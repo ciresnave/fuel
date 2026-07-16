@@ -248,13 +248,22 @@ pub fn clear_runtime_fused_for_tests() {
 // ---- the region → primitive re-emit (the runtime op's `decompose`) ---------
 
 /// Project a region [`OpTag`] (+ its [`OpAttrs`]) back to a primitive [`Op`].
-/// The inverse of `jit::op_to_tag`, over the **v1 re-emit vocabulary**:
-/// type-preserving elementwise + scalar-param ops. Returns `None` for ops that
-/// need structural params or change dtype (comparisons, `Where`, reductions,
-/// `MatMul`, shape/index ops) — those are rejected at registration so this is
-/// total for every registered region.
+/// The inverse of `jit::op_to_tag`, over the **full first-order re-emit
+/// vocabulary** (Convergence Increment A): every non-basis-gap, non-`Scan`,
+/// non-`Fused` op — elementwise, comparison, `Where`, `Cast`, shape/layout
+/// (Transpose/Permute/Reshape/BroadcastTo/(Un)squeeze/Slice/Concat/Flip/Roll/
+/// Pad/Triu/Tril), reductions (SumDim/MeanDim/ReduceSumTo/ReduceMaxTo/CumSum/
+/// SumAll/MaxAll/MinAll/MeanAll), `MatMul`, `Iota`, and indexing (IndexSelect/
+/// Gather/IndexAdd/ScatterAdd). Structural params are decoded from the
+/// (extended) [`OpAttrs`]. Returns `None` (an honest miss, rejected at
+/// registration) for ops with no first-order re-emission: `PowI`/`Clamp`
+/// (no i32/two-scalar carrier), `MaskedFill` (no `Scalar::from_f64`
+/// reconstructor yet), fused/basis-gap tags, and any tag whose required attrs
+/// are unset (e.g. `Iota` with no `target_shape`).
 fn tag_to_op(tag: OpTag, attrs: &OpAttrs) -> Option<Op> {
     use OpTag as T;
+    use fuel_ir::{DType, Shape};
+    use std::str::FromStr;
     Some(match tag {
         T::Add => Op::Add,
         T::Sub => Op::Sub,
@@ -290,8 +299,83 @@ fn tag_to_op(tag: OpTag, attrs: &OpAttrs) -> Option<Op> {
         // live-value substitution via the `extract:` path is a follow-up).
         T::AddScalar => Op::AddScalar(*attrs.scalars.first()?),
         T::MulScalar => Op::MulScalar(*attrs.scalars.first()?),
+
+        // --- Convergence Increment A: the full first-order set ---
+        // Comparison (dtype→U8 handled by primitive_shape, not here).
+        T::Equal => Op::Equal,
+        T::Ne => Op::Ne,
+        T::Lt => Op::Lt,
+        T::Le => Op::Le,
+        T::Gt => Op::Gt,
+        T::Ge => Op::Ge,
+        // Ternary select.
+        T::Where => Op::Where,
+        // Dtype-changing: target dtype rides `cast_dtype` (the stable name).
+        T::Cast => Op::Cast(DType::from_str(attrs.cast_dtype.as_deref()?).ok()?),
+        // MatMul + last-dim log-softmax (no structural params).
+        T::MatMul => Op::MatMul,
+        T::LogSoftmaxLastDim => Op::LogSoftmaxLastDim,
+        // Shape / layout.
+        T::Transpose => Op::Transpose,
+        T::Permute => Op::Permute(attrs.perm.iter().map(|&x| x as usize).collect()),
+        T::Reshape => Op::Reshape(shape_from_attr(attrs)?),
+        T::BroadcastTo => Op::BroadcastTo(shape_from_attr(attrs)?),
+        T::ReduceSumTo => Op::ReduceSumTo(shape_from_attr(attrs)?),
+        T::ReduceMaxTo => Op::ReduceMaxTo(shape_from_attr(attrs)?),
+        T::Unsqueeze => Op::Unsqueeze { dim: *attrs.dims.first()? as usize },
+        T::Squeeze => Op::Squeeze { dim: *attrs.dims.first()? as usize },
+        T::Slice => Op::Slice {
+            dim: attrs.axis? as usize,
+            start: attrs.slice_start? as usize,
+            len: attrs.slice_len? as usize,
+        },
+        T::Concat => Op::Concat { dim: attrs.axis? as usize },
+        T::Flip => Op::Flip { dim: attrs.axis? as usize },
+        T::Roll => Op::Roll { dim: attrs.axis? as usize, shift: attrs.roll_shift? },
+        T::Pad => Op::Pad {
+            padding: attrs.pad_amounts.iter().map(|&(b, e)| (b as usize, e as usize)).collect(),
+            mode: match attrs.pad_mode? {
+                0 => crate::PadMode::Constant,
+                1 => crate::PadMode::Reflect,
+                2 => crate::PadMode::Replicate,
+                _ => return None,
+            },
+            value: attrs.pad_value.unwrap_or(0.0),
+        },
+        T::Triu => Op::Triu { diagonal: attrs.axis? },
+        T::Tril => Op::Tril { diagonal: attrs.axis? },
+        // Reductions (dim rides `axis`; keepdim reductions ride `target_shape`).
+        T::SumDim => Op::SumDim(attrs.axis? as usize),
+        T::MeanDim => Op::MeanDim(attrs.axis? as usize),
+        T::SumAll => Op::SumAll,
+        T::MaxAll => Op::MaxAll,
+        T::MinAll => Op::MinAll,
+        T::MeanAll => Op::MeanAll,
+        T::CumSum => Op::CumSum { dim: attrs.axis? as usize },
+        // Value source leaf (len rides `target_shape` as a 1-element shape).
+        T::Iota => Op::Iota { len: *attrs.target_shape.first()? as usize },
+        // Indexing (dim rides `axis`).
+        T::IndexSelect => Op::IndexSelect { dim: attrs.axis? as usize },
+        T::Gather => Op::Gather { dim: attrs.axis? as usize },
+        T::IndexAdd => Op::IndexAdd { dim: attrs.axis? as usize },
+        T::ScatterAdd => Op::ScatterAdd { dim: attrs.axis? as usize },
+
+        // Honest misses (rejected at registration): PowI/Clamp (no carrier),
+        // MaskedFill (no Scalar::from_f64 reconstructor yet), and any tag whose
+        // required attrs are unset or that is added to OpTag later.
         _ => return None,
     })
+}
+
+/// Decode a target [`fuel_ir::Shape`] from `attrs.target_shape` (the shared
+/// LOGICAL-shape carrier for Reshape/BroadcastTo/ReduceSumTo/ReduceMaxTo).
+/// `None` for an unset (empty) target — an honest miss, not a rank-0 shape.
+fn shape_from_attr(attrs: &OpAttrs) -> Option<fuel_ir::Shape> {
+    if attrs.target_shape.is_empty() {
+        return None;
+    }
+    let dims: Vec<usize> = attrs.target_shape.iter().map(|&d| d as usize).collect();
+    Some(fuel_ir::Shape::from_dims(&dims))
 }
 
 /// How many scalar values `tag` consumes from `attrs.scalars` when re-emitted.
@@ -424,10 +508,29 @@ fn emit(
             let prim = tag_to_op(*op, attrs).expect("region validated re-emittable at registration");
             let child_ids: Vec<NodeId> =
                 operands.iter().map(|o| emit(graph, o, inputs, scalars)).collect();
-            // v1 same-shape elementwise: a node's shape/dtype = its first
-            // operand's (these ops are type-preserving + shape-preserving).
-            let s = graph.node(child_ids[0]).shape.clone();
-            let d = graph.node(child_ids[0]).dtype;
+            // Convergence Increment A: full-parity (shape, dtype) via the single
+            // source of truth (`primitive_shape`) — correct for shape-changing,
+            // reducing, and dtype-changing ops, not just same-shape elementwise.
+            // The Err arm is only reachable for a MALFORMED authored region (a
+            // registration-validated region's ops all infer). Real never-panic
+            // guarantee: emit always returns a node, never panics. Fall back to
+            // operand[0]'s shape/dtype; and because `validate_representable`
+            // checks `tag_to_op(op).is_some()` but NOT arity — and `emit_region`
+            // is a public raw-region entry (candidate verification) that does not
+            // re-validate — a zero-operand op has no operand shape to borrow, so
+            // `.first()` (never `[0]`) guards the index and a degenerate rank-0
+            // F32 node is emitted for that malformed leaf.
+            let child_shapes: Vec<fuel_ir::Shape> =
+                child_ids.iter().map(|&c| graph.node(c).shape.clone()).collect();
+            let child_dtypes: Vec<fuel_ir::DType> =
+                child_ids.iter().map(|&c| graph.node(c).dtype).collect();
+            let (s, d) = crate::shape::primitive_shape(&prim, &child_shapes, &child_dtypes)
+                .unwrap_or_else(|_| {
+                    (
+                        child_shapes.first().cloned().unwrap_or_else(|| fuel_ir::Shape::from_dims(&[])),
+                        child_dtypes.first().copied().unwrap_or(fuel_ir::DType::F32),
+                    )
+                });
             graph.push(Node { op: prim, inputs: child_ids, shape: s, dtype: d })
         }
         PatternNode::Any | PatternNode::SeeThrough { .. } => {
@@ -525,16 +628,131 @@ mod tests {
 
     #[test]
     fn register_rejects_unrepresentable_region() {
-        // MatMul has no v1 primitive re-emission.
+        // Convergence A made MatMul/shape/reduction ops representable; PowI
+        // stays an honest miss (no i32-exponent carrier in OpAttrs), so it is
+        // the current canonical still-unrepresentable tag.
         let region = PatternNode::Op {
-            op: OpTag::MatMul,
+            op: OpTag::PowI,
             attrs: OpAttrs::default(),
-            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+            operands: vec![PatternNode::Bind { index: 0 }],
         };
         assert_eq!(
             register_runtime_fused("bad", region),
-            Err(RuntimeFusedError::UnRepresentable(OpTag::MatMul))
+            Err(RuntimeFusedError::UnRepresentable(OpTag::PowI))
         );
+    }
+
+    #[test]
+    fn tag_to_op_reconstructs_shape_changing_ops() {
+        use fuel_ir::Shape;
+        // Slice{dim:1,start:2,len:3}
+        let attrs = OpAttrs { axis: Some(1), slice_start: Some(2), slice_len: Some(3), ..OpAttrs::default() };
+        assert!(matches!(super::tag_to_op(OpTag::Slice, &attrs), Some(Op::Slice { dim: 1, start: 2, len: 3 })));
+        // Concat{dim:0}
+        let attrs = OpAttrs { axis: Some(0), ..OpAttrs::default() };
+        assert!(matches!(super::tag_to_op(OpTag::Concat, &attrs), Some(Op::Concat { dim: 0 })));
+        // Reshape([6])
+        let attrs = OpAttrs { target_shape: vec![6], ..OpAttrs::default() };
+        assert_eq!(super::tag_to_op(OpTag::Reshape, &attrs), Some(Op::Reshape(Shape::from_dims(&[6]))));
+        // BroadcastTo([2,3])
+        let attrs = OpAttrs { target_shape: vec![2, 3], ..OpAttrs::default() };
+        assert_eq!(super::tag_to_op(OpTag::BroadcastTo, &attrs), Some(Op::BroadcastTo(Shape::from_dims(&[2, 3]))));
+        // ReduceMaxTo([2,1])
+        let attrs = OpAttrs { target_shape: vec![2, 1], ..OpAttrs::default() };
+        assert_eq!(super::tag_to_op(OpTag::ReduceMaxTo, &attrs), Some(Op::ReduceMaxTo(Shape::from_dims(&[2, 1]))));
+    }
+
+    #[test]
+    fn tag_to_op_reconstructs_reductions_dtype_and_matmul() {
+        use fuel_ir::DType;
+        assert!(matches!(super::tag_to_op(OpTag::MeanDim, &OpAttrs { axis: Some(1), ..OpAttrs::default() }), Some(Op::MeanDim(1))));
+        assert!(matches!(super::tag_to_op(OpTag::MatMul, &OpAttrs::default()), Some(Op::MatMul)));
+        // Cast target dtype via name.
+        let attrs = OpAttrs { cast_dtype: Some("f16".into()), ..OpAttrs::default() };
+        assert_eq!(super::tag_to_op(OpTag::Cast, &attrs), Some(Op::Cast(DType::F16)));
+        // Comparison.
+        assert!(matches!(super::tag_to_op(OpTag::Lt, &OpAttrs::default()), Some(Op::Lt)));
+    }
+
+    #[test]
+    fn tag_to_op_still_rejects_basis_gap_and_scan() {
+        // qmatmul/conv flow through Op::Fused (no OpTag); Scan is higher-order.
+        assert_eq!(super::tag_to_op(OpTag::Iota, &OpAttrs::default()), None, "Iota needs a len (target_shape) — empty attrs is a miss");
+    }
+
+    #[test]
+    fn validate_representable_now_accepts_a_slice_region() {
+        // Region: Concat{0}(Neg(Slice{...}(bind0)), bind0) — the rope rotate-half shape.
+        let region = PatternNode::Op {
+            op: OpTag::Concat,
+            attrs: OpAttrs { axis: Some(0), ..OpAttrs::default() },
+            operands: vec![
+                PatternNode::Op {
+                    op: OpTag::Neg,
+                    attrs: OpAttrs::default(),
+                    operands: vec![PatternNode::Op {
+                        op: OpTag::Slice,
+                        attrs: OpAttrs { axis: Some(0), slice_start: Some(0), slice_len: Some(1), ..OpAttrs::default() },
+                        operands: vec![PatternNode::Bind { index: 0 }],
+                    }],
+                },
+                PatternNode::Bind { index: 0 },
+            ],
+        };
+        assert!(super::validate_representable(&region).is_ok(), "slice/concat region must now validate");
+    }
+
+    #[test]
+    fn emit_gets_shape_right_for_a_reduction_region() {
+        use fuel_ir::{DType, Shape};
+        // Region: ReduceSumTo([2,1])(bind0). Input [2,5] → output [2,1].
+        let region = PatternNode::Op {
+            op: OpTag::ReduceSumTo,
+            attrs: OpAttrs { target_shape: vec![2, 1], ..OpAttrs::default() },
+            operands: vec![PatternNode::Bind { index: 0 }],
+        };
+        let mut g = Graph::new();
+        let x = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[2, 5]), dtype: DType::F32 });
+        let root = emit_region(&mut g, &region, &[x], &[]);
+        assert!(matches!(g.node(root).op, Op::ReduceSumTo(_)));
+        assert_eq!(g.node(root).shape, Shape::from_dims(&[2, 1]), "emit must use the reduced shape, not operand[0]");
+        assert_eq!(g.node(root).dtype, DType::F32);
+    }
+
+    #[test]
+    fn emit_gets_dtype_right_for_a_cast_region() {
+        use fuel_ir::{DType, Shape};
+        // Region: Cast(F16)(bind0). Input F32 → output F16, same shape.
+        let region = PatternNode::Op {
+            op: OpTag::Cast,
+            attrs: OpAttrs { cast_dtype: Some("f16".into()), ..OpAttrs::default() },
+            operands: vec![PatternNode::Bind { index: 0 }],
+        };
+        let mut g = Graph::new();
+        let x = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[3, 3]), dtype: DType::F32 });
+        let root = emit_region(&mut g, &region, &[x], &[]);
+        assert!(matches!(g.node(root).op, Op::Cast(DType::F16)));
+        assert_eq!(g.node(root).dtype, DType::F16, "emit must take Cast's target dtype, not operand[0]'s");
+        assert_eq!(g.node(root).shape, Shape::from_dims(&[3, 3]));
+    }
+
+    #[test]
+    fn emit_zero_operand_representable_region_is_panic_free() {
+        // M-1 never-panic hardening: a MALFORMED region — a binary op given ZERO
+        // operands. `validate_representable` accepts it (it checks
+        // `tag_to_op(op).is_some()`, NOT arity), and `emit_region` is a public
+        // raw-region entry (candidate-kernel verification) that does not
+        // re-validate. `primitive_shape(Add, [], [])` errs, so the fallback runs
+        // with an EMPTY child_shapes — it must NOT index-panic. emit stays total:
+        // it returns a node (with a degenerate rank-0 shape), never a panic.
+        let region = PatternNode::Op {
+            op: OpTag::Add,
+            attrs: OpAttrs::default(),
+            operands: vec![],
+        };
+        let mut g = Graph::new();
+        let root = emit_region(&mut g, &region, &[], &[]);
+        assert!(matches!(g.node(root).op, Op::Add), "emit returns a node, not a panic");
     }
 
     #[test]
@@ -640,5 +858,176 @@ mod tests {
             dtype: DType::F32,
         });
         assert_eq!(decompose_region(&mut g, fused), fused, "mismatch ⇒ fixpoint");
+    }
+
+    // ---- Task 5: byte-for-byte emit == registry::*::decompose parity --------
+    //
+    // The A.4 acceptance gate: express each hand-written decompose as a
+    // PatternNode region, re-emit it via the grown `emit`, and assert the
+    // result is structurally identical (op + shape + dtype at every node) to
+    // the registry `decompose` output — the migration oracle. `emit` does NOT
+    // CSE-dedup shared subterms, so a shared oracle node compares structurally
+    // against two identical emitted subtrees; `assert_structural_eq` is
+    // recursive + order-sensitive (no commutative canonicalization — stricter
+    // than `base_map_hash`), catching an operand-swap the hash would mask.
+
+    fn op_node(op: OpTag, attrs: OpAttrs, operands: Vec<PatternNode>) -> PatternNode {
+        PatternNode::Op { op, attrs, operands }
+    }
+    fn bind(i: u8) -> PatternNode {
+        PatternNode::Bind { index: i }
+    }
+
+    /// Recursively assert two subgraphs are identical: same Op, shape, dtype,
+    /// arity, and recursively-equal inputs. Shared leaves (same NodeId) match
+    /// by identity. This is the "byte-for-byte" node-structure check.
+    fn assert_structural_eq(g: &Graph, a: NodeId, b: NodeId) {
+        if a == b {
+            return; // shared leaf (bound external input)
+        }
+        let na = g.node(a);
+        let nb = g.node(b);
+        assert_eq!(na.op, nb.op, "op mismatch: {:?} vs {:?}", na.op, nb.op);
+        assert_eq!(na.shape, nb.shape, "shape mismatch at {:?} vs {:?}", na.op, nb.op);
+        assert_eq!(na.dtype, nb.dtype, "dtype mismatch at {:?}", na.op);
+        assert_eq!(na.inputs.len(), nb.inputs.len(), "arity mismatch at {:?}", na.op);
+        for (&ia, &ib) in na.inputs.iter().zip(nb.inputs.iter()) {
+            assert_structural_eq(g, ia, ib);
+        }
+    }
+
+    #[test]
+    fn emit_matches_softmax_last_dim_decompose() {
+        use fuel_ir::{DType, Shape};
+        let mut g = Graph::new();
+        let sh = Shape::from_dims(&[2, 4]);
+        let x = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+        // Oracle: registry decompose reads inputs[0] + shape + dtype off the node.
+        let fused = g.push(Node { op: Op::Const, inputs: vec![x], shape: sh.clone(), dtype: DType::F32 });
+        let oracle = crate::registry::softmax_last_dim::decompose(&mut g, fused, &FusedOpParams::SoftmaxLastDim);
+
+        // keepdim shape [2,1]; full shape [2,4].
+        let kd = OpAttrs { target_shape: vec![2, 1], ..OpAttrs::default() };
+        let full = OpAttrs { target_shape: vec![2, 4], ..OpAttrs::default() };
+        // e = Exp(Sub(x, BroadcastTo(ReduceMaxTo(x)))) — mirrors decompose order
+        // `Sub{[x, mb]}` exactly; built fresh each call so numerator and the
+        // denominator's ReduceSumTo input are identical subtrees.
+        let softmax_e = |kd: &OpAttrs, full: &OpAttrs| {
+            op_node(OpTag::Exp, OpAttrs::default(), vec![
+                op_node(OpTag::Sub, OpAttrs::default(), vec![
+                    bind(0),
+                    op_node(OpTag::BroadcastTo, full.clone(), vec![
+                        op_node(OpTag::ReduceMaxTo, kd.clone(), vec![bind(0)]),
+                    ]),
+                ]),
+            ])
+        };
+        // out = Div(e, BroadcastTo(ReduceSumTo(e))) — mirrors `Div{[e, db]}`.
+        let region = op_node(OpTag::Div, OpAttrs::default(), vec![
+            softmax_e(&kd, &full),
+            op_node(OpTag::BroadcastTo, full.clone(), vec![
+                op_node(OpTag::ReduceSumTo, kd.clone(), vec![softmax_e(&kd, &full)]),
+            ]),
+        ]);
+        let emitted = emit_region(&mut g, &region, &[x], &[]);
+        assert_structural_eq(&g, oracle, emitted);
+    }
+
+    #[test]
+    fn emit_matches_rope_decompose() {
+        use fuel_ir::{DType, Shape};
+        let mut g = Graph::new();
+        let sh = Shape::from_dims(&[2, 4]); // seq=2, d=4, half=2
+        let x = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+        let cos = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+        let sin = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+        let fused = g.push(Node { op: Op::Const, inputs: vec![x, cos, sin], shape: sh.clone(), dtype: DType::F32 });
+        let oracle = crate::registry::rope::decompose(&mut g, fused, &FusedOpParams::Rope);
+
+        // decompose's broadcast_shape for rank-2 [2,4] is [seq,d] = [2,4]; half slices along last dim.
+        let full = OpAttrs { target_shape: vec![2, 4], ..OpAttrs::default() };
+        let sl_first = OpAttrs { axis: Some(1), slice_start: Some(0), slice_len: Some(2), ..OpAttrs::default() };
+        let sl_second = OpAttrs { axis: Some(1), slice_start: Some(2), slice_len: Some(2), ..OpAttrs::default() };
+        let cat = OpAttrs { axis: Some(1), ..OpAttrs::default() };
+        let bcast_reshape = |full: &OpAttrs, i: u8| {
+            op_node(OpTag::BroadcastTo, full.clone(), vec![
+                op_node(OpTag::Reshape, full.clone(), vec![bind(i)]),
+            ])
+        };
+        // left = Mul(x, cos_bcast); right = Mul(rotated_half, sin_bcast); out = Add(left, right).
+        // rotated_half = Concat{dim:1}(Neg(second_half), first_half).
+        let rotated = op_node(OpTag::Concat, cat, vec![
+            op_node(OpTag::Neg, OpAttrs::default(), vec![op_node(OpTag::Slice, sl_second, vec![bind(0)])]),
+            op_node(OpTag::Slice, sl_first, vec![bind(0)]),
+        ]);
+        let left = op_node(OpTag::Mul, OpAttrs::default(), vec![bind(0), bcast_reshape(&full, 1)]);
+        let right = op_node(OpTag::Mul, OpAttrs::default(), vec![rotated, bcast_reshape(&full, 2)]);
+        let region = op_node(OpTag::Add, OpAttrs::default(), vec![left, right]);
+
+        let emitted = emit_region(&mut g, &region, &[x, cos, sin], &[]);
+        assert_structural_eq(&g, oracle, emitted);
+    }
+
+    #[test]
+    fn emit_matches_layer_norm_last_dim_decompose() {
+        use fuel_ir::{DType, Shape};
+        let mut g = Graph::new();
+        let sh = Shape::from_dims(&[2, 4]); // last=1, reduced [2], keepdim [2,1]
+        let x = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+        let fused = g.push(Node { op: Op::Const, inputs: vec![x], shape: sh.clone(), dtype: DType::F32 });
+        let oracle = crate::registry::layer_norm_last_dim::decompose(
+            &mut g, fused, &FusedOpParams::LayerNormLastDim { eps: 1e-5 },
+        );
+
+        let kd = OpAttrs { target_shape: vec![2, 1], ..OpAttrs::default() };
+        let full = OpAttrs { target_shape: vec![2, 4], ..OpAttrs::default() };
+        let md = OpAttrs { axis: Some(1), ..OpAttrs::default() };
+        let eps_attrs = OpAttrs { scalars: vec![1e-5], ..OpAttrs::default() }; // BAKED constant, not a slot
+        // centered = Sub(x, BroadcastTo(Reshape(MeanDim(x)))) — shared subterm.
+        let centered = op_node(OpTag::Sub, OpAttrs::default(), vec![
+            bind(0),
+            op_node(OpTag::BroadcastTo, full.clone(), vec![
+                op_node(OpTag::Reshape, kd.clone(), vec![
+                    op_node(OpTag::MeanDim, md.clone(), vec![bind(0)]),
+                ]),
+            ]),
+        ]);
+        // denom_bcast = BroadcastTo(Sqrt(AddScalar(eps)(Reshape(MeanDim(Sqr(centered)))))).
+        let denom_bcast = op_node(OpTag::BroadcastTo, full.clone(), vec![
+            op_node(OpTag::Sqrt, OpAttrs::default(), vec![
+                op_node(OpTag::AddScalar, eps_attrs, vec![
+                    op_node(OpTag::Reshape, kd.clone(), vec![
+                        op_node(OpTag::MeanDim, md.clone(), vec![
+                            op_node(OpTag::Sqr, OpAttrs::default(), vec![centered.clone()]),
+                        ]),
+                    ]),
+                ]),
+            ]),
+        ]);
+        // out = Div(centered, denom_bcast).
+        let region = op_node(OpTag::Div, OpAttrs::default(), vec![centered, denom_bcast]);
+
+        let emitted = emit_region(&mut g, &region, &[x], &[]);
+        assert_structural_eq(&g, oracle, emitted);
+    }
+
+    #[test]
+    fn emit_matches_cast_over_add_reference() {
+        // Exercises the dtype path through assert_structural_eq: a hand-built
+        // two-node reference `Cast(F16)(Add(a, b))` vs the emitted region.
+        use fuel_ir::{DType, Shape};
+        let mut g = Graph::new();
+        let sh = Shape::from_dims(&[4]);
+        let a = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+        let b = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+        // Reference graph.
+        let add = g.push(Node { op: Op::Add, inputs: vec![a, b], shape: sh.clone(), dtype: DType::F32 });
+        let reference = g.push(Node { op: Op::Cast(DType::F16), inputs: vec![add], shape: sh.clone(), dtype: DType::F16 });
+
+        let region = op_node(OpTag::Cast, OpAttrs { cast_dtype: Some("f16".into()), ..OpAttrs::default() }, vec![
+            op_node(OpTag::Add, OpAttrs::default(), vec![bind(0), bind(1)]),
+        ]);
+        let emitted = emit_region(&mut g, &region, &[a, b], &[]);
+        assert_structural_eq(&g, reference, emitted);
     }
 }

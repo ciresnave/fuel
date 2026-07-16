@@ -434,6 +434,89 @@ light FDX-version path (§3.5) is acceptable.
 | FKC contract corpus | ~68 bundle files / ~856 kernel sections, lint-clean |
 | JIT-on-request + missing-fusion telemetry + `structure_key`/`DispatchRecord` emission | **Not built** (the base-emission seam is the prerequisite) |
 
+#### 7.3.1 `OpAttrs` full first-order coverage (Convergence Increment A, 2026-07-16)
+
+`OpAttrs` (`fuel-kernel-seam-types`) gained the dependency-free carriers the
+full first-order re-emit vocabulary needs but the F1 set (`scalars`/`axis`/
+`perm`/`target_shape`/`dims`) could not express. **Additive, optional →
+backward-compatible; Fuel-led, Baracuda to mirror** (same convention as the F1
+`perm`/`target_shape`/`dims` additions). Conforms to the pinned KISS §6.19
+positional-blob grammar (the canonical byte serialization lands in Task 7 —
+see the §6.19 schema table added there).
+
+| Field | Type | Carries |
+|---|---|---|
+| `cast_dtype` | `Option<String>` | `Cast` target dtype as `DType::as_str()` (dep-free; mapped back via `FromStr`); also `MaskedFill`'s value dtype |
+| `slice_start` / `slice_len` | `Option<u64>` | `Slice` window (its `dim` rides `axis`) |
+| `roll_shift` | `Option<i64>` | `Roll` signed shift (its `dim` rides `axis`) |
+| `pad_amounts` | `Vec<(u64, u64)>` | `Pad` per-axis `(before, after)` |
+| `pad_mode` | `Option<u8>` | `Pad` mode code `0=Constant, 1=Reflect, 2=Replicate` (mirrors Fuel `PadMode` order) |
+| `pad_value` | `Option<f64>` | `Pad` constant fill value |
+| `keepdim` | `Option<bool>` | §6.19 reduce-schema conformance (serialized only; Fuel reduce Ops encode keepdim structurally) |
+
+`Iota`'s `len` and `MaskedFill`'s value reuse existing fields (`target_shape` =
+`[len]`; value on `scalars[0]`) — the `OpTag` disambiguates, as it already does
+for `target_shape` serving both `BroadcastTo` and `Reshape`.
+
+#### 7.3.2 `OpAttrs` §6.19 canonical positional-blob serialization (Convergence Increment A, 2026-07-16)
+
+`OpAttrs::to_canonical_bytes(op) -> Vec<u8>` (`fuel-kernel-seam-types`) emits the
+KISS **§6.19 canonical positional blob**: a per-op **positional** little-endian
+body (no field names, **no elision** — the `OpTag` fixes the schema),
+length-prefixed with a `u32` LE byte count. It is the canonical serialization
+*onto* Fuel's internal `OpAttrs` struct, which stays a struct. Registered under
+the recipe-import capability **`SEAM_CAP_RECIPE_IMPORT = FEAT bit 35`** (the KISS
+FEAT range; see the co-design reply-2). std-only, dependency-free, deterministic.
+**Baracuda to mirror the encoding.**
+
+**Conformance scope (accurate claim, per the review of Increment A).** The blob
+is **byte-comparable with a Baracuda-emitted one for the positionally-conformant
+ops** — elementwise, `cast`, `slice`, `concat`, `roll`, `pad`, `flip`, `iota`,
+`permute`, `(un)squeeze`, and the shape-target ops. It is **not yet fully
+§6.19.3-conformant for `reduce`/`gather`/`scatter`**, and that is partly by
+design under the pinned node schema `Op{op_name, op_attrs, child_edges}`:
+- **`reduce{monoid, reduce_axes, keepdim}`** — Fuel emits single-axis
+  `{axis, keepdim}`. `monoid` is carried by `op_name` (Fuel's distinct
+  `SumDim`/`MaxDim`/`MinDim`/`ReduceSumTo`/`ReduceMaxTo` tags), so it does **not**
+  belong in `op_attrs`. A **multi-axis `reduce_axes` list is DEFERRED** — Fuel
+  currently models single-axis reduce (no consumer yet).
+- **`gather{axis, oob_policy, index_operand, index_dtype}` /
+  `scatter{axis, scatter_combine, oob_policy, index_operand, index_dtype}`** —
+  Fuel emits `{axis}`. `scatter_combine` rides `op_name` (`IndexAdd` vs
+  `ScatterAdd`), `index_operand` rides `child_edges`, and `index_dtype` rides
+  that operand node — so those three legitimately are **not** `op_attrs` fields.
+  **`oob_policy` is a genuine DEFERRAL** — a known-unwired slot with no carrier
+  yet (tracked with the rest of the `oob_policy` seam work).
+
+These deferrals are consumer-gated (Increment C and beyond), not Increment-A
+scope; the §2.A conformance gap is closed for the conformant ops and the
+remaining fields have a pinned home (`op_name`/`child_edges`) or a named
+deferral (`oob_policy`, multi-axis `reduce_axes`).
+
+Envelope: `u32` LE `body.len()` ++ `body`. **Empty-schema op** (`Add`, `Neg`,
+`MatMul`, `Where`, comparisons, unary math, scalar reductions, `LogSoftmaxLastDim`,
+…): `body` empty → the single canonical form `[0,0,0,0]`.
+
+Per-op `body` field order (all little-endian; lists are `u32` count then elements):
+
+| Op(s) | Positional body |
+|---|---|
+| `Reshape` / `BroadcastTo` / `ReduceSumTo` / `ReduceMaxTo` / `Iota` | `target_shape`: `i64` list (Iota = `[len]`) |
+| `Permute` / `Transpose` | `perm`: `u32` list (absolute axis order) |
+| `Unsqueeze` / `Squeeze` | `dims`: `u32` list |
+| `Slice` | `axis: u32`, `start: u64`, `len: u64` |
+| `Concat` / `Flip` / `Triu` / `Tril` / `IndexSelect` / `Gather` / `IndexAdd` / `ScatterAdd` | `axis: i64` |
+| `Roll` | `axis: i64`, `shift: i64` |
+| `SumDim` / `MeanDim` / `CumSum` | `axis: i64`, `keepdim: u8` |
+| `Cast` | `dtype_name`: length-prefixed UTF-8 (`DType::as_str()`) |
+| `Pad` | `amounts`: `u32` count then `(before:u64, after:u64)` pairs; `mode: u8`; `value: f64` |
+| `AddScalar` / `MulScalar` / `Clamp` / `PowI` | `scalars`: `f64` list |
+| `MaskedFill` | `scalars`: `f64` list; `dtype_name`: length-prefixed UTF-8 |
+| all others (empty schema) | *(empty)* → `[0,0,0,0]` |
+
+The `scan` / `scan_placeholder` / `runtime_scalar` tokens Fuel proposed are
+higher-order / leaf ops handled outside this first-order `OpAttrs` set.
+
 ---
 
 ## 8. Ratification & implementation plan
