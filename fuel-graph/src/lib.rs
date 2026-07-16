@@ -50,6 +50,7 @@ pub mod registry;
 pub mod runtime_fused;
 pub mod run;
 pub mod scan;
+mod shape;
 
 #[doc(inline)]
 pub use run::{
@@ -58,6 +59,8 @@ pub use run::{
     lower_picked_route_streaming, lower_run, lower_runs_arm0, passes_fewness_gate,
     walk_picked_route_streaming, PickedRoute, Run, FEWNESS_THRESHOLD,
 };
+
+pub use shape::primitive_shape;
 
 use crate::registry::{FusedOpId, FusedOpParams};
 use fuel_ir::{DeviceLocation, DType, DynScalar, Layout, Scalar, Shape, SymId, probe::BackendId};
