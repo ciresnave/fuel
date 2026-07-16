@@ -70,12 +70,12 @@ ops run. **The payoff (long-context decode throughput / KV compression) is unrea
 
 | Gap | Status | What's needed | Home |
 | --- | --- | --- | --- |
-| **Higher-order `Scan` `Op`** (G3 basis gap) | Absent (documented) | A build-time `Op`-enum extension: an associative- or chunked-scan primitive. The `O(seqlen)` unroll is unbounded/un-re-fusable; the diagonal-SSM `CumSum` closed-form overflows for Mamba's `a<0`. `decompose` correctly returns self (never-crash surfaced gap). | Documented in [10-decisions-log 2026-07-03](architecture/10-decisions-log.md) (:406, :414) but **never scheduled** → orphan → this doc + ROADMAP backlog |
+| **Higher-order `Scan` `Op`** (G3 basis gap) | **SHIPPED 2026-07-15** (Op::Scan Phase 1) | Built as `Op::Scan{body,carry,bound,emit,early_exit}` + the `Op::ScanPlaceholder` body-hole leaf — a bounded `lax.scan`-shaped primitive whose body lives in the node's own `inputs`. `selective_scan` + `ssd_chunk_scan` `decompose` now emit `Op::Scan` (parity-gated), **closing G3** — `decompose` is total over genuine primitives. Basis closure only: the fused SSM kernels stay the executed path; `Op::Scan` has **no native kernel** yet. | Shipped per [10-decisions-log 2026-07-15](architecture/10-decisions-log.md). **Phase 2** = early-exit mechanism + BPTT differentiability + a Hopfield consumer, and wire/drop the slot-1 (`last_state`) view **before** adding an `Op::Scan` kernel (silent-OOB otherwise) |
 | **SSM autoregressive decode** | Absent | `Op::SelectiveScanWithInitState` (or a 6-input `selective_scan`) that consumes the prior step's `last_state`. Producer half exists (kernels already emit `last_state` as bundle slot 1); the consumer feedback is unbuilt. Blocks the Mamba/LFM2 decode loop — the actual KV-compression win. | orphan (source comment `lazy_mamba.rs:25-31`) → this doc |
 | **GPU scan dispatch** | Absent | Wire the already-ported baracuda CUDA mamba kernels (`fuel-cuda-backend/src/baracuda/mamba.rs`) to `OpKind` dispatch (+ autograd). Today only `causal_conv1d` + `cumsum` dispatch on CUDA; the two scans do not. | orphan (source comment `mamba.rs:16-19`) → this doc |
 | **GraniteMoEHybrid Mamba branch** | Partial (attention-only) | The Mamba branch currently bails; lands downstream of the `Scan` op + SSM decode above. | orphan (source comment `lazy_granitemoehybrid.rs:6-8`) → this doc |
 
-*Sequencing:* the `Scan` op is the root; SSM decode + GPU dispatch follow; hybrid-model
+*Sequencing:* the `Scan` op (the root) **shipped 2026-07-15** (`Op::Scan` Phase 1, G3 closed); SSM decode + GPU dispatch follow; hybrid-model
 completion is downstream of all three.
 
 ---
@@ -332,8 +332,9 @@ carry the critic GRPO exists to eliminate); unrelated to LLM post-training.
 1. **Keystone first: finish data-determined dynamic shapes** (the data-dependent-shapes
    program). Unlocks MoE sparsity *and* underpins SSM/attention capacity buffers, and is
    already needed by Phase 8.5. Highest leverage.
-2. **`Scan` `Op` (G3)** — an independent build-time enum extension; unblocks
-   `selective_scan` + `ssd_chunk_scan`, then SSM decode + GPU dispatch, then hybrid models.
+2. **`Scan` `Op` (G3)** — ✅ **SHIPPED 2026-07-15** (`Op::Scan` Phase 1): a build-time
+   enum extension; `selective_scan` + `ssd_chunk_scan` now decompose to it (G3 closed). SSM
+   decode + GPU dispatch + hybrid models still follow.
 3. **Attention compression** — KV-container generalization (structural) → MLA decode
    cache → weight-absorption / two-projection. Independent of 1–2 except for the shared
    symbolic-`k_len` slice.
