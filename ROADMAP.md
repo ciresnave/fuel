@@ -95,16 +95,22 @@ the `Scan` gap is **CLOSED** — `Op::Scan` Phase 1 shipped, see
 *Newly tracked orphans* (had no planning-doc home — lived only in source comments or
 nowhere; now captured so they are not forgotten):
 
-- **Higher-order `Scan` `Op` — SHIPPED (2026-07-15), G3 CLOSED.** `Op::Scan` / `Op::ScanPlaceholder`
-  (Fuel's first sub-graph-carrying primitive, Phase 1) landed; `selective_scan` +
-  `ssd_chunk_scan`'s `decompose` now emit it instead of surfacing the G3 basis gap —
-  `decompose` is total over genuine primitives for the whole registered fused-op set.
-  `Op::Scan` is a base-map terminal with no native kernel in Phase 1; the fused CPU/CUDA
-  kernels remain the executed path, so this is optimizer-basis closure, not new runtime
-  capability. **Phase 2** (tracked, not yet scheduled in detail): the `early_exit`
-  data-dependent mechanism, BPTT differentiability through a scan body, and a first
-  consumer beyond SSM re-decompose (e.g. a Hopfield/associative-memory op). See
-  [10-decisions-log 2026-07-15](docs/architecture/10-decisions-log.md).
+- **Higher-order `Scan` `Op` — Phase 2 SHIPPED (2026-07-16); G3 CLOSED (Phase 1, 2026-07-15).**
+  `Op::Scan` / `Op::ScanPlaceholder` (Fuel's first sub-graph-carrying primitive, Phase 1) landed;
+  `selective_scan` + `ssd_chunk_scan`'s `decompose` emit it instead of surfacing the G3 basis gap —
+  `decompose` is total over genuine primitives for the whole registered fused-op set. **Phase 2
+  shipped: early-exit + differentiability + Hopfield consumer.** (1) `early_exit` is a built
+  realize-barrier mechanism — a scalar-`U8` predicate over the carry carried as a trailing input
+  (`Tensor::scan_until`), evaluated by a host step driver (`drive_scan_until_final_f32`) that stops
+  at the runtime convergence step under the static-capacity `bound`. (2) BPTT differentiability via
+  a `lower_scans_for_backward` pre-pass (decompose SSM recipes → `Op::Scan` → `unroll_scan` → node-
+  general autograd, truncated to the static `bound`); `selective_scan`/`ssd_chunk_scan` are now
+  differentiable (`BackwardKind::Decompose`, no bespoke `*_BACKWARD`). (3) First non-SSM consumer:
+  `hopfield_retrieve` (Modern Hopfield associative memory), converges early + is BPTT-differentiable.
+  **Still no `Op::Scan` native kernel** (kept out on purpose — the slot-1/`last_state` OOB blocker
+  stays a typed error, not a live silent read); multi-carry, an `emit=All` early-exit valid-count
+  buffer, and equilibrium/implicit-diff gradients remain deferred. See
+  [10-decisions-log 2026-07-16](docs/architecture/10-decisions-log.md).
 - **SSM autoregressive decode** (`Op::SelectiveScanWithInitState`, feed `last_state` back) +
   **GPU scan dispatch** (wire the ported baracuda mamba kernels to `OpKind`) — the SSM
   long-context-decode payoff; plus the **GraniteMoEHybrid** Mamba branch (currently bails).
@@ -226,9 +232,15 @@ Phases 0–7 and the shipped portions of 7.5/7.6 + Phase C are complete; full de
   now emit it instead of surfacing the G3 basis gap — `decompose` is total over genuine
   primitives for the whole registered fused-op set. `Op::Scan` is a base-map terminal with no
   native kernel; the fused CPU/CUDA kernels remain the executed path — the payoff is
-  optimizer-basis closure, not new runtime capability. Phase 2 (early-exit mechanism, BPTT
-  differentiability, a Hopfield/associative-memory consumer) is a separate spec. See
-  [10-decisions-log 2026-07-15](docs/architecture/10-decisions-log.md).
+  optimizer-basis closure, not new runtime capability. **Phase 2 shipped (2026-07-16):**
+  early-exit (predicate-over-carry trailing input + `Tensor::scan_until` + the
+  `drive_scan_until_final_f32` realize-barrier step driver), BPTT differentiability
+  (`lower_scans_for_backward` decompose+unroll pre-pass; SSM ops now `BackwardKind::Decompose`,
+  truncated to the static `bound`), and the first non-SSM consumer (`hopfield_retrieve`, Modern
+  Hopfield associative memory — converges early + is BPTT-differentiable). Still no `Op::Scan`
+  native kernel (the slot-1/`last_state` OOB blocker stays out of scope on purpose). See
+  [10-decisions-log 2026-07-15](docs/architecture/10-decisions-log.md) +
+  [2026-07-16](docs/architecture/10-decisions-log.md).
 
 - **Missing-fusion telemetry (none today; build closed-world first).** The Judge feedback
   above measures fusions Fuel *performed*; it says nothing about fusions Fuel
