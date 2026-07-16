@@ -2115,6 +2115,65 @@ mod tests {
             "unroll oracle must contain y = 12, got {oracle:?}");
     }
 
+    /// Recipe principle (G2/G3 — part 2): SsdChunkScan (Mamba-2's State-Space
+    /// Duality scan) was the constitution's twin **basis gap** to SelectiveScan.
+    /// Fuel now HAS the higher-order `Op::Scan` primitive, so `decompose` lowers
+    /// to it — closing G3 part 2. The SSD recurrence carries a per-head SCALAR
+    /// gate `exp(dt·a_h)` (`a` is `[heads]`, broadcast across the whole
+    /// `head_dim×state_dim` block), with NO softplus. This test mirrors the
+    /// SelectiveScan gate test: (a) NON-REGRESSION — the fused CPU kernel still
+    /// realizes `y = 12`; (b) VERIFICATION — `lowering_only` leaves NO
+    /// `Op::Fused(SSD_CHUNK_SCAN)`, an `Op::Scan` terminal is present, and
+    /// `unroll_scan` + realize of the ys oracle contains `y = 12`.
+    /// Fixture (batch=heads=head_dim=state_dim=1, seqlen=chunk_size=1):
+    /// `x=2, dt=0.5, a=-1, b=3, c=4` → `exp(0.5·-1)·0 + 0.5·3·2 = 3`, `y = 3·4 = 12`.
+    #[test]
+    fn ssd_chunk_scan_decompose_lowers_to_scan_and_matches() {
+        use fuel_graph::registry::FusedOps;
+        use fuel_graph::Op;
+        let dev = Device::cpu();
+        // x [batch, seqlen, heads, head_dim] = [1,1,1,1]; dt [b,s,h]=[1,1,1];
+        // a [heads]=[1]; b/c [b,s,h,state]=[1,1,1,1].
+        let x = LazyTensor::from_f32(vec![2.0f32], Shape::from_dims(&[1, 1, 1, 1]), &dev);
+        let dt = x.const_f32_like(vec![0.5f32], Shape::from_dims(&[1, 1, 1]));
+        let a = x.const_f32_like(vec![-1.0f32], Shape::from_dims(&[1]));
+        let b = x.const_f32_like(vec![3.0f32], Shape::from_dims(&[1, 1, 1, 1]));
+        let c = x.const_f32_like(vec![4.0f32], Shape::from_dims(&[1, 1, 1, 1]));
+        let y = x.ssd_chunk_scan(&dt, &a, &b, &c, /* chunk_size */ 1);
+
+        // (a) NON-REGRESSION: the fused kernel still runs and produces 12.0.
+        let got = y.realize_f32();
+        assert!((got[0] - 12.0).abs() < 1e-4, "fused ssd kernel y: {}", got[0]);
+
+        // (b) VERIFICATION: lowering leaves NO Op::Fused(SSD_CHUNK_SCAN); an
+        // Op::Scan terminal is present; unroll+realize matches h=3, y=12.
+        let graph = y.inner.graph().clone();
+        let id = y.inner.id();
+        let roots = fuel_graph::opt::RuleRegistry::lowering_only().optimize_to_fixpoint(&graph, &[id]);
+        let scan_id = {
+            let g = graph.read().unwrap();
+            let mut stack = vec![roots[0]];
+            let mut seen = std::collections::HashSet::new();
+            let mut scan_id = None;
+            while let Some(nid) = stack.pop() {
+                if !seen.insert(nid) { continue; }
+                let node = g.node(nid);
+                assert!(!matches!(node.op, Op::Fused(fid, _) if fid == FusedOps::SSD_CHUNK_SCAN),
+                    "SsdChunkScan must lower to Op::Scan, not remain fused");
+                if matches!(node.op, Op::Scan { .. }) { scan_id = Some(nid); }
+                for &inp in &node.inputs { stack.push(inp); }
+            }
+            scan_id.expect("an Op::Scan terminal must be present after lowering")
+        };
+        let ys = {
+            let mut g = graph.write().unwrap();
+            fuel_graph::scan::unroll_scan(&mut g, scan_id, 1).expect("unroll").0
+        };
+        let oracle = crate::pipelined_bridge::realize_one_as::<f32>(&graph, ys, &dev)
+            .expect("realize unrolled ssd_chunk_scan oracle on CPU");
+        assert!(oracle.iter().any(|&v| (v - 12.0).abs() < 1e-4), "oracle y=12, got {oracle:?}");
+    }
+
     /// Recipe principle (G2): Nf4Matmul must decompose to a **fused-free**
     /// primitive subgraph whose realize matches the fused kernel. RED before
     /// the total decompose landed (the self-return left an
