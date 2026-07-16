@@ -2174,6 +2174,287 @@ mod tests {
         assert!(oracle.iter().any(|&v| (v - 12.0).abs() < 1e-4), "oracle y=12, got {oracle:?}");
     }
 
+    // ---- Task 8: general-dimension SSM parity gate (C7 non-regression) ------
+    //
+    // The all-1s gap-test fixtures above (Task 6/7) share a single flat order
+    // across every axis, so they cannot catch an axis transposition in the
+    // decompose. The tests below run each SSM op at DISTINGUISHING multi-dim
+    // sizes and assert the `unroll_scan` oracle (over the lowered `Op::Scan`)
+    // matches the fused kernel element-wise, which is only possible if every
+    // per-step slice / broadcast / reduce axis in the Task-6/7 decompose lines
+    // up with the kernel's layout.
+
+    /// Walk the lowered graph from `root`, assert NO `Op::Fused(fused_id)`
+    /// survives the `lowering_only()` pass, and return the `Op::Scan` terminal
+    /// the decompose emitted (there must be exactly one on the SSM path).
+    fn find_scan_terminal(
+        graph: &std::sync::Arc<std::sync::RwLock<fuel_graph::Graph>>,
+        root: fuel_graph::NodeId,
+        fused_id: fuel_graph::registry::FusedOpId,
+    ) -> fuel_graph::NodeId {
+        use fuel_graph::Op;
+        let g = graph.read().unwrap();
+        let mut stack = vec![root];
+        let mut seen = std::collections::HashSet::new();
+        let mut scan_id = None;
+        while let Some(nid) = stack.pop() {
+            if !seen.insert(nid) {
+                continue;
+            }
+            let node = g.node(nid);
+            assert!(
+                !matches!(node.op, Op::Fused(fid, _) if fid == fused_id),
+                "SSM op must lower to Op::Scan, not remain fused",
+            );
+            if matches!(node.op, Op::Scan { .. }) {
+                scan_id = Some(nid);
+            }
+            for &inp in &node.inputs {
+                stack.push(inp);
+            }
+        }
+        scan_id.expect("an Op::Scan terminal must be present after lowering")
+    }
+
+    /// Reindex a flat row-major `[seqlen, batch, tail]` buffer — the layout
+    /// `unroll_scan` stacks its per-step ys into (scan axis 0) — to
+    /// `[batch, seqlen, tail]`, the fused kernel's `y` layout, so the two align
+    /// element-wise. `tail` is the product of the trailing per-token dims (`dim`
+    /// for selective_scan; `heads*head_dim` for ssd) — a contiguous block whose
+    /// internal order is preserved by the batch/seqlen swap.
+    ///
+    /// This is done in host code deliberately: the executor treats `Op::Permute`
+    /// as a metadata-only view (shared bytes + strided layout), so realizing a
+    /// `Permute` *root* can hand back byte-shared storage still in seqlen-major
+    /// order — an unreliable comparand. Realizing the contiguous unroll `Concat`
+    /// (`ys`) and permuting the flat host bytes here is unambiguous.
+    fn scan_ys_to_fused_layout(ys: &[f32], seqlen: usize, batch: usize, tail: usize) -> Vec<f32> {
+        assert_eq!(ys.len(), seqlen * batch * tail, "ys layout mismatch");
+        let mut out = vec![0f32; ys.len()];
+        for s in 0..seqlen {
+            for bb in 0..batch {
+                for t in 0..tail {
+                    out[(bb * seqlen + s) * tail + t] = ys[(s * batch + bb) * tail + t];
+                }
+            }
+        }
+        out
+    }
+
+    /// Task 8 (part 1) — `selective_scan` general-dimension parity.
+    ///
+    /// **C7 non-regression:** `PipelinedExecutor::realize` dispatches
+    /// `Op::Fused(SELECTIVE_SCAN)` **directly** to its kernel and never runs a
+    /// `RuleRegistry` lowering pass, so `decompose`→`Op::Scan` is reached ONLY by
+    /// the `lowering_only()` verification below — the fused kernel is the
+    /// executed path *by construction*. The `realize_f32()` leg (a) is the proof
+    /// the fused kernel still runs (no `O(seqlen)` unroll on the hot path).
+    ///
+    /// **Distinguishing dims** batch=2, seqlen=3, dim=2, dstate=2 with EVERY
+    /// element distinct and asymmetric: `u`/`delta` index `dim`, `b`/`c` index
+    /// `dstate`, and `a` is a full `[dim,dstate]` gate — so a dim↔dstate
+    /// broadcast swap multiplies wrong pairs, and because `h` threads across the
+    /// (order-sensitive) seqlen recurrence, a batch↔seqlen transpose changes the
+    /// result. The all-1s fixture cannot see either; this can.
+    #[test]
+    fn selective_scan_multidim_unroll_matches_fused_kernel() {
+        use fuel_graph::registry::FusedOps;
+        let dev = Device::cpu();
+        let (batch, seqlen, dim, dstate) = (2usize, 3usize, 2usize, 2usize);
+        // [batch, seqlen, dim] — all distinct, mixed signs.
+        let u = LazyTensor::from_f32(
+            vec![0.5, -0.3, 1.0, 0.2, -0.5, 0.7, 0.25, 0.9, -0.8, 0.4, 0.6, -0.1],
+            Shape::from_dims(&[batch, seqlen, dim]),
+            &dev,
+        );
+        // [batch, seqlen, dim] — positive (delta is a rate); all distinct.
+        let delta = u.const_f32_like(
+            vec![0.1, 0.2, 0.3, 0.15, 0.25, 0.4, 0.35, 0.05, 0.2, 0.3, 0.12, 0.28],
+            Shape::from_dims(&[batch, seqlen, dim]),
+        );
+        // [dim, dstate] — negative (Mamba a<0 → stable gate in (0,1)); distinct.
+        let a = u.const_f32_like(
+            vec![-0.7, -0.3, -0.5, -0.9],
+            Shape::from_dims(&[dim, dstate]),
+        );
+        // [batch, seqlen, dstate] — distinct.
+        let b = u.const_f32_like(
+            vec![1.0, 0.5, 0.25, 0.75, 0.6, 0.2, 0.8, 0.4, 0.3, 0.9, 0.55, 0.15],
+            Shape::from_dims(&[batch, seqlen, dstate]),
+        );
+        // [batch, seqlen, dstate] — distinct.
+        let c = u.const_f32_like(
+            vec![2.0, 1.0, 0.5, 1.5, 0.8, 0.3, 1.2, 0.6, 0.9, 0.4, 0.7, 1.1],
+            Shape::from_dims(&[batch, seqlen, dstate]),
+        );
+        let y = u.selective_scan(&delta, &a, &b, &c, /* delta_softplus */ false);
+
+        // (a) Fused kernel (executed production path) runs and is well-shaped.
+        let fused = y.realize_f32();
+        assert_eq!(fused.len(), batch * seqlen * dim);
+
+        // (b) Unroll oracle over the lowered Op::Scan matches the fused kernel.
+        let graph = y.inner.graph().clone();
+        let roots = fuel_graph::opt::RuleRegistry::lowering_only()
+            .optimize_to_fixpoint(&graph, &[y.inner.id()]);
+        assert_eq!(roots.len(), 1);
+        let scan_id = find_scan_terminal(&graph, roots[0], FusedOps::SELECTIVE_SCAN);
+        let ys = {
+            let mut g = graph.write().unwrap();
+            fuel_graph::scan::unroll_scan(&mut g, scan_id, seqlen).expect("unroll").0
+        };
+        let ys_flat = crate::pipelined_bridge::realize_one_as::<f32>(&graph, ys, &dev)
+            .expect("realize selective_scan unroll oracle on CPU");
+        // ys is [seqlen,batch,dim]; fused y is [batch,seqlen,dim].
+        let oracle = scan_ys_to_fused_layout(&ys_flat, seqlen, batch, dim);
+        assert_eq!(oracle.len(), fused.len());
+        let mut max_drift = 0f32;
+        for (i, (o, f)) in oracle.iter().zip(fused.iter()).enumerate() {
+            let d = (o - f).abs();
+            max_drift = max_drift.max(d);
+            // 1e-3 sabotage-calibrated: native-F32 unroll vs F64-accumulate
+            // kernel. Honest drift here is ~1e-6 (printed); a batch/seqlen or
+            // dim/dstate transpose diverges by O(0.1..10) — far above 1e-3.
+            assert!(
+                d < 1e-3,
+                "selective_scan multidim mismatch at {i}: oracle {o} vs fused {f} (drift {d})",
+            );
+        }
+        eprintln!("selective_scan multidim: max honest drift = {max_drift:e}");
+    }
+
+    /// Task 8 (part 1, softplus) — `selective_scan` with `delta_softplus=true`,
+    /// the branch unexercised at T=1. `delta` carries mixed-sign values so the
+    /// stable softplus form `Relu(x)+Log(1+Exp(Neg(Abs(x))))` does real work on
+    /// both the `x>0` and `x<0` sides before the scan. Same fused-vs-oracle
+    /// parity as the non-softplus case.
+    #[test]
+    fn selective_scan_softplus_multitoken_unroll_matches_fused_kernel() {
+        use fuel_graph::registry::FusedOps;
+        let dev = Device::cpu();
+        let (batch, seqlen, dim, dstate) = (1usize, 3usize, 2usize, 2usize);
+        let u = LazyTensor::from_f32(
+            vec![0.5, -0.3, 1.0, 0.2, -0.5, 0.7],
+            Shape::from_dims(&[batch, seqlen, dim]),
+            &dev,
+        );
+        // Mixed signs → softplus exercises max(x,0) AND ln(1+exp(-|x|)).
+        let delta = u.const_f32_like(
+            vec![-0.5, 0.2, 0.8, -1.0, 0.3, -0.2],
+            Shape::from_dims(&[batch, seqlen, dim]),
+        );
+        let a = u.const_f32_like(
+            vec![-0.7, -0.3, -0.5, -0.9],
+            Shape::from_dims(&[dim, dstate]),
+        );
+        let b = u.const_f32_like(
+            vec![1.0, 0.5, 0.25, 0.75, 0.6, 0.2],
+            Shape::from_dims(&[batch, seqlen, dstate]),
+        );
+        let c = u.const_f32_like(
+            vec![2.0, 1.0, 0.5, 1.5, 0.8, 0.3],
+            Shape::from_dims(&[batch, seqlen, dstate]),
+        );
+        let y = u.selective_scan(&delta, &a, &b, &c, /* delta_softplus */ true);
+
+        let fused = y.realize_f32();
+        assert_eq!(fused.len(), batch * seqlen * dim);
+
+        let graph = y.inner.graph().clone();
+        let roots = fuel_graph::opt::RuleRegistry::lowering_only()
+            .optimize_to_fixpoint(&graph, &[y.inner.id()]);
+        let scan_id = find_scan_terminal(&graph, roots[0], FusedOps::SELECTIVE_SCAN);
+        let ys = {
+            let mut g = graph.write().unwrap();
+            fuel_graph::scan::unroll_scan(&mut g, scan_id, seqlen).expect("unroll").0
+        };
+        let ys_flat = crate::pipelined_bridge::realize_one_as::<f32>(&graph, ys, &dev)
+            .expect("realize selective_scan softplus oracle on CPU");
+        let oracle = scan_ys_to_fused_layout(&ys_flat, seqlen, batch, dim);
+        let mut max_drift = 0f32;
+        for (i, (o, f)) in oracle.iter().zip(fused.iter()).enumerate() {
+            let d = (o - f).abs();
+            max_drift = max_drift.max(d);
+            assert!(
+                d < 1e-3,
+                "selective_scan softplus mismatch at {i}: oracle {o} vs fused {f} (drift {d})",
+            );
+        }
+        eprintln!("selective_scan softplus: max honest drift = {max_drift:e}");
+    }
+
+    /// Task 8 (part 2) — `ssd_chunk_scan` general-dimension parity.
+    ///
+    /// **C7 non-regression** (same construction as part 1): the executor
+    /// dispatches `Op::Fused(SSD_CHUNK_SCAN)` straight to its kernel; the
+    /// `decompose`→`Op::Scan` recipe is reached only by `lowering_only()` here.
+    ///
+    /// **Distinguishing dims** batch=2, seqlen=4, heads=2, head_dim=2,
+    /// state_dim=2, chunk_size=2. Per-head `a = [-0.6, -1.0]` (head 0's gate
+    /// leaking into head 1 flips the decay); `x` (indexes head_dim), `b`/`c`
+    /// (index state_dim) use three DIFFERENT value ramps, so a head_dim↔state_dim
+    /// broadcast swap (`bc_x` vs `bc_state`) mixes the wrong axes, and the
+    /// seqlen recurrence + batch↔seqlen permute are exercised because batch>1.
+    /// Every element is distinct.
+    #[test]
+    fn ssd_chunk_scan_multidim_unroll_matches_fused_kernel() {
+        use fuel_graph::registry::FusedOps;
+        let dev = Device::cpu();
+        let (batch, seqlen, heads, head_dim, state_dim, chunk) =
+            (2usize, 4usize, 2usize, 2usize, 2usize, 2usize);
+        // Distinct value ramps (different base + slope per tensor) guarantee no
+        // accidental symmetry; dt stays positive, a stays negative (stable gate).
+        let x_data: Vec<f32> =
+            (0..batch * seqlen * heads * head_dim).map(|i| 0.20 + 0.05 * i as f32).collect();
+        let dt_data: Vec<f32> =
+            (0..batch * seqlen * heads).map(|i| 0.10 + 0.04 * i as f32).collect();
+        let b_data: Vec<f32> =
+            (0..batch * seqlen * heads * state_dim).map(|i| 0.15 + 0.03 * i as f32).collect();
+        let c_data: Vec<f32> =
+            (0..batch * seqlen * heads * state_dim).map(|i| 0.25 + 0.035 * i as f32).collect();
+        let x = LazyTensor::from_f32(
+            x_data,
+            Shape::from_dims(&[batch, seqlen, heads, head_dim]),
+            &dev,
+        );
+        let dt = x.const_f32_like(dt_data, Shape::from_dims(&[batch, seqlen, heads]));
+        let a = x.const_f32_like(vec![-0.6f32, -1.0], Shape::from_dims(&[heads]));
+        let b = x.const_f32_like(b_data, Shape::from_dims(&[batch, seqlen, heads, state_dim]));
+        let c = x.const_f32_like(c_data, Shape::from_dims(&[batch, seqlen, heads, state_dim]));
+        let y = x.ssd_chunk_scan(&dt, &a, &b, &c, chunk);
+
+        // (a) Fused kernel (executed production path) runs and is well-shaped.
+        let fused = y.realize_f32();
+        assert_eq!(fused.len(), batch * seqlen * heads * head_dim);
+
+        // (b) Unroll oracle over the lowered Op::Scan matches the fused kernel.
+        let graph = y.inner.graph().clone();
+        let roots = fuel_graph::opt::RuleRegistry::lowering_only()
+            .optimize_to_fixpoint(&graph, &[y.inner.id()]);
+        assert_eq!(roots.len(), 1);
+        let scan_id = find_scan_terminal(&graph, roots[0], FusedOps::SSD_CHUNK_SCAN);
+        let ys = {
+            let mut g = graph.write().unwrap();
+            fuel_graph::scan::unroll_scan(&mut g, scan_id, seqlen).expect("unroll").0
+        };
+        let ys_flat = crate::pipelined_bridge::realize_one_as::<f32>(&graph, ys, &dev)
+            .expect("realize ssd_chunk_scan unroll oracle on CPU");
+        // ys is [seqlen,batch,heads,head_dim]; fused y is
+        // [batch,seqlen,heads,head_dim]. tail = heads*head_dim (contiguous).
+        let oracle = scan_ys_to_fused_layout(&ys_flat, seqlen, batch, heads * head_dim);
+        assert_eq!(oracle.len(), fused.len());
+        let mut max_drift = 0f32;
+        for (i, (o, f)) in oracle.iter().zip(fused.iter()).enumerate() {
+            let d = (o - f).abs();
+            max_drift = max_drift.max(d);
+            assert!(
+                d < 1e-3,
+                "ssd_chunk_scan multidim mismatch at {i}: oracle {o} vs fused {f} (drift {d})",
+            );
+        }
+        eprintln!("ssd_chunk_scan multidim: max honest drift = {max_drift:e}");
+    }
+
     /// Recipe principle (G2): Nf4Matmul must decompose to a **fused-free**
     /// primitive subgraph whose realize matches the fused kernel. RED before
     /// the total decompose landed (the self-return left an
