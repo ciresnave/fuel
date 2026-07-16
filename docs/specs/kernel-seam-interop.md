@@ -434,6 +434,30 @@ light FDX-version path (§3.5) is acceptable.
 | FKC contract corpus | ~68 bundle files / ~856 kernel sections, lint-clean |
 | JIT-on-request + missing-fusion telemetry + `structure_key`/`DispatchRecord` emission | **Not built** (the base-emission seam is the prerequisite) |
 
+#### 7.3.1 `OpAttrs` full first-order coverage (Convergence Increment A, 2026-07-16)
+
+`OpAttrs` (`fuel-kernel-seam-types`) gained the dependency-free carriers the
+full first-order re-emit vocabulary needs but the F1 set (`scalars`/`axis`/
+`perm`/`target_shape`/`dims`) could not express. **Additive, optional →
+backward-compatible; Fuel-led, Baracuda to mirror** (same convention as the F1
+`perm`/`target_shape`/`dims` additions). Conforms to the pinned KISS §6.19
+positional-blob grammar (the canonical byte serialization lands in Task 7 —
+see the §6.19 schema table added there).
+
+| Field | Type | Carries |
+|---|---|---|
+| `cast_dtype` | `Option<String>` | `Cast` target dtype as `DType::as_str()` (dep-free; mapped back via `FromStr`); also `MaskedFill`'s value dtype |
+| `slice_start` / `slice_len` | `Option<u64>` | `Slice` window (its `dim` rides `axis`) |
+| `roll_shift` | `Option<i64>` | `Roll` signed shift (its `dim` rides `axis`) |
+| `pad_amounts` | `Vec<(u64, u64)>` | `Pad` per-axis `(before, after)` |
+| `pad_mode` | `Option<u8>` | `Pad` mode code `0=Constant, 1=Reflect, 2=Replicate` (mirrors Fuel `PadMode` order) |
+| `pad_value` | `Option<f64>` | `Pad` constant fill value |
+| `keepdim` | `Option<bool>` | §6.19 reduce-schema conformance (serialized only; Fuel reduce Ops encode keepdim structurally) |
+
+`Iota`'s `len` and `MaskedFill`'s value reuse existing fields (`target_shape` =
+`[len]`; value on `scalars[0]`) — the `OpTag` disambiguates, as it already does
+for `target_shape` serving both `BroadcastTo` and `Reshape`.
+
 ---
 
 ## 8. Ratification & implementation plan

@@ -88,6 +88,35 @@ pub struct OpAttrs {
     /// Fuel's single-dim `Op::Squeeze`/`Op::Unsqueeze` emit a one-element list.
     /// Empty ⇒ not a squeeze/unsqueeze node (a matcher wildcard).
     pub dims: Vec<u8>,
+    /// `Cast` target dtype as the stable `DType::as_str()` name (dep-free:
+    /// this crate can't reference `fuel_ir::DType`; fuel-graph maps back via
+    /// `DType::from_str`). Also carries `MaskedFill`'s value dtype. `None` ⇒
+    /// not a dtype-carrying node (a matcher wildcard). Convergence Increment A.
+    pub cast_dtype: Option<String>,
+    /// `Slice` start offset along `axis` (the dim rides the existing `axis`
+    /// field). `None` ⇒ not a slice node. Convergence Increment A.
+    pub slice_start: Option<u64>,
+    /// `Slice` length along `axis`. `None` ⇒ not a slice node. Convergence
+    /// Increment A.
+    pub slice_len: Option<u64>,
+    /// `Roll` cyclic shift along `axis` (signed; the dim rides `axis`). `None`
+    /// ⇒ not a roll node. Convergence Increment A.
+    pub roll_shift: Option<i64>,
+    /// `Pad` per-axis `(before, after)` amounts, one pair per input dim. Empty
+    /// ⇒ not a pad node. Convergence Increment A.
+    pub pad_amounts: Vec<(u64, u64)>,
+    /// `Pad` fill mode code: `0=Constant, 1=Reflect, 2=Replicate` (mirrors
+    /// Fuel's `PadMode` order; dep-free integer code). `None` ⇒ not a pad node.
+    /// Convergence Increment A.
+    pub pad_mode: Option<u8>,
+    /// `Pad` constant fill value (used by `PadMode::Constant`). `None` ⇒ not a
+    /// pad node. Convergence Increment A.
+    pub pad_value: Option<f64>,
+    /// Reduction `keepdim` flag (§6.19 reduce-schema conformance — serialized
+    /// in the canonical blob). NOT consumed by `tag_to_op`: Fuel's reduce Ops
+    /// encode keepdim structurally (`ReduceSumTo`/`ReduceMaxTo` carry the kept
+    /// shape; `SumDim`/`MeanDim` are rank-reducing). Convergence Increment A.
+    pub keepdim: Option<bool>,
 }
 
 /// A node of the §3 declarative subgraph grammar. One type, two directions: a
