@@ -829,4 +829,175 @@ mod tests {
         });
         assert_eq!(decompose_region(&mut g, fused), fused, "mismatch ⇒ fixpoint");
     }
+
+    // ---- Task 5: byte-for-byte emit == registry::*::decompose parity --------
+    //
+    // The A.4 acceptance gate: express each hand-written decompose as a
+    // PatternNode region, re-emit it via the grown `emit`, and assert the
+    // result is structurally identical (op + shape + dtype at every node) to
+    // the registry `decompose` output — the migration oracle. `emit` does NOT
+    // CSE-dedup shared subterms, so a shared oracle node compares structurally
+    // against two identical emitted subtrees; `assert_structural_eq` is
+    // recursive + order-sensitive (no commutative canonicalization — stricter
+    // than `base_map_hash`), catching an operand-swap the hash would mask.
+
+    fn op_node(op: OpTag, attrs: OpAttrs, operands: Vec<PatternNode>) -> PatternNode {
+        PatternNode::Op { op, attrs, operands }
+    }
+    fn bind(i: u8) -> PatternNode {
+        PatternNode::Bind { index: i }
+    }
+
+    /// Recursively assert two subgraphs are identical: same Op, shape, dtype,
+    /// arity, and recursively-equal inputs. Shared leaves (same NodeId) match
+    /// by identity. This is the "byte-for-byte" node-structure check.
+    fn assert_structural_eq(g: &Graph, a: NodeId, b: NodeId) {
+        if a == b {
+            return; // shared leaf (bound external input)
+        }
+        let na = g.node(a);
+        let nb = g.node(b);
+        assert_eq!(na.op, nb.op, "op mismatch: {:?} vs {:?}", na.op, nb.op);
+        assert_eq!(na.shape, nb.shape, "shape mismatch at {:?} vs {:?}", na.op, nb.op);
+        assert_eq!(na.dtype, nb.dtype, "dtype mismatch at {:?}", na.op);
+        assert_eq!(na.inputs.len(), nb.inputs.len(), "arity mismatch at {:?}", na.op);
+        for (&ia, &ib) in na.inputs.iter().zip(nb.inputs.iter()) {
+            assert_structural_eq(g, ia, ib);
+        }
+    }
+
+    #[test]
+    fn emit_matches_softmax_last_dim_decompose() {
+        use fuel_ir::{DType, Shape};
+        let mut g = Graph::new();
+        let sh = Shape::from_dims(&[2, 4]);
+        let x = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+        // Oracle: registry decompose reads inputs[0] + shape + dtype off the node.
+        let fused = g.push(Node { op: Op::Const, inputs: vec![x], shape: sh.clone(), dtype: DType::F32 });
+        let oracle = crate::registry::softmax_last_dim::decompose(&mut g, fused, &FusedOpParams::SoftmaxLastDim);
+
+        // keepdim shape [2,1]; full shape [2,4].
+        let kd = OpAttrs { target_shape: vec![2, 1], ..OpAttrs::default() };
+        let full = OpAttrs { target_shape: vec![2, 4], ..OpAttrs::default() };
+        // e = Exp(Sub(x, BroadcastTo(ReduceMaxTo(x)))) — mirrors decompose order
+        // `Sub{[x, mb]}` exactly; built fresh each call so numerator and the
+        // denominator's ReduceSumTo input are identical subtrees.
+        let softmax_e = |kd: &OpAttrs, full: &OpAttrs| {
+            op_node(OpTag::Exp, OpAttrs::default(), vec![
+                op_node(OpTag::Sub, OpAttrs::default(), vec![
+                    bind(0),
+                    op_node(OpTag::BroadcastTo, full.clone(), vec![
+                        op_node(OpTag::ReduceMaxTo, kd.clone(), vec![bind(0)]),
+                    ]),
+                ]),
+            ])
+        };
+        // out = Div(e, BroadcastTo(ReduceSumTo(e))) — mirrors `Div{[e, db]}`.
+        let region = op_node(OpTag::Div, OpAttrs::default(), vec![
+            softmax_e(&kd, &full),
+            op_node(OpTag::BroadcastTo, full.clone(), vec![
+                op_node(OpTag::ReduceSumTo, kd.clone(), vec![softmax_e(&kd, &full)]),
+            ]),
+        ]);
+        let emitted = emit_region(&mut g, &region, &[x], &[]);
+        assert_structural_eq(&g, oracle, emitted);
+    }
+
+    #[test]
+    fn emit_matches_rope_decompose() {
+        use fuel_ir::{DType, Shape};
+        let mut g = Graph::new();
+        let sh = Shape::from_dims(&[2, 4]); // seq=2, d=4, half=2
+        let x = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+        let cos = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+        let sin = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+        let fused = g.push(Node { op: Op::Const, inputs: vec![x, cos, sin], shape: sh.clone(), dtype: DType::F32 });
+        let oracle = crate::registry::rope::decompose(&mut g, fused, &FusedOpParams::Rope);
+
+        // decompose's broadcast_shape for rank-2 [2,4] is [seq,d] = [2,4]; half slices along last dim.
+        let full = OpAttrs { target_shape: vec![2, 4], ..OpAttrs::default() };
+        let sl_first = OpAttrs { axis: Some(1), slice_start: Some(0), slice_len: Some(2), ..OpAttrs::default() };
+        let sl_second = OpAttrs { axis: Some(1), slice_start: Some(2), slice_len: Some(2), ..OpAttrs::default() };
+        let cat = OpAttrs { axis: Some(1), ..OpAttrs::default() };
+        let bcast_reshape = |full: &OpAttrs, i: u8| {
+            op_node(OpTag::BroadcastTo, full.clone(), vec![
+                op_node(OpTag::Reshape, full.clone(), vec![bind(i)]),
+            ])
+        };
+        // left = Mul(x, cos_bcast); right = Mul(rotated_half, sin_bcast); out = Add(left, right).
+        // rotated_half = Concat{dim:1}(Neg(second_half), first_half).
+        let rotated = op_node(OpTag::Concat, cat, vec![
+            op_node(OpTag::Neg, OpAttrs::default(), vec![op_node(OpTag::Slice, sl_second, vec![bind(0)])]),
+            op_node(OpTag::Slice, sl_first, vec![bind(0)]),
+        ]);
+        let left = op_node(OpTag::Mul, OpAttrs::default(), vec![bind(0), bcast_reshape(&full, 1)]);
+        let right = op_node(OpTag::Mul, OpAttrs::default(), vec![rotated, bcast_reshape(&full, 2)]);
+        let region = op_node(OpTag::Add, OpAttrs::default(), vec![left, right]);
+
+        let emitted = emit_region(&mut g, &region, &[x, cos, sin], &[]);
+        assert_structural_eq(&g, oracle, emitted);
+    }
+
+    #[test]
+    fn emit_matches_layer_norm_last_dim_decompose() {
+        use fuel_ir::{DType, Shape};
+        let mut g = Graph::new();
+        let sh = Shape::from_dims(&[2, 4]); // last=1, reduced [2], keepdim [2,1]
+        let x = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+        let fused = g.push(Node { op: Op::Const, inputs: vec![x], shape: sh.clone(), dtype: DType::F32 });
+        let oracle = crate::registry::layer_norm_last_dim::decompose(
+            &mut g, fused, &FusedOpParams::LayerNormLastDim { eps: 1e-5 },
+        );
+
+        let kd = OpAttrs { target_shape: vec![2, 1], ..OpAttrs::default() };
+        let full = OpAttrs { target_shape: vec![2, 4], ..OpAttrs::default() };
+        let md = OpAttrs { axis: Some(1), ..OpAttrs::default() };
+        let eps_attrs = OpAttrs { scalars: vec![1e-5], ..OpAttrs::default() }; // BAKED constant, not a slot
+        // centered = Sub(x, BroadcastTo(Reshape(MeanDim(x)))) — shared subterm.
+        let centered = op_node(OpTag::Sub, OpAttrs::default(), vec![
+            bind(0),
+            op_node(OpTag::BroadcastTo, full.clone(), vec![
+                op_node(OpTag::Reshape, kd.clone(), vec![
+                    op_node(OpTag::MeanDim, md.clone(), vec![bind(0)]),
+                ]),
+            ]),
+        ]);
+        // denom_bcast = BroadcastTo(Sqrt(AddScalar(eps)(Reshape(MeanDim(Sqr(centered)))))).
+        let denom_bcast = op_node(OpTag::BroadcastTo, full.clone(), vec![
+            op_node(OpTag::Sqrt, OpAttrs::default(), vec![
+                op_node(OpTag::AddScalar, eps_attrs, vec![
+                    op_node(OpTag::Reshape, kd.clone(), vec![
+                        op_node(OpTag::MeanDim, md.clone(), vec![
+                            op_node(OpTag::Sqr, OpAttrs::default(), vec![centered.clone()]),
+                        ]),
+                    ]),
+                ]),
+            ]),
+        ]);
+        // out = Div(centered, denom_bcast).
+        let region = op_node(OpTag::Div, OpAttrs::default(), vec![centered, denom_bcast]);
+
+        let emitted = emit_region(&mut g, &region, &[x], &[]);
+        assert_structural_eq(&g, oracle, emitted);
+    }
+
+    #[test]
+    fn emit_matches_cast_over_add_reference() {
+        // Exercises the dtype path through assert_structural_eq: a hand-built
+        // two-node reference `Cast(F16)(Add(a, b))` vs the emitted region.
+        use fuel_ir::{DType, Shape};
+        let mut g = Graph::new();
+        let sh = Shape::from_dims(&[4]);
+        let a = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+        let b = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+        // Reference graph.
+        let add = g.push(Node { op: Op::Add, inputs: vec![a, b], shape: sh.clone(), dtype: DType::F32 });
+        let reference = g.push(Node { op: Op::Cast(DType::F16), inputs: vec![add], shape: sh.clone(), dtype: DType::F16 });
+
+        let region = op_node(OpTag::Cast, OpAttrs { cast_dtype: Some("f16".into()), ..OpAttrs::default() }, vec![
+            op_node(OpTag::Add, OpAttrs::default(), vec![bind(0), bind(1)]),
+        ]);
+        let emitted = emit_region(&mut g, &region, &[a, b], &[]);
+        assert_structural_eq(&g, reference, emitted);
+    }
 }
