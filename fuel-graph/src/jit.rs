@@ -124,6 +124,18 @@ fn is_commutative(op: OpTag) -> bool {
 /// without the seam-types crate needing to know about the graph `Op` (it stays
 /// dependency-free). Ops with no attr payload project to `OpAttrs::default()`
 /// (all fields empty), which the wildcard rule treats as "no constraint".
+///
+/// **Scope (not a full `Op → OpAttrs → Op` round-trip).** This projection is
+/// **matcher-driven**: it fills only the fields `attrs_match` needs to
+/// discriminate the patterns that exist today. It is faithful (a projected
+/// field equals the `Op`'s value) for the ops it *does* project — including the
+/// Convergence-A additions Slice/Concat/Flip/Roll/Cast/Iota/Pad/MaskedFill — but
+/// it is **not** exhaustive: `tag_to_op` can *reconstruct* several axis-bearing
+/// ops (`CumSum`/`IndexSelect`/`Gather`/`IndexAdd`/`ScatterAdd`) from `axis` that
+/// this fn deliberately does **not** project yet (no matcher consumer), so a
+/// full round-trip through `op_to_attrs` would drop their axis. See the `_ => {}`
+/// arm. The re-emit path (`emit`) supplies those attrs directly from the region
+/// author, so this gap is projection-only, not an emit gap.
 fn op_to_attrs(op: &Op) -> OpAttrs {
     let mut a = OpAttrs::default();
     match op {
@@ -178,6 +190,12 @@ fn op_to_attrs(op: &Op) -> OpAttrs {
             a.scalars = vec![value.to_f64()];
             a.cast_dtype = Some(value.dtype().as_str().to_string());
         }
+        // Intentionally NOT projected yet (no matcher consumer): the axis-bearing
+        // ops `tag_to_op` can reconstruct from `attrs.axis` but no pattern needs
+        // to discriminate on today — `Op::CumSum`, `Op::IndexSelect`,
+        // `Op::Gather`, `Op::IndexAdd`, `Op::ScatterAdd`. Add an `axis` arm here
+        // only when a matcher requires it (deferred; the re-emit path already
+        // gets these attrs from the region author, not from this projection).
         _ => {}
     }
     a

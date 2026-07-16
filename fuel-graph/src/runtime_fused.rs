@@ -511,15 +511,26 @@ fn emit(
             // Convergence Increment A: full-parity (shape, dtype) via the single
             // source of truth (`primitive_shape`) — correct for shape-changing,
             // reducing, and dtype-changing ops, not just same-shape elementwise.
-            // On Err (only reachable for a malformed authored region — a
-            // registration-validated region's ops all infer) fall back to
-            // operand[0]'s shape/dtype so emit stays panic-free + total.
+            // The Err arm is only reachable for a MALFORMED authored region (a
+            // registration-validated region's ops all infer). Real never-panic
+            // guarantee: emit always returns a node, never panics. Fall back to
+            // operand[0]'s shape/dtype; and because `validate_representable`
+            // checks `tag_to_op(op).is_some()` but NOT arity — and `emit_region`
+            // is a public raw-region entry (candidate verification) that does not
+            // re-validate — a zero-operand op has no operand shape to borrow, so
+            // `.first()` (never `[0]`) guards the index and a degenerate rank-0
+            // F32 node is emitted for that malformed leaf.
             let child_shapes: Vec<fuel_ir::Shape> =
                 child_ids.iter().map(|&c| graph.node(c).shape.clone()).collect();
             let child_dtypes: Vec<fuel_ir::DType> =
                 child_ids.iter().map(|&c| graph.node(c).dtype).collect();
             let (s, d) = crate::shape::primitive_shape(&prim, &child_shapes, &child_dtypes)
-                .unwrap_or_else(|_| (child_shapes[0].clone(), child_dtypes[0]));
+                .unwrap_or_else(|_| {
+                    (
+                        child_shapes.first().cloned().unwrap_or_else(|| fuel_ir::Shape::from_dims(&[])),
+                        child_dtypes.first().copied().unwrap_or(fuel_ir::DType::F32),
+                    )
+                });
             graph.push(Node { op: prim, inputs: child_ids, shape: s, dtype: d })
         }
         PatternNode::Any | PatternNode::SeeThrough { .. } => {
@@ -723,6 +734,25 @@ mod tests {
         assert!(matches!(g.node(root).op, Op::Cast(DType::F16)));
         assert_eq!(g.node(root).dtype, DType::F16, "emit must take Cast's target dtype, not operand[0]'s");
         assert_eq!(g.node(root).shape, Shape::from_dims(&[3, 3]));
+    }
+
+    #[test]
+    fn emit_zero_operand_representable_region_is_panic_free() {
+        // M-1 never-panic hardening: a MALFORMED region — a binary op given ZERO
+        // operands. `validate_representable` accepts it (it checks
+        // `tag_to_op(op).is_some()`, NOT arity), and `emit_region` is a public
+        // raw-region entry (candidate-kernel verification) that does not
+        // re-validate. `primitive_shape(Add, [], [])` errs, so the fallback runs
+        // with an EMPTY child_shapes — it must NOT index-panic. emit stays total:
+        // it returns a node (with a degenerate rank-0 shape), never a panic.
+        let region = PatternNode::Op {
+            op: OpTag::Add,
+            attrs: OpAttrs::default(),
+            operands: vec![],
+        };
+        let mut g = Graph::new();
+        let root = emit_region(&mut g, &region, &[], &[]);
+        assert!(matches!(g.node(root).op, Op::Add), "emit returns a node, not a panic");
     }
 
     #[test]

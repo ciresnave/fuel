@@ -119,14 +119,29 @@ pub struct OpAttrs {
     pub keepdim: Option<bool>,
 }
 
-// --- §6.19 canonical positional-blob serialization (Convergence Increment A) ---
+// --- §6.19-shaped canonical positional-blob serialization (Convergence Increment A) ---
 //
 // Little-endian byte writers. `OpAttrs::to_canonical_bytes` emits a per-op
 // **positional** body (no field names, no elision — the OpTag fixes the schema)
 // then length-prefixes it with a `u32` LE byte length, so an empty-schema op has
-// exactly one canonical form (`[0,0,0,0]`) and a Fuel recipe is byte-comparable
-// with a Baracuda-emitted one. std-only (no `fuel_ir`). See kernel-seam-interop.md
-// §7.3.2 for the per-op field-order table.
+// exactly one canonical form (`[0,0,0,0]`). std-only (no `fuel_ir`).
+//
+// SCOPE (do not overclaim): this is the §6.19 positional *shape*, and it is
+// byte-comparable with a Baracuda-emitted blob **for the positionally-conformant
+// ops** — elementwise, cast, slice, concat, roll, pad, flip, iota, permute,
+// (un)squeeze, shape-target. Two known divergences from the confirmed §6.19.3
+// schemas (see docs/outreach/baracuda-recipe-grammar-codesign-reply-2.md), which
+// the pinned node schema `Op{op_name, op_attrs, child_edges}` reconciles WITHOUT
+// widening this blob:
+//   * `reduce{monoid, reduce_axes, keepdim}` — Fuel emits single-axis
+//     `{axis, keepdim}`. `monoid` rides `op_name` (distinct SumDim/MaxDim/MinDim
+//     tags), and a multi-axis `reduce_axes` LIST is DEFERRED (Fuel models
+//     single-axis reduce; no consumer yet).
+//   * `gather/scatter{axis, oob_policy, index_operand, index_dtype, scatter_combine}`
+//     — Fuel emits `{axis}`. `scatter_combine` rides `op_name` (IndexAdd vs
+//     ScatterAdd), `index_operand` rides `child_edges`, `index_dtype` rides that
+//     operand node; `oob_policy` is a DEFERRED unwired slot (no carrier yet).
+// See kernel-seam-interop.md §7.3.2 for the per-op field-order table + this scope.
 
 fn put_u32(b: &mut Vec<u8>, x: u32) { b.extend_from_slice(&x.to_le_bytes()); }
 fn put_u64(b: &mut Vec<u8>, x: u64) { b.extend_from_slice(&x.to_le_bytes()); }
@@ -138,14 +153,29 @@ fn put_u32_list(b: &mut Vec<u8>, xs: &[u32]) { put_u32(b, xs.len() as u32); for 
 fn put_f64_list(b: &mut Vec<u8>, xs: &[f64]) { put_u32(b, xs.len() as u32); for &x in xs { put_f64(b, x); } }
 
 impl OpAttrs {
-    /// Serialize these attrs to the pinned KISS §6.19 canonical positional blob
-    /// for `op`: a per-op **positional** little-endian body (no elision — the
+    /// Serialize these attrs to the KISS §6.19 canonical positional blob for
+    /// `op`: a per-op **positional** little-endian body (no elision — the
     /// `OpTag` determines the fixed schema), length-prefixed with a `u32` LE
     /// byte count. An op whose schema is empty (`Add`, `Neg`, `MatMul`, `Where`,
     /// comparisons, …) serializes as the single canonical form `[0,0,0,0]`.
-    /// Deterministic + dependency-free — a Fuel recipe's blob is byte-comparable
-    /// with a Baracuda-emitted one (the §2.A conformance fix). Field order per op
-    /// is documented in kernel-seam-interop.md §7.3.2.
+    /// Deterministic + dependency-free.
+    ///
+    /// **Conformance scope (do not overclaim):** byte-comparable with a
+    /// Baracuda-emitted blob for the positionally-conformant ops (elementwise,
+    /// cast, slice, concat, roll, pad, flip, iota, permute, (un)squeeze,
+    /// shape-target). `reduce` emits Fuel's single-axis `{axis, keepdim}` and
+    /// `gather`/`scatter` emit `{axis}`; `oob_policy` and a multi-axis
+    /// `reduce_axes` list are DEFERRED (no carrier/consumer yet), while
+    /// `monoid`/`scatter_combine` ride `op_name` and the index operand/dtype
+    /// ride `child_edges`/that operand node per the pinned node schema — so they
+    /// legitimately do not belong in this blob. See the module comment above and
+    /// kernel-seam-interop.md §7.3.2.
+    ///
+    /// M-3: the `unwrap_or(...)` defaults below cannot distinguish an *unset*
+    /// field from a genuine zero (e.g. `axis: None` vs `Some(0)`). Harmless
+    /// today — there is no decoder; this is a forward-serialization only, and an
+    /// op that reaches a given arm always has the field set (`op_to_attrs` /
+    /// `tag_to_op` guarantee it). A future decoder must not round-trip `None`.
     pub fn to_canonical_bytes(&self, op: OpTag) -> Vec<u8> {
         use OpTag as T;
         let mut body: Vec<u8> = Vec::new();

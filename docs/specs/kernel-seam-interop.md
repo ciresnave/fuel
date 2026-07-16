@@ -461,15 +461,37 @@ for `target_shape` serving both `BroadcastTo` and `Reshape`.
 #### 7.3.2 `OpAttrs` §6.19 canonical positional-blob serialization (Convergence Increment A, 2026-07-16)
 
 `OpAttrs::to_canonical_bytes(op) -> Vec<u8>` (`fuel-kernel-seam-types`) emits the
-pinned KISS **§6.19 canonical positional blob**: a per-op **positional**
-little-endian body (no field names, **no elision** — the `OpTag` fixes the
-schema), length-prefixed with a `u32` LE byte count. This makes a Fuel recipe
-**byte-comparable** with a Baracuda-emitted one — the §2.A conformance-gap fix
-(pinned per `baracuda-recipe-grammar-codesign-reply-2.md`). It is the canonical
-serialization *onto* Fuel's internal `OpAttrs` struct, which stays a struct.
-Registered under the recipe-import capability **`SEAM_CAP_RECIPE_IMPORT = FEAT
-bit 35`** (the KISS FEAT range; see the co-design reply-2). std-only, dependency-
-free, deterministic. **Baracuda to mirror the encoding.**
+KISS **§6.19 canonical positional blob**: a per-op **positional** little-endian
+body (no field names, **no elision** — the `OpTag` fixes the schema),
+length-prefixed with a `u32` LE byte count. It is the canonical serialization
+*onto* Fuel's internal `OpAttrs` struct, which stays a struct. Registered under
+the recipe-import capability **`SEAM_CAP_RECIPE_IMPORT = FEAT bit 35`** (the KISS
+FEAT range; see the co-design reply-2). std-only, dependency-free, deterministic.
+**Baracuda to mirror the encoding.**
+
+**Conformance scope (accurate claim, per the review of Increment A).** The blob
+is **byte-comparable with a Baracuda-emitted one for the positionally-conformant
+ops** — elementwise, `cast`, `slice`, `concat`, `roll`, `pad`, `flip`, `iota`,
+`permute`, `(un)squeeze`, and the shape-target ops. It is **not yet fully
+§6.19.3-conformant for `reduce`/`gather`/`scatter`**, and that is partly by
+design under the pinned node schema `Op{op_name, op_attrs, child_edges}`:
+- **`reduce{monoid, reduce_axes, keepdim}`** — Fuel emits single-axis
+  `{axis, keepdim}`. `monoid` is carried by `op_name` (Fuel's distinct
+  `SumDim`/`MaxDim`/`MinDim`/`ReduceSumTo`/`ReduceMaxTo` tags), so it does **not**
+  belong in `op_attrs`. A **multi-axis `reduce_axes` list is DEFERRED** — Fuel
+  currently models single-axis reduce (no consumer yet).
+- **`gather{axis, oob_policy, index_operand, index_dtype}` /
+  `scatter{axis, scatter_combine, oob_policy, index_operand, index_dtype}`** —
+  Fuel emits `{axis}`. `scatter_combine` rides `op_name` (`IndexAdd` vs
+  `ScatterAdd`), `index_operand` rides `child_edges`, and `index_dtype` rides
+  that operand node — so those three legitimately are **not** `op_attrs` fields.
+  **`oob_policy` is a genuine DEFERRAL** — a known-unwired slot with no carrier
+  yet (tracked with the rest of the `oob_policy` seam work).
+
+These deferrals are consumer-gated (Increment C and beyond), not Increment-A
+scope; the §2.A conformance gap is closed for the conformant ops and the
+remaining fields have a pinned home (`op_name`/`child_edges`) or a named
+deferral (`oob_policy`, multi-axis `reduce_axes`).
 
 Envelope: `u32` LE `body.len()` ++ `body`. **Empty-schema op** (`Add`, `Neg`,
 `MatMul`, `Where`, comparisons, unary math, scalar reductions, `LogSoftmaxLastDim`,
