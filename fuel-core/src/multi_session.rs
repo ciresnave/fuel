@@ -558,4 +558,29 @@ mod tests {
         assert_eq!(out[0].0, id);
         assert_eq!(out[0].1, standalone);   // byte-identical token stream
     }
+
+    #[test]
+    fn t1_no_cross_session_contamination() {
+        let model = tiny_model(9999);
+        let prompt_a = [1u32, 2, 3];
+        let prompt_b = [7u32, 4, 9, 2];
+        let max_new = 6;
+
+        // Standalone oracles.
+        let solo_a = model.generate_with_kv_context(
+            &prompt_a, max_new, SamplingStrategy::Greedy, None, &Device::cpu(), DType::F32).unwrap();
+        let solo_b = model.generate_with_kv_context(
+            &prompt_b, max_new, SamplingStrategy::Greedy, None, &Device::cpu(), DType::F32).unwrap();
+
+        // K=2 scheduled together.
+        let mut sched = SessionScheduler::new(
+            &model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin);
+        let ida = sched.add_session(&prompt_a, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let idb = sched.add_session(&prompt_b, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let out = sched.run_to_completion().unwrap();
+
+        let get = |id: SessionId| out.iter().find(|(i,_)| *i==id).map(|(_,t)| t.clone()).unwrap();
+        assert_eq!(get(ida), solo_a, "session A contaminated by B");
+        assert_eq!(get(idb), solo_b, "session B contaminated by A");
+    }
 }
