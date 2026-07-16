@@ -5141,6 +5141,88 @@ impl Tensor {
         })
     }
 
+    /// Append an [`Op::Scan`] node — a bounded `lax.scan` recurrence.
+    /// `self` is the `init_carry`. The body must already be built in the same
+    /// graph, referencing `Op::ScanPlaceholder{Carry,0}` for the per-step
+    /// carry and `Op::ScanPlaceholder{Elem,i}` for the per-step slice of
+    /// `xs[i]`; `consts` are referenced by real NodeId. `body_new_carry` /
+    /// `body_y` are the body's two exit nodes. Always a 2-slot bundle
+    /// (slot 0 = stacked `ys` `[bound] ++ body_y`, slot 1 = final carry);
+    /// `emit` selects which slot this call projects. `early_exit` is Phase 2
+    /// (always `None` here).
+    ///
+    /// **Returns `Result`**: a malformed body/carry/bound surfaces as a typed
+    /// error — never a panic.
+    pub fn scan(
+        &self,
+        xs: &[Tensor],
+        consts: &[Tensor],
+        body_new_carry: &Tensor,
+        body_y: &Tensor,
+        bound: usize,
+        emit: ScanEmit,
+    ) -> std::result::Result<Tensor, fuel_ir::Error> {
+        let same_graph = |t: &Tensor| Arc::ptr_eq(&self.graph, &t.graph);
+        if !same_graph(body_new_carry) || !same_graph(body_y)
+            || !xs.iter().all(same_graph) || !consts.iter().all(same_graph)
+        {
+            return Err(fuel_ir::Error::Msg(
+                "scan: init_carry, xs, consts, and body exits must live on one graph".into(),
+            ).bt());
+        }
+        if bound == 0 {
+            return Err(fuel_ir::Error::Msg("scan: bound must be >= 1".into()).bt());
+        }
+        let carry_shape = self.shape();
+        if body_new_carry.shape().dims() != carry_shape.dims() {
+            return Err(fuel_ir::Error::Msg(format!(
+                "scan: body_new_carry shape {:?} must equal init_carry shape {:?}",
+                body_new_carry.shape().dims(), carry_shape.dims(),
+            )).bt());
+        }
+        let carry_dtype = self.dtype();
+        let y_dtype = body_y.dtype();
+
+        // 2-slot bundle: slot 0 = stacked ys, slot 1 = final carry.
+        let mut ys_dims: Vec<usize> = Vec::with_capacity(1 + body_y.shape().dims().len());
+        ys_dims.push(bound);
+        ys_dims.extend_from_slice(body_y.shape().dims());
+        let ys_shape = Shape::from_dims(&ys_dims);
+        let specs = vec![
+            fuel_ir::storage::OutputViewSpec::contiguous(y_dtype, ys_shape.clone()),
+            fuel_ir::storage::OutputViewSpec::contiguous(carry_dtype, carry_shape.clone()),
+        ];
+        let (_bytes, views) = fuel_ir::storage::compose_bundle(&specs)
+            .map_err(|e| fuel_ir::Error::Msg(format!("scan: compose_bundle failed: {e}")).bt())?;
+
+        let mut inputs: Vec<NodeId> = Vec::with_capacity(2 + xs.len() + consts.len() + 2);
+        inputs.push(self.id);
+        inputs.extend(xs.iter().map(|t| t.id));
+        inputs.extend(consts.iter().map(|t| t.id));
+        inputs.push(body_new_carry.id);
+        inputs.push(body_y.id);
+
+        let id = {
+            let mut g = self.graph.write().unwrap();
+            // Node.shape/dtype are the PRIMARY (slot-0) shape/dtype per the
+            // multi-output authoring contract.
+            let id = g.push(Node {
+                op: Op::Scan { n_xs: xs.len(), bound, emit, early_exit: None },
+                inputs,
+                shape: ys_shape,
+                dtype: y_dtype,
+            });
+            g.set_output_views(id, Arc::from(views.into_boxed_slice()))
+                .map_err(|e| fuel_ir::Error::Msg(format!("scan: set_output_views failed: {e}")).bt())?;
+            id
+        };
+        let producer = Self { graph: self.graph.clone(), id };
+        match emit {
+            ScanEmit::All => producer.view(0),
+            ScanEmit::Final => producer.view(1),
+        }
+    }
+
     /// Append a `Tril` node — lower-triangular mask along the last two
     /// dims. `diagonal = 0` keeps the main diagonal and below.
     /// `tril(diagonal = 0)` is the canonical causal-attention mask.
@@ -13869,5 +13951,73 @@ mod tests {
         );
         assert!(derived.is_err(), "Op::Scan must not be treated as a view op");
         let _ = scan;
+    }
+
+    #[test]
+    fn scan_builder_all_and_final_shapes() {
+        use crate::{Graph, Node, Op, ScanEmit, ScanRole, Tensor};
+        use fuel_ir::{DType, Shape};
+        use std::sync::{Arc, RwLock};
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let cs = Shape::from_dims(&[2]);   // carry shape
+        let ys = Shape::from_dims(&[2]);   // per-step y shape
+        let (carry, hole, new_carry, body_y) = {
+            let mut g = graph.write().unwrap();
+            let carry = g.push(Node { op: Op::Const, inputs: vec![], shape: cs.clone(), dtype: DType::F32 });
+            let hole = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: cs.clone(), dtype: DType::F32 });
+            let new_carry = g.push(Node { op: Op::MulScalar(2.0), inputs: vec![hole], shape: cs.clone(), dtype: DType::F32 });
+            let body_y = g.push(Node { op: Op::AddScalar(1.0), inputs: vec![new_carry], shape: ys.clone(), dtype: DType::F32 });
+            (carry, hole, new_carry, body_y)
+        };
+        let t = |id| Tensor { graph: graph.clone(), id };  // same-crate access to private fields
+        let init = t(carry);
+        let (nc, by) = (t(new_carry), t(body_y));
+        let bound = 4usize;
+
+        let all = init.scan(&[], &[], &nc, &by, bound, ScanEmit::All).expect("scan All");
+        assert_eq!(all.shape().dims(), &[bound, 2], "emit=All -> [bound] ++ body_y");
+
+        // Structural guard (Task-2 review finding): the Op::Scan node's
+        // inputs MUST end with [.., body_new_carry, body_y] in that
+        // order — base_map_hash recurses into the last two inputs to
+        // hash the body, so a reordering would silently hash the wrong
+        // subgraph. `all` is a View(0) over the producer; its own
+        // single input is the producer NodeId.
+        {
+            let g = graph.read().unwrap();
+            let producer_id = g.node(all.id()).inputs[0];
+            let producer_inputs = &g.node(producer_id).inputs;
+            assert_eq!(
+                producer_inputs[producer_inputs.len() - 2], nc.id(),
+                "Op::Scan inputs[len-2] must be body_new_carry",
+            );
+            assert_eq!(
+                producer_inputs[producer_inputs.len() - 1], by.id(),
+                "Op::Scan inputs[len-1] must be body_y",
+            );
+        }
+
+        let fin = init.scan(&[], &[], &nc, &by, bound, ScanEmit::Final).expect("scan Final");
+        assert_eq!(fin.shape().dims(), &[2], "emit=Final -> carry shape");
+        let _ = hole;
+    }
+
+    #[test]
+    fn scan_builder_rejects_zero_bound() {
+        use crate::{Graph, Node, Op, ScanEmit, ScanRole, Tensor};
+        use fuel_ir::{DType, Shape};
+        use std::sync::{Arc, RwLock};
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let cs = Shape::from_dims(&[1]);
+        let (carry, new_carry, body_y) = {
+            let mut g = graph.write().unwrap();
+            let carry = g.push(Node { op: Op::Const, inputs: vec![], shape: cs.clone(), dtype: DType::F32 });
+            let hole = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: cs.clone(), dtype: DType::F32 });
+            let nc = g.push(Node { op: Op::MulScalar(2.0), inputs: vec![hole], shape: cs.clone(), dtype: DType::F32 });
+            (carry, nc, nc)
+        };
+        let t = |id| Tensor { graph: graph.clone(), id };
+        let r = t(carry).scan(&[], &[], &t(new_carry), &t(body_y), 0, ScanEmit::All);
+        assert!(r.is_err(), "bound == 0 must be a typed Err, not a panic");
     }
 }
