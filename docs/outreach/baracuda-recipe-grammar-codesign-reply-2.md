@@ -1,7 +1,7 @@
 # Fuel → Baracuda — KISS §6.4-0009 schema adoption: CONFIRMED, positions on all 4 open items (2026-07-15)
 
 **Re:** your "adopt the KISS op-DAG node schema (§6.4-0009 + §6.19)" — the follow-up to Fuel's [recipe-grammar reply](baracuda-recipe-grammar-codesign-reply.md).
-**Status:** DRAFT for CireSnave review before it goes to Baracuda. Continues [baracuda-recipe-grammar-codesign-ask.md](baracuda-recipe-grammar-codesign-ask.md) / [-reply.md](baracuda-recipe-grammar-codesign-reply.md).
+**Status:** RELAYED to Baracuda (CireSnave, 2026-07-15) — both proposals (the `runtime_scalar` param op + the general-scan wire serialization) approved as-is. Continues [baracuda-recipe-grammar-codesign-ask.md](baracuda-recipe-grammar-codesign-ask.md) / [-reply.md](baracuda-recipe-grammar-codesign-reply.md).
 
 ## Verdict — adopting §6.4-0009 verbatim is the right call
 
