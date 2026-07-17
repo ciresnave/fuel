@@ -61,7 +61,8 @@ the exact reader class KISS's foreign-reader freeze gate exists to protect. All 
 ### B. Missing wire/protocol surface — KISS ahead, correctly gated behind the roadmap
 
 `SeamHello` is envelope + `negotiate()` only — no availability list (§6.4), no contract-query frames
-CYRQ/CRSP/CDEC (§6.5); no region-byte codec, no contract framing/checksum; `SEAM_CAP_JIT_ON_REQUEST`
+CYRQ/CRSP/CDEC (§6.5); no region-byte codec, no contract framing/checksum (→ adopt-from-KISS goal 8:
+KISC self-delimiting framing as the single import frame); `SEAM_CAP_JIT_ON_REQUEST`
 sits at bit 16 (KISS's EXT-experimental range — KISS puts provider features at FEAT bits 32/33);
 `revision_hash` is a `u64` where KISS pins 32 bytes. All bite the first cross-process/foreign reader.
 
@@ -87,6 +88,17 @@ sits at bit 16 (KISS's EXT-experimental range — KISS puts provider features at
 5. Oracle independence + edge-case corpus in verification.
 6. `MathPrecision` reduced-mantissa axis.
 7. Named `reference_function` + derived `audited_status`.
+8. **KISC self-delimiting framing as the *single* kernel-import frame** (KISS-Contract §2.8 /
+   §6.11) — one `KISC` magic + version + `len` + `crc32` envelope for **all** kernel data, the
+   in-repo `.fkc.md` corpus *and* the future contract-query wire, so the corpus continuously
+   dogfoods the foreign-reader/freeze-gate discipline (goal 2) and no local-vs-wire framing can
+   drift. Build-stamp `len`/`crc32` (never hand-maintain); one kernel per KISC document, a file =
+   an ordered bundle of N; a `{abort_batch | isolate}` failure knob — local build **fail-fast**,
+   wire **isolate** — so framing is unified without weakening the build-time-loud invariant. The
+   existing [`parse.rs`](../../fuel-dispatch/src/fkc/parse.rs) section/fence scanner survives as
+   the *inner-body* parser (KISC is the outer envelope). The silent-drop/orphan half is already
+   shipped (`FkcError::OrphanFkcBlock`). Cutover negotiated behind a cap bit in the KISS **FEAT
+   range** (not bit 16). Full position: [`baracuda-kisc-framing-reply.md`](baracuda-kisc-framing-reply.md).
 
 Deferred latent-bug items: `OpTag::Gelu → GeluTanh` seam rename; `op_to_attrs` load-bearing-attr
 projection (frozen `OpAttrs` schema change); integer wrapping path (confirm reachability first); MKL
