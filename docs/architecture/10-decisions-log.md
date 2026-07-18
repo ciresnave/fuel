@@ -825,6 +825,25 @@ re-derive the gap list from scratch.
 
 **Related artifacts**: `docs/superpowers/plans/2026-07-15-op-scan-phase2-early-exit-differentiability-hopfield.md` + its design spec; the 2026-07-15 entry above (the three obligations this entry addresses); `docs/frontier-paradigms-vision.md` (the Hopfield/energy-based-memory bucket this consumer opens).
 
+## 2026-07-16 — Convergence Increment A: `primitive_shape` single-source + full-parity `emit` + §6.19 canonical `OpAttrs`
+
+**What changed** — the recipe grammar's canonical form is now concrete machinery, hardening the recipe principle (03-ir §"two-direction recipe") rather than changing it:
+
+1. **`primitive_shape` is the single source of truth for the first-order primitive basis's shape+dtype.** `primitive_shape(op, &[Shape], &[DType]) -> Result<(Shape, DType)>` (`fuel-graph/src/shape.rs`) is called by BOTH the ~26 `Tensor` builders (they no longer each compute their own out-shape/dtype) AND by `emit` (`fuel-graph/src/runtime_fused.rs`). One shape authority per primitive → no builder-vs-emit drift (a `builders_agree_with_primitive_shape` no-drift guard locks it). It returns an honest `Err` (never panics) for basis-gap / higher-order / malformed inputs.
+2. **`emit` / `tag_to_op` / `validate_representable` grown to the full first-order op set** (was elementwise-only). `Op::MatMul` is now representable; the recipe machinery re-emits shape+dtype via `primitive_shape` with a panic-free fallback (`emit_region`, a public candidate-kernel-verification entry, is now total).
+3. **`OpAttrs` §6.19 canonical positional-blob serialization.** `OpAttrs` gained the missing param fields (Slice start/len, Cast dtype, Roll shift, Pad amounts/mode/value, keepdim); `to_canonical_bytes(op)` emits the KISS §6.19 canonical **length-prefixed positional blob** (empty schema = zero-length `[0,0,0,0]`), fixing a logged §2.A conformance gap.
+4. **Byte-for-byte `emit == registry::{softmax,rope,layer_norm}::decompose` parity** (a recursive, order-sensitive structural check whose bite was sabotage-verified), so the recipe-emission path is cross-checked against the hand-written decompose oracles.
+
+**Sections affected**: `03-ir` **v0.7 → v0.8 (MINOR)** — adds `primitive_shape` as the single-source shape/dtype rule and the §6.19 canonical serialization to the recipe-principle machinery. Not a core-claim change: it *realizes* the already-pinned recipe grammar (the Fuel↔Baracuda recipe-grammar co-design, `docs/outreach/baracuda-recipe-grammar-codesign-reply-2.md`) as shipped infrastructure, the same way the 2026-07-14 Spec-B entry realized an already-canonical goal.
+
+**Phase / PR**: Convergence **Increment A** (7 tasks + review-fixes), merged @ `b5d20b2e` / `503832b3` (on `capturedrun-4b-resume`, now `main`). Design + plan: [`docs/superpowers/specs/2026-07-15-convergence-A-full-parity-emit-design.md`](../superpowers/specs/2026-07-15-convergence-A-full-parity-emit-design.md) + [`.../plans/2026-07-15-convergence-A-full-parity-emit.md`](../superpowers/plans/2026-07-15-convergence-A-full-parity-emit.md). Schema tables + `SEAM_CAP_RECIPE_IMPORT = FEAT bit 35` recorded in [`docs/specs/kernel-seam-interop.md`](../specs/kernel-seam-interop.md) §7.3.1–§7.3.2.
+
+**Scope / honest boundaries (what Increment A deliberately did NOT do — these are Increment C)**: `Op::MatMul` still serializes an **empty** `op_attrs` blob (roles implicit in operand shapes); the matmul role-vector serialization (co-design reply-3) lands in Increment C. The registry `decompose` → `PatternNode`-**data** migration (unifying Fuel's internal recipes with the external Baracuda-imported form) is Increment C. `reduce`/`gather`/`scatter` serialize a Fuel-side positional *subset* (`{axis[,keepdim]}`); `monoid`/`scatter_combine` ride `op_name` and index operands ride `child_edges` per the pinned node schema, while `oob_policy` + multi-axis `reduce_axes` lists are deferred pending their carriers. `op_to_attrs` is a matcher-driven projection, not a full `Op→OpAttrs→Op` round-trip (five axis-bearing ops project only when a matcher needs them).
+
+**Why**: realize the recipe grammar's canonical form as machinery now so (a) builder/emit shape logic has one authority, and (b) Increment C's decompose→`PatternNode`-data migration + Baracuda recipe import have a concrete §6.19 serialization + shape oracle to build on. Grammar pinned in the co-design; Fuel's representation conforms in A (machinery) then C (migration).
+
+**Related artifacts**: `docs/outreach/baracuda-recipe-grammar-codesign-reply-2.md` (the pinned §6.4-0009 schema) + `-reply-3.md` (matmul role-vectors, Increment C); memory `recipe-grammar-codesign`; the sequel is Convergence **Increment C** (this session).
+
 ---
 
 ## See also

@@ -111,6 +111,18 @@ nowhere; now captured so they are not forgotten):
   stays a typed error, not a live silent read); multi-carry, an `emit=All` early-exit valid-count
   buffer, and equilibrium/implicit-diff gradients remain deferred. See
   [10-decisions-log 2026-07-16](docs/architecture/10-decisions-log.md).
+- **Recipe-grammar convergence — Increment A SHIPPED (2026-07-16); Increment C next.**
+  Increment A realized the pinned Fuel↔Baracuda recipe grammar's canonical form as machinery:
+  `primitive_shape` (`fuel-graph/src/shape.rs`) as the single-source shape/dtype rule for the
+  primitive basis (called by BOTH the `Tensor` builders and `emit`, so no builder-vs-`emit`
+  drift), full first-order `emit`/`tag_to_op`/`validate_representable` (`Op::MatMul` now
+  representable), and `OpAttrs::to_canonical_bytes` = the KISS §6.19 canonical positional-blob
+  serialization — cross-checked byte-for-byte against the `rope`/`softmax`/`layer_norm`
+  `decompose` oracles. **Increment C** (next) migrates the ~22 registry `decompose` fns from
+  hand-written Rust to `PatternNode` **data**, unifies Fuel's internal recipes with the external
+  Baracuda-imported form, and adds the matmul role-vector `op_attrs` serialization (co-design
+  reply-3). See [10-decisions-log 2026-07-16](docs/architecture/10-decisions-log.md); memory
+  `recipe-grammar-codesign`.
 - **SSM autoregressive decode** (`Op::SelectiveScanWithInitState`, feed `last_state` back) +
   **GPU scan dispatch** (wire the ported baracuda mamba kernels to `OpKind`) — the SSM
   long-context-decode payoff; plus the **GraniteMoEHybrid** Mamba branch (currently bails).
