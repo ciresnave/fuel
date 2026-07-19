@@ -18,8 +18,9 @@ use crate::fkc::verify::LedgerRecord;
 
 #[cfg(feature = "cuda")]
 use crate::fkc::verify::{
-    verify_bit_stability, verify_precision_bound, Bound, CudaInvoker, HostTensor, KernelInvoker,
-    ProbeInputs, VerificationLedger, VerifyError, VerifyOutcome,
+    region_contains_transcendental, verify_bit_stability, verify_precision_bound,
+    widen_bound_for_transcendental, Bound, CudaInvoker, HostTensor, KernelInvoker, ProbeInputs,
+    VerificationLedger, VerifyError, VerifyOutcome,
 };
 #[cfg(feature = "cuda")]
 use crate::kernel::BindingEntry;
@@ -714,34 +715,47 @@ fn verify_candidate_impl(
             },
         };
 
+        // Transcendental band-widening (KISS, 2026-07-18): kiss-ref and Fuel's
+        // CPU oracle are BOTH hardware-precision (§6.5-0007), so on this LIVE
+        // candidate-vs-reference path a transcendental-containing region gets
+        // ~2× the declared ULP ceiling — two impls each within the ceiling of
+        // the wide-precision truth can differ from each other by up to twice
+        // it. Tight transcendental truth lives in the frozen wide-precision
+        // corpus, not here. Non-transcendental regions keep the tight bound.
+        let transcendental =
+            cand.decompose.as_ref().is_some_and(|r| region_contains_transcendental(r));
+        let widen = |b: Bound| if transcendental { widen_bound_for_transcendental(b) } else { b };
+
         // Check each declared numeric bound in order; FIRST failure returns.
         if let Some(b) = cand.declared.max_ulp {
-            match check_numeric_bound(&cand_out, &reference, &entry, &probe, Bound::MaxUlp(b)) {
-                Ok(()) => {
-                    ledger.upsert(make_record("max_ulp", "pass", serde_json::json!({ "bound": b })))
-                }
+            match check_numeric_bound(&cand_out, &reference, &entry, &probe, widen(Bound::MaxUlp(b))) {
+                Ok(()) => ledger.upsert(make_record(
+                    "max_ulp",
+                    "pass",
+                    serde_json::json!({ "bound": b, "transcendental_band": transcendental }),
+                )),
                 Err(detail) => {
                     ledger.upsert(make_record(
                         "max_ulp",
                         "fail",
-                        serde_json::json!({ "detail": detail.clone(), "bound": b }),
+                        serde_json::json!({ "detail": detail.clone(), "bound": b, "transcendental_band": transcendental }),
                     ));
                     return (VerifyVerdict::Fail { claim: "max_ulp", detail }, ledger.records().to_vec());
                 }
             }
         }
         if let Some(b) = cand.declared.max_relative {
-            match check_numeric_bound(&cand_out, &reference, &entry, &probe, Bound::MaxRelative(b)) {
+            match check_numeric_bound(&cand_out, &reference, &entry, &probe, widen(Bound::MaxRelative(b))) {
                 Ok(()) => ledger.upsert(make_record(
                     "max_relative",
                     "pass",
-                    serde_json::json!({ "bound": b }),
+                    serde_json::json!({ "bound": b, "transcendental_band": transcendental }),
                 )),
                 Err(detail) => {
                     ledger.upsert(make_record(
                         "max_relative",
                         "fail",
-                        serde_json::json!({ "detail": detail.clone(), "bound": b }),
+                        serde_json::json!({ "detail": detail.clone(), "bound": b, "transcendental_band": transcendental }),
                     ));
                     return (
                         VerifyVerdict::Fail { claim: "max_relative", detail },
@@ -751,17 +765,17 @@ fn verify_candidate_impl(
             }
         }
         if let Some(b) = cand.declared.max_absolute {
-            match check_numeric_bound(&cand_out, &reference, &entry, &probe, Bound::MaxAbsolute(b)) {
+            match check_numeric_bound(&cand_out, &reference, &entry, &probe, widen(Bound::MaxAbsolute(b))) {
                 Ok(()) => ledger.upsert(make_record(
                     "max_absolute",
                     "pass",
-                    serde_json::json!({ "bound": b }),
+                    serde_json::json!({ "bound": b, "transcendental_band": transcendental }),
                 )),
                 Err(detail) => {
                     ledger.upsert(make_record(
                         "max_absolute",
                         "fail",
-                        serde_json::json!({ "detail": detail.clone(), "bound": b }),
+                        serde_json::json!({ "detail": detail.clone(), "bound": b, "transcendental_band": transcendental }),
                     ));
                     return (
                         VerifyVerdict::Fail { claim: "max_absolute", detail },

@@ -9,6 +9,7 @@
 
 use crate::fkc::verify::bit_stability::{HostTensor, KernelInvoker, ProbeInputs, VerifyError, VerifyOutcome};
 use crate::kernel::BindingEntry;
+use fuel_graph::jit::{OpTag, PatternNode};
 
 /// ULP (units-in-the-last-place) distance between two `f32` values.
 ///
@@ -105,9 +106,116 @@ pub fn verify_precision_bound(
     Ok(VerifyOutcome::Pass)
 }
 
+/// A transcendental unary atom — one whose hardware value can differ from the
+/// wide-precision (§6.5-0007) truth by more than a correctly-rounded op. IEEE
+/// requires `Sqrt`/`Recip` to be correctly-rounded, so they are NOT here;
+/// `Exp`/`Log`/`Sin`/`Cos`/`Tanh`/`Sigmoid`/`Silu`/`Gelu`/`GeluErf`/`Erf`/
+/// `Rsqrt` are. Mirrors `cost.rs`'s `cost_elementwise_unary_transcendental_cpu`
+/// classification so the two never drift.
+fn is_transcendental(tag: OpTag) -> bool {
+    use OpTag::*;
+    matches!(tag, Exp | Log | Sin | Cos | Tanh | Sigmoid | Silu | Gelu | GeluErf | Erf | Rsqrt)
+}
+
+/// Whether a recipe region contains any transcendental atom. A
+/// transcendental-containing region gets the widened comparison band on the
+/// live kiss-ref / CPU-oracle path (see [`widen_bound_for_transcendental`]).
+/// `Bind`/`Any` are leaves (no op); `SeeThrough` recurses.
+pub fn region_contains_transcendental(region: &PatternNode) -> bool {
+    match region {
+        PatternNode::Op { op, operands, .. } => {
+            is_transcendental(*op) || operands.iter().any(region_contains_transcendental)
+        }
+        PatternNode::SeeThrough { then } => region_contains_transcendental(then),
+        PatternNode::Bind { .. } | PatternNode::Any => false,
+    }
+}
+
+/// Widen a precision [`Bound`] to 2× for a live comparison of a
+/// transcendental-containing region. Two implementations each within the ULP
+/// ceiling `C` of the wide-precision truth can differ from EACH OTHER by up to
+/// `2C` (triangle inequality); kiss-ref and Fuel's CPU oracle are both
+/// hardware-precision (neither is the wide-precision truth), so a live
+/// candidate-vs-reference check on a transcendental region must allow `2C`.
+/// Tight transcendental verification defers to the frozen wide-precision
+/// corpus, not to this live path (KISS, 2026-07-18). `MaxUlp` saturates so a
+/// huge declared ceiling can never overflow (never-panic).
+pub fn widen_bound_for_transcendental(bound: Bound) -> Bound {
+    match bound {
+        Bound::MaxUlp(m) => Bound::MaxUlp(m.saturating_mul(2)),
+        Bound::MaxRelative(m) => Bound::MaxRelative(m * 2.0),
+        Bound::MaxAbsolute(m) => Bound::MaxAbsolute(m * 2.0),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::ulp_distance;
+    use super::{
+        is_transcendental, region_contains_transcendental, ulp_distance,
+        widen_bound_for_transcendental, Bound,
+    };
+    use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
+
+    #[test]
+    fn widen_doubles_each_bound() {
+        assert!(matches!(widen_bound_for_transcendental(Bound::MaxUlp(4)), Bound::MaxUlp(8)));
+        match widen_bound_for_transcendental(Bound::MaxRelative(1e-6)) {
+            Bound::MaxRelative(m) => assert!((m - 2e-6).abs() < 1e-18),
+            other => panic!("expected MaxRelative, got {other:?}"),
+        }
+        match widen_bound_for_transcendental(Bound::MaxAbsolute(0.25)) {
+            Bound::MaxAbsolute(m) => assert_eq!(m, 0.5),
+            other => panic!("expected MaxAbsolute, got {other:?}"),
+        }
+        // Saturates rather than overflowing (never-panic).
+        assert!(matches!(
+            widen_bound_for_transcendental(Bound::MaxUlp(u32::MAX)),
+            Bound::MaxUlp(u32::MAX)
+        ));
+    }
+
+    #[test]
+    fn is_transcendental_classifies_exactly() {
+        for t in [
+            OpTag::Exp, OpTag::Log, OpTag::Sin, OpTag::Cos, OpTag::Tanh, OpTag::Sigmoid,
+            OpTag::Silu, OpTag::Gelu, OpTag::GeluErf, OpTag::Erf, OpTag::Rsqrt,
+        ] {
+            assert!(is_transcendental(t), "{t:?} should be transcendental");
+        }
+        // Sqrt/Recip are IEEE correctly-rounded — NOT band-widened.
+        for t in [OpTag::Sqrt, OpTag::Recip, OpTag::Relu, OpTag::Neg, OpTag::Abs, OpTag::Sqr] {
+            assert!(!is_transcendental(t), "{t:?} should NOT be transcendental");
+        }
+    }
+
+    #[test]
+    fn region_transcendental_detection_walks_nested() {
+        // Op{Neg, [Op{Exp, [Bind0]}]} — a nested transcendental atom.
+        let inner = PatternNode::Op {
+            op: OpTag::Exp,
+            operands: vec![PatternNode::Bind { index: 0 }],
+            attrs: OpAttrs::default(),
+        };
+        let outer = PatternNode::Op {
+            op: OpTag::Neg,
+            operands: vec![inner],
+            attrs: OpAttrs::default(),
+        };
+        assert!(region_contains_transcendental(&outer), "nested Exp must be found");
+
+        // Op{Neg, [Op{Sqr, [Bind0]}]} — no transcendental atom.
+        let inner2 = PatternNode::Op {
+            op: OpTag::Sqr,
+            operands: vec![PatternNode::Bind { index: 0 }],
+            attrs: OpAttrs::default(),
+        };
+        let outer2 = PatternNode::Op {
+            op: OpTag::Neg,
+            operands: vec![inner2],
+            attrs: OpAttrs::default(),
+        };
+        assert!(!region_contains_transcendental(&outer2), "no transcendental atom present");
+    }
 
     #[test]
     fn ulp_distance_signed_zero_is_one() {
