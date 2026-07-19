@@ -514,8 +514,22 @@ Per-op `body` field order (all little-endian; lists are `u32` count then element
 | `MaskedFill` | `scalars`: `f64` list; `dtype_name`: length-prefixed UTF-8 |
 | all others (empty schema) | *(empty)* → `[0,0,0,0]` |
 
-The `scan` / `scan_placeholder` / `runtime_scalar` tokens Fuel proposed are
-higher-order / leaf ops handled outside this first-order `OpAttrs` set.
+The `scan` / `scan_placeholder` / `runtime_scalar` / `reduce_extent` tokens Fuel
+proposed are higher-order / leaf ops handled outside this first-order `OpAttrs` set.
+
+**`reduce_extent{axis}` — the Mean-divisor source-op leaf** (pinned 2026-07-18,
+[`../outreach/baracuda-reduce-extent-mean-divisor-reply.md`](../outreach/baracuda-reduce-extent-mean-divisor-reply.md)).
+A childless `Op{reduce_extent, {axis}, []}` resolving to the product of the reduced
+axes' extents — the divisor in `Mean == div(reduce[sum,…](pre), reduce_extent(axis))`.
+Its body is the **fold node's axis field, byte-identical minus `keepdim`**: `axis: i64`
+today (single-axis, matching the `SumDim`/`MeanDim` row above), growing to a
+`reduce_axes: i64` list in lockstep with the fold when multi-axis lands — so a
+canonicalizer checks `reduce_extent.axis == fold.axis` by byte-equality. Resolved
+against the live interface shape at import (concrete extent → a scalar const at the
+`div`'s dtype); a **symbolic** reduced-axis extent (`DynScalar::Sym`) is a surfaced
+resolve gap, never a crash (same basis gap as symbolic-`k_len` flash decode). Not the
+FKC channel — the divisor is a `div` operand *inside* the recipe DAG, not an
+`OutputDesc` shape rule. Also serves the internal `mean` in RmsNorm/LayerNorm.
 
 ---
 
