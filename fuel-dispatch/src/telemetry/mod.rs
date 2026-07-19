@@ -28,6 +28,7 @@ pub mod miss;
 pub mod record;
 pub mod sink;
 pub mod structure_key;
+pub mod structure_key_derive;
 
 #[cfg(feature = "cuda")]
 pub use baracuda_provider::BaracudaStructureKeyProvider;
