@@ -140,7 +140,9 @@ nowhere; now captured so they are not forgotten):
   op-code set, the reduce field (`rall`/`rlast`/`x<hh>`), rank-N / strided / broadcast /
   vec-width generality. **Remaining, TRACKED (not a forgotten TODO):** (1) the **`gem`
   contraction field** — the deriver DECLINES `gem` until decision **D1** settles its format
-  (weight/accumulator/output dtypes + batch); *unblock = D1 ratified*. (2) the **op→category
+  (weight/accumulator/output dtypes + batch); *unblock = the **`sk3`** RFC adopted (D1's
+  concrete realization: contraction tuple `<batch>/<wdt>/<acc>/<out>/<mp>`, `f32s`→MathPrecision,
+  variant-explicit FP8) → then build the `gem` field + `sk2→sk3` bump + `accumulation_type`*. (2) the **op→category
   classifier** (Fuel `Op`/`OpKind` → `FuelOpCategory`) — the deriver takes the category;
   wiring Fuel's ops into it is the caller-side piece; *unblock = a dispatch-site consumer*.
   (3) a **different-namespace deriver** (CPU/Vulkan-driven) for the strict §6.4-0004 two-impl
