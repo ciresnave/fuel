@@ -124,7 +124,9 @@ nowhere; now captured so they are not forgotten):
   reply-3). **Gating first step (opened 2026-07-18): a shape-expression grammar co-design** —
   hand-written decomposes are shape-*polymorphic* but a `PatternNode` bakes *absolute* shapes, so
   portable recipes need shape-*relative* expressions (core `SameAs` + `DimExpr`, with axis-relative-
-  primitive canonicalization to keep the shared surface minimal). It grows **Fuel's own FKC
+  primitive canonicalization to keep the shared surface minimal; **`Reduce`/`WithDim` are RESERVED**
+  — added to the shared grammar only if a decompose can't canonicalize to axis-relative primitives,
+  *unblock = such a decompose*). It grows **Fuel's own FKC
   `OutputDesc.shape_rule`** (a Fuel field, `fuel-dispatch/src/fkc/schema.rs`, already evaluated by
   `eval_shape_rule` — NOT a KISS §5 field), and its KISS analog is a **new shape oracle** (the
   shape-side companion to the §6.4-0006 value oracle: op_dag interior-node shape consistency), which
@@ -148,7 +150,18 @@ nowhere; now captured so they are not forgotten):
   (3) a **different-namespace deriver** (CPU/Vulkan-driven) for the strict §6.4-0004 two-impl
   gate — the current deriver is same-namespace `cuda` (proves byte-reproduction, not
   cross-namespace). (4) the live **head-to-head** — waits on Baracuda's `sk1`→`sk2` /
-  `cuda:sm89` emit. Memory `kiss-standard-vs-fuel`.
+  `cuda:sm89` emit. (5) **MX-primary cells** — the deriver DECLINES an MX-dtype-primary cell (its
+  dtype not in the KISS §6.1 closed set) rather than guess a token; *unblock = KISS #9/#32 pin the
+  MX keyable (element + block-attribute) form*. Memory `kiss-standard-vs-fuel`.
+- **KISS-conformance verify deferrals (in-prose → tracked 2026-07-19).** (a) **Fix #2 — re-mint the
+  transcendental correctness-fixtures against the wide-precision corpus:** `fuel-correctness-fixtures`
+  self-mints transcendental cells from Fuel's own CPU oracle, which shares the §6.5-0007 hardware-
+  precision weakness, so they are not the tight authority they claim; *unblock = kiss-conform ratifies
+  + publishes the wide-precision transcendental corpus* (Fix #1 — the live transcendental-band
+  comparator, `fkc/verify/ulp.rs` — already shipped `b45565c8`). (b) **`accumulation_type` surfacing:**
+  Fuel's accumulator is backend-internal today; D5/`sk3` want it as a declared Contract guarantee + a
+  key coordinate — *unblock = `sk3` adopted* (lands with the `gem` field build). Memory
+  `kiss-standard-vs-fuel`.
 - **SSM autoregressive decode** (`Op::SelectiveScanWithInitState`, feed `last_state` back) +
   **GPU scan dispatch** (wire the ported baracuda mamba kernels to `OpKind`) — the SSM
   long-context-decode payoff; plus the **GraniteMoEHybrid** Mamba branch (currently bails).
