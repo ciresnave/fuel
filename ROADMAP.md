@@ -133,6 +133,20 @@ nowhere; now captured so they are not forgotten):
   Increment C's Fuel-side implementation is **gated on that grammar converging externally**. See
   [10-decisions-log 2026-07-16](docs/architecture/10-decisions-log.md); memory
   `recipe-grammar-codesign`.
+- **`structure_key` independent deriver — D8 freeze-gate; Fuel half DONE (2026-07-19).**
+  Fuel's second, **Baracuda-free** implementation of the KISS `structure_key`
+  (`fuel-dispatch/src/telemetry/structure_key_derive.rs`) derives the `relu_add` f32 cell
+  byte-for-byte AND all non-`gem` families: full §6.1 dtype map, the §6.5-0006 17-family
+  op-code set, the reduce field (`rall`/`rlast`/`x<hh>`), rank-N / strided / broadcast /
+  vec-width generality. **Remaining, TRACKED (not a forgotten TODO):** (1) the **`gem`
+  contraction field** — the deriver DECLINES `gem` until decision **D1** settles its format
+  (weight/accumulator/output dtypes + batch); *unblock = D1 ratified*. (2) the **op→category
+  classifier** (Fuel `Op`/`OpKind` → `FuelOpCategory`) — the deriver takes the category;
+  wiring Fuel's ops into it is the caller-side piece; *unblock = a dispatch-site consumer*.
+  (3) a **different-namespace deriver** (CPU/Vulkan-driven) for the strict §6.4-0004 two-impl
+  gate — the current deriver is same-namespace `cuda` (proves byte-reproduction, not
+  cross-namespace). (4) the live **head-to-head** — waits on Baracuda's `sk1`→`sk2` /
+  `cuda:sm89` emit. Memory `kiss-standard-vs-fuel`.
 - **SSM autoregressive decode** (`Op::SelectiveScanWithInitState`, feed `last_state` back) +
   **GPU scan dispatch** (wire the ported baracuda mamba kernels to `OpKind`) — the SSM
   long-context-decode payoff; plus the **GraniteMoEHybrid** Mamba branch (currently bails).
