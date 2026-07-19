@@ -16,18 +16,77 @@
 use super::structure_key::{Contiguity, FdxOperandDesc};
 use fuel_ir::DType;
 
-/// The op-family category a `structure_key` keys on (KISS-CLASSIFY §6.5-0006).
-/// Only the elementwise-binary case is derived today.
+/// The reduced-axis set of a `red` cell — the reduce field (§6.6-0009 / §6.7-0005).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReduceAxes {
+    /// Every axis reduced → `rall`.
+    All,
+    /// Only the trailing (innermost) axis → `rlast`.
+    TrailingAxis,
+    /// An explicit keepdim bitmask for any other axis set → `x<hh>`.
+    Keepdim(u8),
+}
+
+/// The op-family a `structure_key` keys on — the full KISS-CLASSIFY §6.5-0006
+/// 3-letter domain. `Reduction` carries its reduce field (§6.6-0009);
+/// `Contraction` (`gem`) is deliberately **DECLINED** by the deriver because its
+/// contraction-field format is the subject of open decision **D1** (growing the
+/// key with weight/accumulator/output dtypes + batch) — emitting it before D1
+/// settles would be rework. Tracked in `ROADMAP.md` (structure_key deriver), not
+/// a forgotten TODO.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FuelOpCategory {
-    /// Two-input, one-output elementwise (`bin`).
     BinaryElementwise,
+    TernaryElementwise,
+    Reduction(ReduceAxes),
+    Contraction,
+    Normalization,
+    Convolution,
+    Pooling,
+    Indexing,
+    ShapeLayout,
+    Sorting,
+    Fft,
+    Linalg,
+    Random,
+    SegmentOps,
+    Softmax,
+    Attention,
+    Loss,
 }
 
 impl FuelOpCategory {
+    /// The §6.5-0006 3-letter family code.
     fn code(self) -> &'static str {
         match self {
             FuelOpCategory::BinaryElementwise => "bin",
+            FuelOpCategory::TernaryElementwise => "ter",
+            FuelOpCategory::Reduction(_) => "red",
+            FuelOpCategory::Contraction => "gem",
+            FuelOpCategory::Normalization => "nrm",
+            FuelOpCategory::Convolution => "cnv",
+            FuelOpCategory::Pooling => "pol",
+            FuelOpCategory::Indexing => "idx",
+            FuelOpCategory::ShapeLayout => "shp",
+            FuelOpCategory::Sorting => "srt",
+            FuelOpCategory::Fft => "fft",
+            FuelOpCategory::Linalg => "lin",
+            FuelOpCategory::Random => "rnd",
+            FuelOpCategory::SegmentOps => "seg",
+            FuelOpCategory::Softmax => "sft",
+            FuelOpCategory::Attention => "att",
+            FuelOpCategory::Loss => "los",
+        }
+    }
+
+    /// The reduce field (§6.6-0009): a non-`-` value only for a `red` cell —
+    /// every other family emits `-` by construction (§6.6-0017).
+    fn reduce_field(self) -> String {
+        match self {
+            FuelOpCategory::Reduction(ReduceAxes::All) => "rall".to_string(),
+            FuelOpCategory::Reduction(ReduceAxes::TrailingAxis) => "rlast".to_string(),
+            FuelOpCategory::Reduction(ReduceAxes::Keepdim(m)) => format!("x{m:02x}"),
+            _ => "-".to_string(),
         }
     }
 }
@@ -41,6 +100,11 @@ pub fn derive_structure_key_token(
     operands: &[FdxOperandDesc],
     target: &str,
 ) -> Option<String> {
+    if matches!(op, FuelOpCategory::Contraction) {
+        // `gem`'s contraction field format is decided by D1 — decline until then
+        // rather than emit a field we know will change (see the enum doc).
+        return None;
+    }
     let first = operands.first()?;
     if operands.iter().any(|o| o.shape.len() > 8) {
         return None; // MAX_OPERANDS rank cap (§6.6-0013)
@@ -81,26 +145,36 @@ pub fn derive_structure_key_token(
     let operand_keys: Vec<String> = operands.iter().map(operand_sub_key).collect();
 
     Some(format!(
-        "sk2|{op}|{dtype}|{target}|{idx}|{work}|r{rank}|{ops}|-",
+        "sk2|{op}|{dtype}|{target}|{idx}|{work}|r{rank}|{ops}|{reduce}",
         op = op.code(),
         idx = index_width,
         work = work_class,
         ops = operand_keys.join(";"),
+        reduce = op.reduce_field(),
     ))
 }
 
-/// KISS-CLASSIFY §6.1 dtype token for the keyed operand-0 dtype. Returns `None`
-/// for a dtype not yet mapped to a canonical KISS token — a typed decline; the
-/// deriver never emits a guessed token. `f32` is the freeze-gate case; the other
-/// common floats are mapped, and the integer / MX tokens are deferred until a
-/// cell needs them (pending the §6.1 token confirmation).
+/// KISS-CLASSIFY §6.1 dtype token for the keyed operand-0 dtype, over the closed
+/// 20-token set. Fuel maps every `DType` it carries; the MX formats
+/// (`F6E2M3`/`F6E3M2`/`F4`/`F8E8M0`) are **not** in the KISS set — Fuel's RFC #9
+/// asks to add them — so they are a typed decline (`None`), never a guessed
+/// token. Exhaustive so a new Fuel `DType` is a compile error here, not a silent
+/// miss.
 fn dtype_token(dt: DType) -> Option<&'static str> {
     Some(match dt {
-        DType::F32 => "f32",
         DType::F16 => "f16",
         DType::BF16 => "bf16",
+        DType::F32 => "f32",
         DType::F64 => "f64",
-        _ => return None,
+        DType::I8 => "s8",
+        DType::I16 => "s16",
+        DType::U8 => "u8",
+        DType::U32 => "u32",
+        DType::I32 => "i32",
+        DType::I64 => "i64",
+        DType::F8E4M3 => "e4m3",
+        // MX element formats — not in the KISS §6.1 closed set (RFC #9 pending).
+        DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 => return None,
     })
 }
 
@@ -221,8 +295,8 @@ mod tests {
     #[test]
     fn declines_rather_than_guessing() {
         let bad_dtype =
-            FdxOperandDesc::from_layout(&Layout::contiguous(Shape::from_dims(&[4096])), DType::I32);
-        // Unmapped dtype → typed decline, never a guessed token.
+            FdxOperandDesc::from_layout(&Layout::contiguous(Shape::from_dims(&[4096])), DType::F4);
+        // Unmapped dtype (MX F4 — not in the KISS §6.1 set) → typed decline.
         assert_eq!(
             derive_structure_key_token(
                 FuelOpCategory::BinaryElementwise,
@@ -255,5 +329,57 @@ mod tests {
             derive_structure_key_token(FuelOpCategory::BinaryElementwise, &[f32_7], "cuda:sm89")
                 .expect("f32 must derive");
         assert_eq!(token, "sk2|bin|f32|cuda:sm89|ix32|warp|r1|co/00/v1/da/f|-");
+    }
+
+    #[test]
+    fn reduction_cell_carries_the_reduce_field() {
+        let f32_4096 =
+            FdxOperandDesc::from_layout(&Layout::contiguous(Shape::from_dims(&[4096])), DType::F32);
+        let token = derive_structure_key_token(
+            FuelOpCategory::Reduction(ReduceAxes::All),
+            &[f32_4096],
+            "cuda:sm89",
+        )
+        .expect("reduction must derive");
+        // op-family `red`, reduce field `rall` (not `-`).
+        assert_eq!(token, "sk2|red|f32|cuda:sm89|ix32|grid|r1|co/00/v4/d16/f|rall");
+    }
+
+    #[test]
+    fn gem_declines_pending_d1() {
+        let f32_4096 =
+            FdxOperandDesc::from_layout(&Layout::contiguous(Shape::from_dims(&[4096])), DType::F32);
+        // The `gem` contraction-field format is decided by D1 — decline, never guess.
+        assert_eq!(
+            derive_structure_key_token(
+                FuelOpCategory::Contraction,
+                &[f32_4096.clone(), f32_4096],
+                "cuda:sm89"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn non_f32_dtype_and_vec_width() {
+        // s16 (2-byte): v8 fits (8·2 = 16 ≤ 16), a wider vec than f32's v4.
+        let s16_4096 =
+            FdxOperandDesc::from_layout(&Layout::contiguous(Shape::from_dims(&[4096])), DType::I16);
+        let token =
+            derive_structure_key_token(FuelOpCategory::BinaryElementwise, &[s16_4096], "cuda:sm89")
+                .expect("s16 must derive");
+        assert_eq!(token, "sk2|bin|s16|cuda:sm89|ix32|grid|r1|co/00/v8/d16/f|-");
+    }
+
+    #[test]
+    fn mixed_rank_derives() {
+        // Rank-2 [128,256] contiguous — the operand derivation is NOT
+        // elementwise-only; rank / index-width / vec all generalize.
+        let f32_2d =
+            FdxOperandDesc::from_layout(&Layout::contiguous(Shape::from_dims(&[128, 256])), DType::F32);
+        let token =
+            derive_structure_key_token(FuelOpCategory::BinaryElementwise, &[f32_2d], "cuda:sm89")
+                .expect("rank-2 must derive");
+        assert_eq!(token, "sk2|bin|f32|cuda:sm89|ix32|grid|r2|co/00/v4/d16/f|-");
     }
 }
