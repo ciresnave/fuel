@@ -514,17 +514,19 @@ Per-op `body` field order (all little-endian; lists are `u32` count then element
 | `MaskedFill` | `scalars`: `f64` list; `dtype_name`: length-prefixed UTF-8 |
 | all others (empty schema) | *(empty)* → `[0,0,0,0]` |
 
-The `scan` / `scan_placeholder` / `runtime_scalar` / `reduce_extent` tokens Fuel
-proposed are higher-order / leaf ops handled outside this first-order `OpAttrs` set.
+The `scan` / `scan_placeholder` / `runtime_scalar` / `reduced_count` / `extent` tokens Fuel
+proposed or adopted are higher-order / leaf ops handled outside this first-order `OpAttrs` set.
 
-**`reduce_extent{axis}` — the Mean-divisor source-op leaf** (pinned 2026-07-18,
-[`../outreach/baracuda-reduce-extent-mean-divisor-reply.md`](../outreach/baracuda-reduce-extent-mean-divisor-reply.md)).
-A childless `Op{reduce_extent, {axis}, []}` resolving to the product of the reduced
-axes' extents — the divisor in `Mean == div(reduce[sum,…](pre), reduce_extent(axis))`.
+**`reduced_count{axes}` — the Mean-divisor source-op leaf** (pinned 2026-07-18 as
+`reduce_extent`; **RENAMED 2026-07-19** to KISS §6.12-0001's pre-existing canonical
+token `reduced_count` — 1:1 identical, align-not-alias, pre-consumer;
+[`../outreach/baracuda-reduced-count-rename-reply.md`](../outreach/baracuda-reduced-count-rename-reply.md)).
+A childless `Op{reduced_count, {axes}, []}` resolving to the product of the reduced
+axes' extents — the divisor in `Mean == div(reduce[sum,…](pre), reduced_count(axes))`.
 Its body is the **fold node's axis field, byte-identical minus `keepdim`**: `axis: i64`
 today (single-axis, matching the `SumDim`/`MeanDim` row above), growing to a
 `reduce_axes: i64` list in lockstep with the fold when multi-axis lands — so a
-canonicalizer checks `reduce_extent.axis == fold.axis` by byte-equality. Resolved
+canonicalizer checks `reduced_count.axes == fold.axes` by byte-equality. Resolved
 against the live interface shape at import (concrete extent → a scalar const at the
 `div`'s dtype); a **symbolic** reduced-axis extent (`DynScalar::Sym`) is a surfaced
 resolve gap, never a crash (same basis gap as symbolic-`k_len` flash decode). Not the
@@ -532,13 +534,18 @@ FKC channel — the divisor is a `div` operand *inside* the recipe DAG, not an
 `OutputDesc` shape rule. Also serves the internal `mean` in RmsNorm/LayerNorm.
 **Increment-C resolver constraint** (attr refinement closed 2026-07-18,
 [`../outreach/baracuda-reduce-extent-mean-divisor-reply-2.md`](../outreach/baracuda-reduce-extent-mean-divisor-reply-2.md)):
-Baracuda spells the fold and the extent from one `reduce_axes_code(axes)` token,
-so `reduce_extent.axes == fold.axes` is byte-identical *at emit*. For the lockstep
-to hold *at resolve*, Fuel's `reduce_extent` axis resolver MUST reuse the fold's
+Baracuda spells the fold and the count from one `reduce_axes_code(axes)` token,
+so `reduced_count.axes == fold.axes` is byte-identical *at emit*. For the lockstep
+to hold *at resolve*, Fuel's `reduced_count` axis resolver MUST reuse the fold's
 axis-resolution codepath verbatim (not a parallel impl) — else a future `last` /
 `0x<hex>`-mask resolution change could split a pair Baracuda emitted identical. A
 multi-axis mask (>1 bit) exceeds the single-axis `{axis}` body and honest-misses
 **both** nodes together, never one.
+
+**Shape-side companion — `extent(axis)`** (KISS §6.12-0001, adopted 2026-07-19). The
+single-axis *value* leaf the shape grammar's `DimExpr::Extent(op, axis)` spells; the
+§6.12 pair is **`extent(axis)`** (single-axis) + **`reduced_count(axes)`** (reduced-axes
+product). Fuel emits no `extent` leaf until Increment C's shape-expression work.
 
 ---
 
