@@ -124,9 +124,12 @@ nowhere; now captured so they are not forgotten):
   reply-3). **Gating first step (opened 2026-07-18): a shape-expression grammar co-design** —
   hand-written decomposes are shape-*polymorphic* but a `PatternNode` bakes *absolute* shapes, so
   portable recipes need shape-*relative* expressions (core `SameAs` + `DimExpr`, with axis-relative-
-  primitive canonicalization to keep the shared surface minimal), proposed as an *extension* of the
-  Kernel-Contract `OutputDesc.shape_rule` (§5, currently parsed-but-unevaluated) rather than a fork —
-  see `docs/outreach/baracuda-shape-expression-grammar-ask.md` + `kiss-rfc-shape-rule-expression-vocabulary.md`.
+  primitive canonicalization to keep the shared surface minimal). It grows **Fuel's own FKC
+  `OutputDesc.shape_rule`** (a Fuel field, `fuel-dispatch/src/fkc/schema.rs`, already evaluated by
+  `eval_shape_rule` — NOT a KISS §5 field), and its KISS analog is a **new shape oracle** (the
+  shape-side companion to the §6.4-0006 value oracle: op_dag interior-node shape consistency), which
+  KISS is filing reframed (KISS-Ops §6.20). Axis pinned to (A) non-negative/`last` (Baracuda). See
+  `docs/outreach/{baracuda-shape-expression-grammar-ask,-reply,kiss-shape-oracle-reframe-reply}.md`.
   Increment C's Fuel-side implementation is **gated on that grammar converging externally**. See
   [10-decisions-log 2026-07-16](docs/architecture/10-decisions-log.md); memory
   `recipe-grammar-codesign`.

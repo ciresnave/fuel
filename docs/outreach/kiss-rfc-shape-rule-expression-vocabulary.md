@@ -4,6 +4,8 @@
 **Affects:** Kernel-Contract §5 (`return` / `OutputDesc.shape_rule`) and §2.3 (Semantics); complements §6.4-0009 (recipe node schema) and §6.19 (canonical `op_attrs` serialization).
 **Category:** Standards-track, backward-compatible extension.
 
+> **⚠ PREMISE CORRECTED — SUPERSEDED (2026-07-18).** KISS held this filing. `OutputDesc.shape_rule` is a **Fuel FKC field** (`fuel-dispatch/src/fkc/schema.rs`), **not** a KISS §5 field, and Fuel's `eval_shape_rule` (`fuel-dispatch/src/fkc/return_check.rs`) **already evaluates it** — so this draft's "grow the §5 `shape_rule`, its first evaluator" premise is wrong on both counts. The vocabulary and the shape/value boundary stand; the *contribution to KISS* is a **shape ORACLE** — the shape-side companion to the §6.4-0006 value oracle (op_dag interior-node shape consistency + the Interface-vs-semantics tie), NOT an evaluator for a §5 string that doesn't exist. KISS is filing the reframed version (KISS-Ops §6.20 shape-oracle subsection + a KISS-Contract shape-consistency clause). See `docs/outreach/kiss-shape-oracle-reframe-reply.md`. Retained for history.
+
 ## Summary
 
 `OutputDesc.shape_rule` (§5) exists as a string expression (`same_as(role)`, `from_params(...)`) but has **no defined expression grammar and no evaluator** — implementations parse it and carry it opaquely. This RFC (a) pins a small, closed **shape-expression vocabulary** for it, (b) defines its **evaluator contract** against concrete operand shapes, and (c) makes the *same* vocabulary the shape descriptor a **§6.4-0009 recipe node** carries — so a recipe expressing a fused op as a primitive DAG is shape-**polymorphic** and portable, not baked to one input shape. One shape-semantics layer serves both the return contract and the recipe grammar.
