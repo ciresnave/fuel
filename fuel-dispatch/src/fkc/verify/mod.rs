@@ -88,7 +88,9 @@ pub use bit_stability::{
     VerifyOutcome,
 };
 pub use ledger::{gate_precision, LedgerQuery, LedgerRecord, VerificationLedger};
-pub use ulp::{verify_precision_bound, Bound};
+pub use ulp::{
+    region_contains_transcendental, verify_precision_bound, widen_bound_for_transcendental, Bound,
+};
 pub use invoker_cpu::CpuInvoker;
 pub use seed_cpu_ledger::{run_cpu_verification, SeedAttempt};
 // `to_bytes` is `pub(crate)` on `seed_cpu_ledger` (not `pub`) — re-exported
