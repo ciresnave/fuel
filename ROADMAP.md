@@ -121,7 +121,14 @@ nowhere; now captured so they are not forgotten):
   `decompose` oracles. **Increment C** (next) migrates the ~22 registry `decompose` fns from
   hand-written Rust to `PatternNode` **data**, unifies Fuel's internal recipes with the external
   Baracuda-imported form, and adds the matmul role-vector `op_attrs` serialization (co-design
-  reply-3). See [10-decisions-log 2026-07-16](docs/architecture/10-decisions-log.md); memory
+  reply-3). **Gating first step (opened 2026-07-18): a shape-expression grammar co-design** —
+  hand-written decomposes are shape-*polymorphic* but a `PatternNode` bakes *absolute* shapes, so
+  portable recipes need shape-*relative* expressions (core `SameAs` + `DimExpr`, with axis-relative-
+  primitive canonicalization to keep the shared surface minimal), proposed as an *extension* of the
+  Kernel-Contract `OutputDesc.shape_rule` (§5, currently parsed-but-unevaluated) rather than a fork —
+  see `docs/outreach/baracuda-shape-expression-grammar-ask.md` + `kiss-rfc-shape-rule-expression-vocabulary.md`.
+  Increment C's Fuel-side implementation is **gated on that grammar converging externally**. See
+  [10-decisions-log 2026-07-16](docs/architecture/10-decisions-log.md); memory
   `recipe-grammar-codesign`.
 - **SSM autoregressive decode** (`Op::SelectiveScanWithInitState`, feed `last_state` back) +
   **GPU scan dispatch** (wire the ported baracuda mamba kernels to `OpKind`) — the SSM
