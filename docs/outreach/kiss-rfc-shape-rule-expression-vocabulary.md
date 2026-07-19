@@ -30,7 +30,7 @@ DimExpr   := Extent(operand, axis)               // the size of the operand's `a
            | Param(field)                          // a value from the op's declared params  (== from_params)
            | DimExpr BinOp DimExpr                  // BinOp ∈ {+, −, ×, ÷}; ÷ is floor division
 
-axis      := signed i64  (−1 = last; resolved against the operand's rank at evaluation time)
+axis      := non-negative index  |  the `last` sentinel   (resolved against the operand's rank at evaluation time)
 operand   := an operand role name (§3.2)  |  a positional operand index
 ```
 
