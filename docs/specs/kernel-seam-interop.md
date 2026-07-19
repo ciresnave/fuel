@@ -530,6 +530,15 @@ against the live interface shape at import (concrete extent → a scalar const a
 resolve gap, never a crash (same basis gap as symbolic-`k_len` flash decode). Not the
 FKC channel — the divisor is a `div` operand *inside* the recipe DAG, not an
 `OutputDesc` shape rule. Also serves the internal `mean` in RmsNorm/LayerNorm.
+**Increment-C resolver constraint** (attr refinement closed 2026-07-18,
+[`../outreach/baracuda-reduce-extent-mean-divisor-reply-2.md`](../outreach/baracuda-reduce-extent-mean-divisor-reply-2.md)):
+Baracuda spells the fold and the extent from one `reduce_axes_code(axes)` token,
+so `reduce_extent.axes == fold.axes` is byte-identical *at emit*. For the lockstep
+to hold *at resolve*, Fuel's `reduce_extent` axis resolver MUST reuse the fold's
+axis-resolution codepath verbatim (not a parallel impl) — else a future `last` /
+`0x<hex>`-mask resolution change could split a pair Baracuda emitted identical. A
+multi-axis mask (>1 bit) exceeds the single-axis `{axis}` body and honest-misses
+**both** nodes together, never one.
 
 ---
 
