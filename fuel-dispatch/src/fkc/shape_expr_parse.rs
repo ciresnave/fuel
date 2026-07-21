@@ -31,6 +31,26 @@ fn inner<'a>(s: &'a str, head: &str) -> Option<&'a str> {
     s.trim().strip_prefix(head)?.strip_suffix(')').map(str::trim)
 }
 
+/// Parse a whole-shape `matmul(role_a, role_b)` rule into the two operand
+/// shapes (concrete `i64` extents), resolved against the probe combo in
+/// `(lhs, rhs)` order. `None` on a non-`matmul(...)` rule, a malformed arg
+/// list, or an unknown role — the caller maps `None` → skip (never a false
+/// reject). §6.20-0008 role-woven `matmul` kind: the two named roles ARE the
+/// M/N/K-bearing operands; the caller derives the contraction shape via
+/// [`crate::fkc::shape_expr::matmul_shape`] (from operand shapes + the M/N/K
+/// role structure — NEVER from `entry.decompose`, per the §4 guardrail).
+pub fn parse_matmul_operands(rule: &str, combo: ProbeComboRef) -> Option<(Vec<i64>, Vec<i64>)> {
+    let args = inner(rule.trim(), "matmul(")?;
+    let (role_a, role_b) = split_top_comma(args)?;
+    let shape_of = |role: &str| {
+        combo
+            .iter()
+            .find(|(r, _, _)| r == role)
+            .map(|(_, s, _)| s.dims().iter().map(|&d| d as i64).collect::<Vec<i64>>())
+    };
+    Some((shape_of(role_a)?, shape_of(role_b)?))
+}
+
 pub fn parse_dim(rule: &str, combo: ProbeComboRef) -> Option<Dim> {
     let rule = rule.trim();
     if let Some(args) = inner(rule, "extent(") {
