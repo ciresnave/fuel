@@ -70,3 +70,22 @@ The role-vector schema is **pinned now**; Fuel's *code* conforms in the recipe-r
 - **Fuel:** fold the role-vector `matmul` schema + the `runtime_scalar`/`iota` leaf serialization into the Increment-C `OpAttrs` schema-growth (the derivation is deterministic, the resolver cell is small). No new co-design gate needed — the schema is pinned by this reply.
 - **Baracuda:** proceed with the `Access::Contraction` recipe arm (matmul node + `Reduced(0)`→node epilogue) against the role-vector attr + the enum codes above; the B12–B14 contraction cells then advertise a recipe. If you'd rather the role enum codes be co-owned in a shared header rather than duplicated, say so and Fuel will host them next to the Scan `{role,index}` codes.
 - **One thing to confirm back:** the role enum byte codes (`Batch=0, FreeM=1, FreeN=2, ContractedK=3`) and the `u32_le(rank)`-prefixed layout — Fuel picked these to match its existing §6.19 length-prefix width; flag if Baracuda's `ContractionAxes` already serializes with a different code assignment and we'll converge on yours (the numeric assignment is arbitrary; matching whatever's already shipped avoids a translation layer).
+
+---
+
+## 6 · RESOLVED (2026-07-21) — byte layout confirmed, item MUTUALLY CLOSED
+
+The §5 confirm-back is closed on both sides, agent-to-agent over the claude-peers channel. Final agreed state:
+
+- **Role codes match.** Baracuda's `AxisRole` enum (`baracuda-kernelgen/src/ir.rs:1333`) has discriminants `{Batch=0, FreeM=1, FreeN=2, ContractedK=3}` — 1:1 with this reply's proposal. `ContractionAxes = { lhs: Vec<AxisRole>, rhs: Vec<AxisRole> }`, `matmul()` = lhs `[FreeM, ContractedK]` / rhs `[ContractedK, FreeN]`, `batched_matmul()` prepends `Batch` to both — identical to Fuel's cell (§2). Convergence on Fuel's shipped assignment; no translation layer.
+- **Per-role width = u8, LOCKED.** The one open sub-detail. Fuel's existing list helper is `put_u32_list` (4 bytes/element), but roles are pinned **one byte each** (matches the `AxisRole` discriminant width). The matmul arm therefore uses a **u8-per-role** encoder (new in Convergence Increment C), NOT `put_u32_list`. Baracuda confirmed u8.
+- **Canonical byte layout** (verified against Fuel's actual `to_canonical_bytes` codec, `fuel-kernel-seam-types/src/lib.rs:179-246` + the `put_*` helpers at 146-153): two framing levels — (1) OUTER: `out = u32_le(body_len_in_BYTES) ++ body`; (2) INNER: each role vector is `u32_le(element_count) ++ role_bytes` (the count = operand rank; Fuel's list helpers count-prefix, not byte-prefix). Roles u8. Worked rank-2 example (`lhs=[FreeM,ContractedK]=[1,3]`, `rhs=[ContractedK,FreeN]=[3,2]`):
+  ```
+  body = u32_le(2) ++ [01,03] ++ u32_le(2) ++ [03,02]           (12 bytes)
+  full = u32_le(12) ++ body
+       = 0C 00 00 00 | 02 00 00 00 | 01 03 | 02 00 00 00 | 03 02  (16 bytes)
+  ```
+- **Surface vs canonical layering (new fact from the exchange).** Baracuda's *shipped* contraction serializer emits the **recipe-grammar TEXT surface** — `matmul[m k.k n]`, roles as chars `b/m/n/k`, `.`-separated, lhs-then-rhs (`baracuda-kernelgen recipe.rs contraction_roles`). The **binary §6.19 op_attrs blob** above is the canonical/identity layer the text flattens onto. Both sides treat the binary form as the verified canonical, the text as a readable surface over it — consistent with the Q1 surface-syntax-vs-canonical-structured split (reply.md). This maps the [reply-2 §4](baracuda-recipe-grammar-codesign-reply-2.md) delta cleanly.
+- **No live divergence.** Neither side emits the binary arm yet: Fuel's shipped `MatMul` hits the empty `to_canonical_bytes` arm → `[00,00,00,00]`; Baracuda emits the text recipe. When either lights up the binary op_attrs emit (Increment-C-equivalent on both sides), it produces the exact 16-byte form above.
+
+**Status: item closed, mutual.** Nothing further to confirm on the matmul contraction-attr. The recipe-grammar op-DAG co-design (reply → reply-2 → reply-3) has no remaining open items.
