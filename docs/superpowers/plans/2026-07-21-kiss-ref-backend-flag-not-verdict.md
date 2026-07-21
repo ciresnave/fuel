@@ -683,4 +683,35 @@ git commit -m "feat(ingest): wire kiss-ref reference into verify_candidate (advi
 
 - **Spec coverage:** §1 reference-selection → Tasks 2, 8. §3 crate/deps/API → Tasks 5-7. §4 outcomes + classify + corpus seam + ingest map → Tasks 1-4, 8. §6 testing → each task's tests + Task 9. §7 risks (git-dep, POC coordination, gate switch, corpus dormancy) → Global Constraints + Tasks 3, 5, 10. §8 sequencing → phase order. Item-#3 doc fix → Task 10. Covered.
 - **Placeholder scan:** `<KISS_REF_REV>` is an execution-time value (peer push), documented in Global Constraints — not a plan gap. `OpTag`/`DType`/`OpKind` variant names are flagged for verification against `fuel-ir`/`fuel-graph` where the concrete type differs. No TBD/TODO steps.
-- **Type consistency:** `FlagReport`, `IngestOutcome::Flagged`, `VerifyVerdict::Inconclusive`, `DiffOutcome`, `RefOutcome`, `CorpusOutcome`, `OpClass`, `classify_floor_verdict`, `corpus_verdict`, `outcome_from_nonadopt_verdict`, `EXACT_FLOOR_KISS_REF_GATES`, `supports`/`op_to_kiss`/`dtype_to_kiss`/`is_exact_floor`/`reference_f32`/`diff_f32` are defined once and referenced consistently across tasks.
+- **Type consistency:** `FlagReport`, `IngestOutcome::Flagged`, `VerifyVerdict::Inconclusive`, `DiffOutcome`, `RefOutcome`, `CorpusOutcome`, `OpClass`, `classify_floor_verdict`, `corpus_verdict`, `outcome_from_nonadopt_verdict`, `supports`/`op_to_kiss`/`dtype_to_kiss`/`reference_f32`/`diff_f32` are defined once and referenced consistently across tasks.
+
+---
+
+## REVISION ADDENDUM (2026-07-21, post-ruling + pre-flight grounding) — AUTHORITATIVE where it conflicts with the tasks above
+
+**1. §6.6-0007 ruling (KISS maintainer 44elbk9y): kiss-ref is UNIFORMLY ADVISORY.** §6.6-0007 is a *provenance* rule binding ALL ops incl. bitwise-exact (live===frozen only holds if kiss-ref is correct — the thing under test; a Fuel↔kiss-ref correlated bug would agree wrongly). So:
+- **DELETE `EXACT_FLOOR_KISS_REF_GATES` and Task 2's exact-gate arm + its two exact-gate tests.** kiss-ref never verdicts. classify precedence collapses to: `corpus` (dormant) → `recipe` (interim verdict, ALL ops) → `kiss`-only ⇒ `Inconclusive`/escalate → none ⇒ `Fail`.
+- `op_class` no longer affects the verdict — it ONLY selects the advisory diff's tolerance (`Tolerance::Exact` for non-transcendental floor, `Tolerance::Ulp(2×ceiling)` for transcendental).
+- **DELETE Task 10 Step 2** (the gate-flip) — permanently advisory.
+
+**2. kiss-ref is LIVE — Phase B unblocked.** URL/rev (`ThinkersJournal`, not `ciresnave`):
+```toml
+kiss-ref-core       = { git = "https://github.com/ThinkersJournal/kiss-ref", rev = "436ff94a9ff6fbee666ae0460ea34384e5ca0c13" }
+kiss-ops-vocab      = { git = "https://github.com/ThinkersJournal/kiss-ref", rev = "436ff94a9ff6fbee666ae0460ea34384e5ca0c13" }
+kiss-classify-vocab = { git = "https://github.com/ThinkersJournal/kiss-ref", rev = "436ff94a9ff6fbee666ae0460ea34384e5ca0c13" }
+```
+
+**3. Verified grounding facts (supersede the "verify the real variant name" caveats):**
+- **Op identity = `fuel_graph::registry::FusedOpId`** (u16 newtype); the per-node primitive tag inside a `decompose` `PatternNode` = **`fuel_graph::jit::OpTag`**. `op_to_kiss` takes `OpTag`. `op_class` = `region_contains_transcendental(&PatternNode)` (pub, in `fkc::verify::ulp`; `is_transcendental` is private and DELIBERATELY excludes `Sqrt`/`Recip`).
+- **`DType` (15 variants, no U16/U64/complex/bool):** F16/BF16/F32/F64, U8/I8/U32/I16/I32/I64, F8E4M3/F8E8M0/F6E2M3/F6E3M2/F4. `dtype_to_kiss`: F16→F16, **BF16→Bf16**, F32→F32, F64→F64, U8→U8, **I8→S8**, U32→U32, **I16→S16**, I32→I32, I64→I64. FP8/MX → decline (kiss `support()` = `Pending`). Decline test uses `DType::F8E4M3`.
+- `half = { workspace = true }` (2.5.0). `LedgerRecord.claim` is `String` (advisory flag record does `claim.to_string()`); `VerifyVerdict::Fail.claim` / `FlagReport.claim` stay `&'static str`.
+- **VerifyVerdict un-gate is SAFE** — the ONLY breaking match is `ingest_one` (cuda, jit_ingest.rs:813-828); the plan's `other =>` fix covers it; `fuel-core` has zero refs; break manifests only under `--features cuda`. The two test matches (`matches!` at :1270; wildcard `other =>` at :1335) do not break.
+- **kiss-ref API is ROW-oriented:** `reference_f32(op: Op, rows: &[&[f32]]) -> Result<Vec<f32>, Error>`; `diff_f32(op: Op, rows: &[&[f32]], candidate: &[f32], tol: Tolerance) -> Result<DiffReport, Error>` (+ f64/f16/bf16). A "row" is ONE element's arg-tuple (`&[a]` unary, `&[a,b]` binary). **The adapter MUST transpose Fuel's column-major operands into rows**, checking all operands share a length first (`KissRefError::LengthMismatch`, never panic). `DiffReport { n, mismatches, max_ulp: u64, first_mismatch }` + method **`conforms(&self) -> bool`** (= `mismatches == 0`) — use `conforms()` (Task 7 tests must NOT use `within()`). `Tolerance { Exact, Ulp(u64) }`.
+- **kiss `Op`:** Add/Sub/Mul/Div/Neg/Exp/Log/Sin/Cos/Sqrt/Erf/Rsqrt/Tanh/Relu. **NO `Op::Max`/`Op::Min`** → Fuel `Maximum`→`Op::MaxProp`, `Minimum`→`Op::MinProp` (NaN-propagating, matches Fuel's pinned convention). `support(op: Op, dtype: Dtype) -> Support{Done,Pending}`; `supports()` = `Done`. Rsqrt/Tanh/Relu are `floor=false` but still `Done` via §6.13 decomposition. `Op` is `#[non_exhaustive]`.
+- **Drop `is_exact_floor` from the adapter (Task 6).** Tolerance/op-class is decided in the wiring (Task 8) via `region_contains_transcendental`; the adapter's `diff_*` just takes a `Tolerance`. Task 8's Interfaces line loses `is_exact_floor`.
+
+**4. `corpus_verdict` retarget (Task 3):** signature `corpus_verdict(op: OpTag, dtype: DType, seed: u64) -> Option<CorpusOutcome>`, returns `None` (dormant). Test calls `corpus_verdict(OpTag::Add, DType::F32, 0)`. Its ACTIVATION target is **KISS's v1 exact-byte corpus** (`conformance/corpus/*.json`, schema `kiss-oracle-vectors-v1`, reference reader `conformance/src/corpus.rs`) — NOT `fuel-correctness-fixtures`. Activation is a FUTURE increment.
+
+**5. Task 8 OpTag-extraction scope:** the kiss-ref advisory diff fires when a single-primitive `OpTag` is extractable (a single-`Op` `decompose` node whose tag maps via `op_to_kiss`). The `recipe=None & kiss=Some ⇒ Inconclusive` case = a recipe-realize FAILURE/absence where the `OpTag` + operands are still available for a kiss diff. Multi-node/fused candidates and `claimed_op(FusedOpId)→OpTag` mapping are follow-ups.
+
+**6. Pre-flight note:** the ultracode design-review agent errored (StructuredOutput retry cap); its review was reconstructed inline from the two successful grounding agents. Verdict: Phase A is safe to implement with the above corrections.
