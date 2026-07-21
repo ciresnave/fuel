@@ -34,6 +34,31 @@ pub fn eval_shape_rule(rule: &str, combo: ProbeComboRef, _section: &str) -> Resu
     if let Some(r) = inner(rule, "same_as(") {
         return Ok(role(combo, r).map(|(_, s, _)| s.clone()));
     }
+    // §6.20-0008 role-woven `matmul(role_a, role_b)`: a WHOLE-shape rule (the
+    // contraction output is multi-dim, so it returns a `Shape` directly — NOT the
+    // single-dim `DimExpr` path). Resolve the two roles to operand shapes and
+    // derive `[..batch, M, N]` via the shipped shape-expr oracle. §4 guardrail:
+    // computed from the operand shapes + M/N/K role structure, never from decompose.
+    if rule.starts_with("matmul(") {
+        let Some((lhs, rhs)) = crate::fkc::shape_expr_parse::parse_matmul_operands(rule, combo)
+        else {
+            return Ok(None);
+        };
+        // Never-panic + §4 guard: `matmul_shape` indexes `lhs[r-2]` and `rhs[r-1]`
+        // (r = lhs rank), so require both operands rank >= 2 with EQUAL rank (the
+        // `fused_linear` same-rank contract). A degenerate rank or a symbolic /
+        // negative extent → skip (Ok(None), never a false reject).
+        if lhs.len() < 2
+            || rhs.len() < 2
+            || lhs.len() != rhs.len()
+            || lhs.iter().chain(rhs.iter()).any(|&d| d < 0)
+        {
+            return Ok(None);
+        }
+        let out = crate::fkc::shape_expr::matmul_shape(&lhs, &rhs);
+        let dims: Vec<usize> = out.iter().map(|&d| d as usize).collect();
+        return Ok(Some(Shape::from_dims(&dims)));
+    }
     // A DimExpr form: parse (role names → positional AST), then evaluate over the combo.
     if is_dimexpr_head(rule) {
         let Some(dim) = crate::fkc::shape_expr_parse::parse_dim(rule, combo) else { return Ok(None) };
@@ -409,6 +434,7 @@ mod tests {
         assert_eq!(eval_dtype_rule("dequant(w)", c, "k").unwrap(), None);
         assert_eq!(eval_shape_rule("same_as(upstream)", c, "k").unwrap(), Some(Shape::from_dims(&[4, 5])));
         assert_eq!(eval_shape_rule("from_params(q)", c, "k").unwrap(), None);
+        // `matmul(a, b)` over a combo that has NO `a`/`b` roles → unknown-role skip.
         assert_eq!(eval_shape_rule("matmul(a, b)", c, "k").unwrap(), None);
         assert_eq!(eval_shape_rule("same_as(does_not_exist)", c, "k").unwrap(), None);
 
@@ -426,6 +452,48 @@ mod tests {
         assert_eq!(eval_shape_rule("param(0)", c, "k").unwrap(), None);
         assert_eq!(eval_shape_rule("div(extent(x, last), const(0))", c, "k").unwrap(), None);
         assert_eq!(eval_shape_rule("sub(const(2), extent(x, 1))", c, "k").unwrap(), None); // 2 − 3 = −1
+    }
+
+    /// Convergence-C C-3 (Tier 3): the whole-shape `matmul(role_a, role_b)` rule
+    /// resolves its two roles to operand shapes and returns the contraction
+    /// `[..batch, M, N]` via the shipped `shape_expr::matmul_shape` — byte-for-byte
+    /// the registry `fused_linear::matmul_output_shape`. Degenerate ranks skip.
+    #[test]
+    fn eval_shape_rule_matmul_resolves_roles_to_contraction_shape() {
+        let combo: Vec<(String, Shape, DType)> = vec![
+            ("a".into(), Shape::from_dims(&[8, 4096]), DType::F32),
+            ("b".into(), Shape::from_dims(&[4096, 1024]), DType::F32),
+            ("bias".into(), Shape::from_dims(&[1024]), DType::F32),
+        ];
+        let c: ProbeComboRef = &combo;
+        // a=[8,4096] · b=[4096,1024] → [8,1024].
+        assert_eq!(eval_shape_rule("matmul(a, b)", c, "k").unwrap(), Some(Shape::from_dims(&[8, 1024])));
+        // Whitespace-insensitive (mirrors parse_dim).
+        assert_eq!(eval_shape_rule("matmul(a,b)", c, "k").unwrap(), Some(Shape::from_dims(&[8, 1024])));
+
+        // Batched: [4,8,16] · [4,16,32] → [4,8,32].
+        let batched: Vec<(String, Shape, DType)> = vec![
+            ("a".into(), Shape::from_dims(&[4, 8, 16]), DType::F32),
+            ("b".into(), Shape::from_dims(&[4, 16, 32]), DType::F32),
+        ];
+        assert_eq!(
+            eval_shape_rule("matmul(a, b)", &batched, "k").unwrap(),
+            Some(Shape::from_dims(&[4, 8, 32])),
+        );
+
+        // Guards → skip (Ok(None), never a false reject / never a panic):
+        // unknown role, a rank-1 operand, and a rank-mismatch.
+        assert_eq!(eval_shape_rule("matmul(a, nope)", c, "k").unwrap(), None);
+        let rank1: Vec<(String, Shape, DType)> = vec![
+            ("a".into(), Shape::from_dims(&[8]), DType::F32),
+            ("b".into(), Shape::from_dims(&[8]), DType::F32),
+        ];
+        assert_eq!(eval_shape_rule("matmul(a, b)", &rank1, "k").unwrap(), None);
+        let rank_mismatch: Vec<(String, Shape, DType)> = vec![
+            ("a".into(), Shape::from_dims(&[4, 8, 16]), DType::F32),
+            ("b".into(), Shape::from_dims(&[16, 32]), DType::F32),
+        ];
+        assert_eq!(eval_shape_rule("matmul(a, b)", &rank_mismatch, "k").unwrap(), None);
     }
 
     /// Finding 5.4 deliverable (Task 3.6 coverage gap): the extractor must

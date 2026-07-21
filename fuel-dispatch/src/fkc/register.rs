@@ -1143,6 +1143,19 @@ mod tests {
     }
 
     #[test]
+    fn fused_linear_matmul_cross_check_fires() {
+        // fused_linear declares the whole-shape `matmul(a, b)` rule (Tier-3),
+        // now evaluable. The registry fn is `matmul_output_shape` (= a_batch ++
+        // [M, N]); the UNMUTATED contract agrees (proven below). Mutate the rule
+        // to `same_as(bias)` (rank-1 [N]) — disagrees with the rank-2 [M, N]
+        // matmul output at every probe → hard reject (proves the check FIRES).
+        let mutated = mutate_once(FUSED_LINEAR_QUANT, "shape_rule: matmul(a, b)", "shape_rule: same_as(bias)");
+        let err = import_bundle_str(&mutated, &crate::fkc::CpuLinkRegistry)
+            .expect_err("a mutated fused_linear shape_rule must be rejected (proves the matmul check FIRES)");
+        assert!(matches!(err, FkcError::ShapeRuleMismatch { .. }), "expected ShapeRuleMismatch, got {err:?}");
+    }
+
+    #[test]
     fn flash_attn_cross_check_fires() {
         // FlashAttn out = same_as(q) (Tier-2 doc fix from from_params(q)); the
         // registry fn returns input 0 (q). Mutate ONLY the value to a rank-1
