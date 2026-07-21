@@ -244,6 +244,63 @@ pub fn eval_shape(s: &ShapeExpr, operands: &[Vec<i64>], _params: &[i64]) -> Resu
     }
 }
 
+// ---- §6.20-0007/0008 the ROLE/INDEX-WOVEN kind (Convergence-C C-2) ----------------
+// These ride the op's role/index structure, NOT the SameAs+DimExpr expression core —
+// a distinct shape-rule kind (§6.20-0008). Not expressible as a wire ShapeExpr.
+
+/// §6.20-0007 `reduce`-family shape rule: the input shape with `reduce_axes` removed
+/// (`keepdim=false`) or set to `1` (`keepdim=true`) — derived from op semantics.
+pub fn reduce_shape(input: &[i64], reduce_axes: &[usize], keepdim: bool) -> Vec<i64> {
+    let set: std::collections::BTreeSet<usize> = reduce_axes.iter().copied().collect();
+    let mut out = Vec::new();
+    for (i, &e) in input.iter().enumerate() {
+        if set.contains(&i) {
+            if keepdim {
+                out.push(1);
+            }
+        } else {
+            out.push(e);
+        }
+    }
+    out
+}
+
+/// §6.20-0008 `gather`/`index_select`/`embedding` shape rule: the data shape with the
+/// gathered `axis` replaced by the index shape (`data[..axis] ++ index ++ data[axis+1..]`).
+/// In general the output equals NO operand's shape — which is why advertising
+/// `same_as(data)` for a gather is a bug the shape oracle catches.
+pub fn gather_shape(data: &[i64], index: &[i64], axis: usize) -> Vec<i64> {
+    let mut out = Vec::with_capacity(data.len() - 1 + index.len());
+    out.extend_from_slice(&data[..axis]);
+    out.extend_from_slice(index);
+    out.extend_from_slice(&data[axis + 1..]);
+    out
+}
+
+/// §6.20-0008 `matmul` (contraction) shape rule: role-vector-derived (KISS-Classify
+/// §6.6-0016 M/N/K axis roles, carried as roles not a ShapeExpr). For the canonical
+/// same-rank ≥ 2 cell `lhs[..batch, M, K] · rhs[..batch, K, N] -> [..batch, M, N]`; the
+/// output equals neither operand (§6.20-0008).
+pub fn matmul_shape(lhs: &[i64], rhs: &[i64]) -> Vec<i64> {
+    let r = lhs.len();
+    let mut out = lhs[..r - 2].to_vec(); // aligned leading batch dims
+    out.push(lhs[r - 2]); // M (lhs second-last)
+    out.push(rhs[r - 1]); // N (rhs last)
+    out
+}
+
+/// KISS-CONTRACT-6.4-0011: the Interface `declared` output shape is consistent iff it
+/// equals the op's shape rule `computed` over the operand shapes. A surfaced `Gap`
+/// (symbolic/data-dependent output) is never a hard inconsistency — a consumer cannot
+/// assert a mismatch it cannot compute. The shape-side companion to the §6.4-0006 value
+/// oracle.
+pub fn shape_consistent(declared: &[i64], computed: &ShapeValue) -> bool {
+    match computed {
+        ShapeValue::Concrete(c) => declared == c.as_slice(),
+        ShapeValue::Gap => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,5 +373,40 @@ mod tests {
         assert_eq!(eval_dim(&half, &sym, &[]).unwrap(), DimValue::Gap);
         assert_eq!(eval_shape(&ShapeExpr::SameAs { operand: 0 }, &sym, &[]).unwrap(), ShapeValue::Gap);
         assert_eq!(eval_dim(&Dim::Extent { operand: 0, axis: 0 }, &sym, &[]).unwrap(), DimValue::Concrete(4));
+    }
+
+    // §6.20-0007 reduce-family shape rule.
+    #[test]
+    fn reduce_shape_rule() {
+        assert_eq!(reduce_shape(&[2, 3, 5], &[2], false), vec![2, 3]);    // drop last
+        assert_eq!(reduce_shape(&[2, 3, 5], &[2], true), vec![2, 3, 1]);  // keepdim
+        assert_eq!(reduce_shape(&[2, 3, 5], &[0, 2], false), vec![3]);    // multi-axis
+        assert_eq!(reduce_shape(&[8, 4096], &[1], false), vec![8]);       // reduce(sum, last)
+    }
+
+    // §6.20-0008 gather / matmul: the output equals no operand's shape.
+    #[test]
+    fn out_differs_from_operands() {
+        // gather: data[..axis] ++ index ++ data[axis+1..].
+        assert_eq!(gather_shape(&[8, 4096], &[16], 0), vec![16, 4096]);
+        assert_eq!(gather_shape(&[1000, 64], &[2, 5], 0), vec![2, 5, 64]); // embedding
+        // matmul: [M,K]·[K,N] -> [M,N], batched too.
+        assert_eq!(matmul_shape(&[8, 4096], &[4096, 1024]), vec![8, 1024]);
+        assert_eq!(matmul_shape(&[4, 8, 16], &[4, 16, 32]), vec![4, 8, 32]);
+        // The oracle catches a false same_as(operand) claim: output ≠ either operand.
+        let g = gather_shape(&[8, 4096], &[16], 0);
+        assert!(!shape_consistent(&[8, 4096], &ShapeValue::Concrete(g)));
+        let m = matmul_shape(&[8, 4096], &[4096, 1024]);
+        assert!(!shape_consistent(&[8, 4096], &ShapeValue::Concrete(m.clone())));
+        assert!(!shape_consistent(&[4096, 1024], &ShapeValue::Concrete(m)));
+    }
+
+    // KISS-CONTRACT-6.4-0011 declared ⟷ computed consistency (Gap is never a mismatch).
+    #[test]
+    fn contract_output_shape_consistency() {
+        let computed = ShapeValue::Concrete(reduce_shape(&[8, 4096], &[1], false));
+        assert!(shape_consistent(&[8], &computed));           // [8] matches reduce → [8]
+        assert!(!shape_consistent(&[8, 4096], &computed));    // declaring rank-2 is the caught error
+        assert!(shape_consistent(&[8], &ShapeValue::Gap));    // a Gap is never a hard mismatch
     }
 }
