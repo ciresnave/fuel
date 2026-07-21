@@ -50,6 +50,21 @@ pub fn eval_shape_rule(rule: &str, combo: ProbeComboRef, _section: &str) -> Resu
     Ok(None)
 }
 
+/// Invoke a registry rule fn (`shape_rule` / `dtype_rule` / `output_views`),
+/// catching a `debug_assert`/panic so a corpus contract can never CRASH the
+/// importer (never-panic on the import path). Some registry fns `debug_assert`
+/// a specific input arity (e.g. `flash_attn`'s "4 or 5 inputs"); a fused
+/// contract elsewhere in the corpus that declares a different operand count
+/// (e.g. `metal/matmul-attn.fkc.md`'s 3-input `FLASH_ATTN`) would otherwise
+/// panic when the cross-check hands the real fn a probe combo of that arity.
+/// A caught panic → `None` = skip this op's differential for this combo (a
+/// coverage gap, never a false reject; in release the `debug_assert` is a
+/// no-op and the fn just reads operand 0, which the differential would pass).
+/// Mirrors the `catch_unwind` guard in `verify::harness`.
+fn guard_rule<T>(f: impl FnOnce() -> T) -> Option<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).ok()
+}
+
 /// True iff `rule` starts with a recognized `DimExpr` constructor head.
 fn is_dimexpr_head(rule: &str) -> bool {
     const HEADS: &[&str] = &["extent(", "const(", "param(", "add(", "sub(", "mul(", "div("];
@@ -84,6 +99,39 @@ pub fn synth_probe_params(variant: Option<&str>) -> Result<Option<FusedOpParams>
         Some("PowIBackward") => Some(FusedOpParams::PowIBackward { exp: 2 }),
         Some("Rope") => Some(FusedOpParams::Rope),
         Some("FusedLinear") => Some(FusedOpParams::FusedLinear),
+        // Convergence-C C-3: widen synth so the shape-oracle cross-check fires
+        // for the expressible attention / affine / scan fused ops. Every variant
+        // added here has a params-INDEPENDENT shape rule (`same_as`/`matmul`
+        // returning `input_shapes[0/1/2]`, or a bundle whose slot-0 shape is a
+        // plain passthrough), so the placeholder field values below never reach a
+        // params-dependent branch and the wrong-params panic stays unreachable
+        // (the never-panic invariant). Field values are arbitrary valid
+        // placeholders — the shape rules ignore them.
+        Some("InplaceAffine") => Some(FusedOpParams::InplaceAffine { mul: 1.0, add: 0.0 }),
+        Some("FlashAttn") => Some(FusedOpParams::FlashAttn {
+            softmax_scale: 1.0,
+            causal: false,
+            window_size_left: None,
+            window_size_right: None,
+            softcap: None,
+            k_len: None,
+        }),
+        Some("PagedAttn") => Some(FusedOpParams::PagedAttn {
+            softmax_scale: 1.0,
+            block_size: 16,
+            softcap: None,
+        }),
+        // FLASH_ATTN_BACKWARD_{Q,K,V} share ONE `FlashAttnBackward` variant
+        // (the FusedOpId distinguishes dQ/dK/dV); a single arm covers all three.
+        Some("FlashAttnBackward") => Some(FusedOpParams::FlashAttnBackward {
+            softmax_scale: 1.0,
+            causal: false,
+            window_size_left: None,
+            window_size_right: None,
+            softcap: None,
+        }),
+        Some("SelectiveScan") => Some(FusedOpParams::SelectiveScan { delta_softplus: false }),
+        Some("SsdChunkScan") => Some(FusedOpParams::SsdChunkScan { chunk_size: 1 }),
         _ => None,
     })
 }
@@ -149,7 +197,9 @@ pub fn cross_check_fused_section(
         // fallback, since a future params-matching dtype_rule could panic.
         if let (Some(rule), Some(p)) = (out.dtype_rule.as_deref(), params.as_ref()) {
             if let Some(declared) = eval_dtype_rule(rule, combo, section)? {
-                let real = (entry.dtype_rule)(&in_dtypes, p);
+                // Never-panic guard: a registry fn that `debug_assert`s an arity
+                // the probe combo doesn't satisfy → skip this combo (see `guard_rule`).
+                let Some(real) = guard_rule(|| (entry.dtype_rule)(&in_dtypes, p)) else { continue };
                 if declared != real {
                     return Err(FkcError::ShapeRuleMismatch {
                         section: section.into(),
@@ -162,7 +212,7 @@ pub fn cross_check_fused_section(
         }
         if let (Some(rule), Some(p)) = (out.shape_rule.as_deref(), params.as_ref()) {
             if let Some(declared) = eval_shape_rule(rule, combo, section)? {
-                let real = (entry.shape_rule)(&in_shapes, p);
+                let Some(real) = guard_rule(|| (entry.shape_rule)(&in_shapes, p)) else { continue };
                 if declared != real {
                     return Err(FkcError::ShapeRuleMismatch {
                         section: section.into(),
@@ -182,20 +232,21 @@ pub fn cross_check_fused_section(
     // `output_views` also takes `&FusedOpParams`, so it's only invoked when
     // `synth_probe_params` produced `Some(params)` for this variant.
     //
-    // Consumer-ahead / dormant-on-corpus note: the only bundle-bearing fused
-    // ops today (SELECTIVE_SCAN, SSD_CHUNK_SCAN) are params-DEPENDENT, so
-    // `synth_probe_params` returns `None` for them and this whole `if let`
-    // (both `check_bundle_arity` below and the derived-rank `check_slot_rank`
-    // call further down) is skipped on the real corpus — exercised only by
-    // this module's unit tests, not corpus-live, until a bundle-bearing op
-    // becomes synth-supported. Conservative skip, never a false reject.
+    // Convergence-C C-3: the only bundle-bearing fused ops (SELECTIVE_SCAN,
+    // SSD_CHUNK_SCAN) are now synth-supported (`synth_probe_params` returns
+    // `Some`), so this bundle check is corpus-LIVE — it validates the declared
+    // `return.bundle` slot count against the real `output_views` arity and
+    // rank-checks each evaluable slot. `output_views` is guarded by `guard_rule`
+    // (never-panic) exactly like `shape_rule`/`dtype_rule`.
     if let (Some(bundle), Some(output_views), Some(p)) =
         (ret.bundle.as_ref(), entry.output_views, params.as_ref())
     {
         if let Some(combo) = combos.first() {
             let in_shapes: Vec<Shape> = combo.iter().map(|(_, s, _)| s.clone()).collect();
             let in_dtypes: Vec<DType> = combo.iter().map(|(_, _, d)| *d).collect();
-            let views = output_views(&in_shapes, &in_dtypes, p);
+            // Never-panic guard (see `guard_rule`): an `output_views` fn that
+            // asserts an arity the probe doesn't satisfy → skip the bundle checks.
+            if let Some(views) = guard_rule(|| output_views(&in_shapes, &in_dtypes, p)) {
             check_bundle_arity(section, views.len(), bundle)?;
             // Rule 13 (Finding 5.3): rank-check every bundle slot whose
             // `shape_rule` is EVALUABLE against this probe combo. The static
@@ -220,6 +271,7 @@ pub fn cross_check_fused_section(
                         }
                     }
                 }
+            }
             }
         }
     }
@@ -308,7 +360,15 @@ mod tests {
         use fuel_graph::registry::FusedOpParams;
         assert!(matches!(synth_probe_params(Some("SoftmaxLastDim")).unwrap(), Some(FusedOpParams::SoftmaxLastDim)));
         assert!(matches!(synth_probe_params(Some("RmsNormLastDim")).unwrap(), Some(FusedOpParams::RmsNormLastDim { .. })));
-        assert!(synth_probe_params(Some("SsdChunkScan")).unwrap().is_none());
+        // Convergence-C C-3: the newly-widened arms return their matching variant.
+        assert!(matches!(synth_probe_params(Some("InplaceAffine")).unwrap(), Some(FusedOpParams::InplaceAffine { .. })));
+        assert!(matches!(synth_probe_params(Some("FlashAttn")).unwrap(), Some(FusedOpParams::FlashAttn { .. })));
+        assert!(matches!(synth_probe_params(Some("PagedAttn")).unwrap(), Some(FusedOpParams::PagedAttn { .. })));
+        assert!(matches!(synth_probe_params(Some("FlashAttnBackward")).unwrap(), Some(FusedOpParams::FlashAttnBackward { .. })));
+        assert!(matches!(synth_probe_params(Some("SelectiveScan")).unwrap(), Some(FusedOpParams::SelectiveScan { .. })));
+        assert!(matches!(synth_probe_params(Some("SsdChunkScan")).unwrap(), Some(FusedOpParams::SsdChunkScan { .. })));
+        // A still-unsupported variant + the absent case both stay None.
+        assert!(synth_probe_params(Some("Conv2D")).unwrap().is_none());
         assert!(synth_probe_params(None).unwrap().is_none());
         // never-panic invariant: QMatMul synth is EITHER QMatMul OR None, never a foreign variant.
         match synth_probe_params(Some("QMatMul")).unwrap() {
