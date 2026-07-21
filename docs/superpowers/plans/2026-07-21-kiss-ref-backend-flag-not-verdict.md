@@ -696,14 +696,14 @@ git commit -m "feat(ingest): wire kiss-ref reference into verify_candidate (advi
 
 **2. kiss-ref is LIVE — Phase B unblocked.** URL/rev (`ThinkersJournal`, not `ciresnave`):
 ```toml
-kiss-ref-core       = { git = "https://github.com/ThinkersJournal/kiss-ref", rev = "436ff94a9ff6fbee666ae0460ea34384e5ca0c13" }
-kiss-ops-vocab      = { git = "https://github.com/ThinkersJournal/kiss-ref", rev = "436ff94a9ff6fbee666ae0460ea34384e5ca0c13" }
-kiss-classify-vocab = { git = "https://github.com/ThinkersJournal/kiss-ref", rev = "436ff94a9ff6fbee666ae0460ea34384e5ca0c13" }
+kiss-ref-core       = { git = "https://github.com/ThinkersJournal/kiss-ref", rev = "b75a748f772d8a4e87b3993430f3b33d593b9eee" }
+kiss-ops-vocab      = { git = "https://github.com/ThinkersJournal/kiss-ref", rev = "b75a748f772d8a4e87b3993430f3b33d593b9eee" }
+kiss-classify-vocab = { git = "https://github.com/ThinkersJournal/kiss-ref", rev = "b75a748f772d8a4e87b3993430f3b33d593b9eee" }
 ```
 
 **3. Verified grounding facts (supersede the "verify the real variant name" caveats):**
 - **Op identity = `fuel_graph::registry::FusedOpId`** (u16 newtype); the per-node primitive tag inside a `decompose` `PatternNode` = **`fuel_graph::jit::OpTag`**. `op_to_kiss` takes `OpTag`. `op_class` = `region_contains_transcendental(&PatternNode)` (pub, in `fkc::verify::ulp`; `is_transcendental` is private and DELIBERATELY excludes `Sqrt`/`Recip`).
-- **`DType` (15 variants, no U16/U64/complex/bool):** F16/BF16/F32/F64, U8/I8/U32/I16/I32/I64, F8E4M3/F8E8M0/F6E2M3/F6E3M2/F4. `dtype_to_kiss`: F16→F16, **BF16→Bf16**, F32→F32, F64→F64, U8→U8, **I8→S8**, U32→U32, **I16→S16**, I32→I32, I64→I64. FP8/MX → decline (kiss `support()` = `Pending`). Decline test uses `DType::F8E4M3`.
+- **`DType` (15 variants, no U16/U64/complex/bool):** F16/BF16/F32/F64, U8/I8/U32/I16/I32/I64, F8E4M3/F8E8M0/F6E2M3/F6E3M2/F4. `dtype_to_kiss`: F16→F16, **BF16→Bf16**, F32→F32, F64→F64, U8→U8, **I8→S8**, U32→U32, **I16→S16**, I32→I32, I64→I64. kiss-ref rev **b75a748f** now has FP8 (`e4m3`/`e5m2`) + `bool` DONE, complex `NotApplicable`, and `Support` gained a 3rd variant `NotApplicable`. `supports()` is `support(op,dtype) == Support::Done` (NOT an exhaustive `match`), so the new variant is transparent — both `Pending` and `NotApplicable` ⇒ not Done ⇒ decline (no arm needed). Map `F8E4M3→E4m3` (now Done). The Task-6 DECLINE test must use a dtype kiss-classify genuinely LACKS — an MX format `DType::F6E2M3` / `F8E8M0` / `F4` (`dtype_to_kiss` → None ⇒ declines) — NOT `F8E4M3`.
 - `half = { workspace = true }` (2.5.0). `LedgerRecord.claim` is `String` (advisory flag record does `claim.to_string()`); `VerifyVerdict::Fail.claim` / `FlagReport.claim` stay `&'static str`.
 - **VerifyVerdict un-gate is SAFE** — the ONLY breaking match is `ingest_one` (cuda, jit_ingest.rs:813-828); the plan's `other =>` fix covers it; `fuel-core` has zero refs; break manifests only under `--features cuda`. The two test matches (`matches!` at :1270; wildcard `other =>` at :1335) do not break.
 - **kiss-ref API is ROW-oriented:** `reference_f32(op: Op, rows: &[&[f32]]) -> Result<Vec<f32>, Error>`; `diff_f32(op: Op, rows: &[&[f32]], candidate: &[f32], tol: Tolerance) -> Result<DiffReport, Error>` (+ f64/f16/bf16). A "row" is ONE element's arg-tuple (`&[a]` unary, `&[a,b]` binary). **The adapter MUST transpose Fuel's column-major operands into rows**, checking all operands share a length first (`KissRefError::LengthMismatch`, never panic). `DiffReport { n, mismatches, max_ulp: u64, first_mismatch }` + method **`conforms(&self) -> bool`** (= `mismatches == 0`) — use `conforms()` (Task 7 tests must NOT use `within()`). `Tolerance { Exact, Ulp(u64) }`.
