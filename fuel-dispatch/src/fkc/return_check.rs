@@ -82,12 +82,61 @@ pub fn eval_shape_rule(rule: &str, combo: ProbeComboRef, _section: &str) -> Resu
 /// contract elsewhere in the corpus that declares a different operand count
 /// (e.g. `metal/matmul-attn.fkc.md`'s 3-input `FLASH_ATTN`) would otherwise
 /// panic when the cross-check hands the real fn a probe combo of that arity.
-/// A caught panic → `None` = skip this op's differential for this combo (a
-/// coverage gap, never a false reject; in release the `debug_assert` is a
-/// no-op and the fn just reads operand 0, which the differential would pass).
+///
+/// A caught panic is NO LONGER a SILENT skip (review Finding 1): it pushes an
+/// [`ImportWarning`] naming the skipped differential, so a coverage hole is
+/// visible to the importer rather than vanishing. Returns `None` (skip this
+/// differential for this combo) on a caught panic; `Some(value)` otherwise.
 /// Mirrors the `catch_unwind` guard in `verify::harness`.
-fn guard_rule<T>(f: impl FnOnce() -> T) -> Option<T> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).ok()
+///
+/// **Debug-vs-release residual (documented, review Finding 1).** `catch_unwind`
+/// only ever fires in a DEBUG build, where the fn's `debug_assert!` is live; in
+/// RELEASE that assert is stripped and the fn instead reads operand 0 and
+/// returns a value, so a *panic-driven* skip is inherently build-mode-dependent
+/// — a drifted contract could then pass `cargo test` yet raise a mismatch under
+/// `cargo build --release`. The [`expected_min_inputs`] arity pre-check in
+/// [`cross_check_fused_section`] closes that split for the concrete cited case
+/// (an under-arity attention contract) by skipping BEFORE the call in BOTH build
+/// modes; this guard stays the never-panic backstop for any other unforeseen
+/// panic (whose skip remains debug-only — the residual this note preserves).
+fn guard_rule<T>(
+    warnings: &mut Vec<ImportWarning>,
+    section: &str,
+    what: &str,
+    f: impl FnOnce() -> T,
+) -> Option<T> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(v) => Some(v),
+        Err(_) => {
+            warnings.push(ImportWarning {
+                section: section.into(),
+                message: format!(
+                    "return cross-check: the registered {what} fn panicked on the probe combo \
+                     (likely an input-arity mismatch); differential skipped for this combo \
+                     (never-panic backstop — see the debug-vs-release note on guard_rule)"
+                ),
+            });
+            None
+        }
+    }
+}
+
+/// The minimum input arity the registry rule fn for a synth-supported `variant`
+/// requires before it safely indexes its operands. Only the attention family is
+/// listed: `flash_attn` / `flash_attn_backward` `debug_assert!(len == 4 || 5)`
+/// and `paged_attn` `debug_assert!(len == 5 || 6)`, and a leaner corpus contract
+/// can under-declare them (metal `matmul-attn.fkc.md`'s 3-input `FLASH_ATTN`
+/// declares only q/k/v). For every other synth variant the corpus contracts
+/// match the fn's exact arity, so no under-arity split exists today and `None`
+/// leaves the `guard_rule` catch-and-warn backstop in charge. Kept deliberately
+/// small + co-located with `synth_probe_params` (do NOT reach into
+/// `fuel-graph/src/registry` for the arities — mirror its documented asserts).
+fn expected_min_inputs(variant: Option<&str>) -> Option<usize> {
+    match variant {
+        Some("FlashAttn") | Some("FlashAttnBackward") => Some(4),
+        Some("PagedAttn") => Some(5),
+        _ => None,
+    }
 }
 
 /// True iff `rule` starts with a recognized `DimExpr` constructor head.
@@ -207,7 +256,42 @@ pub fn cross_check_fused_section(
     };
     let params = synth_probe_params(variant)?;
 
+    // Finding 1 (arity pre-check — closes the debug-vs-release split). The
+    // attention-family registry rule fns `debug_assert!` a minimum input arity
+    // (flash_attn / flash_attn_backward: 4-or-5; paged_attn: 5-or-6). A leaner
+    // corpus contract that under-declares (the metal `matmul-attn.fkc.md`
+    // 3-input FLASH_ATTN) would make that assert PANIC in a DEBUG build (caught
+    // + skipped by `guard_rule`) but be STRIPPED in RELEASE (the fn reads
+    // operand 0 and the differential runs) — so a drifted contract could pass
+    // `cargo test` yet fail `cargo build --release`. Pre-check the probe arity
+    // (= `accept.inputs.len()`, constant across every combo) so BOTH build modes
+    // reach the SAME skip decision, and surface a warning instead of a silent
+    // (debug-only) skip.
+    let probe_arity = accept.inputs.len();
+    let arity_ok = match expected_min_inputs(variant) {
+        Some(min) if probe_arity < min => {
+            warnings.push(ImportWarning {
+                section: section.into(),
+                message: format!(
+                    "return cross-check: fused variant {} declares {probe_arity} input(s) but its \
+                     registered rule fn requires >= {min}; the shape/dtype differential is skipped \
+                     (consistently in debug and release — the fn's arity debug_assert fires only in debug)",
+                    variant.unwrap_or("<unknown>"),
+                ),
+            });
+            false
+        }
+        _ => true,
+    };
+
     for combo in &combos {
+        // Skip the primary-output differential when the probe arity can't
+        // satisfy the registry fn (Finding 1): the same decision in debug and
+        // release. The bundle differential below is independent (its ops declare
+        // no minimum via `expected_min_inputs`).
+        if !arity_ok {
+            break;
+        }
         let in_shapes: Vec<Shape> = combo.iter().map(|(_, s, _)| s.clone()).collect();
         let in_dtypes: Vec<DType> = combo.iter().map(|(_, _, d)| *d).collect();
         // FusedOpEntry::shape_rule/dtype_rule describe the PRIMARY output (slot 0) only
@@ -223,8 +307,10 @@ pub fn cross_check_fused_section(
         if let (Some(rule), Some(p)) = (out.dtype_rule.as_deref(), params.as_ref()) {
             if let Some(declared) = eval_dtype_rule(rule, combo, section)? {
                 // Never-panic guard: a registry fn that `debug_assert`s an arity
-                // the probe combo doesn't satisfy → skip this combo (see `guard_rule`).
-                let Some(real) = guard_rule(|| (entry.dtype_rule)(&in_dtypes, p)) else { continue };
+                // the probe combo doesn't satisfy → warn + skip this combo (see
+                // `guard_rule`; the arity pre-check above already skips the known
+                // under-arity attention case in BOTH build modes).
+                let Some(real) = guard_rule(warnings, section, "dtype_rule", || (entry.dtype_rule)(&in_dtypes, p)) else { continue };
                 if declared != real {
                     return Err(FkcError::ShapeRuleMismatch {
                         section: section.into(),
@@ -237,7 +323,7 @@ pub fn cross_check_fused_section(
         }
         if let (Some(rule), Some(p)) = (out.shape_rule.as_deref(), params.as_ref()) {
             if let Some(declared) = eval_shape_rule(rule, combo, section)? {
-                let Some(real) = guard_rule(|| (entry.shape_rule)(&in_shapes, p)) else { continue };
+                let Some(real) = guard_rule(warnings, section, "shape_rule", || (entry.shape_rule)(&in_shapes, p)) else { continue };
                 if declared != real {
                     return Err(FkcError::ShapeRuleMismatch {
                         section: section.into(),
@@ -270,8 +356,8 @@ pub fn cross_check_fused_section(
             let in_shapes: Vec<Shape> = combo.iter().map(|(_, s, _)| s.clone()).collect();
             let in_dtypes: Vec<DType> = combo.iter().map(|(_, _, d)| *d).collect();
             // Never-panic guard (see `guard_rule`): an `output_views` fn that
-            // asserts an arity the probe doesn't satisfy → skip the bundle checks.
-            if let Some(views) = guard_rule(|| output_views(&in_shapes, &in_dtypes, p)) {
+            // asserts an arity the probe doesn't satisfy → warn + skip the bundle checks.
+            if let Some(views) = guard_rule(warnings, section, "output_views", || output_views(&in_shapes, &in_dtypes, p)) {
             check_bundle_arity(section, views.len(), bundle)?;
             // Rule 13 (Finding 5.3): rank-check every bundle slot whose
             // `shape_rule` is EVALUABLE against this probe combo. The static
@@ -505,6 +591,51 @@ mod tests {
     /// slot names live inside a `serde_yml::Value` (untyped) tree here, and
     /// `serde_yml` 0.0.12 keeps bare `y` as the plain string `"y"` — pinned by
     /// this assertion, not just asserted in prose.
+    /// Finding 1 (warn-not-silent-skip): a caught panic in a registry rule fn
+    /// must now push an `ImportWarning` naming the skipped differential, not
+    /// vanish silently. Previously `guard_rule` returned `catch_unwind(..).ok()`
+    /// — a caught panic became `None` with NO diagnostic, so a coverage hole
+    /// (e.g. the metal 3-input FLASH_ATTN differential going inert in a debug
+    /// build) left no trace. This proves the warning is recorded.
+    #[test]
+    fn guard_rule_warns_on_a_caught_panic_instead_of_silently_skipping() {
+        let mut warnings: Vec<ImportWarning> = Vec::new();
+        // Suppress the default panic hook's stderr print for this deliberate panic.
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let caught: Option<i32> = guard_rule(&mut warnings, "sec", "shape_rule", || {
+            panic!("simulated debug_assert arity panic");
+        });
+        std::panic::set_hook(prev);
+        assert!(caught.is_none(), "a caught panic yields None (skip this differential)");
+        assert_eq!(warnings.len(), 1, "the caught panic must surface exactly one warning");
+        assert_eq!(warnings[0].section, "sec");
+        assert!(
+            warnings[0].message.contains("shape_rule") && warnings[0].message.contains("panicked"),
+            "the warning names the skipped differential + the panic: {:?}",
+            warnings[0].message,
+        );
+        // The happy path (no panic) returns Some and adds NO warning.
+        let ok: Option<i32> = guard_rule(&mut warnings, "sec", "dtype_rule", || 7);
+        assert_eq!(ok, Some(7));
+        assert_eq!(warnings.len(), 1, "a successful call adds no warning");
+    }
+
+    /// Finding 1 (arity pre-check): the attention-family fns declare a minimum
+    /// input arity that a leaner corpus contract can under-declare; every other
+    /// synth variant has no declared minimum (the `guard_rule` backstop covers
+    /// them). This pins the small, deliberately-local arity table.
+    #[test]
+    fn expected_min_inputs_covers_the_attention_family_only() {
+        assert_eq!(expected_min_inputs(Some("FlashAttn")), Some(4));
+        assert_eq!(expected_min_inputs(Some("FlashAttnBackward")), Some(4));
+        assert_eq!(expected_min_inputs(Some("PagedAttn")), Some(5));
+        // Non-attention synth variants (and the absent case) declare no minimum.
+        assert_eq!(expected_min_inputs(Some("SelectiveScan")), None);
+        assert_eq!(expected_min_inputs(Some("InplaceAffine")), None);
+        assert_eq!(expected_min_inputs(None), None);
+    }
+
     #[test]
     fn bundle_slot_names_extracts_names_from_a_real_return_block() {
         let ret: crate::fkc::schema::ReturnBlock = serde_yml::from_str(

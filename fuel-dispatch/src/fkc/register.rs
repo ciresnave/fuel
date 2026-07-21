@@ -1081,6 +1081,88 @@ mod tests {
     // The unmutated companions prove the real contracts AGREE.
     // =====================================================================
 
+    /// Finding 1 (arity pre-check): a synthetic 3-input FLASH_ATTN contract
+    /// (q/k/v, no alibi) — the shape of the metal `matmul-attn.fkc.md`
+    /// `sdpa_vector` sections. Its declared FLASH_ATTN registry fn
+    /// `debug_assert!`s 4-or-5 inputs, so a 3-input probe panics in DEBUG (caught
+    /// + skipped) but is stripped in RELEASE (fn reads operand 0) — the
+    /// debug-vs-release split. The arity pre-check must skip it CONSISTENTLY in
+    /// both build modes with a warning (not a silent debug-only skip).
+    const SYNTH_FLASH_ATTN_3IN: &str = r#"---
+fkc_version: 1
+provider:
+  name: synth-attn-3input
+  backend: Cpu
+  kernel_source: "portable-cpu"
+---
+
+# synthetic 3-input FLASH_ATTN (Finding 1 arity pre-check)
+
+## flash_attn_3in
+
+Synthetic 3-input flash attention (q, k, v) to exercise the arity pre-check.
+
+```fkc
+kernel: flash_attn_3in
+fused_op: FLASH_ATTN
+blurb: "synthetic 3-input flash attn (q,k,v) to exercise the arity pre-check"
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "synthetic::flash_attn_3in_cpu"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: q
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4
+    - name: k
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4
+    - name: v
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4
+  op_params:
+    variant: FlashAttn
+    fields:
+      softmax_scale:     { kind: f32 }
+      causal:            { kind: bool }
+      window_size_left:  { kind: "Option<usize>" }
+      window_size_right: { kind: "Option<usize>" }
+      softcap:           { kind: "Option<f32>" }
+      k_len:             { kind: DynScalar }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: passthrough(q)
+      shape_rule: same_as(q)
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous
+  in_place: false
+
+cost:
+  provenance: judge_measured
+  class: attention
+
+precision:
+  bit_stable_on_same_hardware: false
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: false
+  notes: "synthetic"
+
+determinism: same_hardware_bitwise
+```
+"#;
+
     /// The three fused-op bundles whose cross-checks C-3 turns on.
     const FUSED_ATTENTION: &str =
         include_str!("../../../docs/kernel-contracts/fused/attention.fkc.md");
@@ -1254,6 +1336,32 @@ mod tests {
         // still validates its declared rules against the registry fns.
         import_bundle_str(FUSED_ATTENTION, &StubResolveAll)
             .expect("attention bundle return rules agree with the registered fused fns");
+    }
+
+    // =====================================================================
+    // Convergence-C C-3 adversarial fix — FINDING 1 (guard_rule warn +
+    // arity pre-check closes the debug-vs-release split).
+    // =====================================================================
+
+    #[test]
+    fn under_arity_flash_attn_skips_differential_consistently_and_warns() {
+        // A 3-input FLASH_ATTN contract (the metal `matmul-attn` `sdpa_vector`
+        // shape) feeds a 3-input probe to the registry flash_attn fn whose
+        // `debug_assert!(len == 4 || 5)` PANICS in a debug build but is stripped
+        // in release. The arity pre-check must skip the differential CONSISTENTLY
+        // across build modes and record a warning (no silent, debug-only skip).
+        // Import succeeds (never-panic) and the warning fires.
+        let provider = import_bundle_str(SYNTH_FLASH_ATTN_3IN, &StubResolveAll)
+            .expect("a 3-input FLASH_ATTN contract imports (no panic, no debug-only silent skip)");
+        assert!(
+            provider
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("requires >= 4") && w.message.contains("skipped")),
+            "the under-arity attention differential must be skipped WITH a warning \
+             (consistent debug/release): {:?}",
+            provider.warnings,
+        );
     }
 
     // =====================================================================
