@@ -330,7 +330,27 @@ fn apply_atom(atom: &ShapeAtom, self_role: &str, s: &mut Solve, ranks: &HashMap<
                             // SKIP the round (leave the axis unrounded) rather than
                             // panic under `overflow-checks = true` (Finding 1).
                             if let Some(rounded) = cur.checked_add(v - 1).map(|x| x / v).and_then(|q| q.checked_mul(v)) {
-                                set_axis(s, &target, axis, trank, rounded);
+                                // §3.5 GQA distinctness (review Finding 2). A
+                                // CROSS-operand `divisible(other.dim[i], self.dim[j])`
+                                // (attention's `divisible(q.dim[1], k.dim[1])`,
+                                // Hq % Hkv == 0) seeds both operands identically, so
+                                // the coincidental round leaves target == divisor
+                                // (Hq == Hkv, the degenerate NON-grouped case).
+                                // Promote it to a genuine group ratio (Hq = 2·Hkv) so
+                                // the divisor operand is strictly SMALLER than the
+                                // target — otherwise an operand-role swap in a return
+                                // rule (`same_as(k)` vs `same_as(q)`) evaluates equal
+                                // and the shape-oracle cross-check can't discriminate
+                                // it. ONLY the cross-operand case (`target` role !=
+                                // the constraint owner); a self-target
+                                // `divisible(dim[i], lit)` (rope, matmul's shared `k`)
+                                // keeps its exact round untouched.
+                                let final_val = if target != self_role && rounded == v {
+                                    rounded.checked_mul(2).unwrap_or(rounded)
+                                } else {
+                                    rounded
+                                };
+                                set_axis(s, &target, axis, trank, final_val);
                             }
                         }
                     }

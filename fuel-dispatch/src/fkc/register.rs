@@ -1079,6 +1079,12 @@ mod tests {
     // disagree with the REAL registered FusedOpEntry fn — a skipped/dormant
     // cross-check would let the mutated import succeed (the false-green risk).
     // The unmutated companions prove the real contracts AGREE.
+    //
+    // NOTE (adversarial fix, review Finding 2): the `const(N)` mutations below
+    // change the output RANK, so they only ever proved RANK discrimination. The
+    // GQA probe is now shape-DISTINCT (Hq = 2*Hkv), so a same-rank OPERAND-ROLE
+    // drift is caught too — see `flash_attn_backward_k_operand_role_swap_is_rejected`
+    // (dK `same_as(k)` mis-declared as `same_as(q)`), which used to import clean.
     // =====================================================================
 
     /// Finding 1 (arity pre-check): a synthetic 3-input FLASH_ATTN contract
@@ -1361,6 +1367,34 @@ determinism: same_hardware_bitwise
             "the under-arity attention differential must be skipped WITH a warning \
              (consistent debug/release): {:?}",
             provider.warnings,
+        );
+    }
+
+    // =====================================================================
+    // Convergence-C C-3 adversarial fix — FINDING 2 (GQA probe now
+    // shape-DISTINCT: an operand-role swap in a return rule is caught).
+    // =====================================================================
+
+    #[test]
+    fn flash_attn_backward_k_operand_role_swap_is_rejected() {
+        // With the GQA probe now shape-DISTINCT (Hq = 2*Hkv via the cross-operand
+        // `divisible(q.dim[1], k.dim[1])`), a realistic operand-role drift — dK's
+        // `shape_rule: same_as(k)` mis-authored as `same_as(q)` — is genuinely
+        // caught: the declared q shape [.,2*Hkv,.,.] differs from the registry dK
+        // oracle (input 1 = k) [.,Hkv,.,.]. Before the fix q/k seeded identically
+        // and this swap imported clean (the const(9) mutation only proved RANK
+        // discrimination). Proves operand-role drift is now caught, not just rank.
+        let mutated = mutate_once(
+            FUSED_ATTENTION,
+            "shape_rule: same_as(k)",
+            "shape_rule: same_as(q)",
+        );
+        let err = import_bundle_str(&mutated, &StubResolveAll).expect_err(
+            "dK same_as(k) mis-declared as same_as(q) must be rejected (operand-role drift)",
+        );
+        assert!(
+            matches!(err, FkcError::ShapeRuleMismatch { .. }),
+            "expected ShapeRuleMismatch, got {err:?}"
         );
     }
 
