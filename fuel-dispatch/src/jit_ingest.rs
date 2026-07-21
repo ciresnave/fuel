@@ -66,20 +66,250 @@ pub struct RejectionReport {
     pub ledger_record: Option<LedgerRecord>,
 }
 
+/// Escalation record for a `Flagged` ingest — a non-authoritative reference
+/// (kiss-ref) disagreed, or was the only reference available, on an input
+/// beyond corpus coverage. NOT a rejection: per KISS-CONFORM §6.6-0007 a live
+/// kiss-ref outcome flags/escalates, never verdicts, in EITHER direction.
+pub struct FlagReport {
+    pub entry_point: String,
+    pub claim: &'static str,
+    pub detail: String,
+    /// Compact kiss-ref `DiffReport` summary, if a diff was run.
+    pub diff_summary: Option<String>,
+    /// Always true today: this flag should escalate to mint a corpus vector.
+    pub escalate: bool,
+}
+
 /// The callback surface a candidate-kernel provider implements to learn the
 /// outcome of an offer. `on_rejected` is required (the whole point of the
-/// report); `on_adopted` is optional telemetry, default no-op.
+/// report); `on_adopted` / `on_flagged` are optional telemetry, default no-op.
 pub trait ProviderFeedback: Send + Sync {
     fn on_rejected(&self, report: &RejectionReport);
     fn on_adopted(&self, _entry_point: &str, _id: fuel_graph::registry::FusedOpId) {}
+    /// A candidate was flagged for escalation (non-authoritative reference
+    /// disagreement, or no authoritative reference available). Default no-op.
+    fn on_flagged(&self, _report: &FlagReport) {}
 }
 
 /// The result of ingesting one candidate kernel: adopted (with the
-/// `FusedOpId` it registered under) or rejected (with the report explaining
-/// why).
+/// `FusedOpId` it registered under), rejected (with the report explaining
+/// why), or flagged for escalation (a non-authoritative reference could not
+/// render a verdict — §6.6-0007).
 pub enum IngestOutcome {
     Adopted(fuel_graph::registry::FusedOpId),
     Rejected(RejectionReport),
+    Flagged(FlagReport),
+}
+
+// ---------------------------------------------------------------------------
+// Flag-not-verdict (kiss-ref reference) — CPU-side, cuda-independent.
+//
+// Per KISS-CONFORM §6.6-0007 the frozen corpus is the sole verdict authority;
+// kiss-ref (live) FLAGS, never verdicts, for EVERY op class (provenance rule,
+// not a precision rule). Until Fuel consumes a populated corpus, recipe-realize
+// stays the interim verdict; kiss-ref is an advisory cross-check whose only live
+// behaviour change is turning a no-authoritative-reference case into an escalate
+// (`Inconclusive`) instead of a hard reject. These types + `classify_floor_verdict`
+// are pure so they are unit-tested without a CUDA device.
+// ---------------------------------------------------------------------------
+
+/// Determinism class of a floor op. Consumed by the wiring (Task 8) to pick the
+/// advisory diff's tolerance band (`Exact` vs 2×-widened for transcendentals);
+/// it does NOT gate the verdict (§6.6-0007: kiss-ref never verdicts, any class).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpClass {
+    Exact,
+    Transcendental,
+}
+
+/// Fuel-side summary of a kiss-ref differential (no kiss-ref types cross this
+/// boundary, keeping `classify_floor_verdict` cuda- and dependency-independent).
+#[derive(Debug, Clone)]
+pub struct DiffOutcome {
+    pub within: bool,
+    pub max_ulp: Option<u64>,
+    pub detail: String,
+}
+
+/// Fuel-side summary of the recipe-realize reference verdict (today's interim
+/// authority for every op class).
+#[derive(Debug, Clone)]
+pub struct RefOutcome {
+    pub pass: bool,
+    pub claim: &'static str,
+    pub detail: String,
+}
+
+/// Fuel-side summary of a corpus verdict. Produced only when a covering frozen
+/// corpus cell exists — which is never, today (`corpus_verdict` returns None).
+#[derive(Debug, Clone)]
+pub struct CorpusOutcome {
+    pub adopt: bool,
+    pub claim: &'static str,
+    pub detail: String,
+}
+
+/// Select the verdict for a floor-op candidate from the available references.
+/// Pure + CPU-testable; the cuda `verify_candidate_impl` builds the outcomes and
+/// calls this. Precedence (§6.6-0007): corpus (authoritative, dormant) →
+/// recipe-realize (interim, all classes) → kiss-only ⇒ escalate → none ⇒ fail.
+/// kiss-ref NEVER produces a Pass/Fail here: agreement is not Adopt and a
+/// discrepancy is not Reject — it can only escalate.
+pub fn classify_floor_verdict(
+    kiss: Option<&DiffOutcome>,
+    recipe: Option<&RefOutcome>,
+    corpus: Option<&CorpusOutcome>,
+) -> VerifyVerdict {
+    // (1) Corpus is authoritative (dormant: corpus_verdict returns None today).
+    if let Some(c) = corpus {
+        return if c.adopt {
+            VerifyVerdict::Pass
+        } else {
+            VerifyVerdict::Fail { claim: c.claim, detail: c.detail.clone() }
+        };
+    }
+    // (2) Recipe-realize is the interim verdict for every class. kiss-ref, if
+    // present, was already advisory-recorded by the caller; it does not gate.
+    if let Some(r) = recipe {
+        return if r.pass {
+            VerifyVerdict::Pass
+        } else {
+            VerifyVerdict::Fail { claim: r.claim, detail: r.detail.clone() }
+        };
+    }
+    // (3) No authoritative reference, but kiss-ref could compare ⇒ escalate:
+    // never Adopt (agreement ≠ Adopt), never hard-Reject (kiss-ref ≠ verdict).
+    if let Some(k) = kiss {
+        let detail = format!(
+            "no authoritative reference; kiss-ref {} (escalate to corpus): {}",
+            if k.within { "agrees" } else { "disagrees" },
+            k.detail
+        );
+        return VerifyVerdict::Inconclusive { claim: "max_ulp", detail };
+    }
+    // (4) Nothing to compare against.
+    VerifyVerdict::Fail {
+        claim: "no_reference",
+        detail: "no reference available".to_string(),
+    }
+}
+
+/// The dormant corpus-verdict seam. When Fuel consumes a populated frozen
+/// corpus, a covering cell flips Adopt authority to the corpus (§6.6-0007).
+/// ACTIVATION TARGET: KISS's v1 exact-byte golden corpus
+/// (`conformance/corpus/*.json`, schema `kiss-oracle-vectors-v1`, reader
+/// `conformance/src/corpus.rs`) — a future increment ports a reader for it.
+/// Until then no cell is covered, so this returns `None` and recipe-realize
+/// stays the interim authority. Wired-but-inert; activation needs no re-open.
+pub fn corpus_verdict(
+    _op: fuel_graph::jit::OpTag,
+    _dtype: fuel_ir::DType,
+    _seed: u64,
+) -> Option<CorpusOutcome> {
+    None
+}
+
+/// Map a non-`Pass` verdict to its ingest outcome. Pure so the new
+/// `Inconclusive → Flagged` escalate path is tested without a device. `Pass`
+/// never reaches here (it adopts, which needs cuda) — a defensive `Rejected`.
+#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+fn outcome_from_nonadopt_verdict(
+    verdict: VerifyVerdict,
+    records: Vec<LedgerRecord>,
+    entry_point: &str,
+) -> IngestOutcome {
+    match verdict {
+        VerifyVerdict::Pass => IngestOutcome::Rejected(RejectionReport {
+            entry_point: entry_point.to_string(),
+            failed_claim: "internal",
+            detail: "Pass routed to non-adopt mapping".to_string(),
+            ledger_record: None,
+        }),
+        VerifyVerdict::Fail { claim, detail } => {
+            let ledger_record = records.into_iter().find(|r| r.claim == claim);
+            IngestOutcome::Rejected(RejectionReport {
+                entry_point: entry_point.to_string(),
+                failed_claim: claim,
+                detail,
+                ledger_record,
+            })
+        }
+        VerifyVerdict::Inconclusive { claim, detail } => IngestOutcome::Flagged(FlagReport {
+            entry_point: entry_point.to_string(),
+            claim,
+            detail,
+            diff_summary: None,
+            escalate: true,
+        }),
+    }
+}
+
+#[cfg(test)]
+mod flag_not_verdict_tests {
+    use super::*;
+
+    #[test]
+    fn new_outcome_types_construct_and_match() {
+        let flag = FlagReport {
+            entry_point: "k".into(),
+            claim: "max_ulp",
+            detail: "kiss-ref discrepancy".into(),
+            diff_summary: Some("max_ulp=3".into()),
+            escalate: true,
+        };
+        assert!(matches!(IngestOutcome::Flagged(flag),
+            IngestOutcome::Flagged(ref r) if r.escalate && r.claim == "max_ulp"));
+        let v = VerifyVerdict::Inconclusive { claim: "max_ulp", detail: "x".into() };
+        assert!(matches!(v, VerifyVerdict::Inconclusive { claim, .. } if claim == "max_ulp"));
+    }
+
+    #[test]
+    fn classify_corpus_wins_when_present() {
+        let c = CorpusOutcome { adopt: true, claim: "max_ulp", detail: "corpus".into() };
+        assert!(matches!(classify_floor_verdict(None, None, Some(&c)), VerifyVerdict::Pass));
+        let cr = CorpusOutcome { adopt: false, claim: "max_ulp", detail: "corpus".into() };
+        assert!(matches!(classify_floor_verdict(None, None, Some(&cr)),
+            VerifyVerdict::Fail { claim, .. } if claim == "max_ulp"));
+    }
+
+    #[test]
+    fn classify_recipe_is_interim_verdict_kiss_advisory() {
+        // kiss-ref disagrees but recipe passes: recipe verdict stands, kiss never gates.
+        let kiss = DiffOutcome { within: false, max_ulp: Some(5), detail: "disagree".into() };
+        let recipe = RefOutcome { pass: true, claim: "max_ulp", detail: "recipe ok".into() };
+        assert!(matches!(classify_floor_verdict(Some(&kiss), Some(&recipe), None), VerifyVerdict::Pass));
+    }
+
+    #[test]
+    fn classify_no_reference_but_kiss_is_inconclusive() {
+        let agree = DiffOutcome { within: true, max_ulp: Some(0), detail: "agree".into() };
+        assert!(matches!(classify_floor_verdict(Some(&agree), None, None),
+            VerifyVerdict::Inconclusive { .. }), "kiss agreement != Adopt");
+        let off = DiffOutcome { within: false, max_ulp: Some(4), detail: "disagree".into() };
+        assert!(matches!(classify_floor_verdict(Some(&off), None, None),
+            VerifyVerdict::Inconclusive { .. }), "kiss discrepancy != Reject");
+    }
+
+    #[test]
+    fn classify_all_none_fails() {
+        assert!(matches!(classify_floor_verdict(None, None, None),
+            VerifyVerdict::Fail { claim, .. } if claim == "no_reference"));
+    }
+
+    #[test]
+    fn corpus_verdict_is_dormant_returns_none() {
+        assert!(corpus_verdict(fuel_graph::jit::OpTag::Add, fuel_ir::DType::F32, 0).is_none());
+    }
+
+    #[test]
+    fn map_fail_to_rejected_and_inconclusive_to_flagged() {
+        let out = outcome_from_nonadopt_verdict(
+            VerifyVerdict::Fail { claim: "max_ulp", detail: "off".into() }, vec![], "k");
+        assert!(matches!(out, IngestOutcome::Rejected(ref r) if r.failed_claim == "max_ulp"));
+        let out = outcome_from_nonadopt_verdict(
+            VerifyVerdict::Inconclusive { claim: "max_ulp", detail: "esc".into() }, vec![], "k");
+        assert!(matches!(out, IngestOutcome::Flagged(ref r) if r.escalate && r.claim == "max_ulp"));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -298,7 +528,10 @@ fn expected_input_arity(id: fuel_graph::registry::FusedOpId) -> Option<usize> {
 /// `upsert` — the git-checked-in embedded ledger is never mutated here; Task
 /// 6's `ingest_one` is what merges an adopted candidate's records into the real
 /// ledger.
-#[cfg(feature = "cuda")]
+// Un-gated (the enum itself is cuda-independent; only its cuda producers in
+// `verify_candidate_impl` stay gated) so the CPU-testable `classify_floor_verdict`
+// / `outcome_from_nonadopt_verdict` can build + match it without a device.
+#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 #[derive(Debug)]
 pub enum VerifyVerdict {
     /// Every DECLARED claim was empirically backed.
@@ -307,6 +540,10 @@ pub enum VerifyVerdict {
     /// stage/claim id: `"probe"` / `"invoke"` / `"bit_stable_on_same_hardware"`
     /// / `"max_ulp"` / `"max_relative"` / `"max_absolute"` / `"panic"`.
     Fail { claim: &'static str, detail: String },
+    /// No authoritative verdict was possible (only a non-authoritative live
+    /// reference was available, or the reference realize failed): escalate,
+    /// neither Adopt nor Reject. §6.6-0007 (kiss-ref flags, never verdicts).
+    Inconclusive { claim: &'static str, detail: String },
 }
 
 /// A [`KernelInvoker`] that returns a pre-computed [`HostTensor`] regardless of
@@ -812,19 +1049,9 @@ pub fn ingest_one(cand: &CandidateKernel, device: &CudaDevice) -> IngestOutcome 
     let (verdict, records) = verify_candidate(cand, device);
     match verdict {
         VerifyVerdict::Pass => adopt_verified(cand),
-        VerifyVerdict::Fail { claim, detail } => {
-            // The ledger record for the FAILED claim, if verify_candidate
-            // earned one for it — it does for every fail path except the
-            // very earliest (probe synthesis / invoke / top-level panic),
-            // which return before any record is upserted.
-            let ledger_record = records.into_iter().find(|r| r.claim == claim);
-            IngestOutcome::Rejected(RejectionReport {
-                entry_point: cand.entry_point.clone(),
-                failed_claim: claim,
-                detail,
-                ledger_record,
-            })
-        }
+        // Fail ⇒ Rejected, Inconclusive ⇒ Flagged(escalate) — the pure mapper
+        // handles both (and finds the earned ledger record for a Fail claim).
+        other => outcome_from_nonadopt_verdict(other, records, &cand.entry_point),
     }
 }
 
@@ -1063,6 +1290,11 @@ where
             IngestOutcome::Rejected(report) => {
                 if let Some(fb) = &feedback {
                     fb.on_rejected(&report);
+                }
+            }
+            IngestOutcome::Flagged(report) => {
+                if let Some(fb) = &feedback {
+                    fb.on_flagged(&report);
                 }
             }
         }));
@@ -1411,6 +1643,7 @@ mod tests {
             IngestOutcome::Adopted(_) => {
                 panic!("mul_f32 must NOT be adopted for an Add region — it computes a different function")
             }
+            IngestOutcome::Flagged(r) => panic!("unexpected Flagged: {} / {}", r.claim, r.detail),
         }
     }
 
@@ -1477,6 +1710,7 @@ mod tests {
                 "add_f32 for an Add region must be Adopted, got Rejected: {} / {}",
                 r.failed_claim, r.detail
             ),
+            IngestOutcome::Flagged(r) => panic!("unexpected Flagged: {} / {}", r.claim, r.detail),
         }
     }
 
@@ -1640,6 +1874,7 @@ mod tests {
                 "interleaved rope claiming ROPE must NOT be adopted — it computes a different \
                  function than Fuel's rotate-half rope"
             ),
+            IngestOutcome::Flagged(r) => panic!("unexpected Flagged: {} / {}", r.claim, r.detail),
         }
     }
 
@@ -1718,6 +1953,7 @@ mod tests {
                  got Rejected: {} / {}",
                 r.failed_claim, r.detail
             ),
+            IngestOutcome::Flagged(r) => panic!("unexpected Flagged: {} / {}", r.claim, r.detail),
         }
     }
 
@@ -1761,6 +1997,7 @@ mod tests {
             IngestOutcome::Adopted(_) => {
                 panic!("a candidate with no decompose must never be adopted")
             }
+            IngestOutcome::Flagged(r) => panic!("unexpected Flagged: {} / {}", r.claim, r.detail),
         }
     }
 
@@ -1810,6 +2047,7 @@ mod tests {
             IngestOutcome::Adopted(_) => {
                 panic!("a non-contiguous-bind region must never be adopted")
             }
+            IngestOutcome::Flagged(r) => panic!("unexpected Flagged: {} / {}", r.claim, r.detail),
         }
     }
 
