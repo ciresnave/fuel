@@ -25,10 +25,41 @@ pub fn eval_dtype_rule(rule: &str, combo: ProbeComboRef, section: &str) -> Resul
     if let Some(r) = inner(rule, "passthrough(") { return Ok(role(combo, r).map(|(_, _, d)| *d)); }
     Ok(None)
 }
-/// §5.2: only `same_as(role)` is evaluable purely from probe shapes.
+/// §5.2: `same_as(role)` yields the operand's whole shape; a `DimExpr` string
+/// (`extent(role,axis)` / `const(N)` / `param(N)` / `add|sub|mul|div(a,b)`) evaluates to a
+/// single-dim shape via the shape-expr oracle (§6.20). Every other token, a surfaced gap, or
+/// a decline on a recognized DimExpr → `Ok(None)` (not-evaluable; never a false reject).
 pub fn eval_shape_rule(rule: &str, combo: ProbeComboRef, _section: &str) -> Result<Option<Shape>, FkcError> {
-    if let Some(r) = inner(rule, "same_as(") { return Ok(role(combo, r).map(|(_, s, _)| s.clone())); }
+    let rule = rule.trim();
+    if let Some(r) = inner(rule, "same_as(") {
+        return Ok(role(combo, r).map(|(_, s, _)| s.clone()));
+    }
+    // A DimExpr form: parse (role names → positional AST), then evaluate over the combo.
+    if is_dimexpr_head(rule) {
+        let Some(dim) = crate::fkc::shape_expr_parse::parse_dim(rule, combo) else { return Ok(None) };
+        let operands: Vec<Vec<i64>> = combo.iter().map(|(_, s, _)| shape_to_i64(s)).collect();
+        return match crate::fkc::shape_expr::eval_dim(&dim, &operands, &[]) {
+            // A DimExpr denotes a single dimension → a rank-1 output shape (d ≥ 0).
+            Ok(crate::fkc::shape_expr::DimValue::Concrete(d)) if d >= 0 => {
+                Ok(Some(Shape::from_dims(&[d as usize])))
+            }
+            // Negative dim (not a valid shape), a surfaced Gap, or a decline → skip; never a false reject.
+            Ok(_) | Err(_) => Ok(None),
+        };
+    }
     Ok(None)
+}
+
+/// True iff `rule` starts with a recognized `DimExpr` constructor head.
+fn is_dimexpr_head(rule: &str) -> bool {
+    const HEADS: &[&str] = &["extent(", "const(", "param(", "add(", "sub(", "mul(", "div("];
+    HEADS.iter().any(|h| rule.starts_with(h))
+}
+
+/// Widen a `fuel_ir::Shape`'s concrete `usize` extents to `i64` for the evaluator. Probe
+/// shapes are concrete (no symbolic sentinel arises on this path — see the C-1 Task-4 note).
+fn shape_to_i64(s: &Shape) -> Vec<i64> {
+    s.dims().iter().map(|&d| d as i64).collect()
 }
 
 /// Synthesize the `FusedOpParams` variant NAMED by the contract's
@@ -320,6 +351,21 @@ mod tests {
         assert_eq!(eval_shape_rule("from_params(q)", c, "k").unwrap(), None);
         assert_eq!(eval_shape_rule("matmul(a, b)", c, "k").unwrap(), None);
         assert_eq!(eval_shape_rule("same_as(does_not_exist)", c, "k").unwrap(), None);
+
+        // Convergence-C: DimExpr rules evaluate to a single-dim shape via the §6.20 oracle.
+        // combo "x" = [2, 3].
+        assert_eq!(eval_shape_rule("extent(x, 0)", c, "k").unwrap(), Some(Shape::from_dims(&[2])));
+        assert_eq!(eval_shape_rule("const(9)", c, "k").unwrap(), Some(Shape::from_dims(&[9])));
+        // div(extent(x, last), const(2)) on x=[2,3]: floor(3/2) = 1.
+        assert_eq!(eval_shape_rule("div(extent(x, last), const(2))", c, "k").unwrap(), Some(Shape::from_dims(&[1])));
+        // mul(extent(x, 0)=2, const(3)=3) = 6.
+        assert_eq!(eval_shape_rule("mul(extent(x, 0), const(3))", c, "k").unwrap(), Some(Shape::from_dims(&[6])));
+        // Unknown role, a param rule (no params threaded), a ÷0 decline, and a negative
+        // result all surface as not-evaluable → None (never a false reject).
+        assert_eq!(eval_shape_rule("extent(nope, 0)", c, "k").unwrap(), None);
+        assert_eq!(eval_shape_rule("param(0)", c, "k").unwrap(), None);
+        assert_eq!(eval_shape_rule("div(extent(x, last), const(0))", c, "k").unwrap(), None);
+        assert_eq!(eval_shape_rule("sub(const(2), extent(x, 1))", c, "k").unwrap(), None); // 2 − 3 = −1
     }
 
     /// Finding 5.4 deliverable (Task 3.6 coverage gap): the extractor must
