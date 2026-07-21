@@ -1073,6 +1073,152 @@ mod tests {
     }
 
     // =====================================================================
+    // Convergence-C C-3: the shape-oracle cross-check ACTIVATED across the
+    // remaining expressible fused ops. Each op below is proven to FIRE (not
+    // merely import clean) by a MUTATION that makes the DECLARED shape rule
+    // disagree with the REAL registered FusedOpEntry fn — a skipped/dormant
+    // cross-check would let the mutated import succeed (the false-green risk).
+    // The unmutated companions prove the real contracts AGREE.
+    // =====================================================================
+
+    /// The three fused-op bundles whose cross-checks C-3 turns on.
+    const FUSED_ATTENTION: &str =
+        include_str!("../../../docs/kernel-contracts/fused/attention.fkc.md");
+    const FUSED_LINEAR_QUANT: &str =
+        include_str!("../../../docs/kernel-contracts/fused/linear-quant.fkc.md");
+    const FUSED_CONV_ROPE: &str =
+        include_str!("../../../docs/kernel-contracts/fused/conv-rope.fkc.md");
+
+    /// Replace `from` → `to` exactly once, asserting `from` occurs EXACTLY once
+    /// in `src` — so a mutation test can never silently no-op (a 0-count replace
+    /// would leave the bundle unmutated and hide a cross-check that never fired).
+    fn mutate_once(src: &str, from: &str, to: &str) -> String {
+        assert_eq!(
+            src.matches(from).count(),
+            1,
+            "mutation anchor `{from}` must occur EXACTLY once (got {})",
+            src.matches(from).count()
+        );
+        src.replacen(from, to, 1)
+    }
+
+    /// A link registry that resolves EVERY symbol to a no-op kernel. The
+    /// graph-side fused `attention.fkc.md` is a spec contract for the registry's
+    /// `FusedOpEntry` (`shape_rule`/`dtype_rule`) and is NOT bound on the CPU
+    /// `CpuLinkRegistry` (its CPU kernels come from the PRIMITIVE
+    /// `cpu/attention.fkc.md`), so its `flash_attn_cpu_*` entry points do not
+    /// resolve there. The cross-check runs BEFORE entry resolution and uses the
+    /// REAL `default_registry()` fns regardless of link, so a resolve-anything
+    /// stub isolates the cross-check under test from the (irrelevant here) CPU
+    /// binding step.
+    struct StubResolveAll;
+    fn stub_kernel(
+        _inputs: &[std::sync::Arc<std::sync::RwLock<fuel_memory::Storage>>],
+        _outputs: &mut [std::sync::Arc<std::sync::RwLock<fuel_memory::Storage>>],
+        _layouts: &[fuel_ir::Layout],
+        _params: &crate::kernel::OpParams,
+    ) -> fuel_ir::Result<()> {
+        Ok(())
+    }
+    impl crate::fkc::lower::LinkRegistry for StubResolveAll {
+        fn resolve_primitive(&self, _symbol: &str) -> Option<crate::kernel::KernelRef> {
+            Some(stub_kernel)
+        }
+        fn resolve_fused(&self, _symbol: &str) -> Option<crate::kernel::KernelRef> {
+            Some(stub_kernel)
+        }
+    }
+
+    // ---- Tier 1: same_as / bundle cross-checks (synth-gated) ----
+
+    #[test]
+    fn inplace_affine_cross_check_fires() {
+        // InplaceAffine now synth-supported; its `same_as(x)` (= input 0) is
+        // evaluable. Mutating it to a rank-1 `const(9)` disagrees with the real
+        // registry fn (which returns x's shape) at every probe → hard reject.
+        let mutated = mutate_once(FUSED_LINEAR_QUANT, "shape_rule: same_as(x)", "shape_rule: const(9)");
+        let err = import_bundle_str(&mutated, &crate::fkc::CpuLinkRegistry)
+            .expect_err("a mutated InplaceAffine shape_rule must be rejected (proves the check FIRES)");
+        assert!(matches!(err, FkcError::ShapeRuleMismatch { .. }), "expected ShapeRuleMismatch, got {err:?}");
+    }
+
+    #[test]
+    fn flash_attn_backward_q_cross_check_fires() {
+        // dQ = same_as(q) (= input 0). FLASH_ATTN_BACKWARD_{Q,K,V} share the
+        // FlashAttnBackward variant, now synth-supported. Mutate dQ's rule.
+        // (Stub link: attention is a graph-side spec contract, not CPU-bound.)
+        let mutated = mutate_once(
+            FUSED_ATTENTION,
+            "shape_rule: same_as(q)                 # FusedOp.shape_rule_q",
+            "shape_rule: const(9)                   # FusedOp.shape_rule_q",
+        );
+        let err = import_bundle_str(&mutated, &StubResolveAll)
+            .expect_err("a mutated FlashAttnBackwardQ shape_rule must be rejected");
+        assert!(matches!(err, FkcError::ShapeRuleMismatch { .. }), "expected ShapeRuleMismatch, got {err:?}");
+    }
+
+    #[test]
+    fn flash_attn_backward_k_cross_check_fires() {
+        // dK = same_as(k) (= input 1); `same_as(k)` (parenthesised) is unique.
+        let mutated = mutate_once(FUSED_ATTENTION, "shape_rule: same_as(k)", "shape_rule: const(9)");
+        let err = import_bundle_str(&mutated, &StubResolveAll)
+            .expect_err("a mutated FlashAttnBackwardK shape_rule must be rejected");
+        assert!(matches!(err, FkcError::ShapeRuleMismatch { .. }), "expected ShapeRuleMismatch, got {err:?}");
+    }
+
+    #[test]
+    fn flash_attn_backward_v_cross_check_fires() {
+        // dV = same_as(v) (= input 2); `same_as(v)` (parenthesised) is unique.
+        let mutated = mutate_once(FUSED_ATTENTION, "shape_rule: same_as(v)", "shape_rule: const(9)");
+        let err = import_bundle_str(&mutated, &StubResolveAll)
+            .expect_err("a mutated FlashAttnBackwardV shape_rule must be rejected");
+        assert!(matches!(err, FkcError::ShapeRuleMismatch { .. }), "expected ShapeRuleMismatch, got {err:?}");
+    }
+
+    #[test]
+    fn selective_scan_bundle_cross_check_fires() {
+        // SelectiveScan now synth-supported ⇒ the bundle arity check runs.
+        // Add a phantom 3rd slot: declared 3 ≠ real output_views arity 2.
+        let ys = "- { name: y,          dtype_rule: passthrough(u), shape_rule: same_as(u),               layout_guarantee: contiguous }";
+        let mutated = mutate_once(
+            FUSED_CONV_ROPE,
+            ys,
+            &format!("{ys}\n    - {{ name: phantom, dtype_rule: passthrough(u), shape_rule: same_as(u), layout_guarantee: contiguous }}"),
+        );
+        let err = import_bundle_str(&mutated, &crate::fkc::CpuLinkRegistry)
+            .expect_err("a SelectiveScan bundle with a phantom slot must be rejected");
+        assert!(matches!(err, FkcError::BundleArityMismatch { .. }), "expected BundleArityMismatch, got {err:?}");
+    }
+
+    #[test]
+    fn ssd_chunk_scan_bundle_cross_check_fires() {
+        // SsdChunkScan now synth-supported ⇒ the bundle arity check runs.
+        let ys = "- { name: y,          dtype_rule: passthrough(x), shape_rule: same_as(x),               layout_guarantee: contiguous }";
+        let mutated = mutate_once(
+            FUSED_CONV_ROPE,
+            ys,
+            &format!("{ys}\n    - {{ name: phantom, dtype_rule: passthrough(x), shape_rule: same_as(x), layout_guarantee: contiguous }}"),
+        );
+        let err = import_bundle_str(&mutated, &crate::fkc::CpuLinkRegistry)
+            .expect_err("an SsdChunkScan bundle with a phantom slot must be rejected");
+        assert!(matches!(err, FkcError::BundleArityMismatch { .. }), "expected BundleArityMismatch, got {err:?}");
+    }
+
+    #[test]
+    fn unmutated_c3_bundles_still_import_after_activation() {
+        // The real contracts AGREE with the registered fns across every probe.
+        // linear-quant + conv-rope are CPU-bound (production import path).
+        import_bundle_str(FUSED_LINEAR_QUANT, &crate::fkc::CpuLinkRegistry)
+            .expect("linear-quant bundle return rules agree with the registered fused fns");
+        import_bundle_str(FUSED_CONV_ROPE, &crate::fkc::CpuLinkRegistry)
+            .expect("conv-rope bundle return rules agree with the registered fused fns");
+        // attention is a graph-side spec contract (not CPU-bound); the cross-check
+        // still validates its declared rules against the registry fns.
+        import_bundle_str(FUSED_ATTENTION, &StubResolveAll)
+            .expect("attention bundle return rules agree with the registered fused fns");
+    }
+
+    // =====================================================================
     // DUPLICATE: two sections at the same key+pointer → DuplicateKernelRef
     // =====================================================================
 
