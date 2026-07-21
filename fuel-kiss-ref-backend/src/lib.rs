@@ -31,6 +31,15 @@ pub enum KissRefError {
     Eval(kiss_ref_core::Error),
 }
 
+pub mod mapping;
+pub mod reference;
+
+pub use mapping::{dtype_to_kiss, op_to_kiss, supports};
+pub use reference::{
+    diff_bf16, diff_f16, diff_f32, diff_f64, reference_bf16, reference_f16, reference_f32,
+    reference_f64, DiffReport, Tolerance,
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
