@@ -1399,6 +1399,34 @@ determinism: same_hardware_bitwise
     }
 
     // =====================================================================
+    // Convergence-C C-3 adversarial fix — FINDING 3 (bundle slot shapes are
+    // now differentially compared to the output_views oracle).
+    // =====================================================================
+
+    #[test]
+    fn selective_scan_bundle_slot_content_drift_is_rejected() {
+        // A SAME-RANK content drift in a bundle slot — SelectiveScan slot 0
+        // declared `same_as(b)` instead of `same_as(u)` (both rank 3) — was
+        // previously uncaught: the bundle block only checked arity + rank (<= 6),
+        // never comparing an evaluated slot shape to the output_views oracle.
+        // Over the now role-DISTINCT bundle probe (u [2,2,2] vs bumped b [5,2,2])
+        // the drift diverges from the oracle (u-derived [2,2,2]) and is rejected.
+        // Stays within §4 (reference = output_views, not decompose).
+        let mutated = mutate_once(
+            FUSED_CONV_ROPE,
+            "shape_rule: same_as(u)",
+            "shape_rule: same_as(b)",
+        );
+        let err = import_bundle_str(&mutated, &crate::fkc::CpuLinkRegistry).expect_err(
+            "a same-rank bundle slot content drift (same_as(u) -> same_as(b)) must be rejected",
+        );
+        assert!(
+            matches!(err, FkcError::ShapeRuleMismatch { .. }),
+            "expected ShapeRuleMismatch, got {err:?}"
+        );
+    }
+
+    // =====================================================================
     // DUPLICATE: two sections at the same key+pointer → DuplicateKernelRef
     // =====================================================================
 
