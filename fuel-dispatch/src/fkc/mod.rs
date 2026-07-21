@@ -53,6 +53,7 @@ mod return_check;
 mod revhash;
 mod schema;
 mod shape_constraint;
+mod shape_expr;
 mod validate;
 // pub(crate): jit_ingest.rs (outside this module tree) reaches LedgerRecord
 // via crate::fkc::verify::LedgerRecord for RejectionReport::ledger_record.
