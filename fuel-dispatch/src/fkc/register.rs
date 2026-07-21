@@ -1143,6 +1143,31 @@ mod tests {
     }
 
     #[test]
+    fn flash_attn_cross_check_fires() {
+        // FlashAttn out = same_as(q) (Tier-2 doc fix from from_params(q)); the
+        // registry fn returns input 0 (q). Mutate ONLY the value to a rank-1
+        // const, preserving the `#` comment (the `q shape` tail is unique to
+        // FlashAttn vs PagedAttn's `q (decode)` and dQ's `shape_rule_q`).
+        let anchor = "same_as(q)                 # FusedOp.shape_rule = q shape";
+        let mutated = mutate_once(FUSED_ATTENTION, anchor, "const(9) # FusedOp.shape_rule = q shape");
+        let err = import_bundle_str(&mutated, &StubResolveAll)
+            .expect_err("a mutated FlashAttn shape_rule must be rejected (proves the check FIRES)");
+        assert!(matches!(err, FkcError::ShapeRuleMismatch { .. }), "expected ShapeRuleMismatch, got {err:?}");
+    }
+
+    #[test]
+    fn paged_attn_cross_check_fires() {
+        // PagedAttn out = same_as(q) (Tier-2 doc fix from from_params(q)); the
+        // registry fn returns input 0 (q). Mutate ONLY the value, preserving the
+        // `#` comment (`q (decode)` is unique to PagedAttn).
+        let anchor = "same_as(q)                 # FusedOp.shape_rule = q (decode)";
+        let mutated = mutate_once(FUSED_ATTENTION, anchor, "const(9) # FusedOp.shape_rule = q (decode)");
+        let err = import_bundle_str(&mutated, &StubResolveAll)
+            .expect_err("a mutated PagedAttn shape_rule must be rejected (proves the check FIRES)");
+        assert!(matches!(err, FkcError::ShapeRuleMismatch { .. }), "expected ShapeRuleMismatch, got {err:?}");
+    }
+
+    #[test]
     fn flash_attn_backward_q_cross_check_fires() {
         // dQ = same_as(q) (= input 0). FLASH_ATTN_BACKWARD_{Q,K,V} share the
         // FlashAttnBackward variant, now synth-supported. Mutate dQ's rule.
