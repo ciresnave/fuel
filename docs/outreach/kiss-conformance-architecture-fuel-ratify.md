@@ -36,14 +36,16 @@ Adopted into the doc as a project-agnostic rule: **any differential check whose 
 
 kiss-ref-core is typed-`Error`s-only (never-panic), which **is** Fuel's execution-route contract. Fuel links the **Rust crate directly** — no `kiss-ref-capi`, so the capi's `panic=unwind`/`catch_unwind` concern never touches Fuel (capi stays demand-driven for non-Rust consumers). kiss-ref is a **correctness floor / fallback route**, never a performance path.
 
-## 6 · Fuel follow-ups (queued, pending — not done)
+## 6 · Fuel follow-ups
 
 1. **Build `fuel-kiss-ref-backend`** — thin adapter binding kiss-ref as (c)'s live diff target + correctness-floor execution route.
 2. **Rework ingestion** to the §6.6-0007 flag-not-verdict contract (discrepancy-detector → escalate→mint, distinct from the corpus verdict path).
-3. **Transcendental-aware comparator band** — `verify_precision_bound` currently flat; transcendental-containing regions get ~2× the ULP ceiling on the live kiss-ref path (per the 07-18 reply).
+3. **Transcendental-aware comparator band** — **ALREADY DONE + wired** (before this session): `region_contains_transcendental` / `widen_bound_for_transcendental` in `fuel-dispatch/src/jit_ingest.rs` apply the ~2× ULP band to transcendental-containing regions on the live kiss-ref/CPU-oracle path. *(Corrects an earlier misstatement that this was "queued/flat".)*
 4. **Re-mint Fuel's transcendental fixtures** against the wide-precision corpus rather than Fuel's hardware-precision CPU `exp` (per the 07-18 reply).
 
-Items 3–4 remain gated on kiss-conform confirming the frozen corpus carries transcendental atoms at wide-precision truth.
+Item 4 remains gated on KISS's Plan B (256-bit vendored-precision core) minting wide-precision transcendental corpus cells.
+
+**Implementation status (2026-07-21, branch `feat/kiss-ref-backend`):** item 3 was already done; **item 1** (the adapter crate) is now **built + green** (op/dtype mapping + `reference_*`/`diff_*`, never-panic, on the private `ThinkersJournal/kiss-ref` git dep); **item 2's CPU half is done** (the `Inconclusive`/`Flagged` outcome + pure `classify_floor_verdict` + dormant `corpus_verdict` seam, jit-tested) with its `verify_candidate_impl` (cuda) wiring pending a GPU build. §6.6-0007 was ruled a **provenance** rule, so kiss-ref is uniformly advisory (no exact-op live-gating).
 
 ---
 
