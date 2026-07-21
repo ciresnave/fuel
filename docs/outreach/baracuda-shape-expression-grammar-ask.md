@@ -23,7 +23,7 @@ DimExpr   := Extent(operand, axis)              // the size of an operand's axis
            | Const(i64) | Param(field)          // Param = a fused-op param field (== OutputDesc from_params)
            | DimExpr (+ | − | × | ÷) DimExpr    // integer; ÷ is floor division
 
-axis      := signed i64   (−1 = last, resolved against the operand's rank at emit — PyTorch convention)
+axis      := non-negative index | `last`   (last resolves to rank−1 at eval; co-pinned with Baracuda, KISS §6.19 convention — supersedes the earlier signed −1)
 operand   := local operand position `operand[k]`  |  `Bind(i)`   (== a contract's `role`)
 ```
 
@@ -51,4 +51,4 @@ Worked examples from the actual decomposes:
 
 ## Ask
 
-Confirm (1)–(4) — the `SameAs` + `DimExpr` core, the `OutputDesc.shape_rule` extension framing, the shape/value boundary + shared axis convention with `reduce_extent`, symbolic-as-gap, and the serialization. A KISS RFC (`kiss-rfc-shape-rule-expression-vocabulary.md`) proposes the same as a Kernel-Contract standard change, since `OutputDesc.shape_rule` is a KISS §5 section, not a Fuel field. On your confirmation + the RFC landing, Fuel builds the evaluator + migrates its decomposes onto it (Convergence Increment C).
+Confirm (1)–(4) — the `SameAs` + `DimExpr` core, the shape/value boundary + shared axis convention with `reduce_extent`, symbolic-as-gap, and the serialization. A KISS RFC (`kiss-rfc-shape-rule-expression-vocabulary.md`, reframed to `rfcs/shape-expression-oracle.md` on the KISS side) proposes the same as a KISS standard change — a new **shape oracle** (KISS-Ops §6.20 + KISS-Contract §6.4-0011, companion to the §6.4-0006 value oracle). *(Correction: `OutputDesc.shape_rule` is a **Fuel FKC field** — `fuel-dispatch/src/fkc/schema.rs`, already evaluated by `eval_shape_rule` — not a KISS §5 section; see the banner. KISS §5 is Conventions.)* On your confirmation + the RFC landing, Fuel builds the evaluator + migrates its decomposes onto it (Convergence Increment C).
