@@ -139,6 +139,31 @@ fn expected_min_inputs(variant: Option<&str>) -> Option<usize> {
     }
 }
 
+/// Make twin-rank operands observably distinct for the bundle differential
+/// (review Finding 3): the §3.5 solver seeds same-rank operands identically
+/// (e.g. `selective_scan`'s `u [B,L,dim]` and `b [B,L,dstate]` both seed to the
+/// same probe shape), so a slot rule that drifts to a DIFFERENT same-rank
+/// operand (`same_as(b)` for `same_as(u)`) would evaluate EQUAL to the
+/// `output_views` oracle and import clean. Bump each operand's leading axis by
+/// its position (operand 0 unchanged) so twin-rank operands diverge. dim0 is the
+/// batch axis for every bundle-bearing fused op (`selective_scan` /
+/// `ssd_chunk_scan`) and is passed straight through to each output slot, so
+/// distinguishing operands here never perturbs the oracle's slot geometry — it
+/// only lets an operand-role drift in a slot rule diverge from the reference.
+fn distinct_role_probe(combo: ProbeComboRef) -> Vec<(String, Shape, DType)> {
+    combo
+        .iter()
+        .enumerate()
+        .map(|(i, (role, shape, dt))| {
+            let mut dims: Vec<usize> = shape.dims().to_vec();
+            if let Some(d0) = dims.first_mut() {
+                *d0 += i; // operand 0 unchanged; each later operand distinct on dim0
+            }
+            (role.clone(), Shape::from_dims(&dims), *dt)
+        })
+        .collect()
+}
+
 /// True iff `rule` starts with a recognized `DimExpr` constructor head.
 fn is_dimexpr_head(rule: &str) -> bool {
     const HEADS: &[&str] = &["extent(", "const(", "param(", "add(", "sub(", "mul(", "div("];
@@ -353,8 +378,18 @@ pub fn cross_check_fused_section(
         (ret.bundle.as_ref(), entry.output_views, params.as_ref())
     {
         if let Some(combo) = combos.first() {
-            let in_shapes: Vec<Shape> = combo.iter().map(|(_, s, _)| s.clone()).collect();
-            let in_dtypes: Vec<DType> = combo.iter().map(|(_, _, d)| *d).collect();
+            // Finding 3: run the bundle differential over a ROLE-DISTINCT probe so
+            // a same-rank operand-role drift in a slot rule (`same_as(b)` for
+            // `same_as(u)`) diverges from the `output_views` oracle instead of
+            // evaluating equal (twin-rank operands seed identically). Both the
+            // oracle (`output_views(in_shapes, ..)`) and the declared slot eval
+            // read the SAME distinct probe, so the UNMUTATED contract still
+            // matches (declared slot 0 == the u-derived view), while a drift is
+            // caught. Still §4: the reference is `output_views` (role/vocab-
+            // derived), never `entry.decompose`.
+            let distinct = distinct_role_probe(combo);
+            let in_shapes: Vec<Shape> = distinct.iter().map(|(_, s, _)| s.clone()).collect();
+            let in_dtypes: Vec<DType> = distinct.iter().map(|(_, _, d)| *d).collect();
             // Never-panic guard (see `guard_rule`): an `output_views` fn that
             // asserts an arity the probe doesn't satisfy → warn + skip the bundle checks.
             if let Some(views) = guard_rule(warnings, section, "output_views", || output_views(&in_shapes, &in_dtypes, p)) {
@@ -377,8 +412,25 @@ pub fn cross_check_fused_section(
                         .get(serde_yml::Value::String("shape_rule".into()))
                         .and_then(|v| v.as_str())
                     {
-                        if let Some(shape) = eval_shape_rule(rule, combo, section)? {
+                        if let Some(shape) = eval_shape_rule(rule, &distinct, section)? {
                             check_slot_rank(section, &slot_name, &shape)?;
+                            // Finding 3: differentially compare the evaluated slot
+                            // shape to the `output_views` oracle for the SAME slot
+                            // (mirrors the primary-output differential above). A
+                            // slot whose `shape_rule` is not evaluable (e.g.
+                            // `from_params(last_state)`) yields `None` and stays a
+                            // documented skip; only an evaluable, mismatching slot
+                            // is rejected.
+                            if let Some(view) = views.get(i) {
+                                if shape != view.shape {
+                                    return Err(FkcError::ShapeRuleMismatch {
+                                        section: section.into(),
+                                        role: slot_name.clone(),
+                                        expected: format!("shape {:?}", view.shape),
+                                        actual: format!("shape {shape:?}"),
+                                    });
+                                }
+                            }
                         }
                     }
                 }
@@ -634,6 +686,26 @@ mod tests {
         assert_eq!(expected_min_inputs(Some("SelectiveScan")), None);
         assert_eq!(expected_min_inputs(Some("InplaceAffine")), None);
         assert_eq!(expected_min_inputs(None), None);
+    }
+
+    /// Finding 3 helper: `distinct_role_probe` leaves operand 0 untouched and
+    /// bumps each later operand's leading (dim0/batch) axis by its position, so
+    /// twin-rank operands become observably distinct while the oracle's slot
+    /// geometry (which flows dim0 straight through) is preserved.
+    #[test]
+    fn distinct_role_probe_bumps_dim0_by_position_leaving_operand0() {
+        let combo: Vec<(String, Shape, DType)> = vec![
+            ("u".into(), Shape::from_dims(&[2, 3, 4]), DType::F32),
+            ("b".into(), Shape::from_dims(&[2, 3, 4]), DType::F32),
+            ("c".into(), Shape::from_dims(&[2, 3, 4]), DType::F32),
+        ];
+        let d = distinct_role_probe(&combo);
+        assert_eq!(d[0].1, Shape::from_dims(&[2, 3, 4]), "operand 0 unchanged");
+        assert_eq!(d[1].1, Shape::from_dims(&[3, 3, 4]), "operand 1 dim0 +1");
+        assert_eq!(d[2].1, Shape::from_dims(&[4, 3, 4]), "operand 2 dim0 +2");
+        // The twin-rank u/b/c are now distinct on dim0 — an operand-role swap in
+        // a slot rule (same_as(u) -> same_as(b)) evaluates to a different shape.
+        assert_ne!(d[0].1, d[1].1);
     }
 
     #[test]
