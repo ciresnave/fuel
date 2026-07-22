@@ -244,6 +244,37 @@ fn outcome_from_nonadopt_verdict(
     }
 }
 
+/// The single primitive `OpTag` of a decompose that is exactly one `Op` node over
+/// identity-ordered `Bind` leaves (`Bind{0}`, `Bind{1}`, …) — the only shape the
+/// kiss-ref advisory diff can align a probe against. `None` for a multi-node/fused
+/// decompose, a reordered/gapped binding, or no decompose.
+#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+fn single_primitive_optag(
+    dec: Option<&fuel_graph::jit::PatternNode>,
+) -> Option<fuel_graph::jit::OpTag> {
+    use fuel_graph::jit::PatternNode;
+    let PatternNode::Op { op, operands, .. } = dec? else {
+        return None;
+    };
+    for (i, operand) in operands.iter().enumerate() {
+        match operand {
+            PatternNode::Bind { index } if *index as usize == i => {}
+            _ => return None,
+        }
+    }
+    Some(*op)
+}
+
+/// Reinterpret little-endian `f32` bytes as an owned `Vec<f32>`. Safe:
+/// `chunks_exact(4)` never yields a short chunk, so the array build can't panic.
+#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+fn bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect()
+}
+
 #[cfg(test)]
 mod flag_not_verdict_tests {
     use super::*;
@@ -309,6 +340,85 @@ mod flag_not_verdict_tests {
         let out = outcome_from_nonadopt_verdict(
             VerifyVerdict::Inconclusive { claim: "max_ulp", detail: "esc".into() }, vec![], "k");
         assert!(matches!(out, IngestOutcome::Flagged(ref r) if r.escalate && r.claim == "max_ulp"));
+    }
+
+    #[test]
+    fn single_primitive_optag_extracts_and_declines() {
+        use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
+        let add = PatternNode::Op {
+            op: OpTag::Add,
+            attrs: OpAttrs::default(),
+            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+        };
+        assert!(matches!(single_primitive_optag(Some(&add)), Some(OpTag::Add)));
+        let reordered = PatternNode::Op {
+            op: OpTag::Add,
+            attrs: OpAttrs::default(),
+            operands: vec![PatternNode::Bind { index: 1 }, PatternNode::Bind { index: 0 }],
+        };
+        assert!(single_primitive_optag(Some(&reordered)).is_none());
+        let nested = PatternNode::Op {
+            op: OpTag::Add,
+            attrs: OpAttrs::default(),
+            operands: vec![add.clone(), PatternNode::Bind { index: 1 }],
+        };
+        assert!(single_primitive_optag(Some(&nested)).is_none());
+        assert!(single_primitive_optag(None).is_none());
+    }
+
+    #[test]
+    fn bytes_to_f32_roundtrips() {
+        let v = [1.0f32, -2.5, 3.25];
+        let bytes: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
+        assert_eq!(bytes_to_f32(&bytes), vec![1.0, -2.5, 3.25]);
+    }
+
+    /// Live-GPU: the kiss-ref advisory cross-check fires for an f32 Add candidate
+    /// with a single-primitive Add decompose — `verify_candidate` records a
+    /// `kiss_ref_advisory` "pass" (CUDA add_f32 === kiss-ref add, 0 ULP).
+    #[test]
+    #[ignore = "requires a live CUDA device"]
+    #[cfg(feature = "cuda")]
+    fn kiss_ref_advisory_records_for_add_f32() {
+        use baracuda_kernels_types::{ElementKind, OperandDesc};
+        use fuel_cuda_backend::CudaDevice;
+        use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
+        use fuel_ir::probe::BackendId;
+        use fuel_ir::DType;
+
+        let Ok(dev) = CudaDevice::new(0) else {
+            eprintln!("no CUDA device; skipping");
+            return;
+        };
+        let decompose = PatternNode::Op {
+            op: OpTag::Add,
+            attrs: OpAttrs::default(),
+            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+        };
+        let od = OperandDesc::new(1, &[4], &[1], ElementKind::F32, 16);
+        let cand = CandidateKernel {
+            entry_point: "test::kiss_advisory::add_f32".to_string(),
+            kernel: crate::baracuda_dispatch::binary::add_f32,
+            op_params: crate::kernel::OpParams::None,
+            decompose: Some(decompose),
+            operands: vec![od, od],
+            dtypes: vec![DType::F32, DType::F32],
+            kernel_revision_hash: 0x1_9E57_ADD1,
+            declared: crate::fused::PrecisionGuarantee::REFERENCE,
+            backend: BackendId::Cuda,
+            claimed_op: None,
+        };
+        let (_verdict, records) = verify_candidate(&cand, &dev);
+        let advisory = records.iter().find(|r| r.claim == "kiss_ref_advisory");
+        assert!(
+            advisory.is_some(),
+            "kiss-ref advisory record must be present for a supported f32 Add"
+        );
+        assert_eq!(
+            advisory.unwrap().result,
+            "pass",
+            "CUDA add_f32 must match kiss-ref add exactly (0 ULP)"
+        );
     }
 }
 
@@ -785,6 +895,47 @@ fn verify_candidate_impl(
             )
         }
     };
+
+    // kiss-ref advisory cross-check (§6.6-0007: kiss-ref FLAGS, never verdicts).
+    // For an f32 single-primitive decompose kiss-ref covers, diff the candidate
+    // output against kiss-ref's INDEPENDENT reference and record an advisory
+    // ledger entry. This does NOT gate the verdict — recipe-realize stays the
+    // interim authority until Fuel consumes a corpus; kiss-ref is the independent
+    // discrepancy-detector that catches Fuel-floor-vs-spec drift.
+    if out_dtype == fuel_ir::DType::F32 {
+        if let Some(op_tag) = single_primitive_optag(cand.decompose.as_ref()) {
+            if fuel_kiss_ref_backend::supports(op_tag, fuel_ir::DType::F32) {
+                let cand_f32 = bytes_to_f32(&cand_out.bytes);
+                let inputs_f32: Vec<Vec<f32>> =
+                    probe.iter().map(|t| bytes_to_f32(&t.bytes)).collect();
+                let input_refs: Vec<&[f32]> = inputs_f32.iter().map(|v| v.as_slice()).collect();
+                let transcendental = cand
+                    .decompose
+                    .as_ref()
+                    .is_some_and(|r| region_contains_transcendental(r));
+                let tol = if transcendental {
+                    fuel_kiss_ref_backend::Tolerance::Ulp(4)
+                } else {
+                    fuel_kiss_ref_backend::Tolerance::Exact
+                };
+                if let Ok(report) =
+                    fuel_kiss_ref_backend::diff_f32(op_tag, &cand_f32, &input_refs, tol)
+                {
+                    ledger.upsert(make_record(
+                        "kiss_ref_advisory",
+                        if report.conforms() { "pass" } else { "flag" },
+                        serde_json::json!({
+                            "op": format!("{op_tag:?}"),
+                            "max_ulp": report.max_ulp,
+                            "mismatches": report.mismatches,
+                            "transcendental_band": transcendental,
+                            "note": "advisory only; kiss-ref flags, never verdicts (§6.6-0007)"
+                        }),
+                    ));
+                }
+            }
+        }
+    }
 
     // (3) Bit-stability — only when DECLARED. A candidate that makes no
     // bit-stability claim isn't held to it, and no ledger entry is earned for
