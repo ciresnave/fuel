@@ -9,7 +9,7 @@ Fuel's **authoritative, project-agnostic design input** for consolidating the fu
 This document is the **distilled normative grammar** — the settled decisions lifted out of the conversational co-design record into a form the KISS standard can absorb as a section. It is deliberately *not* Fuel-specific:
 
 - The **co-design record** (conversational): `docs/outreach/baracuda-recipe-grammar-codesign-reply.md`, `…-reply-2.md`, `…-reply-3.md`.
-- The **Fuel implementation reference** (file:line, Fuel-internal, proof-of-implementation): `docs/recipe-signature-reference.md` (on `main` @ `85b5462e`).
+- The **Fuel implementation reference** (file:line, Fuel-internal, proof-of-implementation): `docs/recipe-signature-reference.md` (on `main` @ `ee76c977`).
 - **This document** (project-agnostic normative grammar for KISS): the two above, distilled.
 
 Where a decision is **SHIPPED** in Fuel it is marked so — the grammar is not speculative; a reference implementation exists and its byte contract is proven. Two decisions are flagged **★ MUST-CARRY** — Q4 (canonical serialization) and Q5 (the higher-order / `Op::Scan` primitive) — because they are the load-bearing invariants that must land in the KISS section **verbatim** rather than be re-litigated.
@@ -69,7 +69,7 @@ A node's identity = its `op_key` signature (op discriminant + `op_attrs` + scala
 - **Empty-schema ops** (elementwise, comparison, select, matmul-as-implicit, log-softmax, …) → empty body → the single canonical form **`[00,00,00,00]`**.
 - **Inside `body`, list prefixes are the ELEMENT COUNT** (`u32_le(count) ++ elements`), **not** a byte length — distinct from the outer frame's byte length. Fixed scalars are raw LE (`u32`/`u64`/`i64`/`f64`); strings are `u32_le(len) ++ utf8`.
 
-This is the recipe-**identity** byte contract; two nodes are byte-comparable across producers for the positionally-conformant ops. The concrete per-op arms (§4) are its schedule. *(Verbatim source for the KISS section's byte contract: `docs/recipe-signature-reference.md` §6 @ `85b5462e`.)*
+This is the recipe-**identity** byte contract; two nodes are byte-comparable across producers for the positionally-conformant ops. The concrete per-op arms (§4) are its schedule. *(Verbatim source for the KISS section's byte contract: `docs/recipe-signature-reference.md` §6 @ `ee76c977`.)*
 
 ### ★ Q5 (MUST-CARRY) — higher-order structural ops + the general `Op::Scan` primitive
 There is **one general structural primitive**, `Op::Scan{ body, carry, bound }`, where `body` is a fixed sub-graph (the per-step recurrence), `carry` is the threaded state (a real input+output), and `bound` is a fixed capacity. **SHIPPED** in Fuel (Phase 1, G3 closed). Non-negotiable structure:
@@ -95,6 +95,13 @@ Nodes carry **no storage/compute dtype**. The structural DAG is dtype-agnostic; 
 ## §4 · Per-op `op_attrs` schemas (§6.19.3)
 
 The concrete positional byte arms of the Q4 blob. Fuel emits the following today (SHIPPED); items marked *deferred* are pinned-but-unwired slots that ride `op_name`/operands rather than the blob until a consumer forces them.
+
+**★ Outer-frame width — `u32`-LE supersedes §6.8-0007's `u16` (spec reconciliation, KISS #67).** KISS-GRAMMAR **§6.8-0007** currently pins the OpAttrs sub-block length as `u16`; Fuel's **shipped byte oracle** frames it as `u32`-LE (`to_canonical_bytes` — empty schema → `[00,00,00,00]`, four bytes, unit-tested; documented with anchors in `docs/recipe-signature-reference.md` §6). **The shipped oracle is authoritative**, so §6.8-0007 takes a `u16`→`u32` amendment in **KISS #67** (carried by mlgheozs — already agreed). Carry the `u32`-LE width into the KISS section: an `add`/`sub` node with an empty attrs field embeds a **4-byte** op_attrs blob, not 2.
+
+- **Single framing — no double-wrap.** A node's OpAttrs field **is** Fuel's `to_canonical_bytes` output **verbatim** — the `u32`-LE outer length + body, **one** length prefix. Do **not** wrap a second (`u16` or other) length around the already-`u32`-framed blob; #67 embeds the blob as-is.
+- **Two distinct blobs, two widths — do not unify.** The `op_attrs` outer length is `u32`-LE (§6.8-0007, this doc). The **separate** §6.20 **shape-expr** child-length is `u16`-LE (the shipped shape-oracle wire codec — `recipe-signature-reference.md` §B). Different blobs, different sections; a consolidator MUST keep both widths, not collapse them to one.
+
+**Scope of what Fuel serializes today.** Fuel ships the **`op_attrs` sub-blob** serializer (`to_canonical_bytes`, the field above) — the per-node attribute field, and only that. It does **not** yet ship a full **recipe-NODE** wire serializer: how `op_name` + `child_edges` frame the `op_attrs` blob into a node, and nodes into the flat table (§1/Q2), is the §A flat-DAG-CSE work — **not built**, and being **defined in this consolidation** (#67). Fuel implements the node/table serializer once that framing is pinned. So carry the `op_attrs` byte contract here as authoritative-and-shipped; treat the node-envelope framing as co-design-in-progress.
 
 | Op family | `op_attrs` body |
 |---|---|
@@ -157,16 +164,17 @@ The **shape-expression vocabulary** (`ShapeExpr := SameAs(operand)`; `DimExpr :=
 
 | Element | Status in Fuel |
 |---|---|
-| Node schema `Op \| Bind`, `op_attrs` positional blob (Q4) | **SHIPPED** (`OpAttrs::to_canonical_bytes`) |
+| `op_attrs` **sub-blob** serializer (Q4) | **SHIPPED** (`to_canonical_bytes`, `u32`-LE outer — see §4) |
+| Node schema `Op \| Bind` (design) + full recipe-**node** / flat-table serializer | schema pinned; the node/table wire serializer (`op_name` + `child_edges` envelope around the `op_attrs` blob) **NOT built** — §A, being defined in KISS #67 |
 | Canonicalization / `base_map_hash` rule (Q3) | **SHIPPED** |
 | Resolve-to-base-map + numeric verify (Q6) | **SHIPPED** (recipe-identity verifier) |
 | `Op::Scan{body,carry,bound}`, `Op::Reduce = Scan{emit=Final}` (Q5) | **SHIPPED** (Phase 1, G3 closed) |
 | Source-op leaves (`const`/`iota`/`runtime_scalar`/`scan_placeholder`/`reduced_count`) | schema pinned; leaf serialization lands in Convergence Increment C |
 | matmul role-vectors (§5) | schema **closed/mutual**; the u8-role serialize+resolve lands in Increment C (emits empty `[00,00,00,00]` today) |
-| flat-DAG-CSE representation + `decompose`→data migration | pinned; Convergence Increment C (in progress) |
-| shape-oracle `ShapeExpr`/`DimExpr` (§7) | **merged into KISS** @ `3bd6d2d`; Fuel evaluator = Convergence Increment C (in progress) |
+| flat-DAG-CSE representation + `decompose`→data migration (§A) | **NOT built** — the Convergence-C recipe-interior home, still pending |
+| shape-oracle `ShapeExpr`/`DimExpr` evaluator + §6.20 wire codec (§7) | **SHIPPED** (Convergence-C @ `9156e178`, `fkc/shape_expr.rs`); KISS RFC merged @ `3bd6d2d` |
 
-**Cross-references:** the conversational co-design record (`docs/outreach/baracuda-recipe-grammar-codesign-reply{,-2,-3}.md`), the Fuel implementation reference with file:line anchors (`docs/recipe-signature-reference.md` @ `85b5462e` — the verbatim byte-contract source for the KISS section), and the merged shape-oracle RFC (KISS main @ `3bd6d2d`).
+**Cross-references:** the conversational co-design record (`docs/outreach/baracuda-recipe-grammar-codesign-reply{,-2,-3}.md`), the Fuel implementation reference with file:line anchors (`docs/recipe-signature-reference.md` @ `ee76c977` — the verbatim byte-contract source (§6) + the shipped shape-oracle wire codec (§B)), and the merged shape-oracle RFC (KISS main @ `3bd6d2d`).
 
 ---
 
