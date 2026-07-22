@@ -380,7 +380,7 @@ So: the recipe DAG answers *structure + identity* (op tags, operands, canonical 
 
 # Part II — Realization & in-flight migrations (Convergence Increment C)
 
-**Increment A shipped (2026-07-16).** It grew `emit` to full first-order parity via the shared `primitive_shape`, grew `OpAttrs` + `to_canonical_bytes` (the §6.19 blob), and landed the flat-DAG-schema reply. **Increment C is NOT built.** Everything in this Part — the flat-DAG-CSE migration, the shape-expression evaluator, and the matmul role-vector serialization — is the **pinned / in-flight realization**, gated on the shape-expression grammar converging externally (`ROADMAP.md:114-135`). Read every claim here as *target*, not current behavior; the as-built state is Part I.
+**Increment A shipped (2026-07-16).** It grew `emit` to full first-order parity via the shared `primitive_shape`, grew `OpAttrs` + `to_canonical_bytes` (the §6.19 blob), and landed the flat-DAG-schema reply. **Convergence-C shipped the shape-oracle (2026-07-22, merged @ `9156e178`)** — the shape-expression evaluator and its independent §6.20 wire codec (`fkc/shape_expr.rs`, `fkc/shape_expr_parse.rs`, the extended `fkc/return_check.rs`), so **§B below is now SHIPPED**, not target. **§A (flat-DAG-CSE migration) and §C (matmul role-vector `op_attrs` serialization) remain NOT built** — verified unchanged by Convergence-C (which touched only the FKC shape-oracle files), so read §A and §C as *target* and §B as *as-built*, with §B's recipe-interior home (the change coupled to §A) still pending. The as-built base is Part I.
 
 ## A. Flat-DAG-CSE migration
 
@@ -436,32 +436,18 @@ So a `PatternNode` recipe as-is is "correct for exactly ONE input shape, which d
 
 ## B. The shape-expression evaluator
 
-### Current state — an evaluator that handles exactly one production
+### Shipped state (Convergence-C, merged @ `9156e178`)
 
-`fuel-dispatch/src/fkc/return_check.rs:29`:
+`eval_shape_rule` (`return_check.rs:32`) now evaluates the full `SameAs` + `DimExpr` vocabulary **and** the matmul contraction rule, backed by an **independent typed AST + §6.20 wire codec** (`fkc/shape_expr.rs`) and a **parser** (`fkc/shape_expr_parse.rs` — the `parse_shape_rule` analogue the pre-Convergence-C code lacked):
 
-```rust
-/// §5.2: only `same_as(role)` is evaluable purely from probe shapes.
-pub fn eval_shape_rule(rule: &str, combo: ProbeComboRef, _section: &str) -> Result<Option<Shape>, FkcError> {
-    if let Some(r) = inner(rule, "same_as(") { return Ok(role(combo, r).map(|(_, s, _)| s.clone())); }
-    Ok(None)
-}
-```
+- `same_as(role)` → the role's probe shape.
+- a `DimExpr` rule → `parse_dim` → `shape_expr::eval_dim` (`return_check.rs:64-68`): an `Extent`/`Const`/`Param`/`+ − × ÷floor` tree evaluated against the probe operand shapes + params, requiring a non-negative result.
+- a `matmul(...)` rule → `parse_matmul_operands` → `shape_expr::matmul_shape` (`return_check.rs:43-58`): role-derives `[..batch, M, N]`, the contraction output that equals **neither** operand.
+- an unparseable / unknown rule still returns `Ok(None)` — the "not-evaluable, skip, never a false reject" contract holds.
 
-- `ProbeComboRef<'a> = &'a [(String, Shape, DType)]` (`return_check.rs:11`) — the role→(shape,dtype) probe tuples.
-- The **only** production evaluated is `same_as(role)` → clone that role's probe shape (`return_check.rs:30`). Everything else — `from_params(...)`, arithmetic, an unknown role — falls to `Ok(None)` (`return_check.rs:31`), the "not-evaluable, skip, never a false reject" contract. Pinned by the unit test (`return_check.rs:319-322`): `from_params(q)` → `None`, `matmul(a,b)` → `None`, `same_as(does_not_exist)` → `None`.
+The evaluator is the shape-side companion to the §6.4-0006 value oracle; `shape_expr::shape_consistent` (`shape_expr.rs:297`) is the §6.4-0011 tie — the Interface `declared` shape is consistent iff it equals the op's `computed` shape rule, and a surfaced `Gap` (symbolic output) is never a hard mismatch. Every malformed input is a **typed decline** (`ShapeExprError`, `shape_expr.rs:89-101`), never a panic.
 
-The dtype twin is richer: `eval_dtype_rule` (`return_check.rs:23-27`) handles **two** productions (`fixed(D)`, `passthrough(role)`). The shape side handles one — the asymmetry is the gap in miniature.
-
-### How the evaluator is wired
-
-`eval_shape_rule` is called from `cross_check_fused_section` (`return_check.rs:78`), which runs inside `lower_fused` before registration (invoked at `lower.rs:1063`). The shape leg is `return_check.rs:132-144`: when the declared rule is evaluable, its output (`declared`) is compared against the **real registered** fused-op shape fn `entry.shape_rule` (`registry.rs:118`, `fn(&[Shape], &FusedOpParams) -> Shape`) — e.g. `shape_passthrough` for softmax/rope (`registry/softmax_last_dim.rs:40`), `matmul_output_shape` for fused_linear (`registry/fused_linear.rs:40`). A disagreement fails the import with `FkcError::ShapeRuleMismatch` (`return_check.rs:136`) rather than silently drifting.
-
-### The never-evaluated gap
-
-The real `entry.shape_rule` is invoked **only** when both (a) the declared rule is evaluable (`eval_shape_rule` returned `Some`) **and** (b) `synth_probe_params` returned `Some(params)` (`return_check.rs:104`, `:132`; invariant `return_check.rs:68-77`). `synth_probe_params` (`return_check.rs:43-58`) returns `None` for params-dependent ops whose real fns can `panic!` on a mismatched variant. Because every *currently evaluable* rule (plain `same_as`/`passthrough`/`fixed`) belongs to a params-independent fn, the two conditions coincide and the wrong-params panic is unreachable. **This coincidence is load-bearing and the evaluator extension must preserve it.**
-
-Precise gap: (1) vocabulary is one production wide — no `Extent`, `Const`, arithmetic, `Param`; (2) **no parser / AST** — unlike `dtype_rule` (typed `DtypeRule` via `parse_dtype_rule` at `lower.rs:815`, `:807-811`), there is **no `parse_shape_rule` anywhere** (confirmed absent; only prose mentions in docs); (3) a non-`same_as` claim is carried opaque and unenforced — the cross-check simply skips it. The recipe interior has the mirror-image defect (baked absolute `OpAttrs.target_shape`, §A). Both need the same missing thing: a shape expressed *relative to operand shapes*, evaluable against concrete inputs.
+This **closes the "shape_rule parsed-but-never-evaluated" gap** the pre-Convergence-C code carried: the vocabulary was one production wide (`same_as` only), there was no `parse_shape_rule`, and a non-`same_as` claim was skipped unchecked — the `eval_dtype_rule` twin already had two productions (`fixed`/`passthrough`) while the shape side had one. Convergence-C resolved that asymmetry. (The recipe-interior mirror of the gap — baked absolute `OpAttrs.target_shape`, §A — is **not** closed; that is the still-pending home #2 below.)
 
 ### The merged `ShapeExpr` / `DimExpr` vocabulary
 
@@ -481,6 +467,8 @@ operand   := local operand position operand[k] | Bind(i)   // Bind(i) == a contr
 
 Backward-compatible: `same_as(role) ≡ SameAs(operand)`, `from_params(f) ≡ Param(f)` (`baracuda-shape-expression-grammar-ask.md:38`).
 
+**As shipped** (`shape_expr.rs:30-49`): `Dim` is the full `DimExpr` enum (`Extent{operand,axis}` / `Const(i64)` / `Param(u8)` / `Add` / `Sub` / `Mul` / `Div`); `ShapeExpr` currently has the single `SameAs{operand}` variant, with `Reduce`/`WithDim`/`Dims` **tag-reserved** (`shape_expr.rs:17-19`, reader-rejected) for the §6.4 extension registry. The **role/index-woven** rules (`reduce`/`gather`/`matmul`) are **not** wire `ShapeExpr` — they are separate op-semantics functions (`reduce_shape` / `gather_shape` / `matmul_shape`, `shape_expr.rs:253-290`), because a gather/matmul output equals *no* operand's shape (which is exactly the false-`same_as(data)` bug the oracle catches).
+
 Design decisions pinned across all three parties:
 
 - **Two irreducible constructors.** Most ops are already shape-polymorphic via `primitive_shape` and carry no shape attr; only a **broadcast target** (→ `SameAs`) and a **slice/iota offset** (→ `DimExpr`) irreducibly bake shape. Everything else canonicalizes to an already-polymorphic primitive (`ReduceMaxTo → MaxDim{keepdim}`, `Reshape`-to-1s → `Unsqueeze`).
@@ -490,11 +478,40 @@ Design decisions pinned across all three parties:
 - **`÷` = floor, no remainder error** — producers relying on exact division (even head dim) own that invariant.
 - **One grammar, additive, not a competing shape authority** — a recipe-carrying op keeps **omitting** `shape_rule`; the realized recipe / role-vectors remain the sole shape authority. Giving `shape_rule` an evaluator makes the *claim* checkable; it does not promote the claim to an authority.
 
-### §6.19 serialization + the sentinel details
+### §6.20 serialization — the shipped wire codec
 
-The `ShapeExpr`/`DimExpr` tree serializes as a **recursive, tag-prefixed, length-prefixed positional blob** in the same canonical form as §6.19 `op_attrs` (`baracuda-shape-expression-grammar-ask.md:44`) — one byte tag + fixed fields + length-prefixed child-expression slots, so a shape-bearing attr stays hashable/byte-comparable. The concrete first-order `OpAttrs` body layout being reused is pinned in `docs/specs/kernel-seam-interop.md:495-515` (`u32` LE `body.len()` envelope; empty schema → `[0,0,0,0]`; `Slice`: `axis:u32,start:u64,len:u64` at `:507`; `SumDim`/`MeanDim`/`CumSum`: `axis:i64,keepdim:u8` at `:510`). **Emit division:** Baracuda emits *functional text* (`broadcast_to(same_as(in0))`, `slice(const(0), div(extent(in0,last), const(2)))`); Fuel flattens it to the canonical positional blob on ingest — the blob is Fuel's to mint.
+The `ShapeExpr`/`DimExpr` tree serializes as a **recursive, tag-prefixed, `u16`-length-prefixed positional blob** (§6.20-0005), byte-matching the KISS goldens. The shipped codec is `shape_expr.rs` `encode`/`encode_binary` (`:53-87`); the `serialization_golden` test (`:309-324`) asserts every anchor byte-for-byte.
 
-**The `last`-sentinel byte vs the set-mask.** The shape-expr `axis` is a **`u8`**: concrete axes `0..MAX_RANK−1` with **`MAX_RANK = 8`** (axes `0..7`), and **`0xFF` reserved as the `last` sentinel** (`docs/outreach/baracuda-shape-oracle-rfc-ask.md:25`) — the single-axis analogue of the §6.19-0020 trailing-axis sentinel. This is **explicitly not byte-identical** to §6.19-0020's reduce-axes **set-mask** (a `u16` where `0xFFFE` is the all/last set-mask form): the shape-side `DimExpr::Extent` axis is *single-axis* (one `u8`), while the value-side reduce set is a *bitmask over axes*. They share the same axis *semantics* (both agree which axis is `last`, resolved against operand rank at import) but keep different field *shapes*. (The `0xFFFE`/`u16` set-mask value is a KISS §6.19-0020 detail and does not appear as a literal in the Fuel repo; the Fuel value-side axis field is described in terms of a future `last`/`0x<hex>`-mask resolution at `kernel-seam-interop.md:540-541`.)
+**Tag space** (`shape_expr.rs:8-19`, one byte; `0x00` reserved): `SameAs=0x01`, `Extent=0x02`, `Const=0x03`, `Param=0x04`, `Add=0x05`, `Sub=0x06`, `Mul=0x07`, `Div=0x08`; **reserved (reader rejects):** `Reduce=0x09`, `WithDim=0x0A`, `Dims=0x0B`.
+
+**Leaf / node layouts** (`encode`, `:53-87`):
+
+| Node | bytes |
+|---|---|
+| `SameAs{operand}` | `[0x01, operand:u8]` |
+| `Extent{operand, axis}` | `[0x02, operand:u8, axis:u8]` |
+| `Const(i64)` | `[0x03, i64_le]` (9 bytes) |
+| `Param(field)` | `[0x04, field:u8]` |
+| binary `Add`/`Sub`/`Mul`/`Div` | `[tag, u16_le(len childA), childA, u16_le(len childB), childB]` |
+
+**The child-length prefix is `u16`-LE** (`encode_binary`, `:79-87`) — deliberately **distinct from the `op_attrs` outer frame's `u32`-LE byte length** (Part I §6). Both are §6.19/§6.20-canonical; they are two blobs with two widths — `op_attrs` outer = `u32`-LE byte-len, shape-expr children = `u16`-LE (≤ 65535, ample for bounded `DimExpr` subtrees). A maintainer touching either must not conflate them.
+
+**Axis `u8`:** concrete axes `0..MAX_RANK−1` (`MAX_RANK = 8`), with **`0xFF` = the `last` sentinel** (`shape_expr.rs:24-28`), resolved to `rank−1` at eval (`resolve_axis`, `:180-187`). Explicitly **not** byte-identical to §6.19-0020's `0xFFFE` `u16` axis-set **mask** — the shape-side `Extent` axis is a single `u8`; the value-side reduce set is a bitmask. Same axis *semantics*, different field *width*.
+
+**Symbolic extent:** `SYMBOLIC = i64::MIN` (`shape_expr.rs:22`); an `Extent` over it evaluates to `DimValue::Gap` (`eval_dim`, `:213`), which propagates through every binary op (`eval_binary`, `:195-202`) and through a `SameAs` over a symbolic-bearing shape (`eval_shape`, `:238`) — the surfaced-gap-never-crash posture, in code.
+
+**The rope-half golden** — the byte contract of record (`serialization_golden`, `:316-323`): `Div(Extent(operand=0, axis=last), Const(2))` encodes to
+
+```
+08  03 00  02 00 FF  09 00  03 02 00 00 00 00 00 00 00
+│   │      │          │      └ childB = Const(2) = [0x03, i64_le(2)]  (9 B)
+│   │      │          └ u16_le(9)  = len(childB)
+│   │      └ childA = Extent(0,last) = [0x02, 0x00, 0xFF]  (3 B)
+│   └ u16_le(3) = len(childA)
+└ tag Div = 0x08
+```
+
+(17 bytes total.) **Emit division:** a producer emits *functional text* (`slice(const(0), div(extent(in0,last), const(2)))`); Fuel parses it (`shape_expr_parse.rs`) and mints this canonical blob on ingest.
 
 **The `reduce_extent → reduced_count` rename.** The value-side reduced-axes leaf was pinned 2026-07-18 as `reduce_extent`, then **renamed 2026-07-19 to `reduced_count`** to converge onto KISS §6.12-0001's canonical token — 1:1 identical, "align not alias," pre-consumer (recorded `kernel-seam-interop.md:517-548`). The canonical §6.12 pair:
 
@@ -521,24 +538,21 @@ Some(DynScalar::Sym(_)) => return id,   // return self — the never-crash fixpo
 
 ### The three homes
 
-The reframe resolved "same vocabulary, two homes" into **three homes**:
+The reframe resolved "same vocabulary, two homes" into **three homes** — two now shipped, one pending:
 
-1. **Fuel FKC return-contract** — extend `eval_shape_rule` (`return_check.rs:29`) with `DimExpr`/`Extent` and a real `from_params` (replacing the `None` stub at `:31`). The one home with a live evaluator today (`same_as` only). Fuel-side.
-2. **Fuel recipe interior** — `PatternNode` bakes absolute shapes (`OpAttrs.target_shape`, `lib.rs:86`); **Convergence Increment C** makes interior-node shapes relative using the same `SameAs`+`DimExpr` grammar. Fuel-internal; there is no baked-shape defect in KISS to repair.
-3. **KISS shape ORACLE** — the genuine KISS gap: the shape-side companion to the §6.4-0006 **value** oracle. It checks op_dag interior-node shape consistency and the §6.5 Interface-output-shape ⟷ operand-shapes tie via the op's semantics (catching e.g. a non-keepdim single-axis reduce over rank-3 declaring `rank=3`). KISS contracts are monomorphized per `structure_key`, so this is interior-consistency + Interface-vs-semantics, not making the return contract polymorphic.
+1. **Fuel FKC return-contract — SHIPPED (Convergence-C).** `eval_shape_rule` (`return_check.rs:32`) evaluates `SameAs` + `DimExpr` + the matmul rule (above); `shape_expr::shape_consistent` (`:297`) is the §6.4-0011 tie. This was "the one home with a live evaluator (`same_as` only)"; it is now the full vocabulary.
+2. **Fuel recipe interior — STILL Increment C (NOT built).** `PatternNode` still bakes absolute shapes (`OpAttrs.target_shape`, `lib.rs:86` — verified unchanged by Convergence-C). Making interior-node shapes relative with the same `SameAs`+`DimExpr` grammar is the change coupled to §A, still pending; the shipped `shape_expr` codec is the vocabulary that migration will serialize into. There is no baked-shape defect in KISS to repair.
+3. **KISS shape ORACLE — SHIPPED Fuel-side as the independent reference.** `shape_expr.rs` is Fuel's independent, byte-matching implementation of the KISS §6.20 oracle — the shape-side companion to the §6.4-0006 value oracle. The interior-consistency + Interface-vs-semantics rules `reduce_shape`/`gather_shape`/`matmul_shape` (`:253-290`) + `shape_consistent` (`:297`) catch e.g. a gather advertising `same_as(data)` (its output equals no operand's shape) or a non-keepdim single-axis reduce over rank-3 declaring `rank=3`. KISS contracts are monomorphized per `structure_key`, so this is interior-consistency + Interface-vs-semantics, not making the return contract polymorphic.
 
 One grammar, one serialization, three attachment points. *(The claim that `OutputDesc.shape_rule` was historically mis-framed as a KISS §5 field is corrected: it is a Fuel FKC field — correction banner at `docs/outreach/baracuda-shape-expression-grammar-ask.md:6`. The KISS-repo occurrence counts and the KISS RFC landing at KISS main `@3bd6d2d` are cross-party state asserted in Fuel-side outreach docs; they cannot be verified from the Fuel tree and should be read as external-party status, not Fuel code.)*
 
-### What building it entails
+### What shipped, and what remains
 
-1. **Add a `parse_shape_rule` + typed `ShapeExpr`/`DimExpr` AST** — the shape-side analog of `parse_dtype_rule`→`DtypeRule` (`lower.rs:815`, `:807-811`). Tokenize the functional text into the AST; `same_as`/`from_params` are the trivial subset.
-2. **Extend `eval_shape_rule`** (`return_check.rs:29`) to walk the AST against a `ProbeComboRef`: `SameAs(operand)` (already done), `from_params(f)`/`Param(field)` (replaces the `None` stub), `Extent(operand, axis)` (operand `dims()[axis_resolved]`, floor `÷`/`Const`/integer arithmetic), symbolic axis → surfaced skip.
-3. **Preserve the never-panic coincidence.** Making more rules evaluable includes params-dependent ops whose real `entry.shape_rule` can `panic!` — keep the gate at `return_check.rs:104`/`:132` and extend `synth_probe_params` to synthesize the newly-evaluable variants faithfully.
-4. **Reuse the fold's axis resolver** for any `extent`/`reduced_count` axis resolution (the Increment-C lockstep constraint).
-5. **Serializer** — mint the recursive §6.19 blob (`OpAttrs::to_canonical_bytes` machinery), single-axis `u8` with `0xFF = last`, `MAX_RANK = 8`.
-6. **Recipe-interior (home #2):** migrate the ~16 migratable registry `decompose` fns to `PatternNode` data whose shape-bearing attrs become `SameAs`/`DimExpr`. Worked: softmax broadcast → `BroadcastTo(SameAs(operand[0]))`; rope halves → `Slice{ start: 0, len: Extent(x,last) ÷ 2 }` and `Slice{ start: Extent(x,last) ÷ 2, len: Extent(x,last) − Extent(x,last) ÷ 2 }`.
+**Shipped in Convergence-C (@ `9156e178`):** the parser (`shape_expr_parse.rs`, the `parse_shape_rule` analogue), the typed AST + §6.20 wire codec (`shape_expr.rs`), the extended `eval_shape_rule` (`SameAs` / `DimExpr` / matmul, `return_check.rs:32-68`), the §6.4-0011 `shape_consistent` oracle (`:297`), and the `reduce`/`gather`/`matmul` semantic shape rules (`:253-290`). Floor `÷`, `LAST = 0xFF`, `MAX_RANK = 8`, and symbolic → `Gap` are all in `shape_expr.rs` with golden tests.
 
-Once `eval_shape_rule` handles `from_params`/`Extent`, the cross-check stops silently skipping non-`same_as` claims (a `from_params(batch,m,n)` claim on a matmul-shaped op becomes checkable against `matmul_output_shape`), and `PatternNode` recipes become shape-polymorphic and portable. Fuel committed to signal Baracuda before it **broadens** the checked surface, so their audit of `same_as(in0)`-emitting cells lands first.
+**Still pending (Increment C, coupled with §A):** the **recipe-interior** home (#2) — migrating the ~16 migratable registry `decompose` fns (`registry.rs`, verified unchanged) to `PatternNode` data whose shape-bearing attrs become `SameAs`/`DimExpr` instead of the baked absolute `OpAttrs.target_shape`/`slice_start` (`lib.rs:86,98`). Worked: softmax broadcast → `BroadcastTo(SameAs(operand[0]))`; rope halves → `Slice{ start: 0, len: Extent(x,last) ÷ 2 }` and `Slice{ start: Extent(x,last) ÷ 2, len: Extent(x,last) − Extent(x,last) ÷ 2 }`. Also pending: the `reduced_count` leaf's own serialization + its fold-axis-resolver reuse (the lockstep constraint above).
+
+Because the shipped `eval_shape_rule` now checks non-`same_as` claims, a `from_params(batch,m,n)` claim on a matmul-shaped op is checkable against the role-derived `matmul_shape` — so Fuel committed to **signal Baracuda before broadening** the checked surface, letting their audit of `same_as(in0)`-emitting cells land first.
 
 ## C. Matmul role-vector serialization
 
@@ -663,9 +677,9 @@ full = 0C 00 00 00 | <body>                                                (16 b
 - **STRUCTURE vs INTERFACE:** the recipe DAG (dtype-agnostic, shape-free) vs the FKC contract (dtypes/shape-rules/cost/precision). Joined by `FusedOpId`.
 - **`primitive_shape`:** single source of truth for a primitive op's output shape+dtype, derived from operands. `shape.rs:36-40`.
 - **FKC contract:** the kernel contract wrapper (`OutputDesc`/`TensorDesc`/caps/cost/precision). `fuel-dispatch/src/fkc/schema.rs`.
-- **`ShapeExpr`/`DimExpr`:** the pinned shape-relative expression grammar (`SameAs` + `Extent`/`Const`/`Param`/arithmetic) — the fix for baked absolute shapes. NOT built.
+- **`ShapeExpr`/`DimExpr`:** the shape-relative expression grammar (`SameAs` + `Extent`/`Const`/`Param`/arithmetic). Evaluator + §6.20 wire codec SHIPPED (Convergence-C @ `9156e178`, `fkc/shape_expr.rs`); the recipe-interior fix for baked absolute shapes is still pending (§B home #2, coupled to §A).
 - **`reduced_count` / `extent`:** the value-side (Mean divisor) / shape-side single-axis leaves; canonical KISS §6.12-0001 tokens.
-- **Increment A / C:** A (emit full-parity, shipped 2026-07-16) / C (decompose→PatternNode-data + shape-relative attrs + matmul role-vectors, NOT built).
+- **Increment A / C:** A (emit full-parity, shipped 2026-07-16). C's shape-oracle (evaluator + §6.20 wire codec) SHIPPED as **Convergence-C @ `9156e178`**; C's recipe-interior migration (decompose→PatternNode-data + shape-relative attrs) and the matmul role-vector `op_attrs` serialization are still NOT built.
 
 ## Cross-references — co-design records
 
