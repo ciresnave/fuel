@@ -142,6 +142,13 @@ fn decode_dim_at(blob: &[u8], pos: usize) -> Result<(Dim, usize), ShapeExprError
             };
             Ok((d, p2))
         }
+        // §6.20-0002 reserved constructors — allocated wire tags an encoder MUST NOT
+        // emit at this vocabulary version (§6.20-0005); they enter through the KISS
+        // extension registry (umbrella §6.4). THE FUTURE ACTIVATION POINT: when the
+        // registry admits WithDim (0x0A) / Dims (0x0B) — proposal filed, cosign-tracked
+        // — their decode arms replace this decline. Reduce (0x09) stays reserved
+        // (§6.20-0007 derives reduce-family shapes from op attrs, no wire constructor).
+        TAG_REDUCE | TAG_WITH_DIM | TAG_DIMS => Err(ShapeExprError::ReservedTag { tag }),
         other => Err(ShapeExprError::ReservedTag { tag: other }),
     }
 }
@@ -335,6 +342,35 @@ mod tests {
         assert_eq!(decode_dim(&[0x09, 0x00]), Err(ShapeExprError::ReservedTag { tag: 0x09 }));
         assert_eq!(decode_dim(&[0x03, 0x02, 0x00]), Err(ShapeExprError::TruncatedBlob { need: 9, got: 3 }));
         assert_eq!(decode_dim(&[0x04, 0x00, 0xAB]), Err(ShapeExprError::TrailingBytes { extra: 1 }));
+    }
+
+    // §6.20-0002/-0005 reserved constructors decline BY NAME at the decoder — the
+    // future activation point for the KISS §6.4 extension-registry entrants
+    // (WithDim 0x0A / Dims 0x0B, proposal filed; Reduce 0x09 stays reserved,
+    // §6.20-0007 derives reduce shapes from attrs).
+    #[test]
+    fn reserved_extension_tags_decline_by_name() {
+        // Pin the allocated-reserved wire values (KISS §6.20-0005).
+        assert_eq!(TAG_REDUCE, 0x09);
+        assert_eq!(TAG_WITH_DIM, 0x0A);
+        assert_eq!(TAG_DIMS, 0x0B);
+        for tag in [TAG_REDUCE, TAG_WITH_DIM, TAG_DIMS] {
+            // Bare reserved tag: the typed decline names the tag, never a panic.
+            assert_eq!(decode_dim(&[tag]), Err(ShapeExprError::ReservedTag { tag }));
+            // A payload after a reserved tag does not rescue it.
+            assert_eq!(
+                decode_dim(&[tag, 0x00, 0x01]),
+                Err(ShapeExprError::ReservedTag { tag })
+            );
+        }
+        // A reserved tag in CHILD position (inside a binary node) declines identically.
+        assert_eq!(
+            decode_dim(&[TAG_ADD, 1, 0, TAG_WITH_DIM, 1, 0, TAG_DIMS]),
+            Err(ShapeExprError::ReservedTag { tag: TAG_WITH_DIM })
+        );
+        // The first UNALLOCATED tag past the reserved block also declines (the
+        // §6.20-0005 closed-vocabulary guard is open-ended, not just these three).
+        assert_eq!(decode_dim(&[0x0C]), Err(ShapeExprError::ReservedTag { tag: 0x0C }));
     }
 
     #[test]
