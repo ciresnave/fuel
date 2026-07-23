@@ -248,7 +248,11 @@ fn outcome_from_nonadopt_verdict(
 /// identity-ordered `Bind` leaves (`Bind{0}`, `Bind{1}`, …) — the only shape the
 /// kiss-ref advisory diff can align a probe against. `None` for a multi-node/fused
 /// decompose, a reordered/gapped binding, or no decompose.
-#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+// The generalized (region-based) advisory block (T3) no longer consults this;
+// it is re-consumed by the dormant corpus consult in the numeric region (Task
+// 4/5) and by its CPU unit test. Unconditionally allowed until that re-wiring
+// lands (dead in the plain cuda build meanwhile).
+#[allow(dead_code)]
 fn single_primitive_optag(
     dec: Option<&fuel_graph::jit::PatternNode>,
 ) -> Option<fuel_graph::jit::OpTag> {
@@ -277,10 +281,9 @@ fn bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
 
 /// Reinterpret little-endian `f64` bytes as an owned `Vec<f64>`. Mirrors
 /// [`bytes_to_f32`]: `chunks_exact(8)` never yields a short chunk.
-// Consumed by the cuda advisory block's dtype dispatch (`run_region_diff`)
-// once T3 lands; until then only the CPU unit tests exercise it — tighten to
-// `cfg_attr(not(feature = "cuda"), allow(dead_code))` when wired.
-#[allow(dead_code)]
+// Consumed by the cuda advisory block's dtype dispatch (`run_region_diff`);
+// dead only in the CPU-only (`jit` without `cuda`) build.
+#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 fn bytes_to_f64(bytes: &[u8]) -> Vec<f64> {
     bytes
         .chunks_exact(8)
@@ -290,16 +293,16 @@ fn bytes_to_f64(bytes: &[u8]) -> Vec<f64> {
 
 /// Reinterpret little-endian `f16` bytes as an owned `Vec<half::f16>`. Mirrors
 /// [`bytes_to_f32`]: `chunks_exact(2)` never yields a short chunk.
-// See `bytes_to_f64` on the `allow` — T3's dtype dispatch is the consumer.
-#[allow(dead_code)]
+// See `bytes_to_f64`: consumed by `run_region_diff`, dead only CPU-only.
+#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 fn bytes_to_f16(bytes: &[u8]) -> Vec<half::f16> {
     bytes.chunks_exact(2).map(|c| half::f16::from_le_bytes([c[0], c[1]])).collect()
 }
 
 /// Reinterpret little-endian `bf16` bytes as an owned `Vec<half::bf16>`.
 /// Mirrors [`bytes_to_f32`]: `chunks_exact(2)` never yields a short chunk.
-// See `bytes_to_f64` on the `allow` — T3's dtype dispatch is the consumer.
-#[allow(dead_code)]
+// See `bytes_to_f64`: consumed by `run_region_diff`, dead only CPU-only.
+#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 fn bytes_to_bf16(bytes: &[u8]) -> Vec<half::bf16> {
     bytes.chunks_exact(2).map(|c| half::bf16::from_le_bytes([c[0], c[1]])).collect()
 }
@@ -372,8 +375,8 @@ fn advisory_op_ulp_ceiling(op: fuel_graph::jit::OpTag) -> Option<u64> {
 /// adapter's `region_supported`, which requires ≥1 op node, before diffing).
 /// `SeeThrough` is traversed through (structural metadata, mirroring
 /// [`region_contains_transcendental`]); `Bind`/`Any` are leaves.
-// Consumed by the cuda advisory block once T3 lands — see `bytes_to_f64`.
-#[allow(dead_code)]
+// Consumed by the cuda advisory block (its band selection); dead only CPU-only.
+#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 fn advisory_ulp_band(region: &fuel_graph::jit::PatternNode) -> Option<u64> {
     use fuel_graph::jit::PatternNode;
     fn walk(node: &PatternNode, n_ops: &mut u64, n_exact: &mut u64, trans_sum: &mut Option<u64>) {
@@ -420,8 +423,8 @@ fn advisory_ulp_band(region: &fuel_graph::jit::PatternNode) -> Option<u64> {
 /// claimed id carries no `PatternNode` region until the registry's decomposes
 /// migrate to PatternNode data, so it declines (`None` — no static table);
 /// an unregistered id likewise resolves to `None`, never a panic.
-// Consumed by the cuda advisory block once T3 lands — see `bytes_to_f64`.
-#[allow(dead_code)]
+// Consumed by the cuda advisory block (region derivation); dead only CPU-only.
+#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 fn advisory_region(
     decompose: Option<&fuel_graph::jit::PatternNode>,
     claimed: Option<fuel_graph::registry::FusedOpId>,
@@ -681,6 +684,131 @@ mod flag_not_verdict_tests {
             advisory.unwrap().result,
             "pass",
             "CUDA add_f32 must match kiss-ref add exactly (0 ULP)"
+        );
+    }
+
+    /// Live-GPU (T3): the generalized, REGION-based advisory cross-check reaches
+    /// a MULTI-NODE decompose. The candidate carries a `relu(add(a, b))` region
+    /// (2 op nodes — the pre-T3 single-primitive path could never align it) but
+    /// its kernel is plain `add_f32`, so kiss-ref's composed `relu(add)`
+    /// reference disagrees on rows where the sum is negative. `verify_candidate`
+    /// records a `kiss_ref_advisory` entry with `op_count == 2` and result
+    /// `"flag"`. Born-red pre-T3: the old block only recorded for a
+    /// single-primitive f32 decompose, so no advisory record was earned at all.
+    #[test]
+    #[ignore = "requires a live CUDA device"]
+    #[cfg(feature = "cuda")]
+    fn multi_node_region_advisory_flags_add_kernel_for_relu_add() {
+        use baracuda_kernels_types::{ElementKind, OperandDesc};
+        use fuel_cuda_backend::CudaDevice;
+        use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
+        use fuel_ir::probe::BackendId;
+        use fuel_ir::DType;
+
+        let Ok(dev) = CudaDevice::new(0) else {
+            eprintln!("no CUDA device; skipping");
+            return;
+        };
+        // relu(add(bind0, bind1)) — a 2-op region.
+        let decompose = PatternNode::Op {
+            op: OpTag::Relu,
+            attrs: OpAttrs::default(),
+            operands: vec![PatternNode::Op {
+                op: OpTag::Add,
+                attrs: OpAttrs::default(),
+                operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+            }],
+        };
+        let od = OperandDesc::new(1, &[8], &[1], ElementKind::F32, 32);
+        let cand = CandidateKernel {
+            entry_point: "test::multi_node_advisory::relu_add".to_string(),
+            // Plain add kernel offered for a relu(add) region — it disagrees
+            // with the composed reference wherever the sum is negative.
+            kernel: crate::baracuda_dispatch::binary::add_f32,
+            op_params: crate::kernel::OpParams::None,
+            decompose: Some(decompose),
+            operands: vec![od, od],
+            dtypes: vec![DType::F32, DType::F32],
+            kernel_revision_hash: 0x1_9E57_4EAD,
+            declared: crate::fused::PrecisionGuarantee::REFERENCE,
+            backend: BackendId::Cuda,
+            claimed_op: None,
+        };
+        let (_verdict, records) = verify_candidate(&cand, &dev);
+        let advisory = records
+            .iter()
+            .find(|r| r.claim == "kiss_ref_advisory")
+            .expect("a multi-node region must reach the generalized advisory cross-check");
+        assert_eq!(
+            advisory.evidence["op_count"],
+            serde_json::json!(2),
+            "advisory ran over the 2-op relu(add) region: {advisory:?}"
+        );
+        assert_eq!(
+            advisory.result, "flag",
+            "an add kernel disagrees with kiss-ref's relu(add) reference: {advisory:?}"
+        );
+    }
+
+    /// Live-GPU (T3): a candidate that carries NO submitted decompose but claims
+    /// a runtime-registered op is reached by the advisory cross-check through
+    /// Fuel's OWN registered region for that claim (D1 derive-from-registry). The
+    /// claimed op's region is a plain `add` and the kernel is `add_f32`, so the
+    /// advisory `"pass"`es, with `source == "claimed_recipe"`. Born-red pre-T3:
+    /// the old block only consulted `cand.decompose` (here `None`), so a
+    /// claimed-op-only candidate earned no advisory record.
+    #[test]
+    #[ignore = "requires a live CUDA device"]
+    #[cfg(feature = "cuda")]
+    fn claimed_op_candidate_reaches_advisory_via_runtime_region() {
+        use baracuda_kernels_types::{ElementKind, OperandDesc};
+        use fuel_cuda_backend::CudaDevice;
+        use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
+        use fuel_ir::probe::BackendId;
+        use fuel_ir::DType;
+
+        let Ok(dev) = CudaDevice::new(0) else {
+            eprintln!("no CUDA device; skipping");
+            return;
+        };
+        // Register an `add(bind0, bind1)` region under a runtime FusedOpId; the
+        // candidate claims it WITHOUT submitting its own decompose.
+        let region = PatternNode::Op {
+            op: OpTag::Add,
+            attrs: OpAttrs::default(),
+            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+        };
+        let claimed = fuel_graph::runtime_fused::register_runtime_fused(
+            "test::claimed_op_advisory::add",
+            region,
+        )
+        .expect("runtime registration");
+        let od = OperandDesc::new(1, &[4], &[1], ElementKind::F32, 16);
+        let cand = CandidateKernel {
+            entry_point: "test::claimed_op_advisory::add_f32".to_string(),
+            kernel: crate::baracuda_dispatch::binary::add_f32,
+            op_params: crate::kernel::OpParams::None,
+            decompose: None,
+            operands: vec![od, od],
+            dtypes: vec![DType::F32, DType::F32],
+            kernel_revision_hash: 0x1_9E57_C1A1,
+            declared: crate::fused::PrecisionGuarantee::REFERENCE,
+            backend: BackendId::Cuda,
+            claimed_op: Some(claimed),
+        };
+        let (_verdict, records) = verify_candidate(&cand, &dev);
+        let advisory = records
+            .iter()
+            .find(|r| r.claim == "kiss_ref_advisory")
+            .expect("a claimed-op candidate must reach advisory via its runtime region");
+        assert_eq!(
+            advisory.evidence["source"],
+            serde_json::json!("claimed_recipe"),
+            "the region came from the claimed op's registered recipe, not a decompose: {advisory:?}"
+        );
+        assert_eq!(
+            advisory.result, "pass",
+            "add_f32 matches kiss-ref add exactly (0 ULP): {advisory:?}"
         );
     }
 }
@@ -985,6 +1113,42 @@ fn check_numeric_bound(
     }
 }
 
+/// Dtype-dispatched region differential for the advisory cross-check (design
+/// D6): decode the candidate output bytes and each probe input column into
+/// `out_dtype`'s scalar lattice, then diff the candidate against kiss-ref's
+/// composed-region reference under `tol`. Delegates per dtype to the (cuda-only)
+/// adapter's `diff_region_{f32,f64,f16,bf16}`. `UnsupportedDtype` for a dtype
+/// outside {F32,F64,F16,BF16}; the caller gates on that set (and on
+/// `region_supported`) first, so that arm is unreachable in the live path — it
+/// is kept total for never-panic. Probe columns are matched positionally to the
+/// region's `Bind` indices, exactly as the synthesized probe is 1:1 with the
+/// candidate's operands.
+#[cfg(feature = "cuda")]
+fn run_region_diff(
+    region: &fuel_graph::jit::PatternNode,
+    out_dtype: fuel_ir::DType,
+    cand_bytes: &[u8],
+    probe: &ProbeInputs,
+    tol: fuel_kiss_ref_backend::Tolerance,
+) -> std::result::Result<fuel_kiss_ref_backend::DiffReport, fuel_kiss_ref_backend::KissRefError> {
+    use fuel_ir::DType;
+    macro_rules! dispatch {
+        ($decode:path, $diff:path) => {{
+            let cand = $decode(cand_bytes);
+            let cols: Vec<_> = probe.iter().map(|t| $decode(&t.bytes)).collect();
+            let refs: Vec<_> = cols.iter().map(|v| v.as_slice()).collect();
+            $diff(region, &cand, &refs, tol)
+        }};
+    }
+    match out_dtype {
+        DType::F32 => dispatch!(bytes_to_f32, fuel_kiss_ref_backend::diff_region_f32),
+        DType::F64 => dispatch!(bytes_to_f64, fuel_kiss_ref_backend::diff_region_f64),
+        DType::F16 => dispatch!(bytes_to_f16, fuel_kiss_ref_backend::diff_region_f16),
+        DType::BF16 => dispatch!(bytes_to_bf16, fuel_kiss_ref_backend::diff_region_bf16),
+        other => Err(fuel_kiss_ref_backend::KissRefError::UnsupportedDtype(other)),
+    }
+}
+
 /// Empirically verify a received [`CandidateKernel`] on a synthetic probe:
 /// compare it to the reference realized from its `decompose` and check every
 /// DECLARED, machine-checkable precision claim (bit-stability + the numeric
@@ -1160,54 +1324,67 @@ fn verify_candidate_impl(
     };
 
     // kiss-ref advisory cross-check (§6.6-0007: kiss-ref FLAGS, never verdicts).
-    // For an f32 single-primitive decompose kiss-ref covers, diff the candidate
-    // output against kiss-ref's INDEPENDENT reference and record an advisory
-    // ledger entry. This does NOT gate the verdict — recipe-realize stays the
-    // interim authority until Fuel consumes a corpus; kiss-ref is the independent
-    // discrepancy-detector that catches Fuel-floor-vs-spec drift.
-    if out_dtype == fuel_ir::DType::F32 {
-        if let Some(op_tag) = single_primitive_optag(cand.decompose.as_ref()) {
-            if fuel_kiss_ref_backend::supports(op_tag, fuel_ir::DType::F32) {
-                let cand_f32 = bytes_to_f32(&cand_out.bytes);
-                let inputs_f32: Vec<Vec<f32>> =
-                    probe.iter().map(|t| bytes_to_f32(&t.bytes)).collect();
-                let input_refs: Vec<&[f32]> = inputs_f32.iter().map(|v| v.as_slice()).collect();
-                let transcendental = cand
-                    .decompose
-                    .as_ref()
-                    .is_some_and(|r| region_contains_transcendental(r));
-                // Advisory tolerance per the flag-not-verdict plan addendum
-                // (item 1): `Tolerance::Ulp(2 × ceiling)` for transcendental
-                // regions, `Exact` otherwise. The 2× is the same triangle-
-                // inequality band rule as `widen_bound_for_transcendental`
-                // (two hardware-precision impls each within the ceiling of
-                // wide-precision truth can differ by 2× it); this advisory
-                // path carries no per-candidate declared tier, so a fixed
-                // base ULP ceiling of 2 stands in — 2 × 2 = 4.
-                const ADVISORY_TRANSCENDENTAL_ULP_CEILING: u64 = 2;
-                let tol = if transcendental {
-                    fuel_kiss_ref_backend::Tolerance::Ulp(2 * ADVISORY_TRANSCENDENTAL_ULP_CEILING)
-                } else {
-                    fuel_kiss_ref_backend::Tolerance::Exact
-                };
-                if let Ok(report) =
-                    fuel_kiss_ref_backend::diff_f32(op_tag, &cand_f32, &input_refs, tol)
-                {
-                    ledger.upsert(make_record(
-                        "kiss_ref_advisory",
-                        if report.conforms() { "pass" } else { "flag" },
-                        serde_json::json!({
-                            "op": format!("{op_tag:?}"),
-                            "max_ulp": report.max_ulp,
-                            "mismatches": report.mismatches,
-                            "transcendental_band": transcendental,
-                            "note": "advisory only; kiss-ref flags, never verdicts (§6.6-0007)"
-                        }),
-                    ));
-                }
-            }
+    // GENERALIZED (T3) from the shipped single-primitive f32 path to arbitrary
+    // elementwise regions, all four float dtypes, and claimed-op reach:
+    //   * REGION derivation (D1): the candidate's own submitted `decompose`, else
+    //     — for a runtime-registered `claimed` op with no decompose — Fuel's OWN
+    //     registered region for that claim (`advisory_region`);
+    //   * DTYPE dispatch (D6): F32/F64/F16/BF16 via `run_region_diff`, gated by
+    //     the adapter's `region_supported(region, out_dtype)` (every op node
+    //     mapped, default attrs, ≥1 op node);
+    //   * BAND (D3, kiss-ref refinement): `advisory_ulp_band` — single exact op →
+    //     Exact; multi-node exact → Ulp(n−1); transcendental region → Ulp(Σ
+    //     per-op §6.8 ceilings + (n_exact−1)); raw `max_ulp` always recorded.
+    // Diff the candidate output against kiss-ref's INDEPENDENT composed-region
+    // reference and record an advisory ledger entry. This does NOT gate the
+    // verdict — recipe-realize stays the interim authority until Fuel consumes a
+    // corpus; kiss-ref is the independent Fuel-floor-vs-spec drift detector.
+    //
+    // NON-REGRESSION: an f32 single-primitive `Add` decompose derives
+    // region=Add (op_count 1), band=None ⇒ Exact, run_region_diff→diff_region_f32
+    // over the same kiss add — byte/ledger-identical to the shipped path (result
+    // "pass" at 0 ULP; one `kiss_ref_advisory` record via `upsert`).
+    let advisory = advisory_region(cand.decompose.as_ref(), cand.claimed_op);
+    // `kiss_outcome` is threaded into the numeric-claim verdict below (Task 4/5
+    // consult it as the advisory input to `classify_floor_verdict`: escalate,
+    // never gate — §6.6-0007). Bound now so T3 owns the one construction site.
+    #[allow(unused_variables)]
+    let kiss_outcome: Option<DiffOutcome> = advisory.as_ref().and_then(|region| {
+        let dtype_supported = matches!(
+            out_dtype,
+            fuel_ir::DType::F32 | fuel_ir::DType::F64 | fuel_ir::DType::F16 | fuel_ir::DType::BF16
+        );
+        if !dtype_supported || !fuel_kiss_ref_backend::region_supported(region, out_dtype) {
+            return None;
         }
-    }
+        let band = advisory_ulp_band(region);
+        let tol = band
+            .map_or(fuel_kiss_ref_backend::Tolerance::Exact, fuel_kiss_ref_backend::Tolerance::Ulp);
+        let report = run_region_diff(region, out_dtype, &cand_out.bytes, &probe, tol).ok()?;
+        let op_count = fuel_kiss_ref_backend::region_op_count(region);
+        let source = if cand.decompose.is_some() { "decompose" } else { "claimed_recipe" };
+        ledger.upsert(make_record(
+            "kiss_ref_advisory",
+            if report.conforms() { "pass" } else { "flag" },
+            serde_json::json!({
+                "dtype": format!("{out_dtype:?}"),
+                "op_count": op_count,
+                "max_ulp": report.max_ulp,
+                "mismatches": report.mismatches,
+                "advisory_band_ulp": band,
+                "source": source,
+                "note": "advisory only; kiss-ref flags, never verdicts (§6.6-0007)"
+            }),
+        ));
+        Some(DiffOutcome {
+            within: report.conforms(),
+            max_ulp: Some(report.max_ulp),
+            detail: format!(
+                "kiss-ref region diff (op_count={op_count}, max_ulp={}, mismatches={})",
+                report.max_ulp, report.mismatches
+            ),
+        })
+    });
 
     // (3) Bit-stability — only when DECLARED. A candidate that makes no
     // bit-stability claim isn't held to it, and no ledger entry is earned for
