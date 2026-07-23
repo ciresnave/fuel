@@ -1636,6 +1636,97 @@ determinism: same_hardware_bitwise
         );
     }
 
+    /// Review fix (silent empty-points skip): a params-DEPENDENT variant whose
+    /// probe combo the shape-coupled synth can't safely read (here: a rank-3
+    /// `x` — the derivation needs rank-4) gets EMPTY param points, so every
+    /// shape/dtype differential for that combo is skipped. That skip must
+    /// surface an `ImportWarning` (the module's "a caught panic is no longer a
+    /// silent skip" norm applied to the points path); it passes the arity
+    /// pre-check (2 inputs), so without its own warning the coverage hole
+    /// would leave no trace.
+    const SYNTH_CONV2D_RANK3: &str = r#"---
+fkc_version: 1
+provider:
+  name: synth-conv2d-rank3
+  backend: Cpu
+  kernel_source: "portable-cpu"
+---
+
+# synthetic rank-3 CONV2D (review fix: empty-param-points warning)
+
+## conv2d_rank3
+
+Synthetic 2-input Conv2D whose `x` declares rank 3 (the shape-coupled synth needs rank 4), to
+exercise the empty-points warning.
+
+```fkc
+kernel: conv2d_rank3
+fused_op: CONV2D
+blurb: "synthetic rank-3-x conv2d to exercise the empty-param-points warning"
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "synthetic::conv2d_rank3_cpu"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: x
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 3
+    - name: weight
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4
+  op_params:
+    variant: Conv2D
+    fields:
+      stride:  { kind: "(usize, usize)" }
+      padding: { kind: "(usize, usize)" }
+      groups:  { kind: usize }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: passthrough(x)
+      shape_rule: conv2d(params)
+      layout_guarantee: contiguous
+
+caps:
+  awkward_layout_strategy: requires_contiguous
+  in_place: false
+
+cost:
+  provenance: judge_measured
+  class: conv
+
+precision:
+  bit_stable_on_same_hardware: false
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: false
+  notes: "synthetic"
+
+determinism: same_hardware_bitwise
+```
+"#;
+
+    #[test]
+    fn empty_param_points_for_params_dependent_variant_warns() {
+        let provider = import_bundle_str(SYNTH_CONV2D_RANK3, &StubResolveAll)
+            .expect("a rank-3-x CONV2D contract imports (never-panic; differentials skipped)");
+        assert!(
+            provider
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("no param point") && w.message.contains("skipped")),
+            "an unreadable combo for a params-dependent variant must skip its \
+             differentials WITH a warning, not silently: {:?}",
+            provider.warnings,
+        );
+    }
+
     // =====================================================================
     // DUPLICATE: two sections at the same key+pointer → DuplicateKernelRef
     // =====================================================================
