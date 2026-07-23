@@ -243,6 +243,16 @@ of the first outside kernel provider (which Fuel's multi-agent-serving roadmap w
    reference, ULP tier) rather than an authored boolean. Keep Fuel's empirical ledger gate
    (stronger than KISS's syntactic derivation) but adopt the naming.
 
+**Verify-seam repoint follow-up program (kiss-ref advisory cross-check SHIPPED
+2026-07-22).** `verify_candidate` now runs a kiss-ref advisory diff over the new
+`fuel-kiss-ref-backend` adapter crate (git dep on ThinkersJournal/kiss-ref): f32 +
+single-primitive decomposes only, advisory-only `kiss_ref_advisory` ledger record —
+flag-not-verdict per KISS-CONFORM §6.6-0007 (kiss-ref flags/escalates, never verdicts;
+recipe-realize stays the interim verdict authority until a frozen corpus is consumed).
+Tracked follow-ups: (i) `classify_floor_verdict` live wiring into
+`verify_candidate_impl` + a `FusedOpId -> OpTag` claimed-op mapping, (ii) f64/f16/bf16 +
+multi-node advisory coverage, (iii) IngestionService-level `Flagged` e2e.
+
 **Latent-bug fixes SHIPPED this pass (KISS's discipline caught these; TDD-verified green):**
 `SEAM_MAGIC` byte-order (emitted "MAES", now "SEAM" per KISS-ANNOUNCE §6.1-0004), the
 unmanaged `reserved1` alignment padding in `SeamHello` (now an explicit, zeroed, validated
