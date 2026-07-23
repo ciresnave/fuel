@@ -26,6 +26,12 @@ baracuda-kernels-types = { workspace = true, optional = true }
 # The JIT-on-request envelope — only under `jit` (the adopt-glue seam). The core
 # dispatch layer stays free of it (adopt_runtime_fused takes resolved parts).
 fuel-kernel-seam = { workspace = true, optional = true }
+# kiss-ref's pure op vocabulary — only under `jit`, so the CPU-side advisory ULP
+# band (`jit_ingest::advisory_ulp_band`) reads the per-op §6.8 ceilings from
+# kiss-ref's OWN API (`Op::ulp_ceiling`) without pulling the (cuda-gated)
+# fuel-kiss-ref-backend adapter. Pinned to the SAME rev as that adapter's
+# kiss-ref crates (fuel-kiss-ref-backend/Cargo.toml) — bump in lockstep.
+kiss-ops-vocab = { git = "https://github.com/ThinkersJournal/kiss-ref", rev = "b75a748f772d8a4e87b3993430f3b33d593b9eee", optional = true }
 # NVRTC (crates.io-pinned, no ../baracuda checkout) — only under `cuda`, for the
 # tests/jit_synth_kernel_live.rs on-device JIT-load test, which compiles a
 # scalar-ABI PTX kernel at test time.
@@ -86,7 +92,7 @@ telemetry = ["fuel-ir/serde"]
 # JIT-on-request adopt glue (the seam-consumption site): synthesize -> take_kernel
 # -> load kernel (caller-provided CUDA seam) -> adopt_runtime_fused. Pulls the
 # envelope crate + baracuda's OperandDesc (ElementKind). Default OFF.
-jit = ["dep:fuel-kernel-seam", "dep:baracuda-kernels-types"]
+jit = ["dep:fuel-kernel-seam", "dep:baracuda-kernels-types", "dep:kiss-ops-vocab"]
 # The LIVE JIT loop on published crates: jit + cuda + the real BaracudaSynthesizer
 # (baracuda-kernelgen, seam+nvrtc). Enables the on-device test that drives
 # synthesize -> take_kernel -> load_synth_kernel -> launch with Baracuda's own
