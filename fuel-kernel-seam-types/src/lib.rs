@@ -123,6 +123,43 @@ pub struct OpAttrs {
     /// encode keepdim structurally (`ReduceSumTo`/`ReduceMaxTo` carry the kept
     /// shape; `SumDim`/`MeanDim` are rank-reducing). Convergence Increment A.
     pub keepdim: Option<bool>,
+
+    // --- Shape-RELATIVE recipe-interior fields (Increment C slice 1, D2) ---
+    //
+    // The four fields below make a recipe polymorphic across shapes/ranks:
+    // instead of baking an absolute value they carry an expression over the
+    // region's **Bind space** (`ShapeExpr::SameAs { operand: i }` /
+    // `Dim::Extent { operand: i, .. }` reference `Bind { index: i }` — the same
+    // operand-index convention the merged KISS shape-oracle RFC pins for
+    // contracts). They are resolved to the concrete sibling field at emit time
+    // (`fuel_graph::runtime_fused::resolve_rel_attrs`); a rel field and its
+    // concrete sibling set together is a typed resolution error (mutual
+    // exclusion), never a silent precedence.
+    //
+    // **Deliberately NOT serialized to the §6.19 wire (KISS #67-gated).**
+    // `to_canonical_bytes` serializes only the concrete fields: the pinned
+    // §6.19 arms for `broadcast_to`/`slice` are ABSOLUTE, and the node-envelope
+    // framing that could carry a relative alternative is being defined in
+    // KISS #67 — serializing a rel form now would unilaterally extend a shared
+    // byte contract (propose-first). Emitted/graph nodes are always concrete
+    // post-resolution, so rel-attr recipes never flow to `to_canonical_bytes`
+    // callers. Pinned by `rel_attr_fields_are_absent_from_the_6_19_wire`.
+    /// Shape-relative alternative to `target_shape`: the target is another
+    /// operand's shape (`SameAs { operand }` over the Bind space). `None` ⇒
+    /// use `target_shape` (or not a shape-target node).
+    pub target_shape_rel: Option<shape_expr::ShapeExpr>,
+    /// Shape-relative alternative to `slice_start`: a `DimExpr` over the Bind
+    /// space (e.g. rope's `Div(Extent(0, LAST), 2)`). `None` ⇒ use
+    /// `slice_start`.
+    pub slice_start_rel: Option<shape_expr::Dim>,
+    /// Shape-relative alternative to `slice_len`. `None` ⇒ use `slice_len`.
+    pub slice_len_rel: Option<shape_expr::Dim>,
+    /// Rank-relative alternative to the op's axis carrier (`axis`, or `dims`
+    /// for Squeeze/Unsqueeze): this op's axis is its per-tag LAST — resolved
+    /// against `rank(operand[0])` as `rank − 1` for reduces/Slice/Concat/Flip/
+    /// CumSum/… and Squeeze, and `rank` (append) for Unsqueeze. `false` ⇒ use
+    /// the absolute carrier.
+    pub axis_last: bool,
 }
 
 // --- §6.19-shaped canonical positional-blob serialization (Convergence Increment A) ---
@@ -448,5 +485,61 @@ mod tests {
         // Pinned widths, side by side — (a)=4 (u32-LE) vs (b)=2 (u16-LE) vs
         // (c)=2 (u16-LE). (b) and (c) sharing a width is coincidence, not unity:
         // each is pinned by its OWN carrier name above.
+    }
+
+    // ---- T2 (Increment C slice 1): shape-relative interior fields stay OFF
+    // the §6.19 wire ------------------------------------------------------
+    //
+    // D2 pin (KISS #67-gated): `target_shape_rel` / `slice_start_rel` /
+    // `slice_len_rel` / `axis_last` are IN-MEMORY recipe data, resolved to the
+    // concrete fields at emit time. The pinned §6.19 arms for
+    // `broadcast_to`/`slice` are ABSOLUTE (`put_i64_list(target_shape)`,
+    // `u32(axis) ++ u64(start) ++ u64(len)`), and the node-envelope framing
+    // that could carry a relative alternative is being defined in KISS #67 —
+    // serializing a rel form now would unilaterally extend a shared byte
+    // contract (propose-first says no). This test pins the ABSENCE: the wire
+    // bytes are identical with and without every rel field set, for every
+    // schema family the rel fields could plausibly leak into.
+    #[test]
+    fn rel_attr_fields_are_absent_from_the_6_19_wire() {
+        use crate::shape_expr::{Dim, LAST, ShapeExpr};
+        let half = Dim::Div(
+            Box::new(Dim::Extent { operand: 0, axis: LAST }),
+            Box::new(Dim::Const(2)),
+        );
+        let rel_only = OpAttrs {
+            target_shape_rel: Some(ShapeExpr::SameAs { operand: 0 }),
+            slice_start_rel: Some(half.clone()),
+            slice_len_rel: Some(half),
+            axis_last: true,
+            ..OpAttrs::default()
+        };
+        // Shape-target arm (BroadcastTo/Reshape): rel-only attrs serialize
+        // byte-identically to fully-default attrs (an unset target_shape).
+        assert_eq!(
+            rel_only.to_canonical_bytes(OpTag::BroadcastTo),
+            OpAttrs::default().to_canonical_bytes(OpTag::BroadcastTo),
+            "target_shape_rel must not reach the broadcast_to wire arm"
+        );
+        // Slice arm: the ABSOLUTE fields serialize; adding every rel field on
+        // top changes NOTHING.
+        let abs = OpAttrs { axis: Some(1), slice_start: Some(2), slice_len: Some(3), ..OpAttrs::default() };
+        let abs_plus_rel = OpAttrs { axis: Some(1), slice_start: Some(2), slice_len: Some(3), ..rel_only.clone() };
+        assert_eq!(
+            abs_plus_rel.to_canonical_bytes(OpTag::Slice),
+            abs.to_canonical_bytes(OpTag::Slice),
+            "slice_{{start,len}}_rel must not reach the slice wire arm"
+        );
+        // Reduce row (axis ++ keepdim): axis_last must not leak.
+        let sd = OpAttrs { axis: Some(1), ..OpAttrs::default() };
+        let sd_plus_rel = OpAttrs { axis: Some(1), ..rel_only.clone() };
+        assert_eq!(
+            sd_plus_rel.to_canonical_bytes(OpTag::SumDim),
+            sd.to_canonical_bytes(OpTag::SumDim),
+            "axis_last must not reach the reduce wire row"
+        );
+        // Empty-schema op: stays the single canonical 4-byte zero form even
+        // with every rel field set.
+        assert_eq!(rel_only.to_canonical_bytes(OpTag::Add), vec![0, 0, 0, 0]);
     }
 }

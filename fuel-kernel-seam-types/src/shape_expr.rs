@@ -177,7 +177,10 @@ pub enum DimValue { Concrete(i64), Gap }
 pub enum ShapeValue { Concrete(Vec<i64>), Gap }
 
 /// Resolve a non-negative `axis` (or [`LAST`]) against `rank` (§6.20-0003).
-fn resolve_axis(axis: u8, rank: usize) -> Result<usize, ShapeExprError> {
+/// `pub` since Increment C slice 1 (T2): the recipe-interior `axis_last`
+/// resolver (`fuel_graph::runtime_fused::resolve_rel_attrs`) reuses this as
+/// the single LAST→`rank−1` evaluator instead of growing a second one.
+pub fn resolve_axis(axis: u8, rank: usize) -> Result<usize, ShapeExprError> {
     if axis == LAST {
         return rank.checked_sub(1).ok_or(ShapeExprError::AxisOutOfRange { axis, rank });
     }

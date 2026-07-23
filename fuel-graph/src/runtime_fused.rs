@@ -386,6 +386,145 @@ fn scalar_slot_arity(tag: OpTag) -> usize {
     matches!(tag, OpTag::AddScalar | OpTag::MulScalar) as usize
 }
 
+// ---- shape-relative attr resolution (Increment C slice 1, T2/D2) -----------
+
+/// A shape-relative attr resolution failure — a typed decline, never a panic.
+/// The emit-integration caller (T3) surfaces any of these as a decompose
+/// fixpoint (`return id`, G2); the registration-validation caller rejects the
+/// region. The `field` names the CONCRETE sibling the rel field resolves into
+/// (`"target_shape"`, `"slice_start"`, `"slice_len"`, `"axis"`, `"dims"`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RelAttrError {
+    /// A rel field and its concrete sibling are BOTH set — ambiguous authoring
+    /// (rel XOR abs per field), refused rather than given a silent precedence.
+    RelAbsConflict { field: &'static str },
+    /// The underlying shape-expression evaluation declined (bind out of range,
+    /// axis out of range, divide-by-zero, `Param` with no param threading, …).
+    Expr(fuel_kernel_seam_types::shape_expr::ShapeExprError),
+    /// The expression evaluated over a SYMBOLIC bind extent → a surfaced gap
+    /// (§6.20-0004): a rel attr cannot resolve concrete at emit time.
+    SymbolicGap { field: &'static str },
+    /// The expression produced a negative value where a non-negative
+    /// extent/offset is required.
+    Negative { field: &'static str, value: i64 },
+    /// `axis_last` on a tag with no axis carrier (e.g. `Add`) — meaningless,
+    /// refused (build-time validation, never silently ignored).
+    AxisLastUnsupported { tag: OpTag },
+    /// `axis_last` with no child operand — no rank to resolve LAST against.
+    NoChildOperand,
+}
+
+/// Resolve `attrs`' shape-RELATIVE fields (`target_shape_rel`,
+/// `slice_start_rel`/`slice_len_rel`, `axis_last` — D2) into their concrete
+/// siblings, returning a fully-concrete [`OpAttrs`] ready for the unchanged
+/// `tag_to_op` → `primitive_shape` path. Pure: no graph access.
+///
+/// * `bind_shapes` — the region's **Bind-space** shapes, `bind_shapes[i]` =
+///   `Bind { index: i }`'s shape. This is what `ShapeExpr::SameAs { operand }`
+///   and `Dim::Extent { operand, .. }` index (the recipe-interior reference
+///   convention, same as the merged KISS shape-oracle RFC's contract roles).
+/// * `child_shapes` — THIS op's direct operand shapes (the already-emitted
+///   children), which `axis_last` resolves its rank against — a region
+///   interior node's shape generally matches NO bind.
+///
+/// Evaluation reuses `shape_expr::eval_dim`/`eval_shape`/`resolve_axis` — the
+/// single §6.20 evaluator, no second one. `Dim::Param` declines with a typed
+/// [`ShapeExprError::ParamOutOfRange`] until param threading lands (C-4);
+/// symbolic bind extents decline as [`RelAttrError::SymbolicGap`]. Rel fields
+/// are CLEARED in the output (rel+abs both set in the RESULT would trip the
+/// mutual-exclusion check on a second resolve).
+pub fn resolve_rel_attrs(
+    tag: OpTag,
+    attrs: &OpAttrs,
+    bind_shapes: &[Vec<i64>],
+    child_shapes: &[Vec<i64>],
+) -> Result<OpAttrs, RelAttrError> {
+    use fuel_kernel_seam_types::shape_expr::{
+        self, Dim, DimValue, LAST, ShapeValue, resolve_axis,
+    };
+    let mut out = attrs.clone();
+
+    // target_shape_rel → target_shape (SameAs over the Bind space).
+    if let Some(se) = &attrs.target_shape_rel {
+        if !attrs.target_shape.is_empty() {
+            return Err(RelAttrError::RelAbsConflict { field: "target_shape" });
+        }
+        match shape_expr::eval_shape(se, bind_shapes, &[]).map_err(RelAttrError::Expr)? {
+            ShapeValue::Concrete(s) => {
+                if let Some(&bad) = s.iter().find(|&&e| e < 0) {
+                    return Err(RelAttrError::Negative { field: "target_shape", value: bad });
+                }
+                out.target_shape = s;
+            }
+            ShapeValue::Gap => {
+                return Err(RelAttrError::SymbolicGap { field: "target_shape" });
+            }
+        }
+        out.target_shape_rel = None;
+    }
+
+    // slice_{start,len}_rel → slice_{start,len} (DimExpr over the Bind space).
+    let eval_dim_field = |d: &Dim, field: &'static str| -> Result<u64, RelAttrError> {
+        match shape_expr::eval_dim(d, bind_shapes, &[]).map_err(RelAttrError::Expr)? {
+            DimValue::Concrete(v) if v < 0 => Err(RelAttrError::Negative { field, value: v }),
+            DimValue::Concrete(v) => Ok(v as u64),
+            DimValue::Gap => Err(RelAttrError::SymbolicGap { field }),
+        }
+    };
+    if let Some(d) = &attrs.slice_start_rel {
+        if attrs.slice_start.is_some() {
+            return Err(RelAttrError::RelAbsConflict { field: "slice_start" });
+        }
+        out.slice_start = Some(eval_dim_field(d, "slice_start")?);
+        out.slice_start_rel = None;
+    }
+    if let Some(d) = &attrs.slice_len_rel {
+        if attrs.slice_len.is_some() {
+            return Err(RelAttrError::RelAbsConflict { field: "slice_len" });
+        }
+        out.slice_len = Some(eval_dim_field(d, "slice_len")?);
+        out.slice_len_rel = None;
+    }
+
+    // axis_last → the per-tag axis carrier, resolved against operand[0]'s rank.
+    if attrs.axis_last {
+        let rank = child_shapes.first().ok_or(RelAttrError::NoChildOperand)?.len();
+        use OpTag as T;
+        match tag {
+            // `axis`-carrier tags: this op's LAST = rank − 1 via the shared
+            // §6.20 resolver (typed AxisOutOfRange on a rank-0 operand).
+            T::SumDim | T::MeanDim | T::CumSum | T::Concat | T::Flip | T::Slice | T::Roll
+            | T::IndexSelect | T::Gather | T::IndexAdd | T::ScatterAdd => {
+                if attrs.axis.is_some() {
+                    return Err(RelAttrError::RelAbsConflict { field: "axis" });
+                }
+                let a = resolve_axis(LAST, rank).map_err(RelAttrError::Expr)?;
+                out.axis = Some(a as i64);
+            }
+            // `dims`-carrier: Unsqueeze APPENDS — dim == rank (`primitive_shape`
+            // permits `dim == rank`; keepdim-restore spelling, D3).
+            T::Unsqueeze => {
+                if !attrs.dims.is_empty() {
+                    return Err(RelAttrError::RelAbsConflict { field: "dims" });
+                }
+                out.dims = vec![rank as u8];
+            }
+            // `dims`-carrier: Squeeze drops the trailing axis = rank − 1.
+            T::Squeeze => {
+                if !attrs.dims.is_empty() {
+                    return Err(RelAttrError::RelAbsConflict { field: "dims" });
+                }
+                let a = resolve_axis(LAST, rank).map_err(RelAttrError::Expr)?;
+                out.dims = vec![a as u8];
+            }
+            other => return Err(RelAttrError::AxisLastUnsupported { tag: other }),
+        }
+        out.axis_last = false;
+    }
+
+    Ok(out)
+}
+
 /// Count the region's open scalar **slots** in pattern pre-order — scalar-param
 /// ops whose `attrs.scalars` is empty (a baked value is a pattern constant, not
 /// a slot). This is the length of the `scalars` vec `match_region_extract`
@@ -1009,6 +1148,218 @@ mod tests {
 
         let emitted = emit_region(&mut g, &region, &[x], &[]);
         assert_structural_eq(&g, oracle, emitted);
+    }
+
+    // ---- T2 (Increment C slice 1): shape-relative attr resolution ----------
+    //
+    // `resolve_rel_attrs` is the PURE resolver behind recipe polymorphism: it
+    // turns the shape-relative interior fields (`target_shape_rel` /
+    // `slice_{start,len}_rel` / `axis_last`, D2) into the concrete sibling
+    // fields against the given bind/child shapes, reusing `shape_expr`'s
+    // evaluator (no second evaluator). Every failure is a typed
+    // [`RelAttrError`], never a panic.
+
+    mod resolve_rel {
+        use super::super::{RelAttrError, resolve_rel_attrs};
+        use fuel_kernel_seam_types::shape_expr::{Dim, LAST, ShapeExpr, ShapeExprError, SYMBOLIC};
+        use fuel_kernel_seam_types::{OpAttrs, OpTag};
+
+        fn half_of_bind0_last() -> Dim {
+            Dim::Div(
+                Box::new(Dim::Extent { operand: 0, axis: LAST }),
+                Box::new(Dim::Const(2)),
+            )
+        }
+
+        #[test]
+        fn same_as_bind0_tracks_the_bind_shape() {
+            // The polymorphism seed: ONE recipe datum, two shapes, two targets.
+            let attrs = OpAttrs {
+                target_shape_rel: Some(ShapeExpr::SameAs { operand: 0 }),
+                ..OpAttrs::default()
+            };
+            let r = resolve_rel_attrs(OpTag::BroadcastTo, &attrs, &[vec![2, 3]], &[vec![2, 1]])
+                .expect("resolves");
+            assert_eq!(r.target_shape, vec![2, 3]);
+            assert!(r.target_shape_rel.is_none(), "resolved attrs are fully concrete");
+            let r = resolve_rel_attrs(OpTag::BroadcastTo, &attrs, &[vec![4, 5]], &[vec![4, 1]])
+                .expect("resolves");
+            assert_eq!(r.target_shape, vec![4, 5]);
+        }
+
+        #[test]
+        fn slice_bounds_track_the_bind_extent() {
+            // start = len = Extent(bind0, LAST) / 2 — the rope-half worked example.
+            let attrs = OpAttrs {
+                axis: Some(1),
+                slice_start_rel: Some(half_of_bind0_last()),
+                slice_len_rel: Some(half_of_bind0_last()),
+                ..OpAttrs::default()
+            };
+            let r = resolve_rel_attrs(OpTag::Slice, &attrs, &[vec![2, 4]], &[vec![2, 4]])
+                .expect("resolves at d=4");
+            assert_eq!(r.slice_start, Some(2));
+            assert_eq!(r.slice_len, Some(2));
+            assert!(r.slice_start_rel.is_none() && r.slice_len_rel.is_none());
+            let r = resolve_rel_attrs(OpTag::Slice, &attrs, &[vec![2, 8]], &[vec![2, 8]])
+                .expect("resolves at d=8");
+            assert_eq!(r.slice_start, Some(4));
+            assert_eq!(r.slice_len, Some(4));
+        }
+
+        #[test]
+        fn axis_last_resolves_per_tag() {
+            let attrs = OpAttrs { axis_last: true, ..OpAttrs::default() };
+            // Reduce family (axis carrier): LAST = rank − 1.
+            let r = resolve_rel_attrs(OpTag::SumDim, &attrs, &[], &[vec![2, 4]]).expect("rank 2");
+            assert_eq!(r.axis, Some(1));
+            assert!(!r.axis_last, "resolved attrs are fully concrete");
+            let r = resolve_rel_attrs(OpTag::SumDim, &attrs, &[], &[vec![2, 3, 4]]).expect("rank 3");
+            assert_eq!(r.axis, Some(2));
+            // Concat rides the same axis carrier.
+            let r = resolve_rel_attrs(OpTag::Concat, &attrs, &[], &[vec![2, 3, 4]]).expect("concat");
+            assert_eq!(r.axis, Some(2));
+            // Unsqueeze (dims carrier): APPEND — dim == rank (`primitive_shape`
+            // permits `dim == rank`).
+            let r = resolve_rel_attrs(OpTag::Unsqueeze, &attrs, &[], &[vec![2, 4]]).expect("unsqueeze");
+            assert_eq!(r.dims, vec![2]);
+            assert!(!r.axis_last);
+            // Squeeze (dims carrier): LAST = rank − 1.
+            let r = resolve_rel_attrs(OpTag::Squeeze, &attrs, &[], &[vec![2, 4, 1]]).expect("squeeze");
+            assert_eq!(r.dims, vec![2]);
+        }
+
+        #[test]
+        fn bind_out_of_range_is_a_typed_decline() {
+            let attrs = OpAttrs {
+                target_shape_rel: Some(ShapeExpr::SameAs { operand: 3 }),
+                ..OpAttrs::default()
+            };
+            assert_eq!(
+                resolve_rel_attrs(OpTag::BroadcastTo, &attrs, &[vec![2, 3]], &[vec![2, 3]]),
+                Err(RelAttrError::Expr(ShapeExprError::OperandOutOfRange { operand: 3, operands: 1 })),
+            );
+            let attrs = OpAttrs {
+                axis: Some(1),
+                slice_start_rel: Some(Dim::Extent { operand: 7, axis: LAST }),
+                ..OpAttrs::default()
+            };
+            assert_eq!(
+                resolve_rel_attrs(OpTag::Slice, &attrs, &[vec![2, 4]], &[vec![2, 4]]),
+                Err(RelAttrError::Expr(ShapeExprError::OperandOutOfRange { operand: 7, operands: 1 })),
+            );
+        }
+
+        #[test]
+        fn rel_and_abs_both_set_is_a_typed_conflict() {
+            // target_shape XOR target_shape_rel.
+            let attrs = OpAttrs {
+                target_shape: vec![2, 3],
+                target_shape_rel: Some(ShapeExpr::SameAs { operand: 0 }),
+                ..OpAttrs::default()
+            };
+            assert_eq!(
+                resolve_rel_attrs(OpTag::BroadcastTo, &attrs, &[vec![2, 3]], &[vec![2, 3]]),
+                Err(RelAttrError::RelAbsConflict { field: "target_shape" }),
+            );
+            // slice_start XOR slice_start_rel.
+            let attrs = OpAttrs {
+                axis: Some(1),
+                slice_start: Some(0),
+                slice_start_rel: Some(half_of_bind0_last()),
+                ..OpAttrs::default()
+            };
+            assert_eq!(
+                resolve_rel_attrs(OpTag::Slice, &attrs, &[vec![2, 4]], &[vec![2, 4]]),
+                Err(RelAttrError::RelAbsConflict { field: "slice_start" }),
+            );
+            // slice_len XOR slice_len_rel.
+            let attrs = OpAttrs {
+                axis: Some(1),
+                slice_len: Some(2),
+                slice_len_rel: Some(half_of_bind0_last()),
+                ..OpAttrs::default()
+            };
+            assert_eq!(
+                resolve_rel_attrs(OpTag::Slice, &attrs, &[vec![2, 4]], &[vec![2, 4]]),
+                Err(RelAttrError::RelAbsConflict { field: "slice_len" }),
+            );
+            // axis XOR axis_last.
+            let attrs = OpAttrs { axis: Some(0), axis_last: true, ..OpAttrs::default() };
+            assert_eq!(
+                resolve_rel_attrs(OpTag::SumDim, &attrs, &[], &[vec![2, 4]]),
+                Err(RelAttrError::RelAbsConflict { field: "axis" }),
+            );
+            // dims XOR axis_last (Unsqueeze's carrier is `dims`).
+            let attrs = OpAttrs { dims: vec![0], axis_last: true, ..OpAttrs::default() };
+            assert_eq!(
+                resolve_rel_attrs(OpTag::Unsqueeze, &attrs, &[], &[vec![2, 4]]),
+                Err(RelAttrError::RelAbsConflict { field: "dims" }),
+            );
+        }
+
+        #[test]
+        fn negative_result_is_a_typed_decline() {
+            // 0 − 2 = −2: a negative slice offset is malformed, not a wrap.
+            let neg = Dim::Sub(Box::new(Dim::Const(0)), Box::new(Dim::Const(2)));
+            let attrs = OpAttrs { axis: Some(1), slice_start_rel: Some(neg), ..OpAttrs::default() };
+            assert_eq!(
+                resolve_rel_attrs(OpTag::Slice, &attrs, &[vec![2, 4]], &[vec![2, 4]]),
+                Err(RelAttrError::Negative { field: "slice_start", value: -2 }),
+            );
+        }
+
+        #[test]
+        fn symbolic_extent_is_a_surfaced_gap_decline() {
+            // A symbolic bind extent → the expression evaluates to Gap → typed
+            // decline (the emit caller surfaces it as a fixpoint, G2).
+            let attrs = OpAttrs {
+                axis: Some(1),
+                slice_len_rel: Some(half_of_bind0_last()),
+                ..OpAttrs::default()
+            };
+            assert_eq!(
+                resolve_rel_attrs(OpTag::Slice, &attrs, &[vec![2, SYMBOLIC]], &[vec![2, 4]]),
+                Err(RelAttrError::SymbolicGap { field: "slice_len" }),
+            );
+            let attrs = OpAttrs {
+                target_shape_rel: Some(ShapeExpr::SameAs { operand: 0 }),
+                ..OpAttrs::default()
+            };
+            assert_eq!(
+                resolve_rel_attrs(OpTag::BroadcastTo, &attrs, &[vec![2, SYMBOLIC]], &[vec![2, 4]]),
+                Err(RelAttrError::SymbolicGap { field: "target_shape" }),
+            );
+        }
+
+        #[test]
+        fn axis_last_on_an_axisless_tag_or_without_a_child_declines() {
+            let attrs = OpAttrs { axis_last: true, ..OpAttrs::default() };
+            // Add has no axis carrier — axis_last is meaningless, a typed decline
+            // (build-time validation posture: never silently ignore).
+            assert_eq!(
+                resolve_rel_attrs(OpTag::Add, &attrs, &[], &[vec![2, 4], vec![2, 4]]),
+                Err(RelAttrError::AxisLastUnsupported { tag: OpTag::Add }),
+            );
+            // No child operand → no rank to resolve LAST against.
+            assert_eq!(
+                resolve_rel_attrs(OpTag::SumDim, &attrs, &[], &[]),
+                Err(RelAttrError::NoChildOperand),
+            );
+            // Rank-0 child: LAST has no axis → the shared resolve_axis decline.
+            assert_eq!(
+                resolve_rel_attrs(OpTag::SumDim, &attrs, &[], &[vec![]]),
+                Err(RelAttrError::Expr(ShapeExprError::AxisOutOfRange { axis: LAST, rank: 0 })),
+            );
+        }
+
+        #[test]
+        fn rel_free_attrs_pass_through_unchanged() {
+            // The no-rel fast path: absolute attrs resolve to themselves.
+            let attrs = OpAttrs { axis: Some(1), slice_start: Some(2), slice_len: Some(3), ..OpAttrs::default() };
+            let r = resolve_rel_attrs(OpTag::Slice, &attrs, &[vec![2, 4]], &[vec![2, 4]]).expect("no-op");
+            assert_eq!(r, attrs);
+        }
     }
 
     #[test]
