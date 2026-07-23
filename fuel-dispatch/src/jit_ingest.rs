@@ -1621,8 +1621,11 @@ mod tests {
     /// reference realized from the decompose (elementwise sum), so it's
     /// bit-stable AND meets every `PrecisionGuarantee::REFERENCE` numeric bound
     /// (0 ULP / 0 relative / 0 absolute). Earns one `pass` `LedgerRecord` per
-    /// declared claim (bit_stable + the 3 numeric bounds = 4). `#[ignore]`'d
-    /// (needs a live CUDA device). Candidate/probe construction mirrors
+    /// declared claim (bit_stable + the 3 numeric bounds = 4) PLUS the
+    /// `kiss_ref_advisory` record (f32 single-primitive Add is on the kiss-ref
+    /// floor, so the advisory cross-check fires — see
+    /// `kiss_ref_advisory_records_for_add_f32`). `#[ignore]`'d (needs a live
+    /// CUDA device). Candidate/probe construction mirrors
     /// `invoker_cuda.rs`'s `cuda_invoker_runs_add_elementwise_f32_end_to_end`.
     #[test]
     #[ignore = "requires a live CUDA device"]
@@ -1660,11 +1663,17 @@ mod tests {
 
         let (verdict, records) = verify_candidate(&cand, &dev);
         assert!(matches!(verdict, VerifyVerdict::Pass), "expected Pass, got {verdict:?}");
-        // REFERENCE declares 4 machine-checkable claims → 4 pass records.
-        assert_eq!(records.len(), 4, "one pass record per declared claim: {records:?}");
+        // REFERENCE declares 4 machine-checkable claims → 4 pass records,
+        // plus the kiss-ref advisory record (f32 floor Add) = 5.
+        assert_eq!(
+            records.len(),
+            5,
+            "one pass record per declared claim + the kiss-ref advisory: {records:?}"
+        );
         assert!(records.iter().all(|r| r.result == "pass"), "all pass: {records:?}");
         assert!(records.iter().all(|r| r.backend == "Cuda"));
         assert!(records.iter().all(|r| r.kernel_revision_hash == 0x00AD_DF32));
+        assert!(records.iter().any(|r| r.claim == "kiss_ref_advisory"));
         assert!(records.iter().any(|r| r.claim == "bit_stable_on_same_hardware"));
         assert!(records.iter().any(|r| r.claim == "max_ulp"));
         assert!(records.iter().any(|r| r.claim == "max_relative"));
