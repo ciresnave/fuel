@@ -16,6 +16,12 @@
 //! `fuel-kernel-seam-announce` crate, not here — a provider that only speaks
 //! capability negotiation shouldn't need to pull in this region grammar.
 
+/// The §6.20 shape-expression AST + canonical wire codec + evaluator — the
+/// KISS-consistent shape vocabulary, homed here (std-only) so `fuel-graph` can
+/// carry `Dim`/`ShapeExpr` in [`OpAttrs`] without depending on `fuel-dispatch`
+/// (which re-exports this module at `fkc::shape_expr` for its FKC importer).
+pub mod shape_expr;
+
 // ===========================================================================
 // OpTag — the frozen functional-Op vocabulary (kernel-seam-interop §4.1)
 // ===========================================================================
@@ -371,5 +377,76 @@ mod tests {
     fn canonical_bytes_are_deterministic() {
         let a = OpAttrs { target_shape: vec![2, 3], ..OpAttrs::default() };
         assert_eq!(a.to_canonical_bytes(OpTag::Reshape), a.to_canonical_bytes(OpTag::Reshape));
+    }
+
+    // ---- Per-carrier width conformance (KISS coordinator pin, vs KISS main c9153b2) --
+    //
+    // There are THREE coexisting op_attrs / shape-expr framings. Widths are pinned
+    // PER-CARRIER, never as "the op_attrs width" — a future consolidation must NOT
+    // silently unify them (KISS #67 do-not-unify):
+    //   (a) #67 NODE-ENVELOPE op_attrs        → u32-LE OUTER byte length, payload
+    //       verbatim, no-parse-inside (§6.19-0010). Live producer:
+    //       `OpAttrs::to_canonical_bytes`.
+    //   (b) KISS-Grammar §6.8-0007 REGION-NODE-TABLE op_attrs SUB-BLOCK → u16-LE
+    //       length + payload verbatim; EMPTY = 0x0000. A DIFFERENT carrier from (a).
+    //       Fuel ships NO producer yet (node/table wire serializer is #67-gated,
+    //       slice 4); this pin binds that future serializer to u16-LE here.
+    //   (c) §6.20-0005 SHAPE-EXPR binary-node CHILD length → u16-LE. Live producer:
+    //       `shape_expr::Dim::encode`.
+    #[test]
+    fn three_carrier_width_pins_stay_distinct() {
+        use crate::shape_expr::{Dim, LAST};
+
+        // Carrier (a): node-envelope op_attrs — outer prefix is EXACTLY 4 bytes
+        // (u32-LE); an empty schema is the 4-byte zero form.
+        let empty = OpAttrs::default().to_canonical_bytes(OpTag::Add);
+        assert_eq!(empty, vec![0u8, 0, 0, 0], "carrier (a): empty node-envelope op_attrs = u32-LE zero (4 bytes)");
+        let sliced = OpAttrs { axis: Some(1), slice_start: Some(2), slice_len: Some(3), ..OpAttrs::default() };
+        let blob = sliced.to_canonical_bytes(OpTag::Slice);
+        let a_body_len = u32::from_le_bytes([blob[0], blob[1], blob[2], blob[3]]) as usize;
+        assert_eq!(blob.len(), 4 + a_body_len, "carrier (a): outer length prefix is u32-LE (4 bytes), body verbatim");
+
+        // Carrier (b): region-node-table op_attrs sub-block — u16-LE length +
+        // verbatim payload; empty = 0x0000. Modeled here (no Fuel producer yet) so
+        // the width pin is executable and NAMED before the slice-4 serializer lands.
+        fn region_node_table_op_attrs_sub_block(payload: &[u8]) -> Vec<u8> {
+            let mut out = (payload.len() as u16).to_le_bytes().to_vec();
+            out.extend_from_slice(payload); // verbatim, no-parse-inside
+            out
+        }
+        assert_eq!(
+            region_node_table_op_attrs_sub_block(&[]),
+            vec![0x00, 0x00],
+            "carrier (b): EMPTY region-node-table op_attrs sub-block = 0x0000 (u16-LE, 2 bytes)"
+        );
+        assert_eq!(
+            region_node_table_op_attrs_sub_block(&[0xAB, 0xCD]),
+            vec![0x02, 0x00, 0xAB, 0xCD],
+            "carrier (b): sub-block length prefix is u16-LE (2 bytes), payload verbatim"
+        );
+
+        // Carrier (c): shape-expr binary-node child length — u16-LE (2 bytes),
+        // inside Dim::{Add,Sub,Mul,Div}. The rope-half golden's child prefixes:
+        // tag(0x08) ++ u16-LE(3) ++ Extent(3B) ++ u16-LE(9) ++ Const(9B).
+        let half = Dim::Div(
+            Box::new(Dim::Extent { operand: 0, axis: LAST }),
+            Box::new(Dim::Const(2)),
+        );
+        let bytes = half.encode();
+        assert_eq!(
+            [bytes[1], bytes[2]],
+            3u16.to_le_bytes(),
+            "carrier (c): first child length prefix is u16-LE (2 bytes)"
+        );
+        assert_eq!(
+            [bytes[6], bytes[7]],
+            9u16.to_le_bytes(),
+            "carrier (c): second child length prefix is u16-LE (2 bytes)"
+        );
+        assert_eq!(bytes.len(), 1 + 2 + 3 + 2 + 9, "carrier (c): whole rope-half blob accounted for");
+
+        // Pinned widths, side by side — (a)=4 (u32-LE) vs (b)=2 (u16-LE) vs
+        // (c)=2 (u16-LE). (b) and (c) sharing a width is coincidence, not unity:
+        // each is pinned by its OWN carrier name above.
     }
 }
