@@ -27,9 +27,14 @@ pub fn eval_dtype_rule(rule: &str, combo: ProbeComboRef, section: &str) -> Resul
 }
 /// §5.2: `same_as(role)` yields the operand's whole shape; a `DimExpr` string
 /// (`extent(role,axis)` / `const(N)` / `param(N)` / `add|sub|mul|div(a,b)`) evaluates to a
-/// single-dim shape via the shape-expr oracle (§6.20). Every other token, a surfaced gap, or
-/// a decline on a recognized DimExpr → `Ok(None)` (not-evaluable; never a false reject).
-pub fn eval_shape_rule(rule: &str, combo: ProbeComboRef, _section: &str) -> Result<Option<Shape>, FkcError> {
+/// single-dim shape via the shape-expr oracle (§6.20). `params` carries the op's
+/// flattened param values for `param(N)` — index order pinned to
+/// `FusedOpParams::key().ints` (the C-4 threading convention); an EMPTY slice
+/// declines every `param(N)` rule (`ParamOutOfRange` → skip), preserving the
+/// pre-threading behavior for callers with no synthesized values. Every other
+/// token, a surfaced gap, or a decline on a recognized DimExpr → `Ok(None)`
+/// (not-evaluable; never a false reject).
+pub fn eval_shape_rule(rule: &str, combo: ProbeComboRef, params: &[i64], _section: &str) -> Result<Option<Shape>, FkcError> {
     let rule = rule.trim();
     if let Some(r) = inner(rule, "same_as(") {
         return Ok(role(combo, r).map(|(_, s, _)| s.clone()));
@@ -59,11 +64,12 @@ pub fn eval_shape_rule(rule: &str, combo: ProbeComboRef, _section: &str) -> Resu
         let dims: Vec<usize> = out.iter().map(|&d| d as usize).collect();
         return Ok(Some(Shape::from_dims(&dims)));
     }
-    // A DimExpr form: parse (role names → positional AST), then evaluate over the combo.
+    // A DimExpr form: parse (role names → positional AST), then evaluate over the
+    // combo + the caller's flattened param values (C-4 T1 threading).
     if is_dimexpr_head(rule) {
         let Some(dim) = crate::fkc::shape_expr_parse::parse_dim(rule, combo) else { return Ok(None) };
         let operands: Vec<Vec<i64>> = combo.iter().map(|(_, s, _)| shape_to_i64(s)).collect();
-        return match crate::fkc::shape_expr::eval_dim(&dim, &operands, &[]) {
+        return match crate::fkc::shape_expr::eval_dim(&dim, &operands, params) {
             // A DimExpr denotes a single dimension → a rank-1 output shape (d ≥ 0).
             Ok(crate::fkc::shape_expr::DimValue::Concrete(d)) if d >= 0 => {
                 Ok(Some(Shape::from_dims(&[d as usize])))
@@ -347,7 +353,11 @@ pub fn cross_check_fused_section(
             }
         }
         if let (Some(rule), Some(p)) = (out.shape_rule.as_deref(), params.as_ref()) {
-            if let Some(declared) = eval_shape_rule(rule, combo, section)? {
+            // C-4 T1: no synthesized param VALUES yet at this call site — `&[]`
+            // keeps every `param(N)` rule a decline-to-skip. T2/T3 replace this
+            // with per-combo `synth_probe_param_points` values (same values to
+            // the declared-rule evaluator and the real registry fn).
+            if let Some(declared) = eval_shape_rule(rule, combo, &[], section)? {
                 let Some(real) = guard_rule(warnings, section, "shape_rule", || (entry.shape_rule)(&in_shapes, p)) else { continue };
                 if declared != real {
                     return Err(FkcError::ShapeRuleMismatch {
@@ -412,7 +422,9 @@ pub fn cross_check_fused_section(
                         .get(serde_yml::Value::String("shape_rule".into()))
                         .and_then(|v| v.as_str())
                     {
-                        if let Some(shape) = eval_shape_rule(rule, &distinct, section)? {
+                        // C-4 T1: `&[]` = no synthesized param values for bundle
+                        // slot rules yet (see the primary-output call above).
+                        if let Some(shape) = eval_shape_rule(rule, &distinct, &[], section)? {
                             check_slot_rank(section, &slot_name, &shape)?;
                             // Finding 3: differentially compare the evaluated slot
                             // shape to the `output_views` oracle for the SAME slot
@@ -570,26 +582,55 @@ mod tests {
         assert_eq!(eval_dtype_rule("fixed(F16)", c, "k").unwrap(), Some(DType::F16));
         assert_eq!(eval_dtype_rule("passthrough(x)", c, "k").unwrap(), Some(DType::F32));
         assert_eq!(eval_dtype_rule("dequant(w)", c, "k").unwrap(), None);
-        assert_eq!(eval_shape_rule("same_as(upstream)", c, "k").unwrap(), Some(Shape::from_dims(&[4, 5])));
-        assert_eq!(eval_shape_rule("from_params(q)", c, "k").unwrap(), None);
+        assert_eq!(eval_shape_rule("same_as(upstream)", c, &[], "k").unwrap(), Some(Shape::from_dims(&[4, 5])));
+        assert_eq!(eval_shape_rule("from_params(q)", c, &[], "k").unwrap(), None);
         // `matmul(a, b)` over a combo that has NO `a`/`b` roles → unknown-role skip.
-        assert_eq!(eval_shape_rule("matmul(a, b)", c, "k").unwrap(), None);
-        assert_eq!(eval_shape_rule("same_as(does_not_exist)", c, "k").unwrap(), None);
+        assert_eq!(eval_shape_rule("matmul(a, b)", c, &[], "k").unwrap(), None);
+        assert_eq!(eval_shape_rule("same_as(does_not_exist)", c, &[], "k").unwrap(), None);
 
         // Convergence-C: DimExpr rules evaluate to a single-dim shape via the §6.20 oracle.
         // combo "x" = [2, 3].
-        assert_eq!(eval_shape_rule("extent(x, 0)", c, "k").unwrap(), Some(Shape::from_dims(&[2])));
-        assert_eq!(eval_shape_rule("const(9)", c, "k").unwrap(), Some(Shape::from_dims(&[9])));
+        assert_eq!(eval_shape_rule("extent(x, 0)", c, &[], "k").unwrap(), Some(Shape::from_dims(&[2])));
+        assert_eq!(eval_shape_rule("const(9)", c, &[], "k").unwrap(), Some(Shape::from_dims(&[9])));
         // div(extent(x, last), const(2)) on x=[2,3]: floor(3/2) = 1.
-        assert_eq!(eval_shape_rule("div(extent(x, last), const(2))", c, "k").unwrap(), Some(Shape::from_dims(&[1])));
+        assert_eq!(eval_shape_rule("div(extent(x, last), const(2))", c, &[], "k").unwrap(), Some(Shape::from_dims(&[1])));
         // mul(extent(x, 0)=2, const(3)=3) = 6.
-        assert_eq!(eval_shape_rule("mul(extent(x, 0), const(3))", c, "k").unwrap(), Some(Shape::from_dims(&[6])));
-        // Unknown role, a param rule (no params threaded), a ÷0 decline, and a negative
-        // result all surface as not-evaluable → None (never a false reject).
-        assert_eq!(eval_shape_rule("extent(nope, 0)", c, "k").unwrap(), None);
-        assert_eq!(eval_shape_rule("param(0)", c, "k").unwrap(), None);
-        assert_eq!(eval_shape_rule("div(extent(x, last), const(0))", c, "k").unwrap(), None);
-        assert_eq!(eval_shape_rule("sub(const(2), extent(x, 1))", c, "k").unwrap(), None); // 2 − 3 = −1
+        assert_eq!(eval_shape_rule("mul(extent(x, 0), const(3))", c, &[], "k").unwrap(), Some(Shape::from_dims(&[6])));
+        // Unknown role, a param rule with EMPTY params (`&[]` → ParamOutOfRange
+        // decline; C-4 T1 pin — values thread via the params slice now, but no
+        // values still means skip), a ÷0 decline, and a negative result all
+        // surface as not-evaluable → None (never a false reject).
+        assert_eq!(eval_shape_rule("extent(nope, 0)", c, &[], "k").unwrap(), None);
+        assert_eq!(eval_shape_rule("param(0)", c, &[], "k").unwrap(), None);
+        assert_eq!(eval_shape_rule("div(extent(x, last), const(0))", c, &[], "k").unwrap(), None);
+        assert_eq!(eval_shape_rule("sub(const(2), extent(x, 1))", c, &[], "k").unwrap(), None); // 2 − 3 = −1
+    }
+
+    /// C-4 T1: `eval_shape_rule` threads its params slice through to the §6.20
+    /// `eval_dim` oracle, so a `param(N)` rule evaluates against synthesized
+    /// values instead of unconditionally declining. Index order is the
+    /// `FusedOpParams::key().ints` flattening (pinned per-variant in T2). An
+    /// EMPTY slice still declines every `param(N)` rule (`ParamOutOfRange` →
+    /// skip) — the pre-threading pin stays the default for value-less callers.
+    #[test]
+    fn eval_shape_rule_threads_param_values_through_the_oracle() {
+        let combo: Vec<(String, Shape, DType)> = vec![
+            ("x".into(), Shape::from_dims(&[2, 3]), DType::F32),
+        ];
+        let c: ProbeComboRef = &combo;
+        // param(0) with values [7] → single-dim Shape [7].
+        assert_eq!(eval_shape_rule("param(0)", c, &[7], "k").unwrap(), Some(Shape::from_dims(&[7])));
+        // Composite: mul(extent(x,0)=2, param(1)=5) = 10 — params and extents mix.
+        assert_eq!(
+            eval_shape_rule("mul(extent(x, 0), param(1))", c, &[7, 5], "k").unwrap(),
+            Some(Shape::from_dims(&[10])),
+        );
+        // Out-of-range index (param(2) with 2 values) → ParamOutOfRange decline → skip.
+        assert_eq!(eval_shape_rule("param(2)", c, &[7, 5], "k").unwrap(), None);
+        // A negative param value is not a valid dim → skip (the d >= 0 guard).
+        assert_eq!(eval_shape_rule("param(0)", c, &[-3], "k").unwrap(), None);
+        // No values (&[]) — every param(N) rule still declines to skip.
+        assert_eq!(eval_shape_rule("param(0)", c, &[], "k").unwrap(), None);
     }
 
     /// Convergence-C C-3 (Tier 3): the whole-shape `matmul(role_a, role_b)` rule
@@ -605,9 +646,9 @@ mod tests {
         ];
         let c: ProbeComboRef = &combo;
         // a=[8,4096] · b=[4096,1024] → [8,1024].
-        assert_eq!(eval_shape_rule("matmul(a, b)", c, "k").unwrap(), Some(Shape::from_dims(&[8, 1024])));
+        assert_eq!(eval_shape_rule("matmul(a, b)", c, &[], "k").unwrap(), Some(Shape::from_dims(&[8, 1024])));
         // Whitespace-insensitive (mirrors parse_dim).
-        assert_eq!(eval_shape_rule("matmul(a,b)", c, "k").unwrap(), Some(Shape::from_dims(&[8, 1024])));
+        assert_eq!(eval_shape_rule("matmul(a,b)", c, &[], "k").unwrap(), Some(Shape::from_dims(&[8, 1024])));
 
         // Batched: [4,8,16] · [4,16,32] → [4,8,32].
         let batched: Vec<(String, Shape, DType)> = vec![
@@ -615,23 +656,23 @@ mod tests {
             ("b".into(), Shape::from_dims(&[4, 16, 32]), DType::F32),
         ];
         assert_eq!(
-            eval_shape_rule("matmul(a, b)", &batched, "k").unwrap(),
+            eval_shape_rule("matmul(a, b)", &batched, &[], "k").unwrap(),
             Some(Shape::from_dims(&[4, 8, 32])),
         );
 
         // Guards → skip (Ok(None), never a false reject / never a panic):
         // unknown role, a rank-1 operand, and a rank-mismatch.
-        assert_eq!(eval_shape_rule("matmul(a, nope)", c, "k").unwrap(), None);
+        assert_eq!(eval_shape_rule("matmul(a, nope)", c, &[], "k").unwrap(), None);
         let rank1: Vec<(String, Shape, DType)> = vec![
             ("a".into(), Shape::from_dims(&[8]), DType::F32),
             ("b".into(), Shape::from_dims(&[8]), DType::F32),
         ];
-        assert_eq!(eval_shape_rule("matmul(a, b)", &rank1, "k").unwrap(), None);
+        assert_eq!(eval_shape_rule("matmul(a, b)", &rank1, &[], "k").unwrap(), None);
         let rank_mismatch: Vec<(String, Shape, DType)> = vec![
             ("a".into(), Shape::from_dims(&[4, 8, 16]), DType::F32),
             ("b".into(), Shape::from_dims(&[16, 32]), DType::F32),
         ];
-        assert_eq!(eval_shape_rule("matmul(a, b)", &rank_mismatch, "k").unwrap(), None);
+        assert_eq!(eval_shape_rule("matmul(a, b)", &rank_mismatch, &[], "k").unwrap(), None);
     }
 
     /// Finding 5.4 deliverable (Task 3.6 coverage gap): the extractor must
