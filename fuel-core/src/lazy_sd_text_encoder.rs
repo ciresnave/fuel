@@ -28,7 +28,7 @@
 //! let model = SdTextEncoder::from_hub("stable-diffusion-v1-5/stable-diffusion-v1-5")?;
 //! let tokenizer = SdTextTokenizer::from_hub("stable-diffusion-v1-5/stable-diffusion-v1-5")?;
 //! let tokens = tokenizer.encode_padded("a photo of a cat")?;
-//! let hidden = model.forward(&tokens);
+//! let hidden = model.forward(&tokens)?;
 //! let flat = hidden.realize_f32();
 //! assert_eq!(flat.len(), 77 * 768);
 //! # Ok::<(), fuel_core::Error>(())

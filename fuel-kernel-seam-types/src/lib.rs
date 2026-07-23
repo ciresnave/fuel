@@ -50,8 +50,9 @@ pub enum OpTag {
     Equal, Ne, Lt, Le, Gt, Ge,
     // select / mask
     Where, MaskedFill,
-    // reductions
-    SumAll, MaxAll, MinAll, MeanAll, SumDim, MeanDim, ReduceSumTo, ReduceMaxTo, CumSum,
+    // reductions (MaxDim: additive, Increment C slice 1 T4 — the D3 keepdim
+    // swap spells keepdim reduces as {Max,Sum,Mean}Dim + Unsqueeze)
+    SumAll, MaxAll, MinAll, MeanAll, SumDim, MaxDim, MeanDim, ReduceSumTo, ReduceMaxTo, CumSum,
     // matmul
     MatMul,
     // shape / layout (metadata or copy)
@@ -253,8 +254,10 @@ impl OpAttrs {
                 put_i64(&mut body, self.axis.unwrap_or(0));
                 put_i64(&mut body, self.roll_shift.unwrap_or(0));
             }
-            // Dim reductions + cumsum: axis(i64) + keepdim(u8).
-            T::SumDim | T::MeanDim | T::CumSum => {
+            // Dim reductions + cumsum: axis(i64) + keepdim(u8). The monoid
+            // rides op_name (distinct SumDim/MaxDim/MeanDim tags), so every
+            // reduce tag shares this one row schema.
+            T::SumDim | T::MaxDim | T::MeanDim | T::CumSum => {
                 put_i64(&mut body, self.axis.unwrap_or(0));
                 body.push(self.keepdim.unwrap_or(false) as u8);
             }
@@ -541,5 +544,29 @@ mod tests {
         // Empty-schema op: stays the single canonical 4-byte zero form even
         // with every rel field set.
         assert_eq!(rel_only.to_canonical_bytes(OpTag::Add), vec![0, 0, 0, 0]);
+    }
+
+    // ---- T4 (Increment C slice 1): additive OpTag::MaxDim -----------------
+
+    #[test]
+    fn max_dim_serializes_the_reduce_row() {
+        // `OpTag::MaxDim` joins the pinned §6.19 reduce row — carrier (a), the
+        // node-envelope op_attrs blob (u32-LE outer): body = i64(axis) ++
+        // u8(keepdim). The monoid rides `op_name` (distinct SumDim/MaxDim/
+        // MinDim tags — see the module comment's reduce-schema note), so the
+        // blob is IDENTICAL in shape to SumDim's. Golden for axis=1, keepdim
+        // unset (=0): u32-LE(9) ++ i64-LE(1) ++ 0x00.
+        let a = OpAttrs { axis: Some(1), ..OpAttrs::default() };
+        let mut expect = 9u32.to_le_bytes().to_vec();
+        expect.extend_from_slice(&1i64.to_le_bytes());
+        expect.push(0u8);
+        assert_eq!(a.to_canonical_bytes(OpTag::MaxDim), expect);
+        // Row-shape identity: byte-identical to the SumDim row for the same
+        // attrs (the tag disambiguates via op_name, never via the blob).
+        assert_eq!(
+            a.to_canonical_bytes(OpTag::MaxDim),
+            a.to_canonical_bytes(OpTag::SumDim),
+            "MaxDim must share the SumDim reduce-row schema"
+        );
     }
 }
