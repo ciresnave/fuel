@@ -1398,6 +1398,110 @@ mod tests {
         out_id
     }
 
+    /// FROZEN copy of the pre-migration imperative
+    /// `registry::rope::decompose` (the legacy 11-node spelling with two
+    /// leading-1-padded `Reshape` prep nodes), copied VERBATIM from that
+    /// module @ `af4b7dd4` before T6 replaced the live body with the data
+    /// recipe. Two consumers: `emit_matches_rope_decompose` (whose oracle was
+    /// repointed here — the live decompose now emits the recipe, which at
+    /// EQUAL rank elides the no-op prep `Reshape`, D4) and the T6
+    /// numeric/structural parity oracle (`rope_recipe` below).
+    fn frozen_legacy_rope_decompose(
+        graph: &mut Graph,
+        id: NodeId,
+        _params: &FusedOpParams,
+    ) -> NodeId {
+        let (x_id, cos_id, sin_id, x_shape, dtype) = {
+            let n = graph.node(id);
+            (n.inputs[0], n.inputs[1], n.inputs[2], n.shape.clone(), n.dtype)
+        };
+        let dims = x_shape.dims().to_vec();
+        let rank = dims.len();
+        let seq = dims[rank - 2];
+        let d = dims[rank - 1];
+        let half = d / 2;
+        let last = rank - 1;
+
+        let mut broadcast_shape_dims: Vec<usize> = vec![1usize; rank];
+        broadcast_shape_dims[rank - 2] = seq;
+        broadcast_shape_dims[rank - 1] = d;
+        let broadcast_shape = Shape::from_dims(&broadcast_shape_dims);
+
+        let cos_reshaped_id = graph.push(Node {
+            op:     Op::Reshape(broadcast_shape.clone()),
+            inputs: vec![cos_id],
+            shape:  broadcast_shape.clone(),
+            dtype,
+        });
+        let sin_reshaped_id = graph.push(Node {
+            op:     Op::Reshape(broadcast_shape.clone()),
+            inputs: vec![sin_id],
+            shape:  broadcast_shape,
+            dtype,
+        });
+        let cos_bcast_id = graph.push(Node {
+            op:     Op::BroadcastTo(x_shape.clone()),
+            inputs: vec![cos_reshaped_id],
+            shape:  x_shape.clone(),
+            dtype,
+        });
+        let sin_bcast_id = graph.push(Node {
+            op:     Op::BroadcastTo(x_shape.clone()),
+            inputs: vec![sin_reshaped_id],
+            shape:  x_shape.clone(),
+            dtype,
+        });
+
+        let mut half_dims = dims.clone();
+        half_dims[last] = half;
+        let half_shape = Shape::from_dims(&half_dims);
+
+        let first_half_id = graph.push(Node {
+            op:     Op::Slice { dim: last, start: 0, len: half },
+            inputs: vec![x_id],
+            shape:  half_shape.clone(),
+            dtype,
+        });
+        let second_half_id = graph.push(Node {
+            op:     Op::Slice { dim: last, start: half, len: half },
+            inputs: vec![x_id],
+            shape:  half_shape.clone(),
+            dtype,
+        });
+        let neg_second_id = graph.push(Node {
+            op:     Op::Neg,
+            inputs: vec![second_half_id],
+            shape:  half_shape,
+            dtype,
+        });
+        let rotated_half_id = graph.push(Node {
+            op:     Op::Concat { dim: last },
+            inputs: vec![neg_second_id, first_half_id],
+            shape:  x_shape.clone(),
+            dtype,
+        });
+
+        let left_id = graph.push(Node {
+            op:     Op::Mul,
+            inputs: vec![x_id, cos_bcast_id],
+            shape:  x_shape.clone(),
+            dtype,
+        });
+        let right_id = graph.push(Node {
+            op:     Op::Mul,
+            inputs: vec![rotated_half_id, sin_bcast_id],
+            shape:  x_shape.clone(),
+            dtype,
+        });
+        let out_id = graph.push(Node {
+            op:     Op::Add,
+            inputs: vec![left_id, right_id],
+            shape:  x_shape,
+            dtype,
+        });
+        out_id
+    }
+
     #[test]
     fn emit_matches_softmax_last_dim_decompose() {
         use fuel_ir::{DType, Shape};
@@ -1449,7 +1553,14 @@ mod tests {
         let cos = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
         let sin = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
         let fused = g.push(Node { op: Op::Const, inputs: vec![x, cos, sin], shape: sh.clone(), dtype: DType::F32 });
-        let oracle = crate::registry::rope::decompose(&mut g, fused, &FusedOpParams::Rope);
+        // Oracle: the FROZEN legacy builder. T6 repointed this from the live
+        // registry decompose — which now emits the data recipe (byte-identical
+        // to legacy where a rank-raise occurs, but at EQUAL rank the recipe
+        // elides the legacy's no-op prep `Reshape`, D4). This test keeps
+        // pinning the Increment-A guarantee it always pinned: the grown `emit`
+        // reconstructs the LEGACY imperative structure from a legacy-spelled
+        // region datum.
+        let oracle = frozen_legacy_rope_decompose(&mut g, fused, &FusedOpParams::Rope);
 
         // decompose's broadcast_shape for rank-2 [2,4] is [seq,d] = [2,4]; half slices along last dim.
         let full = OpAttrs { target_shape: vec![2, 4], ..OpAttrs::default() };
@@ -2311,6 +2422,228 @@ mod tests {
             let before = g.len();
             let out = decompose_via_recipe(&mut g, fused, &recipe, Some(Vec::new()));
             assert_eq!(out, fused, "bind/input arity mismatch ⇒ fixpoint");
+            assert_eq!(g.len(), before, "declined before any emission");
+        }
+    }
+
+    // rope migration (Increment C slice 1, T6) ------------------------------
+    //
+    // Rope's 11-node imperative body becomes a 9-node portable `PatternNode`
+    // DATA recipe: cos/sin broadcasts carry `SameAs { operand: 0 }`, the two
+    // half-slices carry `DimExpr` start/len over the Bind space (the
+    // reference-doc worked example: `start=Const(0), len=Div(E,2)` /
+    // `start=Div(E,2), len=Sub(E, Div(E,2))`), the last-axis Concat carries
+    // `axis_last`, and the two leading-1-padded prep `Reshape`s are NOT in the
+    // datum — the emit resolver MATERIALIZES them (D4) only where the
+    // broadcast target out-ranks its operand. Consequence: at a rank-RAISING
+    // broadcast (the real attention consumer: cos/sin `[seq,d]`, x `[..,seq,d]`
+    // rank ≥ 3) emission is BYTE-IDENTICAL to legacy (11 nodes, both pads); at
+    // EQUAL rank (x itself rank 2 = `[seq,d]`) the recipe emits the 9-node
+    // form, eliding legacy's no-op `Reshape([seq,d]→[seq,d])` — numerically
+    // identical, structurally leaner. D4 is shared with softmax/norms and MUST
+    // NOT add reshapes at equal rank (that would break the softmax parity
+    // oracle), so the equal-rank elision is intrinsic, not a defect.
+    mod rope_recipe {
+        use super::super::*;
+        use super::frozen_legacy_rope_decompose;
+        use crate::registry::{FusedOps, rope};
+        use fuel_ir::{DType, Shape};
+        use std::collections::HashMap;
+
+        /// Tiny f64 reference interpreter over the rope primitive vocabulary
+        /// (Const leaves, metadata-only rank-pad Reshape, leading-dim
+        /// BroadcastTo, last-axis Slice/Concat, Neg, elementwise Mul/Add).
+        /// BOTH parity sides run through it in identical in-order arithmetic —
+        /// so a bit-exact assert isolates recipe STRUCTURE. (Not code
+        /// evaluation: a closed match over our own `Op` enum.)
+        fn eval_rope(g: &Graph, id: NodeId, leaves: &HashMap<NodeId, Vec<f64>>) -> Vec<f64> {
+            let node = g.node(id);
+            match &node.op {
+                Op::Const => leaves.get(&id).expect("leaf data provided").clone(),
+                Op::Neg => eval_rope(g, node.inputs[0], leaves).iter().map(|v| -v).collect(),
+                Op::Mul => {
+                    let a = eval_rope(g, node.inputs[0], leaves);
+                    let b = eval_rope(g, node.inputs[1], leaves);
+                    a.iter().zip(&b).map(|(x, y)| x * y).collect()
+                }
+                Op::Add => {
+                    let a = eval_rope(g, node.inputs[0], leaves);
+                    let b = eval_rope(g, node.inputs[1], leaves);
+                    a.iter().zip(&b).map(|(x, y)| x + y).collect()
+                }
+                // Metadata-only leading-1 rank-pad: same row-major order.
+                Op::Reshape(_) => eval_rope(g, node.inputs[0], leaves),
+                // Broadcast a `[1,..,1,seq,d]` inner block over leading dims:
+                // the block (all of `input`, since the leading dims are 1)
+                // tiles to fill the target — row-major `input[i % block]`.
+                Op::BroadcastTo(target) => {
+                    let input = eval_rope(g, node.inputs[0], leaves);
+                    let out_n: usize = target.dims().iter().product();
+                    (0..out_n).map(|i| input[i % input.len()]).collect()
+                }
+                Op::Slice { dim, start, len } => {
+                    let input = eval_rope(g, node.inputs[0], leaves);
+                    let in_dims = g.node(node.inputs[0]).shape.dims().to_vec();
+                    let last = in_dims.len() - 1;
+                    assert_eq!(*dim, last, "rope slices along the last axis");
+                    let row = in_dims[last];
+                    input
+                        .chunks(row)
+                        .flat_map(|r| r[*start..*start + *len].to_vec())
+                        .collect()
+                }
+                Op::Concat { dim } => {
+                    let a = eval_rope(g, node.inputs[0], leaves);
+                    let b = eval_rope(g, node.inputs[1], leaves);
+                    let a_last = *g.node(node.inputs[0]).shape.dims().last().unwrap();
+                    let b_last = *g.node(node.inputs[1]).shape.dims().last().unwrap();
+                    let last = g.node(node.inputs[0]).shape.dims().len() - 1;
+                    assert_eq!(*dim, last, "rope concats along the last axis");
+                    let mut out = Vec::with_capacity(a.len() + b.len());
+                    let mut ai = a.chunks(a_last);
+                    let mut bi = b.chunks(b_last);
+                    loop {
+                        match (ai.next(), bi.next()) {
+                            (Some(ra), Some(rb)) => {
+                                out.extend_from_slice(ra);
+                                out.extend_from_slice(rb);
+                            }
+                            (None, None) => break,
+                            _ => panic!("concat row-count mismatch"),
+                        }
+                    }
+                    out
+                }
+                other => panic!("eval_rope: unhandled op {other:?}"),
+            }
+        }
+
+        /// Build a fused Rope node over `x [..,seq,d]`, `cos [seq,d]`,
+        /// `sin [seq,d]`. Returns `(x, cos, sin, fused)`.
+        fn rope_fused_node(
+            g: &mut Graph,
+            x_dims: &[usize],
+        ) -> (NodeId, NodeId, NodeId, NodeId) {
+            let rank = x_dims.len();
+            let table_dims = [x_dims[rank - 2], x_dims[rank - 1]];
+            let x_sh = Shape::from_dims(x_dims);
+            let t_sh = Shape::from_dims(&table_dims);
+            let x = g.push(Node { op: Op::Const, inputs: vec![], shape: x_sh.clone(), dtype: DType::F32 });
+            let cos = g.push(Node { op: Op::Const, inputs: vec![], shape: t_sh.clone(), dtype: DType::F32 });
+            let sin = g.push(Node { op: Op::Const, inputs: vec![], shape: t_sh, dtype: DType::F32 });
+            let fused = g.push(Node {
+                op: Op::Fused(FusedOps::ROPE, FusedOpParams::Rope),
+                inputs: vec![x, cos, sin],
+                shape: x_sh,
+                dtype: DType::F32,
+            });
+            (x, cos, sin, fused)
+        }
+
+        /// T6 red (a): ONE recipe datum decomposes at BOTH rank 2 and rank 4
+        /// — the shape/rank polymorphism the baked-shape legacy body never had
+        /// — and its numerics match the FROZEN legacy builder bit-exactly
+        /// under the shared reference interpreter.
+        #[test]
+        fn rope_recipe_decompose_is_polymorphic_and_matches_frozen_legacy() {
+            for x_dims in [vec![2usize, 4], vec![1, 2, 3, 8]] {
+                let mut g = Graph::new();
+                let (x, cos, sin, fused) = rope_fused_node(&mut g, &x_dims);
+                let x_sh = Shape::from_dims(&x_dims);
+                let rank = x_dims.len();
+                let seq = x_dims[rank - 2];
+                let d = x_dims[rank - 1];
+
+                let new_root = rope::decompose(&mut g, fused, &FusedOpParams::Rope);
+                assert_ne!(new_root, fused, "recipe decompose must fire at {x_dims:?}");
+                assert_eq!(g.node(new_root).shape, x_sh, "rope is shape-preserving");
+                assert_eq!(g.node(new_root).dtype, DType::F32);
+
+                let legacy_root =
+                    frozen_legacy_rope_decompose(&mut g, fused, &FusedOpParams::Rope);
+
+                // Distinct, deterministic leaf data for x / cos / sin.
+                let x_n: usize = x_dims.iter().product();
+                let t_n = seq * d;
+                let x_data: Vec<f64> = (0..x_n).map(|i| ((i as f64) * 0.31).sin() * 2.0 - 0.4).collect();
+                let cos_data: Vec<f64> = (0..t_n).map(|i| ((i as f64) * 0.17 + 0.5).cos()).collect();
+                let sin_data: Vec<f64> = (0..t_n).map(|i| ((i as f64) * 0.23 - 0.2).sin()).collect();
+                let mut leaves = HashMap::new();
+                leaves.insert(x, x_data);
+                leaves.insert(cos, cos_data);
+                leaves.insert(sin, sin_data);
+
+                let got = eval_rope(&g, new_root, &leaves);
+                let want = eval_rope(&g, legacy_root, &leaves);
+                assert_eq!(got.len(), want.len(), "element count at {x_dims:?}");
+                for (i, (a, b)) in got.iter().zip(want.iter()).enumerate() {
+                    assert_eq!(
+                        a.to_bits(),
+                        b.to_bits(),
+                        "rope[{i}] at {x_dims:?}: recipe={a} vs legacy={b}",
+                    );
+                }
+            }
+        }
+
+        /// T6 red (b): at a rank-RAISING broadcast (rank 4 — the real attention
+        /// consumer's shape), the recipe emission is BYTE-IDENTICAL to legacy:
+        /// D4 materializes both leading-1-padded prep `Reshape`s, so the whole
+        /// 11-node DAG matches node-for-node (op, shape, dtype, wiring). This
+        /// is the byte-identity guarantee that retires all backend risk for the
+        /// live rope-decompose path.
+        #[test]
+        fn rope_recipe_is_byte_identical_to_legacy_at_rank_raise() {
+            let mut g = Graph::new();
+            let (_x, _cos, _sin, fused) = rope_fused_node(&mut g, &[1, 2, 3, 8]);
+            let recipe_root = rope::decompose(&mut g, fused, &FusedOpParams::Rope);
+            let legacy_root = frozen_legacy_rope_decompose(&mut g, fused, &FusedOpParams::Rope);
+            super::assert_structural_eq(&g, recipe_root, legacy_root);
+            // Both leading-1 prep Reshapes are present (byte-identical, 11 ops).
+            let reachable = crate::topo_order_multi(&g, &[recipe_root]);
+            let reshapes = reachable
+                .iter()
+                .filter(|&&n| matches!(g.node(n).op, Op::Reshape(_)))
+                .count();
+            assert_eq!(reshapes, 2, "rank-raise materializes both legacy prep Reshapes (D4)");
+        }
+
+        /// T6 red (c): at EQUAL rank (x itself `[seq,d]`) the recipe emits the
+        /// 9-node form — the resolver adds NO pad `Reshape` (D4 pads only on a
+        /// rank-raise), eliding legacy's no-op `Reshape([seq,d]→[seq,d])`.
+        /// Numerically identical (covered by the parity test), structurally
+        /// leaner: 9 op nodes + 3 leaves, zero `Reshape`.
+        #[test]
+        fn rope_recipe_elides_the_noop_prep_reshape_at_equal_rank() {
+            let mut g = Graph::new();
+            let (_x, _cos, _sin, fused) = rope_fused_node(&mut g, &[2, 4]);
+            let root = rope::decompose(&mut g, fused, &FusedOpParams::Rope);
+            assert_ne!(root, fused, "recipe decompose fires");
+            let reachable = crate::topo_order_multi(&g, &[root]);
+            let reshapes = reachable
+                .iter()
+                .filter(|&&n| matches!(g.node(n).op, Op::Reshape(_)))
+                .count();
+            assert_eq!(reshapes, 0, "equal-rank broadcast needs no prep Reshape (D4)");
+            let op_nodes = reachable
+                .iter()
+                .filter(|&&n| !matches!(g.node(n).op, Op::Const))
+                .count();
+            assert_eq!(op_nodes, 9, "the 9-node rope recipe (2×Bcast/2×Slice/Neg/Concat/2×Mul/Add)");
+        }
+
+        /// T6 red (d): totality (G2) — a wrong params payload is a typed
+        /// decline surfaced as a fixpoint, never a panic, and declines BEFORE
+        /// any emission (no partial nodes). The legacy imperative body ignored
+        /// `params` entirely and always decomposed; the recipe bridge gates on
+        /// the projection, so a non-`Rope` payload now correctly no-ops.
+        #[test]
+        fn rope_recipe_wrong_params_is_a_fixpoint_not_a_crash() {
+            let mut g = Graph::new();
+            let (_x, _cos, _sin, fused) = rope_fused_node(&mut g, &[2, 4]);
+            let before = g.len();
+            let out = rope::decompose(&mut g, fused, &FusedOpParams::SoftmaxLastDim);
+            assert_eq!(out, fused, "wrong params ⇒ typed decline ⇒ fixpoint");
             assert_eq!(g.len(), before, "declined before any emission");
         }
     }
