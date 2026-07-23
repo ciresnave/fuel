@@ -3118,6 +3118,9 @@ mod tests {
     struct RecordingFeedback {
         rejected: std::sync::Mutex<Vec<String>>,
         adopted: std::sync::Mutex<Vec<(String, fuel_graph::registry::FusedOpId)>>,
+        /// `(claim, escalate, diff_summary)` for every `on_flagged` — the
+        /// escalate route the T6 service-level pin asserts.
+        flagged: std::sync::Mutex<Vec<(String, bool, Option<String>)>>,
         notify: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>>,
     }
 
@@ -3141,6 +3144,15 @@ mod tests {
 
         fn on_adopted(&self, entry_point: &str, id: fuel_graph::registry::FusedOpId) {
             self.adopted.lock().unwrap().push((entry_point.to_string(), id));
+            self.fire_notify();
+        }
+
+        fn on_flagged(&self, report: &FlagReport) {
+            self.flagged.lock().unwrap().push((
+                report.claim.to_string(),
+                report.escalate,
+                report.diff_summary.clone(),
+            ));
             self.fire_notify();
         }
     }
@@ -3381,6 +3393,56 @@ mod tests {
         svc.shutdown();
     }
 
+    /// T6 service-level routing PIN — **expected BORN-GREEN, not born-red**
+    /// (the labeled exception to this thread's TDD red-first discipline). The
+    /// worker already routes `IngestOutcome::Flagged => on_flagged` (see
+    /// `worker_loop`'s match arm); this test only adds the
+    /// `RecordingFeedback::on_flagged` sink and pins the route at the SERVICE
+    /// level, so there is no production change that flips it red→green. A mock
+    /// verify that returns `Flagged` must reach the feedback's `on_flagged`
+    /// (carrying `escalate` + the threaded `diff_summary`), never
+    /// `on_rejected`/`on_adopted`. Synchronized deterministically via the
+    /// one-shot notify channel — no sleep, same style as
+    /// `worker_fires_on_adopted_for_adopted_outcome`.
+    #[test]
+    fn worker_routes_flagged_to_on_flagged() {
+        let cfg = IngestionConfig::default();
+        let svc = IngestionService::start_with_verify(
+            move |_cand| {
+                IngestOutcome::Flagged(FlagReport {
+                    entry_point: "flagged-one".to_string(),
+                    claim: "max_ulp",
+                    detail: "kiss-ref advisory escalate (mock, Task 7 seam)".to_string(),
+                    diff_summary: Some("result=flag max_ulp=3 mismatches=2".to_string()),
+                    escalate: true,
+                })
+            },
+            cfg,
+        );
+
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let fb = Arc::new(RecordingFeedback::with_notify(tx));
+        svc.enqueue(test_candidate("flagged-one"), Some(fb.clone())).expect("enqueue accepted");
+
+        rx.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("worker should route the flagged outcome to on_flagged");
+
+        let flagged = fb.flagged.lock().unwrap();
+        assert_eq!(flagged.len(), 1, "exactly one on_flagged callback: {flagged:?}");
+        let (claim, escalate, summary) = &flagged[0];
+        assert_eq!(claim, "max_ulp", "the flag names the evidence claim");
+        assert!(*escalate, "the flag escalates to mint a corpus vector");
+        assert_eq!(
+            summary.as_deref(),
+            Some("result=flag max_ulp=3 mismatches=2"),
+            "the threaded kiss-ref diff summary reaches the provider"
+        );
+        assert!(fb.rejected.lock().unwrap().is_empty(), "a Flagged outcome must not route to on_rejected");
+        assert!(fb.adopted.lock().unwrap().is_empty(), "a Flagged outcome must not route to on_adopted");
+
+        svc.shutdown();
+    }
+
     // -----------------------------------------------------------------
     // Task 8 — end-to-end GPU wiring: `IngestionService::start` (the
     // PRODUCTION constructor, verifying against a real `CudaDevice` via
@@ -3399,6 +3461,7 @@ mod tests {
     struct E2eFeedback {
         adopted: std::sync::Mutex<Vec<(String, fuel_graph::registry::FusedOpId)>>,
         rejected: std::sync::Mutex<Vec<RejectionReportSnapshot>>,
+        flagged: std::sync::Mutex<Vec<FlagReportSnapshot>>,
         notify: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>>,
     }
 
@@ -3412,6 +3475,19 @@ mod tests {
     struct RejectionReportSnapshot {
         failed_claim: &'static str,
         detail: String,
+    }
+
+    /// An owned snapshot of a [`FlagReport`] — the escalate counterpart of
+    /// [`RejectionReportSnapshot`], lifting the fields the T6 e2e assertions
+    /// check (claim/detail/diff_summary/escalate) into an owned `'static`
+    /// value the borrowed `&FlagReport` callback can push into a `Mutex`.
+    #[cfg(feature = "cuda")]
+    #[derive(Debug)]
+    struct FlagReportSnapshot {
+        claim: &'static str,
+        detail: String,
+        diff_summary: Option<String>,
+        escalate: bool,
     }
 
     #[cfg(feature = "cuda")]
@@ -3439,6 +3515,16 @@ mod tests {
 
         fn on_adopted(&self, entry_point: &str, id: fuel_graph::registry::FusedOpId) {
             self.adopted.lock().unwrap().push((entry_point.to_string(), id));
+            self.fire_notify();
+        }
+
+        fn on_flagged(&self, report: &FlagReport) {
+            self.flagged.lock().unwrap().push(FlagReportSnapshot {
+                claim: report.claim,
+                detail: report.detail.clone(),
+                diff_summary: report.diff_summary.clone(),
+                escalate: report.escalate,
+            });
             self.fire_notify();
         }
     }
@@ -3503,6 +3589,42 @@ mod tests {
             operands: vec![od, od],
             dtypes: vec![DType::F32, DType::F32],
             kernel_revision_hash: 0x1_9E57_8802,
+            declared: crate::fused::PrecisionGuarantee::REFERENCE,
+            backend: BackendId::Cuda,
+            claimed_op: None,
+        }
+    }
+
+    /// Build the T5 escalate candidate — an `add_f64` kernel carrying a
+    /// single-primitive `Add` decompose over F64 operands and declaring a
+    /// NUMERIC claim (`PrecisionGuarantee::REFERENCE`) — with a DISTINCTIVE
+    /// `entry_point`/hash so it doesn't collide with the T5 unit
+    /// (`verify_candidate_add_f64_is_inconclusive_not_failed`,
+    /// `test::t5_escalate::add_f64`) or the other e2e candidates (8801/8802)
+    /// under this binary's process-global registration. This is the
+    /// service-level (v) counterpart of the T5 escalate: a kiss-coverable
+    /// non-f32 numeric claim Fuel's f32-only authority can't verdict.
+    #[cfg(feature = "cuda")]
+    fn e2e_add_f64_candidate() -> CandidateKernel {
+        use baracuda_kernels_types::{ElementKind, OperandDesc};
+        use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
+        use fuel_ir::probe::BackendId;
+        use fuel_ir::DType;
+
+        let decompose = PatternNode::Op {
+            op: OpTag::Add,
+            attrs: OpAttrs::default(),
+            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+        };
+        let od = OperandDesc::new(1, &[4], &[1], ElementKind::F64, 32);
+        CandidateKernel {
+            entry_point: "test::e2e::add_f64_escalate::run_e2e_8803".to_string(),
+            kernel: crate::baracuda_dispatch::binary::add_f64,
+            op_params: crate::kernel::OpParams::None,
+            decompose: Some(decompose),
+            operands: vec![od, od],
+            dtypes: vec![DType::F64, DType::F64],
+            kernel_revision_hash: 0x1_9E57_8803,
             declared: crate::fused::PrecisionGuarantee::REFERENCE,
             backend: BackendId::Cuda,
             claimed_op: None,
@@ -3596,6 +3718,67 @@ mod tests {
         assert!(
             fb.adopted.lock().unwrap().is_empty(),
             "the mismatched mul_f32 candidate must not be adopted"
+        );
+
+        svc.shutdown();
+    }
+
+    /// T6 (v) service-level acceptance (live GPU), ESCALATE leg — the
+    /// FLAGGED counterpart of the adopt/reject e2e legs above. The SAME
+    /// production service (`IngestionService::start`, verifying against a
+    /// real `CudaDevice` via `ingest_one`), driven end-to-end, must ESCALATE
+    /// a kiss-coverable non-f32 numeric-claim candidate (`add_f64` with an
+    /// `Add` decompose over F64, declaring `REFERENCE`) — Fuel's f32-only
+    /// numeric authority yields no usable verdict, the kiss-ref advisory
+    /// agrees (add_f64 === kiss add over f64), so `verify_candidate` returns
+    /// `Inconclusive`, `ingest_one` maps it to `IngestOutcome::Flagged`, and
+    /// the worker routes it to `on_flagged` (NEVER `on_rejected`/`on_adopted`)
+    /// carrying `escalate` + the threaded kiss-ref `diff_summary` (D8). This
+    /// is the service-level unit of `verify_candidate_add_f64_is_inconclusive_
+    /// not_failed`. `#[ignore]`'d — needs a live CUDA device; it first RUNS at
+    /// landing (the T5 escalate wiring it exercises is already on this branch,
+    /// so it lands GREEN). Synchronized deterministically via the notify
+    /// channel — no sleep.
+    #[test]
+    #[ignore = "requires a live CUDA device"]
+    #[cfg(feature = "cuda")]
+    fn ingestion_service_flags_an_f64_add_candidate_e2e() {
+        let Ok(dev) = CudaDevice::new(0) else {
+            eprintln!("no CUDA device; skipping");
+            return;
+        };
+
+        let svc = IngestionService::start(dev, IngestionConfig::default());
+
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let fb = Arc::new(E2eFeedback::with_notify(tx));
+        svc.enqueue(e2e_add_f64_candidate(), Some(fb.clone()))
+            .expect("enqueue accepted (queue starts empty)");
+
+        rx.recv_timeout(Duration::from_secs(30))
+            .expect("worker should report the flagged outcome within 30s");
+
+        let flagged = fb.flagged.lock().unwrap();
+        assert_eq!(flagged.len(), 1, "exactly one on_flagged callback: {flagged:?}");
+        assert_eq!(flagged[0].claim, "max_ulp", "the escalate names the evidence claim");
+        assert!(flagged[0].escalate, "the flag escalates to mint a corpus vector");
+        assert!(
+            flagged[0].diff_summary.is_some(),
+            "the escalate threads the kiss-ref advisory summary (D8): {:?}",
+            flagged[0]
+        );
+        assert!(
+            flagged[0].detail.contains("kiss-ref"),
+            "the escalate detail references the kiss-ref advisory: {}",
+            flagged[0].detail
+        );
+        assert!(
+            fb.adopted.lock().unwrap().is_empty(),
+            "a non-f32 escalate must not be adopted (Fuel renders no verdict)"
+        );
+        assert!(
+            fb.rejected.lock().unwrap().is_empty(),
+            "a kiss-coverable escalate must not be rejected — §6.6-0007: flag, never verdict"
         );
 
         svc.shutdown();
