@@ -139,16 +139,40 @@ nowhere; now captured so they are not forgotten):
   in-flight via **KISS #67**. See
   [10-decisions-log 2026-07-16 + 2026-07-21](docs/architecture/10-decisions-log.md); memories
   `recipe-grammar-codesign`, `shape-oracle-rfc-accepted`.
-- **Shape-oracle C-4 frontier — reserved `Dims`/`WithDim` tags + param threading (tracked
-  scope-out, 2026-07-21).** The C-4 successor to Convergence-C (scope-out recorded in
-  `docs/superpowers/plans/2026-07-21-convergence-c-c3.md`): the reserved `TAG_DIMS=0x0B` /
-  `TAG_WITH_DIM=0x0A` wire tags + param-value threading into `eval_dim`, covering the ~7
-  genuinely-inexpressible ops the shipped oracle intentionally skips: `conv2d` +
-  `conv_transpose_2d` (rank-4 + param threading), `qmatmul` (N from param + packed rhs),
-  `nf4_matmul` (transposed-packed-weight matmul variant; also `registrable:false`),
-  `fused_softmax_cross_entropy` (reduction-conditional rank-0 scalar), and the two scan
-  `last_state` slots (multi-dim reweave). All are today intentional `Ok(None)` skips —
-  never false rejects, but also never cross-checked.
+- **Shape-oracle C-4 — Fuel-internal groundwork SHIPPED (2026-07-23); `Dims`/`WithDim`
+  activation KISS-gated (extension-registry proposal FILED, cosign-tracked).** The C-4
+  successor to Convergence-C, built as `feat/c4-groundwork` (plan
+  `docs/superpowers/plans/2026-07-23-c4-groundwork.md`): `eval_shape_rule` threads
+  per-variant synthesized param values (`param(N)` indexes the `FusedOpParams::key().ints`
+  flattening — index tables pinned in `fused/{conv-rope,linear-quant}.fkc.md` + a
+  doc-vs-code drift test), the return cross-check loops per-combo param POINTS (≥ 2 for
+  variants with a free field — the sabotage-calibration norm applied to params), the
+  params-dependent variants' `passthrough`/`fixed` dtype rules are now genuinely
+  cross-checked (previously dead: synth returned `None` for them), and the reserved-tag
+  declines are NAMED at the decoder (`TAG_REDUCE`/`TAG_WITH_DIM`/`TAG_DIMS` → typed
+  `ReservedTag`, the future activation point). **Correction — the prior entry's "reserved
+  tags cover the ~7 skipped ops" overclaimed; the honest split is:** (a) **5 rules
+  KISS-gated** — `conv2d` + `conv_transpose_2d` (rank-4 `Dims` + `Param`), `qmatmul`
+  (`WithDim`/`Dims` + `Param`), and the two scan slot-1 `last_state` bundle rules
+  (`Dims`-only pure extents; **verdict: NOT premature** — the Phase-2/3 open item is the
+  *decompose-path* view composer, whereas the bundle differential's reference is the live,
+  allocator-wired `output_views`, and the cross-check guardrail already forbids referencing
+  decompose — so the slot-1 declared rules join the gated batch); (b)
+  **`fused_softmax_cross_entropy` = PERMANENT documented whole-shape skip** — its rule is
+  reduction-*conditional* (Mean/Sum → `[]`, None → `targets.shape`), outside even the
+  reserved vocabulary (needs a conditional constructor); its `fixed(F32)` dtype check is
+  live NOW at both reduction points; (c) **`nf4_matmul` double-gated** — its only corpus
+  section is `registrable: false` until FDX `AFFINE_BLOCK` lands, out of the oracle's
+  reach regardless of tags. Param threading alone flips ZERO whole-shape rules (each gated
+  rule also needs its whole-shape constructor). **External state (2026-07-23):** the
+  `Dims (0x0B)` + `WithDim (0x0A)` KISS §6.4 extension-registry proposal is **FILED** (the
+  KISS coordinator filed the rfc-labeled issue on Fuel's behalf, attributed, per the #57
+  process; `Reduce (0x09)` stays reserved — no consumer); Baracuda: no objection +
+  declared future consumer + cosigning with a functional-spelling pin; kiss-ref: the
+  second dissimilar implementation, timing theirs. On acceptance: implement the two
+  constructors + rewrite the 5 gated rules (~9 fused sections) → oracle coverage
+  ~16 → ~21 of 22 (FSCE the one honest skip). See
+  `docs/outreach/kiss-dims-withdim-extension-registry-filed.md`.
 - **`structure_key` independent deriver — D8 freeze-gate; Fuel half DONE (2026-07-19).**
   Fuel's second, **Baracuda-free** implementation of the KISS `structure_key`
   (`fuel-dispatch/src/telemetry/structure_key_derive.rs`) derives the `relu_add` f32 cell
