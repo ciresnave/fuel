@@ -29,15 +29,28 @@ pub enum KissRefError {
     LengthMismatch { expected: usize, got: usize },
     /// A kiss-ref reference evaluation failed (wraps its typed error).
     Eval(kiss_ref_core::Error),
+    /// A region op node carries non-default attrs (scalar params, axes, …) —
+    /// the kiss §6.13 `Expr` grammar has no attribute channel, so the region
+    /// declines (a typed coverage gap, not a failure).
+    UnsupportedAttrs(OpTag),
+    /// A region contains a matcher-only node (`SeeThrough`/`Any`), or is not
+    /// rooted at an op node — concrete recipe regions never carry these.
+    UnsupportedNode,
 }
 
 pub mod mapping;
 pub mod reference;
+pub mod region;
 
 pub use mapping::{dtype_to_kiss, op_to_kiss, supports};
 pub use reference::{
     diff_bf16, diff_f16, diff_f32, diff_f64, reference_bf16, reference_f16, reference_f32,
     reference_f64, DiffReport, Tolerance,
+};
+pub use region::{
+    diff_region_bf16, diff_region_f16, diff_region_f32, diff_region_f64, op_ulp_ceiling,
+    reference_region_bf16, reference_region_f16, reference_region_f32, reference_region_f64,
+    region_advisory_tolerance, region_op_count, region_supported, region_ulp_ceilings,
 };
 
 #[cfg(test)]
