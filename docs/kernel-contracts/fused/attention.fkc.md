@@ -110,7 +110,7 @@ return:
   outputs:
     - name: out
       dtype_rule: passthrough(q)             # FusedOp.dtype_rule = input 0
-      shape_rule: from_params(q)             # FusedOp.shape_rule = q shape [B, Hq, Sq, D]; symbolic Sq preserved
+      shape_rule: same_as(q)                 # FusedOp.shape_rule = q shape [B, Hq, Sq, D]; symbolic Sq preserved (C-3: was from_params(q); registry fn returns input 0)
       layout_guarantee: contiguous           # fresh row-major buffer; executor pre-allocates
       aliasing: none
 
@@ -236,7 +236,7 @@ return:
   outputs:
     - name: out
       dtype_rule: passthrough(q)             # FusedOp.dtype_rule = input 0
-      shape_rule: from_params(q)             # FusedOp.shape_rule = q shape [B, Hq, Sq, D]
+      shape_rule: same_as(q)                 # FusedOp.shape_rule = q (decode) shape [B, Hq, Sq, D] (C-3: was from_params(q); registry fn returns input 0)
       layout_guarantee: contiguous
       aliasing: none
 

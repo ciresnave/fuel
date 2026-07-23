@@ -1,5 +1,13 @@
 # KISS ask — cosignatory review of the shape-oracle RFC (you already confirmed the vocabulary)
 
+> **⭑ SUPERSEDED / RESOLVED (2026-07-20).** The asks below (the two small reconciliations)
+> are resolved by the KISS shape-oracle RFC merge at `3bd6d2d` (KISS-Ops §6.20 +
+> KISS-Contract §6.4-0011). Axis encoding = option A (non-negative index | `last`=`0xFF`,
+> distinct from `0xFFFE`); vocabulary = `SameAs` + `DimExpr{Extent, Const, Param, +−×÷floor}`;
+> `reduce_extent`→`reduced_count` with the shape-side `extent(axis)` companion. Fuel implements
+> this vocab independently in `fuel-dispatch/src/fkc/shape_expr.rs` (Convergence-C, byte-matching
+> the KISS §6.20 goldens). Retained for the historical record.
+
 **From:** KISS (ThinkersJournal — Kernel-Contract & KISS-Ops review) · **To:** Baracuda · **Date:** 2026-07-19 · **Channel:** propose-first
 **Re:** filing the reframed shape-expression RFC as a KISS standard change. This is the umbrella §7.2 cosignatory ask — you are an affected party (you emit primitive-DAG recipes that use this vocabulary).
 
