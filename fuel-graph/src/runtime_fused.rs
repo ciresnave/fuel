@@ -161,12 +161,7 @@ pub fn register_runtime_fused(
     region: PatternNode,
 ) -> Result<FusedOpId, RuntimeFusedError> {
     let name = name.into();
-    let binds = region.bind_indices();
-    let n = binds.len() as u8;
-    if binds != (0..n).collect::<Vec<_>>() {
-        return Err(RuntimeFusedError::NonContiguousBinds(binds));
-    }
-    validate_representable(&region)?;
+    validate_recipe(&region)?;
 
     let hash = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         region_base_map_hash(&region)
@@ -587,6 +582,23 @@ pub fn count_scalar_slots(node: &PatternNode) -> usize {
     }
 }
 
+/// The ONE recipe-validation oracle, shared by [`register_runtime_fused`]
+/// (runtime Tier-2 registration) and the static-registry
+/// [`crate::registry::decompose_via_recipe`] bridge (T5): bind indices form a
+/// contiguous `[0, n)` AND every op re-emits to primitives (totality — incl.
+/// the rel-attr probe). A recipe carrying a semantics-absent op token (no
+/// primitive re-emission — the flip-withdrawal posture: unknown/non-registry
+/// tokens are surfaced honest-miss declines, never accepted, never a crash)
+/// is a typed [`RuntimeFusedError::UnRepresentable`] decline here.
+pub(crate) fn validate_recipe(region: &PatternNode) -> Result<(), RuntimeFusedError> {
+    let binds = region.bind_indices();
+    let n = binds.len() as u8;
+    if binds != (0..n).collect::<Vec<_>>() {
+        return Err(RuntimeFusedError::NonContiguousBinds(binds));
+    }
+    validate_representable(region)
+}
+
 fn validate_representable(region: &PatternNode) -> Result<(), RuntimeFusedError> {
     let n_binds = region.bind_indices().len();
     validate_node(region, n_binds)
@@ -723,7 +735,7 @@ pub fn decompose_region(graph: &mut Graph, node_id: NodeId) -> NodeId {
     // no-op fixpoint (G2) — same posture as the slot-count mismatch above,
     // never a panic. Any child nodes emitted before the decline stay in the
     // push-only graph as unreferenced dead nodes (inert).
-    emit(graph, &region, &inputs, &bind_shapes, &mut cursor).unwrap_or(node_id)
+    emit(graph, &region, &inputs, &bind_shapes, &mut cursor, &mut Vec::new()).unwrap_or(node_id)
 }
 
 /// Re-emit a validated region on the given external input nodes (public entry
@@ -772,7 +784,7 @@ pub fn try_emit_region(
 ) -> Result<NodeId, RelAttrError> {
     let bind_shapes = bind_operand_shapes(graph, inputs);
     let mut cursor = scalars;
-    emit(graph, region, inputs, &bind_shapes, &mut cursor)
+    emit(graph, region, inputs, &bind_shapes, &mut cursor, &mut Vec::new())
 }
 
 /// A graph [`fuel_ir::Shape`] as a §6.20 evaluator operand: per-axis extents
@@ -793,16 +805,38 @@ fn bind_operand_shapes(graph: &Graph, inputs: &[NodeId]) -> Vec<Vec<i64>> {
     inputs.iter().map(|&id| shape_expr_operand(&graph.node(id).shape)).collect()
 }
 
-fn emit(
+/// The recursive re-emit core. `memo` is the per-emit-call identity-share
+/// table (T5): a REPEATED slot-free subtree — the tree spelling of a DAG
+/// recipe's shared interior (e.g. softmax's `e = Exp(..)`, consumed by both
+/// the denominator reduce and the final Div) — emits ONCE, so the emitted
+/// graph is the DAG, not a duplicated-compute tree. Lookup is by structural
+/// equality (`PatternNode: PartialEq`; regions are tiny, a linear scan is
+/// fine) and is sound because, within one call, `inputs`/`bind_shapes` are
+/// fixed and emission is deterministic — equal subtrees emit equal nodes.
+/// Subtrees with OPEN scalar slots are NEVER shared: each occurrence takes
+/// its own value(s) from the pre-order cursor. (The flat-DAG node table with
+/// real CSE is slice 3; this is only within-call identity-share.)
+fn emit<'r>(
     graph: &mut Graph,
-    node: &PatternNode,
+    node: &'r PatternNode,
     inputs: &[NodeId],
     bind_shapes: &[Vec<i64>],
     scalars: &mut &[f64],
+    memo: &mut Vec<(&'r PatternNode, NodeId)>,
 ) -> Result<NodeId, RelAttrError> {
     match node {
         PatternNode::Bind { index } => Ok(inputs[*index as usize]),
         PatternNode::Op { op, operands, attrs } => {
+            // Identity-share: a slot-free subtree already emitted in THIS call
+            // re-uses its node (see the fn doc). Checked before the cursor
+            // fill — a slot-free subtree never moves the cursor, so a hit
+            // cannot misalign later slots.
+            let sharable = count_scalar_slots(node) == 0;
+            if sharable {
+                if let Some(&(_, id)) = memo.iter().find(|(p, _)| *p == node) {
+                    return Ok(id);
+                }
+            }
             // Fill an open scalar slot from the cursor in PRE-order (before
             // descending into operands) — the same canonical order
             // `match_region_extract` recorded the live values in. (T3 note:
@@ -823,7 +857,7 @@ fn emit(
             // rel-attr resolver (`axis_last`'s rank, D4's pad decision).
             let mut child_ids = Vec::with_capacity(operands.len());
             for o in operands {
-                child_ids.push(emit(graph, o, inputs, bind_shapes, scalars)?);
+                child_ids.push(emit(graph, o, inputs, bind_shapes, scalars, memo)?);
             }
             let mut child_shapes: Vec<fuel_ir::Shape> =
                 child_ids.iter().map(|&c| graph.node(c).shape.clone()).collect();
@@ -892,7 +926,11 @@ fn emit(
                         child_dtypes.first().copied().unwrap_or(fuel_ir::DType::F32),
                     )
                 });
-            Ok(graph.push(Node { op: prim, inputs: child_ids, shape: s, dtype: d }))
+            let out = graph.push(Node { op: prim, inputs: child_ids, shape: s, dtype: d });
+            if sharable {
+                memo.push((node, out));
+            }
+            Ok(out)
         }
         PatternNode::Any | PatternNode::SeeThrough { .. } => {
             unreachable!("region validated concrete (Op/Bind) at registration")
@@ -1258,11 +1296,12 @@ mod tests {
     // The A.4 acceptance gate: express each hand-written decompose as a
     // PatternNode region, re-emit it via the grown `emit`, and assert the
     // result is structurally identical (op + shape + dtype at every node) to
-    // the registry `decompose` output — the migration oracle. `emit` does NOT
-    // CSE-dedup shared subterms, so a shared oracle node compares structurally
-    // against two identical emitted subtrees; `assert_structural_eq` is
-    // recursive + order-sensitive (no commutative canonicalization — stricter
-    // than `base_map_hash`), catching an operand-swap the hash would mask.
+    // the decompose-oracle output — the migration oracle. Since T5, `emit`
+    // identity-shares repeated slot-free subtrees within one call, so a
+    // shared oracle node compares against an equally-shared emitted node;
+    // `assert_structural_eq` is recursive + order-sensitive (no commutative
+    // canonicalization — stricter than `base_map_hash`), catching an
+    // operand-swap the hash would mask.
 
     fn op_node(op: OpTag, attrs: OpAttrs, operands: Vec<PatternNode>) -> PatternNode {
         PatternNode::Op { op, attrs, operands }
@@ -1289,15 +1328,90 @@ mod tests {
         }
     }
 
+    /// FROZEN copy of the pre-migration imperative
+    /// `registry::softmax_last_dim::decompose` (the legacy 7-node
+    /// `ReduceMaxTo`/`ReduceSumTo` keepdim spelling), copied VERBATIM from
+    /// that module @ `af4b7dd4` before T5 replaced the live body with the
+    /// data recipe. Two consumers: the T5 numeric-parity oracle
+    /// (`recipe_bridge` below) and `emit_matches_softmax_last_dim_decompose`
+    /// (whose oracle was repointed here — the live decompose no longer emits
+    /// this spelling).
+    fn frozen_legacy_softmax_decompose(
+        graph: &mut Graph,
+        id: NodeId,
+        _params: &FusedOpParams,
+    ) -> NodeId {
+        let (x_id, x_shape, dtype) = {
+            let n = graph.node(id);
+            (n.inputs[0], n.shape.clone(), n.dtype)
+        };
+        let dims = x_shape.dims().to_vec();
+        let rank = dims.len();
+        let last = rank - 1;
+
+        let mut keepdim_dims = dims.clone();
+        keepdim_dims[last] = 1;
+        let keepdim_shape = Shape::from_dims(&keepdim_dims);
+
+        let m_id = graph.push(Node {
+            op:     Op::ReduceMaxTo(keepdim_shape.clone()),
+            inputs: vec![x_id],
+            shape:  keepdim_shape.clone(),
+            dtype,
+        });
+        let mb_id = graph.push(Node {
+            op:     Op::BroadcastTo(x_shape.clone()),
+            inputs: vec![m_id],
+            shape:  x_shape.clone(),
+            dtype,
+        });
+        let s_id = graph.push(Node {
+            op:     Op::Sub,
+            inputs: vec![x_id, mb_id],
+            shape:  x_shape.clone(),
+            dtype,
+        });
+        let e_id = graph.push(Node {
+            op:     Op::Exp,
+            inputs: vec![s_id],
+            shape:  x_shape.clone(),
+            dtype,
+        });
+        let d_id = graph.push(Node {
+            op:     Op::ReduceSumTo(keepdim_shape.clone()),
+            inputs: vec![e_id],
+            shape:  keepdim_shape,
+            dtype,
+        });
+        let db_id = graph.push(Node {
+            op:     Op::BroadcastTo(x_shape.clone()),
+            inputs: vec![d_id],
+            shape:  x_shape.clone(),
+            dtype,
+        });
+        let out_id = graph.push(Node {
+            op:     Op::Div,
+            inputs: vec![e_id, db_id],
+            shape:  x_shape,
+            dtype,
+        });
+        out_id
+    }
+
     #[test]
     fn emit_matches_softmax_last_dim_decompose() {
         use fuel_ir::{DType, Shape};
         let mut g = Graph::new();
         let sh = Shape::from_dims(&[2, 4]);
         let x = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
-        // Oracle: registry decompose reads inputs[0] + shape + dtype off the node.
+        // Oracle: the FROZEN legacy builder (reads inputs[0] + shape + dtype
+        // off the node). T5 repointed this from the live registry decompose —
+        // which now emits the 9-node recipe spelling — so this test keeps
+        // pinning the Increment-A guarantee it always pinned: the grown
+        // `emit` reconstructs the LEGACY imperative structure from the legacy
+        // region datum.
         let fused = g.push(Node { op: Op::Const, inputs: vec![x], shape: sh.clone(), dtype: DType::F32 });
-        let oracle = crate::registry::softmax_last_dim::decompose(&mut g, fused, &FusedOpParams::SoftmaxLastDim);
+        let oracle = frozen_legacy_softmax_decompose(&mut g, fused, &FusedOpParams::SoftmaxLastDim);
 
         // keepdim shape [2,1]; full shape [2,4].
         let kd = OpAttrs { target_shape: vec![2, 1], ..OpAttrs::default() };
@@ -1887,6 +2001,61 @@ mod tests {
         }
     }
 
+    // ---- T5 (Increment C slice 1): identity-share of repeated subtrees ----
+    //
+    // A `PatternNode` recipe is a TREE; a DAG recipe (softmax's shared
+    // `e = Exp(..)` interior, consumed by both the denominator reduce and the
+    // final Div) is spelled by REPEATING the subtree. `emit` must emit a
+    // repeated slot-free subtree ONCE per emit call (identity-share), so the
+    // emitted graph is the DAG, not a duplicated-compute tree. Subtrees with
+    // OPEN scalar slots are never shared — each occurrence takes its own
+    // cursor value. (The flat-DAG node table with real CSE is slice 3.)
+
+    #[test]
+    fn emit_shares_repeated_slot_free_subtrees() {
+        let region = op_node(OpTag::Add, OpAttrs::default(), vec![
+            op_node(OpTag::Exp, OpAttrs::default(), vec![bind(0)]),
+            op_node(OpTag::Exp, OpAttrs::default(), vec![bind(0)]),
+        ]);
+        let mut g = Graph::new();
+        let x = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[4]),
+            dtype: DType::F32,
+        });
+        let root = emit_region(&mut g, &region, &[x], &[]);
+        let add = g.node(root);
+        assert!(matches!(add.op, Op::Add));
+        assert_eq!(
+            add.inputs[0], add.inputs[1],
+            "structurally-equal slot-free subtrees must share ONE emitted node",
+        );
+    }
+
+    #[test]
+    fn emit_does_not_share_subtrees_with_open_scalar_slots() {
+        // Two open MulScalar slots take DIFFERENT cursor values (pre-order
+        // fill) — sharing them would silently drop the second live value.
+        let region = op_node(OpTag::Add, OpAttrs::default(), vec![
+            op_node(OpTag::MulScalar, OpAttrs::default(), vec![bind(0)]),
+            op_node(OpTag::MulScalar, OpAttrs::default(), vec![bind(0)]),
+        ]);
+        let mut g = Graph::new();
+        let x = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[4]),
+            dtype: DType::F32,
+        });
+        let root = emit_region(&mut g, &region, &[x], &[2.0, 3.0]);
+        let a = g.node(root).inputs[0];
+        let b = g.node(root).inputs[1];
+        assert_ne!(a, b, "open-slot subtrees are never shared");
+        assert!(matches!(g.node(a).op, Op::MulScalar(v) if v == 2.0));
+        assert!(matches!(g.node(b).op, Op::MulScalar(v) if v == 3.0));
+    }
+
     #[test]
     fn emit_matches_cast_over_add_reference() {
         // Exercises the dtype path through assert_structural_eq: a hand-built
@@ -1905,5 +2074,244 @@ mod tests {
         ]);
         let emitted = emit_region(&mut g, &region, &[a, b], &[]);
         assert_structural_eq(&g, reference, emitted);
+    }
+
+    // ---- T5 (Increment C slice 1): decompose_via_recipe bridge + the
+    // softmax_last_dim pilot migration --------------------------------------
+    //
+    // The registry bridge (`crate::registry::decompose_via_recipe`, design
+    // D6) makes a static entry's `decompose` a re-emit of portable
+    // `PatternNode` DATA: node inputs are the binds, a per-entry projection
+    // supplies the open-slot scalars, the resolving emit does the rest. ANY
+    // failure — wrong params payload, a semantics-absent op token (the
+    // flip-withdrawal posture: unknown/non-registry tokens are surfaced
+    // honest-miss declines, NEVER accepted, NEVER a crash), a bind/arity or
+    // slot-count mismatch, a rel-resolution decline at these shapes — returns
+    // `id` (fixpoint, G2), never panics.
+
+    mod recipe_bridge {
+        use super::super::*;
+        use super::{bind, frozen_legacy_softmax_decompose, op_node};
+        use crate::registry::{FusedOps, decompose_via_recipe};
+        use fuel_ir::{DType, Shape};
+        use std::collections::HashMap;
+
+        /// Tiny f64 reference interpreter over the primitive vocabulary the
+        /// two softmax spellings use (Const leaves, last-axis reduces, keepdim
+        /// restores, last-dim broadcast, elementwise). BOTH parity sides run
+        /// through it, with in-order accumulation per row — so the bit-exact
+        /// assert isolates recipe STRUCTURE; float noise can't differ between
+        /// two evaluations of the same interpreter. (Not code evaluation: a
+        /// closed match over our own `Op` enum — no dynamic execution.)
+        fn eval(g: &Graph, id: NodeId, leaves: &HashMap<NodeId, Vec<f64>>) -> Vec<f64> {
+            let node = g.node(id);
+            match &node.op {
+                Op::Const => leaves.get(&id).expect("leaf data provided").clone(),
+                Op::Exp => eval(g, node.inputs[0], leaves).iter().map(|v| v.exp()).collect(),
+                Op::Sub => {
+                    let a = eval(g, node.inputs[0], leaves);
+                    let b = eval(g, node.inputs[1], leaves);
+                    a.iter().zip(&b).map(|(x, y)| x - y).collect()
+                }
+                Op::Div => {
+                    let a = eval(g, node.inputs[0], leaves);
+                    let b = eval(g, node.inputs[1], leaves);
+                    a.iter().zip(&b).map(|(x, y)| x / y).collect()
+                }
+                // Last-axis reduces — one arm per spelling pair, identical
+                // in-order fold.
+                Op::MaxDim(_) | Op::ReduceMaxTo(_) => {
+                    let input = eval(g, node.inputs[0], leaves);
+                    let last = *g.node(node.inputs[0]).shape.dims().last().unwrap();
+                    input
+                        .chunks(last)
+                        .map(|row| row.iter().copied().fold(f64::NEG_INFINITY, f64::max))
+                        .collect()
+                }
+                Op::SumDim(_) | Op::ReduceSumTo(_) => {
+                    let input = eval(g, node.inputs[0], leaves);
+                    let last = *g.node(node.inputs[0]).shape.dims().last().unwrap();
+                    input.chunks(last).map(|row| row.iter().sum()).collect()
+                }
+                // Metadata-only keepdim restores.
+                Op::Unsqueeze { .. } | Op::Reshape(_) => eval(g, node.inputs[0], leaves),
+                // Broadcast a keepdim/reduced tensor back along the last axis.
+                Op::BroadcastTo(target) => {
+                    let input = eval(g, node.inputs[0], leaves);
+                    let out_n: usize = target.dims().iter().product();
+                    let last = *target.dims().last().unwrap();
+                    assert_eq!(
+                        input.len() * last,
+                        out_n,
+                        "broadcast is a last-dim repeat in these graphs",
+                    );
+                    input
+                        .iter()
+                        .flat_map(|&v| std::iter::repeat(v).take(last))
+                        .collect()
+                }
+                other => panic!("eval: unhandled op {other:?}"),
+            }
+        }
+
+        fn softmax_fused_node(g: &mut Graph, dims: &[usize]) -> (NodeId, NodeId) {
+            let sh = Shape::from_dims(dims);
+            let x = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+            let fused = g.push(Node {
+                op: Op::Fused(FusedOps::SOFTMAX_LAST_DIM, FusedOpParams::SoftmaxLastDim),
+                inputs: vec![x],
+                shape: sh,
+                dtype: DType::F32,
+            });
+            (x, fused)
+        }
+
+        /// T5 red (a): ONE recipe datum decomposes at BOTH rank 2 and rank 3
+        /// (the polymorphism the baked-shape legacy body never had), and its
+        /// numerics match the FROZEN legacy builder bit-exactly under the
+        /// shared reference interpreter.
+        #[test]
+        fn softmax_recipe_decompose_is_polymorphic_and_matches_frozen_legacy() {
+            for dims in [vec![2usize, 4], vec![3, 5, 7]] {
+                let mut g = Graph::new();
+                let (x, fused) = softmax_fused_node(&mut g, &dims);
+                let sh = Shape::from_dims(&dims);
+                let new_root = crate::registry::softmax_last_dim::decompose(
+                    &mut g,
+                    fused,
+                    &FusedOpParams::SoftmaxLastDim,
+                );
+                assert_ne!(new_root, fused, "recipe decompose must fire at {dims:?}");
+                assert_eq!(g.node(new_root).shape, sh, "softmax is shape-preserving");
+                assert_eq!(g.node(new_root).dtype, DType::F32);
+
+                let legacy_root =
+                    frozen_legacy_softmax_decompose(&mut g, fused, &FusedOpParams::SoftmaxLastDim);
+
+                let n: usize = dims.iter().product();
+                let data: Vec<f64> =
+                    (0..n).map(|i| ((i as f64) * 0.37).sin() * 3.0 - 0.5).collect();
+                let mut leaves = HashMap::new();
+                leaves.insert(x, data);
+                let got = eval(&g, new_root, &leaves);
+                let want = eval(&g, legacy_root, &leaves);
+                assert_eq!(got.len(), want.len());
+                for (i, (a, b)) in got.iter().zip(want.iter()).enumerate() {
+                    assert_eq!(
+                        a.to_bits(),
+                        b.to_bits(),
+                        "softmax[{i}] at {dims:?}: recipe={a} vs legacy={b}",
+                    );
+                }
+            }
+        }
+
+        /// T5 red (b): the structural golden — the ratified D3 shrink-via-swap
+        /// spelling, 9 op nodes with the `e = Exp(..)` interior SHARED (node
+        /// identity) between the denominator reduce and the final Div.
+        #[test]
+        fn softmax_recipe_emits_the_nine_node_shared_spelling() {
+            let mut g = Graph::new();
+            let (x, fused) = softmax_fused_node(&mut g, &[2, 4]);
+            let sh = Shape::from_dims(&[2, 4]);
+            let root = crate::registry::softmax_last_dim::decompose(
+                &mut g,
+                fused,
+                &FusedOpParams::SoftmaxLastDim,
+            );
+
+            // out = Div(e, db)
+            assert!(matches!(g.node(root).op, Op::Div));
+            let e = g.node(root).inputs[0];
+            let db = g.node(root).inputs[1];
+            assert!(matches!(g.node(e).op, Op::Exp));
+            assert_eq!(g.node(db).op, Op::BroadcastTo(sh.clone()));
+            // db = BroadcastTo(Unsqueeze(SumDim(e))) — the SAME e node.
+            let u2 = g.node(db).inputs[0];
+            assert!(matches!(g.node(u2).op, Op::Unsqueeze { dim: 1 }));
+            assert_eq!(g.node(u2).shape, Shape::from_dims(&[2, 1]));
+            let d = g.node(u2).inputs[0];
+            assert!(matches!(g.node(d).op, Op::SumDim(1)));
+            assert_eq!(g.node(d).shape, Shape::from_dims(&[2]));
+            assert_eq!(
+                g.node(d).inputs[0], e,
+                "the denominator reduces the SHARED Exp node — identity-share, not a duplicate",
+            );
+            // e = Exp(Sub(x, mb)); mb = BroadcastTo(Unsqueeze(MaxDim(x))).
+            let s = g.node(e).inputs[0];
+            assert!(matches!(g.node(s).op, Op::Sub));
+            assert_eq!(g.node(s).inputs[0], x);
+            let mb = g.node(s).inputs[1];
+            assert_eq!(g.node(mb).op, Op::BroadcastTo(sh.clone()));
+            let u1 = g.node(mb).inputs[0];
+            assert!(matches!(g.node(u1).op, Op::Unsqueeze { dim: 1 }));
+            let m = g.node(u1).inputs[0];
+            assert!(matches!(g.node(m).op, Op::MaxDim(1)));
+            assert_eq!(g.node(m).inputs[0], x);
+            // 9 op nodes + the x leaf = 10 reachable (NO duplicated interior).
+            assert_eq!(
+                crate::topo_order_multi(&g, &[root]).len(),
+                10,
+                "MaxDim/Unsqueeze/Bcast/Sub/Exp/SumDim/Unsqueeze/Bcast/Div + leaf",
+            );
+        }
+
+        /// T5 red (c): totality — a wrong params payload is a typed decline
+        /// surfaced as a fixpoint (G2), never a panic, and declines BEFORE any
+        /// emission (no partial nodes).
+        #[test]
+        fn softmax_recipe_wrong_params_is_a_fixpoint_not_a_crash() {
+            let mut g = Graph::new();
+            let (_x, fused) = softmax_fused_node(&mut g, &[2, 4]);
+            let before = g.len();
+            let out = crate::registry::softmax_last_dim::decompose(
+                &mut g,
+                fused,
+                &FusedOpParams::Rope,
+            );
+            assert_eq!(out, fused, "wrong params ⇒ typed decline ⇒ fixpoint");
+            assert_eq!(g.len(), before, "declined before any emission");
+        }
+
+        /// INJECTED item (2), the flip-withdrawal posture (Baracuda #68 /
+        /// KISS-Ops closed registry): an op token with no registry semantics —
+        /// the in-memory analog of the withdrawn reverse-scan "flip" spelling —
+        /// must surface as a typed honest-miss decline: the node stays fused
+        /// (fixpoint), NEVER accepted, NEVER a crash. The fabricated recipe
+        /// stands in for a foreign token by carrying `OpTag::PowI` — a tag
+        /// with NO primitive re-emission today (`tag_to_op` → `None`), exactly
+        /// the semantics-absent posture an unregistered op name resolves to.
+        /// If/when the token registers (flip returning to KISS-Ops; PowI
+        /// gaining its carrier in slice 2), it becomes a NAMED-op resolution
+        /// case — semantics arrive via registration, never via silent
+        /// acceptance here.
+        #[test]
+        fn decompose_via_recipe_declines_an_unknown_token_recipe() {
+            let fabricated = op_node(
+                OpTag::PowI,
+                OpAttrs { scalars: vec![3.0], ..OpAttrs::default() },
+                vec![bind(0)],
+            );
+            let mut g = Graph::new();
+            let (_x, fused) = softmax_fused_node(&mut g, &[2, 4]);
+            let before = g.len();
+            let out = decompose_via_recipe(&mut g, fused, &fabricated, Some(Vec::new()));
+            assert_eq!(out, fused, "semantics-absent token ⇒ honest-miss fixpoint");
+            assert_eq!(g.len(), before, "declined BEFORE any emission — no partial nodes");
+        }
+
+        /// The bridge's bind/input arity guard: a recipe over 2 binds cannot
+        /// decompose a 1-input node — fixpoint, not a crash (and not a
+        /// misbound emission).
+        #[test]
+        fn decompose_via_recipe_bind_arity_mismatch_is_a_fixpoint() {
+            let recipe = op_node(OpTag::Add, OpAttrs::default(), vec![bind(0), bind(1)]);
+            let mut g = Graph::new();
+            let (_x, fused) = softmax_fused_node(&mut g, &[2, 4]);
+            let before = g.len();
+            let out = decompose_via_recipe(&mut g, fused, &recipe, Some(Vec::new()));
+            assert_eq!(out, fused, "bind/input arity mismatch ⇒ fixpoint");
+            assert_eq!(g.len(), before, "declined before any emission");
+        }
     }
 }

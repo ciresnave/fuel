@@ -15,11 +15,14 @@
 
 use crate::registry::{
     BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps,
-    PatternMatch, SubgraphPattern,
+    PatternMatch, SubgraphPattern, decompose_via_recipe,
 };
-use crate::{Graph, Node, NodeId, Op};
+use crate::{Graph, NodeId, Op};
 use fuel_ir::{DType, Shape};
+use fuel_kernel_seam_types::shape_expr::ShapeExpr;
+use fuel_kernel_seam_types::{OpAttrs, OpTag, PatternNode};
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 /// Metadata-side registry entry for SoftmaxLastDim.
 pub fn entry() -> FusedOpEntry {
@@ -55,94 +58,102 @@ fn dtype_passthrough(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
     input_dtypes[0]
 }
 
-/// Lower a fused SoftmaxLastDim node to the canonical 7-node primitive
-/// subgraph and return the new root id. Mirrors PR 3's
-/// `SoftmaxLastDimLowerRule::rewrite`; the only difference is that the
-/// fused node identified by `id` may be either `Op::SoftmaxLastDim`
-/// (legacy emission site, e.g. the pipelined direct-construct test) or
-/// `Op::Fused(FusedOps::SOFTMAX_LAST_DIM, _)` (the new builder path).
-/// The decomposition is identical for both — it reads the input id +
-/// shape + dtype off the node and emits primitives.
+/// The op's primitive recipe as **portable data** (Increment C slice 1, T5 —
+/// the pilot migration). Shape-polymorphic across ranks/extents: keepdim is
+/// spelled with the RATIFIED shrink-via-swap (`MaxDim`/`SumDim` at
+/// `axis_last` + `Unsqueeze` append — D3), the broadcast targets are
+/// `SameAs {{ operand: 0 }}` over the Bind space (D2), and the shared
+/// `e = Exp(..)` interior is a repeated subtree the emitter identity-shares
+/// into ONE node. Nothing in the datum bakes a shape.
 ///
-/// Lowered form (7 nodes, symmetric across max/sum sides):
+/// Emitted form (9 nodes; `e` shared by the denominator reduce and the Div):
 ///
 /// ```text
-///   m   = ReduceMaxTo([..., 1])(x)   # max-keepdim in one node
-///   mb  = BroadcastTo([..., last])(m)
+///   m   = MaxDim(last)(x)            # shrink…
+///   mk  = Unsqueeze(append)(m)       # …then restore keepdim ([..., 1])
+///   mb  = BroadcastTo(shape_of(x))(mk)
 ///   s   = Sub(x, mb)                 # numerically-stable shift
 ///   e   = Exp(s)
-///   d   = ReduceSumTo([..., 1])(e)   # sum-keepdim in one node
-///   db  = BroadcastTo([..., last])(d)
+///   d   = SumDim(last)(e)
+///   dk  = Unsqueeze(append)(d)
+///   db  = BroadcastTo(shape_of(x))(dk)
 ///   out = Div(e, db)
 /// ```
-pub fn decompose(graph: &mut Graph, id: NodeId, _params: &FusedOpParams) -> NodeId {
-    let (x_id, x_shape, dtype) = {
-        let n = graph.node(id);
-        (n.inputs[0], n.shape.clone(), n.dtype)
-    };
-    let dims = x_shape.dims().to_vec();
-    let rank = dims.len();
-    let last = rank - 1;
-
-    let mut keepdim_dims = dims.clone();
-    keepdim_dims[last] = 1;
-    let keepdim_shape = Shape::from_dims(&keepdim_dims);
-
-    let m_id = graph.push(Node {
-        op:     Op::ReduceMaxTo(keepdim_shape.clone()),
-        inputs: vec![x_id],
-        shape:  keepdim_shape.clone(),
-        dtype,
-    });
-    let mb_id = graph.push(Node {
-        op:     Op::BroadcastTo(x_shape.clone()),
-        inputs: vec![m_id],
-        shape:  x_shape.clone(),
-        dtype,
-    });
-    let s_id = graph.push(Node {
-        op:     Op::Sub,
-        inputs: vec![x_id, mb_id],
-        shape:  x_shape.clone(),
-        dtype,
-    });
-    let e_id = graph.push(Node {
-        op:     Op::Exp,
-        inputs: vec![s_id],
-        shape:  x_shape.clone(),
-        dtype,
-    });
-    let d_id = graph.push(Node {
-        op:     Op::ReduceSumTo(keepdim_shape.clone()),
-        inputs: vec![e_id],
-        shape:  keepdim_shape,
-        dtype,
-    });
-    let db_id = graph.push(Node {
-        op:     Op::BroadcastTo(x_shape.clone()),
-        inputs: vec![d_id],
-        shape:  x_shape.clone(),
-        dtype,
-    });
-    let out_id = graph.push(Node {
-        op:     Op::Div,
-        inputs: vec![e_id, db_id],
-        shape:  x_shape,
-        dtype,
-    });
-    out_id
+fn recipe() -> &'static PatternNode {
+    static RECIPE: OnceLock<PatternNode> = OnceLock::new();
+    RECIPE.get_or_init(|| {
+        let axis_last = || OpAttrs { axis_last: true, ..OpAttrs::default() };
+        let same_as_x = || OpAttrs {
+            target_shape_rel: Some(ShapeExpr::SameAs { operand: 0 }),
+            ..OpAttrs::default()
+        };
+        let op = |op, attrs, operands| PatternNode::Op { op, attrs, operands };
+        let x = || PatternNode::Bind { index: 0 };
+        let e = op(OpTag::Exp, OpAttrs::default(), vec![
+            op(OpTag::Sub, OpAttrs::default(), vec![
+                x(),
+                op(OpTag::BroadcastTo, same_as_x(), vec![
+                    op(OpTag::Unsqueeze, axis_last(), vec![
+                        op(OpTag::MaxDim, axis_last(), vec![x()]),
+                    ]),
+                ]),
+            ]),
+        ]);
+        op(OpTag::Div, OpAttrs::default(), vec![
+            e.clone(),
+            op(OpTag::BroadcastTo, same_as_x(), vec![
+                op(OpTag::Unsqueeze, axis_last(), vec![
+                    op(OpTag::SumDim, axis_last(), vec![e]),
+                ]),
+            ]),
+        ])
+    })
 }
 
-/// Match the canonical 7-node SoftmaxLastDim subgraph rooted at a
-/// `Div` node. Returns a [`PatternMatch`] with `bindings = [(0, x_id)]`
-/// when the pattern fires. Conservative: every intermediate must be
-/// consumed only within the canonical pattern so fusing doesn't
-/// discard a value the user reads.
+/// Per-entry scalar projection: SoftmaxLastDim is parameterless, so the
+/// right payload projects to ZERO open-slot scalars and any other payload is
+/// a typed decline (`None` ⇒ the bridge returns the node unchanged — G2).
+fn scalars(params: &FusedOpParams) -> Option<Vec<f64>> {
+    match params {
+        FusedOpParams::SoftmaxLastDim => Some(Vec::new()),
+        _ => None,
+    }
+}
+
+/// Lower a fused SoftmaxLastDim node to its primitive subgraph and return
+/// the new root id — since T5 a re-emit of [`recipe`]'s data through the
+/// [`decompose_via_recipe`] bridge (the fused node's input is the bind, the
+/// resolving emit derives every interior shape/dtype). Any failure — wrong
+/// params payload, a resolution decline at these shapes — returns `id`
+/// (fixpoint, surfaced gap, never a panic): exactly the G2 posture the
+/// imperative body had.
+pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeId {
+    decompose_via_recipe(graph, id, recipe(), scalars(params))
+}
+
+/// Match a canonical SoftmaxLastDim subgraph rooted at a `Div` node, in
+/// EITHER spelling. Returns a [`PatternMatch`] with `bindings = [(0, x_id)]`
+/// when a pattern fires. Conservative: every intermediate must be consumed
+/// only within the matched pattern so fusing doesn't discard a value the
+/// user reads.
 ///
-/// Direct port of PR 3's `canonical_softmax_pattern`; this is the
-/// matcher referenced from [`SubgraphPattern::Callable`] in the
+/// Two spellings, both kept (T5 / risk-3 posture — never delete the old
+/// match):
+/// * the LEGACY user-spelled 7-node form (`ReduceMaxTo`/`ReduceSumTo`
+///   keepdim) — what user graphs and pre-T5 lowerings contain;
+/// * the RECIPE 9-node form (`MaxDim`/`SumDim` + `Unsqueeze` append, shared
+///   `e`) — what [`recipe`]'s emission contains, so lower→fuse still
+///   round-trips.
+///
+/// This is the matcher referenced from [`SubgraphPattern::Callable`] in the
 /// registry entry.
 pub fn canonical_pattern(graph: &Graph, div_id: NodeId) -> Option<PatternMatch> {
+    legacy_spelled_pattern(graph, div_id).or_else(|| recipe_spelled_pattern(graph, div_id))
+}
+
+/// The legacy 7-node spelling (direct port of PR 3's
+/// `canonical_softmax_pattern`).
+fn legacy_spelled_pattern(graph: &Graph, div_id: NodeId) -> Option<PatternMatch> {
     let div = graph.node(div_id);
     if !matches!(div.op, Op::Div) { return None; }
     if div.inputs.len() != 2 { return None; }
@@ -213,6 +224,97 @@ pub fn canonical_pattern(graph: &Graph, div_id: NodeId) -> Option<PatternMatch> 
     })
 }
 
+/// The recipe 9-node spelling (T5): `Div(e, Bcast(Unsq(SumDim(e))))` with
+/// `e = Exp(Sub(x, Bcast(Unsq(MaxDim(x)))))` — both reduces target the last
+/// axis, both `Unsqueeze`s restore keepdim (append at `rank − 1` of the
+/// reduced tensor), both broadcasts restore x's full shape, and `e` is the
+/// SHARED interior (consumed exactly twice: the denominator reduce + the
+/// Div numerator).
+fn recipe_spelled_pattern(graph: &Graph, div_id: NodeId) -> Option<PatternMatch> {
+    let div = graph.node(div_id);
+    if !matches!(div.op, Op::Div) { return None; }
+    if div.inputs.len() != 2 { return None; }
+    let e_id = div.inputs[0];
+    let db_id = div.inputs[1];
+
+    let db = graph.node(db_id);
+    if !matches!(db.op, Op::BroadcastTo(_)) { return None; }
+    if db.inputs.len() != 1 { return None; }
+    let u2_id = db.inputs[0];
+
+    let u2 = graph.node(u2_id);
+    let Op::Unsqueeze { dim: u2_dim } = u2.op else { return None; };
+    if u2.inputs.len() != 1 { return None; }
+    let d_id = u2.inputs[0];
+
+    let d = graph.node(d_id);
+    let Op::SumDim(sum_axis) = d.op else { return None; };
+    if d.inputs.len() != 1 || d.inputs[0] != e_id { return None; }
+
+    let e = graph.node(e_id);
+    if !matches!(e.op, Op::Exp) { return None; }
+    if e.inputs.len() != 1 { return None; }
+    let s_id = e.inputs[0];
+
+    let s = graph.node(s_id);
+    if !matches!(s.op, Op::Sub) { return None; }
+    if s.inputs.len() != 2 { return None; }
+    let x_id = s.inputs[0];
+    let mb_id = s.inputs[1];
+
+    let mb = graph.node(mb_id);
+    if !matches!(mb.op, Op::BroadcastTo(_)) { return None; }
+    if mb.inputs.len() != 1 { return None; }
+    let u1_id = mb.inputs[0];
+
+    let u1 = graph.node(u1_id);
+    let Op::Unsqueeze { dim: u1_dim } = u1.op else { return None; };
+    if u1.inputs.len() != 1 { return None; }
+    let m_id = u1.inputs[0];
+
+    let m = graph.node(m_id);
+    let Op::MaxDim(max_axis) = m.op else { return None; };
+    if m.inputs.len() != 1 || m.inputs[0] != x_id { return None; }
+
+    // Axis discipline: both reduces AND both keepdim-restores target x's
+    // LAST axis (the reduce drops rank by one, so the restoring Unsqueeze
+    // appends at `last` of the reduced tensor — which IS `last` of x).
+    let x_shape = &graph.node(x_id).shape;
+    if x_shape.rank() == 0 { return None; }
+    let last = x_shape.rank() - 1;
+    if max_axis != last || sum_axis != last || u1_dim != last || u2_dim != last {
+        return None;
+    }
+    // Both broadcasts restore x's full shape.
+    let full = x_shape.dims();
+    if graph.node(mb_id).shape.dims() != full { return None; }
+    if graph.node(db_id).shape.dims() != full { return None; }
+
+    // Conservativeness: every intermediate consumed only within this
+    // pattern; e is consumed twice (→ d via SumDim, → div as numerator).
+    let intermediates_with_expected_count = [
+        (m_id, 1),
+        (u1_id, 1),
+        (mb_id, 1),
+        (s_id, 1),
+        (e_id, 2),
+        (d_id, 1),
+        (u2_id, 1),
+        (db_id, 1),
+    ];
+    let consumer_counts = count_consumers(graph);
+    for (nid, expected) in intermediates_with_expected_count {
+        if consumer_counts.get(&nid).copied().unwrap_or(0) != expected {
+            return None;
+        }
+    }
+
+    Some(PatternMatch {
+        bindings: vec![(0, x_id)],
+        params:   FusedOpParams::SoftmaxLastDim,
+    })
+}
+
 /// Build a consumer-count index across the entire graph. Mirrors
 /// `opt::count_consumers`; replicated here so the matcher is
 /// self-contained and the registry module doesn't pull `opt` into
@@ -227,4 +329,32 @@ fn count_consumers(graph: &Graph) -> HashMap<NodeId, usize> {
         }
     }
     counts
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Node;
+    use fuel_ir::{DType, Shape};
+
+    /// T5 re-fuse closure: the recipe emission itself is matched by
+    /// `canonical_pattern` (the new-spelling arm), so lower → fuse still
+    /// round-trips after the pilot migration.
+    #[test]
+    fn canonical_pattern_matches_the_recipe_spelling() {
+        let mut g = Graph::new();
+        let sh = Shape::from_dims(&[2, 4]);
+        let x = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+        let fused = g.push(Node {
+            op: Op::Fused(FusedOps::SOFTMAX_LAST_DIM, FusedOpParams::SoftmaxLastDim),
+            inputs: vec![x],
+            shape: sh,
+            dtype: DType::F32,
+        });
+        let root = decompose(&mut g, fused, &FusedOpParams::SoftmaxLastDim);
+        assert_ne!(root, fused, "recipe decompose fires");
+        let m = canonical_pattern(&g, root).expect("the recipe emission must re-fuse");
+        assert_eq!(m.bindings, vec![(0, x)], "bound external input = x");
+        assert!(matches!(m.params, FusedOpParams::SoftmaxLastDim));
+    }
 }
