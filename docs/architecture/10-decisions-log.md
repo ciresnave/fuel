@@ -803,6 +803,22 @@ re-derive the gap list from scratch.
 
 ---
 
+## 2026-07-15 — Increment 1: the verify reference is Fuel's OWN registered recipe (reverses Spec B's candidate-self-decompose reference)
+
+**Sections affected**: none bumped (verification-infrastructure behavior; like the 2026-07-14 Spec-B entry above it realizes the already-canonical 2026-06-20 JIT-loop goal — but it REVERSES one of that entry's documented deliberate deviations, so it is logged to keep the audit trail honest).
+
+**Phase / PR**: Increment 1 (recipe-identity verification + rope oracle, 11 commits, subagent-driven), merged to `capturedrun-4b-resume` @ `afc6ff32`, now on main. Key commits: `3c10505e` (`reference_from_registered_recipe`), `a8c7b201` (verify against the registered recipe + the `claimed_op` recipe-identity gate), `f35e8e99` (`by_pattern_hash` recipe-identity index + `register_runtime_fused` dedup), `e0cf3c45` (rope oracle), `f4a43565` (`adopt_runtime_fused` idempotent). Memory `increment-1-recipe-identity-complete`.
+
+**What changed**: `verify_candidate`'s numeric reference is now **Fuel's OWN registered recipe** — `reference_from_registered_recipe` builds `Op::Fused(claimed_op)` over the probe inputs, lowers it via `lower_to_base_map`, and realizes the primitives (`3c10505e`/`a8c7b201`) — instead of "a reference realized from the candidate's `decompose`" as the 2026-07-14 Spec-B entry shipped it (that entry's deliberate deviation (1)). Recipe *identity* is `base_map_hash` equality against the claimed op's registered recipe (`f35e8e99` — the NodeId-independent content hash as the identity pre-filter); `register_runtime_fused` dedups on it and `adopt_runtime_fused` is idempotent under region dedup (`f4a43565`). The rope scenario the Spec-B entry deferred now exists as a live oracle: a candidate claiming `FusedOps::ROPE` is verified against Fuel's rotate-half recipe realized as a primitive graph, so baracuda's interleaved `rope_apply` is REJECTED, not adopted (`e0cf3c45`) — the "non-`PatternNode` reference path" is the registered-recipe path itself (resolving memory `rope-not-patternnode`).
+
+**Why**: the Spec-B reference had a self-certification hole — verifying a candidate against its *own* `decompose` proves internal consistency, not that the kernel computes the op Fuel means by that `FusedOpId`. A wrong-but-self-consistent kernel (the interleaved rope is the live example) would pass. Verifying against Fuel's registered recipe makes the verdict mean "this kernel computes Fuel's op."
+
+**Alternatives considered**: keep the candidate-decompose reference and add a separate semantic gate (rejected — two half-oracles; the registered recipe IS the semantic definition, so verify against it directly); a hand-written CPU reference per fused op (rejected — the registry recipe already exists for every fused op by the G1/G2 invariant, so no second authority is needed).
+
+**Implications going forward**: (1) this resolves the 2026-07-14 Spec-B entry's deferred alternative ("extending `verify_candidate` with a non-`PatternNode` reference path + re-exposing `rope_apply`") — the reference path is now general over any registered recipe realizable on the base map, not `PatternNode`-elementwise-only. (2) The Spec-B carried limitation (a) — the reference realizes through Fuel's OWN backend and probes only `[-0.5, 0.5)` — REMAINS, still targeted by the 2026-07-14 KISS adopt-from goals 3/4/5. (3) Recipe identity by `base_map_hash` is the shared Fuel↔Baracuda identity rule offered in the recipe-grammar co-design (Q3).
+
+---
+
 ## 2026-07-16 — `Op::Scan` Phase 2: `early_exit` mechanism + BPTT differentiability + Hopfield consumer (two of three obligations closed; slot-1 stays open, no kernel added)
 
 **Phase / PR**: Op::Scan Phase 2 (9 tasks). Code: `fuel-graph/src/scan.rs` (`unroll_scan` peels + ignores `early_exit`; `parse_scan_layout` + `build_scan_step`), `fuel-graph/src/lib.rs` (`Tensor::scan_until`; `lower_scans_for_backward` backward pre-pass; N-ary `Op::Concat` backward arm; `Op::Scan` backward arm → defensive guard), `fuel-graph/src/registry/{selective_scan,ssd_chunk_scan}.rs` (`BackwardKind::NotDifferentiable → Decompose` + docs), `fuel-core/src/hopfield.rs` (`drive_scan_until_final_f32` step driver + `hopfield_retrieve`), numeric BPTT + convergence + gradient tests in `fuel-core/src/{lazy,hopfield}.rs`.
@@ -843,6 +859,30 @@ re-derive the gap list from scratch.
 **Why**: realize the recipe grammar's canonical form as machinery now so (a) builder/emit shape logic has one authority, and (b) Increment C's decompose→`PatternNode`-data migration + Baracuda recipe import have a concrete §6.19 serialization + shape oracle to build on. Grammar pinned in the co-design; Fuel's representation conforms in A (machinery) then C (migration).
 
 **Related artifacts**: `docs/outreach/baracuda-recipe-grammar-codesign-reply-2.md` (the pinned §6.4-0009 schema) + `-reply-3.md` (matmul role-vectors, Increment C); memory `recipe-grammar-codesign`; the sequel is Convergence **Increment C** (this session).
+
+---
+
+## 2026-07-21 — Convergence-C: the shape-expression oracle ships (C-1 AST/codec/evaluator, C-2 role/index-woven kinds, C-3 cross-check activation)
+
+**Sections affected**: `03-ir` **v0.8 → v0.9 (MINOR)** — the section choice follows the Increment-A precedent above: Convergence-C realizes the externally-converged shape-expression grammar as machinery on the same recipe-grammar program (no core-claim change). `12-multi-output` is affected-but-NOT-bumped: C-3's bundle-slot differential *enforces* its existing slot-0 == `shape_rule` authoring contract (12 §"The authoring contract") at contract-validation time without changing that claim's scope.
+
+**Phase / PR**: Convergence-C, branch `convergence-c-shape-oracle` (series `6dfc3011`..`f87fd401`, merge `9156e178`, on main; work 2026-07-20/21). External convergence first: the KISS shape-expression-oracle RFC merged @ KISS `3bd6d2d` (2026-07-19, Fuel + Baracuda cosignatories); the Fuel-side ask carries a superseded banner @ `9f8b8347`. Plan: `docs/superpowers/plans/2026-07-21-convergence-c-c3.md`; reference: `docs/recipe-signature-reference.md`; memory `shape-oracle-rfc-accepted`.
+
+**What changed**:
+
+- **C-1**: shape-expr AST + the §6.20 wire codec, byte-matching the KISS golden vectors (`6dfc3011`, `fuel-dispatch/src/fkc/shape_expr.rs`) + the typed-decline decoder + gap-propagating evaluator (`ddd76207`); `eval_shape_rule` now evaluates the full `DimExpr` vocabulary with role-name authoring (`ae6b6300`) — `OutputDesc.shape_rule` was `same_as`-only before.
+- **C-2**: the role/index-woven kinds — reduce/gather/matmul + the §6.4-0011 `shape_consistent` tie (`8d8338e9`).
+- **C-3**: cross-check ACTIVATION — the oracle now cross-checks ~16 of the 22 registered fused ops (was 9): affine/attention-bwd/scan synth (`6ab8d679`), the matmul(a,b) whole-shape rule wired (`1e3d8a0f`), kernel-contract-doc `shape_rule` retargets (`daa806f3` FlashAttn/PagedAttn → `same_as(q)`; `ed7061af` cuda `causal_conv1d` off the inaccurate `same_as(x)`), and the adversarial-review fixes: warn-not-silent-skip + arity pre-check (`80c20a47`), GQA probe shape-distinctness so an operand-role swap is caught (`9c96a0f8`), the bundle-slot-vs-`output_views` differential (`f87fd401`).
+
+This **partially resolves the 2026-07-11 gap-audit's §5 finding** (return-contract validation): declared shape rules are now evaluated AND differentially cross-checked against the real registered functions for the expressible set. (Closure note for the audit's headline set as a whole: the `fix/fkc-gap-closure` merge `cf0c3ee2`, 2026-07-13, had already closed the §5 return-contract cross-check (`b1c33f91`/`8162f056`/`9f09a94a`), the §2.3 cost-AST pricing (`28ea2953`/`56b82d31`), and the V-FKC-9 import gate (`461c3bbc` + ledger `ece3c0e2`).)
+
+**Deliberate scope-out (C-4, tracked in ROADMAP)**: the reserved `TAG_DIMS=0x0B`/`TAG_WITH_DIM=0x0A` tags + param-value threading into `eval_dim` — the ~7 genuinely-inexpressible ops (`conv2d`, `conv_transpose_2d`, `qmatmul`, `nf4_matmul`, `fused_softmax_cross_entropy`, the two scan `last_state` slots) stay intentional `Ok(None)` skips, never false rejects.
+
+**Why**: Increment C's Fuel-side implementation was explicitly gated on the shape-expression grammar converging externally (the 2026-07-16 Increment-A entry above); KISS `3bd6d2d` closed that gate, so the oracle side shipped. The recipe-interior migration (decompose→`PatternNode`-data + shape-relative interior attrs + the flat-DAG-CSE serializer + matmul role-vectors) remains the narrowed Increment C (ROADMAP).
+
+**Alternatives considered**: ship the full C-4 `Dims`/`WithDim` vocabulary now (rejected — the seven ops have no cross-check consumer yet and the tags are reserved, so the honest skip is cheap and safe); silent-skip on evaluator gaps (rejected on adversarial review — `80c20a47` makes a skip a warning so a coverage regression stays visible).
+
+**Implications going forward**: (1) the shape-rule vocabulary is now shared Fuel↔KISS↔Baracuda machinery — the recipe-interior migration serializes into the same codec; (2) new fused-op contracts should author `shape_rule` in the `DimExpr` vocabulary (`same_as` is no longer the ceiling — and C-3 will catch a rule that disagrees with the registered function); (3) C-4 is the named successor for the remaining seven ops.
 
 ---
 
