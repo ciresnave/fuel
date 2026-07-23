@@ -470,6 +470,29 @@ fn advisory_region(
     decompose.cloned().or_else(|| claimed.and_then(fuel_graph::runtime_fused::runtime_region))
 }
 
+/// Pre-invoke eligibility for the Plan-T5 non-f32 numeric-claim ESCALATE path:
+/// a numeric-claim candidate whose output dtype is one of the kiss-coverable
+/// non-f32 floats (F64/F16/BF16) AND whose advisory region kiss-ref can evaluate
+/// (`region_kiss_supported`, computed by the caller through the cuda-gated
+/// adapter's `region_supported`) proceeds to invoke + the advisory diff and
+/// escalates to [`VerifyVerdict::Inconclusive`] in the numeric region, rather
+/// than the pre-invoke f32-only hard Fail. F32 is NEVER escalated — its numeric
+/// authority (`verify_precision_bound`) IS f32, so it is verified inline. Any
+/// dtype outside {F64,F16,BF16}, or a region kiss-ref cannot cover (unmapped
+/// op/dtype, non-default attrs, no advisory region ⇒ `region_kiss_supported ==
+/// false`), keeps the honest f32-only hard Fail — same claim, same detail bytes.
+///
+/// Pure (the adapter support bool is threaded in) so the combining logic is
+/// unit-tested under `--features jit` alone, without the adapter or a device.
+#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+fn nonf32_escalate_eligible(out_dtype: fuel_ir::DType, region_kiss_supported: bool) -> bool {
+    region_kiss_supported
+        && matches!(
+            out_dtype,
+            fuel_ir::DType::F64 | fuel_ir::DType::F16 | fuel_ir::DType::BF16
+        )
+}
+
 #[cfg(test)]
 mod flag_not_verdict_tests {
     use super::*;
@@ -729,6 +752,32 @@ mod flag_not_verdict_tests {
         assert_eq!(advisory_region(None, Some(unregistered)), None);
         // Nothing submitted, nothing claimed.
         assert_eq!(advisory_region(None, None), None);
+    }
+
+    /// Plan T5: the pre-invoke non-f32 escalate eligibility predicate is the AND
+    /// of the dtype gate (F64/F16/BF16 — the kiss-coverable non-f32 floats) and
+    /// the adapter's region-support bool (threaded in, so this stays CPU-testable
+    /// without the cuda-gated adapter or a device). A kiss-coverable non-f32
+    /// candidate escalates (invoke → advisory diff → Inconclusive); an
+    /// unsupported region, F32 (verified inline), or any dtype outside the set
+    /// keeps the pre-T5 hard Fail.
+    #[test]
+    fn nonf32_escalate_eligible_gates_on_dtype_and_region_support() {
+        use fuel_ir::DType;
+        // Coverable non-f32 floats WITH a kiss-supported region -> escalate.
+        assert!(nonf32_escalate_eligible(DType::F64, true));
+        assert!(nonf32_escalate_eligible(DType::F16, true));
+        assert!(nonf32_escalate_eligible(DType::BF16, true));
+        // Region kiss cannot cover -> not eligible (hard Fail), every dtype.
+        assert!(!nonf32_escalate_eligible(DType::F64, false));
+        assert!(!nonf32_escalate_eligible(DType::F16, false));
+        assert!(!nonf32_escalate_eligible(DType::BF16, false));
+        // F32 is never escalated — its numeric authority IS f32 (verified inline).
+        assert!(!nonf32_escalate_eligible(DType::F32, true));
+        // A non-f32 dtype outside the kiss-coverable float set stays hard Fail
+        // even with a (hypothetically) supported region.
+        assert!(!nonf32_escalate_eligible(DType::I32, true));
+        assert!(!nonf32_escalate_eligible(DType::F8E4M3, true));
     }
 
     /// Live-GPU: the kiss-ref advisory cross-check fires for an f32 Add candidate
@@ -1327,6 +1376,76 @@ pub fn verify_candidate(
     }
 }
 
+/// The claimed-op STRUCTURAL pre-checks shared by the f32 numeric registered-
+/// recipe reference and the Plan-T5 non-f32 escalate path. A submitted decompose
+/// whose primitive base map differs from Fuel's registered recipe for `claimed`
+/// is simply not the same op (`recipe_identity` Fail); a probe whose arity
+/// doesn't match the claimed op's expected input count would index-panic the
+/// recipe realize (`probe_arity` Fail). Both are genuine op-identity rejections
+/// kiss-ref cannot rescue, so they gate BEFORE any escalate — a wrong-identity
+/// non-f32 claimant hard-Fails here rather than escalating on the advisory.
+/// `Ok(())` when the candidate claims no op, submits no decompose to
+/// identity-check, or passes both checks; `Err((verdict, records))` is a
+/// ready-to-return early hard Fail whose ledger record is already upserted.
+#[cfg(feature = "cuda")]
+fn claimed_op_structural_gate(
+    cand: &CandidateKernel,
+    probe: &ProbeInputs,
+    ledger: &mut VerificationLedger,
+    make_record: &dyn Fn(&str, &str, serde_json::Value) -> LedgerRecord,
+) -> Result<(), (VerifyVerdict, Vec<LedgerRecord>)> {
+    let Some(claimed) = cand.claimed_op else {
+        return Ok(());
+    };
+    // (i) Structural recipe-identity pre-check — only fires when the candidate
+    // carries a submitted (elementwise-expressible) decompose. A submitted recipe
+    // whose primitive base map differs from Fuel's registered recipe for
+    // `claimed` is not the same op; reject before spending any GPU work.
+    if let Some(dec) = &cand.decompose {
+        if !recipe_identity_matches(claimed, dec) {
+            let detail = "submitted recipe's base map differs from Fuel's registered \
+                 recipe for the claimed op — not the same op"
+                .to_string();
+            ledger.upsert(make_record(
+                "recipe_identity",
+                "fail",
+                serde_json::json!({ "detail": detail.clone() }),
+            ));
+            return Err((
+                VerifyVerdict::Fail { claim: "recipe_identity", detail },
+                ledger.records().to_vec(),
+            ));
+        }
+    }
+
+    // (ii) Probe-arity guard: the registered recipe's `decompose` indexes the
+    // probe POSITIONALLY, so a probe whose length doesn't match the claimed op's
+    // expected input count would panic that `Vec` indexing (caught by the outer
+    // `catch_unwind` and surfaced as a generic `panic`, but an explicit named
+    // refusal is cleaner). Expected count comes from the claimed op when known
+    // (Increment 1: ROPE = 3); otherwise the candidate's own operand count —
+    // probe synthesis is 1:1 with operands, so that fallback only guards the
+    // empty-probe degenerate (no per-op arity table exists in the registry).
+    let expected_inputs = expected_input_arity(claimed).unwrap_or(cand.operands.len());
+    if probe.len() != expected_inputs {
+        let detail = format!(
+            "probe arity {} does not match the claimed op's expected input count {}",
+            probe.len(),
+            expected_inputs
+        );
+        ledger.upsert(make_record(
+            "probe_arity",
+            "fail",
+            serde_json::json!({ "detail": detail.clone() }),
+        ));
+        return Err((
+            VerifyVerdict::Fail { claim: "probe_arity", detail },
+            ledger.records().to_vec(),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(feature = "cuda")]
 fn verify_candidate_impl(
     cand: &CandidateKernel,
@@ -1409,37 +1528,57 @@ fn verify_candidate_impl(
     let out_dtype = probe[0].dtype;
     let out_shape = probe[0].shape.clone();
 
-    // Numeric claims (checked ahead of the invoke below, for the f32-only
-    // guard right after) — the same declared-claim test the numeric block
+    // Numeric claims (checked ahead of the invoke below, for the escalate-or-
+    // fail guard right after) — the same declared-claim test the numeric block
     // uses further down.
     let numeric_declared = cand.declared.max_ulp.is_some()
         || cand.declared.max_relative.is_some()
         || cand.declared.max_absolute.is_some();
 
-    // (1a) Non-f32 numeric-claim guard. `verify_precision_bound` (`ulp.rs`)
-    // unconditionally reinterprets BOTH outputs' raw bytes as `f32`
-    // (`bytemuck::cast_slice`) — for a non-F32 `out_dtype` (BF16/F16/F64/...)
-    // that reinterpretation reads the wrong element count/values from bytes
-    // that were never f32 in the first place. A kernel computing the WRONG
-    // function could then land within `max_ulp` of the reinterpreted
-    // reference purely by accident and wrongly PASS — exactly the "wrong
-    // candidate adopted" defect this whole module exists to prevent. Refuse
-    // honestly instead: no numeric claim can be verified for a non-f32
-    // candidate yet. Placed here (before the GPU invoke below) so a
-    // candidate that can't be numerically verified doesn't waste GPU work
-    // being invoked at all — this short-circuits bit-stability too, matching
-    // the existing first-failure-wins posture (e.g. the probe checks above).
+    // The advisory region (design D1, derive-from-registry): the candidate's own
+    // submitted `decompose`, else Fuel's OWN registered region for a
+    // runtime-registered `claimed` op. Bound HERE (pre-invoke) so the T5 guard
+    // just below can test kiss-ref coverage for a non-f32 candidate; the advisory
+    // diff further down reuses this SAME binding (no re-derivation).
+    let advisory = advisory_region(cand.decompose.as_ref(), cand.claimed_op);
+
+    // (1a) Non-f32 numeric-claim guard (Plan T5 — escalate OR fail).
+    // `verify_precision_bound` (`ulp.rs`) unconditionally reinterprets BOTH
+    // outputs' raw bytes as `f32` (`bytemuck::cast_slice`) — for a non-F32
+    // `out_dtype` (BF16/F16/F64/...) that reads the wrong element count/values
+    // from bytes that were never f32, so a kernel computing the WRONG function
+    // could land within `max_ulp` of the reinterpreted reference by accident and
+    // wrongly PASS — exactly the "wrong candidate adopted" defect this module
+    // exists to prevent. A non-f32 numeric claim is therefore NEVER checked
+    // through that f32 path; the two honest outcomes are:
+    //   * kiss-COVERABLE (`nonf32_escalate_eligible`: dtype ∈ {F64,F16,BF16} ∧
+    //     the advisory region is kiss-supported) ⇒ fall through: invoke, run the
+    //     kiss-ref advisory diff, and ESCALATE to `Inconclusive` in the numeric
+    //     region below (flag, never verdict — §6.6-0007), the live kiss-ref diff
+    //     standing in as the only (non-authoritative) reference.
+    //   * kiss-UNCOVERABLE (any other non-f32 cell — unmapped op/dtype,
+    //     non-default attrs, or no advisory region) ⇒ the EXACT pre-T5 hard Fail,
+    //     same claim + same detail bytes: nothing can verify it yet, so refuse
+    //     honestly before any GPU work (short-circuits the invoke + bit-stability
+    //     too, matching the first-failure-wins posture of the probe checks).
     if numeric_declared && out_dtype != fuel_ir::DType::F32 {
-        let claim = first_numeric_claim(&cand.declared);
-        let detail =
-            "numeric bound verification is f32-only; non-f32 candidate cannot be numerically verified yet"
-                .to_string();
-        ledger.upsert(make_record(
-            claim,
-            "fail",
-            serde_json::json!({ "detail": detail.clone(), "out_dtype": format!("{out_dtype:?}") }),
-        ));
-        return (VerifyVerdict::Fail { claim, detail }, ledger.records().to_vec());
+        let region_kiss_supported = advisory
+            .as_ref()
+            .is_some_and(|r| fuel_kiss_ref_backend::region_supported(r, out_dtype));
+        if !nonf32_escalate_eligible(out_dtype, region_kiss_supported) {
+            let claim = first_numeric_claim(&cand.declared);
+            let detail =
+                "numeric bound verification is f32-only; non-f32 candidate cannot be numerically verified yet"
+                    .to_string();
+            ledger.upsert(make_record(
+                claim,
+                "fail",
+                serde_json::json!({ "detail": detail.clone(), "out_dtype": format!("{out_dtype:?}") }),
+            ));
+            return (VerifyVerdict::Fail { claim, detail }, ledger.records().to_vec());
+        }
+        // Eligible: fall through to invoke + the advisory diff; the numeric
+        // region escalates to Inconclusive rather than checking an f32 bound.
     }
 
     // (2) Candidate output via a real CUDA invoke. The `BindingEntry` mirrors
@@ -1491,10 +1630,10 @@ fn verify_candidate_impl(
     // region=Add (op_count 1), band=None ⇒ Exact, run_region_diff→diff_region_f32
     // over the same kiss add — byte/ledger-identical to the shipped path (result
     // "pass" at 0 ULP; one `kiss_ref_advisory` record via `upsert`).
-    let advisory = advisory_region(cand.decompose.as_ref(), cand.claimed_op);
+    // `advisory` was derived pre-invoke (above the T5 non-f32 guard); reuse it.
     // `kiss_outcome` is threaded into the numeric-claim verdict below (Task 4/5
     // consult it as the advisory input to `classify_floor_verdict`: escalate,
-    // never gate — §6.6-0007). Bound now so T3 owns the one construction site.
+    // never gate — §6.6-0007). Bound here so T3 owns the one construction site.
     #[allow(unused_variables)]
     let kiss_outcome: Option<DiffOutcome> = advisory.as_ref().and_then(|region| {
         let dtype_supported = matches!(
@@ -1611,58 +1750,51 @@ fn verify_candidate_impl(
             return (classify_floor_verdict(None, None, Some(c)), ledger.records().to_vec());
         }
 
+        // (T5) Non-f32 numeric-claim ESCALATE. Reached only for a kiss-coverable
+        // non-f32 candidate the (1a) guard let through (dtype ∈ {F64,F16,BF16},
+        // advisory region kiss-supported). Fuel's numeric authority
+        // (`verify_precision_bound`) is f32-only, so there is NO usable
+        // recipe-realize reference here: realizing a non-f32 reference and then
+        // f32-reinterpreting it is exactly the unsafe mis-compare the (1a) guard
+        // exists to prevent. But the claimed-op STRUCTURAL gates still apply (a
+        // wrong-identity claimant is a real rejection kiss-ref cannot rescue),
+        // and the live kiss-ref advisory IS a non-authoritative reference — so
+        // after those gates this ESCALATES to Inconclusive rather than the pre-T5
+        // hard Fail (§6.6-0007: flag, never verdict). `corpus` was consulted-and-
+        // None just above, so `resolve_reference_failure`'s
+        // `classify_floor_verdict(kiss, None, None)` is identical to the plan's
+        // `(kiss, None, corpus)` here: Inconclusive when the advisory diff ran,
+        // else the honest f32-only Fail (the rare case the advisory declined
+        // despite eligibility — e.g. a `run_region_diff` eval error).
+        if out_dtype != fuel_ir::DType::F32 {
+            if let Err(early) =
+                claimed_op_structural_gate(cand, &probe, &mut ledger, &make_record)
+            {
+                return early;
+            }
+            let claim = first_numeric_claim(&cand.declared);
+            let detail = "numeric bound verification is f32-only; non-f32 candidate escalated \
+                 to the kiss-ref advisory (flag, never verdict — §6.6-0007)"
+                .to_string();
+            return resolve_reference_failure(
+                kiss_outcome.as_ref(),
+                claim,
+                detail,
+                &mut ledger,
+                &make_record,
+            );
+        }
+
         let reference = match cand.claimed_op {
             Some(claimed) => {
-                // (i) Structural recipe-identity pre-check — only fires when
-                // the candidate carries a submitted (elementwise-expressible)
-                // decompose. A submitted recipe whose primitive base map
-                // differs from Fuel's registered recipe for `claimed` is not
-                // the same op; reject before spending any GPU work.
-                if let Some(dec) = &cand.decompose {
-                    if !recipe_identity_matches(claimed, dec) {
-                        let detail = "submitted recipe's base map differs from Fuel's registered \
-                             recipe for the claimed op — not the same op"
-                            .to_string();
-                        ledger.upsert(make_record(
-                            "recipe_identity",
-                            "fail",
-                            serde_json::json!({ "detail": detail.clone() }),
-                        ));
-                        return (
-                            VerifyVerdict::Fail { claim: "recipe_identity", detail },
-                            ledger.records().to_vec(),
-                        );
-                    }
-                }
-
-                // (ii) Probe-arity guard (Task-4 carry-forward): the registered
-                // recipe's `decompose` indexes the probe POSITIONALLY, so a
-                // probe whose length doesn't match the claimed op's expected
-                // input count would panic that `Vec` indexing (it'd be caught by
-                // the outer `catch_unwind` and surface as a generic `panic`, but
-                // an explicit, named refusal is cleaner). Expected count comes
-                // from the claimed op when known (Increment 1: ROPE = 3);
-                // otherwise fall back to the candidate's own operand count —
-                // probe synthesis is 1:1 with operands, so that fallback only
-                // guards the empty-probe degenerate (documented conservative
-                // choice — no per-op arity table exists in the registry).
-                let expected_inputs =
-                    expected_input_arity(claimed).unwrap_or(cand.operands.len());
-                if probe.len() != expected_inputs {
-                    let detail = format!(
-                        "probe arity {} does not match the claimed op's expected input count {}",
-                        probe.len(),
-                        expected_inputs
-                    );
-                    ledger.upsert(make_record(
-                        "probe_arity",
-                        "fail",
-                        serde_json::json!({ "detail": detail.clone() }),
-                    ));
-                    return (
-                        VerifyVerdict::Fail { claim: "probe_arity", detail },
-                        ledger.records().to_vec(),
-                    );
+                // (i)+(ii) Claimed-op STRUCTURAL gates (recipe-identity +
+                // probe-arity), shared with the T5 non-f32 escalate path via
+                // `claimed_op_structural_gate`. A wrong-identity or wrong-arity
+                // claimant is a genuine rejection, refused BEFORE any GPU work.
+                if let Err(early) =
+                    claimed_op_structural_gate(cand, &probe, &mut ledger, &make_record)
+                {
+                    return early;
                 }
 
                 // (iii) Reference = FUEL's registered recipe for `claimed`,
@@ -2316,22 +2448,97 @@ mod tests {
         assert!(records.iter().any(|r| r.claim == "max_absolute"));
     }
 
-    /// Review-fix regression: `verify_precision_bound` (`ulp.rs`)
-    /// unconditionally reinterprets output bytes as `f32`
-    /// (`bytemuck::cast_slice::<f32>`), so a candidate whose real output
-    /// dtype is NOT f32 (BF16 here) must never reach that comparison — it
-    /// would silently reinterpret BF16 bytes as f32 and could wrongly PASS a
-    /// wrong-function kernel. A BF16 candidate declaring a numeric claim
-    /// (`max_ulp`) must get an honest `Fail` naming the f32-only limitation,
-    /// not a GPU invoke + mis-compare. `#[ignore]`'d (needs a live CUDA
-    /// device) — the guard fires before any GPU work, so the `kernel` fn
-    /// pointer is never actually called; reusing `add_f32` here is just a
-    /// valid `KernelRef` value, not a claim it computes anything meaningful
-    /// for BF16.
+    /// Review-fix regression, NARROWED by Plan T5: `verify_precision_bound`
+    /// (`ulp.rs`) unconditionally reinterprets output bytes as `f32`
+    /// (`bytemuck::cast_slice::<f32>`), so a candidate whose real output dtype is
+    /// NOT f32 must never reach that comparison — it would silently reinterpret
+    /// non-f32 bytes as f32 and could wrongly PASS a wrong-function kernel. T5
+    /// splits the non-f32 guard: a kiss-COVERABLE non-f32 candidate now ESCALATES
+    /// (see `verify_candidate_add_f64_is_inconclusive_not_failed`); a kiss-
+    /// UNCOVERABLE non-f32 candidate keeps the honest f32-only hard `Fail`. This
+    /// test pins that retained hard-Fail arm: a BF16 candidate whose advisory
+    /// region is an UNMAPPED op (`MatMul`) that kiss-ref cannot evaluate
+    /// (`region_supported` declines) ⇒ `nonf32_escalate_eligible` is false ⇒
+    /// pre-invoke `Fail` naming the f32-only limitation, same claim + detail
+    /// bytes as pre-T5. `#[ignore]`'d (needs a live CUDA device) — the guard
+    /// fires before any GPU work, so the `kernel` fn pointer is never called;
+    /// reusing `add_f32` is just a valid `KernelRef` value.
     #[test]
     #[ignore = "requires a live CUDA device"]
     #[cfg(feature = "cuda")]
     fn verify_candidate_refuses_numeric_claim_for_non_f32() {
+        use baracuda_kernels_types::{ElementKind, OperandDesc};
+        use fuel_cuda_backend::CudaDevice;
+        use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
+        use fuel_ir::probe::BackendId;
+        use fuel_ir::DType;
+
+        let Ok(dev) = CudaDevice::new(0) else {
+            eprintln!("no CUDA device; skipping");
+            return;
+        };
+
+        // An UNMAPPED-op region (MatMul): kiss-ref has no equivalent, so
+        // `region_supported` declines and this BF16 candidate is NOT escalate-
+        // eligible — it keeps the pre-T5 hard Fail. (The region is never realized;
+        // the guard fires pre-invoke.)
+        let decompose = PatternNode::Op {
+            op: OpTag::MatMul,
+            attrs: OpAttrs::default(),
+            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+        };
+        let od = OperandDesc::new(1, &[4], &[1], ElementKind::Bf16, 16);
+        let cand = CandidateKernel {
+            entry_point: "matmul_bf16".to_string(),
+            kernel: crate::baracuda_dispatch::binary::add_f32,
+            op_params: crate::kernel::OpParams::None,
+            decompose: Some(decompose),
+            operands: vec![od, od],
+            dtypes: vec![DType::BF16, DType::BF16],
+            kernel_revision_hash: 0x00AD_DF16,
+            declared: crate::fused::PrecisionGuarantee {
+                bit_stable_on_same_hardware: false,
+                max_ulp: Some(1),
+                max_relative: None,
+                max_absolute: None,
+                notes: "test-only, f32-only guard regression (kiss-uncoverable region)",
+            },
+            backend: BackendId::Cuda,
+            claimed_op: None,
+        };
+
+        let (verdict, records) = verify_candidate(&cand, &dev);
+        match verdict {
+            VerifyVerdict::Fail { claim, detail } => {
+                assert_eq!(claim, "max_ulp", "first (only) declared numeric claim");
+                assert!(
+                    detail.contains("f32-only"),
+                    "expected an f32-only refusal detail, got: {detail}"
+                );
+            }
+            other => panic!("expected Fail (f32-only guard, kiss-uncoverable), got {other:?}"),
+        }
+        assert_eq!(records.len(), 1, "one fail record for the refused claim: {records:?}");
+        assert_eq!(records[0].claim, "max_ulp");
+        assert_eq!(records[0].result, "fail");
+    }
+
+    /// Live-GPU (Plan T5): a kiss-COVERABLE non-f32 numeric-claim candidate
+    /// ESCALATES to `Inconclusive` instead of the pre-T5 hard Fail. An `add_f64`
+    /// kernel carrying a single-primitive `Add` decompose over F64 operands,
+    /// declaring `PrecisionGuarantee::REFERENCE` (a numeric claim), is exactly the
+    /// case the old (1a) guard hard-Failed `Fail{"max_ulp", "…f32-only…"}`
+    /// pre-invoke. Under T5 it is escalate-eligible (dtype F64 ∈ {F64,F16,BF16},
+    /// the Add region is kiss-supported), so it is invoked, the kiss-ref advisory
+    /// diff runs (`add_f64` === kiss-ref add over f64 ⇒ 0 ULP, an advisory
+    /// "pass"), and — Fuel's f32-only numeric authority yielding no usable
+    /// reference — it escalates to `Inconclusive` on the live kiss-ref advisory
+    /// (§6.6-0007: flag, never verdict). NOT a Fail, NOT a Pass. Born-red pre-T5
+    /// (the guard returned `Fail`). `#[ignore]`'d (needs a live CUDA device).
+    #[test]
+    #[ignore = "requires a live CUDA device"]
+    #[cfg(feature = "cuda")]
+    fn verify_candidate_add_f64_is_inconclusive_not_failed() {
         use baracuda_kernels_types::{ElementKind, OperandDesc};
         use fuel_cuda_backend::CudaDevice;
         use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
@@ -2348,40 +2555,43 @@ mod tests {
             attrs: OpAttrs::default(),
             operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
         };
-        let od = OperandDesc::new(1, &[4], &[1], ElementKind::Bf16, 16);
+        let od = OperandDesc::new(1, &[4], &[1], ElementKind::F64, 32);
         let cand = CandidateKernel {
-            entry_point: "add_bf16".to_string(),
-            kernel: crate::baracuda_dispatch::binary::add_f32,
+            entry_point: "test::t5_escalate::add_f64".to_string(),
+            kernel: crate::baracuda_dispatch::binary::add_f64,
             op_params: crate::kernel::OpParams::None,
             decompose: Some(decompose),
             operands: vec![od, od],
-            dtypes: vec![DType::BF16, DType::BF16],
-            kernel_revision_hash: 0x00AD_DF16,
-            declared: crate::fused::PrecisionGuarantee {
-                bit_stable_on_same_hardware: false,
-                max_ulp: Some(1),
-                max_relative: None,
-                max_absolute: None,
-                notes: "test-only, f32-only guard regression",
-            },
+            dtypes: vec![DType::F64, DType::F64],
+            kernel_revision_hash: 0x00AD_DF64,
+            declared: crate::fused::PrecisionGuarantee::REFERENCE,
             backend: BackendId::Cuda,
             claimed_op: None,
         };
 
         let (verdict, records) = verify_candidate(&cand, &dev);
         match verdict {
-            VerifyVerdict::Fail { claim, detail } => {
-                assert_eq!(claim, "max_ulp", "first (only) declared numeric claim");
+            VerifyVerdict::Inconclusive { claim, detail } => {
+                assert_eq!(claim, "max_ulp", "escalate names the evidence claim");
                 assert!(
-                    detail.contains("f32-only"),
-                    "expected an f32-only refusal detail, got: {detail}"
+                    detail.contains("kiss-ref"),
+                    "escalate detail references the kiss-ref advisory: {detail}"
                 );
             }
-            other => panic!("expected Fail (f32-only guard), got {other:?}"),
+            other => panic!("expected Inconclusive (T5 escalate), got {other:?}"),
         }
-        assert_eq!(records.len(), 1, "one fail record for the refused claim: {records:?}");
-        assert_eq!(records[0].claim, "max_ulp");
-        assert_eq!(records[0].result, "fail");
+        // The advisory cross-check ran and agreed (add_f64 === kiss add, 0 ULP).
+        let advisory = records
+            .iter()
+            .find(|r| r.claim == "kiss_ref_advisory")
+            .expect("a kiss-coverable f64 Add must reach the advisory cross-check");
+        assert_eq!(advisory.evidence["dtype"], serde_json::json!("F64"));
+        assert_eq!(advisory.result, "pass", "add_f64 matches kiss-ref add exactly: {advisory:?}");
+        // And the escalate is recorded as an inconclusive max_ulp entry.
+        assert!(
+            records.iter().any(|r| r.claim == "max_ulp" && r.result == "inconclusive"),
+            "the escalate earns an inconclusive max_ulp record: {records:?}"
+        );
     }
 
     /// Spec-B Task-6 acceptance (live GPU), REJECTION leg.
