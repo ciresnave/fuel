@@ -1679,6 +1679,62 @@ mod tests {
         })
     }
 
+    /// FROZEN copy of the pre-migration imperative
+    /// `registry::softmax_last_dim_backward::decompose` (the legacy 5-node
+    /// `Mul`/`ReduceSumTo(keepdim)`/`BroadcastTo`/`Sub`/`Mul` spelling), copied
+    /// VERBATIM from that module @ `aa2eee3c` before T8 replaced the live body
+    /// with the data recipe. Sole consumer: the T8 numeric-parity oracle
+    /// (`softmax_backward_recipe` below). Reads `inputs[0] = s` (the forward
+    /// softmax output) and `inputs[1] = g` (the upstream gradient) off the node
+    /// — the same convention the autograd `BackwardKind::Fused` edge emits
+    /// (`lib.rs` softmax-backward arm: `vec![id, up_id]`).
+    fn frozen_legacy_softmax_backward_decompose(
+        graph: &mut Graph,
+        id: NodeId,
+        _params: &FusedOpParams,
+    ) -> NodeId {
+        let (s_id, g_id, x_shape, dtype) = {
+            let n = graph.node(id);
+            (n.inputs[0], n.inputs[1], n.shape.clone(), n.dtype)
+        };
+        // keepdim shape: last dim → 1.
+        let mut kd = x_shape.dims().to_vec();
+        let last = kd.len() - 1;
+        kd[last] = 1;
+        let keepdim = Shape::from_dims(&kd);
+
+        let gs = graph.push(Node {
+            op:     Op::Mul,
+            inputs: vec![g_id, s_id],
+            shape:  x_shape.clone(),
+            dtype,
+        });
+        let summed = graph.push(Node {
+            op:     Op::ReduceSumTo(keepdim.clone()),
+            inputs: vec![gs],
+            shape:  keepdim,
+            dtype,
+        });
+        let summed_b = graph.push(Node {
+            op:     Op::BroadcastTo(x_shape.clone()),
+            inputs: vec![summed],
+            shape:  x_shape.clone(),
+            dtype,
+        });
+        let sub = graph.push(Node {
+            op:     Op::Sub,
+            inputs: vec![g_id, summed_b],
+            shape:  x_shape.clone(),
+            dtype,
+        });
+        graph.push(Node {
+            op:     Op::Mul,
+            inputs: vec![s_id, sub],
+            shape:  x_shape,
+            dtype,
+        })
+    }
+
     #[test]
     fn emit_matches_softmax_last_dim_decompose() {
         use fuel_ir::{DType, Shape};
@@ -3179,6 +3235,289 @@ mod tests {
             let out = layer_norm_last_dim::decompose(&mut g, fused, &FusedOpParams::SoftmaxLastDim);
             assert_eq!(out, fused, "wrong params ⇒ typed decline ⇒ fixpoint");
             assert_eq!(g.len(), before, "declined before any emission");
+        }
+    }
+
+    // softmax_last_dim_backward migration (Increment C slice 1, T8) ----------
+    //
+    // The 5-node imperative backward body `s · (g − sum(g·s, last, keepdim))`
+    // becomes a portable `PatternNode` DATA recipe. Bind space: `0 = s` (the
+    // forward softmax output), `1 = g` (the upstream gradient) — the order the
+    // autograd `BackwardKind::Fused(SOFTMAX_LAST_DIM_BACKWARD)` edge emits. The
+    // keepdim restore is the ratified D3 shrink-via-swap
+    // (`ReduceSumTo(keepdim)` → `SumDim(axis_last)` + `Unsqueeze(axis_last =
+    // append)`, node-TYPE change, numerically bit-exact) and the broadcast
+    // targets `SameAs { operand: 0 }` over the Bind space (D2). D4 never fires
+    // (the `Unsqueeze` rebuilds rank BEFORE the broadcast, so the broadcast
+    // operand already matches its target's rank — no leading-1 pad `Reshape`).
+    // This activates the registry's backward-helper edge END-TO-END on a data
+    // recipe for the first time.
+    mod softmax_backward_recipe {
+        use super::super::*;
+        use super::frozen_legacy_softmax_backward_decompose;
+        use crate::registry::{FusedOps, softmax_last_dim_backward};
+        use fuel_ir::{DType, Shape};
+        use std::collections::HashMap;
+
+        /// Tiny f64 reference interpreter over the softmax-backward primitive
+        /// vocabulary (leaf-lookup FIRST, then `Mul`/`Sub`, last-axis
+        /// `SumDim`/`ReduceSumTo`, metadata-only keepdim restore
+        /// `Unsqueeze`/`Reshape`, last-dim `BroadcastTo`). Leaf-first lets ANY
+        /// node stand in as a bound input — a `Const`, or the autograd path's
+        /// forward-softmax (`Op::Fused`) and upstream nodes. BOTH parity sides
+        /// run through it with identical in-order arithmetic, so a bit-exact
+        /// assert isolates recipe STRUCTURE (the `SumDim`+`Unsqueeze`-vs-
+        /// `ReduceSumTo` swap can't perturb it). Not code evaluation: a closed
+        /// match over our own `Op`.
+        fn eval_bwd(g: &Graph, id: NodeId, leaves: &HashMap<NodeId, Vec<f64>>) -> Vec<f64> {
+            if let Some(v) = leaves.get(&id) {
+                return v.clone();
+            }
+            let node = g.node(id);
+            match &node.op {
+                Op::Mul => {
+                    let a = eval_bwd(g, node.inputs[0], leaves);
+                    let b = eval_bwd(g, node.inputs[1], leaves);
+                    a.iter().zip(&b).map(|(x, y)| x * y).collect()
+                }
+                Op::Sub => {
+                    let a = eval_bwd(g, node.inputs[0], leaves);
+                    let b = eval_bwd(g, node.inputs[1], leaves);
+                    a.iter().zip(&b).map(|(x, y)| x - y).collect()
+                }
+                // Last-axis sum — one arm per spelling pair, identical fold.
+                Op::SumDim(_) | Op::ReduceSumTo(_) => {
+                    let input = eval_bwd(g, node.inputs[0], leaves);
+                    let last = *g.node(node.inputs[0]).shape.dims().last().unwrap();
+                    input.chunks(last).map(|row| row.iter().sum()).collect()
+                }
+                // Metadata-only keepdim restores (the D3 swap and its legacy
+                // twin evaluate identically here).
+                Op::Unsqueeze { .. } | Op::Reshape(_) => eval_bwd(g, node.inputs[0], leaves),
+                // Broadcast a keepdim/reduced tensor back along the last axis.
+                Op::BroadcastTo(target) => {
+                    let input = eval_bwd(g, node.inputs[0], leaves);
+                    let out_n: usize = target.dims().iter().product();
+                    let last = *target.dims().last().unwrap();
+                    assert_eq!(
+                        input.len() * last,
+                        out_n,
+                        "broadcast is a last-dim repeat in these graphs",
+                    );
+                    input
+                        .iter()
+                        .flat_map(|&v| std::iter::repeat(v).take(last))
+                        .collect()
+                }
+                other => panic!("eval_bwd: unhandled op {other:?}"),
+            }
+        }
+
+        /// Build a fused SoftmaxLastDimBackward node over `s [dims]` (input 0,
+        /// the forward output) and `g [dims]` (input 1, the upstream gradient).
+        /// Returns `(s, g, fused)`.
+        fn softmax_backward_fused_node(
+            g: &mut Graph,
+            dims: &[usize],
+        ) -> (NodeId, NodeId, NodeId) {
+            let sh = Shape::from_dims(dims);
+            let s = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+            let up = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+            let fused = g.push(Node {
+                op: Op::Fused(
+                    FusedOps::SOFTMAX_LAST_DIM_BACKWARD,
+                    FusedOpParams::SoftmaxLastDimBackward,
+                ),
+                inputs: vec![s, up],
+                shape: sh,
+                dtype: DType::F32,
+            });
+            (s, up, fused)
+        }
+
+        /// T8 red (a): ONE recipe datum decomposes at BOTH rank 2 and rank 3
+        /// (the polymorphism the baked-shape legacy body never had), and its
+        /// numerics match the FROZEN legacy builder bit-exactly under the
+        /// shared reference interpreter.
+        #[test]
+        fn softmax_backward_recipe_decompose_is_polymorphic_and_matches_frozen_legacy() {
+            for dims in [vec![2usize, 4], vec![3, 5, 7]] {
+                let mut g = Graph::new();
+                let (s, up, fused) = softmax_backward_fused_node(&mut g, &dims);
+                let sh = Shape::from_dims(&dims);
+                let new_root = softmax_last_dim_backward::decompose(
+                    &mut g,
+                    fused,
+                    &FusedOpParams::SoftmaxLastDimBackward,
+                );
+                assert_ne!(new_root, fused, "recipe decompose must fire at {dims:?}");
+                assert_eq!(g.node(new_root).shape, sh, "softmax backward is shape-preserving");
+                assert_eq!(g.node(new_root).dtype, DType::F32);
+
+                let legacy_root = frozen_legacy_softmax_backward_decompose(
+                    &mut g,
+                    fused,
+                    &FusedOpParams::SoftmaxLastDimBackward,
+                );
+
+                let n: usize = dims.iter().product();
+                let s_data: Vec<f64> =
+                    (0..n).map(|i| ((i as f64) * 0.29).sin() * 0.5 + 0.5).collect();
+                let g_data: Vec<f64> =
+                    (0..n).map(|i| ((i as f64) * 0.53).cos() * 2.0 - 0.3).collect();
+                let mut leaves = HashMap::new();
+                leaves.insert(s, s_data);
+                leaves.insert(up, g_data);
+                let got = eval_bwd(&g, new_root, &leaves);
+                let want = eval_bwd(&g, legacy_root, &leaves);
+                assert_eq!(got.len(), want.len());
+                for (i, (a, b)) in got.iter().zip(want.iter()).enumerate() {
+                    assert_eq!(
+                        a.to_bits(),
+                        b.to_bits(),
+                        "softmax_backward[{i}] at {dims:?}: recipe={a} vs legacy={b}",
+                    );
+                }
+            }
+        }
+
+        /// T8 red (structural): the keepdim restore is the D3 shrink-via-swap —
+        /// `SumDim(last)` + `Unsqueeze` append, NOT the baked
+        /// `ReduceSumTo(keepdim)`. The crisp discriminator against the
+        /// pre-migration imperative body; the backward root is the outer `Mul`.
+        #[test]
+        fn softmax_backward_recipe_uses_the_sumdim_unsqueeze_swap() {
+            let mut g = Graph::new();
+            let (_s, _up, fused) = softmax_backward_fused_node(&mut g, &[2, 4]);
+            let root = softmax_last_dim_backward::decompose(
+                &mut g,
+                fused,
+                &FusedOpParams::SoftmaxLastDimBackward,
+            );
+            assert_ne!(root, fused, "recipe decompose fires");
+            assert!(matches!(g.node(root).op, Op::Mul), "backward root is the outer Mul");
+            let reachable = crate::topo_order_multi(&g, &[root]);
+            let sumdims = reachable
+                .iter()
+                .filter(|&&n| matches!(g.node(n).op, Op::SumDim(_)))
+                .count();
+            let unsqueezes = reachable
+                .iter()
+                .filter(|&&n| matches!(g.node(n).op, Op::Unsqueeze { .. }))
+                .count();
+            let reduce_sum_tos = reachable
+                .iter()
+                .filter(|&&n| matches!(g.node(n).op, Op::ReduceSumTo(_)))
+                .count();
+            assert_eq!(sumdims, 1, "the reduce is SumDim(last) — the D3 swap");
+            assert_eq!(unsqueezes, 1, "keepdim restored via Unsqueeze append");
+            assert_eq!(reduce_sum_tos, 0, "no baked keepdim ReduceSumTo after the swap");
+        }
+
+        /// T8 red (totality): a wrong params payload is a typed decline
+        /// surfaced as a fixpoint (G2), never a panic, declining BEFORE any
+        /// emission. (The pre-migration imperative body IGNORED params and
+        /// always decomposed; the recipe bridge's `scalars(params)` projection
+        /// is what makes a wrong payload a fixpoint.)
+        #[test]
+        fn softmax_backward_recipe_wrong_params_is_a_fixpoint_not_a_crash() {
+            let mut g = Graph::new();
+            let (_s, _up, fused) = softmax_backward_fused_node(&mut g, &[2, 4]);
+            let before = g.len();
+            let out = softmax_last_dim_backward::decompose(&mut g, fused, &FusedOpParams::Rope);
+            assert_eq!(out, fused, "wrong params ⇒ typed decline ⇒ fixpoint");
+            assert_eq!(g.len(), before, "declined before any emission");
+        }
+
+        /// T8 red (autograd path): the `BackwardKind::Fused(SOFTMAX_LAST_DIM_BACKWARD)`
+        /// edge exercised END-TO-END. Build a softmax forward, backprop; the
+        /// input gradient node is `Op::Fused(SOFTMAX_LAST_DIM_BACKWARD)` over
+        /// `[y, upstream]`; decomposing it fires the MIGRATED recipe (the D3
+        /// SumDim spelling) and matches the frozen legacy numerically — the
+        /// "realize" leg, via the reference interpreter feeding synthetic leaf
+        /// data on the two bound inputs (`y = s`, `upstream = g`).
+        #[test]
+        fn softmax_backward_reaches_the_recipe_through_autograd() {
+            let dev: std::sync::Arc<dyn fuel_backend_contract::DynBackendDevice> =
+                std::sync::Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice);
+            let x = crate::Tensor::from_f32(
+                vec![0.1f32, -0.2, 0.3, 0.4, -0.5, 0.6],
+                Shape::from_dims(&[2, 3]),
+                &dev,
+            );
+            let y = x.softmax_last_dim();
+            let y_id = y.id();
+            let grads = y.backward();
+            let g_x = grads.get(&x).expect("softmax has an input gradient");
+            let handle = g_x.graph();
+            let bwd_id = g_x.id();
+
+            // The input-gradient node IS the registry backward fused op over
+            // `[y, upstream]` (x feeds only the softmax, so no accumulation Add).
+            let up_id = {
+                let gr = handle.read().unwrap();
+                let node = gr.node(bwd_id).clone();
+                match node.op {
+                    Op::Fused(fid, params) => {
+                        assert_eq!(
+                            fid,
+                            FusedOps::SOFTMAX_LAST_DIM_BACKWARD,
+                            "autograd emits the registry backward fused op",
+                        );
+                        assert!(matches!(params, FusedOpParams::SoftmaxLastDimBackward));
+                    }
+                    other => panic!("expected the backward fused op, got {other:?}"),
+                }
+                assert_eq!(node.inputs[0], y_id, "backward input 0 = the forward softmax output");
+                node.inputs[1]
+            };
+
+            // Decompose the SAME autograd backward node both ways (push-only
+            // graph — the fused node survives), then compare numerically.
+            let (new_root, legacy_root, sh) = {
+                let mut gr = handle.write().unwrap();
+                let sh = gr.node(bwd_id).shape.clone();
+                let new_root = softmax_last_dim_backward::decompose(
+                    &mut gr,
+                    bwd_id,
+                    &FusedOpParams::SoftmaxLastDimBackward,
+                );
+                let legacy_root = frozen_legacy_softmax_backward_decompose(
+                    &mut gr,
+                    bwd_id,
+                    &FusedOpParams::SoftmaxLastDimBackward,
+                );
+                (new_root, legacy_root, sh)
+            };
+
+            let gr = handle.read().unwrap();
+            assert_ne!(new_root, bwd_id, "the autograd backward node decomposes via the recipe");
+            assert_eq!(gr.node(new_root).shape, sh, "shape-preserving");
+            let reachable = crate::topo_order_multi(&gr, &[new_root]);
+            assert!(
+                reachable.iter().any(|&n| matches!(gr.node(n).op, Op::SumDim(_))),
+                "the autograd path reaches the D3 SumDim spelling",
+            );
+
+            // Numeric parity (leaf-first interpreter over `[y = s, up = g]`).
+            let n: usize = sh.dims().iter().product();
+            let s_data: Vec<f64> =
+                (0..n).map(|i| ((i as f64) * 0.31).sin() * 0.5 + 0.5).collect();
+            let g_data: Vec<f64> =
+                (0..n).map(|i| ((i as f64) * 0.47).cos() - 0.1).collect();
+            let mut leaves = HashMap::new();
+            leaves.insert(y_id, s_data);
+            leaves.insert(up_id, g_data);
+            let got = eval_bwd(&gr, new_root, &leaves);
+            let want = eval_bwd(&gr, legacy_root, &leaves);
+            assert_eq!(got.len(), want.len());
+            for (i, (a, b)) in got.iter().zip(want.iter()).enumerate() {
+                assert_eq!(
+                    a.to_bits(),
+                    b.to_bits(),
+                    "autograd softmax_backward[{i}]: recipe={a} vs legacy={b}",
+                );
+            }
         }
     }
 }
