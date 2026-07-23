@@ -49,6 +49,14 @@ pub enum RuntimeFusedError {
     NonConcreteRegion,
     /// The runtime id space (`u16` above `RUNTIME_FUSED_BASE`) is exhausted.
     IdSpaceExhausted,
+    /// A shape-relative attr (D2) that can never resolve at ANY shape — a
+    /// STRUCTURAL authoring error caught at registration: a rel field and its
+    /// concrete sibling both set, a bind reference outside the region's bind
+    /// space, `axis_last` on an axis-less tag, or a `Param` reference (no
+    /// param threading until C-4). Value-dependent declines (a `Negative` or
+    /// symbolic-extent result at some particular shape) do NOT reject
+    /// registration — they surface at emit time as a decompose fixpoint (G2).
+    InvalidRelAttrs { tag: OpTag, error: RelAttrError },
 }
 
 static RUNTIME_FUSED_OPS: RwLock<Vec<RuntimeFusedOpEntry>> = RwLock::new(Vec::new());
@@ -104,7 +112,8 @@ fn push_placeholder_leaves(graph: &mut Graph, arity: usize) -> Vec<NodeId> {
 /// (via [`emit_region`]), lower to the primitive base map
 /// ([`crate::opt::lower_to_base_map`]), hash the result
 /// ([`crate::opt::base_map_hash`]). `None` on any structural failure (a
-/// poisoned lock or an empty lowering result) — the caller
+/// poisoned lock, a rel-attr resolution decline at the placeholder shapes,
+/// or an empty lowering result) — the caller
 /// (`register_runtime_fused`) treats `None` as "hash unavailable" and skips
 /// dedup for this registration, never blocking it.
 ///
@@ -121,7 +130,10 @@ fn region_base_map_hash(region: &PatternNode) -> Option<u64> {
     let sink = {
         let mut g = graph.write().ok()?;
         let inputs = push_placeholder_leaves(&mut g, n_binds);
-        emit_region(&mut g, region, &inputs, &scalars)
+        // Fallible entry: a rel-attr region that declines at the rank-1 `[1]`
+        // placeholder shapes yields `None` — "hash unavailable", dedup skipped
+        // for this registration (allocate-fresh), never a panic.
+        try_emit_region(&mut g, region, &inputs, &scalars).ok()?
     };
     let roots = crate::opt::lower_to_base_map(&graph, &[sink]);
     let root = *roots.first()?;
@@ -414,6 +426,51 @@ pub enum RelAttrError {
     NoChildOperand,
 }
 
+/// Whether `attrs` carries any shape-RELATIVE field (D2) — the emit fast-path
+/// guard: rel-free attrs skip resolution entirely (zero behavior change for
+/// existing concrete regions).
+fn has_rel_attrs(attrs: &OpAttrs) -> bool {
+    attrs.target_shape_rel.is_some()
+        || attrs.slice_start_rel.is_some()
+        || attrs.slice_len_rel.is_some()
+        || attrs.axis_last
+}
+
+/// The ONE rel-XOR-abs mutual-exclusion oracle (shared by
+/// [`resolve_rel_attrs`] and the registration rel-probe — no second copy to
+/// drift). Returns the first conflicted field name in canonical field order
+/// (`target_shape`, `slice_start`, `slice_len`, then the `axis_last` carrier —
+/// `dims` for Squeeze/Unsqueeze, `axis` otherwise), or `None`. Note the
+/// `axis_last` arm reports a carrier conflict even for a tag the resolver
+/// would refuse as [`RelAttrError::AxisLastUnsupported`] — both are typed
+/// authoring declines, and both-set is checked first.
+fn rel_abs_conflict_field(tag: OpTag, attrs: &OpAttrs) -> Option<&'static str> {
+    if attrs.target_shape_rel.is_some() && !attrs.target_shape.is_empty() {
+        return Some("target_shape");
+    }
+    if attrs.slice_start_rel.is_some() && attrs.slice_start.is_some() {
+        return Some("slice_start");
+    }
+    if attrs.slice_len_rel.is_some() && attrs.slice_len.is_some() {
+        return Some("slice_len");
+    }
+    if attrs.axis_last {
+        match tag {
+            OpTag::Unsqueeze | OpTag::Squeeze => {
+                if !attrs.dims.is_empty() {
+                    return Some("dims");
+                }
+            }
+            _ => {
+                if attrs.axis.is_some() {
+                    return Some("axis");
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Resolve `attrs`' shape-RELATIVE fields (`target_shape_rel`,
 /// `slice_start_rel`/`slice_len_rel`, `axis_last` — D2) into their concrete
 /// siblings, returning a fully-concrete [`OpAttrs`] ready for the unchanged
@@ -442,13 +499,17 @@ pub fn resolve_rel_attrs(
     use fuel_kernel_seam_types::shape_expr::{
         self, Dim, DimValue, LAST, ShapeValue, resolve_axis,
     };
+    // Mutual exclusion FIRST, for every field, before any evaluation — so a
+    // value-dependent decline in an earlier field can't mask a rel+abs
+    // authoring conflict in a later one (the registration probe relies on
+    // this completeness).
+    if let Some(field) = rel_abs_conflict_field(tag, attrs) {
+        return Err(RelAttrError::RelAbsConflict { field });
+    }
     let mut out = attrs.clone();
 
     // target_shape_rel → target_shape (SameAs over the Bind space).
     if let Some(se) = &attrs.target_shape_rel {
-        if !attrs.target_shape.is_empty() {
-            return Err(RelAttrError::RelAbsConflict { field: "target_shape" });
-        }
         match shape_expr::eval_shape(se, bind_shapes, &[]).map_err(RelAttrError::Expr)? {
             ShapeValue::Concrete(s) => {
                 if let Some(&bad) = s.iter().find(|&&e| e < 0) {
@@ -472,16 +533,10 @@ pub fn resolve_rel_attrs(
         }
     };
     if let Some(d) = &attrs.slice_start_rel {
-        if attrs.slice_start.is_some() {
-            return Err(RelAttrError::RelAbsConflict { field: "slice_start" });
-        }
         out.slice_start = Some(eval_dim_field(d, "slice_start")?);
         out.slice_start_rel = None;
     }
     if let Some(d) = &attrs.slice_len_rel {
-        if attrs.slice_len.is_some() {
-            return Err(RelAttrError::RelAbsConflict { field: "slice_len" });
-        }
         out.slice_len = Some(eval_dim_field(d, "slice_len")?);
         out.slice_len_rel = None;
     }
@@ -495,25 +550,16 @@ pub fn resolve_rel_attrs(
             // §6.20 resolver (typed AxisOutOfRange on a rank-0 operand).
             T::SumDim | T::MeanDim | T::CumSum | T::Concat | T::Flip | T::Slice | T::Roll
             | T::IndexSelect | T::Gather | T::IndexAdd | T::ScatterAdd => {
-                if attrs.axis.is_some() {
-                    return Err(RelAttrError::RelAbsConflict { field: "axis" });
-                }
                 let a = resolve_axis(LAST, rank).map_err(RelAttrError::Expr)?;
                 out.axis = Some(a as i64);
             }
             // `dims`-carrier: Unsqueeze APPENDS — dim == rank (`primitive_shape`
             // permits `dim == rank`; keepdim-restore spelling, D3).
             T::Unsqueeze => {
-                if !attrs.dims.is_empty() {
-                    return Err(RelAttrError::RelAbsConflict { field: "dims" });
-                }
                 out.dims = vec![rank as u8];
             }
             // `dims`-carrier: Squeeze drops the trailing axis = rank − 1.
             T::Squeeze => {
-                if !attrs.dims.is_empty() {
-                    return Err(RelAttrError::RelAbsConflict { field: "dims" });
-                }
                 let a = resolve_axis(LAST, rank).map_err(RelAttrError::Expr)?;
                 out.dims = vec![a as u8];
             }
@@ -540,9 +586,28 @@ pub fn count_scalar_slots(node: &PatternNode) -> usize {
     }
 }
 
-fn validate_representable(node: &PatternNode) -> Result<(), RuntimeFusedError> {
+fn validate_representable(region: &PatternNode) -> Result<(), RuntimeFusedError> {
+    let n_binds = region.bind_indices().len();
+    validate_node(region, n_binds)
+}
+
+fn validate_node(node: &PatternNode, n_binds: usize) -> Result<(), RuntimeFusedError> {
     match node {
         PatternNode::Op { op, operands, attrs } => {
+            // A rel-attr op is a SHAPE-POLYMORPHIC template — probe-resolve it
+            // (T3, mirror of the scalar slot dummy-fill below) so the
+            // `tag_to_op` representability check can run on concrete attrs.
+            // Structural authoring errors reject the region with a typed
+            // decline; value-dependent declines at the probe shape register
+            // fine and surface at emit time as a decompose fixpoint.
+            let probed;
+            let attrs = if has_rel_attrs(attrs) {
+                probed = rel_probe(*op, attrs, n_binds)
+                    .map_err(|error| RuntimeFusedError::InvalidRelAttrs { tag: *op, error })?;
+                &probed
+            } else {
+                attrs
+            };
             // A scalar-param op with empty scalars is a SLOT template —
             // validate re-emittability with a dummy fill (the live value is
             // substituted from the fused node's `Runtime { scalars }` at
@@ -558,7 +623,7 @@ fn validate_representable(node: &PatternNode) -> Result<(), RuntimeFusedError> {
                 return Err(RuntimeFusedError::UnRepresentable(*op));
             }
             for o in operands {
-                validate_representable(o)?;
+                validate_node(o, n_binds)?;
             }
             Ok(())
         }
@@ -567,6 +632,64 @@ fn validate_representable(node: &PatternNode) -> Result<(), RuntimeFusedError> {
             Err(RuntimeFusedError::NonConcreteRegion)
         }
     }
+}
+
+/// The registration-time rel-attr probe: resolve `attrs` against a fixed
+/// `[2, 4]` probe shape (every bind + the child) through the ONE resolver.
+/// * `Ok(resolved)` — fully-concrete attrs for the `tag_to_op` probe.
+/// * `Err` — a STRUCTURAL authoring error that can never resolve at ANY
+///   shape: rel+abs both set, a bind/`Param` reference out of range,
+///   `axis_last` on an axis-less tag.
+/// * A VALUE-dependent decline at the probe shape (`Negative`,
+///   `AxisOutOfRange` against the probe rank, `DivideByZero` through a
+///   derived extent, …) is NOT an authoring error — the attrs get a dummy
+///   concrete fill instead (the emit-time resolver is the real gate; its
+///   decline there is a G2 fixpoint).
+fn rel_probe(tag: OpTag, attrs: &OpAttrs, n_binds: usize) -> Result<OpAttrs, RelAttrError> {
+    use fuel_kernel_seam_types::shape_expr::ShapeExprError as E;
+    let probe: Vec<i64> = vec![2, 4];
+    let bind_shapes = vec![probe.clone(); n_binds];
+    match resolve_rel_attrs(tag, attrs, &bind_shapes, std::slice::from_ref(&probe)) {
+        Ok(resolved) => Ok(resolved),
+        Err(
+            e @ (RelAttrError::RelAbsConflict { .. }
+            | RelAttrError::AxisLastUnsupported { .. }
+            | RelAttrError::Expr(E::OperandOutOfRange { .. } | E::ParamOutOfRange { .. })),
+        ) => Err(e),
+        Err(_) => Ok(dummy_fill_rel(tag, attrs)),
+    }
+}
+
+/// Clear `attrs`' rel fields and dummy-fill their concrete siblings (only
+/// where the sibling is unset — a rel+abs conflict never reaches here, the
+/// probe rejects it first) so `tag_to_op` representability can be checked.
+fn dummy_fill_rel(tag: OpTag, attrs: &OpAttrs) -> OpAttrs {
+    let mut out = attrs.clone();
+    if out.target_shape_rel.take().is_some() && out.target_shape.is_empty() {
+        out.target_shape = vec![1];
+    }
+    if out.slice_start_rel.take().is_some() && out.slice_start.is_none() {
+        out.slice_start = Some(0);
+    }
+    if out.slice_len_rel.take().is_some() && out.slice_len.is_none() {
+        out.slice_len = Some(1);
+    }
+    if out.axis_last {
+        out.axis_last = false;
+        match tag {
+            OpTag::Unsqueeze | OpTag::Squeeze => {
+                if out.dims.is_empty() {
+                    out.dims = vec![0];
+                }
+            }
+            _ => {
+                if out.axis.is_none() {
+                    out.axis = Some(0);
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Decompose a runtime `Op::Fused(id, Runtime { .. })` node by re-emitting its
@@ -592,8 +715,14 @@ pub fn decompose_region(graph: &mut Graph, node_id: NodeId) -> NodeId {
         return node_id;
     }
     let inputs = graph.node(node_id).inputs.clone();
+    let bind_shapes = bind_operand_shapes(graph, &inputs);
     let mut cursor = node_scalars.as_slice();
-    emit(graph, &region, &inputs, &mut cursor)
+    // A shape-relative attr that fails to resolve at THESE input shapes (a
+    // symbolic extent, a negative result, …) is a typed decline surfaced as a
+    // no-op fixpoint (G2) — same posture as the slot-count mismatch above,
+    // never a panic. Any child nodes emitted before the decline stay in the
+    // push-only graph as unreferenced dead nodes (inert).
+    emit(graph, &region, &inputs, &bind_shapes, &mut cursor).unwrap_or(node_id)
 }
 
 /// Re-emit a validated region on the given external input nodes (public entry
@@ -611,29 +740,74 @@ pub fn decompose_region(graph: &mut Graph, node_id: NodeId) -> NodeId {
 /// length check before ever calling `emit`; `emit_region` deliberately does
 /// NOT — it's a thin wrapper, so validating the length is the caller's job.
 /// Callers must pass a `scalars` slice at least as long as the region's
-/// open-slot count.
+/// open-slot count. Third (T3): a shape-RELATIVE attr (D2) that fails to
+/// resolve at these input shapes panics through the wrapper's `expect` —
+/// rel-attr callers use [`try_emit_region`], which surfaces it as a typed
+/// [`RelAttrError`] instead.
 pub fn emit_region(
     graph: &mut Graph,
     region: &PatternNode,
     inputs: &[NodeId],
     scalars: &[f64],
 ) -> NodeId {
+    try_emit_region(graph, region, inputs, scalars).expect(
+        "rel-attr resolution failed — emit_region callers pass concrete-attr or \
+         shape-compatible pre-validated regions; fallible callers use try_emit_region",
+    )
+}
+
+/// The FALLIBLE re-emit entry (Increment C slice 1, T3): like [`emit_region`]
+/// but surfacing a shape-relative attr resolution failure (D2) as a typed
+/// [`RelAttrError`] instead of a panic. This is the resolving entry the
+/// registry `decompose_via_recipe` bridge calls (any failure ⇒ `return id`,
+/// the G2 fixpoint). Concrete-attr regions can never hit the `Err` arm — for
+/// them this is exactly the legacy `emit_region`. The `emit_region` panic
+/// caveats (non-re-emittable `OpTag`, short `scalars` slice) apply unchanged.
+pub fn try_emit_region(
+    graph: &mut Graph,
+    region: &PatternNode,
+    inputs: &[NodeId],
+    scalars: &[f64],
+) -> Result<NodeId, RelAttrError> {
+    let bind_shapes = bind_operand_shapes(graph, inputs);
     let mut cursor = scalars;
-    emit(graph, region, inputs, &mut cursor)
+    emit(graph, region, inputs, &bind_shapes, &mut cursor)
+}
+
+/// A graph [`fuel_ir::Shape`] as a §6.20 evaluator operand: per-axis extents
+/// with a bounded-symbolic (`Extent::Range`) axis mapped to the
+/// [`shape_expr::SYMBOLIC`] sentinel — so a rel attr over a symbolic extent
+/// declines as [`RelAttrError::SymbolicGap`] (surfaced gap, §6.20-0004)
+/// instead of silently resolving against the capacity bound.
+fn shape_expr_operand(shape: &fuel_ir::Shape) -> Vec<i64> {
+    use fuel_kernel_seam_types::shape_expr::SYMBOLIC;
+    (0..shape.rank())
+        .map(|a| if shape.extent(a).is_dynamic() { SYMBOLIC } else { shape.dims()[a] as i64 })
+        .collect()
+}
+
+/// The region's **Bind-space** shapes (`bind_shapes[i]` = `inputs[i]`'s shape)
+/// in §6.20 operand form — what `ShapeExpr::SameAs`/`Dim::Extent` index.
+fn bind_operand_shapes(graph: &Graph, inputs: &[NodeId]) -> Vec<Vec<i64>> {
+    inputs.iter().map(|&id| shape_expr_operand(&graph.node(id).shape)).collect()
 }
 
 fn emit(
     graph: &mut Graph,
     node: &PatternNode,
     inputs: &[NodeId],
+    bind_shapes: &[Vec<i64>],
     scalars: &mut &[f64],
-) -> NodeId {
+) -> Result<NodeId, RelAttrError> {
     match node {
-        PatternNode::Bind { index } => inputs[*index as usize],
+        PatternNode::Bind { index } => Ok(inputs[*index as usize]),
         PatternNode::Op { op, operands, attrs } => {
             // Fill an open scalar slot from the cursor in PRE-order (before
             // descending into operands) — the same canonical order
-            // `match_region_extract` recorded the live values in.
+            // `match_region_extract` recorded the live values in. (T3 note:
+            // children are now EMITTED before the attrs are USED, but the
+            // cursor fill stays right here, before the descent — the cursor
+            // order is authoring order, not emission order.)
             let arity = scalar_slot_arity(*op);
             let filled;
             let attrs = if attrs.scalars.is_empty() && arity > 0 {
@@ -644,25 +818,72 @@ fn emit(
             } else {
                 attrs
             };
+            // Children FIRST (T3 reorder): their emitted shapes feed the
+            // rel-attr resolver (`axis_last`'s rank, D4's pad decision).
+            let mut child_ids = Vec::with_capacity(operands.len());
+            for o in operands {
+                child_ids.push(emit(graph, o, inputs, bind_shapes, scalars)?);
+            }
+            let mut child_shapes: Vec<fuel_ir::Shape> =
+                child_ids.iter().map(|&c| graph.node(c).shape.clone()).collect();
+            let child_dtypes: Vec<fuel_ir::DType> =
+                child_ids.iter().map(|&c| graph.node(c).dtype).collect();
+            // Shape-RELATIVE attrs (D2) resolve to fully-concrete siblings
+            // against the region's Bind space + this op's operand shapes; the
+            // unchanged tag_to_op → primitive_shape path then runs on the
+            // result. A failure is a typed decline the caller surfaces
+            // (`decompose_region` ⇒ fixpoint, `try_emit_region` ⇒ `Err`) —
+            // never a panic. Nodes already pushed for the children stay in the
+            // graph as unreferenced (dead) nodes: `Graph` is push-only and
+            // base-map extraction walks from roots, so they are inert.
+            let resolved;
+            let attrs = if has_rel_attrs(attrs) {
+                let child_ops: Vec<Vec<i64>> =
+                    child_shapes.iter().map(shape_expr_operand).collect();
+                resolved = resolve_rel_attrs(*op, attrs, bind_shapes, &child_ops)?;
+                &resolved
+            } else {
+                attrs
+            };
             let prim = tag_to_op(*op, attrs).expect("region validated re-emittable at registration");
-            let child_ids: Vec<NodeId> =
-                operands.iter().map(|o| emit(graph, o, inputs, scalars)).collect();
+            // D4: a `BroadcastTo` whose target rank EXCEEDS its operand's rank
+            // first materializes the legacy `Reshape` pad (1-padded left,
+            // right-aligned — byte-identical to `registry::rope`'s hand-built
+            // broadcast prep, since `check_broadcast_compatible` is
+            // right-aligned). Recipes stay free of rank-dependent nodes while
+            // the emitted graph matches the legacy imperative builders.
+            // Applied uniformly (rel-resolved AND absolute targets); an
+            // equal-rank broadcast is unchanged (no pad).
+            if let Op::BroadcastTo(target) = &prim {
+                if let Some(cs) = child_shapes.first() {
+                    if target.rank() > cs.rank() {
+                        let mut padded: Vec<usize> = vec![1; target.rank() - cs.rank()];
+                        padded.extend_from_slice(cs.dims());
+                        let pad_shape = fuel_ir::Shape::from_dims(&padded);
+                        let pad = graph.push(Node {
+                            op: Op::Reshape(pad_shape.clone()),
+                            inputs: vec![child_ids[0]],
+                            shape: pad_shape.clone(),
+                            dtype: child_dtypes[0],
+                        });
+                        child_ids[0] = pad;
+                        child_shapes[0] = pad_shape;
+                    }
+                }
+            }
             // Convergence Increment A: full-parity (shape, dtype) via the single
             // source of truth (`primitive_shape`) — correct for shape-changing,
             // reducing, and dtype-changing ops, not just same-shape elementwise.
             // The Err arm is only reachable for a MALFORMED authored region (a
             // registration-validated region's ops all infer). Real never-panic
-            // guarantee: emit always returns a node, never panics. Fall back to
-            // operand[0]'s shape/dtype; and because `validate_representable`
-            // checks `tag_to_op(op).is_some()` but NOT arity — and `emit_region`
-            // is a public raw-region entry (candidate verification) that does not
-            // re-validate — a zero-operand op has no operand shape to borrow, so
-            // `.first()` (never `[0]`) guards the index and a degenerate rank-0
-            // F32 node is emitted for that malformed leaf.
-            let child_shapes: Vec<fuel_ir::Shape> =
-                child_ids.iter().map(|&c| graph.node(c).shape.clone()).collect();
-            let child_dtypes: Vec<fuel_ir::DType> =
-                child_ids.iter().map(|&c| graph.node(c).dtype).collect();
+            // guarantee: emit always returns a node (or a typed rel decline),
+            // never panics here. Fall back to operand[0]'s shape/dtype; and
+            // because `validate_representable` checks `tag_to_op(op).is_some()`
+            // but NOT arity — and `emit_region` is a public raw-region entry
+            // (candidate verification) that does not re-validate — a
+            // zero-operand op has no operand shape to borrow, so `.first()`
+            // (never `[0]`) guards the index and a degenerate rank-0 F32 node
+            // is emitted for that malformed leaf.
             let (s, d) = crate::shape::primitive_shape(&prim, &child_shapes, &child_dtypes)
                 .unwrap_or_else(|_| {
                     (
@@ -670,7 +891,7 @@ fn emit(
                         child_dtypes.first().copied().unwrap_or(fuel_ir::DType::F32),
                     )
                 });
-            graph.push(Node { op: prim, inputs: child_ids, shape: s, dtype: d })
+            Ok(graph.push(Node { op: prim, inputs: child_ids, shape: s, dtype: d }))
         }
         PatternNode::Any | PatternNode::SeeThrough { .. } => {
             unreachable!("region validated concrete (Op/Bind) at registration")
@@ -1359,6 +1580,277 @@ mod tests {
             let attrs = OpAttrs { axis: Some(1), slice_start: Some(2), slice_len: Some(3), ..OpAttrs::default() };
             let r = resolve_rel_attrs(OpTag::Slice, &attrs, &[vec![2, 4]], &[vec![2, 4]]).expect("no-op");
             assert_eq!(r, attrs);
+        }
+    }
+
+    // ---- T3 (Increment C slice 1): resolving emit + D4 pad + rel validation ----
+    //
+    // The emit integration behind recipe polymorphism: children are emitted
+    // FIRST (their shapes feed the rel-attr resolver), `resolve_rel_attrs`
+    // produces fully-concrete attrs, then the unchanged tag_to_op →
+    // primitive_shape path runs. A resolved `BroadcastTo` whose target rank
+    // exceeds its operand's materializes the legacy `Reshape` pad (D4).
+    // `validate_representable` accepts rel-attr regions via a probe-resolve
+    // (mirror of the scalar slot dummy-fill) and rejects structural authoring
+    // errors (rel+abs conflict, bind out of range) with a typed decline.
+
+    mod emit_rel {
+        use super::super::*;
+        use super::{assert_structural_eq, bind, op_node};
+        use fuel_ir::{DType, Shape};
+        use fuel_kernel_seam_types::shape_expr::{Dim, ShapeExpr};
+
+        fn cst(g: &mut Graph, dims: &[usize]) -> NodeId {
+            g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(dims),
+                dtype: DType::F32,
+            })
+        }
+
+        fn bcast_same_as_0() -> OpAttrs {
+            OpAttrs { target_shape_rel: Some(ShapeExpr::SameAs { operand: 0 }), ..OpAttrs::default() }
+        }
+
+        #[test]
+        fn rel_region_emits_polymorphically_across_shapes() {
+            // The headline polymorphism: ONE region datum —
+            // Add(bind0, BroadcastTo{SameAs{0}}(bind1)) — emitted at two
+            // different shapes produces the correct target BOTH times
+            // (impossible with absolute attrs: a baked target matches exactly
+            // one shape).
+            let region = op_node(OpTag::Add, OpAttrs::default(), vec![
+                bind(0),
+                op_node(OpTag::BroadcastTo, bcast_same_as_0(), vec![bind(1)]),
+            ]);
+            let mut g = Graph::new();
+            let x1 = cst(&mut g, &[2, 3]);
+            let t1 = cst(&mut g, &[1, 3]);
+            let r1 = emit_region(&mut g, &region, &[x1, t1], &[]);
+            assert!(matches!(g.node(r1).op, Op::Add));
+            assert_eq!(g.node(r1).shape, Shape::from_dims(&[2, 3]));
+            let b1 = g.node(r1).inputs[1];
+            assert_eq!(g.node(b1).op, Op::BroadcastTo(Shape::from_dims(&[2, 3])));
+            assert_eq!(g.node(b1).shape, Shape::from_dims(&[2, 3]));
+
+            // The SAME region datum at different shapes → a different target.
+            let x2 = cst(&mut g, &[4, 5]);
+            let t2 = cst(&mut g, &[1, 5]);
+            let r2 = emit_region(&mut g, &region, &[x2, t2], &[]);
+            assert_eq!(g.node(r2).shape, Shape::from_dims(&[4, 5]));
+            let b2 = g.node(r2).inputs[1];
+            assert_eq!(g.node(b2).op, Op::BroadcastTo(Shape::from_dims(&[4, 5])));
+        }
+
+        #[test]
+        fn broadcast_rank_raise_materializes_the_legacy_reshape_pad() {
+            // D4: a rank-1 bind1 broadcast to rank-3 bind0's shape — the
+            // resolver must first push the legacy `Reshape` (1-padded left,
+            // right-aligned; `registry::rope`'s hand-built broadcast prep).
+            let region = op_node(OpTag::Mul, OpAttrs::default(), vec![
+                bind(0),
+                op_node(OpTag::BroadcastTo, bcast_same_as_0(), vec![bind(1)]),
+            ]);
+            let mut g = Graph::new();
+            let x = cst(&mut g, &[2, 3, 4]);
+            let t = cst(&mut g, &[4]);
+            // Hand-built legacy reference:
+            // Reshape([1,1,4])(t) → BroadcastTo([2,3,4]) → Mul(x, ·).
+            let pad_shape = Shape::from_dims(&[1, 1, 4]);
+            let full = Shape::from_dims(&[2, 3, 4]);
+            let pad = g.push(Node {
+                op: Op::Reshape(pad_shape.clone()),
+                inputs: vec![t],
+                shape: pad_shape,
+                dtype: DType::F32,
+            });
+            let bc = g.push(Node {
+                op: Op::BroadcastTo(full.clone()),
+                inputs: vec![pad],
+                shape: full.clone(),
+                dtype: DType::F32,
+            });
+            let reference = g.push(Node {
+                op: Op::Mul,
+                inputs: vec![x, bc],
+                shape: full,
+                dtype: DType::F32,
+            });
+
+            let emitted = emit_region(&mut g, &region, &[x, t], &[]);
+            assert_structural_eq(&g, reference, emitted);
+        }
+
+        #[test]
+        fn concrete_broadcast_rank_raise_also_pads() {
+            // D4 applies uniformly: an ABSOLUTE rank-raising BroadcastTo also
+            // materializes the pad (deterministic emission, matches the graph
+            // builders' right-aligned rank-raising semantics). Equal-rank
+            // broadcasts stay pad-free (pinned by the softmax parity oracle).
+            let region = op_node(
+                OpTag::BroadcastTo,
+                OpAttrs { target_shape: vec![2, 3, 4], ..OpAttrs::default() },
+                vec![bind(0)],
+            );
+            let mut g = Graph::new();
+            let t = cst(&mut g, &[3, 4]);
+            let emitted = emit_region(&mut g, &region, &[t], &[]);
+            assert_eq!(g.node(emitted).op, Op::BroadcastTo(Shape::from_dims(&[2, 3, 4])));
+            let pad = g.node(emitted).inputs[0];
+            assert_eq!(
+                g.node(pad).op,
+                Op::Reshape(Shape::from_dims(&[1, 3, 4])),
+                "rank-raise inserts the legacy 1-padded-left Reshape",
+            );
+            assert_eq!(g.node(pad).inputs, vec![t]);
+        }
+
+        #[test]
+        fn scalar_cursor_fill_stays_pre_order_after_the_reorder() {
+            // Risk-2 guard: children are now EMITTED first, but the scalar
+            // cursor fill stays PRE-order (parent before descent) — the
+            // canonical authoring order `match_region_extract` records.
+            let region = op_node(OpTag::AddScalar, OpAttrs::default(), vec![
+                op_node(OpTag::MulScalar, OpAttrs::default(), vec![bind(0)]),
+            ]);
+            let mut g = Graph::new();
+            let x = cst(&mut g, &[4]);
+            let root = emit_region(&mut g, &region, &[x], &[10.0, 20.0]);
+            assert!(
+                matches!(g.node(root).op, Op::AddScalar(v) if v == 10.0),
+                "parent takes scalars[0] (pre-order), got {:?}",
+                g.node(root).op,
+            );
+            let child = g.node(root).inputs[0];
+            assert!(
+                matches!(g.node(child).op, Op::MulScalar(v) if v == 20.0),
+                "child takes scalars[1], got {:?}",
+                g.node(child).op,
+            );
+        }
+
+        #[test]
+        fn validate_accepts_a_rel_attr_region() {
+            // Born-red: today tag_to_op(BroadcastTo, {empty target_shape}) →
+            // None → UnRepresentable. The rel-probe must accept the template.
+            let region = op_node(OpTag::Add, OpAttrs::default(), vec![
+                bind(0),
+                op_node(OpTag::BroadcastTo, bcast_same_as_0(), vec![bind(1)]),
+            ]);
+            register_runtime_fused("t3::rel_bcast", region)
+                .expect("a rel-attr region is registrable");
+        }
+
+        #[test]
+        fn validate_rejects_rel_abs_conflict_and_bind_out_of_range() {
+            // rel+abs both set → a typed authoring reject, never a silent
+            // precedence.
+            let conflicted = op_node(
+                OpTag::BroadcastTo,
+                OpAttrs {
+                    target_shape: vec![2, 3],
+                    target_shape_rel: Some(ShapeExpr::SameAs { operand: 0 }),
+                    ..OpAttrs::default()
+                },
+                vec![bind(0)],
+            );
+            assert_eq!(
+                register_runtime_fused("t3::conflict", conflicted),
+                Err(RuntimeFusedError::InvalidRelAttrs {
+                    tag: OpTag::BroadcastTo,
+                    error: RelAttrError::RelAbsConflict { field: "target_shape" },
+                }),
+            );
+            // A bind reference outside the region's bind space can never
+            // resolve at ANY shape → a typed authoring reject.
+            let oob = op_node(
+                OpTag::BroadcastTo,
+                OpAttrs {
+                    target_shape_rel: Some(ShapeExpr::SameAs { operand: 7 }),
+                    ..OpAttrs::default()
+                },
+                vec![bind(0)],
+            );
+            assert_eq!(
+                register_runtime_fused("t3::oob", oob),
+                Err(RuntimeFusedError::InvalidRelAttrs {
+                    tag: OpTag::BroadcastTo,
+                    error: RelAttrError::Expr(
+                        fuel_kernel_seam_types::shape_expr::ShapeExprError::OperandOutOfRange {
+                            operand: 7,
+                            operands: 1,
+                        },
+                    ),
+                }),
+            );
+        }
+
+        #[test]
+        fn decompose_rel_resolution_failure_is_a_fixpoint_not_a_crash() {
+            // slice_start_rel = 0 − 2 → Negative at emit time. Registration
+            // TOLERATES it (a value-dependent decline at the probe shape is
+            // not an authoring error); the decompose-path resolution failure
+            // surfaces as a no-op fixpoint (G2), never a panic.
+            let neg = Dim::Sub(Box::new(Dim::Const(0)), Box::new(Dim::Const(2)));
+            let region = op_node(
+                OpTag::Slice,
+                OpAttrs {
+                    axis: Some(1),
+                    slice_start_rel: Some(neg),
+                    slice_len: Some(1),
+                    ..OpAttrs::default()
+                },
+                vec![bind(0)],
+            );
+            let id = register_runtime_fused("t3::neg_slice", region)
+                .expect("a value-dependent decline still registers");
+            let mut g = Graph::new();
+            let x = cst(&mut g, &[2, 4]);
+            let fused = g.push(Node {
+                op: Op::Fused(id, FusedOpParams::Runtime { scalars: vec![] }),
+                inputs: vec![x],
+                shape: Shape::from_dims(&[2, 4]),
+                dtype: DType::F32,
+            });
+            assert_eq!(decompose_region(&mut g, fused), fused, "resolution decline ⇒ fixpoint");
+        }
+
+        #[test]
+        fn try_emit_region_surfaces_typed_resolution_errors() {
+            // Negative → typed error from the fallible entry, never a panic.
+            let neg = Dim::Sub(Box::new(Dim::Const(0)), Box::new(Dim::Const(2)));
+            let region = op_node(
+                OpTag::Slice,
+                OpAttrs {
+                    axis: Some(1),
+                    slice_start_rel: Some(neg),
+                    slice_len: Some(1),
+                    ..OpAttrs::default()
+                },
+                vec![bind(0)],
+            );
+            let mut g = Graph::new();
+            let x = cst(&mut g, &[2, 4]);
+            assert_eq!(
+                try_emit_region(&mut g, &region, &[x], &[]),
+                Err(RelAttrError::Negative { field: "slice_start", value: -2 }),
+            );
+            // A graph-side SYMBOLIC bind extent maps to the §6.20 SYMBOLIC
+            // sentinel → SymbolicGap (the surfaced-gap posture, §6.20-0004).
+            let region = op_node(OpTag::BroadcastTo, bcast_same_as_0(), vec![bind(0)]);
+            let dyn_shape =
+                Shape::from_dims(&[2, 8]).with_dynamic_axis(1, 0, fuel_ir::SymId(0));
+            let d = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: dyn_shape,
+                dtype: DType::F32,
+            });
+            assert_eq!(
+                try_emit_region(&mut g, &region, &[d], &[]),
+                Err(RelAttrError::SymbolicGap { field: "target_shape" }),
+            );
         }
     }
 
