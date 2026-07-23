@@ -101,9 +101,9 @@ pub fn eval_shape_rule(rule: &str, combo: ProbeComboRef, params: &[i64], _sectio
 /// returns a value, so a *panic-driven* skip is inherently build-mode-dependent
 /// — a drifted contract could then pass `cargo test` yet raise a mismatch under
 /// `cargo build --release`. The [`expected_min_inputs`] arity pre-check in
-/// [`cross_check_fused_section`] closes that split for the concrete cited case
-/// (an under-arity attention contract) by skipping BEFORE the call in BOTH build
-/// modes; this guard stays the never-panic backstop for any other unforeseen
+/// [`cross_check_fused_section`] closes that split for the listed cases (an
+/// under-arity attention or Conv2D contract) by skipping BEFORE the call in BOTH
+/// build modes; this guard stays the never-panic backstop for any other unforeseen
 /// panic (whose skip remains debug-only — the residual this note preserves).
 fn guard_rule<T>(
     warnings: &mut Vec<ImportWarning>,
@@ -128,19 +128,25 @@ fn guard_rule<T>(
 }
 
 /// The minimum input arity the registry rule fn for a synth-supported `variant`
-/// requires before it safely indexes its operands. Only the attention family is
-/// listed: `flash_attn` / `flash_attn_backward` `debug_assert!(len == 4 || 5)`
-/// and `paged_attn` `debug_assert!(len == 5 || 6)`, and a leaner corpus contract
+/// requires before it safely indexes its operands. The attention family:
+/// `flash_attn` / `flash_attn_backward` `debug_assert!(len == 4 || 5)` and
+/// `paged_attn` `debug_assert!(len == 5 || 6)`, and a leaner corpus contract
 /// can under-declare them (metal `matmul-attn.fkc.md`'s 3-input `FLASH_ATTN`
-/// declares only q/k/v). For every other synth variant the corpus contracts
-/// match the fn's exact arity, so no under-arity split exists today and `None`
-/// leaves the `guard_rule` catch-and-warn backstop in charge. Kept deliberately
-/// small + co-located with `synth_probe_params` (do NOT reach into
+/// declares only q/k/v). C-4 T3 adds `Conv2D` (min 2): its rule fns read
+/// `input_shapes[1]` (the weight) and `debug_assert!` 2-or-3 inputs, its dtype
+/// differential is now params-live, and real 2-input CONV2D fused sections
+/// exist (`vulkan/conv-attn-rope.fkc.md`) — so an under-declaring sibling is a
+/// live authoring risk, not a hypothetical. For every other synth variant the
+/// corpus contracts match the fn's arity, so no under-arity split exists today
+/// and `None` leaves the `guard_rule` catch-and-warn backstop in charge. The
+/// policy: an entry is added when a REAL corpus family could under-declare it —
+/// kept deliberately small + co-located with the synth fns (do NOT reach into
 /// `fuel-graph/src/registry` for the arities — mirror its documented asserts).
 fn expected_min_inputs(variant: Option<&str>) -> Option<usize> {
     match variant {
         Some("FlashAttn") | Some("FlashAttnBackward") => Some(4),
         Some("PagedAttn") => Some(5),
+        Some("Conv2D") => Some(2),
         _ => None,
     }
 }
@@ -183,14 +189,17 @@ fn shape_to_i64(s: &Shape) -> Vec<i64> {
 }
 
 /// Synthesize the `FusedOpParams` variant NAMED by the contract's
-/// `op_params.variant` (§3.7), with placeholder field values. The ONLY
-/// correctness requirement is that the returned variant matches the name so
-/// the real registered `shape_rule` fn never hits its wrong-params panic
-/// (`qmatmul.rs:63`, `conv2d.rs:86`). Params-dependent ops (whose declared
-/// return rules are `from_params`-style = not-evaluable, so the real fn is
-/// never called at all) synthesize nothing here and fall through to `None`
-/// — never-panic beats completeness; a foreign variant would be worse than
-/// skipping the probe.
+/// `op_params.variant` (§3.7), with placeholder field values, for the
+/// params-INDEPENDENT fused ops (their rule fns ignore the field values).
+/// The ONLY correctness requirement is that the returned variant matches the
+/// name so the real registered `shape_rule` fn never hits its wrong-params
+/// panic (`qmatmul.rs:63`, `conv2d.rs:86`). Division of labor (C-4): a
+/// params-DEPENDENT variant (Conv2D / ConvTranspose2D / QMatMul / FSCE /
+/// CausalConv1d) returns `None` HERE — its real, per-combo param POINTS come
+/// from [`synth_probe_param_points`] instead, and the cross-check loops over
+/// those. An op in NEITHER synth fn (e.g. Nf4Matmul, double-gated on FDX
+/// AFFINE_BLOCK) is a skipped differential — never a foreign variant, never
+/// a panic.
 pub fn synth_probe_params(variant: Option<&str>) -> Result<Option<FusedOpParams>, FkcError> {
     const EPS: f64 = 1e-5;
     Ok(match variant {
@@ -378,14 +387,26 @@ pub fn synth_probe_param_points(
 ///
 /// Invariant (never-panic guard): the real `shape_rule`/`dtype_rule` fns for
 /// some fused ops (e.g. qmatmul, conv2d) `panic!` on a mismatched
-/// `FusedOpParams` variant. This fn invokes a real fn ONLY when BOTH (a) the
-/// contract's declared rule is EVALUABLE (`eval_dtype_rule`/`eval_shape_rule`
-/// returned `Some`) AND (b) `synth_probe_params` returned `Some(params)`. For
-/// every current fused op, evaluable declared rules belong to
-/// params-INDEPENDENT fns (plain passthrough/fixed/same_as), so this
-/// coincidence holds and the wrong-params panic is unreachable — a
-/// params-dependent rule (`from_params`-style) is never evaluable, so its
-/// real fn is never called here at all.
+/// `FusedOpParams` variant. C-4 T3 RETIRES the C-3 coincidence this fn used
+/// to lean on ("evaluable ⇒ params-independent, so the real fn is never
+/// called with a synthless variant"): params-DEPENDENT variants now get real
+/// synthesized values too ([`synth_probe_param_points`]), so their
+/// `passthrough`/`fixed` dtype rules are genuinely cross-checked. The
+/// never-panic mechanism is structural, not coincidental:
+/// - **matching-variant synth**: both synth fns only ever build the variant
+///   NAMED by the contract (or nothing), so the wrong-params panic is
+///   unreachable by construction;
+/// - **value validity**: params-dependent points are shape-coupled to the
+///   probe combo (Conv2D padding derives from the weight kernel; QMatMul k/n
+///   from a/w), so the real fn's arithmetic cannot underflow on any probe;
+/// - **arity pre-check**: [`expected_min_inputs`] (attention family + Conv2D)
+///   skips an under-declared contract consistently in debug AND release,
+///   with a warning;
+/// - **backstop**: [`guard_rule`] (catch_unwind + warn) stays the last-resort
+///   never-panic guard for anything unforeseen.
+/// A real fn is still invoked ONLY when the contract's declared rule is
+/// EVALUABLE (`eval_dtype_rule`/`eval_shape_rule` returned `Some`) and a
+/// param point exists for the variant.
 pub fn cross_check_fused_section(
     kernel: &FkcKernel,
     id: FusedOpId,
@@ -412,7 +433,9 @@ pub fn cross_check_fused_section(
             return Ok(());
         }
     };
-    let params = synth_probe_params(variant)?;
+    // Single synthesized params for the params-INDEPENDENT variants; the
+    // params-DEPENDENT variants synthesize per-combo POINTS inside the loop.
+    let single = synth_probe_params(variant)?;
 
     // Finding 1 (arity pre-check — closes the debug-vs-release split). The
     // attention-family registry rule fns `debug_assert!` a minimum input arity
@@ -459,40 +482,54 @@ pub fn cross_check_fused_section(
         // spuriously rejected.
         let Some(out) = ret.outputs.first() else { continue };
         let role_name = out.name.as_deref().unwrap_or("out");
-        // dtype_rule: only call the real fn when synth produced Some(params)
-        // (mirrors the shape_rule guard below) — never an `unwrap_or`
-        // fallback, since a future params-matching dtype_rule could panic.
-        if let (Some(rule), Some(p)) = (out.dtype_rule.as_deref(), params.as_ref()) {
-            if let Some(declared) = eval_dtype_rule(rule, combo, section)? {
-                // Never-panic guard: a registry fn that `debug_assert`s an arity
-                // the probe combo doesn't satisfy → warn + skip this combo (see
-                // `guard_rule`; the arity pre-check above already skips the known
-                // under-arity attention case in BOTH build modes).
-                let Some(real) = guard_rule(warnings, section, "dtype_rule", || (entry.dtype_rule)(&in_dtypes, p)) else { continue };
-                if declared != real {
-                    return Err(FkcError::ShapeRuleMismatch {
-                        section: section.into(),
-                        role: role_name.into(),
-                        expected: format!("dtype {declared:?}"),
-                        actual: format!("dtype {real:?}"),
-                    });
+        // C-4 T3: the param POINTS for this combo. A params-independent
+        // variant contributes its ONE synthesized params, paired with its
+        // `key().ints` flattening (the same encoding `param(N)` indexes —
+        // one convention for every variant); a params-dependent variant
+        // contributes the per-combo shape-coupled points (>= 2 wherever a
+        // free field exists, so a rule that ignores the param can't
+        // false-green on a single point). EMPTY points ⇒ every differential
+        // for this combo is skipped — never a foreign variant, never a
+        // panic (e.g. Nf4Matmul, or a combo the derivation can't read).
+        let points: Vec<(FusedOpParams, Vec<i64>)> = match single.as_ref() {
+            Some(p) => vec![(p.clone(), p.key().ints)],
+            None => synth_probe_param_points(variant, combo),
+        };
+        for (p, ints) in &points {
+            // dtype_rule: the real fn is called only with a matching-variant
+            // point (never an `unwrap_or` fallback — a params-matching
+            // dtype_rule may read its fields).
+            if let Some(rule) = out.dtype_rule.as_deref() {
+                if let Some(declared) = eval_dtype_rule(rule, combo, section)? {
+                    // Never-panic guard: a registry fn that `debug_assert`s an
+                    // arity the probe combo doesn't satisfy → warn + skip this
+                    // point (see `guard_rule`; the arity pre-check above already
+                    // skips the known under-arity cases in BOTH build modes).
+                    let Some(real) = guard_rule(warnings, section, "dtype_rule", || (entry.dtype_rule)(&in_dtypes, p)) else { continue };
+                    if declared != real {
+                        return Err(FkcError::ShapeRuleMismatch {
+                            section: section.into(),
+                            role: role_name.into(),
+                            expected: format!("dtype {declared:?}"),
+                            actual: format!("dtype {real:?}"),
+                        });
+                    }
                 }
             }
-        }
-        if let (Some(rule), Some(p)) = (out.shape_rule.as_deref(), params.as_ref()) {
-            // C-4 T1: no synthesized param VALUES yet at this call site — `&[]`
-            // keeps every `param(N)` rule a decline-to-skip. T2/T3 replace this
-            // with per-combo `synth_probe_param_points` values (same values to
-            // the declared-rule evaluator and the real registry fn).
-            if let Some(declared) = eval_shape_rule(rule, combo, &[], section)? {
-                let Some(real) = guard_rule(warnings, section, "shape_rule", || (entry.shape_rule)(&in_shapes, p)) else { continue };
-                if declared != real {
-                    return Err(FkcError::ShapeRuleMismatch {
-                        section: section.into(),
-                        role: role_name.into(),
-                        expected: format!("shape {declared:?}"),
-                        actual: format!("shape {real:?}"),
-                    });
+            if let Some(rule) = out.shape_rule.as_deref() {
+                // C-4 T3: the SAME point feeds both sides — `ints` to the
+                // declared-rule evaluator (`param(N)` indexes it) and `p` to
+                // the real registry fn — consistency by construction.
+                if let Some(declared) = eval_shape_rule(rule, combo, ints, section)? {
+                    let Some(real) = guard_rule(warnings, section, "shape_rule", || (entry.shape_rule)(&in_shapes, p)) else { continue };
+                    if declared != real {
+                        return Err(FkcError::ShapeRuleMismatch {
+                            section: section.into(),
+                            role: role_name.into(),
+                            expected: format!("shape {declared:?}"),
+                            actual: format!("shape {real:?}"),
+                        });
+                    }
                 }
             }
         }
@@ -512,7 +549,7 @@ pub fn cross_check_fused_section(
     // rank-checks each evaluable slot. `output_views` is guarded by `guard_rule`
     // (never-panic) exactly like `shape_rule`/`dtype_rule`.
     if let (Some(bundle), Some(output_views), Some(p)) =
-        (ret.bundle.as_ref(), entry.output_views, params.as_ref())
+        (ret.bundle.as_ref(), entry.output_views, single.as_ref())
     {
         if let Some(combo) = combos.first() {
             // Finding 3: run the bundle differential over a ROLE-DISTINCT probe so
@@ -549,9 +586,12 @@ pub fn cross_check_fused_section(
                         .get(serde_yml::Value::String("shape_rule".into()))
                         .and_then(|v| v.as_str())
                     {
-                        // C-4 T1: `&[]` = no synthesized param values for bundle
-                        // slot rules yet (see the primary-output call above).
-                        if let Some(shape) = eval_shape_rule(rule, &distinct, &[], section)? {
+                        // C-4 T3: bundle slot rules see the same `key().ints`
+                        // flattening as the primary output (one `param(N)`
+                        // convention). Both bundle-bearing ops are
+                        // params-independent (single-synth), so `p` is the
+                        // one point for the whole bundle differential.
+                        if let Some(shape) = eval_shape_rule(rule, &distinct, &p.key().ints, section)? {
                             check_slot_rank(section, &slot_name, &shape)?;
                             // Finding 3: differentially compare the evaluated slot
                             // shape to the `output_views` oracle for the SAME slot
@@ -669,8 +709,21 @@ mod tests {
         assert!(matches!(synth_probe_params(Some("FlashAttnBackward")).unwrap(), Some(FusedOpParams::FlashAttnBackward { .. })));
         assert!(matches!(synth_probe_params(Some("SelectiveScan")).unwrap(), Some(FusedOpParams::SelectiveScan { .. })));
         assert!(matches!(synth_probe_params(Some("SsdChunkScan")).unwrap(), Some(FusedOpParams::SsdChunkScan { .. })));
-        // A still-unsupported variant + the absent case both stay None.
+        // C-4 T3 division-of-labor pin (the old ":534" flip): Conv2D is NO
+        // LONGER an unsupported skip — it is params-DEPENDENT, so the single
+        // path must stay None (a placeholder here would feed the real fn
+        // params the shape rule actually READS) while the POINTS path
+        // synthesizes its real per-combo values. Both halves pinned:
         assert!(synth_probe_params(Some("Conv2D")).unwrap().is_none());
+        let conv_combo: Vec<(String, Shape, DType)> = vec![
+            ("x".into(), Shape::from_dims(&[2, 3, 8, 8]), DType::F32),
+            ("weight".into(), Shape::from_dims(&[4, 3, 3, 3]), DType::F32),
+        ];
+        assert!(
+            !synth_probe_param_points(Some("Conv2D"), &conv_combo).is_empty(),
+            "Conv2D synth is no longer None — the points path covers it",
+        );
+        // The absent case stays None.
         assert!(synth_probe_params(None).unwrap().is_none());
         // never-panic invariant: QMatMul synth is EITHER QMatMul OR None, never a foreign variant.
         match synth_probe_params(Some("QMatMul")).unwrap() {
@@ -842,15 +895,21 @@ mod tests {
     }
 
     /// Finding 1 (arity pre-check): the attention-family fns declare a minimum
-    /// input arity that a leaner corpus contract can under-declare; every other
-    /// synth variant has no declared minimum (the `guard_rule` backstop covers
-    /// them). This pins the small, deliberately-local arity table.
+    /// input arity that a leaner corpus contract can under-declare — and C-4 T3
+    /// adds Conv2D (its rule fns read `input_shapes[1]` and assert 2-or-3
+    /// inputs, and real 2-input CONV2D fused sections exist in
+    /// `vulkan/conv-attn-rope.fkc.md`, so the under-declaration risk is live
+    /// now that Conv2D's dtype differential runs). Every other synth variant
+    /// has no declared minimum (the `guard_rule` backstop covers them). This
+    /// pins the small, deliberately-local arity table.
     #[test]
-    fn expected_min_inputs_covers_the_attention_family_only() {
+    fn expected_min_inputs_covers_attention_family_and_conv2d() {
         assert_eq!(expected_min_inputs(Some("FlashAttn")), Some(4));
         assert_eq!(expected_min_inputs(Some("FlashAttnBackward")), Some(4));
         assert_eq!(expected_min_inputs(Some("PagedAttn")), Some(5));
-        // Non-attention synth variants (and the absent case) declare no minimum.
+        // C-4 T3: Conv2D's differentials are params-live; pre-check its arity.
+        assert_eq!(expected_min_inputs(Some("Conv2D")), Some(2));
+        // Other synth variants (and the absent case) declare no minimum.
         assert_eq!(expected_min_inputs(Some("SelectiveScan")), None);
         assert_eq!(expected_min_inputs(Some("InplaceAffine")), None);
         assert_eq!(expected_min_inputs(None), None);

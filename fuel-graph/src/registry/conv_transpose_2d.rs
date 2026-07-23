@@ -55,9 +55,14 @@ pub fn entry() -> FusedOpEntry {
 ///   `Hout = (H − 1)·s − 2·p + d·(Kh − 1) + out_pad + 1`
 ///   (and analogously for width).
 fn shape_rule(input_shapes: &[Shape], params: &FusedOpParams) -> Shape {
-    debug_assert_eq!(
-        input_shapes.len(), 2,
-        "ConvTranspose2D takes 2 inputs (x, weight)",
+    // 2 or 3, mirroring conv2d: the op's contract (`fused/conv-rope.fkc.md`
+    // conv_transpose2d) declares an OPTIONAL bias operand and the registered
+    // CPU wrapper seeds the output with it — the graph builder emits the
+    // 2-input (no-bias) form today, but the rule fns must accept the
+    // documented with-bias arity too (the FKC return cross-check probes it).
+    debug_assert!(
+        input_shapes.len() == 2 || input_shapes.len() == 3,
+        "ConvTranspose2D takes 2 or 3 inputs (x, weight, [bias])",
     );
     let (stride, padding, output_padding, dilation, groups) = match params {
         FusedOpParams::ConvTranspose2D {
@@ -90,9 +95,10 @@ fn shape_rule(input_shapes: &[Shape], params: &FusedOpParams) -> Shape {
 
 /// Dtype rule: output dtype equals input 0 (x) dtype.
 fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
-    debug_assert_eq!(
-        input_dtypes.len(), 2,
-        "ConvTranspose2D takes 2 inputs",
+    // 2 or 3 — see the arity note on `shape_rule` (optional bias operand).
+    debug_assert!(
+        input_dtypes.len() == 2 || input_dtypes.len() == 3,
+        "ConvTranspose2D takes 2 or 3 inputs (x, weight, [bias])",
     );
     input_dtypes[0]
 }
