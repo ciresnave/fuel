@@ -258,14 +258,42 @@ of the first outside kernel provider (which Fuel's multi-agent-serving roadmap w
    (stronger than KISS's syntactic derivation) but adopt the naming.
 
 **Verify-seam repoint follow-up program (kiss-ref advisory cross-check SHIPPED
-2026-07-22).** `verify_candidate` now runs a kiss-ref advisory diff over the new
-`fuel-kiss-ref-backend` adapter crate (git dep on ThinkersJournal/kiss-ref): f32 +
-single-primitive decomposes only, advisory-only `kiss_ref_advisory` ledger record —
-flag-not-verdict per KISS-CONFORM §6.6-0007 (kiss-ref flags/escalates, never verdicts;
-recipe-realize stays the interim verdict authority until a frozen corpus is consumed).
-Tracked follow-ups: (i) `classify_floor_verdict` live wiring into
-`verify_candidate_impl` + a `FusedOpId -> OpTag` claimed-op mapping, (ii) f64/f16/bf16 +
-multi-node advisory coverage, (iii) IngestionService-level `Flagged` e2e.
+2026-07-22; follow-ups (i)–(iii) implemented 2026-07-23, branch
+`feat/kiss-ref-verdict-integration`).** `verify_candidate` runs a kiss-ref advisory
+diff over the `fuel-kiss-ref-backend` adapter crate (git dep on ThinkersJournal/kiss-ref),
+advisory-only `kiss_ref_advisory` ledger record — flag-not-verdict per KISS-CONFORM
+§6.6-0007 (kiss-ref flags/escalates, never verdicts; recipe-realize stays the interim
+verdict authority). Follow-ups now implemented (CPU-verified; live-GPU e2e legs written
+`#[ignore]`, run under the exclusive `--features "jit cuda"` gate):
+
+- **(i) `classify_floor_verdict` live wiring** — `verify_candidate_impl` now produces
+  `VerifyVerdict::Inconclusive` (→ `IngestOutcome::Flagged` → `ProviderFeedback::on_flagged`)
+  when a kiss diff exists but the recipe reference is unusable (realize-Err arms, coverable
+  non-f32 numeric claims); the advisory region derives from the registry
+  (`decompose.or(runtime_region(claimed_op))` — no static table). A compact kiss summary
+  threads into `FlagReport.diff_summary`.
+- **(ii) f64/f16/bf16 + multi-node advisory coverage** — the advisory block is region-based
+  (adapter `PatternNode → Expr` row-wise `eval_expr`; elementwise, attrs-default, mapped-ops
+  only — `SeeThrough`/`Any` decline) and dtype-dispatched (F32/F64/F16/BF16). The comparison
+  band follows the kiss-ref tolerance refinement (2026-07-23): single exact op → exact;
+  multi-node exact → `Ulp(n_ops−1)`; transcendental region → `Ulp(Σ per-op §6.8 ceilings over
+  the transcendental ops + (n_exact−1))`, with raw `max_ulp` always recorded (linear-ULP
+  addition is first-order — advisory-only, can flag cancellation-heavy regions spuriously).
+- **(iii) IngestionService-level `Flagged` e2e** — service routing `Flagged → on_flagged`
+  pinned (CPU) + a live-GPU f64-add escalate e2e (`#[ignore]`, gate 5).
+
+Residual gaps (named, tracked): **static-op advisory** still declines — a static `FusedOpId`
+carries no `PatternNode` region until the pinned recipe-grammar migration lands (the
+Convergence Tier-2 PatternNode-data migration; static claims aren't elementwise anyway);
+**non-f32 recipe VERDICT stays f32-only** — a kiss-coverable non-f32 numeric claim *escalates*
+to Inconclusive rather than earning a numeric recipe verdict; **`corpus_verdict` stays
+DORMANT** — KISS's v1 exact-byte corpus now EXISTS and is vendored
+(`fuel-dispatch/fixtures/kiss-corpus/`, KISS `main` @ `c9153b2`) with a never-panic reader
+(`kiss_corpus.rs`, `(add, f32)` populated), but the `corpus_verdict(op, dtype, seed)` seam
+carries no candidate output and its `seed` selects a random probe disjoint from the corpus's
+fixed inputs, so it cannot be authoritative without evaluating the candidate on the corpus's
+own vectors (seam widening — see
+[`docs/design-notes/2026-07-23-kiss-corpus-verdict-seam-mismatch.md`](docs/design-notes/2026-07-23-kiss-corpus-verdict-seam-mismatch.md)).
 
 **Latent-bug fixes SHIPPED this pass (KISS's discipline caught these; TDD-verified green):**
 `SEAM_MAGIC` byte-order (emitted "MAES", now "SEAM" per KISS-ANNOUNCE §6.1-0004), the
