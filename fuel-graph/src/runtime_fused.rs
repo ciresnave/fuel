@@ -1502,6 +1502,183 @@ mod tests {
         out_id
     }
 
+    /// FROZEN copy of the pre-migration imperative
+    /// `registry::rms_norm_last_dim::decompose` (the legacy 7-node
+    /// `MeanDim → Reshape(keepdim) → AddScalar(eps)` spelling), copied VERBATIM
+    /// from that module before T7 replaced the live body with the data recipe.
+    /// Consumer: the T7 numeric-parity oracle (`norm_recipe` below). The live
+    /// decompose now emits the D3 shrink-via-swap spelling (`Unsqueeze` append
+    /// in place of `Reshape(keepdim)`), so the parity test evaluates BOTH
+    /// through the shared reference interpreter and asserts bit-exact
+    /// equivalence (the swap is metadata-only).
+    fn frozen_legacy_rms_norm_decompose(
+        graph: &mut Graph,
+        id: NodeId,
+        params: &FusedOpParams,
+    ) -> NodeId {
+        let (x_id, x_shape, dtype) = {
+            let n = graph.node(id);
+            (n.inputs[0], n.shape.clone(), n.dtype)
+        };
+        let eps = match params {
+            FusedOpParams::RmsNormLastDim { eps } => *eps,
+            _ => return id,
+        };
+        let dims = x_shape.dims().to_vec();
+        let rank = dims.len();
+        let last = rank - 1;
+
+        let mut keepdim_dims = dims.clone();
+        keepdim_dims[last] = 1;
+        let keepdim_shape = Shape::from_dims(&keepdim_dims);
+        let mut reduced_dims = dims.clone();
+        reduced_dims.remove(last);
+        let reduced_shape = Shape::from_dims(&reduced_dims);
+
+        let sq_id = graph.push(Node {
+            op:     Op::Sqr,
+            inputs: vec![x_id],
+            shape:  x_shape.clone(),
+            dtype,
+        });
+        let mean_id = graph.push(Node {
+            op:     Op::MeanDim(last),
+            inputs: vec![sq_id],
+            shape:  reduced_shape,
+            dtype,
+        });
+        let mean_kd_id = graph.push(Node {
+            op:     Op::Reshape(keepdim_shape.clone()),
+            inputs: vec![mean_id],
+            shape:  keepdim_shape.clone(),
+            dtype,
+        });
+        let denom_sq_id = graph.push(Node {
+            op:     Op::AddScalar(eps),
+            inputs: vec![mean_kd_id],
+            shape:  keepdim_shape.clone(),
+            dtype,
+        });
+        let denom_id = graph.push(Node {
+            op:     Op::Sqrt,
+            inputs: vec![denom_sq_id],
+            shape:  keepdim_shape,
+            dtype,
+        });
+        let denom_bcast_id = graph.push(Node {
+            op:     Op::BroadcastTo(x_shape.clone()),
+            inputs: vec![denom_id],
+            shape:  x_shape.clone(),
+            dtype,
+        });
+        graph.push(Node {
+            op:     Op::Div,
+            inputs: vec![x_id, denom_bcast_id],
+            shape:  x_shape,
+            dtype,
+        })
+    }
+
+    /// FROZEN copy of the pre-migration imperative
+    /// `registry::layer_norm_last_dim::decompose` (the legacy 11-node spelling
+    /// with two `Reshape(keepdim)` restores and the `centered` subterm shared
+    /// between `Sqr` and the final `Div`), copied VERBATIM from that module
+    /// before T7 replaced the live body with the data recipe. Two consumers:
+    /// `emit_matches_layer_norm_last_dim_decompose` (whose oracle was repointed
+    /// here — the live decompose now emits the `Unsqueeze` D3 spelling) and the
+    /// T7 numeric-parity oracle (`norm_recipe` below).
+    fn frozen_legacy_layer_norm_decompose(
+        graph: &mut Graph,
+        id: NodeId,
+        params: &FusedOpParams,
+    ) -> NodeId {
+        let (x_id, x_shape, dtype) = {
+            let n = graph.node(id);
+            (n.inputs[0], n.shape.clone(), n.dtype)
+        };
+        let eps = match params {
+            FusedOpParams::LayerNormLastDim { eps } => *eps,
+            _ => return id,
+        };
+        let dims = x_shape.dims().to_vec();
+        let rank = dims.len();
+        let last = rank - 1;
+
+        let mut keepdim_dims = dims.clone();
+        keepdim_dims[last] = 1;
+        let keepdim_shape = Shape::from_dims(&keepdim_dims);
+        let mut reduced_dims = dims.clone();
+        reduced_dims.remove(last);
+        let reduced_shape = Shape::from_dims(&reduced_dims);
+
+        let mean_id = graph.push(Node {
+            op:     Op::MeanDim(last),
+            inputs: vec![x_id],
+            shape:  reduced_shape.clone(),
+            dtype,
+        });
+        let mean_kd_id = graph.push(Node {
+            op:     Op::Reshape(keepdim_shape.clone()),
+            inputs: vec![mean_id],
+            shape:  keepdim_shape.clone(),
+            dtype,
+        });
+        let mean_bcast_id = graph.push(Node {
+            op:     Op::BroadcastTo(x_shape.clone()),
+            inputs: vec![mean_kd_id],
+            shape:  x_shape.clone(),
+            dtype,
+        });
+        let centered_id = graph.push(Node {
+            op:     Op::Sub,
+            inputs: vec![x_id, mean_bcast_id],
+            shape:  x_shape.clone(),
+            dtype,
+        });
+        let centered_sq_id = graph.push(Node {
+            op:     Op::Sqr,
+            inputs: vec![centered_id],
+            shape:  x_shape.clone(),
+            dtype,
+        });
+        let var_id = graph.push(Node {
+            op:     Op::MeanDim(last),
+            inputs: vec![centered_sq_id],
+            shape:  reduced_shape,
+            dtype,
+        });
+        let var_kd_id = graph.push(Node {
+            op:     Op::Reshape(keepdim_shape.clone()),
+            inputs: vec![var_id],
+            shape:  keepdim_shape.clone(),
+            dtype,
+        });
+        let var_eps_id = graph.push(Node {
+            op:     Op::AddScalar(eps),
+            inputs: vec![var_kd_id],
+            shape:  keepdim_shape.clone(),
+            dtype,
+        });
+        let denom_id = graph.push(Node {
+            op:     Op::Sqrt,
+            inputs: vec![var_eps_id],
+            shape:  keepdim_shape,
+            dtype,
+        });
+        let denom_bcast_id = graph.push(Node {
+            op:     Op::BroadcastTo(x_shape.clone()),
+            inputs: vec![denom_id],
+            shape:  x_shape.clone(),
+            dtype,
+        });
+        graph.push(Node {
+            op:     Op::Div,
+            inputs: vec![centered_id, denom_bcast_id],
+            shape:  x_shape,
+            dtype,
+        })
+    }
+
     #[test]
     fn emit_matches_softmax_last_dim_decompose() {
         use fuel_ir::{DType, Shape};
@@ -1593,7 +1770,12 @@ mod tests {
         let sh = Shape::from_dims(&[2, 4]); // last=1, reduced [2], keepdim [2,1]
         let x = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
         let fused = g.push(Node { op: Op::Const, inputs: vec![x], shape: sh.clone(), dtype: DType::F32 });
-        let oracle = crate::registry::layer_norm_last_dim::decompose(
+        // Oracle: the FROZEN legacy builder (the `Reshape(keepdim)` spelling).
+        // T7 repointed this from the live registry decompose — which now emits
+        // the D3 `Unsqueeze` swap — so this test keeps pinning the Increment-A
+        // guarantee it always pinned: the grown `emit` reconstructs the LEGACY
+        // imperative structure from a legacy-spelled (Reshape) region datum.
+        let oracle = frozen_legacy_layer_norm_decompose(
             &mut g, fused, &FusedOpParams::LayerNormLastDim { eps: 1e-5 },
         );
 
@@ -2643,6 +2825,358 @@ mod tests {
             let (_x, _cos, _sin, fused) = rope_fused_node(&mut g, &[2, 4]);
             let before = g.len();
             let out = rope::decompose(&mut g, fused, &FusedOpParams::SoftmaxLastDim);
+            assert_eq!(out, fused, "wrong params ⇒ typed decline ⇒ fixpoint");
+            assert_eq!(g.len(), before, "declined before any emission");
+        }
+    }
+
+    // rms_norm + layer_norm migration (Increment C slice 1, T7) --------------
+    //
+    // Both norms' imperative bodies become portable `PatternNode` DATA recipes.
+    // Two forces at play beyond softmax/rope:
+    //
+    // * `eps` is an OPEN scalar slot. The recipe's `AddScalar` carries EMPTY
+    //   `scalars`, so it is a slot template; the per-entry projection
+    //   (`RmsNormLastDim { eps } → vec![eps]` / `LayerNormLastDim { eps } →
+    //   vec![eps]`) supplies the live value, and the resolving emit fills the
+    //   slot in pre-order. The eps-wiring tests below decompose the SAME op at
+    //   two eps values and assert the realized outputs DIFFER accordingly — the
+    //   proof that eps rides the projection→slot path, not a baked constant.
+    //
+    // * The keepdim restore is the RATIFIED D3 shrink-via-swap: `Reshape(keepdim)`
+    //   → `Unsqueeze(axis_last = append)` (a node-TYPE change, metadata-only, so
+    //   numerically bit-exact). `MeanDim(axis_last)` stays a rank-reducing mean.
+    //   The parity tests evaluate the new recipe emission and the FROZEN legacy
+    //   builder through one reference interpreter (which treats `Reshape` and
+    //   `Unsqueeze` identically) and assert bit-exact equivalence at two ranks.
+    //
+    // Neither norm ever trips D4 (the keepdim restore rebuilds rank BEFORE the
+    // broadcast, so every `BroadcastTo` operand already matches its target's
+    // rank — no leading-1 pad `Reshape` is materialized).
+    mod norm_recipe {
+        use super::super::*;
+        use super::{frozen_legacy_layer_norm_decompose, frozen_legacy_rms_norm_decompose};
+        use crate::registry::{FusedOps, layer_norm_last_dim, rms_norm_last_dim};
+        use fuel_ir::{DType, Shape};
+        use std::collections::HashMap;
+
+        /// Tiny f64 reference interpreter over the norm primitive vocabulary
+        /// (Const leaves, `Sqr`, last-axis `MeanDim`, metadata-only keepdim
+        /// restores `Unsqueeze`/`Reshape`, `AddScalar`, `Sqrt`, last-dim
+        /// `BroadcastTo`, elementwise `Sub`/`Div`). BOTH parity sides run
+        /// through it with identical in-order arithmetic, so a bit-exact assert
+        /// isolates recipe STRUCTURE (the `Unsqueeze`-vs-`Reshape` swap can't
+        /// perturb it). Not code evaluation: a closed match over our own `Op`.
+        fn eval_norm(g: &Graph, id: NodeId, leaves: &HashMap<NodeId, Vec<f64>>) -> Vec<f64> {
+            let node = g.node(id);
+            match &node.op {
+                Op::Const => leaves.get(&id).expect("leaf data provided").clone(),
+                Op::Sqr => eval_norm(g, node.inputs[0], leaves).iter().map(|v| v * v).collect(),
+                Op::Sqrt => eval_norm(g, node.inputs[0], leaves).iter().map(|v| v.sqrt()).collect(),
+                Op::AddScalar(e) => {
+                    eval_norm(g, node.inputs[0], leaves).iter().map(|v| v + e).collect()
+                }
+                Op::Sub => {
+                    let a = eval_norm(g, node.inputs[0], leaves);
+                    let b = eval_norm(g, node.inputs[1], leaves);
+                    a.iter().zip(&b).map(|(x, y)| x - y).collect()
+                }
+                Op::Div => {
+                    let a = eval_norm(g, node.inputs[0], leaves);
+                    let b = eval_norm(g, node.inputs[1], leaves);
+                    a.iter().zip(&b).map(|(x, y)| x / y).collect()
+                }
+                // Last-axis mean — rank-reducing; identical fold both spellings.
+                Op::MeanDim(_) => {
+                    let input = eval_norm(g, node.inputs[0], leaves);
+                    let last = *g.node(node.inputs[0]).shape.dims().last().unwrap();
+                    input
+                        .chunks(last)
+                        .map(|row| row.iter().sum::<f64>() / last as f64)
+                        .collect()
+                }
+                // Metadata-only keepdim restores (the D3 swap and its legacy
+                // twin evaluate identically here).
+                Op::Unsqueeze { .. } | Op::Reshape(_) => eval_norm(g, node.inputs[0], leaves),
+                // Broadcast a keepdim `[.., 1]` tensor back along the last axis.
+                Op::BroadcastTo(target) => {
+                    let input = eval_norm(g, node.inputs[0], leaves);
+                    let out_n: usize = target.dims().iter().product();
+                    let last = *target.dims().last().unwrap();
+                    assert_eq!(
+                        input.len() * last,
+                        out_n,
+                        "broadcast is a last-dim repeat in these graphs",
+                    );
+                    input
+                        .iter()
+                        .flat_map(|&v| std::iter::repeat(v).take(last))
+                        .collect()
+                }
+                other => panic!("eval_norm: unhandled op {other:?}"),
+            }
+        }
+
+        /// Build a fused RmsNormLastDim node over `x [dims]`, carrying `eps`.
+        /// Returns `(x, fused)`.
+        fn rms_norm_fused_node(g: &mut Graph, dims: &[usize], eps: f64) -> (NodeId, NodeId) {
+            let sh = Shape::from_dims(dims);
+            let x = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+            let fused = g.push(Node {
+                op: Op::Fused(
+                    FusedOps::RMS_NORM_LAST_DIM,
+                    FusedOpParams::RmsNormLastDim { eps },
+                ),
+                inputs: vec![x],
+                shape: sh,
+                dtype: DType::F32,
+            });
+            (x, fused)
+        }
+
+        /// Build a fused LayerNormLastDim node over `x [dims]`, carrying `eps`.
+        /// Returns `(x, fused)`.
+        fn layer_norm_fused_node(g: &mut Graph, dims: &[usize], eps: f64) -> (NodeId, NodeId) {
+            let sh = Shape::from_dims(dims);
+            let x = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+            let fused = g.push(Node {
+                op: Op::Fused(
+                    FusedOps::LAYER_NORM_LAST_DIM,
+                    FusedOpParams::LayerNormLastDim { eps },
+                ),
+                inputs: vec![x],
+                shape: sh,
+                dtype: DType::F32,
+            });
+            (x, fused)
+        }
+
+        /// T7 red (a, rms): ONE recipe datum decomposes at BOTH rank 2 and rank
+        /// 3 (the polymorphism the baked-shape legacy body never had), and its
+        /// numerics match the FROZEN legacy builder bit-exactly.
+        #[test]
+        fn rms_norm_recipe_decompose_is_polymorphic_and_matches_frozen_legacy() {
+            for dims in [vec![2usize, 4], vec![3, 5, 7]] {
+                let mut g = Graph::new();
+                let (x, fused) = rms_norm_fused_node(&mut g, &dims, 1e-5);
+                let sh = Shape::from_dims(&dims);
+                let new_root = rms_norm_last_dim::decompose(
+                    &mut g,
+                    fused,
+                    &FusedOpParams::RmsNormLastDim { eps: 1e-5 },
+                );
+                assert_ne!(new_root, fused, "recipe decompose must fire at {dims:?}");
+                assert_eq!(g.node(new_root).shape, sh, "rms_norm is shape-preserving");
+                assert_eq!(g.node(new_root).dtype, DType::F32);
+
+                let legacy_root = frozen_legacy_rms_norm_decompose(
+                    &mut g,
+                    fused,
+                    &FusedOpParams::RmsNormLastDim { eps: 1e-5 },
+                );
+
+                let n: usize = dims.iter().product();
+                let data: Vec<f64> =
+                    (0..n).map(|i| ((i as f64) * 0.37).sin() * 3.0 - 0.5).collect();
+                let mut leaves = HashMap::new();
+                leaves.insert(x, data);
+                let got = eval_norm(&g, new_root, &leaves);
+                let want = eval_norm(&g, legacy_root, &leaves);
+                assert_eq!(got.len(), want.len());
+                for (i, (a, b)) in got.iter().zip(want.iter()).enumerate() {
+                    assert_eq!(
+                        a.to_bits(),
+                        b.to_bits(),
+                        "rms_norm[{i}] at {dims:?}: recipe={a} vs legacy={b}",
+                    );
+                }
+            }
+        }
+
+        /// T7 red (a, layer): same polymorphism + bit-exact parity for the
+        /// 11-node layer-norm recipe (with the `centered` subterm identity-
+        /// shared between `Sqr` and the final `Div`).
+        #[test]
+        fn layer_norm_recipe_decompose_is_polymorphic_and_matches_frozen_legacy() {
+            for dims in [vec![2usize, 4], vec![3, 5, 7]] {
+                let mut g = Graph::new();
+                let (x, fused) = layer_norm_fused_node(&mut g, &dims, 1e-5);
+                let sh = Shape::from_dims(&dims);
+                let new_root = layer_norm_last_dim::decompose(
+                    &mut g,
+                    fused,
+                    &FusedOpParams::LayerNormLastDim { eps: 1e-5 },
+                );
+                assert_ne!(new_root, fused, "recipe decompose must fire at {dims:?}");
+                assert_eq!(g.node(new_root).shape, sh, "layer_norm is shape-preserving");
+                assert_eq!(g.node(new_root).dtype, DType::F32);
+
+                let legacy_root = frozen_legacy_layer_norm_decompose(
+                    &mut g,
+                    fused,
+                    &FusedOpParams::LayerNormLastDim { eps: 1e-5 },
+                );
+
+                let n: usize = dims.iter().product();
+                let data: Vec<f64> =
+                    (0..n).map(|i| ((i as f64) * 0.29).cos() * 2.0 + 0.3).collect();
+                let mut leaves = HashMap::new();
+                leaves.insert(x, data);
+                let got = eval_norm(&g, new_root, &leaves);
+                let want = eval_norm(&g, legacy_root, &leaves);
+                assert_eq!(got.len(), want.len());
+                for (i, (a, b)) in got.iter().zip(want.iter()).enumerate() {
+                    assert_eq!(
+                        a.to_bits(),
+                        b.to_bits(),
+                        "layer_norm[{i}] at {dims:?}: recipe={a} vs legacy={b}",
+                    );
+                }
+            }
+        }
+
+        /// T7 red (structural, rms): the keepdim restore is the D3 shrink-via-
+        /// swap — `Unsqueeze` append, NOT a baked `Reshape(keepdim)`. This is
+        /// the crisp discriminator against the pre-migration imperative body.
+        #[test]
+        fn rms_norm_recipe_uses_the_unsqueeze_keepdim_swap() {
+            let mut g = Graph::new();
+            let (_x, fused) = rms_norm_fused_node(&mut g, &[2, 4], 1e-5);
+            let root = rms_norm_last_dim::decompose(
+                &mut g,
+                fused,
+                &FusedOpParams::RmsNormLastDim { eps: 1e-5 },
+            );
+            assert_ne!(root, fused, "recipe decompose fires");
+            let reachable = crate::topo_order_multi(&g, &[root]);
+            let unsqueezes = reachable
+                .iter()
+                .filter(|&&n| matches!(g.node(n).op, Op::Unsqueeze { .. }))
+                .count();
+            let reshapes = reachable
+                .iter()
+                .filter(|&&n| matches!(g.node(n).op, Op::Reshape(_)))
+                .count();
+            assert_eq!(unsqueezes, 1, "keepdim restored via Unsqueeze append (D3 swap)");
+            assert_eq!(reshapes, 0, "no baked keepdim Reshape after the D3 swap");
+        }
+
+        /// T7 red (structural, layer): both keepdim restores are `Unsqueeze`
+        /// appends; zero `Reshape` (the equal-rank broadcasts add no D4 pad).
+        #[test]
+        fn layer_norm_recipe_uses_the_unsqueeze_keepdim_swap() {
+            let mut g = Graph::new();
+            let (_x, fused) = layer_norm_fused_node(&mut g, &[2, 4], 1e-5);
+            let root = layer_norm_last_dim::decompose(
+                &mut g,
+                fused,
+                &FusedOpParams::LayerNormLastDim { eps: 1e-5 },
+            );
+            assert_ne!(root, fused, "recipe decompose fires");
+            let reachable = crate::topo_order_multi(&g, &[root]);
+            let unsqueezes = reachable
+                .iter()
+                .filter(|&&n| matches!(g.node(n).op, Op::Unsqueeze { .. }))
+                .count();
+            let reshapes = reachable
+                .iter()
+                .filter(|&&n| matches!(g.node(n).op, Op::Reshape(_)))
+                .count();
+            assert_eq!(unsqueezes, 2, "both keepdim restores via Unsqueeze append (D3 swap)");
+            assert_eq!(reshapes, 0, "no baked keepdim Reshape / no D4 pad after the swap");
+            // The `centered` Sub is SHARED (Sqr input == final Div numerator):
+            // 11 op nodes + 1 leaf = 12 reachable, not the 12-op unshared tree.
+            let op_nodes = reachable
+                .iter()
+                .filter(|&&n| !matches!(g.node(n).op, Op::Const))
+                .count();
+            assert_eq!(op_nodes, 11, "11 op nodes with `centered` identity-shared");
+        }
+
+        /// T7 red (eps-wiring, rms): the eps rides the projection→open-slot
+        /// path. Decomposing the SAME op at two eps values yields DIFFERENT
+        /// realized outputs — impossible if eps were dropped or baked to a
+        /// single constant. Small `x` (so `mean(x²) ≈ eps`) makes the eps
+        /// choice materially move every element.
+        #[test]
+        fn rms_norm_recipe_eps_flows_through_the_open_slot() {
+            let dims = [2usize, 4];
+            let n: usize = dims.iter().product();
+            let data: Vec<f64> =
+                (0..n).map(|i| 0.001 * (((i as f64) * 0.37).sin() + 1.2)).collect();
+
+            let realize = |eps: f64| -> Vec<f64> {
+                let mut g = Graph::new();
+                let (x, fused) = rms_norm_fused_node(&mut g, &dims, eps);
+                let root = rms_norm_last_dim::decompose(
+                    &mut g,
+                    fused,
+                    &FusedOpParams::RmsNormLastDim { eps },
+                );
+                let mut leaves = HashMap::new();
+                leaves.insert(x, data.clone());
+                eval_norm(&g, root, &leaves)
+            };
+            let a = realize(1e-5);
+            let b = realize(1e-6);
+            assert_eq!(a.len(), b.len());
+            assert_ne!(
+                a, b,
+                "different eps must change the output — proves projection→slot, not a baked constant",
+            );
+        }
+
+        /// T7 red (eps-wiring, layer): same proof for layer-norm's open slot.
+        #[test]
+        fn layer_norm_recipe_eps_flows_through_the_open_slot() {
+            let dims = [2usize, 4];
+            let n: usize = dims.iter().product();
+            // Near-constant rows so the variance ≈ eps and the eps choice moves
+            // the output materially.
+            let data: Vec<f64> =
+                (0..n).map(|i| 1.0 + 0.001 * ((i as f64) * 0.37).sin()).collect();
+
+            let realize = |eps: f64| -> Vec<f64> {
+                let mut g = Graph::new();
+                let (x, fused) = layer_norm_fused_node(&mut g, &dims, eps);
+                let root = layer_norm_last_dim::decompose(
+                    &mut g,
+                    fused,
+                    &FusedOpParams::LayerNormLastDim { eps },
+                );
+                let mut leaves = HashMap::new();
+                leaves.insert(x, data.clone());
+                eval_norm(&g, root, &leaves)
+            };
+            let a = realize(1e-5);
+            let b = realize(1e-6);
+            assert_eq!(a.len(), b.len());
+            assert_ne!(
+                a, b,
+                "different eps must change the output — proves projection→slot, not a baked constant",
+            );
+        }
+
+        /// T7 red (totality, rms): a wrong params payload is a typed decline
+        /// surfaced as a fixpoint (G2), never a panic, declining BEFORE any
+        /// emission (no partial nodes).
+        #[test]
+        fn rms_norm_recipe_wrong_params_is_a_fixpoint_not_a_crash() {
+            let mut g = Graph::new();
+            let (_x, fused) = rms_norm_fused_node(&mut g, &[2, 4], 1e-5);
+            let before = g.len();
+            let out = rms_norm_last_dim::decompose(&mut g, fused, &FusedOpParams::SoftmaxLastDim);
+            assert_eq!(out, fused, "wrong params ⇒ typed decline ⇒ fixpoint");
+            assert_eq!(g.len(), before, "declined before any emission");
+        }
+
+        /// T7 red (totality, layer): same fixpoint posture for layer-norm.
+        #[test]
+        fn layer_norm_recipe_wrong_params_is_a_fixpoint_not_a_crash() {
+            let mut g = Graph::new();
+            let (_x, fused) = layer_norm_fused_node(&mut g, &[2, 4], 1e-5);
+            let before = g.len();
+            let out = layer_norm_last_dim::decompose(&mut g, fused, &FusedOpParams::SoftmaxLastDim);
             assert_eq!(out, fused, "wrong params ⇒ typed decline ⇒ fixpoint");
             assert_eq!(g.len(), before, "declined before any emission");
         }

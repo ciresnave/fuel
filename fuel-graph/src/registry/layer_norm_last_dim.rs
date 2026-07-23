@@ -1,39 +1,49 @@
 //! LayerNormLastDim — `(x - mean) / sqrt(variance + eps)` along the
-//! last dim, no affine params. Phase 7.6 step 4 (continued — third
-//! op migrated after SoftmaxLastDim, FusedLinear, RmsNormLastDim).
+//! last dim, no affine params. Increment C slice 1, T7 — migrated (with
+//! RmsNormLastDim) to a portable `PatternNode` DATA recipe with an OPEN
+//! `eps` scalar slot.
 //!
 //! Provides:
 //! - [`entry`] — the metadata-side `FusedOpEntry` (decompose function,
 //!   pattern matcher, shape/dtype rules).
-//! - [`canonical_pattern`] — placeholder returning `None`. Step 4's
-//!   bar is "the registry entry exists, builder emits Op::Fused,
-//!   dispatch works." A canonical matcher for the 11-node
-//!   LayerNorm subgraph is future work; until it lands, fusion only
-//!   fires through the builder, never through pattern recognition.
-//! - [`decompose`] — emits the 11-node primitive subgraph.
+//! - [`recipe`] — the op's primitive subgraph as portable, shape-/rank-
+//!   polymorphic data (11 nodes; the two keepdim restores are D3 shrink-via-
+//!   swap `Unsqueeze` appends, the `centered` subterm is identity-shared, and
+//!   the `eps` `AddScalar` is an OPEN slot filled from the params projection).
+//! - [`scalars`] — the per-entry projection `LayerNormLastDim { eps } →
+//!   vec![eps]`.
+//! - [`decompose`] — re-emits [`recipe`] through the
+//!   [`crate::registry::decompose_via_recipe`] bridge.
+//! - [`canonical_pattern`] — placeholder returning `None` (unchanged; a
+//!   canonical matcher for the LayerNorm subgraph stays follow-up work).
 //!
-//! The decomposition mirrors the standard layer-norm formula:
+//! The decomposition mirrors the standard layer-norm formula; the two keepdim
+//! restores are now `Unsqueeze(append)` in place of `Reshape(keepdim)` (a
+//! metadata-only D3 swap, numerically bit-exact):
 //!
 //! ```text
-//!   mean        = MeanDim(last)(x)                # rank-reduced
-//!   mean_kd     = Reshape(keepdim)(mean)
-//!   mean_bcast  = BroadcastTo(x_shape)(mean_kd)
-//!   centered    = Sub(x, mean_bcast)
+//!   mean        = MeanDim(axis_last)(x)                # rank-reduced
+//!   mean_kd     = Unsqueeze(axis_last = append)(mean)
+//!   mean_bcast  = BroadcastTo(SameAs 0)(mean_kd)
+//!   centered    = Sub(x, mean_bcast)                   # SHARED subterm
 //!   centered_sq = Sqr(centered)
-//!   var         = MeanDim(last)(centered_sq)      # rank-reduced
-//!   var_kd      = Reshape(keepdim)(var)
-//!   var_eps     = AddScalar(eps)(var_kd)
+//!   var         = MeanDim(axis_last)(centered_sq)      # rank-reduced
+//!   var_kd      = Unsqueeze(axis_last = append)(var)
+//!   var_eps     = AddScalar[open slot](var_kd)         # + eps
 //!   denom       = Sqrt(var_eps)
-//!   denom_bcast = BroadcastTo(x_shape)(denom)
+//!   denom_bcast = BroadcastTo(SameAs 0)(denom)
 //!   out         = Div(centered, denom_bcast)
 //! ```
 
 use crate::registry::{
     BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps,
-    PatternMatch, SubgraphPattern,
+    PatternMatch, SubgraphPattern, decompose_via_recipe,
 };
-use crate::{Graph, Node, NodeId, Op};
+use crate::{Graph, NodeId};
 use fuel_ir::{DType, Shape};
+use fuel_kernel_seam_types::shape_expr::ShapeExpr;
+use fuel_kernel_seam_types::{OpAttrs, OpTag, PatternNode};
+use std::sync::OnceLock;
 
 /// Metadata-side registry entry for LayerNormLastDim.
 pub fn entry() -> FusedOpEntry {
@@ -67,103 +77,91 @@ fn dtype_passthrough(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
     input_dtypes[0]
 }
 
-/// Lower a fused LayerNormLastDim node to its canonical 11-node
-/// primitive subgraph and return the new root id.
+/// LayerNormLastDim's primitive recipe as **portable data** (Increment C
+/// slice 1, T7). Shape-/rank-polymorphic: both keepdim restores are the D3
+/// shrink-via-swap `Unsqueeze(axis_last = append)` (replacing the baked
+/// `Reshape(keepdim)`), the two broadcasts target `SameAs { operand: 0 }`
+/// (x's shape over the Bind space, D2), and the `eps` `AddScalar` carries
+/// EMPTY `scalars` — an OPEN slot filled at emit time from [`scalars`]'s
+/// projection. The `centered = Sub(x, mean_bcast)` subterm is a repeated
+/// slot-free subtree the emitter identity-shares into ONE node (consumed by
+/// both `Sqr` and the final `Div`), so the emitted graph is the 11-node DAG,
+/// not a duplicated-compute tree. Nothing bakes a shape, a rank, or eps.
+/// Bind: `0 = x`.
 ///
-/// The fused node `id` may be either `Op::LayerNormLastDim { eps }`
-/// (legacy emission) or `Op::Fused(FusedOps::LAYER_NORM_LAST_DIM,
-/// FusedOpParams::LayerNormLastDim { eps })` (the new builder path).
+/// ```text
+///   mean        = MeanDim(axis_last)(x)                # rank-reduced
+///   mean_kd     = Unsqueeze(axis_last = append)(mean)
+///   mean_bcast  = BroadcastTo(SameAs 0)(mean_kd)
+///   centered    = Sub(x, mean_bcast)                   # SHARED
+///   var         = MeanDim(axis_last)(Sqr(centered))    # rank-reduced
+///   var_kd      = Unsqueeze(axis_last = append)(var)
+///   var_eps     = AddScalar[open slot](var_kd)         # + eps
+///   denom_bcast = BroadcastTo(SameAs 0)(Sqrt(var_eps))
+///   out         = Div(centered, denom_bcast)
+/// ```
+fn recipe() -> &'static PatternNode {
+    static RECIPE: OnceLock<PatternNode> = OnceLock::new();
+    RECIPE.get_or_init(|| {
+        let axis_last = || OpAttrs { axis_last: true, ..OpAttrs::default() };
+        let same_as_x = || OpAttrs {
+            target_shape_rel: Some(ShapeExpr::SameAs { operand: 0 }),
+            ..OpAttrs::default()
+        };
+        let op = |op, attrs, operands| PatternNode::Op { op, attrs, operands };
+        let x = || PatternNode::Bind { index: 0 };
+        // centered = Sub(x, BroadcastTo(SameAs 0)(Unsqueeze(MeanDim(x)))) —
+        // the SHARED subterm (emitter identity-shares it into one node).
+        let centered = op(OpTag::Sub, OpAttrs::default(), vec![
+            x(),
+            op(OpTag::BroadcastTo, same_as_x(), vec![
+                op(OpTag::Unsqueeze, axis_last(), vec![
+                    op(OpTag::MeanDim, axis_last(), vec![x()]),
+                ]),
+            ]),
+        ]);
+        // denom_bcast = BroadcastTo(SameAs 0)(Sqrt(AddScalar[eps](
+        //   Unsqueeze(MeanDim(Sqr(centered)))))).
+        let denom_bcast = op(OpTag::BroadcastTo, same_as_x(), vec![
+            op(OpTag::Sqrt, OpAttrs::default(), vec![
+                // AddScalar with EMPTY scalars = the eps OPEN slot.
+                op(OpTag::AddScalar, OpAttrs::default(), vec![
+                    op(OpTag::Unsqueeze, axis_last(), vec![
+                        op(OpTag::MeanDim, axis_last(), vec![
+                            op(OpTag::Sqr, OpAttrs::default(), vec![centered.clone()]),
+                        ]),
+                    ]),
+                ]),
+            ]),
+        ]);
+        op(OpTag::Div, OpAttrs::default(), vec![centered, denom_bcast])
+    })
+}
+
+/// Per-entry scalar projection: LayerNormLastDim's one open slot is the `eps`
+/// term, so the right payload projects to `vec![eps]` and any other payload is
+/// a typed decline (`None` ⇒ the bridge returns the node unchanged — G2).
+fn scalars(params: &FusedOpParams) -> Option<Vec<f64>> {
+    match params {
+        FusedOpParams::LayerNormLastDim { eps } => Some(vec![*eps]),
+        _ => None,
+    }
+}
+
+/// Lower a fused LayerNormLastDim node to its primitive subgraph and return the
+/// new root id — since T7 a re-emit of [`recipe`]'s data through the
+/// [`decompose_via_recipe`] bridge (the fused node's single input is the bind
+/// `[x]`; [`scalars`] fills the eps open slot; the resolving emit derives every
+/// interior shape/dtype and identity-shares `centered`). Any failure — wrong
+/// params payload, a resolution decline at these shapes — returns `id`
+/// (fixpoint, surfaced gap, never a panic): exactly the G2 posture the
+/// imperative body had.
+///
+/// The fused node `id` may be either `Op::LayerNormLastDim { eps }` (legacy
+/// emission) or `Op::Fused(FusedOps::LAYER_NORM_LAST_DIM,
+/// FusedOpParams::LayerNormLastDim { eps })` (the builder path).
 pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeId {
-    let (x_id, x_shape, dtype) = {
-        let n = graph.node(id);
-        (n.inputs[0], n.shape.clone(), n.dtype)
-    };
-    let eps = match params {
-        FusedOpParams::LayerNormLastDim { eps } => *eps,
-        // G2: decompose is total + never-panic. A non-LayerNorm params
-        // payload is an impossible registry-dispatch invariant violation;
-        // return self rather than crash.
-        _ => return id,
-    };
-    let dims = x_shape.dims().to_vec();
-    let rank = dims.len();
-    debug_assert!(rank >= 1, "LayerNormLastDim requires rank >= 1");
-    let last = rank - 1;
-
-    let mut keepdim_dims = dims.clone();
-    keepdim_dims[last] = 1;
-    let keepdim_shape = Shape::from_dims(&keepdim_dims);
-    let mut reduced_dims = dims.clone();
-    reduced_dims.remove(last);
-    let reduced_shape = Shape::from_dims(&reduced_dims);
-
-    let mean_id = graph.push(Node {
-        op:     Op::MeanDim(last),
-        inputs: vec![x_id],
-        shape:  reduced_shape.clone(),
-        dtype,
-    });
-    let mean_kd_id = graph.push(Node {
-        op:     Op::Reshape(keepdim_shape.clone()),
-        inputs: vec![mean_id],
-        shape:  keepdim_shape.clone(),
-        dtype,
-    });
-    let mean_bcast_id = graph.push(Node {
-        op:     Op::BroadcastTo(x_shape.clone()),
-        inputs: vec![mean_kd_id],
-        shape:  x_shape.clone(),
-        dtype,
-    });
-    let centered_id = graph.push(Node {
-        op:     Op::Sub,
-        inputs: vec![x_id, mean_bcast_id],
-        shape:  x_shape.clone(),
-        dtype,
-    });
-    let centered_sq_id = graph.push(Node {
-        op:     Op::Sqr,
-        inputs: vec![centered_id],
-        shape:  x_shape.clone(),
-        dtype,
-    });
-    let var_id = graph.push(Node {
-        op:     Op::MeanDim(last),
-        inputs: vec![centered_sq_id],
-        shape:  reduced_shape,
-        dtype,
-    });
-    let var_kd_id = graph.push(Node {
-        op:     Op::Reshape(keepdim_shape.clone()),
-        inputs: vec![var_id],
-        shape:  keepdim_shape.clone(),
-        dtype,
-    });
-    let var_eps_id = graph.push(Node {
-        op:     Op::AddScalar(eps),
-        inputs: vec![var_kd_id],
-        shape:  keepdim_shape.clone(),
-        dtype,
-    });
-    let denom_id = graph.push(Node {
-        op:     Op::Sqrt,
-        inputs: vec![var_eps_id],
-        shape:  keepdim_shape,
-        dtype,
-    });
-    let denom_bcast_id = graph.push(Node {
-        op:     Op::BroadcastTo(x_shape.clone()),
-        inputs: vec![denom_id],
-        shape:  x_shape.clone(),
-        dtype,
-    });
-    let out_id = graph.push(Node {
-        op:     Op::Div,
-        inputs: vec![centered_id, denom_bcast_id],
-        shape:  x_shape,
-        dtype,
-    });
-    out_id
+    decompose_via_recipe(graph, id, recipe(), scalars(params))
 }
 
 /// Placeholder matcher: returns `None` for every input. The
