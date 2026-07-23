@@ -264,8 +264,8 @@ pub fn clear_runtime_fused_for_tests() {
 /// vocabulary** (Convergence Increment A): every non-basis-gap, non-`Scan`,
 /// non-`Fused` op — elementwise, comparison, `Where`, `Cast`, shape/layout
 /// (Transpose/Permute/Reshape/BroadcastTo/(Un)squeeze/Slice/Concat/Flip/Roll/
-/// Pad/Triu/Tril), reductions (SumDim/MeanDim/ReduceSumTo/ReduceMaxTo/CumSum/
-/// SumAll/MaxAll/MinAll/MeanAll), `MatMul`, `Iota`, and indexing (IndexSelect/
+/// Pad/Triu/Tril), reductions (SumDim/MaxDim/MeanDim/ReduceSumTo/ReduceMaxTo/
+/// CumSum/SumAll/MaxAll/MinAll/MeanAll), `MatMul`, `Iota`, and indexing (IndexSelect/
 /// Gather/IndexAdd/ScatterAdd). Structural params are decoded from the
 /// (extended) [`OpAttrs`]. Returns `None` (an honest miss, rejected at
 /// registration) for ops with no first-order re-emission: `PowI`/`Clamp`
@@ -358,6 +358,7 @@ fn tag_to_op(tag: OpTag, attrs: &OpAttrs) -> Option<Op> {
         T::Tril => Op::Tril { diagonal: attrs.axis? },
         // Reductions (dim rides `axis`; keepdim reductions ride `target_shape`).
         T::SumDim => Op::SumDim(attrs.axis? as usize),
+        T::MaxDim => Op::MaxDim(attrs.axis? as usize),
         T::MeanDim => Op::MeanDim(attrs.axis? as usize),
         T::SumAll => Op::SumAll,
         T::MaxAll => Op::MaxAll,
@@ -548,8 +549,8 @@ pub fn resolve_rel_attrs(
         match tag {
             // `axis`-carrier tags: this op's LAST = rank − 1 via the shared
             // §6.20 resolver (typed AxisOutOfRange on a rank-0 operand).
-            T::SumDim | T::MeanDim | T::CumSum | T::Concat | T::Flip | T::Slice | T::Roll
-            | T::IndexSelect | T::Gather | T::IndexAdd | T::ScatterAdd => {
+            T::SumDim | T::MaxDim | T::MeanDim | T::CumSum | T::Concat | T::Flip | T::Slice
+            | T::Roll | T::IndexSelect | T::Gather | T::IndexAdd | T::ScatterAdd => {
                 let a = resolve_axis(LAST, rank).map_err(RelAttrError::Expr)?;
                 out.axis = Some(a as i64);
             }
@@ -1032,6 +1033,38 @@ mod tests {
         assert_eq!(super::tag_to_op(OpTag::Cast, &attrs), Some(Op::Cast(DType::F16)));
         // Comparison.
         assert!(matches!(super::tag_to_op(OpTag::Lt, &OpAttrs::default()), Some(Op::Lt)));
+    }
+
+    #[test]
+    fn tag_to_op_reconstructs_max_dim() {
+        // T4 (Increment C slice 1): OpTag::MaxDim → Op::MaxDim(axis), the
+        // axis riding `attrs.axis` exactly like SumDim/MeanDim.
+        assert!(matches!(
+            super::tag_to_op(OpTag::MaxDim, &OpAttrs { axis: Some(1), ..OpAttrs::default() }),
+            Some(Op::MaxDim(1))
+        ));
+        // An unset axis is an honest miss (typed decline at registration),
+        // never a defaulted axis.
+        assert_eq!(super::tag_to_op(OpTag::MaxDim, &OpAttrs::default()), None);
+        // Not a scalar-param op: zero scalar slots.
+        assert_eq!(super::scalar_slot_arity(OpTag::MaxDim), 0);
+    }
+
+    #[test]
+    fn max_dim_axis_last_resolves_to_rank_minus_one() {
+        // D3 consumer: migrated recipes spell keepdim as MaxDim(axis_last) +
+        // Unsqueeze(append), so MaxDim must be an `axis`-carrier tag for the
+        // rel-attr resolver (rank − 1 via the shared §6.20 LAST resolver).
+        let attrs = OpAttrs { axis_last: true, ..OpAttrs::default() };
+        let resolved = super::resolve_rel_attrs(
+            OpTag::MaxDim,
+            &attrs,
+            &[vec![2, 3, 4]],
+            &[vec![2, 3, 4]],
+        )
+        .expect("axis_last must resolve on MaxDim, not AxisLastUnsupported");
+        assert_eq!(resolved.axis, Some(2), "rank-3 operand → LAST = axis 2");
+        assert!(!resolved.axis_last, "rel carrier must be cleared post-resolve");
     }
 
     #[test]
