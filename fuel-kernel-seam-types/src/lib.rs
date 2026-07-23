@@ -161,6 +161,33 @@ pub struct OpAttrs {
     /// CumSum/… and Squeeze, and `rank` (append) for Unsqueeze. `false` ⇒ use
     /// the absolute carrier.
     pub axis_last: bool,
+
+    // --- Matmul contraction role vectors (Increment C slice 1, T9/D5) -------
+    //
+    // The LOCKED reply-3 contraction descriptor (commit `b64aa1db`; §5 of the
+    // recipe-grammar design input). `matmul`'s op_attrs is two per-axis role
+    // vectors over the roles { Batch=0, FreeM=1, FreeN=2, ContractedK=3 } (one
+    // **u8** per axis), `lhs_roles` then `rhs_roles`, each length = operand rank.
+    // Role vectors encode WHICH axis plays which role, **not extents** — so GQA
+    // (differing-but-divisible batch extents) serializes to identical all-Batch
+    // leading roles. Both empty ⇒ the rank-polymorphic implicit form (recipes
+    // keep matmul implicit; concrete/ingested nodes get explicit roles). The
+    // canonical cell (same-rank ≥ 2; leading Batch; lhs=[..,FreeM,ContractedK],
+    // rhs=[..,ContractedK,FreeN]) is derived by [`matmul_roles`] and validated at
+    // resolve time (`fuel_graph::runtime_fused::tag_to_op`).
+    //
+    // Serialized on carrier (a) — `to_canonical_bytes(MatMul)` emits
+    // `u32_le(len lhs) ++ lhs_roles ++ u32_le(len rhs) ++ rhs_roles` when set, or
+    // the canonical empty body `[00,00,00,00]` when both are empty (preserving
+    // today's golden). Baracuda (#68) confirmed the rank-2 golden as the shared
+    // cross-producer fixture and has no near-term binary arm, so Fuel's
+    // serializer is the contract.
+    /// LHS per-axis contraction roles ({Batch=0,FreeM=1,FreeN=2,ContractedK=3},
+    /// u8 each; length = lhs rank). Empty ⇒ implicit (rank-polymorphic) matmul.
+    pub lhs_roles: Vec<u8>,
+    /// RHS per-axis contraction roles (same encoding; length = rhs rank). Empty
+    /// ⇒ implicit (rank-polymorphic) matmul.
+    pub rhs_roles: Vec<u8>,
 }
 
 // --- §6.19-shaped canonical positional-blob serialization (Convergence Increment A) ---
@@ -173,7 +200,8 @@ pub struct OpAttrs {
 // SCOPE (do not overclaim): this is the §6.19 positional *shape*, and it is
 // byte-comparable with a Baracuda-emitted blob **for the positionally-conformant
 // ops** — elementwise, cast, slice, concat, roll, pad, flip, iota, permute,
-// (un)squeeze, shape-target. Two known divergences from the confirmed §6.19.3
+// (un)squeeze, shape-target, matmul role-vectors (§5, LOCKED). Two known
+// divergences from the confirmed §6.19.3
 // schemas (see docs/outreach/baracuda-recipe-grammar-codesign-reply-2.md), which
 // the pinned node schema `Op{op_name, op_attrs, child_edges}` reconciles WITHOUT
 // widening this blob:
@@ -195,19 +223,43 @@ fn put_str(b: &mut Vec<u8>, s: &str) { put_u32(b, s.len() as u32); b.extend_from
 fn put_i64_list(b: &mut Vec<u8>, xs: &[i64]) { put_u32(b, xs.len() as u32); for &x in xs { put_i64(b, x); } }
 fn put_u32_list(b: &mut Vec<u8>, xs: &[u32]) { put_u32(b, xs.len() as u32); for &x in xs { put_u32(b, x); } }
 fn put_f64_list(b: &mut Vec<u8>, xs: &[f64]) { put_u32(b, xs.len() as u32); for &x in xs { put_f64(b, x); } }
+fn put_u8_list(b: &mut Vec<u8>, xs: &[u8]) { put_u32(b, xs.len() as u32); b.extend_from_slice(xs); }
+
+/// Derive the canonical matmul role vectors for a same-rank ≥ 2 contraction
+/// (the LOCKED reply-3 cell, §5): `lhs = [Batch×(r−2), FreeM, ContractedK]`,
+/// `rhs = [Batch×(r−2), ContractedK, FreeN]` over the roles
+/// { Batch=0, FreeM=1, FreeN=2, ContractedK=3 }. Roles encode axis POSITIONS,
+/// not extents — GQA-divisible batch stays all-`Batch`. Pure + never-panic: a
+/// rank < 2 operand (never a real matmul input) yields an all-`Batch` vector of
+/// that length, which the resolver's exact-match check rejects as non-canonical.
+pub fn matmul_roles(lhs_rank: usize, rhs_rank: usize) -> (Vec<u8>, Vec<u8>) {
+    fn one(rank: usize, second_last: u8, last: u8) -> Vec<u8> {
+        let mut v = vec![0u8; rank]; // Batch = 0 for every leading axis
+        if rank >= 2 {
+            v[rank - 2] = second_last;
+            v[rank - 1] = last;
+        }
+        v
+    }
+    // lhs: [.., FreeM(1), ContractedK(3)]; rhs: [.., ContractedK(3), FreeN(2)].
+    (one(lhs_rank, 1, 3), one(rhs_rank, 3, 2))
+}
 
 impl OpAttrs {
     /// Serialize these attrs to the KISS §6.19 canonical positional blob for
     /// `op`: a per-op **positional** little-endian body (no elision — the
     /// `OpTag` determines the fixed schema), length-prefixed with a `u32` LE
-    /// byte count. An op whose schema is empty (`Add`, `Neg`, `MatMul`, `Where`,
+    /// byte count. An op whose schema is empty (`Add`, `Neg`, `Where`,
     /// comparisons, …) serializes as the single canonical form `[0,0,0,0]`.
-    /// Deterministic + dependency-free.
+    /// `MatMul` is empty-bodied ONLY when its role vectors are unset (the
+    /// implicit rank-polymorphic form); explicit roles serialize the LOCKED
+    /// §5 contraction descriptor. Deterministic + dependency-free.
     ///
     /// **Conformance scope (do not overclaim):** byte-comparable with a
     /// Baracuda-emitted blob for the positionally-conformant ops (elementwise,
     /// cast, slice, concat, roll, pad, flip, iota, permute, (un)squeeze,
-    /// shape-target). `reduce` emits Fuel's single-axis `{axis, keepdim}` and
+    /// shape-target, matmul role-vectors — the shared cross-producer golden,
+    /// Baracuda #68). `reduce` emits Fuel's single-axis `{axis, keepdim}` and
     /// `gather`/`scatter` emit `{axis}`; `oob_policy` and a multi-axis
     /// `reduce_axes` list are DEFERRED (no carrier/consumer yet), while
     /// `monoid`/`scatter_combine` ride `op_name` and the index operand/dtype
@@ -282,7 +334,19 @@ impl OpAttrs {
                 put_f64_list(&mut body, &self.scalars);
                 put_str(&mut body, self.cast_dtype.as_deref().unwrap_or(""));
             }
-            // Empty-schema ops (elementwise, comparison, Where, MatMul, scalar
+            // MatMul: the LOCKED role-vector contraction descriptor (§5,
+            // reply-3) — `u32_le(len lhs) ++ lhs_roles ++ u32_le(len rhs) ++
+            // rhs_roles`, u8 roles, lhs-then-rhs. Both empty ⇒ the empty body
+            // (the canonical `[00,00,00,00]` implicit form; recipes keep matmul
+            // rank-polymorphic). The rank-2 golden is the shared cross-producer
+            // fixture (Baracuda #68).
+            T::MatMul => {
+                if !self.lhs_roles.is_empty() || !self.rhs_roles.is_empty() {
+                    put_u8_list(&mut body, &self.lhs_roles);
+                    put_u8_list(&mut body, &self.rhs_roles);
+                }
+            }
+            // Empty-schema ops (elementwise, comparison, Where, scalar
             // reductions, log-softmax, …) and any tag added later: zero-length.
             _ => {}
         }
@@ -568,5 +632,56 @@ mod tests {
             a.to_canonical_bytes(OpTag::SumDim),
             "MaxDim must share the SumDim reduce-row schema"
         );
+    }
+
+    // ---- T9 (Increment C slice 1): matmul role-vector serialize + derive -----
+    //
+    // The LOCKED reply-3 layout (commit `b64aa1db`; §5 of the recipe-grammar
+    // design input): matmul's op_attrs = two per-axis role vectors over
+    // { Batch=0, FreeM=1, FreeN=2, ContractedK=3 } (one u8 per axis), `lhs_roles`
+    // then `rhs_roles`, each length = operand rank —
+    //   body = u32_le(len lhs) ++ lhs_roles ++ u32_le(len rhs) ++ rhs_roles
+    // wrapped by carrier (a)'s outer u32_le(body_len) frame. Role vectors encode
+    // WHICH axis plays which role, not extents, so GQA (differing-but-divisible
+    // batch extents) serializes to identical all-Batch leading roles.
+
+    #[test]
+    fn matmul_role_vectors_serialize_the_locked_rank2_golden() {
+        // Worked rank-2 example: lhs=[FreeM,ContractedK]=[1,3], rhs=[ContractedK,FreeN]=[3,2].
+        //   body = 02000000 | 0103 | 02000000 | 0302   (12 bytes)
+        //   full = 0C000000 | body                       (16 bytes)
+        //
+        // INJECTED (B9): this golden is ALSO the shared CROSS-PRODUCER contract —
+        // Baracuda (#68) confirmed the exact bytes and has NO near-term binary
+        // arm, so Fuel's serializer is first and this golden IS the contract.
+        let a = OpAttrs { lhs_roles: vec![1, 3], rhs_roles: vec![3, 2], ..OpAttrs::default() };
+        let golden: Vec<u8> = vec![
+            0x0C, 0x00, 0x00, 0x00, // outer u32-LE body length = 12
+            0x02, 0x00, 0x00, 0x00, // u32-LE len lhs_roles = 2
+            0x01, 0x03, //             lhs_roles = [FreeM, ContractedK]
+            0x02, 0x00, 0x00, 0x00, // u32-LE len rhs_roles = 2
+            0x03, 0x02, //             rhs_roles = [ContractedK, FreeN]
+        ];
+        assert_eq!(
+            a.to_canonical_bytes(OpTag::MatMul),
+            golden,
+            "the rank-2 matmul role-vector golden is the shared cross-producer contract (Baracuda #68)"
+        );
+    }
+
+    #[test]
+    fn matmul_empty_roles_stay_the_canonical_zero_body() {
+        // Empty roles = the rank-polymorphic recipe form: the body is empty → the
+        // single canonical 4-byte zero form. This preserves today's golden
+        // (`empty_schema_op_serializes_zero_length`) untouched.
+        assert_eq!(OpAttrs::default().to_canonical_bytes(OpTag::MatMul), vec![0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn matmul_roles_derives_the_canonical_cell() {
+        // matmul_roles(lhs_rank, rhs_rank): lhs = [Batch.., FreeM(1), ContractedK(3)];
+        // rhs = [Batch.., ContractedK(3), FreeN(2)]. Role POSITIONS, not extents.
+        assert_eq!(matmul_roles(2, 2), (vec![1u8, 3], vec![3u8, 2]));
+        assert_eq!(matmul_roles(4, 4), (vec![0u8, 0, 1, 3], vec![0u8, 0, 3, 2]));
     }
 }
