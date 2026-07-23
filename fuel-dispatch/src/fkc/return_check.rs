@@ -176,6 +176,23 @@ fn distinct_role_probe(combo: ProbeComboRef) -> Vec<(String, Shape, DType)> {
         .collect()
 }
 
+/// True iff `variant` is one of the params-DEPENDENT variants
+/// [`synth_probe_param_points`] knows how to synthesize — kept in lockstep
+/// with its match arms (pinned by
+/// `synth_param_points_distinguish_every_ints_slot_pair`, which iterates the
+/// same list). Used by the cross-check to distinguish "no points because the
+/// variant is out of synth scope" (a documented skip — e.g. Nf4Matmul,
+/// double-gated on FDX AFFINE_BLOCK) from "no points because the probe combo
+/// was unreadable by the shape-coupled derivation" — the latter is a
+/// coverage hole that must WARN, not vanish (review fix; the same
+/// no-silent-skip norm `guard_rule` follows).
+fn is_params_dependent_synth_variant(variant: Option<&str>) -> bool {
+    matches!(
+        variant,
+        Some("Conv2D" | "ConvTranspose2D" | "QMatMul" | "FusedSoftmaxCrossEntropy" | "CausalConv1d")
+    )
+}
+
 /// True iff `rule` starts with a recognized `DimExpr` constructor head.
 fn is_dimexpr_head(rule: &str) -> bool {
     const HEADS: &[&str] = &["extent(", "const(", "param(", "add(", "sub(", "mul(", "div("];
@@ -273,7 +290,13 @@ pub fn synth_probe_params(variant: Option<&str>) -> Result<Option<FusedOpParams>
 /// panic) — valid by construction, for ANY rank-4 probe with nonzero
 /// extents. Variants with a free field get ≥ 2 DISTINCT points (the
 /// sabotage-calibration norm applied to params: one point could false-green
-/// a declared rule that ignores the param).
+/// a declared rule that ignores the param). The points are also
+/// ORDER-ASYMMETRIC (review fix): for every pair of `key().ints` slots, at
+/// least one point assigns them different values — so a length-preserving
+/// slot reorder of the flattening in `fuel-graph/src/registry.rs`, or a
+/// `param(i)`/`param(j)` confusion in a declared rule, cannot evaluate
+/// identically at every point (pinned by
+/// `synth_param_points_distinguish_every_ints_slot_pair`).
 ///
 /// **Never-panic pin** (extends the `synth_probe_params` matching-variant
 /// pin): an unknown variant, or a combo the derivation can't safely read
@@ -309,36 +332,53 @@ pub fn synth_probe_param_points(
             if h == 0 || w_in == 0 || kh == 0 || kw == 0 {
                 return Vec::new();
             }
-            // ph = kh/2 keeps `h + 2·ph − kh` ∈ {h−1, h} ≥ 0 for any h ≥ 1;
-            // ph = kh/2 + 1 keeps it ≥ h+1 — both valid even when the kernel
-            // exceeds the spatial input, and the two points differ in EVERY
-            // free field (stride and padding).
+            // Padding stays SHAPE-COUPLED: any ph ≥ kh/2 keeps
+            // `h + 2·ph − kh` ≥ h−1 ≥ 0 for any h ≥ 1 (larger padding only
+            // grows the sum), so the real fn's usize arithmetic can never
+            // underflow — valid even when the kernel exceeds the spatial
+            // input. Order-asymmetry (review fix): the old points had
+            // stride == padding at BOTH points ([1,1,1,1,1]/[2,2,2,2,1]), so
+            // a stride<->padding reorder of the `key().ints` flattening — or
+            // a param(i)/param(j) confusion in a future declared rule — was
+            // invisible at every point. Point 2's ints are now pairwise
+            // DISTINCT for the common odd/even kernels (e.g. 3x3 →
+            // [3,4,6,7,2]), so every slot transposition is observable, and
+            // the two points still differ in EVERY free field. groups is
+            // unread by the real shape/dtype fns (conv2d.rs), so 1-vs-2 is
+            // purely an order-asymmetry probe.
             points(vec![
-                FusedOpParams::Conv2D { stride: (1, 1), padding: (kh / 2, kw / 2), groups: 1 },
+                FusedOpParams::Conv2D { stride: (1, 2), padding: (kh / 2, kw / 2 + 3), groups: 1 },
                 FusedOpParams::Conv2D {
-                    stride: (2, 2),
-                    padding: (kh / 2 + 1, kw / 2 + 1),
-                    groups: 1,
+                    stride: (3, 4),
+                    padding: (kh / 2 + 5, kw / 2 + 6),
+                    groups: 2,
                 },
             ])
         }
         Some("ConvTranspose2D") => points(vec![
             // Not shape-coupled: the real fn saturates (conv_transpose_2d.rs),
             // so every value is panic-safe; `output_padding < stride` holds at
-            // both points (the standard validity relation).
+            // both points (the standard validity relation). Order-asymmetry
+            // (review fix): the old points had padding == output_padding and
+            // dilation == groups == 1 at BOTH points, so those slot reorders
+            // (and the matching param(N) confusions) were invisible. The 9
+            // ints are now chosen so every slot PAIR differs at one point or
+            // the other ([2,3,0,1,1,2,4,5,1] / [5,4,3,2,4,0,2,6,3]), and the
+            // two points differ in EVERY field. groups only multiplies
+            // `w.dims[1]` in the real shape fn — any value is panic-safe.
             FusedOpParams::ConvTranspose2D {
-                stride: (1, 1),
-                padding: (0, 0),
-                output_padding: (0, 0),
-                dilation: (1, 1),
+                stride: (2, 3),
+                padding: (0, 1),
+                output_padding: (1, 2),
+                dilation: (4, 5),
                 groups: 1,
             },
             FusedOpParams::ConvTranspose2D {
-                stride: (2, 2),
-                padding: (1, 1),
-                output_padding: (1, 1),
-                dilation: (1, 1),
-                groups: 1,
+                stride: (5, 4),
+                padding: (3, 2),
+                output_padding: (4, 0),
+                dilation: (2, 6),
+                groups: 3,
             },
         ]),
         Some("QMatMul") => {
@@ -490,10 +530,27 @@ pub fn cross_check_fused_section(
         // free field exists, so a rule that ignores the param can't
         // false-green on a single point). EMPTY points ⇒ every differential
         // for this combo is skipped — never a foreign variant, never a
-        // panic (e.g. Nf4Matmul, or a combo the derivation can't read).
+        // panic. Out-of-synth-scope variants (e.g. Nf4Matmul) stay documented
+        // skips; a params-DEPENDENT variant whose combo the derivation can't
+        // read WARNS (review fix — no silent coverage hole).
         let points: Vec<(FusedOpParams, Vec<i64>)> = match single.as_ref() {
             Some(p) => vec![(p.clone(), p.key().ints)],
-            None => synth_probe_param_points(variant, combo),
+            None => {
+                let pts = synth_probe_param_points(variant, combo);
+                if pts.is_empty() && is_params_dependent_synth_variant(variant) {
+                    warnings.push(ImportWarning {
+                        section: section.into(),
+                        message: format!(
+                            "return cross-check: no param point could be synthesized for \
+                             params-dependent variant {} from this probe combo (operand shapes \
+                             unreadable by the shape-coupled derivation); shape/dtype \
+                             differentials skipped for this combo",
+                            variant.unwrap_or("<unknown>"),
+                        ),
+                    });
+                }
+                pts
+            }
         };
         for (p, ints) in &points {
             // dtype_rule: the real fn is called only with a matching-variant
@@ -953,31 +1010,36 @@ mod tests {
         ];
         // Conv2D — 2 points; padding is SHAPE-COUPLED to the weight kernel
         // (kh/2 = 1 for the 3x3 kernel) so the real fn's usize
-        // `(H + 2p − K)` arithmetic can never underflow.
+        // `(H + 2p − K)` arithmetic can never underflow. Point 2's ints are
+        // pairwise DISTINCT (order-asymmetry, review fix): any slot reorder
+        // of the flattening — stride<->padding included — changes the vector.
         let pts = synth_probe_param_points(Some("Conv2D"), &conv);
         assert_eq!(pts.len(), 2, "Conv2D needs >= 2 points (no single-point false-green)");
         assert!(
-            matches!(pts[0].0, FusedOpParams::Conv2D { stride: (1, 1), padding: (1, 1), groups: 1 }),
+            matches!(pts[0].0, FusedOpParams::Conv2D { stride: (1, 2), padding: (1, 4), groups: 1 }),
             "got {:?}", pts[0].0,
         );
-        assert_eq!(pts[0].1, vec![1, 1, 1, 1, 1]);
+        assert_eq!(pts[0].1, vec![1, 2, 1, 4, 1]);
         assert!(
-            matches!(pts[1].0, FusedOpParams::Conv2D { stride: (2, 2), padding: (2, 2), groups: 1 }),
+            matches!(pts[1].0, FusedOpParams::Conv2D { stride: (3, 4), padding: (6, 7), groups: 2 }),
             "got {:?}", pts[1].0,
         );
-        assert_eq!(pts[1].1, vec![2, 2, 2, 2, 1]);
+        assert_eq!(pts[1].1, vec![3, 4, 6, 7, 2]);
         assert_ne!(pts[0].1, pts[1].1, "the two points must differ (param-dependence observable)");
 
         // ConvTranspose2D — 2 points, ints = [sh,sw,ph,pw,oph,opw,dh,dw,groups]
         // (registry.rs tag-11 flattening). output_padding < stride at both
         // points (the standard validity relation); the real fn saturates, so
-        // no shape coupling is needed.
+        // no shape coupling is needed. Every slot PAIR differs at one point
+        // or the other (order-asymmetry, review fix): padding<->output_padding
+        // and dilation<->groups reorders — invisible in the old all-0/all-1
+        // values — now change an asserted vector.
         let pts = synth_probe_param_points(Some("ConvTranspose2D"), &conv);
         assert_eq!(pts.len(), 2, "ConvTranspose2D needs >= 2 points");
         assert!(matches!(pts[0].0, FusedOpParams::ConvTranspose2D { .. }), "got {:?}", pts[0].0);
-        assert_eq!(pts[0].1, vec![1, 1, 0, 0, 0, 0, 1, 1, 1]);
+        assert_eq!(pts[0].1, vec![2, 3, 0, 1, 1, 2, 4, 5, 1]);
         assert!(matches!(pts[1].0, FusedOpParams::ConvTranspose2D { .. }), "got {:?}", pts[1].0);
-        assert_eq!(pts[1].1, vec![2, 2, 1, 1, 1, 1, 1, 1, 1]);
+        assert_eq!(pts[1].1, vec![5, 4, 3, 2, 4, 0, 2, 6, 3]);
 
         // QMatMul — 1 point, COMBO-DERIVED per the contract couplings
         // (`k == a.dim[-1]`, `n == w_q_bytes.dim[0]`; linear-quant.fkc.md
@@ -1025,6 +1087,47 @@ mod tests {
         assert_eq!(pts.len(), 1);
         assert!(matches!(pts[0].0, FusedOpParams::CausalConv1d { use_silu: false }), "got {:?}", pts[0].0);
         assert_eq!(pts[0].1, vec![0]);
+    }
+
+    /// Review fix (order-degeneracy): for every params-dependent variant,
+    /// every PAIR of `key().ints` slots must be distinguished by at least one
+    /// synth point (`ints[i] != ints[j]` at that point). Otherwise a
+    /// length-preserving reorder of the `key().ints` flattening in
+    /// `fuel-graph/src/registry.rs` (stride<->padding for Conv2D;
+    /// padding<->output_padding or dilation<->groups for ConvTranspose2D)
+    /// passes every exact-ints pin while the corpus doc tables go silently
+    /// wrong — and, once whole-shape `param(N)` rules land, a
+    /// `param(i)`/`param(j)` confusion in a declared rule would evaluate
+    /// identically at EVERY point and false-green: exactly the failure the
+    /// ">= 2 points" norm claims to prevent.
+    #[test]
+    fn synth_param_points_distinguish_every_ints_slot_pair() {
+        let combo: Vec<(String, Shape, DType)> = vec![
+            ("x".into(), Shape::from_dims(&[2, 3, 8, 8]), DType::F32),
+            ("weight".into(), Shape::from_dims(&[4, 3, 3, 3]), DType::F32),
+        ];
+        for v in [
+            "Conv2D",
+            "ConvTranspose2D",
+            "QMatMul",
+            "FusedSoftmaxCrossEntropy",
+            "CausalConv1d",
+        ] {
+            let pts = synth_probe_param_points(Some(v), &combo);
+            assert!(!pts.is_empty(), "{v} must synthesize points");
+            let len = pts[0].1.len();
+            for i in 0..len {
+                for j in (i + 1)..len {
+                    assert!(
+                        pts.iter().any(|(_, ints)| ints[i] != ints[j]),
+                        "{v}: ints slots {i} and {j} are equal at EVERY synth point \
+                         (order-degenerate: a slot reorder in the key().ints flattening, \
+                         or a param({i})/param({j}) confusion in a declared rule, would \
+                         false-green)",
+                    );
+                }
+            }
+        }
     }
 
     /// C-4 T2 (flattening differential): every returned point's ints ARE its

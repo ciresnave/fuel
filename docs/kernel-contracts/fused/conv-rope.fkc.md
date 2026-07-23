@@ -106,7 +106,9 @@ variant (pinned by `corpus_prose_pins_param_index_tables_matching_key_ints`):
 Threading alone does NOT activate this family's whole-shape rules: `conv2d(params)` /
 `conv_transpose2d(params)` / `from_params(seq_out)` and both scan slot-1 `from_params(last_state)`
 bundle rules each also need a whole-shape constructor (`Dims`, KISS §6.20-reserved `0x0B`) — they
-stay warned skips, **KISS-gated** on the filed §6.4 extension-registry entry
+stay **documented skips** (a non-evaluable shape rule is skipped *silently* at import —
+`eval_shape_rule` returns not-evaluable and the cross-check emits no `ImportWarning` for it; this
+prose + the ROADMAP entry are the record), **KISS-gated** on the filed §6.4 extension-registry entry
 (`docs/outreach/kiss-dims-withdim-extension-registry-filed.md`). What IS live now at the
 synthesized param points: the params-dependent variants' `passthrough` dtype rules (previously
 dead — synth returned `None` for them).

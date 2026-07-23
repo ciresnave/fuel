@@ -146,11 +146,20 @@ nowhere; now captured so they are not forgotten):
   per-variant synthesized param values (`param(N)` indexes the `FusedOpParams::key().ints`
   flattening — index tables pinned in `fused/{conv-rope,linear-quant}.fkc.md` + a
   doc-vs-code drift test), the return cross-check loops per-combo param POINTS (≥ 2 for
-  variants with a free field — the sabotage-calibration norm applied to params), the
-  params-dependent variants' `passthrough`/`fixed` dtype rules are now genuinely
-  cross-checked (previously dead: synth returned `None` for them), and the reserved-tag
-  declines are NAMED at the decoder (`TAG_REDUCE`/`TAG_WITH_DIM`/`TAG_DIMS` → typed
-  `ReservedTag`, the future activation point). **Correction — the prior entry's "reserved
+  variants with a free field, and order-ASYMMETRIC — no two `key().ints` slots agree at
+  every point, so a flattening reorder or a `param(i)`/`param(j)` rule confusion cannot
+  false-green: the sabotage-calibration norm applied to params), the params-dependent
+  variants' `passthrough`/`fixed` dtype rules are now genuinely cross-checked (previously
+  dead: synth returned `None` for them; a probe combo the shape-coupled synth can't read
+  now surfaces an `ImportWarning`, never a silent skip), and the reserved-tag declines are
+  NAMED at the decoder (`TAG_REDUCE`/`TAG_WITH_DIM`/`TAG_DIMS` → typed `ReservedTag`, the
+  future activation point; `shape_expr` went `pub` — required to make the golden-verified
+  §6.20 codec API-reachable so the `TAG_` dead_code warnings die by reference, not
+  `#[allow]`). Scope disclosure (deviates from the plan's "nothing in `fuel-graph`"):
+  `fuel-graph/src/registry/conv_transpose_2d.rs` arity `debug_assert`s widened 2 → 2-or-3
+  (`x`, `weight`, `[bias]` — the contract's documented optional-bias arity; the exact-2
+  assert made the now-live dtype differential guard-catch on the 3-operand probe); see the
+  plan's §7 Deviations. **Correction — the prior entry's "reserved
   tags cover the ~7 skipped ops" overclaimed; the honest split is:** (a) **5 rules
   KISS-gated** — `conv2d` + `conv_transpose_2d` (rank-4 `Dims` + `Param`), `qmatmul`
   (`WithDim`/`Dims` + `Param`), and the two scan slot-1 `last_state` bundle rules

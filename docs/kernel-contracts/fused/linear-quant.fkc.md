@@ -79,8 +79,11 @@ row despite carrying fields, and `FusedLinear` carries no fields at all. Index o
 | `Nf4Matmul` | `param(0)=block_size` |
 
 Threading alone does NOT activate this family's whole-shape rules. `qmatmul`'s `from_params(a, n)`
-(`[..., M, N]`, `n = param(2)`) stays a warned skip, **KISS-gated** on the filed Dims/WithDim §6.4
-extension-registry entry (`docs/outreach/kiss-dims-withdim-extension-registry-filed.md`);
+(`[..., M, N]`, `n = param(2)`) stays a **documented skip** (a non-evaluable shape rule is skipped
+*silently* at import — `eval_shape_rule` returns not-evaluable and the cross-check emits no
+`ImportWarning` for it; this prose + the ROADMAP entry are the record), **KISS-gated** on the filed
+Dims/WithDim §6.4 extension-registry entry
+(`docs/outreach/kiss-dims-withdim-extension-registry-filed.md`);
 `nf4_matmul` is **double-gated** — this section is `registrable: false` until FDX `AFFINE_BLOCK`
 lands, so its rule is out of the oracle's reach regardless of tags; and
 `fused_softmax_cross_entropy`'s `from_params(reduction)` is reduction-**conditional** (Mean/Sum →

@@ -1,6 +1,6 @@
 # C-4 shape-oracle frontier — governance split + Fuel-internal param threading (2026-07-23)
 
-> **For agentic workers:** implement task-by-task with TDD; each task ends with an observed test run + commit. Worktree branched from `main` @ `af4b7dd4`. All code files are `fuel-dispatch/src/fkc/{return_check.rs, shape_expr.rs}` — nothing in `fuel-graph`.
+> **For agentic workers:** implement task-by-task with TDD; each task ends with an observed test run + commit. Worktree branched from `main` @ `af4b7dd4`. All code files are `fuel-dispatch/src/fkc/{return_check.rs, shape_expr.rs}` — nothing in `fuel-graph`. *(Superseded as-built — see §7 "Deviations": T3 also touched `fuel-graph/src/registry/conv_transpose_2d.rs`.)*
 
 **Thread:** `c4-shape-frontier` · **Verdict: GO_REDUCED.** The Dims/WithDim tag activation is externally gated on a KISS extension-registry entry; the Fuel-internal slice (param threading + dtype-differential activation + hygiene + docs corrections) builds now.
 
@@ -41,7 +41,7 @@ KISS-OPS-6.20-0002 (`C:\Projects\KISS\spec\ops.md:1966-1968`): *"`Reduce(operand
 
 **T2 (M) — `synth_probe_param_points`.** Per-variant, per-combo points for Conv2D (2 pts), ConvTranspose2D (2 pts), QMatMul (1 pt, combo-derived), FusedSoftmaxCrossEntropy (2 pts: None + Mean), CausalConv1d (1 pt). ints pinned == `key().ints`; unknown variant → empty (never a foreign variant — extends the pin at `:536-540`). Files: `return_check.rs`.
 
-**T3 (M) — cross-check loops param points; dtype differentials live.** Born-red flips: `:534` (Conv2D synth no longer None); **mutation test** — synthetic FSCE section declaring `dtype_rule: fixed(F16)` is REJECTED (real fn constant-F32), proving enforcement; `expected_min_inputs(Conv2D) == Some(2)`. Regression: corpus imports at `register.rs:1338-1340` stay green (their `conv2d(params)`/`from_params` shape rules remain warned skips; their `passthrough`/`fixed` dtype rules now truly check). Rewrite the invariant comment. Files: `return_check.rs`.
+**T3 (M) — cross-check loops param points; dtype differentials live.** Born-red flips: `:534` (Conv2D synth no longer None); **mutation test** — synthetic FSCE section declaring `dtype_rule: fixed(F16)` is REJECTED (real fn constant-F32), proving enforcement; `expected_min_inputs(Conv2D) == Some(2)`. Regression: corpus imports at `register.rs:1338-1340` stay green (their `conv2d(params)`/`from_params` shape rules remain *documented* skips — silent at import, no `ImportWarning`; "warned skips" here was wrong, corrected in review — their `passthrough`/`fixed` dtype rules now truly check). Rewrite the invariant comment. Files: `return_check.rs`.
 
 **T4 (S) — reserved-tag named declines.** Explicit decoder arm naming `TAG_REDUCE`/`TAG_WITH_DIM`/`TAG_DIMS` (same typed `ReservedTag` decline — behavior-preserving), killing the dead_code warnings by reference, not `#[allow]`. This arm is the future activation point. Red test: constant-named declines for 0x0A/0x0B. Files: `shape_expr.rs`.
 
@@ -75,6 +75,36 @@ On KISS acceptance of the experimental entry: implement `Dims`/`WithDim` (AST + 
   cosigns with the `dims(...)`/`with_dim(...)` functional-spelling pin in the same clause as the
   wire tags; kiss-ref: consistent with its §6.20 stake, the second dissimilar implementation,
   timing theirs. §6's follow-up remains queued on acceptance.
+
+### Deviations from the plan text (as-built record, disclosed per the doc-vs-code-drift norm)
+
+- **T3 touched `fuel-graph` (contradicting this plan's "nothing in `fuel-graph`" header).**
+  `c6f05a3b` widens the arity `debug_assert`s in
+  `fuel-graph/src/registry/conv_transpose_2d.rs` `shape_rule`/`dtype_rule` from exactly-2 to
+  2-or-3 inputs (`x`, `weight`, `[bias]`). Cause: the contract declares an OPTIONAL bias operand,
+  so the §3.5 probe combos carry 3 operands, and the exact-2 assert made the now-live dtype
+  differential guard-catch (a debug-only skip). The change matches the op's documented arity and
+  the conv2d precedent; pinned by `conv_transpose2d_dtype_differential_fires`; gate
+  `cargo test -p fuel-graph` 349 green. The commit body disclosed it; this plan + the ROADMAP
+  entry did not until the review pass — recorded here.
+- **T4 widened `shape_expr` visibility `pub(crate)` → `pub`** (`0107c7c6`,
+  `fuel-dispatch/src/fkc/mod.rs`) — a fuel-dispatch public-API expansion (exposes
+  `Dim`/`ShapeExpr`/`eval_dim`/codec/`TAG_*`) this plan did not mandate. It IS load-bearing for
+  §5's gate: with `pub(crate)` and no crate-internal codec consumer, the whole §6.20 codec chain
+  is dead code, so ALL 11 `TAG_` constants warn and no decoder-arm reference can silence them
+  without `#[allow]` (re-verified empirically in the review pass: flipping back to `pub(crate)`
+  reintroduces all 11 warnings). Rationale stands (golden-verified KISS-interop surface + the
+  future activation point); decision now recorded here rather than only in the commit body.
+- **Review pass (post-T5) hardening, same branch:** (a) the T2 param points were
+  order-DEGENERATE (Conv2D stride==padding at both points; ConvTranspose2D
+  padding==output_padding, dilation==groups) — a `key().ints` slot reorder or a future
+  `param(i)`/`param(j)` rule confusion evaluated identically at every point; points are now
+  order-asymmetric, pinned by `synth_param_points_distinguish_every_ints_slot_pair`; (b) a
+  params-dependent variant whose probe combo the shape-coupled synth can't read now WARNS
+  instead of silently skipping every differential
+  (`empty_param_points_for_params_dependent_variant_warns`); (c) the "warned skips" claims for
+  the KISS-gated whole-shape rules were wrong (a non-evaluable rule skips silently, no
+  `ImportWarning`) — reworded to "documented skips" in both corpus files + T3 above.
 
 ## 8. Evidence index
 `ops.md:1966-1968,1985-1997` (reservation) · `umbrella.md:276` (lifecycle) · `rfcs/shape-expression-oracle.md` (§6.20-0002 reservation + Q1) · `shape_expr.rs:17-19,145,216-221,335` · `shape_expr_parse.rs:65-67` · `return_check.rs:32,66,188-236,238-255,332-347,534,590` · `schema.rs:174-185` · `registry.rs:417-428,458,492,555,572` · `conv2d.rs:79-99` · `qmatmul.rs:56-71` · `fused_softmax_cross_entropy.rs:85-110` · `selective_scan.rs:75-90,136-156` · `ssd_chunk_scan.rs:136-163` · `linear-quant.fkc.md:230-243,310-332,459-471` · `conv-rope.fkc.md:217-228,307-320,503-504,596-597` · `register.rs:1174-1178,1336-1340` · `10-decisions-log.md:822-841,875-881` · `ROADMAP.md:142-151` · base `af4b7dd4`.
