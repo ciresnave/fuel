@@ -42,7 +42,7 @@
   - `pub struct RefOutcome { pub pass: bool, pub claim: &'static str, pub detail: String }`
   - `pub struct CorpusOutcome { pub adopt: bool, pub claim: &'static str, pub detail: String }`
 
-- [ ] **Step 1: Write the failing test** — append to the `#[cfg(test)] mod tests` block in `jit_ingest.rs`:
+- [x] **Step 1: Write the failing test** — append to the `#[cfg(test)] mod tests` block in `jit_ingest.rs`:
 
 ```rust
 #[test]
@@ -68,12 +68,12 @@ fn new_outcome_types_construct_and_match() {
 }
 ```
 
-- [ ] **Step 2: Run it, observe failure**
+- [x] **Step 2: Run it, observe failure**
 
 Run: `cargo test -p fuel-dispatch --lib new_outcome_types_construct_and_match`
 Expected: FAIL — `FlagReport` / `IngestOutcome::Flagged` / `VerifyVerdict::Inconclusive` / `OpClass` / `DiffOutcome` etc. not found.
 
-- [ ] **Step 3: Implement the types.** In `jit_ingest.rs`:
+- [x] **Step 3: Implement the types.** In `jit_ingest.rs`:
   - Add after `RejectionReport` (near line 67):
 
 ```rust
@@ -131,12 +131,12 @@ pub struct RefOutcome { pub pass: bool, pub claim: &'static str, pub detail: Str
 pub struct CorpusOutcome { pub adopt: bool, pub claim: &'static str, pub detail: String }
 ```
 
-- [ ] **Step 4: Run tests, observe green**
+- [x] **Step 4: Run tests, observe green**
 
 Run: `cargo test -p fuel-dispatch --lib new_outcome_types_construct_and_match`
 Expected: PASS. Then `cargo build -p fuel-dispatch` (no cuda) — expected: clean (only pre-existing warnings). If un-gating `VerifyVerdict` surfaces new dead-code errors, add `#[allow(dead_code)]` on the offending item; do NOT re-gate the enum.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd C:/Projects/fuel-kiss-ref-backend
@@ -158,7 +158,7 @@ git commit -m "feat(ingest): Inconclusive/Flagged outcome + CPU classify input t
   - `pub const EXACT_FLOOR_KISS_REF_GATES: bool = false;`
   - `pub fn classify_floor_verdict(op_class: OpClass, kiss: Option<&DiffOutcome>, recipe: Option<&RefOutcome>, corpus: Option<&CorpusOutcome>) -> VerifyVerdict`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```rust
 #[test]
@@ -207,12 +207,12 @@ fn classify_all_none_fails() {
 }
 ```
 
-- [ ] **Step 2: Run, observe failure**
+- [x] **Step 2: Run, observe failure**
 
 Run: `cargo test -p fuel-dispatch --lib classify_`
 Expected: FAIL — `classify_floor_verdict` not found.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```rust
 /// Whether kiss-ref may GATE Adopt/Reject on the bitwise-exact floor (where
@@ -270,12 +270,12 @@ pub fn classify_floor_verdict(
 }
 ```
 
-- [ ] **Step 4: Run, observe green**
+- [x] **Step 4: Run, observe green**
 
 Run: `cargo test -p fuel-dispatch --lib classify_`
 Expected: PASS (all five).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add fuel-dispatch/src/jit_ingest.rs
@@ -293,7 +293,7 @@ git commit -m "feat(ingest): classify_floor_verdict with determinism-class arms 
 **Interfaces:**
 - Produces: `pub fn corpus_verdict(op: OpKind, dtype: DType, probe_seed: u64) -> Option<CorpusOutcome>` (returns `None` on the empty corpus — always, today)
 
-- [ ] **Step 1: Failing test**
+- [x] **Step 1: Failing test**
 
 ```rust
 #[test]
@@ -305,12 +305,12 @@ fn corpus_verdict_is_dormant_returns_none() {
 ```
 (Use the real `OpKind` variant name for elementwise add — verify with `grep 'enum OpKind' fuel-ir`; substitute the actual variant if `Add` differs.)
 
-- [ ] **Step 2: Run, observe failure**
+- [x] **Step 2: Run, observe failure**
 
 Run: `cargo test -p fuel-dispatch --lib corpus_verdict_is_dormant_returns_none`
 Expected: FAIL — `corpus_verdict` not found.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```rust
 use fuel_ir::dispatch::OpKind;
@@ -327,12 +327,12 @@ pub fn corpus_verdict(_op: OpKind, _dtype: DType, _probe_seed: u64) -> Option<Co
 }
 ```
 
-- [ ] **Step 4: Run, observe green**
+- [x] **Step 4: Run, observe green**
 
 Run: `cargo test -p fuel-dispatch --lib corpus_verdict_is_dormant_returns_none`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add fuel-dispatch/src/jit_ingest.rs
@@ -350,7 +350,7 @@ git commit -m "feat(ingest): dormant corpus_verdict seam (returns None on empty 
 **Interfaces:**
 - Produces: `fn outcome_from_nonadopt_verdict(verdict: VerifyVerdict, records: Vec<LedgerRecord>, entry_point: &str) -> IngestOutcome` (non-cuda; maps `Fail → Rejected`, `Inconclusive → Flagged`; `Pass` is unreachable here and returns a defensive `Rejected`)
 
-- [ ] **Step 1: Failing tests** (non-cuda — the mapping is pure):
+- [x] **Step 1: Failing tests** (non-cuda — the mapping is pure):
 
 ```rust
 #[test]
@@ -368,12 +368,12 @@ fn map_inconclusive_verdict_to_flagged() {
 }
 ```
 
-- [ ] **Step 2: Run, observe failure**
+- [x] **Step 2: Run, observe failure**
 
 Run: `cargo test -p fuel-dispatch --lib map_`
 Expected: FAIL — `outcome_from_nonadopt_verdict` not found.
 
-- [ ] **Step 3: Implement** the non-cuda helper, and route `ingest_one`'s non-`Pass` arms through it:
+- [x] **Step 3: Implement** the non-cuda helper, and route `ingest_one`'s non-`Pass` arms through it:
 
 ```rust
 /// Map a non-`Pass` verdict to its ingest outcome. Non-cuda + pure so the
@@ -413,12 +413,12 @@ fn outcome_from_nonadopt_verdict(
     }
 ```
 
-- [ ] **Step 4: Run, observe green + build both features**
+- [x] **Step 4: Run, observe green + build both features**
 
 Run: `cargo test -p fuel-dispatch --lib map_`  → PASS.
 Run: `cargo build -p fuel-dispatch` (no cuda) → clean.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add fuel-dispatch/src/jit_ingest.rs
@@ -440,9 +440,9 @@ git commit -m "feat(ingest): route Inconclusive->Flagged via pure outcome mapper
 **Interfaces:**
 - Produces: crate `fuel-kiss-ref-backend`; `pub enum KissRefError { UnsupportedOp(OpTag), UnsupportedDtype(DType), Arity { op: OpTag, expected: usize, got: usize }, LengthMismatch { expected: usize, got: usize }, Eval(kiss_ref_core::Error) }`
 
-- [ ] **Step 1: Ping the POC**, then add `"fuel-kiss-ref-backend",` to the `members` array in the root `Cargo.toml` (after `"fuel-correctness-fixtures",`). Leave it OFF `default-members` (it has a network git dep) — add it to the `default-members` list ONLY if the workspace has one that should include it; otherwise membership + `-p` is enough.
+- [x] **Step 1: Ping the POC**, then add `"fuel-kiss-ref-backend",` to the `members` array in the root `Cargo.toml` (after `"fuel-correctness-fixtures",`). Leave it OFF `default-members` (it has a network git dep) — add it to the `default-members` list ONLY if the workspace has one that should include it; otherwise membership + `-p` is enough.
 
-- [ ] **Step 2: Create `fuel-kiss-ref-backend/Cargo.toml`:**
+- [x] **Step 2: Create `fuel-kiss-ref-backend/Cargo.toml`:**
 
 ```toml
 [package]
@@ -459,7 +459,7 @@ kiss-classify-vocab = { git = "https://github.com/ciresnave/kiss-ref", rev = "<K
 ```
 (If `half` is not a workspace dep, use the version `fuel-ir` uses — check `fuel-ir/Cargo.toml`.)
 
-- [ ] **Step 3: Create `fuel-kiss-ref-backend/src/lib.rs`** with the error type + a compile smoke test:
+- [x] **Step 3: Create `fuel-kiss-ref-backend/src/lib.rs`** with the error type + a compile smoke test:
 
 ```rust
 //! CPU, never-panic adapter exposing `kiss-ref-core` as Fuel's primitive-floor
@@ -490,12 +490,12 @@ mod tests {
 ```
 (Confirm Fuel's op-tag type: `grep 'OpTag' fuel-graph fuel-ir`. Use whichever type `verify_candidate` keys ops by; `OpTag` here is a placeholder for that concrete type.)
 
-- [ ] **Step 4: Build + test**
+- [x] **Step 4: Build + test**
 
 Run: `cargo test -p fuel-kiss-ref-backend`
 Expected: PASS (`error_type_constructs`); cargo fetches `ciresnave/kiss-ref` at `<KISS_REF_REV>`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add Cargo.toml fuel-kiss-ref-backend/
@@ -518,7 +518,7 @@ git commit -m "feat(kiss-ref-backend): scaffold crate + KissRefError (git dep on
   - `pub fn is_exact_floor(op: OpTag) -> bool`
   - `pub fn supports(op: OpTag, dtype: DType) -> bool`
 
-- [ ] **Step 1: Failing tests** (in `mapping.rs`):
+- [x] **Step 1: Failing tests** (in `mapping.rs`):
 
 ```rust
 #[cfg(test)]
@@ -546,19 +546,19 @@ mod tests {
 ```
 (Use the real Fuel `OpTag`/`DType` variant names — verify against `fuel-ir`. `F8E4M3` is illustrative; use Fuel's actual FP8 variant.)
 
-- [ ] **Step 2: Run, observe failure**
+- [x] **Step 2: Run, observe failure**
 
 Run: `cargo test -p fuel-kiss-ref-backend mapping`
 Expected: FAIL — functions not found.
 
-- [ ] **Step 3: Implement `mapping.rs`** — an explicit `match` for the floor subset (add/sub/mul/div/neg/recip/abs/sqrt/rsqrt/exp/log/sin/cos/tanh/erf/relu/max/min + the integer floor), mapping each `OpTag` variant to its `kiss_ops_vocab::Op`, returning `None` off the floor. `is_exact_floor` matches the exact subset (arith/int/compare/select/round/cast/bitwise) → `true`, the transcendental subset → `false`. `dtype_to_kiss` maps `F16/BF16/F32/F64` + integer dtypes, `None` for FP8/complex/bool/MX. `supports(op, dtype) = op_to_kiss(op).zip(dtype_to_kiss(dtype)).map(|(o,d)| kiss_ref_core::support(o, d) == kiss_ref_core::Support::Done).unwrap_or(false)`. (Confirm `kiss_ref_core::support`'s exact signature against the pinned rev; it returns `Support::{Done,Pending}`.)
+- [x] **Step 3: Implement `mapping.rs`** — an explicit `match` for the floor subset (add/sub/mul/div/neg/recip/abs/sqrt/rsqrt/exp/log/sin/cos/tanh/erf/relu/max/min + the integer floor), mapping each `OpTag` variant to its `kiss_ops_vocab::Op`, returning `None` off the floor. `is_exact_floor` matches the exact subset (arith/int/compare/select/round/cast/bitwise) → `true`, the transcendental subset → `false`. `dtype_to_kiss` maps `F16/BF16/F32/F64` + integer dtypes, `None` for FP8/complex/bool/MX. `supports(op, dtype) = op_to_kiss(op).zip(dtype_to_kiss(dtype)).map(|(o,d)| kiss_ref_core::support(o, d) == kiss_ref_core::Support::Done).unwrap_or(false)`. (Confirm `kiss_ref_core::support`'s exact signature against the pinned rev; it returns `Support::{Done,Pending}`.)
 
-- [ ] **Step 4: Run, observe green**
+- [x] **Step 4: Run, observe green**
 
 Run: `cargo test -p fuel-kiss-ref-backend mapping`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add fuel-kiss-ref-backend/
@@ -577,7 +577,7 @@ git commit -m "feat(kiss-ref-backend): op/dtype mapping + is_exact_floor + suppo
 **Interfaces:**
 - Produces: `pub fn reference_f32(op: OpTag, inputs: &[&[f32]]) -> Result<Vec<f32>, KissRefError>` (+ f64/f16/bf16), `pub fn diff_f32(op: OpTag, candidate: &[f32], inputs: &[&[f32]], tol: Tolerance) -> Result<DiffReport, KissRefError>` (+ f64/f16/bf16); re-exports `kiss_ref_core::{Tolerance, DiffReport}`.
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 ```rust
 #[cfg(test)]
@@ -610,13 +610,13 @@ mod tests {
 ```
 (Adjust `rep.within()` to the real `DiffReport` accessor at the pinned rev — check `kiss_ref_core::diff` return shape; it may be a field or a method.)
 
-- [ ] **Step 2: Run, observe failure** — `cargo test -p fuel-kiss-ref-backend reference` → FAIL (not found).
+- [x] **Step 2: Run, observe failure** — `cargo test -p fuel-kiss-ref-backend reference` → FAIL (not found).
 
-- [ ] **Step 3: Implement `reference.rs`.** Each `reference_f32` maps the op via `op_to_kiss` (else `UnsupportedOp`), calls `kiss_ref_core::reference_f32(kiss_op, inputs)`, maps `kiss_ref_core::Error → KissRefError::Eval`. `diff_f32` computes the reference, length-checks candidate vs reference (`LengthMismatch`), then calls `kiss_ref_core::diff_f32(candidate, &reference, tol)`. (Confirm the exact `kiss_ref_core::reference_f32` / `diff_f32` signatures at `<KISS_REF_REV>` — the crate re-exports them from its `diff` module.)
+- [x] **Step 3: Implement `reference.rs`.** Each `reference_f32` maps the op via `op_to_kiss` (else `UnsupportedOp`), calls `kiss_ref_core::reference_f32(kiss_op, inputs)`, maps `kiss_ref_core::Error → KissRefError::Eval`. `diff_f32` computes the reference, length-checks candidate vs reference (`LengthMismatch`), then calls `kiss_ref_core::diff_f32(candidate, &reference, tol)`. (Confirm the exact `kiss_ref_core::reference_f32` / `diff_f32` signatures at `<KISS_REF_REV>` — the crate re-exports them from its `diff` module.)
 
-- [ ] **Step 4: Run, observe green** — `cargo test -p fuel-kiss-ref-backend reference` → PASS.
+- [x] **Step 4: Run, observe green** — `cargo test -p fuel-kiss-ref-backend reference` → PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add fuel-kiss-ref-backend/
@@ -637,11 +637,11 @@ git commit -m "feat(kiss-ref-backend): reference_* + diff_* over the floor"
 **Interfaces:**
 - Consumes: `fuel_kiss_ref_backend::{supports, is_exact_floor, diff_f32, Tolerance}`, `classify_floor_verdict`, `corpus_verdict`, `DiffOutcome`, `OpClass` (Tasks 2-3, 6-7)
 
-- [ ] **Step 1:** Add to `fuel-dispatch/Cargo.toml` `[dependencies]`: `fuel-kiss-ref-backend = { path = "../fuel-kiss-ref-backend" }`.
+- [x] **Step 1:** Add to `fuel-dispatch/Cargo.toml` `[dependencies]`: `fuel-kiss-ref-backend = { path = "../fuel-kiss-ref-backend" }`.
 
-- [ ] **Step 2: Write the `#[ignore]` live-CUDA test** — a floor candidate (`Add`, f32) with `decompose: None` but kiss-ref support drives `verify_candidate` → `VerifyVerdict::Inconclusive` (not `Fail`). Model it on the existing `#[ignore]` cuda tests in the file (`verify_candidate_add_f32_passes_against_its_decompose`). Assert `matches!(verdict, VerifyVerdict::Inconclusive { .. })`.
+- [x] **Step 2: Write the `#[ignore]` live-CUDA test** — a floor candidate (`Add`, f32) with `decompose: None` but kiss-ref support drives `verify_candidate` → `VerifyVerdict::Inconclusive` (not `Fail`). Model it on the existing `#[ignore]` cuda tests in the file (`verify_candidate_add_f32_passes_against_its_decompose`). Assert `matches!(verdict, VerifyVerdict::Inconclusive { .. })`. *(Shipped in the advisory form as `kiss_ref_advisory_records_for_add_f32` — asserts the `kiss_ref_advisory` ledger record; the `Inconclusive` assertion belongs to the deferred Step-3 classify wiring.)*
 
-- [ ] **Step 3: Implement the wiring** in `verify_candidate_impl`, in the numeric-claims region, computing the pieces and delegating to `classify_floor_verdict`:
+- [ ] *(deferred follow-up — tracked in ROADMAP; shipped instead: the advisory-only kiss-ref cross-check — f32 single-primitive, `kiss_ref_advisory` ledger record, flag-not-verdict per §6.6-0007)* **Step 3: Implement the wiring** in `verify_candidate_impl`, in the numeric-claims region, computing the pieces and delegating to `classify_floor_verdict`:
   - `op_class` = `if region_contains_transcendental(dec) { OpClass::Transcendental } else { OpClass::Exact }` (reuse the item-#3 helper).
   - `kiss: Option<DiffOutcome>` = if `fuel_kiss_ref_backend::supports(op, dtype)`, run `diff_f32(op, &cand_out_host, &input_host_slices, tol)` and summarize into `DiffOutcome { within, max_ulp, detail }`; record an advisory `flag` ledger entry regardless. Else `None`.
   - `recipe: Option<RefOutcome>` = the existing recipe-realize result (Pass/Fail) expressed as `RefOutcome`, or `None` when no decompose/registered recipe exists.
@@ -649,9 +649,9 @@ git commit -m "feat(kiss-ref-backend): reference_* + diff_* over the floor"
   - `let verdict = classify_floor_verdict(op_class, kiss.as_ref(), recipe.as_ref(), corpus.as_ref());` and return it (replacing the current hard-`Fail`-on-no-reference return with this delegation).
   - Keep the existing transcendental band-widening (item #3) applied to the `recipe`/`kiss` tolerance as today.
 
-- [ ] **Step 4: Verify.** CPU: `cargo build -p fuel-dispatch` clean. GPU (local, optional now): `cargo test -p fuel-dispatch --features cuda -- --ignored verify_` after prepending the cuDNN path (see CLAUDE.md runtime-PATH note). Report results faithfully; if GPU unavailable, state the live leg is unrun.
+- [x] **Step 4: Verify.** CPU: `cargo build -p fuel-dispatch` clean. GPU (local, optional now): `cargo test -p fuel-dispatch --features cuda -- --ignored verify_` after prepending the cuDNN path (see CLAUDE.md runtime-PATH note). Report results faithfully; if GPU unavailable, state the live leg is unrun.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add fuel-dispatch/Cargo.toml fuel-dispatch/src/jit_ingest.rs
@@ -664,9 +664,9 @@ git commit -m "feat(ingest): wire kiss-ref reference into verify_candidate (advi
 
 **Files:** Modify: `fuel-dispatch/src/jit_ingest.rs` (test module)
 
-- [ ] **Step 1:** Add an `#[ignore]` `#[cfg(feature = "cuda")]` test driving `IngestionService::start` with a no-decompose floor candidate → asserts an `IngestOutcome::Flagged` reaches `ProviderFeedback::on_flagged` (model on the existing Task-8 end-to-end test in the file).
-- [ ] **Step 2:** Run locally if a GPU is available (`--features cuda -- --ignored`); otherwise record as unrun.
-- [ ] **Step 3: Commit** `test(ingest): e2e ignore-cuda leg for Flagged escalation`.
+- [ ] *(deferred follow-up — tracked in ROADMAP: IngestionService-level `Flagged` e2e depends on the deferred Task-8 Step-3 classify wiring; the shipped live-GPU leg is the advisory `kiss_ref_advisory_records_for_add_f32` test)* **Step 1:** Add an `#[ignore]` `#[cfg(feature = "cuda")]` test driving `IngestionService::start` with a no-decompose floor candidate → asserts an `IngestOutcome::Flagged` reaches `ProviderFeedback::on_flagged` (model on the existing Task-8 end-to-end test in the file).
+- [ ] *(deferred follow-up — tracked in ROADMAP)* **Step 2:** Run locally if a GPU is available (`--features cuda -- --ignored`); otherwise record as unrun.
+- [ ] *(deferred follow-up — tracked in ROADMAP)* **Step 3: Commit** `test(ingest): e2e ignore-cuda leg for Flagged escalation`.
 
 ---
 
@@ -674,8 +674,8 @@ git commit -m "feat(ingest): wire kiss-ref reference into verify_candidate (advi
 
 **Files:** Modify: `docs/outreach/kiss-conformance-architecture-fuel-ratify.md`; possibly `fuel-dispatch/src/jit_ingest.rs`
 
-- [ ] **Step 1:** In the ratify doc §6, change item #3 from a "queued, pending" follow-up to "DONE + wired (`region_contains_transcendental`/`widen_bound_for_transcendental` in `jit_ingest.rs`)", correcting the drift. Commit `docs(outreach): correct item-#3 status (transcendental band already wired)`.
-- [ ] **Step 2 (CONDITIONAL — only if `44elbk9y` ruled that §6.6-0007 permits live-gating bitwise-exact ops):** flip `EXACT_FLOOR_KISS_REF_GATES` to `true`; add a `classify_` test asserting an exact op with a discrepant kiss-ref and no recipe now `Fail`s (gates), and an in-band exact op `Pass`es. Run `cargo test -p fuel-dispatch --lib classify_`. Commit `feat(ingest): gate exact-floor verdicts on kiss-ref per §6.6-0007 ruling`. If the ruling forbids it, leave the switch `false` and record the decision in the spec.
+- [x] **Step 1:** In the ratify doc §6, change item #3 from a "queued, pending" follow-up to "DONE + wired (`region_contains_transcendental`/`widen_bound_for_transcendental` in `jit_ingest.rs`)", correcting the drift. Commit `docs(outreach): correct item-#3 status (transcendental band already wired)`.
+- [ ] *(DELETED by the REVISION ADDENDUM item 1 — the §6.6-0007 ruling makes kiss-ref permanently advisory; there is no gate to flip and `EXACT_FLOOR_KISS_REF_GATES` was never built)* **Step 2 (CONDITIONAL — only if `44elbk9y` ruled that §6.6-0007 permits live-gating bitwise-exact ops):** flip `EXACT_FLOOR_KISS_REF_GATES` to `true`; add a `classify_` test asserting an exact op with a discrepant kiss-ref and no recipe now `Fail`s (gates), and an in-band exact op `Pass`es. Run `cargo test -p fuel-dispatch --lib classify_`. Commit `feat(ingest): gate exact-floor verdicts on kiss-ref per §6.6-0007 ruling`. If the ruling forbids it, leave the switch `false` and record the decision in the spec.
 
 ---
 
