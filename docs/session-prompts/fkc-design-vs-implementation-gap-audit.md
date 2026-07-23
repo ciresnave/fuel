@@ -1,5 +1,18 @@
 # FKC design-vs-implementation gap audit — the complete fingerprint
 
+> **2026-07-22 closure status.** The audit's headline findings are CLOSED by the
+> `fix/fkc-gap-closure` merge `cf0c3ee2` (2026-07-13): finding 1 — §5 return-contract
+> validation (`b1c33f91` §5.1/§5.2 return-rule interpreter, `8162f056` declared-vs-real
+> `FusedOpEntry` cross-check, `9f09a94a` §5.5 bundle-arity vs `output_views`);
+> finding 2 — the §2.3 cost-expression compiler (`28ea2953` primitives priced by the
+> declared cost AST at the ranking site, `56b82d31` declared fused cost reaches layer-1
+> pricing); and V-FKC-9 (`461c3bbc` import-time precision gate, `ece3c0e2`
+> verification-ledger type + embedded loader). Convergence-C (2026-07-21,
+> [10-decisions-log](../architecture/10-decisions-log.md)) further activated the
+> shape-rule cross-check over ~16 of the 22 registered fused ops. **The remaining
+> findings of the ~24-finding body have NOT been re-audited** — verify any of them
+> against current code before treating them as open OR closed.
+
 **Status (2026-07-11): reference document, produced by 5 parallel deep-research passes over the
 entire `docs/session-prompts/kernel-contract-adoption-plan.md` design doc, each independently
 cross-checking every mechanism it specifies against the actual shipped code in

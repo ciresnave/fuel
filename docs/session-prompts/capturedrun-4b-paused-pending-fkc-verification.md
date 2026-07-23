@@ -1,5 +1,18 @@
 # CapturedRun 4b: PAUSED pending FKC contract verification + automatic kernel integration
 
+> **2026-07-22 update — SUPERSEDED: the resume condition was met and 4b COMPLETED.**
+> The FKC contract-verification prerequisite this pause demanded was built and merged:
+> the `fix/fkc-gap-closure` merge `cf0c3ee2` (2026-07-13 — §5 return-contract
+> cross-check, §2.3 cost-AST pricing, the V-FKC-9 import gate + verification ledger),
+> then the Spec-B candidate-kernel ingestion service (merged @ `cbb2e289`, 2026-07-14)
+> and the Increment-1 recipe-identity verification + rope oracle (merged @ `afc6ff32`,
+> 2026-07-15). CapturedRun 4b then COMPLETED 2026-07-13: the acceptance test
+> `forward_with_kv_context_captured_matches_persistent` is byte-exact GREEN
+> (`ef01a5dc`) and the 4b-ε bench measured a **10.4× captured-replay speedup,
+> byte-exact** on TinyLlama-1.1B/RTX 4070 (`9b7a5d1c`); the work is merged to main.
+> Kept as the historical record of the pause decision and the prerequisite's design
+> sketch — the pause below is NOT a live gate.
+
 **Status (2026-07-11): PAUSED, by explicit user decision.** Do not resume any work toward
 finishing task 4b-δ (fuel-core wiring of `CapturedDecodeSession` into the real Llama decode
 loop), 4b-ε (the captured-decode bench leg), or the broader "audit the next unaudited kernel
