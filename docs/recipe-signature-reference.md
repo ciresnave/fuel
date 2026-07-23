@@ -63,9 +63,9 @@ pub enum PatternNode {
 
 `Bind { index }` is the only concrete-recipe leaf. `bind_indices()` (`lib.rs:278-298`) collects the distinct `Bind` indices post-order, sorted + deduped. A region's binds MUST form a contiguous `[0, n_inputs)` — validated at registration (`runtime_fused.rs:152-156`, error `NonContiguousBinds`) and re-checked after a match (`jit.rs:259-265`). A **repeated `index`** is a node-identity guard on a shared *input* (`lib.rs:264-267`; tested at `lib.rs:322-331`, where `mul(x, x)` → binds `[0]`); the matcher enforces "same index must bind the SAME node" at `jit.rs:279-288`.
 
-### `OpAttrs` — the 13 non-tensor attribute fields
+### `OpAttrs` — the non-tensor attribute fields (13 concrete + 6 Increment-C-slice-1 additions)
 
-`fuel-kernel-seam-types/src/lib.rs:70-120`, `#[derive(Clone, Debug, Default, PartialEq)]`. Each field rides specific `OpTag`s; an **unset** field is a matcher wildcard (see below).
+`fuel-kernel-seam-types/src/lib.rs:70-190`, `#[derive(Clone, Debug, Default, PartialEq)]`. Each field rides specific `OpTag`s; an **unset** field is a matcher wildcard (see below). The 13 fields below are the concrete, serialized set; six more were added in Increment C slice 1 (the note after the table).
 
 | Field | Type | Line | Rides which OpTag(s) | Notes |
 |---|---|---|---|---|
@@ -85,6 +85,8 @@ pub enum PatternNode {
 
 The fields `slice_start` … `keepdim` are the Convergence-Increment-A additions.
 
+**Increment C slice 1 added six more fields** (`lib.rs:151-190`), all `Default`-empty so existing regions are unchanged. Four are the shape-**relative** recipe-interior carriers, resolved to the concrete fields above at emit time and **not serialized on the wire** this slice (§A "Shipped in slice 1", D2): `target_shape_rel: Option<ShapeExpr>`, `slice_start_rel`/`slice_len_rel: Option<Dim>`, `axis_last: bool`. Two are the matmul role vectors, **serialized** into the §6.19 blob (§C, T9): `lhs_roles`/`rhs_roles: Vec<u8>`. Neither group is consulted by `attrs_match` this slice.
+
 ### `op_to_attrs` — graph-side projection
 
 `fuel-graph/src/jit.rs:139-202` reads typed `Op` payloads (`Op::Permute(Vec<usize>)`, `Op::AddScalar(f64)`, …) into the flat `OpAttrs` surface so the seam-types crate stays graph-free. It is **matcher-driven** (`jit.rs:128-138`): it fills only the fields `attrs_match` needs today, so the axis-bearing ops `tag_to_op` *can* reconstruct (`CumSum`/`IndexSelect`/`Gather`/`IndexAdd`/`ScatterAdd`) are deliberately **not** projected (the `_ => {}` arm at `jit.rs:199`). This is a projection-only gap; the re-emit path gets attrs from the region author directly.
@@ -103,7 +105,7 @@ fn attrs_match(pattern: &OpAttrs, node: &OpAttrs) -> bool {
 }
 ```
 
-An **unset** field on the pattern (`Vec` empty / `Option` `None`) is a wildcard (matches any graph value); a **set** field must equal exactly. This is what keeps every existing attr-agnostic pattern (authored with `OpAttrs::default()`) matching after attrs became comparable, while letting a layout/scalar pattern discriminate. Note that only **5 of the 13 fields** are consulted here — the Convergence-A additions serialize into the canonical blob (§6) but are not yet matcher predicates.
+An **unset** field on the pattern (`Vec` empty / `Option` `None`) is a wildcard (matches any graph value); a **set** field must equal exactly. This is what keeps every existing attr-agnostic pattern (authored with `OpAttrs::default()`) matching after attrs became comparable, while letting a layout/scalar pattern discriminate. Note that only **5 of the 19 fields** are consulted here — the Convergence-A additions and the Increment-C-slice-1 role vectors serialize into the canonical blob (§6), and the slice-1 rel fields stay off the wire (§A), but none is yet a matcher predicate.
 
 ## 2. The `OpTag` base-op vocabulary
 
@@ -251,7 +253,7 @@ Both directions today are a **recursive tree**. `emit` (`runtime_fused.rs:486-54
 
 **Outer framing** (`lib.rs:243-245`): `out = u32_le(body.len() /* BYTES */) ++ body`. The body is a per-op **positional** little-endian blob (no field names, no elision — the `OpTag` fixes the schema).
 
-**Empty-schema ops** (elementwise, comparison, `Where`, `MatMul`, scalar reductions, log-softmax, and any tag added later) hit the `_ => {}` arm (`lib.rs:239-241`) → empty body → the single canonical form `[0,0,0,0]` (tested `lib.rs:336-340` for `Add`/`MatMul`).
+**Empty-schema ops** (elementwise, comparison, `Where`, scalar reductions, log-softmax, and any tag added later) hit the `_ => {}` arm → empty body → the single canonical form `[0,0,0,0]` (tested `lib.rs` for `Add`). `MatMul` **no longer falls through** — since T9 it has a named arm (Part II §C); with empty role vectors it still produces `[0,0,0,0]` (`matmul_empty_roles_stay_the_canonical_zero_body`).
 
 **`put_*` byte writers** (`lib.rs:146-153`), all little-endian:
 
@@ -259,7 +261,7 @@ Both directions today are a **recursive tree**. `emit` (`runtime_fused.rs:486-54
 - `put_str` = `u32_le(s.len())` ++ raw UTF-8 (`lib.rs:150`).
 - `put_i64_list`/`put_u32_list`/`put_f64_list` = `u32_le(xs.len())` ++ elements — **the list prefix is the ELEMENT COUNT, not a byte length** (`lib.rs:151-153`), in contrast to the outer frame's byte length.
 
-There is **no `put_u8` and no u8-list helper** — relevant to the pinned matmul role-vectors (Part II §C).
+A `put_u8_list` helper (`lib.rs:226`, `u32_le(count) ++ u8s`) was added in Increment C slice 1 T9 for the pinned matmul role-vectors (Part II §C) — the pre-slice-1 blob had no u8-list writer.
 
 Per-op positional arms (`lib.rs:182-242`):
 
@@ -271,7 +273,7 @@ Per-op positional arms (`lib.rs:182-242`):
 | `Slice` | `u32(axis) ++ u64(start) ++ u64(len)` |
 | `Concat`/`Flip`/`Triu`/`Tril`/`IndexSelect`/`Gather`/`IndexAdd`/`ScatterAdd` | `i64(axis)` |
 | `Roll` | `i64(axis) ++ i64(shift)` |
-| `SumDim`/`MeanDim`/`CumSum` | `i64(axis) ++ u8(keepdim)` |
+| `SumDim`/`MaxDim`/`MeanDim`/`CumSum` | `i64(axis) ++ u8(keepdim)` (`MaxDim` additive, Increment C slice 1 T4 — monoid rides `op_name`) |
 | `Cast` | `put_str(cast_dtype)` |
 | `Pad` | `u32(count) ++ (u64 before, u64 after)*count ++ u8(mode) ++ f64(value)` |
 | `AddScalar`/`MulScalar`/`Clamp`/`PowI` | `put_f64_list(scalars)` |
@@ -380,9 +382,39 @@ So: the recipe DAG answers *structure + identity* (op tags, operands, canonical 
 
 # Part II — Realization & in-flight migrations (Convergence Increment C)
 
-**Increment A shipped (2026-07-16).** It grew `emit` to full first-order parity via the shared `primitive_shape`, grew `OpAttrs` + `to_canonical_bytes` (the §6.19 blob), and landed the flat-DAG-schema reply. **Convergence-C shipped the shape-oracle (2026-07-22, merged @ `9156e178`)** — the shape-expression evaluator and its independent §6.20 wire codec (`fkc/shape_expr.rs`, `fkc/shape_expr_parse.rs`, the extended `fkc/return_check.rs`), so **§B below is now SHIPPED**, not target. **§A (flat-DAG-CSE migration) and §C (matmul role-vector `op_attrs` serialization) remain NOT built** — verified unchanged by Convergence-C (which touched only the FKC shape-oracle files), so read §A and §C as *target* and §B as *as-built*, with §B's recipe-interior home (the change coupled to §A) still pending. The as-built base is Part I.
+**Increment A shipped (2026-07-16).** It grew `emit` to full first-order parity via the shared `primitive_shape`, grew `OpAttrs` + `to_canonical_bytes` (the §6.19 blob), and landed the flat-DAG-schema reply. **Convergence-C shipped the shape-oracle (2026-07-22, merged @ `9156e178`)** — the shape-expression evaluator and its independent §6.20 wire codec, so **§B below is SHIPPED**. **Increment C slice 1 shipped the recipe-interior FOUNDATIONS (2026-07-23, branch `feat/increment-c-slice1`, T1–T9 `fbe96f0d`..`12c102cf`)**:
+
+- the shape-expression vocabulary moved to its permanent dependency-free home `fuel-kernel-seam-types` (T1; `fkc/shape_expr.rs` is now a `pub use` shim — §B's `shape_expr.rs:*` line anchors are byte-identical, only the crate directory changed);
+- shape-**relative** `OpAttrs` interior fields + a pure `resolve_rel_attrs` resolver + a children-first resolving `emit` (T2/T3, D2/D3/D4);
+- the additive `OpTag::MaxDim` (T4);
+- a `decompose_via_recipe` bridge (T5) and **5 of the ~16 migratable registry `decompose` fns migrated to portable `PatternNode` data** — `softmax_last_dim`, `rope`, `rms_norm_last_dim`, `layer_norm_last_dim`, `softmax_last_dim_backward` (T5–T8), each shape- AND rank-polymorphic;
+- **the locked matmul role-vector `op_attrs` serialize/resolve, live in both directions (T9), so §C below is SHIPPED**.
+
+What **remains NOT built** in §A is the flat-DAG-CSE indexed node/table WIRE serializer + the maximal-CSE representation (KISS #67-gated, slices 3–4) and the remaining ~11 first-order migrations. So read §A's flat-table WIRE as *target*, its decompose→`PatternNode`-data + shape-relative-attr coupling as *shipped for 5 ops* (§A "Shipped in slice 1"), §B as *as-built*, and §C as *as-built*. The as-built base is Part I.
 
 ## A. Flat-DAG-CSE migration
+
+### Shipped in slice 1 (2026-07-23) — the recipe-interior foundations
+
+Increment C slice 1 built the machinery §A needs and migrated the first-order tranche. It did **not** build the flat indexed node/table WIRE serializer or the maximal-CSE representation (below, still target — KISS #67-gated). As-built:
+
+**5 of the ~16 migratable `decompose` fns are now `PatternNode` data.** Each submodule's imperative `&mut Graph` body is replaced by a `OnceLock`-built static `recipe() -> &'static PatternNode`, a per-entry `scalars(&FusedOpParams) -> Option<Vec<f64>>` projection, and a one-line `decompose = decompose_via_recipe(g, id, recipe(), scalars(params))` — the D6 mechanism; the `FusedOpEntry.decompose` fn *signature* (`registry.rs:112`) is untouched:
+
+| Fused op | Recipe (op composition) | Anchors (`recipe`/`decompose`) |
+|---|---|---|
+| `softmax_last_dim` | `Div(Exp(Sub(x, Bcast(Unsqueeze(MaxDim x)))), Bcast(Unsqueeze(SumDim e)))` — 9 op nodes | `registry/softmax_last_dim.rs:82` / `:130` |
+| `rope` | `Add(Mul(x, Bcast cos), Mul(Concat(Neg(Slice₂), Slice₁), Bcast sin))` — 9 recipe nodes, D4 pad → **11-node byte-identical emission** | `registry/rope.rs:102` / `:180` |
+| `rms_norm_last_dim` | `Div(x, Bcast(Sqrt(AddScalar[eps](Unsqueeze(MeanDim(Sqr x))))))` — 7 nodes, `eps` open slot | `registry/rms_norm_last_dim.rs:91` / `:143` |
+| `layer_norm_last_dim` | `centered = Sub(x, Bcast(Unsqueeze(MeanDim x)))`; `Div(centered, Bcast(Sqrt(AddScalar[eps](Unsqueeze(MeanDim(Sqr centered))))))` — 11 nodes, x-only input | `registry/layer_norm_last_dim.rs:103` / `:163` |
+| `softmax_last_dim_backward` | `Mul(s, Sub(g, Bcast(Unsqueeze(SumDim(Mul(g, s))))))` — the D3 swap of the legacy `ReduceSumTo` form; via the `BackwardKind::Fused` autograd path | `registry/softmax_last_dim_backward.rs:113` / `:159` |
+
+`decompose_via_recipe` (`registry.rs:900`) reads the fused node's inputs as binds, projects scalars, and calls the resolving `emit`; **ANY failure** (wrong-params payload, resolution decline, slot mismatch) returns `id` — the fixpoint, surfaced-gap, never-panic posture the imperative bodies carried (G2). The 5 recipes are **shape- AND rank-polymorphic**: the same static data lowers `softmax_last_dim` correctly at both `[2,4]` and `[3,5,7]` — the thing a `PatternNode` that baked absolute shapes could not do (proven in the polymorphic-decompose tests, `runtime_fused.rs`/`registry/*`).
+
+**Shape-relative interior attrs (D2/D3/D4).** Four optional `OpAttrs` fields carry the shape-relative recipe interior, all `Default`-empty (zero behavior change for existing regions): `target_shape_rel: Option<ShapeExpr>` (`SameAs` over the Bind space), `slice_start_rel`/`slice_len_rel: Option<Dim>` (`DimExpr` over bind shapes), `axis_last: bool` (this op's axis-carrier = its per-tag LAST) — `fuel-kernel-seam-types/src/lib.rs:151-163`. They resolve to concrete `OpAttrs` at emit time via `resolve_rel_attrs(attrs, bind_shapes, child_shapes) -> Result<OpAttrs, RelAttrError>` (`runtime_fused.rs:511`), which **reuses `shape_expr::eval_dim`/`resolve_axis`** (no second evaluator) and returns a typed `RelAttrError` (`runtime_fused.rs:427`) — bind-out-of-range, rel+abs both set, `axis_last` on an axis-less tag, symbolic-bind gap — **never a panic**. `emit` reorders children-first, then resolves, then runs the unchanged `tag_to_op` → `primitive_shape` path; `validate_representable` gained a rel-attr probe (rel XOR abs per field + bind-range checks).
+
+**The rel fields are deliberately NOT serialized this slice (D2).** `to_canonical_bytes` serializes only the concrete fields; the pin is executable in `rel_attr_fields_are_absent_from_the_6_19_wire` (`lib.rs:571`) — the §6.19 `broadcast_to`/`slice` arms stay ABSOLUTE and the node-envelope framing that would carry a relative alternative is KISS #67-gated (propose-first).
+
+**The D3 keepdim swap adds `OpTag::MaxDim`** (`lib.rs:55`, additive per `#[non_exhaustive]`) so `ReduceMaxTo(keepdim)+Bcast` becomes the shape-polymorphic `MaxDim+Unsqueeze+Bcast`; it serializes the pinned reduce row (`i64(axis) ++ u8(keepdim)`, byte-identical to `SumDim` — the monoid rides `op_name`; `max_dim_serializes_the_reduce_row`, `lib.rs:615`). **The migrated ops' base maps change** → `base_map_hash` changes (process-local only, no persisted/cross-process blast radius, §6); the `emit_matches_*` parity oracles were held against frozen legacy builders with **bit-exact** numeric parity as the gate.
 
 ### Representation vs identity — the boundary the migration turns on
 
@@ -418,7 +450,7 @@ The registry declares **22** fused-op submodules (`registry.rs:34-55`), each exp
 - **6 excluded from first-order migration**: 4 basis-gap self-returns — `conv2d` (`registry/conv2d.rs:127-129`, `return id`), `conv_transpose_2d` (`registry/conv_transpose_2d.rs:111`), `qmatmul` (`registry/qmatmul.rs:100`), `inplace_affine` (`registry/inplace_affine.rs:67`) (need `Im2Col`/`Col2Im`/GGUF-unpack/`AffineInplace` IR primitives); + 2 higher-order scans — `selective_scan` (`registry/selective_scan.rs:232`), `ssd_chunk_scan` (`registry/ssd_chunk_scan.rs:213`), which decompose onto `Op::Scan` and are outside the first-order `emit`/`primitive_shape` path.
 - **~16 migratable** = 22 − 4 − 2 (softmax, layer_norm, rms_norm, rope, fused_linear, the backward helpers, etc.).
 
-These are imperative `&mut Graph` builders. `emit` already produces byte-for-byte-identical output against them — proven by `emit_matches_rope_decompose` (`runtime_fused.rs:937-969`), `emit_matches_softmax_last_dim_decompose` (`runtime_fused.rs:899-934`), `emit_matches_layer_norm_last_dim_decompose` (`runtime_fused.rs:972-1012`), each asserting structural equality against the hand-written oracle. The migration replaces each builder with a static `PatternNode` region + `emit`.
+These were imperative `&mut Graph` builders. `emit` already produces byte-for-byte-identical output against them — proven by `emit_matches_rope_decompose`, `emit_matches_softmax_last_dim_decompose`, `emit_matches_layer_norm_last_dim_decompose`, each asserting structural equality against the hand-written oracle. The migration replaces each builder with a static `PatternNode` region + `emit`. **As of slice 1, 5 of the ~16 are migrated** (`softmax_last_dim`, `rope`, `rms_norm_last_dim`, `layer_norm_last_dim`, `softmax_last_dim_backward` — see "Shipped in slice 1" above); the remaining ~11 (`fused_linear` and the backward helpers with shape-derived scalar slots / param-conditional structure) stay imperative, which is legal — the `decompose` fn signature is unchanged — until their carriers land (slice 2+).
 
 ### The absolute-shape-baking coupling (why C is two changes, not one)
 
@@ -541,7 +573,7 @@ Some(DynScalar::Sym(_)) => return id,   // return self — the never-crash fixpo
 The reframe resolved "same vocabulary, two homes" into **three homes** — two now shipped, one pending:
 
 1. **Fuel FKC return-contract — SHIPPED (Convergence-C).** `eval_shape_rule` (`return_check.rs:32`) evaluates `SameAs` + `DimExpr` + the matmul rule (above); `shape_expr::shape_consistent` (`:297`) is the §6.4-0011 tie. This was "the one home with a live evaluator (`same_as` only)"; it is now the full vocabulary.
-2. **Fuel recipe interior — STILL Increment C (NOT built).** `PatternNode` still bakes absolute shapes (`OpAttrs.target_shape`, `lib.rs:86` — verified unchanged by Convergence-C). Making interior-node shapes relative with the same `SameAs`+`DimExpr` grammar is the change coupled to §A, still pending; the shipped `shape_expr` codec is the vocabulary that migration will serialize into. There is no baked-shape defect in KISS to repair.
+2. **Fuel recipe interior — FOUNDATIONS SHIPPED (Increment C slice 1), remainder pending.** The interior can now carry shape-*relative* attrs in the same `SameAs`+`DimExpr` grammar: the optional `OpAttrs` rel fields (`target_shape_rel`/`slice_start_rel`/`slice_len_rel`/`axis_last`, `lib.rs:151-163`) resolved at emit by `resolve_rel_attrs` (`runtime_fused.rs:511`, reusing `shape_expr::eval_dim`/`resolve_axis`), and **5 migrated `decompose`s use them** (§A "Shipped in slice 1"). The rel form is resolved to concrete `OpAttrs` at emit and **not yet serialized** (D2 — the §6.19 arms stay absolute, node-envelope framing is KISS #67-gated). Still pending: the remaining ~11 first-order migrations, the flat-DAG-CSE node/table WIRE that would serialize the rel form, and the `reduced_count` leaf. `PatternNode`'s absolute-shape attrs (`OpAttrs.target_shape`, `lib.rs:86`) remain for un-migrated recipes. There is no baked-shape defect in KISS to repair.
 3. **KISS shape ORACLE — SHIPPED Fuel-side as the independent reference.** `shape_expr.rs` is Fuel's independent, byte-matching implementation of the KISS §6.20 oracle — the shape-side companion to the §6.4-0006 value oracle. The interior-consistency + Interface-vs-semantics rules `reduce_shape`/`gather_shape`/`matmul_shape` (`:253-290`) + `shape_consistent` (`:297`) catch e.g. a gather advertising `same_as(data)` (its output equals no operand's shape) or a non-keepdim single-axis reduce over rank-3 declaring `rank=3`. KISS contracts are monomorphized per `structure_key`, so this is interior-consistency + Interface-vs-semantics, not making the return contract polymorphic.
 
 One grammar, one serialization, three attachment points. *(The claim that `OutputDesc.shape_rule` was historically mis-framed as a KISS §5 field is corrected: it is a Fuel FKC field — correction banner at `docs/outreach/baracuda-shape-expression-grammar-ask.md:6`. The KISS-repo occurrence counts and the KISS RFC landing at KISS main `@3bd6d2d` are cross-party state asserted in Fuel-side outreach docs; they cannot be verified from the Fuel tree and should be read as external-party status, not Fuel code.)*
@@ -550,25 +582,29 @@ One grammar, one serialization, three attachment points. *(The claim that `Outpu
 
 **Shipped in Convergence-C (@ `9156e178`):** the parser (`shape_expr_parse.rs`, the `parse_shape_rule` analogue), the typed AST + §6.20 wire codec (`shape_expr.rs`), the extended `eval_shape_rule` (`SameAs` / `DimExpr` / matmul, `return_check.rs:32-68`), the §6.4-0011 `shape_consistent` oracle (`:297`), and the `reduce`/`gather`/`matmul` semantic shape rules (`:253-290`). Floor `÷`, `LAST = 0xFF`, `MAX_RANK = 8`, and symbolic → `Gap` are all in `shape_expr.rs` with golden tests.
 
-**Still pending (Increment C, coupled with §A):** the **recipe-interior** home (#2) — migrating the ~16 migratable registry `decompose` fns (`registry.rs`, verified unchanged) to `PatternNode` data whose shape-bearing attrs become `SameAs`/`DimExpr` instead of the baked absolute `OpAttrs.target_shape`/`slice_start` (`lib.rs:86,98`). Worked: softmax broadcast → `BroadcastTo(SameAs(operand[0]))`; rope halves → `Slice{ start: 0, len: Extent(x,last) ÷ 2 }` and `Slice{ start: Extent(x,last) ÷ 2, len: Extent(x,last) − Extent(x,last) ÷ 2 }`. Also pending: the `reduced_count` leaf's own serialization + its fold-axis-resolver reuse (the lockstep constraint above).
+**Shipped in Increment C slice 1 (2026-07-23):** the recipe-interior FOUNDATIONS (#2) — the `shape_expr` vocabulary moved to its permanent home `fuel-kernel-seam-types` (T1; `fkc/shape_expr.rs` is a `pub use` shim, line anchors byte-identical), the shape-relative `OpAttrs` rel fields + `resolve_rel_attrs` (T2/T3), `OpTag::MaxDim` (T4), the `decompose_via_recipe` bridge (T5), and **5 of the ~16 migratable `decompose` fns migrated to `PatternNode` data** using `SameAs`/`DimExpr` interior attrs. The worked rope halves land exactly as pinned: `Slice{ start: Const(0), len: Extent(x,last) ÷ 2 }` and `Slice{ start: Extent(x,last) ÷ 2, len: Extent(x,last) − Extent(x,last) ÷ 2 }` (`registry/rope.rs`); softmax broadcast → `BroadcastTo(SameAs(operand[0]))`.
+
+**Still pending (Increment C, coupled with §A):** the remaining ~11 first-order `decompose` migrations; serializing the rel form (the §6.19 arms stay absolute this slice, D2 — the flat-DAG node/table WIRE is KISS #67-gated); and the `reduced_count` leaf's own serialization + its fold-axis-resolver reuse (the lockstep constraint above).
 
 Because the shipped `eval_shape_rule` now checks non-`same_as` claims, a `from_params(batch,m,n)` claim on a matmul-shaped op is checkable against the role-derived `matmul_shape` — so Fuel committed to **signal Baracuda before broadening** the checked surface, letting their audit of `same_as(in0)`-emitting cells land first.
 
 ## C. Matmul role-vector serialization
 
-### Current state — MatMul serializes an empty blob
+### As-built (SHIPPED, Increment C slice 1 T9, `12c102cf`)
 
-MatMul is **not** a named arm in `to_canonical_bytes` — it falls through to the catch-all whose comment lists it (`lib.rs:239-241`, "`Empty-schema ops (elementwise, comparison, Where, MatMul, …): zero-length`"). With an empty body the outer frame (`lib.rs:243-245`) produces MatMul's canonical blob = `u32_le(0)` = **`[00,00,00,00]`**, asserted at `lib.rs:339`. Nothing in `OpAttrs` (`lib.rs:70-120`) carries a role vector; roles are **implicit in operand ranks today**.
+MatMul's `op_attrs` now carries the LOCKED u8 role-vectors and serializes/resolves in both directions. Two `OpAttrs` fields hold the roles: `lhs_roles: Vec<u8>` / `rhs_roles: Vec<u8>` (`lib.rs:187,190`), both `Default`-empty. The design settled the "where do ranks come from" question the pin flagged by **populating the role vectors into `OpAttrs`** (not threading rank into the call site): a pure `matmul_roles(lhs_rank, rhs_rank) -> (Vec<u8>, Vec<u8>)` helper (`lib.rs:235`) derives the canonical cell, and a new `put_u8_list` byte writer (`lib.rs:226`, `u32_le(count) ++ u8s`) supplies the u8-per-role framing `put_u32_list` could not.
 
-The empty state is confirmed in three places:
+**Empty-is-implicit** preserves the rank-polymorphic recipe form. Static recipes keep roles empty → the body stays empty → the single canonical `[00,00,00,00]` (the degenerate `body_len = 0` case of the same outer frame; `matmul_empty_roles_stay_the_canonical_zero_body`, `lib.rs:672`, and the untouched `empty_schema_op_serializes_zero_length` golden). Only concrete/ingested nodes get explicit roles that bake rank.
 
-| Site | Current behavior | Anchor |
+The three seam sites, as-built:
+
+| Site | As-built behavior | Anchor |
 |---|---|---|
-| `to_canonical_bytes` MatMul | `_ => {}` → `[00,00,00,00]` | `lib.rs:239-241`, test `:339` |
-| `op_key` MatMul | tag `30`, all payload slots empty | `opt.rs:1042` |
-| `tag_to_op` MatMul | `T::MatMul => Op::MatMul`, attrs discarded | `runtime_fused.rs:316`, test `:669` |
+| `to_canonical_bytes` MatMul | named arm: roles empty → `[00,00,00,00]`; set → `put_u8_list(lhs) ++ put_u8_list(rhs)` under the outer frame | `lib.rs:344`, golden test `:648` |
+| `op_key` MatMul | tag `30`, payload slots empty (unchanged — `attrs_match`/CSE do not consult the role fields this slice) | `opt.rs:1042` |
+| `tag_to_op` MatMul | resolver **cell**: empty → `Op::MatMul` (implicit-accept); set → validate the canonical cell, else surfaced honest-miss | `runtime_fused.rs:331-337` |
 
-MatMul is representable in the region grammar (`op_to_tag` at `jit.rs:82`), but the reverse resolver ignores attrs entirely (reconstructs from `OpAttrs::default()`). This is the seam where the resolver cell will live.
+MatMul is representable in the region grammar (`op_to_tag` at `jit.rs:82`); the reverse resolver now honors the role vectors instead of discarding attrs.
 
 ### The canonical MatMul cell — `primitive_shape(MatMul)`
 
@@ -599,7 +635,7 @@ op_attrs(matmul) = u32_le(len lhs_roles) ++ lhs_roles ++ u32_le(len rhs_roles) +
 full             = u32_le(body_len) ++ body
 ```
 
-The empty-schema `[00,00,00,00]` MatMul emitted today is the degenerate `body_len = 0` case of this same outer frame — the migration only fills the body. Since **there is no `put_u8`/u8-list helper today** (`lib.rs:146-153`), one must be added (below).
+The empty-schema `[00,00,00,00]` MatMul is the degenerate `body_len = 0` case of this same outer frame (empty role vectors) — filling the body lights up the roles. The `put_u8_list` helper this needs was added in slice 1 T9 (`lib.rs:226`).
 
 **Worked rank-2 example (16 bytes)** — `lhs = [FreeM, ContractedK] = [1, 3]`, `rhs = [ContractedK, FreeN] = [3, 2]`:
 
@@ -609,29 +645,29 @@ full = u32_le(12) ++ body
      = 0C 00 00 00 | 02 00 00 00 | 01 03 | 02 00 00 00 | 03 02      (16 bytes)
 ```
 
-**Surface-vs-canonical split** (`reply-3:88`): Baracuda's shipped serializer emits a readable **text surface** — `matmul[m k.k n]`, roles as chars `b/m/n/k`, `.`-separated, lhs-then-rhs. The binary §6.19 op_attrs blob is the canonical/identity layer the text flattens onto; both sides treat the binary form as verified canonical. No live divergence today — Fuel emits `[00,00,00,00]`, Baracuda emits text; the binary arm lights up on both sides at the Increment-C-equivalent. *(Baracuda's `AxisRole` enum at `baracuda-kernelgen/src/ir.rs:1333` with the same `{Batch=0,FreeM=1,FreeN=2,ContractedK=3}` discriminants is a sibling-project claim recorded at `reply-3:80`; baracuda is not checked out here and it cannot be verified from the Fuel tree.)*
+**Surface-vs-canonical split** (`reply-3:88`): Baracuda's shipped serializer emits a readable **text surface** — `matmul[m k.k n]`, roles as chars `b/m/n/k`, `.`-separated, lhs-then-rhs. The binary §6.19 op_attrs blob is the canonical/identity layer the text flattens onto; both sides treat the binary form as verified canonical. **As of slice 1 T9, Fuel's binary arm is live and its serializer is FIRST**: Baracuda (#68 anti-fork witness) confirmed the rank-2 golden `0C000000|02000000|0103|02000000|0302` and has **no near-term binary arm**, so this golden is the shared **cross-producer contract of record** (`matmul_role_vectors_serialize_the_locked_rank2_golden`, `lib.rs:648`), not merely a Fuel-internal assertion. *(Baracuda's `AxisRole` enum at `baracuda-kernelgen/src/ir.rs:1333` with the same `{Batch=0,FreeM=1,FreeN=2,ContractedK=3}` discriminants is a sibling-project claim recorded at `reply-3:80`; baracuda is not checked out here and it cannot be verified from the Fuel tree.)*
 
 ### Serialize / resolve split
 
 Per `reply-3:45-47`:
 
-- **Serialize (Fuel → recipe):** derive the two vectors from operand ranks per the §C cell — a **pure function of the node**, so structurally-equal matmuls produce equal blobs (no CSE hazard, `base_map_hash`-stable). Today the empty `_ => {}` arm; after C, a named MatMul arm emitting `Batch×(r−2), FreeM, ContractedK` / `Batch×(r−2), ContractedK, FreeN`.
-- **Resolve (recipe → base map):** check incoming role vectors against the canonical cell — exactly one `FreeM`/`FreeN`/`ContractedK`, `ContractedK` at lhs-last & rhs-second-last, Batch axes positionally leading. **Match → `Op::MatMul`.** Any other config (transposed operands, permuted contraction, multi-`ContractedK`, `FreeN`-before-`ContractedK`) → a **surfaced opaque-op gap** in resolve-to-base-map (telemetry), **never a crash**. Today `runtime_fused.rs:316` accepts any MatMul-tagged node unconditionally because no cell check exists yet.
+- **Serialize (Fuel → recipe) — as-built (T9):** `matmul_roles(lhs_rank, rhs_rank)` (`lib.rs:235`) derives the two vectors `Batch×(r−2), FreeM, ContractedK` / `Batch×(r−2), ContractedK, FreeN` — a **pure function of ranks**, so structurally-equal matmuls produce equal blobs (no CSE hazard, `base_map_hash`-stable). The named `to_canonical_bytes` MatMul arm (`lib.rs:344`) serializes whatever roles the `OpAttrs` carries; empty roles → the canonical `[00,00,00,00]`.
+- **Resolve (recipe → base map) — as-built (T9):** the `tag_to_op` cell (`runtime_fused.rs:331-337`) checks incoming role vectors against `matmul_roles(...)` — equal-rank ≥ 2, `lhs_roles`/`rhs_roles` equal to the canonical derivation (which places `ContractedK` at lhs-last & rhs-second-last with Batch leading). **Match → `Op::MatMul`; empty → `Op::MatMul`** (implicit-accept). Any other config (transposed operands, permuted contraction, multi-`ContractedK`, `FreeN`-before-`ContractedK`) → a **surfaced opaque-op gap** (`None`/telemetry), **never a crash**.
 
 ### No epilogue attr — fused bias/activation composes as elementwise
 
 Per `reply-3:49-59`: a fused `matmul + bias[N] + relu` is one flat DAG — `relu( add( matmul(in0,in1), Bind(2) ) )`. `Reduced(0)` = the K-sum = the matmul node itself (a child_edge, consistent with the "`Reduced(i)` = child_edge to the fold node" rule). **No `epilogue` field on `matmul`.** This matches Fuel's shipped decompose model: `FusedLinear::decompose` (`registry/fused_linear.rs:82-106`) emits `Op::MatMul` (`:88`), `Op::BroadcastTo` bias (`:94`), then an ordinary `Op::Add` **over** the matmul node (`:100`). The re-fuse direction — `canonical_pattern` (`registry/fused_linear.rs:122`) and the `MatMul → Add(rank-1 bias)` fusion pass `fuse_linear` (`opt.rs:1523`) — recognizes `Add(MatMul(a,b), bias_broadcast)`. The epilogue is structural, not an attribute; the role-vector matmul node slots straight in as the fold node.
 
-### Where it lands & exactly what changes (Increment C)
+### Where it landed & exactly what changed (Increment C slice 1 T9)
 
-The schema is **pinned now**; Fuel's *code* conforms in the Convergence Increment C migration — a bounded named increment, not a blocker (`reply-3:61-72`, `:81`). The exact code:
+The schema was **pinned**; Fuel's code conformed in slice 1 — a bounded named increment, not a blocker (`reply-3:61-72`, `:81`). As-built:
 
-1. **New u8-per-role serialize helper** in `fuel-kernel-seam-types/src/lib.rs` (alongside `:146-153`), because `put_u32_list` (`:152`) writes 4 bytes/element and roles are pinned u8:
+1. **DONE — u8-per-role serialize helper** in `fuel-kernel-seam-types/src/lib.rs:226`, because `put_u32_list` writes 4 bytes/element and roles are pinned u8:
    ```rust
    fn put_u8_list(b: &mut Vec<u8>, xs: &[u8]) { put_u32(b, xs.len() as u32); b.extend_from_slice(xs); }
    ```
-2. **A named MatMul arm in `to_canonical_bytes`** replacing the fall-through (`lib.rs:239-241`): derive `lhs_roles`/`rhs_roles` from operand rank per the cell, then `put_u8_list(lhs_roles); put_u8_list(rhs_roles)`. **Design choice to settle:** `to_canonical_bytes` currently takes only `&self, op` — deriving roles needs operand rank, which the *node* has but `OpAttrs` does not. Increment C must either thread rank into this call site or (cleaner, `reply-3:24, :46`) populate a role vector into `OpAttrs` at region-construction time and serialize from it. No new `Op` enum field is needed — roles derive from ranks.
-3. **A resolver cell in `tag_to_op`** (`runtime_fused.rs:316`), which today blindly maps `T::MatMul => Op::MatMul`: check the incoming role vectors against the canonical cell → match returns `Op::MatMul`; any transposed/permuted/multi-K config returns a surfaced opaque-op gap (`None`/telemetry), never a crash — consistent with `tag_to_op`'s existing honest-miss posture (`runtime_fused.rs:258-262`).
+2. **DONE — a named MatMul arm in `to_canonical_bytes`** (`lib.rs:344`): roles empty → `[00,00,00,00]`; set → `put_u8_list(lhs_roles); put_u8_list(rhs_roles)`. **The design choice settled the cleaner way** (`reply-3:24, :46`): rather than thread operand rank into a call site that has only `&self, op`, the role vectors are **populated into `OpAttrs`** (`lhs_roles`/`rhs_roles`, `lib.rs:187,190`) at region-construction time and serialized from there; `matmul_roles(lhs_rank, rhs_rank)` (`lib.rs:235`) derives the canonical cell. No new `Op` enum field — roles derive from ranks.
+3. **DONE — a resolver cell in `tag_to_op`** (`runtime_fused.rs:331-337`): empty roles → `Op::MatMul` (implicit-accept); set → validate the canonical cell (equal-rank ≥ 2, `lhs_roles == matmul_roles(…).0` and `rhs == …1` at the pinned positions); any transposed/permuted/multi-K/`FreeN`-before-`ContractedK` config returns a surfaced opaque-op gap (`None`/telemetry), never a crash — consistent with `tag_to_op`'s existing honest-miss posture (`runtime_fused.rs:363-366`). Because `matmul_roles` encodes role **positions** not extents, GQA-divisible batch stays all-`Batch` and resolves cleanly.
 
 ---
 
@@ -677,9 +713,9 @@ full = 0C 00 00 00 | <body>                                                (16 b
 - **STRUCTURE vs INTERFACE:** the recipe DAG (dtype-agnostic, shape-free) vs the FKC contract (dtypes/shape-rules/cost/precision). Joined by `FusedOpId`.
 - **`primitive_shape`:** single source of truth for a primitive op's output shape+dtype, derived from operands. `shape.rs:36-40`.
 - **FKC contract:** the kernel contract wrapper (`OutputDesc`/`TensorDesc`/caps/cost/precision). `fuel-dispatch/src/fkc/schema.rs`.
-- **`ShapeExpr`/`DimExpr`:** the shape-relative expression grammar (`SameAs` + `Extent`/`Const`/`Param`/arithmetic). Evaluator + §6.20 wire codec SHIPPED (Convergence-C @ `9156e178`, `fkc/shape_expr.rs`); the recipe-interior fix for baked absolute shapes is still pending (§B home #2, coupled to §A).
+- **`ShapeExpr`/`DimExpr`:** the shape-relative expression grammar (`SameAs` + `Extent`/`Const`/`Param`/arithmetic). Evaluator + §6.20 wire codec SHIPPED (Convergence-C @ `9156e178`); the vocabulary's permanent home is `fuel-kernel-seam-types/src/shape_expr.rs` (moved from `fuel-dispatch/src/fkc/` in Increment C slice 1 T1; `fkc/shape_expr.rs` is a `pub use` shim). The recipe interior now carries it via the `OpAttrs` rel fields (slice 1 §A); the remaining ~11 migrations + wire serialization are pending.
 - **`reduced_count` / `extent`:** the value-side (Mean divisor) / shape-side single-axis leaves; canonical KISS §6.12-0001 tokens.
-- **Increment A / C:** A (emit full-parity, shipped 2026-07-16). C's shape-oracle (evaluator + §6.20 wire codec) SHIPPED as **Convergence-C @ `9156e178`**; C's recipe-interior migration (decompose→PatternNode-data + shape-relative attrs) and the matmul role-vector `op_attrs` serialization are still NOT built.
+- **Increment A / C:** A (emit full-parity, shipped 2026-07-16). C's shape-oracle (evaluator + §6.20 wire codec) SHIPPED as **Convergence-C @ `9156e178`**. C's recipe-interior migration shipped its **foundations in slice 1** (2026-07-23, branch `feat/increment-c-slice1`): shape-relative `OpAttrs` attrs + `resolve_rel_attrs` + `OpTag::MaxDim` + `decompose_via_recipe` + **5 of ~16 migrated decomposes**, and the **matmul role-vector `op_attrs` serialization is SHIPPED (§C)**. Still NOT built: the flat-DAG-CSE node/table WIRE + the remaining ~11 migrations (slices 2–4).
 
 ## Cross-references — co-design records
 

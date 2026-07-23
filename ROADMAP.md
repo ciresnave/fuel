@@ -130,14 +130,26 @@ nowhere; now captured so they are not forgotten):
   tie (`8d8338e9`); **C-3** cross-check ACTIVATION — the oracle now validates ~16 of the 22
   registered fused ops (was 9), plus the adversarial-review fixes (`80c20a47`
   warn-not-silent-skip + arity pre-check, `9c96a0f8` GQA probe shape-distinctness,
-  `f87fd401` bundle-slot-vs-`output_views` differential). **The remaining Increment C is
-  narrowed to the recipe interior:** migrate the ~22 registry `decompose` fns from
-  hand-written Rust to `PatternNode` **data**, make interior-node attrs shape-*relative*
-  (a `PatternNode` still bakes absolute shapes — `docs/recipe-signature-reference.md`
-  §B home #2), the flat-DAG-CSE recipe-node/table wire serializer, and the matmul
-  role-vector `op_attrs` serialization (co-design reply-3) — node-envelope consolidation
-  in-flight via **KISS #67**. See
-  [10-decisions-log 2026-07-16 + 2026-07-21](docs/architecture/10-decisions-log.md); memories
+  `f87fd401` bundle-slot-vs-`output_views` differential). **Increment C slice 1 —
+  recipe-interior FOUNDATIONS — SHIPPED (2026-07-23, branch `feat/increment-c-slice1`,
+  T1–T10 `fbe96f0d`..HEAD; plan `docs/superpowers/plans/2026-07-23-increment-c-slice1.md`):**
+  the `shape_expr` vocabulary moved to its permanent dependency-free home
+  `fuel-kernel-seam-types` (`fkc/shape_expr.rs` is now a `pub use` shim); shape-**relative**
+  `OpAttrs` interior fields (`target_shape_rel`/`slice_{start,len}_rel`/`axis_last`) + a pure
+  `resolve_rel_attrs` resolver + a children-first resolving `emit` (D2/D3/D4); the additive
+  `OpTag::MaxDim` (the D3 keepdim shrink-via-swap); a `decompose_via_recipe` bridge; **5 of the
+  ~16 migratable registry `decompose` fns migrated to portable, shape- AND rank-polymorphic
+  `PatternNode` data** (`softmax_last_dim`, `rope`, `rms_norm_last_dim`, `layer_norm_last_dim`,
+  `softmax_last_dim_backward`); and **the locked matmul role-vector `op_attrs` serialize/resolve
+  live in both directions** (the rank-2 golden `0C000000|02000000|0103|02000000|0302` is the
+  Baracuda-confirmed cross-producer contract). Gates green: `fuel-kernel-seam-types` (18),
+  `fuel-graph` (396). **Still narrowed to the recipe interior (slices 2–5, §9 of the plan):**
+  the remaining ~11 first-order `decompose` migrations (carriers: PowI/Clamp/MaskedFill,
+  shape-derived scalar slots), the **flat-DAG-CSE recipe-node/table WIRE serializer** + the
+  `reduced_count` leaf, the scan flat form (`selective_scan`/`ssd_chunk_scan`), and the
+  §6.19 import decoder — node-envelope consolidation in-flight via **KISS #67**. See
+  [10-decisions-log 2026-07-16 + 2026-07-21](docs/architecture/10-decisions-log.md);
+  `docs/recipe-signature-reference.md` (Part II §A/§C, as-built); memories
   `recipe-grammar-codesign`, `shape-oracle-rfc-accepted`.
 - **Shape-oracle C-4 frontier — reserved `Dims`/`WithDim` tags + param threading (tracked
   scope-out, 2026-07-21).** The C-4 successor to Convergence-C (scope-out recorded in
