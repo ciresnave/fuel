@@ -109,6 +109,23 @@ CPU-only, one worktree branched from `main` @ `af4b7dd4`, serial task execution 
 
 ## §3 Task list (TDD; every task starts born-red)
 
+**Slice-1 build status — SHIPPED (2026-07-23, branch `feat/increment-c-slice1`).** All ten tasks landed, each born-red-then-green in one worktree, serial. Gates green: `fuel-kernel-seam-types` (18 tests), `fuel-graph` (396 tests).
+
+| Task | Status | Commit |
+|---|---|---|
+| T1 — `shape_expr` home move + shim + three-carrier width pin | DONE | `fbe96f0d` |
+| T2 — rel-attr `OpAttrs` fields + `resolve_rel_attrs` | DONE | `e9b6f8fe` |
+| T3 — emit integration (children-first reorder + resolution + D4 pad + rel-probe) | DONE | `f806820e` |
+| T4 — additive `OpTag::MaxDim` | DONE | `cc6feab5` |
+| T5 — `decompose_via_recipe` bridge + softmax pilot | DONE | `47b134ea` |
+| T6 — rope migration (DimExpr slices + D4) | DONE | `24addbf5` |
+| T7 — rms_norm + layer_norm migration (eps open slots) | DONE | `aa2eee3c` |
+| T8 — softmax_last_dim_backward migration | DONE | `73a33fcb` |
+| T9 — matmul role-vector serialize/resolve | DONE | `12c102cf` |
+| T10 — docs in the same change | DONE | this commit |
+
+The three-carrier width pin (T1) and the rank-2 matmul cross-producer golden (T9) adopt the injected KISS-coordinator / Baracuda-#68 agreements; the `decompose_via_recipe` bridge (T5) honors the flip-withdrawal posture (unknown/non-registry tokens are typed honest-misses, never accepted, never a crash). See `docs/outreach/increment-c-slice1-per-carrier-and-golden-adoption.md`.
+
 **T1 — Move `shape_expr` to `fuel-kernel-seam-types`; shim; width pin. (M)**
 Red: new seam-types test module (ported `serialization_golden` incl. the 17-byte rope-half golden `08 0300 0200FF 0900 03 02…` + round-trips + typed-decline cases) fails to compile — module doesn't exist. New `two_blob_widths_stay_distinct` test: asserts a binary `Dim`'s child-length prefix is 2 bytes (u16) AND `OpAttrs::to_canonical_bytes` outer prefix is 4 bytes (u32) in one test body with a comment pinning KISS #67 do-not-unify.
 Green: move file verbatim; `pub mod shape_expr;` in seam-types; fuel-dispatch `fkc/shape_expr.rs` → `pub use fuel_kernel_seam_types::shape_expr::*;` (keep the module doc). Full fuel-dispatch fkc suite must stay green through the shim (`return_check.rs`, `shape_expr_parse.rs` untouched).
@@ -156,7 +173,7 @@ Files: `fuel-kernel-seam-types/src/lib.rs`, `fuel-graph/src/runtime_fused.rs`.
 
 **T10 — Docs in the same change. (S)**
 Update `docs/recipe-signature-reference.md` (Part II §A: migrated-set table 5/22 + rel-attr machinery as-built with anchors; §C: role vectors SHIPPED; the three-homes status), `ROADMAP.md` recipe-grammar bullet (slice-1 shipped scope + remaining-slices pointer), check `docs/architecture/04-optimization.md` claims (decompose spelling change for softmax/norms — add a `10-decisions-log.md` entry ONLY if a versioned claim changed).
-Files: `docs/recipe-signature-reference.md`, `ROADMAP.md`, `docs/architecture/*` (conditional), this plan committed at `docs/superpowers/plans/2026-07-23-increment-c.md`.
+Files: `docs/recipe-signature-reference.md`, `ROADMAP.md`, `docs/architecture/*` (conditional), this plan at `docs/superpowers/plans/2026-07-23-increment-c-slice1.md`, and the outreach note `docs/outreach/increment-c-slice1-per-carrier-and-golden-adoption.md`.
 
 ## §4 Task ordering & worktree discipline
 
