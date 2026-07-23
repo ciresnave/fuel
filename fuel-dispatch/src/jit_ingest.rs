@@ -196,11 +196,21 @@ pub fn classify_floor_verdict(
 
 /// The dormant corpus-verdict seam. When Fuel consumes a populated frozen
 /// corpus, a covering cell flips Adopt authority to the corpus (§6.6-0007).
-/// ACTIVATION TARGET: KISS's v1 exact-byte golden corpus
-/// (`conformance/corpus/*.json`, schema `kiss-oracle-vectors-v1`, reader
-/// `conformance/src/corpus.rs`) — a future increment ports a reader for it.
-/// Until then no cell is covered, so this returns `None` and recipe-realize
-/// stays the interim authority. Wired-but-inert; activation needs no re-open.
+///
+/// STILL DORMANT after A4b (2026-07-23), by design — NOT for lack of a corpus.
+/// KISS's v1 exact-byte golden corpus now EXISTS and is vendored + parsed:
+/// `fuel-dispatch/fixtures/kiss-corpus/` (KISS `main` @ `c9153b2`), read by
+/// [`crate::kiss_corpus`]. It is a per-`(op, dtype, input-vector)` **oracle**
+/// (fixed inputs → one correct output), NOT an `(op, dtype) → adopt/reject`
+/// table. This seam's signature carries no candidate output, and its `seed`
+/// selects a *random probe* disjoint from the corpus's fixed inputs — so it
+/// CANNOT turn the oracle into a candidate verdict without re-running the
+/// candidate on the corpus's own inputs (a seam change out of A4b scope).
+/// Returning any `Some` here would adopt/reject a candidate the corpus never
+/// checked. So it stays `None` and recipe-realize remains the interim
+/// authority. Activation needs the seam correction recorded in
+/// `docs/design-notes/2026-07-23-kiss-corpus-verdict-seam-mismatch.md` — the
+/// precedence wiring in `verify_candidate_impl` is already live for it.
 pub fn corpus_verdict(
     _op: fuel_graph::jit::OpTag,
     _dtype: fuel_ir::DType,

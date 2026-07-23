@@ -64,6 +64,10 @@ pub use jit_ingest::{
 };
 #[cfg(feature = "jit")]
 mod jit_ingest_probe;
+/// Reader for the vendored KISS conformance corpus (staged for the corrected
+/// `corpus_verdict` seam; see the module doc + its `PROVENANCE.md`).
+#[cfg(feature = "jit")]
+mod kiss_corpus;
 pub mod kernel;
 pub mod optimize;
 pub mod pipelined;
