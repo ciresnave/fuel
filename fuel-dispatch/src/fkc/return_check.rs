@@ -1131,4 +1131,120 @@ mod tests {
         );
         assert_eq!(bundle_slot_names(&None), Vec::<String>::new());
     }
+
+    /// C-4 T5 (doc-vs-code drift is a defect): the fused corpus prose pins a
+    /// per-variant `param(N)` index table — the `FusedOpParams::key().ints`
+    /// flattening the T1–T3 threading indexes. This test compiles the corpus
+    /// files in (`include_str!`, so a doc edit forces a recompile) and checks,
+    /// for every ints-bearing variant contracted in those two files, that its
+    /// table row exists, pins EVERY index `param(0)..param(len-1)`, and pins
+    /// none beyond `key().ints`' actual length — so renumbering the flattening
+    /// in `fuel-graph/src/registry.rs` without updating the docs (or vice
+    /// versa) fails here, not silently.
+    #[test]
+    fn corpus_prose_pins_param_index_tables_matching_key_ints() {
+        use fuel_graph::registry::Reduction;
+        const CONV_ROPE: &str =
+            include_str!("../../../docs/kernel-contracts/fused/conv-rope.fkc.md");
+        const LINEAR_QUANT: &str =
+            include_str!("../../../docs/kernel-contracts/fused/linear-quant.fkc.md");
+
+        fn table_row<'a>(doc: &'a str, doc_name: &str, variant: &str) -> &'a str {
+            let marker = format!("| `{variant}` |");
+            doc.lines().find(|l| l.contains(&marker)).unwrap_or_else(|| {
+                panic!("{doc_name} prose is missing the `{variant}` param-index table row")
+            })
+        }
+        fn assert_row_pins(doc: &str, doc_name: &str, variant: &str, params: &FusedOpParams) {
+            let ints = params.key().ints;
+            let row = table_row(doc, doc_name, variant);
+            for i in 0..ints.len() {
+                assert!(
+                    row.contains(&format!("param({i})=")),
+                    "{doc_name}: `{variant}` row must pin param({i}) (key().ints has {} slots)",
+                    ints.len(),
+                );
+            }
+            assert!(
+                !row.contains(&format!("param({})", ints.len())),
+                "{doc_name}: `{variant}` row pins more slots than key().ints carries ({})",
+                ints.len(),
+            );
+        }
+
+        // conv-rope.fkc.md — Conv2D / ConvTranspose2D / CausalConv1d /
+        // SelectiveScan / SsdChunkScan (Rope carries no fields → no row).
+        assert_row_pins(
+            CONV_ROPE,
+            "conv-rope.fkc.md",
+            "Conv2D",
+            &FusedOpParams::Conv2D { stride: (1, 1), padding: (0, 0), groups: 1 },
+        );
+        assert_row_pins(
+            CONV_ROPE,
+            "conv-rope.fkc.md",
+            "ConvTranspose2D",
+            &FusedOpParams::ConvTranspose2D {
+                stride: (1, 1),
+                padding: (0, 0),
+                output_padding: (0, 0),
+                dilation: (1, 1),
+                groups: 1,
+            },
+        );
+        assert_row_pins(
+            CONV_ROPE,
+            "conv-rope.fkc.md",
+            "CausalConv1d",
+            &FusedOpParams::CausalConv1d { use_silu: false },
+        );
+        assert_row_pins(
+            CONV_ROPE,
+            "conv-rope.fkc.md",
+            "SelectiveScan",
+            &FusedOpParams::SelectiveScan { delta_softplus: false },
+        );
+        assert_row_pins(
+            CONV_ROPE,
+            "conv-rope.fkc.md",
+            "SsdChunkScan",
+            &FusedOpParams::SsdChunkScan { chunk_size: 256 },
+        );
+
+        // linear-quant.fkc.md — QMatMul / FusedSoftmaxCrossEntropy / Nf4Matmul
+        // (FusedLinear has no fields; InplaceAffine's f64 fields ride
+        // `key().bits`, NOT `ints` — no `param(N)` slot exists for either).
+        assert_row_pins(
+            LINEAR_QUANT,
+            "linear-quant.fkc.md",
+            "QMatMul",
+            &FusedOpParams::QMatMul { quant_type: fuel_graph::QuantType::Q4_0, k: 32, n: 4 },
+        );
+        assert_row_pins(
+            LINEAR_QUANT,
+            "linear-quant.fkc.md",
+            "FusedSoftmaxCrossEntropy",
+            &FusedOpParams::FusedSoftmaxCrossEntropy {
+                reduction: Reduction::Mean,
+                ignore_index: -100,
+            },
+        );
+        assert_row_pins(
+            LINEAR_QUANT,
+            "linear-quant.fkc.md",
+            "Nf4Matmul",
+            &FusedOpParams::Nf4Matmul { block_size: 64 },
+        );
+
+        // The threading note itself (the convention sentence) must be present
+        // in BOTH files: `param(N)` indexes the key().ints flattening.
+        for (doc, doc_name) in
+            [(CONV_ROPE, "conv-rope.fkc.md"), (LINEAR_QUANT, "linear-quant.fkc.md")]
+        {
+            assert!(
+                doc.contains("`param(N)` indexes the `FusedOpParams::key().ints` flattening"),
+                "{doc_name} must carry the C-4 param-threading convention note",
+            );
+        }
+    }
 }

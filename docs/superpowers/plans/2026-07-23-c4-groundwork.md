@@ -56,5 +56,25 @@ KISS-OPS-6.20-0002 (`C:\Projects\KISS\spec\ops.md:1966-1968`): *"`Reduce(operand
 ## 6. Externally gated follow-up (queued, NOT this build)
 On KISS acceptance of the experimental entry: implement `Dims`/`WithDim` (AST + wire byte-matching the minted goldens + eval with per-element Gap propagation + text-DSL parse) → rewrite the 5 gated ops' corpus rules (incl. both scan slot-1 rules; ~9 fused sections across `fused/conv-rope.fkc.md`, `fused/linear-quant.fkc.md`, `vulkan/conv-attn-rope.fkc.md`, `vulkan/quantized.fkc.md`) → oracle coverage ~16 → ~21 of 22 (FSCE stays the one honest skip). Peer-ask drafts live in the dispatch record (`external_coordination`); the orchestrator sends them.
 
-## 7. Evidence index
+## 7. Completion (ticked as built, branch `feat/c4-groundwork`)
+
+- [x] **T1** — params threaded through `eval_shape_rule`; `&[]` still declines to skip (`daa54508`)
+- [x] **T2** — `synth_probe_param_points`, ints pinned == `key().ints` (`2871dfe6`)
+- [x] **T3** — cross-check loops param points; dtype differentials live; FSCE `fixed(F16)` mutation
+  rejected; `expected_min_inputs(Conv2D) == Some(2)`; invariant comment rewritten (`c6f05a3b`)
+- [x] **T4** — reserved-tag named declines (`TAG_REDUCE`/`TAG_WITH_DIM`/`TAG_DIMS`), dead_code
+  warnings gone by reference (`0107c7c6`)
+- [x] **T5** — ROADMAP C-4 correction; `param(N)` index tables + threading notes in both fused
+  corpus files, pinned by the born-red `corpus_prose_pins_param_index_tables_matching_key_ints`
+  doc-vs-code drift test; scan-slot-1 verdict recorded in the ROADMAP entry; outreach note
+  `docs/outreach/kiss-dims-withdim-extension-registry-filed.md`. Plan committed at `1cf03f32`.
+- **Post-plan external update (adopted in T5, newer than §1's "orchestrator sends"):** the
+  Dims/WithDim §6.4 extension-registry proposal is **FILED** (KISS coordinator files the
+  rfc-labeled issue on Fuel's behalf, attributed, per the #57 process; mechanics pre-verified
+  against KISS main `c9153b2`); Baracuda: no objection + future consumer (Window/pooling + conv) +
+  cosigns with the `dims(...)`/`with_dim(...)` functional-spelling pin in the same clause as the
+  wire tags; kiss-ref: consistent with its §6.20 stake, the second dissimilar implementation,
+  timing theirs. §6's follow-up remains queued on acceptance.
+
+## 8. Evidence index
 `ops.md:1966-1968,1985-1997` (reservation) · `umbrella.md:276` (lifecycle) · `rfcs/shape-expression-oracle.md` (§6.20-0002 reservation + Q1) · `shape_expr.rs:17-19,145,216-221,335` · `shape_expr_parse.rs:65-67` · `return_check.rs:32,66,188-236,238-255,332-347,534,590` · `schema.rs:174-185` · `registry.rs:417-428,458,492,555,572` · `conv2d.rs:79-99` · `qmatmul.rs:56-71` · `fused_softmax_cross_entropy.rs:85-110` · `selective_scan.rs:75-90,136-156` · `ssd_chunk_scan.rs:136-163` · `linear-quant.fkc.md:230-243,310-332,459-471` · `conv-rope.fkc.md:217-228,307-320,503-504,596-597` · `register.rs:1174-1178,1336-1340` · `10-decisions-log.md:822-841,875-881` · `ROADMAP.md:142-151` · base `af4b7dd4`.
