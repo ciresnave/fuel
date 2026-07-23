@@ -234,14 +234,42 @@ fn outcome_from_nonadopt_verdict(
                 ledger_record,
             })
         }
-        VerifyVerdict::Inconclusive { claim, detail } => IngestOutcome::Flagged(FlagReport {
-            entry_point: entry_point.to_string(),
-            claim,
-            detail,
-            diff_summary: None,
-            escalate: true,
-        }),
+        VerifyVerdict::Inconclusive { claim, detail } => {
+            // (D8) Thread a compact kiss-ref summary into the flag report,
+            // lifted from the `kiss_ref_advisory` ledger record the advisory
+            // cross-check produced — so `on_flagged` learns WHAT kiss-ref saw
+            // (result, max ULP, mismatch count, op count) without re-running
+            // the diff. `None` when no advisory record was earned (a
+            // Fail-arm-only escalate, or the advisory declined the region).
+            let diff_summary = records
+                .iter()
+                .find(|r| r.claim == "kiss_ref_advisory")
+                .map(|r| kiss_advisory_diff_summary(r));
+            IngestOutcome::Flagged(FlagReport {
+                entry_point: entry_point.to_string(),
+                claim,
+                detail,
+                diff_summary,
+                escalate: true,
+            })
+        }
     }
+}
+
+/// A compact one-line summary of a `kiss_ref_advisory` [`LedgerRecord`] for a
+/// [`FlagReport::diff_summary`]: the advisory result plus the diff evidence
+/// (max ULP, mismatch count, op count). Missing evidence keys render as `?`,
+/// never panic. Pure + CPU-testable.
+#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+fn kiss_advisory_diff_summary(r: &LedgerRecord) -> String {
+    let field = |k: &str| r.evidence.get(k).map(|v| v.to_string()).unwrap_or_else(|| "?".to_string());
+    format!(
+        "kiss_ref_advisory={} max_ulp={} mismatches={} op_count={}",
+        r.result,
+        field("max_ulp"),
+        field("mismatches"),
+        field("op_count"),
+    )
 }
 
 /// The single primitive `OpTag` of a decompose that is exactly one `Op` node over
@@ -497,6 +525,60 @@ mod flag_not_verdict_tests {
         let out = outcome_from_nonadopt_verdict(
             VerifyVerdict::Inconclusive { claim: "max_ulp", detail: "esc".into() }, vec![], "k");
         assert!(matches!(out, IngestOutcome::Flagged(ref r) if r.escalate && r.claim == "max_ulp"));
+    }
+
+    /// D8 (Task 4): mapping an `Inconclusive` verdict to `Flagged` threads a
+    /// compact kiss-ref summary into `FlagReport.diff_summary`, lifted from the
+    /// `kiss_ref_advisory` ledger record the advisory cross-check produced —
+    /// so a provider's `on_flagged` learns WHAT kiss-ref saw (max ULP,
+    /// mismatch count, advisory result) without re-running the diff. With no
+    /// advisory record present the summary stays `None` (a Fail-arm-only or
+    /// advisory-declined escalate).
+    #[test]
+    fn map_inconclusive_carries_diff_summary_from_advisory_record() {
+        let advisory = LedgerRecord {
+            kernel_ref: "k".into(),
+            backend: "Cuda".into(),
+            dtypes: vec!["F64".into(), "F64".into()],
+            kernel_revision_hash: 0,
+            claim: "kiss_ref_advisory".into(),
+            result: "flag".into(),
+            verified_at: "epoch:0".into(),
+            protocol_version: 1,
+            evidence: serde_json::json!({
+                "dtype": "F64",
+                "op_count": 1,
+                "max_ulp": 3,
+                "mismatches": 2,
+            }),
+        };
+        let out = outcome_from_nonadopt_verdict(
+            VerifyVerdict::Inconclusive { claim: "max_ulp", detail: "esc".into() },
+            vec![advisory],
+            "k",
+        );
+        match out {
+            IngestOutcome::Flagged(r) => {
+                let summary =
+                    r.diff_summary.expect("diff_summary threaded from the advisory record");
+                assert!(summary.contains("max_ulp=3"), "names the max ULP: {summary}");
+                assert!(summary.contains("mismatches=2"), "and the mismatch count: {summary}");
+                assert!(summary.contains("flag"), "and the advisory result: {summary}");
+            }
+            _ => panic!("expected Flagged"),
+        }
+
+        // No advisory record present -> diff_summary stays None (non-regression
+        // with the vec![] cases in map_fail_to_rejected_and_inconclusive_to_flagged).
+        let out = outcome_from_nonadopt_verdict(
+            VerifyVerdict::Inconclusive { claim: "max_ulp", detail: "esc".into() },
+            vec![],
+            "k",
+        );
+        match out {
+            IngestOutcome::Flagged(r) => assert!(r.diff_summary.is_none()),
+            _ => panic!("expected Flagged"),
+        }
     }
 
     #[test]
@@ -1149,6 +1231,61 @@ fn run_region_diff(
     }
 }
 
+/// Resolve a numeric-region reference-realize failure (or absent reference)
+/// into a verdict (Task 4, design D4). Fuel's interim numeric authority — the
+/// recipe reference realized from the registered recipe / the candidate's own
+/// decompose — is unusable at the call site. But if the advisory kiss-ref
+/// cross-check already produced a live (non-authoritative) [`DiffOutcome`],
+/// there IS a reference to compare against, so [`classify_floor_verdict`]
+/// escalates to [`VerifyVerdict::Inconclusive`] (flag, never verdict —
+/// §6.6-0007) rather than hard-Fail: the candidate is neither adopted
+/// (kiss agreement ≠ adopt) nor rejected (kiss discrepancy ≠ reject), it
+/// escalates to mint a corpus vector.
+///
+/// With NO kiss outcome present, `classify_floor_verdict(None, None, None)`
+/// yields the `no_reference` Fail, which this maps back to today's EXACT
+/// realize-failed Fail (`fail_claim` + `fail_detail` — a numeric-claim
+/// rejection naming the realize error): the no-advisory path is byte-for-byte
+/// unchanged from the pre-Task-4 arms it replaces.
+#[cfg(feature = "cuda")]
+fn resolve_reference_failure(
+    kiss_outcome: Option<&DiffOutcome>,
+    fail_claim: &'static str,
+    fail_detail: String,
+    ledger: &mut VerificationLedger,
+    make_record: &dyn Fn(&str, &str, serde_json::Value) -> LedgerRecord,
+) -> (VerifyVerdict, Vec<LedgerRecord>) {
+    match classify_floor_verdict(kiss_outcome, None, None) {
+        VerifyVerdict::Inconclusive { claim, detail } => {
+            ledger.upsert(make_record(
+                claim,
+                "inconclusive",
+                serde_json::json!({
+                    "detail": detail.clone(),
+                    "realize_error": fail_detail,
+                    "note": "recipe reference unusable; kiss-ref advisory escalates \
+                             (flag, never verdict — §6.6-0007)",
+                }),
+            ));
+            (VerifyVerdict::Inconclusive { claim, detail }, ledger.records().to_vec())
+        }
+        // kiss absent: classify returns the `no_reference` Fail; keep today's
+        // exact realize-failed Fail (same claim + detail + ledger record as the
+        // pre-Task-4 arm) so the no-advisory path is unchanged.
+        _ => {
+            ledger.upsert(make_record(
+                fail_claim,
+                "fail",
+                serde_json::json!({ "detail": fail_detail.clone() }),
+            ));
+            (
+                VerifyVerdict::Fail { claim: fail_claim, detail: fail_detail },
+                ledger.records().to_vec(),
+            )
+        }
+    }
+}
+
 /// Empirically verify a received [`CandidateKernel`] on a synthetic probe:
 /// compare it to the reference realized from its `decompose` and check every
 /// DECLARED, machine-checkable precision claim (bit-stability + the numeric
@@ -1439,6 +1576,31 @@ fn verify_candidate_impl(
     //     honestly (bit-stability above stays checkable). This branch is
     //     defensive — Task 6 requires a decompose to adopt at all.
     if numeric_declared {
+        // (D5) Corpus precedence. The frozen golden corpus is the SOLE verdict
+        // authority (§6.6-0007), so consult it FIRST, ahead of the recipe
+        // reference. A single-primitive region maps to the `OpTag` the corpus
+        // keys on; a multi-node region has no single-op corpus cell
+        // (`single_primitive_optag` → None → corpus None). `corpus_verdict` is
+        // DORMANT today (always `None` — see its doc), so this block is
+        // wired-but-inert: the PRECEDENCE is live for when Fuel consumes a
+        // populated corpus, at which point a covering cell short-circuits the
+        // recipe reference below via `classify_floor_verdict(None, None,
+        // corpus)` — corpus adopt ⇒ Pass, corpus non-adopt ⇒ Fail. The kiss-ref
+        // advisory record (if any) was already upserted above; corpus does not
+        // consult it (kiss-ref never verdicts).
+        let corpus = advisory
+            .as_ref()
+            .and_then(|region| single_primitive_optag(Some(region)))
+            .and_then(|op| corpus_verdict(op, out_dtype, seed));
+        if let Some(c) = &corpus {
+            ledger.upsert(make_record(
+                c.claim,
+                if c.adopt { "pass" } else { "fail" },
+                serde_json::json!({ "detail": c.detail.clone(), "source": "corpus" }),
+            ));
+            return (classify_floor_verdict(None, None, Some(c)), ledger.records().to_vec());
+        }
+
         let reference = match cand.claimed_op {
             Some(claimed) => {
                 // (i) Structural recipe-identity pre-check — only fires when
@@ -1506,15 +1668,20 @@ fn verify_candidate_impl(
                 ) {
                     Ok(r) => r,
                     Err(e) => {
+                        // (D4) The registered-recipe reference is unusable.
+                        // Escalate to Inconclusive when the advisory kiss-ref
+                        // diff ran (a live non-authoritative reference exists);
+                        // else the same Fail as today.
                         let claim = first_numeric_claim(&cand.declared);
                         let detail =
                             format!("reference realize from registered recipe failed: {e:?}");
-                        ledger.upsert(make_record(
+                        return resolve_reference_failure(
+                            kiss_outcome.as_ref(),
                             claim,
-                            "fail",
-                            serde_json::json!({ "detail": detail.clone() }),
-                        ));
-                        return (VerifyVerdict::Fail { claim, detail }, ledger.records().to_vec());
+                            detail,
+                            &mut ledger,
+                            &make_record,
+                        );
                     }
                 }
             }
@@ -1528,29 +1695,48 @@ fn verify_candidate_impl(
                 ) {
                     Ok(r) => r,
                     Err(e) => {
+                        // (D4) Candidate's own decompose reference is unusable —
+                        // escalate to Inconclusive when the advisory diff ran,
+                        // else the same Fail as today.
                         let claim = first_numeric_claim(&cand.declared);
                         let detail = format!("reference realize from decompose failed: {e:?}");
-                        ledger.upsert(make_record(
+                        return resolve_reference_failure(
+                            kiss_outcome.as_ref(),
                             claim,
-                            "fail",
-                            serde_json::json!({ "detail": detail.clone() }),
-                        ));
-                        return (VerifyVerdict::Fail { claim, detail }, ledger.records().to_vec());
+                            detail,
+                            &mut ledger,
+                            &make_record,
+                        );
                     }
                 },
                 None => {
+                    // (D4) No reference of any kind. If the advisory kiss-ref
+                    // diff ran (e.g. a claimed-op region derived from the
+                    // registry), escalate to Inconclusive; else the same Fail
+                    // as today.
                     let claim = first_numeric_claim(&cand.declared);
                     let detail =
                         "no decompose: cannot verify numeric claim against a reference".to_string();
-                    ledger.upsert(make_record(
+                    return resolve_reference_failure(
+                        kiss_outcome.as_ref(),
                         claim,
-                        "fail",
-                        serde_json::json!({ "detail": detail.clone() }),
-                    ));
-                    return (VerifyVerdict::Fail { claim, detail }, ledger.records().to_vec());
+                        detail,
+                        &mut ledger,
+                        &make_record,
+                    );
                 }
             },
         };
+
+        // Happy path (bound checks below): a usable recipe reference WAS
+        // produced. This is exactly `classify_floor_verdict` arm (2) — corpus
+        // already consulted-and-None above, recipe-realize is the interim
+        // authority, and the kiss-ref advisory (if any) is recorded but does
+        // NOT gate (§6.6-0007). The bound checks realize that arm inline: each
+        // declared numeric bound is the recipe verdict; a pass ⇒ Pass, the
+        // first out-of-bound ⇒ Fail. Kept inline (not routed through
+        // `classify_floor_verdict`) so the per-bound ledger evidence + the
+        // transcendental band-widening stay first-class.
 
         // Transcendental band-widening (KISS, 2026-07-18): kiss-ref and Fuel's
         // CPU oracle are BOTH hardware-precision (§6.5-0007), so on this LIVE
