@@ -18,7 +18,7 @@
 use std::collections::HashMap;
 use std::sync::RwLock;
 
-use fuel_kernel_seam_types::{OpAttrs, OpTag, PatternNode};
+use fuel_kernel_seam_types::{OpAttrs, OpTag, PatternNode, matmul_roles};
 
 use crate::registry::{FusedOpId, FusedOpParams};
 use crate::{Graph, Node, NodeId, Op};
@@ -319,8 +319,30 @@ fn tag_to_op(tag: OpTag, attrs: &OpAttrs) -> Option<Op> {
         T::Where => Op::Where,
         // Dtype-changing: target dtype rides `cast_dtype` (the stable name).
         T::Cast => Op::Cast(DType::from_str(attrs.cast_dtype.as_deref()?).ok()?),
-        // MatMul + last-dim log-softmax (no structural params).
-        T::MatMul => Op::MatMul,
+        // MatMul: the LOCKED role-vector contraction cell (§5/D5). Empty roles
+        // = the rank-polymorphic recipe form → implicit-accept (unchanged from
+        // today; recipes keep matmul implicit). Explicit roles must match the
+        // canonical cell EXACTLY — same-rank ≥ 2, leading Batch, lhs=[..,FreeM,
+        // ContractedK], rhs=[..,ContractedK,FreeN] — checked by role POSITION,
+        // not extent (so GQA-divisible batch stays all-Batch). Any other config
+        // (transposed / multi-ContractedK / FreeN-before-K / rank mismatch) is a
+        // SURFACED honest miss (`None`, rejected at registration), never a crash.
+        T::MatMul => {
+            if attrs.lhs_roles.is_empty() && attrs.rhs_roles.is_empty() {
+                Op::MatMul
+            } else {
+                let (canon_lhs, canon_rhs) = matmul_roles(attrs.lhs_roles.len(), attrs.rhs_roles.len());
+                if attrs.lhs_roles.len() == attrs.rhs_roles.len()
+                    && attrs.lhs_roles.len() >= 2
+                    && attrs.lhs_roles == canon_lhs
+                    && attrs.rhs_roles == canon_rhs
+                {
+                    Op::MatMul
+                } else {
+                    return None;
+                }
+            }
+        }
         T::LogSoftmaxLastDim => Op::LogSoftmaxLastDim,
         // Shape / layout.
         T::Transpose => Op::Transpose,
@@ -1071,6 +1093,40 @@ mod tests {
         assert_eq!(super::tag_to_op(OpTag::Cast, &attrs), Some(Op::Cast(DType::F16)));
         // Comparison.
         assert!(matches!(super::tag_to_op(OpTag::Lt, &OpAttrs::default()), Some(Op::Lt)));
+    }
+
+    #[test]
+    fn tag_to_op_matmul_resolves_canonical_roles() {
+        // T9 (D5): explicit CANONICAL role vectors resolve to Op::MatMul. The
+        // resolver checks role POSITIONS against the locked cell, not extents.
+        let attrs = OpAttrs { lhs_roles: vec![1, 3], rhs_roles: vec![3, 2], ..OpAttrs::default() };
+        assert!(matches!(super::tag_to_op(OpTag::MatMul, &attrs), Some(Op::MatMul)));
+        // Rank-4 canonical (leading Batch dims) also resolves — GQA-divisible
+        // batch extents stay all-Batch (positions, not extents).
+        let attrs4 = OpAttrs { lhs_roles: vec![0, 0, 1, 3], rhs_roles: vec![0, 0, 3, 2], ..OpAttrs::default() };
+        assert!(matches!(super::tag_to_op(OpTag::MatMul, &attrs4), Some(Op::MatMul)));
+    }
+
+    #[test]
+    fn tag_to_op_matmul_empty_roles_implicit_accept() {
+        // Empty roles = the rank-polymorphic recipe form → implicit-accept
+        // (unchanged from today; recipes keep matmul implicit).
+        assert!(matches!(super::tag_to_op(OpTag::MatMul, &OpAttrs::default()), Some(Op::MatMul)));
+    }
+
+    #[test]
+    fn tag_to_op_matmul_rejects_noncanonical_roles() {
+        // Non-canonical role configs are a SURFACED honest miss (typed decline at
+        // registration), never a crash.
+        // (1) transposed lhs = [ContractedK, FreeM] = [3,1] instead of [1,3].
+        let transposed = OpAttrs { lhs_roles: vec![3, 1], rhs_roles: vec![3, 2], ..OpAttrs::default() };
+        assert_eq!(super::tag_to_op(OpTag::MatMul, &transposed), None);
+        // (2) multi-ContractedK on lhs = [3,3].
+        let multi_k = OpAttrs { lhs_roles: vec![3, 3], rhs_roles: vec![3, 2], ..OpAttrs::default() };
+        assert_eq!(super::tag_to_op(OpTag::MatMul, &multi_k), None);
+        // (3) FreeN-before-K on rhs = [FreeN, ContractedK] = [2,3] instead of [3,2].
+        let freen_before_k = OpAttrs { lhs_roles: vec![1, 3], rhs_roles: vec![2, 3], ..OpAttrs::default() };
+        assert_eq!(super::tag_to_op(OpTag::MatMul, &freen_before_k), None);
     }
 
     #[test]
