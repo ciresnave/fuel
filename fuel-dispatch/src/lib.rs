@@ -59,8 +59,8 @@ pub mod jit_cuda_load;
 mod jit_ingest;
 #[cfg(feature = "jit")]
 pub use jit_ingest::{
-    CandidateKernel, IngestOutcome, IngestionConfig, IngestionService, ProviderFeedback,
-    RejectionReport,
+    CandidateKernel, FlagReport, IngestOutcome, IngestionConfig, IngestionService,
+    ProviderFeedback, RejectionReport,
 };
 #[cfg(feature = "jit")]
 mod jit_ingest_probe;

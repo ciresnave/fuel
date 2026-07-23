@@ -913,8 +913,17 @@ fn verify_candidate_impl(
                     .decompose
                     .as_ref()
                     .is_some_and(|r| region_contains_transcendental(r));
+                // Advisory tolerance per the flag-not-verdict plan addendum
+                // (item 1): `Tolerance::Ulp(2 × ceiling)` for transcendental
+                // regions, `Exact` otherwise. The 2× is the same triangle-
+                // inequality band rule as `widen_bound_for_transcendental`
+                // (two hardware-precision impls each within the ceiling of
+                // wide-precision truth can differ by 2× it); this advisory
+                // path carries no per-candidate declared tier, so a fixed
+                // base ULP ceiling of 2 stands in — 2 × 2 = 4.
+                const ADVISORY_TRANSCENDENTAL_ULP_CEILING: u64 = 2;
                 let tol = if transcendental {
-                    fuel_kiss_ref_backend::Tolerance::Ulp(4)
+                    fuel_kiss_ref_backend::Tolerance::Ulp(2 * ADVISORY_TRANSCENDENTAL_ULP_CEILING)
                 } else {
                     fuel_kiss_ref_backend::Tolerance::Exact
                 };
