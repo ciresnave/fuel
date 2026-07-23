@@ -42,7 +42,24 @@
 
 ## 3 · Tasks
 
-### T1 — Adapter region evaluator (CPU) — `fuel-kiss-ref-backend`
+**Status ledger (updated 2026-07-23, branch `feat/kiss-ref-verdict-integration`):**
+
+- [x] **T1** (A1) — adapter region evaluator — DONE `8ddeedea`
+- [x] **T2** (A2) — CPU advisory helpers (byte decodes, refined ULP band, derive-from-registry region) — DONE `69f0e55b`
+- [x] **T3** (A3) — generalize advisory block (region-based, dtype-dispatched, claimed-op reach) — DONE `f504fec9`
+- [x] **T4** (A4) — live classify wiring + `diff_summary` — DONE `22e1ec46`
+- [x] **T4b** (A4b, addendum — injected 2026-07-23) — KISS corpus vendor + reader; `corpus_verdict` dormant (seam gap) — DONE `7ddc8ed8`
+- [x] **T5** (A5) — non-f32 numeric-claim escalate — DONE `fdd17a09`
+- [x] **T6** (A6) — service e2e (v), CPU portion — DONE `76b9b883`; **live-GPU pass pending the exclusive `jit cuda` gate 5** (the `#[ignore]` legs are written; the GPU leg is unrun as of A7)
+- [x] **T7** (A7) — docs (this change) — DONE (ROADMAP follow-up block + ratify §6 status + tolerance/corpus outreach note)
+
+> The 2026-07-23 tolerance refinement (per-op §6.8 ceiling sum; `Exact` / `Ulp(n−1)` /
+> `Ulp(Σ ceilings + n_exact−1)`) **replaces** T3's D3 heuristic band (`Ulp(4+(n−1))`), and the
+> "corpus verified absent" premise (§0, D4/D5) is **STALE** — the corpus exists at KISS
+> `c9153b2`, vendored under T4b; `corpus_verdict` stays dormant for a seam-signature reason
+> (see the design note), not corpus absence.
+
+### T1 — Adapter region evaluator (CPU) — `fuel-kiss-ref-backend` — ✅ DONE (`8ddeedea`)
 **Files:** create `src/region.rs`; modify `src/lib.rs` (module + re-exports + 2 new `KissRefError` variants); `src/reference.rs` (`to_rows` → `pub(crate)`).
 **API:**
 ```rust
@@ -54,13 +71,13 @@ pub fn diff_region_f32(region: &PatternNode, candidate: &[f32], operands: &[&[f3
 Internals: `fn region_to_expr(&PatternNode) -> Result<Expr, KissRefError>` (`Bind{i}`→`Input(i)`; `Op`→ mapped + attrs-default guard → `Apply`; else decline). `diff_region_*` builds `DiffReport` directly (fields are pub) using `kiss_ref_core::ulp_distance_*` — kiss’s `diff_*` is op-keyed and can’t take an Expr; replicate its loop semantics exactly (both-NaN 0 / one-NaN MAX / Exact vs Ulp(n)).
 **Steps:** red test `region_relu_add_matches_hand_math` (+ the decline/ragged/narrow-dtype suite listed in the task table) → observe RED (compile) → implement → `cargo test -p fuel-kiss-ref-backend` green → commit `feat(kiss-ref-backend): region evaluator (PatternNode→Expr, reference/diff over composed regions)`.
 
-### T2 — CPU helpers in `jit_ingest.rs`
+### T2 — CPU helpers in `jit_ingest.rs` — ✅ DONE (`69f0e55b`)
 - `bytes_to_f64/bytes_to_f16/bytes_to_bf16` mirroring `bytes_to_f32` (:271-276).
 - `fn advisory_ulp_band(region: &PatternNode) -> Option<u64>` per D3 (uses `region_contains_transcendental` — **move its import off the cuda-gated block**; count op nodes locally, no adapter types).
 - `fn advisory_region(decompose: Option<&PatternNode>, claimed: Option<FusedOpId>) -> Option<PatternNode>` per D1.
 **Red tests:** `advisory_ulp_band_selects_by_region_shape`, `advisory_region_resolves_runtime_claimed_id_and_declines_static` (register a runtime Add region; assert ROPE + unregistered id → None), byte round-trips. RED (not found) → green under `cargo test -p fuel-dispatch --features jit --lib`. Commit.
 
-### T3 — Generalize the advisory block (:899-947) (cuda code; CPU-clean build)
+### T3 — Generalize the advisory block (:899-947) (cuda code; CPU-clean build) — ✅ DONE (`f504fec9`)
 Replace the f32/single-primitive advisory with:
 ```rust
 let advisory = advisory_region(cand.decompose.as_ref(), cand.claimed_op);
@@ -82,23 +99,55 @@ if let Some(region) = &advisory {
 ```
 `run_region_diff` = dtype match → `bytes_to_*` (candidate + each probe column) → `diff_region_*`. Keep the record claim/evidence keys the existing test asserts. Write the two live `#[ignore]` born-red tests here (run in T6): `multi_node_region_advisory_flags_add_kernel_for_relu_add`, `claimed_op_candidate_reaches_advisory_via_runtime_region`. Gate: `cargo build -p fuel-dispatch --features "jit cuda"` clean; CPU suite still green. Commit.
 
-### T4 — Live classify wiring + diff_summary (cuda + one CPU-red)
+### T4 — Live classify wiring + diff_summary (cuda + one CPU-red) — ✅ DONE (`22e1ec46`)
 1. **CPU red:** `map_inconclusive_carries_diff_summary_from_advisory_record` → extend `outcome_from_nonadopt_verdict` (D8). Green.
 2. **cuda:** in the numeric region — corpus consult first (D5; a `Some` returns via `classify_floor_verdict(None, None, corpus)`); the two realize-Err arms (:1068-1078, :1090-1099) and the no-decompose arm (:1101-1111) now build on `kiss_outcome` and delegate: `classify_floor_verdict(kiss_outcome.as_ref(), None, None)` — Inconclusive when kiss present (ledger record result `"inconclusive"`, realize error in evidence), the same Fail as today when not. Happy path (bound checks :1127-1183) unchanged — it IS classify arm (2) with corpus already known-None; state this equivalence in a comment.
 Gates: CPU suite green; cuda build clean. Commit.
 
-### T5 — Non-f32 numeric-claim escalate (cuda)
+### T4b (addendum — injected 2026-07-23) — KISS corpus vendor + reader — ✅ DONE (`7ddc8ed8`)
+**Not in the original plan** (the plan's §0/D4/D5 recorded the KISS v1 exact-byte corpus as
+*absent*). Injected 2026-07-23: KISS `main` @ `c9153b2` ships
+`conformance/corpus/{op_manifest.json, ops-arith.json}`. Shipped: byte-for-byte **vendored**
+snapshot under `fuel-dispatch/fixtures/kiss-corpus/` (+ `PROVENANCE.md`, blob hashes
+`9c7176ed…` / `8bab163e…`), a never-panic reader `fuel-dispatch/src/kiss_corpus.rs`
+(`load_vendored_corpus`, `Corpus::{covers, cells, covered_cells, declares_op}`, `--features
+jit`-gated, unit-tested over the `(add, f32)` cell). `corpus_verdict` **left dormant** — its
+`(op, dtype, seed)` seam carries no candidate output and `seed` selects a random probe
+disjoint from the corpus's fixed inputs, so it cannot be authoritative without a seam widening
+(design note `docs/design-notes/2026-07-23-kiss-corpus-verdict-seam-mismatch.md`). Read-only
+KISS access was used for vendoring only; nothing under the KISS checkout was modified.
+
+### T5 — Non-f32 numeric-claim escalate (cuda) — ✅ DONE (`fdd17a09`)
 Restructure :858-869: compute advisory eligibility pre-invoke (`advisory_region` + `region_supported(region, out_dtype)` + dtype ∈ {F64,F16,BF16}); ineligible ⇒ **identical** early Fail (same claim/detail bytes); eligible ⇒ proceed (invoke → advisory block → bit-stability). In the numeric region, after `recipe_identity`/`probe_arity` still gate, the escalate path skips realize + f32 bound checks and returns `classify_floor_verdict(kiss_outcome.as_ref(), None, corpus.as_ref())` ⇒ Inconclusive. CPU red: `nonf32_escalate_eligible` predicate tests. Live `#[ignore]` red: `verify_candidate_add_f64_is_inconclusive_not_failed` (add_f64 + Add decompose + REFERENCE ⇒ today `Fail{"max_ulp", …f32-only…}`). Commit.
 
-### T6 — Service e2e (v) + the live-GPU pass
+### T6 — Service e2e (v) + the live-GPU pass — ◑ CPU DONE (`76b9b883`); live-GPU pass PENDING (gate 5, unrun as of A7)
 - CPU: extend `RecordingFeedback` with a `flagged` vec + `on_flagged`; `worker_routes_flagged_to_on_flagged` via `start_with_verify(|_| IngestOutcome::Flagged(…))` — **pin, expected born-green** (say so in the doc comment).
 - Live `#[ignore]` red: `ingestion_service_flags_an_f64_add_candidate_e2e` — `IngestionService::start` + the T5 candidate (distinct entry_point/hash per the process-global-registration discipline, model on :2676-2714); extend `E2eFeedback` with `flagged` + `on_flagged`; assert on_flagged fired (escalate, Some diff_summary), on_rejected/on_adopted empty.
 - **Live-GPU verification pass (this task owns the GPU leg):** VS dev shell or `NVCC_CCBIN` set; FOREGROUND, exclusive:
   `cargo test -p fuel-dispatch --features "jit cuda" -- --ignored kiss_ verify_candidate_ ingestion_service_ multi_node_ claimed_op_candidate_ --test-threads=1`
   Observe the T3/T5/T6 tests transition red→green (run once BEFORE the wiring lands if sequencing allows, else rely on the recorded per-task red observations); pre-existing legs stay green. Report the actual output; if the GPU is unavailable, say plainly the live leg is unrun and stop short of claiming done. Commit.
 
-### T7 — Docs (same change)
+### T7 — Docs (same change) — ✅ DONE (A7, this change)
 ROADMAP.md:260-268: follow-ups (i)–(v) → shipped, with residual gaps named (static-op advisory pending PatternNode-data migration; corpus dormant pending KISS v1 corpus; non-f32 recipe VERDICT still f32-only — escalate only). `docs/outreach/kiss-conformance-architecture-fuel-ratify.md` §6 status lines updated to match. No architecture MAJOR bump (implementation completion of ratified scope). Commit `docs: mark verify-seam follow-ups (i)-(v) shipped; name residual gaps`.
+
+**AS SHIPPED (A7, 2026-07-23) — deltas from the above:**
+- ROADMAP follow-up block rewritten to mark (i)–(iii) implemented (CPU-verified; live-GPU
+  e2e legs `#[ignore]`, gate 5) with the **refined** band formula (single exact → exact;
+  multi-node exact → `Ulp(n−1)`; transcendental → `Ulp(Σ §6.8 ceilings + (n_exact−1))`, raw
+  `max_ulp` recorded). The "corpus dormant pending KISS v1 corpus" residual is **corrected**:
+  the corpus now **exists + is vendored** (KISS `c9153b2`), and `corpus_verdict` is dormant
+  for a **seam-signature** reason (no candidate output / random-probe seed), not corpus
+  absence — cross-referenced to the design note. Static-op advisory + non-f32-VERDICT-f32-only
+  residuals kept.
+- Ratify doc §6: item 2 marked IMPLEMENTED + a 2026-07-23 "Implementation status update"
+  paragraph (region-based/dtype-dispatched advisory, tolerance refinement, `Expr`/`eval_expr`
+  stability confirmation `b75a748..004e1a4`, corpus vendored/dormant).
+- **NEW** `docs/outreach/kiss-ref-tolerance-refinement-and-corpus-activation.md` records (a)
+  the tolerance-refinement adoption (formula + fallback-ceiling-4 + cancellation caveat +
+  `Expr`/`eval_expr` stability) and (b) the corpus activation (KISS ping / re-vendor ask +
+  the `c9153b2` provenance).
+- Plan checkboxes ticked (status ledger above), incl. T4b as an addendum entry.
+- Commit subject used: `docs: mark verify-seam follow-ups (i)-(iii) shipped; adopt kiss-ref tolerance refinement; record corpus activation` (the ROADMAP block enumerates (i)–(iii), not (i)–(v)).
 
 ## 4 · Gates (exact commands)
 
