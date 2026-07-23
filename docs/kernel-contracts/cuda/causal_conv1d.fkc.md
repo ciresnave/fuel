@@ -58,7 +58,7 @@ return:
   outputs:
     - name: out
       dtype_rule: passthrough(x)
-      shape_rule: same_as(x)
+      shape_rule: from_params(out_seq)   # C-3 hygiene: NOT same_as(x). out_seq = x.dim[-1] - (kernel-1) shrinks the seq axis for kernel>1 (Mamba K=4 ⇒ -3); same_as(x) only coincides at kernel==1. Non-evaluable ⇒ the shape-oracle skips it (no false-green if CausalConv1d ever joins synth).
       layout_guarantee: contiguous
       aliasing: none
 
