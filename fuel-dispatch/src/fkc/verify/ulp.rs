@@ -112,7 +112,7 @@ pub fn verify_precision_bound(
 /// `Exp`/`Log`/`Sin`/`Cos`/`Tanh`/`Sigmoid`/`Silu`/`Gelu`/`GeluErf`/`Erf`/
 /// `Rsqrt` are. Mirrors `cost.rs`'s `cost_elementwise_unary_transcendental_cpu`
 /// classification so the two never drift.
-fn is_transcendental(tag: OpTag) -> bool {
+pub(crate) fn is_transcendental(tag: OpTag) -> bool {
     use OpTag::*;
     matches!(tag, Exp | Log | Sin | Cos | Tanh | Sigmoid | Silu | Gelu | GeluErf | Erf | Rsqrt)
 }

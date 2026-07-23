@@ -91,6 +91,12 @@ pub use ledger::{gate_precision, LedgerQuery, LedgerRecord, VerificationLedger};
 pub use ulp::{
     region_contains_transcendental, verify_precision_bound, widen_bound_for_transcendental, Bound,
 };
+// The per-op transcendental classification — the SINGLE source `jit_ingest`'s
+// advisory ULP band shares with the region-level check above so the two never
+// drift. `jit`-gated: its only crate consumer is `jit_ingest` (an un-gated
+// re-export would warn as unused in non-jit builds).
+#[cfg(feature = "jit")]
+pub(crate) use ulp::is_transcendental;
 pub use invoker_cpu::CpuInvoker;
 pub use seed_cpu_ledger::{run_cpu_verification, SeedAttempt};
 // `to_bytes` is `pub(crate)` on `seed_cpu_ledger` (not `pub`) — re-exported

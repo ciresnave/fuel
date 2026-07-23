@@ -14,7 +14,7 @@ use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::fkc::verify::LedgerRecord;
+use crate::fkc::verify::{is_transcendental, LedgerRecord};
 
 #[cfg(feature = "cuda")]
 use crate::fkc::verify::{
@@ -275,6 +275,160 @@ fn bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
         .collect()
 }
 
+/// Reinterpret little-endian `f64` bytes as an owned `Vec<f64>`. Mirrors
+/// [`bytes_to_f32`]: `chunks_exact(8)` never yields a short chunk.
+// Consumed by the cuda advisory block's dtype dispatch (`run_region_diff`)
+// once T3 lands; until then only the CPU unit tests exercise it — tighten to
+// `cfg_attr(not(feature = "cuda"), allow(dead_code))` when wired.
+#[allow(dead_code)]
+fn bytes_to_f64(bytes: &[u8]) -> Vec<f64> {
+    bytes
+        .chunks_exact(8)
+        .map(|c| f64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
+        .collect()
+}
+
+/// Reinterpret little-endian `f16` bytes as an owned `Vec<half::f16>`. Mirrors
+/// [`bytes_to_f32`]: `chunks_exact(2)` never yields a short chunk.
+// See `bytes_to_f64` on the `allow` — T3's dtype dispatch is the consumer.
+#[allow(dead_code)]
+fn bytes_to_f16(bytes: &[u8]) -> Vec<half::f16> {
+    bytes.chunks_exact(2).map(|c| half::f16::from_le_bytes([c[0], c[1]])).collect()
+}
+
+/// Reinterpret little-endian `bf16` bytes as an owned `Vec<half::bf16>`.
+/// Mirrors [`bytes_to_f32`]: `chunks_exact(2)` never yields a short chunk.
+// See `bytes_to_f64` on the `allow` — T3's dtype dispatch is the consumer.
+#[allow(dead_code)]
+fn bytes_to_bf16(bytes: &[u8]) -> Vec<half::bf16> {
+    bytes.chunks_exact(2).map(|c| half::bf16::from_le_bytes([c[0], c[1]])).collect()
+}
+
+/// Fallback per-op ULP ceiling for a transcendental whose kiss `Op` declares no
+/// §6.8 ceiling: kiss non-primitives (`Tanh`, `Sigmoid`, `Silu`, `GeluTanh`,
+/// `Gelu`, `Rsqrt`) inherit their decomposition's tolerance and return `None`
+/// from `Op::ulp_ceiling`. Per the kiss-ref band refinement (2026-07-23): treat
+/// a mapped op with no exposed ceiling as 4 ULP.
+const ADVISORY_FALLBACK_TRANSCENDENTAL_ULP_CEILING: u64 = 4;
+
+/// The per-op §6.8 ULP-ceiling contribution to the advisory band:
+/// `Some(ceiling)` for a transcendental op, `None` for an exact-class op
+/// (which contributes to the exact-rounding `n-1` term instead).
+///
+/// Classification delegates to `fkc/verify/ulp.rs`'s [`is_transcendental`] —
+/// the single source of the transcendental set (IEEE-correctly-rounded
+/// `Sqrt`/`Recip` are exact-class there, so they carry no ceiling here).
+/// Ceilings are read from kiss-ref's OWN API (`kiss_ops_vocab::Op::ulp_ceiling`,
+/// verified at the pinned rev `b75a748`) through a mapping arm that mirrors
+/// `fuel-kiss-ref-backend::mapping::op_to_kiss` restricted to that set — the
+/// adapter crate itself is cuda-gated, and this helper must stay CPU-testable
+/// (`--features jit` alone). Keep the two mappings in lockstep.
+fn advisory_op_ulp_ceiling(op: fuel_graph::jit::OpTag) -> Option<u64> {
+    use fuel_graph::jit::OpTag as T;
+    use kiss_ops_vocab::Op as K;
+    if !is_transcendental(op) {
+        return None;
+    }
+    let kiss = match op {
+        T::Exp => Some(K::Exp),
+        T::Log => Some(K::Log),
+        T::Sin => Some(K::Sin),
+        T::Cos => Some(K::Cos),
+        T::Erf => Some(K::Erf),
+        T::Tanh => Some(K::Tanh),
+        T::Sigmoid => Some(K::Sigmoid),
+        T::Silu => Some(K::Silu),
+        T::Gelu => Some(K::GeluTanh), // Fuel Gelu = tanh-approx
+        T::GeluErf => Some(K::Gelu),  // Fuel GeluErf = exact erf
+        T::Rsqrt => Some(K::Rsqrt),
+        // A transcendental tag with no kiss mapping (none today — the match is
+        // total over `is_transcendental`'s set) takes the fallback ceiling.
+        _ => None,
+    };
+    let declared = kiss.and_then(|k| k.ulp_ceiling());
+    // `ceil() as u64` saturates (never-panic); declared ceilings are small
+    // integers (2/4/8) today.
+    Some(declared.map_or(ADVISORY_FALLBACK_TRANSCENDENTAL_ULP_CEILING, |c| c.ceil() as u64))
+}
+
+/// The advisory comparison band for a region, per the kiss-ref tolerance
+/// refinement (2026-07-23) — `None` ⇒ compare `Tolerance::Exact`, `Some(n)` ⇒
+/// `Tolerance::Ulp(n)`:
+///
+/// * single exact op → exact (`None`);
+/// * multi-node exact-only region → `n_ops - 1` (each intermediate rounding
+///   contributes at most ~1 ULP; the final rounding matches the reference's);
+/// * transcendental-containing region → `Σ per-op §6.8 ceilings over the
+///   region's transcendental ops + (n_exact_ops - 1)`, the exact term
+///   saturating at 0 (a lone transcendental keeps exactly its own ceiling).
+///
+/// CANCELLATION CAVEAT (pinned): linear ULP addition is a first-order model —
+/// cancellation-heavy regions (e.g. subtraction of nearby intermediates) can
+/// exceed the band and flag spuriously. The label stays advisory-only per
+/// KISS-CONFORM §6.6-0007 (kiss-ref flags, never verdicts), and the raw
+/// `max_ulp` is always recorded alongside any flag.
+///
+/// `None` also for an op-free region (nothing to band; callers gate on the
+/// adapter's `region_supported`, which requires ≥1 op node, before diffing).
+/// `SeeThrough` is traversed through (structural metadata, mirroring
+/// [`region_contains_transcendental`]); `Bind`/`Any` are leaves.
+// Consumed by the cuda advisory block once T3 lands — see `bytes_to_f64`.
+#[allow(dead_code)]
+fn advisory_ulp_band(region: &fuel_graph::jit::PatternNode) -> Option<u64> {
+    use fuel_graph::jit::PatternNode;
+    fn walk(node: &PatternNode, n_ops: &mut u64, n_exact: &mut u64, trans_sum: &mut Option<u64>) {
+        match node {
+            PatternNode::Op { op, operands, .. } => {
+                *n_ops += 1;
+                match advisory_op_ulp_ceiling(*op) {
+                    Some(c) => {
+                        *trans_sum = Some(trans_sum.unwrap_or(0).saturating_add(c));
+                    }
+                    None => *n_exact += 1,
+                }
+                for o in operands {
+                    walk(o, n_ops, n_exact, trans_sum);
+                }
+            }
+            PatternNode::SeeThrough { then } => walk(then, n_ops, n_exact, trans_sum),
+            PatternNode::Bind { .. } | PatternNode::Any => {}
+        }
+    }
+    let (mut n_ops, mut n_exact, mut trans_sum) = (0u64, 0u64, None);
+    walk(region, &mut n_ops, &mut n_exact, &mut trans_sum);
+    if n_ops == 0 {
+        return None;
+    }
+    match trans_sum {
+        // Exact-only region: single op compares exact; n-node accumulates n-1.
+        None => {
+            if n_ops == 1 {
+                None
+            } else {
+                Some(n_ops - 1)
+            }
+        }
+        Some(sum) => Some(sum.saturating_add(n_exact.saturating_sub(1))),
+    }
+}
+
+/// The region the kiss-ref advisory cross-check runs against (design D1,
+/// derive-from-registry): the candidate's own submitted `decompose` when it
+/// carries one, else — for a runtime-registered `claimed` op — Fuel's OWN
+/// registered region for that claim
+/// ([`runtime_region`](fuel_graph::runtime_fused::runtime_region)). A STATIC
+/// claimed id carries no `PatternNode` region until the registry's decomposes
+/// migrate to PatternNode data, so it declines (`None` — no static table);
+/// an unregistered id likewise resolves to `None`, never a panic.
+// Consumed by the cuda advisory block once T3 lands — see `bytes_to_f64`.
+#[allow(dead_code)]
+fn advisory_region(
+    decompose: Option<&fuel_graph::jit::PatternNode>,
+    claimed: Option<fuel_graph::registry::FusedOpId>,
+) -> Option<fuel_graph::jit::PatternNode> {
+    decompose.cloned().or_else(|| claimed.and_then(fuel_graph::runtime_fused::runtime_region))
+}
+
 #[cfg(test)]
 mod flag_not_verdict_tests {
     use super::*;
@@ -371,6 +525,115 @@ mod flag_not_verdict_tests {
         let v = [1.0f32, -2.5, 3.25];
         let bytes: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
         assert_eq!(bytes_to_f32(&bytes), vec![1.0, -2.5, 3.25]);
+    }
+
+    #[test]
+    fn bytes_to_f64_f16_bf16_roundtrip() {
+        let v64 = [1.0f64, -2.5, 1e300];
+        let bytes: Vec<u8> = v64.iter().flat_map(|x| x.to_le_bytes()).collect();
+        assert_eq!(bytes_to_f64(&bytes), v64.to_vec());
+
+        let v16: Vec<half::f16> =
+            [1.0f32, -2.5, 0.5].iter().map(|&x| half::f16::from_f32(x)).collect();
+        let bytes: Vec<u8> = v16.iter().flat_map(|x| x.to_le_bytes()).collect();
+        assert_eq!(bytes_to_f16(&bytes), v16);
+
+        let vb: Vec<half::bf16> =
+            [1.0f32, -2.5, 0.5].iter().map(|&x| half::bf16::from_f32(x)).collect();
+        let bytes: Vec<u8> = vb.iter().flat_map(|x| x.to_le_bytes()).collect();
+        assert_eq!(bytes_to_bf16(&bytes), vb);
+    }
+
+    /// The advisory band per the kiss-ref tolerance refinement (2026-07-23):
+    /// single exact op → Exact (`None`); multi-node exact-only → `Ulp(n-1)`;
+    /// transcendental-containing → `Ulp(Σ per-op §6.8 ceilings + (n_exact-1))`,
+    /// exact term saturating at 0. Ceilings are read from kiss-ref's own
+    /// `Op::ulp_ceiling` (declared 4 for exp; fallback 4 for kiss
+    /// non-primitives like tanh).
+    #[test]
+    fn advisory_ulp_band_selects_by_region_shape() {
+        use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
+        let bind = |i: u8| PatternNode::Bind { index: i };
+        let node = |op: OpTag, operands: Vec<PatternNode>| PatternNode::Op {
+            op,
+            operands,
+            attrs: OpAttrs::default(),
+        };
+        // Single exact op -> Exact (None).
+        let add = node(OpTag::Add, vec![bind(0), bind(1)]);
+        assert_eq!(advisory_ulp_band(&add), None);
+        // Multi-node exact-only -> Ulp(n_ops - 1).
+        let relu_add = node(OpTag::Relu, vec![add.clone()]);
+        assert_eq!(advisory_ulp_band(&relu_add), Some(1));
+        // Lone transcendental keeps exactly its own §6.8 ceiling (exp: kiss
+        // declares 4).
+        let exp = node(OpTag::Exp, vec![bind(0)]);
+        assert_eq!(advisory_ulp_band(&exp), Some(4));
+        // Transcendental + exact: ceiling sum + (n_exact - 1) = 4 + 0.
+        let exp_add = node(OpTag::Exp, vec![add.clone()]);
+        assert_eq!(advisory_ulp_band(&exp_add), Some(4));
+        // Two transcendentals (exp declared 4; tanh is a kiss non-primitive ->
+        // fallback 4) + one exact: 8 + (1 - 1) = 8.
+        let tanh_exp_add = node(
+            OpTag::Tanh,
+            vec![node(OpTag::Add, vec![node(OpTag::Exp, vec![bind(0)]), bind(1)])],
+        );
+        assert_eq!(advisory_ulp_band(&tanh_exp_add), Some(8));
+        // All-transcendental region: the exact term saturates at 0, never
+        // underflows.
+        let exp_tanh = node(OpTag::Exp, vec![node(OpTag::Tanh, vec![bind(0)])]);
+        assert_eq!(advisory_ulp_band(&exp_tanh), Some(8));
+        // Sqrt is IEEE correctly-rounded -> exact class (mirrors
+        // fkc/verify/ulp.rs `is_transcendental`): sqrt(a+b) is 2 exact ops.
+        let sqrt_add = node(OpTag::Sqrt, vec![add.clone()]);
+        assert_eq!(advisory_ulp_band(&sqrt_add), Some(1));
+        // Op-free region: nothing to band.
+        assert_eq!(advisory_ulp_band(&bind(0)), None);
+    }
+
+    /// D1 (derive-from-registry): the advisory region is the candidate's own
+    /// submitted decompose when present; else a runtime-registered claimed id
+    /// resolves to Fuel's OWN registered region; a static id (no `PatternNode`
+    /// region until the registry decomposes migrate) and an unregistered id
+    /// decline.
+    #[test]
+    fn advisory_region_resolves_runtime_claimed_id_and_declines_static() {
+        use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
+        use fuel_graph::registry::{FusedOpId, FusedOps};
+        let bind = |i: u8| PatternNode::Bind { index: i };
+        let region = PatternNode::Op {
+            op: OpTag::Mul,
+            attrs: OpAttrs::default(),
+            operands: vec![
+                PatternNode::Op {
+                    op: OpTag::Add,
+                    attrs: OpAttrs::default(),
+                    operands: vec![bind(0), bind(1)],
+                },
+                bind(0),
+            ],
+        };
+        let id = fuel_graph::runtime_fused::register_runtime_fused(
+            "test::advisory_region::mul_add",
+            region.clone(),
+        )
+        .expect("runtime registration");
+        // Claimed runtime id (no submitted decompose) -> the registered region.
+        assert_eq!(advisory_region(None, Some(id)), Some(region.clone()));
+        // A submitted decompose wins over the claimed id (D1 precedence).
+        let dec = PatternNode::Op {
+            op: OpTag::Add,
+            attrs: OpAttrs::default(),
+            operands: vec![bind(0), bind(1)],
+        };
+        assert_eq!(advisory_region(Some(&dec), Some(id)), Some(dec.clone()));
+        // A STATIC id has no runtime region -> decline.
+        assert_eq!(advisory_region(None, Some(FusedOps::ROPE)), None);
+        // An unregistered runtime-range id -> decline (never panic).
+        let unregistered = FusedOpId(FusedOpId::RUNTIME_FUSED_BASE + 0x7FF0);
+        assert_eq!(advisory_region(None, Some(unregistered)), None);
+        // Nothing submitted, nothing claimed.
+        assert_eq!(advisory_region(None, None), None);
     }
 
     /// Live-GPU: the kiss-ref advisory cross-check fires for an f32 Add candidate
