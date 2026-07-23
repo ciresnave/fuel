@@ -13,8 +13,9 @@ use fuel_kernel_seam_types::OpTag;
 pub use kiss_ref_core::{DiffReport, Tolerance};
 
 /// Transpose column-major `operands` into kiss-ref's per-element rows. Errors
-/// (never panics) on zero operands or a ragged column set.
-fn to_rows<T: Copy>(op: OpTag, operands: &[&[T]]) -> Result<Vec<Vec<T>>, KissRefError> {
+/// (never panics) on zero operands or a ragged column set. `pub(crate)`: the
+/// composed-region evaluator ([`crate::region`]) shares this transpose.
+pub(crate) fn to_rows<T: Copy>(op: OpTag, operands: &[&[T]]) -> Result<Vec<Vec<T>>, KissRefError> {
     if operands.is_empty() {
         return Err(KissRefError::Arity { op, expected: 1, got: 0 });
     }
