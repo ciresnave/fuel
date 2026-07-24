@@ -101,6 +101,19 @@ pub enum OpTag {
     /// `elem` hole stands for; a `carry` hole is index 0 in the v1 single-carry
     /// model).
     ScanPlaceholder,
+
+    /// Fuel's bounded `lax.scan` recurrence primitive (`fuel_graph::Op::Scan`).
+    /// A **structural token** — like [`ScanPlaceholder`], NOT a KISS base op:
+    /// its params (`n_xs`/`bound`/`emit`/`early_exit`) ride the Fuel-internal
+    /// [`OpAttrs`] `scan_*` fields and are NOT serialized to the §6.19
+    /// cross-producer wire (the empty-body `_` arm in
+    /// [`OpAttrs::to_canonical_bytes`]), exactly like the shape-relative
+    /// recipe-interior fields. The body sub-graph rides the node's trailing
+    /// operands (Phase-1 lax.scan input encoding:
+    /// `[init_carry, xs.., consts.., body_new_carry, body_y, [pred_exit]]`).
+    /// Re-emitted by `runtime_fused::tag_to_op`; no `op_to_tag` producer (a
+    /// scan node is a base-map terminal the matcher never recognizes).
+    Scan,
 }
 
 /// [`OpTag::ScanPlaceholder`] role code for the per-step recurrent **carry**
@@ -281,6 +294,25 @@ pub struct OpAttrs {
     /// for (a `carry` hole is index 0 in the v1 single-carry model). `None` ⇒
     /// not a scan-placeholder leaf.
     pub scan_index: Option<u32>,
+
+    // --- [`OpTag::Scan`] param carriers (Increment C, B1) --------------------
+    //
+    // Fuel-internal recipe fields for the bounded-scan primitive's params.
+    // Like the shape-relative fields above they are NOT on the §6.19 wire (a
+    // `Scan` node hits the empty-body `_` arm of `to_canonical_bytes`): the
+    // scan is Fuel's own sub-graph-carrying primitive, not a KISS base op, so
+    // its params never flow to a cross-producer blob. `None` ⇒ not a scan node.
+    /// [`OpTag::Scan`] `n_xs`: number of per-step `xs` operands.
+    pub scan_n_xs: Option<u32>,
+    /// [`OpTag::Scan`] `bound`: the static step horizon.
+    pub scan_bound: Option<u32>,
+    /// [`OpTag::Scan`] emit code: `0` = All (stack per-step ys, slot 0), `1` =
+    /// Final (final carry). Matches `fuel_graph::ScanEmit`'s declaration order.
+    pub scan_emit: Option<u8>,
+    /// [`OpTag::Scan`] early-exit presence flag: `Some(true)` ⇒ the Phase-2
+    /// `ScanPredicate` marker is present (its predicate LOGIC rides the trailing
+    /// `pred_exit` operand). `None`/`Some(false)` ⇒ no early exit.
+    pub scan_early_exit: Option<bool>,
 }
 
 // --- §6.19-shaped canonical positional-blob serialization (Convergence Increment A) ---

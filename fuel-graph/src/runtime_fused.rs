@@ -256,17 +256,20 @@ pub fn clear_runtime_fused_for_tests() {
 
 /// Project a region [`OpTag`] (+ its [`OpAttrs`]) back to a primitive [`Op`].
 /// The inverse of `jit::op_to_tag`, over the **full first-order re-emit
-/// vocabulary** (Convergence Increment A): every non-basis-gap, non-`Scan`,
-/// non-`Fused` op — elementwise, comparison, `Where`, `Cast`, shape/layout
+/// vocabulary** (Convergence Increment A): every non-basis-gap, non-`Fused`
+/// op — elementwise, comparison, `Where`, `Cast`, shape/layout
 /// (Transpose/Permute/Reshape/BroadcastTo/(Un)squeeze/Slice/Concat/Flip/Roll/
 /// Pad/Triu/Tril), reductions (SumDim/MaxDim/MeanDim/ReduceSumTo/ReduceMaxTo/
 /// CumSum/SumAll/MaxAll/MinAll/MeanAll), `MatMul`, `Iota`, and indexing (IndexSelect/
-/// Gather/IndexAdd/ScatterAdd). Structural params are decoded from the
-/// (extended) [`OpAttrs`]. Returns `None` (an honest miss, rejected at
-/// registration) for ops with no first-order re-emission: `PowI`/`Clamp`
-/// (no i32/two-scalar carrier), `MaskedFill` (no `Scalar::from_f64`
-/// reconstructor yet), fused/basis-gap tags, and any tag whose required attrs
-/// are unset (e.g. `Iota` with no `target_shape`).
+/// Gather/IndexAdd/ScatterAdd) — plus the **`Op::Scan` structural terminal**
+/// (Increment C, B1): `Scan` (params ride the `scan_*` carriers, body sub-graph
+/// rides the operands) and its `ScanPlaceholder` body holes. Structural params
+/// are decoded from the (extended) [`OpAttrs`]. Returns `None` (an honest miss,
+/// rejected at registration) for ops with no first-order re-emission:
+/// `PowI`/`Clamp` (no i32/two-scalar carrier), `MaskedFill` (no `Scalar::from_f64`
+/// reconstructor yet), `View` (the multi-output bundle carrier is B1's second
+/// half), fused/basis-gap tags, and any tag whose required attrs are unset
+/// (e.g. `Iota` with no `target_shape`, `Scan` with no `scan_bound`).
 fn tag_to_op(tag: OpTag, attrs: &OpAttrs) -> Option<Op> {
     use OpTag as T;
     use fuel_ir::{DType, Shape};
@@ -390,8 +393,42 @@ fn tag_to_op(tag: OpTag, attrs: &OpAttrs) -> Option<Op> {
         T::IndexAdd => Op::IndexAdd { dim: attrs.axis? as usize },
         T::ScatterAdd => Op::ScatterAdd { dim: attrs.axis? as usize },
 
+        // --- Op::Scan structural re-emit (Increment C, B1) ---
+        // A scan's body sub-graph rides the node's operands (the trailing
+        // inputs); this arm reconstructs only the `Op::Scan` params. The body
+        // holes re-emit through the `ScanPlaceholder` arm below. `Op::Scan`
+        // stays a base-map terminal (no native kernel, no `LoweringRule`) — the
+        // recipe just re-emits it so a decompose can round-trip through data.
+        T::Scan => Op::Scan {
+            n_xs: attrs.scan_n_xs? as usize,
+            bound: attrs.scan_bound? as usize,
+            emit: match attrs.scan_emit? {
+                0 => crate::ScanEmit::All,
+                1 => crate::ScanEmit::Final,
+                _ => return None,
+            },
+            // Phase-1 `ScanPredicate` is a marker (the predicate DAG rides the
+            // trailing `pred_exit` operand); `Some(true)` re-emits the marker.
+            early_exit: if attrs.scan_early_exit.unwrap_or(false) {
+                Some(crate::ScanPredicate)
+            } else {
+                None
+            },
+        },
+        // A body hole of `Op::Scan` (a childless leaf): `role` + `index` ride
+        // the dedicated `scan_role`/`scan_index` carriers.
+        T::ScanPlaceholder => Op::ScanPlaceholder {
+            role: match attrs.scan_role? {
+                fuel_kernel_seam_types::SCAN_ROLE_CARRY => crate::ScanRole::Carry,
+                fuel_kernel_seam_types::SCAN_ROLE_ELEM => crate::ScanRole::Elem,
+                _ => return None,
+            },
+            index: attrs.scan_index? as usize,
+        },
+
         // Honest misses (rejected at registration): PowI/Clamp (no carrier),
-        // MaskedFill (no Scalar::from_f64 reconstructor yet), and any tag whose
+        // MaskedFill (no Scalar::from_f64 reconstructor yet), Op::View (the
+        // multi-output bundle carrier is B1's second half), and any tag whose
         // required attrs are unset or that is added to OpTag later.
         _ => return None,
     })
@@ -4415,6 +4452,155 @@ mod tests {
             let out = fused_linear::decompose(&mut g, fused, &FusedOpParams::Rope);
             assert_eq!(out, fused, "wrong params ⇒ typed decline ⇒ fixpoint");
             assert_eq!(g.len(), before, "declined before any emission");
+        }
+    }
+
+    /// Increment C, B1 — the `Op::Scan` structural re-emit machinery. These
+    /// tests prove a hand-built `Op::Scan` recipe (an `OpTag::Scan` node whose
+    /// body sub-graph — `ScanPlaceholder` holes + body ops — rides its trailing
+    /// operands, per the Phase-1 lax.scan encoding) round-trips through
+    /// `tag_to_op`/`emit` to a graph whose base map is bit-identical to the
+    /// same scan built imperatively (the way `selective_scan::decompose` emits
+    /// it). `Op::Scan` stays a base-map terminal — the recipe just RE-EMITS it.
+    ///
+    /// Structure-preserving: the recipe mirrors the imperative
+    /// `unroll_scan`-shaped scan node exactly (same op types, same params, same
+    /// body structure, same const-sharing via a shared `Bind`), so the
+    /// `base_map_hash` equality is a structural-identity proof. Neither
+    /// `Op::Scan` nor `Op::ScanPlaceholder` folds its own node shape into
+    /// `base_map_hash` (op_key tags 210/211 fold only their params + the body
+    /// via child recursion), so emit's fallback interior shapes are inert for
+    /// the identity — the base map matches by construction.
+    mod scan_recipe_roundtrip {
+        use super::super::*;
+        use super::{bind, op_node};
+        use crate::{ScanEmit, ScanPredicate, ScanRole};
+        use crate::opt::base_map_hash;
+        use fuel_ir::{DType, Shape};
+        use fuel_kernel_seam_types::{SCAN_ROLE_CARRY, SCAN_ROLE_ELEM};
+
+        fn placeholder(role: u8, index: u32) -> PatternNode {
+            PatternNode::Op {
+                op: OpTag::ScanPlaceholder,
+                attrs: OpAttrs { scan_role: Some(role), scan_index: Some(index), ..OpAttrs::default() },
+                operands: vec![],
+            }
+        }
+
+        /// The recipe: `scan(n_xs=1, bound=3, emit=All)` over
+        /// `[init(B0), xs0(B1), const(B2), body_new_carry, body_y]` where
+        /// `body_new_carry = Add(carry_hole, elem_hole)` and
+        /// `body_y = Mul(body_new_carry, const)`. The `Add(carry,elem)` sub-tree
+        /// appears in BOTH body exits — emit's slot-free identity-share collapses
+        /// them to one node, matching the imperative `sum` referenced twice.
+        fn scan_recipe() -> PatternNode {
+            let sum = || op_node(
+                OpTag::Add,
+                OpAttrs::default(),
+                vec![placeholder(SCAN_ROLE_CARRY, 0), placeholder(SCAN_ROLE_ELEM, 0)],
+            );
+            PatternNode::Op {
+                op: OpTag::Scan,
+                attrs: OpAttrs {
+                    scan_n_xs: Some(1),
+                    scan_bound: Some(3),
+                    scan_emit: Some(0), // All
+                    scan_early_exit: None,
+                    ..OpAttrs::default()
+                },
+                operands: vec![
+                    bind(0), // init_carry
+                    bind(1), // xs0
+                    bind(2), // const
+                    sum(),   // body_new_carry
+                    op_node(OpTag::Mul, OpAttrs::default(), vec![sum(), bind(2)]), // body_y
+                ],
+            }
+        }
+
+        /// Build the reference scan imperatively (the shape/layout
+        /// `selective_scan::decompose` + `unroll_scan` assume) and return the
+        /// scan NodeId. Leaves are unpopulated `Op::Const`s — same shape/dtype
+        /// as the emitted recipe's, so they hash identically.
+        fn reference_scan(g: &mut Graph) -> NodeId {
+            let cs = Shape::from_dims(&[1]);
+            let xs = Shape::from_dims(&[3, 1]);
+            let init = g.push(Node { op: Op::Const, inputs: vec![], shape: cs.clone(), dtype: DType::F32 });
+            let xs0 = g.push(Node { op: Op::Const, inputs: vec![], shape: xs, dtype: DType::F32 });
+            let konst = g.push(Node { op: Op::Const, inputs: vec![], shape: cs.clone(), dtype: DType::F32 });
+            let carry = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: cs.clone(), dtype: DType::F32 });
+            let elem = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Elem, index: 0 }, inputs: vec![], shape: cs.clone(), dtype: DType::F32 });
+            let sum = g.push(Node { op: Op::Add, inputs: vec![carry, elem], shape: cs.clone(), dtype: DType::F32 });
+            let y = g.push(Node { op: Op::Mul, inputs: vec![sum, konst], shape: cs.clone(), dtype: DType::F32 });
+            g.push(Node {
+                op: Op::Scan { n_xs: 1, bound: 3, emit: ScanEmit::All, early_exit: None },
+                inputs: vec![init, xs0, konst, sum, y],
+                shape: Shape::from_dims(&[3, 1]),
+                dtype: DType::F32,
+            })
+        }
+
+        /// `tag_to_op` reconstructs the `Op::Scan` params + `ScanPlaceholder`
+        /// role/index verbatim from the carriers.
+        #[test]
+        fn tag_to_op_reconstructs_scan_and_placeholder() {
+            let scan_attrs = OpAttrs {
+                scan_n_xs: Some(1), scan_bound: Some(3), scan_emit: Some(0), scan_early_exit: None,
+                ..OpAttrs::default()
+            };
+            assert!(matches!(
+                tag_to_op(OpTag::Scan, &scan_attrs),
+                Some(Op::Scan { n_xs: 1, bound: 3, emit: ScanEmit::All, early_exit: None }),
+            ));
+            let fin = OpAttrs { scan_emit: Some(1), scan_early_exit: Some(true), ..scan_attrs.clone() };
+            assert!(matches!(
+                tag_to_op(OpTag::Scan, &fin),
+                Some(Op::Scan { emit: ScanEmit::Final, early_exit: Some(ScanPredicate), .. }),
+            ));
+            // A scan node with no bound is an honest miss (unset required attr).
+            assert!(tag_to_op(OpTag::Scan, &OpAttrs::default()).is_none());
+            let carry = OpAttrs { scan_role: Some(SCAN_ROLE_CARRY), scan_index: Some(0), ..OpAttrs::default() };
+            assert!(matches!(
+                tag_to_op(OpTag::ScanPlaceholder, &carry),
+                Some(Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }),
+            ));
+            let elem = OpAttrs { scan_role: Some(SCAN_ROLE_ELEM), scan_index: Some(2), ..OpAttrs::default() };
+            assert!(matches!(
+                tag_to_op(OpTag::ScanPlaceholder, &elem),
+                Some(Op::ScanPlaceholder { role: ScanRole::Elem, index: 2 }),
+            ));
+            assert!(tag_to_op(OpTag::ScanPlaceholder, &OpAttrs::default()).is_none());
+        }
+
+        /// The recipe is a valid, representable region: contiguous binds `[0,1,2]`
+        /// and every op (incl. `Scan`/`ScanPlaceholder`) re-emits to a primitive.
+        #[test]
+        fn scan_recipe_validates_as_representable() {
+            assert_eq!(scan_recipe().bind_indices(), vec![0, 1, 2]);
+            assert!(validate_recipe(&scan_recipe()).is_ok(), "scan recipe is a total, representable region");
+        }
+
+        /// THE round-trip: emit the recipe onto fresh input leaves and assert its
+        /// base map is bit-identical to the imperatively-built scan.
+        #[test]
+        fn scan_recipe_reemits_to_the_same_base_map_as_the_imperative_scan() {
+            // Reference.
+            let mut gr = Graph::new();
+            let ref_scan = reference_scan(&mut gr);
+            let want = base_map_hash(&gr, ref_scan);
+
+            // Emitted from the recipe onto identical leaves.
+            let mut ge = Graph::new();
+            let cs = Shape::from_dims(&[1]);
+            let init = ge.push(Node { op: Op::Const, inputs: vec![], shape: cs.clone(), dtype: DType::F32 });
+            let xs0 = ge.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[3, 1]), dtype: DType::F32 });
+            let konst = ge.push(Node { op: Op::Const, inputs: vec![], shape: cs, dtype: DType::F32 });
+            let root = emit_region(&mut ge, &scan_recipe(), &[init, xs0, konst], &[]);
+            assert!(matches!(ge.node(root).op, Op::Scan { n_xs: 1, bound: 3, emit: ScanEmit::All, early_exit: None }),
+                "recipe re-emits an Op::Scan terminal");
+            let got = base_map_hash(&ge, root);
+
+            assert_eq!(got, want, "scan recipe re-emit base map == imperative scan base map");
         }
     }
 }
