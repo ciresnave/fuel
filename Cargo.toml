@@ -1,4 +1,4 @@
-﻿[workspace]
+[workspace]
 # Every Fuel crate lives in the workspace so each one can inherit
 # shared dep versions via `{ workspace = true }`. Crates that need
 # heavy build toolchains (CUDA, Metal, Python, prost/ONNX) are kept
@@ -321,7 +321,7 @@ tempfile = "3.27"
 num_cpus = "1.15.0"
 num-traits = "0.2.15"
 once_cell = "1"
-parquet = "58.1.0"
+parquet = "59.0.0"
 rand = "0.9"
 rand_distr = "0.5"
 rayon = "1.12"
