@@ -266,10 +266,11 @@ pub fn clear_runtime_fused_for_tests() {
 /// present else a provisional F32 that `emit` re-resolves to operand[0]'s
 /// dtype). Structural params are decoded from the (extended) [`OpAttrs`].
 /// Returns `None` (an honest miss, rejected at registration) for ops with no
-/// first-order re-emission: `PowI`/`Clamp` (no i32/two-scalar carrier),
+/// first-order re-emission: `Clamp` (no two-scalar carrier yet),
 /// fused/basis-gap tags, and any tag whose required attrs are unset (e.g. `Iota`
-/// with no `target_shape`, or `MaskedFill` with no fill value / a dtype `Scalar`
-/// cannot represent).
+/// with no `target_shape`, `PowI` with no exponent, or `MaskedFill` with no fill
+/// value / a dtype `Scalar` cannot represent). `PowI` gained its i32-exponent
+/// carrier in Increment C carriers (A3 — the exponent rides `scalars[0]`).
 fn tag_to_op(tag: OpTag, attrs: &OpAttrs) -> Option<Op> {
     use OpTag as T;
     use fuel_ir::{DType, Shape};
@@ -309,6 +310,16 @@ fn tag_to_op(tag: OpTag, attrs: &OpAttrs) -> Option<Op> {
         // live-value substitution via the `extract:` path is a follow-up).
         T::AddScalar => Op::AddScalar(*attrs.scalars.first()?),
         T::MulScalar => Op::MulScalar(*attrs.scalars.first()?),
+        // PowI (Increment C carriers, A3): the i32 exponent rides
+        // `attrs.scalars[0]` as an f64 — an EXACT round-trip for every i32
+        // (`|n| < 2^53`), reconstructed via `as i32`. This is the same carrier
+        // the §6.19 wire already commits to (the `to_canonical_bytes` PowI arm
+        // serializes `scalars`) and mirrors `MaskedFill`'s baked-scalar posture:
+        // the exponent is a BAKED pattern constant, NOT an open cursor slot
+        // (`scalar_slot_arity(PowI) == 0`), so the recipe author supplies it and
+        // the emitter never draws it from the params projection. An unset value
+        // is an honest miss (`None`), never a defaulted `PowI(0)`.
+        T::PowI => Op::PowI(*attrs.scalars.first()? as i32),
 
         // --- Convergence Increment A: the full first-order set ---
         // Comparison (dtype→U8 handled by primitive_shape, not here).
@@ -409,9 +420,9 @@ fn tag_to_op(tag: OpTag, attrs: &OpAttrs) -> Option<Op> {
             Op::MaskedFill { value: masked_fill_scalar(v, dtype)? }
         }
 
-        // Honest misses (rejected at registration): PowI/Clamp (no carrier),
-        // and any tag whose required attrs are unset or that is added to OpTag
-        // later.
+        // Honest misses (rejected at registration): Clamp (no two-scalar
+        // carrier yet), and any tag whose required attrs are unset or that is
+        // added to OpTag later.
         _ => return None,
     })
 }
@@ -1229,17 +1240,18 @@ mod tests {
 
     #[test]
     fn register_rejects_unrepresentable_region() {
-        // Convergence A made MatMul/shape/reduction ops representable; PowI
-        // stays an honest miss (no i32-exponent carrier in OpAttrs), so it is
-        // the current canonical still-unrepresentable tag.
+        // Convergence A made MatMul/shape/reduction ops representable, and
+        // Increment C carriers made MaskedFill (A2) + PowI (A3) representable;
+        // `Clamp` stays an honest miss (no two-scalar carrier yet), so it is the
+        // current canonical still-unrepresentable tag.
         let region = PatternNode::Op {
-            op: OpTag::PowI,
+            op: OpTag::Clamp,
             attrs: OpAttrs::default(),
             operands: vec![PatternNode::Bind { index: 0 }],
         };
         assert_eq!(
             register_runtime_fused("bad", region),
-            Err(RuntimeFusedError::UnRepresentable(OpTag::PowI))
+            Err(RuntimeFusedError::UnRepresentable(OpTag::Clamp))
         );
     }
 
@@ -1303,6 +1315,28 @@ mod tests {
     }
 
     #[test]
+    fn tag_to_op_reconstructs_powi() {
+        // A3 (Increment C carriers): the PowI i32-exponent re-emit carrier. The
+        // exponent rides `scalars[0]` as an f64 (an EXACT round-trip for every
+        // i32 — |n| < 2^53), reconstructed via `as i32`. RED before A3 (PowI was
+        // in the `_ => return None` honest-miss set).
+        assert!(matches!(
+            super::tag_to_op(OpTag::PowI, &OpAttrs { scalars: vec![3.0], ..OpAttrs::default() }),
+            Some(Op::PowI(3))
+        ));
+        // Negative exponent (e.g. PowI(-1) = reciprocal — the exp==0 backward arm).
+        assert!(matches!(
+            super::tag_to_op(OpTag::PowI, &OpAttrs { scalars: vec![-1.0], ..OpAttrs::default() }),
+            Some(Op::PowI(-1))
+        ));
+        // No exponent ⇒ honest miss (None), never a defaulted PowI(0).
+        assert_eq!(super::tag_to_op(OpTag::PowI, &OpAttrs::default()), None);
+        // The exponent is a BAKED pattern constant (like MaskedFill's fill), not
+        // a cursor slot — so it never draws from the params projection.
+        assert_eq!(super::scalar_slot_arity(OpTag::PowI), 0);
+    }
+
+    #[test]
     fn masked_fill_region_registers_and_emits_with_operand_dtype() {
         // Before A2 this region was `UnRepresentable(MaskedFill)`; now it
         // registers, and `emit` resolves the fill Scalar to operand[0]'s dtype
@@ -1328,6 +1362,29 @@ mod tests {
             other => panic!("expected MaskedFill, got {other:?}"),
         }
         assert_eq!(g.node(root).dtype, DType::F16);
+    }
+
+    #[test]
+    fn powi_region_registers_and_emits() {
+        // Before A3 a bare PowI region was `UnRepresentable(PowI)`; now it
+        // registers, and `emit` reconstructs the i32 exponent from `scalars[0]`.
+        clear_runtime_fused_for_tests();
+        let region = PatternNode::Op {
+            op: OpTag::PowI,
+            attrs: OpAttrs { scalars: vec![3.0], ..OpAttrs::default() },
+            operands: vec![PatternNode::Bind { index: 0 }],
+        };
+        register_runtime_fused("powi::cube", region.clone())
+            .expect("PowI region registers (was UnRepresentable before A3)");
+        let mut g = Graph::new();
+        let x = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[2, 3]), dtype: DType::F32 });
+        let root = emit_region(&mut g, &region, &[x], &[]);
+        assert!(
+            matches!(g.node(root).op, Op::PowI(3)),
+            "emit reconstructs Op::PowI(3) from scalars[0]",
+        );
+        assert_eq!(g.node(root).shape, Shape::from_dims(&[2, 3]), "PowI is shape-preserving");
+        assert_eq!(g.node(root).dtype, DType::F32);
     }
 
     #[test]
@@ -3479,18 +3536,19 @@ mod tests {
         /// the in-memory analog of the withdrawn reverse-scan "flip" spelling —
         /// must surface as a typed honest-miss decline: the node stays fused
         /// (fixpoint), NEVER accepted, NEVER a crash. The fabricated recipe
-        /// stands in for a foreign token by carrying `OpTag::PowI` — a tag
+        /// stands in for a foreign token by carrying `OpTag::Clamp` — a tag
         /// with NO primitive re-emission today (`tag_to_op` → `None`), exactly
         /// the semantics-absent posture an unregistered op name resolves to.
-        /// If/when the token registers (flip returning to KISS-Ops; PowI
-        /// gaining its carrier in slice 2), it becomes a NAMED-op resolution
-        /// case — semantics arrive via registration, never via silent
-        /// acceptance here.
+        /// (This stand-in was `OpTag::PowI` until Increment C carriers A3 gave
+        /// PowI its i32-exponent carrier; `Clamp` — still awaiting a two-scalar
+        /// carrier — is the current canonical carrier-less token.) If/when the
+        /// token registers, it becomes a NAMED-op resolution case — semantics
+        /// arrive via registration, never via silent acceptance here.
         #[test]
         fn decompose_via_recipe_declines_an_unknown_token_recipe() {
             let fabricated = op_node(
-                OpTag::PowI,
-                OpAttrs { scalars: vec![3.0], ..OpAttrs::default() },
+                OpTag::Clamp,
+                OpAttrs { scalars: vec![0.0, 1.0], ..OpAttrs::default() },
                 vec![bind(0)],
             );
             let mut g = Graph::new();
