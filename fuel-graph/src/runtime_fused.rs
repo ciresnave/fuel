@@ -2079,6 +2079,143 @@ mod tests {
     }
 
     /// FROZEN copy of the pre-migration imperative
+    /// `registry::rms_norm_last_dim_backward::decompose` (the legacy ~22-node
+    /// `MeanDim`/`SumDim`/`Reshape(keepdim)`/`AddScalar`/`MulScalar(n)`/`Rsqrt`/
+    /// `BroadcastTo`/`Mul`/`Sub`/`Div` spelling, with the `n = dims[last]`
+    /// reduced-count baked as an absolute `MulScalar`), copied VERBATIM from that
+    /// module @ `9d7a1380` before A1 replaced the live body with the shape-
+    /// polymorphic data recipe. Sole consumer: the A1 numeric-parity oracle
+    /// (`rms_norm_backward_recipe` below). Reads `inputs = [x, upstream]` + the
+    /// output shape off the node — the convention the autograd
+    /// `BackwardKind::Fused` edge emits.
+    fn frozen_legacy_rms_norm_backward_decompose(
+        graph: &mut Graph,
+        id: NodeId,
+        params: &FusedOpParams,
+    ) -> NodeId {
+        let (x_id, up_id, x_shape, dtype) = {
+            let n = graph.node(id);
+            (n.inputs[0], n.inputs[1], n.shape.clone(), n.dtype)
+        };
+        let eps = match params {
+            FusedOpParams::RmsNormLastDimBackward { eps } => *eps,
+            // G2: total + never-panic — impossible params; return self.
+            _ => return id,
+        };
+        let dims = x_shape.dims().to_vec();
+        let last = dims.len() - 1;
+        let n = dims[last] as f64;
+        let mut kd = dims.clone();
+        kd[last] = 1;
+        let keepdim = Shape::from_dims(&kd);
+        let mut rd = dims.clone();
+        rd.remove(last);
+        let reduced = Shape::from_dims(&rd);
+
+        // denom = mean(x²) + eps  (keepdim).
+        let sq = graph.push(Node {
+            op: Op::Sqr,
+            inputs: vec![x_id],
+            shape: x_shape.clone(),
+            dtype,
+        });
+        let mean = graph.push(Node {
+            op: Op::MeanDim(last),
+            inputs: vec![sq],
+            shape: reduced.clone(),
+            dtype,
+        });
+        let mean_kd = graph.push(Node {
+            op: Op::Reshape(keepdim.clone()),
+            inputs: vec![mean],
+            shape: keepdim.clone(),
+            dtype,
+        });
+        let denom_kd = graph.push(Node {
+            op: Op::AddScalar(eps),
+            inputs: vec![mean_kd],
+            shape: keepdim.clone(),
+            dtype,
+        });
+        // r_rms = rsqrt(denom), broadcast.
+        let rrms_kd = graph.push(Node {
+            op: Op::Rsqrt,
+            inputs: vec![denom_kd],
+            shape: keepdim.clone(),
+            dtype,
+        });
+        let rrms_b = graph.push(Node {
+            op: Op::BroadcastTo(x_shape.clone()),
+            inputs: vec![rrms_kd],
+            shape: x_shape.clone(),
+            dtype,
+        });
+        // s = sum(g·x, last)  (keepdim).
+        let gx = graph.push(Node {
+            op: Op::Mul,
+            inputs: vec![up_id, x_id],
+            shape: x_shape.clone(),
+            dtype,
+        });
+        let s = graph.push(Node {
+            op: Op::SumDim(last),
+            inputs: vec![gx],
+            shape: reduced,
+            dtype,
+        });
+        let s_kd = graph.push(Node {
+            op: Op::Reshape(keepdim.clone()),
+            inputs: vec![s],
+            shape: keepdim.clone(),
+            dtype,
+        });
+        let s_b = graph.push(Node {
+            op: Op::BroadcastTo(x_shape.clone()),
+            inputs: vec![s_kd],
+            shape: x_shape.clone(),
+            dtype,
+        });
+        // term = x·s / (n·denom).
+        let ndenom_kd = graph.push(Node {
+            op: Op::MulScalar(n),
+            inputs: vec![denom_kd],
+            shape: keepdim.clone(),
+            dtype,
+        });
+        let ndenom_b = graph.push(Node {
+            op: Op::BroadcastTo(x_shape.clone()),
+            inputs: vec![ndenom_kd],
+            shape: x_shape.clone(),
+            dtype,
+        });
+        let xs = graph.push(Node {
+            op: Op::Mul,
+            inputs: vec![x_id, s_b],
+            shape: x_shape.clone(),
+            dtype,
+        });
+        let term = graph.push(Node {
+            op: Op::Div,
+            inputs: vec![xs, ndenom_b],
+            shape: x_shape.clone(),
+            dtype,
+        });
+        // grad_x = r_rms · (g − term).
+        let inner = graph.push(Node {
+            op: Op::Sub,
+            inputs: vec![up_id, term],
+            shape: x_shape.clone(),
+            dtype,
+        });
+        graph.push(Node {
+            op: Op::Mul,
+            inputs: vec![rrms_b, inner],
+            shape: x_shape,
+            dtype,
+        })
+    }
+
+    /// FROZEN copy of the pre-migration imperative
     /// `registry::fused_linear::decompose` (the legacy 3-node `MatMul` +
     /// `BroadcastTo(rank-1 bias)` + `Add` spelling, broadcasting the rank-1
     /// bias DIRECTLY with no leading-1 pad), copied VERBATIM from that module @
@@ -4304,6 +4441,217 @@ mod tests {
             let out = layer_norm_last_dim_backward::decompose(&mut g, fused, &FusedOpParams::Rope);
             assert_eq!(out, fused, "wrong params ⇒ typed decline ⇒ fixpoint");
             assert_eq!(g.len(), before, "declined before any emission");
+        }
+    }
+
+    // rms_norm_last_dim_backward migration (Increment C carriers, A1) ---------
+    //
+    // The ~22-node imperative closed-form
+    // `grad_x = r_rms · (g − x·s / (n·(mean_sq + eps)))` becomes a portable
+    // `PatternNode` DATA recipe — the FIRST recipe to drive a SHAPE-DERIVED
+    // scalar through live emit: `n = dims[last]` (the reduced_count) is a
+    // `MulScalar(scalar_rel = Extent(0, LAST))`, resolved from x's shape at emit
+    // (not baked, not a params slot). Sibling of the layer-norm-backward recipe:
+    // `MeanDim(axis_last)` + `Unsqueeze(append)` keepdim (D3 swap) + broadcast to
+    // `SameAs 0`; the `eps` `AddScalar` is an OPEN slot filled by the projection.
+    // Binds: `0 = x`, `1 = upstream`. RISK-A: `denom_kd` (which carries the eps
+    // slot) is consumed by BOTH the `Rsqrt` and the `MulScalar(n)`, so emit's
+    // slot-free identity-share does NOT dedup it — the recipe emits it twice
+    // (numerically identical deterministic recompute; the legacy DAG shared it),
+    // and downstream CSE re-collapses. The parity oracle runs both sides through
+    // a toy f64 interpreter (Reshape/Unsqueeze = metadata passthrough) so neither
+    // the D3 swap nor the recompute can perturb the bit-exact assert.
+    mod rms_norm_backward_recipe {
+        use super::super::*;
+        use super::frozen_legacy_rms_norm_backward_decompose;
+        use crate::registry::{FusedOps, rms_norm_last_dim_backward};
+        use fuel_ir::{DType, Shape};
+        use std::collections::HashMap;
+
+        /// Tiny f64 reference interpreter over the rms-norm-backward primitive
+        /// vocabulary (leaf-lookup FIRST, then elementwise `Mul`/`Sub`/`Div`,
+        /// unary `Sqr`/`Rsqrt`, `AddScalar`/`MulScalar`, last-axis
+        /// `MeanDim`/`SumDim`, metadata-only keepdim restore
+        /// `Unsqueeze`/`Reshape`, last-dim `BroadcastTo`). BOTH parity sides run
+        /// through it with identical in-order arithmetic, so a bit-exact assert
+        /// isolates recipe STRUCTURE — neither the `Reshape`→`Unsqueeze` D3 swap
+        /// NOR the open-slot `denom_kd` recompute can perturb it.
+        fn eval_rnb(g: &Graph, id: NodeId, leaves: &HashMap<NodeId, Vec<f64>>) -> Vec<f64> {
+            if let Some(v) = leaves.get(&id) {
+                return v.clone();
+            }
+            let node = g.node(id);
+            match &node.op {
+                Op::Mul => {
+                    let a = eval_rnb(g, node.inputs[0], leaves);
+                    let b = eval_rnb(g, node.inputs[1], leaves);
+                    a.iter().zip(&b).map(|(x, y)| x * y).collect()
+                }
+                Op::Sub => {
+                    let a = eval_rnb(g, node.inputs[0], leaves);
+                    let b = eval_rnb(g, node.inputs[1], leaves);
+                    a.iter().zip(&b).map(|(x, y)| x - y).collect()
+                }
+                Op::Div => {
+                    let a = eval_rnb(g, node.inputs[0], leaves);
+                    let b = eval_rnb(g, node.inputs[1], leaves);
+                    a.iter().zip(&b).map(|(x, y)| x / y).collect()
+                }
+                Op::Sqr => eval_rnb(g, node.inputs[0], leaves).iter().map(|v| v * v).collect(),
+                Op::Rsqrt => {
+                    eval_rnb(g, node.inputs[0], leaves).iter().map(|v| 1.0 / v.sqrt()).collect()
+                }
+                Op::AddScalar(e) => {
+                    eval_rnb(g, node.inputs[0], leaves).iter().map(|v| v + e).collect()
+                }
+                Op::MulScalar(m) => {
+                    eval_rnb(g, node.inputs[0], leaves).iter().map(|v| v * m).collect()
+                }
+                // Last-axis reductions — rank-reducing; identical fold both
+                // spellings.
+                Op::MeanDim(_) => {
+                    let input = eval_rnb(g, node.inputs[0], leaves);
+                    let last = *g.node(node.inputs[0]).shape.dims().last().unwrap();
+                    input.chunks(last).map(|row| row.iter().sum::<f64>() / last as f64).collect()
+                }
+                Op::SumDim(_) => {
+                    let input = eval_rnb(g, node.inputs[0], leaves);
+                    let last = *g.node(node.inputs[0]).shape.dims().last().unwrap();
+                    input.chunks(last).map(|row| row.iter().sum::<f64>()).collect()
+                }
+                // Metadata-only keepdim restores (the D3 swap and its legacy twin
+                // evaluate identically here).
+                Op::Unsqueeze { .. } | Op::Reshape(_) => eval_rnb(g, node.inputs[0], leaves),
+                // Broadcast a keepdim `[.., 1]` tensor back along the last axis.
+                Op::BroadcastTo(target) => {
+                    let input = eval_rnb(g, node.inputs[0], leaves);
+                    let out_n: usize = target.dims().iter().product();
+                    let last = *target.dims().last().unwrap();
+                    assert_eq!(
+                        input.len() * last,
+                        out_n,
+                        "broadcast is a last-dim repeat in these graphs",
+                    );
+                    input.iter().flat_map(|&v| std::iter::repeat(v).take(last)).collect()
+                }
+                other => panic!("eval_rnb: unhandled op {other:?}"),
+            }
+        }
+
+        /// Build a fused RmsNormLastDimBackward node over `x [dims]` (input 0)
+        /// and `g [dims]` (input 1, the upstream gradient), carrying `eps`.
+        /// Returns `(x, g, fused)`.
+        fn rms_backward_fused_node(
+            g: &mut Graph,
+            dims: &[usize],
+            eps: f64,
+        ) -> (NodeId, NodeId, NodeId) {
+            let sh = Shape::from_dims(dims);
+            let x = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+            let up = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+            let fused = g.push(Node {
+                op: Op::Fused(
+                    FusedOps::RMS_NORM_LAST_DIM_BACKWARD,
+                    FusedOpParams::RmsNormLastDimBackward { eps },
+                ),
+                inputs: vec![x, up],
+                shape: sh,
+                dtype: DType::F32,
+            });
+            (x, up, fused)
+        }
+
+        /// A1 (a): ONE recipe datum decomposes at BOTH rank 2 and rank 3 (the
+        /// polymorphism the baked-shape legacy body never had — including the
+        /// shape-derived `MulScalar(n)`), and its numerics match the FROZEN
+        /// legacy builder bit-exactly under the shared reference interpreter.
+        #[test]
+        fn rms_norm_backward_recipe_decompose_is_polymorphic_and_matches_frozen_legacy() {
+            for dims in [vec![2usize, 4], vec![3, 5, 7]] {
+                let mut g = Graph::new();
+                let (x, up, fused) = rms_backward_fused_node(&mut g, &dims, 1e-5);
+                let sh = Shape::from_dims(&dims);
+                let new_root = rms_norm_last_dim_backward::decompose(
+                    &mut g,
+                    fused,
+                    &FusedOpParams::RmsNormLastDimBackward { eps: 1e-5 },
+                );
+                assert_ne!(new_root, fused, "recipe decompose must fire at {dims:?}");
+                assert_eq!(g.node(new_root).shape, sh, "rms_norm backward is shape-preserving");
+                assert_eq!(g.node(new_root).dtype, DType::F32);
+
+                let legacy_root = frozen_legacy_rms_norm_backward_decompose(
+                    &mut g,
+                    fused,
+                    &FusedOpParams::RmsNormLastDimBackward { eps: 1e-5 },
+                );
+
+                let n: usize = dims.iter().product();
+                let x_data: Vec<f64> =
+                    (0..n).map(|i| ((i as f64) * 0.41).sin() * 2.0 + 0.7).collect();
+                let g_data: Vec<f64> =
+                    (0..n).map(|i| ((i as f64) * 0.61).cos() * 1.3 - 0.15).collect();
+                let mut leaves = HashMap::new();
+                leaves.insert(x, x_data);
+                leaves.insert(up, g_data);
+                let got = eval_rnb(&g, new_root, &leaves);
+                let want = eval_rnb(&g, legacy_root, &leaves);
+                assert_eq!(got.len(), want.len());
+                for (i, (a, b)) in got.iter().zip(want.iter()).enumerate() {
+                    assert_eq!(
+                        a.to_bits(),
+                        b.to_bits(),
+                        "rms_norm_backward[{i}] at {dims:?}: recipe={a} vs legacy={b}",
+                    );
+                }
+            }
+        }
+
+        /// A1 (structural, born-red): every keepdim restore is the D3
+        /// shrink-via-swap `Unsqueeze` append, NOT the baked `Reshape(keepdim)`
+        /// (the crisp discriminator against the pre-migration imperative body,
+        /// which emits `Reshape` — so this is RED until migration), and the
+        /// reduced-count divisor is a live `MulScalar(n = dims[last])` resolved
+        /// from x's shape by the `scalar_rel` carrier (evidence the shape-derived
+        /// scalar reached emit). The backward root is the outer `Mul(rrms, inner)`.
+        #[test]
+        fn rms_norm_backward_recipe_uses_the_unsqueeze_keepdim_swap_and_shape_scalar() {
+            for dims in [vec![2usize, 4], vec![3, 5, 7]] {
+                let mut g = Graph::new();
+                let (_x, _up, fused) = rms_backward_fused_node(&mut g, &dims, 1e-5);
+                let root = rms_norm_last_dim_backward::decompose(
+                    &mut g,
+                    fused,
+                    &FusedOpParams::RmsNormLastDimBackward { eps: 1e-5 },
+                );
+                assert_ne!(root, fused, "recipe decompose fires at {dims:?}");
+                assert!(matches!(g.node(root).op, Op::Mul), "backward root is the outer Mul(rrms, inner)");
+                let reachable = crate::topo_order_multi(&g, &[root]);
+                let unsqueezes = reachable
+                    .iter()
+                    .filter(|&&n| matches!(g.node(n).op, Op::Unsqueeze { .. }))
+                    .count();
+                let reshapes = reachable
+                    .iter()
+                    .filter(|&&n| matches!(g.node(n).op, Op::Reshape(_)))
+                    .count();
+                assert!(unsqueezes >= 1, "keepdim restored via Unsqueeze append (D3 swap) at {dims:?}");
+                assert_eq!(reshapes, 0, "no baked keepdim Reshape / no D4 pad after the D3 swap at {dims:?}");
+                // The reduced-count divisor resolved to n = dims[last] from x's
+                // shape (the scalar_rel carrier), at whatever rank.
+                let n = *dims.last().unwrap() as f64;
+                let mul_scalars: Vec<f64> = reachable
+                    .iter()
+                    .filter_map(|&nid| match g.node(nid).op {
+                        Op::MulScalar(v) => Some(v),
+                        _ => None,
+                    })
+                    .collect();
+                assert!(
+                    mul_scalars.iter().any(|&v| v == n),
+                    "a MulScalar(n={n}) resolved from x's last-axis extent at {dims:?}, got {mul_scalars:?}",
+                );
+            }
         }
     }
 
