@@ -146,8 +146,16 @@ nowhere; now captured so they are not forgotten):
   `fuel-graph` (396). **Still narrowed to the recipe interior (slices 2–5, §9 of the plan):**
   the remaining ~11 first-order `decompose` migrations (carriers: PowI/Clamp/MaskedFill,
   shape-derived scalar slots), the **flat-DAG-CSE recipe-node/table WIRE serializer** + the
-  `reduced_count` leaf, the scan flat form (`selective_scan`/`ssd_chunk_scan`), and the
-  §6.19 import decoder — node-envelope consolidation in-flight via **KISS #67**. See
+  `reduced_count` leaf's **graph wiring**, the scan flat form (`selective_scan`/`ssd_chunk_scan`),
+  and the §6.19 import decoder — node-envelope consolidation in-flight via **KISS #67**.
+  *(Update 2026-07-23: the four **source-op leaf BYTE ARMS** — `const{bits}` with the MBZ
+  narrow-dtype rule, `runtime_scalar{slot_index}`, `reduced_count{axis}`,
+  `scan_placeholder{role,index}` — shipped in `to_canonical_bytes` on the KISS editor's
+  four-leaf ack ([KISS #67 comment 5061571967](https://github.com/ThinkersJournal/KISS/issues/67#issuecomment-5061571967),
+  acking Fuel's proposal comment 5060303085). Each rides **carrier (a)** (`u32`-LE `op_attrs`
+  outer), distinct from the §6.8-0007 region-table (`u16`-LE) and §6.20-0005 shape-expr child
+  (`u16`-LE) framings. Wire tokens only: `op_to_tag` emits none of them and `tag_to_op`
+  declines all four as honest misses, so the leaves' graph wiring stays slices 2–5 work.)* See
   [10-decisions-log 2026-07-16 + 2026-07-21](docs/architecture/10-decisions-log.md);
   `docs/recipe-signature-reference.md` (Part II §A/§C, as-built); memories
   `recipe-grammar-codesign`, `shape-oracle-rfc-accepted`.

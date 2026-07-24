@@ -37,7 +37,11 @@ use fuel_ir::{DType, DeviceLocation, Shape};
 use super::alternative_set::AlternativeSet;
 use super::judge::JudgeOracle;
 use crate::fused::CostEstimate;
-use crate::kernel::{KernelBindingTable, OpParams};
+use crate::kernel::KernelBindingTable;
+// `OpParams` appears only in the test module's `KernelRef`-shaped stub
+// signatures, so scope the import to `cfg(test)` rather than warn in the lib.
+#[cfg(test)]
+use crate::kernel::OpParams;
 
 /// Plan-time transfer-cost oracle — planner Stage 2
 /// (`docs/session-prompts/load-time-incremental-planner.md`).
