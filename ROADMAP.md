@@ -130,25 +130,70 @@ nowhere; now captured so they are not forgotten):
   tie (`8d8338e9`); **C-3** cross-check ACTIVATION — the oracle now validates ~16 of the 22
   registered fused ops (was 9), plus the adversarial-review fixes (`80c20a47`
   warn-not-silent-skip + arity pre-check, `9c96a0f8` GQA probe shape-distinctness,
-  `f87fd401` bundle-slot-vs-`output_views` differential). **The remaining Increment C is
-  narrowed to the recipe interior:** migrate the ~22 registry `decompose` fns from
-  hand-written Rust to `PatternNode` **data**, make interior-node attrs shape-*relative*
-  (a `PatternNode` still bakes absolute shapes — `docs/recipe-signature-reference.md`
-  §B home #2), the flat-DAG-CSE recipe-node/table wire serializer, and the matmul
-  role-vector `op_attrs` serialization (co-design reply-3) — node-envelope consolidation
-  in-flight via **KISS #67**. See
-  [10-decisions-log 2026-07-16 + 2026-07-21](docs/architecture/10-decisions-log.md); memories
+  `f87fd401` bundle-slot-vs-`output_views` differential). **Increment C slice 1 —
+  recipe-interior FOUNDATIONS — SHIPPED (2026-07-23, branch `feat/increment-c-slice1`,
+  T1–T10 `fbe96f0d`..HEAD; plan `docs/superpowers/plans/2026-07-23-increment-c-slice1.md`):**
+  the `shape_expr` vocabulary moved to its permanent dependency-free home
+  `fuel-kernel-seam-types` (`fkc/shape_expr.rs` is now a `pub use` shim); shape-**relative**
+  `OpAttrs` interior fields (`target_shape_rel`/`slice_{start,len}_rel`/`axis_last`) + a pure
+  `resolve_rel_attrs` resolver + a children-first resolving `emit` (D2/D3/D4); the additive
+  `OpTag::MaxDim` (the D3 keepdim shrink-via-swap); a `decompose_via_recipe` bridge; **5 of the
+  ~16 migratable registry `decompose` fns migrated to portable, shape- AND rank-polymorphic
+  `PatternNode` data** (`softmax_last_dim`, `rope`, `rms_norm_last_dim`, `layer_norm_last_dim`,
+  `softmax_last_dim_backward`); and **the locked matmul role-vector `op_attrs` serialize/resolve
+  live in both directions** (the rank-2 golden `0C000000|02000000|0103|02000000|0302` is the
+  Baracuda-confirmed cross-producer contract). Gates green: `fuel-kernel-seam-types` (18),
+  `fuel-graph` (396). **Still narrowed to the recipe interior (slices 2–5, §9 of the plan):**
+  the remaining ~11 first-order `decompose` migrations (carriers: PowI/Clamp/MaskedFill,
+  shape-derived scalar slots), the **flat-DAG-CSE recipe-node/table WIRE serializer** + the
+  `reduced_count` leaf, the scan flat form (`selective_scan`/`ssd_chunk_scan`), and the
+  §6.19 import decoder — node-envelope consolidation in-flight via **KISS #67**. See
+  [10-decisions-log 2026-07-16 + 2026-07-21](docs/architecture/10-decisions-log.md);
+  `docs/recipe-signature-reference.md` (Part II §A/§C, as-built); memories
   `recipe-grammar-codesign`, `shape-oracle-rfc-accepted`.
-- **Shape-oracle C-4 frontier — reserved `Dims`/`WithDim` tags + param threading (tracked
-  scope-out, 2026-07-21).** The C-4 successor to Convergence-C (scope-out recorded in
-  `docs/superpowers/plans/2026-07-21-convergence-c-c3.md`): the reserved `TAG_DIMS=0x0B` /
-  `TAG_WITH_DIM=0x0A` wire tags + param-value threading into `eval_dim`, covering the ~7
-  genuinely-inexpressible ops the shipped oracle intentionally skips: `conv2d` +
-  `conv_transpose_2d` (rank-4 + param threading), `qmatmul` (N from param + packed rhs),
-  `nf4_matmul` (transposed-packed-weight matmul variant; also `registrable:false`),
-  `fused_softmax_cross_entropy` (reduction-conditional rank-0 scalar), and the two scan
-  `last_state` slots (multi-dim reweave). All are today intentional `Ok(None)` skips —
-  never false rejects, but also never cross-checked.
+- **Shape-oracle C-4 — Fuel-internal groundwork SHIPPED (2026-07-23); `Dims`/`WithDim`
+  activation KISS-gated (extension-registry proposal FILED, cosign-tracked).** The C-4
+  successor to Convergence-C, built as `feat/c4-groundwork` (plan
+  `docs/superpowers/plans/2026-07-23-c4-groundwork.md`): `eval_shape_rule` threads
+  per-variant synthesized param values (`param(N)` indexes the `FusedOpParams::key().ints`
+  flattening — index tables pinned in `fused/{conv-rope,linear-quant}.fkc.md` + a
+  doc-vs-code drift test), the return cross-check loops per-combo param POINTS (≥ 2 for
+  variants with a free field, and order-ASYMMETRIC — no two `key().ints` slots agree at
+  every point, so a flattening reorder or a `param(i)`/`param(j)` rule confusion cannot
+  false-green: the sabotage-calibration norm applied to params), the params-dependent
+  variants' `passthrough`/`fixed` dtype rules are now genuinely cross-checked (previously
+  dead: synth returned `None` for them; a probe combo the shape-coupled synth can't read
+  now surfaces an `ImportWarning`, never a silent skip), and the reserved-tag declines are
+  NAMED at the decoder (`TAG_REDUCE`/`TAG_WITH_DIM`/`TAG_DIMS` → typed `ReservedTag`, the
+  future activation point; `shape_expr` went `pub` — required to make the golden-verified
+  §6.20 codec API-reachable so the `TAG_` dead_code warnings die by reference, not
+  `#[allow]`). Scope disclosure (deviates from the plan's "nothing in `fuel-graph`"):
+  `fuel-graph/src/registry/conv_transpose_2d.rs` arity `debug_assert`s widened 2 → 2-or-3
+  (`x`, `weight`, `[bias]` — the contract's documented optional-bias arity; the exact-2
+  assert made the now-live dtype differential guard-catch on the 3-operand probe); see the
+  plan's §7 Deviations. **Correction — the prior entry's "reserved
+  tags cover the ~7 skipped ops" overclaimed; the honest split is:** (a) **5 rules
+  KISS-gated** — `conv2d` + `conv_transpose_2d` (rank-4 `Dims` + `Param`), `qmatmul`
+  (`WithDim`/`Dims` + `Param`), and the two scan slot-1 `last_state` bundle rules
+  (`Dims`-only pure extents; **verdict: NOT premature** — the Phase-2/3 open item is the
+  *decompose-path* view composer, whereas the bundle differential's reference is the live,
+  allocator-wired `output_views`, and the cross-check guardrail already forbids referencing
+  decompose — so the slot-1 declared rules join the gated batch); (b)
+  **`fused_softmax_cross_entropy` = PERMANENT documented whole-shape skip** — its rule is
+  reduction-*conditional* (Mean/Sum → `[]`, None → `targets.shape`), outside even the
+  reserved vocabulary (needs a conditional constructor); its `fixed(F32)` dtype check is
+  live NOW at both reduction points; (c) **`nf4_matmul` double-gated** — its only corpus
+  section is `registrable: false` until FDX `AFFINE_BLOCK` lands, out of the oracle's
+  reach regardless of tags. Param threading alone flips ZERO whole-shape rules (each gated
+  rule also needs its whole-shape constructor). **External state (2026-07-23):** the
+  `Dims (0x0B)` + `WithDim (0x0A)` KISS §6.4 extension-registry proposal is **FILED** (the
+  KISS coordinator filed the rfc-labeled issue on Fuel's behalf, attributed, per the #57
+  process; `Reduce (0x09)` stays reserved — no consumer); Baracuda: no objection +
+  declared future consumer + cosigning with a functional-spelling pin; kiss-ref: the
+  second dissimilar implementation, timing theirs. On acceptance: implement the two
+  constructors + rewrite the 5 gated rules (~9 fused sections) → oracle coverage
+  ~16 → ~21 of 22 (FSCE the one honest skip). See
+  `docs/outreach/kiss-dims-withdim-extension-registry-filed.md`.
 - **`structure_key` independent deriver — D8 freeze-gate; Fuel half DONE (2026-07-19).**
   Fuel's second, **Baracuda-free** implementation of the KISS `structure_key`
   (`fuel-dispatch/src/telemetry/structure_key_derive.rs`) derives the `relu_add` f32 cell

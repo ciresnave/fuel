@@ -62,6 +62,36 @@ Cross-cutting facts (from `docs/kernel-contracts/_inventory/fused.md`, "Cross-cu
   `fdx.quant.scale_operand` and is **not** also a sidecar `scale_buffer` (`ScaleDoubleDeclared`
   otherwise, §10.6).
 
+**`param(N)` index tables (C-4 param threading, 2026-07-23).** The shape-oracle return cross-check
+(`fuel-dispatch/src/fkc/return_check.rs`) evaluates a declared `shape_rule`'s `param(N)` atoms
+against synthesized per-variant, per-combo values (`synth_probe_param_points`);
+`param(N)` indexes the `FusedOpParams::key().ints` flattening (`FusedOpParamsKey.ints`,
+`fuel-graph/src/registry.rs`) — the same encoding CSE keys on, so the declared-rule evaluator and
+the real registry fn see identical values by construction. Float fields ride `key().bits`, **not**
+`ints`, so they have NO `param(N)` slot — `InplaceAffine { mul, add }` (both f64 → `bits`) has no
+row despite carrying fields, and `FusedLinear` carries no fields at all. Index order per variant
+(pinned by `corpus_prose_pins_param_index_tables_matching_key_ints`):
+
+| variant | `key().ints` → `param(N)` |
+|---|---|
+| `QMatMul` | `param(0)=quant_type_key` · `param(1)=k` · `param(2)=n` |
+| `FusedSoftmaxCrossEntropy` | `param(0)=reduction.key() (Mean=0, Sum=1, None=2)` · `param(1)=ignore_index` |
+| `Nf4Matmul` | `param(0)=block_size` |
+
+Threading alone does NOT activate this family's whole-shape rules. `qmatmul`'s `from_params(a, n)`
+(`[..., M, N]`, `n = param(2)`) stays a **documented skip** (a non-evaluable shape rule is skipped
+*silently* at import — `eval_shape_rule` returns not-evaluable and the cross-check emits no
+`ImportWarning` for it; this prose + the ROADMAP entry are the record), **KISS-gated** on the filed
+Dims/WithDim §6.4 extension-registry entry
+(`docs/outreach/kiss-dims-withdim-extension-registry-filed.md`);
+`nf4_matmul` is **double-gated** — this section is `registrable: false` until FDX `AFFINE_BLOCK`
+lands, so its rule is out of the oracle's reach regardless of tags; and
+`fused_softmax_cross_entropy`'s `from_params(reduction)` is reduction-**conditional** (Mean/Sum →
+`[]`, None → `targets.shape`) — outside even the reserved vocabulary, the **permanent documented
+whole-shape skip**. What IS live now at the synthesized param points: the params-dependent
+variants' dtype rules — FSCE's `fixed(F32)` is genuinely enforced at BOTH reduction points
+(a synthetic section declaring `fixed(F16)` is rejected against the constant-F32 real fn).
+
 ---
 
 ## fused_linear  (GEMM + bias epilogue, `(a @ b) + bias`)

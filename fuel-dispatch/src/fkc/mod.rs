@@ -53,7 +53,11 @@ mod return_check;
 mod revhash;
 mod schema;
 mod shape_constraint;
-pub(crate) mod shape_expr;
+// pub: the §6.20 shape-expression wire codec + evaluator is public interop
+// surface (byte-matches the KISS reference, golden-verified) — its decoder is
+// the reserved-tag decline point / future extension-registry activation point,
+// live API rather than crate-internal plumbing.
+pub mod shape_expr;
 pub(crate) mod shape_expr_parse;
 mod validate;
 // pub(crate): jit_ingest.rs (outside this module tree) reaches LedgerRecord

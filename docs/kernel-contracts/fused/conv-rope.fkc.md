@@ -86,6 +86,33 @@ and all six **panic in `decompose`** (no primitive subgraph form) — so a backe
 kernel relies on the executor's `cpu_fallback` to the always-built CPU kernel contracted here. None
 has a live pattern matcher (`pattern` is stub `None`).
 
+**`param(N)` index tables (C-4 param threading, 2026-07-23).** The shape-oracle return cross-check
+(`fuel-dispatch/src/fkc/return_check.rs`) evaluates a declared `shape_rule`'s `param(N)` atoms
+against synthesized per-variant, per-combo values (`synth_probe_param_points`);
+`param(N)` indexes the `FusedOpParams::key().ints` flattening (`FusedOpParamsKey.ints`,
+`fuel-graph/src/registry.rs`) — the same encoding CSE keys on, so the declared-rule evaluator and
+the real registry fn see identical values by construction. Float fields ride `key().bits`, **not**
+`ints`, so they have NO `param(N)` slot; `Rope` carries no fields at all (no row). Index order per
+variant (pinned by `corpus_prose_pins_param_index_tables_matching_key_ints`):
+
+| variant | `key().ints` → `param(N)` |
+|---|---|
+| `Conv2D` | `param(0)=stride.0 (sh)` · `param(1)=stride.1 (sw)` · `param(2)=padding.0 (ph)` · `param(3)=padding.1 (pw)` · `param(4)=groups` |
+| `ConvTranspose2D` | `param(0)=stride.0 (sh)` · `param(1)=stride.1 (sw)` · `param(2)=padding.0 (ph)` · `param(3)=padding.1 (pw)` · `param(4)=output_padding.0 (oph)` · `param(5)=output_padding.1 (opw)` · `param(6)=dilation.0 (dh)` · `param(7)=dilation.1 (dw)` · `param(8)=groups` |
+| `CausalConv1d` | `param(0)=use_silu (0/1)` |
+| `SelectiveScan` | `param(0)=delta_softplus (0/1)` |
+| `SsdChunkScan` | `param(0)=chunk_size` |
+
+Threading alone does NOT activate this family's whole-shape rules: `conv2d(params)` /
+`conv_transpose2d(params)` / `from_params(seq_out)` and both scan slot-1 `from_params(last_state)`
+bundle rules each also need a whole-shape constructor (`Dims`, KISS §6.20-reserved `0x0B`) — they
+stay **documented skips** (a non-evaluable shape rule is skipped *silently* at import —
+`eval_shape_rule` returns not-evaluable and the cross-check emits no `ImportWarning` for it; this
+prose + the ROADMAP entry are the record), **KISS-gated** on the filed §6.4 extension-registry entry
+(`docs/outreach/kiss-dims-withdim-extension-registry-filed.md`). What IS live now at the
+synthesized param points: the params-dependent variants' `passthrough` dtype rules (previously
+dead — synth returned `None` for them).
+
 ---
 
 ## rope  (rotary position embedding with caller cos/sin tables, fused; rotate_half)

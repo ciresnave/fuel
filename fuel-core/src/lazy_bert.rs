@@ -34,7 +34,7 @@
 //! let tokenizer = BertTokenizer::from_hub("bert-base-uncased")?;
 //! let model = BertModel::from_hub("bert-base-uncased")?;
 //! let ids = tokenizer.encode("The quick brown fox", true)?;
-//! let hidden = model.forward(&ids);
+//! let hidden = model.forward(&ids)?;
 //! let out = hidden.realize_f32();
 //! assert_eq!(out.len(), ids.len() * model.config.hidden_size);
 //! # Ok::<(), fuel_core::Error>(())

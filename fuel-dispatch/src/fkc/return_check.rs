@@ -27,9 +27,14 @@ pub fn eval_dtype_rule(rule: &str, combo: ProbeComboRef, section: &str) -> Resul
 }
 /// §5.2: `same_as(role)` yields the operand's whole shape; a `DimExpr` string
 /// (`extent(role,axis)` / `const(N)` / `param(N)` / `add|sub|mul|div(a,b)`) evaluates to a
-/// single-dim shape via the shape-expr oracle (§6.20). Every other token, a surfaced gap, or
-/// a decline on a recognized DimExpr → `Ok(None)` (not-evaluable; never a false reject).
-pub fn eval_shape_rule(rule: &str, combo: ProbeComboRef, _section: &str) -> Result<Option<Shape>, FkcError> {
+/// single-dim shape via the shape-expr oracle (§6.20). `params` carries the op's
+/// flattened param values for `param(N)` — index order pinned to
+/// `FusedOpParams::key().ints` (the C-4 threading convention); an EMPTY slice
+/// declines every `param(N)` rule (`ParamOutOfRange` → skip), preserving the
+/// pre-threading behavior for callers with no synthesized values. Every other
+/// token, a surfaced gap, or a decline on a recognized DimExpr → `Ok(None)`
+/// (not-evaluable; never a false reject).
+pub fn eval_shape_rule(rule: &str, combo: ProbeComboRef, params: &[i64], _section: &str) -> Result<Option<Shape>, FkcError> {
     let rule = rule.trim();
     if let Some(r) = inner(rule, "same_as(") {
         return Ok(role(combo, r).map(|(_, s, _)| s.clone()));
@@ -59,11 +64,12 @@ pub fn eval_shape_rule(rule: &str, combo: ProbeComboRef, _section: &str) -> Resu
         let dims: Vec<usize> = out.iter().map(|&d| d as usize).collect();
         return Ok(Some(Shape::from_dims(&dims)));
     }
-    // A DimExpr form: parse (role names → positional AST), then evaluate over the combo.
+    // A DimExpr form: parse (role names → positional AST), then evaluate over the
+    // combo + the caller's flattened param values (C-4 T1 threading).
     if is_dimexpr_head(rule) {
         let Some(dim) = crate::fkc::shape_expr_parse::parse_dim(rule, combo) else { return Ok(None) };
         let operands: Vec<Vec<i64>> = combo.iter().map(|(_, s, _)| shape_to_i64(s)).collect();
-        return match crate::fkc::shape_expr::eval_dim(&dim, &operands, &[]) {
+        return match crate::fkc::shape_expr::eval_dim(&dim, &operands, params) {
             // A DimExpr denotes a single dimension → a rank-1 output shape (d ≥ 0).
             Ok(crate::fkc::shape_expr::DimValue::Concrete(d)) if d >= 0 => {
                 Ok(Some(Shape::from_dims(&[d as usize])))
@@ -95,9 +101,9 @@ pub fn eval_shape_rule(rule: &str, combo: ProbeComboRef, _section: &str) -> Resu
 /// returns a value, so a *panic-driven* skip is inherently build-mode-dependent
 /// — a drifted contract could then pass `cargo test` yet raise a mismatch under
 /// `cargo build --release`. The [`expected_min_inputs`] arity pre-check in
-/// [`cross_check_fused_section`] closes that split for the concrete cited case
-/// (an under-arity attention contract) by skipping BEFORE the call in BOTH build
-/// modes; this guard stays the never-panic backstop for any other unforeseen
+/// [`cross_check_fused_section`] closes that split for the listed cases (an
+/// under-arity attention or Conv2D contract) by skipping BEFORE the call in BOTH
+/// build modes; this guard stays the never-panic backstop for any other unforeseen
 /// panic (whose skip remains debug-only — the residual this note preserves).
 fn guard_rule<T>(
     warnings: &mut Vec<ImportWarning>,
@@ -122,19 +128,25 @@ fn guard_rule<T>(
 }
 
 /// The minimum input arity the registry rule fn for a synth-supported `variant`
-/// requires before it safely indexes its operands. Only the attention family is
-/// listed: `flash_attn` / `flash_attn_backward` `debug_assert!(len == 4 || 5)`
-/// and `paged_attn` `debug_assert!(len == 5 || 6)`, and a leaner corpus contract
+/// requires before it safely indexes its operands. The attention family:
+/// `flash_attn` / `flash_attn_backward` `debug_assert!(len == 4 || 5)` and
+/// `paged_attn` `debug_assert!(len == 5 || 6)`, and a leaner corpus contract
 /// can under-declare them (metal `matmul-attn.fkc.md`'s 3-input `FLASH_ATTN`
-/// declares only q/k/v). For every other synth variant the corpus contracts
-/// match the fn's exact arity, so no under-arity split exists today and `None`
-/// leaves the `guard_rule` catch-and-warn backstop in charge. Kept deliberately
-/// small + co-located with `synth_probe_params` (do NOT reach into
+/// declares only q/k/v). C-4 T3 adds `Conv2D` (min 2): its rule fns read
+/// `input_shapes[1]` (the weight) and `debug_assert!` 2-or-3 inputs, its dtype
+/// differential is now params-live, and real 2-input CONV2D fused sections
+/// exist (`vulkan/conv-attn-rope.fkc.md`) — so an under-declaring sibling is a
+/// live authoring risk, not a hypothetical. For every other synth variant the
+/// corpus contracts match the fn's arity, so no under-arity split exists today
+/// and `None` leaves the `guard_rule` catch-and-warn backstop in charge. The
+/// policy: an entry is added when a REAL corpus family could under-declare it —
+/// kept deliberately small + co-located with the synth fns (do NOT reach into
 /// `fuel-graph/src/registry` for the arities — mirror its documented asserts).
 fn expected_min_inputs(variant: Option<&str>) -> Option<usize> {
     match variant {
         Some("FlashAttn") | Some("FlashAttnBackward") => Some(4),
         Some("PagedAttn") => Some(5),
+        Some("Conv2D") => Some(2),
         _ => None,
     }
 }
@@ -164,6 +176,23 @@ fn distinct_role_probe(combo: ProbeComboRef) -> Vec<(String, Shape, DType)> {
         .collect()
 }
 
+/// True iff `variant` is one of the params-DEPENDENT variants
+/// [`synth_probe_param_points`] knows how to synthesize — kept in lockstep
+/// with its match arms (pinned by
+/// `synth_param_points_distinguish_every_ints_slot_pair`, which iterates the
+/// same list). Used by the cross-check to distinguish "no points because the
+/// variant is out of synth scope" (a documented skip — e.g. Nf4Matmul,
+/// double-gated on FDX AFFINE_BLOCK) from "no points because the probe combo
+/// was unreadable by the shape-coupled derivation" — the latter is a
+/// coverage hole that must WARN, not vanish (review fix; the same
+/// no-silent-skip norm `guard_rule` follows).
+fn is_params_dependent_synth_variant(variant: Option<&str>) -> bool {
+    matches!(
+        variant,
+        Some("Conv2D" | "ConvTranspose2D" | "QMatMul" | "FusedSoftmaxCrossEntropy" | "CausalConv1d")
+    )
+}
+
 /// True iff `rule` starts with a recognized `DimExpr` constructor head.
 fn is_dimexpr_head(rule: &str) -> bool {
     const HEADS: &[&str] = &["extent(", "const(", "param(", "add(", "sub(", "mul(", "div("];
@@ -177,14 +206,17 @@ fn shape_to_i64(s: &Shape) -> Vec<i64> {
 }
 
 /// Synthesize the `FusedOpParams` variant NAMED by the contract's
-/// `op_params.variant` (§3.7), with placeholder field values. The ONLY
-/// correctness requirement is that the returned variant matches the name so
-/// the real registered `shape_rule` fn never hits its wrong-params panic
-/// (`qmatmul.rs:63`, `conv2d.rs:86`). Params-dependent ops (whose declared
-/// return rules are `from_params`-style = not-evaluable, so the real fn is
-/// never called at all) synthesize nothing here and fall through to `None`
-/// — never-panic beats completeness; a foreign variant would be worse than
-/// skipping the probe.
+/// `op_params.variant` (§3.7), with placeholder field values, for the
+/// params-INDEPENDENT fused ops (their rule fns ignore the field values).
+/// The ONLY correctness requirement is that the returned variant matches the
+/// name so the real registered `shape_rule` fn never hits its wrong-params
+/// panic (`qmatmul.rs:63`, `conv2d.rs:86`). Division of labor (C-4): a
+/// params-DEPENDENT variant (Conv2D / ConvTranspose2D / QMatMul / FSCE /
+/// CausalConv1d) returns `None` HERE — its real, per-combo param POINTS come
+/// from [`synth_probe_param_points`] instead, and the cross-check loops over
+/// those. An op in NEITHER synth fn (e.g. Nf4Matmul, double-gated on FDX
+/// AFFINE_BLOCK) is a skipped differential — never a foreign variant, never
+/// a panic.
 pub fn synth_probe_params(variant: Option<&str>) -> Result<Option<FusedOpParams>, FkcError> {
     const EPS: f64 = 1e-5;
     Ok(match variant {
@@ -235,6 +267,156 @@ pub fn synth_probe_params(variant: Option<&str>) -> Result<Option<FusedOpParams>
     })
 }
 
+/// C-4 T2: synthesize per-variant, per-combo param POINTS for the
+/// params-DEPENDENT fused ops — the variants [`synth_probe_params`]
+/// deliberately returns `None` for. Each point is `(FusedOpParams, ints)`
+/// where `ints` IS the params' [`FusedOpParams::key()`]`.ints` flattening
+/// (by construction — the same encoding CSE keys on), so the declared-rule
+/// evaluator (`param(N)` indexes `ints[N]`) and the real registry fn (which
+/// receives the `FusedOpParams`) always see IDENTICAL values — consistency
+/// by construction. Per-variant index tables (pinned by test + corpus prose):
+///
+/// - `Conv2D`                   → `[sh, sw, ph, pw, groups]` (2 points)
+/// - `ConvTranspose2D`          → `[sh, sw, ph, pw, oph, opw, dh, dw, groups]` (2 points)
+/// - `QMatMul`                  → `[quant_type_key, k, n]` (1 point, combo-derived)
+/// - `FusedSoftmaxCrossEntropy` → `[reduction_key, ignore_index]` (2 points: None, Mean)
+/// - `CausalConv1d`             → `[use_silu]` (1 point)
+///
+/// **Shape-coupled derivation:** fields the contract couples to operand
+/// shapes derive FROM the combo — QMatMul `k = a.dims[last]`,
+/// `n = w_q_bytes.dims[0]` (linear-quant.fkc.md §op_params constraints);
+/// Conv2D padding derives from the weight's kernel extents so the real fn's
+/// usize `(H + 2·ph − Kh)` arithmetic can never underflow (a debug-build
+/// panic) — valid by construction, for ANY rank-4 probe with nonzero
+/// extents. Variants with a free field get ≥ 2 DISTINCT points (the
+/// sabotage-calibration norm applied to params: one point could false-green
+/// a declared rule that ignores the param). The points are also
+/// ORDER-ASYMMETRIC (review fix): for every pair of `key().ints` slots, at
+/// least one point assigns them different values — so a length-preserving
+/// slot reorder of the flattening in `fuel-graph/src/registry.rs`, or a
+/// `param(i)`/`param(j)` confusion in a declared rule, cannot evaluate
+/// identically at every point (pinned by
+/// `synth_param_points_distinguish_every_ints_slot_pair`).
+///
+/// **Never-panic pin** (extends the `synth_probe_params` matching-variant
+/// pin): an unknown variant, or a combo the derivation can't safely read
+/// (missing operand / wrong rank / zero extent), returns EMPTY — a skipped
+/// differential, never a foreign variant, never a panic.
+pub fn synth_probe_param_points(
+    variant: Option<&str>,
+    combo: ProbeComboRef,
+) -> Vec<(FusedOpParams, Vec<i64>)> {
+    use fuel_graph::registry::Reduction;
+    /// Pair each params value with its own `key().ints` flattening.
+    fn points(params: Vec<FusedOpParams>) -> Vec<(FusedOpParams, Vec<i64>)> {
+        params
+            .into_iter()
+            .map(|p| {
+                let ints = p.key().ints;
+                (p, ints)
+            })
+            .collect()
+    }
+    match variant {
+        Some("Conv2D") => {
+            // Positional read mirrors the real fn (`input_shapes[0]` = x,
+            // `[1]` = weight; conv2d.rs shape_rule).
+            let (Some((_, x, _)), Some((_, w, _))) = (combo.first(), combo.get(1)) else {
+                return Vec::new();
+            };
+            let (xd, wd) = (x.dims(), w.dims());
+            if xd.len() != 4 || wd.len() != 4 {
+                return Vec::new();
+            }
+            let (h, w_in, kh, kw) = (xd[2], xd[3], wd[2], wd[3]);
+            if h == 0 || w_in == 0 || kh == 0 || kw == 0 {
+                return Vec::new();
+            }
+            // Padding stays SHAPE-COUPLED: any ph ≥ kh/2 keeps
+            // `h + 2·ph − kh` ≥ h−1 ≥ 0 for any h ≥ 1 (larger padding only
+            // grows the sum), so the real fn's usize arithmetic can never
+            // underflow — valid even when the kernel exceeds the spatial
+            // input. Order-asymmetry (review fix): the old points had
+            // stride == padding at BOTH points ([1,1,1,1,1]/[2,2,2,2,1]), so
+            // a stride<->padding reorder of the `key().ints` flattening — or
+            // a param(i)/param(j) confusion in a future declared rule — was
+            // invisible at every point. Point 2's ints are now pairwise
+            // DISTINCT for the common odd/even kernels (e.g. 3x3 →
+            // [3,4,6,7,2]), so every slot transposition is observable, and
+            // the two points still differ in EVERY free field. groups is
+            // unread by the real shape/dtype fns (conv2d.rs), so 1-vs-2 is
+            // purely an order-asymmetry probe.
+            points(vec![
+                FusedOpParams::Conv2D { stride: (1, 2), padding: (kh / 2, kw / 2 + 3), groups: 1 },
+                FusedOpParams::Conv2D {
+                    stride: (3, 4),
+                    padding: (kh / 2 + 5, kw / 2 + 6),
+                    groups: 2,
+                },
+            ])
+        }
+        Some("ConvTranspose2D") => points(vec![
+            // Not shape-coupled: the real fn saturates (conv_transpose_2d.rs),
+            // so every value is panic-safe; `output_padding < stride` holds at
+            // both points (the standard validity relation). Order-asymmetry
+            // (review fix): the old points had padding == output_padding and
+            // dilation == groups == 1 at BOTH points, so those slot reorders
+            // (and the matching param(N) confusions) were invisible. The 9
+            // ints are now chosen so every slot PAIR differs at one point or
+            // the other ([2,3,0,1,1,2,4,5,1] / [5,4,3,2,4,0,2,6,3]), and the
+            // two points differ in EVERY field. groups only multiplies
+            // `w.dims[1]` in the real shape fn — any value is panic-safe.
+            FusedOpParams::ConvTranspose2D {
+                stride: (2, 3),
+                padding: (0, 1),
+                output_padding: (1, 2),
+                dilation: (4, 5),
+                groups: 1,
+            },
+            FusedOpParams::ConvTranspose2D {
+                stride: (5, 4),
+                padding: (3, 2),
+                output_padding: (4, 0),
+                dilation: (2, 6),
+                groups: 3,
+            },
+        ]),
+        Some("QMatMul") => {
+            // Combo-derived per the contract couplings (`k == a.dim[-1]`,
+            // `n == w_q_bytes.dim[0]`) — consistency by construction. Q4_0
+            // matches the contract's declared `ggml_dtype`. One point: every
+            // field is shape- or format-coupled, so no free field exists to
+            // vary a second point on.
+            let (Some((_, a, _)), Some((_, w, _))) = (combo.first(), combo.get(1)) else {
+                return Vec::new();
+            };
+            let (Some(&k), Some(&n)) = (a.dims().last(), w.dims().first()) else {
+                return Vec::new();
+            };
+            points(vec![FusedOpParams::QMatMul { quant_type: fuel_graph::QuantType::Q4_0, k, n }])
+        }
+        Some("FusedSoftmaxCrossEntropy") => points(vec![
+            // The reduction-CONDITIONAL shape rule (None → targets.shape,
+            // Mean/Sum → []) makes both branches mandatory; ignore_index is
+            // the conventional -100 sentinel at both points.
+            FusedOpParams::FusedSoftmaxCrossEntropy {
+                reduction: Reduction::None,
+                ignore_index: -100,
+            },
+            FusedOpParams::FusedSoftmaxCrossEntropy {
+                reduction: Reduction::Mean,
+                ignore_index: -100,
+            },
+        ]),
+        Some("CausalConv1d") => points(vec![
+            // Shape/dtype rules ignore `use_silu` (causal_conv1d.rs); one
+            // point suffices.
+            FusedOpParams::CausalConv1d { use_silu: false },
+        ]),
+        _ => Vec::new(),
+    }
+}
+
 /// §5 (Finding 5.1): cross-check a `fused_op` section's DECLARED §5.1/§5.2
 /// return rules against the REAL registered [`fuel_graph::registry::FusedOpEntry`]
 /// `shape_rule`/`dtype_rule` fn pointers, at every probe combo `solve_probe_shapes`
@@ -245,14 +427,26 @@ pub fn synth_probe_params(variant: Option<&str>) -> Result<Option<FusedOpParams>
 ///
 /// Invariant (never-panic guard): the real `shape_rule`/`dtype_rule` fns for
 /// some fused ops (e.g. qmatmul, conv2d) `panic!` on a mismatched
-/// `FusedOpParams` variant. This fn invokes a real fn ONLY when BOTH (a) the
-/// contract's declared rule is EVALUABLE (`eval_dtype_rule`/`eval_shape_rule`
-/// returned `Some`) AND (b) `synth_probe_params` returned `Some(params)`. For
-/// every current fused op, evaluable declared rules belong to
-/// params-INDEPENDENT fns (plain passthrough/fixed/same_as), so this
-/// coincidence holds and the wrong-params panic is unreachable — a
-/// params-dependent rule (`from_params`-style) is never evaluable, so its
-/// real fn is never called here at all.
+/// `FusedOpParams` variant. C-4 T3 RETIRES the C-3 coincidence this fn used
+/// to lean on ("evaluable ⇒ params-independent, so the real fn is never
+/// called with a synthless variant"): params-DEPENDENT variants now get real
+/// synthesized values too ([`synth_probe_param_points`]), so their
+/// `passthrough`/`fixed` dtype rules are genuinely cross-checked. The
+/// never-panic mechanism is structural, not coincidental:
+/// - **matching-variant synth**: both synth fns only ever build the variant
+///   NAMED by the contract (or nothing), so the wrong-params panic is
+///   unreachable by construction;
+/// - **value validity**: params-dependent points are shape-coupled to the
+///   probe combo (Conv2D padding derives from the weight kernel; QMatMul k/n
+///   from a/w), so the real fn's arithmetic cannot underflow on any probe;
+/// - **arity pre-check**: [`expected_min_inputs`] (attention family + Conv2D)
+///   skips an under-declared contract consistently in debug AND release,
+///   with a warning;
+/// - **backstop**: [`guard_rule`] (catch_unwind + warn) stays the last-resort
+///   never-panic guard for anything unforeseen.
+/// A real fn is still invoked ONLY when the contract's declared rule is
+/// EVALUABLE (`eval_dtype_rule`/`eval_shape_rule` returned `Some`) and a
+/// param point exists for the variant.
 pub fn cross_check_fused_section(
     kernel: &FkcKernel,
     id: FusedOpId,
@@ -279,7 +473,9 @@ pub fn cross_check_fused_section(
             return Ok(());
         }
     };
-    let params = synth_probe_params(variant)?;
+    // Single synthesized params for the params-INDEPENDENT variants; the
+    // params-DEPENDENT variants synthesize per-combo POINTS inside the loop.
+    let single = synth_probe_params(variant)?;
 
     // Finding 1 (arity pre-check — closes the debug-vs-release split). The
     // attention-family registry rule fns `debug_assert!` a minimum input arity
@@ -326,36 +522,71 @@ pub fn cross_check_fused_section(
         // spuriously rejected.
         let Some(out) = ret.outputs.first() else { continue };
         let role_name = out.name.as_deref().unwrap_or("out");
-        // dtype_rule: only call the real fn when synth produced Some(params)
-        // (mirrors the shape_rule guard below) — never an `unwrap_or`
-        // fallback, since a future params-matching dtype_rule could panic.
-        if let (Some(rule), Some(p)) = (out.dtype_rule.as_deref(), params.as_ref()) {
-            if let Some(declared) = eval_dtype_rule(rule, combo, section)? {
-                // Never-panic guard: a registry fn that `debug_assert`s an arity
-                // the probe combo doesn't satisfy → warn + skip this combo (see
-                // `guard_rule`; the arity pre-check above already skips the known
-                // under-arity attention case in BOTH build modes).
-                let Some(real) = guard_rule(warnings, section, "dtype_rule", || (entry.dtype_rule)(&in_dtypes, p)) else { continue };
-                if declared != real {
-                    return Err(FkcError::ShapeRuleMismatch {
+        // C-4 T3: the param POINTS for this combo. A params-independent
+        // variant contributes its ONE synthesized params, paired with its
+        // `key().ints` flattening (the same encoding `param(N)` indexes —
+        // one convention for every variant); a params-dependent variant
+        // contributes the per-combo shape-coupled points (>= 2 wherever a
+        // free field exists, so a rule that ignores the param can't
+        // false-green on a single point). EMPTY points ⇒ every differential
+        // for this combo is skipped — never a foreign variant, never a
+        // panic. Out-of-synth-scope variants (e.g. Nf4Matmul) stay documented
+        // skips; a params-DEPENDENT variant whose combo the derivation can't
+        // read WARNS (review fix — no silent coverage hole).
+        let points: Vec<(FusedOpParams, Vec<i64>)> = match single.as_ref() {
+            Some(p) => vec![(p.clone(), p.key().ints)],
+            None => {
+                let pts = synth_probe_param_points(variant, combo);
+                if pts.is_empty() && is_params_dependent_synth_variant(variant) {
+                    warnings.push(ImportWarning {
                         section: section.into(),
-                        role: role_name.into(),
-                        expected: format!("dtype {declared:?}"),
-                        actual: format!("dtype {real:?}"),
+                        message: format!(
+                            "return cross-check: no param point could be synthesized for \
+                             params-dependent variant {} from this probe combo (operand shapes \
+                             unreadable by the shape-coupled derivation); shape/dtype \
+                             differentials skipped for this combo",
+                            variant.unwrap_or("<unknown>"),
+                        ),
                     });
                 }
+                pts
             }
-        }
-        if let (Some(rule), Some(p)) = (out.shape_rule.as_deref(), params.as_ref()) {
-            if let Some(declared) = eval_shape_rule(rule, combo, section)? {
-                let Some(real) = guard_rule(warnings, section, "shape_rule", || (entry.shape_rule)(&in_shapes, p)) else { continue };
-                if declared != real {
-                    return Err(FkcError::ShapeRuleMismatch {
-                        section: section.into(),
-                        role: role_name.into(),
-                        expected: format!("shape {declared:?}"),
-                        actual: format!("shape {real:?}"),
-                    });
+        };
+        for (p, ints) in &points {
+            // dtype_rule: the real fn is called only with a matching-variant
+            // point (never an `unwrap_or` fallback — a params-matching
+            // dtype_rule may read its fields).
+            if let Some(rule) = out.dtype_rule.as_deref() {
+                if let Some(declared) = eval_dtype_rule(rule, combo, section)? {
+                    // Never-panic guard: a registry fn that `debug_assert`s an
+                    // arity the probe combo doesn't satisfy → warn + skip this
+                    // point (see `guard_rule`; the arity pre-check above already
+                    // skips the known under-arity cases in BOTH build modes).
+                    let Some(real) = guard_rule(warnings, section, "dtype_rule", || (entry.dtype_rule)(&in_dtypes, p)) else { continue };
+                    if declared != real {
+                        return Err(FkcError::ShapeRuleMismatch {
+                            section: section.into(),
+                            role: role_name.into(),
+                            expected: format!("dtype {declared:?}"),
+                            actual: format!("dtype {real:?}"),
+                        });
+                    }
+                }
+            }
+            if let Some(rule) = out.shape_rule.as_deref() {
+                // C-4 T3: the SAME point feeds both sides — `ints` to the
+                // declared-rule evaluator (`param(N)` indexes it) and `p` to
+                // the real registry fn — consistency by construction.
+                if let Some(declared) = eval_shape_rule(rule, combo, ints, section)? {
+                    let Some(real) = guard_rule(warnings, section, "shape_rule", || (entry.shape_rule)(&in_shapes, p)) else { continue };
+                    if declared != real {
+                        return Err(FkcError::ShapeRuleMismatch {
+                            section: section.into(),
+                            role: role_name.into(),
+                            expected: format!("shape {declared:?}"),
+                            actual: format!("shape {real:?}"),
+                        });
+                    }
                 }
             }
         }
@@ -375,7 +606,7 @@ pub fn cross_check_fused_section(
     // rank-checks each evaluable slot. `output_views` is guarded by `guard_rule`
     // (never-panic) exactly like `shape_rule`/`dtype_rule`.
     if let (Some(bundle), Some(output_views), Some(p)) =
-        (ret.bundle.as_ref(), entry.output_views, params.as_ref())
+        (ret.bundle.as_ref(), entry.output_views, single.as_ref())
     {
         if let Some(combo) = combos.first() {
             // Finding 3: run the bundle differential over a ROLE-DISTINCT probe so
@@ -412,7 +643,12 @@ pub fn cross_check_fused_section(
                         .get(serde_yml::Value::String("shape_rule".into()))
                         .and_then(|v| v.as_str())
                     {
-                        if let Some(shape) = eval_shape_rule(rule, &distinct, section)? {
+                        // C-4 T3: bundle slot rules see the same `key().ints`
+                        // flattening as the primary output (one `param(N)`
+                        // convention). Both bundle-bearing ops are
+                        // params-independent (single-synth), so `p` is the
+                        // one point for the whole bundle differential.
+                        if let Some(shape) = eval_shape_rule(rule, &distinct, &p.key().ints, section)? {
                             check_slot_rank(section, &slot_name, &shape)?;
                             // Finding 3: differentially compare the evaluated slot
                             // shape to the `output_views` oracle for the SAME slot
@@ -530,8 +766,21 @@ mod tests {
         assert!(matches!(synth_probe_params(Some("FlashAttnBackward")).unwrap(), Some(FusedOpParams::FlashAttnBackward { .. })));
         assert!(matches!(synth_probe_params(Some("SelectiveScan")).unwrap(), Some(FusedOpParams::SelectiveScan { .. })));
         assert!(matches!(synth_probe_params(Some("SsdChunkScan")).unwrap(), Some(FusedOpParams::SsdChunkScan { .. })));
-        // A still-unsupported variant + the absent case both stay None.
+        // C-4 T3 division-of-labor pin (the old ":534" flip): Conv2D is NO
+        // LONGER an unsupported skip — it is params-DEPENDENT, so the single
+        // path must stay None (a placeholder here would feed the real fn
+        // params the shape rule actually READS) while the POINTS path
+        // synthesizes its real per-combo values. Both halves pinned:
         assert!(synth_probe_params(Some("Conv2D")).unwrap().is_none());
+        let conv_combo: Vec<(String, Shape, DType)> = vec![
+            ("x".into(), Shape::from_dims(&[2, 3, 8, 8]), DType::F32),
+            ("weight".into(), Shape::from_dims(&[4, 3, 3, 3]), DType::F32),
+        ];
+        assert!(
+            !synth_probe_param_points(Some("Conv2D"), &conv_combo).is_empty(),
+            "Conv2D synth is no longer None — the points path covers it",
+        );
+        // The absent case stays None.
         assert!(synth_probe_params(None).unwrap().is_none());
         // never-panic invariant: QMatMul synth is EITHER QMatMul OR None, never a foreign variant.
         match synth_probe_params(Some("QMatMul")).unwrap() {
@@ -570,26 +819,55 @@ mod tests {
         assert_eq!(eval_dtype_rule("fixed(F16)", c, "k").unwrap(), Some(DType::F16));
         assert_eq!(eval_dtype_rule("passthrough(x)", c, "k").unwrap(), Some(DType::F32));
         assert_eq!(eval_dtype_rule("dequant(w)", c, "k").unwrap(), None);
-        assert_eq!(eval_shape_rule("same_as(upstream)", c, "k").unwrap(), Some(Shape::from_dims(&[4, 5])));
-        assert_eq!(eval_shape_rule("from_params(q)", c, "k").unwrap(), None);
+        assert_eq!(eval_shape_rule("same_as(upstream)", c, &[], "k").unwrap(), Some(Shape::from_dims(&[4, 5])));
+        assert_eq!(eval_shape_rule("from_params(q)", c, &[], "k").unwrap(), None);
         // `matmul(a, b)` over a combo that has NO `a`/`b` roles → unknown-role skip.
-        assert_eq!(eval_shape_rule("matmul(a, b)", c, "k").unwrap(), None);
-        assert_eq!(eval_shape_rule("same_as(does_not_exist)", c, "k").unwrap(), None);
+        assert_eq!(eval_shape_rule("matmul(a, b)", c, &[], "k").unwrap(), None);
+        assert_eq!(eval_shape_rule("same_as(does_not_exist)", c, &[], "k").unwrap(), None);
 
         // Convergence-C: DimExpr rules evaluate to a single-dim shape via the §6.20 oracle.
         // combo "x" = [2, 3].
-        assert_eq!(eval_shape_rule("extent(x, 0)", c, "k").unwrap(), Some(Shape::from_dims(&[2])));
-        assert_eq!(eval_shape_rule("const(9)", c, "k").unwrap(), Some(Shape::from_dims(&[9])));
+        assert_eq!(eval_shape_rule("extent(x, 0)", c, &[], "k").unwrap(), Some(Shape::from_dims(&[2])));
+        assert_eq!(eval_shape_rule("const(9)", c, &[], "k").unwrap(), Some(Shape::from_dims(&[9])));
         // div(extent(x, last), const(2)) on x=[2,3]: floor(3/2) = 1.
-        assert_eq!(eval_shape_rule("div(extent(x, last), const(2))", c, "k").unwrap(), Some(Shape::from_dims(&[1])));
+        assert_eq!(eval_shape_rule("div(extent(x, last), const(2))", c, &[], "k").unwrap(), Some(Shape::from_dims(&[1])));
         // mul(extent(x, 0)=2, const(3)=3) = 6.
-        assert_eq!(eval_shape_rule("mul(extent(x, 0), const(3))", c, "k").unwrap(), Some(Shape::from_dims(&[6])));
-        // Unknown role, a param rule (no params threaded), a ÷0 decline, and a negative
-        // result all surface as not-evaluable → None (never a false reject).
-        assert_eq!(eval_shape_rule("extent(nope, 0)", c, "k").unwrap(), None);
-        assert_eq!(eval_shape_rule("param(0)", c, "k").unwrap(), None);
-        assert_eq!(eval_shape_rule("div(extent(x, last), const(0))", c, "k").unwrap(), None);
-        assert_eq!(eval_shape_rule("sub(const(2), extent(x, 1))", c, "k").unwrap(), None); // 2 − 3 = −1
+        assert_eq!(eval_shape_rule("mul(extent(x, 0), const(3))", c, &[], "k").unwrap(), Some(Shape::from_dims(&[6])));
+        // Unknown role, a param rule with EMPTY params (`&[]` → ParamOutOfRange
+        // decline; C-4 T1 pin — values thread via the params slice now, but no
+        // values still means skip), a ÷0 decline, and a negative result all
+        // surface as not-evaluable → None (never a false reject).
+        assert_eq!(eval_shape_rule("extent(nope, 0)", c, &[], "k").unwrap(), None);
+        assert_eq!(eval_shape_rule("param(0)", c, &[], "k").unwrap(), None);
+        assert_eq!(eval_shape_rule("div(extent(x, last), const(0))", c, &[], "k").unwrap(), None);
+        assert_eq!(eval_shape_rule("sub(const(2), extent(x, 1))", c, &[], "k").unwrap(), None); // 2 − 3 = −1
+    }
+
+    /// C-4 T1: `eval_shape_rule` threads its params slice through to the §6.20
+    /// `eval_dim` oracle, so a `param(N)` rule evaluates against synthesized
+    /// values instead of unconditionally declining. Index order is the
+    /// `FusedOpParams::key().ints` flattening (pinned per-variant in T2). An
+    /// EMPTY slice still declines every `param(N)` rule (`ParamOutOfRange` →
+    /// skip) — the pre-threading pin stays the default for value-less callers.
+    #[test]
+    fn eval_shape_rule_threads_param_values_through_the_oracle() {
+        let combo: Vec<(String, Shape, DType)> = vec![
+            ("x".into(), Shape::from_dims(&[2, 3]), DType::F32),
+        ];
+        let c: ProbeComboRef = &combo;
+        // param(0) with values [7] → single-dim Shape [7].
+        assert_eq!(eval_shape_rule("param(0)", c, &[7], "k").unwrap(), Some(Shape::from_dims(&[7])));
+        // Composite: mul(extent(x,0)=2, param(1)=5) = 10 — params and extents mix.
+        assert_eq!(
+            eval_shape_rule("mul(extent(x, 0), param(1))", c, &[7, 5], "k").unwrap(),
+            Some(Shape::from_dims(&[10])),
+        );
+        // Out-of-range index (param(2) with 2 values) → ParamOutOfRange decline → skip.
+        assert_eq!(eval_shape_rule("param(2)", c, &[7, 5], "k").unwrap(), None);
+        // A negative param value is not a valid dim → skip (the d >= 0 guard).
+        assert_eq!(eval_shape_rule("param(0)", c, &[-3], "k").unwrap(), None);
+        // No values (&[]) — every param(N) rule still declines to skip.
+        assert_eq!(eval_shape_rule("param(0)", c, &[], "k").unwrap(), None);
     }
 
     /// Convergence-C C-3 (Tier 3): the whole-shape `matmul(role_a, role_b)` rule
@@ -605,9 +883,9 @@ mod tests {
         ];
         let c: ProbeComboRef = &combo;
         // a=[8,4096] · b=[4096,1024] → [8,1024].
-        assert_eq!(eval_shape_rule("matmul(a, b)", c, "k").unwrap(), Some(Shape::from_dims(&[8, 1024])));
+        assert_eq!(eval_shape_rule("matmul(a, b)", c, &[], "k").unwrap(), Some(Shape::from_dims(&[8, 1024])));
         // Whitespace-insensitive (mirrors parse_dim).
-        assert_eq!(eval_shape_rule("matmul(a,b)", c, "k").unwrap(), Some(Shape::from_dims(&[8, 1024])));
+        assert_eq!(eval_shape_rule("matmul(a,b)", c, &[], "k").unwrap(), Some(Shape::from_dims(&[8, 1024])));
 
         // Batched: [4,8,16] · [4,16,32] → [4,8,32].
         let batched: Vec<(String, Shape, DType)> = vec![
@@ -615,23 +893,23 @@ mod tests {
             ("b".into(), Shape::from_dims(&[4, 16, 32]), DType::F32),
         ];
         assert_eq!(
-            eval_shape_rule("matmul(a, b)", &batched, "k").unwrap(),
+            eval_shape_rule("matmul(a, b)", &batched, &[], "k").unwrap(),
             Some(Shape::from_dims(&[4, 8, 32])),
         );
 
         // Guards → skip (Ok(None), never a false reject / never a panic):
         // unknown role, a rank-1 operand, and a rank-mismatch.
-        assert_eq!(eval_shape_rule("matmul(a, nope)", c, "k").unwrap(), None);
+        assert_eq!(eval_shape_rule("matmul(a, nope)", c, &[], "k").unwrap(), None);
         let rank1: Vec<(String, Shape, DType)> = vec![
             ("a".into(), Shape::from_dims(&[8]), DType::F32),
             ("b".into(), Shape::from_dims(&[8]), DType::F32),
         ];
-        assert_eq!(eval_shape_rule("matmul(a, b)", &rank1, "k").unwrap(), None);
+        assert_eq!(eval_shape_rule("matmul(a, b)", &rank1, &[], "k").unwrap(), None);
         let rank_mismatch: Vec<(String, Shape, DType)> = vec![
             ("a".into(), Shape::from_dims(&[4, 8, 16]), DType::F32),
             ("b".into(), Shape::from_dims(&[16, 32]), DType::F32),
         ];
-        assert_eq!(eval_shape_rule("matmul(a, b)", &rank_mismatch, "k").unwrap(), None);
+        assert_eq!(eval_shape_rule("matmul(a, b)", &rank_mismatch, &[], "k").unwrap(), None);
     }
 
     /// Finding 5.4 deliverable (Task 3.6 coverage gap): the extractor must
@@ -674,15 +952,21 @@ mod tests {
     }
 
     /// Finding 1 (arity pre-check): the attention-family fns declare a minimum
-    /// input arity that a leaner corpus contract can under-declare; every other
-    /// synth variant has no declared minimum (the `guard_rule` backstop covers
-    /// them). This pins the small, deliberately-local arity table.
+    /// input arity that a leaner corpus contract can under-declare — and C-4 T3
+    /// adds Conv2D (its rule fns read `input_shapes[1]` and assert 2-or-3
+    /// inputs, and real 2-input CONV2D fused sections exist in
+    /// `vulkan/conv-attn-rope.fkc.md`, so the under-declaration risk is live
+    /// now that Conv2D's dtype differential runs). Every other synth variant
+    /// has no declared minimum (the `guard_rule` backstop covers them). This
+    /// pins the small, deliberately-local arity table.
     #[test]
-    fn expected_min_inputs_covers_the_attention_family_only() {
+    fn expected_min_inputs_covers_attention_family_and_conv2d() {
         assert_eq!(expected_min_inputs(Some("FlashAttn")), Some(4));
         assert_eq!(expected_min_inputs(Some("FlashAttnBackward")), Some(4));
         assert_eq!(expected_min_inputs(Some("PagedAttn")), Some(5));
-        // Non-attention synth variants (and the absent case) declare no minimum.
+        // C-4 T3: Conv2D's differentials are params-live; pre-check its arity.
+        assert_eq!(expected_min_inputs(Some("Conv2D")), Some(2));
+        // Other synth variants (and the absent case) declare no minimum.
         assert_eq!(expected_min_inputs(Some("SelectiveScan")), None);
         assert_eq!(expected_min_inputs(Some("InplaceAffine")), None);
         assert_eq!(expected_min_inputs(None), None);
@@ -708,6 +992,236 @@ mod tests {
         assert_ne!(d[0].1, d[1].1);
     }
 
+    /// C-4 T2: `synth_probe_param_points` synthesizes per-variant, per-combo
+    /// param POINTS for the params-DEPENDENT fused ops. Each point's ints are
+    /// the `FusedOpParams::key().ints` flattening (the `param(N)` indexing
+    /// convention pinned in the plan §3): Conv2D `[sh,sw,ph,pw,groups]`,
+    /// ConvTranspose2D 9 slots, QMatMul `[quant_type_key,k,n]`, FSCE
+    /// `[reduction_key,ignore_index]`, CausalConv1d `[use_silu]`. Params-
+    /// dependent ops with a free field get >= 2 DISTINCT points (the
+    /// sabotage-calibration norm applied to params: a single point could
+    /// false-green a rule that ignores the param).
+    #[test]
+    fn synth_probe_param_points_pins_per_variant_tables_and_key_ints_flattening() {
+        use fuel_graph::registry::Reduction;
+        let conv: Vec<(String, Shape, DType)> = vec![
+            ("x".into(), Shape::from_dims(&[2, 3, 8, 8]), DType::F32),
+            ("weight".into(), Shape::from_dims(&[4, 3, 3, 3]), DType::F32),
+        ];
+        // Conv2D — 2 points; padding is SHAPE-COUPLED to the weight kernel
+        // (kh/2 = 1 for the 3x3 kernel) so the real fn's usize
+        // `(H + 2p − K)` arithmetic can never underflow. Point 2's ints are
+        // pairwise DISTINCT (order-asymmetry, review fix): any slot reorder
+        // of the flattening — stride<->padding included — changes the vector.
+        let pts = synth_probe_param_points(Some("Conv2D"), &conv);
+        assert_eq!(pts.len(), 2, "Conv2D needs >= 2 points (no single-point false-green)");
+        assert!(
+            matches!(pts[0].0, FusedOpParams::Conv2D { stride: (1, 2), padding: (1, 4), groups: 1 }),
+            "got {:?}", pts[0].0,
+        );
+        assert_eq!(pts[0].1, vec![1, 2, 1, 4, 1]);
+        assert!(
+            matches!(pts[1].0, FusedOpParams::Conv2D { stride: (3, 4), padding: (6, 7), groups: 2 }),
+            "got {:?}", pts[1].0,
+        );
+        assert_eq!(pts[1].1, vec![3, 4, 6, 7, 2]);
+        assert_ne!(pts[0].1, pts[1].1, "the two points must differ (param-dependence observable)");
+
+        // ConvTranspose2D — 2 points, ints = [sh,sw,ph,pw,oph,opw,dh,dw,groups]
+        // (registry.rs tag-11 flattening). output_padding < stride at both
+        // points (the standard validity relation); the real fn saturates, so
+        // no shape coupling is needed. Every slot PAIR differs at one point
+        // or the other (order-asymmetry, review fix): padding<->output_padding
+        // and dilation<->groups reorders — invisible in the old all-0/all-1
+        // values — now change an asserted vector.
+        let pts = synth_probe_param_points(Some("ConvTranspose2D"), &conv);
+        assert_eq!(pts.len(), 2, "ConvTranspose2D needs >= 2 points");
+        assert!(matches!(pts[0].0, FusedOpParams::ConvTranspose2D { .. }), "got {:?}", pts[0].0);
+        assert_eq!(pts[0].1, vec![2, 3, 0, 1, 1, 2, 4, 5, 1]);
+        assert!(matches!(pts[1].0, FusedOpParams::ConvTranspose2D { .. }), "got {:?}", pts[1].0);
+        assert_eq!(pts[1].1, vec![5, 4, 3, 2, 4, 0, 2, 6, 3]);
+
+        // QMatMul — 1 point, COMBO-DERIVED per the contract couplings
+        // (`k == a.dim[-1]`, `n == w_q_bytes.dim[0]`; linear-quant.fkc.md
+        // §op_params) — consistency by construction. Q4_0 (key 1) matches the
+        // contract's declared ggml_dtype.
+        let qm: Vec<(String, Shape, DType)> = vec![
+            ("a".into(), Shape::from_dims(&[8, 4096]), DType::F32),
+            ("w_q_bytes".into(), Shape::from_dims(&[1024, 128]), DType::U32),
+        ];
+        let pts = synth_probe_param_points(Some("QMatMul"), &qm);
+        assert_eq!(pts.len(), 1);
+        assert!(
+            matches!(pts[0].0, FusedOpParams::QMatMul { k: 4096, n: 1024, .. }),
+            "k/n must derive from the combo; got {:?}", pts[0].0,
+        );
+        assert_eq!(pts[0].1, vec![1, 4096, 1024]);
+
+        // FusedSoftmaxCrossEntropy — 2 points (None then Mean: the shape rule
+        // is reduction-CONDITIONAL, so both branches need a point);
+        // ignore_index is the conventional -100 sentinel at both.
+        let fsce: Vec<(String, Shape, DType)> = vec![
+            ("logits".into(), Shape::from_dims(&[8, 32000]), DType::F32),
+            ("targets".into(), Shape::from_dims(&[8]), DType::I64),
+        ];
+        let pts = synth_probe_param_points(Some("FusedSoftmaxCrossEntropy"), &fsce);
+        assert_eq!(pts.len(), 2, "FSCE needs both reduction branches covered");
+        assert!(matches!(
+            pts[0].0,
+            FusedOpParams::FusedSoftmaxCrossEntropy { reduction: Reduction::None, ignore_index: -100 }
+        ), "got {:?}", pts[0].0);
+        assert_eq!(pts[0].1, vec![2, -100], "Reduction::None.key() = 2");
+        assert!(matches!(
+            pts[1].0,
+            FusedOpParams::FusedSoftmaxCrossEntropy { reduction: Reduction::Mean, ignore_index: -100 }
+        ), "got {:?}", pts[1].0);
+        assert_eq!(pts[1].1, vec![0, -100], "Reduction::Mean.key() = 0");
+
+        // CausalConv1d — 1 point (shape/dtype rules ignore use_silu).
+        let cc: Vec<(String, Shape, DType)> = vec![
+            ("x".into(), Shape::from_dims(&[2, 4, 19]), DType::F32),
+            ("weight".into(), Shape::from_dims(&[4, 1, 4]), DType::F32),
+            ("bias".into(), Shape::from_dims(&[4]), DType::F32),
+        ];
+        let pts = synth_probe_param_points(Some("CausalConv1d"), &cc);
+        assert_eq!(pts.len(), 1);
+        assert!(matches!(pts[0].0, FusedOpParams::CausalConv1d { use_silu: false }), "got {:?}", pts[0].0);
+        assert_eq!(pts[0].1, vec![0]);
+    }
+
+    /// Review fix (order-degeneracy): for every params-dependent variant,
+    /// every PAIR of `key().ints` slots must be distinguished by at least one
+    /// synth point (`ints[i] != ints[j]` at that point). Otherwise a
+    /// length-preserving reorder of the `key().ints` flattening in
+    /// `fuel-graph/src/registry.rs` (stride<->padding for Conv2D;
+    /// padding<->output_padding or dilation<->groups for ConvTranspose2D)
+    /// passes every exact-ints pin while the corpus doc tables go silently
+    /// wrong — and, once whole-shape `param(N)` rules land, a
+    /// `param(i)`/`param(j)` confusion in a declared rule would evaluate
+    /// identically at EVERY point and false-green: exactly the failure the
+    /// ">= 2 points" norm claims to prevent.
+    #[test]
+    fn synth_param_points_distinguish_every_ints_slot_pair() {
+        let combo: Vec<(String, Shape, DType)> = vec![
+            ("x".into(), Shape::from_dims(&[2, 3, 8, 8]), DType::F32),
+            ("weight".into(), Shape::from_dims(&[4, 3, 3, 3]), DType::F32),
+        ];
+        for v in [
+            "Conv2D",
+            "ConvTranspose2D",
+            "QMatMul",
+            "FusedSoftmaxCrossEntropy",
+            "CausalConv1d",
+        ] {
+            let pts = synth_probe_param_points(Some(v), &combo);
+            assert!(!pts.is_empty(), "{v} must synthesize points");
+            let len = pts[0].1.len();
+            for i in 0..len {
+                for j in (i + 1)..len {
+                    assert!(
+                        pts.iter().any(|(_, ints)| ints[i] != ints[j]),
+                        "{v}: ints slots {i} and {j} are equal at EVERY synth point \
+                         (order-degenerate: a slot reorder in the key().ints flattening, \
+                         or a param({i})/param({j}) confusion in a declared rule, would \
+                         false-green)",
+                    );
+                }
+            }
+        }
+    }
+
+    /// C-4 T2 (flattening differential): every returned point's ints ARE its
+    /// own `FusedOpParams::key().ints` — the ONE flattening `param(N)`
+    /// indexes, shared with CSE keying. Guards against a hand-rolled ints
+    /// table drifting from `key()` if either side changes.
+    #[test]
+    fn synth_probe_param_points_ints_equal_key_ints_for_every_point() {
+        // One rank-4 combo readable by every derivation (Conv2D reads
+        // x/weight rank-4; QMatMul reads a.last=8, w.dim0=4).
+        let combo: Vec<(String, Shape, DType)> = vec![
+            ("x".into(), Shape::from_dims(&[2, 3, 8, 8]), DType::F32),
+            ("weight".into(), Shape::from_dims(&[4, 3, 3, 3]), DType::F32),
+        ];
+        for v in ["Conv2D", "ConvTranspose2D", "QMatMul", "FusedSoftmaxCrossEntropy", "CausalConv1d"] {
+            let pts = synth_probe_param_points(Some(v), &combo);
+            assert!(!pts.is_empty(), "{v} must synthesize at least one point");
+            for (p, ints) in &pts {
+                assert_eq!(ints, &p.key().ints, "{v}: ints must be the key().ints flattening");
+            }
+        }
+    }
+
+    /// C-4 T2 (never-a-foreign-variant pin, extending the `synth_probe_params`
+    /// pin above): an unknown/params-independent variant synthesizes NOTHING
+    /// (those stay `synth_probe_params`' job), and a combo the shape-coupled
+    /// derivation can't safely read (missing operand, wrong rank, zero
+    /// extent) declines to EMPTY — a skip, never a panic, never a guess.
+    #[test]
+    fn synth_probe_param_points_declines_unknown_variants_and_unreadable_combos() {
+        let conv_ok: Vec<(String, Shape, DType)> = vec![
+            ("x".into(), Shape::from_dims(&[2, 3, 8, 8]), DType::F32),
+            ("weight".into(), Shape::from_dims(&[4, 3, 3, 3]), DType::F32),
+        ];
+        // Unknown + params-independent variants → empty.
+        assert!(synth_probe_param_points(None, &conv_ok).is_empty());
+        assert!(synth_probe_param_points(Some("SoftmaxLastDim"), &conv_ok).is_empty());
+        assert!(synth_probe_param_points(Some("Bogus"), &conv_ok).is_empty());
+        // Conv2D guards: missing weight operand / rank-3 x / zero spatial extent.
+        assert!(synth_probe_param_points(Some("Conv2D"), &conv_ok[..1]).is_empty());
+        let rank3: Vec<(String, Shape, DType)> = vec![
+            ("x".into(), Shape::from_dims(&[3, 8, 8]), DType::F32),
+            ("weight".into(), Shape::from_dims(&[4, 3, 3, 3]), DType::F32),
+        ];
+        assert!(synth_probe_param_points(Some("Conv2D"), &rank3).is_empty());
+        let zero_h: Vec<(String, Shape, DType)> = vec![
+            ("x".into(), Shape::from_dims(&[2, 3, 0, 8]), DType::F32),
+            ("weight".into(), Shape::from_dims(&[4, 3, 3, 3]), DType::F32),
+        ];
+        assert!(synth_probe_param_points(Some("Conv2D"), &zero_h).is_empty());
+        // QMatMul guards: missing operand / scalar (rank-0) activations.
+        let qm: Vec<(String, Shape, DType)> = vec![
+            ("a".into(), Shape::from_dims(&[8, 4096]), DType::F32),
+            ("w_q_bytes".into(), Shape::from_dims(&[1024, 128]), DType::U32),
+        ];
+        assert!(synth_probe_param_points(Some("QMatMul"), &qm[..1]).is_empty());
+        let scalar_a: Vec<(String, Shape, DType)> = vec![
+            ("a".into(), Shape::from_dims(&[]), DType::F32),
+            ("w_q_bytes".into(), Shape::from_dims(&[1024, 128]), DType::U32),
+        ];
+        assert!(synth_probe_param_points(Some("QMatMul"), &scalar_a).is_empty());
+    }
+
+    /// C-4 T2 (synth-value validity, the adversarial-review item): both
+    /// Conv2D points must be VALID for the real registered shape fn on every
+    /// probe — including a kernel LARGER than the spatial input (kh=5 > h=1),
+    /// exactly where naive fixed padding would underflow the fn's usize
+    /// `h + 2·ph − kh` (a debug-build panic). The shape-coupled padding
+    /// (derived from the weight kernel) keeps the arithmetic non-negative by
+    /// construction; a panic here fails the test.
+    #[test]
+    fn synth_conv2d_points_are_valid_for_the_real_registry_shape_fn() {
+        use fuel_graph::registry::FusedOps;
+        let entry = default_registry().entry(FusedOps::CONV2D).expect("CONV2D registered");
+        let cases = [
+            // (x, weight): kernel > input; odd kernel; even kernel.
+            (Shape::from_dims(&[1, 1, 1, 7]), Shape::from_dims(&[1, 1, 5, 5])),
+            (Shape::from_dims(&[2, 3, 8, 8]), Shape::from_dims(&[4, 3, 3, 3])),
+            (Shape::from_dims(&[2, 3, 8, 8]), Shape::from_dims(&[4, 3, 4, 4])),
+        ];
+        for (x, w) in cases {
+            let combo: Vec<(String, Shape, DType)> = vec![
+                ("x".into(), x.clone(), DType::F32),
+                ("weight".into(), w.clone(), DType::F32),
+            ];
+            let pts = synth_probe_param_points(Some("Conv2D"), &combo);
+            assert_eq!(pts.len(), 2, "x={x:?} w={w:?}");
+            for (p, _) in &pts {
+                let out = (entry.shape_rule)(&[x.clone(), w.clone()], p);
+                assert_eq!(out.rank(), 4, "x={x:?} w={w:?} params={p:?}");
+            }
+        }
+    }
+
     #[test]
     fn bundle_slot_names_extracts_names_from_a_real_return_block() {
         let ret: crate::fkc::schema::ReturnBlock = serde_yml::from_str(
@@ -719,5 +1233,121 @@ mod tests {
             vec!["y".to_string(), "last_state".to_string()]
         );
         assert_eq!(bundle_slot_names(&None), Vec::<String>::new());
+    }
+
+    /// C-4 T5 (doc-vs-code drift is a defect): the fused corpus prose pins a
+    /// per-variant `param(N)` index table — the `FusedOpParams::key().ints`
+    /// flattening the T1–T3 threading indexes. This test compiles the corpus
+    /// files in (`include_str!`, so a doc edit forces a recompile) and checks,
+    /// for every ints-bearing variant contracted in those two files, that its
+    /// table row exists, pins EVERY index `param(0)..param(len-1)`, and pins
+    /// none beyond `key().ints`' actual length — so renumbering the flattening
+    /// in `fuel-graph/src/registry.rs` without updating the docs (or vice
+    /// versa) fails here, not silently.
+    #[test]
+    fn corpus_prose_pins_param_index_tables_matching_key_ints() {
+        use fuel_graph::registry::Reduction;
+        const CONV_ROPE: &str =
+            include_str!("../../../docs/kernel-contracts/fused/conv-rope.fkc.md");
+        const LINEAR_QUANT: &str =
+            include_str!("../../../docs/kernel-contracts/fused/linear-quant.fkc.md");
+
+        fn table_row<'a>(doc: &'a str, doc_name: &str, variant: &str) -> &'a str {
+            let marker = format!("| `{variant}` |");
+            doc.lines().find(|l| l.contains(&marker)).unwrap_or_else(|| {
+                panic!("{doc_name} prose is missing the `{variant}` param-index table row")
+            })
+        }
+        fn assert_row_pins(doc: &str, doc_name: &str, variant: &str, params: &FusedOpParams) {
+            let ints = params.key().ints;
+            let row = table_row(doc, doc_name, variant);
+            for i in 0..ints.len() {
+                assert!(
+                    row.contains(&format!("param({i})=")),
+                    "{doc_name}: `{variant}` row must pin param({i}) (key().ints has {} slots)",
+                    ints.len(),
+                );
+            }
+            assert!(
+                !row.contains(&format!("param({})", ints.len())),
+                "{doc_name}: `{variant}` row pins more slots than key().ints carries ({})",
+                ints.len(),
+            );
+        }
+
+        // conv-rope.fkc.md — Conv2D / ConvTranspose2D / CausalConv1d /
+        // SelectiveScan / SsdChunkScan (Rope carries no fields → no row).
+        assert_row_pins(
+            CONV_ROPE,
+            "conv-rope.fkc.md",
+            "Conv2D",
+            &FusedOpParams::Conv2D { stride: (1, 1), padding: (0, 0), groups: 1 },
+        );
+        assert_row_pins(
+            CONV_ROPE,
+            "conv-rope.fkc.md",
+            "ConvTranspose2D",
+            &FusedOpParams::ConvTranspose2D {
+                stride: (1, 1),
+                padding: (0, 0),
+                output_padding: (0, 0),
+                dilation: (1, 1),
+                groups: 1,
+            },
+        );
+        assert_row_pins(
+            CONV_ROPE,
+            "conv-rope.fkc.md",
+            "CausalConv1d",
+            &FusedOpParams::CausalConv1d { use_silu: false },
+        );
+        assert_row_pins(
+            CONV_ROPE,
+            "conv-rope.fkc.md",
+            "SelectiveScan",
+            &FusedOpParams::SelectiveScan { delta_softplus: false },
+        );
+        assert_row_pins(
+            CONV_ROPE,
+            "conv-rope.fkc.md",
+            "SsdChunkScan",
+            &FusedOpParams::SsdChunkScan { chunk_size: 256 },
+        );
+
+        // linear-quant.fkc.md — QMatMul / FusedSoftmaxCrossEntropy / Nf4Matmul
+        // (FusedLinear has no fields; InplaceAffine's f64 fields ride
+        // `key().bits`, NOT `ints` — no `param(N)` slot exists for either).
+        assert_row_pins(
+            LINEAR_QUANT,
+            "linear-quant.fkc.md",
+            "QMatMul",
+            &FusedOpParams::QMatMul { quant_type: fuel_graph::QuantType::Q4_0, k: 32, n: 4 },
+        );
+        assert_row_pins(
+            LINEAR_QUANT,
+            "linear-quant.fkc.md",
+            "FusedSoftmaxCrossEntropy",
+            &FusedOpParams::FusedSoftmaxCrossEntropy {
+                reduction: Reduction::Mean,
+                ignore_index: -100,
+            },
+        );
+        assert_row_pins(
+            LINEAR_QUANT,
+            "linear-quant.fkc.md",
+            "Nf4Matmul",
+            &FusedOpParams::Nf4Matmul { block_size: 64 },
+        );
+
+        // The threading note itself (the convention sentence) must be present
+        // in BOTH files: `param(N)` indexes the key().ints flattening.
+        for (doc, doc_name) in
+            [(CONV_ROPE, "conv-rope.fkc.md"), (LINEAR_QUANT, "linear-quant.fkc.md")]
+        {
+            assert!(
+                doc.contains("`param(N)` indexes the `FusedOpParams::key().ints` flattening"),
+                "{doc_name} must carry the C-4 param-threading convention note",
+            );
+        }
     }
 }

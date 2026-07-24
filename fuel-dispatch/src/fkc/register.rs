@@ -1427,6 +1427,307 @@ determinism: same_hardware_bitwise
     }
 
     // =====================================================================
+    // C-4 T3: the cross-check loops over synthesized param POINTS, so the
+    // dtype differentials for the params-DEPENDENT fused ops (Conv2D /
+    // ConvTranspose2D / QMatMul / FusedSoftmaxCrossEntropy / CausalConv1d)
+    // are now LIVE. Each op is proven to FIRE by a dtype mutation that
+    // disagrees with the real registered fn (a dormant differential would
+    // let the mutated import succeed — the false-green risk); the unmutated
+    // corpus, which agrees, stays importable WITHOUT any guard-caught panic
+    // (no debug-only skips hiding under the differential).
+    // =====================================================================
+
+    /// EOL-normalize an embedded corpus file. `include_str!` carries the
+    /// CHECKOUT's line endings (CRLF on an autocrlf Windows tree, LF
+    /// elsewhere), so a multi-line mutation anchor written with `\n` would
+    /// fail `mutate_once`'s exactly-once assert on one convention and pass on
+    /// the other. Normalizing to LF makes the two-line anchors below
+    /// checkout-independent; the FKC parser accepts either convention.
+    fn lf(src: &str) -> String {
+        src.replace("\r\n", "\n")
+    }
+
+    #[test]
+    fn fsce_dtype_differential_fires() {
+        // FSCE's real registered dtype fn is CONSTANT F32 (the loss
+        // accumulator dtype), independent of inputs and params. A contract
+        // declaring `fixed(F16)` must be rejected. Before C-4 T3 the FSCE
+        // differential never ran at all (`synth_probe_params` returns None
+        // for params-dependent variants), so this exact mutation imported
+        // clean — the plan's mutation proof that enforcement is now live.
+        let mutated = mutate_once(
+            FUSED_LINEAR_QUANT,
+            "dtype_rule: fixed(F32)          # ALWAYS F32 regardless of input dtype",
+            "dtype_rule: fixed(F16)          # ALWAYS F32 regardless of input dtype",
+        );
+        let err = import_bundle_str(&mutated, &crate::fkc::CpuLinkRegistry)
+            .expect_err("an FSCE dtype_rule disagreeing with the constant-F32 real fn must be rejected");
+        assert!(matches!(err, FkcError::ShapeRuleMismatch { .. }), "expected ShapeRuleMismatch, got {err:?}");
+    }
+
+    #[test]
+    fn qmatmul_dtype_differential_fires() {
+        // QMatMul's real dtype fn returns input 0 (`a`, F32 at every probe —
+        // the contract declares a: [F32]). Declaring fixed(F16) disagrees.
+        let mutated = mutate_once(
+            FUSED_LINEAR_QUANT,
+            "dtype_rule: fixed(F32)          # output is always F32 (dequant-and-contract); = a (F32)",
+            "dtype_rule: fixed(F16)          # output is always F32 (dequant-and-contract); = a (F32)",
+        );
+        let err = import_bundle_str(&mutated, &crate::fkc::CpuLinkRegistry)
+            .expect_err("a QMatMul dtype_rule disagreeing with the real passthrough fn must be rejected");
+        assert!(matches!(err, FkcError::ShapeRuleMismatch { .. }), "expected ShapeRuleMismatch, got {err:?}");
+    }
+
+    #[test]
+    fn conv2d_dtype_differential_fires() {
+        // Conv2D's real dtype fn is passthrough(x) (= F32 at the probes; x's
+        // first declared dtype). Declaring fixed(F64) disagrees. The bare
+        // `dtype_rule: passthrough(x)` line is shared by 4 sections, so the
+        // anchor spans into the section-unique shape_rule line (LF-normalized).
+        let mutated = mutate_once(
+            &lf(FUSED_CONV_ROPE),
+            "dtype_rule: passthrough(x)\n      shape_rule: conv2d(params)",
+            "dtype_rule: fixed(F64)\n      shape_rule: conv2d(params)",
+        );
+        let err = import_bundle_str(&mutated, &crate::fkc::CpuLinkRegistry)
+            .expect_err("a Conv2D dtype_rule disagreeing with the real passthrough fn must be rejected");
+        assert!(matches!(err, FkcError::ShapeRuleMismatch { .. }), "expected ShapeRuleMismatch, got {err:?}");
+    }
+
+    #[test]
+    fn conv_transpose2d_dtype_differential_fires() {
+        // ConvTranspose2D probes carry 3 operands (x, weight, optional bias —
+        // the solver includes optional operands), so this differential also
+        // pins the registry fn's 2-or-3 arity tolerance: were the fn still
+        // `debug_assert_eq!(len, 2)`, a debug build would guard-catch the
+        // panic and SKIP (import clean → this test fails), while release
+        // checked — the exact debug-vs-release split the pre-check work bans.
+        let mutated = mutate_once(
+            &lf(FUSED_CONV_ROPE),
+            "dtype_rule: passthrough(x)\n      shape_rule: conv_transpose2d(params)",
+            "dtype_rule: fixed(F64)\n      shape_rule: conv_transpose2d(params)",
+        );
+        let err = import_bundle_str(&mutated, &crate::fkc::CpuLinkRegistry)
+            .expect_err("a ConvTranspose2D dtype_rule disagreeing with the real passthrough fn must be rejected");
+        assert!(matches!(err, FkcError::ShapeRuleMismatch { .. }), "expected ShapeRuleMismatch, got {err:?}");
+    }
+
+    #[test]
+    fn causal_conv1d_dtype_differential_fires() {
+        let mutated = mutate_once(
+            &lf(FUSED_CONV_ROPE),
+            "dtype_rule: passthrough(x)\n      shape_rule: from_params(seq_out)",
+            "dtype_rule: fixed(F64)\n      shape_rule: from_params(seq_out)",
+        );
+        let err = import_bundle_str(&mutated, &crate::fkc::CpuLinkRegistry)
+            .expect_err("a CausalConv1d dtype_rule disagreeing with the real passthrough fn must be rejected");
+        assert!(matches!(err, FkcError::ShapeRuleMismatch { .. }), "expected ShapeRuleMismatch, got {err:?}");
+    }
+
+    /// C-4 T3 (regression + never-panic): the UNMUTATED corpus imports with
+    /// its now-live dtype differentials actually RUNNING — and none of them
+    /// leans on a guard-caught panic (a `guard_rule` catch would push a
+    /// "panicked" warning and silently skip the differential in debug builds
+    /// only). The params-dependent ops' `conv2d(params)`/`from_params(...)`
+    /// SHAPE rules remain non-evaluable → documented skips, unchanged.
+    #[test]
+    fn unmutated_corpus_dtype_differentials_run_without_guard_panics() {
+        for (src, name) in [(FUSED_LINEAR_QUANT, "linear-quant"), (FUSED_CONV_ROPE, "conv-rope")] {
+            let provider = import_bundle_str(src, &crate::fkc::CpuLinkRegistry)
+                .unwrap_or_else(|e| panic!("{name} must import clean: {e:?}"));
+            let panicked: Vec<_> = provider
+                .warnings
+                .iter()
+                .filter(|w| w.message.contains("panicked"))
+                .collect();
+            assert!(
+                panicked.is_empty(),
+                "{name}: live differentials must not rely on guard-caught panics \
+                 (debug-only skips): {panicked:?}",
+            );
+        }
+    }
+
+    /// C-4 T3 (Conv2D arity pre-check): a synthetic 1-input CONV2D contract.
+    /// The registry conv2d rule fns read `input_shapes[1]` / assert 2-or-3
+    /// inputs, so an under-declared contract must be skipped CONSISTENTLY in
+    /// debug and release with a warning — mirroring the attention-family
+    /// pre-check (real 2-input CONV2D fused sections exist in
+    /// `vulkan/conv-attn-rope.fkc.md`, so the under-declaration risk is live).
+    const SYNTH_CONV2D_1IN: &str = r#"---
+fkc_version: 1
+provider:
+  name: synth-conv2d-1input
+  backend: Cpu
+  kernel_source: "portable-cpu"
+---
+
+# synthetic 1-input CONV2D (C-4 T3 arity pre-check)
+
+## conv2d_1in
+
+Synthetic 1-input Conv2D (x only, no weight) to exercise the arity pre-check.
+
+```fkc
+kernel: conv2d_1in
+fused_op: CONV2D
+blurb: "synthetic 1-input conv2d (x only) to exercise the arity pre-check"
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "synthetic::conv2d_1in_cpu"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: x
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4
+  op_params:
+    variant: Conv2D
+    fields:
+      stride:  { kind: "(usize, usize)" }
+      padding: { kind: "(usize, usize)" }
+      groups:  { kind: usize }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: passthrough(x)
+      shape_rule: conv2d(params)
+      layout_guarantee: contiguous
+
+caps:
+  awkward_layout_strategy: requires_contiguous
+  in_place: false
+
+cost:
+  provenance: judge_measured
+  class: conv
+
+precision:
+  bit_stable_on_same_hardware: false
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: false
+  notes: "synthetic"
+
+determinism: same_hardware_bitwise
+```
+"#;
+
+    #[test]
+    fn under_arity_conv2d_skips_differential_consistently_and_warns() {
+        // Without the pre-check a 1-input CONV2D contract skips SILENTLY
+        // (the shape-coupled synth declines the unreadable combo), leaving no
+        // trace of the dead differential. The pre-check surfaces the skip.
+        let provider = import_bundle_str(SYNTH_CONV2D_1IN, &StubResolveAll)
+            .expect("a 1-input CONV2D contract imports (never-panic; differential skipped)");
+        assert!(
+            provider
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("requires >= 2") && w.message.contains("skipped")),
+            "the under-arity Conv2D differential must be skipped WITH a warning \
+             (consistent debug/release): {:?}",
+            provider.warnings,
+        );
+    }
+
+    /// Review fix (silent empty-points skip): a params-DEPENDENT variant whose
+    /// probe combo the shape-coupled synth can't safely read (here: a rank-3
+    /// `x` — the derivation needs rank-4) gets EMPTY param points, so every
+    /// shape/dtype differential for that combo is skipped. That skip must
+    /// surface an `ImportWarning` (the module's "a caught panic is no longer a
+    /// silent skip" norm applied to the points path); it passes the arity
+    /// pre-check (2 inputs), so without its own warning the coverage hole
+    /// would leave no trace.
+    const SYNTH_CONV2D_RANK3: &str = r#"---
+fkc_version: 1
+provider:
+  name: synth-conv2d-rank3
+  backend: Cpu
+  kernel_source: "portable-cpu"
+---
+
+# synthetic rank-3 CONV2D (review fix: empty-param-points warning)
+
+## conv2d_rank3
+
+Synthetic 2-input Conv2D whose `x` declares rank 3 (the shape-coupled synth needs rank 4), to
+exercise the empty-points warning.
+
+```fkc
+kernel: conv2d_rank3
+fused_op: CONV2D
+blurb: "synthetic rank-3-x conv2d to exercise the empty-param-points warning"
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "synthetic::conv2d_rank3_cpu"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: x
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 3
+    - name: weight
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4
+  op_params:
+    variant: Conv2D
+    fields:
+      stride:  { kind: "(usize, usize)" }
+      padding: { kind: "(usize, usize)" }
+      groups:  { kind: usize }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: passthrough(x)
+      shape_rule: conv2d(params)
+      layout_guarantee: contiguous
+
+caps:
+  awkward_layout_strategy: requires_contiguous
+  in_place: false
+
+cost:
+  provenance: judge_measured
+  class: conv
+
+precision:
+  bit_stable_on_same_hardware: false
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: false
+  notes: "synthetic"
+
+determinism: same_hardware_bitwise
+```
+"#;
+
+    #[test]
+    fn empty_param_points_for_params_dependent_variant_warns() {
+        let provider = import_bundle_str(SYNTH_CONV2D_RANK3, &StubResolveAll)
+            .expect("a rank-3-x CONV2D contract imports (never-panic; differentials skipped)");
+        assert!(
+            provider
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("no param point") && w.message.contains("skipped")),
+            "an unreadable combo for a params-dependent variant must skip its \
+             differentials WITH a warning, not silently: {:?}",
+            provider.warnings,
+        );
+    }
+
+    // =====================================================================
     // DUPLICATE: two sections at the same key+pointer → DuplicateKernelRef
     // =====================================================================
 
