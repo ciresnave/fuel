@@ -159,6 +159,20 @@ nowhere; now captured so they are not forgotten):
   [10-decisions-log 2026-07-16 + 2026-07-21](docs/architecture/10-decisions-log.md);
   `docs/recipe-signature-reference.md` (Part II §A/§C, as-built); memories
   `recipe-grammar-codesign`, `shape-oracle-rfc-accepted`.
+- **Increment C — Op::Scan recipe form SHIPPED (2026-07-24, branch `feat/incc-opscan-recipe`):**
+  the **scan flat form** called out as pending in slice-1's "still narrowed" list now round-trips
+  through a `PatternNode` **data** recipe. Added the re-emit carriers `OpTag::Scan`/`OpTag::View`
+  (+ Fuel-internal `scan_*`/`view_slot` `OpAttrs`, off the §6.19 wire) in `tag_to_op`, a
+  `ScanPlaceholder` body-shape carrier, and the 2-slot `output_views` bundle re-compose/re-attach
+  for `Op::Scan`/`Op::View` in `emit` (both graph-resolved structural terminals, operand[0]
+  fallback, never a panic; `Op::Scan` stays a base-map terminal — still no native kernel).
+  `selective_scan` (two `delta_softplus` recipe variants) + `ssd_chunk_scan` (`chunk_size` a baked
+  CPU no-op) migrated as data recipes, node-for-node identical to their frozen-legacy imperative
+  decompose across all `batch`/`dim`/`dstate` (toy-interpreter parity + `base_map_hash` guards).
+  Migrated registry `decompose` count → **9 of 22** (5 slice-1 + 2 slice-2 mechanical + 2 scan);
+  **13 remain** (9 needs-extension carriers + 4 basis-gap). Plan:
+  `docs/superpowers/plans/2026-07-24-increment-c-decompose-migration.md` ("Op::Scan recipe form —
+  SHIPPED").
 - **Shape-oracle C-4 — Fuel-internal groundwork SHIPPED (2026-07-23); `Dims`/`WithDim`
   activation KISS-gated (extension-registry proposal FILED, cosign-tracked).** The C-4
   successor to Convergence-C, built as `feat/c4-groundwork` (plan
