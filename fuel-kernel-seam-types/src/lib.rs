@@ -123,6 +123,25 @@ pub enum OpTag {
     /// sets that bundle when it re-emits the producing `Scan`), mirroring
     /// `fuel_graph::Graph::view`.
     View,
+
+    /// A **nested fused op** carried inside a recipe AS-IS
+    /// (`fuel_graph::Op::Fused(id, params)`) — the attention-trio decompose's
+    /// inner softmax (`flash_attn`/`paged_attn` emit an
+    /// `Op::Fused(SOFTMAX_LAST_DIM, ..)` node; `flash_attn_backward` an
+    /// `Op::Fused(SOFTMAX_LAST_DIM_BACKWARD, ..)`). A **structural token** — like
+    /// [`Scan`]/[`View`], NOT a KISS base op: it names which registry entry the
+    /// node reconstructs to (via the [`OpAttrs::fused_op`] selector) and is
+    /// **Fuel-internal, NOT serialized to the §6.19 cross-producer wire** (a
+    /// `Fused` node hits the empty-body `_` arm of
+    /// [`OpAttrs::to_canonical_bytes`], exactly like the `scan_*`/`view_slot`
+    /// fields). Re-emitted by `runtime_fused::tag_to_op` for the param-less
+    /// nested fused ops (a small fid → params map); any param-carrying id is an
+    /// honest miss. No `op_to_tag` producer — the base map lowers past a nested
+    /// fused node (it recursively decomposes past itself), so the recipe just
+    /// re-carries it, keeping the softmax fused so the optimizer can re-cover it.
+    /// On re-emit its shape/dtype come from the named registry entry's
+    /// `shape_rule`/`dtype_rule` (`primitive_shape` honest-misses `Fused`).
+    Fused,
 }
 
 /// [`OpTag::ScanPlaceholder`] role code for the per-step recurrent **carry**
@@ -361,6 +380,23 @@ pub struct OpAttrs {
     /// marker only disambiguates the in-memory wildcard-vs-rank-0 overload that
     /// the recipe emitter (`fuel_graph::runtime_fused::shape_from_attr`) reads.
     pub rank0_target: bool,
+
+    // --- nested-fused selector (Increment C, C-T2) --------------------------
+    //
+    /// [`OpTag::Fused`] selector: the stable registry-entry **name** of the
+    /// nested fused op a recipe carries as-is (e.g. `"SoftmaxLastDim"` /
+    /// `"SoftmaxLastDimBackward"`), mirroring [`Self::cast_dtype`]'s
+    /// `DType::as_str` name-string precedent. `fuel-graph`'s
+    /// `runtime_fused::tag_to_op` resolves it back to a `FusedOpId` via
+    /// `registry::id_for_name` and reconstructs the param-less
+    /// `Op::Fused(fid, params)` through a small fid → params map. `None` ⇒ not a
+    /// nested-fused node (an honest miss for [`OpTag::Fused`]).
+    ///
+    /// **Fuel-INTERNAL, off the §6.19 wire.** A `Fused` node serializes to the
+    /// empty canonical body (the `_` arm of [`Self::to_canonical_bytes`]), so
+    /// this selector never flows to a cross-producer blob — a nested fused node
+    /// is a Fuel-side recipe-interior structural token, not a KISS base op.
+    pub fused_op: Option<String>,
 }
 
 // --- §6.19-shaped canonical positional-blob serialization (Convergence Increment A) ---
@@ -905,6 +941,41 @@ mod tests {
         // Empty-schema op: stays the single canonical 4-byte zero form even
         // with every rel field set.
         assert_eq!(rel_only.to_canonical_bytes(OpTag::Add), vec![0, 0, 0, 0]);
+    }
+
+    // ---- C-T2 (Increment C): OpTag::Fused is a Fuel-internal structural token,
+    // OFF the §6.19 wire ----------------------------------------------------
+    //
+    // A nested fused node (the attention-trio decompose's inner softmax) is
+    // Fuel-side recipe interior, NOT a KISS base op: it must never flow to a
+    // cross-producer blob. Like the `scan_*`/`view_slot` fields, `OpTag::Fused`
+    // hits the empty-body `_` arm of `to_canonical_bytes`, and its `fused_op`
+    // selector serializes NOTHING.
+    #[test]
+    fn fused_nested_op_is_absent_from_the_6_19_wire() {
+        let fused = OpAttrs {
+            fused_op: Some("SoftmaxLastDim".into()),
+            ..OpAttrs::default()
+        };
+        // The Fused tag serializes to the single canonical 4-byte zero body —
+        // byte-identical to a fully-default attrs blob (the selector is off-wire).
+        assert_eq!(
+            fused.to_canonical_bytes(OpTag::Fused),
+            vec![0, 0, 0, 0],
+            "OpTag::Fused must serialize to the empty canonical body"
+        );
+        assert_eq!(
+            fused.to_canonical_bytes(OpTag::Fused),
+            OpAttrs::default().to_canonical_bytes(OpTag::Fused),
+            "the fused_op selector must not reach any wire arm"
+        );
+        // The selector also must not leak into any OTHER schema arm it could
+        // plausibly ride alongside (it shares no field with a real op).
+        assert_eq!(
+            fused.to_canonical_bytes(OpTag::Add),
+            vec![0, 0, 0, 0],
+            "fused_op must not leak into an empty-schema arm"
+        );
     }
 
     // ---- T4 (Increment C slice 1): additive OpTag::MaxDim -----------------

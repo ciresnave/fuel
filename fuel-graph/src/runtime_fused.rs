@@ -445,6 +445,21 @@ fn tag_to_op(tag: OpTag, attrs: &OpAttrs) -> Option<Op> {
         // time, mirroring `Graph::view`); this arm reconstructs only the op.
         T::View => Op::View { slot: attrs.view_slot? },
 
+        // Nested fused op carried AS-IS (Increment C, C-T2, mechanism 2a). The
+        // `fused_op` selector names the registry entry (mirroring `cast_dtype`'s
+        // name-string precedent); resolve it to a `FusedOpId` and reconstruct
+        // the param-less `Op::Fused(fid, params)` via the small `fid -> params`
+        // map. An unset selector, an unknown name, or a param-carrying id (not in
+        // the map — its per-instance params can't be recovered from a name alone)
+        // is a surfaced honest miss (`None`), never a crash. The nested node's
+        // shape/dtype are computed at emit time from the entry's shape/dtype
+        // rules (`primitive_shape` honest-misses `Fused`); this arm reconstructs
+        // only the op. Fuel-INTERNAL — a `Fused` node never reaches the §6.19 wire.
+        T::Fused => {
+            let fid = crate::registry::default_registry().id_for_name(attrs.fused_op.as_deref()?)?;
+            Op::Fused(fid, fused_params_for(fid)?)
+        }
+
         // MaskedFill (Increment C carriers, A2): the fill VALUE rides
         // `attrs.scalars[0]` (the `op_to_attrs` projection); its dtype rides
         // `cast_dtype` when present (a concrete round-trip), else a provisional
@@ -464,6 +479,24 @@ fn tag_to_op(tag: OpTag, attrs: &OpAttrs) -> Option<Op> {
         // Honest misses (rejected at registration): Clamp (no two-scalar
         // carrier yet), and any tag whose required attrs are unset or that is
         // added to OpTag later.
+        _ => return None,
+    })
+}
+
+/// The `fid -> params` map for the nested fused ops a recipe carries as-is
+/// (Increment C, C-T2, mechanism 2a): the two **param-less** attention-trio
+/// nested softmaxes — `SoftmaxLastDim` (forward, used by `flash_attn` /
+/// `paged_attn`) and `SoftmaxLastDimBackward` (used by `flash_attn_backward`).
+/// A param-carrying fused op is NOT recoverable from the name-only `fused_op`
+/// selector — its per-instance params (softmax_scale, block_size, …) have no
+/// carrier here — so any other id is a surfaced honest miss (`None`), never a
+/// crash. Extend this map only when a new *param-less* nested fused op needs to
+/// ride a recipe.
+fn fused_params_for(fid: FusedOpId) -> Option<FusedOpParams> {
+    use crate::registry::FusedOps;
+    Some(match fid {
+        FusedOps::SOFTMAX_LAST_DIM => FusedOpParams::SoftmaxLastDim,
+        FusedOps::SOFTMAX_LAST_DIM_BACKWARD => FusedOpParams::SoftmaxLastDimBackward,
         _ => return None,
     })
 }
@@ -1226,6 +1259,22 @@ fn emit<'r>(
                             .map(|spec| (spec.shape.clone(), spec.dtype))
                     })
                     .unwrap_or_else(|| fallback_sd(&child_shapes, &child_dtypes)),
+                // A nested fused node carried as-is (Increment C, C-T2, mechanism
+                // 2a). `primitive_shape` honest-misses `Fused` — a fused op is not
+                // a first-order shape-inferable primitive — so its output frame
+                // comes from the named registry entry's OWN `shape_rule` /
+                // `dtype_rule` (e.g. softmax passes both through). Falls back to
+                // operand[0] on an unregistered id (never a panic), the same
+                // posture as the primitive_shape fallback.
+                Op::Fused(fid, params) => {
+                    match crate::registry::default_registry().entry(*fid) {
+                        Some(e) => (
+                            (e.shape_rule)(&child_shapes, params),
+                            (e.dtype_rule)(&child_dtypes, params),
+                        ),
+                        None => fallback_sd(&child_shapes, &child_dtypes),
+                    }
+                }
                 // A childless scan-body hole (`Op::ScanPlaceholder`). Its shape
                 // is DECLARED on the recipe node (`target_shape` /
                 // `target_shape_rel`, resolved above) rather than inferred from
@@ -1595,6 +1644,89 @@ mod tests {
     fn tag_to_op_still_rejects_basis_gap_and_scan() {
         // qmatmul/conv flow through Op::Fused (no OpTag); Scan is higher-order.
         assert_eq!(super::tag_to_op(OpTag::Iota, &OpAttrs::default()), None, "Iota needs a len (target_shape) — empty attrs is a miss");
+    }
+
+    // ---- C-T2 (Increment C): the nested-fused re-emit carrier (mechanism 2a) --
+
+    /// `OpTag::Fused` reconstructs the param-less nested fused ops from the
+    /// `fused_op` selector (name → fid → params), and honest-misses anything
+    /// else. Born-red before the C-T2 `tag_to_op` arm: `Fused` falls to the
+    /// `_ => return None` catch-all, so every `Some(..)` assertion below fails.
+    #[test]
+    fn tag_to_op_reconstructs_nested_fused() {
+        use crate::registry::{FusedOpParams, FusedOps};
+        let sm = OpAttrs { fused_op: Some("SoftmaxLastDim".into()), ..OpAttrs::default() };
+        assert_eq!(
+            super::tag_to_op(OpTag::Fused, &sm),
+            Some(Op::Fused(FusedOps::SOFTMAX_LAST_DIM, FusedOpParams::SoftmaxLastDim)),
+            "SoftmaxLastDim selector reconstructs the param-less nested fused op",
+        );
+        let smb = OpAttrs { fused_op: Some("SoftmaxLastDimBackward".into()), ..OpAttrs::default() };
+        assert_eq!(
+            super::tag_to_op(OpTag::Fused, &smb),
+            Some(Op::Fused(
+                FusedOps::SOFTMAX_LAST_DIM_BACKWARD,
+                FusedOpParams::SoftmaxLastDimBackward,
+            )),
+            "SoftmaxLastDimBackward selector reconstructs its param-less nested fused op",
+        );
+        // Honest misses (never a crash): unset selector, unknown name, and a
+        // param-carrying fused op (not round-trippable through the name-only
+        // selector — its params can't be reconstructed from the map).
+        assert_eq!(
+            super::tag_to_op(OpTag::Fused, &OpAttrs::default()),
+            None,
+            "an unset fused_op selector is an honest miss",
+        );
+        let bogus = OpAttrs { fused_op: Some("NotARealFusedOp".into()), ..OpAttrs::default() };
+        assert_eq!(super::tag_to_op(OpTag::Fused, &bogus), None, "an unknown name is an honest miss");
+        let paged = OpAttrs { fused_op: Some("PagedAttn".into()), ..OpAttrs::default() };
+        assert_eq!(
+            super::tag_to_op(OpTag::Fused, &paged),
+            None,
+            "a registered but param-carrying fused op is an honest miss (not in the fid->params map)",
+        );
+    }
+
+    /// A hand-built recipe carrying a nested `Op::Fused(SOFTMAX_LAST_DIM)` node
+    /// validates as re-emittable and round-trips through `emit`: the emitted node
+    /// is the real nested fused op, with shape/dtype from the registry entry's
+    /// `shape_rule`/`dtype_rule` (softmax passes both through) since
+    /// `primitive_shape` honest-misses `Fused`. Born-red before the C-T2 arms:
+    /// `validate_recipe` rejects the region `UnRepresentable`.
+    #[test]
+    fn emit_reconstructs_nested_fused_shape_and_dtype() {
+        use crate::registry::{FusedOpParams, FusedOps};
+        use fuel_ir::{DType, Shape};
+        let region = PatternNode::Op {
+            op: OpTag::Fused,
+            attrs: OpAttrs { fused_op: Some("SoftmaxLastDim".into()), ..OpAttrs::default() },
+            operands: vec![PatternNode::Bind { index: 0 }],
+        };
+        assert!(
+            super::validate_recipe(&region).is_ok(),
+            "the nested-fused recipe validates as re-emittable (C-T2 tag_to_op arm)",
+        );
+        let mut g = Graph::new();
+        let x = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[2, 3, 4]),
+            dtype: DType::F32,
+        });
+        let root = emit_region(&mut g, &region, &[x], &[]);
+        assert_eq!(
+            g.node(root).op,
+            Op::Fused(FusedOps::SOFTMAX_LAST_DIM, FusedOpParams::SoftmaxLastDim),
+            "the nested fused node is reconstructed as-is (2a)",
+        );
+        assert_eq!(
+            g.node(root).shape,
+            Shape::from_dims(&[2, 3, 4]),
+            "shape from softmax shape_rule (passthrough), NOT primitive_shape (which misses Fused)",
+        );
+        assert_eq!(g.node(root).dtype, DType::F32, "dtype from softmax dtype_rule (passthrough)");
+        assert_eq!(g.node(root).inputs, vec![x], "the fused node's single operand is the bound input");
     }
 
     #[test]
