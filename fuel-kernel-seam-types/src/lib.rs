@@ -63,6 +63,69 @@ pub enum OpTag {
     LogSoftmaxLastDim,
     // value source
     Iota,
+
+    // --- source-op LEAF tokens (childless `Op` nodes; KISS four-leaf ack) ----
+    //
+    // A value a recipe needs as an operand is a **source op** — a childless
+    // `Op` — so the node schema stays closed to two kinds (`Op | Bind`) instead
+    // of growing a schema variant per value kind (recipe-grammar design input
+    // §2). The four byte arms below were acked by the KISS editor on 2026-07-23
+    // ("RULING RECORD — four-leaf-arm ack", no amendments).
+    //
+    // **Wire tokens only — no Fuel graph producer yet.** `jit::op_to_tag` emits
+    // none of these and `runtime_fused::tag_to_op` declines all four (honest
+    // misses). Fuel expresses these values implicitly today (an `Op::Const`
+    // TENSOR operand, a `Runtime { scalars }` slot on the *consuming* op,
+    // `Op::ScanPlaceholder` inside `Op::Scan`'s body, Mean's divisor folded into
+    // `Op::MeanDim`); making them first-class recipe leaves is the flat-DAG-CSE
+    // recipe interior, still unbuilt. See `docs/recipe-signature-reference.md`
+    // §"source-op leaves".
+    /// Scalar literal leaf: a **dtype-agnostic bit pattern** (`const_bits`).
+    /// **NOT** Fuel's `Op::Const` (a whole constant TENSOR / weight leaf) — this
+    /// is the KISS `const` source op, a baked scalar value. Distinct from
+    /// [`OpTag::RuntimeScalar`]: a baked value and an unfilled dispatch slot are
+    /// not interchangeable.
+    Const,
+    /// Dispatch-bound scalar leaf: the `slot_index` of an **unfilled** scalar
+    /// slot (Fuel-side: the pre-order position in `FusedOpParams::Runtime {
+    /// scalars }`, counted by `runtime_fused::count_scalar_slots`).
+    RuntimeScalar,
+    /// The value-side product of extents over the reduced axes — the `Mean`
+    /// divisor, so `mean == div(reduce[sum,..](x), reduced_count(axis))` is one
+    /// flat DAG (canonical KISS §6.12-0001; the retired name was
+    /// `reduce_extent`). Single-axis, riding the same `axis` carrier as the
+    /// fold; it grows to a `reduce_axes` list ONLY in lockstep with the fold.
+    ReducedCount,
+    /// A body hole of `Op::Scan`: `role` (0 = carry, 1 = elem — see
+    /// [`SCAN_ROLE_CARRY`]/[`SCAN_ROLE_ELEM`]) + `index` (which `xs[i]` an
+    /// `elem` hole stands for; a `carry` hole is index 0 in the v1 single-carry
+    /// model).
+    ScanPlaceholder,
+}
+
+/// [`OpTag::ScanPlaceholder`] role code for the per-step recurrent **carry**
+/// hole. Matches `fuel_graph::ScanRole::Carry`'s declaration order.
+pub const SCAN_ROLE_CARRY: u8 = 0;
+/// [`OpTag::ScanPlaceholder`] role code for the per-step **element** hole (the
+/// slice of `xs[index]`). Matches `fuel_graph::ScanRole::Elem`.
+pub const SCAN_ROLE_ELEM: u8 = 1;
+
+/// Place a narrow dtype's **storage** bit pattern into the [`OpTag::Const`]
+/// leaf's `u64` carrier per the acked **MBZ narrow-dtype rule**: the storage
+/// bits occupy the LOW-order bits and the upper bits are ZERO (must-be-zero on
+/// read). `width_bits` is the dtype's storage width (16 for `f16`/`bf16`, 32 for
+/// `f32`/`u32`/`i32`, 64 for `f64`/`i64`); a width ≥ 64 is the identity.
+///
+/// A NaN payload rides **verbatim** — this masks, it never canonicalizes or
+/// quiets. Pure + never-panic (no shift overflow at width 0 or ≥ 64).
+pub fn const_bits_narrow(storage: u64, width_bits: u32) -> u64 {
+    if width_bits == 0 {
+        return 0;
+    }
+    if width_bits >= 64 {
+        return storage;
+    }
+    storage & ((1u64 << width_bits) - 1)
 }
 
 // ===========================================================================
@@ -148,6 +211,14 @@ pub struct OpAttrs {
     /// Shape-relative alternative to `target_shape`: the target is another
     /// operand's shape (`SameAs { operand }` over the Bind space). `None` ⇒
     /// use `target_shape` (or not a shape-target node).
+    ///
+    /// **Not every output frame is expressible this way.** A broadcast frame
+    /// assembled by per-axis max across TWO binds (`a[N,1] ⊗ b[1,M] → [N,M]`)
+    /// is carried by NO single operand, so no `SameAs` spelling names it — the
+    /// resolver refuses such a `BroadcastTo` target as a Dims-class gap
+    /// (`RelAttrError::FrameNotExpressible`) rather than silently resolving to
+    /// one operand's PARTIAL frame. The constructor that would express it is
+    /// the reserved [`shape_expr::TAG_DIMS`] entrant (KISS #80).
     pub target_shape_rel: Option<shape_expr::ShapeExpr>,
     /// Shape-relative alternative to `slice_start`: a `DimExpr` over the Bind
     /// space (e.g. rope's `Div(Extent(0, LAST), 2)`). `None` ⇒ use
@@ -188,6 +259,28 @@ pub struct OpAttrs {
     /// RHS per-axis contraction roles (same encoding; length = rhs rank). Empty
     /// ⇒ implicit (rank-polymorphic) matmul.
     pub rhs_roles: Vec<u8>,
+
+    // --- source-op LEAF carriers (KISS four-leaf ack, 2026-07-23) -----------
+    //
+    // One carrier per acked leaf arm. `ReducedCount` needs no field of its own:
+    // it rides the existing `axis` (fold-lockstep — byte-identical to the fold
+    // node's axis field, minus keepdim). These are wire carriers; no Fuel graph
+    // Op projects into them yet (see the `OpTag` leaf-token note).
+    /// [`OpTag::Const`] value: the scalar literal's **dtype-agnostic storage bit
+    /// pattern**. Narrow dtypes place their storage bits LOW-order with the
+    /// upper bits zero (MBZ) — use [`const_bits_narrow`]. A NaN payload is
+    /// carried verbatim (never quieted). `None` ⇒ not a const leaf.
+    pub const_bits: Option<u64>,
+    /// [`OpTag::RuntimeScalar`] value: the index of the dispatch-bound scalar
+    /// slot this leaf reads. `None` ⇒ not a runtime-scalar leaf.
+    pub slot_index: Option<u32>,
+    /// [`OpTag::ScanPlaceholder`] role code: [`SCAN_ROLE_CARRY`] (0) or
+    /// [`SCAN_ROLE_ELEM`] (1). `None` ⇒ not a scan-placeholder leaf.
+    pub scan_role: Option<u8>,
+    /// [`OpTag::ScanPlaceholder`] index: which `xs[i]` an `elem` hole stands
+    /// for (a `carry` hole is index 0 in the v1 single-carry model). `None` ⇒
+    /// not a scan-placeholder leaf.
+    pub scan_index: Option<u32>,
 }
 
 // --- §6.19-shaped canonical positional-blob serialization (Convergence Increment A) ---
@@ -345,6 +438,32 @@ impl OpAttrs {
                     put_u8_list(&mut body, &self.lhs_roles);
                     put_u8_list(&mut body, &self.rhs_roles);
                 }
+            }
+            // --- the four ACKED source-op LEAF arms (KISS ruling record,
+            // "four-leaf-arm ack", 2026-07-23 — acked clean, no amendments) ---
+            //
+            // `const`: u64(bits) — a DTYPE-AGNOSTIC bit pattern (Q7: the
+            // structural DAG carries no dtype). MBZ narrow-dtype rule: a
+            // sub-64-bit dtype places its STORAGE bits in the LOW-order bits
+            // with the upper bits ZERO (must-be-zero on read) — producers widen
+            // via [`const_bits_narrow`]. A NaN payload is carried verbatim; this
+            // serializer never quiets or canonicalizes it.
+            T::Const => put_u64(&mut body, self.const_bits.unwrap_or(0)),
+            // `runtime_scalar`: u32(slot_index) — a DISPATCH-BOUND scalar, a
+            // distinct leaf from a baked `const` (an unfilled slot and a baked
+            // value are not interchangeable).
+            T::RuntimeScalar => put_u32(&mut body, self.slot_index.unwrap_or(0)),
+            // `reduced_count`: i64(axis) — single-axis, byte-identical to the
+            // fold row's leading axis field minus `keepdim`, so a resolver
+            // reuses the fold's axis-resolution codepath verbatim. Growth to a
+            // `reduce_axes` LIST happens ONLY in lockstep with the fold
+            // (§6.12-0001), never unilaterally here.
+            T::ReducedCount => put_i64(&mut body, self.axis.unwrap_or(0)),
+            // `scan_placeholder`: u8(role) ++ u32(index), role 0 = carry,
+            // 1 = elem ([`SCAN_ROLE_CARRY`]/[`SCAN_ROLE_ELEM`]).
+            T::ScanPlaceholder => {
+                body.push(self.scan_role.unwrap_or(SCAN_ROLE_CARRY));
+                put_u32(&mut body, self.scan_index.unwrap_or(0));
             }
             // Empty-schema ops (elementwise, comparison, Where, scalar
             // reductions, log-softmax, …) and any tag added later: zero-length.
@@ -801,5 +920,225 @@ mod tests {
         assert!(cases.iter().any(|(_, e)| *e == Some(1)));
         assert!(cases.iter().any(|(_, e)| *e == Some(4)));
         assert!(cases.iter().any(|(_, e)| *e == Some(8)));
+    }
+
+    // ---- L2: the four ACKED source-op LEAF byte arms ------------------------
+    //
+    // KISS ruling record "four-leaf-arm ack (2026-07-23)" (KISS issue-comment
+    // 5061571967, acking Fuel's proposal 5060303085): the editor acked all four
+    // arms clean, no amendments —
+    //   runtime_scalar    → u32(slot_index)
+    //   reduced_count     → i64(axis)                (fold-lockstep, §6.12-0001)
+    //   const             → u64(bits)                (MBZ narrow-dtype rule)
+    //   scan_placeholder  → u8(role: 0=carry,1=elem) ++ u32(index)
+    // Every body rides CARRIER (a) — the #67 node-envelope op_attrs blob, u32-LE
+    // outer length, payload verbatim (§6.19-0010). NOT carrier (b) (KISS-Grammar
+    // §6.8-0007 region-table, u16-LE) and NOT carrier (c) (§6.20-0005 shape-expr
+    // child, u16-LE); see `three_carrier_width_pins_stay_distinct`.
+
+    #[test]
+    fn runtime_scalar_leaf_serializes_the_slot_index() {
+        // Acked arm: body = u32_le(slot_index). A dispatch-bound scalar is a
+        // DISTINCT leaf from a baked `const` (an unfilled slot and a baked value
+        // are not interchangeable) — hence a separate tag, not a `const` with a
+        // sentinel. Golden for slot 7: u32-LE(4) ++ u32-LE(7).
+        let a = OpAttrs { slot_index: Some(7), ..OpAttrs::default() };
+        let golden: Vec<u8> = vec![
+            0x04, 0x00, 0x00, 0x00, // outer u32-LE body length = 4
+            0x07, 0x00, 0x00, 0x00, // u32-LE slot_index = 7
+        ];
+        assert_eq!(a.to_canonical_bytes(OpTag::RuntimeScalar), golden);
+        // Slot 0 is a real slot, not "unset": still the 4-byte body.
+        assert_eq!(
+            OpAttrs { slot_index: Some(0), ..OpAttrs::default() }.to_canonical_bytes(OpTag::RuntimeScalar),
+            vec![0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+        );
+    }
+
+    #[test]
+    fn reduced_count_leaf_serializes_the_fold_axis() {
+        // Acked arm: body = i64_le(axis) — single-axis, byte-identical to the
+        // fold node's axis field MINUS keepdim, so the resolver reuses the fold's
+        // axis-resolution codepath verbatim. Growth to a `reduce_axes` LIST
+        // happens ONLY in lockstep with the fold (§6.12-0001).
+        let a = OpAttrs { axis: Some(1), ..OpAttrs::default() };
+        let mut golden = 8u32.to_le_bytes().to_vec();
+        golden.extend_from_slice(&1i64.to_le_bytes());
+        assert_eq!(a.to_canonical_bytes(OpTag::ReducedCount), golden);
+
+        // Fold-lockstep pin: the reduced_count body IS the reduce row's leading
+        // i64(axis), with the reduce row's trailing u8(keepdim) absent.
+        let fold = a.to_canonical_bytes(OpTag::SumDim);
+        let rc = a.to_canonical_bytes(OpTag::ReducedCount);
+        assert_eq!(rc[4..], fold[4..12], "reduced_count body = the fold's i64(axis) verbatim");
+        assert_eq!(fold.len(), rc.len() + 1, "the fold row carries exactly one extra byte (keepdim)");
+
+        // A negative axis (the i64 carrier is signed, like the fold's) round-trips
+        // its two's-complement bytes.
+        let neg = OpAttrs { axis: Some(-1), ..OpAttrs::default() };
+        let mut expect = 8u32.to_le_bytes().to_vec();
+        expect.extend_from_slice(&(-1i64).to_le_bytes());
+        assert_eq!(neg.to_canonical_bytes(OpTag::ReducedCount), expect);
+    }
+
+    #[test]
+    fn const_leaf_serializes_bits_with_the_mbz_narrow_dtype_rule() {
+        // Acked arm: body = u64_le(bits) — a DTYPE-AGNOSTIC bit pattern (the
+        // structural DAG is dtype-agnostic, Q7). MBZ narrow-dtype rule: the
+        // STORAGE bit pattern of the const's dtype occupies the LOW-order bits,
+        // upper bits ZERO (must-be-zero on read).
+
+        // f64 — the full-width case, every bit load-bearing.
+        let f64_15 = OpAttrs { const_bits: Some(1.5f64.to_bits()), ..OpAttrs::default() };
+        let mut golden = 8u32.to_le_bytes().to_vec();
+        golden.extend_from_slice(&0x3FF8_0000_0000_0000u64.to_le_bytes());
+        assert_eq!(f64_15.to_canonical_bytes(OpTag::Const), golden);
+
+        // f32 — 32 storage bits low-order, upper 32 ZERO.
+        let f32_15 = OpAttrs { const_bits: Some(const_bits_narrow(1.5f32.to_bits() as u64, 32)), ..OpAttrs::default() };
+        let blob = f32_15.to_canonical_bytes(OpTag::Const);
+        assert_eq!(
+            blob,
+            vec![0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x3F, 0x00, 0x00, 0x00, 0x00],
+            "f32 1.5 = 0x3FC00000 in the LOW-order bits; upper 4 bytes MBZ"
+        );
+
+        // f16 (1.5 = 0x3E00) and bf16 (1.5 = 0x3FC0) — 16 storage bits low-order,
+        // upper 48 ZERO.
+        let f16_15 = OpAttrs { const_bits: Some(const_bits_narrow(0x3E00, 16)), ..OpAttrs::default() };
+        assert_eq!(
+            f16_15.to_canonical_bytes(OpTag::Const),
+            vec![0x08, 0x00, 0x00, 0x00, 0x00, 0x3E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+        );
+        let bf16_15 = OpAttrs { const_bits: Some(const_bits_narrow(0x3FC0, 16)), ..OpAttrs::default() };
+        assert_eq!(
+            bf16_15.to_canonical_bytes(OpTag::Const),
+            vec![0x08, 0x00, 0x00, 0x00, 0xC0, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+        );
+
+        // The MBZ widener is the producer-side guarantee: it MASKS, never panics
+        // (a width of 0 or ≥ 64 is well-defined, no shift overflow).
+        assert_eq!(const_bits_narrow(0xFFFF_FFFF_FFFF_FFFF, 16), 0x0000_0000_0000_FFFF);
+        assert_eq!(const_bits_narrow(0xFFFF_FFFF_FFFF_FFFF, 32), 0x0000_0000_FFFF_FFFF);
+        assert_eq!(const_bits_narrow(0xFFFF_FFFF_FFFF_FFFF, 64), 0xFFFF_FFFF_FFFF_FFFF);
+        assert_eq!(const_bits_narrow(0xFFFF_FFFF_FFFF_FFFF, 200), 0xFFFF_FFFF_FFFF_FFFF);
+        assert_eq!(const_bits_narrow(0xFFFF_FFFF_FFFF_FFFF, 0), 0);
+        // Every narrow width leaves the upper bits zero — the MBZ invariant.
+        for w in [1u32, 8, 16, 32, 63] {
+            let bits = const_bits_narrow(0xFFFF_FFFF_FFFF_FFFF, w);
+            assert_eq!(bits >> w, 0, "width {w}: upper bits must be zero");
+        }
+    }
+
+    #[test]
+    fn const_leaf_carries_a_nan_payload_verbatim() {
+        // "NaN payload = stored bits verbatim" — the serializer must NOT
+        // canonicalize a NaN to a quiet default. NOTE: carrier (a) has no
+        // production DECODER (forward-serialization only — see the M-3 note on
+        // `to_canonical_bytes`), so the read-back below is an in-test byte read,
+        // not a claim that a decoder exists.
+        const F32_NAN_PAYLOAD: u32 = 0x7FC0_DEAD;
+        assert!(f32::from_bits(F32_NAN_PAYLOAD).is_nan(), "fixture must be a NaN");
+        let a = OpAttrs { const_bits: Some(const_bits_narrow(F32_NAN_PAYLOAD as u64, 32)), ..OpAttrs::default() };
+        let blob = a.to_canonical_bytes(OpTag::Const);
+        assert_eq!(
+            blob,
+            vec![0x08, 0x00, 0x00, 0x00, 0xAD, 0xDE, 0xC0, 0x7F, 0x00, 0x00, 0x00, 0x00],
+            "the f32 NaN payload rides the low-order bits verbatim; upper 4 bytes MBZ"
+        );
+        let read_back = u64::from_le_bytes(blob[4..12].try_into().unwrap());
+        assert_eq!(read_back, F32_NAN_PAYLOAD as u64, "payload bits round-trip verbatim");
+        assert_eq!(
+            f32::from_bits(read_back as u32).to_bits(),
+            F32_NAN_PAYLOAD,
+            "bit-exact (a NaN never compares equal — compare BITS)"
+        );
+
+        // f64 signalling-NaN payload: full width, nothing masked or quieted.
+        const F64_SNAN_PAYLOAD: u64 = 0x7FF0_0000_0000_DEAD;
+        assert!(f64::from_bits(F64_SNAN_PAYLOAD).is_nan(), "fixture must be a NaN");
+        let d = OpAttrs { const_bits: Some(F64_SNAN_PAYLOAD), ..OpAttrs::default() };
+        let dblob = d.to_canonical_bytes(OpTag::Const);
+        assert_eq!(
+            u64::from_le_bytes(dblob[4..12].try_into().unwrap()),
+            F64_SNAN_PAYLOAD,
+            "an f64 sNaN payload is NOT quieted by the serializer"
+        );
+    }
+
+    #[test]
+    fn scan_placeholder_leaf_serializes_role_and_index() {
+        // Acked arm: body = u8(role: 0=carry, 1=elem) ++ u32_le(index). Role
+        // codes match `fuel_graph::ScanRole`'s declaration order (Carry, Elem).
+        assert_eq!((SCAN_ROLE_CARRY, SCAN_ROLE_ELEM), (0u8, 1u8));
+
+        // Carry hole (always index 0 in the v1 single-carry model).
+        let carry = OpAttrs { scan_role: Some(SCAN_ROLE_CARRY), scan_index: Some(0), ..OpAttrs::default() };
+        assert_eq!(
+            carry.to_canonical_bytes(OpTag::ScanPlaceholder),
+            vec![0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            "carry hole: u32-LE(5) ++ u8(0) ++ u32-LE(0)"
+        );
+        // Elem hole for xs[2].
+        let elem = OpAttrs { scan_role: Some(SCAN_ROLE_ELEM), scan_index: Some(2), ..OpAttrs::default() };
+        assert_eq!(
+            elem.to_canonical_bytes(OpTag::ScanPlaceholder),
+            vec![0x05, 0x00, 0x00, 0x00, 0x01, 0x02, 0x00, 0x00, 0x00],
+            "elem hole: u32-LE(5) ++ u8(1) ++ u32-LE(2)"
+        );
+        // The role byte is NOT part of the index: carry{0} and elem{0} differ.
+        let elem0 = OpAttrs { scan_role: Some(SCAN_ROLE_ELEM), scan_index: Some(0), ..OpAttrs::default() };
+        assert_ne!(
+            carry.to_canonical_bytes(OpTag::ScanPlaceholder),
+            elem0.to_canonical_bytes(OpTag::ScanPlaceholder),
+        );
+    }
+
+    #[test]
+    fn leaf_arm_bodies_ride_carrier_a_u32_le() {
+        // Width discipline: all four acked leaf bodies ride CARRIER (a) — the #67
+        // node-envelope op_attrs blob, u32-LE (4-byte) outer length, payload
+        // verbatim. None of them may adopt carrier (b)/(c)'s u16-LE width.
+        let a = OpAttrs {
+            slot_index: Some(7),
+            axis: Some(1),
+            const_bits: Some(0x3FC0_0000),
+            scan_role: Some(SCAN_ROLE_ELEM),
+            scan_index: Some(2),
+            ..OpAttrs::default()
+        };
+        for (tag, body_len) in [
+            (OpTag::RuntimeScalar, 4usize),
+            (OpTag::ReducedCount, 8),
+            (OpTag::Const, 8),
+            (OpTag::ScanPlaceholder, 5),
+        ] {
+            let blob = a.to_canonical_bytes(tag);
+            let declared = u32::from_le_bytes(blob[..4].try_into().unwrap()) as usize;
+            assert_eq!(declared, body_len, "{tag:?}: outer u32-LE length = body length");
+            assert_eq!(blob.len(), 4 + body_len, "{tag:?}: 4-byte u32-LE prefix + verbatim body");
+        }
+    }
+
+    #[test]
+    fn leaf_arms_are_wire_tokens_only_no_graph_producer() {
+        // HONEST SCOPE. These four tags are wire tokens in the shared grammar;
+        // Fuel's graph has no first-class recipe LEAF for them yet (a value is
+        // expressed implicitly today — an `Op::Const` tensor operand, an
+        // `Op::Iota`, a `Runtime { scalars }` slot on the consuming op,
+        // `Op::ScanPlaceholder` inside `Op::Scan`'s body, and Mean's divisor
+        // folded into `Op::MeanDim`). So `jit::op_to_tag` emits none of them and
+        // `runtime_fused::tag_to_op` declines all four as honest misses — the
+        // flat-DAG-CSE recipe interior that would produce them is the (unbuilt)
+        // Convergence-C home. Pinned here so a later wiring change is deliberate.
+        //
+        // The observable consequence in THIS crate: unset attrs still serialize
+        // to the tag's fixed-width body (the M-3 unset-vs-zero caveat), never a
+        // panic and never an empty body.
+        let d = OpAttrs::default();
+        assert_eq!(d.to_canonical_bytes(OpTag::RuntimeScalar).len(), 4 + 4);
+        assert_eq!(d.to_canonical_bytes(OpTag::ReducedCount).len(), 4 + 8);
+        assert_eq!(d.to_canonical_bytes(OpTag::Const).len(), 4 + 8);
+        assert_eq!(d.to_canonical_bytes(OpTag::ScanPlaceholder).len(), 4 + 5);
     }
 }

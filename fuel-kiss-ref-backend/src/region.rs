@@ -671,7 +671,7 @@ mod tests {
         }
     }
 
-    // ---- kiss-ref composed-expression seam (rev 1f3981f) ---------------------
+    // ---- kiss-ref composed-expression seam (rev e8ae0b5) ---------------------
 
     /// Guards the kiss-ref rev pin. `diff_expr_f32`/`diff_expr_f16` are the
     /// composed-`Expr` mirrors kiss-ref minted **for this consumer** (see the

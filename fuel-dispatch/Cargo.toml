@@ -35,7 +35,7 @@ fuel-kernel-seam = { workspace = true, optional = true }
 # kiss-ref's OWN API (`Op::ulp_ceiling`) without pulling the (cuda-gated)
 # fuel-kiss-ref-backend adapter. Pinned to the SAME rev as that adapter's
 # kiss-ref crates (fuel-kiss-ref-backend/Cargo.toml) — bump in lockstep.
-kiss-ops-vocab = { git = "https://github.com/ThinkersJournal/kiss-ref", rev = "1f3981ff25dbdcc9e2fe49ef30f9c584bee5318a", optional = true }
+kiss-ops-vocab = { git = "https://github.com/ThinkersJournal/kiss-ref", rev = "e8ae0b58cf420851af003f5134ecea9585c393a5", optional = true }
 # NVRTC (crates.io-pinned, no ../baracuda checkout) — only under `cuda`, for the
 # tests/jit_synth_kernel_live.rs on-device JIT-load test, which compiles a
 # scalar-ABI PTX kernel at test time.

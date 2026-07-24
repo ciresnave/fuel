@@ -14,10 +14,11 @@
 //!   vec![eps]` filling the recipe's one open slot.
 //! - [`decompose`] — re-emits [`recipe`] through the
 //!   [`crate::registry::decompose_via_recipe`] bridge.
-//! - [`canonical_pattern`] — recognizes the LEGACY 7-node decomposed
-//!   subgraph and returns the bound `x` input plus the eps parameter. (The
-//!   new-spelling matcher is a slice-2 item — no roundtrip test forces it
-//!   sooner; the legacy matcher keeps firing on user-spelled subgraphs.)
+//! - [`canonical_pattern`] — recognizes the decomposed subgraph in EITHER
+//!   spelling (legacy `Reshape`-keepdim OR the T7 recipe `Unsqueeze`-append
+//!   keepdim) and returns the bound `x` input plus the eps parameter. The
+//!   recipe arm mirrors `softmax_last_dim`'s dual-spelling matcher, so the
+//!   framework's OWN lowered subgraph re-fuses (not just user-spelled forms).
 //!
 //! The numeric relation is [`crate::Tensor::rms_norm_last_dim_decomposed`]'s
 //! `Sqr → MeanDim → keepdim → AddScalar → Sqrt → BroadcastTo → Div`; the
@@ -144,15 +145,51 @@ pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeI
     decompose_via_recipe(graph, id, recipe(), scalars(params))
 }
 
-/// Match the canonical 7-node RmsNormLastDim subgraph rooted at the
-/// final `Div` node. Returns a [`PatternMatch`] binding `x` to input
-/// 0 and stamping `FusedOpParams::RmsNormLastDim { eps }` extracted
-/// from the AddScalar's scalar.
+/// Match the canonical 7-node RmsNormLastDim subgraph rooted at the final
+/// `Div` node, in EITHER spelling. Returns a [`PatternMatch`] binding `x` to
+/// input 0 and stamping `FusedOpParams::RmsNormLastDim { eps }` extracted from
+/// the AddScalar's scalar.
+///
+/// Two spellings, both kept (mirrors `softmax_last_dim`'s dual-spelling
+/// matcher — never delete the old match):
+/// * the LEGACY form (`Reshape` keepdim) — what user graphs and pre-T7
+///   lowerings contain;
+/// * the RECIPE form (`Unsqueeze` append keepdim, the D3 shrink-via-swap) —
+///   what [`recipe`]'s emission contains, so lower → fuse round-trips on the
+///   framework's OWN lowered subgraph.
+///
+/// The two spellings differ ONLY in the keepdim node (`Reshape` vs
+/// `Unsqueeze`); every other node and every guard is identical, so the arms
+/// share [`match_common`] and differ only in the keepdim predicate.
+pub fn canonical_pattern(graph: &Graph, div_id: NodeId) -> Option<PatternMatch> {
+    legacy_spelled_pattern(graph, div_id).or_else(|| recipe_spelled_pattern(graph, div_id))
+}
+
+/// The legacy keepdim spelling: `mean_kd = Reshape(mean)`.
+fn legacy_spelled_pattern(graph: &Graph, div_id: NodeId) -> Option<PatternMatch> {
+    match_common(graph, div_id, |op| matches!(op, Op::Reshape(_)))
+}
+
+/// The T7 recipe keepdim spelling: `mean_kd = Unsqueeze { dim }` (append at
+/// the reduced tensor's last axis — the D3 shrink-via-swap).
+fn recipe_spelled_pattern(graph: &Graph, div_id: NodeId) -> Option<PatternMatch> {
+    match_common(graph, div_id, |op| matches!(op, Op::Unsqueeze { .. }))
+}
+
+/// Shared body of both spellings. `keepdim_ok` decides whether the keepdim
+/// node (`mean_kd`) is the right kind for the spelling being matched; the
+/// downstream shape guard (`mean_kd` = x's shape with last-dim = 1) is the
+/// same for both, so `Reshape` and `Unsqueeze(append)` are validated
+/// identically once the op-kind gate passes.
 ///
 /// Conservative: every intermediate must be consumed only within the
-/// canonical pattern so fusing doesn't discard a value the user reads
-/// from one of the intermediates.
-pub fn canonical_pattern(graph: &Graph, div_id: NodeId) -> Option<PatternMatch> {
+/// canonical pattern so fusing doesn't discard a value the user reads from one
+/// of the intermediates.
+fn match_common(
+    graph: &Graph,
+    div_id: NodeId,
+    keepdim_ok: impl Fn(&Op) -> bool,
+) -> Option<PatternMatch> {
     let div = graph.node(div_id);
     if !matches!(div.op, Op::Div) { return None; }
     if div.inputs.len() != 2 { return None; }
@@ -178,7 +215,7 @@ pub fn canonical_pattern(graph: &Graph, div_id: NodeId) -> Option<PatternMatch> 
     let mean_kd_id = denom_sq.inputs[0];
 
     let mean_kd = graph.node(mean_kd_id);
-    if !matches!(mean_kd.op, Op::Reshape(_)) { return None; }
+    if !keepdim_ok(&mean_kd.op) { return None; }
     if mean_kd.inputs.len() != 1 { return None; }
     let mean_id = mean_kd.inputs[0];
 
@@ -199,7 +236,8 @@ pub fn canonical_pattern(graph: &Graph, div_id: NodeId) -> Option<PatternMatch> 
     if sq.inputs[0] != x_id { return None; }
 
     // Shape sanity checks: the MeanDim must be along the last axis,
-    // and Reshape's target must be the x shape with last-dim=1.
+    // and the keepdim node's target must be the x shape with last-dim=1
+    // (identical for the Reshape and Unsqueeze-append spellings).
     let x_shape = &graph.node(x_id).shape;
     if x_shape.rank() == 0 { return None; }
     let last = x_shape.rank() - 1;
@@ -247,4 +285,60 @@ fn count_consumers(graph: &Graph) -> HashMap<NodeId, usize> {
         }
     }
     counts
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Node;
+    use fuel_ir::{DType, Shape};
+
+    /// Slice-2 re-fuse closure (mirrors softmax's
+    /// `canonical_pattern_matches_the_recipe_spelling`): the recipe emission
+    /// itself must be matched by `canonical_pattern`, so lower → fuse still
+    /// round-trips after the T7 keepdim swap.
+    #[test]
+    fn canonical_pattern_matches_the_recipe_spelling() {
+        let mut g = Graph::new();
+        let sh = Shape::from_dims(&[2, 4]);
+        let x = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+        let params = FusedOpParams::RmsNormLastDim { eps: 1e-5 };
+        let fused = g.push(Node {
+            op: Op::Fused(FusedOps::RMS_NORM_LAST_DIM, params.clone()),
+            inputs: vec![x],
+            shape: sh,
+            dtype: DType::F32,
+        });
+        let root = decompose(&mut g, fused, &params);
+        assert_ne!(root, fused, "recipe decompose fires");
+        let m = canonical_pattern(&g, root).expect("the recipe emission must re-fuse");
+        assert_eq!(m.bindings, vec![(0, x)], "bound external input = x");
+        match m.params {
+            FusedOpParams::RmsNormLastDim { eps } => {
+                assert_eq!(eps, 1e-5, "eps recovered from the AddScalar");
+            }
+            other => panic!("wrong params variant: {other:?}"),
+        }
+    }
+
+    /// The legacy user-spelled `Reshape`-keepdim form keeps matching (risk-3
+    /// posture: never delete the old match).
+    #[test]
+    fn canonical_pattern_still_matches_the_legacy_spelling() {
+        let mut g = Graph::new();
+        let sh = Shape::from_dims(&[2, 4]);
+        let kd = Shape::from_dims(&[2, 1]);
+        let f32_node = |op, inputs, shape| Node { op, inputs, shape, dtype: DType::F32 };
+        let x = g.push(f32_node(Op::Const, vec![], sh.clone()));
+        let sq = g.push(f32_node(Op::Sqr, vec![x], sh.clone()));
+        let mean = g.push(f32_node(Op::MeanDim(1), vec![sq], kd.clone()));
+        let mean_kd = g.push(f32_node(Op::Reshape(kd.clone()), vec![mean], kd.clone()));
+        let denom_sq = g.push(f32_node(Op::AddScalar(1e-5), vec![mean_kd], kd.clone()));
+        let denom = g.push(f32_node(Op::Sqrt, vec![denom_sq], kd));
+        let denom_b = g.push(f32_node(Op::BroadcastTo(sh.clone()), vec![denom], sh.clone()));
+        let div = g.push(f32_node(Op::Div, vec![x, denom_b], sh));
+        let m = canonical_pattern(&g, div).expect("legacy spelling must still match");
+        assert_eq!(m.bindings, vec![(0, x)]);
+        assert!(matches!(m.params, FusedOpParams::RmsNormLastDim { eps } if eps == 1e-5));
+    }
 }
