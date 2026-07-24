@@ -407,6 +407,94 @@ impl PatternNode {
     }
 }
 
+// ===========================================================================
+// Advisory ULP-band reference cases — the single drift-pinning fixture
+// ===========================================================================
+
+/// The shared drift-pinning fixture for the **advisory ULP band** formula
+/// (KISS-CONFORM §6.8; kiss-ref tolerance refinement 2026-07-23).
+///
+/// The band formula is hand-maintained in TWO places that cannot be
+/// co-compiled on a CPU build:
+///
+///   * `fuel_kiss_ref_backend::region_advisory_tolerance` (with
+///     `op_ulp_ceiling` / `region_ulp_ceilings`) — the **reference** formula,
+///     in an adapter crate pulled only under `fuel-dispatch`'s `cuda` feature;
+///     and
+///   * `fuel_dispatch::jit_ingest::advisory_ulp_band` — the **live** copy on
+///     the ingestion path, which must stay testable under `--features jit`
+///     alone (i.e. without the cuda-gated adapter).
+///
+/// Because those two live in crates gated apart, no single CPU test sees both.
+/// This table is the shared source of truth each side is pinned to: every
+/// `(region, expected)` pair here is asserted from BOTH sides (the adapter's
+/// `region.rs` tests and fuel-dispatch's `jit_ingest.rs` tests), so a drift in
+/// either formula fails that side's build. It is homed in this dependency-free
+/// grammar crate — the one both already depend on — precisely because it is the
+/// only place visible to both without touching the cuda gating.
+///
+/// `expected` is the NORMALIZED band the live consumer applies:
+/// `None` ⇒ compare `Tolerance::Exact` (an op-free region *or* a single exact
+/// op — both drive an exact comparison), `Some(n)` ⇒ `Tolerance::Ulp(n)`. The
+/// adapter's richer `Option<Tolerance>` collapses `None` (op-free) and
+/// `Some(Exact)` (single exact op) onto `None` here, matching
+/// `advisory_ulp_band`'s native `Option<u64>` shape.
+///
+/// Baked-in ceilings mirror the two formulas' shared rule: transcendental ops
+/// contribute their kiss §6.8 ceiling (Exp/Erf declare 4; kiss non-primitives
+/// Tanh/Sigmoid/Silu/Gelu/Rsqrt fall back to 4); IEEE-correctly-rounded
+/// Sqrt/Recip are exact-class (no ceiling); an exact-only region of `n` ops
+/// bands at `n - 1`; a transcendental region bands at `Σ ceilings +
+/// (n_exact - 1)` with the exact term saturating at 0.
+pub fn advisory_band_reference_cases() -> Vec<(PatternNode, Option<u64>)> {
+    fn bind(i: u8) -> PatternNode {
+        PatternNode::Bind { index: i }
+    }
+    fn op(op: OpTag, operands: Vec<PatternNode>) -> PatternNode {
+        PatternNode::Op { op, operands, attrs: OpAttrs::default() }
+    }
+    vec![
+        // Op-free region: nothing to band -> exact comparison.
+        (bind(0), None),
+        // Single exact op -> exact comparison.
+        (op(OpTag::Add, vec![bind(0), bind(1)]), None),
+        // Multi-node exact-only region -> Ulp(n_ops - 1).
+        (op(OpTag::Relu, vec![op(OpTag::Add, vec![bind(0), bind(1)])]), Some(1)),
+        // Deeper exact-only region (3 ops) -> Ulp(3 - 1).
+        (
+            op(
+                OpTag::Relu,
+                vec![op(OpTag::Relu, vec![op(OpTag::Add, vec![bind(0), bind(1)])])],
+            ),
+            Some(2),
+        ),
+        // Sqrt is IEEE-correctly-rounded -> exact class; sqrt(a+b) = 2 exact ops.
+        (op(OpTag::Sqrt, vec![op(OpTag::Add, vec![bind(0), bind(1)])]), Some(1)),
+        // Lone transcendental keeps exactly its own ceiling (Exp declares 4).
+        (op(OpTag::Exp, vec![bind(0)]), Some(4)),
+        // Transcendental + one exact: 4 + (1 - 1) = 4.
+        (op(OpTag::Exp, vec![op(OpTag::Add, vec![bind(0), bind(1)])]), Some(4)),
+        // Two transcendentals (Exp 4, Tanh fallback 4) + one exact: 8 + 0 = 8.
+        (
+            op(
+                OpTag::Tanh,
+                vec![op(OpTag::Add, vec![op(OpTag::Exp, vec![bind(0)]), bind(1)])],
+            ),
+            Some(8),
+        ),
+        // All-transcendental exp(tanh(x)): 4 + 4, exact term saturates at 0.
+        (op(OpTag::Exp, vec![op(OpTag::Tanh, vec![bind(0)])]), Some(8)),
+        // Silu (kiss non-primitive fallback 4) over add(a, exp(b)): 4 + 4 + 0.
+        (
+            op(
+                OpTag::Silu,
+                vec![op(OpTag::Add, vec![bind(0), op(OpTag::Exp, vec![bind(1)])])],
+            ),
+            Some(8),
+        ),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -683,5 +771,35 @@ mod tests {
         // rhs = [Batch.., ContractedK(3), FreeN(2)]. Role POSITIONS, not extents.
         assert_eq!(matmul_roles(2, 2), (vec![1u8, 3], vec![3u8, 2]));
         assert_eq!(matmul_roles(4, 4), (vec![0u8, 0, 1, 3], vec![0u8, 0, 3, 2]));
+    }
+
+    // ---- advisory-band drift fixture ----------------------------------------
+
+    #[test]
+    fn advisory_band_reference_cases_are_well_formed() {
+        // The shared fixture both band impls pin against: non-empty, valid
+        // bind spaces, and it exercises every branch of the formula (op-free,
+        // single-exact, multi-exact, and transcendental). The VALUES are
+        // asserted from the two formula sides (adapter + fuel-dispatch); here
+        // we only guard the fixture's own structure so a malformed region can
+        // never silently weaken both sides at once.
+        let cases = advisory_band_reference_cases();
+        assert!(cases.len() >= 8, "fixture should cover the formula's branches");
+        for (region, _expected) in &cases {
+            let binds = region.bind_indices();
+            if let PatternNode::Op { .. } = region {
+                // Every op region here is closed over a contiguous [0, n) bind
+                // space (the fixtures are concrete recipe regions).
+                for (i, b) in binds.iter().enumerate() {
+                    assert_eq!(*b as usize, i, "bind indices must be [0, n)");
+                }
+            }
+        }
+        // Branch coverage: at least one op-free (expected None), one exact
+        // multi-op (Some), and one transcendental band value present.
+        assert!(cases.iter().any(|(r, e)| matches!(r, PatternNode::Bind { .. }) && e.is_none()));
+        assert!(cases.iter().any(|(_, e)| *e == Some(1)));
+        assert!(cases.iter().any(|(_, e)| *e == Some(4)));
+        assert!(cases.iter().any(|(_, e)| *e == Some(8)));
     }
 }

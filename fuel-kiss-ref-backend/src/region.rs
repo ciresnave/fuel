@@ -65,6 +65,19 @@ pub fn region_op_count(region: &PatternNode) -> usize {
 }
 
 // ---- advisory tolerance band (kiss-ref refinement, 2026-07-23) --------------
+//
+// REFERENCE-ONLY. The functions below (`op_ulp_ceiling`, `region_ulp_ceilings`,
+// `region_advisory_tolerance`) are the canonical statement of the §6.8 advisory
+// band, but they are NOT on the live ingestion path: this whole adapter crate
+// is pulled only under `fuel-dispatch`'s `cuda` feature, whereas the live band
+// (`fuel_dispatch::jit_ingest::advisory_ulp_band`) must compute under
+// `--features jit` alone, without this cuda-gated adapter. So the live path
+// carries its own copy of this same formula. The two are hand-maintained and
+// cannot be co-compiled on a CPU build; they are kept from drifting by a shared
+// fixture — `fuel_kernel_seam_types::advisory_band_reference_cases()` — that
+// BOTH sides assert against (adapter side: `advisory_band_matches_shared_cases`
+// below; live side: `advisory_ulp_band_matches_shared_cases` in jit_ingest.rs).
+// If you change the formula here, change it there and update that one fixture.
 
 /// A transcendental op tag — one whose hardware value can differ from the
 /// wide-precision truth by more than a correctly-rounded op. **Mirrors
@@ -625,6 +638,37 @@ mod tests {
     #[test]
     fn advisory_tolerance_none_for_op_free_region() {
         assert_eq!(region_advisory_tolerance(&bind(0)), None);
+    }
+
+    /// DRIFT GUARD (this crate's half). Pins the reference band formula
+    /// (`region_advisory_tolerance`) to the shared fixture that the live copy
+    /// in `fuel-dispatch::jit_ingest::advisory_ulp_band` is pinned to from the
+    /// other side. The two formulas cannot be co-compiled on a CPU build (this
+    /// adapter is cuda-gated), so the shared
+    /// `advisory_band_reference_cases()` table is the only thing keeping them in
+    /// lockstep — if either drifts, its side fails against this table. The
+    /// adapter's richer `Option<Tolerance>` is normalized to the fixture's
+    /// `Option<u64>` shape: `None`(op-free) and `Some(Exact)`(single exact op)
+    /// both collapse to `None` (an exact comparison), `Some(Ulp(n))` to
+    /// `Some(n)`.
+    #[test]
+    fn advisory_band_matches_shared_cases() {
+        fn normalize(t: Option<Tolerance>) -> Option<u64> {
+            match t {
+                None => None,                    // op-free region
+                Some(Tolerance::Exact) => None,  // single exact op
+                Some(Tolerance::Ulp(n)) => Some(n),
+            }
+        }
+        for (region, expected) in
+            fuel_kernel_seam_types::advisory_band_reference_cases()
+        {
+            assert_eq!(
+                normalize(region_advisory_tolerance(&region)),
+                expected,
+                "reference band drifted from the shared fixture for {region:?}"
+            );
+        }
     }
 
     // ---- kiss-ref composed-expression seam (rev 1f3981f) ---------------------
