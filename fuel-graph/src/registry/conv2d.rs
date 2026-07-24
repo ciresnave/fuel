@@ -3,41 +3,45 @@
 //!
 //! Provides:
 //! - [`entry`] — the metadata-side `FusedOpEntry` (shape/dtype rules,
-//!   panicking `decompose`, stubbed pattern).
+//!   self-returning `decompose` pending the im2col-recipe migration,
+//!   stubbed pattern).
 //!
-//! ## Architectural note — no primitive decomposition (yet)
+//! ## Architectural note — migrates via an index-gather im2col recipe (NOT a basis gap)
 //!
-//! Unlike SoftmaxLastDim or RmsNormLastDim, Conv2D **has no clean
-//! decomposition into the current primitive set**. The textbook
-//! im2col-then-matmul lowering requires an `Op::Im2Col` (or equivalent
-//! `Op::Unfold` / `Op::AsStrided`) primitive that hasn't been
-//! introduced — every backend that supports Conv2D either has a native
-//! kernel (CPU, CUDA cuDNN, AOCL) or does im2col internally inside its
-//! own kernel (Vulkan, MKL) without ever surfacing it as a graph node.
+//! **Correction (2026-07-24):** an earlier version of this note claimed
+//! Conv2D "has no clean decomposition into the current primitive set"
+//! and needs a new `Op::Im2Col` (`Op::Unfold` / `Op::AsStrided`)
+//! primitive. **That was wrong.** It weighed only ONE candidate
+//! lowering — the `Op::Slice` + `Op::MatMul` + `Op::Concat` synthesis,
+//! which does explode to `N·Hout·Wout` slice nodes and is correctly
+//! rejected — and overlooked the **index-gather im2col idiom**, whose
+//! node count is *constant* in the spatial size and which uses only
+//! primitives already in the build-time-closed `Op` basis:
 //!
-//! Synthesizing Conv2D from `Op::Slice` + `Op::MatMul` + `Op::Concat`
-//! is technically possible but creates `N·Hout·Wout` slice operations
-//! — astronomical node count that would actively harm any optimization
-//! pass that consumed it. So [`decompose`] **panics** with a clear
-//! pointer to this gap, and the lowering rule's typical "decompose to
-//! primitives for backends without a native kernel" fallback is
-//! replaced by the executor's `cpu_fallback` path until either:
+//! - **im2col = `Op::IndexSelect`** (a strided gather) over the
+//!   `Op::Pad`-padded, flattened spatial axis. One 1-D index of length
+//!   `Kh·Kw·Hout·Wout` gathers the whole patch matrix for every
+//!   `(n, c)`; overlapping windows simply repeat index values (a gather
+//!   reads a source position as many times as needed).
+//! - the window→flat-index map is built from **`Op::Iota`** +
+//!   `MulScalar` / `Add` + **`Op::Cast(U32)`** — integer-valued, exact
+//!   in F32 for padded-spatial extent `< 2^24`.
+//! - the grouped / batched contraction against the reshaped weight is
+//!   **`Op::MatMul`**'s batched (rank≥2, GQA-divisible batch-prefix)
+//!   form; bias is a broadcast `Add`.
 //!
-//! 1. an `Op::Im2Col` primitive lands (step 10 territory; would let
-//!    the lowering rule produce a meaningful primitive subgraph), or
-//! 2. the registry's `decompose` field becomes `Option<fn(...)>` so
-//!    a fused op can architecturally declare "no primitive
-//!    decomposition exists" (a follow-up architecture commit).
+//! This mirrors the CPU kernel itself, which is im2col + batched GEMM
+//! (`fuel-cpu-backend/src/conv2d.rs`). So Conv2D migrates to a total
+//! `PatternNode` recipe like any other Increment-C op — **no `Op`
+//! variant is added and the build-time-closed primitive basis is
+//! unchanged.** See the `10-decisions-log.md` 2026-07-24 addendum and
+//! the `2026-07-24-incc-conv-im2col` plan for the full recipe shape.
 //!
-//! What this commit DOES contribute toward the planned architecture:
-//! - the Conv2D builder routes through `Op::Fused(CONV2D, _)`, so the
-//!   primitive `Op` enum loses one more variant in step 5;
-//! - CPU Conv2D kernels register as per-decision-point `BackendImpl`s
-//!   in `fuel_dispatch::fused::FusedKernelRegistry` (the same shape
-//!   FusedLinear uses), populating the alternative-set substrate that
-//!   step 9 reads for pre-resolved KernelRef dispatch;
-//! - CSE / `op_key` automatically dedupes via [`super::FusedOpParams`]'s
-//!   stride/padding/groups payload.
+//! Until that recipe lands (a follow-up slice on this branch), the
+//! [`decompose`] below **self-returns** — the G2 total + never-panic
+//! fixpoint, a surfaced honest-miss (telemetry), never a crash — and
+//! backends without a native Conv2D kernel route through
+//! `GraphExecutor::cpu_fallback`.
 //!
 //! The matcher is also stubbed (returns `None`) — Conv2D nodes
 //! originate from the `Tensor::conv2d` builder; user-decomposed forms
@@ -107,22 +111,23 @@ fn dtype_passthrough(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
     input_dtypes[0]
 }
 
-/// Conv2D is a genuine primitive-basis gap (G2, 2026-06-20). The clean
-/// lowering is im2col + matmul: `Op::Pad` the input, extract sliding `Kh×Kw`
-/// windows into a `[N, Cin·Kh·Kw, Hout·Wout]` patch matrix, `Op::MatMul`
-/// against the reshaped weight `[Cout, Cin·Kh·Kw]`, then `Op::Reshape`/
-/// `Op::Permute` to `[N, Cout, Hout, Wout]` (groups via per-group
-/// `Slice`+`Concat`, bias via a broadcast `Add`). Every step *except* the
-/// window extraction is already in the closed `Op` basis — the missing
-/// primitive is a sliding-window op: **`Op::Im2Col`** (equivalently
-/// `Op::Unfold` / `Op::AsStrided`). The only existing-primitive alternative
-/// is a `Slice`+`Concat`+`MatMul` soup of `N·Hout·Wout` slice nodes, whose
-/// node count is astronomical and would actively harm any pass consuming it —
-/// so it is not a valid decomposition.
+/// Conv2D migrates via an index-gather im2col recipe built entirely from
+/// existing primitives — it is **NOT** a primitive-basis gap (correcting the
+/// earlier "genuine G2 basis gap, needs `Op::Im2Col`" claim; see the module
+/// note and the `10-decisions-log.md` 2026-07-24 addendum). The clean lowering
+/// is im2col + batched matmul: `Op::Pad` the input, flatten the spatial axis,
+/// gather the overlapping `Kh×Kw` windows into a `[N, Cin·Kh·Kw, Hout·Wout]`
+/// patch matrix with a single `Op::IndexSelect` (its 1-D index built from
+/// `Op::Iota` + scalar arithmetic + `Op::Cast(U32)`, node count constant in the
+/// spatial size), `Op::MatMul` against the reshaped weight `[Cout, Cin·Kh·Kw]`
+/// (batched over groups), then `Op::Reshape` to `[N, Cout, Hout, Wout]` (bias
+/// via a broadcast `Add`). The `Slice`+`Concat`+`MatMul` soup of `N·Hout·Wout`
+/// slice nodes was NOT the only decomposition, as the superseded note assumed —
+/// it is the one the index-gather idiom replaces.
 ///
-/// Per G2 (`decompose` is total + never-panic) this returns **self** until an
-/// `Op::Im2Col` primitive lands; the opaque Conv2D node is then a surfaced
-/// basis-gap (telemetry), never a crash. Backends without a native Conv2D
+/// Until that recipe migration lands (a follow-up slice on this branch), this
+/// returns **self** — the G2 total + never-panic fixpoint (a surfaced
+/// honest-miss, telemetry, never a crash). Backends without a native Conv2D
 /// kernel route through `GraphExecutor::cpu_fallback`.
 pub fn decompose(_graph: &mut Graph, id: NodeId, _params: &FusedOpParams) -> NodeId {
     id
