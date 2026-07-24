@@ -143,7 +143,17 @@ nowhere; now captured so they are not forgotten):
   `softmax_last_dim_backward`); and **the locked matmul role-vector `op_attrs` serialize/resolve
   live in both directions** (the rank-2 golden `0C000000|02000000|0103|02000000|0302` is the
   Baracuda-confirmed cross-producer contract). Gates green: `fuel-kernel-seam-types` (18),
-  `fuel-graph` (396). **Still narrowed to the recipe interior (slices 2–5, §9 of the plan):**
+  `fuel-graph` (396). **Increment C slices 2–3 — carriers + first-order backward migrations —
+  SHIPPED (2026-07-24):** slice-2 (`layer_norm_last_dim_backward` + `fused_linear`, the first live
+  `WithDim` driver; on `origin/main`) then slice-3 (branch `feat/incc-reemit-carriers`, plan
+  `docs/superpowers/plans/2026-07-24-increment-c-decompose-migration.md`) migrated
+  `rms_norm_last_dim_backward` (`72eb481c`), `reduce_max_to_backward` (`98194c48`), and
+  `powi_backward` (`fbe746e9`), each unblocked by a reusable re-emit carrier — the
+  `OpAttrs.scalar_rel` shape-derived scalar (`reduced_count`/`MulScalar(n)`), the MaskedFill
+  fill-`Scalar` carrier, and the PowI i32-exponent carrier — bringing the running total to **10 of
+  22 `decompose` migrated / 12 remain** (4 of which are permanent basis-gap self-returns). Gates
+  green: `fuel-graph --lib` (425), `fuel-dispatch` (712), `fuel-core --lib` (1385).
+  **Still narrowed to the recipe interior (slices 2–5, §9 of the plan):**
   the remaining ~11 first-order `decompose` migrations (carriers: PowI/Clamp/MaskedFill,
   shape-derived scalar slots), the **flat-DAG-CSE recipe-node/table WIRE serializer** + the
   `reduced_count` leaf's **graph wiring**, the scan flat form (`selective_scan`/`ssd_chunk_scan`),
