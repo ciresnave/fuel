@@ -261,12 +261,15 @@ pub fn clear_runtime_fused_for_tests() {
 /// (Transpose/Permute/Reshape/BroadcastTo/(Un)squeeze/Slice/Concat/Flip/Roll/
 /// Pad/Triu/Tril), reductions (SumDim/MaxDim/MeanDim/ReduceSumTo/ReduceMaxTo/
 /// CumSum/SumAll/MaxAll/MinAll/MeanAll), `MatMul`, `Iota`, and indexing (IndexSelect/
-/// Gather/IndexAdd/ScatterAdd). Structural params are decoded from the
-/// (extended) [`OpAttrs`]. Returns `None` (an honest miss, rejected at
-/// registration) for ops with no first-order re-emission: `PowI`/`Clamp`
-/// (no i32/two-scalar carrier), `MaskedFill` (no `Scalar::from_f64`
-/// reconstructor yet), fused/basis-gap tags, and any tag whose required attrs
-/// are unset (e.g. `Iota` with no `target_shape`).
+/// Gather/IndexAdd/ScatterAdd), and `MaskedFill` (Increment C carriers, A2 —
+/// the fill value rides `attrs.scalars[0]`, its dtype rides `cast_dtype` when
+/// present else a provisional F32 that `emit` re-resolves to operand[0]'s
+/// dtype). Structural params are decoded from the (extended) [`OpAttrs`].
+/// Returns `None` (an honest miss, rejected at registration) for ops with no
+/// first-order re-emission: `PowI`/`Clamp` (no i32/two-scalar carrier),
+/// fused/basis-gap tags, and any tag whose required attrs are unset (e.g. `Iota`
+/// with no `target_shape`, or `MaskedFill` with no fill value / a dtype `Scalar`
+/// cannot represent).
 fn tag_to_op(tag: OpTag, attrs: &OpAttrs) -> Option<Op> {
     use OpTag as T;
     use fuel_ir::{DType, Shape};
@@ -390,11 +393,42 @@ fn tag_to_op(tag: OpTag, attrs: &OpAttrs) -> Option<Op> {
         T::IndexAdd => Op::IndexAdd { dim: attrs.axis? as usize },
         T::ScatterAdd => Op::ScatterAdd { dim: attrs.axis? as usize },
 
+        // MaskedFill (Increment C carriers, A2): the fill VALUE rides
+        // `attrs.scalars[0]` (the `op_to_attrs` projection); its dtype rides
+        // `cast_dtype` when present (a concrete round-trip), else a provisional
+        // F32 that `emit` re-resolves to operand[0]'s dtype (the
+        // dtype-polymorphic recipe path — the byte executor derives `fill_bytes`
+        // at the filled tensor's width, so the Scalar dtype must match). An
+        // unset value or a dtype `Scalar` cannot represent is an honest miss.
+        T::MaskedFill => {
+            let v = *attrs.scalars.first()?;
+            let dtype = match attrs.cast_dtype.as_deref() {
+                Some(name) => DType::from_str(name).ok()?,
+                None => DType::F32,
+            };
+            Op::MaskedFill { value: masked_fill_scalar(v, dtype)? }
+        }
+
         // Honest misses (rejected at registration): PowI/Clamp (no carrier),
-        // MaskedFill (no Scalar::from_f64 reconstructor yet), and any tag whose
-        // required attrs are unset or that is added to OpTag later.
+        // and any tag whose required attrs are unset or that is added to OpTag
+        // later.
         _ => return None,
     })
+}
+
+/// Reconstruct a `MaskedFill` fill [`fuel_ir::Scalar`] from its `f64` value +
+/// the FILLED tensor's dtype (the A2 carrier). `None` for a dtype a `Scalar`
+/// cannot represent (the sub-byte dummy quant formats) — an honest miss, never
+/// a panic (so [`fuel_ir::Scalar::from_f64`]'s dummy-dtype panic is unreachable
+/// through this guard). The value rides `attrs.scalars[0]`; the dtype is the
+/// filled tensor's (operand[0]) dtype, resolved at emit time.
+fn masked_fill_scalar(value: f64, dtype: fuel_ir::DType) -> Option<fuel_ir::Scalar> {
+    use fuel_ir::DType as D;
+    match dtype {
+        D::U8 | D::I8 | D::U32 | D::I16 | D::I32 | D::I64 | D::BF16 | D::F16 | D::F32 | D::F64
+        | D::F8E4M3 => Some(fuel_ir::Scalar::from_f64(value, dtype)),
+        D::F6E2M3 | D::F6E3M2 | D::F4 | D::F8E8M0 => None,
+    }
 }
 
 /// Decode a target [`fuel_ir::Shape`] from `attrs.target_shape` (the shared
@@ -1031,7 +1065,24 @@ fn emit<'r>(
             } else {
                 attrs
             };
-            let prim = tag_to_op(*op, attrs).expect("region validated re-emittable at registration");
+            let mut prim = tag_to_op(*op, attrs).expect("region validated re-emittable at registration");
+            // A `MaskedFill` fill Scalar must carry the FILLED tensor's
+            // (operand[0]) dtype — the byte executor derives `fill_bytes` at
+            // that width. A recipe authors the value dtype-polymorphically (no
+            // `cast_dtype`), so re-resolve the Scalar at operand[0]'s emitted
+            // dtype here, mirroring the imperative `Scalar::one(dtype)`. Concrete
+            // round-trips already carry the matching dtype (identity); a dtype a
+            // Scalar cannot represent leaves the provisional value untouched (an
+            // inert dead node, never a panic — the executor rejects it later).
+            if let Op::MaskedFill { value } = &prim {
+                if let Some(&dt) = child_dtypes.first() {
+                    if value.dtype() != dt {
+                        if let Some(fixed) = masked_fill_scalar(value.to_f64(), dt) {
+                            prim = Op::MaskedFill { value: fixed };
+                        }
+                    }
+                }
+            }
             // D4: a `BroadcastTo` whose target rank EXCEEDS its operand's rank
             // first materializes the legacy `Reshape` pad (1-padded left,
             // right-aligned — byte-identical to `registry::rope`'s hand-built
@@ -1222,6 +1273,61 @@ mod tests {
         assert_eq!(super::tag_to_op(OpTag::Cast, &attrs), Some(Op::Cast(DType::F16)));
         // Comparison.
         assert!(matches!(super::tag_to_op(OpTag::Lt, &OpAttrs::default()), Some(Op::Lt)));
+    }
+
+    #[test]
+    fn tag_to_op_reconstructs_masked_fill() {
+        // A2 (Increment C carriers): the MaskedFill re-emit carrier. Value on
+        // `scalars[0]`, dtype on `cast_dtype` (the `op_to_attrs` projection) —
+        // RED before A2 (MaskedFill was the `_ => return None` honest miss).
+        use fuel_ir::Scalar;
+        let attrs = OpAttrs { scalars: vec![-1.0], cast_dtype: Some("f16".into()), ..OpAttrs::default() };
+        match super::tag_to_op(OpTag::MaskedFill, &attrs) {
+            Some(Op::MaskedFill { value }) => {
+                assert_eq!(value.dtype(), DType::F16, "dtype rides cast_dtype");
+                assert_eq!(value, Scalar::from_f64(-1.0, DType::F16), "value rides scalars[0]");
+            }
+            other => panic!("expected MaskedFill, got {other:?}"),
+        }
+        // No fill value ⇒ honest miss (None), never a defaulted 0.
+        assert_eq!(super::tag_to_op(OpTag::MaskedFill, &OpAttrs::default()), None);
+        // A dtype `Scalar` cannot represent (sub-byte dummy) ⇒ honest miss.
+        let dummy = OpAttrs { scalars: vec![1.0], cast_dtype: Some("f4".into()), ..OpAttrs::default() };
+        assert_eq!(super::tag_to_op(OpTag::MaskedFill, &dummy), None);
+        // dtype-polymorphic authoring (no cast_dtype) reconstructs a provisional
+        // F32 that `emit` later re-resolves to operand[0]'s dtype.
+        let poly = OpAttrs { scalars: vec![1.0], ..OpAttrs::default() };
+        assert!(matches!(super::tag_to_op(OpTag::MaskedFill, &poly), Some(Op::MaskedFill { .. })));
+        // The fill value is a BAKED pattern constant, not a cursor slot.
+        assert_eq!(super::scalar_slot_arity(OpTag::MaskedFill), 0);
+    }
+
+    #[test]
+    fn masked_fill_region_registers_and_emits_with_operand_dtype() {
+        // Before A2 this region was `UnRepresentable(MaskedFill)`; now it
+        // registers, and `emit` resolves the fill Scalar to operand[0]'s dtype
+        // (dtype-polymorphic — the imperative `Scalar::one(dtype)` behaviour).
+        clear_runtime_fused_for_tests();
+        let region = PatternNode::Op {
+            op: OpTag::MaskedFill,
+            attrs: OpAttrs { scalars: vec![1.0], ..OpAttrs::default() },
+            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+        };
+        register_runtime_fused("mf::poly", region.clone())
+            .expect("MaskedFill region registers (was UnRepresentable before A2)");
+        // Emit over an F16 tensor + U8 mask ⇒ MaskedFill with an F16 fill Scalar.
+        let mut g = Graph::new();
+        let x = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[2, 3]), dtype: DType::F16 });
+        let mask = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[2, 3]), dtype: DType::U8 });
+        let root = emit_region(&mut g, &region, &[x, mask], &[]);
+        match &g.node(root).op {
+            Op::MaskedFill { value } => {
+                assert_eq!(value.dtype(), DType::F16, "fill Scalar re-resolved to operand[0] dtype");
+                assert_eq!(value.to_f64(), 1.0, "fill VALUE preserved through the re-resolution");
+            }
+            other => panic!("expected MaskedFill, got {other:?}"),
+        }
+        assert_eq!(g.node(root).dtype, DType::F16);
     }
 
     #[test]
