@@ -1124,6 +1124,38 @@ fn emit<'r>(
                             .map(|spec| (spec.shape.clone(), spec.dtype))
                     })
                     .unwrap_or_else(|| fallback_sd(&child_shapes, &child_dtypes)),
+                // A childless scan-body hole (`Op::ScanPlaceholder`). Its shape
+                // is DECLARED on the recipe node (`target_shape` /
+                // `target_shape_rel`, resolved above) rather than inferred from
+                // (absent) operands, so the re-emitted body carries the same
+                // per-step shapes the imperative `selective_scan`/`ssd_chunk_scan`
+                // decompose stamps on its placeholders. This is load-bearing:
+                // `unroll_scan` CLONES body interior nodes with their STORED
+                // shapes, so a rank-0 fallback here would poison the unrolled
+                // graph (e.g. `du = Mul(d_t, u_t)` would come out rank-0). Dtype =
+                // the scan's working dtype = bind 0's (uniform-dtype scan inputs).
+                // Both fall back to the operand/F32 default on a shapeless
+                // authored placeholder (B1's round-trip recipes), never a panic.
+                // A childless scan-body hole (`Op::ScanPlaceholder`). Its shape
+                // is DECLARED on the recipe node (`target_shape` /
+                // `target_shape_rel`, resolved above) rather than inferred from
+                // (absent) operands, so the re-emitted body carries the same
+                // per-step shapes the imperative `selective_scan`/`ssd_chunk_scan`
+                // decompose stamps on its placeholders. This is load-bearing:
+                // `unroll_scan` CLONES body interior nodes with their STORED
+                // shapes, so a rank-0 fallback here would poison the unrolled
+                // graph (e.g. `du = Mul(d_t, u_t)` would come out rank-0). Dtype =
+                // the scan's working dtype = bind 0's (uniform-dtype scan inputs).
+                // Both fall back to the operand/F32 default on a shapeless
+                // authored placeholder (B1's round-trip recipes), never a panic.
+                Op::ScanPlaceholder { .. } => (
+                    shape_from_attr(attrs)
+                        .unwrap_or_else(|| fallback_sd(&child_shapes, &child_dtypes).0),
+                    inputs
+                        .first()
+                        .map(|&b| graph.node(b).dtype)
+                        .unwrap_or_else(|| fallback_sd(&child_shapes, &child_dtypes).1),
+                ),
                 _ => crate::shape::primitive_shape(&prim, &child_shapes, &child_dtypes)
                     .unwrap_or_else(|_| fallback_sd(&child_shapes, &child_dtypes)),
             };
@@ -4788,6 +4820,48 @@ mod tests {
                 Some(Op::View { slot: 1 }),
             ));
             assert!(tag_to_op(OpTag::View, &OpAttrs::default()).is_none());
+        }
+
+        /// B2 emit carrier (born-red without it): a `ScanPlaceholder` that
+        /// declares its per-step shape via `target_shape_rel` emits with THAT
+        /// shape, not the rank-0 `primitive_shape` fallback. This is
+        /// load-bearing for the SSM scan recipes — `unroll_scan` clones body
+        /// interior nodes with their STORED shapes, so a rank-0 placeholder
+        /// would poison the unrolled body (e.g. `du = Mul(d_t, u_t)` rank-0).
+        /// Dtype comes from bind 0 (the uniform-dtype scan inputs).
+        #[test]
+        fn scan_placeholder_recipe_emits_its_declared_shape() {
+            use fuel_kernel_seam_types::shape_expr::{Dim, ShapeExpr};
+            let dims2 = || ShapeExpr::Dims(vec![
+                Dim::Extent { operand: 0, axis: 0 },
+                Dim::Extent { operand: 0, axis: 1 },
+            ]);
+            let ph = |index: u32| PatternNode::Op {
+                op: OpTag::ScanPlaceholder,
+                attrs: OpAttrs {
+                    scan_role: Some(SCAN_ROLE_ELEM),
+                    scan_index: Some(index),
+                    target_shape_rel: Some(dims2()),
+                    ..OpAttrs::default()
+                },
+                operands: vec![],
+            };
+            // Mul takes operand[0]'s shape, so its shape mirrors the placeholder.
+            // A `Bind { 0 }` operand supplies the frame the placeholder's Dims
+            // reference (operand 0) — so the recipe carries a valid bind.
+            let recipe = op_node(OpTag::Mul, OpAttrs::default(), vec![ph(0), bind(0)]);
+            assert!(validate_recipe(&recipe).is_ok());
+            let mut g = Graph::new();
+            let bind0 = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[2, 3]), dtype: DType::F32 });
+            let root = emit_region(&mut g, &recipe, &[bind0], &[]);
+            let ph_id = g.node(root).inputs[0];
+            assert!(matches!(g.node(ph_id).op, Op::ScanPlaceholder { role: ScanRole::Elem, index: 0 }));
+            assert_eq!(
+                g.node(ph_id).shape.dims(), &[2, 3],
+                "placeholder emits its declared target_shape_rel shape, not rank-0",
+            );
+            assert_eq!(g.node(ph_id).dtype, DType::F32, "placeholder dtype = bind 0's");
+            assert_eq!(g.node(root).shape.dims(), &[2, 3], "Mul(placeholder,..) inherits the declared shape");
         }
     }
 }
