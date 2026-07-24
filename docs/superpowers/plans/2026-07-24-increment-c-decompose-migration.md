@@ -284,3 +284,43 @@ BASIS-GAP self-returns (`qmatmul`, `inplace_affine`) that stay surfaced honest-m
 primitive Op lands. (`conv2d` + `conv_transpose_2d` were reclassified 2026-07-24 out of BASIS-GAP —
 they migrate via the index-gather im2col recipe with existing primitives; see the "Classification"
 correction above and the `2026-07-24-incc-conv-im2col` plan.)
+
+## conv family — SHIPPED (2026-07-24, branch `feat/incc-conv-im2col`)
+
+The two ops reclassified out of BASIS-GAP on 2026-07-24 (`conv2d`, `conv_transpose_2d`)
+are now BOTH migrated — via the index-gather im2col recipe using only existing
+build-time-closed-basis primitives (NO new `Op`, no `tag_to_op`/`OpAttrs`/`primitive_shape`
+change). Design pass + build plan: `2026-07-24-incc-conv-im2col.md` (see its §9 "conv
+family — SHIPPED").
+
+- **`conv2d`** (CV1/CV2, `registry/conv2d.rs`) — `Pad`→flatten→`Iota`+arith+`Cast(U32)`
+  index→`IndexSelect` (im2col)→batched `MatMul`→`Reshape` (+optional broadcast `Add`
+  bias). Any `groups>=1` incl. depthwise (rank-4 batched over `[N, groups]`). Gated vs
+  `fuel_conv::conv2d_direct`, `rel<1e-5`.
+- **`conv_transpose_2d`** (CV3, `registry/conv_transpose_2d.rs`) — the col2im
+  (overlap-add) adjoint: `weightᵀ`-arranged batched `MatMul`→column stack→`IndexAdd`
+  (`+=` overlap-add) into a zero base (`MulScalar(0)` of a length-1 `Slice` broadcast, no
+  `Const`)→`Reshape`→`Slice` crop. Any `groups>=1` (2-input, no-bias — the builder's
+  form). Gated vs the **native CPU `ConvTranspose2D` kernel** (`fuel-conv` has no
+  transposed reference; the production `realize_f32` path never fires the decompose, so
+  the oracle is independent), `rel<1e-5`, sabotage-calibrated.
+
+Gates (forced-clean): `fuel-graph --lib` 445, `fuel-core --lib` 1385, `fuel-dispatch`
+712(+1), `fuel-core --test incc_conv_transpose_im2col_oracle` 3 (+ regressions
+`lazy_conv_transpose1d_oracle` 3, `conv_tests` 8) — all green.
+
+### Updated migrated-count (supersedes the earlier layered totals)
+
+Ground truth (directly measured: registry `decompose` fns that re-emit a portable recipe
+via `decompose_via_recipe` / the `Op::Scan` recipe form): **14 of 22 migrated.** The 14:
+`softmax_last_dim`, `softmax_last_dim_backward`, `layer_norm_last_dim`,
+`layer_norm_last_dim_backward`, `rms_norm_last_dim`, `rms_norm_last_dim_backward`, `rope`,
+`fused_linear`, `reduce_max_to_backward`, `powi_backward`, `selective_scan`,
+`ssd_chunk_scan`, **`conv2d`**, **`conv_transpose_2d`**.
+
+The remaining self-returns: 5 NEEDS-EXTENSION migrations still queued behind their named
+unlock (`causal_conv1d`, `nf4_matmul`, `fused_softmax_cross_entropy`, `flash_attn`,
+`paged_attn` — plus `flash_attn`'s `Some(Sym(k_len))` decode arm which stays a PERMANENT
+registry-layer basis gap) and the **2 permanent BASIS-GAP** self-returns (`qmatmul`
+sub-byte bit-unpack, `inplace_affine` destructive-affine aliasing). The conv pair is no
+longer in either "remain" bucket — the basis-gap count is now **2**, not 4.

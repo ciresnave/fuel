@@ -83,3 +83,53 @@ Also reclassify these two in `docs/superpowers/plans/2026-07-24-increment-c-deco
 ## 8. Sequence
 `im2col-1` (conv2d groups=1 + the index-gather helper + numerical harness + docs/decisions-log correction) → `im2col-2` (conv2d groups+bias; extends slice-1 machinery, sequential on `conv2d.rs`) → `im2col-3` (conv_transpose_2d col2im; reuses slice-1's `build_flat_index` helper, own file `conv_transpose_2d.rs`). Worktree isolation: slices 1&2 both touch `conv2d.rs` (serialize); slice 3 is a separate file but should follow slice 1 to reuse the index helper.
 
+
+## 9. conv family — SHIPPED (existing-primitive im2col, no basis change)
+
+**Landed on branch `feat/incc-conv-im2col` (CV0–CV3).** The verdict held: NO basis
+extension. Both ops migrate to total `PatternNode` recipes built entirely from the
+build-time-closed `Op` basis — **no `Op` variant added, no `tag_to_op`/`OpAttrs`/
+`primitive_shape` change.** The four "BASIS-GAP" self-returns in the plan-of-record
+drop to **two** (`qmatmul`, `inplace_affine`).
+
+- **CV0** — docs-integrity correction (`conv2d.rs`/`conv_transpose_2d.rs` module notes
+  + decisions-log addendum; zero behavior change).
+- **CV1 / CV2** — `conv2d` (`registry/conv2d.rs`): the index-gather im2col recipe.
+  `Pad` → flatten → `Op::Iota`+arith+`Op::Cast(U32)` index → `Op::IndexSelect` (im2col)
+  → batched `Op::MatMul` → `Reshape` (+ optional broadcast `Add` bias). CV1 = groups=1
+  (rank-3); CV2 = any `groups>=1` incl. depthwise (rank-4 batched over `[N, groups]`).
+  Gate: real-backend parity vs `fuel_conv::conv2d_direct`, `rel<1e-5`
+  (`fuel-core/tests/incc_conv_im2col_oracle.rs`, `..._grouped_oracle.rs`).
+- **CV3** — `conv_transpose_2d` (`registry/conv_transpose_2d.rs`): the col2im
+  (overlap-add) scatter-add adjoint. `weightᵀ`-arranged batched `Op::MatMul` → column
+  stack → zero base via `MulScalar(0)` of a length-1 `Slice` broadcast (no `Const` in a
+  recipe, the `selective_scan` idiom) → **`Op::IndexAdd`** (`+=` IS the overlap-add;
+  overlapping columns sum) into the FULL pre-crop buffer → `Reshape` → two `Op::Slice`
+  crops to `[N,Cout,Hout,Wout]`. The shared `scatter_flat_index`
+  (`l=(ky,kx,ih,iw) → (ih·sh+ky·dh)·Wbuf + (iw·sw+kx·dw)`) and `col2im_tail` are
+  identical across groupings; groups>1 carries the group as an explicit matmul batch
+  axis (`[N, groups]`). `stride`/`padding`/`output_padding`/`dilation`/`groups` all fold
+  into the index + the full-buffer size (`Hbuf=(Hin-1)·sh+dh·(Kh-1)+1+oph`) + the crop.
+  The `Permute`→`Reshape` weight arrange is materialized row-major by the executor's
+  auto-Contiguize (the `Op::Reshape` `ContiguizeOf` work item), so it is layout-correct.
+  Bias is out of scope (the builder emits the 2-input form; a 3-input node is a surfaced
+  honest-miss fixpoint). Totality (G2): wrong-params / non-2-input / malformed-shape /
+  indivisible-grouping / zero-stride all self-return, never crash.
+
+**Oracle choice (CV3):** `fuel-conv` has no transposed reference, so the oracle is the
+**native CPU `ConvTranspose2D` kernel** — the production realize path (`realize_f32`)
+binds the fused node to it and NEVER fires the decompose (lowering only fires via
+`RuleRegistry::lowering_only`), so the two paths are independent. Sabotage-calibrated:
+corrupting the scatter-index factor drives `max_rel` above `1e-5` while the oracle stays
+the uncorrupted native kernel (verified RED during development).
+
+**Gates (forced-clean):** `fuel-graph --lib` 445 · `fuel-core --lib` 1385 ·
+`fuel-dispatch` 712(+1) · `fuel-core --test incc_conv_transpose_im2col_oracle` 3 ·
+regression `lazy_conv_transpose1d_oracle` 3 + `conv_tests` 8 — all green.
+
+**Migrated count:** conv2d + conv_transpose_2d now BOTH re-emit a portable recipe →
+**14 of 22 registry `decompose` fns migrated.** The remaining self-returns are the
+pending NEEDS-EXTENSION migrations (`causal_conv1d`, `nf4_matmul`,
+`fused_softmax_cross_entropy`, `flash_attn`/`paged_attn` — nested-fused / param-threading
+/ config-branch unlocks) plus the **2 permanent BASIS-GAP** self-returns (`qmatmul`,
+`inplace_affine`). See the plan-of-record's "conv family — SHIPPED" section.
