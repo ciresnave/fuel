@@ -360,8 +360,10 @@ const ADVISORY_FALLBACK_TRANSCENDENTAL_ULP_CEILING: u64 = 4;
 /// the single source of the transcendental set (IEEE-correctly-rounded
 /// `Sqrt`/`Recip` are exact-class there, so they carry no ceiling here).
 /// Ceilings are read from kiss-ref's OWN API (`kiss_ops_vocab::Op::ulp_ceiling`,
-/// verified at the pinned rev `b75a748`) through a mapping arm that mirrors
-/// `fuel-kiss-ref-backend::mapping::op_to_kiss` restricted to that set — the
+/// verified at the pinned rev `1f3981f`; the `b75a748..1f3981f` bump left the
+/// kiss-ops-vocab crate byte-unchanged, so the ceilings did not move) through a
+/// mapping arm that mirrors `fuel-kiss-ref-backend::mapping::op_to_kiss`
+/// restricted to that set — the
 /// adapter crate itself is cuda-gated, and this helper must stay CPU-testable
 /// (`--features jit` alone). Keep the two mappings in lockstep.
 fn advisory_op_ulp_ceiling(op: fuel_graph::jit::OpTag) -> Option<u64> {
