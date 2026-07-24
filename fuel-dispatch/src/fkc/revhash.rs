@@ -189,6 +189,23 @@ mod tests {
         assert_eq!(fnv1a(b"foobar"), 0x85944171f73967e8);
     }
 
+    /// FROZEN end-to-end hash pin (sk3 regen guard): the FNV-1a byte contract
+    /// over the canonical contract form must NOT move with the sk3
+    /// structure_key regen (the "OpAttrs/FNV-1a byte contracts are UNTOUCHED"
+    /// invariant). Pins the exact `auto` revision of the real `add_f32`
+    /// contract fixture for fixed entry point + revision base; any change to
+    /// the FNV-1a constants, the canonical field order, or the separator
+    /// bytes breaks this value.
+    #[test]
+    fn revision_hash_frozen_value_regression() {
+        let k = add_f32();
+        let h = compute_revision(&k, "fuel_cpu_backend::byte_kernels::add_f32", "git:sk3-pin")
+            .unwrap();
+        // Frozen 2026-07-23 (observed born-red first with a placeholder):
+        // FNV1a(entry_point ++ 0x1f ++ revision_base ++ 0x1f ++ canonical-block).
+        assert_eq!(h, KernelRevisionHash(0x7b44_60e6_54c2_7a45));
+    }
+
     #[test]
     fn auto_is_deterministic_for_fixed_inputs() {
         let k = add_f32();

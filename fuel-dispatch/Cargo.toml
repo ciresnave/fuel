@@ -15,6 +15,10 @@ fuel-cpu-backend = { workspace = true }
 fuel-hardware = { workspace = true }
 fuel-cuda-backend = { workspace = true, optional = true }
 fuel-graph = { workspace = true }
+# The §6.20 shape-expression grammar's permanent home; `fkc::shape_expr` is a
+# re-export shim over it (Increment C slice 1, T1). Unconditional — FKC is
+# unconditional core infrastructure.
+fuel-kernel-seam-types = { workspace = true }
 # kiss-ref advisory cross-check (cuda-gated verify path only) — see the `cuda` feature.
 fuel-kiss-ref-backend = { path = "../fuel-kiss-ref-backend", optional = true }
 fuel-memory = { workspace = true }

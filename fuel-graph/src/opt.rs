@@ -4023,10 +4023,17 @@ mod tests {
             .count()
     }
 
-    /// The lower rule, applied to a graph with one `Op::SoftmaxLastDim`,
-    /// produces the canonical 7-node primitive subgraph reachable from
-    /// the rewritten root, with auto-populated layout entries on the
+    /// The lower rule, applied to a graph with one fused softmax,
+    /// produces the canonical primitive subgraph reachable from the
+    /// rewritten root, with auto-populated layout entries on the
     /// inserted BroadcastTo nodes.
+    ///
+    /// T5 (Increment C slice 1): the lowered spelling is the RECIPE's
+    /// 9-node shrink-via-swap form — `MaxDim`/`SumDim` at the last axis +
+    /// `Unsqueeze` append restoring keepdim, with the `e = Exp(..)`
+    /// interior SHARED (identity-share) between the denominator reduce and
+    /// the final Div — replacing the legacy 7-node
+    /// `ReduceMaxTo`/`ReduceSumTo` form.
     #[test]
     fn softmax_last_dim_lower_rule_produces_canonical_subgraph() {
         let x = Tensor::from_f32(
@@ -4043,17 +4050,19 @@ mod tests {
         let new_root = new_roots[0];
 
         // Reachable subgraph from the new root should contain exactly
-        // the 7 lowered nodes (plus the `x` Const leaf — that's 8).
-        // Op composition: 1 ReduceMaxTo, 2 BroadcastTo, 1 Sub, 1 Exp,
-        // 1 ReduceSumTo, 1 Div, 1 Const = 8 reachable.
+        // the 9 lowered nodes (plus the `x` Const leaf — that's 10).
+        // Op composition: 1 MaxDim, 2 Unsqueeze, 2 BroadcastTo, 1 Sub,
+        // 1 Exp, 1 SumDim, 1 Div, 1 Const = 10 reachable.
         let g = graph.read().unwrap();
         let reachable = topo_order_multi(&g, &[new_root]);
-        assert_eq!(reachable.len(), 8, "lowered subgraph: 7 ops + 1 Const = 8 reachable nodes");
+        assert_eq!(reachable.len(), 10, "lowered subgraph: 9 ops + 1 Const = 10 reachable nodes");
         drop(g);
 
         // Op-shape sanity checks.
         let n_reduce_max  = count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::ReduceMaxTo(_)));
         let n_max_dim     = count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::MaxDim(_)));
+        let n_sum_dim     = count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::SumDim(_)));
+        let n_unsqueeze   = count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::Unsqueeze { .. }));
         let n_reshape     = count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::Reshape(_)));
         let n_broadcast   = count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::BroadcastTo(_)));
         let n_sub         = count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::Sub));
@@ -4066,13 +4075,15 @@ mod tests {
         let n_softmax     = count_op_in_reachable(&graph, &[new_root], |op| {
             matches!(op, Op::Fused(fid, _) if *fid == FusedOps::SOFTMAX_LAST_DIM)
         });
-        assert_eq!(n_reduce_max, 1);
-        assert_eq!(n_max_dim, 0, "PR 3.5 max side uses ReduceMaxTo, not MaxDim+Reshape");
-        assert_eq!(n_reshape, 0, "PR 3.5 max side drops the Reshape (ReduceMaxTo carries keepdim)");
+        assert_eq!(n_max_dim, 1, "T5 max side = MaxDim(last) + Unsqueeze append");
+        assert_eq!(n_sum_dim, 1, "T5 sum side = SumDim(last) + Unsqueeze append");
+        assert_eq!(n_unsqueeze, 2, "one keepdim-restore per reduce");
+        assert_eq!(n_reduce_max, 0, "the legacy ReduceMaxTo spelling is retired from the lowering");
+        assert_eq!(n_reduce_sum, 0, "the legacy ReduceSumTo spelling is retired from the lowering");
+        assert_eq!(n_reshape, 0, "keepdim restores via Unsqueeze, not Reshape");
         assert_eq!(n_broadcast, 2);
         assert_eq!(n_sub, 1);
-        assert_eq!(n_exp, 1);
-        assert_eq!(n_reduce_sum, 1);
+        assert_eq!(n_exp, 1, "the shared `e` interior emits ONCE (identity-share), not per consumer");
         assert_eq!(n_div, 1);
         assert_eq!(n_softmax, 0, "no SoftmaxLastDim/Fused(SOFTMAX_LAST_DIM) should remain reachable post-lowering");
 

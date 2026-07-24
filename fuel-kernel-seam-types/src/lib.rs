@@ -16,6 +16,12 @@
 //! `fuel-kernel-seam-announce` crate, not here — a provider that only speaks
 //! capability negotiation shouldn't need to pull in this region grammar.
 
+/// The §6.20 shape-expression AST + canonical wire codec + evaluator — the
+/// KISS-consistent shape vocabulary, homed here (std-only) so `fuel-graph` can
+/// carry `Dim`/`ShapeExpr` in [`OpAttrs`] without depending on `fuel-dispatch`
+/// (which re-exports this module at `fkc::shape_expr` for its FKC importer).
+pub mod shape_expr;
+
 // ===========================================================================
 // OpTag — the frozen functional-Op vocabulary (kernel-seam-interop §4.1)
 // ===========================================================================
@@ -44,8 +50,9 @@ pub enum OpTag {
     Equal, Ne, Lt, Le, Gt, Ge,
     // select / mask
     Where, MaskedFill,
-    // reductions
-    SumAll, MaxAll, MinAll, MeanAll, SumDim, MeanDim, ReduceSumTo, ReduceMaxTo, CumSum,
+    // reductions (MaxDim: additive, Increment C slice 1 T4 — the D3 keepdim
+    // swap spells keepdim reduces as {Max,Sum,Mean}Dim + Unsqueeze)
+    SumAll, MaxAll, MinAll, MeanAll, SumDim, MaxDim, MeanDim, ReduceSumTo, ReduceMaxTo, CumSum,
     // matmul
     MatMul,
     // shape / layout (metadata or copy)
@@ -117,6 +124,70 @@ pub struct OpAttrs {
     /// encode keepdim structurally (`ReduceSumTo`/`ReduceMaxTo` carry the kept
     /// shape; `SumDim`/`MeanDim` are rank-reducing). Convergence Increment A.
     pub keepdim: Option<bool>,
+
+    // --- Shape-RELATIVE recipe-interior fields (Increment C slice 1, D2) ---
+    //
+    // The four fields below make a recipe polymorphic across shapes/ranks:
+    // instead of baking an absolute value they carry an expression over the
+    // region's **Bind space** (`ShapeExpr::SameAs { operand: i }` /
+    // `Dim::Extent { operand: i, .. }` reference `Bind { index: i }` — the same
+    // operand-index convention the merged KISS shape-oracle RFC pins for
+    // contracts). They are resolved to the concrete sibling field at emit time
+    // (`fuel_graph::runtime_fused::resolve_rel_attrs`); a rel field and its
+    // concrete sibling set together is a typed resolution error (mutual
+    // exclusion), never a silent precedence.
+    //
+    // **Deliberately NOT serialized to the §6.19 wire (KISS #67-gated).**
+    // `to_canonical_bytes` serializes only the concrete fields: the pinned
+    // §6.19 arms for `broadcast_to`/`slice` are ABSOLUTE, and the node-envelope
+    // framing that could carry a relative alternative is being defined in
+    // KISS #67 — serializing a rel form now would unilaterally extend a shared
+    // byte contract (propose-first). Emitted/graph nodes are always concrete
+    // post-resolution, so rel-attr recipes never flow to `to_canonical_bytes`
+    // callers. Pinned by `rel_attr_fields_are_absent_from_the_6_19_wire`.
+    /// Shape-relative alternative to `target_shape`: the target is another
+    /// operand's shape (`SameAs { operand }` over the Bind space). `None` ⇒
+    /// use `target_shape` (or not a shape-target node).
+    pub target_shape_rel: Option<shape_expr::ShapeExpr>,
+    /// Shape-relative alternative to `slice_start`: a `DimExpr` over the Bind
+    /// space (e.g. rope's `Div(Extent(0, LAST), 2)`). `None` ⇒ use
+    /// `slice_start`.
+    pub slice_start_rel: Option<shape_expr::Dim>,
+    /// Shape-relative alternative to `slice_len`. `None` ⇒ use `slice_len`.
+    pub slice_len_rel: Option<shape_expr::Dim>,
+    /// Rank-relative alternative to the op's axis carrier (`axis`, or `dims`
+    /// for Squeeze/Unsqueeze): this op's axis is its per-tag LAST — resolved
+    /// against `rank(operand[0])` as `rank − 1` for reduces/Slice/Concat/Flip/
+    /// CumSum/… and Squeeze, and `rank` (append) for Unsqueeze. `false` ⇒ use
+    /// the absolute carrier.
+    pub axis_last: bool,
+
+    // --- Matmul contraction role vectors (Increment C slice 1, T9/D5) -------
+    //
+    // The LOCKED reply-3 contraction descriptor (commit `b64aa1db`; §5 of the
+    // recipe-grammar design input). `matmul`'s op_attrs is two per-axis role
+    // vectors over the roles { Batch=0, FreeM=1, FreeN=2, ContractedK=3 } (one
+    // **u8** per axis), `lhs_roles` then `rhs_roles`, each length = operand rank.
+    // Role vectors encode WHICH axis plays which role, **not extents** — so GQA
+    // (differing-but-divisible batch extents) serializes to identical all-Batch
+    // leading roles. Both empty ⇒ the rank-polymorphic implicit form (recipes
+    // keep matmul implicit; concrete/ingested nodes get explicit roles). The
+    // canonical cell (same-rank ≥ 2; leading Batch; lhs=[..,FreeM,ContractedK],
+    // rhs=[..,ContractedK,FreeN]) is derived by [`matmul_roles`] and validated at
+    // resolve time (`fuel_graph::runtime_fused::tag_to_op`).
+    //
+    // Serialized on carrier (a) — `to_canonical_bytes(MatMul)` emits
+    // `u32_le(len lhs) ++ lhs_roles ++ u32_le(len rhs) ++ rhs_roles` when set, or
+    // the canonical empty body `[00,00,00,00]` when both are empty (preserving
+    // today's golden). Baracuda (#68) confirmed the rank-2 golden as the shared
+    // cross-producer fixture and has no near-term binary arm, so Fuel's
+    // serializer is the contract.
+    /// LHS per-axis contraction roles ({Batch=0,FreeM=1,FreeN=2,ContractedK=3},
+    /// u8 each; length = lhs rank). Empty ⇒ implicit (rank-polymorphic) matmul.
+    pub lhs_roles: Vec<u8>,
+    /// RHS per-axis contraction roles (same encoding; length = rhs rank). Empty
+    /// ⇒ implicit (rank-polymorphic) matmul.
+    pub rhs_roles: Vec<u8>,
 }
 
 // --- §6.19-shaped canonical positional-blob serialization (Convergence Increment A) ---
@@ -129,7 +200,8 @@ pub struct OpAttrs {
 // SCOPE (do not overclaim): this is the §6.19 positional *shape*, and it is
 // byte-comparable with a Baracuda-emitted blob **for the positionally-conformant
 // ops** — elementwise, cast, slice, concat, roll, pad, flip, iota, permute,
-// (un)squeeze, shape-target. Two known divergences from the confirmed §6.19.3
+// (un)squeeze, shape-target, matmul role-vectors (§5, LOCKED). Two known
+// divergences from the confirmed §6.19.3
 // schemas (see docs/outreach/baracuda-recipe-grammar-codesign-reply-2.md), which
 // the pinned node schema `Op{op_name, op_attrs, child_edges}` reconciles WITHOUT
 // widening this blob:
@@ -151,19 +223,43 @@ fn put_str(b: &mut Vec<u8>, s: &str) { put_u32(b, s.len() as u32); b.extend_from
 fn put_i64_list(b: &mut Vec<u8>, xs: &[i64]) { put_u32(b, xs.len() as u32); for &x in xs { put_i64(b, x); } }
 fn put_u32_list(b: &mut Vec<u8>, xs: &[u32]) { put_u32(b, xs.len() as u32); for &x in xs { put_u32(b, x); } }
 fn put_f64_list(b: &mut Vec<u8>, xs: &[f64]) { put_u32(b, xs.len() as u32); for &x in xs { put_f64(b, x); } }
+fn put_u8_list(b: &mut Vec<u8>, xs: &[u8]) { put_u32(b, xs.len() as u32); b.extend_from_slice(xs); }
+
+/// Derive the canonical matmul role vectors for a same-rank ≥ 2 contraction
+/// (the LOCKED reply-3 cell, §5): `lhs = [Batch×(r−2), FreeM, ContractedK]`,
+/// `rhs = [Batch×(r−2), ContractedK, FreeN]` over the roles
+/// { Batch=0, FreeM=1, FreeN=2, ContractedK=3 }. Roles encode axis POSITIONS,
+/// not extents — GQA-divisible batch stays all-`Batch`. Pure + never-panic: a
+/// rank < 2 operand (never a real matmul input) yields an all-`Batch` vector of
+/// that length, which the resolver's exact-match check rejects as non-canonical.
+pub fn matmul_roles(lhs_rank: usize, rhs_rank: usize) -> (Vec<u8>, Vec<u8>) {
+    fn one(rank: usize, second_last: u8, last: u8) -> Vec<u8> {
+        let mut v = vec![0u8; rank]; // Batch = 0 for every leading axis
+        if rank >= 2 {
+            v[rank - 2] = second_last;
+            v[rank - 1] = last;
+        }
+        v
+    }
+    // lhs: [.., FreeM(1), ContractedK(3)]; rhs: [.., ContractedK(3), FreeN(2)].
+    (one(lhs_rank, 1, 3), one(rhs_rank, 3, 2))
+}
 
 impl OpAttrs {
     /// Serialize these attrs to the KISS §6.19 canonical positional blob for
     /// `op`: a per-op **positional** little-endian body (no elision — the
     /// `OpTag` determines the fixed schema), length-prefixed with a `u32` LE
-    /// byte count. An op whose schema is empty (`Add`, `Neg`, `MatMul`, `Where`,
+    /// byte count. An op whose schema is empty (`Add`, `Neg`, `Where`,
     /// comparisons, …) serializes as the single canonical form `[0,0,0,0]`.
-    /// Deterministic + dependency-free.
+    /// `MatMul` is empty-bodied ONLY when its role vectors are unset (the
+    /// implicit rank-polymorphic form); explicit roles serialize the LOCKED
+    /// §5 contraction descriptor. Deterministic + dependency-free.
     ///
     /// **Conformance scope (do not overclaim):** byte-comparable with a
     /// Baracuda-emitted blob for the positionally-conformant ops (elementwise,
     /// cast, slice, concat, roll, pad, flip, iota, permute, (un)squeeze,
-    /// shape-target). `reduce` emits Fuel's single-axis `{axis, keepdim}` and
+    /// shape-target, matmul role-vectors — the shared cross-producer golden,
+    /// Baracuda #68). `reduce` emits Fuel's single-axis `{axis, keepdim}` and
     /// `gather`/`scatter` emit `{axis}`; `oob_policy` and a multi-axis
     /// `reduce_axes` list are DEFERRED (no carrier/consumer yet), while
     /// `monoid`/`scatter_combine` ride `op_name` and the index operand/dtype
@@ -210,8 +306,10 @@ impl OpAttrs {
                 put_i64(&mut body, self.axis.unwrap_or(0));
                 put_i64(&mut body, self.roll_shift.unwrap_or(0));
             }
-            // Dim reductions + cumsum: axis(i64) + keepdim(u8).
-            T::SumDim | T::MeanDim | T::CumSum => {
+            // Dim reductions + cumsum: axis(i64) + keepdim(u8). The monoid
+            // rides op_name (distinct SumDim/MaxDim/MeanDim tags), so every
+            // reduce tag shares this one row schema.
+            T::SumDim | T::MaxDim | T::MeanDim | T::CumSum => {
                 put_i64(&mut body, self.axis.unwrap_or(0));
                 body.push(self.keepdim.unwrap_or(false) as u8);
             }
@@ -236,7 +334,19 @@ impl OpAttrs {
                 put_f64_list(&mut body, &self.scalars);
                 put_str(&mut body, self.cast_dtype.as_deref().unwrap_or(""));
             }
-            // Empty-schema ops (elementwise, comparison, Where, MatMul, scalar
+            // MatMul: the LOCKED role-vector contraction descriptor (§5,
+            // reply-3) — `u32_le(len lhs) ++ lhs_roles ++ u32_le(len rhs) ++
+            // rhs_roles`, u8 roles, lhs-then-rhs. Both empty ⇒ the empty body
+            // (the canonical `[00,00,00,00]` implicit form; recipes keep matmul
+            // rank-polymorphic). The rank-2 golden is the shared cross-producer
+            // fixture (Baracuda #68).
+            T::MatMul => {
+                if !self.lhs_roles.is_empty() || !self.rhs_roles.is_empty() {
+                    put_u8_list(&mut body, &self.lhs_roles);
+                    put_u8_list(&mut body, &self.rhs_roles);
+                }
+            }
+            // Empty-schema ops (elementwise, comparison, Where, scalar
             // reductions, log-softmax, …) and any tag added later: zero-length.
             _ => {}
         }
@@ -371,5 +481,207 @@ mod tests {
     fn canonical_bytes_are_deterministic() {
         let a = OpAttrs { target_shape: vec![2, 3], ..OpAttrs::default() };
         assert_eq!(a.to_canonical_bytes(OpTag::Reshape), a.to_canonical_bytes(OpTag::Reshape));
+    }
+
+    // ---- Per-carrier width conformance (KISS coordinator pin, vs KISS main c9153b2) --
+    //
+    // There are THREE coexisting op_attrs / shape-expr framings. Widths are pinned
+    // PER-CARRIER, never as "the op_attrs width" — a future consolidation must NOT
+    // silently unify them (KISS #67 do-not-unify):
+    //   (a) #67 NODE-ENVELOPE op_attrs        → u32-LE OUTER byte length, payload
+    //       verbatim, no-parse-inside (§6.19-0010). Live producer:
+    //       `OpAttrs::to_canonical_bytes`.
+    //   (b) KISS-Grammar §6.8-0007 REGION-NODE-TABLE op_attrs SUB-BLOCK → u16-LE
+    //       length + payload verbatim; EMPTY = 0x0000. A DIFFERENT carrier from (a).
+    //       Fuel ships NO producer yet (node/table wire serializer is #67-gated,
+    //       slice 4); this pin binds that future serializer to u16-LE here.
+    //   (c) §6.20-0005 SHAPE-EXPR binary-node CHILD length → u16-LE. Live producer:
+    //       `shape_expr::Dim::encode`.
+    #[test]
+    fn three_carrier_width_pins_stay_distinct() {
+        use crate::shape_expr::{Dim, LAST};
+
+        // Carrier (a): node-envelope op_attrs — outer prefix is EXACTLY 4 bytes
+        // (u32-LE); an empty schema is the 4-byte zero form.
+        let empty = OpAttrs::default().to_canonical_bytes(OpTag::Add);
+        assert_eq!(empty, vec![0u8, 0, 0, 0], "carrier (a): empty node-envelope op_attrs = u32-LE zero (4 bytes)");
+        let sliced = OpAttrs { axis: Some(1), slice_start: Some(2), slice_len: Some(3), ..OpAttrs::default() };
+        let blob = sliced.to_canonical_bytes(OpTag::Slice);
+        let a_body_len = u32::from_le_bytes([blob[0], blob[1], blob[2], blob[3]]) as usize;
+        assert_eq!(blob.len(), 4 + a_body_len, "carrier (a): outer length prefix is u32-LE (4 bytes), body verbatim");
+
+        // Carrier (b): region-node-table op_attrs sub-block — u16-LE length +
+        // verbatim payload; empty = 0x0000. Modeled here (no Fuel producer yet) so
+        // the width pin is executable and NAMED before the slice-4 serializer lands.
+        fn region_node_table_op_attrs_sub_block(payload: &[u8]) -> Vec<u8> {
+            let mut out = (payload.len() as u16).to_le_bytes().to_vec();
+            out.extend_from_slice(payload); // verbatim, no-parse-inside
+            out
+        }
+        assert_eq!(
+            region_node_table_op_attrs_sub_block(&[]),
+            vec![0x00, 0x00],
+            "carrier (b): EMPTY region-node-table op_attrs sub-block = 0x0000 (u16-LE, 2 bytes)"
+        );
+        assert_eq!(
+            region_node_table_op_attrs_sub_block(&[0xAB, 0xCD]),
+            vec![0x02, 0x00, 0xAB, 0xCD],
+            "carrier (b): sub-block length prefix is u16-LE (2 bytes), payload verbatim"
+        );
+
+        // Carrier (c): shape-expr binary-node child length — u16-LE (2 bytes),
+        // inside Dim::{Add,Sub,Mul,Div}. The rope-half golden's child prefixes:
+        // tag(0x08) ++ u16-LE(3) ++ Extent(3B) ++ u16-LE(9) ++ Const(9B).
+        let half = Dim::Div(
+            Box::new(Dim::Extent { operand: 0, axis: LAST }),
+            Box::new(Dim::Const(2)),
+        );
+        let bytes = half.encode();
+        assert_eq!(
+            [bytes[1], bytes[2]],
+            3u16.to_le_bytes(),
+            "carrier (c): first child length prefix is u16-LE (2 bytes)"
+        );
+        assert_eq!(
+            [bytes[6], bytes[7]],
+            9u16.to_le_bytes(),
+            "carrier (c): second child length prefix is u16-LE (2 bytes)"
+        );
+        assert_eq!(bytes.len(), 1 + 2 + 3 + 2 + 9, "carrier (c): whole rope-half blob accounted for");
+
+        // Pinned widths, side by side — (a)=4 (u32-LE) vs (b)=2 (u16-LE) vs
+        // (c)=2 (u16-LE). (b) and (c) sharing a width is coincidence, not unity:
+        // each is pinned by its OWN carrier name above.
+    }
+
+    // ---- T2 (Increment C slice 1): shape-relative interior fields stay OFF
+    // the §6.19 wire ------------------------------------------------------
+    //
+    // D2 pin (KISS #67-gated): `target_shape_rel` / `slice_start_rel` /
+    // `slice_len_rel` / `axis_last` are IN-MEMORY recipe data, resolved to the
+    // concrete fields at emit time. The pinned §6.19 arms for
+    // `broadcast_to`/`slice` are ABSOLUTE (`put_i64_list(target_shape)`,
+    // `u32(axis) ++ u64(start) ++ u64(len)`), and the node-envelope framing
+    // that could carry a relative alternative is being defined in KISS #67 —
+    // serializing a rel form now would unilaterally extend a shared byte
+    // contract (propose-first says no). This test pins the ABSENCE: the wire
+    // bytes are identical with and without every rel field set, for every
+    // schema family the rel fields could plausibly leak into.
+    #[test]
+    fn rel_attr_fields_are_absent_from_the_6_19_wire() {
+        use crate::shape_expr::{Dim, LAST, ShapeExpr};
+        let half = Dim::Div(
+            Box::new(Dim::Extent { operand: 0, axis: LAST }),
+            Box::new(Dim::Const(2)),
+        );
+        let rel_only = OpAttrs {
+            target_shape_rel: Some(ShapeExpr::SameAs { operand: 0 }),
+            slice_start_rel: Some(half.clone()),
+            slice_len_rel: Some(half),
+            axis_last: true,
+            ..OpAttrs::default()
+        };
+        // Shape-target arm (BroadcastTo/Reshape): rel-only attrs serialize
+        // byte-identically to fully-default attrs (an unset target_shape).
+        assert_eq!(
+            rel_only.to_canonical_bytes(OpTag::BroadcastTo),
+            OpAttrs::default().to_canonical_bytes(OpTag::BroadcastTo),
+            "target_shape_rel must not reach the broadcast_to wire arm"
+        );
+        // Slice arm: the ABSOLUTE fields serialize; adding every rel field on
+        // top changes NOTHING.
+        let abs = OpAttrs { axis: Some(1), slice_start: Some(2), slice_len: Some(3), ..OpAttrs::default() };
+        let abs_plus_rel = OpAttrs { axis: Some(1), slice_start: Some(2), slice_len: Some(3), ..rel_only.clone() };
+        assert_eq!(
+            abs_plus_rel.to_canonical_bytes(OpTag::Slice),
+            abs.to_canonical_bytes(OpTag::Slice),
+            "slice_{{start,len}}_rel must not reach the slice wire arm"
+        );
+        // Reduce row (axis ++ keepdim): axis_last must not leak.
+        let sd = OpAttrs { axis: Some(1), ..OpAttrs::default() };
+        let sd_plus_rel = OpAttrs { axis: Some(1), ..rel_only.clone() };
+        assert_eq!(
+            sd_plus_rel.to_canonical_bytes(OpTag::SumDim),
+            sd.to_canonical_bytes(OpTag::SumDim),
+            "axis_last must not reach the reduce wire row"
+        );
+        // Empty-schema op: stays the single canonical 4-byte zero form even
+        // with every rel field set.
+        assert_eq!(rel_only.to_canonical_bytes(OpTag::Add), vec![0, 0, 0, 0]);
+    }
+
+    // ---- T4 (Increment C slice 1): additive OpTag::MaxDim -----------------
+
+    #[test]
+    fn max_dim_serializes_the_reduce_row() {
+        // `OpTag::MaxDim` joins the pinned §6.19 reduce row — carrier (a), the
+        // node-envelope op_attrs blob (u32-LE outer): body = i64(axis) ++
+        // u8(keepdim). The monoid rides `op_name` (distinct SumDim/MaxDim/
+        // MinDim tags — see the module comment's reduce-schema note), so the
+        // blob is IDENTICAL in shape to SumDim's. Golden for axis=1, keepdim
+        // unset (=0): u32-LE(9) ++ i64-LE(1) ++ 0x00.
+        let a = OpAttrs { axis: Some(1), ..OpAttrs::default() };
+        let mut expect = 9u32.to_le_bytes().to_vec();
+        expect.extend_from_slice(&1i64.to_le_bytes());
+        expect.push(0u8);
+        assert_eq!(a.to_canonical_bytes(OpTag::MaxDim), expect);
+        // Row-shape identity: byte-identical to the SumDim row for the same
+        // attrs (the tag disambiguates via op_name, never via the blob).
+        assert_eq!(
+            a.to_canonical_bytes(OpTag::MaxDim),
+            a.to_canonical_bytes(OpTag::SumDim),
+            "MaxDim must share the SumDim reduce-row schema"
+        );
+    }
+
+    // ---- T9 (Increment C slice 1): matmul role-vector serialize + derive -----
+    //
+    // The LOCKED reply-3 layout (commit `b64aa1db`; §5 of the recipe-grammar
+    // design input): matmul's op_attrs = two per-axis role vectors over
+    // { Batch=0, FreeM=1, FreeN=2, ContractedK=3 } (one u8 per axis), `lhs_roles`
+    // then `rhs_roles`, each length = operand rank —
+    //   body = u32_le(len lhs) ++ lhs_roles ++ u32_le(len rhs) ++ rhs_roles
+    // wrapped by carrier (a)'s outer u32_le(body_len) frame. Role vectors encode
+    // WHICH axis plays which role, not extents, so GQA (differing-but-divisible
+    // batch extents) serializes to identical all-Batch leading roles.
+
+    #[test]
+    fn matmul_role_vectors_serialize_the_locked_rank2_golden() {
+        // Worked rank-2 example: lhs=[FreeM,ContractedK]=[1,3], rhs=[ContractedK,FreeN]=[3,2].
+        //   body = 02000000 | 0103 | 02000000 | 0302   (12 bytes)
+        //   full = 0C000000 | body                       (16 bytes)
+        //
+        // INJECTED (B9): this golden is ALSO the shared CROSS-PRODUCER contract —
+        // Baracuda (#68) confirmed the exact bytes and has NO near-term binary
+        // arm, so Fuel's serializer is first and this golden IS the contract.
+        let a = OpAttrs { lhs_roles: vec![1, 3], rhs_roles: vec![3, 2], ..OpAttrs::default() };
+        let golden: Vec<u8> = vec![
+            0x0C, 0x00, 0x00, 0x00, // outer u32-LE body length = 12
+            0x02, 0x00, 0x00, 0x00, // u32-LE len lhs_roles = 2
+            0x01, 0x03, //             lhs_roles = [FreeM, ContractedK]
+            0x02, 0x00, 0x00, 0x00, // u32-LE len rhs_roles = 2
+            0x03, 0x02, //             rhs_roles = [ContractedK, FreeN]
+        ];
+        assert_eq!(
+            a.to_canonical_bytes(OpTag::MatMul),
+            golden,
+            "the rank-2 matmul role-vector golden is the shared cross-producer contract (Baracuda #68)"
+        );
+    }
+
+    #[test]
+    fn matmul_empty_roles_stay_the_canonical_zero_body() {
+        // Empty roles = the rank-polymorphic recipe form: the body is empty → the
+        // single canonical 4-byte zero form. This preserves today's golden
+        // (`empty_schema_op_serializes_zero_length`) untouched.
+        assert_eq!(OpAttrs::default().to_canonical_bytes(OpTag::MatMul), vec![0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn matmul_roles_derives_the_canonical_cell() {
+        // matmul_roles(lhs_rank, rhs_rank): lhs = [Batch.., FreeM(1), ContractedK(3)];
+        // rhs = [Batch.., ContractedK(3), FreeN(2)]. Role POSITIONS, not extents.
+        assert_eq!(matmul_roles(2, 2), (vec![1u8, 3], vec![3u8, 2]));
+        assert_eq!(matmul_roles(4, 4), (vec![0u8, 0, 1, 3], vec![0u8, 0, 3, 2]));
     }
 }
