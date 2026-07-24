@@ -327,6 +327,22 @@ verdict authority). Follow-ups now implemented (CPU-verified; live-GPU e2e legs 
 - **(iii) IngestionService-level `Flagged` e2e** — service routing `Flagged → on_flagged`
   pinned (CPU) + a live-GPU f64-add escalate e2e (`#[ignore]`, gate 5).
 
+**Seam-migration follow-on (2026-07-23, branch `feat/kiss-ref-expr-migration`).** kiss-ref
+promoted the composition Fuel's adapter had been hand-rolling to a **first-class** seam
+(`reference_expr` / `diff_expr` + the `_f32`/`_f16`/`_bf16` mirrors it minted for this
+consumer). Fuel bumped the pinned rev `b75a748 → 1f3981f` in lockstep (both `Cargo.toml`
+pins — adapter + `fuel-dispatch`'s `jit`; inert — `kiss-ops-vocab` byte-unchanged, `eval_expr`
+untouched, only the mirrors added), then migrated **all four float lanes**
+(`reference_region_{f32,f64,f16,bf16}` / `diff_region_*`) onto that seam instead of the
+verbatim local copy of kiss's diff loop — numerically inert (same `eval_expr` engine), pinned by
+migration-equivalence tests keeping the old loop as a bit-exact oracle. The **advisory band
+stays Fuel-owned** (`PatternNode → Expr` translation + `region_advisory_tolerance` + typed
+declines): kiss-ref supplies the reference numerics, Fuel decides the tolerance — the §6.6-0007
+mechanism-vs-verdict line. The **cancellation caveat is unchanged** (linear-ULP addition is
+first-order; raw `max_ulp` always recorded). The §6.8 band formula's two hand-maintained copies
+(adapter reference-only + live `jit_ingest::advisory_ulp_band`) were consolidated onto one shared
+drift-pinning fixture (`fuel_kernel_seam_types::advisory_band_reference_cases()`).
+
 Residual gaps (named, tracked): **static-op advisory** still declines — a static `FusedOpId`
 carries no `PatternNode` region until the pinned recipe-grammar migration lands (the
 Convergence Tier-2 PatternNode-data migration; static claims aren't elementwise anyway);

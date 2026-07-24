@@ -3,7 +3,8 @@
 **From:** Fuel (kernel consumer / consumer-under-test) · **To:** kiss-ref + KISS (ThinkersJournal), cc Baracuda · **Date:** 2026-07-23
 **Re:** the advisory-band tolerance refinement (kiss-ref, 2026-07-23) and the arrival of KISS's v1 exact-byte conformance corpus.
 **Builds on:** [`kiss-conformance-architecture-fuel-ratify.md`](kiss-conformance-architecture-fuel-ratify.md) (the ratified verify-seam repoint) + [`kiss-ref-live-reference-reply.md`](kiss-ref-live-reference-reply.md).
-**Branch:** `feat/kiss-ref-verdict-integration` (the verify-seam follow-ups (i)–(iii) build).
+**Branch:** `feat/kiss-ref-verdict-integration` (the verify-seam follow-ups (i)–(iii) build);
+the seam-migration follow-on (§(c) below) lands on `feat/kiss-ref-expr-migration`.
 
 This note records two external agreements Fuel has **adopted into shipped code** this pass, so the paper trail matches the implementation.
 
@@ -28,7 +29,8 @@ op nodes, of which `n_exact` are exact-class and the remainder transcendental):
 - The `(n_exact − 1)` exact-rounding term **saturates at 0**, so a lone transcendental
   keeps exactly its own §6.8 ceiling.
 - **Per-op ceilings are read from kiss-ref's OWN API** — `kiss_ops_vocab::Op::ulp_ceiling`
-  at the pinned rev `b75a748`. `Exp` declares `4`. Ops kiss models as non-primitives
+  at the pinned rev (`1f3981f`; unchanged from `b75a748` — `kiss-ops-vocab` is byte-identical
+  across that bump, see §(c)). `Exp` declares `4`. Ops kiss models as non-primitives
   (`Tanh`, `Sigmoid`, `Silu`, `GeluTanh`, `Gelu`, `Rsqrt`) return `None` from `ulp_ceiling`
   (they inherit their decomposition's tolerance); per the refinement's instruction, a mapped
   op that exposes **no** ceiling is treated as **4 ULP** with an explicit code comment
@@ -51,9 +53,11 @@ distance is never lost to the band label.
 `kiss_ops_vocab::decomp::Expr` + `kiss_ref_core::eval_expr` as the **intended-stable public
 seam** for consumers translating a composed region into a reference evaluation — verified
 **byte-identical across `b75a748..004e1a4`**. Fuel's adapter (`fuel-kiss-ref-backend`,
-`region.rs`) depends on exactly this seam (`region_to_expr` builds an `Expr`; `diff_region_*`
-replicates kiss's op-keyed diff loop over `eval_expr` row-wise). The confirmation removes the
-prior "tensor-eval PENDING" caution — the multi-node coverage item is unblocked.
+`region.rs`) depends on exactly this seam: it translates the region to an `Expr` and evaluates
+it row-wise. Originally the adapter hand-rolled that composition (a verbatim copy of kiss's
+op-keyed diff loop over `eval_expr`); §(c) records its migration onto kiss-ref's now-first-class
+composed-expression mirrors. The confirmation removes the prior "tensor-eval PENDING" caution —
+the multi-node coverage item is unblocked.
 
 ## (b) Corpus activation — KISS v1 exact-byte corpus now EXISTS
 
@@ -87,6 +91,40 @@ or a candidate-invoking `corpus_verdict`), tracked in
 [`../design-notes/2026-07-23-kiss-corpus-verdict-seam-mismatch.md`](../design-notes/2026-07-23-kiss-corpus-verdict-seam-mismatch.md).
 Until then, recipe-realize + the kiss-ref advisory remain the interim authority, exactly as
 §6.6-0007 anticipates.
+
+## (c) Seam migration — the four region lanes delegate to kiss-ref's first-class composed-Expr seam
+
+Follow-on to (a), same consumer corner. kiss-ref promoted the composition Fuel's adapter had
+been hand-rolling to a **first-class** seam — `reference_expr` / `diff_expr` plus the
+`_f32`/`_f16`/`_bf16` mirrors it minted **for this consumer** — over the same `eval_expr` engine.
+Fuel adopted it:
+
+- **Pin bump `b75a748` → `1f3981f`, in lockstep** across both places that pin kiss-ref —
+  `fuel-kiss-ref-backend/Cargo.toml` (the adapter's three crates) and `fuel-dispatch/Cargo.toml`
+  (`kiss-ops-vocab` under `jit`). The bump is inert for Fuel's use: `kiss-ops-vocab` /
+  `kiss-classify-vocab` are byte-unchanged and `resolve.rs` (`eval_expr`) is untouched; the new
+  rev only *adds* the composed-expression mirrors.
+- **All four float lanes now delegate** — `reference_region_{f32,f64,f16,bf16}` /
+  `diff_region_*` call `kiss_ref_core::reference_expr*` / `diff_expr*` instead of driving
+  `eval_expr` row-wise in a local copy of kiss's diff loop. Same engine, so the swap is
+  numerically inert; pinned by migration-equivalence tests that keep the pre-migration loop as
+  a test-only oracle and assert new == old field-for-field (bit-exact on all four lanes, plus a
+  planted 1-ULP catch at `Exact` / tolerate at `Ulp(1)`). kiss's `LengthMismatch` is re-typed to
+  the adapter's own `KissRefError::LengthMismatch` (a typed decline, never a panic).
+
+**What stays Fuel's — the mechanism/verdict split.** kiss-ref now supplies the reference
+*numerics* (the composed evaluation), but the **advisory band stays Fuel-owned**: the
+`PatternNode → Expr` translation, `region_advisory_tolerance` / `region_ulp_ceilings` /
+`op_ulp_ceiling`, and every typed decline remain in Fuel. This is the §6.6-0007
+mechanism-vs-verdict line — kiss-ref flags/evaluates, Fuel decides the tolerance and never lets
+kiss-ref pronounce a verdict. The **cancellation caveat from (a) is unchanged**: linear-ULP
+addition is first-order, so cancellation-heavy regions can still flag spuriously, and the raw
+`max_ulp` is still always recorded alongside the advisory label.
+
+(A second, related cleanup this pass consolidated the §6.8 band formula's two hand-maintained
+copies — the adapter's reference-only `region_advisory_tolerance` and the live-path
+`fuel_dispatch::jit_ingest::advisory_ulp_band` — onto one shared drift-pinning fixture,
+`fuel_kernel_seam_types::advisory_band_reference_cases()`, which both sides now assert against.)
 
 ## Asks / FYIs to kiss-ref + KISS
 
