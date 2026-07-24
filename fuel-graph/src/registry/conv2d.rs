@@ -3,8 +3,9 @@
 //!
 //! Provides:
 //! - [`entry`] — the metadata-side `FusedOpEntry` (shape/dtype rules, a
-//!   `decompose` that lowers the groups=1 case to the im2col recipe
-//!   (`groups>1` self-returns pending CV2), stubbed pattern).
+//!   `decompose` that lowers ANY `groups>=1` case to the im2col recipe
+//!   (groups=1 rank-3; `groups>1` rank-4 batched over `[N, groups]`), stubbed
+//!   pattern).
 //!
 //! ## Architectural note — migrates via an index-gather im2col recipe (NOT a basis gap)
 //!
@@ -37,13 +38,16 @@
 //! unchanged.** See the `10-decisions-log.md` 2026-07-24 addendum and
 //! the `2026-07-24-incc-conv-im2col` plan for the full recipe shape.
 //!
-//! **Status (CV1, im2col-1):** [`decompose`] lowers the **groups=1**
-//! case (with an optional bias tail) to that recipe — see [`recipe`].
-//! A grouped conv (`groups>1`) is still a surfaced honest-miss that
-//! self-returns (the G2 total + never-panic fixpoint, telemetry, never
-//! a crash) pending slice CV2's batched/per-group path; backends
-//! without a native Conv2D kernel route the still-fused node through
-//! `GraphExecutor::cpu_fallback`.
+//! **Status (CV2, im2col-2):** [`decompose`] lowers **any `groups>=1`**
+//! (with an optional bias tail) to that recipe — the groups=1 rank-3
+//! [`recipe`] and the `groups>1` (incl. depthwise `groups=Cin`) rank-4
+//! batched [`recipe_grouped`], which carries the group as an explicit
+//! matmul batch axis (`[N, groups]`) exactly like the CPU kernel's
+//! per-group im2col + GEMM. A malformed grouping (indivisible `Cin`/`Cout`,
+//! or a weight `Cin/g` mismatch) is a surfaced honest-miss that
+//! self-returns (the G2 total + never-panic fixpoint, telemetry, never a
+//! crash); backends without a native Conv2D kernel route the still-fused
+//! node through `GraphExecutor::cpu_fallback`.
 //!
 //! The matcher is also stubbed (returns `None`) — Conv2D nodes
 //! originate from the `Tensor::conv2d` builder; user-decomposed forms
@@ -166,7 +170,6 @@ fn recipe(
 
     let k = cin * kh * kw; // contraction dim  (Cin·Kh·Kw)
     let spatial = hout * wout; // output spatial (Hout·Wout)
-    let l = kh * kw * hout * wout; // gathered positions per (n, cin)
 
     // ---- 1. Pad x -> [N,Cin,Hpad,Wpad], flatten spatial -> [N,Cin,Hpad*Wpad].
     let xp = op(
@@ -190,37 +193,8 @@ fn recipe(
         vec![xp],
     );
 
-    // ---- 2. build the flat gather index [L].
-    // idx(ky,kx,oh,ow) = ky·Wpad + kx + oh·(sh·Wpad) + ow·sw
-    let idx4_shape = vec![kh as i64, kw as i64, hout as i64, wout as i64];
-    // A per-axis term: Iota(axis_len) -> Reshape(rank-4 broadcastable)
-    //   -> MulScalar(factor) -> BroadcastTo([Kh,Kw,Hout,Wout]).
-    let term = |axis_len: usize, reshape_dims: Vec<i64>, factor: f64| -> PatternNode {
-        let iota = op(
-            T::Iota,
-            OpAttrs { target_shape: vec![axis_len as i64], ..OpAttrs::default() },
-            vec![],
-        );
-        let re = op(T::Reshape, shape_attr(reshape_dims), vec![iota]);
-        let scaled = op(
-            T::MulScalar,
-            OpAttrs { scalars: vec![factor], ..OpAttrs::default() },
-            vec![re],
-        );
-        op(T::BroadcastTo, shape_attr(idx4_shape.clone()), vec![scaled])
-    };
-    let term_ky = term(kh, vec![kh as i64, 1, 1, 1], wpad as f64);
-    let term_kx = term(kw, vec![1, kw as i64, 1, 1], 1.0);
-    let term_oh = term(hout, vec![1, 1, hout as i64, 1], (sh * wpad) as f64);
-    let term_ow = term(wout, vec![1, 1, 1, wout as i64], sw as f64);
-    let add = |a, b| op(T::Add, OpAttrs::default(), vec![a, b]);
-    let idx4 = add(add(add(term_ky, term_kx), term_oh), term_ow);
-    let idx1 = op(T::Reshape, shape_attr(vec![l as i64]), vec![idx4]);
-    let idx = op(
-        T::Cast,
-        OpAttrs { cast_dtype: Some("u32".to_string()), ..OpAttrs::default() },
-        vec![idx1],
-    );
+    // ---- 2. build the flat gather index [L] (grouping-independent).
+    let idx = flat_gather_index(kh, kw, hout, wout, sh, sw, wpad);
 
     // ---- 3. im2col gather -> [N,Cin,L]; reshape to patch matrix [N,K,Hout*Wout].
     let cols = op(
@@ -260,7 +234,190 @@ fn recipe(
             shape_attr(vec![n as i64, cout as i64, hout as i64, wout as i64]),
             vec![bm],
         );
-        add(out, bb)
+        op(T::Add, OpAttrs::default(), vec![out, bb])
+    } else {
+        out
+    }
+}
+
+/// Build the 1-D `[Kh·Kw·Hout·Wout]` `U32` gather index over the padded,
+/// flattened spatial axis — the im2col window→flat-source map, shared verbatim
+/// by the groups=1 [`recipe`] and the grouped [`recipe_grouped`]. The index is
+/// the SAME tensor regardless of grouping (grouping only reshapes the *gathered*
+/// columns and the weight; the per-`(n, cin)` window pattern is identical), so
+/// both recipes emit byte-identical index sub-DAGs.
+///
+/// `idx(ky,kx,oh,ow) = (oh·sh + ky)·Wpad + (ow·sw + kx)`, assembled as a sum of
+/// four per-axis terms — `Op::Iota(axis_len)` reshaped to a rank-4 broadcastable
+/// form, scaled by its stride factor (`MulScalar`), broadcast to
+/// `[Kh,Kw,Hout,Wout]` — then flattened to 1-D and `Op::Cast(U32)`. Integer
+/// values are exact in F32 for padded-spatial extent `< 2^24`. Dilation is
+/// always 1 for Conv2D (`FusedOpParams::Conv2D` has no dilation field).
+fn flat_gather_index(
+    kh: usize, kw: usize,
+    hout: usize, wout: usize,
+    sh: usize, sw: usize,
+    wpad: usize,
+) -> PatternNode {
+    use OpTag as T;
+    let op = |op, attrs, operands| PatternNode::Op { op, attrs, operands };
+    let shape_attr = |dims: Vec<i64>| OpAttrs { target_shape: dims, ..OpAttrs::default() };
+
+    let l = kh * kw * hout * wout;
+    let idx4_shape = vec![kh as i64, kw as i64, hout as i64, wout as i64];
+    // A per-axis term: Iota(axis_len) -> Reshape(rank-4 broadcastable)
+    //   -> MulScalar(factor) -> BroadcastTo([Kh,Kw,Hout,Wout]).
+    let term = |axis_len: usize, reshape_dims: Vec<i64>, factor: f64| -> PatternNode {
+        let iota = op(
+            T::Iota,
+            OpAttrs { target_shape: vec![axis_len as i64], ..OpAttrs::default() },
+            vec![],
+        );
+        let re = op(T::Reshape, shape_attr(reshape_dims), vec![iota]);
+        let scaled = op(
+            T::MulScalar,
+            OpAttrs { scalars: vec![factor], ..OpAttrs::default() },
+            vec![re],
+        );
+        op(T::BroadcastTo, shape_attr(idx4_shape.clone()), vec![scaled])
+    };
+    let term_ky = term(kh, vec![kh as i64, 1, 1, 1], wpad as f64);
+    let term_kx = term(kw, vec![1, kw as i64, 1, 1], 1.0);
+    let term_oh = term(hout, vec![1, 1, hout as i64, 1], (sh * wpad) as f64);
+    let term_ow = term(wout, vec![1, 1, 1, wout as i64], sw as f64);
+    let add = |a, b| op(T::Add, OpAttrs::default(), vec![a, b]);
+    let idx4 = add(add(add(term_ky, term_kx), term_oh), term_ow);
+    let idx1 = op(T::Reshape, shape_attr(vec![l as i64]), vec![idx4]);
+    op(
+        T::Cast,
+        OpAttrs { cast_dtype: Some("u32".to_string()), ..OpAttrs::default() },
+        vec![idx1],
+    )
+}
+
+/// Conv2D's index-gather im2col recipe for the **grouped** case (`groups>1`,
+/// including depthwise `groups=Cin`) — Increment C im2col-2 (CV2). Mirrors the
+/// CPU kernel's per-group im2col + GEMM by carrying the group as an explicit
+/// batch axis: the input's `Cin` axis splits into `(groups, Cin/g)`, the gather
+/// runs unchanged, and a **rank-4 batched `Op::MatMul` over `[N, groups]`**
+/// contracts each group's patch matrix against its own weight slice. Everything
+/// is concrete at decompose time, so — like [`recipe`] and `selective_scan`'s
+/// per-call `recipe(seqlen,…)` — this bakes ABSOLUTE `OpAttrs`.
+///
+/// Bind space: `0 = x [N,Cin,Hin,Win]`, `1 = weight [Cout,Cin/g,Kh,Kw]`,
+/// `[2 = bias [Cout]]`. Emitted subgraph (all existing primitives):
+///
+/// ```text
+///   xp   = Pad[(0,0),(0,0),(ph,ph),(pw,pw), Const 0](x)   # [N,Cin,Hpad,Wpad]
+///   xf   = Reshape([N, g, Cin/g, Hpad*Wpad])(xp)          # split Cin -> (g, Cin/g)
+///   idx  = Cast(U32)( flat_gather_index() )               # 1-D [Kh*Kw*Hout*Wout]
+///   cols = IndexSelect(dim=3)(xf, idx)                    # [N, g, Cin/g, L]
+///   P    = Reshape([N, g, (Cin/g)*Kh*Kw, Hout*Wout])(cols)  # per-group patches
+///   Wb   = BroadcastTo([N, g, Cout/g, K/g])(Reshape([1, g, Cout/g, K/g])(weight))
+///   Y    = MatMul(Wb, P)                                  # [N, g, Cout/g, Hout*Wout]
+///   out  = Reshape([N, Cout, Hout, Wout])(Y)
+///   [ + Add(BroadcastTo([N,Cout,Hout,Wout])(Reshape([1,Cout,1,1])(bias))) ]
+/// ```
+///
+/// The `Cin = g·(Cin/g)` and `Cout = g·(Cout/g)` splits are plain row-major
+/// reshapes (channel `c = group·per_g + in_group`), so the group index lines up
+/// on BOTH operands: `P`'s `(g)`-th slice is that group's patch matrix and `Wb`'s
+/// `(g)`-th slice is that group's `[Cout/g, K/g]` weight (broadcast identically
+/// across the `N` batch). The `(Cin/g, Kh, Kw)` reshape ordering of `P` lines the
+/// contraction axis up with the weight's `[Cout, (Cin/g)·Kh·Kw]` reshape. Adds
+/// NO `Op` variant — the build-time-closed primitive basis is unchanged.
+#[allow(clippy::too_many_arguments)]
+fn recipe_grouped(
+    n: usize, cin: usize,
+    hpad: usize, wpad: usize,
+    kh: usize, kw: usize,
+    hout: usize, wout: usize,
+    cout: usize, groups: usize,
+    sh: usize, sw: usize,
+    ph: usize, pw: usize,
+    has_bias: bool,
+) -> PatternNode {
+    use OpTag as T;
+    let op = |op, attrs, operands| PatternNode::Op { op, attrs, operands };
+    let bind = |i| PatternNode::Bind { index: i };
+    let shape_attr = |dims: Vec<i64>| OpAttrs { target_shape: dims, ..OpAttrs::default() };
+
+    let cin_per_g = cin / groups;
+    let cout_per_g = cout / groups;
+    let k_per_g = cin_per_g * kh * kw; // per-group contraction dim
+    let spatial = hout * wout; // output spatial (Hout·Wout)
+
+    // ---- 1. Pad x -> [N,Cin,Hpad,Wpad]; split Cin -> (groups, Cin/g) and
+    //         flatten spatial -> [N, groups, Cin/g, Hpad*Wpad].
+    let xp = op(
+        T::Pad,
+        OpAttrs {
+            pad_amounts: vec![
+                (0, 0),
+                (0, 0),
+                (ph as u64, ph as u64),
+                (pw as u64, pw as u64),
+            ],
+            pad_mode:  Some(0), // PadMode::Constant
+            pad_value: Some(0.0),
+            ..OpAttrs::default()
+        },
+        vec![bind(0)],
+    );
+    let xf = op(
+        T::Reshape,
+        shape_attr(vec![n as i64, groups as i64, cin_per_g as i64, (hpad * wpad) as i64]),
+        vec![xp],
+    );
+
+    // ---- 2. flat gather index [L] (identical to the groups=1 path).
+    let idx = flat_gather_index(kh, kw, hout, wout, sh, sw, wpad);
+
+    // ---- 3. im2col gather over the last (padded-spatial) axis -> [N,g,Cin/g,L];
+    //         reshape to the per-group patch matrix [N, g, K/g, Hout*Wout].
+    let cols = op(
+        T::IndexSelect,
+        OpAttrs { axis: Some(3), ..OpAttrs::default() },
+        vec![xf, idx],
+    );
+    let patch = op(
+        T::Reshape,
+        shape_attr(vec![n as i64, groups as i64, k_per_g as i64, spatial as i64]),
+        vec![cols],
+    );
+
+    // ---- 4. weight [Cout,Cin/g,Kh,Kw] -> [1, g, Cout/g, K/g] -> broadcast
+    //         [N, g, Cout/g, K/g]; batched matmul -> [N, g, Cout/g, Hout*Wout].
+    let wm = op(
+        T::Reshape,
+        shape_attr(vec![1, groups as i64, cout_per_g as i64, k_per_g as i64]),
+        vec![bind(1)],
+    );
+    let wb = op(
+        T::BroadcastTo,
+        shape_attr(vec![n as i64, groups as i64, cout_per_g as i64, k_per_g as i64]),
+        vec![wm],
+    );
+    let ymat = op(T::MatMul, OpAttrs::default(), vec![wb, patch]);
+
+    // ---- 5. reshape to [N,Cout,Hout,Wout]; optional bias broadcast-Add tail.
+    let out = op(
+        T::Reshape,
+        shape_attr(vec![n as i64, cout as i64, hout as i64, wout as i64]),
+        vec![ymat],
+    );
+    if has_bias {
+        let bm = op(
+            T::Reshape,
+            shape_attr(vec![1, cout as i64, 1, 1]),
+            vec![bind(2)],
+        );
+        let bb = op(
+            T::BroadcastTo,
+            shape_attr(vec![n as i64, cout as i64, hout as i64, wout as i64]),
+            vec![bm],
+        );
+        op(T::Add, OpAttrs::default(), vec![out, bb])
     } else {
         out
     }
@@ -274,32 +431,34 @@ fn recipe(
 /// window strided gather (`Op::IndexSelect`), fully expressible in the closed
 /// `Op` basis.
 ///
-/// **Scope (CV1): groups=1**, with or without bias. The stride/padding and the
-/// concrete `Cin/Hin/Win/Cout/Kh/Kw` extents are read here and baked into the
-/// per-call recipe. A grouped conv (`groups>1`) is a surfaced honest-miss that
-/// stays fused pending slice CV2's batched/per-group path.
+/// **Scope: any `groups>=1`** (CV1 groups=1 + CV2 `groups>1`, including
+/// depthwise `groups=Cin`), with or without bias. The stride/padding/groups and
+/// the concrete `Cin/Hin/Win/Cout/Kh/Kw` extents are read here and baked into the
+/// per-call recipe; `groups==1` uses the rank-3 [`recipe`] and `groups>1` the
+/// rank-4 batched [`recipe_grouped`] (a batch axis carries the group).
 ///
 /// Per G2 (2026-06-20) this is total + never-panic: a wrong-params payload, a
-/// `groups>1` node, a malformed input arity/shape, or any bridge decline
-/// (bind-arity, rel-resolution, …) returns `id` — the driver's fixpoint signal,
-/// a surfaced opaque-op gap, never a crash. The recipe is the *math* the kernel
-/// computes; the fused CPU/CUDA Conv2D kernel stays the executed production path
-/// (the optimizer chooses by cost), and the recipe realizes on any backend with
-/// the primitive set for the base-map cover and the numeric verify oracle.
+/// malformed input arity/shape, an indivisible grouping (`Cin`/`Cout` not a
+/// multiple of `groups`, or the weight's `Cin/g` disagreeing), or any bridge
+/// decline (bind-arity, rel-resolution, …) returns `id` — the driver's fixpoint
+/// signal, a surfaced opaque-op gap, never a crash. The recipe is the *math* the
+/// kernel computes; the fused CPU/CUDA Conv2D kernel stays the executed
+/// production path (the optimizer chooses by cost), and the recipe realizes on
+/// any backend with the primitive set for the base-map cover and the numeric
+/// verify oracle.
 pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeId {
     let (stride, padding, groups) = match params {
         FusedOpParams::Conv2D { stride, padding, groups } => (*stride, *padding, *groups),
         // Wrong params for this id — can't decompose; return self (fixpoint).
         _ => return id,
     };
-    // CV1 scope: groups=1. Grouped conv is a surfaced honest-miss (CV2).
-    if groups != 1 {
+    if groups == 0 {
         return id;
     }
 
-    // Read the input shapes in a short borrow. A well-formed groups=1 CONV2D
-    // node has 2 inputs (x, weight) or 3 (x, weight, bias); malformed →
-    // fixpoint self-return (never panic).
+    // Read the input shapes in a short borrow. A well-formed CONV2D node has 2
+    // inputs (x, weight) or 3 (x, weight, bias); malformed → fixpoint
+    // self-return (never panic).
     let (x_shape, w_shape, n_inputs) = {
         let node = graph.node(id);
         if node.inputs.len() != 2 && node.inputs.len() != 3 {
@@ -318,8 +477,9 @@ pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeI
     }
     let (n, cin, hin, win) = (x_dims[0], x_dims[1], x_dims[2], x_dims[3]);
     let (cout, cin_per_g, kh, kw) = (w_dims[0], w_dims[1], w_dims[2], w_dims[3]);
-    // groups=1 ⇒ weight's Cin/group must equal x's Cin.
-    if cin_per_g != cin {
+    // Grouping must be well-formed: Cin/Cout divisible by groups and the
+    // weight's declared Cin/group must equal Cin/groups.
+    if cin % groups != 0 || cout % groups != 0 || cin_per_g != cin / groups {
         return id;
     }
     let (sh, sw) = stride;
@@ -337,7 +497,11 @@ pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeI
     let wout = (wpad - kw) / sw + 1;
 
     let has_bias = n_inputs == 3;
-    let recipe_node = recipe(n, cin, hpad, wpad, kh, kw, hout, wout, cout, sh, sw, ph, pw, has_bias);
+    let recipe_node = if groups == 1 {
+        recipe(n, cin, hpad, wpad, kh, kw, hout, wout, cout, sh, sw, ph, pw, has_bias)
+    } else {
+        recipe_grouped(n, cin, hpad, wpad, kh, kw, hout, wout, cout, groups, sh, sw, ph, pw, has_bias)
+    };
     // No open scalar slots — every MulScalar carries a baked stride factor.
     decompose_via_recipe(graph, id, &recipe_node, Some(Vec::new()))
 }
@@ -471,20 +635,80 @@ mod tests {
         assert_eq!(g.len(), before, "declined before any emission");
     }
 
-    /// CV1 scope is groups=1. A grouped conv is a surfaced honest-miss
-    /// (the batched/per-group path lands in slice CV2) — it declines to a
-    /// fixpoint, never a crash or a wrong (non-grouped) lowering.
+    /// CV2 (im2col-2): a groups>1 CONV2D node (a grouped conv AND a depthwise
+    /// conv `groups=Cin`, with and without bias) decomposes to the batched
+    /// im2col + per-group matmul recipe — NO `Op::Fused(CONV2D)` survives, and
+    /// the recipe is built from the same `Pad`/`Iota`/`IndexSelect`/`MatMul`
+    /// primitives as the groups=1 path (rank-4 batched over `[N, groups]`).
+    /// Born-red while `decompose` self-returns for `groups>1` (`root == fused`).
     #[test]
-    fn conv2d_groups_gt_1_is_a_fixpoint_for_now() {
+    fn conv2d_groups_gt_1_decompose_lowers_to_im2col_matmul() {
+        // (n, cin, hin, win, cout, kh, kw, stride, padding, groups, bias)
+        #[allow(clippy::type_complexity)]
+        let cases: [(usize, usize, usize, usize, usize, usize, usize, (usize, usize), (usize, usize), usize, bool); 3] = [
+            (1, 4, 5, 5, 6, 3, 3, (1, 1), (1, 1), 2, false), // groups=2
+            (2, 4, 5, 5, 4, 2, 2, (1, 1), (0, 0), 4, true),  // depthwise groups=Cin, bias
+            (1, 8, 6, 6, 16, 3, 3, (1, 1), (1, 1), 8, false), // depthwise multiplier Cout/g=2
+        ];
+        for (n, cin, hin, win, cout, kh, kw, stride, padding, groups, bias) in cases {
+            let mut g = Graph::new();
+            let fused = fused_conv(&mut g, n, cin, hin, win, cout, kh, kw, stride, padding, groups, bias);
+            let out_shape = g.node(fused).shape.clone();
+            let params = match &g.node(fused).op {
+                Op::Fused(_, p) => p.clone(),
+                other => panic!("expected fused node, got {other:?}"),
+            };
+
+            let root = decompose(&mut g, fused, &params);
+            assert_ne!(root, fused, "groups={groups} must lower (bias={bias})");
+            assert_eq!(
+                g.node(root).shape, out_shape,
+                "lowered root keeps [N,Cout,Hout,Wout] (groups={groups}, bias={bias})",
+            );
+            assert_eq!(g.node(root).dtype, DType::F32);
+
+            let ops = reachable_ops(&g, root);
+            assert!(
+                !ops.iter().any(|o| matches!(o, Op::Fused(fid, _) if *fid == FusedOps::CONV2D)),
+                "no Op::Fused(CONV2D) remains after decompose (groups={groups}, bias={bias})",
+            );
+            assert!(ops.iter().any(|o| matches!(o, Op::MatMul)), "recipe contains MatMul");
+            assert!(
+                ops.iter().any(|o| matches!(o, Op::IndexSelect { .. })),
+                "recipe gathers patches via IndexSelect",
+            );
+            assert!(ops.iter().any(|o| matches!(o, Op::Iota { .. })), "index built from Iota");
+            assert!(ops.iter().any(|o| matches!(o, Op::Pad { .. })), "input padded via Op::Pad");
+            assert!(
+                ops.iter().any(|o| matches!(o, Op::Cast(dt) if *dt == DType::U32)),
+                "index cast to U32 for the gather",
+            );
+            if bias {
+                assert!(ops.iter().any(|o| matches!(o, Op::Add)), "bias added via broadcast Add tail");
+            }
+        }
+    }
+
+    /// Totality (G2): a malformed grouping the builder would never emit — `Cout`
+    /// not divisible by `groups` — declines to a fixpoint, never a crash and
+    /// never a wrong lowering.
+    #[test]
+    fn conv2d_bad_groups_is_a_fixpoint() {
         let mut g = Graph::new();
-        let fused = fused_conv(&mut g, 1, 4, 5, 5, 4, 2, 2, (1, 1), (0, 0), 2, false);
+        // cin=6, groups=3 ⇒ cin_per_g=2 (weight matches), but cout=4 is NOT
+        // divisible by groups=3 — a malformed hand-built node.
+        let x = mk_const(&mut g, &[1, 6, 5, 5]);
+        let w = mk_const(&mut g, &[4, 2, 2, 2]);
+        let params = FusedOpParams::Conv2D { stride: (1, 1), padding: (0, 0), groups: 3 };
+        let fused = g.push(Node {
+            op: Op::Fused(FusedOps::CONV2D, params.clone()),
+            inputs: vec![x, w],
+            shape: Shape::from_dims(&[1, 4, 4, 4]),
+            dtype: DType::F32,
+        });
         let before = g.len();
-        let params = match &g.node(fused).op {
-            Op::Fused(_, p) => p.clone(),
-            other => panic!("expected fused node, got {other:?}"),
-        };
         let out = decompose(&mut g, fused, &params);
-        assert_eq!(out, fused, "groups>1 => fixpoint (CV1 handles groups=1 only)");
+        assert_eq!(out, fused, "Cout not divisible by groups => fixpoint");
         assert_eq!(g.len(), before, "declined before any emission");
     }
 }
