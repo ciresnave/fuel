@@ -1,9 +1,13 @@
 //! Fuel's independent typed shape-expression AST + §6.19 canonical wire codec +
 //! evaluator (KISS-Ops §6.20). Byte-matches the KISS reference
 //! (`conformance/src/shape_expr.rs`), verified against the vendored golden vectors —
-//! the shape-side companion to the value oracle. EXPRESSION kind only (`SameAs` +
-//! `DimExpr`); the role/index-woven kind (reduce/gather/matmul) is a separate variant
-//! (Convergence-C C-2). Every malformed input is a typed decline, never a panic.
+//! the shape-side companion to the value oracle. The closed EXPRESSION core is
+//! `SameAs` + `DimExpr`; `WithDim`/`Dims` are the experimental umbrella-§6.4
+//! extension constructors (§6.20-0009/-0010, issue #80) — a whole-shape decoder
+//! ([`decode_shape`]) reads them while the `DimExpr` decoder ([`decode_dim`]) keeps
+//! declining them (a `Dim` is never a whole shape). The role/index-woven kind
+//! (reduce/gather/matmul) is a separate variant (Convergence-C C-2). Every
+//! malformed input is a typed decline, never a panic.
 
 // §6.20-0005 tag space (one byte; 0x00 reserved per §6.19-0006).
 pub const TAG_SAME_AS: u8 = 0x01;
@@ -42,17 +46,50 @@ pub enum Dim {
     Div(Box<Dim>, Box<Dim>),
 }
 
-/// A whole-shape expression (`ShapeExpr`). The closed core is `SameAs`.
+/// A whole-shape expression (`ShapeExpr`). The closed core is `SameAs`; `WithDim`
+/// and `Dims` are the experimental-range extension constructors registered via the
+/// KISS umbrella §6.4 registry (Ops §6.20-0009/-0010, issue #80), activating the
+/// §6.20-0005 tags `0x0A`/`0x0B`. `Reduce` (`0x09`) stays reserved (no consumer).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShapeExpr {
+    /// The operand's whole shape.
     SameAs { operand: u8 },
+    /// EXPERIMENTAL (umbrella §6.4; tag `0x0A`, §6.20-0009). The `operand`'s shape
+    /// with the resolved `axis` (non-negative, or [`LAST`] = trailing) replaced by
+    /// `dim`. Functional spelling `with_dim(operand, axis, dim)`.
+    WithDim { operand: u8, axis: u8, dim: Box<Dim> },
+    /// EXPERIMENTAL (umbrella §6.4; tag `0x0B`, §6.20-0010). A whole shape built
+    /// from `N >= 0` ordered `DimExpr`s (`N = 0` = the rank-0 scalar shape).
+    /// Functional spelling `dims([dim, …])`.
+    Dims(Vec<Dim>),
 }
 
 impl ShapeExpr {
-    /// Canonical wire bytes (§6.20-0005).
+    /// Canonical wire bytes (§6.20-0005; the experimental extension tags
+    /// `0x0A`/`0x0B` per §6.20-0009/-0010, u16-LE length-prefixed children).
     pub fn encode(&self) -> Vec<u8> {
         match self {
             ShapeExpr::SameAs { operand } => vec![TAG_SAME_AS, *operand],
+            // 0x0A, u8 operand, u8 axis (0xFF = last), one u16-LE length-prefixed
+            // child DimExpr blob (§6.20-0009).
+            ShapeExpr::WithDim { operand, axis, dim } => {
+                let child = dim.encode();
+                let mut v = vec![TAG_WITH_DIM, *operand, *axis];
+                v.extend_from_slice(&(child.len() as u16).to_le_bytes());
+                v.extend_from_slice(&child);
+                v
+            }
+            // 0x0B, u8 count, then count × (u16-LE length-prefixed child DimExpr
+            // blob) (§6.20-0010).
+            ShapeExpr::Dims(dims) => {
+                let mut v = vec![TAG_DIMS, dims.len() as u8];
+                for d in dims {
+                    let child = d.encode();
+                    v.extend_from_slice(&(child.len() as u16).to_le_bytes());
+                    v.extend_from_slice(&child);
+                }
+                v
+            }
         }
     }
 }
@@ -142,12 +179,11 @@ fn decode_dim_at(blob: &[u8], pos: usize) -> Result<(Dim, usize), ShapeExprError
             };
             Ok((d, p2))
         }
-        // §6.20-0002 reserved constructors — allocated wire tags an encoder MUST NOT
-        // emit at this vocabulary version (§6.20-0005); they enter through the KISS
-        // extension registry (umbrella §6.4). THE FUTURE ACTIVATION POINT: when the
-        // registry admits WithDim (0x0A) / Dims (0x0B) — proposal filed (KISS #80),
-        // cosign-tracked — their decode arms replace this decline. Reduce (0x09) stays
-        // reserved (§6.20-0007 derives reduce-family shapes from op attrs, no wire constructor).
+        // Whole-shape / reserved tags declined at the DimExpr grammar level: WithDim
+        // (0x0A) / Dims (0x0B) are WHOLE-SHAPE constructors — now active, but only via
+        // [`decode_shape`]; a `DimExpr` is never a whole shape, so they decline here
+        // (§6.20-0009/-0010). Reduce (0x09) stays reserved at both levels — no
+        // consumer (§6.20-0007 derives reduce-family shapes from op attrs).
         TAG_REDUCE | TAG_WITH_DIM | TAG_DIMS => Err(ShapeExprError::ReservedTag { tag }),
         other => Err(ShapeExprError::ReservedTag { tag: other }),
     }
@@ -172,6 +208,58 @@ fn need(blob: &[u8], pos: usize, n: usize) -> Result<(), ShapeExprError> {
         Err(ShapeExprError::TruncatedBlob { need: n, got: blob.len().saturating_sub(pos) })
     } else {
         Ok(())
+    }
+}
+
+/// Decode one whole-shape [`ShapeExpr`] blob, rejecting a malformed one with a typed
+/// decline (§6.20-0006). Reads `SameAs` (core) plus the registered experimental
+/// extension constructors `WithDim`/`Dims` (§6.20-0009/-0010); the still-reserved
+/// `Reduce` (`0x09`) and the `DimExpr`-only tags decline typed. A well-formed blob
+/// round-trips: `decode_shape(&s.encode()) == Ok(s)`. Distinct from [`decode_dim`],
+/// which reads the single-dimension grammar (a `Dim` is never a whole shape, so a
+/// whole-shape tag declines there, and vice-versa).
+pub fn decode_shape(blob: &[u8]) -> Result<ShapeExpr, ShapeExprError> {
+    let (s, consumed) = decode_shape_at(blob, 0)?;
+    if consumed != blob.len() {
+        return Err(ShapeExprError::TrailingBytes { extra: blob.len() - consumed });
+    }
+    Ok(s)
+}
+
+fn decode_shape_at(blob: &[u8], pos: usize) -> Result<(ShapeExpr, usize), ShapeExprError> {
+    let tag = *blob
+        .get(pos)
+        .ok_or(ShapeExprError::TruncatedBlob { need: pos + 1, got: blob.len() })?;
+    match tag {
+        0x00 => Err(ShapeExprError::ZeroTag),
+        TAG_SAME_AS => {
+            need(blob, pos, 2)?;
+            Ok((ShapeExpr::SameAs { operand: blob[pos + 1] }, pos + 2))
+        }
+        // 0x0A, u8 operand, u8 axis, one u16-LE length-prefixed child (§6.20-0009).
+        TAG_WITH_DIM => {
+            need(blob, pos, 3)?;
+            let operand = blob[pos + 1];
+            let axis = blob[pos + 2];
+            let (child, next) = read_child(blob, pos + 3)?;
+            Ok((ShapeExpr::WithDim { operand, axis, dim: Box::new(child) }, next))
+        }
+        // 0x0B, u8 count, then count × u16-LE length-prefixed children (§6.20-0010).
+        TAG_DIMS => {
+            need(blob, pos, 2)?;
+            let count = blob[pos + 1] as usize;
+            let mut dims = Vec::with_capacity(count);
+            let mut p = pos + 2;
+            for _ in 0..count {
+                let (child, next) = read_child(blob, p)?;
+                dims.push(child);
+                p = next;
+            }
+            Ok((ShapeExpr::Dims(dims), p))
+        }
+        // `Reduce` (0x09), the `DimExpr`-only tags, and any unallocated tag decline
+        // typed at the whole-shape grammar level (§6.20-0006).
+        other => Err(ShapeExprError::ReservedTag { tag: other }),
     }
 }
 
@@ -239,7 +327,7 @@ pub fn eval_dim(d: &Dim, operands: &[Vec<i64>], params: &[i64]) -> Result<DimVal
 }
 
 /// Evaluate a `ShapeExpr` to a concrete shape (or a surfaced gap).
-pub fn eval_shape(s: &ShapeExpr, operands: &[Vec<i64>], _params: &[i64]) -> Result<ShapeValue, ShapeExprError> {
+pub fn eval_shape(s: &ShapeExpr, operands: &[Vec<i64>], params: &[i64]) -> Result<ShapeValue, ShapeExprError> {
     match s {
         ShapeExpr::SameAs { operand } => {
             let op = *operand as usize;
@@ -250,6 +338,44 @@ pub fn eval_shape(s: &ShapeExpr, operands: &[Vec<i64>], _params: &[i64]) -> Resu
             } else {
                 Ok(ShapeValue::Concrete(shape.clone()))
             }
+        }
+        // §6.20-0009 `with_dim`: the operand's shape with the resolved axis replaced
+        // by `dim`. A Gap replacement, or a symbolic extent in any KEPT axis,
+        // surfaces the whole shape as a Gap (§6.20-0004); an out-of-range axis is a
+        // typed decline (§6.20-0003), never a panic.
+        ShapeExpr::WithDim { operand, axis, dim } => {
+            let op = *operand as usize;
+            let shape = operands.get(op).ok_or(ShapeExprError::OperandOutOfRange {
+                operand: *operand, operands: operands.len() })?;
+            let idx = resolve_axis(*axis, shape.len())?;
+            let replacement = eval_dim(dim, operands, params)?;
+            let mut out = shape.clone();
+            let mut gap = false;
+            for (i, e) in out.iter_mut().enumerate() {
+                if i == idx {
+                    match &replacement {
+                        DimValue::Concrete(v) => *e = *v,
+                        DimValue::Gap => gap = true,
+                    }
+                } else if *e == SYMBOLIC {
+                    gap = true;
+                }
+            }
+            if gap { Ok(ShapeValue::Gap) } else { Ok(ShapeValue::Concrete(out)) }
+        }
+        // §6.20-0010 `dims`: build the whole shape from the ordered DimExprs. A Gap
+        // in ANY element surfaces the whole shape as a Gap (§6.20-0004); an empty
+        // list is the rank-0 scalar shape.
+        ShapeExpr::Dims(dims) => {
+            let mut out = Vec::with_capacity(dims.len());
+            let mut gap = false;
+            for d in dims {
+                match eval_dim(d, operands, params)? {
+                    DimValue::Concrete(v) => out.push(v),
+                    DimValue::Gap => gap = true,
+                }
+            }
+            if gap { Ok(ShapeValue::Gap) } else { Ok(ShapeValue::Concrete(out)) }
         }
     }
 }
@@ -347,10 +473,11 @@ mod tests {
         assert_eq!(decode_dim(&[0x04, 0x00, 0xAB]), Err(ShapeExprError::TrailingBytes { extra: 1 }));
     }
 
-    // §6.20-0002/-0005 reserved constructors decline BY NAME at the decoder — the
-    // future activation point for the KISS §6.4 extension-registry entrants
-    // (WithDim 0x0A / Dims 0x0B, proposal filed KISS #80; Reduce 0x09 stays reserved,
-    // §6.20-0007 derives reduce shapes from attrs).
+    // §6.20-0002/-0005 the DimExpr decoder declines the whole-shape / reserved tags
+    // BY NAME: WithDim (0x0A) / Dims (0x0B) are now active but only via
+    // `decode_shape` — a `DimExpr` is never a whole shape, so `decode_dim` still
+    // declines them; Reduce (0x09) stays reserved (no consumer, §6.20-0007 derives
+    // reduce shapes from attrs).
     #[test]
     fn reserved_extension_tags_decline_by_name() {
         // Pin the allocated-reserved wire values (KISS §6.20-0005).
@@ -374,6 +501,204 @@ mod tests {
         // The first UNALLOCATED tag past the reserved block also declines (the
         // §6.20-0005 closed-vocabulary guard is open-ended, not just these three).
         assert_eq!(decode_dim(&[0x0C]), Err(ShapeExprError::ReservedTag { tag: 0x0C }));
+    }
+
+    // §6.20-0009 WithDim + §6.20-0010 Dims — the experimental umbrella-§6.4
+    // extension constructors, byte-matched against the KISS reference goldens
+    // (`conformance/tests/shape_expr.rs` @ 469abd5, PR #86). The exact golden hex
+    // from each KISS `assert_golden(...)` call is transcribed here as a LITERAL
+    // byte vector — Fuel is the second dissimilar implementation on the promotion
+    // path, so an equal byte sequence is the confirmation gate.
+    #[test]
+    fn with_dim_extension_golden_roundtrip_eval() {
+        // Golden — with_dim(operand=0, axis=1, Const(7)):
+        // KISS "0A 00 01 09 00 03 07 00 00 00 00 00 00 00".
+        let wd = ShapeExpr::WithDim { operand: 0, axis: 1, dim: Box::new(Dim::Const(7)) };
+        assert_eq!(
+            wd.encode(),
+            vec![0x0A, 0x00, 0x01, 0x09, 0x00, 0x03, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+        );
+        // Golden — with_dim(operand=1, axis=last, Param(0)): KISS "0A 01 FF 02 00 04 00".
+        let wd_last =
+            ShapeExpr::WithDim { operand: 1, axis: LAST, dim: Box::new(Dim::Param(0)) };
+        assert_eq!(wd_last.encode(), vec![0x0A, 0x01, 0xFF, 0x02, 0x00, 0x04, 0x00]);
+
+        // Round-trip (the whole-shape decoder).
+        assert_eq!(decode_shape(&wd.encode()).unwrap(), wd);
+        assert_eq!(decode_shape(&wd_last.encode()).unwrap(), wd_last);
+
+        // §6.20-0006 typed declines — never a panic. Truncated before the axis
+        // byte; a child-length prefix that over-runs the buffer.
+        assert_eq!(
+            decode_shape(&[0x0A, 0x00]),
+            Err(ShapeExprError::TruncatedBlob { need: 3, got: 2 })
+        );
+        assert_eq!(
+            decode_shape(&[0x0A, 0x00, 0x01, 0x09, 0x00]),
+            Err(ShapeExprError::TruncatedBlob { need: 9, got: 0 })
+        );
+
+        // §6.20-0003 eval — axis-replacement.
+        let ops = vec![vec![2i64, 3, 5]];
+        assert_eq!(
+            eval_shape(
+                &ShapeExpr::WithDim { operand: 0, axis: 1, dim: Box::new(Dim::Const(9)) },
+                &ops, &[]
+            ).unwrap(),
+            ShapeValue::Concrete(vec![2, 9, 5])
+        );
+        // `last` resolves to the trailing axis.
+        assert_eq!(
+            eval_shape(
+                &ShapeExpr::WithDim { operand: 0, axis: LAST, dim: Box::new(Dim::Const(9)) },
+                &ops, &[]
+            ).unwrap(),
+            ShapeValue::Concrete(vec![2, 3, 9])
+        );
+        // §6.20-0004 gap propagation: a symbolic extent in a KEPT axis surfaces the
+        // whole shape as a Gap; REPLACING the symbolic axis clears it.
+        let sym = vec![vec![4i64, SYMBOLIC]];
+        assert_eq!(
+            eval_shape(
+                &ShapeExpr::WithDim { operand: 0, axis: 0, dim: Box::new(Dim::Const(7)) },
+                &sym, &[]
+            ).unwrap(),
+            ShapeValue::Gap
+        );
+        assert_eq!(
+            eval_shape(
+                &ShapeExpr::WithDim { operand: 0, axis: LAST, dim: Box::new(Dim::Const(7)) },
+                &sym, &[]
+            ).unwrap(),
+            ShapeValue::Concrete(vec![4, 7])
+        );
+        // A Gap REPLACEMENT expression also surfaces a whole-shape Gap.
+        assert_eq!(
+            eval_shape(
+                &ShapeExpr::WithDim {
+                    operand: 0,
+                    axis: 0,
+                    dim: Box::new(Dim::Extent { operand: 0, axis: LAST }),
+                },
+                &sym, &[]
+            ).unwrap(),
+            ShapeValue::Gap
+        );
+        // An out-of-range axis is a typed decline, never a panic (§6.20-0003).
+        assert_eq!(
+            eval_shape(
+                &ShapeExpr::WithDim { operand: 0, axis: 5, dim: Box::new(Dim::Const(1)) },
+                &vec![vec![2i64, 3]], &[]
+            ),
+            Err(ShapeExprError::AxisOutOfRange { axis: 5, rank: 2 })
+        );
+        // Param threads through the replacement dim (whole-shape param plumbing).
+        assert_eq!(
+            eval_shape(
+                &ShapeExpr::WithDim { operand: 0, axis: 1, dim: Box::new(Dim::Param(0)) },
+                &ops, &[42]
+            ).unwrap(),
+            ShapeValue::Concrete(vec![2, 42, 5])
+        );
+    }
+
+    #[test]
+    fn dims_extension_golden_roundtrip_eval() {
+        // Golden — dims([Extent(0,0), Const(2)]):
+        // KISS "0B 02 03 00 02 00 00 09 00 03 02 00 00 00 00 00 00 00".
+        let dims = ShapeExpr::Dims(vec![
+            Dim::Extent { operand: 0, axis: 0 },
+            Dim::Const(2),
+        ]);
+        assert_eq!(
+            dims.encode(),
+            vec![
+                0x0B, 0x02, 0x03, 0x00, 0x02, 0x00, 0x00, 0x09, 0x00, 0x03, 0x02, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00
+            ]
+        );
+        // Golden — the empty Dims (N=0) = the rank-0 scalar shape: KISS "0B 00".
+        let scalar = ShapeExpr::Dims(vec![]);
+        assert_eq!(scalar.encode(), vec![0x0B, 0x00]);
+
+        // Round-trip.
+        assert_eq!(decode_shape(&dims.encode()).unwrap(), dims);
+        assert_eq!(decode_shape(&scalar.encode()).unwrap(), scalar);
+
+        // §6.20-0006 typed declines — never a panic: a count promising children the
+        // blob lacks; the still-reserved Reduce (0x09, no consumer); trailing bytes.
+        assert_eq!(
+            decode_shape(&[0x0B, 0x02]),
+            Err(ShapeExprError::TruncatedBlob { need: 2, got: 0 })
+        );
+        assert_eq!(
+            decode_shape(&[0x09, 0x00]),
+            Err(ShapeExprError::ReservedTag { tag: 0x09 })
+        );
+        assert_eq!(
+            decode_shape(&[0x0B, 0x00, 0xAB]),
+            Err(ShapeExprError::TrailingBytes { extra: 1 })
+        );
+
+        // Eval — a qmatmul/scan-style whole-shape reweave across two operands.
+        let ops = vec![vec![8i64, 16, 32, 64], vec![1i64, 1, 1, 128]];
+        assert_eq!(
+            eval_shape(
+                &ShapeExpr::Dims(vec![
+                    Dim::Extent { operand: 0, axis: 0 },
+                    Dim::Extent { operand: 0, axis: 2 },
+                    Dim::Extent { operand: 0, axis: 3 },
+                    Dim::Extent { operand: 1, axis: 3 },
+                ]),
+                &ops, &[]
+            ).unwrap(),
+            ShapeValue::Concrete(vec![8, 32, 64, 128])
+        );
+        // The empty Dims evaluates to the rank-0 scalar shape.
+        assert_eq!(
+            eval_shape(&ShapeExpr::Dims(vec![]), &ops, &[]).unwrap(),
+            ShapeValue::Concrete(vec![])
+        );
+        // §6.20-0004 gap propagation: a symbolic extent in ANY element surfaces the
+        // whole shape as a Gap.
+        let sym = vec![vec![4i64, SYMBOLIC]];
+        assert_eq!(
+            eval_shape(
+                &ShapeExpr::Dims(vec![
+                    Dim::Extent { operand: 0, axis: 0 },
+                    Dim::Extent { operand: 0, axis: LAST },
+                ]),
+                &sym, &[]
+            ).unwrap(),
+            ShapeValue::Gap
+        );
+    }
+
+    // The whole-shape decoder reads the core `SameAs` too, and declines a
+    // DimExpr-only tag; the DimExpr decoder in turn declines the whole-shape
+    // WithDim/Dims tags (a `Dim` is never a whole shape) — the two grammar levels
+    // stay disjoint (§6.20-0006).
+    #[test]
+    fn decode_shape_core_and_grammar_level_declines() {
+        assert_eq!(decode_shape(&[0x01, 0x00]).unwrap(), ShapeExpr::SameAs { operand: 0 });
+        // A DimExpr-only tag (Const 0x03) is not a whole-shape constructor.
+        assert_eq!(
+            decode_shape(&[0x03, 0x02, 0, 0, 0, 0, 0, 0, 0]),
+            Err(ShapeExprError::ReservedTag { tag: 0x03 })
+        );
+        // WithDim/Dims are whole-shape tags → the DimExpr reader declines them even
+        // with a well-formed whole-shape payload.
+        assert_eq!(
+            decode_dim(&[TAG_WITH_DIM, 0x00, 0x01, 0x02, 0x00, 0x04, 0x00]),
+            Err(ShapeExprError::ReservedTag { tag: TAG_WITH_DIM })
+        );
+        assert_eq!(
+            decode_dim(&[TAG_DIMS, 0x00]),
+            Err(ShapeExprError::ReservedTag { tag: TAG_DIMS })
+        );
+        // Reduce (0x09) stays reserved at BOTH levels — no consumer.
+        assert_eq!(decode_shape(&[0x09, 0x00]), Err(ShapeExprError::ReservedTag { tag: 0x09 }));
+        assert_eq!(decode_dim(&[0x09, 0x00]), Err(ShapeExprError::ReservedTag { tag: 0x09 }));
     }
 
     #[test]

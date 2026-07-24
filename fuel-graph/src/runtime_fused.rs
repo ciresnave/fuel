@@ -555,11 +555,12 @@ fn same_as_frame_guard(
     bind_shapes: &[Vec<i64>],
 ) -> Result<(), RelAttrError> {
     use fuel_kernel_seam_types::shape_expr::{ShapeExpr, TAG_DIMS};
-    // Exhaustive on purpose: when the Dims/WithDim extension entrants (KISS
-    // #80) join `ShapeExpr`, this match stops compiling — they express the
-    // max-frame directly and must NOT be routed through this guard.
+    // Exhaustive on purpose: the Dims/WithDim extension entrants (KISS #80)
+    // express the max-frame DIRECTLY (a whole-shape ctor), so they must NOT be
+    // routed through this partial-`SameAs`-frame guard — they return early.
     match se {
         ShapeExpr::SameAs { .. } => {}
+        ShapeExpr::WithDim { .. } | ShapeExpr::Dims(_) => return Ok(()),
     }
     if tag != OpTag::BroadcastTo {
         return Ok(());
