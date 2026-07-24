@@ -324,3 +324,32 @@ unlock (`causal_conv1d`, `nf4_matmul`, `fused_softmax_cross_entropy`, `flash_att
 registry-layer basis gap) and the **2 permanent BASIS-GAP** self-returns (`qmatmul`
 sub-byte bit-unpack, `inplace_affine` destructive-affine aliasing). The conv pair is no
 longer in either "remain" bucket — the basis-gap count is now **2**, not 4.
+
+---
+
+## Attention machinery — SHIPPED (2026-07-24, branch `feat/incc-attention-machinery`)
+
+The config-branch + nested-fused machinery (designed BUILD_AS_DESIGNED, no constitution/basis
+change) migrated **4 more ops**, landed to main just ahead of the conv pair:
+- **`fused_softmax_cross_entropy`** — config-branch reduction tail (None/Sum/Mean) via ordinary
+  Rust control flow in a per-call `recipe(...)` builder (mechanism 1 needs NO new bridge
+  machinery — `decompose_via_recipe` is param-agnostic). Added the reusable Fuel-internal,
+  off-wire **`OpAttrs::rank0_target`** marker so `ReduceSumTo`/`BroadcastTo` can target `[]`
+  (the reduce-to-scalar loss idiom).
+- **`paged_attn`, `flash_attn` (concrete/None `k_len` arm), `flash_attn_backward`** — via a
+  Fuel-internal **`OpTag::Fused`** structural token (sibling of Scan/View, NOT serialized to
+  `to_canonical_bytes`) + an OpAttrs fused-op-selector, so a recipe carries a nested
+  `Op::Fused(SOFTMAX_LAST_DIM[_BACKWARD])` node as-is (mechanism 2a — base map lowers past it;
+  the optimizer can re-cover it). Config branches (causal/window/softcap/alibi/GQA, Q/K/V
+  variants, Triu/Tril diagonals) bake as concrete attrs per-call — **NO C-4 param-threading
+  needed**. All structure-preserving (frozen-legacy parity, sabotage-verified); `flash_attn`'s
+  `Some(Sym(k_len))` arm stays a documented PERMANENT self-return (registry-layer basis gap,
+  symbolic oracle lives in `fuel_dispatch::decode_flash`).
+
+## AUTHORITATIVE TOTAL (both 2026-07-24 parallel streams landed)
+
+**18 of 22 registry `decompose` fns migrated; 4 remain.** = the 14 above + the 4 attention ops
+(`fused_softmax_cross_entropy`, `paged_attn`, `flash_attn` concrete arm, `flash_attn_backward`).
+Remaining 4: **2 NEEDS-EXTENSION** (`causal_conv1d` extent-driven K-tap unroll + `use_silu`;
+`nf4_matmul` product-collapse + dtype-relative Cast) and **2 permanent BASIS-GAP** self-returns
+(`qmatmul`, `inplace_affine` — the genuinely-open basis questions).
