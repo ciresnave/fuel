@@ -261,15 +261,17 @@ pub fn clear_runtime_fused_for_tests() {
 /// (Transpose/Permute/Reshape/BroadcastTo/(Un)squeeze/Slice/Concat/Flip/Roll/
 /// Pad/Triu/Tril), reductions (SumDim/MaxDim/MeanDim/ReduceSumTo/ReduceMaxTo/
 /// CumSum/SumAll/MaxAll/MinAll/MeanAll), `MatMul`, `Iota`, and indexing (IndexSelect/
-/// Gather/IndexAdd/ScatterAdd) — plus the **`Op::Scan` structural terminal**
-/// (Increment C, B1): `Scan` (params ride the `scan_*` carriers, body sub-graph
-/// rides the operands) and its `ScanPlaceholder` body holes. Structural params
-/// are decoded from the (extended) [`OpAttrs`]. Returns `None` (an honest miss,
-/// rejected at registration) for ops with no first-order re-emission:
-/// `PowI`/`Clamp` (no i32/two-scalar carrier), `MaskedFill` (no `Scalar::from_f64`
-/// reconstructor yet), `View` (the multi-output bundle carrier is B1's second
-/// half), fused/basis-gap tags, and any tag whose required attrs are unset
-/// (e.g. `Iota` with no `target_shape`, `Scan` with no `scan_bound`).
+/// Gather/IndexAdd/ScatterAdd) — plus the **`Op::Scan` multi-output structural
+/// terminal** (Increment C, B1): `Scan` (params ride the `scan_*` carriers, body
+/// sub-graph rides the operands), its `ScanPlaceholder` body holes, and the
+/// `View` slot projection (`view_slot`) that reads the scan's `output_views`
+/// bundle at emit time. Structural params are decoded from the (extended)
+/// [`OpAttrs`]. Returns `None` (an honest miss, rejected at registration) for
+/// ops with no first-order re-emission: `PowI`/`Clamp` (no i32/two-scalar
+/// carrier), `MaskedFill` (no `Scalar::from_f64` reconstructor yet),
+/// fused/basis-gap tags, and any tag whose required attrs are unset (e.g. `Iota`
+/// with no `target_shape`, `Scan` with no `scan_bound`, `View` with no
+/// `view_slot`).
 fn tag_to_op(tag: OpTag, attrs: &OpAttrs) -> Option<Op> {
     use OpTag as T;
     use fuel_ir::{DType, Shape};
@@ -425,10 +427,13 @@ fn tag_to_op(tag: OpTag, attrs: &OpAttrs) -> Option<Op> {
             },
             index: attrs.scan_index? as usize,
         },
+        // Multi-output slot projection. The slot's shape/dtype are NOT decoded
+        // here (they come from the producer's `output_views` bundle at emit
+        // time, mirroring `Graph::view`); this arm reconstructs only the op.
+        T::View => Op::View { slot: attrs.view_slot? },
 
         // Honest misses (rejected at registration): PowI/Clamp (no carrier),
-        // MaskedFill (no Scalar::from_f64 reconstructor yet), Op::View (the
-        // multi-output bundle carrier is B1's second half), and any tag whose
+        // MaskedFill (no Scalar::from_f64 reconstructor yet), and any tag whose
         // required attrs are unset or that is added to OpTag later.
         _ => return None,
     })
@@ -1060,27 +1065,77 @@ fn emit<'r>(
                     }
                 }
             }
-            // Convergence Increment A: full-parity (shape, dtype) via the single
-            // source of truth (`primitive_shape`) — correct for shape-changing,
-            // reducing, and dtype-changing ops, not just same-shape elementwise.
-            // The Err arm is only reachable for a MALFORMED authored region (a
-            // registration-validated region's ops all infer). Real never-panic
-            // guarantee: emit always returns a node (or a typed rel decline),
-            // never panics here. Fall back to operand[0]'s shape/dtype; and
-            // because `validate_representable` checks `tag_to_op(op).is_some()`
-            // but NOT arity — and `emit_region` is a public raw-region entry
-            // (candidate verification) that does not re-validate — a
-            // zero-operand op has no operand shape to borrow, so `.first()`
-            // (never `[0]`) guards the index and a degenerate rank-0 F32 node
-            // is emitted for that malformed leaf.
-            let (s, d) = crate::shape::primitive_shape(&prim, &child_shapes, &child_dtypes)
-                .unwrap_or_else(|_| {
-                    (
-                        child_shapes.first().cloned().unwrap_or_else(|| fuel_ir::Shape::from_dims(&[])),
-                        child_dtypes.first().copied().unwrap_or(fuel_ir::DType::F32),
-                    )
-                });
+            // Shape/dtype for the emitted node. Most ops use the single source
+            // of truth (`primitive_shape`) — a pure function of operand shapes,
+            // correct for shape-changing/reducing/dtype-changing ops. Two
+            // structural multi-output terminals are NOT such a function and are
+            // resolved here with the graph in hand, mirroring `Tensor::scan` /
+            // `Graph::view` (Increment C, B1):
+            //   * `Op::Scan` — the node's PRIMARY (slot-0) shape is the stacked
+            //     ys `[bound] ++ body_y`, and its 2-slot `output_views` bundle
+            //     (slot 0 = stacked ys, slot 1 = final carry) is attached AFTER
+            //     the push so downstream `Op::View`s can read it.
+            //   * `Op::View` — the slot's shape/dtype come from the producer's
+            //     `output_views[slot]` (set when the producing `Scan` emitted).
+            // Both fall back to operand[0]'s shape/dtype on a malformed authored
+            // region (never a panic) — the same posture as the primitive_shape
+            // fallback (`.first()`, never `[0]`, guards a zero-operand leaf).
+            fn fallback_sd(
+                cs: &[fuel_ir::Shape],
+                cd: &[fuel_ir::DType],
+            ) -> (fuel_ir::Shape, fuel_ir::DType) {
+                (
+                    cs.first().cloned().unwrap_or_else(|| fuel_ir::Shape::from_dims(&[])),
+                    cd.first().copied().unwrap_or(fuel_ir::DType::F32),
+                )
+            }
+            let mut scan_bundle: Option<Vec<fuel_ir::storage::OutputViewSpec>> = None;
+            let (s, d) = match &prim {
+                Op::Scan { n_xs, bound, early_exit, .. } => {
+                    // inputs = [init_carry, xs(n_xs), consts.., body_new_carry,
+                    // body_y, [pred_exit]] — the Phase-1 lax.scan encoding.
+                    let n_trailing = if early_exit.is_some() { 3 } else { 2 };
+                    let len = child_ids.len();
+                    if len >= 1 + *n_xs + n_trailing {
+                        let carry_shape = child_shapes[0].clone();
+                        let carry_dtype = child_dtypes[0];
+                        let body_y_i = len - n_trailing + 1;
+                        let y_shape = &child_shapes[body_y_i];
+                        let y_dtype = child_dtypes[body_y_i];
+                        let mut ys_dims = Vec::with_capacity(1 + y_shape.rank());
+                        ys_dims.push(*bound);
+                        ys_dims.extend_from_slice(y_shape.dims());
+                        let ys_shape = fuel_ir::Shape::from_dims(&ys_dims);
+                        scan_bundle = Some(vec![
+                            fuel_ir::storage::OutputViewSpec::contiguous(y_dtype, ys_shape.clone()),
+                            fuel_ir::storage::OutputViewSpec::contiguous(carry_dtype, carry_shape),
+                        ]);
+                        (ys_shape, y_dtype)
+                    } else {
+                        fallback_sd(&child_shapes, &child_dtypes)
+                    }
+                }
+                Op::View { slot } => child_ids
+                    .first()
+                    .and_then(|&producer| {
+                        graph
+                            .output_views(producer)
+                            .and_then(|v| v.get(*slot as usize))
+                            .map(|spec| (spec.shape.clone(), spec.dtype))
+                    })
+                    .unwrap_or_else(|| fallback_sd(&child_shapes, &child_dtypes)),
+                _ => crate::shape::primitive_shape(&prim, &child_shapes, &child_dtypes)
+                    .unwrap_or_else(|_| fallback_sd(&child_shapes, &child_dtypes)),
+            };
             let out = graph.push(Node { op: prim, inputs: child_ids, shape: s, dtype: d });
+            // Attach the scan's 2-slot bundle (mirrors `Tensor::scan`). A
+            // malformed spec (compose/validate failure) leaves the producer
+            // bundle-less — a later `View` then falls back — never a panic.
+            if let Some(specs) = scan_bundle {
+                if let Ok((_bytes, views)) = fuel_ir::storage::compose_bundle(&specs) {
+                    let _ = graph.set_output_views(out, std::sync::Arc::from(views.into_boxed_slice()));
+                }
+            }
             if sharable {
                 memo.push((node, out));
             }
@@ -4476,8 +4531,10 @@ mod tests {
         use super::{bind, op_node};
         use crate::{ScanEmit, ScanPredicate, ScanRole};
         use crate::opt::base_map_hash;
+        use fuel_ir::storage::{compose_bundle, OutputViewSpec};
         use fuel_ir::{DType, Shape};
         use fuel_kernel_seam_types::{SCAN_ROLE_CARRY, SCAN_ROLE_ELEM};
+        use std::sync::Arc;
 
         fn placeholder(role: u8, index: u32) -> PatternNode {
             PatternNode::Op {
@@ -4601,6 +4658,136 @@ mod tests {
             let got = base_map_hash(&ge, root);
 
             assert_eq!(got, want, "scan recipe re-emit base map == imperative scan base map");
+        }
+
+        // ---- The View / output_views bundle half (B1) ----------------------
+        //
+        // A scan recipe whose root is an `Op::View{slot}` must re-emit the scan,
+        // attach the 2-slot `output_views` bundle (slot 0 = stacked ys, slot 1 =
+        // final carry — the SelectiveScan bundle contract), and project the
+        // slot — round-tripping to the same base map AND the correct slot shape
+        // as the imperative scan+view. Real shapes throughout (init/const via
+        // Binds carry real shapes; `body_y = Mul(const, sum)` takes the const's
+        // shape) so the emitted bundle is byte-faithful.
+
+        /// `view(slot)(scan(n_xs=1, bound=3, emit=All))` over binds `[init[2],
+        /// xs0[3,2], const[2]]`. `body_y = Mul(const, sum)` is const-first so its
+        /// re-emitted shape is `[2]` (the const's), making slot 0 = `[3,2]` and
+        /// slot 1 = `[2]`.
+        fn view_scan_recipe(slot: u32) -> PatternNode {
+            let sum = || op_node(
+                OpTag::Add,
+                OpAttrs::default(),
+                vec![placeholder(SCAN_ROLE_CARRY, 0), placeholder(SCAN_ROLE_ELEM, 0)],
+            );
+            let scan = PatternNode::Op {
+                op: OpTag::Scan,
+                attrs: OpAttrs {
+                    scan_n_xs: Some(1), scan_bound: Some(3), scan_emit: Some(0), scan_early_exit: None,
+                    ..OpAttrs::default()
+                },
+                operands: vec![
+                    bind(0), // init_carry [2]
+                    bind(1), // xs0 [3,2]
+                    bind(2), // const [2]
+                    sum(),   // body_new_carry
+                    op_node(OpTag::Mul, OpAttrs::default(), vec![bind(2), sum()]), // body_y = Mul(const, sum)
+                ],
+            };
+            op_node(OpTag::View, OpAttrs { view_slot: Some(slot), ..OpAttrs::default() }, vec![scan])
+        }
+
+        /// The imperative reference: the scan + its composed 2-slot bundle + the
+        /// slot projection (mirrors `Tensor::scan` + `Graph::view`).
+        fn reference_view(g: &mut Graph, slot: u32) -> NodeId {
+            let two = Shape::from_dims(&[2]);
+            let init = g.push(Node { op: Op::Const, inputs: vec![], shape: two.clone(), dtype: DType::F32 });
+            let xs0 = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[3, 2]), dtype: DType::F32 });
+            let konst = g.push(Node { op: Op::Const, inputs: vec![], shape: two.clone(), dtype: DType::F32 });
+            let carry = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: two.clone(), dtype: DType::F32 });
+            let elem = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Elem, index: 0 }, inputs: vec![], shape: two.clone(), dtype: DType::F32 });
+            let sum = g.push(Node { op: Op::Add, inputs: vec![carry, elem], shape: two.clone(), dtype: DType::F32 });
+            let body_y = g.push(Node { op: Op::Mul, inputs: vec![konst, sum], shape: two.clone(), dtype: DType::F32 });
+            let ys = Shape::from_dims(&[3, 2]);
+            let scan = g.push(Node {
+                op: Op::Scan { n_xs: 1, bound: 3, emit: ScanEmit::All, early_exit: None },
+                inputs: vec![init, xs0, konst, sum, body_y],
+                shape: ys.clone(),
+                dtype: DType::F32,
+            });
+            let specs = vec![
+                OutputViewSpec::contiguous(DType::F32, ys),
+                OutputViewSpec::contiguous(DType::F32, two),
+            ];
+            let (_bytes, views) = compose_bundle(&specs).expect("compose_bundle");
+            g.set_output_views(scan, Arc::from(views.into_boxed_slice())).expect("set_output_views");
+            let (sh, dt) = {
+                let v = g.output_views(scan).expect("bundle set");
+                let s = &v[slot as usize];
+                (s.shape.clone(), s.dtype)
+            };
+            g.push(Node { op: Op::View { slot }, inputs: vec![scan], shape: sh, dtype: dt })
+        }
+
+        fn roundtrip_view(slot: u32, want_shape: &[usize]) {
+            // Reference.
+            let mut gr = Graph::new();
+            let ref_view = reference_view(&mut gr, slot);
+            let want = base_map_hash(&gr, ref_view);
+
+            // Emitted from the recipe onto identical leaves.
+            let mut ge = Graph::new();
+            let two = Shape::from_dims(&[2]);
+            let init = ge.push(Node { op: Op::Const, inputs: vec![], shape: two.clone(), dtype: DType::F32 });
+            let xs0 = ge.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[3, 2]), dtype: DType::F32 });
+            let konst = ge.push(Node { op: Op::Const, inputs: vec![], shape: two, dtype: DType::F32 });
+            let root = emit_region(&mut ge, &view_scan_recipe(slot), &[init, xs0, konst], &[]);
+
+            // The View projects the requested slot with the bundle-derived shape.
+            assert!(matches!(ge.node(root).op, Op::View { slot: s } if s == slot),
+                "recipe root re-emits Op::View{{slot={slot}}}");
+            assert_eq!(ge.node(root).shape.dims(), want_shape,
+                "view slot {slot} shape comes from the re-attached output_views bundle");
+            // The producing scan carries the faithful 2-slot bundle.
+            let producer = ge.node(root).inputs[0];
+            assert!(matches!(ge.node(producer).op, Op::Scan { .. }), "producer is the scan");
+            assert_eq!(ge.output_views(producer).map(|v| v.len()), Some(2),
+                "emit re-attaches the 2-slot bundle so slot>=1 views resolve");
+
+            let got = base_map_hash(&ge, root);
+            assert_eq!(got, want, "view+scan recipe re-emit base map == imperative scan+view base map");
+        }
+
+        /// Slot 0 (stacked ys): its shape equals the scan node's primary shape,
+        /// so even the child-fallback would find it — but it must come through
+        /// the bundle for the layout/offset to be right.
+        #[test]
+        fn scan_view_slot0_reemits_to_the_same_base_map() {
+            roundtrip_view(0, &[3, 2]);
+        }
+
+        /// Slot 1 (final carry / last_state) is the load-bearing case: its shape
+        /// (`[2]`) lives ONLY in the bundle and differs from the scan's primary
+        /// (`[3,2]`). `op_key(View) = None` folds the node shape into the hash,
+        /// so a wrong slot-1 shape would break the round-trip — this proves the
+        /// bundle is re-attached and read.
+        #[test]
+        fn scan_view_slot1_reemits_to_the_same_base_map() {
+            roundtrip_view(1, &[2]);
+        }
+
+        /// A view recipe validates as a representable region (contiguous binds,
+        /// every op — incl. `View`/`Scan`/`ScanPlaceholder` — re-emittable).
+        #[test]
+        fn view_scan_recipe_validates_as_representable() {
+            assert_eq!(view_scan_recipe(1).bind_indices(), vec![0, 1, 2]);
+            assert!(validate_recipe(&view_scan_recipe(1)).is_ok());
+            // tag_to_op reconstructs the View op from `view_slot`.
+            assert!(matches!(
+                tag_to_op(OpTag::View, &OpAttrs { view_slot: Some(1), ..OpAttrs::default() }),
+                Some(Op::View { slot: 1 }),
+            ));
+            assert!(tag_to_op(OpTag::View, &OpAttrs::default()).is_none());
         }
     }
 }

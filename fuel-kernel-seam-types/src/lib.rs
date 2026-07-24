@@ -114,6 +114,15 @@ pub enum OpTag {
     /// Re-emitted by `runtime_fused::tag_to_op`; no `op_to_tag` producer (a
     /// scan node is a base-map terminal the matcher never recognizes).
     Scan,
+
+    /// Multi-output slot projection (`fuel_graph::Op::View`) — the bundle
+    /// carrier a scan (or any multi-output producer) exposes its per-slot
+    /// outputs through. A structural token: the `slot` rides the Fuel-internal
+    /// `view_slot` [`OpAttrs`] field, not the §6.19 wire. On re-emit the slot's
+    /// shape/dtype come from the producer's `output_views` bundle (the emitter
+    /// sets that bundle when it re-emits the producing `Scan`), mirroring
+    /// `fuel_graph::Graph::view`.
+    View,
 }
 
 /// [`OpTag::ScanPlaceholder`] role code for the per-step recurrent **carry**
@@ -313,6 +322,10 @@ pub struct OpAttrs {
     /// `ScanPredicate` marker is present (its predicate LOGIC rides the trailing
     /// `pred_exit` operand). `None`/`Some(false)` ⇒ no early exit.
     pub scan_early_exit: Option<bool>,
+    /// [`OpTag::View`] slot index: which of the producer's `output_views` slots
+    /// this projection reads. Fuel-internal (not on the §6.19 wire). `None` ⇒
+    /// not a view node.
+    pub view_slot: Option<u32>,
 }
 
 // --- §6.19-shaped canonical positional-blob serialization (Convergence Increment A) ---
