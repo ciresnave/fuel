@@ -29,6 +29,7 @@
 use crate::{Graph, NodeId};
 use fuel_ir::storage::OutputViewSpec;
 use fuel_ir::{DType, DynScalar, Shape};
+use fuel_kernel_seam_types::PatternNode;
 use std::collections::HashMap;
 
 pub mod causal_conv1d;
@@ -857,6 +858,111 @@ impl FusedOpRegistry {
 pub struct PatternHash(pub u64);
 
 /// Internal placeholder used to keep id-indexed `entries` dense. Never
+/// Decompose the fused node `id` by re-emitting a **data recipe** — the
+/// static-registry bridge onto the one region re-emitter (Increment C
+/// slice 1, T5 / design D6). A migrated entry's `decompose` body becomes:
+///
+/// ```ignore
+/// fn recipe() -> &'static PatternNode              // OnceLock-built data
+/// fn scalars(params: &FusedOpParams) -> Option<Vec<f64>>  // per-entry projection
+/// pub fn decompose(g, id, params) -> NodeId {
+///     decompose_via_recipe(g, id, recipe(), scalars(params))
+/// }
+/// ```
+///
+/// The fused node's `inputs` are the recipe's binds (in bind-index order);
+/// `scalars` fill the recipe's open scalar slots in pattern pre-order (the
+/// per-entry projection maps the params payload — e.g. an `eps` — onto
+/// them). The `FusedOpEntry.decompose` surface is UNCHANGED — imperative
+/// bodies remain legal for param-conditional ops.
+///
+/// **Totality (G2, the recipe principle):** ANY failure returns `id` — the
+/// fused node stays in place as a surfaced opaque-op gap (the lowering
+/// driver records no progress), NEVER a panic:
+/// * `scalars == None` — a wrong params payload for this entry;
+/// * a recipe that fails [`crate::runtime_fused::validate_recipe`] — a
+///   semantics-absent op token with no primitive re-emission (the
+///   flip-withdrawal posture: unknown/non-registry tokens are surfaced
+///   honest-miss declines, never accepted), non-contiguous binds, a
+///   matcher-only node, or structurally-unresolvable rel attrs;
+/// * a bind-count / node-input arity mismatch;
+/// * a scalar-slot count mismatch;
+/// * a shape-relative resolution decline at THESE input shapes (symbolic
+///   extent, negative result, …);
+/// * anything else — a `catch_unwind` last-resort guard converts an
+///   unanticipated panic into the same fixpoint.
+///
+/// The first four decline BEFORE any emission (no partial nodes). An
+/// emit-time decline can leave already-pushed child nodes behind as
+/// unreferenced dead nodes — inert, the documented push-only-graph posture.
+/// Declines are telemetered on stderr (the surfaced-gap channel until a
+/// structured gap inventory exists).
+pub fn decompose_via_recipe(
+    graph: &mut Graph,
+    id: NodeId,
+    recipe: &PatternNode,
+    scalars: Option<Vec<f64>>,
+) -> NodeId {
+    let Some(scalars) = scalars else {
+        eprintln!(
+            "decompose_via_recipe: wrong params payload for node {id:?} — \
+             typed decline, node stays fused (G2 fixpoint)"
+        );
+        return id;
+    };
+    if let Err(err) = crate::runtime_fused::validate_recipe(recipe) {
+        eprintln!(
+            "decompose_via_recipe: recipe declined for node {id:?}: {err:?} — \
+             surfaced honest miss, node stays fused (G2 fixpoint)"
+        );
+        return id;
+    }
+    let inputs = graph.node(id).inputs.clone();
+    if recipe.bind_indices().len() != inputs.len() {
+        eprintln!(
+            "decompose_via_recipe: recipe binds {} != node inputs {} for node {id:?} — \
+             typed decline, node stays fused (G2 fixpoint)",
+            recipe.bind_indices().len(),
+            inputs.len(),
+        );
+        return id;
+    }
+    if scalars.len() != crate::runtime_fused::count_scalar_slots(recipe) {
+        eprintln!(
+            "decompose_via_recipe: {} projected scalars for {} open slots on node {id:?} — \
+             typed decline, node stays fused (G2 fixpoint)",
+            scalars.len(),
+            crate::runtime_fused::count_scalar_slots(recipe),
+        );
+        return id;
+    }
+    // The resolving emit. A rel-attr decline at these shapes is a
+    // value-dependent gap (`Err` arm); `catch_unwind` is the never-panic
+    // last resort for anything validation didn't anticipate (same posture as
+    // `register_runtime_fused`'s hash guard) — a partial emission left by
+    // either failure mode is inert dead nodes in the push-only graph.
+    let emitted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::runtime_fused::try_emit_region(graph, recipe, &inputs, &scalars)
+    }));
+    match emitted {
+        Ok(Ok(root)) => root,
+        Ok(Err(err)) => {
+            eprintln!(
+                "decompose_via_recipe: rel-attr resolution declined for node {id:?}: {err:?} — \
+                 surfaced gap, node stays fused (G2 fixpoint)"
+            );
+            id
+        }
+        Err(_) => {
+            eprintln!(
+                "decompose_via_recipe: emit panicked for node {id:?} — \
+                 caught (never-panic last resort), node stays fused (G2 fixpoint)"
+            );
+            id
+        }
+    }
+}
+
 /// returned by [`FusedOpRegistry::entry`].
 fn placeholder_entry() -> FusedOpEntry {
     FusedOpEntry {
