@@ -45,7 +45,7 @@
 //! let model = ConvNextModel::from_hub("timm/convnext_tiny.fb_in1k")?;
 //! // [1, 3, 224, 224] row-major, ImageNet-normalized.
 //! let image = vec![0.0_f32; 3 * 224 * 224];
-//! let logits = model.forward(&image);
+//! let logits = model.forward(&image)?;
 //! let flat = logits.realize_f32();
 //! assert_eq!(flat.len(), model.config.num_classes);
 //! # Ok::<(), fuel_core::Error>(())

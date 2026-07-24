@@ -5,6 +5,10 @@
 //!
 //! Provides:
 //! - [`entry`] — the metadata-side `FusedOpEntry`.
+//! - [`recipe`] — the op's closed-form backward as portable, shape-/rank-
+//!   polymorphic `PatternNode` data (Increment C slice 1, T8).
+//! - [`decompose`] — re-emits [`recipe`] through the
+//!   [`crate::registry::decompose_via_recipe`] bridge.
 //!
 //! The backward formula is `s * (g - sum(g * s, last_dim,
 //! keepdim=true))` where `s` is the forward output and `g` is the
@@ -14,11 +18,16 @@
 //!
 //! Backward helper entries serve a different role from forward
 //! entries: there is no user-decomposed form to recognize (the
-//! matcher is always stubbed), and the registry's `decompose`
-//! function isn't a "synthesize from primitives" fallback because
-//! the closed-form backward expression doesn't simplify to a
-//! small primitive subgraph that's worth materializing. Instead
-//! the registry entry exists to:
+//! matcher is always stubbed). The `decompose` IS a "synthesize from
+//! primitives" recipe, though: the closed-form backward expression
+//! is a real 6-node primitive subgraph (the same `SumDim` + keepdim
+//! + `BroadcastTo` idiom the forward `softmax_last_dim` recipe uses),
+//! so per G2 it decomposes totally — never a basis-gap self-return.
+//! T8 (Increment C slice 1) migrated that subgraph from an imperative
+//! builder to the portable [`recipe`] datum, and in doing so exercised
+//! the registry's `BackwardKind::Fused(id)` edge end-to-end on a data
+//! recipe for the first time. Beyond the recipe, the registry entry
+//! also exists to:
 //!
 //! - declare the op's identity (FusedOpId, FusedOpParams variant,
 //!   shape/dtype rules);
@@ -36,10 +45,13 @@
 
 use crate::registry::{
     BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps,
-    PatternMatch, SubgraphPattern,
+    PatternMatch, SubgraphPattern, decompose_via_recipe,
 };
-use crate::{Graph, Node, NodeId, Op};
+use crate::{Graph, NodeId};
 use fuel_ir::{DType, Shape};
+use fuel_kernel_seam_types::shape_expr::ShapeExpr;
+use fuel_kernel_seam_types::{OpAttrs, OpTag, PatternNode};
+use std::sync::OnceLock;
 
 /// Metadata-side registry entry for SoftmaxLastDimBackward.
 pub fn entry() -> FusedOpEntry {
@@ -74,54 +86,78 @@ fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
     input_dtypes[0]
 }
 
+/// SoftmaxLastDimBackward's primitive recipe as **portable data** (Increment C
+/// slice 1, T8 — the first *backward* helper migrated, and the op that
+/// activates the registry's `BackwardKind::Fused(SOFTMAX_LAST_DIM_BACKWARD)`
+/// edge end-to-end on a data recipe). Shape-/rank-polymorphic: the last-axis
+/// sum reduces `SumDim(axis_last)` and the keepdim is restored by
+/// `Unsqueeze(axis_last = append)` (the D3 shrink-via-swap replacing the baked
+/// `ReduceSumTo(keepdim)`); the broadcast targets `SameAs { operand: 0 }` —
+/// `s`'s full shape over the Bind space (D2). Bind: `0 = s` (the forward
+/// softmax output), `1 = g` (the upstream gradient) — the order the autograd
+/// edge emits (`lib.rs` softmax-backward arm: `vec![id, up_id]`). Nothing in
+/// the datum bakes a shape or a rank; there are no open scalar slots
+/// (parameterless).
+///
+/// Emitted form (6 op nodes; the `Unsqueeze` rebuilds rank BEFORE the
+/// broadcast, so no D4 leading-1 pad is materialized):
+///
+/// ```text
+///   gs      = Mul(g, s)                    # g · s
+///   summed  = SumDim(axis_last)(gs)        # shrink…
+///   summed_kd = Unsqueeze(axis_last)(summed)  # …restore keepdim ([..., 1])
+///   summed_b  = BroadcastTo(SameAs 0)(summed_kd)
+///   sub     = Sub(g, summed_b)             # g − sum(g·s)
+///   out     = Mul(s, sub)                  # s · (…)
+/// ```
+fn recipe() -> &'static PatternNode {
+    static RECIPE: OnceLock<PatternNode> = OnceLock::new();
+    RECIPE.get_or_init(|| {
+        let axis_last = || OpAttrs { axis_last: true, ..OpAttrs::default() };
+        let same_as_s = || OpAttrs {
+            target_shape_rel: Some(ShapeExpr::SameAs { operand: 0 }),
+            ..OpAttrs::default()
+        };
+        let op = |op, attrs, operands| PatternNode::Op { op, attrs, operands };
+        let s = || PatternNode::Bind { index: 0 };
+        let g = || PatternNode::Bind { index: 1 };
+        op(OpTag::Mul, OpAttrs::default(), vec![
+            s(),
+            op(OpTag::Sub, OpAttrs::default(), vec![
+                g(),
+                op(OpTag::BroadcastTo, same_as_s(), vec![
+                    op(OpTag::Unsqueeze, axis_last(), vec![
+                        op(OpTag::SumDim, axis_last(), vec![
+                            op(OpTag::Mul, OpAttrs::default(), vec![g(), s()]),
+                        ]),
+                    ]),
+                ]),
+            ]),
+        ])
+    })
+}
+
+/// Per-entry scalar projection: SoftmaxLastDimBackward is parameterless, so the
+/// right payload projects to ZERO open-slot scalars and any other payload is a
+/// typed decline (`None` ⇒ the bridge returns the node unchanged — G2).
+fn scalars(params: &FusedOpParams) -> Option<Vec<f64>> {
+    match params {
+        FusedOpParams::SoftmaxLastDimBackward => Some(Vec::new()),
+        _ => None,
+    }
+}
+
 /// Decompose to the closed-form softmax backward
 /// `grad_x = s · (g − sum(g·s, last_dim, keepdim=true))`, where `s` (input 0)
-/// is the forward output and `g` (input 1) is the upstream gradient. Every
-/// primitive exists (`Mul`, `ReduceSumTo` to a keepdim shape, `BroadcastTo`,
-/// `Sub`) — the same `ReduceSumTo([…,1]) + BroadcastTo` idiom the forward
-/// `softmax_last_dim::decompose` uses — so per G2 this is a real 5-node
-/// decomposition, not a basis-gap self-return.
-pub fn decompose(graph: &mut Graph, id: NodeId, _params: &FusedOpParams) -> NodeId {
-    let (s_id, g_id, x_shape, dtype) = {
-        let n = graph.node(id);
-        (n.inputs[0], n.inputs[1], n.shape.clone(), n.dtype)
-    };
-    // keepdim shape: last dim → 1.
-    let mut kd = x_shape.dims().to_vec();
-    let last = kd.len() - 1;
-    kd[last] = 1;
-    let keepdim = Shape::from_dims(&kd);
-
-    let gs = graph.push(Node {
-        op: Op::Mul,
-        inputs: vec![g_id, s_id],
-        shape: x_shape.clone(),
-        dtype,
-    });
-    let summed = graph.push(Node {
-        op: Op::ReduceSumTo(keepdim.clone()),
-        inputs: vec![gs],
-        shape: keepdim,
-        dtype,
-    });
-    let summed_b = graph.push(Node {
-        op: Op::BroadcastTo(x_shape.clone()),
-        inputs: vec![summed],
-        shape: x_shape.clone(),
-        dtype,
-    });
-    let sub = graph.push(Node {
-        op: Op::Sub,
-        inputs: vec![g_id, summed_b],
-        shape: x_shape.clone(),
-        dtype,
-    });
-    graph.push(Node {
-        op: Op::Mul,
-        inputs: vec![s_id, sub],
-        shape: x_shape,
-        dtype,
-    })
+/// is the forward output and `g` (input 1) is the upstream gradient — since T8
+/// a re-emit of [`recipe`]'s data through the [`decompose_via_recipe`] bridge
+/// (the fused node's two inputs `[s, g]` are the binds; the resolving emit
+/// derives every interior shape/dtype). Any failure — wrong params payload, a
+/// resolution decline at these shapes (symbolic extent, …) — returns `id`
+/// (fixpoint, surfaced gap, never a panic): exactly the G2 posture the
+/// imperative body had.
+pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeId {
+    decompose_via_recipe(graph, id, recipe(), scalars(params))
 }
 
 /// Matcher stub — backward-helper nodes originate from autograd

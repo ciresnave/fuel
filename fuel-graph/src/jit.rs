@@ -75,6 +75,7 @@ pub fn op_to_tag(op: &Op) -> Option<OpTag> {
         Op::MinAll => OpTag::MinAll,
         Op::MeanAll => OpTag::MeanAll,
         Op::SumDim(_) => OpTag::SumDim,
+        Op::MaxDim(_) => OpTag::MaxDim,
         Op::MeanDim(_) => OpTag::MeanDim,
         Op::ReduceSumTo(_) => OpTag::ReduceSumTo,
         Op::ReduceMaxTo(_) => OpTag::ReduceMaxTo,
@@ -143,7 +144,7 @@ fn op_to_attrs(op: &Op) -> OpAttrs {
         Op::AddScalar(v) | Op::MulScalar(v) => a.scalars = vec![*v],
         Op::Clamp { min, max } => a.scalars = vec![*min, *max],
         // Dim-bearing ops → `axis`.
-        Op::SumDim(d) | Op::MeanDim(d) => a.axis = Some(*d as i64),
+        Op::SumDim(d) | Op::MaxDim(d) | Op::MeanDim(d) => a.axis = Some(*d as i64),
         Op::Triu { diagonal } | Op::Tril { diagonal } => a.axis = Some(*diagonal),
         // Permute/Transpose → absolute `perm` (F1/F2a). `Transpose` is the
         // rank-2 last-two-axes special case; without the input rank on the op
@@ -404,6 +405,16 @@ mod tests {
         assert_eq!((a.pad_mode, a.pad_value), (Some(0), Some(0.5)));
         // Iota len rides target_shape.
         assert_eq!(op_to_attrs(&Op::Iota { len: 7 }).target_shape, vec![7]);
+    }
+
+    #[test]
+    fn max_dim_projects_tag_and_axis() {
+        // T4 (Increment C slice 1): additive OpTag::MaxDim — the D3 keepdim
+        // swap ({Max,Sum,Mean}Dim + Unsqueeze) needs MaxDim in the region
+        // vocabulary. Round-trip anchor: op_to_tag projects the tag,
+        // op_to_attrs projects the axis (same carrier as SumDim/MeanDim).
+        assert_eq!(op_to_tag(&Op::MaxDim(1)), Some(OpTag::MaxDim));
+        assert_eq!(op_to_attrs(&Op::MaxDim(2)).axis, Some(2));
     }
 
     // ---- the structural matcher (match_region) -------------------------------
