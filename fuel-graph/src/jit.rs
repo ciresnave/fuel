@@ -143,6 +143,11 @@ fn op_to_attrs(op: &Op) -> OpAttrs {
         // Scalar-param ops → `scalars` (the region's slot snapshot; F1).
         Op::AddScalar(v) | Op::MulScalar(v) => a.scalars = vec![*v],
         Op::Clamp { min, max } => a.scalars = vec![*min, *max],
+        // PowI → i32 exponent on `scalars[0]` (Increment C carriers, A3): a
+        // BAKED constant (like MaskedFill's fill), completing the projection ↔
+        // `tag_to_op` round-trip and matching the §6.19 wire (which already
+        // serializes `scalars` for PowI). Exact for every i32 through f64.
+        Op::PowI(n) => a.scalars = vec![*n as f64],
         // Dim-bearing ops → `axis`.
         Op::SumDim(d) | Op::MaxDim(d) | Op::MeanDim(d) => a.axis = Some(*d as i64),
         Op::Triu { diagonal } | Op::Tril { diagonal } => a.axis = Some(*diagonal),
@@ -405,6 +410,11 @@ mod tests {
         assert_eq!((a.pad_mode, a.pad_value), (Some(0), Some(0.5)));
         // Iota len rides target_shape.
         assert_eq!(op_to_attrs(&Op::Iota { len: 7 }).target_shape, vec![7]);
+        // PowI → i32 exponent on scalars[0] (A3 carrier; the §6.19 wire arm
+        // already serializes `scalars` for PowI, so this completes the
+        // projection ↔ reconstruction round-trip). RED before A3 (fell in the
+        // `_ => {}` no-op arm).
+        assert_eq!(op_to_attrs(&Op::PowI(3)).scalars, vec![3.0]);
     }
 
     #[test]
