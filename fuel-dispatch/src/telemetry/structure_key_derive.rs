@@ -387,7 +387,11 @@ fn operand_sub_key(o: &FdxOperandDesc, frame: &[i64], innermost_reduced: bool) -
         let mut picked = "v1";
         for &l in &[8i64, 4, 2] {
             let vbytes = (l as u32) * (dsz as u32);
-            if vbytes <= 16 && o.align_bytes % vbytes == 0 && inner_extent % l == 0 {
+            // `inner_extent >= l` carries the same `E >= N` guard `div_bucket`
+            // uses (§6.5-0012): without it the `inner_extent % l == 0` test is
+            // VACUOUSLY true at E=0 (every L divides 0), mis-deriving v4 for an
+            // empty run — the §6.5-0009(c) zero-extent trap (KISS #82 F4 / #87).
+            if vbytes <= 16 && o.align_bytes % vbytes == 0 && inner_extent >= l && inner_extent % l == 0 {
                 picked = match l {
                     8 => "v8",
                     4 => "v4",
@@ -919,6 +923,7 @@ mod tests {
         assert_eq!(token, "sk3|red|f32|cuda:sm89|ix32|warp|r2|co/00/v1/d8/f;co/00/v1/da/f|rlast");
     }
 
+
     /// KISS A.1: reduction keepdim `[4,8] → [1,1]` (all-axes ⇒ `rall`).
     #[test]
     fn kiss_a1_reduction_all_axes_golden() {
@@ -976,8 +981,13 @@ mod tests {
         assert_eq!(token, "sk3|bin|f32|cuda:sm89|ix32|warp|r2|co/00/v1/da/f|-");
     }
 
-    /// A zero inner extent buckets `da` (§6.5-0012's guard — a guardless
-    /// `0 % 16 == 0` would mis-bucket it `d16`).
+    /// A zero inner extent buckets `da` AND vectorizes `v1` — the coherent
+    /// zero-extent pair. Both clauses carry the same `E >= N` guard: `div_bucket`
+    /// (§6.5-0012, a guardless `0 % 16 == 0` would mis-bucket `d16`) and the
+    /// vector-width ladder (§6.5-0009(c), a guardless `0 % L == 0` would
+    /// mis-derive `v4` — the vacuous-truth trap KISS #82 F4 / PR #87 pinned to
+    /// v1). This test previously froze the pre-fix `v4/da` — the incoherent pair
+    /// where only one of the two axis clauses was guarded.
     #[test]
     fn zero_extent_buckets_da() {
         let token = derive_structure_key_token(
@@ -985,8 +995,8 @@ mod tests {
             &[f32c(&[0])],
             "cuda:sm89",
         )
-        .expect("derives");
-        assert_eq!(token, "sk3|bin|f32|cuda:sm89|ix32|warp|r1|co/00/v4/da/f|-");
+        .expect("derives (never panics)");
+        assert_eq!(token, "sk3|bin|f32|cuda:sm89|ix32|warp|r1|co/00/v1/da/f|-");
     }
 
     /// A fully reversed view is `co` under the |stride| layout algorithm

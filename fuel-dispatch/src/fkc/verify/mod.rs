@@ -82,12 +82,41 @@ mod harness;
 #[cfg(feature = "cuda")]
 mod seed_cuda_ledger;
 
-pub use accept_coverage::verify_accept_coverage;
+// ---------------------------------------------------------------------------
+// Re-export gating.
+//
+// `verify` is `pub(crate) mod` (see `fkc/mod.rs`), so a `pub use` here is only
+// ever reachable from inside this crate — which means a re-export nobody in the
+// crate NAMES is a plain unused import. Each line below is therefore gated to
+// exactly the feature set of its real consumers rather than deleted, so the
+// `jit` / `cuda` builds keep every name they reach either through `super::`
+// (`harness.rs`, `seed_cuda_ledger.rs` — both `cuda`-gated) or through
+// `crate::fkc::verify::` (`jit_ingest.rs`, `jit_ingest_probe.rs` — `jit`-gated,
+// with a further `cuda`-gated block inside `jit_ingest`).
+//
+// Consumers that go through a SUBMODULE path instead
+// (`crate::fkc::verify::bit_stability::…`, as `invoker_cpu`/`invoker_cuda`/
+// `invoker_vulkan`/`ulp`/`seed_cpu_ledger` and their tests do) do not depend on
+// any of these lines.
+// ---------------------------------------------------------------------------
+
+// `fill_deterministic`/`HostTensor`: `jit_ingest_probe` (jit) and
+// `harness`+`seed_cuda_ledger` (cuda, via `super::`).
+#[cfg(any(feature = "jit", feature = "cuda"))]
+pub use bit_stability::{fill_deterministic, HostTensor};
+// The invoker/outcome surface: `jit_ingest`'s cuda block (jit+cuda) and
+// `harness`+`seed_cuda_ledger` (cuda, via `super::`) — i.e. `cuda` covers both.
+#[cfg(feature = "cuda")]
 pub use bit_stability::{
-    fill_deterministic, verify_bit_stability, HostTensor, KernelInvoker, ProbeInputs, VerifyError,
-    VerifyOutcome,
+    verify_bit_stability, KernelInvoker, ProbeInputs, VerifyError, VerifyOutcome,
 };
-pub use ledger::{gate_precision, LedgerQuery, LedgerRecord, VerificationLedger};
+pub use ledger::{gate_precision, LedgerQuery, VerificationLedger};
+// `LedgerRecord`: `jit_ingest` (jit) and `harness`+`seed_cuda_ledger` (cuda).
+#[cfg(any(feature = "jit", feature = "cuda"))]
+pub use ledger::LedgerRecord;
+// The numeric-bound surface: consumed ONLY by `jit_ingest`'s cuda-gated
+// candidate-vs-reference arm, i.e. `jit` AND `cuda`.
+#[cfg(all(feature = "jit", feature = "cuda"))]
 pub use ulp::{
     region_contains_transcendental, verify_precision_bound, widen_bound_for_transcendental, Bound,
 };
@@ -97,11 +126,21 @@ pub use ulp::{
 // re-export would warn as unused in non-jit builds).
 #[cfg(feature = "jit")]
 pub(crate) use ulp::is_transcendental;
+// `CpuInvoker`: the CPU reference invoker `seed_cuda_ledger` diffs CUDA against
+// (cuda, via `super::`). `seed_cpu_ledger` reaches it by submodule path.
+#[cfg(feature = "cuda")]
 pub use invoker_cpu::CpuInvoker;
-pub use seed_cpu_ledger::{run_cpu_verification, SeedAttempt};
+// NOTE: `seed_cpu_ledger::{run_cpu_verification, SeedAttempt}` and
+// `accept_coverage::verify_accept_coverage` are deliberately NOT re-exported —
+// they have no in-crate consumer under any feature today, so the re-export was
+// a pure unused import. The items themselves are untouched; re-add the
+// `pub use` alongside the first consumer.
+//
 // `to_bytes` is `pub(crate)` on `seed_cpu_ledger` (not `pub`) — re-exported
 // here at crate visibility so `jit_ingest_probe::probe_from_operands` can
 // reuse the exact dtype-aware float→bytes encode without duplicating it.
+// (`harness`/`seed_cuda_ledger` each carry their own private `to_bytes`.)
+#[cfg(feature = "jit")]
 pub(crate) use seed_cpu_ledger::to_bytes;
 #[cfg(feature = "cuda")]
 pub use invoker_cuda::CudaInvoker;
