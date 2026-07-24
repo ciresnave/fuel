@@ -485,9 +485,16 @@ fn masked_fill_scalar(value: f64, dtype: fuel_ir::DType) -> Option<fuel_ir::Scal
 
 /// Decode a target [`fuel_ir::Shape`] from `attrs.target_shape` (the shared
 /// LOGICAL-shape carrier for Reshape/BroadcastTo/ReduceSumTo/ReduceMaxTo).
-/// `None` for an unset (empty) target — an honest miss, not a rank-0 shape.
+/// `None` for an unset (empty) target — an honest miss — UNLESS the
+/// [`OpAttrs::rank0_target`] marker is set, which denotes the intentional
+/// rank-0 (`[]`, scalar) shape (C-T1: a reduce-to-scalar loss tail such as
+/// FSCE's `ReduceSumTo([])`). The marker is what distinguishes an authored
+/// rank-0 target from the empty-`target_shape` wildcard/unset state.
 fn shape_from_attr(attrs: &OpAttrs) -> Option<fuel_ir::Shape> {
     if attrs.target_shape.is_empty() {
+        if attrs.rank0_target {
+            return Some(fuel_ir::Shape::from_dims(&[]));
+        }
         return None;
     }
     let dims: Vec<usize> = attrs.target_shape.iter().map(|&d| d as usize).collect();
@@ -1384,6 +1391,26 @@ mod tests {
         // ReduceMaxTo([2,1])
         let attrs = OpAttrs { target_shape: vec![2, 1], ..OpAttrs::default() };
         assert_eq!(super::tag_to_op(OpTag::ReduceMaxTo, &attrs), Some(Op::ReduceMaxTo(Shape::from_dims(&[2, 1]))));
+    }
+
+    #[test]
+    fn shape_target_ops_represent_rank0_via_the_marker() {
+        // C-T1: an INTENTIONAL rank-0 (`[]`) reduce/reshape/broadcast target.
+        // A rank-0 shape has empty `target_shape` — the same empty state as an
+        // unset/wildcard target — so the `rank0_target` marker disambiguates.
+        use fuel_ir::Shape;
+        let empty = Shape::from_dims(&[]);
+        // Marker SET → the concrete rank-0 shape (RED before the shape_from_attr
+        // rank0 arm: an empty `target_shape` honest-missed to `None`).
+        let rank0 = OpAttrs { rank0_target: true, ..OpAttrs::default() };
+        assert_eq!(super::shape_from_attr(&rank0), Some(empty.clone()));
+        assert_eq!(super::tag_to_op(OpTag::ReduceSumTo, &rank0), Some(Op::ReduceSumTo(empty.clone())));
+        assert_eq!(super::tag_to_op(OpTag::ReduceMaxTo, &rank0), Some(Op::ReduceMaxTo(empty.clone())));
+        assert_eq!(super::tag_to_op(OpTag::Reshape, &rank0), Some(Op::Reshape(empty.clone())));
+        assert_eq!(super::tag_to_op(OpTag::BroadcastTo, &rank0), Some(Op::BroadcastTo(empty)));
+        // Marker UNSET + empty target_shape stays an honest miss (wildcard).
+        assert_eq!(super::shape_from_attr(&OpAttrs::default()), None);
+        assert_eq!(super::tag_to_op(OpTag::ReduceSumTo, &OpAttrs::default()), None);
     }
 
     #[test]
