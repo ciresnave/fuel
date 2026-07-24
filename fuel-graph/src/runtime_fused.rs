@@ -464,6 +464,7 @@ fn has_rel_attrs(attrs: &OpAttrs) -> bool {
         || attrs.slice_start_rel.is_some()
         || attrs.slice_len_rel.is_some()
         || attrs.axis_last
+        || attrs.scalar_rel.is_some()
 }
 
 /// The ONE rel-XOR-abs mutual-exclusion oracle (shared by
@@ -483,6 +484,9 @@ fn rel_abs_conflict_field(tag: OpTag, attrs: &OpAttrs) -> Option<&'static str> {
     }
     if attrs.slice_len_rel.is_some() && attrs.slice_len.is_some() {
         return Some("slice_len");
+    }
+    if attrs.scalar_rel.is_some() && !attrs.scalars.is_empty() {
+        return Some("scalars");
     }
     if attrs.axis_last {
         match tag {
@@ -654,6 +658,21 @@ pub fn resolve_rel_attrs(
         out.slice_len_rel = None;
     }
 
+    // scalar_rel → scalars (DimExpr over the Bind space; the reduced_count
+    // concept — `Dim::Extent { operand, axis: LAST }` = n = extent of that
+    // operand's last axis, the norm-backward `MulScalar(n)` divisor). Rides the
+    // SAME §6.20 `eval_dim`/`resolve_axis` evaluator as the slice_* rel fields,
+    // resolved against the Bind space (not this op's children — a scalar rides no
+    // operand's rank). Unlike an extent/offset, a scalar may be negative, so only
+    // a symbolic Gap declines (§6.20-0004); every concrete value flows through.
+    if let Some(d) = &attrs.scalar_rel {
+        match shape_expr::eval_dim(d, bind_shapes, &[]).map_err(RelAttrError::Expr)? {
+            DimValue::Concrete(v) => out.scalars = vec![v as f64],
+            DimValue::Gap => return Err(RelAttrError::SymbolicGap { field: "scalars" }),
+        }
+        out.scalar_rel = None;
+    }
+
     // axis_last → the per-tag axis carrier, resolved against operand[0]'s rank.
     if attrs.axis_last {
         let rank = child_shapes.first().ok_or(RelAttrError::NoChildOperand)?.len();
@@ -692,7 +711,15 @@ pub fn resolve_rel_attrs(
 pub fn count_scalar_slots(node: &PatternNode) -> usize {
     match node {
         PatternNode::Op { op, operands, attrs } => {
-            let own = if attrs.scalars.is_empty() { scalar_slot_arity(*op) } else { 0 };
+            // A `scalar_rel` node is filled from an input SHAPE at emit time, NOT
+            // from the params cursor — so it is never an open slot (mirrors a
+            // baked-value node). Only an empty-`scalars`, no-`scalar_rel`
+            // scalar-param op is a cursor slot.
+            let own = if attrs.scalars.is_empty() && attrs.scalar_rel.is_none() {
+                scalar_slot_arity(*op)
+            } else {
+                0
+            };
             own + operands.iter().map(count_scalar_slots).sum::<usize>()
         }
         _ => 0,
@@ -803,6 +830,9 @@ fn dummy_fill_rel(tag: OpTag, attrs: &OpAttrs) -> OpAttrs {
     }
     if out.slice_len_rel.take().is_some() && out.slice_len.is_none() {
         out.slice_len = Some(1);
+    }
+    if out.scalar_rel.take().is_some() && out.scalars.is_empty() {
+        out.scalars = vec![1.0];
     }
     if out.axis_last {
         out.axis_last = false;
@@ -960,9 +990,13 @@ fn emit<'r>(
             // children are now EMITTED before the attrs are USED, but the
             // cursor fill stays right here, before the descent — the cursor
             // order is authoring order, not emission order.)
+            // A `scalar_rel` node is filled from an input shape by the rel-attr
+            // resolver below (NOT the params cursor) — matching
+            // `count_scalar_slots`, which does not count it as a slot, so it must
+            // not consume a cursor value here either.
             let arity = scalar_slot_arity(*op);
             let filled;
-            let attrs = if attrs.scalars.is_empty() && arity > 0 {
+            let attrs = if attrs.scalars.is_empty() && arity > 0 && attrs.scalar_rel.is_none() {
                 let (take, rest) = scalars.split_at(arity);
                 *scalars = rest;
                 filled = OpAttrs { scalars: take.to_vec(), ..attrs.clone() };
@@ -1440,6 +1474,97 @@ mod tests {
             dtype: DType::F32,
         });
         assert_eq!(decompose_region(&mut g, fused), fused, "mismatch ⇒ fixpoint");
+    }
+
+    // ---- shape-derived scalar slot (A1: the reduced_count live-emission) -----
+
+    /// `mul_scalar(a)` whose scalar is a SHAPE-DERIVED value: `scalar_rel =
+    /// Extent(operand 0, LAST)` — the reduced_count of bind 0's last axis, filled
+    /// from the input shape at emit time (NOT from the params cursor). This is
+    /// the narrow carrier a norm-backward's `MulScalar(n = dims[last])` needs.
+    fn mul_scalar_reduced_count_region() -> PatternNode {
+        use fuel_kernel_seam_types::shape_expr::{Dim, LAST};
+        PatternNode::Op {
+            op: OpTag::MulScalar,
+            attrs: OpAttrs {
+                scalar_rel: Some(Dim::Extent { operand: 0, axis: LAST }),
+                ..OpAttrs::default()
+            },
+            operands: vec![PatternNode::Bind { index: 0 }],
+        }
+    }
+
+    /// A1 born-red: a `scalar_rel` node is filled from an input SHAPE, so it is
+    /// NOT a params-cursor slot (`count_scalar_slots == 0`) and its emitted value
+    /// is the reduced_count of the resolving input's last axis. RED before the
+    /// wiring: `count_scalar_slots` counts the empty-`scalars` MulScalar as one
+    /// open slot, and `emit` ignores `scalar_rel` (fills from the cursor).
+    #[test]
+    fn scalar_rel_is_shape_derived_not_a_cursor_slot() {
+        let region = mul_scalar_reduced_count_region();
+        assert_eq!(
+            count_scalar_slots(&region),
+            0,
+            "a scalar_rel node is shape-derived, never a params-cursor slot",
+        );
+        // Emit over x[3,5]: n = last extent = 5, with NO cursor scalars.
+        let mut g = Graph::new();
+        let x = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[3, 5]),
+            dtype: DType::F32,
+        });
+        let root = try_emit_region(&mut g, &region, &[x], &[])
+            .expect("scalar_rel resolves against the input shape");
+        assert!(
+            matches!(g.node(root).op, Op::MulScalar(v) if v == 5.0),
+            "scalar_rel = Extent(0, LAST) over x[3,5] ⇒ MulScalar(5.0), got {:?}",
+            g.node(root).op,
+        );
+        assert_eq!(g.node(root).inputs, vec![x]);
+        // Rank-polymorphic: the SAME datum resolves to 7 over x[..,7].
+        let mut g3 = Graph::new();
+        let x3 = g3.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[2, 4, 7]),
+            dtype: DType::F32,
+        });
+        let root3 = try_emit_region(&mut g3, &region, &[x3], &[]).unwrap();
+        assert!(
+            matches!(g3.node(root3).op, Op::MulScalar(v) if v == 7.0),
+            "same datum, x[2,4,7] ⇒ MulScalar(7.0), got {:?}",
+            g3.node(root3).op,
+        );
+    }
+
+    /// A1: a `scalar_rel` set together with a non-empty `scalars` is a typed
+    /// rel-XOR-abs authoring conflict at emit (never a silent precedence).
+    #[test]
+    fn scalar_rel_and_baked_scalar_together_is_a_typed_conflict() {
+        use fuel_kernel_seam_types::shape_expr::{Dim, LAST};
+        let region = PatternNode::Op {
+            op: OpTag::MulScalar,
+            attrs: OpAttrs {
+                scalars: vec![2.0],
+                scalar_rel: Some(Dim::Extent { operand: 0, axis: LAST }),
+                ..OpAttrs::default()
+            },
+            operands: vec![PatternNode::Bind { index: 0 }],
+        };
+        let mut g = Graph::new();
+        let x = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[3, 5]),
+            dtype: DType::F32,
+        });
+        assert_eq!(
+            try_emit_region(&mut g, &region, &[x], &[]),
+            Err(RelAttrError::RelAbsConflict { field: "scalars" }),
+            "scalar_rel XOR scalars — both set is a typed decline",
+        );
     }
 
     // ---- Task 5: byte-for-byte emit == registry::*::decompose parity --------
