@@ -442,6 +442,18 @@ pub enum RelAttrError {
     AxisLastUnsupported { tag: OpTag },
     /// `axis_last` with no child operand — no rank to resolve LAST against.
     NoChildOperand,
+    /// The region's Bind-space broadcast **frame** is assembled by per-axis max
+    /// across ≥2 binds (`a[N,1] ⊗ b[1,M] → [N,M]`), so NO single operand carries
+    /// it — and `SameAs { operand }`, the §6.20 EXPRESSION kind's only
+    /// whole-shape constructor, therefore cannot express it. Accepting the
+    /// `SameAs` would SILENTLY resolve a `BroadcastTo` target to a PARTIAL frame
+    /// (`[N,1]` or `[1,M]`) and emit the wrong graph, so it is refused instead
+    /// (Baracuda's §6.20 finding). A **Dims-class gap**: `missing_ctor` is the
+    /// reserved wire tag of the constructor that WOULD express it
+    /// ([`fuel_kernel_seam_types::shape_expr::TAG_DIMS`] = `0x0B`, a §6.20-0002
+    /// extension-registry entrant — proposal filed KISS #80). `frame` is the
+    /// computed per-axis-max frame, for telemetry.
+    FrameNotExpressible { field: &'static str, frame: Vec<i64>, missing_ctor: u8 },
 }
 
 /// Whether `attrs` carries any shape-RELATIVE field (D2) — the emit fast-path
@@ -489,6 +501,82 @@ fn rel_abs_conflict_field(tag: OpTag, attrs: &OpAttrs) -> Option<&'static str> {
     None
 }
 
+/// The region's Bind-space broadcast **frame**: the NumPy right-aligned
+/// per-axis max over EVERY bind shape (`[N,1] ⊗ [1,M] → [N,M]`) — the shape an
+/// elementwise consumer of all the binds produces. `None` when the binds carry
+/// no joint elementwise frame at all: no binds, a SYMBOLIC extent (the frame is
+/// itself a gap — the `SameAs` arm already declines those as
+/// [`RelAttrError::SymbolicGap`]), or mutually broadcast-INcompatible binds (a
+/// matmul/gather region, where per-axis max is meaningless). Pure and total —
+/// unlike the graph-builder `compute_broadcast_shape`, incompatibility is
+/// `None`, never a panic.
+fn bind_broadcast_frame(bind_shapes: &[Vec<i64>]) -> Option<Vec<i64>> {
+    use fuel_kernel_seam_types::shape_expr::SYMBOLIC;
+    let rank = bind_shapes.iter().map(Vec::len).max()?;
+    let mut frame = vec![1i64; rank];
+    for s in bind_shapes {
+        if s.iter().any(|&e| e == SYMBOLIC || e < 0) {
+            return None;
+        }
+        let pad = rank - s.len(); // right-aligned: pad the shorter with leading 1s
+        for (i, &e) in s.iter().enumerate() {
+            let f = &mut frame[pad + i];
+            if *f == e || e == 1 {
+                continue;
+            }
+            if *f == 1 {
+                *f = e;
+                continue;
+            }
+            return None; // incompatible at this axis ⇒ no joint frame
+        }
+    }
+    Some(frame)
+}
+
+/// The SameAs **degradation guard** (I1, Baracuda's §6.20 finding). Even an
+/// ELEMENTWISE output shape is not always expressible as `SameAs(operand)`:
+/// when the region's broadcast frame is assembled by per-axis max across TWO
+/// binds (`a[N,1] ⊗ b[1,M] → [N,M]`) no single operand carries the full frame,
+/// so every `SameAs` spelling resolves to a PARTIAL frame. `BroadcastTo` is the
+/// recipe's frame carrier (its target IS the elementwise output shape), so a
+/// `SameAs` target is accepted only when SOME bind does carry the whole frame;
+/// otherwise the frame is surfaced as a typed Dims-class gap rather than
+/// silently resolved to one operand's partial shape.
+///
+/// Deliberately narrow — it fires ONLY when a joint frame exists and NO bind
+/// equals it. Sub-frame broadcasts (bind1 `[T,D]` inside a `[B,T,D]` region)
+/// and frame-less regions (matmul binds) are untouched, and all 5 slice-1
+/// migrated recipes are safe by construction (their `SameAs` target is bind 0,
+/// which carries the frame).
+fn same_as_frame_guard(
+    tag: OpTag,
+    se: &fuel_kernel_seam_types::shape_expr::ShapeExpr,
+    bind_shapes: &[Vec<i64>],
+) -> Result<(), RelAttrError> {
+    use fuel_kernel_seam_types::shape_expr::{ShapeExpr, TAG_DIMS};
+    // Exhaustive on purpose: when the Dims/WithDim extension entrants (KISS
+    // #80) join `ShapeExpr`, this match stops compiling — they express the
+    // max-frame directly and must NOT be routed through this guard.
+    match se {
+        ShapeExpr::SameAs { .. } => {}
+    }
+    if tag != OpTag::BroadcastTo {
+        return Ok(());
+    }
+    let Some(frame) = bind_broadcast_frame(bind_shapes) else {
+        return Ok(()); // no joint elementwise frame at play
+    };
+    if bind_shapes.iter().any(|b| *b == frame) {
+        return Ok(()); // some operand carries the whole frame ⇒ expressible
+    }
+    Err(RelAttrError::FrameNotExpressible {
+        field: "target_shape",
+        frame,
+        missing_ctor: TAG_DIMS,
+    })
+}
+
 /// Resolve `attrs`' shape-RELATIVE fields (`target_shape_rel`,
 /// `slice_start_rel`/`slice_len_rel`, `axis_last` — D2) into their concrete
 /// siblings, returning a fully-concrete [`OpAttrs`] ready for the unchanged
@@ -533,6 +621,12 @@ pub fn resolve_rel_attrs(
                 if let Some(&bad) = s.iter().find(|&&e| e < 0) {
                     return Err(RelAttrError::Negative { field: "target_shape", value: bad });
                 }
+                // I1: refuse a `SameAs` target whose region frame no operand
+                // carries — a silent PARTIAL frame otherwise (see
+                // [`same_as_frame_guard`]). Runs AFTER evaluation so the
+                // structural declines (`OperandOutOfRange`, `SymbolicGap`)
+                // keep their existing precedence.
+                same_as_frame_guard(tag, se, bind_shapes)?;
                 out.target_shape = s;
             }
             ShapeValue::Gap => {
@@ -1934,7 +2028,9 @@ mod tests {
 
     mod resolve_rel {
         use super::super::{RelAttrError, resolve_rel_attrs};
-        use fuel_kernel_seam_types::shape_expr::{Dim, LAST, ShapeExpr, ShapeExprError, SYMBOLIC};
+        use fuel_kernel_seam_types::shape_expr::{
+            Dim, LAST, SYMBOLIC, ShapeExpr, ShapeExprError, TAG_DIMS,
+        };
         use fuel_kernel_seam_types::{OpAttrs, OpTag};
 
         fn half_of_bind0_last() -> Dim {
@@ -2106,6 +2202,72 @@ mod tests {
         }
 
         #[test]
+        fn two_operand_max_frame_declines_instead_of_a_partial_shape() {
+            // I1 (Baracuda §6.20 finding): an ELEMENTWISE output frame is not
+            // always expressible as `SameAs(operand)`. When the frame is
+            // assembled by per-axis max across TWO binds — `a[2,1] ⊗ b[1,3] →
+            // [2,3]` — NO single operand carries it, so BOTH spellings resolve
+            // to a PARTIAL frame ([2,1] / [1,3]) and would silently emit the
+            // wrong `BroadcastTo` target. Must be a typed decline.
+            // The decline is typed and names the Dims-class constructor that
+            // WOULD express it (reserved tag 0x0B, KISS #80) — a surfaced gap,
+            // never a panic and never a wrong shape.
+            let binds = vec![vec![2, 1], vec![1, 3]]; // frame = [2,3], carried by neither
+            for operand in [0u8, 1] {
+                let attrs = OpAttrs {
+                    target_shape_rel: Some(ShapeExpr::SameAs { operand }),
+                    ..OpAttrs::default()
+                };
+                let child = binds[operand as usize].clone();
+                assert_eq!(
+                    resolve_rel_attrs(OpTag::BroadcastTo, &attrs, &binds, &[child]),
+                    Err(RelAttrError::FrameNotExpressible {
+                        field: "target_shape",
+                        frame: vec![2, 3],
+                        missing_ctor: TAG_DIMS,
+                    }),
+                    "SameAs {{ operand: {operand} }} must not resolve to a PARTIAL frame",
+                );
+            }
+        }
+
+        #[test]
+        fn frame_guard_does_not_fire_when_an_operand_carries_the_frame() {
+            // The guard is deliberately narrow. It must NOT degrade the cases
+            // the 5 migrated recipes actually use.
+            let attrs = OpAttrs {
+                target_shape_rel: Some(ShapeExpr::SameAs { operand: 0 }),
+                ..OpAttrs::default()
+            };
+            // (a) bind0 IS the frame (softmax/rope/rms-norm/layer-norm shape).
+            let binds = vec![vec![2, 3, 4], vec![4]];
+            let r = resolve_rel_attrs(OpTag::BroadcastTo, &attrs, &binds, &[vec![4]])
+                .expect("bind0 carries the frame");
+            assert_eq!(r.target_shape, vec![2, 3, 4]);
+            // (b) a SUB-frame target is legitimate: the frame is bind0's, and
+            // naming bind1's smaller shape is an ordinary interior broadcast.
+            let sub = OpAttrs {
+                target_shape_rel: Some(ShapeExpr::SameAs { operand: 1 }),
+                ..OpAttrs::default()
+            };
+            let r = resolve_rel_attrs(OpTag::BroadcastTo, &sub, &binds, &[vec![4]])
+                .expect("sub-frame broadcast stays expressible");
+            assert_eq!(r.target_shape, vec![4]);
+            // (c) binds with NO joint elementwise frame (a matmul region) —
+            // per-axis max is meaningless there, so the guard stays out.
+            let mm = vec![vec![8, 4096], vec![4096, 1024]];
+            let r = resolve_rel_attrs(OpTag::BroadcastTo, &attrs, &mm, &[vec![8, 1]])
+                .expect("no joint frame ⇒ no guard");
+            assert_eq!(r.target_shape, vec![8, 4096]);
+            // (d) a NON-frame-carrier tag is untouched: only `BroadcastTo`'s
+            // target IS the elementwise output frame.
+            let two = vec![vec![2, 1], vec![1, 3]];
+            let r = resolve_rel_attrs(OpTag::Reshape, &attrs, &two, &[vec![2, 1]])
+                .expect("Reshape's target is not a frame claim");
+            assert_eq!(r.target_shape, vec![2, 1]);
+        }
+
+        #[test]
         fn axis_last_on_an_axisless_tag_or_without_a_child_declines() {
             let attrs = OpAttrs { axis_last: true, ..OpAttrs::default() };
             // Add has no axis carrier — axis_last is meaningless, a typed decline
@@ -2193,6 +2355,31 @@ mod tests {
             assert_eq!(g.node(r2).shape, Shape::from_dims(&[4, 5]));
             let b2 = g.node(r2).inputs[1];
             assert_eq!(g.node(b2).op, Op::BroadcastTo(Shape::from_dims(&[4, 5])));
+        }
+
+        #[test]
+        fn two_operand_max_frame_region_declines_through_emit() {
+            // I1 end-to-end: the ONE region spelling that WANTS the per-axis-max
+            // frame — Mul(BroadcastTo(a[2,1]), BroadcastTo(b[1,3])) → [2,3],
+            // which Fuel's primitive `Mul` requires explicitly (`primitive_shape`
+            // takes in[0]'s shape, it does not broadcast). `SameAs` cannot name
+            // [2,3], so the resolving emit surfaces the typed Dims-class gap
+            // instead of emitting a partial-frame BroadcastTo.
+            let region = op_node(OpTag::Mul, OpAttrs::default(), vec![
+                op_node(OpTag::BroadcastTo, bcast_same_as_0(), vec![bind(0)]),
+                op_node(OpTag::BroadcastTo, bcast_same_as_0(), vec![bind(1)]),
+            ]);
+            let mut g = Graph::new();
+            let a = cst(&mut g, &[2, 1]);
+            let b = cst(&mut g, &[1, 3]);
+            assert_eq!(
+                try_emit_region(&mut g, &region, &[a, b], &[]),
+                Err(RelAttrError::FrameNotExpressible {
+                    field: "target_shape",
+                    frame: vec![2, 3],
+                    missing_ctor: fuel_kernel_seam_types::shape_expr::TAG_DIMS,
+                }),
+            );
         }
 
         #[test]
