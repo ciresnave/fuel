@@ -174,11 +174,27 @@ fn alibi_bias_recipe(
     }
 }
 
+/// The pieces of the recomputed attention state a decompose recipe needs, all as
+/// portable [`PatternNode`] DATA — the recipe-side mirror of the imperative
+/// [`AttnRecompute`]. The forward decompose consumes only `probs` + `v_rep`; the
+/// backward ([`super::flash_attn_backward`], C-T4) also consumes `k_rep` (for dQ)
+/// and `softcap_tanh` (the `1 − tanh²` derivative). Because every field is a
+/// slot-free subtree, emit's within-call identity-share collapses a field that
+/// re-occurs (e.g. `k_rep` appears both inside `probs` via `kt` AND standalone in
+/// dQ; `softcap_tanh` appears inside `probs` via `MulScalar(cap)` AND in the
+/// backward's `1 − tanh²`) to ONE node — reproducing the imperative DAG sharing.
+pub(crate) struct AttnRecomputeRecipe {
+    pub probs: PatternNode,
+    pub k_rep: PatternNode,
+    pub v_rep: PatternNode,
+    pub softcap_tanh: Option<PatternNode>,
+}
+
 /// Build `probs = softmax( mask( alibi( softcap( scale·QKᵀ ) ) ) )` plus the
-/// GQA-repeated V, all as portable recipe DATA (the structure-preserving mirror
-/// of [`recompute_probs`], shared by C-T3 forward and — from C-T4 — the
-/// backward). `k_use`/`v_use` are the (possibly-sliced) K/V recipe subtrees.
-/// Returns `(probs, v_rep)`.
+/// GQA-repeated K/V (and, when softcap is active, the saved `tanh`), all as
+/// portable recipe DATA (the structure-preserving mirror of [`recompute_probs`],
+/// shared by the C-T3 forward and the C-T4 backward). `k_use`/`v_use` are the
+/// (possibly-sliced) K/V recipe subtrees. Returns an [`AttnRecomputeRecipe`].
 ///
 /// The mask bands share the SAME `neg_inf` node (`AddScalar(-inf)(MulScalar(0)(
 /// S0))`, `S0` = the scaled scores at mask entry): every band is authored over a
@@ -188,7 +204,7 @@ fn alibi_bias_recipe(
 /// `o+r+1`, `o-l-1`) and the alibi rel, baked per call. ZERO open scalar slots
 /// (scale, `1/cap`, `cap`, `0`, `-inf` are all baked pattern constants).
 #[allow(clippy::too_many_arguments)]
-fn recompute_probs_recipe(
+pub(crate) fn recompute_probs_recipe(
     q: PatternNode,
     k_use: PatternNode,
     v_use: PatternNode,
@@ -206,20 +222,27 @@ fn recompute_probs_recipe(
     softcap: Option<f32>,
     q_pos_offset: usize,
     dtype: DType,
-) -> (PatternNode, PatternNode) {
+) -> AttnRecomputeRecipe {
     // --- GQA / MQA: repeat K and V heads from Hkv up to Hq. -------------
     let k_rep = repeat_kv_heads_recipe(k_use, b, hkv, hq, sk, d);
     let v_rep = repeat_kv_heads_recipe(v_use, b, hkv, hq, sk, d);
 
     // --- scores = scale · (q · kᵀ) -------------------------------------
-    let kt = r_op(OpTag::Permute, r_perm(vec![0, 1, 3, 2]), vec![k_rep]);
+    // `k_rep` is cloned into `kt`; the standalone `k_rep` is returned for the
+    // backward's dQ (emit's identity-share dedups the two structurally-equal
+    // occurrences back to one node).
+    let kt = r_op(OpTag::Permute, r_perm(vec![0, 1, 3, 2]), vec![k_rep.clone()]);
     let scores = r_op(OpTag::MatMul, OpAttrs::default(), vec![q, kt]);
     let mut scaled = r_op(OpTag::MulScalar, r_scalar(softmax_scale as f64), vec![scores]);
 
     // --- softcap: cap · tanh(scaled / cap) -----------------------------
+    // The saved `tanh` (`t`) is cloned into `scaled` AND returned for the
+    // backward's `1 − tanh²` derivative (identity-share dedups the two).
+    let mut softcap_tanh = None;
     if let Some(cap) = softcap {
         let pre = r_op(OpTag::MulScalar, r_scalar(1.0 / cap as f64), vec![scaled]);
         let t = r_op(OpTag::Tanh, OpAttrs::default(), vec![pre]);
+        softcap_tanh = Some(t.clone());
         scaled = r_op(OpTag::MulScalar, r_scalar(cap as f64), vec![t]);
     }
 
@@ -260,7 +283,7 @@ fn recompute_probs_recipe(
 
     // --- probs = softmax(scaled), carried as a nested Op::Fused node (2a) ---
     let probs = r_op(OpTag::Fused, fused_softmax_attr(), vec![scaled]);
-    (probs, v_rep)
+    AttnRecomputeRecipe { probs, k_rep, v_rep, softcap_tanh }
 }
 
 /// FlashAttn's materialized-SDPA primitive recipe as portable [`PatternNode`]
@@ -301,12 +324,12 @@ fn recipe(
         }
     };
     let alibi = if has_alibi { Some(r_bind(3)) } else { None };
-    let (probs, v_rep) = recompute_probs_recipe(
+    let rc = recompute_probs_recipe(
         r_bind(0), k_use, v_use, alibi, b, hq, sq, sk, d, hkv, softmax_scale, causal,
         window_l, window_r, softcap, q_pos_offset, dtype,
     );
-    // out = probs · v  →  [B, Hq, Sq, D]
-    r_op(OpTag::MatMul, OpAttrs::default(), vec![probs, v_rep])
+    // out = probs · v  →  [B, Hq, Sq, D]  (k_rep / softcap_tanh are backward-only)
+    r_op(OpTag::MatMul, OpAttrs::default(), vec![rc.probs, rc.v_rep])
 }
 
 /// Decompose FlashAttn to its primitive **materialized scaled-dot-product
