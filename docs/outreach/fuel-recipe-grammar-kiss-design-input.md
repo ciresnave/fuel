@@ -119,6 +119,12 @@ The concrete positional byte arms of the Q4 blob. Fuel emits the following today
 | `masked_fill` | `put_f64_list(scalars) ++ put_str(dtype_name)` |
 | `scan` | `{ n_xs, bound, emit, has_early_exit }` |
 | `matmul` (role-vectors, §5) | `u32_le(len lhs_roles) ++ lhs_roles ++ u32_le(len rhs_roles) ++ rhs_roles` (roles = u8) |
+| `const` **(leaf, §2)** | `u64(bits)` — dtype-agnostic; **MBZ narrow-dtype rule**: storage bits LOW-order, upper bits zero; NaN payload verbatim |
+| `runtime_scalar` **(leaf, §2)** | `u32(slot_index)` |
+| `reduced_count` **(leaf, §2)** | `i64(axis)` — the fold's axis field minus `keepdim`; grows to a list only in fold lockstep (§6.12-0001) |
+| `scan_placeholder` **(leaf, §2)** | `u8(role: 0=carry, 1=elem) ++ u32(index)` |
+
+The last four rows are the **four leaf arms acked by the KISS editor 2026-07-23** ("RULING RECORD — four-leaf-arm ack" — [KISS #67 comment 5061571967](https://github.com/ThinkersJournal/KISS/issues/67#issuecomment-5061571967), acking Fuel's proposal [comment 5060303085](https://github.com/ThinkersJournal/KISS/issues/67#issuecomment-5060303085) of the same day; clean, no amendments) and **SHIPPED** in `to_canonical_bytes` with golden-byte tests. They ride **carrier (a)** — the #67 node-envelope `op_attrs` blob, `u32`-LE outer, verbatim (§6.19-0010) — never carrier (b) (§6.8-0007 region-table, `u16`-LE) or carrier (c) (§6.20-0005 shape-expr child, `u16`-LE). **Honest scope:** these are wire tokens only — Fuel's graph produces none of them yet (`op_to_tag` emits none; `tag_to_op` declines all four as honest misses), because a first-class recipe leaf needs the §A flat-DAG-CSE interior.
 
 **Reconciled without widening the blob** (the closed node schema carries these): `reduce{monoid, reduce_axes, keepdim}` — `monoid` rides `op_name` (`sum`/`prod`/`max`/`min`), Fuel emits single-axis `{axis, keepdim}` (multi-axis `reduce_axes` deferred); `gather`/`scatter{axis, oob_policy, index_operand, index_dtype}` — Fuel emits `{axis}`, `oob_policy` a deferred slot, `scatter_combine` rides `op_name` (`scatter_add` = `atomic-add`; assign/atomic-max/atomic-min are consumer-gated op gaps), the index operand/dtype ride `child_edges`/that operand node. `mean` is **not a monoid** — it is `sum` fold + a `div`-by-`reduced_count` epilogue.
 
@@ -169,7 +175,7 @@ The **shape-expression vocabulary** (`ShapeExpr := SameAs(operand)`; `DimExpr :=
 | Canonicalization / `base_map_hash` rule (Q3) | **SHIPPED** |
 | Resolve-to-base-map + numeric verify (Q6) | **SHIPPED** (recipe-identity verifier) |
 | `Op::Scan{body,carry,bound}`, `Op::Reduce = Scan{emit=Final}` (Q5) | **SHIPPED** (Phase 1, G3 closed) |
-| Source-op leaves (`const`/`iota`/`runtime_scalar`/`scan_placeholder`/`reduced_count`) | schema pinned; leaf serialization lands in Convergence Increment C |
+| Source-op leaves (`const`/`iota`/`runtime_scalar`/`scan_placeholder`/`reduced_count`) | **byte arms SHIPPED** for the four acked leaves (`const`/`runtime_scalar`/`reduced_count`/`scan_placeholder`, 2026-07-23 ack — see §4); `iota` already rides `OpTag::Iota`. **Wire tokens only** — the graph-side wiring (first-class `PatternNode` leaves) needs the §A flat-DAG interior, still Increment C |
 | matmul role-vectors (§5) | schema **closed/mutual**; the u8-role serialize+resolve lands in Increment C (emits empty `[00,00,00,00]` today) |
 | flat-DAG-CSE representation + `decompose`→data migration (§A) | **NOT built** — the Convergence-C recipe-interior home, still pending |
 | shape-oracle `ShapeExpr`/`DimExpr` evaluator + §6.20 wire codec (§7) | **SHIPPED** (Convergence-C @ `9156e178`, `fkc/shape_expr.rs`); KISS RFC merged @ `3bd6d2d` |

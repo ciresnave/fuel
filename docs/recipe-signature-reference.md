@@ -191,7 +191,18 @@ In the as-built `PatternNode` grammar the **only** concrete-recipe leaf is `Bind
 
 At the *graph* `Op` level the leaf/source ops that exist are `Op::Const` (`lib.rs:228`), `Op::Iota { len }` (`lib.rs:238`), and `Op::ScanPlaceholder { role: ScanRole, index }` (`lib.rs:1147-1150`) — but `Op::Const`/`Op::Scan`/`Op::ScanPlaceholder` are *outside* the `OpTag` vocabulary (`op_to_tag` returns `None`, `jit.rs:105`), so they never appear as recipe nodes. `Op::Scan` is a terminal in the base map — it *is* the primitive, no `LoweringRule` matches it (`lib.rs:1131-1137`). The shipped scan-body enums are `ScanEmit { All, Final }` (`lib.rs:1158-1162`) and `ScanRole { Carry, Elem }` (`lib.rs:1167-1171`).
 
-### Pinned (co-designed, not yet in `PatternNode`)
+### Pinned (co-designed) — byte arms SHIPPED, graph wiring not
+
+**Four of the five leaf tokens now have a SHIPPED byte arm** (KISS editor ack, 2026-07-23,
+"RULING RECORD — four-leaf-arm ack" — [KISS #67 comment 5061571967](https://github.com/ThinkersJournal/KISS/issues/67#issuecomment-5061571967)):
+`OpTag::{Const, RuntimeScalar, ReducedCount, ScanPlaceholder}` serialize per §6 of this
+document, with golden-byte tests. What shipped is
+the **wire token + its `op_attrs` body**, nothing more: `jit::op_to_tag` emits none of the four
+and `runtime_fused::tag_to_op` declines all four as honest misses (the `_ => return None`
+arms), so they never appear in a live Fuel recipe. `OpTag::Const` is the KISS **scalar**
+literal leaf and is deliberately NOT wired to `Op::Const` (a constant **tensor** / weight
+leaf) — different concepts sharing a name. Making the leaves first-class `PatternNode` nodes
+is the flat-DAG-CSE recipe interior (Part II §A), still unbuilt.
 
 The co-designed source-op **leaf** vocabulary — a value a recipe needs as an operand is a source-op leaf inside the recipe DAG (`docs/outreach/kiss-rfc-shape-rule-expression-vocabulary.md:51-53`, the `reduce_extent{axis}` leaf, now renamed `reduced_count`, Part II §B). The broader pinned set is `const{bits}` / `iota{axis}` / `runtime_scalar{slot}` / `scan_placeholder{role,index}` / `reduced_count{axes}`, kept under one abstraction `output-shape = f(operand shapes, attrs)` (`kiss-rfc-shape-rule-expression-vocabulary.md:62`). Today Fuel expresses these implicitly (a `Const` operand, an `Iota`, a `Runtime{scalars}` slot) rather than as first-class `PatternNode` leaf variants — the flat-DAG target (Part II §A) adds them as **op tokens**, not schema variants.
 
@@ -278,6 +289,28 @@ Per-op positional arms (`lib.rs:182-242`):
 | `Pad` | `u32(count) ++ (u64 before, u64 after)*count ++ u8(mode) ++ f64(value)` |
 | `AddScalar`/`MulScalar`/`Clamp`/`PowI` | `put_f64_list(scalars)` |
 | `MaskedFill` | `put_f64_list(scalars) ++ put_str(cast_dtype)` |
+| `Const` *(leaf)* | `u64(const_bits)` — dtype-agnostic bits; **MBZ narrow-dtype rule** (storage bits LOW-order, upper bits zero); NaN payload verbatim |
+| `RuntimeScalar` *(leaf)* | `u32(slot_index)` |
+| `ReducedCount` *(leaf)* | `i64(axis)` — the fold row's axis field minus `keepdim` (fold-lockstep, §6.12-0001) |
+| `ScanPlaceholder` *(leaf)* | `u8(role: 0=carry, 1=elem) ++ u32(index)` |
+
+The last four rows are the **source-op leaf arms acked by the KISS editor 2026-07-23**
+— the durable "RULING RECORD — four-leaf-arm ack" at **KISS #67 comment 5061571967**
+([`issuecomment-5061571967`](https://github.com/ThinkersJournal/KISS/issues/67#issuecomment-5061571967),
+acking Fuel's proposal [`issuecomment-5060303085`](https://github.com/ThinkersJournal/KISS/issues/67#issuecomment-5060303085);
+clean, no amendments). They are wire tokens only: `op_to_tag` emits none of them and
+`tag_to_op` declines all four as honest misses (see §4), so they never reach a live Fuel
+recipe yet. Producers widen a narrow const via `const_bits_narrow(storage, width_bits)`.
+
+**Per-carrier width pins — do NOT unify the three framings.** All four leaf bodies ride
+**carrier (a)** — the #67 node-envelope `op_attrs` blob, **`u32`-LE outer** byte length,
+payload verbatim (§6.19-0010) — pinned executably by `leaf_arm_bodies_ride_carrier_a_u32_le`.
+Carrier (a) is a *distinct* framing from **(b)** the KISS-Grammar §6.8-0007 region-node-table
+`op_attrs` sub-block (**`u16`-LE** length; Fuel ships no producer yet — #67-gated) and **(c)**
+the §6.20-0005 shape-expr child length (**`u16`-LE**; `shape_expr.rs` codec, Part II §B). The
+three coexist and are pinned side-by-side by `three_carrier_width_pins_stay_distinct` so a
+future consolidation cannot silently merge an `op_attrs` outer length with a shape-expr child
+length, or an `u32` frame with a `u16` one.
 
 **M-3 caveat** (`lib.rs:174-178`): the `unwrap_or(...)` defaults cannot distinguish an *unset* field from a genuine zero (`axis: None` vs `Some(0)`). Harmless today — forward-serialization only, no decoder, and an op reaching a given arm always has the field set. A future decoder must not round-trip `None`.
 

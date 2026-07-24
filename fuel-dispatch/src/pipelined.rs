@@ -52,7 +52,11 @@ use crate::compiled::{
 use crate::dispatch::global_bindings;
 use crate::kernel::{KernelBindingTable, KernelDTypes, MatmulM, OpParams};
 use crate::optimize::OptimizedGraph;
-use crate::ranker::{pick_route, resolve_branch, BackendRuntimeLookup, RuntimeSelector};
+use crate::ranker::{resolve_branch, BackendRuntimeLookup, RuntimeSelector};
+// `pick_route` is called only by the streamed-vs-one-shot equivalence test
+// below; the executor itself resolves branch-by-branch via `resolve_branch`.
+#[cfg(test)]
+use crate::ranker::pick_route;
 use fuel_memory::Storage;
 
 /// How the executor derives its dispatch order + topology-generation
