@@ -60,6 +60,33 @@ impl Scalar {
         }
     }
 
+    /// Reconstruct a scalar of the given [`DType`] from an `f64` value — the
+    /// inverse of [`Scalar::to_f64`] paired with a target dtype. Integer dtypes
+    /// truncate toward zero (`v as iN`); float dtypes round to nearest via the
+    /// type's `from_f64`. Sibling of [`Scalar::zero`]/[`Scalar::one`]: the
+    /// value-carrying reconstructor a recipe re-emit needs when a fill scalar
+    /// (e.g. `MaskedFill`) rides an `f64` + a separately-carried dtype.
+    /// Panics for the sub-byte dummy quant formats (no `Scalar` variant), same
+    /// as `zero`/`one` — real tensor dtypes only.
+    pub fn from_f64(v: f64, dtype: DType) -> Self {
+        match dtype {
+            DType::U8 => Scalar::U8(v as u8),
+            DType::I8 => Scalar::I8(v as i8),
+            DType::U32 => Scalar::U32(v as u32),
+            DType::I16 => Scalar::I16(v as i16),
+            DType::I32 => Scalar::I32(v as i32),
+            DType::I64 => Scalar::I64(v as i64),
+            DType::BF16 => Scalar::BF16(bf16::from_f64(v)),
+            DType::F16 => Scalar::F16(f16::from_f64(v)),
+            DType::F32 => Scalar::F32(v as f32),
+            DType::F64 => Scalar::F64(v),
+            DType::F8E4M3 => Scalar::F8E4M3(f8e4m3::from_f64(v)),
+            DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 => {
+                panic!("Cannot create scalar from f64 for dummy type {dtype:?}")
+            }
+        }
+    }
+
     /// Returns the [`DType`] of this scalar value.
     pub fn dtype(&self) -> DType {
         match self {
