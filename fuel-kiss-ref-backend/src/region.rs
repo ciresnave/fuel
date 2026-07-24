@@ -1,14 +1,19 @@
 //! Composed-**region** reference / differential over the mapped floor.
 //!
 //! Translates a Fuel recipe region ([`PatternNode`]) into a kiss-ref §6.13
-//! expression tree ([`kiss_ops_vocab::decomp::Expr`]) and evaluates it row-wise
-//! with [`kiss_ref_core::eval_expr`] — kiss-ref confirmed `Expr`/`eval_expr` as
-//! an intended-stable public seam (byte-identical `b75a748..1f3981f`,
-//! 2026-07-23 — the only `kernels.rs` movement in that range is `gather`/
-//! `scatter`, which this elementwise path never reaches, and `resolve.rs`
-//! (`eval_expr`/`support`) is untouched). This makes multi-node elementwise
-//! regions (a fused op's `decompose`) diffable against kiss-ref, not just
-//! single primitives.
+//! expression tree ([`kiss_ops_vocab::decomp::Expr`]) and hands it to kiss-ref's
+//! **first-class composed-expression seam** —
+//! [`kiss_ref_core::reference_expr`] / [`kiss_ref_core::diff_expr`] and their
+//! `_f32`/`_f16`/`_bf16` mirrors (the narrow mirrors were minted for this
+//! consumer). That seam is the same [`kiss_ref_core::eval_expr`] engine the
+//! previous hand-rolled per-node composition drove, so the delegation is
+//! numerically inert — pinned by the migration-equivalence tests below, which
+//! keep a verbatim copy of the old loop as an oracle. This makes multi-node
+//! elementwise regions (a fused op's `decompose`) diffable against kiss-ref,
+//! not just single primitives.
+//!
+//! The `PatternNode` → `Expr` translation stays Fuel's (it is Fuel's mapping),
+//! as does the advisory ULP band and every typed decline.
 //!
 //! Scope: elementwise, default-attrs, mapped ops only. `SeeThrough`/`Any` are
 //! matcher-only and decline ([`KissRefError::UnsupportedNode`]); a node carrying
@@ -23,7 +28,7 @@ use crate::KissRefError;
 use fuel_ir::DType;
 use fuel_kernel_seam_types::{OpAttrs, OpTag, PatternNode};
 use kiss_ops_vocab::decomp::Expr;
-use kiss_ref_core::{DiffReport, ScalarFloat, Tolerance};
+use kiss_ref_core::{DiffReport, Tolerance};
 
 /// Whether the region evaluator covers `(region, dtype)`: at least one op node,
 /// and **every** op node is mapped into kiss-ref's vocabulary with
@@ -218,25 +223,39 @@ fn region_rows<T: Copy>(
     Ok((expr, rows))
 }
 
-/// Evaluate the translated tree row-wise via kiss-ref's stable
-/// `eval_expr` seam.
-fn eval_region_rows<T: ScalarFloat>(
-    expr: &Expr,
-    rows: &[Vec<T>],
-) -> Result<Vec<T>, KissRefError> {
-    rows.iter()
-        .map(|r| kiss_ref_core::eval_expr(expr, r).map_err(KissRefError::Eval))
-        .collect()
+/// Borrow the transposed rows in the `&[&[T]]` shape kiss-ref's composed seam
+/// takes.
+fn row_refs<T>(rows: &[Vec<T>]) -> Vec<&[T]> {
+    rows.iter().map(|r| r.as_slice()).collect()
 }
 
-// kiss's `diff_*` is op-keyed and cannot take an `Expr`, so `diff_region_*`
-// builds the `DiffReport` directly (its fields are pub), replicating kiss's
-// loop semantics exactly: per-row ULP distance in the dtype's own lattice
-// (both-NaN = 0, exactly-one-NaN = the dtype lattice MAX — u32::MAX for f32,
-// u16::MAX for the narrow floats — widened to u64), running `max_ulp`, and
-// `first_mismatch` carrying the dtype value widened to f64.
+/// Map a kiss-ref evaluation error onto Fuel's never-panic decline surface.
+///
+/// One arm is load-bearing: kiss's `diff_expr_*` raises
+/// [`kiss_ref_core::Error::LengthMismatch`] for a candidate whose length does
+/// not match the reference's, and that is *Fuel's own* typed decline
+/// ([`KissRefError::LengthMismatch`]) — the adapter promised it before the
+/// migration onto kiss's seam and keeps promising it after, rather than burying
+/// it inside an opaque `Eval`. Everything else wraps unchanged.
+fn map_kiss_error(e: kiss_ref_core::Error) -> KissRefError {
+    match e {
+        kiss_ref_core::Error::LengthMismatch { expected, got } => {
+            KissRefError::LengthMismatch { expected, got }
+        }
+        other => KissRefError::Eval(other),
+    }
+}
+
+// The region lanes delegate to kiss-ref's composed-`Expr` seam
+// (`reference_expr_*` / `diff_expr_*`), which owns the row-wise `eval_expr`
+// walk AND the `DiffReport` loop — per-row ULP distance in the dtype's own
+// lattice (both-NaN = 0, exactly-one-NaN = the dtype lattice MAX: u32::MAX for
+// f32, u16::MAX for the narrow floats, widened to u64), running `max_ulp`, and
+// `first_mismatch` carrying the dtype value widened to f64. Fuel keeps only
+// what is Fuel's: the `PatternNode` -> `Expr` translation, the arity/attrs/
+// matcher-node guards, and the decline typing.
 macro_rules! region_float {
-    ($refr:ident, $diff:ident, $t:ty, $ulp:path, $wide:expr) => {
+    ($refr:ident, $diff:ident, $t:ty, $kref:path, $kdiff:path) => {
         /// kiss-ref's reference output for a composed `region` over column-major
         /// `operands` (one slice per region input, matched by `Bind` index).
         pub fn $refr(
@@ -244,7 +263,7 @@ macro_rules! region_float {
             operands: &[&[$t]],
         ) -> Result<Vec<$t>, KissRefError> {
             let (expr, rows) = region_rows(region, operands)?;
-            eval_region_rows(&expr, &rows)
+            $kref(&expr, &row_refs(&rows)).map_err(map_kiss_error)
         }
 
         /// Differential of `candidate` vs kiss-ref's composed-region reference
@@ -257,36 +276,7 @@ macro_rules! region_float {
             tol: Tolerance,
         ) -> Result<DiffReport, KissRefError> {
             let (expr, rows) = region_rows(region, operands)?;
-            let reference: Vec<$t> = eval_region_rows(&expr, &rows)?;
-            if candidate.len() != reference.len() {
-                return Err(KissRefError::LengthMismatch {
-                    expected: reference.len(),
-                    got: candidate.len(),
-                });
-            }
-            let mut report = DiffReport {
-                n: reference.len(),
-                mismatches: 0,
-                max_ulp: 0,
-                first_mismatch: None,
-            };
-            for (i, (&e, &g)) in reference.iter().zip(candidate).enumerate() {
-                let d = $ulp(e, g) as u64;
-                if d > report.max_ulp {
-                    report.max_ulp = d;
-                }
-                let ok = match tol {
-                    Tolerance::Exact => d == 0,
-                    Tolerance::Ulp(n) => d <= n,
-                };
-                if !ok {
-                    report.mismatches += 1;
-                    if report.first_mismatch.is_none() {
-                        report.first_mismatch = Some((i, $wide(e), $wide(g)));
-                    }
-                }
-            }
-            Ok(report)
+            $kdiff(&expr, &row_refs(&rows), candidate, tol).map_err(map_kiss_error)
         }
     };
 }
@@ -295,29 +285,29 @@ region_float!(
     reference_region_f32,
     diff_region_f32,
     f32,
-    kiss_ref_core::ulp_distance_f32,
-    |x: f32| x as f64
+    kiss_ref_core::reference_expr_f32,
+    kiss_ref_core::diff_expr_f32
 );
 region_float!(
     reference_region_f64,
     diff_region_f64,
     f64,
-    kiss_ref_core::ulp_distance_f64,
-    |x: f64| x
+    kiss_ref_core::reference_expr,
+    kiss_ref_core::diff_expr
 );
 region_float!(
     reference_region_f16,
     diff_region_f16,
     half::f16,
-    kiss_ref_core::ulp_distance_f16,
-    |x: half::f16| x.to_f32() as f64
+    kiss_ref_core::reference_expr_f16,
+    kiss_ref_core::diff_expr_f16
 );
 region_float!(
     reference_region_bf16,
     diff_region_bf16,
     half::bf16,
-    kiss_ref_core::ulp_distance_bf16,
-    |x: half::bf16| x.to_f32() as f64
+    kiss_ref_core::reference_expr_bf16,
+    kiss_ref_core::diff_expr_bf16
 );
 
 #[cfg(test)]
@@ -646,10 +636,12 @@ mod tests {
     /// rev — which is the only way to prove the bump took effect rather than a
     /// cached checkout silently resolving the old tree.
     ///
-    /// It also pins the migration's premise: kiss's own seam is byte-identical
-    /// to the hand-rolled `region_float!` loop, wide lane and narrow lane. The
-    /// migration itself is a separate change; this only establishes that it is
-    /// numerically a no-op.
+    /// It also pinned the migration's premise: kiss's own seam is byte-identical
+    /// to the hand-rolled `region_float!` loop, wide lane and narrow lane. Now
+    /// that `region_float!` *is* that seam, this half is near-tautological — the
+    /// rev-pin compile guard is what it still buys; the equivalence claim is
+    /// carried by the `migration_*` tests below (which keep the old loop as an
+    /// explicit oracle).
     #[test]
     fn kiss_expr_seam_matches_hand_rolled_region_diff() {
         let expr = region_to_expr(&relu_add()).unwrap();
@@ -679,5 +671,275 @@ mod tests {
         let row_refs16: Vec<&[f16]> = rows16.iter().map(|r| r.as_slice()).collect();
         let theirs16 = kiss_ref_core::reference_expr_f16(&expr, &row_refs16).unwrap();
         assert_eq!(ours16, theirs16);
+    }
+
+    // ---- K2 migration equivalence: hand-rolled loop -> kiss-ref's seam -------
+    //
+    // `reference_region_*`/`diff_region_*` used to compose the reference by hand:
+    // translate the region to an `Expr`, then run kiss's `eval_expr` row-wise and
+    // build the `DiffReport` in a local loop. They now delegate to kiss-ref's
+    // first-class `reference_expr_*`/`diff_expr_*`. That is the SAME engine, so
+    // the swap must be numerically inert — these tests pin it by keeping a
+    // verbatim copy of the pre-migration composition (`legacy_region_float!`)
+    // and asserting new == old, field for field, on every lane.
+
+    /// Verbatim copy of the pre-migration `region_float!` body — the hand-rolled
+    /// per-node composition the migration replaces. Test-only oracle.
+    macro_rules! legacy_region_float {
+        ($refr:ident, $diff:ident, $t:ty, $ulp:path, $wide:expr) => {
+            fn $refr(region: &PatternNode, operands: &[&[$t]]) -> Result<Vec<$t>, KissRefError> {
+                let (expr, rows) = region_rows(region, operands)?;
+                rows.iter()
+                    .map(|r| kiss_ref_core::eval_expr(&expr, r).map_err(KissRefError::Eval))
+                    .collect()
+            }
+
+            fn $diff(
+                region: &PatternNode,
+                candidate: &[$t],
+                operands: &[&[$t]],
+                tol: Tolerance,
+            ) -> Result<DiffReport, KissRefError> {
+                let (expr, rows) = region_rows(region, operands)?;
+                let reference: Vec<$t> = rows
+                    .iter()
+                    .map(|r| kiss_ref_core::eval_expr(&expr, r).map_err(KissRefError::Eval))
+                    .collect::<Result<Vec<$t>, KissRefError>>()?;
+                if candidate.len() != reference.len() {
+                    return Err(KissRefError::LengthMismatch {
+                        expected: reference.len(),
+                        got: candidate.len(),
+                    });
+                }
+                let mut report = DiffReport {
+                    n: reference.len(),
+                    mismatches: 0,
+                    max_ulp: 0,
+                    first_mismatch: None,
+                };
+                for (i, (&e, &g)) in reference.iter().zip(candidate).enumerate() {
+                    let d = $ulp(e, g) as u64;
+                    if d > report.max_ulp {
+                        report.max_ulp = d;
+                    }
+                    let ok = match tol {
+                        Tolerance::Exact => d == 0,
+                        Tolerance::Ulp(n) => d <= n,
+                    };
+                    if !ok {
+                        report.mismatches += 1;
+                        if report.first_mismatch.is_none() {
+                            report.first_mismatch = Some((i, $wide(e), $wide(g)));
+                        }
+                    }
+                }
+                Ok(report)
+            }
+        };
+    }
+
+    legacy_region_float!(
+        legacy_reference_region_f32,
+        legacy_diff_region_f32,
+        f32,
+        kiss_ref_core::ulp_distance_f32,
+        |x: f32| x as f64
+    );
+    legacy_region_float!(
+        legacy_reference_region_f64,
+        legacy_diff_region_f64,
+        f64,
+        kiss_ref_core::ulp_distance_f64,
+        |x: f64| x
+    );
+    legacy_region_float!(
+        legacy_reference_region_f16,
+        legacy_diff_region_f16,
+        half::f16,
+        kiss_ref_core::ulp_distance_f16,
+        |x: half::f16| x.to_f32() as f64
+    );
+    legacy_region_float!(
+        legacy_reference_region_bf16,
+        legacy_diff_region_bf16,
+        half::bf16,
+        kiss_ref_core::ulp_distance_bf16,
+        |x: half::bf16| x.to_f32() as f64
+    );
+
+    /// `a*a - b*b` — a 3-op, 2-input, exact-only region with a shared bind on
+    /// each side. Mirrors the coverage shape kiss-ref's own `diff_expr` tests
+    /// use, and exercises the translator's operand recursion + bind reuse.
+    fn sq_diff() -> PatternNode {
+        node(
+            OpTag::Sub,
+            vec![
+                node(OpTag::Mul, vec![bind(0), bind(0)]),
+                node(OpTag::Mul, vec![bind(1), bind(1)]),
+            ],
+        )
+    }
+
+    #[test]
+    fn migration_sq_diff_byte_exact_on_both_narrow_lanes() {
+        use half::{bf16, f16};
+        let av = [1.5f32, -3.0, 0.5, 7.0];
+        let bv = [0.5f32, 2.0, -1.25, 0.25];
+
+        // f16 lane.
+        let a16: Vec<f16> = av.iter().map(|&v| f16::from_f32(v)).collect();
+        let b16: Vec<f16> = bv.iter().map(|&v| f16::from_f32(v)).collect();
+        let new16 = reference_region_f16(&sq_diff(), &[&a16, &b16]).unwrap();
+        let old16 = legacy_reference_region_f16(&sq_diff(), &[&a16, &b16]).unwrap();
+        assert_eq!(new16, old16, "f16 region reference moved under the migration");
+        // Byte-exact, not merely equal: compare the bit patterns.
+        let new_bits: Vec<u16> = new16.iter().map(|x| x.to_bits()).collect();
+        let old_bits: Vec<u16> = old16.iter().map(|x| x.to_bits()).collect();
+        assert_eq!(new_bits, old_bits);
+        // And it is the value hand-math predicts.
+        let want16: Vec<f16> = av
+            .iter()
+            .zip(&bv)
+            .map(|(&a, &b)| {
+                let (a, b) = (f16::from_f32(a), f16::from_f32(b));
+                f16::from_f32(f16::from_f32(a.to_f32() * a.to_f32()).to_f32()
+                    - f16::from_f32(b.to_f32() * b.to_f32()).to_f32())
+            })
+            .collect();
+        assert_eq!(new16, want16);
+
+        // bf16 lane.
+        let abf: Vec<bf16> = av.iter().map(|&v| bf16::from_f32(v)).collect();
+        let bbf: Vec<bf16> = bv.iter().map(|&v| bf16::from_f32(v)).collect();
+        let newb = reference_region_bf16(&sq_diff(), &[&abf, &bbf]).unwrap();
+        let oldb = legacy_reference_region_bf16(&sq_diff(), &[&abf, &bbf]).unwrap();
+        assert_eq!(newb, oldb, "bf16 region reference moved under the migration");
+        let newb_bits: Vec<u16> = newb.iter().map(|x| x.to_bits()).collect();
+        let oldb_bits: Vec<u16> = oldb.iter().map(|x| x.to_bits()).collect();
+        assert_eq!(newb_bits, oldb_bits);
+
+        // Wide lanes too — the whole `region_float!` family migrated, not just
+        // the narrow mirrors.
+        let new32 = reference_region_f32(&sq_diff(), &[&av, &bv]).unwrap();
+        assert_eq!(new32, legacy_reference_region_f32(&sq_diff(), &[&av, &bv]).unwrap());
+        let a64: Vec<f64> = av.iter().map(|&v| v as f64).collect();
+        let b64: Vec<f64> = bv.iter().map(|&v| v as f64).collect();
+        let new64 = reference_region_f64(&sq_diff(), &[&a64, &b64]).unwrap();
+        assert_eq!(new64, legacy_reference_region_f64(&sq_diff(), &[&a64, &b64]).unwrap());
+    }
+
+    #[test]
+    fn migration_planted_one_ulp_caught_exact_tolerated_at_ulp1() {
+        use half::{bf16, f16};
+        let av = [1.5f32, -3.0, 0.5, 7.0];
+        let bv = [0.5f32, 2.0, -1.25, 0.25];
+
+        // f32: bump the LAST element by one ULP so `first_mismatch`'s index is a
+        // real observation, not index 0 by construction.
+        let reference = reference_region_f32(&sq_diff(), &[&av, &bv]).unwrap();
+        let mut cand = reference.clone();
+        let last = cand.len() - 1;
+        cand[last] = f32::from_bits(reference[last].to_bits() + 1);
+        let strict = diff_region_f32(&sq_diff(), &cand, &[&av, &bv], Tolerance::Exact).unwrap();
+        assert!(!strict.conforms(), "a 1-ULP error must fail Tolerance::Exact");
+        assert_eq!(strict.mismatches, 1);
+        assert_eq!(strict.max_ulp, 1);
+        assert_eq!(strict.first_mismatch.map(|(i, _, _)| i), Some(last));
+        let loose = diff_region_f32(&sq_diff(), &cand, &[&av, &bv], Tolerance::Ulp(1)).unwrap();
+        assert!(loose.conforms(), "a 1-ULP error must be tolerated at Ulp(1)");
+        assert_eq!(loose.max_ulp, 1); // raw distance still recorded
+        // Field-for-field against the pre-migration loop.
+        assert_eq!(
+            strict,
+            legacy_diff_region_f32(&sq_diff(), &cand, &[&av, &bv], Tolerance::Exact).unwrap()
+        );
+        assert_eq!(
+            loose,
+            legacy_diff_region_f32(&sq_diff(), &cand, &[&av, &bv], Tolerance::Ulp(1)).unwrap()
+        );
+
+        // f64 lane (the one whose kiss seam is the un-suffixed `diff_expr`).
+        let a64: Vec<f64> = av.iter().map(|&v| v as f64).collect();
+        let b64: Vec<f64> = bv.iter().map(|&v| v as f64).collect();
+        let r64 = reference_region_f64(&sq_diff(), &[&a64, &b64]).unwrap();
+        let mut c64 = r64.clone();
+        c64[last] = f64::from_bits(r64[last].to_bits() + 1);
+        let s64 = diff_region_f64(&sq_diff(), &c64, &[&a64, &b64], Tolerance::Exact).unwrap();
+        assert!(!s64.conforms());
+        assert_eq!(s64.max_ulp, 1);
+        assert!(diff_region_f64(&sq_diff(), &c64, &[&a64, &b64], Tolerance::Ulp(1))
+            .unwrap()
+            .conforms());
+        assert_eq!(
+            s64,
+            legacy_diff_region_f64(&sq_diff(), &c64, &[&a64, &b64], Tolerance::Exact).unwrap()
+        );
+
+        // f16 lane.
+        let a16: Vec<f16> = av.iter().map(|&v| f16::from_f32(v)).collect();
+        let b16: Vec<f16> = bv.iter().map(|&v| f16::from_f32(v)).collect();
+        let r16 = reference_region_f16(&sq_diff(), &[&a16, &b16]).unwrap();
+        let c16: Vec<f16> = r16.iter().map(|&x| f16::from_bits(x.to_bits() + 1)).collect();
+        let s16 = diff_region_f16(&sq_diff(), &c16, &[&a16, &b16], Tolerance::Exact).unwrap();
+        assert!(!s16.conforms());
+        assert_eq!(s16.max_ulp, 1);
+        assert!(diff_region_f16(&sq_diff(), &c16, &[&a16, &b16], Tolerance::Ulp(1))
+            .unwrap()
+            .conforms());
+        assert_eq!(
+            s16,
+            legacy_diff_region_f16(&sq_diff(), &c16, &[&a16, &b16], Tolerance::Exact).unwrap()
+        );
+
+        // bf16 lane.
+        let abf: Vec<bf16> = av.iter().map(|&v| bf16::from_f32(v)).collect();
+        let bbf: Vec<bf16> = bv.iter().map(|&v| bf16::from_f32(v)).collect();
+        let rb = reference_region_bf16(&sq_diff(), &[&abf, &bbf]).unwrap();
+        let cb: Vec<bf16> = rb.iter().map(|&x| bf16::from_bits(x.to_bits() + 1)).collect();
+        let sb = diff_region_bf16(&sq_diff(), &cb, &[&abf, &bbf], Tolerance::Exact).unwrap();
+        assert!(!sb.conforms());
+        assert_eq!(sb.max_ulp, 1);
+        assert!(diff_region_bf16(&sq_diff(), &cb, &[&abf, &bbf], Tolerance::Ulp(1))
+            .unwrap()
+            .conforms());
+        assert_eq!(
+            sb,
+            legacy_diff_region_bf16(&sq_diff(), &cb, &[&abf, &bbf], Tolerance::Exact).unwrap()
+        );
+    }
+
+    #[test]
+    fn migration_kiss_errors_stay_typed_declines() {
+        // `MissingInput` is what kiss's engine raises when an `Expr` reads an
+        // `input(i)` with no column supplied. Fuel's own arity guard fires FIRST
+        // on the region path (a typed decline that the migration must not lose)…
+        let a = [1.5f32, -3.0];
+        assert!(matches!(
+            reference_region_f32(&sq_diff(), &[&a]),
+            Err(KissRefError::Arity { op: OpTag::Sub, expected: 2, got: 1 })
+        ));
+        // …and if kiss's seam does raise it, the adapter surfaces it as a typed
+        // `Eval` decline — never a panic.
+        let expr = region_to_expr(&sq_diff()).unwrap();
+        let short: Vec<&[f32]> = vec![&a[..1]]; // one row, only column 0
+        let raised = kiss_ref_core::reference_expr_f32(&expr, &short).unwrap_err();
+        assert_eq!(raised, kiss_ref_core::Error::MissingInput(1));
+        assert_eq!(
+            map_kiss_error(raised),
+            KissRefError::Eval(kiss_ref_core::Error::MissingInput(1))
+        );
+        // The one kiss error the adapter does NOT wrap: `LengthMismatch` is
+        // Fuel's own typed decline (`diff_region_*` promised it before the
+        // migration and must keep promising it after).
+        assert_eq!(
+            map_kiss_error(kiss_ref_core::Error::LengthMismatch { expected: 2, got: 1 }),
+            KissRefError::LengthMismatch { expected: 2, got: 1 }
+        );
+        let cand = [0.0f32];
+        let b = [0.5f32, 2.0];
+        assert!(matches!(
+            diff_region_f32(&sq_diff(), &cand, &[&a, &b], Tolerance::Exact),
+            Err(KissRefError::LengthMismatch { expected: 2, got: 1 })
+        ));
     }
 }
