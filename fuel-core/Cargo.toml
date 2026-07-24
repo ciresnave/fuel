@@ -73,6 +73,8 @@ clap = { workspace = true }
 criterion = { workspace = true }
 # Telemetry flush tests write JSONL to a scratch dir.
 tempfile = { workspace = true }
+# Direct-conv parity oracle for the CV1 im2col-recipe realize test.
+fuel-conv = { workspace = true }
 
 [features]
 # CPU-only build is the default. Omitting all GPU features produces a clean
