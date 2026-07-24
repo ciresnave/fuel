@@ -265,13 +265,16 @@ pub fn clear_runtime_fused_for_tests() {
 /// terminal** (Increment C, B1): `Scan` (params ride the `scan_*` carriers, body
 /// sub-graph rides the operands), its `ScanPlaceholder` body holes, and the
 /// `View` slot projection (`view_slot`) that reads the scan's `output_views`
-/// bundle at emit time. Structural params are decoded from the (extended)
-/// [`OpAttrs`]. Returns `None` (an honest miss, rejected at registration) for
-/// ops with no first-order re-emission: `PowI`/`Clamp` (no i32/two-scalar
-/// carrier), `MaskedFill` (no `Scalar::from_f64` reconstructor yet),
-/// fused/basis-gap tags, and any tag whose required attrs are unset (e.g. `Iota`
-/// with no `target_shape`, `Scan` with no `scan_bound`, `View` with no
-/// `view_slot`).
+/// bundle at emit time — and the scalar-carrying `MaskedFill` (Increment C
+/// carriers, A2 — fill value on `attrs.scalars[0]`, dtype on `cast_dtype` when
+/// present else a provisional F32 that `emit` re-resolves to operand[0]'s dtype)
+/// and `PowI` (A3 — the i32 exponent on `scalars[0]`). Structural params are
+/// decoded from the (extended) [`OpAttrs`]. Returns `None` (an honest miss,
+/// rejected at registration) for ops with no first-order re-emission: `Clamp`
+/// (no two-scalar carrier yet), fused/basis-gap tags, and any tag whose required
+/// attrs are unset (e.g. `Iota` with no `target_shape`, `Scan` with no
+/// `scan_bound`, `View` with no `view_slot`, `PowI` with no exponent, or
+/// `MaskedFill` with no fill value / a dtype `Scalar` cannot represent).
 fn tag_to_op(tag: OpTag, attrs: &OpAttrs) -> Option<Op> {
     use OpTag as T;
     use fuel_ir::{DType, Shape};
@@ -311,6 +314,16 @@ fn tag_to_op(tag: OpTag, attrs: &OpAttrs) -> Option<Op> {
         // live-value substitution via the `extract:` path is a follow-up).
         T::AddScalar => Op::AddScalar(*attrs.scalars.first()?),
         T::MulScalar => Op::MulScalar(*attrs.scalars.first()?),
+        // PowI (Increment C carriers, A3): the i32 exponent rides
+        // `attrs.scalars[0]` as an f64 — an EXACT round-trip for every i32
+        // (`|n| < 2^53`), reconstructed via `as i32`. This is the same carrier
+        // the §6.19 wire already commits to (the `to_canonical_bytes` PowI arm
+        // serializes `scalars`) and mirrors `MaskedFill`'s baked-scalar posture:
+        // the exponent is a BAKED pattern constant, NOT an open cursor slot
+        // (`scalar_slot_arity(PowI) == 0`), so the recipe author supplies it and
+        // the emitter never draws it from the params projection. An unset value
+        // is an honest miss (`None`), never a defaulted `PowI(0)`.
+        T::PowI => Op::PowI(*attrs.scalars.first()? as i32),
 
         // --- Convergence Increment A: the full first-order set ---
         // Comparison (dtype→U8 handled by primitive_shape, not here).
@@ -432,11 +445,42 @@ fn tag_to_op(tag: OpTag, attrs: &OpAttrs) -> Option<Op> {
         // time, mirroring `Graph::view`); this arm reconstructs only the op.
         T::View => Op::View { slot: attrs.view_slot? },
 
-        // Honest misses (rejected at registration): PowI/Clamp (no carrier),
-        // MaskedFill (no Scalar::from_f64 reconstructor yet), and any tag whose
-        // required attrs are unset or that is added to OpTag later.
+        // MaskedFill (Increment C carriers, A2): the fill VALUE rides
+        // `attrs.scalars[0]` (the `op_to_attrs` projection); its dtype rides
+        // `cast_dtype` when present (a concrete round-trip), else a provisional
+        // F32 that `emit` re-resolves to operand[0]'s dtype (the
+        // dtype-polymorphic recipe path — the byte executor derives `fill_bytes`
+        // at the filled tensor's width, so the Scalar dtype must match). An
+        // unset value or a dtype `Scalar` cannot represent is an honest miss.
+        T::MaskedFill => {
+            let v = *attrs.scalars.first()?;
+            let dtype = match attrs.cast_dtype.as_deref() {
+                Some(name) => DType::from_str(name).ok()?,
+                None => DType::F32,
+            };
+            Op::MaskedFill { value: masked_fill_scalar(v, dtype)? }
+        }
+
+        // Honest misses (rejected at registration): Clamp (no two-scalar
+        // carrier yet), and any tag whose required attrs are unset or that is
+        // added to OpTag later.
         _ => return None,
     })
+}
+
+/// Reconstruct a `MaskedFill` fill [`fuel_ir::Scalar`] from its `f64` value +
+/// the FILLED tensor's dtype (the A2 carrier). `None` for a dtype a `Scalar`
+/// cannot represent (the sub-byte dummy quant formats) — an honest miss, never
+/// a panic (so [`fuel_ir::Scalar::from_f64`]'s dummy-dtype panic is unreachable
+/// through this guard). The value rides `attrs.scalars[0]`; the dtype is the
+/// filled tensor's (operand[0]) dtype, resolved at emit time.
+fn masked_fill_scalar(value: f64, dtype: fuel_ir::DType) -> Option<fuel_ir::Scalar> {
+    use fuel_ir::DType as D;
+    match dtype {
+        D::U8 | D::I8 | D::U32 | D::I16 | D::I32 | D::I64 | D::BF16 | D::F16 | D::F32 | D::F64
+        | D::F8E4M3 => Some(fuel_ir::Scalar::from_f64(value, dtype)),
+        D::F6E2M3 | D::F6E3M2 | D::F4 | D::F8E8M0 => None,
+    }
 }
 
 /// Decode a target [`fuel_ir::Shape`] from `attrs.target_shape` (the shared
@@ -506,6 +550,7 @@ fn has_rel_attrs(attrs: &OpAttrs) -> bool {
         || attrs.slice_start_rel.is_some()
         || attrs.slice_len_rel.is_some()
         || attrs.axis_last
+        || attrs.scalar_rel.is_some()
 }
 
 /// The ONE rel-XOR-abs mutual-exclusion oracle (shared by
@@ -525,6 +570,9 @@ fn rel_abs_conflict_field(tag: OpTag, attrs: &OpAttrs) -> Option<&'static str> {
     }
     if attrs.slice_len_rel.is_some() && attrs.slice_len.is_some() {
         return Some("slice_len");
+    }
+    if attrs.scalar_rel.is_some() && !attrs.scalars.is_empty() {
+        return Some("scalars");
     }
     if attrs.axis_last {
         match tag {
@@ -696,6 +744,21 @@ pub fn resolve_rel_attrs(
         out.slice_len_rel = None;
     }
 
+    // scalar_rel → scalars (DimExpr over the Bind space; the reduced_count
+    // concept — `Dim::Extent { operand, axis: LAST }` = n = extent of that
+    // operand's last axis, the norm-backward `MulScalar(n)` divisor). Rides the
+    // SAME §6.20 `eval_dim`/`resolve_axis` evaluator as the slice_* rel fields,
+    // resolved against the Bind space (not this op's children — a scalar rides no
+    // operand's rank). Unlike an extent/offset, a scalar may be negative, so only
+    // a symbolic Gap declines (§6.20-0004); every concrete value flows through.
+    if let Some(d) = &attrs.scalar_rel {
+        match shape_expr::eval_dim(d, bind_shapes, &[]).map_err(RelAttrError::Expr)? {
+            DimValue::Concrete(v) => out.scalars = vec![v as f64],
+            DimValue::Gap => return Err(RelAttrError::SymbolicGap { field: "scalars" }),
+        }
+        out.scalar_rel = None;
+    }
+
     // axis_last → the per-tag axis carrier, resolved against operand[0]'s rank.
     if attrs.axis_last {
         let rank = child_shapes.first().ok_or(RelAttrError::NoChildOperand)?.len();
@@ -734,7 +797,15 @@ pub fn resolve_rel_attrs(
 pub fn count_scalar_slots(node: &PatternNode) -> usize {
     match node {
         PatternNode::Op { op, operands, attrs } => {
-            let own = if attrs.scalars.is_empty() { scalar_slot_arity(*op) } else { 0 };
+            // A `scalar_rel` node is filled from an input SHAPE at emit time, NOT
+            // from the params cursor — so it is never an open slot (mirrors a
+            // baked-value node). Only an empty-`scalars`, no-`scalar_rel`
+            // scalar-param op is a cursor slot.
+            let own = if attrs.scalars.is_empty() && attrs.scalar_rel.is_none() {
+                scalar_slot_arity(*op)
+            } else {
+                0
+            };
             own + operands.iter().map(count_scalar_slots).sum::<usize>()
         }
         _ => 0,
@@ -845,6 +916,9 @@ fn dummy_fill_rel(tag: OpTag, attrs: &OpAttrs) -> OpAttrs {
     }
     if out.slice_len_rel.take().is_some() && out.slice_len.is_none() {
         out.slice_len = Some(1);
+    }
+    if out.scalar_rel.take().is_some() && out.scalars.is_empty() {
+        out.scalars = vec![1.0];
     }
     if out.axis_last {
         out.axis_last = false;
@@ -1002,9 +1076,13 @@ fn emit<'r>(
             // children are now EMITTED before the attrs are USED, but the
             // cursor fill stays right here, before the descent — the cursor
             // order is authoring order, not emission order.)
+            // A `scalar_rel` node is filled from an input shape by the rel-attr
+            // resolver below (NOT the params cursor) — matching
+            // `count_scalar_slots`, which does not count it as a slot, so it must
+            // not consume a cursor value here either.
             let arity = scalar_slot_arity(*op);
             let filled;
-            let attrs = if attrs.scalars.is_empty() && arity > 0 {
+            let attrs = if attrs.scalars.is_empty() && arity > 0 && attrs.scalar_rel.is_none() {
                 let (take, rest) = scalars.split_at(arity);
                 *scalars = rest;
                 filled = OpAttrs { scalars: take.to_vec(), ..attrs.clone() };
@@ -1039,7 +1117,24 @@ fn emit<'r>(
             } else {
                 attrs
             };
-            let prim = tag_to_op(*op, attrs).expect("region validated re-emittable at registration");
+            let mut prim = tag_to_op(*op, attrs).expect("region validated re-emittable at registration");
+            // A `MaskedFill` fill Scalar must carry the FILLED tensor's
+            // (operand[0]) dtype — the byte executor derives `fill_bytes` at
+            // that width. A recipe authors the value dtype-polymorphically (no
+            // `cast_dtype`), so re-resolve the Scalar at operand[0]'s emitted
+            // dtype here, mirroring the imperative `Scalar::one(dtype)`. Concrete
+            // round-trips already carry the matching dtype (identity); a dtype a
+            // Scalar cannot represent leaves the provisional value untouched (an
+            // inert dead node, never a panic — the executor rejects it later).
+            if let Op::MaskedFill { value } = &prim {
+                if let Some(&dt) = child_dtypes.first() {
+                    if value.dtype() != dt {
+                        if let Some(fixed) = masked_fill_scalar(value.to_f64(), dt) {
+                            prim = Op::MaskedFill { value: fixed };
+                        }
+                    }
+                }
+            }
             // D4: a `BroadcastTo` whose target rank EXCEEDS its operand's rank
             // first materializes the legacy `Reshape` pad (1-padded left,
             // right-aligned — byte-identical to `registry::rope`'s hand-built
@@ -1124,18 +1219,6 @@ fn emit<'r>(
                             .map(|spec| (spec.shape.clone(), spec.dtype))
                     })
                     .unwrap_or_else(|| fallback_sd(&child_shapes, &child_dtypes)),
-                // A childless scan-body hole (`Op::ScanPlaceholder`). Its shape
-                // is DECLARED on the recipe node (`target_shape` /
-                // `target_shape_rel`, resolved above) rather than inferred from
-                // (absent) operands, so the re-emitted body carries the same
-                // per-step shapes the imperative `selective_scan`/`ssd_chunk_scan`
-                // decompose stamps on its placeholders. This is load-bearing:
-                // `unroll_scan` CLONES body interior nodes with their STORED
-                // shapes, so a rank-0 fallback here would poison the unrolled
-                // graph (e.g. `du = Mul(d_t, u_t)` would come out rank-0). Dtype =
-                // the scan's working dtype = bind 0's (uniform-dtype scan inputs).
-                // Both fall back to the operand/F32 default on a shapeless
-                // authored placeholder (B1's round-trip recipes), never a panic.
                 // A childless scan-body hole (`Op::ScanPlaceholder`). Its shape
                 // is DECLARED on the recipe node (`target_shape` /
                 // `target_shape_rel`, resolved above) rather than inferred from
@@ -1268,17 +1351,18 @@ mod tests {
 
     #[test]
     fn register_rejects_unrepresentable_region() {
-        // Convergence A made MatMul/shape/reduction ops representable; PowI
-        // stays an honest miss (no i32-exponent carrier in OpAttrs), so it is
-        // the current canonical still-unrepresentable tag.
+        // Convergence A made MatMul/shape/reduction ops representable, and
+        // Increment C carriers made MaskedFill (A2) + PowI (A3) representable;
+        // `Clamp` stays an honest miss (no two-scalar carrier yet), so it is the
+        // current canonical still-unrepresentable tag.
         let region = PatternNode::Op {
-            op: OpTag::PowI,
+            op: OpTag::Clamp,
             attrs: OpAttrs::default(),
             operands: vec![PatternNode::Bind { index: 0 }],
         };
         assert_eq!(
             register_runtime_fused("bad", region),
-            Err(RuntimeFusedError::UnRepresentable(OpTag::PowI))
+            Err(RuntimeFusedError::UnRepresentable(OpTag::Clamp))
         );
     }
 
@@ -1312,6 +1396,106 @@ mod tests {
         assert_eq!(super::tag_to_op(OpTag::Cast, &attrs), Some(Op::Cast(DType::F16)));
         // Comparison.
         assert!(matches!(super::tag_to_op(OpTag::Lt, &OpAttrs::default()), Some(Op::Lt)));
+    }
+
+    #[test]
+    fn tag_to_op_reconstructs_masked_fill() {
+        // A2 (Increment C carriers): the MaskedFill re-emit carrier. Value on
+        // `scalars[0]`, dtype on `cast_dtype` (the `op_to_attrs` projection) —
+        // RED before A2 (MaskedFill was the `_ => return None` honest miss).
+        use fuel_ir::Scalar;
+        let attrs = OpAttrs { scalars: vec![-1.0], cast_dtype: Some("f16".into()), ..OpAttrs::default() };
+        match super::tag_to_op(OpTag::MaskedFill, &attrs) {
+            Some(Op::MaskedFill { value }) => {
+                assert_eq!(value.dtype(), DType::F16, "dtype rides cast_dtype");
+                assert_eq!(value, Scalar::from_f64(-1.0, DType::F16), "value rides scalars[0]");
+            }
+            other => panic!("expected MaskedFill, got {other:?}"),
+        }
+        // No fill value ⇒ honest miss (None), never a defaulted 0.
+        assert_eq!(super::tag_to_op(OpTag::MaskedFill, &OpAttrs::default()), None);
+        // A dtype `Scalar` cannot represent (sub-byte dummy) ⇒ honest miss.
+        let dummy = OpAttrs { scalars: vec![1.0], cast_dtype: Some("f4".into()), ..OpAttrs::default() };
+        assert_eq!(super::tag_to_op(OpTag::MaskedFill, &dummy), None);
+        // dtype-polymorphic authoring (no cast_dtype) reconstructs a provisional
+        // F32 that `emit` later re-resolves to operand[0]'s dtype.
+        let poly = OpAttrs { scalars: vec![1.0], ..OpAttrs::default() };
+        assert!(matches!(super::tag_to_op(OpTag::MaskedFill, &poly), Some(Op::MaskedFill { .. })));
+        // The fill value is a BAKED pattern constant, not a cursor slot.
+        assert_eq!(super::scalar_slot_arity(OpTag::MaskedFill), 0);
+    }
+
+    #[test]
+    fn tag_to_op_reconstructs_powi() {
+        // A3 (Increment C carriers): the PowI i32-exponent re-emit carrier. The
+        // exponent rides `scalars[0]` as an f64 (an EXACT round-trip for every
+        // i32 — |n| < 2^53), reconstructed via `as i32`. RED before A3 (PowI was
+        // in the `_ => return None` honest-miss set).
+        assert!(matches!(
+            super::tag_to_op(OpTag::PowI, &OpAttrs { scalars: vec![3.0], ..OpAttrs::default() }),
+            Some(Op::PowI(3))
+        ));
+        // Negative exponent (e.g. PowI(-1) = reciprocal — the exp==0 backward arm).
+        assert!(matches!(
+            super::tag_to_op(OpTag::PowI, &OpAttrs { scalars: vec![-1.0], ..OpAttrs::default() }),
+            Some(Op::PowI(-1))
+        ));
+        // No exponent ⇒ honest miss (None), never a defaulted PowI(0).
+        assert_eq!(super::tag_to_op(OpTag::PowI, &OpAttrs::default()), None);
+        // The exponent is a BAKED pattern constant (like MaskedFill's fill), not
+        // a cursor slot — so it never draws from the params projection.
+        assert_eq!(super::scalar_slot_arity(OpTag::PowI), 0);
+    }
+
+    #[test]
+    fn masked_fill_region_registers_and_emits_with_operand_dtype() {
+        // Before A2 this region was `UnRepresentable(MaskedFill)`; now it
+        // registers, and `emit` resolves the fill Scalar to operand[0]'s dtype
+        // (dtype-polymorphic — the imperative `Scalar::one(dtype)` behaviour).
+        clear_runtime_fused_for_tests();
+        let region = PatternNode::Op {
+            op: OpTag::MaskedFill,
+            attrs: OpAttrs { scalars: vec![1.0], ..OpAttrs::default() },
+            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+        };
+        register_runtime_fused("mf::poly", region.clone())
+            .expect("MaskedFill region registers (was UnRepresentable before A2)");
+        // Emit over an F16 tensor + U8 mask ⇒ MaskedFill with an F16 fill Scalar.
+        let mut g = Graph::new();
+        let x = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[2, 3]), dtype: DType::F16 });
+        let mask = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[2, 3]), dtype: DType::U8 });
+        let root = emit_region(&mut g, &region, &[x, mask], &[]);
+        match &g.node(root).op {
+            Op::MaskedFill { value } => {
+                assert_eq!(value.dtype(), DType::F16, "fill Scalar re-resolved to operand[0] dtype");
+                assert_eq!(value.to_f64(), 1.0, "fill VALUE preserved through the re-resolution");
+            }
+            other => panic!("expected MaskedFill, got {other:?}"),
+        }
+        assert_eq!(g.node(root).dtype, DType::F16);
+    }
+
+    #[test]
+    fn powi_region_registers_and_emits() {
+        // Before A3 a bare PowI region was `UnRepresentable(PowI)`; now it
+        // registers, and `emit` reconstructs the i32 exponent from `scalars[0]`.
+        clear_runtime_fused_for_tests();
+        let region = PatternNode::Op {
+            op: OpTag::PowI,
+            attrs: OpAttrs { scalars: vec![3.0], ..OpAttrs::default() },
+            operands: vec![PatternNode::Bind { index: 0 }],
+        };
+        register_runtime_fused("powi::cube", region.clone())
+            .expect("PowI region registers (was UnRepresentable before A3)");
+        let mut g = Graph::new();
+        let x = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[2, 3]), dtype: DType::F32 });
+        let root = emit_region(&mut g, &region, &[x], &[]);
+        assert!(
+            matches!(g.node(root).op, Op::PowI(3)),
+            "emit reconstructs Op::PowI(3) from scalars[0]",
+        );
+        assert_eq!(g.node(root).shape, Shape::from_dims(&[2, 3]), "PowI is shape-preserving");
+        assert_eq!(g.node(root).dtype, DType::F32);
     }
 
     #[test]
@@ -1564,6 +1748,97 @@ mod tests {
             dtype: DType::F32,
         });
         assert_eq!(decompose_region(&mut g, fused), fused, "mismatch ⇒ fixpoint");
+    }
+
+    // ---- shape-derived scalar slot (A1: the reduced_count live-emission) -----
+
+    /// `mul_scalar(a)` whose scalar is a SHAPE-DERIVED value: `scalar_rel =
+    /// Extent(operand 0, LAST)` — the reduced_count of bind 0's last axis, filled
+    /// from the input shape at emit time (NOT from the params cursor). This is
+    /// the narrow carrier a norm-backward's `MulScalar(n = dims[last])` needs.
+    fn mul_scalar_reduced_count_region() -> PatternNode {
+        use fuel_kernel_seam_types::shape_expr::{Dim, LAST};
+        PatternNode::Op {
+            op: OpTag::MulScalar,
+            attrs: OpAttrs {
+                scalar_rel: Some(Dim::Extent { operand: 0, axis: LAST }),
+                ..OpAttrs::default()
+            },
+            operands: vec![PatternNode::Bind { index: 0 }],
+        }
+    }
+
+    /// A1 born-red: a `scalar_rel` node is filled from an input SHAPE, so it is
+    /// NOT a params-cursor slot (`count_scalar_slots == 0`) and its emitted value
+    /// is the reduced_count of the resolving input's last axis. RED before the
+    /// wiring: `count_scalar_slots` counts the empty-`scalars` MulScalar as one
+    /// open slot, and `emit` ignores `scalar_rel` (fills from the cursor).
+    #[test]
+    fn scalar_rel_is_shape_derived_not_a_cursor_slot() {
+        let region = mul_scalar_reduced_count_region();
+        assert_eq!(
+            count_scalar_slots(&region),
+            0,
+            "a scalar_rel node is shape-derived, never a params-cursor slot",
+        );
+        // Emit over x[3,5]: n = last extent = 5, with NO cursor scalars.
+        let mut g = Graph::new();
+        let x = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[3, 5]),
+            dtype: DType::F32,
+        });
+        let root = try_emit_region(&mut g, &region, &[x], &[])
+            .expect("scalar_rel resolves against the input shape");
+        assert!(
+            matches!(g.node(root).op, Op::MulScalar(v) if v == 5.0),
+            "scalar_rel = Extent(0, LAST) over x[3,5] ⇒ MulScalar(5.0), got {:?}",
+            g.node(root).op,
+        );
+        assert_eq!(g.node(root).inputs, vec![x]);
+        // Rank-polymorphic: the SAME datum resolves to 7 over x[..,7].
+        let mut g3 = Graph::new();
+        let x3 = g3.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[2, 4, 7]),
+            dtype: DType::F32,
+        });
+        let root3 = try_emit_region(&mut g3, &region, &[x3], &[]).unwrap();
+        assert!(
+            matches!(g3.node(root3).op, Op::MulScalar(v) if v == 7.0),
+            "same datum, x[2,4,7] ⇒ MulScalar(7.0), got {:?}",
+            g3.node(root3).op,
+        );
+    }
+
+    /// A1: a `scalar_rel` set together with a non-empty `scalars` is a typed
+    /// rel-XOR-abs authoring conflict at emit (never a silent precedence).
+    #[test]
+    fn scalar_rel_and_baked_scalar_together_is_a_typed_conflict() {
+        use fuel_kernel_seam_types::shape_expr::{Dim, LAST};
+        let region = PatternNode::Op {
+            op: OpTag::MulScalar,
+            attrs: OpAttrs {
+                scalars: vec![2.0],
+                scalar_rel: Some(Dim::Extent { operand: 0, axis: LAST }),
+                ..OpAttrs::default()
+            },
+            operands: vec![PatternNode::Bind { index: 0 }],
+        };
+        let mut g = Graph::new();
+        let x = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[3, 5]),
+            dtype: DType::F32,
+        });
+        assert_eq!(
+            try_emit_region(&mut g, &region, &[x], &[]),
+            Err(RelAttrError::RelAbsConflict { field: "scalars" }),
+            "scalar_rel XOR scalars — both set is a typed decline",
+        );
     }
 
     // ---- Task 5: byte-for-byte emit == registry::*::decompose parity --------
@@ -2073,6 +2348,265 @@ mod tests {
             op: Op::Mul,
             inputs: vec![istd, inner],
             shape: x_shape,
+            dtype,
+        })
+    }
+
+    /// FROZEN copy of the pre-migration imperative
+    /// `registry::rms_norm_last_dim_backward::decompose` (the legacy ~22-node
+    /// `MeanDim`/`SumDim`/`Reshape(keepdim)`/`AddScalar`/`MulScalar(n)`/`Rsqrt`/
+    /// `BroadcastTo`/`Mul`/`Sub`/`Div` spelling, with the `n = dims[last]`
+    /// reduced-count baked as an absolute `MulScalar`), copied VERBATIM from that
+    /// module @ `9d7a1380` before A1 replaced the live body with the shape-
+    /// polymorphic data recipe. Sole consumer: the A1 numeric-parity oracle
+    /// (`rms_norm_backward_recipe` below). Reads `inputs = [x, upstream]` + the
+    /// output shape off the node — the convention the autograd
+    /// `BackwardKind::Fused` edge emits.
+    fn frozen_legacy_rms_norm_backward_decompose(
+        graph: &mut Graph,
+        id: NodeId,
+        params: &FusedOpParams,
+    ) -> NodeId {
+        let (x_id, up_id, x_shape, dtype) = {
+            let n = graph.node(id);
+            (n.inputs[0], n.inputs[1], n.shape.clone(), n.dtype)
+        };
+        let eps = match params {
+            FusedOpParams::RmsNormLastDimBackward { eps } => *eps,
+            // G2: total + never-panic — impossible params; return self.
+            _ => return id,
+        };
+        let dims = x_shape.dims().to_vec();
+        let last = dims.len() - 1;
+        let n = dims[last] as f64;
+        let mut kd = dims.clone();
+        kd[last] = 1;
+        let keepdim = Shape::from_dims(&kd);
+        let mut rd = dims.clone();
+        rd.remove(last);
+        let reduced = Shape::from_dims(&rd);
+
+        // denom = mean(x²) + eps  (keepdim).
+        let sq = graph.push(Node {
+            op: Op::Sqr,
+            inputs: vec![x_id],
+            shape: x_shape.clone(),
+            dtype,
+        });
+        let mean = graph.push(Node {
+            op: Op::MeanDim(last),
+            inputs: vec![sq],
+            shape: reduced.clone(),
+            dtype,
+        });
+        let mean_kd = graph.push(Node {
+            op: Op::Reshape(keepdim.clone()),
+            inputs: vec![mean],
+            shape: keepdim.clone(),
+            dtype,
+        });
+        let denom_kd = graph.push(Node {
+            op: Op::AddScalar(eps),
+            inputs: vec![mean_kd],
+            shape: keepdim.clone(),
+            dtype,
+        });
+        // r_rms = rsqrt(denom), broadcast.
+        let rrms_kd = graph.push(Node {
+            op: Op::Rsqrt,
+            inputs: vec![denom_kd],
+            shape: keepdim.clone(),
+            dtype,
+        });
+        let rrms_b = graph.push(Node {
+            op: Op::BroadcastTo(x_shape.clone()),
+            inputs: vec![rrms_kd],
+            shape: x_shape.clone(),
+            dtype,
+        });
+        // s = sum(g·x, last)  (keepdim).
+        let gx = graph.push(Node {
+            op: Op::Mul,
+            inputs: vec![up_id, x_id],
+            shape: x_shape.clone(),
+            dtype,
+        });
+        let s = graph.push(Node {
+            op: Op::SumDim(last),
+            inputs: vec![gx],
+            shape: reduced,
+            dtype,
+        });
+        let s_kd = graph.push(Node {
+            op: Op::Reshape(keepdim.clone()),
+            inputs: vec![s],
+            shape: keepdim.clone(),
+            dtype,
+        });
+        let s_b = graph.push(Node {
+            op: Op::BroadcastTo(x_shape.clone()),
+            inputs: vec![s_kd],
+            shape: x_shape.clone(),
+            dtype,
+        });
+        // term = x·s / (n·denom).
+        let ndenom_kd = graph.push(Node {
+            op: Op::MulScalar(n),
+            inputs: vec![denom_kd],
+            shape: keepdim.clone(),
+            dtype,
+        });
+        let ndenom_b = graph.push(Node {
+            op: Op::BroadcastTo(x_shape.clone()),
+            inputs: vec![ndenom_kd],
+            shape: x_shape.clone(),
+            dtype,
+        });
+        let xs = graph.push(Node {
+            op: Op::Mul,
+            inputs: vec![x_id, s_b],
+            shape: x_shape.clone(),
+            dtype,
+        });
+        let term = graph.push(Node {
+            op: Op::Div,
+            inputs: vec![xs, ndenom_b],
+            shape: x_shape.clone(),
+            dtype,
+        });
+        // grad_x = r_rms · (g − term).
+        let inner = graph.push(Node {
+            op: Op::Sub,
+            inputs: vec![up_id, term],
+            shape: x_shape.clone(),
+            dtype,
+        });
+        graph.push(Node {
+            op: Op::Mul,
+            inputs: vec![rrms_b, inner],
+            shape: x_shape,
+            dtype,
+        })
+    }
+
+    /// FROZEN copy of the pre-migration imperative
+    /// `registry::reduce_max_to_backward::decompose` (the legacy 9-node
+    /// `ReduceMaxTo`→`BroadcastTo`→`Equal(U8)`→`MaskedFill`→`ReduceSumTo`→`Div`→
+    /// `BroadcastTo`→`Mul` spelling, sharing the single `mask_f`), copied VERBATIM
+    /// from that module @ `94c69ec7` before A2 replaced the live body with the
+    /// data recipe. Sole consumer: the A2 numeric-parity oracle
+    /// (`reduce_max_to_backward_recipe` below). Reads `inputs[0] = x` and
+    /// `inputs[1] = up` (the upstream gradient) off the node — the order autograd
+    /// emits. The `MaskedFill` fill is `Scalar::one(dtype)` at the node's dtype.
+    fn frozen_legacy_reduce_max_to_backward_decompose(
+        graph: &mut Graph,
+        id: NodeId,
+        _params: &FusedOpParams,
+    ) -> NodeId {
+        use fuel_ir::Scalar;
+        let (x_id, up_id, x_shape, dtype) = {
+            let n = graph.node(id);
+            (n.inputs[0], n.inputs[1], n.shape.clone(), n.dtype)
+        };
+        let target = graph.node(up_id).shape.clone();
+
+        // y = per-window max, broadcast back to x's shape.
+        let y = graph.push(Node {
+            op: Op::ReduceMaxTo(target.clone()),
+            inputs: vec![x_id],
+            shape: target.clone(),
+            dtype,
+        });
+        let y_b = graph.push(Node {
+            op: Op::BroadcastTo(x_shape.clone()),
+            inputs: vec![y],
+            shape: x_shape.clone(),
+            dtype,
+        });
+        // U8 mask = (x == max), then a float mask = MaskedFill(1.0 into zeros).
+        let mask_u8 = graph.push(Node {
+            op: Op::Equal,
+            inputs: vec![x_id, y_b],
+            shape: x_shape.clone(),
+            dtype: DType::U8,
+        });
+        let zeros = graph.push(Node {
+            op: Op::MulScalar(0.0),
+            inputs: vec![x_id],
+            shape: x_shape.clone(),
+            dtype,
+        });
+        let mask_f = graph.push(Node {
+            op: Op::MaskedFill { value: Scalar::one(dtype) },
+            inputs: vec![zeros, mask_u8],
+            shape: x_shape.clone(),
+            dtype,
+        });
+        // ties = count per window; share = upstream / ties (fair share for ties).
+        let ties = graph.push(Node {
+            op: Op::ReduceSumTo(target.clone()),
+            inputs: vec![mask_f],
+            shape: target.clone(),
+            dtype,
+        });
+        let share = graph.push(Node {
+            op: Op::Div,
+            inputs: vec![up_id, ties],
+            shape: target,
+            dtype,
+        });
+        let share_b = graph.push(Node {
+            op: Op::BroadcastTo(x_shape.clone()),
+            inputs: vec![share],
+            shape: x_shape.clone(),
+            dtype,
+        });
+        graph.push(Node {
+            op: Op::Mul,
+            inputs: vec![mask_f, share_b],
+            shape: x_shape,
+            dtype,
+        })
+    }
+
+    /// FROZEN copy of the pre-migration imperative
+    /// `registry::powi_backward::decompose` (the legacy 3-node
+    /// `PowI(exp-1)`→`MulScalar(exp)`→`Mul` spelling), copied VERBATIM from that
+    /// module before A3 replaced the live body with the param-derived data
+    /// recipe. Sole consumer: the A3 numeric-parity oracle (`powi_backward_recipe`
+    /// below). Reads `inputs[0] = x` and `inputs[1] = up` (the upstream gradient)
+    /// off the node — the order autograd emits — plus the output shape/dtype;
+    /// `exp` rides the params.
+    fn frozen_legacy_powi_backward_decompose(
+        graph: &mut Graph,
+        id: NodeId,
+        params: &FusedOpParams,
+    ) -> NodeId {
+        let (x_id, up_id, shape, dtype) = {
+            let n = graph.node(id);
+            (n.inputs[0], n.inputs[1], n.shape.clone(), n.dtype)
+        };
+        let exp = match params {
+            FusedOpParams::PowIBackward { exp } => *exp,
+            // G2: total + never-panic — impossible params; return self.
+            _ => return id,
+        };
+        let pow = graph.push(Node {
+            op: Op::PowI(exp - 1),
+            inputs: vec![x_id],
+            shape: shape.clone(),
+            dtype,
+        });
+        let scaled = graph.push(Node {
+            op: Op::MulScalar(exp as f64),
+            inputs: vec![pow],
+            shape: shape.clone(),
+            dtype,
+        });
+        graph.push(Node {
+            op: Op::Mul,
+            inputs: vec![scaled, up_id],
+            shape,
             dtype,
         })
     }
@@ -3155,18 +3689,19 @@ mod tests {
         /// the in-memory analog of the withdrawn reverse-scan "flip" spelling —
         /// must surface as a typed honest-miss decline: the node stays fused
         /// (fixpoint), NEVER accepted, NEVER a crash. The fabricated recipe
-        /// stands in for a foreign token by carrying `OpTag::PowI` — a tag
+        /// stands in for a foreign token by carrying `OpTag::Clamp` — a tag
         /// with NO primitive re-emission today (`tag_to_op` → `None`), exactly
         /// the semantics-absent posture an unregistered op name resolves to.
-        /// If/when the token registers (flip returning to KISS-Ops; PowI
-        /// gaining its carrier in slice 2), it becomes a NAMED-op resolution
-        /// case — semantics arrive via registration, never via silent
-        /// acceptance here.
+        /// (This stand-in was `OpTag::PowI` until Increment C carriers A3 gave
+        /// PowI its i32-exponent carrier; `Clamp` — still awaiting a two-scalar
+        /// carrier — is the current canonical carrier-less token.) If/when the
+        /// token registers, it becomes a NAMED-op resolution case — semantics
+        /// arrive via registration, never via silent acceptance here.
         #[test]
         fn decompose_via_recipe_declines_an_unknown_token_recipe() {
             let fabricated = op_node(
-                OpTag::PowI,
-                OpAttrs { scalars: vec![3.0], ..OpAttrs::default() },
+                OpTag::Clamp,
+                OpAttrs { scalars: vec![0.0, 1.0], ..OpAttrs::default() },
                 vec![bind(0)],
             );
             let mut g = Graph::new();
@@ -4306,6 +4841,217 @@ mod tests {
         }
     }
 
+    // rms_norm_last_dim_backward migration (Increment C carriers, A1) ---------
+    //
+    // The ~22-node imperative closed-form
+    // `grad_x = r_rms · (g − x·s / (n·(mean_sq + eps)))` becomes a portable
+    // `PatternNode` DATA recipe — the FIRST recipe to drive a SHAPE-DERIVED
+    // scalar through live emit: `n = dims[last]` (the reduced_count) is a
+    // `MulScalar(scalar_rel = Extent(0, LAST))`, resolved from x's shape at emit
+    // (not baked, not a params slot). Sibling of the layer-norm-backward recipe:
+    // `MeanDim(axis_last)` + `Unsqueeze(append)` keepdim (D3 swap) + broadcast to
+    // `SameAs 0`; the `eps` `AddScalar` is an OPEN slot filled by the projection.
+    // Binds: `0 = x`, `1 = upstream`. RISK-A: `denom_kd` (which carries the eps
+    // slot) is consumed by BOTH the `Rsqrt` and the `MulScalar(n)`, so emit's
+    // slot-free identity-share does NOT dedup it — the recipe emits it twice
+    // (numerically identical deterministic recompute; the legacy DAG shared it),
+    // and downstream CSE re-collapses. The parity oracle runs both sides through
+    // a toy f64 interpreter (Reshape/Unsqueeze = metadata passthrough) so neither
+    // the D3 swap nor the recompute can perturb the bit-exact assert.
+    mod rms_norm_backward_recipe {
+        use super::super::*;
+        use super::frozen_legacy_rms_norm_backward_decompose;
+        use crate::registry::{FusedOps, rms_norm_last_dim_backward};
+        use fuel_ir::{DType, Shape};
+        use std::collections::HashMap;
+
+        /// Tiny f64 reference interpreter over the rms-norm-backward primitive
+        /// vocabulary (leaf-lookup FIRST, then elementwise `Mul`/`Sub`/`Div`,
+        /// unary `Sqr`/`Rsqrt`, `AddScalar`/`MulScalar`, last-axis
+        /// `MeanDim`/`SumDim`, metadata-only keepdim restore
+        /// `Unsqueeze`/`Reshape`, last-dim `BroadcastTo`). BOTH parity sides run
+        /// through it with identical in-order arithmetic, so a bit-exact assert
+        /// isolates recipe STRUCTURE — neither the `Reshape`→`Unsqueeze` D3 swap
+        /// NOR the open-slot `denom_kd` recompute can perturb it.
+        fn eval_rnb(g: &Graph, id: NodeId, leaves: &HashMap<NodeId, Vec<f64>>) -> Vec<f64> {
+            if let Some(v) = leaves.get(&id) {
+                return v.clone();
+            }
+            let node = g.node(id);
+            match &node.op {
+                Op::Mul => {
+                    let a = eval_rnb(g, node.inputs[0], leaves);
+                    let b = eval_rnb(g, node.inputs[1], leaves);
+                    a.iter().zip(&b).map(|(x, y)| x * y).collect()
+                }
+                Op::Sub => {
+                    let a = eval_rnb(g, node.inputs[0], leaves);
+                    let b = eval_rnb(g, node.inputs[1], leaves);
+                    a.iter().zip(&b).map(|(x, y)| x - y).collect()
+                }
+                Op::Div => {
+                    let a = eval_rnb(g, node.inputs[0], leaves);
+                    let b = eval_rnb(g, node.inputs[1], leaves);
+                    a.iter().zip(&b).map(|(x, y)| x / y).collect()
+                }
+                Op::Sqr => eval_rnb(g, node.inputs[0], leaves).iter().map(|v| v * v).collect(),
+                Op::Rsqrt => {
+                    eval_rnb(g, node.inputs[0], leaves).iter().map(|v| 1.0 / v.sqrt()).collect()
+                }
+                Op::AddScalar(e) => {
+                    eval_rnb(g, node.inputs[0], leaves).iter().map(|v| v + e).collect()
+                }
+                Op::MulScalar(m) => {
+                    eval_rnb(g, node.inputs[0], leaves).iter().map(|v| v * m).collect()
+                }
+                // Last-axis reductions — rank-reducing; identical fold both
+                // spellings.
+                Op::MeanDim(_) => {
+                    let input = eval_rnb(g, node.inputs[0], leaves);
+                    let last = *g.node(node.inputs[0]).shape.dims().last().unwrap();
+                    input.chunks(last).map(|row| row.iter().sum::<f64>() / last as f64).collect()
+                }
+                Op::SumDim(_) => {
+                    let input = eval_rnb(g, node.inputs[0], leaves);
+                    let last = *g.node(node.inputs[0]).shape.dims().last().unwrap();
+                    input.chunks(last).map(|row| row.iter().sum::<f64>()).collect()
+                }
+                // Metadata-only keepdim restores (the D3 swap and its legacy twin
+                // evaluate identically here).
+                Op::Unsqueeze { .. } | Op::Reshape(_) => eval_rnb(g, node.inputs[0], leaves),
+                // Broadcast a keepdim `[.., 1]` tensor back along the last axis.
+                Op::BroadcastTo(target) => {
+                    let input = eval_rnb(g, node.inputs[0], leaves);
+                    let out_n: usize = target.dims().iter().product();
+                    let last = *target.dims().last().unwrap();
+                    assert_eq!(
+                        input.len() * last,
+                        out_n,
+                        "broadcast is a last-dim repeat in these graphs",
+                    );
+                    input.iter().flat_map(|&v| std::iter::repeat(v).take(last)).collect()
+                }
+                other => panic!("eval_rnb: unhandled op {other:?}"),
+            }
+        }
+
+        /// Build a fused RmsNormLastDimBackward node over `x [dims]` (input 0)
+        /// and `g [dims]` (input 1, the upstream gradient), carrying `eps`.
+        /// Returns `(x, g, fused)`.
+        fn rms_backward_fused_node(
+            g: &mut Graph,
+            dims: &[usize],
+            eps: f64,
+        ) -> (NodeId, NodeId, NodeId) {
+            let sh = Shape::from_dims(dims);
+            let x = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+            let up = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+            let fused = g.push(Node {
+                op: Op::Fused(
+                    FusedOps::RMS_NORM_LAST_DIM_BACKWARD,
+                    FusedOpParams::RmsNormLastDimBackward { eps },
+                ),
+                inputs: vec![x, up],
+                shape: sh,
+                dtype: DType::F32,
+            });
+            (x, up, fused)
+        }
+
+        /// A1 (a): ONE recipe datum decomposes at BOTH rank 2 and rank 3 (the
+        /// polymorphism the baked-shape legacy body never had — including the
+        /// shape-derived `MulScalar(n)`), and its numerics match the FROZEN
+        /// legacy builder bit-exactly under the shared reference interpreter.
+        #[test]
+        fn rms_norm_backward_recipe_decompose_is_polymorphic_and_matches_frozen_legacy() {
+            for dims in [vec![2usize, 4], vec![3, 5, 7]] {
+                let mut g = Graph::new();
+                let (x, up, fused) = rms_backward_fused_node(&mut g, &dims, 1e-5);
+                let sh = Shape::from_dims(&dims);
+                let new_root = rms_norm_last_dim_backward::decompose(
+                    &mut g,
+                    fused,
+                    &FusedOpParams::RmsNormLastDimBackward { eps: 1e-5 },
+                );
+                assert_ne!(new_root, fused, "recipe decompose must fire at {dims:?}");
+                assert_eq!(g.node(new_root).shape, sh, "rms_norm backward is shape-preserving");
+                assert_eq!(g.node(new_root).dtype, DType::F32);
+
+                let legacy_root = frozen_legacy_rms_norm_backward_decompose(
+                    &mut g,
+                    fused,
+                    &FusedOpParams::RmsNormLastDimBackward { eps: 1e-5 },
+                );
+
+                let n: usize = dims.iter().product();
+                let x_data: Vec<f64> =
+                    (0..n).map(|i| ((i as f64) * 0.41).sin() * 2.0 + 0.7).collect();
+                let g_data: Vec<f64> =
+                    (0..n).map(|i| ((i as f64) * 0.61).cos() * 1.3 - 0.15).collect();
+                let mut leaves = HashMap::new();
+                leaves.insert(x, x_data);
+                leaves.insert(up, g_data);
+                let got = eval_rnb(&g, new_root, &leaves);
+                let want = eval_rnb(&g, legacy_root, &leaves);
+                assert_eq!(got.len(), want.len());
+                for (i, (a, b)) in got.iter().zip(want.iter()).enumerate() {
+                    assert_eq!(
+                        a.to_bits(),
+                        b.to_bits(),
+                        "rms_norm_backward[{i}] at {dims:?}: recipe={a} vs legacy={b}",
+                    );
+                }
+            }
+        }
+
+        /// A1 (structural, born-red): every keepdim restore is the D3
+        /// shrink-via-swap `Unsqueeze` append, NOT the baked `Reshape(keepdim)`
+        /// (the crisp discriminator against the pre-migration imperative body,
+        /// which emits `Reshape` — so this is RED until migration), and the
+        /// reduced-count divisor is a live `MulScalar(n = dims[last])` resolved
+        /// from x's shape by the `scalar_rel` carrier (evidence the shape-derived
+        /// scalar reached emit). The backward root is the outer `Mul(rrms, inner)`.
+        #[test]
+        fn rms_norm_backward_recipe_uses_the_unsqueeze_keepdim_swap_and_shape_scalar() {
+            for dims in [vec![2usize, 4], vec![3, 5, 7]] {
+                let mut g = Graph::new();
+                let (_x, _up, fused) = rms_backward_fused_node(&mut g, &dims, 1e-5);
+                let root = rms_norm_last_dim_backward::decompose(
+                    &mut g,
+                    fused,
+                    &FusedOpParams::RmsNormLastDimBackward { eps: 1e-5 },
+                );
+                assert_ne!(root, fused, "recipe decompose fires at {dims:?}");
+                assert!(matches!(g.node(root).op, Op::Mul), "backward root is the outer Mul(rrms, inner)");
+                let reachable = crate::topo_order_multi(&g, &[root]);
+                let unsqueezes = reachable
+                    .iter()
+                    .filter(|&&n| matches!(g.node(n).op, Op::Unsqueeze { .. }))
+                    .count();
+                let reshapes = reachable
+                    .iter()
+                    .filter(|&&n| matches!(g.node(n).op, Op::Reshape(_)))
+                    .count();
+                assert!(unsqueezes >= 1, "keepdim restored via Unsqueeze append (D3 swap) at {dims:?}");
+                assert_eq!(reshapes, 0, "no baked keepdim Reshape / no D4 pad after the D3 swap at {dims:?}");
+                // The reduced-count divisor resolved to n = dims[last] from x's
+                // shape (the scalar_rel carrier), at whatever rank.
+                let n = *dims.last().unwrap() as f64;
+                let mul_scalars: Vec<f64> = reachable
+                    .iter()
+                    .filter_map(|&nid| match g.node(nid).op {
+                        Op::MulScalar(v) => Some(v),
+                        _ => None,
+                    })
+                    .collect();
+                assert!(
+                    mul_scalars.iter().any(|&v| v == n),
+                    "a MulScalar(n={n}) resolved from x's last-axis extent at {dims:?}, got {mul_scalars:?}",
+                );
+            }
+        }
+    }
+
     // fused_linear migration (Increment C slice 2, S2-2) ----------------------
     //
     // The 3-node imperative `Add(MatMul(a, b), BroadcastTo(rank-1 bias))`
@@ -4862,6 +5608,430 @@ mod tests {
             );
             assert_eq!(g.node(ph_id).dtype, DType::F32, "placeholder dtype = bind 0's");
             assert_eq!(g.node(root).shape.dims(), &[2, 3], "Mul(placeholder,..) inherits the declared shape");
+        }
+    }
+
+    // reduce_max_to_backward migration (Increment C carriers, A2) -------------
+    //
+    // The 9-node imperative fair-share max subgradient (ReduceMaxTo→BroadcastTo→
+    // Equal(U8)→MaskedFill→ReduceSumTo→Div→BroadcastTo→Mul, sharing the single
+    // `mask_f`) becomes a portable `PatternNode` DATA recipe, and the FIRST recipe
+    // to carry a `MaskedFill` — driven LIVE by the A2 fill-Scalar re-emit carrier
+    // (the fill dtype re-resolves to x's dtype, matching `Scalar::one(dtype)`).
+    // A DIRECT structural mirror (no D3 keepdim swap, no D4 pad), so the parity
+    // oracle runs both sides through a toy f64 interpreter and asserts BIT-EXACT
+    // structure — the discriminating power is confirmed by the sabotage-calibrated
+    // negative in `reduce_max_to_backward_recipe_shares_mask_and_has_no_reshape`
+    // (identity-share ⇒ ONE MaskedFill node across its two uses). Binds:
+    // `0 = x`, `1 = up`. The reduce/count targets are `SameAs 1` (upstream's
+    // shape); the broadcasts are `SameAs 0` (x's shape).
+    mod reduce_max_to_backward_recipe {
+        use super::super::*;
+        use super::frozen_legacy_reduce_max_to_backward_decompose;
+        use crate::registry::{FusedOps, reduce_max_to_backward};
+        use fuel_ir::{DType, Shape};
+        use std::collections::HashMap;
+
+        /// Right-aligned NumPy broadcast of `input` (shape `in_shape`) to
+        /// `target` — a size-1 or padded leading dim contributes stride 0. General
+        /// on purpose (both `bcast_x` sites tile a `[..,1]` keepdim back to x).
+        fn broadcast(input: &[f64], in_shape: &[usize], target: &[usize]) -> Vec<f64> {
+            let rank = target.len();
+            let pad = rank - in_shape.len();
+            let mut real_strides = vec![0isize; in_shape.len()];
+            let mut s = 1isize;
+            for i in (0..in_shape.len()).rev() {
+                real_strides[i] = s;
+                s *= in_shape[i] as isize;
+            }
+            let mut in_strides = vec![0isize; rank];
+            for (i, stride) in in_strides.iter_mut().enumerate() {
+                if i >= pad {
+                    let id = i - pad;
+                    *stride = if in_shape[id] == 1 { 0 } else { real_strides[id] };
+                }
+            }
+            let out_n: usize = target.iter().product();
+            let mut out = Vec::with_capacity(out_n);
+            let mut idx = vec![0usize; rank];
+            for _ in 0..out_n {
+                let fi: isize = (0..rank).map(|i| idx[i] as isize * in_strides[i]).sum();
+                out.push(input[fi as usize]);
+                for i in (0..rank).rev() {
+                    idx[i] += 1;
+                    if idx[i] < target[i] {
+                        break;
+                    }
+                    idx[i] = 0;
+                }
+            }
+            out
+        }
+
+        /// Tiny f64 reference interpreter over the reduce-max-backward primitive
+        /// vocabulary (leaf-lookup FIRST, then elementwise `Mul`/`Div`,
+        /// `MulScalar`, `Equal` (1.0/0.0), the `MaskedFill` fill from the op's
+        /// `Scalar`, last-axis `ReduceMaxTo`/`ReduceSumTo`, right-aligned
+        /// `BroadcastTo`). BOTH parity sides run through it with identical in-order
+        /// arithmetic, so a bit-exact assert isolates recipe STRUCTURE. Test dims
+        /// reduce the LAST axis (`up = [.., 1]`), so the reduces are a last-axis
+        /// chunk fold.
+        fn eval_rmb(g: &Graph, id: NodeId, leaves: &HashMap<NodeId, Vec<f64>>) -> Vec<f64> {
+            if let Some(v) = leaves.get(&id) {
+                return v.clone();
+            }
+            let node = g.node(id);
+            match &node.op {
+                Op::Mul => {
+                    let a = eval_rmb(g, node.inputs[0], leaves);
+                    let b = eval_rmb(g, node.inputs[1], leaves);
+                    a.iter().zip(&b).map(|(x, y)| x * y).collect()
+                }
+                Op::Div => {
+                    let a = eval_rmb(g, node.inputs[0], leaves);
+                    let b = eval_rmb(g, node.inputs[1], leaves);
+                    a.iter().zip(&b).map(|(x, y)| x / y).collect()
+                }
+                Op::MulScalar(m) => {
+                    eval_rmb(g, node.inputs[0], leaves).iter().map(|v| v * m).collect()
+                }
+                Op::Equal => {
+                    let a = eval_rmb(g, node.inputs[0], leaves);
+                    let b = eval_rmb(g, node.inputs[1], leaves);
+                    a.iter().zip(&b).map(|(x, y)| if x == y { 1.0 } else { 0.0 }).collect()
+                }
+                Op::MaskedFill { value } => {
+                    let input = eval_rmb(g, node.inputs[0], leaves);
+                    let mask = eval_rmb(g, node.inputs[1], leaves);
+                    let fill = value.to_f64();
+                    input.iter().zip(&mask).map(|(x, m)| if *m != 0.0 { fill } else { *x }).collect()
+                }
+                // Last-axis reduce-to-shape (up = [.., 1]); identical fold both
+                // parity sides.
+                Op::ReduceMaxTo(_) => {
+                    let input = eval_rmb(g, node.inputs[0], leaves);
+                    let last = *g.node(node.inputs[0]).shape.dims().last().unwrap();
+                    input.chunks(last).map(|row| row.iter().cloned().fold(f64::NEG_INFINITY, f64::max)).collect()
+                }
+                Op::ReduceSumTo(_) => {
+                    let input = eval_rmb(g, node.inputs[0], leaves);
+                    let last = *g.node(node.inputs[0]).shape.dims().last().unwrap();
+                    input.chunks(last).map(|row| row.iter().sum::<f64>()).collect()
+                }
+                Op::BroadcastTo(target) => {
+                    let input = eval_rmb(g, node.inputs[0], leaves);
+                    let in_shape: Vec<usize> = g.node(node.inputs[0]).shape.dims().to_vec();
+                    broadcast(&input, &in_shape, target.dims())
+                }
+                other => panic!("eval_rmb: unhandled op {other:?}"),
+            }
+        }
+
+        /// Build a fused ReduceMaxToBackward node over `x [x_dims]` (input 0) and
+        /// `up [up_dims]` (input 1, the upstream gradient = the forward reduce
+        /// target). Returns `(x, up, fused)`.
+        fn rmb_fused_node(
+            g: &mut Graph,
+            x_dims: &[usize],
+            up_dims: &[usize],
+        ) -> (NodeId, NodeId, NodeId) {
+            let xsh = Shape::from_dims(x_dims);
+            let x = g.push(Node { op: Op::Const, inputs: vec![], shape: xsh.clone(), dtype: DType::F32 });
+            let up = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(up_dims), dtype: DType::F32 });
+            let fused = g.push(Node {
+                op: Op::Fused(FusedOps::REDUCE_MAX_TO_BACKWARD, FusedOpParams::ReduceMaxToBackward),
+                inputs: vec![x, up],
+                shape: xsh,
+                dtype: DType::F32,
+            });
+            (x, up, fused)
+        }
+
+        /// A2 (a): ONE recipe datum decomposes at BOTH rank 2 and rank 3 (the
+        /// shape polymorphism the baked-shape legacy body never had), and its
+        /// numerics match the FROZEN legacy builder bit-exactly under the shared
+        /// reference interpreter — the MaskedFill carrier driving live emission.
+        #[test]
+        fn reduce_max_to_backward_recipe_decompose_is_polymorphic_and_matches_frozen_legacy() {
+            for (x_dims, up_dims) in [
+                (vec![2usize, 4], vec![2usize, 1]),
+                (vec![3, 5, 7], vec![3, 5, 1]),
+            ] {
+                let mut g = Graph::new();
+                let (x, up, fused) = rmb_fused_node(&mut g, &x_dims, &up_dims);
+                let xsh = Shape::from_dims(&x_dims);
+                let new_root = reduce_max_to_backward::decompose(
+                    &mut g,
+                    fused,
+                    &FusedOpParams::ReduceMaxToBackward,
+                );
+                assert_ne!(new_root, fused, "recipe decompose must fire at {x_dims:?}");
+                assert_eq!(g.node(new_root).shape, xsh, "reduce_max backward is x-shaped");
+                assert_eq!(g.node(new_root).dtype, DType::F32);
+
+                let legacy_root = frozen_legacy_reduce_max_to_backward_decompose(
+                    &mut g,
+                    fused,
+                    &FusedOpParams::ReduceMaxToBackward,
+                );
+
+                let xn: usize = x_dims.iter().product();
+                let upn: usize = up_dims.iter().product();
+                let x_data: Vec<f64> =
+                    (0..xn).map(|i| ((i as f64) * 0.37).sin() * 2.0 + 0.3).collect();
+                let up_data: Vec<f64> =
+                    (0..upn).map(|i| ((i as f64) * 0.53).cos() * 1.1 - 0.2).collect();
+                let mut leaves = HashMap::new();
+                leaves.insert(x, x_data);
+                leaves.insert(up, up_data);
+                let got = eval_rmb(&g, new_root, &leaves);
+                let want = eval_rmb(&g, legacy_root, &leaves);
+                assert_eq!(got.len(), want.len());
+                for (i, (a, b)) in got.iter().zip(want.iter()).enumerate() {
+                    assert_eq!(
+                        a.to_bits(),
+                        b.to_bits(),
+                        "reduce_max_to_backward[{i}] at {x_dims:?}: recipe={a} vs legacy={b}",
+                    );
+                }
+            }
+        }
+
+        /// A2 (structural): the single `mask_f` is IDENTITY-SHARED across its two
+        /// use sites (`ReduceSumTo` and the final `Mul`) — exactly ONE MaskedFill
+        /// node reachable, the same single-compute DAG the imperative body had (a
+        /// duplicated emit would break this). A direct structural mirror: no D3/D4
+        /// `Reshape`, and the MaskedFill fill Scalar re-resolved to x's (F32)
+        /// dtype (evidence the A2 carrier reached emit).
+        #[test]
+        fn reduce_max_to_backward_recipe_shares_mask_and_has_no_reshape() {
+            for (x_dims, up_dims) in [
+                (vec![2usize, 4], vec![2usize, 1]),
+                (vec![3, 5, 7], vec![3, 5, 1]),
+            ] {
+                let mut g = Graph::new();
+                let (_x, _up, fused) = rmb_fused_node(&mut g, &x_dims, &up_dims);
+                let root = reduce_max_to_backward::decompose(
+                    &mut g,
+                    fused,
+                    &FusedOpParams::ReduceMaxToBackward,
+                );
+                assert_ne!(root, fused, "recipe decompose fires at {x_dims:?}");
+                assert!(matches!(g.node(root).op, Op::Mul), "root is Mul(mask_f, share_b)");
+                let reachable = crate::topo_order_multi(&g, &[root]);
+                let masked = reachable
+                    .iter()
+                    .filter(|&&n| matches!(g.node(n).op, Op::MaskedFill { .. }))
+                    .count();
+                assert_eq!(
+                    masked, 1,
+                    "mask_f identity-shared across its two uses at {x_dims:?} (ONE MaskedFill)",
+                );
+                let reshapes = reachable
+                    .iter()
+                    .filter(|&&n| matches!(g.node(n).op, Op::Reshape(_)))
+                    .count();
+                assert_eq!(reshapes, 0, "direct structural mirror — no D3/D4 Reshape at {x_dims:?}");
+                let fill_dtype = reachable
+                    .iter()
+                    .find_map(|&n| match &g.node(n).op {
+                        Op::MaskedFill { value } => Some(value.dtype()),
+                        _ => None,
+                    })
+                    .expect("a MaskedFill is present");
+                assert_eq!(
+                    fill_dtype, DType::F32,
+                    "the A2 carrier re-resolved the fill Scalar to x's dtype at {x_dims:?}",
+                );
+            }
+        }
+
+        /// A2 (totality): a wrong params payload is a typed decline surfaced as a
+        /// fixpoint (G2), never a panic, declining BEFORE any emission.
+        #[test]
+        fn reduce_max_to_backward_recipe_wrong_params_is_a_fixpoint_not_a_crash() {
+            let mut g = Graph::new();
+            let (_x, _up, fused) = rmb_fused_node(&mut g, &[2, 4], &[2, 1]);
+            let before = g.len();
+            let out = reduce_max_to_backward::decompose(&mut g, fused, &FusedOpParams::Rope);
+            assert_eq!(out, fused, "wrong params ⇒ typed decline ⇒ fixpoint");
+            assert_eq!(g.len(), before, "declined before any emission");
+        }
+    }
+
+    // powi_backward migration (Increment C carriers, A3) ----------------------
+    //
+    // The 3-node imperative closed-form gradient `grad_x = exp · x^(exp-1) ·
+    // upstream` (PowI(exp-1)→MulScalar(exp)→Mul) becomes a portable `PatternNode`
+    // DATA recipe, and the FIRST recipe to carry a `PowI` — driven LIVE by the A3
+    // i32-exponent re-emit carrier (the exponent rides scalars[0]) — and the first
+    // whose STRUCTURE is param-derived (both `exp` and `exp-1` are constant-folded
+    // into the datum at build time, the minimal "param-derived const in the
+    // recipe" C-4 posture, NOT a restructure to dodge the missing thread). A
+    // DIRECT structural mirror (no D3 keepdim swap, no D4 pad), so the parity
+    // oracle runs both sides through a toy f64 interpreter and asserts BIT-EXACT
+    // structure across ranks AND exponents. Binds: `0 = x`, `1 = up`.
+    mod powi_backward_recipe {
+        use super::super::*;
+        use super::frozen_legacy_powi_backward_decompose;
+        use crate::registry::{FusedOps, powi_backward};
+        use fuel_ir::{DType, Shape};
+        use std::collections::HashMap;
+
+        /// Tiny f64 reference interpreter over the powi-backward primitive
+        /// vocabulary (leaf-lookup FIRST, then elementwise `Mul`, `MulScalar`,
+        /// and integer-power `PowI` via `f64::powi`). BOTH parity sides run
+        /// through it with identical in-order arithmetic, so a bit-exact assert
+        /// isolates recipe STRUCTURE — the exponent transported by the A3 carrier
+        /// and the baked `MulScalar`. `x` and `up` are the same shape (`PowI` is
+        /// elementwise), so every op is a flat elementwise map.
+        fn eval_pb(g: &Graph, id: NodeId, leaves: &HashMap<NodeId, Vec<f64>>) -> Vec<f64> {
+            if let Some(v) = leaves.get(&id) {
+                return v.clone();
+            }
+            let node = g.node(id);
+            match &node.op {
+                Op::Mul => {
+                    let a = eval_pb(g, node.inputs[0], leaves);
+                    let b = eval_pb(g, node.inputs[1], leaves);
+                    a.iter().zip(&b).map(|(x, y)| x * y).collect()
+                }
+                Op::MulScalar(m) => {
+                    eval_pb(g, node.inputs[0], leaves).iter().map(|v| v * m).collect()
+                }
+                Op::PowI(n) => {
+                    eval_pb(g, node.inputs[0], leaves).iter().map(|v| v.powi(*n)).collect()
+                }
+                other => panic!("eval_pb: unhandled op {other:?}"),
+            }
+        }
+
+        /// Build a fused PowIBackward node over `x [dims]` (input 0) and `up
+        /// [dims]` (input 1, the upstream gradient — same shape as x), carrying
+        /// `exp`. Returns `(x, up, fused)`.
+        fn pb_fused_node(
+            g: &mut Graph,
+            dims: &[usize],
+            exp: i32,
+        ) -> (NodeId, NodeId, NodeId) {
+            let sh = Shape::from_dims(dims);
+            let x = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+            let up = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+            let fused = g.push(Node {
+                op: Op::Fused(FusedOps::POWI_BACKWARD, FusedOpParams::PowIBackward { exp }),
+                inputs: vec![x, up],
+                shape: sh,
+                dtype: DType::F32,
+            });
+            (x, up, fused)
+        }
+
+        /// A3 (a): ONE recipe datum decomposes at BOTH rank 2 and rank 3 and
+        /// across several exponents, and its numerics match the FROZEN legacy
+        /// builder bit-exactly under the shared reference interpreter — the A3
+        /// PowI carrier driving live emission of `Op::PowI(exp-1)`.
+        #[test]
+        fn powi_backward_recipe_decompose_is_polymorphic_and_matches_frozen_legacy() {
+            // x strictly positive so exp==0's PowI(-1) reciprocal is finite/clean;
+            // the exponents span +, the exp==1 identity, exp==0 (MulScalar(0)=0),
+            // and a negative exponent (PowI(-3)).
+            for dims in [vec![2usize, 4], vec![3, 5, 7]] {
+                for exp in [3i32, 2, 5, 1, 0, -2] {
+                    let mut g = Graph::new();
+                    let (x, up, fused) = pb_fused_node(&mut g, &dims, exp);
+                    let sh = Shape::from_dims(&dims);
+                    let new_root = powi_backward::decompose(
+                        &mut g,
+                        fused,
+                        &FusedOpParams::PowIBackward { exp },
+                    );
+                    assert_ne!(new_root, fused, "recipe decompose must fire at {dims:?} exp={exp}");
+                    assert_eq!(g.node(new_root).shape, sh, "powi backward is shape-preserving");
+                    assert_eq!(g.node(new_root).dtype, DType::F32);
+
+                    let legacy_root = frozen_legacy_powi_backward_decompose(
+                        &mut g,
+                        fused,
+                        &FusedOpParams::PowIBackward { exp },
+                    );
+
+                    let n: usize = dims.iter().product();
+                    let x_data: Vec<f64> =
+                        (0..n).map(|i| ((i as f64) * 0.41).sin() * 0.5 + 1.5).collect();
+                    let up_data: Vec<f64> =
+                        (0..n).map(|i| ((i as f64) * 0.61).cos() * 1.3 - 0.15).collect();
+                    let mut leaves = HashMap::new();
+                    leaves.insert(x, x_data);
+                    leaves.insert(up, up_data);
+                    let got = eval_pb(&g, new_root, &leaves);
+                    let want = eval_pb(&g, legacy_root, &leaves);
+                    assert_eq!(got.len(), want.len());
+                    for (i, (a, b)) in got.iter().zip(want.iter()).enumerate() {
+                        assert_eq!(
+                            a.to_bits(),
+                            b.to_bits(),
+                            "powi_backward[{i}] at {dims:?} exp={exp}: recipe={a} vs legacy={b}",
+                        );
+                    }
+                }
+            }
+        }
+
+        /// A3 (structural): a DIRECT structural mirror — the root is `Mul(scaled,
+        /// up)`, the A3 carrier resolves the exponent to `Op::PowI(exp-1)`, the
+        /// scale is a baked `Op::MulScalar(exp as f64)`, and NO D3/D4 `Reshape` is
+        /// materialized (evidence the i32 carrier + baked scale reached emit at the
+        /// right values).
+        #[test]
+        fn powi_backward_recipe_is_a_direct_mirror_with_carrier_exponent() {
+            for exp in [3i32, 0, -2] {
+                let mut g = Graph::new();
+                let (_x, _up, fused) = pb_fused_node(&mut g, &[2, 4], exp);
+                let root = powi_backward::decompose(
+                    &mut g,
+                    fused,
+                    &FusedOpParams::PowIBackward { exp },
+                );
+                assert_ne!(root, fused, "recipe decompose fires at exp={exp}");
+                assert!(matches!(g.node(root).op, Op::Mul), "root is Mul(scaled, up)");
+                let reachable = crate::topo_order_multi(&g, &[root]);
+                // The A3 carrier reconstructed exactly one Op::PowI(exp-1).
+                let powis: Vec<i32> = reachable
+                    .iter()
+                    .filter_map(|&n| match g.node(n).op {
+                        Op::PowI(k) => Some(k),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(powis, vec![exp - 1], "the A3 carrier resolved Op::PowI(exp-1) at exp={exp}");
+                // The scale is a single baked MulScalar(exp as f64).
+                let mul_scalars: Vec<f64> = reachable
+                    .iter()
+                    .filter_map(|&n| match g.node(n).op {
+                        Op::MulScalar(v) => Some(v),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(mul_scalars, vec![exp as f64], "baked MulScalar(exp) at exp={exp}");
+                // Direct mirror — no keepdim/pad Reshape.
+                let reshapes = reachable
+                    .iter()
+                    .filter(|&&n| matches!(g.node(n).op, Op::Reshape(_)))
+                    .count();
+                assert_eq!(reshapes, 0, "direct structural mirror — no D3/D4 Reshape at exp={exp}");
+            }
+        }
+
+        /// A3 (totality): a wrong params payload is a typed decline surfaced as a
+        /// fixpoint (G2), never a panic, declining BEFORE any emission.
+        #[test]
+        fn powi_backward_recipe_wrong_params_is_a_fixpoint_not_a_crash() {
+            let mut g = Graph::new();
+            let (_x, _up, fused) = pb_fused_node(&mut g, &[2, 4], 3);
+            let before = g.len();
+            let out = powi_backward::decompose(&mut g, fused, &FusedOpParams::Rope);
+            assert_eq!(out, fused, "wrong params ⇒ typed decline ⇒ fixpoint");
+            assert_eq!(g.len(), before, "declined before any emission");
         }
     }
 }

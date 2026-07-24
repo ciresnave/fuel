@@ -254,6 +254,23 @@ pub struct OpAttrs {
     /// CumSum/… and Squeeze, and `rank` (append) for Unsqueeze. `false` ⇒ use
     /// the absolute carrier.
     pub axis_last: bool,
+    /// Shape-relative alternative to `scalars` for a scalar-param op
+    /// (`AddScalar`/`MulScalar`): the scalar VALUE is a `DimExpr` over the Bind
+    /// space, resolved to a concrete number at emit time
+    /// (`fuel_graph::runtime_fused::resolve_rel_attrs`) — the **reduced_count**
+    /// concept made emittable: `Dim::Extent { operand: 0, axis: LAST }` yields
+    /// `n = extent of operand 0's last axis` (the `MulScalar(n)` divisor a norm
+    /// backward needs). It rides the SAME `Dim`/`eval_dim`/`resolve_axis`
+    /// machinery as `slice_start_rel`/`slice_len_rel` (no parallel axis
+    /// resolver). Distinct from an OPEN scalar slot: a `scalar_rel` node is
+    /// filled from an input SHAPE, NOT from the params projection cursor, so it
+    /// is NOT counted by `count_scalar_slots` and never consumes a cursor value.
+    /// `None` ⇒ use `scalars` (a baked value or an open slot). Set together with
+    /// a non-empty `scalars` is a typed resolution error (rel XOR abs). Like the
+    /// other rel fields, it is IN-MEMORY recipe data — deliberately NOT
+    /// serialized to the §6.19 wire (pinned by
+    /// `rel_attr_fields_are_absent_from_the_6_19_wire`).
+    pub scalar_rel: Option<shape_expr::Dim>,
 
     // --- Matmul contraction role vectors (Increment C slice 1, T9/D5) -------
     //
@@ -831,6 +848,7 @@ mod tests {
             slice_start_rel: Some(half.clone()),
             slice_len_rel: Some(half),
             axis_last: true,
+            scalar_rel: Some(Dim::Extent { operand: 0, axis: LAST }),
             ..OpAttrs::default()
         };
         // Shape-target arm (BroadcastTo/Reshape): rel-only attrs serialize
@@ -856,6 +874,15 @@ mod tests {
             sd_plus_rel.to_canonical_bytes(OpTag::SumDim),
             sd.to_canonical_bytes(OpTag::SumDim),
             "axis_last must not reach the reduce wire row"
+        );
+        // Scalar-param arm (AddScalar/MulScalar): a `scalar_rel` DimExpr with an
+        // empty `scalars` list serializes byte-identically to a default (the
+        // wire arm emits only `scalars`), so the reduced_count rel carrier never
+        // leaks onto the §6.19 wire.
+        assert_eq!(
+            rel_only.to_canonical_bytes(OpTag::MulScalar),
+            OpAttrs::default().to_canonical_bytes(OpTag::MulScalar),
+            "scalar_rel must not reach the mul_scalar wire arm"
         );
         // Empty-schema op: stays the single canonical 4-byte zero form even
         // with every rel field set.
