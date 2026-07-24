@@ -49,7 +49,12 @@
 
 use crate::plan::backend_for_device;
 use fuel_ir::{DeviceLocation, Error, Result};
-use fuel_graph::{opt, topo_order_multi, Graph, NodeId, Op, SharedGraph};
+use fuel_graph::{opt, topo_order_multi, Graph, NodeId, SharedGraph};
+// `Op` is named only by the test-module graph builders below (this module
+// emits `Op::Move`/`Op::Copy` through `opt`'s helpers, never by naming the
+// variant), so the import is `cfg(test)`-scoped to keep the lib build clean.
+#[cfg(test)]
+use fuel_graph::Op;
 use std::collections::HashMap;
 
 /// One tensor's residency span. `[first_use, last_use]` are op
