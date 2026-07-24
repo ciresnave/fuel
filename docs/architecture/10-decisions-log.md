@@ -910,6 +910,31 @@ This **partially resolves the 2026-07-11 gap-audit's §5 finding** (return-contr
 
 ---
 
+## 2026-07-24 — conv2d / conv_transpose_2d are NOT a primitive-basis gap (correction to the 2026-06-20 "recipe principle / total decompose" G2 example)
+
+**Sections affected**: **none bumped.** This is a decisions-log **CORRECTION** of a mis-classification, not a constitutional change. The `03-ir` build-time-closed-primitive-basis claim (G3) is *unchanged* — indeed reaffirmed: no `Op` variant is added. The `04-optimization` total/never-panic `decompose` contract (G2) is unchanged. Only the *classification* of two ops is fixed.
+
+**Phase / PR**: Increment C conv stream, slice CV0 (docs-integrity correction), branch `feat/incc-conv-im2col`. Design pass: `docs/superpowers/plans/2026-07-24-incc-conv-im2col.md`. Code touched: `fuel-graph/src/registry/{conv2d,conv_transpose_2d}.rs` module + `decompose` docs; the Increment-C decompose-migration plan-of-record (`docs/superpowers/plans/2026-07-24-increment-c-decompose-migration.md`).
+
+**What was wrong**: The 2026-06-20 G2 entry (decision 2, "`decompose` is TOTAL + never-panic + primitive→self") named its three then-panicking decomposes as `nf4_matmul` / `flash_attn` / `selective_scan`; it did **not** itself name conv2d. But under that G2 principle, `conv2d` and `conv_transpose_2d` were subsequently classified — in their registry module docs ("a genuine primitive-basis gap (G2, 2026-06-20)", needing a new `Op::Im2Col` / `Op::Col2Im`) and in the Increment-C decompose-migration plan-of-record ("BASIS-GAP — need a new PRIMITIVE Op") — as permanent self-returns awaiting a *new primitive*. **That classification was wrong.** Those docs weighed only ONE candidate lowering — the `Op::Slice` + `Op::MatMul` + `Op::Concat` synthesis, which does explode to `N·Hout·Wout` slice nodes and is correctly rejected — and overlooked the index-gather idiom.
+
+**The correction**: conv2d / conv_transpose_2d are fully expressible in the existing closed `Op` basis, with node count *constant* in the spatial size:
+- **im2col = `Op::IndexSelect`** (a strided gather) over the `Op::Pad`-padded, flattened spatial axis; the window→flat-index map is built from **`Op::Iota` + scalar arithmetic + `Op::Cast(U32)`** (integer-valued, exact in F32 for padded-spatial extent `< 2^24`). Overlapping windows just repeat index values — a gather reads a source position as many times as needed.
+- **col2im (conv_transpose_2d) = the adjoint = a scatter-add = `Op::IndexAdd` / `Op::ScatterAdd`** into a zero-init base (`MulScalar(0.0)` of a broadcast — no `Const` in a recipe), then an `Op::Slice` crop. `IndexAdd`'s `+=` semantics ARE the overlap-add.
+- the grouped / batched conv matmul is **`Op::MatMul`**'s batched (rank≥2, GQA-divisible batch-prefix) form; bias is a broadcast `Add`.
+
+This mirrors the CPU kernel, which is itself im2col + batched GEMM (`fuel-cpu-backend/src/conv2d.rs`). **No `Op` variant is added; the build-time-closed primitive basis is UNCHANGED.** So conv2d / conv_transpose_2d migrate to total `PatternNode` recipes like any other Increment-C op — gated by a **real-backend numerical-parity test** (`fuel-conv::conv2d_direct` for conv2d; the native CPU conv_transpose kernel for the transpose), because the toy in-order f64 parity interpreter (`eval_rope`/`eval_norm`) does not implement `IndexSelect`/`Iota`/`MatMul`/`Pad`/`IndexAdd`.
+
+**Contrast with G3 / `Op::Scan`** (the genuine basis extension): the SSM recurrence is *inexpressible* in the elementwise/gather basis (unbounded unroll; the CumSum closed form overflows for `a<0`), so it justified a new higher-order primitive. im2col has no such obstruction — it is ordinary indexing; a hypothetical `Op::Im2Col` would *itself* decompose to `Iota`+`IndexSelect`, so it fails the "irreducible base-map terminal" test and would be sugar, not a basis element.
+
+**What remains a genuine basis question**: `qmatmul` (sub-byte GGML bit-unpack + byte-reinterpret + block-layout) and `inplace_affine` (its destructive-aliasing contract) stay the two open basis-gap self-returns — separate from this correction. The Increment-C basis-gap count therefore drops from **4 to 2**.
+
+**Why**: the mis-classification would have justified a `03-ir` MAJOR basis extension (new `Op` variant, shape/dtype rules, CPU realize, GPU kernels-or-decline, `tag_to_op` arm + `OpAttrs` carriers, `base_map_hash` `op_key`) for *zero* expressive gain, and would have left two ops permanently opaque to base-map analysis (the exact G1/G2 opaque-island failure). Recording the correction keeps the audit trail honest and unblocks the conv family's recipe migration.
+
+**Related artifacts**: `docs/superpowers/plans/2026-07-24-incc-conv-im2col.md` (the design pass with the exact recipe shapes); the 2026-06-20 entry above (G2, whose example this corrects); the 2026-07-16 Op::Scan-Phase-2 + 2026-07-03 entries (G3, the genuine basis extension this is contrasted against).
+
+---
+
 ## See also
 
 - [00-index §Versioning convention](00-index.md#versioning-convention) — when to bump section versions.

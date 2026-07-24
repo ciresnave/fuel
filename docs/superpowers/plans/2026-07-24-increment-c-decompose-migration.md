@@ -22,6 +22,12 @@ the **Slice 3 … SHIPPED** section at the end of this doc) bring the running to
 
 ## Classification (2 mechanical / 11 needs-extension / 4 basis-gap)
 
+> **2026-07-24 correction:** conv2d + conv_transpose_2d are reclassified out of BASIS-GAP into a new
+> "migratable-with-existing-primitives (index-gather im2col)" group below → the true basis-gap count
+> is now **2** (qmatmul, inplace_affine). Every basis-gap count of **4** in the counts/running-totals
+> below (e.g. "4 basis-gap", "12 remain (4 of which are the permanent basis-gap self-returns)")
+> predates this correction and should read **2**.
+
 ### MECHANICAL — migratable with today's grammar (= SLICE 2)
 - **layer_norm_last_dim_backward** — ~20 nodes, elementwise + `MeanDim`/`Unsqueeze`/`BroadcastTo(SameAs 0)`, one `eps` open slot. Structure-preserving; inherits slice-1's parity proof (softmax-bwd idiom + eps-slot idiom). **RISK-A:** `xhat` is shared but carries the eps slot, so emit's slot-free identity-share won't dedup it → recipe emits `xhat` twice (2 eps slots); numerically identical, relies on downstream CSE. Verify CSE collapses or accept redundant compute; may motivate an open-slot subtree-sharing emit extension.
 - **fused_linear** — 3 nodes: `Add(MatMul(a,b), BroadcastTo(WithDim{op:0,axis:LAST,dim:Extent{op:1,LAST}})(bias))`. **First live WithDim driver** (evaluator+routing exist, unexercised — this proves the path end-to-end; it is Fuel-INTERNAL shape resolution, NOT §6.19 wire emission, so it is NOT gated on KISS #86). **RISK-C:** first slice-2 op with a live (non-stub) `canonical_pattern` — the lower→fuse round-trip must stay green.
@@ -35,9 +41,21 @@ the **Slice 3 … SHIPPED** section at the end of this doc) bring the running to
 6. **`Op::Scan` PatternNode form + `scan_placeholder` leaf live-emission + `Op::View`/`output_views` bundle** → **selective_scan** + **ssd_chunk_scan** (twin; identical machinery; do as a pair). G3 is already CLOSED in code (both decompose to `Op::Scan` today).
 7. **Nested-fused references** (a recipe referencing `Op::Fused(SOFTMAX_LAST_DIM…)`) + all above → the attention trio **flash_attn / flash_attn_backward / paged_attn**. Heaviest and last. **RISK-D:** flash_attn's `Some(Sym(k_len))` decode arm is a PERMANENT registry-layer basis gap (no `DynScalar`-length `Slice`/mask inside a `decompose`); migrate the concrete/None arm only, leave the symbolic self-return — the symbolic oracle stays in `fuel_dispatch::decode_flash`.
 
+### MIGRATABLE-WITH-EXISTING-PRIMITIVES via the index-gather im2col idiom (CORRECTION, 2026-07-24)
+> **Reclassified 2026-07-24 (design pass `2026-07-24-incc-conv-im2col`).** conv2d/conv_transpose_2d
+> were originally listed below as BASIS-GAP "need a new PRIMITIVE Op." **That was wrong.** im2col is
+> an overlapping-window *strided gather* (`Op::IndexSelect` over the `Op::Pad`-padded, flattened
+> spatial axis; window→flat-index map from `Op::Iota` + scalar arithmetic + `Op::Cast(U32)`; constant
+> node count — NOT the `N·Hout·Wout` `Slice`/`Concat` soup the old note weighed and correctly
+> rejected); col2im is its scatter-add adjoint (`Op::IndexAdd`/`Op::ScatterAdd` into a `MulScalar(0.0)`
+> zero base, then `Op::Slice` crop); the grouped/batched matmul is `Op::MatMul`'s batched form. All are
+> already in the build-time-closed `Op` basis and re-emittable by `tag_to_op`. **No `Op` variant is
+> added.** So the basis-gap count drops from **4 to 2** — the "4 basis-gap" counts recorded elsewhere
+> in this doc (headers + running totals) are superseded by this correction.
+- **conv2d** → total `PatternNode` recipe: `Pad` → flatten → `IndexSelect` (im2col) → batched `MatMul` → `Reshape` (+broadcast `Add` bias). Gated by a real-backend numerical-parity test (`fuel-conv::conv2d_direct`), NOT the toy f64 interpreter (which doesn't implement `IndexSelect`/`Iota`/`MatMul`/`Pad`). See the `2026-07-24-incc-conv-im2col` plan.
+- **conv_transpose_2d** → total `PatternNode` recipe: `MatMul` → col2im scatter-add (`IndexAdd`) → `Slice` crop. Reuses conv2d's index-gather helper; gated against the native CPU conv_transpose kernel.
+
 ### BASIS-GAP — permanent self-returns, need a new PRIMITIVE Op (NOT a shape constructor; NOT unblocked by Dims/WithDim)
-- **conv2d** → needs `Op::Im2Col` (sliding-window/Unfold).
-- **conv_transpose_2d** → needs `Op::Col2Im`/`Op::Im2Col`.
 - **qmatmul** → needs GGML bit-unpack + byte-reinterpret + block-layout primitives.
 - **inplace_affine** → trivial value (`MulScalar→AddScalar`) but IS its destructive-aliasing contract; needs `Op::AffineInplace{mul,add}` to migrate without dropping the alias semantics.
 
@@ -144,7 +162,9 @@ green.
   ssd_chunk_scan (this Op::Scan work).**
 - Remaining (13): **9 needs-extension** — causal_conv1d, flash_attn, flash_attn_backward,
   fused_softmax_cross_entropy, nf4_matmul, paged_attn, powi_backward, reduce_max_to_backward,
-  rms_norm_last_dim_backward; **4 basis-gap** — conv2d, conv_transpose_2d, qmatmul, inplace_affine.
+  rms_norm_last_dim_backward; **2 basis-gap** — qmatmul, inplace_affine (conv2d + conv_transpose_2d
+  reclassified 2026-07-24 to migratable-with-existing-primitives — index-gather im2col; see the
+  correction under "Classification" above).
 
 The scan pair is the only NEEDS-EXTENSION item closed so far; items 1–5 and 7 (and the 4
 basis-gaps) are untouched by this change.
@@ -259,6 +279,8 @@ red-then-green. **Running total after this slice: 10 of 22 `decompose` migrated 
 `nf4_matmul` (WithDim/Dims live-emission + param threading, C-4); `fused_softmax_cross_entropy`
 (config-branch recipe selection); `selective_scan` + `ssd_chunk_scan` (Op::Scan PatternNode form,
 the scan pair); `flash_attn` / `flash_attn_backward` / `paged_attn` (nested-fused references;
-flash's `Some(Sym(k_len))` decode arm stays a PERMANENT registry-layer basis gap) — plus the 4
-BASIS-GAP self-returns (`conv2d`, `conv_transpose_2d`, `qmatmul`, `inplace_affine`) that stay
-surfaced honest-miss until their new primitive Op lands.
+flash's `Some(Sym(k_len))` decode arm stays a PERMANENT registry-layer basis gap) — plus the 2
+BASIS-GAP self-returns (`qmatmul`, `inplace_affine`) that stay surfaced honest-miss until their new
+primitive Op lands. (`conv2d` + `conv_transpose_2d` were reclassified 2026-07-24 out of BASIS-GAP —
+they migrate via the index-gather im2col recipe with existing primitives; see the "Classification"
+correction above and the `2026-07-24-incc-conv-im2col` plan.)

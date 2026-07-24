@@ -3,18 +3,33 @@
 //!
 //! Provides:
 //! - [`entry`] — the metadata-side `FusedOpEntry` (shape/dtype rules,
-//!   panicking `decompose`, stubbed pattern).
+//!   self-returning `decompose` pending the col2im-recipe migration,
+//!   stubbed pattern).
 //!
-//! ## Architectural note — no primitive decomposition (yet)
+//! ## Architectural note — migrates via a col2im scatter-add recipe (NOT a basis gap)
 //!
-//! Same gap as Conv2D — there is no `Op::Im2Col` (or `Op::Col2Im`)
-//! primitive that could express ConvTranspose2D as a small primitive
-//! subgraph. The textbook "scatter into a strided/padded buffer +
-//! matmul + crop" lowering would produce astronomical node counts on
-//! anything beyond trivial shapes. Backends without a native
-//! ConvTranspose2D kernel route through `GraphExecutor::cpu_fallback`
-//! instead. See the Conv2D registry entry's module docs for the full
-//! discussion of this primitive-set gap.
+//! **Correction (2026-07-24):** the earlier note claimed there is "no
+//! `Op::Im2Col` (or `Op::Col2Im`) primitive that could express
+//! ConvTranspose2D" and that the lowering "would produce astronomical
+//! node counts." **That was wrong** — for the same reason as Conv2D
+//! (see that registry entry's module note). Transposed convolution is
+//! `Op::MatMul` then **col2im (overlap-add)**, which is the adjoint of
+//! im2col's gather = a **scatter-add**: `Op::IndexAdd` / `Op::ScatterAdd`
+//! into a zero-init base (a `MulScalar(0.0)` of a broadcast), then an
+//! `Op::Slice` crop. `IndexAdd`'s `+=` semantics ARE the overlap-add;
+//! `stride` / `output_padding` / `dilation` fold into the scatter-index
+//! map (`Op::Iota` + arithmetic + `Op::Cast(U32)`) and the crop.
+//! Constant node count, only build-time-closed-basis primitives — **no
+//! `Op` variant is added.** So ConvTranspose2D migrates to a total
+//! `PatternNode` recipe like any other Increment-C op. See the Conv2D
+//! module note, the `10-decisions-log.md` 2026-07-24 addendum, and the
+//! `2026-07-24-incc-conv-im2col` plan.
+//!
+//! Until that recipe lands (a follow-up slice on this branch), the
+//! [`decompose`] below **self-returns** (the G2 total + never-panic
+//! fixpoint, a surfaced honest-miss, never a crash); backends without a
+//! native ConvTranspose2D kernel route through
+//! `GraphExecutor::cpu_fallback`.
 //!
 //! The matcher is stubbed for the same reason: ConvTranspose2D nodes
 //! originate from `Tensor::conv_transpose2d` (and from `Conv2D`'s
@@ -103,16 +118,22 @@ fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
     input_dtypes[0]
 }
 
-/// Genuine primitive-basis gap (G2, 2026-06-20). Both textbook lowerings need
-/// a primitive Fuel's closed `Op` basis lacks: (1) col2im / overlap-add —
-/// `matmul(weightᵀ, x)` then fold the overlapping `[Cout·Kh·Kw]` columns back
-/// into `[Cout, Hout, Wout]`, needing an **`Op::Col2Im`**; (2) dilation-as-
-/// stride — scatter `x` into a zero-dilated buffer then run a flipped-kernel
-/// Conv2D, needing **`Op::Im2Col`** (the same gap Conv2D is blocked on). The
-/// `Slice`+`ScatterAdd` synthesis explodes to an `N·Hout·Wout·Kh·Kw` node soup,
-/// so it is not a valid recipe. Per G2 `decompose` is total + never-panic, so
-/// it returns **self** until one of those primitives lands (a surfaced
-/// opaque-op gap, never a crash); backends without a native kernel use
+/// ConvTranspose2D migrates via a col2im (overlap-add) scatter-add recipe built
+/// entirely from existing primitives — it is **NOT** a primitive-basis gap
+/// (correcting the earlier "genuine G2 basis gap, needs `Op::Col2Im`/`Op::Im2Col`"
+/// claim; see the module note and the `10-decisions-log.md` 2026-07-24 addendum).
+/// Transposed conv = `Op::MatMul(weightᵀ-arranged, x)` producing a
+/// `[N, Cout·Kh·Kw, Hin·Win]` column stack, then **col2im** = the adjoint of
+/// im2col's gather = a scatter-add: `Op::IndexAdd` (`+=` IS the overlap-add) into
+/// a zero-init base (`MulScalar(0.0)` of a broadcast), with the scatter-index map
+/// built from `Op::Iota` + arithmetic + `Op::Cast(U32)` (`stride`/`output_padding`/
+/// `dilation` fold into it), then an `Op::Slice` crop to `[N, Cout, Hout, Wout]`.
+/// Node count is constant in the spatial size — the `Slice`+`ScatterAdd` soup the
+/// superseded note weighed was not the only recipe.
+///
+/// Until that recipe migration lands (a follow-up slice on this branch), this
+/// returns **self** — the G2 total + never-panic fixpoint (a surfaced
+/// opaque-op honest-miss, never a crash); backends without a native kernel use
 /// `GraphExecutor::cpu_fallback`.
 pub fn decompose(_graph: &mut Graph, id: NodeId, _params: &FusedOpParams) -> NodeId {
     id
