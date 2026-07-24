@@ -148,6 +148,14 @@ pub struct OpAttrs {
     /// Shape-relative alternative to `target_shape`: the target is another
     /// operand's shape (`SameAs { operand }` over the Bind space). `None` ⇒
     /// use `target_shape` (or not a shape-target node).
+    ///
+    /// **Not every output frame is expressible this way.** A broadcast frame
+    /// assembled by per-axis max across TWO binds (`a[N,1] ⊗ b[1,M] → [N,M]`)
+    /// is carried by NO single operand, so no `SameAs` spelling names it — the
+    /// resolver refuses such a `BroadcastTo` target as a Dims-class gap
+    /// (`RelAttrError::FrameNotExpressible`) rather than silently resolving to
+    /// one operand's PARTIAL frame. The constructor that would express it is
+    /// the reserved [`shape_expr::TAG_DIMS`] entrant (KISS #80).
     pub target_shape_rel: Option<shape_expr::ShapeExpr>,
     /// Shape-relative alternative to `slice_start`: a `DimExpr` over the Bind
     /// space (e.g. rope's `Div(Extent(0, LAST), 2)`). `None` ⇒ use
