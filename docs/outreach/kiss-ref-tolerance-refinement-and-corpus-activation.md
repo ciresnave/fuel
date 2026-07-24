@@ -29,7 +29,7 @@ op nodes, of which `n_exact` are exact-class and the remainder transcendental):
 - The `(n_exact − 1)` exact-rounding term **saturates at 0**, so a lone transcendental
   keeps exactly its own §6.8 ceiling.
 - **Per-op ceilings are read from kiss-ref's OWN API** — `kiss_ops_vocab::Op::ulp_ceiling`
-  at the pinned rev (`1f3981f`; unchanged from `b75a748` — `kiss-ops-vocab` is byte-identical
+  at the pinned rev (`e8ae0b5`; unchanged from `b75a748` — `kiss-ops-vocab` is byte-identical
   across that bump, see §(c)). `Exp` declares `4`. Ops kiss models as non-primitives
   (`Tanh`, `Sigmoid`, `Silu`, `GeluTanh`, `Gelu`, `Rsqrt`) return `None` from `ulp_ceiling`
   (they inherit their decomposition's tolerance); per the refinement's instruction, a mapped
@@ -99,11 +99,18 @@ been hand-rolling to a **first-class** seam — `reference_expr` / `diff_expr` p
 `_f32`/`_f16`/`_bf16` mirrors it minted **for this consumer** — over the same `eval_expr` engine.
 Fuel adopted it:
 
-- **Pin bump `b75a748` → `1f3981f`, in lockstep** across both places that pin kiss-ref —
+- **Pin bump `b75a748` → `e8ae0b5`, in lockstep** across both places that pin kiss-ref —
   `fuel-kiss-ref-backend/Cargo.toml` (the adapter's three crates) and `fuel-dispatch/Cargo.toml`
-  (`kiss-ops-vocab` under `jit`). The bump is inert for Fuel's use: `kiss-ops-vocab` /
-  `kiss-classify-vocab` are byte-unchanged and `resolve.rs` (`eval_expr`) is untouched; the new
-  rev only *adds* the composed-expression mirrors.
+  (`kiss-ops-vocab` under `jit`). The bump is numerically inert for Fuel's use: `kiss-ops-vocab` /
+  `kiss-classify-vocab` are byte-unchanged and `resolve.rs` (`eval_expr`) is untouched; the newer
+  rev *adds* the composed-expression mirrors (target of the migration below) and two changes
+  **outside** Fuel's numeric path — a never-panic `tensor::alloc_exact`/`try_reserve`
+  `ShapeOverflow` hardening (a *strengthening* of the never-panic execution-route contract Fuel
+  links directly: an adversarial shape-derived count on the advisory verify path now surfaces as a
+  typed decline, never a `with_capacity` abort) and an `ldexp` overflow fix (confirmed inert for
+  Fuel — `ldexp` is on no §6.13 exp/pow decomposition and the fix is `is_infinite()`-guarded, a
+  no-op for our bounded `[-0.5, 0.5)` probes). Migration-equivalence oracle tests re-run at
+  `e8ae0b5` confirm no numeric movement.
 - **All four float lanes now delegate** — `reference_region_{f32,f64,f16,bf16}` /
   `diff_region_*` call `kiss_ref_core::reference_expr*` / `diff_expr*` instead of driving
   `eval_expr` row-wise in a local copy of kiss's diff loop. Same engine, so the swap is

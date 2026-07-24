@@ -11,6 +11,6 @@ half = { workspace = true }
 # kiss-ref (private, github.com/ThinkersJournal/kiss-ref) — all three crates from
 # the one workspace repo at a pinned rev. Bump the rev in lockstep. crates.io is
 # deliberately NOT used until kiss-ref is public-ready.
-kiss-ref-core       = { git = "https://github.com/ThinkersJournal/kiss-ref", rev = "1f3981ff25dbdcc9e2fe49ef30f9c584bee5318a" }
-kiss-ops-vocab      = { git = "https://github.com/ThinkersJournal/kiss-ref", rev = "1f3981ff25dbdcc9e2fe49ef30f9c584bee5318a" }
-kiss-classify-vocab = { git = "https://github.com/ThinkersJournal/kiss-ref", rev = "1f3981ff25dbdcc9e2fe49ef30f9c584bee5318a" }
+kiss-ref-core       = { git = "https://github.com/ThinkersJournal/kiss-ref", rev = "e8ae0b58cf420851af003f5134ecea9585c393a5" }
+kiss-ops-vocab      = { git = "https://github.com/ThinkersJournal/kiss-ref", rev = "e8ae0b58cf420851af003f5134ecea9585c393a5" }
+kiss-classify-vocab = { git = "https://github.com/ThinkersJournal/kiss-ref", rev = "e8ae0b58cf420851af003f5134ecea9585c393a5" }

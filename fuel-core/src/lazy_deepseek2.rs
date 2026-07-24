@@ -3123,7 +3123,20 @@ mod tests {
             .forward_with_latent_kv_context_persistent(&[3], &mut cache, &mut ctx, &mut session)
             .expect("decode 1");
         assert!(session.is_some(), "first decode token builds the session");
-        let graph_ptr_1 = Arc::as_ptr(session.as_ref().unwrap().graph());
+        // Clone the graph Arc so the underlying Graph OBJECT stays alive past
+        // the session drop below — otherwise the allocator can recycle its
+        // freed address for the rebuilt session's graph, making the raw-pointer
+        // identity check below spuriously fail (measured 5/40 runs before this
+        // pin; same defect + same fix as the Llama sibling
+        // `forward_with_kv_context_persistent_invalidates_on_non_decode_step`
+        // in lazy.rs). With the allocation pinned, two LIVE Arcs cannot share
+        // an address, so `ptr_1 != ptr_2` means exactly "distinct Graph
+        // objects" — and an actually-retained old graph would still compare
+        // EQUAL, so the assertion is not weakened. Holding this clone does not
+        // affect the drop being tested: `drop_latent_decode_session` does
+        // `session.take()`, which is independent of the graph's refcount.
+        let graph_1_keepalive = session.as_ref().unwrap().graph().clone();
+        let graph_ptr_1 = Arc::as_ptr(&graph_1_keepalive);
 
         // A seq!=1 all-positions step drops the session (fallback to D1).
         let _ = model
@@ -3146,6 +3159,7 @@ mod tests {
             graph_ptr_1 != graph_ptr_2,
             "the rebuilt session must hold a NEW graph, not the dropped one",
         );
+        drop(graph_1_keepalive); // address no longer needs pinning past here
 
         // Byte-exact vs. a fresh D1 run over the identical token history.
         let mut cache_ref = crate::inference_context::LatentKvCache::with_capacity(

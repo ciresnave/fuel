@@ -2056,6 +2056,266 @@ mod tests {
         }
     }
 
+    /// Bit-exact comparison of two `f32` slices (via raw bit patterns), so a
+    /// last-ULP divergence is not masked by `==` and NaNs compare by pattern.
+    fn assert_f32_bits_eq(got: &[f32], want: &[f32], ctx: &str) {
+        assert_eq!(got.len(), want.len(), "{ctx}: length mismatch");
+        for (i, (&g, &w)) in got.iter().zip(want).enumerate() {
+            assert_eq!(
+                g.to_bits(),
+                w.to_bits(),
+                "{ctx}: bit mismatch at {i}: got {g} (0x{:08x}), want {w} (0x{:08x})",
+                g.to_bits(),
+                w.to_bits(),
+            );
+        }
+    }
+
+    /// Assert two positive-`f32` slices agree to within `max_ulp` ULPs. Used
+    /// to document the (migration-orthogonal) 1-ULP gap between a primitive
+    /// `Div` and the fused kernel's reciprocal-multiply.
+    fn assert_f32_within_ulp(got: &[f32], want: &[f32], max_ulp: i64, ctx: &str) {
+        assert_eq!(got.len(), want.len(), "{ctx}: length mismatch");
+        for (i, (&g, &w)) in got.iter().zip(want).enumerate() {
+            let d = (g.to_bits() as i64 - w.to_bits() as i64).abs();
+            assert!(
+                d <= max_ulp,
+                "{ctx}: {d} ULP at {i} (> {max_ulp}): got {g} (0x{:08x}), want {w} (0x{:08x})",
+                g.to_bits(),
+                w.to_bits(),
+            );
+        }
+    }
+
+    /// Real-backend accumulation-order parity for the Increment-C-slice-1
+    /// "shrink-via-swap" reduce spellings (prior-review nit, I3).
+    ///
+    /// The migration parity tests in `fuel-graph`
+    /// (`*_matches_frozen_legacy`) run BOTH the recipe decompose and the
+    /// frozen legacy builder through a shared toy-`f64` reference
+    /// interpreter, so they pin recipe STRUCTURE only and — by construction
+    /// — cannot exercise the concern that the CPU backend's `SumDim`
+    /// (reduction chassis `reduce`) and `ReduceSumTo` (chassis `reduce_to`),
+    /// or `MaxDim` vs `ReduceMaxTo`, might accumulate a last-dim reduction in
+    /// a DIFFERENT order and diverge in `f32`. The recipe swapped
+    /// `ReduceSumTo(keepdim)` → `SumDim(last)`+`Unsqueeze` (and the max
+    /// side likewise), so the two spellings dispatch two DIFFERENT CPU
+    /// reduce kernels.
+    ///
+    /// This realizes both spellings as BARE reduce roots on the ACTUAL CPU
+    /// backend — a bare reduce cannot re-fuse into a `SoftmaxLastDim`
+    /// (no surrounding `Div`/`Exp`), and there is no `SumDim`↔`ReduceSumTo`
+    /// canonicalization, so the two reduce kernels genuinely execute — over
+    /// data engineered so a left-fold and a right-fold `f32` sum DIFFER,
+    /// which gives the bit-exact equality real teeth. Result: bit-exact,
+    /// because both chassis fold every element into its output slot in
+    /// row-major flat order (`reduce`: `for flat in 0..total_input`;
+    /// `reduce_to`: `for in_flat in 0..in_elems`).
+    #[test]
+    fn reduce_swap_sumdim_vs_reducesumto_bit_exact_on_cpu_backend() {
+        let dev = Device::cpu();
+        let (rows, cols) = (2usize, 4usize);
+        // Each row is order-sensitive in f32 (catastrophic cancellation):
+        // its left-fold sum differs from its right-fold sum, so bit-exact
+        // equality of the two spellings is a NON-trivial statement about the
+        // backend's accumulation order.
+        let data: Vec<f32> = vec![
+            1e8, 1.0, -1e8, 1.0,
+            3.0e7, 2.0, -3.0e7, -1.0,
+        ];
+
+        // Independent host references: fold each row left-to-right and
+        // right-to-left in f32. They disagree — the data is adversarial.
+        let mut left_fold = vec![0.0f32; rows];
+        let mut right_fold = vec![0.0f32; rows];
+        for r in 0..rows {
+            let row = &data[r * cols..(r + 1) * cols];
+            let mut acc = 0.0f32;
+            for &v in row.iter() {
+                acc += v;
+            }
+            left_fold[r] = acc;
+            let mut acc_r = 0.0f32;
+            for &v in row.iter().rev() {
+                acc_r += v;
+            }
+            right_fold[r] = acc_r;
+        }
+        assert_ne!(
+            left_fold, right_fold,
+            "test data must be accumulation-order-sensitive so the parity has teeth",
+        );
+
+        let x = LazyTensor::from_f32(data.clone(), Shape::from_dims(&[rows, cols]), &dev);
+        // Recipe spelling: rank-reducing SumDim(last) (chassis `reduce`).
+        let sumdim = x.inner.sum_dim(1);
+        let got_sumdim =
+            crate::pipelined_bridge::realize_one_as::<f32>(&sumdim.graph().clone(), sumdim.id(), &dev)
+                .expect("realize SumDim(last) on CPU");
+        // Legacy spelling: ReduceSumTo(keepdim [rows,1]) (chassis `reduce_to`).
+        let reducesumto = x.inner.reduce_sum_to(Shape::from_dims(&[rows, 1]));
+        let got_reducesumto = crate::pipelined_bridge::realize_one_as::<f32>(
+            &reducesumto.graph().clone(),
+            reducesumto.id(),
+            &dev,
+        )
+        .expect("realize ReduceSumTo(keepdim) on CPU");
+
+        // The load-bearing parity: the two reduce kernels agree bit-exactly.
+        assert_f32_bits_eq(&got_sumdim, &got_reducesumto, "SumDim vs ReduceSumTo");
+        // Correctness + which order: both equal the row-major left-fold (and,
+        // because the data is adversarial, NOT the right-fold).
+        assert_f32_bits_eq(&got_sumdim, &left_fold, "SumDim vs left-fold");
+
+        // Max side: MaxDim(last) (chassis `reduce`) vs ReduceMaxTo(keepdim)
+        // (chassis `reduce_to`). Max is order-independent, but the swap still
+        // dispatches two DIFFERENT CPU kernels; confirm they agree bit-exactly
+        // and equal the per-row maximum.
+        let maxdim = x.inner.max_dim(1);
+        let got_maxdim =
+            crate::pipelined_bridge::realize_one_as::<f32>(&maxdim.graph().clone(), maxdim.id(), &dev)
+                .expect("realize MaxDim(last) on CPU");
+        let reducemaxto = x.inner.reduce_max_to(Shape::from_dims(&[rows, 1]));
+        let got_reducemaxto = crate::pipelined_bridge::realize_one_as::<f32>(
+            &reducemaxto.graph().clone(),
+            reducemaxto.id(),
+            &dev,
+        )
+        .expect("realize ReduceMaxTo(keepdim) on CPU");
+        let row_max: Vec<f32> = (0..rows)
+            .map(|r| data[r * cols..(r + 1) * cols].iter().cloned().fold(f32::NEG_INFINITY, f32::max))
+            .collect();
+        assert_f32_bits_eq(&got_maxdim, &got_reducemaxto, "MaxDim vs ReduceMaxTo");
+        assert_f32_bits_eq(&got_maxdim, &row_max, "MaxDim vs per-row max");
+    }
+
+    /// End-to-end real-backend parity for the migrated `SoftmaxLastDim`
+    /// (Increment C slice 1 pilot, I3). The migration swapped the keepdim
+    /// reduce spelling `ReduceMaxTo`/`ReduceSumTo(keepdim)` →
+    /// `MaxDim`/`SumDim(last)` + `Unsqueeze(append)` (the D3 shrink-via-swap).
+    /// This realizes the WHOLE softmax on the ACTUAL CPU backend two ways and
+    /// asserts the swap is numerically inert:
+    /// * RECIPE path — `lowering_only` lowers the fused node to its recipe
+    ///   (`SumDim`/`MaxDim` spelling) primitive subgraph, then realize it;
+    /// * LEGACY path — the pre-migration `ReduceMaxTo`/`ReduceSumTo` primitive
+    ///   subgraph, hand-built here with the same `Sub`/`Exp`/`Div`.
+    ///
+    /// The two must be BIT-EXACT: `reduce_swap_…` proves `SumDim`≡`ReduceSumTo`
+    /// and `MaxDim`≡`ReduceMaxTo` bit-exactly on the CPU backend, and every
+    /// other node (and the true-`Div` normalize) is identical, so the whole
+    /// pipeline agrees to the bit. (The runtime-fusion pass does NOT re-fuse
+    /// either primitive subgraph back to the `SoftmaxLastDim` kernel — see the
+    /// secondary assertion, which measures the migration-ORTHOGONAL 1-ULP gap
+    /// between the primitive `Div` and the fused kernel's reciprocal-multiply
+    /// `e*(1/sum)`.) Adversarial mixed-magnitude rows make it non-trivial.
+    #[test]
+    fn softmax_last_dim_recipe_decompose_matches_legacy_on_cpu() {
+        let dev = Device::cpu();
+        let (rows, cols) = (3usize, 5usize);
+        let data: Vec<f32> = (0..rows * cols)
+            .map(|i| ((i as f32) * 0.37).sin() * 4.0 - (i as f32) * 0.11)
+            .collect();
+        let shape = || Shape::from_dims(&[rows, cols]);
+        let keepdim = || Shape::from_dims(&[rows, 1]);
+
+        // RECIPE path: lower the fused node to the recipe (SumDim spelling).
+        let recipe = LazyTensor::from_f32(data.clone(), shape(), &dev)
+            .softmax_last_dim()
+            .expect("softmax recipe build");
+        let graph = recipe.inner.graph().clone();
+        let id = recipe.inner.id();
+        let roots = fuel_graph::opt::RuleRegistry::lowering_only().optimize_to_fixpoint(&graph, &[id]);
+        assert_eq!(roots.len(), 1, "lowering keeps a single root");
+        let recipe_out = crate::pipelined_bridge::realize_one_as::<f32>(&graph, roots[0], &dev)
+            .expect("realize recipe-decomposed softmax on CPU");
+
+        // LEGACY path: the pre-migration ReduceMaxTo/ReduceSumTo(keepdim)
+        // spelling, hand-built with identical Sub/Exp/Div.
+        let x = LazyTensor::from_f32(data.clone(), shape(), &dev).inner;
+        let m = x.reduce_max_to(keepdim());
+        let mb = m.broadcast_to(shape());
+        let s = x.sub(&mb);
+        let e = s.exp();
+        let d = e.reduce_sum_to(keepdim());
+        let db = d.broadcast_to(shape());
+        let legacy = e.div(&db);
+        let legacy_out =
+            crate::pipelined_bridge::realize_one_as::<f32>(&legacy.graph().clone(), legacy.id(), &dev)
+                .expect("realize legacy softmax on CPU");
+
+        // PRIMARY: the migration is numerically inert — bit-exact.
+        assert_f32_bits_eq(&recipe_out, &legacy_out, "softmax recipe vs legacy");
+        // Sanity: it is a real softmax (each row sums to ~1).
+        for r in 0..rows {
+            let sum: f32 = recipe_out[r * cols..(r + 1) * cols].iter().sum();
+            assert!((sum - 1.0).abs() < 1e-5, "row {r} softmax sum = {sum}");
+        }
+
+        // SECONDARY (documentation): the fused/production kernel differs by
+        // at most 1 ULP — NOT from the migration but from its reciprocal-
+        // multiply normalize (`e*(1/sum)`) vs the primitive true-`Div`.
+        let fused_out = LazyTensor::from_f32(data.clone(), shape(), &dev)
+            .softmax_last_dim()
+            .expect("softmax fused build")
+            .realize_f32();
+        assert_f32_within_ulp(&recipe_out, &fused_out, 1, "softmax recipe vs fused kernel");
+    }
+
+    /// End-to-end real-backend parity for the migrated `RmsNormLastDim`
+    /// (Increment C slice 1, T7, I3) — the norm counterpart of
+    /// `softmax_last_dim_recipe_decompose_matches_legacy_on_cpu`. Here the D3
+    /// shrink-via-swap replaced the keepdim `Reshape` with `Unsqueeze`
+    /// (append) while the reducing `MeanDim(last)` is UNCHANGED, so the swap
+    /// is metadata-only; the recipe-decompose realize must match a hand-built
+    /// legacy `Reshape`-keepdim subgraph bit-exactly on the CPU backend.
+    #[test]
+    fn rms_norm_last_dim_recipe_decompose_matches_legacy_on_cpu() {
+        let dev = Device::cpu();
+        let (rows, cols) = (3usize, 6usize);
+        let eps = 1e-6f64;
+        let data: Vec<f32> = (0..rows * cols)
+            .map(|i| ((i as f32) * 0.29).cos() * 2.5 + 0.5)
+            .collect();
+        let shape = || Shape::from_dims(&[rows, cols]);
+        let keepdim = || Shape::from_dims(&[rows, 1]);
+
+        // RECIPE path: lower the fused node (MeanDim + Unsqueeze spelling).
+        let recipe = LazyTensor::from_f32(data.clone(), shape(), &dev)
+            .rms_norm_last_dim(eps)
+            .expect("rms_norm recipe build");
+        let graph = recipe.inner.graph().clone();
+        let id = recipe.inner.id();
+        let roots = fuel_graph::opt::RuleRegistry::lowering_only().optimize_to_fixpoint(&graph, &[id]);
+        assert_eq!(roots.len(), 1, "lowering keeps a single root");
+        let recipe_out = crate::pipelined_bridge::realize_one_as::<f32>(&graph, roots[0], &dev)
+            .expect("realize recipe-decomposed rms_norm on CPU");
+
+        // LEGACY path: MeanDim(last) + Reshape-keepdim spelling, same eps and
+        // same true-`Div` normalize.
+        let x = LazyTensor::from_f32(data.clone(), shape(), &dev).inner;
+        let sq = x.sqr();
+        let mean = sq.mean_dim(1);
+        let mean_kd = mean.reshape(keepdim());
+        let denom_sq = mean_kd.add_scalar(eps);
+        let denom = denom_sq.sqrt();
+        let denom_b = denom.broadcast_to(shape());
+        let legacy = x.div(&denom_b);
+        let legacy_out =
+            crate::pipelined_bridge::realize_one_as::<f32>(&legacy.graph().clone(), legacy.id(), &dev)
+                .expect("realize legacy rms_norm on CPU");
+
+        // PRIMARY: the keepdim swap is metadata-only — bit-exact.
+        assert_f32_bits_eq(&recipe_out, &legacy_out, "rms_norm recipe vs legacy");
+
+        // SECONDARY (documentation): the fused kernel's reciprocal-multiply
+        // (`x*rms_inv`) differs from the primitive true-`Div` by ≤1 ULP.
+        let fused_out = LazyTensor::from_f32(data.clone(), shape(), &dev)
+            .rms_norm_last_dim(eps)
+            .expect("rms_norm fused build")
+            .realize_f32();
+        assert_f32_within_ulp(&recipe_out, &fused_out, 1, "rms_norm recipe vs fused kernel");
+    }
+
     /// Recipe principle (G2/G3 — part 1): SelectiveScan is the constitution's
     /// canonical **basis gap** (a higher-order `Scan` primitive). Fuel now HAS
     /// that primitive (`Op::Scan`), so `decompose` lowers to it — closing G3.

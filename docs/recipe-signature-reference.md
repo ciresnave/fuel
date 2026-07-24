@@ -191,7 +191,18 @@ In the as-built `PatternNode` grammar the **only** concrete-recipe leaf is `Bind
 
 At the *graph* `Op` level the leaf/source ops that exist are `Op::Const` (`lib.rs:228`), `Op::Iota { len }` (`lib.rs:238`), and `Op::ScanPlaceholder { role: ScanRole, index }` (`lib.rs:1147-1150`) — but `Op::Const`/`Op::Scan`/`Op::ScanPlaceholder` are *outside* the `OpTag` vocabulary (`op_to_tag` returns `None`, `jit.rs:105`), so they never appear as recipe nodes. `Op::Scan` is a terminal in the base map — it *is* the primitive, no `LoweringRule` matches it (`lib.rs:1131-1137`). The shipped scan-body enums are `ScanEmit { All, Final }` (`lib.rs:1158-1162`) and `ScanRole { Carry, Elem }` (`lib.rs:1167-1171`).
 
-### Pinned (co-designed, not yet in `PatternNode`)
+### Pinned (co-designed) — byte arms SHIPPED, graph wiring not
+
+**Four of the five leaf tokens now have a SHIPPED byte arm** (KISS editor ack, 2026-07-23,
+"RULING RECORD — four-leaf-arm ack" — [KISS #67 comment 5061571967](https://github.com/ThinkersJournal/KISS/issues/67#issuecomment-5061571967)):
+`OpTag::{Const, RuntimeScalar, ReducedCount, ScanPlaceholder}` serialize per §6 of this
+document, with golden-byte tests. What shipped is
+the **wire token + its `op_attrs` body**, nothing more: `jit::op_to_tag` emits none of the four
+and `runtime_fused::tag_to_op` declines all four as honest misses (the `_ => return None`
+arms), so they never appear in a live Fuel recipe. `OpTag::Const` is the KISS **scalar**
+literal leaf and is deliberately NOT wired to `Op::Const` (a constant **tensor** / weight
+leaf) — different concepts sharing a name. Making the leaves first-class `PatternNode` nodes
+is the flat-DAG-CSE recipe interior (Part II §A), still unbuilt.
 
 The co-designed source-op **leaf** vocabulary — a value a recipe needs as an operand is a source-op leaf inside the recipe DAG (`docs/outreach/kiss-rfc-shape-rule-expression-vocabulary.md:51-53`, the `reduce_extent{axis}` leaf, now renamed `reduced_count`, Part II §B). The broader pinned set is `const{bits}` / `iota{axis}` / `runtime_scalar{slot}` / `scan_placeholder{role,index}` / `reduced_count{axes}`, kept under one abstraction `output-shape = f(operand shapes, attrs)` (`kiss-rfc-shape-rule-expression-vocabulary.md:62`). Today Fuel expresses these implicitly (a `Const` operand, an `Iota`, a `Runtime{scalars}` slot) rather than as first-class `PatternNode` leaf variants — the flat-DAG target (Part II §A) adds them as **op tokens**, not schema variants.
 
@@ -278,6 +289,28 @@ Per-op positional arms (`lib.rs:182-242`):
 | `Pad` | `u32(count) ++ (u64 before, u64 after)*count ++ u8(mode) ++ f64(value)` |
 | `AddScalar`/`MulScalar`/`Clamp`/`PowI` | `put_f64_list(scalars)` |
 | `MaskedFill` | `put_f64_list(scalars) ++ put_str(cast_dtype)` |
+| `Const` *(leaf)* | `u64(const_bits)` — dtype-agnostic bits; **MBZ narrow-dtype rule** (storage bits LOW-order, upper bits zero); NaN payload verbatim |
+| `RuntimeScalar` *(leaf)* | `u32(slot_index)` |
+| `ReducedCount` *(leaf)* | `i64(axis)` — the fold row's axis field minus `keepdim` (fold-lockstep, §6.12-0001) |
+| `ScanPlaceholder` *(leaf)* | `u8(role: 0=carry, 1=elem) ++ u32(index)` |
+
+The last four rows are the **source-op leaf arms acked by the KISS editor 2026-07-23**
+— the durable "RULING RECORD — four-leaf-arm ack" at **KISS #67 comment 5061571967**
+([`issuecomment-5061571967`](https://github.com/ThinkersJournal/KISS/issues/67#issuecomment-5061571967),
+acking Fuel's proposal [`issuecomment-5060303085`](https://github.com/ThinkersJournal/KISS/issues/67#issuecomment-5060303085);
+clean, no amendments). They are wire tokens only: `op_to_tag` emits none of them and
+`tag_to_op` declines all four as honest misses (see §4), so they never reach a live Fuel
+recipe yet. Producers widen a narrow const via `const_bits_narrow(storage, width_bits)`.
+
+**Per-carrier width pins — do NOT unify the three framings.** All four leaf bodies ride
+**carrier (a)** — the #67 node-envelope `op_attrs` blob, **`u32`-LE outer** byte length,
+payload verbatim (§6.19-0010) — pinned executably by `leaf_arm_bodies_ride_carrier_a_u32_le`.
+Carrier (a) is a *distinct* framing from **(b)** the KISS-Grammar §6.8-0007 region-node-table
+`op_attrs` sub-block (**`u16`-LE** length; Fuel ships no producer yet — #67-gated) and **(c)**
+the §6.20-0005 shape-expr child length (**`u16`-LE**; `shape_expr.rs` codec, Part II §B). The
+three coexist and are pinned side-by-side by `three_carrier_width_pins_stay_distinct` so a
+future consolidation cannot silently merge an `op_attrs` outer length with a shape-expr child
+length, or an `u32` frame with a `u16` one.
 
 **M-3 caveat** (`lib.rs:174-178`): the `unwrap_or(...)` defaults cannot distinguish an *unset* field from a genuine zero (`axis: None` vs `Some(0)`). Harmless today — forward-serialization only, no decoder, and an op reaching a given arm always has the field set. A future decoder must not round-trip `None`.
 
@@ -410,7 +443,9 @@ Increment C slice 1 built the machinery §A needs and migrated the first-order t
 
 `decompose_via_recipe` (`registry.rs:900`) reads the fused node's inputs as binds, projects scalars, and calls the resolving `emit`; **ANY failure** (wrong-params payload, resolution decline, slot mismatch) returns `id` — the fixpoint, surfaced-gap, never-panic posture the imperative bodies carried (G2). The 5 recipes are **shape- AND rank-polymorphic**: the same static data lowers `softmax_last_dim` correctly at both `[2,4]` and `[3,5,7]` — the thing a `PatternNode` that baked absolute shapes could not do (proven in the polymorphic-decompose tests, `runtime_fused.rs`/`registry/*`).
 
-**Shape-relative interior attrs (D2/D3/D4).** Four optional `OpAttrs` fields carry the shape-relative recipe interior, all `Default`-empty (zero behavior change for existing regions): `target_shape_rel: Option<ShapeExpr>` (`SameAs` over the Bind space), `slice_start_rel`/`slice_len_rel: Option<Dim>` (`DimExpr` over bind shapes), `axis_last: bool` (this op's axis-carrier = its per-tag LAST) — `fuel-kernel-seam-types/src/lib.rs:151-163`. They resolve to concrete `OpAttrs` at emit time via `resolve_rel_attrs(attrs, bind_shapes, child_shapes) -> Result<OpAttrs, RelAttrError>` (`runtime_fused.rs:511`), which **reuses `shape_expr::eval_dim`/`resolve_axis`** (no second evaluator) and returns a typed `RelAttrError` (`runtime_fused.rs:427`) — bind-out-of-range, rel+abs both set, `axis_last` on an axis-less tag, symbolic-bind gap — **never a panic**. `emit` reorders children-first, then resolves, then runs the unchanged `tag_to_op` → `primitive_shape` path; `validate_representable` gained a rel-attr probe (rel XOR abs per field + bind-range checks).
+**Shape-relative interior attrs (D2/D3/D4).** Four optional `OpAttrs` fields carry the shape-relative recipe interior, all `Default`-empty (zero behavior change for existing regions): `target_shape_rel: Option<ShapeExpr>` (`SameAs` over the Bind space), `slice_start_rel`/`slice_len_rel: Option<Dim>` (`DimExpr` over bind shapes), `axis_last: bool` (this op's axis-carrier = its per-tag LAST) — `fuel-kernel-seam-types/src/lib.rs:151-163`. They resolve to concrete `OpAttrs` at emit time via `resolve_rel_attrs(attrs, bind_shapes, child_shapes) -> Result<OpAttrs, RelAttrError>` (`runtime_fused.rs:511`), which **reuses `shape_expr::eval_dim`/`resolve_axis`** (no second evaluator) and returns a typed `RelAttrError` (`runtime_fused.rs:427`) — bind-out-of-range, rel+abs both set, `axis_last` on an axis-less tag, symbolic-bind gap, **frame-not-expressible** (below) — **never a panic**. `emit` reorders children-first, then resolves, then runs the unchanged `tag_to_op` → `primitive_shape` path; `validate_representable` gained a rel-attr probe (rel XOR abs per field + bind-range checks).
+
+**`SameAs` degradation guard — the two-operand max frame (I1, Baracuda's §6.20 finding).** Even an *elementwise* output shape is not always expressible as `SameAs(operand)`: when the region's broadcast frame is assembled by **per-axis max across two binds** (`a[N,1] ⊗ b[1,M] → [N,M]`) **no single operand carries the full frame**, and Fuel's primitive `Mul`/`Add` do not broadcast (`primitive_shape` takes `in[0]`'s shape), so the recipe genuinely has to name `[N,M]`. Accepting the `SameAs` would silently resolve the `BroadcastTo` target to a **partial** frame. `resolve_rel_attrs` therefore refuses it: a `SameAs` target on the frame carrier (`BroadcastTo` — its target *is* the elementwise output shape) is accepted only when **some bind carries the whole frame**; otherwise it declines `RelAttrError::FrameNotExpressible { field, frame, missing_ctor }` — a surfaced **Dims-class gap**, `missing_ctor = TAG_DIMS` (`0x0B`), the reserved §6.20-0002 extension-registry constructor that *would* express it (proposal filed **KISS #80**). The guard is deliberately narrow: it fires only when a joint frame exists and no bind equals it, so sub-frame broadcasts (bind1 `[T,D]` inside a `[B,T,D]` region) and frame-less regions (matmul binds, mutually broadcast-incompatible) are untouched, and non-frame tags (`Reshape`/`ReduceSumTo`/`ReduceMaxTo`) are out of scope. All 5 migrated recipes are safe by construction (their `SameAs` target is bind 0, which carries the frame) — this is a **latent** guard, not a live-bug fix. Pinned by `two_operand_max_frame_declines_instead_of_a_partial_shape` / `frame_guard_does_not_fire_when_an_operand_carries_the_frame` / `two_operand_max_frame_region_declines_through_emit` (`runtime_fused.rs`).
 
 **The rel fields are deliberately NOT serialized this slice (D2).** `to_canonical_bytes` serializes only the concrete fields; the pin is executable in `rel_attr_fields_are_absent_from_the_6_19_wire` (`lib.rs:571`) — the §6.19 `broadcast_to`/`slice` arms stay ABSOLUTE and the node-envelope framing that would carry a relative alternative is KISS #67-gated (propose-first).
 
