@@ -1954,6 +1954,43 @@ mod tests {
     }
 
     /// FROZEN copy of the pre-migration imperative
+    /// `registry::fused_linear::decompose` (the legacy 3-node `MatMul` +
+    /// `BroadcastTo(rank-1 bias)` + `Add` spelling, broadcasting the rank-1
+    /// bias DIRECTLY with no leading-1 pad), copied VERBATIM from that module @
+    /// `b967bdb1` before slice-2 replaced the live body with the WithDim data
+    /// recipe. Sole consumer: the slice-2 numeric-parity oracle
+    /// (`fused_linear_recipe` below). Reads `inputs = [a, b, bias]` + the
+    /// matmul output shape off the node.
+    fn frozen_legacy_fused_linear_decompose(
+        graph: &mut Graph,
+        id: NodeId,
+        _params: &FusedOpParams,
+    ) -> NodeId {
+        let (a_id, b_id, bias_id, out_shape, dtype) = {
+            let n = graph.node(id);
+            (n.inputs[0], n.inputs[1], n.inputs[2], n.shape.clone(), n.dtype)
+        };
+        let mm_id = graph.push(Node {
+            op:     Op::MatMul,
+            inputs: vec![a_id, b_id],
+            shape:  out_shape.clone(),
+            dtype,
+        });
+        let bias_bcst_id = graph.push(Node {
+            op:     Op::BroadcastTo(out_shape.clone()),
+            inputs: vec![bias_id],
+            shape:  out_shape.clone(),
+            dtype,
+        });
+        graph.push(Node {
+            op:     Op::Add,
+            inputs: vec![mm_id, bias_bcst_id],
+            shape:  out_shape,
+            dtype,
+        })
+    }
+
+    /// FROZEN copy of the pre-migration imperative
     /// `registry::softmax_last_dim_backward::decompose` (the legacy 5-node
     /// `Mul`/`ReduceSumTo(keepdim)`/`BroadcastTo`/`Sub`/`Mul` spelling), copied
     /// VERBATIM from that module @ `aa2eee3c` before T8 replaced the live body
@@ -4140,6 +4177,242 @@ mod tests {
             let (_x, _up, fused) = ln_backward_fused_node(&mut g, &[2, 4], 1e-5);
             let before = g.len();
             let out = layer_norm_last_dim_backward::decompose(&mut g, fused, &FusedOpParams::Rope);
+            assert_eq!(out, fused, "wrong params ⇒ typed decline ⇒ fixpoint");
+            assert_eq!(g.len(), before, "declined before any emission");
+        }
+    }
+
+    // fused_linear migration (Increment C slice 2, S2-2) ----------------------
+    //
+    // The 3-node imperative `Add(MatMul(a, b), BroadcastTo(rank-1 bias))`
+    // becomes a portable `PatternNode` DATA recipe, and the FIRST recipe to
+    // drive `WithDim` through live emit: the bias broadcast targets
+    // `WithDim { operand: 0, axis: LAST, dim: Extent { operand: 1, axis: LAST } }`
+    // — a's shape with its LAST axis (K) replaced by b's LAST extent (N) = the
+    // matmul output `[..batch, M, N]`. This is Fuel-INTERNAL shape resolution
+    // (not §6.19 wire emission), so it is NOT gated on KISS #86. Binds:
+    // `0 = a`, `1 = b`, `2 = bias`. The rank-1 bias rank-raises to the matmul
+    // output, so emit materializes a leading-1 pad `Reshape` (D4) the imperative
+    // body never had — the numeric-parity oracle below runs both sides through a
+    // toy interpreter (Reshape = metadata passthrough) to isolate it. The
+    // `canonical_pattern` see-through of that pad (RISK-C) + the lower→fuse
+    // round-trip live in `registry/fused_linear.rs`'s own tests.
+    mod fused_linear_recipe {
+        use super::super::*;
+        use super::frozen_legacy_fused_linear_decompose;
+        use crate::registry::{FusedOps, fused_linear};
+        use fuel_ir::{DType, Shape};
+        use std::collections::HashMap;
+
+        /// Right-aligned NumPy broadcast of `input` (shape `in_shape`) to
+        /// `target` — a size-1 or padded leading dim contributes stride 0.
+        /// General on purpose: fused_linear's bias broadcast tiles along the
+        /// LEADING `M`/batch dims (`[1,N] → [M,N]`), unlike the norm recipes'
+        /// last-dim keepdim repeat.
+        fn broadcast(input: &[f64], in_shape: &[usize], target: &[usize]) -> Vec<f64> {
+            let rank = target.len();
+            let pad = rank - in_shape.len();
+            let mut real_strides = vec![0isize; in_shape.len()];
+            let mut s = 1isize;
+            for i in (0..in_shape.len()).rev() {
+                real_strides[i] = s;
+                s *= in_shape[i] as isize;
+            }
+            let mut in_strides = vec![0isize; rank];
+            for (i, stride) in in_strides.iter_mut().enumerate() {
+                if i >= pad {
+                    let id = i - pad;
+                    *stride = if in_shape[id] == 1 { 0 } else { real_strides[id] };
+                }
+            }
+            let out_n: usize = target.iter().product();
+            let mut out = Vec::with_capacity(out_n);
+            let mut idx = vec![0usize; rank];
+            for _ in 0..out_n {
+                let fi: isize = (0..rank).map(|i| idx[i] as isize * in_strides[i]).sum();
+                out.push(input[fi as usize]);
+                for i in (0..rank).rev() {
+                    idx[i] += 1;
+                    if idx[i] < target[i] {
+                        break;
+                    }
+                    idx[i] = 0;
+                }
+            }
+            out
+        }
+
+        /// Deterministic batched f64 matmul `a[..batch, M, K] · b[..batch, K, N]`
+        /// (same-rank ≥ 2, aligned batch). BOTH parity sides share the SAME
+        /// `MatMul(a, b)` binds, so identical accumulation order ⇒ identical
+        /// bits.
+        fn matmul(a: &[f64], ash: &[usize], b: &[f64], bsh: &[usize]) -> Vec<f64> {
+            let r = ash.len();
+            let (m, k, n) = (ash[r - 2], ash[r - 1], bsh[r - 1]);
+            let batch: usize = ash[..r - 2].iter().product();
+            let (a_bs, b_bs, o_bs) = (m * k, k * n, m * n);
+            let mut out = vec![0.0f64; batch * o_bs];
+            for bi in 0..batch {
+                for i in 0..m {
+                    for j in 0..n {
+                        let mut acc = 0.0f64;
+                        for kk in 0..k {
+                            acc += a[bi * a_bs + i * k + kk] * b[bi * b_bs + kk * n + j];
+                        }
+                        out[bi * o_bs + i * n + j] = acc;
+                    }
+                }
+            }
+            out
+        }
+
+        /// Tiny f64 reference interpreter over the fused-linear primitive
+        /// vocabulary (leaf-lookup FIRST, then `MatMul`, metadata-only
+        /// `Reshape` pad, right-aligned `BroadcastTo`, elementwise `Add`). BOTH
+        /// parity sides run through it with identical arithmetic, so a bit-exact
+        /// assert isolates recipe STRUCTURE — the D4 pad `Reshape` (recipe only)
+        /// is a passthrough here.
+        fn eval_fl(g: &Graph, id: NodeId, leaves: &HashMap<NodeId, Vec<f64>>) -> Vec<f64> {
+            if let Some(v) = leaves.get(&id) {
+                return v.clone();
+            }
+            let node = g.node(id);
+            match &node.op {
+                Op::MatMul => {
+                    let a = eval_fl(g, node.inputs[0], leaves);
+                    let b = eval_fl(g, node.inputs[1], leaves);
+                    let ash: Vec<usize> = g.node(node.inputs[0]).shape.dims().to_vec();
+                    let bsh: Vec<usize> = g.node(node.inputs[1]).shape.dims().to_vec();
+                    matmul(&a, &ash, &b, &bsh)
+                }
+                // Metadata-only leading-1 pad (recipe's D4) — values unchanged.
+                Op::Reshape(_) => eval_fl(g, node.inputs[0], leaves),
+                Op::BroadcastTo(target) => {
+                    let input = eval_fl(g, node.inputs[0], leaves);
+                    let in_shape: Vec<usize> = g.node(node.inputs[0]).shape.dims().to_vec();
+                    broadcast(&input, &in_shape, target.dims())
+                }
+                Op::Add => {
+                    let a = eval_fl(g, node.inputs[0], leaves);
+                    let b = eval_fl(g, node.inputs[1], leaves);
+                    a.iter().zip(&b).map(|(x, y)| x + y).collect()
+                }
+                other => panic!("eval_fl: unhandled op {other:?}"),
+            }
+        }
+
+        /// Build a fused FusedLinear node over `a [a_dims]`, `b [b_dims]`, and a
+        /// rank-1 `bias [N]` (N = b's last dim). Returns `(a, b, bias, fused)`.
+        fn fused_linear_fused_node(
+            g: &mut Graph,
+            a_dims: &[usize],
+            b_dims: &[usize],
+        ) -> (NodeId, NodeId, NodeId, NodeId) {
+            let ar = a_dims.len();
+            let n = b_dims[b_dims.len() - 1];
+            let mut out_dims = a_dims[..ar - 2].to_vec();
+            out_dims.push(a_dims[ar - 2]);
+            out_dims.push(n);
+            let a = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(a_dims), dtype: DType::F32 });
+            let b = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(b_dims), dtype: DType::F32 });
+            let bias = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[n]), dtype: DType::F32 });
+            let fused = g.push(Node {
+                op: Op::Fused(FusedOps::FUSED_LINEAR, FusedOpParams::FusedLinear),
+                inputs: vec![a, b, bias],
+                shape: Shape::from_dims(&out_dims),
+                dtype: DType::F32,
+            });
+            (a, b, bias, fused)
+        }
+
+        /// S2-2 (a): ONE recipe datum decomposes at BOTH rank-2 and rank-3
+        /// (batched) activations — the WithDim-derived broadcast target tracks
+        /// the matmul output shape — and its numerics match the FROZEN legacy
+        /// builder bit-exactly under the shared reference interpreter.
+        #[test]
+        fn fused_linear_recipe_decompose_is_polymorphic_and_matches_frozen_legacy() {
+            for (a_dims, b_dims) in [
+                (vec![2usize, 3], vec![3usize, 4]),
+                (vec![2, 2, 3], vec![2, 3, 4]),
+            ] {
+                let mut g = Graph::new();
+                let (a, b, bias, fused) = fused_linear_fused_node(&mut g, &a_dims, &b_dims);
+                let out_sh = g.node(fused).shape.clone();
+                let new_root = fused_linear::decompose(&mut g, fused, &FusedOpParams::FusedLinear);
+                assert_ne!(new_root, fused, "recipe decompose fires at a={a_dims:?}");
+                assert_eq!(g.node(new_root).shape, out_sh, "output = matmul output shape");
+                assert_eq!(g.node(new_root).dtype, DType::F32);
+
+                let legacy_root =
+                    frozen_legacy_fused_linear_decompose(&mut g, fused, &FusedOpParams::FusedLinear);
+
+                let an: usize = a_dims.iter().product();
+                let bn: usize = b_dims.iter().product();
+                let bias_n = b_dims[b_dims.len() - 1];
+                let a_data: Vec<f64> =
+                    (0..an).map(|i| ((i as f64) * 0.31).sin() * 1.5 - 0.2).collect();
+                let b_data: Vec<f64> =
+                    (0..bn).map(|i| ((i as f64) * 0.47).cos() * 0.8 + 0.1).collect();
+                let bias_data: Vec<f64> =
+                    (0..bias_n).map(|i| ((i as f64) * 0.7).sin() * 2.0).collect();
+                let mut leaves = HashMap::new();
+                leaves.insert(a, a_data);
+                leaves.insert(b, b_data);
+                leaves.insert(bias, bias_data);
+                let got = eval_fl(&g, new_root, &leaves);
+                let want = eval_fl(&g, legacy_root, &leaves);
+                assert_eq!(got.len(), want.len());
+                for (i, (x, y)) in got.iter().zip(want.iter()).enumerate() {
+                    assert_eq!(
+                        x.to_bits(),
+                        y.to_bits(),
+                        "fused_linear[{i}] a={a_dims:?}: recipe={x} vs legacy={y}",
+                    );
+                }
+            }
+        }
+
+        /// S2-2 (structural, born-red): the WithDim-derived broadcast target
+        /// rank-raises the rank-1 bias to the matmul output `[M,N]`, so emit
+        /// materializes exactly one leading-1 pad `Reshape` (the D4 path, driven
+        /// LIVE by WithDim). The imperative body broadcast the rank-1 bias
+        /// directly (zero Reshape) — so this is RED until migration. The bias
+        /// broadcast target equals the matmul output shape.
+        #[test]
+        fn fused_linear_recipe_drives_withdim_broadcast_with_a_d4_pad() {
+            let mut g = Graph::new();
+            let (_a, _b, _bias, fused) = fused_linear_fused_node(&mut g, &[2, 3], &[3, 4]);
+            let root = fused_linear::decompose(&mut g, fused, &FusedOpParams::FusedLinear);
+            assert_ne!(root, fused, "recipe decompose fires");
+            assert!(matches!(g.node(root).op, Op::Add), "root is Add(mm, bias_bcst)");
+            let reachable = crate::topo_order_multi(&g, &[root]);
+            let reshapes = reachable
+                .iter()
+                .filter(|&&n| matches!(g.node(n).op, Op::Reshape(_)))
+                .count();
+            assert_eq!(
+                reshapes, 1,
+                "WithDim rank-raise materializes exactly one D4 pad Reshape on the bias",
+            );
+            let bcst = reachable
+                .iter()
+                .find(|&&n| matches!(g.node(n).op, Op::BroadcastTo(_)))
+                .expect("bias broadcast present");
+            assert_eq!(
+                g.node(*bcst).shape.dims(),
+                &[2, 4],
+                "bias broadcast target = the matmul output shape (WithDim resolved)",
+            );
+        }
+
+        /// S2-2 (totality): a wrong params payload is a typed decline surfaced
+        /// as a fixpoint (G2), never a panic, declining BEFORE any emission.
+        #[test]
+        fn fused_linear_recipe_wrong_params_is_a_fixpoint_not_a_crash() {
+            let mut g = Graph::new();
+            let (_a, _b, _bias, fused) = fused_linear_fused_node(&mut g, &[2, 3], &[3, 4]);
+            let before = g.len();
+            let out = fused_linear::decompose(&mut g, fused, &FusedOpParams::Rope);
             assert_eq!(out, fused, "wrong params ⇒ typed decline ⇒ fixpoint");
             assert_eq!(g.len(), before, "declined before any emission");
         }
