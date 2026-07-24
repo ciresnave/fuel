@@ -343,6 +343,24 @@ pub struct OpAttrs {
     /// this projection reads. Fuel-internal (not on the §6.19 wire). `None` ⇒
     /// not a view node.
     pub view_slot: Option<u32>,
+
+    // --- rank-0 shape-target marker (Increment C, C-T1) ---------------------
+    //
+    /// Marks an INTENTIONAL rank-0 (`[]`, scalar) target on a shape-target op
+    /// (`ReduceSumTo`/`ReduceMaxTo`/`Reshape`/`BroadcastTo`). A rank-0 shape has
+    /// ZERO dims, so its `target_shape` is empty — the SAME empty state a
+    /// wildcard / non-shape-target node carries — leaving the two
+    /// indistinguishable in memory. `true` ⇒ the empty `target_shape` denotes
+    /// the concrete rank-0 shape `[]` (a reduce-to-scalar loss tail, e.g. FSCE's
+    /// `ReduceSumTo([])`); `false` (the default) ⇒ empty `target_shape` is unset
+    /// / a matcher wildcard. Reusable for every future reduce-to-scalar loss.
+    ///
+    /// **Fuel-INTERNAL, off the §6.19 wire.** The wire already encodes a rank-0
+    /// target correctly as a 0-length `target_shape` i64 list
+    /// (`put_i64_list(&[])`), so `to_canonical_bytes` needs no new byte — this
+    /// marker only disambiguates the in-memory wildcard-vs-rank-0 overload that
+    /// the recipe emitter (`fuel_graph::runtime_fused::shape_from_attr`) reads.
+    pub rank0_target: bool,
 }
 
 // --- §6.19-shaped canonical positional-blob serialization (Convergence Increment A) ---
