@@ -520,7 +520,8 @@ Per-op `body` field order (all little-endian; lists are `u32` count then element
 
 **The four source-op LEAF arms** (`Const` / `RuntimeScalar` / `ReducedCount` /
 `ScanPlaceholder`) were **acked by the KISS editor on 2026-07-23** ("RULING RECORD —
-four-leaf-arm ack", acking Fuel's proposal of the same day; clean, no amendments) and are
+four-leaf-arm ack" — KISS #67 comment 5061571967, `github.com/ThinkersJournal/KISS/issues/67#issuecomment-5061571967`,
+acking Fuel's proposal comment 5060303085 of the same day; clean, no amendments) and are
 **SHIPPED** in `OpAttrs::to_canonical_bytes` with golden-byte tests. A value a recipe needs
 as an operand is a **childless `Op`** — a source op — so the node schema stays closed to
 two kinds (`Op | Bind`) instead of growing a schema variant per value kind. Notes that ride

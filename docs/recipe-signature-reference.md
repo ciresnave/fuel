@@ -194,8 +194,9 @@ At the *graph* `Op` level the leaf/source ops that exist are `Op::Const` (`lib.r
 ### Pinned (co-designed) — byte arms SHIPPED, graph wiring not
 
 **Four of the five leaf tokens now have a SHIPPED byte arm** (KISS editor ack, 2026-07-23,
-"RULING RECORD — four-leaf-arm ack"): `OpTag::{Const, RuntimeScalar, ReducedCount,
-ScanPlaceholder}` serialize per §6 of this document, with golden-byte tests. What shipped is
+"RULING RECORD — four-leaf-arm ack" — [KISS #67 comment 5061571967](https://github.com/ThinkersJournal/KISS/issues/67#issuecomment-5061571967)):
+`OpTag::{Const, RuntimeScalar, ReducedCount, ScanPlaceholder}` serialize per §6 of this
+document, with golden-byte tests. What shipped is
 the **wire token + its `op_attrs` body**, nothing more: `jit::op_to_tag` emits none of the four
 and `runtime_fused::tag_to_op` declines all four as honest misses (the `_ => return None`
 arms), so they never appear in a live Fuel recipe. `OpTag::Const` is the KISS **scalar**
@@ -294,11 +295,22 @@ Per-op positional arms (`lib.rs:182-242`):
 | `ScanPlaceholder` *(leaf)* | `u8(role: 0=carry, 1=elem) ++ u32(index)` |
 
 The last four rows are the **source-op leaf arms acked by the KISS editor 2026-07-23**
-("RULING RECORD — four-leaf-arm ack"; clean, no amendments). They are wire tokens only:
-`op_to_tag` emits none of them and `tag_to_op` declines all four as honest misses (see §4),
-so they never reach a live Fuel recipe yet. Producers widen a narrow const via
-`const_bits_narrow(storage, width_bits)`. All four bodies ride carrier (a) (`u32`-LE outer),
-pinned by `leaf_arm_bodies_ride_carrier_a_u32_le`.
+— the durable "RULING RECORD — four-leaf-arm ack" at **KISS #67 comment 5061571967**
+([`issuecomment-5061571967`](https://github.com/ThinkersJournal/KISS/issues/67#issuecomment-5061571967),
+acking Fuel's proposal [`issuecomment-5060303085`](https://github.com/ThinkersJournal/KISS/issues/67#issuecomment-5060303085);
+clean, no amendments). They are wire tokens only: `op_to_tag` emits none of them and
+`tag_to_op` declines all four as honest misses (see §4), so they never reach a live Fuel
+recipe yet. Producers widen a narrow const via `const_bits_narrow(storage, width_bits)`.
+
+**Per-carrier width pins — do NOT unify the three framings.** All four leaf bodies ride
+**carrier (a)** — the #67 node-envelope `op_attrs` blob, **`u32`-LE outer** byte length,
+payload verbatim (§6.19-0010) — pinned executably by `leaf_arm_bodies_ride_carrier_a_u32_le`.
+Carrier (a) is a *distinct* framing from **(b)** the KISS-Grammar §6.8-0007 region-node-table
+`op_attrs` sub-block (**`u16`-LE** length; Fuel ships no producer yet — #67-gated) and **(c)**
+the §6.20-0005 shape-expr child length (**`u16`-LE**; `shape_expr.rs` codec, Part II §B). The
+three coexist and are pinned side-by-side by `three_carrier_width_pins_stay_distinct` so a
+future consolidation cannot silently merge an `op_attrs` outer length with a shape-expr child
+length, or an `u32` frame with a `u16` one.
 
 **M-3 caveat** (`lib.rs:174-178`): the `unwrap_or(...)` defaults cannot distinguish an *unset* field from a genuine zero (`axis: None` vs `Some(0)`). Harmless today — forward-serialization only, no decoder, and an op reaching a given arm always has the field set. A future decoder must not round-trip `None`.
 
