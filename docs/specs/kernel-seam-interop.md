@@ -512,10 +512,50 @@ Per-op `body` field order (all little-endian; lists are `u32` count then element
 | `Pad` | `amounts`: `u32` count then `(before:u64, after:u64)` pairs; `mode: u8`; `value: f64` |
 | `AddScalar` / `MulScalar` / `Clamp` / `PowI` | `scalars`: `f64` list |
 | `MaskedFill` | `scalars`: `f64` list; `dtype_name`: length-prefixed UTF-8 |
+| `Const` *(leaf)* | `bits: u64` |
+| `RuntimeScalar` *(leaf)* | `slot_index: u32` |
+| `ReducedCount` *(leaf)* | `axis: i64` |
+| `ScanPlaceholder` *(leaf)* | `role: u8` (0 = carry, 1 = elem); `index: u32` |
 | all others (empty schema) | *(empty)* → `[0,0,0,0]` |
 
-The `scan` / `scan_placeholder` / `runtime_scalar` / `reduced_count` / `extent` tokens Fuel
-proposed or adopted are higher-order / leaf ops handled outside this first-order `OpAttrs` set.
+**The four source-op LEAF arms** (`Const` / `RuntimeScalar` / `ReducedCount` /
+`ScanPlaceholder`) were **acked by the KISS editor on 2026-07-23** ("RULING RECORD —
+four-leaf-arm ack", acking Fuel's proposal of the same day; clean, no amendments) and are
+**SHIPPED** in `OpAttrs::to_canonical_bytes` with golden-byte tests. A value a recipe needs
+as an operand is a **childless `Op`** — a source op — so the node schema stays closed to
+two kinds (`Op | Bind`) instead of growing a schema variant per value kind. Notes that ride
+with the arms:
+
+- **`const` → `u64(bits)` is dtype-agnostic** (the structural DAG carries no dtype).
+  **MBZ narrow-dtype rule:** a sub-64-bit dtype places its **storage** bit pattern in the
+  **LOW-order** bits with the upper bits **ZERO** (must-be-zero on read) — e.g. `f32` `1.5`
+  = `0x0000_0000_3FC0_0000`, `f16` `1.5` = `0x0000_0000_0000_3E00`. A **NaN payload is
+  carried verbatim**; the serializer never quiets or canonicalizes it. Producers widen via
+  `const_bits_narrow(storage, width_bits)` (pure, never-panic).
+- **`const` and `runtime_scalar` are distinct leaves** — a baked value and an unfilled
+  dispatch slot are not interchangeable.
+- **`reduced_count` → `i64(axis)` is the fold's axis field byte-identical minus `keepdim`**
+  (see the `reduced_count{axes}` note below); it grows to a `reduce_axes` list ONLY in
+  lockstep with the fold (§6.12-0001).
+- **Carrier discipline.** Every leaf body rides **carrier (a)** — the #67 node-envelope
+  `op_attrs` blob, `u32`-LE outer length, payload verbatim (§6.19-0010). Not carrier (b)
+  (KISS-Grammar §6.8-0007 region-node-table `op_attrs`, `u16`-LE), not carrier (c)
+  (§6.20-0005 shape-expr child length, `u16`-LE). Pinned executably by
+  `leaf_arm_bodies_ride_carrier_a_u32_le`, alongside `three_carrier_width_pins_stay_distinct`.
+- **Wire tokens only — no Fuel graph producer yet (honest scope).** `jit::op_to_tag` emits
+  none of the four and `runtime_fused::tag_to_op` declines all four as honest misses. Fuel
+  expresses these values implicitly today: an `Op::Const` **tensor** operand (*not* the
+  `const` scalar leaf), a `Runtime { scalars }` slot on the **consuming** op,
+  `Op::ScanPlaceholder` inside `Op::Scan`'s body, and Mean's divisor folded into
+  `Op::MeanDim`. Making them first-class recipe leaves is the flat-DAG-CSE recipe interior,
+  still unbuilt.
+- **No decoder.** Carrier (a) is forward-serialization only (the `M-3` note on
+  `to_canonical_bytes`); these arms add no decode path, so the NaN-payload round-trip is
+  pinned as an in-test byte read, never a claimed decoder.
+
+The `scan` node itself (`{n_xs, bound, emit, has_early_exit}`) is a **higher-order** op, not
+a leaf, and its body arm is still outside this first-order `OpAttrs` set. `extent` is a
+**shape**-side token spelled by `DimExpr::Extent` on carrier (c), never a recipe leaf.
 
 **`reduced_count{axes}` — the Mean-divisor source-op leaf** (pinned 2026-07-18 as
 `reduce_extent`; **RENAMED 2026-07-19** to KISS §6.12-0001's pre-existing canonical
