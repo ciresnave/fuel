@@ -2459,6 +2459,48 @@ mod tests {
     }
 
     /// FROZEN copy of the pre-migration imperative
+    /// `registry::powi_backward::decompose` (the legacy 3-node
+    /// `PowI(exp-1)`→`MulScalar(exp)`→`Mul` spelling), copied VERBATIM from that
+    /// module before A3 replaced the live body with the param-derived data
+    /// recipe. Sole consumer: the A3 numeric-parity oracle (`powi_backward_recipe`
+    /// below). Reads `inputs[0] = x` and `inputs[1] = up` (the upstream gradient)
+    /// off the node — the order autograd emits — plus the output shape/dtype;
+    /// `exp` rides the params.
+    fn frozen_legacy_powi_backward_decompose(
+        graph: &mut Graph,
+        id: NodeId,
+        params: &FusedOpParams,
+    ) -> NodeId {
+        let (x_id, up_id, shape, dtype) = {
+            let n = graph.node(id);
+            (n.inputs[0], n.inputs[1], n.shape.clone(), n.dtype)
+        };
+        let exp = match params {
+            FusedOpParams::PowIBackward { exp } => *exp,
+            // G2: total + never-panic — impossible params; return self.
+            _ => return id,
+        };
+        let pow = graph.push(Node {
+            op: Op::PowI(exp - 1),
+            inputs: vec![x_id],
+            shape: shape.clone(),
+            dtype,
+        });
+        let scaled = graph.push(Node {
+            op: Op::MulScalar(exp as f64),
+            inputs: vec![pow],
+            shape: shape.clone(),
+            dtype,
+        });
+        graph.push(Node {
+            op: Op::Mul,
+            inputs: vec![scaled, up_id],
+            shape,
+            dtype,
+        })
+    }
+
+    /// FROZEN copy of the pre-migration imperative
     /// `registry::fused_linear::decompose` (the legacy 3-node `MatMul` +
     /// `BroadcastTo(rank-1 bias)` + `Add` spelling, broadcasting the rank-1
     /// bias DIRECTLY with no leading-1 pad), copied VERBATIM from that module @
@@ -5378,6 +5420,182 @@ mod tests {
             let (_x, _up, fused) = rmb_fused_node(&mut g, &[2, 4], &[2, 1]);
             let before = g.len();
             let out = reduce_max_to_backward::decompose(&mut g, fused, &FusedOpParams::Rope);
+            assert_eq!(out, fused, "wrong params ⇒ typed decline ⇒ fixpoint");
+            assert_eq!(g.len(), before, "declined before any emission");
+        }
+    }
+
+    // powi_backward migration (Increment C carriers, A3) ----------------------
+    //
+    // The 3-node imperative closed-form gradient `grad_x = exp · x^(exp-1) ·
+    // upstream` (PowI(exp-1)→MulScalar(exp)→Mul) becomes a portable `PatternNode`
+    // DATA recipe, and the FIRST recipe to carry a `PowI` — driven LIVE by the A3
+    // i32-exponent re-emit carrier (the exponent rides scalars[0]) — and the first
+    // whose STRUCTURE is param-derived (both `exp` and `exp-1` are constant-folded
+    // into the datum at build time, the minimal "param-derived const in the
+    // recipe" C-4 posture, NOT a restructure to dodge the missing thread). A
+    // DIRECT structural mirror (no D3 keepdim swap, no D4 pad), so the parity
+    // oracle runs both sides through a toy f64 interpreter and asserts BIT-EXACT
+    // structure across ranks AND exponents. Binds: `0 = x`, `1 = up`.
+    mod powi_backward_recipe {
+        use super::super::*;
+        use super::frozen_legacy_powi_backward_decompose;
+        use crate::registry::{FusedOps, powi_backward};
+        use fuel_ir::{DType, Shape};
+        use std::collections::HashMap;
+
+        /// Tiny f64 reference interpreter over the powi-backward primitive
+        /// vocabulary (leaf-lookup FIRST, then elementwise `Mul`, `MulScalar`,
+        /// and integer-power `PowI` via `f64::powi`). BOTH parity sides run
+        /// through it with identical in-order arithmetic, so a bit-exact assert
+        /// isolates recipe STRUCTURE — the exponent transported by the A3 carrier
+        /// and the baked `MulScalar`. `x` and `up` are the same shape (`PowI` is
+        /// elementwise), so every op is a flat elementwise map.
+        fn eval_pb(g: &Graph, id: NodeId, leaves: &HashMap<NodeId, Vec<f64>>) -> Vec<f64> {
+            if let Some(v) = leaves.get(&id) {
+                return v.clone();
+            }
+            let node = g.node(id);
+            match &node.op {
+                Op::Mul => {
+                    let a = eval_pb(g, node.inputs[0], leaves);
+                    let b = eval_pb(g, node.inputs[1], leaves);
+                    a.iter().zip(&b).map(|(x, y)| x * y).collect()
+                }
+                Op::MulScalar(m) => {
+                    eval_pb(g, node.inputs[0], leaves).iter().map(|v| v * m).collect()
+                }
+                Op::PowI(n) => {
+                    eval_pb(g, node.inputs[0], leaves).iter().map(|v| v.powi(*n)).collect()
+                }
+                other => panic!("eval_pb: unhandled op {other:?}"),
+            }
+        }
+
+        /// Build a fused PowIBackward node over `x [dims]` (input 0) and `up
+        /// [dims]` (input 1, the upstream gradient — same shape as x), carrying
+        /// `exp`. Returns `(x, up, fused)`.
+        fn pb_fused_node(
+            g: &mut Graph,
+            dims: &[usize],
+            exp: i32,
+        ) -> (NodeId, NodeId, NodeId) {
+            let sh = Shape::from_dims(dims);
+            let x = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+            let up = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+            let fused = g.push(Node {
+                op: Op::Fused(FusedOps::POWI_BACKWARD, FusedOpParams::PowIBackward { exp }),
+                inputs: vec![x, up],
+                shape: sh,
+                dtype: DType::F32,
+            });
+            (x, up, fused)
+        }
+
+        /// A3 (a): ONE recipe datum decomposes at BOTH rank 2 and rank 3 and
+        /// across several exponents, and its numerics match the FROZEN legacy
+        /// builder bit-exactly under the shared reference interpreter — the A3
+        /// PowI carrier driving live emission of `Op::PowI(exp-1)`.
+        #[test]
+        fn powi_backward_recipe_decompose_is_polymorphic_and_matches_frozen_legacy() {
+            // x strictly positive so exp==0's PowI(-1) reciprocal is finite/clean;
+            // the exponents span +, the exp==1 identity, exp==0 (MulScalar(0)=0),
+            // and a negative exponent (PowI(-3)).
+            for dims in [vec![2usize, 4], vec![3, 5, 7]] {
+                for exp in [3i32, 2, 5, 1, 0, -2] {
+                    let mut g = Graph::new();
+                    let (x, up, fused) = pb_fused_node(&mut g, &dims, exp);
+                    let sh = Shape::from_dims(&dims);
+                    let new_root = powi_backward::decompose(
+                        &mut g,
+                        fused,
+                        &FusedOpParams::PowIBackward { exp },
+                    );
+                    assert_ne!(new_root, fused, "recipe decompose must fire at {dims:?} exp={exp}");
+                    assert_eq!(g.node(new_root).shape, sh, "powi backward is shape-preserving");
+                    assert_eq!(g.node(new_root).dtype, DType::F32);
+
+                    let legacy_root = frozen_legacy_powi_backward_decompose(
+                        &mut g,
+                        fused,
+                        &FusedOpParams::PowIBackward { exp },
+                    );
+
+                    let n: usize = dims.iter().product();
+                    let x_data: Vec<f64> =
+                        (0..n).map(|i| ((i as f64) * 0.41).sin() * 0.5 + 1.5).collect();
+                    let up_data: Vec<f64> =
+                        (0..n).map(|i| ((i as f64) * 0.61).cos() * 1.3 - 0.15).collect();
+                    let mut leaves = HashMap::new();
+                    leaves.insert(x, x_data);
+                    leaves.insert(up, up_data);
+                    let got = eval_pb(&g, new_root, &leaves);
+                    let want = eval_pb(&g, legacy_root, &leaves);
+                    assert_eq!(got.len(), want.len());
+                    for (i, (a, b)) in got.iter().zip(want.iter()).enumerate() {
+                        assert_eq!(
+                            a.to_bits(),
+                            b.to_bits(),
+                            "powi_backward[{i}] at {dims:?} exp={exp}: recipe={a} vs legacy={b}",
+                        );
+                    }
+                }
+            }
+        }
+
+        /// A3 (structural): a DIRECT structural mirror — the root is `Mul(scaled,
+        /// up)`, the A3 carrier resolves the exponent to `Op::PowI(exp-1)`, the
+        /// scale is a baked `Op::MulScalar(exp as f64)`, and NO D3/D4 `Reshape` is
+        /// materialized (evidence the i32 carrier + baked scale reached emit at the
+        /// right values).
+        #[test]
+        fn powi_backward_recipe_is_a_direct_mirror_with_carrier_exponent() {
+            for exp in [3i32, 0, -2] {
+                let mut g = Graph::new();
+                let (_x, _up, fused) = pb_fused_node(&mut g, &[2, 4], exp);
+                let root = powi_backward::decompose(
+                    &mut g,
+                    fused,
+                    &FusedOpParams::PowIBackward { exp },
+                );
+                assert_ne!(root, fused, "recipe decompose fires at exp={exp}");
+                assert!(matches!(g.node(root).op, Op::Mul), "root is Mul(scaled, up)");
+                let reachable = crate::topo_order_multi(&g, &[root]);
+                // The A3 carrier reconstructed exactly one Op::PowI(exp-1).
+                let powis: Vec<i32> = reachable
+                    .iter()
+                    .filter_map(|&n| match g.node(n).op {
+                        Op::PowI(k) => Some(k),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(powis, vec![exp - 1], "the A3 carrier resolved Op::PowI(exp-1) at exp={exp}");
+                // The scale is a single baked MulScalar(exp as f64).
+                let mul_scalars: Vec<f64> = reachable
+                    .iter()
+                    .filter_map(|&n| match g.node(n).op {
+                        Op::MulScalar(v) => Some(v),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(mul_scalars, vec![exp as f64], "baked MulScalar(exp) at exp={exp}");
+                // Direct mirror — no keepdim/pad Reshape.
+                let reshapes = reachable
+                    .iter()
+                    .filter(|&&n| matches!(g.node(n).op, Op::Reshape(_)))
+                    .count();
+                assert_eq!(reshapes, 0, "direct structural mirror — no D3/D4 Reshape at exp={exp}");
+            }
+        }
+
+        /// A3 (totality): a wrong params payload is a typed decline surfaced as a
+        /// fixpoint (G2), never a panic, declining BEFORE any emission.
+        #[test]
+        fn powi_backward_recipe_wrong_params_is_a_fixpoint_not_a_crash() {
+            let mut g = Graph::new();
+            let (_x, _up, fused) = pb_fused_node(&mut g, &[2, 4], 3);
+            let before = g.len();
+            let out = powi_backward::decompose(&mut g, fused, &FusedOpParams::Rope);
             assert_eq!(out, fused, "wrong params ⇒ typed decline ⇒ fixpoint");
             assert_eq!(g.len(), before, "declined before any emission");
         }
