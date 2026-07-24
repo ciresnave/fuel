@@ -3,9 +3,12 @@
 //! Translates a Fuel recipe region ([`PatternNode`]) into a kiss-ref §6.13
 //! expression tree ([`kiss_ops_vocab::decomp::Expr`]) and evaluates it row-wise
 //! with [`kiss_ref_core::eval_expr`] — kiss-ref confirmed `Expr`/`eval_expr` as
-//! an intended-stable public seam (byte-identical `b75a748..004e1a4`,
-//! 2026-07-23). This makes multi-node elementwise regions (a fused op's
-//! `decompose`) diffable against kiss-ref, not just single primitives.
+//! an intended-stable public seam (byte-identical `b75a748..1f3981f`,
+//! 2026-07-23 — the only `kernels.rs` movement in that range is `gather`/
+//! `scatter`, which this elementwise path never reaches, and `resolve.rs`
+//! (`eval_expr`/`support`) is untouched). This makes multi-node elementwise
+//! regions (a fused op's `decompose`) diffable against kiss-ref, not just
+//! single primitives.
 //!
 //! Scope: elementwise, default-attrs, mapped ops only. `SeeThrough`/`Any` are
 //! matcher-only and decline ([`KissRefError::UnsupportedNode`]); a node carrying
@@ -632,5 +635,49 @@ mod tests {
     #[test]
     fn advisory_tolerance_none_for_op_free_region() {
         assert_eq!(region_advisory_tolerance(&bind(0)), None);
+    }
+
+    // ---- kiss-ref composed-expression seam (rev 1f3981f) ---------------------
+
+    /// Guards the kiss-ref rev pin. `diff_expr_f32`/`diff_expr_f16` are the
+    /// composed-`Expr` mirrors kiss-ref minted **for this consumer** (see the
+    /// `narrow_expr!` note in kiss-ref-core `diff.rs`); they do not exist at the
+    /// previous pin `b75a748`, so this test fails to COMPILE against the old
+    /// rev — which is the only way to prove the bump took effect rather than a
+    /// cached checkout silently resolving the old tree.
+    ///
+    /// It also pins the migration's premise: kiss's own seam is byte-identical
+    /// to the hand-rolled `region_float!` loop, wide lane and narrow lane. The
+    /// migration itself is a separate change; this only establishes that it is
+    /// numerically a no-op.
+    #[test]
+    fn kiss_expr_seam_matches_hand_rolled_region_diff() {
+        let expr = region_to_expr(&relu_add()).unwrap();
+
+        // Wide lane (f32), with a planted mismatch so every DiffReport field is
+        // exercised — not just the all-conforming happy path.
+        let a = [1.0f32, -5.0, 2.5];
+        let b = [2.0f32, 3.0, -4.0];
+        let cand = [3.0f32, 999.0, 0.0]; // row 1 corrupted
+        let ours = diff_region_f32(&relu_add(), &cand, &[&a, &b], Tolerance::Exact).unwrap();
+        let rows = crate::reference::to_rows(OpTag::Relu, &[&a, &b]).unwrap();
+        let row_refs: Vec<&[f32]> = rows.iter().map(|r| r.as_slice()).collect();
+        let theirs =
+            kiss_ref_core::diff_expr_f32(&expr, &row_refs, &cand, Tolerance::Exact).unwrap();
+        assert_eq!(ours.n, theirs.n);
+        assert_eq!(ours.mismatches, theirs.mismatches);
+        assert_eq!(ours.max_ulp, theirs.max_ulp);
+        assert_eq!(ours.first_mismatch, theirs.first_mismatch);
+
+        // Narrow lane (f16) — the mirror kiss-ref added specifically because
+        // Fuel's advisory covers f16/bf16.
+        use half::f16;
+        let a16: Vec<f16> = a.iter().map(|&v| f16::from_f32(v)).collect();
+        let b16: Vec<f16> = b.iter().map(|&v| f16::from_f32(v)).collect();
+        let ours16 = reference_region_f16(&relu_add(), &[&a16, &b16]).unwrap();
+        let rows16 = crate::reference::to_rows(OpTag::Relu, &[&a16, &b16]).unwrap();
+        let row_refs16: Vec<&[f16]> = rows16.iter().map(|r| r.as_slice()).collect();
+        let theirs16 = kiss_ref_core::reference_expr_f16(&expr, &row_refs16).unwrap();
+        assert_eq!(ours16, theirs16);
     }
 }
