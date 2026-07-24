@@ -39,10 +39,11 @@
 
 use crate::registry::{
     BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps,
-    PatternMatch, SubgraphPattern,
+    PatternMatch, SubgraphPattern, decompose_via_recipe,
 };
 use crate::{Graph, Node, NodeId, Op};
 use fuel_ir::{DType, DynScalar, Shape};
+use fuel_kernel_seam_types::{OpAttrs, OpTag, PatternNode};
 
 /// Metadata-side registry entry for FlashAttn.
 pub fn entry() -> FusedOpEntry {
@@ -77,8 +78,243 @@ fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
     input_dtypes[0]
 }
 
+// --- recipe builders (Increment C, C-T3) -------------------------------------
+// Tiny constructors for the portable [`PatternNode`] recipe data. Every extent
+// and diagonal is a concrete integer at decompose time (the concrete/None k_len
+// arms only — the Sym arm never reaches here), so shape-changer nodes carry a
+// BAKED absolute `target_shape` and the causal/window bands bake their concrete
+// diagonal into `axis` (the FSCE / paged_attn posture) — the recipe mirrors the
+// pre-C-T3 imperative body node-for-node. Reuses the C-T2 nested-fused carrier
+// for the softmax (mechanism 2a).
+
+fn r_op(op: OpTag, attrs: OpAttrs, operands: Vec<PatternNode>) -> PatternNode {
+    PatternNode::Op { op, attrs, operands }
+}
+fn r_bind(i: u8) -> PatternNode {
+    PatternNode::Bind { index: i }
+}
+/// A baked absolute `target_shape` attr for a shape-changer (Reshape/BroadcastTo).
+fn r_shape(dims: &[usize]) -> OpAttrs {
+    OpAttrs { target_shape: dims.iter().map(|&d| d as i64).collect(), ..OpAttrs::default() }
+}
+/// A baked scalar for a scalar-param op (Mul/AddScalar) — NOT an open slot.
+fn r_scalar(v: f64) -> OpAttrs {
+    OpAttrs { scalars: vec![v], ..OpAttrs::default() }
+}
+/// An absolute permutation attr.
+fn r_perm(p: Vec<u8>) -> OpAttrs {
+    OpAttrs { perm: p, ..OpAttrs::default() }
+}
+/// A baked concrete diagonal for a Triu/Tril band (`tag_to_op` reads `axis`).
+fn r_diag(diagonal: i64) -> OpAttrs {
+    OpAttrs { axis: Some(diagonal), ..OpAttrs::default() }
+}
+/// A baked `Slice { dim, start, len }` attr (all concrete at decompose time).
+fn r_slice(dim: i64, start: u64, len: u64) -> OpAttrs {
+    OpAttrs { axis: Some(dim), slice_start: Some(start), slice_len: Some(len), ..OpAttrs::default() }
+}
+/// A `Cast(dtype)` attr (target rides `cast_dtype` as the stable name string).
+fn cast_attr(dtype: DType) -> OpAttrs {
+    OpAttrs { cast_dtype: Some(dtype.as_str().to_string()), ..OpAttrs::default() }
+}
+/// The nested-softmax selector attr (mechanism 2a): names the `SoftmaxLastDim`
+/// registry entry the C-T2 carrier reconstructs to.
+fn fused_softmax_attr() -> OpAttrs {
+    OpAttrs { fused_op: Some("SoftmaxLastDim".to_string()), ..OpAttrs::default() }
+}
+
+/// GQA head-repeat as recipe DATA (mirrors [`repeat_kv_heads`]): when
+/// `Hq == Hkv` the operand passes through unchanged; otherwise Reshape →
+/// (equal-rank) BroadcastTo → Reshape. The explicit Reshape keeps the
+/// BroadcastTo operand at equal rank so emit's D4 auto-pad never fires (the
+/// recipe matches the legacy exactly).
+fn repeat_kv_heads_recipe(
+    x: PatternNode, b: usize, hkv: usize, hq: usize, s: usize, d: usize,
+) -> PatternNode {
+    if hq == hkv {
+        return x;
+    }
+    let g = hq / hkv;
+    let r5 = r_op(OpTag::Reshape, r_shape(&[b, hkv, 1, s, d]), vec![x]);
+    let bc = r_op(OpTag::BroadcastTo, r_shape(&[b, hkv, g, s, d]), vec![r5]);
+    r_op(OpTag::Reshape, r_shape(&[b, hq, s, d]), vec![bc])
+}
+
+/// ALiBi bias `slope[h] · (j - (i + q_pos_offset))` broadcast to `[B, Hq, Sq,
+/// Sk]` as recipe DATA — the structure-preserving migration of
+/// [`alibi_bias`]. The bottom-right decode alignment rides an `AddScalar`
+/// shift emitted only when `q_pos_offset != 0` (byte-identical to the
+/// imperative guard). The interior nodes are all F32 (Iota → F32); the final
+/// F32→`dtype` `Cast` is emitted only when the attention dtype differs (an
+/// F32→F32 cast is an executor-less identity), exactly as the imperative does.
+/// Every BroadcastTo is preceded by an equal-rank Reshape (no D4 auto-pad).
+fn alibi_bias_recipe(
+    alibi: PatternNode, b: usize, hq: usize, sq: usize, sk: usize,
+    q_pos_offset: usize, dtype: DType,
+) -> PatternNode {
+    let grid = &[sq, sk];
+    let full = &[b, hq, sq, sk];
+    let row = r_op(OpTag::Reshape, r_shape(&[sq, 1]), vec![r_op(OpTag::Iota, r_shape(&[sq]), vec![])]);
+    let col = r_op(OpTag::Reshape, r_shape(&[1, sk]), vec![r_op(OpTag::Iota, r_shape(&[sk]), vec![])]);
+    let row_bc = r_op(OpTag::BroadcastTo, r_shape(grid), vec![row]);
+    let col_bc = r_op(OpTag::BroadcastTo, r_shape(grid), vec![col]);
+    let mut rel = r_op(OpTag::Sub, OpAttrs::default(), vec![col_bc, row_bc]); // j - i
+    if q_pos_offset != 0 {
+        rel = r_op(OpTag::AddScalar, r_scalar(-(q_pos_offset as f64)), vec![rel]);
+    }
+    let rel_re = r_op(OpTag::Reshape, r_shape(&[1, 1, sq, sk]), vec![rel]);
+    let rel_4d = r_op(OpTag::BroadcastTo, r_shape(full), vec![rel_re]);
+    let slope_re = r_op(OpTag::Reshape, r_shape(&[1, hq, 1, 1]), vec![alibi]);
+    let slope_4d = r_op(OpTag::BroadcastTo, r_shape(full), vec![slope_re]);
+    let bias_f32 = r_op(OpTag::Mul, OpAttrs::default(), vec![slope_4d, rel_4d]);
+    if dtype == DType::F32 {
+        bias_f32
+    } else {
+        r_op(OpTag::Cast, cast_attr(dtype), vec![bias_f32])
+    }
+}
+
+/// Build `probs = softmax( mask( alibi( softcap( scale·QKᵀ ) ) ) )` plus the
+/// GQA-repeated V, all as portable recipe DATA (the structure-preserving mirror
+/// of [`recompute_probs`], shared by C-T3 forward and — from C-T4 — the
+/// backward). `k_use`/`v_use` are the (possibly-sliced) K/V recipe subtrees.
+/// Returns `(probs, v_rep)`.
+///
+/// The mask bands share the SAME `neg_inf` node (`AddScalar(-inf)(MulScalar(0)(
+/// S0))`, `S0` = the scaled scores at mask entry): every band is authored over a
+/// clone of `neg_inf`, and emit's slot-free identity-share collapses the clones
+/// (and the shared `S0`) to one node each — reproducing the imperative DAG
+/// sharing. The concrete `q_pos_offset` shifts every band diagonal (`o+1`,
+/// `o+r+1`, `o-l-1`) and the alibi rel, baked per call. ZERO open scalar slots
+/// (scale, `1/cap`, `cap`, `0`, `-inf` are all baked pattern constants).
+#[allow(clippy::too_many_arguments)]
+fn recompute_probs_recipe(
+    q: PatternNode,
+    k_use: PatternNode,
+    v_use: PatternNode,
+    alibi: Option<PatternNode>,
+    b: usize,
+    hq: usize,
+    sq: usize,
+    sk: usize,
+    d: usize,
+    hkv: usize,
+    softmax_scale: f32,
+    causal: bool,
+    window_l: Option<usize>,
+    window_r: Option<usize>,
+    softcap: Option<f32>,
+    q_pos_offset: usize,
+    dtype: DType,
+) -> (PatternNode, PatternNode) {
+    // --- GQA / MQA: repeat K and V heads from Hkv up to Hq. -------------
+    let k_rep = repeat_kv_heads_recipe(k_use, b, hkv, hq, sk, d);
+    let v_rep = repeat_kv_heads_recipe(v_use, b, hkv, hq, sk, d);
+
+    // --- scores = scale · (q · kᵀ) -------------------------------------
+    let kt = r_op(OpTag::Permute, r_perm(vec![0, 1, 3, 2]), vec![k_rep]);
+    let scores = r_op(OpTag::MatMul, OpAttrs::default(), vec![q, kt]);
+    let mut scaled = r_op(OpTag::MulScalar, r_scalar(softmax_scale as f64), vec![scores]);
+
+    // --- softcap: cap · tanh(scaled / cap) -----------------------------
+    if let Some(cap) = softcap {
+        let pre = r_op(OpTag::MulScalar, r_scalar(1.0 / cap as f64), vec![scaled]);
+        let t = r_op(OpTag::Tanh, OpAttrs::default(), vec![pre]);
+        scaled = r_op(OpTag::MulScalar, r_scalar(cap as f64), vec![t]);
+    }
+
+    // --- alibi: scaled += slope[h] · (j - (i + q_pos_offset)) ----------
+    if let Some(al) = alibi {
+        let bias = alibi_bias_recipe(al, b, hq, sq, sk, q_pos_offset, dtype);
+        scaled = r_op(OpTag::Add, OpAttrs::default(), vec![scaled, bias]);
+    }
+
+    // --- causal / sliding-window: additive -inf bands ------------------
+    let needs_mask = causal || window_r.is_some() || window_l.is_some();
+    if needs_mask {
+        // `S0` = scaled at mask entry; shared by `neg_inf` and the first band's
+        // Add (emit dedups the clones). `neg_inf = -inf · 0 · S0`.
+        let s0 = scaled;
+        let zeros = r_op(OpTag::MulScalar, r_scalar(0.0), vec![s0.clone()]);
+        let neg_inf = r_op(OpTag::AddScalar, r_scalar(f64::NEG_INFINITY), vec![zeros]);
+        // `q_pos_offset` shifts every band's diagonal: query row `i` sits at
+        // absolute position `i + offset`, so key column `j` is causal iff
+        // `j ≤ i + offset`.
+        let o = q_pos_offset as i64;
+        let add_band = |running: PatternNode, band_op: OpTag, diagonal: i64| -> PatternNode {
+            let band = r_op(band_op, r_diag(diagonal), vec![neg_inf.clone()]);
+            r_op(OpTag::Add, OpAttrs::default(), vec![running, band])
+        };
+        let mut running = s0;
+        if causal {
+            running = add_band(running, OpTag::Triu, o + 1);
+        }
+        if let Some(r) = window_r {
+            running = add_band(running, OpTag::Triu, o + r as i64 + 1);
+        }
+        if let Some(l) = window_l {
+            running = add_band(running, OpTag::Tril, o - l as i64 - 1);
+        }
+        scaled = running;
+    }
+
+    // --- probs = softmax(scaled), carried as a nested Op::Fused node (2a) ---
+    let probs = r_op(OpTag::Fused, fused_softmax_attr(), vec![scaled]);
+    (probs, v_rep)
+}
+
+/// FlashAttn's materialized-SDPA primitive recipe as portable [`PatternNode`]
+/// DATA (Increment C, C-T3) — the structure-preserving migration of the
+/// pre-C-T3 imperative `decompose` body (the concrete/None `k_len` arms) onto
+/// the re-emit machinery. `concrete_klen` selects the decode slice + bottom-
+/// right alignment (`q_pos_offset = kl − Sq`); `has_alibi` / `softcap` /
+/// `causal` / windows select structure via ordinary Rust `if`s. All extents +
+/// diagonals are baked per call — ZERO open scalar slots.
+///
+/// Bind space: `0 = q`, `1 = k`, `2 = v`, `3 = alibi_slopes` (present iff
+/// `has_alibi`) — the fused node's input order.
+#[allow(clippy::too_many_arguments)]
+fn recipe(
+    b: usize,
+    hq: usize,
+    sq: usize,
+    d: usize,
+    hkv: usize,
+    sk_full: usize,
+    concrete_klen: Option<usize>,
+    softmax_scale: f32,
+    causal: bool,
+    window_l: Option<usize>,
+    window_r: Option<usize>,
+    softcap: Option<f32>,
+    has_alibi: bool,
+    dtype: DType,
+) -> PatternNode {
+    // For a concrete k_len, Slice K/V to the live prefix and attend it
+    // bottom-right-aligned (offset kl − Sq). None ⇒ full capacity, offset 0.
+    let (k_use, v_use, sk, q_pos_offset) = match concrete_klen {
+        None => (r_bind(1), r_bind(2), sk_full, 0usize),
+        Some(kl) => {
+            let k_sl = r_op(OpTag::Slice, r_slice(2, 0, kl as u64), vec![r_bind(1)]);
+            let v_sl = r_op(OpTag::Slice, r_slice(2, 0, kl as u64), vec![r_bind(2)]);
+            (k_sl, v_sl, kl, kl.saturating_sub(sq))
+        }
+    };
+    let alibi = if has_alibi { Some(r_bind(3)) } else { None };
+    let (probs, v_rep) = recompute_probs_recipe(
+        r_bind(0), k_use, v_use, alibi, b, hq, sq, sk, d, hkv, softmax_scale, causal,
+        window_l, window_r, softcap, q_pos_offset, dtype,
+    );
+    // out = probs · v  →  [B, Hq, Sq, D]
+    r_op(OpTag::MatMul, OpAttrs::default(), vec![probs, v_rep])
+}
+
 /// Decompose FlashAttn to its primitive **materialized scaled-dot-product
-/// attention** subgraph and return the new root. The general recipe:
+/// attention** subgraph and return the new root. Since Increment C C-T3 a
+/// re-emit of [`recipe`]'s portable data through the [`decompose_via_recipe`]
+/// bridge (structure-preserving: the emitted base map is node-for-node
+/// identical to the pre-C-T3 imperative body — see the parity test in
+/// `tests`). The general math:
 ///
 /// ```text
 ///   k,v    = repeat-heads if GQA/MQA (Hq != Hkv)   # [B, Hq, Sk, D]
@@ -88,15 +324,15 @@ fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
 ///          [ softcap: cap·tanh(scaled/cap) ]
 ///          [ alibi:   scaled += slope · (j - i)  via Iota positions ]
 ///          [ causal / sliding-window: additive -inf bands via Triu/Tril ]
-///   probs  = SoftmaxLastDim(scaled)                # softmax over Sk
+///   probs  = SoftmaxLastDim(scaled)                # softmax over Sk (nested 2a)
 ///   out    = MatMul(probs, v)                      # [B, Hq, Sq, D]
 /// ```
 ///
 /// This is the *math* FlashAttn computes; the fused kernel is a faster,
-/// numerically-close implementation (online vs. materialized softmax).
-/// Whether to keep the fused form or use this lowering is the optimizer's
-/// cost-guided call — not `decompose`'s, which returns the recipe whenever
-/// it *can* express the configuration.
+/// numerically-close implementation (online vs. materialized softmax). Whether
+/// to keep the fused form or use this lowering is the optimizer's cost-guided
+/// call — not `decompose`'s, which returns the recipe whenever it *can* express
+/// the configuration.
 ///
 /// Per G2 (2026-06-20) `decompose` is total and never panics. It resolves
 /// `k_len` — the live attended-prefix length backing a capacity-KV decode —
@@ -106,81 +342,72 @@ fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
 /// - **`Some(Concrete(kl))`** (per-step decode, or any build-time-known
 ///   length): a **static** config — `Slice` K/V to `kl` and run the SDPA
 ///   recipe **bottom-right-aligned** (`q_pos_offset = kl − Sq`, the standard
-///   FA2 alignment, threaded into every causal / window / alibi band). This
-///   used to return self despite being fully static; it now decomposes.
+///   FA2 alignment, threaded into every causal / window / alibi band).
 /// - **`Some(Sym(_))`** (persistent / plan-once decode): a genuine
 ///   **registry-layer basis gap**. Slicing K/V to a *symbolic* length needs a
 ///   primitive Fuel's basis lacks — `Op::Slice` carries a static `usize` len,
 ///   and there is no op that materializes a `DynScalar` into a length-mask
 ///   tensor *inside* a `decompose` fn (which sees only the static graph +
 ///   params, never the per-realize `SymEnv`). So `decompose` returns **self**
-///   — the driver's never-crash fixpoint signal — and the *symbolic* decode
-///   oracle is emitted one layer up by the optimizer's decode-flash arm
-///   (`fuel_dispatch::decode_flash`), which *does* hold the `SymEnv` and
-///   builds the `matmul → mask → softmax → matmul` region over the capacity
-///   KV. See [`phase-d-symbolic-extents`]. Closing this at the registry layer
-///   is a build-time basis extension (a `DynScalar`-length `Slice`/mask op).
+///   — the driver's never-crash fixpoint signal — BEFORE any recipe
+///   construction — and the *symbolic* decode oracle is emitted one layer up by
+///   the optimizer's decode-flash arm (`fuel_dispatch::decode_flash`), which
+///   *does* hold the `SymEnv` and builds the `matmul → mask → softmax → matmul`
+///   region over the capacity KV. See [`phase-d-symbolic-extents`]. Closing
+///   this at the registry layer is a build-time basis extension (a
+///   `DynScalar`-length `Slice`/mask op) — a future constitution decision, NOT
+///   part of Increment C (a PERMANENT registry-layer gap this migration keeps).
 pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeId {
-    let (q_id, k_id, v_id, alibi_id, q_shape, k_shape, dtype) = {
-        let n = graph.node(id);
-        let q_shape = graph.node(n.inputs[0]).shape.clone();
-        let k_shape = graph.node(n.inputs[1]).shape.clone();
-        let alibi = if n.inputs.len() == 4 { Some(n.inputs[3]) } else { None };
-        (n.inputs[0], n.inputs[1], n.inputs[2], alibi, q_shape, k_shape, n.dtype)
-    };
-
     let (softmax_scale, causal, window_l, window_r, softcap, k_len) = match params {
         FusedOpParams::FlashAttn {
             softmax_scale, causal, window_size_left, window_size_right, softcap, k_len,
         } => (
             *softmax_scale, *causal, *window_size_left, *window_size_right, *softcap, *k_len,
         ),
-        // Wrong params for this id — can't decompose; return self.
+        // Wrong params for this id — can't decompose; return self (fixpoint).
         _ => return id,
     };
 
     // Resolve the attended length. A symbolic k_len is the one basis gap —
-    // return self (fixpoint); the decode-flash optimizer arm owns its oracle.
+    // return self (fixpoint) BEFORE any recipe construction; the decode-flash
+    // optimizer arm owns its oracle. Concrete/None arms proceed to the recipe.
     let concrete_klen: Option<usize> = match k_len {
         None => None,
         Some(DynScalar::Concrete(kl)) => Some(kl),
         Some(DynScalar::Sym(_)) => return id,
     };
 
+    let (q_shape, k_shape, n_inputs, dtype) = {
+        let n = graph.node(id);
+        // A well-formed FlashAttn node has 3 (q,k,v) or 4 (+alibi) inputs.
+        // Malformed → fixpoint self-return (never panic).
+        if n.inputs.len() != 3 && n.inputs.len() != 4 {
+            return id;
+        }
+        (
+            graph.node(n.inputs[0]).shape.clone(), // q
+            graph.node(n.inputs[1]).shape.clone(), // k
+            n.inputs.len(),
+            n.dtype,
+        )
+    };
     let q_dims = q_shape.dims();
     let k_dims = k_shape.dims();
+    // Defensive shape guards — malformed → fixpoint self-return.
+    if q_dims.len() != 4 || k_dims.len() != 4 {
+        return id;
+    }
     let (b, hq, sq, d) = (q_dims[0], q_dims[1], q_dims[2], q_dims[3]);
     let hkv = k_dims[1];
+    let sk_full = k_dims[2];
+    let has_alibi = n_inputs == 4;
 
-    // For a concrete k_len, slice K/V to the live prefix and attend it
-    // bottom-right-aligned (offset kl − Sq). None ⇒ full capacity, offset 0.
-    let (k_use, v_use, sk, q_pos_offset) = match concrete_klen {
-        None => (k_id, v_id, k_dims[2], 0usize),
-        Some(kl) => {
-            let sliced = Shape::from_dims(&[b, hkv, kl, d]);
-            let k_sl = graph.push(Node {
-                op: Op::Slice { dim: 2, start: 0, len: kl },
-                inputs: vec![k_id], shape: sliced.clone(), dtype,
-            });
-            let v_sl = graph.push(Node {
-                op: Op::Slice { dim: 2, start: 0, len: kl },
-                inputs: vec![v_id], shape: sliced, dtype,
-            });
-            (k_sl, v_sl, kl, kl.saturating_sub(sq))
-        }
-    };
-
-    let rc = recompute_probs(
-        graph, q_id, k_use, v_use, alibi_id, b, hq, sq, sk, d, hkv, softmax_scale, causal,
-        window_l, window_r, softcap, q_pos_offset, dtype,
+    let recipe_node = recipe(
+        b, hq, sq, d, hkv, sk_full, concrete_klen, softmax_scale, causal, window_l, window_r,
+        softcap, has_alibi, dtype,
     );
-    // out = probs · v  →  [B, Hq, Sq, D]
-    graph.push(Node {
-        op: Op::MatMul,
-        inputs: vec![rc.probs, rc.v_rep],
-        shape: q_shape,
-        dtype,
-    })
+    // No open scalar slots (scale / softcap / -inf / diagonals are baked).
+    decompose_via_recipe(graph, id, &recipe_node, Some(Vec::new()))
 }
 
 /// Recomputed attention internals shared by the forward decompose and the
@@ -443,4 +670,240 @@ pub(crate) fn alibi_bias(
 /// form) and isn't on the step-4 critical path.
 pub fn canonical_pattern(_graph: &Graph, _root: NodeId) -> Option<PatternMatch> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// FROZEN copy of the pre-C-T3 imperative `flash_attn::decompose` body,
+    /// verbatim (the explicit-`Shape` `graph.push` spelling + the retained
+    /// imperative `recompute_probs` helper), before C-T3 replaced the live body
+    /// with the data recipe. The C-T3 structure-preservation oracle: the
+    /// migrated recipe re-emit must produce a graph structurally identical to
+    /// this. Only the concrete/None `k_len` arms are covered — the `Some(Sym)`
+    /// arm self-returns in BOTH the frozen and the migrated body (the permanent
+    /// registry-layer basis gap).
+    fn frozen_legacy_decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeId {
+        let (q_id, k_id, v_id, alibi_id, q_shape, k_shape, dtype) = {
+            let n = graph.node(id);
+            let q_shape = graph.node(n.inputs[0]).shape.clone();
+            let k_shape = graph.node(n.inputs[1]).shape.clone();
+            let alibi = if n.inputs.len() == 4 { Some(n.inputs[3]) } else { None };
+            (n.inputs[0], n.inputs[1], n.inputs[2], alibi, q_shape, k_shape, n.dtype)
+        };
+
+        let (softmax_scale, causal, window_l, window_r, softcap, k_len) = match params {
+            FusedOpParams::FlashAttn {
+                softmax_scale, causal, window_size_left, window_size_right, softcap, k_len,
+            } => (
+                *softmax_scale, *causal, *window_size_left, *window_size_right, *softcap, *k_len,
+            ),
+            _ => return id,
+        };
+
+        let concrete_klen: Option<usize> = match k_len {
+            None => None,
+            Some(DynScalar::Concrete(kl)) => Some(kl),
+            Some(DynScalar::Sym(_)) => return id,
+        };
+
+        let q_dims = q_shape.dims();
+        let k_dims = k_shape.dims();
+        let (b, hq, sq, d) = (q_dims[0], q_dims[1], q_dims[2], q_dims[3]);
+        let hkv = k_dims[1];
+
+        let (k_use, v_use, sk, q_pos_offset) = match concrete_klen {
+            None => (k_id, v_id, k_dims[2], 0usize),
+            Some(kl) => {
+                let sliced = Shape::from_dims(&[b, hkv, kl, d]);
+                let k_sl = graph.push(Node {
+                    op: Op::Slice { dim: 2, start: 0, len: kl },
+                    inputs: vec![k_id], shape: sliced.clone(), dtype,
+                });
+                let v_sl = graph.push(Node {
+                    op: Op::Slice { dim: 2, start: 0, len: kl },
+                    inputs: vec![v_id], shape: sliced, dtype,
+                });
+                (k_sl, v_sl, kl, kl.saturating_sub(sq))
+            }
+        };
+
+        let rc = recompute_probs(
+            graph, q_id, k_use, v_use, alibi_id, b, hq, sq, sk, d, hkv, softmax_scale, causal,
+            window_l, window_r, softcap, q_pos_offset, dtype,
+        );
+        graph.push(Node {
+            op: Op::MatMul,
+            inputs: vec![rc.probs, rc.v_rep],
+            shape: q_shape,
+            dtype,
+        })
+    }
+
+    /// Recursively assert two subgraphs are node-for-node identical (op, shape,
+    /// dtype, arity, recursively-equal inputs). A shared leaf (same NodeId — a
+    /// bound external input) matches by identity. Shape/dtype-sensitive at EVERY
+    /// node, so it catches any structural drift the recipe migration introduces
+    /// (a wrong band diagonal, a missing slice, an alibi offset, a lost share).
+    fn assert_structural_eq(g: &Graph, a: NodeId, b: NodeId) {
+        if a == b {
+            return;
+        }
+        let na = g.node(a);
+        let nb = g.node(b);
+        assert_eq!(na.op, nb.op, "op mismatch: {:?} vs {:?}", na.op, nb.op);
+        assert_eq!(na.shape, nb.shape, "shape mismatch at {:?}: {:?} vs {:?}", na.op, na.shape, nb.shape);
+        assert_eq!(na.dtype, nb.dtype, "dtype mismatch at {:?}", na.op);
+        assert_eq!(na.inputs.len(), nb.inputs.len(), "arity mismatch at {:?}", na.op);
+        for (&ia, &ib) in na.inputs.iter().zip(nb.inputs.iter()) {
+            assert_structural_eq(g, ia, ib);
+        }
+    }
+
+    /// A representative FlashAttn config for the parity matrix.
+    #[derive(Clone, Copy)]
+    struct Cfg {
+        hq: usize,
+        hkv: usize,
+        causal: bool,
+        window_l: Option<usize>,
+        window_r: Option<usize>,
+        softcap: Option<f32>,
+        alibi: bool,
+        klen: Option<usize>,
+    }
+
+    /// Build a fused FLASH_ATTN node over `q [b,hq,sq,d]`, `k/v [b,hkv,Sk,d]`,
+    /// optional `alibi [hq]`, all F32 `Op::Const` leaves. `Sk` is the capacity
+    /// (a concrete `klen < Sk` exercises the decode slice). Returns the fused
+    /// NodeId.
+    fn flash_node(g: &mut Graph, b: usize, sq: usize, sk_cap: usize, d: usize, cfg: Cfg) -> NodeId {
+        let q_shape = Shape::from_dims(&[b, cfg.hq, sq, d]);
+        let q = g.push(Node { op: Op::Const, inputs: vec![], shape: q_shape.clone(), dtype: DType::F32 });
+        let kv_shape = Shape::from_dims(&[b, cfg.hkv, sk_cap, d]);
+        let k = g.push(Node { op: Op::Const, inputs: vec![], shape: kv_shape.clone(), dtype: DType::F32 });
+        let v = g.push(Node { op: Op::Const, inputs: vec![], shape: kv_shape, dtype: DType::F32 });
+        let mut inputs = vec![q, k, v];
+        if cfg.alibi {
+            let al = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[cfg.hq]), dtype: DType::F32 });
+            inputs.push(al);
+        }
+        g.push(Node {
+            op: Op::Fused(
+                FusedOps::FLASH_ATTN,
+                FusedOpParams::FlashAttn {
+                    softmax_scale: 0.5,
+                    causal: cfg.causal,
+                    window_size_left: cfg.window_l,
+                    window_size_right: cfg.window_r,
+                    softcap: cfg.softcap,
+                    k_len: cfg.klen.map(DynScalar::Concrete),
+                },
+            ),
+            inputs,
+            shape: q_shape,
+            dtype: DType::F32,
+        })
+    }
+
+    /// C-T3: ONE recipe form decomposes across a representative config matrix
+    /// (plain / causal / windowed / GQA / softcap / alibi × None-and-concrete
+    /// `k_len`), and its emitted base map is node-for-node identical to the
+    /// FROZEN pre-C-T3 imperative body — the structure-preservation contract.
+    /// Asserted at F32 (per the plan). The concrete-`k_len` arm exercises the
+    /// decode Slice + `q_pos_offset` diagonal threading through every band + the
+    /// alibi rel shift.
+    #[test]
+    fn flash_attn_recipe_decompose_is_polymorphic_and_matches_frozen_legacy() {
+        // b=1, sq=2, d=2, capacity Sk=4. klen=Some(3) < 4 fires the slice;
+        // q_pos_offset = 3 - 2 = 1 (nonzero → exercises the band/alibi shift).
+        let (b, sq, sk_cap, d) = (1usize, 2usize, 4usize, 2usize);
+        // Mask combos cover causal + each window edge, independently and combined.
+        let masks: [(bool, Option<usize>, Option<usize>); 6] = [
+            (false, None, None),        // plain
+            (true, None, None),         // causal
+            (false, Some(2), Some(1)),  // both windows
+            (false, Some(2), None),     // left-only window
+            (false, None, Some(1)),     // right-only window
+            (true, Some(2), Some(1)),   // causal + windows (kitchen sink)
+        ];
+        let mut fired = 0usize;
+        for (causal, window_l, window_r) in masks {
+            for softcap in [None, Some(30.0f32)] {
+                for alibi in [false, true] {
+                    for (hq, hkv) in [(2usize, 2usize), (4usize, 2usize)] {
+                        for klen in [None, Some(3usize)] {
+                            let cfg = Cfg { hq, hkv, causal, window_l, window_r, softcap, alibi, klen };
+                            let mut g = Graph::new();
+                            let fused = flash_node(&mut g, b, sq, sk_cap, d, cfg);
+                            let out_shape = g.node(fused).shape.clone();
+                            let params = match &g.node(fused).op {
+                                Op::Fused(_, p) => p.clone(),
+                                _ => unreachable!(),
+                            };
+
+                            let new_root = decompose(&mut g, fused, &params);
+                            assert_ne!(
+                                new_root, fused,
+                                "recipe decompose fires (causal={causal}, wl={window_l:?}, \
+                                 wr={window_r:?}, softcap={softcap:?}, alibi={alibi}, \
+                                 hq={hq}, hkv={hkv}, klen={klen:?})"
+                            );
+                            assert_eq!(g.node(new_root).shape, out_shape, "output = q shape");
+                            assert_eq!(g.node(new_root).dtype, DType::F32);
+
+                            let legacy_root = frozen_legacy_decompose(&mut g, fused, &params);
+                            assert_structural_eq(&g, new_root, legacy_root);
+                            fired += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(fired, 6 * 2 * 2 * 2 * 2, "every config in the matrix was checked");
+    }
+
+    /// Out-of-scope gap posture (permanent registry-layer basis gap): a
+    /// `Some(Sym(_))` `k_len` self-returns BEFORE any recipe construction — no
+    /// nodes emitted — exactly as the frozen legacy did. The symbolic decode
+    /// oracle lives one layer up in `fuel_dispatch::decode_flash`.
+    #[test]
+    fn flash_attn_symbolic_klen_stays_a_fixpoint_gap() {
+        let mut g = Graph::new();
+        let cfg = Cfg {
+            hq: 2, hkv: 2, causal: true, window_l: None, window_r: None,
+            softcap: None, alibi: false, klen: None,
+        };
+        let fused = flash_node(&mut g, 1, 2, 4, 2, cfg);
+        // Swap in a SYMBOLIC k_len (flash_node only builds concrete/None).
+        let sym_params = FusedOpParams::FlashAttn {
+            softmax_scale: 0.5,
+            causal: true,
+            window_size_left: None,
+            window_size_right: None,
+            softcap: None,
+            k_len: Some(DynScalar::Sym(fuel_ir::SymId(0))),
+        };
+        let before = g.len();
+        let out = decompose(&mut g, fused, &sym_params);
+        assert_eq!(out, fused, "symbolic k_len => registry-layer basis gap => fixpoint self-return");
+        assert_eq!(g.len(), before, "declined before any emission (no recipe built)");
+    }
+
+    /// Totality (G2): a wrong params payload declines to a fixpoint, never a
+    /// crash, before any emission.
+    #[test]
+    fn flash_attn_recipe_wrong_params_is_a_fixpoint_not_a_crash() {
+        let mut g = Graph::new();
+        let cfg = Cfg {
+            hq: 2, hkv: 2, causal: false, window_l: None, window_r: None,
+            softcap: None, alibi: false, klen: None,
+        };
+        let fused = flash_node(&mut g, 1, 2, 4, 2, cfg);
+        let before = g.len();
+        let out = decompose(&mut g, fused, &FusedOpParams::Rope);
+        assert_eq!(out, fused, "wrong params => typed decline => fixpoint");
+        assert_eq!(g.len(), before, "declined before any emission");
+    }
 }
