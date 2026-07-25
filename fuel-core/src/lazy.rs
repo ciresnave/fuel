@@ -3019,6 +3019,39 @@ mod tests {
         }
     }
 
+    /// Increment C — `inplace_affine`'s migrated functional value recipe:
+    /// `decompose` lowers `Op::Fused(INPLACE_AFFINE, {mul, add})` to
+    /// `AddScalar(add)(MulScalar(mul)(x))`, which realizes on the CPU backend to
+    /// the plain affine `mul·x + add`. Bit-exact: the affine kernel pre-casts the
+    /// f64 scalars to f32 and computes `mul_f32 * x + add_f32`, so the two-op
+    /// `MulScalar`→`AddScalar` composition matches a hand `(mul as f32)*x + (add
+    /// as f32)` exactly (the intermediate `* 1.0` / `+ 0.0` are IEEE identities).
+    #[test]
+    fn inplace_affine_decompose_matches_affine_reference() {
+        use fuel_graph::registry::{FusedOpParams, FusedOps};
+        let dev = Device::cpu();
+        let (mul, add) = (2.5f64, -1.0f64);
+        let x_data = vec![1.5f32, -2.0, 0.5, 3.0];
+        let shape = Shape::from_dims(&[4]);
+        let x = LazyTensor::from_f32(x_data.clone(), shape.clone(), &dev);
+        let got = lower_realize_fused(
+            &x,
+            fuel_graph::Op::Fused(
+                FusedOps::INPLACE_AFFINE,
+                FusedOpParams::InplaceAffine { mul, add },
+            ),
+            vec![x.inner.id()],
+            shape,
+        );
+        // functional affine: out = mul·x + add (scalars pre-cast to f32).
+        let expected: Vec<f32> =
+            x_data.iter().map(|&v| (mul as f32) * v + add as f32).collect();
+        assert_eq!(got.len(), expected.len());
+        for (i, (&g, &e)) in got.iter().zip(&expected).enumerate() {
+            assert_eq!(g, e, "inplace_affine at {i}: got {g}, expected {e}");
+        }
+    }
+
     #[test]
     fn softmax_last_dim_backward_decompose_matches_reference() {
         use fuel_graph::registry::{FusedOpParams, FusedOps};
