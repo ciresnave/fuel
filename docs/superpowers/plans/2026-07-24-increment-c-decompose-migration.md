@@ -325,6 +325,11 @@ registry-layer basis gap) and the **2 permanent BASIS-GAP** self-returns (`qmatm
 sub-byte bit-unpack, `inplace_affine` destructive-affine aliasing). The conv pair is no
 longer in either "remain" bucket — the basis-gap count is now **2**, not 4.
 
+> **SUPERSEDED 2026-07-25 (see "inplace_affine — SHIPPED" at the very bottom):**
+> `inplace_affine` migrated — it was mis-labeled a basis gap (its in-place-ness is a
+> `destructive_input()` + KISS-Contract facet, not a decompose concern). The permanent
+> BASIS-GAP count drops from **2 to 1** — **`qmatmul` is now the SOLE basis gap.**
+
 ---
 
 ## Attention machinery — SHIPPED (2026-07-24, branch `feat/incc-attention-machinery`)
@@ -353,3 +358,38 @@ change) migrated **4 more ops**, landed to main just ahead of the conv pair:
 Remaining 4: **2 NEEDS-EXTENSION** (`causal_conv1d` extent-driven K-tap unroll + `use_silu`;
 `nf4_matmul` product-collapse + dtype-relative Cast) and **2 permanent BASIS-GAP** self-returns
 (`qmatmul`, `inplace_affine` — the genuinely-open basis questions).
+
+## inplace_affine — SHIPPED (2026-07-25, branch `feat/incc-inplace-affine`)
+
+`inplace_affine` is **MIGRATED** — it was mis-labeled a permanent basis gap. **UPDATED
+AUTHORITATIVE TOTAL: 19 of 22 migrated; 3 remain** (2 NEEDS-EXTENSION `causal_conv1d` +
+`nf4_matmul`, and **`qmatmul` as the SOLE remaining permanent BASIS-GAP**).
+
+**The corrected finding.** The earlier "basis gap" note was over-conservative: it conflated the
+*value* layer with the *destructive/aliasing* layer. In-place-ness is a KISS-Contract §4.6/§5.4 +
+`Op::destructive_input()` facet — **NOT an op-basis or decompose concern**. So no new primitive
+(`Op::AffineInplace` is NOT needed to migrate) and no standard change.
+- `Op::destructive_input() -> Some(0)` is a method on the `Op` (a per-fused-id match arm in
+  `fuel-graph/src/lib.rs:1213`) that drives `opt::derive_ordering` on the EXECUTION graph, where
+  the fused `Op::Fused(INPLACE_AFFINE)` node lives. It is **UNAFFECTED** by what `decompose`
+  returns — the migration does not touch it (guarded by
+  `inplace_affine_destructive_input_survives_migration`).
+- `decompose` feeds only the BASE-MAP COVER (value / `base_map_hash` / verify-oracle /
+  correctness-floor fallback), NOT execution. The fused op still executes via its own in-place
+  kernel (`affine_inplace_*`, Phase 3, unlanded); the functional decompose is the correctness-floor
+  fallback until then.
+
+The functional `MulScalar(mul) → AddScalar(add)` recipe (`x = mul·x + add`) is value-correct,
+does not "drop" the destructive contract, and is self-consistent (the functional form doesn't
+mutate, so needs no ordering pin) — making `decompose` **total** (the recipe principle) and giving
+`InplaceAffine` an executable functional fallback. Two OPEN scalar slots filled from
+`FusedOpParams::InplaceAffine { mul, add }` in pattern pre-order (outer `AddScalar` ← `add`, inner
+`MulScalar` ← `mul`), so the projection is `vec![add, mul]`.
+
+Tests (all observed red→green where applicable): `fuel-graph`
+`inplace_affine_decompose_lowers_to_mul_then_add_scalar` (structural, born-red),
+`inplace_affine_destructive_input_survives_migration` (the load-bearing facet guard),
+`inplace_affine_wrong_params_is_a_fixpoint_not_a_crash` (G2); `fuel-core`
+`inplace_affine_decompose_matches_affine_reference` (real-backend CPU, bit-exact vs `mul·x + add`).
+Gates (forced-clean): `fuel-graph --lib` 462, `fuel-dispatch --lib` 712, `fuel-core --lib` 1386 —
+all green.
