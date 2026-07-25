@@ -3,7 +3,8 @@
 //!
 //! Provides:
 //! - [`entry`] — the metadata-side `FusedOpEntry` (shape/dtype rules,
-//!   panicking `decompose`, stubbed pattern).
+//!   self-returning `decompose` — a surfaced gap pending the
+//!   decode-boundary-typing migration, see [`decompose`] — stubbed pattern).
 //!
 //! Inputs: `[a, w_q_bytes]`.
 //!   - `a`:          `[..., M, K]` F32 activations
@@ -81,22 +82,41 @@ fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
     input_dtypes[0]
 }
 
-/// QMatMul is a genuine **basis gap** (G2, 2026-06-20). Its primitive recipe
-/// is `dequantize(w_q_bytes, quant_type) → matmul(a, ·)`, but the dequant needs
-/// primitives Fuel lacks. The U32 `w_q_bytes` is an opaque GGUF/GGML `BlockQ*`
-/// stream interleaving, per block: sub-byte-packed quants (4/5/2/3/6 bits) plus
-/// f16 scale(s)/min(s) embedded as raw bytes (and, for the Q*_K super-blocks,
-/// 6-bit-packed sub-block scales + high-bit masks). Expressing the dequant
-/// needs (1) a **sub-byte bit-unpack** primitive (no BitShift/BitAnd/Unpack
-/// exists; `Cast` converts whole dtypes only), (2) a **byte-reinterpret of an
-/// offset slice** to recover the embedded f16 scales (`Cast` is value-
-/// converting, not a bit-cast; `Slice` indexes logical typed elements, not byte
-/// offsets), and (3) a GGML block/super-block layout op. `Gather`/`IndexSelect`
-/// don't close the gap. Per G2 `decompose` is total + never-panic: with no
-/// expressible recipe it returns **self** (a surfaced opaque-op gap), and
-/// decomposes once those primitives land. `cpu_fallback` handles backends
-/// without a native kernel. (The DRAM-round-trip-avoidance note is a kernel-
-/// selection rationale — performance, not a totality argument.)
+/// QMatMul is **not** a basis gap. Its primitive recipe is
+/// `dequantize(w_q_bytes, quant_type) → matmul(a, ·)`, and the earlier claim
+/// that the dequant needs three primitives Fuel lacks was **wrong** (scoped
+/// 2026-07-25, cross-validated with KISS/kiss-ref/Baracuda). Correcting each:
+///
+/// - **Sub-byte quant unpack is power-of-2 arithmetic, not a bitwise
+///   primitive.** The already-shipped `nf4_matmul` recipe unpacks packed
+///   nibbles with `Cast`/`Floor`/`MulScalar`/`Sub` and **zero** bitwise ops;
+///   Q4_0's `&0x0F`/`>>4` and the Q*_K 6-bit sub-scale unpacks are the same
+///   power-of-2 arithmetic on integer fields `< 2^24` (F32-exact).
+/// - **The GGML block / super-block layout is `Reshape` + `Slice`** — both
+///   already in the basis.
+/// - **The one byte-level step — recovering the embedded f16 block-scale from
+///   its raw bytes — is hoisted to the DECODE BOUNDARY, not done in-graph.**
+///   `w_q_bytes` is a **frozen loaded constant** (a GGUF weight, known at load;
+///   never the output of a prior graph op), so per KISS §7.3-0002 the
+///   reinterpret is structurally hoistable: the loader host-decodes each
+///   block's f16 scale into a typed operand — exactly the `nf4_matmul`
+///   `absmax`-as-separate-operand precedent — leaving the recipe pure
+///   arithmetic. No in-graph byte-reinterpret, hence **no new primitive `Op`
+///   (no `Bitcast`) is required.**
+///
+/// `decompose` still returns **self** today (a surfaced gap, never a crash)
+/// because the recipe needs the node's inputs to include the host-decoded
+/// scale operand — i.e. it awaits the **decode-boundary-typing migration**:
+/// the `qmatmul` builder must bind the weight as typed operands (quant payload
+/// + host-decoded f16 scales, `nf4_matmul`-style) so the recipe can be pure
+/// `Reshape`/`Slice`/arithmetic + `matmul`. Until that lands, the single U32
+/// buffer can't be split in-graph without the very byte-reinterpret we just
+/// showed is unnecessary — so self-return is the correct interim posture.
+/// `cpu_fallback` handles backends without a native kernel. (The
+/// DRAM-round-trip-avoidance note below is a kernel-selection rationale —
+/// performance, not a totality argument; the fused dequant-in-kernel arm stays
+/// the cost-preferred cover, the decomposed form is the fallback + optimizer
+/// lowering.)
 pub fn decompose(_graph: &mut Graph, id: NodeId, _params: &FusedOpParams) -> NodeId {
     id
 }
