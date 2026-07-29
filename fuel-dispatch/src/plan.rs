@@ -1627,12 +1627,17 @@ fn missing_binding_error(
     dtypes: &[DType],
     backend: BackendId,
 ) -> Error {
-    let _ = (table, backend);
+    // The queried `backend` isn't a NoBackendForOp field; the diagnostic lists
+    // the full coverage across all backends (the "what exists" context) so a
+    // reader can see which `(op, dtypes)` ARE registered. Formerly this returned
+    // empty lists, falsely reading as "no backend registered".
+    let _ = backend;
+    let (available_backends, supported_combinations) = table.coverage_diagnostic();
     Error::NoBackendForOp {
         op,
         dtypes: dtypes.to_vec(),
-        available_backends: Vec::new(),
-        supported_combinations: Vec::new(),
+        available_backends,
+        supported_combinations,
     }
     .bt()
 }
@@ -1855,6 +1860,60 @@ mod tests {
             Error::NoBackendForOp { op, dtypes, .. } => {
                 assert_eq!(op, OpKind::MatMul);
                 assert_eq!(dtypes, vec![DType::F32, DType::F32, DType::F32]);
+            }
+            other => panic!("expected NoBackendForOp, got {other:?}"),
+        }
+    }
+
+    /// Regression: a plan-time binding miss reports the REAL registered coverage,
+    /// not a hardcoded `[]`. Reproduces the observed `llama-lazy` failure — an
+    /// F32-activation × BF16-weight (mixed-precision) matmul, which the CPU
+    /// backend has no kernel for (it registers uniform `[T,T,T]` only) — against
+    /// the fully-populated production binding table. Before the fix,
+    /// `missing_binding_error` returned empty lists, so a mixed-precision gap
+    /// surfaced as the maximally-misleading "available backends: []" (it cost two
+    /// people an investigation + a wrong hypothesis). Now it lists Cpu + the
+    /// uniform matmul combos, so a reader sees `[F32,F32,F32]` present and
+    /// `[F32,BF16,F32]` absent and diagnoses it immediately.
+    #[test]
+    fn plan_time_miss_reports_real_coverage_not_empty() {
+        let bindings = crate::dispatch::global_bindings(); // self-seeded, populated
+        let mut g = Graph::new();
+        let lhs = g.push(Node {
+            op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+        });
+        // BF16 weight → the matmul dtype key becomes the mixed [F32, BF16, F32].
+        let rhs = g.push(Node {
+            op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[3, 2]), dtype: DType::BF16,
+        });
+        let mm = g.push(Node {
+            op: Op::MatMul, inputs: vec![lhs, rhs], shape: Shape::from_dims(&[2, 2]), dtype: DType::F32,
+        });
+        g.set_target_backend(mm, BackendId::Cpu);
+
+        let order = topo_order(&g, mm);
+        let opts = PlanOptions::new().without_cost_population();
+        let err = compile_plan(&g, &order, &bindings, &opts).unwrap_err();
+        match err {
+            Error::NoBackendForOp { op, dtypes, available_backends, supported_combinations } => {
+                assert_eq!(op, OpKind::MatMul);
+                assert_eq!(
+                    dtypes,
+                    vec![DType::F32, DType::BF16, DType::F32],
+                    "the mixed-precision key (F32 activation, BF16 weight)",
+                );
+                // The fix: the diagnostic is TRUTHFUL, not a hardcoded empty stub.
+                assert!(
+                    available_backends.contains(&BackendId::Cpu),
+                    "a populated table must report Cpu, never []: {available_backends:?}",
+                );
+                assert!(
+                    supported_combinations.iter().any(|(b, o, d)| *b == BackendId::Cpu
+                        && *o == OpKind::MatMul
+                        && *d == vec![DType::F32, DType::F32, DType::F32]),
+                    "must show uniform F32 matmul IS registered (so the mixed gap is visible): \
+                     {supported_combinations:?}",
+                );
             }
             other => panic!("expected NoBackendForOp, got {other:?}"),
         }

@@ -1463,21 +1463,7 @@ impl KernelBindingTable {
             .and_then(|alts| alts.iter().find(|e| !e.caps.requires_broadcast))
             .map(|e| (e.kernel, e.caps))
             .ok_or_else(|| {
-                let available_backends: Vec<BackendId> = self
-                    .bindings
-                    .keys()
-                    .map(|(_, _, b)| *b)
-                    .collect::<std::collections::HashSet<_>>()
-                    .into_iter()
-                    .collect();
-                // Diagnostic listing of the STATIC coverage (the useful "what
-                // exists" context); a runtime-fused miss reports the honest
-                // `OpKind::RuntimeFused` tag as its op.
-                let supported_combinations: Vec<(BackendId, OpKind, Vec<DType>)> = self
-                    .bindings
-                    .keys()
-                    .filter_map(|(k, d, b)| k.static_op().map(|o| (*b, o, d.to_vec())))
-                    .collect();
+                let (available_backends, supported_combinations) = self.coverage_diagnostic();
                 Error::NoBackendForOp {
                     op: key.0.static_op().unwrap_or(OpKind::RuntimeFused),
                     dtypes: dtypes.to_vec(),
@@ -1486,6 +1472,32 @@ impl KernelBindingTable {
                 }
                 .bt()
             })
+    }
+
+    /// Build the truthful `(available_backends, supported_combinations)`
+    /// diagnostic pair for a [`Error::NoBackendForOp`] miss: the DISTINCT
+    /// registered backends, and the full static `(backend, op, dtypes)` coverage
+    /// (the useful "what exists" context). Shared by
+    /// [`lookup_with_caps`](Self::lookup_with_caps) AND the plan-time miss
+    /// (`plan::missing_binding_error`) so BOTH surface the same real context. The
+    /// plan-time path formerly hardcoded `[]` here, which falsely reads as "no
+    /// backend is registered" and misdirects diagnosis — a mixed-precision
+    /// `(op, dtypes)` gap is not an empty registry (observed in the wild:
+    /// `[F32, BF16, F32]` matmul reported as "available backends: []").
+    pub fn coverage_diagnostic(&self) -> (Vec<BackendId>, Vec<(BackendId, OpKind, Vec<DType>)>) {
+        let available_backends: Vec<BackendId> = self
+            .bindings
+            .keys()
+            .map(|(_, _, b)| *b)
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        let supported_combinations: Vec<(BackendId, OpKind, Vec<DType>)> = self
+            .bindings
+            .keys()
+            .filter_map(|(k, d, b)| k.static_op().map(|o| (*b, o, d.to_vec())))
+            .collect();
+        (available_backends, supported_combinations)
     }
 
     /// Phase 7.6 step 9a: return the full set of registered
