@@ -905,6 +905,60 @@ actually implements — before deletion, not after.
 decoding's two-model arrangement, the disk tier behind `Externalized`, KIVI and low-rank as graph
 transforms, structured-output contracts, and pruning are unaudited.
 
+### A.5.1 Item 6 answered — it is model sharding, and the deletion would have lost it [verified 2026-07-29]
+
+The gating question is settled. The consumer's `multi_gpu/` (1,767 LOC) implements **model
+sharding**, not op placement:
+
+| File | LOC | Contents |
+| --- | ---: | --- |
+| `pipeline_parallel.rs` | 728 | `PipelineScheduler`, `PipelineStage`, `PipelineStrategy` |
+| `tensor_parallel.rs` | 403 | `ShardedLinear`, `ShardingStrategy` (`ColumnWise`), `TensorShard` |
+| `distributed_cache.rs` | 264 | KV cache sharded / replicated across GPUs |
+| `topology.rs` + `config.rs` | 357 | device topology + consumer config surface |
+
+**So the category error was real and the deletion would have silently dropped tensor parallelism,
+pipeline parallelism, and distributed KV.** Fuel's multi-device machinery is op *placement*
+(`topology.rs`, `distinct_devices`, `sync_active_cuda_devices`); none of the above is subsumed by it.
+
+**CireSnave's decision (2026-07-29): multi-device functionality belongs in Fuel, not the consumer**,
+with the consumer's code as *one possible guide* — and with the explicit caution to **establish that
+each piece belongs before building it**. The audit becomes **sustained work**, with a second purpose
+beyond regression-catching: **placing each capability correctly across the ecosystem.**
+
+### A.5.2 Placement rubric — where a capability goes
+
+Sustained auditing needs a repeatable answer to *"where does this belong?"*, not case-by-case
+argument. The rubric below is **derived from existing architecture**, not invented for the occasion:
+
+1. **Is it policy — a judgment about whose work matters, or which outcome is wanted?** → the
+   **consumer**. ([15 §The rule](architecture/15-consumer-contract.md))
+2. **Is it mechanism, and would replacing it require forking fuel?** → **Fuel Foundation**.
+   ([15 §Where the seam runs](architecture/15-consumer-contract.md#where-the-seam-runs-foundation-not-the-repository))
+3. **Is it mechanism a consumer could simply not depend on?** → **`fuel-inference` / `fuel-training`**
+   — the optional toolkit tier above the seam.
+4. **Is it numerics or a kernel?** → a **backend** (Baracuda for CUDA; `fuel-vulkan-kernels` for
+   Vulkan), never the consumer. ([05-backend-contract](architecture/05-backend-contract.md))
+5. **Is it op vocabulary or spec?** → **KISS**. **Is it reference semantics?** → **kiss-ref**.
+6. **Does it decompose to the primitive basis?** → it is an `Op`, not a subsystem
+   ([`frontier-paradigms-vision.md`](frontier-paradigms-vision.md) bucket test).
+
+**Applied to multi-GPU, per file:**
+
+| Piece | Placement | Reasoning |
+| --- | --- | --- |
+| `ShardedLinear` / `ShardingStrategy` | **Fuel Foundation** | Splitting one matmul across devices is *the same math, executed differently* — arm selection at device granularity, rule 2 |
+| Pipeline split (which layers, which device) | **Fuel Foundation** | Same math, different execution; a consumer cannot replace it without forking |
+| Pipeline micro-batch *schedule* | **split** — bubble management is Fuel; coupling to request admission is consumer | It stops being mechanism where it starts deciding *whose* request advances |
+| Distributed KV (shard vs replicate) | **mechanism Fuel / strategy consumer** | Multi-device KV blocks extend the block-pool allocator (C-1/C-3); *replicate-hot-shard-cold* is a value judgment, rule 1 |
+| Collectives (all-reduce &c.) | **backend** | Rule 4 — a kernel, and for CUDA a Baracuda ask |
+| Device set, whether to shard, failure/elasticity response | **consumer** | Rule 1, and already C-5's "device set" constraint |
+
+**[judgment] The rubric reproduces CireSnave's instinct rather than merely agreeing with it**, which
+is the point: multi-device lands in Fuel because sharding is *equivalent-implementation selection*,
+which is the same test that put `SchedulePolicy` on Fuel's side and eviction policy on the
+consumer's. A capability that needed a bespoke argument would be a sign the rubric is wrong.
+
 ---
 
 ## Annex B — Training host
