@@ -1,6 +1,6 @@
 # Consumer contract
 
-**Status**: v0.1 (draft, 2026-07-28). Establishes the upward-facing half of fuel's boundary obligations: what fuel provides to the systems built *on* it, and what fuel correspondingly doesn't decide. The mirror of [05-backend-contract](05-backend-contract.md). Motivating phase doc: [`docs/fuel-consumer-seam.md`](../fuel-consumer-seam.md), which carries the per-consumer-class annexes and the as-built audit.
+**Status**: v0.2 (draft, 2026-07-29). v0.2 (MINOR) adds [§Where the seam runs](#where-the-seam-runs-foundation-not-the-repository) — the contract binds *Foundation*, not every crate in the workspace; `fuel-inference` and `fuel-training` are consumer-side toolkits above the seam, optional by construction. Added in response to the first real consumer hitting the ambiguity (the Lightbulb port session, 2026-07-29): §15 refused admission/eviction/fairness while `fuel-inference` shipped a scheduler with priority queuing and eviction-pressure admission control. No core-claim change — the refusals bind Foundation exactly as before. v0.1 (2026-07-28) established the upward-facing half of fuel's boundary obligations: what fuel provides to the systems built *on* it, and what fuel correspondingly doesn't decide. The mirror of [05-backend-contract](05-backend-contract.md). Motivating phase doc: [`docs/fuel-consumer-seam.md`](../fuel-consumer-seam.md), which carries the per-consumer-class annexes and the as-built audit.
 
 What consumers provide to fuel, what fuel provides back, and what fuel doesn't decide. Anchored in the same architectural principle as the backend seam ([01-identity](01-identity.md): **backends advertise; they don't decide**) applied one layer up, with fuel now in the advertiser's seat: **fuel advertises capacity and reports measurements; the consumer decides whose work matters.**
 
@@ -31,6 +31,20 @@ This is the same reasoning that puts kernel-local decisions inside a backend and
 Not every consumer executes anything. Model export and conversion, weight surgery, merging, pruning, visualization, and static analysis consume the **IR**, not the runtime: they build, inspect, transform, and serialize graphs without ever realizing one. No clause below applies to them, because every clause concerns the cost, interruption, or observation of *work being done*.
 
 Those consumers are governed by [03-ir](03-ir.md) (the base map as the stable hub) and [13-interchange](13-interchange.md) (import/export, the weight⊥graph axes). Their contract is a different one — base-map stability, round-trip fidelity, serialization guarantees. The omission here is deliberate; this contract is not to be grown to cover them.
+
+### Where the seam runs: Foundation, not the repository
+
+**The seam runs between Foundation and the orchestration tier — not around the Fuel workspace.** "Fuel" in the refusals above means *Fuel-the-Foundation*: the graph, the optimizer, the dispatch layer, the backends. It does not mean "every crate in the fuel repository."
+
+`fuel-inference` and `fuel-training` sit **above** the seam. They are consumer-side toolkits that happen to ship in the Fuel workspace: batteries-included default policies — eviction strategies, admission control, priority queuing, schedulers, sampling — that a consumer **may adopt, adopt selectively, or ignore entirely**. That they contain policy is not a violation of the refusals; it is the corrected [09-non-goals §Not orchestration-flavored architecture decisions](09-non-goals.md) working as intended, which names `fuel-inference` as exactly where inference-side orchestration belongs.
+
+Three consequences worth stating, because a consumer hit this ambiguity the day the section landed:
+
+- **Adopting a shipped toolkit is a consumer choice, never a contract obligation.** A consumer that brings its own scheduler, its own eviction policy, and its own admission control is fully conformant. Nothing above the seam is required.
+- **Policy shipped above the seam is a default, not a commitment.** Foundation owes the clause guarantees; a toolkit crate owes only what its own docs claim.
+- **The refusals still bind Foundation absolutely.** If admission control, fairness, or eviction *choice* ever appears below the seam — in the graph, optimizer, dispatch layer, or a backend — that is a defect regardless of how convenient it is.
+
+The practical test for "which side is this on?": would replacing it require a consumer to fork Fuel? If yes, it is Foundation and the refusals apply. If a consumer can simply not depend on the crate, it is above the seam.
 
 ---
 

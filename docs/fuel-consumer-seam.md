@@ -184,10 +184,18 @@ incrementally as Fuel offers them; **none block the port**.
    (logits → sampling) or hidden dynamic control flow that must become a graph construct or an
    explicit realize. **[judgment] the single largest port risk — and it is not a Fuel gap; it is
    Lightbulb-side work.**
-2. **Model implementations.** Uses `candlelight::transformers::models::llama::{Llama, Cache, Config,
-   LlamaEosToks}` *and* carries its own `custom_transformer` / `custom_attention` /
-   `custom_transformer_block` (~3.3k LOC). `fuel-transformers` parity is needed for the former; the
-   latter ports as ordinary graph code.
+2. ~~**Model implementations** — `fuel-transformers` parity needed.~~ **CORRECTED 2026-07-29 —
+   mostly CLOSED, not a Fuel-side blocker.** Raised by the Lightbulb port session and **[verified]**
+   here: `fuel-transformers/src/models/` does not exist; the eager ports are dead in
+   `_models_retired/`. The live surface is `fuel-core`'s lazy layer — 157 `pub mod lazy_*` modules,
+   with `fuel-core/src/lazy_llama_full.rs` (731 LOC) carrying `LlamaModel` as the canonical
+   lazy-graph LLaMA decoder plus `Llama3Model` (line 319) with three-band Llama-3.1 long-context RoPE
+   and `from_hf_json_str` for full HF `config.json`. Working end-to-end binaries exist in
+   `fuel-lazy-examples/src/bin/`: `llama-lazy`, `llama-lazy-cuda`, `llama-lazy-vulkan`, `gemma-lazy`,
+   `phi-lazy-vulkan`, `bert-lazy`, `convnext-lazy`. So this is a **find-and-read task for the
+   consumer**, not a Fuel gap — and the `model/` rewrite has a working reference to copy. (The
+   consumer's own `custom_transformer`/`custom_attention`/`custom_transformer_block`, ~3.3k LOC,
+   still ports as ordinary graph code.)
 3. **`nn` surface.** `VarBuilder`, `Linear`, `linear_no_bias`, `linear_b`, `embedding`, `ops::silu`,
    `ops::softmax_last_dim`. `fuel-nn` has `VarBuilder`/`VarMap`; needs a coverage check.
 4. **Quantized surface.** `QMatMul::from_qtensor`, `gguf_file`, AWQ (`awq_qwen3.rs`), and a Marlin
@@ -205,6 +213,47 @@ that reshape permanently. Two allocator requirements Lightbulb's cache implies:
 - **Compressed KV** — `kv_compression.rs` is 1,998 LOC, so block sizing may not be uniform across
   sessions. **[judgment]** worth confirming the allocator doesn't assume fixed-size blocks in a way
   that forecloses compressed-KV consumers.
+
+### A.4 `fuel-inference` overlaps the consumer heavily (2026-07-29)
+
+Found while verifying a port question; post-dates A.3 and materially changes the port's shape.
+
+**[verified]** `fuel-inference` is 6,231 LOC across 14 modules and ships: eviction policies (LRU,
+H2O heavy-hitter, weighted voting), prefix caching, StreamingLLM, speculative decoding, chunked
+prefill, segmented eviction, KV compression (KIVI / R-KV / low-rank), a memory-aware scheduler with
+priority queuing and eviction-pressure admission control, MoE routing, tiered storage (GPU→CPU→Disk
+with RoPE re-injection), context compression, tool call, sampling + `LogitsProcessor`, and unified KV
+cache variants.
+
+Set against Lightbulb's tree that is a **near-1:1 overlap**: `cache/{h2o_policy, prefix_cache,
+streaming_policy, segmented_eviction_policy, kv_compression, tiered_storage, eviction_policy}.rs`,
+`model/chunked_prefill.rs`, `engine/{moe_router, speculative, memory_aware_scheduler,
+context_compression, tool_call}.rs`, `sampling.rs`. Lightbulb's `cache/` alone is 9.4k LOC with a
+tested counterpart already in Fuel.
+
+**Maturity, precisely [verified — sharpened by the Lightbulb session]:** 153 `#[test]` fns across the
+12 modules plus `tests/scheduler_bridge.rs`, and **exactly zero consumers** — `fuel-inference`
+appears in only two `Cargo.toml` files, the workspace root and its own. So it is **unit-tested but
+never integrated**. The first consumer should expect to find the integration bugs 153 unit tests do
+not catch. *"Tested" must not be read as "proven."*
+
+**Decision rule (CireSnave, relayed 2026-07-29):** default is **adopt Fuel's** — "unless Lightbulb
+has some piece of functionality worth keeping over Fuel in spots where they are nearly 1:1, we should
+use what Fuel supplies." And upstreaming is blessed: "if Lightbulb does contain functionality that
+would be better suited on the Fuel side of that seam, we can move things into Fuel." So the
+per-module diff has three arms — **adopt Fuel's**, **upstream Lightbulb's**, or **diverge with a
+stated reason** — with the burden of proof on keeping a consumer-side copy.
+
+Size deltas that make this actionable rather than academic: Lightbulb's `kv_compression.rs` is 1,998
+LOC vs. `fuel-inference`'s 742; `segmented_eviction_policy.rs` 844 vs. 551. KIVI / R-KV / low-rank
+are named on both sides, so the delta is plausibly depth rather than breadth — **[judgment]** if it
+is real capability, the answer is upstream, not keep.
+
+**Note the placement question this raised**, now resolved in the constitution: `fuel-inference`
+shipping admission control and eviction *policy* looked like a violation of §15's refusals. It isn't
+— see [15 §Where the seam runs](architecture/15-consumer-contract.md#where-the-seam-runs-foundation-not-the-repository)
+(added v0.2 in response): the seam runs between Foundation and the orchestration tier, not around the
+workspace, and `fuel-inference` is an optional consumer-side toolkit above it.
 
 ---
 
