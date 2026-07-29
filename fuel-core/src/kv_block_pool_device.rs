@@ -33,7 +33,19 @@ use fuel_dispatch::pipelined::{PipelinedExecutor, StorageCache};
 use fuel_memory::Storage;
 
 use crate::Device;
+use crate::lazy::LazyTensor;
 use crate::kv_block_pool::{KvAllocError, KvBlockPool, KvGeometry, PhysBlockId, SessionHandle};
+
+/// Which of a layer's two pool buffers a block operation targets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockKind {
+    K,
+    V,
+}
+
+fn msg_err(s: String) -> crate::Error {
+    crate::Error::from(fuel_ir::Error::Msg(s).bt())
+}
 
 /// A materialized `Op::PagedAttn` page table — the host-side `block_table` +
 /// `context_lens` for a batch of `B` sessions, ready to upload as `Op::Const`
@@ -152,6 +164,137 @@ impl DeviceKvPool {
     /// Layer `l`'s V pool buffer, if `l < n_layers`.
     pub fn v_pool(&self, layer: usize) -> Option<&Arc<RwLock<Storage>>> {
         self.v_pools.get(layer)
+    }
+
+    // --- block byte movement (device-general via the executor) ------------
+
+    /// Layer `layer`'s K-or-V pool buffer, or a typed error if `layer` is out
+    /// of range.
+    fn buffer(&self, layer: usize, kind: BlockKind) -> crate::Result<&Arc<RwLock<Storage>>> {
+        let v = match kind {
+            BlockKind::K => &self.k_pools,
+            BlockKind::V => &self.v_pools,
+        };
+        v.get(layer).ok_or_else(|| {
+            msg_err(format!("DeviceKvPool: no layer {layer} (n_layers={})", self.n_layers()))
+        })
+    }
+
+    /// Elements in one physical block for one buffer (`block_size · Hkv · D`).
+    fn block_elems(&self) -> usize {
+        let g = self.geometry();
+        g.block_size * g.n_kv_heads * g.head_dim
+    }
+
+    /// The `Op::WriteSlice` rectangular ranges that select physical block
+    /// `phys` in a `[num_blocks, block_size, Hkv, D]` pool buffer:
+    /// `[(phys, phys+1), (0, block_size), (0, Hkv), (0, D)]`. Public so a
+    /// consumer building its own decode graph can write a token's K/V slab
+    /// straight into a block without re-deriving the offset.
+    pub fn block_write_ranges(&self, phys: PhysBlockId) -> Vec<(usize, usize)> {
+        let g = self.geometry();
+        let p = phys as usize;
+        vec![(p, p + 1), (0, g.block_size), (0, g.n_kv_heads), (0, g.head_dim)]
+    }
+
+    /// Write `data` (`block_size · Hkv · D` f32, row-major `[block_size, Hkv,
+    /// D]`) into physical block `phys` of layer `layer`'s K-or-V buffer, in
+    /// place, through the executor (`Op::WriteSlice`) — so it is device-general
+    /// (the same path a CUDA/Vulkan pool uses), not a host poke.
+    ///
+    /// f32-only for now (the CPU-gated increment); the pool's real dtype is
+    /// carried in [`Self::dtype`] and a byte/dtype-generic form is the follow-up
+    /// tracked for the CUDA bf16 pool.
+    pub fn write_block(
+        &self,
+        layer: usize,
+        kind: BlockKind,
+        phys: PhysBlockId,
+        data: &[f32],
+    ) -> crate::Result<()> {
+        if self.dtype != DType::F32 {
+            return Err(msg_err(format!(
+                "DeviceKvPool::write_block: f32-only for now, pool dtype is {:?}",
+                self.dtype,
+            )));
+        }
+        let g = self.geometry();
+        if phys as usize >= g.num_blocks {
+            return Err(msg_err(format!(
+                "DeviceKvPool::write_block: physical block {phys} out of range (num_blocks={})",
+                g.num_blocks,
+            )));
+        }
+        if data.len() != self.block_elems() {
+            return Err(msg_err(format!(
+                "DeviceKvPool::write_block: data len {} ≠ block elems {} ([block_size {}, Hkv {}, D {}])",
+                data.len(), self.block_elems(), g.block_size, g.n_kv_heads, g.head_dim,
+            )));
+        }
+        let buf = Arc::clone(self.buffer(layer, kind)?);
+        // Source slab [1, block_size, Hkv, D]; destination is a placeholder
+        // bound to the persistent pool buffer, WriteSliced at the block offset.
+        let src = LazyTensor::from_f32(
+            data.to_vec(),
+            Shape::from_dims(&[1, g.block_size, g.n_kv_heads, g.head_dim]),
+            &self.device,
+        );
+        let dest = src.const_placeholder_like(self.pool_shape.clone(), self.dtype);
+        let post = dest.write_slice(&src, self.block_write_ranges(phys))?;
+        let mut cache = StorageCache::new();
+        cache.insert(dest.node_id(), buf);
+        // Realizing `post` executes the WriteSlice, mutating the bound pool
+        // buffer in place; the returned bytes (the whole buffer) are discarded.
+        let _ = crate::pipelined_bridge::realize_one_as_with_initial::<f32>(
+            post.graph_handle(),
+            post.node_id(),
+            &self.device,
+            cache,
+        )?;
+        Ok(())
+    }
+
+    /// Read physical block `phys` of layer `layer`'s K-or-V buffer back to host
+    /// as `block_size · Hkv · D` f32 (row-major `[block_size, Hkv, D]`). Reads
+    /// *through the executor* (`Slice` of the cache-bound buffer, realized) so
+    /// it is device-general — a CUDA/Vulkan pool D2H-copies the block the same
+    /// way. f32-only for now (see [`Self::write_block`]).
+    pub fn read_block(
+        &self,
+        layer: usize,
+        kind: BlockKind,
+        phys: PhysBlockId,
+    ) -> crate::Result<Vec<f32>> {
+        if self.dtype != DType::F32 {
+            return Err(msg_err(format!(
+                "DeviceKvPool::read_block: f32-only for now, pool dtype is {:?}",
+                self.dtype,
+            )));
+        }
+        let g = self.geometry();
+        if phys as usize >= g.num_blocks {
+            return Err(msg_err(format!(
+                "DeviceKvPool::read_block: physical block {phys} out of range (num_blocks={})",
+                g.num_blocks,
+            )));
+        }
+        let buf = Arc::clone(self.buffer(layer, kind)?);
+        // Anchor a graph, bind the pool buffer to a placeholder, slice the one
+        // block out, and realize it — the executor handles any D2H copy.
+        let anchor = LazyTensor::from_f32(vec![0.0], Shape::from_dims(&[1]), &self.device);
+        let dest = anchor.const_placeholder_like(self.pool_shape.clone(), self.dtype);
+        let block = dest
+            .slice(0, phys as usize, 1)?
+            .reshape(Shape::from_dims(&[self.block_elems()]))?;
+        let mut cache = StorageCache::new();
+        cache.insert(dest.node_id(), buf);
+        crate::pipelined_bridge::realize_one_as_with_initial::<f32>(
+            block.graph_handle(),
+            block.node_id(),
+            &self.device,
+            cache,
+        )
+        .map_err(crate::Error::from)
     }
 
     // --- page-table materialization (C: Op::PagedAttn operands) -----------
@@ -344,6 +487,53 @@ mod tests {
         assert_eq!(row_b[2], 0, "sb's short row is zero-padded");
         assert_eq!(pt.block_table_shape().dims(), &[2, 3]);
         assert_eq!(pt.context_lens_shape().dims(), &[2]);
+    }
+
+    /// `write_block` mutates the *persistent* pool buffer in place (through the
+    /// executor's `Op::WriteSlice`), and `read_block` reads it straight back —
+    /// the device byte-movement round trip. If the WriteSlice produced a fresh
+    /// output instead of mutating the bound buffer, read_block would still see
+    /// the zero-init block and this fails.
+    #[test]
+    fn write_block_then_read_block_round_trips_in_place() {
+        let pool = DeviceKvPool::new(geom(2, 8, 4), DType::F32, &Device::cpu()).unwrap();
+        let block_elems = 4 * 2 * 8; // block_size · Hkv · D
+        let data: Vec<f32> = (0..block_elems).map(|i| i as f32 + 0.5).collect();
+
+        pool.write_block(1, BlockKind::K, 5, &data).unwrap();
+        let back = pool.read_block(1, BlockKind::K, 5).unwrap();
+        assert_eq!(back, data, "block content survives the device write→read round trip");
+    }
+
+    /// A block write touches ONLY the addressed (layer, kind, phys) — every
+    /// other block/buffer stays zero-initialized. Catches an offset/stride bug
+    /// that would smear the write across blocks or the wrong buffer.
+    #[test]
+    fn write_block_is_isolated_to_its_layer_kind_and_physical_block() {
+        let pool = DeviceKvPool::new(geom(2, 8, 4), DType::F32, &Device::cpu()).unwrap();
+        let block_elems = 4 * 2 * 8;
+        let ones = vec![1.0_f32; block_elems];
+        let zeros = vec![0.0_f32; block_elems];
+
+        pool.write_block(0, BlockKind::K, 3, &ones).unwrap();
+
+        assert_eq!(pool.read_block(0, BlockKind::K, 3).unwrap(), ones, "target block written");
+        assert_eq!(pool.read_block(0, BlockKind::K, 2).unwrap(), zeros, "neighbor block untouched");
+        assert_eq!(pool.read_block(0, BlockKind::K, 4).unwrap(), zeros, "neighbor block untouched");
+        assert_eq!(pool.read_block(0, BlockKind::V, 3).unwrap(), zeros, "same-layer V untouched");
+        assert_eq!(pool.read_block(1, BlockKind::K, 3).unwrap(), zeros, "other-layer K untouched");
+    }
+
+    /// Out-of-range physical block / wrong data length are typed errors, never
+    /// panics or out-of-bounds writes.
+    #[test]
+    fn block_io_bounds_are_typed_errors() {
+        let pool = DeviceKvPool::new(geom(1, 4, 4), DType::F32, &Device::cpu()).unwrap();
+        let block_elems = 4 * 2 * 8;
+        assert!(pool.write_block(0, BlockKind::K, 4, &vec![0.0; block_elems]).is_err(), "phys 4 ≥ num_blocks 4");
+        assert!(pool.read_block(0, BlockKind::K, 9).is_err(), "read phys 9 out of range");
+        assert!(pool.write_block(0, BlockKind::K, 0, &[1.0, 2.0]).is_err(), "short data rejected");
+        assert!(pool.write_block(3, BlockKind::K, 0, &vec![0.0; block_elems]).is_err(), "no layer 3");
     }
 
     /// Materializing over an unknown or externalized session is a typed error
