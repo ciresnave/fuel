@@ -1055,6 +1055,28 @@ prompted this section was **not** a `todo!()`: it computes its input, discards i
 input?*** A stub cannot fake that, and a signature cannot show it. Both probes are cheap
 approximations of that single question.
 
+#### Probe zero — before claiming a capability is ABSENT, check whether something is NAMED for it
+
+Both probes above test whether a *found* implementation is real. Neither helps when the
+implementation is never found. **Two absence claims failed today for the same reason, one from each
+side of this survey:** a *"the serving path has no runnable reference"* claim checked `examples/`
+when Fuel exercises serving in `tests/`; and my *"zero implementation hits for sharding"* claim
+grepped three crates while an entire crate named **`fuel-parallel`** sat in the workspace root.
+
+**Neither was a "search wider" failure. Both searched where the thing was *expected to be* rather
+than where it would be *named*.** A content grep answers "does this text appear where I looked"; it
+cannot answer "does this exist." So:
+
+**Before asserting a capability is absent, run a name-based sweep first** — `ls */`, the workspace
+members list, crate descriptions, directory names. It is a *different and cheaper* probe than a
+content grep, and it is the one that finds things filed where you did not think to look. One `ls` at
+the workspace root would have found `fuel-parallel`, and neither party had run one despite both
+reading that workspace all day.
+
+**Absence claims carry a higher burden than presence claims** — a presence claim is falsified by the
+next person who looks, but an absence claim tends to stand unchallenged, because nobody has occasion
+to go looking for something they have been told is not there.
+
 **Both were run across the consumer's whole tree, and the result is reassuring rather than alarming
 [consumer-reported]:** exactly **one** `todo!()` in `src/` (the known `PerGroup`), and `randn`
 outside tests hits five sites — three doc examples in ```` ```ignore ```` blocks, two the known
@@ -1091,12 +1113,35 @@ identity backend**: correct shard *arithmetic*, no actual cross-device *communic
 **And zero consumers** — `fuel-parallel` appears in exactly two `Cargo.toml`s, the workspace root and
 its own. Built, never wired: the same pattern as `fuel-inference`.
 
-**The consumer is in the same position [verified].** Its `NCCL` is an enum variant in `config.rs` plus
-doc-comment aspiration; `TensorShard::all_reduce(&[Tensor])` / `gather` / `scatter` operate on slices
-of tensors **already local to one process**. Real sharding arithmetic, no transport.
+**~~The consumer is in the same position.~~ CORRECTED 2026-07-29 — it is not, and the difference is
+load-bearing. [verified]** I wrote that its collectives *"operate on slices of tensors already local
+to one process"* and equated that with `IdentityComm`. **Wrong.** `TensorShard::all_reduce` genuinely
+reduces: `let mut result = shards[0].clone(); for shard in &shards[1..] { let shard_same_device =
+shard.to_device(result.device())?; result = (result + shard_same_device)?; }` — it **moves each shard
+onto a common device and sums them**. That is a working *single-process, multi-device* all-reduce:
+one process driving N GPUs via device-to-device copies. `IdentityComm` returns `tensor.clone()` and
+reduces nothing.
 
-**So per the absence-in-both rule this is NOT a port regression** — it is a genuine gap in both
-systems. And the missing piece places cleanly under [A.5.2](#a52-placement-rubric--where-a-capability-goes)
+| | Single-node multi-GPU | Multi-node |
+| --- | --- | --- |
+| Consumer `multi_gpu/` | **works** — real cross-device gather-and-sum | **absent** (`NCCL` = enum variant + doc aspiration) |
+| Fuel `fuel-parallel` | **placeholder** — `IdentityComm` reduces nothing | **absent** |
+
+**Three consequences:**
+
+1. **The don't-delete case is *stronger*, not weaker.** Not merely "Fuel's equivalent is unwired" but
+   **"the consumer's works for single-node and Fuel's returns its input unchanged."** Deleting a
+   functioning cross-device all-reduce in favour of `IdentityComm` is a straightforward capability
+   loss.
+2. **Absence-in-both applies only to the *multi-node* collective.** Single-node is
+   **present-in-one, absent-in-other** — a genuine regression risk belonging in a different row from
+   the NCCL gap. *"One process, four GPUs"* — the configuration most inference deployments actually
+   run — needs cross-device copies, not NCCL.
+3. **The guide value includes `comm.rs`.** The consumer's cross-device path is a working reference
+   for what `IdentityComm` must become **for the single-node case** — a far smaller step than
+   multi-node transport, and the highest-value thing to port first.
+
+**So the *multi-node* collective is absent in both** And the missing piece places cleanly under [A.5.2](#a52-placement-rubric--where-a-capability-goes)
 **rule 4**: a real collective (NCCL or equivalent) is a *kernel/transport* concern, so it is a
 **backend** ask — Baracuda for CUDA — not Fuel-internal work. Fuel's remaining job is to *wire*
 `fuel-parallel` to it and to a consumer.
