@@ -328,8 +328,53 @@ incrementally as Fuel offers them; **none block the port**.
    requests the missing kernel, because no matmul ever sees mixed dtypes. I asserted the port was
    "blocked behind this fix" without checking whether the port's own path would hit the gap — the
    same existence→behaviour overreach catalogued in the standing caveat, applied to a *gap* instead
-   of a feature. The port session's calibrated version: *plausibly unblocked, pending a run.*
-   Awaiting a build-now-vs-sequence call; the fix belongs beside the two existing fixup passes.
+   of a feature.
+
+   **RESOLVED BY EXECUTION 2026-07-29 — F32-at-load works.** The port session built a scratch crate
+   depending on Fuel by path and ran a control/test pair on `a[2,3] @ w[3,2]` with known values: the
+   **control** (`F32 @ BF16`) reproduces the gap exactly, and the **test** (`F32 @ cast(BF16→F32)`)
+   realizes `[4, 5, 10, 11]` — correct. A cast-at-load consumer is **verified unblocked**, not merely
+   plausibly so. Gap 5b is real and blocks `llama-lazy` plus any graph that *constructs* a
+   mixed-precision matmul; it does **not** block a cast-at-load consumer. Awaiting a
+   build-now-vs-sequence call; the fix belongs beside the two existing fixup passes.
+
+   **[note] The first entry in this survey established by execution rather than inspection — and it
+   needed a control to be trustworthy.** The port session's harness was initially wrong and *both*
+   arms failed identically; had only the test been run, the conclusion would have been "F32-at-load
+   is broken" and a Fuel gap that does not exist would have been reported. **Two paths failing the
+   same way is a harness smell, not a finding.**
+
+5c. **Graph affinity is undiscoverable from the constructor side — a consumer-blocking documentation
+   gap. [verified 2026-07-29]** Found by the first consumer to write a two-tensor program, by hitting
+   a panic rather than by reading.
+
+   Every `LazyTensor::from_*` constructor **mints its own graph** — `from_f32`, `from_bf16`, and
+   `zeros`/`full` which delegate to them; none takes a graph parameter. Meanwhile `matmul` asserts
+   `Arc::ptr_eq(&self.graph, &other.graph)` (`fuel-graph/src/lib.rs:3913`). **So the obvious way to
+   write a two-tensor program — construct both, multiply them — cannot work**, and fails with
+   `"matmul: tensors must live on the same graph"`: a message stating the invariant, not the cure.
+   The `matmul` doc directly above that assert covers ranks, shapes and broadcasting and says nothing
+   about graph affinity.
+
+   The remedy is the **`const_*_like` family** (`const_f32_like`, `const_bf16_like`,
+   `const_like_dtype`, …) — graph-sharing constructors taking an anchor tensor. `const_bf16_like`'s
+   own doc names this exact case ("bf16-on-device weights in the mixed-precision matmul path —
+   activations stay f32, weight matrices live as bf16"). **Clear once you know to look there;
+   undiscoverable from the `from_*` side.**
+
+   **The general constraint every consumer must internalize:** every tensor in a graph descends from
+   a common root — a model's weights are `const_*_like` off the activation tensor.
+
+   **Suggested fix, cheapest first** — deliberately *not* applied here: it spans nine assert sites in
+   a core file (`matmul`, `qmatmul`, `conv2d` ×2, `conv_transpose2d`, `flash_attn` ×3) plus the
+   constructor docs, and wants to land as one coherent sweep rather than a partial edit while another
+   session is working those crates. **[verified]** no test matches on those message strings, so they
+   are safe to change.
+   1. Cross-reference `const_*_like` from every `from_*` constructor doc, and say that the
+      constructor mints a **new** graph.
+   2. Extend each assert message to name the cure — *"…must live on the same graph; use
+      `const_*_like` to build on an existing graph"*.
+   3. State the common-root constraint once in the `LazyTensor` type doc.
 6. **Hot-path attention observation — the only genuine design problem in the port, and it is a
    *clause* problem.** The ~4 real extraction sites from item 1 (`custom_transformer.rs:593`/`:749`,
    `custom_attention.rs:919`, `kv_compression.rs:595`/`:820`) are all the same thing: **observing
