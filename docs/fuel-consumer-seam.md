@@ -364,6 +364,15 @@ incrementally as Fuel offers them; **none block the port**.
    on the consumer's real shapes before deleting a hand-tuned FFI; and these are baracuda-backed, so
    **CUDA-only**. A consumer needing 4-bit on Vulkan or CPU is still in gap territory.
 5. **Error type.** 49 `Error::Msg` + 28 `bail`. Mechanical, but touches nearly every coupled file.
+5d. **No `from_mmaped_safetensors` equivalent on `LazyVarBuilder` [reported 2026-07-29, port
+   session].** The Candle-shaped weight-loading route a consumer reaches for does not exist, so the
+   real safetensors path has to be resolved before any loader code is written. Recorded as found
+   rather than invented — it surfaced while the port session was cataloguing Fuel's actual API
+   surface at `13279179` with `file:line` evidence markers, which is also where the graph-affinity
+   rule, `DecodeModel` as the consumer seam (returns `Vec<f32>`, so the realize boundary genuinely
+   is logits→sampling, and `SamplingStrategy` deliberately stayed out of the trait — corroborating
+   Q5), `forward_with_kv_context_captured` (`lazy.rs:8458`) as the port's target, and
+   `DeviceKvPool`'s surface were pinned.
 5b. **No optimizer dtype-reconciliation pass — a real Fuel-side blocker, found 2026-07-29.** The
    dispatch failure that killed `llama-lazy` turned out **systemic, not a one-off**: the
    mixed-precision matmul a real model builds (`[F32, BF16, F32]`) has no CPU or CUDA kernel — those
@@ -375,7 +384,36 @@ incrementally as Fuel offers them; **none block the port**.
    *residency* mismatches and has no equivalent for *dtype*. Diagnosed by the serving/dispatch
    session, which reports the intended fallback ("f32 matmul after a Cast") is promised in a Vulkan
    docstring but unimplemented — **[not verified here]**, I could not locate that string.
-   **⚠ OPEN QUESTION raised by the fix (2026-07-29) — does `insert_dtype_fixups` honour C-5?**
+   **✅ ANSWERED same day — the pass is *losslessness*-gated, and the caveat was already written
+   down. [verified here]** `optimize.rs:476` — `lossless_upcast` returns `true` only for identity
+   plus `BF16→{F32,F64}`, `F16→{F32,F64}`, `F32→F64`: widenings where the target's exponent *and*
+   mantissa cover the source's. Its doc: *"Deliberately conservative: an unlisted pair returns
+   `false`, so the pass declines rather than risk a lossy or semantics-changing promotion."* When no
+   lossless promotion yields a supported key, the node is untouched and fails cleanly at
+   `compile_plan` with the truthful coverage diagnostic — a real gap surfaced rather than papered
+   over. (A comparison's `U8` output is not a lossless target, so comparisons are left alone.)
+
+   **`optimize.rs:376–383` already states the concern and names the clauses**: the upcast is
+   value-lossless but *"NOT numerically identical to a native mixed-precision kernel — it accumulates
+   in the higher precision"*; every promotion is reported via `tracing` (**C-6** visibility, already
+   implemented); making a promoting cast **forbiddable under a C-5 determinism/tolerance
+   constraint** and **accounting its extra resident bytes under C-4** are named ROADMAP follow-ups.
+   **The gap is real but tracked, not unnoticed.**
+
+   **The distinction worth keeping — value-lossless ≠ accumulation-preserving.** The *cast* preserves
+   every value exactly; the *accumulation afterwards* does not match a native mixed kernel. A
+   reviewer skimming `lossless_upcast` could reasonably conclude the pass is numerically neutral; it
+   is not, and only the prose says so. That sharpens the three-dimension taxonomy:
+   `insert_layout_fixups` and `insert_residency_copies` are value-preserving **and**
+   accumulation-preserving; `insert_dtype_fixups` is value-preserving **but not**
+   accumulation-preserving. That is the precise line, and why two are exempt by construction and one
+   needs a gate.
+
+   **[note] §15's clause numbers are cited by name in code written the day after the section
+   landed** — C-4, C-5 and C-6 all appear in this pass's comments. The contract is functioning as
+   shared vocabulary, not merely as documentation.
+
+   **~~Original open question, retained for the trail:~~**
    The port session reports that execution surfaced *"the numeric non-neutrality of the promoting
    cast"* — i.e. inserting a `Cast` to make a kernel available is **not** a numerics-preserving
    rewrite. If so, this is a **C-5 question**, not merely an optimizer detail: a pass that changes
