@@ -536,6 +536,122 @@ mod tests {
         assert!(pool.write_block(3, BlockKind::K, 0, &vec![0.0; block_elems]).is_err(), "no layer 3");
     }
 
+    /// Small deterministic pseudo-random f32 fill (mirrors paged_attn_oracle).
+    fn rand_f32(n: usize, seed: u32) -> Vec<f32> {
+        let mut s = seed;
+        (0..n)
+            .map(|_| {
+                s = s.wrapping_mul(1103515245).wrapping_add(12345);
+                ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.5
+            })
+            .collect()
+    }
+
+    /// THE INTEGRATION GATE. A session's K/V, written into the pool's physical
+    /// blocks via `write_block` at the *core-assigned* (non-identity) physical
+    /// positions, then read by `Op::PagedAttn` through the *materialized*
+    /// block_table, must equal a hand-computed dense attention over the logical
+    /// sequence. This composes every Part-2 piece — core placement + write_block
+    /// + materialize_block_table + the real fused op bound to the real pool
+    /// buffers. The physical layout is a permutation (blocks 2,3,4, not 0,1,2),
+    /// so a paged_attn that ignored the block_table would read the wrong blocks
+    /// and fail.
+    #[test]
+    fn pool_routed_paged_attn_matches_dense_reference_over_a_permuted_layout() {
+        let (hq, hkv, d, block_size, sk) = (2usize, 2usize, 4usize, 4usize, 12usize);
+        let num_blocks = 8;
+        let scale = 1.0f32 / (d as f32).sqrt();
+        let dev = Device::cpu();
+
+        let g = KvGeometry {
+            n_layers: 1,
+            num_blocks,
+            block_size,
+            n_kv_heads: hkv,
+            head_dim: d,
+            elem_size: 4,
+        };
+        let mut pool = DeviceKvPool::new(g, DType::F32, &dev).unwrap();
+
+        // Force a NON-identity physical assignment: a filler grabs blocks 0,1;
+        // the real session then gets blocks 2,3,4.
+        let filler = pool.core_mut().open();
+        pool.core_mut().append(filler, 8).unwrap();
+        let s = pool.core_mut().open();
+        pool.core_mut().append(s, sk).unwrap(); // 12 tokens → 3 blocks: 2,3,4
+        let phys = pool.core().session_block_table(s).unwrap();
+        assert_eq!(phys, vec![2, 3, 4], "permuted layout — not identity 0,1,2");
+
+        // Logical K/V for the session, row-major [sk, Hkv, D]; q is [1, Hq, 1, D].
+        let k_all = rand_f32(sk * hkv * d, 2);
+        let v_all = rand_f32(sk * hkv * d, 3);
+        let q_data = rand_f32(hq * d, 1);
+
+        // Write each logical block into its core-assigned physical block.
+        let per_block = block_size * hkv * d;
+        for (b, &p) in phys.iter().enumerate() {
+            let kb = &k_all[b * per_block..(b + 1) * per_block];
+            let vb = &v_all[b * per_block..(b + 1) * per_block];
+            pool.write_block(0, BlockKind::K, p, kb).unwrap();
+            pool.write_block(0, BlockKind::V, p, vb).unwrap();
+        }
+
+        // Materialize the page table straight from the core.
+        let pt = pool.materialize_block_table(&[s]).unwrap();
+        assert_eq!(pt.context_lens, vec![sk as u32]);
+
+        // Build the paged_attn graph, binding the REAL pool buffers as k/v cache.
+        let q = LazyTensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, 1, d]), &dev);
+        let kc = q.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
+        let vc = q.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
+        let bt = q.const_u32_like(pt.block_table.clone(), pt.block_table_shape());
+        let cl = q.const_u32_like(pt.context_lens.clone(), pt.context_lens_shape());
+        let out = q.paged_attn(&kc, &vc, &bt, &cl, None, scale, block_size, None).unwrap();
+
+        let mut cache = StorageCache::new();
+        cache.insert(kc.node_id(), Arc::clone(pool.k_pool(0).unwrap()));
+        cache.insert(vc.node_id(), Arc::clone(pool.v_pool(0).unwrap()));
+        let got = crate::pipelined_bridge::realize_one_as_with_initial::<f32>(
+            out.graph_handle(),
+            out.node_id(),
+            &dev,
+            cache,
+        )
+        .unwrap();
+
+        // Dense reference: softmax(scale · q·kᵀ) · v per head, over all sk keys.
+        let mut want = vec![0.0f32; hq * d];
+        for h in 0..hq {
+            let mut scores = vec![0.0f32; sk];
+            for t in 0..sk {
+                let mut dot = 0.0f32;
+                for dd in 0..d {
+                    dot += q_data[h * d + dd] * k_all[(t * hkv + h) * d + dd];
+                }
+                scores[t] = dot * scale;
+            }
+            let m = scores.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let mut denom = 0.0f32;
+            for sc in scores.iter_mut() {
+                *sc = (*sc - m).exp();
+                denom += *sc;
+            }
+            for t in 0..sk {
+                let p = scores[t] / denom;
+                for dd in 0..d {
+                    want[h * d + dd] += p * v_all[(t * hkv + h) * d + dd];
+                }
+            }
+        }
+
+        assert_eq!(got.len(), want.len());
+        for (i, (&a, &b)) in got.iter().zip(want.iter()).enumerate() {
+            let diff = (a - b).abs();
+            let denom = a.abs().max(b.abs()).max(f32::MIN_POSITIVE);
+            assert!(diff < 1e-5 || diff / denom < 1e-5, "[{i}]: pool={a} dense={b} (abs={diff})");
+        }
+    }
+
     /// Materializing over an unknown or externalized session is a typed error
     /// (delegates the core's resident-only guard), never a panic.
     #[test]
