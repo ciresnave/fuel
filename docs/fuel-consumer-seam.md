@@ -817,10 +817,43 @@ context_compression, tool_call}.rs`, `sampling.rs`.
 > a duplicate of a consumer, it is **a policy layer written against Foundation mechanisms that
 > were never built**. That is why it has 153 tests and zero consumers.
 >
-> **The dominant outcome is upstreaming, not deletion.** On current evidence Fuel would *gain*
-> stateful H2O accumulation, KIVI granularity control, and a relationship-aware compression
-> strategy. The size deltas flagged below (`kv_compression` 1,998 vs 742) turn out to be **real
-> capability, not padding** — exactly the case CireSnave's rule sends upstream.
+> **~~The dominant outcome is upstreaming, not deletion.~~ RETRACTED IN PART, 2026-07-29.** This
+> originally claimed Fuel would gain **three** things: stateful H2O accumulation, KIVI granularity
+> control, and a relationship-aware compression strategy. **Two of the three are withdrawn**, by the
+> port session against its own recommendation, and the third is unverified.
+>
+> **[verified here]** in the consumer's `cache/kv_compression.rs`:
+> - **Low-rank compression returns noise.** `compute_low_rank` (`:1070`) computes `reshaped` from
+>   the input and then **never uses it**; `u` and `vt` come from `Tensor::randn`, `s` from
+>   `Tensor::ones`, and the normalized result is returned. Its own comment: *"we'll use random
+>   projection as a proxy. TODO: Replace with proper SVD when available in Candle."* **The input
+>   tensor is discarded** — it is not an approximation of anything.
+> - **KIVI `PerGroup` is `todo!("Grouped quantization not yet implemented")`** (`:446`) — it panics.
+>   `PerHead` and `PerChannel` are real. **`PerGroup` is precisely the option that made the
+>   consumer's config look richer than Fuel's `KiviConfig { bits }`**, and precisely what was
+>   offered for upstreaming.
+> - **Relationship-aware is scaffolding** — clustering is *"TODO: Implement more sophisticated
+>   clustering"* (`:772`), causal analysis *"TODO: Implement proper causal graph analysis"* (`:839`),
+>   compressor chaining TODO (`:145`).
+> - **A suspected bug on KIVI's live path** *(consumer-reported, not verified here)*: symmetric scale
+>   (`abs().max / (2^bits − 1)`) followed by `clamp(0.0, max_val)` with `zero_points: None` (`:492`)
+>   would clamp every negative to zero on signed KV activations.
+>
+> **So the "upstreaming" framing rests on one unverified item.** Stateful H2O accumulation was never
+> checked for stubs and should not be relied on until it is.
+>
+> **The 1,998-vs-742 LOC delta was measuring unfinished breadth, not depth** — I cited it as
+> evidence of "real capability, not padding". **A line-count difference is not a capability signal**;
+> that inference was mine and it was wrong.
+>
+> **No regression to record**: a capability that never worked cannot be lost by porting. Low-rank
+> and `PerGroup` are absences in *both* systems.
+>
+> **A real gap surfaces instead [consumer-checked, both trees]: SVD exists in neither Fuel nor
+> KISS's op vocabulary.** If low-rank KV compression is ever wanted for real, the decomposition has
+> to come from somewhere — a **vocabulary question for KISS** and a **numerics question for a
+> backend** under [A.5.2](#a52-placement-rubric--where-a-capability-goes). Not something a consumer
+> should hand-roll again.
 >
 > **Why this correction matters more than it looks** *(the port session's framing, and it is the
 > right one)*: the harm of the original wording was never that a consumer deletes something it
@@ -958,6 +991,28 @@ argument. The rubric below is **derived from existing architecture**, not invent
 is the point: multi-device lands in Fuel because sharding is *equivalent-implementation selection*,
 which is the same test that put `SchedulePolicy` on Fuel's side and eviction policy on the
 consumer's. A capability that needed a bespoke argument would be a sign the rubric is wrong.
+
+### A.5.3 Gate zero — is the implementation real? (added 2026-07-29, the expensive way)
+
+**Before placing a capability, establish that it exists.** Run
+`grep -n "todo!\|unimplemented!\|TODO" <module>` and read what the function actually returns. Five
+seconds, and it precedes every other question in the rubric — placement, regression, upstreaming and
+deletion are all moot for a capability that was never implemented.
+
+This is not hypothetical caution. It was added after the port session withdrew two upstreaming
+recommendations it had already given, and that this annex had already recorded: a KIVI granularity
+option that is a `todo!()` panic, and a low-rank compressor that discards its input and returns
+`randn`. Both had rich, well-typed, plausibly-documented public surfaces.
+
+**The general form, and it is the sharp edge of the standing caveat at the head of A.3:** *a module
+can expose a complete API and do nothing behind it, and reading the API cannot distinguish those
+cases.* The existence→behaviour rule says "run it"; gate zero is the cheap approximation available
+when running it is expensive — you cannot always execute, but you can always check whether the body
+is a stub.
+
+**Corollary, learned the same way: a line-count delta is not a capability signal.** The 1,998-vs-742
+comparison in A.4 was cited as evidence of depth and was measuring unfinished breadth. Size
+comparisons belong nowhere in a capability verdict.
 
 ---
 
