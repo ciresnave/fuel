@@ -47,6 +47,39 @@ use std::sync::Arc;
 /// called. Cheap to clone — the underlying `fuel_graph::Tensor` is a
 /// cheap handle pair `(Rc<RefCell<Graph>>, NodeId)`, so cloning just
 /// bumps the `Rc` and copies the id.
+///
+/// # Tensors are graph-affine — read this before building anything
+///
+/// **Every tensor in one computation must descend from a common root.**
+/// Each `from_*` constructor ([`from_f32`](Self::from_f32),
+/// [`from_bf16`](Self::from_bf16), …) — and [`zeros`](Self::zeros) /
+/// [`full`](Self::full), which delegate to them — **mints a brand-new
+/// graph**. Two independently-constructed tensors therefore live on two
+/// different graphs and **cannot be combined**: every binary op asserts
+/// `"… must live on the same graph"`.
+///
+/// So the obvious shape does *not* work:
+///
+/// ```ignore
+/// let a = LazyTensor::from_f32(a_data, [2, 3], &device);
+/// let w = LazyTensor::from_f32(w_data, [3, 2], &device);  // ← a SECOND graph
+/// let y = a.matmul(&w);                                   // ← panics
+/// ```
+///
+/// Build every subsequent tensor **on an existing one** with the
+/// `const_*_like` family, which takes an anchor tensor and shares its
+/// graph:
+///
+/// ```ignore
+/// let a = LazyTensor::from_f32(a_data, [2, 3], &device);  // the root
+/// let w = a.const_f32_like(w_data, [3, 2].into());        // same graph ✓
+/// let y = a.matmul(&w);                                   // ✓
+/// ```
+///
+/// In a model this means the **activation tensor is the root and the
+/// weights are `const_*_like` off it**. `const_bf16_like` exists for
+/// precisely the mixed-precision case — f32 activations with bf16 weight
+/// matrices sharing one graph.
 #[derive(Clone, Debug)]
 pub struct LazyTensor {
     inner: fuel_graph::Tensor,
@@ -66,6 +99,14 @@ impl LazyTensor {
     /// allocated. The graph's storage_map slot for the new node is
     /// populated and `Op::Const(None)` is emitted — no host-side
     /// `ConstData` payload rides on the graph node.
+    ///
+    /// # Mints a NEW graph
+    ///
+    /// This starts a **fresh graph**. A tensor built here cannot be combined
+    /// with one built by another `from_*` call — ops assert both operands
+    /// share a graph. To add a second tensor to *this* one's graph, use
+    /// [`const_f32_like`](Self::const_f32_like) (or a sibling
+    /// `const_*_like`). See [graph affinity](Self#tensors-are-graph-affine--read-this-before-building-anything).
     pub fn from_f32(
         data: impl Into<Arc<[f32]>>,
         shape: impl Into<Shape>,
@@ -78,6 +119,10 @@ impl LazyTensor {
 
     /// Build an `f64` lazy tensor. `device` selects where the realized
     /// Storage is allocated.
+    ///
+    /// **Mints a NEW graph** — to build on an existing tensor's graph use
+    /// [`const_f64_like`](Self::const_f64_like). See
+    /// [graph affinity](Self#tensors-are-graph-affine--read-this-before-building-anything).
     pub fn from_f64(
         data: impl Into<Arc<[f64]>>,
         shape: impl Into<Shape>,
@@ -90,6 +135,12 @@ impl LazyTensor {
 
     /// Build a `bf16` lazy tensor. `device` selects where the realized
     /// Storage is allocated.
+    ///
+    /// **Mints a NEW graph.** For the common case — bf16 weights alongside
+    /// f32 activations — build the weights with
+    /// [`const_bf16_like`](Self::const_bf16_like) off the activation tensor
+    /// so both share one graph. See
+    /// [graph affinity](Self#tensors-are-graph-affine--read-this-before-building-anything).
     pub fn from_bf16(
         data: impl Into<Arc<[half::bf16]>>,
         shape: impl Into<Shape>,
@@ -5007,6 +5058,12 @@ impl LazyTensor {
     /// New tensor with `shape`/`dtype`/`device`, every element set to `0`.
     /// Static factory equivalent of eager's `Tensor::zeros`. Returns Err for
     /// dtypes outside F32/F64/BF16/F16/U32.
+    ///
+    /// **Mints a NEW graph** — it delegates to the `from_*` constructors, so
+    /// the tensor it returns cannot be combined with one built elsewhere. To
+    /// add a zero tensor to an existing graph, use
+    /// [`zeros_like`](Self::zeros_like) or a `const_*_like` builder. See
+    /// [graph affinity](Self#tensors-are-graph-affine--read-this-before-building-anything).
     pub fn zeros(
         shape: impl Into<Shape>, dtype: DType, device: &Device,
     ) -> std::result::Result<Self, fuel_ir::Error> {
@@ -5027,6 +5084,11 @@ impl LazyTensor {
     /// New tensor of `shape`/`device` filled with `value`. The scalar's
     /// dtype determines the tensor's dtype. Returns Err for scalar dtypes
     /// outside F32/F64/BF16/F16/U32.
+    ///
+    /// **Mints a NEW graph** — it delegates to the `from_*` constructors, so
+    /// the tensor it returns cannot be combined with one built elsewhere. To
+    /// add a filled tensor to an existing graph, use a `const_*_like` builder.
+    /// See [graph affinity](Self#tensors-are-graph-affine--read-this-before-building-anything).
     pub fn full(
         shape: impl Into<Shape>,
         value: fuel_ir::Scalar,

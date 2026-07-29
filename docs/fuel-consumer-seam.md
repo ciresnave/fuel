@@ -128,6 +128,23 @@ counted or read from code; **[judgment]** = assessment.
 >
 > **Re-check the reverse gap list by execution before planning around it.** Structure tells you
 > what to look at; it does not tell you what works.
+>
+> **And the same caveat applies to the *consumer* side of this survey (2026-07-29).** The port
+> session reports that Lightbulb had **never compiled** before that day (missing workspace root,
+> plus an `mlmf` dependency that could not have type-checked against `candlelight`), and that its
+> correctness suite **still does not** — `batched_transformer_correctness` fails with 36 errors of
+> genuine API drift. So the parity oracle the port plan depends on is not merely unbuilt but stale
+> by an API generation. **Every claim in A.3/A.4 about Lightbulb's *behaviour* — as distinct from
+> its structure — is therefore unverified**, including the H2O semantics that the reduction-in-graph
+> spec is derived from. The structural claims (file counts, module shape, symbol presence) stand;
+> anything about what the code *does* is pending that suite being restored.
+>
+> **A second failure mode, found the same day and not covered by the rule above.** The port
+> session's first execution had a broken harness, and *both* the control and the test failed
+> identically; had only the test been run, the result would have been a confident report of a Fuel
+> gap that does not exist. The evidence-distance heuristic guards against overclaiming *from
+> structure*; it does nothing against **concluding absence from a broken harness**. Only a control
+> catches that. **Both disciplines are required, and they protect against opposite errors.**
 
 **Shape [verified].** ~66k LOC across 168 `.rs` files repo-wide, 110 under `src/`; single crate.
 Built on **`candlelight`**, a Candle *fork* — not stock Candle. 44 files repo-wide touch the tensor
