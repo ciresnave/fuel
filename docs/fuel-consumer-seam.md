@@ -116,6 +116,19 @@ of them will serve only Llama.
 Structural, not behavioural — file/symbol counts and module shape, no execution. **[verified]** =
 counted or read from code; **[judgment]** = assessment.
 
+> **Standing caveat (added 2026-07-29, the hard way).** **Everything in A.3 and A.4 is an
+> *existence* claim, not a *behaviour* claim.** `[verified]` here means "this symbol/file/count is
+> really there," never "this runs." That distinction was stated in the Method line from the start
+> and then violated anyway — gap #2 below was written as "working end-to-end binaries" on the
+> strength of an `ls`, and the binary does not execute. By the port session's own count, **three
+> structural findings in this survey did not survive contact with execution**: the `fuel-inference`
+> "near-1:1 overlap" (the first three modules examined turned out complementary, not duplicative),
+> a delete-list entry that was half mechanism and half policy, and gap #2. All three were
+> well-evidenced *structurally* — file counts, symbol greps, module names.
+>
+> **Re-check the reverse gap list by execution before planning around it.** Structure tells you
+> what to look at; it does not tell you what works.
+
 **Shape [verified].** ~66k LOC across 168 `.rs` files repo-wide, 110 under `src/`; single crate.
 Built on **`candlelight`**, a Candle *fork* — not stock Candle. 44 files repo-wide touch the tensor
 layer. **[flag]** what candlelight diverged from Candle is unknown to this survey and is a real port
@@ -190,12 +203,37 @@ incrementally as Fuel offers them; **none block the port**.
    `_models_retired/`. The live surface is `fuel-core`'s lazy layer — 157 `pub mod lazy_*` modules,
    with `fuel-core/src/lazy_llama_full.rs` (731 LOC) carrying `LlamaModel` as the canonical
    lazy-graph LLaMA decoder plus `Llama3Model` (line 319) with three-band Llama-3.1 long-context RoPE
-   and `from_hf_json_str` for full HF `config.json`. Working end-to-end binaries exist in
+   and `from_hf_json_str` for full HF `config.json`. Binaries exist in
    `fuel-lazy-examples/src/bin/`: `llama-lazy`, `llama-lazy-cuda`, `llama-lazy-vulkan`, `gemma-lazy`,
-   `phi-lazy-vulkan`, `bert-lazy`, `convnext-lazy`. So this is a **find-and-read task for the
-   consumer**, not a Fuel gap — and the `model/` rewrite has a working reference to copy. (The
-   consumer's own `custom_transformer`/`custom_attention`/`custom_transformer_block`, ~3.3k LOC,
-   still ports as ordinary graph code.)
+   `phi-lazy-vulkan`, `bert-lazy`, `convnext-lazy`. (The consumer's own
+   `custom_transformer`/`custom_attention`/`custom_transformer_block`, ~3.3k LOC, still ports as
+   ordinary graph code.)
+
+   > **PARTIALLY RETRACTED 2026-07-29 — the binaries do not run.** This entry originally said
+   > "**working** end-to-end binaries" and "the `model/` rewrite has a working reference to copy."
+   > **Both claims were unearned**: existence was verified with a directory listing; execution
+   > never was. The port session ran `llama-lazy` and it fails at the first realize with
+   > `no backend supports matmul on [F32, BF16, F32]; available backends: []` — an *empty
+   > registry*, not a dtype gap. It builds, downloads TinyLlama, loads weights, parses config, and
+   > builds the graph, then dies at realize. Reproduced on current `main`.
+   >
+   > **Mechanism [verified here]:** backend registration is **explicit** —
+   > `fuel-dispatch::register_backend_capabilities` (`dispatch.rs:6539`) and
+   > `register_cpu_kernels` (`:5256`) — and there is **no `ctor`/`inventory`/`linkme`
+   > auto-registration**, so linking `fuel-cpu-backend` (which `fuel-lazy-examples` does, as a
+   > non-optional dep) does not register it. None of the lazy example binaries calls either
+   > function. The registry is empty because nothing populates it.
+   >
+   > **A second reason not to lean on it:** `llama-lazy.rs` uses `fuel::lazy_llama2c::Llama2cModel`,
+   > **not** the `lazy::LlamaModel` / `Llama3Model` cited above — so even once it runs it does not
+   > exercise the model surface this gap entry points a consumer at.
+   >
+   > **Corrected status:** the lazy model surface **exists and appears complete** — 157 `lazy_*`
+   > modules, `LlamaModel`, `Llama3Model` with three-band Llama-3.1 RoPE and an HF-config
+   > deserializer are all really there, and the eager-retired-vs-lazy-live story holds. But the
+   > **end-to-end example path is unverified-to-broken pending a dispatch fix**, and a consumer
+   > cannot presently confirm parity by execution. Filed with the serving/dispatch session; fix
+   > requested by CireSnave. Close this gap on a token coming out of Fuel, not on a file listing.
 3. ~~**`nn` surface** — needs a coverage check.~~ **CLOSED 2026-07-29 (parity check, all
    [verified]).** Every symbol the consumer uses has a Fuel counterpart. `VarBuilder`/`VarMap` →
    `fuel_core::lazy_nn_varbuilder::LazyVarBuilder` / `lazy_nn_varmap::LazyVarMap`. `Linear` /
