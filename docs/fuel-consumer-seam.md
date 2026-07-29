@@ -196,11 +196,28 @@ incrementally as Fuel offers them; **none block the port**.
    consumer**, not a Fuel gap — and the `model/` rewrite has a working reference to copy. (The
    consumer's own `custom_transformer`/`custom_attention`/`custom_transformer_block`, ~3.3k LOC,
    still ports as ordinary graph code.)
-3. **`nn` surface.** `VarBuilder`, `Linear`, `linear_no_bias`, `linear_b`, `embedding`, `ops::silu`,
-   `ops::softmax_last_dim`. `fuel-nn` has `VarBuilder`/`VarMap`; needs a coverage check.
-4. **Quantized surface.** `QMatMul::from_qtensor`, `gguf_file`, AWQ (`awq_qwen3.rs`), and a Marlin
-   FFI backend. Fuel's `qmatmul` reached a total Q4_0 decompose on main `9d6ad291` — timely. AWQ and
-   Marlin are separate asks.
+3. ~~**`nn` surface** — needs a coverage check.~~ **CLOSED 2026-07-29 (parity check, all
+   [verified]).** Every symbol the consumer uses has a Fuel counterpart. `VarBuilder`/`VarMap` →
+   `fuel_core::lazy_nn_varbuilder::LazyVarBuilder` / `lazy_nn_varmap::LazyVarMap`. `Linear` /
+   `linear_no_bias` → `fuel-core/src/lazy_nn/linear.rs` (`linear()` :145, `linear_no_bias()` :169).
+   `embedding` → `lazy_nn/embedding.rs`. `ops::silu` → `fuel-graph/src/lib.rs:4761` +
+   `fuel-core/src/lazy.rs:498` (plus `silu_inplace` :4808). `ops::softmax_last_dim` →
+   `fuel-graph/src/lib.rs:5970` + `fuel-core/src/lazy.rs:1037`. **Bonus overlap:** `lazy_nn/` also
+   ships `lora.rs` (`LazyLoraLinear`) and `quantizable_linear.rs` (`LazyQuantizableLinear`), which
+   duplicate the consumer's `lora/` and `model/quantizable_linear.rs` — add both to the A.4 diff.
+   Full `lazy_nn/` inventory: activation, conv, embedding, init, linear, lora, moe, norm,
+   quantizable_linear, sampling, sequential, two_proj_attention.
+4. ~~**Quantized surface** — AWQ and Marlin are separate asks.~~ **LARGELY CLOSED 2026-07-29 — and
+   this was the biggest wrong assumption in the original list. [verified]**
+   `fuel-cuda-backend/src/baracuda/quant_w4a16.rs` already ships **both**: `marlin_gemm_f16` (:54) +
+   `marlin_can_implement_f16` (:104), **and** `awq_gemm_f16` (:128) + `awq_can_implement_f16` (:186)
+   + `AwqWeight::matmul_f16` (:444), plus `nf4_dequantize_{f16,bf16,f32}` (:204/:220/:236). GGUF
+   k-quants for CPU live in `fuel-quantized` (avx / neon / simd128 / k_quants). With `qmatmul`'s
+   total Q4_0 decompose (main `9d6ad291`), **the consumer's Marlin FFI is a deletion candidate and
+   AWQ has a native path** — neither is a Baracuda ask.
+   **Two caveats [judgment]:** existence is not performance parity — the honest test is a benchmark
+   on the consumer's real shapes before deleting a hand-tuned FFI; and these are baracuda-backed, so
+   **CUDA-only**. A consumer needing 4-bit on Vulkan or CPU is still in gap territory.
 5. **Error type.** 49 `Error::Msg` + 28 `bail`. Mechanical, but touches nearly every coupled file.
 
 **Finding for serving Increment 2 [judgment].** Lightbulb will almost certainly **not** adopt
