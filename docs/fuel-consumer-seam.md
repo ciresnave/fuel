@@ -82,6 +82,20 @@ which properties it can honour, measured cost, telemetry, and surfaced gaps.
 
 Everything in §3 is an instance of one of those two flows.
 
+### 2.1 Scope — this contract governs *execution* consumers
+
+Not every consumer executes anything. Model export and conversion, weight surgery, merging,
+pruning, visualization, and static analysis consume the **IR**, not the runtime: they build,
+inspect, transform, and serialize graphs without ever realizing one. None of C-1…C-7 applies
+to them, because every clause is about the cost, interruption, or observation of *work being
+done*.
+
+Those consumers are governed by [03-ir](architecture/03-ir.md) (the base map as the stable
+hub) and [13-interchange](architecture/13-interchange.md) (import/export, the weight⊥graph
+axes), and their contract is a different one: base-map stability, round-trip fidelity, and
+serialization guarantees. Naming the boundary here so the omission is deliberate rather than
+accidental — **do not grow this contract to cover them.**
+
 ---
 
 ## 3. The clauses
@@ -147,6 +161,46 @@ Fuel optimizes *within* these constraints and never around them. C-5 is the clau
 Fuel's aggressive arm selection safe for consumers whose correctness requirements are
 stricter than "fast and close enough."
 
+### C-6 — Observation and intervention (consumer names points; Fuel honours or refuses, never silently)
+
+The consumer must be able to name an intermediate value, receive it, and — for some classes —
+replace it and continue. This is **not** C-4: that clause measures what execution *cost*, this
+one extracts what it *computed*.
+
+| Mode | Meaning | Consumer classes |
+| --- | --- | --- |
+| **Observe** | materialize a named intermediate and hand it out | quantization calibration (activation statistics → scales), distillation (teacher intermediates), probing, debugging |
+| **Intervene** | replace a named intermediate and continue execution | activation patching, ablation, causal tracing, constraint injection |
+
+The clause has a real cost and a real tension with Fuel's identity: **naming an intermediate
+defeats fusion across it.** An observation request is therefore a request that *changes the
+plan*, and the contract's obligation is that this be explicit — Fuel reports the cost of
+honouring the request through C-4 and never silently drops the observation, nor silently
+deoptimizes without saying so.
+
+**[verified 2026-07-28]** `RuntimeHook` appears in [`ROADMAP.md`](../ROADMAP.md),
+[`frontier-architecture-gaps.md`](frontier-architecture-gaps.md), and
+[`frontier-paradigms-vision.md`](frontier-paradigms-vision.md) — and in **no source file**.
+The machinery is planned (Phase 9), not built, and is not yet a consumer-facing seam.
+[08-pattern-harvest](architecture/08-pattern-harvest.md) is adjacent but is opt-in telemetry
+about *fusion opportunities*, not consumer-directed value extraction.
+
+### C-7 — Declared mutation and in-process invalidation
+
+A consumer that mutates weights (or the graph) mid-process must be able to declare it, and
+Fuel must invalidate whatever it derived from the prior state: captured runs, cached plans,
+cost-model assumptions, and any arm choice that was valid only for the old weights.
+
+**[verified 2026-07-28]** [11-persistence](architecture/11-persistence.md) already specifies
+invalidation thoroughly — the cache header carries
+`(arch_version, kernel_hashes, hw_fingerprint, judge_version, tolerance_set, model_hash)` and
+any strict-field mismatch invalidates the whole cache. But its scope is explicitly *"across
+process restarts."* The gap is the **live** case: a long-running process that mutates weights
+between phases, where `model_hash` changes and nothing recomputes or rechecks it.
+
+This is undefined today rather than known-broken, and it is undefined in the direction that
+fails silently. The consumer that hits it first is Annex F.
+
 ### What Fuel refuses — proposed [09-non-goals](architecture/09-non-goals.md) additions
 
 - **No fairness, priority, or SLA model.** No queue disciplines, no deadline scheduling, no
@@ -169,19 +223,38 @@ boundaries around them ("Lightbulb (inference-only consumer) wants fuel-tensor w
 fuel-autograd; mlmf (network IPC consumer) wants fuel-formats without fuel-loaders"), and the
 ROADMAP names "Lightbulb, embeddings, retrieval, oracle test runners, quantized-only paths."
 
-| Class | Work unit | Engine-held state | C-1 | C-2 | C-3 | C-4 | C-5 |
-| --- | --- | --- | :-: | :-: | :-: | :-: | :-: |
-| **A. Inference host** (Lightbulb) | decode step over a ready set | KV cache — *lossy* | ● | ● | ● | ● | ◐ |
-| **B. Training host** | optimizer step / microbatch | params + moments + RNG — *exact* | ● | ● | ● | ● | ● |
-| **C. Stateless batch** (embeddings, retrieval, quantized-only) | one batch | none | ● | ◐ | — | ● | ● |
-| **D. Oracle / test runner** | one reference execution | none | — | — | — | ● | ● |
-| **E. IPC / remote** (mlmf) | a transported tensor / graph | serialized across a process boundary | ◐ | ◐ | ● | ● | ◐ |
+| Class | Work unit | Engine-held state | C-1 | C-2 | C-3 | C-4 | C-5 | C-6 | C-7 |
+| --- | --- | --- | :-: | :-: | :-: | :-: | :-: | :-: | :-: |
+| **A. Inference host** (Lightbulb) | decode step over a ready set | KV cache — *lossy* | ● | ● | ● | ● | ◐ | ◐ | ◐ |
+| **B. Training host** | optimizer step / microbatch | params + moments + RNG — *exact* | ● | ● | ● | ● | ● | ◐ | ◐ |
+| **C. Stateless batch** (embeddings, retrieval, quantized-only) | one batch | none | ● | ◐ | — | ● | ● | ◐ | — |
+| **D. Oracle / test runner** | one reference execution | none | — | — | — | ● | ● | ● | — |
+| **E. IPC / remote** (mlmf) | a transported tensor / graph | serialized across a process boundary | ◐ | ◐ | ● | ● | ◐ | — | ◐ |
+| **F. RL / alternating loop** (GRPO, RLVR, online learning) | a rollout batch, then a policy update | KV (*lossy*) **and** params+moments+RNG (*exact*) | ● | ● | ● | ● | ● | ◐ | ● |
+| **G. Observation / analysis** (calibration, distillation, interpretability) | one instrumented execution | none | ◐ | ◐ | — | ● | ● | ● | — |
 
 ● required ◐ partial/optional — not applicable
 
-That column C-3 is empty for class C and required-but-different for A vs. B is the whole
-argument for writing the contract consumer-agnostically: **the clauses are portable, the
-guarantees are not.**
+Two columns carry the argument for writing this consumer-agnostically. **C-3** is empty for
+class C, required-but-*lossy* for A, and required-but-*exact* for B — the clause is portable,
+the guarantee is not. **C-7** is required by exactly one class, which is why it stayed
+invisible while the doc was written from the inference point of view.
+
+### 4.1 What folds in, and where
+
+Recorded so the filtering is auditable rather than re-litigated. None of these earn a class;
+each is an instance of one above.
+
+| Use case | Folds into | Wrinkle worth remembering |
+| --- | --- | --- |
+| Fine-tuning / PEFT / LoRA | B (training), A (adapter serving) | shared immutable base + small mutable per-tenant delta; C-1 must account for adapter memory separately, C-3 evicts the adapter not the base |
+| Hyperparameter search / experiment orchestration | *N* × B plus an orchestrator | the orchestrator is above the consumer layer, not a consumer; it is where cost stops being fungible |
+| Speculative decoding / draft models | A | two models, **one** consumer — the arbitration unit is the VRAM pool; accept/reject is consumer policy |
+| Distributed / multi-node training | B | collectives are Fuel's over a consumer-supplied topology; failure and elasticity response are the consumer's |
+| Benchmarking / profiling | D | C-4-heavy; it is an oracle runner that cares about the measurement rather than the value |
+| GPU array / preprocessing (Fuel as a tensor library) | C | wants the tensor surface without autograd — already a named crate-fission driver in [02-layers](architecture/02-layers.md) |
+| Differentiable scientific computing / simulation | B-shaped | exact-restorable and iterative, but with no model and no "training"; a good check that B's clauses aren't secretly ML-specific |
+| Model surgery / merging / pruning / export | **none — graph consumer** | see §2.1; governed by 03-ir + 13-interchange |
 
 ---
 
@@ -326,6 +399,59 @@ stub deliberately — writing it without a consumer would be speculation.
 
 ---
 
+## Annex F — RL / alternating train-infer loop (GRPO, RLVR, online learning)
+
+**Unit** a rollout batch, then a policy update. **State** *both* kinds at once — KV caches
+from rollouts (lossy, discardable) and parameters + optimizer moments + RNG stream (exact).
+**Cost** rollout tokens, update step time, and the ratio between them.
+
+This class matters out of proportion to its size because it is the **only** one that runs A
+and B against the same weights with a mutation between phases. Every other class holds weights
+still for its entire lifetime. Already on Fuel's roadmap (GRPO/RLVR, bucket D in
+[`frontier-paradigms-vision.md`](frontier-paradigms-vision.md)), so this is a scheduled
+consumer, not a hypothetical.
+
+**Why it is the C-7 consumer.** After a policy update, everything derived from the old weights
+is stale: rollout KV caches (semantically — they encode the old policy's continuations),
+captured runs, and any arm choice or cost estimate conditioned on the old weights. The
+consumer knows the mutation happened; Fuel does not, unless told. Nothing in the current
+surface provides the telling, and the failure mode is silent rather than loud — a stale
+capture replays, and the run degrades instead of erroring.
+
+**Other clause pressure.** C-3 must serve both fidelities in one process, which is the
+strongest argument for one mechanism with a fidelity flag rather than two implementations
+(Annex B's open item). C-5 is doubly binding: rollouts and updates may legitimately want
+*different* determinism and tolerance settings, so constraints must be per-phase, not
+per-process. C-2 matters because rollout batches are long and the consumer wants to bound
+them against update latency.
+
+**[judgment]** If C-7 is going to be built, this is the consumer that should specify it, and
+it should be specified before the inference-side C-3 hardens — otherwise C-3 gets an
+inference-shaped API that this class cannot use.
+
+## Annex G — Observation / analysis (calibration, distillation, interpretability)
+
+**Unit** one instrumented execution. **State** none. **Defining clause** C-6; without it this
+class cannot exist at all, which is why it earns a row despite being clause-light everywhere
+else.
+
+Quantization calibration reads activation statistics to compute scales. Distillation reads
+teacher intermediates. Interpretability reads, patches, and ablates. Debugging — every
+consumer's fallback mode — reads whatever is going wrong. These differ in what they do with
+the value, not in what they need from Fuel.
+
+C-5 is joint-binding with C-6 here: an observation is only meaningful if the consumer also
+controls the numerics that produced it. Calibrating scales against an ε-close fused arm and
+then deploying against a bit-exact one (or the reverse) is a silent correctness bug, and the
+consumer needs to be able to pin both.
+
+**[judgment]** This class is the natural first consumer of C-6 because calibration is
+concrete, already needed by the quantized paths Fuel supports, and produces a checkable
+artifact — which makes it a better proving ground than interpretability, whose requirements
+are open-ended.
+
+---
+
 ## 5. Relationship to the Reasoning-Runtime sketch
 
 Context only; nothing above depends on it. Under a "cognitive engines as schedulable
@@ -360,7 +486,17 @@ their own merits.
 5. **Where does sampling live?** `SessionState::sample_and_append` puts sampling strategy
    inside Fuel's session, but temperature/top-p/grammars/speculative acceptance are arguably
    all consumer policy. Unresolved; it may be a sixth clause, or an instance of C-5.
-6. **What is the minimum a consumer needs to port at all?** If C-1…C-5 gate the Lightbulb
+6. **What is the minimum a consumer needs to port at all?** If C-1…C-7 gate the Lightbulb
    port, that is a large gate; if the port can proceed against today's surface and adopt
    clauses incrementally, sequencing is far easier. Largest schedule impact, and I do not have
    enough of Lightbulb's shape to answer it.
+7. **Does C-6 land as Phase-9 `RuntimeHook`, or is it a separate seam?** The hook machinery is
+   specified but unbuilt; if it is built for constraint-gating (its current framing in the
+   frontier docs) without the consumer-facing observe/intervene surface, C-6 will need a
+   second mechanism later. Cheaper to design once.
+8. **Should C-7 be built now or specified now and built with Annex F?** It is undefined in a
+   direction that fails *silently*, which argues for at least a loud interim: a declared
+   `weights_mutated()` that conservatively invalidates everything derived, tightened later.
+9. **Is one C-3 mechanism with a fidelity flag right, or two implementations?** Annex F forces
+   the question because it needs both in one process. Recommendation: settle this before the
+   inference-side C-3 hardens into an inference-shaped API.
