@@ -1,6 +1,6 @@
 # Fuel architecture: index
 
-**Status**: v1.1 (2026-06-20). The architecture set is the durable description of what fuel is and how it's structured. Code, ROADMAP, and per-phase design documents anchor to this set. When this set and any phase document conflict, this set is authoritative; the phase document is updated to match. v1.1 (minor) refreshes the section summaries for the 2026-06-20 adaptive-runtime-fusion decision (recipe principle, two-tier runtime extensibility, missing-fusion telemetry, the Fuel-strategist / backend-synthesizer JIT loop); see [10-decisions-log](10-decisions-log.md).
+**Status**: v1.2 (2026-07-28). v1.2 adds **[15 consumer-contract](15-consumer-contract.md)** — the upward-facing mirror of [05 backend-contract](05-backend-contract.md), stating what fuel provides to the systems built *on* it and what it correspondingly doesn't decide — and records the withdrawal of 09's "the architecture's center of gravity is inference" claim ([10-decisions-log §2026-07-28](10-decisions-log.md)). The architecture set is the durable description of what fuel is and how it's structured. Code, ROADMAP, and per-phase design documents anchor to this set. When this set and any phase document conflict, this set is authoritative; the phase document is updated to match. v1.1 (minor) refreshes the section summaries for the 2026-06-20 adaptive-runtime-fusion decision (recipe principle, two-tier runtime extensibility, missing-fusion telemetry, the Fuel-strategist / backend-synthesizer JIT loop); see [10-decisions-log](10-decisions-log.md).
 
 **Audience**: future-you, future-me, contributors (human or model) trying to understand "what is fuel trying to be?" Not new users. Not API reference. Not tutorials.
 
@@ -26,6 +26,7 @@
 | 12 | [multi-output](12-multi-output.md) | Option-C bundled storage + `Op::View`/`Op::ViewOwned`/`Op::ScatterIntoSlot`; multi-output authoring contract |
 | 13 | [interchange](13-interchange.md) | Model import/export; weight⊥graph axes; base map as hub; per-format binding seam; native format reuses base-map serialization; scaffolder |
 | 14 | [lifecycle](14-lifecycle.md) | End-to-end flow (load → graph → plan → realize → inference/training) + the canonical glossary; the closed-loop adaptive optimizer (Fuel-strategist / backend-synthesizer JIT loop, explore/exploit); the orientation/spine doc — start here |
+| 15 | [consumer-contract](15-consumer-contract.md) | What fuel provides to the systems built *on* it (capacity, bounded preemption, state externalization, measured cost, constraint admission, observation, declared mutation) and what it doesn't decide (fairness, admission, work lifecycle); the mechanism/policy line derived from cost fungibility; consumer classes. The mirror of 05 |
 
 ---
 
@@ -48,7 +49,7 @@ That's the spine. The remaining sections are there when you need them.
 
 1. Read 01 to ground purpose.
 2. Read 03 + 04 to ground IR and optimization model.
-3. Read 05 if your phase touches a backend; 06 if it touches runtime; 07 if it touches numerical precision.
+3. Read 05 if your phase touches a backend; 15 if it touches a consumer boundary (serving, training loops, anything that decides *whose* work runs); 06 if it touches runtime; 07 if it touches numerical precision.
 4. Cross-check against 09 (non-goals) before committing to scope.
 5. After the phase ships, append a row to 10 (decisions log) if material decisions changed.
 
@@ -67,6 +68,7 @@ The architecture sections aren't independent. Below is the dependency graph — 
 01 identity ──┬──→ 03 ir
               ├──→ 04 optimization
               ├──→ 05 backend-contract
+              ├──→ 15 consumer-contract
               └──→ 07 tolerance
 
 02 layers   ──→  03 ir
@@ -101,6 +103,12 @@ The architecture sections aren't independent. Below is the dependency graph — 
 13 interchange ──┬──→ 02 layers       (crate tiers that implement import/export)
                  ├──→ 03 ir            (the base map is the interchange hub)
                  └──→ 11 persistence   (native format reuses the base-map serialization)
+
+15 consumer-contract ──┬──→ 01 identity          ("advertise, don't decide", one layer up)
+                       ├──→ 05 backend-contract  (its mirror — opposite polarity, same principle)
+                       ├──→ 07 tolerance         (C-5's tolerance half, already specified)
+                       ├──→ 09 non-goals         (the refusals, in negative-space register)
+                       └──→ 11 persistence       (C-7's across-restart counterpart)
 ```
 
 If you change 03 (the IR), expect to revise 04, 05, 06, 11. If you change 04 (the optimization model), expect to revise 06, 07, 08, 11. If you change 01 (identity), the whole set may need re-anchoring.
@@ -120,7 +128,7 @@ The decisions log (10) records every MAJOR bump with one paragraph of context (w
 
 ## How phase docs relate to this set
 
-This set defines the steady-state architecture. Phase documents (currently in `docs/`: `storage-unification.md`, `fused-op-registry.md`) describe in-flight work that moves the codebase toward this steady state.
+This set defines the steady-state architecture. Phase documents (currently in `docs/`: `storage-unification.md`, `fused-op-registry.md`, `fuel-consumer-seam.md`) describe in-flight work that moves the codebase toward this steady state.
 
 The relationship is:
 

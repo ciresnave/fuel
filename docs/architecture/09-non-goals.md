@@ -1,6 +1,6 @@
 # Non-goals
 
-**Status**: v0.3 (2026-06-20). Reconciled to the 2026-06-20 adaptive-runtime-fusion decision ([10-decisions-log](10-decisions-log.md)): two blanket-freeze non-goals ("Not framework-agnostic dispatch", "Not user-installable optimization rules at runtime") are re-scoped — the rejection of *untrusted-user* hot-loaded ops/rules and of new *primitives* at runtime **stands**, but **trusted, Fuel-orchestrated, cost-gated runtime registration of new fused-op identities** (Tier 2) is now an architectural goal, and the kernel binding table is already runtime-extensible (Tier 1). v0.2 (2026-06-14) reconciled to the "plan is the graph" redirection: the e-graph non-goal is narrowed to the per-realize hot path (offline `optimize_graph` path-search is in-bounds), and the bundled-cache non-goal is distinguished from the in-bounds bundled Judge baseline.
+**Status**: v0.4 (2026-07-28). **v0.4 is a MAJOR core-claim correction**: "Not training-orchestration-flavored architecture decisions" is replaced by "Not orchestration-flavored architecture decisions". The prior text claimed *"the architecture's center of gravity is inference"* — **that claim was wrong and is withdrawn.** Fuel is general ML tooling; inference engines, trainers, and other consumer classes are peers, and the exclusion of orchestration from Foundation is symmetric across all of them. Re-derived from [15-consumer-contract](15-consumer-contract.md)'s mechanism/policy rule rather than from a workload preference. See [10-decisions-log §2026-07-28](10-decisions-log.md). v0.3 (2026-06-20) reconciled to the 2026-06-20 adaptive-runtime-fusion decision ([10-decisions-log](10-decisions-log.md)): two blanket-freeze non-goals ("Not framework-agnostic dispatch", "Not user-installable optimization rules at runtime") are re-scoped — the rejection of *untrusted-user* hot-loaded ops/rules and of new *primitives* at runtime **stands**, but **trusted, Fuel-orchestrated, cost-gated runtime registration of new fused-op identities** (Tier 2) is now an architectural goal, and the kernel binding table is already runtime-extensible (Tier 1). v0.2 (2026-06-14) reconciled to the "plan is the graph" redirection: the e-graph non-goal is narrowed to the per-realize hot path (offline `optimize_graph` path-search is in-bounds), and the bundled-cache non-goal is distinguished from the in-bounds bundled Judge baseline.
 
 What fuel deliberately doesn't try to be. Each rejection is a real architectural decision — not a "we didn't get to it yet" but a "we examined this direction and chose against it because of how it would change fuel's center of gravity."
 
@@ -148,11 +148,16 @@ Each of these would require either dropping the strict-fingerprint-match invaria
 
 This non-goal is about the *hardware-keyed optimization cache* — **not** the bundled Judge baseline that ships in-package ([06-runtime](06-runtime.md), [10-decisions-log](10-decisions-log.md) 2026-06-13). The baseline is workload-agnostic statistical *priors* the local Judge falls back to before any local measurement exists, not a compiled-for-specific-hardware plan. It degrades gracefully on mismatched hardware (a wrong prior is corrected by the first local measurement), whereas a fingerprint-mismatched cache would be silently wrong. Shipping priors is in-bounds; shipping locked plans is what this rejects.
 
-## Not training-orchestration-flavored architecture decisions
+## Not orchestration-flavored architecture decisions
 
-Fuel-the-Foundation supports both inference and training (autograd is a graph-rewrite over the forward IR per Phase 7.5; both forward and backward are first-class). But the architecture's center of gravity is *inference* — competitive-edge claims, default tolerance models, persistence semantics, all assume inference-flavored workloads.
+**Corrected 2026-07-28.** This non-goal previously read "Not *training*-orchestration-flavored architecture decisions" and justified itself with the claim that *"the architecture's center of gravity is inference."* **That claim was wrong.** Fuel is general ML tooling — the substrate someone builds an inference engine, a trainer, a calibration pipeline, or a scientific-computing consumer out of. Those consumer classes are peers. Nothing in Foundation is owed a bias toward any of them, and the previous framing invited exactly the failure mode [15-consumer-contract §Consumer-shape neutrality](15-consumer-contract.md) now guards against: a mechanism built to one class's guarantee and generalized later, badly.
 
-Training-specific concerns (checkpointing strategies, gradient accumulation policy, mixed-precision training recipes, distributed training) belong at the orchestration layer (`fuel-training`), not at Foundation. The architecture doesn't reject training; it just doesn't shape Foundation around training-specific concerns.
+What survives the correction — and is now stated symmetrically — is the real line: **Foundation holds mechanism; orchestration is policy and lives above it.** Fuel-the-Foundation supports inference and training alike (autograd is a graph-rewrite over the forward IR per Phase 7.5; forward and backward are both first-class), and it declines *orchestration* concerns for every consumer class, not just one:
+
+- **Training-side**: checkpointing strategy, gradient-accumulation policy, mixed-precision training recipes, distributed-training policy → `fuel-training`.
+- **Inference-side**: batching policy, admission control, session lifecycle, sampling policy, decode/serving loops → `fuel-inference` or a downstream consumer.
+
+The symmetry is the point. Excluding training orchestration while absorbing inference orchestration would not be neutrality; it would be the same mistake with a different beneficiary. The governing rule and the full clause set are [15-consumer-contract](15-consumer-contract.md).
 
 ## What this section is
 
@@ -167,5 +172,6 @@ Future contributors: if you encounter a real consumer pressure that one of these
 - [01-identity](01-identity.md) — what fuel *is*; this section is the complement.
 - [04-optimization](04-optimization.md) — where many of these non-goals are operationally enforced.
 - [05-backend-contract](05-backend-contract.md) — backend-side non-features (no internal fusion, no internal placement).
+- [15-consumer-contract](15-consumer-contract.md) — consumer-side non-features (no fairness, no admission, no work lifecycle); the positive statement of what fuel provides instead.
 - [07-tolerance](07-tolerance.md) — the tolerance non-features in detail.
 - [10-decisions-log](10-decisions-log.md) — when a non-goal is reconsidered, the decision is recorded there.

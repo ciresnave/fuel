@@ -308,6 +308,22 @@ nowhere; now captured so they are not forgotten):
   local/`#[ignore]`).
   No IR op, no kernel — host orchestration over the existing persistent-decode machinery.
   KV-content sharing/splice + the block-pool allocator stay Increment 2+.
+  **Increment 2+ is now scoped by [15-consumer-contract](docs/architecture/15-consumer-contract.md)**
+  (new 2026-07-28; annexes + as-built audit in `docs/fuel-consumer-seam.md`): Fuel owns mechanism,
+  the consumer owns policy — Fuel never decides *whose* work runs. Clause status of the shipped
+  substrate: **C-1** capacity advertisement *absent* (OOM surfaces as an `add_session` error, too
+  late for a consumer to shed load), **C-2** bounded quantum + cancel *absent*, **C-3** state
+  externalization *absent* — `KvCache` has no evict/restore path, the load-bearing gap, and it
+  overlaps the confirmed-absent block-pool allocator (§4 above), so the two are likely one piece of
+  work; **C-4** measured cost *partial* (`StepReport` says what happened, not what it cost);
+  **C-5** constraint admission *absent* as a consumer control — note the ε-close batched arm means a
+  logprob-returning consumer has a different requirement from a token-only one. `SchedulePolicy` is
+  confirmed correctly Fuel's (equivalent arms = arm selection, not fairness); `run_to_completion`,
+  the implicit `Vec`-order FIFO, and `add_session`'s name are consumer-policy shapes to keep out of
+  the interface. **Tracked defect:** `multi_session.rs` sits in `fuel-core` and depends on
+  `LlamaModel` + `SamplingStrategy` — three categories the layer table below excludes from
+  Foundation; move to `fuel-inference` before the Lightbulb port (that move is what forces
+  `&LlamaModel` to become a model-agnostic trait).
 - **GRPO** + **RLVR** verifiable post-training — greenfield on the existing `fuel-training`
   stack (SGD/AdamW + autodiff + `cross_entropy`); needs the RNG/generator seam (above) for
   group sampling.
