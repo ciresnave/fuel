@@ -614,6 +614,20 @@ stack flow downward only. No lower layer may depend on a higher one.
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
+> **As-built note (2026-07-29) — this diagram and the "Current State" analysis below are a
+> target/historical snapshot, not the present workspace.** Verified against the crate list:
+> **`fuel-nn` does not exist** — no directory, no manifest entry; the NN surface lives in
+> `fuel-core` as `lazy_nn_varbuilder::LazyVarBuilder`, `lazy_nn_varmap::LazyVarMap`, and
+> `lazy_nn/` (linear, embedding, norm, activation, lora, quantizable_linear, moe, conv,
+> sequential). **`fuel-core-types` no longer exists** — it is now `fuel-ir`; `fuel-hardware`,
+> `fuel-memory` (ex-`fuel-storage`), and `fuel-backend-contract` all exist; `fuel-core` itself
+> has not yet dissolved. The "inference and training concerns are scattered" item below is
+> **partly resolved**: `kv_cache` and `sampling` moved to `fuel-core`, and **`fuel-inference`
+> now exists** as a real crate (6.2k LOC, 153 tests — though with zero consumers as of this
+> date). Recorded because a consumer-facing port survey found these sections naming crates the
+> workspace no longer has. See [`docs/architecture/02-layers.md`](docs/architecture/02-layers.md)
+> §Retirement trajectory for the authoritative status.
+
 ---
 
 ## Current State
