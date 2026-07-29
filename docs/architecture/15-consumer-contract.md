@@ -195,6 +195,14 @@ Consequences for the order of preference above:
 
 **The general rule**: before promising a consumer an in-graph reduction, check whether the value it reduces survives the arm the consumer actually wants to run on.
 
+**Sharpened by KISS (2026-07-29), and it improves the framing.** In the KISS vocabulary attention is **not an op — it is a recipe** (`probs = softmax(QKᵀ)`; `out = probs·V`). So a hot-path observer is asking for *"a multi-output recipe whose second output is a reduction of an interior node"*, which the recipe grammar already expresses — **no new primitive**. Crucially: **a fused kernel's non-materialization of `probs` is a *lowering* choice, not a semantic one.** The recipe always has the interior node; some lowerings keep it, some fuse it away.
+
+That relocates the difficulty without dissolving it. The clause's arm-dependence stands, but its *cause* is cleaner: observability is not a property of attention, it is a property of the chosen lowering — which is exactly why it belongs to C-5 (a constraint that prunes lowerings) rather than to C-6 (a request the op cannot satisfy). What remains is a **cost** question for the backend, not an expressibility question for the IR.
+
+**A narrow spec gap this exposes, and it is a C-4/C-5 concern.** KISS §7.4-0001 advertises a determinism class **per op**. A secondary *reduction* output can carry a **different class from its primary** — a per-tile accumulation may be non-deterministic where the primary output is not. So a consumer constraining determinism (C-5) or accounting measured cost (C-4) against a multi-output op needs **per-output** granularity, which is not currently pinned. KISS has offered to take the clause; recorded here because the consumer-facing half is this section's.
+
+*(Also closed: `softmax_lse` cannot serve as the reduction. It is per-query over keys; a heavy-hitter observer needs per-key over queries — orthogonal, and not derivable from one another.)*
+
 **[Evidence status]** design-level: derived by reading a real consumer's attention-observation sites (5 in its transformer/attention/KV-compression paths) against this clause, against `CapturedRun`'s requirements, and against `registry/flash_attn.rs`. **Not yet validated by a running port** — the reduction-in-graph route is a strong conjecture, not a demonstrated result, and the multi-output route is unbuilt.
 
 ### C-7 — Declared mutation and in-process invalidation

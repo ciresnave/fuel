@@ -323,10 +323,36 @@ incrementally as Fuel offers them; **none block the port**.
    >   model, through `lazy::LlamaModel` via the `Llama2cModel` thin wrapper. That is the surface a
    >   consumer's `model/` rewrite copies from, so it is now a **working reference**, as this entry
    >   originally (and unearnedly) claimed.
-   > - **Still unverified:** the *serving* path. No KV cache in that binary, no batched decode, no
-   >   `CapturedRun` replay, no `Llama3Model` RoPE scaling. **The serving path still has no runnable
-   >   reference, and the first consumer writes it.** That half is unchanged and is the half an
-   >   inference host needs.
+   > - **Still unverified *by that binary*:** the serving path — no KV cache in it, no batched
+   >   decode, no `CapturedRun` replay, no `Llama3Model` RoPE scaling.
+   >
+   > **UPDATE 2026-07-29 — "the serving path has no runnable reference" is NO LONGER TRUE.**
+   > That claim was made in the morning from a directory listing plus the absence of an example
+   > binary, repeated several times as the justification for the consumer writing the first serving
+   > consumer, and **[verified here]** overtaken within hours by the allocator session's PS2 work:
+   >
+   > - `LlamaModel::forward_paged_step` — `fuel-core/src/lazy.rs:7450`
+   > - `fuel-core/tests/paged_decode_parity.rs` + `paged_attn_oracle.rs`
+   >
+   > So the paged decode path **has a runnable, parity-gated reference**: sessions' KV physically
+   > resident in `DeviceKvPool` blocks, decoded via `Op::PagedAttn`, ε-close to the contiguous
+   > `forward_with_kv_context` for the same token sequence.
+   >
+   > **Corrected status, kept narrow rather than swung to "solved":** decoder path verified by
+   > execution; **paged decode path referenced and parity-gated**; **still unreferenced** — batched
+   > multi-session decode end-to-end, `CapturedRun` replay, and `Llama3Model` RoPE scaling.
+   >
+   > **Three caveats that keep the reference honest** (the first is from the test's own header):
+   > `Op::PagedAttn` is **decode-only (Sq=1)**, so the test feeds *every* token one at a time,
+   > prompt included — it leans on the one-at-a-time ≡ batched-prefill identity rather than
+   > exercising a batched prefill, so **paged prefill is still unreferenced**; the weights are
+   > **tiny and deterministic**, making this a correctness gate and not an integration example; and
+   > it is **f32-only**, matching the pool.
+   >
+   > **[note] The method lesson is the port session's own:** the claim was checked against
+   > `examples/` when Fuel's convention — stated to them explicitly — is that serving machinery is
+   > exercised by **`tests/`**. The information was in hand and not applied. A "no reference exists"
+   > claim is an *absence* claim, and absence claims are only as good as the places you looked.
    >
    > **[note] This is the first entry in the survey that neither party could have got wrong by
    > reading.** Reaching it took a build that exposed a misleading diagnostic, a wrong hypothesis
