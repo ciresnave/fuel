@@ -100,6 +100,11 @@ pub enum StateKind {
 /// `fuel-inference` move cheap.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KvGeometry {
+    /// Transformer layers. A physical block addresses the SAME slot in *every*
+    /// layer's K/V buffer (the vLLM shared-block-table model: one block table,
+    /// physical block `p` = slot `p` in all layers), so the pool's resident bytes
+    /// and the device layer's `n_layers × 2` pool buffers both scale with this.
+    pub n_layers: usize,
     /// Total physical blocks in the pool.
     pub num_blocks: usize,
     /// Tokens per block.
@@ -113,9 +118,11 @@ pub struct KvGeometry {
 }
 
 impl KvGeometry {
-    /// Bytes one physical block occupies across BOTH K and V.
+    /// Bytes one physical block occupies across ALL layers and BOTH K and V — a
+    /// block is a slot in every layer's K buffer and every layer's V buffer.
     fn bytes_per_block(&self) -> u64 {
-        (self.block_size * self.n_kv_heads * self.head_dim * 2 * self.elem_size) as u64
+        (self.n_layers * self.block_size * self.n_kv_heads * self.head_dim * 2 * self.elem_size)
+            as u64
     }
 }
 
@@ -575,7 +582,28 @@ mod tests {
     use super::*;
 
     fn geom(num_blocks: usize, block_size: usize) -> KvGeometry {
-        KvGeometry { num_blocks, block_size, n_kv_heads: 2, head_dim: 4, elem_size: 2 }
+        KvGeometry { n_layers: 1, num_blocks, block_size, n_kv_heads: 2, head_dim: 4, elem_size: 2 }
+    }
+
+    #[test]
+    fn kv_bytes_resident_scales_with_n_layers() {
+        // A block is a slot in every layer's K and V buffer, so resident bytes
+        // scale linearly with n_layers (the device layer will own n_layers×2
+        // pool buffers).
+        let one = geom(16, 4);
+        let mut many = one;
+        many.n_layers = 32;
+        let mut pool1 = KvBlockPool::new(one);
+        let mut pool32 = KvBlockPool::new(many);
+        let s1 = pool1.open();
+        let s32 = pool32.open();
+        pool1.append(s1, 8).unwrap(); // 2 blocks
+        pool32.append(s32, 8).unwrap(); // 2 blocks
+        assert_eq!(
+            pool32.kv_bytes_resident(),
+            32 * pool1.kv_bytes_resident(),
+            "32-layer pool holds 32× the resident bytes for the same block count",
+        );
     }
 
     /// THE HAZARD (peer-flagged, born-red before the design set): a naive
