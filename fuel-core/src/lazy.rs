@@ -7429,6 +7429,183 @@ impl LlamaModel {
         Ok(h1.add(&ffn_out).unwrap())
     }
 
+    /// One single-token forward through **paged** pool storage — the paged-decode
+    /// counterpart of [`Self::forward_with_kv_context`] (multi-session serving,
+    /// paged-storage integration PS2). Feeds ONE `token` (a prompt token during
+    /// prefill, or a sampled token during decode), writes its K/V into the
+    /// session's [`DeviceKvPool`](crate::kv_block_pool_device::DeviceKvPool)
+    /// blocks, attends via `Op::PagedAttn` over the session's block table, and
+    /// returns last-position logits `[vocab_size]`.
+    ///
+    /// `Op::PagedAttn` is decode-only (`Sq == 1`), so PREFILL is done by feeding
+    /// the prompt one token at a time — each attends causally to its predecessors
+    /// via the running `context_len`, which is position-for-position equivalent
+    /// to a batched causal prefill (each token's K/V depends only on tokens
+    /// `0..=i`, all resident by the time token `i` is fed). f32-only for now (the
+    /// pool is f32-only).
+    ///
+    /// Same math as the contiguous forward up to the attention reduction order
+    /// (paged gathers-then-dense-SDPAs where contiguous slices a fixed-capacity
+    /// buffer) — ε-close, the bar the batched arm already uses.
+    pub fn forward_paged_step(
+        &self,
+        token: u32,
+        pool: &mut crate::kv_block_pool_device::DeviceKvPool,
+        session: crate::kv_block_pool::SessionHandle,
+    ) -> crate::Result<Vec<f32>> {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        if pool.dtype() != DType::F32 {
+            return Err(fuel_ir::Error::Msg(format!(
+                "forward_paged_step: f32-only for now, pool dtype is {:?}",
+                pool.dtype(),
+            )).bt());
+        }
+        let geom = pool.geometry();
+        if geom.n_layers != cfg.n_layers {
+            return Err(fuel_ir::Error::Msg(format!(
+                "forward_paged_step: pool n_layers {} != model n_layers {}",
+                geom.n_layers, cfg.n_layers,
+            )).bt());
+        }
+        let block_size = geom.block_size;
+
+        // This token's absolute position; grow the session by one slot to cover it.
+        let tok_pos = pool.core().filled_tokens(session).ok_or_else(|| {
+            fuel_ir::Error::Msg("forward_paged_step: unknown session".to_string()).bt()
+        })?;
+        pool.core_mut().append(session, 1).map_err(|e| {
+            fuel_ir::Error::Msg(format!("forward_paged_step: block append failed: {e:?}")).bt()
+        })?;
+        let phys = pool.core().resident_block(session, tok_pos / block_size).ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "forward_paged_step: token block not resident after append".to_string(),
+            ).bt()
+        })?;
+        let slot = tok_pos % block_size;
+        let pt = pool.materialize_block_table(&[session]).map_err(|e| {
+            fuel_ir::Error::Msg(format!("forward_paged_step: block-table materialize failed: {e:?}")).bt()
+        })?;
+
+        // Embed the single token → [1, 1, dim].
+        let embed = LazyTensor::from_f32(
+            weights.token_embedding.clone(),
+            Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
+            &Device::cpu(),
+        );
+        let token_ids = embed.const_u32_like(vec![token], Shape::from_dims(&[1]));
+        let mut h = embed
+            .index_select(0, &token_ids).unwrap()
+            .reshape(Shape::from_dims(&[1, 1, cfg.dim])).unwrap();
+
+        // RoPE tables at this token's absolute position (seq = 1).
+        let (rope_cos, rope_sin) = h.rope_tables_const(cfg.rope_base, tok_pos, 1, cfg.head_dim);
+        let scale = (1.0f64 / (cfg.head_dim as f64).sqrt()) as f32;
+
+        // block_table / context_lens for this session (single-row batch).
+        let block_table = h.const_u32_like(pt.block_table.clone(), pt.block_table_shape());
+        let context_lens = h.const_u32_like(pt.context_lens.clone(), pt.context_lens_shape());
+
+        // Per layer: bind this layer's pool K/V buffers to placeholders and build
+        // the paged attend + FFN. All layers bind into ONE realize cache — the
+        // pool buffers persist across steps via their Arcs (the same relationship
+        // the contiguous forward's cache slots have), so the write this step lands
+        // in place and is visible next step.
+        let mut cache = fuel_dispatch::pipelined::StorageCache::new();
+        for (li, layer) in weights.layers.iter().enumerate() {
+            let k_ph = h.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
+            let v_ph = h.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
+            let k_arc = pool.k_pool(li).ok_or_else(|| {
+                fuel_ir::Error::Msg(format!("forward_paged_step: no K pool buffer for layer {li}")).bt()
+            })?;
+            let v_arc = pool.v_pool(li).ok_or_else(|| {
+                fuel_ir::Error::Msg(format!("forward_paged_step: no V pool buffer for layer {li}")).bt()
+            })?;
+            cache.insert(k_ph.inner.id(), std::sync::Arc::clone(k_arc));
+            cache.insert(v_ph.inner.id(), std::sync::Arc::clone(v_arc));
+            h = self.apply_layer_paged(
+                &h, layer, pool, &k_ph, &v_ph, &rope_cos, &rope_sin,
+                &block_table, &context_lens, phys, slot, scale,
+            )?;
+        }
+
+        let h_norm = apply_affine_rms_norm(&h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps);
+        let logits = weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size);
+        let logits_root = logits.reshape(Shape::from_dims(&[cfg.vocab_size]))?;
+        crate::pipelined_bridge::realize_one_as_with_initial::<f32>(
+            logits_root.inner.graph(),
+            logits_root.inner.id(),
+            &Device::cpu(),
+            cache,
+        )
+    }
+
+    /// One transformer layer of the paged decode step: the projection/RoPE of
+    /// [`Self::apply_layer_with_kv_writes`] (duplicated so the tested contiguous
+    /// forward is untouched), with the KV write + sliced attention replaced by
+    /// [`DeviceKvPool::build_decode_attn`](crate::kv_block_pool_device::DeviceKvPool::build_decode_attn)
+    /// — write the new token's K/V into its pool slot, then `Op::PagedAttn`. The
+    /// o-projection + residual + SwiGLU FFN tail is identical to the contiguous
+    /// layer. `seq == batch == 1` (single-token decode step).
+    #[allow(clippy::too_many_arguments)]
+    fn apply_layer_paged(
+        &self,
+        x: &LazyTensor,
+        layer: &LayerWeights,
+        pool: &crate::kv_block_pool_device::DeviceKvPool,
+        k_pool_ph: &LazyTensor,
+        v_pool_ph: &LazyTensor,
+        rope_cos: &LazyTensor,
+        rope_sin: &LazyTensor,
+        block_table: &LazyTensor,
+        context_lens: &LazyTensor,
+        phys: crate::kv_block_pool::PhysBlockId,
+        slot: usize,
+        scale: f32,
+    ) -> crate::Result<LazyTensor> {
+        let cfg = &self.config;
+        let (batch, seq) = (1usize, 1usize);
+        let kv_dim = cfg.n_kv_heads * cfg.head_dim;
+        let act_dtype = x.dtype();
+
+        let x_norm = apply_affine_rms_norm(x, &layer.attn_norm_gain, cfg.dim, cfg.norm_eps);
+        let q = layer.attn_q.apply_linear(&x_norm, cfg.dim, cfg.dim).add_optional_trailing_bias(layer.attn_q_bias.as_ref()).unwrap();
+        let k = layer.attn_k.apply_linear(&x_norm, cfg.dim, kv_dim).add_optional_trailing_bias(layer.attn_k_bias.as_ref()).unwrap();
+        let v = layer.attn_v.apply_linear(&x_norm, cfg.dim, kv_dim).add_optional_trailing_bias(layer.attn_v_bias.as_ref()).unwrap();
+        let q_h = q
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim])).unwrap()
+            .permute([0, 2, 1, 3_usize]).unwrap();
+        let k_h = k
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim])).unwrap()
+            .permute([0, 2, 1, 3_usize]).unwrap();
+        let v_h = v
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim])).unwrap()
+            .permute([0, 2, 1, 3_usize]).unwrap();
+        let q_r = q_h.to_dtype(DType::F32)?
+            .rope_with_tables_decomposed(rope_cos, rope_sin)?
+            .to_dtype(act_dtype)?;
+        let k_r = k_h.to_dtype(DType::F32)?
+            .rope_with_tables_decomposed(rope_cos, rope_sin)?
+            .to_dtype(act_dtype)?;
+
+        // Paged storage + attention (replaces the contiguous write_slice + sliced SDPA).
+        let attn = pool.build_decode_attn(
+            k_pool_ph, v_pool_ph, &q_r, &k_r, &v_h, block_table, context_lens, phys, slot, scale,
+        )?;
+
+        let merged = attn
+            .permute([0, 2, 1, 3_usize]).unwrap()
+            .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
+        let attn_out = layer.attn_o.apply_linear(&merged, cfg.dim, cfg.dim);
+        let h1 = x.add(&attn_out).unwrap();
+        let h1_norm = apply_affine_rms_norm(&h1, &layer.ffn_norm_gain, cfg.dim, cfg.norm_eps);
+        let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.dim, cfg.ffn_dim);
+        let up = layer.ffn_up.apply_linear(&h1_norm, cfg.dim, cfg.ffn_dim);
+        let swiglu = gate.silu().mul(&up).unwrap();
+        let ffn_out = layer.ffn_down.apply_linear(&swiglu, cfg.ffn_dim, cfg.dim);
+        Ok(h1.add(&ffn_out).unwrap())
+    }
+
     /// Forward pass using pre-allocated KV-cache buffers and
     /// `Op::WriteSlice`. The cache must have been constructed via
     /// [`KvCache::with_capacity`] (the legacy `with_dims` grow-by-

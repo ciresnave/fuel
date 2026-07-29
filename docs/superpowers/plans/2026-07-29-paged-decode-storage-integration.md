@@ -32,16 +32,19 @@ KV *store* — unlocking:
   the running `context_len` mask, and in-place pool writes persisting across
   steps. (2c had already proved single-shot paged_attn over a pool.)
 
-- **PS2 — `LlamaModel::forward_with_paged_kv` (single session) + parity.** Compose
-  `build_decode_attn` across all layers with the existing projection/RoPE, into a
-  full decode forward that produces logits **ε-close** to
-  `forward_with_kv_context` for the same tokens. Binds all `n_layers` pool buffers
-  (K+V) into one realize (mirroring the contiguous forward's per-layer
-  `const_placeholder_like` + `ctx.insert` loop). Prefill writes the prompt's K/V
-  into blocks; decode appends one token/step. Rebuild-per-step first (the D1-style
-  path); the plan-once/persistent optimization is a later rider. Duplicate the
-  projection/RoPE rather than refactor the tested contiguous forward — factor the
-  shared half only once both are green.
+- **PS2 — `LlamaModel::forward_paged_step` + parity — DONE 2026-07-29.** A
+  single-token forward that composes `build_decode_attn` across all layers with
+  the projection/RoPE (duplicated from `apply_layer_with_kv_writes` into
+  `apply_layer_paged`, so the tested contiguous forward is untouched), binding all
+  `n_layers` pool buffers (K+V) into one realize. `Op::PagedAttn` is decode-only
+  (Sq=1), so prefill feeds the prompt one token at a time — position-for-position
+  equivalent to a batched causal prefill (each token's K/V depends only on
+  `0..=i`, all resident when token `i` is fed). Gate:
+  `fuel-core/tests/paged_decode_parity.rs` — logits ε-close (rel 1e-4) to
+  `forward_with_kv_context` across prefill + decode, for **both no-GQA and GQA**
+  (n_rep 2) configs. Rebuild-per-step (no plan-once yet); f32-only. The shared
+  projection/RoPE half can be factored now that both are green (a cleanup, not a
+  blocker).
 
 - **PS3 — wire it into `SessionScheduler`.** A session's KV lives in a shared
   `DeviceKvPool` (one pool, `open()` per session) instead of a private `KvCache`.
