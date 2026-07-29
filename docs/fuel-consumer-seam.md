@@ -312,6 +312,29 @@ incrementally as Fuel offers them; **none block the port**.
    > it is the half an inference host actually needs. Raised by the port session; recorded here as
    > its own item rather than buried in a retraction.
    >
+   > **CLOSED BY EXECUTION 2026-07-29 — tokens out of Fuel.** `llama-lazy` built clean at
+   > `origin/main` `13279179` and generated on TinyLlama-1.1B: *"Once upon a time, in a land far far
+   > away," — 8 tokens in 28.37s (3.55 s/tok)*, exit 0, coherent English. Same invocation that died
+   > at the first realize that morning.
+   >
+   > **Scope, stated precisely — "Fuel runs a model" is broader than what was established:**
+   > - **Verified by execution:** the *decoder* path end to end — weight load, config parse,
+   >   tokenization, graph construction, realize, sampling, detokenization — on a real 22-layer
+   >   model, through `lazy::LlamaModel` via the `Llama2cModel` thin wrapper. That is the surface a
+   >   consumer's `model/` rewrite copies from, so it is now a **working reference**, as this entry
+   >   originally (and unearnedly) claimed.
+   > - **Still unverified:** the *serving* path. No KV cache in that binary, no batched decode, no
+   >   `CapturedRun` replay, no `Llama3Model` RoPE scaling. **The serving path still has no runnable
+   >   reference, and the first consumer writes it.** That half is unchanged and is the half an
+   >   inference host needs.
+   >
+   > **[note] This is the first entry in the survey that neither party could have got wrong by
+   > reading.** Reaching it took a build that exposed a misleading diagnostic, a wrong hypothesis
+   > from the consumer, a correct root cause from the dispatch session, a capability decision from
+   > CireSnave, a general optimizer fix rather than a per-consumer kernel, and then running the
+   > thing. Nine existence-read-as-behaviour errors across two sessions in one day; the fix for
+   > every one was the same.
+   >
    > **Corrected status:** the lazy model surface **exists and appears complete** — 157 `lazy_*`
    > modules, `LlamaModel`, `Llama3Model` with three-band Llama-3.1 RoPE and an HF-config
    > deserializer are all really there, and the eager-retired-vs-lazy-live story holds. But the
@@ -352,6 +375,20 @@ incrementally as Fuel offers them; **none block the port**.
    *residency* mismatches and has no equivalent for *dtype*. Diagnosed by the serving/dispatch
    session, which reports the intended fallback ("f32 matmul after a Cast") is promised in a Vulkan
    docstring but unimplemented — **[not verified here]**, I could not locate that string.
+   **⚠ OPEN QUESTION raised by the fix (2026-07-29) — does `insert_dtype_fixups` honour C-5?**
+   The port session reports that execution surfaced *"the numeric non-neutrality of the promoting
+   cast"* — i.e. inserting a `Cast` to make a kernel available is **not** a numerics-preserving
+   rewrite. If so, this is a **C-5 question**, not merely an optimizer detail: a pass that changes
+   numerics to satisfy kernel availability is making a decision a consumer may have constrained.
+   Under [C-5](architecture/15-consumer-contract.md), a consumer demanding bit-exactness or a
+   tolerance budget must be able to *prune* that rewrite — otherwise it silently gets a different
+   numerical path than the one it asked for, which is precisely what C-5 exists to prevent.
+   **[not verified here]** I have not read the pass and do not know whether it is tolerance-gated,
+   unconditional, or reports its intervention through C-4. Worth settling while the pass is days
+   old: the same question applies to `insert_layout_fixups` and `insert_residency_copies`, which
+   are value-preserving and therefore *should* be exempt — making dtype the one fixup dimension
+   that is not automatically safe.
+
    **Consequence, scoped precisely (corrected 2026-07-29 — my first statement overreached).** This
    blocks any graph that *constructs* a mixed-precision matmul: `llama-lazy` does, because it loads
    BF16 and never casts, which is why Fuel's only runnable reference path is down. It does **not**
