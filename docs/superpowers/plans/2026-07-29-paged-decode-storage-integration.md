@@ -61,9 +61,29 @@ KV *store* — unlocking:
   output matches the contiguous `generate_with_kv_context` oracle **exactly**
   (PS2's ε-closeness is tight enough that greedy argmax is stable).
 
-- **PS4 (later) — batched paged decode + C-3 on the live path.** Batch=K paged
-  decode over the shared pool (block_table `[K, max_blocks]`); evict/restore/splice
-  driven from the scheduler; GQA + bf16 + live-GPU.
+- **PS4b — C-3 (evict/restore) on the live path — DONE 2026-07-29.** The pressure
+  valve for PS3's optimistic admission: `PagedSessionScheduler::evict_session(id)`
+  suspends a live session (captures its KV bytes device→host via the tested
+  byte-exact `DeviceKvPool::evict`, frees its pool blocks for others);
+  `restore_session(id)` re-allocates + writes the bytes back (capacity pre-checked,
+  so a failed restore leaves the session suspended + retryable, never losing
+  bytes). `step()` skips suspended sessions; `run_to_completion` stops rather than
+  spins when the only remaining work is suspended. *Which* session to evict is
+  consumer policy; this is the mechanism. Gates: evict→restore resumes **byte-exact**
+  (same final tokens as an uninterrupted run — bytes round-trip + rng/tokens/budget
+  preserved), and an end-to-end pressure-valve flow (evict A → run B in the freed
+  room → restore A → both finish). fuel-inference multi_session: 26 tests.
+
+- **PS4a (remaining) — paged BATCHED decode.** Batch=K paged decode over the
+  shared pool (`block_table [K, max_blocks]`, q `[K, Hq, 1, D]`) as a batched arm
+  on `PagedSessionScheduler` — the throughput piece. A new batched forward
+  (generalize `forward_paged_step` to K sessions); larger + Op::PagedAttn at B>1
+  is less exercised than B=1. Parity: batched == serial.
+
+- **PS4c (remaining) — CUDA bf16 / live-GPU.** Byte/dtype-generic `write_block`/
+  `read_block` + `build_decode_attn` for the bf16 pool, and a live-GPU (`#[ignore]`)
+  parity run of the paged path on CUDA. Splice on the live path (residual-stream
+  donation) also rides here.
 
 ## Layering / correctness notes
 
