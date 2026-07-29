@@ -217,12 +217,34 @@ incrementally as Fuel offers them; **none block the port**.
    > registry*, not a dtype gap. It builds, downloads TinyLlama, loads weights, parses config, and
    > builds the graph, then dies at realize. Reproduced on current `main`.
    >
-   > **Mechanism [verified here]:** backend registration is **explicit** —
-   > `fuel-dispatch::register_backend_capabilities` (`dispatch.rs:6539`) and
-   > `register_cpu_kernels` (`:5256`) — and there is **no `ctor`/`inventory`/`linkme`
-   > auto-registration**, so linking `fuel-cpu-backend` (which `fuel-lazy-examples` does, as a
-   > non-optional dep) does not register it. None of the lazy example binaries calls either
-   > function. The registry is empty because nothing populates it.
+   > **~~Mechanism [verified here]~~ — RETRACTED 2026-07-29. My diagnosis was wrong on every
+   > clause, and I gave it to the port session with confidence.** I wrote that registration is
+   > "explicit", that there is "no `ctor`/`inventory`/`linkme` auto-registration", that linking
+   > `fuel-cpu-backend` "does not register it", and that "the registry is empty because nothing
+   > populates it."
+   >
+   > **[re-verified] `dispatch.rs:6554` — `global_bindings()` auto-registers**:
+   > `GLOBAL_BINDINGS.get_or_init(|| { … register_cpu_kernels(&mut t);
+   > register_optional_backends(&mut t); … })`, with the doc comment stating outright that "CPU
+   > dispatch wrappers are auto-registered on first access… production callers picking up the
+   > global table see all available backends **without manual init**." The registry is **not**
+   > empty. I greped for three auto-registration *crates*, found none, and concluded there was no
+   > auto-registration — when the mechanism is an ordinary `OnceLock` in the accessor, which needs
+   > none of them.
+   >
+   > **Actual root cause (found by the serving/dispatch session, not by me):** an **unbuilt CPU
+   > mixed-precision matmul kernel** — CPU registers only uniform `[T, T, T]`; the mixed
+   > `[F32, BF16, F32]` form is CUDA-only. The `available backends: []` text is a **misleading
+   > stub that ignores the real binding table**, which is what sent both of us down the
+   > empty-registry path. (I could not locate that error string in `fuel-dispatch`, `fuel-graph`,
+   > or `fuel-core`; I am not claiming to have found the stub — recording the attribution
+   > accurately.)
+   >
+   > **Credit, stated precisely:** running the binary established **that** it was broken, not
+   > **why**. The port session's empty-registry hypothesis was wrong; mine was wrong in the same
+   > direction and with more confidence. This is the **fifth** structural finding in this survey
+   > to fail on contact with execution, and the first one that is entirely mine — recorded because
+   > the standing caveat above applies to the author of the caveat too.
    >
    > **~~A second reason not to lean on it~~ — WITHDRAWN 2026-07-29, that claim was wrong.** I
    > wrote that `llama-lazy.rs` "does not exercise the model surface this gap points a consumer
@@ -343,7 +365,7 @@ context_compression, tool_call}.rs`, `sampling.rs`.
 > | `chunked_prefill` | **complementary** — Fuel chunks *one* sequence (zero-copy `ChunkedPrefill<'a>::next_chunk`); the consumer batches *across* requests (`next_batch(&mut [PrefillRequest])`) plus tensor materialization |
 > | `tiered_storage` | **complementary** — Fuel = tier accounting + demotion policy; the consumer = byte movement + storage backends |
 > | `segmented_eviction` | **compose** — Fuel has the span vocabulary; the consumer adds parent/child hierarchy with cycle detection, `importance: f32`, and partial-vs-full `EvictionImpact` |
-> | `moe_routing` | **near-parity, consumer marginally richer** (`RoutingPolicy` variants, `load_imbalance()`, `RoutingStats`, typed errors) — weakest upstream candidate; polish, not capability |
+> | `moe_routing` | **compose — a C-4 instance** *(verdict revised 2026-07-29, upward)*. Fuel's `RoutingResult` has `num_dropped` + `expert_load`, so it reports the *symptom*; the consumer adds `load_imbalance()` + `RoutingStats`, the metric that makes it **diagnosable** — it tells a consumer `capacity_factor` is wrong *before* tokens start dropping. That is C-4's "advertised cost is a hint; measured cost is the record" applied to expert load, so it upstreams on the same footing as the others, not as polish |
 > | `sampling` | **resolved earlier** — consumer policy (Q5) |
 >
 > **Three findings from the completed diff worth pulling out:**
