@@ -311,7 +311,8 @@ context_compression, tool_call}.rs`, `sampling.rs`.
 > overlap is real at the **module-name** level and substantially weaker at the **capability**
 > level. Verdicts below are the port session's, from reading both implementations.
 >
-> **Of 7 of 13 modules examined: 2 are name collisions, 1 is a clean adopt, 4 are compose.**
+> **Final tally, all 13 modules diffed: 1 clean adopt, 2 name collisions, 6 compose/complementary,
+> 2 judgment calls, 1 resolved earlier (`sampling` → consumer policy, Q5).**
 >
 > **Not overlap at all — pure name collisions:**
 > - **`tool_call`** — Fuel's is schema + registry + *post-hoc text* parsing (`ToolDef`,
@@ -334,8 +335,46 @@ context_compression, tool_call}.rs`, `sampling.rs`.
 > | `eviction` + `h2o` | **compose** — adopt Fuel's `EvictionContext`/trait/`VotingAggregator` (`Box<dyn>` beats a generic builder); **upstream stateful H2O** — Fuel's `H2oPolicy` is a unit struct scoring a passed-in snapshot, the consumer's accumulates `TokenMetadata` (cumulative attention, steps present, position) across steps with a decay factor |
 > | `prefix_cache` | **adopt Fuel's core** (`longest_prefix_match`); keep the consumer's observability (`hit_rate`, `avg_saved_tokens`, `current_size_bytes`, `check_would_hit`) |
 >
-> Not yet examined: `scheduler`, `chunked_prefill`, `moe_routing`, `segmented_eviction`,
-> `tiered_storage`, `sampling`.
+> **The remaining six:**
+>
+> | Module | Verdict |
+> | --- | --- |
+> | `scheduler` | **judgment call, not capability** — near-identical concepts; the difference is coupling (Fuel's is standalone, the consumer's extends its own `SlotPool` + `slot_monitor`, ~1k LOC). Both are policy, so genuinely optional per [§15 v0.2](architecture/15-consumer-contract.md#where-the-seam-runs-foundation-not-the-repository) |
+> | `chunked_prefill` | **complementary** — Fuel chunks *one* sequence (zero-copy `ChunkedPrefill<'a>::next_chunk`); the consumer batches *across* requests (`next_batch(&mut [PrefillRequest])`) plus tensor materialization |
+> | `tiered_storage` | **complementary** — Fuel = tier accounting + demotion policy; the consumer = byte movement + storage backends |
+> | `segmented_eviction` | **compose** — Fuel has the span vocabulary; the consumer adds parent/child hierarchy with cycle detection, `importance: f32`, and partial-vs-full `EvictionImpact` |
+> | `moe_routing` | **near-parity, consumer marginally richer** (`RoutingPolicy` variants, `load_imbalance()`, `RoutingStats`, typed errors) — weakest upstream candidate; polish, not capability |
+> | `sampling` | **resolved earlier** — consumer policy (Q5) |
+>
+> **Three findings from the completed diff worth pulling out:**
+>
+> **(a) `scheduler` is NOT a stub — my §15 worry was wrong, in Fuel's favour. [verified here]**
+> `MemoryScheduler` (`scheduler.rs:139`) has real admission — `try_admit(RequestInfo) ->
+> Option<SlotHandle>` (`:185`), a configurable `pressure_threshold` (`:150`, `:172`), plus
+> `drain_queue`, `update_usage`, and budget accounting. I had asked whether "optional
+> consumer-side toolkit" was a generous description of a stub. It isn't generous; it's accurate.
+>
+> **(b) `tiered_storage` is metadata-only *by explicit design*, and it was written against a
+> mechanism that did not exist. [verified here]** `tiered_storage.rs:6` — it "does not move actual
+> tensors (**that responsibility belongs to the caller / runtime**)." `TieredStore` tracks tiers
+> and budgets and returns `TierTransfer` *descriptors* (`:109`, `:258` `candidates_for_demotion`).
+> **The "caller/runtime" it defers to is precisely C-3's evict/restore** — so this is a
+> C-3-lossy consumer authored before C-3 existed, waiting for the allocator to be its byte-moving
+> half. Strongest available input to the evict/restore signature.
+>
+> **(c) Fuel's toolkit already ships a span vocabulary. [verified here]** `segmented_eviction.rs`
+> carries `SpanId` (`:60`), `SpanKind` (`:79`), `SpanInfo` (`:109`), `EvictionPlan` (`:141`), and
+> `SpanRegistry::register(label, kind, range) -> SpanId` (`:181`, `:206`) — spans described as
+> "named indivisible units (a system prompt, a conversation turn, a retrieved document chunk)."
+> **This matters to the allocator's deferred "named, refcounted block group" increment**, which is
+> currently framed as greenfield to be designed against two consumers: one of those consumers
+> already ships the abstraction. It re-poses the question from *what should a span be* to
+> *should the toolkit's `SpanRegistry` sit on a Foundation-level group handle* — better-posed, and
+> only findable by diffing.
+>
+> **[judgment]** (b) and (c) are the same shape as A.4's headline lesson: `fuel-inference` is not
+> a duplicate of a consumer, it is **a policy layer written against Foundation mechanisms that
+> were never built**. That is why it has 153 tests and zero consumers.
 >
 > **The dominant outcome is upstreaming, not deletion.** On current evidence Fuel would *gain*
 > stateful H2O accumulation, KIVI granularity control, and a relationship-aware compression
