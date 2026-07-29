@@ -854,6 +854,59 @@ workspace, and `fuel-inference` is an optional consumer-side toolkit above it.
 
 ---
 
+### A.5 Capability-regression audit — a second, backwards-facing axis (2026-07-29)
+
+**A different question from the reverse gap list, and one it structurally cannot answer.** The gap
+list asks *"what does the consumer need from Fuel to proceed?"* — forward-facing, discovered by
+building. This asks *"what could the **old** system do that the new one cannot?"* Entries surface as
+**absences**, and an absence is only visible against an inventory of the system being replaced —
+which Fuel does not hold and cannot derive. Nobody hits an absence by building forward; the one
+below was found by chasing a falsifier, which is exactly the accidental route that should not be the
+mechanism.
+
+**The generalization** (port session's sharpening of my framing): the dangerous class is *a capability
+that worked because the old substrate happened to **materialize** something it never promised.* The
+consumer never asked for the intermediate — only for what it enabled. Their per-capability method
+question is the operational form: **"what did this need from Candle that was not a tensor
+operation?"** — observability of an intermediate, a custom kernel, a placement decision, a dtype
+choice. Those are precisely where a lazy, optimizer-owning framework legitimately differs from an
+eager one.
+
+First pass lives in the consumer's tree (`docs/superpowers/notes/capability-regression-audit.md`,
+`95e5e78`). Verification of each finding against Fuel's source is mine; results:
+
+| # | Capability | Verdict **[verified here unless noted]** |
+| --- | --- | --- |
+| 1 | Attention observability | **Confirmed regression** — arm-scoped, see item 6 of the gap list and §15 v0.5 |
+| 2 | LoRA | **NOT a regression — it inverts.** Confirmed: `lazy_nn/lora.rs` serves `y = base(x) + (alpha/rank)·x@A@B` **unmerged** over a frozen `WeightStorage::WithLoRA`, including a **Q4_0-quantized** base. The consumer could only *merge permanently*. Fuel's half is strictly more capable, and it is exactly the shared-immutable-base + per-tenant-delta shape §4.1 files under PEFT — so **multi-tenant adapter serving becomes newly expressible by porting**. The consumer's loader / validator / name-mapper is complementary and stays consumer-side. |
+| 3 | GGUF quantized inference | **Present** — `lazy_quantized_llama.rs:240` `QuantizedLlama3Model::from_gguf`; `WeightStorage::Q4_0` dispatches via `Op::QMatMul` |
+| 4 | Marlin / AWQ | **Present** — see gap 4 |
+| 5 | No `CustomOp` escape hatch | **A constraint, not a regression** — the `Op` enum is build-time-closed by design ([09-non-goals](architecture/09-non-goals.md)); custom kernels route through the binding table or the fused-op registry. **Worth stating as a consumer-visible consequence**: it relocates where custom-kernel work is *contributed* — out of the consumer, into the backend. Intended, but not inferable from the contract. |
+| 6 | Multi-GPU | **UNCERTAIN — and the highest-risk entry, because 1,767 LOC is deleted on the strength of it.** See below. |
+
+**Item 6, sharpened [verified here].** Two separate facts, and conflating them is the risk:
+
+- **The coherence protocol is genuinely a placeholder.** `inference_context.rs:32` says so in its own
+  words — *"the `authority` and `version` fields exist as placeholders. No protocol consults"* them —
+  and nothing outside that file reads them.
+- **More importantly: Fuel's multi-device story is *op placement*, not *model sharding*.** Greps for
+  `multi_gpu` / `tensor_parallel` / `data_parallel` across `fuel-dispatch`, `fuel-core`, `fuel-graph`
+  return **zero implementation hits**, while real multi-device *topology* machinery does exist
+  (`topology.rs` `devices: Vec<DeviceLocation>` + `devices_for_backend`, `plan.rs:1049`
+  `distinct_devices`, `pipelined.rs` `sync_active_cuda_devices`).
+
+**So "hand placement to the optimizer" is true for placing ops across devices and says nothing about
+sharding a model across them.** Those are different capabilities. **[judgment] If the consumer's
+`multi_gpu/` does model/tensor parallelism, deleting it on the strength of optimizer placement is a
+category error, not a simplification.** The prerequisite is establishing which of the two that module
+actually implements — before deletion, not after.
+
+**Coverage is partial and the consumer says so** rather than implying completeness: speculative
+decoding's two-model arrangement, the disk tier behind `Externalized`, KIVI and low-rank as graph
+transforms, structured-output contracts, and pruning are unaudited.
+
+---
+
 ## Annex B — Training host
 
 **Unit** an optimizer step, or a microbatch under gradient accumulation. **State** parameters +
