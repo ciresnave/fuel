@@ -34,7 +34,9 @@ use fuel_memory::Storage;
 
 use crate::Device;
 use crate::lazy::LazyTensor;
-use crate::kv_block_pool::{KvAllocError, KvBlockPool, KvGeometry, PhysBlockId, SessionHandle};
+use crate::kv_block_pool::{
+    Externalized, KvAllocError, KvBlockPool, KvGeometry, PhysBlockId, SessionHandle,
+};
 
 /// Which of a layer's two pool buffers a block operation targets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,6 +47,47 @@ pub enum BlockKind {
 
 fn msg_err(s: String) -> crate::Error {
     crate::Error::from(fuel_ir::Error::Msg(s).bt())
+}
+
+fn alloc_err(e: KvAllocError) -> crate::Error {
+    msg_err(format!("KV allocator: {e:?}"))
+}
+
+/// The device-backed externalization of a session's evicted state (C-3, lossy).
+/// Wraps the pure core's structural [`Externalized`] handle with the **bytes**
+/// of the detached blocks — one `[block_size · Hkv · D]` f32 vector per
+/// externalized logical slot, per layer, for K and V. The core is byte-free by
+/// design (move-ready), so the device layer is where the block contents live
+/// while a session is suspended. Never carries a recompute instruction (Q9): it
+/// is externalized *state*, restorable as-is into fresh physical blocks.
+pub struct DeviceEvicted {
+    core_handle: Externalized,
+    saved: Vec<SavedBlock>,
+}
+
+/// The captured contents of one detached (exclusive) logical block across all
+/// layers. `k[l]` / `v[l]` are layer `l`'s `[block_size, Hkv, D]` slab as f32.
+struct SavedBlock {
+    logical_slot: usize,
+    k: Vec<Vec<f32>>,
+    v: Vec<Vec<f32>>,
+}
+
+impl DeviceEvicted {
+    /// The categories of state this handle covers (delegates the core handle's
+    /// enumeration — the Q9 completeness gate).
+    pub fn covers(&self) -> &[crate::kv_block_pool::StateKind] {
+        self.core_handle.covers()
+    }
+    /// This handle's fidelity guarantee (`Lossy` this increment).
+    pub fn fidelity(&self) -> crate::kv_block_pool::Fidelity {
+        self.core_handle.fidelity()
+    }
+    /// Number of blocks whose bytes this handle carries (the exclusive,
+    /// actually-detached blocks — shared blocks stay resident and aren't here).
+    pub fn saved_block_count(&self) -> usize {
+        self.saved.len()
+    }
 }
 
 /// A materialized `Op::PagedAttn` page table — the host-side `block_table` +
@@ -329,6 +372,84 @@ impl DeviceKvPool {
             }
         }
         Ok(PageTableHost { block_table, context_lens, batch, max_blocks })
+    }
+
+    // --- C-3: device-backed evict / restore (bytes move device↔host) ------
+
+    /// Evict a session's entire resident state: capture the bytes of its
+    /// exclusive blocks (D2H, all layers, K and V) into a [`DeviceEvicted`]
+    /// handle, then hand the physical blocks back to the pool via the core.
+    /// `restore` re-materializes it byte-for-byte. Shared (spliced) blocks are
+    /// never detached and carry no bytes here (they stay resident).
+    pub fn evict(&mut self, s: SessionHandle) -> crate::Result<DeviceEvicted> {
+        let n = self
+            .core
+            .session_blocks(s)
+            .ok_or_else(|| alloc_err(KvAllocError::UnknownSession))?;
+        let all: Vec<usize> = (0..n).collect();
+        self.evict_blocks(s, &all)
+    }
+
+    /// Evict a SET of a session's logical blocks (sub-session tiering). Captures
+    /// the bytes of exactly the *exclusive* blocks in `indices` (a shared block
+    /// stays resident — its sharer still needs it), then calls the core's
+    /// refcount-aware [`KvBlockPool::evict_blocks`]. The returned handle carries
+    /// the detached bytes; the rest of the session keeps decoding.
+    pub fn evict_blocks(
+        &mut self,
+        s: SessionHandle,
+        indices: &[usize],
+    ) -> crate::Result<DeviceEvicted> {
+        let n_layers = self.n_layers();
+        // Capture bytes BEFORE the core detaches anything (an evicted block is
+        // returned to the free pool and may be overwritten immediately). Only
+        // exclusive resident blocks are actually detached, so only those are
+        // read back — a shared or already-externalized slot moves no bytes.
+        let to_save: Vec<usize> = indices
+            .iter()
+            .copied()
+            .filter(|&i| match self.core.resident_block(s, i) {
+                Some(p) => self.core.block_refcount(p) == 1,
+                None => false,
+            })
+            .collect();
+        let mut saved = Vec::with_capacity(to_save.len());
+        for &i in &to_save {
+            let p = self.core.resident_block(s, i).expect("checked resident just above");
+            let mut k = Vec::with_capacity(n_layers);
+            let mut v = Vec::with_capacity(n_layers);
+            for l in 0..n_layers {
+                k.push(self.read_block(l, BlockKind::K, p)?);
+                v.push(self.read_block(l, BlockKind::V, p)?);
+            }
+            saved.push(SavedBlock { logical_slot: i, k, v });
+        }
+        let report = self.core.evict_blocks(s, indices).map_err(alloc_err)?;
+        Ok(DeviceEvicted { core_handle: report.handle, saved })
+    }
+
+    /// Re-materialize an evicted session: the core allocates fresh physical
+    /// blocks for the externalized slots, then the saved bytes are written back
+    /// (H2D) into whichever blocks the pool handed out — so the restored content
+    /// is byte-identical regardless of physical reuse. Fails (typed) if the pool
+    /// can't fit the session's blocks again (`OutOfBlocks`).
+    pub fn restore(&mut self, s: SessionHandle, handle: DeviceEvicted) -> crate::Result<()> {
+        let DeviceEvicted { core_handle, saved } = handle;
+        self.core.restore(s, core_handle).map_err(alloc_err)?;
+        for sb in &saved {
+            let p = self.core.resident_block(s, sb.logical_slot).ok_or_else(|| {
+                msg_err(format!(
+                    "DeviceKvPool::restore: slot {} not resident after core restore — \
+                     the core and device handle disagree (internal bug)",
+                    sb.logical_slot,
+                ))
+            })?;
+            for l in 0..self.n_layers() {
+                self.write_block(l, BlockKind::K, p, &sb.k[l])?;
+                self.write_block(l, BlockKind::V, p, &sb.v[l])?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -650,6 +771,93 @@ mod tests {
             let denom = a.abs().max(b.abs()).max(f32::MIN_POSITIVE);
             assert!(diff < 1e-5 || diff / denom < 1e-5, "[{i}]: pool={a} dense={b} (abs={diff})");
         }
+    }
+
+    /// C-3 device round trip: a session's K/V, evicted (bytes captured D2H, its
+    /// physical blocks returned to the pool) and then restored (bytes written
+    /// H2D into freshly-assigned blocks), is byte-identical — even after every
+    /// physical block was scribbled with garbage while the session was
+    /// suspended. Distinct content per (slot, layer, kind) catches any mixup.
+    #[test]
+    fn device_evict_then_restore_is_a_byte_exact_round_trip_across_block_reuse() {
+        let (n_layers, num_blocks, block_size) = (2usize, 8usize, 4usize);
+        let mut pool =
+            DeviceKvPool::new(geom(n_layers, num_blocks, block_size), DType::F32, &Device::cpu())
+                .unwrap();
+        let block_elems = block_size * 2 * 8; // Hkv=2, D=8 from geom()
+
+        // Distinct content per (logical slot, layer, kind).
+        let content = |slot: usize, layer: usize, kind: BlockKind| -> Vec<f32> {
+            let base = (slot * 1000 + layer * 100 + if kind == BlockKind::K { 0 } else { 50 }) as f32;
+            (0..block_elems).map(|e| base + e as f32 * 0.001).collect()
+        };
+
+        let s = pool.core_mut().open();
+        pool.core_mut().append(s, 8).unwrap(); // 2 blocks
+        for slot in 0..2 {
+            let p = pool.core().resident_block(s, slot).unwrap();
+            for l in 0..n_layers {
+                pool.write_block(l, BlockKind::K, p, &content(slot, l, BlockKind::K)).unwrap();
+                pool.write_block(l, BlockKind::V, p, &content(slot, l, BlockKind::V)).unwrap();
+            }
+        }
+
+        let free_before = pool.core().free_blocks();
+        let handle = pool.evict(s).unwrap();
+        assert_eq!(handle.saved_block_count(), 2, "both exclusive blocks captured");
+        assert_eq!(handle.fidelity(), crate::kv_block_pool::Fidelity::Lossy);
+        assert_eq!(pool.core().free_blocks(), free_before + 2, "2 blocks returned to the pool");
+
+        // Scribble EVERY physical block — the session's old blocks are free and
+        // could be reused; restore must overwrite whatever it grabs.
+        for p in 0..num_blocks as PhysBlockId {
+            for l in 0..n_layers {
+                pool.write_block(l, BlockKind::K, p, &vec![-9.0; block_elems]).unwrap();
+                pool.write_block(l, BlockKind::V, p, &vec![-9.0; block_elems]).unwrap();
+            }
+        }
+
+        pool.restore(s, handle).unwrap();
+        assert_eq!(pool.core().session_blocks(s), Some(2), "session resident again");
+
+        // Every (slot, layer, kind) reads back its original content.
+        for slot in 0..2 {
+            let p = pool.core().resident_block(s, slot).unwrap();
+            for l in 0..n_layers {
+                assert_eq!(
+                    pool.read_block(l, BlockKind::K, p).unwrap(),
+                    content(slot, l, BlockKind::K),
+                    "K slot {slot} layer {l} restored byte-exact",
+                );
+                assert_eq!(
+                    pool.read_block(l, BlockKind::V, p).unwrap(),
+                    content(slot, l, BlockKind::V),
+                    "V slot {slot} layer {l} restored byte-exact",
+                );
+            }
+        }
+    }
+
+    /// A partial (sub-session) evict of a spliced session moves bytes only for
+    /// the EXCLUSIVE blocks; the shared prefix stays resident and carries no
+    /// bytes in the handle (the sharer still references it).
+    #[test]
+    fn device_partial_evict_captures_only_exclusive_blocks() {
+        let mut pool =
+            DeviceKvPool::new(geom(1, 16, 4), DType::F32, &Device::cpu()).unwrap();
+        let a = pool.core_mut().open();
+        pool.core_mut().append(a, 9).unwrap(); // 3 blocks
+        let b = pool.core_mut().open();
+        pool.core_mut().splice(a, b, 0, 2).unwrap(); // b shares A's first 2 blocks
+
+        // Evict all of A: blocks 0,1 are shared (kept), block 2 is exclusive.
+        let handle = pool.evict(a).unwrap();
+        assert_eq!(
+            handle.saved_block_count(), 1,
+            "only the 1 exclusive block's bytes are captured; the 2 shared stay resident",
+        );
+        // B is untouched and still resident.
+        assert_eq!(pool.core().session_blocks(b), Some(2));
     }
 
     /// Materializing over an unknown or externalized session is a typed error
