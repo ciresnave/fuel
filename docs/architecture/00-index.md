@@ -140,12 +140,14 @@ Implementation detail (file layouts, type signatures, code shapes) lives in phas
 
 ---
 
-## Out of band: this is a draft
+## Out of band: set status
 
-v0.1 means: the structure is committed, the content is in active drafting. Sections will land one or two at a time. Until v1.0 (the first complete set), expect:
+**Corrected 2026-07-29.** This section previously described the set as a v0.1 draft — "sections will land one or two at a time", "the decisions log is empty until v1.0", "when all 11 sections exist, this header gets bumped to v1.0". **All three statements are obsolete.** The set passed v1.0 on 2026-05-09, is at **v1.2**, contains **15 sections** (not 11), and the decisions log has been load-bearing since v1.0.
 
-- Some sections in this index reference docs that don't yet exist.
-- Sections that do exist may be partial.
-- The decisions log is empty until v1.0 (no decisions to record yet relative to a baseline).
+What remains true:
 
-When all 11 sections exist, this header gets bumped to v1.0 and from that point the decisions log becomes load-bearing.
+- **Individual sections carry their own versions**, and several are still `v0.x` drafts (e.g. `02` v0.5, `05` v0.6, `09` v0.4, `15` v0.2). A `v0.x` section is in active drafting; a section version is independent of the set version.
+- **Sections may be partial**, and content is refined in place rather than frozen.
+- **The decisions log records every MAJOR bump** and is the audit trail for why the architecture says what it says.
+
+Set-version bumps are recorded in the log alongside the section changes that prompted them.
