@@ -1040,6 +1040,61 @@ is a stub.
 comparison in A.4 was cited as evidence of depth and was measuring unfinished breadth. Size
 comparisons belong nowhere in a capability verdict.
 
+#### Gate zero needs TWO probes — the first misses the dangerous form
+
+`todo!` / `unimplemented!` catches only **declared**-unimplemented. The low-rank compressor that
+prompted this section was **not** a `todo!()`: it computes its input, discards it, and returns
+`randn`. It type-checks, runs, and returns plausibly-shaped output.
+
+| Probe | Catches | How |
+| --- | --- | --- |
+| **Declared**-unimplemented | honest stubs | `grep -n "todo!\|unimplemented!\|TODO"` |
+| **Silently**-unimplemented | stubs that look like implementations | synthetic constructors on production paths — `randn` / `ones` / `zeros` outside `#[cfg(test)]` |
+
+**The general form is the one to remember: *does this function's output actually depend on its
+input?*** A stub cannot fake that, and a signature cannot show it. Both probes are cheap
+approximations of that single question.
+
+**Both were run across the consumer's whole tree, and the result is reassuring rather than alarming
+[consumer-reported]:** exactly **one** `todo!()` in `src/` (the known `PerGroup`), and `randn`
+outside tests hits five sites — three doc examples in ```` ```ignore ```` blocks, two the known
+low-rank stub. **`kv_compression` is the outlier, not the pattern.**
+
+**One census result bears on a live decision [verified here]:**
+`multi_gpu::tensor_parallel::from_full_tensor` is **real** — it bounds-checks `shard_dim` against the
+tensor rank, rejects splits that don't divide evenly across the world size, and shards the actual
+tensor. Since CireSnave's call is that the consumer's multi-GPU code is *one possible guide* for
+Fuel's multi-device work, it matters that **the guide is not scaffolding.**
+
+### A.5.4 Audit round 1 complete (2026-07-29)
+
+All named items closed. **Tally: 1 confirmed regression** (attention observability, arm-scoped),
+**1 near-miss caught** (multi-GPU — a category error that would have deleted working sharding),
+**1 capability gain** (LoRA, unmerged serving over a quantized base), **6 verified-clean**,
+**2 absent-in-both** (low-rank SVD, KIVI `PerGroup` — not port risks), **1 constraint** (no
+`CustomOp`; it relocates where kernel work is *contributed*), plus the stub census.
+
+Three closed after the last record, all **[verified here]**:
+
+- **Chunked prefill — no regression.** The real question was whether Fuel supports *incremental*
+  prefill into a live cache. It does: `forward_with_kv_context_persistent` (`lazy.rs:7908`) holds
+  data `Const`s across tokens rather than rebuilding per token, so chunked prefill is repeated calls
+  over successive slices — no new mechanism needed.
+- **Structured-output contracts — no Fuel bearing.** Entirely host-side over generated *text*; no
+  tensors, so no regression is possible. (Gate zero did find a pre-existing consumer gap —
+  `OutputContractSpec::Json => None` — but per the absence-in-both rule that is a consumer TODO, not
+  a port risk.)
+- **Disk tier — placement REVISED, and this one moved.** The first answer implied Fuel had only byte
+  primitives. It has far more: `fuel-inference/src/tiered_storage.rs` carries the whole tier model —
+  `enum Tier` (`:57`), per-tier budgets, placement tracking, `candidates_for_demotion`, LRU `touch`,
+  `TierTransfer` (`:109`), and `position_range` (`:80`) *preserved across tier moves for positional
+  re-injection*. **Only byte movement is absent, and explicitly delegated.** Byte movement is
+  mechanism, so under [A.5.2](#a52-placement-rubric--where-a-capability-goes) it belongs in **Fuel,
+  completing what is already started** — not as consumer code. The consumer's distinctive residue
+  narrows to a `FileDiskStore` backend and its knowledge-base link.
+  **And that entry has a shelf life:** once host storage is file-backed (§15 v0.7), `Cpu` and `Disk`
+  stop being distinct locations and a separate disk backend may become unnecessary.
+
 ---
 
 ## Annex B — Training host
