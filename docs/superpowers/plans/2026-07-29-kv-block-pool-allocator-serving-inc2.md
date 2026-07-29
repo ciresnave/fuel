@@ -223,7 +223,12 @@ not built for one consumer. → ROADMAP.
     Follow-ups: byte/dtype-generic `write_block`/`read_block` for the CUDA bf16 pool; live-GPU parity of
     the 2c gate; a consumer-facing bind helper (or `InferenceContext` integration) so a forward graph
     binds the pool buffers without hand-building a `StorageCache`.
-- **Q2 — `multi_session.rs` → `fuel-inference` — AUTHORIZED by CireSnave** (2026-07-29, "move it when
-  convenient"). This session's, *after* part 2. NOT a pure file move: it forces `&LlamaModel` into a
-  model-agnostic trait (SamplingStrategy sheds rather than moves — sampling is consumer policy, Q5).
-  The trait is the real design change and the reason to move before an inference consumer arrives.
+- **Q2 — `multi_session.rs` → `fuel-inference` — DONE 2026-07-29** (authorized "move it when
+  convenient"). As predicted, NOT a pure file move: it forced `&LlamaModel` into a model-agnostic
+  `DecodeModel` trait (the real design change). Shipped in two steps: **Q2.1** (`e75c7525`) introduced
+  the trait + made `SessionScheduler<'m, M: DecodeModel>` / `BatchedDecode` generic, verified in place
+  in fuel-core (17 tests, no test changed — M infers to `LlamaModel`); **Q2.2** (`57abafb4`) relocated
+  the module (git rename, `crate::`→`fuel::`, `impl DecodeModel for LlamaModel` now in fuel-inference
+  by the orphan rule, `build_batched_decode_logits` widened `pub(crate)`→`pub`). `SamplingStrategy`
+  stayed a fuel-core type (sheds, not moves — consumer policy); the full sampling-location reshape (Q5)
+  stays deferred. Also fixed pre-existing fuel-inference test breakage (`Device::Cpu`→`Device::cpu()`).
