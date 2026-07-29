@@ -1066,6 +1066,45 @@ tensor rank, rejects splits that don't divide evenly across the world size, and 
 tensor. Since CireSnave's call is that the consumer's multi-GPU code is *one possible guide* for
 Fuel's multi-device work, it matters that **the guide is not scaffolding.**
 
+### A.5.3b CORRECTION — Fuel *does* have sharding machinery; `fuel-parallel` exists
+
+**I claimed "zero implementation hits" for model sharding in Fuel. That was wrong**, and wrong by the
+exact failure this section catalogues: I grepped `fuel-dispatch`, `fuel-core` and `fuel-graph` for
+`tensor_parallel`/`data_parallel` and **missed an entire crate named for the thing**.
+
+**[verified] `fuel-parallel` — 1,808 LOC**, described in its own manifest as *"Multi-GPU parallelism
+primitives for the Fuel ML framework"*, containing `tensor_parallel.rs`, `pipeline_parallel.rs`,
+`distributed_cache.rs`, `comm.rs`, `topology.rs` — a near-mirror of the consumer's `multi_gpu/`
+module structure.
+
+**Gate zero: clean.** Zero `todo!`/`unimplemented!`; the only synthetic constructors sit past
+`#[cfg(test)]` at `tensor_parallel.rs:278`. The shard arithmetic is real — `ShardDim`, `TensorShard`
+(`start`/`end`/`shard_size`), `TensorParallelConfig::shard_range(rank, full_size, dim)`, a sharded
+`Linear`.
+
+**But the decisive gap is one layer down: there is no real communicator.** `comm.rs` declares a
+`Communicator` trait, and **`IdentityComm` is its only implementation** — `CommInfo { rank: 0,
+world_size: 1 }`, with `all_reduce`, `all_gather`, `reduce_scatter` and `broadcast` each returning
+`tensor.clone()`. So Fuel has **the shape of tensor/pipeline parallelism over a single-process
+identity backend**: correct shard *arithmetic*, no actual cross-device *communication*.
+
+**And zero consumers** — `fuel-parallel` appears in exactly two `Cargo.toml`s, the workspace root and
+its own. Built, never wired: the same pattern as `fuel-inference`.
+
+**The consumer is in the same position [verified].** Its `NCCL` is an enum variant in `config.rs` plus
+doc-comment aspiration; `TensorShard::all_reduce(&[Tensor])` / `gather` / `scatter` operate on slices
+of tensors **already local to one process**. Real sharding arithmetic, no transport.
+
+**So per the absence-in-both rule this is NOT a port regression** — it is a genuine gap in both
+systems. And the missing piece places cleanly under [A.5.2](#a52-placement-rubric--where-a-capability-goes)
+**rule 4**: a real collective (NCCL or equivalent) is a *kernel/transport* concern, so it is a
+**backend** ask — Baracuda for CUDA — not Fuel-internal work. Fuel's remaining job is to *wire*
+`fuel-parallel` to it and to a consumer.
+
+**[judgment] This changes the shape of the multi-device work** from "build sharding in Fuel" to
+"supply a real `Communicator` and wire the existing crate" — a materially smaller and differently-
+placed task than the one I described.
+
 ### A.5.4 Audit round 1 complete (2026-07-29)
 
 All named items closed. **Tally: 1 confirmed regression** (attention observability, arm-scoped),
