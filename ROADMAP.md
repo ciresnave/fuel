@@ -338,10 +338,14 @@ nowhere; now captured so they are not forgotten):
   logprob-returning consumer has a different requirement from a token-only one. `SchedulePolicy` is
   confirmed correctly Fuel's (equivalent arms = arm selection, not fairness); `run_to_completion`,
   the implicit `Vec`-order FIFO, and `add_session`'s name are consumer-policy shapes to keep out of
-  the interface. **Tracked defect:** `multi_session.rs` sits in `fuel-core` and depends on
-  `LlamaModel` + `SamplingStrategy` — three categories the layer table below excludes from
-  Foundation; move to `fuel-inference` before the Lightbulb port (that move is what forces
-  `&LlamaModel` to become a model-agnostic trait).
+  the interface. **Tracked defect — RESOLVED 2026-07-29 (Q2):** `multi_session.rs` moved from
+  `fuel-core` to `fuel-inference` (`57abafb4`). The move forced the concrete-model coupling into a
+  model-agnostic `DecodeModel` trait (`n_layers`/`n_kv_heads`/`head_dim` +
+  `forward_with_kv_context_persistent` + `build_batched_decode_logits`; `LlamaModel` is the first
+  impl) — Q2.1 decoupled in place (`e75c7525`), Q2.2 relocated (`57abafb4`). `SamplingStrategy` stays
+  a fuel-core type (sheds rather than moves — sampling is consumer policy); the full sampling-location
+  reshape (Q5) is still deferred. The scheduler is now consumer-side orchestration where it belongs,
+  ready to wire the KV block-pool allocator under.
 - **GRPO** + **RLVR** verifiable post-training — greenfield on the existing `fuel-training`
   stack (SGD/AdamW + autodiff + `cross_entropy`); needs the RNG/generator seam (above) for
   group sampling.
