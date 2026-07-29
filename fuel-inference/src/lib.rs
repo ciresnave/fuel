@@ -155,6 +155,14 @@ pub mod kv_compress;
 /// eviction-pressure admission control.
 pub mod scheduler;
 
+/// K-way multi-session decode driver (moved from `fuel-core`, Q2 2026-07-29):
+/// runs K independent decode sessions concurrently over one model, serial
+/// (byte-exact oracle) or live-batched. Reaches the model through the
+/// model-agnostic [`multi_session::DecodeModel`] trait — consumer-side
+/// orchestration, not a Foundation primitive. Distinct from [`scheduler`]'s
+/// memory-admission `MemoryScheduler`.
+pub mod multi_session;
+
 /// Mixture-of-Experts capacity-aware top-K token routing.
 pub mod moe_routing;
 

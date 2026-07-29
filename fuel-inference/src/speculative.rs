@@ -31,7 +31,7 @@
 //! use fuel::{DType, Device, Tensor};
 //!
 //! # fn main() -> fuel::Result<()> {
-//! let device = Device::Cpu;
+//! let device = Device::cpu();
 //! let vocab_size = 100;
 //!
 //! // Draft model proposed 3 tokens: [10, 20, 30]
@@ -373,7 +373,7 @@ mod tests {
 
     #[test]
     fn all_accepted_when_distributions_match() -> Result<()> {
-        let device = Device::Cpu;
+        let device = Device::cpu();
         let vocab = 50;
         let k = 3;
         let draft_tokens = vec![5u32, 10, 15];
@@ -452,7 +452,7 @@ mod tests {
 
     #[test]
     fn empty_draft_returns_bonus_token() -> Result<()> {
-        let device = Device::Cpu;
+        let device = Device::cpu();
         let vocab = 50;
 
         // No draft tokens
@@ -478,7 +478,7 @@ mod tests {
 
     #[test]
     fn rejection_with_divergent_distributions() -> Result<()> {
-        let device = Device::Cpu;
+        let device = Device::cpu();
         let vocab = 10;
         let k = 3;
 
@@ -521,7 +521,7 @@ mod tests {
 
     #[test]
     fn verify_result_invariants() -> Result<()> {
-        let device = Device::Cpu;
+        let device = Device::cpu();
         let vocab = 20;
         let k = 5;
 

@@ -7948,7 +7948,12 @@ impl LlamaModel {
     /// buffer + scatter path and is the CPU parity gate. On CUDA (bf16) the
     /// optimizer-emitted flash arm consumes the shared buffer's batch dim.
     #[allow(clippy::needless_range_loop)]
-    pub(crate) fn build_batched_decode_logits(
+    // `pub` (not `pub(crate)`): the multi-session decode scheduler that drives
+    // this batched arm lives in `fuel-inference` (the Q2 move), so its
+    // `DecodeModel for LlamaModel` impl must reach this method across the crate
+    // boundary. It is a legitimate public model capability (K-way batched decode
+    // logits), not an internal.
+    pub fn build_batched_decode_logits(
         &self,
         caches: &mut [&mut KvCache],
         last_tokens: &[u32],
@@ -8173,8 +8178,8 @@ impl LlamaModel {
         //       session i can never touch session j's buffer;
         //   (b) on ANY `Err` returned from here, the scheduler's `advance_batched`
         //       Err arm forces EVERY batch member to Finished-with-error (see
-        //       `multi_session::SessionScheduler::advance_batched`), so no
-        //       partially-written session is ever decoded again;
+        //       `fuel_inference::multi_session::SessionScheduler::advance_batched`),
+        //       so no partially-written session is ever decoded again;
         //   (c) `cached_len` is NOT bumped until AFTER copy-out fully succeeds,
         //       and the copy-out rewrite is idempotent over the read region
         //       `[0, cached_len)` (it re-copies the identical prefix), so a
