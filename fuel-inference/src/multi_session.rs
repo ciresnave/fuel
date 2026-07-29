@@ -32,11 +32,30 @@
 //! Llama-first but trait-shaped ([`ModelDims`]): `PhiModel`'s identical
 //! four-local quartet is a later drop-in.
 
+use std::collections::HashMap;
+
 use fuel_ir::{DType, Error};
 
 use fuel::Device;
 use fuel::inference_context::{DecodeSession, InferenceContext, KvCache};
+use fuel::kv_block_pool::{KvBlockPool, KvGeometry, PoolCapacity, SessionHandle};
 use fuel::lazy::{sample_logits, LlamaModel, SamplingStrategy};
+
+/// The KV memory budget a [`SessionScheduler`] admits sessions against — the
+/// C-1 capacity mechanism (from [15-consumer-contract]). `num_blocks` physical
+/// blocks of `block_size` tokens each is the pool's ceiling; a session reserves
+/// `⌈(prompt + max_new) / block_size⌉` blocks at admission, so the scheduler can
+/// answer "will this session fit?" *before* building its KV cache instead of
+/// discovering it via a late OOM. The per-token head geometry comes from the
+/// model, so only these two knobs are the budget.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KvBudget {
+    /// Tokens per block (the `Op::PagedAttn` block size, and the admission
+    /// reservation quantum).
+    pub block_size: usize,
+    /// Total physical blocks — the KV ceiling shared across all sessions.
+    pub num_blocks: usize,
+}
 
 /// The model capability the [`SessionScheduler`] depends on — the model-agnostic
 /// seam. The scheduler is orchestration (mechanism); it needs only the KV-context
@@ -433,16 +452,39 @@ pub struct SessionScheduler<'m, M: DecodeModel> {
     sessions: Vec<SessionState>,
     policy: SchedulePolicy,
     next_id: u64,
+    /// C-1 capacity accountant: the KV block pool the scheduler admits sessions
+    /// against. Each admitted session reserves the blocks its `max_seq_len`
+    /// (prompt + budget) needs; the reservation is a faithful proxy for its
+    /// fixed-capacity `KvCache`, so `free_blocks` mirrors real KV headroom.
+    /// (Mechanism only — the pool decides *fit*, never *whom* to admit; that is
+    /// the caller's policy.) The reservation is released together with the
+    /// session's `KvCache` by [`reap_finished`](Self::reap_finished).
+    kv_pool: KvBlockPool,
+    /// Live sessions' pool reservations, so `reap_finished` frees the exact
+    /// blocks a session reserved.
+    kv_handles: HashMap<SessionId, SessionHandle>,
 }
 
 impl<'m, M: DecodeModel> SessionScheduler<'m, M> {
-    /// Create an empty scheduler over a shared read-only model.
+    /// Create an empty scheduler over a shared read-only model, admitting
+    /// sessions against a KV block-pool budget (C-1). The pool's per-token head
+    /// geometry is taken from the model (all sessions share it); `budget` sets
+    /// the block size + total blocks.
     pub fn new(
         model: &'m M,
         device: Device,
         dtype: DType,
         policy: SchedulePolicy,
+        budget: KvBudget,
     ) -> Self {
+        let kv_pool = KvBlockPool::new(KvGeometry {
+            n_layers: model.n_layers(),
+            n_kv_heads: model.n_kv_heads(),
+            head_dim: model.head_dim(),
+            num_blocks: budget.num_blocks,
+            block_size: budget.block_size,
+            elem_size: dtype.size_in_bytes(),
+        });
         Self {
             model,
             device,
@@ -450,15 +492,50 @@ impl<'m, M: DecodeModel> SessionScheduler<'m, M> {
             sessions: Vec::new(),
             policy,
             next_id: 0,
+            kv_pool,
+            kv_handles: HashMap::new(),
         }
     }
 
-    /// Add a session from a prompt. Mints a fresh [`SessionId`], builds the
-    /// session's private `KvCache` + `InferenceContext` (all geometry is
-    /// uniform by construction — every session shares the one `&LlamaModel`),
-    /// and returns the id. Geometry/budget is validated at construction time
-    /// by [`SessionState::new`], never deferred to `step`. On a construction
-    /// error (empty prompt, zero budget, OOM) no id is consumed.
+    // --- C-1 capacity advertisement (the admission primitives) -----------
+
+    /// Physical KV blocks currently free (C-1). A caller sheds/queues load by
+    /// comparing this to [`kv_blocks_required`](Self::kv_blocks_required) BEFORE
+    /// calling [`add_session`](Self::add_session), rather than discovering the
+    /// ceiling via a rejected admit.
+    pub fn kv_free_blocks(&self) -> usize {
+        self.kv_pool.free_blocks()
+    }
+
+    /// The pool's full capacity descriptor (C-1) — free/total blocks + geometry.
+    pub fn kv_capacity(&self) -> PoolCapacity {
+        self.kv_pool.capacity()
+    }
+
+    /// Blocks a fresh session of `prompt_len + max_new` tokens would reserve —
+    /// the exact quantity [`add_session`](Self::add_session) checks against
+    /// [`kv_free_blocks`](Self::kv_free_blocks). The admission math lives in one
+    /// place so a caller's pre-check can never disagree with the reservation.
+    pub fn kv_blocks_required(&self, prompt_len: usize, max_new: usize) -> usize {
+        self.kv_pool.blocks_required(0, prompt_len + max_new)
+    }
+
+    // --- C-4 measured cost -----------------------------------------------
+
+    /// Resident KV bytes across all admitted sessions (C-4) — the scheduler's
+    /// budget signal. Reservation-based (each session's full `max_seq_len`),
+    /// matching the fixed-capacity caches it stands in for.
+    pub fn kv_bytes_resident(&self) -> u64 {
+        self.kv_pool.kv_bytes_resident()
+    }
+
+    /// Add a session from a prompt. **Capacity-gated (C-1):** reserves the
+    /// blocks its `max_seq_len` (prompt + `max_new`) needs from the KV pool
+    /// FIRST — if they don't fit, returns `Err` *before* building any KV cache,
+    /// so a full scheduler sheds an admission instead of OOMing mid-build. On
+    /// success, mints a fresh [`SessionId`], builds the private `KvCache` +
+    /// `InferenceContext`, and records the reservation. On any error (capacity,
+    /// empty prompt, zero budget, OOM) no id and no blocks are consumed.
     pub fn add_session(
         &mut self,
         prompt: &[u32],
@@ -466,12 +543,27 @@ impl<'m, M: DecodeModel> SessionScheduler<'m, M> {
         eos_id: Option<u32>,
         max_new: usize,
     ) -> fuel::Result<SessionId> {
+        // C-1 gate: does this session's KV reservation fit? Check before any
+        // allocation so a rejection is cheap and total (nothing half-built).
+        let needed = self.kv_blocks_required(prompt.len(), max_new);
+        let free = self.kv_pool.free_blocks();
+        if needed > free {
+            return Err(Error::Msg(format!(
+                "SessionScheduler::add_session: KV capacity — session needs {needed} blocks, \
+                 {free} free (shed load, or reap_finished to reclaim). Pre-check with \
+                 kv_blocks_required + kv_free_blocks.",
+            )).bt());
+        }
+
         let id = SessionId(self.next_id);
         let dims = ModelDims {
             n_layers: self.model.n_layers(),
             n_kv_heads: self.model.n_kv_heads(),
             head_dim: self.model.head_dim(),
         };
+        // Build the cache first (an empty-prompt / zero-budget error must not
+        // consume a reservation), THEN reserve — both are pre-gated above so
+        // neither the build nor the reserve can fail on capacity here.
         let state = SessionState::new(
             id,
             dims,
@@ -482,9 +574,38 @@ impl<'m, M: DecodeModel> SessionScheduler<'m, M> {
             &self.device,
             self.dtype,
         )?;
+        let handle = self.kv_pool.open();
+        self.kv_pool
+            .append(handle, prompt.len() + max_new)
+            .map_err(|e| Error::Msg(format!("SessionScheduler::add_session: reserve failed: {e:?}")).bt())?;
+        self.kv_handles.insert(id, handle);
         self.next_id += 1;
         self.sessions.push(state);
         Ok(id)
+    }
+
+    /// Reap every `Finished` session: drop it (freeing its `KvCache`) and
+    /// release its KV pool reservation, returning each reaped session's
+    /// `(id, tokens)`. This is the operation that turns a completed session's KV
+    /// back into admission headroom — cache-free and pool-free happen together,
+    /// so [`kv_free_blocks`](Self::kv_free_blocks) never drifts from real memory.
+    /// A serving loop calls this between `step`s to admit new work as old work
+    /// completes. (Non-`Finished` sessions are untouched.)
+    pub fn reap_finished(&mut self) -> Vec<(SessionId, Vec<u32>)> {
+        let mut reaped = Vec::new();
+        let mut kept = Vec::with_capacity(self.sessions.len());
+        for s in std::mem::take(&mut self.sessions) {
+            if s.phase == SessionPhase::Finished {
+                if let Some(h) = self.kv_handles.remove(&s.id) {
+                    self.kv_pool.discard(h);
+                }
+                reaped.push((s.id, s.tokens));
+            } else {
+                kept.push(s);
+            }
+        }
+        self.sessions = kept;
+        reaped
     }
 
     /// Advance one scheduling quantum: (1) run any `Prefill` sessions serially
@@ -794,6 +915,12 @@ mod tests {
         let cfg = tiny_cfg();
         LlamaModel { config: cfg.clone(), weights: tiny_weights(&cfg, seed) }
     }
+    /// A generous KV budget for tests that don't exercise the capacity gate —
+    /// large enough that no admission is ever rejected. Capacity-gate tests
+    /// build their own tight budget.
+    fn test_budget() -> KvBudget {
+        KvBudget { block_size: 16, num_blocks: 4096 }
+    }
     fn dims(cfg: &LlamaConfig) -> ModelDims {
         ModelDims { n_layers: cfg.n_layers, n_kv_heads: cfg.n_kv_heads, head_dim: cfg.head_dim }
     }
@@ -863,12 +990,67 @@ mod tests {
             &prompt, max_new, SamplingStrategy::Greedy, None, &Device::cpu(), DType::F32).unwrap();
 
         let mut sched = SessionScheduler::new(
-            &model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin);
+            &model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, test_budget());
         let id = sched.add_session(&prompt, SamplingStrategy::Greedy, None, max_new).unwrap();
         let out = sched.run_to_completion().unwrap();
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].0, id);
         assert_eq!(out[0].1, standalone);   // byte-identical token stream
+    }
+
+    /// C-1: admission is gated on the KV block pool. A tight budget admits until
+    /// blocks run out, rejects the over-committing session BEFORE building its
+    /// cache (rejection consumes nothing), and `reap_finished` turns completed
+    /// sessions' reservations back into admission headroom. C-4 resident bytes
+    /// track the reservations.
+    #[test]
+    fn admission_is_capacity_gated_c1_and_reap_reclaims() {
+        let model = tiny_model(31);
+        // block_size 8; a (prompt 3 + max_new 5 = 8)-token session = exactly 1 block.
+        let budget = KvBudget { block_size: 8, num_blocks: 2 };
+        let mut sched =
+            SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, budget);
+        let prompt = [1u32, 2, 3];
+
+        assert_eq!(sched.kv_blocks_required(prompt.len(), 5), 1, "8 tokens / block_size 8 = 1 block");
+        assert_eq!(sched.kv_free_blocks(), 2);
+        assert_eq!(sched.kv_bytes_resident(), 0, "C-4: nothing reserved yet");
+
+        sched.add_session(&prompt, SamplingStrategy::Greedy, None, 5).unwrap();
+        sched.add_session(&prompt, SamplingStrategy::Greedy, None, 5).unwrap();
+        assert_eq!(sched.kv_free_blocks(), 0, "both blocks reserved");
+        assert!(sched.kv_bytes_resident() > 0, "C-4: resident bytes reflect the 2 reserved blocks");
+
+        // Third admission is rejected on capacity — total, nothing half-built.
+        let rejected = sched.add_session(&prompt, SamplingStrategy::Greedy, None, 5);
+        assert!(rejected.is_err(), "no room → typed capacity rejection (C-1)");
+        assert_eq!(sched.kv_free_blocks(), 0, "a rejected admit consumes no blocks");
+
+        // Complete the two sessions, reap them, and the reservations return.
+        let _ = sched.run_to_completion().unwrap();
+        let reaped = sched.reap_finished();
+        assert_eq!(reaped.len(), 2, "both finished sessions reaped");
+        assert_eq!(sched.kv_free_blocks(), 2, "reap reclaimed both blocks");
+        assert_eq!(sched.kv_bytes_resident(), 0, "C-4: back to zero after reap");
+
+        // A fresh session admits again into the reclaimed headroom.
+        sched.add_session(&prompt, SamplingStrategy::Greedy, None, 5).unwrap();
+        assert_eq!(sched.kv_free_blocks(), 1);
+    }
+
+    /// A multi-block session reserves ⌈max_seq_len / block_size⌉ blocks, and the
+    /// pre-check query agrees with what admission actually reserves.
+    #[test]
+    fn kv_blocks_required_matches_multi_block_reservation() {
+        let model = tiny_model(7);
+        let budget = KvBudget { block_size: 4, num_blocks: 16 };
+        let mut sched =
+            SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, budget);
+        let prompt = [1u32, 2, 3, 4, 5]; // 5 + max_new 6 = 11 tokens → ceil(11/4) = 3 blocks
+        assert_eq!(sched.kv_blocks_required(prompt.len(), 6), 3);
+        let free_before = sched.kv_free_blocks();
+        sched.add_session(&prompt, SamplingStrategy::Greedy, None, 6).unwrap();
+        assert_eq!(sched.kv_free_blocks(), free_before - 3, "admission reserved exactly the queried 3 blocks");
     }
 
     #[test]
@@ -886,7 +1068,7 @@ mod tests {
 
         // K=2 scheduled together.
         let mut sched = SessionScheduler::new(
-            &model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin);
+            &model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, test_budget());
         let ida = sched.add_session(&prompt_a, SamplingStrategy::Greedy, None, max_new).unwrap();
         let idb = sched.add_session(&prompt_b, SamplingStrategy::Greedy, None, max_new).unwrap();
         let out = sched.run_to_completion().unwrap();
@@ -902,16 +1084,16 @@ mod tests {
         let (pa, pb, max_new) = ([1u32,2,3], [5u32,6], 6);
 
         // Round-robin (both added, then run together).
-        let mut rr = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin);
+        let mut rr = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, test_budget());
         let a1 = rr.add_session(&pa, SamplingStrategy::Greedy, None, max_new).unwrap();
         let b1 = rr.add_session(&pb, SamplingStrategy::Greedy, None, max_new).unwrap();
         let out_rr = rr.run_to_completion().unwrap();
 
         // One-then-the-other: A alone to completion, then B alone.
-        let mut s_a = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin);
+        let mut s_a = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, test_budget());
         s_a.add_session(&pa, SamplingStrategy::Greedy, None, max_new).unwrap();
         let just_a = s_a.run_to_completion().unwrap();
-        let mut s_b = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin);
+        let mut s_b = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, test_budget());
         s_b.add_session(&pb, SamplingStrategy::Greedy, None, max_new).unwrap();
         let just_b = s_b.run_to_completion().unwrap();
 
@@ -927,7 +1109,7 @@ mod tests {
         let max_new = 8;
 
         // Same prompt, DIFFERENT seeds → different streams.
-        let mut sched = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin);
+        let mut sched = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, test_budget());
         let id1 = sched.add_session(&prompt, SamplingStrategy::Temperature{temp:1.0, seed:1}, None, max_new).unwrap();
         let id2 = sched.add_session(&prompt, SamplingStrategy::Temperature{temp:1.0, seed:2}, None, max_new).unwrap();
         let out = sched.run_to_completion().unwrap();
@@ -945,7 +1127,7 @@ mod tests {
     fn t4_session_isolation_on_error() {
         let model = tiny_model(9999);
         let good = [1u32,2,3];
-        let mut sched = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin);
+        let mut sched = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, test_budget());
         let bad_id  = sched.add_poisoned_session_for_test(&[4u32,5], 5).unwrap();
         let good_id = sched.add_session(&good, SamplingStrategy::Greedy, None, 5).unwrap();
 
@@ -967,7 +1149,7 @@ mod tests {
         let pb = [8u32,1];
         let max_new = 6;
 
-        let mut sched = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin);
+        let mut sched = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, test_budget());
         let ida = sched.add_session(&pa, SamplingStrategy::Greedy, None, max_new).unwrap();
         // Advance A alone for two steps.
         sched.step().unwrap();
@@ -998,7 +1180,7 @@ mod tests {
         let model = tiny_model(9999);
         let (pa, pb, max_new) = ([1u32,2,3], [5u32,6,7], 6);
         let run = |policy| {
-            let mut s = SessionScheduler::new(&model, Device::cpu(), DType::F32, policy);
+            let mut s = SessionScheduler::new(&model, Device::cpu(), DType::F32, policy, test_budget());
             let a = s.add_session(&pa, SamplingStrategy::Greedy, None, max_new).unwrap();
             let b = s.add_session(&pb, SamplingStrategy::Greedy, None, max_new).unwrap();
             (a, b, s.run_to_completion().unwrap())
@@ -1203,7 +1385,7 @@ mod tests {
             })
             .collect();
 
-        let mut sched = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::Batched { max_batch: 2 });
+        let mut sched = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::Batched { max_batch: 2 }, test_budget());
         let ids: Vec<SessionId> = cases
             .iter()
             .map(|(p, eos, mn)| sched.add_session(p, SamplingStrategy::Greedy, *eos, *mn).unwrap())
@@ -1237,7 +1419,7 @@ mod tests {
             .map(|p| model.generate_with_kv_context(p, max_new, SamplingStrategy::Greedy, None, &Device::cpu(), DType::F32).unwrap())
             .collect();
 
-        let mut sched = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::Batched { max_batch: 4 });
+        let mut sched = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::Batched { max_batch: 4 }, test_budget());
         let ids: Vec<SessionId> = prompts
             .iter()
             .map(|p| sched.add_session(p, SamplingStrategy::Greedy, None, max_new).unwrap())
