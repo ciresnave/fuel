@@ -145,6 +145,20 @@ counted or read from code; **[judgment]** = assessment.
 > gap that does not exist. The evidence-distance heuristic guards against overclaiming *from
 > structure*; it does nothing against **concluding absence from a broken harness**. Only a control
 > catches that. **Both disciplines are required, and they protect against opposite errors.**
+>
+> **The unifying form, after nine instances across two sessions:** *"I ran a command that answered a
+> narrower question than the one I reported on."* It has three shapes, each needing a different
+> guard:
+>
+> | Shape | Example | Guard |
+> | --- | --- | --- |
+> | **Existence read as behaviour** | `clear_slot` exists and is called → "slot reuse happens"; `ctor`/`inventory` absent → "no auto-registration" | run it |
+> | **Truncation read as total** | a `head -10` grep → "nine sites" (25); "no test matches" (two do) | `wc -l` before trusting a `head` |
+> | **Memory read as record** | "I read the constructor docs" → the transcript shows `grep -n` returning line numbers only | check the transcript, not the recollection |
+>
+> The third is the hardest, because the subject is the only witness and has no reason to doubt
+> themselves. It surfaced here only because the consumer went back to their own transcript
+> voluntarily — and it invalidated a priority ranking two parties had already acted on.
 
 **Shape [verified].** ~66k LOC across 168 `.rs` files repo-wide, 110 under `src/`; single crate.
 Built on **`candlelight`**, a Candle *fork* — not stock Candle. 44 files repo-wide touch the tensor
@@ -392,6 +406,46 @@ incrementally as Fuel offers them; **none block the port**.
    2. Extend each assert message to name the cure — *"…must live on the same graph; use
       `const_*_like` to build on an existing graph"*.
    3. State the common-root constraint once in the `LazyTensor` type doc.
+
+   **SHIPPED 2026-07-29** (`7a284021`, gate green — `fuel-graph --lib` 473 passed including both
+   `should_panic` tests): type doc, five constructor docs (`from_f32`, `from_f64`, `from_bf16`,
+   `zeros`, `full`), and 25 assert messages, append-only in the house style `matmul` established.
+
+   ### Which discoverability mechanism actually reaches a consumer — and the ranking inverted
+
+   **This is the most transferable finding in the survey, and it cost two reversals to get.**
+
+   The consumer first reported that constructor docs would have *prevented* the failure while the
+   assert would only have *shortened* it — so the work was built in that order. They then checked
+   their **transcript** rather than their memory and found the account was a reconstruction:
+
+   - for `from_f32` / `from_bf16` they ran `grep -n "pub fn from_f32\|pub fn from_bf16"`, which
+     returns **line numbers only** — the doc comment was never read;
+   - for `zeros` they ran `sed -n '5010,5030p'`, and line 5010 **was** `pub fn zeros(` — the window
+     started *at the signature* and ran downward into the body.
+
+   **Doc comments sit above the signature. Locate-by-grep then read-forward structurally skips
+   them.** Both new constructor clauses land in precisely the region that navigation style never
+   visits — and that style is typical for anyone exploring an unfamiliar 6,000-line file, which is
+   exactly the situation the fix exists for.
+
+   **The corrected ranking, by how reliably a mechanism reaches a reader:**
+
+   1. **Runtime error messages** — arrive regardless of reading method: docs, signatures, or
+      copy-paste from an example. **No blind spot.** (I had called these "the cheap half.")
+   2. **Type-level docs** — at the top of the type, so they survive many navigation styles.
+   3. **Per-item doc comments** — a real structural blind spot for grep-driven readers.
+
+   **Remaining blind spot, and the consumer's own judgement on it:** only something in the *same
+   visual region as the signature* would have reached them — a name or signature that says
+   "graph". They explicitly did **not** propose a rename, and none is proposed here; it is recorded
+   as the honest boundary of what documentation can fix. Relatedly, the panic is a **runtime**
+   assert on what is really a **construction-time** mistake: the graph is already wrong when the
+   second `from_*` returns, and the failure only surfaces when the tensors meet.
+
+   **[judgment] Do not spend the next increment of discoverability effort on doc prose.** All three
+   layers are correct and each catches a different reader, but the marginal return is now in error
+   messages and in whether the API can make the mistake unrepresentable at all.
 6. **Hot-path attention observation — the only genuine design problem in the port, and it is a
    *clause* problem.** The ~4 real extraction sites from item 1 (`custom_transformer.rs:593`/`:749`,
    `custom_attention.rs:919`, `kv_compression.rs:595`/`:820`) are all the same thing: **observing
