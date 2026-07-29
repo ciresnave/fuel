@@ -1501,7 +1501,12 @@ pub fn infer_storage_class(op: &Op) -> StorageClass {
 /// so existing `Node { ... }` construction sites don't need to be
 /// modified. This is the Phase-1 shape: placements are opt-in, inert
 /// hints that the executor may validate but does not yet act on.
-#[derive(Debug, Default)]
+/// `Default` is implemented **manually** (not derived) so that every graph —
+/// however it is created — mints a fresh [`GraphId`] from the monotonic
+/// counter. A derived `Default` would hand out a zeroed id, so two
+/// `Graph::default()` graphs would claim the same identity and affinity
+/// diagnostics would report nonsense.
+#[derive(Debug)]
 pub struct Graph {
     nodes: Vec<Node>,
     /// Sparse map of per-node placement hints. Entries are only present
@@ -1579,12 +1584,45 @@ pub struct Graph {
     /// Absent ⇒ a normal, static-M matmul. A side-table (not an `Op::MatMul`
     /// field) so the dense-matmul enum + its every match arm stay untouched.
     node_matmul_row_count: HashMap<NodeId, DynScalar>,
+    /// Process-unique identity for this graph, minted at construction.
+    ///
+    /// Tensors are **graph-affine**: every binary op requires both operands to
+    /// live on the same `Graph`, checked by `Arc::ptr_eq`. Pointer identity is
+    /// the right *check* but a useless thing to *report* — so each graph also
+    /// carries a small monotonic id, letting an affinity failure say "lhs is on
+    /// graph #1, rhs on graph #2" instead of only that the two differ. That
+    /// turns an abstract invariant into an observation the caller can act on:
+    /// *you made two graphs.*
+    id: GraphId,
+}
+
+/// Process-unique identifier for a [`Graph`], minted monotonically by
+/// [`Graph::new`]. Exists so affinity diagnostics can name *which* graphs
+/// disagree; it is not a stable address, an index, or anything to persist.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct GraphId(u64);
+
+impl std::fmt::Display for GraphId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// Monotonic source for [`GraphId`]. Starts at 1 so `#0` never appears and a
+/// zeroed/defaulted id is visibly wrong.
+static NEXT_GRAPH_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+impl Default for Graph {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Graph {
     /// Create an empty graph.
     pub fn new() -> Self {
         Self {
+            id: GraphId(NEXT_GRAPH_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)),
             nodes: Vec::new(),
             placements: HashMap::new(),
             side_effect_roots: Vec::new(),
@@ -1595,6 +1633,12 @@ impl Graph {
             storage_class: HashMap::new(),
             node_matmul_row_count: HashMap::new(),
         }
+    }
+
+    /// This graph's process-unique [`GraphId`]. Used by affinity diagnostics to
+    /// name *which* graphs disagree; see [`Tensor::graph_id`].
+    pub fn id(&self) -> GraphId {
+        self.id
     }
 
     /// Look up the resolved target backend for a node, if any has
@@ -2863,6 +2907,16 @@ impl Tensor {
         &self.graph
     }
 
+    /// This tensor's graph identity — see [`GraphId`].
+    ///
+    /// Two tensors can be combined **iff** their `graph_id`s match. Affinity is
+    /// still *checked* by pointer identity (`Arc::ptr_eq`, which cannot alias);
+    /// this is the human-readable form, so a failure can say *which* graphs are
+    /// involved rather than only that they differ.
+    pub fn graph_id(&self) -> GraphId {
+        self.graph.read().unwrap().id()
+    }
+
     /// The shape of this tensor, read from the underlying node.
     pub fn shape(&self) -> Shape {
         self.graph.read().unwrap().node(self.id).shape.clone()
@@ -3610,6 +3664,20 @@ impl Tensor {
         shape: impl Into<Shape>,
         device: &Arc<dyn fuel_backend_contract::DynBackendDevice>,
     ) -> Self {
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        Self::from_host_buffer_on(&graph, buf, dtype, shape, device)
+    }
+
+    /// `from_host_buffer` against an **existing** graph — the shared body of the
+    /// `from_*_on` family. Identical to `from_host_buffer` except that the caller
+    /// supplies the graph instead of one being minted.
+    fn from_host_buffer_on(
+        graph: &SharedGraph,
+        buf: fuel_ir::HostBuffer,
+        dtype: DType,
+        shape: impl Into<Shape>,
+        device: &Arc<dyn fuel_backend_contract::DynBackendDevice>,
+    ) -> Self {
         let shape = shape.into();
         let n = host_buffer_elem_count(&buf);
         assert_eq!(
@@ -3622,7 +3690,6 @@ impl Tensor {
             .storage_from_host_buffer_owned_dyn(buf)
             .expect("Tensor::from_*: device.storage_from_host_buffer_owned_dyn failed");
         let storage_arc = Arc::new(RwLock::new(Storage::from_dyn(backend_storage)));
-        let graph = Arc::new(RwLock::new(Graph::new()));
         let id = {
             let mut g = graph.write().unwrap();
             let id = g.push(Node {
@@ -3634,7 +3701,88 @@ impl Tensor {
             g.set_storage(id, storage_arc);
             id
         };
-        Self { graph, id }
+        Self {
+            graph: Arc::clone(graph),
+            id,
+        }
+    }
+
+    /// Build an `f32` `Const` leaf **on the graph you pass in**, rather than on a
+    /// fresh one.
+    ///
+    /// This is the non-anchor route for adding a tensor to an existing graph.
+    /// `Tensor::from_f32` mints a NEW graph, so two `from_*` tensors can never be
+    /// combined; `from_f32_on` puts the new leaf on `graph`, and
+    /// [`const_f32_like`](Self::const_f32_like) does the same thing when what you
+    /// have to hand is a sibling *tensor* rather than the graph itself.
+    ///
+    /// ```ignore
+    /// let g: SharedGraph = Arc::new(RwLock::new(Graph::new()));
+    /// let a = Tensor::from_f32_on(&g, a_data, [2, 3], &device);
+    /// let w = Tensor::from_f32_on(&g, w_data, [3, 2], &device);
+    /// let y = a.matmul(&w);   // same graph ✓
+    /// ```
+    pub fn from_f32_on(
+        graph: &SharedGraph,
+        data: impl Into<Arc<[f32]>>,
+        shape: impl Into<Shape>,
+        device: &Arc<dyn fuel_backend_contract::DynBackendDevice>,
+    ) -> Self {
+        let v: Arc<[f32]> = data.into();
+        let buf = fuel_ir::HostBuffer::F32(v.to_vec());
+        Self::from_host_buffer_on(graph, buf, DType::F32, shape, device)
+    }
+
+    /// `f64` sibling of [`from_f32_on`](Self::from_f32_on) — builds on the given
+    /// graph rather than a fresh one.
+    pub fn from_f64_on(
+        graph: &SharedGraph,
+        data: impl Into<Arc<[f64]>>,
+        shape: impl Into<Shape>,
+        device: &Arc<dyn fuel_backend_contract::DynBackendDevice>,
+    ) -> Self {
+        let v: Arc<[f64]> = data.into();
+        let buf = fuel_ir::HostBuffer::F64(v.to_vec());
+        Self::from_host_buffer_on(graph, buf, DType::F64, shape, device)
+    }
+
+    /// `bf16` sibling of [`from_f32_on`](Self::from_f32_on). The common
+    /// mixed-precision shape — f32 activations, bf16 weights — is exactly this
+    /// plus [`from_f32_on`](Self::from_f32_on) against one shared graph.
+    pub fn from_bf16_on(
+        graph: &SharedGraph,
+        data: impl Into<Arc<[half::bf16]>>,
+        shape: impl Into<Shape>,
+        device: &Arc<dyn fuel_backend_contract::DynBackendDevice>,
+    ) -> Self {
+        let v: Arc<[half::bf16]> = data.into();
+        let buf = fuel_ir::HostBuffer::BF16(v.to_vec());
+        Self::from_host_buffer_on(graph, buf, DType::BF16, shape, device)
+    }
+
+    /// `f16` sibling of [`from_f32_on`](Self::from_f32_on).
+    pub fn from_f16_on(
+        graph: &SharedGraph,
+        data: impl Into<Arc<[half::f16]>>,
+        shape: impl Into<Shape>,
+        device: &Arc<dyn fuel_backend_contract::DynBackendDevice>,
+    ) -> Self {
+        let v: Arc<[half::f16]> = data.into();
+        let buf = fuel_ir::HostBuffer::F16(v.to_vec());
+        Self::from_host_buffer_on(graph, buf, DType::F16, shape, device)
+    }
+
+    /// `u32` sibling of [`from_f32_on`](Self::from_f32_on) — index tensors for
+    /// gather/index_select built straight onto the graph they will be used on.
+    pub fn from_u32_on(
+        graph: &SharedGraph,
+        data: impl Into<Arc<[u32]>>,
+        shape: impl Into<Shape>,
+        device: &Arc<dyn fuel_backend_contract::DynBackendDevice>,
+    ) -> Self {
+        let v: Arc<[u32]> = data.into();
+        let buf = fuel_ir::HostBuffer::U32(v.to_vec());
+        Self::from_host_buffer_on(graph, buf, DType::U32, shape, device)
     }
 
     /// Phase 7.5 work item G2: build a `Const` leaf on a fresh graph
@@ -3912,9 +4060,11 @@ impl Tensor {
     pub fn matmul(&self, other: &Tensor) -> Tensor {
         assert!(
             Arc::ptr_eq(&self.graph, &other.graph),
-            "matmul: tensors must live on the same graph — each `from_*` \
-             constructor mints a NEW graph; build `other` on this tensor's graph \
-             with `const_*_like` (or another same-graph builder)",
+            "matmul: tensors must live on the same graph — lhs is on graph #{}, rhs on graph \
+             #{}; each `from_*` constructor mints a NEW graph, so build `other` on this \
+             tensor's graph with `from_f32_on(self.graph(), ..)` or `const_*_like`",
+            self.graph_id(),
+            other.graph_id(),
         );
         // Mixed-precision matmul: activations stay in their native
         // dtype while weights can live as a lower-precision type on
@@ -7097,7 +7247,11 @@ impl Tensor {
     fn auto_broadcast_pair(&self, op: &'static str, other: &Tensor) -> (Tensor, Tensor) {
         assert!(
             Arc::ptr_eq(&self.graph, &other.graph),
-            "{op}: tensors must live on the same graph; use `const_*_like` to build on an existing graph",
+            "{op}: tensors must live on the same graph — lhs is on graph #{}, rhs on graph #{}; \
+             each `from_*` constructor mints a NEW graph, so build the second operand with \
+             `from_*_on(lhs.graph(), ..)` or `const_*_like`",
+            self.graph_id(),
+            other.graph_id(),
         );
         assert_eq!(
             self.dtype(),
@@ -7238,7 +7392,11 @@ impl Tensor {
     fn binary_op(&self, name: &'static str, op: Op, other: &Tensor, out_shape: Shape) -> Tensor {
         assert!(
             Arc::ptr_eq(&self.graph, &other.graph),
-            "{name}: tensors must live on the same graph; use `const_*_like` to build on an existing graph",
+            "{name}: tensors must live on the same graph — lhs is on graph #{}, rhs on graph #{}; \
+                 each `from_*` constructor mints a NEW graph, so build the second operand with \
+                 `from_*_on(lhs.graph(), ..)` or `const_*_like`",
+            self.graph_id(),
+            other.graph_id(),
         );
         assert_eq!(
             self.dtype(),
@@ -7281,7 +7439,11 @@ impl Tensor {
     ) -> std::result::Result<Tensor, fuel_ir::Error> {
         if !Arc::ptr_eq(&self.graph, &other.graph) {
             return Err(fuel_ir::Error::Msg(format!(
-                "{name}: tensors must live on the same graph; use `const_*_like` to build on an existing graph",
+                "{name}: tensors must live on the same graph — lhs is on graph #{}, rhs on graph #{}; \
+                 each `from_*` constructor mints a NEW graph, so build the second operand with \
+                 `from_*_on(lhs.graph(), ..)` or `const_*_like`",
+            self.graph_id(),
+            other.graph_id(),
             )).bt());
         }
         if self.dtype() != other.dtype() {
@@ -7334,7 +7496,11 @@ impl Tensor {
     fn binary_compare_op(&self, name: &'static str, op: Op, other: &Tensor) -> Tensor {
         assert!(
             Arc::ptr_eq(&self.graph, &other.graph),
-            "{name}: tensors must live on the same graph; use `const_*_like` to build on an existing graph",
+            "{name}: tensors must live on the same graph — lhs is on graph #{}, rhs on graph #{}; \
+                 each `from_*` constructor mints a NEW graph, so build the second operand with \
+                 `from_*_on(lhs.graph(), ..)` or `const_*_like`",
+            self.graph_id(),
+            other.graph_id(),
         );
         assert_eq!(
             self.dtype(),
@@ -10908,6 +11074,88 @@ mod tests {
         let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let b = Tensor::from_f32(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]), cpu_dev());
         let _ = a.add(&b);
+    }
+
+    // ----- graph identity + graph-scoped construction -----
+    //
+    // Two changes land together: (1) every Graph carries a monotonic GraphId so
+    // an affinity failure can name WHICH graphs rather than only that they
+    // differ; (2) constructors accept an existing graph, so a consumer never has
+    // to discover `const_*_like` to build a second tensor.
+
+    #[test]
+    fn each_new_graph_gets_a_distinct_id() {
+        let a = Tensor::from_f32(vec![1.0], Shape::from_dims(&[1]), cpu_dev());
+        let b = Tensor::from_f32(vec![2.0], Shape::from_dims(&[1]), cpu_dev());
+        assert_ne!(a.graph_id(), b.graph_id());
+    }
+
+    #[test]
+    fn same_graph_tensors_share_one_id() {
+        let a = Tensor::from_f32(vec![1.0], Shape::from_dims(&[1]), cpu_dev());
+        let b = a.const_f32_like(vec![2.0], Shape::from_dims(&[1]));
+        assert_eq!(a.graph_id(), b.graph_id());
+    }
+
+    #[test]
+    fn affinity_panic_names_both_graph_ids() {
+        let a = Tensor::from_f32(vec![1.0], Shape::from_dims(&[1]), cpu_dev());
+        let b = Tensor::from_f32(vec![2.0], Shape::from_dims(&[1]), cpu_dev());
+        let (ia, ib) = (a.graph_id(), b.graph_id());
+        let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| a.add(&b)))
+            .expect_err("cross-graph add must panic");
+        let text = err
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| err.downcast_ref::<&str>().map(|s| s.to_string()))
+            .expect("panic payload is a string");
+        assert!(
+            text.contains(&format!("#{ia}")) && text.contains(&format!("#{ib}")),
+            "affinity panic must name BOTH graph ids so the caller can see it made two; got: {text}",
+        );
+    }
+
+    #[test]
+    fn from_f32_on_builds_into_the_given_graph() {
+        let root = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let w = Tensor::from_f32_on(
+            root.graph(),
+            vec![4.0, 5.0, 6.0],
+            Shape::from_dims(&[3]),
+            cpu_dev(),
+        );
+        assert_eq!(root.graph_id(), w.graph_id());
+        assert!(Arc::ptr_eq(root.graph(), w.graph()));
+    }
+
+    #[test]
+    fn graph_scoped_construction_composes_without_an_anchor() {
+        // The program that could not previously be written: build two tensors
+        // and combine them, without discovering `const_*_like`.
+        let g: SharedGraph = Arc::new(RwLock::new(Graph::new()));
+        let a = Tensor::from_f32_on(&g, vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let b = Tensor::from_f32_on(&g, vec![1.0; 6], Shape::from_dims(&[3, 2]), cpu_dev());
+        let y = a.matmul(&b);
+        assert_eq!(y.shape().dims(), &[2, 2]);
+        assert_eq!(y.graph_id(), a.graph_id());
+    }
+
+    #[test]
+    fn graph_scoped_constructors_cover_every_dtype() {
+        let g: SharedGraph = Arc::new(RwLock::new(Graph::new()));
+        let s = Shape::from_dims(&[1]);
+        let f32t = Tensor::from_f32_on(&g, vec![1.0f32], s.clone(), cpu_dev());
+        let f64t = Tensor::from_f64_on(&g, vec![1.0f64], s.clone(), cpu_dev());
+        let bf16t = Tensor::from_bf16_on(&g, vec![half::bf16::from_f32(1.0)], s.clone(), cpu_dev());
+        let f16t = Tensor::from_f16_on(&g, vec![half::f16::from_f32(1.0)], s.clone(), cpu_dev());
+        let u32t = Tensor::from_u32_on(&g, vec![1u32], s, cpu_dev());
+        for t in [&f64t, &bf16t, &f16t, &u32t] {
+            assert_eq!(t.graph_id(), f32t.graph_id(), "all must share the given graph");
+        }
+        assert_eq!(f64t.dtype(), DType::F64);
+        assert_eq!(bf16t.dtype(), DType::BF16);
+        assert_eq!(f16t.dtype(), DType::F16);
+        assert_eq!(u32t.dtype(), DType::U32);
     }
 
     // ----- multi-dtype graph builders -----
