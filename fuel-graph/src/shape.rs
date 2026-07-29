@@ -145,17 +145,42 @@ pub fn primitive_shape(
             (Shape::from_dims(&out), input_dtypes[0])
         }
         Concat { dim } => {
-            need(input_shapes, 2, op)?;
+            // `Op::Concat` is N-ary (the executor and backward both handle any
+            // input count): sum the join dim over ALL inputs, requiring every
+            // input to share the rank and the non-join dims. Summing only the
+            // first two silently truncates 3+-way concats (observed as a wrong
+            // emit-time shape for the qmatmul byte-lane recipe).
+            need(input_shapes, 1, op)?;
             let a = input_shapes[0].dims();
-            let b = input_shapes[1].dims();
-            if *dim >= a.len() || a.len() != b.len() {
+            if *dim >= a.len() {
                 return Err(Error::Msg(format!(
-                    "primitive_shape: Concat dim {dim} invalid for {a:?} / {b:?}"
+                    "primitive_shape: Concat dim {dim} out of range for rank-{} input {a:?}",
+                    a.len(),
                 ))
                 .bt());
             }
+            let mut total = 0usize;
+            for (i, sh) in input_shapes.iter().enumerate() {
+                let d = sh.dims();
+                if d.len() != a.len() {
+                    return Err(Error::Msg(format!(
+                        "primitive_shape: Concat input {i} has rank {} but input 0 has rank {}",
+                        d.len(), a.len(),
+                    ))
+                    .bt());
+                }
+                for (ax, (&da, &d0)) in d.iter().zip(a.iter()).enumerate() {
+                    if ax != *dim && da != d0 {
+                        return Err(Error::Msg(format!(
+                            "primitive_shape: Concat non-join dim {ax} mismatch (input {i}: {d:?} vs {a:?})"
+                        ))
+                        .bt());
+                    }
+                }
+                total += d[*dim];
+            }
             let mut out = a.to_vec();
-            out[*dim] = a[*dim] + b[*dim];
+            out[*dim] = total;
             (Shape::from_dims(&out), input_dtypes[0])
         }
         Pad { padding, .. } => {
@@ -296,6 +321,29 @@ mod tests {
     fn concat_sums_the_join_dim() {
         let (sh, _) = primitive_shape(&Op::Concat { dim: 0 }, &[s(&[2, 4]), s(&[5, 4])], &[DType::F32, DType::F32]).unwrap();
         assert_eq!(sh, s(&[7, 4]));
+    }
+
+    #[test]
+    fn concat_sums_the_join_dim_for_n_ary_inputs() {
+        // 4-way concat along dim 1 — must sum ALL inputs, not just the first
+        // two (the qmatmul byte-lane recipe regression).
+        let (sh, _) = primitive_shape(
+            &Op::Concat { dim: 1 },
+            &[s(&[18, 1]), s(&[18, 1]), s(&[18, 1]), s(&[18, 1])],
+            &[DType::F64; 4],
+        )
+        .unwrap();
+        assert_eq!(sh, s(&[18, 4]));
+    }
+
+    #[test]
+    fn concat_rejects_non_join_dim_mismatch() {
+        let r = primitive_shape(
+            &Op::Concat { dim: 0 },
+            &[s(&[2, 4]), s(&[5, 7])],
+            &[DType::F32, DType::F32],
+        );
+        assert!(r.is_err(), "non-join dim mismatch (4 vs 7) must error");
     }
 
     #[test]
