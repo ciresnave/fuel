@@ -38,6 +38,88 @@ use crate::Device;
 use crate::inference_context::{DecodeSession, InferenceContext, KvCache};
 use crate::lazy::{sample_logits, LlamaModel, SamplingStrategy};
 
+/// The model capability the [`SessionScheduler`] depends on — the model-agnostic
+/// seam. The scheduler is orchestration (mechanism); it needs only the KV-context
+/// decode surface, never a concrete model family. `LlamaModel` is the first
+/// implementor, but any model providing a persistent-KV decode + the batched-
+/// decode logits arm can be served. This is the abstraction that lets the whole
+/// module live in a consumer crate (`fuel-inference`) without depending on a
+/// specific model definition — sampling (`SamplingStrategy`) is deliberately NOT
+/// here: it is consumer policy the scheduler applies per-session, not a model
+/// capability.
+///
+/// Every method mirrors the concrete `LlamaModel` inherent method it fronts, so
+/// the impl is a thin forward. The KV/decode types (`KvCache`,
+/// `InferenceContext`, `DecodeSession`) are Fuel-core primitives the seam speaks;
+/// they are the interchange, not a model dependency.
+pub trait DecodeModel {
+    /// Transformer layer count — the KV cache geometry the scheduler builds a
+    /// session's private cache against (all sessions share one model, so this is
+    /// uniform).
+    fn n_layers(&self) -> usize;
+    /// KV head count (cache geometry).
+    fn n_kv_heads(&self) -> usize;
+    /// Head dimension (cache geometry).
+    fn head_dim(&self) -> usize;
+
+    /// One persistent-KV forward: run `tokens` (full prompt on prefill, the last
+    /// token on decode), mutating the session's `cache`/`ctx`/`session` in place,
+    /// and return the step's logits. The scheduler's serial arm + prefill pass.
+    fn forward_with_kv_context_persistent(
+        &self,
+        tokens: &[u32],
+        cache: &mut KvCache,
+        ctx: &mut InferenceContext,
+        session: &mut Option<DecodeSession>,
+    ) -> crate::Result<Vec<f32>>;
+
+    /// One batch=K decode step over K sessions' caches — the live batched arm.
+    /// Returns one logits row per cache. The scheduler only calls this on a
+    /// uniformity-gated ready set; a model may return an error (never a panic)
+    /// before mutating any cache (the all-or-nothing contract the batched arm
+    /// relies on).
+    fn build_batched_decode_logits(
+        &self,
+        caches: &mut [&mut KvCache],
+        last_tokens: &[u32],
+        device: &Device,
+        dtype: DType,
+    ) -> crate::Result<Vec<Vec<f32>>>;
+}
+
+impl DecodeModel for LlamaModel {
+    fn n_layers(&self) -> usize {
+        self.config.n_layers
+    }
+    fn n_kv_heads(&self) -> usize {
+        self.config.n_kv_heads
+    }
+    fn head_dim(&self) -> usize {
+        self.config.head_dim
+    }
+    fn forward_with_kv_context_persistent(
+        &self,
+        tokens: &[u32],
+        cache: &mut KvCache,
+        ctx: &mut InferenceContext,
+        session: &mut Option<DecodeSession>,
+    ) -> crate::Result<Vec<f32>> {
+        // Explicit inherent-path call: `LlamaModel::` resolves to the inherent
+        // method (inherent wins over the same-named trait method), so this is a
+        // forward, not a recursion into the trait.
+        LlamaModel::forward_with_kv_context_persistent(self, tokens, cache, ctx, session)
+    }
+    fn build_batched_decode_logits(
+        &self,
+        caches: &mut [&mut KvCache],
+        last_tokens: &[u32],
+        device: &Device,
+        dtype: DType,
+    ) -> crate::Result<Vec<Vec<f32>>> {
+        LlamaModel::build_batched_decode_logits(self, caches, last_tokens, device, dtype)
+    }
+}
+
 /// Stable identity for one session within a [`SessionScheduler`]. Minted
 /// monotonically by `add_session`; used to correlate a session's output with
 /// its input across scheduling.
@@ -252,8 +334,8 @@ impl BatchedDecode {
     /// path only — even a uniform ready set returns `NotBatchable` here so the
     /// scheduler's serial fallback stays the executed path. Task 8 wires the
     /// live `flash_decoding` batch arm into the `Advanced` branch.
-    pub(crate) fn try_batched_step(
-        model: &LlamaModel,
+    pub(crate) fn try_batched_step<M: DecodeModel>(
+        model: &M,
         device: &Device,
         dtype: DType,
         sessions: &mut [&mut SessionState],
@@ -344,8 +426,8 @@ pub struct StepReport {
 /// `&LlamaModel` (shared weights) + the device/dtype. Decides which sessions
 /// advance together and how (serial in Increment 1's C2; batched once C3 is
 /// wired). Owns no tensor state of its own.
-pub struct SessionScheduler<'m> {
-    model: &'m LlamaModel,
+pub struct SessionScheduler<'m, M: DecodeModel> {
+    model: &'m M,
     device: Device,
     dtype: DType,
     sessions: Vec<SessionState>,
@@ -353,10 +435,10 @@ pub struct SessionScheduler<'m> {
     next_id: u64,
 }
 
-impl<'m> SessionScheduler<'m> {
+impl<'m, M: DecodeModel> SessionScheduler<'m, M> {
     /// Create an empty scheduler over a shared read-only model.
     pub fn new(
-        model: &'m LlamaModel,
+        model: &'m M,
         device: Device,
         dtype: DType,
         policy: SchedulePolicy,
@@ -386,9 +468,9 @@ impl<'m> SessionScheduler<'m> {
     ) -> crate::Result<SessionId> {
         let id = SessionId(self.next_id);
         let dims = ModelDims {
-            n_layers: self.model.config.n_layers,
-            n_kv_heads: self.model.config.n_kv_heads,
-            head_dim: self.model.config.head_dim,
+            n_layers: self.model.n_layers(),
+            n_kv_heads: self.model.n_kv_heads(),
+            head_dim: self.model.head_dim(),
         };
         let state = SessionState::new(
             id,
@@ -463,7 +545,7 @@ impl<'m> SessionScheduler<'m> {
     /// remains reachable for every session.
     fn advance_batched(
         &mut self,
-        model: &LlamaModel,
+        model: &M,
         ready: &[usize],
         max_batch: usize,
         report: &mut StepReport,
@@ -538,7 +620,7 @@ impl<'m> SessionScheduler<'m> {
     /// Advance one decode-ready session serially by exactly one forward on its
     /// last token, then sample. Errors isolate into a recorded per-session
     /// failure.
-    fn serial_advance_one(&mut self, model: &LlamaModel, idx: usize, report: &mut StepReport) {
+    fn serial_advance_one(&mut self, model: &M, idx: usize, report: &mut StepReport) {
         // Never-panic: an empty token history after a validated prefill is
         // impossible, but the production path must not `unwrap`.
         let last = self.sessions[idx].tokens.last().copied();
@@ -555,7 +637,7 @@ impl<'m> SessionScheduler<'m> {
     /// Run one forward and store its logits on the session. Shared by the
     /// prefill (full prompt) and decode (last token) advances.
     fn forward_and_store(
-        model: &LlamaModel,
+        model: &M,
         s: &mut SessionState,
         input: &[u32],
     ) -> crate::Result<()> {
