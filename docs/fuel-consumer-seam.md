@@ -364,11 +364,51 @@ incrementally as Fuel offers them; **none block the port**.
    (`:67`) — auxiliary attention statistics are an established shape for these kernels, so the
    multi-output route is a backend ask rather than an invention.
 
-   Two further falsifiers stay open: runtime-offset accumulate may not compose with capture if
-   offsets force a graph rebuild; and decay may need to be per-slot rather than uniform, which turns
-   `inplace_affine` into something carrying a per-element scale vector. Also open on the consumer
-   side: whether R-KV's attention input is captured per-step (regime 2) or only at compression time
-   (regime 1) — flagged rather than guessed.
+   **Falsifier #2 (accumulate-vs-capture) — RESOLVED 2026-07-29, analytically. It dissolves.**
+   Three independent legs, each **[verified]** by reading:
+
+   1. **The capture invariant is zero-alloc-on-replay, not "no runtime-varying values."**
+      `baracuda/attention.rs:1386` states it exactly: two same-shape launches "must allocate the
+      scratch **EXACTLY ONCE** each… proving the second launch reused the cache (**zero
+      `cuMemAlloc` — the CapturedRun invariant**)." Allocation on first launch is fine; replay must
+      allocate nothing.
+   2. **Runtime offsets are device-resident *by design*, so they never force a rebuild.**
+      `fuel-core/tests/write_slice_doff_kv.rs` — `Op::WriteSliceDoff` takes its write start from a
+      rank-0 `I64` operand, "read host-side on CPU; **device-side under CUDA so a captured graph
+      replays at the host-updated position**." This is the mechanism KV append already uses *inside*
+      captured decode, which is why the 10.4× decode replay works at all.
+   3. **In-place affine is wired.** `fuel-dispatch/src/baracuda_dispatch.rs:1959–1963` binds
+      `affine_inplace_{f32,f64}` to baracuda's single-pointer kernels, so `c = c·decay + a` has a
+      no-new-buffer CUDA path.
+
+   **And the stronger result: the accumulator doesn't need the runtime-offset machinery at all.**
+   If attention is computed against the *capacity-shaped* KV buffer (Fuel's existing pattern —
+   fixed capacity plus a runtime valid length), the column-sum is naturally `[max_slots]`-shaped
+   with masked positions contributing ~0 post-softmax. Then `a_t` is fixed-shape, `c_t =
+   c_{t-1}·decay + a_t` is a fixed-shape in-place elementwise affine, and there is **no dynamic
+   extent, no slice, and no offset anywhere in the recurrence**. It allocates `c` once and reuses it
+   forever, which satisfies the capture invariant trivially rather than narrowly.
+
+   **What this does not establish.** Nothing here was executed. The decisive test is the existing
+   pattern — build the `[max_slots]` accumulator, launch twice, assert `allocation_count == 1`,
+   exactly as `fused_rope_is_capture_safe_zero_alloc_on_reuse` does — and it requires a live CUDA
+   device (the invariant is `cuMemAlloc`; CPU cannot answer it). **Falsifier #1 (arm-dependence) is
+   untouched and remains the real blocker**: this result says the accumulator is capture-safe *given*
+   `a_t`, not that `a_t` is obtainable on the fused arm.
+
+   **Falsifier #3 (per-slot decay) — downgraded, not resolved.** If decay must vary per slot, the
+   scalar `mul` becomes a vector and the op is no longer `InplaceAffine` — but it is still
+   fixed-shape, still elementwise, and still in-place-able. That changes *which op*, not whether
+   capture holds.
+
+   Open on the consumer side: whether R-KV's attention input is captured per-step (regime 2) or
+   only at compression time (regime 1) — flagged rather than guessed.
+
+   **Incidental drift found while verifying:** `registry/inplace_affine.rs`'s module doc says
+   "Backend dispatch (CPU + CUDA `affine_inplace_*`) lands in **Phase 3**… until then, the
+   metadata-side entry exists so CSE, telemetry and dispatch work." CUDA dispatch **is** wired
+   (`baracuda_dispatch.rs:1959`), so that comment is at least partly stale. Not corrected here — the
+   CPU half is unverified, and correcting it needs someone to confirm both.
 
    **Status: conjecture, not result.** Derived by reading real consumer code against the clause and
    against `CapturedRun`'s requirements; not validated by a running port. Validation order:
