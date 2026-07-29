@@ -4054,7 +4054,7 @@ impl Tensor {
     ) -> Tensor {
         assert!(
             Arc::ptr_eq(&self.graph, &weight_bytes.graph),
-            "qmatmul: tensors must live on the same graph",
+            "qmatmul: tensors must live on the same graph; use `const_*_like` to build on an existing graph",
         );
         assert_eq!(
             self.dtype(),
@@ -4131,12 +4131,12 @@ impl Tensor {
     ) -> Tensor {
         assert!(
             Arc::ptr_eq(&self.graph, &weight.graph),
-            "conv2d: x and weight must live on the same graph",
+            "conv2d: x and weight must live on the same graph; use `const_*_like` to build on an existing graph",
         );
         if let Some(b) = bias {
             assert!(
                 Arc::ptr_eq(&self.graph, &b.graph),
-                "conv2d: bias must live on the same graph",
+                "conv2d: bias must live on the same graph; use `const_*_like` to build on an existing graph",
             );
         }
         assert!(groups >= 1, "conv2d: groups must be ≥ 1, got {groups}");
@@ -4308,7 +4308,7 @@ impl Tensor {
     ) -> Tensor {
         assert!(
             Arc::ptr_eq(&self.graph, &weight.graph),
-            "conv_transpose2d: x and weight must live on the same graph",
+            "conv_transpose2d: x and weight must live on the same graph; use `const_*_like` to build on an existing graph",
         );
         assert!(groups >= 1, "conv_transpose2d: groups must be ≥ 1, got {groups}");
         let x_dims = self.shape();
@@ -4435,10 +4435,10 @@ impl Tensor {
         window_size_right: Option<usize>,
         softcap: Option<f32>,
     ) -> Tensor {
-        assert!(Arc::ptr_eq(&self.graph, &k.graph), "flash_attn: q + k must live on the same graph");
-        assert!(Arc::ptr_eq(&self.graph, &v.graph), "flash_attn: q + v must live on the same graph");
+        assert!(Arc::ptr_eq(&self.graph, &k.graph), "flash_attn: q + k must live on the same graph; use `const_*_like` to build on an existing graph");
+        assert!(Arc::ptr_eq(&self.graph, &v.graph), "flash_attn: q + v must live on the same graph; use `const_*_like` to build on an existing graph");
         if let Some(a) = alibi_slopes {
-            assert!(Arc::ptr_eq(&self.graph, &a.graph), "flash_attn: alibi_slopes must live on the same graph");
+            assert!(Arc::ptr_eq(&self.graph, &a.graph), "flash_attn: alibi_slopes must live on the same graph; use `const_*_like` to build on an existing graph");
         }
         let q_dims = self.shape();
         let q_dims = q_dims.dims();
@@ -4518,10 +4518,10 @@ impl Tensor {
         softcap: Option<f32>,
         k_len: fuel_ir::DynScalar,
     ) -> Tensor {
-        assert!(Arc::ptr_eq(&self.graph, &k.graph), "flash_attn_dyn: q + k must live on the same graph");
-        assert!(Arc::ptr_eq(&self.graph, &v.graph), "flash_attn_dyn: q + v must live on the same graph");
+        assert!(Arc::ptr_eq(&self.graph, &k.graph), "flash_attn_dyn: q + k must live on the same graph; use `const_*_like` to build on an existing graph");
+        assert!(Arc::ptr_eq(&self.graph, &v.graph), "flash_attn_dyn: q + v must live on the same graph; use `const_*_like` to build on an existing graph");
         if let Some(a) = alibi_slopes {
-            assert!(Arc::ptr_eq(&self.graph, &a.graph), "flash_attn_dyn: alibi_slopes must live on the same graph");
+            assert!(Arc::ptr_eq(&self.graph, &a.graph), "flash_attn_dyn: alibi_slopes must live on the same graph; use `const_*_like` to build on an existing graph");
         }
         let q_dims = self.shape();
         let q_dims = q_dims.dims();
@@ -5561,7 +5561,7 @@ impl Tensor {
     pub fn where_cond(&self, a: &Tensor, b: &Tensor) -> Tensor {
         assert!(
             Arc::ptr_eq(&self.graph, &a.graph) && Arc::ptr_eq(&self.graph, &b.graph),
-            "where_cond: tensors must live on the same graph",
+            "where_cond: tensors must live on the same graph; use `const_*_like` to build on an existing graph",
         );
         assert_eq!(
             self.dtype(),
@@ -6009,7 +6009,7 @@ impl Tensor {
         assert!(
             Arc::ptr_eq(&self.graph, &weight.graph)
                 && Arc::ptr_eq(&self.graph, &bias.graph),
-            "causal_conv1d: tensors must live on the same graph",
+            "causal_conv1d: tensors must live on the same graph; use `const_*_like` to build on an existing graph",
         );
         let dtype = self.dtype();
         assert!(
@@ -6107,7 +6107,7 @@ impl Tensor {
         assert!(
             Arc::ptr_eq(&self.graph, &w_packed.graph)
                 && Arc::ptr_eq(&self.graph, &absmax.graph),
-            "nf4_matmul: tensors must live on the same graph",
+            "nf4_matmul: tensors must live on the same graph; use `const_*_like` to build on an existing graph",
         );
         let act_dtype = self.dtype();
         assert!(
@@ -6216,7 +6216,7 @@ impl Tensor {
                 && Arc::ptr_eq(&self.graph, &a.graph)
                 && Arc::ptr_eq(&self.graph, &b.graph)
                 && Arc::ptr_eq(&self.graph, &c.graph),
-            "ssd_chunk_scan: all tensors must live on the same graph",
+            "ssd_chunk_scan: all tensors must live on the same graph; use `const_*_like` to build on an existing graph",
         );
         let dtype = self.dtype();
         assert!(
@@ -6357,7 +6357,7 @@ impl Tensor {
                 && Arc::ptr_eq(&self.graph, &a.graph)
                 && Arc::ptr_eq(&self.graph, &b.graph)
                 && Arc::ptr_eq(&self.graph, &c.graph),
-            "selective_scan: all tensors must live on the same graph",
+            "selective_scan: all tensors must live on the same graph; use `const_*_like` to build on an existing graph",
         );
         let dtype = self.dtype();
         assert!(
@@ -6593,7 +6593,7 @@ impl Tensor {
     ) -> Tensor {
         assert!(
             Arc::ptr_eq(&self.graph, &targets.graph),
-            "fused_softmax_cross_entropy: tensors must live on the same graph",
+            "fused_softmax_cross_entropy: tensors must live on the same graph; use `const_*_like` to build on an existing graph",
         );
         assert!(
             matches!(
@@ -6868,7 +6868,7 @@ impl Tensor {
     pub fn index_select(&self, dim: usize, indices: &Tensor) -> Tensor {
         assert!(
             Arc::ptr_eq(&self.graph, &indices.graph),
-            "index_select: data and index tensors must live on the same graph",
+            "index_select: data and index tensors must live on the same graph; use `const_*_like` to build on an existing graph",
         );
         assert_eq!(
             indices.dtype(),
@@ -6914,7 +6914,7 @@ impl Tensor {
     pub fn gather(&self, dim: usize, indices: &Tensor) -> Tensor {
         assert!(
             Arc::ptr_eq(&self.graph, &indices.graph),
-            "gather: data and index tensors must live on the same graph",
+            "gather: data and index tensors must live on the same graph; use `const_*_like` to build on an existing graph",
         );
         assert_eq!(
             indices.dtype(),
@@ -6955,7 +6955,7 @@ impl Tensor {
     pub fn concat(&self, other: &Tensor, dim: usize) -> Tensor {
         assert!(
             Arc::ptr_eq(&self.graph, &other.graph),
-            "concat: tensors must live on the same graph",
+            "concat: tensors must live on the same graph; use `const_*_like` to build on an existing graph",
         );
         assert_eq!(
             self.dtype(),
@@ -7097,7 +7097,7 @@ impl Tensor {
     fn auto_broadcast_pair(&self, op: &'static str, other: &Tensor) -> (Tensor, Tensor) {
         assert!(
             Arc::ptr_eq(&self.graph, &other.graph),
-            "{op}: tensors must live on the same graph",
+            "{op}: tensors must live on the same graph; use `const_*_like` to build on an existing graph",
         );
         assert_eq!(
             self.dtype(),
@@ -7129,7 +7129,7 @@ impl Tensor {
     pub fn index_add(&self, dim: usize, indices: &Tensor, src: &Tensor) -> Tensor {
         assert!(
             Arc::ptr_eq(&self.graph, &indices.graph) && Arc::ptr_eq(&self.graph, &src.graph),
-            "index_add: all tensors must live on the same graph",
+            "index_add: all tensors must live on the same graph; use `const_*_like` to build on an existing graph",
         );
         assert_eq!(indices.dtype(), DType::U32, "index_add: index must be U32");
         assert_eq!(self.dtype(), src.dtype(), "index_add: base and src dtypes must match");
@@ -7172,7 +7172,7 @@ impl Tensor {
     pub fn scatter_add(&self, dim: usize, indices: &Tensor, src: &Tensor) -> Tensor {
         assert!(
             Arc::ptr_eq(&self.graph, &indices.graph) && Arc::ptr_eq(&self.graph, &src.graph),
-            "scatter_add: all tensors must live on the same graph",
+            "scatter_add: all tensors must live on the same graph; use `const_*_like` to build on an existing graph",
         );
         assert_eq!(indices.dtype(), DType::U32, "scatter_add: index must be U32");
         assert_eq!(self.dtype(), src.dtype(), "scatter_add: base and src dtypes must match");
@@ -7238,7 +7238,7 @@ impl Tensor {
     fn binary_op(&self, name: &'static str, op: Op, other: &Tensor, out_shape: Shape) -> Tensor {
         assert!(
             Arc::ptr_eq(&self.graph, &other.graph),
-            "{name}: tensors must live on the same graph",
+            "{name}: tensors must live on the same graph; use `const_*_like` to build on an existing graph",
         );
         assert_eq!(
             self.dtype(),
@@ -7281,7 +7281,7 @@ impl Tensor {
     ) -> std::result::Result<Tensor, fuel_ir::Error> {
         if !Arc::ptr_eq(&self.graph, &other.graph) {
             return Err(fuel_ir::Error::Msg(format!(
-                "{name}: tensors must live on the same graph",
+                "{name}: tensors must live on the same graph; use `const_*_like` to build on an existing graph",
             )).bt());
         }
         if self.dtype() != other.dtype() {
@@ -7334,7 +7334,7 @@ impl Tensor {
     fn binary_compare_op(&self, name: &'static str, op: Op, other: &Tensor) -> Tensor {
         assert!(
             Arc::ptr_eq(&self.graph, &other.graph),
-            "{name}: tensors must live on the same graph",
+            "{name}: tensors must live on the same graph; use `const_*_like` to build on an existing graph",
         );
         assert_eq!(
             self.dtype(),
