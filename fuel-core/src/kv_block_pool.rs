@@ -277,6 +277,17 @@ impl KvBlockPool {
         blocks_for(cur_filled + add_tokens, bs) - blocks_for(cur_filled, bs)
     }
 
+    /// Batch admissibility helper (C-1, pure convenience): the total blocks
+    /// needed to admit a whole batch, one `(cur_filled, add_tokens)` per
+    /// sequence. The consumer compares this to [`free_blocks`](Self::free_blocks)
+    /// — the **admit decision stays the consumer's** (policy, e.g. the uniformity
+    /// gate); this only keeps the summation in one place, so it stays correct if
+    /// geometry ever makes the per-sequence cost non-additive. Requested by the
+    /// first real consumer's batched-decode admit path.
+    pub fn blocks_required_batch(&self, seqs: &[(usize, usize)]) -> usize {
+        seqs.iter().map(|&(filled, add)| self.blocks_required(filled, add)).sum()
+    }
+
     // --- C-4: one measured-cost bite -------------------------------------
 
     /// Resident KV bytes across K + V — the consumer's budget signal. Shared
@@ -587,6 +598,17 @@ mod tests {
         assert_eq!(pool.blocks_required(10, 3), 1);
         pool.append(s, 3).unwrap();
         assert_eq!(pool.free_blocks(), 6);
+    }
+
+    #[test]
+    fn blocks_required_batch_sums_per_sequence() {
+        let pool = KvBlockPool::new(geom(100, 4));
+        // Three fresh 10-token sequences: ceil(10/4)=3 blocks each → 9.
+        assert_eq!(pool.blocks_required_batch(&[(0, 10), (0, 10), (0, 10)]), 9);
+        // Mixed grow: (5,+3) needs ceil(8/4)-ceil(5/4)=0; (0,+8) needs 2 → 2.
+        assert_eq!(pool.blocks_required_batch(&[(5, 3), (0, 8)]), 2);
+        // Empty batch admits with zero blocks.
+        assert_eq!(pool.blocks_required_batch(&[]), 0);
     }
 
     #[test]

@@ -407,10 +407,12 @@ what multi-session serving and reproducible training each need on their own meri
    [10-decisions-log §2026-07-28](architecture/10-decisions-log.md).
 2. **Does `multi_session.rs` move to `fuel-inference`, or does the layer table get an argued
    exception?** Recommendation: move, before the port. (Annex A.2 — verified defect.)
-3. **Is C-3 in scope for Increment 2?** Highest-value clause, only one with no partial
-   implementation, and it overlaps the confirmed-absent block-pool allocator behind `Op::PagedAttn`
-   (ROADMAP §4) — the two may be one piece of work. Building it needs the inference *and* training
-   fidelity requirements settled together (Annex B open item).
+3. ~~Is C-3 in scope for Increment 2?~~ **RESOLVED 2026-07-29 (cae56435) — YES, and it IS the
+   block-pool allocator.** Paged blocks + refcounting *are* the evict/restore/splice mechanism; C-1
+   falls out of the same free list. One coherent piece. The lossy-KV arm shipped as the allocator
+   core (`fuel-core/src/kv_block_pool.rs`, part 1); the training/RL exact fidelity is a later
+   increment (see Q9). Design:
+   `docs/superpowers/plans/2026-07-29-kv-block-pool-allocator-serving-inc2.md`.
 4. **Rename `SchedulePolicy` → `DecodeArm`?**
 5. ~~Where does sampling live?~~ **RESOLVED 2026-07-29 (Annex A.3) — consumer policy.**
    `Lightbulb/src/sampling.rs` is host-side post-processing over *realized* logits, with
@@ -432,6 +434,11 @@ what multi-session serving and reproducible training each need on their own meri
 8. **Should C-7 be built now or specified now and built with Annex F?** It is undefined in a
    direction that fails *silently*, which argues for at least a loud interim: a declared
    `weights_mutated()` that conservatively invalidates everything derived, tightened later.
-9. **Is one C-3 mechanism with a fidelity flag right, or two implementations?** Annex F forces the
-   question because it needs both in one process. Recommendation: settle before the inference-side
-   C-3 hardens into an inference-shaped API.
+9. ~~Is one C-3 mechanism with a fidelity flag right, or two implementations?~~ **RESOLVED 2026-07-29
+   (cae56435) — one interface + a `Fidelity` discriminator, two implementations backed by different
+   state; the lossy-KV arm now.** The load-bearing rule (sharper than "fidelity flag"): `restore`
+   takes externalized *state* (an opaque handle), NEVER a "recompute-from-tokens" instruction — that
+   is what keeps the future `Fidelity::Exact` (training/RL: params + optimizer moments + RNG stream
+   position) arm expressible. The Exact-arm completeness gate is specified now (restore diverges from
+   an uninterrupted run by exactly zero; the handle enumerates its coverage; RNG coverage bounded to
+   **Fuel-owned** RNG, never the consumer's sampler — per Q5), gated on the RNG/generator seam.
