@@ -321,9 +321,15 @@ incrementally as Fuel offers them; **none block the port**.
    *residency* mismatches and has no equivalent for *dtype*. Diagnosed by the serving/dispatch
    session, which reports the intended fallback ("f32 matmul after a Cast") is promised in a Vulkan
    docstring but unimplemented — **[not verified here]**, I could not locate that string.
-   **Consequence for any consumer:** a model that mixes activation and weight dtypes — i.e. every
-   BF16-weight model on CPU — cannot realize. Awaiting a build-now-vs-sequence call; the fix belongs
-   beside the two existing fixup passes.
+   **Consequence, scoped precisely (corrected 2026-07-29 — my first statement overreached).** This
+   blocks any graph that *constructs* a mixed-precision matmul: `llama-lazy` does, because it loads
+   BF16 and never casts, which is why Fuel's only runnable reference path is down. It does **not**
+   automatically block every consumer: a consumer that casts weights to F32 **at load** never
+   requests the missing kernel, because no matmul ever sees mixed dtypes. I asserted the port was
+   "blocked behind this fix" without checking whether the port's own path would hit the gap — the
+   same existence→behaviour overreach catalogued in the standing caveat, applied to a *gap* instead
+   of a feature. The port session's calibrated version: *plausibly unblocked, pending a run.*
+   Awaiting a build-now-vs-sequence call; the fix belongs beside the two existing fixup passes.
 6. **Hot-path attention observation — the only genuine design problem in the port, and it is a
    *clause* problem.** The ~4 real extraction sites from item 1 (`custom_transformer.rs:593`/`:749`,
    `custom_attention.rs:919`, `kv_compression.rs:595`/`:820`) are all the same thing: **observing
@@ -516,6 +522,13 @@ context_compression, tool_call}.rs`, `sampling.rs`.
 >
 > **Final tally, all 13 modules diffed: 1 clean adopt, 2 name collisions, 6 compose/complementary,
 > 2 judgment calls, 1 resolved earlier (`sampling` → consumer policy, Q5).**
+>
+> **⚠ These verdicts are hypotheses, not decisions (re-labelled 2026-07-29).** The diff established
+> *"Fuel has X"* for all thirteen modules and *"Fuel's X does what the consumer needs"* for **none**
+> of them — the first is a source read, the second requires running. "Adopt" and "compose" below
+> read as conclusions; they are a **shortlist of what to test**. Treat every row as a port decision
+> still pending, and see the standing caveat at the head of A.3 for why this distinction has been
+> the session's dominant failure mode.
 >
 > **Not overlap at all — pure name collisions:**
 > - **`tool_call`** — Fuel's is schema + registry + *post-hoc text* parsing (`ToolDef`,
