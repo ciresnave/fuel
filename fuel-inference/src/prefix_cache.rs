@@ -33,8 +33,8 @@
 //! assert!(cache.lookup(&system_tokens).is_none());
 //!
 //! // After prefill, store the KV states (one pair per layer)
-//! let k = Tensor::zeros((1, 4, 5, 64), DType::F32, &Device::Cpu)?;
-//! let v = Tensor::zeros((1, 4, 5, 64), DType::F32, &Device::Cpu)?;
+//! let k = Tensor::zeros((1, 4, 5, 64), DType::F32, &Device::cpu())?;
+//! let v = Tensor::zeros((1, 4, 5, 64), DType::F32, &Device::cpu())?;
 //! let kv_states = vec![(k, v)]; // 1-layer example
 //! cache.insert(&system_tokens, kv_states);
 //!
@@ -225,9 +225,9 @@ mod tests {
         (0..layers)
             .map(|_| {
                 let k =
-                    Tensor::zeros((1, 4, seq_len, 64), DType::F32, &Device::Cpu).unwrap();
+                    Tensor::zeros((1, 4, seq_len, 64), DType::F32, &Device::cpu()).unwrap();
                 let v =
-                    Tensor::zeros((1, 4, seq_len, 64), DType::F32, &Device::Cpu).unwrap();
+                    Tensor::zeros((1, 4, seq_len, 64), DType::F32, &Device::cpu()).unwrap();
                 (k, v)
             })
             .collect()

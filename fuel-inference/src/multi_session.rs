@@ -4,17 +4,17 @@
 //! Runs **K independent decode sessions concurrently on one `LlamaModel`,
 //! correctly** — each session generating its own token stream from its own
 //! prompt, reusing the existing single-session persistent decode machinery
-//! ([`crate::inference_context`] + [`crate::lazy::LlamaModel`]). It adds **no
+//! ([`fuel::inference_context`] + [`fuel::lazy::LlamaModel`]). It adds **no
 //! IR op** and **no kernel** — this is pure host orchestration.
 //!
 //! ## Components
 //!
 //! - [`SessionState`] (C1) — a faithful bundle of the four per-generation
 //!   loop locals that already exist in
-//!   [`crate::lazy::LlamaModel::generate_streaming_with_kv_context`]: one
-//!   [`crate::inference_context::KvCache`], one
-//!   [`crate::inference_context::InferenceContext`], the plan-once
-//!   [`crate::inference_context::DecodeSession`] (lazily built on the first
+//!   [`fuel::lazy::LlamaModel::generate_streaming_with_kv_context`]: one
+//!   [`fuel::inference_context::KvCache`], one
+//!   [`fuel::inference_context::InferenceContext`], the plan-once
+//!   [`fuel::inference_context::DecodeSession`] (lazily built on the first
 //!   decode token), and the sampler/RNG/token state. Owns **nothing shared**
 //!   — independent `KvCache` allocations + an independent `rng_state` are what
 //!   make cross-session contamination structurally impossible.
@@ -34,9 +34,9 @@
 
 use fuel_ir::{DType, Error};
 
-use crate::Device;
-use crate::inference_context::{DecodeSession, InferenceContext, KvCache};
-use crate::lazy::{sample_logits, LlamaModel, SamplingStrategy};
+use fuel::Device;
+use fuel::inference_context::{DecodeSession, InferenceContext, KvCache};
+use fuel::lazy::{sample_logits, LlamaModel, SamplingStrategy};
 
 /// The model capability the [`SessionScheduler`] depends on — the model-agnostic
 /// seam. The scheduler is orchestration (mechanism); it needs only the KV-context
@@ -71,7 +71,7 @@ pub trait DecodeModel {
         cache: &mut KvCache,
         ctx: &mut InferenceContext,
         session: &mut Option<DecodeSession>,
-    ) -> crate::Result<Vec<f32>>;
+    ) -> fuel::Result<Vec<f32>>;
 
     /// One batch=K decode step over K sessions' caches — the live batched arm.
     /// Returns one logits row per cache. The scheduler only calls this on a
@@ -84,7 +84,7 @@ pub trait DecodeModel {
         last_tokens: &[u32],
         device: &Device,
         dtype: DType,
-    ) -> crate::Result<Vec<Vec<f32>>>;
+    ) -> fuel::Result<Vec<Vec<f32>>>;
 }
 
 impl DecodeModel for LlamaModel {
@@ -103,7 +103,7 @@ impl DecodeModel for LlamaModel {
         cache: &mut KvCache,
         ctx: &mut InferenceContext,
         session: &mut Option<DecodeSession>,
-    ) -> crate::Result<Vec<f32>> {
+    ) -> fuel::Result<Vec<f32>> {
         // Explicit inherent-path call: `LlamaModel::` resolves to the inherent
         // method (inherent wins over the same-named trait method), so this is a
         // forward, not a recursion into the trait.
@@ -115,7 +115,7 @@ impl DecodeModel for LlamaModel {
         last_tokens: &[u32],
         device: &Device,
         dtype: DType,
-    ) -> crate::Result<Vec<Vec<f32>>> {
+    ) -> fuel::Result<Vec<Vec<f32>>> {
         LlamaModel::build_batched_decode_logits(self, caches, last_tokens, device, dtype)
     }
 }
@@ -153,7 +153,7 @@ pub struct ModelDims {
 
 /// One decode session's mutable state — a faithful bundle of the four
 /// per-generation loop locals from
-/// [`crate::lazy::LlamaModel::generate_streaming_with_kv_context`]
+/// [`fuel::lazy::LlamaModel::generate_streaming_with_kv_context`]
 /// (`KvCache` + `InferenceContext` + `Option<DecodeSession>` +
 /// sampler/RNG/token state) plus scheduling bookkeeping. Owns **nothing
 /// shared**: the independent `KvCache` allocations and the independent
@@ -194,7 +194,7 @@ impl SessionState {
         max_new: usize,
         device: &Device,
         dtype: DType,
-    ) -> crate::Result<Self> {
+    ) -> fuel::Result<Self> {
         if prompt.is_empty() {
             return Err(Error::Msg("SessionState::new: prompt is empty".to_string()).bt());
         }
@@ -261,7 +261,7 @@ impl SessionState {
     /// ONLY `self.rng_state`, never a shared or global state, so two sessions
     /// sampling the same logits with different seeds diverge and one with the
     /// same seed as a standalone run matches it (T3).
-    pub fn sample_and_append(&mut self) -> crate::Result<Option<u32>> {
+    pub fn sample_and_append(&mut self) -> fuel::Result<Option<u32>> {
         if self.phase == SessionPhase::Finished {
             return Ok(None);
         }
@@ -339,7 +339,7 @@ impl BatchedDecode {
         device: &Device,
         dtype: DType,
         sessions: &mut [&mut SessionState],
-    ) -> crate::Result<BatchOutcome> {
+    ) -> fuel::Result<BatchOutcome> {
         let descs: Vec<BatchDescriptor> = sessions
             .iter()
             .map(|s| BatchDescriptor {
@@ -381,7 +381,7 @@ impl BatchedDecode {
         // rewritten — and on any `Err` the scheduler's `advance_batched` Err arm
         // finishes every batch member, so no partial cache is ever decoded again
         // (all-or-nothing; see build_batched_decode_logits step 4's WARNING).
-        let mut caches: Vec<&mut crate::inference_context::KvCache> =
+        let mut caches: Vec<&mut fuel::inference_context::KvCache> =
             sessions.iter_mut().map(|s| &mut s.cache).collect();
         let rows = model.build_batched_decode_logits(&mut caches, &last_tokens, device, dtype)?;
         Ok(BatchOutcome::Advanced(rows))
@@ -465,7 +465,7 @@ impl<'m, M: DecodeModel> SessionScheduler<'m, M> {
         strategy: SamplingStrategy,
         eos_id: Option<u32>,
         max_new: usize,
-    ) -> crate::Result<SessionId> {
+    ) -> fuel::Result<SessionId> {
         let id = SessionId(self.next_id);
         let dims = ModelDims {
             n_layers: self.model.n_layers(),
@@ -492,7 +492,7 @@ impl<'m, M: DecodeModel> SessionScheduler<'m, M> {
     /// (3) advance it (serial in C2; batched wiring lands in C3); (4) sample
     /// each. A per-session `Err` is isolated into that session finishing with
     /// a recorded error — never propagated out to kill the batch.
-    pub fn step(&mut self) -> crate::Result<StepReport> {
+    pub fn step(&mut self) -> fuel::Result<StepReport> {
         // Copy the shared model reference out of `self` so the per-session
         // `&mut self.sessions[idx]` borrows below don't conflict with reading
         // `self.model`.
@@ -640,7 +640,7 @@ impl<'m, M: DecodeModel> SessionScheduler<'m, M> {
         model: &M,
         s: &mut SessionState,
         input: &[u32],
-    ) -> crate::Result<()> {
+    ) -> fuel::Result<()> {
         let logits = model.forward_with_kv_context_persistent(
             input,
             &mut s.cache,
@@ -657,7 +657,7 @@ impl<'m, M: DecodeModel> SessionScheduler<'m, M> {
     fn finalize_advance(
         &mut self,
         idx: usize,
-        advance: crate::Result<()>,
+        advance: fuel::Result<()>,
         report: &mut StepReport,
     ) {
         match advance {
@@ -678,7 +678,7 @@ impl<'m, M: DecodeModel> SessionScheduler<'m, M> {
 
     /// Force one session to `Finished`-with-error and record it. Isolation: the
     /// other sessions are untouched.
-    fn record_error(&mut self, idx: usize, e: crate::Error, report: &mut StepReport) {
+    fn record_error(&mut self, idx: usize, e: fuel::Error, report: &mut StepReport) {
         self.record_error_msg(idx, e.to_string(), report);
     }
 
@@ -694,7 +694,7 @@ impl<'m, M: DecodeModel> SessionScheduler<'m, M> {
 
     /// Loop `step` until every session is `Finished`; return each session's
     /// full token sequence (prompt + generated) in insertion order.
-    pub fn run_to_completion(&mut self) -> crate::Result<Vec<(SessionId, Vec<u32>)>> {
+    pub fn run_to_completion(&mut self) -> fuel::Result<Vec<(SessionId, Vec<u32>)>> {
         while !self.is_all_finished() {
             self.step()?;
         }
@@ -721,7 +721,7 @@ impl<'m, M: DecodeModel> SessionScheduler<'m, M> {
         &mut self,
         prompt: &[u32],
         max_new: usize,
-    ) -> crate::Result<SessionId> {
+    ) -> fuel::Result<SessionId> {
         let id = self.add_session(prompt, SamplingStrategy::Greedy, None, max_new)?;
         if let Some(s) = self.sessions.last_mut() {
             // Corrupt the real cache so the real forward path errors.
@@ -753,12 +753,12 @@ fn collect_disjoint_mut<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lazy::{LlamaConfig, LlamaModel, LlamaWeights, LayerWeights, WeightStorage, SamplingStrategy};
-    // NOTE: `fuel_ir::Device` does not exist — the device type is `crate::Device`
+    use fuel::lazy::{LlamaConfig, LlamaModel, LlamaWeights, LayerWeights, WeightStorage, SamplingStrategy};
+    // NOTE: `fuel_ir::Device` does not exist — the device type is `fuel::Device`
     // (fuel_core::Device), which is what `KvCache::with_capacity` takes. `DType`
     // is `fuel_ir::DType`. This mirrors the `use` lines at the top of
-    // inference_context.rs (`use fuel_ir::{DType, ..}; use crate::Device;`).
-    use crate::Device;
+    // inference_context.rs (`use fuel_ir::{DType, ..}; use fuel::Device;`).
+    use fuel::Device;
     use fuel_ir::DType;
     use std::sync::Arc;
 
@@ -1020,14 +1020,14 @@ mod tests {
 
         // Serial oracle: prefill each, take one decode step, record logits.
         let serial_logits = |prompt: &[u32]| -> Vec<f32> {
-            use crate::inference_context::{KvCache, InferenceContext};
+            use fuel::inference_context::{KvCache, InferenceContext};
             let cfg = &model.config;
             let msl = prompt.len() + 2;
             let mut cache = KvCache::with_capacity(cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, msl, DType::F32, &Device::cpu()).unwrap();
             let mut ctx = InferenceContext::new(Device::cpu());
             let mut sess = None;
             let pre = model.forward_with_kv_context_persistent(prompt, &mut cache, &mut ctx, &mut sess).unwrap();
-            let next = crate::lazy::sample_logits(&pre, SamplingStrategy::Greedy, &mut 0u64);
+            let next = fuel::lazy::sample_logits(&pre, SamplingStrategy::Greedy, &mut 0u64);
             model.forward_with_kv_context_persistent(&[next], &mut cache, &mut ctx, &mut sess).unwrap()
         };
         let sa = serial_logits(&pa);
@@ -1075,7 +1075,7 @@ mod tests {
         // actually PICKED (temporary eprintln of the chosen arm) and that a
         // KV-perturbation sabotage makes the test FAIL (a passing sabotage run
         // is invalid without confirmed recompilation).
-        use crate::lazy::{LlamaConfig, LlamaModel, LayerWeights, LlamaWeights, WeightStorage};
+        use fuel::lazy::{LlamaConfig, LlamaModel, LayerWeights, LlamaWeights, WeightStorage};
 
         fn bf16_weights(cfg: &LlamaConfig) -> LlamaWeights {
             // f32 tiny weights → BF16 for every WeightStorage matrix (embedding
@@ -1109,19 +1109,19 @@ mod tests {
 
         let cfg = tiny_cfg();
         let model = LlamaModel { config: cfg.clone(), weights: bf16_weights(&cfg) };
-        let dev = crate::cuda_backend::new_device(0).expect("cuda device 0");
+        let dev = fuel::cuda_backend::new_device(0).expect("cuda device 0");
         let dt = DType::BF16;
         let pa = [1u32, 2, 3];
         let pb = [4u32, 5, 6];
 
         let serial_logits = |prompt: &[u32]| -> Vec<f32> {
-            use crate::inference_context::{KvCache, InferenceContext};
+            use fuel::inference_context::{KvCache, InferenceContext};
             let msl = prompt.len() + 2;
             let mut cache = KvCache::with_capacity(cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, msl, dt, &dev).unwrap();
             let mut ctx = InferenceContext::new(dev.clone());
             let mut sess = None;
             let pre = model.forward_with_kv_context_persistent(prompt, &mut cache, &mut ctx, &mut sess).unwrap();
-            let next = crate::lazy::sample_logits(&pre, SamplingStrategy::Greedy, &mut 0u64);
+            let next = fuel::lazy::sample_logits(&pre, SamplingStrategy::Greedy, &mut 0u64);
             model.forward_with_kv_context_persistent(&[next], &mut cache, &mut ctx, &mut sess).unwrap()
         };
         let sa = serial_logits(&pa);
@@ -1156,7 +1156,7 @@ mod tests {
     // binding its bytes to a different-width placeholder (reinterpretation).
     #[test]
     fn build_batched_decode_logits_rejects_dtype_mismatch() {
-        use crate::inference_context::KvCache;
+        use fuel::inference_context::KvCache;
         let model = tiny_model(9999);
         let cfg = &model.config;
         let msl = 4;

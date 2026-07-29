@@ -247,7 +247,10 @@ pub mod factories;
 pub mod inference_context;
 pub mod kv_block_pool;
 pub mod kv_block_pool_device;
-pub mod multi_session;
+// `multi_session` (the K-way decode scheduler) moved to `fuel-inference` (Q2,
+// 2026-07-29): it is consumer-side orchestration, not a Foundation primitive.
+// It reaches the model through the `DecodeModel` trait, so it no longer belongs
+// in `fuel-core`. See `fuel-inference/src/multi_session.rs`.
 pub mod pipelined_bridge;
 pub mod planner;
 pub mod judge;
