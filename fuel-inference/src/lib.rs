@@ -4,7 +4,7 @@
 //!
 //! Inference orchestration for the Fuel ML framework. This crate provides
 //! the building blocks for running autoregressive text generation and
-//! transformer inference pipelines on top of `fuel-core`, `fuel-nn`, and
+//! transformer inference pipelines on top of `fuel-core` and
 //! `fuel-transformers`.
 //!
 //! ## What is here
@@ -73,11 +73,21 @@
 //! ```text
 //! fuel-inference   ← you are here (inference orchestration)
 //! fuel-transformers (model definitions)
-//! fuel-nn          (layers, optimisers, VarBuilder)
-//! fuel-core        (tensors, devices, autograd)
+//! fuel-core        (tensors, devices, autograd, AND the NN surface:
+//!                   `lazy_nn_varbuilder::LazyVarBuilder`,
+//!                   `lazy_nn_varmap::LazyVarMap`, and `lazy_nn/`
+//!                   — linear, embedding, norm, activation, lora,
+//!                   quantizable_linear, moe, conv, sequential)
 //! ```
 //!
-//! Nothing in `fuel-core`, `fuel-nn`, or `fuel-transformers` depends on
+//! Note: a separate `fuel-nn` crate is **planned, not shipped** — there is no
+//! such crate in the workspace today, and the NN surface lives in `fuel-core`
+//! as shown above. Extracting it is a step of the `fuel-core` retirement
+//! program. (Corrected 2026-07-29: the previous layer diagram listed
+//! `fuel-nn` as an existing layer, which sent a consumer looking for a crate
+//! that does not exist. See `docs/architecture/02-layers.md`.)
+//!
+//! Nothing in `fuel-core` or `fuel-transformers` depends on
 //! this crate. It is a leaf that aggregates; it does not define.
 
 // ── Re-export inference building blocks ───────────────────────────────────
