@@ -1,6 +1,6 @@
 # Consumer contract
 
-**Status**: v0.2 (draft, 2026-07-29). v0.2 (MINOR) adds [§Where the seam runs](#where-the-seam-runs-foundation-not-the-repository) — the contract binds *Foundation*, not every crate in the workspace; `fuel-inference` and `fuel-training` are consumer-side toolkits above the seam, optional by construction. Added in response to the first real consumer hitting the ambiguity (the Lightbulb port session, 2026-07-29): §15 refused admission/eviction/fairness while `fuel-inference` shipped a scheduler with priority queuing and eviction-pressure admission control. No core-claim change — the refusals bind Foundation exactly as before. v0.1 (2026-07-28) established the upward-facing half of fuel's boundary obligations: what fuel provides to the systems built *on* it, and what fuel correspondingly doesn't decide. The mirror of [05-backend-contract](05-backend-contract.md). Motivating phase doc: [`docs/fuel-consumer-seam.md`](../fuel-consumer-seam.md), which carries the per-consumer-class annexes and the as-built audit.
+**Status**: v0.3 (draft, 2026-07-29). v0.3 (MINOR) adds [C-6 §Two regimes](#two-regimes--and-the-obligation-differs-added-v03-2026-07-29): C-6's stated obligation ("report the cost, never silently deoptimize") is correct for *occasional* observation and **wrong for hot-path observation** — per-token, per-layer attention observation for KV eviction defeats fusion everywhere and makes capture unformable, so telling a consumer it deoptimized is not a resolution. Adds an order of preference led by **express the reduction in-graph, don't observe the intermediate**. Surfaced by the Lightbulb port session auditing its real observation sites against the clause. v0.2 (MINOR) adds [§Where the seam runs](#where-the-seam-runs-foundation-not-the-repository) — the contract binds *Foundation*, not every crate in the workspace; `fuel-inference` and `fuel-training` are consumer-side toolkits above the seam, optional by construction. Added in response to the first real consumer hitting the ambiguity (the Lightbulb port session, 2026-07-29): §15 refused admission/eviction/fairness while `fuel-inference` shipped a scheduler with priority queuing and eviction-pressure admission control. No core-claim change — the refusals bind Foundation exactly as before. v0.1 (2026-07-28) established the upward-facing half of fuel's boundary obligations: what fuel provides to the systems built *on* it, and what fuel correspondingly doesn't decide. The mirror of [05-backend-contract](05-backend-contract.md). Motivating phase doc: [`docs/fuel-consumer-seam.md`](../fuel-consumer-seam.md), which carries the per-consumer-class annexes and the as-built audit.
 
 What consumers provide to fuel, what fuel provides back, and what fuel doesn't decide. Anchored in the same architectural principle as the backend seam ([01-identity](01-identity.md): **backends advertise; they don't decide**) applied one layer up, with fuel now in the advertiser's seat: **fuel advertises capacity and reports measurements; the consumer decides whose work matters.**
 
@@ -102,6 +102,28 @@ Fuel optimizes *within* these constraints and never around them. C-5 is what kee
 The consumer can name an intermediate value and receive it, and for some classes replace it and continue. This is not C-4: that measures what execution *cost*; this extracts what it *computed*. Observation serves quantization calibration, distillation, probing, and debugging; intervention serves activation patching, ablation, and causal tracing.
 
 The clause carries a real tension with fuel's identity: **naming an intermediate defeats fusion across it.** An observation request therefore changes the plan, and fuel's obligation is that this be explicit — the cost is reported through C-4, the observation is never silently dropped, and fuel never silently deoptimizes without saying so.
+
+#### Two regimes — and the obligation differs (added v0.3, 2026-07-29)
+
+The paragraph above is correct for **occasional** observation and wrong for **hot-path** observation. The distinction is cadence relative to the critical path, and it changes what fuel owes:
+
+| Regime | Cadence | Examples | Fuel's obligation |
+| --- | --- | --- | --- |
+| **Occasional** | offline, per-run, or per-request | calibration, distillation, probing, debugging | **report the cost** (C-4) and never silently deoptimize. Paying for a broken fusion once is an acceptable trade the consumer can evaluate. |
+| **Hot-path** | per-token, per-layer, on every request | attention-driven KV eviction (H2O heavy-hitter accumulation, R-KV importance pruning) | **reporting the cost is not a resolution.** An observation at this cadence defeats fusion at every layer of every step and makes a captured region unformable — the consumer does not need to be told it deoptimized, it needs a way not to. |
+
+The second regime is a real consumer class, not a hypothetical: an inference host whose eviction policy is attention-driven must see attention scores every layer every step, which collides head-on with the capture-shaped decode path such a host is also built for. Left unaddressed, **attention-driven eviction and captured replay are mutually exclusive**, and a consumer discovers this only after building on both.
+
+**Design guidance — ask for the reduction, not the intermediate.** A hot-path observer almost never wants the raw intermediate; it wants a *reduction over* it. H2O wants a decayed running sum of attention mass per token; R-KV wants an importance score. Those are graph computations, not observations. When the reduction is expressed as graph nodes, **nothing is observed, nothing breaks, and capture survives** — the only value realized is the small statistics tensor, and only when the policy actually consults it, which is far rarer than per-token-per-layer.
+
+So the clause's order of preference is:
+
+1. **Express the reduction in-graph.** No C-6 request at all. Note that a running accumulator across steps is structurally the same shape as a KV write — a runtime-offset write into a persistent buffer — so the machinery largely exists.
+2. **Observe out of the hot path** — a side buffer written without breaking the captured region, if such a mechanism is built.
+3. **Observe the intermediate**, accepting the plan change, with the cost reported per C-4. Correct for the occasional regime; a last resort for the hot-path one.
+4. **Refuse and say so.** If a consumer's observation genuinely cannot leave the hot path, fuel must state that the two capabilities are incompatible rather than let it be discovered late.
+
+**[Evidence status]** design-level: derived by reading a real consumer's attention-observation sites (5 in its transformer/attention/KV-compression paths) against this clause and against `CapturedRun`'s requirements. **Not yet validated by a running port** — the reduction-in-graph route in particular is a strong conjecture, not a demonstrated result.
 
 ### C-7 — Declared mutation and in-process invalidation
 
