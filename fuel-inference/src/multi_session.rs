@@ -39,6 +39,7 @@ use fuel_ir::{DType, Error};
 use fuel::Device;
 use fuel::inference_context::{DecodeSession, InferenceContext, KvCache};
 use fuel::kv_block_pool::{KvBlockPool, KvGeometry, PoolCapacity, SessionHandle};
+use fuel::kv_block_pool_device::DeviceKvPool;
 use fuel::lazy::{sample_logits, LlamaModel, SamplingStrategy};
 
 /// The KV memory budget a [`SessionScheduler`] admits sessions against — the
@@ -104,6 +105,20 @@ pub trait DecodeModel {
         device: &Device,
         dtype: DType,
     ) -> fuel::Result<Vec<Vec<f32>>>;
+
+    /// One single-token **paged** forward — the paged-storage decode surface
+    /// ([`PagedSessionScheduler`]). Feeds `token` (a prompt token during prefill,
+    /// a sampled token during decode) into the session's blocks of the shared
+    /// `pool`, attends via `Op::PagedAttn`, and returns last-position logits.
+    /// Grows the session's block allocation incrementally (one slot per token);
+    /// an exhausted pool surfaces as a typed `Err` (the scheduler isolates it
+    /// into a per-session finish), never a panic.
+    fn forward_paged_step(
+        &self,
+        token: u32,
+        pool: &mut DeviceKvPool,
+        session: SessionHandle,
+    ) -> fuel::Result<Vec<f32>>;
 }
 
 impl DecodeModel for LlamaModel {
@@ -136,6 +151,14 @@ impl DecodeModel for LlamaModel {
         dtype: DType,
     ) -> fuel::Result<Vec<Vec<f32>>> {
         LlamaModel::build_batched_decode_logits(self, caches, last_tokens, device, dtype)
+    }
+    fn forward_paged_step(
+        &self,
+        token: u32,
+        pool: &mut DeviceKvPool,
+        session: SessionHandle,
+    ) -> fuel::Result<Vec<f32>> {
+        LlamaModel::forward_paged_step(self, token, pool, session)
     }
 }
 
@@ -871,6 +894,252 @@ fn collect_disjoint_mut<'a>(
     out
 }
 
+// ===========================================================================
+// PagedSessionScheduler — the paged-storage decode driver (PS3)
+// ===========================================================================
+
+/// Paged multi-session decode driver — the paged-storage counterpart of
+/// [`SessionScheduler`]. Every session's KV physically lives in ONE shared
+/// [`DeviceKvPool`], with blocks allocated **incrementally** per token via the
+/// model's [`DecodeModel::forward_paged_step`] (`Op::PagedAttn`), not reserved up
+/// front against a fixed-capacity per-session cache. That incremental growth is
+/// the paging memory win: a session that stops early never held blocks it didn't
+/// use.
+///
+/// Serial arm only (byte-exact per session); paged **batched** decode and C-3
+/// (evict/restore/splice) on the live path are PS4. Admission is **optimistic** —
+/// `add_session` opens a pool session without reserving its full length; if the
+/// shared pool exhausts mid-decode, the growing session's `forward_paged_step`
+/// returns a typed error that the scheduler **isolates** into that session
+/// finishing (never a panic), and the others keep decoding. A consumer that wants
+/// to admit conservatively pre-checks [`kv_free_blocks`](Self::kv_free_blocks)
+/// against its expected length first (C-1).
+pub struct PagedSessionScheduler<'m, M: DecodeModel> {
+    model: &'m M,
+    /// The shared device KV pool — all sessions' blocks live here.
+    pool: DeviceKvPool,
+    sessions: Vec<PagedSession>,
+    next_id: u64,
+}
+
+/// One session of a [`PagedSessionScheduler`]. Its KV is the pool blocks reached
+/// through `handle`; it holds no tensor state of its own (contrast
+/// [`SessionState`], which owns a contiguous `KvCache`). Per-session RNG is the
+/// contamination firewall (T1), exactly as in the contiguous scheduler.
+struct PagedSession {
+    handle: SessionHandle,
+    tokens: Vec<u32>,
+    new_tokens: Vec<u32>,
+    rng_state: u64,
+    strategy: SamplingStrategy,
+    eos_id: Option<u32>,
+    remaining: usize,
+    phase: SessionPhase,
+    last_logits: Option<Vec<f32>>,
+    id: SessionId,
+}
+
+impl<'m, M: DecodeModel> PagedSessionScheduler<'m, M> {
+    /// Build an empty paged scheduler over a shared model + a KV block-pool
+    /// `budget`. The pool's head geometry is taken from the model; `budget` sets
+    /// block size + total blocks (the shared VRAM ceiling).
+    pub fn new(
+        model: &'m M,
+        budget: KvBudget,
+        dtype: DType,
+        device: &Device,
+    ) -> fuel::Result<Self> {
+        let pool = DeviceKvPool::new(
+            KvGeometry {
+                n_layers: model.n_layers(),
+                n_kv_heads: model.n_kv_heads(),
+                head_dim: model.head_dim(),
+                num_blocks: budget.num_blocks,
+                block_size: budget.block_size,
+                elem_size: dtype.size_in_bytes(),
+            },
+            dtype,
+            device,
+        )?;
+        Ok(Self { model, pool, sessions: Vec::new(), next_id: 0 })
+    }
+
+    /// Free pool blocks (C-1) — the consumer's optional conservative-admission
+    /// pre-check against a session's expected length.
+    pub fn kv_free_blocks(&self) -> usize {
+        self.pool.core().free_blocks()
+    }
+
+    /// Number of live (not-yet-reaped) sessions.
+    pub fn session_count(&self) -> usize {
+        self.sessions.len()
+    }
+
+    /// Admit a session from a prompt (optimistic — no up-front block reservation).
+    /// Opens a pool session; the prompt's blocks are allocated on the first
+    /// `step`'s prefill. Rejects an empty prompt / zero budget before opening.
+    pub fn add_session(
+        &mut self,
+        prompt: &[u32],
+        strategy: SamplingStrategy,
+        eos_id: Option<u32>,
+        max_new: usize,
+    ) -> fuel::Result<SessionId> {
+        if prompt.is_empty() {
+            return Err(Error::Msg("PagedSessionScheduler::add_session: prompt is empty".into()).bt());
+        }
+        if max_new == 0 {
+            return Err(Error::Msg("PagedSessionScheduler::add_session: max_new must be > 0".into()).bt());
+        }
+        let id = SessionId(self.next_id);
+        let handle = self.pool.core_mut().open();
+        let rng_state = match strategy {
+            SamplingStrategy::Temperature { seed, .. } => seed,
+            _ => 0,
+        };
+        self.sessions.push(PagedSession {
+            handle,
+            tokens: prompt.to_vec(),
+            new_tokens: Vec::new(),
+            rng_state,
+            strategy,
+            eos_id,
+            remaining: max_new,
+            phase: SessionPhase::Prefill,
+            last_logits: None,
+            id,
+        });
+        self.next_id += 1;
+        Ok(id)
+    }
+
+    /// Advance one quantum: prefill any `Prefill` sessions (feed the whole prompt
+    /// one token at a time — `Op::PagedAttn` is decode-only, and one-at-a-time is
+    /// causally equivalent to a batched prefill), then decode-advance every
+    /// `Decode`-ready session by one token. Each `forward_paged_step` grows the
+    /// session's blocks; a pool exhaustion (or any per-session error) is isolated
+    /// into that session finishing-with-error, never propagated.
+    pub fn step(&mut self) -> StepReport {
+        let model = self.model;
+        let mut report = StepReport::default();
+
+        // (1) Prefill: feed the full prompt, then sample the first token.
+        for idx in 0..self.sessions.len() {
+            if self.sessions[idx].phase != SessionPhase::Prefill {
+                continue;
+            }
+            let prompt = self.sessions[idx].tokens.clone();
+            let handle = self.sessions[idx].handle;
+            let mut last_logits: Option<Vec<f32>> = None;
+            let mut failure: Option<String> = None;
+            for &tok in &prompt {
+                match model.forward_paged_step(tok, &mut self.pool, handle) {
+                    Ok(l) => last_logits = Some(l),
+                    Err(e) => {
+                        failure = Some(e.to_string());
+                        break;
+                    }
+                }
+            }
+            match failure {
+                Some(msg) => self.finish_error(idx, msg, &mut report),
+                None => {
+                    self.sessions[idx].phase = SessionPhase::Decode;
+                    self.sessions[idx].last_logits = last_logits;
+                    self.sample(idx, &mut report);
+                }
+            }
+        }
+
+        // (2) Decode: one token per Decode-ready session.
+        for idx in 0..self.sessions.len() {
+            if self.sessions[idx].phase != SessionPhase::Decode {
+                continue;
+            }
+            let handle = self.sessions[idx].handle;
+            let last = self.sessions[idx].tokens.last().copied();
+            match last {
+                Some(tok) => match model.forward_paged_step(tok, &mut self.pool, handle) {
+                    Ok(l) => {
+                        self.sessions[idx].last_logits = Some(l);
+                        self.sample(idx, &mut report);
+                    }
+                    Err(e) => self.finish_error(idx, e.to_string(), &mut report),
+                },
+                None => self.finish_error(
+                    idx,
+                    "PagedSessionScheduler: decode on empty token history".into(),
+                    &mut report,
+                ),
+            }
+        }
+
+        report
+    }
+
+    /// Sample the pending logits with THIS session's own RNG (the T1 firewall),
+    /// append, decrement the budget, and transition to `Finished` on eos/budget.
+    fn sample(&mut self, idx: usize, report: &mut StepReport) {
+        let s = &mut self.sessions[idx];
+        if s.phase == SessionPhase::Finished {
+            return;
+        }
+        let logits = match s.last_logits.take() {
+            Some(l) => l,
+            None => return,
+        };
+        let next = sample_logits(&logits, s.strategy, &mut s.rng_state);
+        s.tokens.push(next);
+        s.new_tokens.push(next);
+        s.remaining = s.remaining.saturating_sub(1);
+        let id = s.id;
+        report.advanced.push(id);
+        if s.eos_id == Some(next) || s.remaining == 0 {
+            s.phase = SessionPhase::Finished;
+            report.finished.push(id);
+        } else {
+            s.phase = SessionPhase::Decode;
+        }
+    }
+
+    /// Force one session to `Finished`-with-error (isolated — the others are
+    /// untouched). The pool blocks it holds are freed by [`reap_finished`].
+    fn finish_error(&mut self, idx: usize, msg: String, report: &mut StepReport) {
+        let s = &mut self.sessions[idx];
+        s.phase = SessionPhase::Finished;
+        let id = s.id;
+        report.errored.push((id, msg));
+        report.finished.push(id);
+    }
+
+    /// Loop `step` until every session is `Finished`; return each session's full
+    /// token sequence in insertion order.
+    pub fn run_to_completion(&mut self) -> Vec<(SessionId, Vec<u32>)> {
+        while !self.sessions.iter().all(|s| s.phase == SessionPhase::Finished) {
+            self.step();
+        }
+        self.sessions.iter().map(|s| (s.id, s.tokens.clone())).collect()
+    }
+
+    /// Reap every `Finished` session: discard its pool session (freeing its
+    /// blocks) and drop it, returning each reaped `(id, tokens)`. This is how a
+    /// completed session's blocks become admission headroom again.
+    pub fn reap_finished(&mut self) -> Vec<(SessionId, Vec<u32>)> {
+        let mut reaped = Vec::new();
+        let mut kept = Vec::with_capacity(self.sessions.len());
+        for s in std::mem::take(&mut self.sessions) {
+            if s.phase == SessionPhase::Finished {
+                self.pool.core_mut().discard(s.handle);
+                reaped.push((s.id, s.tokens));
+            } else {
+                kept.push(s);
+            }
+        }
+        self.sessions = kept;
+        reaped
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1051,6 +1320,117 @@ mod tests {
         let free_before = sched.kv_free_blocks();
         sched.add_session(&prompt, SamplingStrategy::Greedy, None, 6).unwrap();
         assert_eq!(sched.kv_free_blocks(), free_before - 3, "admission reserved exactly the queried 3 blocks");
+    }
+
+    // --- PagedSessionScheduler (PS3) -------------------------------------
+
+    fn paged_budget() -> KvBudget {
+        KvBudget { block_size: 4, num_blocks: 64 }
+    }
+
+    /// A single paged session runs to its `max_new` budget: prefill (feed the
+    /// prompt token-by-token) + decode, ending with prompt + max_new tokens.
+    #[test]
+    fn paged_scheduler_single_session_runs_to_budget() {
+        let model = tiny_model(42);
+        let mut s =
+            PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
+        let prompt = [1u32, 2, 3];
+        let id = s.add_session(&prompt, SamplingStrategy::Greedy, None, 5).unwrap();
+        let out = s.run_to_completion();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0, id);
+        assert_eq!(out[0].1.len(), prompt.len() + 5, "prompt + 5 generated tokens");
+    }
+
+    /// eos stops a paged session right after it is emitted (budget not exhausted).
+    #[test]
+    fn paged_scheduler_stops_on_eos() {
+        let model = tiny_model(42);
+        let prompt = [1u32, 2, 3];
+        // Learn the first greedy token, then use it as eos.
+        let mut s0 =
+            PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
+        s0.add_session(&prompt, SamplingStrategy::Greedy, None, 5).unwrap();
+        let full = s0.run_to_completion()[0].1.clone();
+        let first_gen = full[prompt.len()];
+
+        let mut s =
+            PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
+        s.add_session(&prompt, SamplingStrategy::Greedy, Some(first_gen), 5).unwrap();
+        let out = s.run_to_completion()[0].1.clone();
+        assert_eq!(out.len(), prompt.len() + 1, "stops right after emitting eos");
+        assert_eq!(*out.last().unwrap(), first_gen);
+    }
+
+    /// THE PS3 GATE — shared-pool isolation (T1). Two sessions decoding over ONE
+    /// shared DeviceKvPool produce token-for-token the SAME output as each run
+    /// alone in its own pool. Proves per-session block handles never cross-
+    /// contaminate through the shared physical pool.
+    #[test]
+    fn paged_scheduler_two_sessions_isolated_over_shared_pool() {
+        let model = tiny_model(9999);
+        let a = [1u32, 2, 3];
+        let b = [7u32, 4, 9, 2];
+        let max_new = 6;
+
+        // Each ALONE (own scheduler, own pool).
+        let mut sa =
+            PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
+        sa.add_session(&a, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let a_alone = sa.run_to_completion()[0].1.clone();
+        let mut sb =
+            PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
+        sb.add_session(&b, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let b_alone = sb.run_to_completion()[0].1.clone();
+
+        // TOGETHER (one scheduler, SHARED pool).
+        let mut both =
+            PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
+        let ida = both.add_session(&a, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let idb = both.add_session(&b, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let out = both.run_to_completion();
+        let a_shared = out.iter().find(|(id, _)| *id == ida).unwrap().1.clone();
+        let b_shared = out.iter().find(|(id, _)| *id == idb).unwrap().1.clone();
+
+        assert_eq!(a_shared, a_alone, "A unaffected by sharing the pool with B");
+        assert_eq!(b_shared, b_alone, "B unaffected by sharing the pool with A");
+    }
+
+    /// Reaping a finished paged session returns all its blocks to the shared pool.
+    #[test]
+    fn paged_scheduler_reap_frees_pool_blocks() {
+        let model = tiny_model(42);
+        let mut s =
+            PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
+        let free0 = s.kv_free_blocks();
+        s.add_session(&[1u32, 2, 3], SamplingStrategy::Greedy, None, 5).unwrap();
+        s.run_to_completion();
+        assert!(s.kv_free_blocks() < free0, "a decoded session holds pool blocks");
+        let reaped = s.reap_finished();
+        assert_eq!(reaped.len(), 1);
+        assert_eq!(s.kv_free_blocks(), free0, "reap returns every block");
+        assert_eq!(s.session_count(), 0);
+    }
+
+    /// End-to-end tie: the paged scheduler's greedy output matches the contiguous
+    /// `generate_with_kv_context` oracle (PS2 showed the paged forward is ε-close
+    /// per step; greedy argmax is stable at that closeness on this tiny model).
+    #[test]
+    fn paged_scheduler_greedy_matches_contiguous_generate() {
+        let model = tiny_model(9999);
+        let prompt = [1u32, 2, 3];
+        let max_new = 5;
+        let contig = model
+            .generate_with_kv_context(
+                &prompt, max_new, SamplingStrategy::Greedy, None, &Device::cpu(), DType::F32,
+            )
+            .unwrap();
+        let mut s =
+            PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
+        s.add_session(&prompt, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let paged = s.run_to_completion()[0].1.clone();
+        assert_eq!(paged, contig, "paged scheduler greedy == contiguous generate oracle");
     }
 
     #[test]
