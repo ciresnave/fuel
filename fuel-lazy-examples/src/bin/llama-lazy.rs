@@ -61,6 +61,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("Tracing enabled → trace.json");
         Some(guard)
     } else {
+        // No profiling trace requested — but still install a lightweight stderr
+        // subscriber so optimizer diagnostics are visible. The dtype-
+        // reconciliation pass emits `tracing::warn!` on every promoting cast it
+        // inserts (e.g. a BF16→F32 weight upcast for a mixed-precision matmul —
+        // doubled resident bytes + changed accumulation precision); with NO
+        // subscriber a first-time consumer pays for that silently. Defaults to
+        // WARN so those surface; `RUST_LOG=info|debug|trace` widens it.
+        let level = std::env::var("RUST_LOG")
+            .ok()
+            .and_then(|s| s.trim().parse::<tracing::Level>().ok())
+            .unwrap_or(tracing::Level::WARN);
+        tracing_subscriber::fmt()
+            .with_max_level(level)
+            .with_writer(std::io::stderr)
+            .init();
         None
     };
 
