@@ -201,13 +201,28 @@ not built for one consumer. → ROADMAP.
 
 ## Part 2 + follow-ups
 
-- **Part 2 (device-backed integration):** bind the core to real `[num_blocks, block_size, Hkv, D]`
-  K/V pool buffers; materialize the `block_table`/`context_lens` tensors for `Op::PagedAttn`; wire
-  evict/restore byte movement device↔host. Read `fuel-inference`'s `tiered_storage.rs` (a C-3-lossy
-  consumer written before C-3) + Lightbulb's counterpart before finalizing the device evict/restore
-  signature — it's the real-ergonomics surface, and `fuel-inference`'s policy layer
-  (eviction/prefix_cache/tiered_storage, zero consumers today) is the natural first thing to wire the
-  allocator under.
+- **Part 2 (device-backed integration) — SHIPPED 2026-07-29** (`fuel-core/src/kv_block_pool_device.rs`,
+  `DeviceKvPool`), four CPU-gated sub-increments on `main`:
+  - **2a** (`d731b99f`): real pool buffers — `n_layers × 2` zero-init `[num_blocks, block_size, Hkv, D]`
+    K/V buffers via `Op::Alloc → ZeroFill → realize_many` (same path as `KvCache::with_capacity`); +
+    `materialize_block_table` projecting the core's per-session tables into the op's `[B, max_blocks]`
+    u32 `block_table` + `[B]` u32 `context_lens` (resident-only, zero-padded, mask-neutralized padding).
+    Core gained `filled_tokens` + `session_block_table` accessors + `KvAllocError::SessionNotResident`.
+  - **2b** (`0626d168`): device-general block byte movement — `write_block` (in-place `Op::WriteSlice`
+    into the persistent buffer) + `read_block` (executor `Slice` D2H) + `block_write_ranges`.
+  - **2c** (`91e4b607`): the integration gate — pool-routed `Op::PagedAttn` (real buffers bound via a
+    `StorageCache`, materialized block_table over a NON-identity physical layout) equals a hand-computed
+    dense `softmax(scale·q·kᵀ)·v`. Proves routing + placement + tail mask compose.
+  - **2d** (`79b0f808`): device C-3 — `evict`/`evict_blocks`/`restore` move block *bytes* device↔host
+    (`DeviceEvicted` handle wraps the core's byte-free structural handle). Byte-exact round trip even
+    after every physical block is scribbled; refcount-aware (a partial evict of a spliced session
+    captures only the exclusive blocks). f32-only (CPU-gated); byte/dtype-generic form → CUDA bf16 pool.
+  - **Not yet wired to a consumer.** Read `fuel-inference`'s `tiered_storage.rs` (a C-3-lossy consumer
+    written before C-3) + Lightbulb's counterpart before wiring the allocator under
+    `fuel-inference`'s policy layer (eviction/prefix_cache/tiered_storage) — the natural first consumer.
+    Follow-ups: byte/dtype-generic `write_block`/`read_block` for the CUDA bf16 pool; live-GPU parity of
+    the 2c gate; a consumer-facing bind helper (or `InferenceContext` integration) so a forward graph
+    binds the pool buffers without hand-building a `StorageCache`.
 - **Q2 — `multi_session.rs` → `fuel-inference` — AUTHORIZED by CireSnave** (2026-07-29, "move it when
   convenient"). This session's, *after* part 2. NOT a pure file move: it forces `&LlamaModel` into a
   model-agnostic trait (SamplingStrategy sheds rather than moves — sampling is consumer policy, Q5).

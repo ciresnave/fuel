@@ -309,7 +309,23 @@ nowhere; now captured so they are not forgotten):
   to serial on the tested CPU shapes, not bit-exact; the CUDA bf16 flash-arm parity test is
   local/`#[ignore]`).
   No IR op, no kernel — host orchestration over the existing persistent-decode machinery.
-  KV-content sharing/splice + the block-pool allocator stay Increment 2+.
+  **Increment 2 — the block-pool allocator — SHIPPED 2026-07-29** (the confirmed-absent keystone
+  is now present): pure host-side core `fuel-core/src/kv_block_pool.rs` (`KvBlockPool` — free list +
+  refcounts + per-session block tables + refcount-aware evict/splice, model-agnostic, move-ready for
+  the Q2 `fuel-inference` move) + the device-backed layer `fuel-core/src/kv_block_pool_device.rs`
+  (`DeviceKvPool` — real `n_layers × 2` `[num_blocks, block_size, Hkv, D]` K/V pool buffers,
+  `block_table`/`context_lens` materialization for `Op::PagedAttn`, `write_block`/`read_block` byte
+  movement, and C-3 device evict/restore that round-trips block bytes device↔host). It delivers, **as
+  mechanism**, the three clauses the Increment-1 audit flagged: **C-1** (`free_blocks` +
+  `blocks_required` + `capacity`), **C-3-lossy** (`evict`/`restore`/`discard`/`splice`, `Fidelity`
+  discriminator keeping the future Exact arm expressible), **C-4** one bite (`kv_bytes_resident`).
+  Gated by a pool-routed `paged_attn` parity test (permuted physical layout vs a dense reference) +
+  a byte-exact evict→restore round trip. Design-of-record:
+  `docs/superpowers/plans/2026-07-29-kv-block-pool-allocator-serving-inc2.md`. Follow-ups: wire it
+  under a real consumer (`fuel-inference` policy layer / Lightbulb); byte/dtype-generic block IO +
+  live-GPU parity for the CUDA bf16 pool; the deferred named refcounted block-group handle.
+  KV-content sharing/splice between concurrently-decoding branches (the residual-stream-donation
+  path) rides on `splice` but stays a later increment.
   **Increment 2+ is now scoped by [15-consumer-contract](docs/architecture/15-consumer-contract.md)**
   (new 2026-07-28; annexes + as-built audit in `docs/fuel-consumer-seam.md`): Fuel owns mechanism,
   the consumer owns policy — Fuel never decides *whose* work runs. Clause status of the shipped
