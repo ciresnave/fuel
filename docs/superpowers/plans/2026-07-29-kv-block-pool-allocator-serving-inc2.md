@@ -159,3 +159,56 @@ with the commit ref), per the whoever-closes-edits convention:
 - **Q9** (one C-3 mechanism with a fidelity flag, or two?) → **one interface + a `Fidelity`
   discriminator, two implementations backed by different state; the Lossy-KV arm now.** The
   load-bearing rule: `restore` takes externalized *state*, never a recompute-from-tokens instruction.
+
+## Consumer-driven hardening (Lightbulb, the first real consumer)
+
+A live design loop with the Lightbulb port session (`0guhhdqj`) — Eric put *batched decode from the
+start* on the port, making this allocator its critical path — hardened the evict surface **before it
+set**, against the §15 two-consumer bar (Lightbulb's `segmented_eviction_policy` + `fuel-inference`'s
+`segmented_eviction`, both "logical segments evicted as complete units"):
+
+- **`evict` is whole-session; the real eviction unit is a block SET within a live session.** Tiering
+  sheds the cold middle of a long conversation while it keeps decoding. So the primitive is now
+  **`evict_blocks(s, &[logical_index])`** (may be non-contiguous — H2O keeps scattered heavy-hitters;
+  a segmented policy evicts a union of spans), with `evict_range(s, from, to)` the single-span
+  convenience and `evict(s)` the whole-session convenience (part 1's surface, unchanged). `restore`
+  needs no range variant — it re-materializes whatever the handle covers at each block's original
+  logical index (→ RoPE ranges reconstruct), so it's granularity-agnostic; and it no longer touches
+  `filled_tokens` (a partial evict of a still-growing session must not be reset).
+- **`EvictReport` carries per-block attribution, not counts** (`freed: Vec<usize>`,
+  `still_shared: Vec<usize>`). After a scattered set-evict, a *count* ("3 still_shared") hides *which*
+  blocks stayed shared, so a consumer marking a span demoted on the count would silently diverge from
+  the pool. Same honesty property `{freed, still_shared}` already carried, at the set primitive's
+  granularity. Test coverage includes the exact shape a shared-system-prompt conversation generates:
+  a set straddling a spliced prefix and an exclusive tail → both lists non-empty.
+- **RoPE positions** are preserved by construction (restore places each block at its original logical
+  index → `logical_index·block_size + offset` reconstructs the position range on promote). No
+  handle-riding metadata stash was added — the consumer initiates every eviction (§15) so it holds
+  its own span→blocks map; adding an opaque blob for one consumer is the speculative generality §15
+  warns against.
+
+### Deferred: a named, refcounted block-group handle (future increment, two-consumer-specified)
+
+Lightbulb noted (and self-corrected toward the mechanism/policy line) that the per-block attribution
+above exists *only* because a consumer reassembles group outcomes from block outcomes — evidence that
+a **named, refcounted block group with atomic evict/restore** may itself be Fuel mechanism (splice
+already shares a contiguous run anonymously; the two-consumer bar is met by the two segmented
+policies). The **extent** half of a "span" (contiguous positions + identity, evicted/restored as a
+unit) is the mechanism candidate; the **meaning** half (importance, tags) is unambiguously consumer
+policy. Deferred deliberately: design it against both segmented policies *from the start*, never
+retrofitted around one consumer's span semantics (the C-3 failure mode §15 documents). Not built now,
+not built for one consumer. → ROADMAP.
+
+## Part 2 + follow-ups
+
+- **Part 2 (device-backed integration):** bind the core to real `[num_blocks, block_size, Hkv, D]`
+  K/V pool buffers; materialize the `block_table`/`context_lens` tensors for `Op::PagedAttn`; wire
+  evict/restore byte movement device↔host. Read `fuel-inference`'s `tiered_storage.rs` (a C-3-lossy
+  consumer written before C-3) + Lightbulb's counterpart before finalizing the device evict/restore
+  signature — it's the real-ergonomics surface, and `fuel-inference`'s policy layer
+  (eviction/prefix_cache/tiered_storage, zero consumers today) is the natural first thing to wire the
+  allocator under.
+- **Q2 — `multi_session.rs` → `fuel-inference` — AUTHORIZED by CireSnave** (2026-07-29, "move it when
+  convenient"). This session's, *after* part 2. NOT a pure file move: it forces `&LlamaModel` into a
+  model-agnostic trait (SamplingStrategy sheds rather than moves — sampling is consumer policy, Q5).
+  The trait is the real design change and the reason to move before an inference consumer arrives.
