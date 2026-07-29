@@ -150,16 +150,27 @@ impl KvGeometry {
 /// a guess) — reserved, not yet built, per "establish it belongs before
 /// building it".
 ///
-/// **Contract requirement both shapes must satisfy (C-5):** the consumer
-/// supplies the device set, so residence must be **constrainable from outside,
-/// not merely observable** — a consumer must be able to express per-tenant
-/// residence ("this session's blocks on device 0"). A pool that spans devices
-/// and picks residence *internally* would hide a decision the contract reserves
-/// to the consumer; N addressable pools, or one pool with a consumer-
-/// constrainable device coordinate, both keep it expressible. The pool-set
-/// manager that arbitrates **fit** (headroom per pool, how blocks move) is
-/// Fuel's; one that arbitrates **priority** ("put this tenant on the fast
-/// device") has crossed into policy.
+/// **Contract requirement both shapes must satisfy (C-5, corrected 2026-07-29
+/// §15 v0.7):** device placement is a **per-device budget**, not a device set.
+/// Fuel *observes* availability (topology + the memory-pressure/slot/queue
+/// telemetry `05-backend-contract` already requires downward); the consumer owns
+/// **entitlement** — what it is *permitted* to consume ("don't use more than 50%
+/// of the 4070's VRAM"; "GPU 0 drives the display — leave it alone"), which Fuel
+/// cannot observe. So residence must be **constrainable from outside** as a
+/// budget with two axes — *admissibility* (may this device be used at all) and
+/// *quantity* (VRAM fraction/absolute; potentially slot/compute share) — not
+/// merely observable. The acceptance test: the descriptor must answer "how MUCH
+/// may I use on device X", not just "is X permitted". Headroom then becomes
+/// **per-device and budget-relative** — `free_blocks` against a device the
+/// consumer capped at 50% reports against the *cap*, not the hardware; a pool
+/// budgeted out of a device it could physically fit declines *as though full*,
+/// and must distinguish "no room" from "not permitted" (different states a
+/// consumer acts on differently). A pool that picks residence *internally* fails
+/// this. Directionality: unconstrained = all visible devices at full capacity (a
+/// single-process script enumerates nothing); Fuel may narrow for cost, **never**
+/// expand past the budget; the consumer may always narrow further. The pool-set
+/// manager that arbitrates **fit** is Fuel's; one that arbitrates **priority** is
+/// policy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PoolCapacity {
     pub geometry: KvGeometry,
@@ -335,9 +346,20 @@ impl KvBlockPool {
 
     // --- C-4: one measured-cost bite -------------------------------------
 
-    /// Resident KV bytes across K + V — the consumer's budget signal. Shared
-    /// blocks are counted **once** (they are one physical block), so this is
-    /// true resident memory, not summed-per-session.
+    /// Resident KV bytes across K + V — the consumer's C-4 budget signal. Shared
+    /// blocks are counted **once** (they are one physical block), so this is true
+    /// resident memory, not summed-per-session.
+    ///
+    /// **`resident` means *bytes physically held by this pool*** — exact today
+    /// because the device-tier pool buffers are real VRAM (`resident` ==
+    /// `mapped`). If a memory-mapped host tier is ever added (the decided-but-
+    /// unbuilt unified durable store — mapping succeeds beyond physical RAM,
+    /// residency becomes the kernel's page-cache decision), `resident` and
+    /// `mapped` diverge arbitrarily. This name is then **resident** (what C-4
+    /// admission must budget on); the mapped count would want a SEPARATE
+    /// accessor (`kv_bytes_mapped`), never a meaning-by-tier overload of this one.
+    /// Reserving the *distinction* in docs now (renaming a live C-4 surface later
+    /// is the expensive version); device-tier accounting is unaffected either way.
     pub fn kv_bytes_resident(&self) -> u64 {
         let used = (self.geom.num_blocks - self.free.len()) as u64;
         used * self.geom.bytes_per_block()
