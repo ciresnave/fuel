@@ -183,6 +183,33 @@ nowhere; now captured so they are not forgotten):
   **13 remain** (9 needs-extension carriers + 4 basis-gap). Plan:
   `docs/superpowers/plans/2026-07-24-increment-c-decompose-migration.md` ("Op::Scan recipe form —
   SHIPPED").
+- **Increment C — `qmatmul` (Q4_0) decompose SHIPPED → 22 of 22 migrated (2026-07-28, branch
+  `feat/qmatmul-q4_0-decompose`).** The last fused op leaves the opaque-island set. The old
+  "basis gap needing 3 missing primitives" was FALSE (scoped 2026-07-25; the KISS §7.3-0002
+  necessity test came back negative from Fuel/Baracuda/kiss-ref, so NO `Op::Bitcast` — see
+  `docs/outreach/bitcast-basis-token-design-input-ask.md`). `qmatmul.rs` now carries a **total
+  primitive recipe** for Q4_0, contained entirely to `fuel-graph` (no builder/loader/kernel/
+  dtype change): byte-extract the U32 stream by **exact F64 arithmetic** (`Cast(U32→F64)` then
+  `⌊·/256ⁱ⌋ mod 256`; F32 would round above 2²⁴), recover the embedded f16 block-scale by
+  **arithmetic IEEE-754-half reconstruction** (5-bit binary-decomposition power-of-two, bit-exact
+  to `f16::to_f32` for every finite half — proven over all 63488 finite bit patterns), nibble
+  unpack + per-block broadcast + GEMM. Real-backend CPU-realize parity vs exact `BlockQ4_0::
+  to_float` dequant at `rel<1e-5` (`fuel-core/tests/incc_qmatmul_q4_0_oracle.rs`, sabotage-
+  calibrated); the fused dequant-in-kernel arm stays the cost-preferred cover (the lowering is
+  the optimizer/basis-map alternative, never the executed path where the kernel exists).
+- [ ] **`qmatmul` per-format decompose build-out (backlog).** Q4_0 is the only format the live
+  loader produces today; the other **ten** `QuantType`s (`Q4_1`, `Q5_0`, `Q5_1`, `Q8_0`, `Q8_1`,
+  `Q2K`, `Q3K`, `Q4_K_M`, `Q5K`, `Q6K`) `decompose` as **surfaced gaps** (self-return, never a
+  crash — the `flash_attn` concrete-vs-symbolic precedent). Each is its own recipe over the SAME
+  technique (F64 byte-extract + the shared arithmetic f16 decode); the deltas are per-format block
+  layout (`k_quants.rs` `#[repr(C)]` structs) and scale structure: flat single-scale (`Q8_0`),
+  scale+min (`Q4_1`/`Q8_1`), scale+high-bit (`Q5_0`/`Q5_1`), and the hierarchical super-block
+  6-bit sub-scales of the `*_K` family (a second arithmetic unpack over the sub-scale bytes).
+  Sequence behind consumers: wire a format into the loader first (or a test that exercises it),
+  then add its recipe + a `to_float` real-backend oracle. Grouping: the flat/near-flat formats
+  (`Q8_0`/`Q4_1`/`Q8_1`/`Q5_0`/`Q5_1`) are near-mechanical reuses; the four K-quants are the
+  harder sub-scale tier. Reference impl + oracle: `qmatmul.rs::recipe_q4_0` +
+  `incc_qmatmul_q4_0_oracle.rs`.
 - **Shape-oracle C-4 — Fuel-internal groundwork SHIPPED (2026-07-23); `Dims`/`WithDim`
   activation KISS-gated (extension-registry proposal FILED, cosign-tracked).** The C-4
   successor to Convergence-C, built as `feat/c4-groundwork` (plan

@@ -410,3 +410,46 @@ Tests (all observed red→green where applicable): `fuel-graph`
 `inplace_affine_decompose_matches_affine_reference` (real-backend CPU, bit-exact vs `mul·x + add`).
 Gates (forced-clean): `fuel-graph --lib` 462, `fuel-dispatch --lib` 712, `fuel-core --lib` 1386 —
 all green.
+
+## COMPLETE: 22 of 22 (2026-07-28) — `qmatmul` (Q4_0) migrated
+
+**All 22 registry `decompose` fns are migrated.** The last self-return, `qmatmul`, now carries a
+total primitive recipe for **Q4_0** — the sole GGUF format the live loader produces. This closes
+the last opaque island in the fused-op set (the optimizer can lower every fused op to base map).
+
+**The corrected finding (supersedes the 2026-07-25 "storage-decode / basis-gap" framing above).**
+`qmatmul` is NOT a basis gap and needs NO new primitive. Verified via the propose-first round with
+KISS/kiss-ref/Baracuda (`docs/outreach/bitcast-basis-token-design-input-ask.md`): the byte-
+reinterpret every quant consumer needs is on a **loaded constant**, so per KISS's §7.3-0002
+necessity test it is boundary-hoistable and does NOT justify an `Op::Bitcast` axiom — the floor
+stays closed. The recipe uses only existing primitives:
+- **U32 → per-block bytes by exact F64 arithmetic.** `Cast(U32→F64)` is exact (`u32 < 2⁵³`); each
+  little-endian byte is `⌊u/256ⁱ⌋ mod 256` via `Floor`/`MulScalar`/`Sub`. (F32 can't: `Cast(U32→
+  F32)` rounds above `2²⁴`.) Bytes are `< 256` → `Cast(F64→F32)` exact, rest runs in F32.
+- **f16 block-scale by arithmetic IEEE-754-half reconstruction** (not a bitcast): field-extract
+  sign/exp/mant by `Floor`/`Sub`, build the data-dependent `2^exp` by a 5-bit binary decomposition
+  (product of `2^(2^i)` selected per bit — exact multiplies), blend the subnormal branch. Bit-exact
+  to `f16::to_f32` for every finite half — the same "bytes as small exact integers + arithmetic"
+  technique `nf4_matmul` uses for nibble unpack.
+- **block layout = `Reshape` + `Slice`**; nibble unpack + per-block `BroadcastTo` scale + GEMM.
+
+Contained entirely to `fuel-graph/src/registry/qmatmul.rs` — **no** builder/loader/dispatch/kernel/
+dtype change (the F64 route avoids the `U32→U8` weight-representation change that would otherwise be
+forced). The fused dequant-in-kernel arm stays the cost-preferred cover; the lowering is the
+optimizer/basis-map alternative + correctness-floor fallback, never the executed path where the
+kernel exists.
+
+Tests (red→green): `fuel-graph` `f16_decode_arithmetic_matches_half_for_all_finite_bit_patterns`
+(the load-bearing anchor — bit-exact over all 63488 finite f16 bit patterns),
+`qmatmul_q4_0_decompose_fires_and_is_shape_correct`, `qmatmul_nonq4_0_format_is_a_surfaced_gap_
+fixpoint` (G2), `qmatmul_wrong_params_is_a_fixpoint_not_a_crash` (G2); `fuel-core`
+`incc_qmatmul_q4_0_oracle::qmatmul_q4_0_recipe_matches_exact_dequant` (real-backend CPU-realize vs
+exact `BlockQ4_0::to_float`, `rel<1e-5`, sabotage-calibrated).
+
+**Backlog (ROADMAP): `qmatmul` per-format build-out.** The other ten `QuantType`s (`Q4_1`, `Q5_0`,
+`Q5_1`, `Q8_0`, `Q8_1`, `Q2K`, `Q3K`, `Q4_K_M`, `Q5K`, `Q6K`) `decompose` as surfaced gaps
+(self-return) — each its own recipe over the same technique (F64 byte-extract + shared f16 decode),
+differing only in block layout + scale structure (flat / scale+min / scale+high-bit / hierarchical
+super-block sub-scales). Sequence behind consumers (wire the format into the loader first). This is
+the `flash_attn` concrete-vs-symbolic precedent: migrated with the uncovered configs documented as
+gaps.
