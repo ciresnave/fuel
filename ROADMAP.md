@@ -328,12 +328,16 @@ nowhere; now captured so they are not forgotten):
   path) rides on `splice` but stays a later increment.
   **Increment 2+ is now scoped by [15-consumer-contract](docs/architecture/15-consumer-contract.md)**
   (new 2026-07-28; annexes + as-built audit in `docs/fuel-consumer-seam.md`): Fuel owns mechanism,
-  the consumer owns policy — Fuel never decides *whose* work runs. Clause status of the shipped
-  substrate: **C-1** capacity advertisement *absent* (OOM surfaces as an `add_session` error, too
-  late for a consumer to shed load), **C-2** bounded quantum + cancel *absent*, **C-3** state
-  externalization *absent* — `KvCache` has no evict/restore path, the load-bearing gap, and it
-  overlaps the confirmed-absent block-pool allocator (§4 above), so the two are likely one piece of
-  work; **C-4** measured cost *partial* (`StepReport` says what happened, not what it cost);
+  the consumer owns policy — Fuel never decides *whose* work runs. Clause status (updated 2026-07-29
+  as Increment 2 landed): **C-1** capacity advertisement **WIRED** — `SessionScheduler::new` takes a
+  `KvBudget` and admits sessions against a `KvBlockPool`; `add_session` reserves ⌈max_seq_len/block_size⌉
+  blocks and rejects (typed, total) before building any cache when they don't fit, and `kv_free_blocks`/
+  `kv_capacity`/`kv_blocks_required` are the caller's pre-check + `reap_finished` reclaims (`05dc98a3`);
+  **C-2** bounded quantum + cancel *absent*; **C-3** state externalization — **mechanism SHIPPED** in the
+  block-pool allocator (`evict`/`restore`/`discard`/`splice` + device byte movement, §4 above), not yet
+  wired into the scheduler's contiguous-cache path (that rides the paged-storage integration); **C-4**
+  measured cost *partial→wired for KV* (`kv_bytes_resident` on the scheduler; `StepReport` still says what
+  happened, not what it cost);
   **C-5** constraint admission *absent* as a consumer control — note the ε-close batched arm means a
   logprob-returning consumer has a different requirement from a token-only one. `SchedulePolicy` is
   confirmed correctly Fuel's (equivalent arms = arm selection, not fairness); `run_to_completion`,
