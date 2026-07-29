@@ -39,7 +39,7 @@ use fuel_ir::{DType, Error};
 use fuel::Device;
 use fuel::inference_context::{DecodeSession, InferenceContext, KvCache};
 use fuel::kv_block_pool::{KvBlockPool, KvGeometry, PoolCapacity, SessionHandle};
-use fuel::kv_block_pool_device::DeviceKvPool;
+use fuel::kv_block_pool_device::{DeviceEvicted, DeviceKvPool};
 use fuel::lazy::{sample_logits, LlamaModel, SamplingStrategy};
 
 /// The KV memory budget a [`SessionScheduler`] admits sessions against — the
@@ -937,6 +937,11 @@ struct PagedSession {
     phase: SessionPhase,
     last_logits: Option<Vec<f32>>,
     id: SessionId,
+    /// `Some` while the session is **suspended** (C-3): its pool blocks have been
+    /// evicted (freed to host in this handle), so it holds no VRAM and does not
+    /// decode until [`restore_session`](PagedSessionScheduler::restore_session)
+    /// writes the bytes back into fresh blocks.
+    suspended: Option<DeviceEvicted>,
 }
 
 impl<'m, M: DecodeModel> PagedSessionScheduler<'m, M> {
@@ -975,6 +980,70 @@ impl<'m, M: DecodeModel> PagedSessionScheduler<'m, M> {
         self.sessions.len()
     }
 
+    /// Whether session `id` is currently suspended (evicted).
+    pub fn is_suspended(&self, id: SessionId) -> bool {
+        self.sessions.iter().any(|s| s.id == id && s.suspended.is_some())
+    }
+
+    // --- C-3 on the live path: evict / restore a decoding session --------
+
+    /// **Suspend** (evict) a live session — the pressure valve for the optimistic
+    /// admission of [`add_session`](Self::add_session). Its KV bytes are captured
+    /// device→host and its pool blocks are freed for other sessions, so
+    /// [`kv_free_blocks`](Self::kv_free_blocks) rises; the session stops decoding
+    /// until [`restore_session`](Self::restore_session). *Which* session to evict
+    /// is the consumer's policy call — this is the mechanism. No-op (Ok) if the
+    /// session is already suspended; `Err` for an unknown or finished session.
+    pub fn evict_session(&mut self, id: SessionId) -> fuel::Result<()> {
+        let idx = self
+            .sessions
+            .iter()
+            .position(|s| s.id == id)
+            .ok_or_else(|| Error::Msg(format!("evict_session: unknown session {id:?}")).bt())?;
+        if self.sessions[idx].suspended.is_some() {
+            return Ok(()); // already suspended
+        }
+        if self.sessions[idx].phase == SessionPhase::Finished {
+            return Err(Error::Msg(format!("evict_session: session {id:?} is finished")).bt());
+        }
+        let handle = self.sessions[idx].handle;
+        let evicted = self.pool.evict(handle)?;
+        self.sessions[idx].suspended = Some(evicted);
+        Ok(())
+    }
+
+    /// **Resume** (restore) a suspended session: re-allocate its blocks and write
+    /// the captured bytes back (host→device, byte-exact — see
+    /// [`DeviceKvPool::restore`]), so it decodes from exactly where it left off.
+    /// `Err` if the session is unknown or not suspended, or if the pool can't fit
+    /// its blocks again — in which case the session **stays suspended and
+    /// restorable** (the capacity is pre-checked, so a failure never consumes the
+    /// captured bytes; the consumer frees room and retries).
+    pub fn restore_session(&mut self, id: SessionId) -> fuel::Result<()> {
+        let idx = self
+            .sessions
+            .iter()
+            .position(|s| s.id == id)
+            .ok_or_else(|| Error::Msg(format!("restore_session: unknown session {id:?}")).bt())?;
+        let need = match &self.sessions[idx].suspended {
+            Some(ev) => ev.saved_block_count(),
+            None => {
+                return Err(Error::Msg(format!("restore_session: session {id:?} is not suspended")).bt())
+            }
+        };
+        let free = self.pool.core().free_blocks();
+        if need > free {
+            return Err(Error::Msg(format!(
+                "restore_session: needs {need} blocks, {free} free — session {id:?} stays \
+                 suspended (free room and retry)",
+            )).bt());
+        }
+        // Pre-checked, so `restore` cannot OutOfBlocks — only now consume the handle.
+        let evicted = self.sessions[idx].suspended.take().expect("checked Some above");
+        let handle = self.sessions[idx].handle;
+        self.pool.restore(handle, evicted)
+    }
+
     /// Admit a session from a prompt (optimistic — no up-front block reservation).
     /// Opens a pool session; the prompt's blocks are allocated on the first
     /// `step`'s prefill. Rejects an empty prompt / zero budget before opening.
@@ -1008,6 +1077,7 @@ impl<'m, M: DecodeModel> PagedSessionScheduler<'m, M> {
             phase: SessionPhase::Prefill,
             last_logits: None,
             id,
+            suspended: None,
         });
         self.next_id += 1;
         Ok(id)
@@ -1024,8 +1094,11 @@ impl<'m, M: DecodeModel> PagedSessionScheduler<'m, M> {
         let mut report = StepReport::default();
 
         // (1) Prefill: feed the full prompt, then sample the first token.
+        // A suspended (evicted) session holds no blocks — skip until restored.
         for idx in 0..self.sessions.len() {
-            if self.sessions[idx].phase != SessionPhase::Prefill {
+            if self.sessions[idx].phase != SessionPhase::Prefill
+                || self.sessions[idx].suspended.is_some()
+            {
                 continue;
             }
             let prompt = self.sessions[idx].tokens.clone();
@@ -1051,9 +1124,11 @@ impl<'m, M: DecodeModel> PagedSessionScheduler<'m, M> {
             }
         }
 
-        // (2) Decode: one token per Decode-ready session.
+        // (2) Decode: one token per Decode-ready session (suspended ones skipped).
         for idx in 0..self.sessions.len() {
-            if self.sessions[idx].phase != SessionPhase::Decode {
+            if self.sessions[idx].phase != SessionPhase::Decode
+                || self.sessions[idx].suspended.is_some()
+            {
                 continue;
             }
             let handle = self.sessions[idx].handle;
@@ -1112,10 +1187,18 @@ impl<'m, M: DecodeModel> PagedSessionScheduler<'m, M> {
         report.finished.push(id);
     }
 
-    /// Loop `step` until every session is `Finished`; return each session's full
-    /// token sequence in insertion order.
+    /// Loop `step` while any session can still make progress — i.e. is neither
+    /// `Finished` nor **suspended** — then return each session's full token
+    /// sequence in insertion order. A suspended (evicted) session can't advance
+    /// until [`restore_session`](Self::restore_session), so this returns with it
+    /// still live rather than spinning forever; the consumer restores it and
+    /// calls again to finish it.
     pub fn run_to_completion(&mut self) -> Vec<(SessionId, Vec<u32>)> {
-        while !self.sessions.iter().all(|s| s.phase == SessionPhase::Finished) {
+        while self
+            .sessions
+            .iter()
+            .any(|s| s.phase != SessionPhase::Finished && s.suspended.is_none())
+        {
             self.step();
         }
         self.sessions.iter().map(|s| (s.id, s.tokens.clone())).collect()
@@ -1431,6 +1514,84 @@ mod tests {
         s.add_session(&prompt, SamplingStrategy::Greedy, None, max_new).unwrap();
         let paged = s.run_to_completion()[0].1.clone();
         assert_eq!(paged, contig, "paged scheduler greedy == contiguous generate oracle");
+    }
+
+    /// C-3 ON THE LIVE PATH (PS4). Evicting a decoding paged session frees its
+    /// blocks (the pressure valve for PS3's optimistic admission), a step while
+    /// suspended advances nothing, and restoring it resumes BYTE-EXACT — the same
+    /// final tokens as an uninterrupted run (DeviceKvPool.evict/restore round-
+    /// trips the block bytes exactly, and the session's rng/tokens/budget are
+    /// preserved across the suspension).
+    #[test]
+    fn paged_scheduler_evict_restore_resumes_byte_exact() {
+        let model = tiny_model(9999);
+        let prompt = [1u32, 2, 3];
+        let max_new = 6;
+
+        // Reference: uninterrupted run.
+        let mut s0 =
+            PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
+        s0.add_session(&prompt, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let reference = s0.run_to_completion()[0].1.clone();
+
+        // Evict mid-decode, restore, finish — final tokens must match.
+        let mut s =
+            PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
+        let id = s.add_session(&prompt, SamplingStrategy::Greedy, None, max_new).unwrap();
+        s.step(); // prefill + 1st decode token
+        s.step(); // 2nd decode token
+        let free_decoding = s.kv_free_blocks();
+
+        s.evict_session(id).unwrap();
+        assert!(s.is_suspended(id), "suspended after evict");
+        assert!(
+            s.kv_free_blocks() > free_decoding,
+            "evict returned the session's blocks to the pool",
+        );
+
+        s.step(); // a step while suspended advances nothing
+        assert!(s.is_suspended(id), "suspended session is skipped by step");
+
+        s.restore_session(id).unwrap();
+        assert!(!s.is_suspended(id), "resumed after restore");
+        assert_eq!(
+            s.kv_free_blocks(), free_decoding,
+            "restore re-took exactly the freed blocks",
+        );
+
+        let out = s.run_to_completion()[0].1.clone();
+        assert_eq!(out, reference, "evict→restore resumes byte-exact (same tokens as uninterrupted)");
+    }
+
+    /// The pressure-valve flow end to end: evict a session to free the pool, let
+    /// another session run in the freed room, then restore the first and finish
+    /// it. `run_to_completion` returns with a suspended session still live rather
+    /// than spinning.
+    #[test]
+    fn paged_scheduler_evict_lets_another_run_then_restore_finishes() {
+        let model = tiny_model(9999);
+        let mut s = PagedSessionScheduler::new(
+            &model, KvBudget { block_size: 4, num_blocks: 16 }, DType::F32, &Device::cpu(),
+        ).unwrap();
+        let a = s.add_session(&[1u32, 2, 3], SamplingStrategy::Greedy, None, 4).unwrap();
+        s.step();
+        let free_with_a = s.kv_free_blocks();
+        s.evict_session(a).unwrap();
+        assert!(s.kv_free_blocks() > free_with_a, "A's blocks freed");
+
+        // B runs to completion in the pool while A is suspended; run_to_completion
+        // returns (does not spin) with A still suspended.
+        let b = s.add_session(&[5u32, 6], SamplingStrategy::Greedy, None, 3).unwrap();
+        let out1 = s.run_to_completion();
+        let b_len = out1.iter().find(|(id, _)| *id == b).map(|(_, t)| t.len());
+        assert_eq!(b_len, Some(2 + 3), "B (prompt 2 + 3 generated) finished in the freed pool");
+        assert!(s.is_suspended(a), "A stayed suspended while B ran");
+
+        // Restore A and finish it.
+        s.restore_session(a).unwrap();
+        let out2 = s.run_to_completion();
+        let a_len = out2.iter().find(|(id, _)| *id == a).map(|(_, t)| t.len());
+        assert_eq!(a_len, Some(3 + 4), "A resumed and finished (prompt 3 + 4 generated)");
     }
 
     #[test]
