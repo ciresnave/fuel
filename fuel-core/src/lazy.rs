@@ -66,15 +66,28 @@ use std::sync::Arc;
 /// let y = a.matmul(&w);                                   // ← panics
 /// ```
 ///
-/// Build every subsequent tensor **on an existing one** with the
-/// `const_*_like` family, which takes an anchor tensor and shares its
-/// graph:
+/// There are two ways to put a second tensor on an existing graph.
+///
+/// **1. `from_*_on` — pass the graph.** Use this when you have the graph, or
+/// simply want the construction site to say which graph it targets:
+///
+/// ```ignore
+/// let a = LazyTensor::from_f32(a_data, [2, 3], &device);          // the root
+/// let w = LazyTensor::from_f32_on(a.graph(), w_data, [3, 2], &device);
+/// let y = a.matmul(&w);                                           // ✓
+/// ```
+///
+/// **2. `const_*_like` — pass an anchor tensor.** Identical effect; use it when
+/// what you have to hand is a sibling tensor rather than the graph:
 ///
 /// ```ignore
 /// let a = LazyTensor::from_f32(a_data, [2, 3], &device);  // the root
 /// let w = a.const_f32_like(w_data, [3, 2].into());        // same graph ✓
 /// let y = a.matmul(&w);                                   // ✓
 /// ```
+///
+/// Every tensor also reports its [`graph_id`](Self::graph_id), so if two do end
+/// up on different graphs the panic names which is which.
 ///
 /// In a model this means the **activation tensor is the root and the
 /// weights are `const_*_like` off it**. `const_bf16_like` exists for
@@ -114,6 +127,93 @@ impl LazyTensor {
     ) -> Self {
         Self {
             inner: fuel_graph::Tensor::from_f32(data, shape, device.as_dyn()),
+        }
+    }
+
+    /// This tensor's graph identity — see [`fuel_graph::GraphId`]. Two tensors
+    /// can be combined **iff** their `graph_id`s match.
+    pub fn graph_id(&self) -> fuel_graph::GraphId {
+        self.inner.graph_id()
+    }
+
+    /// The shared graph this tensor belongs to — hand it to a `from_*_on`
+    /// constructor to build a sibling on the same graph.
+    pub fn graph(&self) -> &fuel_graph::SharedGraph {
+        self.inner.graph()
+    }
+
+    /// Build an `f32` lazy tensor **on the graph you pass in**, not a fresh one.
+    ///
+    /// The non-anchor route for adding a tensor to an existing graph.
+    /// [`from_f32`](Self::from_f32) mints a NEW graph, so two `from_*` tensors
+    /// can never be combined; this puts the new leaf on `graph`.
+    /// [`const_f32_like`](Self::const_f32_like) does the same when what you have
+    /// to hand is a sibling *tensor* rather than the graph itself.
+    ///
+    /// ```ignore
+    /// let a = LazyTensor::from_f32(a_data, [2, 3], &device);          // root
+    /// let w = LazyTensor::from_f32_on(a.graph(), w_data, [3, 2], &device);
+    /// let y = a.matmul(&w)?;                                          // ✓
+    /// ```
+    pub fn from_f32_on(
+        graph: &fuel_graph::SharedGraph,
+        data: impl Into<Arc<[f32]>>,
+        shape: impl Into<Shape>,
+        device: &crate::Device,
+    ) -> Self {
+        Self {
+            inner: fuel_graph::Tensor::from_f32_on(graph, data, shape, device.as_dyn()),
+        }
+    }
+
+    /// `f64` sibling of [`from_f32_on`](Self::from_f32_on).
+    pub fn from_f64_on(
+        graph: &fuel_graph::SharedGraph,
+        data: impl Into<Arc<[f64]>>,
+        shape: impl Into<Shape>,
+        device: &crate::Device,
+    ) -> Self {
+        Self {
+            inner: fuel_graph::Tensor::from_f64_on(graph, data, shape, device.as_dyn()),
+        }
+    }
+
+    /// `bf16` sibling of [`from_f32_on`](Self::from_f32_on) — the mixed-precision
+    /// shape (f32 activations, bf16 weights) is this plus
+    /// [`from_f32_on`](Self::from_f32_on) against one shared graph.
+    pub fn from_bf16_on(
+        graph: &fuel_graph::SharedGraph,
+        data: impl Into<Arc<[half::bf16]>>,
+        shape: impl Into<Shape>,
+        device: &crate::Device,
+    ) -> Self {
+        Self {
+            inner: fuel_graph::Tensor::from_bf16_on(graph, data, shape, device.as_dyn()),
+        }
+    }
+
+    /// `f16` sibling of [`from_f32_on`](Self::from_f32_on).
+    pub fn from_f16_on(
+        graph: &fuel_graph::SharedGraph,
+        data: impl Into<Arc<[half::f16]>>,
+        shape: impl Into<Shape>,
+        device: &crate::Device,
+    ) -> Self {
+        Self {
+            inner: fuel_graph::Tensor::from_f16_on(graph, data, shape, device.as_dyn()),
+        }
+    }
+
+    /// `u32` sibling of [`from_f32_on`](Self::from_f32_on) — index tensors built
+    /// straight onto the graph they will be gathered on.
+    pub fn from_u32_on(
+        graph: &fuel_graph::SharedGraph,
+        data: impl Into<Arc<[u32]>>,
+        shape: impl Into<Shape>,
+        device: &crate::Device,
+    ) -> Self {
+        Self {
+            inner: fuel_graph::Tensor::from_u32_on(graph, data, shape, device.as_dyn()),
         }
     }
 
