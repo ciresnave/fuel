@@ -957,6 +957,22 @@ This mirrors the CPU kernel, which is itself im2col + batched GEMM (`fuel-cpu-ba
 
 ---
 
+## 2026-07-29 — The seam runs between Foundation and the orchestration tier, not around the workspace
+
+**Sections affected**: `15-consumer-contract` **v0.1 → v0.2 (MINOR)** — adds §Where the seam runs. `02-layers` gains an as-built note (no bump — factual clarification). No core-claim change: the refusals bind Foundation exactly as before.
+
+**Phase / PR**: design pass — no code. Prompted by the first real consumer, the Lightbulb port session, within a day of §15 landing.
+
+**What changed**: §15's refusals ("fuel does not decide admission / eviction choice / fairness") were read as applying to every crate in the fuel repository, which put them in direct contradiction with `fuel-inference` — a shipped crate whose `scheduler.rs` self-describes as "a memory-aware inference scheduler with priority queuing and eviction-pressure admission control" and whose `eviction.rs` carries LRU / H2O / weighted-voting policies. The resolution: **"fuel" in the refusals means Fuel-the-Foundation** — graph, optimizer, dispatch, backends. `fuel-inference` and `fuel-training` sit *above* the seam as optional consumer-side toolkits that happen to ship in the workspace. Adopting one is a consumer choice, never a contract obligation; policy shipped there is a default, not a commitment; and the refusals still bind Foundation absolutely. The stated test: if replacing it would require forking fuel, it is Foundation and the refusals apply; if a consumer can simply not depend on the crate, it is above the seam.
+
+**Why**: the ambiguity was real and load-bearing — a consumer planning a port could not tell whether adopting `fuel-inference`'s scheduler was required, forbidden, or optional, and the same repo appeared to both refuse and ship admission control. This is also the corrected [09-non-goals §Not orchestration-flavored architecture decisions](09-non-goals.md) working as designed: it names `fuel-inference` as exactly where inference-side orchestration belongs, so the crate was never the problem — §15's scope statement was.
+
+**Alternatives considered**: (a) declare `fuel-inference`'s scheduler a §15 violation and strip it — rejected: it is correctly placed per 09, and the refusals were the imprecise half; (b) widen the refusals to "Foundation crates only" without naming the toolkits — rejected: the consumer's confusion was specifically about *which* crates, so naming them is the fix; (c) move `fuel-inference` out of the workspace to make the boundary physical — rejected as disproportionate, and it would lose the batteries-included benefit for consumers who want it.
+
+**Implications going forward**: (1) a consumer bringing its own scheduler, eviction policy, and admission control is fully conformant — nothing above the seam is required; (2) new policy-bearing code belongs above the seam, and if it ever appears below it that is a defect regardless of convenience; (3) `fuel-inference` is unit-tested (153 tests) but has **zero consumers** — the first integrator should expect integration bugs unit tests don't catch, and "tested" must not be read as "proven".
+
+---
+
 ## See also
 
 - [00-index §Versioning convention](00-index.md#versioning-convention) — when to bump section versions.
