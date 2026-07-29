@@ -46,13 +46,20 @@ KV *store* — unlocking:
   projection/RoPE half can be factored now that both are green (a cleanup, not a
   blocker).
 
-- **PS3 — wire it into `SessionScheduler`.** A session's KV lives in a shared
-  `DeviceKvPool` (one pool, `open()` per session) instead of a private `KvCache`.
-  Admission grows from the C-1 *reservation* model to *incremental* allocation
-  (append blocks per step; the reservation becomes an upper bound / optional
-  pre-reserve). The `DecodeModel` trait gains a paged-decode method; `LlamaModel`
-  implements it. `reap_finished` already frees pool blocks — it stays. Parity: a
-  scheduled single session matches the contiguous scheduler's tokens.
+- **PS3 — `PagedSessionScheduler` — DONE 2026-07-29.** A session's KV lives in a
+  shared `DeviceKvPool` (one pool, `open()` per session) instead of a private
+  `KvCache`; blocks grow **incrementally** per token via `forward_paged_step`, not
+  reserved up front. The `DecodeModel` trait gained `forward_paged_step`
+  (`LlamaModel` impls it). Serial arm only; admission is optimistic (pool
+  exhaustion mid-decode isolates into a per-session finish, never a panic);
+  `reap_finished` frees blocks. Rather than entangle the tested contiguous
+  `SessionScheduler` (whose `SessionState` owns a `KvCache`), PS3 is a distinct
+  driver sharing the small types (`SessionId`/`SessionPhase`/`SamplingStrategy`/
+  `StepReport`). Gates (fuel-inference multi_session, 5 tests): single-session
+  budget, eos-stop, **shared-pool isolation** (2 sessions over one pool == each
+  alone, token-identical), reap-frees-blocks, and an end-to-end tie — paged greedy
+  output matches the contiguous `generate_with_kv_context` oracle **exactly**
+  (PS2's ε-closeness is tight enough that greedy argmax is stable).
 
 - **PS4 (later) — batched paged decode + C-3 on the live path.** Batch=K paged
   decode over the shared pool (block_table `[K, max_blocks]`); evict/restore/splice
