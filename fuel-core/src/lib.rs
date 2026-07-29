@@ -245,6 +245,7 @@ mod mkl;
 // `invalidate()` (re-exported at the judge module's top level).
 pub mod factories;
 pub mod inference_context;
+pub mod kv_block_pool;
 pub mod multi_session;
 pub mod pipelined_bridge;
 pub mod planner;
