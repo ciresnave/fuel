@@ -4,6 +4,8 @@
 
 What backends provide to the Foundation layer, what they don't decide, and how the boundary is enforced. Anchored in the architectural principle from [01-identity](01-identity.md): **backends advertise; they don't decide.** Every strategic choice (placement, fusion, kernel selection, slot assignment, tolerance trade-off) lives at the DAG level. Backends provide the substrate the optimizer reasons about.
 
+This is fuel's **downward** contract. [15-consumer-contract](15-consumer-contract.md) is its upward mirror — the same principle with fuel in the advertiser's seat: fuel advertises capacity and reports measurements, and the consumer decides whose work matters. Reading the two together is the fastest way to see fuel's position: it decides *how*, never *whose*.
+
 ---
 
 ## What every backend provides
