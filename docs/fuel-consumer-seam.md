@@ -310,6 +310,20 @@ incrementally as Fuel offers them; **none block the port**.
    on the consumer's real shapes before deleting a hand-tuned FFI; and these are baracuda-backed, so
    **CUDA-only**. A consumer needing 4-bit on Vulkan or CPU is still in gap territory.
 5. **Error type.** 49 `Error::Msg` + 28 `bail`. Mechanical, but touches nearly every coupled file.
+5b. **No optimizer dtype-reconciliation pass — a real Fuel-side blocker, found 2026-07-29.** The
+   dispatch failure that killed `llama-lazy` turned out **systemic, not a one-off**: the
+   mixed-precision matmul a real model builds (`[F32, BF16, F32]`) has no CPU or CUDA kernel — those
+   are uniform-key — and **[verified]** there is **no pass that reconciles dtypes by inserting
+   casts**. Greps for `insert_dtype*` / `dtype_fixup` / `dtype_reconcil` / `insert_cast_fixups`
+   return nothing, while both cited precedents exist: `insert_layout_fixups`
+   (`fuel-graph/src/opt.rs:2716`) and `insert_residency_copies`
+   (`fuel-dispatch/src/optimize.rs:397`). So the optimizer knows how to fix up *layout* and
+   *residency* mismatches and has no equivalent for *dtype*. Diagnosed by the serving/dispatch
+   session, which reports the intended fallback ("f32 matmul after a Cast") is promised in a Vulkan
+   docstring but unimplemented — **[not verified here]**, I could not locate that string.
+   **Consequence for any consumer:** a model that mixes activation and weight dtypes — i.e. every
+   BF16-weight model on CPU — cannot realize. Awaiting a build-now-vs-sequence call; the fix belongs
+   beside the two existing fixup passes.
 6. **Hot-path attention observation — the only genuine design problem in the port, and it is a
    *clause* problem.** The ~4 real extraction sites from item 1 (`custom_transformer.rs:593`/`:749`,
    `custom_attention.rs:919`, `kv_compression.rs:595`/`:820`) are all the same thing: **observing
@@ -442,6 +456,17 @@ incrementally as Fuel offers them; **none block the port**.
 
    Open on the consumer side: whether R-KV's attention input is captured per-step (regime 2) or
    only at compression time (regime 1) — flagged rather than guessed.
+
+   **Open, and it bears on whether the consumer's H2O is a usable reference at all: a possible
+   index-space confusion.** `H2OPolicy::update_attention_scores` populates `slot_metadata` keyed by
+   **`slot_id`** (from a `cache_positions: HashMap<slot → seq_position>`), while
+   `reset_batch_index(batch_index)` calls `clear_slot(batch_index)` keyed by **batch row**. If those
+   two index spaces are not identical, `clear_slot` clears the wrong entries — H2O metadata for a
+   finished request would persist while an unrelated slot's history is discarded. They may coincide
+   (one KV row per batch slot, which the `[max_batch, heads, seq, head_dim]` cache shape hints at).
+   **Raised by the port session as a question, explicitly not a claim, and unresolved.** Recorded
+   because if the spaces diverge, the existing reset behaviour is not merely incomplete but *wrong*,
+   and **the in-graph form must not inherit its structure**.
 
    **Incidental drift found while verifying:** `registry/inplace_affine.rs`'s module doc says
    "Backend dispatch (CPU + CUDA `affine_inplace_*`) lands in **Phase 3**… until then, the
