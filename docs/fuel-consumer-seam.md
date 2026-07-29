@@ -109,6 +109,103 @@ argued exception. **Recommendation: move it**, before the Lightbulb port — the
 `&LlamaModel` to become a model-agnostic trait, which any inference consumer needs anyway since none
 of them will serve only Llama.
 
+### A.3 Lightbulb port survey (2026-07-29)
+
+**Method.** Read-only structural survey of the *pre-port* codebase at `C:\Projects\Lightbulb`
+(CireSnave's note: "it has not yet even started to be ported to Fuel. It will change a lot").
+Structural, not behavioural — file/symbol counts and module shape, no execution. **[verified]** =
+counted or read from code; **[judgment]** = assessment.
+
+**Shape [verified].** ~66k LOC across 168 `.rs` files repo-wide, 110 under `src/`; single crate.
+Built on **`candlelight`**, a Candle *fork* — not stock Candle. 44 files repo-wide touch the tensor
+layer. **[flag]** what candlelight diverged from Candle is unknown to this survey and is a real port
+input.
+
+**The tensor coupling is concentrated in `model/` [verified].**
+
+| Subsystem | files touching tensors | LOC | Character |
+| --- | :-: | ---: | --- |
+| `model/` | **16 / 17** | 8,895 | the tensor core — the actual port surface |
+| `multi_gpu/` | 4 / 6 | — | placement / sharding |
+| `cache/` | 5 / 12 | 9,399 | 5 tensor files; the other 7 are **policy** |
+| `loaders/` | 3 / 3 | — | weight loading |
+| `memory/` | 3 / 4 | 774 | |
+| `engine/` | **1 / 25** | 15,954 | reasoning layer — reaches tensors through `speculative.rs` alone |
+| `api/` | **0 / 9** | 2,288 | OpenAI-compatible server |
+| `contracts/` | **0 / 6** | 1,331 | constrained generation |
+
+**Finding 1 — Lightbulb is mostly not a tensor program [verified].** Its largest subsystem
+(`engine/`, 16k LOC, 25 files) is *reasoning orchestration* — `query_analysis`, `knowledge_base`,
+`context_injection`, `decomposition`, `relevance_search`, `conversation_history`, `tool_call` — and
+touches the tensor layer through exactly one file (`speculative.rs`, i.e. speculative decoding, which
+genuinely needs tensors). `api/` and `contracts/` are tensor-free entirely. Notably `model_runner.rs`
+does *not* touch candlelight directly — the reasoning layer reaches models through `model/`'s
+abstraction.
+
+**Finding 2 — Lightbulb's shape independently corroborates the mechanism/policy line
+[verified structure, judgment on significance].** It already partitions the way
+[15](architecture/15-consumer-contract.md) predicts, without having been designed against it:
+
+- `cache/{h2o_policy, streaming_policy, segmented_eviction_policy, eviction_policy}.rs` — eviction
+  **policy**, four files, zero tensor coupling. Exactly what 15 says stays with the consumer.
+- `cache/tiered_storage.rs` — C-3 externalization, consumer side, already built.
+- `cache/{prefix_cache, cache_span}.rs` — shared-prefix reuse, i.e. the refcounted COW splice
+  Increment 2 is building, from the consumer's side.
+- `engine/{slot_pool, slot_monitor, memory_aware_scheduler}.rs` — the consumer's own admission and
+  scheduling.
+- `sampling.rs` + `contracts/` — sampling policy.
+
+**[judgment]** The contract was derived from Fuel's side and Lightbulb sits on the predicted side of
+every line. That is meaningful corroboration that the boundary is real rather than invented.
+
+**Q5 RESOLVED — sampling is consumer policy [verified].** `src/sampling.rs` is 123 lines of
+host-side post-processing over **realized** `&mut [f32]` logits: temperature scaling, top-k, top-p,
+and a seeded `StdRng` draw. `contracts/` (`enum_choice`, `tagged_fields`, `validation`,
+`commit_block`) layers constrained generation on top — sampling policy Fuel could never anticipate.
+**Fuel should produce logits and stop.** `SessionState::sample_and_append` duplicates something the
+consumer already owns and is richer at. It is scheduler-surface, so it rides the `fuel-inference`
+move rather than Increment 2.
+
+**Sub-finding — this bounds C-3-exact [verified].** Lightbulb re-seeds
+`StdRng::seed_from_u64(seed)` *per sample call*; the consumer owns its RNG entirely. So the "RNG
+stream position" an exact-fidelity C-3 handle must cover is **Fuel's** RNG (training-side sampling,
+dropout), never the consumer's sampler. Worth pinning so the Exact arm doesn't over-scope.
+
+**Q6 RESOLVED — the clauses do NOT gate the port.** Lightbulb keeps its own `engine/`, cache
+policies, `memory/`, slot pool, scheduler, sampler, and API. The port is a **tensor-layer swap
+concentrated in `model/`**, not a re-architecture around the consumer contract. C-1…C-7 are adopted
+incrementally as Fuel offers them; **none block the port**.
+
+**What does gate it — the reverse gap list (what Lightbulb needs *from Fuel*):**
+
+1. **Eager → lazy [verified: 70 value-extraction sites (`to_vec1`/`to_vec2`/`to_scalar`), 57
+   `.forward(` `Module` calls].** Most translates mechanically, since Fuel's tensor ops build graph
+   nodes. The 70 extraction sites need auditing: each is either a legitimate realize boundary
+   (logits → sampling) or hidden dynamic control flow that must become a graph construct or an
+   explicit realize. **[judgment] the single largest port risk — and it is not a Fuel gap; it is
+   Lightbulb-side work.**
+2. **Model implementations.** Uses `candlelight::transformers::models::llama::{Llama, Cache, Config,
+   LlamaEosToks}` *and* carries its own `custom_transformer` / `custom_attention` /
+   `custom_transformer_block` (~3.3k LOC). `fuel-transformers` parity is needed for the former; the
+   latter ports as ordinary graph code.
+3. **`nn` surface.** `VarBuilder`, `Linear`, `linear_no_bias`, `linear_b`, `embedding`, `ops::silu`,
+   `ops::softmax_last_dim`. `fuel-nn` has `VarBuilder`/`VarMap`; needs a coverage check.
+4. **Quantized surface.** `QMatMul::from_qtensor`, `gguf_file`, AWQ (`awq_qwen3.rs`), and a Marlin
+   FFI backend. Fuel's `qmatmul` reached a total Q4_0 decompose on main `9d6ad291` — timely. AWQ and
+   Marlin are separate asks.
+5. **Error type.** 49 `Error::Msg` + 28 `bail`. Mechanical, but touches nearly every coupled file.
+
+**Finding for serving Increment 2 [judgment].** Lightbulb will almost certainly **not** adopt
+`SessionScheduler` — it has its own scheduler, slot pool, and admission. It wants the **allocator**
+underneath its own policies. That validates deferring the scheduler-surface reshape and may shrink
+that reshape permanently. Two allocator requirements Lightbulb's cache implies:
+
+- **Prefix sharing** — `prefix_cache.rs` + `cache_span.rs` mean shared-prefix blocks across sessions,
+  which is exactly the refcounted COW splice being built. Good fit, no change needed.
+- **Compressed KV** — `kv_compression.rs` is 1,998 LOC, so block sizing may not be uniform across
+  sessions. **[judgment]** worth confirming the allocator doesn't assume fixed-size blocks in a way
+  that forecloses compressed-KV consumers.
+
 ---
 
 ## Annex B — Training host
@@ -266,13 +363,19 @@ what multi-session serving and reproducible training each need on their own meri
    (ROADMAP §4) — the two may be one piece of work. Building it needs the inference *and* training
    fidelity requirements settled together (Annex B open item).
 4. **Rename `SchedulePolicy` → `DecodeArm`?**
-5. **Where does sampling live?** `SessionState::sample_and_append` puts sampling strategy inside
-   Fuel's session, but temperature/top-p/grammars/speculative acceptance are arguably all consumer
-   policy. Unresolved; it may be an eighth clause, or an instance of C-5.
-6. **What is the minimum a consumer needs to port at all?** If C-1…C-7 gate the Lightbulb port, that
-   is a large gate; if the port can proceed against today's surface and adopt clauses incrementally,
-   sequencing is far easier. Largest schedule impact, and this doc does not have enough of
-   Lightbulb's shape to answer it.
+5. ~~Where does sampling live?~~ **RESOLVED 2026-07-29 (Annex A.3) — consumer policy.**
+   `Lightbulb/src/sampling.rs` is host-side post-processing over *realized* logits, with
+   constrained generation layered on top in `contracts/`. Fuel should produce logits and stop;
+   `SessionState::sample_and_append` is misplaced and rides the `fuel-inference` move. Not an eighth
+   clause. Sub-finding bounds C-3-exact: the consumer owns its sampler's RNG, so the "RNG stream
+   position" an Exact handle must cover is *Fuel's* RNG, never the consumer's.
+6. ~~What is the minimum a consumer needs to port at all?~~ **RESOLVED 2026-07-29 (Annex A.3) — the
+   clauses do not gate the port.** Lightbulb keeps its own engine, cache policies, memory, slot pool,
+   scheduler, sampler and API; the port is a tensor-layer swap concentrated in `model/` (16 of 17
+   files), not a re-architecture around this contract. C-1…C-7 are adopted incrementally. The real
+   gates are Lightbulb-side (eager→lazy, 70 value-extraction sites) plus a Fuel-side parity list —
+   `fuel-transformers`, `fuel-nn` coverage, the quantized surface (AWQ, Marlin), and the error type.
+   See the reverse gap list in A.3.
 7. **Does C-6 land as Phase-9 `RuntimeHook`, or a separate seam?** The hook machinery is specified
    but unbuilt (**[verified]** — it appears in `ROADMAP.md` and two frontier docs, and in zero source
    files); if it is built for constraint-gating without the consumer-facing observe/intervene
