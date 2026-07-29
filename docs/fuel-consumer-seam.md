@@ -334,9 +334,47 @@ incrementally as Fuel offers them; **none block the port**.
    H2O's statefulness — the capability flagged for upstreaming in A.4 — out of consumer bookkeeping
    and into the graph.
 
+   **The consumer's spec** (`docs/superpowers/specs/2026-07-29-attention-reduction-in-graph.md`,
+   Lightbulb repo) works the conjecture out concretely. The load-bearing move is a **decomposition
+   the consumer's own implementation currently conflates**: *the accumulation runs every step; the
+   scoring runs only when evicting.* Only the accumulation is hot. Split them and the per-step half
+   is a small tensor recurrence that can live in-graph, while the on-demand half stays consumer
+   policy where §15 puts it.
+
+   H2O's exact recurrence, per step *t* and key position *k*: `a_t[k] = Σ_q attn[q][k]` (column sum
+   over the query axis); `c_t[k] = decay·c_{t-1}[k] + a_t[k]`; `n_t[k] = n_{t-1}[k] + 1`. **`c` and
+   `n` are the only cross-step state.** In-graph that is a reduce-sum to `[key_len]`, a persistent
+   `[max_slots]` f32 buffer, and a runtime-offset read-modify-write — i.e. the
+   `InferenceContext`/`Op::WriteSlice` pattern pointed at a statistics tensor, with the arithmetic
+   `c·decay + a` matching the registry's existing `inplace_affine`. **[verified]** both
+   `Op::WriteSlice` (`fuel-ir/src/dispatch.rs:398`) and `registry/inplace_affine.rs` exist, so
+   "plausibly zero new primitives" holds for the *accumulate*. `n_t` may not need to exist at all —
+   `steps_present = t − insertion_step[k]`, implied by slot position — collapsing per-step state to
+   one tensor and one fused update. Everything else (`avg = c/n`, `score = 1/avg`, the sink window,
+   ranking) is host-side and reads `c` once per eviction: regime 1, fine.
+
+   **The falsifier that matters, and it is confirmed *conditionally*.** The consumer's own lead
+   objection: under a tiled-softmax flash kernel the `[q][k]` matrix is **never materialized**, so
+   a column-sum of it is not a reduction but a request for a different kernel. **[verified here]**
+   that is true of the *fused* arm and false of the *decomposed* one — `registry/flash_attn.rs:235`
+   builds `scores = scale · (q · kᵀ)` as a real node. So **observability is arm-dependent**, and
+   the request is partly a C-5 arm-pruning question. §15 v0.4 records this, restates preference 2
+   as **a second output from the producing op** ([12-multi-output](architecture/12-multi-output.md),
+   not C-6), and notes that `flash_attn` already carries an optional `softmax_lse` in its signature
+   (`:67`) — auxiliary attention statistics are an established shape for these kernels, so the
+   multi-output route is a backend ask rather than an invention.
+
+   Two further falsifiers stay open: runtime-offset accumulate may not compose with capture if
+   offsets force a graph rebuild; and decay may need to be per-slot rather than uniform, which turns
+   `inplace_affine` into something carrying a per-element scale vector. Also open on the consumer
+   side: whether R-KV's attention input is captured per-step (regime 2) or only at compression time
+   (regime 1) — flagged rather than guessed.
+
    **Status: conjecture, not result.** Derived by reading real consumer code against the clause and
-   against `CapturedRun`'s requirements; not validated by a running port. Per the standing caveat,
-   treat accordingly.
+   against `CapturedRun`'s requirements; not validated by a running port. Validation order:
+   confirm the attention matrix is materializable on the arm the consumer needs → express the
+   recurrence as graph nodes → confirm `CapturedRun` still captures the step. If step one fails,
+   §15's preference 4 (state the incompatibility plainly) is the honest fallback.
 
 **Finding for serving Increment 2 [judgment].** Lightbulb will almost certainly **not** adopt
 `SessionScheduler` — it has its own scheduler, slot pool, and admission. It wants the **allocator**
