@@ -191,12 +191,24 @@ incrementally as Fuel offers them; **none block the port**.
 
 **What does gate it — the reverse gap list (what Lightbulb needs *from Fuel*):**
 
-1. **Eager → lazy [verified: 70 value-extraction sites (`to_vec1`/`to_vec2`/`to_scalar`), 57
-   `.forward(` `Module` calls].** Most translates mechanically, since Fuel's tensor ops build graph
-   nodes. The 70 extraction sites need auditing: each is either a legitimate realize boundary
-   (logits → sampling) or hidden dynamic control flow that must become a graph construct or an
-   explicit realize. **[judgment] the single largest port risk — and it is not a Fuel gap; it is
-   Lightbulb-side work.**
+1. **Eager → lazy.** ~~70 value-extraction sites, the single largest port risk.~~ **AUDITED
+   2026-07-29 — the raw count was misleading and the real risk is elsewhere.** The port session
+   classified all 73 sites:
+   - **49 are inside `#[cfg(test)]`** — test assertions, not production, not on the decode path.
+   - **~5 are dead debug code** — vestigial realizes whose consumers were deleted. The worst,
+     `mlp_wrapper.rs:156` inside `MlpWrapper::forward()`, realizes the full activation tensor **on
+     every MLP call, every layer, every token** to compute two statistics that are then discarded
+     (`let _input_max = …; let _input_mean = …;`). Under Candle that is a wasteful copy; under Fuel
+     it would break the graph at every MLP in every layer — fusion gone, capture impossible. Same
+     pattern at `custom_transformer.rs:264`/`:550` and `custom_attention.rs:675`. **These get
+     deleted, not ported.**
+   - **~9 are legitimate realize boundaries** — `logits.argmax(0).to_scalar::<u32>()` → next token
+     (the canonical one), tensor serialization, offline pruning/calibration.
+   - **~24 is the real production surface; ~4 are a genuine design problem** — and all four reduce
+     to a single issue, promoted to its own item below.
+
+   So eager→lazy is **mechanical for nearly all of it**. The residue is not a translation problem;
+   it is a clause problem (item 6).
 2. ~~**Model implementations** — `fuel-transformers` parity needed.~~ **CORRECTED 2026-07-29 —
    mostly CLOSED, not a Fuel-side blocker.** Raised by the Lightbulb port session and **[verified]**
    here: `fuel-transformers/src/models/` does not exist; the eager ports are dead in
@@ -298,6 +310,33 @@ incrementally as Fuel offers them; **none block the port**.
    on the consumer's real shapes before deleting a hand-tuned FFI; and these are baracuda-backed, so
    **CUDA-only**. A consumer needing 4-bit on Vulkan or CPU is still in gap territory.
 5. **Error type.** 49 `Error::Msg` + 28 `bail`. Mechanical, but touches nearly every coupled file.
+6. **Hot-path attention observation — the only genuine design problem in the port, and it is a
+   *clause* problem.** The ~4 real extraction sites from item 1 (`custom_transformer.rs:593`/`:749`,
+   `custom_attention.rs:919`, `kv_compression.rs:595`/`:820`) are all the same thing: **observing
+   attention scores mid-forward**. H2O needs realized attention weights each step to accumulate
+   heavy-hitter statistics; R-KV needs `attention_scores.sum(1)` realized to compute pruning
+   importance.
+
+   This is C-6 at **per-token, per-layer cadence on every request** — a regime §15 did not
+   anticipate, since it framed observation around calibration, distillation, probing and debugging,
+   all of which are occasional. And it collides with the thing the consumer is porting *for*:
+   "naming an intermediate defeats fusion across it", while `CapturedRun` needs a stable graph with
+   no host-side branching in the step. **Attention-driven eviction and captured replay appear
+   mutually exclusive** on current understanding — and the consumer would discover that only after
+   building on both.
+
+   **§15 amended in response** ([C-6 §Two regimes](architecture/15-consumer-contract.md#two-regimes--and-the-obligation-differs-added-v03-2026-07-29),
+   v0.3): for hot-path observation, "we reported the cost" is not a resolution. The order of
+   preference is now **express the reduction in-graph** first — H2O wants a decayed running sum,
+   R-KV an importance score, and neither needs the raw scores. A running accumulator across steps is
+   structurally a KV write (runtime-offset write into a persistent buffer), so the machinery largely
+   exists. **[judgment]** if that route holds it is a better answer than either side had: it moves
+   H2O's statefulness — the capability flagged for upstreaming in A.4 — out of consumer bookkeeping
+   and into the graph.
+
+   **Status: conjecture, not result.** Derived by reading real consumer code against the clause and
+   against `CapturedRun`'s requirements; not validated by a running port. Per the standing caveat,
+   treat accordingly.
 
 **Finding for serving Increment 2 [judgment].** Lightbulb will almost certainly **not** adopt
 `SessionScheduler` — it has its own scheduler, slot pool, and admission. It wants the **allocator**

@@ -973,6 +973,22 @@ This mirrors the CPU kernel, which is itself im2col + batched GEMM (`fuel-cpu-ba
 
 ---
 
+## 2026-07-29 — C-6 has two regimes; hot-path observation needs a reduction, not an observation
+
+**Sections affected**: `15-consumer-contract` **v0.2 → v0.3 (MINOR)** — C-6 gains §Two regimes and an order of preference. No core-claim change: C-6 still obliges fuel to report the cost and never silently deoptimize; that obligation is now scoped to the regime where it is *sufficient*.
+
+**Phase / PR**: design pass — no code. Surfaced by the Lightbulb port session auditing its real value-extraction sites against the clause.
+
+**What changed**: C-6 was written around **occasional** observation — calibration, distillation, probing, debugging — where "naming an intermediate defeats fusion across it" is a one-time cost the consumer can evaluate, and fuel's obligation is to report it honestly. The audit found a second regime the clause did not anticipate: **hot-path observation at per-token, per-layer cadence on every request**, required by attention-driven KV eviction (H2O heavy-hitter accumulation, R-KV importance pruning). At that cadence, reporting the cost is not a resolution — the observation defeats fusion at every layer of every step and makes a captured region unformable, so **attention-driven eviction and captured replay are mutually exclusive** unless something changes. C-6 now states both regimes and an order of preference led by **express the reduction in-graph rather than observing the intermediate**: H2O wants a decayed running sum and R-KV an importance score, neither of which needs the raw scores, and a cross-step accumulator is structurally a KV write (a runtime-offset write into a persistent buffer).
+
+**Why**: a clause that silently mis-serves an entire consumer class is worse than a missing one, because the consumer builds on it and finds the collision late — here, only after building both an attention-driven eviction policy and a capture-shaped decode loop, the two things an inference host most wants. The audit also deflated the input that prompted it: of 73 value-extraction sites in the consumer, **49 were in `#[cfg(test)]`, ~5 were dead debug code, ~9 were legitimate realize boundaries, and only ~4 were a real design problem** — all four the same attention-observation issue. The eager→lazy port is mechanical; the residue is a contract question.
+
+**Alternatives considered**: (a) leave C-6 as written and let consumers discover the collision — rejected, that *is* the failure mode; (b) build a side-buffer observation mechanism that writes without breaking the captured region — kept as preference #2, but speculative and unbuilt, and preferring it would mean designing a mechanism before establishing the cheaper route fails; (c) declare attention-driven eviction incompatible with capture and stop — kept as preference #4, the honest fallback, premature while the reduction route is untested; (d) treat it under [07-tolerance](07-tolerance.md) — rejected, nothing here is a numerical-accuracy trade.
+
+**Implications going forward**: (1) a consumer asking to observe on the hot path should first be asked **what reduction it actually needs**, with raw-intermediate observation the fallback rather than the interface; (2) if the reduction route holds, H2O's cross-step statefulness moves from consumer bookkeeping into the graph, which changes the upstreaming picture in [`docs/fuel-consumer-seam.md`](../fuel-consumer-seam.md) A.4; (3) this is **design-level evidence, not a demonstrated result** — derived from reading consumer code against the clause, not from a running port, and the reduction-in-graph route is a strong conjecture a real port must confirm.
+
+---
+
 ## See also
 
 - [00-index §Versioning convention](00-index.md#versioning-convention) — when to bump section versions.
