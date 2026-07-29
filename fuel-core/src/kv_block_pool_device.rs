@@ -374,6 +374,62 @@ impl DeviceKvPool {
         Ok(PageTableHost { block_table, context_lens, batch, max_blocks })
     }
 
+    // --- paged decode step (the storage integration building block) -------
+
+    /// Build (does NOT realize) one decode step's paged attention for one layer:
+    /// write the new token's `[Hkv, D]` K/V into its physical pool slot, then run
+    /// `Op::PagedAttn` over the (post-write) pool via the session's block table.
+    /// The graph-builder half of paged decode — the model's forward calls this
+    /// per layer, binds `k_pool(layer)`/`v_pool(layer)` into the realize cache
+    /// (the caller owns the binding + the single realize for the whole forward),
+    /// and threads the result into the o-projection.
+    ///
+    /// All tensors are on `q`'s graph: `k_pool_ph`/`v_pool_ph` are
+    /// [`const_placeholder_like`](LazyTensor::const_placeholder_like) placeholders
+    /// the caller binds to this layer's pool buffers; `block_table`/`context_lens`
+    /// are the [`materialize_block_table`](Self::materialize_block_table) tensors;
+    /// `q` is `[1, Hq, 1, D]`; `k_new`/`v_new` are `[1, Hkv, 1, D]` (the new
+    /// token, post-RoPE for K). `(phys_block, slot)` is where the new token lands
+    /// — `phys_block = resident_block(session, tok_pos / block_size)`,
+    /// `slot = tok_pos % block_size`, after the session has been `append`ed to
+    /// cover `tok_pos`. Returns the attention output `[1, Hq, 1, D]`.
+    ///
+    /// The write mutates the bound pool buffer in place (so it persists for the
+    /// next step) AND feeds this step's `Op::PagedAttn` — one graph, one realize,
+    /// exactly like the contiguous `write_slice`-then-attend path it replaces.
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_decode_attn(
+        &self,
+        k_pool_ph: &LazyTensor,
+        v_pool_ph: &LazyTensor,
+        q: &LazyTensor,
+        k_new: &LazyTensor,
+        v_new: &LazyTensor,
+        block_table: &LazyTensor,
+        context_lens: &LazyTensor,
+        phys_block: PhysBlockId,
+        slot: usize,
+        scale: f32,
+    ) -> crate::Result<LazyTensor> {
+        let g = self.geometry();
+        let p = phys_block as usize;
+        // The new token occupies one slot of one physical block: [1, 1, Hkv, D].
+        let slot_ranges = vec![
+            (p, p + 1),
+            (slot, slot + 1),
+            (0, g.n_kv_heads),
+            (0, g.head_dim),
+        ];
+        let slot_shape = Shape::from_dims(&[1, 1, g.n_kv_heads, g.head_dim]);
+        // [1, Hkv, 1, D] → [1, 1, Hkv, D] is a pure reshape (h-major order is
+        // identical), aligning the new token to the pool block's slot layout.
+        let k_slot = k_new.reshape(slot_shape.clone())?;
+        let v_slot = v_new.reshape(slot_shape)?;
+        let post_k = k_pool_ph.write_slice(&k_slot, slot_ranges.clone())?;
+        let post_v = v_pool_ph.write_slice(&v_slot, slot_ranges)?;
+        q.paged_attn(&post_k, &post_v, block_table, context_lens, None, scale, g.block_size, None)
+    }
+
     // --- C-3: device-backed evict / restore (bytes move device↔host) ------
 
     /// Evict a session's entire resident state: capture the bytes of its
@@ -858,6 +914,111 @@ mod tests {
         );
         // B is untouched and still resident.
         assert_eq!(pool.core().session_blocks(b), Some(2));
+    }
+
+    /// THE PAGED-DECODE GATE. Decode T tokens ONE AT A TIME into the pool —
+    /// append a token, write its K/V into the freshly-grown block slot, and
+    /// attend via `Op::PagedAttn` — and at every step the attention output must
+    /// equal a dense `softmax(scale·q·kᵀ)·v` over the tokens accumulated so far.
+    /// This is the multi-step write/accumulate path the storage integration
+    /// rests on: block-boundary growth (block_size 4, 10 steps → 3 blocks), the
+    /// running context_len mask, and the in-place pool writes persisting across
+    /// steps. (2c proved single-shot paged_attn over a pool; this proves the
+    /// token-by-token decode loop.)
+    #[test]
+    fn paged_decode_multistep_matches_dense_reference_across_block_growth() {
+        let (hq, hkv, d, block_size) = (2usize, 2usize, 4usize, 4usize);
+        let (num_blocks, n_steps) = (8usize, 10usize);
+        let scale = 1.0f32 / (d as f32).sqrt();
+        let dev = Device::cpu();
+        let g = KvGeometry {
+            n_layers: 1,
+            num_blocks,
+            block_size,
+            n_kv_heads: hkv,
+            head_dim: d,
+            elem_size: 4,
+        };
+        let mut pool = DeviceKvPool::new(g, DType::F32, &dev).unwrap();
+        let session = pool.core_mut().open();
+
+        // Accumulated logical K/V for the dense reference (each entry [Hkv·D]).
+        let mut k_hist: Vec<Vec<f32>> = Vec::new();
+        let mut v_hist: Vec<Vec<f32>> = Vec::new();
+
+        for t in 0..n_steps {
+            let q_data = rand_f32(hq * d, 100 + t as u32);
+            let k_data = rand_f32(hkv * d, 200 + t as u32);
+            let v_data = rand_f32(hkv * d, 300 + t as u32);
+            k_hist.push(k_data.clone());
+            v_hist.push(v_data.clone());
+
+            // Grow the session by one token; find where token t lands.
+            pool.core_mut().append(session, 1).unwrap();
+            let phys = pool.core().resident_block(session, t / block_size).unwrap();
+            let slot = t % block_size;
+            let pt = pool.materialize_block_table(&[session]).unwrap();
+            assert_eq!(pt.context_lens, vec![(t + 1) as u32], "context_len tracks tokens so far");
+
+            // Build the paged decode-step graph on q's graph, bind the pool.
+            let q = LazyTensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, 1, d]), &dev);
+            let kph = q.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
+            let vph = q.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
+            let knew = q.const_f32_like(k_data, Shape::from_dims(&[1, hkv, 1, d]));
+            let vnew = q.const_f32_like(v_data, Shape::from_dims(&[1, hkv, 1, d]));
+            let bt = q.const_u32_like(pt.block_table.clone(), pt.block_table_shape());
+            let cl = q.const_u32_like(pt.context_lens.clone(), pt.context_lens_shape());
+            let attn = pool
+                .build_decode_attn(&kph, &vph, &q, &knew, &vnew, &bt, &cl, phys, slot, scale)
+                .unwrap();
+
+            let mut cache = StorageCache::new();
+            cache.insert(kph.node_id(), Arc::clone(pool.k_pool(0).unwrap()));
+            cache.insert(vph.node_id(), Arc::clone(pool.v_pool(0).unwrap()));
+            let got = crate::pipelined_bridge::realize_one_as_with_initial::<f32>(
+                attn.graph_handle(),
+                attn.node_id(),
+                &dev,
+                cache,
+            )
+            .unwrap();
+
+            // Dense reference: q attends to tokens 0..=t.
+            let mut want = vec![0.0f32; hq * d];
+            for h in 0..hq {
+                let mut scores = vec![0.0f32; t + 1];
+                for (j, sc) in scores.iter_mut().enumerate() {
+                    let mut dot = 0.0f32;
+                    for dd in 0..d {
+                        dot += q_data[h * d + dd] * k_hist[j][h * d + dd];
+                    }
+                    *sc = dot * scale;
+                }
+                let m = scores.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                let mut denom = 0.0f32;
+                for sc in scores.iter_mut() {
+                    *sc = (*sc - m).exp();
+                    denom += *sc;
+                }
+                for (j, &p) in scores.iter().enumerate() {
+                    let w = p / denom;
+                    for dd in 0..d {
+                        want[h * d + dd] += w * v_hist[j][h * d + dd];
+                    }
+                }
+            }
+
+            assert_eq!(got.len(), want.len());
+            for (i, (&a, &b)) in got.iter().zip(want.iter()).enumerate() {
+                let diff = (a - b).abs();
+                let den = a.abs().max(b.abs()).max(f32::MIN_POSITIVE);
+                assert!(
+                    diff < 1e-5 || diff / den < 1e-5,
+                    "step {t} [{i}]: paged={a} dense={b} (abs={diff})",
+                );
+            }
+        }
+        assert_eq!(pool.core().session_blocks(session), Some(3), "10 tokens / block_size 4 = 3 blocks");
     }
 
     /// Materializing over an unknown or externalized session is a typed error
