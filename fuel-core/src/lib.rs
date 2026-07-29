@@ -246,6 +246,7 @@ mod mkl;
 pub mod factories;
 pub mod inference_context;
 pub mod kv_block_pool;
+pub mod kv_block_pool_device;
 pub mod multi_session;
 pub mod pipelined_bridge;
 pub mod planner;

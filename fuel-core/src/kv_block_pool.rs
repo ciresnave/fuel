@@ -227,6 +227,12 @@ pub enum KvAllocError {
     /// An `evict_blocks`/`evict_range` request named a logical block index
     /// outside the session (nothing is evicted — the call is atomic).
     BadBlockIndex { index: usize, session_blocks: usize },
+    /// A device-layer materialization (block-table / byte movement) named a
+    /// session whose logical slot `slot` is externalized, not resident — it
+    /// must be [`restore`](KvBlockPool::restore)d before it can back a live
+    /// `Op::PagedAttn`. Surfaces a mis-sequenced call as a typed error rather
+    /// than silently routing attention through a reclaimed physical block.
+    SessionNotResident { slot: usize },
 }
 
 /// The host-side KV block-pool allocator. See the module docs.
@@ -349,6 +355,36 @@ impl KvBlockPool {
     /// Number of logical blocks a session holds (resident + externalized).
     pub fn session_blocks(&self, s: SessionHandle) -> Option<usize> {
         self.tables.get(&s).map(|t| t.slots.len())
+    }
+
+    /// Tokens currently filled in a session — its `Op::PagedAttn`
+    /// `context_len`. The device layer reads this to build the `context_lens`
+    /// tensor, so it stays the single source of truth (never recomputed from
+    /// `session_blocks × block_size`, which would over-count the partial last
+    /// block). `None` if the session isn't open.
+    pub fn filled_tokens(&self, s: SessionHandle) -> Option<usize> {
+        self.tables.get(&s).map(|t| t.filled_tokens)
+    }
+
+    /// The session's resident logical→physical block table — the physical id
+    /// backing each logical slot, in order. This is exactly what the device
+    /// layer flattens into the `Op::PagedAttn` `block_table` row for the
+    /// session. `Err(UnknownSession)` if not open; `Err(SessionNotResident)`
+    /// if any slot is externalized (the caller must `restore` first — routing
+    /// attention through a reclaimed block would be silent corruption).
+    pub fn session_block_table(
+        &self,
+        s: SessionHandle,
+    ) -> Result<Vec<PhysBlockId>, KvAllocError> {
+        let t = self.tables.get(&s).ok_or(KvAllocError::UnknownSession)?;
+        let mut out = Vec::with_capacity(t.slots.len());
+        for (i, slot) in t.slots.iter().enumerate() {
+            match slot {
+                Slot::Resident(p) => out.push(*p),
+                Slot::Externalized => return Err(KvAllocError::SessionNotResident { slot: i }),
+            }
+        }
+        Ok(out)
     }
 
     /// Physical block backing logical slot `i`, if resident (test/integration
@@ -603,6 +639,53 @@ mod tests {
             pool32.kv_bytes_resident(),
             32 * pool1.kv_bytes_resident(),
             "32-layer pool holds 32× the resident bytes for the same block count",
+        );
+    }
+
+    #[test]
+    fn filled_tokens_is_the_context_len_source_not_blocks_times_block_size() {
+        let mut pool = KvBlockPool::new(geom(16, 4));
+        let s = pool.open();
+        assert_eq!(pool.filled_tokens(s), Some(0), "fresh session: 0 filled tokens");
+        pool.append(s, 6).unwrap(); // 6 tokens → 2 blocks, last block half full
+        assert_eq!(pool.session_blocks(s), Some(2));
+        assert_eq!(
+            pool.filled_tokens(s), Some(6),
+            "context_len is the token count (6), NOT blocks×block_size (8)",
+        );
+        assert_eq!(pool.filled_tokens(SessionHandle(999)), None, "unknown session → None");
+    }
+
+    #[test]
+    fn session_block_table_returns_resident_physical_ids_in_logical_order() {
+        let mut pool = KvBlockPool::new(geom(16, 4));
+        let s = pool.open();
+        pool.append(s, 9).unwrap(); // 3 blocks
+        let bt = pool.session_block_table(s).unwrap();
+        let expected: Vec<PhysBlockId> =
+            (0..3).map(|i| pool.resident_block(s, i).unwrap()).collect();
+        assert_eq!(bt, expected, "block table = per-slot resident physical id, in order");
+        assert_eq!(
+            pool.session_block_table(SessionHandle(999)),
+            Err(KvAllocError::UnknownSession),
+            "unknown session → typed error, never a panic",
+        );
+    }
+
+    #[test]
+    fn session_block_table_errors_on_an_externalized_slot_never_routes_a_reclaimed_block() {
+        // A fully-evicted session keeps its slots as `Externalized` (bytes live in
+        // the handle). Materializing a block table over it must be a typed error —
+        // routing attention through a physical block already handed back to the
+        // pool would be silent cross-session corruption.
+        let mut pool = KvBlockPool::new(geom(16, 4));
+        let s = pool.open();
+        pool.append(s, 9).unwrap(); // 3 exclusive blocks
+        let _rep = pool.evict(s).unwrap(); // all 3 externalized (none shared)
+        assert_eq!(
+            pool.session_block_table(s),
+            Err(KvAllocError::SessionNotResident { slot: 0 }),
+            "an externalized slot is a mis-sequenced materialize → typed error",
         );
     }
 
