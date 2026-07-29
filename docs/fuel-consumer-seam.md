@@ -224,9 +224,28 @@ incrementally as Fuel offers them; **none block the port**.
    > non-optional dep) does not register it. None of the lazy example binaries calls either
    > function. The registry is empty because nothing populates it.
    >
-   > **A second reason not to lean on it:** `llama-lazy.rs` uses `fuel::lazy_llama2c::Llama2cModel`,
-   > **not** the `lazy::LlamaModel` / `Llama3Model` cited above — so even once it runs it does not
-   > exercise the model surface this gap entry points a consumer at.
+   > **~~A second reason not to lean on it~~ — WITHDRAWN 2026-07-29, that claim was wrong.** I
+   > wrote that `llama-lazy.rs` "does not exercise the model surface this gap points a consumer
+   > at" because it uses `lazy_llama2c::Llama2cModel`. The port session pushed back with file:line
+   > evidence and is correct; **[re-verified here]** `lazy_llama2c.rs:10` — *"Thin wrapper over
+   > [`crate::lazy::LlamaModel`]"*; `:66` — *"the forward delegates to [`LlamaModel`]"*; and every
+   > forward (`:74`, `:86`, `:106`) constructs `LlamaModel { config: to_llama_config(), … }` and
+   > delegates. It runs **real TinyLlama weights** (`dim=2048 layers=22 heads=32 kv_heads=4`)
+   > through the llama2.c *config adapter*, not the llama2.c *architecture*. So it does exercise
+   > `lazy::LlamaModel`, transitively and by design. **One axis wrong, not two.**
+   >
+   > **What is narrowly true, and matters more than the retraction:** that path is
+   > `LlamaModel::forward(tokens, start_pos)` with **no KV cache** (`llama-lazy.rs:29` says so
+   > outright), and it touches neither `Llama3Model` / `lazy_llama_full.rs`'s three-band RoPE nor
+   > `InferenceContext` / `KvCache` / `CapturedRun`. So the honest split is:
+   >
+   > - the **decoder** surface has a runnable path (a valid smoke test), pending the dispatch fix;
+   > - the **serving** path — KV cache, batched decode, capture-shaped replay — has **no runnable
+   >   example at all**.
+   >
+   > **That second half is a genuine gap this entry would otherwise have recorded as closed**, and
+   > it is the half an inference host actually needs. Raised by the port session; recorded here as
+   > its own item rather than buried in a retraction.
    >
    > **Corrected status:** the lazy model surface **exists and appears complete** — 157 `lazy_*`
    > modules, `LlamaModel`, `Llama3Model` with three-band Llama-3.1 RoPE and an HF-config
@@ -280,11 +299,54 @@ priority queuing and eviction-pressure admission control, MoE routing, tiered st
 with RoPE re-injection), context compression, tool call, sampling + `LogitsProcessor`, and unified KV
 cache variants.
 
-Set against Lightbulb's tree that is a **near-1:1 overlap**: `cache/{h2o_policy, prefix_cache,
+Set against Lightbulb's tree the **module names** line up closely: `cache/{h2o_policy, prefix_cache,
 streaming_policy, segmented_eviction_policy, kv_compression, tiered_storage, eviction_policy}.rs`,
 `model/chunked_prefill.rs`, `engine/{moe_router, speculative, memory_aware_scheduler,
-context_compression, tool_call}.rs`, `sampling.rs`. Lightbulb's `cache/` alone is 9.4k LOC with a
-tested counterpart already in Fuel.
+context_compression, tool_call}.rs`, `sampling.rs`.
+
+> ### ⚠ A.4's original framing was wrong — corrected 2026-07-29
+>
+> This annex originally called that a **"near-1:1 overlap"** and implied the port's main outcome
+> would be the consumer deleting ~9.4k LOC. **On execution-grade evidence that inverts.** The
+> overlap is real at the **module-name** level and substantially weaker at the **capability**
+> level. Verdicts below are the port session's, from reading both implementations.
+>
+> **Of 7 of 13 modules examined: 2 are name collisions, 1 is a clean adopt, 4 are compose.**
+>
+> **Not overlap at all — pure name collisions:**
+> - **`tool_call`** — Fuel's is schema + registry + *post-hoc text* parsing (`ToolDef`,
+>   `ToolRegistry`, `validate`, `extract_tool_calls(text)`). The consumer's is a
+>   `ToolCallDetector`: *token-level streaming* detection during generation (`push_token`,
+>   `AttentionSnapshot`, per-cache-slot state). Different capabilities; adopt Fuel's registry,
+>   keep the detector.
+> - **`engine/streaming_context.rs`** — "Streaming Context *Injection*"
+>   (`StreamingContextProvider`, `ContextStream::on_token`, code-completion and web-search
+>   providers). Nothing to do with Fuel's `streaming.rs` StreamingLLM sink tokens. *(The port
+>   session's own mis-pairing, corrected by them.)*
+>
+> **The five genuine overlaps — only one is a clean adopt:**
+>
+> | Module | Verdict |
+> | --- | --- |
+> | `streaming_policy` | **adopt Fuel's** — it has `position_ids` for RoPE remapping + `select_keep`/`select_evict`; the consumer's is index arithmetic |
+> | `kv_compression` | **compose** — adopt Fuel's `CompressedKv`/`KvCompressor` traits; **upstream** KIVI granularity (`QuantGranularity::{PerHead, PerGroup}`, `per_head_scales` — Fuel's `KiviConfig` has *only* `bits`) and a relationship-aware strategy with no Fuel counterpart |
+> | `speculative` | **compose** — Fuel's `verify_draft` + stats is a verification *primitive*; the consumer's is a *driver* (`SpeculativeModel` trait, `generate_tokens`). Fuel has no loop; the consumer has no standalone verify. Splits on the mechanism/policy line exactly |
+> | `eviction` + `h2o` | **compose** — adopt Fuel's `EvictionContext`/trait/`VotingAggregator` (`Box<dyn>` beats a generic builder); **upstream stateful H2O** — Fuel's `H2oPolicy` is a unit struct scoring a passed-in snapshot, the consumer's accumulates `TokenMetadata` (cumulative attention, steps present, position) across steps with a decay factor |
+> | `prefix_cache` | **adopt Fuel's core** (`longest_prefix_match`); keep the consumer's observability (`hit_rate`, `avg_saved_tokens`, `current_size_bytes`, `check_would_hit`) |
+>
+> Not yet examined: `scheduler`, `chunked_prefill`, `moe_routing`, `segmented_eviction`,
+> `tiered_storage`, `sampling`.
+>
+> **The dominant outcome is upstreaming, not deletion.** On current evidence Fuel would *gain*
+> stateful H2O accumulation, KIVI granularity control, and a relationship-aware compression
+> strategy. The size deltas flagged below (`kv_compression` 1,998 vs 742) turn out to be **real
+> capability, not padding** — exactly the case CireSnave's rule sends upstream.
+>
+> **Why this correction matters more than it looks** *(the port session's framing, and it is the
+> right one)*: the harm of the original wording was never that a consumer deletes something it
+> shouldn't. It is that **it makes Fuel look complete where it isn't.** A name-level inventory
+> read as a capability inventory turns "Fuel has a module called X" into "Fuel does X," and that
+> error propagates into roadmap decisions no consumer is present to correct.
 
 **Maturity, precisely [verified — sharpened by the Lightbulb session]:** 153 `#[test]` fns across the
 12 modules plus `tests/scheduler_bridge.rs`, and **exactly zero consumers** — `fuel-inference`
