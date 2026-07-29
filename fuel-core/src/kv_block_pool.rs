@@ -161,10 +161,15 @@ struct BlockTable {
 /// may free little and report the rest as `still_shared`.
 #[derive(Debug)]
 pub struct EvictReport {
-    /// Physical blocks actually returned to the pool (were refcount == 1).
-    pub freed: usize,
-    /// Blocks left in place because another session still references them.
-    pub still_shared: usize,
+    /// Logical block indices actually detached this call (were refcount == 1).
+    /// Per-block rather than a count so a consumer evicting a SET (H2O /
+    /// multi-span segmented eviction) can attribute the outcome back to its own
+    /// spans: a block that came back in `still_shared` means its span is NOT
+    /// fully demoted. `.len()` recovers the count.
+    pub freed: Vec<usize>,
+    /// Logical block indices left in place because another session still
+    /// references them (never freed — that would corrupt the sharer).
+    pub still_shared: Vec<usize>,
     /// The reversible handle for [`KvBlockPool::restore`].
     pub handle: Externalized,
 }
@@ -212,6 +217,9 @@ pub enum KvAllocError {
     /// A splice referenced a logical block range that doesn't exist / isn't
     /// resident in the source.
     BadSpliceRange,
+    /// An `evict_blocks`/`evict_range` request named a logical block index
+    /// outside the session (nothing is evicted — the call is atomic).
+    BadBlockIndex { index: usize, session_blocks: usize },
 }
 
 /// The host-side KV block-pool allocator. See the module docs.
@@ -352,36 +360,54 @@ impl KvBlockPool {
 
     // --- C-3: state externalization (lossy) ------------------------------
 
-    /// Evict a session's **exclusively-held** (refcount == 1) blocks, returning
-    /// them to the pool and recording them in a reversible [`Externalized`]
-    /// handle. **Blocks shared with another session are never touched** — that
-    /// would corrupt the sharer — and are reported via
-    /// [`EvictReport::still_shared`]. `freed` is the *actual* count detached.
-    pub fn evict(&mut self, s: SessionHandle) -> Result<EvictReport, KvAllocError> {
-        let slots = self.tables.get(&s).ok_or(KvAllocError::UnknownSession)?.slots.clone();
-        let filled = self.tables[&s].filled_tokens;
+    /// Evict a SET of a live session's blocks — the primitive `evict` and
+    /// `evict_range` build on. The rest of the session stays resident and keeps
+    /// decoding (this is sub-session tiering: shed the cold middle of a long
+    /// conversation without dropping it). The block set may be **non-contiguous**
+    /// (H2O keeps scattered heavy-hitter blocks; a segmented policy evicts a
+    /// union of spans). Refcount-aware PER BLOCK: a block shared with another
+    /// session (a spliced prefix) is never detached — that would corrupt the
+    /// sharer — and comes back in [`EvictReport::still_shared`]; exclusively-held
+    /// blocks are detached into the reversible handle and listed in
+    /// [`EvictReport::freed`]. Atomic in its validation: an out-of-range index
+    /// evicts nothing and returns [`KvAllocError::BadBlockIndex`].
+    pub fn evict_blocks(
+        &mut self,
+        s: SessionHandle,
+        indices: &[usize],
+    ) -> Result<EvictReport, KvAllocError> {
+        let (n_slots, filled) = {
+            let t = self.tables.get(&s).ok_or(KvAllocError::UnknownSession)?;
+            (t.slots.len(), t.filled_tokens)
+        };
+        for &i in indices {
+            if i >= n_slots {
+                return Err(KvAllocError::BadBlockIndex { index: i, session_blocks: n_slots });
+            }
+        }
         let mut externalized_slots = Vec::new();
         let mut resident_slots = Vec::new();
-        let mut freed = 0;
-        let mut still_shared = 0;
-        for (i, slot) in slots.iter().enumerate() {
-            match slot {
+        let mut freed = Vec::new();
+        let mut still_shared = Vec::new();
+        for &i in indices {
+            match self.tables[&s].slots[i] {
                 Slot::Resident(p) => {
-                    let p = *p;
                     if self.refcount[p as usize] == 1 {
                         // Exclusive → detach: return to pool, mark externalized.
                         self.refcount[p as usize] = 0;
                         self.free.push(p);
                         self.tables.get_mut(&s).unwrap().slots[i] = Slot::Externalized;
                         externalized_slots.push(i);
-                        freed += 1;
+                        freed.push(i);
                     } else {
                         // Shared → leave it; someone else references it.
                         resident_slots.push((i, p));
-                        still_shared += 1;
+                        still_shared.push(i);
                     }
                 }
-                Slot::Externalized => externalized_slots.push(i),
+                // Already externalized by an earlier partial evict — its bytes
+                // live in that call's handle, not this one; a no-op here.
+                Slot::Externalized => {}
             }
         }
         Ok(EvictReport {
@@ -395,6 +421,30 @@ impl KvBlockPool {
                 resident_slots,
             },
         })
+    }
+
+    /// Evict a session's ENTIRE resident state (the whole-session convenience —
+    /// part 1's shape, unchanged). Suspends the session; `restore` un-suspends.
+    pub fn evict(&mut self, s: SessionHandle) -> Result<EvictReport, KvAllocError> {
+        let n = self.tables.get(&s).ok_or(KvAllocError::UnknownSession)?.slots.len();
+        let all: Vec<usize> = (0..n).collect();
+        self.evict_blocks(s, &all)
+    }
+
+    /// Evict a contiguous logical block range `[from, to)` of a live session (the
+    /// single-span convenience over [`evict_blocks`](Self::evict_blocks)). The
+    /// session stays live outside the range.
+    pub fn evict_range(
+        &mut self,
+        s: SessionHandle,
+        from: usize,
+        to: usize,
+    ) -> Result<EvictReport, KvAllocError> {
+        if from > to {
+            return Err(KvAllocError::BadBlockIndex { index: from, session_blocks: to });
+        }
+        let range: Vec<usize> = (from..to).collect();
+        self.evict_blocks(s, &range)
     }
 
     /// Re-materialize an evicted session from its handle: allocate fresh
@@ -425,7 +475,11 @@ impl KvBlockPool {
             }
             t.slots[i] = Slot::Resident(p);
         }
-        self.tables.get_mut(&s).unwrap().filled_tokens = handle.filled_tokens;
+        // Deliberately does NOT touch `filled_tokens`: `evict` never changes it
+        // (a session's logical length is unchanged — only block residency is), so
+        // a PARTIAL evict of a still-decoding session that grew its fill after the
+        // evict must not be reset to the stale handle value. The handle's
+        // `filled_tokens` is informational (the fill level at evict time).
         Ok(())
     }
 
@@ -552,8 +606,8 @@ mod tests {
 
         // Evict A. Only p2 (exclusive) is detachable; p0,p1 are shared → kept.
         let rep = pool.evict(a).unwrap();
-        assert_eq!(rep.freed, 1, "only the exclusive block frees");
-        assert_eq!(rep.still_shared, 2, "the two shared blocks are honestly reported");
+        assert_eq!(rep.freed, vec![2], "only the exclusive block (index 2) frees");
+        assert_eq!(rep.still_shared, vec![0, 1], "the two shared blocks reported by index");
         assert_eq!(pool.free_blocks(), free_before + 1, "exactly one block returned");
 
         // The sharer B is intact: its blocks still resolve to the SAME physical
@@ -633,8 +687,8 @@ mod tests {
         let free_after_alloc = pool.free_blocks();
 
         let rep = pool.evict(s).unwrap();
-        assert_eq!(rep.freed, 3, "all exclusive → all freed");
-        assert_eq!(rep.still_shared, 0);
+        assert_eq!(rep.freed, vec![0, 1, 2], "all exclusive → all freed, by index");
+        assert!(rep.still_shared.is_empty());
         assert_eq!(pool.free_blocks(), free_after_alloc + 3);
         assert_eq!(rep.handle.fidelity(), Fidelity::Lossy);
         assert_eq!(rep.handle.covers(), &[StateKind::KvBlocks]);
@@ -644,6 +698,63 @@ mod tests {
         assert!(pool.resident_block(s, 0).is_some());
         assert!(pool.resident_block(s, 2).is_some());
         assert_eq!(pool.free_blocks(), free_after_alloc, "3 re-allocated");
+    }
+
+    #[test]
+    fn evict_range_sheds_a_span_and_leaves_the_live_session_decoding() {
+        let mut pool = KvBlockPool::new(geom(16, 4));
+        let s = pool.open();
+        pool.append(s, 20).unwrap(); // 5 blocks, all exclusive
+        let free_after = pool.free_blocks();
+        // Shed the cold middle [1, 4): blocks 1, 2, 3 — the point of tiering.
+        let rep = pool.evict_range(s, 1, 4).unwrap();
+        assert_eq!(rep.freed, vec![1, 2, 3]);
+        assert!(rep.still_shared.is_empty());
+        assert_eq!(pool.free_blocks(), free_after + 3);
+        // Head + tail stay resident; the session is still live and can grow.
+        assert!(pool.resident_block(s, 0).is_some(), "head resident");
+        assert!(pool.resident_block(s, 4).is_some(), "tail resident");
+        assert_eq!(pool.resident_block(s, 2), None, "middle externalized");
+        pool.append(s, 4).unwrap(); // still decoding after a partial evict
+        assert_eq!(pool.session_blocks(s), Some(6));
+        // Restore the shed span at its original logical positions (→ RoPE ranges
+        // reconstruct); the rest is untouched.
+        pool.restore(s, rep.handle).unwrap();
+        assert!(pool.resident_block(s, 1).is_some());
+        assert!(pool.resident_block(s, 3).is_some());
+    }
+
+    #[test]
+    fn evict_blocks_partially_overlapping_a_shared_prefix_reports_both() {
+        // The exact shape a conversation sharing a system prompt generates: a
+        // requested set straddling a spliced (shared) prefix and an exclusive
+        // tail. A count-based report would hide WHICH blocks stayed shared, and a
+        // consumer marking the span demoted on the count would diverge from the
+        // pool. Per-block `freed`/`still_shared` keeps it honest.
+        let mut pool = KvBlockPool::new(geom(16, 4));
+        let a = pool.open();
+        pool.append(a, 20).unwrap(); // 5 blocks
+        let b = pool.open();
+        pool.splice(a, b, 0, 2).unwrap(); // A's blocks 0,1 shared with B
+        let rep = pool.evict_blocks(a, &[1, 2, 3]).unwrap(); // straddles shared + exclusive
+        assert_eq!(rep.freed, vec![2, 3], "exclusive blocks freed, by index");
+        assert_eq!(rep.still_shared, vec![1], "the shared block reported, not freed");
+        // Block 1 untouched: A still holds it, B still resolves to it, refcount 2.
+        assert!(pool.resident_block(a, 1).is_some());
+        assert_eq!(pool.block_refcount(pool.resident_block(b, 1).unwrap()), 2);
+    }
+
+    #[test]
+    fn evict_blocks_rejects_out_of_range_index_atomically() {
+        let mut pool = KvBlockPool::new(geom(16, 4));
+        let s = pool.open();
+        pool.append(s, 12).unwrap(); // 3 blocks
+        let free_before = pool.free_blocks();
+        let err = pool.evict_blocks(s, &[0, 5]).unwrap_err(); // 5 is out of range
+        assert!(matches!(err, KvAllocError::BadBlockIndex { index: 5, session_blocks: 3 }));
+        // Atomic: the valid block 0 was NOT evicted despite appearing in the set.
+        assert_eq!(pool.free_blocks(), free_before, "nothing evicted on a bad set");
+        assert!(pool.resident_block(s, 0).is_some());
     }
 
     #[test]
