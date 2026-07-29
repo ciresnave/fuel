@@ -671,6 +671,40 @@ incrementally as Fuel offers them; **none block the port**.
    (`baracuda_dispatch.rs:1959`), so that comment is at least partly stale. Not corrected here — the
    CPU half is unverified, and correcting it needs someone to confirm both.
 
+   **FALSIFIER #1 RESOLVED 2026-07-29 — `probs` is NOT obtainable on the fused arm, by design.**
+   **[verified here]** `registry/flash_attn.rs:285` builds `probs` (post-softmax) on the
+   **decomposed** arm only; the op's header states that avoiding the `[B,Hq,Sq,Sk]` materialization
+   *is* the op's value and that lowering it to primitives "would be a footgun." So the in-graph
+   reduction design **stands but is arm-scoped** — it was never wrong, and the scoping is what both
+   parties had missed.
+
+   **Correction of record: the tensor is `probs`, not `scores`.** This annex and §15 both said
+   "scores" throughout. `scores` (`:235`) is *pre*-softmax; H2O and R-KV need the *post*-softmax
+   `probs` (`:285`). Raised by the port session against its own earlier framing — asking a backend
+   for `scores` would have been asking for the wrong tensor.
+
+   **Consequence recorded in §15 v0.5, and it is a C-5 case cleanly:** arm choice becomes a
+   per-deployment constraint — attention-driven eviction requires the decomposed arm and pays the
+   materialization; maximum decode throughput requires the fused arm and forgoes observability.
+   **C-4 settles the default**, since decomposed-vs-fused at real shapes is measurable rather than
+   arguable; that benchmark is the port session's and is not yet run.
+
+   **New C-5 obligation surfaced by this:** a consumer's *policy catalogue* is partly arm-dependent.
+   H2O and R-KV are arm-gated; recency, StreamingLLM sink-window, and segmented eviction are not. A
+   consumer picking the fused arm silently loses half its eviction policies, and the failure mode is
+   **a policy starved of input** rather than an error. Now stated in
+   [15 §C-5](architecture/15-consumer-contract.md#arm-choice-can-prune-the-consumers-own-policy-set--say-so-dont-let-it-be-discovered).
+
+   **Preference 2 upgraded from speculative to existing. [verified here]** `output_views`
+   ([12-multi-output](architecture/12-multi-output.md)) is contract-checked — `Graph::set_output_views`
+   (`lib.rs:1813`) carries five invariants — and has **two live consumers**,
+   `registry/selective_scan.rs:130` and `registry/ssd_chunk_scan.rs:119`, both declaring
+   `output_views: Some(..)`. `registry/flash_attn.rs:59` declares `None`. **So the second-output
+   route is a mechanism one op has not opted into, not infrastructure to be built.** The consumer's
+   cost argument (a query-axis reduction is orthogonal to `softmax_lse`; a per-tile column-sum into
+   an `[Sk]` output is O(Sk), ~`1/Sq` of the matrix) is **algorithmic reasoning, not a measurement**,
+   and kernel feasibility is the backend's call.
+
    **Status: conjecture, not result.** Derived by reading real consumer code against the clause and
    against `CapturedRun`'s requirements; not validated by a running port. Validation order:
    confirm the attention matrix is materializable on the arm the consumer needs → express the
