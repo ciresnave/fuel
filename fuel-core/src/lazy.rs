@@ -7287,48 +7287,9 @@ impl LlamaModel {
         let dims = x_shape.dims();
         let batch = dims[0];
         let seq = dims[1];
-        let kv_dim = cfg.n_kv_heads * cfg.head_dim;
-        // BF16-throughout decode (Phase D increment A): the activation
-        // dtype tracks the KV cache dtype end-to-end, so `x`'s dtype IS
-        // the running activation dtype for this whole layer (every op
-        // below is dtype-preserving except the RoPE cast window).
-        let act_dtype = x.dtype();
-
-        let x_norm = apply_affine_rms_norm(x, &layer.attn_norm_gain, cfg.dim, cfg.norm_eps);
-
-        // Q/K/V projections + optional biases — identical to apply_layer_with_cache.
-        let q = layer.attn_q.apply_linear(&x_norm, cfg.dim, cfg.dim).add_optional_trailing_bias(layer.attn_q_bias.as_ref()).unwrap();
-        let k = layer.attn_k.apply_linear(&x_norm, cfg.dim, kv_dim).add_optional_trailing_bias(layer.attn_k_bias.as_ref()).unwrap();
-        let v = layer.attn_v.apply_linear(&x_norm, cfg.dim, kv_dim).add_optional_trailing_bias(layer.attn_v_bias.as_ref()).unwrap();
-
-        let q_h = q
-            .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim])).unwrap()
-            .permute([0, 2, 1, 3_usize]).unwrap();
-        let k_h = k
-            .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim])).unwrap()
-            .permute([0, 2, 1, 3_usize]).unwrap();
-        let v_h = v
-            .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim])).unwrap()
-            .permute([0, 2, 1, 3_usize]).unwrap();
-
-        // `rope_with_tables` hard-requires f32 input/tables (see its
-        // build-time check). Under BF16-throughout decode (Phase D
-        // increment A) `q_h`/`k_h` are BF16 — cast to f32 around the
-        // RoPE application (trig math stays f32 for numerical safety,
-        // matching the F32-table design) and back to the running
-        // activation dtype afterward. No-op casts (fast-path clones)
-        // when `act_dtype` is already F32.
-        // CapturedRun 4b-resume: DECOMPOSED rope (rotate-half primitives) so the
-        // decode runs entirely on CUDA. Fuel's fused ROPE has no rotate-half CUDA
-        // kernel (baracuda's is interleaved) so it places on CPU and breaks
-        // capture; the primitive form has capture-safe CUDA kernels. Same
-        // rotate-half math. See `LazyTensor::rope_with_tables_decomposed`.
-        let q_r = q_h.to_dtype(DType::F32)?
-            .rope_with_tables_decomposed(rope_cos, rope_sin)?
-            .to_dtype(act_dtype)?;
-        let k_r = k_h.to_dtype(DType::F32)?
-            .rope_with_tables_decomposed(rope_cos, rope_sin)?
-            .to_dtype(act_dtype)?;
+        // Shared front half (RmsNorm → Q/K/V proj → per-head reshape → RoPE) —
+        // identical to the paged layer; see `project_qkv_roped`.
+        let (q_r, k_r, v_h) = self.project_qkv_roped(x, layer, rope_cos, rope_sin)?;
 
         // Write fresh K/V slabs into the pre-allocated cache buffers
         // via Op::WriteSlice at the RUNTIME offset `cached_len`. Source
@@ -7419,14 +7380,8 @@ impl LlamaModel {
         let attn_out = layer.attn_o.apply_linear(&merged, cfg.dim, cfg.dim);
 
         let h1 = x.add(&attn_out).unwrap();
-        let h1_norm = apply_affine_rms_norm(&h1, &layer.ffn_norm_gain, cfg.dim, cfg.norm_eps);
-
-        let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.dim, cfg.ffn_dim);
-        let up   = layer.ffn_up.apply_linear(&h1_norm, cfg.dim, cfg.ffn_dim);
-        let swiglu = gate.silu().mul(&up).unwrap();
-        let ffn_out = layer.ffn_down.apply_linear(&swiglu, cfg.ffn_dim, cfg.dim);
-
-        Ok(h1.add(&ffn_out).unwrap())
+        // Shared FFN tail (identical to the paged layer); see `ffn_block`.
+        Ok(self.ffn_block(&h1, layer))
     }
 
     /// One single-token forward through **paged** pool storage — the paged-decode
@@ -7565,6 +7520,40 @@ impl LlamaModel {
     ) -> crate::Result<LazyTensor> {
         let cfg = &self.config;
         let (batch, seq) = (1usize, 1usize);
+        let (q_r, k_r, v_h) = self.project_qkv_roped(x, layer, rope_cos, rope_sin)?;
+
+        // Paged storage + attention (replaces the contiguous write_slice + sliced SDPA).
+        let attn = pool.build_decode_attn(
+            k_pool_ph, v_pool_ph, &q_r, &k_r, &v_h, block_table, context_lens, phys, slot, scale,
+        )?;
+
+        let merged = attn
+            .permute([0, 2, 1, 3_usize]).unwrap()
+            .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
+        let attn_out = layer.attn_o.apply_linear(&merged, cfg.dim, cfg.dim);
+        let h1 = x.add(&attn_out).unwrap();
+        Ok(self.ffn_block(&h1, layer))
+    }
+
+    /// Shared attention **front half** — RmsNorm → Q/K/V projections (+ optional
+    /// biases) → per-head reshape → RoPE on Q and K — returning
+    /// `(q_r, k_r, v_h)` at `[batch, {n_heads|n_kv_heads}, seq, head_dim]`. The
+    /// math is identical for contiguous ([`Self::apply_layer_with_kv_writes`]) and
+    /// paged ([`Self::apply_layer_paged`]) decode; only KV storage + attention
+    /// differ downstream. RoPE runs in f32 (its build-time requirement) with no-op
+    /// casts around it when the activation dtype is already f32.
+    fn project_qkv_roped(
+        &self,
+        x: &LazyTensor,
+        layer: &LayerWeights,
+        rope_cos: &LazyTensor,
+        rope_sin: &LazyTensor,
+    ) -> crate::Result<(LazyTensor, LazyTensor, LazyTensor)> {
+        let cfg = &self.config;
+        let x_shape = x.shape();
+        let dims = x_shape.dims();
+        let batch = dims[0];
+        let seq = dims[1];
         let kv_dim = cfg.n_kv_heads * cfg.head_dim;
         let act_dtype = x.dtype();
 
@@ -7587,23 +7576,20 @@ impl LlamaModel {
         let k_r = k_h.to_dtype(DType::F32)?
             .rope_with_tables_decomposed(rope_cos, rope_sin)?
             .to_dtype(act_dtype)?;
+        Ok((q_r, k_r, v_h))
+    }
 
-        // Paged storage + attention (replaces the contiguous write_slice + sliced SDPA).
-        let attn = pool.build_decode_attn(
-            k_pool_ph, v_pool_ph, &q_r, &k_r, &v_h, block_table, context_lens, phys, slot, scale,
-        )?;
-
-        let merged = attn
-            .permute([0, 2, 1, 3_usize]).unwrap()
-            .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
-        let attn_out = layer.attn_o.apply_linear(&merged, cfg.dim, cfg.dim);
-        let h1 = x.add(&attn_out).unwrap();
-        let h1_norm = apply_affine_rms_norm(&h1, &layer.ffn_norm_gain, cfg.dim, cfg.norm_eps);
+    /// Shared attention **tail** — pre-FFN RmsNorm → SwiGLU (`gate.silu() * up`) →
+    /// down-projection → residual. `h1` is the post-attention residual
+    /// (`x + o_proj(merged_heads)`). Identical for contiguous + paged decode.
+    fn ffn_block(&self, h1: &LazyTensor, layer: &LayerWeights) -> LazyTensor {
+        let cfg = &self.config;
+        let h1_norm = apply_affine_rms_norm(h1, &layer.ffn_norm_gain, cfg.dim, cfg.norm_eps);
         let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.dim, cfg.ffn_dim);
         let up = layer.ffn_up.apply_linear(&h1_norm, cfg.dim, cfg.ffn_dim);
         let swiglu = gate.silu().mul(&up).unwrap();
         let ffn_out = layer.ffn_down.apply_linear(&swiglu, cfg.ffn_dim, cfg.dim);
-        Ok(h1.add(&ffn_out).unwrap())
+        h1.add(&ffn_out).unwrap()
     }
 
     /// Forward pass using pre-allocated KV-cache buffers and
