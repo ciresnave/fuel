@@ -396,10 +396,49 @@ incrementally as Fuel offers them; **none block the port**.
    untouched and remains the real blocker**: this result says the accumulator is capture-safe *given*
    `a_t`, not that `a_t` is obtainable on the fused arm.
 
+   **Correction to the fixed-shape form — it drops reset-on-reuse (raised by the port session,
+   2026-07-29).** The capacity-shaped formulation above silently loses a correctness requirement the
+   consumer's `HashMap<slot_id, TokenMetadata>` form gets for free: when a slot's occupant is
+   evicted and the slot is reused, the map entry *vanishes* and the next occupant starts fresh. A
+   fixed-shape `[max_slots]` buffer has no removal, so `c[k]` keeps decaying and a new token
+   inherits its predecessor's remnant. **The `n` direction is the worse half**: a reused slot would
+   report the *previous* occupant's tenure, inflating the denominator in `avg = c/n` and making a
+   brand-new token look long-lived and low-attention — precisely the profile H2O evicts first, so a
+   freshly-admitted token could be immediately re-evicted.
+
+   **Their fix preserves every property established above**: an occupancy mask,
+   `c_t = (c_{t-1}·decay + a_t) ⊙ occ_t`, with `occ_t` a `[max_slots]` 0/1 vector zeroed on
+   admission. Still elementwise, fixed-shape, in-place-able, **still no offsets and no dynamic
+   extent** — the zero-`cuMemAlloc` argument is untouched. It makes the op `c·decay·occ + a·occ`
+   rather than a bare `InplaceAffine`, which lands in the same bucket as falsifier #3: *which op*,
+   not *whether capture holds*. And it **sharpens the `n_t = t − insertion_step[k]` collapse** —
+   `insertion_step` is exactly what must be reset on reuse, so one `[max_slots]` buffer written on
+   admission yields `n_t` by derivation *and* `occ_t = (insertion_step ≥ 0)`. One buffer solves both.
+
+   **[verified here, with a refinement neither of us had]** `h2o_policy.rs:209`'s `clear_slot` is
+   real and is called — but at `parallel_cache_builder.rs:1909` it sits inside
+   `reset_batch_index(batch_index)`, which zeroes `positions`/`indices` for a **batch row**: that is
+   *sequence-level* reuse (a new request taking over a row), not *token-level* eviction within a
+   sequence. The token-level path is `should_clear_slot` → KV-cache `clear_slot()`, and
+   `parallel_cache_builder.rs:2048` says plainly: **"CURRENT STATUS: Not actually used yet since
+   `clear_slot()` is a stub."** So token-level slot reuse is **not live in the consumer either**.
+   The mask is therefore not repairing a regression the fixed-shape form introduced — it implements
+   a requirement **neither form meets today**.
+
+   **[judgment] The architectural consequence is the interesting part, and it is not H2O-specific.**
+   Token-level slot reuse becomes live exactly when Fuel's block-pool allocator lands, because
+   refcount-aware evict plus block reuse *is* that mechanism. So **any per-slot side buffer built
+   above the allocator silently inherits stale state unless slot-recycle is observable at the
+   allocator boundary** — either the allocator zeroes registered per-slot side buffers on recycle,
+   or it surfaces a recycle signal a consumer can hook. That is a mechanism obligation (slot
+   lifecycle is the allocator's), it generalizes past H2O to every per-slot statistic, and it is
+   worth settling while the evict/restore surface is still being designed. Routed to the allocator
+   session as part-2 input; **not** promoted to clause text, since it is design-level and unvalidated.
+
    **Falsifier #3 (per-slot decay) — downgraded, not resolved.** If decay must vary per slot, the
    scalar `mul` becomes a vector and the op is no longer `InplaceAffine` — but it is still
    fixed-shape, still elementwise, and still in-place-able. That changes *which op*, not whether
-   capture holds.
+   capture holds. (The mask term above lands in the same bucket, and composes with it.)
 
    Open on the consumer side: whether R-KV's attention input is captured per-step (regime 2) or
    only at compression time (regime 1) — flagged rather than guessed.
