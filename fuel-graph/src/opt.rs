@@ -2802,6 +2802,36 @@ where
     inserted
 }
 
+/// Insert `Op::Cast` fixups that CHANGE a consumer's input dtype — the sibling of
+/// [`insert_layout_fixups`], for dtype rather than layout. Given precomputed
+/// `(consumer, input, target_dtype)` edges (an input whose dtype should be
+/// promoted so the consumer's `(op, per-operand-dtypes)` key becomes servable),
+/// insert one `Op::Cast(target)` per distinct `(input, target)` — CSE-shared
+/// across consumers — and rewire each consumer's edge to it.
+///
+/// Unlike [`Graph::rewrite_input`] (whose contract is a *same-dtype* redirect),
+/// this DELIBERATELY changes the consumer's input dtype — that is the point: it
+/// is the graph-side half of the optimizer's dtype-reconciliation pass
+/// (`fuel_dispatch::optimize::insert_dtype_fixups`), which decides WHICH edges to
+/// promote from backend kernel coverage. Edges apply in the given order
+/// (deterministic when the caller passes topo order). Returns the rewires applied.
+pub fn insert_cast_fixups(graph: &mut Graph, casts: &[(NodeId, NodeId, DType)]) -> usize {
+    let mut cache: HashMap<(NodeId, DType), NodeId> = HashMap::new();
+    let mut applied = 0;
+    for &(consumer, input, target) in casts {
+        if graph.node(input).dtype == target {
+            continue; // already the target dtype — nothing to cast
+        }
+        let cast_id = *cache.entry((input, target)).or_insert_with(|| {
+            let shape = graph.node(input).shape.clone();
+            graph.push(Node { op: Op::Cast(target), inputs: vec![input], shape, dtype: target })
+        });
+        graph.rewrite_input(consumer, input, cast_id);
+        applied += 1;
+    }
+    applied
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
