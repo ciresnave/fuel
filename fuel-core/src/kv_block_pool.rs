@@ -136,6 +136,30 @@ impl KvGeometry {
 /// consumer can be out of blocks in every pool yet have free VRAM — pools
 /// fragment memory) are a higher layer: a future pool-set manager over N pools +
 /// the backend's free-memory query. NOT this single pool's job.
+///
+/// **Reserved axis — device residence (multi-device KV).** A pool is
+/// single-device today, so this descriptor implicitly belongs to its pool's
+/// device. When multi-device KV lands (CireSnave's call, 2026-07-29: it is
+/// mechanism and belongs in Fuel — distributed KV = this block pool + *which
+/// device a block lives on* + the device↔device transfer path; the
+/// replicate-hot/shard-cold *strategy* stays consumer policy), the **device**
+/// becomes a second arbitration axis alongside geometry — the pool-set manager
+/// arbitrates over N pools keyed by *(device, geometry)*. Whether that surfaces
+/// as a per-pool device tag here or a per-block `DeviceLocation` lower down is
+/// deferred to that increment's design (the field shape follows the design, not
+/// a guess) — reserved, not yet built, per "establish it belongs before
+/// building it".
+///
+/// **Contract requirement both shapes must satisfy (C-5):** the consumer
+/// supplies the device set, so residence must be **constrainable from outside,
+/// not merely observable** — a consumer must be able to express per-tenant
+/// residence ("this session's blocks on device 0"). A pool that spans devices
+/// and picks residence *internally* would hide a decision the contract reserves
+/// to the consumer; N addressable pools, or one pool with a consumer-
+/// constrainable device coordinate, both keep it expressible. The pool-set
+/// manager that arbitrates **fit** (headroom per pool, how blocks move) is
+/// Fuel's; one that arbitrates **priority** ("put this tenant on the fast
+/// device") has crossed into policy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PoolCapacity {
     pub geometry: KvGeometry,
