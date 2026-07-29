@@ -80,7 +80,7 @@
 use std::collections::{HashMap, HashSet};
 
 use fuel_ir::probe::BackendId;
-use fuel_ir::{DeviceLocation, Result};
+use fuel_ir::{DType, DeviceLocation, Result};
 use fuel_graph::opt::insert_cross_device_copies;
 use fuel_graph::{extract_runs_multi, topo_order_multi, Graph, NodeId, Op};
 
@@ -241,6 +241,19 @@ fn optimize_graph_with_passes(
     //     stamp / residency / layout-fixup passes + the lock-step rankers
     //     read below; it is NOT returned or threaded (Step D — the graph
     //     stamps + arms are the only durable output).
+    // (2a) Dtype-reconciliation fixup — insert promoting `Op::Cast`s so a node
+    //      whose per-operand key no compiled-in backend serves natively (e.g. a
+    //      mixed-precision `[F32, BF16, F32]` matmul) becomes servable, instead of
+    //      dead-ending in `compile_plan` below. Runs BEFORE the plan because it
+    //      changes what's enumerable; if it rewrites, re-derive the execution
+    //      order over the mutated graph. The layout/residency fixups are its
+    //      post-plan siblings.
+    let order = if insert_dtype_fixups(graph, roots, bindings_table) {
+        fuel_graph::opt::execution_plan(graph, roots)
+    } else {
+        order
+    };
+
     let plan = compile_plan(graph, &order, bindings_table, opts)?;
     let generation = plan.generation;
 
@@ -336,6 +349,139 @@ fn optimize_graph_with_passes(
         roots: roots.to_vec(),
         generation,
     })
+}
+
+/// Dtype-reconciliation fixup (runs BEFORE `compile_plan`): for any kernel-
+/// bearing node whose per-operand `(op, dtypes)` key is not servable by any
+/// compiled-in backend, insert `Op::Cast`(s) promoting the mismatched input(s)
+/// to the node's OUTPUT dtype — IF that lossless upcast yields a key some backend
+/// DOES support. This is "backends advertise; the optimizer adapts"
+/// ([04-optimization], [05-backend-contract]) applied to dtype, and the sibling
+/// of `insert_layout_fixups` (`Op::Contiguize`) and `insert_residency_copies`
+/// (`Op::Copy`).
+///
+/// It is the non-native-kernel fallback the mixed-precision matmul path already
+/// ASSUMED exists — `vulkan_dispatch`'s matmul route picker documents "otherwise
+/// falls back to f32 matmul (after a Cast)" — but which was never built as a
+/// pass, so a graph builder emitting a mixed `[F32, BF16] → F32` matmul
+/// dead-ended at `NoBackendForOp` on every backend without the native mixed key
+/// (all but Vulkan; and CPU-only default builds have none).
+///
+/// SAFE + CONSERVATIVE: promotes ONLY by a value-LOSSLESS upcast to the output
+/// dtype ([`lossless_upcast`]), so it never changes op semantics (a comparison's
+/// `U8` output is not a lossless upcast target, so comparisons are left alone) and
+/// never corrupts a value.
+///
+/// **NUMERIC CAVEAT:** the upcast is value-lossless but the promoted op is NOT
+/// numerically identical to a native mixed-precision kernel — it accumulates in
+/// the higher precision, so the *same graph* can differ by which arm ran (a CPU
+/// upcast vs a native `[F32,BF16,F32]` kernel; and it already differs
+/// CPU-vs-CUDA). The pass REPORTS every promotion via `tracing` (visibility, per
+/// C-6's "never silently deoptimize"). Making a promoting cast **forbiddable
+/// under a C-5 determinism/tolerance constraint** (so a byte-exact-oracle or
+/// CPU-vs-CUDA-parity consumer gets the native path or a hard fail, not a silent
+/// upcast) and **accounting its extra resident bytes under C-4** (BF16→F32
+/// doubles a weight) are tracked ROADMAP follow-ups.
+///
+/// When no lossless promotion yields a supported key, the node is left unchanged
+/// and fails cleanly at `compile_plan` with the truthful coverage diagnostic — a
+/// genuine gap, surfaced honestly. Returns whether it changed the graph (so the
+/// caller re-derives the execution order).
+///
+/// The broader fix — expanding per-op dtype coverage across kernels (starting
+/// CPU) so fewer combos need reconciling — is a tracked ROADMAP item; this pass
+/// makes the graph builder's mixed-precision promise executable everywhere today.
+fn insert_dtype_fixups(
+    graph: &mut Graph,
+    roots: &[NodeId],
+    bindings: &KernelBindingTable,
+) -> bool {
+    let order = topo_order_multi(graph, roots);
+    // Decision only (immutable graph reads): the `(consumer, input, target)` edges
+    // to promote. The mechanical Cast-insert + rewire is
+    // `fuel_graph::opt::insert_cast_fixups` (the dtype-changing sibling of the
+    // layout fixup). Built in topo order ⇒ deterministic cast-node assignment.
+    let mut casts: Vec<(NodeId, NodeId, DType)> = Vec::new();
+
+    for &id in &order {
+        let (op, inputs, out_dtype) = {
+            let node = graph.node(id);
+            (node.op.clone(), node.inputs.clone(), node.dtype)
+        };
+        let op_kind = match crate::pipelined::op_to_op_kind(&op) {
+            Some(k) => k,
+            None => continue, // view / Const / not-dispatched → no binding key
+        };
+        // The exact per-operand key the dispatcher will look up.
+        let native_key = crate::pipelined::build_lookup_dtypes(graph, graph.node(id));
+        // Only reconcile the generic `[in0, in1, …, out]` key shape. Ops whose
+        // key is canonicalized (Concat, WriteSlice*) share a uniform input dtype
+        // by construction, so they never present a mixed-input miss here.
+        if native_key.len() != inputs.len() + 1 {
+            continue;
+        }
+        if bindings.any_backend_supports(op_kind, &native_key) {
+            continue; // some backend serves it natively
+        }
+        // Promotion target = the output dtype ("compute dtype"), taken ONLY when
+        // every input can losslessly upcast to it — else decline.
+        let target = out_dtype;
+        if !inputs.iter().all(|&i| lossless_upcast(graph.node(i).dtype, target)) {
+            continue;
+        }
+        // Uniform promoted key `[target, …, target, out]` (target == out).
+        let promoted_key: Vec<DType> =
+            inputs.iter().map(|_| target).chain(std::iter::once(out_dtype)).collect();
+        if promoted_key == native_key {
+            continue; // inputs already == target; nothing to promote
+        }
+        if !bindings.any_backend_supports(op_kind, &promoted_key) {
+            continue; // the lossless promotion still isn't servable — genuine gap
+        }
+        for &input_id in &inputs {
+            if graph.node(input_id).dtype != target {
+                casts.push((id, input_id, target));
+            }
+        }
+    }
+
+    if casts.is_empty() {
+        return false;
+    }
+    // Visibility (C-6 "fuel never silently deoptimizes without saying so", applied
+    // to precision rather than fusion): a promoting cast is NOT numerically
+    // identical to a native mixed-precision kernel — it accumulates the upcast in
+    // higher precision, so the same graph can diverge by which arm ran (CPU upcast
+    // vs CUDA native mixed) — and it increases the promoted operand's resident
+    // bytes (e.g. BF16→F32 doubles a weight). A byte-exact-oracle or determinism
+    // consumer must be able to SEE it. Reported via `tracing`; forbidding it under
+    // a C-5 constraint + full C-4 cost accounting are tracked ROADMAP follow-ups.
+    tracing::warn!(
+        promoting_casts = casts.len(),
+        "dtype-reconciliation inserted {} promoting Cast(s): a node's per-operand \
+         dtype key had no native kernel on any backend, so input(s) were upcast to \
+         the output dtype. This CHANGES numerics vs a native mixed-precision kernel \
+         and increases resident bytes for the promoted operand(s).",
+        casts.len(),
+    );
+    fuel_graph::opt::insert_cast_fixups(graph, &casts);
+    true
+}
+
+/// Lossless dtype upcast predicate for [`insert_dtype_fixups`] — `true` ONLY for
+/// conversions that preserve every value exactly (identity + float widenings
+/// where the target's exponent AND mantissa cover the source's). Deliberately
+/// conservative: an unlisted pair returns `false`, so the pass declines rather
+/// than risk a lossy or semantics-changing promotion.
+fn lossless_upcast(from: DType, to: DType) -> bool {
+    use DType::*;
+    if from == to {
+        return true;
+    }
+    matches!(
+        (from, to),
+        (BF16, F32) | (BF16, F64) | (F16, F32) | (F16, F64) | (F32, F64)
+    )
 }
 
 /// Commit the plan's per-node winner backend to the graph's
@@ -699,6 +845,42 @@ mod tests {
         assert_eq!(g.target_backend(c), Some(BackendId::Cpu), "Silu stamped Cpu");
         assert_eq!(g.target_backend(d), Some(BackendId::Cpu), "Tanh stamped Cpu");
         assert!(g.target_backend(a).is_none(), "Op::Const leaf is not stamped");
+    }
+
+    /// Dtype-reconciliation: a mixed-precision `[F32, BF16, F32]` matmul (F32
+    /// activation × BF16 weight) — which no compiled-in backend serves natively in
+    /// a CPU-only build — is made runnable by inserting a `Cast(BF16→F32)` on the
+    /// weight, so the matmul becomes uniform `[F32, F32, F32]` (which CPU serves).
+    /// Born-red: before this pass, `optimize_graph` failed with `NoBackendForOp`
+    /// (the exact llama-lazy failure). This is the "f32 matmul after a Cast"
+    /// fallback the design assumed but never built.
+    #[test]
+    fn optimize_graph_reconciles_mixed_precision_matmul_via_cast() {
+        let bindings = crate::dispatch::global_bindings(); // real populated CPU table
+        let mut g = Graph::new();
+        let lhs = g.push(Node {
+            op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+        });
+        let rhs = g.push(Node {
+            op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[3, 2]), dtype: DType::BF16,
+        });
+        let mm = g.push(Node {
+            op: Op::MatMul, inputs: vec![lhs, rhs], shape: Shape::from_dims(&[2, 2]), dtype: DType::F32,
+        });
+
+        // Born-red baseline: without the fixup this errors with NoBackendForOp.
+        optimize_graph(&mut g, &[mm], &bindings, &cpu_opts())
+            .expect("mixed-precision matmul reconciled + optimized on CPU");
+
+        // The matmul's rhs is now a Cast(F32) of the original BF16 weight; lhs
+        // (already F32) is untouched.
+        let mm_inputs = g.node(mm).inputs.clone();
+        assert_eq!(mm_inputs[0], lhs, "lhs (already F32) untouched");
+        let cast_id = mm_inputs[1];
+        assert_ne!(cast_id, rhs, "rhs was rewired to a Cast");
+        assert!(matches!(g.node(cast_id).op, Op::Cast(DType::F32)), "rhs cast to F32");
+        assert_eq!(g.node(cast_id).dtype, DType::F32);
+        assert_eq!(g.node(cast_id).inputs, vec![rhs], "cast reads the original BF16 weight");
     }
 
     /// The stamping is guarded on a pinned device — an `optimize_graph`

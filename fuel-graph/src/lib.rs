@@ -3912,7 +3912,9 @@ impl Tensor {
     pub fn matmul(&self, other: &Tensor) -> Tensor {
         assert!(
             Arc::ptr_eq(&self.graph, &other.graph),
-            "matmul: tensors must live on the same graph",
+            "matmul: tensors must live on the same graph — each `from_*` \
+             constructor mints a NEW graph; build `other` on this tensor's graph \
+             with `const_*_like` (or another same-graph builder)",
         );
         // Mixed-precision matmul: activations stay in their native
         // dtype while weights can live as a lower-precision type on
