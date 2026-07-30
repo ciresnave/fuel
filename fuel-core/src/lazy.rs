@@ -7495,6 +7495,165 @@ impl LlamaModel {
         )
     }
 
+    /// Batched (`B = K`) sibling of [`Self::forward_paged_step`] — one decode
+    /// step over K sessions in a single model pass (paged-storage PS4a, the
+    /// throughput arm). Each session `i` contributes one `token`; all must be at
+    /// the **same** position (uniform `filled_tokens`) so RoPE + the slot index
+    /// are shared — the batching precondition (same as the contiguous batched
+    /// arm's uniformity gate). Returns one logits row `[vocab_size]` per session,
+    /// in `sessions` order.
+    ///
+    /// Each session's new K/V is written into its OWN physical block (they differ
+    /// by `block_table` row), and one `Op::PagedAttn` at batch `K` reads them —
+    /// so per-row results are independent (no cross-session contamination) and
+    /// equal the B=1 serial path ε-close. f32-only.
+    pub fn forward_paged_step_batched(
+        &self,
+        tokens: &[u32],
+        pool: &mut crate::kv_block_pool_device::DeviceKvPool,
+        sessions: &[crate::kv_block_pool::SessionHandle],
+    ) -> crate::Result<Vec<Vec<f32>>> {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let k = tokens.len();
+        if k == 0 || k != sessions.len() {
+            return Err(fuel_ir::Error::Msg(format!(
+                "forward_paged_step_batched: {} tokens for {} sessions (need equal, ≥ 1)",
+                k, sessions.len(),
+            )).bt());
+        }
+        if pool.dtype() != DType::F32 {
+            return Err(fuel_ir::Error::Msg(format!(
+                "forward_paged_step_batched: f32-only for now, pool dtype is {:?}",
+                pool.dtype(),
+            )).bt());
+        }
+        let geom = pool.geometry();
+        if geom.n_layers != cfg.n_layers {
+            return Err(fuel_ir::Error::Msg(format!(
+                "forward_paged_step_batched: pool n_layers {} != model n_layers {}",
+                geom.n_layers, cfg.n_layers,
+            )).bt());
+        }
+        let block_size = geom.block_size;
+
+        // Uniformity gate: all sessions at the same position (so RoPE + slot are
+        // shared). A ragged batch is a mis-call — the scheduler's arm pre-filters.
+        let tok_pos = pool.core().filled_tokens(sessions[0]).ok_or_else(|| {
+            fuel_ir::Error::Msg("forward_paged_step_batched: unknown session".to_string()).bt()
+        })?;
+        for &s in &sessions[1..] {
+            let p = pool.core().filled_tokens(s).ok_or_else(|| {
+                fuel_ir::Error::Msg("forward_paged_step_batched: unknown session".to_string()).bt()
+            })?;
+            if p != tok_pos {
+                return Err(fuel_ir::Error::Msg(format!(
+                    "forward_paged_step_batched: non-uniform positions ({p} != {tok_pos}) — batch \
+                     only equal-length sessions",
+                )).bt());
+            }
+        }
+        let slot = tok_pos % block_size;
+
+        // Grow each session by one token; collect its (phys, slot) write target.
+        let mut writes: Vec<(crate::kv_block_pool::PhysBlockId, usize)> = Vec::with_capacity(k);
+        for &s in sessions {
+            pool.core_mut().append(s, 1).map_err(|e| {
+                fuel_ir::Error::Msg(format!("forward_paged_step_batched: block append failed: {e:?}")).bt()
+            })?;
+            let phys = pool.core().resident_block(s, tok_pos / block_size).ok_or_else(|| {
+                fuel_ir::Error::Msg(
+                    "forward_paged_step_batched: token block not resident after append".to_string(),
+                ).bt()
+            })?;
+            writes.push((phys, slot));
+        }
+        let pt = pool.materialize_block_table(sessions).map_err(|e| {
+            fuel_ir::Error::Msg(format!("forward_paged_step_batched: block-table materialize failed: {e:?}")).bt()
+        })?;
+
+        // Embed K tokens → [K, 1, dim].
+        let embed = LazyTensor::from_f32(
+            weights.token_embedding.clone(),
+            Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
+            &Device::cpu(),
+        );
+        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[k]));
+        let mut h = embed
+            .index_select(0, &token_ids).unwrap()
+            .reshape(Shape::from_dims(&[k, 1, cfg.dim])).unwrap();
+
+        // RoPE at the (shared) position; block_table [K, max_blk], context_lens [K].
+        let (rope_cos, rope_sin) = h.rope_tables_const(cfg.rope_base, tok_pos, 1, cfg.head_dim);
+        let scale = (1.0f64 / (cfg.head_dim as f64).sqrt()) as f32;
+        let block_table = h.const_u32_like(pt.block_table.clone(), pt.block_table_shape());
+        let context_lens = h.const_u32_like(pt.context_lens.clone(), pt.context_lens_shape());
+
+        let mut cache = fuel_dispatch::pipelined::StorageCache::new();
+        for (li, layer) in weights.layers.iter().enumerate() {
+            let k_ph = h.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
+            let v_ph = h.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
+            let k_arc = pool.k_pool(li).ok_or_else(|| {
+                fuel_ir::Error::Msg(format!("forward_paged_step_batched: no K pool buffer for layer {li}")).bt()
+            })?;
+            let v_arc = pool.v_pool(li).ok_or_else(|| {
+                fuel_ir::Error::Msg(format!("forward_paged_step_batched: no V pool buffer for layer {li}")).bt()
+            })?;
+            cache.insert(k_ph.inner.id(), std::sync::Arc::clone(k_arc));
+            cache.insert(v_ph.inner.id(), std::sync::Arc::clone(v_arc));
+            h = self.apply_layer_paged_batched(
+                &h, layer, pool, &k_ph, &v_ph, &rope_cos, &rope_sin,
+                &block_table, &context_lens, &writes, scale,
+            )?;
+        }
+
+        let h_norm = apply_affine_rms_norm(&h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps);
+        let logits = weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size); // [K, 1, vocab]
+        let logits_flat = logits.reshape(Shape::from_dims(&[k * cfg.vocab_size]))?;
+        let flat = crate::pipelined_bridge::realize_one_as_with_initial::<f32>(
+            logits_flat.inner.graph(),
+            logits_flat.inner.id(),
+            &Device::cpu(),
+            cache,
+        )?;
+        // Split the flat [K·vocab] into one [vocab] row per session (row-major).
+        Ok(flat.chunks(cfg.vocab_size).map(|c| c.to_vec()).collect())
+    }
+
+    /// Batched (`B = K`) sibling of [`Self::apply_layer_paged`]: the shared
+    /// `project_qkv_roped` (batch-agnostic) + `build_decode_attn_batched` (K
+    /// per-session slot writes + one `Op::PagedAttn` at B=K) + the shared
+    /// `ffn_block`. `x` is `[K, 1, dim]`.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_layer_paged_batched(
+        &self,
+        x: &LazyTensor,
+        layer: &LayerWeights,
+        pool: &crate::kv_block_pool_device::DeviceKvPool,
+        k_pool_ph: &LazyTensor,
+        v_pool_ph: &LazyTensor,
+        rope_cos: &LazyTensor,
+        rope_sin: &LazyTensor,
+        block_table: &LazyTensor,
+        context_lens: &LazyTensor,
+        writes: &[(crate::kv_block_pool::PhysBlockId, usize)],
+        scale: f32,
+    ) -> crate::Result<LazyTensor> {
+        let cfg = &self.config;
+        let xs = x.shape();
+        let batch = xs.dims()[0];
+        let (q_r, k_r, v_h) = self.project_qkv_roped(x, layer, rope_cos, rope_sin)?;
+        let attn = pool.build_decode_attn_batched(
+            k_pool_ph, v_pool_ph, &q_r, &k_r, &v_h, block_table, context_lens, writes, scale,
+        )?;
+        let merged = attn
+            .permute([0, 2, 1, 3_usize]).unwrap()
+            .reshape(Shape::from_dims(&[batch, 1, cfg.dim])).unwrap();
+        let attn_out = layer.attn_o.apply_linear(&merged, cfg.dim, cfg.dim);
+        let h1 = x.add(&attn_out).unwrap();
+        Ok(self.ffn_block(&h1, layer))
+    }
+
     /// One transformer layer of the paged decode step: the projection/RoPE of
     /// [`Self::apply_layer_with_kv_writes`] (duplicated so the tested contiguous
     /// forward is untouched), with the KV write + sliced attention replaced by

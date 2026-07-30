@@ -138,3 +138,69 @@ fn paged_forward_matches_contiguous_gqa() {
         rope_base: 10000.0,
     });
 }
+
+/// PS4a: batched paged decode (`B = K`) matches the serial single-session path
+/// per row. Each row of a batched step equals that session's standalone decode
+/// — proving `Op::PagedAttn` at B=K routes each session to only its own blocks
+/// (no cross-contamination) and the batched result is the B=1 result.
+fn batched_matches_serial_for(cfg: LlamaConfig) {
+    let model = LlamaModel { config: cfg.clone(), weights: tiny_weights(&cfg, 9999) };
+    let dev = Device::cpu();
+    let geom = || KvGeometry {
+        n_layers: cfg.n_layers,
+        num_blocks: 32,
+        block_size: 4,
+        n_kv_heads: cfg.n_kv_heads,
+        head_dim: cfg.head_dim,
+        elem_size: 4,
+    };
+    // Equal-length prompts → uniform position after prefill (the batching gate).
+    let prompt_a = [1u32, 2, 3];
+    let prompt_b = [4u32, 5, 6];
+    let (decode_a, decode_b) = (7u32, 8u32);
+
+    // Serial: each session alone (own pool), prefill token-by-token + one decode.
+    let serial = |prompt: &[u32], tok: u32| -> Vec<f32> {
+        let mut pool = DeviceKvPool::new(geom(), DType::F32, &dev).unwrap();
+        let s = pool.core_mut().open();
+        for &t in prompt {
+            model.forward_paged_step(t, &mut pool, s).unwrap();
+        }
+        model.forward_paged_step(tok, &mut pool, s).unwrap()
+    };
+    let a_serial = serial(&prompt_a, decode_a);
+    let b_serial = serial(&prompt_b, decode_b);
+
+    // Batched: A + B on ONE shared pool, prefill each, then one batched step.
+    let mut pool = DeviceKvPool::new(geom(), DType::F32, &dev).unwrap();
+    let sa = pool.core_mut().open();
+    let sb = pool.core_mut().open();
+    for &t in &prompt_a {
+        model.forward_paged_step(t, &mut pool, sa).unwrap();
+    }
+    for &t in &prompt_b {
+        model.forward_paged_step(t, &mut pool, sb).unwrap();
+    }
+    let batched = model
+        .forward_paged_step_batched(&[decode_a, decode_b], &mut pool, &[sa, sb])
+        .unwrap();
+    assert_eq!(batched.len(), 2);
+    assert_close(&batched[0], &a_serial, "batched row 0 (A) == serial A");
+    assert_close(&batched[1], &b_serial, "batched row 1 (B) == serial B");
+}
+
+#[test]
+fn paged_batched_matches_serial_no_gqa() {
+    batched_matches_serial_for(LlamaConfig {
+        vocab_size: 16, dim: 16, n_layers: 2, n_heads: 4, n_kv_heads: 4,
+        head_dim: 4, ffn_dim: 16, norm_eps: 1e-5, rope_base: 10000.0,
+    });
+}
+
+#[test]
+fn paged_batched_matches_serial_gqa() {
+    batched_matches_serial_for(LlamaConfig {
+        vocab_size: 16, dim: 16, n_layers: 2, n_heads: 4, n_kv_heads: 2,
+        head_dim: 4, ffn_dim: 16, norm_eps: 1e-5, rope_base: 10000.0,
+    });
+}
