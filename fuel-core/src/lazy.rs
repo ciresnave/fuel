@@ -7590,11 +7590,11 @@ impl LlamaModel {
 
     /// Batched (`B = K`) sibling of [`Self::forward_paged_step`] — one decode
     /// step over K sessions in a single model pass (paged-storage PS4a, the
-    /// throughput arm). Each session `i` contributes one `token`; all must be at
-    /// the **same** position (uniform `filled_tokens`) so RoPE + the slot index
-    /// are shared — the batching precondition (same as the contiguous batched
-    /// arm's uniformity gate). Returns one logits row `[vocab_size]` per session,
-    /// in `sessions` order.
+    /// throughput arm). Each session `i` contributes one `token` at its OWN
+    /// position: a ragged batch (sessions at different `filled_tokens`) is fully
+    /// supported — per-row RoPE (`rope_tables_const_batched` → `rope_batched`) +
+    /// per-row slot index remove the former uniformity precondition. Returns one
+    /// logits row `[vocab_size]` per session, in `sessions` order.
     ///
     /// Each session's new K/V is written into its OWN physical block (they differ
     /// by `block_table` row), and one `Op::PagedAttn` at batch `K` reads them —
@@ -7631,23 +7631,17 @@ impl LlamaModel {
         }
         let block_size = geom.block_size;
 
-        // Uniformity gate: all sessions at the same position (so RoPE + slot are
-        // shared). A ragged batch is a mis-call — the scheduler's arm pre-filters.
-        let tok_pos = pool.core().filled_tokens(sessions[0]).ok_or_else(|| {
-            fuel_ir::Error::Msg("forward_paged_step_batched: unknown session".to_string()).bt()
-        })?;
-        for &s in &sessions[1..] {
+        // Per-session positions — a ragged batch is fully supported: each row
+        // carries its own RoPE position and slot index. (The former uniformity
+        // gate existed only because RoPE + slot were shared; per-row RoPE via
+        // rope_tables_const_batched dissolved that precondition.)
+        let mut positions = Vec::with_capacity(k);
+        for &s in sessions {
             let p = pool.core().filled_tokens(s).ok_or_else(|| {
                 fuel_ir::Error::Msg("forward_paged_step_batched: unknown session".to_string()).bt()
             })?;
-            if p != tok_pos {
-                return Err(fuel_ir::Error::Msg(format!(
-                    "forward_paged_step_batched: non-uniform positions ({p} != {tok_pos}) — batch \
-                     only equal-length sessions",
-                )).bt());
-            }
+            positions.push(p);
         }
-        let slot = tok_pos % block_size;
 
         // Atomicity + capacity pre-check (C-1): a batched step allocates one block
         // per boundary-crossing session (slot == 0) PLUS one per shared frontier
@@ -7655,11 +7649,12 @@ impl LlamaModel {
         // mutating any session, so a mid-batch OutOfBlocks can't leave the batch
         // partially advanced (which would wedge it non-uniform + un-retryable).
         let mut needed = 0usize;
-        for &s in sessions {
-            if slot == 0 {
+        for (bi, &s) in sessions.iter().enumerate() {
+            let pos_b = positions[bi];
+            if pos_b % block_size == 0 {
                 needed += 1; // append allocates a fresh block for the new token
             } else {
-                let frontier = pool.core().resident_block(s, tok_pos / block_size).ok_or_else(|| {
+                let frontier = pool.core().resident_block(s, pos_b / block_size).ok_or_else(|| {
                     fuel_ir::Error::Msg(
                         "forward_paged_step_batched: frontier block not resident".to_string(),
                     ).bt()
@@ -7679,13 +7674,14 @@ impl LlamaModel {
 
         // Execute — pre-checked to fit, so no session is left partially advanced.
         let mut writes: Vec<(crate::kv_block_pool::PhysBlockId, usize)> = Vec::with_capacity(k);
-        for &s in sessions {
+        for (bi, &s) in sessions.iter().enumerate() {
+            let pos_b = positions[bi];
             pool.core_mut().append(s, 1).map_err(|e| {
                 fuel_ir::Error::Msg(format!("forward_paged_step_batched: block append failed: {e:?}")).bt()
             })?;
             // Copy-on-write if this session's frontier block is shared (spliced).
-            let phys = pool.ensure_writable_block(s, tok_pos / block_size)?;
-            writes.push((phys, slot));
+            let phys = pool.ensure_writable_block(s, pos_b / block_size)?;
+            writes.push((phys, pos_b % block_size));
         }
         let pt = pool.materialize_block_table(sessions).map_err(|e| {
             fuel_ir::Error::Msg(format!("forward_paged_step_batched: block-table materialize failed: {e:?}")).bt()
@@ -7703,8 +7699,9 @@ impl LlamaModel {
             .reshape(Shape::from_dims(&[k, 1, cfg.dim])).unwrap()
             .to_dtype(act_dtype)?;
 
-        // RoPE at the (shared) position; block_table [K, max_blk], context_lens [K].
-        let (rope_cos, rope_sin) = h.rope_tables_const(cfg.rope_base, tok_pos, 1, cfg.head_dim);
+        // Per-row RoPE: one position per session -> [K,1,1,head_dim] tables.
+        // block_table [K, max_blk], context_lens [K] (both already ragged).
+        let (rope_cos, rope_sin) = h.rope_tables_const_batched(cfg.rope_base, &positions, cfg.head_dim);
         let scale = (1.0f64 / (cfg.head_dim as f64).sqrt()) as f32;
         let block_table = h.const_u32_like(pt.block_table.clone(), pt.block_table_shape());
         let context_lens = h.const_u32_like(pt.context_lens.clone(), pt.context_lens_shape());
@@ -7764,7 +7761,7 @@ impl LlamaModel {
         let cfg = &self.config;
         let xs = x.shape();
         let batch = xs.dims()[0];
-        let (q_r, k_r, v_h) = self.project_qkv_roped(x, layer, rope_cos, rope_sin)?;
+        let (q_r, k_r, v_h) = self.project_qkv_roped_batched(x, layer, rope_cos, rope_sin)?;
         let attn = pool.build_decode_attn_batched(
             k_pool_ph, v_pool_ph, &q_r, &k_r, &v_h, block_table, context_lens, writes, scale,
         )?;
@@ -7856,6 +7853,50 @@ impl LlamaModel {
             .to_dtype(act_dtype)?;
         let k_r = k_h.to_dtype(DType::F32)?
             .rope_with_tables_decomposed(rope_cos, rope_sin)?
+            .to_dtype(act_dtype)?;
+        Ok((q_r, k_r, v_h))
+    }
+
+    /// Per-row RoPE sibling of [`Self::project_qkv_roped`]: identical projection
+    /// + head reshape, but applies RoPE via [`LazyTensor::rope_batched`] with
+    /// `[batch, 1, 1, head_dim]` cos/sin tables (one position per row) instead of
+    /// the shared single-position `rope_with_tables_decomposed`. Uniform
+    /// positions are a bit-identical special case, so this subsumes the shared
+    /// path for the batched paged decode. `rope_cos`/`rope_sin` come from
+    /// [`LazyTensor::rope_tables_const_batched`].
+    fn project_qkv_roped_batched(
+        &self,
+        x: &LazyTensor,
+        layer: &LayerWeights,
+        rope_cos: &LazyTensor,
+        rope_sin: &LazyTensor,
+    ) -> crate::Result<(LazyTensor, LazyTensor, LazyTensor)> {
+        let cfg = &self.config;
+        let x_shape = x.shape();
+        let dims = x_shape.dims();
+        let batch = dims[0];
+        let seq = dims[1];
+        let kv_dim = cfg.n_kv_heads * cfg.head_dim;
+        let act_dtype = x.dtype();
+
+        let x_norm = apply_affine_rms_norm(x, &layer.attn_norm_gain, cfg.dim, cfg.norm_eps);
+        let q = layer.attn_q.apply_linear(&x_norm, cfg.dim, cfg.dim).add_optional_trailing_bias(layer.attn_q_bias.as_ref()).unwrap();
+        let k = layer.attn_k.apply_linear(&x_norm, cfg.dim, kv_dim).add_optional_trailing_bias(layer.attn_k_bias.as_ref()).unwrap();
+        let v = layer.attn_v.apply_linear(&x_norm, cfg.dim, kv_dim).add_optional_trailing_bias(layer.attn_v_bias.as_ref()).unwrap();
+        let q_h = q
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim])).unwrap()
+            .permute([0, 2, 1, 3_usize]).unwrap();
+        let k_h = k
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim])).unwrap()
+            .permute([0, 2, 1, 3_usize]).unwrap();
+        let v_h = v
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim])).unwrap()
+            .permute([0, 2, 1, 3_usize]).unwrap();
+        let q_r = q_h.to_dtype(DType::F32)?
+            .rope_batched(rope_cos, rope_sin)?
+            .to_dtype(act_dtype)?;
+        let k_r = k_h.to_dtype(DType::F32)?
+            .rope_batched(rope_cos, rope_sin)?
             .to_dtype(act_dtype)?;
         Ok((q_r, k_r, v_h))
     }
@@ -13857,6 +13898,92 @@ mod generate_tests {
             );
         }
         eprintln!("bf16 PAGED decode on CUDA VERIFIED: argmax matches contiguous over {} steps", all.len());
+    }
+
+    /// Ragged (non-uniform-position) batched paged decode: `K` sessions sitting
+    /// at DISTINCT absolute positions, advanced by ONE batched step, where every
+    /// output row must equal the single-session serial [`LlamaModel::
+    /// forward_paged_step`] for that session at its own position. CPU f32.
+    ///
+    /// This is the parity gate for removing `forward_paged_step_batched`'s
+    /// uniformity gate. The schedule is deliberately STAGGERED — histories of
+    /// length 2 / 5 / 3 → positions 2 / 5 / 3 — NOT a lockstep common offset. A
+    /// broken per-row RoPE that shares one `tok_pos` across rows applies the
+    /// wrong rotation to rows 1..K (row 0 sits at the shared position, so it
+    /// stays correct — that asymmetry is the tell) and diverges from their
+    /// serial reference. A fixed-offset heterogeneous schedule would pass
+    /// vacuously even with that bug; distinct absolute positions do not.
+    #[test]
+    fn ragged_batched_paged_decode_matches_per_session_serial() {
+        let cfg = LlamaConfig {
+            vocab_size: 32, dim: 16, n_layers: 2, n_heads: 4, n_kv_heads: 4,
+            head_dim: 4, ffn_dim: 32, norm_eps: 1e-5, rope_base: 10000.0,
+        };
+        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
+        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let dev = crate::Device::cpu();
+
+        // Staggered histories → DISTINCT positions {2, 5, 3} at the batched step.
+        let histories: [&[u32]; 3] = [&[1, 2], &[3, 4, 5, 6, 1], &[2, 5, 1]];
+        let decode_tokens = [7u32, 2, 4];
+        let k = histories.len();
+
+        let (n_layers, n_kv_heads, head_dim) = (cfg.n_layers, cfg.n_kv_heads, cfg.head_dim);
+        let geom = || crate::kv_block_pool::KvGeometry {
+            n_layers, num_blocks: 32, block_size: 4, n_kv_heads, head_dim, elem_size: 4,
+        };
+
+        // Serial reference: each session ALONE in its own pool, primed
+        // identically, then one single-session decode step — ground truth row b.
+        let mut reference: Vec<Vec<f32>> = Vec::with_capacity(k);
+        for b in 0..k {
+            let mut pool = crate::kv_block_pool_device::DeviceKvPool::new(geom(), DType::F32, &dev)
+                .expect("f32 DeviceKvPool (ref)");
+            let s = pool.core_mut().open();
+            for &t in histories[b] {
+                model.forward_paged_step(t, &mut pool, s).expect("serial prime");
+            }
+            reference.push(
+                model.forward_paged_step(decode_tokens[b], &mut pool, s).expect("serial decode"),
+            );
+        }
+
+        // Batched: K sessions in ONE pool, primed identically per-session, then a
+        // SINGLE ragged batched step over all K at once.
+        let mut pool = crate::kv_block_pool_device::DeviceKvPool::new(geom(), DType::F32, &dev)
+            .expect("f32 DeviceKvPool (batched)");
+        let mut sessions = Vec::with_capacity(k);
+        for b in 0..k {
+            let s = pool.core_mut().open();
+            for &t in histories[b] {
+                model.forward_paged_step(t, &mut pool, s).expect("batched prime");
+            }
+            sessions.push(s);
+        }
+        // Guard the premise: the positions really are non-uniform.
+        let positions: Vec<usize> = sessions.iter()
+            .map(|&s| pool.core().filled_tokens(s).unwrap())
+            .collect();
+        assert_eq!(positions, vec![2, 5, 3], "test setup: staggered positions");
+
+        let batched = model
+            .forward_paged_step_batched(&decode_tokens, &mut pool, &sessions)
+            .expect("ragged batched decode");
+        assert_eq!(batched.len(), k, "one logits row per session");
+
+        for b in 0..k {
+            assert_eq!(batched[b].len(), reference[b].len(), "row {b} logits length");
+            for (i, (&got, &want)) in batched[b].iter().zip(reference[b].iter()).enumerate() {
+                let diff = (got - want).abs();
+                let denom = got.abs().max(want.abs()).max(f32::MIN_POSITIVE);
+                let rel = diff / denom;
+                assert!(
+                    diff < 1e-5 || rel < 1e-5,
+                    "row {b} (pos {}) logit[{i}]: batched={got} serial={want} (abs={diff} rel={rel})",
+                    positions[b],
+                );
+            }
+        }
     }
 
     /// Phase D · FIRST live-GPU verification of plan-once persistent decode on
