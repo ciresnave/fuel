@@ -101,6 +101,32 @@ KV *store* — unlocking:
   CUDA build ~36 min + cuDNN on PATH per environment discipline); the CPU-side
   seam is ready to generalize.
 
+## PS4 hardening — adversarial verification (ultracode, 2026-07-29)
+
+A multi-agent adversarial-verification pass over the batched B>1 path (5 attack
+angles → refute-verify) found two REAL defects the happy-path parity tests missed
+(they used non-spliced, over-provisioned sessions) — both now FIXED (`7676d9f5`):
+
+- **Missing copy-on-write** (the root of 5 confirmed findings): the decode write
+  path (single + batched) wrote a new token into the resident block without
+  breaking a share, so decoding a *spliced* session corrupted its co-sharers.
+  Fix: `DeviceKvPool::ensure_writable_block` (cow_break + byte copy if shared),
+  called in both forwards after append. Regressions: device `ensure_writable_
+  block_copy_on_writes_a_shared_block`; end-to-end `paged_decode_into_spliced_
+  prefix_does_not_corrupt_donor`.
+- **Non-atomic batched append**: a mid-loop OutOfBlocks left earlier sessions
+  advanced, wedging the batch non-uniform. Fix: pre-check total block need
+  (boundary appends + CoW splits) vs free before mutating; error atomically.
+  Regression: `batched_step_out_of_blocks_is_atomic`.
+
+The pass also flagged the **highest-risk coverage gap** — batched decode at
+`max_blocks > 1` was untested (1-block sessions make the per-row gather a no-op).
+Closed with `paged_batched_multiblock_matches_serial` (2-block sessions, batched
+row == serial). Remaining lower-risk follow-ups (not live bugs): a build-time
+`Sq == 1` assert on the `Op::PagedAttn` builder (decode-only; deferred to avoid
+re-entering `fuel-graph/lib.rs` while the seam owner works there); `B >= 3`;
+genuine variable-length (non-uniform) batching + its block-table padding path.
+
 ## Layering / correctness notes
 
 - `build_decode_attn` is a **graph-builder** (no realize) because the pool buffers

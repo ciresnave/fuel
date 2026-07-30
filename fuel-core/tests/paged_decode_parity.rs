@@ -283,3 +283,49 @@ fn batched_step_out_of_blocks_is_atomic() {
     );
     assert_eq!(pool.core().free_blocks(), 1, "no block consumed on the rejected batch");
 }
+
+/// REGRESSION for the adversarial-verification "highest-risk gap": batched decode
+/// with sessions spanning >1 block. The earlier batched parity uses 1-block
+/// sessions, where the per-row block gather degenerates to a no-op; here each
+/// session holds 2 blocks, exercising the flattened `[K, max_blk]` block_table
+/// routing at B=K. Each batched row must still equal its standalone serial decode
+/// (each row attends to ONLY its own two blocks).
+#[test]
+fn paged_batched_multiblock_matches_serial() {
+    let cfg = tiny_cfg();
+    let model = LlamaModel { config: cfg.clone(), weights: tiny_weights(&cfg, 9999) };
+    let dev = Device::cpu();
+    let geom = || KvGeometry {
+        n_layers: cfg.n_layers, num_blocks: 32, block_size: 4,
+        n_kv_heads: cfg.n_kv_heads, head_dim: cfg.head_dim, elem_size: 4,
+    };
+    // 5-token prompts → 2 blocks each (block_size 4); equal length → uniform.
+    let prompt_a = [1u32, 2, 3, 4, 5];
+    let prompt_b = [6u32, 7, 8, 9, 10];
+    let (da, db) = (11u32, 12u32);
+
+    let serial = |prompt: &[u32], tok: u32| -> Vec<f32> {
+        let mut pool = DeviceKvPool::new(geom(), DType::F32, &dev).unwrap();
+        let s = pool.core_mut().open();
+        for &t in prompt {
+            model.forward_paged_step(t, &mut pool, s).unwrap();
+        }
+        model.forward_paged_step(tok, &mut pool, s).unwrap()
+    };
+    let a_serial = serial(&prompt_a, da);
+    let b_serial = serial(&prompt_b, db);
+
+    let mut pool = DeviceKvPool::new(geom(), DType::F32, &dev).unwrap();
+    let sa = pool.core_mut().open();
+    let sb = pool.core_mut().open();
+    for &t in &prompt_a {
+        model.forward_paged_step(t, &mut pool, sa).unwrap();
+    }
+    for &t in &prompt_b {
+        model.forward_paged_step(t, &mut pool, sb).unwrap();
+    }
+    assert_eq!(pool.core().session_blocks(sa), Some(2), "each session spans 2 blocks");
+    let batched = model.forward_paged_step_batched(&[da, db], &mut pool, &[sa, sb]).unwrap();
+    assert_close(&batched[0], &a_serial, "multi-block batched row A == serial A");
+    assert_close(&batched[1], &b_serial, "multi-block batched row B == serial B");
+}
