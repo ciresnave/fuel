@@ -1,8 +1,31 @@
-﻿//! Communication abstraction for collective operations.
+//! Communication abstraction for collective operations — **lazy-only**.
 //!
 //! Defines the [`Communicator`] trait that backends (NCCL, Gloo, etc.) implement
 //! to provide collective primitives. Code in [`tensor_parallel`](crate::tensor_parallel)
 //! and [`pipeline_parallel`](crate::pipeline_parallel) is generic over this trait.
+//!
+//! # Which shape do I want?
+//!
+//! This crate carries **two** collective surfaces, and they are not competitors:
+//!
+//! | | [`Communicator`] | [`DeviceGroup`](crate::device_group::DeviceGroup) |
+//! |---|---|---|
+//! | Model | SPMD — one process per rank | one process, N devices |
+//! | You pass | *your* shard | *every* shard |
+//! | Transport | external (NCCL/Gloo/MPI) | in-graph `Op::Copy` |
+//! | Works today | only at `world_size == 1` | yes |
+//!
+//! A single process driving four GPUs holds all four shards at once and has no
+//! peer to rendezvous with, so the per-rank signature does not fit it — use
+//! `DeviceGroup`. `Communicator` is the seam an out-of-process transport plugs
+//! into, and Fuel deliberately does not implement one: *which* process is rank 3,
+//! and how ranks meet, is consumer policy (see `docs/architecture/15-consumer-contract.md`).
+//!
+//! # Lazy-only
+//!
+//! These signatures take [`LazyTensor`]. The eager `fuel::Tensor` surface is
+//! being retired, and a collective written against it could not reduce lazy
+//! shards — which is the likeliest reason this crate never acquired a consumer.
 //!
 //! # Example
 //!
@@ -15,7 +38,8 @@
 //! assert_eq!(info.world_size, 2);
 //! ```
 
-use fuel::{Result, Tensor};
+use fuel::Result;
+use fuel::lazy::LazyTensor;
 
 /// Reduce operation type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -52,22 +76,29 @@ impl CommInfo {
 /// are synchronous — they block until the collective is complete.
 ///
 /// The trait is object-safe so it can be stored as `Box<dyn Communicator>`.
+///
+/// **Every shard handed to an implementation must belong to the same graph as
+/// the value it is combined with.** `LazyTensor` ops are graph-affine: two
+/// tensors can be combined iff their `graph_id`s match. An out-of-process
+/// implementation that receives bytes over the wire must therefore materialize
+/// them onto the *caller's* graph (`const_f32_like`, `from_f32_on`), not mint a
+/// fresh one.
 pub trait Communicator: Send {
     /// Communicator info (rank, world size).
     fn info(&self) -> CommInfo;
 
     /// All-reduce: compute element-wise reduction across all ranks,
     /// distributing the result to every rank.
-    fn all_reduce(&self, tensor: &Tensor, op: ReduceOp) -> Result<Tensor>;
+    fn all_reduce(&self, tensor: &LazyTensor, op: ReduceOp) -> Result<LazyTensor>;
 
     /// All-gather: concatenate tensors from all ranks along `dim`.
-    fn all_gather(&self, tensor: &Tensor, dim: usize) -> Result<Tensor>;
+    fn all_gather(&self, tensor: &LazyTensor, dim: usize) -> Result<LazyTensor>;
 
     /// Reduce-scatter: reduce across ranks then scatter equal chunks to each rank.
-    fn reduce_scatter(&self, tensor: &Tensor, op: ReduceOp, dim: usize) -> Result<Tensor>;
+    fn reduce_scatter(&self, tensor: &LazyTensor, op: ReduceOp, dim: usize) -> Result<LazyTensor>;
 
     /// Broadcast tensor from `root` to all ranks.
-    fn broadcast(&self, tensor: &Tensor, root: usize) -> Result<Tensor>;
+    fn broadcast(&self, tensor: &LazyTensor, root: usize) -> Result<LazyTensor>;
 
     /// Barrier: block until all ranks reach this point.
     fn barrier(&self) -> Result<()>;
@@ -77,21 +108,11 @@ pub trait Communicator: Send {
 ///
 /// Useful for testing parallel code on a single device.
 ///
-/// # Example
-///
-/// ```rust
-/// use fuel::{Device, Tensor};
-/// use fuel_parallel::comm::{Communicator, ReduceOp, IdentityComm};
-///
-/// let comm = IdentityComm;
-/// assert_eq!(comm.info().rank, 0);
-/// assert_eq!(comm.info().world_size, 1);
-///
-/// let t = Tensor::new(&[1.0f32, 2.0, 3.0], &Device::cpu()).unwrap();
-/// let reduced = comm.all_reduce(&t, ReduceOp::Sum).unwrap();
-/// // Identity: result equals input
-/// assert_eq!(reduced.to_vec1::<f32>().unwrap(), vec![1.0, 2.0, 3.0]);
-/// ```
+/// **This reduces nothing, and that is correct.** With `world_size == 1` there
+/// is no peer to combine with, so the identity *is* the reduction. It is not a
+/// working multi-device collective and must not be read as one — for that, use
+/// [`DeviceGroup`](crate::device_group::DeviceGroup), which holds every shard
+/// and folds them in-graph.
 pub struct IdentityComm;
 
 impl Communicator for IdentityComm {
@@ -99,19 +120,19 @@ impl Communicator for IdentityComm {
         CommInfo { rank: 0, world_size: 1 }
     }
 
-    fn all_reduce(&self, tensor: &Tensor, _op: ReduceOp) -> Result<Tensor> {
+    fn all_reduce(&self, tensor: &LazyTensor, _op: ReduceOp) -> Result<LazyTensor> {
         Ok(tensor.clone())
     }
 
-    fn all_gather(&self, tensor: &Tensor, _dim: usize) -> Result<Tensor> {
+    fn all_gather(&self, tensor: &LazyTensor, _dim: usize) -> Result<LazyTensor> {
         Ok(tensor.clone())
     }
 
-    fn reduce_scatter(&self, tensor: &Tensor, _op: ReduceOp, _dim: usize) -> Result<Tensor> {
+    fn reduce_scatter(&self, tensor: &LazyTensor, _op: ReduceOp, _dim: usize) -> Result<LazyTensor> {
         Ok(tensor.clone())
     }
 
-    fn broadcast(&self, tensor: &Tensor, _root: usize) -> Result<Tensor> {
+    fn broadcast(&self, tensor: &LazyTensor, _root: usize) -> Result<LazyTensor> {
         Ok(tensor.clone())
     }
 
@@ -123,7 +144,12 @@ impl Communicator for IdentityComm {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel::Device;
+    use fuel::{Device, Shape};
+
+    /// A 1-D f32 lazy tensor on CPU, on a fresh graph.
+    fn t(data: &[f32]) -> LazyTensor {
+        LazyTensor::from_f32(data.to_vec(), Shape::from_dims(&[data.len()]), &Device::cpu())
+    }
 
     #[test]
     fn identity_comm_info() {
@@ -137,23 +163,21 @@ mod tests {
     #[test]
     fn identity_all_reduce() {
         let comm = IdentityComm;
-        let t = Tensor::new(&[1.0f32, 2.0, 3.0], &Device::cpu()).unwrap();
-        let result = comm.all_reduce(&t, ReduceOp::Sum).unwrap();
-        assert_eq!(result.to_vec1::<f32>().unwrap(), vec![1.0, 2.0, 3.0]);
+        let result = comm.all_reduce(&t(&[1.0, 2.0, 3.0]), ReduceOp::Sum).unwrap();
+        assert_eq!(result.realize_f32(), vec![1.0, 2.0, 3.0]);
     }
 
     #[test]
     fn identity_all_gather() {
         let comm = IdentityComm;
-        let t = Tensor::new(&[1.0f32, 2.0], &Device::cpu()).unwrap();
-        let result = comm.all_gather(&t, 0).unwrap();
-        assert_eq!(result.to_vec1::<f32>().unwrap(), vec![1.0, 2.0]);
+        let result = comm.all_gather(&t(&[1.0, 2.0]), 0).unwrap();
+        assert_eq!(result.realize_f32(), vec![1.0, 2.0]);
     }
 
     // `Communicator` is the SPMD shape: each rank calls with its own tensor.
     // A single process driving N devices holds ALL shards at once, so it wants
-    // a slice-shaped interface instead — see [`crate::device_group`], which is
-    // lazy-only. `IdentityComm` stays the correct degenerate impl here.
+    // a slice-shaped interface instead — see [`crate::device_group`].
+    // `IdentityComm` stays the correct degenerate impl here.
 
     #[test]
     fn identity_comm_reduces_nothing_and_that_is_correct() {
@@ -162,27 +186,37 @@ mod tests {
         // test exists so the distinction stays visible if someone reads
         // `all_reduce` and assumes it reduces.
         let comm = IdentityComm;
-        let t = Tensor::new(&[1.0f32, 2.0], &Device::cpu()).unwrap();
-        let out = comm.all_reduce(&t, ReduceOp::Sum).unwrap();
+        let out = comm.all_reduce(&t(&[1.0, 2.0]), ReduceOp::Sum).unwrap();
         assert_eq!(comm.info().world_size, 1);
-        assert_eq!(out.to_vec1::<f32>().unwrap(), vec![1.0, 2.0]);
+        assert_eq!(out.realize_f32(), vec![1.0, 2.0]);
     }
 
+    #[test]
+    fn identity_preserves_graph_affinity() {
+        // The ported signature must not silently re-root a shard onto a new
+        // graph: a returned tensor that no longer shares the caller's graph
+        // could not be combined with anything, and the failure would surface
+        // far from here as an operand-graph assert.
+        let comm = IdentityComm;
+        let input = t(&[1.0, 2.0]);
+        let out = comm.all_reduce(&input, ReduceOp::Sum).unwrap();
+        assert_eq!(out.graph_id(), input.graph_id());
+        // ...and the proof that matters: it still composes.
+        assert_eq!(out.add(&input).unwrap().realize_f32(), vec![2.0, 4.0]);
+    }
 
     #[test]
     fn identity_broadcast() {
         let comm = IdentityComm;
-        let t = Tensor::new(&[5.0f32], &Device::cpu()).unwrap();
-        let result = comm.broadcast(&t, 0).unwrap();
-        assert_eq!(result.to_vec1::<f32>().unwrap(), vec![5.0]);
+        let result = comm.broadcast(&t(&[5.0]), 0).unwrap();
+        assert_eq!(result.realize_f32(), vec![5.0]);
     }
 
     #[test]
     fn identity_reduce_scatter() {
         let comm = IdentityComm;
-        let t = Tensor::new(&[1.0f32, 2.0, 3.0], &Device::cpu()).unwrap();
-        let result = comm.reduce_scatter(&t, ReduceOp::Sum, 0).unwrap();
-        assert_eq!(result.to_vec1::<f32>().unwrap(), vec![1.0, 2.0, 3.0]);
+        let result = comm.reduce_scatter(&t(&[1.0, 2.0, 3.0]), ReduceOp::Sum, 0).unwrap();
+        assert_eq!(result.realize_f32(), vec![1.0, 2.0, 3.0]);
     }
 
     #[test]
