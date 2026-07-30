@@ -12,7 +12,7 @@ Fix agents consume their crate-dir section below.
 
 Read from the as-built code this round:
 
-- **`OpKind`** — `fuel-core-types/src/dispatch.rs` lines 52–494. The lowering table that gates
+- **`OpKind`** — `fuel-ir/src/dispatch.rs` lines 52–494. The lowering table that gates
   `op_kind:` is `fuel-dispatch/src/fkc/lower.rs::lower_op_kind` (lines 130–264), one arm per variant.
 - **`OpParams`** variants — `fuel-dispatch/src/kernel.rs` lines 163–681; the validator's accepted set
   is `validate.rs::is_op_params_variant` (lines 776–821).

@@ -12,7 +12,7 @@ by FDX.
 **Scope.** How a `Storage` describes *the scheme by which its bytes encode logical elements*, on
 the tensor itself, without an op consulting op-params. Two orthogonal axes:
 
-- **`DType`** (existing, [`fuel-core-types/src/dtype.rs:14`](../../fuel-core-types/src/dtype.rs)) —
+- **`DType`** (existing, [`fuel-ir/src/dtype.rs:14`](../../fuel-ir/src/dtype.rs)) —
   the **logical** element type ("what is a value"). Unchanged.
 - **`SType`** (new) — the **physical** encoding stack ("how is a logical element stored"). A named
   newtype over an ordered stack of `Encoding` layers; empty = plain dense `DType`.
@@ -22,10 +22,10 @@ the tensor itself, without an op consulting op-params. Two orthogonal axes:
 caches, the multi-output machinery), and `fuel-memory::dlpack_view` (the FDX projection point).
 
 **Authoritative inputs (verified against code, file:line cited inline).** The as-built core types
-in [`fuel-core-types/src/dtype.rs`](../../fuel-core-types/src/dtype.rs),
-[`quantized.rs`](../../fuel-core-types/src/quantized.rs),
-[`quant_scale.rs`](../../fuel-core-types/src/quant_scale.rs),
-[`storage.rs`](../../fuel-core-types/src/storage.rs); the closed-enum `Storage` in
+in [`fuel-ir/src/dtype.rs`](../../fuel-ir/src/dtype.rs),
+[`quantized.rs`](../../fuel-ir/src/quantized.rs),
+[`quant_scale.rs`](../../fuel-ir/src/quant_scale.rs),
+[`storage.rs`](../../fuel-ir/src/storage.rs); the closed-enum `Storage` in
 [`fuel-memory/src/lib.rs`](../../fuel-memory/src/lib.rs); the multi-output graph machinery in
 [`fuel-graph/src/lib.rs`](../../fuel-graph/src/lib.rs),
 [`fuel-dispatch/src/pipelined.rs`](../../fuel-dispatch/src/pipelined.rs), and
@@ -82,17 +82,17 @@ may carry any (compatible) `SType`, and the two are read for different questions
 | Question it answers | *What is a value?* | *How is a logical value stored?* |
 | Example value | `F16`, `F32`, `I8` | `[]` (plain) · `[GgmlBlock { Q4K }]` · `[AffineBlock { F4, [64], … }]` |
 | Status | **existing**, unchanged | **new** |
-| Home | [`dtype.rs:14`](../../fuel-core-types/src/dtype.rs) | new, this spec |
-| Derives | `Copy, Eq, Hash` ([`dtype.rs:12`](../../fuel-core-types/src/dtype.rs)) | `Eq, Hash` (§2) |
+| Home | [`dtype.rs:14`](../../fuel-ir/src/dtype.rs) | new, this spec |
+| Derives | `Copy, Eq, Hash` ([`dtype.rs:12`](../../fuel-ir/src/dtype.rs)) | `Eq, Hash` (§2) |
 
 **`DType` stays logical.** An NF4 (block-affine 4-bit) weight whose values *represent* F16 floats
 has `DType::F16` — **not** a hypothetical "4-bit" `DType`. The 4-bit packing is an `Encoding`
 *layer*, not a logical element type. This is why `DType` is unchanged by this spec: it already
 answers the logical question, and forcing storage facts into it would conflate the two axes. Note
 that `DType` *does* already include sub-byte logical floats (`F4`, `F6E2M3`, `F6E3M2`, `F8E8M0`,
-[`dtype.rs:39-46`](../../fuel-core-types/src/dtype.rs)) — those are genuine *logical* element types
+[`dtype.rs:39-46`](../../fuel-ir/src/dtype.rs)) — those are genuine *logical* element types
 (an MX payload's logical element really is `F4`), and `DType::size_in_bytes()` returns `0` for them
-([`dtype.rs:123-125`](../../fuel-core-types/src/dtype.rs)). The *packing* of those sub-byte
+([`dtype.rs:123-125`](../../fuel-ir/src/dtype.rs)). The *packing* of those sub-byte
 elements is, again, an `Encoding` concern, not a `DType` one.
 
 **Why orthogonal and not one fused enum.** A fused `DType × packing` enum would multiply: every
@@ -235,17 +235,17 @@ scheme. (This mirrors the FDX rule that the boundary descriptor carries no value
 
 **Verified type bindings (ground truth, not the sketch):**
 
-- `GgmlDType` — [`quantized.rs:26`](../../fuel-core-types/src/quantized.rs); 15 variants
+- `GgmlDType` — [`quantized.rs:26`](../../fuel-ir/src/quantized.rs); 15 variants
   `F32 … Q8K, BF16`. `block_size()` / `type_size()` at
-  [`quantized.rs:87-113`](../../fuel-core-types/src/quantized.rs) (Q4_0 = 18 bytes/block, etc.).
-- `DType` (for `AffineBlock.packed`) — [`dtype.rs:14`](../../fuel-core-types/src/dtype.rs); the
+  [`quantized.rs:87-113`](../../fuel-ir/src/quantized.rs) (Q4_0 = 18 bytes/block, etc.).
+- `DType` (for `AffineBlock.packed`) — [`dtype.rs:14`](../../fuel-ir/src/dtype.rs); the
   sub-byte members `F4`/`F6E2M3`/`F6E3M2`/`F8E8M0` exist
-  ([`dtype.rs:39-46`](../../fuel-core-types/src/dtype.rs)). **NF4 reuses `DType::F4`** — there is no
+  ([`dtype.rs:39-46`](../../fuel-ir/src/dtype.rs)). **NF4 reuses `DType::F4`** — there is no
   separate `NF4` `DType`, and this spec does **not** invent one (the locked decision forbids
   inventing dtype variants; the NF4 codebook is the kernel's, exactly as FDX §13.5a states).
-- `ScaleGranularity` — [`quant_scale.rs:38`](../../fuel-core-types/src/quant_scale.rs);
+- `ScaleGranularity` — [`quant_scale.rs:38`](../../fuel-ir/src/quant_scale.rs);
   `PerTensor`/`PerToken`/`PerChannel`. **Divergence note:** there is **no `PerBlock` variant** in
-  the as-built enum (its module doc, [`quant_scale.rs:24-30`](../../fuel-core-types/src/quant_scale.rs),
+  the as-built enum (its module doc, [`quant_scale.rs:24-30`](../../fuel-ir/src/quant_scale.rs),
   explicitly says block-quant formats "don't expose `ScaleGranularity`"). This matches FDX, which
   keeps `PerBlock` an **FDX/FKC-only** code (MX-only) that is **not** mirrored back into
   `ScaleGranularity` (FDX §6.2, FKC "Resolved critique" `PerBlock` note). Therefore `AffineBlock`'s
@@ -264,14 +264,14 @@ one); both gain the field.
 
 **As-built today (verified):**
 
-- [`fuel-core-types/src/storage.rs:216-224`](../../fuel-core-types/src/storage.rs):
+- [`fuel-ir/src/storage.rs:216-224`](../../fuel-ir/src/storage.rs):
   ```rust
   pub struct Storage {
       pub(crate) inner:  Box<dyn DynBackendStorage>,
       pub(crate) bundle: Option<Arc<[OutputView]>>,
   }
   ```
-  (here the dtype is read from `inner.dtype_dyn()`, [`storage.rs:396-398`](../../fuel-core-types/src/storage.rs)).
+  (here the dtype is read from `inner.dtype_dyn()`, [`storage.rs:396-398`](../../fuel-ir/src/storage.rs)).
 - [`fuel-memory/src/lib.rs:89-101`](../../fuel-memory/src/lib.rs):
   ```rust
   pub struct Storage {
@@ -302,7 +302,7 @@ pub struct Storage {
 ```
 
 ```rust
-// fuel-core-types/src/storage.rs
+// fuel-ir/src/storage.rs
 pub struct Storage {
     pub(crate) inner:  Box<dyn DynBackendStorage>,
     pub(crate) bundle: Option<Arc<[OutputView]>>,
@@ -317,7 +317,7 @@ existing path changes. New constructors (`Storage::with_stype(self, SType) -> Re
 `with_bundle`) attach a non-empty encoding; construction validates §8's invariants.
 
 **v1 is PRIMARY-only.** `SType` lives on the **primary** `Storage` only. Bundle slots
-(`OutputView`, [`storage.rs:46-68`](../../fuel-core-types/src/storage.rs)) keep **`dtype` only** —
+(`OutputView`, [`storage.rs:46-68`](../../fuel-ir/src/storage.rs)) keep **`dtype` only** —
 they carry no `SType` in v1. The realistic v1 producers of encoded storage are *single-output*
 quantized weights (a loaded NF4 / GGUF weight is one tensor, not a bundle); a *multi-output* node
 emitting an encoded slot is not a v1 need. **Per-slot `SType` is a FUTURE addition** — note it, do
@@ -364,7 +364,7 @@ Verified:
   [`fuel-dispatch/src/pipelined.rs:273-295`](../../fuel-dispatch/src/pipelined.rs) and the
   `SlotOwn` work item at [`pipelined.rs:1272-1295`](../../fuel-dispatch/src/pipelined.rs).
 - The one-allocation contract: [`docs/architecture/12-multi-output.md`](../architecture/12-multi-output.md)
-  and `allocate_bundled_storage` ([`storage.rs:187-201`](../../fuel-core-types/src/storage.rs)),
+  and `allocate_bundled_storage` ([`storage.rs:187-201`](../../fuel-ir/src/storage.rs)),
   which sizes **one** backing buffer covering all slots.
 
 So the graph supports **"many NODES sharing ONE allocation"**, **not** "one node owning many
@@ -420,10 +420,10 @@ multi-output check (Fact 1) plus the FDX re-read (Fact 2) settled it as **B**.
 **GGML stays inline — forced, not a choice.** GGUF on-disk is **interleaved struct-packed**: each
 block bakes its scale(s) into one struct (Q4_0 = `{ f16 d; u8 qs[16] }` = 18 bytes/block; the
 per-format byte budget is `GgmlDType::type_size()`,
-[`quantized.rs:87-105`](../../fuel-core-types/src/quantized.rs), and the block size is
-`GgmlDType::block_size()`, [`quantized.rs:107-113`](../../fuel-core-types/src/quantized.rs)). The
+[`quantized.rs:87-105`](../../fuel-ir/src/quantized.rs), and the block size is
+`GgmlDType::block_size()`, [`quantized.rs:107-113`](../../fuel-ir/src/quantized.rs)). The
 GGUF format, the k-quants math, and the ~40 quantized kernels (the `DynQuantizedStorage` family,
-[`quantized.rs:124-198`](../../fuel-core-types/src/quantized.rs)) all assume that interleaving, and
+[`quantized.rs:124-198`](../../fuel-ir/src/quantized.rs)) all assume that interleaving, and
 **zero-copy mmap requires it**. Therefore `Encoding::GgmlBlock` is **inline**: one self-contained
 buffer, **no** sibling scale operand, projecting to FDX `GGML_BLOCK` / `scale_placement = INLINE`
 (§7). There is no `ScaleSpec` on `GgmlBlock` — the scale is recovered per-format from `ggml_dtype`,
@@ -493,7 +493,7 @@ operand, §4); `SType` carries only the scheme.
   [§6.2 line 954, 994-998](dlpack-extension.md)). `Encoding::GgmlBlock.ggml_dtype` maps directly to
   `FDXQuant.ggml_dtype` (the FDX code mirrors `GgmlDType::to_u32` — Q4_0=2 … Q8K=15, BF16=30, FDX
   [§6.2 lines 903-905](dlpack-extension.md), matching
-  [`quantized.rs:67-85`](../../fuel-core-types/src/quantized.rs)). `dtype_ext.packing = GGML_BLOCK`
+  [`quantized.rs:67-85`](../../fuel-ir/src/quantized.rs)). `dtype_ext.packing = GGML_BLOCK`
   (FDX [§6.1 line 885](dlpack-extension.md)).
 - **`AffineBlock` → AFFINE_BLOCK, SEPARATE_BUFFER.** `scale_present = 1`, `scale_placement =
   SEPARATE_BUFFER`, `scale_buffer` = a real index (named once — single-place rule), `block_ndim ≥

@@ -305,7 +305,7 @@ regardless of FKC (never-panic, digest §3).
 `fuel-dispatch/src/kernel.rs:895-920`: change `register_full_with_source` to return
 `Result<(), Error>` and replace the `panic!` on duplicate `KernelRef` with
 `return Err(Error::DuplicateKernelRef { op, dtypes, backend }.bt())`. Add the `DuplicateKernelRef`
-variant to `fuel-core-types/src/error.rs` (it already hosts `NoBackendForOp` with the same shape —
+variant to `fuel-ir/src/error.rs` (it already hosts `NoBackendForOp` with the same shape —
 mirror it). Thread the `Result` through the thin wrappers (`register`, `register_with_caps`,
 `register_with_precision`, `register_with_caps_and_precision`, `register_full`) — each now returns
 `Result` and `?`-propagates.

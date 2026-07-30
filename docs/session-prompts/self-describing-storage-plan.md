@@ -6,7 +6,7 @@ steps 5–6 are descriptive/deferred-behind-consumer; step 7 gate is green. WIP 
 
 **Progress (2026-06-19):**
 
-- ✅ **Step 1** — `fuel-core-types/src/stype.rs`: `SType`/`Encoding`/`ScaleSpec`
+- ✅ **Step 1** — `fuel-ir/src/stype.rs`: `SType`/`Encoding`/`ScaleSpec`
   (commit `4bbe566c`). 5 born-red tests. Re-exported from crate root.
 - ✅ **Step 2** — `stype: SType` on BOTH `Storage` structs, default-empty =
   byte-identical (commit `f241c87c`). `with_stype`/`stype` accessors; `try_clone`
@@ -58,7 +58,7 @@ SCHEME moves onto the tensor.
 
 **CORE TYPES.**
 
-- **`DType`** (EXISTING, [`fuel-core-types/src/dtype.rs:14`](../../fuel-core-types/src/dtype.rs))
+- **`DType`** (EXISTING, [`fuel-ir/src/dtype.rs:14`](../../fuel-ir/src/dtype.rs))
   = the LOGICAL element type ("what is a value"). UNCHANGED, stays logical: an NF4 weight's
   `DType` is the logical float it represents (`F16`/`F32`), not the 4-bit storage.
 - **`SType`** (NEW) = an ordered stack of encoding layers describing HOW logical elements are
@@ -78,7 +78,7 @@ SCHEME moves onto the tensor.
 **ATTACHMENT.** `Storage` gains `stype: SType` (default empty). Today
 `Storage = { inner, dtype, bundle: Option<Arc<[OutputView]>> }`
 ([`fuel-memory/src/lib.rs:89`](../../fuel-memory/src/lib.rs) and
-[`fuel-core-types/src/storage.rs:216`](../../fuel-core-types/src/storage.rs)). After: add
+[`fuel-ir/src/storage.rs:216`](../../fuel-ir/src/storage.rs)). After: add
 `stype: SType`. Default-empty keeps every existing single-output `Storage` byte-identical in
 behaviour. **v1: `SType` lives on the PRIMARY `Storage` only**; bundle slots (`OutputView`) keep
 `dtype` only. Per-slot `SType` is a FUTURE addition (note it, do not build it).
@@ -122,7 +122,7 @@ model A). Decided FOR:
 
 **GGML STAYS INLINE (forced, not a choice):** GGUF on-disk is interleaved struct-packed (Q4_0 =
 `{f16 d; u8 qs[16]}` = 18 bytes/block; see
-[`fuel-core-types/src/quantized.rs:87-113`](../../fuel-core-types/src/quantized.rs)
+[`fuel-ir/src/quantized.rs:87-113`](../../fuel-ir/src/quantized.rs)
 `type_size`/`block_size`); the format, k_quants, and ~40 quantized kernels assume it; zero-copy
 mmap requires it. `Encoding::GgmlBlock` = inline. Do NOT generalize interleaving to NF4 (it would
 force a repack on load from bnb's separate-tensor format, killing zero-copy, for no kernel-locality
@@ -145,12 +145,12 @@ Every fact below was read from the live tree on 2026-06-18 (`feat/kernel-contrac
 | Sketch claim | Ground truth | Divergence / note |
 |---|---|---|
 | `Storage = { inner, dtype, bundle }` | [`fuel-memory/src/lib.rs:89-101`](../../fuel-memory/src/lib.rs) — fields `inner: BackendStorage`, `dtype: DType`, `bundle: Option<Arc<[OutputView]>>` (all `pub`). | **Matches.** There are TWO distinct `Storage` types (see next row). |
-| One `Storage` | TWO: (a) [`fuel-core-types/src/storage.rs:216`](../../fuel-core-types/src/storage.rs) `Storage { inner: Box<dyn DynBackendStorage>, bundle }` (note: **no `dtype` field** — dtype comes from `inner.dtype_dyn()`); (b) [`fuel-memory/src/lib.rs:89`](../../fuel-memory/src/lib.rs) `Storage { inner: BackendStorage, dtype, bundle }`. | **Divergence vs sketch.** The sketch's "`Storage = { inner, dtype, bundle }`" describes the `fuel-memory` one. The `fuel-core-types` one is a *separate* trait-object wrapper with **no `dtype` field**. BOTH get `stype` (step 2), but the `fuel-core-types` one's constructors are `new`/`from_dyn`/`from_dyn_bundled`/`with_bundle` (storage.rs:234, 242, 256, 283), NOT `new`/`new_bundled`/`with_bundle`. |
-| `Encoding` variants from FDX vocabulary | `FDX_QUANT_GGML_BLOCK=0`, `FDX_QUANT_AFFINE_BLOCK=4` ([`fuel-core-types/src/dlpack/codes.rs:79, 86`](../../fuel-core-types/src/dlpack/codes.rs)). `GgmlDType` enum at [`quantized.rs:26`](../../fuel-core-types/src/quantized.rs) (already `Eq+Hash`). | **Matches.** `Encoding::GgmlBlock` carries `GgmlDType`; `Encoding::AffineBlock` maps to family 4. |
-| NF4/F4 packed sub-byte code | There is **no `FDX_DTYPE_NF4`**. The sub-byte 4-bit code is `FDX_DTYPE_F4 = 13` ([codes.rs:176](../../fuel-core-types/src/dlpack/codes.rs)); `DType::F4` ([dtype.rs:44](../../fuel-core-types/src/dtype.rs)) is the logical 4-bit float; `dtype_to_fdx(DType::F4)` is in [`convert.rs:44`](../../fuel-core-types/src/dlpack/convert.rs). | **Divergence vs sketch's "NF4/F4".** Use `DType::F4` (→ `FDX_DTYPE_F4`) as the packed sub-byte code in v1. "NF4" is a *normalization variant* of 4-bit affine; FDX has no distinct code for it yet — model it as `packed = DType::F4` + `AffineBlock`. Note this in the deferred list. |
-| `ScaleSpec` granularity reuses existing type | `ScaleGranularity { PerTensor, PerToken, PerChannel }` at [`quant_scale.rs:38`](../../fuel-core-types/src/quant_scale.rs) (`Clone+Copy+Debug+PartialEq+Eq+Hash`), re-exported [`lib.rs:57`](../../fuel-core-types/src/lib.rs). **No `PerBlock`** in the Fuel enum (that code is FDX-MX-only). | **Matches the FDX rule** (`AFFINE_BLOCK` grain rides `block_shape`, not a granularity byte — [spec §6.2, lines 982-985](../../docs/specs/dlpack-extension.md)). `ScaleSpec` carries `ScaleGranularity` + a `scale_dtype: DType`; block geometry lives in `Encoding::AffineBlock::block_shape`. |
+| One `Storage` | TWO: (a) [`fuel-ir/src/storage.rs:216`](../../fuel-ir/src/storage.rs) `Storage { inner: Box<dyn DynBackendStorage>, bundle }` (note: **no `dtype` field** — dtype comes from `inner.dtype_dyn()`); (b) [`fuel-memory/src/lib.rs:89`](../../fuel-memory/src/lib.rs) `Storage { inner: BackendStorage, dtype, bundle }`. | **Divergence vs sketch.** The sketch's "`Storage = { inner, dtype, bundle }`" describes the `fuel-memory` one. The `fuel-core-types` one is a *separate* trait-object wrapper with **no `dtype` field**. BOTH get `stype` (step 2), but the `fuel-core-types` one's constructors are `new`/`from_dyn`/`from_dyn_bundled`/`with_bundle` (storage.rs:234, 242, 256, 283), NOT `new`/`new_bundled`/`with_bundle`. |
+| `Encoding` variants from FDX vocabulary | `FDX_QUANT_GGML_BLOCK=0`, `FDX_QUANT_AFFINE_BLOCK=4` ([`fuel-ir/src/dlpack/codes.rs:79, 86`](../../fuel-ir/src/dlpack/codes.rs)). `GgmlDType` enum at [`quantized.rs:26`](../../fuel-ir/src/quantized.rs) (already `Eq+Hash`). | **Matches.** `Encoding::GgmlBlock` carries `GgmlDType`; `Encoding::AffineBlock` maps to family 4. |
+| NF4/F4 packed sub-byte code | There is **no `FDX_DTYPE_NF4`**. The sub-byte 4-bit code is `FDX_DTYPE_F4 = 13` ([codes.rs:176](../../fuel-ir/src/dlpack/codes.rs)); `DType::F4` ([dtype.rs:44](../../fuel-ir/src/dtype.rs)) is the logical 4-bit float; `dtype_to_fdx(DType::F4)` is in [`convert.rs:44`](../../fuel-ir/src/dlpack/convert.rs). | **Divergence vs sketch's "NF4/F4".** Use `DType::F4` (→ `FDX_DTYPE_F4`) as the packed sub-byte code in v1. "NF4" is a *normalization variant* of 4-bit affine; FDX has no distinct code for it yet — model it as `packed = DType::F4` + `AffineBlock`. Note this in the deferred list. |
+| `ScaleSpec` granularity reuses existing type | `ScaleGranularity { PerTensor, PerToken, PerChannel }` at [`quant_scale.rs:38`](../../fuel-ir/src/quant_scale.rs) (`Clone+Copy+Debug+PartialEq+Eq+Hash`), re-exported [`lib.rs:57`](../../fuel-ir/src/lib.rs). **No `PerBlock`** in the Fuel enum (that code is FDX-MX-only). | **Matches the FDX rule** (`AFFINE_BLOCK` grain rides `block_shape`, not a granularity byte — [spec §6.2, lines 982-985](../../docs/specs/dlpack-extension.md)). `ScaleSpec` carries `ScaleGranularity` + a `scale_dtype: DType`; block geometry lives in `Encoding::AffineBlock::block_shape`. |
 | `smallvec` available in fuel-core-types | `smallvec = { workspace = true }` in [`fuel-core-types/Cargo.toml:19`](../../fuel-core-types/Cargo.toml). | **Matches** — no new dep. |
-| `FDXQuant` fields for projection | [`sidecar.rs:51-96`](../../fuel-core-types/src/dlpack/sidecar.rs): `family, ggml_dtype, block_ndim, block_shape:[u32;4], block_axes:[i32;4], pack_order, scale_present, scale_dtype, scale_placement, scale_granularity, scale_buffer, zp_present, zp_dtype, zp_buffer, ...`. `quant_none()` builder at [`dlpack_view.rs:271`](../../fuel-memory/src/dlpack_view.rs). | **Matches.** `to_fdx()` writes exactly these fields. `FDX_FLAG_HAS_QUANT = 1<<1` ([codes.rs:31](../../fuel-core-types/src/dlpack/codes.rs)). |
+| `FDXQuant` fields for projection | [`sidecar.rs:51-96`](../../fuel-ir/src/dlpack/sidecar.rs): `family, ggml_dtype, block_ndim, block_shape:[u32;4], block_axes:[i32;4], pack_order, scale_present, scale_dtype, scale_placement, scale_granularity, scale_buffer, zp_present, zp_dtype, zp_buffer, ...`. `quant_none()` builder at [`dlpack_view.rs:271`](../../fuel-memory/src/dlpack_view.rs). | **Matches.** `to_fdx()` writes exactly these fields. `FDX_FLAG_HAS_QUANT = 1<<1` ([codes.rs:31](../../fuel-ir/src/dlpack/codes.rs)). |
 | quant sidecar deferred in `view()` | [`dlpack_view.rs:485-491`](../../fuel-memory/src/dlpack_view.rs): "quant … sidecar needs the consuming op's quant params … deliberately deferred (`[consumer-ahead]`)". `view()` always writes `quant: quant_none()` at [dlpack_view.rs:665](../../fuel-memory/src/dlpack_view.rs). | **This is exactly what SType unblocks.** The scheme now travels on `storage.stype`; `view()` reads it instead of needing op-context. The scale BUFFER reference is still op-context (step 4). |
 
 **The one thing the sketch gets wrong that changes the plan:** there are **two** `Storage`
@@ -181,10 +181,10 @@ constructor names for each.
 ## Step 1 — `Encoding` + `ScaleSpec` + `SType` as a new module in `fuel-core-types`
 
 **Files to touch:**
-- NEW `fuel-core-types/src/stype.rs` — the module.
-- `fuel-core-types/src/lib.rs` — add `pub mod stype;` (alongside the other `pub mod` lines at
-  [lib.rs:22-45](../../fuel-core-types/src/lib.rs)) and a `pub use stype::{SType, Encoding, ScaleSpec};`
-  (alongside the re-exports at [lib.rs:49-63](../../fuel-core-types/src/lib.rs)).
+- NEW `fuel-ir/src/stype.rs` — the module.
+- `fuel-ir/src/lib.rs` — add `pub mod stype;` (alongside the other `pub mod` lines at
+  [lib.rs:22-45](../../fuel-ir/src/lib.rs)) and a `pub use stype::{SType, Encoding, ScaleSpec};`
+  (alongside the re-exports at [lib.rs:49-63](../../fuel-ir/src/lib.rs)).
 - `fuel-core-types/Cargo.toml` — **no change** (`smallvec` already present at line 19).
 
 **Failing test FIRST** (put in `stype.rs` under `#[cfg(test)] mod tests`). Write these, run,
@@ -397,7 +397,7 @@ There are **two** `Storage` structs (see ground-truth table). Both gain `stype: 
 to empty so every existing single-output `Storage` is behaviourally identical.
 
 **Files to touch:**
-- [`fuel-core-types/src/storage.rs`](../../fuel-core-types/src/storage.rs) — the
+- [`fuel-ir/src/storage.rs`](../../fuel-ir/src/storage.rs) — the
   `Box<dyn DynBackendStorage>` wrapper (`Storage { inner, bundle }` at line 216; **no `dtype`
   field**). Constructors: `new` (234), `from_dyn` (242), `from_dyn_bundled` (256), `with_bundle`
   (283), and `try_clone` (385).
@@ -430,7 +430,7 @@ fn storage_with_stype_round_trips() {
 }
 ```
 
-In [`fuel-core-types/src/storage.rs`](../../fuel-core-types/src/storage.rs) `mod multi_output_specs`
+In [`fuel-ir/src/storage.rs`](../../fuel-ir/src/storage.rs) `mod multi_output_specs`
 (or a new `mod stype_attach`), add a parallel born-red test asserting `Storage::new(b).stype().is_plain()`
 on the trait-object wrapper (construct a dummy `DynBackendStorage` — reuse whatever the existing
 storage.rs tests use; if none, gate this assertion behind the `fuel-memory` test which exercises a
@@ -475,7 +475,7 @@ impl Storage {
 }
 ```
 
-`fuel-core-types/src/storage.rs` — same field + accessor on the trait-object wrapper. Because this
+`fuel-ir/src/storage.rs` — same field + accessor on the trait-object wrapper. Because this
 one has **no `dtype` field**, the struct becomes `Storage { inner, bundle, stype }`. Thread the
 default through `new`, `from_dyn`, `from_dyn_bundled`, `with_bundle`. **Critical:** `try_clone`
 (storage.rs:385) currently does `Storage::from_dyn(self.inner.try_clone_dyn(layout)?)` — that drops
@@ -495,7 +495,7 @@ in storage.rs).
 - `plain_storage_has_empty_stype` and `storage_with_stype_round_trips` pass.
 - ALL pre-existing `storage.rs` / `fuel-memory` tests still pass (byte-identical: `compose_bundle_*`,
   `cpu_storage_basic_shape`, `from_slice_cpu_round_trip`, etc. — listed at
-  [storage.rs:744-836](../../fuel-core-types/src/storage.rs) and
+  [storage.rs:744-836](../../fuel-ir/src/storage.rs) and
   [lib.rs:252-310](../../fuel-memory/src/lib.rs)).
 - No constructor's public *signature* changed (only internal field init).
 - `try_clone` preserves `stype` (new one-line test green).
@@ -515,7 +515,7 @@ placeholder when no buffer table is supplied, OR takes an optional `scale_buffer
 argument that step 4 fills.
 
 **Files to touch:**
-- `fuel-core-types/src/stype.rs` — add `to_fdx()` behind `#[cfg(feature = "dlpack")]`.
+- `fuel-ir/src/stype.rs` — add `to_fdx()` behind `#[cfg(feature = "dlpack")]`.
 - [`fuel-memory/src/dlpack_view.rs`](../../fuel-memory/src/dlpack_view.rs) — `view()` reads
   `storage.stype` and replaces the hardcoded `quant: quant_none()`
   ([dlpack_view.rs:665](../../fuel-memory/src/dlpack_view.rs)) with the projected `FDXQuant` when
@@ -617,8 +617,8 @@ impl SType {
 ```
 
 `fdx_gran(ScaleGranularity) -> u8` maps `PerTensor/PerToken/PerChannel` →
-`FDX_SCALE_GRAN_PER_TENSOR/_TOKEN/_CHANNEL` ([codes.rs:89-91](../../fuel-core-types/src/dlpack/codes.rs)).
-Check whether [`convert.rs`](../../fuel-core-types/src/dlpack/convert.rs) already has a
+`FDX_SCALE_GRAN_PER_TENSOR/_TOKEN/_CHANNEL` ([codes.rs:89-91](../../fuel-ir/src/dlpack/codes.rs)).
+Check whether [`convert.rs`](../../fuel-ir/src/dlpack/convert.rs) already has a
 `ScaleGranularity → FDX` helper (the comm-layer plan §1.3 promised one); if so, reuse it instead of
 re-defining `fdx_gran`. Also confirm `FDX_BUFFER_NONE` / `FDX_DTYPE_NONE` exist in `codes.rs` (the
 `quant_none()` builder at [dlpack_view.rs:271](../../fuel-memory/src/dlpack_view.rs) uses both, so
@@ -739,7 +739,7 @@ Now connect the graph layer (model B). A dequant / quantized-matmul op:
 - `fuel-memory/src/dlpack_view.rs` — add `pub fn view_with_quant(storage, layout, env,
   scale_buffer: Option<u32>) -> Result<DlpackView>` (or thread an extra arg) that forwards
   `scale_buffer` into `storage.stype.to_fdx(scale_buffer)` and adds the scale operand as a
-  buffer-table entry (role `FDX_BUFFER_ROLE_SCALE = 1`, [codes.rs:105](../../fuel-core-types/src/dlpack/codes.rs)).
+  buffer-table entry (role `FDX_BUFFER_ROLE_SCALE = 1`, [codes.rs:105](../../fuel-ir/src/dlpack/codes.rs)).
   Mirror the `buffers` Vec assembly already at [dlpack_view.rs:630-644](../../fuel-memory/src/dlpack_view.rs).
 - The consuming op's kernel-call site (wherever it builds the `DlpackView` for its operands) —
   bind the weight's `DlpackView` via `view_with_quant`, passing the scale operand's buffer index.
@@ -776,10 +776,10 @@ there — confirm by grep). One invocation; never workspace-wide.
 ## Step 5 — GGML path stays inline (no behaviour change; described via `Encoding`)
 
 GGML is FORCED inline (GGUF on-disk is interleaved struct-packed: Q4_0 = `{f16 d; u8 qs[16]}` = 18
-bytes/block; see [`quantized.rs:87-113`](../../fuel-core-types/src/quantized.rs) `type_size` /
+bytes/block; see [`quantized.rs:87-113`](../../fuel-ir/src/quantized.rs) `type_size` /
 `block_size`). The format, k_quants, and ~40 quantized kernels assume it; zero-copy mmap requires
 it. **No code path changes** — GGML quantized storage continues to be the existing
-`DynQuantizedStorage` ([quantized.rs:124](../../fuel-core-types/src/quantized.rs)) block math.
+`DynQuantizedStorage` ([quantized.rs:124](../../fuel-ir/src/quantized.rs)) block math.
 
 The ONLY addition is *descriptive*: a GGUF-loaded tensor's `Storage` MAY carry
 `SType::from_layer(Encoding::GgmlBlock { ggml_dtype })` so its scheme is self-describing at the FDX
@@ -874,7 +874,7 @@ pointers, not started.
 ## What is deliberately deferred (do NOT build in this program)
 
 - **Per-slot `SType` on bundle `OutputView`s.** v1: `SType` lives on the PRIMARY `Storage` only;
-  bundle slots ([`OutputView`, storage.rs:46](../../fuel-core-types/src/storage.rs)) keep `dtype`
+  bundle slots ([`OutputView`, storage.rs:46](../../fuel-ir/src/storage.rs)) keep `dtype`
   only. A multi-output node whose slots have *different* encodings is a future addition.
 - **`Encoding::Mx` wiring.** The `Mx` variant is a RESERVED placeholder (FDX `MX` family 1,
   F8E8M0 per-block scale, the sole `PerBlock` user). Declared for shape; `to_fdx()` returns `None`

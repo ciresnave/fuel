@@ -18,8 +18,8 @@ This session is **NOT parallel-safe** with anything else that touches the `Op` e
 2. **`docs/architecture/05-backend-contract.md`** — `PrecisionGuarantee` + the always-built `bit_stable` coverage commitment. Every primitive added here must have a `bit_stable` cpu kernel.
 3. **`docs/session-prompts/add-recip-abs-primitives.md`** + the four commits at branch tip (`23febb87`, `3cd970d8`, `c34f61d7`, `896f97da`) — this is the *exact* shape every Tier-1 unary follows. Read the commits to see how mechanical the wiring is when the byte-kernel infrastructure already exists.
 4. **`fuel-graph/src/lib.rs`** §`pub enum Op` (line ~185) — the canonical primitive set you're extending.
-5. **`fuel-core-types/src/op.rs`** — `UnaryOp`, `BinaryOp`, `CmpOp`, `ReduceOp`. Several Tier-1 ops are already declared here; you're filling the `Op`-side gap.
-6. **`fuel-core-types/src/dispatch.rs`** §`pub enum OpKind` — extends to track new families. Mark with `#[non_exhaustive]` (already is) so persisted profiles parse forward.
+5. **`fuel-ir/src/op.rs`** — `UnaryOp`, `BinaryOp`, `CmpOp`, `ReduceOp`. Several Tier-1 ops are already declared here; you're filling the `Op`-side gap.
+6. **`fuel-ir/src/dispatch.rs`** §`pub enum OpKind` — extends to track new families. Mark with `#[non_exhaustive]` (already is) so persisted profiles parse forward.
 7. **`fuel-graph/src/registry.rs`** — `FusedOpRegistry` skeleton from Phase 7.6 step 1. Tier 3 entries register here; cross-reference `docs/fused-op-registry.md`.
 8. **Kernel-side registry crate (OPEN — `fuel-memory` vs `fuel-dispatch`, per commit `a9efb9f4`; historically `fuel-storage/src/dispatch.rs`)** — the `KernelBindingTable::register` calls + `cpu_unary_wrapper!`/`cpu_binary_wrapper!` macros. New kernels register here. Note: the 2026-06-14 redirection left the kernel-side registry crate placement unresolved — moving the `BackendImpl` payloads to `fuel-dispatch` is an acceptable resolution if it fits once the executor-unification seam settles. For Batch D (decomposition-only, zero native kernels) this is mostly moot, but confirm the current home before assuming `fuel-storage/src/dispatch.rs`.
 9. **`fuel-cpu-backend/src/byte_kernels.rs`** — where new CPU byte kernels go (use the `unary_f32_kernel!` / `binary_f32_kernel!` macros + their `_f64` / `_bf16` / `_f16` siblings).
@@ -56,7 +56,7 @@ This is the highest-leverage block. Without comparison ops + `Where`, dozens of 
 - **Files**:
   - `fuel-graph/src/lib.rs`: 6 enum variants, 6 `Tensor` builder methods (`eq`, `ne`, `lt`, `le`, `gt`, `ge`), 6 `op_short_name` arms, 6 backward arms (no-op).
   - `fuel-graph/src/opt.rs`: 6 `op_key` tags.
-  - `fuel-core-types/src/dispatch.rs`: 6 `OpKind` variants + `as_str` arms.
+  - `fuel-ir/src/dispatch.rs`: 6 `OpKind` variants + `as_str` arms.
   - `fuel-storage/src/pipelined.rs`: `op_to_op_kind` arms.
   - `fuel-storage/src/dispatch.rs`: 6 wrappers per dtype (F32 minimum; F64/BF16/F16 follow same dispatch key but compare-and-emit-U8 — output dtype differs from input).
   - `fuel-cpu-backend/src/byte_kernels.rs`: per-dtype kernels emitting `U8`. The existing `binary_f32_kernel!` macro produces same-dtype output; you'll need a new macro variant for `f32 × f32 → u8`. Call it `binary_compare_f32_kernel!` or similar.

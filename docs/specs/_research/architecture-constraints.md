@@ -12,7 +12,7 @@ Sources read (all under `docs/architecture/` unless noted): 00-index, 01-identit
 10-decisions-log, 11-persistence, 12-multi-output, 13-interchange, 14-lifecycle;
 `ROADMAP.md`; `docs/session-prompts/symbolic-extents-and-persistent-decode.md`;
 `docs/session-prompts/quantize-as-graph-op.md`; and the as-built types in
-`fuel-core-types/src/{dtype.rs, quant_scale.rs, quantized.rs, capability.rs,
+`fuel-ir/src/{dtype.rs, quant_scale.rs, quantized.rs, capability.rs,
 backend.rs, symbol.rs, shape.rs}` + `fuel-dispatch/src/kernel.rs`.
 
 A note on doc-vs-code drift the reader must keep in mind: the architecture's **Intended**
@@ -253,7 +253,7 @@ ranks **paths**, not nodes, on a **cost vector**, and bounds survivors per devic
 
 This is the active frontier and the strongest new constraint on *tensor description*. From
 `symbolic-extents-and-persistent-decode.md` (§0 wins on conflicts) + as-built
-`fuel-core-types/src/{symbol.rs, shape.rs, layout.rs}`. **Steps 1a–1d have landed.**
+`fuel-ir/src/{symbol.rs, shape.rs, layout.rs}`. **Steps 1a–1d have landed.**
 
 The primitives:
 
@@ -349,7 +349,7 @@ Constraints:
 
 ## 8. The dtype set, incl. sub-byte placeholders
 
-As-built `DType` (`fuel-core-types/src/dtype.rs`) — the full set both formats must cover, with
+As-built `DType` (`fuel-ir/src/dtype.rs`) — the full set both formats must cover, with
 safetensors interop already wired:
 
 `U8, I8, U32, I16, I32, I64, BF16, F16, F32, F64, F8E4M3, F6E2M3, F6E3M2, F4, F8E8M0`.
@@ -381,7 +381,7 @@ There are **two distinct quant systems**, and the formats must not conflate them
 
 ### 9a. GGML block-quant (static, load-time) — `GgmlDType`
 
-`fuel-core-types/src/quantized.rs`: `GgmlDType { F32, F16, BF16, Q4_0, Q4_1, Q5_0, Q5_1, Q8_0,
+`fuel-ir/src/quantized.rs`: `GgmlDType { F32, F16, BF16, Q4_0, Q4_1, Q5_0, Q5_1, Q8_0,
 Q8_1, Q2K..Q8K }` with `type_size()` (per-block bytes) + `block_size()` (32 for legacy, 256 for
 K-quants). Scales are **baked into the binary block format** (per-block along K) — **no free
 granularity parameter.** Loaded pre-quantized; quantization is the *loader's* job. Dispatch
@@ -398,7 +398,7 @@ generic dequant-on-read fallback.
 
 ### 9b. Dynamic quant (runtime, graph-op) — `ScaleGranularity` / `ScalePair`
 
-`fuel-core-types/src/quant_scale.rs` + the `quantize-as-graph-op` prompt. For FP8/Int8/Int4
+`fuel-ir/src/quant_scale.rs` + the `quantize-as-graph-op` prompt. For FP8/Int8/Int4
 *dynamic* quant the caller chooses scale granularity:
 `ScaleGranularity { PerTensor | PerToken | PerChannel }` (scale shapes `f32[1]` / `f32[rows]` /
 `f32[cols]`), paired as `ScalePair { activation, weight }` (presets: `PRODUCTION_DECODE` =

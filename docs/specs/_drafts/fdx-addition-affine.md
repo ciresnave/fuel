@@ -35,8 +35,8 @@ COPY), §5.2 (flag-bit allocation table), §5.3 (sidecar layout), §5.4 (size di
 §6.0 (FDX-owned codes), **§6.4 (`FDXExtent`)**, §7.3 (`FDXSymEnv` call surface), §8 (validators
 V7/V8/V14), §13.4 (single-`Range` KV example), §14 (versioning incl. the array-element-growth
 caveat), §17.3 (the deferred affine question); the as-built core types
-`fuel-core-types/src/shape.rs` (`Extent {Scalar | Range}`, `DynAxis`, `Shape::resolve`) and
-`fuel-core-types/src/symbol.rs` (`SymId(u32)`, `SymEnv` (`SymId -> usize`, write-once),
+`fuel-ir/src/shape.rs` (`Extent {Scalar | Range}`, `DynAxis`, `Shape::resolve`) and
+`fuel-ir/src/symbol.rs` (`SymId(u32)`, `SymEnv` (`SymId -> usize`, write-once),
 `DynScalar`); the symbolic-extents design
 `docs/session-prompts/symbolic-extents-and-persistent-decode.md` (§5 "the decode application":
 `flash` `k_len = cached_len + seq`; §9 "Affine sym expressions"). When this draft and the

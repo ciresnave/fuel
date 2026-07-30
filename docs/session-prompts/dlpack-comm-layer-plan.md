@@ -22,21 +22,21 @@ enforces the honesty invariant, and migrates the `KernelRef` ABI onto DLPack-sha
 - `fuel-memory/src/lib.rs:82` — `Storage { inner: BackendStorage, dtype: DType, bundle: Option<Arc<[OutputView]>> }`.
   **Storage owns only bytes + dtype; Layout lives separately on the consumer** (lib.rs:70-73). This
   split is exactly the DLPack shape: `Storage` ≈ `data`+`device`+`dtype`, `Layout` ≈ `shape`+`strides`+`byte_offset`.
-- `fuel-core-types/src/layout.rs:24` — `Layout { shape: Shape, stride: StrideVec, start_offset: usize }`.
+- `fuel-ir/src/layout.rs:24` — `Layout { shape: Shape, stride: StrideVec, start_offset: usize }`.
   **`stride` is already `isize` (signed)** (layout.rs:11-22) and `Layout::flip` (layout.rs:299) already
   maintains "`start_offset` is the byte offset of the iteration-first element, always non-negative."
   This is the precise invariant FDX V13 (signed-stride OOB) needs — no Layout change required.
-- `fuel-core-types/src/layout.rs:84` — `Layout::resolve(&SymEnv) -> Result<Layout>` (strides/offset
+- `fuel-ir/src/layout.rs:84` — `Layout::resolve(&SymEnv) -> Result<Layout>` (strides/offset
   unchanged, only the symbolic extent becomes concrete). The realize-time half of P4.
-- `fuel-core-types/src/symbol.rs:29,59,119` — `SymId(u32)`, `SymEnv { bind, get }`, `DynScalar { resolve }`.
+- `fuel-ir/src/symbol.rs:29,59,119` — `SymId(u32)`, `SymEnv { bind, get }`, `DynScalar { resolve }`.
 - `fuel-dispatch/src/kernel.rs:152` — the `KernelRef` ABI: `fn(&[Arc<RwLock<Storage>>], &mut [Arc<RwLock<Storage>>], &[Layout], &OpParams) -> Result<()>`.
 - `fuel-dispatch/src/kernel.rs:895` — `register_full_with_source(...)` **panics** on duplicate `KernelRef`
   (kernel.rs:910-918). This is the never-panic prerequisite below.
-- `fuel-core-types/src/backend.rs:97,121,147` — `SubstrateClass`, `TransferPath`, `BackendCapabilities`
+- `fuel-ir/src/backend.rs:97,121,147` — `SubstrateClass`, `TransferPath`, `BackendCapabilities`
   (`op_dtype_support`, `required_alignment`, `access_granularity_bits`, `storage_substrate`).
-- `fuel-core-types/src/probe.rs:63,182` — `BackendId`, `BackendProbe` (a *device-enumeration* marker
+- `fuel-ir/src/probe.rs:63,182` — `BackendId`, `BackendProbe` (a *device-enumeration* marker
   convention, NOT a capability surface; see §6 — we extend the capability side, not this trait).
-- `fuel-core-types/src/storage.rs:46` — `OutputView { byte_offset, len_elements, dtype, shape, layout, name }`
+- `fuel-ir/src/storage.rs:46` — `OutputView { byte_offset, len_elements, dtype, shape, layout, name }`
   (the bundle slot; maps to `FDXOutputView`, rank-capped + name side-table per FDX §6.8 / FKC §5.5).
 - `fuel-graph/src/registry.rs:104,108,133,159` — `FusedOp.shape_rule` / `dtype_rule` / `output_views`;
   `FusedOpParams` (incl. `FlashAttn { k_len: Option<DynScalar> }`, `PagedAttn`, `QMatMul`).
@@ -80,16 +80,16 @@ enforces the honesty invariant, and migrates the `KernelRef` ABI onto DLPack-sha
   Gate it OFF by default — every other crate that wants the boundary turns it on (`fuel-memory`,
   `fuel-dispatch`, each backend wrapper crate).
 - New files:
-  - `fuel-core-types/src/dlpack/mod.rs` — re-exports; `#![cfg(feature = "dlpack")]` at the crate
+  - `fuel-ir/src/dlpack/mod.rs` — re-exports; `#![cfg(feature = "dlpack")]` at the crate
     `lib.rs` mod declaration (`#[cfg(feature = "dlpack")] pub mod dlpack;`).
-  - `fuel-core-types/src/dlpack/abi.rs` — the standard DLPack structs (FDX §5.1): `DLDevice`,
+  - `fuel-ir/src/dlpack/abi.rs` — the standard DLPack structs (FDX §5.1): `DLDevice`,
     `DLDataType`, `DLDeviceType`, `DLDataTypeCode`, `DLTensor`, `DLPackVersion`,
     `DLManagedTensorVersioned`, the `DLPACK_FLAG_BITMASK_*` consts. Reproduced from `dlpack.h` v1.3,
     validated against it (see §8 test gate). NOT redefined by Fuel — these are the canonical names.
-  - `fuel-core-types/src/dlpack/sidecar.rs` — `FDXSidecar` + all embedded sub-structs (FDX §5.3, §6).
-  - `fuel-core-types/src/dlpack/codes.rs` — the FDX-owned stable code tables + explicit conversions
+  - `fuel-ir/src/dlpack/sidecar.rs` — `FDXSidecar` + all embedded sub-structs (FDX §5.3, §6).
+  - `fuel-ir/src/dlpack/codes.rs` — the FDX-owned stable code tables + explicit conversions
     (FDX §6.0). This is the **only** place a numeric FDX code is assigned.
-  - `fuel-core-types/src/dlpack/validate.rs` — the V1–V21 validators (FDX §"Validator checks"), all
+  - `fuel-ir/src/dlpack/validate.rs` — the V1–V21 validators (FDX §"Validator checks"), all
     `Result`-returning, no `try_*` siblings.
   - `fuel-core-types/include/fuel_dlpack_ext.h` — the C header. Hand-maintained against the Rust
     `#[repr(C)]` types; a layout test (§8) pins parity.
@@ -286,7 +286,7 @@ capability tokens live on the existing capability surface.
 ### 5.1 What we extend (and what we do NOT)
 
 - **Do NOT overload `probe::BackendProbe`** — it is device *enumeration*, not capability (probe.rs:182).
-- **Extend the `Capability` token enum** (`fuel-core-types/src/capability.rs`, `#[non_exhaustive]`) with
+- **Extend the `Capability` token enum** (`fuel-ir/src/capability.rs`, `#[non_exhaustive]`) with
   the FDX-extension acceptance tokens the specs name: `DlpackExtGather`, `DlpackExtSymbolic`,
   `DlpackExtAffine` (affine *quant*, distinct from the symbolic-extent token — FKC §3.9.2 warns these are
   two tokens), and the layout capability that backs `reverse_strides`. These are *facts a backend
