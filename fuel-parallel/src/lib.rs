@@ -44,6 +44,7 @@
 //! ```
 
 pub mod comm;
+pub mod device_group;
 pub mod distributed_cache;
 pub mod pipeline_parallel;
 pub mod tensor_parallel;
