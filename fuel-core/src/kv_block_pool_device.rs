@@ -1074,6 +1074,94 @@ mod tests {
         assert_eq!(pool.core().session_blocks(session), Some(3), "10 tokens / block_size 4 = 3 blocks");
     }
 
+    /// PS4c substrate — SPLICE on the paged path (prefix sharing / residual-
+    /// stream donation). Session A fills blocks with known K/V; session B splices
+    /// A's blocks (shared, refcount 2); a paged attention for B reads the SHARED
+    /// blocks via B's materialized block_table and equals a dense reference over
+    /// A's K/V. Proves the core's refcounted splice composes with the paged read
+    /// path — B decodes over A's prefix with zero copy.
+    #[test]
+    fn spliced_shared_blocks_are_read_by_paged_attention() {
+        let (hq, hkv, d, block_size) = (2usize, 2usize, 4usize, 4usize);
+        let (num_blocks, sk) = (8usize, 8usize); // sk=8 → 2 blocks
+        let scale = 1.0f32 / (d as f32).sqrt();
+        let dev = Device::cpu();
+        let g = KvGeometry {
+            n_layers: 1,
+            num_blocks,
+            block_size,
+            n_kv_heads: hkv,
+            head_dim: d,
+            elem_size: 4,
+        };
+        let mut pool = DeviceKvPool::new(g, DType::F32, &dev).unwrap();
+
+        // A fills 2 blocks with known K/V.
+        let a = pool.core_mut().open();
+        pool.core_mut().append(a, sk).unwrap();
+        let k_all = rand_f32(sk * hkv * d, 2);
+        let v_all = rand_f32(sk * hkv * d, 3);
+        let per_block = block_size * hkv * d;
+        let a_blocks = pool.core().session_block_table(a).unwrap();
+        for (bi, &p) in a_blocks.iter().enumerate() {
+            pool.write_block(0, BlockKind::K, p, &k_all[bi * per_block..(bi + 1) * per_block]).unwrap();
+            pool.write_block(0, BlockKind::V, p, &v_all[bi * per_block..(bi + 1) * per_block]).unwrap();
+        }
+
+        // B splices A's 2 blocks — shared, not copied.
+        let b = pool.core_mut().open();
+        pool.core_mut().splice(a, b, 0, 2).unwrap();
+        assert_eq!(pool.core().session_block_table(b).unwrap(), a_blocks, "B shares A's exact blocks");
+        assert_eq!(pool.core().block_refcount(a_blocks[0]), 2, "shared → refcount 2");
+
+        // A query for B attends over the shared prefix (context_len = B's filled = 8).
+        let pt = pool.materialize_block_table(&[b]).unwrap();
+        assert_eq!(pt.context_lens, vec![sk as u32], "spliced prefix length carried to B");
+        let q_data = rand_f32(hq * d, 1);
+        let q = LazyTensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, 1, d]), &dev);
+        let kph = q.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
+        let vph = q.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
+        let bt = q.const_u32_like(pt.block_table.clone(), pt.block_table_shape());
+        let cl = q.const_u32_like(pt.context_lens.clone(), pt.context_lens_shape());
+        let out = q.paged_attn(&kph, &vph, &bt, &cl, None, scale, block_size, None).unwrap();
+        let mut cache = StorageCache::new();
+        cache.insert(kph.node_id(), Arc::clone(pool.k_pool(0).unwrap()));
+        cache.insert(vph.node_id(), Arc::clone(pool.v_pool(0).unwrap()));
+        let got = crate::pipelined_bridge::realize_one_as_with_initial::<f32>(
+            out.graph_handle(), out.node_id(), &dev, cache,
+        ).unwrap();
+
+        // Dense reference: q attends to A's sk shared tokens.
+        let mut want = vec![0.0f32; hq * d];
+        for h in 0..hq {
+            let mut scores = vec![0.0f32; sk];
+            for (t, sc) in scores.iter_mut().enumerate() {
+                let mut dot = 0.0f32;
+                for dd in 0..d {
+                    dot += q_data[h * d + dd] * k_all[(t * hkv + h) * d + dd];
+                }
+                *sc = dot * scale;
+            }
+            let m = scores.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let mut denom = 0.0f32;
+            for sc in scores.iter_mut() {
+                *sc = (*sc - m).exp();
+                denom += *sc;
+            }
+            for (t, &p) in scores.iter().enumerate() {
+                let w = p / denom;
+                for dd in 0..d {
+                    want[h * d + dd] += w * v_all[(t * hkv + h) * d + dd];
+                }
+            }
+        }
+        for (i, (&x, &y)) in got.iter().zip(want.iter()).enumerate() {
+            let diff = (x - y).abs();
+            let den = x.abs().max(y.abs()).max(f32::MIN_POSITIVE);
+            assert!(diff < 1e-5 || diff / den < 1e-5, "[{i}]: spliced={x} dense={y} (abs={diff})");
+        }
+    }
+
     /// Materializing over an unknown or externalized session is a typed error
     /// (delegates the core's resident-only guard), never a panic.
     #[test]

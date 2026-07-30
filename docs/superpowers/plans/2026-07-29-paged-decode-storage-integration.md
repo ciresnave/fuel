@@ -74,16 +74,32 @@ KV *store* — unlocking:
   preserved), and an end-to-end pressure-valve flow (evict A → run B in the freed
   room → restore A → both finish). fuel-inference multi_session: 26 tests.
 
-- **PS4a (remaining) — paged BATCHED decode.** Batch=K paged decode over the
-  shared pool (`block_table [K, max_blocks]`, q `[K, Hq, 1, D]`) as a batched arm
-  on `PagedSessionScheduler` — the throughput piece. A new batched forward
-  (generalize `forward_paged_step` to K sessions); larger + Op::PagedAttn at B>1
-  is less exercised than B=1. Parity: batched == serial.
+- **PS4a — paged BATCHED decode — DONE 2026-07-29.** `DeviceKvPool::
+  build_decode_attn_batched` (K per-session slot writes + one Op::PagedAttn at
+  B=K) + `LlamaModel::forward_paged_step_batched` (K uniform-position sessions,
+  reusing the shared `project_qkv_roped`/`ffn_block`) + `PagedSessionScheduler::
+  step_batched` (partition ready by position, batch same-position groups ≤
+  `max_batch`, serial fallback). Gates: a batched step's row `i` == that session's
+  standalone serial decode (no-GQA + GQA), and the scheduler arm is token-
+  identical to serial + actually fires. Uniform-position is the batching
+  precondition (matching the contiguous arm's gate). f32-only.
 
-- **PS4c (remaining) — CUDA bf16 / live-GPU.** Byte/dtype-generic `write_block`/
-  `read_block` + `build_decode_attn` for the bf16 pool, and a live-GPU (`#[ignore]`)
-  parity run of the paged path on CUDA. Splice on the live path (residual-stream
-  donation) also rides here.
+- **PS4c-splice — SPLICE on the live path — DONE 2026-07-29.** The core's
+  refcounted `splice` composes with the paged read path with zero new code: a
+  session reading another's spliced (shared) blocks via `Op::PagedAttn` equals a
+  dense reference over the donor's K/V (test
+  `spliced_shared_blocks_are_read_by_paged_attention`). This is the prefix-
+  sharing / residual-stream-donation substrate; a *scheduler* prefix-share
+  admission API is consumer policy (fuel-inference's prefix_cache) — built when a
+  consumer needs it, not speculatively.
+
+- **PS4c-CUDA (remaining — GPU-gated).** Byte/dtype-generic `write_block`/
+  `read_block` + `build_decode_attn` for a bf16 pool, and a live-GPU (`#[ignore]`)
+  parity run of the paged path on CUDA/RTX 4070. Deliberately NOT shipped from
+  this CPU flow: the bf16 kernels can only be exercised on the GPU, and shipping
+  unverified numeric code violates the test-gated norm. Needs a GPU session (cold
+  CUDA build ~36 min + cuDNN on PATH per environment discipline); the CPU-side
+  seam is ready to generalize.
 
 ## Layering / correctness notes
 
