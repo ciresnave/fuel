@@ -483,6 +483,39 @@ impl DeviceKvPool {
         q.paged_attn(&post_k, &post_v, block_table, context_lens, None, scale, g.block_size, None)
     }
 
+    /// **Copy-on-write guard** for the paged decode write path. Ensure the
+    /// physical block backing logical slot `logical_block` of `session` is
+    /// exclusively owned before a new token is written into it. If the block is
+    /// **shared** (spliced, refcount > 1), break the share (`cow_break` → a fresh
+    /// block) and COPY the shared block's bytes (all layers, K + V) into it, so
+    /// the session keeps the shared-prefix content while its write no longer
+    /// mutates a block another session still references. Returns the (now
+    /// private) physical block to write into; an exclusive block is returned
+    /// unchanged. **Must be called after `append` and before writing the token**
+    /// — otherwise decoding a spliced session silently corrupts its co-sharers.
+    pub fn ensure_writable_block(
+        &mut self,
+        session: SessionHandle,
+        logical_block: usize,
+    ) -> crate::Result<PhysBlockId> {
+        let old = self.core.resident_block(session, logical_block).ok_or_else(|| {
+            msg_err(format!("ensure_writable_block: logical block {logical_block} not resident"))
+        })?;
+        if self.core.block_refcount(old) <= 1 {
+            return Ok(old); // exclusive — writable in place, no copy needed
+        }
+        // Shared → copy-on-write: fresh private block, then copy old → new so the
+        // session's prefix content survives (the donor's block is untouched).
+        let new = self.core.cow_break(session, logical_block).map_err(alloc_err)?;
+        for l in 0..self.n_layers() {
+            let k = self.read_block(l, BlockKind::K, old)?;
+            self.write_block(l, BlockKind::K, new, &k)?;
+            let v = self.read_block(l, BlockKind::V, old)?;
+            self.write_block(l, BlockKind::V, new, &v)?;
+        }
+        Ok(new)
+    }
+
     // --- C-3: device-backed evict / restore (bytes move device↔host) ------
 
     /// Evict a session's entire resident state: capture the bytes of its
@@ -1160,6 +1193,56 @@ mod tests {
             let den = x.abs().max(y.abs()).max(f32::MIN_POSITIVE);
             assert!(diff < 1e-5 || diff / den < 1e-5, "[{i}]: spliced={x} dense={y} (abs={diff})");
         }
+    }
+
+    /// The copy-on-write guard (regression for the adversarial-verification
+    /// finding): `ensure_writable_block` on a SHARED (spliced) block breaks the
+    /// share into a fresh private block holding a COPY of the donor's bytes,
+    /// drops the donor's refcount, and a subsequent write to the new block does
+    /// NOT touch the donor. Without this, decoding a spliced session corrupts its
+    /// co-sharers.
+    #[test]
+    fn ensure_writable_block_copy_on_writes_a_shared_block() {
+        let (hkv, d, block_size) = (2usize, 4usize, 4usize);
+        let g = KvGeometry {
+            n_layers: 1,
+            num_blocks: 8,
+            block_size,
+            n_kv_heads: hkv,
+            head_dim: d,
+            elem_size: 4,
+        };
+        let mut pool = DeviceKvPool::new(g, DType::F32, &Device::cpu()).unwrap();
+        let block_elems = block_size * hkv * d;
+
+        // A fills one block with known K.
+        let a = pool.core_mut().open();
+        pool.core_mut().append(a, block_size).unwrap();
+        let a_phys = pool.core().resident_block(a, 0).unwrap();
+        let a_data: Vec<f32> = (0..block_elems).map(|i| i as f32 + 1.0).collect();
+        pool.write_block(0, BlockKind::K, a_phys, &a_data).unwrap();
+
+        // B splices A's block (shared, refcount 2).
+        let b = pool.core_mut().open();
+        pool.core_mut().splice(a, b, 0, 1).unwrap();
+        assert_eq!(pool.core().resident_block(b, 0), Some(a_phys), "B shares A's block");
+        assert_eq!(pool.core().block_refcount(a_phys), 2);
+
+        // CoW: B gets a fresh private block holding a COPY of A's bytes.
+        let b_phys = pool.ensure_writable_block(b, 0).unwrap();
+        assert_ne!(b_phys, a_phys, "B got a fresh private block");
+        assert_eq!(pool.core().block_refcount(a_phys), 1, "A's block no longer shared");
+        assert_eq!(pool.read_block(0, BlockKind::K, b_phys).unwrap(), a_data, "B's block is a copy of A's");
+
+        // Writing B's copy must not touch A's block.
+        pool.write_block(0, BlockKind::K, b_phys, &vec![-1.0; block_elems]).unwrap();
+        assert_eq!(
+            pool.read_block(0, BlockKind::K, a_phys).unwrap(), a_data,
+            "A's block intact after B writes its own copy",
+        );
+
+        // An exclusive block is returned unchanged (no needless copy).
+        assert_eq!(pool.ensure_writable_block(a, 0).unwrap(), a_phys, "exclusive block: no CoW");
     }
 
     /// Materializing over an unknown or externalized session is a typed error
