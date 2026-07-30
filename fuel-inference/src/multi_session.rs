@@ -119,6 +119,19 @@ pub trait DecodeModel {
         pool: &mut DeviceKvPool,
         session: SessionHandle,
     ) -> fuel::Result<Vec<f32>>;
+
+    /// Batched (`B = K`) sibling of [`forward_paged_step`](Self::forward_paged_step)
+    /// — one decode step over K same-position sessions in a single model pass
+    /// (`Op::PagedAttn` at B=K), returning one logits row per session in
+    /// `sessions` order. The scheduler's batched arm ([`PagedSessionScheduler::
+    /// step_batched`]) uses it on uniform-position groups. All sessions must be at
+    /// the same position (typed `Err` otherwise).
+    fn forward_paged_step_batched(
+        &self,
+        tokens: &[u32],
+        pool: &mut DeviceKvPool,
+        sessions: &[SessionHandle],
+    ) -> fuel::Result<Vec<Vec<f32>>>;
 }
 
 impl DecodeModel for LlamaModel {
@@ -159,6 +172,14 @@ impl DecodeModel for LlamaModel {
         session: SessionHandle,
     ) -> fuel::Result<Vec<f32>> {
         LlamaModel::forward_paged_step(self, token, pool, session)
+    }
+    fn forward_paged_step_batched(
+        &self,
+        tokens: &[u32],
+        pool: &mut DeviceKvPool,
+        sessions: &[SessionHandle],
+    ) -> fuel::Result<Vec<Vec<f32>>> {
+        LlamaModel::forward_paged_step_batched(self, tokens, pool, sessions)
     }
 }
 
@@ -1090,11 +1111,56 @@ impl<'m, M: DecodeModel> PagedSessionScheduler<'m, M> {
     /// session's blocks; a pool exhaustion (or any per-session error) is isolated
     /// into that session finishing-with-error, never propagated.
     pub fn step(&mut self) -> StepReport {
-        let model = self.model;
         let mut report = StepReport::default();
+        self.prefill_pass(&mut report);
+        for idx in self.collect_decode_ready() {
+            self.decode_one(idx, &mut report);
+        }
+        report
+    }
 
-        // (1) Prefill: feed the full prompt, then sample the first token.
-        // A suspended (evicted) session holds no blocks — skip until restored.
+    /// Batched decode variant of [`step`](Self::step) (PS4a throughput arm): the
+    /// Decode-ready set is partitioned by position and each same-position group
+    /// of ≥2 is advanced in ONE `Op::PagedAttn` pass at B=K (up to `max_batch`
+    /// per pass); singletons and a non-uniform remainder fall back to serial.
+    /// Prefill is always serial (ragged prompts). Provably equal to `step` per
+    /// session — the batched forward's row i equals the serial decode (see the
+    /// batched↔serial parity gate). `StepReport::used_batched_arm` is set when a
+    /// batch actually ran.
+    pub fn step_batched(&mut self, max_batch: usize) -> StepReport {
+        let mut report = StepReport::default();
+        self.prefill_pass(&mut report);
+
+        // Partition ready sessions by position (BTreeMap → deterministic order),
+        // then batch each same-position group in chunks of ≤ max_batch.
+        let mut by_pos: std::collections::BTreeMap<usize, Vec<usize>> =
+            std::collections::BTreeMap::new();
+        for idx in self.collect_decode_ready() {
+            let pos = self
+                .pool
+                .core()
+                .filled_tokens(self.sessions[idx].handle)
+                .unwrap_or(usize::MAX);
+            by_pos.entry(pos).or_default().push(idx);
+        }
+        for (_pos, group) in by_pos {
+            for chunk in group.chunks(max_batch.max(1)) {
+                if chunk.len() < 2 {
+                    for &idx in chunk {
+                        self.decode_one(idx, &mut report);
+                    }
+                } else {
+                    self.decode_batch(chunk, &mut report);
+                }
+            }
+        }
+        report
+    }
+
+    /// Serial prefill pass: feed each `Prefill` (non-suspended) session's whole
+    /// prompt token-by-token, then sample its first token. Errors isolate.
+    fn prefill_pass(&mut self, report: &mut StepReport) {
+        let model = self.model;
         for idx in 0..self.sessions.len() {
             if self.sessions[idx].phase != SessionPhase::Prefill
                 || self.sessions[idx].suspended.is_some()
@@ -1115,41 +1181,88 @@ impl<'m, M: DecodeModel> PagedSessionScheduler<'m, M> {
                 }
             }
             match failure {
-                Some(msg) => self.finish_error(idx, msg, &mut report),
+                Some(msg) => self.finish_error(idx, msg, report),
                 None => {
                     self.sessions[idx].phase = SessionPhase::Decode;
                     self.sessions[idx].last_logits = last_logits;
-                    self.sample(idx, &mut report);
+                    self.sample(idx, report);
                 }
             }
         }
+    }
 
-        // (2) Decode: one token per Decode-ready session (suspended ones skipped).
-        for idx in 0..self.sessions.len() {
-            if self.sessions[idx].phase != SessionPhase::Decode
-                || self.sessions[idx].suspended.is_some()
-            {
-                continue;
+    /// Indices of Decode-ready, non-suspended sessions (ascending).
+    fn collect_decode_ready(&self) -> Vec<usize> {
+        (0..self.sessions.len())
+            .filter(|&i| {
+                self.sessions[i].phase == SessionPhase::Decode && self.sessions[i].suspended.is_none()
+            })
+            .collect()
+    }
+
+    /// One serial decode-advance of session `idx` (last token → forward → sample).
+    fn decode_one(&mut self, idx: usize, report: &mut StepReport) {
+        let model = self.model;
+        let handle = self.sessions[idx].handle;
+        let last = self.sessions[idx].tokens.last().copied();
+        match last {
+            Some(tok) => match model.forward_paged_step(tok, &mut self.pool, handle) {
+                Ok(l) => {
+                    self.sessions[idx].last_logits = Some(l);
+                    self.sample(idx, report);
+                }
+                Err(e) => self.finish_error(idx, e.to_string(), report),
+            },
+            None => self.finish_error(
+                idx,
+                "PagedSessionScheduler: decode on empty token history".into(),
+                report,
+            ),
+        }
+    }
+
+    /// Advance a batch of same-position sessions in one `forward_paged_step_batched`
+    /// pass, sampling each. On any error or malformed row count the whole batch
+    /// finishes-with-error in isolation (the model layer's KV mutation is
+    /// all-or-nothing). `idxs` must be ≥2 same-position, non-suspended Decode
+    /// sessions.
+    fn decode_batch(&mut self, idxs: &[usize], report: &mut StepReport) {
+        let model = self.model;
+        let tokens: Vec<u32> = match idxs
+            .iter()
+            .map(|&i| self.sessions[i].tokens.last().copied())
+            .collect::<Option<Vec<u32>>>()
+        {
+            Some(t) => t,
+            None => {
+                for &idx in idxs {
+                    self.finish_error(idx, "decode_batch: empty token history".into(), report);
+                }
+                return;
             }
-            let handle = self.sessions[idx].handle;
-            let last = self.sessions[idx].tokens.last().copied();
-            match last {
-                Some(tok) => match model.forward_paged_step(tok, &mut self.pool, handle) {
-                    Ok(l) => {
-                        self.sessions[idx].last_logits = Some(l);
-                        self.sample(idx, &mut report);
-                    }
-                    Err(e) => self.finish_error(idx, e.to_string(), &mut report),
-                },
-                None => self.finish_error(
-                    idx,
-                    "PagedSessionScheduler: decode on empty token history".into(),
-                    &mut report,
-                ),
+        };
+        let handles: Vec<SessionHandle> = idxs.iter().map(|&i| self.sessions[i].handle).collect();
+        match model.forward_paged_step_batched(&tokens, &mut self.pool, &handles) {
+            Ok(rows) if rows.len() == idxs.len() => {
+                for (slot, &idx) in idxs.iter().enumerate() {
+                    self.sessions[idx].last_logits = Some(rows[slot].clone());
+                    self.sample(idx, report);
+                }
+                report.used_batched_arm = true;
+            }
+            Ok(rows) => {
+                let msg = format!("decode_batch: {} rows for {} sessions", rows.len(), idxs.len());
+                for &idx in idxs {
+                    self.finish_error(idx, msg.clone(), report);
+                }
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                for &idx in idxs {
+                    self.finish_error(idx, msg.clone(), report);
+                }
             }
         }
-
-        report
     }
 
     /// Sample the pending logits with THIS session's own RNG (the T1 firewall),
@@ -1592,6 +1705,43 @@ mod tests {
         let out2 = s.run_to_completion();
         let a_len = out2.iter().find(|(id, _)| *id == a).map(|(_, t)| t.len());
         assert_eq!(a_len, Some(3 + 4), "A resumed and finished (prompt 3 + 4 generated)");
+    }
+
+    /// PS4a scheduler arm: `step_batched` (batches same-position ready sessions
+    /// via Op::PagedAttn at B=K) produces token-identical output to serial `step`,
+    /// and the batched arm actually fires (`used_batched_arm`).
+    #[test]
+    fn paged_scheduler_batched_arm_matches_serial() {
+        let model = tiny_model(9999);
+        let a = [1u32, 2, 3];
+        let b = [4u32, 5, 6]; // equal length → the two stay position-uniform in lockstep
+        let max_new = 5;
+
+        // Serial reference.
+        let mut ss =
+            PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
+        let ida = ss.add_session(&a, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let idb = ss.add_session(&b, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let serial = ss.run_to_completion();
+        let sa = serial.iter().find(|(id, _)| *id == ida).unwrap().1.clone();
+        let sb = serial.iter().find(|(id, _)| *id == idb).unwrap().1.clone();
+
+        // Batched: loop step_batched to completion.
+        let mut bs =
+            PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
+        let ida2 = bs.add_session(&a, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let idb2 = bs.add_session(&b, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let mut fired = false;
+        while bs.sessions.iter().any(|s| s.phase != SessionPhase::Finished) {
+            let r = bs.step_batched(8);
+            fired |= r.used_batched_arm;
+        }
+        assert!(fired, "the batched arm actually ran (two same-position sessions)");
+        let out: Vec<_> = bs.sessions.iter().map(|s| (s.id, s.tokens.clone())).collect();
+        let ba = out.iter().find(|(id, _)| *id == ida2).unwrap().1.clone();
+        let bb = out.iter().find(|(id, _)| *id == idb2).unwrap().1.clone();
+        assert_eq!(ba, sa, "batched arm A == serial A (token-identical)");
+        assert_eq!(bb, sb, "batched arm B == serial B (token-identical)");
     }
 
     #[test]
