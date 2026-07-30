@@ -171,6 +171,19 @@ impl KvGeometry {
 /// expand past the budget; the consumer may always narrow further. The pool-set
 /// manager that arbitrates **fit** is Fuel's; one that arbitrates **priority** is
 /// policy.
+///
+/// **Cross-vendor block movement must author two hops (2026-07-30, seam owner).**
+/// Cross-backend `Op::Copy` is solved *for optimizer-inserted transfers* — the
+/// `insert_cross_device_copies` pass splits e.g. CUDA→Vulkan into CUDA→CPU→Vulkan
+/// (host-staged, CSE-shared), byte-exact-tested on CPU+CUDA+Vulkan
+/// (`cuda_vulkan_multidevice_realize_live.rs`). But that split is deliberately NOT
+/// applied to a consumer that is itself a Copy/Move (`fuel-graph/opt.rs` skips
+/// them — infinite-regress guard), so a *hand-authored* cross-vendor
+/// `copy_to_device` is never split and the foreign-GPU backends reject it. This
+/// pool moves bytes DELIBERATELY (evict/restore = D2H/H2D realizes today, all
+/// single-hop through the host — safe). When the device coordinate lands, a
+/// device↔device block move ACROSS vendors must author both hops itself
+/// (dev→CPU→dev), not emit one `Op::Copy` and expect the optimizer to split it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PoolCapacity {
     pub geometry: KvGeometry,
