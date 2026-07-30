@@ -9,14 +9,20 @@ fuel-ir = { path = "../fuel-ir" }
 fuel-kernel-seam-types = { path = "../fuel-kernel-seam-types" }
 half = { workspace = true }
 # kiss-ref (github.com/ThinkersJournal/kiss-ref) — all three crates from the one
-# workspace repo at a pinned rev. Bump the rev in lockstep.
+# workspace repo, tracked as PUBLISHED RELEASES (CireSnave, 2026-07-29: always
+# prefer published crates where possible). Moved off the git-rev pin at 0.2.0.
 #
-# Status (corrected 2026-07-29): `kiss-ref-core` 0.1.0 IS published on crates.io.
-# The previous note here — "private … crates.io is deliberately NOT used until
-# kiss-ref is public-ready" — was stale. Fuel still pins a git rev deliberately:
-# the seam tracks unreleased changes and the three crates must move in lockstep.
-# Moving to the published crate is a separate decision, not a consequence of
-# publication.
-kiss-ref-core       = { git = "https://github.com/ThinkersJournal/kiss-ref", rev = "e8ae0b58cf420851af003f5134ecea9585c393a5" }
-kiss-ops-vocab      = { git = "https://github.com/ThinkersJournal/kiss-ref", rev = "e8ae0b58cf420851af003f5134ecea9585c393a5" }
-kiss-classify-vocab = { git = "https://github.com/ThinkersJournal/kiss-ref", rev = "e8ae0b58cf420851af003f5134ecea9585c393a5" }
+# Lockstep is preserved by pinning all three at the same published minor: they
+# publish together at matching versions. The caret's auto-uptake is bounded by
+# kiss-ref's release discipline — `"0.2"` accepts only non-breaking 0.2.z, and
+# any breaking change goes to a 0.x-minor bump the caret will not pull. That
+# discipline was established by shipping the ScalarFloat seal + Node::ConstBits
+# + required from_bits as 0.2.0 rather than 0.1.1, precisely so surprise-
+# immunity is structural rather than something a rev pin has to buy.
+#
+# What this gives up vs a rev pin: tracking UNRELEASED main. That is the healthy
+# direction — being blocked on an unreleased kiss-ref change is a signal to cut
+# a release, not to track a rev.
+kiss-ref-core       = "0.2"
+kiss-ops-vocab      = "0.2"
+kiss-classify-vocab = "0.2"
