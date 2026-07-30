@@ -44,7 +44,7 @@ Today's storage architecture is asymmetric: GPU backends already store data as b
 
 ## Current state
 
-### `Storage` (fuel-core-types/src/storage.rs)
+### `Storage` (fuel-ir/src/storage.rs)
 
 ```rust
 pub struct Storage(pub Box<dyn DynBackendStorage>);
@@ -52,7 +52,7 @@ pub struct Storage(pub Box<dyn DynBackendStorage>);
 
 A newtype over a trait object. The trait has dozens of methods covering the eager-dispatch op surface. Dtype is queried via `storage.dtype()` at runtime.
 
-### `HostBuffer` (fuel-core-types/src/cpu_storage.rs)
+### `HostBuffer` (fuel-ir/src/cpu_storage.rs)
 
 ```rust
 pub enum HostBuffer {

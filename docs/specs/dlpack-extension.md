@@ -22,7 +22,7 @@ unversioned `DLManagedTensor` path is **not** an FDX export target; FDX never em
 
 Authoritative inputs: the architecture-constraints digest
 (`docs/specs/_research/architecture-constraints.md`); the as-built core types in
-`fuel-core-types/src/{dtype.rs, symbol.rs, shape.rs, quant_scale.rs, quantized.rs,
+`fuel-ir/src/{dtype.rs, symbol.rs, shape.rs, quant_scale.rs, quantized.rs,
 capability.rs, backend.rs, probe.rs, device.rs}`; the DLPack ABI (`dlpack.h` v1.3:
 `DLDataType`, `DLDevice`, `DLTensor`, `DLManagedTensor`, `DLManagedTensorVersioned`,
 `DLPackVersion`, the `DLPACK_FLAG_BITMASK_*` flags, and the `__dlpack__` /

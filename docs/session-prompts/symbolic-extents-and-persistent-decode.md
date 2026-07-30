@@ -27,7 +27,7 @@ conflict, **§0 wins**.
   on `Graph` (`fuel-graph/src/lib.rs`).
 - **Spec** (`3811f7f3`) — this document.
 - **Step 1a** (`3ec35fb6`) — `SymId` / `SymGen` / `SymEnv` / `DynScalar` in
-  `fuel-core-types/src/symbol.rs` (re-exported from the crate root). Tested.
+  `fuel-ir/src/symbol.rs` (re-exported from the crate root). Tested.
 - **Step 1b** (`55a186cb`) — `Extent {Scalar|Range{min,max,sym}}` + `DynAxis` + annotated `Shape`
   (`dims()` unchanged; new `extent()`/`extents()`/`has_dynamic()`/`with_dynamic_axis()`/`resolve(&env)`;
   `Eq`/`Debug` include `dynamic`) + `Layout::has_dynamic()`/`resolve(&env)`. Tested
@@ -109,7 +109,7 @@ live-GPU suite at a time.
 - Per-session persistent storage: `fuel-core/src/inference_context.rs` (`InferenceContext`).
 - Riskiest surface (realize prep/optimize/dispatch): `fuel-core/src/pipelined_bridge.rs`.
 - Flash op builder: `fuel-graph/src/lib.rs:~3838`; flash kernel: `fuel-cuda-backend/src/baracuda/attention.rs`.
-- The foundation just built: `fuel-core-types/src/{symbol.rs, shape.rs, layout.rs}`.
+- The foundation just built: `fuel-ir/src/{symbol.rs, shape.rs, layout.rs}`.
 
 ---
 

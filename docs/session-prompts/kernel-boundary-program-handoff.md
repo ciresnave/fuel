@@ -84,7 +84,7 @@ kernels, Vulkane FFI) are coordinated by **outreach proposals**, never unilatera
 ### STILL TO BUILD (each owned by a plan in §4)
 
 - **Self-describing Storage** — steps 1–4 SHIPPED 2026-06-19 (`SType`/`Encoding`/`ScaleSpec` in
-  `fuel-core-types/src/stype.rs`; `Storage.stype` on both structs, default-empty; `SType::to_fdx()`
+  `fuel-ir/src/stype.rs`; `Storage.stype` on both structs, default-empty; `SType::to_fdx()`
   projection + `view()` fills the quant sidecar; `view_with_quant()` binds the AFFINE scale operand
   so it validates end-to-end; V6 fixed to count blocks over LOGICAL elements). Commits `4bbe566c` /
   `f241c87c` / `fb385c4b` / `74c45015` / `8e4e90d9`. Steps 5–6 are descriptive/deferred-behind-
@@ -132,7 +132,7 @@ These were settled by verified investigation. A fresh instance must build *on* t
    miss histogram, §4).
 
 4. **GGML stays INLINE** (forced, not a choice). GGUF on-disk is interleaved struct-packed
-   (Q4_0 = `{f16 d; u8 qs[16]}` = 18 bytes/block; `fuel-core-types/src/quantized.rs:87-113`); the
+   (Q4_0 = `{f16 d; u8 qs[16]}` = 18 bytes/block; `fuel-ir/src/quantized.rs:87-113`); the
    format + k-quants + ~40 quantized kernels + zero-copy mmap all assume it. `Encoding::GgmlBlock` =
    inline, no sibling scale. **Do NOT generalize interleaving to NF4** (would force a repack on load
    from bnb's separate-tensor format, killing zero-copy, for no win). **Efficiency rule:** layout
@@ -151,7 +151,7 @@ These were settled by verified investigation. A fresh instance must build *on* t
 
 8. **Ground-truth divergences from the original sketches (already reconciled — don't re-discover):**
    there are **two** `Storage` structs — `fuel-memory/src/lib.rs:89-101` (`{ inner, dtype, bundle }`)
-   and `fuel-core-types/src/storage.rs:216-224` (`{ inner, bundle }`, **no `dtype` field** —
+   and `fuel-ir/src/storage.rs:216-224` (`{ inner, bundle }`, **no `dtype` field** —
    delegates to `inner.dtype_dyn()`); both gain `stype`. There is **no `PerBlock`** in
    `ScaleGranularity` (`quant_scale.rs:38`) — `AffineBlock` block grain rides `block_shape`. There is
    **no `NF4` dtype** — NF4 reuses `DType::F4` (`dtype.rs:44` → FDX code 13). `Encoding::Mx` +
@@ -203,7 +203,7 @@ These were settled by verified investigation. A fresh instance must build *on* t
 The Judge **already retains per-`(op, dtype, size_class, backend, kernel_source)` timings, including
 losing alternatives, as `u64` nanoseconds.** Two artifacts, both verified:
 
-- **`ProfileReport` / `ProfileEntry`** (persistent JSON) — `fuel-core-types/src/dispatch.rs:655-692`.
+- **`ProfileReport` / `ProfileEntry`** (persistent JSON) — `fuel-ir/src/dispatch.rs:655-692`.
   One entry **per measured alternative including losers**; `latency_ns: u64` (NOT f32 squares);
   `kernel_source: String` distinguishes siblings. `PROFILE_REPORT_VERSION == 2`.
 - **`HashMapJudge` / `JudgeOracle`** (in-memory) — `fuel-dispatch/src/ranker/judge.rs:53-75`, keyed
@@ -242,7 +242,7 @@ track** (P, no code dependency). Within any step, obey the discipline in §5 (on
   Spec: [`storage-encoding.md`](../specs/storage-encoding.md).
 - **Unblocked by:** nothing — the `dlpack` module + `DlpackView` slice 1 already exist (§1 DONE).
 - **Unblocks:** the quant sidecar in `view()` (B), and the consuming-op scale-sibling wiring.
-- Shape: step 1 new `fuel-core-types/src/stype.rs` (types); step 2 `stype: SType` field on **both**
+- Shape: step 1 new `fuel-ir/src/stype.rs` (types); step 2 `stype: SType` field on **both**
   `Storage` structs (default empty = byte-identical); step 3 `SType::to_fdx()` fills the deferred
   quant sidecar in `dlpack_view.rs`; step 4 consuming-op binds the scale operand (model B at the
   graph layer); steps 5-6 GGML-inline + loader notes; step 7 test round-up.
@@ -341,13 +341,13 @@ existing oracle; the outreach is cross-project coordination). Do them whenever; 
    [`kernel-contract-format.md`](../specs/kernel-contract-format.md)). Spot-check that §1's "DONE"
    claims still hold: the `dlpack` + `fkc` features compile and their test counts pass
    (`cargo test -p fuel-core-types --features dlpack`, `cargo test -p fuel-dispatch --features fkc`
-   — **one at a time**). Confirm §3's Judge facts at `fuel-core-types/src/dispatch.rs:655-692` and
+   — **one at a time**). Confirm §3's Judge facts at `fuel-ir/src/dispatch.rs:655-692` and
    `fuel-dispatch/src/ranker/judge.rs:53-75` (already verified for this handoff; re-verify if you
    touch them).
 
 2. **Start the keystone: workstream A, step 1.** Open
    [`self-describing-storage-plan.md`](self-describing-storage-plan.md). Write the 5 born-red tests
-   for `SType`/`Encoding`/`ScaleSpec` in a new `fuel-core-types/src/stype.rs`, run
+   for `SType`/`Encoding`/`ScaleSpec` in a new `fuel-ir/src/stype.rs`, run
    `cargo test -p fuel-core-types stype`, **watch them fail**, then implement the types per the plan's
    step 1. This unblocks the quant sidecar (B) and everything downstream.
 

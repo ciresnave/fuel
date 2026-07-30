@@ -12,7 +12,7 @@ is in our own code, as you noted:
 
 - **Strides — no change on Fuel's side.** Fuel keeps its existing `Layout::permute` (b): a transposed operand
   is delivered pre-permuted into iteration-axis order (`perm_stride[i] = stride[idxs[i]]`,
-  `fuel-core-types/src/layout.rs:205‑228`). Under (c) that classifies honestly as `Strided` and your existing
+  `fuel-ir/src/layout.rs:205‑228`). Under (c) that classifies honestly as `Strided` and your existing
   generic strided cell reads it correctly. **We stand down the net-new peel-the-permute projection** — it was
   never built (it was a queued commitment, not code), so there is nothing to revert.
 - **Your decisive argument holds.** Under (a) we'd hand the producer's natural strides (contiguous `[2,3,4]`

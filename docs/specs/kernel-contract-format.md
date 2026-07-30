@@ -27,7 +27,7 @@ Authoritative inputs: the architecture-constraints digest
 `BindingEntry`, `KernelBindingTable`, `CostFn`, `CostEstimate`, `PrecisionGuarantee`,
 `KernelRevisionHash`, `OpParams`); the graph-side fused registry
 (`fuel-graph/src/registry.rs`: `FusedOp { shape_rule, dtype_rule, output_views, … }`); the
-core types in `fuel-core-types/src/{dtype.rs, shape.rs, symbol.rs, quant_scale.rs, quantized.rs,
+core types in `fuel-ir/src/{dtype.rs, shape.rs, symbol.rs, quant_scale.rs, quantized.rs,
 capability.rs, backend.rs, probe.rs, storage.rs}`; and the **sibling FDX spec**
 (`docs/specs/dlpack-extension.md`) plus its two 2026-06-17 additions —
 `docs/specs/_drafts/fdx-addition-gather.md` (paged / indexed-residency `FDXIndexedResidency`) and
@@ -510,7 +510,7 @@ rules the importer applies (`fuel-dispatch/src/fkc/lower.rs::assemble_dtype_vari
   the primitive rules above.
 
 **GGML dtype names are the as-built `GgmlDType` variant names, matched by numeric code.** The
-canonical set (`fuel-core-types/src/quantized.rs`) is:
+canonical set (`fuel-ir/src/quantized.rs`) is:
 `F32(0), F16(1), Q4_0(2), Q4_1(3), Q5_0(6), Q5_1(7), Q8_0(8), Q8_1(9), Q2K(10), Q3K(11),
 Q4K(12), Q5K(13), Q6K(14), Q8K(15), BF16(30)`. **There is no `Q4_K_M` / `Q4KM` `GgmlDType`
 variant.** `Q4_K_M` is the *file-format (GGUF) name* for a mixed-precision K-quant whose storage
@@ -629,7 +629,7 @@ is a **FUSED op**, so the param carrier is **`FusedOpParams::PagedAttn`** (`Fuse
 worked descriptor therefore declares `fused_op: PAGED_ATTN` with `op_params.variant: PagedAttn` in
 the `FusedOpParams` namespace (the same shape as the FlashAttn fused example, §8) — never
 `op_kind`/`OpParams` (an `op_kind` carrier would fail the §10.7 namespace check). (`OpKind::PagedAttn`
-at `fuel-core-types/src/dispatch.rs:168` exists as the op-kind tag but is **not** the param carrier.)
+at `fuel-ir/src/dispatch.rs:168` exists as the op-kind tag but is **not** the param carrier.)
 
 ```yaml
 - name: k_cache
@@ -650,7 +650,7 @@ and lists the **block table** and **context lengths as ordinary separate `accept
 the as-built PagedAttn ABI takes them as their own graph inputs — the `KernelRef::PagedAttn` operand
 order is `[q, k_cache, v_cache, block_table, context_lens, alibi?]`
 (`fuel-dispatch/src/kernel.rs:314-331`, matching FDX §6.9.3 / V21(b); the earlier
-`fuel-core-types/src/dispatch.rs:165-168` operand-order citation was wrong and is corrected here):
+`fuel-ir/src/dispatch.rs:165-168` operand-order citation was wrong and is corrected here):
 
 ```yaml
 - name: block_table
@@ -1259,7 +1259,7 @@ concurrently (CUDA streams / SM occupancy budget, Vulkan queues, CPU worker thre
 **static device fact, not per-kernel**, and **not telemetry** (it is the *capacity*, not the live
 free count). FKC intentionally does **not** carry it.
 
-It belongs on `BackendCapabilities` (`fuel-core-types/src/backend.rs`), as a `slot_capacity:
+It belongs on `BackendCapabilities` (`fuel-ir/src/backend.rs`), as a `slot_capacity:
 u32` / `max_concurrent_contexts: u32` field read by the optimizer's scheduler. As of this draft
 `BackendCapabilities` does **not** yet have that field (it has `required_alignment`,
 `access_granularity_bits`, `transfer_paths`, `storage_substrate`, `op_dtype_support`); adding it
@@ -1438,7 +1438,7 @@ return:
     - { name: last_state, dtype_rule: passthrough(u), shape_rule: from_params(state), layout_guarantee: contiguous }
 ```
 
-Each slot compiles to an `OutputViewSpec` (`fuel-core-types/src/storage.rs`), which the executor
+Each slot compiles to an `OutputViewSpec` (`fuel-ir/src/storage.rs`), which the executor
 turns into an `OutputView { byte_offset, len_elements, dtype, shape: Shape, layout, name }` via
 `allocate_bundled_storage`. **Two honest limits, stated rather than hidden** (the in-memory
 `OutputView` is the authority; the on-the-wire `FDXOutputView` is its serialization, and it is

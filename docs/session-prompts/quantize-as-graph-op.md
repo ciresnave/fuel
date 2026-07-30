@@ -18,7 +18,7 @@ variant model the same way GGUF Q4_0 tensors already do.
 
 Two pieces are already in place from 2026-05-29 sessions:
 
-1. **`ScaleGranularity` + `ScalePair`** in `fuel-core-types/src/
+1. **`ScaleGranularity` + `ScalePair`** in `fuel-ir/src/
    quant_scale.rs`. The dispatch-time parameter for which
    per-tensor / per-token / per-channel layout the kernel should
    produce.
@@ -211,5 +211,5 @@ land in baracuda. The interesting design choice is Option A vs B
 of the implementation session.
 
 Link:
-[`fuel-core-types/src/quant_scale.rs`](../../fuel-core-types/src/quant_scale.rs),
+[`fuel-ir/src/quant_scale.rs`](../../fuel-ir/src/quant_scale.rs),
 [`fuel-cuda-backend/src/baracuda/quant_w4a16.rs`](../../fuel-cuda-backend/src/baracuda/quant_w4a16.rs).

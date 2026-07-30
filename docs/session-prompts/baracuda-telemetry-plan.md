@@ -7,8 +7,8 @@ This plan builds the **emission layer** for the Baracuda dispatch-telemetry / mi
 feed. It is **not** a retention rebuild. The crucial grounding (verified this session) is that the
 Judge **already retains** the per-candidate timings the feed needs:
 
-- **Persistent JSON** — [`ProfileReport`](../../fuel-core-types/src/dispatch.rs) /
-  [`ProfileEntry`](../../fuel-core-types/src/dispatch.rs) at `fuel-core-types/src/dispatch.rs:653-692`.
+- **Persistent JSON** — [`ProfileReport`](../../fuel-ir/src/dispatch.rs) /
+  [`ProfileEntry`](../../fuel-ir/src/dispatch.rs) at `fuel-ir/src/dispatch.rs:653-692`.
   One `ProfileEntry` **per measured alternative including losers**; fields verified:
   `op: OpKind`, `dtype: DType`, `size_class: SizeClass`, `backend: BackendId`,
   `device_index: u32`, `latency_ns: u64`, `iterations: u32`, `max_rel_error: f32`,
@@ -428,7 +428,7 @@ schema and in the outbound reply — that the feed starts sparse and fills in.
 **Files:**
 - New: `fuel-dispatch/src/telemetry/candidates.rs` (`fill_candidates(admitted: &[ImplId], oracle:
   &dyn JudgeOracle, dtype, size_class) -> Vec<Candidate>`). Note: `size_class` is derived via
-  `SizeClass::from_elem_count` (`fuel-core-types/src/dispatch.rs:635-639`).
+  `SizeClass::from_elem_count` (`fuel-ir/src/dispatch.rs:635-639`).
 
 **Failing test first:**
 

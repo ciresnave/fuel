@@ -24,7 +24,7 @@ Authoritative inputs: the architecture-constraints digest
 `BindingEntry`, `KernelBindingTable`, `CostFn`, `CostEstimate`, `PrecisionGuarantee`,
 `KernelRevisionHash`, `OpParams`); the graph-side fused registry
 (`fuel-graph/src/registry.rs`: `FusedOp { shape_rule, dtype_rule, output_views, … }`); the
-core types in `fuel-core-types/src/{dtype.rs, shape.rs, symbol.rs, quant_scale.rs, quantized.rs,
+core types in `fuel-ir/src/{dtype.rs, shape.rs, symbol.rs, quant_scale.rs, quantized.rs,
 capability.rs, backend.rs, probe.rs}`; and the **sibling FDX spec**
 (`docs/specs/_drafts/dlpack-extension.draft.md`) for all tensor (DLPack + extension) vocabulary.
 When this draft and the constitution (`docs/architecture/`) conflict, the constitution wins;

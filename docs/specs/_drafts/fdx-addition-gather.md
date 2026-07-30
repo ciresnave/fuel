@@ -28,7 +28,7 @@ block_size: usize, softcap: Option<f32> }` — **three fields only**
 (`fuel-graph/src/registry.rs:241-244`; the `FusedOpParamsKey` tag is 13, `:524-527`; the op id is
 `PAGED_ATTN = FusedOpId(13)`, `:887`). The earlier draft's citation of a nine-field
 `OpParams::PagedAttn { b, hq, hkv, sq, d, block_size, max_blocks_per_seq, num_blocks, … }` and the
-path `fuel-core-types/src/dispatch.rs:165-168` were **wrong** and are corrected here.
+path `fuel-ir/src/dispatch.rs:165-168` were **wrong** and are corrected here.
 
 The geometry this addition mirrors (`b`, `hq`, `hkv`, `sq`, `d`, `max_blocks_per_seq`,
 `num_blocks`) is **not** stored as op params; it is carried on the lowered
