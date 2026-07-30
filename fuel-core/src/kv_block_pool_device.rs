@@ -430,6 +430,59 @@ impl DeviceKvPool {
         q.paged_attn(&post_k, &post_v, block_table, context_lens, None, scale, g.block_size, None)
     }
 
+    /// Batched (`B = K`) sibling of [`build_decode_attn`] — one decode step over
+    /// K sessions sharing this layer's pool buffers (paged-storage PS4a). Each
+    /// session `i` contributes one new token: its `[Hkv, D]` K/V (row `i` of
+    /// `k_new`/`v_new`, shaped `[K, Hkv, 1, D]`) is written into its own physical
+    /// slot `writes[i] = (phys, slot)`; then a single `Op::PagedAttn` at batch
+    /// `K` reads all K sessions via the `[K, max_blocks]` `block_table` +
+    /// `[K]` `context_lens`. `q` is `[K, Hq, 1, D]`; returns `[K, Hq, 1, D]`.
+    ///
+    /// The K per-session writes chain on the same bound pool buffer (each
+    /// `write_slice` returns the post-write handle) so all land before the op
+    /// reads — one graph, one realize, exactly like the single-session path.
+    /// `writes` must be non-empty and in `block_table`/`q` batch-row order.
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_decode_attn_batched(
+        &self,
+        k_pool_ph: &LazyTensor,
+        v_pool_ph: &LazyTensor,
+        q: &LazyTensor,
+        k_new: &LazyTensor,
+        v_new: &LazyTensor,
+        block_table: &LazyTensor,
+        context_lens: &LazyTensor,
+        writes: &[(PhysBlockId, usize)],
+        scale: f32,
+    ) -> crate::Result<LazyTensor> {
+        let g = self.geometry();
+        let slot_shape = Shape::from_dims(&[1, 1, g.n_kv_heads, g.head_dim]);
+        let mut post_k: Option<LazyTensor> = None;
+        let mut post_v: Option<LazyTensor> = None;
+        for (i, &(phys, slot)) in writes.iter().enumerate() {
+            let p = phys as usize;
+            let ranges = vec![
+                (p, p + 1),
+                (slot, slot + 1),
+                (0, g.n_kv_heads),
+                (0, g.head_dim),
+            ];
+            // Row i of the batched new K/V: [K,Hkv,1,D] --slice0--> [1,Hkv,1,D]
+            // --reshape--> [1,1,Hkv,D] (the block-slot layout).
+            let k_row = k_new.slice(0, i, 1)?.reshape(slot_shape.clone())?;
+            let v_row = v_new.slice(0, i, 1)?.reshape(slot_shape.clone())?;
+            let dest_k = post_k.as_ref().unwrap_or(k_pool_ph);
+            let dest_v = post_v.as_ref().unwrap_or(v_pool_ph);
+            post_k = Some(dest_k.write_slice(&k_row, ranges.clone())?);
+            post_v = Some(dest_v.write_slice(&v_row, ranges)?);
+        }
+        let post_k = post_k.ok_or_else(|| {
+            msg_err("build_decode_attn_batched: writes is empty (need ≥ 1 session)".into())
+        })?;
+        let post_v = post_v.expect("post_v Some iff post_k Some");
+        q.paged_attn(&post_k, &post_v, block_table, context_lens, None, scale, g.block_size, None)
+    }
+
     // --- C-3: device-backed evict / restore (bytes move device↔host) ------
 
     /// Evict a session's entire resident state: capture the bytes of its
