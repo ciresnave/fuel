@@ -150,6 +150,60 @@ mod tests {
         assert_eq!(result.to_vec1::<f32>().unwrap(), vec![1.0, 2.0]);
     }
 
+    // ---- DeviceGroup: single-process, multi-device collectives ----
+    //
+    // `Communicator` is the SPMD shape: each rank calls with its own tensor.
+    // A single process driving N devices holds ALL shards at once, so it wants
+    // a slice-shaped interface instead. `DeviceGroup` is that; `IdentityComm`
+    // remains the correct degenerate impl of the per-rank trait.
+
+    #[test]
+    fn identity_comm_reduces_nothing_and_that_is_correct() {
+        // Characterization guard. IdentityComm is world_size 1 returning its
+        // input — right for a single rank, and NOT a working collective. This
+        // test exists so the distinction stays visible if someone reads
+        // `all_reduce` and assumes it reduces.
+        let comm = IdentityComm;
+        let t = Tensor::new(&[1.0f32, 2.0], &Device::cpu()).unwrap();
+        let out = comm.all_reduce(&t, ReduceOp::Sum).unwrap();
+        assert_eq!(comm.info().world_size, 1);
+        assert_eq!(out.to_vec1::<f32>().unwrap(), vec![1.0, 2.0]);
+    }
+
+    #[test]
+    fn device_group_new_rejects_empty_device_list() {
+        assert!(DeviceGroup::new(vec![]).is_err(), "a group with no devices is not constructible");
+    }
+
+    #[test]
+    fn device_group_all_reduce_sums_across_shards() {
+        let dev = Device::cpu();
+        let g = DeviceGroup::new(vec![dev.clone()]).unwrap();
+        let a = Tensor::new(&[1.0f32, 2.0], &dev).unwrap();
+        let b = Tensor::new(&[10.0f32, 20.0], &dev).unwrap();
+        let out = g.all_reduce(&[a, b], ReduceOp::Sum).unwrap();
+        assert_eq!(out.to_vec1::<f32>().unwrap(), vec![11.0, 22.0]);
+    }
+
+    #[test]
+    fn device_group_all_reduce_rejects_empty_shards() {
+        let g = DeviceGroup::new(vec![Device::cpu()]).unwrap();
+        assert!(
+            g.all_reduce(&[], ReduceOp::Sum).is_err(),
+            "reducing zero shards is an error, not a panic (never-panic contract)",
+        );
+    }
+
+    #[test]
+    fn device_group_all_gather_concatenates_shards() {
+        let dev = Device::cpu();
+        let g = DeviceGroup::new(vec![dev.clone()]).unwrap();
+        let a = Tensor::new(&[1.0f32, 2.0], &dev).unwrap();
+        let b = Tensor::new(&[3.0f32, 4.0], &dev).unwrap();
+        let out = g.all_gather(&[a, b], 0).unwrap();
+        assert_eq!(out.to_vec1::<f32>().unwrap(), vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
     #[test]
     fn identity_broadcast() {
         let comm = IdentityComm;
