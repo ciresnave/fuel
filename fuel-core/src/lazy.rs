@@ -5369,6 +5369,90 @@ impl LazyTensor {
         (rope_cos, rope_sin)
     }
 
+    /// `[B, 1, 1, head_dim]` RoPE cos/sin tables, row `b` at absolute position
+    /// `positions[b]` — the per-row generalization of [`Self::rope_tables_const`]
+    /// (which carries one shared position). Built as a **single** const from `B`
+    /// calls to `fuel_graph::build_rope_tables` (the canonical `(theta, position)
+    /// → (cos, sin)` math), concatenated host-side — no `Op::Concat` chain. At
+    /// `B == 1` the emitted data is bit-identical to `rope_tables_const`'s
+    /// `[1, head_dim]` const (same builder call), so
+    /// [`Self::rope_batched`] reduces to the single-position decomposed RoPE.
+    ///
+    /// This is the mechanism that lets a decode batch carry sessions at
+    /// *different* positions (continuous batching) rather than requiring
+    /// equal-length rows. `anchor` (`self`) supplies the graph.
+    pub fn rope_tables_const_batched(
+        &self,
+        theta: f64,
+        positions: &[usize],
+        head_dim: usize,
+    ) -> (Self, Self) {
+        let b = positions.len();
+        let mut cos_data = Vec::with_capacity(b * head_dim);
+        let mut sin_data = Vec::with_capacity(b * head_dim);
+        for &pos in positions {
+            let (c, s) = fuel_graph::build_rope_tables(theta, pos, 1, head_dim);
+            cos_data.extend_from_slice(&c);
+            sin_data.extend_from_slice(&s);
+        }
+        let shape = Shape::from_dims(&[b, 1, 1, head_dim]);
+        let rope_cos = self.const_f32_like(cos_data, shape.clone());
+        let rope_sin = self.const_f32_like(sin_data, shape);
+        (rope_cos, rope_sin)
+    }
+
+    /// Rotary position embedding with **per-batch-row** tables.
+    ///
+    /// `self` is `[B, H, 1, D]`; `cos`/`sin` are `[B, 1, 1, D]` (row `b` holds the
+    /// table for sequence `b`'s own position — see [`Self::rope_tables_const_batched`]).
+    /// Broadcasting the `[B, 1, 1, D]` tables over the head axis is what lets one
+    /// table row serve all of that sequence's heads.
+    ///
+    /// This is `fuel_graph::Tensor::rope_with_tables_decomposed`'s body
+    /// (`fuel-graph/src/lib.rs` ~6931-6954) with the table shape generalized from
+    /// one shared position to one-per-row — **same ops, same order, same
+    /// associativity** (`y = x·cos + concat(-x[…,D/2..], x[…,..D/2])·sin`), so at
+    /// `B == 1` it is bit-identical to `rope_with_tables_decomposed`. Built on the
+    /// public `LazyTensor` surface (not a new `fuel-graph` op) deliberately: the
+    /// single-position [`Self::rope_with_tables_decomposed`] hard-requires
+    /// `cos.dims() == [seq, d]`, so it cannot carry per-row tables, and rebuilding
+    /// the lowering here avoids re-entering the `fuel-graph` rope op.
+    ///
+    /// (Adopted from the Lightbulb consumer's verified `rope_batched`; the
+    /// mechanism belongs in Fuel, not the consumer.)
+    pub fn rope_batched(
+        &self,
+        cos: &Self,
+        sin: &Self,
+    ) -> std::result::Result<Self, fuel_ir::Error> {
+        let dims: Vec<usize> = self.inner.shape().dims().to_vec();
+        let rank = dims.len();
+        if rank < 2 {
+            return Err(fuel_ir::Error::Msg(format!(
+                "rope_batched: expected rank >= 2, got {dims:?}",
+            )).bt());
+        }
+        let d = dims[rank - 1];
+        if !d.is_multiple_of(2) {
+            return Err(fuel_ir::Error::Msg(format!(
+                "rope_batched: head_dim {d} must be even",
+            )).bt());
+        }
+        let half = d / 2;
+        let target = Shape::from_dims(&dims);
+
+        let cos_b = cos.broadcast_to(target.clone())?;
+        let sin_b = sin.broadcast_to(target)?;
+
+        let first = self.slice(rank - 1, 0, half)?;
+        let second = self.slice(rank - 1, half, half)?;
+        let rotated = second.neg().concat(&first, rank - 1)?;
+
+        let left = self.mul(&cos_b)?;
+        let right = rotated.mul(&sin_b)?;
+        left.add(&right)
+    }
+
     /// Apply RoPE to the first `rope_dim` entries of each head and
     /// pass the remaining `head_dim - rope_dim` features through
     /// unchanged. `head_dim` is derived from the receiver's last-dim
@@ -7410,12 +7494,16 @@ impl LlamaModel {
     ) -> crate::Result<Vec<f32>> {
         let cfg = &self.config;
         let weights = &self.weights;
-        if pool.dtype() != DType::F32 {
+        // The activation dtype IS the pool dtype (BF16-throughout decode, Phase D
+        // increment A): f32 pool → f32 activations; bf16 pool → bf16 activations.
+        let act_dtype = pool.dtype();
+        if !matches!(act_dtype, DType::F32 | DType::BF16 | DType::F16) {
             return Err(fuel_ir::Error::Msg(format!(
-                "forward_paged_step: f32-only for now, pool dtype is {:?}",
-                pool.dtype(),
+                "forward_paged_step: unsupported pool dtype {act_dtype:?} (expected F32/BF16/F16)",
             )).bt());
         }
+        // Build + realize on the pool's device so a CUDA pool runs on CUDA.
+        let dev = pool.device().clone();
         let geom = pool.geometry();
         if geom.n_layers != cfg.n_layers {
             return Err(fuel_ir::Error::Msg(format!(
@@ -7440,16 +7528,18 @@ impl LlamaModel {
             fuel_ir::Error::Msg(format!("forward_paged_step: block-table materialize failed: {e:?}")).bt()
         })?;
 
-        // Embed the single token → [1, 1, dim].
+        // Embed the single token → [1, 1, dim]. The table stays f32 (CUDA
+        // IndexSelect has no bf16 key); cast to the activation dtype after lookup.
         let embed = LazyTensor::from_f32(
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
-            &Device::cpu(),
+            &dev,
         );
         let token_ids = embed.const_u32_like(vec![token], Shape::from_dims(&[1]));
         let mut h = embed
             .index_select(0, &token_ids).unwrap()
-            .reshape(Shape::from_dims(&[1, 1, cfg.dim])).unwrap();
+            .reshape(Shape::from_dims(&[1, 1, cfg.dim])).unwrap()
+            .to_dtype(act_dtype)?;
 
         // RoPE tables at this token's absolute position (seq = 1).
         let (rope_cos, rope_sin) = h.rope_tables_const(cfg.rope_base, tok_pos, 1, cfg.head_dim);
@@ -7466,8 +7556,9 @@ impl LlamaModel {
         // in place and is visible next step.
         let mut cache = fuel_dispatch::pipelined::StorageCache::new();
         for (li, layer) in weights.layers.iter().enumerate() {
-            let k_ph = h.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
-            let v_ph = h.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
+            // Placeholders match the pool buffers' dtype (bf16 pool → bf16 bind).
+            let k_ph = h.const_placeholder_like(pool.pool_shape().clone(), act_dtype);
+            let v_ph = h.const_placeholder_like(pool.pool_shape().clone(), act_dtype);
             let k_arc = pool.k_pool(li).ok_or_else(|| {
                 fuel_ir::Error::Msg(format!("forward_paged_step: no K pool buffer for layer {li}")).bt()
             })?;
@@ -7484,11 +7575,15 @@ impl LlamaModel {
 
         let h_norm = apply_affine_rms_norm(&h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps);
         let logits = weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size);
-        let logits_root = logits.reshape(Shape::from_dims(&[cfg.vocab_size]))?;
+        // Cast to f32 before the f32 realize (a bf16 root is UB — half the byte
+        // width); no-op under an f32 pool.
+        let logits_root = logits
+            .reshape(Shape::from_dims(&[cfg.vocab_size]))?
+            .to_dtype(DType::F32)?;
         crate::pipelined_bridge::realize_one_as_with_initial::<f32>(
             logits_root.inner.graph(),
             logits_root.inner.id(),
-            &Device::cpu(),
+            &dev,
             cache,
         )
     }
@@ -7520,12 +7615,13 @@ impl LlamaModel {
                 k, sessions.len(),
             )).bt());
         }
-        if pool.dtype() != DType::F32 {
+        let act_dtype = pool.dtype();
+        if !matches!(act_dtype, DType::F32 | DType::BF16 | DType::F16) {
             return Err(fuel_ir::Error::Msg(format!(
-                "forward_paged_step_batched: f32-only for now, pool dtype is {:?}",
-                pool.dtype(),
+                "forward_paged_step_batched: unsupported pool dtype {act_dtype:?} (expected F32/BF16/F16)",
             )).bt());
         }
+        let dev = pool.device().clone();
         let geom = pool.geometry();
         if geom.n_layers != cfg.n_layers {
             return Err(fuel_ir::Error::Msg(format!(
@@ -7595,16 +7691,17 @@ impl LlamaModel {
             fuel_ir::Error::Msg(format!("forward_paged_step_batched: block-table materialize failed: {e:?}")).bt()
         })?;
 
-        // Embed K tokens → [K, 1, dim].
+        // Embed K tokens → [K, 1, dim] (f32 table; cast to activation dtype).
         let embed = LazyTensor::from_f32(
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
-            &Device::cpu(),
+            &dev,
         );
         let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[k]));
         let mut h = embed
             .index_select(0, &token_ids).unwrap()
-            .reshape(Shape::from_dims(&[k, 1, cfg.dim])).unwrap();
+            .reshape(Shape::from_dims(&[k, 1, cfg.dim])).unwrap()
+            .to_dtype(act_dtype)?;
 
         // RoPE at the (shared) position; block_table [K, max_blk], context_lens [K].
         let (rope_cos, rope_sin) = h.rope_tables_const(cfg.rope_base, tok_pos, 1, cfg.head_dim);
@@ -7614,8 +7711,8 @@ impl LlamaModel {
 
         let mut cache = fuel_dispatch::pipelined::StorageCache::new();
         for (li, layer) in weights.layers.iter().enumerate() {
-            let k_ph = h.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
-            let v_ph = h.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
+            let k_ph = h.const_placeholder_like(pool.pool_shape().clone(), act_dtype);
+            let v_ph = h.const_placeholder_like(pool.pool_shape().clone(), act_dtype);
             let k_arc = pool.k_pool(li).ok_or_else(|| {
                 fuel_ir::Error::Msg(format!("forward_paged_step_batched: no K pool buffer for layer {li}")).bt()
             })?;
@@ -7632,11 +7729,13 @@ impl LlamaModel {
 
         let h_norm = apply_affine_rms_norm(&h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps);
         let logits = weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size); // [K, 1, vocab]
-        let logits_flat = logits.reshape(Shape::from_dims(&[k * cfg.vocab_size]))?;
+        let logits_flat = logits
+            .reshape(Shape::from_dims(&[k * cfg.vocab_size]))?
+            .to_dtype(DType::F32)?; // f32 for the realize (no-op under an f32 pool)
         let flat = crate::pipelined_bridge::realize_one_as_with_initial::<f32>(
             logits_flat.inner.graph(),
             logits_flat.inner.id(),
-            &Device::cpu(),
+            &dev,
             cache,
         )?;
         // Split the flat [K·vocab] into one [vocab] row per session (row-major).
@@ -13686,6 +13785,80 @@ mod generate_tests {
         );
     }
 
+    /// PS4c PC-2 — bf16 PAGED decode on a live CUDA device matches bf16
+    /// CONTIGUOUS decode, per step. Both run BF16-throughout on the 4070; the
+    /// paged path stores KV in a bf16 `DeviceKvPool` and attends via
+    /// `Op::PagedAttn` (decomposed to gather+SDPA on the primitives' bf16 CUDA
+    /// kernels — PC-2's decompose route), the contiguous path uses a bf16
+    /// `KvCache`. Greedy **argmax** must agree at every step (bf16 is too coarse
+    /// for tight logit parity, but the sampled token must match).
+    ///
+    /// Run: `cargo test -p fuel-core --features cuda --lib \
+    ///   bf16_paged_decode_matches_contiguous_on_cuda -- --ignored --nocapture`
+    #[test]
+    #[cfg(feature = "cuda")]
+    #[ignore = "requires a live CUDA device"]
+    fn bf16_paged_decode_matches_contiguous_on_cuda() {
+        let cfg = LlamaConfig {
+            vocab_size: 32, dim: 16, n_layers: 2, n_heads: 4, n_kv_heads: 4,
+            head_dim: 4, ffn_dim: 32, norm_eps: 1e-5, rope_base: 10000.0,
+        };
+        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
+        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights_bf16(&cfg) };
+
+        let cuda = match fuel_cuda_backend::CudaDevice::new(0) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("no CUDA device; skipping: {e:?}");
+                return;
+            }
+        };
+        let dev: Device = cuda.into();
+
+        let prompt = [1u32, 2, 3];
+        let decode = [4u32, 5, 6];
+        let all: Vec<u32> = prompt.iter().chain(decode.iter()).copied().collect();
+        let max_seq_len = all.len();
+
+        // Contiguous bf16 reference on CUDA.
+        let mut cache = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::BF16, &dev,
+        ).expect("bf16 KvCache");
+        let mut ctx = InferenceContext::new(dev.clone());
+        let mut contig: Vec<Vec<f32>> = Vec::new();
+        contig.push(model.forward_with_kv_context(&prompt, &mut cache, &mut ctx).expect("contig prefill"));
+        for &t in &decode {
+            contig.push(model.forward_with_kv_context(&[t], &mut cache, &mut ctx).expect("contig decode"));
+        }
+
+        // Paged bf16 decode on CUDA — feed every token one at a time.
+        let geom = crate::kv_block_pool::KvGeometry {
+            n_layers: cfg.n_layers, num_blocks: 32, block_size: 4,
+            n_kv_heads: cfg.n_kv_heads, head_dim: cfg.head_dim, elem_size: 2,
+        };
+        let mut pool = crate::kv_block_pool_device::DeviceKvPool::new(geom, DType::BF16, &dev)
+            .expect("bf16 DeviceKvPool");
+        let session = pool.core_mut().open();
+        let mut paged: Vec<Vec<f32>> = Vec::new();
+        for &t in &all {
+            paged.push(model.forward_paged_step(t, &mut pool, session).expect("paged bf16 step"));
+        }
+
+        let argmax = |v: &[f32]| {
+            v.iter().enumerate().max_by(|a, b| a.1.partial_cmp(b.1).unwrap()).unwrap().0
+        };
+        // Contiguous prefill = position P-1 = paged's P-th step; then each decode.
+        let p = prompt.len();
+        assert_eq!(argmax(&paged[p - 1]), argmax(&contig[0]), "prefill-last argmax (bf16 CUDA)");
+        for i in 0..decode.len() {
+            assert_eq!(
+                argmax(&paged[p + i]), argmax(&contig[1 + i]),
+                "decode-{i} argmax (bf16 CUDA paged vs contiguous)",
+            );
+        }
+        eprintln!("bf16 PAGED decode on CUDA VERIFIED: argmax matches contiguous over {} steps", all.len());
+    }
+
     /// Phase D · FIRST live-GPU verification of plan-once persistent decode on
     /// VULKAN — the `write_bytes` variant of the per-token H2D re-bind upload
     /// arm (`upload_host_buffer_to_device`'s non-CPU branch on a Vulkan
@@ -16713,6 +16886,65 @@ mod phase_a2_composite_tests {
         let out = t.flatten_all().unwrap();
         assert_eq!(out.shape().dims(), &[6]);
         assert_eq!(out.realize_f32(), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
+
+    /// `rope_batched` at `B == 1` must be **bit-identical** to
+    /// `rope_with_tables_decomposed`, and each row at `B == 3` must equal the
+    /// single-position result at that row's own position — the exactness proof
+    /// for the per-row RoPE that unblocks ragged (non-uniform-position) batched
+    /// decode. A subtly wrong rotate-half (wrong half split, wrong sign, wrong
+    /// concat order) still produces plausible tokens, so this asserts
+    /// bit-equality; the CONTROL proves the per-row table is load-bearing.
+    /// (Adopted from the Lightbulb consumer's verified `rope_batched` oracle;
+    /// the mechanism belongs in Fuel.)
+    #[test]
+    fn rope_batched_matches_single_position_rope_row_by_row() {
+        let lcg = |n: usize, seed: u32| -> Vec<f32> {
+            let mut s = seed;
+            (0..n)
+                .map(|_| {
+                    s = s.wrapping_mul(1103515245).wrapping_add(12345);
+                    ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.5
+                })
+                .collect()
+        };
+        let (b, heads, hd) = (3usize, 4usize, 8usize);
+        let base = 10000.0f64;
+        let positions = [0usize, 7, 3];
+
+        let x_data = lcg(b * heads * hd, 11);
+        let x = cpu_f32(x_data.clone(), &[b, heads, 1, hd]);
+        let (cos, sin) = x.rope_tables_const_batched(base, &positions, hd);
+        let got = x.rope_batched(&cos, &sin).unwrap().realize_f32();
+
+        let per_row = heads * hd;
+        for (row, &pos) in positions.iter().enumerate() {
+            let row_data = x_data[row * per_row..(row + 1) * per_row].to_vec();
+            let xr = cpu_f32(row_data, &[1, heads, 1, hd]);
+            let (c, s) = xr.rope_tables_const(base, pos, 1, hd);
+            let want = xr.rope_with_tables_decomposed(&c, &s).unwrap().realize_f32();
+            assert_eq!(
+                &got[row * per_row..(row + 1) * per_row],
+                &want[..],
+                "row {row} (position {pos}) != decomposed RoPE at that position",
+            );
+        }
+
+        // CONTROL: prove the per-row table is load-bearing. Give EVERY row
+        // position 0 (row 0's position); rows at other positions must now
+        // DISAGREE with their own-position result — else the comparison above is
+        // blind to the whole per-row-position mechanism.
+        let shared = [positions[0]; 3];
+        let (c0, s0) = x.rope_tables_const_batched(base, &shared, hd);
+        let wrong = x.rope_batched(&c0, &s0).unwrap().realize_f32();
+        for (row, &pos) in positions.iter().enumerate().skip(1) {
+            assert_ne!(
+                &wrong[row * per_row..(row + 1) * per_row],
+                &got[row * per_row..(row + 1) * per_row],
+                "CONTROL: row {row} at shared position 0 matched its own position \
+                 {pos} — per-row RoPE not applied, or comparison blind to it",
+            );
+        }
     }
 
     #[test]
