@@ -190,8 +190,32 @@ realization barrier built in)** — see Subtask B.
 
 The `WeightStorage::apply_linear` builder already handles F32 / BF16 / Q4_0
 on the lazy side
-([fuel-core/src/lazy.rs:4526-4570](../../fuel-core/src/lazy.rs#L4526-L4570)),
+([fuel-core/src/lazy.rs:6785](../../fuel-core/src/lazy.rs#L6785)),
 so the shard's dtype is whatever the caller stored.
+
+> **Line reference corrected 2026-07-30.** This read `lazy.rs:4526-4570`;
+> `apply_linear` is at **6785** (`apply_linear_with_bias` at 6759,
+> `apply_linear_dyn_m` at 6855). Treat every line number in this document as
+> advisory — grep the symbol, do not trust the line.
+>
+> **Also note `WeightStorage` covers a fourth case this text omits: `WithLoRA`.**
+
+> **[2026-07-30] Subtask A is shipped, and not as designed here.** `fuel-parallel`
+> was ported to lazy on `main`: `comm::Communicator` and `tensor_parallel::Linear`
+> now take `LazyTensor`, and `Linear::forward` **delegates to
+> `WeightStorage::apply_linear`** rather than reimplementing it — which is what
+> this section anticipated. Two deltas worth knowing before reviving the driver:
+>
+> 1. **Weight layout changed.** `Linear` now stores `[in_features, out_features]`
+>    and computes `x @ W`, where the eager version stored `[out, in]` and computed
+>    `x @ W.t()`. That is a *silent* change — same shapes accepted, different
+>    numbers out — safe only because the crate has no consumer yet. A revived
+>    `llama_multiprocess` loading sharded weights must match the new layout.
+> 2. **`apply_linear` is not never-panic.** It reaches `x.matmul(&w).unwrap()` and
+>    an `assert_eq!` on the trailing dim, so it violates the production-path rule.
+>    `Linear::forward` guards rank and the `k == in_features` mismatch ahead of the
+>    call and returns `Err`; a *direct* `WeightStorage::apply_linear` caller gets no
+>    such protection. Reported to the owning session as its own TDD increment.
 
 ### Subtask B — `Communicator` for lazy tensors
 
