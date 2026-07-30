@@ -40,8 +40,11 @@ fn lazy_paged_attn_decode_round_trip() {
     let cl = q.const_u32_like(cl_data.clone(), Shape::from_dims(&[b]));
     let out = q.paged_attn(&kc, &vc, &bt, &cl, None, scale, block_size, None).unwrap();
 
+    // Executor path (production PagedAttn arm, cost-placement enabled) vs the
+    // hard-CPU-pinned reference oracle — the two dispatch paths this test's
+    // header claims to cover. (Was realize_f32() twice: a == a, coverage-free.)
     let cpu = out.realize_f32();
-    let reference = out.realize_f32();
+    let reference = out.realize_f32_reference();
     assert_eq!(cpu.len(), reference.len());
     for (i, (&a, &b)) in cpu.iter().zip(reference.iter()).enumerate() {
         let diff = (a - b).abs();
