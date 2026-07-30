@@ -131,6 +131,29 @@ impl DeviceGroup {
         Ok(acc)
     }
 
+    /// Realize `t` as `f32`, seeding a device handle for **every** device in the
+    /// group.
+    ///
+    /// A plain `LazyTensor::realize_f32` seeds only the *primary* device, so a
+    /// graph whose nodes span several backends cannot be executed through it —
+    /// the non-primary backends have no handle to allocate against. This routes
+    /// through `pipelined_bridge::realize_one_as_multi_device` with the leader as
+    /// primary and the remaining group devices as extras, which is the entry the
+    /// existing live multi-vendor tests use.
+    ///
+    /// Callers should not have to know that: the group already owns the device
+    /// list, so it is the natural place for the seeding to live.
+    pub fn realize_f32(&self, t: &LazyTensor) -> Result<Vec<f32>> {
+        let extras: Vec<&Device> = self.devices[1..].iter().collect();
+        let graph = t.graph().clone();
+        fuel::pipelined_bridge::realize_one_as_multi_device::<f32>(
+            &graph,
+            t.node_id(),
+            self.leader(),
+            &extras,
+        )
+    }
+
     /// Bring `shard`, which lives on `devices[rank]`, onto the leader device —
     /// **authoring the CPU hop ourselves when the move crosses vendors.**
     ///

@@ -9,10 +9,25 @@ categories.workspace = true
 license.workspace = true
 
 [dependencies]
-fuel = { workspace = true }
-serde = { workspace = true }
+    fuel   = { workspace = true }
+    serde  = { workspace = true }
+    # Backend crates, pulled in only by the matching feature. Needed because a
+    # live multi-backend test must NAME its device: `VulkanBackend::with_selection`
+    # is the only way to ask for the integrated GPU — `vulkan_backend::new_device()`
+    # uses `PreferDiscrete`, which on a mixed box selects the *discrete* card and
+    # would quietly make a "CUDA + Vulkan" test run both halves on the same vendor.
+    fuel-cuda-backend   = { workspace = true, optional = true }
+    fuel-vulkan-backend = { workspace = true, optional = true }
 
 [dev-dependencies]
 
 [features]
-default = []
+    default = []
+
+    # GPU passthrough. This crate holds no backend code of its own — the features
+    # exist so a live multi-backend test here can reach real CUDA / Vulkan
+    # devices, which `fuel`'s own defaults leave off. Without these, a test in
+    # this crate can only ever construct `Device::cpu()`, so "multi-device" would
+    # mean "several handles to the same host" and would prove nothing.
+    cuda   = ["fuel/cuda", "dep:fuel-cuda-backend"]
+    vulkan = ["fuel/vulkan", "dep:fuel-vulkan-backend"]
