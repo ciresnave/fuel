@@ -93,13 +93,42 @@ KV *store* — unlocking:
   admission API is consumer policy (fuel-inference's prefix_cache) — built when a
   consumer needs it, not speculatively.
 
-- **PS4c-CUDA (remaining — GPU-gated).** Byte/dtype-generic `write_block`/
-  `read_block` + `build_decode_attn` for a bf16 pool, and a live-GPU (`#[ignore]`)
-  parity run of the paged path on CUDA/RTX 4070. Deliberately NOT shipped from
-  this CPU flow: the bf16 kernels can only be exercised on the GPU, and shipping
-  unverified numeric code violates the test-gated norm. Needs a GPU session (cold
-  CUDA build ~36 min + cuDNN on PATH per environment discipline); the CPU-side
-  seam is ready to generalize.
+- **PS4c-CUDA (remaining — GPU + baracuda-gated). Execution plan (2026-07-30,
+  CireSnave chose this as the next track).** Serving is f32/CPU-only; this makes
+  the paged path real on the RTX 4070 in bf16. It is GPU + baracuda-gated —
+  bf16 attention compute can only be exercised on CUDA (the existing bf16 decode
+  test `bf16_cuda_decode_graph_offers_flash_arm` is `#[cfg(cuda)]` + `#[ignore]`),
+  so shipping bf16 numeric code from a CPU flow would violate test-gated. Three
+  increments:
+
+  - **PC-1 — dtype-agnostic block MOVEMENT (CPU-verifiable, buildable now).**
+    Today `write_block`/`read_block` (and the CoW `ensure_writable_block` +
+    evict/restore that build on them) hard-code f32 (`from_f32`/`const_f32_like`/
+    `realize_one_as::<f32>`). A bf16 pool stores bf16 bytes, so movement must be
+    dtype-agnostic or it reinterprets bf16 as f32. Refactor the movement core to
+    carry BYTES keyed by the pool's dtype (a const-from-bytes-with-dtype source +
+    a byte-width read), keeping f32 typed wrappers for existing callers. **Verify
+    with f32** (round-trip through bytes is byte-identical) — no bf16 kernel
+    needed. This is the real CPU-verifiable prerequisite; movement side only.
+  - **PC-2 — bf16 paged decode on CUDA (GPU-gated).** Build a bf16 `DeviceKvPool`;
+    `forward_paged_step`/`_batched` in bf16 (the graph already threads bf16 —
+    "BF16-throughout decode", Phase D increment A). Depends on **PC-3**. Gate: an
+    `#[ignore]`'d live-GPU parity test (paged bf16 == the contiguous bf16
+    reference / an f32 reference within ε) on the 4070.
+  - **PC-3 — the paged/flash CUDA kernel (GPU + baracuda ask).** Whether
+    `Op::PagedAttn` dispatches to a fast baracuda kernel (`flash_decoding` /
+    paged-attention) on CUDA vs decomposing to the gather+SDPA primitives (whose
+    bf16 CUDA kernels must then all exist). This is the "flash arm" for the paged
+    path — distinct from the contiguous path's `offer_flash_decode_arm_for_region`
+    (→ `Op::Branch` to a CUDA-pinned `FlashAttn`). A cross-project ask: does
+    baracuda expose a paged/flash-decoding kernel Fuel can register for
+    `Op::PagedAttn`? (cf. the memory `bf16-cuda-decode-part2`: "CUDA BF16 kernels
+    mostly EXIST; blockers are graph-level".)
+
+  Sequencing: PC-1 now (CPU); PC-2/PC-3 in a GPU session — cold CUDA build ~36 min
+  + cuDNN on PATH (environment discipline), one live-GPU suite at a time
+  (coordinate the 4070 with the peer's tri-backend `DeviceGroup` test over the
+  claude-peers channel), and a baracuda kernel ask for PC-3.
 
 ## PS4 hardening — adversarial verification (ultracode, 2026-07-29)
 
