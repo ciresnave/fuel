@@ -129,7 +129,6 @@ impl PageTableHost {
 /// pure capacity/lifecycle verbs.
 pub struct DeviceKvPool {
     core: KvBlockPool,
-    #[allow(dead_code)] // consumed by the WriteSlice / evict-restore sub-increments
     device: Device,
     dtype: DType,
     /// `[num_blocks, block_size, Hkv, D]` — the shape of every layer buffer.
@@ -199,6 +198,11 @@ impl DeviceKvPool {
     /// Pool buffer element dtype.
     pub fn dtype(&self) -> DType {
         self.dtype
+    }
+    /// The device the pool buffers live on — a paged forward builds + realizes on
+    /// this device (so a CUDA pool runs on CUDA, not CPU).
+    pub fn device(&self) -> &Device {
+        &self.device
     }
     /// Layer `l`'s K pool buffer, if `l < n_layers`.
     pub fn k_pool(&self, layer: usize) -> Option<&Arc<RwLock<Storage>>> {
