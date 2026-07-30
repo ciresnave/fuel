@@ -7432,11 +7432,9 @@ impl LlamaModel {
         pool.core_mut().append(session, 1).map_err(|e| {
             fuel_ir::Error::Msg(format!("forward_paged_step: block append failed: {e:?}")).bt()
         })?;
-        let phys = pool.core().resident_block(session, tok_pos / block_size).ok_or_else(|| {
-            fuel_ir::Error::Msg(
-                "forward_paged_step: token block not resident after append".to_string(),
-            ).bt()
-        })?;
+        // Copy-on-write: if this token's block is shared (spliced), break the
+        // share + copy so the write doesn't corrupt a co-sharer.
+        let phys = pool.ensure_writable_block(session, tok_pos / block_size)?;
         let slot = tok_pos % block_size;
         let pt = pool.materialize_block_table(&[session]).map_err(|e| {
             fuel_ir::Error::Msg(format!("forward_paged_step: block-table materialize failed: {e:?}")).bt()
@@ -7555,17 +7553,42 @@ impl LlamaModel {
         }
         let slot = tok_pos % block_size;
 
-        // Grow each session by one token; collect its (phys, slot) write target.
+        // Atomicity + capacity pre-check (C-1): a batched step allocates one block
+        // per boundary-crossing session (slot == 0) PLUS one per shared frontier
+        // block that copy-on-write will split. Verify the whole batch fits BEFORE
+        // mutating any session, so a mid-batch OutOfBlocks can't leave the batch
+        // partially advanced (which would wedge it non-uniform + un-retryable).
+        let mut needed = 0usize;
+        for &s in sessions {
+            if slot == 0 {
+                needed += 1; // append allocates a fresh block for the new token
+            } else {
+                let frontier = pool.core().resident_block(s, tok_pos / block_size).ok_or_else(|| {
+                    fuel_ir::Error::Msg(
+                        "forward_paged_step_batched: frontier block not resident".to_string(),
+                    ).bt()
+                })?;
+                if pool.core().block_refcount(frontier) > 1 {
+                    needed += 1; // copy-on-write will split this shared block
+                }
+            }
+        }
+        let free = pool.core().free_blocks();
+        if needed > free {
+            return Err(fuel_ir::Error::Msg(format!(
+                "forward_paged_step_batched: batch needs {needed} blocks, {free} free — \
+                 pre-check capacity (C-1) or evict before batching",
+            )).bt());
+        }
+
+        // Execute — pre-checked to fit, so no session is left partially advanced.
         let mut writes: Vec<(crate::kv_block_pool::PhysBlockId, usize)> = Vec::with_capacity(k);
         for &s in sessions {
             pool.core_mut().append(s, 1).map_err(|e| {
                 fuel_ir::Error::Msg(format!("forward_paged_step_batched: block append failed: {e:?}")).bt()
             })?;
-            let phys = pool.core().resident_block(s, tok_pos / block_size).ok_or_else(|| {
-                fuel_ir::Error::Msg(
-                    "forward_paged_step_batched: token block not resident after append".to_string(),
-                ).bt()
-            })?;
+            // Copy-on-write if this session's frontier block is shared (spliced).
+            let phys = pool.ensure_writable_block(s, tok_pos / block_size)?;
             writes.push((phys, slot));
         }
         let pt = pool.materialize_block_table(sessions).map_err(|e| {

@@ -204,3 +204,82 @@ fn paged_batched_matches_serial_gqa() {
         head_dim: 4, ffn_dim: 16, norm_eps: 1e-5, rope_base: 10000.0,
     });
 }
+
+fn tiny_cfg() -> LlamaConfig {
+    LlamaConfig {
+        vocab_size: 16, dim: 16, n_layers: 2, n_heads: 4, n_kv_heads: 4,
+        head_dim: 4, ffn_dim: 16, norm_eps: 1e-5, rope_base: 10000.0,
+    }
+}
+
+/// REGRESSION (adversarial-verification finding): decoding a session whose last
+/// block is spliced/shared must copy-on-write, NOT write through the shared
+/// physical block. A donates its prefix to B; A decodes into the (partial)
+/// shared block, B decodes into it, then A decodes again — A's logits must equal
+/// an A that never shared with B. Without the CoW guard, B's write clobbers A's
+/// shared slot and A silently reads B's KV.
+#[test]
+fn paged_decode_into_spliced_prefix_does_not_corrupt_donor() {
+    let cfg = tiny_cfg();
+    let model = LlamaModel { config: cfg.clone(), weights: tiny_weights(&cfg, 9999) };
+    let dev = Device::cpu();
+    let geom = || KvGeometry {
+        n_layers: cfg.n_layers, num_blocks: 32, block_size: 4,
+        n_kv_heads: cfg.n_kv_heads, head_dim: cfg.head_dim, elem_size: 4,
+    };
+    let prompt = [1u32, 2, 3, 4, 5, 6]; // 6 tokens → block0 full, block1 partial (2/4)
+    let (a_tok, b_tok) = (7u32, 8u32);
+
+    // Reference: A alone — prefill, decode a_tok (pos 6), decode a_tok (pos 7).
+    let a_ref = {
+        let mut pool = DeviceKvPool::new(geom(), DType::F32, &dev).unwrap();
+        let a = pool.core_mut().open();
+        for &t in &prompt { model.forward_paged_step(t, &mut pool, a).unwrap(); }
+        model.forward_paged_step(a_tok, &mut pool, a).unwrap(); // pos 6
+        model.forward_paged_step(a_tok, &mut pool, a).unwrap() // pos 7 (compared)
+    };
+
+    // With B sharing A's prefix, interleaved so B writes A's shared slot AFTER A.
+    let mut pool = DeviceKvPool::new(geom(), DType::F32, &dev).unwrap();
+    let a = pool.core_mut().open();
+    for &t in &prompt { model.forward_paged_step(t, &mut pool, a).unwrap(); }
+    let b = pool.core_mut().open();
+    pool.core_mut().splice(a, b, 0, 2).unwrap(); // B shares A's 2 blocks (block1 partial + shared)
+    model.forward_paged_step(a_tok, &mut pool, a).unwrap(); // A writes pos 6 into shared block1 slot 2
+    model.forward_paged_step(b_tok, &mut pool, b).unwrap(); // B decodes pos 6 → CoW (must NOT clobber A)
+    let a_with_b = model.forward_paged_step(a_tok, &mut pool, a).unwrap(); // A pos 7 reads its own pos-6 KV
+
+    assert_eq!(a_with_b, a_ref, "A's decode unaffected by B decoding into the shared prefix (CoW held)");
+}
+
+/// REGRESSION (adversarial-verification finding): a batched step that can't fit
+/// the whole batch is ATOMIC — it errors before advancing ANY session, so the
+/// batch stays uniform + retryable instead of wedging.
+#[test]
+fn batched_step_out_of_blocks_is_atomic() {
+    let cfg = tiny_cfg();
+    let model = LlamaModel { config: cfg.clone(), weights: tiny_weights(&cfg, 9999) };
+    let dev = Device::cpu();
+    // num_blocks 3, block_size 4: two sessions prefilled to 4 tokens use 2 blocks
+    // (1 each); a boundary batched step needs 2 more but only 1 is free.
+    let geom = KvGeometry {
+        n_layers: cfg.n_layers, num_blocks: 3, block_size: 4,
+        n_kv_heads: cfg.n_kv_heads, head_dim: cfg.head_dim, elem_size: 4,
+    };
+    let mut pool = DeviceKvPool::new(geom, DType::F32, &dev).unwrap();
+    let sa = pool.core_mut().open();
+    let sb = pool.core_mut().open();
+    for &t in &[1u32, 2, 3, 4] { model.forward_paged_step(t, &mut pool, sa).unwrap(); }
+    for &t in &[5u32, 6, 7, 8] { model.forward_paged_step(t, &mut pool, sb).unwrap(); }
+    assert_eq!(pool.core().free_blocks(), 1, "2 of 3 blocks used, 1 free");
+    let filled_before = (pool.core().filled_tokens(sa), pool.core().filled_tokens(sb));
+
+    // Boundary batched step (pos 4, slot 0) needs 2 blocks, 1 free → Err, atomic.
+    let r = model.forward_paged_step_batched(&[9, 10], &mut pool, &[sa, sb]);
+    assert!(r.is_err(), "batch at a boundary needs 2 blocks, only 1 free");
+    assert_eq!(
+        (pool.core().filled_tokens(sa), pool.core().filled_tokens(sb)), filled_before,
+        "no session partially advanced (atomic)",
+    );
+    assert_eq!(pool.core().free_blocks(), 1, "no block consumed on the rejected batch");
+}
