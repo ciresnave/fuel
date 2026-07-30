@@ -20,6 +20,9 @@ license.workspace = true
     fuel-vulkan-backend = { workspace = true, optional = true }
 
 [dev-dependencies]
+    # Only for the BF16 `WeightStorage` test. `Linear` is dtype-agnostic because
+    # it delegates to `WeightStorage`; proving that needs a real bf16 value.
+    half = { workspace = true }
 
 [features]
     default = []
