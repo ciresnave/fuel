@@ -2396,6 +2396,21 @@ wondering where the entry went.
 
 ### 1. Re-migrate the 10 quarantined `fuel-examples` binaries
 
+> **The retired eager sources these ports referenced were DELETED 2026-07-31.**
+> `fuel-transformers/src/_models_retired/` (208 files, ~3.1 MB) plus
+> `_fused_moe_retired.rs`, `_quantized_nn_retired.rs` and
+> `_quantized_var_builder_retired.rs` were never declared as modules in
+> `lib.rs`, so they had not been compiled since Phase H — they were dead
+> weight that inflated every grep and made the eager surface look ~5455
+> references larger than it was (the live figure was 2). Same precedent as
+> the deletions recorded in §0 above.
+>
+> **They remain the porting reference — retrieve them from git, not from the
+> working tree.** Last commit containing them: **`19365b07`**. For example:
+> `git show 19365b07:fuel-transformers/src/_models_retired/audio/metavoice.rs`
+> or `git checkout 19365b07 -- fuel-transformers/src/_models_retired/<path>`
+> to restore one temporarily while porting it.
+
 Each binary was set aside because its target model family doesn't yet have a
 lazy port. Restoring each one means landing the lazy port called out, then
 doing the standard binary swap (lazy_X imports + lazy weight loader +
