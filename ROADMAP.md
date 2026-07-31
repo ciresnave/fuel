@@ -2429,6 +2429,28 @@ LazyTensor signatures).
 
 ### 2. Re-migrate the 10 fuel-wasm-examples crates + fuel-wasm-tests
 
+> **ARCHIVED 2026-07-31 — `fuel-pyo3` and `fuel-wasm-tests` are removed from the
+> workspace and deleted from the tree.** Both were unmaintained, neither is needed to
+> get Fuel working, and both **blocked the eager-`Tensor` retirement (B6)**:
+> `fuel-pyo3` was the sole remaining consumer of `fuel_onnx::eval::simple_eval`, and
+> `fuel-wasm-tests` was the only consumer keeping `QTensor`/`QMatMul`/`Module` alive.
+> `fuel-wasm-tests` additionally **did not compile** (`unresolved import
+> fuel::quantized::k_quants`) while being a *default-member*, which is what made a bare
+> root `cargo check` fail — see the corrected note in CLAUDE.md.
+>
+> **Retrieve from git, not the working tree.** Last commit containing them:
+> **`087109cf`** — e.g. `git checkout 087109cf -- fuel-pyo3`.
+>
+> Python bindings are deliberately deferred rather than ported: porting them now means
+> porting them twice, and the `tensor.item::<f32>() > 0.5` question that B6 flags as
+> "the most user-visible difference from PyTorch eager" is a Python-surface design
+> decision best made when the bindings are actually wanted.
+>
+> **This section's claim that the WASM example tree is "quarantined out of the
+> workspace" is STALE:** `fuel-wasm-examples/*` is present in both `members` and
+> `default-members`, the 11 crates are real (100 files), and the sampled ones import no
+> retired crate. Whether they build is UNVERIFIED.
+
 The entire WASM example tree is currently quarantined out of the workspace
 (removed from `[workspace.members]`) because every crate depends on
 `fuel_transformers::models::*` (retired in Phase H) and `fuel_nn::*` (retired
