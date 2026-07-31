@@ -1,6 +1,8 @@
 //! Traits and methods for CPU-backed Tensors
 
 pub mod erf;
+pub mod philox;
+pub mod philox_kat;
 pub mod kernels;
 
 pub use kernels::VecOps;
