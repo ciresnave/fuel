@@ -33,6 +33,10 @@ pub fn enumerate_devices() -> Result<Vec<DeviceDescriptor>> {
         vendor_id:          0,
         device_id:          0,
         compute_capability: None,
+        // No subgroup/wave concept on the scalar CPU path. (SIMD lane count
+        // is a different axis — it varies per instruction set, not per
+        // device — so it deliberately does not map onto this field.)
+        subgroup_width:     None,
         // No direct driver concept for the CPU backend; use the crate
         // version so the Judge invalidates on fuel-cpu-backend updates.
         driver_version:     env!("CARGO_PKG_VERSION").to_string(),

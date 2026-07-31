@@ -507,8 +507,22 @@ impl VulkanBackend {
         // Extract into a fuel-internal POD summary so the field is
         // Send + Sync (the raw vulkane type contains a *mut c_void
         // pNext chain that's !Send/!Sync).
+        //
+        // vulkane 0.9.0 made `cooperative_matrix_properties` SAFE — it now
+        // self-gates on the device's own extension advertisement instead of
+        // trusting the loader's non-null stub, so the `unsafe` wrapper this
+        // call used to need is gone (it would emit `unused_unsafe`).
+        //
+        // `has_coop_matrix` STAYS. vulkane's migration note says a caller
+        // that hand-checked the extension list "can delete both", but that is
+        // only true of the check *at this call site*: our binding also drives
+        // `with_cooperative_matrix()` (feature enablement), `khr_cooperative_matrix()`
+        // (extension enablement) and `Pipelines::new(..)` below. Deleting it
+        // would leave the extension NEVER ENABLED while the self-gating query
+        // still reports shapes from the *supported* list — a silent loss of
+        // tensor-core-class matmul, not a compile error.
         let coop_matrix_shapes: Vec<CoopMatrixShape> = if has_coop_matrix {
-            let raw = unsafe { physical.cooperative_matrix_properties() };
+            let raw = physical.cooperative_matrix_properties();
             raw.iter().map(CoopMatrixShape::from_vulkane).collect()
         } else {
             Vec::new()

@@ -237,6 +237,7 @@ mod tests {
             vendor_id:          0x10DE,
             device_id:          0x2684,
             compute_capability: Some((8, 9)),
+            subgroup_width:     Some(32),
             driver_version:     "CUDA 12.6".to_string(),
             total_memory_bytes: 25_769_803_776,
             location:           DeviceLocation::Cuda { gpu_id: idx as usize },

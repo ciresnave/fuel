@@ -602,6 +602,7 @@ mod tests {
                 vendor_id:          0,
                 device_id:          0,
                 compute_capability: None,
+                subgroup_width:     None,
                 driver_version:     "test".to_string(),
                 total_memory_bytes: 0,
                 location:           DeviceLocation::Cpu,

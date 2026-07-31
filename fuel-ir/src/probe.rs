@@ -125,6 +125,17 @@ pub struct DeviceDescriptor {
     /// CUDA compute capability, when applicable. `None` for non-CUDA
     /// entries. Stored as `(major, minor)` — e.g. `(8, 9)` for sm_89.
     pub compute_capability: Option<(u32, u32)>,
+    /// Lanes per subgroup / wave / warp — the primary kernel-
+    /// specialization axis on every SIMT backend. 32 on NVIDIA, 64 on
+    /// AMD GCN/CDNA, 32 *or* 64 on RDNA, 8/16/32 on Intel. `None` when
+    /// the backend cannot report it (CPU, or a Vulkan instance created
+    /// below 1.1).
+    ///
+    /// Deliberately **not** part of [`EquivalenceKey`]: it is a
+    /// function of `(vendor_id, device_id)`, which the key already
+    /// carries, so including it would add no discriminating power and
+    /// would churn the Judge's cache for nothing.
+    pub subgroup_width: Option<u32>,
     /// Driver version string as reported by the backend. Cache
     /// invalidation key: if the driver rev changes, Judge re-runs.
     pub driver_version: String,
@@ -209,6 +220,7 @@ mod tests {
             vendor_id:          0x10DE,
             device_id:          0x2684,
             compute_capability: Some((8, 9)),
+            subgroup_width:     Some(32),   // NVIDIA warp
             driver_version:     "550.54.14".to_string(),
             total_memory_bytes: 25_769_803_776,
             location:           DeviceLocation::Cuda { gpu_id: idx as usize },
@@ -230,6 +242,7 @@ mod tests {
             vendor_id:          0x10DE,
             device_id:          0x2684,
             compute_capability: Some((8, 9)),
+            subgroup_width:     Some(32),
             driver_version:     "550.54.14".to_string(),
             total_memory_bytes: 25_769_803_776,
             location:           DeviceLocation::Cuda { gpu_id: 0 },
@@ -241,6 +254,7 @@ mod tests {
             vendor_id:          0x10DE,
             device_id:          0x2684,
             compute_capability: None,  // Vulkan doesn't expose CUDA CC.
+            subgroup_width:     Some(32),
             driver_version:     "550.54.14".to_string(),
             total_memory_bytes: 25_769_803_776,
             location:           DeviceLocation::Cpu,  // placeholder; vulkane uses a different variant
@@ -258,11 +272,38 @@ mod tests {
             vendor_id:          1,
             device_id:          2,
             compute_capability: Some((8, 9)),
+            subgroup_width:     Some(32),
             driver_version:     "550".to_string(),
             total_memory_bytes: 0,
             location:           DeviceLocation::Cuda { gpu_id: 0 },
         };
         let newer = DeviceDescriptor { driver_version: "560".to_string(), ..base.clone() };
         assert_ne!(base.equivalence_key(), newer.equivalence_key());
+    }
+
+    /// `subgroup_width` is a function of `(vendor_id, device_id)`, which the
+    /// key already carries, so it must NOT participate in the equivalence
+    /// key — otherwise a backend that learns to report it (or stops) would
+    /// churn every cached Judge profile for no discriminating gain.
+    /// Pins the documented invariant on `DeviceDescriptor::subgroup_width`.
+    #[test]
+    fn equivalence_key_ignores_subgroup_width() {
+        let base = DeviceDescriptor {
+            backend:            BackendId::Vulkan,
+            device_index:       0,
+            hardware_sku:       "X".to_string(),
+            vendor_id:          1,
+            device_id:          2,
+            compute_capability: None,
+            subgroup_width:     None,
+            driver_version:     "550".to_string(),
+            total_memory_bytes: 0,
+            location:           DeviceLocation::Vulkan { gpu_id: 0 },
+        };
+        let with_width = DeviceDescriptor { subgroup_width: Some(64), ..base.clone() };
+        // Descriptors differ...
+        assert_ne!(base, with_width);
+        // ...but they profile identically, so the key must collapse them.
+        assert_eq!(base.equivalence_key(), with_width.equivalence_key());
     }
 }
