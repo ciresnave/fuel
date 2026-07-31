@@ -90,13 +90,25 @@ The correctness gate is flag-toggled and runs BOTH arms in one process:
 
 ---
 
-### Task 5 — Wire + measure
+### Task 5 — Wire + measure — **COMPLETE (wiring); measurement handed to Lightbulb**
 
-**Files:** Modify the paged generate loop / `PagedSessionScheduler` (fuel-inference) to hold + drive a `PagedDecodeSession` per session behind the flag.
+**Files:** Modified `fuel-inference/src/multi_session.rs` (the `PagedSessionScheduler` paged driver).
 
-- [ ] Wire `forward_paged_step_persistent` into the paged decode driver (hold `Option<PagedDecodeSession>` per session, like `generate_streaming_with_kv_context` holds `Option<DecodeSession>`); default flag off, opt-in on.
-- [ ] Land the whole increment as ONE commit with a clean parent; ping Lightbulb with the commit hash + a quiet-window request. Lightbulb runs `b_sweep_per_sequence_cost` parent-vs-commit (same session/machine/geometry prompt8/steps4/BLOCK16/max_blocks==1); success = paged warm-up/steady ratio moves above 1.0 and per-token cost drops toward the ~950ms execution floor.
-- [ ] Commit + push.
+**Shipped wiring:**
+- **`DecodeModel::forward_paged_step_persistent`** — new trait method (thin `LlamaModel` forward), the plan-once sibling of `forward_paged_step`; carries `max_blocks_cap` + `plan` + `&mut Option<PagedDecodeSession>`.
+- **`PagedSession.decode_session: Option<PagedDecodeSession>`** + **`max_blocks_cap`** — per-session held plan (the paged twin of `SessionState.session: Option<DecodeSession>`). `max_blocks_cap = ⌈(prompt+max_new)/block_size⌉` computed at `add_session` from the live pool geometry.
+- **`PagedSessionScheduler.plan: PagedDecodePlan`** — default `Replan` (off). `set_plan(PlanOnce)` opts in; `plan()` reads it back.
+- **`decode_one`** routes through `forward_paged_step_persistent` (flag-gated; `pool` and the session's `decode_session` are disjoint fields → both borrow mutably in one call). Prefill stays on the plain `forward_paged_step` (the plan builds on the FIRST decode token, exactly the Task-3/4 gate flow); the batched arm (`decode_batch`, B=K) stays on `forward_paged_step_batched` (persistent is B=1). Interleaving serial↔batched is safe: the rebind recomputes block_table/context_lens/offset from live pool state each token; only the stable big-buffer K/V Arc is captured.
+- **`evict_session`** defensively drops the held plan (restore re-allocates fresh blocks; one rebuild on resume is negligible against the host round-trip).
+- **`session_realize_count(id) -> Option<usize>`** — observability/test hook: how many times a session's held plan was rebound (`None` if no plan held).
+
+**Test (TDD, RED→GREEN→sabotage-calibrated):** `paged_scheduler_plan_once_matches_replan_byte_exact` — decodes one session both ways in one process (default `Replan` reference vs `set_plan(PlanOnce)`); asserts byte-identical token stream + the held plan was rebound (`session_realize_count ≥ 1`, via `.expect` that panics if no plan persisted). Two complementary teeth: byte-identity catches a result-changing mis-wire; the rebind count catches the "flag set but persistent path silently bypassed" inversion (reads as no-speedup → would wrongly retire the feature). **Sabotage-calibrated** (confirmed recompile): forcing `decode_one` to pass `Replan` regardless of the flag makes the test FAIL at the rebind-count `.expect`.
+
+- [x] Wire `forward_paged_step_persistent` into the paged decode driver behind the flag; default off, opt-in on.
+- [x] Commit + push (see below).
+- [ ] **Lightbulb measurement (handed off):** with the flag now reachable, the cleanest A/B is flag-off vs flag-on **at the same commit** (`set_plan(Replan)` vs `set_plan(PlanOnce)`), which removes any parent-vs-commit confound from intervening commits. Harness knobs unchanged (single session, prompt8/steps4/BLOCK16/max_blocks==1). Success = paged warm-up/steady ratio moves above 1.0 and per-token cost drops toward the ~950ms execution floor.
+
+**Verification:** the new test + full `multi_session` regression **28 passed / 0 failed** (1 live-GPU ignored). CPU f32.
 
 ## Self-review notes
 - Spec coverage: two structural variabilities (Task 1 block_table shape, Task 3 fresh root) + the write-offset (Task 2) + rebind (Task 3) + flag/gate (Task 4) + wire/measure (Task 5). Ragged batched persistent is explicitly a follow-on after single-session (Task 3 note).

@@ -37,7 +37,9 @@ use std::collections::HashMap;
 use fuel_ir::{DType, Error};
 
 use fuel::Device;
-use fuel::inference_context::{DecodeSession, InferenceContext, KvCache};
+use fuel::inference_context::{
+    DecodeSession, InferenceContext, KvCache, PagedDecodePlan, PagedDecodeSession,
+};
 use fuel::kv_block_pool::{KvBlockPool, KvGeometry, PoolCapacity, SessionHandle};
 use fuel::kv_block_pool_device::{DeviceEvicted, DeviceKvPool};
 use fuel::lazy::{sample_logits, LlamaModel, SamplingStrategy};
@@ -132,6 +134,28 @@ pub trait DecodeModel {
         pool: &mut DeviceKvPool,
         sessions: &[SessionHandle],
     ) -> fuel::Result<Vec<Vec<f32>>>;
+
+    /// Plan-once sibling of [`forward_paged_step`](Self::forward_paged_step): the
+    /// paged driver holds one [`PagedDecodeSession`] per session and, under
+    /// `plan == PagedDecodePlan::PlanOnce`, builds + optimizes the decode graph
+    /// ONCE then rebinds it per token — paying the optimizer (Lightbulb-measured at
+    /// ~90% of per-token paged cost) once instead of every token. `Replan` (the
+    /// driver default) drops any held session and re-plans via `forward_paged_step`
+    /// — behaviorally identical to the pre-plan-once path, so a session may flip
+    /// the flag without leaving stale state. `max_blocks_cap` is the session's
+    /// fixed block-table capacity (`⌈(prompt + max_new) / block_size⌉`), which
+    /// pins the held graph's `block_table` shape across tokens. Single session
+    /// (B = 1); the batched arm stays on `forward_paged_step_batched`.
+    #[allow(clippy::too_many_arguments)]
+    fn forward_paged_step_persistent(
+        &self,
+        token: u32,
+        pool: &mut DeviceKvPool,
+        session: SessionHandle,
+        max_blocks_cap: usize,
+        plan: PagedDecodePlan,
+        decode_session: &mut Option<PagedDecodeSession>,
+    ) -> fuel::Result<Vec<f32>>;
 }
 
 impl DecodeModel for LlamaModel {
@@ -180,6 +204,19 @@ impl DecodeModel for LlamaModel {
         sessions: &[SessionHandle],
     ) -> fuel::Result<Vec<Vec<f32>>> {
         LlamaModel::forward_paged_step_batched(self, tokens, pool, sessions)
+    }
+    fn forward_paged_step_persistent(
+        &self,
+        token: u32,
+        pool: &mut DeviceKvPool,
+        session: SessionHandle,
+        max_blocks_cap: usize,
+        plan: PagedDecodePlan,
+        decode_session: &mut Option<PagedDecodeSession>,
+    ) -> fuel::Result<Vec<f32>> {
+        LlamaModel::forward_paged_step_persistent(
+            self, token, pool, session, max_blocks_cap, plan, decode_session,
+        )
     }
 }
 
@@ -941,6 +978,12 @@ pub struct PagedSessionScheduler<'m, M: DecodeModel> {
     pool: DeviceKvPool,
     sessions: Vec<PagedSession>,
     next_id: u64,
+    /// Decode planning mode (default [`PagedDecodePlan::Replan`] — the shipped,
+    /// pre-plan-once behavior). Flip to `PlanOnce` via [`set_plan`](Self::set_plan)
+    /// to build + reuse each session's optimized decode plan across tokens.
+    /// Correctness is identical either way; the flag only trades a one-time build
+    /// for per-token planner savings.
+    plan: PagedDecodePlan,
 }
 
 /// One session of a [`PagedSessionScheduler`]. Its KV is the pool blocks reached
@@ -963,6 +1006,17 @@ struct PagedSession {
     /// decode until [`restore_session`](PagedSessionScheduler::restore_session)
     /// writes the bytes back into fresh blocks.
     suspended: Option<DeviceEvicted>,
+    /// Held plan-once decode plan (the paged twin of [`SessionState::session`]).
+    /// Built on this session's FIRST persistent decode token when the scheduler's
+    /// `plan == PlanOnce`; stays `None` under `Replan`. Rebound per subsequent
+    /// token, so the optimizer runs once per session rather than per token. Dropped
+    /// on eviction ([`evict_session`](PagedSessionScheduler::evict_session)) so a
+    /// restored session rebuilds against its fresh blocks.
+    decode_session: Option<PagedDecodeSession>,
+    /// Fixed block-table capacity for the held plan
+    /// (`⌈(prompt + max_new) / block_size⌉`), computed at admission so the
+    /// plan-once graph's `block_table` shape is stable across decode tokens.
+    max_blocks_cap: usize,
 }
 
 impl<'m, M: DecodeModel> PagedSessionScheduler<'m, M> {
@@ -987,7 +1041,40 @@ impl<'m, M: DecodeModel> PagedSessionScheduler<'m, M> {
             dtype,
             device,
         )?;
-        Ok(Self { model, pool, sessions: Vec::new(), next_id: 0 })
+        Ok(Self {
+            model,
+            pool,
+            sessions: Vec::new(),
+            next_id: 0,
+            plan: PagedDecodePlan::Replan,
+        })
+    }
+
+    /// Opt into the plan-once decode path (the driver default is
+    /// [`PagedDecodePlan::Replan`], off). Under `PlanOnce` each session builds its
+    /// decode graph + optimized plan once and rebinds it per token; under `Replan`
+    /// every token re-plans (the shipped default). Output is identical either way
+    /// (the plan-once↔replan parity gate) — the flag trades a one-time build for
+    /// per-token planner savings. Applies to sessions' subsequent decode tokens.
+    pub fn set_plan(&mut self, plan: PagedDecodePlan) {
+        self.plan = plan;
+    }
+
+    /// Current decode planning mode.
+    pub fn plan(&self) -> PagedDecodePlan {
+        self.plan
+    }
+
+    /// How many times session `id`'s held plan-once decode graph has been REBOUND
+    /// (`None` if the session is unknown or holds no plan — e.g. under `Replan`, or
+    /// before its first decode token). A positive count is direct evidence the
+    /// persistent decode path ran for this session. Observability/test hook.
+    pub fn session_realize_count(&self, id: SessionId) -> Option<usize> {
+        self.sessions
+            .iter()
+            .find(|s| s.id == id)
+            .and_then(|s| s.decode_session.as_ref())
+            .map(|ds| ds.realize_count())
     }
 
     /// Free pool blocks (C-1) — the consumer's optional conservative-admission
@@ -1030,6 +1117,10 @@ impl<'m, M: DecodeModel> PagedSessionScheduler<'m, M> {
         let handle = self.sessions[idx].handle;
         let evicted = self.pool.evict(handle)?;
         self.sessions[idx].suspended = Some(evicted);
+        // Drop any held plan-once plan: restore re-allocates fresh physical blocks,
+        // so the plan rebuilds on the first post-restore decode token (eviction is
+        // already a full host round-trip — one rebuild is negligible).
+        self.sessions[idx].decode_session = None;
         Ok(())
     }
 
@@ -1087,6 +1178,11 @@ impl<'m, M: DecodeModel> PagedSessionScheduler<'m, M> {
             SamplingStrategy::Temperature { seed, .. } => seed,
             _ => 0,
         };
+        // Fixed block-table capacity for a plan-once hold: the session's whole
+        // decode length rounded up to blocks. Known now (prompt + max_new); pins
+        // the held graph's block_table shape. `.max(1)` guards a degenerate 0.
+        let block_size = self.pool.geometry().block_size;
+        let max_blocks_cap = (prompt.len() + max_new).div_ceil(block_size).max(1);
         self.sessions.push(PagedSession {
             handle,
             tokens: prompt.to_vec(),
@@ -1099,6 +1195,8 @@ impl<'m, M: DecodeModel> PagedSessionScheduler<'m, M> {
             last_logits: None,
             id,
             suspended: None,
+            decode_session: None,
+            max_blocks_cap,
         });
         self.next_id += 1;
         Ok(id)
@@ -1201,18 +1299,35 @@ impl<'m, M: DecodeModel> PagedSessionScheduler<'m, M> {
     }
 
     /// One serial decode-advance of session `idx` (last token → forward → sample).
+    /// Routes through [`DecodeModel::forward_paged_step_persistent`] behind the
+    /// scheduler's `plan` flag: `Replan` (default) re-plans this token — identical
+    /// to the pre-plan-once `forward_paged_step`; `PlanOnce` builds the held plan on
+    /// the first decode token and rebinds it thereafter. `pool` and the session's
+    /// `decode_session` are disjoint fields, so both borrow mutably in one call.
     fn decode_one(&mut self, idx: usize, report: &mut StepReport) {
         let model = self.model;
         let handle = self.sessions[idx].handle;
+        let cap = self.sessions[idx].max_blocks_cap;
+        let plan = self.plan;
         let last = self.sessions[idx].tokens.last().copied();
         match last {
-            Some(tok) => match model.forward_paged_step(tok, &mut self.pool, handle) {
-                Ok(l) => {
-                    self.sessions[idx].last_logits = Some(l);
-                    self.sample(idx, report);
+            Some(tok) => {
+                let res = model.forward_paged_step_persistent(
+                    tok,
+                    &mut self.pool,
+                    handle,
+                    cap,
+                    plan,
+                    &mut self.sessions[idx].decode_session,
+                );
+                match res {
+                    Ok(l) => {
+                        self.sessions[idx].last_logits = Some(l);
+                        self.sample(idx, report);
+                    }
+                    Err(e) => self.finish_error(idx, e.to_string(), report),
                 }
-                Err(e) => self.finish_error(idx, e.to_string(), report),
-            },
+            }
             None => self.finish_error(
                 idx,
                 "PagedSessionScheduler: decode on empty token history".into(),
@@ -1627,6 +1742,54 @@ mod tests {
         s.add_session(&prompt, SamplingStrategy::Greedy, None, max_new).unwrap();
         let paged = s.run_to_completion()[0].1.clone();
         assert_eq!(paged, contig, "paged scheduler greedy == contiguous generate oracle");
+    }
+
+    /// Plan-once wiring (Task 5): opting a paged session into
+    /// [`PagedDecodePlan::PlanOnce`] via [`PagedSessionScheduler::set_plan`]
+    /// produces output BYTE-IDENTICAL to the default `Replan` driver — the flag
+    /// changes only WHEN the decode graph is optimized (once vs per token), never
+    /// the numbers — AND the session's held decode plan is actually REBOUND per
+    /// decode token (`session_realize_count` > 0), direct evidence the persistent
+    /// path ran through the driver rather than being silently bypassed. Single
+    /// session, serial arm (the B=1 measured case). The two guards are
+    /// complementary teeth: byte-identity catches a mis-wire that changes results;
+    /// the rebind-count catches a mis-wire where the flag is set but the plan-once
+    /// path never actually runs (e.g. the persistent call handed a throwaway
+    /// `&mut None`, or `decode_one` left on the plain path) — which would read as
+    /// "no speedup" and wrongly retire the feature.
+    #[test]
+    fn paged_scheduler_plan_once_matches_replan_byte_exact() {
+        let model = tiny_model(42);
+        let prompt = [1u32, 2, 3];
+        let max_new = 5;
+
+        // Reference arm: the shipped default (`Replan`) — re-plans every token.
+        let mut s_replan =
+            PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
+        assert_eq!(s_replan.plan(), PagedDecodePlan::Replan, "driver default is off (Replan)");
+        s_replan.add_session(&prompt, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let replan_out = s_replan.run_to_completion()[0].1.clone();
+
+        // Plan-once arm: build + optimize the decode graph once, rebind per token.
+        let mut s_plan =
+            PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
+        s_plan.set_plan(PagedDecodePlan::PlanOnce);
+        let id = s_plan.add_session(&prompt, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let plan_out = s_plan.run_to_completion()[0].1.clone();
+
+        assert_eq!(plan_out, replan_out, "plan-once output == replan output (byte-exact)");
+
+        // The held plan was REUSED: the first decode token builds the plan
+        // (realize 0), each subsequent decode token rebinds it. With prompt 3 +
+        // max_new 5, the first new token comes from the prefill sample and the
+        // remaining 4 from decode forwards — 1 build + 3 rebinds ⇒ rebind count 3.
+        // Assert ≥ 1 (robust to sampling/budget arithmetic; still fails hard if
+        // the persistent path never ran — `session_realize_count` is `None`
+        // without a held plan, so `.expect` panics).
+        let rc = s_plan
+            .session_realize_count(id)
+            .expect("plan-once session holds a decode plan after decoding");
+        assert!(rc >= 1, "plan-once path rebound the held decode plan per token (got {rc})");
     }
 
     /// C-3 ON THE LIVE PATH (PS4). Evicting a decoding paged session frees its
