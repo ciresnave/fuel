@@ -205,11 +205,11 @@ impl BertModel {
             Shape::from_dims(&[cfg.type_vocab_size, h]),
         );
         // Each lookup produces `[seq, h]`.
-        let w = word_emb.index_select(0, &input_ids).unwrap();
-        let p = pos_emb.index_select(0, &position_ids).unwrap();
-        let t = type_emb.index_select(0, &token_type_ids).unwrap();
+        let w = word_emb.index_select(0, &input_ids)?;
+        let p = pos_emb.index_select(0, &position_ids)?;
+        let t = type_emb.index_select(0, &token_type_ids)?;
         // Add the three embeddings, then prepend a batch dim: `[1, seq, h]`.
-        let embeds = w.add(&p).unwrap().add(&t).unwrap().reshape(Shape::from_dims(&[1, seq, h])).unwrap();
+        let embeds = w.add(&p)?.add(&t)?.reshape(Shape::from_dims(&[1, seq, h]))?;
         let embeds = layer_norm_affine(
             &embeds,
             &self.weights.emb_ln_gamma,
@@ -217,12 +217,12 @@ impl BertModel {
             cfg.layer_norm_eps,
             h,
             seq,
-        );
+        )?;
 
         // -- encoder layers --------------------------------------------------
         let mut x = embeds;
         for lw in &self.weights.layers {
-            x = encoder_layer(&x, lw, cfg, seq);
+            x = encoder_layer(&x, lw, cfg, seq)?;
         }
         Ok(x)
     }
@@ -260,7 +260,7 @@ impl BertModel {
         }
         let depth = self.weights.layers.len();
         assert!(
-            *layer_ids.last().unwrap() < depth,
+            layer_ids.iter().all(|&i| i < depth),
             "layer_ids must all be in [0, num_hidden_layers = {depth})",
         );
         let seq = token_ids.len();
@@ -291,22 +291,22 @@ impl BertModel {
             self.weights.token_type_embeddings.clone(),
             Shape::from_dims(&[cfg.type_vocab_size, h]),
         );
-        let w = word_emb.index_select(0, &input_ids).unwrap();
-        let p = pos_emb.index_select(0, &position_ids).unwrap();
-        let t = type_emb.index_select(0, &token_type_ids).unwrap();
-        let embeds = w.add(&p).unwrap().add(&t).unwrap()
-            .reshape(Shape::from_dims(&[1, seq, h])).unwrap();
+        let w = word_emb.index_select(0, &input_ids)?;
+        let p = pos_emb.index_select(0, &position_ids)?;
+        let t = type_emb.index_select(0, &token_type_ids)?;
+        let embeds = w.add(&p)?.add(&t)?
+            .reshape(Shape::from_dims(&[1, seq, h]))?;
         let embeds = layer_norm_affine(
             &embeds, &self.weights.emb_ln_gamma, &self.weights.emb_ln_beta,
             cfg.layer_norm_eps, h, seq,
-        );
+        )?;
 
         // Walk layers and capture at the requested indices.
         let mut x = embeds;
         let mut out = Vec::with_capacity(layer_ids.len());
         let mut next_capture = 0;
         for (idx, lw) in self.weights.layers.iter().enumerate() {
-            x = encoder_layer(&x, lw, cfg, seq);
+            x = encoder_layer(&x, lw, cfg, seq)?;
             if next_capture < layer_ids.len() && layer_ids[next_capture] == idx {
                 out.push(x.clone());
                 next_capture += 1;
@@ -334,19 +334,19 @@ fn layer_norm_affine(
     eps: f64,
     hidden: usize,
     seq: usize,
-) -> LazyTensor {
-    let normed = x.layer_norm_last_dim(eps).unwrap();
+) -> crate::Result<LazyTensor> {
+    let normed = x.layer_norm_last_dim(eps)?;
     let g = x
         .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))
-        .reshape(Shape::from_dims(&[1, 1, hidden])).unwrap()
+        .reshape(Shape::from_dims(&[1, 1, hidden]))?
         .broadcast_to(Shape::from_dims(&[1, seq, hidden]))
-        .unwrap();
+        ?;
     let b = x
         .const_f32_like(beta.clone(), Shape::from_dims(&[hidden]))
-        .reshape(Shape::from_dims(&[1, 1, hidden])).unwrap()
+        .reshape(Shape::from_dims(&[1, 1, hidden]))?
         .broadcast_to(Shape::from_dims(&[1, seq, hidden]))
-        .unwrap();
-    normed.mul(&g).unwrap().add(&b).unwrap()
+        ?;
+    normed.mul(&g)?.add(&b)
 }
 
 /// `y = x @ W + b` where `W` is `[in_features, out_features]` and `b` is
@@ -359,61 +359,61 @@ fn linear(
     in_f: usize,
     out_f: usize,
     seq: usize,
-) -> LazyTensor {
+) -> crate::Result<LazyTensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]));
     let bias = x
         .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))
-        .reshape(Shape::from_dims(&[1, 1, out_f])).unwrap()
+        .reshape(Shape::from_dims(&[1, 1, out_f]))?
         .broadcast_to(Shape::from_dims(&[1, seq, out_f]))
-        .unwrap();
-    x.matmul(&w_t).unwrap().add(&bias).unwrap()
+        ?;
+    x.matmul(&w_t)?.add(&bias)
 }
 
 /// One full BERT transformer block: multi-head self-attention → add+norm →
 /// FFN(GELU) → add+norm.
-fn encoder_layer(x: &LazyTensor, lw: &BertLayerWeights, cfg: &BertConfig, seq: usize) -> LazyTensor {
+fn encoder_layer(x: &LazyTensor, lw: &BertLayerWeights, cfg: &BertConfig, seq: usize) -> crate::Result<LazyTensor> {
     let h = cfg.hidden_size;
     let n_heads = cfg.num_attention_heads;
     let d_head = cfg.head_dim();
 
     // --- self-attention ----------------------------------------------------
     // Q, K, V projections + bias: `[1, seq, h]` → `[1, seq, h]`.
-    let q = linear(x, &lw.attn_q_w, &lw.attn_q_b, h, h, seq);
-    let k = linear(x, &lw.attn_k_w, &lw.attn_k_b, h, h, seq);
-    let v = linear(x, &lw.attn_v_w, &lw.attn_v_b, h, h, seq);
+    let q = linear(x, &lw.attn_q_w, &lw.attn_q_b, h, h, seq)?;
+    let k = linear(x, &lw.attn_k_w, &lw.attn_k_b, h, h, seq)?;
+    let v = linear(x, &lw.attn_v_w, &lw.attn_v_b, h, h, seq)?;
 
     // Reshape each to `[1, n_heads, seq, d_head]` for per-head attention.
-    let q = q.split_heads(n_heads, d_head).unwrap();
-    let k = k.split_heads(n_heads, d_head).unwrap();
-    let v = v.split_heads(n_heads, d_head).unwrap();
+    let q = q.split_heads(n_heads, d_head)?;
+    let k = k.split_heads(n_heads, d_head)?;
+    let v = v.split_heads(n_heads, d_head)?;
 
     // Attention scores: `q @ k^T` → `[1, n_heads, seq, seq]`. We transpose
     // the last two dims of k to build k^T.
-    let k_t = k.permute([0, 1, 3, 2_usize]).unwrap();
+    let k_t = k.permute([0, 1, 3, 2_usize])?;
     let scale = 1.0_f64 / (d_head as f64).sqrt();
-    let scores = q.matmul(&k_t).unwrap().mul_scalar(scale);
+    let scores = q.matmul(&k_t)?.mul_scalar(scale);
 
     // Bidirectional softmax — no causal mask.
-    let probs = scores.softmax_last_dim().unwrap();
+    let probs = scores.softmax_last_dim()?;
 
     // Attention output: `[1, n_heads, seq, d_head]`, permute + reshape back
     // to `[1, seq, h]`.
     let ctx = probs
-        .matmul(&v).unwrap()
-        .merge_heads().unwrap();
-    let attn_out = linear(&ctx, &lw.attn_out_w, &lw.attn_out_b, h, h, seq);
+        .matmul(&v)?
+        .merge_heads()?;
+    let attn_out = linear(&ctx, &lw.attn_out_w, &lw.attn_out_b, h, h, seq)?;
 
     // Residual + LayerNorm (post-norm, BERT style).
-    let x = x.add(&attn_out).unwrap();
-    let x = layer_norm_affine(&x, &lw.attn_ln_gamma, &lw.attn_ln_beta, cfg.layer_norm_eps, h, seq);
+    let x = x.add(&attn_out)?;
+    let x = layer_norm_affine(&x, &lw.attn_ln_gamma, &lw.attn_ln_beta, cfg.layer_norm_eps, h, seq)?;
 
     // --- FFN ---------------------------------------------------------------
     let h_ff = cfg.intermediate_size;
-    let mid = linear(&x, &lw.ffn_in_w, &lw.ffn_in_b, h, h_ff, seq).gelu();
-    let ffn_out = linear(&mid, &lw.ffn_out_w, &lw.ffn_out_b, h_ff, h, seq);
+    let mid = linear(&x, &lw.ffn_in_w, &lw.ffn_in_b, h, h_ff, seq)?.gelu();
+    let ffn_out = linear(&mid, &lw.ffn_out_w, &lw.ffn_out_b, h_ff, h, seq)?;
 
     // Residual + LayerNorm.
-    let x = x.add(&ffn_out).unwrap();
+    let x = x.add(&ffn_out)?;
     layer_norm_affine(&x, &lw.ffn_ln_gamma, &lw.ffn_ln_beta, cfg.layer_norm_eps, h, seq)
 }
 
@@ -583,7 +583,7 @@ fn load_f32(
         Dtype::F64 => {
             let mut out = Vec::with_capacity(bytes.len() / 8);
             for chunk in bytes.chunks_exact(8) {
-                let arr: [u8; 8] = chunk.try_into().unwrap();
+                let arr: [u8; 8] = chunk.try_into().expect("chunks_exact(8) always yields 8 bytes");
                 out.push(f64::from_le_bytes(arr) as f32);
             }
             Ok(out)
