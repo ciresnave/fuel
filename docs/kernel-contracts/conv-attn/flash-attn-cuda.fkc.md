@@ -22,7 +22,7 @@ static lib). They reject CPU storage and any dtype other than f16/bf16.
 > targets so the planner can cost/admit/dispatch it — is the graph-side fused op
 > `FusedOps::FLASH_ATTN` (`FusedOpId(12)`, `fuel-graph/src/registry.rs:885`) carried by
 > `FusedOpParams::FlashAttn` (`registry.rs:231`) / `OpKind::FlashAttn`
-> (`fuel-core-types/src/dispatch.rs:148`). Both kernels below therefore declare
+> (`fuel-ir/src/dispatch.rs:148`). Both kernels below therefore declare
 > `fused_op: FLASH_ATTN` with `op_params.variant: FlashAttn` (the FusedOpParams namespace, §3.7).
 > **`flash-attn-varlen` has no distinct as-built fused id or params variant** — varlen is a
 > `fuel-flash-attn-cuda`-only CustomOp3 whose `seqlens_q`/`seqlens_k`/`max_seqlen_*` are op

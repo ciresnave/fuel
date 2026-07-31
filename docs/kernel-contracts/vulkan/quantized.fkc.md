@@ -65,7 +65,7 @@ Perf: bandwidth-bound — reads `n_blocks*18` bytes, writes `n_blocks*32*4` byte
 write dominates. Limitation: input must be a well-formed Q4_0 blob whose length is exactly
 `n_blocks*18` (the wrapper validates this); contiguous-only, no strided/offset input.
 
-As-built: dispatched by `Capability::DequantizeQ4_0` (`fuel-core-types/src/capability.rs:75`);
+As-built: dispatched by `Capability::DequantizeQ4_0` (`fuel-ir/src/capability.rs:75`);
 there is **no** `OpKind::DequantizeQ4_0` (the `op_kind:` slot below records the `Capability`
 token as the dispatch tag — see the bundle header note). The weight operand is GGML_BLOCK
 family `ggml_dtype: Q4_0` (`GgmlDType` code 2; §3.4).

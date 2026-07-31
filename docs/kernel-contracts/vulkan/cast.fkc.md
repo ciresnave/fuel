@@ -11,7 +11,7 @@ provider:
 # fuel-vulkan-kernels — cast (dtype-conversion) kernel contracts
 
 Dtype-conversion kernels for the Vulkan backend (crate `vulkan`, family `cast`). Every kernel here
-implements `OpKind::Cast` (`fuel-core-types/src/dispatch.rs:117`) for one fixed source→destination
+implements `OpKind::Cast` (`fuel-ir/src/dispatch.rs:117`) for one fixed source→destination
 dtype pair. The pair is the dispatch key: `(OpKind::Cast, [SRC, DST], Vulkan) + kernel_source`
 (§3.2, §12.1). The `OpParams::Cast` variant is a unit marker (`fuel-dispatch/src/kernel.rs:352`) —
 the target dtype lives on the output Storage's `dtype` field, so the output dtype rule is
@@ -438,7 +438,7 @@ determinism: same_hardware_bitwise
 One-line: Cast F32 → F8E4M3 (1-byte float), 4 per u32, RNE with saturation to ±448.
 
 Narrowing cast from F32 to F8E4M3 (1-byte E4M3 float; `DType::F8E4M3`,
-`fuel-core-types/src/dtype.rs:38`). F8 elements are 1 byte each, 4 packed per u32 word. The
+`fuel-ir/src/dtype.rs:38`). F8 elements are 1 byte each, 4 packed per u32 word. The
 conversion is round-to-nearest-even with **saturation to the E4M3 finite range ±448** (E4M3 has no
 inf encoding; out-of-range values clamp rather than overflow). SPIR-V only (`cast_f32_to_f8e4m3.spv`);
 the contract is read from the Rust wrapper `cast_f8e4m3_bytes`

@@ -26,7 +26,7 @@ declared prior.
 > (`fuel-dispatch/src/kernel.rs:299`). They are therefore **fused-op** contracts and compile to
 > the fused cost-fn shape `fn(&[Shape], &FusedOpParams, &BackendCapabilities)` (no `&[DType]`
 > arg — §4.4). `mlx_gemm` is a **primitive** `op_kind: MatMul` (`OpKind::MatMul`,
-> `fuel-core-types/src/dispatch.rs:54`) carried by `OpParams::Matmul`
+> `fuel-ir/src/dispatch.rs:54`) carried by `OpParams::Matmul`
 > (`fuel-dispatch/src/kernel.rs:202`). As-built, only `steel_attention` and `sdpa_vector*` are
 > the two `call_sdpa_*` entry points and `sdpa_vector_has_mask` is a compile-time function
 > constant; the 2-pass partials (`intermediate`/`sums`/`maxs`) are kernel-internal scratch, not

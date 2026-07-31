@@ -21,7 +21,7 @@ describe the **standalone dequant** op only.
 
 > **AS-BUILT DISPATCH NOTE — read before trusting `op_kind` (mirrors the sibling quantize bundle).**
 > There is **no `Dequantize` `OpKind`** in the as-built dispatch enum
-> (`fuel-core-types/src/dispatch.rs`); the only quant-direction `OpKind` these block formats
+> (`fuel-ir/src/dispatch.rs`); the only quant-direction `OpKind` these block formats
 > participate in is `QMatMul`. These dequantizers are therefore **not** registered as standalone
 > primitive kernels on the `KernelBindingTable` at a `(Dequantize, dtypes, backend)` key — they reach
 > the dispatch surface through the **`DynQuantizedStorage` / `QuantizedType::dequantize` trait method**
@@ -33,7 +33,7 @@ describe the **standalone dequant** op only.
 > register as their own keyed kernels; until it lands the `op_kind` slot is the closest faithful tag
 > and the trait-method path is authoritative.
 >
-> **Only three dequantize `Capability` tokens exist as-built** (`fuel-core-types/src/capability.rs`):
+> **Only three dequantize `Capability` tokens exist as-built** (`fuel-ir/src/capability.rs`):
 > `DequantizeQ8_0`, `DequantizeQ4_0`, and `DequantizeQ4KM`. There is **no** `Capability::Dequantize`
 > umbrella token and **no** per-format token for Q4_1/Q5_0/Q5_1/Q2K/Q3K/Q5K/Q6K/Q8K or the float
 > formats — those op-level capability codes **do not yet exist** and are documented as gaps below

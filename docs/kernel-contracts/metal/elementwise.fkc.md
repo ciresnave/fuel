@@ -55,7 +55,7 @@ binary arithmetic/comparison, affine (`mul·x + add`), `powf` (`pow(x, mul)`), `
 > **Five kernels in this family have NO backing Fuel `OpKind` today (faithfulness flag).** The
 > as-built Metal entries `powf_kernel(_strided)`, `elu_kernel(_strided)`, `const_set(_strided)`,
 > `copy2d`, and `fill` are **backend primitives with no `OpKind` / `OpParams` in
-> `fuel-core-types/src/dispatch.rs` or `fuel-dispatch/src/kernel.rs`** (verified: no `Powf`, `Elu`,
+> `fuel-ir/src/dispatch.rs` or `fuel-dispatch/src/kernel.rs`** (verified: no `Powf`, `Elu`,
 > `ConstSet`, `Copy2d`, or `Fill` variant exists; `OpKind::Copy` is the *cross-device* copy `[T,T]`,
 > and `Op::ZeroFill` is a fixed zero-fill, neither of which is the scalar `powf`/`elu`/`fill`/
 > `const_set`/`copy2d` semantics). FKC's dispatch key requires a real `OpKind` (§3.3, §10 rule 2),

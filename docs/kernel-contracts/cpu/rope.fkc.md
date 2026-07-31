@@ -17,7 +17,7 @@ shape but differ in element width and the accumulation/narrowing rule. Source:
 `fuel-cpu-backend/src/byte_kernels.rs:1885` (`rope_f32`), `:2058` (`rope_f64`), and the
 `rope_half!` macro `:1968` instantiating `rope_bf16` / `rope_f16` (`:2053-2054`). All four are
 primitive `op_kind` contracts (RoPE is **not** a fused op — `OpParams::Rope`,
-`fuel-dispatch/src/kernel.rs:434`; `OpKind::Rope`, `fuel-core-types/src/dispatch.rs:335`).
+`fuel-dispatch/src/kernel.rs:434`; `OpKind::Rope`, `fuel-ir/src/dispatch.rs:335`).
 
 These kernels are the production `CpuStorageBytes` path the dispatch wrapper
 (`fuel_dispatch::dispatch::cpu_wrappers`, `fuel-dispatch/src/dispatch.rs:1558-1600`) extracts and

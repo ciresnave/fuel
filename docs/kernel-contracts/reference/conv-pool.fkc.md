@@ -316,7 +316,7 @@ deterministic and same-hardware bit-stable (a max is exact — no rounding, no a
 **not wired in the executor**. A graph-side `Op::MaxPool2D` exists in `fuel-core`
 (`op.rs:93`, fields `kernel_size: (usize, usize)`, `stride: (usize, usize)`), but there is **no
 `OpKind::MaxPool2D` and no `OpParams::MaxPool2D` in `fuel-dispatch`** (grep over
-`fuel-core-types/src` and `fuel-dispatch/src` returns nothing). Note also a shape mismatch the
+`fuel-ir/src` and `fuel-dispatch/src` returns nothing). Note also a shape mismatch the
 contract surfaces honestly: the reference oracle takes **scalar** `kernel_size`/`stride` (a square
 window, no padding), whereas the graph `Op::MaxPool2D` carries **tuple** `(usize, usize)` for each
 and the lazy API (`lazy.rs:3785`) additionally supports padding + pad-value — so this oracle covers

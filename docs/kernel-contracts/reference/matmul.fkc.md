@@ -401,7 +401,7 @@ determinism: bitwise
 Quantized matmul `C = A @ dequant(W_Q)`, the reference oracle for the `QMATMUL` fused op
 (`exec.rs:1494`). **This is a FUSED op**: the param carrier is **`FusedOpParams::QMatMul { quant_type,
 k, n }`** (`FusedOpId(14)`, `fuel-graph/src/registry.rs:250`/`890`), **not** an `OpParams` variant —
-`OpKind::QMatMul` (`fuel-core-types/src/dispatch.rs:356`) exists as the op-kind tag but is not the
+`OpKind::QMatMul` (`fuel-ir/src/dispatch.rs:356`) exists as the op-kind tag but is not the
 param carrier (same pattern as PagedAttn, §3.9.1). Activations arrive **F32** `[..,M,K]`; the weight
 arrives as **opaque quantized bytes** (a `U32`-backed buffer reinterpreted as bytes — the FDX base
 carries opaque `uint8` block storage, FDX §6.1). `quant_type ∈ {Q4_0, Q8_0, Q4_K_M}` selects the
@@ -511,7 +511,7 @@ Known limitation: Q4_0 / Q8_0 only (K-quant goes through `dequantize_q4_km_block
 > **AS-BUILT DISPATCH NOTE — no fabricated `op_kind` (inv10; mirrors `eval_qmatmul` above and the
 > sibling `quantized/dequantize.fkc.md` bundle note).** There is **no `OpKind::DequantizeBlocks`**
 > and **no `DequantizeBlocks` `OpParams`/`FusedOpParams` variant** in the as-built dispatch surface
-> (`fuel-core-types/src/dispatch.rs` / `fuel-dispatch/src/kernel.rs` / `fuel-graph/src/registry.rs`).
+> (`fuel-ir/src/dispatch.rs` / `fuel-dispatch/src/kernel.rs` / `fuel-graph/src/registry.rs`).
 > `dequantize_blocks` is an **internal sub-step of the fused `QMATMUL` kernel** with **no independent
 > dispatch identity**: it is called inline by `eval_qmatmul` (`exec.rs:1530`) and never reaches the
 > binding table or the fused registry on its own. Per the never-invent discipline (§0, inv10) this
@@ -520,7 +520,7 @@ Known limitation: Q4_0 / Q8_0 only (K-quant goes through `dequantize_q4_km_block
 > namespace** (`registry.rs:250`) — resolving the earlier `op_kind: DequantizeBlocks` (primitive)
 > ↔ `op_params: QMatMul` (fused) namespace mismatch (§3.7 / §10.7). The op-level distinction the
 > helper *would* carry rides the **`Capability::DequantizeQ4_0` / `DequantizeQ8_0`** tokens
-> (`fuel-core-types/src/capability.rs:74-75`), recorded in `caps.notes` — these are real Capability
+> (`fuel-ir/src/capability.rs:74-75`), recorded in `caps.notes` — these are real Capability
 > tokens, not an `OpKind`. **[consumer-ahead]:** a future `OpKind::Dequantize` (or a standalone
 > dequant binding key) would let this register as its own kernel; until it lands the fused `QMATMUL`
 > identity is the faithful tag and the sub-step path is authoritative.
@@ -600,14 +600,14 @@ Dequantize one GGML **Q4_K_M** super-block to **F32** (`exec.rs:1583`). The K-qu
 `lib.rs:179-181`), reproducing llama.cpp's `get_scale_min_k4` 6-bit packed scale/min extraction. The
 "Q4_K_M" name is the GGUF mixed-precision file-format name; its storage dtype is `GgmlDType::Q4K`
 (code 12), and the op-level distinction rides `Capability::DequantizeQ4KM`
-(`fuel-core-types/src/capability.rs:76`), **not** a separate storage dtype (§3.4). The result must
+(`fuel-ir/src/capability.rs:76`), **not** a separate storage dtype (§3.4). The result must
 **bit-match** the GPU `dequant_q4_km` kernel. Scales/mins are **INLINE in the super-block**
 (single-place rule, §3.9.3 / §6) — no separate scale operand. Known limitation: Q4_K_M format only;
 super-block size fixed at 144 bytes → 256 elements.
 
 > **AS-BUILT DISPATCH NOTE — no fabricated `op_kind` (inv10; mirrors `dequantize_blocks` /
 > `eval_qmatmul` above and the sibling `quantized/dequantize.fkc.md` bundle note).**
-> **`DequantizeQ4KM` exists ONLY as a `Capability` token** (`fuel-core-types/src/capability.rs:76`)
+> **`DequantizeQ4KM` exists ONLY as a `Capability` token** (`fuel-ir/src/capability.rs:76`)
 > — there is **no `OpKind::DequantizeQ4KM`** and **no `DequantizeQ4KM` `OpParams`/`FusedOpParams`
 > variant** in the as-built dispatch surface. Like `dequantize_blocks`, this is an **internal sub-step
 > of the fused `QMATMUL` kernel** with **no independent dispatch identity**: `eval_qmatmul` calls it

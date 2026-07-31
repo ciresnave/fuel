@@ -807,7 +807,7 @@ Backward of `powi`: `out[i] = exp * x[i]^(exp-1) * upstream[i]` in native f32. *
 respect to `x`. This is the single-launch alternative to the pre-`PowIElementwiseBackward` autograd
 decomposition (`PowI(exp-1) → MulScalar(exp) → Mul`). The integer exponent arrives on the **same**
 `OpParams::PowI { exp: i32 }` carrier as the forward (per `OpKind::PowIElementwiseBackward`,
-`fuel-core-types/src/dispatch.rs`). Both inputs and the output are validated to the same byte length
+`fuel-ir/src/dispatch.rs`). Both inputs and the output are validated to the same byte length
 (`check_lens_2` on `x` vs `out` and on `upstream` vs `out`). Inner term uses `f32::powi(exp-1)`.
 Contiguous, zero-offset, row-major; pre-allocated output, full overwrite, no aliasing
 (distinct buffer from both inputs). Bit-stable on the same hardware. Contiguous-only.
