@@ -66,11 +66,12 @@ pub struct DeviceEvicted {
 }
 
 /// The captured contents of one detached (exclusive) logical block across all
-/// layers. `k[l]` / `v[l]` are layer `l`'s `[block_size, Hkv, D]` slab as f32.
+/// layers. `k[l]` / `v[l]` are layer `l`'s `[block_size, Hkv, D]` slab as raw
+/// pool-dtype bytes (dtype-agnostic — f32 or bf16, via the byte movement core).
 struct SavedBlock {
     logical_slot: usize,
-    k: Vec<Vec<f32>>,
-    v: Vec<Vec<f32>>,
+    k: Vec<Vec<u8>>,
+    v: Vec<Vec<u8>>,
 }
 
 impl DeviceEvicted {
@@ -261,44 +262,18 @@ impl DeviceKvPool {
     ) -> crate::Result<()> {
         if self.dtype != DType::F32 {
             return Err(msg_err(format!(
-                "DeviceKvPool::write_block: f32-only for now, pool dtype is {:?}",
+                "DeviceKvPool::write_block: f32-typed API, pool dtype is {:?} — use write_block_bytes",
                 self.dtype,
-            )));
-        }
-        let g = self.geometry();
-        if phys as usize >= g.num_blocks {
-            return Err(msg_err(format!(
-                "DeviceKvPool::write_block: physical block {phys} out of range (num_blocks={})",
-                g.num_blocks,
             )));
         }
         if data.len() != self.block_elems() {
             return Err(msg_err(format!(
-                "DeviceKvPool::write_block: data len {} ≠ block elems {} ([block_size {}, Hkv {}, D {}])",
-                data.len(), self.block_elems(), g.block_size, g.n_kv_heads, g.head_dim,
+                "DeviceKvPool::write_block: data len {} ≠ block elems {}",
+                data.len(), self.block_elems(),
             )));
         }
-        let buf = Arc::clone(self.buffer(layer, kind)?);
-        // Source slab [1, block_size, Hkv, D]; destination is a placeholder
-        // bound to the persistent pool buffer, WriteSliced at the block offset.
-        let src = LazyTensor::from_f32(
-            data.to_vec(),
-            Shape::from_dims(&[1, g.block_size, g.n_kv_heads, g.head_dim]),
-            &self.device,
-        );
-        let dest = src.const_placeholder_like(self.pool_shape.clone(), self.dtype);
-        let post = dest.write_slice(&src, self.block_write_ranges(phys))?;
-        let mut cache = StorageCache::new();
-        cache.insert(dest.node_id(), buf);
-        // Realizing `post` executes the WriteSlice, mutating the bound pool
-        // buffer in place; the returned bytes (the whole buffer) are discarded.
-        let _ = crate::pipelined_bridge::realize_one_as_with_initial::<f32>(
-            post.graph_handle(),
-            post.node_id(),
-            &self.device,
-            cache,
-        )?;
-        Ok(())
+        // f32 typed wrapper over the dtype-agnostic byte core.
+        self.write_block_bytes(layer, kind, phys, bytemuck::cast_slice::<f32, u8>(data))
     }
 
     /// Read physical block `phys` of layer `layer`'s K-or-V buffer back to host
@@ -314,20 +289,87 @@ impl DeviceKvPool {
     ) -> crate::Result<Vec<f32>> {
         if self.dtype != DType::F32 {
             return Err(msg_err(format!(
-                "DeviceKvPool::read_block: f32-only for now, pool dtype is {:?}",
+                "DeviceKvPool::read_block: f32-typed API, pool dtype is {:?} — use read_block_bytes",
                 self.dtype,
             )));
         }
+        let bytes = self.read_block_bytes(layer, kind, phys)?;
+        let v: &[f32] = bytemuck::try_cast_slice(&bytes)
+            .map_err(|e| msg_err(format!("DeviceKvPool::read_block: f32 cast: {e:?}")))?;
+        Ok(v.to_vec())
+    }
+
+    /// Dtype-agnostic byte-level block WRITE — the movement core that the f32
+    /// [`Self::write_block`] wrapper and the evict/restore/CoW paths build on.
+    /// `bytes` is the block's raw content in the pool's dtype
+    /// (`block_elems · dtype.size_in_bytes()` bytes, row-major `[block_size, Hkv,
+    /// D]`). Backend-neutral: builds a dtype-tagged `Op::Const` from the bytes and
+    /// `Op::WriteSlice`s it into the persistent pool buffer through the executor —
+    /// the same path a CUDA/Vulkan (or future) pool uses; no host poke, no
+    /// per-backend code.
+    pub fn write_block_bytes(
+        &self,
+        layer: usize,
+        kind: BlockKind,
+        phys: PhysBlockId,
+        bytes: &[u8],
+    ) -> crate::Result<()> {
         let g = self.geometry();
         if phys as usize >= g.num_blocks {
             return Err(msg_err(format!(
-                "DeviceKvPool::read_block: physical block {phys} out of range (num_blocks={})",
+                "DeviceKvPool::write_block_bytes: physical block {phys} out of range (num_blocks={})",
+                g.num_blocks,
+            )));
+        }
+        let want = self.block_elems() * self.dtype_elem_bytes()?;
+        if bytes.len() != want {
+            return Err(msg_err(format!(
+                "DeviceKvPool::write_block_bytes: {} bytes ≠ block bytes {} \
+                 ([block_size {}, Hkv {}, D {}] for {:?})",
+                bytes.len(), want, g.block_size, g.n_kv_heads, g.head_dim, self.dtype,
+            )));
+        }
+        let buf = Arc::clone(self.buffer(layer, kind)?);
+        // Dtype-tagged Const from the raw bytes (backend-neutral) → WriteSlice into
+        // the persistent pool buffer; realized as u8 (a byte reinterpret, discarded).
+        let src = self.const_from_bytes(
+            bytes,
+            Shape::from_dims(&[1, g.block_size, g.n_kv_heads, g.head_dim]),
+        )?;
+        let dest = src.const_placeholder_like(self.pool_shape.clone(), self.dtype);
+        let post = dest.write_slice(&src, self.block_write_ranges(phys))?;
+        let mut cache = StorageCache::new();
+        cache.insert(dest.node_id(), buf);
+        let _ = crate::pipelined_bridge::realize_one_as_with_initial::<u8>(
+            post.graph_handle(),
+            post.node_id(),
+            &self.device,
+            cache,
+        )?;
+        Ok(())
+    }
+
+    /// Dtype-agnostic byte-level block READ — sibling of [`Self::write_block_bytes`].
+    /// Returns the block's raw bytes in the pool's dtype via a uniform
+    /// `realize_one_as::<u8>` (a byte reinterpret of the realized `Slice`, correct
+    /// for ANY dtype — there is no per-dtype read path).
+    pub fn read_block_bytes(
+        &self,
+        layer: usize,
+        kind: BlockKind,
+        phys: PhysBlockId,
+    ) -> crate::Result<Vec<u8>> {
+        let g = self.geometry();
+        if phys as usize >= g.num_blocks {
+            return Err(msg_err(format!(
+                "DeviceKvPool::read_block_bytes: physical block {phys} out of range (num_blocks={})",
                 g.num_blocks,
             )));
         }
         let buf = Arc::clone(self.buffer(layer, kind)?);
-        // Anchor a graph, bind the pool buffer to a placeholder, slice the one
-        // block out, and realize it — the executor handles any D2H copy.
+        // Bind the pool buffer to a placeholder, slice the one block out, realize
+        // as u8 — a byte reinterpret, so the read is correct for ANY dtype. The
+        // f32 anchor only mints the graph (mirrors the historical read_block).
         let anchor = LazyTensor::from_f32(vec![0.0], Shape::from_dims(&[1]), &self.device);
         let dest = anchor.const_placeholder_like(self.pool_shape.clone(), self.dtype);
         let block = dest
@@ -335,13 +377,52 @@ impl DeviceKvPool {
             .reshape(Shape::from_dims(&[self.block_elems()]))?;
         let mut cache = StorageCache::new();
         cache.insert(dest.node_id(), buf);
-        crate::pipelined_bridge::realize_one_as_with_initial::<f32>(
+        crate::pipelined_bridge::realize_one_as_with_initial::<u8>(
             block.graph_handle(),
             block.node_id(),
             &self.device,
             cache,
         )
         .map_err(crate::Error::from)
+    }
+
+    /// Byte width of one pool element for byte-level movement. F32/BF16 only (the
+    /// activation dtypes the CUDA bf16 leg needs); F16 movement is a trivial
+    /// follow-up (needs a `LazyTensor::from_f16_on` const source).
+    fn dtype_elem_bytes(&self) -> crate::Result<usize> {
+        match self.dtype {
+            DType::F32 => Ok(4),
+            DType::BF16 => Ok(2),
+            other => Err(msg_err(format!(
+                "DeviceKvPool: byte movement unsupported for dtype {other:?} (F32/BF16)",
+            ))),
+        }
+    }
+
+    /// Build a fresh-graph `Op::Const` of the pool's dtype from raw little-endian
+    /// element bytes — the backend-neutral source [`Self::write_block_bytes`]
+    /// WriteSlices. Dispatches `self.dtype` to the matching typed graph
+    /// constructor via alignment-safe `try_cast_slice` (never panics). For BF16 a
+    /// tiny f32 anchor mints the graph (mirrors `read_block_bytes`'s anchor); the
+    /// bf16 const is a sibling on it.
+    fn const_from_bytes(&self, bytes: &[u8], shape: Shape) -> crate::Result<LazyTensor> {
+        let dev = &self.device;
+        match self.dtype {
+            DType::F32 => {
+                let v: &[f32] = bytemuck::try_cast_slice(bytes)
+                    .map_err(|e| msg_err(format!("const_from_bytes: f32 cast: {e:?}")))?;
+                Ok(LazyTensor::from_f32(v.to_vec(), shape, dev))
+            }
+            DType::BF16 => {
+                let v: &[half::bf16] = bytemuck::try_cast_slice(bytes)
+                    .map_err(|e| msg_err(format!("const_from_bytes: bf16 cast: {e:?}")))?;
+                let anchor = LazyTensor::from_f32(vec![0.0f32], Shape::from_dims(&[1]), dev);
+                Ok(LazyTensor::from_bf16_on(anchor.graph(), v.to_vec(), shape, dev))
+            }
+            other => Err(msg_err(format!(
+                "DeviceKvPool::const_from_bytes: unsupported dtype {other:?} (F32/BF16)",
+            ))),
+        }
     }
 
     // --- page-table materialization (C: Op::PagedAttn operands) -----------
@@ -512,10 +593,10 @@ impl DeviceKvPool {
         // session's prefix content survives (the donor's block is untouched).
         let new = self.core.cow_break(session, logical_block).map_err(alloc_err)?;
         for l in 0..self.n_layers() {
-            let k = self.read_block(l, BlockKind::K, old)?;
-            self.write_block(l, BlockKind::K, new, &k)?;
-            let v = self.read_block(l, BlockKind::V, old)?;
-            self.write_block(l, BlockKind::V, new, &v)?;
+            let k = self.read_block_bytes(l, BlockKind::K, old)?;
+            self.write_block_bytes(l, BlockKind::K, new, &k)?;
+            let v = self.read_block_bytes(l, BlockKind::V, old)?;
+            self.write_block_bytes(l, BlockKind::V, new, &v)?;
         }
         Ok(new)
     }
@@ -565,8 +646,8 @@ impl DeviceKvPool {
             let mut k = Vec::with_capacity(n_layers);
             let mut v = Vec::with_capacity(n_layers);
             for l in 0..n_layers {
-                k.push(self.read_block(l, BlockKind::K, p)?);
-                v.push(self.read_block(l, BlockKind::V, p)?);
+                k.push(self.read_block_bytes(l, BlockKind::K, p)?);
+                v.push(self.read_block_bytes(l, BlockKind::V, p)?);
             }
             saved.push(SavedBlock { logical_slot: i, k, v });
         }
@@ -591,8 +672,8 @@ impl DeviceKvPool {
                 ))
             })?;
             for l in 0..self.n_layers() {
-                self.write_block(l, BlockKind::K, p, &sb.k[l])?;
-                self.write_block(l, BlockKind::V, p, &sb.v[l])?;
+                self.write_block_bytes(l, BlockKind::K, p, &sb.k[l])?;
+                self.write_block_bytes(l, BlockKind::V, p, &sb.v[l])?;
             }
         }
         Ok(())
@@ -801,6 +882,81 @@ mod tests {
         assert!(pool.read_block(0, BlockKind::K, 9).is_err(), "read phys 9 out of range");
         assert!(pool.write_block(0, BlockKind::K, 0, &[1.0, 2.0]).is_err(), "short data rejected");
         assert!(pool.write_block(3, BlockKind::K, 0, &vec![0.0; block_elems]).is_err(), "no layer 3");
+    }
+
+    /// PC-1: the dtype-agnostic byte movement core round-trips an f32 pool's
+    /// bytes byte-identically — the f32 baseline for the byte API. Movement, not
+    /// compute, so fully CPU-verifiable.
+    #[test]
+    fn write_read_block_bytes_round_trips_f32() {
+        let pool = DeviceKvPool::new(geom(2, 8, 4), DType::F32, &Device::cpu()).unwrap();
+        let block_elems = 4 * 2 * 8; // block_size · Hkv · D
+        let vals: Vec<f32> = (0..block_elems).map(|i| i as f32 + 0.5).collect();
+        let bytes: Vec<u8> = bytemuck::cast_slice::<f32, u8>(&vals).to_vec();
+
+        pool.write_block_bytes(1, BlockKind::K, 5, &bytes).unwrap();
+        let back = pool.read_block_bytes(1, BlockKind::K, 5).unwrap();
+        assert_eq!(back, bytes, "f32 block bytes survive the byte-level round trip");
+    }
+
+    /// PC-1: the byte movement core is DTYPE-AGNOSTIC — a bf16 pool's 2-byte
+    /// elements round-trip byte-identically with NO bf16 compute kernel (pure
+    /// data movement: dtype-tagged `Op::Const` → `Op::WriteSlice` → `Op::Slice` →
+    /// `realize::<u8>`). This is the real new capability the CUDA bf16 pool's
+    /// evict/restore/CoW ride on.
+    #[test]
+    fn write_read_block_bytes_round_trips_bf16() {
+        let mut g = geom(2, 8, 4);
+        g.elem_size = 2; // bf16 = 2 bytes/elem
+        let pool = DeviceKvPool::new(g, DType::BF16, &Device::cpu()).unwrap();
+        let block_elems = 4 * 2 * 8;
+        // Valid bf16 content (avoid NaN-canonicalization ambiguity), as raw bytes.
+        let vals: Vec<half::bf16> =
+            (0..block_elems).map(|i| half::bf16::from_f32(i as f32 * 0.25 - 3.0)).collect();
+        let bytes: Vec<u8> = bytemuck::cast_slice::<half::bf16, u8>(&vals).to_vec();
+        assert_eq!(bytes.len(), block_elems * 2, "bf16 block = 2 bytes/elem");
+
+        pool.write_block_bytes(1, BlockKind::K, 5, &bytes).unwrap();
+        let back = pool.read_block_bytes(1, BlockKind::K, 5).unwrap();
+        assert_eq!(back, bytes, "bf16 block bytes survive the byte-level round trip");
+    }
+
+    /// PC-1: evict→restore is byte-exact on a BF16 pool — the dtype-agnostic
+    /// movement makes suspend/resume (C-3) real for the CUDA bf16 pool, not just
+    /// f32. CPU-verifiable (movement, not compute). Pre-PC-1 this errors: evict
+    /// reads via the f32 `read_block`, which rejects a bf16 pool.
+    #[test]
+    fn bf16_pool_evict_restore_is_byte_exact() {
+        let mut g = geom(2, 8, 4);
+        g.elem_size = 2;
+        let mut pool = DeviceKvPool::new(g, DType::BF16, &Device::cpu()).unwrap();
+        let block_elems = 4 * 2 * 8;
+        let vals: Vec<half::bf16> =
+            (0..block_elems).map(|i| half::bf16::from_f32(i as f32 * 0.5 - 5.0)).collect();
+        let bytes: Vec<u8> = bytemuck::cast_slice::<half::bf16, u8>(&vals).to_vec();
+
+        let s = pool.core_mut().open();
+        pool.core_mut().append(s, 1).unwrap(); // one exclusive block resident
+        let phys = pool.core().resident_block(s, 0).unwrap();
+        for l in 0..pool.n_layers() {
+            pool.write_block_bytes(l, BlockKind::K, phys, &bytes).unwrap();
+            pool.write_block_bytes(l, BlockKind::V, phys, &bytes).unwrap();
+        }
+
+        let handle = pool.evict(s).unwrap();
+        pool.restore(s, handle).unwrap();
+
+        let phys2 = pool.core().resident_block(s, 0).unwrap();
+        for l in 0..pool.n_layers() {
+            assert_eq!(
+                pool.read_block_bytes(l, BlockKind::K, phys2).unwrap(), bytes,
+                "K byte-exact after bf16 evict/restore (layer {l})",
+            );
+            assert_eq!(
+                pool.read_block_bytes(l, BlockKind::V, phys2).unwrap(), bytes,
+                "V byte-exact after bf16 evict/restore (layer {l})",
+            );
+        }
     }
 
     /// Small deterministic pseudo-random f32 fill (mirrors paged_attn_oracle).
