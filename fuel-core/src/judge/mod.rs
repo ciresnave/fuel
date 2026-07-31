@@ -2311,6 +2311,7 @@ mod tests {
             vendor_id: 0,
             device_id: 0,
             compute_capability: None,
+            subgroup_width: None,
             driver_version: String::new(),
             total_memory_bytes: 0,
             location: fuel_ir::DeviceLocation::Cpu,

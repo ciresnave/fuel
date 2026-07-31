@@ -56,6 +56,16 @@ pub fn enumerate_devices() -> Result<Vec<DeviceDescriptor>> {
             vendor_id:          NVIDIA_VENDOR_ID,
             device_id:          pci_device_id,
             compute_capability: cc,
+            // TODO(cuda): CUDA *can* report this — it is
+            // `CU_DEVICE_ATTRIBUTE_WARP_SIZE`, readable via the same
+            // `dev.attribute(..)` path used for PCI_DEVICE_ID above (32 on
+            // every shipping NVIDIA architecture). Left `None` here because
+            // this crate needs the `cuda` feature + nvcc to build, which the
+            // vulkane-0.9.0 change that introduced this field could not
+            // exercise — shipping either an unverified enum-variant name or a
+            // hardcoded constant into a probe would be worse than a documented
+            // `None`. Populate it in a CUDA-buildable change.
+            subgroup_width:     None,
             driver_version:     driver_ver.clone(),
             total_memory_bytes: total_mem,
             location:           DeviceLocation::Cuda { gpu_id: ordinal as usize },
