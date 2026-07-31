@@ -268,6 +268,89 @@ Random123's internals wrong — the `mulhilo` 32×32→64 split, the round key b
 implementation bug, and **the published Random123 vectors are load-bearing, not illustrative** —
 they are what converts *"references Random123"* into *"provably computes Random123."*
 
+### 8.1 `uniform_f32` (normative)
+
+§2's `"RandomBits → mantissa splice → [0,1)"` was a sketch, not a specification. Pinned:
+
+```
+w : u32 = the RandomBits word for this element (§8)
+
+uniform_f32(w) = f32::from_bits(0x3F80_0000 | (w >> 9)) - 1.0
+```
+
+- `w >> 9` takes the **top 23 bits** of the draw as the mantissa field. Top, not bottom — Philox
+  mixes all output bits so either is statistically sound, which is exactly why it must be pinned
+  rather than left to taste.
+- The exponent field `0x3F80_0000` places the value in `[1, 2)`; subtracting `1.0` yields
+  **`[0, 1)`** — `0.0` attainable, `1.0` **not**, with uniform spacing `2⁻²³` (8 388 608 distinct
+  values).
+
+**Determinism: `ExactByte`.** Integer ops, a bitcast, and one subtraction that is exact by
+**Sterbenz's lemma** (both operands in `[1, 2]`, ratio ≤ 2). No rounding occurs anywhere, so
+`uniform_f32` stays on the exact lane with the draw.
+
+**CORRECTION to §10.1 as first written.** That section said the multiply form
+`(w >> 8) as f32 * 2⁻²⁴` *"invites a tolerance."* **That is wrong** and is retracted here. Closer
+analysis: `w >> 8` lies in `[0, 2²⁴)`, every such integer is exactly representable in `f32`
+(exact up to 2²⁴), so the conversion is exact under any rounding mode; multiplying by a power of
+two is exact and the smallest non-zero result, `2⁻²⁴`, is far above the `f32` normal minimum. The
+multiply form is **also `ExactByte`**. The real trade is different, and smaller:
+
+| | splice (chosen) | multiply |
+| --- | --- | --- |
+| distinct values | 2²³ | 2²⁴ (one more bit) |
+| semantics to pin | bitcast + subtract | int→float conversion + multiply |
+| closest precedent | JAX (counter-based RNG) | PyTorch, Random123's own `u01` |
+
+**Chosen: the splice**, on two grounds — it is one fewer semantic to pin (no int→float
+conversion rule, even though that rule happens to be exact here), and JAX is the closer
+architectural precedent, being the other counter-based-RNG framework. The cost is one bit of
+resolution, which is not load-bearing for masks, dropout, or sampling. Both forms are defensible;
+this is a pin, not a proof.
+
+### 8.2 `normal_f32` (normative)
+
+```
+element i  →  pair p = i / 2,  drawing uniforms at LOGICAL indices 2p and 2p+1
+u1 = uniform_f32(word(2p))        u2 = uniform_f32(word(2p + 1))
+
+r     = sqrt(-2.0 * ln(1.0 - u1))         <- 1.0 - u1 lands in (0, 1]
+theta = 2.0 * core::f32::consts::PI * u2
+
+normal_f32(i) = if i is even { r * cos(theta) } else { r * sin(theta) }
+```
+
+Four pins, each a place two conforming implementations would otherwise diverge:
+
+1. **`u1` feeds the radius, `u2` the angle** — not the reverse.
+2. **`1.0 - u1`, and it is not cosmetic.** `uniform_f32` yields `[0, 1)`, so `u1 = 0.0` is
+   attainable (probability 2⁻²³ — reached routinely at tensor scale). `ln(0)` is `-inf`, giving
+   `r = inf` and a **NaN/inf sample**. Reflecting to `(0, 1]` removes the singularity; `u1' = 1.0`
+   then gives `r = 0`, which is finite and correct.
+3. **Pair-to-element mapping.** Box-Muller yields two samples per two uniforms. Element *i* takes
+   `z0` when even and `z1` when odd, from pair `p = i/2`. This keeps the op **position-pure**:
+   element *i* remains a pure function of *i*. An odd element count simply leaves the final `z1`
+   uncomputed. Draw consumption is 1:1 with outputs.
+4. **Evaluation order** as written — `ln`, then `*-2.0`, then `sqrt`, then the multiply — and `2π`
+   formed as `2.0 * core::f32::consts::PI` in `f32`, not a literal.
+
+**Determinism: NOT `ExactByte` — tolerance-classed, and forced.** `ln`, `sqrt`, `sin`, `cos` are
+not bit-identical across CPU / CUDA / Vulkan. The class joins from the constituents (§10.1).
+
+**Marsaglia polar is INADMISSIBLE**, not merely dispreferred: it is rejection-based, so it
+consumes a variable number of draws per output and element *i*'s value would depend on how many
+rejections preceded it — not a pure function of the logical index, making **§9 unsatisfiable**.
+Basic Box-Muller is forced by position-purity. Recorded because polar otherwise looks like an
+obvious optimization.
+
+**The tolerance is TO BE CALIBRATED, not asserted here.** Per the project's standing rule,
+epsilon tolerances are **sabotage-calibrated** — measure genuine cross-backend drift *and* the
+signal from a deliberately corrupted implementation, then set the bound between them. A ULP
+number invented in this document would be exactly the guessed-anchor failure §10 exists to
+prevent, one layer up. **Open item: run that calibration when the second backend lands; until
+then `normal_f32` has no numeric conformance bound**, and that absence is deliberate and stated
+rather than papered over with a plausible constant.
+
 ## 9. Position-pure ops — a class invariant
 
 The invariant has **two layers**, because the class has two kinds of member (KISS steward). An
@@ -356,9 +439,12 @@ kiss-ref was preparing to implement:
 **`uniform_f32` — exact, but only if the splice is chosen for it.** The bit-manipulation form
 `f32::from_bits(0x3F80_0000 \| (bits >> 9)) - 1.0` is exact: integer ops, then a subtraction that
 is exact by **Sterbenz's lemma** (both operands within a factor of two, for a value in `[1,2)`).
-A multiply-by-`2⁻²⁴` form is equally defensible numerically but invites a tolerance and differs
-in the low bit. **The determinism class is therefore an input to choosing the splice, not a
-consequence of it** — pin the form that keeps `uniform_f32` on the exact lane.
+~~A multiply-by-`2⁻²⁴` form is equally defensible numerically but invites a tolerance and differs
+in the low bit.~~ **RETRACTED — see §8.1.** Closer analysis shows the multiply form is *also*
+`ExactByte` (the int→float conversion is exact below 2²⁴, and scaling by a power of two is
+exact), so the determinism class does **not** discriminate between the two forms. The splice is
+still chosen, but on different grounds — one fewer semantic to pin, and JAX precedent — and the
+cost is one bit of resolution rather than exactness. Pinned in §8.1.
 
 **`normal_f32` cannot be `ExactByte`, and this is forced, not a choice.** Box-Muller requires
 `ln`, `sqrt` and `sin`/`cos`, whose implementations are **not** bit-identical across CPU, CUDA
