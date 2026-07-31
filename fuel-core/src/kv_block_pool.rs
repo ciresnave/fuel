@@ -281,6 +281,16 @@ pub enum KvAllocError {
     /// `Op::PagedAttn`. Surfaces a mis-sequenced call as a typed error rather
     /// than silently routing attention through a reclaimed physical block.
     SessionNotResident { slot: usize },
+    /// [`splice_prefix`](KvBlockPool::splice_prefix) into a non-empty target. A
+    /// shared prefix must be the target's FIRST blocks (the underlying `splice`
+    /// appends), so a non-empty target is refused — before any mutation.
+    PrefixTargetNotEmpty,
+    /// [`splice_prefix`](KvBlockPool::splice_prefix) asked to share a prefix
+    /// whose last block is only partially filled (`prefix_blocks * block_size >
+    /// donor_filled`). Only FULLY-filled whole blocks may be shared, so the
+    /// sharer's fill stays block-aligned and its first suffix write lands on a
+    /// fresh (unshared) block. Refused before any mutation.
+    PrefixNotFullyFilled { prefix_blocks: usize, donor_filled: usize },
 }
 
 /// The host-side KV block-pool allocator. See the module docs.
@@ -670,6 +680,60 @@ impl KvBlockPool {
         self.tables.get_mut(&s).unwrap().slots[i] = Slot::Resident(q);
         Ok(q)
     }
+
+    /// Share a prefix of `prefix_blocks` FULLY-FILLED blocks from `src` into an
+    /// EMPTY `dst` (rung-1: same absolute positions `0..shared_tokens`). Returns
+    /// the shared token count (`= prefix_blocks * block_size`) so the consumer
+    /// prefills ONLY the suffix — the "prefill only the suffix" contract is a
+    /// pool invariant, not a per-consumer convention. The transactional wrapper
+    /// over [`splice`](Self::splice): ALL preconditions are validated BEFORE any
+    /// mutation, so a refused call leaves the pool byte-identical (no half-spliced
+    /// `dst` with bumped refcounts and no unsplice).
+    ///
+    /// Preconditions (each refused before mutation):
+    /// - `dst` open + EMPTY — a shared prefix must be `dst`'s FIRST blocks, but
+    ///   `splice` APPENDS, so a non-empty `dst` would place the prefix at a shifted
+    ///   position (numerically wrong; rung-2's job). [`PrefixTargetNotEmpty`].
+    /// - `prefix_blocks <= src` block count. [`BadSpliceRange`].
+    /// - every shared block FULLY filled (`prefix_blocks * block_size <=
+    ///   src_filled`) so `shared_tokens` is block-aligned and the sharer's first
+    ///   suffix write lands on a fresh (unshared) block. [`PrefixNotFullyFilled`].
+    ///
+    /// NOTE: distinct from `lightbulb::model_fuel::policies::splice_prefix` — that
+    /// takes a `PrefixMatch` and layers its own (stricter) policy; this is the pool
+    /// mechanism it can build on. Different signature + semantics.
+    ///
+    /// [`PrefixTargetNotEmpty`]: KvAllocError::PrefixTargetNotEmpty
+    /// [`BadSpliceRange`]: KvAllocError::BadSpliceRange
+    /// [`PrefixNotFullyFilled`]: KvAllocError::PrefixNotFullyFilled
+    pub fn splice_prefix(
+        &mut self,
+        src: SessionHandle,
+        dst: SessionHandle,
+        prefix_blocks: usize,
+    ) -> Result<usize, KvAllocError> {
+        // ---- Validate BEFORE any mutation (transactional). ----
+        // `dst` must be open and EMPTY.
+        if !self.tables.get(&dst).ok_or(KvAllocError::UnknownSession)?.slots.is_empty() {
+            return Err(KvAllocError::PrefixTargetNotEmpty);
+        }
+        // `src` must be open; the shared range must fit and be fully filled.
+        let src_filled = {
+            let src_t = self.tables.get(&src).ok_or(KvAllocError::UnknownSession)?;
+            if prefix_blocks > src_t.slots.len() {
+                return Err(KvAllocError::BadSpliceRange);
+            }
+            src_t.filled_tokens
+        };
+        let shared_tokens = prefix_blocks * self.geom.block_size;
+        if shared_tokens > src_filled {
+            return Err(KvAllocError::PrefixNotFullyFilled { prefix_blocks, donor_filled: src_filled });
+        }
+        // ---- Mutate. `splice` is itself transactional for its own range/residency
+        // checks; all our preconditions passed, so nothing is left partial. ----
+        self.splice(src, dst, 0, prefix_blocks)?;
+        Ok(shared_tokens)
+    }
 }
 
 #[cfg(test)]
@@ -794,6 +858,91 @@ mod tests {
         // The freed block p2 is genuinely reusable and not referenced by B.
         assert_ne!(pool.resident_block(b, 0), Some(p2));
         assert_ne!(pool.resident_block(b, 1), Some(p2));
+    }
+
+    /// TRANSACTIONAL GUARD (Lightbulb-flagged scar): `splice_prefix` must validate
+    /// BEFORE it mutates, so a REFUSED splice leaves the pool byte-identical — no
+    /// half-spliced target with bumped refcounts and no unsplice. The teeth are in
+    /// asserting the POOL STATE after the refusal, NOT the returned `Err`: the
+    /// Err-only assertion passes even on a broken validate-AFTER-splice impl,
+    /// because the guard still fires — just too late, after the damage. The
+    /// meaningful refusal here is "target not empty": a shared prefix must be the
+    /// target's FIRST blocks, but the underlying `splice` blindly APPENDS, so a
+    /// non-empty target is exactly the case a late check would corrupt.
+    #[test]
+    fn refused_splice_prefix_leaves_the_pool_completely_untouched() {
+        let mut pool = KvBlockPool::new(geom(16, 4));
+        // Donor A: 2 filled blocks (the prefix), both exclusive.
+        let a = pool.open();
+        pool.append(a, 8).unwrap();
+        let (p0, p1) = (pool.resident_block(a, 0).unwrap(), pool.resident_block(a, 1).unwrap());
+        // Target B is NON-EMPTY (already holds one block) — the refusal trigger.
+        let b = pool.open();
+        pool.append(b, 4).unwrap();
+        let q0 = pool.resident_block(b, 0).unwrap();
+
+        // Snapshot everything a corruption could move.
+        let free_before = pool.free_blocks();
+        let (rc_p0, rc_p1) = (pool.block_refcount(p0), pool.block_refcount(p1));
+        let b_blocks_before = pool.session_blocks(b);
+        let b_filled_before = pool.filled_tokens(b);
+
+        // Refuse: cannot splice a prefix into a non-empty target.
+        let res = pool.splice_prefix(a, b, 2);
+        assert!(res.is_err(), "splice_prefix into a non-empty target must refuse");
+
+        // THE GUARD — assert on the POOL, not the Err. A validate-after-splice impl
+        // would have appended A's 2 blocks to B (B → 3 blocks) and bumped p0/p1 to
+        // refcount 2 before erroring; every assertion below then fails.
+        assert_eq!(pool.session_blocks(b), b_blocks_before, "B's block count unchanged (no prefix appended)");
+        assert_eq!(pool.filled_tokens(b), b_filled_before, "B's fill unchanged");
+        assert_eq!(pool.resident_block(b, 0), Some(q0), "B's own block untouched");
+        assert_eq!(pool.resident_block(b, 1), None, "B gained no second block");
+        assert_eq!(pool.block_refcount(p0), rc_p0, "donor refcount not bumped by a refused splice");
+        assert_eq!(pool.block_refcount(p1), rc_p1);
+        assert_eq!(pool.free_blocks(), free_before, "free list unmoved");
+
+        // And the refusal did not poison the donor for a later legitimate caller:
+        // splicing the same prefix into a FRESH empty session still succeeds.
+        let c = pool.open();
+        let shared = pool.splice_prefix(a, c, 2).expect("legit prefix splice into empty target");
+        assert_eq!(shared, 8, "2 blocks × block_size 4 = 8 shared tokens (donor fully filled)");
+        assert_eq!(pool.filled_tokens(c), Some(8), "C inherits the prefix's fill");
+        assert_eq!(pool.block_refcount(p0), 2, "now genuinely shared A+C");
+        assert_eq!(pool.block_refcount(p1), 2);
+        assert_eq!(pool.resident_block(c, 0), Some(p0), "C reads A's exact prefix blocks (zero-copy)");
+        assert_eq!(pool.resident_block(c, 1), Some(p1));
+    }
+
+    /// ALIGNMENT INVARIANT (Lightbulb-flagged): only FULLY-filled whole blocks may
+    /// be shared, so the sharer's fill stays a block multiple and its first suffix
+    /// write lands on a fresh (unshared) block — never mid a shared block. A
+    /// partial last block is refused. (Block-granular COUNT is not block-aligned
+    /// FILL: 6 tokens at bs=4 is 2 blocks but `filled==6`.)
+    #[test]
+    fn splice_prefix_refuses_a_partial_last_block() {
+        let mut pool = KvBlockPool::new(geom(16, 4));
+        let a = pool.open();
+        pool.append(a, 6).unwrap(); // 2 blocks, block 1 half-full (filled 6)
+        let free_before = pool.free_blocks();
+
+        // Sharing 2 blocks would give a misaligned fill of 6 → refuse, untouched.
+        let c = pool.open();
+        assert_eq!(
+            pool.splice_prefix(a, c, 2),
+            Err(KvAllocError::PrefixNotFullyFilled { prefix_blocks: 2, donor_filled: 6 }),
+            "a partial last block cannot be shared (would misalign the sharer's fill)",
+        );
+        assert_eq!(pool.session_blocks(c), Some(0), "refused share leaves C empty");
+        assert_eq!(pool.free_blocks(), free_before, "free list unmoved by the refusal");
+
+        // Sharing the ONE fully-filled block is aligned and succeeds.
+        assert_eq!(
+            pool.splice_prefix(a, c, 1).unwrap(),
+            4,
+            "one full block = 4 shared tokens (block-aligned)",
+        );
+        assert_eq!(pool.filled_tokens(c), Some(4), "sharer fill is block-aligned");
     }
 
     #[test]
