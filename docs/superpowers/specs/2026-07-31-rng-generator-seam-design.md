@@ -270,11 +270,21 @@ they are what converts *"references Random123"* into *"provably computes Random1
 
 ## 9. Position-pure ops — a class invariant
 
-> **Position-pure ops** — ops whose output is a pure function of element position (`RandomBits`,
-> `Op::Iota`, `Triu`/`Tril`, position-derived encodings) — derive every element from its
-> **global logical row-major index in the unsharded logical shape**, never a partition- or
-> rank-local index. Where such an op is reproduced across ranks, **all ranks share one `stream`
-> and one `base`**.
+The invariant has **two layers**, because the class has two kinds of member (KISS steward). An
+earlier draft of this section stated the stream obligation as binding the whole class, which is
+wrong — `Triu`/`Tril` carry no stream:
+
+> **(a) Index rule — binds every position-pure op**, whether position-*generating*
+> (`RandomBits`, `Op::Iota`) or position-*dependent* (`Triu`/`Tril`, position-derived
+> encodings): derive the element's position from the **global logical row-major index in the
+> unsharded logical shape**, never a partition- or rank-local index. A rank-local `Triu` mask is
+> as wrong as a rank-local `Iota` value — both diverge silently under sharding.
+>
+> **(b) Stream rule — binds only members carrying a generator stream** (`RandomBits`): where the
+> op is reproduced across ranks, **all ranks share one `stream` and one `base`**.
+
+Splitting them keeps `Triu`/`Tril` in scope for the index rule without implying they have a
+stream to share.
 
 This is stated for the class, not for `RandomBits`, so the next such op inherits it by
 construction (Baracuda). The KISS steward affirms it belongs in **KISS-Ops as a general clause**
