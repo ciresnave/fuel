@@ -64,7 +64,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let latent = vec![0.0_f32; lc * lat_size * lat_size];
     eprintln!("Running decoder...");
     let t0 = Instant::now();
-    let out_t = decoder.decode(&latent, lat_size, lat_size);
+    let out_t = decoder.decode(&latent, lat_size, lat_size)?;
     let out = out_t.realize_f32();
     let elapsed = t0.elapsed();
     eprintln!("Forward done in {:.2?}", elapsed);
