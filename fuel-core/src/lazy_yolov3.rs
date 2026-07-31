@@ -243,27 +243,27 @@ fn per_channel_affine(
     c: usize,
     h: usize,
     w: usize,
-) -> LazyTensor {
+) -> crate::Result<LazyTensor> {
     let s = x
         .const_f32_like(scale.clone(), Shape::from_dims(&[c]))
         .reshape(Shape::from_dims(&[1, c, 1, 1]))
-        .unwrap()
+        ?
         .broadcast_to(Shape::from_dims(&[1, c, h, w]))
-        .unwrap();
+        ?;
     let sh = x
         .const_f32_like(shift.clone(), Shape::from_dims(&[c]))
         .reshape(Shape::from_dims(&[1, c, 1, 1]))
-        .unwrap()
+        ?
         .broadcast_to(Shape::from_dims(&[1, c, h, w]))
-        .unwrap();
-    x.mul(&s).unwrap().add(&sh).unwrap()
+        ?;
+    x.mul(&s)?.add(&sh)
 }
 
 /// Leaky-ReLU(slope). Implemented as `max(x, slope * x)` — matches
 /// PyTorch's `F.leaky_relu` exactly when `slope > 0`.
-fn leaky_relu(x: &LazyTensor, slope: f64) -> LazyTensor {
+fn leaky_relu(x: &LazyTensor, slope: f64) -> crate::Result<LazyTensor> {
     let scaled = x.mul_scalar(slope);
-    x.maximum(&scaled).unwrap()
+    x.maximum(&scaled)
 }
 
 /// Conv + BN-fused affine + Leaky-ReLU. Standard Darknet "DBL" block.
@@ -279,14 +279,14 @@ fn cbn(
     h_out: usize,
     w_out: usize,
     cfg: &YoloV3Config,
-) -> LazyTensor {
+) -> crate::Result<LazyTensor> {
     let p = (k - 1) / 2;
     let w_t = x.const_f32_like(
         cw.conv_w.clone(),
         Shape::from_dims(&[c_out, c_in, k, k]),
     );
-    let conv = x.conv2d(&w_t, None, (stride, stride), (p, p), 1).unwrap();
-    let affine = per_channel_affine(&conv, &cw.bn_scale, &cw.bn_shift, c_out, h_out, w_out);
+    let conv = x.conv2d(&w_t, None, (stride, stride), (p, p), 1)?;
+    let affine = per_channel_affine(&conv, &cw.bn_scale, &cw.bn_shift, c_out, h_out, w_out)?;
     leaky_relu(&affine, cfg.leaky_slope)
 }
 
@@ -300,11 +300,11 @@ fn residual(
     h: usize,
     w: usize,
     cfg: &YoloV3Config,
-) -> LazyTensor {
+) -> crate::Result<LazyTensor> {
     let c_mid = c / 2;
-    let y = cbn(x, &rw.cv1, c, c_mid, 1, 1, h, w, cfg);
-    let y = cbn(&y, &rw.cv2, c_mid, c, 3, 1, h, w, cfg);
-    x.add(&y).unwrap()
+    let y = cbn(x, &rw.cv1, c, c_mid, 1, 1, h, w, cfg)?;
+    let y = cbn(&y, &rw.cv2, c_mid, c, 3, 1, h, w, cfg)?;
+    x.add(&y)
 }
 
 /// One backbone stage: stride-2 downsample then `n` residual blocks at
@@ -317,14 +317,14 @@ fn backbone_stage(
     h_in: usize,
     w_in: usize,
     cfg: &YoloV3Config,
-) -> LazyTensor {
+) -> crate::Result<LazyTensor> {
     let h_out = h_in / 2;
     let w_out = w_in / 2;
-    let mut x = cbn(x, &sw.downsample, c_in, c_out, 3, 2, h_out, w_out, cfg);
+    let mut x = cbn(x, &sw.downsample, c_in, c_out, 3, 2, h_out, w_out, cfg)?;
     for rw in &sw.blocks {
-        x = residual(&x, rw, c_out, h_out, w_out, cfg);
+        x = residual(&x, rw, c_out, h_out, w_out, cfg)?;
     }
-    x
+    Ok(x)
 }
 
 /// The "DBL × 5" stack at one scale. Pattern (per official cfg):
@@ -339,11 +339,11 @@ fn head_stack(
     h: usize,
     w: usize,
     cfg: &YoloV3Config,
-) -> LazyTensor {
-    let x = cbn(x, &hw.cv1, c_in, c, 1, 1, h, w, cfg);
-    let x = cbn(&x, &hw.cv2, c, 2 * c, 3, 1, h, w, cfg);
-    let x = cbn(&x, &hw.cv3, 2 * c, c, 1, 1, h, w, cfg);
-    let x = cbn(&x, &hw.cv4, c, 2 * c, 3, 1, h, w, cfg);
+) -> crate::Result<LazyTensor> {
+    let x = cbn(x, &hw.cv1, c_in, c, 1, 1, h, w, cfg)?;
+    let x = cbn(&x, &hw.cv2, c, 2 * c, 3, 1, h, w, cfg)?;
+    let x = cbn(&x, &hw.cv3, 2 * c, c, 1, 1, h, w, cfg)?;
+    let x = cbn(&x, &hw.cv4, c, 2 * c, 3, 1, h, w, cfg)?;
     cbn(&x, &hw.cv5, 2 * c, c, 1, 1, h, w, cfg)
 }
 
@@ -354,13 +354,13 @@ fn raw_conv_1x1_bias(
     dw: &DetectConvWeights,
     c_in: usize,
     c_out: usize,
-) -> LazyTensor {
+) -> crate::Result<LazyTensor> {
     let w_t = x.const_f32_like(
         dw.conv_w.clone(),
         Shape::from_dims(&[c_out, c_in, 1, 1]),
     );
     let b_t = x.const_f32_like(dw.conv_b.clone(), Shape::from_dims(&[c_out]));
-    x.conv2d(&w_t, Some(&b_t), (1, 1), (0, 0), 1).unwrap()
+    x.conv2d(&w_t, Some(&b_t), (1, 1), (0, 0), 1)
 }
 
 // ---- Detection decode -----------------------------------------------------
@@ -375,18 +375,18 @@ fn decode_scale(
     num_classes: usize,
     h: usize,
     w: usize,
-) -> LazyTensor {
+) -> crate::Result<LazyTensor> {
     let n_anchors = 3;
     let attrs = 5 + num_classes;
     // [1, 3*attrs, H, W] → [1, 3, attrs, H*W] → [1, 3, H*W, attrs] →
     // [1, 3*H*W, attrs]
     let x = raw
         .reshape(Shape::from_dims(&[1, n_anchors, attrs, h * w]))
-        .unwrap()
+        ?
         .permute([0_usize, 1, 3, 2])
-        .unwrap()
+        ?
         .reshape(Shape::from_dims(&[1, n_anchors * h * w, attrs]))
-        .unwrap();
+        ?;
     let n = n_anchors * h * w;
 
     // Build the (grid_x, grid_y, anchor_w, anchor_h) constants —
@@ -420,24 +420,24 @@ fn decode_scale(
 
     // Slice the channel axis: positions 0..2 (xy), 2..4 (wh),
     // 4..(5+nc) (obj + classes).
-    let xy = x.slice(2, 0, 2).unwrap();
-    let wh = x.slice(2, 2, 2).unwrap();
-    let conf = x.slice(2, 4, 1 + num_classes).unwrap();
+    let xy = x.slice(2, 0, 2)?;
+    let wh = x.slice(2, 2, 2)?;
+    let conf = x.slice(2, 4, 1 + num_classes)?;
 
     // xy: (sigmoid(t) + grid) * stride.
     let xy_sig = xy.sigmoid();
     // Build a [1, N, 2] tensor of (grid_x, grid_y) by concatenating.
-    let grid_xy = g_x.concat(&g_y, 2).unwrap();
+    let grid_xy = g_x.concat(&g_y, 2)?;
     let xy_pix = xy_sig
         .add(&grid_xy)
-        .unwrap()
+        ?
         .mul_scalar(stride as f64);
 
     // wh: exp(t) * anchor_pixel.
     // anchor here is in grid units (anchors / stride); multiply by
     // stride at the end to get pixels.
-    let wh_anc = a_w.concat(&a_h, 2).unwrap();
-    let wh_pix = wh.exp().mul(&wh_anc).unwrap().mul_scalar(stride as f64);
+    let wh_anc = a_w.concat(&a_h, 2)?;
+    let wh_pix = wh.exp().mul(&wh_anc)?.mul_scalar(stride as f64);
 
     // obj + class confidences: sigmoid (independent per-class).
     let conf_sig = conf.sigmoid();
@@ -445,10 +445,10 @@ fn decode_scale(
     // Concat along the attr axis: [xy(2), wh(2), conf(1+nc)] = 5+nc.
     let row = xy_pix
         .concat(&wh_pix, 2)
-        .unwrap()
+        ?
         .concat(&conf_sig, 2)
-        .unwrap();
-    row
+        ?;
+    Ok(row)
 }
 
 // ---- Model ----------------------------------------------------------------
@@ -490,68 +490,68 @@ impl YoloV3Model {
 
         // --- Backbone ---
         // Stem: 3 → 32, k=3, s=1.
-        let x = cbn(&x, &self.weights.stem, 3, 32, 3, 1, isize, isize, cfg);
+        let x = cbn(&x, &self.weights.stem, 3, 32, 3, 1, isize, isize, cfg)?;
         // Stage 1: 32 → 64, 1 block, /2.
         let (h, w) = (isize / 2, isize / 2);
-        let x = backbone_stage(&x, &self.weights.stage1, 32, 64, isize, isize, cfg);
+        let x = backbone_stage(&x, &self.weights.stage1, 32, 64, isize, isize, cfg)?;
         // Stage 2: 64 → 128, 2 blocks, /2.
         let (h, w) = (h / 2, w / 2);
-        let x = backbone_stage(&x, &self.weights.stage2, 64, 128, h * 2, w * 2, cfg);
+        let x = backbone_stage(&x, &self.weights.stage2, 64, 128, h * 2, w * 2, cfg)?;
         // Stage 3: 128 → 256, 8 blocks, /2  — feed to scale 3.
         let (h3, w3) = (h / 2, w / 2);
-        let route_s3 = backbone_stage(&x, &self.weights.stage3, 128, 256, h, w, cfg);
+        let route_s3 = backbone_stage(&x, &self.weights.stage3, 128, 256, h, w, cfg)?;
         // Stage 4: 256 → 512, 8 blocks, /2  — feed to scale 2.
         let (h2, w2) = (h3 / 2, w3 / 2);
-        let route_s2 = backbone_stage(&route_s3, &self.weights.stage4, 256, 512, h3, w3, cfg);
+        let route_s2 = backbone_stage(&route_s3, &self.weights.stage4, 256, 512, h3, w3, cfg)?;
         // Stage 5: 512 → 1024, 4 blocks, /2  — feed to scale 1.
         let (h1, w1) = (h2 / 2, w2 / 2);
-        let route_s1 = backbone_stage(&route_s2, &self.weights.stage5, 512, 1024, h2, w2, cfg);
+        let route_s1 = backbone_stage(&route_s2, &self.weights.stage5, 512, 1024, h2, w2, cfg)?;
 
         // --- Head scale 1 (deepest, stride 32, anchors[0]) ---
-        let head1 = head_stack(&route_s1, &self.weights.head1, 1024, 512, h1, w1, cfg);
-        let final1 = cbn(&head1, &self.weights.final1_cv, 512, 1024, 3, 1, h1, w1, cfg);
+        let head1 = head_stack(&route_s1, &self.weights.head1, 1024, 512, h1, w1, cfg)?;
+        let final1 = cbn(&head1, &self.weights.final1_cv, 512, 1024, 3, 1, h1, w1, cfg)?;
         let detect1_raw = raw_conv_1x1_bias(
             &final1,
             &self.weights.detect1,
             1024,
             3 * (5 + cfg.num_classes),
-        );
-        let dec1 = decode_scale(&detect1_raw, &cfg.anchors[0], 32, cfg.num_classes, h1, w1);
+        )?;
+        let dec1 = decode_scale(&detect1_raw, &cfg.anchors[0], 32, cfg.num_classes, h1, w1)?;
 
         // --- Lateral 1 → 2 ---
-        let lat1 = cbn(&head1, &self.weights.lat1, 512, 256, 1, 1, h1, w1, cfg);
-        let lat1_up = lat1.upsample_nearest2d(2).unwrap();
-        let cat2 = lat1_up.concat(&route_s2, 1).unwrap(); // (256 + 512) channels at (h2, w2)
+        let lat1 = cbn(&head1, &self.weights.lat1, 512, 256, 1, 1, h1, w1, cfg)?;
+        let lat1_up = lat1.upsample_nearest2d(2)?;
+        let cat2 = lat1_up.concat(&route_s2, 1)?; // (256 + 512) channels at (h2, w2)
 
         // --- Head scale 2 (stride 16, anchors[1]) ---
-        let head2 = head_stack(&cat2, &self.weights.head2, 768, 256, h2, w2, cfg);
-        let final2 = cbn(&head2, &self.weights.final2_cv, 256, 512, 3, 1, h2, w2, cfg);
+        let head2 = head_stack(&cat2, &self.weights.head2, 768, 256, h2, w2, cfg)?;
+        let final2 = cbn(&head2, &self.weights.final2_cv, 256, 512, 3, 1, h2, w2, cfg)?;
         let detect2_raw = raw_conv_1x1_bias(
             &final2,
             &self.weights.detect2,
             512,
             3 * (5 + cfg.num_classes),
-        );
-        let dec2 = decode_scale(&detect2_raw, &cfg.anchors[1], 16, cfg.num_classes, h2, w2);
+        )?;
+        let dec2 = decode_scale(&detect2_raw, &cfg.anchors[1], 16, cfg.num_classes, h2, w2)?;
 
         // --- Lateral 2 → 3 ---
-        let lat2 = cbn(&head2, &self.weights.lat2, 256, 128, 1, 1, h2, w2, cfg);
-        let lat2_up = lat2.upsample_nearest2d(2).unwrap();
-        let cat3 = lat2_up.concat(&route_s3, 1).unwrap(); // (128 + 256) at (h3, w3)
+        let lat2 = cbn(&head2, &self.weights.lat2, 256, 128, 1, 1, h2, w2, cfg)?;
+        let lat2_up = lat2.upsample_nearest2d(2)?;
+        let cat3 = lat2_up.concat(&route_s3, 1)?; // (128 + 256) at (h3, w3)
 
         // --- Head scale 3 (stride 8, anchors[2]) ---
-        let head3 = head_stack(&cat3, &self.weights.head3, 384, 128, h3, w3, cfg);
-        let final3 = cbn(&head3, &self.weights.final3_cv, 128, 256, 3, 1, h3, w3, cfg);
+        let head3 = head_stack(&cat3, &self.weights.head3, 384, 128, h3, w3, cfg)?;
+        let final3 = cbn(&head3, &self.weights.final3_cv, 128, 256, 3, 1, h3, w3, cfg)?;
         let detect3_raw = raw_conv_1x1_bias(
             &final3,
             &self.weights.detect3,
             256,
             3 * (5 + cfg.num_classes),
-        );
-        let dec3 = decode_scale(&detect3_raw, &cfg.anchors[2], 8, cfg.num_classes, h3, w3);
+        )?;
+        let dec3 = decode_scale(&detect3_raw, &cfg.anchors[2], 8, cfg.num_classes, h3, w3)?;
 
         // Concat all 3 scales along anchor axis: [1, N_total, 5+nc].
-        let predictions = dec1.concat(&dec2, 1).unwrap().concat(&dec3, 1).unwrap();
+        let predictions = dec1.concat(&dec2, 1)?.concat(&dec3, 1)?;
         Ok(YoloV3RawOutput { predictions })
     }
 }
@@ -934,8 +934,8 @@ fn iou_xyxy(a: &[f32; 4], b: &[f32; 4]) -> f32 {
 impl YoloV3Weights {
     /// Build a zero-weight bundle matching `cfg`. BN scale defaults to
     /// 1 and shift to 0, so each Conv+BN+Leaky collapses to
-    /// `leaky_relu(conv(x))`. All conv weights are zero, so every
-    /// feature map is `leaky_relu(0) = 0`, but every op in the graph
+    /// `leaky_relu(conv(x))?`. All conv weights are zero, so every
+    /// feature map is `leaky_relu(0)? = 0`, but every op in the graph
     /// is exercised and every shape is valid — enough for a smoke test.
     pub fn zeros(cfg: &YoloV3Config) -> Self {
         let z = |n: usize| Arc::<[f32]>::from(vec![0.0_f32; n]);
@@ -1115,7 +1115,7 @@ mod tests {
         );
         let anchors = [(20_usize, 30_usize), (40, 60), (80, 90)];
         let stride = 32_usize;
-        let decoded = decode_scale(&raw, &anchors, stride, num_classes, h, w);
+        let decoded = decode_scale(&raw, &anchors, stride, num_classes, h, w).unwrap();
         let flat = decoded.realize_f32();
         // Decoded shape should be [1, n_anchors * h * w, attrs].
         let dims = decoded.shape().dims().to_vec();

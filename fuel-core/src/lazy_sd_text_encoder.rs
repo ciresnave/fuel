@@ -229,15 +229,15 @@ impl SdTextEncoder {
             Shape::from_dims(&[cfg.max_position_embeddings, h]),
         );
 
-        let w = token_emb.index_select(0, &input_ids).unwrap();
-        let p = pos_emb.index_select(0, &position_ids).unwrap();
-        let embeds = w.add(&p).unwrap().reshape(Shape::from_dims(&[1, seq, h])).unwrap();
+        let w = token_emb.index_select(0, &input_ids)?;
+        let p = pos_emb.index_select(0, &position_ids)?;
+        let embeds = w.add(&p)?.reshape(Shape::from_dims(&[1, seq, h]))?;
 
         let mut x = embeds;
         for lw in &self.weights.layers {
-            x = encoder_layer(&x, lw, cfg, seq);
+            x = encoder_layer(&x, lw, cfg, seq)?;
         }
-        Ok(layer_norm_affine(&x, &self.weights.final_ln_g, &self.weights.final_ln_b, cfg.layer_norm_eps, h, seq))
+        Ok(layer_norm_affine(&x, &self.weights.final_ln_g, &self.weights.final_ln_b, cfg.layer_norm_eps, h, seq)?)
     }
 
     /// Run the forward pass and return the per-layer hidden
@@ -315,13 +315,13 @@ impl SdTextEncoder {
             self.weights.position_embedding.clone(),
             Shape::from_dims(&[cfg.max_position_embeddings, h]),
         );
-        let w = token_emb.index_select(0, &input_ids).unwrap();
-        let p = pos_emb.index_select(0, &position_ids).unwrap();
-        let mut x = w.add(&p).unwrap().reshape(Shape::from_dims(&[1, seq, h])).unwrap();
+        let w = token_emb.index_select(0, &input_ids)?;
+        let p = pos_emb.index_select(0, &position_ids)?;
+        let mut x = w.add(&p)?.reshape(Shape::from_dims(&[1, seq, h]))?;
 
         let mut intermediate: Option<LazyTensor> = None;
         for (layer_id, lw) in self.weights.layers.iter().enumerate() {
-            x = encoder_layer(&x, lw, cfg, seq);
+            x = encoder_layer(&x, lw, cfg, seq)?;
             if layer_id == until_idx {
                 intermediate = Some(x.clone());
             }
@@ -329,14 +329,14 @@ impl SdTextEncoder {
         let final_out = layer_norm_affine(
             &x, &self.weights.final_ln_g, &self.weights.final_ln_b,
             cfg.layer_norm_eps, h, seq,
-        );
+        )?;
         let intermediate = intermediate.expect("until_idx is in range so intermediate is set");
         // Apply final LN to the intermediate too — SDXL's
         // ConditioningProvider expects normalized features.
         let intermediate_normed = layer_norm_affine(
             &intermediate, &self.weights.final_ln_g, &self.weights.final_ln_b,
             cfg.layer_norm_eps, h, seq,
-        );
+        )?;
         Ok((final_out, intermediate_normed))
     }
 }
@@ -348,52 +348,52 @@ fn encoder_layer(
     lw: &ClipLayerWeights,
     cfg: &ClipTextConfig,
     seq: usize,
-) -> LazyTensor {
+) -> crate::Result<LazyTensor> {
     let h = cfg.hidden_size;
     let n_heads = cfg.num_attention_heads;
     let d_head = cfg.head_dim();
 
     // --- self-attention -------------
-    let x_ln = layer_norm_affine(x, &lw.ln1_g, &lw.ln1_b, cfg.layer_norm_eps, h, seq);
-    let q = linear(&x_ln, &lw.q_w, Some(&lw.q_b), h, h, seq);
-    let k = linear(&x_ln, &lw.k_w, Some(&lw.k_b), h, h, seq);
-    let v = linear(&x_ln, &lw.v_w, Some(&lw.v_b), h, h, seq);
+    let x_ln = layer_norm_affine(x, &lw.ln1_g, &lw.ln1_b, cfg.layer_norm_eps, h, seq)?;
+    let q = linear(&x_ln, &lw.q_w, Some(&lw.q_b), h, h, seq)?;
+    let k = linear(&x_ln, &lw.k_w, Some(&lw.k_b), h, h, seq)?;
+    let v = linear(&x_ln, &lw.v_w, Some(&lw.v_b), h, h, seq)?;
 
-    let q = q.split_heads(n_heads, d_head).unwrap();
-    let k = k.split_heads(n_heads, d_head).unwrap();
-    let v = v.split_heads(n_heads, d_head).unwrap();
-    let k_t = k.permute([0, 1, 3, 2_usize]).unwrap();
+    let q = q.split_heads(n_heads, d_head)?;
+    let k = k.split_heads(n_heads, d_head)?;
+    let v = v.split_heads(n_heads, d_head)?;
+    let k_t = k.permute([0, 1, 3, 2_usize])?;
     let scale = 1.0_f64 / (d_head as f64).sqrt();
-    let mut scores = q.matmul(&k_t).unwrap().mul_scalar(scale);
+    let mut scores = q.matmul(&k_t)?.mul_scalar(scale);
     // Causal mask: -inf above the diagonal.
     let mask_t = LazyTensor::additive_causal_mask_like(&scores, seq)
-        .reshape(Shape::from_dims(&[1, 1, seq, seq])).unwrap()
-        .broadcast_to(Shape::from_dims(&[1, n_heads, seq, seq])).unwrap();
-    scores = scores.add(&mask_t).unwrap();
-    let probs = scores.softmax_last_dim().unwrap();
+        .reshape(Shape::from_dims(&[1, 1, seq, seq]))?
+        .broadcast_to(Shape::from_dims(&[1, n_heads, seq, seq]))?;
+    scores = scores.add(&mask_t)?;
+    let probs = scores.softmax_last_dim()?;
     let ctx = probs
-        .matmul(&v).unwrap()
-        .merge_heads().unwrap();
-    let attn_out = linear(&ctx, &lw.out_w, Some(&lw.out_b), h, h, seq);
-    let x = x.add(&attn_out).unwrap();
+        .matmul(&v)?
+        .merge_heads()?;
+    let attn_out = linear(&ctx, &lw.out_w, Some(&lw.out_b), h, h, seq)?;
+    let x = x.add(&attn_out)?;
 
     // --- MLP with configurable activation -------
-    let x_ln = layer_norm_affine(&x, &lw.ln2_g, &lw.ln2_b, cfg.layer_norm_eps, h, seq);
+    let x_ln = layer_norm_affine(&x, &lw.ln2_g, &lw.ln2_b, cfg.layer_norm_eps, h, seq)?;
     let h_ff = cfg.intermediate_size;
-    let mid = linear(&x_ln, &lw.fc1_w, Some(&lw.fc1_b), h, h_ff, seq);
+    let mid = linear(&x_ln, &lw.fc1_w, Some(&lw.fc1_b), h, h_ff, seq)?;
     let mid = match cfg.activation {
-        ClipTextActivation::QuickGelu => quick_gelu(&mid),
+        ClipTextActivation::QuickGelu => quick_gelu(&mid)?,
         ClipTextActivation::Gelu      => mid.gelu(),
         ClipTextActivation::GeluErf   => mid.gelu_erf(),
     };
-    let ffn = linear(&mid, &lw.fc2_w, Some(&lw.fc2_b), h_ff, h, seq);
-    x.add(&ffn).unwrap()
+    let ffn = linear(&mid, &lw.fc2_w, Some(&lw.fc2_b), h_ff, h, seq)?;
+    x.add(&ffn)
 }
 
 /// QuickGELU: `x * sigmoid(1.702 * x)`. CLIP's approximation to GELU;
 /// the 1.702 constant is part of CLIP's trained baseline and swapping
 /// in the exact GELU at inference produces visibly different outputs.
-fn quick_gelu(x: &LazyTensor) -> LazyTensor {
+fn quick_gelu(x: &LazyTensor) -> crate::Result<LazyTensor> {
     // sigmoid(y) = 1 / (1 + exp(-y))
     // sigmoid(1.702 * x) = 1 / (1 + exp(-1.702 * x))
     let scaled = x.mul_scalar(1.702);
@@ -404,9 +404,9 @@ fn quick_gelu(x: &LazyTensor) -> LazyTensor {
     // Div op; use `div` with the numerator 1-tensor.
     let ones = x
         .const_f32_like(vec![1.0_f32; 1], Shape::from_dims(&[1]))
-        .broadcast_to(one_plus.shape()).unwrap();
-    let sig = ones.div(&one_plus).unwrap();
-    x.mul(&sig).unwrap()
+        .broadcast_to(one_plus.shape())?;
+    let sig = ones.div(&one_plus)?;
+    x.mul(&sig)
 }
 
 /// `y = LayerNorm(x) * gamma + beta`. Same pattern as BERT / Whisper.
@@ -417,17 +417,17 @@ fn layer_norm_affine(
     eps: f64,
     hidden: usize,
     seq: usize,
-) -> LazyTensor {
-    let normed = x.layer_norm_last_dim(eps).unwrap();
+) -> crate::Result<LazyTensor> {
+    let normed = x.layer_norm_last_dim(eps)?;
     let g = x
         .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))
-        .reshape(Shape::from_dims(&[1, 1, hidden])).unwrap()
-        .broadcast_to(Shape::from_dims(&[1, seq, hidden])).unwrap();
+        .reshape(Shape::from_dims(&[1, 1, hidden]))?
+        .broadcast_to(Shape::from_dims(&[1, seq, hidden]))?;
     let b = x
         .const_f32_like(beta.clone(), Shape::from_dims(&[hidden]))
-        .reshape(Shape::from_dims(&[1, 1, hidden])).unwrap()
-        .broadcast_to(Shape::from_dims(&[1, seq, hidden])).unwrap();
-    normed.mul(&g).unwrap().add(&b).unwrap()
+        .reshape(Shape::from_dims(&[1, 1, hidden]))?
+        .broadcast_to(Shape::from_dims(&[1, seq, hidden]))?;
+    normed.mul(&g)?.add(&b)
 }
 
 fn linear(
@@ -437,18 +437,18 @@ fn linear(
     in_f: usize,
     out_f: usize,
     seq: usize,
-) -> LazyTensor {
+) -> crate::Result<LazyTensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]));
-    let proj = x.matmul(&w_t).unwrap();
+    let proj = x.matmul(&w_t)?;
     match b {
         Some(b) => {
             let bias = x
                 .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))
-                .reshape(Shape::from_dims(&[1, 1, out_f])).unwrap()
-                .broadcast_to(Shape::from_dims(&[1, seq, out_f])).unwrap();
-            proj.add(&bias).unwrap()
+                .reshape(Shape::from_dims(&[1, 1, out_f]))?
+                .broadcast_to(Shape::from_dims(&[1, seq, out_f]))?;
+            proj.add(&bias)
         }
-        None => proj,
+        None => Ok(proj),
     }
 }
 
@@ -746,7 +746,7 @@ mod tests {
         let x_vals = [-2.0_f32, -0.5, 0.0, 0.5, 1.0, 2.0];
         for &v in &x_vals {
             let x = LazyTensor::from_f32(vec![v], Shape::from_dims(&[1]), &crate::Device::cpu());
-            let y = quick_gelu(&x);
+            let y = quick_gelu(&x).unwrap();
             let out = y.realize_f32()[0];
             let expected = v * (1.0 / (1.0 + (-1.702_f32 * v).exp()));
             assert!(

@@ -232,16 +232,16 @@ fn per_channel_affine(
     c: usize,
     h: usize,
     w: usize,
-) -> LazyTensor {
+) -> crate::Result<LazyTensor> {
     let s = x
         .const_f32_like(scale.clone(), Shape::from_dims(&[c]))
-        .reshape(Shape::from_dims(&[1, c, 1, 1])).unwrap()
-        .broadcast_to(Shape::from_dims(&[1, c, h, w])).unwrap();
+        .reshape(Shape::from_dims(&[1, c, 1, 1]))?
+        .broadcast_to(Shape::from_dims(&[1, c, h, w]))?;
     let sh = x
         .const_f32_like(shift.clone(), Shape::from_dims(&[c]))
-        .reshape(Shape::from_dims(&[1, c, 1, 1])).unwrap()
-        .broadcast_to(Shape::from_dims(&[1, c, h, w])).unwrap();
-    x.mul(&s).unwrap().add(&sh).unwrap()
+        .reshape(Shape::from_dims(&[1, c, 1, 1]))?
+        .broadcast_to(Shape::from_dims(&[1, c, h, w]))?;
+    x.mul(&s)?.add(&sh)
 }
 
 /// Conv+BN+SiLU. Computes `y = silu(conv2d(x, w) * scale + shift)`
@@ -257,14 +257,14 @@ fn cbs(
     groups: usize,
     h_out: usize,
     w_out: usize,
-) -> LazyTensor {
+) -> crate::Result<LazyTensor> {
     let w_t = x.const_f32_like(
         cw.conv_w.clone(),
         Shape::from_dims(&[c_out, c_in / groups, k, k]),
     );
-    let conv = x.conv2d(&w_t, None, (s, s), (p, p), groups).unwrap();
-    let affine = per_channel_affine(&conv, &cw.bn_scale, &cw.bn_shift, c_out, h_out, w_out);
-    affine.silu()
+    let conv = x.conv2d(&w_t, None, (s, s), (p, p), groups)?;
+    let affine = per_channel_affine(&conv, &cw.bn_scale, &cw.bn_shift, c_out, h_out, w_out)?;
+    Ok(affine.silu())
 }
 
 /// MaxPool2D with kernel `k`, stride 1, padding `p` — zero-padded.
@@ -283,38 +283,38 @@ fn max_pool_s1_composed(
     w: usize,
     k: usize,
     p: usize,
-) -> LazyTensor {
+) -> crate::Result<LazyTensor> {
     assert_eq!(k, 2 * p + 1, "max_pool_s1_composed assumes padding = (k-1)/2");
-    let padded = pad_hw_zeros(x, c, h, w, p);
+    let padded = pad_hw_zeros(x, c, h, w, p)?;
     let mut acc: Option<LazyTensor> = None;
     for ky in 0..k {
-        let row = padded.slice(2, ky, h).unwrap();
+        let row = padded.slice(2, ky, h)?;
         for kx in 0..k {
-            let win = row.slice(3, kx, w).unwrap();
+            let win = row.slice(3, kx, w)?;
             acc = Some(match acc {
                 None => win,
-                Some(a) => a.maximum(&win).unwrap(),
+                Some(a) => a.maximum(&win)?,
             });
         }
     }
-    acc.expect("max_pool_s1_composed: at least one tap")
+    Ok(acc.expect("max_pool_s1_composed: at least one tap"))
 }
 
-fn pad_hw_zeros(x: &LazyTensor, c: usize, h: usize, w: usize, p: usize) -> LazyTensor {
+fn pad_hw_zeros(x: &LazyTensor, c: usize, h: usize, w: usize, p: usize) -> crate::Result<LazyTensor> {
     if p == 0 {
-        return x.clone();
+        return Ok(x.clone());
     }
     let z_w = x.const_f32_like(
         vec![0.0_f32; c * h * p],
         Shape::from_dims(&[1, c, h, p]),
     );
-    let x_wpad = z_w.concat(x, 3).unwrap().concat(&z_w, 3).unwrap();
+    let x_wpad = z_w.concat(x, 3)?.concat(&z_w, 3)?;
     let w_p = w + 2 * p;
     let z_h = x.const_f32_like(
         vec![0.0_f32; c * p * w_p],
         Shape::from_dims(&[1, c, p, w_p]),
     );
-    z_h.concat(&x_wpad, 2).unwrap().concat(&z_h, 2).unwrap()
+    z_h.concat(&x_wpad, 2)?.concat(&z_h, 2)
 }
 
 /// YOLOv8 Bottleneck: `cv1(x) = cv(k=3) then cv(k=3)`; if
@@ -325,10 +325,10 @@ fn bottleneck(
     c: usize,
     h: usize,
     w: usize,
-) -> LazyTensor {
-    let y = cbs(x, &bw.cv1, c, c, 3, 1, 1, 1, h, w);
-    let y = cbs(&y, &bw.cv2, c, c, 3, 1, 1, 1, h, w);
-    if bw.add_residual { x.add(&y).unwrap() } else { y }
+) -> crate::Result<LazyTensor> {
+    let y = cbs(x, &bw.cv1, c, c, 3, 1, 1, 1, h, w)?;
+    let y = cbs(&y, &bw.cv2, c, c, 3, 1, 1, 1, h, w)?;
+    if bw.add_residual { x.add(&y) } else { Ok(y) }
 }
 
 /// C2f block. `cv1` expands to `2c`, splits along the channel axis
@@ -342,23 +342,23 @@ fn c2f(
     c_out: usize,
     h: usize,
     w: usize,
-) -> LazyTensor {
+) -> crate::Result<LazyTensor> {
     let c = cw.c_inner;  // = c_out / 2 in the standard YOLOv8 config
-    let expanded = cbs(x, &cw.cv1, c_in, 2 * c, 1, 1, 0, 1, h, w);
+    let expanded = cbs(x, &cw.cv1, c_in, 2 * c, 1, 1, 0, 1, h, w)?;
     // Split into halves along channel axis.
-    let a = expanded.slice(1, 0, c).unwrap();
-    let b = expanded.slice(1, c, c).unwrap();
+    let a = expanded.slice(1, 0, c)?;
+    let b = expanded.slice(1, c, c)?;
     // Run bottlenecks on `b`, accumulating each output.
     let mut parts: Vec<LazyTensor> = vec![a, b.clone()];
     let mut cur = b;
     for bn in &cw.bottlenecks {
-        cur = bottleneck(&cur, bn, c, h, w);
+        cur = bottleneck(&cur, bn, c, h, w)?;
         parts.push(cur.clone());
     }
     // Concat along channel axis: (2+n)*c channels.
     let mut stacked = parts[0].clone();
     for p in &parts[1..] {
-        stacked = stacked.concat(p, 1).unwrap();
+        stacked = stacked.concat(p, 1)?;
     }
     let merged_c = (2 + cw.bottlenecks.len()) * c;
     cbs(&stacked, &cw.cv2, merged_c, c_out, 1, 1, 0, 1, h, w)
@@ -374,23 +374,23 @@ fn sppf(
     c_out: usize,
     h: usize,
     w: usize,
-) -> LazyTensor {
+) -> crate::Result<LazyTensor> {
     let c_mid = c_in / 2;
-    let y0 = cbs(x, &sw.cv1, c_in, c_mid, 1, 1, 0, 1, h, w);
-    let y1 = max_pool_s1_composed(&y0, c_mid, h, w, 5, 2);
-    let y2 = max_pool_s1_composed(&y1, c_mid, h, w, 5, 2);
-    let y3 = max_pool_s1_composed(&y2, c_mid, h, w, 5, 2);
-    let cat = y0.concat(&y1, 1).unwrap().concat(&y2, 1).unwrap().concat(&y3, 1).unwrap();
+    let y0 = cbs(x, &sw.cv1, c_in, c_mid, 1, 1, 0, 1, h, w)?;
+    let y1 = max_pool_s1_composed(&y0, c_mid, h, w, 5, 2)?;
+    let y2 = max_pool_s1_composed(&y1, c_mid, h, w, 5, 2)?;
+    let y3 = max_pool_s1_composed(&y2, c_mid, h, w, 5, 2)?;
+    let cat = y0.concat(&y1, 1)?.concat(&y2, 1)?.concat(&y3, 1)?;
     cbs(&cat, &sw.cv2, 4 * c_mid, c_out, 1, 1, 0, 1, h, w)
 }
 
 /// 2× nearest-neighbor upsample along both spatial axes. `[1, C, H, W]`
 /// → `[1, C, 2H, 2W]`.
-fn upsample_nearest_2x(x: &LazyTensor, c: usize, h: usize, w: usize) -> LazyTensor {
-    let x6 = x.reshape(Shape::from_dims(&[1, c, h, 1, w, 1])).unwrap();
-    let x6 = x6.concat(&x6, 3).unwrap();
-    let x6 = x6.concat(&x6, 5).unwrap();
-    x6.reshape(Shape::from_dims(&[1, c, 2 * h, 2 * w])).unwrap()
+fn upsample_nearest_2x(x: &LazyTensor, c: usize, h: usize, w: usize) -> crate::Result<LazyTensor> {
+    let x6 = x.reshape(Shape::from_dims(&[1, c, h, 1, w, 1]))?;
+    let x6 = x6.concat(&x6, 3)?;
+    let x6 = x6.concat(&x6, 5)?;
+    x6.reshape(Shape::from_dims(&[1, c, 2 * h, 2 * w]))
 }
 
 /// Raw 1×1 or 3×3 conv with bias but **no BN and no activation**.
@@ -403,10 +403,10 @@ fn raw_conv(
     c_out: usize,
     k: usize,
     p: usize,
-) -> LazyTensor {
+) -> crate::Result<LazyTensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[c_out, c_in, k, k]));
     let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[c_out]));
-    x.conv2d(&w_t, Some(&b_t), (1, 1), (p, p), 1).unwrap()
+    x.conv2d(&w_t, Some(&b_t), (1, 1), (p, p), 1)
 }
 
 // ---- Detect head ----------------------------------------------------------
@@ -422,35 +422,35 @@ fn detect_branch(
     c_in: usize,
     h: usize,
     w: usize,
-) -> (LazyTensor, LazyTensor) {
+) -> crate::Result<(LazyTensor, LazyTensor)> {
     // Classification head.
-    let cls = cbs(x, &dw.cls_cv1, c_in, c_in, 3, 1, 1, 1, h, w);
-    let cls = cbs(&cls, &dw.cls_cv2, c_in, c_in, 3, 1, 1, 1, h, w);
-    let cls_logits = raw_conv(&cls, &dw.cls_out_w, &dw.cls_out_b, c_in, cfg.num_classes, 1, 0);
+    let cls = cbs(x, &dw.cls_cv1, c_in, c_in, 3, 1, 1, 1, h, w)?;
+    let cls = cbs(&cls, &dw.cls_cv2, c_in, c_in, 3, 1, 1, 1, h, w)?;
+    let cls_logits = raw_conv(&cls, &dw.cls_out_w, &dw.cls_out_b, c_in, cfg.num_classes, 1, 0)?;
     // Regression head.
-    let reg = cbs(x, &dw.reg_cv1, c_in, c_in, 3, 1, 1, 1, h, w);
-    let reg = cbs(&reg, &dw.reg_cv2, c_in, c_in, 3, 1, 1, 1, h, w);
-    let reg_logits = raw_conv(&reg, &dw.reg_out_w, &dw.reg_out_b, c_in, 4 * cfg.reg_max, 1, 0);
-    (cls_logits, reg_logits)
+    let reg = cbs(x, &dw.reg_cv1, c_in, c_in, 3, 1, 1, 1, h, w)?;
+    let reg = cbs(&reg, &dw.reg_cv2, c_in, c_in, 3, 1, 1, 1, h, w)?;
+    let reg_logits = raw_conv(&reg, &dw.reg_out_w, &dw.reg_out_b, c_in, 4 * cfg.reg_max, 1, 0)?;
+    Ok((cls_logits, reg_logits))
 }
 
 /// DFL decode: `reg_logits [1, 4*R, N]` → `[1, 4, N]` distances. Each
 /// coordinate's `R` bins are softmaxed then summed against `[0, 1, ...,
 /// R-1]` to produce the expectation.
-fn dfl_decode(reg_logits: &LazyTensor, reg_max: usize, n_anchors: usize) -> LazyTensor {
+fn dfl_decode(reg_logits: &LazyTensor, reg_max: usize, n_anchors: usize) -> crate::Result<LazyTensor> {
     // Reshape [1, 4*R, N] → [1, 4, R, N] → [1, 4, N, R] (R last).
     let r = reg_max;
-    let y = reg_logits.reshape(Shape::from_dims(&[1, 4, r, n_anchors])).unwrap();
-    let y = y.permute([0, 1, 3, 2_usize]).unwrap();  // [1, 4, N, R]
-    let probs = y.softmax_last_dim().unwrap();
+    let y = reg_logits.reshape(Shape::from_dims(&[1, 4, r, n_anchors]))?;
+    let y = y.permute([0, 1, 3, 2_usize])?;  // [1, 4, N, R]
+    let probs = y.softmax_last_dim()?;
     // Bin weights [0..R] as a const tensor broadcast to [1, 4, N, R].
     let bins: Vec<f32> = (0..r).map(|i| i as f32).collect();
     let bins_t = reg_logits
         .const_f32_like(bins, Shape::from_dims(&[r]))
-        .reshape(Shape::from_dims(&[1, 1, 1, r])).unwrap()
-        .broadcast_to(Shape::from_dims(&[1, 4, n_anchors, r])).unwrap();
-    let weighted = probs.mul(&bins_t).unwrap();
-    weighted.sum_dim(3).unwrap()  // [1, 4, N]
+        .reshape(Shape::from_dims(&[1, 1, 1, r]))?
+        .broadcast_to(Shape::from_dims(&[1, 4, n_anchors, r]))?;
+    let weighted = probs.mul(&bins_t)?;
+    weighted.sum_dim(3)  // [1, 4, N]
 }
 
 /// Result of a YOLOv8 forward pass, pre-NMS.
@@ -491,84 +491,84 @@ impl YoloV8Model {
 
         // --- Backbone ---
         let (h1, w1) = (isize / 2, isize / 2);
-        let x = cbs(&x, &self.weights.stem, 3, cfg.ch[0], 3, 2, 1, 1, h1, w1);
+        let x = cbs(&x, &self.weights.stem, 3, cfg.ch[0], 3, 2, 1, 1, h1, w1)?;
 
         let (h2, w2) = (isize / 4, isize / 4);
-        let x = cbs(&x, &self.weights.down_p2, cfg.ch[0], cfg.ch[1], 3, 2, 1, 1, h2, w2);
-        let x = c2f(&x, &self.weights.c2f_p2, cfg.ch[1], cfg.ch[1], h2, w2);
+        let x = cbs(&x, &self.weights.down_p2, cfg.ch[0], cfg.ch[1], 3, 2, 1, 1, h2, w2)?;
+        let x = c2f(&x, &self.weights.c2f_p2, cfg.ch[1], cfg.ch[1], h2, w2)?;
 
         let (h3, w3) = (isize / 8, isize / 8);
-        let x = cbs(&x, &self.weights.down_p3, cfg.ch[1], cfg.ch[2], 3, 2, 1, 1, h3, w3);
-        let p3 = c2f(&x, &self.weights.c2f_p3, cfg.ch[2], cfg.ch[2], h3, w3);
+        let x = cbs(&x, &self.weights.down_p3, cfg.ch[1], cfg.ch[2], 3, 2, 1, 1, h3, w3)?;
+        let p3 = c2f(&x, &self.weights.c2f_p3, cfg.ch[2], cfg.ch[2], h3, w3)?;
 
         let (h4, w4) = (isize / 16, isize / 16);
-        let x = cbs(&p3, &self.weights.down_p4, cfg.ch[2], cfg.ch[3], 3, 2, 1, 1, h4, w4);
-        let p4 = c2f(&x, &self.weights.c2f_p4, cfg.ch[3], cfg.ch[3], h4, w4);
+        let x = cbs(&p3, &self.weights.down_p4, cfg.ch[2], cfg.ch[3], 3, 2, 1, 1, h4, w4)?;
+        let p4 = c2f(&x, &self.weights.c2f_p4, cfg.ch[3], cfg.ch[3], h4, w4)?;
 
         let (h5, w5) = (isize / 32, isize / 32);
-        let x = cbs(&p4, &self.weights.down_p5, cfg.ch[3], cfg.ch[4], 3, 2, 1, 1, h5, w5);
-        let x = c2f(&x, &self.weights.c2f_p5, cfg.ch[4], cfg.ch[4], h5, w5);
-        let p5 = sppf(&x, &self.weights.sppf, cfg.ch[4], cfg.ch[4], h5, w5);
+        let x = cbs(&p4, &self.weights.down_p5, cfg.ch[3], cfg.ch[4], 3, 2, 1, 1, h5, w5)?;
+        let x = c2f(&x, &self.weights.c2f_p5, cfg.ch[4], cfg.ch[4], h5, w5)?;
+        let p5 = sppf(&x, &self.weights.sppf, cfg.ch[4], cfg.ch[4], h5, w5)?;
 
         // --- Neck: top-down (P5 -> P4 -> P3) ---
-        let up_p5 = upsample_nearest_2x(&p5, cfg.ch[4], h5, w5);  // [1, ch[4], h4, w4]
-        let cat_p4 = up_p5.concat(&p4, 1).unwrap();                         // [1, ch[4]+ch[3], h4, w4]
+        let up_p5 = upsample_nearest_2x(&p5, cfg.ch[4], h5, w5)?;  // [1, ch[4], h4, w4]
+        let cat_p4 = up_p5.concat(&p4, 1)?;                         // [1, ch[4]+ch[3], h4, w4]
         let n_up_p4 = c2f(
             &cat_p4, &self.weights.neck_up_p4,
             cfg.ch[4] + cfg.ch[3], cfg.ch[3], h4, w4,
-        );
+        )?;
 
-        let up_p4 = upsample_nearest_2x(&n_up_p4, cfg.ch[3], h4, w4);
-        let cat_p3 = up_p4.concat(&p3, 1).unwrap();                         // [1, ch[3]+ch[2], h3, w3]
+        let up_p4 = upsample_nearest_2x(&n_up_p4, cfg.ch[3], h4, w4)?;
+        let cat_p3 = up_p4.concat(&p3, 1)?;                         // [1, ch[3]+ch[2], h3, w3]
         let n_up_p3 = c2f(
             &cat_p3, &self.weights.neck_up_p3,
             cfg.ch[3] + cfg.ch[2], cfg.ch[2], h3, w3,
-        );  // this feeds the P3 detect
+        )?;  // this feeds the P3 detect
 
         // --- Neck: bottom-up (P3 -> P4 -> P5) ---
         let down_p4 = cbs(
             &n_up_p3, &self.weights.neck_down_p4,
             cfg.ch[2], cfg.ch[2], 3, 2, 1, 1, h4, w4,
-        );
-        let cat_d_p4 = down_p4.concat(&n_up_p4, 1).unwrap();                // [1, ch[2]+ch[3], h4, w4]
+        )?;
+        let cat_d_p4 = down_p4.concat(&n_up_p4, 1)?;                // [1, ch[2]+ch[3], h4, w4]
         let n_out_p4 = c2f(
             &cat_d_p4, &self.weights.neck_out_p4,
             cfg.ch[2] + cfg.ch[3], cfg.ch[3], h4, w4,
-        );  // feeds the P4 detect
+        )?;  // feeds the P4 detect
 
         let down_p5 = cbs(
             &n_out_p4, &self.weights.neck_down_p5,
             cfg.ch[3], cfg.ch[3], 3, 2, 1, 1, h5, w5,
-        );
-        let cat_d_p5 = down_p5.concat(&p5, 1).unwrap();                     // [1, ch[3]+ch[4], h5, w5]
+        )?;
+        let cat_d_p5 = down_p5.concat(&p5, 1)?;                     // [1, ch[3]+ch[4], h5, w5]
         let n_out_p5 = c2f(
             &cat_d_p5, &self.weights.neck_out_p5,
             cfg.ch[3] + cfg.ch[4], cfg.ch[4], h5, w5,
-        );  // feeds the P5 detect
+        )?;  // feeds the P5 detect
 
         // --- Detect head (3 scales) ---
-        let (cls_s, reg_s) = detect_branch(&n_up_p3, &self.weights.detect_s, cfg, cfg.ch[2], h3, w3);
-        let (cls_m, reg_m) = detect_branch(&n_out_p4, &self.weights.detect_m, cfg, cfg.ch[3], h4, w4);
-        let (cls_l, reg_l) = detect_branch(&n_out_p5, &self.weights.detect_l, cfg, cfg.ch[4], h5, w5);
+        let (cls_s, reg_s) = detect_branch(&n_up_p3, &self.weights.detect_s, cfg, cfg.ch[2], h3, w3)?;
+        let (cls_m, reg_m) = detect_branch(&n_out_p4, &self.weights.detect_m, cfg, cfg.ch[3], h4, w4)?;
+        let (cls_l, reg_l) = detect_branch(&n_out_p5, &self.weights.detect_l, cfg, cfg.ch[4], h5, w5)?;
 
         // Flatten each (H, W) into N positions then concat along the
         // position axis.
-        let flatten_positions = |t: &LazyTensor, c: usize, h: usize, w: usize| -> LazyTensor {
-            t.reshape(Shape::from_dims(&[1, c, h * w])).unwrap()
+        let flatten_positions = |t: &LazyTensor, c: usize, h: usize, w: usize| -> crate::Result<LazyTensor> {
+            t.reshape(Shape::from_dims(&[1, c, h * w]))
         };
-        let cls_s_f = flatten_positions(&cls_s, cfg.num_classes, h3, w3);
-        let cls_m_f = flatten_positions(&cls_m, cfg.num_classes, h4, w4);
-        let cls_l_f = flatten_positions(&cls_l, cfg.num_classes, h5, w5);
-        let cls_cat = cls_s_f.concat(&cls_m_f, 2).unwrap().concat(&cls_l_f, 2).unwrap();  // [1, nc, N]
+        let cls_s_f = flatten_positions(&cls_s, cfg.num_classes, h3, w3)?;
+        let cls_m_f = flatten_positions(&cls_m, cfg.num_classes, h4, w4)?;
+        let cls_l_f = flatten_positions(&cls_l, cfg.num_classes, h5, w5)?;
+        let cls_cat = cls_s_f.concat(&cls_m_f, 2)?.concat(&cls_l_f, 2)?;  // [1, nc, N]
 
         let reg_ch = 4 * cfg.reg_max;
-        let reg_s_f = flatten_positions(&reg_s, reg_ch, h3, w3);
-        let reg_m_f = flatten_positions(&reg_m, reg_ch, h4, w4);
-        let reg_l_f = flatten_positions(&reg_l, reg_ch, h5, w5);
-        let reg_cat = reg_s_f.concat(&reg_m_f, 2).unwrap().concat(&reg_l_f, 2).unwrap();  // [1, 4*R, N]
+        let reg_s_f = flatten_positions(&reg_s, reg_ch, h3, w3)?;
+        let reg_m_f = flatten_positions(&reg_m, reg_ch, h4, w4)?;
+        let reg_l_f = flatten_positions(&reg_l, reg_ch, h5, w5)?;
+        let reg_cat = reg_s_f.concat(&reg_m_f, 2)?.concat(&reg_l_f, 2)?;  // [1, 4*R, N]
 
         let n_total = h3 * w3 + h4 * w4 + h5 * w5;
-        let reg_dists = dfl_decode(&reg_cat, cfg.reg_max, n_total);     // [1, 4, N]
+        let reg_dists = dfl_decode(&reg_cat, cfg.reg_max, n_total)?;     // [1, 4, N]
 
         // Precompute anchor grid (cx, cy in grid-cell coords) and strides.
         let mut grid_xy = Vec::with_capacity(2 * n_total);
