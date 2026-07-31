@@ -351,6 +351,28 @@ prevent, one layer up. **Open item: run that calibration when the second backend
 then `normal_f32` has no numeric conformance bound**, and that absence is deliberate and stated
 rather than papered over with a plausible constant.
 
+**How to test an op that has no tolerance yet** (kiss-ref). "Test structure, not a number" is
+easy to state and non-obvious to do. Three assertions cover `normal_f32` without any calibrated
+constant:
+
+1. **The reflection.** `box_muller(u1 = 0.0, _) == 0.0` exactly, since
+   `r = sqrt(-2·ln(1)) = 0`. A missing `1.0 - u1` turns this specific case into `NaN`, so the
+   one input most likely to be mishandled is also the one with an exact expected answer.
+2. **The Pythagorean identity — the clever one.**
+   `z_even² + z_odd² == r² == -2·ln(1 - u1)`. The pair shares one radius and differ only by
+   `cos` vs `sin`, so their squares must sum to `r²` regardless of the angle. This catches a
+   **cos/sin swap, a wrong-pair mapping, or a mis-derived radius — while asserting no absolute
+   value at all.** It is a relation among outputs rather than a comparison against a golden, so
+   it needs no ULP budget and survives any backend's transcendental differences.
+3. **Position-purity.** Element *i* is a pure function of *i*: recomputing any element in
+   isolation reproduces it.
+
+The general move is the same one behind §10's increment-coherence vector: **a structural
+assertion tests the property a design was built on, and therefore needs no oracle**, where a
+value assertion needs one. For an op that is deliberately tolerance-free until calibration, that
+is the only kind of test available — and it turns out to be the more diagnostic kind anyway,
+since a failure names the broken invariant rather than an index.
+
 ## 9. Position-pure ops — a class invariant
 
 The invariant has **two layers**, because the class has two kinds of member (KISS steward). An
