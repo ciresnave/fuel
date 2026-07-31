@@ -69,17 +69,24 @@ The correctness gate is flag-toggled and runs BOTH arms in one process:
 
 ---
 
-### Task 4 — Runtime flag + teeth-bearing correctness gate
+### Task 4 — Runtime flag + teeth-bearing correctness gate — **COMPLETE**
 
 **Files:** Modify `lazy.rs`/`inference_context.rs` (flag on the persistent path + a plan-HIT counter on the session). Test: `lazy.rs` tests.
 
 **Why:** the gate is the deliverable that makes the win trustworthy. Flag toggles plan-once vs re-planning in ONE process.
 
-- [ ] `plan_once_paged_matches_replanning_with_hit_asserted` — decode N tokens (crossing a block boundary) both arms in one process off one setup; assert plan-once arm output == re-planning arm output byte-for-byte AND the plan-once session reports a HIT on every step after the first AND the control arm reports a MISS every step.
-- [ ] Mutation check `plan_once_gate_has_teeth` — force the plan-once cache to always-miss → assert the HIT assertion fails (gate goes red). Force the control to always-hit → assert the MISS assertion fails.
-- [ ] `plan_once_paged_ragged_matches_replanning` — staggered positions {2,5,3} (the 4c2e9407 batched path once Task 3-batched lands; single-session staggered histories otherwise), same HIT/identity asserts.
-- [ ] Audit: check whether the contiguous D2/D3 tests (`*_persistent_byte_exact_and_plans_once`) carry the plan-HIT assertion; if not, note it (latent same-shaped hole) — fix-at-source is a separate small commit.
-- [ ] Commit `test(paged-decode): flag-gated plan-once correctness gate w/ HIT+MISS guards + mutation check`.
+**Shipped design:**
+- **Flag** = `PagedDecodePlan { Replan, PlanOnce }` (inference_context.rs), a new param to `forward_paged_step_persistent`. `Replan` (the driver default, off) drops any held session and delegates to `forward_paged_step` — the exact production toggle Task 5 wires, and safe across a flip (no stale session lingers). `PlanOnce` builds-once / rebinds.
+- **Plan-HIT counter** = `PagedDecodeSession.realize_count: AtomicUsize`, bumped in `realize_token` (the rebind seam; the build realizes via prebuild, NOT `realize_token`, so it stays 0 after build and +1 per reuse). DEVICE-INDEPENDENT — unlike the `optimize_calls_thread_local` delta, which is CPU-scoped (GPU per-token uploads bump it). The gate asserts BOTH per step.
+- **Teeth via a non-panicking checker:** the invariants live in `check_paged_gate(&report) -> Result<(),String>`; the primary test `unwrap`s it (relies on those exact checks), the mutation test asserts the SAME checker goes `Err` under a flipped flag — no `catch_unwind`/global-panic-hook fiddling under the concurrent suite.
+
+- [x] `plan_once_paged_matches_replanning_with_hit_asserted` — decodes 4 tokens crossing a block boundary, plan-once (A) vs `Replan` control (B) in one process off identical primed pools; asserts byte-identity + HIT (`opt_delta_a==0` **exactly** AND one session rebind, every step after the first) + control MISS (`opt_delta_b>=1` every step). Per-step exact-zero HIT is strictly stronger than the contiguous `==2` aggregate.
+- [x] Mutation check `plan_once_gate_has_teeth` — flips arm A to `Replan` (force always-miss → HIT invariant breaks) and arm B to `PlanOnce` (force always-hit → MISS invariant breaks); asserts the shared `check_paged_gate` returns `Err` for each. **Sabotage-calibrated:** confirmed with recompilation that a toothless `check_paged_gate` (forced `Ok`) makes THIS test fail (the primary passes vacuously — so the teeth test is what actually guards the checker).
+- [x] `plan_once_paged_ragged_matches_replanning` — single-session (B=1) staggered histories {2,5,3} → different absolute positions / block-slot phases (mid-block, boundary-adjacent) the lockstep primary gate can't reach; each satisfies the full gate. (Batched-ragged persistent is a Task-3-batched follow-on.)
+- [x] Audit — **FINDING: no hole.** The contiguous `generate_loop_persistent_byte_exact_and_plans_once` (lazy.rs) already carries the plan-HIT assertion in the **exact-delta** form (`opt_after - opt_before == 2`, i.e. 1 prefill-fallback + 1 decode-build, NOT `<= N`); the Phi/DeepSeek twins mirror it. So there is no latent `<=N` weakness to fix; the paged gate matches that exact-delta rigor (and tightens it to per-step).
+- [x] Commit `test(paged-decode): flag-gated plan-once correctness gate w/ HIT+MISS guards + mutation check`.
+
+**Verification:** the 3 new tests + Task 3's `plan_once_second_token_reuses_graph` all green; full `paged/persistent/kv_block_pool` regression **48 passed / 0 failed** (2 live-GPU ignored). CPU f32.
 
 ---
 
