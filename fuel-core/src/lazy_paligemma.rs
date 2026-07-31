@@ -101,7 +101,7 @@ impl PaligemmaModel {
             &image_features,
             v_cfg.hidden_size,
             cfg.projection_dim,
-        );
+        )?;
         let bias_t = pixel_values.const_f32_like(
             Arc::clone(&self.weights.mm_proj_bias),
             Shape::from_dims(&[cfg.projection_dim]),
@@ -174,7 +174,7 @@ impl PaligemmaModel {
             &image_features,
             v_cfg.hidden_size,
             cfg.projection_dim,
-        );
+        )?;
         let bias_t = pixel_values.const_f32_like(
             Arc::clone(&self.weights.mm_proj_bias),
             Shape::from_dims(&[cfg.projection_dim]),

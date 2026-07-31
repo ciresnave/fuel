@@ -182,7 +182,7 @@ impl MptModel {
 
     fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
-        Ok(self.weights.output.apply_linear(h_norm, cfg.d_model, cfg.vocab_size))
+        Ok(self.weights.output.apply_linear(h_norm, cfg.d_model, cfg.vocab_size)?)
     }
 
     fn run_backbone(&self, tokens: &[u32]) -> Result<LazyTensor> {
@@ -260,9 +260,9 @@ impl MptModel {
         let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&layer.norm1_gain), std::sync::Arc::clone(&layer.norm1_bias), cfg.layer_norm_eps)?;
 
         // Bias-free Q/K/V.
-        let q = layer.attn_q.apply_linear(&x_norm, cfg.d_model, cfg.d_model);
-        let k = layer.attn_k.apply_linear(&x_norm, cfg.d_model, kv_dim);
-        let v = layer.attn_v.apply_linear(&x_norm, cfg.d_model, kv_dim);
+        let q = layer.attn_q.apply_linear(&x_norm, cfg.d_model, cfg.d_model)?;
+        let k = layer.attn_k.apply_linear(&x_norm, cfg.d_model, kv_dim)?;
+        let v = layer.attn_v.apply_linear(&x_norm, cfg.d_model, kv_dim)?;
 
         let q = q.split_heads(cfg.n_heads, head_dim)?;
         let k = k.split_heads(cfg.kv_n_heads, head_dim)?;
@@ -285,14 +285,14 @@ impl MptModel {
         let attn_v = attn.matmul(&v_full)?;
 
         let merged = attn_v.merge_heads()?;
-        let attn_out = layer.attn_o.apply_linear(&merged, cfg.d_model, cfg.d_model);
+        let attn_out = layer.attn_o.apply_linear(&merged, cfg.d_model, cfg.d_model)?;
 
         let h1 = x.add(&attn_out)?;
         let h1_norm = h1.layer_norm_affine(std::sync::Arc::clone(&layer.norm2_gain), std::sync::Arc::clone(&layer.norm2_bias), cfg.layer_norm_eps)?;
 
-        let mid = layer.mlp_up.apply_linear(&h1_norm, cfg.d_model, cfg.ffn_dim());
+        let mid = layer.mlp_up.apply_linear(&h1_norm, cfg.d_model, cfg.ffn_dim())?;
         let mid_act = mid.gelu_erf();
-        let ffn_out = layer.mlp_down.apply_linear(&mid_act, cfg.ffn_dim(), cfg.d_model);
+        let ffn_out = layer.mlp_down.apply_linear(&mid_act, cfg.ffn_dim(), cfg.d_model)?;
         h1.add(&ffn_out)
     }
 }

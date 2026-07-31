@@ -222,7 +222,7 @@ impl EfficientVitModel {
                 let bn_out = apply_bn(&reshaped, bn, c)?;
                 let flat = bn_out.reshape(Shape::from_dims(&[1, c]))?;
                 let n_out = lin_b.len();
-                let logits = lin_w.apply_linear(&flat, c, n_out);
+                let logits = lin_w.apply_linear(&flat, c, n_out)?;
                 let bias = image.const_f32_like(
                     Arc::clone(lin_b), Shape::from_dims(&[n_out]),
                 );

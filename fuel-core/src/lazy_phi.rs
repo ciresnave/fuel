@@ -177,7 +177,7 @@ impl PhiModel {
             ),
             None => Ok(weights.lm_head.apply_linear(
                 h_norm, cfg.hidden_size, cfg.vocab_size,
-            )),
+            )?),
         }
     }
 

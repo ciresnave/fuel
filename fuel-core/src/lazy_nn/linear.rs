@@ -95,7 +95,7 @@ impl LazyLinear {
 
 impl LazyModule for LazyLinear {
     fn forward(&self, xs: &LazyTensor) -> Result<LazyTensor> {
-        let y = self.weight.apply_linear(xs, self.in_features, self.out_features);
+        let y = self.weight.apply_linear(xs, self.in_features, self.out_features)?;
         match &self.bias {
             Some(b) => {
                 let bias_t = y.const_f32_like(
@@ -303,7 +303,7 @@ mod tests {
             x_data, Shape::from_dims(&[seq, in_features]), &Device::cpu(),
         );
         let direct = weight
-            .apply_linear(&x2, in_features, out_features)
+            .apply_linear(&x2, in_features, out_features).unwrap()
             .realize_f32();
 
         assert_eq!(got.len(), expected.len());

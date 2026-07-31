@@ -220,7 +220,7 @@ impl VitModel {
                     .slice(1_usize, 0, 1)?
                     .reshape(Shape::from_dims(&[batch, cfg.hidden_size]))?;
                 let num_labels = cls_b.len();
-                let logits = cls_w.apply_linear(&cls, cfg.hidden_size, num_labels);
+                let logits = cls_w.apply_linear(&cls, cfg.hidden_size, num_labels)?;
                 let bias_t = h_norm.const_f32_like(
                     Arc::clone(cls_b),
                     Shape::from_dims(&[num_labels]),
@@ -329,9 +329,9 @@ impl VitModel {
         let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&layer.ln_before_gain), std::sync::Arc::clone(&layer.ln_before_bias), cfg.layer_norm_eps)?;
 
         // Q/K/V projections with optional biases.
-        let q = layer.q_proj.apply_linear(&x_norm, h, h).add_optional_trailing_bias(layer.q_proj_bias.as_ref())?;
-        let k = layer.k_proj.apply_linear(&x_norm, h, h).add_optional_trailing_bias(layer.k_proj_bias.as_ref())?;
-        let v = layer.v_proj.apply_linear(&x_norm, h, h).add_optional_trailing_bias(layer.v_proj_bias.as_ref())?;
+        let q = layer.q_proj.apply_linear(&x_norm, h, h)?.add_optional_trailing_bias(layer.q_proj_bias.as_ref())?;
+        let k = layer.k_proj.apply_linear(&x_norm, h, h)?.add_optional_trailing_bias(layer.k_proj_bias.as_ref())?;
+        let v = layer.v_proj.apply_linear(&x_norm, h, h)?.add_optional_trailing_bias(layer.v_proj_bias.as_ref())?;
 
         let _ = (batch, seq);
         let q = q.split_heads(n_heads, head_dim)?;
@@ -347,7 +347,7 @@ impl VitModel {
         let merged = ctx.merge_heads()?;
 
         // SelfOutput: dense projection only (no normalisation here in HF).
-        let attn_out = layer.attn_output_proj.apply_linear(&merged, h, h);
+        let attn_out = layer.attn_output_proj.apply_linear(&merged, h, h)?;
         let attn_out_bias_t = x.const_f32_like(
             Arc::clone(&layer.attn_output_proj_bias),
             Shape::from_dims(&[h]),
@@ -360,7 +360,7 @@ impl VitModel {
         let h1_norm = h1.layer_norm_affine(std::sync::Arc::clone(&layer.ln_after_gain), std::sync::Arc::clone(&layer.ln_after_bias), cfg.layer_norm_eps)?;
 
         // Intermediate: linear + activation.
-        let inter_proj = layer.intermediate_proj.apply_linear(&h1_norm, h, cfg.intermediate_size);
+        let inter_proj = layer.intermediate_proj.apply_linear(&h1_norm, h, cfg.intermediate_size)?;
         let inter_bias_t = x.const_f32_like(
             Arc::clone(&layer.intermediate_proj_bias),
             Shape::from_dims(&[cfg.intermediate_size]),
@@ -374,7 +374,7 @@ impl VitModel {
         };
 
         // Output: linear + residual.
-        let mlp_out = layer.mlp_output_proj.apply_linear(&activated, cfg.intermediate_size, h);
+        let mlp_out = layer.mlp_output_proj.apply_linear(&activated, cfg.intermediate_size, h)?;
         let mlp_bias_t = x.const_f32_like(
             Arc::clone(&layer.mlp_output_proj_bias),
             Shape::from_dims(&[h]),

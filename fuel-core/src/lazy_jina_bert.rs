@@ -338,11 +338,11 @@ impl JinaBertModel {
         let head_dim = cfg.head_dim();
 
         // ---- Self-attention (separate Q/K/V) ------------------------------
-        let q = layer.q.apply_linear(x, h, h);
+        let q = layer.q.apply_linear(x, h, h)?;
         let q = q.add_trailing_bias(std::sync::Arc::clone(&layer.q_bias))?;
-        let k = layer.k.apply_linear(x, h, h);
+        let k = layer.k.apply_linear(x, h, h)?;
         let k = k.add_trailing_bias(std::sync::Arc::clone(&layer.k_bias))?;
-        let v = layer.v.apply_linear(x, h, h);
+        let v = layer.v.apply_linear(x, h, h)?;
         let v = v.add_trailing_bias(std::sync::Arc::clone(&layer.v_bias))?;
 
         let _ = (batch, seq);
@@ -356,7 +356,7 @@ impl JinaBertModel {
         let probs = scores.softmax_last_dim()?;
         let ctx = probs.matmul(&v)?;
         let merged = ctx.merge_heads()?;
-        let attn_out = layer.attn_out.apply_linear(&merged, h, h);
+        let attn_out = layer.attn_out.apply_linear(&merged, h, h)?;
         let attn_out = attn_out.add_trailing_bias(std::sync::Arc::clone(&layer.attn_out_bias))?;
 
         // Post-LN attention residual: LN(x + attn).
@@ -364,7 +364,7 @@ impl JinaBertModel {
 
         // ---- GeGLU MLP -----------------------------------------------------
         let i = cfg.intermediate_size;
-        let up = layer.gated_layers.apply_linear(&h1, h, 2 * i);
+        let up = layer.gated_layers.apply_linear(&h1, h, 2 * i)?;
         let gate = up.slice(2_usize, 0, i)?;
         let value = up.slice(2_usize, i, i)?;
         let gated = match cfg.hidden_activation {
@@ -374,7 +374,7 @@ impl JinaBertModel {
             JinaActivation::Silu => gate.silu(),
         };
         let inner = gated.mul(&value)?;
-        let down = layer.mlp_wo.apply_linear(&inner, i, h);
+        let down = layer.mlp_wo.apply_linear(&inner, i, h)?;
         let down = down.add_trailing_bias(std::sync::Arc::clone(&layer.mlp_wo_bias))?;
 
         // Post-LN MLP residual: LN(h1 + mlp).

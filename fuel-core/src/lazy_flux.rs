@@ -122,7 +122,7 @@ pub struct FluxLinear {
 
 impl FluxLinear {
     fn apply(&self, x: &LazyTensor) -> Result<LazyTensor> {
-        let y = self.weight.apply_linear(x, self.in_features, self.out_features);
+        let y = self.weight.apply_linear(x, self.in_features, self.out_features)?;
         match &self.bias {
             Some(b) => Ok(y.add_trailing_bias(Arc::clone(b))?),
             None => Ok(y),

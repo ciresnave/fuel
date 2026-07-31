@@ -147,7 +147,7 @@ impl GemmaModel {
 
         // Final offset RmsNorm + lm_head.
         let h_norm = h.rms_norm_affine_with_offset(&weights.final_norm_gain, 1.0, cfg.rms_norm_eps)?;
-        Ok(weights.output.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size))
+        Ok(weights.output.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 
     /// Run the decoder forward up to the final offset RmsNorm
@@ -213,9 +213,9 @@ impl GemmaModel {
         let x_norm = x.rms_norm_affine_with_offset(&layer.attn_norm_gain, 1.0, cfg.rms_norm_eps)?;
 
         // Q / K / V — biases are honored when the config flag is on.
-        let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size).add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
-        let k = layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim).add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
-        let v = layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim).add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
+        let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size)?.add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
+        let k = layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
+        let v = layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
 
         let _ = (batch, seq);
         let q = q.split_heads(cfg.num_attention_heads, cfg.head_dim)?;
@@ -247,7 +247,7 @@ impl GemmaModel {
         let attn_v = attn.matmul(&v_full)?;
 
         let merged = attn_v.merge_heads()?;
-        let attn_out = layer.attn_o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size).add_optional_trailing_bias(// LayerWeights doesn't carry an explicit attn_o_bias; reuse
+        let attn_out = layer.attn_o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?.add_optional_trailing_bias(// LayerWeights doesn't carry an explicit attn_o_bias; reuse
             // attn_q_bias's None branch by passing None here. Gemma's
             // o_proj bias support would need a LayerWeights extension if
             // a checkpoint requires it (rare).
@@ -258,14 +258,14 @@ impl GemmaModel {
         let h1_norm = h1.rms_norm_affine_with_offset(&layer.ffn_norm_gain, 1.0, cfg.rms_norm_eps)?;
 
         // GELU gated FFN: `down(gelu(gate) * up)`.
-        let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size);
-        let up = layer.ffn_up.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size);
+        let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let up = layer.ffn_up.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
         let activated_gate = match cfg.hidden_activation {
             GemmaActivation::Gelu => gate.gelu_erf(),
             GemmaActivation::GeluPytorchTanh => gate.gelu(),
         };
         let ffn_in = activated_gate.mul(&up)?;
-        let ffn_out = layer.ffn_down.apply_linear(&ffn_in, cfg.intermediate_size, cfg.hidden_size);
+        let ffn_out = layer.ffn_down.apply_linear(&ffn_in, cfg.intermediate_size, cfg.hidden_size)?;
 
         h1.add(&ffn_out)
     }

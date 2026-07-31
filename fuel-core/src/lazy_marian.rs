@@ -190,7 +190,7 @@ impl MarianModel {
 
         let lm_head = WeightStorage::F32(self.weights.shared_embedding.clone());
         let target_vocab = cfg.target_vocab_size();
-        let logits = lm_head.apply_linear(&dec_out, cfg.d_model, target_vocab);
+        let logits = lm_head.apply_linear(&dec_out, cfg.d_model, target_vocab)?;
         let bias_t = dec_out.const_f32_like(
             Arc::clone(&self.weights.final_logits_bias),
             Shape::from_dims(&[target_vocab]),
@@ -262,7 +262,7 @@ impl MarianModel {
 
         let lm_head = WeightStorage::F32(self.weights.shared_embedding.clone());
         let target_vocab = cfg.target_vocab_size();
-        let logits = lm_head.apply_linear(&dec_out, cfg.d_model, target_vocab);
+        let logits = lm_head.apply_linear(&dec_out, cfg.d_model, target_vocab)?;
         let bias_t = enc_out.const_f32_like(
             Arc::clone(&self.weights.final_logits_bias),
             Shape::from_dims(&[target_vocab]),
@@ -339,7 +339,7 @@ impl MarianModel {
 
         let lm_head = WeightStorage::F32(self.weights.shared_embedding.clone());
         let target_vocab = cfg.target_vocab_size();
-        let logits = lm_head.apply_linear(&dec_out, cfg.d_model, target_vocab);
+        let logits = lm_head.apply_linear(&dec_out, cfg.d_model, target_vocab)?;
         let bias_t = enc_out.const_f32_like(
             Arc::clone(&self.weights.final_logits_bias),
             Shape::from_dims(&[target_vocab]),
@@ -537,15 +537,15 @@ impl MarianModel {
 
         let scaling = (head_dim as f64).powf(-0.5);
         let q = add_bias_3d(
-            w.q_proj.apply_linear(q_src, d_model, d_model),
+            w.q_proj.apply_linear(q_src, d_model, d_model)?,
             &w.q_proj_bias, d_model,
         )?.mul_scalar(scaling);
         let k = add_bias_3d(
-            w.k_proj.apply_linear(kv_src, d_model, d_model),
+            w.k_proj.apply_linear(kv_src, d_model, d_model)?,
             &w.k_proj_bias, d_model,
         )?;
         let v = add_bias_3d(
-            w.v_proj.apply_linear(kv_src, d_model, d_model),
+            w.v_proj.apply_linear(kv_src, d_model, d_model)?,
             &w.v_proj_bias, d_model,
         )?;
 
@@ -563,7 +563,7 @@ impl MarianModel {
         let probs = scores.softmax_last_dim()?;
         let ctx = probs.matmul(&v)?;
         let merged = ctx.merge_heads()?;
-        let out = w.out_proj.apply_linear(&merged, d_model, d_model);
+        let out = w.out_proj.apply_linear(&merged, d_model, d_model)?;
         add_bias_3d(out, &w.out_proj_bias, d_model)
     }
 
@@ -576,7 +576,7 @@ impl MarianModel {
     ) -> Result<LazyTensor> {
         let cfg = &self.config;
         let fc1 = add_bias_3d(
-            fc1_w.apply_linear(x, cfg.d_model, ffn_dim),
+            fc1_w.apply_linear(x, cfg.d_model, ffn_dim)?,
             fc1_b, ffn_dim,
         )?;
         let activated = match cfg.activation_function {
@@ -586,7 +586,7 @@ impl MarianModel {
             MarianActivation::GeluPytorchTanh => fc1.gelu(),
         };
         let fc2 = add_bias_3d(
-            fc2_w.apply_linear(&activated, ffn_dim, cfg.d_model),
+            fc2_w.apply_linear(&activated, ffn_dim, cfg.d_model)?,
             fc2_b, cfg.d_model,
         )?;
         Ok(fc2)

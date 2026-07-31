@@ -507,7 +507,7 @@ impl ClipModel {
         let pooled = v_model.forward(pixel_values)?;
         Ok(self.weights.visual_projection.apply_linear(
             &pooled, self.vision_config.embed_dim, self.vision_config.projection_dim,
-        ))
+        )?)
     }
 
     /// Encode a single token sequence at `eos_pos` (pooled) and
@@ -520,7 +520,7 @@ impl ClipModel {
         let pooled = t_model.pool_eos(tokens, eos_pos)?;
         Ok(self.weights.text_projection.apply_linear(
             &pooled, self.text_config.embed_dim, self.text_config.projection_dim,
-        ))
+        )?)
     }
 }
 
@@ -544,11 +544,11 @@ fn apply_clip_layer(
     let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&layer.ln1_gain), std::sync::Arc::clone(&layer.ln1_bias), 1e-5)?;
 
     // Q, K, V projections with biases.
-    let q = layer.q_proj.apply_linear(&x_norm, h, h);
+    let q = layer.q_proj.apply_linear(&x_norm, h, h)?;
     let q = q.add_trailing_bias(std::sync::Arc::clone(&layer.q_proj_bias))?;
-    let k = layer.k_proj.apply_linear(&x_norm, h, h);
+    let k = layer.k_proj.apply_linear(&x_norm, h, h)?;
     let k = k.add_trailing_bias(std::sync::Arc::clone(&layer.k_proj_bias))?;
-    let v = layer.v_proj.apply_linear(&x_norm, h, h);
+    let v = layer.v_proj.apply_linear(&x_norm, h, h)?;
     let v = v.add_trailing_bias(std::sync::Arc::clone(&layer.v_proj_bias))?;
 
     let _ = (batch, seq);
@@ -567,17 +567,17 @@ fn apply_clip_layer(
     let probs = scores_masked.softmax_last_dim()?;
     let ctx = probs.matmul(&v)?;
     let merged = ctx.merge_heads()?;
-    let attn_out = layer.out_proj.apply_linear(&merged, h, h);
+    let attn_out = layer.out_proj.apply_linear(&merged, h, h)?;
     let attn_out = attn_out.add_trailing_bias(std::sync::Arc::clone(&layer.out_proj_bias))?;
     let h1 = x.add(&attn_out)?;
 
     // Pre-LN before MLP.
     let h1_norm = h1.layer_norm_affine(std::sync::Arc::clone(&layer.ln2_gain), std::sync::Arc::clone(&layer.ln2_bias), 1e-5)?;
 
-    let inter = layer.fc1.apply_linear(&h1_norm, h, layer.fc1_bias.len());
+    let inter = layer.fc1.apply_linear(&h1_norm, h, layer.fc1_bias.len())?;
     let inter = inter.add_trailing_bias(std::sync::Arc::clone(&layer.fc1_bias))?;
     let activated = quick_gelu(&inter);
-    let mlp_out = layer.fc2.apply_linear(&activated, layer.fc1_bias.len(), h);
+    let mlp_out = layer.fc2.apply_linear(&activated, layer.fc1_bias.len(), h)?;
     let mlp_out = mlp_out.add_trailing_bias(std::sync::Arc::clone(&layer.fc2_bias))?;
     h1.add(&mlp_out)
 }

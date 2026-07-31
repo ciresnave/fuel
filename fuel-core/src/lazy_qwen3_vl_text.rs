@@ -160,7 +160,7 @@ impl Qwen3VlTextModel {
         Ok(self
             .weights
             .output
-            .apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size))
+            .apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 
     fn run_backbone(
@@ -320,15 +320,15 @@ impl Qwen3VlTextModel {
 
         let q = layer
             .attn_q
-            .apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size)
+            .apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size)?
             .add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
         let k = layer
             .attn_k
-            .apply_linear(&x_norm, cfg.hidden_size, kv_dim)
+            .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
             .add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
         let v = layer
             .attn_v
-            .apply_linear(&x_norm, cfg.hidden_size, kv_dim)
+            .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
             .add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
 
         let q = q.split_heads(cfg.num_attention_heads, cfg.head_dim)?;
@@ -364,7 +364,7 @@ impl Qwen3VlTextModel {
         let attn_out =
             layer
                 .attn_o
-                .apply_linear(&merged, cfg.hidden_size, cfg.hidden_size);
+                .apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?;
 
         let h1 = x.add(&attn_out)?;
         let h1_norm = h1.rms_norm_affine(
@@ -373,15 +373,15 @@ impl Qwen3VlTextModel {
         )?;
         let gate = layer
             .ffn_gate
-            .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size);
+            .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
         let up = layer
             .ffn_up
-            .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size);
+            .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
         let swiglu = gate.silu().mul(&up)?;
         let ffn_out =
             layer
                 .ffn_down
-                .apply_linear(&swiglu, cfg.intermediate_size, cfg.hidden_size);
+                .apply_linear(&swiglu, cfg.intermediate_size, cfg.hidden_size)?;
         h1.add(&ffn_out)
     }
 }

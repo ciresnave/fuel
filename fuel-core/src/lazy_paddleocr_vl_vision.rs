@@ -311,15 +311,15 @@ impl PaddleOcrVlVisionModel {
         )?;
         let q = block
             .q_proj
-            .apply_linear(&x_norm, h, h)
+            .apply_linear(&x_norm, h, h)?
             .add_trailing_bias(Arc::clone(&block.q_proj_bias))?;
         let k = block
             .k_proj
-            .apply_linear(&x_norm, h, h)
+            .apply_linear(&x_norm, h, h)?
             .add_trailing_bias(Arc::clone(&block.k_proj_bias))?;
         let v = block
             .v_proj
-            .apply_linear(&x_norm, h, h)
+            .apply_linear(&x_norm, h, h)?
             .add_trailing_bias(Arc::clone(&block.v_proj_bias))?;
 
         let q = q.split_heads(n_heads, head_dim)?;
@@ -338,7 +338,7 @@ impl PaddleOcrVlVisionModel {
         let merged = ctx.merge_heads()?;
         let attn_out = block
             .out_proj
-            .apply_linear(&merged, h, h)
+            .apply_linear(&merged, h, h)?
             .add_trailing_bias(Arc::clone(&block.out_proj_bias))?;
         let h1 = x.add(&attn_out)?;
 
@@ -350,7 +350,7 @@ impl PaddleOcrVlVisionModel {
         )?;
         let fc1 = block
             .fc1
-            .apply_linear(&h1_norm, h, cfg.intermediate_size)
+            .apply_linear(&h1_norm, h, cfg.intermediate_size)?
             .add_trailing_bias(Arc::clone(&block.fc1_bias))?;
         let activated = match cfg.hidden_activation {
             PaddleOcrVlVisionActivation::Gelu => fc1.gelu_erf(),
@@ -360,7 +360,7 @@ impl PaddleOcrVlVisionModel {
         };
         let fc2 = block
             .fc2
-            .apply_linear(&activated, cfg.intermediate_size, h)
+            .apply_linear(&activated, cfg.intermediate_size, h)?
             .add_trailing_bias(Arc::clone(&block.fc2_bias))?;
         h1.add(&fc2)
     }
@@ -398,13 +398,13 @@ impl PaddleOcrVlVisionModel {
 
         let l1 = weights
             .linear_1
-            .apply_linear(&merged, merged_hidden, merged_hidden)
+            .apply_linear(&merged, merged_hidden, merged_hidden)?
             .add_trailing_bias(Arc::clone(&weights.linear_1_bias))?;
         // Projector activation is gelu_pytorch_tanh per eager.
         let activated = l1.gelu();
         let l2 = weights
             .linear_2
-            .apply_linear(&activated, merged_hidden, self.text_hidden_size)
+            .apply_linear(&activated, merged_hidden, self.text_hidden_size)?
             .add_trailing_bias(Arc::clone(&weights.linear_2_bias))?;
         Ok(l2)
     }
@@ -1091,15 +1091,15 @@ impl PaddleOcrVlNaVitModel {
         )?;
         let q = block
             .q_proj
-            .apply_linear(&x_norm, h, h)
+            .apply_linear(&x_norm, h, h)?
             .add_trailing_bias(Arc::clone(&block.q_proj_bias))?;
         let k = block
             .k_proj
-            .apply_linear(&x_norm, h, h)
+            .apply_linear(&x_norm, h, h)?
             .add_trailing_bias(Arc::clone(&block.k_proj_bias))?;
         let v = block
             .v_proj
-            .apply_linear(&x_norm, h, h)
+            .apply_linear(&x_norm, h, h)?
             .add_trailing_bias(Arc::clone(&block.v_proj_bias))?;
 
         let q = q.split_heads(n_heads, head_dim)?;
@@ -1117,7 +1117,7 @@ impl PaddleOcrVlNaVitModel {
         let merged = ctx.merge_heads()?;
         let attn_out = block
             .out_proj
-            .apply_linear(&merged, h, h)
+            .apply_linear(&merged, h, h)?
             .add_trailing_bias(Arc::clone(&block.out_proj_bias))?;
         let h1 = x.add(&attn_out)?;
 
@@ -1129,7 +1129,7 @@ impl PaddleOcrVlNaVitModel {
         )?;
         let fc1 = block
             .fc1
-            .apply_linear(&h1_norm, h, cfg.intermediate_size)
+            .apply_linear(&h1_norm, h, cfg.intermediate_size)?
             .add_trailing_bias(Arc::clone(&block.fc1_bias))?;
         let activated = match cfg.hidden_activation {
             PaddleOcrVlVisionActivation::Gelu => fc1.gelu_erf(),
@@ -1139,7 +1139,7 @@ impl PaddleOcrVlNaVitModel {
         };
         let fc2 = block
             .fc2
-            .apply_linear(&activated, cfg.intermediate_size, h)
+            .apply_linear(&activated, cfg.intermediate_size, h)?
             .add_trailing_bias(Arc::clone(&block.fc2_bias))?;
         h1.add(&fc2)
     }
@@ -1174,12 +1174,12 @@ impl PaddleOcrVlNaVitModel {
 
         let l1 = weights
             .linear_1
-            .apply_linear(&merged, merged_hidden, merged_hidden)
+            .apply_linear(&merged, merged_hidden, merged_hidden)?
             .add_trailing_bias(Arc::clone(&weights.linear_1_bias))?;
         let activated = l1.gelu();
         let l2 = weights
             .linear_2
-            .apply_linear(&activated, merged_hidden, self.text_hidden_size)
+            .apply_linear(&activated, merged_hidden, self.text_hidden_size)?
             .add_trailing_bias(Arc::clone(&weights.linear_2_bias))?;
         Ok(l2)
     }

@@ -202,7 +202,7 @@ impl VggModel {
     }
 
     fn apply_fc(&self, x: &LazyTensor, fc: &VggHeadFc) -> Result<LazyTensor> {
-        let out = fc.w.apply_linear(x, fc.in_features, fc.out_features);
+        let out = fc.w.apply_linear(x, fc.in_features, fc.out_features)?;
         let bias_t = x.const_f32_like(
             Arc::clone(&fc.b), Shape::from_dims(&[fc.out_features]),
         );

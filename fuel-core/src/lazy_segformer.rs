@@ -248,7 +248,7 @@ impl ImageClassificationModel {
             .permute([0, 2, 1_usize])?;
         let pooled = flat.mean_dim(1_usize)?;
         let n = self.classifier.b.len();
-        let logits = self.classifier.w.apply_linear(&pooled, c, n);
+        let logits = self.classifier.w.apply_linear(&pooled, c, n)?;
         let bias = image.const_f32_like(
             Arc::clone(&self.classifier.b), Shape::from_dims(&[n]),
         );

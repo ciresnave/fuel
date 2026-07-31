@@ -165,7 +165,7 @@ impl FalconModel {
 
     fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
-        Ok(self.weights.output.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size))
+        Ok(self.weights.output.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 
     /// Shared backbone: embed → RoPE → per-layer parallel
@@ -279,9 +279,9 @@ impl FalconModel {
         kv_dim: usize,
     ) -> Result<LazyTensor> {
         let cfg = &self.config;
-        let q = layer.attn_q.apply_linear(x_ln, cfg.hidden_size, cfg.hidden_size).add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
-        let k = layer.attn_k.apply_linear(x_ln, cfg.hidden_size, kv_dim).add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
-        let v = layer.attn_v.apply_linear(x_ln, cfg.hidden_size, kv_dim).add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
+        let q = layer.attn_q.apply_linear(x_ln, cfg.hidden_size, cfg.hidden_size)?.add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
+        let k = layer.attn_k.apply_linear(x_ln, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
+        let v = layer.attn_v.apply_linear(x_ln, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
 
         let _ = (batch, seq);
         let q = q.split_heads(cfg.num_attention_heads, head_dim)?;
@@ -307,7 +307,7 @@ impl FalconModel {
         let attn_v = attn.matmul(&v_full)?;
 
         let merged = attn_v.merge_heads()?;
-        layer.attn_dense.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size).add_optional_trailing_bias(layer.attn_dense_bias.as_ref())
+        layer.attn_dense.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?.add_optional_trailing_bias(layer.attn_dense_bias.as_ref())
     }
 
     fn mlp(
@@ -319,9 +319,9 @@ impl FalconModel {
     ) -> Result<LazyTensor> {
         let cfg = &self.config;
         let inter = 4 * cfg.hidden_size;
-        let up = layer.mlp_up.apply_linear(x_ln, cfg.hidden_size, inter).add_optional_trailing_bias(layer.mlp_up_bias.as_ref())?;
+        let up = layer.mlp_up.apply_linear(x_ln, cfg.hidden_size, inter)?.add_optional_trailing_bias(layer.mlp_up_bias.as_ref())?;
         let up_act = up.gelu();
-        layer.mlp_down.apply_linear(&up_act, inter, cfg.hidden_size).add_optional_trailing_bias(layer.mlp_down_bias.as_ref())
+        layer.mlp_down.apply_linear(&up_act, inter, cfg.hidden_size)?.add_optional_trailing_bias(layer.mlp_down_bias.as_ref())
     }
 }
 

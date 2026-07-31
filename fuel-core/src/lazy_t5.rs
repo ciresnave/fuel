@@ -185,7 +185,7 @@ impl T5Model {
         } else {
             dec_out
         };
-        Ok(lm_head.apply_linear(&dec_scaled, cfg.d_model, cfg.vocab_size))
+        Ok(lm_head.apply_linear(&dec_scaled, cfg.d_model, cfg.vocab_size)?)
     }
 
     /// Run only the T5 encoder and return its hidden states
@@ -246,7 +246,7 @@ impl T5Model {
         } else {
             dec_out
         };
-        Ok(lm_head.apply_linear(&dec_scaled, cfg.d_model, cfg.vocab_size))
+        Ok(lm_head.apply_linear(&dec_scaled, cfg.d_model, cfg.vocab_size)?)
     }
 
     /// Hidden-state variant of [`Self::forward_decoder_embeds`].
@@ -310,7 +310,7 @@ impl T5Model {
         } else {
             dec_out
         };
-        Ok(lm_head.apply_linear(&dec_scaled, cfg.d_model, cfg.vocab_size))
+        Ok(lm_head.apply_linear(&dec_scaled, cfg.d_model, cfg.vocab_size)?)
     }
 
     fn encode(&self, embed: &LazyTensor, src: &[u32]) -> Result<LazyTensor> {
@@ -483,9 +483,9 @@ impl T5Model {
         let kd = kv_shape.dims();
         let kv_len = kd[1];
 
-        let q = w.q.apply_linear(q_src, cfg.d_model, inner);
-        let k = w.k.apply_linear(kv_src, cfg.d_model, inner);
-        let v = w.v.apply_linear(kv_src, cfg.d_model, inner);
+        let q = w.q.apply_linear(q_src, cfg.d_model, inner)?;
+        let k = w.k.apply_linear(kv_src, cfg.d_model, inner)?;
+        let v = w.v.apply_linear(kv_src, cfg.d_model, inner)?;
 
         let _ = (batch, q_len, kv_len);
         let q = q.split_heads(cfg.num_heads, cfg.d_kv)?;
@@ -504,23 +504,23 @@ impl T5Model {
         let probs = scores.softmax_last_dim()?;
         let ctx = probs.matmul(&v)?;
         let merged = ctx.merge_heads()?;
-        Ok(w.o.apply_linear(&merged, inner, cfg.d_model))
+        Ok(w.o.apply_linear(&merged, inner, cfg.d_model)?)
     }
 
     fn feed_forward(&self, x: &LazyTensor, ffn: &T5FfnWeights) -> Result<LazyTensor> {
         let cfg = &self.config;
         match ffn {
             T5FfnWeights::Dense { wi, wo } => {
-                let hidden = wi.apply_linear(x, cfg.d_model, cfg.d_ff);
+                let hidden = wi.apply_linear(x, cfg.d_model, cfg.d_ff)?;
                 let activated = self.activate(&hidden);
-                Ok(wo.apply_linear(&activated, cfg.d_ff, cfg.d_model))
+                Ok(wo.apply_linear(&activated, cfg.d_ff, cfg.d_model)?)
             }
             T5FfnWeights::Gated { wi_0, wi_1, wo } => {
-                let gate = wi_0.apply_linear(x, cfg.d_model, cfg.d_ff);
-                let up = wi_1.apply_linear(x, cfg.d_model, cfg.d_ff);
+                let gate = wi_0.apply_linear(x, cfg.d_model, cfg.d_ff)?;
+                let up = wi_1.apply_linear(x, cfg.d_model, cfg.d_ff)?;
                 let activated = self.activate(&gate);
                 let combined = activated.mul(&up)?;
-                Ok(wo.apply_linear(&combined, cfg.d_ff, cfg.d_model))
+                Ok(wo.apply_linear(&combined, cfg.d_ff, cfg.d_model)?)
             }
         }
     }

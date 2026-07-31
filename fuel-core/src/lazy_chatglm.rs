@@ -207,7 +207,7 @@ impl ChatGlmModel {
         let cfg = &self.config;
         Ok(self.weights.output_layer.apply_linear(
             h_post, cfg.hidden_size, cfg.padded_vocab_size,
-        ))
+        )?)
     }
 
     fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
@@ -331,7 +331,7 @@ impl ChatGlmModel {
         let kv_dim = n_groups * hpa;
         let qkv_dim = cfg.qkv_hidden_size();
 
-        let qkv = layer.query_key_value.apply_linear(x, h, qkv_dim);
+        let qkv = layer.query_key_value.apply_linear(x, h, qkv_dim)?;
         let qkv = match &layer.query_key_value_bias {
             None => qkv,
             Some(b) => {
@@ -374,7 +374,7 @@ impl ChatGlmModel {
         // Note: q_dim = n_heads * hpa may not equal hidden_size when the
         // model uses a separate kv_channels — the eager reference relies
         // on `n_heads * kv_channels == hidden_size` (GLM3-6B: 32 * 128 = 4096).
-        let dense_out = layer.dense.apply_linear(&merged, q_dim, cfg.hidden_size);
+        let dense_out = layer.dense.apply_linear(&merged, q_dim, cfg.hidden_size)?;
         match &layer.dense_bias {
             None => Ok(dense_out),
             Some(b) => {
@@ -397,7 +397,7 @@ impl ChatGlmModel {
         let ffn = cfg.ffn_hidden_size;
         let fused_dim = 2 * ffn;
         // Fused gate + up: hidden → 2 * ffn.
-        let h_to_4h = layer.dense_h_to_4h.apply_linear(x, h, fused_dim);
+        let h_to_4h = layer.dense_h_to_4h.apply_linear(x, h, fused_dim)?;
         let h_to_4h = match &layer.dense_h_to_4h_bias {
             None => h_to_4h,
             Some(b) => {
@@ -408,7 +408,7 @@ impl ChatGlmModel {
         let gate = h_to_4h.slice(2_usize, 0, ffn)?;
         let up = h_to_4h.slice(2_usize, ffn, ffn)?;
         let swiglu = gate.silu().mul(&up)?;
-        let down = layer.dense_4h_to_h.apply_linear(&swiglu, ffn, h);
+        let down = layer.dense_4h_to_h.apply_linear(&swiglu, ffn, h)?;
         match &layer.dense_4h_to_h_bias {
             None => Ok(down),
             Some(b) => {

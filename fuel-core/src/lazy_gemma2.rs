@@ -283,9 +283,9 @@ impl Gemma2Model {
 
         // Attention sublayer: post_attn_norm(attn(input_norm(x))) + x.
         let x_in = x.rms_norm_affine_with_offset(&layer.input_norm_gain, 1.0, cfg.rms_norm_eps).unwrap();
-        let q = layer.q.apply_linear(&x_in, cfg.hidden_size, cfg.hidden_size).add_optional_trailing_bias(layer.q_bias.as_ref())?;
-        let k = layer.k.apply_linear(&x_in, cfg.hidden_size, kv_dim).add_optional_trailing_bias(layer.k_bias.as_ref())?;
-        let v = layer.v.apply_linear(&x_in, cfg.hidden_size, kv_dim).add_optional_trailing_bias(layer.v_bias.as_ref())?;
+        let q = layer.q.apply_linear(&x_in, cfg.hidden_size, cfg.hidden_size)?.add_optional_trailing_bias(layer.q_bias.as_ref())?;
+        let k = layer.k.apply_linear(&x_in, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(layer.k_bias.as_ref())?;
+        let v = layer.v.apply_linear(&x_in, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(layer.v_bias.as_ref())?;
 
         let _ = (batch, seq);
         let q = q.split_heads(cfg.num_attention_heads, head_dim)?;
@@ -307,21 +307,21 @@ impl Gemma2Model {
         let probs = scores.softmax_last_dim()?;
         let ctx = probs.matmul(&v_full)?;
         let merged = ctx.merge_heads()?;
-        let attn_out = layer.o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size).add_optional_trailing_bias(layer.o_bias.as_ref())?;
+        let attn_out = layer.o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?.add_optional_trailing_bias(layer.o_bias.as_ref())?;
         // Post-attn norm BEFORE the residual add.
         let attn_post = attn_out.rms_norm_affine_with_offset(&layer.post_attn_norm_gain, 1.0, cfg.rms_norm_eps).unwrap();
         let h1 = x.add(&attn_post)?;
 
         // MLP sublayer: post_ffn_norm(mlp(pre_ffn_norm(h1))) + h1.
         let h1_in = h1.rms_norm_affine_with_offset(&layer.pre_ffn_norm_gain, 1.0, cfg.rms_norm_eps).unwrap();
-        let gate = layer.gate.apply_linear(&h1_in, cfg.hidden_size, cfg.intermediate_size);
-        let up = layer.up.apply_linear(&h1_in, cfg.hidden_size, cfg.intermediate_size);
+        let gate = layer.gate.apply_linear(&h1_in, cfg.hidden_size, cfg.intermediate_size)?;
+        let up = layer.up.apply_linear(&h1_in, cfg.hidden_size, cfg.intermediate_size)?;
         // Gemma 2 default activation is GeGLU-tanh (HiddenAct::GeluPytorchTanh
         // in the config), but the original Gemma uses Silu. The eager config
         // carries the activation as a field; we follow gemma-2 default which
         // is GELU-tanh (used by the public release).
         let swi = gate.gelu().mul(&up)?;
-        let ffn_out = layer.down.apply_linear(&swi, cfg.intermediate_size, cfg.hidden_size);
+        let ffn_out = layer.down.apply_linear(&swi, cfg.intermediate_size, cfg.hidden_size)?;
         let ffn_post = ffn_out.rms_norm_affine_with_offset(&layer.post_ffn_norm_gain, 1.0, cfg.rms_norm_eps).unwrap();
         h1.add(&ffn_post)
     }

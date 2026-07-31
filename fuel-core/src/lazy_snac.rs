@@ -373,7 +373,7 @@ fn apply_local_mha(
         Arc::clone(&w.norm_gain), Arc::clone(&w.norm_bias), 1e-5,
     )?;
     // qkv: linear B,T,C → B,T,3C.
-    let qkv = w.to_qkv.apply_linear(&normed, c, 3 * c);
+    let qkv = w.to_qkv.apply_linear(&normed, c, 3 * c)?;
     let q = qkv.narrow(2_usize, 0, c)?;
     let k = qkv.narrow(2_usize, c, c)?;
     let v = qkv.narrow(2_usize, 2 * c, c)?;
@@ -388,7 +388,7 @@ fn apply_local_mha(
     let scores = q.matmul(&kt)?.mul_scalar(scale);
     let probs = scores.softmax_last_dim()?;
     let ctx = probs.matmul(&v)?.merge_heads()?;
-    let out = w.to_out.apply_linear(&ctx, c, c);
+    let out = w.to_out.apply_linear(&ctx, c, c)?;
     // (B, T, C) → (B, C, T) for residual add.
     let out_chw = out.permute([0, 2, 1_usize])?;
     out_chw.add(&residual)

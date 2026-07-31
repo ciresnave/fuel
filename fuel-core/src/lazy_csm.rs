@@ -289,7 +289,7 @@ impl CsmModel {
 
     /// Apply the `codebook0_head` linear to the backbone hidden state.
     /// `backbone_h` shape `(1, S, backbone_dim)` → `(1, S, audio_vocab_size)`.
-    pub fn codebook0_logits(&self, backbone_h: &LazyTensor) -> LazyTensor {
+    pub fn codebook0_logits(&self, backbone_h: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
         self.weights.codebook0_head.apply_linear(
             backbone_h, cfg.backbone_dim, cfg.audio_vocab_size,
@@ -299,7 +299,7 @@ impl CsmModel {
     /// Project a tensor from backbone hidden space to decoder hidden
     /// space (no bias). Used between `cat([h, c0_embed], 1)` and the
     /// decoder's `forward_embeds`.
-    pub fn project_to_decoder(&self, curr_h: &LazyTensor) -> LazyTensor {
+    pub fn project_to_decoder(&self, curr_h: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
         self.weights.projection.apply_linear(
             curr_h, cfg.backbone_dim, cfg.decoder_dim,
@@ -363,7 +363,7 @@ impl CsmModel {
         anchor: &LazyTensor,
     ) -> Result<(LazyTensor, LazyTensor)> {
         let embed = self.embed_frame(audio_codes, text_tokens, tokens_mask, anchor)?;
-        let logits = self.codebook0_logits(&embed);
+        let logits = self.codebook0_logits(&embed)?;
         Ok((embed, logits))
     }
 
@@ -493,7 +493,7 @@ mod tests {
             Shape::from_dims(&[1, 2, cfg.backbone_dim]),
             &Device::cpu(),
         );
-        let logits = model.codebook0_logits(&h);
+        let logits = model.codebook0_logits(&h).unwrap();
         assert_eq!(logits.shape().dims(), &[1, 2, cfg.audio_vocab_size]);
     }
 
@@ -507,7 +507,7 @@ mod tests {
             Shape::from_dims(&[1, 3, cfg.backbone_dim]),
             &Device::cpu(),
         );
-        let proj = model.project_to_decoder(&curr_h);
+        let proj = model.project_to_decoder(&curr_h).unwrap();
         assert_eq!(proj.shape().dims(), &[1, 3, cfg.decoder_dim]);
         // Run audio_head_logits for codebook 1 (proj subs in for decoder hidden).
         let ci_logits = model.audio_head_logits(&proj, 1).unwrap();
@@ -765,11 +765,11 @@ mod tests {
         assert_eq!(emb.shape().dims(), &[1, seq, cfg.backbone_dim]);
         for &v in &emb.realize_f32() { assert!(v.is_finite()); }
 
-        let logits = model.codebook0_logits(&emb);
+        let logits = model.codebook0_logits(&emb).unwrap();
         assert_eq!(logits.shape().dims(), &[1, seq, cfg.audio_vocab_size]);
         for &v in &logits.realize_f32() { assert!(v.is_finite()); }
 
-        let proj_h = model.project_to_decoder(&emb);
+        let proj_h = model.project_to_decoder(&emb).unwrap();
         assert_eq!(proj_h.shape().dims(), &[1, seq, cfg.decoder_dim]);
         let ci = model.audio_head_logits(&proj_h, 1).unwrap();
         assert_eq!(ci.shape().dims(), &[1, seq, cfg.audio_vocab_size]);

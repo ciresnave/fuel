@@ -188,7 +188,7 @@ impl Glm4NewModel {
         let cfg = &self.config;
         let weights = &self.weights;
         let logits = match &weights.lm_head {
-            Some(w) => w.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size),
+            Some(w) => w.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?,
             None => {
                 let lm_w = h_norm.const_f32_like(
                     Arc::clone(&weights.token_embedding),
@@ -295,9 +295,9 @@ impl Glm4NewModel {
 
         // Attention sublayer: post_self_attn_norm(attn(input_norm(x))) + x.
         let x_in = x.rms_norm_affine(std::sync::Arc::clone(&layer.input_norm_gain), cfg.rms_norm_eps)?;
-        let q = layer.q.apply_linear(&x_in, cfg.hidden_size, q_dim).add_optional_trailing_bias(layer.q_bias.as_ref())?;
-        let k = layer.k.apply_linear(&x_in, cfg.hidden_size, kv_dim).add_optional_trailing_bias(layer.k_bias.as_ref())?;
-        let v = layer.v.apply_linear(&x_in, cfg.hidden_size, kv_dim).add_optional_trailing_bias(layer.v_bias.as_ref())?;
+        let q = layer.q.apply_linear(&x_in, cfg.hidden_size, q_dim)?.add_optional_trailing_bias(layer.q_bias.as_ref())?;
+        let k = layer.k.apply_linear(&x_in, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(layer.k_bias.as_ref())?;
+        let v = layer.v.apply_linear(&x_in, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(layer.v_bias.as_ref())?;
 
         let _ = (batch, seq);
         let q = q.split_heads(cfg.num_attention_heads, head_dim)?;
@@ -317,13 +317,13 @@ impl Glm4NewModel {
         let probs = scores.softmax_last_dim()?;
         let ctx = probs.matmul(&v_full)?;
         let merged = ctx.merge_heads()?;
-        let attn_out = layer.o.apply_linear(&merged, q_dim, cfg.hidden_size);
+        let attn_out = layer.o.apply_linear(&merged, q_dim, cfg.hidden_size)?;
         let attn_post = attn_out.rms_norm_affine(std::sync::Arc::clone(&layer.post_self_attn_norm_gain), cfg.rms_norm_eps)?;
         let h1 = x.add(&attn_post)?;
 
         // MLP sublayer: post_mlp_norm(mlp(post_attn_norm(h1))) + h1.
         let h1_in = h1.rms_norm_affine(std::sync::Arc::clone(&layer.post_attn_norm_gain), cfg.rms_norm_eps)?;
-        let gate_up = layer.gate_up.apply_linear(&h1_in, cfg.hidden_size, 2 * cfg.intermediate_size);
+        let gate_up = layer.gate_up.apply_linear(&h1_in, cfg.hidden_size, 2 * cfg.intermediate_size)?;
         let gate = gate_up.slice(2_usize, 0, cfg.intermediate_size)?;
         let up = gate_up.slice(2_usize, cfg.intermediate_size, cfg.intermediate_size)?;
         let act = match cfg.hidden_act {
@@ -332,7 +332,7 @@ impl Glm4NewModel {
             Glm4NewActivation::GeluPytorchTanh => gate.gelu(),
         };
         let inner = act.mul(&up)?;
-        let mlp_out = layer.down.apply_linear(&inner, cfg.intermediate_size, cfg.hidden_size);
+        let mlp_out = layer.down.apply_linear(&inner, cfg.intermediate_size, cfg.hidden_size)?;
         let mlp_post = mlp_out.rms_norm_affine(std::sync::Arc::clone(&layer.post_mlp_norm_gain), cfg.rms_norm_eps)?;
         h1.add(&mlp_post)
     }

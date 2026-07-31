@@ -255,7 +255,7 @@ impl Qwen3VlVisionModel {
                     let projector = &weights.deepstack[ds_idx];
                     let projected = projector
                         .weight
-                        .apply_linear(&hidden, cfg.hidden_size, cfg.out_hidden_size);
+                        .apply_linear(&hidden, cfg.hidden_size, cfg.out_hidden_size)?;
                     let bias_t = hidden.const_f32_like(
                         Arc::clone(&projector.bias),
                         Shape::from_dims(&[cfg.out_hidden_size]),
@@ -301,7 +301,7 @@ impl Qwen3VlVisionModel {
         // Packed QKV: (N, hidden) → (N, 3 * hidden).
         let qkv = layer
             .qkv
-            .apply_linear(&x_norm, h, 3 * h)
+            .apply_linear(&x_norm, h, 3 * h)?
             .add_trailing_bias(Arc::clone(&layer.qkv_bias))?;
         // (N, 3, num_heads, head_dim) → (3, N, num_heads, head_dim).
         let qkv = qkv
@@ -332,7 +332,7 @@ impl Qwen3VlVisionModel {
 
         let attn_out = layer
             .proj
-            .apply_linear(&merged, h, h)
+            .apply_linear(&merged, h, h)?
             .add_trailing_bias(Arc::clone(&layer.proj_bias))?;
         let x_attn = x.add(&attn_out)?;
 
@@ -344,12 +344,12 @@ impl Qwen3VlVisionModel {
         )?;
         let fc1 = layer
             .fc1
-            .apply_linear(&x_attn_norm, h, cfg.intermediate_size)
+            .apply_linear(&x_attn_norm, h, cfg.intermediate_size)?
             .add_trailing_bias(Arc::clone(&layer.fc1_bias))?;
         let activated = fc1.gelu();
         let fc2 = layer
             .fc2
-            .apply_linear(&activated, cfg.intermediate_size, h)
+            .apply_linear(&activated, cfg.intermediate_size, h)?
             .add_trailing_bias(Arc::clone(&layer.fc2_bias))?;
         x_attn.add(&fc2)
     }

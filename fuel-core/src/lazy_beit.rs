@@ -196,7 +196,7 @@ impl BeitModel {
         // Final LayerNorm on the pooled vector.
         let pooled_ln = patch_mean.layer_norm_affine(std::sync::Arc::clone(&weights.final_ln_gain), std::sync::Arc::clone(&weights.final_ln_bias), cfg.layer_norm_eps)?;
         // Classifier.
-        let logits = weights.head.apply_linear(&pooled_ln, cfg.embed_dim, cfg.num_classes);
+        let logits = weights.head.apply_linear(&pooled_ln, cfg.embed_dim, cfg.num_classes)?;
         let bias_t = pixel_values.const_f32_like(
             Arc::clone(&weights.head_bias),
             Shape::from_dims(&[cfg.num_classes]),
@@ -301,7 +301,7 @@ impl BeitModel {
         let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&block.norm1_gain), std::sync::Arc::clone(&block.norm1_bias), cfg.layer_norm_eps)?;
 
         // Fused Wqkv.
-        let qkv_lin = block.qkv.apply_linear(&x_norm, h, 3 * h);
+        let qkv_lin = block.qkv.apply_linear(&x_norm, h, 3 * h)?;
         let qkv = match &block.qkv_bias {
             None => qkv_lin,
             Some(b) => {
@@ -336,7 +336,7 @@ impl BeitModel {
         let probs = scores.softmax_last_dim()?;
         let ctx = probs.matmul(&v)?;
         let merged = ctx.merge_heads()?;
-        let proj = block.proj.apply_linear(&merged, h, h);
+        let proj = block.proj.apply_linear(&merged, h, h)?;
         let attn_out = match &block.proj_bias {
             None => proj,
             Some(b) => {
@@ -358,13 +358,13 @@ impl BeitModel {
         // Pre-MLP norm + MLP + LayerScale 2 + residual.
         let h1_norm = h1.layer_norm_affine(std::sync::Arc::clone(&block.norm2_gain), std::sync::Arc::clone(&block.norm2_bias), cfg.layer_norm_eps)?;
         let mlp_h = cfg.embed_dim * cfg.mlp_ratio;
-        let fc1 = block.fc1.apply_linear(&h1_norm, h, mlp_h);
+        let fc1 = block.fc1.apply_linear(&h1_norm, h, mlp_h)?;
         let fc1_bias_t = anchor.const_f32_like(
             Arc::clone(&block.fc1_bias),
             Shape::from_dims(&[mlp_h]),
         );
         let fc1 = fc1.broadcast_add(&fc1_bias_t)?.gelu_erf();
-        let fc2 = block.fc2.apply_linear(&fc1, mlp_h, h);
+        let fc2 = block.fc2.apply_linear(&fc1, mlp_h, h)?;
         let fc2_bias_t = anchor.const_f32_like(
             Arc::clone(&block.fc2_bias),
             Shape::from_dims(&[h]),

@@ -337,7 +337,7 @@ impl MusicGenModel {
         // to `(num_codebooks, seq_len, vocab_size)` (batch == 1).
         let mut per_codebook: Vec<LazyTensor> = Vec::with_capacity(n_cb);
         for head in &weights.lm_heads {
-            let logits = head.apply_linear(&h, cfg.hidden_size, cfg.vocab_size);
+            let logits = head.apply_linear(&h, cfg.hidden_size, cfg.vocab_size)?;
             // `logits` has shape `(1, seq_len, vocab_size)`.
             per_codebook.push(logits.squeeze(0_usize)?);
         }
@@ -396,14 +396,14 @@ impl MusicGenModel {
             Arc::clone(&layer.final_ln_bias),
             1e-5,
         )?;
-        let fc1 = layer.fc1.apply_linear(&h2_norm, cfg.hidden_size, cfg.ffn_dim);
+        let fc1 = layer.fc1.apply_linear(&h2_norm, cfg.hidden_size, cfg.ffn_dim)?;
         let activated = match cfg.activation_function {
             MusicGenActivation::Relu => fc1.relu(),
             MusicGenActivation::Gelu => fc1.gelu_erf(),
             MusicGenActivation::GeluPytorchTanh => fc1.gelu(),
             MusicGenActivation::Silu => fc1.silu(),
         };
-        let fc2 = layer.fc2.apply_linear(&activated, cfg.ffn_dim, cfg.hidden_size);
+        let fc2 = layer.fc2.apply_linear(&activated, cfg.ffn_dim, cfg.hidden_size)?;
         residual.add(&fc2)
     }
 
@@ -427,9 +427,9 @@ impl MusicGenModel {
         let head_dim = cfg.head_dim();
         let scaling = 1.0_f64 / (head_dim as f64).sqrt();
 
-        let q = w.q_proj.apply_linear(q_src, q_in_dim, inner).mul_scalar(scaling);
-        let k = w.k_proj.apply_linear(kv_src, kv_in_dim, inner);
-        let v = w.v_proj.apply_linear(kv_src, kv_in_dim, inner);
+        let q = w.q_proj.apply_linear(q_src, q_in_dim, inner)?.mul_scalar(scaling);
+        let k = w.k_proj.apply_linear(kv_src, kv_in_dim, inner)?;
+        let v = w.v_proj.apply_linear(kv_src, kv_in_dim, inner)?;
 
         let q = q.split_heads(cfg.num_attention_heads, head_dim)?;
         let k = k.split_heads(cfg.num_attention_heads, head_dim)?;
@@ -443,7 +443,7 @@ impl MusicGenModel {
         let probs = scores.softmax_last_dim()?;
         let ctx = probs.matmul(&v)?;
         let merged = ctx.merge_heads()?;
-        Ok(w.out_proj.apply_linear(&merged, inner, inner))
+        Ok(w.out_proj.apply_linear(&merged, inner, inner)?)
     }
 }
 

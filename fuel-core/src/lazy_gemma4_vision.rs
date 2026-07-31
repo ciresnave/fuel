@@ -135,7 +135,7 @@ impl Gemma4VisionModel {
         // Linear projection to hidden_size.
         let mut h_states = weights.input_proj.apply_linear(
             &patches, ps * ps * c, cfg.hidden_size,
-        );
+        )?;
 
         // ---- 2D positional embedding -----------------------------------------
         let (pos_emb, cos_xy, sin_xy) = self.build_position_aux(
@@ -283,14 +283,14 @@ impl Gemma4VisionModel {
         // Pre-FFN norm.
         let residual2 = h1.clone();
         let h1_norm = h1.rms_norm_affine_with_offset(&layer.pre_ffn_norm_gain, 1.0, cfg.rms_norm_eps)?;
-        let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size);
-        let up = layer.ffn_up.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size);
+        let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let up = layer.ffn_up.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
         let activated = match cfg.hidden_activation {
             Gemma4VisionActivation::Gelu => gate.gelu_erf(),
             Gemma4VisionActivation::GeluPytorchTanh => gate.gelu(),
         };
         let ffn_inner = activated.mul(&up)?;
-        let ffn_out = layer.ffn_down.apply_linear(&ffn_inner, cfg.intermediate_size, cfg.hidden_size);
+        let ffn_out = layer.ffn_down.apply_linear(&ffn_inner, cfg.intermediate_size, cfg.hidden_size)?;
         let ffn_normed = ffn_out.rms_norm_affine_with_offset(&layer.post_ffn_norm_gain, 1.0, cfg.rms_norm_eps)?;
         residual2.add(&ffn_normed)
     }
@@ -313,9 +313,9 @@ impl Gemma4VisionModel {
         let q_dim = n_heads * head_dim;
         let kv_dim = n_kv * head_dim;
 
-        let q = layer.q_proj.apply_linear(x, cfg.hidden_size, q_dim);
-        let k = layer.k_proj.apply_linear(x, cfg.hidden_size, kv_dim);
-        let v = layer.v_proj.apply_linear(x, cfg.hidden_size, kv_dim);
+        let q = layer.q_proj.apply_linear(x, cfg.hidden_size, q_dim)?;
+        let k = layer.k_proj.apply_linear(x, cfg.hidden_size, kv_dim)?;
+        let v = layer.v_proj.apply_linear(x, cfg.hidden_size, kv_dim)?;
 
         let _ = (batch, seq);
         let q = q.split_heads(n_heads, head_dim)?;
@@ -347,7 +347,7 @@ impl Gemma4VisionModel {
         let probs = scores.softmax_last_dim()?;
         let ctx = probs.matmul(&v_full)?;
         let merged = ctx.merge_heads()?;
-        Ok(layer.o_proj.apply_linear(&merged, q_dim, cfg.hidden_size))
+        Ok(layer.o_proj.apply_linear(&merged, q_dim, cfg.hidden_size)?)
     }
 
     /// Spatial average pooling via scatter_add by patch (col, row).

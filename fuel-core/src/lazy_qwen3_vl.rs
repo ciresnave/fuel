@@ -339,7 +339,7 @@ fn project_visual(
 ) -> Result<LazyTensor> {
     let projected = proj
         .weight
-        .apply_linear(visual, vision_out_hidden, text_hidden);
+        .apply_linear(visual, vision_out_hidden, text_hidden)?;
     let bias_t =
         projected.const_f32_like(Arc::clone(&proj.bias), Shape::from_dims(&[text_hidden]));
     projected.broadcast_add(&bias_t)

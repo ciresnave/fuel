@@ -195,8 +195,8 @@ impl NvEmbedV2Model {
             .broadcast_to(Shape::from_dims(&[batch, cfg.num_latents, bcfg.hidden_size]))?;
         let latents_normed = latents.layer_norm_affine(std::sync::Arc::clone(&self.weights.cross_attn_context_norm_gain), std::sync::Arc::clone(&self.weights.cross_attn_context_norm_bias), cfg.layer_norm_eps)?;
         let inner = cfg.latent_heads * cfg.latent_head_dim;
-        let q = self.weights.to_q.apply_linear(&hidden_normed, bcfg.hidden_size, inner);
-        let kv = self.weights.to_kv.apply_linear(&latents_normed, bcfg.hidden_size, 2 * inner);
+        let q = self.weights.to_q.apply_linear(&hidden_normed, bcfg.hidden_size, inner)?;
+        let kv = self.weights.to_kv.apply_linear(&latents_normed, bcfg.hidden_size, 2 * inner)?;
         let k = kv.slice(2_usize, 0, inner)?;
         let v = kv.slice(2_usize, inner, inner)?;
         // Heads split: (batch, len, heads, head_dim) → permute(0, 2, 1, 3).
@@ -209,18 +209,18 @@ impl NvEmbedV2Model {
         let probs = scores.softmax_last_dim()?;
         let ctx = probs.matmul(&v)?; // (batch, heads, seq, head_dim)
         let merged = ctx.merge_heads()?;
-        let cross_out = self.weights.to_out.apply_linear(&merged, inner, bcfg.hidden_size);
+        let cross_out = self.weights.to_out.apply_linear(&merged, inner, bcfg.hidden_size)?;
         // Residual: hidden + cross_out.
         let cross_hidden = hidden.add(&cross_out)?;
 
         // ---- GeGLU FFN with residual --------------------------------------
         let ff_in = cross_hidden.layer_norm_affine(std::sync::Arc::clone(&self.weights.ff_norm_gain), std::sync::Arc::clone(&self.weights.ff_norm_bias), cfg.layer_norm_eps)?;
         let ff_hidden = bcfg.hidden_size * cfg.ff_mult;
-        let ff_up = self.weights.ff_proj.apply_linear(&ff_in, bcfg.hidden_size, 2 * ff_hidden);
+        let ff_up = self.weights.ff_proj.apply_linear(&ff_in, bcfg.hidden_size, 2 * ff_hidden)?;
         let ff_value = ff_up.slice(2_usize, 0, ff_hidden)?;
         let ff_gate = ff_up.slice(2_usize, ff_hidden, ff_hidden)?;
         let ff_inner = ff_value.mul(&ff_gate.gelu_erf())?;
-        let ff_out = self.weights.ff_down.apply_linear(&ff_inner, ff_hidden, bcfg.hidden_size);
+        let ff_out = self.weights.ff_down.apply_linear(&ff_inner, ff_hidden, bcfg.hidden_size)?;
         let pooled_input = cross_hidden.add(&ff_out)?;
 
         // ---- Mask-weighted mean pool --------------------------------------

@@ -172,7 +172,7 @@ impl EvaModel {
         let normed = apply_layer_norm_last(&pooled, &self.weights.norm, e)?;
         let logits = self.weights.head_w.apply_linear(
             &normed, e, self.weights.head_b.len(),
-        );
+        )?;
         let head_bias = image.const_f32_like(
             Arc::clone(&self.weights.head_b),
             Shape::from_dims(&[self.weights.head_b.len()]),
@@ -208,11 +208,11 @@ fn apply_attention(
     let a = &blk.attn;
 
     // Three independent linears (Q has bias, K NO bias, V has bias).
-    let q = a.q_w.apply_linear(x, e, e);
+    let q = a.q_w.apply_linear(x, e, e)?;
     let q_bias = anchor.const_f32_like(Arc::clone(&a.q_b), Shape::from_dims(&[e]));
     let q = q.broadcast_add(&q_bias)?;
-    let k = a.k_w.apply_linear(x, e, e);
-    let v = a.v_w.apply_linear(x, e, e);
+    let k = a.k_w.apply_linear(x, e, e)?;
+    let v = a.v_w.apply_linear(x, e, e)?;
     let v_bias = anchor.const_f32_like(Arc::clone(&a.v_b), Shape::from_dims(&[e]));
     let v = v.broadcast_add(&v_bias)?;
 
@@ -239,7 +239,7 @@ fn apply_attention(
         .reshape(Shape::from_dims(&[b, heads, n, head_dim]))?
         .merge_heads()?;
     let _ = e;
-    let projected = a.proj_w.apply_linear(&ctx, e, e);
+    let projected = a.proj_w.apply_linear(&ctx, e, e)?;
     let proj_bias = anchor.const_f32_like(Arc::clone(&a.proj_b), Shape::from_dims(&[e]));
     projected.broadcast_add(&proj_bias)
 }
@@ -300,18 +300,18 @@ fn apply_mlp(
     let e = cfg.embed_dim;
     let hidden = cfg.hidden_mlp_dim();
 
-    let g = m.fc1_g_w.apply_linear(x, e, hidden);
+    let g = m.fc1_g_w.apply_linear(x, e, hidden)?;
     let g_b = anchor.const_f32_like(Arc::clone(&m.fc1_g_b), Shape::from_dims(&[hidden]));
     let g = g.broadcast_add(&g_b)?.silu();
 
-    let xv = m.fc1_x_w.apply_linear(x, e, hidden);
+    let xv = m.fc1_x_w.apply_linear(x, e, hidden)?;
     let xv_b = anchor.const_f32_like(Arc::clone(&m.fc1_x_b), Shape::from_dims(&[hidden]));
     let xv = xv.broadcast_add(&xv_b)?;
 
     let gated = g.mul(&xv)?;
     let normed = apply_layer_norm_last(&gated, &m.norm, hidden)?;
 
-    let out = m.fc2_w.apply_linear(&normed, hidden, e);
+    let out = m.fc2_w.apply_linear(&normed, hidden, e)?;
     let out_b = anchor.const_f32_like(Arc::clone(&m.fc2_b), Shape::from_dims(&[e]));
     out.broadcast_add(&out_b)
 }

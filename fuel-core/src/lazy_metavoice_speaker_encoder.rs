@@ -85,7 +85,7 @@ impl SpeakerEncoderModel {
         // Linear (hidden → embedding) + ReLU.
         let h = cfg.model_hidden_size;
         let e = cfg.model_embedding_size;
-        let proj = self.weights.linear.apply_linear(&lstm_out, h, e);
+        let proj = self.weights.linear.apply_linear(&lstm_out, h, e)?;
         let bias = mels.const_f32_like(
             Arc::clone(&self.weights.linear_bias), Shape::from_dims(&[e]),
         );

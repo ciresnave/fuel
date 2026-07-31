@@ -238,7 +238,7 @@ impl RecurrentGemmaModel {
     fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
         let lm_head = WeightStorage::F32(self.weights.token_embedding.clone());
-        let logits = lm_head.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size);
+        let logits = lm_head.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?;
         let sc = cfg.logits_soft_cap;
         if sc > 0.0 {
             Ok(logits.mul_scalar(1.0 / sc).tanh().mul_scalar(sc))
@@ -362,9 +362,9 @@ impl RecurrentGemmaModel {
         let rope_dim = cfg.head_dim / 2;
         let window = cfg.attention_window_size;
 
-        let q = a.q_w.apply_linear(x, cfg.hidden_size, q_dim).add_optional_trailing_bias(a.q_b.as_ref())?;
-        let k = a.k_w.apply_linear(x, cfg.hidden_size, kv_dim).add_optional_trailing_bias(a.k_b.as_ref())?;
-        let v = a.v_w.apply_linear(x, cfg.hidden_size, kv_dim).add_optional_trailing_bias(a.v_b.as_ref())?;
+        let q = a.q_w.apply_linear(x, cfg.hidden_size, q_dim)?.add_optional_trailing_bias(a.q_b.as_ref())?;
+        let k = a.k_w.apply_linear(x, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(a.k_b.as_ref())?;
+        let v = a.v_w.apply_linear(x, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(a.v_b.as_ref())?;
 
         let _ = (batch, seq);
         let q = q.split_heads(cfg.num_attention_heads, cfg.head_dim)?;
@@ -399,7 +399,7 @@ impl RecurrentGemmaModel {
         let attn_v = attn.matmul(&v_full)?;
 
         let merged = attn_v.merge_heads()?;
-        let attn_out = a.o_w.apply_linear(&merged, q_dim, cfg.hidden_size);
+        let attn_out = a.o_w.apply_linear(&merged, q_dim, cfg.hidden_size)?;
         attn_out.add_trailing_bias(std::sync::Arc::clone(&a.o_b))
     }
 
@@ -453,7 +453,7 @@ impl RecurrentGemmaModel {
 
         // Gate × output.
         let gated = x_lru.mul(&y_act)?;
-        let out_proj = r.linear_out_w.apply_linear(&gated, lru_width, h);
+        let out_proj = r.linear_out_w.apply_linear(&gated, lru_width, h)?;
         out_proj.add_trailing_bias(std::sync::Arc::clone(&r.linear_out_b))
     }
 
@@ -588,7 +588,7 @@ impl RecurrentGemmaModel {
             GemmaActivation::GeluPytorchTanh => gate.gelu(),
         };
         let inner = activated.mul(&up)?;
-        let down = layer.mlp_down_w.apply_linear(&inner, inter, h);
+        let down = layer.mlp_down_w.apply_linear(&inner, inter, h)?;
         down.add_trailing_bias(std::sync::Arc::clone(&layer.mlp_down_b))
     }
 }

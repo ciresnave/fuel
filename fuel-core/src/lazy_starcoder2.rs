@@ -131,7 +131,7 @@ impl StarCoder2Model {
 
     fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
-        Ok(self.weights.output.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size))
+        Ok(self.weights.output.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 
     fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
@@ -207,9 +207,9 @@ impl StarCoder2Model {
 
         let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&layer.input_ln_gain), std::sync::Arc::clone(&layer.input_ln_bias), cfg.norm_epsilon)?;
 
-        let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size).add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
-        let k = layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim).add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
-        let v = layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim).add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
+        let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size)?.add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
+        let k = layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
+        let v = layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
 
         let _ = (batch, seq);
         let q = q.split_heads(cfg.num_attention_heads, cfg.head_dim)?;
@@ -233,15 +233,15 @@ impl StarCoder2Model {
         let attn_v = attn.matmul(&v_full)?;
 
         let merged = attn_v.merge_heads()?;
-        let attn_out = layer.attn_o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size).add_optional_trailing_bias(layer.attn_o_bias.as_ref())?;
+        let attn_out = layer.attn_o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?.add_optional_trailing_bias(layer.attn_o_bias.as_ref())?;
 
         let h1 = x.add(&attn_out)?;
         let h1_norm = h1.layer_norm_affine(std::sync::Arc::clone(&layer.post_attn_ln_gain), std::sync::Arc::clone(&layer.post_attn_ln_bias), cfg.norm_epsilon)?;
 
         // MLP: c_proj(gelu(c_fc(x))). Standard GELU, not GeluPyTorchTanh.
-        let mid = layer.mlp_fc.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size).add_optional_trailing_bias(layer.mlp_fc_bias.as_ref())?;
+        let mid = layer.mlp_fc.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?.add_optional_trailing_bias(layer.mlp_fc_bias.as_ref())?;
         let mid_act = mid.gelu_erf();
-        let ffn_out = layer.mlp_proj.apply_linear(&mid_act, cfg.intermediate_size, cfg.hidden_size).add_optional_trailing_bias(layer.mlp_proj_bias.as_ref())?;
+        let ffn_out = layer.mlp_proj.apply_linear(&mid_act, cfg.intermediate_size, cfg.hidden_size)?.add_optional_trailing_bias(layer.mlp_proj_bias.as_ref())?;
 
         h1.add(&ffn_out)
     }

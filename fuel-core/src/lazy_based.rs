@@ -209,7 +209,7 @@ impl BasedModel {
     fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
         let lm_head = WeightStorage::F32(self.weights.token_embedding.clone());
-        Ok(lm_head.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size))
+        Ok(lm_head.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 
     fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
@@ -319,7 +319,7 @@ impl BasedModel {
         let kernel = 3;
 
         // in_proj: hidden → 4 * hidden, then chunk into (u_conv, gate).
-        let proj = w.in_proj_w.apply_linear(x, h, 4 * h);
+        let proj = w.in_proj_w.apply_linear(x, h, 4 * h)?;
         let proj_bias_t = x.const_f32_like(
             Arc::clone(&w.in_proj_b),
             Shape::from_dims(&[4 * h]),
@@ -353,7 +353,7 @@ impl BasedModel {
         // back to (b, seq, dim2)
         let u_conv = u_conv_raw.permute([0, 2, 1_usize])?.silu();
         let v = u_conv.mul(&gate)?;
-        let out = w.out_proj_w.apply_linear(&v, dim2, h);
+        let out = w.out_proj_w.apply_linear(&v, dim2, h)?;
         let out_bias_t = x.const_f32_like(
             Arc::clone(&w.out_proj_b),
             Shape::from_dims(&[h]),
@@ -382,9 +382,9 @@ impl BasedModel {
         let d_h_v = h / n_heads;
         let d_expanded = d_feat * d_feat + d_feat + 1;
 
-        let q = w.q_proj.apply_linear(x, h, n_heads * d_feat);
-        let k = w.k_proj.apply_linear(x, h, n_heads * d_feat);
-        let v = w.v_proj.apply_linear(x, h, h);
+        let q = w.q_proj.apply_linear(x, h, n_heads * d_feat)?;
+        let k = w.k_proj.apply_linear(x, h, n_heads * d_feat)?;
+        let v = w.v_proj.apply_linear(x, h, h)?;
 
         let _ = (batch, seq);
         let q = q.split_heads(n_heads, d_feat)?;
@@ -441,7 +441,7 @@ impl BasedModel {
         let out_h = aqk_v.mul(&z_bc)?;
 
         let merged = out_h.merge_heads()?;
-        Ok(w.out_proj.apply_linear(&merged, h, h))
+        Ok(w.out_proj.apply_linear(&merged, h, h)?)
     }
 
     fn apply_sliding(
@@ -462,7 +462,7 @@ impl BasedModel {
         let window = cfg.swa.window_size / 2;
 
         // Fused Wqkv: hidden → 3 * hidden, slice into Q/K/V.
-        let qkv = w.wqkv.apply_linear(x, h, 3 * h);
+        let qkv = w.wqkv.apply_linear(x, h, 3 * h)?;
         let q = qkv.slice(2_usize, 0, h)?;
         let k = qkv.slice(2_usize, h, h)?;
         let v = qkv.slice(2_usize, 2 * h, h)?;
@@ -493,7 +493,7 @@ impl BasedModel {
         let probs = scores_masked.softmax_last_dim()?;
         let attn_v = probs.matmul(&v)?;
         let merged = attn_v.merge_heads()?;
-        Ok(w.out_proj.apply_linear(&merged, h, h))
+        Ok(w.out_proj.apply_linear(&merged, h, h)?)
     }
 
     fn apply_mlp(
@@ -506,12 +506,12 @@ impl BasedModel {
         let h = cfg.hidden_size;
         let inter = cfg.intermediate_size;
         // fc1 out is 4 * hidden; chunked to (left, right) each 2 * hidden.
-        let projected = fc1.apply_linear(x, h, 4 * h);
+        let projected = fc1.apply_linear(x, h, 4 * h)?;
         let left = projected.slice(2_usize, 0, 2 * h)?;
         let right = projected.slice(2_usize, 2 * h, 2 * h)?;
         // Eager swap: `silu(right) * left`.
         let gated = right.silu().mul(&left)?;
-        Ok(fc2.apply_linear(&gated, inter, h))
+        Ok(fc2.apply_linear(&gated, inter, h)?)
     }
 }
 

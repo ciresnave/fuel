@@ -99,7 +99,7 @@ impl LazyMoeRouter {
         let xs_flat = xs.reshape(Shape::from_dims(&[n, self.hidden_size]))?;
         let logits = self.weight.apply_linear(
             &xs_flat, self.hidden_size, self.num_experts,
-        );
+        )?;
 
         let mut work = logits;
         let mut idx_cols: Vec<LazyTensor> = Vec::with_capacity(self.top_k);

@@ -168,7 +168,7 @@ impl MixFormerModel {
             Some(w) => w.clone(),
             None => WeightStorage::F32(weights.token_embedding.clone()),
         };
-        let logits = lm_w.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size);
+        let logits = lm_w.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size)?;
         let bias_t = h.const_f32_like(
             Arc::clone(&weights.lm_head_bias),
             Shape::from_dims(&[cfg.vocab_size]),
@@ -242,7 +242,7 @@ impl MixFormerModel {
         let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&layer.ln_gain), std::sync::Arc::clone(&layer.ln_bias), cfg.layer_norm_eps)?;
 
         // ---- Attention path: fused Wqkv -------------------------------------
-        let qkv_lin = layer.wqkv.apply_linear(&x_norm, h, 3 * h);
+        let qkv_lin = layer.wqkv.apply_linear(&x_norm, h, 3 * h)?;
         let qkv_b_t = x_norm.const_f32_like(
             Arc::clone(&layer.wqkv_bias),
             Shape::from_dims(&[3 * h]),
@@ -273,7 +273,7 @@ impl MixFormerModel {
         let attn_v = attn.matmul(&v)?;
 
         let merged = attn_v.merge_heads()?;
-        let attn_out_lin = layer.out_proj.apply_linear(&merged, h, h);
+        let attn_out_lin = layer.out_proj.apply_linear(&merged, h, h)?;
         let out_bias_t = x.const_f32_like(
             Arc::clone(&layer.out_proj_bias),
             Shape::from_dims(&[h]),
@@ -282,7 +282,7 @@ impl MixFormerModel {
 
         // ---- MLP path (uses the same x_norm) -------------------------------
         let inner = cfg.inner_dim();
-        let fc1_lin = layer.fc1.apply_linear(&x_norm, h, inner);
+        let fc1_lin = layer.fc1.apply_linear(&x_norm, h, inner)?;
         let fc1_b_t = x.const_f32_like(
             Arc::clone(&layer.fc1_bias),
             Shape::from_dims(&[inner]),
@@ -292,7 +292,7 @@ impl MixFormerModel {
             MixFormerActivation::Gelu => fc1_out.gelu_erf(),
             MixFormerActivation::GeluPytorchTanh => fc1_out.gelu(),
         };
-        let fc2_lin = layer.fc2.apply_linear(&activated, inner, h);
+        let fc2_lin = layer.fc2.apply_linear(&activated, inner, h)?;
         let fc2_b_t = x.const_f32_like(
             Arc::clone(&layer.fc2_bias),
             Shape::from_dims(&[h]),

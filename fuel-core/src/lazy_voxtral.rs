@@ -276,7 +276,7 @@ fn encoder_layer(
     // Q (biased) / K (bias-free) / V (biased).
     let q = lw.self_attn_q.apply_linear_with_bias(
         &x_ln, d, d, Arc::clone(&lw.self_attn_q_bias))?;
-    let k = lw.self_attn_k.apply_linear(&x_ln, d, d);
+    let k = lw.self_attn_k.apply_linear(&x_ln, d, d)?;
     let v = lw.self_attn_v.apply_linear_with_bias(
         &x_ln, d, d, Arc::clone(&lw.self_attn_v_bias))?;
 
@@ -332,9 +332,9 @@ impl VoxtralMultiModalProjector {
     pub fn forward(&self, audio: &LazyTensor) -> Result<LazyTensor> {
         let x = self.linear_1.apply_linear(
             audio, self.audio_intermediate_size, self.text_hidden,
-        );
+        )?;
         let x = x.gelu();
-        Ok(self.linear_2.apply_linear(&x, self.text_hidden, self.text_hidden))
+        Ok(self.linear_2.apply_linear(&x, self.text_hidden, self.text_hidden)?)
     }
 }
 
@@ -442,7 +442,7 @@ impl VoxtralTextModel {
         let h_norm = h.rms_norm_affine(
             Arc::clone(&weights.final_norm_gain), cfg.rms_norm_eps,
         )?;
-        Ok(weights.lm_head.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size))
+        Ok(weights.lm_head.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 }
 
@@ -463,9 +463,9 @@ fn apply_text_layer(
     let x_norm = x.rms_norm_affine(
         Arc::clone(&layer.attn_norm_gain), cfg.rms_norm_eps,
     )?;
-    let q = layer.attn_q.apply_linear(&x_norm, h, q_dim);
-    let k = layer.attn_k.apply_linear(&x_norm, h, kv_dim);
-    let v = layer.attn_v.apply_linear(&x_norm, h, kv_dim);
+    let q = layer.attn_q.apply_linear(&x_norm, h, q_dim)?;
+    let k = layer.attn_k.apply_linear(&x_norm, h, kv_dim)?;
+    let v = layer.attn_v.apply_linear(&x_norm, h, kv_dim)?;
 
     let q = q.split_heads(cfg.num_attention_heads, cfg.head_dim)?;
     let k = k.split_heads(cfg.num_key_value_heads, cfg.head_dim)?;
@@ -487,16 +487,16 @@ fn apply_text_layer(
     let attn = scores_masked.softmax_last_dim()?;
     let attn_v = attn.matmul(&v_full)?;
     let merged = attn_v.merge_heads()?;
-    let attn_out = layer.attn_o.apply_linear(&merged, q_dim, h);
+    let attn_out = layer.attn_o.apply_linear(&merged, q_dim, h)?;
     let h1 = x.add(&attn_out)?;
 
     let h1_norm = h1.rms_norm_affine(
         Arc::clone(&layer.ffn_norm_gain), cfg.rms_norm_eps,
     )?;
-    let gate = layer.ffn_gate.apply_linear(&h1_norm, h, cfg.intermediate_size);
-    let up = layer.ffn_up.apply_linear(&h1_norm, h, cfg.intermediate_size);
+    let gate = layer.ffn_gate.apply_linear(&h1_norm, h, cfg.intermediate_size)?;
+    let up = layer.ffn_up.apply_linear(&h1_norm, h, cfg.intermediate_size)?;
     let swiglu = gate.silu().mul(&up)?;
-    let ffn_out = layer.ffn_down.apply_linear(&swiglu, cfg.intermediate_size, h);
+    let ffn_out = layer.ffn_down.apply_linear(&swiglu, cfg.intermediate_size, h)?;
     h1.add(&ffn_out)
 }
 

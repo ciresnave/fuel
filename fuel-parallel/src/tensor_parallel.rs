@@ -142,30 +142,24 @@ impl Linear {
     /// one delegated call and the optimizer keeps its job.
     pub fn forward(&self, x: &LazyTensor) -> Result<LazyTensor> {
         let (in_features, out_features) = (self.in_features, self.out_features);
-        let x_dims = x.shape().dims().to_vec();
 
-        // Guard everything `apply_linear` would otherwise panic on.
-        if x_dims.len() < 2 {
-            return Err(Error::Msg(format!(
-                "Linear({in_features}->{out_features}): input must be rank >= 2, got {x_dims:?}"
-            )));
-        }
-        let k = x_dims[x_dims.len() - 1];
-        if k != in_features {
-            return Err(Error::Msg(format!(
-                "Linear({in_features}->{out_features}): input shape {x_dims:?} has trailing dim \
-                 {k}, expected {in_features}"
-            )));
-        }
-
+        // The trailing-dim and stored-shape checks that were duplicated here
+        // now live inside `WeightStorage::apply_linear`, which returns
+        // `Result` rather than panicking. Guarding at this one caller only
+        // ever protected this one caller; validating inside the builder
+        // protects all ~620 of them. What is left here is naming the layer in
+        // the error chain.
+        let labelled =
+            |e: Error| Error::Msg(format!("Linear({in_features}->{out_features}): {e}"));
         match &self.bias {
-            None => Ok(self.weight.apply_linear(x, in_features, out_features)),
+            None => self
+                .weight
+                .apply_linear(x, in_features, out_features)
+                .map_err(labelled),
             Some(bias) => self
                 .weight
                 .apply_linear_with_bias(x, in_features, out_features, Arc::clone(bias))
-                .map_err(|e| {
-                    Error::Msg(format!("Linear({in_features}->{out_features}): {e}"))
-                }),
+                .map_err(labelled),
         }
     }
 }
@@ -512,10 +506,16 @@ mod tests {
     fn linear_rejects_mismatched_input() {
         let lin = ones_linear(3, 2);
         let err = lin.forward(&ones_input(&[1, 5])).unwrap_err();
+        let msg = format!("{err}");
+        // The check now lives in `WeightStorage::apply_linear` rather than
+        // being duplicated in `Linear::forward`, so the wording comes from
+        // there; `Linear(..)` is this layer's label on the error chain. Assert
+        // on the facts (offending shape + required dim), not the phrasing.
         assert!(
-            format!("{err}").contains("expected 3"),
-            "error should name the expected in_features, got: {err}"
+            msg.contains("[1, 5]") && msg.contains("trailing dim 3"),
+            "error should name the offending shape and the required in_features, got: {err}"
         );
+        assert!(msg.contains("Linear(3->2)"), "error should name the layer, got: {err}");
     }
 
     #[test]
