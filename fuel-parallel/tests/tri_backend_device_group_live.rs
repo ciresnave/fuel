@@ -24,14 +24,32 @@
 //! uses `PreferDiscrete`, which would hand back the *NVIDIA* card and make the
 //! "CUDA + Vulkan" halves silently run on one vendor, proving nothing.
 //!
-//! ## Running
+//! ## Running — and why "3 passed" is NOT sufficient evidence
 //!
 //! ```text
 //! cargo test -p fuel-parallel --features "cuda vulkan" \
-//!     --test tri_backend_device_group_live -- --ignored --test-threads=1
+//!     --test tri_backend_device_group_live -- --ignored --test-threads=1 --nocapture
 //! ```
 //!
-//! Absent hardware makes each test return early and PASS, after printing why.
+//! **`--nocapture` is mandatory, not cosmetic.** Absent hardware makes each test
+//! `return` early, and an early return from a `#[test]` is a *pass*. So a green
+//! run on a box with no CUDA device and a green run that genuinely reduced
+//! across three vendors are indistinguishable from the summary line alone — the
+//! reason for skipping is printed, and printing is captured by default.
+//!
+//! A run counts as evidence only if the output satisfies **both**:
+//!
+//! - **no line begins `SKIP:`** — every such line means a device was missing or
+//!   refused, and that test proved nothing; and
+//! - **three `PROOF ` lines appear**, one per test, each naming the Vulkan
+//!   adapter actually used.
+//!
+//! The adapter name matters as much as the pass: if the Vulkan handle resolved
+//! to the NVIDIA card, "CUDA + Vulkan" would be one vendor twice and every
+//! assertion here would still hold. `vulkan_igpu_or_skip` prints the full
+//! adapter enumeration, selects by index, and refuses NVIDIA outright — so the
+//! `PROOF` line is what distinguishes a real tri-vendor reduce from a
+//! same-vendor one wearing its clothes.
 
 use fuel::lazy::LazyTensor;
 use fuel::{Device, Shape};
@@ -50,31 +68,56 @@ fn cuda_or_skip() -> Option<Device> {
     }
 }
 
-/// A Vulkan device on the **integrated** GPU, or `None` with an explanation.
+/// A Vulkan device on the **integrated** GPU plus its adapter name, or `None`
+/// with an explanation.
 ///
-/// Prefers an AMD-named adapter; falls back to scanning `list_devices()` for one
-/// reporting `"integrated"`. Deliberately never falls back to a discrete
-/// adapter — a silent fallback would turn this into a same-vendor test that
-/// still passes, which is worse than skipping.
-fn vulkan_igpu_or_skip() -> Option<Device> {
-    if let Ok(b) = VulkanBackend::with_selection(DeviceSelection::ByName("AMD".to_string())) {
-        return Some(std::sync::Arc::new(b).into());
-    }
-    match VulkanBackend::list_devices() {
-        Ok(devices) => {
-            for (idx, name, kind) in devices {
-                if kind == "integrated" {
-                    match VulkanBackend::with_selection(DeviceSelection::Index(idx)) {
-                        Ok(b) => return Some(std::sync::Arc::new(b).into()),
-                        Err(e) => eprintln!("SKIP: integrated Vulkan device {idx} ({name}): {e}"),
-                    }
-                }
-            }
-            eprintln!("SKIP: no integrated Vulkan adapter found (refusing to fall back to discrete)");
-            None
-        }
+/// Enumerates first and selects **by index**, printing the full adapter list and
+/// the chosen entry. The earlier version asked for `ByName("AMD")` and returned
+/// whatever came back, which is opaque: if that selector had resolved to the
+/// NVIDIA card, the "CUDA + Vulkan" halves would both run on one vendor and
+/// every assertion below would still pass while proving nothing. Selecting from
+/// an enumeration this function printed makes the choice auditable after the
+/// fact, and an explicit NVIDIA refusal makes the bad case a skip, not a
+/// silent pass.
+fn vulkan_igpu_or_skip() -> Option<(Device, String)> {
+    let devices = match VulkanBackend::list_devices() {
+        Ok(d) => d,
         Err(e) => {
             eprintln!("SKIP: Vulkan enumeration failed ({e})");
+            return None;
+        }
+    };
+    eprintln!("Vulkan adapters visible to this process:");
+    for (idx, name, kind) in &devices {
+        eprintln!("    [{idx}] {name}  ({kind})");
+    }
+
+    let pick = devices
+        .iter()
+        .find(|(_, name, kind)| {
+            kind.as_str() == "integrated" && !name.to_uppercase().contains("NVIDIA")
+        })
+        .or_else(|| {
+            devices
+                .iter()
+                .find(|(_, name, _)| name.to_uppercase().contains("AMD"))
+        });
+
+    let Some((idx, name, kind)) = pick else {
+        eprintln!(
+            "SKIP: no non-NVIDIA Vulkan adapter found \
+             (refusing to fall back to the discrete card — that would make this a same-vendor test)"
+        );
+        return None;
+    };
+
+    match VulkanBackend::with_selection(DeviceSelection::Index(*idx)) {
+        Ok(b) => {
+            eprintln!("Vulkan shard will run on [{idx}] {name} ({kind})");
+            Some((std::sync::Arc::new(b).into(), name.clone()))
+        }
+        Err(e) => {
+            eprintln!("SKIP: could not open Vulkan adapter [{idx}] {name}: {e}");
             None
         }
     }
@@ -99,7 +142,7 @@ fn shards_on_one_graph(values: &[f32], len: usize, dev: &Device) -> Vec<LazyTens
 #[ignore = "requires a live CUDA device AND an integrated Vulkan device"]
 fn tri_backend_all_reduce_sums_across_cpu_cuda_and_vulkan() {
     let Some(cuda) = cuda_or_skip() else { return };
-    let Some(vulkan) = vulkan_igpu_or_skip() else { return };
+    let Some((vulkan, vk_name)) = vulkan_igpu_or_skip() else { return };
     let cpu = Device::cpu();
 
     // Leader is CPU: every hop is then a single implemented Copy, which isolates
@@ -116,6 +159,7 @@ fn tri_backend_all_reduce_sums_across_cpu_cuda_and_vulkan() {
 
     let got = group.realize_f32(&out).expect("multi-device realize");
     assert_eq!(got, vec![7.0f32; LEN], "1 + 2 + 4 across CPU, CUDA and Vulkan");
+    eprintln!("PROOF tri_backend_sum: CPU + CUDA + Vulkan({vk_name}) reduced to {}", got[0]);
 }
 
 #[test]
@@ -126,7 +170,7 @@ fn cross_vendor_leader_stages_through_host() {
     // Before that staging existed this failed at execute time with a
     // foreign-GPU-output rejection, so this test is the regression guard for it.
     let Some(cuda) = cuda_or_skip() else { return };
-    let Some(vulkan) = vulkan_igpu_or_skip() else { return };
+    let Some((vulkan, vk_name)) = vulkan_igpu_or_skip() else { return };
     let cpu = Device::cpu();
 
     let group = DeviceGroup::new(vec![cuda, vulkan, cpu.clone()]).expect("3-device group");
@@ -139,6 +183,7 @@ fn cross_vendor_leader_stages_through_host() {
 
     let got = group.realize_f32(&out).expect("multi-device realize");
     assert_eq!(got, vec![60.0f32; LEN], "CUDA leader, Vulkan shard staged via host");
+    eprintln!("PROOF cross_vendor_staging: CUDA leader + Vulkan({vk_name}) shard staged via host -> {}", got[0]);
 }
 
 #[test]
@@ -148,7 +193,7 @@ fn tri_backend_all_reduce_max_is_elementwise() {
     // to be right for Sum by accident (e.g. dropping a shard would still give a
     // plausible sum, but not a plausible max).
     let Some(cuda) = cuda_or_skip() else { return };
-    let Some(vulkan) = vulkan_igpu_or_skip() else { return };
+    let Some((vulkan, vk_name)) = vulkan_igpu_or_skip() else { return };
     let cpu = Device::cpu();
 
     let group = DeviceGroup::new(vec![cpu.clone(), cuda, vulkan]).expect("3-device group");
@@ -161,4 +206,5 @@ fn tri_backend_all_reduce_max_is_elementwise() {
 
     let got = group.realize_f32(&out).expect("multi-device realize");
     assert_eq!(got, vec![9.0f32; LEN], "max over the three shards");
+    eprintln!("PROOF tri_backend_max: CPU + CUDA + Vulkan({vk_name}) max -> {}", got[0]);
 }
