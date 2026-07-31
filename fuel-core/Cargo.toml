@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "fuel-core"
 version.workspace = true
 edition.workspace = true
@@ -151,10 +151,6 @@ vulkan = ["dep:fuel-vulkan-backend", "fuel-dispatch/vulkan", "fuel-memory/vulkan
 # per-backend `XxxUgIOp1::new(..., device)` constructors are available
 # whenever `cuda`/`metal` is also enabled.
 ug = ["dep:fuel-ug", "fuel-ir/ug", "fuel-cuda-backend?/ug", "fuel-metal-backend?/ug"]
-
-[[bench]]
-name = "bench_main"
-harness = false
 
 [[example]]
 name = "metal_basics"
