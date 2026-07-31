@@ -395,11 +395,29 @@ removes the per-token host barrier in serving).
 - ~~**Whether the §9 class invariant belongs in KISS-Ops**~~ **RESOLVED — yes, as a GENERAL
   clause**, not RNG-specific (KISS steward: "same principle as where the fixed-width-alphabet
   rule went — put the universal rule where it's universal"). The steward will draft it.
-- **`Op::Iota` / `Triu` / `Tril` under tensor parallelism** — the §9 invariant applies to them
-  today. Whether any current TP usage already violates it is **UNAUDITED**; the mechanism
-  (`shard_start()`) exists but the threading does not. Not a blocker for this design, but it is
-  a live correctness question about *existing* ops, not a future one. **Worth auditing
-  independently of this program.**
+- ~~**`Op::Iota` / `Triu` / `Tril` under tensor parallelism — UNAUDITED.**~~ **AUDITED
+  2026-07-31 at the KISS steward's request. Verdict: the §9 invariant is PREVENTIVE, not
+  retroactive — there is no live violation.** Evidence:
+  1. **`fuel-parallel` has zero consumers** — no crate's `Cargo.toml` depends on it. Built,
+     ported to the lazy surface, unwired.
+  2. **`fuel-parallel` constructs no position-pure ops.** No `iota`/`triu`/`tril`/`arange`
+     anywhere in its source; its TP `Linear::forward` is `apply_linear` and nothing else.
+  3. **`Op::Iota` has exactly one construction path** — flash-attn's **alibi** decompose
+     (relative-position bias, `fuel-core/src/lazy.rs`), which is not TP-sharded. `Triu`/`Tril`
+     take **one input**: they mask an existing tensor rather than generating positions, so they
+     are position-*dependent*, not position-*generating*.
+
+  **This is "not currently reachable", not "structurally safe."** The trigger condition is
+  specific: `fuel-parallel` gaining a consumer **and** a sharded tensor feeding a position-pure
+  op. That argues for landing the §9 clause **before** `fuel-parallel` is wired rather than
+  after — the invariant is cheap now and would be an archaeology exercise later.
+
+  **An oracle exists for re-auditing this** (kiss-ref): their `Node::Iota` is position-pure *by
+  construction* — a serial reference with no tensor parallelism, so logical-coordinate ==
+  physical-output holds trivially. So Fuel's TP-threaded `Iota` (and `Triu`/`Tril` once
+  reference-covered) can be **differentially tested** against kiss-ref's serial version, where a
+  position-purity violation surfaces as an exact mismatch at the diverging index. The audit does
+  not have to stay a reasoning exercise about threading.
 - **RFC drafting.** The steward has offered to draft three §6 clause texts: the class-8 counter
   clause, the purity clause, and the general position-pure clause. Ping when the RFC starts.
 
