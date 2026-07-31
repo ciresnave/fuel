@@ -109,6 +109,81 @@ pub fn default_device_for(backend: BackendId) -> DeviceLocation {
     }
 }
 
+/// The node's **decision device** — the single resolution chain the planner
+/// uses, extracted so every pass that must agree with [`compile_plan`] asks
+/// exactly the same question instead of approximating it.
+///
+/// Priority (see [`PlanOptions::pinned_device`]): explicit `Graph::placement`
+/// (the scheduler's per-node assignment) → the realize call's `pinned_device`
+/// → `default_device_for(target_backend)` (legacy stamped graphs). `None`
+/// means the node has no device context — `compile_plan` turns that into a
+/// typed error at its call site.
+pub(crate) fn decision_device_for(
+    graph: &Graph,
+    options: &PlanOptions<'_>,
+    id: NodeId,
+) -> Option<DeviceLocation> {
+    graph
+        .placement(id)
+        .or(options.pinned_device)
+        .or_else(|| graph.target_backend(id).map(default_device_for))
+}
+
+/// Every `BackendId` [`compile_plan`] may enumerate a kernel from **for this
+/// node**.
+///
+/// This is the authority on "can this node be served?", and **a pass that asks
+/// a weaker question will disagree with the planner.** That divergence is not
+/// hypothetical — it shipped: `insert_dtype_fixups` used to ask whether *any*
+/// registered backend served a key, so a backend the node could never run on
+/// suppressed the dtype reconciliation the node actually needed, and planning
+/// then dead-ended at `NoBackendForOp`. Concretely, compiling the Vulkan
+/// backend in broke CPU-pinned mixed-precision matmul, because Vulkan is the
+/// only backend registering `MatMul[F32, BF16, F32]`. Nothing about that is
+/// Vulkan-specific: *any* backend registering a mixed-dtype kernel would have
+/// broken every other backend's pinned graphs the same way.
+///
+/// Mirrors the enumeration in `plan_node`: the decision device's backends
+/// (cross-backend when a topology enumerator is configured, else the single
+/// legacy backend), plus the off-device fallback set when admission allows it
+/// — those backends are genuinely reachable for the node, so a native kernel
+/// there is a real alternative and must count.
+pub(crate) fn candidate_backends_for(
+    graph: &Graph,
+    options: &PlanOptions<'_>,
+    id: NodeId,
+    node: &fuel_graph::Node,
+) -> Vec<BackendId> {
+    let Some(target_device) = decision_device_for(graph, options, id) else {
+        return Vec::new();
+    };
+    let mut backends: Vec<BackendId> = match options.placements_for_device {
+        Some(f) => f(target_device),
+        None => vec![
+            graph
+                .target_backend(id)
+                .unwrap_or_else(|| backend_for_device(target_device)),
+        ],
+    };
+    // Picker-arc step 4b: the planner admits off-device candidates for a
+    // non-destructive node whenever a fallback enumerator is configured, so
+    // those backends ARE candidates here too. Destructive ops never move off
+    // the device owning their mutation target, matching `fallback_allowed`.
+    if node.op.destructive_input().is_none()
+        && let Some(fallback) = options.fallback_placements_for
+    {
+        backends.extend(fallback(target_device).into_iter().map(|(b, _)| b));
+    }
+    // Dedup without requiring `Ord` on the non-exhaustive `BackendId`.
+    let mut unique: Vec<BackendId> = Vec::with_capacity(backends.len());
+    for b in backends {
+        if !unique.contains(&b) {
+            unique.push(b);
+        }
+    }
+    unique
+}
+
 /// The `BackendId` that owns a `DeviceLocation`'s storage substrate.
 /// Total — `BackendId` mirrors `DeviceLocation` 1:1 (AOCL/MKL are
 /// `kernel_source` siblings under `Cpu`, not distinct backends).
@@ -1287,10 +1362,7 @@ fn build_node_draft(
     // placement (scheduler assignments) → the realize call's
     // pinned device → the legacy stamped-backend default.
     let explicit_backend = graph.target_backend(id);
-    let target_device = graph
-        .placement(id)
-        .or(options.pinned_device)
-        .or_else(|| explicit_backend.map(default_device_for))
+    let target_device = decision_device_for(graph, options, id)
         .ok_or_else(|| {
             Error::Msg(format!(
                 "compile_plan: node {:?} ({:?}) has no device context — \

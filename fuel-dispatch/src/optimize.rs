@@ -248,7 +248,7 @@ fn optimize_graph_with_passes(
     //      changes what's enumerable; if it rewrites, re-derive the execution
     //      order over the mutated graph. The layout/residency fixups are its
     //      post-plan siblings.
-    let order = if insert_dtype_fixups(graph, roots, bindings_table) {
+    let order = if insert_dtype_fixups(graph, roots, bindings_table, opts) {
         fuel_graph::opt::execution_plan(graph, roots)
     } else {
         order
@@ -395,6 +395,7 @@ fn insert_dtype_fixups(
     graph: &mut Graph,
     roots: &[NodeId],
     bindings: &KernelBindingTable,
+    options: &PlanOptions<'_>,
 ) -> bool {
     let order = topo_order_multi(graph, roots);
     // Decision only (immutable graph reads): the `(consumer, input, target)` edges
@@ -420,8 +421,21 @@ fn insert_dtype_fixups(
         if native_key.len() != inputs.len() + 1 {
             continue;
         }
-        if bindings.any_backend_supports(op_kind, &native_key) {
-            continue; // some backend serves it natively
+        // The backends THIS node may actually be placed on. Asked via the
+        // planner's own resolver so the two cannot drift: a weaker predicate
+        // here (e.g. "does any registered backend serve it?") lets a backend
+        // the node can never run on suppress the reconciliation the node needs,
+        // and `compile_plan` below then dead-ends at `NoBackendForOp`.
+        let candidates =
+            crate::plan::candidate_backends_for(graph, options, id, graph.node(id));
+        let servable = |key: &[DType]| {
+            candidates
+                .iter()
+                .any(|&backend| bindings.backend_supports(op_kind, key, backend))
+        };
+
+        if servable(&native_key) {
+            continue; // a backend this node can run on serves it natively
         }
         // Promotion target = the output dtype ("compute dtype"), taken ONLY when
         // every input can losslessly upcast to it — else decline.
@@ -435,7 +449,7 @@ fn insert_dtype_fixups(
         if promoted_key == native_key {
             continue; // inputs already == target; nothing to promote
         }
-        if !bindings.any_backend_supports(op_kind, &promoted_key) {
+        if !servable(&promoted_key) {
             continue; // the lossless promotion still isn't servable — genuine gap
         }
         for &input_id in &inputs {
@@ -881,6 +895,134 @@ mod tests {
         assert!(matches!(g.node(cast_id).op, Op::Cast(DType::F32)), "rhs cast to F32");
         assert_eq!(g.node(cast_id).dtype, DType::F32);
         assert_eq!(g.node(cast_id).inputs, vec![rhs], "cast reads the original BF16 weight");
+    }
+
+    fn register_matmul(table: &mut KernelBindingTable, dtypes: &[DType], backend: BackendId) {
+        table.register_full(
+            OpKind::MatMul,
+            dtypes,
+            backend,
+            noop_kernel,
+            KernelCaps::empty(),
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+            unknown_cost,
+        );
+    }
+
+    /// The reconciling `Op::Cast` the pass inserts needs a binding of its own to
+    /// plan. The production table has these (`(Cpu, Cast, [BF16, F32])`); a
+    /// hand-built test table must register them explicitly.
+    fn register_cast(table: &mut KernelBindingTable, from: DType, to: DType, backend: BackendId) {
+        table.register_full(
+            OpKind::Cast,
+            &[from, to],
+            backend,
+            noop_kernel,
+            KernelCaps::empty(),
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+            unknown_cost,
+        );
+    }
+
+    /// `[F32] @ [BF16] -> [F32]` on a graph pinned to `pinned`.
+    fn mixed_matmul_graph() -> (Graph, NodeId, NodeId, NodeId) {
+        let mut g = Graph::new();
+        let lhs = g.push(Node {
+            op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+        });
+        let rhs = g.push(Node {
+            op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[3, 2]), dtype: DType::BF16,
+        });
+        let mm = g.push(Node {
+            op: Op::MatMul, inputs: vec![lhs, rhs], shape: Shape::from_dims(&[2, 2]), dtype: DType::F32,
+        });
+        (g, lhs, rhs, mm)
+    }
+
+    /// **Born-red regression guard: a backend must never break a graph that
+    /// isn't running on it.**
+    ///
+    /// `insert_dtype_fixups` used to guard on `any_backend_supports` — a
+    /// predicate over the WHOLE binding table that ignores the key's backend
+    /// component. `compile_plan` enumerates over the node's *candidate
+    /// placement set*. So when a non-candidate backend owned the only native
+    /// mixed-dtype kernel, the pass saw "someone serves it", declined to
+    /// reconcile, and the planner then dead-ended at `NoBackendForOp`.
+    ///
+    /// In-tree that surfaced as `--features vulkan` breaking CPU-pinned
+    /// mixed-precision matmul, because Vulkan happens to be the only backend
+    /// registering `MatMul[F32, BF16, F32]`. This test builds that situation
+    /// from a LOCAL table so it reproduces in **every** build configuration —
+    /// the feature-gated version is why the defect shipped unnoticed.
+    #[test]
+    fn dtype_reconciliation_ignores_kernels_on_non_candidate_backends() {
+        let mut table = KernelBindingTable::new();
+        // The pinned backend serves only the uniform key...
+        register_matmul(&mut table, &[DType::F32, DType::F32, DType::F32], BackendId::Cpu);
+        // ...while a backend this graph will never run on owns the mixed key.
+        register_matmul(&mut table, &[DType::F32, DType::BF16, DType::F32], BackendId::Vulkan);
+        register_cast(&mut table, DType::BF16, DType::F32, BackendId::Cpu);
+
+        let (mut g, lhs, rhs, mm) = mixed_matmul_graph();
+        optimize_graph(&mut g, &[mm], &table, &cpu_opts()).expect(
+            "CPU-pinned mixed-precision matmul must reconcile via Cast even though \
+             a NON-candidate backend owns the native mixed kernel",
+        );
+
+        let mm_inputs = g.node(mm).inputs.clone();
+        assert_eq!(mm_inputs[0], lhs, "lhs (already F32) untouched");
+        let cast_id = mm_inputs[1];
+        assert_ne!(cast_id, rhs, "rhs was rewired to a Cast");
+        assert!(matches!(g.node(cast_id).op, Op::Cast(DType::F32)), "rhs cast to F32");
+        assert_eq!(g.node(cast_id).inputs, vec![rhs], "cast reads the original BF16 weight");
+    }
+
+    /// The converse guard — the fix must not over-cast. When the node's own
+    /// candidate backend serves the mixed key natively, reconciliation must
+    /// decline, so the native mixed-precision kernel is preserved (casting
+    /// would change numerics and double the promoted operand's bytes).
+    #[test]
+    fn dtype_reconciliation_declines_when_the_candidate_backend_serves_it_natively() {
+        let mut table = KernelBindingTable::new();
+        register_matmul(&mut table, &[DType::F32, DType::BF16, DType::F32], BackendId::Cpu);
+
+        let (mut g, lhs, rhs, mm) = mixed_matmul_graph();
+        optimize_graph(&mut g, &[mm], &table, &cpu_opts()).expect("native mixed kernel plans");
+
+        assert_eq!(
+            g.node(mm).inputs,
+            vec![lhs, rhs],
+            "no Cast: the candidate backend has the native mixed kernel",
+        );
+    }
+
+    /// Multi-device behavior must be PRESERVED, not sacrificed to fix the bug
+    /// above. When an off-device fallback is admitted, the foreign backend IS
+    /// a candidate for this node — so its native mixed kernel is reachable and
+    /// reconciliation must still decline. This is why the fix mirrors the
+    /// planner's candidate set rather than narrowing to the pinned device.
+    #[test]
+    fn dtype_reconciliation_counts_admitted_off_device_fallback_as_a_candidate() {
+        let mut table = KernelBindingTable::new();
+        register_matmul(&mut table, &[DType::F32, DType::F32, DType::F32], BackendId::Cpu);
+        register_matmul(&mut table, &[DType::F32, DType::BF16, DType::F32], BackendId::Vulkan);
+
+        let fallback = |_from: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> {
+            vec![(BackendId::Vulkan, DeviceLocation::Vulkan { gpu_id: 0 })]
+        };
+        let opts = PlanOptions::new()
+            .without_cost_population()
+            .with_pinned_device(DeviceLocation::Cpu)
+            .with_fallback_placements_for(&fallback);
+
+        let (mut g, lhs, rhs, mm) = mixed_matmul_graph();
+        optimize_graph(&mut g, &[mm], &table, &opts).expect("off-device native mixed kernel plans");
+
+        assert_eq!(
+            g.node(mm).inputs,
+            vec![lhs, rhs],
+            "no Cast: the admitted off-device fallback backend serves the mixed key natively",
+        );
     }
 
     /// The stamping is guarded on a pinned device — an `optimize_graph`
