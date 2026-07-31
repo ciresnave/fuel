@@ -340,6 +340,52 @@ choosing an integer atom over a float one*, not a lucky property, and no float-R
 claim it. Only `uniform_f32`'s mantissa splice (bit-deterministic) and `normal_f32`'s Box-Muller
 touch floats, and the latter is a §6.13 recipe over two uniforms.
 
+### 10.1 The determinism class is NOT uniform across the three distributions
+
+**Correction, 2026-07-31.** §7's bit-identity requirement and the framing above together imply
+the whole stack is `ExactByte`. That is an **overclaim**. The honest split, surfaced while
+kiss-ref was preparing to implement:
+
+| | class | why |
+| --- | --- | --- |
+| `RandomBits` | **`ExactByte`** | pure integer function of `(key, counter)` |
+| `bernoulli_mask` | **`ExactByte`** | integer compare `bits < ⌊p·2³²⌋`; never touches a float |
+| `uniform_f32` | **`ExactByte`**, *conditional on the splice* | see below |
+| `normal_f32` | **NOT `ExactByte`** — tolerance-classed | see below |
+
+**`uniform_f32` — exact, but only if the splice is chosen for it.** The bit-manipulation form
+`f32::from_bits(0x3F80_0000 \| (bits >> 9)) - 1.0` is exact: integer ops, then a subtraction that
+is exact by **Sterbenz's lemma** (both operands within a factor of two, for a value in `[1,2)`).
+A multiply-by-`2⁻²⁴` form is equally defensible numerically but invites a tolerance and differs
+in the low bit. **The determinism class is therefore an input to choosing the splice, not a
+consequence of it** — pin the form that keeps `uniform_f32` on the exact lane.
+
+**`normal_f32` cannot be `ExactByte`, and this is forced, not a choice.** Box-Muller requires
+`ln`, `sqrt` and `sin`/`cos`, whose implementations are **not** bit-identical across CPU, CUDA
+and Vulkan. So the guarantee that covers the draw does not extend to a normal sample; it carries
+a tolerance class like any other transcendental op, joined from its constituents. kiss-ref
+already maintains ULP ceilings on `exp`/`ln`/`sqrt`/`sincos`, so this slots in rather than
+breaking anything.
+
+**What survives, stated precisely so nobody files a bug against the wrong expectation:** the
+*draw* is bit-identical everywhere; two of the three distributions preserve that; the third is
+tolerance-classed. **The exactness boundary is the mantissa splice and Box-Muller — not the
+RNG.** A backend's normal draw diffs within tolerance, not bit-exactly, and that is correct
+behaviour rather than a defect.
+
+**Marsaglia polar is INADMISSIBLE, not merely dispreferred** — recorded here because it looks
+like an obvious optimization. It is rejection-based, so it consumes a *variable* number of draws
+per output; element *i*'s value would then depend on how many rejections preceded it, so it
+could not be a pure function of its logical index and **§9 would be unsatisfiable**. Basic
+Box-Muller is forced by position-purity. Both Fuel and kiss-ref are constrained to the same
+formulation before either writes a line.
+
+**Still to pin (normative text owed):** the exact `uniform_f32` splice, and the Box-Muller
+formulation for `normal_f32` — which uniform feeds the radius vs the angle, the `log`/`sqrt`/
+`sincos` order, and the declared tolerance. These need the §8 treatment (enumerate, pick,
+justify, pin); §2's one-line sketches are **not** specifications, and kiss-ref has correctly
+declined to implement from them.
+
 **Two-layer corpus** (kiss-ref owns it):
 
 1. **Algorithm layer** — Random123's *published* vectors anchor `philox(key, counter)`. kiss-ref
