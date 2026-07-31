@@ -147,14 +147,27 @@ nowhere; now captured so they are not forgotten):
   belongs on live-checkpoint count, not staleness; `Δ‖r‖` falls out of migration as a per-memory
   measurement of catastrophic forgetting; shape is data (`MemoryGeometry` + a replaceable
   `MemoryPolicy` trait, mirroring the `KvGeometry` precedent), **not** a type parameter.
-  **Sequenced after** B0.3 + B0.5 (`fuel-core` retirement — the generic block-pool core must not
-  land in a retiring crate), **after** multi-session inference, and **after** the RNG/generator-seam
-  decisions. Increment 1 is the round-trip born-red gate (reconstruct via the *stamped* adapter
+  **Sequenced after** multi-session inference and the RNG/generator-seam decisions.
+  *(Corrected 2026-07-31: this entry originally also listed **B0.3 + B0.5** as blockers. They
+  were already complete on 2026-06-27 — see "B0.1–B0.5 COMPLETE" above — so the gate count is
+  two, not three. The constraint they stood in for still holds: the generic block-pool core
+  must not land in the retiring `fuel-core`; that is now an available placement decision
+  (`fuel-memory` or `fuel-backend-contract`) rather than a wait. The still-open item people
+  mistake for B0.5 is the **Storage-unification**, blocked on B6 eager-dispatch retirement.
+  Note the extraction also moves `KvBlockPool` out of `fuel-core`, so coordinate — the paged
+  plan-once increment is actively editing that area.)*
+  Increment 1 is the round-trip born-red gate (reconstruct via the *stamped* adapter
   succeeds; via the *current* adapter fails — the overshoot bug as a test), CPU-only, no training
-  loop. **Open:** the precision-ladder rungs are unsurveyed (`Encoding::AffineBlock` is
-  parameterized by `packed: DType` but `DType::F4` is the only sub-byte code named in its docs —
-  if that is the whole ladder, "graceful degradation" is three steps, not a curve, and adding
-  rungs is bucket-B work); the `fuel-training` inference-time-update path is unverified.
+  loop. **Precision ladder — RESOLVED 2026-07-31, favourably:** `DType::F4` is not the only
+  sub-byte code. `fuel-ir/src/dtype.rs:14` carries five rungs — 32 (`F32`), 16 (`F16`/`BF16`),
+  8 (`F8E4M3`, plus `F8E8M0`/`I8`/`U8`), 6 (`F6E2M3`/`F6E3M2`), 4 (`F4`) — all with handling
+  beyond the enum arms, so precision decay has real resolution and the detection-derived floor
+  is expressible. One small gap found instead: **there is no bit-width accessor** —
+  `size_in_bytes()` (`dtype.rs:110`) returns **0** for the three sub-byte rungs, so mapping a
+  bit budget onto a rung wants a `DType::bit_width()`; additive, bucket-B, trivially testable.
+  **Still open:** whether `AffineBlock`'s `packed` has kernel support beyond `F4` (NF4 is the
+  proven path; increment 1 stores F32 and does not decay, so it is not gated); and the
+  `fuel-training` inference-time-update path is unverified.
 - **Recipe-grammar convergence — Increment A SHIPPED (2026-07-16); shape-oracle SHIPPED as
   Convergence-C (2026-07-20/21); remaining Increment C narrowed to the recipe interior.**
   Increment A realized the pinned Fuel↔Baracuda recipe grammar's canonical form as machinery:
