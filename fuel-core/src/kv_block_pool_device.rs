@@ -196,6 +196,20 @@ impl DeviceKvPool {
     pub fn pool_shape(&self) -> &Shape {
         &self.pool_shape
     }
+    /// `[num_blocks · block_size, Hkv, D]` — the pool buffer viewed with its
+    /// leading (block, slot) axes collapsed into ONE flat slot axis. A physical
+    /// `(phys, slot)` then addresses a single row `phys · block_size + slot`, so
+    /// the paged decode's new-token K/V write is one dynamic start on axis 0
+    /// (`Op::WriteSliceDyn` / `Op::WriteSliceDoff`) instead of a concrete
+    /// two-axis `[(phys,phys+1),(slot,slot+1),…]` slab whose ranges change every
+    /// step. [`Self::build_decode_attn_off`] binds a placeholder of THIS shape to
+    /// the same pool buffer — a pure metadata reshape of [`Self::pool_shape`]
+    /// (same element count, row-major order preserved), so the write still
+    /// mutates the persistent buffer in place.
+    pub fn pool_shape_flat(&self) -> Shape {
+        let g = self.geometry();
+        Shape::from_dims(&[g.num_blocks * g.block_size, g.n_kv_heads, g.head_dim])
+    }
     /// Pool buffer element dtype.
     pub fn dtype(&self) -> DType {
         self.dtype
@@ -597,6 +611,77 @@ impl DeviceKvPool {
             msg_err("build_decode_attn_batched: writes is empty (need ≥ 1 session)".into())
         })?;
         let post_v = post_v.expect("post_v Some iff post_k Some");
+        q.paged_attn(&post_k, &post_v, block_table, context_lens, None, scale, g.block_size, None)
+    }
+
+    /// **Plan-once sibling of [`Self::build_decode_attn`]** — the new token's K/V
+    /// is written at a FLATTENED, runtime-resolved offset instead of a concrete
+    /// two-axis slab, so the write op is structurally identical across decode
+    /// steps (only the bound offset changes). The pool buffer is viewed as
+    /// [`Self::pool_shape_flat`] `[num_blocks·block_size, Hkv, D]`; the new token
+    /// `[1, Hkv, D]` lands at row `linear = phys·block_size + slot` via a single
+    /// dynamic start on axis 0. The post-write flat buffer is reshaped back to
+    /// `[num_blocks, block_size, Hkv, D]` for `Op::PagedAttn`.
+    ///
+    /// `k_pool_ph`/`v_pool_ph` must be `const_placeholder_like(pool_shape_flat())`
+    /// placeholders the caller binds to this layer's pool buffers (NOTE: the flat
+    /// shape, not [`Self::pool_shape`]). The offset is supplied one of two ways,
+    /// mirroring the contiguous KV-write split in `apply_layer_with_kv_writes`:
+    /// - `write_off = Some(off)`: a rank-0 `I64` tensor read device-side at kernel
+    ///   launch (`Op::WriteSliceDoff`) — the CUDA-graph-capturable arm.
+    /// - `write_off = None`: `Op::WriteSliceDyn` with `DynScalar::Sym(write_sym)`,
+    ///   the caller binding `write_sym → linear` in the per-pass `SymEnv` — the
+    ///   backend-generic (CPU/Vulkan) arm.
+    ///
+    /// Both land the same slab at the same offset — bit-identical to the concrete
+    /// [`Self::build_decode_attn`]. Returns the attention output `[1, Hq, 1, D]`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_decode_attn_off(
+        &self,
+        k_pool_ph: &LazyTensor,
+        v_pool_ph: &LazyTensor,
+        q: &LazyTensor,
+        k_new: &LazyTensor,
+        v_new: &LazyTensor,
+        block_table: &LazyTensor,
+        context_lens: &LazyTensor,
+        write_off: Option<&LazyTensor>,
+        write_sym: fuel_ir::SymId,
+        scale: f32,
+    ) -> crate::Result<LazyTensor> {
+        let g = self.geometry();
+        // New token as a single flat row: [1, Hkv, 1, D] → [1, Hkv, D] (h-major
+        // order preserved), matching one row of the flattened pool's slot axis.
+        let flat_row = Shape::from_dims(&[1, g.n_kv_heads, g.head_dim]);
+        let k_row = k_new.reshape(flat_row.clone())?;
+        let v_row = v_new.reshape(flat_row)?;
+        // Width-1 slab on axis 0; the start is the dynamic offset
+        // (linear = phys·block_size + slot). ranges[0].0 is ignored on the
+        // dynamic axis — the width (1) must equal the source's axis-0 dim.
+        let ranges = vec![(0usize, 1usize), (0, g.n_kv_heads), (0, g.head_dim)];
+        // Write directly into the flat-shaped bound placeholder (no reshape
+        // BETWEEN the binding and the write) so the in-place pool mutation is
+        // preserved exactly like the contiguous `write_slice_doff` precedent.
+        let (post_flat_k, post_flat_v) = match write_off {
+            Some(off) => (
+                k_pool_ph.write_slice_doff(&k_row, off, 0, ranges.clone())?,
+                v_pool_ph.write_slice_doff(&v_row, off, 0, ranges)?,
+            ),
+            None => {
+                let dyn_off = fuel_ir::DynScalar::Sym(write_sym);
+                (
+                    k_pool_ph.write_slice_dyn(&k_row, ranges.clone(), 0, dyn_off)?,
+                    v_pool_ph.write_slice_dyn(&v_row, ranges, 0, dyn_off)?,
+                )
+            }
+        };
+        // Reshape the post-write flat buffers back to the paged-cache shape for
+        // Op::PagedAttn — a consumer-side view; the write already mutated the
+        // persistent pool buffer in place.
+        let pool4 =
+            Shape::from_dims(&[g.num_blocks, g.block_size, g.n_kv_heads, g.head_dim]);
+        let post_k = post_flat_k.reshape(pool4.clone())?;
+        let post_v = post_flat_v.reshape(pool4)?;
         q.paged_attn(&post_k, &post_v, block_table, context_lens, None, scale, g.block_size, None)
     }
 
@@ -1059,6 +1144,150 @@ mod tests {
             run(&pt_pad), run(&pt_fit),
             "capacity-padded block_table (mask-neutralized pad) == L-fitted, byte-identical",
         );
+    }
+
+    /// Paged plan-once Task 2: writing the new token's K/V via a FLATTENED
+    /// runtime offset (`linear = phys·block_size + slot`, one dynamic start on
+    /// the pool's collapsed slot axis) lands byte-identically to the concrete
+    /// two-axis `write_slice` — for BOTH the `SymEnv` (`write_slice_dyn`) and the
+    /// device-offset (`write_slice_doff`) arms — and the resulting `paged_attn`
+    /// output is bit-identical. That makes the K/V write op structurally
+    /// invariant across decode steps (only the bound offset changes), removing
+    /// the last per-step graph-shape variability blocking one cached plan.
+    ///
+    /// A filler forces a permuted physical layout so the new token's physical
+    /// block (2) ≠ its slot (2): an offset that dropped the `phys·block_size`
+    /// term (or the `slot`) would write the WRONG physical block and diverge on
+    /// both the read-back bytes AND the attention output.
+    #[test]
+    fn symbolic_offset_write_matches_concrete_write() {
+        let (hq, hkv, d, block_size) = (2usize, 2usize, 8usize, 4usize);
+        let num_blocks = 8;
+        let sk = 6usize; // context tokens; new token is position 6 → slot 2, block 2
+        let scale = 1.0f32 / (d as f32).sqrt();
+        let dev = Device::cpu();
+        let g = KvGeometry {
+            n_layers: 1, num_blocks, block_size, n_kv_heads: hkv, head_dim: d, elem_size: 4,
+        };
+
+        // Deterministic shared inputs (identical across all three pools).
+        let q_data = rand_f32(hq * d, 1);
+        let k_new_data = rand_f32(hkv * d, 4);
+        let v_new_data = rand_f32(hkv * d, 5);
+        let q_shape = Shape::from_dims(&[1, hq, 1, d]);
+        let kv_new_shape = Shape::from_dims(&[1, hkv, 1, d]);
+
+        // Build a fresh, identically-prepared pool: a filler grabs physical
+        // block 0, then the session gets blocks 1,2; append 1 for the new token.
+        let setup = || -> (DeviceKvPool, PhysBlockId, usize, PageTableHost) {
+            let mut pool = DeviceKvPool::new(g, DType::F32, &dev).unwrap();
+            let filler = pool.core_mut().open();
+            pool.core_mut().append(filler, block_size).unwrap(); // physical block 0
+            let s = pool.core_mut().open();
+            pool.core_mut().append(s, sk).unwrap(); // physical blocks 1,2 (6 tokens)
+            let tok_pos = sk; // new token position (6)
+            pool.core_mut().append(s, 1).unwrap(); // filled = 7 (covers position 6)
+            let phys = pool.core().resident_block(s, tok_pos / block_size).unwrap();
+            let slot = tok_pos % block_size;
+            let pt = pool.materialize_block_table(&[s]).unwrap();
+            (pool, phys, slot, pt)
+        };
+
+        // ---- reference: the concrete two-axis write (build_decode_attn) ----
+        let (pool_ref, phys, slot, pt) = setup();
+        assert_eq!(phys, 2, "permuted layout — new token's physical block is 2, not 0");
+        assert_eq!(slot, 2, "new token lands at slot 2");
+        let linear = phys as usize * block_size + slot; // 10
+        let attn_ref = {
+            let q = LazyTensor::from_f32(q_data.clone(), q_shape.clone(), &dev);
+            // k_new/v_new must be siblings of q (build_decode_attn's same-graph
+            // contract) — LazyTensor::from_f32 would mint separate graphs.
+            let k_new = q.const_f32_like(k_new_data.clone(), kv_new_shape.clone());
+            let v_new = q.const_f32_like(v_new_data.clone(), kv_new_shape.clone());
+            let k_ph = q.const_placeholder_like(pool_ref.pool_shape().clone(), DType::F32);
+            let v_ph = q.const_placeholder_like(pool_ref.pool_shape().clone(), DType::F32);
+            let bt = q.const_u32_like(pt.block_table.clone(), pt.block_table_shape());
+            let cl = q.const_u32_like(pt.context_lens.clone(), pt.context_lens_shape());
+            let out = pool_ref
+                .build_decode_attn(&k_ph, &v_ph, &q, &k_new, &v_new, &bt, &cl, phys, slot, scale)
+                .unwrap();
+            let mut cache = StorageCache::new();
+            cache.insert(k_ph.node_id(), Arc::clone(pool_ref.k_pool(0).unwrap()));
+            cache.insert(v_ph.node_id(), Arc::clone(pool_ref.v_pool(0).unwrap()));
+            crate::pipelined_bridge::realize_one_as_with_initial::<f32>(
+                out.graph_handle(), out.node_id(), &dev, cache,
+            ).unwrap()
+        };
+        let ref_k_bytes = pool_ref.read_block_bytes(0, BlockKind::K, phys).unwrap();
+        let ref_v_bytes = pool_ref.read_block_bytes(0, BlockKind::V, phys).unwrap();
+
+        // ---- dyn arm: SymEnv-bound flattened offset (write_slice_dyn) ----
+        let sym = fuel_ir::SymId(0);
+        let (pool_dyn, _p, _s, pt_dyn) = setup();
+        let attn_dyn = {
+            let q = LazyTensor::from_f32(q_data.clone(), q_shape.clone(), &dev);
+            // k_new/v_new must be siblings of q (build_decode_attn's same-graph
+            // contract) — LazyTensor::from_f32 would mint separate graphs.
+            let k_new = q.const_f32_like(k_new_data.clone(), kv_new_shape.clone());
+            let v_new = q.const_f32_like(v_new_data.clone(), kv_new_shape.clone());
+            let k_ph = q.const_placeholder_like(pool_dyn.pool_shape_flat(), DType::F32);
+            let v_ph = q.const_placeholder_like(pool_dyn.pool_shape_flat(), DType::F32);
+            let bt = q.const_u32_like(pt_dyn.block_table.clone(), pt_dyn.block_table_shape());
+            let cl = q.const_u32_like(pt_dyn.context_lens.clone(), pt_dyn.context_lens_shape());
+            let out = pool_dyn
+                .build_decode_attn_off(&k_ph, &v_ph, &q, &k_new, &v_new, &bt, &cl, None, sym, scale)
+                .unwrap();
+            let mut cache = StorageCache::new();
+            cache.insert(k_ph.node_id(), Arc::clone(pool_dyn.k_pool(0).unwrap()));
+            cache.insert(v_ph.node_id(), Arc::clone(pool_dyn.v_pool(0).unwrap()));
+            let mut env = fuel_ir::SymEnv::new();
+            env.bind(sym, linear).unwrap();
+            crate::pipelined_bridge::realize_one_as_with_initial_env::<f32>(
+                out.graph_handle(), out.node_id(), &dev, cache, &env,
+            ).unwrap()
+        };
+        assert_eq!(
+            pool_dyn.read_block_bytes(0, BlockKind::K, phys).unwrap(), ref_k_bytes,
+            "dyn write: K block bytes match the concrete write",
+        );
+        assert_eq!(
+            pool_dyn.read_block_bytes(0, BlockKind::V, phys).unwrap(), ref_v_bytes,
+            "dyn write: V block bytes match the concrete write",
+        );
+        assert_eq!(attn_dyn, attn_ref, "dyn arm paged_attn output is bit-identical to concrete");
+
+        // ---- doff arm: device rank-0 I64 offset (write_slice_doff) ----
+        let (pool_doff, _p, _s, pt_doff) = setup();
+        let attn_doff = {
+            let q = LazyTensor::from_f32(q_data.clone(), q_shape.clone(), &dev);
+            // k_new/v_new must be siblings of q (build_decode_attn's same-graph
+            // contract) — LazyTensor::from_f32 would mint separate graphs.
+            let k_new = q.const_f32_like(k_new_data.clone(), kv_new_shape.clone());
+            let v_new = q.const_f32_like(v_new_data.clone(), kv_new_shape.clone());
+            let k_ph = q.const_placeholder_like(pool_doff.pool_shape_flat(), DType::F32);
+            let v_ph = q.const_placeholder_like(pool_doff.pool_shape_flat(), DType::F32);
+            let bt = q.const_u32_like(pt_doff.block_table.clone(), pt_doff.block_table_shape());
+            let cl = q.const_u32_like(pt_doff.context_lens.clone(), pt_doff.context_lens_shape());
+            let off = q.const_i64_like(vec![linear as i64], Shape::from_dims(&[]));
+            let out = pool_doff
+                .build_decode_attn_off(&k_ph, &v_ph, &q, &k_new, &v_new, &bt, &cl, Some(&off), sym, scale)
+                .unwrap();
+            let mut cache = StorageCache::new();
+            cache.insert(k_ph.node_id(), Arc::clone(pool_doff.k_pool(0).unwrap()));
+            cache.insert(v_ph.node_id(), Arc::clone(pool_doff.v_pool(0).unwrap()));
+            crate::pipelined_bridge::realize_one_as_with_initial::<f32>(
+                out.graph_handle(), out.node_id(), &dev, cache,
+            ).unwrap()
+        };
+        assert_eq!(
+            pool_doff.read_block_bytes(0, BlockKind::K, phys).unwrap(), ref_k_bytes,
+            "doff write: K block bytes match the concrete write",
+        );
+        assert_eq!(
+            pool_doff.read_block_bytes(0, BlockKind::V, phys).unwrap(), ref_v_bytes,
+            "doff write: V block bytes match the concrete write",
+        );
+        assert_eq!(attn_doff, attn_ref, "doff arm paged_attn output is bit-identical to concrete");
     }
 
     /// THE INTEGRATION GATE. A session's K/V, written into the pool's physical
