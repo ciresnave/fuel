@@ -1,8 +1,25 @@
 # Reconstructive ("after-image") memory — design
 
-**Date:** 2026-07-30
+**Date:** 2026-07-30 (sequencing corrected 2026-07-31)
 **Status:** design approved; scheduled, not started
-**Sequenced after:** B0.3 + B0.5 (`fuel-core` retirement), multi-session inference, the RNG/generator-seam decisions
+**Sequenced after:** ~~B0.3 + B0.5~~ **(already complete — see below)**, multi-session
+inference, the RNG/generator-seam decisions
+
+> **Correction, 2026-07-31.** This spec originally listed **B0.3 + B0.5** as a blocker. They
+> were **already complete on 2026-06-27** — `ROADMAP.md:47` reads "B0.1–B0.5 COMPLETE",
+> `fuel-backend-contract/` exists with all six modules, and `fuel-ir/src/dtype.rs:191`
+> documents the `VecOps` supertrait drop. The error came from a stale one-line summary, not
+> from the source docs, which were correct throughout.
+>
+> The *substantive* constraint the blocker was standing in for **still holds**: the generic
+> block-pool core must not land in `fuel-core`. That is now satisfiable immediately rather
+> than gated — `fuel-backend-contract` and `fuel-memory` both exist and are the candidate
+> homes. What remains genuinely open is the **Storage-unification** (merging the closed-enum
+> `fuel_memory::Storage` with the `Box<dyn DynBackendStorage>` handle), which is carved out as
+> blocked on **B6, eager-dispatch retirement** — a different item people mistake for B0.5.
+>
+> So the real remaining gates are **multi-session inference** and the **RNG/generator-seam
+> decisions**, not three.
 
 ---
 
@@ -323,7 +340,15 @@ Policy hooks: what is worth storing, pooling, admission threshold (`‖r‖ > ε
 **Base pool extraction.** `KvBlockPool` is the right *shape* but a KV-typed API
 (`KvGeometry`, `kv_bytes_resident`, `StateKind`). Extract a generic block-pool core that
 **both** `KvBlockPool` and the memory bank build atop. It must not land in `fuel-core`
-(retiring) — hence the B0.3/B0.5 sequencing.
+(retiring). That was originally written as "hence the B0.3/B0.5 sequencing" — but those are
+complete, so this is a **placement decision available now**, not a gate: `fuel-memory` is the
+natural home for a byte/block container, `fuel-backend-contract` for anything the backends
+must see. Pick when the increment is planned.
+
+Note `KvBlockPool` itself still lives in `fuel-core/src/kv_block_pool.rs`, so the extraction
+also *moves* it out of the retiring crate — a second, independent reason to do it. Coordinate
+before touching that file: `fuel-core/src/kv_block_pool_device.rs` and the paged plan-once
+increment are actively worked (peer session, 2026-07-31).
 
 **Content and key are separate, and may come from different places.** `x` is what is
 reconstructed; the *addressing key* is what the bank is looked up by. Increment 1 pairs a
@@ -356,11 +381,34 @@ Follow-on increments, in order: precision decay + floor → migration (copying c
 
 ## 11. Open items
 
-- **Precision ladder (investigate first).** `AffineBlock` is parameterized by
-  `packed: DType`, but the available sub-byte codes have **not** been surveyed — `DType::F4`
-  is the only one named in the `Encoding` docs. If the ladder is effectively F32 → F4 → gone,
-  "graceful degradation" is three steps, not a curve, and the §4.2 floor may not be
-  expressible. Adding rungs is bucket B (cheap) but is real work, not free reuse.
+- ~~**Precision ladder (investigate first).**~~ **RESOLVED 2026-07-31 — the concern was
+  unfounded, and the design is better supported than assumed.** `DType::F4` is *not* the only
+  sub-byte code; the enum (`fuel-ir/src/dtype.rs:14`) carries a genuine curve:
+
+  | rung | bits | `DType` |
+  | --- | --- | --- |
+  | 0 | 32 | `F32` |
+  | 1 | 16 | `F16` / `BF16` |
+  | 2 | 8 | `F8E4M3` (also `F8E8M0`, `I8`, `U8`) |
+  | 3 | 6 | `F6E2M3` / `F6E3M2` |
+  | 4 | 4 | `F4` |
+
+  Five rungs, so §4.1's `bits ≈ log₂(‖r‖/ε)` has real resolution and §4.2's
+  detection-derived floor **is** expressible. All of `F8E4M3`/`F6*`/`F4` have handling
+  outside the enum arms (`convert.rs`, `safetensors.rs`, `display.rs`,
+  `fuel-cpu-backend/src/dyn_impl.rs`), so these are wired codes, not reserved names.
+
+  **One concrete gap remains, and it is smaller than the original worry:** there is **no
+  bit-width accessor**. `DType::size_in_bytes()` (`dtype.rs:110`) returns **`0`** for exactly
+  the three sub-byte rungs — a sentinel meaning "ask elsewhere", not a width. So selecting a
+  rung from a bit budget needs a `DType::bit_width() -> u32` returning 4/6/8/16/32/64.
+  Additive, bucket **B**, trivially testable against `size_in_bytes()` for the byte-aligned
+  types. That is now a *known small task*, not an open question.
+
+  Not verified, and deferred to the increment that needs it: whether
+  `Encoding::AffineBlock { packed, .. }` has kernel support for `packed` values *other than*
+  `F4` (NF4/QLoRA is the proven path). Increment 1 stores at F32 and does not decay, so this
+  does not gate it.
 - **Online/test-time update path.** Whether `fuel-training` supports inference-time weight
   updates is **unverified**. Not on increment 1's path; required before consolidation lands.
 - **Verify the bucket-E claim** (§8) before scheduling.
