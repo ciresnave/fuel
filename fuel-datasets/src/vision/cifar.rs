@@ -1,10 +1,10 @@
-﻿//! The CIFAR-10 dataset.
+//! The CIFAR-10 dataset.
 //!
 //! The files can be downloaded from the following page:
 //! <https://www.cs.toronto.edu/~kriz/cifar.html>
 //! The binary version of the dataset is used.
 use crate::vision::Dataset;
-use fuel::{DType, Device, Error, Result, Tensor};
+use fuel::{Error, Result};
 use hf_hub::{api::sync::Api, Repo, RepoType};
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use std::fs::File;
@@ -16,7 +16,9 @@ const C: usize = 3;
 const BYTES_PER_IMAGE: usize = W * H * C + 1;
 const SAMPLES_PER_FILE: usize = 10000;
 
-fn read_file(filename: &std::path::Path) -> Result<(Tensor, Tensor)> {
+/// Returns `(pixels, labels)`. The `.bin` files already store CHW, so this path
+/// needs no reordering — only the u8 -> f32/255 normalization, done on the host.
+fn read_file(filename: &std::path::Path) -> Result<(Vec<f32>, Vec<u32>)> {
     let mut buf_reader = BufReader::new(File::open(filename)?);
     let mut data = vec![0u8; SAMPLES_PER_FILE * BYTES_PER_IMAGE];
     buf_reader.read_exact(&mut data)?;
@@ -33,9 +35,8 @@ fn read_file(filename: &std::path::Path) -> Result<(Tensor, Tensor)> {
         .flatten()
         .copied()
         .collect::<Vec<_>>();
-    let labels = Tensor::from_vec(labels, SAMPLES_PER_FILE, &Device::cpu())?;
-    let images = Tensor::from_vec(images, (SAMPLES_PER_FILE, C, H, W), &Device::cpu())?;
-    let images = (images.to_dtype(DType::F32)? / 255.)?;
+    let labels: Vec<u32> = labels.into_iter().map(u32::from).collect();
+    let images: Vec<f32> = images.into_iter().map(|b| f32::from(b) / 255.0).collect();
     Ok((images, labels))
 }
 
@@ -64,15 +65,20 @@ pub fn load_dir<T: AsRef<std::path::Path>>(dir: T) -> Result<Dataset> {
     let (train_images, train_labels): (Vec<_>, Vec<_>) =
         train_images_and_labels.into_iter().unzip();
     Ok(Dataset {
-        train_images: Tensor::cat(&train_images, 0)?,
-        train_labels: Tensor::cat(&train_labels, 0)?,
+        train_images: train_images.concat(),
+        train_labels: train_labels.concat(),
         test_images,
         test_labels,
         labels: 10,
+        image_dims: vec![C, H, W],
+        train_samples: SAMPLES_PER_FILE * 5,
+        test_samples: SAMPLES_PER_FILE,
     })
 }
 
-fn load_parquet(parquet: SerializedFileReader<std::fs::File>) -> Result<(Tensor, Tensor)> {
+fn load_parquet(
+    parquet: SerializedFileReader<std::fs::File>,
+) -> Result<(Vec<f32>, Vec<u32>, usize)> {
     let samples = parquet.metadata().file_metadata().num_rows() as usize;
     let mut buffer_images: Vec<u8> = Vec::with_capacity(samples * 1_024);
     let mut buffer_labels: Vec<u8> = Vec::with_capacity(samples);
@@ -93,12 +99,28 @@ fn load_parquet(parquet: SerializedFileReader<std::fs::File>) -> Result<(Tensor,
         }
     }
     // Reorder image-rs convention (width, height, channels) to fuel/pytorch convolution convention (channels, height, width)
-    let images = (Tensor::from_vec(buffer_images, (samples, 32, 32, 3), &Device::cpu())?
-        .to_dtype(DType::F32)?
-        .permute((0, 3, 2, 1))?
-        / 255.)?;
-    let labels = Tensor::from_vec(buffer_labels, (samples,), &Device::cpu())?;
-    Ok((images, labels))
+    // Replicates the eager `.permute((0, 3, 2, 1))` EXACTLY, by index:
+    //     out[s][d3][d2][d1] = in[s][d1][d2][d3]
+    // Note this swaps the two 32-axes as well as moving the channel axis.
+    // Because H == W == 32 for CIFAR that swap is INVISIBLE in the shape, so
+    // getting it wrong would silently transpose every image rather than fail.
+    const D1: usize = 32;
+    const D2: usize = 32;
+    const D3: usize = 3;
+    let mut images = vec![0.0_f32; samples * D1 * D2 * D3];
+    for s in 0..samples {
+        for d1 in 0..D1 {
+            for d2 in 0..D2 {
+                for d3 in 0..D3 {
+                    let src = ((s * D1 + d1) * D2 + d2) * D3 + d3;
+                    let dst = ((s * D3 + d3) * D2 + d2) * D1 + d1;
+                    images[dst] = f32::from(buffer_images[src]) / 255.0;
+                }
+            }
+        }
+    }
+    let labels: Vec<u32> = buffer_labels.into_iter().map(u32::from).collect();
+    Ok((images, labels, samples))
 }
 
 /// Download and load the CIFAR-10 dataset via the Hugging Face hub.
@@ -108,7 +130,7 @@ fn load_parquet(parquet: SerializedFileReader<std::fs::File>) -> Result<(Tensor,
 /// ```no_run
 /// use fuel_datasets::vision::cifar;
 /// let dataset = cifar::load()?;
-/// println!("train images: {:?}", dataset.train_images.dims());
+/// println!("train samples: {}, dims: {:?}", dataset.train_samples, dataset.image_dims);
 /// # Ok::<(), fuel::Error>(())
 /// ```
 pub fn load() -> Result<Dataset> {
@@ -130,13 +152,16 @@ pub fn load() -> Result<Dataset> {
         .map_err(|e| Error::Msg(format!("Parquet error: {e}")))?;
     let train_parquet = SerializedFileReader::new(std::fs::File::open(train_parquet_filename)?)
         .map_err(|e| Error::Msg(format!("Parquet error: {e}")))?;
-    let (test_images, test_labels) = load_parquet(test_parquet)?;
-    let (train_images, train_labels) = load_parquet(train_parquet)?;
+    let (test_images, test_labels, test_samples) = load_parquet(test_parquet)?;
+    let (train_images, train_labels, train_samples) = load_parquet(train_parquet)?;
     Ok(crate::vision::Dataset {
         train_images,
         train_labels,
         test_images,
         test_labels,
         labels: 10,
+        image_dims: vec![C, H, W],
+        train_samples,
+        test_samples,
     })
 }
