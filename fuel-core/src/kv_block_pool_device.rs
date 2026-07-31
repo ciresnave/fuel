@@ -459,6 +459,38 @@ impl DeviceKvPool {
         Ok(PageTableHost { block_table, context_lens, batch, max_blocks })
     }
 
+    /// Capacity-padded sibling of [`Self::materialize_block_table`]: every row is
+    /// right-padded with 0 to a FIXED width `max_blocks_cap`, so the block_table
+    /// shape `[B, max_blocks_cap]` is constant across decode steps — the paged
+    /// plan-once prerequisite. Padded entries (0) are in-bounds and neutralized
+    /// by `Op::PagedAttn`'s `context_len` mask (a padded key position is always
+    /// `>= context_len`). Errors if a session already occupies more than
+    /// `max_blocks_cap` blocks.
+    pub fn materialize_block_table_padded(
+        &self,
+        sessions: &[SessionHandle],
+        max_blocks_cap: usize,
+    ) -> std::result::Result<PageTableHost, KvAllocError> {
+        let batch = sessions.len();
+        let cap = max_blocks_cap.max(1); // >= 1 so the tensor is well-formed rank-2
+        let mut block_table = vec![0u32; batch * cap];
+        let mut context_lens: Vec<u32> = Vec::with_capacity(batch);
+        for (bi, &s) in sessions.iter().enumerate() {
+            let row = self.core.session_block_table(s)?;
+            if row.len() > cap {
+                // The fixed capacity can't hold this session's blocks — a caller
+                // bug (pass a cap >= ceil(max_seq_len / block_size)). Never truncate.
+                return Err(KvAllocError::OutOfBlocks { need: row.len(), have: cap });
+            }
+            for (i, &p) in row.iter().enumerate() {
+                block_table[bi * cap + i] = p;
+            }
+            let filled = self.core.filled_tokens(s).ok_or(KvAllocError::UnknownSession)?;
+            context_lens.push(filled as u32);
+        }
+        Ok(PageTableHost { block_table, context_lens, batch, max_blocks: cap })
+    }
+
     // --- paged decode step (the storage integration building block) -------
 
     /// Build (does NOT realize) one decode step's paged attention for one layer:
@@ -968,6 +1000,65 @@ mod tests {
                 ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.5
             })
             .collect()
+    }
+
+    /// Paged plan-once Task 1: a capacity-PADDED block_table (`[B, CAP]`,
+    /// 0-padded) plus the `context_len` mask produces byte-identical `paged_attn`
+    /// output to the L-fitted block_table (`[B, N]`). Padded key positions are
+    /// `>= context_len`, so the op's mask drives them to `−inf` before softmax
+    /// (`exp(−inf)=0`, added exactly), leaving the result bit-identical. That
+    /// means the block_table SHAPE can be a FIXED capacity across decode steps
+    /// instead of growing with L — the structural prerequisite for one cached plan.
+    #[test]
+    fn padded_block_table_paged_attn_matches_unpadded() {
+        let (hq, hkv, d, block_size, sk) = (2usize, 2usize, 4usize, 4usize, 12usize);
+        let num_blocks = 8;
+        let cap = 6; // fixed capacity > the session's 3 resident blocks
+        let scale = 1.0f32 / (d as f32).sqrt();
+        let dev = Device::cpu();
+
+        let g = KvGeometry {
+            n_layers: 1, num_blocks, block_size, n_kv_heads: hkv, head_dim: d, elem_size: 4,
+        };
+        let mut pool = DeviceKvPool::new(g, DType::F32, &dev).unwrap();
+        let s = pool.core_mut().open();
+        pool.core_mut().append(s, sk).unwrap(); // 12 tokens → 3 blocks
+        let phys = pool.core().session_block_table(s).unwrap();
+
+        let k_all = rand_f32(sk * hkv * d, 2);
+        let v_all = rand_f32(sk * hkv * d, 3);
+        let q_data = rand_f32(hq * d, 1);
+        let per_block = block_size * hkv * d;
+        for (b, &p) in phys.iter().enumerate() {
+            pool.write_block(0, BlockKind::K, p, &k_all[b * per_block..(b + 1) * per_block]).unwrap();
+            pool.write_block(0, BlockKind::V, p, &v_all[b * per_block..(b + 1) * per_block]).unwrap();
+        }
+
+        let pt_fit = pool.materialize_block_table(&[s]).unwrap();
+        let pt_pad = pool.materialize_block_table_padded(&[s], cap).unwrap();
+        assert_eq!(pt_fit.block_table_shape().dims(), &[1, phys.len()], "L-fitted width");
+        assert_eq!(pt_pad.block_table_shape().dims(), &[1, cap], "padded width is the fixed capacity");
+        assert_eq!(pt_pad.context_lens, pt_fit.context_lens, "same context_lens");
+
+        let run = |pt: &PageTableHost| -> Vec<f32> {
+            let q = LazyTensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, 1, d]), &dev);
+            let kc = q.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
+            let vc = q.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
+            let bt = q.const_u32_like(pt.block_table.clone(), pt.block_table_shape());
+            let cl = q.const_u32_like(pt.context_lens.clone(), pt.context_lens_shape());
+            let out = q.paged_attn(&kc, &vc, &bt, &cl, None, scale, block_size, None).unwrap();
+            let mut cache = StorageCache::new();
+            cache.insert(kc.node_id(), Arc::clone(pool.k_pool(0).unwrap()));
+            cache.insert(vc.node_id(), Arc::clone(pool.v_pool(0).unwrap()));
+            crate::pipelined_bridge::realize_one_as_with_initial::<f32>(
+                out.graph_handle(), out.node_id(), &dev, cache,
+            ).unwrap()
+        };
+
+        assert_eq!(
+            run(&pt_pad), run(&pt_fit),
+            "capacity-padded block_table (mask-neutralized pad) == L-fitted, byte-identical",
+        );
     }
 
     /// THE INTEGRATION GATE. A session's K/V, written into the pool's physical
