@@ -125,11 +125,27 @@ pub struct DeviceDescriptor {
     /// CUDA compute capability, when applicable. `None` for non-CUDA
     /// entries. Stored as `(major, minor)` — e.g. `(8, 9)` for sm_89.
     pub compute_capability: Option<(u32, u32)>,
-    /// Lanes per subgroup / wave / warp — the primary kernel-
-    /// specialization axis on every SIMT backend. 32 on NVIDIA, 64 on
-    /// AMD GCN/CDNA, 32 *or* 64 on RDNA, 8/16/32 on Intel. `None` when
-    /// the backend cannot report it (CPU, or a Vulkan instance created
-    /// below 1.1).
+    /// The **default** lanes per subgroup / wave / warp — the primary
+    /// kernel-specialization axis on every SIMT backend. 32 on NVIDIA,
+    /// 64 on AMD GCN/CDNA, 32 *or* 64 on RDNA, 8/16/32 on Intel.
+    /// `None` when the backend cannot report it (CPU, or a Vulkan
+    /// instance created below 1.1).
+    ///
+    /// **This is the default width a shader sees, NOT the set the
+    /// device supports.** A device may *admit several*: an AMD 610M
+    /// reports a default of 64 while admitting dynamic, 32 and 64.
+    /// Vulkan exposes the pinnable range through
+    /// `SubgroupProperties::size_control`, which is 1.3 core / the EXT
+    /// — unreachable from Fuel's V1_2 instances today, so only the
+    /// default is captured here.
+    ///
+    /// **Consequence if Fuel ever specializes kernels by wave width:
+    /// `Option<u32>` is then the wrong shape**, not merely
+    /// under-documented — a wave32-pinned kernel and a wave64 one are
+    /// different cells, so the descriptor would need *the admissible
+    /// set plus the default*. Mirror vulkane's split
+    /// (`admissible_subgroups()` alongside `default_subgroup`) rather
+    /// than widening this field in place.
     ///
     /// Deliberately **not** part of [`EquivalenceKey`]: it is a
     /// function of `(vendor_id, device_id)`, which the key already
