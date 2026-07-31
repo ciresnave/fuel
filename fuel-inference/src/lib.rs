@@ -1,4 +1,4 @@
-﻿//! # fuel-inference
+//! # fuel-inference
 //!
 //! **Layer**: Inference  |  **Stability**: experimental
 //!
@@ -12,7 +12,6 @@
 //! - **KV cache** — [`kv_cache`] re-exports and unifies all cache variants
 //!   (`Cache`, `KvCache`, `RotatingKvCache`, `ConcatKvCache`, `ScatteredKvCache`)
 //!   currently living in `fuel-core`.
-//! - **Sampling** — [`sampling`] exposes `gumbel_softmax` and related utilities
 //!   currently living in `fuel-core`.
 //! - **Logits processing** — [`generation`] holds `LogitsProcessor`, `Sampling`,
 //!   and all decode-time logit strategies currently living in `fuel-transformers`.
@@ -114,13 +113,6 @@ pub mod generation {
 pub mod kv_cache {
     pub use fuel::inference_context::KvCache;
     pub use fuel::lazy_kv_cache::*;
-}
-
-/// Gumbel-softmax and other sampling primitives.
-///
-/// Re-exported from `fuel_core::sampling`.
-pub mod sampling {
-    pub use fuel::sampling::*;
 }
 
 // ── Native inference modules ──────────────────────────────────────────────
