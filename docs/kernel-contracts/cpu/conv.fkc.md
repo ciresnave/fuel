@@ -18,7 +18,7 @@ element width and the accumulation/narrowing rule: f32/f64 accumulate natively, 
 in **f32** and narrow on store (the family precision invariant). All eight are primitive `op_kind`
 contracts (convolution is **not** a fused op — `OpParams::Conv2D` / `OpParams::ConvTranspose2D`,
 `fuel-dispatch/src/kernel.rs:222` / `:244`; `OpKind::Conv2D` / `OpKind::ConvTranspose2D`,
-`fuel-core-types/src/dispatch.rs:122` / `:127`).
+`fuel-ir/src/dispatch.rs:122` / `:127`).
 
 Sources: `conv2d_f32` is hand-written (`fuel-cpu-backend/src/byte_kernels.rs:7162`); `conv2d_f64` is
 the native macro `conv2d_native_kernel!` (`:4380`); `conv2d_bf16` / `conv2d_f16` are the

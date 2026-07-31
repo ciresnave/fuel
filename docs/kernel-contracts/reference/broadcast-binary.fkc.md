@@ -52,7 +52,7 @@ on Fuel's production surface the equivalent shape mismatch is rejected at graph-
 > **Dispatch-key note (faithful mapping).** Fuel's dispatch surface has **no
 > `OpKind::BroadcastAdd`/`Sub`/`Mul`/`Div`** — the broadcasting binary semantic dispatches under
 > the *same* `OpKind` as the same-shape binary (`AddElementwise` / `SubElementwise` /
-> `MulElementwise` / `DivElementwise`, `fuel-core-types/src/dispatch.rs:56-62`). What distinguishes
+> `MulElementwise` / `DivElementwise`, `fuel-ir/src/dispatch.rs:56-62`). What distinguishes
 > a broadcast-binary contract from the same-shape `add`/`sub`/`mul`/`div` contract at that key is
 > the **accept shape predicate**: a broadcast contract admits a `broadcast_to`-related operand pair
 > (`shape_constraint: broadcast_to`), whereas the same-shape contract requires exact-equal dims.

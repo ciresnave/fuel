@@ -26,7 +26,7 @@ tril/pad/concat/slice all do this via a flat-3-axis or row-major walk) the input
 dense contiguous `RefTensor`; that internal math is not a strided-input capability.
 
 `Op::Flip` is explicitly a **materializing** op in this crate, not a negative-stride view:
-`fuel-core-types/src/dispatch.rs:257-260` records "Layout strides are unsigned; the negative-stride
+`fuel-ir/src/dispatch.rs:257-260` records "Layout strides are unsigned; the negative-stride
 view path requires a wider stride representation that's a separate scope." So `flip` here copies to
 a fresh contiguous buffer and declares `reverse_strides: rejected` on both accept and return —
 the zero-copy negative-stride flip of §4.1.1 is a *different* (GPU/strided) backend's capability,
@@ -719,7 +719,7 @@ same shape. The kernel views the tensor as a flat `outer × dim_size × inner` w
 each row in reversed order — **a materializing copy, not a negative-stride view**. Dtype-agnostic at
 the byte level (`T: Copy + Default`), so `u32` is admissible. Output is a fresh contiguous buffer.
 
-> **Materializing, NOT `reverse_strides`.** Per `fuel-core-types/src/dispatch.rs:257-260`, this crate's
+> **Materializing, NOT `reverse_strides`.** Per `fuel-ir/src/dispatch.rs:257-260`, this crate's
 > unsigned `Layout` strides cannot represent a backward walk, so `flip` copies. Both accept and return
 > declare `reverse_strides: rejected`. The zero-copy negative-stride flip of FKC §4.1.1 is a different
 > backend's capability; the oracle does not advertise it.
@@ -1042,7 +1042,7 @@ supported on U32 (index) tensors"), so index tensors are not admissible here.
 > Layout is derived by `derive_view_output_layout` → `input_layout.broadcast_as(target)`
 > (`lib.rs:1124`) with **no Storage allocation** (a stride-0 broadcast view; the layout side-table
 > note at `lib.rs:1385` lists `Op::BroadcastTo` among the metadata-only view ops). **There is NO
-> `OpKind::BroadcastTo`** in the dispatch enum (`fuel-core-types/src/dispatch.rs`) and **no
+> `OpKind::BroadcastTo`** in the dispatch enum (`fuel-ir/src/dispatch.rs`) and **no
 > `BroadcastTo` `OpParams`/`FusedOpParams` carrier** — the forward broadcast never reaches the
 > binding table or the fused registry; it is satisfied entirely by the layout rewrite (the executor's
 > `eval_broadcast_to` is the materialized oracle fallback that still hits the zero-copy `Arc`-share

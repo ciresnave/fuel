@@ -14,14 +14,14 @@ This bundle contracts the **quantize-direction** numeric kernels of `fuel-quanti
 `GgmlType::from_float` (round-trip quantize) and `GgmlType::from_float_imatrix`
 (importance-matrix-weighted quantize) implementations in `fuel-quantized/src/k_quants.rs`. They are
 the backend-agnostic ggml/gguf block-format quantizers — the numeric body behind
-`DynQuantizedStorage::quantize` / `quantize_imatrix` (`fuel-core-types/src/quantized.rs:130,133`).
+`DynQuantizedStorage::quantize` / `quantize_imatrix` (`fuel-ir/src/quantized.rs:130,133`).
 
 > **AS-BUILT DISPATCH NOTE — read before trusting `op_kind`.** There is **no `Quantize` /
-> `FromFloat` `OpKind`** in the as-built dispatch enum (`fuel-core-types/src/dispatch.rs:52`); the
+> `FromFloat` `OpKind`** in the as-built dispatch enum (`fuel-ir/src/dispatch.rs:52`); the
 > only quant-direction `OpKind` is `QMatMul` (line 356). These quantizers are **not** registered as
 > standalone primitive kernels on the `KernelBindingTable` at a `(OpKind, dtypes, backend)` key the
 > way `binary` is; they reach the dispatch surface through the **`DynQuantizedStorage::quantize` /
-> `quantize_imatrix` trait methods** (`fuel-core-types/src/quantized.rs:124-149`), which the CPU
+> `quantize_imatrix` trait methods** (`fuel-ir/src/quantized.rs:124-149`), which the CPU
 > adapter (`fuel-quantized/src/cpu.rs` `QuantizedType`) forwards to these `from_float*` impls.
 > Per the never-invent / never-re-number discipline (§0), the `op_kind:` slot below names the
 > **closest honest dispatch tag**, `QMatMul` (the only `OpKind` these block formats participate in),
@@ -30,7 +30,7 @@ the backend-agnostic ggml/gguf block-format quantizers — the numeric body behi
 > `OpKind::Quantize` (or a `DynQuantizedStorage`-trait FKC import surface) would let these register
 > as their own keyed kernels; until it lands the `op_kind` slot is the closest faithful tag and the
 > trait-method path is authoritative. The `Capability` tokens `QuantizeQ8_0`
-> (`fuel-core-types/src/capability.rs:73`) are the only quantize-direction capability codes that
+> (`fuel-ir/src/capability.rs:73`) are the only quantize-direction capability codes that
 > exist as-built; no broader per-format quantize capability set exists yet.
 
 **Crate-wide layout reality (applies to EVERY kernel here, from the inventory).** Every kernel

@@ -11,7 +11,7 @@ provider:
 # fuel-cpu-backend — cast kernel contracts
 
 Directional dtype-conversion kernels from `fuel-cpu-backend/src/byte_kernels.rs`. One logical
-`Cast` op (`OpKind::Cast`, `fuel-core-types/src/dispatch.rs:117`; `OpParams::Cast` unit variant,
+`Cast` op (`OpKind::Cast`, `fuel-ir/src/dispatch.rs:117`; `OpParams::Cast` unit variant,
 `fuel-dispatch/src/kernel.rs:352`) is realized as **distinct directional kernels** — each
 (src dtype → dst dtype) pair is a separate kernel because the input and output element widths
 differ, so the output byte size differs from the input. The binding-table lookup is keyed on the

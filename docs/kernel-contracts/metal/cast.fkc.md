@@ -13,7 +13,7 @@ provider:
 Dtype-conversion kernels for the Metal backend (crate `metal`, family `cast`), from
 `metal_src/cast.metal:36-104` and the `kernels/cast.rs` dispatch wrappers, wired by
 `fuel-metal-backend` `to_dtype()` (`storage.rs:543-663`). Both kernels implement `OpKind::Cast`
-(`fuel-core-types/src/dispatch.rs:117`). The `OpParams::Cast` variant is a unit marker
+(`fuel-ir/src/dispatch.rs:117`). The `OpParams::Cast` variant is a unit marker
 (`fuel-dispatch/src/kernel.rs:352`) — the **target** dtype is not a param; it lives on the output
 Storage's `dtype` field, so the output dtype rule is `cast(output)` (§5.1). The conversion is a
 straight `out = U(IR(in))` cast chain where `IR` (the intermediate) defaults to `T` and is **unused

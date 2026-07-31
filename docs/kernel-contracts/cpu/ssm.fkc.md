@@ -17,7 +17,7 @@ so this bundle registers 16 primitive `op_kind` contracts:
 
 - **`fused_softmax_cross_entropy_{f32,f64,bf16,f16}`** — `OpKind::FusedSoftmaxCrossEntropy`,
   `OpParams::FusedSoftmaxCrossEntropy` (`fuel-dispatch/src/kernel.rs:604`; `OpKind` at
-  `fuel-core-types/src/dispatch.rs:463`). Source: the `fused_softmax_cross_entropy_kernel!` macro,
+  `fuel-ir/src/dispatch.rs:463`). Source: the `fused_softmax_cross_entropy_kernel!` macro,
   `fuel-cpu-backend/src/byte_kernels.rs:5155`, instantiated `:5251-5262`.
 - **`causal_conv1d_{f32,f64,bf16,f16}`** — `OpKind::CausalConv1d`, `OpParams::CausalConv1d`
   (`kernel.rs:621`; `OpKind` `dispatch.rs:472`). Source: `causal_conv1d_native_kernel!` (`:5348`,

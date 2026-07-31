@@ -19,7 +19,7 @@ precision story is byte-exact dtype-passthrough rather than a numeric bound. Ren
 the importer reads only the ` ```fkc ` blocks.
 
 > **As-built dispatch-key note (faithfulness).** `index_select`, `gather`, `index_add`, and
-> `scatter_add` each have a real `OpKind` (`fuel-core-types/src/dispatch.rs:326,331,339,345`) and
+> `scatter_add` each have a real `OpKind` (`fuel-ir/src/dispatch.rs:326,331,339,345`) and
 > an `OpParams` carrier (`fuel-dispatch/src/kernel.rs:413,424,455,467`). `where_cond` is
 > `OpKind::Where` (`dispatch.rs:215`) and rides `OpParams::None` (it is an elementwise ternary —
 > shape/stride data is derived from the operand layouts at dispatch; `kernel.rs:167`). **`scatter`

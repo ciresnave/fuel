@@ -48,7 +48,7 @@ element is written exactly once (no accumulation), so pre-zeroing is **not** req
 
 ```fkc
 kernel: conv2d_direct
-op_kind: Conv2D                # OpKind::Conv2D (fuel-core-types/src/dispatch.rs:122)
+op_kind: Conv2D                # OpKind::Conv2D (fuel-ir/src/dispatch.rs:122)
 blurb: "Reference conv2d forward by direct nested loops over (N, groups, Cout/g, Hout, Wout, Cin/g, Kh, Kw); f32/f64 host slices, contiguous NCHW/OIHW only."
 backend: Cpu
 kernel_source: "fuel-conv-reference"
@@ -142,7 +142,7 @@ NOTE (faithful to as-built): there is **no** as-built `OpKind::Im2Col` / `OpPara
 variant — im2col is a fuel-conv free function parameterized by the crate-local `ConvShape`
 (`fuel-conv/src/lib.rs:48`), not a Fuel dispatch op. Per the never-invent / never-re-number
 discipline (§0, invariant 10), the `op_kind:` slot below names the **closest honest dispatch tag**,
-`Conv2D` (`OpKind::Conv2D`, `fuel-core-types/src/dispatch.rs:122`) — the only `OpKind` im2col
+`Conv2D` (`OpKind::Conv2D`, `fuel-ir/src/dispatch.rs:122`) — the only `OpKind` im2col
 participates in (it is the patch-extraction sub-step `conv2d_via_gemm` lowers through) — and is
 flagged **[consumer-ahead]** rather than fabricating an `Im2Col` variant. This contract records that
 the param carrier is `ConvShape` (not a `fuel-dispatch::OpParams` variant); until a dedicated
