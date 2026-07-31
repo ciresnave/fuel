@@ -1,0 +1,97 @@
+# Paged plan-once decode — Implementation Plan
+
+> Executed INLINE (superpowers:executing-plans) by the author, who has full context. Steps are TDD; each task ends independently testable. Line numbers are `fuel` @ the branch tip — GREP the symbol, don't trust the line.
+
+**Goal:** Make paged decode build its graph + optimized plan ONCE and reuse it across tokens (a `PagedDecodeSession`, the paged twin of the contiguous `DecodeSession`), behind a runtime flag — targeting the ~90% of per-token paged cost that is the planner (Lightbulb: plan≈4s vs execute≈0.95s; paged pays plan+execute every token).
+
+**Architecture:** Mirror `DecodeSession` (inference_context.rs) + its `prebuild_optimized_capturing…`/`realize_one_prebuilt_env` machinery (pipelined_bridge.rs) for the paged forward. The map found ONLY TWO structural variabilities that force a re-plan: (1) the fresh `LazyTensor::from_f32` graph root per call, and (2) the L-varying `block_table` shape (`max_blocks = max(row.len())`). Everything else is shape-stable data (rebind via the existing `const_placeholder_like` + `StorageCache::insert` precedent already in `forward_paged_step`) or a concrete write offset (symbolize via the existing `write_slice_dyn`/`write_slice_doff` precedent). `Op::PagedAttn` already tolerates a fixed-capacity padded block_table + the `context_len` mask (confirmed in the decompose recipe: score width `max_blk*block_size`, mask `Ge(pos, context_len)→−inf`).
+
+**Tech stack:** Rust, fuel-core lazy DAG. Reuses: `DecodeSession`, `prebuild_optimized_capturing_as_with_env`, `realize_one_prebuilt_env`, `const_placeholder_like`, `StorageCache`, `write_slice_dyn`/`write_slice_doff`, `SymId`/`SymEnv`.
+
+## Global constraints
+- Single cargo invocation at a time; `-p fuel-core` only; never workspace-wide.
+- TDD: born-red observed before green. Never-panic (Result). f32/CPU-verifiable throughout (no GPU needed — the win is CPU-side planning).
+- Commit-producing work in the `fuel-kv-alloc` worktree; push to origin/main after re-fetch.
+- **Plan-once must land as ONE commit with a clean parent** (Lightbulb re-pins fuel-lightbulb-port to parent=before, commit=after; a fresh 4c2e9407-free base avoids the ragged confound).
+
+## Test design (Lightbulb-hardened — the gate must have teeth)
+The correctness gate is flag-toggled and runs BOTH arms in one process:
+- **plan-once arm:** assert plan **HIT** + byte-identical to the control (catches flag-off).
+- **control (re-planning) arm:** assert plan **MISS** (catches flag stuck ON — the inversion where a control secretly running plan-once passes identity self-vs-self, passes HIT, and reads ~1.0× = "doesn't help", a false negative that would retire the feature).
+- **mutation check** on each guard: force the opposite (stub the cache to always-miss / always-hit) → confirm the test goes RED. Proves the assertions have teeth before relying on them.
+- **ragged coverage:** staggered positions (the 4c2e9407 batched work) — where a cached plan is *wrong* not merely rebuilt; the lockstep-uniform sweep won't exercise it.
+- Perf (Lightbulb runs, single harness, parent-vs-commit): warm-up/steady ratio must move above 1.0 (instrumentation-independent). Never compute plan/execute as a residual (tautology) — use a difference of two direct measurements.
+
+---
+
+### Task 1 — Fixed-capacity (padded) block_table
+
+**Files:** Modify `fuel-core/src/kv_block_pool_device.rs` (`materialize_block_table` / `PageTableHost`). Test: same file's `tests`.
+
+**Why:** removes structural variability #2. Today `materialize_block_table` sets `max_blocks = rows.iter().map(|r| r.len()).max().max(1)` = f(L). Add a capacity-padded variant so the `[B, max_blocks]` shape is constant across steps. Padded entries are 0 (in-bounds); the `context_len` mask neutralizes them.
+
+**Interface produced:** `DeviceKvPool::materialize_block_table_padded(&self, sessions: &[SessionHandle], max_blocks_cap: usize) -> Result<PageTableHost, KvAllocError>` — same as `materialize_block_table` but every row is right-padded with 0 to width `max_blocks_cap` (errors if any session already occupies `> max_blocks_cap` blocks). `PageTableHost.max_blocks == max_blocks_cap`.
+
+- [ ] **Step 1 (RED):** test `padded_block_table_paged_attn_matches_unpadded` — build a pool, one session at ~sk tokens (occupies N<CAP blocks), compute `paged_attn` two ways: (a) `materialize_block_table` (`[B,N]`), (b) `materialize_block_table_padded(.., CAP)` (`[B,CAP]`, 0-padded) with the SAME `context_lens`; assert the two realized outputs are byte-identical (the mask neutralizes the pad). Also assert `pt.block_table_shape().dims() == [B, CAP]`.
+- [ ] **Step 2:** run → RED (method missing).
+- [ ] **Step 3 (GREEN):** implement `materialize_block_table_padded` (reuse `materialize_block_table`'s row projection; pad each row to `max_blocks_cap`; set `max_blocks = max_blocks_cap`; error on overflow).
+- [ ] **Step 4:** run → GREEN. Regress the existing `materialize_block_table` tests.
+- [ ] **Step 5:** commit `feat(kv-pool): capacity-padded block_table (paged plan-once prereq)`.
+
+---
+
+### Task 2 — Symbolic K/V write offset (graph-stable pool write)
+
+**Files:** Modify `fuel-core/src/kv_block_pool_device.rs` (`build_decode_attn` / `build_decode_attn_batched` write path). Test: same file.
+
+**Why:** removes the per-step write-range variability. Today `build_decode_attn` writes the new K/V at CONCRETE `slot_ranges = [(p,p+1),(slot,slot+1),(0,Hkv),(0,D)]` via plain `write_slice`, so the write op changes every step. Reshape the pool buffer `[num_blocks, block_size, Hkv, D] → [num_blocks*block_size, Hkv, D]`, write `[1,Hkv,D]` at flattened offset `linear = phys*block_size + slot` via `write_slice_doff` (device offset scalar) / `write_slice_dyn` (SymEnv), then the `[num_blocks,block_size,…]` view feeds `paged_attn`. Offset is a single DynScalar bound per step.
+
+**Interface produced:** a `build_decode_attn` variant taking the write offset as a bound scalar (device `LazyTensor` offset or `SymId`), mirroring `apply_layer_with_kv_writes`'s `write_slice_doff`/`write_slice_dyn` split (lazy.rs ~:7404/:7409).
+
+- [ ] **Step 1 (RED):** test `symbolic_offset_write_matches_concrete_write` — write the same K/V into the same (phys,slot) two ways (concrete `write_slice` vs flattened symbolic offset), realize the post-write pool block via `read_block_bytes`, assert byte-identical. Then the full `build_decode_attn` output byte-identical.
+- [ ] **Step 2:** run → RED.
+- [ ] **Step 3 (GREEN):** implement the flattened symbolic-offset write; verify the reshape composes with the pool-buffer placeholder binding (the buffer is mutated in place).
+- [ ] **Step 4:** run → GREEN + regress the existing decode-attn parity tests.
+- [ ] **Step 5:** commit `feat(kv-pool): symbolic K/V write offset (paged plan-once prereq)`.
+
+---
+
+### Task 3 — `PagedDecodeSession` + `forward_paged_step_persistent` (build-once / rebind)
+
+**Files:** Modify `fuel-core/src/lazy.rs` (new `forward_paged_step_persistent`, build-once + rebind helpers) + `fuel-core/src/inference_context.rs` (new `PagedDecodeSession`, mirroring `DecodeSession` :778). Test: `lazy.rs` tests.
+
+**Why:** removes structural variability #1 (fresh root) — the ~90% lever. Mirror `DecodeSession`: build the paged decode graph ONCE with `const_placeholder_like` data nodes (token_ids, rope tables, block_table[B,CAP], context_lens) + the symbolic write offset, call `prebuild_optimized_capturing_as_with_env` to cache the `OptimizedGraph` + `base_cache`, store a `PagedDecodeSession`; per subsequent token recompute the per-token Arcs + bind the write-offset scalar + `realize_one_prebuilt_env`.
+
+**Interface produced:** `PagedDecodeSession { graph, optimized: OptimizedGraph, effective_target, logits_node, token_ids_node, rope_*_node, block_table_node, context_lens_node, kv_nodes, write_offset_node/sym, base_cache, validity keys }` + `LlamaModel::forward_paged_step_persistent(&self, token, pool, session_handle, decode_session: &mut Option<PagedDecodeSession>) -> Result<Vec<f32>>` (seq==1; invalid/absent → build-once; valid → rebind; `TopologyChanged` → drop + fall back to `forward_paged_step`).
+
+- [ ] Steps: RED (byte-identity test deferred to Task 4's gate — Task 3's own test asserts a second token reuses the plan: `plan_once_second_token_reuses_graph` via a graph-node-count / HIT counter on the session). Implement build-once then rebind. GREEN. Commit `feat(paged-decode): PagedDecodeSession — build graph + plan once, reuse per token`.
+- Note: batched (`forward_paged_step_batched`, ragged) persistent is a follow-on; Task 3 does single-session (`forward_paged_step`) first — it's the B=1 5.58× case and the simplest correct target.
+
+---
+
+### Task 4 — Runtime flag + teeth-bearing correctness gate
+
+**Files:** Modify `lazy.rs`/`inference_context.rs` (flag on the persistent path + a plan-HIT counter on the session). Test: `lazy.rs` tests.
+
+**Why:** the gate is the deliverable that makes the win trustworthy. Flag toggles plan-once vs re-planning in ONE process.
+
+- [ ] `plan_once_paged_matches_replanning_with_hit_asserted` — decode N tokens (crossing a block boundary) both arms in one process off one setup; assert plan-once arm output == re-planning arm output byte-for-byte AND the plan-once session reports a HIT on every step after the first AND the control arm reports a MISS every step.
+- [ ] Mutation check `plan_once_gate_has_teeth` — force the plan-once cache to always-miss → assert the HIT assertion fails (gate goes red). Force the control to always-hit → assert the MISS assertion fails.
+- [ ] `plan_once_paged_ragged_matches_replanning` — staggered positions {2,5,3} (the 4c2e9407 batched path once Task 3-batched lands; single-session staggered histories otherwise), same HIT/identity asserts.
+- [ ] Audit: check whether the contiguous D2/D3 tests (`*_persistent_byte_exact_and_plans_once`) carry the plan-HIT assertion; if not, note it (latent same-shaped hole) — fix-at-source is a separate small commit.
+- [ ] Commit `test(paged-decode): flag-gated plan-once correctness gate w/ HIT+MISS guards + mutation check`.
+
+---
+
+### Task 5 — Wire + measure
+
+**Files:** Modify the paged generate loop / `PagedSessionScheduler` (fuel-inference) to hold + drive a `PagedDecodeSession` per session behind the flag.
+
+- [ ] Wire `forward_paged_step_persistent` into the paged decode driver (hold `Option<PagedDecodeSession>` per session, like `generate_streaming_with_kv_context` holds `Option<DecodeSession>`); default flag off, opt-in on.
+- [ ] Land the whole increment as ONE commit with a clean parent; ping Lightbulb with the commit hash + a quiet-window request. Lightbulb runs `b_sweep_per_sequence_cost` parent-vs-commit (same session/machine/geometry prompt8/steps4/BLOCK16/max_blocks==1); success = paged warm-up/steady ratio moves above 1.0 and per-token cost drops toward the ~950ms execution floor.
+- [ ] Commit + push.
+
+## Self-review notes
+- Spec coverage: two structural variabilities (Task 1 block_table shape, Task 3 fresh root) + the write-offset (Task 2) + rebind (Task 3) + flag/gate (Task 4) + wire/measure (Task 5). Ragged batched persistent is explicitly a follow-on after single-session (Task 3 note).
+- Open design detail: `max_blocks_cap` source (Task 1) = the session's decode capacity `ceil(max_seq_len/block_size)`; the persistent forward passes it (the driver knows prompt+max_new). Confirm during Task 1/3.
+- Risk: the flattened symbolic write offset (Task 2) composing with in-place pool-buffer mutation is the subtlest piece — a byte-identity read-back test gates it directly.
