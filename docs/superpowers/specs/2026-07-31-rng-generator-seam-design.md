@@ -345,6 +345,33 @@ touch floats, and the latter is a §6.13 recipe over two uniforms.
 1. **Algorithm layer** — Random123's *published* vectors anchor `philox(key, counter)`. kiss-ref
    is the differential **target, never the oracle**: its implementation is *checked against*
    the published vectors, so nobody has to trust kiss-ref's word for the algorithm.
+
+   **Exact provenance — do not paraphrase this** (verified by kiss-ref, 2026-07-31):
+
+   | | |
+   | --- | --- |
+   | repo | **`DEShawResearch/random123`** — *no hyphen*; `DEShaw-Research` does not exist |
+   | file | **`tests/kat_vectors`** — *no extension* |
+   | blob | commit `d8a0c25e`, 2021-01-17, stable since |
+
+   **Trap:** `tests/ut_uniform_kat_vectors.dat` also exists in that repo and is *not* this — it
+   is the uniform-distribution set, not the raw generator KAT. Anchoring to it would validate
+   the wrong layer.
+
+   **The anchor must be fetched, never recited — and this is not a theoretical rule.** On
+   2026-07-31 both parties independently held a *wrong* recollection of the all-`ffff` vector:
+   the remembered value differed from upstream by a full 32-bit word. Had either side supplied
+   it from memory, a **correct** Philox implementation would have failed its own KAT — sending
+   the author to debug a right answer, or worse, to "fix" the implementation to match the wrong
+   number and ship a subtly broken generator that every backend then faithfully reproduced. The
+   failure mode fired; the fetch-don't-recite discipline caught it. Cite the file, never the
+   digits.
+
+   **The same discipline applies to the pointer, not only the payload.** The first version of
+   this reference, given from memory, named the wrong org *and* the wrong filename — a
+   plausible-looking citation that 404s. A recalled path is the same failure class as a recalled
+   value, with a smaller blast radius only because it fails loudly. Verify any recalled
+   specific, not merely the obviously-numeric ones.
 2. **Mapping layer** — a separate corpus for "given declared shape and `base`, what is element
    *i*", minted by kiss-ref. **A mapping bug therefore cannot hide behind an algorithm bug**, and
    because the class is `ExactByte` the oracle names the *exact diverging index* rather than
