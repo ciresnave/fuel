@@ -260,14 +260,14 @@ impl ConvNextModel {
         let cfg = &self.config;
         let (x, c, h) = self.run_backbone(image)?;
 
-        let pooled = global_avg_pool_2d(&x, c, h, h);
-        let pooled3 = pooled.reshape(Shape::from_dims(&[1, 1, c])).unwrap();
+        let pooled = global_avg_pool_2d(&x, c, h, h)?;
+        let pooled3 = pooled.reshape(Shape::from_dims(&[1, 1, c]))?;
         let normed = layer_norm_affine(
             &pooled3, &self.weights.head_ln_g, &self.weights.head_ln_b,
             cfg.layer_norm_eps, c, 1,
-        );
-        Ok(linear(&normed, &self.weights.head_fc_w, Some(&self.weights.head_fc_b), c, cfg.num_classes, 1)
-            .reshape(Shape::from_dims(&[1, cfg.num_classes])).unwrap())
+        )?;
+        Ok(linear(&normed, &self.weights.head_fc_w, Some(&self.weights.head_fc_b), c, cfg.num_classes, 1)?
+            .reshape(Shape::from_dims(&[1, cfg.num_classes]))?)
     }
 
     /// Run the backbone (stem + stages) and return the final
@@ -302,8 +302,8 @@ impl ConvNextModel {
             &self.weights.stem_conv_b,
             cin, d0, p,
             s, s,
-        );
-        let x = layer_norm_channel_dim(&x, &self.weights.stem_ln_g, &self.weights.stem_ln_b, cfg.layer_norm_eps, d0, h1, h1);
+        )?;
+        let x = layer_norm_channel_dim(&x, &self.weights.stem_ln_g, &self.weights.stem_ln_b, cfg.layer_norm_eps, d0, h1, h1)?;
 
         let mut x = x;
         let mut h = h1;
@@ -311,13 +311,13 @@ impl ConvNextModel {
         for (si, stage) in self.weights.stages.iter().enumerate() {
             if let Some(ds) = &stage.downsample {
                 let cout = cfg.dims[si];
-                let x_ln = layer_norm_channel_dim(&x, &ds.ln_g, &ds.ln_b, cfg.layer_norm_eps, c, h, h);
-                x = conv2d_stride_eq_kernel(&x_ln, &ds.conv_w, &ds.conv_b, c, cout, 2, h, h);
+                let x_ln = layer_norm_channel_dim(&x, &ds.ln_g, &ds.ln_b, cfg.layer_norm_eps, c, h, h)?;
+                x = conv2d_stride_eq_kernel(&x_ln, &ds.conv_w, &ds.conv_b, c, cout, 2, h, h)?;
                 h /= 2;
                 c = cout;
             }
             for bw in &stage.blocks {
-                x = convnext_block(&x, bw, cfg.layer_norm_eps, c, h, h);
+                x = convnext_block(&x, bw, cfg.layer_norm_eps, c, h, h)?;
             }
         }
         Ok((x, c, h))
@@ -335,37 +335,37 @@ fn convnext_block(
     c: usize,
     h: usize,
     w: usize,
-) -> LazyTensor {
+) -> crate::Result<LazyTensor> {
     // DWConv: [1, C, H, W] → [1, C, H, W], still channels-first.
-    let dw = conv2d_depthwise_k7_s1_p3(x, &bw.dw_w, &bw.dw_b, c, h, w);
+    let dw = conv2d_depthwise_k7_s1_p3(x, &bw.dw_w, &bw.dw_b, c, h, w)?;
     // Move channels to the last dim so LayerNorm + MLP work on [1, H, W, C].
-    let dw_nhwc = dw.permute([0, 2, 3, 1_usize]).unwrap();  // [1, H, W, C]
+    let dw_nhwc = dw.permute([0, 2, 3, 1_usize])?;  // [1, H, W, C]
     // Flatten spatial for the LN + linear ops we already have: [1, H*W, C].
-    let flat = dw_nhwc.reshape(Shape::from_dims(&[1, h * w, c])).unwrap();
-    let normed = layer_norm_affine(&flat, &bw.ln_g, &bw.ln_b, eps, c, h * w);
+    let flat = dw_nhwc.reshape(Shape::from_dims(&[1, h * w, c]))?;
+    let normed = layer_norm_affine(&flat, &bw.ln_g, &bw.ln_b, eps, c, h * w)?;
     // MLP: C → 4C → [V2 GRN] → C with GELU. Linear already wants [1, seq, C].
-    let hidden = linear(&normed, &bw.fc1_w, Some(&bw.fc1_b), c, 4 * c, h * w).gelu();
+    let hidden = linear(&normed, &bw.fc1_w, Some(&bw.fc1_b), c, 4 * c, h * w)?.gelu();
     let hidden = if let Some(grn) = &bw.grn {
-        apply_grn(&hidden, &grn.gamma, &grn.beta, 4 * c, h * w)
+        apply_grn(&hidden, &grn.gamma, &grn.beta, 4 * c, h * w)?
     } else {
         hidden
     };
-    let projected = linear(&hidden, &bw.fc2_w, Some(&bw.fc2_b), 4 * c, c, h * w);
+    let projected = linear(&hidden, &bw.fc2_w, Some(&bw.fc2_b), 4 * c, c, h * w)?;
     // V1 layer-scale γ (V2 models omit this — GRN replaces it).
     let scaled = if let Some(gamma_arr) = &bw.layer_scale_gamma {
         let gamma = projected
             .const_f32_like(gamma_arr.clone(), Shape::from_dims(&[c]))
-            .reshape(Shape::from_dims(&[1, 1, c])).unwrap()
-            .broadcast_to(Shape::from_dims(&[1, h * w, c])).unwrap();
-        projected.mul(&gamma).unwrap()
+            .reshape(Shape::from_dims(&[1, 1, c]))?
+            .broadcast_to(Shape::from_dims(&[1, h * w, c]))?;
+        projected.mul(&gamma)?
     } else {
         projected
     };
     // Back to channels-first: [1, H, W, C] → [1, C, H, W].
     let scaled_chw = scaled
-        .reshape(Shape::from_dims(&[1, h, w, c])).unwrap()
-        .permute([0, 3, 1, 2_usize]).unwrap();
-    x.add(&scaled_chw).unwrap()
+        .reshape(Shape::from_dims(&[1, h, w, c]))?
+        .permute([0, 3, 1, 2_usize])?;
+    x.add(&scaled_chw)
 }
 
 /// Global Response Normalization on a `[1, seq, c4]` tensor (seq = H·W).
@@ -380,9 +380,9 @@ fn apply_grn(
     beta_arr: &Arc<[f32]>,
     c4: usize,
     seq: usize,
-) -> LazyTensor {
+) -> crate::Result<LazyTensor> {
     let residual = x.clone();
-    let sqr = x.mul(x).unwrap();
+    let sqr = x.mul(x)?;
     // sum over seq → [1, 1, c4]
     let gx_sum = sqr.reduce_sum_to(Shape::from_dims(&[1, 1, c4]));
     let gx = gx_sum.sqrt();
@@ -391,20 +391,20 @@ fn apply_grn(
     let gxmean = gx_chan_sum.mul_scalar(1.0_f64 / c4 as f64);
     let gxmean_eps = gxmean
         .add_scalar(1e-6_f64)
-        .broadcast_to(Shape::from_dims(&[1, 1, c4])).unwrap();
-    let nx = gx.div(&gxmean_eps).unwrap();
-    let nx_b = nx.broadcast_to(Shape::from_dims(&[1, seq, c4])).unwrap();
+        .broadcast_to(Shape::from_dims(&[1, 1, c4]))?;
+    let nx = gx.div(&gxmean_eps)?;
+    let nx_b = nx.broadcast_to(Shape::from_dims(&[1, seq, c4]))?;
     let gamma = x
         .const_f32_like(gamma_arr.clone(), Shape::from_dims(&[c4]))
-        .reshape(Shape::from_dims(&[1, 1, c4])).unwrap()
-        .broadcast_to(Shape::from_dims(&[1, seq, c4])).unwrap();
+        .reshape(Shape::from_dims(&[1, 1, c4]))?
+        .broadcast_to(Shape::from_dims(&[1, seq, c4]))?;
     let beta = x
         .const_f32_like(beta_arr.clone(), Shape::from_dims(&[c4]))
-        .reshape(Shape::from_dims(&[1, 1, c4])).unwrap()
-        .broadcast_to(Shape::from_dims(&[1, seq, c4])).unwrap();
-    let scaled = x.mul(&nx_b).unwrap().mul(&gamma).unwrap();
-    let with_beta = scaled.add(&beta).unwrap();
-    with_beta.add(&residual).unwrap()
+        .reshape(Shape::from_dims(&[1, 1, c4]))?
+        .broadcast_to(Shape::from_dims(&[1, seq, c4]))?;
+    let scaled = x.mul(&nx_b)?.mul(&gamma)?;
+    let with_beta = scaled.add(&beta)?;
+    with_beta.add(&residual)
 }
 
 // ---- Primitives ----------------------------------------------------------
@@ -417,17 +417,17 @@ fn layer_norm_affine(
     eps: f64,
     hidden: usize,
     seq: usize,
-) -> LazyTensor {
-    let normed = x.layer_norm_last_dim(eps).unwrap();
+) -> crate::Result<LazyTensor> {
+    let normed = x.layer_norm_last_dim(eps)?;
     let g = x
         .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))
-        .reshape(Shape::from_dims(&[1, 1, hidden])).unwrap()
-        .broadcast_to(Shape::from_dims(&[1, seq, hidden])).unwrap();
+        .reshape(Shape::from_dims(&[1, 1, hidden]))?
+        .broadcast_to(Shape::from_dims(&[1, seq, hidden]))?;
     let b = x
         .const_f32_like(beta.clone(), Shape::from_dims(&[hidden]))
-        .reshape(Shape::from_dims(&[1, 1, hidden])).unwrap()
-        .broadcast_to(Shape::from_dims(&[1, seq, hidden])).unwrap();
-    normed.mul(&g).unwrap().add(&b).unwrap()
+        .reshape(Shape::from_dims(&[1, 1, hidden]))?
+        .broadcast_to(Shape::from_dims(&[1, seq, hidden]))?;
+    normed.mul(&g)?.add(&b)
 }
 
 /// LayerNorm with affine on a `[1, C, H, W]` tensor, normalizing over
@@ -441,13 +441,13 @@ fn layer_norm_channel_dim(
     c: usize,
     h: usize,
     w: usize,
-) -> LazyTensor {
-    let x_nhwc = x.permute([0, 2, 3, 1_usize]).unwrap();
-    let flat = x_nhwc.reshape(Shape::from_dims(&[1, h * w, c])).unwrap();
-    let normed = layer_norm_affine(&flat, gamma, beta, eps, c, h * w);
+) -> crate::Result<LazyTensor> {
+    let x_nhwc = x.permute([0, 2, 3, 1_usize])?;
+    let flat = x_nhwc.reshape(Shape::from_dims(&[1, h * w, c]))?;
+    let normed = layer_norm_affine(&flat, gamma, beta, eps, c, h * w)?;
     normed
-        .reshape(Shape::from_dims(&[1, h, w, c])).unwrap()
-        .permute([0, 3, 1, 2_usize]).unwrap()
+        .reshape(Shape::from_dims(&[1, h, w, c]))?
+        .permute([0, 3, 1, 2_usize])
 }
 
 /// `y = x @ W + b`. `x` shape `[1, seq, in_f]`, W stored `[in_f, out_f]`.
@@ -458,24 +458,24 @@ fn linear(
     in_f: usize,
     out_f: usize,
     seq: usize,
-) -> LazyTensor {
+) -> crate::Result<LazyTensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]));
-    let proj = x.matmul(&w_t).unwrap();
+    let proj = x.matmul(&w_t)?;
     match b {
         Some(b) => {
             let bias = x
                 .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))
-                .reshape(Shape::from_dims(&[1, 1, out_f])).unwrap()
-                .broadcast_to(Shape::from_dims(&[1, seq, out_f])).unwrap();
-            proj.add(&bias).unwrap()
+                .reshape(Shape::from_dims(&[1, 1, out_f]))?
+                .broadcast_to(Shape::from_dims(&[1, seq, out_f]))?;
+            proj.add(&bias)
         }
-        None => proj,
+        None => Ok(proj),
     }
 }
 
 /// Global average pool 2D. Input `[1, C, H, W]` → output `[1, C]`.
-fn global_avg_pool_2d(x: &LazyTensor, _c: usize, _h: usize, _w: usize) -> LazyTensor {
-    x.global_avg_pool_2d().unwrap()
+fn global_avg_pool_2d(x: &LazyTensor, _c: usize, _h: usize, _w: usize) -> crate::Result<LazyTensor> {
+    x.global_avg_pool_2d()
 }
 
 /// Conv2d with `stride == kernel` and `padding == 0`. The windows are
@@ -497,35 +497,35 @@ fn conv2d_stride_eq_kernel(
     k: usize,
     h: usize,
     w_sz: usize,
-) -> LazyTensor {
+) -> crate::Result<LazyTensor> {
     assert!(h.is_multiple_of(k), "conv2d_stride_eq_kernel: H={h} % k={k} != 0");
     assert!(w_sz.is_multiple_of(k), "conv2d_stride_eq_kernel: W={w_sz} % k={k} != 0");
     let h_out = h / k;
     let w_out = w_sz / k;
     // Reshape [1, Cin, H, W] → [1, Cin, H/k, k, W/k, k]. Logical-only;
     // row-major layout stays the same.
-    let x6 = x.reshape(Shape::from_dims(&[1, cin, h_out, k, w_out, k])).unwrap();
+    let x6 = x.reshape(Shape::from_dims(&[1, cin, h_out, k, w_out, k]))?;
     // Permute to [1, H_out, W_out, Cin, k, k] so each spatial patch's
     // (Cin, k, k) block sits contiguously in the last three axes.
-    let x_perm = x6.permute([0, 2, 4, 1, 3, 5_usize]).unwrap();
+    let x_perm = x6.permute([0, 2, 4, 1, 3, 5_usize])?;
     // Flatten to [1, H_out*W_out, Cin*k*k].
-    let x_flat = x_perm.reshape(Shape::from_dims(&[1, h_out * w_out, cin * k * k])).unwrap();
+    let x_flat = x_perm.reshape(Shape::from_dims(&[1, h_out * w_out, cin * k * k]))?;
     // Kernel reshape: HF stores [Cout, Cin, k, k] row-major, which is
     // exactly [Cout, Cin*k*k] in the same ordering (Cin-major, then
     // k_row, then k_col) — matches what we just produced. Transpose
     // to [Cin*k*k, Cout] for matmul.
     let w_2d = x.const_f32_like(w.clone(), Shape::from_dims(&[cout, cin * k * k]));
-    let w_t = w_2d.transpose().unwrap();  // [Cin*k*k, Cout]
-    let y = x_flat.matmul(&w_t).unwrap();  // [1, H_out*W_out, Cout]
+    let w_t = w_2d.transpose()?;  // [Cin*k*k, Cout]
+    let y = x_flat.matmul(&w_t)?;  // [1, H_out*W_out, Cout]
     // Add bias.
     let bias = x
         .const_f32_like(b.clone(), Shape::from_dims(&[cout]))
-        .reshape(Shape::from_dims(&[1, 1, cout])).unwrap()
-        .broadcast_to(Shape::from_dims(&[1, h_out * w_out, cout])).unwrap();
-    let y = y.add(&bias).unwrap();
+        .reshape(Shape::from_dims(&[1, 1, cout]))?
+        .broadcast_to(Shape::from_dims(&[1, h_out * w_out, cout]))?;
+    let y = y.add(&bias)?;
     // Back to [1, Cout, H_out, W_out].
-    y.reshape(Shape::from_dims(&[1, h_out, w_out, cout])).unwrap()
-        .permute([0, 3, 1, 2_usize]).unwrap()
+    y.reshape(Shape::from_dims(&[1, h_out, w_out, cout]))?
+        .permute([0, 3, 1, 2_usize])
 }
 
 /// Depthwise Conv2d, kernel=7, stride=1, padding=3. Weight shape
@@ -542,10 +542,10 @@ fn conv2d_depthwise_k7_s1_p3(
     c: usize,
     _h: usize,
     _w_sz: usize,
-) -> LazyTensor {
+) -> crate::Result<LazyTensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[c, 1, 7, 7]));
     let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[c]));
-    x.conv2d(&w_t, Some(&b_t), (1, 1), (3, 3), c).unwrap()
+    x.conv2d(&w_t, Some(&b_t), (1, 1), (3, 3), c)
 }
 
 // ---- Safetensors loader ----------------------------------------------------
@@ -629,7 +629,7 @@ impl ConvNextWeights {
 
         let head_ln_g = load_f32(st, "head.norm.weight")?;
         let head_ln_b = load_f32(st, "head.norm.bias")?;
-        let last_dim = *cfg.dims.last().unwrap();
+        let last_dim = *cfg.dims.last().ok_or_else(|| fuel_ir::Error::Msg("convnext: dims must not be empty".to_string()))?;
         let head_fc_w = load_transposed(st, "head.fc.weight", cfg.num_classes, last_dim)?;
         let head_fc_b = load_f32(st, "head.fc.bias")?;
 
@@ -795,9 +795,9 @@ pub fn zero_weights(cfg: &ConvNextConfig) -> ConvNextWeights {
         stem_ln_g: o(d0),
         stem_ln_b: z(d0),
         stages,
-        head_ln_g: o(*cfg.dims.last().unwrap()),
-        head_ln_b: z(*cfg.dims.last().unwrap()),
-        head_fc_w: z(cfg.num_classes * cfg.dims.last().unwrap()),
+        head_ln_g: o(*cfg.dims.last().expect("convnext: dims must not be empty")),
+        head_ln_b: z(*cfg.dims.last().expect("convnext: dims must not be empty")),
+        head_fc_w: z(cfg.num_classes * cfg.dims.last().expect("convnext: dims must not be empty")),
         head_fc_b: z(cfg.num_classes),
     }
 }
@@ -905,7 +905,7 @@ mod tests {
         );
         let gamma = arc(vec![1.0_f32; c4]);
         let beta = arc(vec![0.0_f32; c4]);
-        let out = apply_grn(&x, &gamma, &beta, c4, seq).realize_f32();
+        let out = apply_grn(&x, &gamma, &beta, c4, seq).unwrap().realize_f32();
         let gxmean = (1.0 + 1.0 + 2.0 + 2.0 + 3.0) / c4 as f32;
         let denom = gxmean + 1e-6;
         let expected: Vec<f32> = x_data.iter().map(|&xv| {
@@ -933,7 +933,7 @@ mod tests {
         );
         let gamma = arc(vec![0.0_f32; c4]);
         let beta = arc(vec![0.0_f32; c4]);
-        let out = apply_grn(&x, &gamma, &beta, c4, seq).realize_f32();
+        let out = apply_grn(&x, &gamma, &beta, c4, seq).unwrap().realize_f32();
         for (i, (a, b)) in out.iter().zip(x_data.iter()).enumerate() {
             assert!((a - b).abs() < 1e-6,
                 "γ=0, β=0 should be identity: [{i}] expected {b}, got {a}");

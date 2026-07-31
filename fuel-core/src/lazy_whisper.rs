@@ -238,7 +238,7 @@ impl WhisperModel {
             n_mel,
             d,
             mel_time,
-        )
+        )?
         .gelu();
         // conv2: kernel=3, stride=2, padding=1 → [1, d, T/2]
         assert!(mel_time.is_multiple_of(2), "mel_time must be even for stride-2 conv");
@@ -250,24 +250,24 @@ impl WhisperModel {
             d,
             d,
             mel_time,
-        )
+        )?
         .gelu();
 
         // --- transpose to [1, T/2, d] and add positional ------------------
-        let x = x.permute([0, 2, 1_usize]).unwrap();  // [1, T/2, d]
+        let x = x.permute([0, 2, 1_usize])?;  // [1, T/2, d]
         let pos = x
             .const_f32_like(
                 self.weights.encoder.positional.clone(),
                 Shape::from_dims(&[cfg.max_source_positions, d]),
             )
-            .slice(0, 0, t_half).unwrap()
-            .reshape(Shape::from_dims(&[1, t_half, d])).unwrap()
-            .broadcast_to(Shape::from_dims(&[1, t_half, d])).unwrap();
-        let mut x = x.add(&pos).unwrap();
+            .slice(0, 0, t_half)?
+            .reshape(Shape::from_dims(&[1, t_half, d]))?
+            .broadcast_to(Shape::from_dims(&[1, t_half, d]))?;
+        let mut x = x.add(&pos)?;
 
         // --- encoder layers ---------------------------------------------
         for lw in &self.weights.encoder.layers {
-            x = encoder_layer(&x, lw, cfg, t_half);
+            x = encoder_layer(&x, lw, cfg, t_half)?;
         }
 
         // --- final LN ---------------------------------------------------
@@ -278,7 +278,7 @@ impl WhisperModel {
             1e-5,
             d,
             t_half,
-        ))
+        )?)
     }
 
     /// Run the decoder for a given token prefix, attending into a
@@ -308,12 +308,12 @@ impl WhisperModel {
             Shape::from_dims(&[cfg.max_target_positions, d]),
         );
 
-        let tok = embed.index_select(0, &input_ids).unwrap();  // [seq, d]
-        let pos = pos_emb.index_select(0, &position_ids).unwrap();  // [seq, d]
-        let mut x = tok.add(&pos).unwrap().reshape(Shape::from_dims(&[1, seq, d])).unwrap();
+        let tok = embed.index_select(0, &input_ids)?;  // [seq, d]
+        let pos = pos_emb.index_select(0, &position_ids)?;  // [seq, d]
+        let mut x = tok.add(&pos)?.reshape(Shape::from_dims(&[1, seq, d]))?;
 
         for lw in &self.weights.decoder.layers {
-            x = decoder_layer(&x, encoder_out, lw, cfg, seq);
+            x = decoder_layer(&x, encoder_out, lw, cfg, seq)?;
         }
 
         let x = layer_norm_affine(
@@ -323,12 +323,12 @@ impl WhisperModel {
             1e-5,
             d,
             seq,
-        );
+        )?;
 
         // Tied output projection: logits = x @ embed^T → [1, seq, vocab].
         // embed is [vocab, d] row-major; transpose to [d, vocab] and matmul.
-        let embed_t = embed.transpose().unwrap();  // [d, vocab]
-        Ok(x.matmul(&embed_t).unwrap())
+        let embed_t = embed.transpose()?;  // [d, vocab]
+        Ok(x.matmul(&embed_t)?)
     }
 
     /// Greedy decode for `max_new_tokens` steps starting from
@@ -391,17 +391,17 @@ fn layer_norm_affine(
     eps: f64,
     hidden: usize,
     seq: usize,
-) -> LazyTensor {
-    let normed = x.layer_norm_last_dim(eps).unwrap();
+) -> crate::Result<LazyTensor> {
+    let normed = x.layer_norm_last_dim(eps)?;
     let g = x
         .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))
-        .reshape(Shape::from_dims(&[1, 1, hidden])).unwrap()
-        .broadcast_to(Shape::from_dims(&[1, seq, hidden])).unwrap();
+        .reshape(Shape::from_dims(&[1, 1, hidden]))?
+        .broadcast_to(Shape::from_dims(&[1, seq, hidden]))?;
     let b = x
         .const_f32_like(beta.clone(), Shape::from_dims(&[hidden]))
-        .reshape(Shape::from_dims(&[1, 1, hidden])).unwrap()
-        .broadcast_to(Shape::from_dims(&[1, seq, hidden])).unwrap();
-    normed.mul(&g).unwrap().add(&b).unwrap()
+        .reshape(Shape::from_dims(&[1, 1, hidden]))?
+        .broadcast_to(Shape::from_dims(&[1, seq, hidden]))?;
+    normed.mul(&g)?.add(&b)
 }
 
 /// `y = x @ W + b`. `x` is `[1, seq, in_f]`, `W` is `[in_f, out_f]` (the
@@ -413,27 +413,27 @@ fn linear(
     in_f: usize,
     out_f: usize,
     seq: usize,
-) -> LazyTensor {
+) -> crate::Result<LazyTensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]));
-    let proj = x.matmul(&w_t).unwrap();
+    let proj = x.matmul(&w_t)?;
     match b {
         Some(b) => {
             let bias = x
                 .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))
-                .reshape(Shape::from_dims(&[1, 1, out_f])).unwrap()
-                .broadcast_to(Shape::from_dims(&[1, seq, out_f])).unwrap();
-            proj.add(&bias).unwrap()
+                .reshape(Shape::from_dims(&[1, 1, out_f]))?
+                .broadcast_to(Shape::from_dims(&[1, seq, out_f]))?;
+            proj.add(&bias)
         }
-        None => proj,
+        None => Ok(proj),
     }
 }
 
 /// Zero-pad `x: [1, C, T]` by 1 along the time axis, returning
 /// `[1, C, T+2]`. Built via concat with a const zero tensor — no
 /// native `Pad` op is needed since we only use this one padding.
-fn pad_t_axis_one_each_side(x: &LazyTensor, c: usize, t: usize) -> LazyTensor {
+fn pad_t_axis_one_each_side(x: &LazyTensor, c: usize, t: usize) -> crate::Result<LazyTensor> {
     let zeros = x.const_f32_like(vec![0.0_f32; c], Shape::from_dims(&[1, c, 1]));
-    zeros.concat(x, 2).unwrap().concat(&zeros, 2).unwrap()  // [1, c, t+2]
+    zeros.concat(x, 2)?.concat(&zeros, 2)  // [1, c, t+2]
 }
 
 /// Conv1d with kernel_size=3, stride=1, padding=1, on `x: [1, in_c, T]`
@@ -452,17 +452,17 @@ pub(crate) fn conv1d_k3_s1_p1(
     in_c: usize,
     out_c: usize,
     t: usize,
-) -> LazyTensor {
+) -> crate::Result<LazyTensor> {
     // Pad T axis to T+2.
-    let padded = pad_t_axis_one_each_side(x, in_c, t);
+    let padded = pad_t_axis_one_each_side(x, in_c, t)?;
     // Three stride-1 windows along the time axis, each of length T.
-    let s0 = padded.slice(2, 0, t).unwrap();
-    let s1 = padded.slice(2, 1, t).unwrap();
-    let s2 = padded.slice(2, 2, t).unwrap();
+    let s0 = padded.slice(2, 0, t)?;
+    let s1 = padded.slice(2, 1, t)?;
+    let s2 = padded.slice(2, 2, t)?;
     // Concat along channel axis: [1, 3*in_c, T].
-    let stacked = s0.concat(&s1, 1).unwrap().concat(&s2, 1).unwrap();
+    let stacked = s0.concat(&s1, 1)?.concat(&s2, 1)?;
     // Move channels-last for matmul: [1, T, 3*in_c].
-    let stacked_tlast = stacked.permute([0, 2, 1_usize]).unwrap();
+    let stacked_tlast = stacked.permute([0, 2, 1_usize])?;
     // Kernel in storage order [out_c, in_c, 3]. We want
     // `[3*in_c, out_c]` where the 3*in_c axis is laid out in the same
     // order as the channel-stack above (k=0 block, k=1 block, k=2 block).
@@ -478,13 +478,13 @@ pub(crate) fn conv1d_k3_s1_p1(
         }
     }
     let w_t = x.const_f32_like(w_out, Shape::from_dims(&[3 * in_c, out_c]));
-    let y = stacked_tlast.matmul(&w_t).unwrap();  // [1, T, out_c]
+    let y = stacked_tlast.matmul(&w_t)?;  // [1, T, out_c]
     // Add bias (broadcast [out_c] across [1, T, out_c]).
     let bias = x
         .const_f32_like(b.clone(), Shape::from_dims(&[out_c]))
-        .reshape(Shape::from_dims(&[1, 1, out_c])).unwrap()
-        .broadcast_to(Shape::from_dims(&[1, t, out_c])).unwrap();
-    y.add(&bias).unwrap().permute([0, 2, 1_usize]).unwrap()  // back to [1, out_c, T]
+        .reshape(Shape::from_dims(&[1, 1, out_c]))?
+        .broadcast_to(Shape::from_dims(&[1, t, out_c]))?;
+    y.add(&bias)?.permute([0, 2, 1_usize])  // back to [1, out_c, T]
 }
 
 /// Conv1d with kernel_size=3, stride=2, padding=1, on `x: [1, in_c, T]`
@@ -502,39 +502,39 @@ pub(crate) fn conv1d_k3_s2_p1(
     in_c: usize,
     out_c: usize,
     t_in: usize,
-) -> LazyTensor {
+) -> crate::Result<LazyTensor> {
     assert!(t_in.is_multiple_of(2), "conv1d_k3_s2_p1 needs even T, got {t_in}");
     let t_out = t_in / 2;
     // Pad to T_in + 2. Effective T = T_in + 2.
-    let padded = pad_t_axis_one_each_side(x, in_c, t_in);
+    let padded = pad_t_axis_one_each_side(x, in_c, t_in)?;
     // For output t ∈ [0..T_out), the 3 kernel taps read padded at:
     //   k=0: 2t  →  positions 0, 2, 4, ..., 2*(T_out-1) = T_in - 2
     //   k=1: 2t+1 → 1, 3, ..., T_in - 1
     //   k=2: 2t+2 → 2, 4, ..., T_in
     //
     // Express each via a contiguous slice + reshape + dim-3 slice:
-    //   head_head = padded.slice(2, 0, 2*T_out).unwrap().reshape([1, C, T_out, 2])
+    //   head_head = padded.slice(2, 0, 2*T_out)?.reshape([1, C, T_out, 2])
     //   s0 = head_head[:, :, :, 0]  (even positions)
     //   s1 = head_head[:, :, :, 1]  (odd positions)
-    //   head_tail = padded.slice(2, 2, 2*T_out).unwrap().reshape([1, C, T_out, 2])
+    //   head_tail = padded.slice(2, 2, 2*T_out)?.reshape([1, C, T_out, 2])
     //   s2 = head_tail[:, :, :, 0]  (shifted even positions = 2, 4, …, T_in)
     let head_head = padded
-        .slice(2, 0, 2 * t_out).unwrap()
-        .reshape(Shape::from_dims(&[1, in_c, t_out, 2])).unwrap();
+        .slice(2, 0, 2 * t_out)?
+        .reshape(Shape::from_dims(&[1, in_c, t_out, 2]))?;
     let s0 = head_head
-        .slice(3, 0, 1).unwrap()
-        .reshape(Shape::from_dims(&[1, in_c, t_out])).unwrap();
+        .slice(3, 0, 1)?
+        .reshape(Shape::from_dims(&[1, in_c, t_out]))?;
     let s1 = head_head
-        .slice(3, 1, 1).unwrap()
-        .reshape(Shape::from_dims(&[1, in_c, t_out])).unwrap();
+        .slice(3, 1, 1)?
+        .reshape(Shape::from_dims(&[1, in_c, t_out]))?;
     let head_tail = padded
-        .slice(2, 2, 2 * t_out).unwrap()
-        .reshape(Shape::from_dims(&[1, in_c, t_out, 2])).unwrap();
+        .slice(2, 2, 2 * t_out)?
+        .reshape(Shape::from_dims(&[1, in_c, t_out, 2]))?;
     let s2 = head_tail
-        .slice(3, 0, 1).unwrap()
-        .reshape(Shape::from_dims(&[1, in_c, t_out])).unwrap();
-    let stacked = s0.concat(&s1, 1).unwrap().concat(&s2, 1).unwrap();  // [1, 3*in_c, T_out]
-    let stacked_tlast = stacked.permute([0, 2, 1_usize]).unwrap();  // [1, T_out, 3*in_c]
+        .slice(3, 0, 1)?
+        .reshape(Shape::from_dims(&[1, in_c, t_out]))?;
+    let stacked = s0.concat(&s1, 1)?.concat(&s2, 1)?;  // [1, 3*in_c, T_out]
+    let stacked_tlast = stacked.permute([0, 2, 1_usize])?;  // [1, T_out, 3*in_c]
     // Same kernel reshuffle as the stride-1 case.
     let mut w_out = vec![0.0_f32; 3 * in_c * out_c];
     for o in 0..out_c {
@@ -545,12 +545,12 @@ pub(crate) fn conv1d_k3_s2_p1(
         }
     }
     let w_t = x.const_f32_like(w_out, Shape::from_dims(&[3 * in_c, out_c]));
-    let y = stacked_tlast.matmul(&w_t).unwrap();
+    let y = stacked_tlast.matmul(&w_t)?;
     let bias = x
         .const_f32_like(b.clone(), Shape::from_dims(&[out_c]))
-        .reshape(Shape::from_dims(&[1, 1, out_c])).unwrap()
-        .broadcast_to(Shape::from_dims(&[1, t_out, out_c])).unwrap();
-    y.add(&bias).unwrap().permute([0, 2, 1_usize]).unwrap()  // [1, out_c, T_out]
+        .reshape(Shape::from_dims(&[1, 1, out_c]))?
+        .broadcast_to(Shape::from_dims(&[1, t_out, out_c]))?;
+    y.add(&bias)?.permute([0, 2, 1_usize])  // [1, out_c, T_out]
 }
 
 /// Multi-head self-attention + output projection. Shared between the
@@ -575,20 +575,20 @@ fn multi_head_attn(
     q_seq: usize,
     kv_seq: usize,
     causal: bool,
-) -> LazyTensor {
-    let q = linear(q_src, q_w, Some(q_b), d, d, q_seq);
-    let k = linear(k_src, k_w, None, d, d, kv_seq);  // no K bias
-    let v = linear(v_src, v_w, Some(v_b), d, d, kv_seq);
+) -> crate::Result<LazyTensor> {
+    let q = linear(q_src, q_w, Some(q_b), d, d, q_seq)?;
+    let k = linear(k_src, k_w, None, d, d, kv_seq)?;  // no K bias
+    let v = linear(v_src, v_w, Some(v_b), d, d, kv_seq)?;
 
     // (1, seq, n_heads * d_head) → (1, n_heads, seq, d_head)
     let _ = (q_seq, kv_seq);
-    let q = q.split_heads(n_heads, d_head).unwrap();
-    let k = k.split_heads(n_heads, d_head).unwrap();
-    let v = v.split_heads(n_heads, d_head).unwrap();
+    let q = q.split_heads(n_heads, d_head)?;
+    let k = k.split_heads(n_heads, d_head)?;
+    let v = v.split_heads(n_heads, d_head)?;
 
-    let k_t = k.permute([0, 1, 3, 2_usize]).unwrap();  // [1, n_heads, d_head, kv_seq]
+    let k_t = k.permute([0, 1, 3, 2_usize])?;  // [1, n_heads, d_head, kv_seq]
     let scale = 1.0_f64 / (d_head as f64).sqrt();
-    let mut scores = q.matmul(&k_t).unwrap().mul_scalar(scale);  // [1, n_heads, q_seq, kv_seq]
+    let mut scores = q.matmul(&k_t)?.mul_scalar(scale);  // [1, n_heads, q_seq, kv_seq]
 
     if causal {
         // Additive lower-triangular mask: -inf above diagonal.
@@ -602,15 +602,15 @@ fn multi_head_attn(
         }
         let mask_t = scores
             .const_f32_like(mask, Shape::from_dims(&[q_seq, kv_seq]))
-            .reshape(Shape::from_dims(&[1, 1, q_seq, kv_seq])).unwrap()
-            .broadcast_to(Shape::from_dims(&[1, n_heads, q_seq, kv_seq])).unwrap();
-        scores = scores.add(&mask_t).unwrap();
+            .reshape(Shape::from_dims(&[1, 1, q_seq, kv_seq]))?
+            .broadcast_to(Shape::from_dims(&[1, n_heads, q_seq, kv_seq]))?;
+        scores = scores.add(&mask_t)?;
     }
 
-    let probs = scores.softmax_last_dim().unwrap();
+    let probs = scores.softmax_last_dim()?;
     let ctx = probs
-        .matmul(&v).unwrap()
-        .merge_heads().unwrap();
+        .matmul(&v)?
+        .merge_heads()?;
     linear(&ctx, out_w, Some(out_b), d, d, q_seq)
 }
 
@@ -621,24 +621,24 @@ fn encoder_layer(
     lw: &WhisperEncoderLayerWeights,
     cfg: &WhisperConfig,
     seq: usize,
-) -> LazyTensor {
+) -> crate::Result<LazyTensor> {
     let d = cfg.d_model;
     let n_heads = cfg.encoder_attention_heads;
     let d_head = cfg.encoder_head_dim();
 
-    let x_ln = layer_norm_affine(x, &lw.self_attn_ln_g, &lw.self_attn_ln_b, 1e-5, d, seq);
+    let x_ln = layer_norm_affine(x, &lw.self_attn_ln_g, &lw.self_attn_ln_b, 1e-5, d, seq)?;
     let attn = multi_head_attn(
         &x_ln, &x_ln, &x_ln,
         &lw.q_w, &lw.q_b, &lw.k_w, &lw.v_w, &lw.v_b, &lw.out_w, &lw.out_b,
         d, n_heads, d_head, seq, seq, false,
-    );
-    let x = x.add(&attn).unwrap();
+    )?;
+    let x = x.add(&attn)?;
 
-    let x_ln = layer_norm_affine(&x, &lw.final_ln_g, &lw.final_ln_b, 1e-5, d, seq);
+    let x_ln = layer_norm_affine(&x, &lw.final_ln_g, &lw.final_ln_b, 1e-5, d, seq)?;
     let h_ff = cfg.encoder_ffn_dim;
-    let mid = linear(&x_ln, &lw.fc1_w, Some(&lw.fc1_b), d, h_ff, seq).gelu();
-    let ffn = linear(&mid, &lw.fc2_w, Some(&lw.fc2_b), h_ff, d, seq);
-    x.add(&ffn).unwrap()
+    let mid = linear(&x_ln, &lw.fc1_w, Some(&lw.fc1_b), d, h_ff, seq)?.gelu();
+    let ffn = linear(&mid, &lw.fc2_w, Some(&lw.fc2_b), h_ff, d, seq)?;
+    x.add(&ffn)
 }
 
 /// One pre-LN decoder block: causal self-attn + cross-attn + FFN.
@@ -648,24 +648,24 @@ fn decoder_layer(
     lw: &WhisperDecoderLayerWeights,
     cfg: &WhisperConfig,
     q_seq: usize,
-) -> LazyTensor {
+) -> crate::Result<LazyTensor> {
     let d = cfg.d_model;
     let n_heads = cfg.decoder_attention_heads;
     let d_head = cfg.decoder_head_dim();
     let kv_seq_self = q_seq;
 
     // --- self-attn (causal) -------
-    let x_ln = layer_norm_affine(x, &lw.self_ln_g, &lw.self_ln_b, 1e-5, d, q_seq);
+    let x_ln = layer_norm_affine(x, &lw.self_ln_g, &lw.self_ln_b, 1e-5, d, q_seq)?;
     let self_attn = multi_head_attn(
         &x_ln, &x_ln, &x_ln,
         &lw.self_q_w, &lw.self_q_b, &lw.self_k_w, &lw.self_v_w, &lw.self_v_b,
         &lw.self_out_w, &lw.self_out_b,
         d, n_heads, d_head, q_seq, kv_seq_self, true,
-    );
-    let x = x.add(&self_attn).unwrap();
+    )?;
+    let x = x.add(&self_attn)?;
 
     // --- cross-attn ---------------
-    let x_ln = layer_norm_affine(&x, &lw.cross_ln_g, &lw.cross_ln_b, 1e-5, d, q_seq);
+    let x_ln = layer_norm_affine(&x, &lw.cross_ln_g, &lw.cross_ln_b, 1e-5, d, q_seq)?;
     // encoder_out has shape [1, T_enc, d]. Use it as the K and V source.
     let enc_shape = encoder_out.shape();
     let enc_dims = enc_shape.dims();
@@ -679,15 +679,15 @@ fn decoder_layer(
         &lw.cross_q_w, &lw.cross_q_b, &lw.cross_k_w, &lw.cross_v_w, &lw.cross_v_b,
         &lw.cross_out_w, &lw.cross_out_b,
         d, n_heads, d_head, q_seq, kv_seq_cross, false,
-    );
-    let x = x.add(&cross).unwrap();
+    )?;
+    let x = x.add(&cross)?;
 
     // --- FFN ----------------------
-    let x_ln = layer_norm_affine(&x, &lw.final_ln_g, &lw.final_ln_b, 1e-5, d, q_seq);
+    let x_ln = layer_norm_affine(&x, &lw.final_ln_g, &lw.final_ln_b, 1e-5, d, q_seq)?;
     let h_ff = cfg.decoder_ffn_dim;
-    let mid = linear(&x_ln, &lw.fc1_w, Some(&lw.fc1_b), d, h_ff, q_seq).gelu();
-    let ffn = linear(&mid, &lw.fc2_w, Some(&lw.fc2_b), h_ff, d, q_seq);
-    x.add(&ffn).unwrap()
+    let mid = linear(&x_ln, &lw.fc1_w, Some(&lw.fc1_b), d, h_ff, q_seq)?.gelu();
+    let ffn = linear(&mid, &lw.fc2_w, Some(&lw.fc2_b), h_ff, d, q_seq)?;
+    x.add(&ffn)
 }
 
 // ---- Safetensors loader ----------------------------------------------------
