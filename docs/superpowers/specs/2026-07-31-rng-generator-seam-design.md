@@ -372,6 +372,15 @@ touch floats, and the latter is a §6.13 recipe over two uniforms.
    plausible-looking citation that 404s. A recalled path is the same failure class as a recalled
    value, with a smaller blast radius only because it fails loudly. Verify any recalled
    specific, not merely the obviously-numeric ones.
+
+   **And it applies to transcription — the step most likely to be botched by someone who did
+   everything else right** (kiss-ref). Fetching the file and then *hand-typing* the vectors into
+   a test table reintroduces the exact failure the fetch was meant to eliminate:
+   hand-transcription is recall with extra steps. **Machine-generate the anchor table from the
+   fetched blob** (e.g. `awk` over the file → array literals) so there is no human in the loop
+   between upstream and the anchor. This matters most for the *extended* corpus: 52 vectors ×
+   10 hex words is precisely the volume at which manual transcription is tedious enough to rush
+   and long enough to hide one wrong digit.
 2. **Mapping layer** — a separate corpus for "given declared shape and `base`, what is element
    *i*", minted by kiss-ref. **A mapping bug therefore cannot hide behind an algorithm bug**, and
    because the class is `ExactByte` the oracle names the *exact diverging index* rather than
