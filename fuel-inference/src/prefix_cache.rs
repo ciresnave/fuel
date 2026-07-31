@@ -1,4 +1,4 @@
-﻿//! Hash-based prefix caching for KV state reuse.
+//! Hash-based prefix caching for KV state reuse.
 //!
 //! When multiple inference requests share a common prefix (e.g., a system prompt,
 //! few-shot examples, or conversation history), the KV states for that prefix can be
@@ -46,12 +46,12 @@
 //! # }
 //! ```
 
-use fuel::Tensor;
+use fuel::lazy::LazyTensor;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 /// A cached KV state for one transformer layer.
-pub type LayerKvState = (Tensor, Tensor);
+pub type LayerKvState = (LazyTensor, LazyTensor);
 
 /// Hash key for a token sequence prefix.
 type PrefixHash = u64;
@@ -224,10 +224,10 @@ mod tests {
     fn make_kv(layers: usize, seq_len: usize) -> Vec<LayerKvState> {
         (0..layers)
             .map(|_| {
-                let k =
-                    Tensor::zeros((1, 4, seq_len, 64), DType::F32, &Device::cpu()).unwrap();
-                let v =
-                    Tensor::zeros((1, 4, seq_len, 64), DType::F32, &Device::cpu()).unwrap();
+                let dims = fuel::Shape::from_dims(&[1, 4, seq_len, 64]);
+                let k = LazyTensor::from_f32(vec![0.0_f32; 4 * seq_len * 64], dims.clone(), &Device::cpu());
+                let v = LazyTensor::from_f32(vec![0.0_f32; 4 * seq_len * 64], dims, &Device::cpu());
+
                 (k, v)
             })
             .collect()
@@ -246,7 +246,7 @@ mod tests {
         assert!(cached.is_some());
         let cached = cached.unwrap();
         assert_eq!(cached.len(), 2);
-        assert_eq!(cached[0].0.dims(), &[1, 4, 5, 64]);
+        assert_eq!(cached[0].0.shape().dims(), &[1, 4, 5, 64]);
     }
 
     #[test]
@@ -335,7 +335,7 @@ mod tests {
         assert!(result.is_some());
         let (matched_len, kv) = result.unwrap();
         assert_eq!(matched_len, 4);
-        assert_eq!(kv[0].0.dims(), &[1, 4, 4, 64]);
+        assert_eq!(kv[0].0.shape().dims(), &[1, 4, 4, 64]);
     }
 
     #[test]

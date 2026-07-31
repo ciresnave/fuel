@@ -1,4 +1,4 @@
-﻿//! Speculative decoding for accelerated autoregressive generation.
+//! Speculative decoding for accelerated autoregressive generation.
 //!
 //! Speculative decoding (Leviathan et al., 2023; Chen et al., 2023) uses a small, fast
 //! **draft model** to propose `K` candidate tokens, then verifies them in a single
@@ -28,21 +28,21 @@
 //!
 //! ```rust
 //! use fuel_inference::speculative::{SpeculativeConfig, SpeculativeStats, verify_draft};
-//! use fuel::{DType, Device, Tensor};
 //!
 //! # fn main() -> fuel::Result<()> {
-//! let device = Device::cpu();
 //! let vocab_size = 100;
 //!
 //! // Draft model proposed 3 tokens: [10, 20, 30]
 //! let draft_tokens = vec![10u32, 20, 30];
 //!
-//! // Draft model's log-probabilities at each step (shape: [K, vocab_size])
-//! let draft_logprobs = Tensor::zeros((3, vocab_size), DType::F32, &device)?;
+//! // Draft model's log-probabilities at each step: one row per position,
+//! // `vocab_size` wide. These are HOST values — verification is control flow
+//! // over already-realized logits, so no tensor is involved.
+//! let draft_logprobs = vec![vec![0.0_f32; vocab_size]; 3];
 //!
-//! // Target model's log-probabilities for the prefix + draft (shape: [K+1, vocab_size])
-//! // (K+1 because the target also produces logits for the next token after all drafts)
-//! let target_logprobs = Tensor::zeros((4, vocab_size), DType::F32, &device)?;
+//! // Target model's log-probabilities for the prefix + draft (K+1 rows,
+//! // because the target also produces logits for the token after all drafts).
+//! let target_logprobs = vec![vec![0.0_f32; vocab_size]; 4];
 //!
 //! let config = SpeculativeConfig::new(3);
 //! let mut stats = SpeculativeStats::new();
@@ -68,7 +68,7 @@
 //! - Leviathan et al., "Fast Inference from Transformers via Speculative Decoding" (ICML 2023)
 //! - Chen et al., "Accelerating Large Language Model Decoding with Speculative Sampling" (2023)
 
-use fuel::{DType, Result, Tensor};
+use fuel::Result;
 
 /// Configuration for speculative decoding.
 #[derive(Debug, Clone)]
@@ -226,8 +226,8 @@ pub struct VerifyResult {
 /// A [`VerifyResult`] containing the accepted tokens and the next token.
 pub fn verify_draft(
     draft_tokens: &[u32],
-    draft_logprobs: &Tensor,
-    target_logprobs: &Tensor,
+    draft_logprobs: &[Vec<f32>],
+    target_logprobs: &[Vec<f32>],
     config: &SpeculativeConfig,
     stats: &mut SpeculativeStats,
 ) -> Result<VerifyResult> {
@@ -235,7 +235,7 @@ pub fn verify_draft(
 
     if k == 0 {
         // No draft tokens — just sample from the target
-        let target_probs = softmax_1d(&target_logprobs.get(0)?)?;
+        let target_probs = softmax_1d(row(target_logprobs, 0, "target_logprobs")?);
         let next_token = sample_from_probs(&target_probs)?;
         stats.record(0, 0, config.stats_window);
         return Ok(VerifyResult {
@@ -248,8 +248,8 @@ pub fn verify_draft(
     let mut accepted = Vec::with_capacity(k);
 
     for i in 0..k {
-        let draft_probs = softmax_1d(&draft_logprobs.get(i)?)?;
-        let target_probs = softmax_1d(&target_logprobs.get(i)?)?;
+        let draft_probs = softmax_1d(row(draft_logprobs, i, "draft_logprobs")?);
+        let target_probs = softmax_1d(row(target_logprobs, i, "target_logprobs")?);
 
         let token = draft_tokens[i];
         let draft_p = prob_of_token(&draft_probs, token)?;
@@ -287,7 +287,7 @@ pub fn verify_draft(
     }
 
     // All K tokens accepted — sample bonus token from target at position K
-    let bonus_probs = softmax_1d(&target_logprobs.get(k)?)?;
+    let bonus_probs = softmax_1d(row(target_logprobs, k, "target_logprobs")?);
     let next_token = sample_from_probs(&bonus_probs)?;
     stats.record(k, k, config.stats_window);
 
@@ -298,15 +298,41 @@ pub fn verify_draft(
     })
 }
 
-/// Softmax a 1-D logits tensor to probabilities.
-fn softmax_1d(logits: &Tensor) -> Result<Vec<f32>> {
-    let logits = logits.to_dtype(DType::F32)?;
-    let max_val = logits.max(0)?.to_scalar::<f32>()?;
-    let shifted = (logits - max_val as f64)?;
-    let exp = shifted.exp()?;
-    let sum = exp.sum_all()?.to_scalar::<f32>()?;
-    let probs = (exp / sum as f64)?;
-    probs.to_vec1::<f32>()
+/// Borrow row `i` of a `[positions, vocab]` logprob table.
+///
+/// Replaces the eager `Tensor::get(i)`, which allocated a row tensor per
+/// call. Bounds are a caller-data condition, so this is an `Err`, not a panic.
+fn row<'a>(rows: &'a [Vec<f32>], i: usize, name: &str) -> Result<&'a [f32]> {
+    rows.get(i).map(Vec::as_slice).ok_or_else(|| {
+        fuel::Error::Msg(format!(
+            "{name}: need row {i} but only {} row(s) supplied",
+            rows.len(),
+        ))
+    })
+}
+
+/// Softmax a 1-D logits row to probabilities.
+///
+/// Host-side and infallible: max-shift then normalize. This used to build an
+/// eager `Tensor` graph per row (`to_dtype` -> `max` -> `sub` -> `exp` ->
+/// `sum_all` -> `div` -> `to_vec1`) to compute a handful of floats the caller
+/// immediately read back. Speculative accept/reject is control flow over
+/// already-realized logits, so it belongs on the host — same call the
+/// `fuel-transformers` generation module made when it dropped to `&[f32]`.
+fn softmax_1d(logits: &[f32]) -> Vec<f32> {
+    let max_val = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    if !max_val.is_finite() {
+        // All -inf / empty: nothing to normalize against.
+        return vec![0.0; logits.len()];
+    }
+    let mut probs: Vec<f32> = logits.iter().map(|&l| (l - max_val).exp()).collect();
+    let sum: f32 = probs.iter().sum();
+    if sum > 0.0 {
+        for p in &mut probs {
+            *p /= sum;
+        }
+    }
+    probs
 }
 
 /// Extract the probability assigned to a specific token.
@@ -366,9 +392,9 @@ mod tests {
     use super::*;
     use fuel::Device;
 
-    fn uniform_logprobs(k: usize, vocab: usize, device: &Device) -> Tensor {
+    fn uniform_logprobs(k: usize, vocab: usize) -> Vec<Vec<f32>> {
         // Uniform distribution — all logits = 0 → softmax = 1/vocab
-        Tensor::zeros((k, vocab), DType::F32, device).unwrap()
+        vec![vec![0.0_f32; vocab]; k]
     }
 
     #[test]
@@ -379,8 +405,8 @@ mod tests {
         let draft_tokens = vec![5u32, 10, 15];
 
         // When draft and target have identical distributions, acceptance prob = 1.0
-        let logprobs = uniform_logprobs(k, vocab, &device);
-        let target_logprobs = uniform_logprobs(k + 1, vocab, &device);
+        let logprobs = uniform_logprobs(k, vocab);
+        let target_logprobs = uniform_logprobs(k + 1, vocab);
 
         let config = SpeculativeConfig::new(k);
         let mut stats = SpeculativeStats::new();
@@ -457,8 +483,8 @@ mod tests {
 
         // No draft tokens
         let draft_tokens: Vec<u32> = vec![];
-        let draft_logprobs = Tensor::zeros((0, vocab), DType::F32, &device)?;
-        let target_logprobs = Tensor::zeros((1, vocab), DType::F32, &device)?;
+        let draft_logprobs: Vec<Vec<f32>> = Vec::new();
+        let target_logprobs = vec![vec![0.0_f32; vocab]];
 
         let config = SpeculativeConfig::new(3);
         let mut stats = SpeculativeStats::new();
@@ -487,14 +513,14 @@ mod tests {
         for i in 0..k {
             draft_data[i * vocab] = 10.0; // token 0 has high logit
         }
-        let draft_logprobs = Tensor::from_vec(draft_data, (k, vocab), &device)?;
+        let draft_logprobs: Vec<Vec<f32>> = draft_data.chunks(vocab).map(<[f32]>::to_vec).collect();
 
         // Target strongly prefers token 5
         let mut target_data = vec![0.0f32; (k + 1) * vocab];
         for i in 0..=k {
             target_data[i * vocab + 5] = 10.0; // token 5 has high logit
         }
-        let target_logprobs = Tensor::from_vec(target_data, (k + 1, vocab), &device)?;
+        let target_logprobs: Vec<Vec<f32>> = target_data.chunks(vocab).map(<[f32]>::to_vec).collect();
 
         // Draft proposes token 0 (which target dislikes)
         let draft_tokens = vec![0u32, 0, 0];
@@ -526,8 +552,8 @@ mod tests {
         let k = 5;
 
         let draft_tokens: Vec<u32> = (0..k as u32).collect();
-        let draft_logprobs = uniform_logprobs(k, vocab, &device);
-        let target_logprobs = uniform_logprobs(k + 1, vocab, &device);
+        let draft_logprobs = uniform_logprobs(k, vocab);
+        let target_logprobs = uniform_logprobs(k + 1, vocab);
 
         let config = SpeculativeConfig::new(k);
         let mut stats = SpeculativeStats::new();
