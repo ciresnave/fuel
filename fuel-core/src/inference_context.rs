@@ -1018,6 +1018,242 @@ impl DecodeSession {
     }
 }
 
+/// Per-token re-bound data Consts for one PAGED decode step — the paged twin
+/// of [`DecodeTokenData`]. The shapes are stable across tokens (that is the
+/// whole point of the plan-once path); only the bytes change, so each is an
+/// `Arc<RwLock<Storage>>` overwriting the held [`PagedDecodeSession`]'s
+/// base-cache entry for its stable NodeId.
+pub struct PagedDecodeTokenData {
+    /// The single decode token id (`[1]` U32).
+    pub token_ids: Arc<RwLock<Storage>>,
+    /// RoPE cos table at THIS token's absolute position (`[1, head_dim]` F32).
+    pub rope_cos: Arc<RwLock<Storage>>,
+    /// RoPE sin table at THIS token's absolute position (`[1, head_dim]` F32).
+    pub rope_sin: Arc<RwLock<Storage>>,
+    /// Capacity-padded block table (`[1, max_blocks_cap]` U32) — the shape is
+    /// FIXED by `max_blocks_cap`; the content grows a physical block whenever
+    /// this token crosses a block boundary (padded tail stays 0, masked out).
+    pub block_table: Arc<RwLock<Storage>>,
+    /// Attended prefix length for this row (`[1]` U32) — the `Op::PagedAttn`
+    /// mask cutoff (`Ge(pos, context_len) → −inf`) that neutralizes both the
+    /// future positions AND the padded block_table tail.
+    pub context_lens: Arc<RwLock<Storage>>,
+    /// The flattened KV-write offset (`linear = phys·block_size + slot` as a
+    /// rank-0 I64), present ONLY on the device-offset path (CPU/CUDA, where
+    /// `Op::WriteSliceDoff` reads the start device-side). `None` on the SymEnv
+    /// path (Vulkan), where the offset rides `write_sym` in the per-pass env.
+    pub offset: Option<Arc<RwLock<Storage>>>,
+}
+
+/// Plan-once persistent decode state for one PAGED (block-pool) decode
+/// stream — the paged twin of [`DecodeSession`]. Built on the first
+/// `seq == 1` paged decode token; reused (graph + optimize view HELD, only
+/// the per-token data Consts + `SymEnv` re-bound) for every subsequent token.
+///
+/// Paged decode's structural variabilities that a re-plan would otherwise pay
+/// EVERY token are removed here: (1) the fresh `LazyTensor` graph root becomes
+/// a held graph with stable re-bindable Const placeholders; (2) the L-varying
+/// `block_table` shape is pinned to `[1, max_blocks_cap]` (Task 1 padded
+/// materialize); (3) the per-step KV-write range becomes ONE flattened
+/// dynamic offset (Task 2 `build_decode_attn_off`). What remains per token is
+/// shape-stable data re-bound into a clone of `base_cache` + one bound scalar.
+///
+/// The pool K/V buffer Arcs are bound ONCE into `base_cache` and mutate IN
+/// PLACE via `Op::WriteSliceDoff`/`Op::WriteSliceDyn` each token (never
+/// re-inserted) — exactly the contiguous KV relationship, so the write this
+/// step lands in the pool and is visible next step.
+///
+/// Held by the paged generate-loop owner alongside the `DeviceKvPool` +
+/// `SessionHandle`; the caller must NOT swap the pool/model out from under a
+/// live session (the held `base_cache` references THIS pool's buffers). A
+/// validity-key mismatch (`is_valid_for`) or `TopologyChanged` drops + rebuilds
+/// it (see `LlamaModel::forward_paged_step_persistent`). Single-session (B = 1)
+/// today; the ragged batched persistent path is a follow-on.
+pub struct PagedDecodeSession {
+    /// The held paged decode-step graph, ALREADY optimized in place. Structure
+    /// is stable across tokens (variabilities #1–#3 removed).
+    graph: Arc<RwLock<Graph>>,
+    /// The cached optimize view from the first realize. Holds only
+    /// `{roots, generation}`; valid while `graph` structure + topology
+    /// generation are unchanged.
+    optimized: OptimizedGraph,
+    /// The realize root the executor is asked for (the D2H `Op::Copy` splice).
+    effective_target: NodeId,
+    /// The logits node (pre-D2H-splice) — retained for debugging/attribution.
+    logits_node: NodeId,
+    /// Stable re-bindable single-token-id Const (`[1]` U32).
+    token_ids_node: NodeId,
+    /// Stable re-bindable RoPE cos table Const (`[1, head_dim]` F32).
+    rope_cos_node: NodeId,
+    /// Stable re-bindable RoPE sin table Const (`[1, head_dim]` F32).
+    rope_sin_node: NodeId,
+    /// Stable re-bindable padded block_table Const (`[1, max_blocks_cap]` U32).
+    block_table_node: NodeId,
+    /// Stable re-bindable context_lens Const (`[1]` U32).
+    context_lens_node: NodeId,
+    /// Per-layer `(k_pool_ph, v_pool_ph)` stable KV placeholder NodeIds, bound
+    /// ONCE to the pool buffers (viewed at `pool_shape_flat`) and mutated in
+    /// place by the flattened-offset write each token.
+    kv_nodes: Vec<(NodeId, NodeId)>,
+    /// The stable rank-0 `I64` KV-write offset Const, present ONLY on the
+    /// device-offset path (CPU/CUDA — `Op::WriteSliceDoff`). `None` on the
+    /// SymEnv path (Vulkan — the offset rides `write_sym`).
+    offset_node: Option<NodeId>,
+    /// The symbol the per-pass `SymEnv` binds to the flattened write offset
+    /// (`linear`) each token. Load-bearing on the SymEnv path; a harmless
+    /// (unreferenced) extra binding on the device-offset path.
+    write_sym: SymId,
+    /// The full realized [`StorageCache`] from the first realize (weights +
+    /// the pool KV Arcs + the initial per-token data Consts). Each token we
+    /// clone this and overwrite ONLY the per-token data-Const entries; the
+    /// weight + pool Arcs are stable (the pool mutates in place).
+    base_cache: StorageCache,
+    // ---- validity keys — rebuild if any change vs. the live pool ----
+    max_blocks_cap: usize,
+    n_layers: usize,
+    block_size: usize,
+    cache_dtype: DType,
+}
+
+impl PagedDecodeSession {
+    /// Assemble a held paged session from the artifacts a first-realize
+    /// prebuild produced. The node ids are the STABLE data-Const NodeIds the
+    /// paged builder minted.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        graph: Arc<RwLock<Graph>>,
+        optimized: OptimizedGraph,
+        effective_target: NodeId,
+        logits_node: NodeId,
+        token_ids_node: NodeId,
+        rope_cos_node: NodeId,
+        rope_sin_node: NodeId,
+        block_table_node: NodeId,
+        context_lens_node: NodeId,
+        kv_nodes: Vec<(NodeId, NodeId)>,
+        offset_node: Option<NodeId>,
+        write_sym: SymId,
+        base_cache: StorageCache,
+        max_blocks_cap: usize,
+        n_layers: usize,
+        block_size: usize,
+        cache_dtype: DType,
+    ) -> Self {
+        Self {
+            graph,
+            optimized,
+            effective_target,
+            logits_node,
+            token_ids_node,
+            rope_cos_node,
+            rope_sin_node,
+            block_table_node,
+            context_lens_node,
+            kv_nodes,
+            offset_node,
+            write_sym,
+            base_cache,
+            max_blocks_cap,
+            n_layers,
+            block_size,
+            cache_dtype,
+        }
+    }
+
+    /// Realize the held paged graph for one decode token via the prebuilt seam
+    /// (SKIP `prepare` + `optimize_graph`). `data` supplies the per-token
+    /// re-bound data-Const Arcs; they overwrite the held `base_cache`'s entries
+    /// for this token (the weight + pool KV Arcs stay from `base_cache`).
+    /// `sym_env` binds `write_sym` (load-bearing on the SymEnv path, harmless
+    /// on the device-offset path). `TopologyChanged` surfaces typed (caller
+    /// invalidates the session).
+    pub fn realize_token(
+        &self,
+        device: &Device,
+        data: PagedDecodeTokenData,
+        sym_env: &SymEnv,
+    ) -> Result<Vec<f32>> {
+        let mut cache = self.base_cache.clone();
+        cache.insert(self.token_ids_node, data.token_ids);
+        cache.insert(self.rope_cos_node, data.rope_cos);
+        cache.insert(self.rope_sin_node, data.rope_sin);
+        cache.insert(self.block_table_node, data.block_table);
+        cache.insert(self.context_lens_node, data.context_lens);
+        if let (Some(offset_node), Some(offset)) = (self.offset_node, data.offset) {
+            cache.insert(offset_node, offset);
+        }
+        crate::pipelined_bridge::realize_one_prebuilt_env::<f32>(
+            &self.graph,
+            self.effective_target,
+            &self.optimized,
+            device,
+            cache,
+            sym_env,
+        )
+    }
+
+    /// Whether this held session is valid for the given paged decode step.
+    /// Rebuild (drop + build fresh) on any mismatch: a change in
+    /// `max_blocks_cap` (the block_table shape key), `n_layers`, `block_size`,
+    /// or `cache_dtype` means the held graph's shapes / offsets are stale.
+    pub fn is_valid_for(
+        &self,
+        max_blocks_cap: usize,
+        n_layers: usize,
+        block_size: usize,
+        cache_dtype: DType,
+    ) -> bool {
+        self.max_blocks_cap == max_blocks_cap
+            && self.n_layers == n_layers
+            && self.block_size == block_size
+            && self.cache_dtype == cache_dtype
+    }
+
+    /// Build the per-token [`SymEnv`] for one paged decode step: bind
+    /// `write_sym = linear` (the flattened KV-write offset). Load-bearing on
+    /// the SymEnv path; a harmless unreferenced binding on the device-offset
+    /// path (a conflicting rebind surfaces a typed error, never a panic).
+    pub fn per_token_sym_env(&self, linear: usize) -> Result<SymEnv> {
+        let mut env = SymEnv::new();
+        env.bind(self.write_sym, linear)?;
+        Ok(env)
+    }
+
+    /// The held graph handle.
+    pub fn graph(&self) -> &Arc<RwLock<Graph>> {
+        &self.graph
+    }
+    /// The cached optimize view (fed to the prebuilt-realize seam).
+    pub fn optimized(&self) -> &OptimizedGraph {
+        &self.optimized
+    }
+    pub fn effective_target(&self) -> NodeId {
+        self.effective_target
+    }
+    pub fn logits_node(&self) -> NodeId { self.logits_node }
+    pub fn token_ids_node(&self) -> NodeId { self.token_ids_node }
+    pub fn rope_cos_node(&self) -> NodeId { self.rope_cos_node }
+    pub fn rope_sin_node(&self) -> NodeId { self.rope_sin_node }
+    pub fn block_table_node(&self) -> NodeId { self.block_table_node }
+    pub fn context_lens_node(&self) -> NodeId { self.context_lens_node }
+    pub fn kv_nodes(&self) -> &[(NodeId, NodeId)] { &self.kv_nodes }
+    pub fn offset_node(&self) -> Option<NodeId> { self.offset_node }
+    pub fn write_sym(&self) -> SymId { self.write_sym }
+    pub fn max_blocks_cap(&self) -> usize { self.max_blocks_cap }
+
+    /// The held graph's node count. The Task 3 born-red test asserts this is
+    /// stable from token 2 onward (no per-token node growth — the guard
+    /// against an accidental re-splice / re-insert).
+    pub fn graph_node_count(&self) -> usize {
+        self.graph.read().map(|g| g.len()).unwrap_or(0)
+    }
+
+    /// The full realized [`StorageCache`] from the first realize.
+    pub fn base_cache(&self) -> &StorageCache {
+        &self.base_cache
+    }
+}
+
 // `alloc_zeroed_on` retired 2026-05-22 (bridge-retirement Phase 3a).
 // Zero-init device allocation now flows through `Op::Alloc` graph
 // emission + the executor's `WorkItemKind::Alloc` arm. The per-

@@ -7618,6 +7618,325 @@ impl LlamaModel {
         )
     }
 
+    /// **Plan-once persistent sibling of [`Self::forward_paged_step`]** — builds
+    /// the paged decode graph + optimized plan ONCE (held in a
+    /// [`crate::inference_context::PagedDecodeSession`]) and REUSES it for every
+    /// subsequent token, paying the optimizer (Lightbulb: ~90% of per-token
+    /// paged cost) once instead of per token. The paged twin of
+    /// [`Self::forward_with_kv_context_persistent`].
+    ///
+    /// Removes paged decode's three per-token re-plan triggers: (1) the fresh
+    /// `LazyTensor` graph root → a held graph of stable re-bindable Const
+    /// placeholders; (2) the L-varying `block_table` shape → pinned to
+    /// `[1, max_blocks_cap]` (Task 1 padded materialize); (3) the per-step
+    /// KV-write range → one flattened dynamic offset (Task 2
+    /// `build_decode_attn_off`). Per token only shape-stable data Arcs + the
+    /// bound offset change — re-bound into a clone of the held `base_cache`.
+    ///
+    /// `seq == 1` single-session (B = 1) — the simplest correct target; the
+    /// ragged batched persistent path is a follow-on. `max_blocks_cap` pins the
+    /// block_table shape: the paged driver passes the session's decode capacity
+    /// `ceil(max_seq_len / block_size)`; it MUST be ≥ the session's eventual
+    /// block count (else the padded materialize errors — never truncates). On a
+    /// validity-key mismatch (cap / geometry / dtype) or a `TopologyChanged`,
+    /// the held session is dropped and this token falls back to the re-planning
+    /// [`Self::forward_paged_step`] (the session rebuilds on the next token).
+    /// f32/bf16/f16; CPU-verifiable (the win is CPU-side planning).
+    pub fn forward_paged_step_persistent(
+        &self,
+        token: u32,
+        pool: &mut crate::kv_block_pool_device::DeviceKvPool,
+        session: crate::kv_block_pool::SessionHandle,
+        max_blocks_cap: usize,
+        decode_session: &mut Option<crate::inference_context::PagedDecodeSession>,
+    ) -> crate::Result<Vec<f32>> {
+        let cfg = &self.config;
+        let act_dtype = pool.dtype();
+        if !matches!(act_dtype, DType::F32 | DType::BF16 | DType::F16) {
+            return Err(fuel_ir::Error::Msg(format!(
+                "forward_paged_step_persistent: unsupported pool dtype {act_dtype:?} (expected F32/BF16/F16)",
+            )).bt());
+        }
+        let geom = pool.geometry();
+        if geom.n_layers != cfg.n_layers {
+            return Err(fuel_ir::Error::Msg(format!(
+                "forward_paged_step_persistent: pool n_layers {} != model n_layers {}",
+                geom.n_layers, cfg.n_layers,
+            )).bt());
+        }
+
+        // Invalidate a stale held session (different cap / geometry / dtype).
+        if let Some(s) = decode_session.as_ref() {
+            if !s.is_valid_for(max_blocks_cap, geom.n_layers, geom.block_size, act_dtype) {
+                *decode_session = None;
+            }
+        }
+
+        if decode_session.is_none() {
+            // First paged decode token (or post-invalidation): build + optimize
+            // the held graph ONCE.
+            return self.build_and_realize_first_paged_token(
+                token, pool, session, max_blocks_cap, decode_session,
+            );
+        }
+
+        // Subsequent token: re-bind data + skip optimize.
+        let res = {
+            let s = decode_session.as_ref().expect("session is_some");
+            self.rebind_and_realize_paged_prebuilt(token, pool, session, max_blocks_cap, s)
+        };
+        match res {
+            Ok(logits) => Ok(logits),
+            Err(e) if matches!(e, crate::Error::TopologyChanged { .. }) => {
+                // Stale cached generation — drop the session and re-plan this
+                // token via the D1 paged path; the session rebuilds next token.
+                *decode_session = None;
+                self.forward_paged_step(token, pool, session)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Advance one paged decode token's POOL bookkeeping (shared by the build
+    /// and rebind arms of the persistent path): grow the session by one slot,
+    /// break any copy-on-write share on the target block, and materialize the
+    /// capacity-padded block table. Returns `(tok_pos, linear, page_table)`
+    /// where `linear = phys·block_size + slot` is the flattened KV-write offset.
+    /// Takes `&mut pool` and returns owned data so the caller's `&mut` borrow
+    /// ends before the (immutable) graph build.
+    fn advance_paged_session(
+        pool: &mut crate::kv_block_pool_device::DeviceKvPool,
+        session: crate::kv_block_pool::SessionHandle,
+        max_blocks_cap: usize,
+    ) -> crate::Result<(usize, usize, crate::kv_block_pool_device::PageTableHost)> {
+        let block_size = pool.geometry().block_size;
+        let tok_pos = pool.core().filled_tokens(session).ok_or_else(|| {
+            fuel_ir::Error::Msg("forward_paged_step_persistent: unknown session".to_string()).bt()
+        })?;
+        pool.core_mut().append(session, 1).map_err(|e| {
+            fuel_ir::Error::Msg(format!("forward_paged_step_persistent: block append failed: {e:?}")).bt()
+        })?;
+        let phys = pool.ensure_writable_block(session, tok_pos / block_size)?;
+        let slot = tok_pos % block_size;
+        let linear = phys as usize * block_size + slot;
+        let pt = pool.materialize_block_table_padded(&[session], max_blocks_cap).map_err(|e| {
+            fuel_ir::Error::Msg(format!(
+                "forward_paged_step_persistent: padded block-table materialize failed: {e:?}",
+            )).bt()
+        })?;
+        Ok((tok_pos, linear, pt))
+    }
+
+    /// Build the per-token data Arcs for one paged decode step (shared by the
+    /// build + rebind arms). Uses the SAME `upload_host_buffer_to_device` path
+    /// `KvCache::with_capacity` uses — on CPU the Storage wraps the host bytes,
+    /// on GPU it performs the (tiny) H2D upload. The bytes change per token;
+    /// the held graph's Const NodeIds stay stable (re-bound via a `base_cache`
+    /// overwrite, not a fresh graph).
+    fn build_paged_token_data(
+        &self,
+        dev: &Device,
+        token: u32,
+        tok_pos: usize,
+        linear: usize,
+        pt: &crate::kv_block_pool_device::PageTableHost,
+        use_device_offset: bool,
+    ) -> crate::Result<crate::inference_context::PagedDecodeTokenData> {
+        let cfg = &self.config;
+        let upload = crate::pipelined_bridge::upload_host_buffer_to_device;
+        let token_ids = upload(dev, fuel_ir::HostBuffer::U32(vec![token]))?;
+        let (cos_data, sin_data) =
+            fuel_graph::build_rope_tables(cfg.rope_base, tok_pos, 1, cfg.head_dim);
+        let rope_cos = upload(dev, fuel_ir::HostBuffer::F32(cos_data))?;
+        let rope_sin = upload(dev, fuel_ir::HostBuffer::F32(sin_data))?;
+        let block_table = upload(dev, fuel_ir::HostBuffer::U32(pt.block_table.clone()))?;
+        let context_lens = upload(dev, fuel_ir::HostBuffer::U32(pt.context_lens.clone()))?;
+        let offset = if use_device_offset {
+            Some(upload(dev, fuel_ir::HostBuffer::I64(vec![linear as i64]))?)
+        } else {
+            None
+        };
+        Ok(crate::inference_context::PagedDecodeTokenData {
+            token_ids, rope_cos, rope_sin, block_table, context_lens, offset,
+        })
+    }
+
+    /// Build the held paged decode-step graph with STABLE re-bindable data
+    /// Consts, optimize it ONCE via `prebuild_optimized_env_capturing_cache`,
+    /// populate `decode_session`, and return the first token's logits. Only
+    /// called for the first paged decode token when there is no valid session.
+    fn build_and_realize_first_paged_token(
+        &self,
+        token: u32,
+        pool: &mut crate::kv_block_pool_device::DeviceKvPool,
+        session: crate::kv_block_pool::SessionHandle,
+        max_blocks_cap: usize,
+        decode_session: &mut Option<crate::inference_context::PagedDecodeSession>,
+    ) -> crate::Result<Vec<f32>> {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let dev = pool.device().clone();
+        let act_dtype = pool.dtype();
+        let geom = pool.geometry();
+        let block_size = geom.block_size;
+        let n_layers = geom.n_layers;
+        let scale = (1.0f64 / (cfg.head_dim as f64).sqrt()) as f32;
+        // Device-offset (WriteSliceDoff) on CPU/CUDA — capture-ready + the
+        // CPU-verifiable arm; SymEnv (WriteSliceDyn) on Vulkan. Mirrors the
+        // contiguous persistent path's split.
+        let use_device_offset = dev.is_cpu() || dev.is_cuda();
+        let write_sym = fuel_ir::SymId(0);
+
+        // Advance the pool for THIS token (same bookkeeping the re-planning
+        // path does); releases the &mut borrow before the immutable build.
+        let (tok_pos, linear, pt) =
+            Self::advance_paged_session(pool, session, max_blocks_cap)?;
+
+        // ---- Build the held graph ONCE with STABLE re-bindable placeholders. ----
+        // Embed table stays f32 (CUDA IndexSelect has no bf16 key); cast to the
+        // activation dtype after lookup. The embed Const is the graph root.
+        let embed = LazyTensor::from_f32(
+            weights.token_embedding.clone(),
+            Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
+            &dev,
+        );
+        let token_ids = embed.const_placeholder_like(Shape::from_dims(&[1]), DType::U32);
+        let token_ids_node = token_ids.inner.id();
+        let mut h = embed
+            .index_select(0, &token_ids)?
+            .reshape(Shape::from_dims(&[1, 1, cfg.dim]))?
+            .to_dtype(act_dtype)?;
+
+        // RoPE cos/sin at this token's absolute position — STABLE placeholders.
+        let rope_shape = Shape::from_dims(&[1, cfg.head_dim]);
+        let rope_cos = h.const_placeholder_like(rope_shape.clone(), DType::F32);
+        let rope_sin = h.const_placeholder_like(rope_shape, DType::F32);
+        let rope_cos_node = rope_cos.inner.id();
+        let rope_sin_node = rope_sin.inner.id();
+
+        // block_table pinned to [1, max_blocks_cap] (Task 1) + context_lens —
+        // STABLE placeholders. `.max(1)` matches the padded materialize's
+        // rank-2 well-formedness floor.
+        let block_table = h.const_placeholder_like(
+            Shape::from_dims(&[1, max_blocks_cap.max(1)]), DType::U32,
+        );
+        let block_table_node = block_table.inner.id();
+        let context_lens = h.const_placeholder_like(Shape::from_dims(&[1]), DType::U32);
+        let context_lens_node = context_lens.inner.id();
+
+        // The flattened KV-write offset carrier (device path: a rank-0 I64
+        // placeholder; SymEnv path: None, the offset rides `write_sym`).
+        let offset_tensor = if use_device_offset {
+            Some(h.const_placeholder_like(Shape::from_dims(&[]), DType::I64))
+        } else {
+            None
+        };
+        let offset_node = offset_tensor.as_ref().map(|t| t.inner.id());
+
+        // Per layer: STABLE pool K/V placeholders (viewed at pool_shape_flat so
+        // the write is ONE dynamic axis-0 offset), bound ONCE to the pool
+        // buffers and mutated in place each token.
+        let mut cache = fuel_dispatch::pipelined::StorageCache::new();
+        let mut kv_nodes: Vec<(fuel_graph::NodeId, fuel_graph::NodeId)> =
+            Vec::with_capacity(n_layers);
+        let flat_shape = pool.pool_shape_flat();
+        for (li, layer) in weights.layers.iter().enumerate() {
+            let k_ph = h.const_placeholder_like(flat_shape.clone(), act_dtype);
+            let v_ph = h.const_placeholder_like(flat_shape.clone(), act_dtype);
+            let k_arc = pool.k_pool(li).ok_or_else(|| {
+                fuel_ir::Error::Msg(format!("forward_paged_step_persistent: no K pool buffer for layer {li}")).bt()
+            })?;
+            let v_arc = pool.v_pool(li).ok_or_else(|| {
+                fuel_ir::Error::Msg(format!("forward_paged_step_persistent: no V pool buffer for layer {li}")).bt()
+            })?;
+            let k_id = k_ph.inner.id();
+            let v_id = v_ph.inner.id();
+            cache.insert(k_id, std::sync::Arc::clone(k_arc));
+            cache.insert(v_id, std::sync::Arc::clone(v_arc));
+            kv_nodes.push((k_id, v_id));
+            h = self.apply_layer_paged_off(
+                &h, layer, pool, &k_ph, &v_ph, &rope_cos, &rope_sin,
+                &block_table, &context_lens, offset_tensor.as_ref(), write_sym, scale,
+            )?;
+        }
+
+        let h_norm = apply_affine_rms_norm(&h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps);
+        let logits = weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size)?;
+        // Cast to f32 before the f32 realize (a bf16 root is UB — half the byte
+        // width); no-op under an f32 pool.
+        let logits_root = logits
+            .reshape(Shape::from_dims(&[cfg.vocab_size]))?
+            .to_dtype(DType::F32)?;
+        let logits_node = logits_root.inner.id();
+        let graph = logits_root.inner.graph().clone();
+
+        // ---- Bind the per-token DATA + realize + optimize ONCE. ----
+        let data =
+            self.build_paged_token_data(&dev, token, tok_pos, linear, &pt, use_device_offset)?;
+        cache.insert(token_ids_node, std::sync::Arc::clone(&data.token_ids));
+        cache.insert(rope_cos_node, std::sync::Arc::clone(&data.rope_cos));
+        cache.insert(rope_sin_node, std::sync::Arc::clone(&data.rope_sin));
+        cache.insert(block_table_node, std::sync::Arc::clone(&data.block_table));
+        cache.insert(context_lens_node, std::sync::Arc::clone(&data.context_lens));
+        if let (Some(off_node), Some(off_arc)) = (offset_node, data.offset.as_ref()) {
+            cache.insert(off_node, std::sync::Arc::clone(off_arc));
+        }
+
+        let mut sym_env = fuel_ir::SymEnv::new();
+        sym_env.bind(write_sym, linear).map_err(crate::Error::from)?;
+
+        let (effective_target, optimized, base_cache, logits_vec) =
+            crate::pipelined_bridge::prebuild_optimized_env_capturing_cache::<f32>(
+                &graph, logits_node, &dev, cache, &sym_env,
+            )?;
+
+        *decode_session = Some(crate::inference_context::PagedDecodeSession::new(
+            graph,
+            optimized,
+            effective_target,
+            logits_node,
+            token_ids_node,
+            rope_cos_node,
+            rope_sin_node,
+            block_table_node,
+            context_lens_node,
+            kv_nodes,
+            offset_node,
+            write_sym,
+            base_cache,
+            max_blocks_cap,
+            n_layers,
+            block_size,
+            act_dtype,
+        ));
+
+        Ok(logits_vec)
+    }
+
+    /// Re-bind one paged decode token's data into a clone of the held session's
+    /// `base_cache` and realize via the prebuilt seam (SKIP prepare + optimize).
+    /// The pool bookkeeping runs the same as the build arm; only the plan is
+    /// reused. `TopologyChanged` surfaces typed (the caller invalidates).
+    fn rebind_and_realize_paged_prebuilt(
+        &self,
+        token: u32,
+        pool: &mut crate::kv_block_pool_device::DeviceKvPool,
+        session: crate::kv_block_pool::SessionHandle,
+        max_blocks_cap: usize,
+        decode_session: &crate::inference_context::PagedDecodeSession,
+    ) -> crate::Result<Vec<f32>> {
+        let dev = pool.device().clone();
+        // Source of truth for the offset carrier = what the graph was built
+        // with (its offset_node presence), so build + rebind never disagree.
+        let use_device_offset = decode_session.offset_node().is_some();
+        let (tok_pos, linear, pt) =
+            Self::advance_paged_session(pool, session, max_blocks_cap)?;
+        let data =
+            self.build_paged_token_data(&dev, token, tok_pos, linear, &pt, use_device_offset)?;
+        let sym_env = decode_session.per_token_sym_env(linear)?;
+        decode_session.realize_token(&dev, data, &sym_env)
+    }
+
     /// Batched (`B = K`) sibling of [`Self::forward_paged_step`] — one decode
     /// step over K sessions in a single model pass (paged-storage PS4a, the
     /// throughput arm). Each session `i` contributes one `token` at its OWN
@@ -7833,6 +8152,50 @@ impl LlamaModel {
         // Paged storage + attention (replaces the contiguous write_slice + sliced SDPA).
         let attn = pool.build_decode_attn(
             k_pool_ph, v_pool_ph, &q_r, &k_r, &v_h, block_table, context_lens, phys, slot, scale,
+        )?;
+
+        let merged = attn
+            .permute([0, 2, 1, 3_usize]).unwrap()
+            .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
+        let attn_out = layer.attn_o.apply_linear(&merged, cfg.dim, cfg.dim)?;
+        let h1 = x.add(&attn_out).unwrap();
+        self.ffn_block(&h1, layer)
+    }
+
+    /// **Plan-once sibling of [`Self::apply_layer_paged`]** — identical
+    /// attention front half + o-projection + FFN, but the paged KV write +
+    /// attend go through
+    /// [`DeviceKvPool::build_decode_attn_off`](crate::kv_block_pool_device::DeviceKvPool::build_decode_attn_off)
+    /// (flattened, runtime-resolved write offset) so the layer's graph is
+    /// structurally IDENTICAL across decode steps — only the bound offset
+    /// changes. `k_pool_ph`/`v_pool_ph` are `pool_shape_flat()` placeholders;
+    /// `write_off` is `Some` on the device-offset path (CPU/CUDA) / `None` on
+    /// the SymEnv path (Vulkan), with `write_sym` carrying the offset there.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_layer_paged_off(
+        &self,
+        x: &LazyTensor,
+        layer: &LayerWeights,
+        pool: &crate::kv_block_pool_device::DeviceKvPool,
+        k_pool_ph: &LazyTensor,
+        v_pool_ph: &LazyTensor,
+        rope_cos: &LazyTensor,
+        rope_sin: &LazyTensor,
+        block_table: &LazyTensor,
+        context_lens: &LazyTensor,
+        write_off: Option<&LazyTensor>,
+        write_sym: fuel_ir::SymId,
+        scale: f32,
+    ) -> crate::Result<LazyTensor> {
+        let cfg = &self.config;
+        let (batch, seq) = (1usize, 1usize);
+        let (q_r, k_r, v_h) = self.project_qkv_roped(x, layer, rope_cos, rope_sin)?;
+
+        // Paged storage + attention with a flattened dynamic write offset
+        // (structurally step-invariant), replacing the concrete two-axis slab.
+        let attn = pool.build_decode_attn_off(
+            k_pool_ph, v_pool_ph, &q_r, &k_r, &v_h, block_table, context_lens,
+            write_off, write_sym, scale,
         )?;
 
         let merged = attn
@@ -14014,6 +14377,118 @@ mod generate_tests {
                 );
             }
         }
+    }
+
+    /// Task 3 (paged plan-once) — the second decode token REUSES the built
+    /// graph + optimized plan instead of re-planning. Proves both halves:
+    ///
+    /// (1) PLAN-ONCE: the first persistent token optimizes (≥ 1 optimize call —
+    ///     it builds + caches the plan); the second optimizes ZERO times (the
+    ///     `realize_one_prebuilt_env` HIT), and the held graph's node count is
+    ///     stable across the rebind (no re-splice / re-insert). Measured on the
+    ///     THREAD-LOCAL optimize counter so it is robust under the concurrent
+    ///     test suite (a process-global counter is polluted by peer threads).
+    /// (2) CORRECTNESS: both persistent tokens are BYTE-IDENTICAL to the
+    ///     re-planning `forward_paged_step` reference from the same primed
+    ///     state — so the rebind bound the RIGHT per-token data (token-ids,
+    ///     RoPE at the live position, the capacity-padded block_table that
+    ///     gains a new physical block mid-generation, context_lens, and the
+    ///     flattened KV-write offset). A HIT on WRONG bindings would pass (1)
+    ///     but fail (2); only a correct rebind passes both.
+    ///
+    /// The schedule crosses a BLOCK BOUNDARY between the two measured tokens
+    /// (history 7 → pos 7 fills block 1, pos 8 allocates block 2), so the
+    /// second token's rebound block_table MUST carry a physical block the
+    /// first token's did not — a stale (un-rebound) block_table attends the
+    /// wrong slots and diverges from the reference. CPU f32.
+    #[test]
+    fn plan_once_second_token_reuses_graph() {
+        use crate::pipelined_bridge::optimize_calls_thread_local;
+
+        let cfg = LlamaConfig {
+            vocab_size: 32, dim: 16, n_layers: 2, n_heads: 4, n_kv_heads: 4,
+            head_dim: 4, ffn_dim: 32, norm_eps: 1e-5, rope_base: 10000.0,
+        };
+        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
+        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let dev = crate::Device::cpu();
+
+        let (n_layers, n_kv_heads, head_dim) = (cfg.n_layers, cfg.n_kv_heads, cfg.head_dim);
+        let geom = || crate::kv_block_pool::KvGeometry {
+            n_layers, num_blocks: 32, block_size: 4, n_kv_heads, head_dim, elem_size: 4,
+        };
+
+        // History of 7 → after priming, filled_tokens == 7. The two decode
+        // tokens land at pos 7 (block 1, slot 3 — fills block 1) then pos 8
+        // (block 2, slot 0 — a NEW block is allocated between the two steps).
+        let history: [u32; 7] = [1, 2, 3, 4, 5, 6, 7];
+        let decode: [u32; 2] = [8, 9];
+        // Fixed capacity ≥ ceil((7 + 2) / 4) = 3 blocks. Pad to 8 so the
+        // block_table shape is stable AND wider than occupancy (exercises pad).
+        const CAP: usize = 8;
+
+        // Reference: re-planning `forward_paged_step` from the primed state.
+        let mut ref_pool = crate::kv_block_pool_device::DeviceKvPool::new(geom(), DType::F32, &dev)
+            .expect("f32 DeviceKvPool (ref)");
+        let rs = ref_pool.core_mut().open();
+        for &t in &history {
+            model.forward_paged_step(t, &mut ref_pool, rs).expect("ref prime");
+        }
+        let ref0 = model.forward_paged_step(decode[0], &mut ref_pool, rs).expect("ref decode 0");
+        let ref1 = model.forward_paged_step(decode[1], &mut ref_pool, rs).expect("ref decode 1");
+
+        // Persistent: prime identically via the re-planning path, then decode
+        // the two tokens via the plan-once persistent path.
+        let mut pool = crate::kv_block_pool_device::DeviceKvPool::new(geom(), DType::F32, &dev)
+            .expect("f32 DeviceKvPool (persistent)");
+        let s = pool.core_mut().open();
+        for &t in &history {
+            model.forward_paged_step(t, &mut pool, s).expect("persistent prime");
+        }
+
+        let mut ds: Option<crate::inference_context::PagedDecodeSession> = None;
+
+        // ---- Token 0: builds + optimizes the plan ONCE. ----
+        let before_build = optimize_calls_thread_local();
+        let l0 = model
+            .forward_paged_step_persistent(decode[0], &mut pool, s, CAP, &mut ds)
+            .expect("persistent decode 0 (build)");
+        let build_delta = optimize_calls_thread_local() - before_build;
+        assert!(
+            build_delta >= 1,
+            "first persistent token must optimize (build the plan): delta={build_delta}",
+        );
+        assert!(ds.is_some(), "session built on the first token");
+        let nodes_after_build = ds.as_ref().unwrap().graph_node_count();
+
+        // ---- Token 1: REUSES the plan (zero optimize calls). ----
+        let before_rebind = optimize_calls_thread_local();
+        let l1 = model
+            .forward_paged_step_persistent(decode[1], &mut pool, s, CAP, &mut ds)
+            .expect("persistent decode 1 (rebind)");
+        let rebind_delta = optimize_calls_thread_local() - before_rebind;
+        assert_eq!(
+            rebind_delta, 0,
+            "second persistent token must REUSE the cached plan (zero re-optimize), got delta={rebind_delta}",
+        );
+        let nodes_after_rebind = ds.as_ref().unwrap().graph_node_count();
+        assert_eq!(
+            nodes_after_rebind, nodes_after_build,
+            "held graph node count stable across rebind (no re-splice / re-insert)",
+        );
+
+        // ---- Correctness: byte-identical to the re-planning reference. ----
+        assert_eq!(l0.len(), ref0.len(), "logits length (token 0)");
+        assert_eq!(l1.len(), ref1.len(), "logits length (token 1)");
+        assert_eq!(
+            l0, ref0,
+            "plan-once BUILD token must be byte-identical to the re-planning reference",
+        );
+        assert_eq!(
+            l1, ref1,
+            "plan-once REBIND token must be byte-identical to the re-planning reference \
+             (proves the block_table / offset / RoPE rebind is correct across a block boundary)",
+        );
     }
 
     /// Phase D · FIRST live-GPU verification of plan-once persistent decode on
