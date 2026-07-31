@@ -308,7 +308,7 @@ impl Sd3TripleClip {
             .reshape(Shape::from_dims(&[1, clip_g_dim]))?;
         let clip_g_pooled = self.clip_g_text_projection.apply_linear(
             &clip_g_pooled_raw, clip_g_dim, clip_g_dim,
-        );
+        )?;
 
         // 3. y vector: concat pooled CLIP-L + projected CLIP-G pooled.
         let y = clip_l_pooled.concat(&clip_g_pooled, 1_usize)?;

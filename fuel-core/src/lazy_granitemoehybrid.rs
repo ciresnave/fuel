@@ -303,7 +303,7 @@ impl GraniteMoeHybridModel {
     fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
         let lm_head = WeightStorage::F32(self.weights.token_embedding.clone());
-        let logits = lm_head.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size);
+        let logits = lm_head.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?;
         let div = cfg.logits_divisor();
         if (div - 1.0).abs() < f32::EPSILON {
             Ok(logits)
@@ -454,9 +454,9 @@ impl GraniteMoeHybridModel {
         let q_dim = cfg.num_attention_heads * head_dim;
         let kv_dim = cfg.num_key_value_heads * head_dim;
 
-        let q = w.q_proj.apply_linear(x, cfg.hidden_size, q_dim);
-        let k = w.k_proj.apply_linear(x, cfg.hidden_size, kv_dim);
-        let v = w.v_proj.apply_linear(x, cfg.hidden_size, kv_dim);
+        let q = w.q_proj.apply_linear(x, cfg.hidden_size, q_dim)?;
+        let k = w.k_proj.apply_linear(x, cfg.hidden_size, kv_dim)?;
+        let v = w.v_proj.apply_linear(x, cfg.hidden_size, kv_dim)?;
 
         let _ = (batch, seq);
         let q = q.split_heads(cfg.num_attention_heads, head_dim)?;
@@ -481,7 +481,7 @@ impl GraniteMoeHybridModel {
         let probs = scores_masked.softmax_last_dim()?;
         let ctx = probs.matmul(&v_full)?;
         let merged = ctx.merge_heads()?;
-        Ok(w.o_proj.apply_linear(&merged, q_dim, cfg.hidden_size))
+        Ok(w.o_proj.apply_linear(&merged, q_dim, cfg.hidden_size)?)
     }
 
     fn apply_mlp(
@@ -492,11 +492,11 @@ impl GraniteMoeHybridModel {
         let cfg = &self.config;
         let h = cfg.hidden_size;
         let inter = cfg.shared_intermediate_size;
-        let fused = w.input_linear.apply_linear(x, h, 2 * inter);
+        let fused = w.input_linear.apply_linear(x, h, 2 * inter)?;
         let left = fused.slice(2_usize, 0, inter)?;
         let right = fused.slice(2_usize, inter, inter)?;
         let gated = left.silu().mul(&right)?;
-        Ok(w.output_linear.apply_linear(&gated, inter, h))
+        Ok(w.output_linear.apply_linear(&gated, inter, h)?)
     }
 }
 

@@ -356,7 +356,7 @@ impl ModernBertModel {
         let n_heads = cfg.num_attention_heads;
         let head_dim = cfg.head_dim();
 
-        let qkv = layer.wqkv.apply_linear(x, h, 3 * h);
+        let qkv = layer.wqkv.apply_linear(x, h, 3 * h)?;
         // (batch, seq, 3 * h) → split Q / K / V on last dim.
         let q = qkv.slice(2_usize, 0, h)?;
         let k = qkv.slice(2_usize, h, h)?;
@@ -379,7 +379,7 @@ impl ModernBertModel {
         let probs = scores.softmax_last_dim()?;
         let ctx = probs.matmul(&v)?;
         let merged = ctx.merge_heads()?;
-        Ok(layer.wo.apply_linear(&merged, h, h))
+        Ok(layer.wo.apply_linear(&merged, h, h)?)
     }
 
     fn geglu(&self, x: &LazyTensor, layer: &ModernBertLayerWeights) -> Result<LazyTensor> {
@@ -388,11 +388,11 @@ impl ModernBertModel {
         let i = cfg.intermediate_size;
 
         // GeGLU: wi(x) is (..., 2 * i). x0 = gate, x1 = value.
-        let up = layer.mlp_wi.apply_linear(x, h, 2 * i);
+        let up = layer.mlp_wi.apply_linear(x, h, 2 * i)?;
         let gate = up.slice(2_usize, 0, i)?;
         let value = up.slice(2_usize, i, i)?;
         let inner = gate.gelu_erf().mul(&value)?;
-        Ok(layer.mlp_wo.apply_linear(&inner, i, h))
+        Ok(layer.mlp_wo.apply_linear(&inner, i, h)?)
     }
 }
 

@@ -153,7 +153,7 @@ impl Rwkv6Model {
 
     fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
-        Ok(self.weights.head.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size))
+        Ok(self.weights.head.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 
     fn run_backbone(&self, tokens: &[u32]) -> Result<LazyTensor> {
@@ -333,10 +333,10 @@ impl Rwkv6Model {
             .reshape(Shape::from_dims(&[batch, seq, n_heads, head_size]))?;
 
         // Projections.
-        let k = layer.attn_key.apply_linear(&xk, h, h);
-        let v = layer.attn_value.apply_linear(&xv, h, h);
-        let r = layer.attn_receptance.apply_linear(&xr, h, h);
-        let g = layer.attn_gate.apply_linear(&xg, h, h).silu();
+        let k = layer.attn_key.apply_linear(&xk, h, h)?;
+        let v = layer.attn_value.apply_linear(&xv, h, h)?;
+        let r = layer.attn_receptance.apply_linear(&xr, h, h)?;
+        let g = layer.attn_gate.apply_linear(&xg, h, h)?.silu();
 
         // Per-head reshapes (same as v5).
         let k_h = k
@@ -394,7 +394,7 @@ impl Rwkv6Model {
             batch, seq, n_heads, head_size, 1e-5,
         )?;
         let gated = out.mul(&g)?;
-        Ok(layer.attn_output.apply_linear(&gated, h, h))
+        Ok(layer.attn_output.apply_linear(&gated, h, h)?)
     }
 
     fn channel_mix(
@@ -424,9 +424,9 @@ impl Rwkv6Model {
         let k_in = x.add(&sx.broadcast_mul(&mix_key)?)?;
         let r_in = x.add(&sx.broadcast_mul(&mix_rec)?)?;
 
-        let k = layer.ffn_key.apply_linear(&k_in, h, inter).relu().sqr();
-        let v = layer.ffn_value.apply_linear(&k, inter, h);
-        let r = layer.ffn_receptance.apply_linear(&r_in, h, h).sigmoid();
+        let k = layer.ffn_key.apply_linear(&k_in, h, inter)?.relu().sqr();
+        let v = layer.ffn_value.apply_linear(&k, inter, h)?;
+        let r = layer.ffn_receptance.apply_linear(&r_in, h, h)?.sigmoid();
         r.mul(&v)
     }
 }

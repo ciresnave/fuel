@@ -358,7 +358,7 @@ impl Llama3Model {
         let cfg = &self.inner.config;
         let weights = &self.inner.weights;
         let h_norm = self.run_backbone_embeds(embeds, start_pos)?;
-        Ok(weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size))
+        Ok(weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size)?)
     }
 
     /// Forward from pre-computed embeddings; skip the LM head and

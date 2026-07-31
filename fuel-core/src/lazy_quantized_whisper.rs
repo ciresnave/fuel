@@ -497,7 +497,7 @@ fn q_linear(
     out_f: usize,
     seq: usize,
 ) -> crate::Result<LazyTensor> {
-    let proj = w.apply_linear(x, in_f, out_f);
+    let proj = w.apply_linear(x, in_f, out_f)?;
     match b {
         Some(bias) => {
             let bias_t = proj

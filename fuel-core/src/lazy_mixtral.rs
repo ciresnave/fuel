@@ -160,7 +160,7 @@ impl MixtralModel {
 
     fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
-        Ok(self.weights.output.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size))
+        Ok(self.weights.output.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 
     /// Shared backbone: embed → RoPE → per-layer attn+MoE →
@@ -253,9 +253,9 @@ impl MixtralModel {
         let x_norm = x.rms_norm_affine(std::sync::Arc::clone(&layer.attn_norm_gain), cfg.rms_norm_eps)?;
 
         // Q / K / V — bias-free Mistral-style.
-        let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size);
-        let k = layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim);
-        let v = layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim);
+        let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size)?;
+        let k = layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?;
+        let v = layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?;
 
         let _ = (batch, seq);
         let q = q.split_heads(cfg.num_attention_heads, cfg.head_dim)?;
@@ -280,7 +280,7 @@ impl MixtralModel {
         let attn_v = attn.matmul(&v_full)?;
 
         let merged = attn_v.merge_heads()?;
-        let attn_out = layer.attn_o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size);
+        let attn_out = layer.attn_o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?;
 
         let h1 = x.add(&attn_out)?;
 
@@ -314,10 +314,10 @@ impl MixtralModel {
         let mut routed_sum: Option<LazyTensor> = None;
         for (ei, ew) in layer.experts.iter().enumerate() {
             // SwiGLU expert: `down(silu(gate(x)) * up(x))`.
-            let gate = ew.gate_w.apply_linear(x, h, inter);
-            let up = ew.up_w.apply_linear(x, h, inter);
+            let gate = ew.gate_w.apply_linear(x, h, inter)?;
+            let up = ew.up_w.apply_linear(x, h, inter)?;
             let swiglu = gate.silu().mul(&up)?;
-            let expert_out = ew.down_w.apply_linear(&swiglu, inter, h);
+            let expert_out = ew.down_w.apply_linear(&swiglu, inter, h)?;
 
             // Gate weight column for this expert: [batch, seq, 1].
             let w_col = router_weights.slice(2_usize, ei, 1)?;

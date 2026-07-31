@@ -293,11 +293,11 @@ impl XlmrModel {
         let n_heads = cfg.num_attention_heads;
         let head_dim = cfg.head_dim();
 
-        let q = layer.q_proj.apply_linear(x, d, d);
+        let q = layer.q_proj.apply_linear(x, d, d)?;
         let q = q.add_trailing_bias(std::sync::Arc::clone(&layer.q_proj_bias))?;
-        let k = layer.k_proj.apply_linear(x, d, d);
+        let k = layer.k_proj.apply_linear(x, d, d)?;
         let k = k.add_trailing_bias(std::sync::Arc::clone(&layer.k_proj_bias))?;
-        let v = layer.v_proj.apply_linear(x, d, d);
+        let v = layer.v_proj.apply_linear(x, d, d)?;
         let v = v.add_trailing_bias(std::sync::Arc::clone(&layer.v_proj_bias))?;
 
         let _ = (batch, seq);
@@ -315,14 +315,14 @@ impl XlmrModel {
         let probs = scores.softmax_last_dim()?;
         let ctx = probs.matmul(&v)?;
         let merged = ctx.merge_heads()?;
-        let attn_out = layer.out_proj.apply_linear(&merged, d, d);
+        let attn_out = layer.out_proj.apply_linear(&merged, d, d)?;
         let attn_out = attn_out.add_trailing_bias(std::sync::Arc::clone(&layer.out_proj_bias))?;
 
         // Post-LN: LN(attn + x).
         let h1 = x.add(&attn_out)?.layer_norm_affine(std::sync::Arc::clone(&layer.attn_ln_gain), std::sync::Arc::clone(&layer.attn_ln_bias), cfg.layer_norm_eps)?;
 
         // FFN.
-        let fc1 = layer.fc1.apply_linear(&h1, d, cfg.intermediate_size);
+        let fc1 = layer.fc1.apply_linear(&h1, d, cfg.intermediate_size)?;
         let fc1 = fc1.add_trailing_bias(std::sync::Arc::clone(&layer.fc1_bias))?;
         let act = match cfg.hidden_activation {
             XlmrActivation::Gelu => fc1.gelu_erf(),
@@ -330,7 +330,7 @@ impl XlmrModel {
             XlmrActivation::Relu => fc1.relu(),
             XlmrActivation::Silu => fc1.silu(),
         };
-        let fc2 = layer.fc2.apply_linear(&act, cfg.intermediate_size, d);
+        let fc2 = layer.fc2.apply_linear(&act, cfg.intermediate_size, d)?;
         let fc2 = fc2.add_trailing_bias(std::sync::Arc::clone(&layer.fc2_bias))?;
 
         // Post-LN: LN(ffn + h1).
@@ -486,7 +486,7 @@ impl XlmrForMaskedLM {
         // `apply_linear` matmuls a `(1, seq, hidden)` activation by a
         // `(hidden, hidden)` weight to give `(1, seq, hidden)`.
         let dense = self.lm_head_dense_weight
-            .apply_linear(&h, cfg.hidden_size, cfg.hidden_size);
+            .apply_linear(&h, cfg.hidden_size, cfg.hidden_size)?;
         let dense = dense.add_trailing_bias(Arc::clone(&self.lm_head_dense_bias))?;
         let act = dense.gelu_erf();
         let normed = act.layer_norm_affine(
@@ -495,7 +495,7 @@ impl XlmrForMaskedLM {
             cfg.layer_norm_eps,
         )?;
         let logits = self.lm_head_decoder_weight
-            .apply_linear(&normed, cfg.hidden_size, cfg.vocab_size);
+            .apply_linear(&normed, cfg.hidden_size, cfg.vocab_size)?;
         let logits = logits.add_trailing_bias(Arc::clone(&self.lm_head_decoder_bias))?;
         Ok(logits)
     }
@@ -609,12 +609,12 @@ impl XlmrForSequenceClassification {
             .reshape(Shape::from_dims(&[1, cfg.hidden_size]))?;
         // dense (hidden -> hidden) + bias + tanh.
         let dense = self.classifier_dense_weight
-            .apply_linear(&cls, cfg.hidden_size, cfg.hidden_size);
+            .apply_linear(&cls, cfg.hidden_size, cfg.hidden_size)?;
         let dense = dense.add_trailing_bias(Arc::clone(&self.classifier_dense_bias))?;
         let act = dense.tanh();
         // out_proj (hidden -> num_labels) + bias.
         let logits = self.classifier_out_proj_weight
-            .apply_linear(&act, cfg.hidden_size, self.num_labels);
+            .apply_linear(&act, cfg.hidden_size, self.num_labels)?;
         let logits = logits.add_trailing_bias(Arc::clone(&self.classifier_out_proj_bias))?;
         Ok(logits)
     }

@@ -377,7 +377,7 @@ impl NomicBertModel {
         let n_heads = cfg.n_head;
         let head_dim = cfg.head_dim();
 
-        let qkv = layer.wqkv.apply_linear(x, d, 3 * d);
+        let qkv = layer.wqkv.apply_linear(x, d, 3 * d)?;
         let qkv = qkv.add_optional_trailing_bias(layer.wqkv_bias.as_ref())?;
         // (batch, seq, 3 * d) → split Q / K / V on last dim.
         let q = qkv.slice(2_usize, 0, d)?;
@@ -403,7 +403,7 @@ impl NomicBertModel {
         let probs = scores.softmax_last_dim()?;
         let ctx = probs.matmul(&v)?;
         let merged = ctx.merge_heads()?;
-        let out = layer.out_proj.apply_linear(&merged, d, d);
+        let out = layer.out_proj.apply_linear(&merged, d, d)?;
         out.add_optional_trailing_bias(layer.out_proj_bias.as_ref())
     }
 
@@ -413,26 +413,26 @@ impl NomicBertModel {
         let h = cfg.n_inner;
         match cfg.activation {
             NomicBertActivation::SwiGlu => {
-                let val = layer.fc11.apply_linear(x, d, h);
+                let val = layer.fc11.apply_linear(x, d, h)?;
                 let val = val.add_optional_trailing_bias(layer.fc11_bias.as_ref())?;
-                let gate = layer.fc12.apply_linear(x, d, h);
+                let gate = layer.fc12.apply_linear(x, d, h)?;
                 let gate = gate.add_optional_trailing_bias(layer.fc12_bias.as_ref())?;
                 let inner = val.mul(&gate.silu())?;
-                let down = layer.fc2.apply_linear(&inner, h, d);
+                let down = layer.fc2.apply_linear(&inner, h, d)?;
                 down.add_optional_trailing_bias(layer.fc2_bias.as_ref())
             }
             NomicBertActivation::Gelu => {
-                let up = layer.fc11.apply_linear(x, d, h);
+                let up = layer.fc11.apply_linear(x, d, h)?;
                 let up = up.add_optional_trailing_bias(layer.fc11_bias.as_ref())?;
                 let act = up.gelu_erf();
-                let down = layer.fc2.apply_linear(&act, h, d);
+                let down = layer.fc2.apply_linear(&act, h, d)?;
                 down.add_optional_trailing_bias(layer.fc2_bias.as_ref())
             }
             NomicBertActivation::Relu => {
-                let up = layer.fc11.apply_linear(x, d, h);
+                let up = layer.fc11.apply_linear(x, d, h)?;
                 let up = up.add_optional_trailing_bias(layer.fc11_bias.as_ref())?;
                 let act = up.relu();
-                let down = layer.fc2.apply_linear(&act, h, d);
+                let down = layer.fc2.apply_linear(&act, h, d)?;
                 down.add_optional_trailing_bias(layer.fc2_bias.as_ref())
             }
         }

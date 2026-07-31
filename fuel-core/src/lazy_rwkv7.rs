@@ -191,7 +191,7 @@ impl Rwkv7Model {
 
     fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
-        Ok(self.weights.head.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size))
+        Ok(self.weights.head.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 
     fn run_backbone(&self, tokens: &[u32]) -> Result<LazyTensor> {
@@ -304,9 +304,9 @@ impl Rwkv7Model {
         let xg = x.add(&xx.broadcast_mul(&m_g)?)?;
 
         // ---- Projections -----------------------------------------------------
-        let r = tm.receptance.apply_linear(&xr, h, h);
-        let k = tm.key.apply_linear(&xk, h, h);
-        let v = tm.value.apply_linear(&xv, h, h);
+        let r = tm.receptance.apply_linear(&xr, h, h)?;
+        let k = tm.key.apply_linear(&xk, h, h)?;
+        let v = tm.value.apply_linear(&xv, h, h)?;
 
         // ---- Decay LoRA: w = exp(-0.606531 * sigmoid(w0 + tanh(xw @ w1) @ w2))
         let w0 = x.const_f32_like(Arc::clone(&tm.w0), Shape::from_dims(&[1, 1, h]));
@@ -481,7 +481,7 @@ impl Rwkv7Model {
 
         // ---- Gate + output projection ---------------------------------------
         let gated = out_with_bonus.mul(&g)?;
-        let final_out = tm.output.apply_linear(&gated, h, h);
+        let final_out = tm.output.apply_linear(&gated, h, h)?;
         Ok((final_out, v_first_collected))
     }
 
@@ -503,8 +503,8 @@ impl Rwkv7Model {
         let k_in = x.add(&xx.broadcast_mul(&mix_const)?)?;
 
         // k = relu(k @ key)^2
-        let k = cm.key.apply_linear(&k_in, h, dim_ffn).relu().sqr();
-        Ok(cm.value.apply_linear(&k, dim_ffn, h))
+        let k = cm.key.apply_linear(&k_in, h, dim_ffn)?.relu().sqr();
+        Ok(cm.value.apply_linear(&k, dim_ffn, h)?)
     }
 }
 

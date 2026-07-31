@@ -230,7 +230,7 @@ impl LFM2Model {
 
     fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
-        Ok(self.weights.output.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size))
+        Ok(self.weights.output.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 
     fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
@@ -327,10 +327,10 @@ impl LFM2Model {
         layer: &LFM2LayerWeights,
     ) -> Result<LazyTensor> {
         let cfg = &self.config;
-        let gate = layer.ffn_gate.apply_linear(x, cfg.hidden_size, cfg.intermediate_size);
-        let up = layer.ffn_up.apply_linear(x, cfg.hidden_size, cfg.intermediate_size);
+        let gate = layer.ffn_gate.apply_linear(x, cfg.hidden_size, cfg.intermediate_size)?;
+        let up = layer.ffn_up.apply_linear(x, cfg.hidden_size, cfg.intermediate_size)?;
         let swiglu = gate.silu().mul(&up)?;
-        Ok(layer.ffn_down.apply_linear(&swiglu, cfg.intermediate_size, cfg.hidden_size))
+        Ok(layer.ffn_down.apply_linear(&swiglu, cfg.intermediate_size, cfg.hidden_size)?)
     }
 
     fn apply_attention(
@@ -348,9 +348,9 @@ impl LFM2Model {
         let q_dim = cfg.num_attention_heads * cfg.head_dim;
         let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
 
-        let q = a.attn_q.apply_linear(x, cfg.hidden_size, q_dim);
-        let k = a.attn_k.apply_linear(x, cfg.hidden_size, kv_dim);
-        let v = a.attn_v.apply_linear(x, cfg.hidden_size, kv_dim);
+        let q = a.attn_q.apply_linear(x, cfg.hidden_size, q_dim)?;
+        let k = a.attn_k.apply_linear(x, cfg.hidden_size, kv_dim)?;
+        let v = a.attn_v.apply_linear(x, cfg.hidden_size, kv_dim)?;
 
         let q = q.split_heads(cfg.num_attention_heads, cfg.head_dim)?;
         let k = k.split_heads(cfg.num_key_value_heads, cfg.head_dim)?;
@@ -379,7 +379,7 @@ impl LFM2Model {
         let attn_v = attn.matmul(&v_full)?;
 
         let merged = attn_v.merge_heads()?;
-        Ok(a.attn_o.apply_linear(&merged, q_dim, cfg.hidden_size))
+        Ok(a.attn_o.apply_linear(&merged, q_dim, cfg.hidden_size)?)
     }
 
     /// Apply the LFM2 ShortConv (LIV) mixer.
@@ -416,7 +416,7 @@ impl LFM2Model {
 
         // in_proj: x → bcx in (B, seq, 3*hidden), then transpose to
         // (B, 3*hidden, seq) so we can slice along the channel axis.
-        let bcx = c.in_proj.apply_linear(x, hidden, 3 * hidden);
+        let bcx = c.in_proj.apply_linear(x, hidden, 3 * hidden)?;
         let bcx_t = bcx.permute([0, 2, 1_usize])?; // (B, 3*hidden, seq)
 
         let b_gate = bcx_t.slice(1_usize, 0, hidden)?;          // (B, hidden, seq)
@@ -449,7 +449,7 @@ impl LFM2Model {
         let gated = c_gate.mul(&conv_out)?;
         let _ = seq;
         let out_t = gated.permute([0, 2, 1_usize])?;
-        Ok(c.out_proj.apply_linear(&out_t, hidden, hidden))
+        Ok(c.out_proj.apply_linear(&out_t, hidden, hidden)?)
     }
 }
 

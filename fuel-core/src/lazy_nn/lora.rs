@@ -161,7 +161,7 @@ impl LazyModule for LazyLoraLinear {
             self.in_features,
             self.out_features,
         );
-        let y = merged.apply_linear(xs, self.in_features, self.out_features);
+        let y = merged.apply_linear(xs, self.in_features, self.out_features)?;
         match &self.bias {
             Some(b) => {
                 let bias_t = y.const_f32_like(

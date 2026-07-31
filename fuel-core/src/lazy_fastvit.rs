@@ -274,7 +274,7 @@ impl FastVitModel {
                 let dims = dims.dims();
                 let c = dims[1];
                 let n = head.linear_b.len();
-                let logits = head.linear_w.apply_linear(&pooled, c, n);
+                let logits = head.linear_w.apply_linear(&pooled, c, n)?;
                 let bias = image.const_f32_like(
                     Arc::clone(&head.linear_b), Shape::from_dims(&[n]),
                 );
@@ -421,7 +421,7 @@ fn apply_fastvit_attention(
         .reshape(Shape::from_dims(&[b, c, n]))?
         .permute([0, 2, 1_usize])?;
     // qkv: (B, N, 3C)
-    let qkv = w.qkv.apply_linear(&x_seq, c, 3 * c);
+    let qkv = w.qkv.apply_linear(&x_seq, c, 3 * c)?;
     let q = qkv.narrow(2_usize, 0, c)?;
     let k = qkv.narrow(2_usize, c, c)?;
     let v = qkv.narrow(2_usize, 2 * c, c)?;
@@ -434,7 +434,7 @@ fn apply_fastvit_attention(
     let probs = scores.softmax_last_dim()?;
     let ctx = probs.matmul(&v)?.merge_heads()?;
     let _ = n;
-    let projected = w.proj.apply_linear(&ctx, c, c);
+    let projected = w.proj.apply_linear(&ctx, c, c)?;
     let bias_t = anchor.const_f32_like(
         Arc::clone(&w.proj_bias), Shape::from_dims(&[c]),
     );

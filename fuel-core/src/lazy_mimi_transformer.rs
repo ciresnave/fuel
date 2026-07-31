@@ -138,7 +138,7 @@ impl ProjectedTransformerModel {
         // Optional input projection.
         let h = match &self.weights.input_proj {
             None => xs,
-            Some(w) => w.apply_linear(&xs, self.input_dim, cfg.d_model),
+            Some(w) => w.apply_linear(&xs, self.input_dim, cfg.d_model)?,
         };
 
         // Build RoPE cos/sin tables for the input sequence length.
@@ -160,7 +160,7 @@ impl ProjectedTransformerModel {
         for (proj, out_dim) in &self.weights.output_projs {
             let y = match proj {
                 None => hidden.clone(),
-                Some(w) => w.apply_linear(&hidden, cfg.d_model, *out_dim),
+                Some(w) => w.apply_linear(&hidden, cfg.d_model, *out_dim)?,
             };
             let y = if cfg.conv_layout { y.permute([0, 2, 1_usize])? } else { y };
             outs.push(y);
@@ -202,9 +202,9 @@ fn apply_attention(
     let scale = 1.0_f64 / (head_dim as f64).sqrt();
 
     // (B, T, D) → (B, heads, T, head_dim)
-    let q = w.q_proj.apply_linear(x, d, d).split_heads(heads, head_dim)?;
-    let k = w.k_proj.apply_linear(x, d, d).split_heads(heads, head_dim)?;
-    let v = w.v_proj.apply_linear(x, d, d).split_heads(heads, head_dim)?;
+    let q = w.q_proj.apply_linear(x, d, d)?.split_heads(heads, head_dim)?;
+    let k = w.k_proj.apply_linear(x, d, d)?.split_heads(heads, head_dim)?;
+    let v = w.v_proj.apply_linear(x, d, d)?.split_heads(heads, head_dim)?;
 
     // Apply RoPE-interleaved to q and k.
     let q = apply_rope_interleaved(&q, cos, sin, b, heads, t, head_dim)?;
@@ -227,7 +227,7 @@ fn apply_attention(
         .reshape(Shape::from_dims(&[b, heads, t, head_dim]))?
         .merge_heads()?;
     let _ = d;
-    Ok(w.o_proj.apply_linear(&ctx, d, d))
+    Ok(w.o_proj.apply_linear(&ctx, d, d)?)
 }
 
 fn apply_mlp(
@@ -235,8 +235,8 @@ fn apply_mlp(
 ) -> Result<LazyTensor> {
     let hidden = cfg.dim_feedforward;
     let d = cfg.d_model;
-    let h = w.fc1.apply_linear(x, d, hidden).gelu_erf();
-    Ok(w.fc2.apply_linear(&h, hidden, d))
+    let h = w.fc1.apply_linear(x, d, hidden)?.gelu_erf();
+    Ok(w.fc2.apply_linear(&h, hidden, d)?)
 }
 
 

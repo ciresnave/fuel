@@ -183,7 +183,7 @@ impl MistralModel {
         }
 
         let h_norm = h.rms_norm_affine(std::sync::Arc::clone(&weights.final_norm_gain), cfg.rms_norm_eps)?;
-        Ok(weights.output.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size))
+        Ok(weights.output.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 
     /// Run the decoder forward up to the final RmsNorm and
@@ -312,9 +312,9 @@ impl MistralModel {
         let x_norm = x.rms_norm_affine(std::sync::Arc::clone(&layer.attn_norm_gain), cfg.rms_norm_eps)?;
 
         // Q / K / V projections (bias-free for Mistral).
-        let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size);
-        let k = layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim);
-        let v = layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim);
+        let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size)?;
+        let k = layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?;
+        let v = layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?;
 
         // Reshape to per-head and transpose to [batch, heads, seq, head_dim].
         let _ = (batch, seq);
@@ -342,7 +342,7 @@ impl MistralModel {
 
         // Merge heads + output projection.
         let merged = attn_v.merge_heads()?;
-        let attn_out = layer.attn_o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size);
+        let attn_out = layer.attn_o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?;
 
         // First residual.
         let h1 = x.add(&attn_out)?;
@@ -351,10 +351,10 @@ impl MistralModel {
         let h1_norm = h1.rms_norm_affine(std::sync::Arc::clone(&layer.ffn_norm_gain), cfg.rms_norm_eps)?;
 
         // SwiGLU FFN: `down(silu(gate) * up)`.
-        let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size);
-        let up = layer.ffn_up.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size);
+        let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let up = layer.ffn_up.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
         let swiglu = gate.silu().mul(&up)?;
-        let ffn_out = layer.ffn_down.apply_linear(&swiglu, cfg.intermediate_size, cfg.hidden_size);
+        let ffn_out = layer.ffn_down.apply_linear(&swiglu, cfg.intermediate_size, cfg.hidden_size)?;
 
         // Second residual.
         h1.add(&ffn_out)

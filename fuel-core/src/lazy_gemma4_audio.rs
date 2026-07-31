@@ -203,7 +203,7 @@ impl Gemma4AudioModel {
             &x,
             f_cur * c_out,
             cfg.hidden_size,
-        );
+        )?;
 
         // Chunked attention mask + rel-pos offsets — shared across layers.
         let t_seq = t_cur;
@@ -234,7 +234,7 @@ impl Gemma4AudioModel {
             let out_dim = cfg.output_proj_dims.expect(
                 "output_proj weights present but output_proj_dims is None",
             );
-            Ok(out_proj.apply_linear(&h, cfg.hidden_size, out_dim))
+            Ok(out_proj.apply_linear(&h, cfg.hidden_size, out_dim)?)
         } else {
             Ok(h)
         }
@@ -347,9 +347,9 @@ impl Gemma4AudioModel {
         let residual = x.clone();
         let x = x.clamp(-clip, clip);
         let x_n = x.rms_norm_affine(Arc::clone(pre_gain), cfg.rms_norm_eps)?;
-        let y = w1.apply_linear(&x_n, cfg.hidden_size, cfg.hidden_size * 4);
+        let y = w1.apply_linear(&x_n, cfg.hidden_size, cfg.hidden_size * 4)?;
         let y = y.silu();
-        let y = w2.apply_linear(&y, cfg.hidden_size * 4, cfg.hidden_size);
+        let y = w2.apply_linear(&y, cfg.hidden_size * 4, cfg.hidden_size)?;
         let y = y.clamp(-clip, clip);
         let y_n = y.rms_norm_affine(Arc::clone(post_gain), cfg.rms_norm_eps)?;
         residual.add(&y_n.mul_scalar(scale))
@@ -376,9 +376,9 @@ impl Gemma4AudioModel {
         let x = x.clamp(-clip, clip);
         let x_n = x.rms_norm_affine(Arc::clone(&layer.attn_pre_norm), cfg.rms_norm_eps)?;
 
-        let q = layer.attn_q.apply_linear(&x_n, hidden, n_heads * head_dim);
-        let k = layer.attn_k.apply_linear(&x_n, hidden, n_heads * head_dim);
-        let v = layer.attn_v.apply_linear(&x_n, hidden, n_heads * head_dim);
+        let q = layer.attn_q.apply_linear(&x_n, hidden, n_heads * head_dim)?;
+        let k = layer.attn_k.apply_linear(&x_n, hidden, n_heads * head_dim)?;
+        let v = layer.attn_v.apply_linear(&x_n, hidden, n_heads * head_dim)?;
 
         // (B, T, H, D) → (B, H, T, D)
         let q = q.reshape(Shape::from_dims(&[b, t_seq, n_heads, head_dim]))?
@@ -423,7 +423,7 @@ impl Gemma4AudioModel {
         let ctx = probs.matmul(&v)?;
         let ctx = ctx.permute([0_usize, 2, 1, 3])?
             .reshape(Shape::from_dims(&[b, t_seq, hidden]))?;
-        let out = layer.attn_o.apply_linear(&ctx, hidden, hidden).clamp(-clip, clip);
+        let out = layer.attn_o.apply_linear(&ctx, hidden, hidden)?.clamp(-clip, clip);
         let out_n = out.rms_norm_affine(Arc::clone(&layer.attn_post_norm), cfg.rms_norm_eps)?;
         residual.add(&out_n)
     }
@@ -440,7 +440,7 @@ impl Gemma4AudioModel {
 
         let residual = x.clone();
         let x_n = x.rms_norm_affine(Arc::clone(&layer.lconv_pre_norm), cfg.rms_norm_eps)?;
-        let y = layer.lconv_linear_start.apply_linear(&x_n, hidden, hidden * 2);
+        let y = layer.lconv_linear_start.apply_linear(&x_n, hidden, hidden * 2)?;
         // GLU: split last dim in half, mul by sigmoid of the other half.
         let half = hidden;
         let y1 = y.narrow(2_usize, 0, half)?;
@@ -460,7 +460,7 @@ impl Gemma4AudioModel {
         let y_btc = y_conv.permute([0_usize, 2, 1])?.clamp(-clip, clip);
         let y_n = y_btc.rms_norm_affine(Arc::clone(&layer.lconv_inner_norm), cfg.rms_norm_eps)?;
         let y_act = y_n.silu();
-        let y_out = layer.lconv_linear_end.apply_linear(&y_act, hidden, hidden);
+        let y_out = layer.lconv_linear_end.apply_linear(&y_act, hidden, hidden)?;
         residual.add(&y_out)
     }
 

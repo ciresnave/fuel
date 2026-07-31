@@ -168,7 +168,7 @@ impl ConvMixerModel {
         let cfg = &self.config;
         let x = self.run_backbone(image)?;
         let pooled = x.global_avg_pool_2d()?;
-        let logits = self.weights.head.apply_linear(&pooled, cfg.dim, cfg.nclasses);
+        let logits = self.weights.head.apply_linear(&pooled, cfg.dim, cfg.nclasses)?;
         let bias_t = pooled.const_f32_like(
             Arc::clone(&self.weights.head_bias),
             Shape::from_dims(&[cfg.nclasses]),

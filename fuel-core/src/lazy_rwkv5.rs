@@ -185,7 +185,7 @@ impl Rwkv5Model {
 
     fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
-        Ok(self.weights.head.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size))
+        Ok(self.weights.head.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 
     fn run_backbone(&self, tokens: &[u32]) -> Result<LazyTensor> {
@@ -322,10 +322,10 @@ impl Rwkv5Model {
         let gat_in = x.broadcast_mul(&mix_gate)?.add(&shifted.broadcast_mul(&mg_inv)?)?;
 
         // Project to attention space.
-        let k = layer.attn_key.apply_linear(&key_in, h, h);
-        let v = layer.attn_value.apply_linear(&val_in, h, h);
-        let r = layer.attn_receptance.apply_linear(&rec_in, h, h);
-        let g = layer.attn_gate.apply_linear(&gat_in, h, h).silu();
+        let k = layer.attn_key.apply_linear(&key_in, h, h)?;
+        let v = layer.attn_value.apply_linear(&val_in, h, h)?;
+        let r = layer.attn_receptance.apply_linear(&rec_in, h, h)?;
+        let g = layer.attn_gate.apply_linear(&gat_in, h, h)?.silu();
 
         // Reshape per-head.
         // K → (b, h, head_size, seq)  via reshape + permute(0, 2, 3, 1)
@@ -395,7 +395,7 @@ impl Rwkv5Model {
 
         // Output projection: (b, seq, h) * g → out_proj.
         let gated = out.mul(&g)?;
-        Ok(layer.attn_output.apply_linear(&gated, h, h))
+        Ok(layer.attn_output.apply_linear(&gated, h, h)?)
     }
 
     fn channel_mix(
@@ -429,9 +429,9 @@ impl Rwkv5Model {
         let r_in = x.broadcast_mul(&mix_rec)?.add(&shifted.broadcast_mul(&mr_inv)?)?;
 
         // key = relu(K_proj(k_in)).square()
-        let k = layer.ffn_key.apply_linear(&k_in, h, inter).relu().sqr();
-        let v = layer.ffn_value.apply_linear(&k, inter, h);
-        let r = layer.ffn_receptance.apply_linear(&r_in, h, h).sigmoid();
+        let k = layer.ffn_key.apply_linear(&k_in, h, inter)?.relu().sqr();
+        let v = layer.ffn_value.apply_linear(&k, inter, h)?;
+        let r = layer.ffn_receptance.apply_linear(&r_in, h, h)?.sigmoid();
         r.mul(&v)
     }
 

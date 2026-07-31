@@ -198,7 +198,7 @@ impl Dinov2Model {
         let combined = cls_feat.concat(&patch_feat, 1_usize)?;
 
         // Classifier head.
-        let logits = weights.head.apply_linear(&combined, 2 * cfg.embed_dim, cfg.num_classes);
+        let logits = weights.head.apply_linear(&combined, 2 * cfg.embed_dim, cfg.num_classes)?;
         let bias_t = pixel_values.const_f32_like(
             Arc::clone(&weights.head_bias),
             Shape::from_dims(&[cfg.num_classes]),
@@ -308,7 +308,7 @@ impl Dinov2Model {
         let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&block.norm1_gain), std::sync::Arc::clone(&block.norm1_bias), cfg.layer_norm_eps)?;
 
         // Fused Wqkv: hidden → 3 * hidden.
-        let qkv_lin = block.qkv.apply_linear(&x_norm, h, 3 * h);
+        let qkv_lin = block.qkv.apply_linear(&x_norm, h, 3 * h)?;
         let qkv_bias_t = x.const_f32_like(
             Arc::clone(&block.qkv_bias),
             Shape::from_dims(&[3 * h]),
@@ -329,7 +329,7 @@ impl Dinov2Model {
         let probs = scores.softmax_last_dim()?;
         let ctx = probs.matmul(&v)?;
         let merged = ctx.merge_heads()?;
-        let proj = block.proj.apply_linear(&merged, h, h);
+        let proj = block.proj.apply_linear(&merged, h, h)?;
         let proj_b_t = x.const_f32_like(
             Arc::clone(&block.proj_bias),
             Shape::from_dims(&[h]),
@@ -347,13 +347,13 @@ impl Dinov2Model {
         // Pre-LN before MLP.
         let h1_norm = h1.layer_norm_affine(std::sync::Arc::clone(&block.norm2_gain), std::sync::Arc::clone(&block.norm2_bias), cfg.layer_norm_eps)?;
         let mlp_hidden = cfg.mlp_hidden();
-        let fc1 = block.fc1.apply_linear(&h1_norm, h, mlp_hidden);
+        let fc1 = block.fc1.apply_linear(&h1_norm, h, mlp_hidden)?;
         let fc1_b_t = x.const_f32_like(
             Arc::clone(&block.fc1_bias),
             Shape::from_dims(&[mlp_hidden]),
         );
         let fc1 = fc1.broadcast_add(&fc1_b_t)?.gelu_erf();
-        let fc2 = block.fc2.apply_linear(&fc1, mlp_hidden, h);
+        let fc2 = block.fc2.apply_linear(&fc1, mlp_hidden, h)?;
         let fc2_b_t = x.const_f32_like(
             Arc::clone(&block.fc2_bias),
             Shape::from_dims(&[h]),

@@ -153,7 +153,7 @@ impl RepVggModel {
             Some((w, b)) => {
                 let n = cfg.nclasses.expect("head present but cfg.nclasses == None");
                 let last_c = cfg.channels_at(4);
-                let logits = w.apply_linear(&pooled, last_c, n);
+                let logits = w.apply_linear(&pooled, last_c, n)?;
                 let bias_t = pooled.const_f32_like(
                     Arc::clone(b), Shape::from_dims(&[n]),
                 );

@@ -107,7 +107,7 @@ impl LazyQuantizableLinear {
 
 impl LazyModule for LazyQuantizableLinear {
     fn forward(&self, xs: &LazyTensor) -> Result<LazyTensor> {
-        let y = self.weight.apply_linear(xs, self.in_features, self.out_features);
+        let y = self.weight.apply_linear(xs, self.in_features, self.out_features)?;
         match &self.bias {
             Some(b) => {
                 let bias_t = y.const_f32_like(

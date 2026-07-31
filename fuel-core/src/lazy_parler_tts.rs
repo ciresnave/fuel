@@ -244,7 +244,7 @@ impl ParlerDecoderModel {
         // Per-codebook LM heads.
         let mut logits = Vec::with_capacity(cfg.num_codebooks);
         for lm in &w.lm_heads {
-            logits.push(lm.apply_linear(&x, h_dim, cfg.vocab_size));
+            logits.push(lm.apply_linear(&x, h_dim, cfg.vocab_size)?);
         }
         Ok(logits)
     }
@@ -283,14 +283,14 @@ fn apply_decoder_layer(
     // FFN.
     let residual = x.clone();
     let normed = x.layer_norm_affine(Arc::clone(&w.final_ln.gain), Arc::clone(&w.final_ln.bias), 1e-5)?;
-    let h = w.fc1.apply_linear(&normed, h_dim, cfg.ffn_dim);
+    let h = w.fc1.apply_linear(&normed, h_dim, cfg.ffn_dim)?;
     let h = match cfg.activation_function {
         ParlerActivation::Gelu => h.gelu(),
         ParlerActivation::GeluPytorchTanh => h.gelu(),
         ParlerActivation::Relu => h.relu(),
         ParlerActivation::Silu => h.silu(),
     };
-    let h = w.fc2.apply_linear(&h, cfg.ffn_dim, h_dim);
+    let h = w.fc2.apply_linear(&h, cfg.ffn_dim, h_dim)?;
     residual.add(&h)
 }
 
@@ -321,9 +321,9 @@ fn apply_attention(
     let q_out_dim = num_heads * head_dim;
     let kv_out_dim = num_kv_heads * head_dim;
 
-    let q = w.q_proj.apply_linear(q_input, q_in_dim, q_out_dim);
-    let k = w.k_proj.apply_linear(kv_src, kv_in_dim, kv_out_dim);
-    let v = w.v_proj.apply_linear(kv_src, kv_in_dim, kv_out_dim);
+    let q = w.q_proj.apply_linear(q_input, q_in_dim, q_out_dim)?;
+    let k = w.k_proj.apply_linear(kv_src, kv_in_dim, kv_out_dim)?;
+    let v = w.v_proj.apply_linear(kv_src, kv_in_dim, kv_out_dim)?;
 
     let scaling = 1.0_f64 / (head_dim as f64).sqrt();
     let q = q.mul_scalar(scaling);
@@ -353,7 +353,7 @@ fn apply_attention(
     let probs = scores.softmax_last_dim()?;
     let ctx = probs.matmul(&v)?.merge_heads()?;
     let _ = (b, q_out_dim);
-    Ok(w.out_proj.apply_linear(&ctx, q_out_dim, q_out_dim))
+    Ok(w.out_proj.apply_linear(&ctx, q_out_dim, q_out_dim)?)
 }
 
 /// Repeat K/V along the head dim: `(B, n_kv, L, D) → (B, n_kv * n_rep, L, D)`
@@ -380,7 +380,7 @@ fn apply_linear_with_bias(
         Some(b) => w.w.apply_linear_with_bias(
             x, w.in_features, w.out_features, Arc::clone(b),
         ),
-        None => Ok(w.w.apply_linear(x, w.in_features, w.out_features)),
+        None => Ok(w.w.apply_linear(x, w.in_features, w.out_features)?),
     }
 }
 

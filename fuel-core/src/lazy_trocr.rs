@@ -197,7 +197,7 @@ impl TrocrModel {
 
         // lm_head: tied → matmul against embedding constant. Untied → output_projection.
         let logits = match &dw.output_projection {
-            Some(w) => w.apply_linear(&x, dcfg.d_model, dcfg.vocab_size),
+            Some(w) => w.apply_linear(&x, dcfg.d_model, dcfg.vocab_size)?,
             None => {
                 assert!(dcfg.tie_word_embeddings,
                     "output_projection missing but tie_word_embeddings = false");
@@ -241,12 +241,12 @@ fn apply_decoder_layer(
     let h2 = h2.layer_norm_affine(std::sync::Arc::clone(&w.encoder_attn_ln_gain), std::sync::Arc::clone(&w.encoder_attn_ln_bias), 1e-5)?;
 
     // FFN: fc1 → activation → fc2.
-    let h_ffn = w.fc1.apply_linear(&h2, d, cfg.decoder_ffn_dim);
+    let h_ffn = w.fc1.apply_linear(&h2, d, cfg.decoder_ffn_dim)?;
     let h_ffn = match cfg.activation_function {
         TrocrActivation::Gelu => h_ffn.gelu(),
         TrocrActivation::Relu => h_ffn.relu(),
     };
-    let h_ffn = w.fc2.apply_linear(&h_ffn, cfg.decoder_ffn_dim, d);
+    let h_ffn = w.fc2.apply_linear(&h_ffn, cfg.decoder_ffn_dim, d)?;
     let h3 = h2.add(&h_ffn)?;
     Ok(h3.layer_norm_affine(std::sync::Arc::clone(&w.final_ln_gain), std::sync::Arc::clone(&w.final_ln_bias), 1e-5)?)
 }
@@ -271,9 +271,9 @@ fn apply_attention(
     let kv_len = kv_dims[1];
     let d_model = n_heads * head_dim;
 
-    let q = w.q_proj.apply_linear(q_input, q_in_dim, d_model);
-    let k = w.k_proj.apply_linear(kv_input, kv_in_dim, d_model);
-    let v = w.v_proj.apply_linear(kv_input, kv_in_dim, d_model);
+    let q = w.q_proj.apply_linear(q_input, q_in_dim, d_model)?;
+    let k = w.k_proj.apply_linear(kv_input, kv_in_dim, d_model)?;
+    let v = w.v_proj.apply_linear(kv_input, kv_in_dim, d_model)?;
 
     let scaling = 1.0_f64 / (head_dim as f64).sqrt();
     let q = q.mul_scalar(scaling);
@@ -294,7 +294,7 @@ fn apply_attention(
     let ctx = probs.matmul(&v)?;
     let _ = (batch, q_len, kv_len, d_model);
     let ctx = ctx.merge_heads()?;
-    Ok(w.out_proj.apply_linear(&ctx, d_model, d_model))
+    Ok(w.out_proj.apply_linear(&ctx, d_model, d_model)?)
 }
 
 // ---- Safetensors loader ----------------------------------------------------

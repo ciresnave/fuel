@@ -214,7 +214,7 @@ impl EfficientNetModel {
 
         let logits = self.weights.classifier_w.apply_linear(
             &pooled, cfg.final_channels, cfg.nclasses,
-        );
+        )?;
         let bias_t = pooled.const_f32_like(
             Arc::clone(&self.weights.classifier_b),
             Shape::from_dims(&[cfg.nclasses]),

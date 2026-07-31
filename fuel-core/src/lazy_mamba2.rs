@@ -135,7 +135,7 @@ impl Mamba2Model {
         let h_norm = self.run_backbone(tokens)?;
         Ok(weights.output.apply_linear(
             &h_norm, cfg.d_model, cfg.vocab_size(),
-        ))
+        )?)
     }
 
     /// Run the Mamba-2 SSD stack forward up to the final
@@ -199,7 +199,7 @@ impl Mamba2Model {
 
         // in_proj: x → [z, xbc, dt] concatenated.
         let proj_size = d_inner + d_xbc + n_heads;
-        let in_out = layer.in_proj.apply_linear(x, cfg.d_model, proj_size);
+        let in_out = layer.in_proj.apply_linear(x, cfg.d_model, proj_size)?;
         let z = in_out.slice(2_usize, 0, d_inner)?;
         let xbc = in_out.slice(2_usize, d_inner, d_xbc)?;
         let dt = in_out.slice(2_usize, d_inner + d_xbc, n_heads)?;
@@ -299,7 +299,7 @@ impl Mamba2Model {
         let gated = y_normed.mul(&z.silu())?;
 
         // out_proj: d_inner → d_model.
-        Ok(layer.out_proj.apply_linear(&gated, d_inner, cfg.d_model))
+        Ok(layer.out_proj.apply_linear(&gated, d_inner, cfg.d_model)?)
     }
 }
 

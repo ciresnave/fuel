@@ -140,7 +140,7 @@ impl StellaV5Model {
         let out_features = cfg.embed_dim.out_features();
         let projected = self.weights.embed_head.apply_linear(
             &pooled, cfg.backbone.hidden_size, out_features,
-        );
+        )?;
 
         // L2-normalize on the last dim.
         l2_normalize(&projected)
@@ -183,7 +183,7 @@ impl StellaV5Model {
         let out_features = cfg.embed_dim.out_features();
         let projected = self.weights.embed_head.apply_linear(
             &pooled, cfg.backbone.hidden_size, out_features,
-        );
+        )?;
         l2_normalize(&projected)
     }
 }

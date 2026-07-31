@@ -254,7 +254,7 @@ impl SiglipTextModel {
         let last = h_norm
             .slice(1_usize, seq - 1, 1)?
             .reshape(Shape::from_dims(&[batch, cfg.hidden_size]))?;
-        let head_out = weights.head_w.apply_linear(&last, cfg.hidden_size, cfg.hidden_size);
+        let head_out = weights.head_w.apply_linear(&last, cfg.hidden_size, cfg.hidden_size)?;
         // Bias on head.
         let bias_t = head_out.const_f32_like(
             Arc::clone(&weights.head_bias),
@@ -429,11 +429,11 @@ impl SiglipVisionModel {
         let probe_bc = probe.broadcast_to(Shape::from_dims(&[batch, 1, h]))?;
 
         // Cross-attention: Q = probe, K = V = xs.
-        let q = head.q_proj.apply_linear(&probe_bc, h, h);
+        let q = head.q_proj.apply_linear(&probe_bc, h, h)?;
         let q = q.add_trailing_bias(std::sync::Arc::clone(&head.q_proj_bias))?;
-        let k = head.k_proj.apply_linear(xs, h, h);
+        let k = head.k_proj.apply_linear(xs, h, h)?;
         let k = k.add_trailing_bias(std::sync::Arc::clone(&head.k_proj_bias))?;
-        let v = head.v_proj.apply_linear(xs, h, h);
+        let v = head.v_proj.apply_linear(xs, h, h)?;
         let v = v.add_trailing_bias(std::sync::Arc::clone(&head.v_proj_bias))?;
 
         let _ = (batch, seq);
@@ -447,17 +447,17 @@ impl SiglipVisionModel {
         let probs = scores.softmax_last_dim()?;
         let ctx = probs.matmul(&v)?;
         let merged = ctx.merge_heads()?;
-        let attn_out = head.out_proj.apply_linear(&merged, h, h);
+        let attn_out = head.out_proj.apply_linear(&merged, h, h)?;
         let attn_out = attn_out.add_trailing_bias(std::sync::Arc::clone(&head.out_proj_bias))?;
 
         // MLP residual: residual + mlp(LN(attn_out)) → take token 0.
         let residual = attn_out.clone();
         let attn_ln = attn_out.layer_norm_affine(std::sync::Arc::clone(&head.ln_gain), std::sync::Arc::clone(&head.ln_bias), cfg.layer_norm_eps)?;
         let inter_dim = head.mlp_fc1_bias.len();
-        let fc1 = head.mlp_fc1.apply_linear(&attn_ln, h, inter_dim);
+        let fc1 = head.mlp_fc1.apply_linear(&attn_ln, h, inter_dim)?;
         let fc1 = fc1.add_trailing_bias(std::sync::Arc::clone(&head.mlp_fc1_bias))?;
         let act = activate(&fc1, cfg.hidden_activation);
-        let fc2 = head.mlp_fc2.apply_linear(&act, inter_dim, h);
+        let fc2 = head.mlp_fc2.apply_linear(&act, inter_dim, h)?;
         let fc2 = fc2.add_trailing_bias(std::sync::Arc::clone(&head.mlp_fc2_bias))?;
         let with_res = residual.add(&fc2)?;
         // The eager takes the first token; with seq=1 the result is already (b, 1, h).
@@ -504,11 +504,11 @@ fn apply_encoder_layer(
 
     let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&layer.ln1_gain), std::sync::Arc::clone(&layer.ln1_bias), layer_norm_eps)?;
 
-    let q = layer.q_proj.apply_linear(&x_norm, h, h);
+    let q = layer.q_proj.apply_linear(&x_norm, h, h)?;
     let q = q.add_trailing_bias(std::sync::Arc::clone(&layer.q_proj_bias))?;
-    let k = layer.k_proj.apply_linear(&x_norm, h, h);
+    let k = layer.k_proj.apply_linear(&x_norm, h, h)?;
     let k = k.add_trailing_bias(std::sync::Arc::clone(&layer.k_proj_bias))?;
-    let v = layer.v_proj.apply_linear(&x_norm, h, h);
+    let v = layer.v_proj.apply_linear(&x_norm, h, h)?;
     let v = v.add_trailing_bias(std::sync::Arc::clone(&layer.v_proj_bias))?;
 
     let _ = (batch, seq);
@@ -526,16 +526,16 @@ fn apply_encoder_layer(
     let probs = scores.softmax_last_dim()?;
     let ctx = probs.matmul(&v)?;
     let merged = ctx.merge_heads()?;
-    let attn_out = layer.out_proj.apply_linear(&merged, h, h);
+    let attn_out = layer.out_proj.apply_linear(&merged, h, h)?;
     let attn_out = attn_out.add_trailing_bias(std::sync::Arc::clone(&layer.out_proj_bias))?;
     let h1 = x.add(&attn_out)?;
 
     let h1_norm = h1.layer_norm_affine(std::sync::Arc::clone(&layer.ln2_gain), std::sync::Arc::clone(&layer.ln2_bias), layer_norm_eps)?;
     let inter_dim = layer.fc1_bias.len();
-    let fc1 = layer.fc1.apply_linear(&h1_norm, h, inter_dim);
+    let fc1 = layer.fc1.apply_linear(&h1_norm, h, inter_dim)?;
     let fc1 = fc1.add_trailing_bias(std::sync::Arc::clone(&layer.fc1_bias))?;
     let act = activate(&fc1, activation);
-    let fc2 = layer.fc2.apply_linear(&act, inter_dim, h);
+    let fc2 = layer.fc2.apply_linear(&act, inter_dim, h)?;
     let fc2 = fc2.add_trailing_bias(std::sync::Arc::clone(&layer.fc2_bias))?;
     h1.add(&fc2)
 }

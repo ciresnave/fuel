@@ -92,7 +92,7 @@ impl ColPaliModel {
         let h_dim = cfg.text_config.hidden_size;
         let projected = self.weights.custom_text_projection.apply_linear(
             hidden, h_dim, COLPALI_PROJ_DIM,
-        );
+        )?;
         let bias = anchor.const_f32_like(
             Arc::clone(&self.weights.custom_text_projection_bias),
             Shape::from_dims(&[COLPALI_PROJ_DIM]),

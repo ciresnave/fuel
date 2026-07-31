@@ -225,16 +225,16 @@ fn build_conditioning(
     let batch = dims_t[0];
 
     let t_feat = timestep_sinusoidal_embed(timestep, w.frequency_embedding_size)?;
-    let t1 = w.t_fc1.apply_linear(&t_feat, w.frequency_embedding_size, dim);
+    let t1 = w.t_fc1.apply_linear(&t_feat, w.frequency_embedding_size, dim)?;
     let t1 = t1.add_trailing_bias(Arc::clone(&w.t_fc1_bias))?;
     let t1 = t1.silu();
-    let t_emb = w.t_fc2.apply_linear(&t1, dim, dim);
+    let t_emb = w.t_fc2.apply_linear(&t1, dim, dim)?;
     let t_emb = t_emb.add_trailing_bias(Arc::clone(&w.t_fc2_bias))?;
 
-    let y1 = w.y_fc1.apply_linear(y, w.adm_in_channels, dim);
+    let y1 = w.y_fc1.apply_linear(y, w.adm_in_channels, dim)?;
     let y1 = y1.add_trailing_bias(Arc::clone(&w.y_fc1_bias))?;
     let y1 = y1.silu();
-    let y_emb = w.y_fc2.apply_linear(&y1, dim, dim);
+    let y_emb = w.y_fc2.apply_linear(&y1, dim, dim)?;
     let y_emb = y_emb.add_trailing_bias(Arc::clone(&w.y_fc2_bias))?;
 
     let c = t_emb.add(&y_emb)?;
@@ -332,7 +332,7 @@ fn compute_modulation(
     dim: usize,
 ) -> Result<ModulationChunks> {
     let c_act = c.silu();
-    let m = adaln_proj.apply_linear(&c_act, dim, 6 * dim);
+    let m = adaln_proj.apply_linear(&c_act, dim, 6 * dim)?;
     let m = m.add_trailing_bias(Arc::clone(adaln_bias))?;
     let chunks = m.chunk(6, 1_usize)?;
     if chunks.len() != 6 {
@@ -390,7 +390,7 @@ fn project_qkv(
     head_dim: usize,
 ) -> Result<(LazyTensor, LazyTensor, LazyTensor)> {
     let dim = num_heads * head_dim;
-    let qkv = qkv_proj.apply_linear(x_norm_mod, dim, 3 * dim);
+    let qkv = qkv_proj.apply_linear(x_norm_mod, dim, 3 * dim)?;
     let qkv = qkv.add_trailing_bias(Arc::clone(qkv_bias))?;
     split_qkv(&qkv, num_heads, head_dim)
 }
@@ -448,9 +448,9 @@ pub fn apply_double_stream(
     let txt_attn = attn_all.narrow(1_usize, 0, s_txt)?;
     let img_attn = attn_all.narrow(1_usize, s_txt, s_img)?;
 
-    let txt_attn_out = weights.text.out_proj.apply_linear(&txt_attn, dim, dim);
+    let txt_attn_out = weights.text.out_proj.apply_linear(&txt_attn, dim, dim)?;
     let txt_attn_out = txt_attn_out.add_trailing_bias(Arc::clone(&weights.text.out_bias))?;
-    let img_attn_out = weights.image.out_proj.apply_linear(&img_attn, dim, dim);
+    let img_attn_out = weights.image.out_proj.apply_linear(&img_attn, dim, dim)?;
     let img_attn_out = img_attn_out.add_trailing_bias(Arc::clone(&weights.image.out_bias))?;
 
     let txt_h1 = gated_residual(txt, &txt_attn_out, &txt_mod.gate_msa)?;
@@ -493,10 +493,10 @@ fn mlp_residual(
     let mlp_hidden = dim * cfg.mlp_ratio;
     let x_norm = x.layer_norm_last_dim(cfg.eps)?;
     let x_mod = apply_modulation(&x_norm, &m.scale_mlp, &m.shift_mlp)?;
-    let h1 = weights.fc1.apply_linear(&x_mod, dim, mlp_hidden);
+    let h1 = weights.fc1.apply_linear(&x_mod, dim, mlp_hidden)?;
     let h1 = h1.add_trailing_bias(Arc::clone(&weights.fc1_bias))?;
     let h1 = h1.gelu();
-    let h2 = weights.fc2.apply_linear(&h1, mlp_hidden, dim);
+    let h2 = weights.fc2.apply_linear(&h1, mlp_hidden, dim)?;
     let h2 = h2.add_trailing_bias(Arc::clone(&weights.fc2_bias))?;
     gated_residual(x, &h2, &m.gate_mlp)
 }
@@ -525,17 +525,17 @@ pub fn apply_single_stream(
         &x_mod, &weights.qkv_proj, &weights.qkv_bias, num_heads, head_dim,
     )?;
     let attn = attention(&q, &k, &v, head_dim)?;
-    let attn_out = weights.out_proj.apply_linear(&attn, dim, dim);
+    let attn_out = weights.out_proj.apply_linear(&attn, dim, dim)?;
     let attn_out = attn_out.add_trailing_bias(Arc::clone(&weights.out_bias))?;
     let h1 = gated_residual(joined, &attn_out, &m.gate_msa)?;
 
     let mlp_hidden = dim * cfg.mlp_ratio;
     let h1_norm = h1.layer_norm_last_dim(cfg.eps)?;
     let h1_mod = apply_modulation(&h1_norm, &m.scale_mlp, &m.shift_mlp)?;
-    let h2 = weights.fc1.apply_linear(&h1_mod, dim, mlp_hidden);
+    let h2 = weights.fc1.apply_linear(&h1_mod, dim, mlp_hidden)?;
     let h2 = h2.add_trailing_bias(Arc::clone(&weights.fc1_bias))?;
     let h2 = h2.gelu();
-    let h3 = weights.fc2.apply_linear(&h2, mlp_hidden, dim);
+    let h3 = weights.fc2.apply_linear(&h2, mlp_hidden, dim)?;
     let h3 = h3.add_trailing_bias(Arc::clone(&weights.fc2_bias))?;
     gated_residual(&h1, &h3, &m.gate_mlp)
 }
@@ -1015,7 +1015,7 @@ impl MmDitFullModel {
         }
         let ctx_proj = self.weights.context_embedder.weight.apply_linear(
             context, cfg.context_embed_size, hidden,
-        );
+        )?;
         let ctx_proj = ctx_proj.add_trailing_bias(
             Arc::clone(&self.weights.context_embedder.bias),
         )?;
@@ -1180,7 +1180,7 @@ fn apply_context_qkv_only_joint(
 
     // Context stream — 2-chunk AdaLN (shift, scale), QKV only.
     let txt_c_act = c.silu();
-    let m = weights.context.adaln_proj.apply_linear(&txt_c_act, dim, 2 * dim);
+    let m = weights.context.adaln_proj.apply_linear(&txt_c_act, dim, 2 * dim)?;
     let m = m.add_trailing_bias(Arc::clone(&weights.context.adaln_bias))?;
     let chunks = m.chunk(2, 1_usize)?;
     if chunks.len() != 2 {
@@ -1206,7 +1206,7 @@ fn apply_context_qkv_only_joint(
     // Discard the context portion; only the image stream is updated.
     let img_attn = attn_all.narrow(1_usize, s_txt, s_img)?;
 
-    let img_attn_out = weights.image.out_proj.apply_linear(&img_attn, dim, dim);
+    let img_attn_out = weights.image.out_proj.apply_linear(&img_attn, dim, dim)?;
     let img_attn_out = img_attn_out.add_trailing_bias(Arc::clone(&weights.image.out_bias))?;
     let img_h1 = gated_residual(img, &img_attn_out, &img_mod.gate_msa)?;
     mlp_residual(&img_h1, &img_mod, &weights.image, cfg)
@@ -1225,7 +1225,7 @@ fn apply_final_layer(
     out_channels: usize,
 ) -> Result<LazyTensor> {
     let c_act = c.silu();
-    let m = weights.adaln_proj.apply_linear(&c_act, hidden, 2 * hidden);
+    let m = weights.adaln_proj.apply_linear(&c_act, hidden, 2 * hidden)?;
     let m = m.add_trailing_bias(Arc::clone(&weights.adaln_bias))?;
     let chunks = m.chunk(2, 1_usize)?;
     if chunks.len() != 2 {
@@ -1239,7 +1239,7 @@ fn apply_final_layer(
     let x_norm = x.layer_norm_last_dim(1e-6_f64)?;
     let x_mod = apply_modulation(&x_norm, &scale, &shift)?;
 
-    let out = weights.linear.apply_linear(&x_mod, hidden, patch_size * patch_size * out_channels);
+    let out = weights.linear.apply_linear(&x_mod, hidden, patch_size * patch_size * out_channels)?;
     out.add_trailing_bias(Arc::clone(&weights.linear_bias))
 }
 

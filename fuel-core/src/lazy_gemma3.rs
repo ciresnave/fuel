@@ -173,7 +173,7 @@ impl Gemma3Model {
     fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
         let lm_head = WeightStorage::F32(self.weights.token_embedding.clone());
-        let logits = lm_head.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size);
+        let logits = lm_head.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?;
         match cfg.final_logit_softcapping {
             None => Ok(logits),
             Some(sc) => Ok(logits.mul_scalar(1.0 / sc).tanh().mul_scalar(sc)),
@@ -283,9 +283,9 @@ impl Gemma3Model {
 
         // Q / K / V projections; note Q goes to num_heads*head_dim
         // which is NOT necessarily equal to hidden_size.
-        let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, q_dim).add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
-        let k = layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim).add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
-        let v = layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim).add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
+        let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, q_dim)?.add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
+        let k = layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
+        let v = layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
 
         // (b, seq, n_heads, head_dim) -> (b, n_heads, seq, head_dim).
         let _ = (batch, seq);
@@ -319,7 +319,7 @@ impl Gemma3Model {
         let attn_v = attn.matmul(&v_full)?;
 
         let merged = attn_v.merge_heads()?;
-        let attn_out = layer.attn_o.apply_linear(&merged, q_dim, cfg.hidden_size).add_optional_trailing_bias(layer.attn_o_bias.as_ref())?;
+        let attn_out = layer.attn_o.apply_linear(&merged, q_dim, cfg.hidden_size)?.add_optional_trailing_bias(layer.attn_o_bias.as_ref())?;
         // post_attention_layernorm wraps the attn output BEFORE the residual add.
         let attn_out_norm = attn_out.rms_norm_affine_with_offset(&layer.post_attn_norm_gain, 1.0, cfg.rms_norm_eps)?;
         let h1 = residual.add(&attn_out_norm)?;
@@ -329,14 +329,14 @@ impl Gemma3Model {
         let h1_norm = h1.rms_norm_affine_with_offset(&layer.pre_ffn_norm_gain, 1.0, cfg.rms_norm_eps)?;
 
         // GELU gated FFN.
-        let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size);
-        let up = layer.ffn_up.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size);
+        let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let up = layer.ffn_up.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
         let activated = match cfg.hidden_activation {
             GemmaActivation::Gelu => gate.gelu_erf(),
             GemmaActivation::GeluPytorchTanh => gate.gelu(),
         };
         let ffn_in = activated.mul(&up)?;
-        let ffn_out = layer.ffn_down.apply_linear(&ffn_in, cfg.intermediate_size, cfg.hidden_size);
+        let ffn_out = layer.ffn_down.apply_linear(&ffn_in, cfg.intermediate_size, cfg.hidden_size)?;
         // post_feedforward_layernorm wraps the FFN output BEFORE the residual add.
         let ffn_out_norm = ffn_out.rms_norm_affine_with_offset(&layer.post_ffn_norm_gain, 1.0, cfg.rms_norm_eps)?;
 

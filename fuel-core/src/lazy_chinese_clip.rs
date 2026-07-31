@@ -98,7 +98,7 @@ impl ChineseClipModel {
         // (1, vision_embed_dim) → (1, projection_dim)
         Ok(self.weights.visual_projection.apply_linear(
             &pooled, self.config.vision.embed_dim, self.config.projection_dim,
-        ))
+        )?)
     }
 
     /// Encode `input_ids` (Chinese-BERT-tokenized) into a
@@ -113,7 +113,7 @@ impl ChineseClipModel {
             .reshape(Shape::from_dims(&[1, h]))?;
         Ok(self.weights.text_projection.apply_linear(
             &cls, h, self.config.projection_dim,
-        ))
+        )?)
     }
 
     /// Build contrastive logits from already-extracted features.

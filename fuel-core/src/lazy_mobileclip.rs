@@ -92,7 +92,7 @@ impl MobileClipModel {
         let cfg = &self.config;
         let proj = self.weights.text_projection.apply_linear(
             &pooled, cfg.text.embed_dim, cfg.projection_dim,
-        );
+        )?;
         let _ = anchor;
         Ok(proj)
     }

@@ -274,9 +274,9 @@ impl PixtralModel {
         // Pre-attn RmsNorm.
         let x_norm = x.rms_norm_affine(std::sync::Arc::clone(&block.attn_norm_gain), cfg.rms_norm_eps)?;
 
-        let q = block.q_proj.apply_linear(&x_norm, h, h);
-        let k = block.k_proj.apply_linear(&x_norm, h, h);
-        let v = block.v_proj.apply_linear(&x_norm, h, h);
+        let q = block.q_proj.apply_linear(&x_norm, h, h)?;
+        let k = block.k_proj.apply_linear(&x_norm, h, h)?;
+        let v = block.v_proj.apply_linear(&x_norm, h, h)?;
 
         let _ = (batch, seq);
         let q = q.split_heads(n_heads, head_dim)?;
@@ -294,27 +294,27 @@ impl PixtralModel {
         let probs = scores.softmax_last_dim()?;
         let ctx = probs.matmul(&v)?;
         let merged = ctx.merge_heads()?;
-        let attn_out = block.o_proj.apply_linear(&merged, h, h);
+        let attn_out = block.o_proj.apply_linear(&merged, h, h)?;
         let h1 = x.add(&attn_out)?;
 
         // Pre-FFN RmsNorm.
         let h1_norm = h1.rms_norm_affine(std::sync::Arc::clone(&block.ffn_norm_gain), cfg.rms_norm_eps)?;
-        let gate = block.gate_proj.apply_linear(&h1_norm, h, cfg.intermediate_size);
-        let up = block.up_proj.apply_linear(&h1_norm, h, cfg.intermediate_size);
+        let gate = block.gate_proj.apply_linear(&h1_norm, h, cfg.intermediate_size)?;
+        let up = block.up_proj.apply_linear(&h1_norm, h, cfg.intermediate_size)?;
         let activated = match cfg.activation {
             PixtralActivation::Silu => up.silu(),
             PixtralActivation::Gelu => up.gelu_erf(),
             PixtralActivation::GeluPytorchTanh => up.gelu(),
         };
         let ffn_inner = gate.mul(&activated)?;
-        let down = block.down_proj.apply_linear(&ffn_inner, cfg.intermediate_size, h);
+        let down = block.down_proj.apply_linear(&ffn_inner, cfg.intermediate_size, h)?;
         h1.add(&down)
     }
 
     fn apply_projector(&self, vision_out: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config.projector;
         let weights = &self.weights.projector;
-        let l1 = weights.linear_1.apply_linear(vision_out, cfg.in_dim, cfg.out_dim);
+        let l1 = weights.linear_1.apply_linear(vision_out, cfg.in_dim, cfg.out_dim)?;
         let l1_b_t = vision_out.const_f32_like(
             Arc::clone(&weights.linear_1_bias),
             Shape::from_dims(&[cfg.out_dim]),
@@ -325,7 +325,7 @@ impl PixtralModel {
             PixtralActivation::Gelu => l1.gelu_erf(),
             PixtralActivation::GeluPytorchTanh => l1.gelu(),
         };
-        let l2 = weights.linear_2.apply_linear(&activated, cfg.out_dim, cfg.out_dim);
+        let l2 = weights.linear_2.apply_linear(&activated, cfg.out_dim, cfg.out_dim)?;
         let l2_b_t = vision_out.const_f32_like(
             Arc::clone(&weights.linear_2_bias),
             Shape::from_dims(&[cfg.out_dim]),

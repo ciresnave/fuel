@@ -147,7 +147,7 @@ impl MambaModel {
         let h_norm = self.run_backbone(tokens)?;
         Ok(weights.output.apply_linear(
             &h_norm, cfg.d_model, cfg.vocab_size(),
-        ))
+        )?)
     }
 
     /// Run the Mamba SSM stack forward up to the final RmsNorm
@@ -201,7 +201,7 @@ impl MambaModel {
         let seq = x_dims[1];
 
         // in_proj: x → [x_path, z_path] each `[batch, seq, d_inner]`.
-        let xz = layer.in_proj.apply_linear(x, cfg.d_model, 2 * d_inner);
+        let xz = layer.in_proj.apply_linear(x, cfg.d_model, 2 * d_inner)?;
         let x_path = xz.slice(2_usize, 0, d_inner)?;
         let z_path = xz.slice(2_usize, d_inner, d_inner)?;
 
@@ -226,14 +226,14 @@ impl MambaModel {
         let x_conv = x_conv.permute([0, 2, 1_usize])?;
 
         // x_proj: x_conv → [delta_low_rank, b, c].
-        let proj = layer.x_proj.apply_linear(&x_conv, d_inner, dt_rank + 2 * D_STATE);
+        let proj = layer.x_proj.apply_linear(&x_conv, d_inner, dt_rank + 2 * D_STATE)?;
         let delta_low = proj.slice(2_usize, 0, dt_rank)?;
         let b = proj.slice(2_usize, dt_rank, D_STATE)?;
         let c = proj.slice(2_usize, dt_rank + D_STATE, D_STATE)?;
 
         // dt_proj: [batch, seq, dt_rank] → [batch, seq, d_inner].
         // dt_proj has a bias.
-        let delta = layer.dt_proj.apply_linear(&delta_low, dt_rank, d_inner);
+        let delta = layer.dt_proj.apply_linear(&delta_low, dt_rank, d_inner)?;
         let dt_bias_t = x.const_f32_like(
             layer.dt_proj_bias.clone(),
             Shape::from_dims(&[d_inner]),
@@ -268,7 +268,7 @@ impl MambaModel {
         let gated = y_with_skip.mul(&z_silu)?;
 
         // out_proj: d_inner → d_model.
-        Ok(layer.out_proj.apply_linear(&gated, d_inner, cfg.d_model))
+        Ok(layer.out_proj.apply_linear(&gated, d_inner, cfg.d_model)?)
     }
 }
 

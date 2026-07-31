@@ -144,14 +144,14 @@ impl LazyTwoProjAttention {
         // q = x @ W_q, split into heads: (B, H, S, d).
         let q = self
             .w_q
-            .apply_linear(xs, self.hidden_size, self.n_heads * self.head_dim)
+            .apply_linear(xs, self.hidden_size, self.n_heads * self.head_dim)?
             .split_heads(self.n_heads, self.head_dim)?;
 
         // kv = x @ W_kv, split into kv-heads, repeated up to n_heads.
         // K = V = kv (the two-projection trick).
         let kv = self
             .w_kv
-            .apply_linear(xs, self.hidden_size, self.n_kv_heads * self.head_dim)
+            .apply_linear(xs, self.hidden_size, self.n_kv_heads * self.head_dim)?
             .split_heads(self.n_kv_heads, self.head_dim)?;
         let n_rep = self.n_heads / self.n_kv_heads;
         let kv = kv.repeat_interleave(1_usize, n_rep)?; // (B, H, S, d)
@@ -233,13 +233,13 @@ impl LazyTwoProjAttention {
         // q from the new tokens only: (1, H, s, d).
         let q = self
             .w_q
-            .apply_linear(xs_step, self.hidden_size, self.n_heads * self.head_dim)
+            .apply_linear(xs_step, self.hidden_size, self.n_heads * self.head_dim)?
             .split_heads(self.n_heads, self.head_dim)?;
 
         // kv_step = W_kv(xs_step): (1, s, Hkv*d) -> [s, Hkv*d] -> append.
         let kv_step = self.w_kv.apply_linear(
             xs_step, self.hidden_size, self.n_kv_heads * self.head_dim,
-        );
+        )?;
         let kv_step_2d = kv_step.reshape(Shape::from_dims(&[s, self.n_kv_heads * self.head_dim]))?;
         let cache = cache.append(layer, &[&kv_step_2d])?;
 

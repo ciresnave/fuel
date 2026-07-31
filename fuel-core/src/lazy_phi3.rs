@@ -124,7 +124,7 @@ impl Phi3Model {
 
     fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
-        Ok(self.weights.output.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size))
+        Ok(self.weights.output.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 
     /// Shared backbone: embed → RoPE → per-layer attn + MLP →
@@ -203,9 +203,9 @@ impl Phi3Model {
         let x_norm = x.rms_norm_affine(std::sync::Arc::clone(&layer.attn_norm_gain), cfg.rms_norm_eps)?;
 
         // Bias-free Q / K / V (Phi-3 uses linear_no_bias for all).
-        let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size);
-        let k = layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim);
-        let v = layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim);
+        let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size)?;
+        let k = layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?;
+        let v = layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?;
 
         let _ = (batch, seq);
         let q = q.split_heads(cfg.num_attention_heads, head_dim)?;
@@ -236,17 +236,17 @@ impl Phi3Model {
         let attn_v = attn.matmul(&v_full)?;
 
         let merged = attn_v.merge_heads()?;
-        let attn_out = layer.attn_o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size);
+        let attn_out = layer.attn_o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?;
 
         let h1 = x.add(&attn_out)?;
         let h1_norm = h1.rms_norm_affine(std::sync::Arc::clone(&layer.ffn_norm_gain), cfg.rms_norm_eps)?;
 
         // SwiGLU FFN (Phi-3's MLP is SwiGLU even though it stores
         // gate+up fused on disk).
-        let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size);
-        let up = layer.ffn_up.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size);
+        let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let up = layer.ffn_up.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
         let swiglu = gate.silu().mul(&up)?;
-        let ffn_out = layer.ffn_down.apply_linear(&swiglu, cfg.intermediate_size, cfg.hidden_size);
+        let ffn_out = layer.ffn_down.apply_linear(&swiglu, cfg.intermediate_size, cfg.hidden_size)?;
 
         h1.add(&ffn_out)
     }

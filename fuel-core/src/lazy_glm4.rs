@@ -154,7 +154,7 @@ impl Glm4Model {
             Some(w) => w.clone(),
             None => WeightStorage::F32(self.weights.token_embedding.clone()),
         };
-        Ok(lm_head_w.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size))
+        Ok(lm_head_w.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 
     /// Run the decoder forward up to the final RmsNorm and
@@ -238,9 +238,9 @@ impl Glm4Model {
         let residual = x.clone();
         let x_norm = x.rms_norm_affine(std::sync::Arc::clone(&layer.input_norm_gain), cfg.rms_norm_eps)?;
 
-        let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, q_dim).add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
-        let k = layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim).add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
-        let v = layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim).add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
+        let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, q_dim)?.add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
+        let k = layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
+        let v = layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
 
         let _ = (batch, seq);
         let q = q.split_heads(cfg.num_attention_heads, cfg.head_dim)?;
@@ -268,7 +268,7 @@ impl Glm4Model {
         let attn_v = attn.matmul(&v_full)?;
 
         let merged = attn_v.merge_heads()?;
-        let attn_out = layer.attn_o.apply_linear(&merged, q_dim, cfg.hidden_size);
+        let attn_out = layer.attn_o.apply_linear(&merged, q_dim, cfg.hidden_size)?;
         let attn_normed = attn_out.rms_norm_affine(std::sync::Arc::clone(&layer.post_self_attn_norm_gain), cfg.rms_norm_eps)?;
         let h1 = residual.add(&attn_normed)?;
 
@@ -279,7 +279,7 @@ impl Glm4Model {
         // Fused gate_up: [hidden, 2 * intermediate]. Split last dim.
         let gate_up = layer.ffn_gate_up.apply_linear(
             &h1_norm, cfg.hidden_size, 2 * cfg.intermediate_size,
-        );
+        )?;
         let gate = gate_up.slice(2_usize, 0, cfg.intermediate_size)?;
         let up = gate_up.slice(2_usize, cfg.intermediate_size, cfg.intermediate_size)?;
         let activated = match cfg.hidden_activation {
@@ -288,7 +288,7 @@ impl Glm4Model {
             Glm4Activation::GeluPytorchTanh => gate.gelu(),
         };
         let ffn_in = activated.mul(&up)?;
-        let ffn_out = layer.ffn_down.apply_linear(&ffn_in, cfg.intermediate_size, cfg.hidden_size);
+        let ffn_out = layer.ffn_down.apply_linear(&ffn_in, cfg.intermediate_size, cfg.hidden_size)?;
         let ffn_normed = ffn_out.rms_norm_affine(std::sync::Arc::clone(&layer.post_mlp_norm_gain), cfg.rms_norm_eps)?;
         residual2.add(&ffn_normed)
     }

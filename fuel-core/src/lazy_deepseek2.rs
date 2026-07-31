@@ -953,12 +953,12 @@ impl DeepSeek2Model {
         // ---- Q projection (plain or LoRA), split + RoPE on the pe half ------
         let q = match &w.q_proj {
             DeepSeek2QProj::Plain(plain) => {
-                plain.apply_linear(x, cfg.hidden_size, n_heads * q_head_dim)
+                plain.apply_linear(x, cfg.hidden_size, n_heads * q_head_dim)?
             }
             DeepSeek2QProj::Lora { a, norm_gain, b } => {
-                let lo = a.apply_linear(x, cfg.hidden_size, norm_gain.len());
+                let lo = a.apply_linear(x, cfg.hidden_size, norm_gain.len())?;
                 let lo_norm = lo.rms_norm_affine(Arc::clone(norm_gain), cfg.rms_norm_eps)?;
-                b.apply_linear(&lo_norm, norm_gain.len(), n_heads * q_head_dim)
+                b.apply_linear(&lo_norm, norm_gain.len(), n_heads * q_head_dim)?
             }
         };
         let q = q.split_heads(n_heads, q_head_dim)?;
@@ -967,7 +967,7 @@ impl DeepSeek2Model {
         let q_pe_rot = apply_interleaved_partial_rope(&q_pe, rope_cos, rope_sin, rope, rope)?;
 
         // ---- New KV latents for this step's tokens only ---------------------
-        let kv_a = w.kv_a_proj_with_mqa.apply_linear(x, cfg.hidden_size, kvr + rope);
+        let kv_a = w.kv_a_proj_with_mqa.apply_linear(x, cfg.hidden_size, kvr + rope)?;
         let compressed_kv = kv_a.slice(2_usize, 0, kvr)?;
         let k_pe_single = kv_a.slice(2_usize, kvr, rope)?;
 
@@ -1024,7 +1024,7 @@ impl DeepSeek2Model {
         let ctx = ctx_latent.matmul(&w_uv)?; // (1, H, s, v_dim)
 
         let merged = ctx.merge_heads()?;
-        let out = w.o_proj.apply_linear(&merged, n_heads * v_dim, cfg.hidden_size);
+        let out = w.o_proj.apply_linear(&merged, n_heads * v_dim, cfg.hidden_size)?;
         Ok(out)
     }
 
@@ -1629,7 +1629,7 @@ impl DeepSeek2Model {
             Some(w) => w.clone(),
             None => WeightStorage::F32(self.weights.token_embedding.clone()),
         };
-        Ok(lm_head_w.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size))
+        Ok(lm_head_w.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 
     fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
@@ -1788,12 +1788,12 @@ impl DeepSeek2Model {
         // ---- Q projection (plain or LoRA), split + RoPE on the pe half ------
         let q = match &w.q_proj {
             DeepSeek2QProj::Plain(plain) => {
-                plain.apply_linear(x, cfg.hidden_size, n_heads * q_head_dim)
+                plain.apply_linear(x, cfg.hidden_size, n_heads * q_head_dim)?
             }
             DeepSeek2QProj::Lora { a, norm_gain, b } => {
-                let lo = a.apply_linear(x, cfg.hidden_size, norm_gain.len());
+                let lo = a.apply_linear(x, cfg.hidden_size, norm_gain.len())?;
                 let lo_norm = lo.rms_norm_affine(Arc::clone(norm_gain), cfg.rms_norm_eps)?;
-                b.apply_linear(&lo_norm, norm_gain.len(), n_heads * q_head_dim)
+                b.apply_linear(&lo_norm, norm_gain.len(), n_heads * q_head_dim)?
             }
         };
         let q = q.split_heads(n_heads, q_head_dim)?;
@@ -1802,7 +1802,7 @@ impl DeepSeek2Model {
         let q_pe_rot = apply_interleaved_partial_rope(&q_pe, rope_cos, rope_sin, rope, rope)?;
 
         // ---- New KV latents for this step's tokens only ---------------------
-        let kv_a = w.kv_a_proj_with_mqa.apply_linear(x, cfg.hidden_size, kvr + rope);
+        let kv_a = w.kv_a_proj_with_mqa.apply_linear(x, cfg.hidden_size, kvr + rope)?;
         let compressed_kv = kv_a.slice(2_usize, 0, kvr)?;
         let k_pe_single = kv_a.slice(2_usize, kvr, rope)?;
 
@@ -1833,7 +1833,7 @@ impl DeepSeek2Model {
             .broadcast_to(Shape::from_dims(&[1, n_heads, total, rope]))?;
 
         // ---- Up-project the whole latent prefix (cached + new) ---------------
-        let kv = w.kv_b_proj.apply_linear(&latent_all, kvr, n_heads * (nope + v_dim));
+        let kv = w.kv_b_proj.apply_linear(&latent_all, kvr, n_heads * (nope + v_dim))?;
         let kv = kv.split_heads(n_heads, nope + v_dim)?;
         let k_nope = kv.slice(3_usize, 0, nope)?;
         let v = kv.slice(3_usize, nope, v_dim)?;
@@ -1852,7 +1852,7 @@ impl DeepSeek2Model {
         let ctx = probs.matmul(&v)?; // (1, H, s, v_dim)
 
         let merged = ctx.merge_heads()?;
-        let out = w.o_proj.apply_linear(&merged, n_heads * v_dim, cfg.hidden_size);
+        let out = w.o_proj.apply_linear(&merged, n_heads * v_dim, cfg.hidden_size)?;
         Ok((out, cache))
     }
 
@@ -1923,12 +1923,12 @@ impl DeepSeek2Model {
         // `q_nope`/`q_pe_rot`, the cache append, and the prefix read-back.
         let q = match &w.q_proj {
             DeepSeek2QProj::Plain(plain) => {
-                plain.apply_linear(x, cfg.hidden_size, n_heads * q_head_dim)
+                plain.apply_linear(x, cfg.hidden_size, n_heads * q_head_dim)?
             }
             DeepSeek2QProj::Lora { a, norm_gain, b } => {
-                let lo = a.apply_linear(x, cfg.hidden_size, norm_gain.len());
+                let lo = a.apply_linear(x, cfg.hidden_size, norm_gain.len())?;
                 let lo_norm = lo.rms_norm_affine(Arc::clone(norm_gain), cfg.rms_norm_eps)?;
-                b.apply_linear(&lo_norm, norm_gain.len(), n_heads * q_head_dim)
+                b.apply_linear(&lo_norm, norm_gain.len(), n_heads * q_head_dim)?
             }
         };
         let q = q.split_heads(n_heads, q_head_dim)?;
@@ -1937,7 +1937,7 @@ impl DeepSeek2Model {
         let q_pe_rot = apply_interleaved_partial_rope(&q_pe, rope_cos, rope_sin, rope, rope)?;
 
         // ---- New KV latents for this step's tokens only ---------------------
-        let kv_a = w.kv_a_proj_with_mqa.apply_linear(x, cfg.hidden_size, kvr + rope);
+        let kv_a = w.kv_a_proj_with_mqa.apply_linear(x, cfg.hidden_size, kvr + rope)?;
         let compressed_kv = kv_a.slice(2_usize, 0, kvr)?;
         let k_pe_single = kv_a.slice(2_usize, kvr, rope)?;
 
@@ -1999,7 +1999,7 @@ impl DeepSeek2Model {
         let ctx = ctx_latent.matmul(&w_uv)?; // (1, H, s, v_dim)
 
         let merged = ctx.merge_heads()?;
-        let out = w.o_proj.apply_linear(&merged, n_heads * v_dim, cfg.hidden_size);
+        let out = w.o_proj.apply_linear(&merged, n_heads * v_dim, cfg.hidden_size)?;
         Ok((out, cache))
     }
 
@@ -2024,12 +2024,12 @@ impl DeepSeek2Model {
         // ---- Q projection (plain or LoRA) -----------------------------------
         let q = match &w.q_proj {
             DeepSeek2QProj::Plain(plain) => {
-                plain.apply_linear(x, cfg.hidden_size, n_heads * q_head_dim)
+                plain.apply_linear(x, cfg.hidden_size, n_heads * q_head_dim)?
             }
             DeepSeek2QProj::Lora { a, norm_gain, b } => {
-                let lo = a.apply_linear(x, cfg.hidden_size, norm_gain.len());
+                let lo = a.apply_linear(x, cfg.hidden_size, norm_gain.len())?;
                 let lo_norm = lo.rms_norm_affine(Arc::clone(norm_gain), cfg.rms_norm_eps)?;
-                b.apply_linear(&lo_norm, norm_gain.len(), n_heads * q_head_dim)
+                b.apply_linear(&lo_norm, norm_gain.len(), n_heads * q_head_dim)?
             }
         };
         let _ = (batch, seq);
@@ -2041,7 +2041,7 @@ impl DeepSeek2Model {
         // ---- KV compressed projection ---------------------------------------
         let kv_a = w.kv_a_proj_with_mqa.apply_linear(
             x, cfg.hidden_size, cfg.kv_lora_rank + rope,
-        );
+        )?;
         let compressed_kv = kv_a.slice(2_usize, 0, cfg.kv_lora_rank)?;
         let k_pe_single = kv_a.slice(2_usize, cfg.kv_lora_rank, rope)?;
         // k_pe shape (b, seq, rope) → (b, 1, seq, rope) for MQA broadcast.
@@ -2050,7 +2050,7 @@ impl DeepSeek2Model {
         let compressed_kv_norm = compressed_kv.rms_norm_affine(std::sync::Arc::clone(&w.kv_a_layernorm_gain), cfg.rms_norm_eps)?;
         let kv = w.kv_b_proj.apply_linear(
             &compressed_kv_norm, cfg.kv_lora_rank, n_heads * (nope + v_dim),
-        );
+        )?;
         let kv = kv.split_heads(n_heads, nope + v_dim)?;
         let k_nope = kv.slice(3_usize, 0, nope)?;
         let v = kv.slice(3_usize, nope, v_dim)?;
@@ -2079,7 +2079,7 @@ impl DeepSeek2Model {
         let ctx = probs.matmul(&v)?; // (b, n_heads, seq, v_dim)
 
         let merged = ctx.merge_heads()?;
-        Ok(w.o_proj.apply_linear(&merged, n_heads * v_dim, cfg.hidden_size))
+        Ok(w.o_proj.apply_linear(&merged, n_heads * v_dim, cfg.hidden_size)?)
     }
 
     fn apply_dense_mlp(
@@ -2090,14 +2090,14 @@ impl DeepSeek2Model {
         let cfg = &self.config;
         let h = cfg.hidden_size;
         let inter = cfg.intermediate_size;
-        let gate = w.gate.apply_linear(x, h, inter);
-        let up = w.up.apply_linear(x, h, inter);
+        let gate = w.gate.apply_linear(x, h, inter)?;
+        let up = w.up.apply_linear(x, h, inter)?;
         let activated = match cfg.hidden_activation {
             DeepSeek2Activation::Silu => gate.silu(),
             DeepSeek2Activation::Gelu => gate.gelu_erf(),
         };
         let inner = activated.mul(&up)?;
-        Ok(w.down.apply_linear(&inner, inter, h))
+        Ok(w.down.apply_linear(&inner, inter, h)?)
     }
 
     fn apply_moe(
@@ -2129,14 +2129,14 @@ impl DeepSeek2Model {
 
         let mut routed_sum: Option<LazyTensor> = None;
         for (ei, ew) in w.experts.iter().enumerate() {
-            let gate = ew.gate.apply_linear(x, h, inter);
-            let up = ew.up.apply_linear(x, h, inter);
+            let gate = ew.gate.apply_linear(x, h, inter)?;
+            let up = ew.up.apply_linear(x, h, inter)?;
             let activated = match cfg.hidden_activation {
                 DeepSeek2Activation::Silu => gate.silu(),
                 DeepSeek2Activation::Gelu => gate.gelu_erf(),
             };
             let inner = activated.mul(&up)?;
-            let expert_out = ew.down.apply_linear(&inner, inter, h);
+            let expert_out = ew.down.apply_linear(&inner, inter, h)?;
             let w_col = routing_weights.slice(2_usize, ei, 1)?;
             let w_bc = w_col.broadcast_to(Shape::from_dims(&[batch, seq, h]))?;
             let gated = expert_out.mul(&w_bc)?;
@@ -2152,14 +2152,14 @@ impl DeepSeek2Model {
             return Ok(routed);
         }
         let shared_inter = n_shared * inter;
-        let s_gate = w.shared_gate.apply_linear(x, h, shared_inter);
-        let s_up = w.shared_up.apply_linear(x, h, shared_inter);
+        let s_gate = w.shared_gate.apply_linear(x, h, shared_inter)?;
+        let s_up = w.shared_up.apply_linear(x, h, shared_inter)?;
         let s_act = match cfg.hidden_activation {
             DeepSeek2Activation::Silu => s_gate.silu(),
             DeepSeek2Activation::Gelu => s_gate.gelu_erf(),
         };
         let s_inner = s_act.mul(&s_up)?;
-        let s_out = w.shared_down.apply_linear(&s_inner, shared_inter, h);
+        let s_out = w.shared_down.apply_linear(&s_inner, shared_inter, h)?;
         routed.add(&s_out)
     }
 }

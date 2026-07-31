@@ -60,7 +60,7 @@ impl Gemma4MmEmbedder {
             &normed,
             cfg.multimodal_hidden_size,
             cfg.text_hidden_size,
-        ))
+        )?)
     }
 }
 

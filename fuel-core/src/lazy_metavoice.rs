@@ -167,7 +167,7 @@ impl MetaVoiceModel {
             &spk_anchored,
             cfg.speaker_emb_dim,
             cfg.hidden_size,
-        );
+        )?;
         let spk_bc = spk_proj.broadcast_to(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
         let mut h = embeds.add(&spk_bc)?;
 
@@ -185,7 +185,7 @@ impl MetaVoiceModel {
         let last = h_norm.narrow(1_usize, seq - 1, 1)?;
         let mut per_codebook: Vec<LazyTensor> = Vec::with_capacity(cfg.num_codebooks);
         for head in &weights.lm_heads {
-            let logits = head.apply_linear(&last, cfg.hidden_size, cfg.vocab_size);
+            let logits = head.apply_linear(&last, cfg.hidden_size, cfg.vocab_size)?;
             per_codebook.push(logits.squeeze(1_usize)?);
         }
         let refs: Vec<&LazyTensor> = per_codebook.iter().collect();
@@ -244,9 +244,9 @@ impl MetaVoiceModel {
         let x_norm =
             x.rms_norm_affine(Arc::clone(&layer.attn_norm_gain), cfg.rms_norm_eps)?;
 
-        let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size);
-        let k = layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim);
-        let v = layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim);
+        let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size)?;
+        let k = layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?;
+        let v = layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?;
 
         let q = q.split_heads(cfg.num_attention_heads, cfg.head_dim)?;
         let k = k.split_heads(cfg.num_key_value_heads, cfg.head_dim)?;
@@ -269,18 +269,18 @@ impl MetaVoiceModel {
 
         let merged = attn_v.merge_heads()?;
         let attn_out =
-            layer.attn_o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size);
+            layer.attn_o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?;
 
         let h1 = x.add(&attn_out)?;
 
         let h1_norm =
             h1.rms_norm_affine(Arc::clone(&layer.ffn_norm_gain), cfg.rms_norm_eps)?;
         let gate =
-            layer.ffn_gate.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size);
-        let up = layer.ffn_up.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size);
+            layer.ffn_gate.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let up = layer.ffn_up.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
         let swiglu = gate.silu().mul(&up)?;
         let ffn_out =
-            layer.ffn_down.apply_linear(&swiglu, cfg.intermediate_size, cfg.hidden_size);
+            layer.ffn_down.apply_linear(&swiglu, cfg.intermediate_size, cfg.hidden_size)?;
 
         h1.add(&ffn_out)
     }

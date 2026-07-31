@@ -6763,10 +6763,18 @@ impl WeightStorage {
         out_features: usize,
         bias: std::sync::Arc<[f32]>,
     ) -> std::result::Result<LazyTensor, fuel_ir::Error> {
-        debug_assert_eq!(bias.len(), out_features,
-            "apply_linear_with_bias: bias len ({}) != out_features ({})",
-            bias.len(), out_features);
-        let projected = self.apply_linear(x, in_features, out_features);
+        if bias.len() != out_features {
+            // Was a `debug_assert_eq!` — i.e. compiled OUT of release builds,
+            // so a release binary silently built a broadcast against a
+            // wrong-length bias. A length mismatch is a checkpoint condition;
+            // it errors in every profile now.
+            return Err(fuel_ir::Error::Msg(format!(
+                "apply_linear_with_bias: bias len ({}) != out_features ({out_features})",
+                bias.len(),
+            ))
+            .bt());
+        }
+        let projected = self.apply_linear(x, in_features, out_features)?;
         let bias_t = projected.const_f32_like(
             bias, Shape::from_dims(&[out_features]),
         );
@@ -6782,45 +6790,67 @@ impl WeightStorage {
     /// (f32-activation quantized-weight serving). `(x=BF16,
     /// weight=F32)` is NOT supported — cast the weight or the
     /// activation to match before calling.
+    /// # Errors
+    ///
+    /// Returns a typed error rather than panicking on a dimension or dtype
+    /// mismatch. This used to `.unwrap()` the inner `matmul`/`qmatmul` and
+    /// `assert_eq!` the stored-vs-requested dimensions, which made a
+    /// **production** path panic — a mismatched checkpoint (a GGUF whose
+    /// stored shape disagrees with the model config) is a data condition, not
+    /// a programming invariant, so it must surface as `Err`.
     pub fn apply_linear(
         &self,
         x: &LazyTensor,
         in_features: usize,
         out_features: usize,
-    ) -> LazyTensor {
+    ) -> std::result::Result<LazyTensor, fuel_ir::Error> {
+        // Build-time contract check, shared by every arm: a "linear with
+        // `in_features`" requires x's trailing dim to BE `in_features`.
+        // Checked here rather than at the ~620 call sites, and phrased so the
+        // message names the projection instead of surfacing a bare matmul
+        // shape error two layers down.
+        let x_dims = x.shape().dims().to_vec();
+        match x_dims.last() {
+            Some(&k) if k == in_features => {}
+            _ => {
+                return Err(fuel_ir::Error::Msg(format!(
+                    "apply_linear({in_features} -> {out_features}): input shape {x_dims:?} \
+                     must have trailing dim {in_features}",
+                ))
+                .bt());
+            }
+        }
         match self {
             Self::F32(_) | Self::BF16(_) => {
-                // const_like only errors on WithLoRA; we're statically in
-                // the F32/BF16 arm so the call is infallible here.
-                let w = self.const_like(x, Shape::from_dims(&[in_features, out_features]))
-                    .expect("apply_linear F32/BF16 arm: const_like cannot fail for non-LoRA variants");
-                x.matmul(&w).unwrap()
+                let w = self.const_like(x, Shape::from_dims(&[in_features, out_features]))?;
+                x.matmul(&w)
             }
             Self::Q4_0 { in_features: expected_in, out_features: expected_out, .. } => {
-                assert_eq!(
-                    *expected_in, in_features,
-                    "WeightStorage::Q4_0 in_features mismatch: stored {}, requested {in_features}",
-                    expected_in,
-                );
-                assert_eq!(
-                    *expected_out, out_features,
-                    "WeightStorage::Q4_0 out_features mismatch: stored {}, requested {out_features}",
-                    expected_out,
-                );
-                // const_like for Q4_0 emits a flat U32 tensor. Q4_0 arm is
-                // statically known here so the call is infallible.
-                let w_bytes = self.const_like(x, Shape::from_dims(&[in_features, out_features]))
-                    .expect("apply_linear Q4_0 arm: const_like cannot fail for non-LoRA variants");
-                x.qmatmul(&w_bytes, fuel_graph::QuantType::Q4_0, in_features, out_features).unwrap()
+                if *expected_in != in_features || *expected_out != out_features {
+                    return Err(fuel_ir::Error::Msg(format!(
+                        "WeightStorage::Q4_0 shape mismatch: stored \
+                         [{expected_in}, {expected_out}], requested \
+                         [{in_features}, {out_features}]",
+                    ))
+                    .bt());
+                }
+                let w_bytes = self.const_like(x, Shape::from_dims(&[in_features, out_features]))?;
+                x.qmatmul(&w_bytes, fuel_graph::QuantType::Q4_0, in_features, out_features)
             }
             Self::WithLoRA {
                 base, lora_a, lora_b, rank, alpha,
                 in_features: expected_in, out_features: expected_out,
             } => {
-                assert_eq!(*expected_in, in_features, "WithLoRA in_features mismatch");
-                assert_eq!(*expected_out, out_features, "WithLoRA out_features mismatch");
+                if *expected_in != in_features || *expected_out != out_features {
+                    return Err(fuel_ir::Error::Msg(format!(
+                        "WeightStorage::WithLoRA shape mismatch: stored \
+                         [{expected_in}, {expected_out}], requested \
+                         [{in_features}, {out_features}]",
+                    ))
+                    .bt());
+                }
                 // Base forward (F32, BF16, or Q4_0).
-                let base_out = base.apply_linear(x, in_features, out_features);
+                let base_out = base.apply_linear(x, in_features, out_features)?;
                 // Low-rank update: y += (alpha/rank) · x @ A @ B.
                 let a_t = x.const_f32_like(
                     Arc::clone(lora_a),
@@ -6833,9 +6863,9 @@ impl WeightStorage {
                 let scale = *alpha as f64 / *rank as f64;
                 // x: [*, in] → @A [*, rank] → @B [*, out] → scale → add base.
                 let lora_path = LazyTensor {
-                    inner: x.matmul(&a_t).unwrap().matmul(&b_t).unwrap().inner.mul_scalar(scale),
+                    inner: x.matmul(&a_t)?.matmul(&b_t)?.inner.mul_scalar(scale),
                 };
-                base_out.add(&lora_path).unwrap()
+                base_out.add(&lora_path)
             }
         }
     }
@@ -7040,7 +7070,7 @@ impl LlamaModel {
         let cfg = &self.config;
         let weights = &self.weights;
         let h_norm = self.run_backbone_embeds(embeds, start_pos)?;
-        Ok(weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size))
+        Ok(weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size)?)
     }
 
     /// Like [`forward_embeds`] but skips the LM-head projection
@@ -7081,7 +7111,7 @@ impl LlamaModel {
             .reshape(Shape::from_dims(&[1, 1, seq, seq])).unwrap();
 
         for layer in &weights.layers {
-            h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, &mask);
+            h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, &mask)?;
         }
         Ok(apply_affine_rms_norm(
             &h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps,
@@ -7116,7 +7146,7 @@ impl LlamaModel {
         );
 
         for layer in &weights.layers {
-            h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, attention_mask);
+            h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, attention_mask)?;
         }
         Ok(apply_affine_rms_norm(&h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps))
     }
@@ -7170,7 +7200,7 @@ impl LlamaModel {
             .reshape(Shape::from_dims(&[1, 1, seq, seq])).unwrap();
 
         for layer in &weights.layers {
-            h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, &mask);
+            h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, &mask)?;
         }
 
         Ok(apply_affine_rms_norm(&h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps))
@@ -7204,7 +7234,7 @@ impl LlamaModel {
 
         let mut h = embeds.clone();
         for layer in &weights.layers {
-            h = self.apply_layer(&h, layer, rope_cos, rope_sin, mask);
+            h = self.apply_layer(&h, layer, rope_cos, rope_sin, mask)?;
         }
         Ok(apply_affine_rms_norm(&h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps))
     }
@@ -7216,7 +7246,7 @@ impl LlamaModel {
         rope_cos: &LazyTensor,
         rope_sin: &LazyTensor,
         mask: &LazyTensor,
-    ) -> LazyTensor {
+    ) -> crate::Result<LazyTensor> {
         let cfg = &self.config;
         let x_shape = x.shape();
         let dims = x_shape.dims();
@@ -7231,68 +7261,68 @@ impl LlamaModel {
         // routes F32/BF16 through standard matmul and Q4_0 through
         // fused qmatmul. Under GQA, W_k and W_v have fewer output
         // features (kv_dim instead of dim).
-        let q = layer.attn_q.apply_linear(&x_norm, cfg.dim, cfg.dim).add_optional_trailing_bias(layer.attn_q_bias.as_ref()).unwrap();
-        let k = layer.attn_k.apply_linear(&x_norm, cfg.dim, kv_dim).add_optional_trailing_bias(layer.attn_k_bias.as_ref()).unwrap();
-        let v = layer.attn_v.apply_linear(&x_norm, cfg.dim, kv_dim).add_optional_trailing_bias(layer.attn_v_bias.as_ref()).unwrap();
+        let q = layer.attn_q.apply_linear(&x_norm, cfg.dim, cfg.dim)?.add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
+        let k = layer.attn_k.apply_linear(&x_norm, cfg.dim, kv_dim)?.add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
+        let v = layer.attn_v.apply_linear(&x_norm, cfg.dim, kv_dim)?.add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
 
         // Split heads.
         // Q: [batch, seq, dim] → [batch, seq, n_heads, head_dim] → [batch, n_heads, seq, head_dim]
         let q_h = q
-            .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim])).unwrap()
-            .permute([0, 2, 1, 3_usize]).unwrap();
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim]))?
+            .permute([0, 2, 1, 3_usize])?;
         // K/V: [batch, seq, kv_dim] → [batch, seq, n_kv_heads, head_dim] → [batch, n_kv_heads, seq, head_dim]
         let k_h = k
-            .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim])).unwrap()
-            .permute([0, 2, 1, 3_usize]).unwrap();
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim]))?
+            .permute([0, 2, 1, 3_usize])?;
         let v_h = v
-            .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim])).unwrap()
-            .permute([0, 2, 1, 3_usize]).unwrap();
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim]))?
+            .permute([0, 2, 1, 3_usize])?;
 
         // RoPE on Q and K (applied per-head; V is NOT rotated). Uses
         // caller-supplied cos/sin so all layers share a single pair
         // of const nodes.
-        let q_r = q_h.rope_with_tables(rope_cos, rope_sin).unwrap();
-        let k_r = k_h.rope_with_tables(rope_cos, rope_sin).unwrap();
+        let q_r = q_h.rope_with_tables(rope_cos, rope_sin)?;
+        let k_r = k_h.rope_with_tables(rope_cos, rope_sin)?;
 
         let n_rep = cfg.n_heads / cfg.n_kv_heads;
-        let k_r = k_r.repeat_interleave(1_usize, n_rep).unwrap();
-        let v_h = v_h.repeat_interleave(1_usize, n_rep).unwrap();
+        let k_r = k_r.repeat_interleave(1_usize, n_rep)?;
+        let v_h = v_h.repeat_interleave(1_usize, n_rep)?;
 
         // Scaled dot-product attention with caller-supplied mask.
         // The default forward path passes the strict-causal mask
         // built once outside the loop; `forward_hidden_embeds_with_mask`
         // passes whatever the caller chose (e.g. bidirectional pad).
         let _ = seq; // silence unused after refactor; mask already sized for seq.
-        let k_t = k_r.transpose().unwrap();
+        let k_t = k_r.transpose()?;
         let scale = 1.0_f64 / (cfg.head_dim as f64).sqrt();
-        let scores = q_r.matmul(&k_t).unwrap();
+        let scores = q_r.matmul(&k_t)?;
         let scores_scaled = LazyTensor {
             inner: scores.inner.mul_scalar(scale),
         };
-        let scores_masked = scores_scaled.broadcast_add(mask).unwrap();
-        let attn = scores_masked.softmax_last_dim().unwrap();
-        let attn_v = attn.matmul(&v_h).unwrap();
+        let scores_masked = scores_scaled.broadcast_add(mask)?;
+        let attn = scores_masked.softmax_last_dim()?;
+        let attn_v = attn.matmul(&v_h)?;
 
         // Merge heads + output projection.
         let merged = attn_v
-            .permute([0, 2, 1, 3_usize]).unwrap()
-            .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
-        let attn_out = layer.attn_o.apply_linear(&merged, cfg.dim, cfg.dim);
+            .permute([0, 2, 1, 3_usize])?
+            .reshape(Shape::from_dims(&[batch, seq, cfg.dim]))?;
+        let attn_out = layer.attn_o.apply_linear(&merged, cfg.dim, cfg.dim)?;
 
         // First residual connection.
-        let h1 = x.add(&attn_out).unwrap();
+        let h1 = x.add(&attn_out)?;
 
         // Pre-FFN RmsNorm with affine gain.
         let h1_norm = apply_affine_rms_norm(&h1, &layer.ffn_norm_gain, cfg.dim, cfg.norm_eps);
 
         // SwiGLU FFN (routes through apply_linear → qmatmul for Q4_0).
-        let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.dim, cfg.ffn_dim);
-        let up   = layer.ffn_up.apply_linear(&h1_norm, cfg.dim, cfg.ffn_dim);
-        let swiglu = gate.silu().mul(&up).unwrap();
-        let ffn_out = layer.ffn_down.apply_linear(&swiglu, cfg.ffn_dim, cfg.dim);
+        let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.dim, cfg.ffn_dim)?;
+        let up   = layer.ffn_up.apply_linear(&h1_norm, cfg.dim, cfg.ffn_dim)?;
+        let swiglu = gate.silu().mul(&up)?;
+        let ffn_out = layer.ffn_down.apply_linear(&swiglu, cfg.ffn_dim, cfg.dim)?;
 
         // Second residual connection.
-        h1.add(&ffn_out).unwrap()
+        h1.add(&ffn_out)
     }
 
 
@@ -7461,11 +7491,11 @@ impl LlamaModel {
 
         let merged = attn_v_permuted
             .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
-        let attn_out = layer.attn_o.apply_linear(&merged, cfg.dim, cfg.dim);
+        let attn_out = layer.attn_o.apply_linear(&merged, cfg.dim, cfg.dim)?;
 
         let h1 = x.add(&attn_out).unwrap();
         // Shared FFN tail (identical to the paged layer); see `ffn_block`.
-        Ok(self.ffn_block(&h1, layer))
+        self.ffn_block(&h1, layer)
     }
 
     /// One single-token forward through **paged** pool storage — the paged-decode
@@ -7574,7 +7604,7 @@ impl LlamaModel {
         }
 
         let h_norm = apply_affine_rms_norm(&h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps);
-        let logits = weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size);
+        let logits = weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size)?;
         // Cast to f32 before the f32 realize (a bf16 root is UB — half the byte
         // width); no-op under an f32 pool.
         let logits_root = logits
@@ -7725,7 +7755,7 @@ impl LlamaModel {
         }
 
         let h_norm = apply_affine_rms_norm(&h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps);
-        let logits = weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size); // [K, 1, vocab]
+        let logits = weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size)?; // [K, 1, vocab]
         let logits_flat = logits
             .reshape(Shape::from_dims(&[k * cfg.vocab_size]))?
             .to_dtype(DType::F32)?; // f32 for the realize (no-op under an f32 pool)
@@ -7768,9 +7798,9 @@ impl LlamaModel {
         let merged = attn
             .permute([0, 2, 1, 3_usize]).unwrap()
             .reshape(Shape::from_dims(&[batch, 1, cfg.dim])).unwrap();
-        let attn_out = layer.attn_o.apply_linear(&merged, cfg.dim, cfg.dim);
+        let attn_out = layer.attn_o.apply_linear(&merged, cfg.dim, cfg.dim)?;
         let h1 = x.add(&attn_out).unwrap();
-        Ok(self.ffn_block(&h1, layer))
+        self.ffn_block(&h1, layer)
     }
 
     /// One transformer layer of the paged decode step: the projection/RoPE of
@@ -7808,9 +7838,9 @@ impl LlamaModel {
         let merged = attn
             .permute([0, 2, 1, 3_usize]).unwrap()
             .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
-        let attn_out = layer.attn_o.apply_linear(&merged, cfg.dim, cfg.dim);
+        let attn_out = layer.attn_o.apply_linear(&merged, cfg.dim, cfg.dim)?;
         let h1 = x.add(&attn_out).unwrap();
-        Ok(self.ffn_block(&h1, layer))
+        self.ffn_block(&h1, layer)
     }
 
     /// Shared attention **front half** — RmsNorm → Q/K/V projections (+ optional
@@ -7836,9 +7866,9 @@ impl LlamaModel {
         let act_dtype = x.dtype();
 
         let x_norm = apply_affine_rms_norm(x, &layer.attn_norm_gain, cfg.dim, cfg.norm_eps);
-        let q = layer.attn_q.apply_linear(&x_norm, cfg.dim, cfg.dim).add_optional_trailing_bias(layer.attn_q_bias.as_ref()).unwrap();
-        let k = layer.attn_k.apply_linear(&x_norm, cfg.dim, kv_dim).add_optional_trailing_bias(layer.attn_k_bias.as_ref()).unwrap();
-        let v = layer.attn_v.apply_linear(&x_norm, cfg.dim, kv_dim).add_optional_trailing_bias(layer.attn_v_bias.as_ref()).unwrap();
+        let q = layer.attn_q.apply_linear(&x_norm, cfg.dim, cfg.dim)?.add_optional_trailing_bias(layer.attn_q_bias.as_ref()).unwrap();
+        let k = layer.attn_k.apply_linear(&x_norm, cfg.dim, kv_dim)?.add_optional_trailing_bias(layer.attn_k_bias.as_ref()).unwrap();
+        let v = layer.attn_v.apply_linear(&x_norm, cfg.dim, kv_dim)?.add_optional_trailing_bias(layer.attn_v_bias.as_ref()).unwrap();
         let q_h = q
             .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim])).unwrap()
             .permute([0, 2, 1, 3_usize]).unwrap();
@@ -7880,9 +7910,9 @@ impl LlamaModel {
         let act_dtype = x.dtype();
 
         let x_norm = apply_affine_rms_norm(x, &layer.attn_norm_gain, cfg.dim, cfg.norm_eps);
-        let q = layer.attn_q.apply_linear(&x_norm, cfg.dim, cfg.dim).add_optional_trailing_bias(layer.attn_q_bias.as_ref()).unwrap();
-        let k = layer.attn_k.apply_linear(&x_norm, cfg.dim, kv_dim).add_optional_trailing_bias(layer.attn_k_bias.as_ref()).unwrap();
-        let v = layer.attn_v.apply_linear(&x_norm, cfg.dim, kv_dim).add_optional_trailing_bias(layer.attn_v_bias.as_ref()).unwrap();
+        let q = layer.attn_q.apply_linear(&x_norm, cfg.dim, cfg.dim)?.add_optional_trailing_bias(layer.attn_q_bias.as_ref()).unwrap();
+        let k = layer.attn_k.apply_linear(&x_norm, cfg.dim, kv_dim)?.add_optional_trailing_bias(layer.attn_k_bias.as_ref()).unwrap();
+        let v = layer.attn_v.apply_linear(&x_norm, cfg.dim, kv_dim)?.add_optional_trailing_bias(layer.attn_v_bias.as_ref()).unwrap();
         let q_h = q
             .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim])).unwrap()
             .permute([0, 2, 1, 3_usize]).unwrap();
@@ -7904,14 +7934,14 @@ impl LlamaModel {
     /// Shared attention **tail** — pre-FFN RmsNorm → SwiGLU (`gate.silu() * up`) →
     /// down-projection → residual. `h1` is the post-attention residual
     /// (`x + o_proj(merged_heads)`). Identical for contiguous + paged decode.
-    fn ffn_block(&self, h1: &LazyTensor, layer: &LayerWeights) -> LazyTensor {
+    fn ffn_block(&self, h1: &LazyTensor, layer: &LayerWeights) -> crate::Result<LazyTensor> {
         let cfg = &self.config;
         let h1_norm = apply_affine_rms_norm(h1, &layer.ffn_norm_gain, cfg.dim, cfg.norm_eps);
-        let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.dim, cfg.ffn_dim);
-        let up = layer.ffn_up.apply_linear(&h1_norm, cfg.dim, cfg.ffn_dim);
-        let swiglu = gate.silu().mul(&up).unwrap();
-        let ffn_out = layer.ffn_down.apply_linear(&swiglu, cfg.ffn_dim, cfg.dim);
-        h1.add(&ffn_out).unwrap()
+        let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.dim, cfg.ffn_dim)?;
+        let up = layer.ffn_up.apply_linear(&h1_norm, cfg.dim, cfg.ffn_dim)?;
+        let swiglu = gate.silu().mul(&up)?;
+        let ffn_out = layer.ffn_down.apply_linear(&swiglu, cfg.ffn_dim, cfg.dim)?;
+        h1.add(&ffn_out)
     }
 
     /// Forward pass using pre-allocated KV-cache buffers and
@@ -8111,7 +8141,7 @@ impl LlamaModel {
         }
 
         let h_norm = apply_affine_rms_norm(&h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps);
-        let logits = weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size);
+        let logits = weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size)?;
         // For spec-decode verification we need per-position logits;
         // otherwise slice to the last position for decode/prefill.
         let logits_root = if return_all_positions {
@@ -8413,7 +8443,7 @@ impl LlamaModel {
         }
 
         let h_norm = apply_affine_rms_norm(&h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps);
-        let logits = weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size);
+        let logits = weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size)?;
         let last_pos = seq - 1;
         let logits_root = logits
             .slice(1, last_pos, 1)?
@@ -8718,7 +8748,7 @@ impl LlamaModel {
 
         let h_norm =
             apply_affine_rms_norm(&h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps);
-        let logits = weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size);
+        let logits = weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size)?;
         let last_pos = seq - 1;
         let logits_root = logits
             .slice(1, last_pos, 1)?
@@ -10778,7 +10808,7 @@ impl PhiModel {
             Arc::clone(&weights.final_norm_gain), Arc::clone(&weights.final_norm_bias),
             cfg.layer_norm_eps,
         )?;
-        let logits_no_bias = weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size);
+        let logits_no_bias = weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size)?;
         let logits = match &weights.output_bias {
             Some(b) => {
                 let b_t = h_norm.const_f32_like(
@@ -11004,7 +11034,7 @@ impl PhiModel {
             Arc::clone(&weights.final_norm_gain), Arc::clone(&weights.final_norm_bias),
             cfg.layer_norm_eps,
         )?;
-        let logits_no_bias = weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size);
+        let logits_no_bias = weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size)?;
         let logits = match &weights.output_bias {
             Some(b) => {
                 let b_t = h_norm.const_f32_like(
@@ -13058,7 +13088,7 @@ mod generate_tests {
 
         let h_norm =
             apply_affine_rms_norm(&h, &model.weights.final_norm_gain, cfg.dim, cfg.norm_eps);
-        let logits = model.weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size);
+        let logits = model.weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size).unwrap();
         let logits_root = logits
             .slice(1, seq - 1, 1).unwrap()
             .reshape(Shape::from_dims(&[cfg.vocab_size])).unwrap();
@@ -16198,6 +16228,7 @@ mod gqa_tests {
 #[cfg(test)]
 mod lora_tests {
     use super::*;
+    use crate::Shape;
 
     #[test]
     fn with_lora_matches_manual_base_plus_lora() {
@@ -16228,7 +16259,7 @@ mod lora_tests {
         let batch = 2;
         let x_data: Vec<f32> = (0..batch * in_f).map(|i| (i as f32) * 0.1 + 0.5).collect();
         let x = anchor.const_f32_like(x_data.clone(), Shape::from_dims(&[batch, in_f]));
-        let y = ws.apply_linear(&x, in_f, out_f);
+        let y = ws.apply_linear(&x, in_f, out_f).unwrap();
         let got = y.realize_f32().to_vec();
 
         // Reference: base + (alpha/rank) * x @ A @ B, all f32, on CPU.
@@ -16269,6 +16300,76 @@ mod lora_tests {
         let bad_a = Arc::from(vec![0.0_f32; 3]);                     // wrong
         let b = Arc::from(vec![0.0_f32; 6]);                         // 2 x 3
         let _ = ws.with_lora(bad_a, b, 2, 8.0, 4, 3);
+    }
+
+    // ---- never-panic conversion (`apply_linear` -> `Result`) ----
+    //
+    // These three inputs each used to abort the process on a PRODUCTION path:
+    // a wrong trailing dim reached `x.matmul(&w).unwrap()`, a stored/requested
+    // shape disagreement hit `assert_eq!`, and a wrong-length bias hit a
+    // `debug_assert_eq!` that is compiled OUT of release builds — so release
+    // binaries broadcast a mis-sized bias with no complaint at all. All three
+    // are checkpoint/data conditions rather than programming invariants (a
+    // GGUF whose stored shape disagrees with the model config produces exactly
+    // this), so all three must be `Err`.
+
+    #[test]
+    fn apply_linear_errors_on_trailing_dim_mismatch() {
+        let ws = WeightStorage::F32(Arc::from(vec![0.0_f32; 12])); // 4 x 3
+        let x = LazyTensor::from_f32(
+            vec![0.0_f32; 10],
+            Shape::from_dims(&[2, 5]), // trailing dim 5 != in_features 4
+            &Device::cpu(),
+        );
+        let err = ws.apply_linear(&x, 4, 3).expect_err("must not panic, must Err");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("trailing dim 4"),
+            "error should name the expected trailing dim, got: {msg}",
+        );
+    }
+
+    #[test]
+    fn apply_linear_errors_on_q4_0_stored_shape_mismatch() {
+        // 4 x 4 of Q4_0: one 32-element block needs 18 bytes; keep the word
+        // count self-consistent since only the shape check is under test.
+        let ws = WeightStorage::Q4_0 {
+            words: Arc::from(vec![0_u32; 8]),
+            bytes_len: 18, // one Q4_0 block: 2-byte scale + 16 packed nibble bytes
+            in_features: 4,
+            out_features: 4,
+        };
+        let x = LazyTensor::from_f32(
+            vec![0.0_f32; 8],
+            Shape::from_dims(&[2, 4]),
+            &Device::cpu(),
+        );
+        // Trailing dim matches in_features, so this reaches the stored-shape
+        // check rather than the contract check above.
+        let err = ws.apply_linear(&x, 4, 7).expect_err("must not panic, must Err");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Q4_0 shape mismatch"),
+            "error should name the stored/requested disagreement, got: {msg}",
+        );
+    }
+
+    #[test]
+    fn apply_linear_with_bias_errors_on_wrong_bias_length() {
+        let ws = WeightStorage::F32(Arc::from(vec![0.0_f32; 12])); // 4 x 3
+        let x = LazyTensor::from_f32(
+            vec![0.0_f32; 8],
+            Shape::from_dims(&[2, 4]),
+            &Device::cpu(),
+        );
+        let bias: Arc<[f32]> = Arc::from(vec![0.0_f32; 2]); // wrong: out_features is 3
+        let err = ws
+            .apply_linear_with_bias(&x, 4, 3, bias)
+            .expect_err("wrong-length bias must Err in EVERY profile, not just debug");
+        assert!(
+            err.to_string().contains("bias len"),
+            "error should name the bias length, got: {err}",
+        );
     }
 }
 
@@ -16534,7 +16635,7 @@ mod llama_tests {
 
         let hidden = model.forward_hidden_embeds(&embeds, 0).unwrap();
         let logits_from_hidden = model.weights.output
-            .apply_linear(&hidden, cfg.dim, cfg.vocab_size).realize_f32();
+            .apply_linear(&hidden, cfg.dim, cfg.vocab_size).unwrap().realize_f32();
         let logits_direct = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
         assert_eq!(logits_from_hidden.len(), logits_direct.len());
         for (a, b) in logits_from_hidden.iter().zip(logits_direct.iter()) {

@@ -275,7 +275,7 @@ impl LlavaModel {
             &image_features,
             v_cfg.embed_dim,
             cfg.projection_dim,
-        );
+        )?;
         let bias_t = pixel_values.const_f32_like(
             Arc::clone(&self.weights.mm_proj_bias),
             Shape::from_dims(&[cfg.projection_dim]),
@@ -394,11 +394,11 @@ fn clip_encoder_layer(
 
     let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&layer.ln1_gain), std::sync::Arc::clone(&layer.ln1_bias), 1e-5)?;
 
-    let q = layer.q_proj.apply_linear(&x_norm, h, h);
+    let q = layer.q_proj.apply_linear(&x_norm, h, h)?;
     let q = q.add_trailing_bias(std::sync::Arc::clone(&layer.q_proj_bias))?;
-    let k = layer.k_proj.apply_linear(&x_norm, h, h);
+    let k = layer.k_proj.apply_linear(&x_norm, h, h)?;
     let k = k.add_trailing_bias(std::sync::Arc::clone(&layer.k_proj_bias))?;
-    let v = layer.v_proj.apply_linear(&x_norm, h, h);
+    let v = layer.v_proj.apply_linear(&x_norm, h, h)?;
     let v = v.add_trailing_bias(std::sync::Arc::clone(&layer.v_proj_bias))?;
 
     let _ = (batch, seq);
@@ -416,14 +416,14 @@ fn clip_encoder_layer(
     let probs = scores.softmax_last_dim()?;
     let ctx = probs.matmul(&v)?;
     let merged = ctx.merge_heads()?;
-    let attn_out = layer.out_proj.apply_linear(&merged, h, h);
+    let attn_out = layer.out_proj.apply_linear(&merged, h, h)?;
     let attn_out = attn_out.add_trailing_bias(std::sync::Arc::clone(&layer.out_proj_bias))?;
     let h1 = x.add(&attn_out)?;
 
     let h1_norm = h1.layer_norm_affine(std::sync::Arc::clone(&layer.ln2_gain), std::sync::Arc::clone(&layer.ln2_bias), 1e-5)?;
 
     let inter_dim = layer.fc1_bias.len();
-    let inter = layer.fc1.apply_linear(&h1_norm, h, inter_dim);
+    let inter = layer.fc1.apply_linear(&h1_norm, h, inter_dim)?;
     let inter = inter.add_trailing_bias(std::sync::Arc::clone(&layer.fc1_bias))?;
     // QuickGelu: x * sigmoid(1.702 * x).
     let activated = {
@@ -431,7 +431,7 @@ fn clip_encoder_layer(
         let sig = scaled.sigmoid();
         inter.mul(&sig)?
     };
-    let mlp_out = layer.fc2.apply_linear(&activated, inter_dim, h);
+    let mlp_out = layer.fc2.apply_linear(&activated, inter_dim, h)?;
     let mlp_out = mlp_out.add_trailing_bias(std::sync::Arc::clone(&layer.fc2_bias))?;
     h1.add(&mlp_out)
 }

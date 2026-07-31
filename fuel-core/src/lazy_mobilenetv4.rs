@@ -235,7 +235,7 @@ impl Mv4Model {
                 let h = apply_conv_bn_act(&chw, &head.conv, cfg.activation, image)?;
                 let flat = h.reshape(Shape::from_dims(&[1, cfg.head_out_channels]))?;
                 let n = head.linear_b.len();
-                let logits = head.linear_w.apply_linear(&flat, cfg.head_out_channels, n);
+                let logits = head.linear_w.apply_linear(&flat, cfg.head_out_channels, n)?;
                 let bias = image.const_f32_like(
                     Arc::clone(&head.linear_b), Shape::from_dims(&[n]),
                 );
