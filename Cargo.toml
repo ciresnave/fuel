@@ -1,4 +1,4 @@
-﻿[workspace]
+[workspace]
 # Every Fuel crate lives in the workspace so each one can inherit
 # shared dep versions via `{ workspace = true }`. Crates that need
 # heavy build toolchains (CUDA, Metal, Python, prost/ONNX) are kept
@@ -37,14 +37,12 @@ members = [
     "fuel-kiss-ref-backend",
     "fuel-onnx",
     "fuel-parallel",
-    "fuel-pyo3",
     "fuel-quantized",
     "fuel-memory",
     "fuel-training",
     "fuel-transformers",
     "fuel-ug",
     "fuel-wasm-examples/*",
-    "fuel-wasm-tests",
     "fuel-tensor-tools",
 ]
 # What `cargo build`, `cargo check`, `cargo test` without `-p` or
@@ -75,13 +73,11 @@ default-members = [
     "fuel-examples",
     "fuel-inference",
     "fuel-parallel",
-    "fuel-pyo3",
     "fuel-quantized",
     "fuel-transformers",
     "fuel-training",
     "fuel-ug",
     "fuel-wasm-examples/*",
-    "fuel-wasm-tests",
 ]
 resolver = "2"
 
