@@ -3168,6 +3168,7 @@ impl Tensor {
         source: &Tensor,
         ranges: Vec<(usize, usize)>,
     ) -> std::result::Result<Tensor, fuel_ir::Error> {
+        self.require_same_graph(source, "write_slice", "source")?;
         let dest_shape = self.shape();
         let dest_dims = dest_shape.dims();
         let src_shape = source.shape();
@@ -3252,6 +3253,7 @@ impl Tensor {
         dyn_axis: usize,
         offset: DynScalar,
     ) -> std::result::Result<Tensor, fuel_ir::Error> {
+        self.require_same_graph(source, "write_slice_dyn", "source")?;
         let dest_shape = self.shape();
         let dest_dims = dest_shape.dims();
         let src_shape = source.shape();
@@ -3349,6 +3351,8 @@ impl Tensor {
         modulus: usize,
         ranges: Vec<(usize, usize)>,
     ) -> std::result::Result<Tensor, fuel_ir::Error> {
+        self.require_same_graph(source, "write_slice_rotating", "source")?;
+        self.require_same_graph(position, "write_slice_rotating", "position")?;
         let dest_shape = self.shape();
         let dest_dims = dest_shape.dims();
         let src_shape = source.shape();
@@ -3489,6 +3493,8 @@ impl Tensor {
         axis: usize,
         ranges: Vec<(usize, usize)>,
     ) -> std::result::Result<Tensor, fuel_ir::Error> {
+        self.require_same_graph(source, "write_slice_doff", "source")?;
+        self.require_same_graph(offset, "write_slice_doff", "offset")?;
         let dest_shape = self.shape();
         let dest_dims = dest_shape.dims();
         let src_dims = source.shape().dims().to_vec();
@@ -4169,6 +4175,7 @@ impl Tensor {
     /// producer-bound `SymEnv` (e.g. `Op::NonZeroIndices`'s count). The
     /// output shape is the capacity shape `[..., lhs.shape[-2], n]`.
     pub fn matmul_dyn_m(&self, other: &Tensor, row_count: DynScalar) -> Tensor {
+        self.assert_same_graph(other, "matmul_dyn_m", "other");
         // Only the F32 CPU capacity kernel honors a data-determined row
         // count today; other dtypes/backends compute all capacity rows.
         // Guard here so a dynamic-M matmul can never be built where it
@@ -4540,6 +4547,7 @@ impl Tensor {
         dilation: usize,
         groups: usize,
     ) -> Tensor {
+        self.assert_same_graph(weight, "conv_transpose1d", "weight");
         let x_dims = self.shape();
         let x_dims = x_dims.dims();
         let w_dims = weight.shape();
@@ -5576,6 +5584,7 @@ impl Tensor {
         mask: &Tensor,
         value: Scalar,
     ) -> std::result::Result<Tensor, fuel_ir::Error> {
+        self.require_same_graph(mask, "masked_fill", "mask")?;
         if self.shape().dims() != mask.shape().dims() {
             return Err(fuel_ir::Error::Msg(format!(
                 "masked_fill: x.shape={:?} != mask.shape={:?}",
@@ -6466,6 +6475,10 @@ impl Tensor {
         c: &Tensor,
         chunk_size: usize,
     ) -> Tensor {
+        self.assert_same_graph(dt, "ssd_chunk_scan", "dt");
+        self.assert_same_graph(a, "ssd_chunk_scan", "a");
+        self.assert_same_graph(b, "ssd_chunk_scan", "b");
+        self.assert_same_graph(c, "ssd_chunk_scan", "c");
         let producer = self.ssd_chunk_scan_producer(dt, a, b, c, chunk_size);
         producer.view(0).expect("SsdChunkScan view(0) must succeed (just registered slots)")
     }
@@ -6611,6 +6624,10 @@ impl Tensor {
         c: &Tensor,
         delta_softplus: bool,
     ) -> Tensor {
+        self.assert_same_graph(delta, "selective_scan", "delta");
+        self.assert_same_graph(a, "selective_scan", "a");
+        self.assert_same_graph(b, "selective_scan", "b");
+        self.assert_same_graph(c, "selective_scan", "c");
         let producer = self.selective_scan_producer(delta, a, b, c, delta_softplus);
         producer.view(0).expect("SelectiveScan view(0) must succeed (just registered slots)")
     }
@@ -6629,6 +6646,10 @@ impl Tensor {
         c: &Tensor,
         delta_softplus: bool,
     ) -> std::result::Result<(Tensor, Tensor), fuel_ir::Error> {
+        self.require_same_graph(delta, "selective_scan_bundled", "delta")?;
+        self.require_same_graph(a, "selective_scan_bundled", "a")?;
+        self.require_same_graph(b, "selective_scan_bundled", "b")?;
+        self.require_same_graph(c, "selective_scan_bundled", "c")?;
         let producer = self.selective_scan_producer(delta, a, b, c, delta_softplus);
         let y = producer.view(0)?;
         let last_state = producer.view(1)?;
@@ -6645,6 +6666,10 @@ impl Tensor {
         c: &Tensor,
         chunk_size: usize,
     ) -> std::result::Result<(Tensor, Tensor), fuel_ir::Error> {
+        self.require_same_graph(dt, "ssd_chunk_scan_bundled", "dt")?;
+        self.require_same_graph(a, "ssd_chunk_scan_bundled", "a")?;
+        self.require_same_graph(b, "ssd_chunk_scan_bundled", "b")?;
+        self.require_same_graph(c, "ssd_chunk_scan_bundled", "c")?;
         let producer = self.ssd_chunk_scan_producer(dt, a, b, c, chunk_size);
         let y = producer.view(0)?;
         let last_state = producer.view(1)?;
@@ -6866,6 +6891,8 @@ impl Tensor {
     /// them inside each `.rope()` call. The classic [`rope`] entry
     /// point funnels through this after building the tables itself.
     pub fn rope_with_tables(&self, cos: &Tensor, sin: &Tensor) -> Tensor {
+        self.assert_same_graph(cos, "rope_with_tables", "cos");
+        self.assert_same_graph(sin, "rope_with_tables", "sin");
         assert_eq!(
             self.dtype(),
             DType::F32,
@@ -6929,6 +6956,8 @@ impl Tensor {
     /// path against the primitive path.
     #[doc(hidden)]
     pub fn rope_with_tables_decomposed(&self, cos: &Tensor, sin: &Tensor) -> Tensor {
+        self.assert_same_graph(cos, "rope_with_tables_decomposed", "cos");
+        self.assert_same_graph(sin, "rope_with_tables_decomposed", "sin");
         let in_shape = self.shape();
         let dims_vec: Vec<usize> = in_shape.dims().to_vec();
         let rank = dims_vec.len();
@@ -7388,6 +7417,49 @@ impl Tensor {
     }
 
     // Internal helpers. Both shape-validate and append.
+
+    /// Build-time graph-affinity check for a `Result`-returning builder.
+    ///
+    /// Node ids index ONE graph's arena, so an operand from a different graph
+    /// records an id pointing at an unrelated node — a malformed dependency
+    /// graph whose failure mode is a **realize-time hang**, not a panic or an
+    /// error. Checking here converts a silent deadlock into a typed build-time
+    /// error naming both graphs, per "validate at graph-build time".
+    fn require_same_graph(
+        &self,
+        other: &Tensor,
+        op: &str,
+        role: &str,
+    ) -> std::result::Result<(), fuel_ir::Error> {
+        if !Arc::ptr_eq(&self.graph, &other.graph) {
+            return Err(fuel_ir::Error::Msg(format!(
+                "{op}: operands must live on the same graph — self is on graph #{}, \
+                 {role} on graph #{}; each `from_*` constructor mints a NEW graph, so \
+                 build the other operand with `from_*_on(self.graph(), ..)` or \
+                 `const_*_like`",
+                self.graph_id(),
+                other.graph_id(),
+            ))
+            .bt());
+        }
+        Ok(())
+    }
+
+    /// Panicking sibling of [`Self::require_same_graph`] for the builders that
+    /// return `Tensor` rather than `Result` — same convention as `matmul`,
+    /// `qmatmul`, `conv2d` and `paged_attn`. A panic at the build site is far
+    /// better than the hang it replaces: it names the operand and both graphs.
+    fn assert_same_graph(&self, other: &Tensor, op: &str, role: &str) {
+        assert!(
+            Arc::ptr_eq(&self.graph, &other.graph),
+            "{op}: operands must live on the same graph — self is on graph #{}, \
+             {role} on graph #{}; each `from_*` constructor mints a NEW graph, so \
+             build the other operand with `from_*_on(self.graph(), ..)` or \
+             `const_*_like`",
+            self.graph_id(),
+            other.graph_id(),
+        );
+    }
 
     fn binary_op(&self, name: &'static str, op: Op, other: &Tensor, out_shape: Shape) -> Tensor {
         assert!(
@@ -12248,6 +12320,81 @@ mod tests {
         // ranges has rank 2 (matches dest) but source has rank 1.
         let err = dest.write_slice(&src, vec![(0, 1), (0, 3)]);
         assert!(err.is_err(), "rank mismatch must error");
+    }
+
+    // ---- cross-graph operands must fail at BUILD time, never hang -----------
+    //
+    // Node ids are indices into ONE graph's arena, so an operand built on a
+    // DIFFERENT graph records an id that indexes an unrelated node (or none),
+    // producing a malformed dependency graph. The failure surfaces as neither
+    // a panic nor an error: the executor **HANGS at realize**, waiting on a
+    // dependency that can never resolve — low CPU, no stack, no message. That
+    // is strictly worse than a panic, and it violates two rules at once:
+    // "validate at graph-build time" and never-hang.
+    //
+    // `matmul`, `qmatmul`, `conv2d`, `paged_attn`, and everything routed via
+    // `binary_op` already assert this. These builders did not — a real cost: a
+    // peer session spent a long bisect localizing exactly this on `write_slice`.
+    //
+    // These tests only BUILD, never realize, so before the fix they fail fast
+    // instead of hanging the suite.
+
+    #[test]
+    fn write_slice_rejects_cross_graph_source() {
+        let dest = Tensor::from_f32(
+            vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev(),
+        );
+        // A SECOND `from_*` mints a second graph — the easy mistake to make,
+        // and currently the un-diagnosable one.
+        let foreign = Tensor::from_f32(
+            vec![1.0, 2.0, 3.0], Shape::from_dims(&[1, 3]), cpu_dev(),
+        );
+        assert_ne!(dest.graph_id(), foreign.graph_id(), "fixture must be cross-graph");
+
+        let err = dest.write_slice(&foreign, vec![(2, 3), (0, 3)]);
+        assert!(
+            err.is_err(),
+            "cross-graph source must be a build-time Err, not a realize-time hang",
+        );
+        let msg = format!("{}", err.unwrap_err());
+        assert!(
+            msg.contains("same graph"),
+            "error should say the operands must share a graph, got: {msg}",
+        );
+    }
+
+    #[test]
+    fn masked_fill_rejects_cross_graph_mask() {
+        let x = Tensor::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        let foreign_mask =
+            Tensor::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        assert_ne!(x.graph_id(), foreign_mask.graph_id(), "fixture must be cross-graph");
+
+        let err = x.masked_fill(&foreign_mask, Scalar::F32(0.0));
+        assert!(
+            err.is_err(),
+            "cross-graph mask must be a build-time Err, not a realize-time hang",
+        );
+        // MUST assert the reason, not just is_err(): this fixture also has a
+        // dtype mismatch, so a bare `is_err()` passes for the WRONG reason and
+        // would stay green even with no graph check at all.
+        let msg = format!("{}", err.unwrap_err());
+        assert!(
+            msg.contains("same graph"),
+            "must fail on GRAPH affinity, not incidentally on dtype, got: {msg}",
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "same graph")]
+    fn rope_with_tables_panics_on_cross_graph_tables() {
+        // Returns `Tensor`, so it follows the convention of the already-checked
+        // builders (`matmul`, `paged_attn`) and asserts. A panic names the
+        // problem at the build site; the status quo hangs later saying nothing.
+        let x = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[1, 1, 2, 4]), cpu_dev());
+        let cos = Tensor::from_f32(vec![1.0_f32; 8], Shape::from_dims(&[2, 4]), cpu_dev());
+        let sin = x.const_f32_like(vec![0.0_f32; 8], Shape::from_dims(&[2, 4]));
+        let _ = x.rope_with_tables(&cos, &sin);
     }
 
     #[test]
