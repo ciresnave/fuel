@@ -1,6 +1,6 @@
-﻿//! Helper functions for the tinystories dataset. This uses the pre-tokenized version as generated
+//! Helper functions for the tinystories dataset. This uses the pre-tokenized version as generated
 //! by the tools from https://github.com/karpathy/llama2.c
-use fuel::{Device, Result, Tensor};
+use fuel::Result;
 
 /// A pre-tokenized TinyStories dataset loaded from binary token files.
 ///
@@ -65,9 +65,8 @@ impl Dataset {
 ///
 /// ```no_run
 /// use fuel_datasets::nlp::tinystories::{Dataset, DatasetRandomIter};
-/// use fuel::Device;
 /// let ds = Dataset::new("data/tinystories")?;
-/// let iter = DatasetRandomIter::new(&ds, false, 512, Device::cpu());
+/// let iter = DatasetRandomIter::new(&ds, false, 512);
 /// # Ok::<(), fuel::Error>(())
 /// ```
 pub struct DatasetRandomIter<'a> {
@@ -76,11 +75,10 @@ pub struct DatasetRandomIter<'a> {
     current_tokens: &'a memmap2::Mmap,
     indexes_in_bytes: Vec<usize>,
     seq_len: usize,
-    device: Device,
 }
 
 impl<'a> DatasetRandomIter<'a> {
-    pub fn new(ds: &'a Dataset, valid: bool, seq_len: usize, device: Device) -> Self {
+    pub fn new(ds: &'a Dataset, valid: bool, seq_len: usize) -> Self {
         use rand::rng;
         use rand::seq::SliceRandom;
 
@@ -103,13 +101,15 @@ impl<'a> DatasetRandomIter<'a> {
             current_tokens,
             indexes_in_bytes,
             seq_len,
-            device,
         }
     }
 }
 
 impl Iterator for DatasetRandomIter<'_> {
-    type Item = Result<(Tensor, Tensor)>;
+    /// `(inputs, targets)` as host token vectors. The eager version built two
+    /// `Tensor`s on a stored `Device` purely to hand the caller numbers it
+    /// re-embeds anyway; the tokens are already `Vec<u32>` two lines earlier.
+    type Item = Result<(Vec<u32>, Vec<u32>)>;
 
     fn next(&mut self) -> Option<Self::Item> {
         use byteorder::{LittleEndian, ReadBytesExt};
@@ -136,8 +136,8 @@ impl Iterator for DatasetRandomIter<'_> {
             return Some(Err(err.into()));
         }
         let tokens = tokens.into_iter().map(|v| v as u32).collect::<Vec<_>>();
-        let inputs = Tensor::new(&tokens[..seq_len], &self.device);
-        let targets = Tensor::new(&tokens[1..], &self.device);
-        Some(fuel::error::zip(inputs, targets))
+        let inputs = tokens[..seq_len].to_vec();
+        let targets = tokens[1..].to_vec();
+        Some(Ok((inputs, targets)))
     }
 }

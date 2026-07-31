@@ -1,8 +1,8 @@
-﻿//! The MNIST hand-written digit dataset.
+//! The MNIST hand-written digit dataset.
 //!
 //! The files can be obtained from the following link:
 //! <http://yann.lecun.com/exdb/mnist/>
-use fuel::{DType, Device, Error, Result, Tensor};
+use fuel::{Error, Result};
 use hf_hub::{api::sync::Api, Repo, RepoType};
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use std::fs::File;
@@ -23,17 +23,21 @@ fn check_magic_number<T: Read>(reader: &mut T, expected: u32) -> Result<()> {
     Ok(())
 }
 
-fn read_labels(filename: &std::path::Path) -> Result<Tensor> {
+fn read_labels(filename: &std::path::Path) -> Result<Vec<u32>> {
     let mut buf_reader = BufReader::new(File::open(filename)?);
     check_magic_number(&mut buf_reader, 2049)?;
     let samples = read_u32(&mut buf_reader)?;
     let mut data = vec![0u8; samples as usize];
     buf_reader.read_exact(&mut data)?;
-    let samples = data.len();
-    Tensor::from_vec(data, samples, &Device::cpu())
+    Ok(data.into_iter().map(u32::from).collect())
 }
 
-fn read_images(filename: &std::path::Path) -> Result<Tensor> {
+/// Returns `(pixels, samples, rows, cols)`. Pixels are flattened row-major and
+/// scaled to `[0.0, 1.0]` on the host — the eager version built a `[samples,
+/// rows*cols]` u8 tensor only to `to_dtype(F32)` and divide it, which is one
+/// host pass expressed as three graph nodes. `LazyTensor` could not express it
+/// at all: it has no `from_u8`/`const_u8_like` constructor.
+fn read_images(filename: &std::path::Path) -> Result<(Vec<f32>, usize, usize, usize)> {
     let mut buf_reader = BufReader::new(File::open(filename)?);
     check_magic_number(&mut buf_reader, 2051)?;
     let samples = read_u32(&mut buf_reader)? as usize;
@@ -42,8 +46,8 @@ fn read_images(filename: &std::path::Path) -> Result<Tensor> {
     let data_len = samples * rows * cols;
     let mut data = vec![0u8; data_len];
     buf_reader.read_exact(&mut data)?;
-    let tensor = Tensor::from_vec(data, (samples, rows * cols), &Device::cpu())?;
-    tensor.to_dtype(DType::F32)? / 255.
+    let pixels = data.into_iter().map(|b| f32::from(b) / 255.0).collect();
+    Ok((pixels, samples, rows, cols))
 }
 
 /// Load the MNIST dataset from a directory containing the original IDX binary files.
@@ -57,9 +61,10 @@ fn read_images(filename: &std::path::Path) -> Result<Tensor> {
 /// ```
 pub fn load_dir<T: AsRef<std::path::Path>>(dir: T) -> Result<crate::vision::Dataset> {
     let dir = dir.as_ref();
-    let train_images = read_images(&dir.join("train-images-idx3-ubyte"))?;
+    let (train_images, train_samples, rows, cols) =
+        read_images(&dir.join("train-images-idx3-ubyte"))?;
     let train_labels = read_labels(&dir.join("train-labels-idx1-ubyte"))?;
-    let test_images = read_images(&dir.join("t10k-images-idx3-ubyte"))?;
+    let (test_images, test_samples, _, _) = read_images(&dir.join("t10k-images-idx3-ubyte"))?;
     let test_labels = read_labels(&dir.join("t10k-labels-idx1-ubyte"))?;
     Ok(crate::vision::Dataset {
         train_images,
@@ -67,10 +72,15 @@ pub fn load_dir<T: AsRef<std::path::Path>>(dir: T) -> Result<crate::vision::Data
         test_images,
         test_labels,
         labels: 10,
+        image_dims: vec![rows, cols],
+        train_samples,
+        test_samples,
     })
 }
 
-fn load_parquet(parquet: SerializedFileReader<std::fs::File>) -> Result<(Tensor, Tensor)> {
+fn load_parquet(
+    parquet: SerializedFileReader<std::fs::File>,
+) -> Result<(Vec<f32>, Vec<u32>, usize)> {
     let samples = parquet.metadata().file_metadata().num_rows() as usize;
     let mut buffer_images: Vec<u8> = Vec::with_capacity(samples * 784);
     let mut buffer_labels: Vec<u8> = Vec::with_capacity(samples);
@@ -88,11 +98,9 @@ fn load_parquet(parquet: SerializedFileReader<std::fs::File>) -> Result<(Tensor,
             }
         }
     }
-    let images = (Tensor::from_vec(buffer_images, (samples, 784), &Device::cpu())?
-        .to_dtype(DType::F32)?
-        / 255.)?;
-    let labels = Tensor::from_vec(buffer_labels, (samples,), &Device::cpu())?;
-    Ok((images, labels))
+    let images: Vec<f32> = buffer_images.into_iter().map(|b| f32::from(b) / 255.0).collect();
+    let labels: Vec<u32> = buffer_labels.into_iter().map(u32::from).collect();
+    Ok((images, labels, samples))
 }
 
 pub(crate) fn load_mnist_like(
@@ -118,14 +126,17 @@ pub(crate) fn load_mnist_like(
         .map_err(|e| Error::Msg(format!("Parquet error: {e}")))?;
     let train_parquet = SerializedFileReader::new(std::fs::File::open(train_parquet_filename)?)
         .map_err(|e| Error::Msg(format!("Parquet error: {e}")))?;
-    let (test_images, test_labels) = load_parquet(test_parquet)?;
-    let (train_images, train_labels) = load_parquet(train_parquet)?;
+    let (test_images, test_labels, test_samples) = load_parquet(test_parquet)?;
+    let (train_images, train_labels, train_samples) = load_parquet(train_parquet)?;
     Ok(crate::vision::Dataset {
         train_images,
         train_labels,
         test_images,
         test_labels,
         labels: 10,
+        image_dims: vec![28, 28],
+        train_samples,
+        test_samples,
     })
 }
 
@@ -136,7 +147,7 @@ pub(crate) fn load_mnist_like(
 /// ```no_run
 /// use fuel_datasets::vision::mnist;
 /// let dataset = mnist::load()?;
-/// println!("train images: {:?}", dataset.train_images.dims());
+/// println!("train samples: {}, dims: {:?}", dataset.train_samples, dataset.image_dims);
 /// # Ok::<(), fuel::Error>(())
 /// ```
 pub fn load() -> Result<crate::vision::Dataset> {

@@ -1,4 +1,4 @@
-﻿//! Zalando Fashion MNIST dataset.
+//! Zalando Fashion MNIST dataset.
 //! A slightly more difficult dataset that is drop-in compatible with MNIST.
 //!
 //! Taken from here: https://huggingface.co/datasets/zalando-datasets/fashion_mnist
@@ -11,7 +11,7 @@ use fuel::Result;
 /// ```no_run
 /// use fuel_datasets::vision::fashion_mnist;
 /// let dataset = fashion_mnist::load()?;
-/// println!("train images: {:?}", dataset.train_images.dims());
+/// println!("train samples: {}, dims: {:?}", dataset.train_samples, dataset.image_dims);
 /// # Ok::<(), fuel::Error>(())
 /// ```
 pub fn load() -> Result<crate::vision::Dataset> {
