@@ -30,22 +30,15 @@
     # allocator (AllocatorOptions { buffer_device_address } / new_with_options)
     # required for the FDX Vulkan BDA path (spec §3.3.1): pooled-buffer device
     # addresses were invalid on strict drivers before 0.8.2.
-    # TEMPORARY path dep (2026-07-31) — vulkane 0.9.0 is cut and tagged
-    # (`v0.9.0`, commit `7dd0dcf`) but NOT yet published; crates.io is still
-    # at 0.8.3. A `[patch.crates-io]` entry does NOT work here: a patch must
-    # satisfy the existing requirement, and `^0.8.2` excludes 0.9.0, so cargo
-    # reports "patch was not used in the crate graph" and silently resolves
-    # 0.8.3. Hence the direct path dep.
-    #
-    # 0.9.0 brings `driver_properties()` (portable driver identity — closes
-    # the probe.rs vendor-decoder TODO), `subgroup_properties()` (subgroup/wave
-    # width, the primary Vulkan kernel-specialization axis),
+    # 0.9.0 (2026-07-31) brings `driver_properties()` (portable driver identity
+    # — RADV vs AMDVLK are distinct ICDs on the same silicon and do not make the
+    # same codegen choices, which the raw vendor-packed `driver_version` u32
+    # cannot express), `subgroup_properties()` (subgroup/wave width — 64 on the
+    # AMD iGPU here, 32 on the 4070 — the primary kernel-specialization axis),
     # `effective_api_version()`, and `cooperative_matrix_properties()` losing
-    # its `unsafe` qualifier.
-    #
-    # FLIP TO `vulkane = "0.9.0"` the moment it lands on crates.io. Verifying
-    # against the tag now is what makes that a one-line change.
-    vulkane                = { path = "../../vulkane/vulkane" }
+    # its `unsafe` qualifier. Note `SubgroupProperties::size_control` needs an
+    # instance at V1_3; ours are V1_2, so it reads `None` regardless of device.
+    vulkane                = "0.9.0"
 
 [dev-dependencies]
     fuel-conv      = { workspace = true }
