@@ -126,6 +126,35 @@ nowhere; now captured so they are not forgotten):
   stays a typed error, not a live silent read); multi-carry, an `emit=All` early-exit valid-count
   buffer, and equilibrium/implicit-diff gradients remain deferred. See
   [10-decisions-log 2026-07-16](docs/architecture/10-decisions-log.md).
+- **Reconstructive ("after-image") memory — DESIGNED (2026-07-30), SCHEDULED, not started.**
+  A stateful memory in which a stored item is a **residual against the model's own prediction**
+  (`r = x − p(cue; θ)`), reconstructed rather than replayed — so the same cue reconstructs
+  *differently* as the weights drift. Full design:
+  [`docs/superpowers/specs/2026-07-30-reconstructive-memory-design.md`](docs/superpowers/specs/2026-07-30-reconstructive-memory-design.md).
+  **This is composition, not new substrate** — `hopfield_retrieve`, `Op::Scan`, `lazy_nn::lora`,
+  `KvBlockPool` (`Fidelity`/`Externalized`/`restore`/`block_refcount`) and
+  `Encoding::AffineBlock` are all already on main; the one genuine gap is that
+  `hopfield_retrieve` takes `patterns` as a frozen **const** — there is no write/evict path.
+  Classification: buckets **A** (residual path, generic-pool extraction) + **B** (precision-ladder
+  rungs) + **F** (consolidation/migration scheduling = consumer policy, per §15) —
+  **no bucket-E work; the primitive basis is untouched.** Load-bearing decisions: residual
+  coupling adopted, query-side addressing deferred-but-hooked; **never fully evict** — precision
+  decay with a floor set by the drift-*detection* requirement; a θ-stamp is a **LoRA adapter
+  delta, not the weights** (which makes the frozen base a hard requirement, since full
+  fine-tuning would make every checkpoint a whole model copy); migration is a copying collector
+  (always-to-current-checkpoint, oldest-first, refcount-before-free, crash-safe via per-memory
+  stamps); **staleness is free** (stamped reconstruction is exact at any age) so back-pressure
+  belongs on live-checkpoint count, not staleness; `Δ‖r‖` falls out of migration as a per-memory
+  measurement of catastrophic forgetting; shape is data (`MemoryGeometry` + a replaceable
+  `MemoryPolicy` trait, mirroring the `KvGeometry` precedent), **not** a type parameter.
+  **Sequenced after** B0.3 + B0.5 (`fuel-core` retirement — the generic block-pool core must not
+  land in a retiring crate), **after** multi-session inference, and **after** the RNG/generator-seam
+  decisions. Increment 1 is the round-trip born-red gate (reconstruct via the *stamped* adapter
+  succeeds; via the *current* adapter fails — the overshoot bug as a test), CPU-only, no training
+  loop. **Open:** the precision-ladder rungs are unsurveyed (`Encoding::AffineBlock` is
+  parameterized by `packed: DType` but `DType::F4` is the only sub-byte code named in its docs —
+  if that is the whole ladder, "graceful degradation" is three steps, not a curve, and adding
+  rungs is bucket-B work); the `fuel-training` inference-time-update path is unverified.
 - **Recipe-grammar convergence — Increment A SHIPPED (2026-07-16); shape-oracle SHIPPED as
   Convergence-C (2026-07-20/21); remaining Increment C narrowed to the recipe interior.**
   Increment A realized the pinned Fuel↔Baracuda recipe grammar's canonical form as machinery:
@@ -769,8 +798,19 @@ that cudarc didn't, pitched for later roadmap consideration.
       `ExternalMemory::import` (baracuda) + `DeviceMemory::get_win32_handle`
       (vulkane). Was estimated ~2-3 days before baracuda existed;
       now closer to ~1-2 days since both sides expose the primitives.
-      Gates on someone running a real multi-device model and finding
-      the PCIe round-trip is the bottleneck.
+      Vulkane also exports **semaphore** handles
+      (`Semaphore::get_win32_handle`/`get_fd`), so cross-API *sync* is
+      available too — not only memory sharing.
+      **Do not read the gate as merely unmet — on this hardware it is
+      UNMEASURABLE (2026-07-31).** The stated gate ("someone runs a real
+      multi-device model and finds the PCIe round-trip is the bottleneck")
+      cannot become true on the dev rig: it is an RTX 4070 + AMD **iGPU**,
+      and an iGPU's memory *is* system memory, so host staging is already
+      near-optimal and eliminating it would buy close to nothing. The
+      payoff is **dGPU↔dGPU**, and there is no dGPU pair on the machine to
+      measure it on. Stays backlogged until such hardware exists — this is
+      "not yet tried", not "tried and not worth it". (Analysis from the
+      Vulkane session; re-derived and confirmed Fuel-side.)
 - [ ] **Launch attributes** — cluster dims, programmatic stream
       serialization, priority ([`baracuda-driver/src/launch_attr.rs`]).
       Opportunistic tuning for specific kernels; measure before
@@ -1783,12 +1823,16 @@ Path from bridge to destination (each phase ~1 session, in dependency order):
 
 ### Phase 8 — FlashAttention tiered implementation
 
-*Affects only the Backends/Kernels layer. Gated on two external
-prerequisites landing first: the new Vulkane release (adds
-external-memory / handle-export primitives among other things) and
-Baracuda (Fuel-owned CUDA FFI crate replacing cudarc, exposing
-functionality cudarc omits). Neither is ready as of this entry;
-do not start Phase 8 work until both are integrated into Fuel.*
+*Affects only the Backends/Kernels layer. Was gated on two external
+prerequisites: the new Vulkane release (adds external-memory /
+handle-export primitives among other things) and Baracuda (Fuel-owned
+CUDA FFI crate replacing cudarc, exposing functionality cudarc omits).*
+**Both prerequisites are MET as of 2026-07-31 — this gate is no longer a
+blocker.** Vulkane 0.8.0 shipped `DeviceMemory::get_win32_handle`/`get_fd`
+plus `Semaphore::get_win32_handle`/`get_fd`, and the workspace pins **0.8.2**;
+Baracuda is at **alpha.77** and integrated. Phase 8 is now gated only on
+sequencing against the active frontier, not on external work. (Stale-gate
+correction reported by the Vulkane session, re-verified against the tree.)
 
 #### Why Phase 8 exists
 
