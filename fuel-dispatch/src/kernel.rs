@@ -1500,18 +1500,32 @@ impl KernelBindingTable {
         (available_backends, supported_combinations)
     }
 
-    /// Is there ANY backend with a usable (non-broadcast-baked) binding for the
-    /// per-operand key `(op, dtypes)`? The dtype-reconciliation pass
-    /// (`optimize::insert_dtype_fixups`) uses this to decide whether a node's
-    /// per-operand key is natively servable by some compiled-in backend, or needs
-    /// a promoting `Op::Cast` to reach a supported combo. Mirrors
-    /// [`lookup_with_caps`](Self::lookup_with_caps)'s usability filter: a key with
-    /// only broadcast-baked siblings is not a usable native binding.
-    pub fn any_backend_supports(&self, op: impl Into<BindingKey>, dtypes: &[DType]) -> bool {
-        let op = op.into();
-        self.bindings.iter().any(|((k, d, _), alts)| {
-            *k == op && d.as_slice() == dtypes && alts.iter().any(|e| !e.caps.requires_broadcast)
-        })
+    /// Does **this specific backend** serve `(op, dtypes)` with a usable
+    /// (non-broadcast-baked) binding?
+    ///
+    /// Mirrors [`lookup_with_caps`](Self::lookup_with_caps)'s success condition
+    /// exactly — same key, same `!requires_broadcast` admission — but skips
+    /// constructing the miss diagnostic, so it is cheap enough to call in a
+    /// per-node loop (`coverage_diagnostic` walks the entire table).
+    ///
+    /// Ask this once per *candidate* backend. There is deliberately no
+    /// "does any backend anywhere serve it?" sibling: a predicate that ignores
+    /// the key's backend component cannot answer a dispatch question, because a
+    /// node executes on one backend rather than on the union of them. Such a
+    /// sibling did exist (`any_backend_supports`) and it caused a real defect —
+    /// the dtype-reconciliation pass consulted it, so a backend a node could
+    /// never run on suppressed the `Op::Cast` that node needed and planning
+    /// dead-ended at `NoBackendForOp`. See [`crate::plan::candidate_backends_for`].
+    pub fn backend_supports(
+        &self,
+        op: impl Into<BindingKey>,
+        dtypes: &[DType],
+        backend: BackendId,
+    ) -> bool {
+        let key = (op.into(), SmallVec::from_slice(dtypes), backend);
+        self.bindings
+            .get(&key)
+            .is_some_and(|alts| alts.iter().any(|e| !e.caps.requires_broadcast))
     }
 
     /// Phase 7.6 step 9a: return the full set of registered
