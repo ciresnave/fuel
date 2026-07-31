@@ -173,7 +173,7 @@ impl Qwen2MoeModel {
             self.weights.lm_head.clone(),
             Shape::from_dims(&[cfg.hidden_size, cfg.vocab_size]),
         );
-        Ok(h_norm.matmul(&lm).unwrap())
+        Ok(h_norm.matmul(&lm)?)
     }
 
     /// Shared backbone: embed → per-layer attn+MoE → final
@@ -192,8 +192,8 @@ impl Qwen2MoeModel {
         );
         let input_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         let x = embed
-            .index_select(0, &input_ids).unwrap()
-            .reshape(Shape::from_dims(&[1, seq, h])).unwrap();
+            .index_select(0, &input_ids)?
+            .reshape(Shape::from_dims(&[1, seq, h]))?;
         self.run_backbone_embeds(&x)
     }
 
@@ -216,49 +216,49 @@ impl Qwen2MoeModel {
         }
         let mut x = embeds.clone();
         for lw in &self.weights.layers {
-            x = decoder_layer(&x, lw, cfg, seq);
+            x = decoder_layer(&x, lw, cfg, seq)?;
         }
-        Ok(rms_norm_affine(&x, &self.weights.final_ln, cfg.rms_norm_eps, h, seq))
+        Ok(rms_norm_affine(&x, &self.weights.final_ln, cfg.rms_norm_eps, h, seq)?)
     }
 }
 
-fn decoder_layer(x: &LazyTensor, lw: &Qwen2MoeLayerWeights, cfg: &Qwen2MoeConfig, seq: usize) -> LazyTensor {
+fn decoder_layer(x: &LazyTensor, lw: &Qwen2MoeLayerWeights, cfg: &Qwen2MoeConfig, seq: usize) -> crate::Result<LazyTensor> {
     let h = cfg.hidden_size;
     // Attention sublayer
-    let x_ln = rms_norm_affine(x, &lw.input_ln, cfg.rms_norm_eps, h, seq);
-    let attn = qwen2_attn(&x_ln, lw, cfg, seq);
-    let x = x.add(&attn).unwrap();
+    let x_ln = rms_norm_affine(x, &lw.input_ln, cfg.rms_norm_eps, h, seq)?;
+    let attn = qwen2_attn(&x_ln, lw, cfg, seq)?;
+    let x = x.add(&attn)?;
 
     // MoE sublayer
-    let x_ln = rms_norm_affine(&x, &lw.post_attn_ln, cfg.rms_norm_eps, h, seq);
-    let moe = moe_block(&x_ln, lw, cfg, seq);
-    x.add(&moe).unwrap()
+    let x_ln = rms_norm_affine(&x, &lw.post_attn_ln, cfg.rms_norm_eps, h, seq)?;
+    let moe = moe_block(&x_ln, lw, cfg, seq)?;
+    x.add(&moe)
 }
 
-fn qwen2_attn(x: &LazyTensor, lw: &Qwen2MoeLayerWeights, cfg: &Qwen2MoeConfig, seq: usize) -> LazyTensor {
+fn qwen2_attn(x: &LazyTensor, lw: &Qwen2MoeLayerWeights, cfg: &Qwen2MoeConfig, seq: usize) -> crate::Result<LazyTensor> {
     let h = cfg.hidden_size;
     let n_heads = cfg.num_attention_heads;
     let d_head = cfg.head_dim();
     let n_kv = cfg.num_key_value_heads;
 
-    let q = linear(x, &lw.q_w, Some(&lw.q_b), h, h, seq);
-    let k = linear(x, &lw.k_w, Some(&lw.k_b), h, n_kv * d_head, seq);
-    let v = linear(x, &lw.v_w, Some(&lw.v_b), h, n_kv * d_head, seq);
+    let q = linear(x, &lw.q_w, Some(&lw.q_b), h, h, seq)?;
+    let k = linear(x, &lw.k_w, Some(&lw.k_b), h, n_kv * d_head, seq)?;
+    let v = linear(x, &lw.v_w, Some(&lw.v_b), h, n_kv * d_head, seq)?;
 
-    let q = q.split_heads(n_heads, d_head).unwrap();
+    let q = q.split_heads(n_heads, d_head)?;
     // For Qwen1.5-MoE num_kv_heads == num_attention_heads, so no GQA
     // replication needed; but keep the path general.
-    let k = k.split_heads(n_kv, d_head).unwrap();
-    let v = v.split_heads(n_kv, d_head).unwrap();
+    let k = k.split_heads(n_kv, d_head)?;
+    let v = v.split_heads(n_kv, d_head)?;
 
     // RoPE.
     let (cos, sin) = rope_tables(cfg.rope_theta, seq, d_head);
-    let q = apply_rope(&q, &cos, &sin, seq, d_head);
-    let k = apply_rope(&k, &cos, &sin, seq, d_head);
+    let q = apply_rope(&q, &cos, &sin, seq, d_head)?;
+    let k = apply_rope(&k, &cos, &sin, seq, d_head)?;
 
-    let k_t = k.permute([0, 1, 3, 2_usize]).unwrap();
+    let k_t = k.permute([0, 1, 3, 2_usize])?;
     let scale = 1.0_f64 / (d_head as f64).sqrt();
-    let mut scores = q.matmul(&k_t).unwrap().mul_scalar(scale);
+    let mut scores = q.matmul(&k_t)?.mul_scalar(scale);
     // causal mask
     let mut mask = vec![0.0_f32; seq * seq];
     for i in 0..seq {
@@ -268,13 +268,13 @@ fn qwen2_attn(x: &LazyTensor, lw: &Qwen2MoeLayerWeights, cfg: &Qwen2MoeConfig, s
     }
     let mask_t = scores
         .const_f32_like(mask, Shape::from_dims(&[seq, seq]))
-        .reshape(Shape::from_dims(&[1, 1, seq, seq])).unwrap()
-        .broadcast_to(Shape::from_dims(&[1, n_heads, seq, seq])).unwrap();
-    scores = scores.add(&mask_t).unwrap();
-    let probs = scores.softmax_last_dim().unwrap();
+        .reshape(Shape::from_dims(&[1, 1, seq, seq]))?
+        .broadcast_to(Shape::from_dims(&[1, n_heads, seq, seq]))?;
+    scores = scores.add(&mask_t)?;
+    let probs = scores.softmax_last_dim()?;
     let ctx = probs
-        .matmul(&v).unwrap()
-        .merge_heads().unwrap();
+        .matmul(&v)?
+        .merge_heads()?;
     linear(&ctx, &lw.o_w, None, h, h, seq)
 }
 
@@ -286,28 +286,28 @@ fn moe_block(
     lw: &Qwen2MoeLayerWeights,
     cfg: &Qwen2MoeConfig,
     seq: usize,
-) -> LazyTensor {
+) -> crate::Result<LazyTensor> {
     let h = cfg.hidden_size;
     let e = cfg.num_experts;
 
     // Router: [1, seq, h] → gate.matmul → [1, seq, E].
     let gate = x.const_f32_like(lw.gate_w.clone(), Shape::from_dims(&[h, e]));
-    let router_logits = x.matmul(&gate).unwrap();
-    let router_weights = router_logits.softmax_last_dim().unwrap();  // [1, seq, E]
+    let router_logits = x.matmul(&gate)?;
+    let router_weights = router_logits.softmax_last_dim()?;  // [1, seq, E]
 
     // Each expert's SwiGLU output, weighted by its per-token gate weight.
     // Accumulate into `routed_sum` : [1, seq, h].
     let moe_int = cfg.moe_intermediate_size;
     let mut routed_sum: Option<LazyTensor> = None;
     for (ei, ew) in lw.experts.iter().enumerate() {
-        let expert_out = swiglu_mlp(x, &ew.gate_w, &ew.up_w, &ew.down_w, h, moe_int, seq);
+        let expert_out = swiglu_mlp(x, &ew.gate_w, &ew.up_w, &ew.down_w, h, moe_int, seq)?;
         // Slice router_weights to get the column for this expert: [1, seq, 1].
         let w_col = router_weights
-            .slice(2, ei, 1).unwrap();  // [1, seq, 1]
-        let w_bc = w_col.broadcast_to(Shape::from_dims(&[1, seq, h])).unwrap();
-        let gated = expert_out.mul(&w_bc).unwrap();
+            .slice(2, ei, 1)?;  // [1, seq, 1]
+        let w_bc = w_col.broadcast_to(Shape::from_dims(&[1, seq, h]))?;
+        let gated = expert_out.mul(&w_bc)?;
         routed_sum = Some(match routed_sum {
-            Some(s) => s.add(&gated).unwrap(),
+            Some(s) => s.add(&gated)?,
             None => gated,
         });
     }
@@ -315,14 +315,14 @@ fn moe_block(
 
     // Shared expert (always active, sigmoid-gated by a scalar per token).
     let shared_int = cfg.shared_expert_intermediate_size;
-    let shared_out = swiglu_mlp(x, &lw.shared_gate_w, &lw.shared_up_w, &lw.shared_down_w, h, shared_int, seq);
+    let shared_out = swiglu_mlp(x, &lw.shared_gate_w, &lw.shared_up_w, &lw.shared_down_w, h, shared_int, seq)?;
     // Shared expert gate: Linear(h → 1), then sigmoid.
     let sg_w = x.const_f32_like(lw.shared_expert_gate_w.clone(), Shape::from_dims(&[h, 1]));
-    let sg = x.matmul(&sg_w).unwrap().sigmoid();  // [1, seq, 1]
-    let sg_bc = sg.broadcast_to(Shape::from_dims(&[1, seq, h])).unwrap();
-    let shared_gated = shared_out.mul(&sg_bc).unwrap();
+    let sg = x.matmul(&sg_w)?.sigmoid();  // [1, seq, 1]
+    let sg_bc = sg.broadcast_to(Shape::from_dims(&[1, seq, h]))?;
+    let shared_gated = shared_out.mul(&sg_bc)?;
 
-    routed.add(&shared_gated).unwrap()
+    routed.add(&shared_gated)
 }
 
 fn swiglu_mlp(
@@ -333,27 +333,27 @@ fn swiglu_mlp(
     h: usize,
     h_ff: usize,
     seq: usize,
-) -> LazyTensor {
-    let g = linear(x, gate_w, None, h, h_ff, seq).silu();
-    let u = linear(x, up_w, None, h, h_ff, seq);
-    let gated = g.mul(&u).unwrap();
+) -> crate::Result<LazyTensor> {
+    let g = linear(x, gate_w, None, h, h_ff, seq)?.silu();
+    let u = linear(x, up_w, None, h, h_ff, seq)?;
+    let gated = g.mul(&u)?;
     linear(&gated, down_w, None, h_ff, h, seq)
 }
 
-fn rms_norm_affine(x: &LazyTensor, gamma: &Arc<[f32]>, eps: f64, hidden: usize, seq: usize) -> LazyTensor {
+fn rms_norm_affine(x: &LazyTensor, gamma: &Arc<[f32]>, eps: f64, hidden: usize, seq: usize) -> crate::Result<LazyTensor> {
     // RMS norm: x * rsqrt(mean(x^2) + eps) * gamma
-    let sq = x.mul(x).unwrap();
-    let ms = sq.mean_dim(2).unwrap();  // [1, seq]
+    let sq = x.mul(x)?;
+    let ms = sq.mean_dim(2)?;  // [1, seq]
     let rstd = ms.add_scalar(eps).sqrt();
     let rstd_bc = rstd
-        .reshape(Shape::from_dims(&[1, seq, 1])).unwrap()
-        .broadcast_to(Shape::from_dims(&[1, seq, hidden])).unwrap();
-    let normed = x.div(&rstd_bc).unwrap();
+        .reshape(Shape::from_dims(&[1, seq, 1]))?
+        .broadcast_to(Shape::from_dims(&[1, seq, hidden]))?;
+    let normed = x.div(&rstd_bc)?;
     let g = x
         .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))
-        .reshape(Shape::from_dims(&[1, 1, hidden])).unwrap()
-        .broadcast_to(Shape::from_dims(&[1, seq, hidden])).unwrap();
-    normed.mul(&g).unwrap()
+        .reshape(Shape::from_dims(&[1, 1, hidden]))?
+        .broadcast_to(Shape::from_dims(&[1, seq, hidden]))?;
+    normed.mul(&g)
 }
 
 fn rope_tables(theta: f64, seq: usize, d_head: usize) -> (Vec<f32>, Vec<f32>) {
@@ -379,25 +379,25 @@ fn apply_rope(
     sin: &[f32],
     seq: usize,
     d_head: usize,
-) -> LazyTensor {
+) -> crate::Result<LazyTensor> {
     let x_shape = x.shape();
     let x_dims = x_shape.dims();
     let n_heads = x_dims[1];
     let cos_t = x
         .const_f32_like(cos.to_vec(), Shape::from_dims(&[seq, d_head]))
-        .reshape(Shape::from_dims(&[1, 1, seq, d_head])).unwrap()
-        .broadcast_to(Shape::from_dims(&[1, n_heads, seq, d_head])).unwrap();
+        .reshape(Shape::from_dims(&[1, 1, seq, d_head]))?
+        .broadcast_to(Shape::from_dims(&[1, n_heads, seq, d_head]))?;
     let sin_t = x
         .const_f32_like(sin.to_vec(), Shape::from_dims(&[seq, d_head]))
-        .reshape(Shape::from_dims(&[1, 1, seq, d_head])).unwrap()
-        .broadcast_to(Shape::from_dims(&[1, n_heads, seq, d_head])).unwrap();
+        .reshape(Shape::from_dims(&[1, 1, seq, d_head]))?
+        .broadcast_to(Shape::from_dims(&[1, n_heads, seq, d_head]))?;
     let half = d_head / 2;
-    let x1 = x.slice(3, 0, half).unwrap();
-    let x2 = x.slice(3, half, half).unwrap();
+    let x1 = x.slice(3, 0, half)?;
+    let x2 = x.slice(3, half, half)?;
     // rotate_half: concat(-x2, x1) along dim 3.
     let neg_x2 = x2.neg();
-    let rotated = neg_x2.concat(&x1, 3).unwrap();
-    x.mul(&cos_t).unwrap().add(&rotated.mul(&sin_t).unwrap()).unwrap()
+    let rotated = neg_x2.concat(&x1, 3)?;
+    x.mul(&cos_t)?.add(&rotated.mul(&sin_t)?)
 }
 
 fn linear(
@@ -407,18 +407,18 @@ fn linear(
     in_f: usize,
     out_f: usize,
     seq: usize,
-) -> LazyTensor {
+) -> crate::Result<LazyTensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]));
-    let proj = x.matmul(&w_t).unwrap();
+    let proj = x.matmul(&w_t)?;
     match b {
         Some(b) => {
             let bias = x
                 .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))
-                .reshape(Shape::from_dims(&[1, 1, out_f])).unwrap()
-                .broadcast_to(Shape::from_dims(&[1, seq, out_f])).unwrap();
-            proj.add(&bias).unwrap()
+                .reshape(Shape::from_dims(&[1, 1, out_f]))?
+                .broadcast_to(Shape::from_dims(&[1, seq, out_f]))?;
+            proj.add(&bias)
         }
-        None => proj,
+        None => Ok(proj),
     }
 }
 

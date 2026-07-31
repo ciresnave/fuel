@@ -343,7 +343,7 @@ impl QuantizedWhisperModel {
             &self.weights.encoder.conv1_w,
             &self.weights.encoder.conv1_b,
             n_mel, d, mel_time,
-        ).gelu();
+        )?.gelu();
         if !mel_time.is_multiple_of(2) {
             return Err(crate::Error::Msg(
                 "forward_encoder: mel_time must be even for stride-2 conv".into(),
@@ -355,7 +355,7 @@ impl QuantizedWhisperModel {
             &self.weights.encoder.conv2_w,
             &self.weights.encoder.conv2_b,
             d, d, mel_time,
-        ).gelu();
+        )?.gelu();
 
         let x = x.permute([0, 2, 1_usize])?;
         let pos = x

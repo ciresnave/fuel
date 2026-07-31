@@ -280,19 +280,19 @@ pub struct PaellaUpLevelWeights {
 
 /// `(1, C, H, W)` LayerNorm over the channel axis with no affine.
 /// Matches eager `WLayerNorm`: permute NHWC, LN(last dim), permute back.
-fn w_layer_norm(x: &LazyTensor, c: usize, h: usize, w: usize, eps: f64) -> LazyTensor {
-    let x_nhwc = x.permute([0, 2, 3, 1_usize]).unwrap();
-    let x_flat = x_nhwc.reshape(Shape::from_dims(&[1, h * w, c])).unwrap();
-    let normed = x_flat.layer_norm_last_dim(eps).unwrap();
+fn w_layer_norm(x: &LazyTensor, c: usize, h: usize, w: usize, eps: f64) -> crate::Result<LazyTensor> {
+    let x_nhwc = x.permute([0, 2, 3, 1_usize])?;
+    let x_flat = x_nhwc.reshape(Shape::from_dims(&[1, h * w, c]))?;
+    let normed = x_flat.layer_norm_last_dim(eps)?;
     normed
-        .reshape(Shape::from_dims(&[1, h, w, c])).unwrap()
-        .permute([0, 3, 1, 2_usize]).unwrap()
+        .reshape(Shape::from_dims(&[1, h, w, c]))?
+        .permute([0, 3, 1, 2_usize])
 }
 
 /// Same shape contract as `w_layer_norm` but operates on a `[1, seq, C]`
 /// tensor directly (i.e. already channels-last and flattened).
-fn ln_last_no_affine(x: &LazyTensor, eps: f64) -> LazyTensor {
-    x.layer_norm_last_dim(eps).unwrap()
+fn ln_last_no_affine(x: &LazyTensor, eps: f64) -> crate::Result<LazyTensor> {
+    x.layer_norm_last_dim(eps)
 }
 
 /// `y = x @ W + b`. `x` shape `[B, seq, in_f]`, W stored
@@ -305,18 +305,18 @@ fn linear(
     out_f: usize,
     batch: usize,
     seq: usize,
-) -> LazyTensor {
+) -> crate::Result<LazyTensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]));
-    let proj = x.matmul(&w_t).unwrap();
+    let proj = x.matmul(&w_t)?;
     match b {
         Some(b) => {
             let bias = x
                 .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))
-                .reshape(Shape::from_dims(&[1, 1, out_f])).unwrap()
-                .broadcast_to(Shape::from_dims(&[batch, seq, out_f])).unwrap();
-            proj.add(&bias).unwrap()
+                .reshape(Shape::from_dims(&[1, 1, out_f]))?
+                .broadcast_to(Shape::from_dims(&[batch, seq, out_f]))?;
+            proj.add(&bias)
         }
-        None => proj,
+        None => Ok(proj),
     }
 }
 
@@ -337,29 +337,29 @@ pub fn global_response_norm(
     c: usize,
     h: usize,
     w: usize,
-) -> LazyTensor {
+) -> crate::Result<LazyTensor> {
     // sum over (h, w) per channel.
-    let sq = x.mul(x).unwrap();  // [1, C, H, W]
+    let sq = x.mul(x)?;  // [1, C, H, W]
     let agg = sq.reduce_sum_to(Shape::from_dims(&[1, c, 1, 1])).sqrt();  // [1, C, 1, 1]
     // mean over channels via reduce_sum + scalar mul.
     let agg_sum = agg.reduce_sum_to(Shape::from_dims(&[1, 1, 1, 1]));
     let mean_c = agg_sum.mul_scalar(1.0_f64 / c as f64);  // [1, 1, 1, 1]
     let denom = mean_c
         .add_scalar(1e-6_f64)
-        .broadcast_to(Shape::from_dims(&[1, c, 1, 1])).unwrap();
-    let stand = agg.div(&denom).unwrap();  // [1, C, 1, 1]
-    let stand_b = stand.broadcast_to(Shape::from_dims(&[1, c, h, w])).unwrap();
+        .broadcast_to(Shape::from_dims(&[1, c, 1, 1]))?;
+    let stand = agg.div(&denom)?;  // [1, C, 1, 1]
+    let stand_b = stand.broadcast_to(Shape::from_dims(&[1, c, h, w]))?;
     let g = x
         .const_f32_like(gamma.clone(), Shape::from_dims(&[c]))
-        .reshape(Shape::from_dims(&[1, c, 1, 1])).unwrap()
-        .broadcast_to(Shape::from_dims(&[1, c, h, w])).unwrap();
+        .reshape(Shape::from_dims(&[1, c, 1, 1]))?
+        .broadcast_to(Shape::from_dims(&[1, c, h, w]))?;
     let b = x
         .const_f32_like(beta.clone(), Shape::from_dims(&[c]))
-        .reshape(Shape::from_dims(&[1, c, 1, 1])).unwrap()
-        .broadcast_to(Shape::from_dims(&[1, c, h, w])).unwrap();
-    let scaled = x.mul(&stand_b).unwrap().mul(&g).unwrap();
-    let with_beta = scaled.add(&b).unwrap();
-    with_beta.add(x).unwrap()
+        .reshape(Shape::from_dims(&[1, c, 1, 1]))?
+        .broadcast_to(Shape::from_dims(&[1, c, h, w]))?;
+    let scaled = x.mul(&stand_b)?.mul(&g)?;
+    let with_beta = scaled.add(&b)?;
+    with_beta.add(x)
 }
 
 /// Apply the ResBlock used by `PriorModel`: depthwise conv → WLN →
@@ -372,13 +372,13 @@ fn apply_res_block(
     h: usize,
     w: usize,
     eps: f64,
-) -> LazyTensor {
+) -> crate::Result<LazyTensor> {
     let c = rw.c;
     let c_skip = rw.c_skip;
     let k = rw.ksize;
     let residual = x.clone();
     let xs = match skip {
-        Some(s) => x.concat(s, 1_usize).unwrap(),
+        Some(s) => x.concat(s, 1_usize)?,
         None => x.clone(),
     };
     // depthwise conv: groups = c, in/out channels c+c_skip -> c.
@@ -391,25 +391,25 @@ fn apply_res_block(
     let _ = c_skip;
     let dw_w = x.const_f32_like(rw.dw_w.clone(), Shape::from_dims(&[c, 1, k, k]));
     let dw_b = x.const_f32_like(rw.dw_b.clone(), Shape::from_dims(&[c]));
-    let conv = xs.conv2d(&dw_w, Some(&dw_b), (1, 1), (k / 2, k / 2), c).unwrap();
-    let norm = w_layer_norm(&conv, c, h, w, eps);
+    let conv = xs.conv2d(&dw_w, Some(&dw_b), (1, 1), (k / 2, k / 2), c)?;
+    let norm = w_layer_norm(&conv, c, h, w, eps)?;
     // Channelwise MLP. Permute to NHWC for the linears.
-    let nhwc = norm.permute([0, 2, 3, 1_usize]).unwrap();  // [1, H, W, C]
-    let flat = nhwc.reshape(Shape::from_dims(&[1, h * w, c])).unwrap();
-    let fc1 = linear(&flat, &rw.fc1_w, Some(&rw.fc1_b), c, 4 * c, 1, h * w).gelu();
+    let nhwc = norm.permute([0, 2, 3, 1_usize])?;  // [1, H, W, C]
+    let flat = nhwc.reshape(Shape::from_dims(&[1, h * w, c]))?;
+    let fc1 = linear(&flat, &rw.fc1_w, Some(&rw.fc1_b), c, 4 * c, 1, h * w)?.gelu();
     // GRN expects [1, C, H, W]; bridge: reshape fc1 to that.
     let fc1_chw = fc1
-        .reshape(Shape::from_dims(&[1, h, w, 4 * c])).unwrap()
-        .permute([0, 3, 1, 2_usize]).unwrap();
-    let grn = global_response_norm(&fc1_chw, &rw.grn.gamma, &rw.grn.beta, 4 * c, h, w);
+        .reshape(Shape::from_dims(&[1, h, w, 4 * c]))?
+        .permute([0, 3, 1, 2_usize])?;
+    let grn = global_response_norm(&fc1_chw, &rw.grn.gamma, &rw.grn.beta, 4 * c, h, w)?;
     // Back to channels-last for fc2.
-    let grn_nhwc = grn.permute([0, 2, 3, 1_usize]).unwrap();
-    let grn_flat = grn_nhwc.reshape(Shape::from_dims(&[1, h * w, 4 * c])).unwrap();
-    let fc2 = linear(&grn_flat, &rw.fc2_w, Some(&rw.fc2_b), 4 * c, c, 1, h * w);
+    let grn_nhwc = grn.permute([0, 2, 3, 1_usize])?;
+    let grn_flat = grn_nhwc.reshape(Shape::from_dims(&[1, h * w, 4 * c]))?;
+    let fc2 = linear(&grn_flat, &rw.fc2_w, Some(&rw.fc2_b), 4 * c, c, 1, h * w)?;
     let out_chw = fc2
-        .reshape(Shape::from_dims(&[1, h, w, c])).unwrap()
-        .permute([0, 3, 1, 2_usize]).unwrap();
-    residual.add(&out_chw).unwrap()
+        .reshape(Shape::from_dims(&[1, h, w, c]))?
+        .permute([0, 3, 1, 2_usize])?;
+    residual.add(&out_chw)
 }
 
 /// DiffNeXt-style ResBlockStageB. Difference vs `apply_res_block`:
@@ -422,35 +422,35 @@ fn apply_res_block_stage_b(
     h: usize,
     w: usize,
     eps: f64,
-) -> LazyTensor {
+) -> crate::Result<LazyTensor> {
     let c = rw.c;
     let c_skip = rw.c_skip;
     let k = rw.ksize;
     let residual = x.clone();
     let dw_w = x.const_f32_like(rw.dw_w.clone(), Shape::from_dims(&[c, 1, k, k]));
     let dw_b = x.const_f32_like(rw.dw_b.clone(), Shape::from_dims(&[c]));
-    let conv = x.conv2d(&dw_w, Some(&dw_b), (1, 1), (k / 2, k / 2), c).unwrap();
-    let norm = w_layer_norm(&conv, c, h, w, eps);
+    let conv = x.conv2d(&dw_w, Some(&dw_b), (1, 1), (k / 2, k / 2), c)?;
+    let norm = w_layer_norm(&conv, c, h, w, eps)?;
     // Concat skip channels after norm.
     let merged = match skip {
-        Some(s) => norm.concat(s, 1_usize).unwrap(),
+        Some(s) => norm.concat(s, 1_usize)?,
         None => norm,
     };
-    let merged_nhwc = merged.permute([0, 2, 3, 1_usize]).unwrap();
+    let merged_nhwc = merged.permute([0, 2, 3, 1_usize])?;
     let merged_flat = merged_nhwc
-        .reshape(Shape::from_dims(&[1, h * w, c + c_skip])).unwrap();
-    let fc1 = linear(&merged_flat, &rw.fc1_w, Some(&rw.fc1_b), c + c_skip, 4 * c, 1, h * w).gelu();
+        .reshape(Shape::from_dims(&[1, h * w, c + c_skip]))?;
+    let fc1 = linear(&merged_flat, &rw.fc1_w, Some(&rw.fc1_b), c + c_skip, 4 * c, 1, h * w)?.gelu();
     let fc1_chw = fc1
-        .reshape(Shape::from_dims(&[1, h, w, 4 * c])).unwrap()
-        .permute([0, 3, 1, 2_usize]).unwrap();
-    let grn = global_response_norm(&fc1_chw, &rw.grn.gamma, &rw.grn.beta, 4 * c, h, w);
-    let grn_nhwc = grn.permute([0, 2, 3, 1_usize]).unwrap();
-    let grn_flat = grn_nhwc.reshape(Shape::from_dims(&[1, h * w, 4 * c])).unwrap();
-    let fc2 = linear(&grn_flat, &rw.fc2_w, Some(&rw.fc2_b), 4 * c, c, 1, h * w);
+        .reshape(Shape::from_dims(&[1, h, w, 4 * c]))?
+        .permute([0, 3, 1, 2_usize])?;
+    let grn = global_response_norm(&fc1_chw, &rw.grn.gamma, &rw.grn.beta, 4 * c, h, w)?;
+    let grn_nhwc = grn.permute([0, 2, 3, 1_usize])?;
+    let grn_flat = grn_nhwc.reshape(Shape::from_dims(&[1, h * w, 4 * c]))?;
+    let fc2 = linear(&grn_flat, &rw.fc2_w, Some(&rw.fc2_b), 4 * c, c, 1, h * w)?;
     let out_chw = fc2
-        .reshape(Shape::from_dims(&[1, h, w, c])).unwrap()
-        .permute([0, 3, 1, 2_usize]).unwrap();
-    residual.add(&out_chw).unwrap()
+        .reshape(Shape::from_dims(&[1, h, w, c]))?
+        .permute([0, 3, 1, 2_usize])?;
+    residual.add(&out_chw)
 }
 
 /// FiLM-style timestep block. `t` is `[1, c_timestep]`; output is `(1+a)·x + b`
@@ -461,19 +461,19 @@ fn apply_timestep_block(
     t: &LazyTensor,  // [1, 1, c_timestep]
     h: usize,
     w: usize,
-) -> LazyTensor {
+) -> crate::Result<LazyTensor> {
     let c = tw.c;
-    let mapped = linear(t, &tw.w, Some(&tw.b), tw.c_timestep, 2 * c, 1, 1);
+    let mapped = linear(t, &tw.w, Some(&tw.b), tw.c_timestep, 2 * c, 1, 1)?;
     // mapped: [1, 1, 2C]. chunk along axis -1.
-    let halves = mapped.chunk(2, 2_usize).unwrap();
+    let halves = mapped.chunk(2, 2_usize)?;
     let a = halves[0]
-        .reshape(Shape::from_dims(&[1, c, 1, 1])).unwrap()
-        .broadcast_to(Shape::from_dims(&[1, c, h, w])).unwrap();
+        .reshape(Shape::from_dims(&[1, c, 1, 1]))?
+        .broadcast_to(Shape::from_dims(&[1, c, h, w]))?;
     let b = halves[1]
-        .reshape(Shape::from_dims(&[1, c, 1, 1])).unwrap()
-        .broadcast_to(Shape::from_dims(&[1, c, h, w])).unwrap();
+        .reshape(Shape::from_dims(&[1, c, 1, 1]))?
+        .broadcast_to(Shape::from_dims(&[1, c, h, w]))?;
     let one_plus_a = a.add_scalar(1.0_f64);
-    x.mul(&one_plus_a).unwrap().add(&b).unwrap()
+    x.mul(&one_plus_a)?.add(&b)
 }
 
 /// Cross-attention block: norm(x) + attention(norm(x), silu(kv).mapper)
@@ -487,56 +487,56 @@ fn apply_attn_block(
     w: usize,
     eps: f64,
     self_attn: bool,
-) -> LazyTensor {
+) -> crate::Result<LazyTensor> {
     let c = aw.c;
     let heads = aw.heads;
     let d_head = c / heads;
     // norm(x): NCHW → NHWC layered LN.
-    let norm = w_layer_norm(x, c, h, w, eps);
+    let norm = w_layer_norm(x, c, h, w, eps)?;
     // kv: silu(kv_raw) → kv_mapper linear.
     let kv = linear(
         &kv_raw.silu(),
         &aw.kv_mapper_w, Some(&aw.kv_mapper_b),
         aw.c_cond, c, 1, s_kv,
-    );
+    )?;
     // norm_xs as [1, H*W, C].
     let norm_seq = norm
-        .reshape(Shape::from_dims(&[1, c, h * w])).unwrap()
-        .transpose().unwrap();
+        .reshape(Shape::from_dims(&[1, c, h * w]))?
+        .transpose()?;
     let (kv_full, s_total) = if self_attn {
         // prepend norm tokens to kv along seq dim.
-        (norm_seq.concat(&kv, 1_usize).unwrap(), h * w + s_kv)
+        (norm_seq.concat(&kv, 1_usize)?, h * w + s_kv)
     } else {
         (kv, s_kv)
     };
     // Q from norm_xs; K/V from kv_full.
-    let q = linear(&norm_seq, &aw.to_q_w, Some(&aw.to_q_b), c, c, 1, h * w);
-    let k = linear(&kv_full,  &aw.to_k_w, Some(&aw.to_k_b), c, c, 1, s_total);
-    let v = linear(&kv_full,  &aw.to_v_w, Some(&aw.to_v_b), c, c, 1, s_total);
+    let q = linear(&norm_seq, &aw.to_q_w, Some(&aw.to_q_b), c, c, 1, h * w)?;
+    let k = linear(&kv_full,  &aw.to_k_w, Some(&aw.to_k_b), c, c, 1, s_total)?;
+    let v = linear(&kv_full,  &aw.to_v_w, Some(&aw.to_v_b), c, c, 1, s_total)?;
     // Reshape to heads. [1, S, C] → [1, S, H, D] → [1, H, S, D].
     let q_h = q
-        .reshape(Shape::from_dims(&[1, h * w, heads, d_head])).unwrap()
-        .permute([0, 2, 1, 3_usize]).unwrap();
+        .reshape(Shape::from_dims(&[1, h * w, heads, d_head]))?
+        .permute([0, 2, 1, 3_usize])?;
     let k_h = k
-        .reshape(Shape::from_dims(&[1, s_total, heads, d_head])).unwrap()
-        .permute([0, 2, 1, 3_usize]).unwrap();
+        .reshape(Shape::from_dims(&[1, s_total, heads, d_head]))?
+        .permute([0, 2, 1, 3_usize])?;
     let v_h = v
-        .reshape(Shape::from_dims(&[1, s_total, heads, d_head])).unwrap()
-        .permute([0, 2, 1, 3_usize]).unwrap();
-    let k_t = k_h.permute([0, 1, 3, 2_usize]).unwrap();  // [1, H, D, S]
+        .reshape(Shape::from_dims(&[1, s_total, heads, d_head]))?
+        .permute([0, 2, 1, 3_usize])?;
+    let k_t = k_h.permute([0, 1, 3, 2_usize])?;  // [1, H, D, S]
     let scale = 1.0_f64 / (d_head as f64).sqrt();
-    let scores = q_h.matmul(&k_t).unwrap().mul_scalar(scale);  // [1, H, hw, S]
-    let probs = scores.softmax_last_dim().unwrap();
-    let out_h = probs.matmul(&v_h).unwrap();  // [1, H, hw, D]
+    let scores = q_h.matmul(&k_t)?.mul_scalar(scale);  // [1, H, hw, S]
+    let probs = scores.softmax_last_dim()?;
+    let out_h = probs.matmul(&v_h)?;  // [1, H, hw, D]
     let out = out_h
-        .permute([0, 2, 1, 3_usize]).unwrap()
-        .reshape(Shape::from_dims(&[1, h * w, c])).unwrap();
-    let proj = linear(&out, &aw.to_out_w, Some(&aw.to_out_b), c, c, 1, h * w);
+        .permute([0, 2, 1, 3_usize])?
+        .reshape(Shape::from_dims(&[1, h * w, c]))?;
+    let proj = linear(&out, &aw.to_out_w, Some(&aw.to_out_b), c, c, 1, h * w)?;
     // Back to [1, C, H, W] and residual-add with original x.
     let proj_chw = proj
-        .transpose().unwrap()
-        .reshape(Shape::from_dims(&[1, c, h, w])).unwrap();
-    x.add(&proj_chw).unwrap()
+        .transpose()?
+        .reshape(Shape::from_dims(&[1, c, h, w]))?;
+    x.add(&proj_chw)
 }
 
 // ---- Sinusoidal noise-ratio embedding -------------------------------------
@@ -605,14 +605,14 @@ impl PriorModel {
 
         // Cond-mapper: linear → leaky_relu(0.2) → linear.
         let c1 = linear(c_embed, &self.weights.cond1_w, Some(&self.weights.cond1_b),
-            c_cond, c, 1, s_kv);
+            c_cond, c, 1, s_kv)?;
         // leaky_relu(0.2): max(x, 0.2 * x). Compose via where_cond.
         let c1_neg = c1.mul_scalar(0.2_f64);
         let zero = c1.const_f32_like(vec![0.0_f32; c1.elem_count()], c1.shape());
         let mask = c1.gt(&zero)?;
         let c1_act = mask.where_cond(&c1, &c1_neg)?;
         let c_embed_mapped = linear(&c1_act, &self.weights.cond2_w, Some(&self.weights.cond2_b),
-            c, c, 1, s_kv);
+            c, c, 1, s_kv)?;
 
         // r_embed.
         let r_vec = r_embedding_host(r, cfg.c_r);
@@ -621,13 +621,13 @@ impl PriorModel {
             .reshape(Shape::from_dims(&[1, 1, cfg.c_r]))?;
 
         for bw in &self.weights.blocks {
-            x = apply_res_block(&x, &bw.res, None, h, w, eps);
-            x = apply_timestep_block(&x, &bw.ts, &r_embed, h, w);
-            x = apply_attn_block(&x, &bw.attn, &c_embed_mapped, s_kv, h, w, eps, true);
+            x = apply_res_block(&x, &bw.res, None, h, w, eps)?;
+            x = apply_timestep_block(&x, &bw.ts, &r_embed, h, w)?;
+            x = apply_attn_block(&x, &bw.attn, &c_embed_mapped, s_kv, h, w, eps, true)?;
         }
 
         // out_ln + out_conv → chunk(2, dim=1) → (x_in - a0) / (|a1 - 1| + eps).
-        let normed = w_layer_norm(&x, c, h, w, eps);
+        let normed = w_layer_norm(&x, c, h, w, eps)?;
         let out_w = xs.const_f32_like(self.weights.out_conv_w.clone(),
             Shape::from_dims(&[c_in * 2, c, 1, 1]));
         let out_b = xs.const_f32_like(self.weights.out_conv_b.clone(),
@@ -686,8 +686,8 @@ impl DiffNextModel {
         // clip mapper: linear + LN-no-affine.
         let s_kv = clip.dim(1_usize)?;
         let c_embed = linear(clip, &self.weights.clip_mapper_w, Some(&self.weights.clip_mapper_b),
-            cfg.clip_embed, c_cond, 1, s_kv);
-        let c_embed = ln_last_no_affine(&c_embed, eps);
+            cfg.clip_embed, c_cond, 1, s_kv)?;
+        let c_embed = ln_last_no_affine(&c_embed, eps)?;
 
         // r_embed.
         let r_vec = r_embedding_host(r, cfg.c_r);
@@ -698,14 +698,14 @@ impl DiffNextModel {
         // Pixel-unshuffle by `p`: [1, C, H, W] → [1, C * p², H/p, W/p].
         let mut h = h_in / p;
         let mut w = w_in / p;
-        let xu = pixel_unshuffle(xs, c_in, h_in, w_in, p);
+        let xu = pixel_unshuffle(xs, c_in, h_in, w_in, p)?;
         // embedding 1×1 conv: c_in*p² → C_HIDDEN[0].
         let emb_w = xs.const_f32_like(self.weights.embed_w.clone(),
             Shape::from_dims(&[levels[0], c_in * p * p, 1, 1]));
         let emb_b = xs.const_f32_like(self.weights.embed_b.clone(),
             Shape::from_dims(&[levels[0]]));
         let mut x = xu.conv2d(&emb_w, Some(&emb_b), (1, 1), (0, 0), 1)?;
-        x = w_layer_norm(&x, levels[0], h, w, eps);
+        x = w_layer_norm(&x, levels[0], h, w, eps)?;
 
         // --- down path ---
         let mut skips: Vec<LazyTensor> = Vec::new();
@@ -713,7 +713,7 @@ impl DiffNextModel {
             let c_lvl = levels[i];
             if let (Some(dw), Some(db)) = (&lvl.down_w, &lvl.down_b) {
                 let prev = levels[i - 1];
-                x = w_layer_norm(&x, prev, h, w, eps);
+                x = w_layer_norm(&x, prev, h, w, eps)?;
                 let dw_t = xs.const_f32_like(dw.clone(), Shape::from_dims(&[c_lvl, prev, 2, 2]));
                 let db_t = xs.const_f32_like(db.clone(), Shape::from_dims(&[c_lvl]));
                 x = x.conv2d(&dw_t, Some(&db_t), (2, 2), (0, 0), 1)?;
@@ -721,10 +721,10 @@ impl DiffNextModel {
                 w /= 2;
             }
             for sub in &lvl.subs {
-                x = apply_res_block_stage_b(&x, &sub.res, None, h, w, eps);
-                x = apply_timestep_block(&x, &sub.ts, &r_embed, h, w);
+                x = apply_res_block_stage_b(&x, &sub.res, None, h, w, eps)?;
+                x = apply_timestep_block(&x, &sub.ts, &r_embed, h, w)?;
                 if let Some(aw) = &sub.attn {
-                    x = apply_attn_block(&x, aw, &c_embed, s_kv, h, w, eps, true);
+                    x = apply_attn_block(&x, aw, &c_embed, s_kv, h, w, eps, true)?;
                 }
             }
             skips.push(x.clone());
@@ -748,15 +748,15 @@ impl DiffNextModel {
                 } else {
                     None
                 };
-                x = apply_res_block_stage_b(&x, &sub.res, skip_ref, h, w, eps);
-                x = apply_timestep_block(&x, &sub.ts, &r_embed, h, w);
+                x = apply_res_block_stage_b(&x, &sub.res, skip_ref, h, w, eps)?;
+                x = apply_timestep_block(&x, &sub.ts, &r_embed, h, w)?;
                 if let Some(aw) = &sub.attn {
-                    x = apply_attn_block(&x, aw, &c_embed, s_kv, h, w, eps, true);
+                    x = apply_attn_block(&x, aw, &c_embed, s_kv, h, w, eps, true)?;
                 }
             }
             if let (Some(uw), Some(ub)) = (&lvl.up_w, &lvl.up_b) {
                 let next = levels[lvl_idx - 1];
-                x = w_layer_norm(&x, c_lvl, h, w, eps);
+                x = w_layer_norm(&x, c_lvl, h, w, eps)?;
                 let uw_t = xs.const_f32_like(uw.clone(), Shape::from_dims(&[c_lvl, next, 2, 2]));
                 let ub_t = xs.const_f32_like(ub.clone(), Shape::from_dims(&[next]));
                 x = x.conv_transpose2d(&uw_t, (2, 2), (0, 0), (0, 0), (1, 1), 1)?;
@@ -774,14 +774,14 @@ impl DiffNextModel {
 
         // --- classifier ---
         let last_h = levels[0];
-        x = w_layer_norm(&x, last_h, h, w, eps);
+        x = w_layer_norm(&x, last_h, h, w, eps)?;
         let clf_w = xs.const_f32_like(self.weights.clf_w.clone(),
             Shape::from_dims(&[2 * c_out * p * p, last_h, 1, 1]));
         let clf_b = xs.const_f32_like(self.weights.clf_b.clone(),
             Shape::from_dims(&[2 * c_out * p * p]));
         let out = x.conv2d(&clf_w, Some(&clf_b), (1, 1), (0, 0), 1)?;
         // pixel_shuffle by p: [1, 2*c_out*p², H, W] → [1, 2*c_out, H*p, W*p].
-        let out = pixel_shuffle(&out, 2 * c_out * p * p, h, w, p);
+        let out = pixel_shuffle(&out, 2 * c_out * p * p, h, w, p)?;
         // chunk(2, dim=1).
         let ab = out.chunk(2, 1_usize)?;
         let a = &ab[0];
@@ -797,23 +797,23 @@ impl DiffNextModel {
 /// Pixel-unshuffle (a.k.a. space-to-depth) by factor `p`. Input
 /// `[1, C, H, W]` → output `[1, C*p², H/p, W/p]`. Implemented as a
 /// reshape+permute composition.
-fn pixel_unshuffle(x: &LazyTensor, c: usize, h: usize, w: usize, p: usize) -> LazyTensor {
+fn pixel_unshuffle(x: &LazyTensor, c: usize, h: usize, w: usize, p: usize) -> crate::Result<LazyTensor> {
     let h_out = h / p;
     let w_out = w / p;
-    let r = x.reshape(Shape::from_dims(&[1, c, h_out, p, w_out, p])).unwrap();
+    let r = x.reshape(Shape::from_dims(&[1, c, h_out, p, w_out, p]))?;
     // permute to [1, C, p, p, H_out, W_out].
-    let pm = r.permute([0, 1, 3, 5, 2, 4_usize]).unwrap();
-    pm.reshape(Shape::from_dims(&[1, c * p * p, h_out, w_out])).unwrap()
+    let pm = r.permute([0, 1, 3, 5, 2, 4_usize])?;
+    pm.reshape(Shape::from_dims(&[1, c * p * p, h_out, w_out]))
 }
 
 /// Pixel-shuffle (depth-to-space) by factor `p`. Input `[1, C, H, W]`
 /// → output `[1, C/p², H*p, W*p]`. Inverse of `pixel_unshuffle`.
-fn pixel_shuffle(x: &LazyTensor, c: usize, h: usize, w: usize, p: usize) -> LazyTensor {
+fn pixel_shuffle(x: &LazyTensor, c: usize, h: usize, w: usize, p: usize) -> crate::Result<LazyTensor> {
     let c_out = c / (p * p);
-    let r = x.reshape(Shape::from_dims(&[1, c_out, p, p, h, w])).unwrap();
+    let r = x.reshape(Shape::from_dims(&[1, c_out, p, p, h, w]))?;
     // permute to [1, C_out, H, p, W, p].
-    let pm = r.permute([0, 1, 4, 2, 5, 3_usize]).unwrap();
-    pm.reshape(Shape::from_dims(&[1, c_out, h * p, w * p])).unwrap()
+    let pm = r.permute([0, 1, 4, 2, 5, 3_usize])?;
+    pm.reshape(Shape::from_dims(&[1, c_out, h * p, w * p]))
 }
 
 // ---- PaellaVqModel (decoder) ----------------------------------------------
@@ -856,7 +856,7 @@ impl PaellaVqModel {
         for (i, lw) in self.weights.up_levels.iter().enumerate() {
             let c_lvl = levels[i];
             for rb in &lw.res_blocks {
-                x = apply_paella_mixing_res(&x, rb, h, w);
+                x = apply_paella_mixing_res(&x, rb, h, w)?;
             }
             if let (Some(uw), Some(ub)) = (&lw.upsample_w, &lw.upsample_b) {
                 let next = levels[i + 1];
@@ -875,14 +875,14 @@ impl PaellaVqModel {
             }
         }
         // out_block: 1×1 conv → pixel_shuffle by 2.
-        let last_c = *levels.last().unwrap();
+        let last_c = *levels.last().ok_or_else(|| fuel_ir::Error::Msg("wuerstchen: levels must not be empty".to_string()))?;
         let oc = cfg.paella_out_channels;
         let ow = latents.const_f32_like(self.weights.out_w.clone(),
             Shape::from_dims(&[oc * 4, last_c, 1, 1]));
         let ob = latents.const_f32_like(self.weights.out_b.clone(),
             Shape::from_dims(&[oc * 4]));
         let out = x.conv2d(&ow, Some(&ob), (1, 1), (0, 0), 1)?;
-        let out = pixel_shuffle(&out, oc * 4, h, w, 2);
+        let out = pixel_shuffle(&out, oc * 4, h, w, 2)?;
         // Final tanh: bring into [-1, 1] (matches Paella's reference output range).
         Ok(out.tanh())
     }
@@ -894,7 +894,7 @@ fn apply_paella_mixing_res(
     bw: &PaellaMixingResWeights,
     h: usize,
     w: usize,
-) -> LazyTensor {
+) -> crate::Result<LazyTensor> {
     let c = bw.c;
     let g = &bw.gammas;
     let eps = 1e-6_f64;
@@ -904,49 +904,49 @@ fn apply_paella_mixing_res(
     //           then a plain `conv2d` (no padding). The lazy port
     //           approximates replication padding with edge-replicate
     //           via narrow+repeat+concat.
-    let temp = w_layer_norm(x, c, h, w, eps);
+    let temp = w_layer_norm(x, c, h, w, eps)?;
     let temp = temp.affine(1.0 + g[0] as f64, g[1] as f64);
-    let padded = replicate_pad_2d(&temp, c, h, w, 1);
+    let padded = replicate_pad_2d(&temp, c, h, w, 1)?;
     let dw_w = x.const_f32_like(bw.dw_w.clone(), Shape::from_dims(&[c, 1, 3, 3]));
     let dw_b = x.const_f32_like(bw.dw_b.clone(), Shape::from_dims(&[c]));
-    let conv = padded.conv2d(&dw_w, Some(&dw_b), (1, 1), (0, 0), c).unwrap();
-    let xs = x.add(&conv.mul_scalar(g[2] as f64)).unwrap();
+    let conv = padded.conv2d(&dw_w, Some(&dw_b), (1, 1), (0, 0), c)?;
+    let xs = x.add(&conv.mul_scalar(g[2] as f64))?;
 
     // Branch 2: norm2 → affine(1+g3, g4) → channelwise MLP (linear,
     //           GELU, linear) → scale by g5, residual.
-    let temp = w_layer_norm(&xs, c, h, w, eps)
+    let temp = w_layer_norm(&xs, c, h, w, eps)?
         .affine(1.0 + g[3] as f64, g[4] as f64);
-    let nhwc = temp.permute([0, 2, 3, 1_usize]).unwrap();
-    let flat = nhwc.reshape(Shape::from_dims(&[1, h * w, c])).unwrap();
+    let nhwc = temp.permute([0, 2, 3, 1_usize])?;
+    let flat = nhwc.reshape(Shape::from_dims(&[1, h * w, c]))?;
     let embed_dim = bw.fc1_b.len();
-    let mid = linear(&flat, &bw.fc1_w, Some(&bw.fc1_b), c, embed_dim, 1, h * w).gelu();
-    let out = linear(&mid, &bw.fc2_w, Some(&bw.fc2_b), embed_dim, c, 1, h * w);
+    let mid = linear(&flat, &bw.fc1_w, Some(&bw.fc1_b), c, embed_dim, 1, h * w)?.gelu();
+    let out = linear(&mid, &bw.fc2_w, Some(&bw.fc2_b), embed_dim, c, 1, h * w)?;
     let out_chw = out
-        .reshape(Shape::from_dims(&[1, h, w, c])).unwrap()
-        .permute([0, 3, 1, 2_usize]).unwrap();
-    xs.add(&out_chw.mul_scalar(g[5] as f64)).unwrap()
+        .reshape(Shape::from_dims(&[1, h, w, c]))?
+        .permute([0, 3, 1, 2_usize])?;
+    xs.add(&out_chw.mul_scalar(g[5] as f64))
 }
 
 /// Replication-pad 2D by `pad` on every side. Input `[1, C, H, W]` →
 /// output `[1, C, H + 2*pad, W + 2*pad]`.
-fn replicate_pad_2d(x: &LazyTensor, c: usize, h: usize, w: usize, pad: usize) -> LazyTensor {
+fn replicate_pad_2d(x: &LazyTensor, c: usize, h: usize, w: usize, pad: usize) -> crate::Result<LazyTensor> {
     if pad == 0 {
-        return x.clone();
+        return Ok(x.clone());
     }
     // First pad along W (dim 3).
-    let left_col = x.narrow(3_usize, 0, 1).unwrap();
-    let right_col = x.narrow(3_usize, w - 1, 1).unwrap();
-    let left_block = left_col.repeat(Shape::from_dims(&[1, 1, 1, pad])).unwrap();
-    let right_block = right_col.repeat(Shape::from_dims(&[1, 1, 1, pad])).unwrap();
-    let padded_w = left_block.concat(x, 3_usize).unwrap().concat(&right_block, 3_usize).unwrap();
+    let left_col = x.narrow(3_usize, 0, 1)?;
+    let right_col = x.narrow(3_usize, w - 1, 1)?;
+    let left_block = left_col.repeat(Shape::from_dims(&[1, 1, 1, pad]))?;
+    let right_block = right_col.repeat(Shape::from_dims(&[1, 1, 1, pad]))?;
+    let padded_w = left_block.concat(x, 3_usize)?.concat(&right_block, 3_usize)?;
     // Then pad along H (dim 2).
-    let h2 = padded_w.dim(2_usize).unwrap();
+    let h2 = padded_w.dim(2_usize)?;
     let _ = (h, w);
-    let top_row = padded_w.narrow(2_usize, 0, 1).unwrap();
-    let bot_row = padded_w.narrow(2_usize, h2 - 1, 1).unwrap();
-    let top_block = top_row.repeat(Shape::from_dims(&[1, 1, pad, 1])).unwrap();
-    let bot_block = bot_row.repeat(Shape::from_dims(&[1, 1, pad, 1])).unwrap();
-    top_block.concat(&padded_w, 2_usize).unwrap().concat(&bot_block, 2_usize).unwrap()
+    let top_row = padded_w.narrow(2_usize, 0, 1)?;
+    let bot_row = padded_w.narrow(2_usize, h2 - 1, 1)?;
+    let top_block = top_row.repeat(Shape::from_dims(&[1, 1, pad, 1]))?;
+    let bot_block = bot_row.repeat(Shape::from_dims(&[1, 1, pad, 1]))?;
+    top_block.concat(&padded_w, 2_usize)?.concat(&bot_block, 2_usize)
 }
 
 // ---- End-to-end generate ---------------------------------------------------
@@ -982,7 +982,7 @@ pub fn generate(
         text_embed,
         Shape::from_dims(&[1, cfg.prior_c_in, prior_h, prior_w]),
         0xC0DEC0DE,
-    );
+    )?;
     for s in 0..=prior_steps {
         let r = 1.0 - (s as f32 / (prior_steps as f32 + 1.0));
         z_c = prior.forward(&z_c, r, text_embed, prior_h, prior_w)?;
@@ -996,7 +996,7 @@ pub fn generate(
         text_embed,
         Shape::from_dims(&[1, cfg.diffnext_c_in, b_h, b_w]),
         0xB0DEB0DE,
-    );
+    )?;
     for s in 0..=b_steps {
         let r = 1.0 - (s as f32 / (b_steps as f32 + 1.0));
         z_b = diffnext.forward(&z_b, r, text_embed, b_h, b_w)?;
@@ -1012,10 +1012,10 @@ pub fn generate(
 /// model's `(x - a) / b` output is the update), so a reproducible
 /// pseudo-random initial state suffices for both the tiny test and the
 /// general-purpose entry point.
-fn noise_on_graph(anchor: &LazyTensor, shape: Shape, seed: u64) -> LazyTensor {
+fn noise_on_graph(anchor: &LazyTensor, shape: Shape, seed: u64) -> crate::Result<LazyTensor> {
     let n = shape.elem_count();
     let data = small_normal_vec(n, seed);
-    anchor.const_f32_like(data, shape)
+    Ok(anchor.const_f32_like(data, shape))
 }
 
 /// Internal helper producing a deterministic small-noise vector
@@ -1216,7 +1216,7 @@ pub fn make_paella_weights(cfg: &WuerstchenConfig) -> PaellaVqWeights {
         };
         up_levels.push(PaellaUpLevelWeights { res_blocks, upsample_w, upsample_b });
     }
-    let last_c = *levels.last().unwrap();
+    let last_c = *levels.last().expect("wuerstchen: levels must not be empty");
     PaellaVqWeights {
         up_in_w: small_normal(levels[0] * lc * 1 * 1, 7000),
         up_in_b: arc_zeros(levels[0]),
@@ -1561,7 +1561,7 @@ impl PaellaVqWeights {
             };
             up_levels.push(PaellaUpLevelWeights { res_blocks, upsample_w, upsample_b });
         }
-        let last_c = *levels.last().unwrap();
+        let last_c = *levels.last().ok_or_else(|| fuel_ir::Error::Msg("wuerstchen: levels must not be empty".to_string()))?;
         let out_w = load_arc_f32(st, "out_block.1.weight", oc * 4 * last_c)?;
         let out_b = load_arc_f32(st, "out_block.1.bias",   oc * 4)?;
         Ok(PaellaVqWeights {
@@ -1589,7 +1589,7 @@ mod tests {
         let x = LazyTensor::from_f32(x_data.clone(), Shape::from_dims(&[1, 1, 2, 2]), &dev());
         let gamma = arc_ones(1);
         let beta = arc_zeros(1);
-        let out = global_response_norm(&x, &gamma, &beta, 1, 2, 2).realize_f32();
+        let out = global_response_norm(&x, &gamma, &beta, 1, 2, 2).unwrap().realize_f32();
         // Expected: y[i] ≈ x[i] * 1 + x[i] = 2 * x[i] (with tiny eps drift).
         let expected: Vec<f32> = x_data.iter().map(|&v| 2.0 * v).collect();
         for (i, (a, e)) in out.iter().zip(expected.iter()).enumerate() {

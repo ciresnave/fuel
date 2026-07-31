@@ -225,10 +225,10 @@ impl VoxtralEncoder {
         // ---- conv stem (downsample) ---------------------------------------
         let x = conv1d_k3_s1_p1(
             &mel_t, &self.weights.conv1_w, &self.weights.conv1_b, n_mel, d, mel_time,
-        ).gelu();
+        )?.gelu();
         let x = conv1d_k3_s2_p1(
             &x, &self.weights.conv2_w, &self.weights.conv2_b, d, d, mel_time,
-        ).gelu();
+        )?.gelu();
 
         // ---- transpose to [1, T/2, d] + add learned positions -------------
         let x = x.permute([0, 2, 1_usize])?;
