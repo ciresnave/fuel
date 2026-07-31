@@ -101,6 +101,21 @@ KV *store* — unlocking:
   so shipping bf16 numeric code from a CPU flow would violate test-gated. Three
   increments:
 
+  **STATUS (2026-07-31):** PC-1 **DONE** (on main `dd3b45f9` — dtype-agnostic
+  byte block movement, backend-neutral; f32+bf16 CPU-verified). PC-2 **DONE** —
+  bf16 paged decode **VERIFIED on the RTX 4070**: `bf16_paged_decode_matches_
+  contiguous_on_cuda` green, argmax matches the contiguous bf16 reference over 6
+  steps (3.68s), via the decompose route (gather+SDPA on bf16 primitives — the
+  bf16 paged gather routed cleanly through the generic cudarc `index_select`
+  despite no bf16 arm in baracuda's FFI). PC-3 layout **LOCKED** (baracuda
+  2026-07-31): the FlashInfer paged-decode kernel already exists behind the
+  `flashinfer` feature, and its native kNHD `[max_num_pages, page_size,
+  num_kv_heads, head_dim]` == Fuel's exact `[num_blocks, block_size, Hkv, D]` —
+  wholesale adopt, zero repack. Remaining PC-3 work is async + baracuda-gated: a
+  formal `BatchPagedDecodePlan` signature + a Fuel-side dense block_table →
+  FlashInfer CSR (indices/indptr/last_page_len) conversion. It is a **perf arm**
+  over the already-correct decompose path, not a correctness blocker.
+
   - **PC-1 — dtype-agnostic block MOVEMENT (CPU-verifiable, buildable now).**
     Today `write_block`/`read_block` (and the CoW `ensure_writable_block` +
     evict/restore that build on them) hard-code f32 (`from_f32`/`const_f32_like`/
