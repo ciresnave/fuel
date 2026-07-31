@@ -7642,14 +7642,29 @@ impl LlamaModel {
     /// the held session is dropped and this token falls back to the re-planning
     /// [`Self::forward_paged_step`] (the session rebuilds on the next token).
     /// f32/bf16/f16; CPU-verifiable (the win is CPU-side planning).
+    ///
+    /// `plan` is the runtime flag ([`crate::inference_context::PagedDecodePlan`]):
+    /// `Replan` drops any held session and re-plans this token via
+    /// [`Self::forward_paged_step`] (the pre-plan-once behavior the driver ships
+    /// off-by-default); `PlanOnce` builds-once / rebinds as above.
     pub fn forward_paged_step_persistent(
         &self,
         token: u32,
         pool: &mut crate::kv_block_pool_device::DeviceKvPool,
         session: crate::kv_block_pool::SessionHandle,
         max_blocks_cap: usize,
+        plan: crate::inference_context::PagedDecodePlan,
         decode_session: &mut Option<crate::inference_context::PagedDecodeSession>,
     ) -> crate::Result<Vec<f32>> {
+        // Runtime flag (`plan`). `Replan` is the pre-plan-once path: drop any
+        // held session (so nothing stale lingers across a flag flip) and re-plan
+        // this token via `forward_paged_step`. `PlanOnce` builds-once / rebinds
+        // below. This is the exact toggle the paged driver ships (off by
+        // default) and the correctness gate flips per arm.
+        if matches!(plan, crate::inference_context::PagedDecodePlan::Replan) {
+            *decode_session = None;
+            return self.forward_paged_step(token, pool, session);
+        }
         let cfg = &self.config;
         let act_dtype = pool.dtype();
         if !matches!(act_dtype, DType::F32 | DType::BF16 | DType::F16) {
@@ -14451,7 +14466,10 @@ mod generate_tests {
         // ---- Token 0: builds + optimizes the plan ONCE. ----
         let before_build = optimize_calls_thread_local();
         let l0 = model
-            .forward_paged_step_persistent(decode[0], &mut pool, s, CAP, &mut ds)
+            .forward_paged_step_persistent(
+                decode[0], &mut pool, s, CAP,
+                crate::inference_context::PagedDecodePlan::PlanOnce, &mut ds,
+            )
             .expect("persistent decode 0 (build)");
         let build_delta = optimize_calls_thread_local() - before_build;
         assert!(
@@ -14464,7 +14482,10 @@ mod generate_tests {
         // ---- Token 1: REUSES the plan (zero optimize calls). ----
         let before_rebind = optimize_calls_thread_local();
         let l1 = model
-            .forward_paged_step_persistent(decode[1], &mut pool, s, CAP, &mut ds)
+            .forward_paged_step_persistent(
+                decode[1], &mut pool, s, CAP,
+                crate::inference_context::PagedDecodePlan::PlanOnce, &mut ds,
+            )
             .expect("persistent decode 1 (rebind)");
         let rebind_delta = optimize_calls_thread_local() - before_rebind;
         assert_eq!(
@@ -14489,6 +14510,276 @@ mod generate_tests {
             "plan-once REBIND token must be byte-identical to the re-planning reference \
              (proves the block_table / offset / RoPE rebind is correct across a block boundary)",
         );
+    }
+
+    // =======================================================================
+    // Task 4 (paged plan-once) — flag-toggled, teeth-bearing correctness gate.
+    //
+    // The gate runs BOTH arms in ONE process off identical primed pools:
+    //   • plan-once arm  (`PagedDecodePlan::PlanOnce`): build+optimize once,
+    //     then reuse — asserted a HIT (0 re-optimize AND one session rebind)
+    //     every step after the first.
+    //   • control arm    (`PagedDecodePlan::Replan`): the pre-plan-once path
+    //     (clears the session + delegates to `forward_paged_step`) — asserted
+    //     a MISS (re-optimizes) EVERY step. Guards the inversion where a
+    //     control secretly running plan-once would pass identity self-vs-self,
+    //     pass HIT, and read ~1.0× = "doesn't help" (a false negative that
+    //     would retire the feature).
+    // Both arms must be byte-identical every step.
+    //
+    // Teeth: the assertions live in a NON-panicking `check_paged_gate` that
+    // returns `Result`; the primary test `unwrap`s it (so it relies on those
+    // exact checks) and `plan_once_gate_has_teeth` flips each flag and asserts
+    // the SAME checker goes red — proving the invariants have teeth before we
+    // trust them. (No `catch_unwind` / global panic-hook fiddling under the
+    // concurrent suite.)
+    //
+    // CPU-scoped note: the per-step optimize delta uses the thread-local
+    // counter, robust here because on CPU `upload_host_buffer_to_device` wraps
+    // host bytes (no transient copy graph → no optimize bump). The device-
+    // independent HIT signal is the session's `realize_count` (bumped only by
+    // the rebind seam), also asserted — so the gate is not optimize-counter-
+    // only. f32/CPU.
+    // =======================================================================
+
+    /// One decode step's measurements for the paged plan-once gate.
+    struct PagedGateStep {
+        /// plan-once arm (A) logits this step.
+        logits_a: Vec<f32>,
+        /// re-planning control arm (B) logits this step.
+        logits_b: Vec<f32>,
+        /// optimize-call delta around arm A this step (0 = plan reused = HIT).
+        opt_delta_a: usize,
+        /// optimize-call delta around arm B this step (≥1 = re-planned = MISS).
+        opt_delta_b: usize,
+        /// arm-A session `realize_count` delta this step (device-independent
+        /// HIT: 1 = one rebind served, 0 = build/none).
+        hit_delta_a: usize,
+    }
+
+    /// Full gate run: per-step rows + the arm-A session's final rebind count.
+    struct PagedGateReport {
+        steps: Vec<PagedGateStep>,
+        /// arm-A session `realize_count` at the end (== rebinds served).
+        final_hits_a: usize,
+    }
+
+    /// Build the tiny CPU f32 model + block geometry shared by the gate tests.
+    fn paged_gate_fixture() -> (LlamaModel, crate::kv_block_pool::KvGeometry, Device) {
+        let cfg = LlamaConfig {
+            vocab_size: 32, dim: 16, n_layers: 2, n_heads: 4, n_kv_heads: 4,
+            head_dim: 4, ffn_dim: 32, norm_eps: 1e-5, rope_base: 10000.0,
+        };
+        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
+        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let geom = crate::kv_block_pool::KvGeometry {
+            n_layers: cfg.n_layers, num_blocks: 32, block_size: 4,
+            n_kv_heads: cfg.n_kv_heads, head_dim: cfg.head_dim, elem_size: 4,
+        };
+        (model, geom, Device::cpu())
+    }
+
+    /// Run both gate arms off identically primed pools. Arm A runs `plan_a`,
+    /// arm B runs `plan_b` (the flags are parameters so the mutation test can
+    /// flip them). Each arm is primed with `history` via the re-planning
+    /// `forward_paged_step`, then decodes `decode` via the persistent path.
+    #[allow(clippy::too_many_arguments)]
+    fn run_paged_plan_once_gate(
+        model: &LlamaModel,
+        geom: crate::kv_block_pool::KvGeometry,
+        history: &[u32],
+        decode: &[u32],
+        cap: usize,
+        plan_a: crate::inference_context::PagedDecodePlan,
+        plan_b: crate::inference_context::PagedDecodePlan,
+        dev: &Device,
+    ) -> crate::Result<PagedGateReport> {
+        use crate::pipelined_bridge::optimize_calls_thread_local;
+        type Pool = crate::kv_block_pool_device::DeviceKvPool;
+
+        // Two pools, IDENTICALLY primed — so plan-once (A) and re-planning (B)
+        // can only differ if the plan-once rebind is wrong.
+        let mut pool_a = Pool::new(geom, DType::F32, dev)?;
+        let sa = pool_a.core_mut().open();
+        for &t in history { model.forward_paged_step(t, &mut pool_a, sa)?; }
+        let mut pool_b = Pool::new(geom, DType::F32, dev)?;
+        let sb = pool_b.core_mut().open();
+        for &t in history { model.forward_paged_step(t, &mut pool_b, sb)?; }
+
+        let mut ds_a: Option<crate::inference_context::PagedDecodeSession> = None;
+        let mut ds_b: Option<crate::inference_context::PagedDecodeSession> = None;
+        let mut steps = Vec::with_capacity(decode.len());
+        for &tok in decode {
+            let hits_before = ds_a.as_ref().map(|s| s.realize_count()).unwrap_or(0);
+            let ob = optimize_calls_thread_local();
+            let logits_a =
+                model.forward_paged_step_persistent(tok, &mut pool_a, sa, cap, plan_a, &mut ds_a)?;
+            let opt_delta_a = optimize_calls_thread_local() - ob;
+            let hits_after = ds_a.as_ref().map(|s| s.realize_count()).unwrap_or(0);
+            let hit_delta_a = hits_after - hits_before;
+
+            let ob2 = optimize_calls_thread_local();
+            let logits_b =
+                model.forward_paged_step_persistent(tok, &mut pool_b, sb, cap, plan_b, &mut ds_b)?;
+            let opt_delta_b = optimize_calls_thread_local() - ob2;
+
+            steps.push(PagedGateStep { logits_a, logits_b, opt_delta_a, opt_delta_b, hit_delta_a });
+        }
+        let final_hits_a = ds_a.as_ref().map(|s| s.realize_count()).unwrap_or(0);
+        Ok(PagedGateReport { steps, final_hits_a })
+    }
+
+    /// The gate's invariants, as a NON-panicking checker (so the mutation test
+    /// can prove the SAME checks have teeth). Returns `Err(reason)` on the
+    /// first broken invariant. Assumes arm A = plan-once, arm B = control.
+    fn check_paged_gate(report: &PagedGateReport) -> std::result::Result<(), String> {
+        if report.steps.is_empty() {
+            return Err("gate ran zero steps".to_string());
+        }
+        let n = report.steps.len();
+        for (i, s) in report.steps.iter().enumerate() {
+            // Identity: plan-once (A) must equal re-planning (B), byte-for-byte.
+            if s.logits_a != s.logits_b {
+                return Err(format!(
+                    "step {i}: plan-once logits != re-planning logits (not byte-identical)",
+                ));
+            }
+            // Control MISS: the re-planning arm re-optimizes EVERY step.
+            if s.opt_delta_b < 1 {
+                return Err(format!(
+                    "step {i}: control (Replan) arm must re-optimize every step (MISS), \
+                     opt_delta_b={}",
+                    s.opt_delta_b,
+                ));
+            }
+            if i == 0 {
+                // First plan-once token BUILDS the plan (optimize ≥ 1) and is
+                // NOT a rebind (build realizes via prebuild, not realize_token).
+                if s.opt_delta_a < 1 {
+                    return Err(format!(
+                        "step 0: first plan-once token must build the plan (optimize ≥ 1), \
+                         opt_delta_a={}",
+                        s.opt_delta_a,
+                    ));
+                }
+                if s.hit_delta_a != 0 {
+                    return Err(format!(
+                        "step 0: build is not a rebind — session HIT count must not advance, \
+                         hit_delta_a={}",
+                        s.hit_delta_a,
+                    ));
+                }
+            } else {
+                // HIT: plan-once REUSES — zero re-optimize AND exactly one rebind.
+                if s.opt_delta_a != 0 {
+                    return Err(format!(
+                        "step {i}: plan-once arm must REUSE the plan (0 re-optimize = HIT), \
+                         opt_delta_a={}",
+                        s.opt_delta_a,
+                    ));
+                }
+                if s.hit_delta_a != 1 {
+                    return Err(format!(
+                        "step {i}: plan-once session must report exactly one rebind (HIT), \
+                         hit_delta_a={}",
+                        s.hit_delta_a,
+                    ));
+                }
+            }
+        }
+        // Global: the session served exactly (n-1) rebinds (1 build + (n-1) HITs).
+        if report.final_hits_a != n - 1 {
+            return Err(format!(
+                "plan-once session must serve exactly {} rebinds (1 build + {} HITs), served {}",
+                n - 1, n - 1, report.final_hits_a,
+            ));
+        }
+        Ok(())
+    }
+
+    /// Task 4 · the primary correctness gate: N decode tokens crossing a block
+    /// boundary, plan-once (A) vs re-planning control (B) in one process, all
+    /// three invariants (byte-identity + plan-once HIT + control MISS) asserted
+    /// via the shared checker.
+    #[test]
+    fn plan_once_paged_matches_replanning_with_hit_asserted() {
+        use crate::inference_context::PagedDecodePlan;
+        let (model, geom, dev) = paged_gate_fixture();
+        // History 7 → decode lands at pos 7,8,9,10. The block boundary
+        // (block_size 4) falls between step 0 (pos 7, fills block 1) and step 1
+        // (pos 8, allocates block 2): a cached-but-un-rebound block_table would
+        // attend the wrong slots and diverge from the control.
+        let history: [u32; 7] = [1, 2, 3, 4, 5, 6, 7];
+        let decode: [u32; 4] = [8, 9, 10, 11];
+        const CAP: usize = 8;
+        let report = run_paged_plan_once_gate(
+            &model, geom, &history, &decode, CAP,
+            PagedDecodePlan::PlanOnce, PagedDecodePlan::Replan, &dev,
+        ).expect("paged plan-once gate run");
+        check_paged_gate(&report)
+            .unwrap_or_else(|e| panic!("plan-once gate must hold (identity + HIT + MISS): {e}"));
+    }
+
+    /// Task 4 · the gate's teeth: flipping each arm's flag must make the SAME
+    /// checker `plan_once_paged_matches_replanning_with_hit_asserted` relies on
+    /// go RED — so a toothless gate (assertions that always pass) cannot slip
+    /// through. Mutation 1 forces the plan-once arm to always-MISS (breaks the
+    /// HIT invariant); mutation 2 forces the control arm to always-HIT (breaks
+    /// the MISS invariant).
+    #[test]
+    fn plan_once_gate_has_teeth() {
+        use crate::inference_context::PagedDecodePlan;
+        let (model, geom, dev) = paged_gate_fixture();
+        let history: [u32; 7] = [1, 2, 3, 4, 5, 6, 7];
+        let decode: [u32; 4] = [8, 9, 10, 11];
+        const CAP: usize = 8;
+
+        // Mutation 1 — plan-once arm forced to re-plan every token (Replan):
+        // the HIT invariant (opt_delta_a==0 / one rebind) must break.
+        let forced_miss = run_paged_plan_once_gate(
+            &model, geom, &history, &decode, CAP,
+            PagedDecodePlan::Replan, PagedDecodePlan::Replan, &dev,
+        ).expect("gate run (force-miss)");
+        assert!(
+            check_paged_gate(&forced_miss).is_err(),
+            "forcing the plan-once arm to re-plan every token MUST break the HIT assertion (teeth)",
+        );
+
+        // Mutation 2 — control arm forced to reuse the plan (PlanOnce): the
+        // MISS invariant (opt_delta_b≥1 every step) must break.
+        let forced_hit = run_paged_plan_once_gate(
+            &model, geom, &history, &decode, CAP,
+            PagedDecodePlan::PlanOnce, PagedDecodePlan::PlanOnce, &dev,
+        ).expect("gate run (force-hit)");
+        assert!(
+            check_paged_gate(&forced_hit).is_err(),
+            "forcing the control arm to reuse the plan MUST break the MISS assertion (teeth)",
+        );
+    }
+
+    /// Task 4 · ragged coverage: single-session (B=1) histories at STAGGERED
+    /// lengths {2, 5, 3} → different absolute positions and block-slot phases
+    /// (mid-block, block-boundary-adjacent), where a cached plan is *wrong* (the
+    /// per-token block_table / offset / RoPE differ), not merely rebuilt. The
+    /// lockstep-uniform primary gate won't exercise these phases. Each staggered
+    /// session must satisfy the full gate (identity + HIT + MISS).
+    #[test]
+    fn plan_once_paged_ragged_matches_replanning() {
+        use crate::inference_context::PagedDecodePlan;
+        let (model, geom, dev) = paged_gate_fixture();
+        const CAP: usize = 8;
+        for &hist_len in &[2usize, 5, 3] {
+            let history: Vec<u32> = (1..=hist_len as u32).collect();
+            // In-range tokens (vocab_size == 32); values are irrelevant to the
+            // boundary phase (set by position), only the gather must be valid.
+            let decode: Vec<u32> = vec![10, 11, 12]; // 3 decode tokens
+            let report = run_paged_plan_once_gate(
+                &model, geom, &history, &decode, CAP,
+                PagedDecodePlan::PlanOnce, PagedDecodePlan::Replan, &dev,
+            ).unwrap_or_else(|e| panic!("ragged gate run (hist_len={hist_len}): {e:?}"));
+            check_paged_gate(&report)
+                .unwrap_or_else(|e| panic!("ragged plan-once gate (hist_len={hist_len}): {e}"));
+        }
     }
 
     /// Phase D · FIRST live-GPU verification of plan-once persistent decode on

@@ -40,6 +40,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use fuel_ir::{DType, DeviceLocation, Error, Layout, Result, Shape, SymEnv, SymId};
 use fuel_graph::{Graph, Node, NodeId, Op};
@@ -1018,6 +1019,31 @@ impl DecodeSession {
     }
 }
 
+/// Runtime policy for the paged persistent decode path
+/// ([`LlamaModel::forward_paged_step_persistent`]): whether to build the plan
+/// ONCE and reuse it across tokens, or re-plan every token (the pre-plan-once
+/// behavior). The paged driver holds this per config and passes it each step;
+/// the default is [`Replan`](Self::Replan) (opt into [`PlanOnce`](Self::PlanOnce)).
+///
+/// It is a real runtime flag — not a test hook — for two reasons: (1) the paged
+/// driver ships it "off by default, opt-in on" so the plan-once path can be A/B
+/// measured (Lightbulb parent-vs-commit) and safely rolled out; and (2) toggling
+/// it in ONE process is what lets the correctness gate run both arms off one
+/// setup. On [`Replan`](Self::Replan) the persistent forward drops any held
+/// session (so nothing stale lingers) and delegates to the re-planning
+/// [`LlamaModel::forward_paged_step`]; on [`PlanOnce`](Self::PlanOnce) it
+/// builds-once / rebinds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PagedDecodePlan {
+    /// Re-plan (build + optimize the graph) every token — the pre-plan-once
+    /// path. Drops any held [`PagedDecodeSession`] and routes to
+    /// [`LlamaModel::forward_paged_step`].
+    Replan,
+    /// Build + optimize the graph ONCE (into a [`PagedDecodeSession`]) and reuse
+    /// it (rebinding only the per-token data) for every subsequent token.
+    PlanOnce,
+}
+
 /// Per-token re-bound data Consts for one PAGED decode step — the paged twin
 /// of [`DecodeTokenData`]. The shapes are stable across tokens (that is the
 /// whole point of the plan-once path); only the bytes change, so each is an
@@ -1113,6 +1139,15 @@ pub struct PagedDecodeSession {
     n_layers: usize,
     block_size: usize,
     cache_dtype: DType,
+    /// Count of REBIND realizes this session has served (one per
+    /// [`Self::realize_token`]). The build itself realizes through the prebuild
+    /// seam, NOT `realize_token`, so it stays 0 right after construction and
+    /// increments only on each plan-reuse token. A DEVICE-INDEPENDENT plan-HIT
+    /// signal (the `optimize_calls_thread_local` counter is CPU-scoped — GPU
+    /// per-token uploads bump it), so the correctness gate can assert "this
+    /// token reused the plan" on any backend. Interior-mutable (`realize_token`
+    /// takes `&self`); `Relaxed` — it is telemetry, ordered by the caller.
+    realize_count: AtomicUsize,
 }
 
 impl PagedDecodeSession {
@@ -1157,6 +1192,7 @@ impl PagedDecodeSession {
             n_layers,
             block_size,
             cache_dtype,
+            realize_count: AtomicUsize::new(0),
         }
     }
 
@@ -1182,6 +1218,10 @@ impl PagedDecodeSession {
         if let (Some(offset_node), Some(offset)) = (self.offset_node, data.offset) {
             cache.insert(offset_node, offset);
         }
+        // Device-independent plan-HIT tick: this token reuses the held plan
+        // (the prebuild seam below SKIPs optimize). Bumped BEFORE the realize
+        // so a realize error still records the attempted rebind.
+        self.realize_count.fetch_add(1, Ordering::Relaxed);
         crate::pipelined_bridge::realize_one_prebuilt_env::<f32>(
             &self.graph,
             self.effective_target,
@@ -1240,6 +1280,14 @@ impl PagedDecodeSession {
     pub fn offset_node(&self) -> Option<NodeId> { self.offset_node }
     pub fn write_sym(&self) -> SymId { self.write_sym }
     pub fn max_blocks_cap(&self) -> usize { self.max_blocks_cap }
+
+    /// How many REBIND (plan-reuse) tokens this session has served — a
+    /// device-independent plan-HIT signal (see [`Self::realize_count`]). Zero
+    /// right after the build; `n` after `n` reuse tokens. The correctness gate
+    /// asserts this advances by exactly one per plan-once decode step.
+    pub fn realize_count(&self) -> usize {
+        self.realize_count.load(Ordering::Relaxed)
+    }
 
     /// The held graph's node count. The Task 3 born-red test asserts this is
     /// stable from token 2 onward (no per-token node growth — the guard
