@@ -998,6 +998,14 @@ type FlashDecodingRun = unsafe extern "C" fn(
     k: *const std::ffi::c_void,
     v: *const std::ffi::c_void,
     y: *mut std::ffi::c_void,
+    // Optional outputs, added upstream by baracuda's flash-decode
+    // attention-weights work. NULL = not requested (baracuda's own convention);
+    // Fuel passes null for both. Keeping them in the alias rather than eliding
+    // them is what makes the ABI mismatch a COMPILE error instead of a silent
+    // argument shift — this alias is the contract, so it must mirror the FFI
+    // signature exactly even for parameters we never use.
+    a: *mut std::ffi::c_void,
+    a_mean: *mut std::ffi::c_void,
     workspace: *mut std::ffi::c_void,
     workspace_bytes: usize,
     batch: i32,
@@ -1175,6 +1183,19 @@ fn flash_decoding_run(
     let status = device.flash_workspace().with(&device, ws_need, |ws_ptr, ws_len| unsafe {
         run(
             q_ptr, k_ptr, v_ptr, y_ptr,
+            // `a` (per-head attention weights) and `a_mean` (their head-average)
+            // are OPTIONAL outputs added by baracuda's flash-decode
+            // attention-weights work. NULL is baracuda's own encoding for "not
+            // requested" — its Rust API derives these pointers as
+            // `args.a.as_ref().map_or(null_mut(), ..)` — and passing null skips
+            // the extra reduction launch entirely.
+            //
+            // Fuel does not consume attention weights today. When it does (H2O /
+            // R-KV style KV eviction scoring is the consumer shape these exist
+            // for), `a_mean` is the head-aggregated statistic to request, and
+            // note `a_mean` REQUIRES `a` to be non-null — the per-head output is
+            // its input.
+            core::ptr::null_mut(), core::ptr::null_mut(),
             ws_ptr, ws_len,
             batch_i, heads_i, kv_heads_i, k_len_i, d_i,
             q_b, q_h,
