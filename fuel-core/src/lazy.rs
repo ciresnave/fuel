@@ -1358,7 +1358,7 @@ impl LazyTensor {
     pub fn layer_norm_last_dim(&self, eps: f64) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dims = shape.dims();
-        if dims.is_empty() || *dims.last().unwrap() == 0 {
+        if dims.last().copied().unwrap_or(0) == 0 {
             return Err(fuel_ir::Error::Msg(format!(
                 "layer_norm_last_dim: input must have non-zero last dim, got {dims:?}",
             )).bt());
@@ -1373,7 +1373,7 @@ impl LazyTensor {
     pub fn rms_norm_last_dim(&self, eps: f64) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dims = shape.dims();
-        if dims.is_empty() || *dims.last().unwrap() == 0 {
+        if dims.last().copied().unwrap_or(0) == 0 {
             return Err(fuel_ir::Error::Msg(format!(
                 "rms_norm_last_dim: input must have non-zero last dim, got {dims:?}",
             )).bt());

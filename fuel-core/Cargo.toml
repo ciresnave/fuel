@@ -152,10 +152,7 @@ vulkan = ["dep:fuel-vulkan-backend", "fuel-dispatch/vulkan", "fuel-memory/vulkan
 # whenever `cuda`/`metal` is also enabled.
 ug = ["dep:fuel-ug", "fuel-ir/ug", "fuel-cuda-backend?/ug", "fuel-metal-backend?/ug"]
 
-[[example]]
-name = "metal_basics"
-required-features = ["metal"]
-
-[[example]]
-name = "cuda_basics"
-required-features = ["cuda"]
+# NOTE: fuel-core has no examples. The four that lived here (`basics`,
+# `cuda_basics`, `metal_basics`, `cuda_sum_benchmark`) were all eager-`Tensor`
+# demos and were deleted with the rest of the eager surface. Lazy examples live
+# in `fuel-lazy-examples`.
