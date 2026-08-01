@@ -16,7 +16,6 @@ members = [
     "fuel-cpu-backend",
     "fuel-mkl-cpu-backend",
     "fuel-cublaslt",
-    "fuel-cuda-vmm",
     "fuel-datasets",
     "fuel-examples",
     "fuel-formats",
