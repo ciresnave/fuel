@@ -24,8 +24,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     use std::time::Instant;
 
     // Tracing: set FUEL_TRACE=1 to write a Chrome-compatible trace file.
-    // Open the resulting trace.json in chrome://tracing or ui.perfetto.dev
-    // to see a flame chart of every op, const upload, and D2H transfer.
+    // Open the resulting trace.json in chrome://tracing or ui.perfetto.dev.
+    //
+    // SCOPE — this comment used to promise "a flame chart of every op, const
+    // upload, and D2H transfer". That is FALSE on CUDA, and this is the CUDA
+    // example. Measured 2026-08-01 (positive control: the same search finds
+    // Vulkan's spans by name, so the zeros are real):
+    //
+    //     fuel-cuda-backend     0 tracing emissions  <- declares the dep, emits nothing
+    //     fuel-vulkan-backend  22 (vk_upload_bytes, vk_download_bytes, vk_download, ...)
+    //     fuel-cpu-backend      0
+    //     fuel-core             no tracing dependency at all
+    //
+    // So a CUDA run produces a trace with NO transfer spans and NO per-op spans
+    // — not because none occurred, but because nothing emits them. The danger is
+    // specific: an empty trace reads as "no transfers happened" when it actually
+    // means "this instrument cannot see them", so it yields a CONFIDENT WRONG
+    // answer rather than a null one. Do not use it to reason about H2D/D2H
+    // traffic on CUDA.
+    //
+    // For CUDA transfer accounting use a driver-level tool — `nsys` records
+    // cudaMemcpyAsync HtoD/DtoH counts and bytes beneath Fuel entirely, so it
+    // cannot be fooled by a missing span. The promise above IS accurate on the
+    // Vulkan example, which has real spans.
+    //
+    // FOLLOW-UP: giving fuel-cuda-backend span parity with fuel-vulkan-backend
+    // would make the original claim true rather than merely making this comment
+    // accurate.
     let _trace_guard = if std::env::var("FUEL_TRACE").is_ok() {
         let (chrome_layer, guard) = tracing_chrome::ChromeLayerBuilder::new()
             .file("trace.json")
