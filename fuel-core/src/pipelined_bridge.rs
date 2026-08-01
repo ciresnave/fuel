@@ -725,8 +725,14 @@ fn build_optimized_graph(
     // Reference / single-device realize: suppress cost-based cross-device
     // placement so every un-pinned node stays on the pinned device (the CPU
     // oracle must run on CPU, not be relocated to the backend it validates).
+    // When cost placement IS active, declare that this plan must price
+    // transfer — so if the `.with_transfer_estimator(&*topology)` above is ever
+    // dropped (or a future planner forgets it), `compile_plan` fails loudly at
+    // build time instead of silently reverting to latency-greedy placement.
     if !allow_cost_placement {
         options = options.without_cost_placement();
+    } else {
+        options = options.require_transfer_pricing();
     }
     if let Some(oracle) = judge_oracle.as_deref() {
         options = options.with_judge(oracle);
