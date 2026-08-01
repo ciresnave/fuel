@@ -7510,8 +7510,12 @@ impl LlamaModel {
     /// the prompt one token at a time — each attends causally to its predecessors
     /// via the running `context_len`, which is position-for-position equivalent
     /// to a batched causal prefill (each token's K/V depends only on tokens
-    /// `0..=i`, all resident by the time token `i` is fed). f32-only for now (the
-    /// pool is f32-only).
+    /// `0..=i`, all resident by the time token `i` is fed). The pool-dtype gate
+    /// accepts F32/BF16/F16 (the old f32-only restriction was lifted); but
+    /// `Op::PagedAttn` is registered ONLY on the CPU backend (half-float variant
+    /// incl.) — no CUDA/Vulkan kernel — so on GPU backends the attention op falls
+    /// back to CPU with copies (PC-3). (Corrected 2026-08-01: the old "f32-only"
+    /// wording was stale and misled a consumer.)
     ///
     /// Same math as the contiguous forward up to the attention reduction order
     /// (paged gathers-then-dense-SDPAs where contiguous slices a fixed-capacity
@@ -7963,7 +7967,10 @@ impl LlamaModel {
     /// Each session's new K/V is written into its OWN physical block (they differ
     /// by `block_table` row), and one `Op::PagedAttn` at batch `K` reads them —
     /// so per-row results are independent (no cross-session contamination) and
-    /// equal the B=1 serial path ε-close. f32-only.
+    /// equal the B=1 serial path ε-close. The pool-dtype gate accepts F32/BF16/F16;
+    /// `Op::PagedAttn` is CPU-only in the binding table (no CUDA/Vulkan kernel — PC-3),
+    /// so GPU backends fall back to CPU for the attention (corrected 2026-08-01; the
+    /// old "f32-only" wording was stale).
     pub fn forward_paged_step_batched(
         &self,
         tokens: &[u32],
