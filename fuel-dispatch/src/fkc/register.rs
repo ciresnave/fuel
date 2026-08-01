@@ -145,6 +145,18 @@ pub struct ImportedProvider {
     pub backend: BackendId,
     /// `provider.kernel_source` (front-matter), interned to `&'static`.
     pub kernel_source: &'static str,
+    /// `provider.revision_base` (front-matter) — the provider build id folded
+    /// into `kernel_revision_hash`.
+    ///
+    /// Retained on the imported provider *specifically* so [`import_glob`] can
+    /// enforce §9.2's "front-matter must agree across files". It was previously
+    /// consumed during lowering and dropped, which made that agreement
+    /// structurally uncheckable: two files of one globbed provider could
+    /// declare different bases, and since `revision_base` feeds
+    /// `kernel_revision_hash` — the key the verification ledger is looked up
+    /// by — the merged provider would silently carry kernels whose revision
+    /// hashes were computed against different roots.
+    pub revision_base: Option<String>,
     /// Lowered `op_kind` contracts → the binding table.
     pub primitives: Vec<ResolvedPrimitive>,
     /// Lowered `fused_op` contracts → the fused registry.
@@ -159,6 +171,7 @@ impl ImportedProvider {
         name: String,
         backend: BackendId,
         kernel_source: &'static str,
+        revision_base: Option<String>,
         resolved: Vec<Resolved>,
         warnings: Vec<crate::fkc::ImportWarning>,
     ) -> Self {
@@ -174,6 +187,7 @@ impl ImportedProvider {
             name,
             backend,
             kernel_source,
+            revision_base,
             primitives,
             fused,
             warnings,
@@ -378,6 +392,7 @@ pub fn import_bundle_str(
         provider.name.clone(),
         backend,
         kernel_source,
+        provider.revision_base.clone(),
         resolved,
         warnings,
     ))
@@ -458,6 +473,21 @@ pub fn import_glob(
                         expected: acc.kernel_source.to_string(),
                         found: provider.kernel_source.to_string(),
                         file: file_label,
+                    });
+                }
+                // `revision_base` is folded into `kernel_revision_hash`, which
+                // is the key the verification ledger is looked up by. A drift
+                // here would merge kernels whose revision hashes were computed
+                // against different roots while presenting as one provider —
+                // silently invalidating those lookups rather than failing.
+                // Compared as `Option` so "one file declares it, the other
+                // omits it" is caught too, not just two differing values.
+                if provider.revision_base != acc.revision_base {
+                    return Err(FkcError::ProviderMismatch {
+                        field: "provider.revision_base".to_string(),
+                        expected: format!("{:?}", acc.revision_base),
+                        found: format!("{:?}", provider.revision_base),
+                        file: file_label.clone(),
                     });
                 }
                 // Agreed — fold this file's kernels into the merged provider.
@@ -1857,6 +1887,16 @@ determinism: same_hardware_bitwise
     }
 
     fn bundle_with(provider_backend: &str, kernel: &str, op_kind: &str, entry: &str) -> String {
+        bundle_with_revision_base(provider_backend, kernel, op_kind, entry, None)
+    }
+
+    fn bundle_with_revision_base(
+        provider_backend: &str,
+        kernel: &str,
+        op_kind: &str,
+        entry: &str,
+        revision_base: Option<&str>,
+    ) -> String {
         // A raw string with real newlines (NO `\`-continuations, which
         // would eat the YAML indentation).
         let template = r#"---
@@ -1864,7 +1904,7 @@ fkc_version: 1
 provider:
   name: glob-provider
   backend: __BACKEND__
-  kernel_source: "glob-cpu"
+  kernel_source: "glob-cpu"__REVISION_BASE__
 ---
 
 # glob bundle
@@ -1901,7 +1941,12 @@ precision:
 determinism: same_hardware_bitwise
 ```
 "#;
+        let rev_line = match revision_base {
+            Some(r) => format!("\n  revision_base: \"{r}\""),
+            None => String::new(),
+        };
         template
+            .replace("__REVISION_BASE__", &rev_line)
             .replace("__BACKEND__", provider_backend)
             .replace("__KERNEL__", kernel)
             .replace("__OP_KIND__", op_kind)
@@ -1943,6 +1988,92 @@ determinism: same_hardware_bitwise
         assert!(table
             .lookup(OpKind::SubElementwise, &[DType::F32, DType::F32, DType::F32], BackendId::Cpu)
             .is_ok());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// §9.2 says the provider front-matter must AGREE across the files a glob
+    /// merges. `revision_base` is part of that front-matter and is folded into
+    /// `kernel_revision_hash` — which is in turn the key the verification
+    /// ledger is looked up by. Two files of one globbed provider declaring
+    /// different bases therefore produce kernels whose revision hashes are
+    /// computed against different roots while presenting as a single provider,
+    /// silently invalidating ledger lookups.
+    ///
+    /// This is the "existence != enforcement" shape: the loop is *commented*
+    /// "front-matter must agree across files (§9.2)" and checks 3 of the 5
+    /// declared fields.
+    #[test]
+    fn import_glob_mismatched_revision_base_is_provider_mismatch() {
+        let dir = std::env::temp_dir().join(format!("fkc_glob_rev_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        write_temp(
+            &dir,
+            "a.fkc.md",
+            &bundle_with_revision_base(
+                "Cpu",
+                "add_f32",
+                "AddElementwise",
+                "x::add",
+                Some("git:aaaaaaaa"),
+            ),
+        );
+        write_temp(
+            &dir,
+            "b.fkc.md",
+            &bundle_with_revision_base(
+                "Cpu",
+                "sub_f32",
+                "SubElementwise",
+                "x::sub",
+                Some("git:bbbbbbbb"),
+            ),
+        );
+
+        let link = DistinctLink::new();
+        let pattern = dir.join("*.fkc.md").display().to_string();
+        let err = import_glob(&pattern, &link)
+            .expect_err("a revision_base drift across a globbed provider must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("revision_base"),
+            "the error must name the drifted field, got: {msg}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The agreeing case must still merge — a guard that rejects everything is
+    /// not a guard.
+    #[test]
+    fn import_glob_matching_revision_base_still_merges() {
+        let dir = std::env::temp_dir().join(format!("fkc_glob_rev_ok_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        for (f, k, op, e) in [
+            ("a.fkc.md", "add_f32", "AddElementwise", "x::add"),
+            ("b.fkc.md", "sub_f32", "SubElementwise", "x::sub"),
+        ] {
+            write_temp(
+                &dir,
+                f,
+                &bundle_with_revision_base("Cpu", k, op, e, Some("git:deadbeef")),
+            );
+        }
+
+        let link = DistinctLink::new();
+        let pattern = dir.join("*.fkc.md").display().to_string();
+        let provider =
+            import_glob(&pattern, &link).expect("agreeing revision_base must still merge");
+        assert_eq!(provider.primitives.len(), 2, "both kernels present");
+        assert_eq!(
+            provider.revision_base.as_deref(),
+            Some("git:deadbeef"),
+            "the merged provider must retain the agreed revision_base"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2272,6 +2403,7 @@ determinism: same_hardware_bitwise
             name: "fuel-fused-registry".to_string(),
             backend: BackendId::Cpu,
             kernel_source: intern("portable-cpu"),
+            revision_base: None,
             primitives: Vec::new(),
             fused: vec![f],
             warnings: Vec::new(),
@@ -2901,6 +3033,7 @@ determinism: same_hardware_bitwise
             name: "p".into(),
             backend: fuel_ir::probe::BackendId::Cpu,
             kernel_source: "ks",
+            revision_base: None,
             primitives: Vec::new(),
             fused: Vec::new(),
             warnings: Vec::new(),
