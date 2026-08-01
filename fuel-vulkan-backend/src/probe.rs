@@ -12,7 +12,37 @@
 
 use fuel_ir::probe::{BackendId, BackendProbe, DeviceDescriptor};
 use fuel_ir::{DeviceLocation, Error, Result};
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use vulkane::safe::*;
+
+/// Memoized result of the one real loader probe this process performs.
+///
+/// The error is stored as a `String` because [`Error`] is not `Clone` and the
+/// cache must hand out an owned value per call. Failures are cached too: a
+/// loader that is missing now will not appear later in the same run, and
+/// caching the failure is what stops a box without Vulkan from re-entering
+/// `Instance::new` on every single call.
+static DEVICE_CACHE: OnceLock<std::result::Result<Vec<DeviceDescriptor>, String>> =
+    OnceLock::new();
+
+/// How many times the loader was *actually* probed — i.e. how many
+/// `vkCreateInstance` calls this process has made from here — as opposed to
+/// how many times [`enumerate_devices`] was called.
+///
+/// Incremented inside [`enumerate_devices_uncached`], the real probe, and
+/// deliberately NOT inside the memoizing wrapper. That placement is what lets
+/// the concurrency test assert `== 1` in absolute terms: memoization
+/// guarantees the uncached path runs at most once per process, so the
+/// assertion cannot be diluted by test ordering or by other callers.
+static PROBE_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+/// Number of real loader probes (`vkCreateInstance` calls) performed so far in
+/// this process. Test seam.
+#[doc(hidden)]
+pub fn probe_call_count() -> usize {
+    PROBE_CALLS.load(Ordering::SeqCst)
+}
 
 pub struct VulkanBackendProbe;
 
@@ -26,10 +56,43 @@ fn vk_err(e: impl std::fmt::Debug) -> Error {
     Error::Msg(format!("vulkan probe: {e:?}"))
 }
 
-/// Enumerate every Vulkan physical device currently visible to the
-/// loader. Cheap — creates an `Instance` but never a logical
-/// `Device`, queue, or any allocations on GPU memory.
+/// Enumerate every Vulkan physical device currently visible to the loader.
+///
+/// The loader is probed **once per process**; every later call returns a clone
+/// of the memoized result. This matters well beyond saving a few milliseconds:
+/// `SystemTopology::current()` (fuel-dispatch) deliberately builds its snapshot
+/// *outside* its cache lock — "we may race with another rebuild; the last
+/// writer wins" — so on a cold cache every racing thread reaches this function.
+/// Un-memoized, K threads meant **K concurrent `vkCreateInstance` calls in one
+/// process**, which is a fan-out no machine-wide GPU lock can see: such a lock
+/// admits the process once and the process then fans out internally. Under
+/// `cargo test` K is cargo's thread count.
+///
+/// Creates an `Instance` but never a logical `Device`, queue, or any GPU
+/// allocation.
+///
+/// **Hot-plug caveat:** the cache lives for the process lifetime, so a device
+/// attached after the first enumeration will not appear. That is correct for a
+/// test or CLI run and is the deliberate tradeoff for killing the fan-out; a
+/// long-lived process that must see hot-plug needs an explicit invalidation
+/// hook, which does not exist today.
 pub fn enumerate_devices() -> Result<Vec<DeviceDescriptor>> {
+    DEVICE_CACHE
+        .get_or_init(|| enumerate_devices_uncached().map_err(|e| e.to_string()))
+        .clone()
+        .map_err(Error::Msg)
+}
+
+/// The real probe: creates a fresh `VkInstance` on **every** call.
+///
+/// Production code must call [`enumerate_devices`] instead. This is `pub` only
+/// so the fan-out characterization test can exercise the pre-memoization
+/// behaviour honestly — racing this directly *is* what the old code did —
+/// rather than by temporarily breaking the cache and re-running, which would
+/// leave a window where a half-sabotaged probe could be committed by accident.
+#[doc(hidden)]
+pub fn enumerate_devices_uncached() -> Result<Vec<DeviceDescriptor>> {
+    PROBE_CALLS.fetch_add(1, Ordering::SeqCst);
     let instance = Instance::new(InstanceCreateInfo {
         engine_name: Some("fuel-vulkan-backend probe"),
         api_version: ApiVersion::V1_2,
@@ -106,6 +169,106 @@ fn total_device_local_memory(p: &PhysicalDevice) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The fan-out this memoization exists to kill.
+    ///
+    /// `SystemTopology::current()` builds its snapshot outside its own cache
+    /// lock by design, so on a cold cache every racing thread lands here.
+    /// Before memoization that meant one `vkCreateInstance` per thread — a
+    /// concurrent-Vulkan-setup storm inside a single process, which a
+    /// machine-wide GPU lock cannot prevent because it admits the process once
+    /// and the process then fans out.
+    ///
+    /// Asserting on the probe counter rather than on timing or on device
+    /// contents is what gives this teeth on any box: it holds identically
+    /// whether the loader is present (probe succeeds) or absent (probe fails
+    /// and the failure is cached), and it fails loudly if someone reverts the
+    /// `OnceLock` or adds a second un-memoized call path.
+    ///
+    /// Note this test creates at most ONE `VkInstance` for the whole process —
+    /// it is the *pre-fix* behaviour that was expensive, not this. The
+    /// assertion is absolute rather than a delta because memoization makes the
+    /// uncached path run at most once per process, so no amount of other
+    /// activity can dilute it.
+    #[test]
+    fn concurrent_enumeration_probes_the_loader_exactly_once() {
+        const THREADS: usize = 16;
+        let start = std::sync::Barrier::new(THREADS);
+
+        std::thread::scope(|s| {
+            for _ in 0..THREADS {
+                s.spawn(|| {
+                    // Release all threads together so they genuinely contend
+                    // on the OnceLock rather than trickling through it.
+                    start.wait();
+                    let _ = enumerate_devices();
+                });
+            }
+        });
+
+        assert_eq!(
+            probe_call_count(),
+            1,
+            "the loader must be probed exactly once across {THREADS} racing \
+             threads; got {} probes, which means the per-thread \
+             vkCreateInstance fan-out is back",
+            probe_call_count(),
+        );
+    }
+
+    /// Characterizes the fan-out the memoization removes, by racing the
+    /// **uncached** entry point directly — which is faithfully what the old
+    /// code did on every `SystemTopology::current()` cache miss.
+    ///
+    /// `#[ignore]` and deliberately bounded to K=4. This test intentionally
+    /// fires concurrent `vkCreateInstance` calls, which is the mechanism
+    /// implicated in the 2026-07-31 `VIDEO_MEMORY_MANAGEMENT_INTERNAL` /
+    /// `DdiMapCpuHostAperture` bugcheck on this hardware. K=4 proves the
+    /// fan-out unambiguously (4 != 1) at a quarter of the blast radius of the
+    /// K=16 the green test uses. Run it deliberately, serialized against other
+    /// GPU work, and alone:
+    ///
+    /// ```text
+    /// cargo test -p fuel-vulkan-backend -- --ignored --exact \
+    ///     probe::tests::uncached_enumeration_fans_out_per_thread \
+    ///     --test-threads=1
+    /// ```
+    #[test]
+    #[ignore = "deliberately fires concurrent vkCreateInstance; run serialized under the GPU lock"]
+    fn uncached_enumeration_fans_out_per_thread() {
+        const THREADS: usize = 4;
+        let before = probe_call_count();
+        let start = std::sync::Barrier::new(THREADS);
+
+        std::thread::scope(|s| {
+            for _ in 0..THREADS {
+                s.spawn(|| {
+                    start.wait();
+                    let _ = enumerate_devices_uncached();
+                });
+            }
+        });
+
+        assert_eq!(
+            probe_call_count() - before,
+            THREADS,
+            "the uncached path must probe once per thread — that is the \
+             fan-out `enumerate_devices` exists to collapse",
+        );
+    }
+
+    /// Memoization must not change what callers see: repeated calls agree, and
+    /// they agree with what the single underlying probe returned.
+    #[test]
+    fn repeated_enumeration_is_stable() {
+        let a = enumerate_devices();
+        let b = enumerate_devices();
+        match (a, b) {
+            (Ok(a), Ok(b)) => assert_eq!(a, b, "cached enumeration changed between calls"),
+            (Err(_), Err(_)) => {}
+            (a, b) => panic!("cached enumeration flipped success/failure: {a:?} vs {b:?}"),
+        }
+    }
 
     /// On a box with no Vulkan runtime at all, `Instance::new` fails
     /// and `enumerate_devices` returns `Err`. On a normal dev box it
