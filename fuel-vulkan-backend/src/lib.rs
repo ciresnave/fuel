@@ -18,7 +18,7 @@ pub mod residency;
 pub use byte_storage::VulkanStorageBytes;
 pub use mapped_meter::{
     mapped_host_visible_bytes, mapped_host_visible_peak_bytes, reset_host_mapped_peak,
-    MappedByteMeter,
+    MappedByteMeter, MappedGuard,
 };
 pub use capture::CapturedRun;
 pub use dyn_impl::VulkanBackendDevice;
@@ -915,6 +915,11 @@ impl VulkanBackend {
                 },
             )
             .map_err(vk_err)?;
+        // Account this host-visible mapped staging allocation in the process-wide
+        // aperture meter for exactly its lifetime. The guard's Drop records the
+        // unmap on every exit — including the `?` returns below — so an erroring
+        // upload cannot ratchet the counter (the post-mortem's leak mode).
+        let _staging_map = MappedGuard::new(byte_size.max(1));
         if !src.is_empty() {
             let mapped = staging_alloc
                 .mapped_ptr()
@@ -1006,6 +1011,9 @@ impl VulkanBackend {
                 },
             )
             .map_err(vk_err)?;
+        // Account this host-visible mapped staging allocation in the process-wide
+        // aperture meter for its lifetime; the guard releases on every exit path.
+        let _staging_map = MappedGuard::new(byte_size);
         let mapped = staging_alloc
             .mapped_ptr()
             .ok_or_else(|| fuel_ir::Error::Msg(

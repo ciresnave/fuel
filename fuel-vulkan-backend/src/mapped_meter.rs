@@ -160,11 +160,47 @@ pub fn reset_host_mapped_peak() {
     HOST_MAPPED.reset_peak();
 }
 
+/// RAII guard that accounts a host-visible mapping in the process-wide meter for
+/// exactly its own lifetime: [`record_host_map`] on construction,
+/// [`record_host_unmap`] on drop.
+///
+/// Bind one to a mapped staging allocation (`let _g = MappedGuard::new(size);`)
+/// and the unmap is recorded on **every** exit from the scope — the success path,
+/// a `?` early return, or an unwind — so a mapping that errors part-way can never
+/// ratchet the counter upward without a matching release. That leak mode (a failed
+/// host mapping whose block is never freed, turning a recoverable failure into
+/// progressive exhaustion) is one of the latent defects the 2026-07-31
+/// host-aperture post-mortem called out; the guard makes it structurally
+/// impossible for the *accounting* to drift the same way.
+#[derive(Debug)]
+pub struct MappedGuard {
+    bytes: u64,
+}
+
+impl MappedGuard {
+    /// Record `bytes` mapped now; the matching unmap fires on drop.
+    pub fn new(bytes: u64) -> Self {
+        record_host_map(bytes);
+        Self { bytes }
+    }
+}
+
+impl Drop for MappedGuard {
+    fn drop(&mut self) {
+        record_host_unmap(self.bytes);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use std::thread;
+
+    /// Tests that touch the process-global `HOST_MAPPED` meter run in the same
+    /// test binary and would race on it under Rust's default parallel harness.
+    /// Serialize them so each sees a stable baseline for its delta assertions.
+    static GLOBAL_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn records_current_and_tracks_peak() {
@@ -282,13 +318,41 @@ mod tests {
 
     #[test]
     fn process_global_accessors_are_wired() {
+        let _lock = GLOBAL_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // The process-global is shared across the whole test binary, so assert on
-        // deltas rather than absolute values (another test may have touched it).
+        // deltas rather than absolute values, under the serialization lock.
         let before = mapped_host_visible_bytes();
         record_host_map(4096);
         assert_eq!(mapped_host_visible_bytes(), before + 4096);
         assert!(mapped_host_visible_peak_bytes() >= before + 4096);
         record_host_unmap(4096);
+        assert_eq!(mapped_host_visible_bytes(), before);
+    }
+
+    #[test]
+    fn mapped_guard_accounts_for_its_lifetime() {
+        let _lock = GLOBAL_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let before = mapped_host_visible_bytes();
+        {
+            let _g = MappedGuard::new(8192);
+            assert_eq!(mapped_host_visible_bytes(), before + 8192);
+            assert!(mapped_host_visible_peak_bytes() >= before + 8192);
+        }
+        // Guard dropped at scope end → unmap recorded, back to baseline.
+        assert_eq!(mapped_host_visible_bytes(), before);
+    }
+
+    #[test]
+    fn mapped_guard_records_unmap_even_on_early_return() {
+        let _lock = GLOBAL_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let before = mapped_host_visible_bytes();
+        // A `?`-style early return leaves the scope without an explicit unmap;
+        // the guard's Drop must still fire (this is the anti-ratchet property).
+        fn scope_that_returns_early(bytes: u64) -> Result<(), ()> {
+            let _g = MappedGuard::new(bytes);
+            Err(())
+        }
+        let _ = scope_that_returns_early(4096);
         assert_eq!(mapped_host_visible_bytes(), before);
     }
 }
