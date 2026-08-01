@@ -1156,6 +1156,10 @@ impl VulkanBackend {
         })?;
         self.force_flush()?;
         let mut staging = self.create_download_staging(byte_size)?;
+        // Account the host-visible mapped D2H staging in the aperture meter for
+        // its lifetime (covers both the Pooled and Dedicated staging kinds
+        // uniformly). Released on every exit, including the `?` below.
+        let _staging_map = MappedGuard::new(byte_size.max(1));
         self.queue
             .one_shot(&self.device, self.queue_family, |cmd| {
                 cmd.copy_buffer(
@@ -1193,6 +1197,9 @@ impl VulkanBackend {
                 },
             )
             .map_err(vk_err)?;
+        // Account this host-visible mapped staging allocation for its lifetime;
+        // the guard releases on every exit path (incl. the `?` below).
+        let _staging_map = MappedGuard::new(byte_size.max(1));
         // Write the bytes into the staging buffer via its mapped pointer.
         let mapped = staging_alloc
             .mapped_ptr()
