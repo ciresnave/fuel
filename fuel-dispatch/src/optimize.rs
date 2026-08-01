@@ -108,6 +108,14 @@ pub struct OptimizedGraph {
     /// chunk-boundary check can detect a topology shift exactly as
     /// the executor does today.
     pub generation: u64,
+    /// Final effective placement per node, as the optimizer resolved it.
+    /// Read via [`OptimizedGraph::placement_of`].
+    ///
+    /// `None` when the residency pass did not run — it is gated on
+    /// `PlanOptions::pinned_device`, which the production realize path always
+    /// sets and bare-graph test callers often do not. `None` therefore means
+    /// **"not computed"**, never "placed nowhere".
+    pub(crate) placements: Option<HashMap<NodeId, DeviceLocation>>,
 }
 
 impl OptimizedGraph {
@@ -116,6 +124,48 @@ impl OptimizedGraph {
     /// branchless, single-residency graph yields exactly one run.
     pub fn runs(&self, graph: &Graph) -> Vec<fuel_graph::Run> {
         extract_runs_multi(graph, &self.roots)
+    }
+
+    /// **The device the optimizer decided this node runs on** — the observable
+    /// form of the placement decision, for callers that need to check *where*
+    /// work landed rather than infer it from timing.
+    ///
+    /// This is the resolved *effective* placement, not a hint. It is the same
+    /// map the residency pass uses to decide where to stitch cross-device
+    /// copies, resolved by the priority in [`effective_placements`]:
+    /// residency-declaring ops → explicit `Graph::placement` → input residency
+    /// → **plan winner** → backend stamp → view pass-through.
+    ///
+    /// **Do not substitute [`fuel_graph::Graph::placement`] for this.** That is
+    /// only *level 2* of the six — a hint set by inserted copies and caller
+    /// overrides. The planner's actual choice for a compute node arrives at
+    /// level 4 ("plan winner"), so `Graph::placement` returns `None` for
+    /// precisely the nodes whose placement is interesting, and reading that
+    /// `None` as "unplaced" is a wrong answer that looks like a null one.
+    ///
+    /// Returns `None` if the node is unknown to this optimization **or** if the
+    /// residency pass did not run (no `pinned_device`; see the field docs) —
+    /// the two are deliberately not distinguished here because neither means
+    /// "placed nowhere". Use [`OptimizedGraph::has_placements`] to tell them
+    /// apart before drawing a conclusion from a `None`.
+    pub fn placement_of(&self, node: NodeId) -> Option<DeviceLocation> {
+        self.placements.as_ref()?.get(&node).copied()
+    }
+
+    /// Whether placement was computed at all. Distinguishes "this node has no
+    /// placement" from "no node does, because the pass was skipped" — the
+    /// difference between a real observation and an absent instrument.
+    pub fn has_placements(&self) -> bool {
+        self.placements.is_some()
+    }
+
+    /// Every resolved `(node, device)` pair, for dumping a whole graph's
+    /// placement. Empty iterator when placement was not computed — check
+    /// [`OptimizedGraph::has_placements`] first if that distinction matters.
+    pub fn placements(&self) -> impl Iterator<Item = (NodeId, DeviceLocation)> + '_ {
+        self.placements
+            .iter()
+            .flat_map(|m| m.iter().map(|(&id, &loc)| (id, loc)))
     }
 
     /// The flat executable dispatch order — the **arm-0 single-route
@@ -293,6 +343,10 @@ fn optimize_graph_with_passes(
     // test callers that don't are unaffected. (Cleanup Step A: this is
     // idempotent with the bridge's transitional `stamp_plan_backends`, which
     // re-stamps the identical result; Step A2 removes the bridge copy.)
+    // Stays `None` when the residency pass below is skipped (no pinned device),
+    // so a caller can tell "not computed" from "no placement" — see
+    // `OptimizedGraph::has_placements`.
+    let mut resolved_placements: Option<HashMap<NodeId, DeviceLocation>> = None;
     if let Some(pinned) = opts.pinned_device {
         stamp_plan_backends(graph, roots, &plan, pinned);
         // Optimize-time kernel-variant bake: resolve **same-device**
@@ -328,7 +382,12 @@ fn optimize_graph_with_passes(
         // const inputs already live) arrives via the `opts.input_residency`
         // provider the realize path already threads in — the optimizer reads
         // that fact, it does not touch realize-time storage.
-        insert_residency_copies(graph, roots, &plan, pinned, opts.input_residency);
+        // Capture the resolved placement map on the way past — it is the pass's
+        // own input, and surfacing it is what makes `OptimizedGraph::placement_of`
+        // an observation rather than an inference.
+        resolved_placements = Some(insert_residency_copies(
+            graph, roots, &plan, pinned, opts.input_residency,
+        ));
         // Cleanup Step B (layout): insert `Op::Contiguize` before any kernel
         // whose chosen winner rejects strided inputs and whose input layout is
         // non-contiguous — the optimizer writing the layout-fixup decision INTO
@@ -348,6 +407,7 @@ fn optimize_graph_with_passes(
     Ok(OptimizedGraph {
         roots: roots.to_vec(),
         generation,
+        placements: resolved_placements,
     })
 }
 
@@ -554,13 +614,22 @@ fn stamp_plan_backends(
 /// Runs after `stamp_plan_backends` (it reads `target_backend`); the re-stamp
 /// sweep below restores the source-backend stamp on copies/moves that the
 /// stamping pass overwrote with the pinned backend.
+/// Returns the effective-placement map it resolved, so the optimizer can hand
+/// it out via [`OptimizedGraph::placement_of`]. The map is the pass's own input
+/// — surfacing it costs nothing and makes the placement decision observable
+/// instead of inferable.
+///
+/// Note the snapshot is taken BEFORE copy insertion (see the `placements`
+/// comment below), which is the right vantage for "where did this node land":
+/// it reports the placement of the original nodes, with the inserted copies
+/// being the consequence rather than part of the answer.
 fn insert_residency_copies(
     graph: &mut Graph,
     roots: &[NodeId],
     plan: &ExecutionPlan,
     pinned_loc: DeviceLocation,
     input_residency: Option<&dyn Fn(NodeId) -> Option<DeviceLocation>>,
-) {
+) -> HashMap<NodeId, DeviceLocation> {
     // Step E Phase C, PR C-0: walk the ARM-INCLUSIVE reachable set, not bare
     // `roots`. A finalized `Op::Branch` is orphaned (its `reconverge_at` reads
     // arm-0 directly, per the PR-A1 runnability invariant), so a plain
@@ -657,6 +726,8 @@ fn insert_residency_copies(
         let Some(src_loc) = src_location(graph, src) else { continue };
         graph.set_target_backend(id, location_to_backend_id(src_loc));
     }
+
+    placements
 }
 
 /// Compute every reachable node's *effective placement* for the residency
@@ -859,6 +930,73 @@ mod tests {
         assert_eq!(g.target_backend(c), Some(BackendId::Cpu), "Silu stamped Cpu");
         assert_eq!(g.target_backend(d), Some(BackendId::Cpu), "Tanh stamped Cpu");
         assert!(g.target_backend(a).is_none(), "Op::Const leaf is not stamped");
+    }
+
+    /// `OptimizedGraph::placement_of` makes the placement DECISION observable,
+    /// so a consumer can check where work landed instead of inferring it from
+    /// timing (or from `Graph::placement`, which is only level 2 of the six-way
+    /// resolution and returns `None` for exactly the compute nodes that matter).
+    ///
+    /// Two halves, and the second is the **positive control**: an accessor that
+    /// silently returned `None` for everything would satisfy any test that only
+    /// asserted `is_none()` on the unpinned path. So the pinned path asserts
+    /// concrete `Some(Cpu)` values AND a non-empty map — if placement were never
+    /// captured, that half fails loudly rather than passing vacuously.
+    #[test]
+    fn placement_of_observes_the_decision_and_marks_not_computed() {
+        // --- pinned: the residency pass runs, placements are captured ---
+        let mut table = KernelBindingTable::new();
+        let (mut g, root) = build_straight_line_graph(&mut table);
+        let (_a, b, c, d) = (NodeId(0), NodeId(1), NodeId(2), NodeId(3));
+
+        let optimized = optimize_graph(&mut g, &[root], &table, &cpu_opts())
+            .expect("optimize_graph on a straight-line CPU graph");
+
+        assert!(
+            optimized.has_placements(),
+            "a pinned device runs the residency pass, so placements must be computed",
+        );
+        // POSITIVE CONTROL: concrete values, not merely "not None". An empty or
+        // never-populated map would fail here instead of passing quietly.
+        assert_eq!(optimized.placement_of(b), Some(DeviceLocation::Cpu), "Relu placed Cpu");
+        assert_eq!(optimized.placement_of(c), Some(DeviceLocation::Cpu), "Silu placed Cpu");
+        assert_eq!(optimized.placement_of(d), Some(DeviceLocation::Cpu), "Tanh placed Cpu");
+        assert!(
+            optimized.placements().count() >= 3,
+            "the map must actually be populated, got {} entries",
+            optimized.placements().count(),
+        );
+
+        // --- unpinned: the pass is skipped, and that is DISTINGUISHABLE ---
+        // This is the property that keeps a `None` from being misread as
+        // "placed nowhere" — the failure mode this accessor exists to prevent.
+        //
+        // Device context has to come from SOMEWHERE or `compile_plan` refuses
+        // outright ("node has no device context — set PlanOptions::pinned_device,
+        // a graph placement, or the node's target_backend"). So supply it via
+        // per-node graph placement instead of a pin: the graph optimizes fine,
+        // but `pinned_device` is unset so the residency pass never runs — which
+        // is exactly the "optimized successfully, placement not computed" state
+        // a caller must be able to tell apart from "placed nowhere".
+        let mut table2 = KernelBindingTable::new();
+        let (mut g2, root2) = build_straight_line_graph(&mut table2);
+        for n in [NodeId(0), NodeId(1), NodeId(2), NodeId(3)] {
+            g2.set_placement(n, DeviceLocation::Cpu);
+        }
+        let bare = PlanOptions::new().without_cost_population();
+        let unpinned = optimize_graph(&mut g2, &[root2], &table2, &bare)
+            .expect("optimize_graph with graph placements but no pinned device");
+
+        assert!(
+            !unpinned.has_placements(),
+            "no pinned device => residency pass skipped => placements NOT computed",
+        );
+        assert_eq!(
+            unpinned.placement_of(b),
+            None,
+            "and every lookup is None — which `has_placements()` explains as \
+             'not computed', never 'placed nowhere'",
+        );
     }
 
     /// Dtype-reconciliation: a mixed-precision `[F32, BF16, F32]` matmul (F32

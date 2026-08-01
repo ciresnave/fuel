@@ -2041,9 +2041,13 @@ fn order_for(
                     fuel_graph::lower_picked_route(graph, effective_roots, route)
                 }
                 None => {
+                    // A transient view built solely to call `dispatch_order`;
+                    // it does no planning, so it carries no placements. The
+                    // real optimization's map lives on `optimized`.
                     let view = OptimizedGraph {
                         roots: effective_roots.to_vec(),
                         generation: optimized.generation,
+                        placements: None,
                     };
                     view.dispatch_order(graph)
                 }
@@ -8463,7 +8467,7 @@ mod tests {
 
         // Arm-0 path.
         let (g_a, add_a, in_a) = build();
-        let opt_a = OptimizedGraph { roots: vec![add_a], generation: live_gen };
+        let opt_a = OptimizedGraph { roots: vec![add_a], generation: live_gen, placements: None };
         let (arm0_arc, _) =
             PipelinedExecutor::realize_with_optimized(g_a, add_a, in_a, &opt_a)
                 .expect("arm-0 realize");
@@ -8471,7 +8475,7 @@ mod tests {
 
         // Empty-route path — must match arm-0 exactly.
         let (g_r, add_r, in_r) = build();
-        let opt_r = OptimizedGraph { roots: vec![add_r], generation: live_gen };
+        let opt_r = OptimizedGraph { roots: vec![add_r], generation: live_gen, placements: None };
         let empty_route = PickedRoute::new();
         let (route_arc, _) = PipelinedExecutor::realize_with_optimized_route(
             g_r, add_r, in_r, &opt_r, &empty_route,
