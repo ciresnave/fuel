@@ -291,6 +291,25 @@ pub enum KvAllocError {
     /// sharer's fill stays block-aligned and its first suffix write lands on a
     /// fresh (unshared) block. Refused before any mutation.
     PrefixNotFullyFilled { prefix_blocks: usize, donor_filled: usize },
+    /// A [`PrefixId`](PrefixId) named a prefix that isn't registered (never
+    /// minted, or already [`release_prefix`](KvBlockPool::release_prefix)d).
+    UnknownPrefix,
+}
+
+/// A registry-minted handle for a shared prefix owner (a named, refcounted KV
+/// prefix — e.g. a shared system prompt computed once and read by many sessions).
+/// Its lifetime is controlled by the pool's prefix registry, not by the session
+/// that originally computed the prefix: see
+/// [`register_prefix`](KvBlockPool::register_prefix).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PrefixId(u64);
+
+/// A registered prefix owner: an internal `SessionHandle` that holds the shared
+/// blocks alive (never decodes) plus the block count it owns. The owner's own
+/// refcount keeps the prefix resident even after the original donor is discarded.
+struct PrefixOwner {
+    owner: SessionHandle,
+    prefix_blocks: usize,
 }
 
 /// The host-side KV block-pool allocator. See the module docs.
@@ -303,6 +322,11 @@ pub struct KvBlockPool {
     refcount: Vec<u32>,
     tables: HashMap<SessionHandle, BlockTable>,
     next_session: u64,
+    /// Registered prefix owners, keyed by their minted [`PrefixId`]. Each owner is
+    /// a `SessionHandle` holding the shared prefix blocks; the registry — not the
+    /// donor — controls when they're released ([`release_prefix`](Self::release_prefix)).
+    prefixes: HashMap<PrefixId, PrefixOwner>,
+    next_prefix: u64,
 }
 
 fn blocks_for(tokens: usize, block_size: usize) -> usize {
@@ -319,6 +343,8 @@ impl KvBlockPool {
             refcount: vec![0; n],
             tables: HashMap::new(),
             next_session: 0,
+            prefixes: HashMap::new(),
+            next_prefix: 0,
         }
     }
 
@@ -527,10 +553,17 @@ impl KvBlockPool {
         let mut resident_slots = Vec::new();
         let mut freed = Vec::new();
         let mut still_shared = Vec::new();
+        // Owner-only `still_shared` invariant: a registered prefix owner's blocks
+        // ARE the shared prefix — eviction must NEVER free them (only
+        // `release_prefix` does), even when the owner is their sole reference
+        // (refcount 1). Report them `still_shared` instead, so no evict path can
+        // silently reclaim a live prefix out from under its consumers. Computed
+        // once here (immutable borrow) before the mutating loop.
+        let querying_is_prefix_owner = self.is_prefix_owner(s);
         for &i in indices {
             match self.tables[&s].slots[i] {
                 Slot::Resident(p) => {
-                    if self.refcount[p as usize] == 1 {
+                    if self.refcount[p as usize] == 1 && !querying_is_prefix_owner {
                         // Exclusive → detach: return to pool, mark externalized.
                         self.refcount[p as usize] = 0;
                         self.free.push(p);
@@ -759,6 +792,70 @@ impl KvBlockPool {
         // checks; all our preconditions passed, so nothing is left partial. ----
         self.splice(src, dst, 0, prefix_blocks)?;
         Ok(shared_tokens)
+    }
+
+    // --- Prefix registry (Task 2): named refcounted shared-prefix owners -----
+
+    /// Register a shared prefix: mint a [`PrefixId`] whose owner independently
+    /// keeps the donor's first `prefix_blocks` blocks alive. Opens an internal
+    /// owner session and transactionally splices those blocks into it (reusing
+    /// [`splice_prefix`](Self::splice_prefix)'s guard — the donor's shared blocks
+    /// must be fully filled; the fresh owner is empty). After this the prefix's
+    /// lifetime is the REGISTRY's to control: the donor may be discarded and the
+    /// blocks stay resident (held by the owner), so a consumer's prefix reference
+    /// no longer races the donor's teardown.
+    ///
+    /// On refusal the just-opened owner is rolled back, so a failed registration
+    /// leaves no trace (no dangling empty session, no refcount change).
+    pub fn register_prefix(
+        &mut self,
+        donor: SessionHandle,
+        prefix_blocks: usize,
+    ) -> Result<PrefixId, KvAllocError> {
+        let owner = self.open();
+        match self.splice_prefix(donor, owner, prefix_blocks) {
+            Ok(_shared_tokens) => {
+                let id = PrefixId(self.next_prefix);
+                self.next_prefix += 1;
+                self.prefixes.insert(id, PrefixOwner { owner, prefix_blocks });
+                Ok(id)
+            }
+            Err(e) => {
+                // Roll back the empty owner (it never took a block, so this frees
+                // nothing) — a failed registration leaves the pool untouched.
+                self.discard(owner);
+                Err(e)
+            }
+        }
+    }
+
+    /// Release a registered prefix: discard its owner handle. Each shared block's
+    /// refcount drops by one; a block frees ONLY if it reaches refcount 0 — i.e.
+    /// no live sharer still references it. Sharers that spliced the prefix keep
+    /// their copies alive independently.
+    pub fn release_prefix(&mut self, id: PrefixId) -> Result<(), KvAllocError> {
+        let owner = self.prefixes.remove(&id).ok_or(KvAllocError::UnknownPrefix)?;
+        self.discard(owner.owner);
+        Ok(())
+    }
+
+    /// The number of blocks a registered prefix owns (introspection).
+    pub fn prefix_blocks(&self, id: PrefixId) -> Result<usize, KvAllocError> {
+        self.prefixes
+            .get(&id)
+            .map(|o| o.prefix_blocks)
+            .ok_or(KvAllocError::UnknownPrefix)
+    }
+
+    /// Is `s` the owner session of a registered prefix? An owner session holds
+    /// ONLY the shared prefix blocks (it never appends/decodes), so all of its
+    /// blocks are eviction-immune — [`evict_blocks`](Self::evict_blocks) reports
+    /// them `still_shared` regardless of refcount (the owner-only invariant). A
+    /// non-owner session holding a block at refcount 1 genuinely owns it
+    /// exclusively (any owner reference would push the count to ≥ 2), so this
+    /// per-session check is exactly the discriminator evict needs.
+    fn is_prefix_owner(&self, s: SessionHandle) -> bool {
+        self.prefixes.values().any(|o| o.owner == s)
     }
 }
 
@@ -1163,5 +1260,58 @@ mod tests {
         assert_eq!(pool.kv_bytes_resident(), 2 * per, "sharing adds no resident bytes");
         pool.append(b, 4).unwrap(); // B grows by 1 exclusive block
         assert_eq!(pool.kv_bytes_resident(), 3 * per);
+    }
+
+    #[test]
+    fn prefix_owner_keeps_blocks_alive_after_donor_discarded() {
+        let mut pool = KvBlockPool::new(geom(16, 4));
+        let a = pool.open();
+        pool.append(a, 8).unwrap(); // 2 FULL blocks (block_size 4)
+        let (p0, p1) = (pool.resident_block(a, 0).unwrap(), pool.resident_block(a, 1).unwrap());
+        assert_eq!(pool.block_refcount(p0), 1);
+        assert_eq!(pool.block_refcount(p1), 1);
+
+        // Register a 2-block prefix. The owner splices A's first 2 blocks:
+        // refcounts bump to 2 (donor A + owner).
+        let id = pool.register_prefix(a, 2).expect("register 2 full blocks");
+        assert_eq!(pool.prefix_blocks(id).unwrap(), 2);
+        assert_eq!(pool.block_refcount(p0), 2, "donor + owner reference p0");
+        assert_eq!(pool.block_refcount(p1), 2);
+
+        // Discard the DONOR. The owner keeps the blocks alive (refcount → 1) and
+        // NONE are freed — the prefix outlives the session that computed it, so a
+        // consumer's prefix reference no longer races the donor's teardown.
+        let free_before = pool.free_blocks();
+        pool.discard(a);
+        assert_eq!(pool.block_refcount(p0), 1, "owner alone still references p0");
+        assert_eq!(pool.block_refcount(p1), 1);
+        assert_eq!(pool.free_blocks(), free_before, "no block freed — the owner holds them");
+
+        // THE OWNER-ONLY still_shared PIN (silent-corruption trap): a block held
+        // ONLY by a prefix owner (refcount 1) must report `still_shared`, NEVER
+        // `freed`, from an evict — a registered prefix's blocks are eviction-immune
+        // (only `release_prefix` frees them). An owner-only block reporting `freed`
+        // would let a consumer's report-reconciliation treat live shared-prefix
+        // tokens as reclaimed and re-prefill over a live prefix. Evict-query the
+        // owner's own blocks at their sharpest (sole reference).
+        let owner_h = pool.prefixes[&id].owner; // tests reach the internal owner
+        let rep = pool.evict_blocks(owner_h, &[0, 1]).expect("evict-query owner blocks");
+        assert_eq!(
+            rep.still_shared, vec![0, 1],
+            "owner-only prefix blocks must report still_shared (eviction-immune)",
+        );
+        assert!(rep.freed.is_empty(), "a registered prefix's blocks are NEVER freed by evict");
+        assert_eq!(pool.block_refcount(p0), 1, "still resident — evict did not detach it");
+        assert_eq!(pool.block_refcount(p1), 1);
+
+        // Only release_prefix frees them: owner-only → refcount 0 → back to the pool.
+        pool.release_prefix(id).unwrap();
+        assert_eq!(pool.block_refcount(p0), 0, "release_prefix frees the owner-only block");
+        assert_eq!(pool.block_refcount(p1), 0);
+        assert_eq!(pool.free_blocks(), free_before + 2, "both prefix blocks back in the pool");
+
+        // A released id is a typed error on every path, never a panic.
+        assert_eq!(pool.release_prefix(id), Err(KvAllocError::UnknownPrefix));
+        assert_eq!(pool.prefix_blocks(id), Err(KvAllocError::UnknownPrefix));
     }
 }
