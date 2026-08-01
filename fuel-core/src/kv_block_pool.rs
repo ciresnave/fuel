@@ -398,6 +398,32 @@ impl KvBlockPool {
         h
     }
 
+    /// `&mut` access to a session's block table as a typed error rather than a
+    /// panic.
+    ///
+    /// Several call sites re-look-up the table after an earlier
+    /// `contains_key` / `get` check and used to `.unwrap()` the result. Those
+    /// unwraps were correct — nothing interleaves between the check and the use
+    /// — but "correct" there was a property of the current call graph, not of
+    /// the function, and this is the multi-agent serving allocator: a panic
+    /// here takes down every session in the process, not just the one that
+    /// tripped it. The `?` costs nothing and cannot rot.
+    fn table_mut(&mut self, s: SessionHandle) -> Result<&mut BlockTable, KvAllocError> {
+        self.tables.get_mut(&s).ok_or(KvAllocError::UnknownSession)
+    }
+
+    /// Pop one free physical block, or report exhaustion.
+    ///
+    /// Callers still pre-check `free.len()` when they need *several* blocks so
+    /// the error can carry the real `need`; this is the last-mile guard, so a
+    /// miscounted pre-check degrades to `OutOfBlocks` instead of panicking
+    /// halfway through mutating the pool.
+    fn take_free(&mut self) -> Result<PhysBlockId, KvAllocError> {
+        self.free
+            .pop()
+            .ok_or(KvAllocError::OutOfBlocks { need: 1, have: 0 })
+    }
+
     /// Grow a session by `add_tokens`, allocating physical blocks as needed.
     /// Returns `Err(OutOfBlocks)` if the pool can't satisfy it (the consumer
     /// should have pre-checked via C-1).
@@ -413,11 +439,11 @@ impl KvBlockPool {
             return Err(KvAllocError::OutOfBlocks { need: new_blocks, have: self.free.len() });
         }
         for _ in 0..new_blocks {
-            let p = self.free.pop().expect("checked free ≥ new_blocks");
+            let p = self.take_free()?;
             self.refcount[p as usize] = 1;
-            self.tables.get_mut(&s).unwrap().slots.push(Slot::Resident(p));
+            self.table_mut(s)?.slots.push(Slot::Resident(p));
         }
-        self.tables.get_mut(&s).unwrap().filled_tokens = cur_filled + add_tokens;
+        self.table_mut(s)?.filled_tokens = cur_filled + add_tokens;
         Ok(())
     }
 
@@ -508,7 +534,7 @@ impl KvBlockPool {
                         // Exclusive → detach: return to pool, mark externalized.
                         self.refcount[p as usize] = 0;
                         self.free.push(p);
-                        self.tables.get_mut(&s).unwrap().slots[i] = Slot::Externalized;
+                        self.table_mut(s)?.slots[i] = Slot::Externalized;
                         externalized_slots.push(i);
                         freed.push(i);
                     } else {
@@ -572,16 +598,16 @@ impl KvBlockPool {
             return Err(KvAllocError::OutOfBlocks { need, have: self.free.len() });
         }
         for &i in &handle.externalized_slots {
-            let p = self.free.pop().expect("checked");
+            let p = self.take_free()?;
             self.refcount[p as usize] = 1;
-            let t = self.tables.get_mut(&s).unwrap();
+            let t = self.table_mut(s)?;
             if i >= t.slots.len() {
                 t.slots.resize(i + 1, Slot::Externalized);
             }
             t.slots[i] = Slot::Resident(p);
         }
         for &(i, p) in &handle.resident_slots {
-            let t = self.tables.get_mut(&s).unwrap();
+            let t = self.table_mut(s)?;
             if i >= t.slots.len() {
                 t.slots.resize(i + 1, Slot::Externalized);
             }
@@ -651,9 +677,9 @@ impl KvBlockPool {
         let shared_tokens = ((to - from) * bs).min(src_filled.saturating_sub(from * bs));
         for p in shared {
             self.refcount[p as usize] += 1;
-            self.tables.get_mut(&dst).unwrap().slots.push(Slot::Resident(p));
+            self.table_mut(dst)?.slots.push(Slot::Resident(p));
         }
-        self.tables.get_mut(&dst).unwrap().filled_tokens += shared_tokens;
+        self.table_mut(dst)?.filled_tokens += shared_tokens;
         Ok(())
     }
 
@@ -674,10 +700,10 @@ impl KvBlockPool {
         if self.free.is_empty() {
             return Err(KvAllocError::OutOfBlocks { need: 1, have: 0 });
         }
-        let q = self.free.pop().unwrap();
+        let q = self.take_free()?;
         self.refcount[q as usize] = 1;
         self.refcount[p as usize] -= 1;
-        self.tables.get_mut(&s).unwrap().slots[i] = Slot::Resident(q);
+        self.table_mut(s)?.slots[i] = Slot::Resident(q);
         Ok(q)
     }
 

@@ -645,9 +645,11 @@ fn profile_lookup_latency_ns(
         .collect();
     if candidates.is_empty() { return None; }
     let target = size_class.0 as i32;
+    // `candidates` is non-empty (checked above) so `min_by_key` yields Some —
+    // but this fn already returns `Option`, so `?` states that without a panic
+    // path and stays correct if the guard above ever moves.
     let nearest = candidates.iter()
-        .min_by_key(|e| (e.size_class.0 as i32 - target).abs())
-        .unwrap();
+        .min_by_key(|e| (e.size_class.0 as i32 - target).abs())?;
     Some(nearest.latency_ns as f64)
 }
 
