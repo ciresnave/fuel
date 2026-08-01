@@ -114,9 +114,14 @@ allocations we ourselves request (see mitigation 5).
    `write_bytes`) — the guard releases on every exit including a `?` return, so a failed
    mapping can't ratchet the accounting (mitigation-3b's leak mode). A live 4 MiB upload on
    the RTX 4070 lifted the peak by exactly 4 MiB and released back to zero
-   (`fuel-vulkan-backend/tests/mapped_meter_live.rs`, run under the GPU lock). It is a
-   *partial* instrument by design — it sees our own mapped footprint, not the machine's
-   total aperture pressure — and the D2H download-staging path is not yet wired (follow-up).
+   (`fuel-vulkan-backend/tests/mapped_meter_live.rs`, run under the GPU lock — both H2D and
+   D2H). All four host-visible staging sites are wired: H2D (`upload_bytes`, `write_bytes`,
+   `upload_slice`) and D2H (`download_bytes`). Two honesty caveats (see the module doc): it
+   is a *partial* instrument — it sees our own mapped footprint, not the machine's total
+   aperture pressure — and it counts host-visible mapped bytes as a conservative UPPER-BOUND
+   proxy, not exact BAR occupancy (the BAR is consumed by `DEVICE_LOCAL|HOST_VISIBLE` memory;
+   plain system-RAM host-visible staging is mapped but is not BAR — precise BAR-only
+   accounting would need per-allocation memory-type introspection, a future refinement).
 6. **Corrected the VRAM-capacity assumption** to the real hardware.
 
 ## Lessons
