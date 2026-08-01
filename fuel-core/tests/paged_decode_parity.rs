@@ -14,7 +14,7 @@ use std::sync::Arc;
 use fuel_core::Device;
 use fuel_core::inference_context::{InferenceContext, KvCache};
 use fuel_core::kv_block_pool::KvGeometry;
-use fuel_core::kv_block_pool_device::DeviceKvPool;
+use fuel_core::kv_block_pool_device::{BlockKind, DeviceKvPool};
 use fuel_core::lazy::{LayerWeights, LlamaConfig, LlamaModel, LlamaWeights};
 use fuel_ir::DType;
 
@@ -328,4 +328,115 @@ fn paged_batched_multiblock_matches_serial() {
     let batched = model.forward_paged_step_batched(&[da, db], &mut pool, &[sa, sb]).unwrap();
     assert_close(&batched[0], &a_serial, "multi-block batched row A == serial A");
     assert_close(&batched[1], &b_serial, "multi-block batched row B == serial B");
+}
+
+/// SERVING-VALUE CORRECTNESS ANCHOR (prefix-sharing Task 1): a session that
+/// REUSES a shared KV prefix through the registry (`register_prefix` +
+/// `splice_prefix_from`) and prefills ONLY the suffix decodes token-for-token
+/// IDENTICALLY to a from-scratch session that computed the WHOLE prompt.
+///
+/// This goes THROUGH the product API (not hand-rolled `splice`), so it is the
+/// real end-to-end proof of the rung-1 serving claim. Two things are asserted:
+///   1. **Decode parity:** the shared session's logits for `[suffix .. decode]`
+///      equal the from-scratch session's logits at the SAME absolute positions.
+///      This works because `forward_paged_step` derives the RoPE position from
+///      `filled_tokens` (bumped to `shared_tokens` by the splice), so the sharer
+///      computes the suffix at positions `N*block_size ..` — exactly where the
+///      from-scratch prompt has those same tokens.
+///   2. **Owner KV immutability:** the shared prefix's physical block bytes are
+///      byte-unchanged after the sharer prefills + decodes. In rung-1 the prefix
+///      is WHOLE filled blocks, so the sharer's first suffix write lands on a
+///      FRESH block (`tok_pos/block_size == N`, a new append) — it never writes
+///      the shared blocks, and CoW never enters the rung-1 path. If a bug wrote
+///      into a shared slot instead, these bytes would change and this catches it.
+#[test]
+fn prefix_shared_session_decodes_like_from_scratch() {
+    let cfg = tiny_cfg();
+    let model = LlamaModel { config: cfg.clone(), weights: tiny_weights(&cfg, 9999) };
+    let dev = Device::cpu();
+    let block_size = 4usize;
+    let geom = || KvGeometry {
+        n_layers: cfg.n_layers, num_blocks: 32, block_size,
+        n_kv_heads: cfg.n_kv_heads, head_dim: cfg.head_dim, elem_size: 4,
+    };
+
+    // A shared system prompt filling EXACTLY 2 whole blocks (8 tokens @ bs=4),
+    // a per-request suffix (3 tokens), then K=3 decode steps.
+    let prefix: [u32; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
+    let suffix: [u32; 3] = [9, 10, 11];
+    let decode: [u32; 3] = [12, 13, 14];
+    let n_prefix_blocks = prefix.len() / block_size; // 2 whole blocks
+    let full: Vec<u32> = prefix.iter().chain(suffix.iter()).copied().collect();
+
+    // --- From-scratch reference: prefill the FULL prompt + decode, one at a time.
+    // scratch[i] = logits after feeding the i-th token (predicts position i+1).
+    let scratch: Vec<Vec<f32>> = {
+        let mut pool = DeviceKvPool::new(geom(), DType::F32, &dev).unwrap();
+        let s = pool.core_mut().open();
+        let mut logits = Vec::new();
+        for &t in full.iter().chain(decode.iter()) {
+            logits.push(model.forward_paged_step(t, &mut pool, s).unwrap());
+        }
+        logits
+    };
+
+    // --- Shared path: donor fills the prefix; register it; sharer splices it. ---
+    let mut pool = DeviceKvPool::new(geom(), DType::F32, &dev).unwrap();
+    let donor = pool.core_mut().open();
+    for &t in &prefix {
+        model.forward_paged_step(t, &mut pool, donor).unwrap();
+    }
+    // Mint a registry prefix from the donor's first N (whole, filled) blocks,
+    // then DISCARD the donor — the owner keeps the prefix alive (registry lifetime).
+    let pid = pool.core_mut().register_prefix(donor, n_prefix_blocks).unwrap();
+    pool.core_mut().discard(donor);
+
+    // Sharer session: zero-copy splice the registered prefix, then prefill ONLY
+    // the suffix. The splice returns the shared token count = the suffix offset.
+    let sharer = pool.core_mut().open();
+    let shared_tokens = pool.core_mut().splice_prefix_from(pid, sharer).unwrap();
+    assert_eq!(shared_tokens, prefix.len(), "splice returns the shared prefix token count");
+    assert_eq!(
+        pool.core().filled_tokens(sharer), Some(prefix.len()),
+        "sharer starts at the shared-prefix position (suffix prefill continues from here)",
+    );
+
+    // Snapshot the SHARED prefix's physical block bytes (owner-held, refcount 2).
+    // The sharer's block table points at the same physical blocks the owner keeps
+    // alive, so reading them through the sharer reads the owner's KV.
+    let shared_phys: Vec<_> = (0..n_prefix_blocks)
+        .map(|i| pool.core().resident_block(sharer, i).expect("shared block resident"))
+        .collect();
+    let read_shared = |pool: &DeviceKvPool, phys: &[_]| -> Vec<Vec<f32>> {
+        let mut out = Vec::new();
+        for &p in phys {
+            for l in 0..cfg.n_layers {
+                out.push(pool.read_block(l, BlockKind::K, p).unwrap());
+                out.push(pool.read_block(l, BlockKind::V, p).unwrap());
+            }
+        }
+        out
+    };
+    let shared_kv_before = read_shared(&pool, &shared_phys);
+
+    // Prefill ONLY the suffix (positions N*block_size ..), then decode K tokens.
+    let mut shared_logits: Vec<Vec<f32>> = Vec::new();
+    for &t in suffix.iter().chain(decode.iter()) {
+        shared_logits.push(model.forward_paged_step(t, &mut pool, sharer).unwrap());
+    }
+
+    // (2) Owner KV immutability: shared prefix blocks byte-unchanged.
+    let shared_kv_after = read_shared(&pool, &shared_phys);
+    assert_eq!(
+        shared_kv_before, shared_kv_after,
+        "the shared prefix owner's KV bytes must be untouched by the sharer's writes",
+    );
+
+    // (1) Decode parity: shared_logits[k] is the logit after feeding the k-th
+    // suffix/decode token, at absolute position prefix.len()+k. Compare to the
+    // from-scratch logit at the SAME position (scratch index prefix.len()+k).
+    assert_eq!(shared_logits.len(), suffix.len() + decode.len());
+    for (k, sl) in shared_logits.iter().enumerate() {
+        assert_close(sl, &scratch[prefix.len() + k], &format!("prefix-shared-step-{k}"));
+    }
 }
