@@ -274,11 +274,21 @@ impl KvCache {
             )).bt());
         }
 
+        // Never-panic: the length is checked above, but the production path
+        // must not `.expect()` — surface a typed `Err` if the iterator runs
+        // short. (Same pattern as `alloc_batched_kv` below.)
         let mut realized_iter = realized.into_iter();
+        let short = |what: &str, l: usize| {
+            Error::Msg(format!(
+                "alloc_kv: realize_many yielded fewer storages than expected \
+                 (ran out at layer {l} fetching {what})"
+            ))
+            .bt()
+        };
         let mut layers: Vec<Option<KvLayer>> = Vec::with_capacity(n_layers);
-        for _ in 0..n_layers {
-            let (k_arc, _) = realized_iter.next().expect("checked above");
-            let (v_arc, _) = realized_iter.next().expect("checked above");
+        for l in 0..n_layers {
+            let (k_arc, _) = realized_iter.next().ok_or_else(|| short("K", l))?;
+            let (v_arc, _) = realized_iter.next().ok_or_else(|| short("V", l))?;
             layers.push(Some(KvLayer {
                 k: k_arc,
                 v: v_arc,
@@ -645,12 +655,21 @@ impl LatentKvCache {
             )).bt());
         }
 
+        // Never-panic: length checked above; still surface a typed `Err`
+        // rather than `.expect()` on a production path.
         let mut realized_iter = realized.into_iter();
+        let short = |l: usize| {
+            Error::Msg(format!(
+                "alloc_latent: realize_many yielded fewer storages than \
+                 expected (ran out at layer {l})"
+            ))
+            .bt()
+        };
         let mut layers: Vec<Option<Vec<LatentSlot>>> = Vec::with_capacity(n_layers);
-        for _ in 0..n_layers {
+        for l in 0..n_layers {
             let mut slots = Vec::with_capacity(n_slots);
             for layout in &layouts {
-                let (arc, _) = realized_iter.next().expect("checked above");
+                let (arc, _) = realized_iter.next().ok_or_else(|| short(l))?;
                 slots.push(LatentSlot {
                     storage: arc,
                     layout: layout.clone(),

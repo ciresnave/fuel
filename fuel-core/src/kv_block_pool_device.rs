@@ -610,7 +610,12 @@ impl DeviceKvPool {
         let post_k = post_k.ok_or_else(|| {
             msg_err("build_decode_attn_batched: writes is empty (need ≥ 1 session)".into())
         })?;
-        let post_v = post_v.expect("post_v Some iff post_k Some");
+        // `post_k`/`post_v` are assigned together in the loop above, so this is
+        // unreachable — but a serving path should degrade to an error rather
+        // than abort the process if that pairing ever drifts.
+        let post_v = post_v.ok_or_else(|| {
+            msg_err("build_decode_attn_batched: post_v unset while post_k is set".into())
+        })?;
         q.paged_attn(&post_k, &post_v, block_table, context_lens, None, scale, g.block_size, None)
     }
 
@@ -759,7 +764,12 @@ impl DeviceKvPool {
             .collect();
         let mut saved = Vec::with_capacity(to_save.len());
         for &i in &to_save {
-            let p = self.core.resident_block(s, i).expect("checked resident just above");
+            let p = self.core.resident_block(s, i).ok_or_else(|| {
+                msg_err(format!(
+                    "evict: slot {i} stopped being resident between the \
+                     residency filter and the save loop"
+                ))
+            })?;
             let mut k = Vec::with_capacity(n_layers);
             let mut v = Vec::with_capacity(n_layers);
             for l in 0..n_layers {
@@ -857,9 +867,21 @@ fn alloc_layer_buffers(
     let mut it = realized.into_iter();
     let mut k_pools = Vec::with_capacity(n_layers);
     let mut v_pools = Vec::with_capacity(n_layers);
-    for _ in 0..n_layers {
-        let (k_arc, _) = it.next().expect("checked len == 2*n_layers");
-        let (v_arc, _) = it.next().expect("checked len == 2*n_layers");
+    // The length was checked to be exactly `2 * n_layers` just above, so the
+    // iterator cannot run short — but pairing K with V by consuming two items
+    // per turn is the kind of invariant that breaks silently under a later
+    // edit, and getting it wrong would mis-pair pools rather than fail loudly.
+    let short = |what: &str, l: usize| {
+        crate::Error::Msg(format!(
+            "kv pool realize: iterator ran short at layer {l} fetching {what}, \
+             despite a checked length of {} — internal bug",
+            2 * n_layers
+        ))
+        .bt()
+    };
+    for l in 0..n_layers {
+        let (k_arc, _) = it.next().ok_or_else(|| short("K", l))?;
+        let (v_arc, _) = it.next().ok_or_else(|| short("V", l))?;
         k_pools.push(k_arc);
         v_pools.push(v_arc);
     }
