@@ -111,11 +111,52 @@ The generalisation: **a structural assertion tests the property the design was b
 
 Purely additive. The `rnd` family is reserved and empty; no existing op, recipe, or serialization changes. Consumers that do not use RNG are unaffected. The class-8 counter uses an existing launch-scalar slot.
 
-## Open questions for the steward
+## Questions for the steward — ANSWERED 2026-08-01
 
-1. **Clause placement.** The steward has offered to draft three §6 clause texts — the class-8 counter clause, the purity clause, and the general position-pure clause. Confirm the position-pure clause lands at **KISS-Ops level** (governing `Iota`/`Triu`/`Tril`/`RandomBits` and any future member) rather than inside the RNG op.
-2. **Whether `rnd`'s classify token needs sub-structure** to distinguish a bits generator from a distribution recipe, or whether the family tag plus OpAttrs suffices.
-3. **Ratification gate.** Fuel is holding `Op::RandomBits` out of its `Op` enum until this RFC ratifies the basis slot — the same discipline the `vulkan:` namespace is under. Confirm that is the gate you want, and what "ratified" means procedurally.
+**Q1 — clause placement. CONFIRMED: KISS-Ops level, two layers.** Layer 1 (global-logical-index)
+binds *every* position-pure op — `Iota`, `Triu`/`Tril`, `RandomBits`. Layer 2 (shared
+`stream`/`base` across ranks) binds only the stream-carrying members. It carries the
+*gate-on-bits-not-plausibility* rationale, and it does **not** live inside the RNG op — the
+steward's reasoning: *burying a universal rule in one op is how the next position-pure op
+violates it*, the same reasoning that put the fixed-width-alphabet rule in §6.8 rather than
+inside `vulkan:`.
+
+**Q2 — `rnd` classify sub-structure. LEAN: no. Explicitly NOT a ruling.** The steward's lean is
+that `RandomBits` is the sole `rnd` basis occupant, the distributions are non-primitive recipes
+distinguished by op name, and a non-primitive decomposes to its floor — so the specialization
+cell keys on the *floor* ops, not a distribution super-node. **They declined to rule from
+memory** and will verify against the classify text before the RFC lands. Recorded as
+lean-not-ruling so nobody downstream treats it as settled.
+
+**Q3 — ratification. ANSWERED, and it is broader than this draft assumed.** Per the
+shape-expression-oracle precedent, *ratified* requires **all** of:
+
+1. the RFC merged into KISS `rfcs/`; **and**
+2. the normative clauses merged to KISS `main` — purity, identity/CSE, position-pure; **and**
+3. **`RandomBits` registered in the `ops.md` §6.1 op-set registry**; **and**
+4. **its classify `rnd` occupant landed.**
+
+Items 3 and 4 were **not** in this draft's model of the gate — it assumed the three clauses were
+sufficient. Registration in the op-set registry and the classify occupant are what actually make
+the basis slot *official*. Until all four are on KISS `main`, Fuel holds `Op::RandomBits` out of
+its `Op` enum, the same discipline `vulkan:` is under. The steward drives the KISS-side landing
+and binds kiss-ref + Baracuda where their cosign applies.
+
+### Determinism framing — sharpened by the steward
+
+The non-uniform class is not a special case for this family; it is an instance of an existing
+rule. `normal_f32` contains a transcendental, so **§6.0-0003** makes it ULP/tolerance, and
+**§6.0-0005 precedence** resolves the mix: *ULP wins over the exact-byte bits it is computed
+from.* So the family needs no bespoke carve-out — it needs the precedence rule applied and the
+boundary named. The framing to carry into §6.0-0002: **the exactness boundary is the mantissa
+splice and Box-Muller, not the RNG.**
+
+## Remaining open
+
+- **Q2's verification** against the classify text (steward, before the RFC lands).
+- Nothing else is open on the KISS side. Fuel's remaining increments are blocked on **hardware
+  access**, not on ratification timing — a machine-wide GPU-execution hold pending a lockfile,
+  unrelated to this RFC.
 
 ## Status of the implementations
 
