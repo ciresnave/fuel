@@ -12,12 +12,26 @@
 //! result. This meter tracks the one aperture quantity we can attribute to
 //! ourselves: the host-visible allocations we actually map.
 //!
-//! Scope: it counts bytes for host-visible memory *we* map (upload / download
-//! staging). Device-local tensor VRAM is not host-visible and is not mapped by
-//! us, so it does not count here. (With Resizable BAR the whole framebuffer is
-//! CPU-addressable, but we never `vkMapMemory` device-local buffers — the
-//! aperture cost we can *measure* is what we map.) This is a partial instrument:
-//! it sees our footprint, not the machine's total aperture pressure.
+//! Scope: it counts bytes for host-visible memory *we* map — every host-visible
+//! mapped staging allocation on the transfer paths: H2D (`upload_bytes`,
+//! `write_bytes`, `upload_slice`) and D2H (`download_bytes`). Device-local tensor
+//! VRAM is not host-visible and is not mapped by us, so it does not count here.
+//!
+//! **This is an UPPER-BOUND proxy, not exact BAR occupancy — read the number with
+//! that caveat.** The BAR aperture is consumed specifically by memory that is BOTH
+//! `DEVICE_LOCAL` and `HOST_VISIBLE` (the ReBAR-exposed VRAM window). *Plain*
+//! host-visible memory (system RAM the GPU reads over PCIe) is mapped into the CPU
+//! address space but does NOT consume the GPU's BAR aperture. This meter counts
+//! all host-visible mapped bytes without distinguishing the two, so it is a
+//! conservative superset of true aperture use — and after the allocator's
+//! mitigation-2 change (host-visible staging now *prefers* a system-RAM type), much
+//! of what it counts may be system RAM, not BAR. Counting it as literal aperture
+//! would repeat the very "measured the wrong quantity" error the post-mortem warns
+//! about; treat it as "our host-visible mapped footprint (an aperture upper bound)".
+//! Precise BAR-only accounting would need per-allocation memory-type introspection
+//! (does this type carry `DEVICE_LOCAL`?) — a future refinement. It also does not
+//! count the D2H download pool's one-time reservation, only the active per-download
+//! staging. Partial by design: it sees our footprint, not the machine's total.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 

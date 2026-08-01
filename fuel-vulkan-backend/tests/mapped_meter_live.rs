@@ -26,48 +26,67 @@ fn backend_or_skip() -> Option<VulkanBackend> {
     }
 }
 
-/// A real H2D upload must (a) lift the process-wide mapped-byte PEAK by at least
-/// the staged size while the staging buffer is mapped, and (b) return the CURRENT
-/// mapped total to its baseline once `upload_bytes` returns and the RAII guard
-/// drops. Together these prove `MappedGuard` is wired into `upload_bytes` AND that
-/// it releases — i.e. the instrument tracks the real staging mapping and does not
-/// ratchet.
+/// Both transfer directions must (a) lift the process-wide mapped-byte PEAK by at
+/// least the staged size while the staging buffer is mapped, and (b) return the
+/// CURRENT mapped total to its baseline once the call returns and the RAII guard
+/// drops. Together these prove `MappedGuard` is wired into the H2D path
+/// (`upload_bytes`) AND the D2H path (`download_bytes`), and that both release —
+/// i.e. the instrument tracks the real staging mappings and does not ratchet.
+///
+/// One test (not two), because the two directions share the process-global meter
+/// and separate `#[ignore]` tests in the same binary would race it; sequencing
+/// them with a `reset_host_mapped_peak()` between gives each a clean window.
 #[test]
 #[ignore = "requires a live Vulkan device"]
-fn upload_bytes_accounts_host_visible_mapping() {
+fn upload_and_download_account_host_visible_mappings() {
     let Some(b) = backend_or_skip() else { return };
 
-    // Open a clean measurement window; nothing else touches the global in this
-    // single-test binary.
-    reset_host_mapped_peak();
-    let baseline_current = mapped_host_visible_bytes();
-    let baseline_peak = mapped_host_visible_peak_bytes();
-
     let n: usize = 4 * 1024 * 1024; // 4 MiB — unmistakable against any noise
-    let src = vec![0xABu8; n];
+    let src: Vec<u8> = (0..n).map(|i| (i & 0xFF) as u8).collect();
+
+    // ---- H2D: upload_bytes ------------------------------------------------
+    reset_host_mapped_peak();
+    let h2d_base_current = mapped_host_visible_bytes();
+    let h2d_base_peak = mapped_host_visible_peak_bytes();
+
     let storage = b.upload_bytes(&src).expect("h2d upload");
     assert_eq!(storage.len_bytes(), n);
 
-    // (a) The peak captured the mapping while it was live.
-    let after_peak = mapped_host_visible_peak_bytes();
+    let h2d_peak = mapped_host_visible_peak_bytes();
     assert!(
-        after_peak >= baseline_peak + n as u64,
-        "upload of {n} bytes should have lifted the mapped-byte peak by >= {n}; \
-         baseline_peak={baseline_peak}, after_peak={after_peak}",
+        h2d_peak >= h2d_base_peak + n as u64,
+        "H2D upload of {n} bytes should lift the mapped-byte peak by >= {n}; \
+         base_peak={h2d_base_peak}, peak={h2d_peak}",
+    );
+    assert_eq!(
+        mapped_host_visible_bytes(),
+        h2d_base_current,
+        "H2D staging mapping must be released once upload_bytes returns (guard Drop)",
     );
 
-    // (b) The guard released on return — current is back to baseline (the returned
-    // storage is device-local, hence not host-visible and not counted here).
-    let after_current = mapped_host_visible_bytes();
+    // ---- D2H: download_bytes ---------------------------------------------
+    reset_host_mapped_peak();
+    let d2h_base_current = mapped_host_visible_bytes();
+    let d2h_base_peak = mapped_host_visible_peak_bytes();
+
+    let got = b.download_bytes(&storage).expect("d2h download");
+    assert_eq!(got, src, "round-trip bytes must match (correctness sanity)");
+
+    let d2h_peak = mapped_host_visible_peak_bytes();
+    assert!(
+        d2h_peak >= d2h_base_peak + n as u64,
+        "D2H download of {n} bytes should lift the mapped-byte peak by >= {n}; \
+         base_peak={d2h_base_peak}, peak={d2h_peak}",
+    );
     assert_eq!(
-        after_current, baseline_current,
-        "the staging mapping must be released once upload_bytes returns \
-         (guard Drop); baseline_current={baseline_current}, after_current={after_current}",
+        mapped_host_visible_bytes(),
+        d2h_base_current,
+        "D2H staging mapping must be released once download_bytes returns (guard Drop)",
     );
 
     eprintln!(
-        "mapped-meter live: baseline_peak={baseline_peak} after_peak={after_peak} \
-         (Δpeak={}), current back to {after_current}",
-        after_peak - baseline_peak,
+        "mapped-meter live: H2D Δpeak={} D2H Δpeak={} (both released to baseline)",
+        h2d_peak - h2d_base_peak,
+        d2h_peak - d2h_base_peak,
     );
 }
