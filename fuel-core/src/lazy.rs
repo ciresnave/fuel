@@ -7513,21 +7513,26 @@ impl LlamaModel {
     /// `0..=i`, all resident by the time token `i` is fed). The pool-dtype gate
     /// accepts F32/BF16/F16 (the old f32-only restriction was lifted).
     ///
-    /// Placement — UNRESOLVED; do NOT cite either outcome as verified. Verified
-    /// facts only: (1) `Op::PagedAttn` has no FUSED CUDA/Vulkan kernel — it is
-    /// CPU-only in the binding table (byte_kernels.rs). (2) The PC-2 CUDA test
-    /// `bf16_paged_decode_matches_contiguous_on_cuda` asserts NUMERICAL parity
-    /// (argmax(paged) == argmax(contiguous), every step) — it does NOT assert
-    /// PLACEMENT, so it cannot tell "runs on GPU as decomposed primitives" apart
-    /// from "runs on CPU with H2D/D2H copies"; a CPU fallback passes it identically.
-    /// What the executor actually does with a fused `PagedAttn` node on a CUDA
-    /// target — lower it to GPU-capable primitives, or run it on CPU with copies —
-    /// is NOT settled by any test or code-reading to date (three careful readings
-    /// reached different answers). It will be settled by per-node placement
-    /// MEASUREMENT of the attention op (GPU paged vs GPU contiguous). Until then,
-    /// assert neither. (2026-08-01: this note has at different times wrongly asserted
-    /// BOTH "falls back to CPU" and "runs on GPU via decompose", each on evidence
-    /// that didn't reach placement; reduced to the verified facts + the explicit gap.)
+    /// Placement — RESOLVED (2026-08-01) by measurement: on a CUDA target this
+    /// paged decode currently runs the attention OFF-DEVICE (CPU) with copies
+    /// stitched around it. Two facts, both load-bearing:
+    /// (1) `Op::PagedAttn` has no FUSED CUDA/Vulkan kernel — CPU-only in the
+    ///     binding table (byte_kernels.rs). This is the mechanism.
+    /// (2) An nsys A/B (Lightbulb, same binary/model/tokens, only the decode path
+    ///     differing) is the per-node MEASUREMENT that discriminates: the paged
+    ///     arm pulled ~6.2 GB/token Device→Host (6,335 copies) against the
+    ///     contiguous arm's ~13.5 MB logits-readback FLOOR (26 copies), and ran
+    ///     FEWER GPU kernels (17,802 vs 36,718). On-device paged attention cannot
+    ///     produce that D2H volume + kernel-count deficit — the attention work is
+    ///     leaving the device.
+    /// NOTE the trap this note carried for weeks: the PC-2 CUDA test
+    /// `bf16_paged_decode_matches_contiguous_on_cuda` asserts only NUMERICAL parity
+    /// (argmax(paged) == argmax(contiguous)) — INVARIANT to placement; a CPU
+    /// fallback passes it identically. It never backed placement either way, and
+    /// three code-readings that "reached different answers" were all non-
+    /// discriminating. Measurement settled it; a fused CUDA `PagedAttn` kernel
+    /// (or a decompose→GPU-primitives route with a real production caller) is the
+    /// prerequisite to move it on-device.
     ///
     /// Same math as the contiguous forward up to the attention reduction order
     /// (paged gathers-then-dense-SDPAs where contiguous slices a fixed-capacity
@@ -7981,12 +7986,12 @@ impl LlamaModel {
     /// so per-row results are independent (no cross-session contamination) and
     /// equal the B=1 serial path ε-close. The pool-dtype gate accepts F32/BF16/F16.
     /// `Op::PagedAttn` has no fused CUDA/Vulkan kernel (CPU-only in the binding
-    /// table). Whether, on a GPU target, the fused node lowers to GPU-capable
-    /// primitives or runs on CPU with copies is UNRESOLVED — the PC-2 CUDA test
-    /// verifies numerical parity, NOT placement, and code-readings have disagreed;
-    /// to be settled by per-node placement measurement. Assert neither outcome until
-    /// then. (2026-08-01: see `forward_paged_step`'s note — this doc twice asserted a
-    /// placement on under-reaching evidence; reduced to verified facts + the gap.)
+    /// table). On a CUDA target this attention currently runs OFF-DEVICE (CPU)
+    /// with copies — RESOLVED 2026-08-01 by an nsys A/B (Lightbulb): the paged arm
+    /// pulled ~6.2 GB/token D2H vs the contiguous arm's ~13.5 MB logits-readback
+    /// floor, with FEWER GPU kernels. See `forward_paged_step`'s note for the full
+    /// account (the PC-2 test asserts argmax parity, invariant to placement — it
+    /// never backed either answer; measurement, not reading, settled it).
     pub fn forward_paged_step_batched(
         &self,
         tokens: &[u32],
