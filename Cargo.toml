@@ -41,6 +41,7 @@ members = [
     "fuel-transformers",
     "fuel-ug",
     "fuel-wasm-examples/*",
+    "fuel-tensor-tools",
 ]
 # What `cargo build`, `cargo check`, `cargo test` without `-p` or
 # `--workspace` will actually build. Matches the pre-restructure
