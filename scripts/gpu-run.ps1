@@ -68,14 +68,20 @@
 
 $ErrorActionPreference = 'Stop'
 
-$MutexName = 'Global\gpu-run'                       # MUST be Global\ (machine-wide), not Local\
+# The mutex name is a PROTOCOL CONSTANT shared by every participant across all
+# projects and script versions. NEVER change it (not even to "-v2"): a different
+# name means NO mutual exclusion between the two — both would run on the GPU at
+# once, the exact failure this prevents (same trap as Local\ vs Global\). Version
+# skew is surfaced by $GpuRunVersion (logged, not enforced), never by the name.
+$MutexName     = 'Global\gpu-run'                   # MUST be Global\ (machine-wide), not Local\ — DO NOT VERSION
+$GpuRunVersion = 2                                  # bump on behavioral change; written to the log + lockfile so drift is visible
 $LockPath  = Join-Path $env:TEMP 'gpu-run.lock'     # metadata only, cleared on reboot (a lock must not survive one)
 $LogPath   = Join-Path $env:TEMP 'gpu-run.log'
 
 function Write-GpuLog([string] $msg) {
     $ts = (Get-Date).ToString('o')
     # Best-effort; never let a logging failure abort or wedge a GPU run.
-    try { Add-Content -LiteralPath $LogPath -Value "$ts [$Project pid=$PID] $msg" -ErrorAction Stop } catch {}
+    try { Add-Content -LiteralPath $LogPath -Value "$ts [$Project v$GpuRunVersion pid=$PID] $msg" -ErrorAction Stop } catch {}
 }
 
 # Parse the whole argument vector by hand (see the note at the top of the file).
@@ -131,7 +137,11 @@ try {
             # session looking idle while stuck (worse than no lock). Slice the wait,
             # warn to stderr each minute, and ABORT loud after the bound so a hang is
             # the noisiest state in the system, not the quietest.
-            $timeoutMin = if ($env:GPU_RUN_TIMEOUT_MIN) { [int]$env:GPU_RUN_TIMEOUT_MIN } else { 15 }
+            # GPU_RUN_TIMEOUT_MIN must EXCEED the longest legitimate GPU hold, or a
+            # valid long job's waiters abort spuriously (exit 75) and it looks exactly
+            # like the lock is broken. Default 45m fits a full Fuel CUDA suite; raise
+            # it for longer jobs rather than let a real hold trip the guillotine.
+            $timeoutMin = if ($env:GPU_RUN_TIMEOUT_MIN) { [int]$env:GPU_RUN_TIMEOUT_MIN } else { 45 }
             while (-not $acquired) {
                 if ($mutex.WaitOne(60000)) { $acquired = $true; break }
                 $mins      = [int]((Get-Date) - $t0).TotalMinutes
@@ -163,6 +173,7 @@ try {
     # --- Metadata lockfile (NOT the exclusion primitive) ----------------------
     $meta = [ordered]@{
         v       = 1
+        sv      = $GpuRunVersion
         pid     = $PID
         project = $Project
         cmd     = $cmdStr
