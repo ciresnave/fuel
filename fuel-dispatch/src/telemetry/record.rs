@@ -277,7 +277,10 @@ mod tests {
             compute_capability: Some((8, 9)),
             subgroup_width: Some(32),
             driver_version: "552.44".into(),
-            total_memory_bytes: 12 * 1024 * 1024 * 1024,
+            // Synthetic HwStamp-derivation fixture (SKU/IDs are illustrative, not
+            // this machine). Kept at 8 GiB, not the desktop 4070's 12 GiB, so no
+            // "12 GB" figure lingers to be copied into a real budget (2026-07-31).
+            total_memory_bytes: 8 * 1024 * 1024 * 1024,
             location: DeviceLocation::Cuda { gpu_id: 0 },
         };
         let stamp = HwStamp::from_descriptor(&cuda);
