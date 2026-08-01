@@ -484,6 +484,9 @@ fn dispatch_node(
             if crate::lazy_eval_norm::try_dispatch(node, values, device, anchor)? {
                 return Ok(());
             }
+            if crate::lazy_eval_ops::try_dispatch(node, values, device, anchor)? {
+                return Ok(());
+            }
             let sub_port = classify_op_sub_port(op_type);
             return Err(Error::Msg(format!(
                 "ONNX op '{}' (node '{}') is not supported in sub-port 1; \
@@ -832,7 +835,7 @@ fn fill_from_value_proto(
     }
 }
 
-fn onnx_dtype_to_fuel(dt: i32) -> Result<DType> {
+pub fn onnx_dtype_to_fuel(dt: i32) -> Result<DType> {
     let d = DataType::try_from(dt)
         .map_err(|_| Error::Msg(format!("invalid ONNX data_type {dt}")).bt())?;
     match d {
