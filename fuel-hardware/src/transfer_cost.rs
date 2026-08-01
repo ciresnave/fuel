@@ -1,19 +1,36 @@
-//! Transfer-cost model for Phase 6c's DAG planner.
+//! Transfer-cost model for the multi-backend DAG planner.
 //!
-//! When dispatch decisions span multiple backends, every cross-
-//! backend edge incurs a transfer cost: an `Op::Copy` insertion
-//! that pays bandwidth proportional to the tensor size. Phase 6b's
-//! dispatch table ignores this cost — it picks each op's backend
-//! purely on `latency_ns`. That's fine when every input/output
-//! lands on the same backend, but it can give the wrong answer
-//! when running an op on a "fast" backend would require a transfer
-//! more expensive than the speedup itself.
+//! When dispatch decisions span multiple backends, every cross-backend edge
+//! incurs a transfer cost: an `Op::Copy` insertion that pays bandwidth
+//! proportional to the tensor size.
 //!
-//! Phase 6c fixes this by adding a per-(src, dst) **bandwidth**
-//! matrix. Cost of moving an N-byte tensor from `src` to `dst` is
-//! `N * ns_per_byte(src, dst)`. The matrix is measured once at
-//! probe time (it depends on PCIe topology + driver, not on the
-//! workload) and persisted alongside the probe + Judge reports.
+//! **CURRENT STATE (corrected 2026-08-01 — the two "Phase 6b/6c" paragraphs below
+//! were STALE and read as if per-op placement were still transfer-blind; it is
+//! NOT. Two independent readers took the stale header as live code and raised a
+//! false "the planner ignores transfer cost" alarm.)** Per-op placement in the
+//! production realize path IS transfer-cost-aware: `compile_plan`
+//! (`fuel-dispatch/src/plan.rs`) scores each candidate as `compute + inbound`
+//! (greedy — `CostVector::from_candidate` in `ranker/cost_vector.rs`,
+//! `time = composite_ns(compute) + inbound_transfer_ns`) or
+//! `compute + inbound + cross-edge + outbound` (multi-device DP,
+//! `ranker/placement_dp.rs`), priced by the **Stage-1** `TransferCalibration` /
+//! `TransferEstimate` below via `SystemTopology` (the production
+//! `TransferEstimator`, wired at `fuel-core/src/pipelined_bridge.rs`'s
+//! `.with_transfer_estimator`). Copy-insertion runs after placement but only
+//! realizes edges the placement already priced. GOTCHA: transfer-awareness is
+//! gated on that estimator being passed — a caller of `compile_plan` /
+//! `optimize_graph` that omits `.with_transfer_estimator(...)` silently reverts to
+//! latency-greedy placement, the one way this file's stale text could become true
+//! again.
+//!
+//! HISTORICAL (original design note; no longer the live path): Phase 6b's dispatch
+//! table ignored transfer cost — it picked each op's backend purely on
+//! `latency_ns`. Phase 6c added a per-(src, dst) [`BandwidthMatrix`]
+//! (`N * ns_per_byte(src, dst)`, measured once at probe time). That `BandwidthMatrix`
+//! planner (`auto_place_and_route_with_transfer_cost` / `dp_plan` in
+//! `fuel-core/src/scheduling.rs`) was SUPERSEDED by the Stage-1 `TransferCalibration`
+//! path above and is NOT on the realize path — it survives only in tests and the
+//! `place` / `dp_diff` example bins.
 //!
 //! # What's in this commit (Phase 6c-A)
 //!
