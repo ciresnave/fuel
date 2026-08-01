@@ -109,7 +109,14 @@ allocations we ourselves request (see mitigation 5).
 5. **A self-monitoring aperture counter:** an in-process peak counter over host-visible
    *mapped* allocation bytes — the aperture-relevant quantity — so we can see our own
    aperture footprint going forward (partially closing the "nothing tracks the aperture"
-   gap).
+   gap). **Landed + live-verified:** a `MappedByteMeter` (saturating current+peak) plus an
+   RAII `MappedGuard` wired into the two host-visible H2D staging sites (`upload_bytes`,
+   `write_bytes`) — the guard releases on every exit including a `?` return, so a failed
+   mapping can't ratchet the accounting (mitigation-3b's leak mode). A live 4 MiB upload on
+   the RTX 4070 lifted the peak by exactly 4 MiB and released back to zero
+   (`fuel-vulkan-backend/tests/mapped_meter_live.rs`, run under the GPU lock). It is a
+   *partial* instrument by design — it sees our own mapped footprint, not the machine's
+   total aperture pressure — and the D2H download-staging path is not yet wired (follow-up).
 6. **Corrected the VRAM-capacity assumption** to the real hardware.
 
 ## Lessons
