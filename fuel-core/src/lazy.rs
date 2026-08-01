@@ -7513,17 +7513,21 @@ impl LlamaModel {
     /// `0..=i`, all resident by the time token `i` is fed). The pool-dtype gate
     /// accepts F32/BF16/F16 (the old f32-only restriction was lifted).
     ///
-    /// Placement: `Op::PagedAttn` has no FUSED CUDA/Vulkan kernel (it is CPU-only
-    /// in the binding table), but it DECOMPOSES to gather + SDPA primitives that DO
-    /// have GPU kernels — so on a GPU target, paged attention runs ON the GPU via
-    /// that decompose route, NOT on CPU. This is PC-2, verified on the 4070 by
-    /// `bf16_paged_decode_matches_contiguous_on_cuda` (calls this fn on a CUDA
-    /// device; argmax matches contiguous decode every step). PC-3 (a single fused
-    /// CUDA paged/flash kernel) is a PERF optimization over the decomposed
-    /// primitives, not a prerequisite for GPU paged decode. (2026-08-01: an earlier
-    /// pass of this note recorded a wrong "falls back to CPU" consequence — the
-    /// binding-table fact was true but the placement consequence was not; corrected
-    /// against the passing PC-2 test. The still-earlier "f32-only" wording is gone.)
+    /// Placement — UNRESOLVED; do NOT cite either outcome as verified. Verified
+    /// facts only: (1) `Op::PagedAttn` has no FUSED CUDA/Vulkan kernel — it is
+    /// CPU-only in the binding table (byte_kernels.rs). (2) The PC-2 CUDA test
+    /// `bf16_paged_decode_matches_contiguous_on_cuda` asserts NUMERICAL parity
+    /// (argmax(paged) == argmax(contiguous), every step) — it does NOT assert
+    /// PLACEMENT, so it cannot tell "runs on GPU as decomposed primitives" apart
+    /// from "runs on CPU with H2D/D2H copies"; a CPU fallback passes it identically.
+    /// What the executor actually does with a fused `PagedAttn` node on a CUDA
+    /// target — lower it to GPU-capable primitives, or run it on CPU with copies —
+    /// is NOT settled by any test or code-reading to date (three careful readings
+    /// reached different answers). It will be settled by per-node placement
+    /// MEASUREMENT of the attention op (GPU paged vs GPU contiguous). Until then,
+    /// assert neither. (2026-08-01: this note has at different times wrongly asserted
+    /// BOTH "falls back to CPU" and "runs on GPU via decompose", each on evidence
+    /// that didn't reach placement; reduced to the verified facts + the explicit gap.)
     ///
     /// Same math as the contiguous forward up to the attention reduction order
     /// (paged gathers-then-dense-SDPAs where contiguous slices a fixed-capacity
@@ -7977,11 +7981,12 @@ impl LlamaModel {
     /// so per-row results are independent (no cross-session contamination) and
     /// equal the B=1 serial path ε-close. The pool-dtype gate accepts F32/BF16/F16.
     /// `Op::PagedAttn` has no fused CUDA/Vulkan kernel (CPU-only in the binding
-    /// table) but DECOMPOSES to gather + SDPA primitives that have GPU kernels, so
-    /// on a GPU target it runs ON the GPU via that route (PC-2, verified), NOT on
-    /// CPU. PC-3 (a fused CUDA paged kernel) is a perf optimization, not a
-    /// prerequisite. (2026-08-01: corrected a wrong "falls back to CPU" consequence
-    /// against the passing PC-2 test.)
+    /// table). Whether, on a GPU target, the fused node lowers to GPU-capable
+    /// primitives or runs on CPU with copies is UNRESOLVED — the PC-2 CUDA test
+    /// verifies numerical parity, NOT placement, and code-readings have disagreed;
+    /// to be settled by per-node placement measurement. Assert neither outcome until
+    /// then. (2026-08-01: see `forward_paged_step`'s note — this doc twice asserted a
+    /// placement on under-reaching evidence; reduced to verified facts + the gap.)
     pub fn forward_paged_step_batched(
         &self,
         tokens: &[u32],
