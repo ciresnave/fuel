@@ -7511,11 +7511,19 @@ impl LlamaModel {
     /// via the running `context_len`, which is position-for-position equivalent
     /// to a batched causal prefill (each token's K/V depends only on tokens
     /// `0..=i`, all resident by the time token `i` is fed). The pool-dtype gate
-    /// accepts F32/BF16/F16 (the old f32-only restriction was lifted); but
-    /// `Op::PagedAttn` is registered ONLY on the CPU backend (half-float variant
-    /// incl.) — no CUDA/Vulkan kernel — so on GPU backends the attention op falls
-    /// back to CPU with copies (PC-3). (Corrected 2026-08-01: the old "f32-only"
-    /// wording was stale and misled a consumer.)
+    /// accepts F32/BF16/F16 (the old f32-only restriction was lifted).
+    ///
+    /// Placement: `Op::PagedAttn` has no FUSED CUDA/Vulkan kernel (it is CPU-only
+    /// in the binding table), but it DECOMPOSES to gather + SDPA primitives that DO
+    /// have GPU kernels — so on a GPU target, paged attention runs ON the GPU via
+    /// that decompose route, NOT on CPU. This is PC-2, verified on the 4070 by
+    /// `bf16_paged_decode_matches_contiguous_on_cuda` (calls this fn on a CUDA
+    /// device; argmax matches contiguous decode every step). PC-3 (a single fused
+    /// CUDA paged/flash kernel) is a PERF optimization over the decomposed
+    /// primitives, not a prerequisite for GPU paged decode. (2026-08-01: an earlier
+    /// pass of this note recorded a wrong "falls back to CPU" consequence — the
+    /// binding-table fact was true but the placement consequence was not; corrected
+    /// against the passing PC-2 test. The still-earlier "f32-only" wording is gone.)
     ///
     /// Same math as the contiguous forward up to the attention reduction order
     /// (paged gathers-then-dense-SDPAs where contiguous slices a fixed-capacity
@@ -7967,10 +7975,13 @@ impl LlamaModel {
     /// Each session's new K/V is written into its OWN physical block (they differ
     /// by `block_table` row), and one `Op::PagedAttn` at batch `K` reads them —
     /// so per-row results are independent (no cross-session contamination) and
-    /// equal the B=1 serial path ε-close. The pool-dtype gate accepts F32/BF16/F16;
-    /// `Op::PagedAttn` is CPU-only in the binding table (no CUDA/Vulkan kernel — PC-3),
-    /// so GPU backends fall back to CPU for the attention (corrected 2026-08-01; the
-    /// old "f32-only" wording was stale).
+    /// equal the B=1 serial path ε-close. The pool-dtype gate accepts F32/BF16/F16.
+    /// `Op::PagedAttn` has no fused CUDA/Vulkan kernel (CPU-only in the binding
+    /// table) but DECOMPOSES to gather + SDPA primitives that have GPU kernels, so
+    /// on a GPU target it runs ON the GPU via that route (PC-2, verified), NOT on
+    /// CPU. PC-3 (a fused CUDA paged kernel) is a perf optimization, not a
+    /// prerequisite. (2026-08-01: corrected a wrong "falls back to CPU" consequence
+    /// against the passing PC-2 test.)
     pub fn forward_paged_step_batched(
         &self,
         tokens: &[u32],
