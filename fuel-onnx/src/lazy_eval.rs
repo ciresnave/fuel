@@ -54,6 +54,15 @@ impl LazyOnnxEval {
         Self::from_bytes(&bytes)
     }
 
+    /// Wrap an already-decoded `ModelProto`.
+    ///
+    /// Exists for callers that build a graph programmatically rather than
+    /// loading one — notably the op conformance tests, which construct
+    /// single-node graphs directly instead of round-tripping through protobuf.
+    pub fn from_model(model: onnx::ModelProto) -> Self {
+        Self { model }
+    }
+
     /// Borrow the underlying ONNX model proto.
     pub fn model(&self) -> &onnx::ModelProto {
         &self.model

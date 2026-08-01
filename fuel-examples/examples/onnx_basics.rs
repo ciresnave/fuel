@@ -1,5 +1,7 @@
 ﻿use anyhow::Result;
-use fuel::{Device, Tensor};
+use fuel::lazy::LazyTensor;
+use fuel::{Device, Shape};
+use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 
@@ -39,8 +41,12 @@ pub fn main() -> Result<()> {
             let constants: std::collections::HashSet<_> =
                 graph.initializer.iter().map(|i| i.name.as_str()).collect();
             let mut inputs = std::collections::HashMap::new();
+            // Every `LazyTensor::from_*` mints a NEW graph and tensors only
+            // combine within one graph, so the first input becomes the anchor
+            // and the rest are built on its graph.
+            let mut anchor: Option<LazyTensor> = None;
+            let dev = Device::cpu();
             for input in graph.input.iter() {
-                use fuel_onnx::onnx::tensor_proto::DataType;
                 if constants.contains(input.name.as_str()) {
                     continue;
                 }
@@ -49,18 +55,9 @@ pub fn main() -> Result<()> {
                 let type_ = type_.value.as_ref().expect("no type.value for input");
                 let value = match type_ {
                     fuel_onnx::onnx::type_proto::Value::TensorType(tt) => {
-                        let dt = match DataType::try_from(tt.elem_type) {
-                            Ok(dt) => match fuel_onnx::dtype(dt) {
-                                Some(dt) => dt,
-                                None => {
-                                    anyhow::bail!(
-                                        "unsupported 'value' data-type {dt:?} for {}",
-                                        input.name
-                                    )
-                                }
-                            },
-                            type_ => anyhow::bail!("unsupported input type {type_:?}"),
-                        };
+                        let dt = fuel_onnx::dtype(tt.elem_type).map_err(|e| {
+                            anyhow::anyhow!("unsupported data-type for {}: {e}", input.name)
+                        })?;
                         let shape = tt.shape.as_ref().expect("no tensortype.shape for input");
                         let dims = shape
                                 .dim
@@ -70,16 +67,35 @@ pub fn main() -> Result<()> {
                                     fuel_onnx::onnx::tensor_shape_proto::dimension::Value::DimParam(_) => Ok(42),
                                 })
                                 .collect::<Result<Vec<usize>>>()?;
-                        Tensor::zeros(dims, dt, &Device::cpu())?
+                        let n: usize = dims.iter().product();
+                        let zeros: Arc<[f32]> = Arc::from(vec![0f32; n]);
+                        let t = match &anchor {
+                            None => LazyTensor::from_f32(zeros, Shape::from_dims(&dims), &dev),
+                            Some(a) => LazyTensor::from_f32_on(
+                                a.graph(),
+                                zeros,
+                                Shape::from_dims(&dims),
+                                &dev,
+                            ),
+                        };
+                        t.to_dtype(dt)?
                     }
                     type_ => anyhow::bail!("unsupported input type {type_:?}"),
                 };
-                println!("input {}: {value:?}", input.name);
+                if anchor.is_none() {
+                    anchor = Some(value.clone());
+                }
+                println!("input {}: shape {:?} dtype {:?}", input.name, value.shape().dims(), value.dtype());
                 inputs.insert(input.name.clone(), value);
             }
-            let outputs = fuel_onnx::simple_eval(&model, inputs)?;
+            let outputs = fuel_onnx::LazyOnnxEval::from_model(model).run(&inputs)?;
             for (name, value) in outputs.iter() {
-                println!("output {name}: {value:?}")
+                // Lazy: realize to inspect.
+                println!(
+                    "output {name}: shape {:?} = {:?}",
+                    value.shape().dims(),
+                    value.to_dtype(fuel::DType::F32)?.realize_f32()
+                );
             }
         }
     }

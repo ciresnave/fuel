@@ -56,12 +56,20 @@ fn broadcast_pair(a: &LazyTensor, b: &LazyTensor, op: &str) -> Result<(LazyTenso
     Ok((a.broadcast_to(shape.clone())?, b.broadcast_to(shape)?))
 }
 
-/// ONNX booleans are 0/1; fuel carries them as an integer dtype. `nonzero`
-/// normalizes an arbitrary numeric input to a 0/1 mask so the logical ops
-/// compose predictably even when handed, say, a float tensor.
-fn nonzero(x: &LazyTensor) -> Result<LazyTensor> {
-    let zero = x.zeros_like()?;
-    Ok(x.ne(&zero)?)
+/// Normalize an arbitrary numeric input to a **0.0/1.0 F32** mask.
+///
+/// F32 rather than a bool/U8 dtype for a concrete backend reason: the CPU
+/// backend registers the comparison and min/max kernels for FLOAT dtypes only
+/// (`MinimumElementwise` exists for F16/F32/F64/BF16 and *not* U8), while the
+/// comparison ops themselves *produce* U8. Chaining logical ops on their raw
+/// output therefore dies at realize with "no backend supports minimum on
+/// [U8, U8, U8]". Doing the algebra in F32 and casting the final result back to
+/// U8 keeps every intermediate on a kernel that exists.
+fn nonzero_f32(x: &LazyTensor) -> Result<LazyTensor> {
+    let xf = x.to_dtype(DType::F32)?;
+    let zero = xf.zeros_like()?;
+    // `ne` yields U8; widen straight back to F32 so callers can compose.
+    Ok(xf.ne(&zero)?.to_dtype(DType::F32)?)
 }
 
 /// Fetch a required positional input, erroring with the node name.
@@ -147,18 +155,21 @@ pub(crate) fn try_dispatch(
 
         // ---- logical: normalize to a 0/1 mask, then min/max/ne ----
         "Not" => {
-            let x = nonzero(&input(node, values, 0)?)?;
+            let x = nonzero_f32(&input(node, values, 0)?)?;
             let zero = x.zeros_like()?;
+            // `eq` already returns U8, which is the ONNX bool representation.
             set_output(node, 0, x.eq(&zero)?, values)?
         }
         "And" | "Or" | "Xor" => {
-            let a = nonzero(&input(node, values, 0)?)?;
-            let b = nonzero(&input(node, values, 1)?)?;
+            let a = nonzero_f32(&input(node, values, 0)?)?;
+            let b = nonzero_f32(&input(node, values, 1)?)?;
             let (a, b) = broadcast_pair(&a, &b, &node.op_type)?;
+            // On a 0.0/1.0 F32 mask: AND is min, OR is max, XOR is inequality.
+            // min/max stay in F32 (no U8 kernel exists) and are cast to U8 at
+            // the end; `ne` already produces U8.
             let y = match node.op_type.as_str() {
-                // on a 0/1 mask: AND is min, OR is max, XOR is inequality
-                "And" => a.minimum(&b)?,
-                "Or" => a.maximum(&b)?,
+                "And" => a.minimum(&b)?.to_dtype(DType::U8)?,
+                "Or" => a.maximum(&b)?.to_dtype(DType::U8)?,
                 _ => a.ne(&b)?,
             };
             set_output(node, 0, y, values)?
@@ -192,7 +203,8 @@ pub(crate) fn try_dispatch(
 
         // ---- Where: cond ? x : y ----
         "Where" => {
-            let cond = nonzero(&input(node, values, 0)?)?;
+            // `where_cond` wants a U8 selector; the F32 mask casts cleanly.
+            let cond = nonzero_f32(&input(node, values, 0)?)?.to_dtype(DType::U8)?;
             let x = input(node, values, 1)?;
             let y = input(node, values, 2)?;
             // All three broadcast together; do it pairwise against the result
@@ -228,23 +240,13 @@ pub(crate) fn try_dispatch(
                 let v = if v < 0 { v + rank } else { v };
                 v.clamp(0, rank) as usize
             };
-            let start = get_attr_ints_opt(node, "start")
-                .and_then(|s| s.first().copied())
-                .map(norm)
-                .unwrap_or(0);
-            let end = match node
-                .attribute
-                .iter()
-                .find(|a| a.name == "end")
-                .map(|a| a.i)
-            {
-                Some(v) => norm(v),
-                None => rank as usize,
+            let start = match node.attribute.iter().find(|a| a.name == "start") {
+                Some(a) => norm(a.i),
+                None => 0,
             };
-            let start_attr = node.attribute.iter().find(|a| a.name == "start").map(|a| a.i);
-            let start = match start_attr {
-                Some(v) => norm(v),
-                None => start,
+            let end = match node.attribute.iter().find(|a| a.name == "end") {
+                Some(a) => norm(a.i),
+                None => rank as usize,
             };
             let slice: Vec<i64> = if start <= end { dims[start..end].to_vec() } else { vec![] };
             let a = ensure_anchor(anchor, device);
@@ -515,9 +517,12 @@ pub(crate) fn try_dispatch(
             // ONNX: n = max(ceil((limit - start) / delta), 0)
             let n = (((limit - start) / delta).ceil()).max(0.0) as usize;
             let dtype = input(node, values, 0)?.dtype();
-            // `arange` has no step, so generate 0..n and affine it into place.
-            let base = LazyTensor::arange(0.0, n as f32, device);
-            let y = base.affine(delta, start).to_dtype(dtype)?;
+            // NOT `LazyTensor::arange` — that mints a NEW graph and the result
+            // would not combine with anything else in this evaluation. Hang the
+            // sequence off the anchor instead.
+            let a = ensure_anchor(anchor, device);
+            let seq: Vec<f32> = (0..n).map(|i| (start + delta * i as f64) as f32).collect();
+            let y = a.const_f32_like(seq, Shape::from_dims(&[n])).to_dtype(dtype)?;
             set_output(node, 0, y, values)?
         }
 
@@ -566,11 +571,13 @@ pub(crate) fn try_dispatch(
             }
             // one_hot[..., d, ...] = (indices == d) ? on : off
             let idx_f = indices.to_dtype(DType::F32)?.unsqueeze(axis)?;
-            let ramp = LazyTensor::arange(0.0, depth as f32, device);
-            // place `ramp` on the one-hot axis, everything else extent 1
+            // NOT `LazyTensor::arange` — it mints a NEW graph, and the `eq`
+            // below would then fail with a cross-graph error. Build the ramp as
+            // a constant on the indices' own graph.
             let mut ramp_dims = vec![1usize; rank1];
             ramp_dims[axis] = depth as usize;
-            let ramp = ramp.reshape(Shape::from_dims(&ramp_dims))?;
+            let ramp_data: Vec<f32> = (0..depth).map(|d| d as f32).collect();
+            let ramp = idx_f.const_f32_like(ramp_data, Shape::from_dims(&ramp_dims));
             let (a, b) = broadcast_pair(&idx_f, &ramp, "OneHot")?;
             let mask = a.eq(&b)?.to_dtype(DType::F32)?;
             // mask*(on-off) + off
