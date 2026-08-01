@@ -9,12 +9,17 @@
 pub mod byte_storage;
 pub mod capture;
 pub mod dyn_impl;
+pub mod mapped_meter;
 pub mod pipelines;
 pub mod probe;
 mod recorder;
 pub mod residency;
 
 pub use byte_storage::VulkanStorageBytes;
+pub use mapped_meter::{
+    mapped_host_visible_bytes, mapped_host_visible_peak_bytes, reset_host_mapped_peak,
+    MappedByteMeter,
+};
 pub use capture::CapturedRun;
 pub use dyn_impl::VulkanBackendDevice;
 /// Step E A4b-2: an in-flight (submitted, not-yet-waited) Vulkan batch. Produced
