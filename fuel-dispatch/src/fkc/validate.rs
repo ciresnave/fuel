@@ -2051,7 +2051,167 @@ determinism: same_hardware_bitwise
     }
 
     /// Lower a single kernel within a file using the stub link, mirroring what
+    /// V-FKC-3, corpus arm: **no two registrable contracts anywhere in the
+    /// checked-in corpus may claim the same `(kernel_source, entry_point)`.**
+    ///
+    /// `register_into` already rejects a duplicate `KernelRef` — but only for
+    /// the providers a given process actually imports, and the corpus lint
+    /// above stops at *lower*, so cross-file collisions in the checked-in
+    /// corpus had no safety net. That is the gap this closes.
+    ///
+    /// It deliberately does NOT go through `register_into`, and the reason is
+    /// worth recording: the lint's `StubLink` hands out
+    /// `table[g.len() % table.len()]` — **four** fn pointers, cycling — so the
+    /// 5th distinct symbol aliases the 1st. Registering the corpus through it
+    /// would report a flood of duplicates that are artifacts of the stub, not
+    /// of the corpus. Synthesizing an unbounded number of distinct `fn`
+    /// pointers at runtime is not possible, which is why this net could not be
+    /// built the obvious way.
+    ///
+    /// So it asserts the property at its source instead: two contracts naming
+    /// the same entry point in the same `kernel_source` are exactly the ones a
+    /// real link registry resolves to one `KernelRef`. A *structural*
+    /// assertion — it tests the property the duplicate gate is built on, needs
+    /// no oracle, and diagnoses by NAME rather than by index.
+    #[test]
+    fn ci_lint_corpus_has_no_cross_file_entry_point_collisions() {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let corpus = manifest.join("..").join("docs").join("kernel-contracts");
+        assert!(corpus.is_dir(), "corpus dir not found at {}", corpus.display());
+
+        let mut files = Vec::new();
+        collect_fkc_files(&corpus, &mut files);
+        files.sort();
+        assert!(!files.is_empty(), "no .fkc.md files found");
+
+        // (kernel_source, entry_point) -> first "file :: kernel" that claimed it
+        let mut claimed: std::collections::HashMap<(String, String), String> =
+            std::collections::HashMap::new();
+        // (kernel_source, entry_point, human description)
+        let mut collisions: Vec<(String, String, String)> = Vec::new();
+        let mut checked = 0usize;
+
+        for path in &files {
+            let rel = path.strip_prefix(manifest).unwrap_or(path).display().to_string();
+            let src = std::fs::read_to_string(path).expect("read corpus file");
+            let Ok(file) = parse_file(&src) else {
+                // Parse failures are the other lint's business; skip rather
+                // than double-report them here.
+                continue;
+            };
+            let kernel_source = file.front_matter.provider.kernel_source.clone();
+            for kernel in &file.kernels {
+                // Describe-only sections (§3.10) never reach the binding table,
+                // so they cannot collide.
+                if !kernel.registrable {
+                    continue;
+                }
+                let Some(entry) = kernel.entry_point.as_ref() else {
+                    continue;
+                };
+                checked += 1;
+                let key = (kernel_source.clone(), entry.clone());
+                let who = format!("{rel} :: {}", kernel.kernel);
+                match claimed.get(&key) {
+                    Some(first) => collisions.push((
+                        key.0.clone(),
+                        key.1.clone(),
+                        format!("claimed by BOTH {first} AND {who}"),
+                    )),
+                    None => {
+                        claimed.insert(key, who);
+                    }
+                }
+            }
+        }
+
+        // Report what the instrument actually SAW — a loop that silently
+        // examined nothing passes identically to one that examined everything.
+        eprintln!(
+            "FKC corpus entry-point uniqueness: {checked} registrable contracts across {} files,              {} distinct (kernel_source, entry_point) keys",
+            files.len(),
+            claimed.len()
+        );
+        assert!(
+            checked > 0,
+            "the lint examined zero registrable contracts — it is not looking where it thinks"
+        );
+
+        // --- Ratchet, not a cliff ---------------------------------------
+        //
+        // The corpus has 13 PRE-EXISTING collisions, all of the same shape: an
+        // IMPORTED file colliding with an UN-IMPORTED orphan. Verified by
+        // counting `include_str!` sites — `dispatch/reduce.fkc.md` and
+        // `vulkan/conv-attn-rope.fkc.md` have ZERO, while their partners
+        // `cpu/reduce{,-to}.fkc.md` and `vulkan/attention.fkc.md` have two
+        // each. So none of them registers today and none is a live duplicate.
+        //
+        // They are still real debt: two contracts claiming one kernel can
+        // DISAGREE about precision/cost, which is the divergence FKC exists to
+        // prevent, and wiring either orphan up would fail registration. They
+        // are listed rather than deleted because removing corpus contracts is a
+        // content decision for their authors, not a lint's to make.
+        //
+        // The value here is the ratchet: a NEW collision fails immediately.
+        const KNOWN: &[(&str, &str)] = &[
+            // dispatch/reduce.fkc.md (orphan) vs cpu/reduce{,-to}.fkc.md
+            ("portable-cpu", "fuel_cpu_backend::byte_kernels::sum_reduce_f32"),
+            ("portable-cpu", "fuel_cpu_backend::byte_kernels::max_reduce_f32"),
+            ("portable-cpu", "fuel_cpu_backend::byte_kernels::min_reduce_f32"),
+            ("portable-cpu", "fuel_cpu_backend::byte_kernels::mean_reduce_f32"),
+            ("portable-cpu", "fuel_cpu_backend::byte_kernels::reduce_sum_to_f32"),
+            ("portable-cpu", "fuel_cpu_backend::byte_kernels::reduce_max_to_f32"),
+            ("portable-cpu", "fuel_cpu_backend::byte_kernels::reduce_max_to_backward_f32"),
+            // vulkan/conv-attn-rope.fkc.md (orphan) vs vulkan/attention.fkc.md
+            ("vulkan-slang", "fuel_vulkan_backend::fkc::flash_attn_f32"),
+            ("vulkan-slang", "fuel_vulkan_backend::fkc::flash_attn_bf16"),
+            ("vulkan-slang", "fuel_vulkan_backend::fkc::flash_attn_f16"),
+            ("vulkan-slang", "fuel_vulkan_backend::fkc::flash_attn_backward_q_f32"),
+            ("vulkan-slang", "fuel_vulkan_backend::fkc::flash_attn_backward_k_f32"),
+            ("vulkan-slang", "fuel_vulkan_backend::fkc::flash_attn_backward_v_f32"),
+        ];
+        let is_known = |key: &(String, String)| {
+            KNOWN.iter().any(|(ks, ep)| *ks == key.0 && *ep == key.1)
+        };
+
+        let novel: Vec<&(String, String, String)> =
+            collisions.iter().filter(|c| !is_known(&(c.0.clone(), c.1.clone()))).collect();
+
+        // An allowlist that is never re-checked ROTS: a fixed collision would
+        // sit here forever, and the next reader would believe the debt is
+        // larger than it is. Fail on a stale entry too.
+        let seen: std::collections::HashSet<(String, String)> =
+            collisions.iter().map(|c| (c.0.clone(), c.1.clone())).collect();
+        let stale: Vec<&(&str, &str)> = KNOWN
+            .iter()
+            .filter(|(ks, ep)| !seen.contains(&((*ks).to_string(), (*ep).to_string())))
+            .collect();
+
+        if !stale.is_empty() {
+            for (ks, ep) in &stale {
+                eprintln!("  STALE ALLOWLIST ENTRY (no longer collides): {ks} :: {ep}");
+            }
+            panic!(
+                "{} allowlisted collision(s) no longer occur — delete them from KNOWN so the                  list keeps reflecting the real debt",
+                stale.len()
+            );
+        }
+
+        if !novel.is_empty() {
+            for (ks, ep, who) in &novel {
+                eprintln!("  NEW COLLISION: kernel_source `{ks}` entry_point `{ep}` — {who}");
+            }
+            panic!(
+                "{} NEW cross-file entry-point collision(s) — each would resolve to one                  KernelRef and trip the duplicate gate at registration. Give the new contract                  its own entry point, or mark it `registrable: false` if it is documentation.",
+                novel.len()
+            );
+        }
+    }
+
     /// `lower_file` does per-kernel (front-matter defaults applied).
+    ///
+    /// (See `ci_lint_corpus_has_no_cross_file_entry_point_collisions` below for
+    /// the V-FKC-3 corpus arm.)
     fn lower_one_kernel(
         file: &FkcFile,
         kernel: &FkcKernel,
