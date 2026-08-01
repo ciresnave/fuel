@@ -403,12 +403,27 @@ mod tests {
             let eff = p.effective_api_version();
             let sg = p.subgroup_properties();
             eprintln!(
-                "  [{i}] {}\n       effective_api = {}.{}\n       subgroup_size = {:?}\n       size_control  = {:?}",
+                "  [{i}] {}\n       effective_api = {}.{}\n       subgroup_size = {:?} (DEFAULT, not the admissible set)",
                 p.properties().device_name(),
                 eff.major(), eff.minor(),
                 sg.as_ref().map(|s| s.subgroup_size),
-                sg.as_ref().map(|s| s.size_control.is_some()),
             );
+            // The admissible SET is what decides whether wave-width
+            // specialization is even testable on a given device: a device that
+            // reports a default of 64 but admits {32, 64} is the interesting
+            // case (RDNA), one that admits only its default is not.
+            match sg.as_ref().and_then(|s| s.size_control.as_ref()) {
+                Some(sc) => eprintln!(
+                    "       size_control  = min={} max={} max_wg_subgroups={} compute_stage={}\n       \
+                     pinnable(32)={} pinnable(64)={}",
+                    sc.min_subgroup_size, sc.max_subgroup_size,
+                    sc.max_compute_workgroup_subgroups,
+                    sc.required_subgroup_size_stages
+                        .contains(ShaderStageFlags::COMPUTE),
+                    sc.permits_in_compute(32), sc.permits_in_compute(64),
+                ),
+                None => eprintln!("       size_control  = None (not pinnable)"),
+            }
             // Invariant, independent of what this machine supports: the
             // effective version is min(instance, device), so it can never
             // exceed what we requested.
