@@ -847,6 +847,26 @@ impl KvBlockPool {
             .ok_or(KvAllocError::UnknownPrefix)
     }
 
+    /// Splice a REGISTERED prefix (by [`PrefixId`]) into `dst` — the
+    /// consumer-facing splice that does NOT require the original donor session to
+    /// still exist (the owner keeps the blocks alive). Same contract as
+    /// [`splice_prefix`](Self::splice_prefix): `dst` must be empty, and the shared
+    /// blocks are the owner's (already fully-filled by construction); returns the
+    /// shared token count `prefix_blocks * block_size` so the consumer prefills
+    /// only `prompt[shared_tokens..]`. `Err(UnknownPrefix)` if `prefix` isn't
+    /// registered — never a panic.
+    pub fn splice_prefix_from(
+        &mut self,
+        prefix: PrefixId,
+        dst: SessionHandle,
+    ) -> Result<usize, KvAllocError> {
+        let (owner, prefix_blocks) = {
+            let o = self.prefixes.get(&prefix).ok_or(KvAllocError::UnknownPrefix)?;
+            (o.owner, o.prefix_blocks)
+        };
+        self.splice_prefix(owner, dst, prefix_blocks)
+    }
+
     /// Is `s` the owner session of a registered prefix? An owner session holds
     /// ONLY the shared prefix blocks (it never appends/decodes), so all of its
     /// blocks are eviction-immune — [`evict_blocks`](Self::evict_blocks) reports
@@ -1313,5 +1333,38 @@ mod tests {
         // A released id is a typed error on every path, never a panic.
         assert_eq!(pool.release_prefix(id), Err(KvAllocError::UnknownPrefix));
         assert_eq!(pool.prefix_blocks(id), Err(KvAllocError::UnknownPrefix));
+    }
+
+    #[test]
+    fn splice_prefix_from_shares_a_registered_prefix_after_donor_gone() {
+        let mut pool = KvBlockPool::new(geom(16, 4));
+        let a = pool.open();
+        pool.append(a, 8).unwrap(); // 2 full blocks
+        let (p0, p1) = (pool.resident_block(a, 0).unwrap(), pool.resident_block(a, 1).unwrap());
+        let id = pool.register_prefix(a, 2).unwrap();
+        pool.discard(a); // donor gone; the owner keeps the prefix alive (refcount 1)
+        assert_eq!(pool.block_refcount(p0), 1);
+
+        // A fresh consumer splices the registered prefix — no donor needed.
+        let c = pool.open();
+        let shared = pool.splice_prefix_from(id, c).expect("splice registered prefix");
+        assert_eq!(shared, 8, "2 blocks × block_size 4 = 8 shared tokens");
+        assert_eq!(pool.filled_tokens(c), Some(8), "consumer fill = shared prefix length");
+        assert_eq!(pool.session_blocks(c), Some(2));
+        assert_eq!(pool.block_refcount(p0), 2, "owner + consumer reference the prefix block");
+        assert_eq!(pool.block_refcount(p1), 2);
+        // Zero-copy: the consumer's slots point at the SAME physical blocks.
+        assert_eq!(pool.resident_block(c, 0).unwrap(), p0);
+        assert_eq!(pool.resident_block(c, 1).unwrap(), p1);
+
+        // Same transactional guard as splice_prefix: refuses a non-empty target.
+        let d = pool.open();
+        pool.append(d, 4).unwrap();
+        assert_eq!(pool.splice_prefix_from(id, d), Err(KvAllocError::PrefixTargetNotEmpty));
+
+        // After release, the id is unknown → typed error, never a panic.
+        pool.release_prefix(id).unwrap();
+        let e = pool.open();
+        assert_eq!(pool.splice_prefix_from(id, e), Err(KvAllocError::UnknownPrefix));
     }
 }
