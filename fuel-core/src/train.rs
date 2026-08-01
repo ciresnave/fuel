@@ -336,7 +336,7 @@ impl TrainState {
     ) -> Result<f32>
     where
         S: LrSchedule,
-        F: FnOnce(&SharedGraph, &HashMap<String, LazyTensor>) -> LazyTensor,
+        F: FnOnce(&SharedGraph, &HashMap<String, LazyTensor>) -> Result<LazyTensor>,
     {
         self.set_lr(schedule.lr_at(self.step_count));
         self.step(build_loss)
@@ -388,7 +388,7 @@ impl TrainState {
         build_loss: F,
     ) -> Result<f32>
     where
-        F: FnOnce(&SharedGraph, &HashMap<String, LazyTensor>) -> LazyTensor,
+        F: FnOnce(&SharedGraph, &HashMap<String, LazyTensor>) -> Result<LazyTensor>,
     {
         // 1. Build parameter placeholder tensors in a fresh graph.
         //    Use a "seed" LazyTensor to get a fresh SharedGraph. The
@@ -420,7 +420,7 @@ impl TrainState {
         }
 
         // 2. User builds the loss graph referring to parameters by name.
-        let loss = build_loss(&graph, &param_tensors);
+        let loss = build_loss(&graph, &param_tensors)?;
 
         // 3. Backward to get gradient nodes per parameter.
         let grad_map = loss.graph_tensor().backward();
@@ -453,7 +453,7 @@ impl TrainState {
                     let g_sq_sum = g.sqr().sum_all();
                     total_sq = Some(match total_sq {
                         None => g_sq_sum,
-                        Some(acc) => acc.add(&g_sq_sum).unwrap(),
+                        Some(acc) => acc.add(&g_sq_sum)?,
                     });
                 }
                 let total_sq = total_sq.ok_or_else(|| Error::Msg(
@@ -468,7 +468,7 @@ impl TrainState {
                 // ratio = norm/max_norm. We want scale = min(1, 1/ratio).
                 // Equivalently: scale = clamp(1/ratio, 0, 1).
                 let inv_ratio = ratio.const_f32_like(vec![1.0f32], Shape::from_dims(&[]))
-                    .div(&ratio).unwrap();
+                    .div(&ratio)?;
                 let scale = inv_ratio.clamp(0.0, 1.0);
                 Some(scale)
             }
@@ -488,8 +488,8 @@ impl TrainState {
                 Some(scale) => {
                     // Broadcast the rank-0 scalar to grad's shape and multiply.
                     let grad_shape = raw_grad.graph_tensor().shape();
-                    let scale_bcast = scale.broadcast_to(grad_shape).unwrap();
-                    raw_grad.mul(&scale_bcast).unwrap()
+                    let scale_bcast = scale.broadcast_to(grad_shape)?;
+                    raw_grad.mul(&scale_bcast)?
                 }
             };
 
@@ -497,7 +497,7 @@ impl TrainState {
                 OptimizerConfig::Sgd { lr } => {
                     // new = param - lr * grad
                     let scaled = grad_lt.mul_scalar(lr as f64);
-                    let new_param = param.sub(&scaled).unwrap();
+                    let new_param = param.sub(&scaled)?;
                     new_param_tensors.push(new_param);
                 }
                 OptimizerConfig::AdamW { lr, beta1, beta2, eps, weight_decay } => {
@@ -527,12 +527,12 @@ impl TrainState {
                     // new_m = β1·m + (1-β1)·g
                     let m_decayed = m_placeholder.mul_scalar(beta1 as f64);
                     let g_part = grad_lt.mul_scalar((1.0 - beta1) as f64);
-                    let new_m = m_decayed.add(&g_part).unwrap();
+                    let new_m = m_decayed.add(&g_part)?;
                     // new_v = β2·v + (1-β2)·g²
                     let v_decayed = v_placeholder.mul_scalar(beta2 as f64);
                     let g_sq = grad_lt.sqr();
                     let g_sq_part = g_sq.mul_scalar((1.0 - beta2) as f64);
-                    let new_v = v_decayed.add(&g_sq_part).unwrap();
+                    let new_v = v_decayed.add(&g_sq_part)?;
                     // Bias correction using step+1 (this is the step we're ABOUT to complete).
                     let t = (self.step_count + 1) as f64;
                     let bc1 = 1.0 - (beta1 as f64).powf(t);
@@ -541,11 +541,11 @@ impl TrainState {
                     let v_hat = new_v.mul_scalar(1.0 / bc2);
                     // update = m_hat / (sqrt(v_hat) + eps)
                     let denom = v_hat.sqrt().add_scalar(eps as f64);
-                    let update = m_hat.div(&denom).unwrap();
+                    let update = m_hat.div(&denom)?;
                     // Apply weight decay and lr.
                     let wd_term = param.mul_scalar(weight_decay as f64);
-                    let step_total = update.add(&wd_term).unwrap().mul_scalar(lr as f64);
-                    let new_param = param.sub(&step_total).unwrap();
+                    let step_total = update.add(&wd_term)?.mul_scalar(lr as f64);
+                    let new_param = param.sub(&step_total)?;
                     new_param_tensors.push(new_param);
                     new_opt_tensors.push((name.clone(), new_m, new_v));
                 }
@@ -623,16 +623,19 @@ impl TrainState {
 /// every backend runs them via the primitives it already supports.
 pub mod loss {
     use crate::lazy::LazyTensor;
-    use fuel_ir::Shape;
+    use fuel_ir::{Error, Result, Shape};
 
     /// Mean-squared-error loss: `mean((pred - target)²)`. Returns a
     /// scalar tensor. Works on any numeric shape — the mean is
     /// over all elements.
-    pub fn mse(pred: &LazyTensor, target: &LazyTensor) -> LazyTensor {
+    pub fn mse(pred: &LazyTensor, target: &LazyTensor) -> Result<LazyTensor> {
         let n = pred.graph_tensor().shape().elem_count();
-        let diff = pred.sub(target).unwrap();
+        // `sub` fails on a shape mismatch or a cross-graph operand — both are
+        // caller errors that must surface as a typed `Err`, not a panic inside
+        // a training loop.
+        let diff = pred.sub(target)?;
         let sq = diff.sqr();
-        sq.sum_all().mul_scalar(1.0 / n as f64)
+        Ok(sq.sum_all().mul_scalar(1.0 / n as f64))
     }
 
     /// Cross-entropy loss with integer class targets and raw logits.
@@ -654,10 +657,16 @@ pub mod loss {
     pub fn cross_entropy_with_logits(
         logits: &LazyTensor,
         target_one_hot: &LazyTensor,
-    ) -> LazyTensor {
+    ) -> Result<LazyTensor> {
         let dims = logits.graph_tensor().shape().dims().to_vec();
         let rank = dims.len();
-        assert!(rank >= 1, "cross_entropy_with_logits: logits must have rank >= 1");
+        // Was `assert!`. Rank-0 logits are a caller mistake, and a caller
+        // mistake must not abort a training process.
+        if rank < 1 {
+            return Err(Error::Msg(format!(
+                "cross_entropy_with_logits: logits must have rank >= 1, got {dims:?}"
+            )));
+        }
         let n_outer: usize = dims[..rank - 1].iter().product::<usize>().max(1);
 
         // Stable log-softmax along last dim:
@@ -665,26 +674,26 @@ pub mod loss {
         //   shifted = logits - max_r              shape [..., C]
         //   log_sum = log(sum_dim(exp(shifted), last))  shape [..., 1]
         //   log_softmax = shifted - log_sum       shape [..., C]
-        let max_r = logits.max_dim(rank - 1).unwrap();
+        let max_r = logits.max_dim(rank - 1)?;
         let mut keepdim = dims.clone();
         keepdim[rank - 1] = 1;
-        let max_kd = max_r.reshape(Shape::from_dims(&keepdim)).unwrap();
-        let max_bcast = max_kd.broadcast_to(Shape::from_dims(&dims)).unwrap();
-        let shifted = logits.sub(&max_bcast).unwrap();
+        let max_kd = max_r.reshape(Shape::from_dims(&keepdim))?;
+        let max_bcast = max_kd.broadcast_to(Shape::from_dims(&dims))?;
+        let shifted = logits.sub(&max_bcast)?;
         let expd = shifted.exp();
-        let sum_exp = expd.sum_dim(rank - 1).unwrap();
+        let sum_exp = expd.sum_dim(rank - 1)?;
         let log_sum = sum_exp.log();
-        let log_sum_kd = log_sum.reshape(Shape::from_dims(&keepdim)).unwrap();
-        let log_sum_bcast = log_sum_kd.broadcast_to(Shape::from_dims(&dims)).unwrap();
-        let log_softmax = shifted.sub(&log_sum_bcast).unwrap();
+        let log_sum_kd = log_sum.reshape(Shape::from_dims(&keepdim))?;
+        let log_sum_bcast = log_sum_kd.broadcast_to(Shape::from_dims(&dims))?;
+        let log_softmax = shifted.sub(&log_sum_bcast)?;
 
         // -sum(target * log_softmax, last-dim) summed over batch, then mean.
-        let per_elem = target_one_hot.mul(&log_softmax).unwrap();
+        let per_elem = target_one_hot.mul(&log_softmax)?;
         // Loss per-sample = -sum over class dim. Then mean over the
         // outer (batch) dims for a scalar loss.
-        let neg_per_sample = per_elem.sum_dim(rank - 1).unwrap().mul_scalar(-1.0);
+        let neg_per_sample = per_elem.sum_dim(rank - 1)?.mul_scalar(-1.0);
         let total = neg_per_sample.sum_all();
-        total.mul_scalar(1.0 / n_outer as f64)
+        Ok(total.mul_scalar(1.0 / n_outer as f64))
     }
 
     /// Fused softmax + negative log-likelihood with integer (class-
@@ -781,7 +790,7 @@ mod tests {
         let targets_prim = logits_prim.const_f32_like(
             targets_onehot, Shape::from_dims(&[3, 4]),
         );
-        let prim_loss = loss::cross_entropy_with_logits(&logits_prim, &targets_prim)
+        let prim_loss = loss::cross_entropy_with_logits(&logits_prim, &targets_prim).unwrap()
             .realize_f32()[0];
 
         assert!(
@@ -1132,7 +1141,7 @@ mod tests {
                 let y_hat = x.mul(&w_b).unwrap().add(&b_b).unwrap();
                 let diff = y_hat.sub(&y).unwrap();
                 let sq = diff.sqr();
-                sq.sum_all().mul_scalar(1.0 / len as f64)
+                Ok(sq.sum_all().mul_scalar(1.0 / len as f64))
             }).unwrap();
             if step % 500 == 0 {
                 eprintln!("step {step}: loss = {loss}");
@@ -1179,7 +1188,7 @@ mod tests {
                 let b_b = b.broadcast_to(Shape::from_dims(&[len])).unwrap();
                 let y_hat = x.mul(&w_b).unwrap().add(&b_b).unwrap();
                 let diff = y_hat.sub(&y).unwrap();
-                diff.sqr().sum_all().mul_scalar(1.0 / len as f64)
+                Ok(diff.sqr().sum_all().mul_scalar(1.0 / len as f64))
             }).unwrap();
             final_loss = loss;
             if step % 100 == 0 {
@@ -1329,7 +1338,7 @@ mod tests {
             let w_b = w.broadcast_to(Shape::from_dims(&[len])).unwrap();
             let b_b = b.broadcast_to(Shape::from_dims(&[len])).unwrap();
             let y_hat = x.mul(&w_b).unwrap().add(&b_b).unwrap();
-            y_hat.sub(&y).unwrap().sqr().sum_all().mul_scalar(1.0 / len as f64)
+            Ok(y_hat.sub(&y).unwrap().sqr().sum_all().mul_scalar(1.0 / len as f64))
         }).unwrap()
     }
 
@@ -1477,7 +1486,7 @@ mod tests {
                     let w_b = w.broadcast_to(Shape::from_dims(&[len])).unwrap();
                     let b_b = b.broadcast_to(Shape::from_dims(&[len])).unwrap();
                     let y_hat = x.mul(&w_b).unwrap().add(&b_b).unwrap();
-                    y_hat.sub(&y).unwrap().sqr().sum_all().mul_scalar(1.0 / len as f64)
+                    Ok(y_hat.sub(&y).unwrap().sqr().sum_all().mul_scalar(1.0 / len as f64))
                 }).unwrap();
             }
             let w = state.param_to_host("w").unwrap()[0];
@@ -1500,7 +1509,7 @@ mod tests {
                     let w_b = w.broadcast_to(Shape::from_dims(&[len])).unwrap();
                     let b_b = b.broadcast_to(Shape::from_dims(&[len])).unwrap();
                     let y_hat = x.mul(&w_b).unwrap().add(&b_b).unwrap();
-                    y_hat.sub(&y).unwrap().sqr().sum_all().mul_scalar(1.0 / len as f64)
+                    Ok(y_hat.sub(&y).unwrap().sqr().sum_all().mul_scalar(1.0 / len as f64))
                 }).unwrap();
             }
             let w = state.param_to_host("w").unwrap()[0];
@@ -1538,7 +1547,7 @@ mod tests {
                 let b_b = b.broadcast_to(Shape::from_dims(&[len])).unwrap();
                 let y_hat = x.mul(&w_b).unwrap().add(&b_b).unwrap();
                 let diff = y_hat.sub(&y).unwrap();
-                diff.sqr().sum_all().mul_scalar(1.0 / len as f64)
+                Ok(diff.sqr().sum_all().mul_scalar(1.0 / len as f64))
             }).unwrap();
         }
         let w_final = state.param_to_host("w").unwrap()[0];
