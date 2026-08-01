@@ -337,6 +337,23 @@ pub struct PlanOptions<'env> {
     /// `TransferCalibration` behind it); unit tests use synthetic
     /// estimators — never live calibration.
     pub transfer_estimator: Option<&'env dyn TransferEstimator>,
+    /// Guard against silently planning cost-based placement WITHOUT
+    /// transfer pricing. When `true`, [`compile_plan`] fails fast with an
+    /// error if [`Self::transfer_estimator`] is `None` — i.e. the caller
+    /// has declared "I intend to price transfer; if the estimator isn't
+    /// wired, that's a bug, not a silent revert to latency-greedy."
+    ///
+    /// Default `false` so the many unit tests that legitimately plan
+    /// *unpriced* (see `compile_plan_without_estimator_prices_nothing`) are
+    /// unaffected. The PRODUCTION realize entry (`fuel-core`'s
+    /// `build_optimized_graph`) sets this whenever cost-based cross-device
+    /// placement is active, so a future edit that drops the
+    /// `.with_transfer_estimator(...)` wiring — or a new production planner
+    /// that forgets it — fails loudly at plan-build time instead of quietly
+    /// pricing every transfer at zero. Opt-in rather than default-on
+    /// because "cost placement, unpriced" is a supported mode for callers
+    /// that ask for it; production simply never does.
+    pub require_transfer_pricing: bool,
     /// Residency resolver for graph INPUTS whose bytes already
     /// exist outside the plan — `Op::Const` storages uploaded by
     /// the const cache and persistent `initial` slots
@@ -407,6 +424,7 @@ impl Default for PlanOptions<'_> {
             capabilities_for: None,
             judge: None,
             transfer_estimator: None,
+            require_transfer_pricing: false,
             input_residency: None,
             reuse_plan: None,
             allow_cost_placement: true,
@@ -461,6 +479,18 @@ impl<'env> PlanOptions<'env> {
     /// off-device. Use for a reference / single-device realize.
     pub fn without_cost_placement(mut self) -> Self {
         self.allow_cost_placement = false;
+        self
+    }
+
+    /// Declare that this plan MUST price transfer: [`compile_plan`] errors
+    /// if no [`Self::transfer_estimator`] is set. Production realize wires
+    /// this whenever cost-based cross-device placement is active, so a
+    /// dropped or forgotten `.with_transfer_estimator(...)` fails loudly at
+    /// plan-build time rather than silently reverting to latency-greedy
+    /// placement (transfers priced at zero). See
+    /// [`Self::require_transfer_pricing`].
+    pub fn require_transfer_pricing(mut self) -> Self {
+        self.require_transfer_pricing = true;
         self
     }
 
@@ -626,6 +656,24 @@ pub fn compile_plan(
     bindings_table: &KernelBindingTable,
     options: &PlanOptions<'_>,
 ) -> Result<ExecutionPlan> {
+    // Transfer-pricing guard (opt-in via `PlanOptions::require_transfer_pricing`).
+    // A caller that declared it must price transfer, yet wired no estimator,
+    // would silently price every cross-device transfer at zero — reverting
+    // placement to latency-greedy. That is precisely the drift the production
+    // realize path guards against, so fail fast at plan-build time. Result, not
+    // panic (never panic on production paths); build-time validation, not a
+    // runtime surprise mid-dispatch.
+    if options.require_transfer_pricing && options.transfer_estimator.is_none() {
+        return Err(Error::Msg(
+            "compile_plan: require_transfer_pricing is set but no transfer \
+             estimator is wired — placement would silently price transfers at \
+             zero (latency-greedy). Wire PlanOptions::with_transfer_estimator(..) \
+             or drop the pricing requirement."
+                .into(),
+        )
+        .bt());
+    }
+
     // Snapshot the topology generation at plan-build time. The
     // executor (Phase 4.3) checks this against the live counter at
     // every dispatch-chunk boundary; mismatch surfaces
@@ -3536,6 +3584,65 @@ mod tests {
             assert_eq!(ca.inbound_transfer_ns, 0);
             assert_eq!(cb.inbound_transfer_ns, 0);
         }
+    }
+
+    /// The `require_transfer_pricing` guard: a plan that DECLARES it needs
+    /// transfer pricing but has no estimator wired must fail fast at plan-build
+    /// time — never silently price transfers at zero (latency-greedy). This is
+    /// the production regression guard: dropping `.with_transfer_estimator(...)`
+    /// from the realize path (while it still requires pricing) turns this red.
+    #[test]
+    fn compile_plan_require_transfer_pricing_errors_without_estimator() {
+        let mut table = KernelBindingTable::new();
+        register_add_f32(
+            &mut table,
+            BackendId::Cpu,
+            noop_kernel,
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+        );
+        let (g, add_id) = build_add_graph();
+        let order = topo_order(&g, add_id);
+        let cpu_caps_val = cpu_caps();
+        let caps_fn = |_: BackendId| Some(&cpu_caps_val);
+
+        // Declares it requires pricing, but wires NO estimator — the exact
+        // shape of a realize path that forgot `.with_transfer_estimator(...)`.
+        let opts = PlanOptions::new()
+            .with_capabilities_for(&caps_fn)
+            .require_transfer_pricing();
+        let err = compile_plan(&g, &order, &table, &opts).unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("transfer")
+                && (msg.contains("estimator") || msg.contains("pricing")),
+            "error should name the missing transfer estimator / pricing; got: {msg}",
+        );
+    }
+
+    /// The guard is satisfied when both `require_transfer_pricing` AND an
+    /// estimator are set — planning proceeds normally.
+    #[test]
+    fn compile_plan_require_transfer_pricing_ok_with_estimator() {
+        let mut table = KernelBindingTable::new();
+        register_add_f32(
+            &mut table,
+            BackendId::Cpu,
+            noop_kernel,
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+        );
+        let (g, add_id) = build_add_graph();
+        let order = topo_order(&g, add_id);
+        let cpu_caps_val = cpu_caps();
+        let caps_fn = |_: BackendId| Some(&cpu_caps_val);
+        let est = FlatEstimator { latency_ns: 1000 };
+
+        let opts = PlanOptions::new()
+            .with_capabilities_for(&caps_fn)
+            .with_transfer_estimator(&est)
+            .require_transfer_pricing();
+        let plan = compile_plan(&g, &order, &table, &opts)
+            .expect("require_transfer_pricing WITH an estimator must plan fine");
+        assert!(plan.alternatives(add_id).is_some());
     }
 
     #[test]
