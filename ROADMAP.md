@@ -2470,14 +2470,19 @@ LazyTensor signatures).
 >   fused-epilogue *idea* is still live as a future FusedLinear competitor
 >   (`docs/session-prompts/baracuda-cutlass-alpha-13-integration.md`), but it would
 >   need a lazy rewrite anyway.
-> - `fuel-tensor-tools` was the GGUF quantize/inspect CLI. **This is a real capability
->   loss** — `QTensor::quantize` / `dequantize`, `gguf_file::write`, and npz/pth
->   reading all went with it, and nothing replaces the "quantize a model to GGUF"
->   workflow today. It was already scoped out as unmaintained by an earlier session
->   (`docs/session-prompts/eager-tail-session-8-surgical-plan.md`). Restoring it does
->   **not** need a tensor at all: it is a file-format converter, so the lazy rewrite is
->   `fuel-formats` readers → host `Vec<f32>` → `fuel_quantized::GgmlType::from_float`
->   → a raw-bytes GGUF writer. Sized at roughly a day, not a port.
+> - `fuel-tensor-tools`, the GGUF quantize/inspect CLI, was archived and is now
+>   **RESTORED (2026-08-01)** — back in `[workspace.members]` and ported to host types
+>   exactly as the archive note predicted: `fuel-formats` readers → host `Vec<f32>` →
+>   `fuel_quantized`'s `QuantizedType` (`cpu_zeros` + `from_float` /
+>   `cpu_from_data` + `dequantize`) → a raw-bytes GGUF writer replacing the deleted
+>   `gguf_file::write`. It never needed a tensor: the eager `QTensor` was doing
+>   nothing a `Vec<f32>` could not, which is why this was a rewrite rather than a port.
+>
+>   **One capability did NOT come back: npz.** `fuel-core`'s `npy.rs` was deleted in B6
+>   and no npy reader survives anywhere in the tree (`fuel-formats` has ggml, gguf,
+>   imatrix, pickle, safetensors — no npy), so restoring it means writing a reader.
+>   `pth` is `ls`-only for a related reason: `fuel_formats::pickle` exposes
+>   `read_pth_tensor_info` (metadata) but not tensor payloads.
 
 
 >

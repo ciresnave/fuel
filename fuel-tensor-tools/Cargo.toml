@@ -1,0 +1,20 @@
+﻿[package]
+name = "fuel-tensor-tools"
+version.workspace = true
+edition.workspace = true
+description.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+byteorder = { workspace = true }
+clap = { workspace = true }
+# `fuel` is used only for the surviving safetensors mmap/view surface; the
+# format parsing and quantization go direct to fuel-formats / fuel-quantized.
+fuel = { workspace = true }
+fuel-formats = { workspace = true }
+fuel-quantized = { workspace = true }
+safetensors = { workspace = true }
