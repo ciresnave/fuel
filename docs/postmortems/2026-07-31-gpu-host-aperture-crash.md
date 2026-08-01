@@ -63,7 +63,10 @@ Several distinct issues combined; **none alone is proven to be the trigger.**
   different driver, so a non-reproduction means "the .1088 conditions no longer exist on this
   machine," NOT "unreproducible, probably not our code." (A control assertion did confirm the
   driver-identity change is real, not an artifact of the same-night Vulkan instance-version
-  bump.)
+  bump.) **This rollback is an active mitigation, not a restoration — the machine is now in a
+  MODIFIED state pinned to .1074. A future driver update could silently reinstall .1088 and
+  bring back the pre-crash conditions with no one connecting the two events. Treat the
+  pinned-back driver as an ongoing condition to watch, not a closed action.**
 - **No single session was the proximate trigger.** At the crash moment every agent
   session was doing CPU-only or compile-only work. Sessions that had done live GPU work
   earlier had finished and freed well before the crash.
