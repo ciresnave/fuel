@@ -390,14 +390,28 @@ impl VulkanBackend {
 
     /// Initialize with explicit device selection.
     pub fn with_selection(selection: DeviceSelection) -> fuel_ir::Result<Self> {
-        let instance = Instance::new(InstanceCreateInfo {
+        // V1_3 (was V1_2): `SubgroupProperties::size_control` is 1.3 core /
+        // VK_EXT_subgroup_size_control, and `effective_api_version` is
+        // min(instance, device) — so a sub-1.3 instance makes the pinnable
+        // subgroup-size range unreadable *regardless of device support*.
+        //
+        // Bumped together with the probe deliberately. Reporting `size_control`
+        // in `DeviceDescriptor` from a V1_3 probe while this compute instance
+        // stayed at V1_2 would advertise a capability the compute path cannot
+        // use — presence with the caveat stripped, the same defect shape as the
+        // `subgroup_width`-is-a-default doc fix.
+        //
+        // `vkCreateInstance` HARD-FAILS (`VK_ERROR_INCOMPATIBLE_DRIVER`) on a
+        // loader that tops out below the requested version — it does not
+        // silently degrade — hence the one-step fallback helper.
+        let instance = crate::probe::new_instance_preferring_v1_3(|api_version| InstanceCreateInfo {
             application_name: Some("fuel"),
             application_version: ApiVersion::V1_0,
             engine_name: Some("fuel-vulkan-backend"),
             engine_version: ApiVersion::V1_0,
-            api_version: ApiVersion::V1_2,
+            api_version,
             ..Default::default()
-        }).map_err(vk_err)?;
+        }).map_err(|e| fuel_ir::Error::Msg(format!("{e}")))?;
 
         let physicals = instance.enumerate_physical_devices().map_err(vk_err)?;
         if physicals.is_empty() {
@@ -640,14 +654,15 @@ impl VulkanBackend {
 
     /// List all available Vulkan physical devices.
     pub fn list_devices() -> fuel_ir::Result<Vec<(usize, String, String)>> {
-        let instance = Instance::new(InstanceCreateInfo {
+        // V1_3 — see `with_selection` for why, and why the fallback exists.
+        let instance = crate::probe::new_instance_preferring_v1_3(|api_version| InstanceCreateInfo {
             application_name: Some("fuel"),
             application_version: ApiVersion::V1_0,
             engine_name: Some("fuel-vulkan-backend"),
             engine_version: ApiVersion::V1_0,
-            api_version: ApiVersion::V1_2,
+            api_version,
             ..Default::default()
-        }).map_err(vk_err)?;
+        }).map_err(|e| fuel_ir::Error::Msg(format!("{e}")))?;
         let physicals = instance.enumerate_physical_devices().map_err(vk_err)?;
         Ok(physicals.iter().enumerate().map(|(i, p)| {
             let props = p.properties();

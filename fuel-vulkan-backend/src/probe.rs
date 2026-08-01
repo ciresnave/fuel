@@ -56,6 +56,44 @@ fn vk_err(e: impl std::fmt::Debug) -> Error {
     Error::Msg(format!("vulkan probe: {e:?}"))
 }
 
+/// Create an `Instance` at the requested API version, falling back **one step**
+/// to V1_2 if the loader refuses it.
+///
+/// Why the fallback exists. Fuel asks for **V1_3** because
+/// `SubgroupProperties::size_control` (the pinnable subgroup-size range) is
+/// Vulkan 1.3 core / `VK_EXT_subgroup_size_control`, and `effective_api_version`
+/// is `min(instance, device)` — so an instance below 1.3 makes size control
+/// unreadable *regardless of what the device supports*. Requesting 1.3 costs
+/// nothing on a 1.2 device: the effective version simply clamps back down.
+///
+/// The risk is narrow but real. A Vulkan **1.0** loader returns
+/// `VK_ERROR_INCOMPATIBLE_DRIVER` for any `apiVersion` above 1.0; loaders at 1.1
+/// and above must accept any value. Without a fallback, that failure would
+/// propagate as `Err` from a probe documented as *total*, and Fuel would report
+/// **zero Vulkan devices** on a machine that has one — a silent capability loss
+/// that looks identical to "no Vulkan installed". The fallback converts a hard
+/// failure into a logged degradation.
+///
+/// Takes a *builder* rather than a populated struct because
+/// `InstanceCreateInfo` is not `Clone` — the fallback needs to construct a
+/// second, independent value at the lower version.
+pub(crate) fn new_instance_preferring_v1_3<'a>(
+    build: impl Fn(ApiVersion) -> InstanceCreateInfo<'a>,
+) -> Result<Instance> {
+    match Instance::new(build(ApiVersion::V1_3)) {
+        Ok(i) => Ok(i),
+        Err(e) => {
+            tracing::warn!(
+                error = ?e,
+                "Vulkan instance creation failed at V1_3; retrying at V1_2. \
+                 SubgroupProperties::size_control will read None regardless of \
+                 device support."
+            );
+            Instance::new(build(ApiVersion::V1_2)).map_err(vk_err)
+        }
+    }
+}
+
 /// Enumerate every Vulkan physical device currently visible to the loader.
 ///
 /// The loader is probed **once per process**; every later call returns a clone
@@ -93,11 +131,11 @@ pub fn enumerate_devices() -> Result<Vec<DeviceDescriptor>> {
 #[doc(hidden)]
 pub fn enumerate_devices_uncached() -> Result<Vec<DeviceDescriptor>> {
     PROBE_CALLS.fetch_add(1, Ordering::SeqCst);
-    let instance = Instance::new(InstanceCreateInfo {
+    let instance = new_instance_preferring_v1_3(|api_version| InstanceCreateInfo {
         engine_name: Some("fuel-vulkan-backend probe"),
-        api_version: ApiVersion::V1_2,
+        api_version,
         ..Default::default()
-    }).map_err(vk_err)?;
+    })?;
     let physicals = instance.enumerate_physical_devices().map_err(vk_err)?;
 
     Ok(physicals.iter().enumerate().map(|(idx, p)| {
@@ -332,6 +370,103 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// **Characterization of the V1_2 → V1_3 instance bump.** Not an assertion
+    /// about this machine — it reports what the raised instance version actually
+    /// bought, per device, so the change is *observed* rather than assumed.
+    ///
+    /// The claim under test: `SubgroupProperties::size_control` is Vulkan 1.3
+    /// core / `VK_EXT_subgroup_size_control`, and `effective_api_version` is
+    /// `min(instance, device)` — so at V1_2 it read `None` regardless of what
+    /// the device supported. If the bump worked and the device is 1.3-capable,
+    /// it should now be `Some`.
+    ///
+    /// The only hard assertion is the invariant that must hold either way:
+    /// effective version can never exceed the instance version we asked for.
+    #[test]
+    fn v1_3_instance_bump_characterization() {
+        let instance = match new_instance_preferring_v1_3(|api_version| InstanceCreateInfo {
+            engine_name: Some("fuel-vulkan-backend probe"),
+            api_version,
+            ..Default::default()
+        }) {
+            Ok(i) => i,
+            Err(e) => { eprintln!("vulkan unavailable, skipped: {e}"); return; }
+        };
+        let physicals = match instance.enumerate_physical_devices() {
+            Ok(p) => p,
+            Err(e) => { eprintln!("enumeration failed, skipped: {e:?}"); return; }
+        };
+        eprintln!("=== V1_3 instance bump: {} device(s) ===", physicals.len());
+        for (i, p) in physicals.iter().enumerate() {
+            let eff = p.effective_api_version();
+            let sg = p.subgroup_properties();
+            eprintln!(
+                "  [{i}] {}\n       effective_api = {}.{}\n       subgroup_size = {:?}\n       size_control  = {:?}",
+                p.properties().device_name(),
+                eff.major(), eff.minor(),
+                sg.as_ref().map(|s| s.subgroup_size),
+                sg.as_ref().map(|s| s.size_control.is_some()),
+            );
+            // Invariant, independent of what this machine supports: the
+            // effective version is min(instance, device), so it can never
+            // exceed what we requested.
+            assert!(
+                eff.major() < 1 || (eff.major() == 1 && eff.minor() <= 3),
+                "effective_api_version {}.{} exceeds the requested V1_3",
+                eff.major(), eff.minor(),
+            );
+        }
+    }
+
+    /// **`driver_version` must not depend on the instance API version.**
+    ///
+    /// It is an [`EquivalenceKey`] field — the Judge's profile-cache key. If the
+    /// same physical device reported a different driver identity under a V1_2
+    /// instance than under V1_3, then raising the instance version would
+    /// silently invalidate every cached profile, *and* two Fuel components
+    /// creating instances at different versions would disagree about which
+    /// device they were looking at. Neither failure announces itself.
+    ///
+    /// Asserted rather than merely observed because the consequence is a silent
+    /// cache-key split, not a visible error.
+    #[test]
+    fn driver_identity_is_stable_across_instance_version() {
+        let mk = |api: ApiVersion| {
+            Instance::new(InstanceCreateInfo {
+                engine_name: Some("fuel-vulkan-backend probe"),
+                api_version: api,
+                ..Default::default()
+            })
+            .ok()
+            .and_then(|inst| {
+                let v: Vec<_> = inst
+                    .enumerate_physical_devices()
+                    .ok()?
+                    .iter()
+                    .map(|p| {
+                        let d = p.driver_properties();
+                        (
+                            p.properties().device_name(),
+                            d.as_ref().map(|d| format!("{:?} {} {}", d.driver_id, d.driver_name, d.driver_info)),
+                        )
+                    })
+                    .collect();
+                Some(v)
+            })
+        };
+        let (Some(at_1_2), Some(at_1_3)) = (mk(ApiVersion::V1_2), mk(ApiVersion::V1_3)) else {
+            eprintln!("vulkan unavailable at one or both versions, skipped");
+            return;
+        };
+        eprintln!("V1_2: {at_1_2:#?}");
+        eprintln!("V1_3: {at_1_3:#?}");
+        assert_eq!(
+            at_1_2, at_1_3,
+            "driver identity differs by instance API version — `driver_version` is an \
+             EquivalenceKey field, so this would split the Judge's profile cache silently"
+        );
     }
 
     /// The driver identity is an `EquivalenceKey` field, so an empty or
