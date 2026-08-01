@@ -287,9 +287,15 @@ fn run(args: Args) -> Result<()> {
         chw_u8[i] = scaled;
     }
 
-    let eager_u8 = fuel::Tensor::from_vec(chw_u8, (c, h, w), &fuel::Device::cpu())?;
+    // Already CHW — hand it straight to `HostImage`, no tensor round-trip.
+    debug_assert_eq!(c, 3);
+    let out = fuel_examples::HostImage {
+        data: chw_u8,
+        height: h,
+        width: w,
+    };
     println!("Saving image to {}...", args.output);
-    fuel_examples::save_image(&eager_u8, &args.output)?;
+    fuel_examples::save_image(&out, &args.output)?;
 
     println!("\nDone! Image saved to {}", args.output);
     Ok(())

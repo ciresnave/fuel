@@ -209,7 +209,7 @@ fn save_image(
             .map(|v| (*v as f64 / vae_scale) as f32)
             .collect();
 
-        let image = vae.decode(&scaled, h_lat, w_lat);
+        let image = vae.decode(&scaled, h_lat, w_lat)?;
         let image_flat = image.realize_f32();
         let dims = image.shape().dims().to_vec();
         if dims.len() != 4 || dims[0] != 1 || dims[1] != 3 {
@@ -223,14 +223,20 @@ fn save_image(
             let scaled_px = ((v.clamp(-1.0, 1.0) + 1.0) * 0.5 * 255.0).round() as u8;
             chw_u8[i] = scaled_px;
         }
-        let eager_u8 = fuel::Tensor::from_vec(chw_u8, (c, h, w), &fuel::Device::cpu())?;
+        // Already CHW — the VAE emits [1, 3, h, w] — so hand it straight to
+        // `HostImage` rather than round-tripping through a tensor.
+        let out = fuel_examples::HostImage {
+            data: chw_u8,
+            height: h,
+            width: w,
+        };
         let image_filename = output_filename(
             final_image,
             (bsize * idx) + batch + 1,
             batch + num_samples,
             timestep_ids,
         );
-        fuel_examples::save_image(&eager_u8, image_filename)?;
+        fuel_examples::save_image(&out, image_filename)?;
     }
     Ok(())
 }

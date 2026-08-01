@@ -38,7 +38,7 @@ pub fn main() -> Result<()> {
     // a flat row-major Vec<f32> and wrap as a lazy (1, 3, 224, 224) input.
     let image = fuel_examples::imagenet::load_image224(&args.image)?;
     println!("loaded image {image:?}");
-    let image_vec = image.flatten_all()?.to_vec1::<f32>()?;
+    let image_vec: Vec<f32> = image;
     let image_lazy = LazyTensor::from_f32(
         Arc::<[f32]>::from(image_vec),
         Shape::from_dims(&[1, 3, 224, 224]),

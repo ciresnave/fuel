@@ -39,9 +39,9 @@ pub fn main() -> anyhow::Result<()> {
     // position-embedding interpolation). Load with the 518 helper
     // and convert to a flat f32 vec for a (1, 3, 518, 518) lazy tensor.
     let cfg = Dinov2Config::vit_small();
-    let eager_image = fuel_examples::imagenet::load_image518(&args.image)?;
-    println!("loaded image {eager_image:?}");
-    let image_vec: Vec<f32> = eager_image.flatten_all()?.to_vec1::<f32>()?;
+    let image_chw = fuel_examples::imagenet::load_image518(&args.image)?;
+    println!("loaded image: {} f32 values (CHW)", image_chw.len());
+    let image_vec: Vec<f32> = image_chw;
     let image = LazyTensor::from_f32(
         Arc::<[f32]>::from(image_vec),
         Shape::from_dims(&[1, cfg.num_channels, cfg.image_size, cfg.image_size]),

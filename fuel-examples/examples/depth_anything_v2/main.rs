@@ -16,8 +16,7 @@ use fuel::lazy_depth_anything_v2::{
 };
 use fuel::lazy_dinov2::Dinov2Config;
 use fuel::safetensors::MmapedSafetensors;
-use fuel::DType::{F32, U8};
-use fuel::{Device, Result, Shape, Tensor};
+use fuel::{Device, Shape};
 use fuel_examples::{load_image, save_image};
 
 use crate::color_map::SpectralRColormap;
@@ -111,16 +110,12 @@ pub fn main() -> anyhow::Result<()> {
         .map_err(|e| E::msg(format!("forward: {e}")))?;
     println!("Got predictions {:?}", depth.shape());
 
-    // Realize the depth map to host f32 and finish post-processing eagerly
-    // (interpolate2d → min/max-normalize → optional color map → uint8) so
-    // we can reuse `fuel_examples::save_image` and `SpectralRColormap`
-    // which both expect an eager `Tensor`.
-    let depth_dims = depth.shape().dims().to_vec();
-    let depth_data = depth.realize_f32();
-    let depth_eager = Tensor::from_vec(depth_data, depth_dims, &device)?;
-
+    // Resize on the graph, then finish post-processing on the host
+    // (min/max-normalize → optional color map → uint8). B6 deleted the eager
+    // `Tensor` this used to route through; none of the remaining steps needed
+    // one, and `interpolate2d` exists on `LazyTensor`.
     let output_image = post_process_image(
-        &depth_eager,
+        &depth,
         original_height,
         original_width,
         args.color_map,
@@ -155,13 +150,11 @@ fn load_and_prep_image(
 ) -> anyhow::Result<(usize, usize, LazyTensor)> {
     let (_original_image, original_height, original_width) = load_image(image_path, None)?;
 
-    // Resize + CHW eager (uint8 → f32 with eager helpers, then drop to a
-    // plain Vec for host-side normalize).
+    // Resize to CHW u8, then widen to f32 for the host-side normalize.
     let resized = fuel_examples::load_image_and_resize(
         image_path, DINO_IMG_SIZE, DINO_IMG_SIZE,
-    )?
-    .to_dtype(F32)?;
-    let mut chw: Vec<f32> = resized.flatten_all()?.to_vec1::<f32>()?;
+    )?;
+    let mut chw: Vec<f32> = resized.data.iter().map(|&b| b as f32).collect();
     assert_eq!(chw.len(), 3 * DINO_IMG_SIZE * DINO_IMG_SIZE);
 
     // Normalize: pixel/255, then channel-wise (- mean) / std.
@@ -184,45 +177,56 @@ fn load_and_prep_image(
 }
 
 fn post_process_image(
-    image: &Tensor,
+    depth: &LazyTensor,
     original_height: usize,
     original_width: usize,
     color_map: bool,
-) -> Result<Tensor> {
-    let out = image.interpolate2d(original_height, original_width)?;
-    let out = scale_image(&out)?;
+) -> anyhow::Result<fuel_examples::HostImage> {
+    // Resize on the graph — this is the only step that wants a tensor.
+    let resized = depth
+        .interpolate2d(original_height, original_width)
+        .map_err(|e| E::msg(format!("interpolate2d: {e}")))?;
+    let gray = scale_to_unit_range(&resized.realize_f32());
 
-    let out = if color_map {
-        let spectral_r = SpectralRColormap::new();
-        spectral_r.gray2color(&out)?
+    let plane = original_height * original_width;
+    if gray.len() != plane {
+        anyhow::bail!(
+            "expected a {original_height}x{original_width} depth plane ({plane} values), got {}",
+            gray.len()
+        );
+    }
+
+    // Grayscale → RGB, channel-major. The colormap path maps each depth value
+    // through the spectral gradient; the plain path replicates the single
+    // channel three times (what `Tensor::cat(&[g, g, g], 0)` used to do).
+    let rgb: Vec<f32> = if color_map {
+        SpectralRColormap::new().gray2color(&gray, original_height, original_width)
     } else {
-        let rgb_slice = [&out, &out, &out];
-        Tensor::cat(&rgb_slice, 0)?.squeeze(1)?
+        let mut v = Vec::with_capacity(3 * plane);
+        for _ in 0..3 {
+            v.extend_from_slice(&gray);
+        }
+        v
     };
 
-    let max_pixel_val = Tensor::try_from(255.0f32)?
-        .to_device(out.device())?
-        .broadcast_as(out.shape())?;
-    let out = (out * max_pixel_val)?;
-
-    out.to_dtype(U8)
+    Ok(fuel_examples::HostImage {
+        data: rgb
+            .iter()
+            .map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)
+            .collect(),
+        height: original_height,
+        width: original_width,
+    })
 }
 
-fn scale_image(depth: &Tensor) -> Result<Tensor> {
-    let flat_values: Vec<f32> = depth.flatten_all()?.to_vec1()?;
-
-    let min_val = flat_values.iter().min_by(|a, b| a.total_cmp(b)).unwrap();
-    let max_val = flat_values.iter().max_by(|a, b| a.total_cmp(b)).unwrap();
-
-    let min_val_tensor = Tensor::try_from(*min_val)?
-        .to_device(depth.device())?
-        .broadcast_as(depth.shape())?;
-    let depth = (depth - min_val_tensor)?;
-
+/// Min/max-normalize a depth plane into `[0, 1]`. A flat plane (max == min)
+/// maps to all-zero rather than dividing by zero.
+fn scale_to_unit_range(depth: &[f32]) -> Vec<f32> {
+    let min_val = depth.iter().copied().fold(f32::INFINITY, f32::min);
+    let max_val = depth.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     let range = max_val - min_val;
-    let range_tensor = Tensor::try_from(range)?
-        .to_device(depth.device())?
-        .broadcast_as(depth.shape())?;
-
-    depth / range_tensor
+    if range == 0.0 || !range.is_finite() {
+        return vec![0.0; depth.len()];
+    }
+    depth.iter().map(|v| (v - min_val) / range).collect()
 }

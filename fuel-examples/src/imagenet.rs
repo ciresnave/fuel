@@ -1,17 +1,24 @@
-﻿use fuel::{Device, Result, Tensor};
+﻿use fuel::Result;
 
 pub const IMAGENET_MEAN: [f32; 3] = [0.485f32, 0.456, 0.406];
 pub const IMAGENET_STD: [f32; 3] = [0.229f32, 0.224, 0.225];
 
 /// Loads an image from disk using the image crate at the requested resolution,
 /// using the given std and mean parameters.
-/// This returns a tensor with shape (3, res, res). imagenet normalization is applied.
+///
+/// Returns `3 * res * res` floats in **CHW** order with imagenet normalization
+/// applied: `(pixel / 255 - mean[c]) / std[c]`. Build a tensor from it with
+/// `LazyTensor::from_vec(v, (3, res, res), dev)`.
+///
+/// B6 note: this used to return an eager `Tensor` and do the normalization with
+/// `broadcast_sub`/`broadcast_div`. Nothing about it needed a device — it is
+/// per-pixel host arithmetic on a freshly decoded image.
 pub fn load_image_with_std_mean<P: AsRef<std::path::Path>>(
     p: P,
     res: usize,
     mean: &[f32; 3],
     std: &[f32; 3],
-) -> Result<Tensor> {
+) -> Result<Vec<f32>> {
     let img = image::ImageReader::open(p)?
         .decode()
         .map_err(fuel::Error::wrap)?
@@ -21,31 +28,35 @@ pub fn load_image_with_std_mean<P: AsRef<std::path::Path>>(
             image::imageops::FilterType::Triangle,
         );
     let img = img.to_rgb8();
-    let data = img.into_raw();
-    let data = Tensor::from_vec(data, (res, res, 3), &Device::cpu())?.permute((2, 0, 1))?;
-    let mean = Tensor::new(mean, &Device::cpu())?.reshape((3, 1, 1))?;
-    let std = Tensor::new(std, &Device::cpu())?.reshape((3, 1, 1))?;
-    (data.to_dtype(fuel::DType::F32)? / 255.)?
-        .broadcast_sub(&mean)?
-        .broadcast_div(&std)
+    let hwc = img.into_raw();
+    let mut out = vec![0f32; 3 * res * res];
+    for y in 0..res {
+        for x in 0..res {
+            for c in 0..3 {
+                let v = hwc[(y * res + x) * 3 + c] as f32 / 255.;
+                out[(c * res + y) * res + x] = (v - mean[c]) / std[c];
+            }
+        }
+    }
+    Ok(out)
 }
 
-/// Loads an image from disk using the image crate at the requested resolution.
-/// This returns a tensor with shape (3, res, res). imagenet normalization is applied.
-pub fn load_image<P: AsRef<std::path::Path>>(p: P, res: usize) -> Result<Tensor> {
+/// Loads an image from disk at the requested resolution, returning
+/// `3 * res * res` imagenet-normalized floats in CHW order.
+pub fn load_image<P: AsRef<std::path::Path>>(p: P, res: usize) -> Result<Vec<f32>> {
     load_image_with_std_mean(p, res, &IMAGENET_MEAN, &IMAGENET_STD)
 }
 
-/// Loads an image from disk using the image crate, this returns a tensor with shape
-/// (3, 224, 224). imagenet normalization is applied.
-pub fn load_image224<P: AsRef<std::path::Path>>(p: P) -> Result<Tensor> {
+/// Loads an image from disk, returning `3 * 224 * 224` imagenet-normalized
+/// floats in CHW order.
+pub fn load_image224<P: AsRef<std::path::Path>>(p: P) -> Result<Vec<f32>> {
     load_image(p, 224)
 }
 
-/// Loads an image from disk using the image crate, this returns a tensor with shape
-/// (3, 518, 518). imagenet normalization is applied.
+/// Loads an image from disk, returning `3 * 518 * 518` imagenet-normalized
+/// floats in CHW order.
 /// The model dinov2 reg4 analyzes images with dimensions 3x518x518 (resulting in 37x37 transformer tokens).
-pub fn load_image518<P: AsRef<std::path::Path>>(p: P) -> Result<Tensor> {
+pub fn load_image518<P: AsRef<std::path::Path>>(p: P) -> Result<Vec<f32>> {
     load_image(p, 518)
 }
 

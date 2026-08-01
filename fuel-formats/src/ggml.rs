@@ -7,9 +7,11 @@
 //!
 //! This module owns the wire-format types ([`Magic`],
 //! [`VersionedMagic`], [`HParams`], [`Vocab`], [`RawTensor`]) and the
-//! readers that produce them from any `impl Read + Seek`. Promotion
-//! of [`RawTensor`] to a typed `QTensor` lives downstream
-//! (`fuel-core/src/quantized/ggml_file.rs::qtensor_from_ggml`).
+//! readers that produce them from any `impl Read + Seek`. It is now the
+//! whole of Fuel's GGML support: B6 deleted the downstream promotion
+//! layer (`fuel-core/src/quantized/ggml_file.rs`), which existed only to
+//! turn a [`RawTensor`] into an eager `QTensor`. Consumers take the
+//! [`RawTensor`] bytes and decode them themselves.
 //!
 //! Reference: <https://github.com/ggerganov/llama.cpp/blob/468ea24fb4633a0d681f7ac84089566c1c6190cb/llama.cpp#L505>
 

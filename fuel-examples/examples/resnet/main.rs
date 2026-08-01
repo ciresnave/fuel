@@ -53,9 +53,9 @@ pub fn main() -> anyhow::Result<()> {
     // Image loading still uses the eager imagenet helper (returns
     // shape (3, 224, 224)). Convert to a flat f32 vec and build a
     // lazy (1, 3, 224, 224) tensor.
-    let eager_image = fuel_examples::imagenet::load_image224(&args.image)?;
-    println!("loaded image {eager_image:?}");
-    let image_vec: Vec<f32> = eager_image.flatten_all()?.to_vec1::<f32>()?;
+    let image_chw = fuel_examples::imagenet::load_image224(&args.image)?;
+    println!("loaded image: {} f32 values (CHW)", image_chw.len());
+    let image_vec: Vec<f32> = image_chw;
     let image = LazyTensor::from_f32(
         Arc::<[f32]>::from(image_vec),
         Shape::from_dims(&[1, 3, 224, 224]),

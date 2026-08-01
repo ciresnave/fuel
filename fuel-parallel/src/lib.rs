@@ -25,9 +25,9 @@
 //! ## Lazy-only
 //!
 //! Every tensor-touching surface here takes [`LazyTensor`](fuel::lazy::LazyTensor).
-//! Fuel is retiring eager entirely, and a collective written against the eager
-//! `fuel::Tensor` could not reduce lazy shards — the most likely reason this
-//! crate sat unwired. Only [`comm`] and [`tensor_parallel`] ever touched
+//! Fuel retired eager entirely in B6, and a collective written against the old
+//! eager `Tensor` could not have reduced lazy shards — the most likely reason
+//! this crate sat unwired. Only [`comm`] and [`tensor_parallel`] ever touched
 //! tensors; [`topology`], [`pipeline_parallel`] and [`distributed_cache`] are
 //! pure policy and metadata, so they were already dtype- and tensor-free.
 //!
