@@ -119,11 +119,37 @@ $holderBefore = if (Test-Path -LiteralPath $LockPath) {
 
 try {
     try {
-        if (-not $mutex.WaitOne(0)) {
-            Write-GpuLog "WAIT — GPU lock held by: $holderBefore"
-            $mutex.WaitOne() | Out-Null            # blocks until the holder releases
+        if ($mutex.WaitOne(0)) {
+            $acquired = $true
         }
-        $acquired = $true
+        else {
+            Write-GpuLog "WAIT — GPU lock held by: $holderBefore"
+            # A holder that DIES abandons the mutex (AbandonedMutexException, handled
+            # below). But a holder that HANGS never abandons it — the exact
+            # SIGKILL-worthy Vulkan-enumeration hang behind the 2026-07-31 incident —
+            # so an UNBOUNDED WaitOne would silently wedge the whole queue, every
+            # session looking idle while stuck (worse than no lock). Slice the wait,
+            # warn to stderr each minute, and ABORT loud after the bound so a hang is
+            # the noisiest state in the system, not the quietest.
+            $timeoutMin = if ($env:GPU_RUN_TIMEOUT_MIN) { [int]$env:GPU_RUN_TIMEOUT_MIN } else { 15 }
+            while (-not $acquired) {
+                if ($mutex.WaitOne(60000)) { $acquired = $true; break }
+                $mins      = [int]((Get-Date) - $t0).TotalMinutes
+                $holderNow = if (Test-Path -LiteralPath $LockPath) {
+                                 (Get-Content -Raw -LiteralPath $LockPath -ErrorAction SilentlyContinue)
+                             } else { '(lockfile gone)' }
+                $warn = "gpu-run: still WAITING ${mins}m for the GPU lock — holder: $holderNow"
+                [Console]::Error.WriteLine($warn); Write-GpuLog $warn
+                if ($mins -ge $timeoutMin) {
+                    $abort = "gpu-run: ABORT after ${mins}m (>= ${timeoutMin}m) — holder appears WEDGED " +
+                             "(a hung holder never abandons the mutex). Holder: $holderNow. " +
+                             "Investigate/kill it (Stop-Process), then retry; raise the bound with " +
+                             "`$env:GPU_RUN_TIMEOUT_MIN."
+                    [Console]::Error.WriteLine($abort); Write-GpuLog $abort
+                    exit 75   # EX_TEMPFAIL: distinct 'try again later', not a child code
+                }
+            }
+        }
     }
     catch [System.Threading.AbandonedMutexException] {
         # Previous holder died mid-hold (hard kill / bugcheck). WaitOne STILL acquired.
@@ -148,6 +174,10 @@ try {
     # --- Run the child HOLDING the lock (blocks; lock outlives the work) -------
     $env:GPU_RUN_HELD     = '1'
     $env:GPU_RUN_HELD_PID = "$PID"
+    # PS 7.4+ with EAP=Stop makes a FAILING native child throw instead of setting
+    # $LASTEXITCODE; disable that locally so we capture the child's REAL exit code
+    # (the finally still releases the lock either way).
+    $PSNativeCommandUseErrorActionPreference = $false
     & $exe @rest
     $code = $LASTEXITCODE
     Write-GpuLog "DONE exit=$code : $cmdStr"
