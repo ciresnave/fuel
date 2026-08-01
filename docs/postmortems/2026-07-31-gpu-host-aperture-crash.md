@@ -47,6 +47,23 @@ Several distinct issues combined; **none alone is proven to be the trigger.**
 
 ## What we investigated — and did NOT conclude
 
+- **The GPU driver was rolled back — MANUALLY by the operator, not by the OS — so it carries
+  no attribution.** The crash-time NVIDIA driver was 610.88 (`32.0.16.1088`); the machine now
+  reports 610.74 (`.1074`), confirmed by two independent reads. The operator rolled it back
+  *deliberately, as a precaution*, on the hypothesis that the .1088 driver might have been the
+  cause — it was **not** a Windows-initiated post-bugcheck rollback. (An earlier draft of this
+  note inferred "the OS attributed the fault to the driver" from the version change alone,
+  without verifying *who* caused it — the same assert-from-a-datum-without-a-positive-control
+  defect this file's process exists to catch, and the one place all night the evidence seemed
+  to point our way, which is exactly when the inference was weakest.) So there is no OS verdict
+  here; there is an operator's reasonable suspicion. What *does* hold, and matters
+  operationally: **every result after the rollback runs on .1074 and says nothing about
+  .1088** — the clean post-crash test run and all later validation are evidence that .1074
+  works, not that the .1088 which crashed was fine. A reproduction attempt from here runs on a
+  different driver, so a non-reproduction means "the .1088 conditions no longer exist on this
+  machine," NOT "unreproducible, probably not our code." (A control assertion did confirm the
+  driver-identity change is real, not an artifact of the same-night Vulkan instance-version
+  bump.)
 - **No single session was the proximate trigger.** At the crash moment every agent
   session was doing CPU-only or compile-only work. Sessions that had done live GPU work
   earlier had finished and freed well before the crash.
