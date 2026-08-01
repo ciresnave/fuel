@@ -2,12 +2,13 @@
 //!
 //! `MetalUgIOp1` wraps a compiled Metal `ComputePipeline` produced by
 //! `MetalDevice::compile` and dispatches it as an in-place unary op.
-//! Implements [`fuel_backend_contract::InplaceOp1`] so it can be applied to a
-//! tensor via `Tensor::inplace_op1` from fuel-core.
+//! Implements [`fuel_backend_contract::InplaceOp1`], the backend-side contract
+//! for an in-place unary kernel.
 //!
-//! Migrated out of `fuel_core::custom_op::UgIOp1` in step B2 of the
-//! backend extraction; fuel-core no longer mentions
-//! metal-specific dispatch in the custom-op module.
+//! Migrated out of `fuel_core::custom_op::UgIOp1` in step B2 of the backend
+//! extraction. That module is gone entirely as of B6 — the eager custom-op
+//! surface it belonged to was deleted with the eager `Tensor` — so this
+//! `InplaceOp1` impl is the only remaining home for metal-specific ug dispatch.
 
 use fuel_backend_contract::dyn_backend::DynBackendStorage;
 use fuel_backend_contract::inplace_op::InplaceOp1;

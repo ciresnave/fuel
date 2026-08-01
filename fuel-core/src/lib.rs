@@ -1,4 +1,4 @@
-﻿//! ML framework for Rust
+//! ML framework for Rust
 //!
 //! ```rust
 //! use fuel_core::tensor::Tensor;
@@ -48,27 +48,16 @@
 //! - [fuel-transformers](https://docs.rs/fuel-transformers/). Fuel implementation of many published transformer models.
 //!
 
-/// A small-vector type for dimension/stride storage.
-/// Avoids heap allocation for tensors with up to 6 dimensions.
-pub(crate) type DimVec = smallvec::SmallVec<[usize; 6]>;
-
 #[cfg(feature = "accelerate")]
 mod accelerate;
 pub mod backend;
-pub mod backprop;
-pub mod conv;
-mod convert;
 pub mod cpu_backend;
 pub mod cuda_backend;
-mod custom_op;
 mod device;
-pub mod display;
 pub mod dyn_backend;
 mod dtype;
 pub mod dummy_dtype;
 pub mod error;
-pub mod hopfield;
-mod indexer;
 pub mod lazy;
 pub mod lazy_based;
 pub mod lazy_beit;
@@ -260,7 +249,6 @@ pub mod judge;
 /// realize path. Behind the `telemetry` cargo feature; off by default.
 #[cfg(feature = "telemetry")]
 pub mod telemetry;
-pub mod npy;
 /// Hardware discovery moved to the `fuel-hardware` crate (retirement B0.2);
 /// re-exported here so `fuel_core::probe` / `crate::probe` callers are unchanged.
 pub use fuel_hardware::probe;
@@ -272,41 +260,28 @@ pub use fuel_dispatch::topology;
 /// Transfer (bandwidth) calibration moved to `fuel-hardware` (retirement B0.2b);
 /// re-exported so `crate::transfer_cost` / `fuel_core::transfer_cost` is unchanged.
 pub use fuel_hardware::transfer_cost;
-pub mod op;
-pub mod pickle;
 pub mod quantized;
 pub mod nf4;
 pub mod safetensors;
-pub mod sampling;
 pub mod train;
-pub mod scalar;
 pub mod shape;
-mod sort;
 mod storage;
-pub mod streaming;
 mod strided_index;
-pub mod tensor;
-mod tensor_cat;
 pub mod test_utils;
 pub mod utils;
-mod variable;
 
 #[cfg(feature = "cudnn")]
 pub use cuda_backend::cudnn;
 
 pub use cpu_backend::{CpuStorage, CpuStorageRef, HostBuffer, HostBufferRef};
-pub use custom_op::{CustomOp1, CustomOp2, CustomOp3, InplaceOp1, InplaceOp2, InplaceOp3};
 pub use device::{Device, DeviceLocation, NdArray};
 pub use dtype::{DType, DTypeParseError, FloatDType, IntDType, WithDType};
 pub use dummy_dtype::{F4, F6E2M3, F6E3M2, F8E8M0};
 pub use error::{Context, Error, Result};
-pub use indexer::{IndexOp, TensorIndexer};
 pub use layout::Layout;
 pub use shape::{Shape, D};
 pub use storage::Storage;
-pub use streaming::{StreamMask, StreamTensor, StreamingBinOp, StreamingModule, apply_state_mask};
 pub use strided_index::{StridedBlocks, StridedIndex};
-pub use variable::Var;
 
 // Eager `Tensor` is the runtime data type the executor materializes into.
 // New user code should use [`lazy::LazyTensor`] — the graph builder — and
@@ -317,7 +292,6 @@ pub use variable::Var;
 // does not appear in generated rustdoc; the canonical path
 // `fuel_core::tensor::Tensor` remains accessible for the same callers.
 #[doc(hidden)]
-pub use tensor::{Tensor, TensorId};
 
 #[cfg(feature = "cuda")]
 pub use cuda_backend as cuda;
@@ -353,34 +327,8 @@ impl ToUsize2 for (usize, usize) {
     }
 }
 
-/// Defining a module with forward method using a single argument.
-pub trait Module {
-    fn forward(&self, xs: &crate::tensor::Tensor) -> Result<crate::tensor::Tensor>;
-}
-
-impl<T: Fn(&crate::tensor::Tensor) -> Result<crate::tensor::Tensor>> Module for T {
-    fn forward(&self, xs: &crate::tensor::Tensor) -> Result<crate::tensor::Tensor> {
-        self(xs)
-    }
-}
-
-impl<M: Module> Module for Option<&M> {
-    fn forward(&self, xs: &crate::tensor::Tensor) -> Result<crate::tensor::Tensor> {
-        match self {
-            None => Ok(xs.clone()),
-            Some(m) => m.forward(xs),
-        }
-    }
-}
-
-/// A single forward method using a single single tensor argument and a flag to
-/// separate the training and evaluation behaviors.
-pub trait ModuleT {
-    fn forward_t(&self, xs: &crate::tensor::Tensor, train: bool) -> Result<crate::tensor::Tensor>;
-}
-
-impl<M: Module> ModuleT for M {
-    fn forward_t(&self, xs: &crate::tensor::Tensor, _train: bool) -> Result<crate::tensor::Tensor> {
-        self.forward(xs)
-    }
-}
+// `Module` / `ModuleT` were REMOVED in B6. Both were defined over the eager
+// `crate::tensor::Tensor` (`forward(&self, xs: &Tensor) -> Result<Tensor>`), so
+// they could not survive its deletion. The lazy stack never adopted them — lazy
+// models are plain inherent methods on their weight structs
+// (e.g. `LlamaModel::forward`), not trait impls, so there is nothing to port.

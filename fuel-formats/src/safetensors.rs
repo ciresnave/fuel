@@ -19,14 +19,16 @@
 //!   `fuel-formats`: it owns the bytes, and the parser surface
 //!   above sits on top.
 //!
-//! Tensor-construction wrappers ([`fuel_core::safetensors::load`],
-//! [`fuel_core::safetensors::MmapedSafetensors`],
-//! [`fuel_core::safetensors::SliceSafetensors`],
-//! [`fuel_core::safetensors::BufferedSafetensors`], the [`Load`]
-//! trait, dtype materializers, save path) stay in `fuel-core`
-//! because each calls `Tensor::from_*` or `Storage::*` constructors.
-//! When work item E lands and `Tensor` moves to `fuel-tensor`,
-//! those wrappers migrate to `fuel-loaders`.
+//! The mmap/view wrappers `fuel_core::safetensors::MmapedSafetensors`
+//! and `fuel_core::safetensors::BufferedSafetensors` sit downstream in
+//! `fuel-core`. They hand out `TensorView`s and nothing more — the
+//! caller decodes the bytes.
+//!
+//! B6 deleted the eager tensor-construction half that used to live
+//! alongside them (`load`, `load_buffer`, `save`, `SliceSafetensors`,
+//! and the `Load` trait's `.load(device)`), because each called
+//! `Tensor::from_*` or `Storage::*` on the retired eager `Tensor`.
+//! Nothing replaced them: the lazy loaders read `view.data()` directly.
 
 use std::path::{Path, PathBuf};
 

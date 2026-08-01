@@ -23,10 +23,10 @@
 //! This split is what lets the same parser code serve file loading,
 //! HTTP/S3 streaming, mmap, Unix-socket IPC, and shared-memory
 //! tensor exchange between cooperating processes — including the
-//! eventual `RemoteHostStorage` consumers in Phase 7c. The thin
-//! Tensor-construction wrappers that build a [`fuel_core::Tensor`]
-//! from parsed metadata live in `fuel-loaders` (post-Phase 7.5
-//! work item E) or in `fuel-core` directly (until then).
+//! eventual `RemoteHostStorage` consumers in Phase 7c. There is no
+//! longer a Tensor-construction layer stacked on top: B6 deleted the
+//! eager `Tensor` those wrappers built, and `fuel-core`'s lazy loaders
+//! read parsed bytes straight out of the mmap.
 //!
 //! # Status
 //!

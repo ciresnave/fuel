@@ -158,17 +158,20 @@ pub fn main() -> Result<()> {
                 let v = (out_vec[i].clamp(0.0, 1.0) * 255.0).round() as u8;
                 chw_u8[i] = v;
             }
-            // Rebuild a lazy u8 tensor for save_image (which expects an
-            // eager Tensor). save_image is part of fuel-examples; bridge
-            // by going through a fresh eager Tensor via fuel::Tensor.
             let pb = std::path::PathBuf::from(args.image);
             let input_file_name = pb.file_name().unwrap();
             let mut output_file_name = std::ffi::OsString::from("super_");
             output_file_name.push(input_file_name);
 
-            let eager_u8 =
-                fuel::Tensor::from_vec(chw_u8, (c, h, w), &Device::cpu())?;
-            save_image(&eager_u8, output_file_name)?;
+            // The buffer is already CHW, which is exactly what `HostImage`
+            // holds — no tensor round-trip needed.
+            debug_assert_eq!(c, 3);
+            let out = fuel_examples::HostImage {
+                data: chw_u8,
+                height: h,
+                width: w,
+            };
+            save_image(&out, output_file_name)?;
         }
     }
 

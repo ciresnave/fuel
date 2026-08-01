@@ -138,9 +138,9 @@ struct LabelItem {
 /// Load an image at 224x224 ImageNet preprocessing via the shared
 /// helper, then convert to a lazy `(1, 3, 224, 224)` tensor.
 fn load_image_lazy(path: PathBuf, device: &Device) -> anyhow::Result<LazyTensor> {
-    let eager_image = fuel_examples::imagenet::load_image224(path)?;
-    println!("loaded image {eager_image:?}");
-    let image_vec: Vec<f32> = eager_image.flatten_all()?.to_vec1::<f32>()?;
+    let image_chw = fuel_examples::imagenet::load_image224(path)?;
+    println!("loaded image: {} f32 values (CHW)", image_chw.len());
+    let image_vec: Vec<f32> = image_chw;
     Ok(LazyTensor::from_f32(
         Arc::<[f32]>::from(image_vec),
         Shape::from_dims(&[1, 3, 224, 224]),

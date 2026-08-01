@@ -134,7 +134,7 @@ pub fn main() -> anyhow::Result<()> {
     // which is what `ConvNextModel::forward` expects.
     let image = fuel_examples::imagenet::load_image224(args.image)?;
     println!("loaded image {image:?}");
-    let image_vec = image.flatten_all()?.to_vec1::<f32>()?;
+    let image_vec: Vec<f32> = image;
 
     let model_file = match args.model {
         None => {

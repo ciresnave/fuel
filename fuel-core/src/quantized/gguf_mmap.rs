@@ -8,18 +8,18 @@
 //! path.
 //!
 //! The `Arc<Mmap>` is retained for the lifetime of `MmapedContent`, so
-//! returned `QTensor`s that copy data at construction time are safe to
-//! use after the struct is dropped; ones that reference the mmap are
-//! kept alive by the inner Arc.
+//! callers may slice into the mapping for as long as they hold the
+//! struct (or a clone of the inner `Arc`, via [`MmapedContent::mmap`]).
 //!
-//! This is a non-breaking addition — the streaming `Content::read` +
-//! `Content::tensor` path still works unchanged.
+//! B6 removed the eager `tensor(&self, name, device) -> QTensor` accessor.
+//! Callers now take [`MmapedContent::mmap`] plus the `TensorInfo` from
+//! [`MmapedContent::content`] and decode the bytes themselves — which is
+//! what the lazy loader already did.
 
 use super::arch::{detect_from_gguf, Architecture};
 use super::gguf_file::{Content, Value};
-use super::QTensor;
 use crate::model_progress::{ProgressEvent, ProgressReporter};
-use crate::{Device, Result};
+use crate::Result;
 use memmap2::Mmap;
 use std::collections::HashMap;
 use std::fs::File;
@@ -91,15 +91,6 @@ impl MmapedContent {
     /// a model that outlives this struct, keep a clone of the Arc).
     pub fn mmap(&self) -> Arc<Mmap> {
         Arc::clone(&self.mmap)
-    }
-
-    /// Zero-copy tensor read. The returned `QTensor` owns its own
-    /// dequantized buffer (for dequantized dtypes) or holds a copy of
-    /// the quantized bytes (for quantized dtypes), so it does not
-    /// borrow from the mmap. The mmap is held by `self` so repeated
-    /// `tensor()` calls stay fast.
-    pub fn tensor(&self, name: &str, device: &Device) -> Result<QTensor> {
-        self.content.tensor_from_mmap(&self.mmap[..], name, device)
     }
 
     /// List tensor names known to the file.

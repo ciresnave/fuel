@@ -18,12 +18,12 @@
 //!
 //! # Why this module is lazy-only
 //!
-//! The rest of this crate is written against the **legacy eager** `fuel::Tensor`
-//! (`fuel-core/src/tensor.rs`, "eventually retires when B6 drops eager
-//! dispatch"). New code targets [`LazyTensor`] — `fuel-core`'s own guidance is
-//! *"new user code should use `lazy::LazyTensor`"*, and every model in Fuel is
-//! built on the lazy graph. A collective written against eager tensors could not
-//! reduce lazy shards, which is the likeliest reason this crate has no consumers.
+//! Everything tensor-touching in this crate targets [`LazyTensor`], and every
+//! model in Fuel is built on the lazy graph. A collective written against the
+//! old eager `Tensor` could not have reduced lazy shards, which is the likeliest
+//! reason this crate has no consumers. B6 deleted that eager `Tensor` outright
+//! (`fuel-core/src/tensor.rs` is gone), so lazy-only is now the only option
+//! rather than a preference.
 //!
 //! # Transport, and why cross-vendor hops are authored here
 //!

@@ -1285,13 +1285,33 @@ B's factory migration plugs into.
       `fuel-examples`: most code remains unchanged because op
       methods retain their signatures; only "inspect a value"
       sites need `.realize()`.
-- [ ] **B6.** Drop eager dispatch entirely. `Storage::matmul`,
-      `Storage::unary_impl`, `Storage::binary_impl`, etc. become
-      dead code. Storage shrinks to a thin enum of typed buffers.
-      Document the new idiom in `GUIDE.md` and `PATTERNS.md`.
-      Particular care for the `if tensor.item::<f32>() > 0.5`
-      case — this is the most user-visible difference from
-      PyTorch eager.
+- [x] **B6.** Drop eager dispatch entirely. **The eager `Tensor` is
+      DELETED** (2026-08-01) — `fuel-core/src/tensor.rs`, `op.rs`,
+      `backprop.rs`, `custom_op.rs`, `variable.rs`, `indexer.rs`,
+      `streaming.rs`, `convert.rs`, `npy.rs`, `pickle.rs`, `conv.rs`,
+      `display.rs`, `hopfield.rs`, `sampling.rs`, `sort.rs`,
+      `tensor_cat.rs`, `scalar.rs`, plus the `Module`/`ModuleT` traits and
+      the eager halves of `storage.rs`, `test_utils.rs`, `shape.rs`,
+      `safetensors.rs` and `quantized/`. `fuel-core` and every
+      default-member compile without it.
+
+      Sequencing that actually mattered — the naive "sever one island"
+      plan was wrong in two ways: there are **five** carve-outs, not two,
+      and one hard break sat in a *default-member* (`fuel-inference`
+      re-exported `fuel::sampling::*`). The methodological trap that
+      produced the wrong plan: the root manifest aliases the crate
+      (`fuel = { path = "./fuel-core", package = "fuel-core" }`), so
+      consumers write `use fuel::…` and **any grep keyed on `fuel_core::`
+      returns near-zero by construction** — scanning both aliases moved
+      the external hit count from ~5 files to 137.
+
+      Still open, tracked separately: `fuel-onnx`'s eager `eval.rs`
+      (`simple_eval`, with live consumers in `fuel-onnx/tests/ops.rs` and
+      `fuel-examples/examples/onnx_basics.rs`; the lazy evaluator covers
+      41 of 82 ops and says so itself), and `fuel-book`. Neither is a
+      default-member. The `if tensor.item::<f32>() > 0.5` idiom question
+      is moot for Rust callers — there is no eager value left to
+      inspect — but resurfaces if Python bindings are revived.
 
 **C. Sever `Op`-as-IR from `BackpropOp`-as-tape-entry; move
 backward to `fuel-autograd`.**
@@ -2440,6 +2460,26 @@ LazyTensor signatures).
 >
 > **Retrieve from git, not the working tree.** Last commit containing them:
 > **`087109cf`** — e.g. `git checkout 087109cf -- fuel-pyo3`.
+>
+> **Also archived 2026-08-01, for the same reason:** `fuel-cublaslt` and
+> `fuel-tensor-tools`. Both were 100% eager with no lazy half, and neither is a
+> default-member.
+> - `fuel-cublaslt` had **zero consumers** — it appeared only in `[workspace.members]`.
+>   Its whole public surface (`fused_matmul`, `fused_batch_matmul`) took and returned
+>   the eager `Tensor` via `CustomOp2`/`CustomOp3`, both deleted by B6. The cuBLASLt
+>   fused-epilogue *idea* is still live as a future FusedLinear competitor
+>   (`docs/session-prompts/baracuda-cutlass-alpha-13-integration.md`), but it would
+>   need a lazy rewrite anyway.
+> - `fuel-tensor-tools` was the GGUF quantize/inspect CLI. **This is a real capability
+>   loss** — `QTensor::quantize` / `dequantize`, `gguf_file::write`, and npz/pth
+>   reading all went with it, and nothing replaces the "quantize a model to GGUF"
+>   workflow today. It was already scoped out as unmaintained by an earlier session
+>   (`docs/session-prompts/eager-tail-session-8-surgical-plan.md`). Restoring it does
+>   **not** need a tensor at all: it is a file-format converter, so the lazy rewrite is
+>   `fuel-formats` readers → host `Vec<f32>` → `fuel_quantized::GgmlType::from_float`
+>   → a raw-bytes GGUF writer. Sized at roughly a day, not a port.
+
+
 >
 > Python bindings are deliberately deferred rather than ported: porting them now means
 > porting them twice, and the `tensor.item::<f32>() > 0.5` question that B6 flags as

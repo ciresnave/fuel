@@ -39,9 +39,9 @@
 //!   graph rewriting are deferred to Phase 6d.
 //! - No fusion, no planner. Those belong to later sub-phases of Phase 6.
 //! - Thread-safe. The graph is wrapped in `Arc<RwLock<_>>` so that
-//!   `fuel_graph::Tensor` (and any handle that embeds it, including
-//!   `fuel_core::Tensor` post Phase 7.5 work item G) is `Send + Sync`.
-//!   Borrow access goes through `read().unwrap()` / `write().unwrap()`.
+//!   `fuel_graph::Tensor` — the lazy build handle — and any handle that
+//!   embeds it are `Send + Sync`. Borrow access goes through
+//!   `read().unwrap()` / `write().unwrap()`.
 
 pub mod grad;
 pub mod jit;

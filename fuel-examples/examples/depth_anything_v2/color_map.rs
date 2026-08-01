@@ -2,8 +2,6 @@
 use enterpolation::Generator;
 use palette::LinSrgb;
 
-use fuel::Tensor;
-
 pub struct SpectralRColormap {
     gradient: ConstEquidistantLinear<f32, LinSrgb, 9>,
 }
@@ -27,24 +25,27 @@ impl SpectralRColormap {
     }
 
     fn get_color(&self, value: f32) -> LinSrgb {
-        self.gradient.gen(value)
+        // `gen` is a reserved keyword in edition 2024 — the raw identifier is
+        // required to call enterpolation's `Generator::gen`.
+        self.gradient.r#gen(value)
     }
 
-    pub fn gray2color(&self, gray: &Tensor) -> fuel::Result<Tensor> {
-        println!("Gray: {:?}", gray.dims());
-        let gray_values: Vec<f32> = gray.flatten_all()?.to_vec1()?;
-        let rgb_values: Vec<f32> = gray_values
-            .iter()
-            .map(|g| self.get_color(*g))
-            .flat_map(|rgb| [rgb.red, rgb.green, rgb.blue])
-            .collect();
-
-        let [.., height, width] = gray.dims() else {
-            fuel::bail!("Not enough dims!")
-        };
-
-        let color = Tensor::from_vec(rgb_values, (*height, *width, 3), gray.device())?;
-
-        color.permute((2, 0, 1))
+    /// Map a `height * width` grayscale plane to a `3 * height * width`
+    /// **CHW** RGB buffer.
+    ///
+    /// B6 note: this took and returned an eager `Tensor`, but the colormap
+    /// lookup was always host arithmetic — the tensor only supplied the
+    /// HWC→CHW `permute`, which is done here directly.
+    pub fn gray2color(&self, gray: &[f32], height: usize, width: usize) -> Vec<f32> {
+        debug_assert_eq!(gray.len(), height * width);
+        let plane = height * width;
+        let mut out = vec![0f32; 3 * plane];
+        for (i, g) in gray.iter().enumerate() {
+            let rgb = self.get_color(*g);
+            out[i] = rgb.red;
+            out[plane + i] = rgb.green;
+            out[2 * plane + i] = rgb.blue;
+        }
+        out
     }
 }

@@ -441,13 +441,16 @@ fn main() -> Result<()> {
 
     // ---- Save PNG ---------------------------------------------------
     //
-    // `fuel_examples::save_image` expects an eager `(3, H, W)` U8
-    // tensor; building one is the cleanest realize→save bridge. The
-    // file extension on `output_png` drives the image-crate encoder.
-    let eager =
-        fuel::Tensor::from_vec(chw_u8, (c, h, w), &fuel::Device::cpu())
-            .map_err(|e| E::msg(format!("build eager u8 tensor: {e}")))?;
-    fuel_examples::save_image(&eager, &output_png)
+    // `chw_u8` is already `(3, H, W)` channel-major, which is exactly what
+    // `HostImage` holds. The file extension on `output_png` drives the
+    // image-crate encoder.
+    debug_assert_eq!(c, 3);
+    let out = fuel_examples::HostImage {
+        data: chw_u8,
+        height: h,
+        width: w,
+    };
+    fuel_examples::save_image(&out, &output_png)
         .map_err(|e| E::msg(format!("save png: {e}")))?;
     println!("Saved {output_png}");
     Ok(())

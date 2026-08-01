@@ -1,31 +1,36 @@
-﻿use fuel::{Result, Tensor};
+﻿use fuel::Result;
 
 // https://github.com/facebookresearch/audiocraft/blob/69fea8b290ad1b4b40d28f92d1dfc0ab01dbab85/audiocraft/data/audio_utils.py#L57
+//
+// B6 note: this took and returned an eager `Tensor`, but every step is
+// per-sample host arithmetic over a mono waveform — and it already round-tripped
+// through `to_vec1::<f32>()` in the middle to feed the loudness meter. It now
+// works on `&[f32]` directly.
 pub fn normalize_loudness(
-    wav: &Tensor,
+    wav: &[f32],
     sample_rate: u32,
     loudness_compressor: bool,
-) -> Result<Tensor> {
-    let energy = wav.sqr()?.mean_all()?.sqrt()?.to_vec0::<f32>()?;
+) -> Result<Vec<f32>> {
+    let energy = (wav.iter().map(|v| v * v).sum::<f32>() / wav.len().max(1) as f32).sqrt();
     if energy < 2e-3 {
-        return Ok(wav.clone());
+        return Ok(wav.to_vec());
     }
-    let wav_array = wav.to_vec1::<f32>()?;
     let mut meter = crate::bs1770::ChannelLoudnessMeter::new(sample_rate);
-    meter.push(wav_array.into_iter());
+    meter.push(wav.iter().copied());
     let power = meter.as_100ms_windows();
     let loudness = match crate::bs1770::gated_mean(power) {
-        None => return Ok(wav.clone()),
+        None => return Ok(wav.to_vec()),
         Some(gp) => gp.loudness_lkfs() as f64,
     };
     let delta_loudness = -14. - loudness;
-    let gain = 10f64.powf(delta_loudness / 20.);
-    let wav = (wav * gain)?;
-    if loudness_compressor {
-        wav.tanh()
-    } else {
-        Ok(wav)
-    }
+    let gain = 10f64.powf(delta_loudness / 20.) as f32;
+    Ok(wav
+        .iter()
+        .map(|v| {
+            let v = v * gain;
+            if loudness_compressor { v.tanh() } else { v }
+        })
+        .collect())
 }
 
 #[cfg(feature = "symphonia")]
