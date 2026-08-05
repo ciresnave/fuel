@@ -79,7 +79,53 @@ Positive-controlled: the same query finds four other fused ops in the CUDA
 backend, so `PagedAttn`'s zero is a real absence, not a failed search. The only
 native implementation of paged attention in Fuel is **CPU**.
 
-### 2.1 Fact vs consequence — what this does NOT establish
+### 2.0 RESOLVED — the node runs on the HOST (measured 2026-08-05)
+
+**`Op::PagedAttn` executes on the CPU during CUDA decode.** Per-node
+`placement_of` over the real held decode plan
+(`paged_decode_node_placement_report_cuda`, RTX 4070 Laptop, CUDA, 2-layer
+model, 172 nodes):
+
+```
+Fused(PAGED_ATTN)   Cpu×2            <-- one per layer, ON HOST
+MatMul              Cuda×15
+Const               Cuda×31
+BroadcastTo         Cuda×28
+IndexSelect         Cuda×1
+WriteSliceDoff      Cuda×4
+Slice               Cuda×8
+Silu                Cuda×2
+Copy                Cpu×1  None×10   <-- the cross-device stitches
+Permute             Cpu×2  Cuda×6    <-- neighbours dragged host-ward
+Reshape             Cpu×2  Cuda×19
+```
+
+**Hypothesis (A) confirmed, (B) excluded**, and the two are not confusable:
+(B) predicts *no* `PAGED_ATTN` node at all plus four recipe `IndexSelect`s per
+layer. There is exactly one `IndexSelect`, it is on CUDA, and it is the
+embedding lookup. **The recipe never fired** — the optimizer kept the fused node
+and placed it on the only backend that implements it.
+
+Instrument was positive-controlled two ways: `has_placements()` asserted before
+reading (an all-`None` dump would read as "nothing is on CUDA"), and the
+`PAGED_ATTN` identification is the registry constant compared in code, not a
+number read off a label.
+
+**Consequences that now follow, and did not before:**
+
+1. The 186× host-ward DtoH is **the op's placement**, not `DeviceKvPool`
+   plumbing. Both layers' KV caches cross the bus every token.
+2. **A kernel does fix it.** §6.1's fork resolves to the kernel arm.
+3. It explains the tell nobody predicted — the paged arm running *fewer* kernels
+   (17,802 vs 36,718). One host op replaces the many device kernels dense
+   attention would have launched.
+4. Structural, not model-specific: the placement follows from "no CUDA backend
+   advertises PagedAttn", which no model size changes.
+
+### 2.1 Fact vs consequence — the reasoning this replaces
+
+*(Retained because the discipline is the point, not because the question is
+still open — §2.0 settles it by measurement.)*
 
 The **fact** is: no CUDA/Vulkan `PagedAttn` implementation exists.
 
@@ -179,17 +225,16 @@ argument that should drive priority, not the 10.4×.
 
 ## 6. Open inputs — the design does not harden until these land
 
-### 6.1 `placement_of`, per node (mine)
+### 6.1 `placement_of`, per node (mine) — ✅ DONE, see §2.0
 
-Settles §2.1. For a CUDA decode graph, report the placement of the `PagedAttn`
-node and of each recipe node. Distinguishes:
+**Answered: host-placed fused node.** The round-trip is the *op*, and a kernel
+does fix it. The alternative (CUDA-placed recipe primitives, meaning the
+round-trip was `DeviceKvPool` plumbing and a kernel would have been the wrong
+build) is excluded.
 
-- **host-placed fused node** → the round-trip is the *op*; the fix is a kernel.
-- **CUDA-placed primitives** → the round-trip is `DeviceKvPool` *plumbing*; a
-  kernel would not have fixed it, and the fix is elsewhere entirely.
-
-These call for completely different work, which is why no kernel is being
-requested before this is measured.
+This unblocks asking Baracuda for kernel work — but *what* to ask for still
+waits on §6.2, because the k=1-vs-batched shape decides monolithic vs
+primitives.
 
 ### 6.2 Batch-size sweep (Lightbulb)
 
@@ -250,6 +295,7 @@ already runs both configurations.
 | Floor materialises padded capacity, not occupancy | code read (`kv_len = max_blk · block_size`) |
 | No CUDA/Vulkan PagedAttn implementation | grep, positive-controlled against 4 other fused ops |
 | Paged decode round-trips to host | **measured** (nsys, Lightbulb) — of the *path* |
-| …because the PagedAttn *node* is host-placed | **UNRESOLVED** — §6.1 |
+| …because the PagedAttn *node* is host-placed | **MEASURED, CONFIRMED** — §2.0, per-node `placement_of` |
+| The primitive recipe never fires under CUDA | **measured** — no PAGED_ATTN decomposition in the held plan |
 | Leg 3 is a reduction, not a scan | Baracuda correction, accepted |
 | Ragged continuous batching has only the paged path | Lightbulb, positive-controlled |
