@@ -1987,4 +1987,237 @@ mod tests {
              dependent optimizer PRUNE (prune-as-you-go)",
         );
     }
+
+    /// **Where does `PagedAttn`'s DECOMPOSED form land on CUDA?** — the
+    /// measurement that gates whether offering a decomposed arm is worth
+    /// building, and what to ask Baracuda for.
+    ///
+    /// Established already: the FUSED `Op::PagedAttn` node executes on the CPU
+    /// under CUDA decode (`paged_decode_node_placement_report_cuda`), because
+    /// no CUDA backend advertises it — so "runs on host" is not a decision the
+    /// planner made, it is the only move it had. `decompose` exists and is
+    /// closed-basis, but the planner is never offered it.
+    ///
+    /// This asks the question that decides the next build, and it is a
+    /// GPU-vs-GPU question that the 186× host-ward figure cannot answer —
+    /// **any** on-device path removes that round-trip equally, so its magnitude
+    /// says something must be built without saying what:
+    ///
+    /// - **every recipe node CUDA-placed** → the round-trip is removable with
+    ///   NO kernel work at all; the ask to Baracuda may be nothing.
+    /// - **some primitive falls back to host** → *that primitive* is the ask,
+    ///   far smaller and better-specified than "paged attention".
+    ///
+    /// A grep cannot answer this. I tried: it reported `Permute` in zero
+    /// CUDA-backend files while the measured placement dump showed
+    /// `Permute Cuda×6` — it undercounts ops served by generic dispatch. Only
+    /// the planner's own resolved map settles it.
+    ///
+    /// REPORTS rather than asserting a verdict, for the same reason as the
+    /// fused-node report: pre-committing to an answer is the error being
+    /// corrected. What it DOES assert is that the instrument ran
+    /// (`has_placements()`) and that decomposition actually happened (the root
+    /// moved off the fused node) — an all-`None` dump would read as "nothing
+    /// is on CUDA", a wrong answer wearing a null answer's clothes.
+    #[test]
+    #[ignore = "live GPU (CUDA); run via scripts/gpu-run.ps1"]
+    #[cfg(feature = "cuda")]
+    fn paged_attn_decomposed_arm_placement_report_cuda() {
+        use fuel_graph::registry::{FusedOpParams, FusedOps};
+        use std::collections::BTreeMap;
+
+        const B: usize = 1;
+        const HQ: usize = 4;
+        const HKV: usize = 4;
+        const SQ: usize = 1;
+        const D: usize = 4;
+        const NUM_BLOCKS: usize = 32;
+        const BLOCK_SIZE: usize = 4;
+        const MAX_BLK: usize = 8;
+
+        let mut g = Graph::new();
+        let leaf = |g: &mut Graph, dims: &[usize], dtype: DType| {
+            g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(dims), dtype })
+        };
+        let q = leaf(&mut g, &[B, HQ, SQ, D], DType::F32);
+        let kc = leaf(&mut g, &[NUM_BLOCKS, BLOCK_SIZE, HKV, D], DType::F32);
+        let vc = leaf(&mut g, &[NUM_BLOCKS, BLOCK_SIZE, HKV, D], DType::F32);
+        let bt = leaf(&mut g, &[B, MAX_BLK], DType::U32);
+        let cl = leaf(&mut g, &[B], DType::U32);
+
+        let params = FusedOpParams::PagedAttn {
+            softmax_scale: 1.0 / (D as f32).sqrt(),
+            block_size: BLOCK_SIZE,
+            softcap: None,
+        };
+        let fused = g.push(Node {
+            op: Op::Fused(FusedOps::PAGED_ATTN, params.clone()),
+            inputs: vec![q, kc, vc, bt, cl],
+            shape: Shape::from_dims(&[B, HQ, SQ, D]),
+            dtype: DType::F32,
+        });
+
+        // Lower the fused node to its primitive recipe — the arm the planner is
+        // never currently offered.
+        let root = fuel_graph::registry::paged_attn::decompose(&mut g, fused, &params);
+        assert_ne!(
+            root, fused,
+            "PRECONDITION: decompose must actually lower. A self-return is the \
+             G2 fixpoint signal (malformed node / declined recipe), and every \
+             placement below would then describe the FUSED node, silently \
+             answering a different question than the one asked.",
+        );
+
+        // THE PRODUCTION TABLE, not a hand-assembled one. An earlier version of
+        // this test built the table with `register_cuda_kernels` alone and got
+        // "no backend supports index_select" — which was an artifact of the
+        // HARNESS, not a fact about Fuel: that function makes ~5 registrations
+        // and the bulk of CUDA lives in `register_baracuda_cuda_kernels`, which
+        // the real path (`register_optional_backends`) also calls, on top of
+        // `register_cpu_kernels` and a cost fill. Reproducing that assembly by
+        // hand is precisely the kind of thing that silently drifts, so ask for
+        // the table the realize path actually uses.
+        let table = crate::dispatch::global_bindings();
+
+        // POSITIVE CONTROL — the instrument must be able to see a CUDA binding
+        // at all. Without this, an under-populated table reports "no CUDA
+        // support" for EVERY op, which reads exactly like a real finding: it is
+        // specific, it names a primitive, and it is completely wrong. That is
+        // how the first run of this test nearly shipped a false Baracuda ask.
+        // MatMul is the control because the fuel-core placement report measured
+        // `MatMul Cuda×15` on a real decode graph — an independently observed
+        // fact this table must reproduce.
+        assert!(
+            table
+                .lookup(OpKind::MatMul, &[DType::F32, DType::F32, DType::F32], BackendId::Cuda)
+                .is_ok(),
+            "INSTRUMENT BROKEN: the binding table has no CUDA MatMul, so every \
+             'no CUDA support' conclusion below would be an artifact of the \
+             harness. Fix the table before reading any verdict from this test.",
+        );
+
+        // ---- THE COMPLETE MISSING-BINDING SET, asked directly ----
+        //
+        // `optimize_graph` fails at the FIRST unplaceable node, so driving this
+        // off its error yields one op per run — a trickle, and each run costs a
+        // CUDA rebuild. Worse, it conflates two different things: "CUDA has no
+        // kernel for this op" and "the planner could not place it under THIS
+        // pin". Asking the binding table per node separates them and returns the
+        // whole set at once.
+        let mut missing_cuda: Vec<String> = Vec::new();
+        let mut present_cuda: Vec<String> = Vec::new();
+        for i in 0..g.len() {
+            let id = NodeId(i);
+            let node = g.node(id);
+            let Some(kind) = crate::pipelined::op_to_op_kind(&node.op) else {
+                continue; // Const / view / fused — not a binding-table lookup
+            };
+            let mut dtypes: Vec<DType> =
+                node.inputs.iter().map(|&i| g.node(i).dtype).collect();
+            dtypes.push(node.dtype); // binding key is [inputs.., output]
+            let sig = format!(
+                "{kind:?}{:?}",
+                dtypes.iter().map(|d| format!("{d:?}")).collect::<Vec<_>>()
+            );
+            if table.lookup(kind, &dtypes, BackendId::Cuda).is_ok() {
+                present_cuda.push(sig);
+            } else {
+                missing_cuda.push(sig);
+            }
+        }
+        missing_cuda.sort();
+        missing_cuda.dedup();
+        present_cuda.sort();
+        present_cuda.dedup();
+
+        println!("\n=== PagedAttn recipe: CUDA binding coverage (asked per node) ===");
+        println!("PRESENT on CUDA ({}):", present_cuda.len());
+        for s in &present_cuda {
+            println!("    {s}");
+        }
+        println!("MISSING on CUDA ({}):", missing_cuda.len());
+        for s in &missing_cuda {
+            println!("    {s}");
+        }
+        // A run where NOTHING resolves would mean the table is empty again — the
+        // MatMul control above already guards that, but state the invariant that
+        // makes the "missing" list meaningful rather than vacuous.
+        assert!(
+            !present_cuda.is_empty(),
+            "INSTRUMENT BROKEN: not one recipe node resolved on CUDA, so the \
+             MISSING list is a property of the lookup, not of the backend",
+        );
+        println!(
+            "\n>>> THE ASK: the {} signature(s) above are what CUDA lacks for the \
+             §1 dense recipe. Each is a small, named primitive — not \"paged \
+             attention\".\n",
+            missing_cuda.len()
+        );
+
+        let opts = PlanOptions::new()
+            .with_pinned_device(DeviceLocation::Cuda { gpu_id: 0 });
+        let optimized = match optimize_graph(&mut g, &[root], &table, &opts) {
+            Ok(o) => o,
+            Err(e) => {
+                println!("\n=== DECOMPOSED ARM DOES NOT PLAN ON CUDA ===");
+                println!("optimize_graph error: {e:?}");
+                println!("That is itself the answer: some recipe primitive has no CUDA");
+                println!("binding, and the error names it. THAT is the Baracuda ask.");
+                return;
+            }
+        };
+
+        assert!(
+            optimized.has_placements(),
+            "placement NOT COMPUTED — every placement_of would be None and the \
+             report below would describe the missing instrument, not the graph",
+        );
+
+        let mut by_op: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+        let mut host_ops: Vec<String> = Vec::new();
+        for i in 0..g.len() {
+            let id = NodeId(i);
+            let op_name = match &g.node(id).op {
+                Op::Fused(fid, _) => format!("Fused({fid:?})"),
+                other => format!("{other:?}").split(' ').next().unwrap_or("?").to_string(),
+            };
+            let place = match optimized.placement_of(id) {
+                Some(d) => format!("{d:?}"),
+                None => "None".to_string(),
+            };
+            if place.starts_with("Cpu") {
+                host_ops.push(op_name.clone());
+            }
+            *by_op.entry(op_name).or_default().entry(place).or_insert(0) += 1;
+        }
+
+        println!("\n=== PagedAttn DECOMPOSED arm: node placement (CUDA-pinned) ===");
+        println!("total nodes: {} (fused node #{} lowered to root #{})", g.len(), fused.0, root.0);
+        for (op, places) in &by_op {
+            let rendered: Vec<String> =
+                places.iter().map(|(d, n)| format!("{d}×{n}")).collect();
+            println!("  {op:<40} {}", rendered.join("  "));
+        }
+
+        println!("\n--- VERDICT ---");
+        if host_ops.is_empty() {
+            println!(
+                "EVERY recipe node is off-host. The decomposed paged attention runs \
+                 ON DEVICE, so the 186x round-trip is removable by OFFERING THIS ARM \
+                 — no Baracuda kernel required to eliminate it. A kernel would then \
+                 be a throughput question (the recipe materialises padded capacity, \
+                 not live context_len), not a round-trip one."
+            );
+        } else {
+            host_ops.sort();
+            host_ops.dedup();
+            println!(
+                "HOST-PLACED recipe primitives: {host_ops:?}\n\
+                 These are the ask — each is a far smaller and better-specified \
+                 request than \"paged attention\", and until they exist on device \
+                 the decomposed arm cannot win."
+            );
+        }
+        println!("--- END VERDICT ---\n");
+    }
 }
