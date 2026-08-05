@@ -42,6 +42,10 @@
 use crate::fkc::error::FkcError;
 use crate::fkc::lower;
 use crate::fkc::schema::{FkcFile, FkcKernel, QuantSpec, TensorDesc};
+// Rule 7's op-param allowlists are generated from — and held against — these
+// two enums by `variant_table!`; see the V-FKC-5 note above `variant_table!`.
+use crate::kernel::OpParams;
+use fuel_graph::registry::FusedOpParams;
 
 /// The maximum `fkc_version` this importer understands (FKC §10.1 / §11).
 pub const FKC_VERSION_MAX: u32 = 1;
@@ -863,82 +867,153 @@ fn validate_op_params_namespace(
     }
 }
 
-/// The as-built `OpParams` variant names (`fuel-dispatch/src/kernel.rs`).
-fn is_op_params_variant(v: &str) -> bool {
-    matches!(
-        v,
-        "None"
-            | "Reduce"
-            | "Matmul"
-            | "Conv1D"
-            | "Conv2D"
-            | "ConvTranspose1D"
-            | "ConvTranspose2D"
-            | "ReduceSumTo"
-            | "ReduceMaxTo"
-            | "ReduceMaxToBackward"
-            | "Cast"
-            | "Affine"
-            | "Clamp"
-            | "PowI"
-            | "Concat"
-            | "Slice"
-            | "Pad"
-            | "PadBackward"
-            | "Flip"
-            | "Roll"
-            | "CumSum"
-            | "Triangular"
-            | "MaskedFill"
-            | "IndexSelect"
-            | "Gather"
-            | "IndexAdd"
-            | "ScatterAdd"
-            | "Rope"
-            | "SoftmaxLastDim"
-            | "LogSoftmaxLastDim"
-            | "NormLastDim"
-            | "FlashAttn"
-            | "PagedAttn"
-            | "QMatMul"
-            | "Nf4Matmul"
-            | "WriteSlice"
-            | "WriteSliceRotating"
-            | "WriteSliceDoff"
-            | "SelectiveScan"
-            | "SsdChunkScan"
-            | "CausalConv1d"
-            | "FusedSoftmaxCrossEntropy"
-    )
+// --- V-FKC-5: the op-param allowlists, tied to the real enums -------------
+//
+// These two tables were hand-typed string literals with no link back to
+// `OpParams`/`FusedOpParams`, and they drifted exactly as that shape
+// predicts: `OpParams` grew `JitScalars` and `NonZeroIndices` and the
+// allowlist stayed 42-of-44, so a contract naming the real `NonZeroIndices`
+// variant was rejected as if it were a typo. A test asserting "the list is
+// complete" would only have moved the drift from the list to the test, so
+// the list is now GENERATED, from a declaration the compiler checks against
+// the enum itself: `variant_table!` emits both an exhaustive `match` (adding,
+// removing, or renaming a variant is a COMPILE error, not a silent
+// divergence) and the `&[(name, exclusion)]` table the predicate reads. One
+// source of truth, and drift is structurally impossible rather than
+// test-detected.
+//
+// `None` in the second column = a contract may name this variant.
+// `Some(reason)` = deliberately NOT contract-authorable, with the reason
+// recorded at the entry — the distinction the old silent omission destroyed.
+
+/// Emit (a) a never-called exhaustive `match` over `$enum`, so the variant
+/// list below cannot drift from the enum without failing to compile, and
+/// (b) the `&[(&str, Option<&str>)]` table the `is_*_variant` predicate
+/// reads. See the V-FKC-5 note above.
+macro_rules! variant_table {
+    ($enum:ident, $guard:ident, $table:ident, $($v:ident => $excluded:expr),+ $(,)?) => {
+        /// Never called — it exists so the compiler checks the variant list
+        /// below against the real enum. A new variant makes this match
+        /// non-exhaustive; a removed or renamed one makes an arm unresolvable.
+        #[allow(dead_code)]
+        fn $guard(p: &$enum) {
+            match p { $( $enum::$v { .. } => (), )+ }
+        }
+
+        /// `(variant name, why it is NOT contract-authorable)`.
+        const $table: &[(&str, Option<&str>)] = &[ $( (stringify!($v), $excluded) ),+ ];
+    };
 }
 
-/// The as-built `FusedOpParams` variant names (`fuel-graph/src/registry.rs`).
+variant_table!(
+    OpParams,
+    _op_params_is_exhaustive,
+    OP_PARAMS_VARIANTS,
+    None => None,
+    Reduce => None,
+    Matmul => None,
+    Conv1D => None,
+    Conv2D => None,
+    ConvTranspose1D => None,
+    ConvTranspose2D => None,
+    ReduceSumTo => None,
+    ReduceMaxTo => None,
+    ReduceMaxToBackward => None,
+    FlashAttn => None,
+    PagedAttn => None,
+    Slice => None,
+    Cast => None,
+    Affine => None,
+    Clamp => None,
+    PowI => None,
+    Concat => None,
+    SoftmaxLastDim => None,
+    NormLastDim => None,
+    IndexSelect => None,
+    Gather => None,
+    Rope => None,
+    QMatMul => None,
+    IndexAdd => None,
+    ScatterAdd => None,
+    Flip => None,
+    Roll => None,
+    CumSum => None,
+    Triangular => None,
+    LogSoftmaxLastDim => None,
+    MaskedFill => None,
+    PadBackward => None,
+    Pad => None,
+    WriteSlice => None,
+    WriteSliceRotating => None,
+    WriteSliceDoff => None,
+    FusedSoftmaxCrossEntropy => None,
+    CausalConv1d => None,
+    SelectiveScan => None,
+    SsdChunkScan => None,
+    Nf4Matmul => None,
+    // A JIT-synthesized runtime op's live scalar args. `kernel.rs` pins the
+    // producer: "Only produced by `compile_one`'s `is_runtime` arm" — the
+    // kernel is synthesized at run time, so there is no checked-in source
+    // file for a `.fkc.md` contract to describe.
+    JitScalars => Some("runtime-JIT-only: no checked-in kernel to contract"),
+    NonZeroIndices => None,
+);
+
+variant_table!(
+    FusedOpParams,
+    _fused_op_params_is_exhaustive,
+    FUSED_OP_PARAMS_VARIANTS,
+    SoftmaxLastDim => None,
+    FusedLinear => None,
+    RmsNormLastDim => None,
+    LayerNormLastDim => None,
+    Rope => None,
+    Conv2D => None,
+    SoftmaxLastDimBackward => None,
+    LayerNormLastDimBackward => None,
+    RmsNormLastDimBackward => None,
+    ReduceMaxToBackward => None,
+    PowIBackward => None,
+    ConvTranspose2D => None,
+    FlashAttn => None,
+    PagedAttn => None,
+    QMatMul => None,
+    InplaceAffine => None,
+    SsdChunkScan => None,
+    Nf4Matmul => None,
+    FlashAttnBackward => None,
+    SelectiveScan => None,
+    CausalConv1d => None,
+    FusedSoftmaxCrossEntropy => None,
+    // A runtime-REGISTERED fused op (JIT-synthesized or import-time). Its
+    // identity is a runtime `FusedOpId` and its recipe lives in the
+    // `runtime_fused` sidecar, so it has no stable name a hand-authored
+    // contract could bind to.
+    Runtime => Some("runtime-registered: identity is a runtime FusedOpId"),
+);
+
+/// Whether a contract may name `v` as an `OpParams` variant. Backed by
+/// [`OP_PARAMS_VARIANTS`], which the compiler holds against the real
+/// `OpParams` enum (`fuel-dispatch/src/kernel.rs`).
+fn is_op_params_variant(v: &str) -> bool {
+    contract_authorable(OP_PARAMS_VARIANTS, v)
+}
+
+/// Whether a contract may name `v` as a `FusedOpParams` variant. Backed by
+/// [`FUSED_OP_PARAMS_VARIANTS`], which the compiler holds against the real
+/// `FusedOpParams` enum (`fuel-graph/src/registry.rs`).
 fn is_fused_op_params_variant(v: &str) -> bool {
-    matches!(
-        v,
-        "SoftmaxLastDim"
-            | "FusedLinear"
-            | "RmsNormLastDim"
-            | "LayerNormLastDim"
-            | "Rope"
-            | "Conv2D"
-            | "SoftmaxLastDimBackward"
-            | "LayerNormLastDimBackward"
-            | "RmsNormLastDimBackward"
-            | "ReduceMaxToBackward"
-            | "PowIBackward"
-            | "ConvTranspose2D"
-            | "FlashAttn"
-            | "PagedAttn"
-            | "QMatMul"
-            | "InplaceAffine"
-            | "SsdChunkScan"
-            | "Nf4Matmul"
-            | "FlashAttnBackward"
-            | "SelectiveScan"
-            | "CausalConv1d"
-            | "FusedSoftmaxCrossEntropy"
-    )
+    contract_authorable(FUSED_OP_PARAMS_VARIANTS, v)
+}
+
+/// `v` names a real variant in `table` AND that variant carries no exclusion
+/// reason. An excluded variant is rejected exactly like an unknown one — the
+/// contract still cannot name it — but the reason is recorded at the entry
+/// rather than being an unexplained absence.
+fn contract_authorable(table: &[(&str, Option<&str>)], v: &str) -> bool {
+    table
+        .iter()
+        .any(|(name, excluded)| *name == v && excluded.is_none())
 }
 
 // ===========================================================================
@@ -1472,6 +1547,199 @@ determinism: same_hardware_bitwise
             matches!(err, FkcError::BadOpParamsVariant { ref namespace, .. } if namespace == "OpParams"),
             "got {err:?}"
         );
+    }
+
+    // ===== V-FKC-5 — the op-param allowlists vs the real enums =====
+
+    /// The drift this closes, stated as behavior rather than as a list
+    /// comparison: `OpParams::NonZeroIndices` is a real, kernel-backed variant
+    /// (1 input, a `[indices; count]` bundle output — the data-dependent
+    /// dynamic-shape seam), and a contract naming it was rejected as if it
+    /// were a typo, because the hand-typed allowlist was two variants behind
+    /// the enum.
+    #[test]
+    fn op_params_namespace_accepts_the_real_nonzeroindices_variant() {
+        let src = valid_bundle()
+            .replace("op_params: { variant: None }", "op_params: { variant: NonZeroIndices }");
+        validate_str(&src).expect(
+            "NonZeroIndices is a real OpParams variant — a contract may name it",
+        );
+    }
+
+    /// The predicate must be exactly the generated table, in both directions.
+    /// The table itself is held against the real enum by the compiler (see
+    /// `variant_table!`), so this is what closes the loop between "the list
+    /// matches the enum" and "the checker reads the list".
+    #[test]
+    fn op_param_predicates_agree_with_the_generated_variant_tables() {
+        // Positive control: a macro that expanded to nothing, or a table that
+        // silently lost its entries, would make every assertion below vacuous.
+        // These floors are deliberately loose — they catch an empty or
+        // truncated table, not a single added variant.
+        assert!(
+            OP_PARAMS_VARIANTS.len() >= 40,
+            "OP_PARAMS_VARIANTS looks truncated ({} entries) — the rest of this \
+             test would pass vacuously",
+            OP_PARAMS_VARIANTS.len()
+        );
+        assert!(
+            FUSED_OP_PARAMS_VARIANTS.len() >= 20,
+            "FUSED_OP_PARAMS_VARIANTS looks truncated ({} entries)",
+            FUSED_OP_PARAMS_VARIANTS.len()
+        );
+
+        for (name, excluded) in OP_PARAMS_VARIANTS {
+            assert_eq!(
+                is_op_params_variant(name),
+                excluded.is_none(),
+                "OpParams::{name} — excluded={excluded:?} but the predicate says \
+                 {}",
+                is_op_params_variant(name)
+            );
+        }
+        for (name, excluded) in FUSED_OP_PARAMS_VARIANTS {
+            assert_eq!(
+                is_fused_op_params_variant(name),
+                excluded.is_none(),
+                "FusedOpParams::{name} — excluded={excluded:?} but the predicate \
+                 says {}",
+                is_fused_op_params_variant(name)
+            );
+        }
+
+        // An exclusion with no stated reason is the silent omission this whole
+        // change exists to eliminate.
+        for (name, excluded) in OP_PARAMS_VARIANTS.iter().chain(FUSED_OP_PARAMS_VARIANTS) {
+            if let Some(reason) = excluded {
+                assert!(!reason.trim().is_empty(), "{name} is excluded with an empty reason");
+            }
+        }
+    }
+
+    /// The two deliberate exclusions, pinned so a later reader doesn't "fix"
+    /// them back in: both name kernels that are synthesized or registered at
+    /// RUN time, so there is no checked-in kernel for a `.fkc.md` contract to
+    /// describe. This is the one case where rejection is correct — and the
+    /// reason is now recorded at the table entry instead of being an
+    /// unexplained gap.
+    #[test]
+    fn runtime_only_op_param_variants_stay_out_of_contract_reach() {
+        assert!(!is_op_params_variant("JitScalars"));
+        assert!(!is_fused_op_params_variant("Runtime"));
+
+        let src = valid_bundle()
+            .replace("op_params: { variant: None }", "op_params: { variant: JitScalars }");
+        let err = validate_str(&src).expect_err("JitScalars is runtime-JIT-only");
+        assert!(
+            matches!(err, FkcError::BadOpParamsVariant { ref namespace, .. } if namespace == "OpParams"),
+            "got {err:?}"
+        );
+    }
+
+    // ===== V-FKC-10 — FKC's quant tokens ⊆ FDX's normative code table =====
+
+    /// FDX's `codes` module doc names it "the normative owner of the shared
+    /// dtype/quant/granularity/... codes (the FKC kernel-contract format
+    /// references them by symbol)". FKC's [`is_fdx_quant_family`] /
+    /// [`is_fdx_granularity`] hand-copy that table as string literals, and
+    /// nothing checked the two still agreed — in either direction.
+    ///
+    /// The guard reads `codes.rs` as TEXT rather than by symbol, deliberately.
+    /// FDX's consts live behind fuel-ir's non-default `dlpack` feature, so a
+    /// symbol-level test would compile only under `--features dlpack` and
+    /// would report `test result: ok` while running nothing under the default
+    /// gate — the exact failure mode that let this drift survive. Reading the
+    /// source text needs no feature, so this runs in a plain
+    /// `cargo test -p fuel-dispatch`.
+    const FDX_CODES_SRC: &str = include_str!("../../../fuel-ir/src/dlpack/codes.rs");
+
+    /// `(FDX const name, the token an FKC contract writes)`. Every const named
+    /// here must exist in `codes.rs` and every `FDX_QUANT_*` const there must
+    /// appear here — so an FDX addition, removal, or rename all fail loudly.
+    const FDX_FAMILY_TOKENS: &[(&str, &str)] = &[
+        ("FDX_QUANT_NONE", "NONE"),
+        ("FDX_QUANT_GGML_BLOCK", "GGML_BLOCK"),
+        ("FDX_QUANT_MX", "MX"),
+        ("FDX_QUANT_AFFINE_INT", "AFFINE_INT"),
+        ("FDX_QUANT_AFFINE_FLOAT", "AFFINE_FLOAT"),
+        ("FDX_QUANT_AFFINE_BLOCK", "AFFINE_BLOCK"),
+    ];
+
+    /// As [`FDX_FAMILY_TOKENS`], for `FDXScaleGranularity`.
+    const FDX_GRAN_TOKENS: &[(&str, &str)] = &[
+        ("FDX_SCALE_GRAN_PER_TENSOR", "PerTensor"),
+        ("FDX_SCALE_GRAN_PER_TOKEN", "PerToken"),
+        ("FDX_SCALE_GRAN_PER_CHANNEL", "PerChannel"),
+        ("FDX_SCALE_GRAN_PER_BLOCK", "PerBlock"),
+    ];
+
+    /// Every `pub const <prefix>… ` declared in FDX's code table.
+    fn fdx_consts_with_prefix(prefix: &str) -> std::collections::BTreeSet<String> {
+        FDX_CODES_SRC
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("pub const ")?.split(':').next())
+            .map(|n| n.trim().to_string())
+            .filter(|n| n.starts_with(prefix))
+            .collect()
+    }
+
+    #[test]
+    fn fkc_quant_tokens_are_a_faithful_subset_of_the_fdx_code_table() {
+        let families = fdx_consts_with_prefix("FDX_QUANT_");
+        let grans = fdx_consts_with_prefix("FDX_SCALE_GRAN_");
+
+        // Positive control. A parse that matched nothing — `codes.rs` reshaped,
+        // the consts moved, the `pub const` spelling changed — would make every
+        // set comparison below trivially satisfiable in the *dangerous*
+        // direction (FKC accepts tokens FDX no longer defines). Assert the
+        // instrument works before trusting what it reports.
+        assert!(
+            families.contains("FDX_QUANT_GGML_BLOCK") && grans.contains("FDX_SCALE_GRAN_PER_BLOCK"),
+            "parsed {} family / {} granularity consts out of {} lines of codes.rs — \
+             the parse found neither known anchor, so it is broken, not the table",
+            families.len(),
+            grans.len(),
+            FDX_CODES_SRC.lines().count()
+        );
+
+        let declared_families: std::collections::BTreeSet<String> =
+            FDX_FAMILY_TOKENS.iter().map(|(c, _)| c.to_string()).collect();
+        assert_eq!(
+            families, declared_families,
+            "FDX's FDX_QUANT_* table and FKC's mirror of it have diverged — update \
+             FDX_FAMILY_TOKENS *and* is_fdx_quant_family together"
+        );
+
+        let declared_grans: std::collections::BTreeSet<String> =
+            FDX_GRAN_TOKENS.iter().map(|(c, _)| c.to_string()).collect();
+        assert_eq!(
+            grans, declared_grans,
+            "FDX's FDX_SCALE_GRAN_* table and FKC's mirror of it have diverged"
+        );
+
+        // …and the tokens themselves round-trip through the FKC predicates.
+        for (konst, token) in FDX_FAMILY_TOKENS {
+            assert!(
+                is_fdx_quant_family(token),
+                "FKC rejects `{token}`, the token for the live FDX const {konst}"
+            );
+        }
+        for (konst, token) in FDX_GRAN_TOKENS {
+            assert!(
+                is_fdx_granularity(token),
+                "FKC rejects `{token}`, the token for the live FDX const {konst}"
+            );
+        }
+
+        // The corpus writes `none` lowercase; both spellings are accepted.
+        assert!(is_fdx_quant_family("none"));
+
+        // Plausible-but-not-FDX tokens must NOT be accepted, or the subset
+        // property above is satisfied by a predicate that accepts everything.
+        for bogus in ["PerGroup", "AWQ", "GPTQ", "affine_int", "PERTENSOR", ""] {
+            assert!(!is_fdx_quant_family(bogus), "family accepted `{bogus}`");
+            assert!(!is_fdx_granularity(bogus), "granularity accepted `{bogus}`");
+        }
     }
 
     // ===== Rule 8 / 8a — cost =====

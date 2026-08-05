@@ -558,6 +558,15 @@ contract it is a `fuel_graph::registry::FusedOpParams` variant.** The two namesp
 distinct; §10.7 checks the variant against the correct namespace depending on which of
 `op_kind` / `fused_op` the contract declares. Example for matmul (primitive):
 
+The accepted set is **every variant of the respective enum except the runtime-only ones** —
+`OpParams::JitScalars` and `FusedOpParams::Runtime`. Both describe kernels that are synthesized
+or registered at *run* time (a JIT region's extracted scalars; a `runtime_fused` op whose
+identity is a live `FusedOpId`), so there is no checked-in kernel for a hand-authored contract
+to describe, and naming either is `BadOpParamsVariant`. The importer derives its accepted set
+from the enums themselves rather than a hand-maintained list, so the two stay in lockstep by
+construction; the two exclusions are the only entries carrying a reason (see `variant_table!` in
+`fuel-dispatch/src/fkc/validate.rs`).
+
 ```yaml
 op_params:
   variant: Matmul          # OpParams::Matmul
@@ -1740,6 +1749,20 @@ The importer is pointed at a glob (`contracts/vulkan/**/*.fkc.md`). A bare `_pro
 (front-matter, no `## ` sections) supplies defaults inherited by every file in the tree; per-file
 front-matter overrides. Files are processed in sorted path order for deterministic registration
 ordering (which determines the order of sibling alternatives at a key — §12.5).
+
+**Front-matter must AGREE across the files a glob merges** — a glob produces *one*
+`ImportedProvider`, so `name`, `backend`, `kernel_source`, `link_registry` and `revision_base`
+must be identical in every file the glob matched, or the import fails with `ProviderMismatch`
+naming the drifted field. All five are compared, and each is compared as an `Option` where the
+field is optional, so "one file declares it, another omits it" is a drift too, not a silent
+default. The two easy ones to under-enforce are the two that matter most, because neither
+produces a visible symptom when it drifts: `revision_base` is folded into every kernel's
+`kernel_revision_hash` (§8), the key the verification ledger is looked up by, so a drift merges
+kernels whose hashes were computed against *different* roots while presenting as one provider;
+and `link_registry` names the symbol table a file's `entry_point`s are declared to resolve
+against, while the glob binds every merged file through the single registry its caller supplied
+— so a drift means at least one file's entry points resolved against a table its author never
+named, possibly onto a same-named symbol belonging to a different provider.
 
 ### 9.3 The import pipeline
 
