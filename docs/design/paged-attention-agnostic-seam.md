@@ -236,14 +236,75 @@ This unblocks asking Baracuda for kernel work — but *what* to ask for still
 waits on §6.2, because the k=1-vs-batched shape decides monolithic vs
 primitives.
 
-### 6.2 Batch-size sweep (Lightbulb)
+### 6.2 The decomposed arm — the real discriminator (mine)
 
-10.4× is a **k=1** number, and k=1 is the case batching exists to avoid. If the
-paged step is near-flat in k the ratio inverts somewhere, and *where* is a design
-input unobtainable by reasoning. Also requested: **DtoH bytes/token at each k**,
-which separates "per-token overhead that amortises" from "scales with batch" —
-that single slope plausibly decides monolithic-vs-primitives before anyone
-writes code.
+**CORRECTION.** This section previously said the DtoH bytes/token slope
+"plausibly decides monolithic-vs-primitives before anyone writes code." **It does
+not, and that error propagated to Baracuda**, who sharpened it into an explicit
+prioritisation rule before it was caught.
+
+The flaw: **once ANY GPU implementation exists, the round-trip disappears
+entirely.** Monolithic and small-primitives both eliminate it, equally and
+completely. So the bytes/token slope characterises the *current broken state* —
+an op on the wrong side of the bus — not a property separating two candidate
+futures, neither of which has a round-trip at all. The 186× establishes that
+**something** must be built; it is silent on **what**.
+
+What actually decides it is **GPU-decomposed vs GPU-fused** — the fork Baracuda
+originally named. §2.0 makes that arm sound like a dead letter (the recipe never
+fires), but "the arm doesn't exist" is a reason to *create* it, not a reason to
+stop treating it as the criterion. It is still the thing a fused kernel must
+beat.
+
+So the gating work is to **offer the decomposed arm and measure it**:
+
+- **every recipe node CUDA-placed, fast enough** → primitives win; the 186× is
+  removable with **no Baracuda kernel at all**;
+- **CUDA-placed but slow** → almost certainly §1.1 (the recipe materialises
+  padded capacity, not live `context_len`), which is the quantified case for a
+  fused paged kernel — a *throughput* argument, not a round-trip one;
+- **some primitive falls back to host** → that primitive is the ask, far
+  smaller than "paged attention", and a decomposed arm cannot win until it
+  exists.
+
+### 6.2a Two axes the §1 measurement separates — and one it cannot
+
+Refinement from Baracuda, adopted because it caught me sliding between two
+claims. The §1 decomposed-arm dump separates exactly two things:
+
+- **PLACEMENT** — §1 on host vs §1 on device.
+- **FORMULATION** — §1 dense (cost ∝ *allocated capacity*, §1.1) vs §3 flash
+  (cost ∝ *occupancy*).
+
+It does **not** settle **FUSION** (monolithic vs small primitives), because
+fusion is a question *within* §3 and the dump contains no §3 arm for a fused §3
+kernel to be compared against. "Slow even when fully on-device" argues for the
+flash **formulation**; it does not by itself argue for **fusion**. Those are
+different claims and this document previously ran them together.
+
+| question | settled by | status |
+|---|---|---|
+| does §1 run on device at all | §1 dump | in flight |
+| how much of 10.4× is PLACEMENT vs FORMULATION | §1 dump | in flight |
+| build §3 at all | the FORMULATION share above | pending |
+| §3 monolithic vs §3 primitives | needs a §3 **decomposed** arm to exist | **not scoped** |
+| which §3 primitive resists native emission | Baracuda, against a concrete §3 seam | last |
+
+The fourth row is the scope discovery: "what do we ask Baracuda to build"
+bottoms out in **building the §3 decomposed arm ourselves first**. Baracuda's
+prediction — that the online-softmax custom monoid is the leg most likely to lack
+a native binding — is recorded **against §3**, and is *not* testable by the §1
+dump, which contains no online-softmax accumulate at all (one dense
+`Fused(SOFTMAX_LAST_DIM)` over materialised scores). Their three-leg mapping
+describes §3 throughout; it is tagged as such here so the conflation I caused
+isn't repeated.
+
+### 6.2b Batch-size sweep (Lightbulb) — shapes the ask, does not gate it
+
+10.4× is a **k=1** number and k=1 is the case batching exists to avoid, so the
+sweep decides whether a kernel targets single-token decode or batched — the
+*shape* of the request. It is **downstream** of §6.2, not upstream, and it does
+not choose monolithic-vs-primitives.
 
 ### 6.3 Per-primitive native-emittable read (Baracuda)
 
