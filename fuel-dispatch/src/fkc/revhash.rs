@@ -160,10 +160,62 @@ pub fn compute_revision(
     }
 }
 
+/// Canonical FNV-1a 64-bit known-answer vectors.
+///
+/// **Why a KAT and not a cross-check against the FDX-side implementation.**
+/// There are two independent FNV-1a implementations in this workspace — this
+/// one and `fuel_memory::dlpack_view::fnv1a`. (§8's "shared hash function with
+/// FDX" is in fact two implementations agreeing only by both happening to use
+/// the standard constants.) A test comparing them to each other would prove
+/// only that they agree *with one another*: a refactor changing both
+/// consistently — FNV-1a to FNV-1, folding in a length prefix, reseeding —
+/// keeps them equal while silently invalidating every persisted plan key and
+/// `kernel_revision_hash` already on disk.
+///
+/// Pinning to the SPEC catches that; pinning to a sibling does not. These
+/// vectors are shared verbatim with the fuel-memory side, so both are anchored
+/// to the same external truth rather than to each other.
+///
+/// `""` hashing to the offset basis is the built-in positive control: it is
+/// the one input whose answer is structurally forced, so a vector table that
+/// got the basis wrong cannot pass.
+#[cfg(test)]
+pub(crate) const FNV1A64_KAT: &[(&str, u64)] = &[
+    ("", 0xcbf2_9ce4_8422_2325),
+    ("a", 0xaf63_dc4c_8601_ec8c),
+    ("foobar", 0x8594_4171_f739_67e8),
+    ("fuel", 0x8644_7a78_daee_11cd),
+    ("FNV-1a", 0xd498_8d18_eaff_5dc2),
+    ("flash_attn_f32", 0x737f_6f3f_3150_8709),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::fkc::parse_file;
+
+    /// This crate's FNV-1a must match the spec, not merely match its sibling.
+    #[test]
+    fn fnv1a_matches_the_canonical_vectors() {
+        for (input, want) in FNV1A64_KAT {
+            let got = fnv1a(input.as_bytes());
+            assert_eq!(
+                got, *want,
+                "FNV-1a(\"{input}\") = 0x{got:016x}, want 0x{want:016x} — the \
+                 revision-hash function drifted from the FNV-1a spec, which \
+                 silently invalidates every kernel_revision_hash on disk"
+            );
+        }
+    }
+
+    /// Byte-oriented, so a non-UTF8 payload hashes byte-by-byte with no
+    /// re-encoding. This side takes `&[u8]` and the FDX side takes `&str`;
+    /// this pins that the widening is a no-op for the shared vectors.
+    #[test]
+    fn fnv1a_is_byte_oriented() {
+        assert_eq!(fnv1a(&[0u8, 1, 2, 3, 4, 5, 6, 7]), 0xa4dc_49e2_b28e_cb7d);
+        assert_eq!(fnv1a("foobar".as_bytes()), 0x8594_4171_f739_67e8);
+    }
 
     const ELEMENTWISE_BINARY: &str =
         include_str!("../../../docs/kernel-contracts/cpu/elementwise-binary.fkc.md");
