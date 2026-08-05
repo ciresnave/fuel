@@ -31,6 +31,7 @@ fn tiny_weights(cfg: &LlamaConfig, seed: u32) -> LlamaWeights {
     };
     let kv_dim = cfg.n_kv_heads * cfg.head_dim;
     LlamaWeights {
+        instance: fuel_core::decode_shape::ModelInstanceId::next(),
         token_embedding: vec_of(cfg.vocab_size * cfg.dim),
         layers: (0..cfg.n_layers)
             .map(|_| LayerWeights {
