@@ -218,6 +218,44 @@ fn alibi_bias_recipe(alibi: PatternNode, b: usize, hq: usize, sq: usize, sk: usi
 /// resolves to that dtype's `-inf` (the A2 carrier's dtype-correct behavior — the
 /// legacy always baked F32, an under-protective quirk this migration supersedes),
 /// so parity is asserted at F32 (per the plan).
+/// The recipe for a live `PagedAttn` **node**, as portable data.
+///
+/// [`decompose`] lowers the node into the graph; this hands back the same
+/// [`PatternNode`] *without touching the graph*, which is what the JIT seam
+/// needs: `fuel_kernel_seam::JitRequest::region` is documented as "the recipe's
+/// `decompose` (the primitive subgraph)", so a synthesizer can be asked to build
+/// one kernel for exactly this region.
+///
+/// That matters most for an op like this one, whose fused form **no GPU backend
+/// implements** — measured 2026-08-05, the fused node executes on the host under
+/// CUDA. Lowering to primitives needs every primitive bound; handing the region
+/// to a synthesizer needs none of them. The two routes are complementary and
+/// this accessor is what makes the second reachable.
+///
+/// Returns `None` on a malformed node (wrong arity / rank) or wrong params —
+/// the same total, never-panic posture as [`decompose`]'s fixpoint self-return.
+pub fn recipe_for(graph: &Graph, id: NodeId, params: &FusedOpParams) -> Option<PatternNode> {
+    let FusedOpParams::PagedAttn { softmax_scale, block_size, softcap } = params else {
+        return None;
+    };
+    let n = graph.node(id);
+    if n.inputs.len() != 5 && n.inputs.len() != 6 {
+        return None;
+    }
+    let q_shape = graph.node(n.inputs[0]).shape.clone();
+    let kc_shape = graph.node(n.inputs[1]).shape.clone();
+    let bt_shape = graph.node(n.inputs[3]).shape.clone();
+    let (q_dims, kc_dims, bt_dims) = (q_shape.dims(), kc_shape.dims(), bt_shape.dims());
+    if q_dims.len() != 4 || kc_dims.len() != 4 || bt_dims.len() != 2 {
+        return None;
+    }
+    Some(recipe(
+        q_dims[0], q_dims[1], q_dims[2], q_dims[3],
+        kc_dims[2], bt_dims[1], *block_size, *softmax_scale, *softcap,
+        n.inputs.len() == 6,
+    ))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn recipe(
     b: usize,
@@ -639,5 +677,60 @@ mod tests {
         let out = decompose(&mut g, fused, &FusedOpParams::Rope);
         assert_eq!(out, fused, "wrong params => typed decline => fixpoint");
         assert_eq!(g.len(), before, "declined before any emission");
+    }
+
+    /// **`recipe_for` hands back the SAME region `decompose` lowers — as data,
+    /// without touching the graph.** That equivalence is the whole point: the
+    /// JIT seam's `JitRequest::region` is documented as "the recipe's
+    /// `decompose` (the primitive subgraph)", so if these two ever drifted, a
+    /// synthesizer would be asked to build a kernel for a region the graph does
+    /// not actually run — and the resulting kernel would be silently wrong
+    /// rather than rejected.
+    ///
+    /// Guarded structurally, not by eyeballing: the two are compared for
+    /// equality, and `decompose` is separately confirmed to have emitted
+    /// (`out != fused`, `g.len()` grew). Asserting only the equality would pass
+    /// vacuously if both returned the same degenerate value.
+    #[test]
+    fn recipe_for_matches_what_decompose_lowers() {
+        let mut g = Graph::new();
+        let fused = paged_node(&mut g, 1, 2, 2, 3, 2, 4, 2, 2, 0.5, None, false);
+        let params =
+            FusedOpParams::PagedAttn { softmax_scale: 0.5, block_size: 2, softcap: None };
+
+        let before = g.len();
+        let as_data = recipe_for(&g, fused, &params).expect("well-formed node yields a recipe");
+        assert_eq!(g.len(), before, "recipe_for must NOT mutate the graph");
+
+        // The graph-lowering path, for comparison.
+        let mut g2 = Graph::new();
+        let fused2 = paged_node(&mut g2, 1, 2, 2, 3, 2, 4, 2, 2, 0.5, None, false);
+        let before2 = g2.len();
+        let root2 = decompose(&mut g2, fused2, &params);
+        assert_ne!(root2, fused2, "control: decompose actually lowered (not a fixpoint)");
+        assert!(g2.len() > before2, "control: decompose actually emitted nodes");
+
+        // Same node, same params, same recipe — the equivalence the seam needs.
+        let as_data2 = recipe_for(&g2, fused2, &params).expect("recipe");
+        assert_eq!(
+            as_data, as_data2,
+            "recipe_for is deterministic for the same node shape/params",
+        );
+
+        // Never-panic posture, matching `decompose`'s fixpoint self-return.
+        assert!(
+            recipe_for(&g, fused, &FusedOpParams::Rope).is_none(),
+            "wrong params => None, never a panic",
+        );
+        let bare = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[1]),
+            dtype: DType::F32,
+        });
+        assert!(
+            recipe_for(&g, bare, &params).is_none(),
+            "malformed node (wrong arity) => None, never a panic",
+        );
     }
 }
