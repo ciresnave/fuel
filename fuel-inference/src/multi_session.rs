@@ -1991,6 +1991,39 @@ mod tests {
         assert!(rc >= 1, "default path rebound the held decode plan per token (got {rc})");
     }
 
+    /// Max absolute per-element difference between two captured logit streams
+    /// (from [`PagedSessionScheduler::take_captured_logits`]) — the discriminating
+    /// metric for KV-state-dependent behavior (see `tiny_model`'s note: token
+    /// equality is vacuous here). Asserts the streams are the same shape.
+    fn logits_maxdiff(a: &[Vec<f32>], b: &[Vec<f32>]) -> f32 {
+        assert_eq!(a.len(), b.len(), "same number of sampled steps");
+        let mut m = 0.0f32;
+        for (x, y) in a.iter().zip(b) {
+            assert_eq!(x.len(), y.len(), "logit vectors are the same width");
+            for (p, q) in x.iter().zip(y) {
+                m = m.max((p - q).abs());
+            }
+        }
+        m
+    }
+
+    /// Run a prompt from scratch through a private scheduler, returning its
+    /// per-step captured logits — the from-scratch reference for a prefix-sharing
+    /// parity check.
+    fn from_scratch_logits(
+        model: &LlamaModel,
+        budget: KvBudget,
+        prompt: &[u32],
+        max_new: usize,
+    ) -> Vec<Vec<f32>> {
+        let mut s =
+            PagedSessionScheduler::new(model, budget, DType::F32, &Device::cpu()).unwrap();
+        let id = s.add_session(prompt, SamplingStrategy::Greedy, None, max_new).unwrap();
+        s.capture_logits(id).unwrap();
+        s.run_to_completion();
+        s.take_captured_logits(id).unwrap()
+    }
+
     /// TASK 4 — the SCHEDULER-level prefix-sharing correctness anchor (the twin
     /// of Task 1's model-level `prefix_shared_session_decodes_like_from_scratch`).
     /// A session admitted through the reference caller
@@ -2074,21 +2107,146 @@ mod tests {
         // The discriminating oracle: byte-identical per-step logits. A wiring bug
         // that re-fed or mis-positioned the prefix would diverge here (~1.7e-3)
         // while leaving the token stream above untouched.
-        assert_eq!(
-            shared_logits.len(),
-            scratch_logits.len(),
-            "same number of sampled steps",
-        );
-        let mut maxdiff = 0.0f32;
-        for (a, b) in shared_logits.iter().zip(&scratch_logits) {
-            assert_eq!(a.len(), b.len(), "logit vectors are the same width");
-            for (x, y) in a.iter().zip(b) {
-                maxdiff = maxdiff.max((x - y).abs());
-            }
-        }
+        let maxdiff = logits_maxdiff(&shared_logits, &scratch_logits);
         assert_eq!(
             maxdiff, 0.0,
             "prefix-shared per-step logits are byte-identical to from-scratch (maxdiff {maxdiff})",
+        );
+    }
+
+    /// TASK 5 (adversarial) — the actual serving value: TWO sessions splice the
+    /// SAME registered prefix and decode DIFFERENT suffixes concurrently over one
+    /// pool, and each is byte-identical (per-step logits) to its own from-scratch
+    /// run. This is the multi-tenant isolation claim under sharing: the shared
+    /// prefix blocks are read by both, and each sharer's first suffix write lands
+    /// on a FRESH block (rung-1: prefix fully filled), so neither corrupts the
+    /// shared prefix nor the other's suffix.
+    #[test]
+    fn two_sharers_of_one_prefix_decode_independently() {
+        let model = tiny_model(9999);
+        let budget = KvBudget { block_size: 4, num_blocks: 64 };
+        let prefix = [1u32, 2, 3, 4, 5, 6, 7, 8];
+        let full_a: Vec<u32> = prefix.iter().chain([9u32, 10, 11].iter()).copied().collect();
+        let full_b: Vec<u32> = prefix.iter().chain([12u32, 13, 14, 15].iter()).copied().collect();
+        let max_new = 5;
+        let ref_a = from_scratch_logits(&model, budget, &full_a, max_new);
+        let ref_b = from_scratch_logits(&model, budget, &full_b, max_new);
+
+        let mut sched =
+            PagedSessionScheduler::new(&model, budget, DType::F32, &Device::cpu()).unwrap();
+        let donor = sched.add_session(&prefix, SamplingStrategy::Greedy, None, 1).unwrap();
+        sched.step();
+        let pid = sched.register_prefix(donor, 2).unwrap();
+        sched.reap_finished();
+
+        let a = sched
+            .add_session_sharing_prefix(pid, &full_a, SamplingStrategy::Greedy, None, max_new)
+            .unwrap();
+        let b = sched
+            .add_session_sharing_prefix(pid, &full_b, SamplingStrategy::Greedy, None, max_new)
+            .unwrap();
+        sched.capture_logits(a).unwrap();
+        sched.capture_logits(b).unwrap();
+        sched.run_to_completion();
+        let la = sched.take_captured_logits(a).unwrap();
+        let lb = sched.take_captured_logits(b).unwrap();
+
+        assert_eq!(
+            logits_maxdiff(&la, &ref_a),
+            0.0,
+            "sharer A decodes byte-identically to its own from-scratch run",
+        );
+        assert_eq!(
+            logits_maxdiff(&lb, &ref_b),
+            0.0,
+            "sharer B decodes byte-identically to its own from-scratch run (not contaminated by A)",
+        );
+    }
+
+    /// TASK 5 (adversarial) — releasing the prefix OWNER while a sharer is still
+    /// live (and about to decode over the shared blocks) must not pull the rug:
+    /// the sharer's own splice refcount keeps the blocks alive, so it decodes
+    /// byte-identically to from-scratch. A refcount bug that freed the blocks on
+    /// owner-release would make the sharer read reclaimed memory and diverge.
+    #[test]
+    fn prefix_owner_release_while_sharer_live_keeps_it_correct() {
+        let model = tiny_model(9999);
+        let budget = KvBudget { block_size: 4, num_blocks: 64 };
+        let prefix = [1u32, 2, 3, 4, 5, 6, 7, 8];
+        let full: Vec<u32> = prefix.iter().chain([9u32, 10, 11].iter()).copied().collect();
+        let max_new = 5;
+        let reference = from_scratch_logits(&model, budget, &full, max_new);
+
+        let mut sched =
+            PagedSessionScheduler::new(&model, budget, DType::F32, &Device::cpu()).unwrap();
+        let donor = sched.add_session(&prefix, SamplingStrategy::Greedy, None, 1).unwrap();
+        sched.step();
+        let pid = sched.register_prefix(donor, 2).unwrap();
+        sched.reap_finished();
+        let sharer = sched
+            .add_session_sharing_prefix(pid, &full, SamplingStrategy::Greedy, None, max_new)
+            .unwrap();
+        // Drop the owner NOW, before the sharer has decoded a single token.
+        sched.release_prefix(pid).unwrap();
+        sched.capture_logits(sharer).unwrap();
+        sched.run_to_completion();
+        let got = sched.take_captured_logits(sharer).unwrap();
+
+        assert_eq!(
+            logits_maxdiff(&got, &reference),
+            0.0,
+            "sharer decodes byte-identically after its prefix owner is released mid-flight",
+        );
+    }
+
+    /// TASK 5 (adversarial) — a refused `add_session_sharing_prefix` leaks
+    /// nothing: no session is admitted, no blocks are consumed, AND the whole run
+    /// later unwinds to a fully-free pool. That last check is the teeth — a
+    /// refusal that failed to roll back its just-opened handle would pin the
+    /// shared blocks at a positive refcount forever, so reap + release could never
+    /// return the pool to `num_blocks`.
+    #[test]
+    fn add_session_sharing_prefix_refusal_leaks_nothing() {
+        let model = tiny_model(9999);
+        let budget = KvBudget { block_size: 4, num_blocks: 64 };
+        let prefix = [1u32, 2, 3, 4, 5, 6, 7, 8];
+        let full: Vec<u32> = prefix.iter().chain([9u32, 10, 11].iter()).copied().collect();
+
+        let mut sched =
+            PagedSessionScheduler::new(&model, budget, DType::F32, &Device::cpu()).unwrap();
+        let donor = sched.add_session(&prefix, SamplingStrategy::Greedy, None, 1).unwrap();
+        sched.step();
+        let pid = sched.register_prefix(donor, 2).unwrap();
+        sched.reap_finished();
+
+        let free_with_prefix = sched.kv_free_blocks();
+        let sessions_before = sched.session_count();
+
+        // Refusal: the prompt does not extend past the shared prefix (this path
+        // splices SUCCESSFULLY, then must roll the handle back). Err, untouched.
+        assert!(
+            sched
+                .add_session_sharing_prefix(pid, &prefix, SamplingStrategy::Greedy, None, 3)
+                .is_err(),
+            "a prompt that does not extend past the prefix is refused",
+        );
+        assert_eq!(sched.session_count(), sessions_before, "refusal admits no session");
+        assert_eq!(sched.kv_free_blocks(), free_with_prefix, "refusal consumes no blocks");
+
+        // A legitimate sharer still works after the refusal, and the whole thing
+        // unwinds to an entirely free pool — impossible if the refusal leaked its
+        // rolled-back handle (which would pin the shared blocks).
+        let ok = sched
+            .add_session_sharing_prefix(pid, &full, SamplingStrategy::Greedy, None, 3)
+            .unwrap();
+        sched.run_to_completion();
+        let reaped = sched.reap_finished();
+        assert!(reaped.iter().any(|(id, _)| *id == ok), "the legit sharer ran and reaped");
+        sched.release_prefix(pid).unwrap();
+        assert_eq!(
+            sched.kv_free_blocks(),
+            budget.num_blocks,
+            "after reap + release every block is free — the refusal leaked no handle",
         );
     }
 
