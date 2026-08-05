@@ -10625,12 +10625,46 @@ pub fn build_rope_tables(
         "build_rope_tables: head_dim {head_dim} must be even",
     );
     let half = head_dim / 2;
+    let inv_freq: Vec<f64> = (0..half)
+        .map(|i| base.powf(-2.0 * (i as f64) / (head_dim as f64)))
+        .collect();
+    build_rope_tables_with_inv_freq(&inv_freq, start_pos, seq, head_dim)
+}
+
+/// [`build_rope_tables`] with the inverse frequencies supplied directly rather
+/// than derived from a single `base`.
+///
+/// Every RoPE variant Fuel supports differs from the default in **exactly** this
+/// vector: LLaMA-3.1's long-context scaling is a per-dimension transform of the
+/// same `head_dim / 2` values, and the position loop below is bit-identical
+/// either way. Splitting the frequency choice out is what lets a scaled model
+/// reuse the whole decode path — the KV-cache forward, the held-graph persistent
+/// forward, and their per-token rebinds — instead of needing a parallel copy of
+/// each.
+///
+/// `inv_freq.len()` must be `head_dim / 2`.
+pub fn build_rope_tables_with_inv_freq(
+    inv_freq: &[f64],
+    start_pos: usize,
+    seq: usize,
+    head_dim: usize,
+) -> (Vec<f32>, Vec<f32>) {
+    assert!(
+        head_dim.is_multiple_of(2),
+        "build_rope_tables_with_inv_freq: head_dim {head_dim} must be even",
+    );
+    let half = head_dim / 2;
+    assert_eq!(
+        inv_freq.len(),
+        half,
+        "build_rope_tables_with_inv_freq: inv_freq len {} != head_dim/2 {half}",
+        inv_freq.len(),
+    );
     let mut cos_data = vec![0.0_f32; seq * head_dim];
     let mut sin_data = vec![0.0_f32; seq * head_dim];
     for p in 0..seq {
         let pos = (start_pos + p) as f64;
-        for i in 0..half {
-            let freq = base.powf(-2.0 * (i as f64) / (head_dim as f64));
+        for (i, &freq) in inv_freq.iter().enumerate() {
             let theta = pos * freq;
             let c = theta.cos() as f32;
             let s = theta.sin() as f32;

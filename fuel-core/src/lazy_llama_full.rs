@@ -334,6 +334,63 @@ impl Llama3Model {
         Self { inner, rope_scaling, eos_token_id }
     }
 
+    /// This model's RoPE inverse frequencies — `config.rope_base`'s defaults
+    /// when unscaled, the LLaMA-3.1 long-context transform when scaled.
+    ///
+    /// The scaling is *entirely* a per-dimension transform of this vector (see
+    /// [`compute_llama3_inv_freq`]), which is why the decode entry points below
+    /// are thin calls into [`LlamaModel`]'s own path with the vector passed
+    /// down, rather than a parallel implementation of it.
+    fn rope_inv_freq(&self) -> Vec<f64> {
+        compute_llama3_inv_freq(
+            self.inner.config.rope_base,
+            self.rope_scaling.as_ref(),
+            self.inner.config.head_dim,
+        )
+    }
+
+    /// Incremental KV-cache forward — the decode surface this model was missing
+    /// entirely. `new`/`forward`/`forward_embeds`/`forward_hidden_embeds` were
+    /// the whole method set, which meant serving a GGUF checkpoint through
+    /// [`crate::lazy_quantized_llama::QuantizedLlama3Model`] re-ran the full
+    /// prefix for every token.
+    ///
+    /// Delegates to [`LlamaModel::forward_with_kv_context_inv_freq`] with this
+    /// model's frequencies, so a *scaled* model decodes correctly rather than
+    /// silently inheriting unscaled RoPE — the failure a plain delegation to
+    /// `self.inner` would have produced, and one that shows up as slightly
+    /// wrong long-context attention rather than an error.
+    pub fn forward_with_kv_context(
+        &self,
+        tokens: &[u32],
+        cache: &mut crate::inference_context::KvCache,
+        ctx: &mut crate::inference_context::InferenceContext,
+    ) -> Result<Vec<f32>> {
+        let inv = self.rope_inv_freq();
+        self.inner.forward_with_kv_context_inv_freq(tokens, cache, ctx, Some(&inv))
+    }
+
+    /// Persistent-KV forward: build + optimize the decode graph once, then
+    /// rebind it per token.
+    ///
+    /// **This is the variant that makes the model servable**, not
+    /// [`Self::forward_with_kv_context`]. The non-persistent arm re-optimizes
+    /// the graph every token; the Lightbulb port measured 5,901 ms/token
+    /// against 26.47 ms/token with a caller-held `DecodeSession` on the same
+    /// hardware (CUDA, TinyLlama-1.1B f32, debug). A KV cache without the held
+    /// plan closes the asymptotic gap and leaves the constant that dominates.
+    pub fn forward_with_kv_context_persistent(
+        &self,
+        tokens: &[u32],
+        cache: &mut crate::inference_context::KvCache,
+        ctx: &mut crate::inference_context::InferenceContext,
+        session: &mut Option<crate::inference_context::DecodeSession>,
+    ) -> Result<Vec<f32>> {
+        let inv = self.rope_inv_freq();
+        self.inner
+            .forward_with_kv_context_persistent_inv_freq(tokens, cache, ctx, session, Some(&inv))
+    }
+
     /// Forward from token ids. Returns logits `[1, seq, vocab_size]`.
     pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
         let cfg = &self.inner.config;
@@ -727,5 +784,142 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A `head_dim` large enough that the lowest-frequency wavelength exceeds
+    /// `low_freq_wavelen`, so the scaling actually engages. `tiny_cfg`'s
+    /// `head_dim: 4` does NOT — a parity test built on it would compare the
+    /// scaled path against itself and pass no matter what the override did.
+    fn scaled_cfg() -> LlamaConfig {
+        LlamaConfig {
+            vocab_size: 32,
+            dim: 32,
+            n_layers: 2,
+            n_heads: 2,
+            n_kv_heads: 1,
+            head_dim: 16,
+            ffn_dim: 32,
+            norm_eps: 1e-5,
+            rope_base: 500_000.0,
+        }
+    }
+
+    /// LLaMA-3.1's band boundaries are `original_max_position_embeddings /
+    /// *_freq_factor`, so the real 8192 puts every band edge far beyond any
+    /// position a unit test can afford to decode to: with the production
+    /// numbers, scaled and unscaled decode at positions 0..6 differ by 1.1e-7,
+    /// and a parity test built on them passes whether the override is threaded
+    /// or not (measured — that is how this constant got chosen).
+    ///
+    /// `original_max_position_embeddings: 8` moves the same band arithmetic
+    /// into the positions a test actually visits. The code path is identical;
+    /// only where the bands fall changes.
+    /// Parity tolerance for the scaled-decode oracle. Deliberately far below
+    /// the scaled-vs-unscaled separation the negative control measures — if
+    /// the two were comparable, "parity holds" and "the override was dropped"
+    /// would be indistinguishable outcomes.
+    const PARITY_TOL: f32 = 1e-5;
+
+    fn llama3_scaling() -> Llama3RopeConfig {
+        Llama3RopeConfig {
+            factor: 32.0,
+            low_freq_factor: 1.0,
+            high_freq_factor: 4.0,
+            original_max_position_embeddings: 8,
+            rope_type: Llama3RopeType::Llama3,
+        }
+    }
+
+    /// Decode `n` tokens one at a time through the persistent KV path,
+    /// returning the LAST step's logits.
+    fn decode_persistent(m: &Llama3Model, prompt: &[u32], extra: &[u32]) -> Vec<f32> {
+        let cfg = &m.inner.config;
+        let dev = crate::Device::cpu();
+        let mut cache = crate::inference_context::KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim,
+            prompt.len() + extra.len() + 1, fuel_ir::DType::F32, &dev,
+        ).unwrap();
+        let mut ctx = crate::inference_context::InferenceContext::new(dev);
+        let mut session = None;
+        let mut logits = m.forward_with_kv_context_persistent(
+            prompt, &mut cache, &mut ctx, &mut session,
+        ).unwrap();
+        for &t in extra {
+            logits = m.forward_with_kv_context_persistent(
+                &[t], &mut cache, &mut ctx, &mut session,
+            ).unwrap();
+        }
+        logits
+    }
+
+    /// The oracle: incremental persistent decode must agree with a full-prefix
+    /// `forward` at the same final position, **with scaling engaged**.
+    ///
+    /// Compares LOGITS, not sampled tokens — per the standing warning in
+    /// `fuel-inference/src/multi_session.rs`, a tiny random model's greedy
+    /// argmax is a fixed point and would pass even if the KV state were wrong.
+    ///
+    /// Several decode steps, not one, on purpose: the RoPE override has to
+    /// reach BOTH the first token's held-graph build and every later rebind.
+    /// A version threading only the build would produce a correct step 1 and
+    /// wrong steps 2..n — position-dependent, and invisible to a 1-token test.
+    #[test]
+    fn scaled_persistent_decode_matches_full_prefix_forward() {
+        let cfg = scaled_cfg();
+        let inner = LlamaModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let m = Llama3Model::new(inner, Some(llama3_scaling()), None);
+
+        let prompt = [1u32, 2, 3, 4];
+        let extra = [5u32, 6, 7];
+        let got = decode_persistent(&m, &prompt, &extra);
+
+        // Oracle: one forward over the whole sequence; take the last position.
+        let all: Vec<u32> = prompt.iter().chain(extra.iter()).copied().collect();
+        let full = m.forward(&all, 0).unwrap().realize_f32();
+        let want = &full[(all.len() - 1) * cfg.vocab_size..];
+
+        assert_eq!(got.len(), cfg.vocab_size, "decode returns last-position logits");
+        for (i, (a, b)) in got.iter().zip(want.iter()).enumerate() {
+            assert!(
+                (a - b).abs() < PARITY_TOL,
+                "scaled persistent decode diverged at logit {i}: {a} vs {b}",
+            );
+        }
+    }
+
+    /// The negative control for the test above. If the override were dropped
+    /// and `Llama3Model` decoded through plain unscaled `LlamaModel`, the
+    /// result would still be *finite and plausible* — it just would not match
+    /// the scaled oracle. Assert the two are actually distinguishable, or the
+    /// parity assertion above proves nothing about scaling.
+    #[test]
+    fn unscaled_decode_is_distinguishable_from_scaled() {
+        let cfg = scaled_cfg();
+        let weights = tiny_weights(&cfg);
+        let scaled = Llama3Model::new(
+            LlamaModel { config: cfg.clone(), weights: weights.clone() },
+            Some(llama3_scaling()),
+            None,
+        );
+        let unscaled = Llama3Model::new(
+            LlamaModel { config: cfg.clone(), weights },
+            None,
+            None,
+        );
+
+        let prompt = [1u32, 2, 3, 4];
+        let extra = [5u32, 6, 7];
+        let a = decode_persistent(&scaled, &prompt, &extra);
+        let b = decode_persistent(&unscaled, &prompt, &extra);
+
+        let max_diff = a
+            .iter()
+            .zip(b.iter())
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff > 10.0 * PARITY_TOL,
+            "scaled and unscaled decode are indistinguishable (max diff {max_diff}) —              the parity test above would pass with the override removed",
+        );
     }
 }
