@@ -1042,13 +1042,22 @@ impl DecodeSession {
 /// ([`LlamaModel::forward_paged_step_persistent`]): whether to build the plan
 /// ONCE and reuse it across tokens, or re-plan every token (the pre-plan-once
 /// behavior). The paged driver holds this per config and passes it each step;
-/// the default is [`Replan`](Self::Replan) (opt into [`PlanOnce`](Self::PlanOnce)).
+/// **the driver default is [`PlanOnce`](Self::PlanOnce)** (set by
+/// `PagedSessionScheduler::new`), with [`Replan`](Self::Replan) available as an
+/// explicit opt-out.
 ///
-/// It is a real runtime flag — not a test hook — for two reasons: (1) the paged
-/// driver ships it "off by default, opt-in on" so the plan-once path can be A/B
-/// measured (Lightbulb parent-vs-commit) and safely rolled out; and (2) toggling
-/// it in ONE process is what lets the correctness gate run both arms off one
-/// setup. On [`Replan`](Self::Replan) the persistent forward drops any held
+/// The A/B rollout this flag was built for is DONE, and the default moved with
+/// the result. Measured (nsys, Lightbulb, 2026-08-01; 16 tokens, same binary and
+/// model, only the plan mode differing): `Replan` → `PlanOnce` is **29.7×** on
+/// ms/token (8,192.0 → 275.8) and cuts host-ward DtoH 61% (101,691 → 40,088 MB)
+/// at IDENTICAL kernel-launch count (17,802 in both arms — same compute, less
+/// data movement). Shipping `Replan` as the default meant every consumer who did
+/// not know to opt in paid that 29.7×.
+///
+/// It remains a real runtime flag — not a test hook — because toggling it in ONE
+/// process is what lets the correctness gate run both arms off a single setup,
+/// and because `Replan` is the parity reference the plan-once path is checked
+/// against. On [`Replan`](Self::Replan) the persistent forward drops any held
 /// session (so nothing stale lingers) and delegates to the re-planning
 /// [`LlamaModel::forward_paged_step`]; on [`PlanOnce`](Self::PlanOnce) it
 /// builds-once / rebinds.

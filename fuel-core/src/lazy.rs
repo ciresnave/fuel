@@ -7666,8 +7666,9 @@ impl LlamaModel {
     ///
     /// `plan` is the runtime flag ([`crate::inference_context::PagedDecodePlan`]):
     /// `Replan` drops any held session and re-plans this token via
-    /// [`Self::forward_paged_step`] (the pre-plan-once behavior the driver ships
-    /// off-by-default); `PlanOnce` builds-once / rebinds as above.
+    /// [`Self::forward_paged_step`] (the pre-plan-once behavior, now an explicit
+    /// opt-OUT); `PlanOnce` — **the driver default** — builds-once / rebinds as
+    /// above.
     pub fn forward_paged_step_persistent(
         &self,
         token: u32,
@@ -14420,6 +14421,64 @@ mod generate_tests {
                 );
             }
         }
+    }
+
+    /// **The CONTIGUOUS generation API is plan-reuse-by-default, and this is the
+    /// gate that keeps it so.** [`LlamaModel::generate_streaming_with_kv_context`]
+    /// holds one `Option<DecodeSession>` across its whole decode loop, so the
+    /// optimizer runs once for the held decode plan rather than once per token.
+    /// Nothing asserted that before this test: the behavior was correct but
+    /// ungated, i.e. one refactor away from silently reverting to per-token
+    /// planning — the failure mode that cost the paged route a measured 29.7× and
+    /// hand-rolled contiguous decode loops 223× (nsys, 2026-08-01).
+    ///
+    /// **Instrument: the optimize-call delta must NOT GROW WITH TOKEN COUNT.** An
+    /// absolute bound would be a magic number that drifts with the prefill/sampling
+    /// path; the *slope* is the actual claim. Two runs differing only in
+    /// `max_new_tokens` (2 vs 10) must show the SAME delta:
+    ///
+    /// - plan reuse ON  → `delta(10) - delta(2) == 0`  (prefill + one plan build,
+    ///   independent of N)
+    /// - plan reuse OFF → `delta(10) - delta(2) == 8`  (one optimize per token)
+    ///
+    /// So the assertion is sabotage-calibrated by construction: the quantity it
+    /// checks IS the per-token planning cost, and deleting the held session moves
+    /// it from 0 to exactly the token difference. Thread-local counter (robust
+    /// under the concurrent suite); CPU f32; greedy + `eos_id: None` so both runs
+    /// spend their full budget.
+    #[test]
+    fn contiguous_generate_reuses_decode_plan_by_default() {
+        use crate::pipelined_bridge::optimize_calls_thread_local;
+
+        let cfg = LlamaConfig {
+            vocab_size: 32, dim: 16, n_layers: 2, n_heads: 4, n_kv_heads: 4,
+            head_dim: 4, ffn_dim: 32, norm_eps: 1e-5, rope_base: 10000.0,
+        };
+        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
+        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let dev = crate::Device::cpu();
+        let prompt: [u32; 3] = [1, 2, 3];
+
+        let optimize_calls_for = |max_new: usize| -> usize {
+            let before = optimize_calls_thread_local();
+            model
+                .generate_with_kv_context(
+                    &prompt, max_new, SamplingStrategy::Greedy, None, &dev, DType::F32,
+                )
+                .expect("greedy generate");
+            optimize_calls_thread_local() - before
+        };
+
+        let short = optimize_calls_for(2);
+        let long = optimize_calls_for(10);
+
+        assert_eq!(
+            long, short,
+            "contiguous generate must reuse ONE decode plan across tokens: \
+             optimize-call delta grew {} between max_new=2 ({short}) and max_new=10 ({long}) \
+             — that slope is one re-plan per token, i.e. the held DecodeSession is gone",
+            long as i64 - short as i64,
+        );
     }
 
     /// Task 3 (paged plan-once) — the second decode token REUSES the built
