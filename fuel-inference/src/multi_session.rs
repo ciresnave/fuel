@@ -1801,6 +1801,20 @@ mod tests {
     /// path never actually runs (e.g. the persistent call handed a throwaway
     /// `&mut None`, or `decode_one` left on the plain path) — which would read as
     /// "no speedup" and wrongly retire the feature.
+    ///
+    /// **Scope honesty on the word "byte-exact": this arm compares TOKEN
+    /// STREAMS, and token equality is a coarse oracle for anything
+    /// KV-state-dependent.** A peer measured a 1.67e-3 max logit perturbation
+    /// surviving *both* greedy argmax and seeded multinomial sampling — i.e. a
+    /// real numerical divergence that a token-stream comparison cannot see, at
+    /// either sampler. So this test's genuine teeth are `session_realize_count`
+    /// (wiring) rather than the token comparison. The **logit-level** plan-once
+    /// parity — the claim that reusing the plan does not change the numbers —
+    /// is gated a layer down, at the model, by
+    /// `lazy.rs::plan_once_second_token_reuses_graph`, which compares the
+    /// persistent tokens' actual logits against the re-planning
+    /// `forward_paged_step` reference. Read the two together; neither is
+    /// sufficient alone.
     #[test]
     fn paged_scheduler_plan_once_matches_replan_byte_exact() {
         let model = tiny_model(42);

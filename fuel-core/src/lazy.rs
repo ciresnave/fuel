@@ -9470,12 +9470,16 @@ impl LlamaModel {
     ///    [`Self::build_token_rope_mask_bytes`] and replay via one
     ///    `cuGraphLaunch` (`replay_token` with the fresh bytes).
     ///
-    /// **Known gap** (documented, not half-implemented): unlike
-    /// `forward_with_kv_context_persistent`, this does NOT replicate
-    /// `DecodeSession::is_valid_for`'s staleness check (cache resized /
-    /// model swapped mid-generation) — out of scope for this first
-    /// capture-wiring pass; the caller is responsible for not swapping
-    /// `cache`/model out from under a live `(session, captured)` pair.
+    /// **Staleness** (was a documented gap in the first capture-wiring pass;
+    /// now closed): before case 2, a held pair whose validity key no longer
+    /// matches the live cache/model is invalidated — session AND capture
+    /// together — via [`Self::invalidate_decode_pair_if_stale`], which shares
+    /// its predicate with `forward_with_kv_context_persistent` so the two
+    /// paths cannot drift on what "stale" means. Dropping the session alone
+    /// would leave a recorded CUDA graph replaying against fixed device
+    /// addresses that no longer describe the live cache: wrong logits at full
+    /// speed, with nothing reporting it. After invalidation `session` is
+    /// `None`, so case 2 rebuilds both on this same token.
     #[cfg(feature = "cuda")]
     pub fn forward_with_kv_context_captured(
         &self,
@@ -9494,6 +9498,19 @@ impl LlamaModel {
             self.drop_decode_session(session, ctx);
             return self.forward_with_kv_context(tokens, cache, ctx);
         }
+
+        // ---- 1b. Staleness: a held pair keyed to a cache/model that no
+        // longer matches is retired — capture first, then session (see
+        // `invalidate_decode_pair_if_stale`). This leaves `session` as
+        // `None`, so case 2 immediately rebuilds both on this token. ----
+        self.invalidate_decode_pair_if_stale(
+            session,
+            captured,
+            ctx,
+            seq,
+            cache.max_seq_len,
+            cache.dtype.unwrap_or(DType::F32),
+        );
 
         // ---- 2. First decode token: build the held session (unmodified
         // shared path with forward_with_kv_context_persistent). ----
@@ -9586,6 +9603,55 @@ impl LlamaModel {
             cache.bump_version(li, KvSlot::V);
         }
         Ok(logits)
+    }
+
+    /// Invalidate a held `(DecodeSession, capture)` PAIR when the session's
+    /// validity key no longer matches the live cache/model — the captured
+    /// path's twin of the staleness check
+    /// [`Self::forward_with_kv_context_persistent`] runs inline, and it uses
+    /// the identical predicate ([`DecodeSession::is_valid_for`] over
+    /// `seq / max_seq_len / n_layers / cache_dtype`, with a `max_seq_len` of
+    /// `None` counting as stale) so the two paths cannot drift apart on what
+    /// "stale" means.
+    ///
+    /// **The capture must die with the session, and that is the whole point
+    /// of this being one function instead of two.** A `CapturedDecodeSession`
+    /// is a recorded CUDA graph over FIXED device addresses drawn from the
+    /// session's `base_cache`. Drop the session alone and the recorded graph
+    /// keeps replaying against buffers that no longer describe the live cache
+    /// — silently wrong logits at full speed, which is worse than a crash
+    /// because nothing reports it. Dropping the capture FIRST (before the
+    /// session releases its `base_cache` Arcs) retires the reader before the
+    /// owner, so no replay can observe a half-invalidated pair.
+    ///
+    /// Generic in the capture type purely so this stays compilable — and
+    /// therefore CPU-testable — without the `cuda` feature; the only thing
+    /// done with `captured` is to clear it.
+    ///
+    /// Returns whether it invalidated. On `true` the caller's `session` is
+    /// `None`, so the ordinary "first decode token" arm rebuilds both.
+    fn invalidate_decode_pair_if_stale<C>(
+        &self,
+        session: &mut Option<crate::inference_context::DecodeSession>,
+        captured: &mut Option<C>,
+        ctx: &mut InferenceContext,
+        seq: usize,
+        max_seq_len: Option<usize>,
+        cache_dtype: DType,
+    ) -> bool {
+        let stale = match session.as_ref() {
+            None => false,
+            Some(s) => match max_seq_len {
+                Some(msl) => !s.is_valid_for(seq, msl, self.config.n_layers, cache_dtype),
+                None => true,
+            },
+        };
+        if stale {
+            // Reader before owner — see the doc comment above.
+            *captured = None;
+            self.drop_decode_session(session, ctx);
+        }
+        stale
     }
 
     /// Drop a held decode session, removing any leftover persistent
@@ -14421,6 +14487,94 @@ mod generate_tests {
                 );
             }
         }
+    }
+
+    /// **Staleness invalidates the SESSION AND THE CAPTURE TOGETHER** — the
+    /// check `forward_with_kv_context_captured` shipped without, and the reason
+    /// it matters more there than on the plain persistent path.
+    ///
+    /// A `CapturedDecodeSession` is a recorded CUDA graph over FIXED device
+    /// addresses taken from the session's `base_cache`. If invalidation dropped
+    /// the session but left the capture, the next token would `cuGraphLaunch`
+    /// against buffers that no longer describe the live cache and return wrong
+    /// logits **at full speed, with nothing reporting it**. That is strictly
+    /// worse than a crash, and no existing test could see it: the plain
+    /// persistent path has no capture to leak, so its staleness test passes
+    /// whether or not the captured path is correct.
+    ///
+    /// Exercised through the generic capture parameter with `C = ()`. That is a
+    /// faithful stand-in, not a convenience: the function's entire contract
+    /// w.r.t. `captured` is "clear it", so `()` tests the real behavior while
+    /// keeping the test on CPU — `CapturedDecodeSession` is `cuda`-only and a
+    /// GPU-gated test could not run in the ordinary suite at all.
+    ///
+    /// Three arms, because "it clears things" is not the claim — "it clears
+    /// things exactly when the key mismatches" is:
+    /// - matching key → returns false, BOTH survive (an over-eager check that
+    ///   invalidated every token would silently cost the whole 223× win while
+    ///   every correctness test still passed);
+    /// - mismatched `max_seq_len` → returns true, BOTH cleared;
+    /// - mismatched `cache_dtype` → returns true, BOTH cleared.
+    #[test]
+    fn stale_decode_pair_invalidates_session_and_capture_together() {
+        let cfg = LlamaConfig {
+            vocab_size: 32, dim: 16, n_layers: 2, n_heads: 4, n_kv_heads: 4,
+            head_dim: 4, ffn_dim: 32, norm_eps: 1e-5, rope_base: 10000.0,
+        };
+        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
+        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let dev = crate::Device::cpu();
+        const MSL: usize = 16;
+
+        // Build a REAL held session: prefill (seq>1, no session) then one
+        // decode token (seq==1, builds it).
+        let mut cache = crate::inference_context::KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, MSL, DType::F32, &dev,
+        )
+        .expect("kv cache");
+        let mut ctx = InferenceContext::new(dev.clone());
+        let mut session: Option<crate::inference_context::DecodeSession> = None;
+        model
+            .forward_with_kv_context_persistent(&[1, 2, 3], &mut cache, &mut ctx, &mut session)
+            .expect("prefill");
+        model
+            .forward_with_kv_context_persistent(&[4], &mut cache, &mut ctx, &mut session)
+            .expect("first decode token builds the session");
+        assert!(session.is_some(), "precondition: a session is held");
+
+        // --- Arm 1: key MATCHES the live cache → nothing is invalidated. ---
+        let mut captured: Option<()> = Some(());
+        let invalidated = model.invalidate_decode_pair_if_stale(
+            &mut session, &mut captured, &mut ctx, 1, Some(MSL), DType::F32,
+        );
+        assert!(!invalidated, "a matching validity key must NOT invalidate");
+        assert!(session.is_some(), "valid session survives");
+        assert!(captured.is_some(), "valid capture survives");
+
+        // --- Arm 2: cache resized under the held pair → both retired. ---
+        let mut captured: Option<()> = Some(());
+        let invalidated = model.invalidate_decode_pair_if_stale(
+            &mut session, &mut captured, &mut ctx, 1, Some(MSL * 4), DType::F32,
+        );
+        assert!(invalidated, "a resized cache must invalidate");
+        assert!(session.is_none(), "stale session dropped");
+        assert!(
+            captured.is_none(),
+            "stale CAPTURE dropped — a surviving recorded graph would replay against \
+             fixed device addresses that no longer describe the live cache",
+        );
+
+        // --- Arm 3: same, via a cache-dtype swap, rebuilding the session. ---
+        model
+            .forward_with_kv_context_persistent(&[5], &mut cache, &mut ctx, &mut session)
+            .expect("rebuild the session after invalidation");
+        assert!(session.is_some(), "precondition: session rebuilt");
+        let mut captured: Option<()> = Some(());
+        let invalidated = model.invalidate_decode_pair_if_stale(
+            &mut session, &mut captured, &mut ctx, 1, Some(MSL), DType::BF16,
+        );
+        assert!(invalidated, "a cache-dtype swap must invalidate");
+        assert!(session.is_none() && captured.is_none(), "both retired on dtype mismatch");
     }
 
     /// **The CONTIGUOUS generation API is plan-reuse-by-default, and this is the

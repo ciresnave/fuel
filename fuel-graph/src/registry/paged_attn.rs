@@ -24,10 +24,37 @@
 //! arm in `Tensor::backward`, which panics). The registry entry's
 //! `BackwardKind::NotDifferentiable` reflects this.
 //!
-//! No primitive decomposition exposed at the registry layer — same
-//! rationale as FlashAttn (the paged-block traversal is the point of
-//! the kernel; a "decompose to materialized k_cache + materialized
-//! attention" lowering would defeat the design).
+//! ## Decomposition — STALE CLAIM CORRECTED (2026-08-05)
+//!
+//! This header previously read "No primitive decomposition exposed at
+//! the registry layer — a 'decompose to materialized k_cache +
+//! materialized attention' lowering would defeat the design." **That is
+//! contradicted by the code below it.** [`decompose`] is real, total and
+//! never-panic (G2), and lowers to exactly that materialized form:
+//! `IndexSelect` the physical blocks named by the block table → dense
+//! SDPA (`MatMul` / softmax / `MatMul`) → variable-length `MaskedFill`.
+//! Every node is in the closed primitive basis, so it is a genuine
+//! decomposition, not a basis-gap self-return. See [`recipe`].
+//!
+//! The old claim confused two different things, and the distinction is
+//! the whole design point of this op:
+//!
+//! - **Correctness floor** (what `decompose` is): any backend can run
+//!   paged attention, because the recipe is primitive-only. This is a
+//!   requirement, not a compromise — without it `PagedAttn` would be a
+//!   CUDA feature wearing a portable name.
+//! - **Performance path** (what a kernel is): traversing blocks without
+//!   materializing them. `decompose` deliberately does NOT do this.
+//!
+//! **Cost of the floor, stated plainly so nobody mistakes it for a fast
+//! path:** the recipe materializes `kv_len = max_blk · block_size` — the
+//! block table's PADDED capacity, not the live `context_len` — as dense
+//! `[B, Hq, kv_len, D]` K and V, plus `[B, Hq, Sq, kv_len]` scores. The
+//! `context_lens` mask discards the tail *after* it has been computed.
+//! So the floor's cost scales with allocated capacity rather than with
+//! occupancy, which is precisely the asymptotics paging exists to avoid.
+//! It is the right correctness floor and the wrong steady-state decode
+//! path, and both halves of that sentence matter.
 
 use crate::registry::{
     BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps,
