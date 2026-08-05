@@ -1835,6 +1835,38 @@ mod tests {
     }
 
     #[test]
+    fn rope_delta_rotate_equals_direct_shift() {
+        // rung-2 primitive: a K block rotated at its ORIGINAL positions then
+        // uniformly delta-rotated by M is byte-equal to the same raw K rotated
+        // DIRECTLY at the shifted positions. This is the exactness that lets a
+        // cached prefix be reused at a non-zero offset.
+        let dev = Device::cpu();
+        let (n_kv_heads, head_dim, bs) = (2usize, 4usize, 4usize);
+        let theta = 10000.0;
+        let (p0, m) = (0usize, 8usize); // block at positions 0..4, shift by 8 → 8..12
+        let raw: Vec<f32> = (0..n_kv_heads * bs * head_dim)
+            .map(|i| (i as f32 * 0.017).sin())
+            .collect();
+        let shape = Shape::from_dims(&[1, n_kv_heads, bs, head_dim]);
+        let k = LazyTensor::from_f32(raw.clone(), shape.clone(), &dev);
+        // Direct: rope at positions (p0+m)..(p0+m+bs).
+        let (c_dir, s_dir) = k.rope_tables_const(theta, p0 + m, bs, head_dim);
+        let direct = k.rope_with_tables_decomposed(&c_dir, &s_dir).unwrap().realize_f32();
+        // Delta path: rope at p0, then a uniform θ·m delta.
+        let (c0, s0) = k.rope_tables_const(theta, p0, bs, head_dim);
+        let at_p0 = k.rope_with_tables_decomposed(&c0, &s0).unwrap().realize_f32();
+        let shifted = LazyTensor::rope_delta_rotate_block_f32(
+            &dev, &at_p0, theta, m, bs, n_kv_heads, head_dim,
+        );
+        let maxdiff = direct
+            .iter()
+            .zip(&shifted)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(maxdiff < 1e-5, "delta-rotate == direct shift (maxdiff {maxdiff})");
+    }
+
+    #[test]
     fn cast_switches_dtype_through_wrapper() {
         let x = LazyTensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu());
         let y = x.to_dtype(DType::F64).unwrap();
@@ -5367,6 +5399,60 @@ impl LazyTensor {
         let rope_cos = self.const_f32_like(cos_data, rope_shape.clone());
         let rope_sin = self.const_f32_like(sin_data, rope_shape);
         (rope_cos, rope_sin)
+    }
+
+    /// Constant-position RoPE cos/sin tables `[rows, head_dim]` where EVERY row
+    /// is the *same* θ·`delta` rotation — the rung-2 delta-rotation tables. A
+    /// cached prefix's keys, already rotated for their original positions, are
+    /// shifted to `+delta` by applying this uniform rotation (RoPE composes
+    /// additively per pair: `R(delta)·R(p) = R(p+delta)`).
+    ///
+    /// This is the position-`delta` row repeated `rows` times — NOT
+    /// `rope_tables_const(theta, delta, rows, head_dim)`, which would give the
+    /// *incrementing* progression `delta, delta+1, …` (the standard RoPE sweep).
+    /// Routed through the canonical `fuel_graph::build_rope_tables` so it inherits
+    /// the model's inv-freq/scaling exactly.
+    pub fn rope_delta_tables_const(
+        &self,
+        theta: f64,
+        delta: usize,
+        rows: usize,
+        head_dim: usize,
+    ) -> (Self, Self) {
+        let (c1, s1) = fuel_graph::build_rope_tables(theta, delta, 1, head_dim);
+        let mut cos = Vec::with_capacity(rows * head_dim);
+        let mut sin = Vec::with_capacity(rows * head_dim);
+        for _ in 0..rows {
+            cos.extend_from_slice(&c1);
+            sin.extend_from_slice(&s1);
+        }
+        let shape = Shape::from_dims(&[rows, head_dim]);
+        (self.const_f32_like(cos, shape.clone()), self.const_f32_like(sin, shape))
+    }
+
+    /// Uniformly delta-rotate one cached (post-RoPE) K block by θ·`delta`,
+    /// returning the shifted block (same length/layout). Reuses the model's exact
+    /// `rope_with_tables_decomposed` (rotate-half) rather than a hand-rolled
+    /// rotation, so it inherits the model's RoPE convention + scaling and stays
+    /// byte-exact with a direct rope-at-shifted-position. A single uniform
+    /// rotation is correct for the whole block even though it holds `block_size`
+    /// distinct original positions — the delta is the same for every position.
+    /// The rung-2 numeric core, realized on `dev`.
+    pub fn rope_delta_rotate_block_f32(
+        dev: &crate::Device,
+        k_block: &[f32],
+        theta: f64,
+        delta: usize,
+        block_size: usize,
+        n_kv_heads: usize,
+        head_dim: usize,
+    ) -> Vec<f32> {
+        let shape = Shape::from_dims(&[1, n_kv_heads, block_size, head_dim]);
+        let k = LazyTensor::from_f32(k_block.to_vec(), shape, dev);
+        let (cos, sin) = k.rope_delta_tables_const(theta, delta, block_size, head_dim);
+        k.rope_with_tables_decomposed(&cos, &sin)
+            .expect("rope_delta_rotate_block_f32: rope_with_tables_decomposed")
+            .realize_f32()
     }
 
     /// `[B, 1, 1, head_dim]` RoPE cos/sin tables, row `b` at absolute position
