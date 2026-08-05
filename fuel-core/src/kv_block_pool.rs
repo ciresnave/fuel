@@ -294,6 +294,12 @@ pub enum KvAllocError {
     /// A [`PrefixId`](PrefixId) named a prefix that isn't registered (never
     /// minted, or already [`release_prefix`](KvBlockPool::release_prefix)d).
     UnknownPrefix,
+    /// [`alloc_shifted_prefix_slots`](KvBlockPool::alloc_shifted_prefix_slots)
+    /// (rung-2) into a target whose fill is NOT block-aligned. A shifted prefix
+    /// must land on fresh WHOLE blocks appended after the target's full blocks;
+    /// a partial last block would put the prefix mid-block (partial-block merge is
+    /// a separate follow-on). Refused before any mutation.
+    OffsetNotBlockAligned { filled: usize, block_size: usize },
 }
 
 /// A registry-minted handle for a shared prefix owner (a named, refcounted KV
@@ -877,6 +883,54 @@ impl KvBlockPool {
     fn is_prefix_owner(&self, s: SessionHandle) -> bool {
         self.prefixes.values().any(|o| o.owner == s)
     }
+
+    /// rung-2 bookkeeping for a SHIFTED-prefix splice: validate that `dst`'s fill
+    /// is block-aligned, then allocate one FRESH block per prefix block — a copy
+    /// target, NOT a refcount share (a shifted prefix's keys must be re-rotated,
+    /// so it cannot alias the owner's) — append them to `dst`, and return
+    /// `(m_offset, [(owner_src_phys, fresh_dst_phys); prefix_blocks])`. The device
+    /// layer ([`DeviceKvPool::splice_prefix_shifted`](crate::kv_block_pool_device::DeviceKvPool::splice_prefix_shifted))
+    /// then rotates K src→fresh and copies V src→fresh. Validate-before-mutate: a
+    /// refusal allocates nothing and leaves `dst` untouched.
+    pub fn alloc_shifted_prefix_slots(
+        &mut self,
+        prefix: PrefixId,
+        dst: SessionHandle,
+    ) -> Result<(usize, Vec<(PhysBlockId, PhysBlockId)>), KvAllocError> {
+        let bs = self.geom.block_size;
+        let m = self.tables.get(&dst).ok_or(KvAllocError::UnknownSession)?.filled_tokens;
+        if m % bs != 0 {
+            return Err(KvAllocError::OffsetNotBlockAligned { filled: m, block_size: bs });
+        }
+        let (owner, prefix_blocks) = {
+            let o = self.prefixes.get(&prefix).ok_or(KvAllocError::UnknownPrefix)?;
+            (o.owner, o.prefix_blocks)
+        };
+        let owner_filled = self
+            .tables
+            .get(&owner)
+            .ok_or(KvAllocError::UnknownSession)?
+            .filled_tokens;
+        if prefix_blocks * bs > owner_filled {
+            return Err(KvAllocError::PrefixNotFullyFilled { prefix_blocks, donor_filled: owner_filled });
+        }
+        if prefix_blocks > self.free.len() {
+            return Err(KvAllocError::OutOfBlocks { need: prefix_blocks, have: self.free.len() });
+        }
+        // All preconditions passed — allocate + append (infallible from here).
+        let src: Vec<PhysBlockId> = (0..prefix_blocks)
+            .map(|i| self.resident_block(owner, i).expect("registered prefix owner block is resident"))
+            .collect();
+        let mut pairs = Vec::with_capacity(prefix_blocks);
+        for s in src {
+            let fresh = self.take_free()?;
+            self.refcount[fresh as usize] = 1;
+            self.table_mut(dst)?.slots.push(Slot::Resident(fresh));
+            pairs.push((s, fresh));
+        }
+        self.table_mut(dst)?.filled_tokens += prefix_blocks * bs;
+        Ok((m, pairs))
+    }
 }
 
 #[cfg(test)]
@@ -1086,6 +1140,41 @@ mod tests {
             "one full block = 4 shared tokens (block-aligned)",
         );
         assert_eq!(pool.filled_tokens(c), Some(4), "sharer fill is block-aligned");
+    }
+
+    #[test]
+    fn alloc_shifted_prefix_slots_validates_and_allocates() {
+        // rung-2 bookkeeping: a shifted-prefix splice needs the target's fill to be
+        // block-aligned (so the prefix lands on fresh whole blocks), and allocates
+        // fresh COPY-target blocks (not a refcount share).
+        let mut pool = KvBlockPool::new(geom(64, 4));
+        let donor = pool.open();
+        pool.append(donor, 8).unwrap(); // 2 full blocks
+        let pid = pool.register_prefix(donor, 2).unwrap();
+
+        // NON-aligned target fill → refused before any mutation.
+        let dst = pool.open();
+        pool.append(dst, 5).unwrap();
+        let free0 = pool.free_blocks();
+        assert_eq!(
+            pool.alloc_shifted_prefix_slots(pid, dst),
+            Err(KvAllocError::OffsetNotBlockAligned { filled: 5, block_size: 4 }),
+        );
+        assert_eq!(pool.free_blocks(), free0, "refusal allocates nothing");
+        assert_eq!(pool.filled_tokens(dst), Some(5), "refusal does not bump fill");
+        assert_eq!(pool.session_blocks(dst), Some(2), "refusal does not extend the table");
+
+        // Block-aligned target (M=8) → allocates 2 fresh copy-target blocks.
+        let dst2 = pool.open();
+        pool.append(dst2, 8).unwrap();
+        let (m, pairs) = pool.alloc_shifted_prefix_slots(pid, dst2).unwrap();
+        assert_eq!(m, 8, "offset is the target's block-aligned fill");
+        assert_eq!(pairs.len(), 2, "one copy pair per prefix block");
+        assert_eq!(pool.filled_tokens(dst2), Some(16), "fill bumped by 2*block_size");
+        for (src, fresh) in &pairs {
+            assert_eq!(pool.block_refcount(*fresh), 1, "fresh dst block is exclusive (a COPY target)");
+            assert_ne!(src, fresh, "dst block is a copy target, not the shared original");
+        }
     }
 
     #[test]
