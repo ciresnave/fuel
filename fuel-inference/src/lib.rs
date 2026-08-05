@@ -153,6 +153,14 @@ pub mod scheduler;
 /// model-agnostic [`multi_session::DecodeModel`] trait — consumer-side
 /// orchestration, not a Foundation primitive. Distinct from [`scheduler`]'s
 /// memory-admission `MemoryScheduler`.
+///
+/// The model surface is **tiered**: [`multi_session::DecodeModel`] is the core a
+/// model needs to be servable at all (KV geometry + one persistent-KV step), and
+/// [`multi_session::PagedDecodeModel`] adds the paged-storage surface that
+/// [`multi_session::PagedSessionScheduler`] requires. The tiering exists because
+/// only two of Fuel's twelve model families currently ship *any* incremental-
+/// decode surface; one fat trait meant a model had to arrive with paged AND
+/// batched decode before plain contiguous decode worked at all.
 pub mod multi_session;
 
 /// Mixture-of-Experts capacity-aware top-K token routing.
