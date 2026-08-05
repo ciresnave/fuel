@@ -9745,6 +9745,25 @@ impl LlamaModel {
     /// addresses that no longer describe the live cache: wrong logits at full
     /// speed, with nothing reporting it. After invalidation `session` is
     /// `None`, so case 2 rebuilds both on this same token.
+    ///
+    /// **RoPE SCALING — why the three internal `rope_inv_freq: None`s are
+    /// correct, and exactly when they stop being.** This entry is inherent to
+    /// `LlamaModel`, whose RoPE frequencies are the unscaled default. Models
+    /// with scaled frequencies (Llama-3.1 et al) reach decode through
+    /// `forward_with_kv_context_persistent_inv_freq`, and **nothing routes them
+    /// here** — this fn has no caller outside this file. So `None` is the same
+    /// value `forward_with_kv_context_persistent` passes, and the semantics are
+    /// identical.
+    ///
+    /// It is therefore a **latent** trap, not a live one — and severe if it goes
+    /// live: passing `None` where a model needs its own inverse frequencies
+    /// gives right-token-1 / wrong-tokens-after, with no error. Worse on THIS
+    /// path than the persistent one, because the capture bakes the graph ONCE
+    /// and every later `replay_token` reuses it, so a wrong `None` would persist
+    /// across every replayed token instead of showing up intermittently.
+    /// **Wiring a scaled model to this entry means threading `rope_inv_freq`
+    /// through all three internal sites — not passing `None` because it
+    /// compiles.** (Raised by Lightbulb, 2026-08-05.)
     #[cfg(feature = "cuda")]
     pub fn forward_with_kv_context_captured(
         &self,
@@ -9781,7 +9800,8 @@ impl LlamaModel {
         // shared path with forward_with_kv_context_persistent). ----
         if session.is_none() {
             *captured = None;
-            return self.build_and_realize_first_decode_token(tokens, cache, ctx, session);
+            // rope_inv_freq: None — see the RoPE-SCALING note in this fn's doc.
+            return self.build_and_realize_first_decode_token(tokens, cache, ctx, session, None);
         }
 
         let cache_dtype = cache.dtype.unwrap_or(DType::F32);
@@ -9797,6 +9817,7 @@ impl LlamaModel {
             let data = self.build_token_rope_mask_arcs(
                 &device, cached_len, tokens, s.max_seq_len(), cache_dtype,
                 s.offset_node().is_some(),
+                None, // rope_inv_freq — see the RoPE-SCALING note in this fn's doc
             )?;
 
             // Merged StorageCache: base_cache clone (cheap — Arc-clones
@@ -9848,6 +9869,7 @@ impl LlamaModel {
 
         let bytes = self.build_token_rope_mask_bytes(
             cached_len, tokens, s.max_seq_len(), cache_dtype, s.offset_node().is_some(),
+            None, // rope_inv_freq — see the RoPE-SCALING note in this fn's doc
         )?;
         let mut updates: Vec<(fuel_graph::NodeId, &[u8])> = vec![
             (s.token_ids_node(), bytes.token_ids.as_slice()),
