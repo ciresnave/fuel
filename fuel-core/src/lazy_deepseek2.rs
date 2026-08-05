@@ -168,6 +168,8 @@ pub struct DeepSeek2LayerWeights {
 
 #[derive(Debug, Clone)]
 pub struct DeepSeek2Weights {
+    /// See [`crate::lazy::LlamaWeights::instance`].
+    pub instance: crate::decode_shape::ModelInstanceId,
     pub token_embedding: Arc<[f32]>,
     pub layers: Vec<DeepSeek2LayerWeights>,
     pub final_norm_gain: Arc<[f32]>,
@@ -423,6 +425,7 @@ impl DeepSeek2Weights {
         };
 
         Ok(DeepSeek2Weights {
+            instance: crate::decode_shape::ModelInstanceId::next(),
             token_embedding: Arc::from(token_embedding),
             layers,
             final_norm_gain,
@@ -492,6 +495,18 @@ fn absorb_split_kv_b(
 }
 
 impl DeepSeek2Model {
+    /// See [`crate::lazy::LlamaModel::decode_shape_key`].
+    pub fn decode_shape_key(&self) -> u64 {
+        let mut h = crate::decode_shape::ShapeKeyHasher::new();
+        h.mix_str("deepseek2")
+            .mix_instance(self.weights.instance)
+            .mix_u64(self.config.num_hidden_layers as u64)
+            .mix_u64(self.config.num_attention_heads as u64)
+            .mix_u64(self.config.hidden_size as u64)
+            .mix_u64(self.config.vocab_size as u64);
+        h.finish()
+    }
+
     pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
         let h_norm = self.run_backbone(tokens, start_pos)?;
         self.apply_lm_head(&h_norm)
@@ -1107,7 +1122,10 @@ impl DeepSeek2Model {
         // match the live cache/model (max_seq_len / n_layers / dtype), it
         // is stale — drop it so we rebuild fresh below.
         if let Some(s) = session.as_ref() {
-            if !s.is_valid_for(seq, max_seq_len, cfg.num_hidden_layers, cache_dtype) {
+            if !s.is_valid_for(
+                seq, max_seq_len, cfg.num_hidden_layers, cache_dtype,
+                self.decode_shape_key(),
+            ) {
                 self.drop_latent_decode_session(session, ctx);
             }
         }
@@ -1330,6 +1348,7 @@ impl DeepSeek2Model {
             max_seq_len,
             cfg.num_hidden_layers,
             cache.dtype,
+            self.decode_shape_key(),
         ));
 
         // Bump cache state (identical to the D1 path).
@@ -2261,6 +2280,7 @@ mod tests {
             Some(WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *nb)))
         };
         DeepSeek2Weights {
+            instance: crate::decode_shape::ModelInstanceId::next(),
             token_embedding, layers,
             final_norm_gain, lm_head,
         }

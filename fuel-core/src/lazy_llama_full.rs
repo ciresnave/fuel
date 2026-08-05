@@ -541,7 +541,10 @@ mod tests {
             .collect();
         let final_norm_gain = Arc::from(vec![1.0_f32; h]);
         let output = WeightStorage::F32(buf(h * cfg.vocab_size, &mut *next_box));
-        LlamaWeights { token_embedding, layers, final_norm_gain, output }
+        LlamaWeights {
+            instance: crate::decode_shape::ModelInstanceId::next(),
+            token_embedding, layers, final_norm_gain, output,
+        }
     }
 
     fn tiny_cfg() -> LlamaConfig {

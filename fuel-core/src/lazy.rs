@@ -6991,6 +6991,16 @@ pub struct LayerWeights {
 /// or a separate matrix).
 #[derive(Debug, Clone)]
 pub struct LlamaWeights {
+    /// Process-unique identity for THIS weight set — the component that lets a
+    /// held decode plan tell two same-architecture models apart.
+    ///
+    /// It lives on the weights rather than the model because the weights are
+    /// what a held graph bakes as `Const`s: two `LlamaModel`s sharing one
+    /// `Arc` weight set may legitimately share a plan, while two with distinct
+    /// weights must not. Minted with [`crate::decode_shape::ModelInstanceId::next`];
+    /// never recycled, so no lifetime reasoning is required (see that module for
+    /// the pointer-identity scheme this replaced and how it failed).
+    pub instance: crate::decode_shape::ModelInstanceId,
     /// `[vocab_size, dim]` token embedding table. Stays f32 — the
     /// downstream `index_select` + graph traversal requires activation
     /// dtype to be f32, and the table is used directly as activations.
@@ -8374,6 +8384,28 @@ impl LlamaModel {
     ///   only, same as [`Self::forward_with_cache_on`].
     /// - Backends: CPU, CUDA, and Vulkan all run this path via the
     ///   pipelined executor + binding-table dispatch.
+    /// The [`crate::decode_shape`] key a held decode plan for THIS model is
+    /// baked against: family + the config values that change graph structure +
+    /// this weight set's identity.
+    ///
+    /// `rope_base` is deliberately absent — RoPE tables are rebound per token,
+    /// not baked, so including it would forfeit plan reuse across a frequency
+    /// change that is already handled correctly. See the module docs.
+    pub fn decode_shape_key(&self) -> u64 {
+        let mut h = crate::decode_shape::ShapeKeyHasher::new();
+        h.mix_str("llama")
+            .mix_instance(self.weights.instance)
+            .mix_u64(self.config.n_layers as u64)
+            .mix_u64(self.config.n_heads as u64)
+            .mix_u64(self.config.n_kv_heads as u64)
+            .mix_u64(self.config.head_dim as u64)
+            .mix_u64(self.config.dim as u64)
+            .mix_u64(self.config.ffn_dim as u64)
+            .mix_u64(self.config.vocab_size as u64)
+            .mix_f64(self.config.norm_eps);
+        h.finish()
+    }
+
     pub fn forward_with_kv_context(
         &self,
         tokens: &[u32],
@@ -8777,7 +8809,9 @@ impl LlamaModel {
         // is stale — drop it so we rebuild fresh below.
         if let Some(s) = session.as_ref() {
             let valid = match max_seq_len {
-                Some(msl) => s.is_valid_for(seq, msl, cfg.n_layers, cache_dtype),
+                Some(msl) => s.is_valid_for(
+                    seq, msl, cfg.n_layers, cache_dtype, self.decode_shape_key(),
+                ),
                 None => false,
             };
             if !valid {
@@ -9026,6 +9060,7 @@ impl LlamaModel {
             max_seq_len,
             cfg.n_layers,
             cache_dtype,
+            self.decode_shape_key(),
         ));
 
         // Bump cache state (identical to the D1 path).
@@ -9761,7 +9796,9 @@ impl LlamaModel {
         let stale = match session.as_ref() {
             None => false,
             Some(s) => match max_seq_len {
-                Some(msl) => !s.is_valid_for(seq, msl, self.config.n_layers, cache_dtype),
+                Some(msl) => !s.is_valid_for(
+                    seq, msl, self.config.n_layers, cache_dtype, self.decode_shape_key(),
+                ),
                 None => true,
             },
         };
@@ -10289,6 +10326,7 @@ impl LlamaWeights {
         };
 
         Ok(LlamaWeights {
+            instance: crate::decode_shape::ModelInstanceId::next(),
             token_embedding: Arc::from(token_embedding),
             layers,
             final_norm_gain: Arc::from(final_norm_gain),
@@ -11104,6 +11142,8 @@ pub struct PhiLayerWeights {
 
 #[derive(Debug, Clone)]
 pub struct PhiWeights {
+    /// See [`LlamaWeights::instance`].
+    pub instance: crate::decode_shape::ModelInstanceId,
     pub token_embedding: Arc<[f32]>,   // [vocab_size, dim]
     pub layers:          Vec<PhiLayerWeights>,
     pub final_norm_gain: Arc<[f32]>,
@@ -11126,6 +11166,19 @@ pub struct PhiModel {
 /// Q4_0 weights.
 
 impl PhiModel {
+    /// See [`LlamaModel::decode_shape_key`].
+    pub fn decode_shape_key(&self) -> u64 {
+        let mut h = crate::decode_shape::ShapeKeyHasher::new();
+        h.mix_str("phi")
+            .mix_instance(self.weights.instance)
+            .mix_u64(self.config.n_layers as u64)
+            .mix_u64(self.config.n_heads as u64)
+            .mix_u64(self.config.head_dim as u64)
+            .mix_u64(self.config.dim as u64)
+            .mix_u64(self.config.vocab_size as u64);
+        h.finish()
+    }
+
     // ===== Phase 7.6 step 9c E.3.3/E.3.4 — KvCache + InferenceContext =====
     //
     // The pipelined-executor forward/generate family, mirroring
@@ -11485,7 +11538,9 @@ impl PhiModel {
         // is stale — drop it so we rebuild fresh below.
         if let Some(s) = session.as_ref() {
             let valid = match max_seq_len {
-                Some(msl) => s.is_valid_for(seq, msl, cfg.n_layers, cache_dtype),
+                Some(msl) => s.is_valid_for(
+                    seq, msl, cfg.n_layers, cache_dtype, self.decode_shape_key(),
+                ),
                 None => false,
             };
             if !valid {
@@ -11695,6 +11750,7 @@ impl PhiModel {
             max_seq_len,
             cfg.n_layers,
             cache_dtype,
+            self.decode_shape_key(),
         ));
 
         // Bump cache state (identical to the D1 path).
@@ -12061,6 +12117,7 @@ impl PhiWeights {
         let output_bias = load_tensor_as_f32(st, "lm_head.bias").ok().map(Arc::from);
 
         Ok(PhiWeights {
+            instance: crate::decode_shape::ModelInstanceId::next(),
             token_embedding: Arc::from(token_embedding),
             layers, final_norm_gain, final_norm_bias, output, output_bias,
         })
@@ -12211,6 +12268,7 @@ impl PhiWeights {
         let output_bias = load_f32("output.bias").ok().map(Arc::from);
 
         Ok(PhiWeights {
+            instance: crate::decode_shape::ModelInstanceId::next(),
             token_embedding: Arc::from(token_embedding),
             layers, final_norm_gain, final_norm_bias, output, output_bias,
         })
@@ -12448,6 +12506,7 @@ mod generate_tests {
         };
         let kv_dim = cfg.n_kv_heads * cfg.head_dim;
         LlamaWeights {
+            instance: crate::decode_shape::ModelInstanceId::next(),
             token_embedding: vec_of(cfg.vocab_size * cfg.dim),
             layers: (0..cfg.n_layers)
                 .map(|_| LayerWeights {
@@ -12511,6 +12570,7 @@ mod generate_tests {
             }
         }
         LlamaWeights {
+            instance: crate::decode_shape::ModelInstanceId::next(),
             token_embedding: f32w.token_embedding,
             layers: f32w.layers.into_iter().map(|l| LayerWeights {
                 attn_q:         to_bf16(l.attn_q),
@@ -17039,6 +17099,7 @@ mod phi_kv_context_tests {
         let d = cfg.dim;
         let kv_dim = cfg.n_heads * cfg.head_dim;
         PhiWeights {
+            instance: crate::decode_shape::ModelInstanceId::next(),
             token_embedding: vec_of(cfg.vocab_size * d),
             layers: (0..cfg.n_layers)
                 .map(|_| PhiLayerWeights {
@@ -17516,6 +17577,7 @@ mod gqa_tests {
         };
         let kv_dim = cfg.n_kv_heads * cfg.head_dim;
         LlamaWeights {
+            instance: crate::decode_shape::ModelInstanceId::next(),
             token_embedding: vec_of(cfg.vocab_size * cfg.dim),
             layers: (0..cfg.n_layers)
                 .map(|_| LayerWeights {
@@ -17760,6 +17822,7 @@ mod llama_tests {
         };
         let kv_dim = cfg.n_kv_heads * cfg.head_dim;
         LlamaWeights {
+            instance: crate::decode_shape::ModelInstanceId::next(),
             token_embedding: vec_of(cfg.vocab_size * cfg.dim),
             layers: (0..cfg.n_layers)
                 .map(|_| LayerWeights {

@@ -641,6 +641,7 @@ pub fn load_llama_weights_with_prefix(
     };
 
     Ok(LlamaWeights {
+        instance: crate::decode_shape::ModelInstanceId::next(),
         token_embedding: Arc::from(token_embedding),
         layers,
         final_norm_gain: Arc::from(final_norm_gain),
@@ -799,7 +800,10 @@ mod tests {
         }).collect();
         let final_norm_gain = Arc::from(vec![1.0_f32; h]);
         let output = WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *nb));
-        LlamaWeights { token_embedding, layers, final_norm_gain, output }
+        LlamaWeights {
+            instance: crate::decode_shape::ModelInstanceId::next(),
+            token_embedding, layers, final_norm_gain, output,
+        }
     }
 
     fn tiny_image(cfg: &ClipVisionConfig) -> LazyTensor {

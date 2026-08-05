@@ -203,6 +203,7 @@ impl QuantizedLlama3Model {
         let llama = LlamaModel {
             config: lazy_cfg,
             weights: LlamaWeights {
+                instance: crate::decode_shape::ModelInstanceId::next(),
                 token_embedding: src.token_embedding,
                 layers,
                 final_norm_gain: src.final_norm_gain,
@@ -355,6 +356,7 @@ impl QuantizedLlama3Model {
         let llama = LlamaModel {
             config: lazy_cfg,
             weights: LlamaWeights {
+                instance: crate::decode_shape::ModelInstanceId::next(),
                 token_embedding: Arc::from(token_embedding),
                 layers, final_norm_gain, output,
             },
@@ -553,7 +555,10 @@ mod tests {
         }).collect();
         let final_norm_gain = Arc::from(vec![1.0_f32; h]);
         let output = WeightStorage::F32(vec_of(h * cfg.vocab_size));
-        LlamaWeights { token_embedding, layers, final_norm_gain, output }
+        LlamaWeights {
+            instance: crate::decode_shape::ModelInstanceId::next(),
+            token_embedding, layers, final_norm_gain, output,
+        }
     }
 
     #[test]
