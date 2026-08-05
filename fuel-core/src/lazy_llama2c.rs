@@ -613,6 +613,7 @@ pub fn load_llama2c_bin<R: std::io::Read>(r: &mut R) -> Result<Llama2cModel> {
     };
 
     let weights = LlamaWeights {
+        instance: crate::decode_shape::ModelInstanceId::next(),
         token_embedding,
         layers,
         final_norm_gain: rms_final,
@@ -714,6 +715,7 @@ mod tests {
             ffn_norm_gain:  Arc::from(vec![1.0_f32; h]),
         }).collect();
         let weights = LlamaWeights {
+            instance: crate::decode_shape::ModelInstanceId::next(),
             token_embedding: Arc::clone(&token_embedding),
             layers,
             final_norm_gain: Arc::from(vec![1.0_f32; h]),
@@ -778,6 +780,7 @@ mod tests {
             ffn_norm_gain:  Arc::from(vec![1.0_f32; h]),
         }).collect();
         let weights = LlamaWeights {
+            instance: crate::decode_shape::ModelInstanceId::next(),
             token_embedding,
             layers,
             final_norm_gain: Arc::from(vec![1.0_f32; h]),
@@ -851,6 +854,7 @@ mod tests {
             ffn_norm_gain:  Arc::from(vec![1.0_f32; h]),
         }).collect();
         let weights = LlamaWeights {
+            instance: crate::decode_shape::ModelInstanceId::next(),
             token_embedding,
             layers,
             final_norm_gain: Arc::from(vec![1.0_f32; h]),
@@ -934,6 +938,7 @@ mod tests {
             ffn_norm_gain:  Arc::from(vec![1.0_f32; h]),
         }).collect();
         let weights = LlamaWeights {
+            instance: crate::decode_shape::ModelInstanceId::next(),
             token_embedding,
             layers,
             final_norm_gain: Arc::from(vec![1.0_f32; h]),
@@ -990,6 +995,7 @@ mod tests {
             ffn_norm_gain:  Arc::from(vec![1.0_f32; h]),
         }).collect();
         let weights = LlamaWeights {
+            instance: crate::decode_shape::ModelInstanceId::next(),
             token_embedding, layers,
             final_norm_gain: Arc::from(vec![1.0_f32; h]),
             output: WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *nb)),

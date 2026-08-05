@@ -1762,6 +1762,7 @@ mod tests {
         let mut vec_of = |n: usize| -> Arc<[f32]> { Arc::from((0..n).map(|_| next()).collect::<Vec<_>>()) };
         let kv = cfg.n_kv_heads * cfg.head_dim;
         LlamaWeights {
+            instance: fuel::decode_shape::ModelInstanceId::next(),
             token_embedding: vec_of(cfg.vocab_size * cfg.dim),
             layers: (0..cfg.n_layers).map(|_| LayerWeights {
                 attn_q: vec_of(cfg.dim*cfg.dim).into(), attn_q_bias: None,
@@ -2740,6 +2741,7 @@ mod tests {
                     a.iter().map(|&v| half::bf16::from_f32(v)).collect::<Vec<_>>())) };
             let kv = cfg.n_kv_heads * cfg.head_dim;
             LlamaWeights {
+                instance: fuel::decode_shape::ModelInstanceId::next(),
                 token_embedding: vec_of(cfg.vocab_size * cfg.dim),
                 layers: (0..cfg.n_layers).map(|_| LayerWeights {
                     attn_q: to_bf16(vec_of(cfg.dim*cfg.dim)), attn_q_bias: None,

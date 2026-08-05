@@ -861,6 +861,9 @@ pub struct DecodeSession {
     max_seq_len: usize,
     n_layers: usize,
     cache_dtype: DType,
+    /// The [`crate::decode_shape`] key this plan was baked against — model
+    /// structure + weight identity. See [`Self::is_valid_for`].
+    shape_key: u64,
 }
 
 impl DecodeSession {
@@ -888,8 +891,10 @@ impl DecodeSession {
         max_seq_len: usize,
         n_layers: usize,
         cache_dtype: DType,
+        shape_key: u64,
     ) -> Self {
         Self {
+            shape_key,
             graph,
             optimized,
             effective_target,
@@ -951,17 +956,31 @@ impl DecodeSession {
     /// (the held graph is the seq==1 decode graph); a change in
     /// `max_seq_len` / `n_layers` / `cache_dtype` means a different
     /// model/cache → the held graph's shapes are stale.
+    /// May this held plan be reused for a step with these parameters?
+    ///
+    /// `shape_key` is the caller's [`crate::decode_shape`] key. Geometry alone
+    /// is NOT sufficient and was the whole reason that module exists: a held
+    /// graph bakes its op structure and its weight `Const`s, so two models at
+    /// identical dims — a different architecture, or the same architecture with
+    /// different weights — would otherwise be judged interchangeable and one
+    /// would silently execute the other's baked plan.
+    ///
+    /// Both directions matter. Returning `true` too readily is a wrong answer
+    /// at full speed; returning `false` too readily forfeits plan reuse
+    /// (measured 223× on CUDA) while every correctness test stays green.
     pub fn is_valid_for(
         &self,
         seq: usize,
         max_seq_len: usize,
         n_layers: usize,
         cache_dtype: DType,
+        shape_key: u64,
     ) -> bool {
         self.seq == seq
             && self.max_seq_len == max_seq_len
             && self.n_layers == n_layers
             && self.cache_dtype == cache_dtype
+            && self.shape_key == shape_key
     }
 
     /// The held graph handle (the caller re-binds data Consts + realizes
