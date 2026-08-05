@@ -95,19 +95,65 @@ pub trait DecodeModel {
         session: &mut Option<DecodeSession>,
     ) -> fuel::Result<Vec<f32>>;
 
+    /// Does this model implement the batched arm
+    /// ([`Self::build_batched_decode_logits`])? Defaults to `false`.
+    ///
+    /// This is a *predicate*, not an error path, on purpose. The scheduler asks
+    /// before it assembles a batch, so a core-only model takes the serial arm
+    /// directly instead of building a batch, failing, and falling back — which
+    /// would waste the work every step AND make `StepReport::used_batched_arm`
+    /// the only way to discover the model can't batch. Override it to `true` in
+    /// the same impl that overrides `build_batched_decode_logits`; the two are
+    /// consistency-checked by `decode_model_batched_capability_is_self_consistent`.
+    fn supports_batched_decode(&self) -> bool {
+        false
+    }
+
     /// One batch=K decode step over K sessions' caches — the live batched arm.
     /// Returns one logits row per cache. The scheduler only calls this on a
     /// uniformity-gated ready set; a model may return an error (never a panic)
     /// before mutating any cache (the all-or-nothing contract the batched arm
     /// relies on).
+    ///
+    /// **Defaulted to a typed decline**, unlike the paged surface below, and the
+    /// asymmetry is deliberate rather than an oversight. Batching is selected by
+    /// [`SchedulePolicy`], a *runtime* enum handed to `SessionScheduler::new` —
+    /// so gating it in the type system would mean making the policy a type
+    /// parameter, which churns every construction site to buy a guarantee the
+    /// scheduler already provides at runtime: `advance_batched`'s
+    /// `NotBatchable`/error path routes unbatched sessions to the serial arm in
+    /// isolation, with their KV untouched. Paged decode has no such fallback —
+    /// a paged scheduler cannot run a model that has no paged surface at all —
+    /// so it is a supertrait ([`PagedDecodeModel`]) and the mismatch is a
+    /// compile error.
     fn build_batched_decode_logits(
         &self,
-        caches: &mut [&mut KvCache],
-        last_tokens: &[u32],
-        device: &Device,
-        dtype: DType,
-    ) -> fuel::Result<Vec<Vec<f32>>>;
+        _caches: &mut [&mut KvCache],
+        _last_tokens: &[u32],
+        _device: &Device,
+        _dtype: DType,
+    ) -> fuel::Result<Vec<Vec<f32>>> {
+        Err(fuel::Error::Msg(
+            "this model implements only the core DecodeModel surface — no \
+             batched decode arm (see DecodeModel::supports_batched_decode)"
+                .to_string(),
+        ))
+    }
+}
 
+/// Paged-storage decode: the surface [`PagedSessionScheduler`] needs.
+///
+/// A separate trait rather than more methods on [`DecodeModel`] because paged
+/// serving has no serial fallback — a model with no paged surface simply cannot
+/// be driven by the paged scheduler, and that is better said at compile time
+/// than discovered as a per-session error at run time. `PagedSessionScheduler`
+/// is bounded on this trait, so handing it a core-only model does not build.
+///
+/// Ten of Fuel's twelve model families implement neither this trait nor, today,
+/// the core one; the split exists so they can arrive incrementally — contiguous
+/// persistent decode first (which is what makes a model *servable*), paged
+/// later — instead of needing all eight methods before any of them works.
+pub trait PagedDecodeModel: DecodeModel {
     /// One single-token **paged** forward — the paged-storage decode surface
     /// ([`PagedSessionScheduler`]). Feeds `token` (a prompt token during prefill,
     /// a sampled token during decode) into the session's blocks of the shared
@@ -181,6 +227,9 @@ impl DecodeModel for LlamaModel {
         // forward, not a recursion into the trait.
         LlamaModel::forward_with_kv_context_persistent(self, tokens, cache, ctx, session)
     }
+    fn supports_batched_decode(&self) -> bool {
+        true
+    }
     fn build_batched_decode_logits(
         &self,
         caches: &mut [&mut KvCache],
@@ -190,6 +239,9 @@ impl DecodeModel for LlamaModel {
     ) -> fuel::Result<Vec<Vec<f32>>> {
         LlamaModel::build_batched_decode_logits(self, caches, last_tokens, device, dtype)
     }
+}
+
+impl PagedDecodeModel for LlamaModel {
     fn forward_paged_step(
         &self,
         token: u32,
@@ -759,8 +811,14 @@ impl<'m, M: DecodeModel> SessionScheduler<'m, M> {
         let batch_idxs: Vec<usize> = ready.iter().copied().take(max_batch).collect();
         let serial_idxs: Vec<usize> = ready.iter().copied().skip(max_batch).collect();
 
+        // Ask before assembling. A model that implements only the core
+        // `DecodeModel` surface has no batched arm, and discovering that by
+        // building a batch and catching the decline would repeat the wasted
+        // work every step. The serial remainder below still advances every
+        // session, so a `Batched` policy on a core-only model degrades to
+        // round-robin rather than failing.
         let mut consumed_by_batch = false;
-        if batch_idxs.len() >= 2 {
+        if batch_idxs.len() >= 2 && model.supports_batched_decode() {
             let dev = self.device.clone();
             let dt = self.dtype;
             let outcome = {
@@ -973,7 +1031,7 @@ fn collect_disjoint_mut<'a>(
 /// finishing (never a panic), and the others keep decoding. A consumer that wants
 /// to admit conservatively pre-checks [`kv_free_blocks`](Self::kv_free_blocks)
 /// against its expected length first (C-1).
-pub struct PagedSessionScheduler<'m, M: DecodeModel> {
+pub struct PagedSessionScheduler<'m, M: PagedDecodeModel> {
     model: &'m M,
     /// The shared device KV pool — all sessions' blocks live here.
     pool: DeviceKvPool,
@@ -1038,7 +1096,7 @@ struct PagedSession {
     captured_logits: Option<Vec<Vec<f32>>>,
 }
 
-impl<'m, M: DecodeModel> PagedSessionScheduler<'m, M> {
+impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
     /// Build an empty paged scheduler over a shared model + a KV block-pool
     /// `budget`. The pool's head geometry is taken from the model; `budget` sets
     /// block size + total blocks (the shared VRAM ceiling).
@@ -2808,6 +2866,176 @@ mod tests {
         for (i, id) in ids.iter().enumerate() {
             let got = out.iter().find(|(x, _)| x == id).unwrap().1.clone();
             assert_eq!(got, solo[i], "GQA K=3 session {i} != standalone");
+        }
+    }
+
+    // ===== The core/paged split: what a model must provide to be served =====
+
+    /// A model that does ONLY contiguous persistent decode — no paged storage,
+    /// no batched arm. Ten of Fuel's twelve model families are shaped exactly
+    /// like this today (Gemma3, Glm4, LFM2, Llama3, Phi3, Qwen2, Qwen3,
+    /// Qwen3Moe, SmolLm3, T5 have prefix-recompute forwards and nothing else),
+    /// so this stub is not a hypothetical.
+    ///
+    /// Before the trait split this type could not exist: [`DecodeModel`]
+    /// required all eight methods with no defaults, including three paged ones,
+    /// so a model with no paged surface could not be handed to
+    /// [`SessionScheduler`] *even to run the serial arm this test uses*. That is
+    /// the whole cost of a fat trait — it wasn't that paged decode was slow for
+    /// these models, it was that they couldn't be named to the scheduler at all.
+    struct CoreOnlyModel {
+        vocab: usize,
+    }
+
+    impl DecodeModel for CoreOnlyModel {
+        fn n_layers(&self) -> usize {
+            2
+        }
+        fn n_kv_heads(&self) -> usize {
+            2
+        }
+        fn head_dim(&self) -> usize {
+            4
+        }
+
+        /// Deterministic and **cache-dependent**: the argmax walks with
+        /// `cached_len`, so a session that fails to advance its cache produces a
+        /// visibly different token stream. Per this module's own warning about
+        /// the tiny random model, a stub whose output ignored KV state would
+        /// make the assertions below vacuous.
+        fn forward_with_kv_context_persistent(
+            &self,
+            tokens: &[u32],
+            cache: &mut KvCache,
+            _ctx: &mut InferenceContext,
+            _session: &mut Option<DecodeSession>,
+        ) -> fuel::Result<Vec<f32>> {
+            cache.cached_len += tokens.len();
+            let mut logits = vec![0.0f32; self.vocab];
+            logits[cache.cached_len % self.vocab] = 1.0;
+            Ok(logits)
+        }
+    }
+
+    #[test]
+    fn core_only_model_is_servable_by_the_serial_scheduler() {
+        let model = CoreOnlyModel { vocab: 16 };
+        let mut sched = SessionScheduler::new(
+            &model,
+            Device::cpu(),
+            DType::F32,
+            SchedulePolicy::RoundRobin,
+            test_budget(),
+        );
+        let id = sched
+            .add_session(&[1u32, 2, 3], SamplingStrategy::Greedy, None, 4)
+            .expect("a core-only model must be admissible");
+        let out = sched.run_to_completion().expect("serial arm must run");
+
+        // `run_to_completion` returns prompt ++ generated.
+        let toks = out.iter().find(|(i, _)| *i == id).unwrap().1.clone();
+        assert_eq!(toks.len(), 3 + 4, "expected prompt + 4 sampled, got {toks:?}");
+
+        // The stub's argmax is `cached_len % vocab`. Prefill consumes the 3
+        // prompt tokens (cached_len 3 → token 3), then each decode step consumes
+        // 1 more — so the generated tail is strictly increasing. A scheduler that
+        // failed to thread the cache through would produce a constant tail.
+        assert_eq!(&toks[3..], &[3, 4, 5, 6], "cache did not advance per step");
+    }
+
+    /// The predicate and the method must agree, or `supports_batched_decode`
+    /// becomes exactly the kind of correctly-named-but-lying accessor this
+    /// codebase keeps finding: a model could claim the arm and hand back the
+    /// default decline, and the scheduler would route every batch into an
+    /// error-isolation path while `used_batched_arm` stayed false.
+    #[test]
+    fn decode_model_batched_capability_is_self_consistent() {
+        // Declines: predicate false, default body returns a typed Err (not a
+        // panic, and not a silently-empty Ok).
+        let core = CoreOnlyModel { vocab: 16 };
+        assert!(!core.supports_batched_decode());
+        let mut cache = KvCache::with_capacity(2, 2, 4, 8, DType::F32, &Device::cpu()).unwrap();
+        let mut refs = [&mut cache];
+        let err = DecodeModel::build_batched_decode_logits(
+            &core,
+            &mut refs,
+            &[1u32],
+            &Device::cpu(),
+            DType::F32,
+        )
+        .expect_err("the core-only default must decline, not fabricate logits");
+        assert!(
+            err.to_string().contains("core DecodeModel surface"),
+            "the decline must say WHY, got: {err}"
+        );
+
+        // Claims and delivers: LlamaModel says true and really overrides.
+        let llama = tiny_model(7);
+        assert!(llama.supports_batched_decode());
+        let mut c0 = KvCache::with_capacity(
+            llama.config.n_layers,
+            llama.config.n_kv_heads,
+            llama.config.head_dim,
+            8,
+            DType::F32,
+            &Device::cpu(),
+        )
+        .unwrap();
+        let mut c1 = KvCache::with_capacity(
+            llama.config.n_layers,
+            llama.config.n_kv_heads,
+            llama.config.head_dim,
+            8,
+            DType::F32,
+            &Device::cpu(),
+        )
+        .unwrap();
+        let mut ctx0 = InferenceContext::new(Device::cpu());
+        let mut ctx1 = InferenceContext::new(Device::cpu());
+        let mut s0 = None;
+        let mut s1 = None;
+        llama.forward_with_kv_context_persistent(&[1, 2], &mut c0, &mut ctx0, &mut s0).unwrap();
+        llama.forward_with_kv_context_persistent(&[1, 2], &mut c1, &mut ctx1, &mut s1).unwrap();
+        let mut both = [&mut c0, &mut c1];
+        let rows = DecodeModel::build_batched_decode_logits(
+            &llama,
+            &mut both,
+            &[3u32, 4u32],
+            &Device::cpu(),
+            DType::F32,
+        )
+        .expect("a model claiming the batched arm must actually implement it");
+        assert_eq!(rows.len(), 2, "one logits row per cache");
+    }
+
+    /// A `Batched` policy on a core-only model must degrade to round-robin,
+    /// not fail. Every session still advances; the report says the batched arm
+    /// did not run, which is the honest answer rather than a silent claim.
+    #[test]
+    fn batched_policy_on_a_core_only_model_degrades_to_serial() {
+        let model = CoreOnlyModel { vocab: 16 };
+        let mut sched = SessionScheduler::new(
+            &model,
+            Device::cpu(),
+            DType::F32,
+            SchedulePolicy::Batched { max_batch: 4 },
+            test_budget(),
+        );
+        let ids: Vec<SessionId> = [&[1u32, 2, 3][..], &[4u32, 5, 6][..]]
+            .iter()
+            .map(|p| sched.add_session(p, SamplingStrategy::Greedy, None, 3).unwrap())
+            .collect();
+
+        let report = sched.step().expect("step must not fail on a core-only model");
+        assert!(
+            !report.used_batched_arm,
+            "a core-only model has no batched arm — the report must not claim one"
+        );
+
+        let out = sched.run_to_completion().unwrap();
+        for id in &ids {
+            let toks = out.iter().find(|(i, _)| i == id).unwrap().1.clone();
+            assert_eq!(toks.len(), 3 + 3, "session {id:?} did not advance under Batched");
         }
     }
 }
