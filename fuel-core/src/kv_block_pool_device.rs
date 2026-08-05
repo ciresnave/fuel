@@ -313,6 +313,45 @@ impl DeviceKvPool {
         Ok(v.to_vec())
     }
 
+    /// **rung-2 product** — materialize a registered prefix at a block-aligned,
+    /// NON-ZERO position offset in `dst` via a uniform θ·M RoPE delta-rotation of
+    /// its cached keys. Unlike the pure-core zero-copy
+    /// [`splice_prefix_from`](crate::kv_block_pool::KvBlockPool::splice_prefix_from)
+    /// (rung-1, prefix at position 0), this COPIES: the prefix's keys were rotated
+    /// for positions `0..N` and are numerically wrong at `M..M+N`, so fresh blocks
+    /// are allocated and written with rotated K + copied V. `rope_base` is the
+    /// model's θ — a plain param, so a pool-driving consumer supplies its own (the
+    /// §15 seam). Returns the shared token count `N`. `M = filled_tokens(dst)` must
+    /// be block-aligned; validation + fresh-block bookkeeping is
+    /// [`KvBlockPool::alloc_shifted_prefix_slots`](crate::kv_block_pool::KvBlockPool::alloc_shifted_prefix_slots),
+    /// which is transactional (a refusal allocates nothing). f32 pool.
+    pub fn splice_prefix_shifted(
+        &mut self,
+        prefix: crate::kv_block_pool::PrefixId,
+        dst: crate::kv_block_pool::SessionHandle,
+        rope_base: f64,
+    ) -> crate::Result<usize> {
+        let g = self.geometry();
+        let (m, pairs) = self
+            .core_mut()
+            .alloc_shifted_prefix_slots(prefix, dst)
+            .map_err(|e| msg_err(format!("DeviceKvPool::splice_prefix_shifted: {e:?}")))?;
+        for (src, fresh) in &pairs {
+            for l in 0..g.n_layers {
+                // K: delta-rotate the cached (post-RoPE) block by θ·M into the fresh block.
+                let k = self.read_block(l, BlockKind::K, *src)?;
+                let rot = crate::lazy::LazyTensor::rope_delta_rotate_block_f32(
+                    self.device(), &k, rope_base, m, g.block_size, g.n_kv_heads, g.head_dim,
+                );
+                self.write_block(l, BlockKind::K, *fresh, &rot)?;
+                // V: position-independent, copied verbatim (dtype-agnostic bytes).
+                let v = self.read_block_bytes(l, BlockKind::V, *src)?;
+                self.write_block_bytes(l, BlockKind::V, *fresh, &v)?;
+            }
+        }
+        Ok(pairs.len() * g.block_size)
+    }
+
     /// Dtype-agnostic byte-level block WRITE — the movement core that the f32
     /// [`Self::write_block`] wrapper and the evict/restore/CoW paths build on.
     /// `bytes` is the block's raw content in the pool's dtype
@@ -990,6 +1029,63 @@ mod tests {
         pool.write_block(1, BlockKind::K, 5, &data).unwrap();
         let back = pool.read_block(1, BlockKind::K, 5).unwrap();
         assert_eq!(back, data, "block content survives the device write→read round trip");
+    }
+
+    /// rung-2 product: `splice_prefix_shifted` materializes the shared prefix at a
+    /// block-aligned offset M as FRESH blocks whose K is the cached K delta-rotated
+    /// by θ·M and whose V is copied verbatim. Verifies the orchestration — correct
+    /// src→fresh mapping, per-layer loop, the offset threaded as the delta, and V
+    /// left unrotated — against the Task-1 primitive.
+    #[test]
+    fn splice_prefix_shifted_rotates_k_copies_v() {
+        let g = KvGeometry {
+            n_layers: 2, n_kv_heads: 2, head_dim: 4,
+            num_blocks: 64, block_size: 4, elem_size: DType::F32.size_in_bytes(),
+        };
+        let mut pool = DeviceKvPool::new(g, DType::F32, &Device::cpu()).unwrap();
+        let rope_base = 10000.0f64;
+        let block_elems = 4 * 2 * 4; // block_size · Hkv · D
+
+        // Donor: 2 full blocks with deterministic, distinct K and V per (block, layer).
+        let donor = pool.core_mut().open();
+        pool.core_mut().append(donor, 8).unwrap();
+        let d0 = pool.core().resident_block(donor, 0).unwrap();
+        let d1 = pool.core().resident_block(donor, 1).unwrap();
+        for (bi, phys) in [(0usize, d0), (1usize, d1)] {
+            for l in 0..2usize {
+                let base = (bi * 100 + l * 10) as f32;
+                let k: Vec<f32> = (0..block_elems).map(|i| (base + i as f32) * 0.01).collect();
+                let v: Vec<f32> = (0..block_elems).map(|i| (base + i as f32) * 0.02 + 1.0).collect();
+                pool.write_block(l, BlockKind::K, phys, &k).unwrap();
+                pool.write_block(l, BlockKind::V, phys, &v).unwrap();
+            }
+        }
+        let pid = pool.core_mut().register_prefix(donor, 2).unwrap();
+
+        // Sharer prefilled to a block-aligned offset M = 8.
+        let dst = pool.core_mut().open();
+        pool.core_mut().append(dst, 8).unwrap();
+        let n = pool.splice_prefix_shifted(pid, dst, rope_base).unwrap();
+        assert_eq!(n, 8, "shared token count = 2 blocks * block_size");
+
+        // The shifted prefix is dst's slots 2,3 (after its 2 preamble blocks).
+        for (dst_slot, src_phys) in [(2usize, d0), (3usize, d1)] {
+            let fresh = pool.core().resident_block(dst, dst_slot).unwrap();
+            for l in 0..2usize {
+                let src_k = pool.read_block(l, BlockKind::K, src_phys).unwrap();
+                let want = crate::lazy::LazyTensor::rope_delta_rotate_block_f32(
+                    &Device::cpu(), &src_k, rope_base, 8, 4, 2, 4,
+                );
+                let got = pool.read_block(l, BlockKind::K, fresh).unwrap();
+                let md = want.iter().zip(&got).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+                assert!(md < 1e-6, "K delta-rotated by θ·8 (layer {l}, slot {dst_slot}, maxdiff {md})");
+                assert_eq!(
+                    pool.read_block(l, BlockKind::V, fresh).unwrap(),
+                    pool.read_block(l, BlockKind::V, src_phys).unwrap(),
+                    "V copied verbatim (layer {l}, slot {dst_slot})",
+                );
+            }
+        }
     }
 
     /// A block write touches ONLY the addressed (layer, kind, phys) — every
