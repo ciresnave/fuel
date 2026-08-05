@@ -8380,7 +8380,25 @@ impl LlamaModel {
         cache: &mut KvCache,
         ctx: &mut InferenceContext,
     ) -> crate::Result<Vec<f32>> {
-        self.forward_with_kv_context_impl(tokens, cache, ctx, false)
+        self.forward_with_kv_context_impl(tokens, cache, ctx, false, None)
+    }
+
+    /// [`Self::forward_with_kv_context`] with the RoPE inverse frequencies
+    /// supplied by the caller instead of derived from `config.rope_base`.
+    ///
+    /// This is the seam a scaled-RoPE wrapper decodes through — LLaMA-3.1's
+    /// long-context scaling is a per-dimension transform of exactly this
+    /// vector (`fuel_graph::build_rope_tables_with_inv_freq`), so a scaled
+    /// model reuses this whole path rather than needing its own copy of it.
+    /// `None` is bit-identical to [`Self::forward_with_kv_context`].
+    pub fn forward_with_kv_context_inv_freq(
+        &self,
+        tokens: &[u32],
+        cache: &mut KvCache,
+        ctx: &mut InferenceContext,
+        rope_inv_freq: Option<&[f64]>,
+    ) -> crate::Result<Vec<f32>> {
+        self.forward_with_kv_context_impl(tokens, cache, ctx, false, rope_inv_freq)
     }
 
     /// All-positions variant of [`Self::forward_with_kv_context`]:
@@ -8400,7 +8418,7 @@ impl LlamaModel {
         cache: &mut KvCache,
         ctx: &mut InferenceContext,
     ) -> crate::Result<Vec<f32>> {
-        self.forward_with_kv_context_impl(tokens, cache, ctx, true)
+        self.forward_with_kv_context_impl(tokens, cache, ctx, true, None)
     }
 
     fn forward_with_kv_context_impl(
@@ -8409,6 +8427,7 @@ impl LlamaModel {
         cache: &mut KvCache,
         ctx: &mut InferenceContext,
         return_all_positions: bool,
+        rope_inv_freq: Option<&[f64]>,
     ) -> crate::Result<Vec<f32>> {
         let cfg = &self.config;
         let weights = &self.weights;
@@ -8466,9 +8485,19 @@ impl LlamaModel {
         h = h.to_dtype(cache_dtype)?;
 
         // RoPE cos/sin tables shared across layers.
-        let (rope_cos, rope_sin) = h.rope_tables_const(
-            cfg.rope_base, cached_len, seq, cfg.head_dim,
-        );
+        let (rope_cos, rope_sin) = match rope_inv_freq {
+            Some(inv) => {
+                let (c, sn) = fuel_graph::build_rope_tables_with_inv_freq(
+                    inv, cached_len, seq, cfg.head_dim,
+                );
+                let shape = Shape::from_dims(&[seq, cfg.head_dim]);
+                (
+                    h.const_f32_like(Arc::from(c), shape.clone()),
+                    h.const_f32_like(Arc::from(sn), shape),
+                )
+            }
+            None => h.rope_tables_const(cfg.rope_base, cached_len, seq, cfg.head_dim),
+        };
 
         // Phase D: the per-token KV-write offset (`cached_len`) is a
         // runtime symbol bound through the per-pass `SymEnv` at realize,
@@ -8706,6 +8735,29 @@ impl LlamaModel {
         ctx: &mut InferenceContext,
         session: &mut Option<crate::inference_context::DecodeSession>,
     ) -> crate::Result<Vec<f32>> {
+        self.forward_with_kv_context_persistent_inv_freq(tokens, cache, ctx, session, None)
+    }
+
+    /// [`Self::forward_with_kv_context_persistent`] with caller-supplied RoPE
+    /// inverse frequencies — the persistent-decode sibling of
+    /// [`Self::forward_with_kv_context_inv_freq`], and the entry point a
+    /// scaled-RoPE wrapper serves through.
+    ///
+    /// The override reaches BOTH halves of the persistent path: the first
+    /// token's held-graph build AND every subsequent per-token rebind.
+    /// Threading only one would give a model whose first decode token used
+    /// scaled RoPE and whose remaining tokens did not — a silent,
+    /// position-dependent wrong answer rather than an error, which is why the
+    /// parity test decodes several tokens rather than one.
+    /// `None` is bit-identical to the unscaled method.
+    pub fn forward_with_kv_context_persistent_inv_freq(
+        &self,
+        tokens: &[u32],
+        cache: &mut KvCache,
+        ctx: &mut InferenceContext,
+        session: &mut Option<crate::inference_context::DecodeSession>,
+        rope_inv_freq: Option<&[f64]>,
+    ) -> crate::Result<Vec<f32>> {
         let cfg = &self.config;
         let seq = tokens.len();
         let max_seq_len = cache.max_seq_len;
@@ -8717,7 +8769,7 @@ impl LlamaModel {
         // next decode token).
         if seq != 1 {
             self.drop_decode_session(session, ctx);
-            return self.forward_with_kv_context(tokens, cache, ctx);
+            return self.forward_with_kv_context_inv_freq(tokens, cache, ctx, rope_inv_freq);
         }
 
         // seq == 1. If a session exists but its validity keys no longer
@@ -8738,13 +8790,15 @@ impl LlamaModel {
                 // ---- First decode token (or post-invalidation): build +
                 // optimize the held graph ONCE. ----
                 self.build_and_realize_first_decode_token(
-                    tokens, cache, ctx, session,
+                    tokens, cache, ctx, session, rope_inv_freq,
                 )
             }
             Some(_) => {
                 // ---- Subsequent decode token: re-bind data + skip optimize. ----
                 let res =
-                    self.rebind_and_realize_prebuilt(tokens, cache, &*ctx, &*session);
+                    self.rebind_and_realize_prebuilt(
+                        tokens, cache, &*ctx, &*session, rope_inv_freq,
+                    );
                 match res {
                     Ok(logits) => Ok(logits),
                     Err(e) if matches!(e, crate::Error::TopologyChanged { .. }) => {
@@ -8752,7 +8806,7 @@ impl LlamaModel {
                         // rebuild via the D1 path this token; the session
                         // rebuilds on the next decode token.
                         self.drop_decode_session(session, ctx);
-                        self.forward_with_kv_context(tokens, cache, ctx)
+                        self.forward_with_kv_context_inv_freq(tokens, cache, ctx, rope_inv_freq)
                     }
                     Err(e) => Err(e),
                 }
@@ -8770,6 +8824,7 @@ impl LlamaModel {
         cache: &mut KvCache,
         ctx: &mut InferenceContext,
         session: &mut Option<crate::inference_context::DecodeSession>,
+        rope_inv_freq: Option<&[f64]>,
     ) -> crate::Result<Vec<f32>> {
         let cfg = &self.config;
         let weights = &self.weights;
@@ -8919,7 +8974,7 @@ impl LlamaModel {
         // realized cache (weights + KV + data) for the held session.
         let data = self.build_token_rope_mask_arcs(
             ctx.device(), cached_len, tokens, max_seq_len, cache_dtype,
-            use_device_offset,
+            use_device_offset, rope_inv_freq,
         )?;
         ctx.insert(token_ids_node, Arc::clone(&data.token_ids));
         ctx.insert(rope_cos_node, Arc::clone(&data.rope_cos));
@@ -9333,6 +9388,7 @@ impl LlamaModel {
         cache: &mut KvCache,
         ctx: &InferenceContext,
         session: &Option<crate::inference_context::DecodeSession>,
+        rope_inv_freq: Option<&[f64]>,
     ) -> crate::Result<Vec<f32>> {
         let cfg = &self.config;
         let seq = tokens.len();
@@ -9351,7 +9407,7 @@ impl LlamaModel {
         // sessions skip it (offset rides `cached_len_sym`).
         let data = self.build_token_rope_mask_arcs(
             &device, cached_len, tokens, s.max_seq_len(), cache_dtype,
-            s.offset_node().is_some(),
+            s.offset_node().is_some(), rope_inv_freq,
         )?;
         // Bind BOTH per-token symbols: `cached_len` (the KV-write offset)
         // AND `attended_len = cached_len + seq` (the flash-arm `k_len`).
@@ -9381,14 +9437,24 @@ impl LlamaModel {
         max_seq_len: usize,
         cache_dtype: DType,
         with_device_offset: bool,
+        rope_inv_freq: Option<&[f64]>,
     ) -> crate::Result<TokenDataHost> {
         let cfg = &self.config;
         let seq = tokens.len();
 
         let token_ids = fuel_ir::HostBuffer::U32(tokens.to_vec());
-        let (cos_data, sin_data) = fuel_graph::build_rope_tables(
-            cfg.rope_base, cached_len, seq, cfg.head_dim,
-        );
+        // `rope_inv_freq` replaces the frequencies derived from
+        // `cfg.rope_base` — the ONLY thing a scaled-RoPE variant (LLaMA-3.1
+        // long context) changes on this path. `None` keeps the default, so
+        // every pre-existing caller stays bit-identical.
+        let (cos_data, sin_data) = match rope_inv_freq {
+            Some(inv) => fuel_graph::build_rope_tables_with_inv_freq(
+                inv, cached_len, seq, cfg.head_dim,
+            ),
+            None => fuel_graph::build_rope_tables(
+                cfg.rope_base, cached_len, seq, cfg.head_dim,
+            ),
+        };
         let rope_cos = fuel_ir::HostBuffer::F32(cos_data);
         let rope_sin = fuel_ir::HostBuffer::F32(sin_data);
         let mask_data = build_decode_causal_mask(cached_len, seq, max_seq_len);
@@ -9438,9 +9504,11 @@ impl LlamaModel {
         max_seq_len: usize,
         cache_dtype: DType,
         with_device_offset: bool,
+        rope_inv_freq: Option<&[f64]>,
     ) -> crate::Result<crate::inference_context::DecodeTokenData> {
         let host = self.compute_token_rope_mask_host_data(
             cached_len, tokens, max_seq_len, cache_dtype, with_device_offset,
+            rope_inv_freq,
         )?;
         let upload = crate::pipelined_bridge::upload_host_buffer_to_device;
 
@@ -9472,9 +9540,11 @@ impl LlamaModel {
         max_seq_len: usize,
         cache_dtype: DType,
         with_device_offset: bool,
+        rope_inv_freq: Option<&[f64]>,
     ) -> crate::Result<TokenDataBytes> {
         let host = self.compute_token_rope_mask_host_data(
             cached_len, tokens, max_seq_len, cache_dtype, with_device_offset,
+            rope_inv_freq,
         )?;
         Ok(TokenDataBytes {
             token_ids: crate::pipelined_bridge::host_buffer_to_bytes(&host.token_ids),

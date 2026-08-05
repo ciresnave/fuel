@@ -241,6 +241,37 @@ impl DecodeModel for LlamaModel {
     }
 }
 
+/// `Llama3Model` is a thin wrapper over [`LlamaModel`] that differs only in its
+/// RoPE frequencies, so it reaches the same decode path with its own
+/// frequencies threaded down — see `Llama3Model::forward_with_kv_context_
+/// persistent`. It implements the CORE trait only: the paged surface would need
+/// the same override threaded through `forward_paged_step*`, which is a separate
+/// tier of work, and [`PagedDecodeModel`] existing as a supertrait is what makes
+/// that a compile error here rather than a runtime surprise in the paged
+/// scheduler.
+impl DecodeModel for fuel::lazy_llama_full::Llama3Model {
+    fn n_layers(&self) -> usize {
+        self.inner.config.n_layers
+    }
+    fn n_kv_heads(&self) -> usize {
+        self.inner.config.n_kv_heads
+    }
+    fn head_dim(&self) -> usize {
+        self.inner.config.head_dim
+    }
+    fn forward_with_kv_context_persistent(
+        &self,
+        tokens: &[u32],
+        cache: &mut KvCache,
+        ctx: &mut InferenceContext,
+        session: &mut Option<DecodeSession>,
+    ) -> fuel::Result<Vec<f32>> {
+        fuel::lazy_llama_full::Llama3Model::forward_with_kv_context_persistent(
+            self, tokens, cache, ctx, session,
+        )
+    }
+}
+
 impl PagedDecodeModel for LlamaModel {
     fn forward_paged_step(
         &self,
@@ -3037,5 +3068,39 @@ mod tests {
             let toks = out.iter().find(|(i, _)| i == id).unwrap().1.clone();
             assert_eq!(toks.len(), 3 + 3, "session {id:?} did not advance under Batched");
         }
+    }
+
+    /// The point of the whole exercise: `Llama3Model` — the type
+    /// `QuantizedLlama3Model::from_gguf` wraps — is now servable. Before this
+    /// change its entire method set was `new`/`forward`/`forward_embeds`/
+    /// `forward_hidden_embeds`, so a GGUF checkpoint re-ran its whole prefix
+    /// for every token; it could not be handed to this scheduler at all.
+    #[test]
+    fn llama3_model_is_servable_by_the_scheduler() {
+        let m = fuel::lazy_llama_full::Llama3Model::new(tiny_model(11), None, None);
+        let mut sched = SessionScheduler::new(
+            &m,
+            Device::cpu(),
+            DType::F32,
+            SchedulePolicy::RoundRobin,
+            test_budget(),
+        );
+        let id = sched
+            .add_session(&[1u32, 2, 3], SamplingStrategy::Greedy, None, 4)
+            .expect("Llama3Model must be admissible");
+        let out = sched.run_to_completion().expect("Llama3Model must decode");
+        let toks = out.iter().find(|(i, _)| *i == id).unwrap().1.clone();
+        assert_eq!(toks.len(), 3 + 4, "prompt + 4 generated, got {toks:?}");
+
+        // Unscaled Llama3Model is documented as bit-identical to its inner
+        // LlamaModel, so the same prompt through the inner model must agree —
+        // this is what catches the wrapper accidentally decoding a different
+        // graph rather than merely decoding *something*.
+        let inner_out = tiny_model(11)
+            .generate_with_kv_context(
+                &[1u32, 2, 3], 4, SamplingStrategy::Greedy, None, &Device::cpu(), DType::F32,
+            )
+            .unwrap();
+        assert_eq!(toks, inner_out, "unscaled wrapper diverged from its inner model");
     }
 }
