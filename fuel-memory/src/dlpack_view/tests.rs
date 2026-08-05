@@ -11,6 +11,48 @@ use fuel_ir::symbol::SymId;
 use fuel_ir::{DType, Layout, SymEnv};
 use fuel_cpu_backend::CpuStorageBytes;
 
+/// Canonical FNV-1a 64-bit known-answer vectors — **the same table** pinned by
+/// `fuel_dispatch::fkc::revhash`'s `FNV1A64_KAT`.
+///
+/// §8 describes a "shared hash function with FDX"; in reality there are two
+/// independent implementations (this one and revhash's) that agree only because
+/// both happen to use the standard constants. Cross-checking them against each
+/// OTHER would prove only mutual agreement — a refactor changing both
+/// consistently (FNV-1a to FNV-1, a length prefix, a reseed) would keep them
+/// equal while silently invalidating every bundle slot-name hash and persisted
+/// plan key already on disk. Anchoring BOTH to the spec is what makes the
+/// agreement load-bearing.
+///
+/// Kept as a literal duplicate rather than imported: fuel-memory does not (and
+/// should not) depend on fuel-dispatch, and a shared constant would reintroduce
+/// exactly the single-point-of-drift this guards against.
+const FNV1A64_KAT: &[(&str, u64)] = &[
+    ("", 0xcbf2_9ce4_8422_2325),
+    ("a", 0xaf63_dc4c_8601_ec8c),
+    ("foobar", 0x8594_4171_f739_67e8),
+    ("fuel", 0x8644_7a78_daee_11cd),
+    ("FNV-1a", 0xd498_8d18_eaff_5dc2),
+    ("flash_attn_f32", 0x737f_6f3f_3150_8709),
+];
+
+/// The FDX slot-name hash must match the FNV-1a spec, not merely match its
+/// sibling in fuel-dispatch.
+///
+/// `""` hashing to the offset basis is the built-in positive control — the one
+/// input whose answer is structurally forced, so a table that got the basis
+/// wrong cannot pass.
+#[test]
+fn fnv1a_matches_the_canonical_vectors() {
+    for (input, want) in FNV1A64_KAT {
+        let got = fnv1a(input);
+        assert_eq!(
+            got, *want,
+            "FNV-1a(\"{input}\") = 0x{got:016x}, want 0x{want:016x} — the FDX              slot-name hash drifted from the spec, which silently breaks every              bundle name side-table already written"
+        );
+    }
+}
+
+
 use crate::{BackendStorage, Storage};
 
 /// Build a CPU F32 `Storage` holding `n` zeroed elements.
