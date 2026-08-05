@@ -157,6 +157,16 @@ pub struct ImportedProvider {
     /// by — the merged provider would silently carry kernels whose revision
     /// hashes were computed against different roots.
     pub revision_base: Option<String>,
+    /// `provider.link_registry` (front-matter) — the symbol path of the table
+    /// this file's `entry_point`s are declared to resolve against.
+    ///
+    /// Retained for the same reason as [`Self::revision_base`]: §9.2 requires
+    /// it to AGREE across a glob's files, and a field that is consumed during
+    /// lowering and dropped cannot be compared at merge time. `import_glob`
+    /// binds every file it merges through the single registry its *caller*
+    /// supplied, so disagreement here means at least one file's entry points
+    /// were resolved against a table its author never named.
+    pub link_registry: Option<String>,
     /// Lowered `op_kind` contracts → the binding table.
     pub primitives: Vec<ResolvedPrimitive>,
     /// Lowered `fused_op` contracts → the fused registry.
@@ -172,6 +182,7 @@ impl ImportedProvider {
         backend: BackendId,
         kernel_source: &'static str,
         revision_base: Option<String>,
+        link_registry: Option<String>,
         resolved: Vec<Resolved>,
         warnings: Vec<crate::fkc::ImportWarning>,
     ) -> Self {
@@ -188,6 +199,7 @@ impl ImportedProvider {
             backend,
             kernel_source,
             revision_base,
+            link_registry,
             primitives,
             fused,
             warnings,
@@ -393,6 +405,7 @@ pub fn import_bundle_str(
         backend,
         kernel_source,
         provider.revision_base.clone(),
+        provider.link_registry.clone(),
         resolved,
         warnings,
     ))
@@ -487,6 +500,22 @@ pub fn import_glob(
                         field: "provider.revision_base".to_string(),
                         expected: format!("{:?}", acc.revision_base),
                         found: format!("{:?}", provider.revision_base),
+                        file: file_label.clone(),
+                    });
+                }
+                // `link_registry` names the symbol table a file's entry points
+                // are declared to resolve against — but a glob binds every file
+                // it merges through the ONE registry the caller supplied. A
+                // drift here means at least one file's `entry_point`s were
+                // resolved against a table its author never named; they may
+                // still resolve, to a same-named symbol from a different
+                // provider. Same `Option` comparison as above, and for the same
+                // reason: declared-in-one-file-only is a drift too.
+                if provider.link_registry != acc.link_registry {
+                    return Err(FkcError::ProviderMismatch {
+                        field: "provider.link_registry".to_string(),
+                        expected: format!("{:?}", acc.link_registry),
+                        found: format!("{:?}", provider.link_registry),
                         file: file_label.clone(),
                     });
                 }
@@ -1897,6 +1926,27 @@ determinism: same_hardware_bitwise
         entry: &str,
         revision_base: Option<&str>,
     ) -> String {
+        bundle_with_front_matter(provider_backend, kernel, op_kind, entry, revision_base, None)
+    }
+
+    fn bundle_with_link_registry(
+        provider_backend: &str,
+        kernel: &str,
+        op_kind: &str,
+        entry: &str,
+        link_registry: Option<&str>,
+    ) -> String {
+        bundle_with_front_matter(provider_backend, kernel, op_kind, entry, None, link_registry)
+    }
+
+    fn bundle_with_front_matter(
+        provider_backend: &str,
+        kernel: &str,
+        op_kind: &str,
+        entry: &str,
+        revision_base: Option<&str>,
+        link_registry: Option<&str>,
+    ) -> String {
         // A raw string with real newlines (NO `\`-continuations, which
         // would eat the YAML indentation).
         let template = r#"---
@@ -1904,7 +1954,7 @@ fkc_version: 1
 provider:
   name: glob-provider
   backend: __BACKEND__
-  kernel_source: "glob-cpu"__REVISION_BASE__
+  kernel_source: "glob-cpu"__REVISION_BASE____LINK_REGISTRY__
 ---
 
 # glob bundle
@@ -1945,8 +1995,13 @@ determinism: same_hardware_bitwise
             Some(r) => format!("\n  revision_base: \"{r}\""),
             None => String::new(),
         };
+        let link_line = match link_registry {
+            Some(r) => format!("\n  link_registry: \"{r}\""),
+            None => String::new(),
+        };
         template
             .replace("__REVISION_BASE__", &rev_line)
+            .replace("__LINK_REGISTRY__", &link_line)
             .replace("__BACKEND__", provider_backend)
             .replace("__KERNEL__", kernel)
             .replace("__OP_KIND__", op_kind)
@@ -2073,6 +2128,87 @@ determinism: same_hardware_bitwise
             provider.revision_base.as_deref(),
             Some("git:deadbeef"),
             "the merged provider must retain the agreed revision_base"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The other half of §9.2's five fields. `link_registry` names the symbol
+    /// table a file's `entry_point`s are meant to resolve against; `import_glob`
+    /// binds every merged file through the ONE registry its caller passed in.
+    /// So a glob whose files disagree on `link_registry` has at least one file
+    /// whose entry points were resolved against a table its author never named
+    /// — the symbols may well resolve, silently, to a different provider's
+    /// kernels of the same name.
+    #[test]
+    fn import_glob_mismatched_link_registry_is_provider_mismatch() {
+        let dir = std::env::temp_dir().join(format!("fkc_glob_link_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        write_temp(
+            &dir,
+            "a.fkc.md",
+            &bundle_with_link_registry(
+                "Cpu",
+                "add_f32",
+                "AddElementwise",
+                "x::add",
+                Some("fuel_cpu_backend::fkc::ENTRY_POINTS"),
+            ),
+        );
+        write_temp(
+            &dir,
+            "b.fkc.md",
+            &bundle_with_link_registry(
+                "Cpu",
+                "sub_f32",
+                "SubElementwise",
+                "x::sub",
+                Some("fuel_other_backend::fkc::ENTRY_POINTS"),
+            ),
+        );
+
+        let link = DistinctLink::new();
+        let pattern = dir.join("*.fkc.md").display().to_string();
+        let err = import_glob(&pattern, &link)
+            .expect_err("a link_registry drift across a globbed provider must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("link_registry"),
+            "the error must name the drifted field, got: {msg}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The agreeing case must still merge, and must retain the agreed value —
+    /// otherwise "enforced" could be satisfied by rejecting everything.
+    #[test]
+    fn import_glob_matching_link_registry_still_merges() {
+        let dir = std::env::temp_dir().join(format!("fkc_glob_link_ok_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        for (f, k, op, e) in [
+            ("a.fkc.md", "add_f32", "AddElementwise", "x::add"),
+            ("b.fkc.md", "sub_f32", "SubElementwise", "x::sub"),
+        ] {
+            write_temp(
+                &dir,
+                f,
+                &bundle_with_link_registry("Cpu", k, op, e, Some("fuel_cpu_backend::fkc::ENTRY_POINTS")),
+            );
+        }
+
+        let link = DistinctLink::new();
+        let pattern = dir.join("*.fkc.md").display().to_string();
+        let provider =
+            import_glob(&pattern, &link).expect("agreeing link_registry must still merge");
+        assert_eq!(
+            provider.link_registry.as_deref(),
+            Some("fuel_cpu_backend::fkc::ENTRY_POINTS"),
+            "the merged provider must retain the agreed link_registry"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -2404,6 +2540,7 @@ determinism: same_hardware_bitwise
             backend: BackendId::Cpu,
             kernel_source: intern("portable-cpu"),
             revision_base: None,
+            link_registry: None,
             primitives: Vec::new(),
             fused: vec![f],
             warnings: Vec::new(),
@@ -3034,6 +3171,7 @@ determinism: same_hardware_bitwise
             backend: fuel_ir::probe::BackendId::Cpu,
             kernel_source: "ks",
             revision_base: None,
+            link_registry: None,
             primitives: Vec::new(),
             fused: Vec::new(),
             warnings: Vec::new(),

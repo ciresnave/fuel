@@ -12,6 +12,35 @@
 > shape-rule cross-check over ~16 of the 22 registered fused ops. **The remaining
 > findings of the ~24-finding body have NOT been re-audited** — verify any of them
 > against current code before treating them as open OR closed.
+>
+> **2026-08-05 second closure pass.** Re-verified against current code, one finding at a
+> time. **Closed this pass**: §9.1 (`637f8e4e` `revision_base`, this pass `link_registry` —
+> §9.2 now enforces all five fields); V-FKC-3's corpus arm (`ce8a3206`, a ratchet — 13 real
+> cross-file `entry_point` collisions found, all imported-vs-orphan so none registers today);
+> §8's "shared hash" (`441256c9`, known-answer vectors in BOTH crates rather than a
+> cross-check between them); V-FKC-5 (the allowlists are now *generated* from the enums, so
+> drift is a compile error — and the drift it had already accumulated, a contract naming the
+> real `OpParams::NonZeroIndices` being rejected as a typo, is fixed); V-FKC-10 (the FDX
+> token subset is now asserted against FDX's live code table).
+>
+> **Found already CLOSED, claim was stale** — do not re-derive these as open: **Finding 5.4 /
+> §8.5** (the bundle slot-name side-table exists on BOTH sides — `FusedKernelRegistry::
+> bundle_slot_names(id, backend, dtypes)` on the FKC side, `fdx_slot_name(hash)` +
+> `FDX_NAME_TABLE` on the FDX side, both citing Finding 5.4 by name); **V-FKC-9's cost half**
+> (`validate.rs` routes through `cost_compile::classify_cost`, closing the `class.is_empty()`
+> escape hatch). **Withdrawn as a false positive**: §6's `awkward_layout_strategy` "validated
+> then silently discarded" — the `None` that reads like a silent drop is inside a `mod tests`
+> helper, not the production path.
+>
+> **Still open**: V-FKC-9's *precision* half — confirmed exactly as described, but it is a
+> WIRING DECISION rather than a defect (`audited: false` → `UNAUDITED` is the documented
+> intent; no `gate_precision`-style reference/non-reference concept exists anywhere). The
+> question is whether `PrecisionFloorFilter` should get a production caller, which is an
+> owner's call, not a lint's.
+>
+> The pattern in this pass is worth carrying forward: **three of the findings I picked up were
+> stale or wrong**, in a document whose own header says to re-verify. Cost of checking: minutes.
+> Cost of not checking: building a "fix" for a mechanism that already exists.
 
 **Status (2026-07-11): reference document, produced by 5 parallel deep-research passes over the
 entire `docs/session-prompts/kernel-contract-adoption-plan.md` design doc, each independently
