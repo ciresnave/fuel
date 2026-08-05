@@ -2,7 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax.
 
-**Goal:** Place an already-computed KV prefix at a non-zero, block-aligned position offset `M` in a sharer session, by materializing fresh blocks whose keys are the cached keys uniformly delta-rotated by θ·M (values copied verbatim). Byte-exact, no new numeric Op, no attention-kernel changes.
+**Goal:** Place an already-computed KV prefix at a non-zero, block-aligned position offset `M` in a sharer session, by materializing fresh blocks whose keys are the cached keys uniformly delta-rotated by θ·M (values copied verbatim). No new numeric Op, no attention-kernel changes.
+
+> ## STATUS (2026-08-05) — C1–C3 SHIPPED (exact); C4/C5 outcome changed
+>
+> Tasks 1–3 are done and committed on `feat/rope-rung2` (`e4856895`, `cafe3f57`, `92e4e948`, `72cb70b1`): the delta-rotation primitive, the block-aligned bookkeeping, and `DeviceKvPool::splice_prefix_shifted` — all exact, born-red, mutation-checked where applicable.
+>
+> **Task 4 was reshaped and Task 5 dropped.** Implementation revealed (see the spec's CORRECTION) that exact mid-prompt reuse is impossible for multi-layer models — the primitive is POSITION-exact but the reused prefix loses the preamble's context at layers > 0 (`n_layers=1` maxdiff 0, `n_layers=2` ~2.1e-3). So Task 4 is NOT the `maxdiff==0` anchor below; it is a **characterization test** (`shifted_prefix_reuse_is_exact_at_depth_1_and_lossy_deeper`) that pins the exact-at-depth-1 / lossy-deeper boundary. The **scheduler reference caller (C5) is parked** — it would be an approximate feature with no consumer (Lightbulb serves the rung-1 start-prefix case). The `maxdiff==0` Task 4 text below is retained only as the record of what was originally planned.
 
 **Architecture:** Three layers, bottom-up. (C1) a RoPE **delta-rotation primitive** in `lazy.rs` — constant-position tables + a per-block f32 rotation that reuses the model's exact `rope_with_tables_decomposed`. (C3+core) pure-core **bookkeeping** in `kv_block_pool.rs` that validates the block-aligned offset and allocates fresh dst blocks, returning `(M, src→dst physical pairs)`. (C2) the **product** `DeviceKvPool::splice_prefix_shifted` that drives the two: rotate each src K block → fresh dst K block, copy each src V block → fresh dst V block. (C4) a model-level **logit-parity anchor**. Spec: `docs/superpowers/specs/2026-08-05-rope-rung2-shifted-prefix-design.md`.
 
