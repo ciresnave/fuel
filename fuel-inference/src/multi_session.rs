@@ -139,8 +139,9 @@ pub trait DecodeModel {
     /// paged driver holds one [`PagedDecodeSession`] per session and, under
     /// `plan == PagedDecodePlan::PlanOnce`, builds + optimizes the decode graph
     /// ONCE then rebinds it per token — paying the optimizer (Lightbulb-measured at
-    /// ~90% of per-token paged cost) once instead of every token. `Replan` (the
-    /// driver default) drops any held session and re-plans via `forward_paged_step`
+    /// ~90% of per-token paged cost) once instead of every token — and `PlanOnce`
+    /// is the driver default. `Replan` (the explicit opt-out) drops any held
+    /// session and re-plans via `forward_paged_step`
     /// — behaviorally identical to the pre-plan-once path, so a session may flip
     /// the flag without leaving stale state. `max_blocks_cap` is the session's
     /// fixed block-table capacity (`⌈(prompt + max_new) / block_size⌉`), which
@@ -978,11 +979,11 @@ pub struct PagedSessionScheduler<'m, M: DecodeModel> {
     pool: DeviceKvPool,
     sessions: Vec<PagedSession>,
     next_id: u64,
-    /// Decode planning mode (default [`PagedDecodePlan::Replan`] — the shipped,
-    /// pre-plan-once behavior). Flip to `PlanOnce` via [`set_plan`](Self::set_plan)
-    /// to build + reuse each session's optimized decode plan across tokens.
-    /// Correctness is identical either way; the flag only trades a one-time build
-    /// for per-token planner savings.
+    /// Decode planning mode (default [`PagedDecodePlan::PlanOnce`] — build + reuse
+    /// each session's optimized decode plan across tokens). Flip to `Replan` via
+    /// [`set_plan`](Self::set_plan) for the pre-plan-once behavior (re-plan and
+    /// re-realize every token). Correctness is identical either way; the flag only
+    /// trades a one-time build for per-token planner savings.
     plan: PagedDecodePlan,
 }
 
@@ -1046,16 +1047,20 @@ impl<'m, M: DecodeModel> PagedSessionScheduler<'m, M> {
             pool,
             sessions: Vec::new(),
             next_id: 0,
-            plan: PagedDecodePlan::Replan,
+            plan: PagedDecodePlan::PlanOnce,
         })
     }
 
-    /// Opt into the plan-once decode path (the driver default is
-    /// [`PagedDecodePlan::Replan`], off). Under `PlanOnce` each session builds its
-    /// decode graph + optimized plan once and rebinds it per token; under `Replan`
-    /// every token re-plans (the shipped default). Output is identical either way
-    /// (the plan-once↔replan parity gate) — the flag trades a one-time build for
-    /// per-token planner savings. Applies to sessions' subsequent decode tokens.
+    /// Change the decode planning mode. **The driver default is
+    /// [`PagedDecodePlan::PlanOnce`]** — each session builds its decode graph +
+    /// optimized plan once and rebinds it per token. `Replan` re-plans and
+    /// re-realizes every token; it is retained as the parity reference arm and an
+    /// escape hatch, not as a recommended configuration. Output is identical either
+    /// way (the plan-once↔replan parity gate) — the flag trades a one-time build
+    /// for per-token planner savings. Applies to sessions' subsequent decode tokens.
+    ///
+    /// Measured cost of the old `Replan` default on this route: **29.7×**
+    /// (8,192.0 → 275.8 ms/token, nsys, 2026-08-01).
     pub fn set_plan(&mut self, plan: PagedDecodePlan) {
         self.plan = plan;
     }
@@ -1744,9 +1749,48 @@ mod tests {
         assert_eq!(paged, contig, "paged scheduler greedy == contiguous generate oracle");
     }
 
+    /// **Plan reuse is the DEFAULT.** A consumer that never calls
+    /// [`set_plan`](PagedSessionScheduler::set_plan) gets the plan-once path, and
+    /// gets it *routed*, not merely configured. Two teeth, because "the field says
+    /// `PlanOnce`" and "the persistent path actually ran" are different claims and
+    /// only the second one is worth anything:
+    ///
+    /// 1. the freshly-built scheduler reports [`PagedDecodePlan::PlanOnce`];
+    /// 2. a default-constructed scheduler that decodes to completion holds a
+    ///    REBOUND decode plan (`session_realize_count >= 1`).
+    ///
+    /// Tooth 2 is the one that catches the regression that matters. Before this
+    /// default flipped, the correct, test-gated persistent seam shipped OFF and
+    /// cost measured consumers **29.7×** on the paged route (8,192.0 → 275.8
+    /// ms/token, nsys, 2026-08-01) — a seam nobody was routed to. If a future
+    /// refactor leaves `plan()` reading `PlanOnce` while `decode_one` quietly takes
+    /// the replan branch, tooth 1 still passes and tooth 2 fails.
+    #[test]
+    fn paged_scheduler_defaults_to_plan_once() {
+        let model = tiny_model(42);
+        let prompt = [1u32, 2, 3];
+        let max_new = 5;
+
+        let mut s =
+            PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
+        assert_eq!(
+            s.plan(),
+            PagedDecodePlan::PlanOnce,
+            "driver default is plan reuse — a consumer that never opts in gets the fast path"
+        );
+
+        // ...and the default is ROUTED: decode through it and the held plan rebinds.
+        let id = s.add_session(&prompt, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let _ = s.run_to_completion();
+        let rc = s
+            .session_realize_count(id)
+            .expect("default-configured session holds a decode plan after decoding");
+        assert!(rc >= 1, "default path rebound the held decode plan per token (got {rc})");
+    }
+
     /// Plan-once wiring (Task 5): opting a paged session into
     /// [`PagedDecodePlan::PlanOnce`] via [`PagedSessionScheduler::set_plan`]
-    /// produces output BYTE-IDENTICAL to the default `Replan` driver — the flag
+    /// produces output BYTE-IDENTICAL to the `Replan` driver — the flag
     /// changes only WHEN the decode graph is optimized (once vs per token), never
     /// the numbers — AND the session's held decode plan is actually REBOUND per
     /// decode token (`session_realize_count` > 0), direct evidence the persistent
@@ -1763,10 +1807,15 @@ mod tests {
         let prompt = [1u32, 2, 3];
         let max_new = 5;
 
-        // Reference arm: the shipped default (`Replan`) — re-plans every token.
+        // Reference arm: `Replan` — re-plans every token. Set EXPLICITLY, never
+        // inherited from the driver default: the default is now `PlanOnce`, and an
+        // arm that leans on the default would silently become a PlanOnce-vs-PlanOnce
+        // comparison the day the default moved — a parity test that passes by
+        // comparing a thing to itself.
         let mut s_replan =
             PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
-        assert_eq!(s_replan.plan(), PagedDecodePlan::Replan, "driver default is off (Replan)");
+        s_replan.set_plan(PagedDecodePlan::Replan);
+        assert_eq!(s_replan.plan(), PagedDecodePlan::Replan, "reference arm is Replan");
         s_replan.add_session(&prompt, SamplingStrategy::Greedy, None, max_new).unwrap();
         let replan_out = s_replan.run_to_completion()[0].1.clone();
 
