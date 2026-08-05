@@ -207,6 +207,41 @@ answerable.
 
 ---
 
+## 6.4 Related: does every route default to its fast path?
+
+Asked directly, and the honest answer was **no**. Audit as of 2026-08-05:
+
+| route | fast by default? |
+|---|---|
+| `PagedSessionScheduler` | ✅ now (`PlanOnce`) |
+| `generate_with_kv_context` / streaming | ✅ already was |
+| `SessionScheduler` (contiguous multi-session) | ✅ already was |
+| hand-rolled loop on `forward_with_kv_context` | ❌ → **fixed**, `forward_decode_step` |
+| CUDA-graph capture | ❌ → **deliberately left**, see below |
+
+**Fixed.** `forward_decode_step(tokens, cache, ctx)` gives plan reuse at the
+*same three-argument shape* as the raw primitive, with the held plan carried on
+the `InferenceContext`. The defect was never a bad default — it was that the
+fast path required a call shape (`&mut Option<DecodeSession>`) you could only
+write if you already knew `DecodeSession` existed. `forward_with_kv_context`
+keeps its rebuild contract: the persistent path uses it as its own fallback, and
+dozens of tests exercise rebuild *as the thing under test*.
+
+**Deliberately left: CUDA-graph capture.** `forward_with_kv_context_captured` is
+called from tests only — no production route captures. It is tempting to default
+it, and I am not doing so, because **the number that would justify it does not
+isolate it.** The measured 5,901 → 26.47 ms/token added persistence *and*
+capture in one step; persistence alone is now the default everywhere, and how
+much of the remainder is capture is **unmeasured**. Capture also carries real
+invalidation surface — a recorded graph over fixed device addresses (which is
+why the staleness fix had to retire the capture with the session).
+
+Defaulting it on an unseparated measurement would be the same error this document
+exists to avoid: **taking a true observation and attaching a mechanism nobody
+checked.** The prerequisite is one more arm in Lightbulb's sweep — persistent
+*without* capture vs persistent *with* — which is nearly free given the harness
+already runs both configurations.
+
 ## 7. Status of claims
 
 | claim | evidence |
