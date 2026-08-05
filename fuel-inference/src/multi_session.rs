@@ -40,7 +40,7 @@ use fuel::Device;
 use fuel::inference_context::{
     DecodeSession, InferenceContext, KvCache, PagedDecodePlan, PagedDecodeSession,
 };
-use fuel::kv_block_pool::{KvBlockPool, KvGeometry, PoolCapacity, SessionHandle};
+use fuel::kv_block_pool::{KvBlockPool, KvGeometry, PoolCapacity, PrefixId, SessionHandle};
 use fuel::kv_block_pool_device::{DeviceEvicted, DeviceKvPool};
 use fuel::lazy::{sample_logits, LlamaModel, SamplingStrategy};
 
@@ -1018,6 +1018,24 @@ struct PagedSession {
     /// (`⌈(prompt + max_new) / block_size⌉`), computed at admission so the
     /// plan-once graph's `block_table` shape is stable across decode tokens.
     max_blocks_cap: usize,
+    /// How many LEADING prompt tokens are already resident in this session's
+    /// blocks and must be SKIPPED by prefill. `0` for an ordinary session; for a
+    /// prefix-shared session ([`add_session_sharing_prefix`](PagedSessionScheduler::add_session_sharing_prefix))
+    /// it is the spliced shared-prefix token count, so prefill feeds only
+    /// `tokens[prefill_start..]` — the donor already computed the prefix KV and it
+    /// sits at the right absolute positions (`filled_tokens == prefill_start` after
+    /// the splice), so re-feeding it would double-write and mis-position.
+    prefill_start: usize,
+    /// Inspection hook (sibling of
+    /// [`session_realize_count`](PagedSessionScheduler::session_realize_count)):
+    /// when `Some`, each pre-sample logits vector is cloned here in decode order
+    /// (the prefill's first-token logits, then one per decode step) before
+    /// `sample` consumes it. `None` (default) captures nothing and costs nothing.
+    /// Exists because sampled-token equality is too coarse an oracle for
+    /// KV-state-dependent behavior — a sub-1e-3 logit perturbation (e.g. a
+    /// mis-positioned prefix) hides under both greedy argmax and seeded
+    /// multinomial, so a correctness test must compare logits, not tokens.
+    captured_logits: Option<Vec<Vec<f32>>>,
 }
 
 impl<'m, M: DecodeModel> PagedSessionScheduler<'m, M> {
@@ -1080,6 +1098,35 @@ impl<'m, M: DecodeModel> PagedSessionScheduler<'m, M> {
             .find(|s| s.id == id)
             .and_then(|s| s.decode_session.as_ref())
             .map(|ds| ds.realize_count())
+    }
+
+    /// Begin capturing session `id`'s per-step decode logits (see
+    /// [`PagedSession::captured_logits`]) — each pre-sample logits vector is
+    /// cloned in decode order until [`take_captured_logits`](Self::take_captured_logits).
+    /// Inspection/test observability; the discriminating oracle for
+    /// KV-state-dependent behavior (token equality is too coarse). No-op if `id`
+    /// is already capturing; `Err` for an unknown session.
+    pub fn capture_logits(&mut self, id: SessionId) -> fuel::Result<()> {
+        let s = self
+            .sessions
+            .iter_mut()
+            .find(|s| s.id == id)
+            .ok_or_else(|| Error::Msg(format!("capture_logits: unknown session {id:?}")).bt())?;
+        if s.captured_logits.is_none() {
+            s.captured_logits = Some(Vec::new());
+        }
+        Ok(())
+    }
+
+    /// Take (and stop) the logits captured for session `id` since
+    /// [`capture_logits`](Self::capture_logits) — the prefill's first-token logits
+    /// followed by one vector per decode step. `None` if `id` is unknown or was
+    /// never capturing.
+    pub fn take_captured_logits(&mut self, id: SessionId) -> Option<Vec<Vec<f32>>> {
+        self.sessions
+            .iter_mut()
+            .find(|s| s.id == id)
+            .and_then(|s| s.captured_logits.take())
     }
 
     /// Free pool blocks (C-1) — the consumer's optional conservative-admission
@@ -1202,6 +1249,141 @@ impl<'m, M: DecodeModel> PagedSessionScheduler<'m, M> {
             suspended: None,
             decode_session: None,
             max_blocks_cap,
+            prefill_start: 0,
+            captured_logits: None,
+        });
+        self.next_id += 1;
+        Ok(id)
+    }
+
+    /// Register the first `prefix_blocks` FULLY-FILLED blocks of a live session as
+    /// a shared [`PrefixId`] whose lifetime the pool's registry controls — the
+    /// reference wrapper over [`KvBlockPool::register_prefix`]. The donor may then
+    /// be reaped/discarded; the owner keeps those blocks resident so a later
+    /// [`add_session_sharing_prefix`](Self::add_session_sharing_prefix) can splice
+    /// them without racing the donor's teardown. `Err` for an unknown session, or
+    /// if the pool refuses (the donor lacks `prefix_blocks` fully-filled blocks) —
+    /// never a panic, and a refusal leaves the pool untouched.
+    pub fn register_prefix(
+        &mut self,
+        donor: SessionId,
+        prefix_blocks: usize,
+    ) -> fuel::Result<PrefixId> {
+        let handle = self
+            .sessions
+            .iter()
+            .find(|s| s.id == donor)
+            .map(|s| s.handle)
+            .ok_or_else(|| {
+                Error::Msg(format!(
+                    "PagedSessionScheduler::register_prefix: unknown session {donor:?}"
+                ))
+                .bt()
+            })?;
+        self.pool
+            .core_mut()
+            .register_prefix(handle, prefix_blocks)
+            .map_err(|e| {
+                Error::Msg(format!("PagedSessionScheduler::register_prefix: {e:?}")).bt()
+            })
+    }
+
+    /// Release a registered prefix ([`KvBlockPool::release_prefix`]): drop the
+    /// owner handle so each shared block's refcount falls by one, freeing only the
+    /// blocks no live sharer still references. Live sharers keep the prefix alive
+    /// independently. `Err` for an unregistered id.
+    pub fn release_prefix(&mut self, prefix: PrefixId) -> fuel::Result<()> {
+        self.pool
+            .core_mut()
+            .release_prefix(prefix)
+            .map_err(|e| {
+                Error::Msg(format!("PagedSessionScheduler::release_prefix: {e:?}")).bt()
+            })
+    }
+
+    /// Admit a session that REUSES a registered KV prefix (rung-1 prefix sharing) —
+    /// the reference caller of the transactional splice. Opens a fresh pool handle,
+    /// splices the shared prefix into it ([`KvBlockPool::splice_prefix_from`] —
+    /// refcount bump, zero recompute), and admits the session so its prefill feeds
+    /// ONLY the unique suffix `prompt[shared_tokens..]`; the donor-computed prefix
+    /// KV already occupies positions `0..shared_tokens`, and the first suffix token
+    /// derives its position from `filled_tokens == shared_tokens`. CoW is a
+    /// non-issue in rung-1: every shared block is fully filled, so the sharer's
+    /// first write lands on a FRESH block (guarded by `forward_paged_step`'s
+    /// `ensure_writable_block`).
+    ///
+    /// Rejects — leaving the pool untouched (the just-opened handle is rolled
+    /// back) — an empty prompt, a zero budget, a splice the pool refuses (e.g. an
+    /// unknown prefix), or a prompt that does not extend past the shared prefix
+    /// (`prompt.len() <= shared_tokens`): the suffix must be non-empty to produce
+    /// the logits that sample the first generated token.
+    pub fn add_session_sharing_prefix(
+        &mut self,
+        prefix: PrefixId,
+        prompt: &[u32],
+        strategy: SamplingStrategy,
+        eos_id: Option<u32>,
+        max_new: usize,
+    ) -> fuel::Result<SessionId> {
+        if prompt.is_empty() {
+            return Err(Error::Msg(
+                "PagedSessionScheduler::add_session_sharing_prefix: prompt is empty".into(),
+            )
+            .bt());
+        }
+        if max_new == 0 {
+            return Err(Error::Msg(
+                "PagedSessionScheduler::add_session_sharing_prefix: max_new must be > 0".into(),
+            )
+            .bt());
+        }
+        let handle = self.pool.core_mut().open();
+        // Splice BEFORE pushing the session; a refusal must leave no trace, so the
+        // just-opened (empty, block-less) handle is rolled back on any error.
+        let spliced = self.pool.core_mut().splice_prefix_from(prefix, handle);
+        let shared_tokens = match spliced {
+            Ok(n) => n,
+            Err(e) => {
+                self.pool.core_mut().discard(handle);
+                return Err(Error::Msg(format!(
+                    "PagedSessionScheduler::add_session_sharing_prefix: \
+                     splice_prefix_from failed: {e:?}"
+                ))
+                .bt());
+            }
+        };
+        if prompt.len() <= shared_tokens {
+            self.pool.core_mut().discard(handle);
+            return Err(Error::Msg(format!(
+                "PagedSessionScheduler::add_session_sharing_prefix: prompt length {} must \
+                 exceed the shared prefix ({shared_tokens} tokens) — the suffix must be non-empty",
+                prompt.len()
+            ))
+            .bt());
+        }
+        let id = SessionId(self.next_id);
+        let rng_state = match strategy {
+            SamplingStrategy::Temperature { seed, .. } => seed,
+            _ => 0,
+        };
+        let block_size = self.pool.geometry().block_size;
+        let max_blocks_cap = (prompt.len() + max_new).div_ceil(block_size).max(1);
+        self.sessions.push(PagedSession {
+            handle,
+            tokens: prompt.to_vec(),
+            new_tokens: Vec::new(),
+            rng_state,
+            strategy,
+            eos_id,
+            remaining: max_new,
+            phase: SessionPhase::Prefill,
+            last_logits: None,
+            id,
+            suspended: None,
+            decode_session: None,
+            max_blocks_cap,
+            prefill_start: shared_tokens,
+            captured_logits: None,
         });
         self.next_id += 1;
         Ok(id)
@@ -1272,9 +1454,15 @@ impl<'m, M: DecodeModel> PagedSessionScheduler<'m, M> {
             }
             let prompt = self.sessions[idx].tokens.clone();
             let handle = self.sessions[idx].handle;
+            // Skip any leading tokens already resident from a spliced prefix
+            // (`prefill_start == 0` for an ordinary session). The donor computed
+            // that prefix KV and it sits at the right absolute positions, so we
+            // feed ONLY `prompt[prefill_start..]`; the first suffix token derives
+            // its position from `filled_tokens == prefill_start`.
+            let start = self.sessions[idx].prefill_start.min(prompt.len());
             let mut last_logits: Option<Vec<f32>> = None;
             let mut failure: Option<String> = None;
-            for &tok in &prompt {
+            for &tok in &prompt[start..] {
                 match model.forward_paged_step(tok, &mut self.pool, handle) {
                     Ok(l) => last_logits = Some(l),
                     Err(e) => {
@@ -1396,6 +1584,11 @@ impl<'m, M: DecodeModel> PagedSessionScheduler<'m, M> {
             Some(l) => l,
             None => return,
         };
+        // Inspection hook: record the exact logits this step sampled from, before
+        // they are consumed (opt-in via `capture_logits`; `None` = no-op).
+        if let Some(buf) = s.captured_logits.as_mut() {
+            buf.push(logits.clone());
+        }
         let next = sample_logits(&logits, s.strategy, &mut s.rng_state);
         s.tokens.push(next);
         s.new_tokens.push(next);
@@ -1496,6 +1689,16 @@ mod tests {
             output: vec_of(cfg.dim*cfg.vocab_size).into(),
         }
     }
+    // CAUTION: this tiny random model's GREEDY output is a fixed point — its
+    // argmax collapses to one token and stays there regardless of KV context, so
+    // greedy-token equality asserts NOTHING about cache-dependent behavior (a
+    // model that ignored its KV entirely would pass identically). Seeded
+    // temperature sampling is barely better: a sub-1e-3 logit perturbation (e.g. a
+    // mis-positioned prefix) does not cross a multinomial boundary either. For any
+    // oracle that must distinguish correct KV state from corrupted, compare
+    // LOGITS, not sampled tokens (see `paged_scheduler_prefix_shared_matches_from_scratch`
+    // and the `capture_logits` hook). Token-equality tests here that DO have teeth
+    // get them from a structural guard (e.g. `session_realize_count`), not the tokens.
     fn tiny_model(seed: u32) -> LlamaModel {
         let cfg = tiny_cfg();
         LlamaModel { config: cfg.clone(), weights: tiny_weights(&cfg, seed) }
@@ -1786,6 +1989,107 @@ mod tests {
             .session_realize_count(id)
             .expect("default-configured session holds a decode plan after decoding");
         assert!(rc >= 1, "default path rebound the held decode plan per token (got {rc})");
+    }
+
+    /// TASK 4 — the SCHEDULER-level prefix-sharing correctness anchor (the twin
+    /// of Task 1's model-level `prefix_shared_session_decodes_like_from_scratch`).
+    /// A session admitted through the reference caller
+    /// [`PagedSessionScheduler::add_session_sharing_prefix`] — which splices a
+    /// registered [`PrefixId`] then prefills ONLY its unique suffix — computes,
+    /// step for step, the SAME logits as a from-scratch session that prefilled the
+    /// WHOLE prompt. This proves the suffix-only prefill lands the donor-computed
+    /// prefix KV at the correct absolute positions (rung-1: same positions), so
+    /// the sharer never recomputes the prefix yet decodes identically.
+    ///
+    /// The oracle is LOGITS, not sampled tokens, and that choice has teeth: a
+    /// mis-positioned prefill (re-feeding the whole prompt onto the spliced
+    /// prefix) perturbs the logits by only ~1.7e-3, which is BELOW the token
+    /// threshold — the sampled stream is byte-identical under both greedy argmax
+    /// (a sticky constant on `tiny_model`, see its note) and seeded temperature.
+    /// Only a per-step logit comparison catches it. (Mutation-verified: setting
+    /// `prefill_start = 0` makes `maxdiff` jump from 0 to ~1.7e-3 and this fails.)
+    #[test]
+    fn paged_scheduler_prefix_shared_matches_from_scratch() {
+        let model = tiny_model(9999);
+        // block_size 4: a 2-whole-block shared prefix, then a unique suffix.
+        let budget = KvBudget { block_size: 4, num_blocks: 64 };
+        let prefix = [1u32, 2, 3, 4, 5, 6, 7, 8]; // 2 full blocks at bs=4
+        let suffix = [9u32, 10, 11];
+        let full: Vec<u32> = prefix.iter().chain(suffix.iter()).copied().collect();
+        let max_new = 6;
+
+        // From scratch: the whole prompt through the normal admission path,
+        // capturing every step's pre-sample logits.
+        let mut scratch =
+            PagedSessionScheduler::new(&model, budget, DType::F32, &Device::cpu()).unwrap();
+        let scratch_id = scratch
+            .add_session(&full, SamplingStrategy::Greedy, None, max_new)
+            .unwrap();
+        scratch.capture_logits(scratch_id).unwrap();
+        let scratch_tokens = scratch
+            .run_to_completion()
+            .into_iter()
+            .find(|(id, _)| *id == scratch_id)
+            .unwrap()
+            .1;
+        let scratch_logits = scratch.take_captured_logits(scratch_id).unwrap();
+
+        // Shared: a throwaway donor computes the prefix ONCE, we register its two
+        // full blocks, reap the donor (the prefix owner keeps them alive), then a
+        // sharer splices the prefix and prefills only its unique suffix.
+        let mut sched =
+            PagedSessionScheduler::new(&model, budget, DType::F32, &Device::cpu()).unwrap();
+        // Donor prompt = the prefix, max_new = 1: one `step()` prefills the two
+        // full blocks (filled == 8, block-aligned) and finishes — it never feeds
+        // the sampled token back, so no partial third block is written.
+        let donor = sched.add_session(&prefix, SamplingStrategy::Greedy, None, 1).unwrap();
+        sched.step();
+        let pid = sched.register_prefix(donor, 2).unwrap();
+        sched.reap_finished(); // donor gone; owner still pins the 2 blocks
+
+        let shared_id = sched
+            .add_session_sharing_prefix(pid, &full, SamplingStrategy::Greedy, None, max_new)
+            .unwrap();
+        // The splice made the whole prefix resident before any prefill runs.
+        let sharer_handle = sched.sessions.last().unwrap().handle;
+        assert_eq!(
+            sched.pool.core().filled_tokens(sharer_handle),
+            Some(prefix.len()),
+            "splice_prefix_from made the shared prefix resident in the sharer",
+        );
+        sched.capture_logits(shared_id).unwrap();
+        let shared_tokens = sched
+            .run_to_completion()
+            .into_iter()
+            .find(|(id, _)| *id == shared_id)
+            .unwrap()
+            .1;
+        let shared_logits = sched.take_captured_logits(shared_id).unwrap();
+
+        // Product-level sanity: same token stream (both include the full prompt).
+        assert_eq!(
+            shared_tokens, scratch_tokens,
+            "prefix-shared token stream == from-scratch token stream",
+        );
+        // The discriminating oracle: byte-identical per-step logits. A wiring bug
+        // that re-fed or mis-positioned the prefix would diverge here (~1.7e-3)
+        // while leaving the token stream above untouched.
+        assert_eq!(
+            shared_logits.len(),
+            scratch_logits.len(),
+            "same number of sampled steps",
+        );
+        let mut maxdiff = 0.0f32;
+        for (a, b) in shared_logits.iter().zip(&scratch_logits) {
+            assert_eq!(a.len(), b.len(), "logit vectors are the same width");
+            for (x, y) in a.iter().zip(b) {
+                maxdiff = maxdiff.max((x - y).abs());
+            }
+        }
+        assert_eq!(
+            maxdiff, 0.0,
+            "prefix-shared per-step logits are byte-identical to from-scratch (maxdiff {maxdiff})",
+        );
     }
 
     /// Plan-once wiring (Task 5): opting a paged session into
