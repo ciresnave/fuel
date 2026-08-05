@@ -1,6 +1,28 @@
 # rung-2 — position-shifted prefix donation (RoPE delta-rotation) — Design
 
-**Status:** approved (brainstorm 2026-08-05). Successor to rung-1 prefix sharing ([[prefix-sharing-serving-shipped]], on main @ `1c640648`).
+**Status:** primitive SHIPPED (C1–C3, exact); mid-prompt CONSUMER PARKED (C4-exact/C5). Successor to rung-1 prefix sharing ([[prefix-sharing-serving-shipped]], on main @ `1c640648`).
+
+> ## ⚠ CORRECTION (2026-08-05, discovered during implementation) — "byte-exact" was WRONG for the mid-prompt case
+>
+> The delta-rotation fixes the RoPE **position** exactly, but exact mid-prompt KV
+> reuse is **impossible for multi-layer transformers**, and this design's
+> "byte-exact" premise (below) only holds at `n_layers == 1` (or `M == 0`, i.e.
+> rung-1). Reason: a prefix computed in isolation (the donor, with no preamble)
+> has layer-0 K/V that depend only on token + position — context-free — but its
+> layer-1+ K/V depend on the token's hidden state, which *should* have attended to
+> the preamble it now sits behind (positions `0..M`) and never did. So the reused
+> prefix's deep K/V are wrong by exactly the preamble's contribution. Measured on
+> the tiny 2-layer fixture: `n_layers=1` maxdiff **0.0** (byte-exact),
+> `n_layers=2` maxdiff **~2.1e-3** (nonzero, unbounded in principle). Recorded in
+> `fuel-core/tests/paged_decode_parity.rs::shifted_prefix_reuse_is_exact_at_depth_1_and_lossy_deeper`.
+>
+> **Outcome (user decision):** ship C1–C3 as the exact, position-correct
+> primitive (they're sound and committed); **park** the mid-prompt consumer —
+> C4's `maxdiff==0` anchor is unachievable and C5 would be an approximate feature
+> with no consumer today (Lightbulb serves the start-prefix case, which is rung-1).
+> The delta-rotation stays available for any future exact-context shift and is the
+> exact answer at `n_layers=1`. Everything below is the as-designed spec; read it
+> through this correction.
 
 ## Goal
 

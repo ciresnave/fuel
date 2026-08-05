@@ -440,3 +440,84 @@ fn prefix_shared_session_decodes_like_from_scratch() {
         assert_close(sl, &scratch[prefix.len() + k], &format!("prefix-shared-step-{k}"));
     }
 }
+
+/// CHARACTERIZATION — documents a FUNDAMENTAL limit of rung-2 mid-prompt reuse,
+/// not a bug. `splice_prefix_shifted`'s θ·M delta-rotation is POSITION-exact, but
+/// reusing a prefix at a non-zero offset is CONTEXT-approximate for multi-layer
+/// models: a prefix computed in isolation (donor, no preamble) has layer-0 K/V
+/// that depend only on token + position, so at `n_layers=1` the shifted reuse is
+/// byte-exact (maxdiff 0); at `n_layers>=2` the prefix's deeper K/V should have
+/// attended to the preamble it now sits behind but never did, so reuse diverges
+/// (nonzero — small on this fixture, unbounded in principle).
+///
+/// This is WHY the mid-prompt consumer is PARKED (see the design doc): exact
+/// mid-prompt KV reuse is impossible without recomputing the prefix. The
+/// primitive itself is exact — see `rope_delta_rotate_equals_direct_shift`
+/// (lazy.rs) and `splice_prefix_shifted_rotates_k_copies_v` (kv_block_pool_device.rs).
+/// This test is the honest record of the boundary; the `d1 == 0` arm also gives
+/// the end-to-end delta-rotation a teeth-bearing exactness check (a wrong rotation
+/// breaks it), and the `d2 > 0` arm forbids anyone quietly "fixing" the divergence
+/// by loosening a tolerance and calling mid-prompt reuse exact.
+#[test]
+fn shifted_prefix_reuse_is_exact_at_depth_1_and_lossy_deeper() {
+    let dev = Device::cpu();
+    let block_size = 4usize;
+    let preamble: [u32; 4] = [1, 2, 3, 4];
+    let shared: [u32; 8] = [5, 6, 7, 8, 9, 10, 11, 12];
+    let suffix: [u32; 3] = [13, 14, 15];
+    let decode: [u32; 3] = [16, 17, 18];
+    let m = preamble.len();
+    let n_prefix_blocks = shared.len() / block_size;
+    let full: Vec<u32> = preamble.iter().chain(&shared).chain(&suffix).copied().collect();
+
+    let run = |n_layers: usize| -> f32 {
+        let cfg = LlamaConfig {
+            vocab_size: 32, dim: 8, n_layers, n_heads: 2, n_kv_heads: 2,
+            head_dim: 4, ffn_dim: 16, norm_eps: 1e-5, rope_base: 10000.0,
+        };
+        let model = LlamaModel { config: cfg.clone(), weights: tiny_weights(&cfg, 9999) };
+        let geom = || KvGeometry {
+            n_layers: cfg.n_layers, num_blocks: 32, block_size,
+            n_kv_heads: cfg.n_kv_heads, head_dim: cfg.head_dim, elem_size: 4,
+        };
+        let scratch: Vec<Vec<f32>> = {
+            let mut pool = DeviceKvPool::new(geom(), DType::F32, &dev).unwrap();
+            let s = pool.core_mut().open();
+            full.iter().chain(decode.iter())
+                .map(|&t| model.forward_paged_step(t, &mut pool, s).unwrap())
+                .collect()
+        };
+        let mut pool = DeviceKvPool::new(geom(), DType::F32, &dev).unwrap();
+        let donor = pool.core_mut().open();
+        for &t in &shared { model.forward_paged_step(t, &mut pool, donor).unwrap(); }
+        let pid = pool.core_mut().register_prefix(donor, n_prefix_blocks).unwrap();
+        pool.core_mut().discard(donor);
+        let sharer = pool.core_mut().open();
+        for &t in &preamble { model.forward_paged_step(t, &mut pool, sharer).unwrap(); }
+        pool.splice_prefix_shifted(pid, sharer, cfg.rope_base).unwrap();
+        let base = m + shared.len();
+        let mut maxdiff = 0.0f32;
+        for (k, &t) in suffix.iter().chain(decode.iter()).enumerate() {
+            let sl = model.forward_paged_step(t, &mut pool, sharer).unwrap();
+            for (a, b) in sl.iter().zip(&scratch[base + k]) {
+                maxdiff = maxdiff.max((a - b).abs());
+            }
+        }
+        maxdiff
+    };
+
+    let d1 = run(1);
+    let d2 = run(2);
+    // Position-exact + context-free at depth 1: a wrong delta-rotation breaks this.
+    assert_eq!(
+        d1, 0.0,
+        "n_layers=1: shifted reuse is byte-exact (layer-0 K/V is context-free); maxdiff {d1}",
+    );
+    // Context loss is REAL at depth >= 2 — mid-prompt reuse is not exact. Guards
+    // against anyone re-labeling it exact by loosening a tolerance.
+    assert!(
+        d2 > 1e-6,
+        "n_layers>=2: mid-prompt reuse loses the preamble context — NOT exact; maxdiff {d2}",
+    );
+    assert!(d2 < 0.1, "context divergence is bounded on this fixture; maxdiff {d2}");
+}
