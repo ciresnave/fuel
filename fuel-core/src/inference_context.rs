@@ -1367,6 +1367,22 @@ impl PagedDecodeSession {
 pub struct InferenceContext {
     device: Device,
     persistent: HashMap<NodeId, Arc<RwLock<Storage>>>,
+    /// Held plan-once decode plan for [`crate::lazy::LlamaModel::forward_decode_step`]
+    /// — the carrier that lets a caller-driven decode loop get plan reuse
+    /// WITHOUT threading an `Option<DecodeSession>` of its own.
+    ///
+    /// This exists because the ergonomic call shape and the fast call shape had
+    /// drifted apart. `forward_with_kv_context(tokens, cache, ctx)` is the raw
+    /// rebuild primitive; its persistent sibling takes a fourth argument, so a
+    /// consumer hand-rolling a decode loop reaches the slow one and never learns
+    /// the fast one exists. Not hypothetical: that gap cost a measured consumer
+    /// 5,901 → 26.47 ms/token before anyone noticed (nsys, 2026-08-01).
+    ///
+    /// **One context per model.** Already this codebase's invariant — speculative
+    /// decoding builds a separate `InferenceContext` for the draft and the target
+    /// — and the held plan self-heals regardless: `DecodeSession::is_valid_for`
+    /// drops it on any cache-geometry or dtype change.
+    decode_session: Option<DecodeSession>,
 }
 
 impl InferenceContext {
@@ -1374,11 +1390,35 @@ impl InferenceContext {
         Self {
             device,
             persistent: HashMap::new(),
+            decode_session: None,
         }
     }
 
     pub fn device(&self) -> &Device {
         &self.device
+    }
+
+    /// Take the held decode plan out of the context, leaving `None`.
+    ///
+    /// Paired with [`Self::put_decode_session`]. The take/put dance exists for
+    /// the borrow checker: the persistent forward needs `&mut InferenceContext`
+    /// AND `&mut Option<DecodeSession>` at once, which it cannot have if the
+    /// session lives inside the context. Callers outside
+    /// `forward_decode_step` should not need either method.
+    pub fn take_decode_session(&mut self) -> Option<DecodeSession> {
+        self.decode_session.take()
+    }
+
+    /// Put a decode plan back into the context. See [`Self::take_decode_session`].
+    pub fn put_decode_session(&mut self, session: Option<DecodeSession>) {
+        self.decode_session = session;
+    }
+
+    /// Whether a decode plan is currently held. Observability hook — a caller
+    /// that has decoded at least one token through
+    /// [`crate::lazy::LlamaModel::forward_decode_step`] holds one.
+    pub fn has_decode_session(&self) -> bool {
+        self.decode_session.is_some()
     }
 
     /// Insert a long-lived storage at `node_id`. The Arc survives

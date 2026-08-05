@@ -8611,6 +8611,55 @@ impl LlamaModel {
         Ok(logits_vec)
     }
 
+    /// **Plan-reuse decode at the SAME call shape as
+    /// [`Self::forward_with_kv_context`]** — `(tokens, cache, ctx)`, no fourth
+    /// argument. The held plan rides in the `InferenceContext`, so a caller
+    /// hand-rolling a decode loop gets plan reuse without knowing that
+    /// `DecodeSession` exists.
+    ///
+    /// **Why this is a separate entry rather than a change to
+    /// `forward_with_kv_context`.** The ergonomic shape and the fast shape had
+    /// drifted apart: the persistent sibling needs `&mut Option<DecodeSession>`,
+    /// so the call a consumer naturally writes is the slow one. That drift is
+    /// not theoretical — it cost a measured consumer 5,901 → 26.47 ms/token
+    /// (nsys, 2026-08-01) and read to them as "Fuel ships a bad default" when
+    /// the real defect was that the fast path was unreachable at the shape they
+    /// were writing.
+    ///
+    /// `forward_with_kv_context` keeps its rebuild contract deliberately: it is
+    /// the primitive the persistent path itself falls back to (`seq != 1`,
+    /// invalidation, `TopologyChanged`), and dozens of tests exercise the
+    /// rebuild path *as* the thing under test. Silently making it persistent
+    /// would change what those tests mean. So the fix is to make the fast path
+    /// reachable, not to redefine the primitive.
+    ///
+    /// Semantics are exactly [`Self::forward_with_kv_context_persistent`]'s —
+    /// this only owns the session for you. `seq != 1` (prefill, spec-decode
+    /// verification) falls back to the rebuild path without building a plan;
+    /// the first `seq == 1` token builds it; later tokens rebind and skip
+    /// optimize. Output is byte-identical to `forward_with_kv_context` either
+    /// way. The plan self-heals on a cache resize / dtype change
+    /// ([`DecodeSession::is_valid_for`]).
+    ///
+    /// **One `InferenceContext` per model** — already the invariant here
+    /// (speculative decoding builds a separate context for draft and target).
+    pub fn forward_decode_step(
+        &self,
+        tokens: &[u32],
+        cache: &mut KvCache,
+        ctx: &mut InferenceContext,
+    ) -> crate::Result<Vec<f32>> {
+        // Take/put rather than borrow: the persistent forward needs `&mut ctx`
+        // and `&mut Option<DecodeSession>` simultaneously. The result is bound
+        // BEFORE the put so the session returns to the context on the error
+        // path too — dropping it on error would silently downgrade every
+        // subsequent token to re-planning.
+        let mut session = ctx.take_decode_session();
+        let out = self.forward_with_kv_context_persistent(tokens, cache, ctx, &mut session);
+        ctx.put_decode_session(session);
+        out
+    }
+
     /// Phase D · D2b — plan-once persistent decode. Sibling of
     /// [`Self::forward_with_kv_context`] that HOLDS the optimized
     /// decode-step graph in `session` and, on every token after the
@@ -14489,6 +14538,98 @@ mod generate_tests {
         }
     }
 
+    /// **A hand-rolled decode loop gets plan reuse at the ergonomic call
+    /// shape.** `forward_decode_step(tokens, cache, ctx)` takes the same three
+    /// arguments as the raw `forward_with_kv_context`, so the call a consumer
+    /// naturally writes is now the fast one. This closes the gap that cost a
+    /// measured consumer 5,901 → 26.47 ms/token: not a bad default, but a fast
+    /// path that was unreachable without knowing `DecodeSession` existed.
+    ///
+    /// Same slope instrument as
+    /// [`contiguous_generate_reuses_decode_plan_by_default`]: the optimize-call
+    /// delta must NOT GROW WITH TOKEN COUNT. Two loops differing only in length
+    /// (2 vs 10 decode tokens) must show the same delta.
+    ///
+    /// **The second arm is the point.** It drives the identical loop through
+    /// `forward_with_kv_context` — the raw primitive, same three arguments —
+    /// and asserts the slope IS present there. Without it, arm one alone could
+    /// pass on a `forward_decode_step` that silently did nothing useful, and
+    /// the test would be asserting a property of the *instrument* rather than
+    /// of the new entry. With both arms, the test states the actual claim: at
+    /// one call shape the slope is absent, at the other it is present, and the
+    /// difference is exactly the held plan.
+    #[test]
+    fn forward_decode_step_reuses_plan_at_the_raw_call_shape() {
+        use crate::pipelined_bridge::optimize_calls_thread_local;
+
+        let cfg = LlamaConfig {
+            vocab_size: 32, dim: 16, n_layers: 2, n_heads: 4, n_kv_heads: 4,
+            head_dim: 4, ffn_dim: 32, norm_eps: 1e-5, rope_base: 10000.0,
+        };
+        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
+        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let dev = crate::Device::cpu();
+        let prompt: [u32; 3] = [1, 2, 3];
+        const MSL: usize = 32;
+
+        // `persistent = false` drives the raw primitive at the same call shape.
+        let optimize_calls_for = |n_decode: usize, persistent: bool| -> usize {
+            let mut cache = crate::inference_context::KvCache::with_capacity(
+                cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, MSL, DType::F32, &dev,
+            )
+            .expect("kv cache");
+            let mut ctx = InferenceContext::new(dev.clone());
+            let before = optimize_calls_thread_local();
+            // Prefill (seq != 1 — builds no plan on either path).
+            model.forward_decode_step(&prompt, &mut cache, &mut ctx).expect("prefill");
+            for t in 0..n_decode {
+                let tok = [(t as u32 % 7) + 1];
+                if persistent {
+                    model.forward_decode_step(&tok, &mut cache, &mut ctx).expect("decode")
+                } else {
+                    model.forward_with_kv_context(&tok, &mut cache, &mut ctx).expect("decode")
+                };
+            }
+            optimize_calls_thread_local() - before
+        };
+
+        // --- Arm 1: forward_decode_step — NO slope. ---
+        let short = optimize_calls_for(2, true);
+        let long = optimize_calls_for(10, true);
+        assert_eq!(
+            long, short,
+            "forward_decode_step must reuse ONE decode plan across tokens: delta grew {} \
+             between 2 decode tokens ({short}) and 10 ({long})",
+            long as i64 - short as i64,
+        );
+
+        // --- Arm 2 (POSITIVE CONTROL): the raw primitive — slope PRESENT. ---
+        // Proves the instrument can see the difference it claims to measure.
+        let raw_short = optimize_calls_for(2, false);
+        let raw_long = optimize_calls_for(10, false);
+        assert_eq!(
+            raw_long - raw_short,
+            8,
+            "the raw forward_with_kv_context must re-plan per token — expected the \
+             optimize-call delta to grow by exactly the 8-token difference, got {} \
+             (2 tokens: {raw_short}, 10 tokens: {raw_long}). If this is 0, the \
+             instrument is blind and arm 1 above proves nothing.",
+            raw_long as i64 - raw_short as i64,
+        );
+
+        // And the plan is actually HELD on the context, not merely fast.
+        let mut cache = crate::inference_context::KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, MSL, DType::F32, &dev,
+        )
+        .expect("kv cache");
+        let mut ctx = InferenceContext::new(dev.clone());
+        assert!(!ctx.has_decode_session(), "fresh context holds no plan");
+        model.forward_decode_step(&prompt, &mut cache, &mut ctx).expect("prefill");
+        assert!(!ctx.has_decode_session(), "prefill (seq != 1) builds no plan");
+        model.forward_decode_step(&[4], &mut cache, &mut ctx).expect("first decode token");
+        assert!(ctx.has_decode_session(), "the first decode token builds and HOLDS the plan");
+    }
+
     /// **Staleness invalidates the SESSION AND THE CAPTURE TOGETHER** — the
     /// check `forward_with_kv_context_captured` shipped without, and the reason
     /// it matters more there than on the plain persistent path.
@@ -14633,6 +14774,155 @@ mod generate_tests {
              — that slope is one re-plan per token, i.e. the held DecodeSession is gone",
             long as i64 - short as i64,
         );
+    }
+
+    /// **§6.1 of `docs/design/paged-attention-agnostic-seam.md` — WHERE does
+    /// paged decode actually run?** This is the discriminating instrument the
+    /// paged-attention design is blocked on, and it exists because reasoning has
+    /// repeatedly failed here: three sessions have asserted the placement of
+    /// `Op::PagedAttn` from non-discriminating evidence and landed on two
+    /// opposite answers. Grep cannot settle it and neither can arithmetic.
+    ///
+    /// **The question.** `PagedAttn` has no CUDA and no Vulkan implementation
+    /// (positive-controlled: the same query finds FlashAttn in 3 cuda-backend
+    /// files, FusedLinear in 2). Under a CUDA-pinned decode the optimizer
+    /// therefore has two legal moves, and Lightbulb's measured 186× host-ward
+    /// DtoH is consistent with BOTH:
+    ///
+    /// - **(A) keep the fused node and place it on host** — the KV caches round
+    ///   trip every token, and the fix is a kernel;
+    /// - **(B) lower to the primitive recipe and run it on CUDA** — the
+    ///   round-trip is `DeviceKvPool` plumbing, a kernel would not have fixed
+    ///   it, and the work belongs somewhere else entirely.
+    ///
+    /// Those imply completely different programs, which is why no kernel is
+    /// being requested from Baracuda until this reports.
+    ///
+    /// **How it discriminates.** It reads the REAL held decode plan
+    /// (`PagedDecodeSession::optimized()`) from a CUDA `forward_paged_step_
+    /// persistent`, and dumps `placement_of` for every node, bucketed by op. The
+    /// two hypotheses produce structurally different dumps and cannot be
+    /// confused:
+    ///
+    /// - **(A)** a surviving `Op::Fused(PAGED_ATTN, _)` node, placed `Cpu`,
+    ///   inside an otherwise-CUDA graph;
+    /// - **(B)** NO `PAGED_ATTN` node at all (it was decomposed), and
+    ///   `IndexSelect`/`MatMul`/`MaskedFill` recipe nodes placed `Cuda`.
+    ///
+    /// It asserts neither outcome — **it reports.** Pre-committing to an answer
+    /// is the exact error being corrected. What it DOES assert is that the
+    /// instrument worked: `has_placements()` must be true, because a skipped
+    /// residency pass makes every `placement_of` return `None`, and a dump of
+    /// all-`None` would read as "nothing is placed on CUDA" — a wrong answer
+    /// that looks like a null one, and precisely the failure
+    /// `OptimizedGraph::has_placements` exists to expose.
+    ///
+    /// Live-GPU: `#[ignore]`d, and run through `scripts/gpu-run.ps1`.
+    #[test]
+    #[ignore = "live GPU (CUDA); run via scripts/gpu-run.ps1"]
+    #[cfg(feature = "cuda")]
+    fn paged_decode_node_placement_report_cuda() {
+        use crate::inference_context::PagedDecodePlan;
+        use std::collections::BTreeMap;
+
+        let cfg = LlamaConfig {
+            vocab_size: 32, dim: 16, n_layers: 2, n_heads: 4, n_kv_heads: 4,
+            head_dim: 4, ffn_dim: 32, norm_eps: 1e-5, rope_base: 10000.0,
+        };
+        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
+        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        // `Device::new_cuda` was retired; `cuda_backend::new_device` carries its
+        // ergonomics (see that module's header).
+        let dev = match crate::cuda_backend::new_device(0) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("no CUDA device; skipping placement report: {e:?}");
+                return;
+            }
+        };
+
+        let geom = crate::kv_block_pool::KvGeometry {
+            n_layers: cfg.n_layers, num_blocks: 32, block_size: 4,
+            n_kv_heads: cfg.n_kv_heads, head_dim: cfg.head_dim, elem_size: 4,
+        };
+        let mut pool = crate::kv_block_pool_device::DeviceKvPool::new(geom, DType::F32, &dev)
+            .expect("CUDA DeviceKvPool");
+        let s = pool.core_mut().open();
+        for &t in &[1u32, 2, 3, 4, 5, 6, 7] {
+            model.forward_paged_step(t, &mut pool, s).expect("prime");
+        }
+
+        // Build the held plan on CUDA — this is the real production decode plan.
+        let mut ds: Option<crate::inference_context::PagedDecodeSession> = None;
+        model
+            .forward_paged_step_persistent(8, &mut pool, s, 8, PagedDecodePlan::PlanOnce, &mut ds)
+            .expect("CUDA persistent decode token");
+        let ds = ds.expect("plan-once built a held session");
+
+        let opt = ds.optimized();
+        // INSTRUMENT CHECK, before reading anything out of it. Without this, a
+        // skipped residency pass yields all-`None` and the report below would
+        // silently claim "no node is on CUDA".
+        assert!(
+            opt.has_placements(),
+            "placement was NOT COMPUTED — every placement_of would be None and the \
+             report below would be an artifact of the missing instrument, not an \
+             observation. Fix the harness before reading any conclusion from it.",
+        );
+
+        let g = ds.graph().read().expect("graph lock");
+        let mut by_op: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+        let mut paged_attn_placements: Vec<String> = Vec::new();
+
+        for i in 0..g.len() {
+            let id = fuel_graph::NodeId(i);
+            let node = g.node(id);
+            let is_paged = matches!(
+                node.op,
+                fuel_graph::Op::Fused(fid, _) if fid == fuel_graph::registry::FusedOps::PAGED_ATTN
+            );
+            let op_name = match &node.op {
+                fuel_graph::Op::Fused(fid, _) => format!("Fused({fid:?})"),
+                other => format!("{other:?}").split(' ').next().unwrap_or("?").to_string(),
+            };
+            let place = match opt.placement_of(id) {
+                Some(d) => format!("{d:?}"),
+                None => "None".to_string(),
+            };
+            if is_paged {
+                paged_attn_placements.push(place.clone());
+            }
+            *by_op.entry(op_name).or_default().entry(place).or_insert(0) += 1;
+        }
+
+        println!("\n=== paged decode plan: node placement by op (CUDA-pinned) ===");
+        println!("total nodes: {}", g.len());
+        for (op, places) in &by_op {
+            let rendered: Vec<String> =
+                places.iter().map(|(d, n)| format!("{d}×{n}")).collect();
+            println!("  {op:<40} {}", rendered.join("  "));
+        }
+
+        println!("\n--- VERDICT ---");
+        if paged_attn_placements.is_empty() {
+            println!(
+                "HYPOTHESIS (B): no Op::Fused(PAGED_ATTN) node survives in the held plan \
+                 — it was DECOMPOSED to the primitive recipe. Read the IndexSelect / \
+                 MatMul / MaskedFill rows above for where those primitives landed. If \
+                 they are Cuda, the 186x DtoH is NOT this op's placement and a paged \
+                 kernel would not have fixed it."
+            );
+        } else {
+            println!(
+                "HYPOTHESIS (A): {} Op::Fused(PAGED_ATTN) node(s) SURVIVE in the held \
+                 plan, placed {:?}. If that is Cpu inside an otherwise-Cuda graph, the \
+                 fused paged attention op is executing on the host and the KV caches \
+                 round-trip every token.",
+                paged_attn_placements.len(),
+                paged_attn_placements,
+            );
+        }
+        println!("--- END VERDICT ---\n");
     }
 
     /// Task 3 (paged plan-once) — the second decode token REUSES the built
