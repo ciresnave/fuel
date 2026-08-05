@@ -1839,22 +1839,32 @@ mod tests {
         // rung-2 primitive: a K block rotated at its ORIGINAL positions then
         // uniformly delta-rotated by M is byte-equal to the same raw K rotated
         // DIRECTLY at the shifted positions. This is the exactness that lets a
-        // cached prefix be reused at a non-zero offset.
+        // cached prefix be reused at a non-zero offset. Everything is in the POOL
+        // block layout [block_size, n_kv_heads, head_dim] that `read_block` yields.
         let dev = Device::cpu();
         let (n_kv_heads, head_dim, bs) = (2usize, 4usize, 4usize);
         let theta = 10000.0;
         let (p0, m) = (0usize, 8usize); // block at positions 0..4, shift by 8 → 8..12
-        let raw: Vec<f32> = (0..n_kv_heads * bs * head_dim)
+        let raw: Vec<f32> = (0..bs * n_kv_heads * head_dim)
             .map(|i| (i as f32 * 0.017).sin())
             .collect();
-        let shape = Shape::from_dims(&[1, n_kv_heads, bs, head_dim]);
-        let k = LazyTensor::from_f32(raw.clone(), shape.clone(), &dev);
-        // Direct: rope at positions (p0+m)..(p0+m+bs).
-        let (c_dir, s_dir) = k.rope_tables_const(theta, p0 + m, bs, head_dim);
-        let direct = k.rope_with_tables_decomposed(&c_dir, &s_dir).unwrap().realize_f32();
-        // Delta path: rope at p0, then a uniform θ·m delta.
-        let (c0, s0) = k.rope_tables_const(theta, p0, bs, head_dim);
-        let at_p0 = k.rope_with_tables_decomposed(&c0, &s0).unwrap().realize_f32();
+        // Reference: rope a pool-layout [bs,Hkv,D] block DIRECTLY at `start_pos`
+        // (heads forward → rope → back), mirroring the helper's permute so the two
+        // paths are compared in the same layout.
+        let rope_pool_at = |data: &[f32], start_pos: usize| -> Vec<f32> {
+            let k = LazyTensor::from_f32(
+                data.to_vec(), Shape::from_dims(&[bs, n_kv_heads, head_dim]), &dev,
+            );
+            let k4 = k.permute([1, 0, 2]).unwrap()
+                .reshape(Shape::from_dims(&[1, n_kv_heads, bs, head_dim])).unwrap();
+            let (c, s) = k4.rope_tables_const(theta, start_pos, bs, head_dim);
+            k4.rope_with_tables_decomposed(&c, &s).unwrap()
+                .reshape(Shape::from_dims(&[n_kv_heads, bs, head_dim])).unwrap()
+                .permute([1, 0, 2]).unwrap()
+                .realize_f32()
+        };
+        let direct = rope_pool_at(&raw, p0 + m); // rope directly at shifted positions
+        let at_p0 = rope_pool_at(&raw, p0); // cached, rotated at original positions
         let shifted = LazyTensor::rope_delta_rotate_block_f32(
             &dev, &at_p0, theta, m, bs, n_kv_heads, head_dim,
         );
@@ -5431,13 +5441,19 @@ impl LazyTensor {
     }
 
     /// Uniformly delta-rotate one cached (post-RoPE) K block by θ·`delta`,
-    /// returning the shifted block (same length/layout). Reuses the model's exact
-    /// `rope_with_tables_decomposed` (rotate-half) rather than a hand-rolled
+    /// returning the shifted block in the SAME pool layout. Reuses the model's
+    /// exact `rope_with_tables_decomposed` (rotate-half) rather than a hand-rolled
     /// rotation, so it inherits the model's RoPE convention + scaling and stays
     /// byte-exact with a direct rope-at-shifted-position. A single uniform
     /// rotation is correct for the whole block even though it holds `block_size`
     /// distinct original positions — the delta is the same for every position.
-    /// The rung-2 numeric core, realized on `dev`.
+    ///
+    /// `k_block` is the pool block layout, row-major `[block_size, n_kv_heads,
+    /// head_dim]` (positions-major, as `DeviceKvPool::read_block` returns). RoPE
+    /// wants `(position, dim)` as the last two axes, so heads are brought forward
+    /// to the `project_qkv_roped` layout `[1, n_kv_heads, block_size, head_dim]`,
+    /// rotated, and returned to `[block_size, n_kv_heads, head_dim]`. The rung-2
+    /// numeric core, realized on `dev`.
     pub fn rope_delta_rotate_block_f32(
         dev: &crate::Device,
         k_block: &[f32],
@@ -5447,11 +5463,20 @@ impl LazyTensor {
         n_kv_heads: usize,
         head_dim: usize,
     ) -> Vec<f32> {
-        let shape = Shape::from_dims(&[1, n_kv_heads, block_size, head_dim]);
-        let k = LazyTensor::from_f32(k_block.to_vec(), shape, dev);
-        let (cos, sin) = k.rope_delta_tables_const(theta, delta, block_size, head_dim);
-        k.rope_with_tables_decomposed(&cos, &sin)
+        let pool_shape = Shape::from_dims(&[block_size, n_kv_heads, head_dim]);
+        let k = LazyTensor::from_f32(k_block.to_vec(), pool_shape, dev);
+        let k4 = k
+            .permute([1, 0, 2])
+            .expect("rope_delta_rotate_block_f32: permute [bs,Hkv,D]->[Hkv,bs,D]")
+            .reshape(Shape::from_dims(&[1, n_kv_heads, block_size, head_dim]))
+            .expect("rope_delta_rotate_block_f32: reshape to [1,Hkv,bs,D]");
+        let (cos, sin) = k4.rope_delta_tables_const(theta, delta, block_size, head_dim);
+        k4.rope_with_tables_decomposed(&cos, &sin)
             .expect("rope_delta_rotate_block_f32: rope_with_tables_decomposed")
+            .reshape(Shape::from_dims(&[n_kv_heads, block_size, head_dim]))
+            .expect("rope_delta_rotate_block_f32: reshape back to [Hkv,bs,D]")
+            .permute([1, 0, 2])
+            .expect("rope_delta_rotate_block_f32: permute [Hkv,bs,D]->[bs,Hkv,D]")
             .realize_f32()
     }
 
