@@ -38,23 +38,68 @@
 //! no error message; that is why the tests here assert **both** halves — that a
 //! differing key invalidates, *and* that a matching one does not.
 //!
-//! ## Why identity, not content
+//! ## Why a counter, and not weight pointers
 //!
-//! Weights are mixed in by `Arc` **pointer**, not by hashing their bytes. Two
-//! consequences worth stating rather than discovering:
+//! Model identity is a [`ModelInstanceId`] — a value from a process-global
+//! monotonic counter, minted once per constructed model. It is **never
+//! recycled**, so two distinct models cannot share one, ever, under any
+//! ownership arrangement.
 //!
-//! - A model reloaded from disk into fresh allocations gets a new key and
-//!   rebuilds its plan. Safe, mildly wasteful, and correct-by-default.
-//! - Mutating a weight buffer in place under a live session does **not**
-//!   invalidate it. Decode does not do that; training would, and a training
-//!   consumer must not reuse a decode session across an optimizer step.
+//! The obvious cheaper thing is to fold the weights' `Arc` addresses, and this
+//! module did that for exactly one commit. It is **unsound**, and the way it
+//! was unsound is the reason the counter is worth its cost:
 //!
-//! The ABA hazard that normally makes pointer identity unsound does not apply:
-//! a session holds `Arc` clones of the storages it baked, so those allocations
-//! cannot be freed and re-issued to a different live model while its key is in
-//! use. Two distinct live models cannot share a weight address.
+//! > Pointer identity is safe only while something pins the allocation. A
+//! > `DecodeSession` holds `StorageCache = HashMap<NodeId, Arc<RwLock<Storage>>>`
+//! > — it pins the *Storage* it baked, **not** the model's `Arc<[f32]>` weight
+//! > buffers, which are different allocations (and on GPU the host buffer is not
+//! > retained at all). So: hold a session for model A, drop A, construct B — the
+//! > allocator may hand back A's addresses, B's key equals A's, and the stale
+//! > plan baked with **A's** weight `Const`s is judged valid for B.
+//!
+//! That is reachable, not exotic: a driver serving many models with cached
+//! sessions is precisely where a session outlives its model.
+//!
+//! The lesson generalizes past this bug. The pointer scheme was justified by a
+//! *proof about lifetimes*, and the proof was true of the design it was written
+//! for (folding `base_cache`'s own Arcs) and silently stopped being true when
+//! the input moved to model-owned weights — a change made for unrelated and
+//! good reasons. **A counter that is never reused needs no proof**, so it cannot
+//! be invalidated by a refactor somewhere else. Prefer that to a correct
+//! argument whose premises live in another file.
+//!
+//! One consequence worth stating rather than discovering: a model reloaded from
+//! disk gets a fresh id and rebuilds its plan. Safe, mildly wasteful, and
+//! correct by default. Mutating a weight buffer in place under a live session
+//! does **not** invalidate it — decode does not do that; a training consumer
+//! must not reuse a decode session across an optimizer step.
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// A process-unique, never-recycled identity for one constructed model.
+///
+/// Mint one per model (lazily is fine) and mix it into that model's decode
+/// key. Because ids are monotonic and never reused, two distinct models cannot
+/// collide regardless of allocation, drop order, or who outlives whom — see the
+/// module docs for the pointer-identity scheme this replaced and why it failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ModelInstanceId(u64);
+
+/// Starts at 1 so a `Default`/zero-initialized field can never be mistaken for
+/// a real id.
+static NEXT_MODEL_INSTANCE: AtomicU64 = AtomicU64::new(1);
+
+impl ModelInstanceId {
+    /// Mint the next id. Monotonic and never recycled; `u64` exhaustion would
+    /// need 2^64 model constructions in one process.
+    pub fn next() -> Self {
+        ModelInstanceId(NEXT_MODEL_INSTANCE.fetch_add(1, Ordering::Relaxed))
+    }
+
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
 
 /// FNV-1a 64 over a canonical encoding of a model's decode identity.
 ///
@@ -102,29 +147,35 @@ impl ShapeKeyHasher {
     }
 
     /// Mix a float structural parameter (`rms_norm_eps`). By bit pattern, so
-    /// `NaN` and `-0.0` are handled without a comparison.
+    /// `NaN` and `-0.0` need no comparison.
+    ///
+    /// Note this gives `+0.0` and `-0.0` different keys. That is deliberate and
+    /// conservative — the cost is a redundant plan rebuild in a case that does
+    /// not arise, and the alternative (normalizing) is a comparison that has to
+    /// stay correct forever. Do not "fix" it.
     pub fn mix_f64(&mut self, v: f64) -> &mut Self {
         self.mix_bytes(&v.to_bits().to_le_bytes());
         self
     }
 
-    /// Mix a weight buffer's **identity** (its allocation address), which is
-    /// what distinguishes two models of the same architecture. See the module
-    /// docs on why identity rather than content, and why ABA does not apply.
-    pub fn mix_weight<T: ?Sized>(&mut self, w: &Arc<T>) -> &mut Self {
-        self.mix_u64(Arc::as_ptr(w) as *const u8 as usize as u64)
+    /// Mix the model's identity — the component that separates two models of
+    /// the *same* architecture, whose baked weight `Const`s differ.
+    ///
+    /// There is deliberately **no** `mix_weight(&Arc<T>)` here. Folding weight
+    /// addresses is the obvious cheaper implementation and it is unsound: a
+    /// session does not pin the model's weight allocations, so a dropped model
+    /// frees addresses a later model can be handed. The module docs carry the
+    /// full sequence. A method that looks like identity and silently isn't is
+    /// worse than no method, so it is absent rather than deprecated.
+    pub fn mix_instance(&mut self, id: ModelInstanceId) -> &mut Self {
+        self.mix_str("instance").mix_u64(id.get())
     }
 
-    /// Mix an optional weight, distinguishing "absent" from "present" so a model
-    /// with a hook disabled cannot key the same as one with it enabled.
-    pub fn mix_opt_weight<T: ?Sized>(&mut self, w: Option<&Arc<T>>) -> &mut Self {
-        match w {
-            Some(a) => {
-                self.mix_str("some");
-                self.mix_weight(a)
-            }
-            None => self.mix_str("none"),
-        }
+    /// Mix whether an optional hook is present, so a model with it disabled
+    /// cannot key the same as one with it enabled. The obvious implementation —
+    /// skipping the mix when absent — has exactly that bug.
+    pub fn mix_present(&mut self, present: bool) -> &mut Self {
+        self.mix_str(if present { "some" } else { "none" })
     }
 
     pub fn finish(&self) -> u64 {
@@ -178,34 +229,51 @@ mod tests {
         assert_ne!(a.finish(), b.finish());
     }
 
+    /// Two models of the same architecture must key differently — this is the
+    /// half that needs no new model family to be wrong, since it fires on two
+    /// same-config models with different weights.
     #[test]
-    fn weight_identity_discriminates_same_shaped_models() {
-        let w1: Arc<[f32]> = Arc::from(vec![1.0_f32, 2.0, 3.0]);
-        let w2: Arc<[f32]> = Arc::from(vec![1.0_f32, 2.0, 3.0]); // equal CONTENT
-        let key = |w: &Arc<[f32]>| {
+    fn distinct_model_instances_key_differently() {
+        let a = ModelInstanceId::next();
+        let b = ModelInstanceId::next();
+        assert_ne!(a, b, "ids must never repeat");
+        let key = |id| {
             let mut h = ShapeKeyHasher::new();
-            h.mix_str("llama").mix_weight(w);
+            h.mix_str("llama").mix_instance(id);
             h.finish()
         };
-        assert_ne!(
-            key(&w1),
-            key(&w2),
-            "two models with identical config and identical weight VALUES still \
-             bake different Consts — the key must separate them",
+        assert_ne!(key(a), key(b));
+
+        // …and the SAME instance must key identically. This is the half that
+        // guards plan reuse: "always stale" satisfies every correctness test
+        // ever written while silently forfeiting the 223x persistent-decode win.
+        assert_eq!(key(a), key(a));
+    }
+
+    /// The property the pointer scheme could not offer: ids are never recycled,
+    /// so a model constructed after another is dropped cannot inherit its key.
+    /// No lifetime reasoning, and nothing for a later refactor to invalidate.
+    #[test]
+    fn ids_are_not_recycled_across_drops() {
+        let first = {
+            let id = ModelInstanceId::next();
+            let k = id.get();
+            drop(id);
+            k
+        };
+        let second = ModelInstanceId::next().get();
+        assert!(
+            second > first,
+            "id {second} did not advance past the dropped {first} — a recycled id              would let a stale plan be judged valid for a different model",
         );
-        // …and a clone of the same Arc is the same model, so it must NOT
-        // invalidate. Over-keying here would forfeit plan reuse entirely while
-        // every correctness test stayed green.
-        assert_eq!(key(&w1), key(&Arc::clone(&w1)));
     }
 
     #[test]
     fn absent_and_present_hooks_differ() {
-        let g: Arc<[f32]> = Arc::from(vec![1.0_f32]);
         let mut with = ShapeKeyHasher::new();
-        with.mix_opt_weight(Some(&g));
+        with.mix_present(true);
         let mut without = ShapeKeyHasher::new();
-        without.mix_opt_weight(None::<&Arc<[f32]>>);
+        without.mix_present(false);
         assert_ne!(
             with.finish(),
             without.finish(),
