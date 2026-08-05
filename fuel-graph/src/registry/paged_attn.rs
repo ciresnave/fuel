@@ -331,43 +331,25 @@ fn fused_softmax_attr() -> OpAttrs {
 /// Per G2 this is total + never-panic: a wrong-params payload or a malformed node
 /// (wrong input arity, wrong ranks) returns `id` (the driver's fixpoint signal),
 /// and any bridge decline (validation, bind-arity, emit) returns `id` too.
+/// **`decompose` IS `recipe_for` + emit.** There is exactly one place that reads
+/// a node and decides what its recipe is ([`recipe_for`]); this adds the only
+/// thing lowering does on top — emitting that recipe into the graph.
+///
+/// It was briefly two functions with duplicated validation, guarded by a test
+/// asserting they didn't drift. That test was evidence of the defect, not a fix
+/// for it: a drift test is *vigilance*, and the seam is to not have two copies.
+/// Recipe-as-data is the primary artifact; lowering is one consumer of it, and
+/// the JIT seam (`JitRequest::region`) is another.
+///
+/// Per G2 this stays total + never-panic: anything [`recipe_for`] declines
+/// (wrong params, malformed node) returns `id` — the driver's fixpoint signal —
+/// as does any bridge decline inside [`decompose_via_recipe`].
 pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeId {
-    let (scale, block_size, softcap) = match params {
-        FusedOpParams::PagedAttn { softmax_scale, block_size, softcap } => {
-            (*softmax_scale, *block_size, *softcap)
-        }
-        // Wrong params for this id — can't decompose; return self (fixpoint).
-        _ => return id,
-    };
-    let (q_shape, kc_shape, bt_shape, n_inputs) = {
-        let n = graph.node(id);
-        // A well-formed PagedAttn node has exactly 5 or 6 inputs. Malformed →
-        // fixpoint self-return (never panic).
-        if n.inputs.len() != 5 && n.inputs.len() != 6 {
-            return id;
-        }
-        (
-            graph.node(n.inputs[0]).shape.clone(), // q
-            graph.node(n.inputs[1]).shape.clone(), // k_cache
-            graph.node(n.inputs[3]).shape.clone(), // block_table
-            n.inputs.len(),
-        )
-    };
-    let q_dims = q_shape.dims();
-    let kc_dims = kc_shape.dims();
-    let bt_dims = bt_shape.dims();
-    // Defensive shape guards — malformed → fixpoint self-return.
-    if q_dims.len() != 4 || kc_dims.len() != 4 || bt_dims.len() != 2 {
-        return id;
+    match recipe_for(graph, id, params) {
+        // No open scalar slots (scale / softcap / -inf are baked constants).
+        Some(recipe_node) => decompose_via_recipe(graph, id, &recipe_node, Some(Vec::new())),
+        None => id,
     }
-    let (b, hq, sq, d) = (q_dims[0], q_dims[1], q_dims[2], q_dims[3]);
-    let hkv = kc_dims[2]; // k_cache [num_blocks, block_size, Hkv, D]
-    let max_blk = bt_dims[1]; // block_table [B, max_blk]
-    let has_alibi = n_inputs == 6;
-
-    let recipe_node = recipe(b, hq, sq, d, hkv, max_blk, block_size, scale, softcap, has_alibi);
-    // No open scalar slots (scale / softcap / -inf are baked constants).
-    decompose_via_recipe(graph, id, &recipe_node, Some(Vec::new()))
 }
 
 /// Matcher stub — PagedAttn originates from explicit builders, not
@@ -679,45 +661,50 @@ mod tests {
         assert_eq!(g.len(), before, "declined before any emission");
     }
 
-    /// **`recipe_for` hands back the SAME region `decompose` lowers — as data,
-    /// without touching the graph.** That equivalence is the whole point: the
-    /// JIT seam's `JitRequest::region` is documented as "the recipe's
-    /// `decompose` (the primitive subgraph)", so if these two ever drifted, a
-    /// synthesizer would be asked to build a kernel for a region the graph does
-    /// not actually run — and the resulting kernel would be silently wrong
-    /// rather than rejected.
+    /// [`recipe_for`]'s own contract — the parts `decompose` does NOT cover now
+    /// that it is defined as `recipe_for` + emit.
     ///
-    /// Guarded structurally, not by eyeballing: the two are compared for
-    /// equality, and `decompose` is separately confirmed to have emitted
-    /// (`out != fused`, `g.len()` grew). Asserting only the equality would pass
-    /// vacuously if both returned the same degenerate value.
+    /// There is deliberately **no drift test** between the two. An earlier
+    /// version had them as separate functions with duplicated validation and a
+    /// test asserting they agreed; that test was evidence of the duplication,
+    /// not protection against it. Sharing one implementation makes drift
+    /// unrepresentable, which is strictly better than detecting it — a test can
+    /// only fail after someone has already written the divergence.
+    ///
+    /// What still needs asserting is what `decompose` cannot show: that
+    /// `recipe_for` yields the region **without mutating the graph** (the JIT
+    /// seam asks for a region to send to a synthesizer, not a lowering), and
+    /// that its declines are total rather than panics.
     #[test]
-    fn recipe_for_matches_what_decompose_lowers() {
+    fn recipe_for_yields_the_region_without_touching_the_graph() {
         let mut g = Graph::new();
         let fused = paged_node(&mut g, 1, 2, 2, 3, 2, 4, 2, 2, 0.5, None, false);
         let params =
             FusedOpParams::PagedAttn { softmax_scale: 0.5, block_size: 2, softcap: None };
 
         let before = g.len();
-        let as_data = recipe_for(&g, fused, &params).expect("well-formed node yields a recipe");
-        assert_eq!(g.len(), before, "recipe_for must NOT mutate the graph");
-
-        // The graph-lowering path, for comparison.
-        let mut g2 = Graph::new();
-        let fused2 = paged_node(&mut g2, 1, 2, 2, 3, 2, 4, 2, 2, 0.5, None, false);
-        let before2 = g2.len();
-        let root2 = decompose(&mut g2, fused2, &params);
-        assert_ne!(root2, fused2, "control: decompose actually lowered (not a fixpoint)");
-        assert!(g2.len() > before2, "control: decompose actually emitted nodes");
-
-        // Same node, same params, same recipe — the equivalence the seam needs.
-        let as_data2 = recipe_for(&g2, fused2, &params).expect("recipe");
+        let region = recipe_for(&g, fused, &params).expect("well-formed node yields a recipe");
         assert_eq!(
-            as_data, as_data2,
-            "recipe_for is deterministic for the same node shape/params",
+            g.len(),
+            before,
+            "recipe_for must NOT mutate the graph — it hands a region to a \
+             synthesizer; `decompose` is the variant that emits",
         );
 
-        // Never-panic posture, matching `decompose`'s fixpoint self-return.
+        // CONTROL: the region is a real subgraph, not a degenerate stub. Without
+        // this, a `recipe_for` returning a bare Bind would satisfy every other
+        // assertion here.
+        assert!(
+            matches!(region, PatternNode::Op { .. }),
+            "the region must be an Op tree, not a bare bind/leaf",
+        );
+
+        // And `decompose` — now literally this recipe plus emit — does emit it.
+        let root = decompose(&mut g, fused, &params);
+        assert_ne!(root, fused, "decompose lowered (not a fixpoint self-return)");
+        assert!(g.len() > before, "decompose emitted the region into the graph");
+
+        // Never-panic posture: every decline is a typed `None`.
         assert!(
             recipe_for(&g, fused, &FusedOpParams::Rope).is_none(),
             "wrong params => None, never a panic",
@@ -731,6 +718,12 @@ mod tests {
         assert!(
             recipe_for(&g, bare, &params).is_none(),
             "malformed node (wrong arity) => None, never a panic",
+        );
+        // ...and `decompose` inherits that decline as its fixpoint, by construction.
+        assert_eq!(
+            decompose(&mut g, bare, &params),
+            bare,
+            "a recipe_for decline IS decompose's fixpoint — one rule, not two",
         );
     }
 }
