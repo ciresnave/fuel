@@ -44,7 +44,11 @@ pub enum DType {
     F4,
     /// 8-bit float with 8 exponent bits and 0 mantissa bits.
     F8E8M0,
-    /// 8-bit float with 6 exponent bits and 2 mantissa bits (FP8 E6M2).
+    /// Unsigned 8-bit block-scale: 6 exponent bits, 2 mantissa bits, no sign
+    /// (0+6+2=8). A finer-granularity sibling of [`F8E8M0`](Self::F8E8M0) —
+    /// trades 2 exponent bits for 2 mantissa — so a scale type, not a signed
+    /// value dtype. (The "8-bit float, 6 exp, 2 mant" framing it shipped with in
+    /// e275538c was a misread: 1+6+2=9 doesn't fit a signed byte.)
     F8E6M2,
 }
 
