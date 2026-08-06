@@ -82,6 +82,51 @@ kernel request; Baracuda has been told explicitly not to build to this yet.
 >   Paged is therefore **measured**, not merely inferred, to be the only
 >   continuous-batching path in Fuel.
 
+## 0a. THE K=1 PAGED PENALTY IS CAPTURE-SHAPED, NOT PAGING-SHAPED (2026-08-06)
+
+**The single most important finding in this document, and it reframes the rest.**
+Measured (Lightbulb, corrected harness, k=1, release, this card):
+
+```
+paged / CAPTURED   contiguous  =  3.98×
+paged / UNCAPTURED contiguous  =  indistinguishable from 1×
+```
+
+**At k=1 paged costs about the same as contiguous-without-capture. The entire
+measured "paged penalty" is the absence of capture — not paging overhead.**
+
+### Why there is no captured paged path — it is impossible, not merely absent
+
+Every link measured, not reasoned:
+
+1. `Op::PagedAttn` has **no CUDA kernel** ⇒ the fused node is **host-placed**
+   (per-node `placement_of`: `Fused(PAGED_ATTN) Cpu×2` in an otherwise-CUDA graph).
+2. Host placement ⇒ the graph carries **cross-device copies** (`Copy Cpu×1 None×10`).
+3. `capture_decode` **hard-rejects cross-device copies** (test:
+   `capture_decode_rejects_cross_device_copy_cuda`; it is also why the
+   *contiguous* captured path targets `logits_node`, not `effective_target`).
+4. ⇒ **a paged decode graph cannot be CUDA-graph-captured today.**
+5. ⇒ entry points are `forward_paged_step` / `_persistent` / `_batched` and
+   **no `_captured`** — positive-controlled: the same query *does* find
+   `forward_with_kv_context_captured`.
+
+### What this changes
+
+**The `ge[F32,F32,U8]` registration is the unblock for BOTH effects, not one.**
+It was scoped as "removes the 186× host round-trip". It also removes the
+cross-device copies that make the paged graph uncapturable — so it plausibly
+enables a captured paged path, which is where the measured k=1 penalty actually
+lives. **One fix, two wins**, and the second dominates at k=1.
+
+It correspondingly **lowers the urgency of kernel work**: before writing a paged
+kernel, register `ge`, add the captured paged variant, and re-measure. The
+remaining penalty after that is the honest target — and §1 stays capacity-bound
+regardless (§1.1), which no amount of capture fixes.
+
+**Caveats, as measured:** "indistinguishable from 1×" means the n=3 spread
+contains 1.0 against a 2.2× noise floor, not equality. k=1 only — k≥4 OOMs on
+this 8 GB card, so the batching regime where paging earns its keep is unmeasured.
+
 ## 0. What this document is answering
 
 CireSnave: *"Lets proceed with the backend and device agnostic Fuel paged
