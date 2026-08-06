@@ -69,9 +69,16 @@ impl KernelInvoker for VulkanInvoker {
 
         let elem_count = self.out_shape.iter().product::<usize>();
         let out_len_bytes = elem_count.saturating_mul(self.out_dtype.size_in_bytes());
+        // Zero-INITIALIZE the output (upload zeros) rather than allocating
+        // uninitialized/recycled device memory. Full-write kernels overwrite it
+        // anyway; in-place / partial-write kernels (WriteSlice, WriteSliceRotating)
+        // leave their non-slab region untouched, so a deterministic zeroed base is
+        // what makes their output bit-stable across repeats AND byte-exact against
+        // the CPU reference invoker (which uses `alloc_cpu_zeroed`). Verification-
+        // only path — no production dispatch uses this invoker.
         let out_vb = self
             .backend
-            .alloc_bytes_handle(out_len_bytes)
+            .upload_bytes_handle(&vec![0u8; out_len_bytes])
             .map_err(|e| VerifyError::Backend(e.to_string()))?;
         let out = Arc::new(RwLock::new(fuel_memory::Storage::new(
             fuel_memory::BackendStorage::Vulkan(out_vb),

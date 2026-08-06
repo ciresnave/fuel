@@ -72,6 +72,11 @@ pub struct VerificationLedger {
 /// gate runs in every hardware-free `cargo test` with no filesystem access.
 /// Must exist and parse as a JSON array (an empty ledger is `[]`) before
 /// `fuel-dispatch` compiles at all.
+///
+/// NOTE: `include_str!` makes this a compile-time snapshot. When the ledger is
+/// re-seeded (e.g. `seed_vulkan_verified_ledger`), THIS crate must be recompiled
+/// for the new records to take effect — a downstream test binary relinking
+/// against a cached `fuel-dispatch` lib will still see the old ledger.
 const LEDGER_JSON: &str =
     include_str!("../../../../docs/kernel-contracts/.fkc-verified-ledger.json");
 

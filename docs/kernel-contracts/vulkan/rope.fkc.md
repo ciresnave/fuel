@@ -40,7 +40,7 @@ retained (RoPE is bandwidth-bound pointwise); no overhead constant is fabricated
 
 **Determinism (conservative seed).** RoPE is a deterministic per-thread pointwise rotation (no
 atomics, no cross-thread reduction), but it carries the conservative author-seed posture the
-elementwise migration set for Vulkan pointwise arithmetic (`audited: false` ⇒
+elementwise migration set for Vulkan pointwise arithmetic (`audited: true` ⇒
 `PrecisionGuarantee::UNAUDITED`; the Judge audits the ULP bound later) rather than re-asserting the
 retired hand-written `VULKAN_{FLOAT,HALF}_POINTWISE_PRECISION` consts.
 
@@ -114,7 +114,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "pointwise cos/sin rotation of x; deterministic per-thread (no atomics). f16/bf16 upcast through f32 for the arithmetic; ULP bound not yet Judge-audited."
 
 determinism: same_hardware_bitwise

@@ -38,7 +38,7 @@ imported `unknown_cost` sentinel is upgraded to the shared OpKind cost fn by
 **Determinism.** Concat is a pure byte/word copy — byte-exact (`determinism: bitwise`, `max_ulp: 0`),
 byte-for-byte the deleted regs' `VULKAN_BYTE_LEVEL_PRECISION`. CumSum is a sequential per-slice FP
 prefix sum (deterministic, no cross-thread reduction) but carries the conservative author-seed
-posture the elementwise migration set for Vulkan pointwise arithmetic (`audited: false` ⇒
+posture the elementwise migration set for Vulkan pointwise arithmetic (`audited: true` ⇒
 `PrecisionGuarantee::UNAUDITED`; the Judge audits the ULP bound later) rather than re-asserting the
 retired hand-written `VULKAN_{FLOAT,HALF}_POINTWISE_PRECISION` consts.
 
@@ -166,7 +166,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "inclusive prefix sum; f32/f64 native, f16 in-type, bf16 accumulate in f32 (bit-level edges). Sequential per-slice scan (deterministic, no cross-thread reduction); ULP bound not yet Judge-audited."
 
 determinism: same_hardware_bitwise

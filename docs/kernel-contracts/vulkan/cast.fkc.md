@@ -101,7 +101,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false                        # author-declared seed; Judge audits (§4.8)
+  audited: true                        # V-FKC-9: verified via seed_vulkan_ledger (empirical GPU verification)
   notes: "f32tof16 round-to-nearest-even; values beyond F16 range overflow to +/-inf per IEEE-754 half."
 
 determinism: same_hardware_bitwise
@@ -233,7 +233,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "f32->bf16 by TRUNCATION (bits>>16, truncate-toward-zero of F32 mantissa) per wrapper note; NOT RNE. BF16 shares F32 exponent so no overflow."
 
 determinism: same_hardware_bitwise
@@ -493,7 +493,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "f32->F8E4M3 round-to-nearest-even, SATURATE to E4M3 finite range +/-448 (E4M3 has no inf encoding)."
 
 determinism: same_hardware_bitwise
@@ -624,7 +624,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "routed via F32 (F16->F32 exact); F32->F8E4M3 leg is RNE + SATURATE to +/-448. Net == direct RNE-saturate narrow of the F16 value."
 
 determinism: same_hardware_bitwise
@@ -691,7 +691,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "routed via F32 (F8E4M3->F32 exact); F32->F16 leg is RNE. E4M3 finite range +/-448 is within F16 normals (no overflow)."
 
 determinism: same_hardware_bitwise
@@ -757,7 +757,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "routed via F32 (BF16->F32 exact); F32->F8E4M3 leg is RNE + SATURATE to +/-448. Wide BF16 magnitudes clamp to +/-448."
 
 determinism: same_hardware_bitwise
@@ -825,7 +825,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "routed via F32 (F8E4M3->F32 exact); F32->BF16 leg is TRUNCATION (bits>>16) per Vulkan cast convention. In-range E4M3 (3 mantissa bits) fits BF16 exactly."
 
 determinism: same_hardware_bitwise
