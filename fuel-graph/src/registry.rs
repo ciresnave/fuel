@@ -897,6 +897,35 @@ pub struct PatternHash(pub u64);
 /// unreferenced dead nodes — inert, the documented push-only-graph posture.
 /// Declines are telemetered on stderr (the surfaced-gap channel until a
 /// structured gap inventory exists).
+/// **A fused node's recipe as portable data — the generic accessor the JIT seam
+/// needs.** Returns the same [`PatternNode`] the op's `decompose` lowers,
+/// *without touching the graph*.
+///
+/// `fuel_kernel_seam::JitRequest::region` is documented as "the recipe's
+/// `decompose` (the primitive subgraph)", so a synthesizer can be asked to build
+/// one kernel for a region the consumer discovered at runtime. Lowering needs
+/// every primitive bound on the target device; **handing the region over needs
+/// none of them** — which is the whole reason this accessor exists.
+///
+/// Dispatches on the fused op id. `None` means "this op does not expose its
+/// recipe as data (yet)", which is a *surfaced gap*, never a crash — the same
+/// G2 posture as a `decompose` fixpoint self-return. Adding an op is one arm.
+///
+/// Today only [`FusedOps::PAGED_ATTN`] implements it, because it is the op that
+/// forced the question: no GPU backend implements the fused form at all, so the
+/// JIT route is the only one that does not depend on every primitive being
+/// pre-registered.
+pub fn recipe_for(graph: &Graph, id: NodeId) -> Option<PatternNode> {
+    let (fused_id, params) = match &graph.node(id).op {
+        crate::Op::Fused(fid, p) => (*fid, p.clone()),
+        _ => return None,
+    };
+    match fused_id {
+        FusedOps::PAGED_ATTN => crate::registry::paged_attn::recipe_for(graph, id, &params),
+        _ => None,
+    }
+}
+
 pub fn decompose_via_recipe(
     graph: &mut Graph,
     id: NodeId,

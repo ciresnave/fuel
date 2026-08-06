@@ -214,7 +214,7 @@ fn static_binding_table_bridge_over(
 /// corresponding [`OpKind`] rather than (only) [`default_kernel_registry`].
 /// See [`fused_kernel_available`]'s doc comment — widen this one id at a
 /// time as each is verified, not speculatively.
-fn static_fused_id_to_binding_table_op_kind(id: FusedOpId) -> Option<OpKind> {
+pub(crate) fn static_fused_id_to_binding_table_op_kind(id: FusedOpId) -> Option<OpKind> {
     if id == FusedOps::FLASH_ATTN { Some(OpKind::FlashAttn) } else { None }
 }
 
