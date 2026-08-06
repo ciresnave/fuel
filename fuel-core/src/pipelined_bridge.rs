@@ -651,6 +651,34 @@ impl TopologyRetryState {
     }
 }
 
+/// The devices to which the realize path's off-device fallback may migrate a
+/// node: every device RESIDENT in this realize (has storage in the cache), other
+/// than the node's own. This is a FEASIBILITY scope, not a cost one — the
+/// executor derives a backend's device handle from a storage already resident on
+/// it (`find_cuda_device_in_cache` and its Vulkan sibling), so a device with NO
+/// resident storage cannot back a migrated op: offering it lets the placement DP
+/// price and pick a candidate the realize then cannot execute (the observed
+/// `Op::Copy on Cuda … no CUDA storage in input cache` spill for CPU-built decode
+/// graphs on a CUDA host).
+///
+/// Scoping to resident devices keeps a pure-CPU realize on CPU (no GPU resident ⇒
+/// no GPU fallback offered), while a CUDA-seeded realize (e.g. weights on CUDA)
+/// still offers CUDA and cost-migrates. BOTH halves are load-bearing: the
+/// CPU-only case is the fix; the resident-GPU case is the guard that the fix
+/// SCOPED candidates rather than amputating cross-device placement — verified by
+/// `feasible_fallback_devices_scopes_to_resident`.
+fn feasible_fallback_devices(
+    all_devices: &[DeviceLocation],
+    resident: &[DeviceLocation],
+    node_dev: DeviceLocation,
+) -> Vec<DeviceLocation> {
+    all_devices
+        .iter()
+        .copied()
+        .filter(|&d| d != node_dev && resident.contains(&d))
+        .collect()
+}
+
 /// Build the `OptimizedGraph` lowering view for the realize path.
 ///
 /// `optimize_graph` transforms the graph **in place** into the "plan IS
@@ -685,19 +713,30 @@ fn build_optimized_graph(
     let capabilities_for = |b: BackendId|
         -> Option<&fuel_ir::backend::BackendCapabilities>
     { topology.capabilities(b) };
+    // Devices with storage RESIDENT in this realize's cache — the feasibility
+    // scope for off-device migration (see `feasible_fallback_devices`). A pure-CPU
+    // realize yields only `Cpu`, so no GPU fallback is offered and CPU-built graphs
+    // (e.g. the decode attention mask) stay on CPU instead of the DP pricing a
+    // CUDA candidate the realize cannot execute.
+    let resident_devices: Vec<DeviceLocation> = {
+        let mut v = Vec::new();
+        for arc in cache.values() {
+            if let Ok(guard) = arc.read()
+                && let Some(loc) = cached_storage_location(&guard)
+                && !v.contains(&loc)
+            {
+                v.push(loc);
+            }
+        }
+        v
+    };
     let fallback_for = |dev: DeviceLocation|
         -> Vec<(BackendId, DeviceLocation)>
     {
-        let mut out = Vec::new();
-        for &d in topology.devices() {
-            if d == dev {
-                continue;
-            }
-            for &b in topology.backends_for(d) {
-                out.push((b, d));
-            }
-        }
-        out
+        feasible_fallback_devices(topology.devices(), &resident_devices, dev)
+            .into_iter()
+            .flat_map(|d| topology.backends_for(d).iter().map(move |&b| (b, d)))
+            .collect()
     };
     let judge_oracle = crate::judge::cached_oracle();
     let input_residency = |id: NodeId| -> Option<DeviceLocation> {
@@ -1901,6 +1940,39 @@ mod tests {
     use super::*;
     use fuel_ir::{DType, Shape};
     use fuel_dispatch::plan::compile_plan;
+
+    #[test]
+    fn feasible_fallback_devices_scopes_to_resident() {
+        // The off-device fallback must be scoped to devices RESIDENT in the
+        // realize — the fix for CPU-built graphs spilling onto an unseeded CUDA.
+        // BOTH halves are asserted (see the fn's doc): the negative is the fix,
+        // the positive is the guard that it wasn't fixed by amputation.
+        let cpu = DeviceLocation::Cpu;
+        let cuda = DeviceLocation::Cuda { gpu_id: 0 };
+        let all = [cpu, cuda];
+
+        // NEGATIVE (the fix): a pure-CPU realize (only Cpu resident) offers NO GPU
+        // fallback for a CPU node → the decode mask stays CPU, no spill. This
+        // FAILS under the old unconditional "offer every topology device"
+        // fallback — that is its teeth.
+        assert_eq!(
+            feasible_fallback_devices(&all, &[cpu], cpu),
+            Vec::<DeviceLocation>::new(),
+            "cpu-only realize must not offer CUDA as a fallback (the spill fix)",
+        );
+
+        // POSITIVE CONTROL (the guard): a CUDA-seeded realize (Cuda resident)
+        // STILL offers CUDA for a CPU node → cross-device cost-migration is
+        // preserved. If this ever returns empty, the fix amputated the feature.
+        assert_eq!(
+            feasible_fallback_devices(&all, &[cpu, cuda], cpu),
+            vec![cuda],
+            "cuda-seeded realize must still offer CUDA (positive control — not amputated)",
+        );
+
+        // Symmetric: a CUDA node in a mixed realize can fall back to CPU.
+        assert_eq!(feasible_fallback_devices(&all, &[cpu, cuda], cuda), vec![cpu]);
+    }
 
     fn push_node(g: &mut Graph, op: Op, inputs: Vec<NodeId>) -> NodeId {
         g.push(Node {
