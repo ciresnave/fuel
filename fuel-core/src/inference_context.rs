@@ -1186,6 +1186,17 @@ pub struct PagedDecodeSession {
     n_layers: usize,
     block_size: usize,
     cache_dtype: DType,
+    /// The model's `decode_shape_key()` at build time — family + structure-
+    /// affecting config + WEIGHT IDENTITY (a never-recycled `ModelInstanceId`).
+    ///
+    /// Geometry alone cannot separate two models: `PagedDecodeSession` bakes the
+    /// weight `Const`s, so two same-shaped models produce identical
+    /// `(max_blocks_cap, n_layers, block_size, cache_dtype)` and a plan built for
+    /// one would be judged valid for the other — silently computing the wrong
+    /// architecture, or the right architecture with the wrong weights, at full
+    /// speed. The contiguous twin closed this first; this is the paged half of
+    /// the same hole.
+    shape_key: u64,
     /// Count of REBIND realizes this session has served (one per
     /// [`Self::realize_token`]). The build itself realizes through the prebuild
     /// seam, NOT `realize_token`, so it stays 0 right after construction and
@@ -1220,6 +1231,7 @@ impl PagedDecodeSession {
         n_layers: usize,
         block_size: usize,
         cache_dtype: DType,
+        shape_key: u64,
     ) -> Self {
         Self {
             graph,
@@ -1239,6 +1251,7 @@ impl PagedDecodeSession {
             n_layers,
             block_size,
             cache_dtype,
+            shape_key,
             realize_count: AtomicUsize::new(0),
         }
     }
@@ -1289,11 +1302,13 @@ impl PagedDecodeSession {
         n_layers: usize,
         block_size: usize,
         cache_dtype: DType,
+        shape_key: u64,
     ) -> bool {
         self.max_blocks_cap == max_blocks_cap
             && self.n_layers == n_layers
             && self.block_size == block_size
             && self.cache_dtype == cache_dtype
+            && self.shape_key == shape_key
     }
 
     /// Build the per-token [`SymEnv`] for one paged decode step: bind

@@ -7825,7 +7825,13 @@ impl LlamaModel {
 
         // Invalidate a stale held session (different cap / geometry / dtype).
         if let Some(s) = decode_session.as_ref() {
-            if !s.is_valid_for(max_blocks_cap, geom.n_layers, geom.block_size, act_dtype) {
+            // `decode_shape_key()` carries weight IDENTITY, so a same-shaped
+            // model with different weights invalidates instead of silently
+            // reusing a plan baked against the other one's Consts.
+            if !s.is_valid_for(
+                max_blocks_cap, geom.n_layers, geom.block_size, act_dtype,
+                self.decode_shape_key(),
+            ) {
                 *decode_session = None;
             }
         }
@@ -8066,6 +8072,7 @@ impl LlamaModel {
             n_layers,
             block_size,
             act_dtype,
+            self.decode_shape_key(),
         ));
 
         Ok(logits_vec)
@@ -15186,6 +15193,83 @@ mod generate_tests {
             );
         }
         println!("--- END VERDICT ---\n");
+    }
+
+    /// **A held PAGED plan must not be reused across two models of identical
+    /// geometry but different weights.** The paged half of the hole the
+    /// contiguous `DecodeSession` closed first.
+    ///
+    /// `PagedDecodeSession` bakes the model's weight `Const`s. Its validity key
+    /// was `(max_blocks_cap, n_layers, block_size, cache_dtype)` — pure
+    /// geometry — so two same-shaped models produced the SAME key and a plan
+    /// built for one was judged valid for the other. That is not a crash: it is
+    /// the right architecture computed with the wrong weights, at full speed,
+    /// with nothing to report. Weight identity now enters via
+    /// `decode_shape_key()`, whose `ModelInstanceId` comes from a never-recycled
+    /// counter (so it cannot be defeated by allocator address reuse).
+    ///
+    /// BOTH halves asserted, because only the pair is meaningful: a differing
+    /// key must invalidate, AND a matching key must NOT. An "always stale"
+    /// predicate would pass the first assertion alone while silently disabling
+    /// plan reuse entirely — a pure performance regression that hides behind a
+    /// fully green correctness suite.
+    #[test]
+    fn paged_session_is_not_reused_across_models_with_different_weights() {
+        let cfg = LlamaConfig {
+            vocab_size: 32, dim: 16, n_layers: 2, n_heads: 4, n_kv_heads: 4,
+            head_dim: 4, ffn_dim: 32, norm_eps: 1e-5, rope_base: 10000.0,
+        };
+        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
+
+        // Two models: IDENTICAL config, SEPARATELY constructed weights.
+        let model_a = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let model_b = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+
+        let key_a = model_a.decode_shape_key();
+        let key_b = model_b.decode_shape_key();
+        assert_ne!(
+            key_a, key_b,
+            "two same-shaped models with distinct weights must key differently —              the paged session bakes their Consts",
+        );
+        // CONTROL: the key is stable for one model, or "always invalidate"
+        // would satisfy the assertion above while destroying plan reuse.
+        assert_eq!(
+            key_a,
+            model_a.decode_shape_key(),
+            "the same model must key identically across calls",
+        );
+
+        // Build a real held paged session for model A on CPU.
+        let dev = crate::Device::cpu();
+        let geom = crate::kv_block_pool::KvGeometry {
+            n_layers: cfg.n_layers, num_blocks: 32, block_size: 4,
+            n_kv_heads: cfg.n_kv_heads, head_dim: cfg.head_dim, elem_size: 4,
+        };
+        let mut pool = crate::kv_block_pool_device::DeviceKvPool::new(geom, DType::F32, &dev)
+            .expect("f32 DeviceKvPool");
+        let handle = pool.core_mut().open();
+        for &t in &[1u32, 2, 3] {
+            model_a.forward_paged_step(t, &mut pool, handle).expect("prime");
+        }
+        let mut ds: Option<crate::inference_context::PagedDecodeSession> = None;
+        model_a
+            .forward_paged_step_persistent(
+                4, &mut pool, handle, 8,
+                crate::inference_context::PagedDecodePlan::PlanOnce, &mut ds,
+            )
+            .expect("model A builds a held paged plan");
+        let s = ds.as_ref().expect("held paged session");
+
+        // Same geometry, model A's key => VALID (plan reuse preserved).
+        assert!(
+            s.is_valid_for(8, cfg.n_layers, 4, DType::F32, key_a),
+            "model A's own plan must stay valid — otherwise plan reuse is dead",
+        );
+        // Same geometry, model B's key => STALE.
+        assert!(
+            !s.is_valid_for(8, cfg.n_layers, 4, DType::F32, key_b),
+            "a plan baked for model A must NOT be judged valid for model B at              identical geometry — this is the silent-wrong-weights hole",
+        );
     }
 
     /// Task 3 (paged plan-once) — the second decode token REUSES the built
