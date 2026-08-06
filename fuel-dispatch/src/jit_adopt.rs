@@ -47,6 +47,41 @@ pub(crate) fn element_kind_to_dtype(ek: ElementKind) -> Option<DType> {
         ElementKind::F16 => DType::F16,
         ElementKind::F32 => DType::F32,
         ElementKind::F64 => DType::F64,
+        // Index operands. `U32` is the seam's gather/scatter INDEX ctype
+        // (`unsigned int`) — deliberately not a compute dtype upstream (no
+        // `Element` impl, no vector path). Fuel still needs it mapped, because
+        // any INDEXED region carries one: `IndexSelect`, scatter/gather, and
+        // `PagedAttn`'s `block_table` + `context_lens`. Its absence here meant a
+        // returned contract naming a U32 operand could not be mapped back into a
+        // Fuel `DType` at all — an interop gap that would have bitten on the
+        // first indexed region regardless of anything else.
+        ElementKind::U32 => DType::U32,
+        _ => return None,
+    })
+}
+
+/// The outbound direction: a Fuel [`DType`] as the seam's [`ElementKind`].
+///
+/// Fuel had **no** `DType -> ElementKind` mapping at all, which meant a request
+/// could not be *constructed* for a region whose operands Fuel knows the dtypes
+/// of — the seam could express them, Fuel just had no way to say them. Inverse
+/// of [`element_kind_to_dtype`] over exactly the same set, so the round trip is
+/// total on the mapped subset (asserted in tests).
+///
+/// `None` for dtypes with no seam spelling rather than a lossy substitution — a
+/// request that misrepresents its operand types would get an answer about a
+/// different kernel than the one asked for.
+pub(crate) fn dtype_to_element_kind(dt: DType) -> Option<ElementKind> {
+    Some(match dt {
+        DType::U8 => ElementKind::U8,
+        DType::I8 => ElementKind::S8,
+        DType::I32 => ElementKind::I32,
+        DType::I64 => ElementKind::I64,
+        DType::BF16 => ElementKind::Bf16,
+        DType::F16 => ElementKind::F16,
+        DType::F32 => ElementKind::F32,
+        DType::F64 => ElementKind::F64,
+        DType::U32 => ElementKind::U32,
         _ => return None,
     })
 }
@@ -86,6 +121,51 @@ pub fn adopt_from_response(
 
 #[cfg(test)]
 mod tests {
+    /// **The two dtype directions must be exact inverses on the mapped set.**
+    ///
+    /// `element_kind_to_dtype` existed alone, so Fuel could *read* a returned
+    /// contract's operand dtypes but could not *construct* a request naming
+    /// them. Adding the outbound direction creates a round trip, and a round
+    /// trip that is not the identity is worse than no round trip: a request
+    /// would silently describe operands other than the ones the caller has, and
+    /// the answer would be about a different kernel.
+    ///
+    /// Exhaustive over the mapped set — listed explicitly rather than derived,
+    /// so ADDING a variant to one direction and not the other fails here instead
+    /// of silently narrowing the seam. `U32` is in the list because it is the
+    /// index ctype every indexed region carries (`IndexSelect`, scatter/gather,
+    /// `PagedAttn`'s `block_table` and `context_lens`) — the case whose absence
+    /// blocked a real request.
+    #[test]
+    fn dtype_and_element_kind_round_trip_exactly() {
+        use super::{dtype_to_element_kind, element_kind_to_dtype};
+        use fuel_ir::DType;
+
+        const MAPPED: &[DType] = &[
+            DType::U8, DType::I8, DType::I32, DType::I64,
+            DType::BF16, DType::F16, DType::F32, DType::F64,
+            DType::U32,
+        ];
+
+        for &dt in MAPPED {
+            let ek = dtype_to_element_kind(dt)
+                .unwrap_or_else(|| panic!("{dt:?} must have a seam spelling"));
+            assert_eq!(
+                element_kind_to_dtype(ek),
+                Some(dt),
+                "{dt:?} -> {ek:?} -> back must be the identity; a non-identity                  round trip means a request describes operands the caller does                  not have",
+            );
+        }
+
+        // CONTROL: the map is PARTIAL by design, not total. Without this, a
+        // `dtype_to_element_kind` that returned `Some(F32)` for everything would
+        // satisfy every assertion above.
+        assert!(
+            dtype_to_element_kind(DType::I16).is_none(),
+            "I16 has no ElementKind spelling (the seam has S8/U8/I32/I64/U32, no 16-bit int) — it must decline, not substitute — a lossy              mapping asks about a different kernel than the caller's",
+        );
+    }
+
     use super::*;
     use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
     use fuel_kernel_seam::{ArtifactKind, JitBudget, LinkEntry};
