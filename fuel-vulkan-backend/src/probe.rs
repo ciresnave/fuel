@@ -30,18 +30,38 @@ static DEVICE_CACHE: OnceLock<std::result::Result<Vec<DeviceDescriptor>, String>
 /// `vkCreateInstance` calls this process has made from here — as opposed to
 /// how many times [`enumerate_devices`] was called.
 ///
-/// Incremented inside [`enumerate_devices_uncached`], the real probe, and
-/// deliberately NOT inside the memoizing wrapper. That placement is what lets
-/// the concurrency test assert `== 1` in absolute terms: memoization
-/// guarantees the uncached path runs at most once per process, so the
-/// assertion cannot be diluted by test ordering or by other callers.
+/// Incremented inside [`enumerate_devices_uncached`], the real probe. This is
+/// a process-global TOTAL: the single memoized probe PLUS any direct
+/// `enumerate_devices_uncached` calls (which only the fan-out characterization
+/// test makes). Because it is a total, it is NOT safe for the concurrency test
+/// to assert `== 1` against — a sibling test calling the uncached path directly
+/// (`uncached_enumeration_fans_out_per_thread`, which `--include-ignored`
+/// un-ignores and runs in parallel) pollutes it. The concurrency test asserts
+/// on [`MEMOIZED_PROBE_CALLS`] instead, which no direct caller can touch.
 static PROBE_CALLS: AtomicUsize = AtomicUsize::new(0);
 
+/// How many times the **memoized** path ([`enumerate_devices`]) ran the real
+/// probe — incremented inside the `OnceLock::get_or_init` closure, so it is
+/// **exactly one** per process no matter how many threads race and no matter
+/// what any direct [`enumerate_devices_uncached`] caller does to
+/// [`PROBE_CALLS`]. This is the counter the concurrency test asserts `== 1`
+/// against without being diluted by test ordering or parallel siblings.
+static MEMOIZED_PROBE_CALLS: AtomicUsize = AtomicUsize::new(0);
+
 /// Number of real loader probes (`vkCreateInstance` calls) performed so far in
-/// this process. Test seam.
+/// this process — the process-global TOTAL across the memoized path and any
+/// direct [`enumerate_devices_uncached`] callers. Test seam.
 #[doc(hidden)]
 pub fn probe_call_count() -> usize {
     PROBE_CALLS.load(Ordering::SeqCst)
+}
+
+/// Number of real loader probes performed via the **memoized** path
+/// ([`enumerate_devices`]) — exactly one per process, immune to direct
+/// [`enumerate_devices_uncached`] callers. Test seam.
+#[doc(hidden)]
+pub fn memoized_probe_call_count() -> usize {
+    MEMOIZED_PROBE_CALLS.load(Ordering::SeqCst)
 }
 
 pub struct VulkanBackendProbe;
@@ -116,7 +136,15 @@ pub(crate) fn new_instance_preferring_v1_3<'a>(
 /// hook, which does not exist today.
 pub fn enumerate_devices() -> Result<Vec<DeviceDescriptor>> {
     DEVICE_CACHE
-        .get_or_init(|| enumerate_devices_uncached().map_err(|e| e.to_string()))
+        .get_or_init(|| {
+            // Memoized-path probe counter — incremented here, inside the
+            // OnceLock closure, so it is exactly one per process no matter how
+            // many threads race. The TOTAL counter (`PROBE_CALLS`) lives one
+            // level down in `enumerate_devices_uncached` and is shared with
+            // direct callers, so it cannot carry the "exactly once" assertion.
+            MEMOIZED_PROBE_CALLS.fetch_add(1, Ordering::SeqCst);
+            enumerate_devices_uncached().map_err(|e| e.to_string())
+        })
         .clone()
         .map_err(Error::Msg)
 }
@@ -225,9 +253,14 @@ mod tests {
     ///
     /// Note this test creates at most ONE `VkInstance` for the whole process —
     /// it is the *pre-fix* behaviour that was expensive, not this. The
-    /// assertion is absolute rather than a delta because memoization makes the
-    /// uncached path run at most once per process, so no amount of other
-    /// activity can dilute it.
+    /// assertion is on [`memoized_probe_call_count`], NOT the process-global
+    /// total: the sibling `uncached_enumeration_fans_out_per_thread` calls the
+    /// uncached path directly and is `#[ignore]`, so `--include-ignored` runs
+    /// it in PARALLEL with this test and adds to the total counter. Asserting
+    /// the total `== 1` was a flake (seen as "got 5 probes" = 1 memoized + 4
+    /// from the K=4 fan-out sibling). The memoized counter is incremented only
+    /// inside the `OnceLock` closure, so it is exactly 1 regardless of siblings
+    /// or ordering — that is what makes the assertion honest under load.
     #[test]
     fn concurrent_enumeration_probes_the_loader_exactly_once() {
         const THREADS: usize = 16;
@@ -245,12 +278,45 @@ mod tests {
         });
 
         assert_eq!(
-            probe_call_count(),
+            memoized_probe_call_count(),
             1,
-            "the loader must be probed exactly once across {THREADS} racing \
-             threads; got {} probes, which means the per-thread \
-             vkCreateInstance fan-out is back",
-            probe_call_count(),
+            "the memoized loader path must probe exactly once across {THREADS} \
+             racing threads; got {} — the per-thread vkCreateInstance fan-out is back",
+            memoized_probe_call_count(),
+        );
+    }
+
+    /// Regression for the `concurrent_...` flake: the memoized-path probe
+    /// counter must be immune to direct `enumerate_devices_uncached` callers
+    /// polluting the process-global total. Deterministic (no threads, no
+    /// timing) — it encodes the exact mechanism behind the flake: a sibling
+    /// running the uncached path in parallel drove the TOTAL counter above 1
+    /// while the memoized path had still probed only once.
+    #[test]
+    fn memoized_probe_counter_is_immune_to_direct_uncached_pollution() {
+        // Warm the memoized path (idempotent; exactly one memoized probe ever).
+        let _ = enumerate_devices();
+        assert_eq!(
+            memoized_probe_call_count(),
+            1,
+            "memoized path must probe exactly once per process",
+        );
+        let total_before = probe_call_count();
+        // Pollute the process-global total the way the fan-out sibling does —
+        // SERIAL direct calls (safe: the aperture hazard is concurrent, not
+        // serial, vkCreateInstance).
+        let _ = enumerate_devices_uncached();
+        let _ = enumerate_devices_uncached();
+        // The total moved (pollution is real)...
+        assert!(
+            probe_call_count() >= total_before + 2,
+            "direct uncached calls must bump the total counter",
+        );
+        // ...but the memoized counter did not: it is immune.
+        assert_eq!(
+            memoized_probe_call_count(),
+            1,
+            "memoized counter must not be diluted by direct uncached callers",
         );
     }
 
