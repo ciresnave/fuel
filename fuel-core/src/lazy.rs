@@ -9845,13 +9845,47 @@ impl LlamaModel {
 
             let sym_env = s.per_token_sym_env(cached_len)?;
 
-            let cd_session = fuel_dispatch::pipelined::CapturedDecodeSession::capture(
+            // CAPTURE IS AN OPTIMIZATION: IT MUST DEGRADE, NEVER FAIL.
+            //
+            // `capture_decode` rejects any graph it cannot record — most
+            // commonly a CROSS-DEVICE `Op::Copy`, which appears whenever any
+            // node in the decode graph lands on the host. That is a property of
+            // the model's graph, not an error in this call: PhiModel hits it
+            // today, and the paged decode graph hits it because `Op::PagedAttn`
+            // is host-placed for want of a CUDA kernel.
+            //
+            // Propagating it would turn "this graph cannot be captured" into
+            // "generation fails" — which is what happened when capture was
+            // first defaulted on for Phi, and is exactly the wrong trade for an
+            // optimization. Fall back to the ordinary persistent rebind instead
+            // and return a correct token.
+            //
+            // Safe by inspection: `capture()` runs BEFORE any `cache` mutation
+            // below, so nothing is half-applied and the fallback recomputes the
+            // token cleanly. A genuine compute error is not masked — the
+            // fallback re-runs the same work through the persistent path and
+            // surfaces it there.
+            //
+            // Retried per token rather than remembered, deliberately: the check
+            // is a cheap graph scan on an already-built plan, it only costs
+            // anything on models that cannot capture (which get no benefit
+            // either way), and it self-corrects if a future registration makes
+            // the graph capturable mid-run.
+            let cd_session = match fuel_dispatch::pipelined::CapturedDecodeSession::capture(
                 s.graph().clone(),
                 s.logits_node(),
                 merged_cache,
                 &per_token_node_ids,
                 sym_env,
-            )?;
+            ) {
+                Ok(cd) => cd,
+                Err(_) => {
+                    let res = self.rebind_and_realize_prebuilt(
+                        tokens, cache, &*ctx, &*session, None, // see the RoPE-SCALING note
+                    );
+                    return res;
+                }
+            };
 
             // The warm pass inside `capture()` already computed THIS
             // token's correct result against the per-token buffers just
@@ -12189,13 +12223,47 @@ impl PhiModel {
             ];
 
             let sym_env = s.per_token_sym_env(cached_len)?;
-            let cd_session = fuel_dispatch::pipelined::CapturedDecodeSession::capture(
+            // CAPTURE IS AN OPTIMIZATION: IT MUST DEGRADE, NEVER FAIL.
+            //
+            // `capture_decode` rejects any graph it cannot record — most
+            // commonly a CROSS-DEVICE `Op::Copy`, which appears whenever any
+            // node in the decode graph lands on the host. That is a property of
+            // the model's graph, not an error in this call: PhiModel hits it
+            // today, and the paged decode graph hits it because `Op::PagedAttn`
+            // is host-placed for want of a CUDA kernel.
+            //
+            // Propagating it would turn "this graph cannot be captured" into
+            // "generation fails" — which is what happened when capture was
+            // first defaulted on for Phi, and is exactly the wrong trade for an
+            // optimization. Fall back to the ordinary persistent rebind instead
+            // and return a correct token.
+            //
+            // Safe by inspection: `capture()` runs BEFORE any `cache` mutation
+            // below, so nothing is half-applied and the fallback recomputes the
+            // token cleanly. A genuine compute error is not masked — the
+            // fallback re-runs the same work through the persistent path and
+            // surfaces it there.
+            //
+            // Retried per token rather than remembered, deliberately: the check
+            // is a cheap graph scan on an already-built plan, it only costs
+            // anything on models that cannot capture (which get no benefit
+            // either way), and it self-corrects if a future registration makes
+            // the graph capturable mid-run.
+            let cd_session = match fuel_dispatch::pipelined::CapturedDecodeSession::capture(
                 s.graph().clone(),
                 s.logits_node(),
                 merged_cache,
                 &per_token_node_ids,
                 sym_env,
-            )?;
+            ) {
+                Ok(cd) => cd,
+                Err(_) => {
+                    let res = self.rebind_and_realize_prebuilt(
+                        tokens, cache, &*ctx, &*session,
+                    );
+                    return res;
+                }
+            };
 
             // The warm pass inside `capture()` already computed THIS token.
             let output = cd_session.replay_token(&[])?;
@@ -18058,6 +18126,226 @@ mod phi_kv_context_tests {
              byte-identical token sequence as the D1 reference",
         );
     }
+
+    /// **WHICH Phi decode nodes land on the host?** — diagnostic for the
+    /// capture rejection (`cross-device Op::Copy ... target Cpu`).
+    ///
+    /// Capture records CUDA operations issued to a stream. Host code is not a
+    /// CUDA operation, so it cannot be recorded — and a cross-device `Copy` is
+    /// the SYMPTOM of host compute sitting mid-graph, not the cause. This says
+    /// which node(s) actually caused it, which decides the fix: a load-bearing
+    /// host op means capture genuinely cannot apply; an accidentally-placed one
+    /// means the fix is placement, and capture then works for free.
+    ///
+    /// Reports rather than asserts. The one thing it DOES assert is that
+    /// placement was computed (`has_placements`) — an all-`None` dump would
+    /// read as "nothing is on CUDA", a wrong answer wearing a null answer's
+    /// clothes.
+    #[test]
+    #[cfg(feature = "cuda")]
+    #[ignore = "requires a live CUDA device"]
+    fn phi_decode_node_placement_report_cuda() {
+        use std::collections::BTreeMap;
+
+        let cfg = tiny_cfg();
+        let dev: Device = match fuel_cuda_backend::CudaDevice::new(0) {
+            Ok(d) => d.into(),
+            Err(e) => {
+                eprintln!("no CUDA device; skipping: {e:?}");
+                return;
+            }
+        };
+        let model = PhiModel { config: cfg.clone(), weights: make_tiny_phi(&cfg, 7) };
+        let prompt = [1_u32, 2, 3];
+        let max_seq_len = prompt.len() + 4;
+
+        let mut cache = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_heads, cfg.head_dim, max_seq_len, DType::F32, &dev,
+        )
+        .expect("with_capacity");
+        let mut ctx = InferenceContext::new(dev.clone());
+        let mut sess: Option<crate::inference_context::DecodeSession> = None;
+        model
+            .forward_with_kv_context_persistent(&prompt, &mut cache, &mut ctx, &mut sess)
+            .expect("prefill");
+        model
+            .forward_with_kv_context_persistent(&[4], &mut cache, &mut ctx, &mut sess)
+            .expect("first decode token builds the held plan");
+        let s = sess.as_ref().expect("held session");
+
+        let opt = s.optimized();
+        assert!(
+            opt.has_placements(),
+            "placement NOT COMPUTED — every lookup would be None and the report              below would describe a missing instrument, not the graph",
+        );
+
+        let g = s.graph().read().expect("graph lock");
+        let mut by_op: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+        let mut host_nodes: Vec<String> = Vec::new();
+        for i in 0..g.len() {
+            let id = fuel_graph::NodeId(i);
+            let op_name = match &g.node(id).op {
+                fuel_graph::Op::Fused(fid, _) => format!("Fused({fid:?})"),
+                other => format!("{other:?}").split(' ').next().unwrap_or("?").to_string(),
+            };
+            let place = match opt.placement_of(id) {
+                Some(d) => format!("{d:?}"),
+                None => "None".to_string(),
+            };
+            if place.starts_with("Cpu") {
+                host_nodes.push(format!("#{i} {op_name}"));
+            }
+            *by_op.entry(op_name).or_default().entry(place).or_insert(0) += 1;
+        }
+
+        println!("
+=== Phi decode plan: node placement (CUDA) ===");
+        println!("total nodes: {}", g.len());
+        for (op, places) in &by_op {
+            let r: Vec<String> = places.iter().map(|(d, n)| format!("{d}x{n}")).collect();
+            println!("  {op:<34} {}", r.join("  "));
+        }
+        println!("
+--- HOST-PLACED NODES ({}) ---", host_nodes.len());
+        for h in &host_nodes {
+            println!("    {h}");
+        }
+        println!("--- END ---
+");
+    }
+
+    /// **GPU gate for Phi's CapturedRun decode** — the mirror of
+    /// `forward_with_kv_context_captured_matches_persistent` (Llama).
+    ///
+    /// Phi's capture shipped default-on verified only by `cargo check`, and its
+    /// captured entry is `#[cfg(feature = "cuda")]` — so every CPU test in this
+    /// crate passes with it arbitrarily broken. This closes that.
+    ///
+    /// **The specific failure it guards is silent.** Phi uses PARTIAL rotary:
+    /// its RoPE tables are sized for `rotary_dim`, not `head_dim`. The replay
+    /// path serialises those tables to raw bytes and H2Ds them into fixed
+    /// capture buffers, so a wrong-but-well-formed table would write the WRONG
+    /// VALUES into the RIGHT BUFFERS — correct shapes, no error, fluent wrong
+    /// tokens. Byte-exactness against the persistent path is the only thing
+    /// that catches it.
+    ///
+    /// Drives >= 4 decode tokens so all four driver branches run: token 1
+    /// builds the held `DecodeSession`; token 2 builds the
+    /// `CapturedDecodeSession` and returns its logits from an empty-`updates`
+    /// warm replay; tokens 3-4 are pure `cuGraphLaunch` replays fed by freshly
+    /// serialised per-token bytes — which is where a partial-rotary mistake
+    /// would surface and nowhere earlier.
+    ///
+    /// Bit-exact, not epsilon: same plan, same kernels, same bytes.
+    #[test]
+    #[cfg(feature = "cuda")]
+    #[ignore = "requires a live CUDA device"]
+    fn phi_forward_with_kv_context_captured_matches_persistent() {
+        let cfg = tiny_cfg();
+
+        let cuda = match fuel_cuda_backend::CudaDevice::new(0) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("no CUDA device; skipping: {e:?}");
+                return;
+            }
+        };
+        let dev: Device = cuda.into();
+
+        let prompt = [1_u32, 2, 3];
+        let decode_tokens = [4_u32, 5, 6, 7]; // >= 4 so every branch runs
+        let max_seq_len = prompt.len() + decode_tokens.len();
+
+        // Two models with byte-identical weights (same seed): one drives the
+        // reference persistent path, one the captured path under test.
+        let model_ref = PhiModel { config: cfg.clone(), weights: make_tiny_phi(&cfg, 7) };
+        let model_cap = PhiModel { config: cfg.clone(), weights: make_tiny_phi(&cfg, 7) };
+
+        // --- Reference: forward_with_kv_context_persistent ---
+        let mut cache_ref = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_heads, cfg.head_dim, max_seq_len, DType::F32, &dev,
+        )
+        .expect("with_capacity ref");
+        let mut ctx_ref = InferenceContext::new(dev.clone());
+        let mut sess_ref: Option<crate::inference_context::DecodeSession> = None;
+        model_ref
+            .forward_with_kv_context_persistent(&prompt, &mut cache_ref, &mut ctx_ref, &mut sess_ref)
+            .expect("ref prefill");
+        let mut ref_logits: Vec<Vec<f32>> = Vec::with_capacity(decode_tokens.len());
+        for &tok in &decode_tokens {
+            ref_logits.push(
+                model_ref
+                    .forward_with_kv_context_persistent(
+                        &[tok], &mut cache_ref, &mut ctx_ref, &mut sess_ref,
+                    )
+                    .expect("ref decode"),
+            );
+        }
+
+        // --- Under test: forward_with_kv_context_captured ---
+        let mut cache_cap = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_heads, cfg.head_dim, max_seq_len, DType::F32, &dev,
+        )
+        .expect("with_capacity captured");
+        let mut ctx_cap = InferenceContext::new(dev.clone());
+        let mut sess_cap: Option<crate::inference_context::DecodeSession> = None;
+        let mut captured: Option<fuel_dispatch::pipelined::CapturedDecodeSession> = None;
+        model_cap
+            .forward_with_kv_context_captured(
+                &prompt, &mut cache_cap, &mut ctx_cap, &mut sess_cap, &mut captured,
+            )
+            .expect("captured prefill");
+        assert!(captured.is_none(), "prefill (seq != 1) must NOT build a capture");
+
+        for (i, &tok) in decode_tokens.iter().enumerate() {
+            let got = model_cap
+                .forward_with_kv_context_captured(
+                    &[tok], &mut cache_cap, &mut ctx_cap, &mut sess_cap, &mut captured,
+                )
+                .expect("captured decode");
+
+            assert_eq!(
+                got, ref_logits[i],
+                "Phi captured decode token {i} must be BYTE-IDENTICAL to the persistent                  path (same plan => same kernels). A mismatch here on tokens 3+ is the                  partial-rotary replay-bytes failure this test exists for.",
+            );
+
+            if i == 0 {
+                assert!(sess_cap.is_some(), "token 1 builds the held session");
+                assert!(captured.is_none(), "token 1 must NOT build the capture yet");
+            }
+        }
+
+        // Both caches advanced identically — the fallback path must bump the
+        // cache exactly as the captured path would.
+        assert_eq!(cache_cap.cached_len, max_seq_len);
+        assert_eq!(cache_ref.cached_len, max_seq_len);
+
+        // --- Report whether capture actually formed (state, not verdict) ---
+        //
+        // Byte-exactness above is the CLAIM and is asserted unconditionally.
+        // Whether the capture forms is a property of the model's GRAPH, and
+        // Phi's is currently NOT capturable: its decode plan carries 3 fused
+        // `LayerNormLastDim` and 4 fused `ROPE` nodes with no CUDA binding, so
+        // they land on the host and force the cross-device `Op::Copy` that
+        // `capture_decode` rejects (measured — see
+        // `phi_decode_node_placement_report_cuda`). Llama captures because its
+        // rope runs DECOMPOSED on CUDA instead of as a fused node.
+        //
+        // So this asserts the INVARIANT that holds either way — capture is an
+        // optimization, and declining it must never change the answer — and
+        // reports which branch ran. If a future registration puts LayerNorm and
+        // ROPE on CUDA, capture will start forming and this test keeps passing
+        // while the line below changes: a state report, not a frozen
+        // expectation.
+        if captured.is_some() {
+            println!("Phi capture FORMED — the decode graph is fully CUDA-resident");
+        } else {
+            println!(
+                "Phi capture DECLINED (expected today) — host-placed fused                  LayerNormLastDim/ROPE force a cross-device Copy. Results were                  byte-identical via the persistent fallback, which is the                  property that matters: capture degrades, never fails."
+            );
+        }
+    }
+
 }
 
 #[cfg(test)]
