@@ -5,26 +5,49 @@
 //! `#[ignore]`'d: needs a real CUDA device + the NVRTC runtime. Run manually
 //! with `cargo test -p fuel-dispatch --features cuda,jit -- --ignored`.
 //!
-//! ## Why this doesn't drive `baracuda_kernelgen::jit::seam::BaracudaSynthesizer`
+//! ## Why this drives a mock — and why that reason is now STALE (2026-08-06)
 //!
-//! The task that produced this test asked for the real `BaracudaSynthesizer`
-//! (`baracuda-kernelgen`, `--features seam,nvrtc`). That crate is
-//! `publish = false` in its own `Cargo.toml` — never shipped to crates.io —
-//! and CLAUDE.md's build-discipline section is explicit that "baracuda...
-//! comes from crates.io pinned... a local `../baracuda` checkout is
-//! **reference-only**". Depending on it here would mean a path dependency
-//! into that checkout, which is exactly what that rule rules out. So this
-//! test instead drives the same seam (`fuel_kernel_seam::Synthesizer`) with a
-//! small mock synthesizer (the same shape `jit_adopt.rs`'s own unit tests
-//! use), whose "compiled artifact" is real PTX — compiled at test time by
-//! `baracuda-nvrtc` (a properly crates.io-pinned baracuda crate, not the
-//! reference-only checkout) from a hand-written CUDA-C source matching the
-//! exact scalar ABI `load_synth_kernel` expects. This exercises every part of
-//! `load_synth_kernel` that is actually novel here (module load, symbol
-//! resolve, slot claim, launch marshaling, real device execution + result
-//! verification) without the disputed dependency. If the real
-//! `BaracudaSynthesizer` wiring is wanted anyway, that's a follow-up someone
-//! should explicitly approve (it means overriding the reference-only rule).
+//! **CORRECTION. This block previously claimed `baracuda-kernelgen` is
+//! `publish = false` in its own `Cargo.toml` — never shipped to crates.io — and
+//! concluded that wiring the real `BaracudaSynthesizer` would need a path dep
+//! into the reference-only `../baracuda` checkout, i.e. an override of CLAUDE.md's
+//! build discipline requiring explicit approval. THAT IS FALSE, and it was false
+//! when written or shortly after.**
+//!
+//! Verified: `baracuda-kernelgen` **0.0.1-alpha.76 and alpha.77 are present in
+//! the local crates.io registry cache** (`~/.cargo/registry/{src,cache}/
+//! index.crates.io-*/baracuda-kernelgen-0.0.1-alpha.7{6,7}[.crate]`) — a `.crate`
+//! tarball under `index.crates.io` can only have come from the registry. The
+//! upstream manifest carries no `publish` key (so it defaults to publishable) and
+//! comments that it was published **specifically so Fuel could construct
+//! `BaracudaSynthesizer` from crates.io**, precisely because our build discipline
+//! forbids path deps.
+//!
+//! So there is **no rule to override**: depending on it is an ordinary registry
+//! dependency, pinned like every other baracuda crate. The blocker this comment
+//! described does not exist.
+//!
+//! Cost of the stale claim, recorded because it is the reusable part: it was
+//! read as authoritative and propagated — Fuel told a sibling project its JIT
+//! seam was "blocked on nothing but the publish boundary" and asked to be pinged
+//! when the crate published, which it already had. **A doc comment asserting an
+//! external fact has a shelf life, and this one outlived its truth without any
+//! signal.** External facts (is X published? what version?) belong in a check,
+//! not a comment.
+//!
+//! What remains true: this test drives the seam (`fuel_kernel_seam::Synthesizer`)
+//! with a small mock whose "compiled artifact" is real PTX — compiled at test
+//! time by `baracuda-nvrtc` from hand-written CUDA-C matching the exact scalar
+//! ABI `load_synth_kernel` expects. That exercises everything novel *here*
+//! (module load, symbol resolve, slot claim, launch marshaling, real device
+//! execution + result verification), and remains a useful isolation of the
+//! loader from the generator.
+//!
+//! **Open follow-up, no longer gated on approval:** drive the seam end-to-end
+//! against the real `BaracudaSynthesizer` (`baracuda-kernelgen`, exact-pinned,
+//! `--features seam,nvrtc`) — the first time Fuel's JIT path would meet a real
+//! generator. The marquee region is `PagedAttn`'s dense recipe, which no GPU
+//! backend implements as a fused op.
 
 #![cfg(all(feature = "cuda", feature = "jit"))]
 
