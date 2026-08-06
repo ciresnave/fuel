@@ -81,6 +81,8 @@ mod invoker_vulkan;
 mod harness;
 #[cfg(feature = "cuda")]
 mod seed_cuda_ledger;
+#[cfg(feature = "vulkan")]
+mod seed_vulkan_ledger;
 
 // ---------------------------------------------------------------------------
 // Re-export gating.

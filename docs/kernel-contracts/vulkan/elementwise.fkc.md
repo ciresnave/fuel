@@ -115,7 +115,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "Generic 16-op selector chassis; per-op numerics in the specialized sections. f32/f64 native, f16 float16_t, bf16 packed-u32; all f32 math. Gelu = tanh approximation."
 
 determinism: same_hardware_bitwise
@@ -178,7 +178,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "-x; exact. f32 native; f16 native float16_t (f32 intermediate); f64 native double. Exact/pointwise arithmetic."
 
 determinism: same_hardware_bitwise
@@ -241,7 +241,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "x*x; exact. f32 native; f16 native float16_t (f32 intermediate); f64 native double. Exact/pointwise arithmetic."
 
 determinism: same_hardware_bitwise
@@ -304,7 +304,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "√x; NaN for x<0. f32 native; f16 native float16_t (f32 intermediate); f64 native double. Exact/pointwise arithmetic."
 
 determinism: same_hardware_bitwise
@@ -367,7 +367,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "e^x. f32 native; f16 native float16_t (f32 intermediate); f64 native double. Transcendental (Exp/Log/Sin/Cos/Tanh/Sigmoid/Silu/Gelu) not bit-stable cross-hardware."
 
 determinism: same_hardware_bitwise
@@ -430,7 +430,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "ln(x); NaN for x<0, -inf at 0. f32 native; f16 native float16_t (f32 intermediate); f64 native double. Transcendental (Exp/Log/Sin/Cos/Tanh/Sigmoid/Silu/Gelu) not bit-stable cross-hardware."
 
 determinism: same_hardware_bitwise
@@ -493,7 +493,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "sin(x). f32 native; f16 native float16_t (f32 intermediate); f64 native double. Transcendental (Exp/Log/Sin/Cos/Tanh/Sigmoid/Silu/Gelu) not bit-stable cross-hardware."
 
 determinism: same_hardware_bitwise
@@ -556,7 +556,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "cos(x). f32 native; f16 native float16_t (f32 intermediate); f64 native double. Transcendental (Exp/Log/Sin/Cos/Tanh/Sigmoid/Silu/Gelu) not bit-stable cross-hardware."
 
 determinism: same_hardware_bitwise
@@ -619,7 +619,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "tanh(x). f32 native; f16 native float16_t (f32 intermediate); f64 native double. Transcendental (Exp/Log/Sin/Cos/Tanh/Sigmoid/Silu/Gelu) not bit-stable cross-hardware."
 
 determinism: same_hardware_bitwise
@@ -682,7 +682,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "1/(1+exp(-x)). f32 native; f16 native float16_t (f32 intermediate); f64 native double. Transcendental (Exp/Log/Sin/Cos/Tanh/Sigmoid/Silu/Gelu) not bit-stable cross-hardware."
 
 determinism: same_hardware_bitwise
@@ -745,7 +745,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "x*sigmoid(x). f32 native; f16 native float16_t (f32 intermediate); f64 native double. Transcendental (Exp/Log/Sin/Cos/Tanh/Sigmoid/Silu/Gelu) not bit-stable cross-hardware."
 
 determinism: same_hardware_bitwise
@@ -808,7 +808,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "GELU tanh approximation (NOT erf). f32 native; f16 native float16_t (f32 intermediate); f64 native double. Transcendental (Exp/Log/Sin/Cos/Tanh/Sigmoid/Silu/Gelu) not bit-stable cross-hardware."
 
 determinism: same_hardware_bitwise
@@ -871,7 +871,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "max(0,x). f32 native; f16 native float16_t (f32 intermediate); f64 native double. Exact/pointwise arithmetic."
 
 determinism: same_hardware_bitwise
@@ -934,7 +934,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "x>0 ? 1 : 0. f32 native; f16 native float16_t (f32 intermediate); f64 native double. Exact/pointwise arithmetic."
 
 determinism: same_hardware_bitwise
@@ -997,7 +997,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "|x|. f32 native; f16 native float16_t (f32 intermediate); f64 native double. Exact/pointwise arithmetic."
 
 determinism: same_hardware_bitwise
@@ -1060,7 +1060,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "sign(x) in {-1,0,1}. f32 native; f16 native float16_t (f32 intermediate); f64 native double. Exact/pointwise arithmetic."
 
 determinism: same_hardware_bitwise
@@ -1123,7 +1123,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "1/x; ±inf at 0. f32 native; f16 native float16_t (f32 intermediate); f64 native double. Exact/pointwise arithmetic."
 
 determinism: same_hardware_bitwise
@@ -1186,7 +1186,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "-x; exact. bf16 packed-u32; f32 math; load bits<<16 exact, store RNE upper-16 + canonical qNaN. Exact/pointwise arithmetic. Requires even n."
 
 determinism: same_hardware_bitwise
@@ -1249,7 +1249,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "x*x; exact. bf16 packed-u32; f32 math; load bits<<16 exact, store RNE upper-16 + canonical qNaN. Exact/pointwise arithmetic. Requires even n."
 
 determinism: same_hardware_bitwise
@@ -1312,7 +1312,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "√x; NaN for x<0. bf16 packed-u32; f32 math; load bits<<16 exact, store RNE upper-16 + canonical qNaN. Exact/pointwise arithmetic. Requires even n."
 
 determinism: same_hardware_bitwise
@@ -1375,7 +1375,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "e^x. bf16 packed-u32; f32 math; load bits<<16 exact, store RNE upper-16 + canonical qNaN. Transcendentals not bit-stable cross-hardware. Requires even n."
 
 determinism: same_hardware_bitwise
@@ -1438,7 +1438,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "ln(x); NaN for x<0, -inf at 0. bf16 packed-u32; f32 math; load bits<<16 exact, store RNE upper-16 + canonical qNaN. Transcendentals not bit-stable cross-hardware. Requires even n."
 
 determinism: same_hardware_bitwise
@@ -1501,7 +1501,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "sin(x). bf16 packed-u32; f32 math; load bits<<16 exact, store RNE upper-16 + canonical qNaN. Transcendentals not bit-stable cross-hardware. Requires even n."
 
 determinism: same_hardware_bitwise
@@ -1564,7 +1564,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "cos(x). bf16 packed-u32; f32 math; load bits<<16 exact, store RNE upper-16 + canonical qNaN. Transcendentals not bit-stable cross-hardware. Requires even n."
 
 determinism: same_hardware_bitwise
@@ -1627,7 +1627,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "tanh(x). bf16 packed-u32; f32 math; load bits<<16 exact, store RNE upper-16 + canonical qNaN. Transcendentals not bit-stable cross-hardware. Requires even n."
 
 determinism: same_hardware_bitwise
@@ -1690,7 +1690,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "1/(1+exp(-x)). bf16 packed-u32; f32 math; load bits<<16 exact, store RNE upper-16 + canonical qNaN. Transcendentals not bit-stable cross-hardware. Requires even n."
 
 determinism: same_hardware_bitwise
@@ -1753,7 +1753,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "x*sigmoid(x). bf16 packed-u32; f32 math; load bits<<16 exact, store RNE upper-16 + canonical qNaN. Transcendentals not bit-stable cross-hardware. Requires even n."
 
 determinism: same_hardware_bitwise
@@ -1816,7 +1816,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "GELU tanh approximation (NOT erf). bf16 packed-u32; f32 math; load bits<<16 exact, store RNE upper-16 + canonical qNaN. Transcendentals not bit-stable cross-hardware. Requires even n."
 
 determinism: same_hardware_bitwise
@@ -1879,7 +1879,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "max(0,x). bf16 packed-u32; f32 math; load bits<<16 exact, store RNE upper-16 + canonical qNaN. Exact/pointwise arithmetic. Requires even n."
 
 determinism: same_hardware_bitwise
@@ -1942,7 +1942,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "x>0 ? 1 : 0. bf16 packed-u32; f32 math; load bits<<16 exact, store RNE upper-16 + canonical qNaN. Exact/pointwise arithmetic. Requires even n."
 
 determinism: same_hardware_bitwise
@@ -2005,7 +2005,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "|x|. bf16 packed-u32; f32 math; load bits<<16 exact, store RNE upper-16 + canonical qNaN. Exact/pointwise arithmetic. Requires even n."
 
 determinism: same_hardware_bitwise
@@ -2068,7 +2068,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "sign(x) in {-1,0,1}. bf16 packed-u32; f32 math; load bits<<16 exact, store RNE upper-16 + canonical qNaN. Exact/pointwise arithmetic. Requires even n."
 
 determinism: same_hardware_bitwise
@@ -2131,7 +2131,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "1/x; ±inf at 0. bf16 packed-u32; f32 math; load bits<<16 exact, store RNE upper-16 + canonical qNaN. Exact/pointwise arithmetic. Requires even n."
 
 determinism: same_hardware_bitwise
@@ -2200,7 +2200,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "Generic 6-op selector chassis; per-op numerics in the specialized sections. Div IEEE inf/NaN; Max/Min NaN-as-missing."
 
 determinism: same_hardware_bitwise
@@ -2269,7 +2269,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "lhs+rhs. f32/f64 native; f16 native float16_t; bf16 packed-u32 (lane-masked strided), all f32 math. Deterministic per-element dispatch."
 
 determinism: same_hardware_bitwise
@@ -2338,7 +2338,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "lhs-rhs. f32/f64 native; f16 native float16_t; bf16 packed-u32 (lane-masked strided), all f32 math. Deterministic per-element dispatch."
 
 determinism: same_hardware_bitwise
@@ -2407,7 +2407,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "lhs*rhs. f32/f64 native; f16 native float16_t; bf16 packed-u32 (lane-masked strided), all f32 math. Deterministic per-element dispatch."
 
 determinism: same_hardware_bitwise
@@ -2476,7 +2476,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "lhs/rhs; IEEE inf/NaN. f32/f64 native; f16 native float16_t; bf16 packed-u32 (lane-masked strided), all f32 math. Deterministic per-element dispatch."
 
 determinism: same_hardware_bitwise
@@ -2545,7 +2545,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "max(lhs,rhs); NaN-as-missing. f32/f64 native; f16 native float16_t; bf16 packed-u32 (lane-masked strided), all f32 math. Deterministic per-element dispatch."
 
 determinism: same_hardware_bitwise
@@ -2614,7 +2614,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "min(lhs,rhs); NaN-as-missing. f32/f64 native; f16 native float16_t; bf16 packed-u32 (lane-masked strided), all f32 math. Deterministic per-element dispatch."
 
 determinism: same_hardware_bitwise
@@ -2683,7 +2683,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "f32/f16 widen to f32 mul-add then narrow; f64 native double. mul=1 ⇒ AddScalar; add=0 ⇒ MulScalar. Deterministic per-element dispatch."
 
 determinism: same_hardware_bitwise
@@ -2749,7 +2749,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "bf16 packed-u32; widen to f32, mul-add in f32 (params f64→f32), narrow to bf16 on store. mul=1 ⇒ AddScalar; add=0 ⇒ MulScalar."
 
 determinism: same_hardware_bitwise
@@ -2817,7 +2817,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "f32 clamp; exact (no rounding). Deterministic per-element dispatch."
 
 determinism: same_hardware_bitwise
@@ -2885,7 +2885,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "f32. e=0/1/2/3 by direct multiply; else GLSL pow (not bit-stable cross-hardware). pow(0,-k) -> +inf matches CPU."
 
 determinism: same_hardware_bitwise
@@ -2957,7 +2957,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
+  audited: true
   notes: "f32 dst + src*scale; plain per-element accumulate (no atomics); IEEE inf/NaN. Bit-stable on same hardware."
 
 determinism: same_hardware_bitwise

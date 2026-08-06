@@ -902,8 +902,12 @@ pub fn default_cost_for_op_kind(op: OpKind) -> CostFn {
         Conv2D => cost_conv2d_primitive_cpu,
         ConvTranspose2D => cost_conv_transpose2d_primitive_cpu,
 
-        // Attention.
-        FlashAttn => cost_flash_attn_primitive_cpu,
+        // Attention (forward + backward share the geometry-based cost — the
+        // backward ops carry `OpParams::FlashAttn`, and forward FLOPs are a
+        // sound proxy; mirrors the softmax/norm forward+backward arms below).
+        FlashAttn
+        | FlashAttnBackwardQ | FlashAttnBackwardK | FlashAttnBackwardV
+            => cost_flash_attn_primitive_cpu,
         PagedAttn => cost_paged_attn_primitive_cpu,
 
         // Cast.
