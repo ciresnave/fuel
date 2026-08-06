@@ -1137,7 +1137,7 @@ fn cpu_zeros(shape: &Shape, dtype: DType) -> Result<HostBuffer> {
         DType::F32 => HostBuffer::F32(vec![0f32; elem_count]),
         DType::F64 => HostBuffer::F64(vec![0f64; elem_count]),
         DType::F8E4M3 => HostBuffer::F8E4M3(vec![F8E4M3::ZERO; elem_count]),
-        DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 => {
+        DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 | DType::F8E6M2 => {
             return Err(Error::UnsupportedDTypeForOp(dtype, "zeros").bt())
         }
     };
@@ -1159,7 +1159,7 @@ unsafe fn cpu_alloc_uninit(shape: &Shape, dtype: DType) -> Result<HostBuffer> {
         DType::F32 => { let mut v = Vec::with_capacity(elem_count); unsafe { v.set_len(elem_count) }; HostBuffer::F32(v) }
         DType::F64 => { let mut v = Vec::with_capacity(elem_count); unsafe { v.set_len(elem_count) }; HostBuffer::F64(v) }
         DType::F8E4M3 => { let mut v = Vec::with_capacity(elem_count); unsafe { v.set_len(elem_count) }; HostBuffer::F8E4M3(v) }
-        DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 => {
+        DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 | DType::F8E6M2 => {
             return Err(Error::UnsupportedDTypeForOp(dtype, "alloc_uninit").bt())
         }
     };

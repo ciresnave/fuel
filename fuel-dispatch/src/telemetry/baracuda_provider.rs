@@ -125,7 +125,7 @@ fn map_element_kind(dt: DType) -> Option<ElementKind> {
         DType::F64 => ElementKind::F64,
         DType::F8E4M3 => ElementKind::Fp8E4M3,
         // No faithful Baracuda ElementKind — no signal beats a wrong one.
-        DType::U32 | DType::I16 | DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 => {
+        DType::U32 | DType::I16 | DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 | DType::F8E6M2 => {
             return None;
         }
     })

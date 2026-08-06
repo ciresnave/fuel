@@ -582,7 +582,7 @@ impl CudaDevice {
                 let data = self.alloc_zeros::<F8E4M3>(elem_count)?;
                 CudaStorageSlice::F8E4M3(data)
             }
-            DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 => {
+            DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 | DType::F8E6M2 => {
                 return Err(
                     CudaError::InternalError("Dummy types not supported in CUDA backend").into(),
                 )
@@ -622,7 +622,7 @@ impl CudaDevice {
                 curand.0.uniform_f64(&mut data).w()?;
                 CudaStorageSlice::F64(data)
             }
-            DType::F8E4M3 | DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 => {
+            DType::F8E4M3 | DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 | DType::F8E6M2 => {
                 Err(CudaError::UnsupportedDtype {
                     dtype,
                     op: "rand_uniform",
@@ -681,7 +681,7 @@ impl CudaDevice {
                 curand.0.normal_f64(&mut data, mean, std).w()?;
                 CudaStorageSlice::F64(data)
             }
-            DType::F8E4M3 | DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 => {
+            DType::F8E4M3 | DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 | DType::F8E6M2 => {
                 Err(CudaError::UnsupportedDtype {
                     dtype,
                     op: "rand_normal",
@@ -742,7 +742,7 @@ impl CudaDevice {
                 let data = unsafe { self.alloc::<F8E4M3>(elem_count) }?;
                 CudaStorageSlice::F8E4M3(data)
             }
-            DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 => {
+            DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 | DType::F8E6M2 => {
                 return Err(
                     CudaError::InternalError("Dummy types not supported in CUDA backend").into(),
                 )
