@@ -2419,6 +2419,45 @@ pub mod binary {
     use super::*;
     use fuel_cuda_backend::baracuda::binary as bk;
 
+    // --- comparison family (T, T -> U8) ---
+    //
+    // The generated wrapper is dtype-agnostic: it hands raw
+    // `CudaStorageBytes` through, and the U8-vs-F32 width difference is
+    // handled one layer down (`compare_kernel!` passes an output element
+    // width of 1). Registering these is what lets `Op::PagedAttn`'s
+    // primitive recipe resolve entirely on CUDA — `ge` on [F32,F32,U8] was
+    // its single unresolvable node, which is why the paged graph carried
+    // host round-trips.
+    cuda_binary_baracuda_wrapper!(eq_f32_u8, bk::binary_cmp_eq_f32_into);
+    cuda_binary_baracuda_wrapper!(eq_f64_u8, bk::binary_cmp_eq_f64_into);
+    cuda_binary_baracuda_wrapper!(eq_f16_u8, bk::binary_cmp_eq_f16_into);
+    cuda_binary_baracuda_wrapper!(eq_bf16_u8, bk::binary_cmp_eq_bf16_into);
+
+    cuda_binary_baracuda_wrapper!(ne_f32_u8, bk::binary_cmp_ne_f32_into);
+    cuda_binary_baracuda_wrapper!(ne_f64_u8, bk::binary_cmp_ne_f64_into);
+    cuda_binary_baracuda_wrapper!(ne_f16_u8, bk::binary_cmp_ne_f16_into);
+    cuda_binary_baracuda_wrapper!(ne_bf16_u8, bk::binary_cmp_ne_bf16_into);
+
+    cuda_binary_baracuda_wrapper!(lt_f32_u8, bk::binary_cmp_lt_f32_into);
+    cuda_binary_baracuda_wrapper!(lt_f64_u8, bk::binary_cmp_lt_f64_into);
+    cuda_binary_baracuda_wrapper!(lt_f16_u8, bk::binary_cmp_lt_f16_into);
+    cuda_binary_baracuda_wrapper!(lt_bf16_u8, bk::binary_cmp_lt_bf16_into);
+
+    cuda_binary_baracuda_wrapper!(le_f32_u8, bk::binary_cmp_le_f32_into);
+    cuda_binary_baracuda_wrapper!(le_f64_u8, bk::binary_cmp_le_f64_into);
+    cuda_binary_baracuda_wrapper!(le_f16_u8, bk::binary_cmp_le_f16_into);
+    cuda_binary_baracuda_wrapper!(le_bf16_u8, bk::binary_cmp_le_bf16_into);
+
+    cuda_binary_baracuda_wrapper!(gt_f32_u8, bk::binary_cmp_gt_f32_into);
+    cuda_binary_baracuda_wrapper!(gt_f64_u8, bk::binary_cmp_gt_f64_into);
+    cuda_binary_baracuda_wrapper!(gt_f16_u8, bk::binary_cmp_gt_f16_into);
+    cuda_binary_baracuda_wrapper!(gt_bf16_u8, bk::binary_cmp_gt_bf16_into);
+
+    cuda_binary_baracuda_wrapper!(ge_f32_u8, bk::binary_cmp_ge_f32_into);
+    cuda_binary_baracuda_wrapper!(ge_f64_u8, bk::binary_cmp_ge_f64_into);
+    cuda_binary_baracuda_wrapper!(ge_f16_u8, bk::binary_cmp_ge_f16_into);
+    cuda_binary_baracuda_wrapper!(ge_bf16_u8, bk::binary_cmp_ge_bf16_into);
+
     cuda_binary_baracuda_wrapper!(add_f32, bk::binary_add_f32_into);
     cuda_binary_baracuda_wrapper!(sub_f32, bk::binary_sub_f32_into);
     cuda_binary_baracuda_wrapper!(mul_f32, bk::binary_mul_f32_into);

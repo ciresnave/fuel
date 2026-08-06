@@ -118,6 +118,7 @@ fn binary_run(
     strided_run: BinaryStridedRun,
     op_label: &'static str,
     dtype_size_bytes: usize,
+    out_dtype_size_bytes: usize,
 ) -> Result<CudaStorageBytes> {
     // Size the output from lhs (post-broadcast lhs shape == output shape
     // at this layer — the graph inserts explicit Op::BroadcastTo, so both
@@ -127,7 +128,13 @@ fn binary_run(
         Some(l) => l.shape().elem_count(),
         None => lhs.len_bytes() / dtype_size_bytes.max(1),
     };
-    let out_bytes = numel * dtype_size_bytes;
+    // Input and output element widths are SEPARATE. They coincide for
+    // arithmetic (f32+f32->f32) and differ for comparisons (f32,f32->u8):
+    // `dtype_size_bytes` derives element counts from INPUT byte lengths,
+    // `out_dtype_size_bytes` sizes the OUTPUT. Collapsing them — as this
+    // driver did while it had only arithmetic callers — makes a comparison
+    // demand a 4x-oversized u8 buffer and reject a correct one.
+    let out_bytes = numel * out_dtype_size_bytes;
     let device = lhs.device().clone();
     if out_bytes == 0 {
         return CudaStorageBytes::alloc(&device, 0);
@@ -136,7 +143,7 @@ fn binary_run(
     let out = CudaStorageBytes::from_parts(Arc::new(out_buf), device, out_bytes);
     binary_run_into(
         lhs, rhs, lhs_layout, rhs_layout, &out, contig_run, strided_run, op_label,
-        dtype_size_bytes,
+        dtype_size_bytes, out_dtype_size_bytes,
     )?;
     Ok(out)
 }
@@ -165,6 +172,7 @@ fn binary_run_into(
     strided_run: BinaryStridedRun,
     op_label: &'static str,
     dtype_size_bytes: usize,
+    out_dtype_size_bytes: usize,
 ) -> Result<()> {
     let derived_lhs_layout;
     let derived_rhs_layout;
@@ -185,7 +193,8 @@ fn binary_run_into(
         }
     };
     let numel: i64 = lhs_l.shape().elem_count() as i64;
-    let out_bytes = (numel as usize) * dtype_size_bytes;
+    // See `binary_run`: output width is independent of input width.
+    let out_bytes = (numel as usize) * out_dtype_size_bytes;
     let device = lhs.device().clone();
     if rhs.device().id() != device.id() {
         return Err(fuel_ir::Error::Msg(format!(
@@ -277,6 +286,7 @@ macro_rules! binary_kernel {
                     sys::[<baracuda_kernels_binary_ $sys_stem _strided_run>],
                     $op_label,
                     $dtype_size,
+                    $dtype_size,
                 )
             }
 
@@ -301,6 +311,7 @@ macro_rules! binary_kernel {
                     sys::[<baracuda_kernels_binary_ $sys_stem _strided_run>],
                     $op_label,
                     $dtype_size,
+                    $dtype_size,
                 )
             }
         }
@@ -310,6 +321,104 @@ macro_rules! binary_kernel {
 // ---------------------------------------------------------------------------
 // F32 binary kernels
 // ---------------------------------------------------------------------------
+
+/// Manifest macro for one (comparison, dtype) entry — the predicate
+/// siblings of [`binary_kernel!`].
+///
+/// Identical launch path; the ONE difference is that inputs and output
+/// have different element widths (`T, T -> U8`), which is why the driver
+/// takes the two sizes separately. baracuda states the semantics on the
+/// FFI symbol: *"Any comparison involving NaN returns 0 per IEEE 754."*
+/// That is the convention Fuel's CPU comparisons already follow, so the
+/// backends agree without a Fuel-side adjustment — see
+/// `docs/kernel-contracts/cpu/compare-where.fkc.md`.
+///
+/// `$dtype_size` is the INPUT element width; the output is always 1 byte.
+macro_rules! compare_kernel {
+    ($name:ident, $sys_stem:ident, $dtype_size:expr, $op_label:expr $(,)?) => {
+        ::paste::paste! {
+            #[doc = concat!("Baracuda binary comparison `", $op_label, "` (T, T -> U8).")]
+            pub fn $name(
+                lhs: &CudaStorageBytes,
+                rhs: &CudaStorageBytes,
+                lhs_layout: Option<&Layout>,
+                rhs_layout: Option<&Layout>,
+            ) -> Result<CudaStorageBytes> {
+                binary_run(
+                    lhs,
+                    rhs,
+                    lhs_layout,
+                    rhs_layout,
+                    sys::[<baracuda_kernels_binary_ $sys_stem _run>],
+                    sys::[<baracuda_kernels_binary_ $sys_stem _strided_run>],
+                    $op_label,
+                    $dtype_size,
+                    1,
+                )
+            }
+
+            #[doc = concat!(
+                "Write-into-output variant of baracuda comparison `", $op_label,
+                "` — writes into `out` (no alloc; CapturedRun capture mode)."
+            )]
+            pub fn [<$name _into>](
+                lhs: &CudaStorageBytes,
+                rhs: &CudaStorageBytes,
+                lhs_layout: Option<&Layout>,
+                rhs_layout: Option<&Layout>,
+                out: &CudaStorageBytes,
+            ) -> Result<()> {
+                binary_run_into(
+                    lhs,
+                    rhs,
+                    lhs_layout,
+                    rhs_layout,
+                    out,
+                    sys::[<baracuda_kernels_binary_ $sys_stem _run>],
+                    sys::[<baracuda_kernels_binary_ $sys_stem _strided_run>],
+                    $op_label,
+                    $dtype_size,
+                    1,
+                )
+            }
+        }
+    };
+}
+
+// The comparison family: 6 ops x 4 float dtypes -> U8, contig + strided.
+// Every symbol below already exists in `baracuda-kernels-sys`; this file is
+// the only thing that was missing, which is why `Op::PagedAttn`'s recipe
+// could not plan on CUDA (`GreaterEqualElementwise[F32,F32,U8]` was its one
+// unresolvable node).
+compare_kernel!(binary_cmp_eq_f32, cmp_eq_f32, 4, "binary_cmp_eq_f32");
+compare_kernel!(binary_cmp_eq_f64, cmp_eq_f64, 8, "binary_cmp_eq_f64");
+compare_kernel!(binary_cmp_eq_f16, cmp_eq_f16, 2, "binary_cmp_eq_f16");
+compare_kernel!(binary_cmp_eq_bf16, cmp_eq_bf16, 2, "binary_cmp_eq_bf16");
+
+compare_kernel!(binary_cmp_ne_f32, cmp_ne_f32, 4, "binary_cmp_ne_f32");
+compare_kernel!(binary_cmp_ne_f64, cmp_ne_f64, 8, "binary_cmp_ne_f64");
+compare_kernel!(binary_cmp_ne_f16, cmp_ne_f16, 2, "binary_cmp_ne_f16");
+compare_kernel!(binary_cmp_ne_bf16, cmp_ne_bf16, 2, "binary_cmp_ne_bf16");
+
+compare_kernel!(binary_cmp_lt_f32, cmp_lt_f32, 4, "binary_cmp_lt_f32");
+compare_kernel!(binary_cmp_lt_f64, cmp_lt_f64, 8, "binary_cmp_lt_f64");
+compare_kernel!(binary_cmp_lt_f16, cmp_lt_f16, 2, "binary_cmp_lt_f16");
+compare_kernel!(binary_cmp_lt_bf16, cmp_lt_bf16, 2, "binary_cmp_lt_bf16");
+
+compare_kernel!(binary_cmp_le_f32, cmp_le_f32, 4, "binary_cmp_le_f32");
+compare_kernel!(binary_cmp_le_f64, cmp_le_f64, 8, "binary_cmp_le_f64");
+compare_kernel!(binary_cmp_le_f16, cmp_le_f16, 2, "binary_cmp_le_f16");
+compare_kernel!(binary_cmp_le_bf16, cmp_le_bf16, 2, "binary_cmp_le_bf16");
+
+compare_kernel!(binary_cmp_gt_f32, cmp_gt_f32, 4, "binary_cmp_gt_f32");
+compare_kernel!(binary_cmp_gt_f64, cmp_gt_f64, 8, "binary_cmp_gt_f64");
+compare_kernel!(binary_cmp_gt_f16, cmp_gt_f16, 2, "binary_cmp_gt_f16");
+compare_kernel!(binary_cmp_gt_bf16, cmp_gt_bf16, 2, "binary_cmp_gt_bf16");
+
+compare_kernel!(binary_cmp_ge_f32, cmp_ge_f32, 4, "binary_cmp_ge_f32");
+compare_kernel!(binary_cmp_ge_f64, cmp_ge_f64, 8, "binary_cmp_ge_f64");
+compare_kernel!(binary_cmp_ge_f16, cmp_ge_f16, 2, "binary_cmp_ge_f16");
+compare_kernel!(binary_cmp_ge_bf16, cmp_ge_bf16, 2, "binary_cmp_ge_bf16");
 
 binary_kernel!(binary_add_f32, add_f32, 4, "binary_add_f32");
 binary_kernel!(binary_sub_f32, sub_f32, 4, "binary_sub_f32");
