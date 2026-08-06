@@ -22,10 +22,11 @@ pub use fuel_ir::DeviceLocation;
 /// # Example
 ///
 /// ```rust
-/// use fuel_core::{Device, Tensor, DType};
+/// use fuel_core::{Device, DType};
+/// use fuel_core::lazy::LazyTensor;
 /// let dev = Device::cpu();
-/// let t = Tensor::zeros((2, 3), DType::F32, &dev)?;
-/// assert_eq!(t.dims(), &[2, 3]);
+/// let t = LazyTensor::zeros((2, 3), DType::F32, &dev)?;
+/// assert_eq!(t.shape().dims(), &[2, 3]);
 /// # Ok::<(), fuel_core::Error>(())
 /// ```
 #[derive(Clone, Debug)]
@@ -33,23 +34,21 @@ pub struct Device {
     pub(crate) inner: Arc<dyn DynBackendDevice>,
 }
 
-/// Trait for types that can be converted to tensor storage, providing shape and CPU data.
+/// Trait for host array-like values that describe their shape and yield CPU storage.
 ///
 /// Implemented for scalars, arrays, slices, and nested vecs up to 4 dimensions.
-/// This trait is what allows [`Tensor::new`](crate::Tensor::new) to accept many different
-/// Rust types directly.
+/// It lets array-like Rust values report the [`Shape`] their data describes and
+/// materialize into a [`HostBuffer`] — the raw material a lazy tensor is built from.
 ///
 /// # Example
 ///
 /// ```rust
-/// use fuel_core::{Device, Tensor};
-/// // Scalars, arrays, and nested arrays all implement NdArray
-/// let scalar = Tensor::new(3.14f32, &Device::cpu())?;
-/// let vec1d = Tensor::new(&[1f32, 2., 3.], &Device::cpu())?;
-/// let mat2d = Tensor::new(&[[1f32, 2.], [3., 4.]], &Device::cpu())?;
-/// assert_eq!(scalar.dims(), &[] as &[usize]);
-/// assert_eq!(vec1d.dims(), &[3]);
-/// assert_eq!(mat2d.dims(), &[2, 2]);
+/// use fuel_core::NdArray;
+/// // Scalars, arrays, and nested arrays all implement `NdArray` and report
+/// // the shape their data describes.
+/// assert_eq!(3.14f32.shape()?.dims(), &[] as &[usize]);
+/// assert_eq!((&[1f32, 2., 3.]).shape()?.dims(), &[3]);
+/// assert_eq!((&[[1f32, 2.], [3., 4.]]).shape()?.dims(), &[2, 2]);
 /// # Ok::<(), fuel_core::Error>(())
 /// ```
 pub trait NdArray {
