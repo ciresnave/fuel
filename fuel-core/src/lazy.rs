@@ -9933,21 +9933,11 @@ impl LlamaModel {
         max_seq_len: Option<usize>,
         cache_dtype: DType,
     ) -> bool {
-        let stale = match session.as_ref() {
-            None => false,
-            Some(s) => match max_seq_len {
-                Some(msl) => !s.is_valid_for(
-                    seq, msl, self.config.n_layers, cache_dtype, self.decode_shape_key(),
-                ),
-                None => true,
-            },
-        };
-        if stale {
-            // Reader before owner — see the doc comment above.
-            *captured = None;
-            self.drop_decode_session(session, ctx);
-        }
-        stale
+        invalidate_decode_pair_if_stale(
+            session, captured, ctx, seq, max_seq_len, cache_dtype,
+            self.config.n_layers, self.decode_shape_key(),
+            |sess, c| self.drop_decode_session(sess, c),
+        )
     }
 
     /// Drop a held decode session, removing any leftover persistent
@@ -9985,6 +9975,57 @@ impl LlamaModel {
 /// `LlamaModel::build_token_rope_mask_arcs` (uploads each to a fresh
 /// device Arc) and `LlamaModel::build_token_rope_mask_bytes` (extracts
 /// each to raw host bytes) build from. `LlamaModel`-private.
+/// **Shared staleness predicate for a held `(DecodeSession, capture)` pair** —
+/// one definition for every model, so they cannot drift on what "stale" means.
+///
+/// Was a `LlamaModel` inherent method until Phi needed it too. Copying it would
+/// have created exactly the divergence risk this session has been closing
+/// elsewhere: two predicates, one test, and a silent disagreement the day one is
+/// updated. The model-specific parts (`n_layers`, `shape_key`, and how to drop
+/// a session) arrive as parameters instead.
+///
+/// **The capture must die with the session.** A `CapturedDecodeSession` is a
+/// recorded CUDA graph over FIXED device addresses drawn from the session's
+/// `base_cache`. Drop the session alone and the graph keeps replaying against
+/// buffers that no longer describe the live cache — silently wrong logits at
+/// full speed, which is worse than a crash because nothing reports it. The
+/// capture is cleared FIRST, retiring the reader before the owner.
+///
+/// Generic in the capture type so this compiles — and is therefore testable —
+/// without the `cuda` feature; the only thing done with `captured` is clear it.
+///
+/// Returns whether it invalidated. On `true` the caller's `session` is `None`,
+/// so the ordinary first-decode-token arm rebuilds both.
+#[allow(clippy::too_many_arguments)]
+fn invalidate_decode_pair_if_stale<C>(
+    session: &mut Option<crate::inference_context::DecodeSession>,
+    captured: &mut Option<C>,
+    ctx: &mut InferenceContext,
+    seq: usize,
+    max_seq_len: Option<usize>,
+    cache_dtype: DType,
+    n_layers: usize,
+    shape_key: u64,
+    drop_session: impl FnOnce(
+        &mut Option<crate::inference_context::DecodeSession>,
+        &mut InferenceContext,
+    ),
+) -> bool {
+    let stale = match session.as_ref() {
+        None => false,
+        Some(s) => match max_seq_len {
+            Some(msl) => !s.is_valid_for(seq, msl, n_layers, cache_dtype, shape_key),
+            None => true,
+        },
+    };
+    if stale {
+        // Reader before owner — see the doc comment above.
+        *captured = None;
+        drop_session(session, ctx);
+    }
+    stale
+}
+
 struct TokenDataHost {
     token_ids: fuel_ir::HostBuffer,
     rope_cos: fuel_ir::HostBuffer,
@@ -11978,6 +12019,47 @@ impl PhiModel {
     /// (the SAME upload path `KvCache::with_capacity` uses). The bytes
     /// change per token; the NodeId stays stable (re-bound via a
     /// `base_cache` overwrite, not a fresh graph).
+    /// Phi's per-token decode data as HOST buffers — the single source of
+    /// truth shared by [`Self::build_token_rope_mask_arcs`] (which uploads it)
+    /// and [`Self::build_token_rope_mask_bytes`] (which serialises it for
+    /// capture replay).
+    ///
+    /// Extracted rather than duplicated deliberately. If the upload path and
+    /// the replay path computed this data separately they could drift, and the
+    /// failure would be silent: replay would H2D the *wrong bytes* into the
+    /// right buffers and produce confident garbage. One computation, two
+    /// consumers, drift unrepresentable.
+    ///
+    /// **Phi-specific:** RoPE tables are sized for `rotary_dim`, not `head_dim`
+    /// — Phi uses PARTIAL rotary embedding. Getting that wrong here is exactly
+    /// the silent-wrong-bytes failure above, since the shapes would still match.
+    fn compute_token_rope_mask_host_data(
+        &self,
+        cached_len: usize,
+        tokens: &[u32],
+        max_seq_len: usize,
+    ) -> crate::Result<TokenDataHost> {
+        let cfg = &self.config;
+        let seq = tokens.len();
+        // Phi's RoPE tables are sized for `rotary_dim` (partial RoPE).
+        let (cos_data, sin_data) = fuel_graph::build_rope_tables(
+            cfg.rope_base, cached_len, seq, cfg.rotary_dim,
+        );
+        Ok(TokenDataHost {
+            token_ids: fuel_ir::HostBuffer::U32(tokens.to_vec()),
+            rope_cos: fuel_ir::HostBuffer::F32(cos_data),
+            rope_sin: fuel_ir::HostBuffer::F32(sin_data),
+            mask: fuel_ir::HostBuffer::F32(build_decode_causal_mask(
+                cached_len, seq, max_seq_len,
+            )),
+            // Phi decode stays on the SymEnv `Op::WriteSlice` path — the KV
+            // write offset rides `cached_len_sym`, so there is no device-offset
+            // operand to rebind. Capture handles this: the offset entry is
+            // conditional on `offset_node().is_some()`.
+            offset: None,
+        })
+    }
+
     fn build_token_rope_mask_arcs(
         &self,
         device: &Device,
@@ -11985,29 +12067,170 @@ impl PhiModel {
         tokens: &[u32],
         max_seq_len: usize,
     ) -> crate::Result<crate::inference_context::DecodeTokenData> {
-        let cfg = &self.config;
-        let seq = tokens.len();
+        let host = self.compute_token_rope_mask_host_data(cached_len, tokens, max_seq_len)?;
         let upload = crate::pipelined_bridge::upload_host_buffer_to_device;
-
-        let token_ids = upload(device, fuel_ir::HostBuffer::U32(tokens.to_vec()))?;
-        // Phi's RoPE tables are sized for `rotary_dim` (partial RoPE).
-        let (cos_data, sin_data) = fuel_graph::build_rope_tables(
-            cfg.rope_base, cached_len, seq, cfg.rotary_dim,
-        );
-        let rope_cos = upload(device, fuel_ir::HostBuffer::F32(cos_data))?;
-        let rope_sin = upload(device, fuel_ir::HostBuffer::F32(sin_data))?;
-        let mask_data = build_decode_causal_mask(cached_len, seq, max_seq_len);
-        let mask = upload(device, fuel_ir::HostBuffer::F32(mask_data))?;
-
         Ok(crate::inference_context::DecodeTokenData {
-            token_ids,
-            rope_cos,
-            rope_sin,
-            mask,
-            // Phi decode stays on the SymEnv `Op::WriteSlice` path for now
-            // (device-offset / CapturedRun is sequenced behind Llama).
+            token_ids: upload(device, host.token_ids)?,
+            rope_cos: upload(device, host.rope_cos)?,
+            rope_sin: upload(device, host.rope_sin)?,
+            mask: upload(device, host.mask)?,
             offset: None,
         })
+    }
+
+    /// The same per-token data as raw host bytes, for
+    /// [`fuel_dispatch::pipelined::CapturedDecodeSession::replay_token`]'s
+    /// in-place H2D overwrite of the fixed capture buffers. Shares
+    /// [`Self::compute_token_rope_mask_host_data`] with the Arc path, so the
+    /// captured and uncaptured routes cannot disagree about what a token's
+    /// data is.
+    #[cfg(feature = "cuda")]
+    fn build_token_rope_mask_bytes(
+        &self,
+        cached_len: usize,
+        tokens: &[u32],
+        max_seq_len: usize,
+    ) -> crate::Result<TokenDataBytes> {
+        let host = self.compute_token_rope_mask_host_data(cached_len, tokens, max_seq_len)?;
+        Ok(TokenDataBytes {
+            token_ids: crate::pipelined_bridge::host_buffer_to_bytes(&host.token_ids),
+            rope_cos: crate::pipelined_bridge::host_buffer_to_bytes(&host.rope_cos),
+            rope_sin: crate::pipelined_bridge::host_buffer_to_bytes(&host.rope_sin),
+            mask: crate::pipelined_bridge::host_buffer_to_bytes(&host.mask),
+            offset: None,
+        })
+    }
+
+    /// CapturedRun decode for Phi — the sibling of
+    /// [`LlamaModel::forward_with_kv_context_captured`], same four cases:
+    ///
+    /// 1. `seq != 1` — not a decode step; drop session + capture, fall back to
+    ///    the rebuild path.
+    /// 1b. stale held pair — retire BOTH (see below), leaving case 2 to rebuild.
+    /// 2. first decode token — build the held session; `captured` stays `None`.
+    /// 3. second decode token — build this token's data as fresh FIXED-address
+    ///    Arcs, merge over `session.base_cache()`, and capture once targeting
+    ///    `logits_node()` (NOT `effective_target`: `capture_decode` rejects the
+    ///    D2H `Op::Copy` splice as non-single-device-CUDA-capturable, so the
+    ///    D2H happens here, after replay). The warm pass inside `capture()`
+    ///    already computed this token, so its logits come from an empty-updates
+    ///    `replay_token(&[])`.
+    /// 4. third token onward — recompute the per-token data as raw bytes and
+    ///    replay with one `cuGraphLaunch`.
+    ///
+    /// **Phi is on the SymEnv path** (`offset: None`), so there is no
+    /// device-offset operand to rebind — the KV write offset rides
+    /// `cached_len_sym`. The offset entries below are conditional for exactly
+    /// that reason and are simply absent for Phi today.
+    ///
+    /// Staleness retires the capture WITH the session via the shared
+    /// [`invalidate_decode_pair_if_stale`]: a recorded CUDA graph outliving its
+    /// session would replay against fixed device addresses that no longer
+    /// describe the live cache — wrong logits at full speed. Sharing the helper
+    /// with `LlamaModel` rather than copying it means the two models cannot
+    /// drift on what "stale" means.
+    #[cfg(feature = "cuda")]
+    pub fn forward_with_kv_context_captured(
+        &self,
+        tokens: &[u32],
+        cache: &mut KvCache,
+        ctx: &mut InferenceContext,
+        session: &mut Option<crate::inference_context::DecodeSession>,
+        captured: &mut Option<fuel_dispatch::pipelined::CapturedDecodeSession>,
+    ) -> crate::Result<Vec<f32>> {
+        let cfg = &self.config;
+        let seq = tokens.len();
+
+        // ---- 1. Non-decode step: drop state, fall back. ----
+        if seq != 1 {
+            *captured = None;
+            self.drop_decode_session(session, ctx);
+            return self.forward_with_kv_context(tokens, cache, ctx);
+        }
+
+        // ---- 1b. Staleness: retire capture-then-session together. ----
+        invalidate_decode_pair_if_stale(
+            session,
+            captured,
+            ctx,
+            seq,
+            cache.max_seq_len,
+            cache.dtype.unwrap_or(DType::F32),
+            cfg.n_layers,
+            self.decode_shape_key(),
+            |s, ctx| self.drop_decode_session(s, ctx),
+        );
+
+        // ---- 2. First decode token: build the held session. ----
+        if session.is_none() {
+            *captured = None;
+            return self.build_and_realize_first_decode_token(tokens, cache, ctx, session);
+        }
+
+        let cached_len = cache.cached_len;
+
+        // ---- 3. Second decode token: build the capture. ----
+        if captured.is_none() {
+            let device = ctx.device().clone();
+            let s = session.as_ref().expect("session is Some (checked above)");
+
+            let data = self.build_token_rope_mask_arcs(
+                &device, cached_len, tokens, s.max_seq_len(),
+            )?;
+
+            let mut merged_cache: fuel_dispatch::pipelined::StorageCache =
+                s.base_cache().clone();
+            merged_cache.insert(s.token_ids_node(), Arc::clone(&data.token_ids));
+            merged_cache.insert(s.rope_cos_node(), Arc::clone(&data.rope_cos));
+            merged_cache.insert(s.rope_sin_node(), Arc::clone(&data.rope_sin));
+            merged_cache.insert(s.mask_node(), Arc::clone(&data.mask));
+            let per_token_node_ids: Vec<fuel_graph::NodeId> = vec![
+                s.token_ids_node(), s.rope_cos_node(), s.rope_sin_node(), s.mask_node(),
+            ];
+
+            let sym_env = s.per_token_sym_env(cached_len)?;
+            let cd_session = fuel_dispatch::pipelined::CapturedDecodeSession::capture(
+                s.graph().clone(),
+                s.logits_node(),
+                merged_cache,
+                &per_token_node_ids,
+                sym_env,
+            )?;
+
+            // The warm pass inside `capture()` already computed THIS token.
+            let output = cd_session.replay_token(&[])?;
+            let logits = captured_output_to_f32(&output)?;
+            *captured = Some(cd_session);
+
+            cache.cached_len += seq;
+            for li in 0..cfg.n_layers {
+                cache.bump_version(li, KvSlot::K);
+                cache.bump_version(li, KvSlot::V);
+            }
+            return Ok(logits);
+        }
+
+        // ---- 4. Third token onward: pure replay. ----
+        let cap = captured.as_ref().expect("captured is Some (checked above)");
+        let s = session.as_ref().expect("session is Some whenever captured is Some");
+
+        let bytes = self.build_token_rope_mask_bytes(cached_len, tokens, s.max_seq_len())?;
+        let updates: Vec<(fuel_graph::NodeId, &[u8])> = vec![
+            (s.token_ids_node(), bytes.token_ids.as_slice()),
+            (s.rope_cos_node(), bytes.rope_cos.as_slice()),
+            (s.rope_sin_node(), bytes.rope_sin.as_slice()),
+            (s.mask_node(), bytes.mask.as_slice()),
+        ];
+
+        let output = cap.replay_token(&updates)?;
+        let logits = captured_output_to_f32(&output)?;
+
+        cache.cached_len += seq;
+        for li in 0..cfg.n_layers {
+            cache.bump_version(li, KvSlot::K);
+            cache.bump_version(li, KvSlot::V);
+        }
+        Ok(logits)
     }
 
     /// Drop a held decode session, removing any leftover persistent
@@ -12072,7 +12295,21 @@ impl PhiModel {
         // The session is loop-internal; the public signature is unchanged.
         let mut session: Option<crate::inference_context::DecodeSession> = None;
 
-        // Prefill: one forward pass over the full prompt.
+        // CUDA-graph capture is ON BY DEFAULT here, matching
+        // `LlamaModel::generate_streaming_with_kv_context`. Measured on Llama:
+        // 4.28x at k=1 in release, byte-exact, replay cost build-profile-
+        // invariant. Phi shares the decode substrate (`DecodeSession`, the
+        // capture/replay machinery, the staleness predicate), so the same win
+        // applies; the ratio itself has not been separately measured for Phi.
+        //
+        // Phi stays on the SymEnv path (`offset: None`) — the KV write offset
+        // rides `cached_len_sym` rather than a device-offset operand — which
+        // capture handles, since the offset entry is conditional.
+        #[cfg(feature = "cuda")]
+        let mut captured: Option<fuel_dispatch::pipelined::CapturedDecodeSession> = None;
+
+        // Prefill: one forward pass over the full prompt. Always the persistent
+        // entry — `seq != 1`, so the captured path would immediately fall back.
         let mut last_logits = self.forward_with_kv_context_persistent(
             prompt_tokens, &mut cache, &mut ctx, &mut session,
         )?;
@@ -12087,9 +12324,18 @@ impl PhiModel {
                     break;
                 }
             }
-            last_logits = self.forward_with_kv_context_persistent(
-                &[next], &mut cache, &mut ctx, &mut session,
-            )?;
+            #[cfg(feature = "cuda")]
+            {
+                last_logits = self.forward_with_kv_context_captured(
+                    &[next], &mut cache, &mut ctx, &mut session, &mut captured,
+                )?;
+            }
+            #[cfg(not(feature = "cuda"))]
+            {
+                last_logits = self.forward_with_kv_context_persistent(
+                    &[next], &mut cache, &mut ctx, &mut session,
+                )?;
+            }
         }
         Ok(tokens)
     }
