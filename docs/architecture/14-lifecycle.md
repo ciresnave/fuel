@@ -1,6 +1,6 @@
 # Lifecycle: from model file to finished inference/training
 
-**Status**: v0.8 (2026-07-16). **v0.8 records that the SSM ops are now differentiable** (Op::Scan Phase 2, [10-decisions-log §2026-07-16](10-decisions-log.md)): `selective_scan` / `ssd_chunk_scan` gain BPTT gradients via the Stage-6 backward pass's **lower-then-differentiate pre-pass** (`lower_scans_for_backward` — decompose the SSM fused recipe → `Op::Scan` → `unroll_scan` to the static `bound` → node-general autograd), not a bespoke `*_BACKWARD` fused op. Their registry `backward` flips `NotDifferentiable → Decompose` (intent doc; `BackwardKind` is verified-dead metadata, the pre-pass is the mechanism). BPTT is truncated to the static `bound`; no `Op::Scan` native kernel. No core-claim change. **v0.7 fixes a stale claim in the Stage 2 narrative**: the "three current panicking decomposes" it once named (`nf4_matmul`, `flash_attn`, `selective_scan`) are no longer accurate — all three now carry real recipes. `nf4_matmul` and `flash_attn`'s concrete-`k_len` decode were resolved 2026-07-03; `selective_scan` (and its Mamba-2 sibling `ssd_chunk_scan`) now `decompose` to `Op::Scan` — Fuel's first sub-graph-carrying primitive, [03-ir](03-ir.md#higher-order-primitives-opscan) — closing decision G3 2026-07-15 ([10-decisions-log](10-decisions-log.md)). `flash_attn`'s symbolic-`k_len` decode remains the one separately-documented, never-crash basis gap. No core-claim change. v0.6 reconciles the glossary + narrative to the 2026-06-20 adaptive-runtime-fusion decision ([10-decisions-log](10-decisions-log.md)): the fused-op registry is **no longer "frozen"** but two-tier runtime-extensible (G4 — Tier-1 binding table already extensible, Tier-2 trusted Fuel-orchestrated fused-op registration the new goal; untrusted user ops/rules + new primitives stay closed); the base-map/`decompose` narrative gains the **total + never-panic + primitive→self** invariant (G2); **missing-fusion telemetry** is named as distinct from the Judge (G5); the run-capture/replay passage positions the **megakernel** as the narrow, highest-risk, non-default step above captured-run replay (G6); and the optimizer narrative references the **closed-loop adaptive optimizer** with its Fuel-strategist / backend-synthesizer division (G7). v0.6 also refines Stage 5's autoregressive-barrier story: the per-pass re-bind substrate (realize binds the runtime KV append offset / `cached_len` into one stable graph instead of baking it into a fresh per-token graph) has landed at the executor/session level, framed honestly as the Intended mechanism whose substrate has shipped but is not yet wired into production decode. Core claim unchanged.
+**Status**: v0.9 (2026-08-06). **v0.9 adds a NORMATIVE INVARIANT to Stage 5** — a held plan's validity key must cover everything it bakes, and every artifact derived from it must be retired with it ([10-decisions-log §2026-08-06](10-decisions-log.md)). Stated as a rule about new work after FOUR reactive discoveries in two days (model identity contiguous + paged, the captured-session pair, and the still-open KvCache hole); the failure is committed by whoever adds baked state to a session, who would never open the keying code. No existing core claim changed. v0.8 (2026-07-16). **v0.8 records that the SSM ops are now differentiable** (Op::Scan Phase 2, [10-decisions-log §2026-07-16](10-decisions-log.md)): `selective_scan` / `ssd_chunk_scan` gain BPTT gradients via the Stage-6 backward pass's **lower-then-differentiate pre-pass** (`lower_scans_for_backward` — decompose the SSM fused recipe → `Op::Scan` → `unroll_scan` to the static `bound` → node-general autograd), not a bespoke `*_BACKWARD` fused op. Their registry `backward` flips `NotDifferentiable → Decompose` (intent doc; `BackwardKind` is verified-dead metadata, the pre-pass is the mechanism). BPTT is truncated to the static `bound`; no `Op::Scan` native kernel. No core-claim change. **v0.7 fixes a stale claim in the Stage 2 narrative**: the "three current panicking decomposes" it once named (`nf4_matmul`, `flash_attn`, `selective_scan`) are no longer accurate — all three now carry real recipes. `nf4_matmul` and `flash_attn`'s concrete-`k_len` decode were resolved 2026-07-03; `selective_scan` (and its Mamba-2 sibling `ssd_chunk_scan`) now `decompose` to `Op::Scan` — Fuel's first sub-graph-carrying primitive, [03-ir](03-ir.md#higher-order-primitives-opscan) — closing decision G3 2026-07-15 ([10-decisions-log](10-decisions-log.md)). `flash_attn`'s symbolic-`k_len` decode remains the one separately-documented, never-crash basis gap. No core-claim change. v0.6 reconciles the glossary + narrative to the 2026-06-20 adaptive-runtime-fusion decision ([10-decisions-log](10-decisions-log.md)): the fused-op registry is **no longer "frozen"** but two-tier runtime-extensible (G4 — Tier-1 binding table already extensible, Tier-2 trusted Fuel-orchestrated fused-op registration the new goal; untrusted user ops/rules + new primitives stay closed); the base-map/`decompose` narrative gains the **total + never-panic + primitive→self** invariant (G2); **missing-fusion telemetry** is named as distinct from the Judge (G5); the run-capture/replay passage positions the **megakernel** as the narrow, highest-risk, non-default step above captured-run replay (G6); and the optimizer narrative references the **closed-loop adaptive optimizer** with its Fuel-strategist / backend-synthesizer division (G7). v0.6 also refines Stage 5's autoregressive-barrier story: the per-pass re-bind substrate (realize binds the runtime KV append offset / `cached_len` into one stable graph instead of baking it into a fresh per-token graph) has landed at the executor/session level, framed honestly as the Intended mechanism whose substrate has shipped but is not yet wired into production decode. Core claim unchanged.
 
 This is the one document that walks the **whole path**, in order: from "load a model
 from disk" to "inference or training has finished." Every other architecture section
@@ -448,6 +448,60 @@ step (only the host scalar `cached_len` changes), so re-optimizing each token is
 single-growing-graph loop and **does not reach this production decode path**.
 
 Under the redirection this gap closes *by construction*: the decode graph is **not** rebuilt per token — the loaded, input-independent graph is reused across steps, and the only thing that advances is **session-class** storage (the KV-cache, keyed by `SessionId`) together with the runtime values (the write offset `cached_len`) **re-bound per pass** rather than baked into a fresh graph. The substrate for that re-bind has landed at the executor/session level: realize accepts a per-pass environment that binds the runtime value of each symbolic scalar (the KV append offset) into one stable graph, so a step *re-binds and re-runs* instead of re-building and re-planning. Production decode does not yet use it — it still bakes the host scalar and mints a fresh graph each token — so this is the **Intended** mechanism with its substrate proven, not the as-built decode path. Plan reuse then falls out of the graph being the same object, instead of needing a structural-hash plan cache bolted onto fresh-every-step graphs.
+
+### NORMATIVE INVARIANT — a held plan's validity key must cover everything it bakes
+
+**A held decode plan may outlive anything it was baked against. Its validity key
+MUST name every such thing, and every artifact derived from it MUST be retired
+with it.**
+
+This is a *rule about new work*, not a description of a fix. It is stated here —
+in the stage where held plans live — because the failure it prevents is committed
+by someone **adding state to a session**, who would have no reason to open the
+keying code.
+
+A held plan (`DecodeSession`, `PagedDecodeSession`, a `CapturedDecodeSession`
+recorded over it) **bakes**: the op structure, the weight `Const`s, and the
+storage `Arc`s bound at build time. Per-token data is rebound; **baked state is
+not**. So for each baked thing, one of two must hold:
+
+1. its identity is in the validity key, or
+2. it cannot change for the plan's lifetime, *enforced by construction* — not by
+   convention.
+
+**Four violations found reactively in two days**, all of the same shape, all
+silent, all full-speed, none a crash:
+
+| baked thing | symptom | closed |
+|---|---|---|
+| model identity (contiguous) | same-shaped models share a plan → wrong weights | `decode_shape` `ShapeKeyHasher` + `ModelInstanceId` |
+| the recorded CUDA graph | stale session dropped, capture survives → replay over dead addresses | `a1ea9860` `invalidate_decode_pair_if_stale` |
+| model identity (paged) | as row 1, paged path | `d36ef0ac` |
+| **the `KvCache`** | **a fresh same-shaped cache is ignored; the plan keeps writing the old buffers** | **OPEN** |
+
+Row 4 is the dangerous one and shows why this is normative rather than
+retrospective: `rebind_and_realize_prebuilt` never re-binds `kv_nodes`, so in a
+slot-pooled server the *happy path* — retire request A, admit B with a fresh
+same-shaped cache — has B decoding over A's KV. Geometry-only keys cannot see it.
+
+**Three rules that follow, each earned by a specific failure:**
+
+- **Identity, not geometry.** Shape is not identity. Two objects of identical
+  geometry are indistinguishable to a geometry key, and *that* is the normal case
+  in a pool, not the edge case.
+- **Never-recycled counters, not pointer identity.** A session does not pin the
+  caller's allocations, so a freed address can be re-issued to a different live
+  object. Pointer identity is sound only while something pins the allocation, and
+  the pin lives in *another file's* ownership behaviour — so a refactor that never
+  touches the key can break it. `ModelInstanceId` is a process-global monotonic
+  counter for exactly this reason.
+- **Assert both halves.** A differing key MUST invalidate *and* a matching key
+  MUST NOT. "Always stale" passes every correctness test while silently disabling
+  plan reuse — a pure performance regression hiding behind a green suite.
+
+**Four instances in two days predicts a fifth.** Anyone adding baked state to a
+session is the person this section is addressed to: put its identity in the key,
+or make it unable to change, and prove both halves.
 
 ---
 

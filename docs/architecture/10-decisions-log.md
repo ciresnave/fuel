@@ -991,6 +991,50 @@ This mirrors the CPU kernel, which is itself im2col + batched GEMM (`fuel-cpu-ba
 
 ---
 
+## 2026-08-06 — A held plan's validity key must cover everything it bakes (normative)
+
+**What changed**: [14-lifecycle](14-lifecycle.md) Stage 5 gains a **normative
+invariant** (doc v0.8 → v0.9): *a held decode plan may outlive anything it was
+baked against; its validity key must name every such thing, and every artifact
+derived from it must be retired with it.*
+
+**Why**: four violations were found **reactively in two days**, all the same
+shape — a held plan reused against state it was baked against but could not
+detect had changed. All silent, all full-speed, none a crash:
+
+1. **model identity, contiguous** — two same-shaped models shared a plan, so one
+   ran with the other's baked weight `Const`s. Closed by `decode_shape`'s
+   `ShapeKeyHasher` + `ModelInstanceId`.
+2. **the recorded CUDA graph** — a stale `DecodeSession` was dropped while its
+   `CapturedDecodeSession` survived, replaying over device addresses that no
+   longer described the live cache. Closed by `invalidate_decode_pair_if_stale`
+   (`a1ea9860`).
+3. **model identity, paged** — as (1) on `PagedDecodeSession`. Closed by
+   `d36ef0ac`.
+4. **the `KvCache`** — `rebind_and_realize_prebuilt` never re-binds `kv_nodes`,
+   so a fresh same-shaped cache is ignored and the plan keeps writing the
+   original's buffers. **OPEN**; owned by the FKC/decode-shape thread.
+
+(4) is why this is normative rather than a changelog: in a slot-pooled server it
+is reached on the **happy path** — retire request A, admit B with a fresh
+same-shaped cache — and the result is one request decoding over another's KV.
+
+**Rules stated, each earned by a specific failure**: identity not geometry;
+never-recycled counters not pointer identity (a session does not pin the
+caller's allocations, and the pin lives in another file's ownership behaviour, so
+a refactor that never touches the key can break it); and assert **both halves**,
+since "always stale" passes every correctness test while silently disabling plan
+reuse.
+
+**Sections affected**: [14-lifecycle](14-lifecycle.md) Stage 5 (v0.9).
+
+**Why it is in the lifecycle doc rather than next to the keying code**: the
+failure is committed by whoever **adds baked state to a session**, and that
+person has no reason to open the keying code. Four instances in two days predicts
+a fifth; this is addressed to whoever builds it.
+
+---
+
 ## See also
 
 - [00-index §Versioning convention](00-index.md#versioning-convention) — when to bump section versions.
