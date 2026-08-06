@@ -2827,6 +2827,32 @@ fn register_cuda_flash_decoding_from_contract(table: &mut KernelBindingTable) {
 /// [`register_cuda_binary_from_contract`] - the SOLE registration path (hand-written regs DELETED).
 const CUDA_BINARY_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/binary.fkc.md");
 
+/// The authored CUDA (baracuda) COMPARISON kernel contract (`include_str!`),
+/// imported by [`register_cuda_compare_from_contract`].
+///
+/// Authoring the `.fkc.md` and registering its entry points is NOT sufficient
+/// on its own: the link registry only resolves `symbol -> KernelRef`, and a
+/// contract that is never `include_str!`d and imported here declares nothing
+/// into the binding table. `Op::PagedAttn`'s recipe stays unplaceable until
+/// all three layers exist.
+const CUDA_COMPARE_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/cuda/compare.fkc.md");
+
+/// Register the CUDA comparison family (6 ops x 4 float dtypes -> U8) FROM its
+/// FKC contract. This is what makes `GreaterEqualElementwise[F32,F32,U8]`
+/// resolvable on CUDA — the single node that kept `Op::PagedAttn`'s primitive
+/// recipe off the device.
+fn register_cuda_compare_from_contract(table: &mut KernelBindingTable) {
+    let provider =
+        crate::fkc::import_bundle_str(CUDA_COMPARE_CONTRACT, &crate::fkc::CudaLinkRegistry)
+            .expect("authored CUDA compare contract must import (embedded include_str!, CudaLinkRegistry)");
+    debug_assert!(provider.fused.is_empty(), "cuda compare contract declares no fused ops");
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("CUDA compare contract must register into the binding table");
+}
+
 /// Register the CUDA binary family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
 /// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
@@ -3455,6 +3481,7 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     // block; all run BEFORE fill_unset_cost_for_backend(Cuda, ..) so the
     // imported unknown_cost sentinels upgrade to the shared per-OpKind cost. -----
     register_cuda_binary_from_contract(table);
+    register_cuda_compare_from_contract(table);
     register_cuda_reduce_from_contract(table);
     register_cuda_norm_from_contract(table);
     register_cuda_softmax_from_contract(table);
