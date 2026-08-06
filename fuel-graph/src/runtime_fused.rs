@@ -512,7 +512,7 @@ fn masked_fill_scalar(value: f64, dtype: fuel_ir::DType) -> Option<fuel_ir::Scal
     match dtype {
         D::U8 | D::I8 | D::U32 | D::I16 | D::I32 | D::I64 | D::BF16 | D::F16 | D::F32 | D::F64
         | D::F8E4M3 => Some(fuel_ir::Scalar::from_f64(value, dtype)),
-        D::F6E2M3 | D::F6E3M2 | D::F4 | D::F8E8M0 => None,
+        D::F6E2M3 | D::F6E3M2 | D::F4 | D::F8E8M0 | D::F8E6M2 => None,
     }
 }
 

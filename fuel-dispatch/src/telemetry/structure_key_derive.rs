@@ -327,8 +327,8 @@ fn dtype_token(dt: DType) -> Option<&'static str> {
         DType::I32 => "i32",
         DType::I64 => "i64",
         DType::F8E4M3 => "e4m3fn",
-        // MX element formats — not in the KISS §6.1 closed set (RFC #9 pending).
-        DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 => return None,
+        // MX + non-standard sub-byte element formats — not in the KISS §6.1 closed set (RFC #9 pending).
+        DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 | DType::F8E6M2 => return None,
     })
 }
 
@@ -794,6 +794,7 @@ mod tests {
             DType::F6E3M2,
             DType::F4,
             DType::F8E8M0,
+            DType::F8E6M2,
         ];
         let assert_clean = |token: &str| {
             assert!(!token.contains("f32s"), "retired f32s spelling in {token}");

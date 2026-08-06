@@ -3016,6 +3016,13 @@ impl CudaStorage {
                 let result = dst.clone_dtod(cuda_slice)?;
                 CudaStorageSlice::F8E8M0(result)
             }
+            DType::F8E6M2 => {
+                return Err(CudaError::UnsupportedDtype {
+                    dtype: self.dtype(),
+                    op: "transfer_to_device",
+                }
+                .into());
+            }
         };
 
         Ok(Self {
@@ -3294,7 +3301,7 @@ impl CudaStorage {
                 dev.synchronize()?;
                 Ok(())
             }
-            DType::F4 | DType::F6E2M3 | DType::F6E3M2 | DType::F8E8M0 => {
+            DType::F4 | DType::F6E2M3 | DType::F6E3M2 | DType::F8E8M0 | DType::F8E6M2 => {
                 Err(CudaError::UnsupportedDtype {
                     dtype: self.dtype(),
                     op: "const_set",
@@ -3377,7 +3384,7 @@ impl CudaStorage {
             DType::I8 | DType::I16 | DType::I32 => {
                 return Err(CudaError::InternalError("i8,i16,i32 dtypes are not supported as cast targets").into())
             }
-            DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 => {
+            DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 | DType::F8E6M2 => {
                 return Err(CudaError::InternalError("Dummy types not supported in CUDA backend").into());
             }
         };

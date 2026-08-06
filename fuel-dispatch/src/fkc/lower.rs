@@ -388,6 +388,7 @@ pub(crate) fn lower_dtype(token: &str, section: &str, operand: &str) -> Result<D
         "F6E3M2" => Some(DType::F6E3M2),
         "F4" => Some(DType::F4),
         "F8E8M0" => Some(DType::F8E8M0),
+        "F8E6M2" => Some(DType::F8E6M2),
         _ => None,
     };
     if let Some(dt) = mapped {
@@ -396,7 +397,7 @@ pub(crate) fn lower_dtype(token: &str, section: &str, operand: &str) -> Result<D
         let _assert_exhaustive = match dt {
             DType::U8 | DType::I8 | DType::U32 | DType::I16 | DType::I32 | DType::I64
             | DType::BF16 | DType::F16 | DType::F32 | DType::F64 | DType::F8E4M3
-            | DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 => (),
+            | DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 | DType::F8E6M2 => (),
         };
         Ok(dt)
     } else {
@@ -1719,7 +1720,7 @@ return:
         for dt in [
             DType::U8, DType::I8, DType::U32, DType::I16, DType::I32, DType::I64,
             DType::BF16, DType::F16, DType::F32, DType::F64, DType::F8E4M3,
-            DType::F6E2M3, DType::F6E3M2, DType::F4, DType::F8E8M0,
+            DType::F6E2M3, DType::F6E3M2, DType::F4, DType::F8E8M0, DType::F8E6M2,
         ] {
             let suffix = super::dtype_suffix(dt);
             let token = suffix.to_uppercase();

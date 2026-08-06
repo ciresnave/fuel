@@ -113,7 +113,7 @@ impl MetalStorage {
             DType::F32 => Ok(HostBuffer::F32(self.to_cpu()?)),
             DType::F64 => Ok(HostBuffer::F64(self.to_cpu()?)),
             DType::F8E4M3 => Ok(HostBuffer::F8E4M3(self.to_cpu()?)),
-            DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 => Err(
+            DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 | DType::F8E6M2 => Err(
                 fuel_ir::Error::UnsupportedDTypeForOp(self.dtype, "to_cpu_storage").bt(),
             ),
         }
@@ -478,6 +478,7 @@ impl MetalStorage {
                     | DType::F6E2M3
                     | DType::F6E3M2
                     | DType::F8E8M0
+                    | DType::F8E6M2
                     | DType::I16
                     | DType::I32 => {
                         return Err(Error::UnsupportedDTypeForOp(dtype, "const-set").bt());
@@ -509,6 +510,7 @@ impl MetalStorage {
                     | DType::F6E2M3
                     | DType::F6E3M2
                     | DType::F8E8M0
+                    | DType::F8E6M2
                     | DType::I16
                     | DType::I32 => {
                         return Err(Error::UnsupportedDTypeForOp(dtype, "const-set").bt());

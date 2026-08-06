@@ -44,6 +44,8 @@ pub enum DType {
     F4,
     /// 8-bit float with 8 exponent bits and 0 mantissa bits.
     F8E8M0,
+    /// 8-bit float with 6 exponent bits and 2 mantissa bits (FP8 E6M2).
+    F8E6M2,
 }
 
 /// Error returned when a string cannot be parsed as a [`DType`].
@@ -77,6 +79,7 @@ impl std::str::FromStr for DType {
             "f6e3m2" => Ok(Self::F6E3M2),
             "f4" => Ok(Self::F4),
             "f8e8m0" => Ok(Self::F8E8M0),
+            "f8e6m2" => Ok(Self::F8E6M2),
             _ => Err(DTypeParseError(s.to_string())),
         }
     }
@@ -101,6 +104,7 @@ impl DType {
             Self::F6E3M2 => "f6e3m2",
             Self::F4 => "f4",
             Self::F8E8M0 => "f8e8m0",
+            Self::F8E6M2 => "f8e6m2",
         }
     }
 
@@ -124,6 +128,7 @@ impl DType {
             Self::F6E3M2 => 0,
             Self::F4 => 0,
             Self::F8E8M0 => 1,
+            Self::F8E6M2 => 1,
         }
     }
 
@@ -139,7 +144,8 @@ impl DType {
             | Self::F6E2M3
             | Self::F6E3M2
             | Self::F4
-            | Self::F8E8M0 => false,
+            | Self::F8E8M0
+            | Self::F8E6M2 => false,
         }
     }
 
@@ -155,7 +161,8 @@ impl DType {
             | Self::F6E2M3
             | Self::F6E3M2
             | Self::F4
-            | Self::F8E8M0 => true,
+            | Self::F8E8M0
+            | Self::F8E6M2 => true,
         }
     }
 }
@@ -320,6 +327,13 @@ impl From<DType> for st::Dtype {
             DType::F6E3M2 => st::Dtype::F6_E3M2,
             DType::F4 => st::Dtype::F4,
             DType::F8E8M0 => st::Dtype::F8_E8M0,
+            // safetensors 0.7.0 tracks the OCP MX + standard FP8 set
+            // (E4M3/E5M2/E8M0/F6/F4). F8E6M2 is a non-OCP-standard token with no
+            // safetensors representation, so it cannot be serialized there.
+            DType::F8E6M2 => panic!(
+                "F8E6M2 has no safetensors representation (0.7.0 supports \
+                 E4M3/E5M2/E8M0/F6/F4, not E6M2)"
+            ),
         }
     }
 }
