@@ -425,3 +425,126 @@ fn live_baracuda_synthesizer_full_loop_scalar() {
         "relu(a + b) via Baracuda's OWN alpha.76-synthesized CUDA kernel — the LIVE LOOP",
     );
 }
+
+/// **Does a real synthesizer accept `PagedAttn`'s dense region?** — the probe
+/// KISS is gating its region-synthesis RFC on.
+///
+/// This is the marquee case for JIT-from-a-discovered-region: `Op::PagedAttn`
+/// has **no GPU implementation anywhere**, so under CUDA the fused node is
+/// host-placed and the KV caches cross the bus every token. Lowering to
+/// primitives needs every primitive bound; handing the whole region to a
+/// synthesizer needs none of them. It is also far larger than the
+/// `relu(add(a,b))` cell the rest of this file exercises — two `IndexSelect`
+/// gathers, two `MatMul`s, a nested `Fused(SOFTMAX_LAST_DIM)`, and a
+/// variable-length mask chain.
+///
+/// **The question is willingness, not correctness.** `JitResponse::Declined` is
+/// a first-class answer and is reported as a RESULT, not a failure — a decline
+/// tells KISS that JIT-from-a-region is out of scope for this generator, which
+/// is as useful for the RFC as acceptance.
+///
+/// The region comes from Fuel's own `recipe_for` — the same `PatternNode`
+/// `decompose` lowers — so this asks about the region Fuel actually runs, not a
+/// hand-written approximation.
+///
+/// **Operands are typed honestly.** `block_table` and `context_lens` are `U32`
+/// (`ElementKind::U32`, the seam's designated gather/scatter index ctype). An
+/// earlier attempt at this probe was abandoned rather than substitute `I32`:
+/// an answer obtained by misrepresenting the operands is an answer about a
+/// different kernel.
+#[test]
+#[ignore]
+#[cfg(feature = "jit-synth")]
+fn live_baracuda_synthesizer_paged_attn_dense_region() {
+    use baracuda_kernelgen::jit::seam::BaracudaSynthesizer;
+    use fuel_graph::registry::{FusedOpParams, FusedOps};
+    use fuel_graph::{Graph, Node, NodeId, Op};
+
+    const B: usize = 1;
+    const HQ: usize = 4;
+    const HKV: usize = 4;
+    const SQ: usize = 1;
+    const D: usize = 4;
+    const NUM_BLOCKS: usize = 32;
+    const BLOCK_SIZE: usize = 4;
+    const MAX_BLK: usize = 8;
+
+    let mut g = Graph::new();
+    let leaf = |g: &mut Graph, dims: &[usize], dtype: DType| {
+        g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(dims), dtype })
+    };
+    let q = leaf(&mut g, &[B, HQ, SQ, D], DType::F32);
+    let kc = leaf(&mut g, &[NUM_BLOCKS, BLOCK_SIZE, HKV, D], DType::F32);
+    let vc = leaf(&mut g, &[NUM_BLOCKS, BLOCK_SIZE, HKV, D], DType::F32);
+    let bt = leaf(&mut g, &[B, MAX_BLK], DType::U32);
+    let cl = leaf(&mut g, &[B], DType::U32);
+
+    let params = FusedOpParams::PagedAttn {
+        softmax_scale: 1.0 / (D as f32).sqrt(),
+        block_size: BLOCK_SIZE,
+        softcap: None,
+    };
+    let fused = g.push(Node {
+        op: Op::Fused(FusedOps::PAGED_ATTN, params.clone()),
+        inputs: vec![q, kc, vc, bt, cl],
+        shape: Shape::from_dims(&[B, HQ, SQ, D]),
+        dtype: DType::F32,
+    });
+
+    // Fuel's OWN region — the same PatternNode `decompose` lowers.
+    let region = fuel_graph::registry::paged_attn::recipe_for(&g, fused, &params)
+        .expect("well-formed PagedAttn node yields a recipe");
+    // CONTROL: a real Op tree, not a degenerate stub. Without this a
+    // `recipe_for` returning a bare Bind would make any answer meaningless.
+    assert!(
+        matches!(region, PatternNode::Op { .. }),
+        "the region must be an Op tree",
+    );
+
+    // Operands in bind order, then the output (the seam's OpDef convention).
+    let od = |dims: &[usize], k: ElementKind, elem: u32| {
+        let mut strides = vec![1usize; dims.len()];
+        for i in (0..dims.len().saturating_sub(1)).rev() {
+            strides[i] = strides[i + 1] * dims[i + 1];
+        }
+        let d: Vec<i64> = dims.iter().map(|&x| x as i64).collect();
+        let s: Vec<i64> = strides.iter().map(|&x| x as i64).collect();
+        OperandDesc::new(dims.len(), &d, &s, k, elem)
+    };
+    let operands = vec![
+        od(&[B, HQ, SQ, D], ElementKind::F32, 4),                 // 0 q
+        od(&[NUM_BLOCKS, BLOCK_SIZE, HKV, D], ElementKind::F32, 4), // 1 k_cache
+        od(&[NUM_BLOCKS, BLOCK_SIZE, HKV, D], ElementKind::F32, 4), // 2 v_cache
+        od(&[B, MAX_BLK], ElementKind::U32, 4),                   // 3 block_table
+        od(&[B], ElementKind::U32, 4),                            // 4 context_lens
+        od(&[B, HQ, SQ, D], ElementKind::F32, 4),                 // out
+    ];
+
+    let synth = BaracudaSynthesizer::new(10_000);
+    let req = JitRequest {
+        region,
+        operands,
+        arch: ArchSku::Sm89,
+        budget: JitBudget { max_compile_ms: 10_000 },
+    };
+
+    println!("\n=== PagedAttn dense region -> real BaracudaSynthesizer ===");
+    match synth.synthesize(&req) {
+        JitResponse::Synthesized { entry_point } => {
+            println!("RESULT: ACCEPTED — entry_point = {entry_point}");
+            println!(
+                "The generator will synthesize a fused kernel for a discovered region \
+                 of this size. JIT-from-a-region is in scope for it."
+            );
+        }
+        JitResponse::Declined { reason } => {
+            println!("RESULT: DECLINED — reason: {reason}");
+            println!(
+                "A decline is a first-class answer, not a failure: it says \
+                 JIT-from-a-discovered-region of this shape is out of scope for this \
+                 generator, which is what the RFC needs to know."
+            );
+        }
+    }
+    println!("=== END RESULT ===\n");
+}
