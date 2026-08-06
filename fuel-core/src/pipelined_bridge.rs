@@ -652,8 +652,9 @@ impl TopologyRetryState {
 }
 
 /// The devices to which the realize path's off-device fallback may migrate a
-/// node: every device RESIDENT in this realize (has storage in the cache), other
-/// than the node's own. This is a FEASIBILITY scope, not a cost one — the
+/// node: CPU (ALWAYS feasible) plus every NON-CPU device resident in this realize
+/// (has storage in the cache), other than the node's own. This is a FEASIBILITY
+/// scope, not a cost one — the
 /// executor derives a backend's device handle from a storage already resident on
 /// it (`find_cuda_device_in_cache` and its Vulkan sibling), so a device with NO
 /// resident storage cannot back a migrated op: offering it lets the placement DP
@@ -675,7 +676,17 @@ fn feasible_fallback_devices(
     all_devices
         .iter()
         .copied()
-        .filter(|&d| d != node_dev && resident.contains(&d))
+        // CPU is ALWAYS a feasible fallback: the executor allocates CPU storage
+        // directly (no device handle to derive), so an op the target device can't
+        // serve — e.g. a `conv2d` in a CUDA-resident realize when CUDA has no
+        // conv2d kernel — can always spill back to CPU. A NON-CPU backend needs a
+        // storage already resident on it to derive its device handle, so it is
+        // offered only when resident (the CUDA mask-spill fix). Excluding CPU here
+        // was an over-narrowing that broke CUDA-resident realizes needing a CPU
+        // fallback op.
+        .filter(|&d| {
+            d != node_dev && (matches!(d, DeviceLocation::Cpu) || resident.contains(&d))
+        })
         .collect()
 }
 
@@ -1972,6 +1983,18 @@ mod tests {
 
         // Symmetric: a CUDA node in a mixed realize can fall back to CPU.
         assert_eq!(feasible_fallback_devices(&all, &[cpu, cuda], cuda), vec![cpu]);
+
+        // CPU-IS-ALWAYS-FEASIBLE (the regression guard): a CUDA-ONLY realize
+        // (only Cuda resident, CPU not) must STILL offer CPU as a fallback for a
+        // CUDA node — an op CUDA can't serve (e.g. conv2d with no CUDA kernel)
+        // spills to CPU. Excluding CPU here broke `*_cuda_matches_reference` with
+        // "no backend supports conv2d". CPU allocs need no resident device, so
+        // CPU is feasible regardless of residency.
+        assert_eq!(
+            feasible_fallback_devices(&all, &[cuda], cuda),
+            vec![cpu],
+            "cuda-only realize must still offer CPU fallback (conv2d-with-no-cuda-kernel case)",
+        );
     }
 
     fn push_node(g: &mut Graph, op: Op, inputs: Vec<NodeId>) -> NodeId {
