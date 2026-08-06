@@ -7,32 +7,57 @@ kernel request; Baracuda has been told explicitly not to build to this yet.
 
 ---
 
-> ## ⚠ NUMBERS UNDER REVISION (2026-08-06)
+> ## ⚠ CORRECTED NUMBERS (2026-08-06) — read before quoting anything below
 >
-> **The 10.4× paged-vs-contiguous figure quoted throughout this document is
-> UNDER REVISION and may be a DEBUG-BUILD ARTIFACT.** Lightbulb reports that
-> kernel-launch counts reproduce *exactly* across debug and release, and across
-> a 15-commit baseline move (36,718 / 9,214 / 17,802) — identical device work,
-> so a wall-clock gap that large must be host-side. Awaiting the
-> release-configuration number before this document is corrected. **Do not quote
-> 10.4× onward from here.**
+> **10.4× IS STRUCK as a release-configuration claim. It is a DEBUG-BUILD
+> number.** 10.4× and 2.59× are the *same quantity* — paged-PlanOnce ÷
+> contiguous-captured at k=1 — measured in different build profiles. Launch
+> counts are identical across debug and release and across a 15-commit baseline
+> move (36,718 / 9,214 / 17,802), so device work is identical and the gap is
+> host-side, which debug inflates.
 >
-> Two figures in this document ARE corrected and current:
-> - **CUDA-graph capture: ~2× at k=1, range 1.5–2.8×.** Non-overlapping
->   distributions (max capture-on 67.118 < min capture-off 93.131, Mann-Whitney
->   p≈0.014). Un-counterbalanced ordering biases *against* capture, so ~2× is a
->   floor. Cost is launch overhead **plus memset elimination** (14,368 → 2,811;
->   363.7 → 280.2 MB) — *not* "zero bytes", and no host-device traffic change.
->   Persistence is genuinely held constant across the arms: both reach
->   `build_and_realize_first_decode_token` (verified in `lazy.rs`).
-> - **Paged vs contiguous at k=1: ~1.4–4×**, not a point estimate. n=3, ratios
->   4.43 / 2.59 / 2.09, paged last in all three; one same-session pair was
->   excluded (an inversion at 0.84) and is disclosed here rather than dropped.
+> **Do not substitute 2.59× either.** Three things changed between the two
+> measurements — build profile, Fuel baseline (15+ commits), and window
+> definition (the release harness splits prefill / first-decode / steady-state;
+> the debug one did not) — so the change cannot be attributed to the profile
+> alone.
 >
-> **What survives all of this unchanged** — because it is structural rather than
-> timing-derived: `Op::PagedAttn` executes on the host under CUDA (per-node
-> `placement_of`), the recipe is 6-of-7 CUDA-resolvable, and §1 is
-> capacity-bound by construction.
+> **The honest statement, which is what this document now uses:**
+>
+> > At k=1 on an RTX 4070 Laptop (TinyLlama-1.1B f32, release, Fuel
+> > `8771997e`), paged decode costs roughly **1.4–4× contiguous**, depending on
+> > whether the contiguous arm is captured. n=3 per configuration; arm order was
+> > not counterbalanced, in the direction that *inflates* the paged penalty; one
+> > excluded same-session pair showed an **inversion** (0.84). **Direction is
+> > established; magnitude is not well constrained on this hardware.**
+>
+> Run-to-run variance is severe: paged k=1 spanned **78.5–173.9 ms/token across
+> five identical runs** (2.2× spread). If prose needs one phrase, "a few times
+> slower, not an order of magnitude" is defensible. **"10.4×" is not.**
+>
+> **CUDA-graph capture: ~2× at k=1, range 1.5–2.8×** (not 2.06×, which was the
+> median of four paired ratios). Non-overlapping distributions (max capture-on
+> 67.118 < min capture-off 93.131, p≈0.014); un-counterbalanced ordering biases
+> *against* capture, so ~2× is a floor. Cost is launch overhead **plus memset
+> elimination** (14,368 → 2,811; 363.7 → 280.2 MB) — *not* "zero bytes", which
+> was only true of H2D/DtoH. Persistence is genuinely constant across the arms:
+> both reach `build_and_realize_first_decode_token` (verified in `lazy.rs`).
+>
+> **UNCHANGED, because it is structural rather than timing-derived** — this is
+> the part of the document that never depended on a ratio: `Op::PagedAttn`
+> executes on the host under CUDA (per-node `placement_of`), the recipe is
+> 6-of-7 CUDA-resolvable with `ge` the sole gap, and §1 is capacity-bound by
+> construction.
+>
+> **Two new hardware facts that bound the whole exercise (2026-08-06):**
+> - **k ≥ 4 OOMs on BOTH paths** on this 8 GB card, at the same 44 MiB FFN
+>   weight `Copy`. Largest k completed is **2**. So on this hardware the
+>   batching question is bounded by *memory* before it is bounded by design, and
+>   no large-k projection is available to size a kernel against.
+> - **`build_batched_decode_logits` REJECTED a ragged batch** (`cached_lens =
+>   [23, 26]`, uniform capacity, so `cached_len` was the only possible trigger).
+>   Paged is therefore **measured**, not merely inferred, to be the only
+>   continuous-batching path in Fuel.
 
 ## 0. What this document is answering
 
@@ -246,7 +271,9 @@ Lightbulb's serving work has to choose a batching path:
 So ragged continuous batching currently has **paged as its only path**. That
 reclassifies paged attention from "a memory-efficiency option" to "a
 prerequisite for the batching mode the serving engine needs" — which is the
-argument that should drive priority, not the 10.4×.
+argument that should drive priority — and it is now MEASURED (a ragged batch was
+rejected by `build_batched_decode_logits`), not inferred. It also does not depend
+on any performance ratio, which is why it survives the 10.4× retraction intact.
 
 ---
 
@@ -312,7 +339,7 @@ different claims and this document previously ran them together.
 | question | settled by | status |
 |---|---|---|
 | does §1 run on device at all | §1 dump | in flight |
-| how much of 10.4× is PLACEMENT vs FORMULATION | §1 dump | in flight |
+| how much of the paged penalty is PLACEMENT vs FORMULATION | §1 dump | in flight |
 | build §3 at all | the FORMULATION share above | pending |
 | §3 monolithic vs §3 primitives | needs a §3 **decomposed** arm to exist | **not scoped** |
 | which §3 primitive resists native emission | Baracuda, against a concrete §3 seam | last |
@@ -328,10 +355,15 @@ isn't repeated.
 
 ### 6.2b Batch-size sweep (Lightbulb) — shapes the ask, does not gate it
 
-10.4× is a **k=1** number and k=1 is the case batching exists to avoid, so the
-sweep decides whether a kernel targets single-token decode or batched — the
-*shape* of the request. It is **downstream** of §6.2, not upstream, and it does
-not choose monolithic-vs-primitives.
+The paged penalty is a **k=1** number and k=1 is the case batching exists to
+avoid, so the sweep decides whether a kernel targets single-token decode or
+batched — the *shape* of the request. It is **downstream** of §6.2, not upstream,
+and it does not choose monolithic-vs-primitives.
+
+**Bounded by hardware, not by design, on this box:** k ≥ 4 OOMs on BOTH paths at
+the same 44 MiB FFN weight `Copy`; largest k completed is **2**. So the k-curve
+this section wanted cannot be produced here, and nobody should size a kernel
+against a large-k projection that does not exist.
 
 ### 6.3 Per-primitive native-emittable read (Baracuda)
 
