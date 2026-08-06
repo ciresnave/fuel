@@ -10660,7 +10660,35 @@ impl LlamaModel {
         // public signature is unchanged.
         let mut session: Option<crate::inference_context::DecodeSession> = None;
 
-        // Prefill: one forward pass over the full prompt.
+        // CUDA-graph capture is ON BY DEFAULT here (2026-08-06). Under `cuda`
+        // the decode steps route through `forward_with_kv_context_captured`,
+        // which holds this same `session` plus a recorded CUDA graph and
+        // replays it with one `cuGraphLaunch` per token.
+        //
+        // MEASURED, release, RTX 4070 Laptop, TinyLlama-1.1B, both arms one
+        // process, median over tok 3..N: plan-once 111.77 -> captured 25.87
+        // ms/token = 4.28x, byte-exact (`logits_bit_exact=true`). The replay
+        // cost is BUILD-PROFILE-INVARIANT (25.8 / 26.33 / 25.87 across three
+        // weeks and both build profiles) because it is one launch and almost
+        // pure device time, while the plan-once baseline is nearly all host
+        // work — which is why a debug build reads the ratio as ~12x. Quote
+        // 4.28x (release); the historic 10.4x was a DEBUG measurement.
+        //
+        // Not merely a contiguous-path win: the k=1 paged penalty is *made of*
+        // missing capture (paged ~= contiguous-WITHOUT-capture; the gap to
+        // captured-contiguous is the same ~4x capture is worth here), so this
+        // is where that value currently lives.
+        //
+        // Safe by construction rather than convention: the captured entry
+        // declines non-decode shapes itself (`seq != 1` falls back to the
+        // rebuild path), retires the capture WITH the session on any staleness
+        // (`invalidate_decode_pair_if_stale`), and is byte-identical to the
+        // plan-once path. Non-CUDA builds are untouched.
+        #[cfg(feature = "cuda")]
+        let mut captured: Option<fuel_dispatch::pipelined::CapturedDecodeSession> = None;
+
+        // Prefill: one forward pass over the full prompt. Always the persistent
+        // entry — `seq != 1`, so the captured path would immediately fall back.
         let mut last_logits = self.forward_with_kv_context_persistent(
             prompt_tokens, &mut cache, &mut ctx, &mut session,
         )?;
@@ -10675,9 +10703,18 @@ impl LlamaModel {
                     break;
                 }
             }
-            last_logits = self.forward_with_kv_context_persistent(
-                &[next], &mut cache, &mut ctx, &mut session,
-            )?;
+            #[cfg(feature = "cuda")]
+            {
+                last_logits = self.forward_with_kv_context_captured(
+                    &[next], &mut cache, &mut ctx, &mut session, &mut captured,
+                )?;
+            }
+            #[cfg(not(feature = "cuda"))]
+            {
+                last_logits = self.forward_with_kv_context_persistent(
+                    &[next], &mut cache, &mut ctx, &mut session,
+                )?;
+            }
         }
         Ok(tokens)
     }
