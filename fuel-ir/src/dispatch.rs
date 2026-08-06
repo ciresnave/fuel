@@ -991,6 +991,7 @@ pub fn kernel_source_intern(s: &str) -> &'static str {
         "mkl"          => "mkl",
         "cublas"       => "cublas",
         "cutlass"      => "cutlass",
+        "baracuda"     => "baracuda",
         "slang"        => "slang",
         tag            => {
             debug_assert!(
