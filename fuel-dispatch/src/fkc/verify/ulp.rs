@@ -13,26 +13,26 @@ use fuel_graph::jit::{OpTag, PatternNode};
 
 /// ULP (units-in-the-last-place) distance between two `f32` values.
 ///
-/// Uses an IEEE-754 **total-order** mapping (the same sign-magnitude →
-/// monotonic transform `f32::total_cmp` uses) before differencing, so the
-/// distance is correct across the sign/zero boundary. A naive
-/// `bits_x - bits_y` on the raw sign-magnitude patterns is right only for
-/// same-sign operands: it reports `2^31` ULP between `+0.0` and `-0.0` (which
-/// are adjacent, distance 1) and is meaningless for any candidate/reference
-/// pair that straddles zero.
+/// **Consumed directly from kiss-ref** ([`kiss_ref_core::ulp_distance_f32`]) —
+/// the single cross-project source of truth for float comparison, so Fuel's
+/// verify stack and any other "KISS-speaking" project (kiss-ref itself, its
+/// conformance corpus, sibling consumers) can never disagree on how far apart
+/// two floats are. This used to be a Fuel-internal copy; two copies that must
+/// agree by hand is a latent drift bug, and they HAD drifted (see below).
 ///
-/// Shared by [`verify_precision_bound`] here and the CUDA seed harness so the
-/// two never drift.
+/// kiss-ref uses the identical IEEE-754 **total-order** mapping Fuel used
+/// (`kiss_ref_core`'s `key_f32` is byte-for-byte the old `total_order_key`), so
+/// every non-NaN result is unchanged — the total-order transform is what makes
+/// the distance correct across the sign/zero boundary (`-0.0`/`+0.0` are 1 ULP
+/// apart, not `2^31`; straddling zero is meaningful). What kiss-ref ADDS is the
+/// correct NaN handling the old copy lacked: both-NaN → 0 (a reference NaN
+/// matched by a candidate NaN conforms), exactly one NaN → `u32::MAX` (a
+/// NaN-vs-number pair is NEVER "within N ULP" — the old raw-key `abs_diff` could
+/// wrongly *pass* a `MaxUlp` bound when the NaN and number keys happened to land
+/// close). Widened to `u64` at the boundary so the `Bound::MaxUlp(u32)` call
+/// sites are unchanged.
 pub(crate) fn ulp_distance(x: f32, y: f32) -> u64 {
-    fn total_order_key(f: f32) -> u32 {
-        let b = f.to_bits();
-        // Negative: flip every bit (reverses the descending magnitude order).
-        // Non-negative: set the sign bit (lifts the positives above the
-        // negatives). Result is a u32 that increases monotonically with the
-        // real value, with `-0.0` immediately below `+0.0`.
-        if b & 0x8000_0000 != 0 { !b } else { b | 0x8000_0000 }
-    }
-    u64::from(total_order_key(x).abs_diff(total_order_key(y)))
+    u64::from(kiss_ref_core::ulp_distance_f32(x, y))
 }
 
 /// A declared precision bound to check a candidate against a reference.
@@ -247,5 +247,16 @@ mod tests {
         let pos_min = f32::from_bits(1); // +2^-149
         let neg_min = f32::from_bits(0x8000_0001); // -2^-149
         assert_eq!(ulp_distance(pos_min, neg_min), 3);
+    }
+
+    #[test]
+    fn ulp_distance_nan_handling_matches_kiss_ref() {
+        // Regression for the drift the kiss-ref repoint fixed: exactly one NaN
+        // must SATURATE (u32::MAX widened) so a NaN-vs-number pair can never pass
+        // a `MaxUlp` bound; both-NaN conforms (0). The old Fuel-internal copy
+        // returned a finite raw-key abs_diff for the one-NaN case.
+        assert_eq!(ulp_distance(f32::NAN, 1.0), u64::from(u32::MAX));
+        assert_eq!(ulp_distance(1.0, f32::NAN), u64::from(u32::MAX));
+        assert_eq!(ulp_distance(f32::NAN, f32::NAN), 0);
     }
 }
