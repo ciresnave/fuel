@@ -244,7 +244,7 @@ baracuda-nvrtc         = { version = "0.0.1-alpha.78" }
 # baracuda-kernels-sys is a shared extern-C dep, so leaving kernelgen at alpha.76
 # while the rest is alpha.77 would pull two kernels-sys versions and duplicate the
 # FFI symbols. Pulled only under fuel-dispatch's `jit-synth` feature.
-baracuda-kernelgen     = { version = "=0.0.1-alpha.78" }
+baracuda-kernelgen     = { version = "=0.0.1-alpha.77" }  # alpha.78 has an all-zero-output regression (bisected 77->78); revert when fixed
 baracuda-nccl-sys      = { version = "0.0.1-alpha.78" }
 baracuda-nccl          = { version = "0.0.1-alpha.78", features = ["half-crate"] }
 baracuda-cutlass       = { version = "0.0.1-alpha.78" }
