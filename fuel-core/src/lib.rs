@@ -1,15 +1,23 @@
 //! ML framework for Rust
 //!
 //! ```rust
-//! use fuel_core::tensor::Tensor;
-//! use fuel_core::{DType, Device};
+//! use fuel_core::lazy::{LazyTensor, realize_many_f32};
+//! use fuel_core::Device;
 //! # use fuel_core::Error;
-//! # fn main() -> Result<(), Error>{
+//! # fn main() -> Result<(), Error> {
+//! let dev = Device::cpu();
 //!
-//! let a = Tensor::arange(0f32, 6f32, &Device::cpu())?.reshape((2, 3))?;
-//! let b = Tensor::arange(0f32, 12f32, &Device::cpu())?.reshape((3, 4))?;
+//! // Every tensor is a node in a lazy graph. The first `from_*` call mints the
+//! // graph; a second operand joins it with `from_*_on(a.graph(), ..)` — ops
+//! // require both operands to share one graph.
+//! let a = LazyTensor::from_f32((0..6).map(|x| x as f32).collect::<Vec<_>>(), (2, 3), &dev);
+//! let b = LazyTensor::from_f32_on(a.graph(), (0..12).map(|x| x as f32).collect::<Vec<_>>(), (3, 4), &dev);
 //! let c = a.matmul(&b)?;
+//! assert_eq!(c.shape().dims(), &[2, 4]);
 //!
+//! // Nothing has executed yet — `realize_*` is what runs the graph.
+//! let out = realize_many_f32(&[&c]);
+//! assert_eq!(out[0].len(), 8);
 //! # Ok(())}
 //! ```
 //!
