@@ -177,6 +177,47 @@ pub static CUDA_BINARY_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 
 /// CUDA `reduce` family (axis reductions (sum / max / min / mean)): fanned `<op>_<dtype>` symbol -> production wrapper.
 /// Contract: `docs/kernel-contracts/cuda/reduce.fkc.md`.
+/// The CUDA comparison family's `symbol → production wrapper` map
+/// (6 ops × 4 float dtypes = 24). Mirrors [`crate::fkc::cpu_link::
+/// CPU_COMPARE_ENTRY_POINTS`], whose 24 entries were the positive control
+/// that revealed this table had **zero** comparisons out of 440.
+///
+/// Binding key is `[T, T, U8]` — inputs share T, output is always U8 — so
+/// the symbol carries both (`ge_f32_u8`), unlike the same-dtype arithmetic
+/// families whose symbol carries one (`add_f32`).
+///
+/// `Op::PagedAttn`'s primitive recipe needs exactly one of these —
+/// `ge` on `[F32,F32,U8]` — and its absence is why the paged graph was
+/// host-placed, carrying the cross-device copies that make it
+/// non-capturable (measured: the whole k=1 paged penalty is the missing
+/// capture, not paging).
+pub static CUDA_COMPARE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    cuda_ep!("eq_f32_u8", crate::baracuda_dispatch::binary::eq_f32_u8),
+    cuda_ep!("eq_f64_u8", crate::baracuda_dispatch::binary::eq_f64_u8),
+    cuda_ep!("eq_f16_u8", crate::baracuda_dispatch::binary::eq_f16_u8),
+    cuda_ep!("eq_bf16_u8", crate::baracuda_dispatch::binary::eq_bf16_u8),
+    cuda_ep!("ne_f32_u8", crate::baracuda_dispatch::binary::ne_f32_u8),
+    cuda_ep!("ne_f64_u8", crate::baracuda_dispatch::binary::ne_f64_u8),
+    cuda_ep!("ne_f16_u8", crate::baracuda_dispatch::binary::ne_f16_u8),
+    cuda_ep!("ne_bf16_u8", crate::baracuda_dispatch::binary::ne_bf16_u8),
+    cuda_ep!("lt_f32_u8", crate::baracuda_dispatch::binary::lt_f32_u8),
+    cuda_ep!("lt_f64_u8", crate::baracuda_dispatch::binary::lt_f64_u8),
+    cuda_ep!("lt_f16_u8", crate::baracuda_dispatch::binary::lt_f16_u8),
+    cuda_ep!("lt_bf16_u8", crate::baracuda_dispatch::binary::lt_bf16_u8),
+    cuda_ep!("le_f32_u8", crate::baracuda_dispatch::binary::le_f32_u8),
+    cuda_ep!("le_f64_u8", crate::baracuda_dispatch::binary::le_f64_u8),
+    cuda_ep!("le_f16_u8", crate::baracuda_dispatch::binary::le_f16_u8),
+    cuda_ep!("le_bf16_u8", crate::baracuda_dispatch::binary::le_bf16_u8),
+    cuda_ep!("gt_f32_u8", crate::baracuda_dispatch::binary::gt_f32_u8),
+    cuda_ep!("gt_f64_u8", crate::baracuda_dispatch::binary::gt_f64_u8),
+    cuda_ep!("gt_f16_u8", crate::baracuda_dispatch::binary::gt_f16_u8),
+    cuda_ep!("gt_bf16_u8", crate::baracuda_dispatch::binary::gt_bf16_u8),
+    cuda_ep!("ge_f32_u8", crate::baracuda_dispatch::binary::ge_f32_u8),
+    cuda_ep!("ge_f64_u8", crate::baracuda_dispatch::binary::ge_f64_u8),
+    cuda_ep!("ge_f16_u8", crate::baracuda_dispatch::binary::ge_f16_u8),
+    cuda_ep!("ge_bf16_u8", crate::baracuda_dispatch::binary::ge_bf16_u8),
+];
+
 pub static CUDA_REDUCE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     cuda_ep!("sum_f32", crate::baracuda_dispatch::reduce::sum_f32),
     cuda_ep!("sum_f16", crate::baracuda_dispatch::reduce::sum_f16),
@@ -714,6 +755,7 @@ impl LinkRegistry for CudaLinkRegistry {
         CUDA_CAST_ENTRY_POINTS
             .iter()
             .chain(CUDA_BINARY_ENTRY_POINTS.iter())
+            .chain(CUDA_COMPARE_ENTRY_POINTS.iter())
             .chain(CUDA_REDUCE_ENTRY_POINTS.iter())
             .chain(CUDA_NORM_ENTRY_POINTS.iter())
             .chain(CUDA_SOFTMAX_ENTRY_POINTS.iter())
