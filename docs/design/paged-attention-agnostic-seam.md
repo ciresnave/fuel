@@ -7,6 +7,33 @@ kernel request; Baracuda has been told explicitly not to build to this yet.
 
 ---
 
+> ## ⚠ NUMBERS UNDER REVISION (2026-08-06)
+>
+> **The 10.4× paged-vs-contiguous figure quoted throughout this document is
+> UNDER REVISION and may be a DEBUG-BUILD ARTIFACT.** Lightbulb reports that
+> kernel-launch counts reproduce *exactly* across debug and release, and across
+> a 15-commit baseline move (36,718 / 9,214 / 17,802) — identical device work,
+> so a wall-clock gap that large must be host-side. Awaiting the
+> release-configuration number before this document is corrected. **Do not quote
+> 10.4× onward from here.**
+>
+> Two figures in this document ARE corrected and current:
+> - **CUDA-graph capture: ~2× at k=1, range 1.5–2.8×.** Non-overlapping
+>   distributions (max capture-on 67.118 < min capture-off 93.131, Mann-Whitney
+>   p≈0.014). Un-counterbalanced ordering biases *against* capture, so ~2× is a
+>   floor. Cost is launch overhead **plus memset elimination** (14,368 → 2,811;
+>   363.7 → 280.2 MB) — *not* "zero bytes", and no host-device traffic change.
+>   Persistence is genuinely held constant across the arms: both reach
+>   `build_and_realize_first_decode_token` (verified in `lazy.rs`).
+> - **Paged vs contiguous at k=1: ~1.4–4×**, not a point estimate. n=3, ratios
+>   4.43 / 2.59 / 2.09, paged last in all three; one same-session pair was
+>   excluded (an inversion at 0.84) and is disclosed here rather than dropped.
+>
+> **What survives all of this unchanged** — because it is structural rather than
+> timing-derived: `Op::PagedAttn` executes on the host under CUDA (per-node
+> `placement_of`), the recipe is 6-of-7 CUDA-resolvable, and §1 is
+> capacity-bound by construction.
+
 ## 0. What this document is answering
 
 CireSnave: *"Lets proceed with the backend and device agnostic Fuel paged
