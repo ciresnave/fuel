@@ -10,15 +10,60 @@
 
 #![cfg(feature = "vulkan")]
 
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock};
 
 use fuel_ir::{dispatch::OpKind, probe::BackendId, DType, Layout, Shape};
 use fuel_dispatch::{kernel::{MatmulM, KernelBindingTable, OpParams}, vulkan_dispatch::register_vulkan_kernels};
 use fuel_memory::{alloc_cpu_zeroed, BackendStorage, Storage};
 use fuel_vulkan_backend::VulkanBackend;
 
-fn backend_or_skip() -> Option<Arc<VulkanBackend>> {
-    VulkanBackend::new().ok().map(Arc::new)
+/// A serialized handle to the shared Vulkan backend for one live test.
+///
+/// Derefs to `Arc<VulkanBackend>`, so every existing call site — `&backend`,
+/// `backend.method()`, `backend.clone()` — compiles unchanged. Holding it keeps
+/// the process-wide `GPU_SERIAL` lock for the test's duration.
+struct VkTest {
+    _serial: MutexGuard<'static, ()>,
+    backend: Arc<VulkanBackend>,
+}
+
+impl std::ops::Deref for VkTest {
+    type Target = Arc<VulkanBackend>;
+    fn deref(&self) -> &Self::Target {
+        &self.backend
+    }
+}
+
+/// Acquire the shared Vulkan backend, serialized against every other live test
+/// in this binary. Returns `None` (skip) when no Vulkan device is present.
+///
+/// **Why shared + serialized.** The old body was `VulkanBackend::new()` — a fresh
+/// VkInstance + VkDevice + VMA allocator + 512 MB recycler pool **per test**. Run
+/// under libtest's default thread pool (~14 on this box), ~14 backends are alive at
+/// once and their combined device memory OOMs the 8 GB RTX 4070 (observed:
+/// `ERROR_OUT_OF_DEVICE_MEMORY` on `upload_bytes_handle`, scattered late in the
+/// 204-test run; every test passed in isolation). Sharing ONE backend bounds live
+/// device memory to a single working set regardless of parallelism.
+///
+/// Sharing then *requires* serialization: the backend's `one_shot` upload/download
+/// path submits to its `VkQueue` without an internal lock, so concurrent use across
+/// libtest threads would be a `vkQueueSubmit` data race (the queue must be
+/// externally synchronized). `GPU_SERIAL` gives that external synchronization — one
+/// test touches the GPU at a time — which is also the correct posture for live-GPU
+/// tests on a shared card. Each test calls this exactly once, so the non-reentrant
+/// lock never self-deadlocks.
+fn backend_or_skip() -> Option<VkTest> {
+    static GPU_SERIAL: OnceLock<Mutex<()>> = OnceLock::new();
+    static SHARED: OnceLock<Option<Arc<VulkanBackend>>> = OnceLock::new();
+
+    let serial = GPU_SERIAL
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let backend = SHARED
+        .get_or_init(|| VulkanBackend::new().ok().map(Arc::new))
+        .clone()?;
+    Some(VkTest { _serial: serial, backend })
 }
 
 fn upload_f32(backend: &Arc<VulkanBackend>, host: &[f32]) -> Storage {
