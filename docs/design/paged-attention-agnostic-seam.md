@@ -35,7 +35,30 @@ kernel request; Baracuda has been told explicitly not to build to this yet.
 > five identical runs** (2.2× spread). If prose needs one phrase, "a few times
 > slower, not an order of magnitude" is defensible. **"10.4×" is not.**
 >
-> **CUDA-graph capture: ~2× at k=1, range 1.5–2.8×** (not 2.06×, which was the
+> **CUDA-graph capture: 4.28× at k=1 in RELEASE — MEASURED 2026-08-06**, Fuel
+> `6b44b333`, RTX 4070 Laptop 8188 MiB, TinyLlama-1.1B-Chat-v1.0, both arms one
+> process, median over tok 3..N (build tokens reported separately):
+> `D2 plan-once 111.77 ms → D3 captured 25.87 ms`, byte-exact
+> (`logits_bit_exact=true`).
+>
+> **Fuel's own historic "10.4× CapturedRun" figure was a DEBUG measurement** —
+> today's debug run reproduces it at **12.02×** (316.16 → 26.33). **Capture did
+> NOT regress**: the captured arm is 25.8 (2026-07-13) → 26.33 (debug today) →
+> 25.87 (release today), flat across three weeks and both profiles.
+>
+> **Why the ratio moves while the arm doesn't** — the general lesson, worth more
+> than the number: captured replay is ONE `cuGraphLaunch`, so it is almost pure
+> device time and **build-profile-invariant**. The plan-once baseline
+> re-dispatches per token, which is nearly all host work, so debug inflates it
+> 2.8×. **Only the numerator moves with profile.** Any ratio with a
+> profile-invariant denominator will look like a regression when its baseline
+> changes — which is exactly how this became a five-way disagreement.
+>
+> (An external ~2×/1.5–2.8× estimate is superseded: its baseline agreed with
+> ours, but its captured arm read 53.2 ms vs our 25.87 ms, most likely a window
+> including the capture-build token — reported here separately at 438.51 ms.)
+>
+> *Superseded, retained for the record:* ~2× at k=1, range 1.5–2.8× (not 2.06×, which was the
 > median of four paired ratios). Non-overlapping distributions (max capture-on
 > 67.118 < min capture-off 93.131, p≈0.014); un-counterbalanced ordering biases
 > *against* capture, so ~2× is a floor. Cost is launch overhead **plus memset
