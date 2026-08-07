@@ -39,6 +39,15 @@ pub enum Error {
     #[error("unsupported dtype {0:?} for op {1}")]
     UnsupportedDTypeForOp(DType, &'static str),
 
+    #[error("no zero scalar for dtype {0:?} (scale format has no exact zero)")]
+    NoZeroScalar(DType),
+    #[error("no one scalar for dtype {0:?}")]
+    NoOneScalar(DType),
+    #[error("value {1} not representable as a scalar of dtype {0:?}")]
+    ScalarUnrepresentable(DType, f64),
+    #[error("dtype {0:?} is a packed element format with no scalar representation")]
+    PackedElementHasNoScalar(DType),
+
     // === Dimension Index Errors ===
     #[error("{op}: dimension index {dim} out of range for shape {shape:?}")]
     DimOutOfRange {
