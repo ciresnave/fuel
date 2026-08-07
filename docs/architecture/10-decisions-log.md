@@ -1156,6 +1156,45 @@ a fifth; this is addressed to whoever builds it.
 
 ---
 
+## 2026-08-07 — Scalar completion: `Result` constructors (never-panic), scales real / packed `Err`, F8E6M2 authored-not-pinned
+
+**Sections affected**: 03 (IR — `Scalar`/`DType`).
+**Phase / PR**: GAP-002 (Scalar/DType completion), branch `feat/scalar-dtype-completion`.
+
+**What changed**: `Scalar::{zero,one,from_f64}` now return `fuel_ir::Result`
+instead of `panic!`-ing on the sub-byte dtypes — closing a standing never-panic
+violation. `Scalar` gains a real `F8E8M0(u8)` block-scale variant (OCP-MX
+decode). The three packed *element* formats (`F4`/`F6E2M3`/`F6E3M2`) return
+`Err` — they have no single-scalar representation (tensors dequantize whole).
+`F8E6M2` stays **token-only**: it is a scale, but its exact bit-encoding is a
+Fuel-local invention with no citable spec, so it is *authored-not-pinned* and
+deferred behind a consumer. A build-time guard rejects `MaskedFill` on any
+packed/scale dtype, which makes the `Scalar::zero` `Err` branch in the
+`MaskedFill` backward provably unreachable. Exhaustiveness is enforced by a
+wildcard-free `DType` witness plus a `catch_unwind` sweep over `DType::ALL`.
+
+**Why**: `DType` (the token space Fuel can name / parse / serialize) is a
+*superset* of `Scalar` (the values Fuel can compute with). Conflating them meant
+the constructors panicked on formats that are legitimately name-only. Never-panic
+requires the honest `Result`; and the block-scales genuinely have no zero
+(`2^(x−bias)`), so even a real scale variant must return `Err(NoZeroScalar)`.
+
+**Alternatives considered**: (1) an opaque-bytes `Scalar::Packed{bits}` variant —
+rejected: `to_f64` still can't yield a number, so it merely relocates the panic
+to the accessor, and no consumer round-trips a lone packed scalar. (2)
+`strum::EnumIter` for `DType::ALL` — rejected: a derived list is a *runtime*
+check, whereas a wildcard-free witness is a *compile-time* one (the constitution's
+"validate at build time"), and it keeps the pure-vocabulary leaf dep-free. (3)
+Authoring the `F8E6M2` encoding now — rejected: novel float semantics with no
+consumer, against the sequence-behind-consumers rule.
+
+**Implications going forward**: adding a `DType` now forces a deliberate `Scalar`
+decision (no wildcard arms) and a witness update, both at compile time. `F8E6M2`
+arithmetic is tracked as its own follow-up (the encoding must be *authored*, then
+cited) rather than lost. The `DType`-superset-of-`Scalar` model is now explicit.
+
+---
+
 ## See also
 
 - [00-index §Versioning convention](00-index.md#versioning-convention) — when to bump section versions.

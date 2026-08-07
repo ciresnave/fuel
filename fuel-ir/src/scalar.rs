@@ -76,7 +76,9 @@ impl Scalar {
             DType::F8E4M3 => Scalar::F8E4M3(f8e4m3::ONE),
             // OCP-MX E8M0: 2^0 => X = 127.
             DType::F8E8M0 => Scalar::F8E8M0(127),
-            // Scales: interim Err (Task 3 gives F8E6M2 the real 2^0 byte).
+            // F8E6M2: a scale, but its exact bit-encoding is a Fuel-local
+            // invention with no citable spec — deferred as token-only (see the
+            // gap registry). Err until the encoding is authored.
             DType::F8E6M2 => {
                 return Err(crate::Error::NoOneScalar(dtype));
             }
@@ -122,7 +124,9 @@ impl Scalar {
                 }
                 Scalar::F8E8M0(x as u8)
             }
-            // Scales: interim Err (Task 3 gives F8E6M2 the real nearest-representable).
+            // F8E6M2: a scale, but its exact bit-encoding is a Fuel-local
+            // invention with no citable spec — deferred as token-only (see the
+            // gap registry). Err until the encoding is authored.
             DType::F8E6M2 => {
                 return Err(crate::Error::ScalarUnrepresentable(dtype, v));
             }
