@@ -5597,6 +5597,20 @@ impl Tensor {
                 mask.dtype(),
             )).bt());
         }
+        // GAP-002 (D5): MaskedFill has no meaning on the packed/scale dtypes.
+        // Packed formats (F4/F6*) have no scalar fill value; the block-scales
+        // (F8E8M0/F8E6M2) have no zero, so the backward pass — which fills with
+        // zero — cannot produce a gradient. Reject at graph-build time. This is
+        // also what makes the `Scalar::zero` Err branch in the MaskedFill
+        // `backward` arm provably unreachable in a well-formed graph.
+        if matches!(
+            self.dtype(),
+            DType::F4 | DType::F6E2M3 | DType::F6E3M2 | DType::F8E8M0 | DType::F8E6M2
+        ) {
+            return Err(
+                fuel_ir::Error::UnsupportedDTypeForOp(self.dtype(), "masked_fill").bt(),
+            );
+        }
         if value.dtype() != self.dtype() {
             return Err(fuel_ir::Error::Msg(format!(
                 "masked_fill: value dtype {:?} != x dtype {:?}",
@@ -12428,6 +12442,27 @@ mod tests {
         assert!(
             msg.contains("same graph"),
             "must fail on GRAPH affinity, not incidentally on dtype, got: {msg}",
+        );
+    }
+
+    #[test]
+    fn masked_fill_rejects_scale_dtype_at_build() {
+        // F8E8M0 is a block-scale dtype: it HAS a scalar value (so the
+        // value-dtype check passes) but no zero, so the MaskedFill backward
+        // cannot produce a gradient. Reject at build time — and this must fail
+        // on the dtype guard specifically: graph / shape / mask-U8 / value-dtype
+        // are all satisfied, so a bare `is_err()` can only be the guard firing.
+        let x = Tensor::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        let scale = x.cast(DType::F8E8M0);
+        let mask = x.cast(DType::U8);
+        let value = Scalar::one(DType::F8E8M0).unwrap();
+
+        let err = scale.masked_fill(&mask, value);
+        assert!(err.is_err(), "masked_fill on a scale dtype must be a build-time Err");
+        let msg = format!("{}", err.unwrap_err());
+        assert!(
+            msg.contains("unsupported dtype") && msg.contains("masked_fill"),
+            "must fail on the packed/scale dtype guard, got: {msg}",
         );
     }
 
