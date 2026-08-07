@@ -13953,6 +13953,24 @@ mod generate_tests {
     /// Reports rather than gates: this exists to size the opportunity, and the
     /// number it produces decides whether memoization is worth its correctness
     /// exposure at all.
+    ///
+    /// **MEASURED (tiny F32 Llama, RTX 4070): 168 nodes, 127 varying, 41
+    /// invariant = 21 `Const` + 20 `BroadcastTo`. Invariant nodes that
+    /// MATERIALIZE: zero.** The Consts are weights `base_cache` already realizes
+    /// once; the `BroadcastTo`s are `WorkItemKind::ViewOf` — output Arc aliases
+    /// the input's, no allocation, no launch — so recomputing one per token
+    /// costs a host-side Layout. Nothing here is worth a value cache.
+    ///
+    /// The first version of this test reported the same CONCLUSION for a reason
+    /// that was wrong, and the correction is the point: it inferred "all 41 are
+    /// Consts" from an op histogram that was populated only for nodes present in
+    /// both replay snapshots. Capture retains no `Const` output and no view
+    /// output, so that bucket was empty and printed NOTHING — and an empty print
+    /// was read as confirmation. It was equally consistent with 20 invariant
+    /// compute nodes existing, which is what was actually there. Hence §1b:
+    /// enumerate off the graph, and assert the enumeration's total against an
+    /// independently computed count so "printed nothing" cannot masquerade as
+    /// "measured nothing".
     #[test]
     #[cfg(feature = "cuda")]
     #[ignore = "requires a live CUDA device"]
@@ -14024,6 +14042,57 @@ mod generate_tests {
             }
         }
 
+        // --- (1b) WHAT the structurally-invariant nodes ACTUALLY ARE ---
+        //
+        // The conclusion this census gets used to justify — "there is nothing to
+        // memoize, because every invariant node is a weight `base_cache` already
+        // realizes once" — was INFERRED in the first version of this test and
+        // never measured. The op histogram below (`inv_by_op`) is populated only
+        // for nodes present in BOTH replay snapshots, and capture retains no
+        // `Const` outputs, so that bucket was empty and printed nothing. An empty
+        // print was read as confirmation of the inference. It confirmed nothing:
+        // it is equally consistent with invariant COMPUTE nodes existing and
+        // simply not being retained.
+        //
+        // So enumerate them directly, off the graph, with no dependence on what
+        // capture happened to retain. `Op` has exactly two leaves — `Const` and
+        // `Iota` — so every other op has inputs and is real computation. An
+        // invariant node that is not a leaf is therefore work redone every token
+        // that could be done once: a genuine memoization candidate, and its
+        // existence flips the conclusion.
+        let mut inv_all_by_op: BTreeMap<String, usize> = BTreeMap::new();
+        let mut inv_compute: Vec<(usize, String)> = Vec::new();
+        let op_kind = |o: &fuel_graph::Op| {
+            format!("{o:?}").split(['(', ' ', '{']).next().unwrap_or("?").to_string()
+        };
+        for i in 0..g.len() {
+            if varying.contains(&i) { continue; }
+            let node = g.node(fuel_graph::NodeId(i));
+            let kind = op_kind(&node.op);
+            *inv_all_by_op.entry(kind.clone()).or_insert(0) += 1;
+            if !matches!(node.op, fuel_graph::Op::Const | fuel_graph::Op::Iota { .. }) {
+                inv_compute.push((i, kind));
+            }
+        }
+        // Not every non-leaf is WORK. `Transpose` / `Permute` / `BroadcastTo` are
+        // `WorkItemKind::ViewOf` in the executor: the output's Storage Arc IS the
+        // input's, bytes shared, only the Layout's strides/offset differ. They
+        // allocate nothing and launch nothing, so "recomputing" one per token
+        // costs a Layout struct on the host — memoizing it buys nothing. (It is
+        // also why capture does not retain them: there is no distinct output
+        // buffer to retain, which is what made the first version of this census
+        // read as "no candidates".)
+        //
+        // So the number that actually decides whether memoization has a consumer
+        // is the MATERIALIZING invariant nodes — invariant work that allocates
+        // and launches. Reported separately rather than asserted on: a
+        // materializing invariant node appearing later is an OPPORTUNITY, not a
+        // defect, and a test that fails on someone adding one would be an
+        // obstacle. The census reports; the decision stays with a human.
+        let is_view = |k: &str| matches!(k, "Transpose" | "Permute" | "BroadcastTo" | "Reshape");
+        let (inv_views, inv_materializing): (Vec<_>, Vec<_>) =
+            inv_compute.iter().cloned().partition(|(_, k)| is_view(k));
+
         // --- (2) EMPIRICAL: bytes that changed between two replayed tokens ---
         let mut emp_changed: HashSet<usize> = HashSet::new();
         let mut compared = 0usize;
@@ -14076,6 +14145,28 @@ mod generate_tests {
                 println!("    {op:<24} {n}");
             }
         }
+
+        println!("\n-- what the structurally-invariant nodes ARE (off the graph, \
+                  independent of what capture retained) --");
+        for (op, n) in &inv_all_by_op {
+            println!("    {op:<24} {n}");
+        }
+        println!(
+            "  leaves (Const/Iota — already hoisted by base_cache) : {}",
+            inv_all_by_op.iter().filter(|(k, _)| k.as_str() == "Const" || k.as_str() == "Iota")
+                .map(|(_, n)| *n).sum::<usize>(),
+        );
+        println!(
+            "  invariant VIEW ops (ViewOf — alias input bytes, no alloc/launch) : {}",
+            inv_views.len(),
+        );
+        println!(
+            "  invariant MATERIALIZING ops (alloc + launch every token) : {}  <- the real candidates",
+            inv_materializing.len(),
+        );
+        for (id, op) in inv_materializing.iter().take(20) {
+            println!("      #{id:<5} {op}");
+        }
         println!("=== END ===\n");
 
         // POSITIVE CONTROL: the comparison actually happened. Without it, zero
@@ -14084,6 +14175,21 @@ mod generate_tests {
         // And the seeds must have been found — an empty seed set makes EVERYTHING
         // look invariant, which is the most flattering possible wrong answer.
         assert!(seeds >= 4, "only {seeds} per-token seed nodes — the structural pass is blind");
+        // POSITIVE CONTROL for (1b), and the specific defect it repairs: the
+        // enumeration must account for EVERY structurally-invariant node. The
+        // bug being fixed here was an empty report read as a negative result, so
+        // "the histogram printed nothing" must be distinguishable from "the
+        // histogram was never populated". Totals agreeing with the independently
+        // computed invariant count is that distinction.
+        let inv_total: usize = inv_all_by_op.values().sum();
+        assert_eq!(
+            inv_total,
+            g.len() - varying.len(),
+            "the invariant-node enumeration covered {inv_total} nodes but the \
+             structural pass found {} — an under-populated histogram would print \
+             an empty candidate list that reads as 'nothing to memoize'",
+            g.len() - varying.len(),
+        );
 
         // The one direction that is a correctness signal rather than noise.
         assert!(
