@@ -16270,14 +16270,102 @@ mod generate_tests {
              apart — so this is A's answer, not a rounding difference.",
         );
 
-        // The mechanism, made visible: the swap must have DROPPED the held
-        // plan and rebuilt it, so the session now holds a DIFFERENT graph.
+        // The mechanism, made visible. GAP-014 shipped invalidate-and-rebuild,
+        // so this asserted the graph CHANGED. GAP-028 replaces that with a
+        // guarded re-bind, so a compatible swap now REUSES the graph — the
+        // assertion is deliberately flipped, and the logit oracle above (which
+        // did not change) is what proves the flip is safe: whichever mechanism
+        // runs, B must get B's answer.
+        assert!(
+            session
+                .as_ref()
+                .map(|s| std::sync::Arc::ptr_eq(s.graph(), &built))
+                .unwrap_or(false),
+            "a compatible cache swap must RE-BIND the held plan, not rebuild it \
+             (GAP-028) — the logits are already proven correct above, so a \
+             rebuild here is pure cost on the serving admission path",
+        );
+    }
+
+    /// GAP-028 NEGATIVE CONTROL — the half that makes the test above mean
+    /// something.
+    ///
+    /// GAP-028 trades a guarantee that held by *construction* for one that holds
+    /// by *proof*: invalidate-and-rebuild could not be wrong, whereas re-binding
+    /// the KV Arcs into a live plan is correct only while the guard is. If the
+    /// guard ever accepts an incompatible cache, the failure is GAP-014 again —
+    /// silent, full-speed, plausible logits.
+    ///
+    /// So accepting a compatible swap proves nothing on its own. This asserts
+    /// the guard REJECTS: an incompatible cache must fall back to a rebuild,
+    /// never be spliced into the baked plan. `max_seq_len` is the lever here
+    /// because it is baked into the graph's KV `Const` shape AND its causal
+    /// mask, so re-binding across it would feed the plan storage of the wrong
+    /// extent.
+    #[test]
+    fn incompatible_cache_swap_is_rejected_not_rebound() {
+        let cfg = LlamaConfig {
+            vocab_size: 32, dim: 16, n_layers: 2, n_heads: 4, n_kv_heads: 4,
+            head_dim: 4, ffn_dim: 32, norm_eps: 1e-5, rope_base: 10000.0,
+        };
+        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
+        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let dev = Device::cpu();
+        let mk = |msl: usize| {
+            KvCache::with_capacity(
+                cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, msl, DType::F32, &dev,
+            ).expect("with_capacity")
+        };
+
+        let mut cache_a = mk(8);
+        let mut ctx = InferenceContext::new(dev.clone());
+        let mut session: Option<crate::inference_context::DecodeSession> = None;
+        model
+            .forward_with_kv_context_persistent(&[1, 2, 3], &mut cache_a, &mut ctx, &mut session)
+            .expect("A prefill");
+        model
+            .forward_with_kv_context_persistent(&[4], &mut cache_a, &mut ctx, &mut session)
+            .expect("A builds the plan");
+        let built =
+            std::sync::Arc::clone(session.as_ref().expect("held plan").graph());
+
+        // A cache whose KV buffers are a DIFFERENT extent. Every other key
+        // field matches — same model, same layer count, same dtype — so this
+        // isolates the one thing the guard must catch.
+        let mut cache_wide = mk(16);
+        let mut ctx_w = InferenceContext::new(dev.clone());
+        model
+            .forward_with_kv_context(&[7, 8, 9], &mut cache_wide, &mut ctx_w)
+            .expect("wide prefill");
+        let expected = {
+            let mut c = mk(16);
+            let mut x = InferenceContext::new(dev.clone());
+            model.forward_with_kv_context(&[7, 8, 9], &mut c, &mut x).expect("oracle prefill");
+            model.forward_with_kv_context(&[5], &mut c, &mut x).expect("oracle decode")
+        };
+
+        let got = model
+            .forward_with_kv_context_persistent(&[5], &mut cache_wide, &mut ctx, &mut session)
+            .expect("decode over an incompatible cache must still SUCCEED (rebuild)");
+
         assert!(
             !session
                 .as_ref()
                 .map(|s| std::sync::Arc::ptr_eq(s.graph(), &built))
                 .unwrap_or(false),
-            "the held plan survived a cache swap — it must be invalidated",
+            "REJECTION FAILED: a plan baked for max_seq_len=8 was re-bound onto \
+             max_seq_len=16 storage. The guard accepted an incompatible cache, \
+             which is GAP-014 reintroduced behind the optimization that was \
+             supposed to be safe.",
+        );
+        let drift = {
+            assert_eq!(expected.len(), got.len(), "logit rows must be comparable");
+            expected.iter().zip(&got).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max)
+        };
+        assert!(
+            drift <= 1e-5,
+            "rejecting must fall back to a correct REBUILD, not merely refuse to \
+             re-bind: maxdiff {drift:.3e} vs the re-planned oracle",
         );
     }
 
