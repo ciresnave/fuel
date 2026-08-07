@@ -6519,15 +6519,31 @@ fn register_derived_gpu_caps(table: &KernelBindingTable) {
 /// Read-lock the process-wide capability registry. CPU is auto-
 /// registered on first access; subsequent backends register
 /// themselves via [`register_backend_capabilities`].
+/// TEMPORARY GAP-015 DIAGNOSTIC — env-gated (`FUEL_LOCK_TRACE=1`), off by
+/// default, zero behavior change. Names the thread and the acquisition it is
+/// ABOUT to attempt versus the one it completed; a thread that logs "want" and
+/// never logs "got" IS the blocked party, which is what the deadlock's stack we
+/// cannot capture (no debugger on this box) would otherwise have told us.
+/// Revert once the opposing lock order is pinned.
+#[inline]
+pub(crate) fn lock_trace(what: &str) {
+    if std::env::var_os("FUEL_LOCK_TRACE").is_some() {
+        eprintln!("[locktrace] t={:?} {}", std::thread::current().id(), what);
+    }
+}
+
 pub fn global_registry() -> std::sync::RwLockReadGuard<'static, CapabilityRegistry> {
-    GLOBAL_REGISTRY
-        .get_or_init(|| {
-            let mut r = CapabilityRegistry::new();
-            r.register(default_cpu_caps());
-            RwLock::new(r)
-        })
-        .read()
-        .unwrap()
+    lock_trace("want REGISTRY.oncelock+read");
+    let l = GLOBAL_REGISTRY.get_or_init(|| {
+        lock_trace("  REGISTRY init: begin");
+        let mut r = CapabilityRegistry::new();
+        r.register(default_cpu_caps());
+        lock_trace("  REGISTRY init: end");
+        RwLock::new(r)
+    });
+    let g = l.read().unwrap();
+    lock_trace("got  REGISTRY.read");
+    g
 }
 
 /// Add a backend's capabilities to the process-wide registry.
@@ -6537,12 +6553,16 @@ pub fn global_registry() -> std::sync::RwLockReadGuard<'static, CapabilityRegist
 /// registry happily appends duplicates and the lookup picks the
 /// first-registered match.
 pub fn register_backend_capabilities(caps: BackendCapabilities) {
+    lock_trace("want REGISTRY.oncelock+WRITE (from register_backend_capabilities)");
     let lock = GLOBAL_REGISTRY.get_or_init(|| {
+        lock_trace("  REGISTRY init: begin (via register_backend_capabilities)");
         let mut r = CapabilityRegistry::new();
         r.register(default_cpu_caps());
+        lock_trace("  REGISTRY init: end");
         RwLock::new(r)
     });
     lock.write().unwrap().register(caps);
+    lock_trace("got+released REGISTRY.WRITE");
     bump_topology_generation();
 }
 
@@ -6552,11 +6572,15 @@ pub fn register_backend_capabilities(caps: BackendCapabilities) {
 /// are also auto-registered — production callers picking up the
 /// global table see all available backends without manual init.
 pub fn global_bindings() -> std::sync::RwLockReadGuard<'static, KernelBindingTable> {
-    GLOBAL_BINDINGS
+    lock_trace("want BINDINGS.oncelock+read");
+    let __g = GLOBAL_BINDINGS
         .get_or_init(|| {
+            lock_trace("  BINDINGS init: begin");
             let mut t = KernelBindingTable::new();
             register_cpu_kernels(&mut t);
+            lock_trace("  BINDINGS init: cpu done, entering optional backends");
             register_optional_backends(&mut t);
+            lock_trace("  BINDINGS init: optional backends done");
             // Single init-boundary fail-fast: a duplicate `KernelRef`
             // in the hand-written static tables is a programmer error,
             // surfaced once here after all backends register — the
@@ -6567,7 +6591,9 @@ pub fn global_bindings() -> std::sync::RwLockReadGuard<'static, KernelBindingTab
             RwLock::new(t)
         })
         .read()
-        .unwrap()
+        .unwrap();
+    lock_trace("got  BINDINGS.read");
+    __g
 }
 
 /// Auto-register every cargo-feature-gated backend that built. CPU is
@@ -6625,13 +6651,17 @@ pub fn extend_global_bindings(register: impl FnOnce(&mut KernelBindingTable)) {
         RwLock::new(t)
     });
     {
+        lock_trace("want BINDINGS.WRITE (extend_global_bindings)");
         let mut guard = lock.write().unwrap();
+        lock_trace("got  BINDINGS.WRITE -- calling extender while HOLDING it");
         register(&mut guard);
+        lock_trace("  extender returned");
         // Re-validate after the extender adds its wrappers (same
         // never-panic fail-fast as the init boundary above).
         guard
             .finalize()
             .expect("KernelBindingTable: duplicate kernel registration after extend");
+        lock_trace("released BINDINGS.WRITE");
     }
     bump_topology_generation();
 }
