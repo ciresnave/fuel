@@ -991,6 +991,78 @@ This mirrors the CPU kernel, which is itself im2col + batched GEMM (`fuel-cpu-ba
 
 ---
 
+## 2026-08-07 — Runtime value memoization is DECLINED; invariance is a declaration, not a cache
+
+**Sections affected**: none normatively (records a decision *not* to build)
+**Phase / PR**: token-invariance census (`56843728`, corrected `dd98aa23`)
+**Bumped to**: no section bump — this entry is the record
+
+**What was decided**: Fuel will **not** build runtime value memoization — a
+cache keyed on "these inputs are unchanged since the last call." The capability
+was proposed as a way to skip recomputing loop-invariant nodes across decode
+tokens, and as a candidate to standardize into KISS so kernel generators could
+emit against it. Declined on both counts.
+
+**Why — two independent reasons, and the second is the one that must survive**:
+
+1. **No harvest, measured.** A token-invariance census of a decode step
+   (fuel-core, RTX 4070) found 168 nodes: 127 varying, 41 invariant. The 41
+   decompose as **21 `Const` + 20 `BroadcastTo`**, and the count of invariant
+   nodes that **materialize** is **zero**. The `Const`s are weights `base_cache`
+   already hoists; `BroadcastTo` is `WorkItemKind::ViewOf`, whose output `Arc`
+   aliases its input — no allocation, no launch. There is nothing in today's
+   decode graph a value cache would save. (An earlier claim that all 41 were
+   `Const`s was **inferred, never measured, and wrong**; corrected at
+   `dd98aa23`. The census is the instrument, not the anecdote.)
+
+2. **It is unsound as specified, not merely unprofitable.** `inference_context.rs`
+   binds pool K/V `Arc`s once and **mutates them in place**. Any cache keyed on
+   "inputs unchanged" is therefore wrong *by construction* — the input identity
+   is stable while its contents change — and the failure mode is a **silent wrong
+   answer**, not an error. Reason 1 invites "but maybe later, on another model";
+   reason 2 does not.
+
+**What replaces it**: the distinction between two things both called
+"memoization". *Value memoization* (runtime cache, equality-keyed) is declined
+above. ***Invariance declaration + optimizer hoist*** — where the kernel or graph
+**declares** which operands are loop-invariant and the optimizer hoists at
+**build time** — remains open and is the form a kernel generator can target,
+because a generator emits **structure**, not cache policy. It has no runtime
+equality check and therefore no silent-wrong-answer mode, which is the whole
+point. This is the constitution's standing preference for build-time validation
+applied to a case where the runtime alternative looked superficially equivalent.
+
+**Consequences**: a KISS/Unpopped proposal for an operand-invariance attribute
+plus a `prepare(invariant) -> state` / `step(state, varying)` split-kernel
+contract is **held, not abandoned** — pending evidence of a real consumer, which
+the F32 census cannot supply. Sending the ask first would repeat the error
+corrected at `dd98aa23`.
+
+**The obvious next measurement is NOT executable, and the reframe matters more
+than the original plan.** "Re-run the census on a quantized fixture" was the
+first proposal and it **cannot be done**: per GAP-029, `QuantizedLlama3Model`
+implements neither `DecodeModel` nor `PagedDecodeModel`, and *both* halves of the
+census depend on a decode session — the empirical half replays two tokens through
+`forward_with_kv_context_captured` and diffs retained intermediates, and the
+structural half seeds from the session's per-token nodes. No decode surface → no
+session → neither half ports. (Secondary, unverified: the quantized entry point
+is `QuantizedLlama3Model::from_gguf` and it is not known whether a synthetic
+fixture exists, so it may also need a real GGUF file.)
+
+**The right question for quantized is constant-foldability, not
+token-invariance**: are there **materializing** nodes whose transitive inputs are
+all `Const`? Weight-only dequant is exactly that shape. This is answerable by
+**walking a graph** — no decode session, no capture, no GPU — and it names the
+missing capability correctly: if such nodes exist and are not hoisted, the gap is
+**constant folding**, an ordinary and defensible optimizer feature, not
+"memoization." *Searched for an existing folding pass and found none under the
+obvious names* (`const_fold` / `constant_fold` / `fold_const`); the only hit,
+`fuel-graph/src/opt.rs:425 fold_const_bytes`, is a **CSE hashing helper**, not
+evaluation of constant subgraphs. Positive-controlled (the same style of query
+returns the real `optimize_graph` / `run_pass` entry points). **UNVERIFIED** that
+no such pass exists under a different name — establish that before treating
+"Fuel has no constant folding" as fact.
+
 ## 2026-08-07 — KV allocation identity enters the decode validity key
 
 **Sections affected**: 14
