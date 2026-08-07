@@ -397,7 +397,19 @@ nowhere; now captured so they are not forgotten):
   logprob-returning consumer has a different requirement from a token-only one. `SchedulePolicy` is
   confirmed correctly Fuel's (equivalent arms = arm selection, not fairness); `run_to_completion`,
   the implicit `Vec`-order FIFO, and `add_session`'s name are consumer-policy shapes to keep out of
-  the interface. **Tracked defect — RESOLVED 2026-07-29 (Q2):** `multi_session.rs` moved from
+  the interface. **Tracked defect — RESOLVED 2026-08-07 (GAP-014, slot-pool KV contamination):** a
+  held decode plan was welded to the KV **allocation** it was built against — `base_cache` holds the
+  KV storage `Arc`s and neither rebind path ever re-binds them — while the validity key named only
+  geometry + model identity. So the serving happy path (retire request A, admit B on a fresh
+  same-shaped cache, reuse the plan for speed) had B decoding over A's KV at full speed with a
+  plausible distribution and nothing to report. Closed by `decode_shape::KvAllocId`, a
+  never-recycled per-allocation id now in BOTH `is_valid_for`s, across all three carriers
+  (`KvCache`, `LatentKvCache`, `DeviceKvPool` — the hole was 3× its filed site). The id names the
+  ALLOCATION, not the conversation: `truncate_to` preserves it, `clear`/`set_layer` re-mint. Perf
+  follow-up filed as GAP-028 (re-bind the KV Arcs on swap instead of rebuilding, so an admission
+  costs nothing rather than one re-optimise). Last of the four
+  [14-lifecycle](docs/architecture/14-lifecycle.md) Stage-5 invariant violations.
+  **Tracked defect — RESOLVED 2026-07-29 (Q2):** `multi_session.rs` moved from
   `fuel-core` to `fuel-inference` (`57abafb4`). The move forced the concrete-model coupling into a
   model-agnostic `DecodeModel` trait (`n_layers`/`n_kv_heads`/`head_dim` +
   `forward_with_kv_context_persistent` + `build_batched_decode_logits`; `LlamaModel` is the first

@@ -48,6 +48,7 @@ use fuel_dispatch::{optimize::OptimizedGraph, pipelined::{PipelinedExecutor, Sto
 use fuel_memory::{BackendStorage, Storage};
 
 use crate::Device;
+use crate::decode_shape::KvAllocId;
 
 // ===========================================================================
 // KV cache primitive types
@@ -131,6 +132,12 @@ pub struct KvCache {
     pub cached_len: usize,
     pub n_kv_heads: usize,
     pub head_dim: usize,
+    /// Identity of the *allocation* backing this cache — the thing a held
+    /// [`DecodeSession`] is welded to. Private with an [`Self::alloc_id`]
+    /// reader so it cannot be assigned by hand: every path that replaces
+    /// storage ([`Self::clear`], [`Self::set_layer`]) re-mints it, and
+    /// [`Self::truncate_to`] deliberately does not. See [`KvAllocId`].
+    alloc_id: KvAllocId,
     /// Pre-allocated capacity along the sequence axis. `Some(n)` when
     /// constructed via [`KvCache::with_capacity`] — every layer's K + V
     /// storage holds `[1, n_kv_heads, n, head_dim]` of zeros and the
@@ -162,6 +169,7 @@ impl KvCache {
             head_dim,
             max_seq_len: None,
             dtype: None,
+            alloc_id: KvAllocId::next(),
         }
     }
 
@@ -312,6 +320,7 @@ impl KvCache {
             head_dim,
             max_seq_len: Some(max_seq_len),
             dtype: Some(dtype),
+            alloc_id: KvAllocId::next(),
         })
     }
 
@@ -359,18 +368,38 @@ impl KvCache {
         self.layers.get_mut(li).and_then(|o| o.as_mut())
     }
 
+    /// Identity of the storage this cache currently owns — the value a held
+    /// [`DecodeSession`]'s validity key carries so a cache **swap** cannot be
+    /// mistaken for a continuation. See [`KvAllocId`] for why re-allocation
+    /// re-mints it and rewinding does not.
+    pub fn alloc_id(&self) -> KvAllocId {
+        self.alloc_id
+    }
+
+    /// Install a layer's storage, replacing whatever was there.
+    ///
+    /// This **re-mints [`Self::alloc_id`]**: the storage `Arc` a held plan
+    /// baked into its `base_cache` for this layer is no longer the storage
+    /// this cache reads, so any plan welded to the old one must be rebuilt.
     pub fn set_layer(&mut self, li: usize, layer: KvLayer) {
         self.layers[li] = Some(layer);
+        self.alloc_id = KvAllocId::next();
     }
 
     /// Drop every layer; reset `cached_len` to zero. Use between
     /// independent generations (the cache's K/V shapes are tied to
     /// a specific prompt prefix).
+    ///
+    /// **Re-mints [`Self::alloc_id`]** — every storage `Arc` is released, so
+    /// this is an allocation change, not a rewind. Contrast
+    /// [`Self::truncate_to`], which moves only `cached_len` and therefore must
+    /// preserve the id.
     pub fn clear(&mut self) {
         for layer in &mut self.layers {
             *layer = None;
         }
         self.cached_len = 0;
+        self.alloc_id = KvAllocId::next();
     }
 
     /// Shrink the cache to `new_len` cached positions. Speculative-
@@ -384,6 +413,12 @@ impl KvCache {
     /// pairs this with pre-allocated buffers + `Op::WriteSlice` so
     /// truncate becomes a pure metadata update — the trailing rows
     /// of the pre-allocated buffer simply stop being read.
+    ///
+    /// **Deliberately does NOT touch [`Self::alloc_id`].** Rewinding the
+    /// conversation is not re-allocating the buffers: a held plan is still
+    /// welded to exactly the right storage, so invalidating here would forfeit
+    /// plan reuse on every rejected draft batch and buy no correctness. The
+    /// id names the allocation, never the conversation — see [`KvAllocId`].
     pub fn truncate_to(&mut self, new_len: usize) {
         if new_len < self.cached_len {
             self.cached_len = new_len;
@@ -550,6 +585,11 @@ pub struct LatentKvCache {
     pub slot_trailing: Vec<Vec<usize>>,
     pub max_seq_len: usize,
     pub dtype: DType,
+    /// Identity of the allocation backing this cache. Same role and same
+    /// re-mint rules as [`KvCache::alloc_id`] — MLA reuses [`DecodeSession`]
+    /// verbatim (its 2 latent slots ride `kv_nodes` as `(latent, kpe)` pairs),
+    /// so it inherits the same welding and needs the same guard.
+    alloc_id: KvAllocId,
 }
 
 impl LatentKvCache {
@@ -686,6 +726,7 @@ impl LatentKvCache {
             slot_trailing,
             max_seq_len,
             dtype,
+            alloc_id: KvAllocId::next(),
         })
     }
 
@@ -723,12 +764,21 @@ impl LatentKvCache {
         &self.slot_trailing[s]
     }
 
-    /// Drop every layer; reset `cached_len` to zero. Mirrors [`KvCache::clear`].
+    /// Identity of the storage this cache currently owns. Mirrors
+    /// [`KvCache::alloc_id`]; see [`KvAllocId`].
+    pub fn alloc_id(&self) -> KvAllocId {
+        self.alloc_id
+    }
+
+    /// Drop every layer; reset `cached_len` to zero. Mirrors [`KvCache::clear`],
+    /// including the [`Self::alloc_id`] re-mint — every storage `Arc` is
+    /// released, so a plan welded to them must be rebuilt.
     pub fn clear(&mut self) {
         for layer in &mut self.layers {
             *layer = None;
         }
         self.cached_len = 0;
+        self.alloc_id = KvAllocId::next();
     }
 
     /// Shrink the cache to `new_len` cached positions — metadata-only,
@@ -736,6 +786,9 @@ impl LatentKvCache {
     /// truncate_to`]: the underlying storages are not shrunk; the
     /// pre-allocated buffers' trailing rows simply stop being read until
     /// overwritten by a later `Op::WriteSlice` at the same positions.
+    ///
+    /// Deliberately preserves [`Self::alloc_id`] — a rewind is not a
+    /// re-allocation. Same rule as [`KvCache::truncate_to`].
     pub fn truncate_to(&mut self, new_len: usize) {
         if new_len < self.cached_len {
             self.cached_len = new_len;
@@ -864,6 +917,12 @@ pub struct DecodeSession {
     /// The [`crate::decode_shape`] key this plan was baked against — model
     /// structure + weight identity. See [`Self::is_valid_for`].
     shape_key: u64,
+    /// The KV **allocation** whose storage `Arc`s are baked into `base_cache`.
+    /// `rebind_and_realize_prebuilt` never re-binds `kv_nodes`, so this plan
+    /// reads and writes THESE buffers regardless of which cache the caller
+    /// hands in — making the id, not the geometry, the thing that decides
+    /// reuse. See [`KvAllocId`] and [`Self::is_valid_for`].
+    alloc_id: KvAllocId,
 }
 
 impl DecodeSession {
@@ -892,9 +951,11 @@ impl DecodeSession {
         n_layers: usize,
         cache_dtype: DType,
         shape_key: u64,
+        alloc_id: KvAllocId,
     ) -> Self {
         Self {
             shape_key,
+            alloc_id,
             graph,
             optimized,
             effective_target,
@@ -965,9 +1026,20 @@ impl DecodeSession {
     /// different weights — would otherwise be judged interchangeable and one
     /// would silently execute the other's baked plan.
     ///
+    /// `alloc_id` is the live cache's [`KvCache::alloc_id`]. It is a SEPARATE
+    /// question from `shape_key` and neither subsumes the other: `shape_key`
+    /// names the model whose weights are baked in, `alloc_id` names the KV
+    /// buffers the plan writes into. One model serving many concurrent
+    /// requests has one `shape_key` and one allocation per request, and it is
+    /// exactly that case — the slot-pooled server — where geometry-only keying
+    /// hands request B a plan welded to request A's KV. Nothing errors: B just
+    /// decodes over A's context at full speed.
+    ///
     /// Both directions matter. Returning `true` too readily is a wrong answer
     /// at full speed; returning `false` too readily forfeits plan reuse
-    /// (measured 223× on CUDA) while every correctness test stays green.
+    /// (measured 223× on CUDA) while every correctness test stays green. That
+    /// second direction is why `alloc_id` tracks the ALLOCATION and not the
+    /// conversation — see [`KvCache::truncate_to`], which must not invalidate.
     pub fn is_valid_for(
         &self,
         seq: usize,
@@ -975,12 +1047,14 @@ impl DecodeSession {
         n_layers: usize,
         cache_dtype: DType,
         shape_key: u64,
+        alloc_id: KvAllocId,
     ) -> bool {
         self.seq == seq
             && self.max_seq_len == max_seq_len
             && self.n_layers == n_layers
             && self.cache_dtype == cache_dtype
             && self.shape_key == shape_key
+            && self.alloc_id == alloc_id
     }
 
     /// The held graph handle (the caller re-binds data Consts + realizes
@@ -1197,6 +1271,14 @@ pub struct PagedDecodeSession {
     /// speed. The contiguous twin closed this first; this is the paged half of
     /// the same hole.
     shape_key: u64,
+    /// The [`DeviceKvPool`](crate::kv_block_pool_device::DeviceKvPool) whose
+    /// per-layer block buffers are baked into `base_cache`. The paged half of
+    /// the same welding: `rebind_and_realize_paged_prebuilt` re-binds the
+    /// per-token data (token id, RoPE, block_table, context_lens, offset) and
+    /// never the pool, so this plan reads THESE buffers whichever pool the
+    /// caller passes. Two same-geometry pools are otherwise indistinguishable
+    /// to the key. See [`KvAllocId`].
+    alloc_id: KvAllocId,
     /// Count of REBIND realizes this session has served (one per
     /// [`Self::realize_token`]). The build itself realizes through the prebuild
     /// seam, NOT `realize_token`, so it stays 0 right after construction and
@@ -1232,8 +1314,10 @@ impl PagedDecodeSession {
         block_size: usize,
         cache_dtype: DType,
         shape_key: u64,
+        alloc_id: KvAllocId,
     ) -> Self {
         Self {
+            alloc_id,
             graph,
             optimized,
             effective_target,
@@ -1296,6 +1380,13 @@ impl PagedDecodeSession {
     /// Rebuild (drop + build fresh) on any mismatch: a change in
     /// `max_blocks_cap` (the block_table shape key), `n_layers`, `block_size`,
     /// or `cache_dtype` means the held graph's shapes / offsets are stale.
+    ///
+    /// `alloc_id` is the live pool's
+    /// [`DeviceKvPool::alloc_id`](crate::kv_block_pool_device::DeviceKvPool::alloc_id)
+    /// — which POOL's buffers, as distinct from `shape_key`'s which MODEL's
+    /// weights. Note it is deliberately not sensitive to block allocation:
+    /// which physical blocks a session owns rides the per-token `block_table`
+    /// rebind, so a generation that grows into new blocks keeps its plan.
     pub fn is_valid_for(
         &self,
         max_blocks_cap: usize,
@@ -1303,12 +1394,14 @@ impl PagedDecodeSession {
         block_size: usize,
         cache_dtype: DType,
         shape_key: u64,
+        alloc_id: KvAllocId,
     ) -> bool {
         self.max_blocks_cap == max_blocks_cap
             && self.n_layers == n_layers
             && self.block_size == block_size
             && self.cache_dtype == cache_dtype
             && self.shape_key == shape_key
+            && self.alloc_id == alloc_id
     }
 
     /// Build the per-token [`SymEnv`] for one paged decode step: bind
