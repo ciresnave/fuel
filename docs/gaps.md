@@ -34,8 +34,9 @@
 | GAP-009 | fuel-cpu-backend/src/system_memory.rs:198 | — | `panic!` on an inconsistent OS memory snapshot. Never-panic. | OPEN |
 | GAP-010 | fuel-quantized/src/k_quants.rs:40 | — | `from_float_imatrix` default trait method `panic!`s "unimplemented" for most dtypes. Never-panic. | OPEN |
 | GAP-011 | fuel-core/src/judge/mod.rs:61 | C | `build_input_graph` "would panic!" for un-profiled ops (currently guarded by a catch-all arm; lower risk). | OPEN |
-| GAP-012 | fuel-cuda-backend/src/probe.rs + placement | B | Within-process CUDA-probe fan-out **race**: cold probe from K threads unmemoized (CUDA twin of Vulkan `9bb68e6b`). Stalls the suite at default `-j`; passes at `--test-threads=1`. OnceLock memoization (counter in the *uncached* fn). | IN PROGRESS (B) |
-| GAP-013 | fuel-core placement (candidate-scope 42-fix) | A | VERIFY the shipped candidate-scope fix (`5358f596`) isn't aimed at the wrong layer vs GAP-012: revert + `--test-threads=1`; capture absent/persist/fewer. If green scheduling-dependent, re-examine. | OPEN |
+| GAP-012 | fuel-cuda-backend/src/probe.rs | B | `probe.rs` had NO memoization while the Vulkan twin has had it since `9bb68e6b`: re-entering the driver on every `enumerate_devices()` is real waste. FIXED with an `OnceLock` + non-vacuous test (counter in the *uncached* fn). **NOT the stall cause** — 32 tests still hang with the fix compiled in (positive-controlled). | FIXED (waste only) |
+| GAP-015 | fuel-dispatch `--features cuda` lib tests | B | **HANG at default `-j`**: 32 tests stall (18 `optimize::*`, 14 `pipelined::*`); NOT fixed by GAP-012. Cause UNKNOWN — being **stack-sampled** (three resemblance-based hypotheses failed: pre-existing, load, probe fan-out; observe the block before proposing a fourth). Blocks a `cargo test --features cuda` gate; interim `--test-threads=1` (743 pass / 19s). | OPEN |
+| GAP-013 | fuel-core placement (candidate-scope 42-fix) | A | VERIFY the shipped candidate-scope fix (`5358f596`) addresses the original 42 `Op::Copy on Cuda: no CUDA storage` **ERRORS** at the right layer: revert + re-run. NOTE: DECOUPLED from GAP-015 — the 42 were an error (suite ran to report), GAP-015 is a hang; likely separate. Do NOT treat the probe fix as the operative variable. | OPEN |
 
 ---
 
