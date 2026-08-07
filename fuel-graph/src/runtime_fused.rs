@@ -508,12 +508,9 @@ fn fused_params_for(fid: FusedOpId) -> Option<FusedOpParams> {
 /// through this guard). The value rides `attrs.scalars[0]`; the dtype is the
 /// filled tensor's (operand[0]) dtype, resolved at emit time.
 fn masked_fill_scalar(value: f64, dtype: fuel_ir::DType) -> Option<fuel_ir::Scalar> {
-    use fuel_ir::DType as D;
-    match dtype {
-        D::U8 | D::I8 | D::U32 | D::I16 | D::I32 | D::I64 | D::BF16 | D::F16 | D::F32 | D::F64
-        | D::F8E4M3 => Some(fuel_ir::Scalar::from_f64(value, dtype)),
-        D::F6E2M3 | D::F6E3M2 | D::F4 | D::F8E8M0 | D::F8E6M2 => None,
-    }
+    // Honest miss for any dtype without a scalar rep; the Result collapses
+    // the old hand-written dummy-dtype guard.
+    fuel_ir::Scalar::from_f64(value, dtype).ok()
 }
 
 /// Decode a target [`fuel_ir::Shape`] from `attrs.target_shape` (the shared
@@ -1484,7 +1481,7 @@ mod tests {
         match super::tag_to_op(OpTag::MaskedFill, &attrs) {
             Some(Op::MaskedFill { value }) => {
                 assert_eq!(value.dtype(), DType::F16, "dtype rides cast_dtype");
-                assert_eq!(value, Scalar::from_f64(-1.0, DType::F16), "value rides scalars[0]");
+                assert_eq!(value, Scalar::from_f64(-1.0, DType::F16).unwrap(), "value rides scalars[0]");
             }
             other => panic!("expected MaskedFill, got {other:?}"),
         }
@@ -2695,8 +2692,15 @@ mod tests {
             shape: x_shape.clone(),
             dtype,
         });
+        // A reduce-max backward over a non-real (packed/scale) dtype is not a
+        // thing this frozen oracle handles; self-return the node unchanged
+        // (decompose-fixpoint / surfaced-gap convention) rather than panic.
+        let fill = match Scalar::one(dtype) {
+            Ok(s) => s,
+            Err(_) => return id,
+        };
         let mask_f = graph.push(Node {
-            op: Op::MaskedFill { value: Scalar::one(dtype) },
+            op: Op::MaskedFill { value: fill },
             inputs: vec![zeros, mask_u8],
             shape: x_shape.clone(),
             dtype,

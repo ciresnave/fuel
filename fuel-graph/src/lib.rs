@@ -8431,7 +8431,19 @@ impl Tensor {
                     let mask = inputs[1];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
-                    let zero = fuel_ir::Scalar::zero(dtype);
+                    let zero = match fuel_ir::Scalar::zero(dtype) {
+                        Ok(z) => z,
+                        Err(_) => {
+                            // A packed/scale dtype has no zero scalar. MaskedFill
+                            // on such a dtype is a build-time bug (a future D5
+                            // graph-build guard forbids it), so this is
+                            // unreachable in a well-formed graph. debug_assert
+                            // catches it in debug; release skips this gradient
+                            // rather than panicking (never-panic invariant).
+                            debug_assert!(false, "MaskedFill backward on non-real dtype {dtype:?}");
+                            continue;
+                        }
+                    };
                     let grad_x = push_node(
                         &graph_handle, Op::MaskedFill { value: zero },
                         vec![up_id, mask], x_shape, dtype,
