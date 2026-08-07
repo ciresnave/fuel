@@ -17,6 +17,9 @@ pub enum Scalar {
     F32(f32),
     F64(f64),
     F8E4M3(f8e4m3),
+    /// OCP-MX `E8M0` block scale: raw byte `X` decodes to `2^(X − 127)` for
+    /// `X ∈ 0..=254`; `X == 255` is NaN. Unsigned; no zero, no subnormals.
+    F8E8M0(u8),
 }
 
 impl Scalar {
@@ -71,8 +74,10 @@ impl Scalar {
             DType::F32 => Scalar::F32(1.0),
             DType::F64 => Scalar::F64(1.0),
             DType::F8E4M3 => Scalar::F8E4M3(f8e4m3::ONE),
-            // Scales: interim Err (Task 2/3 give the real 2^0 byte).
-            DType::F8E8M0 | DType::F8E6M2 => {
+            // OCP-MX E8M0: 2^0 => X = 127.
+            DType::F8E8M0 => Scalar::F8E8M0(127),
+            // Scales: interim Err (Task 3 gives F8E6M2 the real 2^0 byte).
+            DType::F8E6M2 => {
                 return Err(crate::Error::NoOneScalar(dtype));
             }
             // Packed element formats: no scalar representation.
@@ -106,8 +111,19 @@ impl Scalar {
             DType::F32 => Scalar::F32(v as f32),
             DType::F64 => Scalar::F64(v),
             DType::F8E4M3 => Scalar::F8E4M3(f8e4m3::from_f64(v)),
-            // Scales: interim Err (Task 2/3 give the real nearest-representable).
-            DType::F8E8M0 | DType::F8E6M2 => {
+            // OCP-MX E8M0: nearest power of two, X = round(log2(v)) + 127.
+            DType::F8E8M0 => {
+                if !v.is_finite() || v <= 0.0 {
+                    return Err(crate::Error::ScalarUnrepresentable(dtype, v));
+                }
+                let x = v.log2().round() as i32 + 127;
+                if !(0..=254).contains(&x) {
+                    return Err(crate::Error::ScalarUnrepresentable(dtype, v));
+                }
+                Scalar::F8E8M0(x as u8)
+            }
+            // Scales: interim Err (Task 3 gives F8E6M2 the real nearest-representable).
+            DType::F8E6M2 => {
                 return Err(crate::Error::ScalarUnrepresentable(dtype, v));
             }
             // Packed element formats: no scalar representation.
@@ -131,6 +147,7 @@ impl Scalar {
             Scalar::F32(_) => DType::F32,
             Scalar::F64(_) => DType::F64,
             Scalar::F8E4M3(_) => DType::F8E4M3,
+            Scalar::F8E8M0(_) => DType::F8E8M0,
         }
     }
 
@@ -148,6 +165,13 @@ impl Scalar {
             Scalar::F32(v) => *v as f64,
             Scalar::F64(v) => *v,
             Scalar::F8E4M3(v) => v.to_f64(),
+            Scalar::F8E8M0(x) => {
+                if *x == 255 {
+                    f64::NAN
+                } else {
+                    2f64.powi(*x as i32 - 127)
+                }
+            }
         }
     }
 }
@@ -177,5 +201,30 @@ mod tests {
         assert_eq!(Scalar::one(DType::I64).unwrap(), Scalar::I64(1));
         assert_eq!(Scalar::from_f64(-1.0, DType::F16).unwrap(),
                    Scalar::F16(f16::from_f64(-1.0)));
+    }
+
+    #[test]
+    fn f8e8m0_decode_matches_ocp() {
+        // value = 2^(X - 127); X = 255 => NaN. No zero, no negatives.
+        assert_eq!(Scalar::F8E8M0(127).to_f64(), 1.0);          // 2^0
+        assert_eq!(Scalar::F8E8M0(128).to_f64(), 2.0);          // 2^1
+        assert_eq!(Scalar::F8E8M0(126).to_f64(), 0.5);          // 2^-1
+        assert!(Scalar::F8E8M0(255).to_f64().is_nan());
+    }
+
+    #[test]
+    fn f8e8m0_roundtrip_all_finite_bytes() {
+        for x in 0u8..=254 {
+            let v = Scalar::F8E8M0(x).to_f64();
+            assert_eq!(Scalar::from_f64(v, DType::F8E8M0).unwrap(),
+                       Scalar::F8E8M0(x), "byte {x}");
+        }
+    }
+
+    #[test]
+    fn f8e8m0_one_and_no_zero() {
+        assert_eq!(Scalar::one(DType::F8E8M0).unwrap(), Scalar::F8E8M0(127));
+        assert!(matches!(Scalar::zero(DType::F8E8M0),
+                         Err(crate::Error::NoZeroScalar(DType::F8E8M0))));
     }
 }
