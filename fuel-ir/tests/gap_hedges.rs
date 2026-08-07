@@ -59,6 +59,16 @@
 //!     `target/` excluded for the ordinary reason: not production source.)
 //!   - **`#[cfg(test)]` regions are test code.** Skipped via naive brace-depth
 //!     tracking (count `{` minus `}` per line), same as Increment 1.
+//!   - **Bare `#[test]` fns are test code too.** A `#[test]`-attributed fn is a
+//!     test even when NOT wrapped in a `#[cfg(test)] mod`; its body is skipped
+//!     by the same brace-depth mechanism, armed on the `#[test]` line.
+//!     (`"#[test]"` is not a substring of `"#[cfg(test)]"`, so no double-fire.)
+//!   - **Files included via a parent's `#[cfg(test)] mod <stem>;` are test
+//!     code.** Such a file has no top-level `#[cfg(test)]`; the whole-tree loop
+//!     reads the candidate parent-module sources (`.../mod.rs`, the sibling
+//!     `.../<dir>.rs`, and `lib.rs`/`main.rs` for a file directly under `src/`)
+//!     and excludes the file when a parent gates it. Real cases:
+//!     `dlpack/header_check.rs` and `dlpack/validate/tests.rs`.
 //!   - **Comments only.** A hedge phrase inside a string literal on a code line
 //!     (`let s = "not yet ready";`) is NOT scanned — only lines whose trimmed
 //!     start is `//`.
@@ -145,10 +155,16 @@ fn scan_file_hedges(rel_path: &str, text: &str) -> Vec<HedgeHit> {
         let trimmed = line.trim();
         let is_comment = line.trim_start().starts_with("//");
 
-        // Detect the start of a cfg(test) region. Guard against re-arming while
-        // already inside one so a nested attribute cannot corrupt the depth we
-        // must return to.
-        if skip_until_depth.is_none() && line.contains("#[cfg(test)]") {
+        // Detect the start of a test region. `#[cfg(test)]` gates a whole
+        // module/block; a bare `#[test]` marks a single test fn whose body is
+        // likewise test code (real case: dlpack/header_check.rs, a `#[test]` fn
+        // not wrapped in a `#[cfg(test)] mod`). `"#[test]"` is NOT a substring of
+        // `"#[cfg(test)]"`, so a `#[cfg(test)]` line never double-triggers here.
+        // Guard against re-arming while already inside a region so a nested
+        // attribute cannot corrupt the depth we must return to (naive safety).
+        if skip_until_depth.is_none()
+            && (line.contains("#[cfg(test)]") || line.contains("#[test]"))
+        {
             pending_cfg_test = true;
         }
 
@@ -275,6 +291,64 @@ fn workspace_relative(root: &Path, path: &Path) -> String {
     rel.to_string_lossy().replace('\\', "/")
 }
 
+/// True if `parent_text` declares an external `mod <stem>;` (semicolon form, so
+/// `<stem>` lives in its own file) attributed `#[cfg(test)]` on the same line or
+/// the immediately-preceding line. Pure text function — unit-tested both ways.
+fn parent_declares_mod_cfg_test(parent_text: &str, stem: &str) -> bool {
+    let needle = format!("mod {stem};");
+    let lines: Vec<&str> = parent_text.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        if line.contains(&needle) {
+            if line.contains("#[cfg(test)]") {
+                return true;
+            }
+            if i > 0 && lines[i - 1].contains("#[cfg(test)]") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// True if `path`'s parent module includes it via a `#[cfg(test)]`-gated
+/// `mod <stem>;`, making the WHOLE file test code even though the file itself
+/// carries no top-level `#[cfg(test)]`. Candidate parent-module sources for
+/// `.../a/b.rs`: `.../a/mod.rs`, the sibling `.../a.rs`, and — for a file
+/// directly under `crate/src/` — `.../lib.rs` / `.../main.rs`. Real cases:
+/// `dlpack/header_check.rs` (via `mod.rs`) and `dlpack/validate/tests.rs` (via
+/// the sibling `validate.rs`).
+fn parent_gates_as_cfg_test(path: &Path) -> bool {
+    let stem = match path.file_stem().and_then(|s| s.to_str()) {
+        Some(s) => s,
+        None => return false,
+    };
+    let parent = match path.parent() {
+        Some(p) => p,
+        None => return false,
+    };
+    let mut candidates: Vec<PathBuf> = vec![parent.join("mod.rs")];
+    if let Some(dir_name) = parent.file_name().and_then(|s| s.to_str()) {
+        if let Some(grandparent) = parent.parent() {
+            candidates.push(grandparent.join(format!("{dir_name}.rs")));
+        }
+        if dir_name == "src" {
+            candidates.push(parent.join("lib.rs"));
+            candidates.push(parent.join("main.rs"));
+        }
+    }
+    for cand in candidates {
+        if cand == path {
+            continue; // a file is never its own parent module
+        }
+        if let Ok(txt) = std::fs::read_to_string(&cand) {
+            if parent_declares_mod_cfg_test(&txt, stem) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Path to the checked-in baseline allowlist.
 fn allowlist_path(root: &Path) -> PathBuf {
     root.join("fuel-ir").join("tests").join("gap_hedge_allowlist.txt")
@@ -341,6 +415,32 @@ mod unit {
     }
 
     #[test]
+    fn skips_bare_test_fn_hedge() {
+        // A hedge inside a bare `#[test] fn` (NOT wrapped in a `#[cfg(test)] mod`)
+        // is test code. Real case: dlpack/header_check.rs.
+        let text = "#[test]\nfn t() {\n  // for now\n}\n";
+        let v = scan_hedges("x.rs", text, &allowlist(&[]));
+        assert_eq!(v.len(), 0, "a hedge inside a bare #[test] fn must be excluded: {v:?}");
+    }
+
+    #[test]
+    fn still_flags_production_hedge_outside_test() {
+        // Control (other direction): a hedge NOT inside any test construct must
+        // still be flagged — the fix must not over-broaden into ordinary code.
+        let text = "fn real() {\n  // for now\n}\n";
+        let v = scan_hedges("x.rs", text, &allowlist(&[]));
+        assert_eq!(v.len(), 1, "a production hedge must still be flagged: {v:?}");
+    }
+
+    #[test]
+    fn parent_cfg_test_detection_both_directions() {
+        // A `#[cfg(test)]`-attributed `mod foo;` in a parent gates foo.rs as test.
+        assert!(parent_declares_mod_cfg_test("#[cfg(test)]\nmod foo;", "foo"));
+        // A plain `mod foo;` (no attribute) does not.
+        assert!(!parent_declares_mod_cfg_test("mod foo;", "foo"));
+    }
+
+    #[test]
     fn detects_stale_allowlist_key() {
         let al = allowlist(&["a.rs\t// foo"]);
         // Key absent from the tree ⇒ stale.
@@ -368,6 +468,7 @@ fn no_new_prose_hedge_in_workspace() {
     let mut pattern_counts = [0usize; 14];
     let mut keys_seen: HashSet<String> = HashSet::new();
     let mut production_files = 0usize;
+    let mut parent_cfg_test_files = 0usize;
 
     for path in &files {
         // Never scan this enforcer file itself (it is packed with literal hedge
@@ -377,6 +478,14 @@ fn no_new_prose_hedge_in_workspace() {
             continue;
         }
         if excluded_component(path).is_some() {
+            continue;
+        }
+        // The WHOLE file is test code, included via a parent module's
+        // `#[cfg(test)] mod <stem>;` even though the file itself carries no
+        // top-level `#[cfg(test)]`. Real cases: dlpack/header_check.rs (via
+        // mod.rs) and dlpack/validate/tests.rs (via the sibling validate.rs).
+        if parent_gates_as_cfg_test(path) {
+            parent_cfg_test_files += 1;
             continue;
         }
         production_files += 1;
@@ -408,10 +517,12 @@ fn no_new_prose_hedge_in_workspace() {
         .join(", ");
 
     println!(
-        "gap-hedge check: scanned {} production .rs files; {} comment hedge(s) seen — \
+        "gap-hedge check: scanned {} production .rs files \
+         (+{} excluded as parent-#[cfg(test)] modules); {} comment hedge(s) seen — \
          {} NEW violation(s), {} tracked (GAP-referenced), {} grandfathered (allowlisted); \
          allowlist size {}, {} stale.",
         production_files,
+        parent_cfg_test_files,
         seen,
         violations.len(),
         tracked,
@@ -465,6 +576,11 @@ fn regenerate_allowlist() {
             continue;
         }
         if excluded_component(path).is_some() {
+            continue;
+        }
+        // Mirror the gate's parent-`#[cfg(test)]` exclusion exactly, so the
+        // regenerated baseline can never diverge from what the gate enforces.
+        if parent_gates_as_cfg_test(path) {
             continue;
         }
         let rel = workspace_relative(&root, path);

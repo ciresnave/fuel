@@ -187,7 +187,6 @@ fuel-kernels-source/src/lib.rs	//!   co-located there; Slang→CUDA unification 
 fuel-lazy-examples/src/bin/yolov8-lazy.rs	// `sigmoid(0) = 0.5` and every anchor passes a naive threshold. To
 fuel-memory/src/dlpack_view.rs	// the GPU path is explicitly TODO rather than silently wrong.
 fuel-memory/src/dlpack_view.rs	//! A naive "store a pointer into my own field" is unsound: moving the
-fuel-memory/src/dlpack_view/tests.rs	// The SCHEME is described, but the scale operand is not yet bound, so the
 fuel-metal-backend/src/ug.rs	// TODO: support more dtypes.
 fuel-metal-kernels/src/kernels/sdpa.rs	/// - final type != bf16 (TODO maybe just template this kernel too?)
 fuel-metal-kernels/src/metal/commands.rs	// TODO: Avoid redundant allocation before drop
