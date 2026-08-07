@@ -13,6 +13,60 @@
 
 use fuel_ir::probe::{BackendId, BackendProbe, DeviceDescriptor};
 use fuel_ir::{DeviceLocation, Error, Result};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::OnceLock;
+
+/// Memoized enumeration result — the whole point of this module's caching.
+///
+/// The `Err` arm is cached deliberately, exactly as in the Vulkan twin: caching
+/// the FAILURE is what stops a box with no CUDA runtime from re-entering the
+/// driver load on every call.
+///
+/// **This is the CUDA half of the fan-out fixed for Vulkan in `9bb68e6b`.**
+/// That commit's own caveat recorded that `gpu-run` serializes runs BETWEEN
+/// processes and does nothing for WITHIN-process fan-out, which needs separate
+/// memoization — this is that unfixed half. Symptom before the fix:
+/// `cargo test -p fuel-dispatch --features cuda --lib` stalls indefinitely at
+/// default parallelism while `-- --test-threads=1` passes 743/0 in 19s, with the
+/// stalling test set VARYING between runs (a logic bug picks the same victim;
+/// contention picks whoever races).
+///
+/// **Hot-plug caveat:** the cache lives for the process lifetime, so a device
+/// attached after the first enumeration will not appear. Correct for a test or
+/// CLI run and the deliberate tradeoff for killing the fan-out.
+static DEVICE_CACHE: OnceLock<std::result::Result<Vec<DeviceDescriptor>, String>> =
+    OnceLock::new();
+
+/// How many times the driver was ACTUALLY probed, process-global TOTAL across
+/// the memoized path and any direct [`enumerate_devices_uncached`] caller.
+///
+/// Incremented inside the real probe. Because it is a total, it is NOT safe for
+/// the concurrency test to assert `== 1` against — a sibling test calling the
+/// uncached path directly would pollute it. That is what
+/// [`MEMOIZED_PROBE_CALLS`] exists for.
+static PROBE_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+/// How many times the MEMOIZED path ran the real probe — incremented inside the
+/// `OnceLock::get_or_init` closure, so it is exactly one per process however
+/// many threads race, and immune to direct uncached callers.
+///
+/// Keeping the counter here rather than in the wrapper is the difference between
+/// an assertion of `== 1` (which proves memoization) and `>= 1` (which proves
+/// nothing).
+static MEMOIZED_PROBE_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+/// Real driver probes so far this process — TOTAL across both paths. Test seam.
+#[doc(hidden)]
+pub fn probe_call_count() -> usize {
+    PROBE_CALLS.load(Ordering::SeqCst)
+}
+
+/// Real driver probes performed via the MEMOIZED path — exactly one per
+/// process. Test seam; this is the counter a concurrency assertion belongs on.
+#[doc(hidden)]
+pub fn memoized_probe_call_count() -> usize {
+    MEMOIZED_PROBE_CALLS.load(Ordering::SeqCst)
+}
 
 /// NVIDIA's PCI-SIG vendor ID. Hardcoded because (a) CUDA only ever
 /// runs on NVIDIA silicon and (b) the CUDA device-attribute API does
@@ -27,9 +81,34 @@ impl BackendProbe for CudaBackendProbe {
     }
 }
 
-/// Enumerate every CUDA device currently visible. Cheap — creates no
-/// contexts or streams, allocates no device memory.
+/// Enumerate every CUDA device currently visible — **memoized**, one real
+/// probe per process.
+///
+/// The old doc-comment called the probe "cheap — creates no contexts or
+/// streams". That is true of the work it *asks for* and false of what it
+/// *costs* under concurrency: `Device::count()` forces driver initialization,
+/// and K threads reaching a cold probe simultaneously is what stalled the test
+/// suite. Cheap-per-call and safe-under-fan-out are different properties.
 pub fn enumerate_devices() -> Result<Vec<DeviceDescriptor>> {
+    DEVICE_CACHE
+        .get_or_init(|| {
+            MEMOIZED_PROBE_CALLS.fetch_add(1, Ordering::SeqCst);
+            enumerate_devices_uncached().map_err(|e| e.to_string())
+        })
+        .clone()
+        .map_err(Error::Msg)
+}
+
+/// The real probe: re-enters the CUDA driver on **every** call.
+///
+/// Production code must call [`enumerate_devices`]. This is `pub` only so the
+/// fan-out characterization test can exercise the pre-memoization behaviour
+/// honestly — racing this directly *is* what the old code did — rather than by
+/// temporarily breaking the cache, which would leave a window where a
+/// half-sabotaged probe could be committed by accident.
+#[doc(hidden)]
+pub fn enumerate_devices_uncached() -> Result<Vec<DeviceDescriptor>> {
+    PROBE_CALLS.fetch_add(1, Ordering::SeqCst);
     let count = baracuda_driver::Device::count()
         .map_err(|e| Error::Msg(format!("cuda probe: device count failed: {e}")).bt())?;
     let driver_ver = baracuda_driver::version()
@@ -104,5 +183,79 @@ mod tests {
                 other => panic!("expected Cuda location, got {other:?}"),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod probe_memoization_tests {
+    use super::*;
+
+    /// K threads racing a cold probe must produce **exactly one** real driver
+    /// enumeration.
+    ///
+    /// This is the CUDA half of the fan-out fixed for Vulkan in `9bb68e6b`.
+    /// Before memoization, `cargo test -p fuel-dispatch --features cuda --lib`
+    /// stalled indefinitely at default parallelism while `--test-threads=1`
+    /// passed 743/0 in 19s — and the STALLING SET VARIED between runs, which is
+    /// the signature of contention rather than a logic bug.
+    ///
+    /// The assertion is on [`MEMOIZED_PROBE_CALLS`], not [`PROBE_CALLS`].
+    /// `PROBE_CALLS` is a process-global total shared with any direct
+    /// `enumerate_devices_uncached` caller, so asserting `== 1` on it would be
+    /// polluted by a parallel sibling; the memoized counter is incremented
+    /// inside the `get_or_init` closure and no caller outside this module can
+    /// touch it. Getting that wrong turns an `== 1` proof of memoization into a
+    /// `>= 1` proof of nothing.
+    ///
+    /// Skips on a box with no CUDA runtime: a cached `Err` is still exactly one
+    /// probe, so the property holds, but there is no point asserting it where
+    /// the driver never loads.
+    #[test]
+    fn concurrent_enumeration_probes_the_driver_exactly_once() {
+        if enumerate_devices().is_err() {
+            return; // no CUDA runtime here
+        }
+        let before = memoized_probe_call_count();
+
+        let threads: Vec<_> = (0..16)
+            .map(|_| std::thread::spawn(|| enumerate_devices().map(|d| d.len())))
+            .collect();
+        let lens: Vec<usize> = threads
+            .into_iter()
+            .map(|t| t.join().expect("probe thread panicked").expect("probe"))
+            .collect();
+
+        // Every racer must see the SAME device list — a torn or per-thread
+        // result would mean the cache is not actually shared.
+        assert!(
+            lens.windows(2).all(|w| w[0] == w[1]),
+            "racing threads saw different device counts: {lens:?}",
+        );
+
+        assert_eq!(
+            memoized_probe_call_count(),
+            before,
+            "16 racing threads triggered {} additional real driver probes; the              memoized path must probe exactly once per process",
+            memoized_probe_call_count() - before,
+        );
+    }
+
+    /// Positive control for the test above. If `enumerate_devices_uncached` did
+    /// NOT actually re-probe per call, the memoization assertion would pass
+    /// trivially and prove nothing — the same vacuous-oracle shape that has
+    /// bitten this codebase repeatedly.
+    #[test]
+    fn uncached_enumeration_really_does_re_probe() {
+        if enumerate_devices().is_err() {
+            return; // no CUDA runtime here
+        }
+        let before = probe_call_count();
+        let _ = enumerate_devices_uncached();
+        let _ = enumerate_devices_uncached();
+        assert_eq!(
+            probe_call_count() - before,
+            2,
+            "the uncached path must re-probe on every call, or the memoization              test above is vacuous",
+        );
     }
 }
