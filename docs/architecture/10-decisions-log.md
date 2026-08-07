@@ -991,6 +991,55 @@ This mirrors the CPU kernel, which is itself im2col + batched GEMM (`fuel-cpu-ba
 
 ---
 
+## 2026-08-07 — KV allocation identity enters the decode validity key
+
+**Sections affected**: 14
+**Phase / PR**: GAP-014 (Tier A #2)
+**Bumped to**: 14 v0.9 → v0.10
+
+**What changed**: `decode_shape` gains `KvAllocId`, a process-global,
+never-recycled counter minted per KV **allocation**, and it is now a field of
+both `DecodeSession::is_valid_for` and `PagedDecodeSession::is_valid_for`. Three
+carriers mint and expose it: `KvCache`, `LatentKvCache`, and `DeviceKvPool`.
+This closes row 4 of the table the 2026-08-06 invariant tabulated — the last of
+the four.
+
+**Why**: a held plan's `base_cache` holds the KV storage `Arc`s bound on the
+first decode token, and neither `rebind_and_realize_prebuilt` nor
+`rebind_and_realize_paged_prebuilt` ever re-binds them. A held plan therefore
+reads and writes **the buffers it was built against**, whichever cache the
+caller passes. The pre-existing key was geometry plus model identity, so two
+same-shaped caches were interchangeable — which is not an edge case but the
+slot-pooled serving *happy path*: retire request A, admit B on a fresh cache,
+reuse the plan for speed, and B decodes over A's KV at full speed with a
+plausible distribution and nothing to report. The born-red end-to-end test
+measured the divergence at 1.03e-1 against a re-planned oracle, with the two
+histories 1.34e-1 apart.
+
+**Alternatives considered**: (1) *Re-bind the KV `Arc`s each token instead of
+invalidating* — strictly better for serving (a swap would cost nothing rather
+than a plan rebuild), but it is an optimization layered on a correctness fix,
+and it must prove the layouts match. Deferred, and noted as the follow-up; the
+conservative rebuild matches what every other key field already does.
+(2) *Fold the allocation into `shape_key`* — rejected: `shape_key` is documented
+as model structure + weight identity and is computed from the model, so every
+`decode_shape_key()` implementation would have to be handed a cache. Two
+identities that vary independently (one model, N concurrent allocations) belong
+in two fields. (3) *Pointer identity over the storage `Arc`s* — rejected for the
+same reason `ModelInstanceId` rejected it: a session does not pin the caller's
+allocations, so a freed address can be re-issued to a live object.
+
+**Implications going forward**: (1) the ALLOCATION-vs-conversation distinction is
+now load-bearing — `truncate_to` must preserve the id (speculative decoding's
+reject path would otherwise rebuild the plan on every rejected batch) while
+`clear`/`set_layer` must re-mint it; (2) a fifth violation of the invariant is
+still expected, and the lesson added to §14 from this one is that a violation is
+**wider than the site where it is noticed** — this was filed against one function
+and held in three carriers; (3) multi-session serving no longer has a known
+silent-wrong-answer hole on its happy path.
+
+---
+
 ## 2026-08-06 — A held plan's validity key must cover everything it bakes (normative)
 
 **What changed**: [14-lifecycle](14-lifecycle.md) Stage 5 gains a **normative

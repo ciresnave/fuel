@@ -7830,7 +7830,7 @@ impl LlamaModel {
             // reusing a plan baked against the other one's Consts.
             if !s.is_valid_for(
                 max_blocks_cap, geom.n_layers, geom.block_size, act_dtype,
-                self.decode_shape_key(),
+                self.decode_shape_key(), pool.alloc_id(),
             ) {
                 *decode_session = None;
             }
@@ -8073,6 +8073,10 @@ impl LlamaModel {
             block_size,
             act_dtype,
             self.decode_shape_key(),
+            // Which POOL's block buffers are baked into `base_cache` — the
+            // rebind never re-binds them, so a same-geometry pool swap would
+            // otherwise reuse this plan over the wrong KV.
+            pool.alloc_id(),
         ));
 
         Ok(logits_vec)
@@ -8929,6 +8933,7 @@ impl LlamaModel {
             let valid = match max_seq_len {
                 Some(msl) => s.is_valid_for(
                     seq, msl, cfg.n_layers, cache_dtype, self.decode_shape_key(),
+                    cache.alloc_id(),
                 ),
                 None => false,
             };
@@ -9179,6 +9184,8 @@ impl LlamaModel {
             cfg.n_layers,
             cache_dtype,
             self.decode_shape_key(),
+            // Which ALLOCATION's KV Arcs are baked into `base_cache`.
+            cache.alloc_id(),
         ));
 
         // Bump cache state (identical to the D1 path).
@@ -9801,6 +9808,7 @@ impl LlamaModel {
             seq,
             cache.max_seq_len,
             cache.dtype.unwrap_or(DType::F32),
+            cache.alloc_id(),
         );
 
         // ---- 2. First decode token: build the held session (unmodified
@@ -9966,10 +9974,11 @@ impl LlamaModel {
         seq: usize,
         max_seq_len: Option<usize>,
         cache_dtype: DType,
+        alloc_id: crate::decode_shape::KvAllocId,
     ) -> bool {
         invalidate_decode_pair_if_stale(
             session, captured, ctx, seq, max_seq_len, cache_dtype,
-            self.config.n_layers, self.decode_shape_key(),
+            self.config.n_layers, self.decode_shape_key(), alloc_id,
             |sess, c| self.drop_decode_session(sess, c),
         )
     }
@@ -10040,6 +10049,7 @@ fn invalidate_decode_pair_if_stale<C>(
     cache_dtype: DType,
     n_layers: usize,
     shape_key: u64,
+    alloc_id: crate::decode_shape::KvAllocId,
     drop_session: impl FnOnce(
         &mut Option<crate::inference_context::DecodeSession>,
         &mut InferenceContext,
@@ -10048,7 +10058,9 @@ fn invalidate_decode_pair_if_stale<C>(
     let stale = match session.as_ref() {
         None => false,
         Some(s) => match max_seq_len {
-            Some(msl) => !s.is_valid_for(seq, msl, n_layers, cache_dtype, shape_key),
+            Some(msl) => {
+                !s.is_valid_for(seq, msl, n_layers, cache_dtype, shape_key, alloc_id)
+            }
             None => true,
         },
     };
@@ -11792,6 +11804,7 @@ impl PhiModel {
             let valid = match max_seq_len {
                 Some(msl) => s.is_valid_for(
                     seq, msl, cfg.n_layers, cache_dtype, self.decode_shape_key(),
+                    cache.alloc_id(),
                 ),
                 None => false,
             };
@@ -12003,6 +12016,8 @@ impl PhiModel {
             cfg.n_layers,
             cache_dtype,
             self.decode_shape_key(),
+            // Which ALLOCATION's KV Arcs are baked into `base_cache`.
+            cache.alloc_id(),
         ));
 
         // Bump cache state (identical to the D1 path).
@@ -12192,6 +12207,7 @@ impl PhiModel {
             cache.dtype.unwrap_or(DType::F32),
             cfg.n_layers,
             self.decode_shape_key(),
+            cache.alloc_id(),
             |s, ctx| self.drop_decode_session(s, ctx),
         );
 
@@ -15760,6 +15776,7 @@ mod generate_tests {
         let mut captured: Option<()> = Some(());
         let invalidated = model.invalidate_decode_pair_if_stale(
             &mut session, &mut captured, &mut ctx, 1, Some(MSL), DType::F32,
+            cache.alloc_id(),
         );
         assert!(!invalidated, "a matching validity key must NOT invalidate");
         assert!(session.is_some(), "valid session survives");
@@ -15769,6 +15786,7 @@ mod generate_tests {
         let mut captured: Option<()> = Some(());
         let invalidated = model.invalidate_decode_pair_if_stale(
             &mut session, &mut captured, &mut ctx, 1, Some(MSL * 4), DType::F32,
+            cache.alloc_id(),
         );
         assert!(invalidated, "a resized cache must invalidate");
         assert!(session.is_none(), "stale session dropped");
@@ -15786,9 +15804,40 @@ mod generate_tests {
         let mut captured: Option<()> = Some(());
         let invalidated = model.invalidate_decode_pair_if_stale(
             &mut session, &mut captured, &mut ctx, 1, Some(MSL), DType::BF16,
+            cache.alloc_id(),
         );
         assert!(invalidated, "a cache-dtype swap must invalidate");
         assert!(session.is_none() && captured.is_none(), "both retired on dtype mismatch");
+
+        // --- Arm 4 (GAP-014): a cache SWAP at identical geometry. The pair is
+        // welded to the KV Arcs baked into `base_cache`, so a same-shaped
+        // replacement is the one mismatch geometry cannot express — and the
+        // one the slot-pooled serving path hits every time it admits a
+        // request. Silent if missed: the capture would keep replaying against
+        // the retired request's device addresses. ---
+        model
+            .forward_with_kv_context_persistent(&[6], &mut cache, &mut ctx, &mut session)
+            .expect("rebuild the session after invalidation");
+        assert!(session.is_some(), "precondition: session rebuilt");
+        let fresh = crate::inference_context::KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, MSL, DType::F32, &dev,
+        )
+        .expect("a second cache of IDENTICAL geometry");
+        assert_ne!(
+            fresh.alloc_id(), cache.alloc_id(),
+            "two allocations must never share an id — the counter is never recycled",
+        );
+        let mut captured: Option<()> = Some(());
+        let invalidated = model.invalidate_decode_pair_if_stale(
+            &mut session, &mut captured, &mut ctx, 1, Some(MSL), DType::F32,
+            fresh.alloc_id(),
+        );
+        assert!(
+            invalidated,
+            "a same-geometry cache SWAP must invalidate — every other key field \
+             matches, so nothing but the allocation id can catch this",
+        );
+        assert!(session.is_none() && captured.is_none(), "both retired on cache swap");
     }
 
     /// **The CONTIGUOUS generation API is plan-reuse-by-default, and this is the
@@ -16063,15 +16112,234 @@ mod generate_tests {
             .expect("model A builds a held paged plan");
         let s = ds.as_ref().expect("held paged session");
 
-        // Same geometry, model A's key => VALID (plan reuse preserved).
+        let pool_id = pool.alloc_id();
+        // Same geometry, model A's key, same pool => VALID (plan reuse preserved).
         assert!(
-            s.is_valid_for(8, cfg.n_layers, 4, DType::F32, key_a),
+            s.is_valid_for(8, cfg.n_layers, 4, DType::F32, key_a, pool_id),
             "model A's own plan must stay valid — otherwise plan reuse is dead",
         );
         // Same geometry, model B's key => STALE.
         assert!(
-            !s.is_valid_for(8, cfg.n_layers, 4, DType::F32, key_b),
+            !s.is_valid_for(8, cfg.n_layers, 4, DType::F32, key_b, pool_id),
             "a plan baked for model A must NOT be judged valid for model B at              identical geometry — this is the silent-wrong-weights hole",
+        );
+
+        // GAP-014, paged half: same model, same geometry, a DIFFERENT pool.
+        // `rebind_and_realize_paged_prebuilt` never re-binds the pool buffers,
+        // so this plan would keep reading the first pool's blocks — the paged
+        // twin of the cross-request contamination the contiguous path had.
+        let pool_b = crate::kv_block_pool_device::DeviceKvPool::new(geom, DType::F32, &dev)
+            .expect("a second pool of IDENTICAL geometry");
+        assert_ne!(
+            pool_b.alloc_id(), pool_id,
+            "two pools must never share an id — the counter is never recycled",
+        );
+        assert!(
+            !s.is_valid_for(8, cfg.n_layers, 4, DType::F32, key_a, pool_b.alloc_id()),
+            "a plan baked against pool A must NOT be judged valid for pool B — \
+             every other key field matches, so only the allocation id can see it",
+        );
+    }
+
+    /// GAP-014 — a held decode plan is WELDED to the KV allocation it was
+    /// built against, and today's validity key cannot see a swap.
+    ///
+    /// `DecodeSession::base_cache` holds the KV storage Arcs bound on the
+    /// first decode token, and `rebind_and_realize_prebuilt` overwrites only
+    /// the per-token data Consts — it contains ZERO `kv_nodes` references. So
+    /// every subsequent token reads and writes the ORIGINAL cache's buffers no
+    /// matter which `&mut KvCache` the caller hands in. The validity key
+    /// (`seq / max_seq_len / n_layers / cache_dtype / shape_key`) names the
+    /// model and the geometry and nothing at all about the allocation, so a
+    /// same-shaped replacement is judged interchangeable.
+    ///
+    /// That is precisely the slot-pooled serving happy path: retire request A,
+    /// admit request B with a fresh cache of the same geometry, reuse the held
+    /// plan for speed. B then decodes over A's KV — at full speed, with a
+    /// plausible-looking distribution, and nothing to report.
+    ///
+    /// The oracle is at LOGIT level, not sampled-token level: on a tiny model
+    /// greedy sampling is a fixed point that swallows exactly this kind of
+    /// divergence (the null-oracle lesson from the ragged-decode work).
+    #[test]
+    fn held_decode_plan_must_not_execute_over_a_swapped_kv_cache() {
+        let cfg = LlamaConfig {
+            vocab_size: 32, dim: 16, n_layers: 2, n_heads: 4, n_kv_heads: 4,
+            head_dim: 4, ffn_dim: 32, norm_eps: 1e-5, rope_base: 10000.0,
+        };
+        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
+        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+
+        let dev = Device::cpu();
+        let max_seq_len = 8usize;
+        let mk_cache = || {
+            KvCache::with_capacity(
+                cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &dev,
+            ).expect("with_capacity")
+        };
+        // Tolerance for "the same computation": both arms run the identical f32
+        // CPU kernels, so agreement is near-exact. Deliberately far below the
+        // measured A-vs-B separation asserted as the control below.
+        const TOL: f32 = 1e-5;
+        fn maxdiff(a: &[f32], b: &[f32]) -> f32 {
+            assert_eq!(a.len(), b.len(), "logit rows must be comparable");
+            a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max)
+        }
+
+        let prompt_a = [1u32, 2, 3];
+        let prompt_b = [7u32, 8, 9];
+        let next_token = 5u32;
+
+        // ---- Request A: prime a cache and BUILD a held plan welded to it. ----
+        let mut cache_a = mk_cache();
+        let mut ctx = InferenceContext::new(dev.clone());
+        let mut session: Option<crate::inference_context::DecodeSession> = None;
+        model
+            .forward_with_kv_context_persistent(&prompt_a, &mut cache_a, &mut ctx, &mut session)
+            .expect("A prefill");
+        model
+            .forward_with_kv_context_persistent(&[4], &mut cache_a, &mut ctx, &mut session)
+            .expect("A's first decode token builds the held plan");
+        // Reuse detector: the held graph's Arc IDENTITY. NOT its data-Const
+        // NodeIds — those are graph-local and a rebuilt graph mints the very
+        // same `NodeId(1)`, so a NodeId comparison cannot distinguish reuse
+        // from rebuild in EITHER direction. Holding this clone pins the
+        // allocation, which is what makes pointer identity sound here.
+        let built = std::sync::Arc::clone(
+            session
+                .as_ref()
+                .expect("A must leave a held plan — without one this test proves nothing")
+                .graph(),
+        );
+
+        // ---- ORACLE: what B's next token MUST produce. Computed on an
+        // independent cache via the always-re-planning reference path, which
+        // holds no session and therefore cannot be contaminated. ----
+        let mut cache_oracle = mk_cache();
+        let mut ctx_oracle = InferenceContext::new(dev.clone());
+        model
+            .forward_with_kv_context(&prompt_b, &mut cache_oracle, &mut ctx_oracle)
+            .expect("oracle prefill");
+        let expected_b = model
+            .forward_with_kv_context(&[next_token], &mut cache_oracle, &mut ctx_oracle)
+            .expect("oracle decode");
+
+        // ---- CONTROL: the two histories must actually be distinguishable at
+        // this token. If A's prefix and B's prefix produced near-identical
+        // logits, the assertion below would pass without the bug being fixed —
+        // a vacuous oracle. Measure the separation and require the pass
+        // threshold to sit far under it. ----
+        let mut cache_ctl = mk_cache();
+        let mut ctx_ctl = InferenceContext::new(dev.clone());
+        model
+            .forward_with_kv_context(&prompt_a, &mut cache_ctl, &mut ctx_ctl)
+            .expect("control prefill");
+        model
+            .forward_with_kv_context(&[4], &mut cache_ctl, &mut ctx_ctl)
+            .expect("control decode 1");
+        let a_history = model
+            .forward_with_kv_context(&[next_token], &mut cache_ctl, &mut ctx_ctl)
+            .expect("control decode 2");
+        let separation = maxdiff(&expected_b, &a_history);
+        assert!(
+            separation > 10.0 * TOL,
+            "NEGATIVE CONTROL FAILED: A's history and B's history produce logits \
+             only {separation:.3e} apart, so a {TOL:.0e} equality check cannot \
+             tell them apart and the assertion below would be vacuous",
+        );
+
+        // ---- ACT: hand the held plan a step over a DIFFERENT, fresh cache
+        // primed with B's own prefix through the reference path. ----
+        let mut cache_b = mk_cache();
+        let mut ctx_b = InferenceContext::new(dev.clone());
+        model
+            .forward_with_kv_context(&prompt_b, &mut cache_b, &mut ctx_b)
+            .expect("B prefill lands in B's OWN storage");
+        let actual_b = model
+            .forward_with_kv_context_persistent(
+                &[next_token], &mut cache_b, &mut ctx, &mut session,
+            )
+            .expect("B's decode step, offered the plan A built");
+
+        let drift = maxdiff(&expected_b, &actual_b);
+        assert!(
+            drift <= TOL,
+            "CROSS-REQUEST KV CONTAMINATION: a plan built against cache A \
+             executed request B's token over A's KV. maxdiff {drift:.3e} vs the \
+             re-planned oracle, while the two histories are {separation:.3e} \
+             apart — so this is A's answer, not a rounding difference.",
+        );
+
+        // The mechanism, made visible: the swap must have DROPPED the held
+        // plan and rebuilt it, so the session now holds a DIFFERENT graph.
+        assert!(
+            !session
+                .as_ref()
+                .map(|s| std::sync::Arc::ptr_eq(s.graph(), &built))
+                .unwrap_or(false),
+            "the held plan survived a cache swap — it must be invalidated",
+        );
+    }
+
+    /// GAP-014 CONTROL, the other direction: an "always stale" predicate would
+    /// satisfy the test above while silently destroying plan reuse (measured
+    /// 223× on CUDA) with every correctness test still green. Continuing the
+    /// SAME request on the SAME cache must keep the held plan alive, and
+    /// `truncate_to` — speculative decoding's reject path — must NOT count as a
+    /// swap: it rewinds the conversation, it does not re-allocate the buffers
+    /// the plan is welded to. That distinction is the whole design: the key
+    /// names the ALLOCATION, never the conversation.
+    #[test]
+    fn held_decode_plan_survives_same_cache_continuation_and_truncate() {
+        let cfg = LlamaConfig {
+            vocab_size: 32, dim: 16, n_layers: 2, n_heads: 4, n_kv_heads: 4,
+            head_dim: 4, ffn_dim: 32, norm_eps: 1e-5, rope_base: 10000.0,
+        };
+        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
+        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+
+        let dev = Device::cpu();
+        let mut cache = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, 8, DType::F32, &dev,
+        ).expect("with_capacity");
+        let mut ctx = InferenceContext::new(dev.clone());
+        let mut session: Option<crate::inference_context::DecodeSession> = None;
+
+        model
+            .forward_with_kv_context_persistent(&[1, 2, 3], &mut cache, &mut ctx, &mut session)
+            .expect("prefill");
+        model
+            .forward_with_kv_context_persistent(&[4], &mut cache, &mut ctx, &mut session)
+            .expect("first decode token builds the plan");
+        // Arc identity, NOT `token_ids_node()`: data-Const NodeIds are
+        // graph-local, so a REBUILT session mints the very same `NodeId(1)`
+        // and a NodeId comparison would report "reused" for a rebuild —
+        // making both assertions below silently vacuous.
+        let built =
+            std::sync::Arc::clone(session.as_ref().expect("held plan").graph());
+        let reused = |s: &Option<crate::inference_context::DecodeSession>| {
+            s.as_ref()
+                .map(|s| std::sync::Arc::ptr_eq(s.graph(), &built))
+                .unwrap_or(false)
+        };
+
+        model
+            .forward_with_kv_context_persistent(&[5], &mut cache, &mut ctx, &mut session)
+            .expect("second decode token on the SAME cache");
+        assert!(
+            reused(&session),
+            "continuing the same request on its own cache must REUSE the plan",
+        );
+
+        // Speculative-decode reject: rewind the conversation, same allocation.
+        cache.truncate_to(4);
+        model
+            .forward_with_kv_context_persistent(&[6], &mut cache, &mut ctx, &mut session)
+            .expect("decode after truncate_to");
+        assert!(
+            reused(&session),
+            "truncate_to rewinds the CONVERSATION, not the ALLOCATION — the plan \
+             is still welded to the right buffers and must stay valid",
         );
     }
 

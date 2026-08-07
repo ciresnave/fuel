@@ -33,6 +33,7 @@ use fuel_dispatch::pipelined::{PipelinedExecutor, StorageCache};
 use fuel_memory::Storage;
 
 use crate::Device;
+use crate::decode_shape::KvAllocId;
 use crate::lazy::LazyTensor;
 use crate::kv_block_pool::{
     Externalized, KvAllocError, KvBlockPool, KvGeometry, PhysBlockId, SessionHandle,
@@ -138,6 +139,16 @@ pub struct DeviceKvPool {
     k_pools: Vec<Arc<RwLock<Storage>>>,
     /// Per-layer V pool buffers.
     v_pools: Vec<Arc<RwLock<Storage>>>,
+    /// Identity of these pool buffers — the paged twin of
+    /// [`KvCache::alloc_id`](crate::inference_context::KvCache::alloc_id).
+    /// A held [`PagedDecodeSession`](crate::inference_context::PagedDecodeSession)
+    /// bakes these `Arc`s into its `base_cache`, and
+    /// `rebind_and_realize_paged_prebuilt` re-binds only the per-token data
+    /// (token id, RoPE, block_table, context_lens, offset) — never the pool.
+    /// So the held plan reads the pool it was BUILT against no matter which
+    /// `&mut DeviceKvPool` the caller passes, and geometry alone cannot tell
+    /// two same-shaped pools apart. See [`KvAllocId`].
+    alloc_id: KvAllocId,
 }
 
 impl DeviceKvPool {
@@ -167,7 +178,20 @@ impl DeviceKvPool {
             pool_shape,
             k_pools,
             v_pools,
+            alloc_id: KvAllocId::next(),
         })
+    }
+
+    /// Identity of the physical pool buffers a held paged plan is welded to.
+    /// See [`KvAllocId`].
+    ///
+    /// There is no re-mint path: `DeviceKvPool` allocates once in [`Self::new`]
+    /// and never replaces a layer buffer. Block *allocation* churn lives in
+    /// `core` (a `KvBlockPool` index) and reaches the graph through the
+    /// per-token `block_table` rebind, so it is correctly NOT part of this
+    /// identity — over-keying it would rebuild the plan on every new block.
+    pub fn alloc_id(&self) -> KvAllocId {
+        self.alloc_id
     }
 
     // --- pure-core access -------------------------------------------------

@@ -101,6 +101,67 @@ impl ModelInstanceId {
     }
 }
 
+/// A process-unique, never-recycled identity for one KV **allocation** — the
+/// set of storage buffers a held decode plan is welded to.
+///
+/// ## Why a held plan needs this at all
+///
+/// [`DecodeSession`](crate::inference_context::DecodeSession) keeps a
+/// `base_cache` holding the KV storage `Arc`s bound on the first decode token,
+/// and the per-token rebind overwrites *only* the data `Const`s — `token_ids`,
+/// RoPE tables, mask, offset. It never rebinds `kv_nodes`. So a held plan does
+/// not read the `&mut KvCache` it is handed; it reads **the buffers it was
+/// built against**, forever.
+///
+/// Geometry cannot see that. Two same-shaped caches key identically, so the
+/// slot-pooled serving happy path — retire request A, admit B on a fresh cache
+/// of the same shape, reuse the plan for speed — silently decodes B over A's
+/// KV. Full speed, plausible distribution, nothing to report. That is why this
+/// id exists and why it is in the validity key.
+///
+/// ## The id names the ALLOCATION, not the conversation
+///
+/// This distinction is the entire design, and getting it backwards breaks one
+/// of the two directions that matter:
+///
+/// - **Re-allocate ⇒ new id.** Constructing a cache, and any operation that
+///   replaces storage under it ([`KvCache::clear`] / [`KvCache::set_layer`]),
+///   mints a fresh id. A plan welded to the old buffers must be rebuilt.
+/// - **Rewind ⇒ SAME id.** [`KvCache::truncate_to`] — speculative decoding's
+///   reject path — moves `cached_len` and touches no storage. The plan is still
+///   welded to exactly the right buffers, so invalidating there would forfeit
+///   plan reuse (223× on CUDA) on every rejected draft batch, for no
+///   correctness gain.
+///
+/// [`KvCache::clear`]: crate::inference_context::KvCache::clear
+/// [`KvCache::set_layer`]: crate::inference_context::KvCache::set_layer
+/// [`KvCache::truncate_to`]: crate::inference_context::KvCache::truncate_to
+///
+/// Over-keying is the failure mode with no error message: an "always stale"
+/// predicate passes every correctness test while quietly disabling the
+/// optimization. The tests assert both halves for that reason.
+///
+/// Never recycled, for the same reason [`ModelInstanceId`] is: pointer identity
+/// would be sound only while something pins the allocation, and a session
+/// outliving its cache is exactly the case this guards. See the module docs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct KvAllocId(u64);
+
+/// Starts at 1 so a `Default`/zero-initialized field can never be mistaken for
+/// a real id.
+static NEXT_KV_ALLOC: AtomicU64 = AtomicU64::new(1);
+
+impl KvAllocId {
+    /// Mint the next id. Monotonic and never recycled.
+    pub fn next() -> Self {
+        KvAllocId(NEXT_KV_ALLOC.fetch_add(1, Ordering::Relaxed))
+    }
+
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
 /// FNV-1a 64 over a canonical encoding of a model's decode identity.
 ///
 /// Same constants as `fuel_dispatch::fkc::revhash` and
@@ -227,6 +288,66 @@ mod tests {
         let mut b = ShapeKeyHasher::new();
         b.mix_str("a").mix_str("bc");
         assert_ne!(a.finish(), b.finish());
+    }
+
+    /// [`KvAllocId`]'s whole contract, stated as a test on the real carrier:
+    /// **re-allocating re-mints, rewinding does not.** Both halves matter and
+    /// they fail differently — a missing re-mint is a silent wrong answer
+    /// (a held plan reused across a cache swap), while a spurious re-mint is a
+    /// silent performance loss (speculative decoding's reject path rebuilding
+    /// the plan on every rejected batch) that no correctness test would catch.
+    #[test]
+    fn alloc_id_tracks_the_allocation_not_the_conversation() {
+        use crate::inference_context::KvCache;
+
+        let dev = crate::Device::cpu();
+        let mut cache = KvCache::with_capacity(2, 2, 4, 8, fuel_ir::DType::F32, &dev)
+            .expect("with_capacity");
+        let first = cache.alloc_id();
+
+        // A second cache of IDENTICAL geometry is a DIFFERENT allocation.
+        let other = KvCache::with_capacity(2, 2, 4, 8, fuel_ir::DType::F32, &dev)
+            .expect("with_capacity");
+        assert_ne!(
+            other.alloc_id(), first,
+            "same-geometry caches must not share an id — that collision IS the bug",
+        );
+
+        // Rewind the conversation: storage untouched ⇒ id preserved.
+        cache.cached_len = 5;
+        cache.truncate_to(2);
+        assert_eq!(
+            cache.alloc_id(), first,
+            "truncate_to rewinds cached_len and touches no storage — re-minting \
+             here would forfeit plan reuse on every rejected draft batch",
+        );
+
+        // Release the storage: id must move.
+        cache.clear();
+        let after_clear = cache.alloc_id();
+        assert_ne!(
+            after_clear, first,
+            "clear() drops every layer, so a plan welded to them is stale",
+        );
+
+        // Replace one layer's storage: id must move again.
+        let replacement = KvCache::with_capacity(2, 2, 4, 8, fuel_ir::DType::F32, &dev)
+            .expect("with_capacity");
+        let src = replacement.layer(0).expect("layer 0");
+        cache.set_layer(0, crate::inference_context::KvLayer {
+            k: std::sync::Arc::clone(&src.k),
+            v: std::sync::Arc::clone(&src.v),
+            k_layout: src.k_layout.clone(),
+            v_layout: src.v_layout.clone(),
+            k_version: 0,
+            v_version: 0,
+            k_authority: src.k_authority.clone(),
+            v_authority: src.v_authority.clone(),
+        });
+        assert_ne!(
+            cache.alloc_id(), after_clear,
+            "set_layer swaps the Arc a held plan baked in — that is a new allocation",
+        );
     }
 
     /// Two models of the same architecture must key differently — this is the

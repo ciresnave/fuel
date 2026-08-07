@@ -1124,7 +1124,7 @@ impl DeepSeek2Model {
         if let Some(s) = session.as_ref() {
             if !s.is_valid_for(
                 seq, max_seq_len, cfg.num_hidden_layers, cache_dtype,
-                self.decode_shape_key(),
+                self.decode_shape_key(), cache.alloc_id(),
             ) {
                 self.drop_latent_decode_session(session, ctx);
             }
@@ -1349,6 +1349,8 @@ impl DeepSeek2Model {
             cfg.num_hidden_layers,
             cache.dtype,
             self.decode_shape_key(),
+            // Which ALLOCATION's latent-slot Arcs are baked into `base_cache`.
+            cache.alloc_id(),
         ));
 
         // Bump cache state (identical to the D1 path).

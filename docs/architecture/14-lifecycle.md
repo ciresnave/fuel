@@ -1,6 +1,14 @@
 # Lifecycle: from model file to finished inference/training
 
-**Status**: v0.9 (2026-08-06). **v0.9 adds a NORMATIVE INVARIANT to Stage 5** — a held plan's validity key must cover everything it bakes, and every artifact derived from it must be retired with it ([10-decisions-log §2026-08-06](10-decisions-log.md)). Stated as a rule about new work after FOUR reactive discoveries in two days (model identity contiguous + paged, the captured-session pair, and the still-open KvCache hole); the failure is committed by whoever adds baked state to a session, who would never open the keying code. No existing core claim changed. v0.8 (2026-07-16). **v0.8 records that the SSM ops are now differentiable** (Op::Scan Phase 2, [10-decisions-log §2026-07-16](10-decisions-log.md)): `selective_scan` / `ssd_chunk_scan` gain BPTT gradients via the Stage-6 backward pass's **lower-then-differentiate pre-pass** (`lower_scans_for_backward` — decompose the SSM fused recipe → `Op::Scan` → `unroll_scan` to the static `bound` → node-general autograd), not a bespoke `*_BACKWARD` fused op. Their registry `backward` flips `NotDifferentiable → Decompose` (intent doc; `BackwardKind` is verified-dead metadata, the pre-pass is the mechanism). BPTT is truncated to the static `bound`; no `Op::Scan` native kernel. No core-claim change. **v0.7 fixes a stale claim in the Stage 2 narrative**: the "three current panicking decomposes" it once named (`nf4_matmul`, `flash_attn`, `selective_scan`) are no longer accurate — all three now carry real recipes. `nf4_matmul` and `flash_attn`'s concrete-`k_len` decode were resolved 2026-07-03; `selective_scan` (and its Mamba-2 sibling `ssd_chunk_scan`) now `decompose` to `Op::Scan` — Fuel's first sub-graph-carrying primitive, [03-ir](03-ir.md#higher-order-primitives-opscan) — closing decision G3 2026-07-15 ([10-decisions-log](10-decisions-log.md)). `flash_attn`'s symbolic-`k_len` decode remains the one separately-documented, never-crash basis gap. No core-claim change. v0.6 reconciles the glossary + narrative to the 2026-06-20 adaptive-runtime-fusion decision ([10-decisions-log](10-decisions-log.md)): the fused-op registry is **no longer "frozen"** but two-tier runtime-extensible (G4 — Tier-1 binding table already extensible, Tier-2 trusted Fuel-orchestrated fused-op registration the new goal; untrusted user ops/rules + new primitives stay closed); the base-map/`decompose` narrative gains the **total + never-panic + primitive→self** invariant (G2); **missing-fusion telemetry** is named as distinct from the Judge (G5); the run-capture/replay passage positions the **megakernel** as the narrow, highest-risk, non-default step above captured-run replay (G6); and the optimizer narrative references the **closed-loop adaptive optimizer** with its Fuel-strategist / backend-synthesizer division (G7). v0.6 also refines Stage 5's autoregressive-barrier story: the per-pass re-bind substrate (realize binds the runtime KV append offset / `cached_len` into one stable graph instead of baking it into a fresh per-token graph) has landed at the executor/session level, framed honestly as the Intended mechanism whose substrate has shipped but is not yet wired into production decode. Core claim unchanged.
+**Status**: v0.10 (2026-08-07). **v0.10 closes the last of the four Stage-5
+violations the v0.9 invariant tabulated** — the KV allocation now carries a
+never-recycled `decode_shape::KvAllocId` that enters both decode validity keys,
+in all three carriers (`KvCache`, `LatentKvCache`, `DeviceKvPool`)
+([10-decisions-log §2026-08-07](10-decisions-log.md)). The invariant itself is
+unchanged and remains normative; two clarifications were earned closing it — the
+key names the **allocation**, not the conversation, and a violation is wider than
+the site where it is noticed. No core claim changed. v0.9 (2026-08-06). **v0.9
+adds a NORMATIVE INVARIANT to Stage 5** — a held plan's validity key must cover everything it bakes, and every artifact derived from it must be retired with it ([10-decisions-log §2026-08-06](10-decisions-log.md)). Stated as a rule about new work after FOUR reactive discoveries in two days (model identity contiguous + paged, the captured-session pair, and the still-open KvCache hole); the failure is committed by whoever adds baked state to a session, who would never open the keying code. No existing core claim changed. v0.8 (2026-07-16). **v0.8 records that the SSM ops are now differentiable** (Op::Scan Phase 2, [10-decisions-log §2026-07-16](10-decisions-log.md)): `selective_scan` / `ssd_chunk_scan` gain BPTT gradients via the Stage-6 backward pass's **lower-then-differentiate pre-pass** (`lower_scans_for_backward` — decompose the SSM fused recipe → `Op::Scan` → `unroll_scan` to the static `bound` → node-general autograd), not a bespoke `*_BACKWARD` fused op. Their registry `backward` flips `NotDifferentiable → Decompose` (intent doc; `BackwardKind` is verified-dead metadata, the pre-pass is the mechanism). BPTT is truncated to the static `bound`; no `Op::Scan` native kernel. No core-claim change. **v0.7 fixes a stale claim in the Stage 2 narrative**: the "three current panicking decomposes" it once named (`nf4_matmul`, `flash_attn`, `selective_scan`) are no longer accurate — all three now carry real recipes. `nf4_matmul` and `flash_attn`'s concrete-`k_len` decode were resolved 2026-07-03; `selective_scan` (and its Mamba-2 sibling `ssd_chunk_scan`) now `decompose` to `Op::Scan` — Fuel's first sub-graph-carrying primitive, [03-ir](03-ir.md#higher-order-primitives-opscan) — closing decision G3 2026-07-15 ([10-decisions-log](10-decisions-log.md)). `flash_attn`'s symbolic-`k_len` decode remains the one separately-documented, never-crash basis gap. No core-claim change. v0.6 reconciles the glossary + narrative to the 2026-06-20 adaptive-runtime-fusion decision ([10-decisions-log](10-decisions-log.md)): the fused-op registry is **no longer "frozen"** but two-tier runtime-extensible (G4 — Tier-1 binding table already extensible, Tier-2 trusted Fuel-orchestrated fused-op registration the new goal; untrusted user ops/rules + new primitives stay closed); the base-map/`decompose` narrative gains the **total + never-panic + primitive→self** invariant (G2); **missing-fusion telemetry** is named as distinct from the Judge (G5); the run-capture/replay passage positions the **megakernel** as the narrow, highest-risk, non-default step above captured-run replay (G6); and the optimizer narrative references the **closed-loop adaptive optimizer** with its Fuel-strategist / backend-synthesizer division (G7). v0.6 also refines Stage 5's autoregressive-barrier story: the per-pass re-bind substrate (realize binds the runtime KV append offset / `cached_len` into one stable graph instead of baking it into a fresh per-token graph) has landed at the executor/session level, framed honestly as the Intended mechanism whose substrate has shipped but is not yet wired into production decode. Core claim unchanged.
 
 This is the one document that walks the **whole path**, in order: from "load a model
 from disk" to "inference or training has finished." Every other architecture section
@@ -477,12 +485,27 @@ silent, all full-speed, none a crash:
 | model identity (contiguous) | same-shaped models share a plan → wrong weights | `decode_shape` `ShapeKeyHasher` + `ModelInstanceId` |
 | the recorded CUDA graph | stale session dropped, capture survives → replay over dead addresses | `a1ea9860` `invalidate_decode_pair_if_stale` |
 | model identity (paged) | as row 1, paged path | `d36ef0ac` |
-| **the `KvCache`** | **a fresh same-shaped cache is ignored; the plan keeps writing the old buffers** | **OPEN** |
+| **the KV allocation** | **a fresh same-shaped cache/pool is ignored; the plan keeps reading and writing the old buffers** | `decode_shape::KvAllocId` (2026-08-07) |
 
-Row 4 is the dangerous one and shows why this is normative rather than
+Row 4 was the dangerous one and shows why this is normative rather than
 retrospective: `rebind_and_realize_prebuilt` never re-binds `kv_nodes`, so in a
 slot-pooled server the *happy path* — retire request A, admit B with a fresh
-same-shaped cache — has B decoding over A's KV. Geometry-only keys cannot see it.
+same-shaped cache — had B decoding over A's KV. Geometry-only keys cannot see it.
+
+Closing it also demonstrated the section's own prediction that a violation is
+**wider than the site where it is noticed**. The hole was filed against
+`rebind_and_realize_prebuilt`, but the same welding held in all three carriers —
+`KvCache`, `LatentKvCache` (MLA reuses `DecodeSession` verbatim), and
+`DeviceKvPool` (`rebind_and_realize_paged_prebuilt` re-binds `block_table` but
+never the pool). Enumerate the carriers of a baked thing before fixing one.
+
+Row 4 also sharpens rule 1 below into a distinction geometry keys never had to
+make: **the key names the ALLOCATION, not the conversation.** `truncate_to` —
+speculative decoding's reject path — rewinds `cached_len` and touches no
+storage, so it must NOT invalidate; `clear`/`set_layer` replace storage, so they
+must. Getting that backwards satisfies the correctness half while forfeiting
+plan reuse on every rejected draft batch, which is exactly the silent
+performance regression rule 3 exists to catch.
 
 **Three rules that follow, each earned by a specific failure:**
 
@@ -501,7 +524,8 @@ same-shaped cache — has B decoding over A's KV. Geometry-only keys cannot see 
 
 **Four instances in two days predicts a fifth.** Anyone adding baked state to a
 session is the person this section is addressed to: put its identity in the key,
-or make it unable to change, and prove both halves.
+or make it unable to change, and prove both halves. All four are now closed —
+which retires the backlog, not the rule. The rule is about the *next* one.
 
 ---
 
