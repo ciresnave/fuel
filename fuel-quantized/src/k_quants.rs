@@ -757,7 +757,7 @@ impl GgmlType for BlockQ8_1 {
     }
 
     fn to_float(_xs: &[Self], _ys: &mut [f32]) {
-        unimplemented!("no support for vec-dot on Q8_1")
+        unimplemented!("no support for vec-dot on Q8_1") // GAP(GAP-125)
     }
 }
 
