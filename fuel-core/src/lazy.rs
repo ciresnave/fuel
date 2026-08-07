@@ -13921,6 +13921,180 @@ mod generate_tests {
     // worse than no test, and the measurement is the useful artifact.
     // ---------------------------------------------------------------------
 
+    /// **TOKEN-INVARIANCE CENSUS — how much of a decode step is recomputed
+    /// per token that need not be?** The measurement that sizes memoization
+    /// before any caching logic is written.
+    ///
+    /// A node is token-invariant iff none of its transitive inputs is per-token
+    /// data. Those inputs are exactly what the held session names:
+    /// `token_ids` / `rope_cos` / `rope_sin` / `mask` / the KV pairs / the
+    /// optional write offset. Everything downstream of them varies; everything
+    /// else is computed identically for every token of the generation.
+    ///
+    /// **Measured TWO independent ways, and they must agree.** This session's
+    /// only reliable defence against a wrong instrument was a second instrument
+    /// that could contradict the first — an under-populated binding table, a
+    /// truncated enum read and a mis-windowed benchmark each looked like a
+    /// finding until something disagreed with them.
+    ///
+    /// 1. **Structural** — forward reachability from the per-token inputs over
+    ///    the real graph. Exact by construction.
+    /// 2. **Empirical** — replay two DIFFERENT tokens and compare every retained
+    ///    intermediate bytewise. A node whose bytes change is varying; one whose
+    ///    bytes do not is an invariance CANDIDATE.
+    ///
+    /// Their disagreement is the interesting signal and is reported, not hidden.
+    /// Empirical-invariant / structurally-varying is expected and benign (two
+    /// tokens can coincide, especially on a 16-vocab fixture). The reverse —
+    /// empirically CHANGING while structurally invariant — would mean a node
+    /// with no per-token input is nonetheless not reproducible, which is a
+    /// correctness signal, so it is asserted against.
+    ///
+    /// Reports rather than gates: this exists to size the opportunity, and the
+    /// number it produces decides whether memoization is worth its correctness
+    /// exposure at all.
+    #[test]
+    #[cfg(feature = "cuda")]
+    #[ignore = "requires a live CUDA device"]
+    fn token_invariance_census_cuda() {
+        use std::collections::{BTreeMap, HashSet};
+
+        let cfg = LlamaConfig {
+            vocab_size: 16, dim: 16, n_layers: 2, n_heads: 4, n_kv_heads: 2,
+            head_dim: 4, ffn_dim: 16, norm_eps: 1e-5, rope_base: 10000.0,
+        };
+        let dev: Device = match fuel_cuda_backend::CudaDevice::new(0) {
+            Ok(d) => d.into(),
+            Err(e) => { eprintln!("no CUDA device; skipping: {e:?}"); return; }
+        };
+
+        let prompt = [1_u32, 2, 3];
+        let msl = prompt.len() + 4;
+        let m = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let mut cache = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, msl, DType::F32, &dev,
+        ).expect("cache");
+        let mut ctx = InferenceContext::new(dev.clone());
+        let mut sess: Option<crate::inference_context::DecodeSession> = None;
+        let mut cap: Option<fuel_dispatch::pipelined::CapturedDecodeSession> = None;
+
+        m.forward_with_kv_context_captured(&prompt, &mut cache, &mut ctx, &mut sess, &mut cap)
+            .expect("prefill");
+        // Tokens 1-2 build the session then the capture; 3 and 4 are pure
+        // replays, and those are the two we compare.
+        for t in [4_u32, 5] {
+            m.forward_with_kv_context_captured(&[t], &mut cache, &mut ctx, &mut sess, &mut cap)
+                .expect("build");
+        }
+
+        let snapshot = |cap: &fuel_dispatch::pipelined::CapturedDecodeSession| {
+            let mut out: BTreeMap<usize, Vec<f32>> = BTreeMap::new();
+            for (nid, buf) in cap.node_outputs().iter() {
+                if let Ok(v) = captured_output_to_f32(buf) {
+                    out.insert(nid.0, v);
+                }
+            }
+            out
+        };
+
+        m.forward_with_kv_context_captured(&[6], &mut cache, &mut ctx, &mut sess, &mut cap)
+            .expect("replay A");
+        let snap_a = snapshot(cap.as_ref().expect("capture"));
+        m.forward_with_kv_context_captured(&[11], &mut cache, &mut ctx, &mut sess, &mut cap)
+            .expect("replay B");
+        let snap_b = snapshot(cap.as_ref().expect("capture"));
+
+        let s = sess.as_ref().expect("session");
+        let g = s.graph().read().expect("graph lock");
+
+        // --- (1) STRUCTURAL: forward reachability from the per-token inputs ---
+        let mut varying: HashSet<usize> = HashSet::new();
+        varying.insert(s.token_ids_node().0);
+        varying.insert(s.rope_cos_node().0);
+        varying.insert(s.rope_sin_node().0);
+        varying.insert(s.mask_node().0);
+        if let Some(off) = s.offset_node() { varying.insert(off.0); }
+        for (k, v) in s.kv_nodes() { varying.insert(k.0); varying.insert(v.0); }
+        let seeds = varying.len();
+        // Node ids are topologically ordered (a node's inputs precede it), so a
+        // single forward sweep is a complete fixpoint — no iteration needed.
+        for i in 0..g.len() {
+            if g.node(fuel_graph::NodeId(i)).inputs.iter().any(|inp| varying.contains(&inp.0)) {
+                varying.insert(i);
+            }
+        }
+
+        // --- (2) EMPIRICAL: bytes that changed between two replayed tokens ---
+        let mut emp_changed: HashSet<usize> = HashSet::new();
+        let mut compared = 0usize;
+        for (id, a) in &snap_a {
+            if let Some(b) = snap_b.get(id) {
+                compared += 1;
+                if a.len() != b.len() || a.iter().zip(b.iter()).any(|(x, y)| x.to_bits() != y.to_bits()) {
+                    emp_changed.insert(*id);
+                }
+            }
+        }
+
+        // --- agreement + census over the nodes we can actually see ---
+        let mut struct_inv_emp_same = 0usize;
+        let mut struct_inv_emp_changed: Vec<usize> = Vec::new();
+        let mut struct_var_emp_same: Vec<usize> = Vec::new();
+        let mut struct_var_emp_changed = 0usize;
+        let mut inv_by_op: BTreeMap<String, usize> = BTreeMap::new();
+        for id in snap_a.keys() {
+            if snap_b.get(id).is_none() { continue; }
+            let sv = varying.contains(id);
+            let ec = emp_changed.contains(id);
+            match (sv, ec) {
+                (false, false) => {
+                    struct_inv_emp_same += 1;
+                    let op = format!("{:?}", g.node(fuel_graph::NodeId(*id)).op);
+                    *inv_by_op.entry(op.split(' ').next().unwrap_or("?").to_string())
+                        .or_insert(0) += 1;
+                }
+                (false, true) => struct_inv_emp_changed.push(*id),
+                (true, false) => struct_var_emp_same.push(*id),
+                (true, true) => struct_var_emp_changed += 1,
+            }
+        }
+
+        println!("\n=== token-invariance census (decode step) ===");
+        println!("graph nodes: {}   per-token seeds: {seeds}", g.len());
+        println!("structurally VARYING: {}   structurally INVARIANT: {}",
+            varying.len(), g.len() - varying.len());
+        println!("retained + comparable across two replays: {compared}");
+        println!("  structurally-invariant & bytes same    : {struct_inv_emp_same}  <- memoization candidates");
+        println!("  structurally-varying   & bytes changed : {struct_var_emp_changed}");
+        println!("  structurally-varying   & bytes SAME    : {}  (coincidence on a 16-vocab fixture)",
+            struct_var_emp_same.len());
+        println!("  structurally-invariant & bytes CHANGED : {}  (would be a correctness signal)",
+            struct_inv_emp_changed.len());
+        if !inv_by_op.is_empty() {
+            println!("invariant candidates by op:");
+            for (op, n) in &inv_by_op {
+                println!("    {op:<24} {n}");
+            }
+        }
+        println!("=== END ===\n");
+
+        // POSITIVE CONTROL: the comparison actually happened. Without it, zero
+        // comparable nodes would report "no varying nodes" and pass vacuously.
+        assert!(compared >= 10, "only {compared} nodes were comparable across replays");
+        // And the seeds must have been found — an empty seed set makes EVERYTHING
+        // look invariant, which is the most flattering possible wrong answer.
+        assert!(seeds >= 4, "only {seeds} per-token seed nodes — the structural pass is blind");
+
+        // The one direction that is a correctness signal rather than noise.
+        assert!(
+            struct_inv_emp_changed.is_empty(),
+            "nodes {struct_inv_emp_changed:?} have NO per-token input yet produced \
+             different bytes across two replays — a node that cannot depend on the \
+             token should be reproducible, so this is a correctness signal, not a \
+             census artifact",
+        );
+    }
+
     /// **Capture as a WHOLE-GRAPH CORRECTNESS INSTRUMENT** — per-node
     /// intermediates read out of a captured replay and checked against a CPU
     /// oracle.
