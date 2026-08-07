@@ -13885,6 +13885,42 @@ mod generate_tests {
         );
     }
 
+    // ---------------------------------------------------------------------
+    // PER-NODE CPU-ORACLE DIFF — ATTEMPTED, MEASURED, NOT VIABLE IN THIS FORM.
+    //
+    // The idea: after a captured replay, read every retained intermediate
+    // (`CapturedDecodeSession::node_outputs`) and compare it against the same
+    // node realized on CPU, localising numerical divergence to a NODE rather
+    // than to "the logits differ". The capture half works — 66 retained
+    // buffers over a 168-node graph, all readable, all finite (see
+    // `captured_decode_exposes_per_node_intermediates_cuda`).
+    //
+    // The CPU-oracle half does not, and the reason is structural rather than a
+    // matter of tuning. THREE configurations were measured, all exceeding a
+    // 7-15 minute bound on a TINY fixture (vocab 16, dim 16, 2 layers):
+    //
+    //   1. one `realize_one_as_with_env` per node   -> killed at 15 min
+    //   2. one `realize_many_as_with_env` over ~66  -> killed at 15 min
+    //   3. the same, SAMPLED to 3 targets           -> killed at 7 min
+    //
+    // (3) is decisive: cost is NOT proportional to the number of targets, so
+    // sampling cannot rescue it. Realizing an INTERIOR node of a held decode
+    // graph is expensive per se — the plan-once path exists precisely because
+    // the graph has ONE root, and asking for an interior node asks a question
+    // that path is not shaped to answer.
+    //
+    // WHAT THIS ACTUALLY BLOCKS ON, stated so the next attempt does not repeat
+    // the three above: capture gives per-node retention on CUDA *for free*
+    // because recording the graph pins every intermediate at a fixed address.
+    // There is NO CPU-side equivalent. So a per-node CPU oracle needs a
+    // "realize once, retain all intermediates" mode on the CPU path — a real
+    // capability, not a test-writing problem. With that, the oracle is one
+    // realize and a map lookup; without it, every node costs a fresh traversal.
+    //
+    // Filed here rather than as a disabled test: a test that cannot complete is
+    // worse than no test, and the measurement is the useful artifact.
+    // ---------------------------------------------------------------------
+
     /// **Capture as a WHOLE-GRAPH CORRECTNESS INSTRUMENT** — per-node
     /// intermediates read out of a captured replay and checked against a CPU
     /// oracle.
