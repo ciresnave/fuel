@@ -64,10 +64,22 @@ Split by **rate of change**, because the two surfaces have opposite properties:
   role-level roster, the pointer + read-rule to the registry, cross-cutting
   process facts (build traps). Keep it minimal — every token is paid by every
   agent every turn.
-  - A registry pointer line now lives in CLAUDE.md (added 2026-08-07 under the
-    Source-of-truth hierarchy): *"docs/gaps.md is source of truth for open
-    defects + ownership — read it before claiming or closing a gap, and update
-    the row in the same change that closes one."*
+  - **CORRECTED 2026-08-07 (architect).** This bullet previously read "A
+    registry pointer line now lives in CLAUDE.md (added 2026-08-07)". **It did
+    not, on any ref** — verified by scanning CLAUDE.md across every ref in
+    `refs/heads` + `refs/remotes` (positive control: CLAUDE.md itself resolves
+    on main), zero hits for `gaps.md`. The line existed only as an
+    **uncommitted** working-tree change in the decode-owner's GAP-014 tree; it
+    reached main later, in the split-out build-doc commit. An in-progress change
+    was stated as done — the exact read-before-relay failure this file's own
+    operating principles name, committed in the file that names them. Left as a
+    correction rather than a silent fix, because the failure mode is the point:
+    the pointer line is the mechanism that makes the registry binding, so
+    asserting it exists when it doesn't disables the read-rule for every agent
+    while reading as if it were in force. The line's intended text:
+    *"docs/gaps.md is source of truth for open defects + ownership — read it
+    before claiming or closing a gap, and update the row in the same change that
+    closes one."*
 - **The registry file (`docs/gaps.md`) — churny payload, pointed-to.** Per-gap
   owner/status changes hourly; it must not live in CLAUDE.md (cost + merge
   churn). CLAUDE.md's read-rule makes consulting it non-optional.
@@ -102,9 +114,15 @@ asking each worker its lane, don't trust a stale id.*
 
 - **sk4 RFC:** Fuel is 1 of **4** independent token derivations (KISS / Fuel /
   kiss-ref / unpopped-vocab; baracuda reclassified to its physical CUDA-emit
-  corpus). Fuel's cosign stands. Awaiting baracuda's cosign → Eric's push
-  authorization → coordinated regen (GAP-020, Fuel's leg). Head to verify:
-  `C:/Projects/kiss-sk4/rfcs/sk4-schema-event.md`.
+  corpus). Fuel's cosign stands. **CORRECTED 2026-08-07 (architect), read from
+  the RFC head:** this said "awaiting baracuda's cosign," i.e. one outstanding.
+  §7 of `C:/Projects/kiss-sk4/rfcs/sk4-schema-event.md` records cosigns received
+  from **Unpopped, Fuel, kiss-ref** — **3 of 6**. Outstanding: **KISS
+  (hub/steward), Baracuda, Vulkane.** All six sign before any regeneration, so
+  Eric's push authorization → coordinated regen (GAP-020, Fuel's leg) is two
+  cosigns further out than this note implied. A local memory saying "4/6" is
+  also stale against the artifact. Read the RFC head, not a relay — and note the
+  count is the kind of fact that decays between sessions.
 - **unpopped migration:** `baracuda-kernelgen` → published `unpopped` 0.1.0 /
   `unpopped-vocab` 0.1.0. Fuel pins `=0.0.1-alpha.77` (import-path-compatible
   swap when scheduled; `BaracudaSynthesizer` path moves to `baracuda-cuda-emit`).
