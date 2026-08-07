@@ -145,7 +145,16 @@ the final split — several concurrent callers, not one test.
    `fetch_add`.
 6. **`pipelined_bridge.rs:795` guard held across `:877`** — different functions
    (`build_optimized_graph`@705 vs `dispatch_with_plan_retry`@807); the guard is
-   dead by the second call.
+   dead by the second call. **Refutes only that PAIRING — not the site.** An
+   earlier version of this document said "so that site is clean," which was
+   broader than the evidence: see §6, the guard at `:795` *is* held across the
+   whole optimize call at `:804`. Refuting one pairing does not clear a scope.
+7. **`cast_fusion_predicate()` as the live second `.read()`** — the `Arc<dyn Fn>`
+   really does re-acquire `global_bindings()` on every invocation, but it is
+   **test-only**: it appears in `cast_fusion.rs` tests (`:187/200/221/251`) and
+   `opt.rs`'s test region (`:4569-4737`). The production rule registry
+   (`opt.rs:187-228`) wires `LoweringRule` + `FusionRule` only. Do not fix on the
+   assumption that cast fusion is the culprit.
 7. **Writers are `adopt_runtime_fused`/`clear_runtime_fused_for_tests`** —
    over-attribution from a doc comment. Skipping every `runtime_fused` test still
    hangs. The comment names those because they were *that test's* local problem;
@@ -156,12 +165,26 @@ the final split — several concurrent callers, not one test.
 
 ## 6. Open / unconfirmed
 
-**The exact recursive-read site is not pinned.** The strongest lead is
-indirection a same-function grep cannot see: `cast_fusion.rs:48-61`'s
-`cast_fusion_predicate()` returns an `Arc<dyn Fn>` that calls `global_bindings()`
-on **every invocation**. Anyone invoking a `CapabilityPredicate` while holding a
-bindings guard is the second `.read()`. A bounded sweep of predicate *invocation*
-sites was requested from another session; result may not have landed.
+**The model's precondition is CONFIRMED; the exact second `.read()` is not.**
+
+Confirmed (positive): `fuel-core/src/pipelined_bridge.rs:795` binds
+`let bindings_guard = global_bindings();` and holds it across the **entire**
+optimize call at `:804` —
+`optimize_graph_with_runtime_fusion(&mut g, roots, &bindings_guard, &options)`.
+The guard is passed by reference *precisely so the optimizer reuses it*. So a
+site holding a guard across a large re-entrant region definitely exists, and the
+recursive-read model has no hole.
+
+Still open: **which callee under that guard ignores the passed `&bindings_guard`
+and calls `global_bindings()` itself.** That callee is the second `.read()`.
+Unchecked candidates, all reached under the held guard: `order_for`
+(`pipelined.rs:2051` Streaming arm, and `:2215`), the `LoweringRule` /
+`FusionRule` internals, the residency / layout passes, and any registration path
+re-entered during optimize.
+
+The reproducer plus the trace at `c9b9e991` can pin it in one run — add a
+`lock_trace` marker at the suspected callee and see whether the blocked thread
+passes through it.
 
 Note the search rule: `RwLockReadGuard` has a `Drop` impl, so NLL does **not**
 end it early — it lives to end of scope. "Held across" means "still in scope,"
