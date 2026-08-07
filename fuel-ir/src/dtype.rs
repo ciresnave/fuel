@@ -52,6 +52,61 @@ pub enum DType {
     F8E6M2,
 }
 
+impl DType {
+    /// Every [`DType`] variant, in declaration order.
+    ///
+    /// Kept complete by [`all_variants_witness`] below: its wildcard-free
+    /// `match` makes adding a variant a compile error there, dragging the
+    /// author to this list. A **compile-time** completeness instrument (the
+    /// constitution's "validate at build time"), not a runtime-reflected one —
+    /// which is why this is a hand-written `const` and not a derived iterator.
+    pub const ALL: &'static [DType] = &[
+        DType::U8,
+        DType::I8,
+        DType::U32,
+        DType::I16,
+        DType::I32,
+        DType::I64,
+        DType::BF16,
+        DType::F16,
+        DType::F32,
+        DType::F64,
+        DType::F8E4M3,
+        DType::F6E2M3,
+        DType::F6E3M2,
+        DType::F4,
+        DType::F8E8M0,
+        DType::F8E6M2,
+    ];
+}
+
+/// Compile-time completeness tripwire for [`DType::ALL`]. This wildcard-free
+/// `match` names every variant, so adding a `DType` fails to compile HERE
+/// (non-exhaustive `match`) until the new variant is handled — and
+/// [`DType::ALL`] is to be extended in the same edit. Never called; it exists
+/// only so the compiler forces acknowledgement of every variant.
+#[allow(dead_code)]
+fn all_variants_witness(dt: DType) {
+    match dt {
+        DType::U8
+        | DType::I8
+        | DType::U32
+        | DType::I16
+        | DType::I32
+        | DType::I64
+        | DType::BF16
+        | DType::F16
+        | DType::F32
+        | DType::F64
+        | DType::F8E4M3
+        | DType::F6E2M3
+        | DType::F6E3M2
+        | DType::F4
+        | DType::F8E8M0
+        | DType::F8E6M2 => {}
+    }
+}
+
 /// Error returned when a string cannot be parsed as a [`DType`].
 #[derive(Debug, PartialEq, Eq)]
 pub struct DTypeParseError(String);

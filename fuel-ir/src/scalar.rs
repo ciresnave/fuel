@@ -227,4 +227,19 @@ mod tests {
         assert!(matches!(Scalar::zero(DType::F8E8M0),
                          Err(crate::Error::NoZeroScalar(DType::F8E8M0))));
     }
+
+    #[test]
+    fn scalar_ctors_never_unwind_over_all_dtypes() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+        // DType::ALL is compile-complete (see dtype.rs `all_variants_witness`),
+        // so this sweep provably covers every variant — no vacuous pass.
+        for &dt in DType::ALL {
+            assert!(catch_unwind(AssertUnwindSafe(|| Scalar::zero(dt))).is_ok(),
+                    "zero() unwound for {dt:?}");
+            assert!(catch_unwind(AssertUnwindSafe(|| Scalar::one(dt))).is_ok(),
+                    "one() unwound for {dt:?}");
+            assert!(catch_unwind(AssertUnwindSafe(|| Scalar::from_f64(1.0, dt))).is_ok(),
+                    "from_f64() unwound for {dt:?}");
+        }
+    }
 }
