@@ -13885,6 +13885,142 @@ mod generate_tests {
         );
     }
 
+    /// **Capture as a WHOLE-GRAPH CORRECTNESS INSTRUMENT** — per-node
+    /// intermediates read out of a captured replay and checked against a CPU
+    /// oracle.
+    ///
+    /// Capture is normally sold as launch-overhead elimination, and that is all
+    /// Fuel exploits today. Recording the graph has a second consequence nobody
+    /// was using: **every compute node's output gets a FIXED device address that
+    /// survives replays** (`CapturedDecodeSession::node_outputs`). On the
+    /// ordinary path intermediates are transient, so there is nothing to
+    /// inspect after the fact.
+    ///
+    /// That makes a capture an independent second source of truth. `placement_of`
+    /// reports what the optimizer DECIDED; this reports what the device HELD.
+    /// This session repeatedly found instruments that were themselves wrong, and
+    /// the only reliable defence was two instruments that could disagree.
+    ///
+    /// What this asserts:
+    /// 1. **Coverage** — the capture retains a buffer for a substantial share of
+    ///    the graph's nodes, not a handful. Without this, a `node_outputs` that
+    ///    returned one entry would satisfy every other check here.
+    /// 2. **Readability** — every retained buffer D2Hs to finite values. A
+    ///    capture that replayed into freed or uninitialised memory shows up as
+    ///    NaN/Inf here, which is the failure mode `retained_inputs` exists to
+    ///    prevent and which no logits-only check would localise.
+    /// 3. **Whole-graph agreement** — the final logits match the persistent path
+    ///    byte-for-byte, so the intermediates above belong to a run that was
+    ///    correct end-to-end rather than merely finite.
+    ///
+    /// The per-node CPU-oracle diff this enables is deliberately NOT attempted
+    /// here: node ids are shared with the held graph, so a full differential is
+    /// a straightforward follow-up, but it needs a CPU realize of the same graph
+    /// and belongs in its own increment.
+    #[test]
+    #[cfg(feature = "cuda")]
+    #[ignore = "requires a live CUDA device"]
+    fn captured_decode_exposes_per_node_intermediates_cuda() {
+        let cfg = LlamaConfig {
+            vocab_size: 16, dim: 16, n_layers: 2, n_heads: 4, n_kv_heads: 2,
+            head_dim: 4, ffn_dim: 16, norm_eps: 1e-5, rope_base: 10000.0,
+        };
+        let dev: Device = match fuel_cuda_backend::CudaDevice::new(0) {
+            Ok(d) => d.into(),
+            Err(e) => {
+                eprintln!("no CUDA device; skipping: {e:?}");
+                return;
+            }
+        };
+
+        let prompt = [1_u32, 2, 3];
+        let decode = [4_u32, 5, 6];
+        let max_seq_len = prompt.len() + decode.len();
+
+        // Reference: the persistent path, for the end-to-end agreement check.
+        let m_ref = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let mut c_ref = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &dev,
+        ).expect("ref cache");
+        let mut x_ref = InferenceContext::new(dev.clone());
+        let mut s_ref: Option<crate::inference_context::DecodeSession> = None;
+        m_ref.forward_with_kv_context_persistent(&prompt, &mut c_ref, &mut x_ref, &mut s_ref)
+            .expect("ref prefill");
+        let mut ref_logits = Vec::new();
+        for &t in &decode {
+            ref_logits.push(
+                m_ref.forward_with_kv_context_persistent(&[t], &mut c_ref, &mut x_ref, &mut s_ref)
+                    .expect("ref decode"),
+            );
+        }
+
+        // Under test: capture, then read the intermediates it retained.
+        let m_cap = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let mut c_cap = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &dev,
+        ).expect("cap cache");
+        let mut x_cap = InferenceContext::new(dev.clone());
+        let mut s_cap: Option<crate::inference_context::DecodeSession> = None;
+        let mut captured: Option<fuel_dispatch::pipelined::CapturedDecodeSession> = None;
+        m_cap.forward_with_kv_context_captured(
+            &prompt, &mut c_cap, &mut x_cap, &mut s_cap, &mut captured,
+        ).expect("cap prefill");
+        let mut cap_logits = Vec::new();
+        for &t in &decode {
+            cap_logits.push(
+                m_cap.forward_with_kv_context_captured(
+                    &[t], &mut c_cap, &mut x_cap, &mut s_cap, &mut captured,
+                ).expect("cap decode"),
+            );
+        }
+
+        let cap = captured.as_ref().expect(
+            "Llama's decode graph is capturable — if this is None the capture              declined and there are no intermediates to inspect",
+        );
+        let outputs = cap.node_outputs();
+        let graph_len = s_cap.as_ref().expect("session").graph_node_count();
+
+        // (1) COVERAGE — a real share of the graph, not a token handful.
+        println!("
+=== captured per-node intermediates ===");
+        println!("graph nodes: {graph_len}   retained buffers: {}", outputs.len());
+        assert!(
+            outputs.len() >= graph_len / 4,
+            "capture retained only {} buffers for a {graph_len}-node graph —              node_outputs is supposed to expose EVERY compute node's output, so              a near-empty map means the inspection surface is not what it claims",
+            outputs.len(),
+        );
+
+        // (2) READABILITY — every retained buffer D2Hs to finite values.
+        let mut checked = 0usize;
+        let mut nonfinite: Vec<String> = Vec::new();
+        for (nid, buf) in outputs.iter() {
+            if let Ok(vals) = captured_output_to_f32(buf) {
+                if vals.iter().any(|v| !v.is_finite()) {
+                    nonfinite.push(format!("#{}", nid.0));
+                }
+                checked += 1;
+            }
+        }
+        println!("readable buffers: {checked}   non-finite: {}", nonfinite.len());
+        assert!(checked > 0, "no retained buffer was readable — the surface is unusable");
+        assert!(
+            nonfinite.is_empty(),
+            "retained intermediates contain non-finite values at {nonfinite:?} —              the signature of replay against freed/uninitialised memory, which a              logits-only check would not localise",
+        );
+
+        // (3) WHOLE-GRAPH AGREEMENT — the run those intermediates came from was
+        // correct end to end, not merely finite.
+        for (i, got) in cap_logits.iter().enumerate() {
+            assert_eq!(
+                *got, ref_logits[i],
+                "captured token {i} must be byte-identical to the persistent path",
+            );
+        }
+        println!("end-to-end: byte-identical to the persistent path over {} tokens", decode.len());
+        println!("=== END ===
+");
+    }
+
     /// Task 4b-δ · GPU gate: [`LlamaModel::forward_with_kv_context_captured`]
     /// (the CapturedRun / CUDA-graph decode driver) must be **bit-exact**
     /// vs. the existing [`LlamaModel::forward_with_kv_context_persistent`]

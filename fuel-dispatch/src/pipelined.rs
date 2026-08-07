@@ -437,6 +437,35 @@ impl CapturedDecodeSession {
     /// address), then replay the captured graph and return the output buffer
     /// (now holding this token's result). `host_bytes.len()` must equal the
     /// buffer's byte length.
+    /// **Every compute node's output buffer, keyed by `NodeId`** — the
+    /// capture's inspection surface.
+    ///
+    /// Capture is usually described as a launch-overhead optimization, and that
+    /// is what Fuel currently exploits (measured 4.28x at k=1). But recording
+    /// the graph has a second, unexploited consequence: **every intermediate
+    /// gets a FIXED device address that survives across replays.** On the
+    /// ordinary path intermediates are transient — allocated, consumed, freed —
+    /// so there is nothing to look at after the fact.
+    ///
+    /// That makes a captured session a **whole-graph, per-node, addressable
+    /// snapshot of what actually executed**, which is a different artifact from
+    /// anything the planner records. `OptimizedGraph::placement_of` says what
+    /// the optimizer DECIDED; this says what the device HELD. Those can
+    /// disagree, and an independent second instrument is the only way to notice.
+    ///
+    /// Uses this enables, none of which need re-running the model:
+    /// - read any intermediate after a token;
+    /// - compare per-node against a CPU oracle — whole-graph differential,
+    ///   where FKC verification today is per-KERNEL;
+    /// - measure real per-op divergence for the tolerance/Judge work instead of
+    ///   modelling it.
+    ///
+    /// Buffers are live device memory owned by the capture; they are overwritten
+    /// by the next `replay_token`. Read them before replaying again.
+    pub fn node_outputs(&self) -> &HashMap<NodeId, Arc<RwLock<Storage>>> {
+        &self.captured.persistent
+    }
+
     pub fn replay_token(&self, updates: &[(NodeId, &[u8])]) -> Result<Arc<RwLock<Storage>>> {
         use fuel_memory::BackendStorage;
         for (id, bytes) in updates {
