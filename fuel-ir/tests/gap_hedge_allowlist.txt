@@ -1,0 +1,216 @@
+fuel-aocl-cpu-backend/src/lib.rs	/// run would need a manual `set PATH=...` before invocation.
+fuel-core/src/inference_context.rs	//!   not yet on the pre-allocated path (grow-by-replace works without
+fuel-core/src/judge/cache.rs	//! not yet useful for realize-time dispatch — the router needs
+fuel-core/src/judge/mod.rs	// All others: not yet wired into the direct-call path. The
+fuel-core/src/judge/mod.rs	// FlashAttn kernel (naive SDPA, `flash_attn_{f32,f16,bf16}` in
+fuel-core/src/judge/mod.rs	// Reductions + ReduceTo not yet wired into the direct-call
+fuel-core/src/judge/mod.rs	// naive CPU SDPA is ~Hq·k_len·D ≈ 8.4M MACs per QKᵀ/PV pass.
+fuel-core/src/judge/mod.rs	//! Op kinds *not yet profiled* (build_input_graph would `panic!` if
+fuel-core/src/judge/mod.rs	/// of one (op, size) cell. Returns `None` for ops not yet supported.
+fuel-core/src/judge/mod.rs	/// op family is not yet wired into the direct-call path.
+fuel-core/src/kv_block_pool.rs	/// a guess) — reserved, not yet built, per "establish it belongs before
+fuel-core/src/kv_block_pool_device.rs	/// f32-only for now (the CPU-gated increment); the pool's real dtype is
+fuel-core/src/kv_block_pool_device.rs	/// way. f32-only for now (see [`Self::write_block`]).
+fuel-core/src/lazy.rs	/// Allocate a data-determined [`fuel_ir::SymId`] not yet used by any
+fuel-core/src/lazy.rs	/// does not yet expose.
+fuel-core/src/lazy_csm.rs	/// generated audio frame) is still consumer-side TODO.
+fuel-core/src/lazy_dac.rs	//! Dilation handling: `LazyTensor::conv1d` doesn't yet take a
+fuel-core/src/lazy_debertav2.rs	/// unused (the lazy encoder doesn't yet ingest either — see the
+fuel-core/src/lazy_deepseek2.rs	/// Naively threading `LazyLatentCache` directly across
+fuel-core/src/lazy_dinov2reg4.rs	//! deferred (eager uses `upsample_nearest2d` as a workaround
+fuel-core/src/lazy_encodec.rs	//! → Conv1d (dim/compress → dim) → optional 1×1 shortcut conv on
+fuel-core/src/lazy_encodec.rs	/// 1×1 conv on the residual branch when `use_conv_shortcut`.
+fuel-core/src/lazy_encodec.rs	/// `cfg.use_conv_shortcut` is true.
+fuel-core/src/lazy_encodec.rs	/// plus an optional `shortcut.conv.*` 1×1 conv when
+fuel-core/src/lazy_gemma.rs	// o_proj bias support would need a LayerWeights extension if
+fuel-core/src/lazy_granitemoehybrid.rs	// exercised. Matches eager (which also bails on
+fuel-core/src/lazy_granitemoehybrid.rs	//! F32, attention-only layers (eager's Mamba branch bails too).
+fuel-core/src/lazy_granitemoehybrid.rs	//! implemented** (the Mamba branch bails). v1 mirrors that
+fuel-core/src/lazy_kv_cache.rs	/// `Op::WriteSlice` target; resizing would need a new buffer node).
+fuel-core/src/lazy_latent_cache.rs	//! surface can later be re-expressed on top of it — deferred for now because
+fuel-core/src/lazy_lfm2.rs	/// TODO(autoregressive): when multi-output nodes land, restore the
+fuel-core/src/lazy_llama_full.rs	// performing a transpose copy. There's no zero-copy shortcut
+fuel-core/src/lazy_mimi_conv_wrappers.rs	//! `learnt = true` is the only supported mode (eager bails on
+fuel-core/src/lazy_mimi_seanet.rs	//!     optional 1×1 skip-shortcut conv.
+fuel-core/src/lazy_mimi_seanet.rs	//!     then `+ x` (or `+ shortcut(x)` if `true_skip = false`).
+fuel-core/src/lazy_mimi_seanet.rs	//! (Mimi v0.1 has `lstm = 0`; the eager port also bails when
+fuel-core/src/lazy_mimi_seanet.rs	/// Optional 1×1 shortcut conv when `true_skip = false`.
+fuel-core/src/lazy_mimi_seanet.rs	/// optional `shortcut.conv` when `true_skip = false`.
+fuel-core/src/lazy_mmdit.rs	// ---- MMDiT-X joint block (TODO) --------------------------------------------
+fuel-core/src/lazy_mmdit.rs	// MMDiT-X (SD3.5 medium) variant: not implemented in v1; flagged as TODO.
+fuel-core/src/lazy_mmdit.rs	// upstream and would need an `enum JointBlockWeights { MMDiT(...),
+fuel-core/src/lazy_mmdit.rs	/// MMDiT-X joint-block variant is not yet implemented; this config
+fuel-core/src/lazy_nn/conv.rs	//! Dilation: the LazyTensor conv primitives do not yet accept a
+fuel-core/src/lazy_nn/two_proj_attention.rs	/// Per-token, per-layer footprint a *standard* K/V cache would need at
+fuel-core/src/lazy_nn_conv_transpose.rs	//!   carry it yet (the eager `// TODO: support groups.` comment will
+fuel-core/src/lazy_nn_conv_transpose.rs	/// (the eager side has a `TODO: support groups.` and the underlying
+fuel-core/src/lazy_phi.rs	///   supports false — set to true bails at load time).
+fuel-core/src/lazy_quantized_whisper.rs	//!   returns an error pointing callers at `from_f32_bake` for now.
+fuel-core/src/lazy_sam.rs	//!   path bails explicitly in that branch — currently only the
+fuel-core/src/lazy_sd3_vae.rs	/// Optional 1×1 shortcut when in_channels != out_channels.
+fuel-core/src/lazy_sd_samplers_unipc.rs	//! # Deferred (TODOs for follow-ups)
+fuel-core/src/lazy_sd_samplers_unipc.rs	/// implemented in this port; the stochastic `SdeDpmSolverPlusPlus` is a TODO.
+fuel-core/src/lazy_sd_unet.rs	/// ResNet block with time conditioning. `conv_shortcut` is present
+fuel-core/src/lazy_sd_vae.rs	//!   shortcuts when the ResNet block changes channel count). Dispatches
+fuel-core/src/lazy_sd_vae.rs	/// Optional 1×1 shortcut when in_channels != out_channels.
+fuel-core/src/lazy_stella_v5.rs	//! distinct — it would need its own port.
+fuel-core/src/lazy_wuerstchen.rs	// conv_transpose2d does not yet plumb the bias; add manually.
+fuel-core/src/lazy_yolov3.rs	// NOT convs (shortcuts, routes, upsamples, yolo) are skipped.
+fuel-core/src/lazy_yolov3.rs	// shortcut / route / upsample / yolo blocks sit).
+fuel-core/src/train.rs	//! ## Not yet covered
+fuel-correctness-fixtures/src/lib.rs	// Future dtypes: add arms here. For now, treat
+fuel-correctness-fixtures/src/lib.rs	//! ## Not yet in v1 (deferred to follow-up sessions)
+fuel-cpu-backend/src/byte_kernels.rs	// FlashAttn — naive multi-head SDPA (math definition)
+fuel-cpu-backend/src/byte_kernels.rs	// PagedAttn — paged-KV-cache attention (naive)
+fuel-cpu-backend/src/byte_kernels.rs	// mark as "not yet set"). Easiest: iterate in lex order and
+fuel-cpu-backend/src/byte_kernels.rs	// this naive impl since v_cache shares the block layout.
+fuel-cpu-backend/src/byte_storage/aligned.rs	// and not yet freed; no mutation possible through `&self`).
+fuel-cpu-backend/src/conv2d.rs	// Other 1x1 convolutions for now are assumed faster with full im2col,
+fuel-cpu-backend/src/conv2d.rs	// TODO other cases
+fuel-cpu-backend/src/dyn_impl.rs	// For now, go through CPU storage → convert via unary_map.
+fuel-cpu-backend/src/ops.rs	// TODO: Avoid making this copy if `inp` already has the appropriate layout.
+fuel-cpu-backend/src/ops.rs	// TODO: Specialized implementation for the case 2*h, 2*w?
+fuel-cpu-backend/src/ops.rs	// TODO: Specialized implementation for the case 2*sz?
+fuel-cpu-backend/src/ops.rs	// TODO: provide specialized kernels for the common use cases.
+fuel-cpu-backend/src/utils.rs	// TODO: Maybe we want to avoid going through the layout twice.
+fuel-cuda-backend/src/baracuda/binary.rs	//! Ops baracuda ships that Fuel doesn't yet have OpKinds for
+fuel-cuda-backend/src/baracuda/cast.rs	// (those have separate scale tensors and would need different
+fuel-cuda-backend/src/baracuda/cumsum.rs	// common axis sizes; very large axes that would need workspace
+fuel-cuda-backend/src/baracuda/mod.rs	//!   per-stream scratch pool is a future optimization — for now the
+fuel-cuda-backend/src/baracuda/quant_w4a16.rs	///   (OC-major, IC-minor — transpose of naive [K, N]).
+fuel-cuda-backend/src/baracuda/quant_w4a16.rs	///   (OC-major, IC-minor — transpose of naive `[K, N]`).
+fuel-cuda-backend/src/baracuda/scratch.rs	//! kernel launches — is an obvious optimization but not yet
+fuel-cuda-backend/src/capture.rs	//! This module is a **capability**, not yet a wired-in optimization. The
+fuel-cuda-backend/src/capture.rs	/// call) is Phase D's job; for now this device-level method is the
+fuel-cuda-backend/src/device.rs	// TODO: Add support for F16 and BF16 though this is likely to require some upstream
+fuel-cuda-backend/src/device.rs	/// the "bind temporary to extend lifetime, then push by reference"
+fuel-cuda-backend/src/flash_attn.rs	//! Staged module: `launch` is not yet wired into `Op::FlashAttn`
+fuel-cuda-backend/src/lib.rs	// The baracuda FA2 launcher (`flash_attn::launch`). Staged but not yet
+fuel-cuda-backend/src/probe.rs	// TODO(cuda): CUDA *can* report this — it is
+fuel-cuda-backend/src/storage.rs	// stays on PTX for now because baracuda's interpolate-bilinear FFI
+fuel-cuda-backend/src/storage.rs	/// supported on CUDA today. Prefill (m > 1) bails; the caller
+fuel-cuda-backend/src/ug.rs	// TODO: support more dtypes.
+fuel-dispatch/src/baracuda_dispatch.rs	// Bias / BiasRelu / BiasGelu / BiasSilu epilogues are not yet wired
+fuel-dispatch/src/dispatch.rs	// dtype). Registered DIRECTLY (not yet FKC-contract-sourced): the
+fuel-dispatch/src/dispatch.rs	/// SUBMITTED but not yet observed completed, per device. It is a
+fuel-dispatch/src/dispatch.rs	/// TEMPORARY GAP-015 DIAGNOSTIC — env-gated (`FUEL_LOCK_TRACE=1`), off by
+fuel-dispatch/src/driver.rs	// (it would need a new `fuel-graph` mutation API and is a
+fuel-dispatch/src/fkc/caps_map.rs	/// not yet carry). An empty operand set is not generic (no contract to fall
+fuel-dispatch/src/fkc/caps_map.rs	/// retained, even the ones not yet projected onto `KernelCaps` (§6
+fuel-dispatch/src/fkc/error.rs	/// A contract is describable but NOT yet registrable on today's types
+fuel-dispatch/src/fkc/mod.rs	//! NOT yet implemented (later slices of the plan): the cost trampoline /
+fuel-dispatch/src/fkc/mod.rs	//! `CostFn` for now), the full `V-FKC-*` validators, and the CI lint.
+fuel-dispatch/src/fkc/register.rs	/// `ResolvedFused.cost` but not yet wired into a `CostFn`; the Judge
+fuel-dispatch/src/fkc/register.rs	/// bootstraps all imported costs for now (a follow-up slice adds the cost
+fuel-dispatch/src/fkc/validate.rs	// a future ragged/CSR `kind >= 2` that FKC cannot yet key.)
+fuel-dispatch/src/fkc/verify/harness.rs	//!   real cross-backend numeric check is a follow-on (would need a
+fuel-dispatch/src/fkc/verify/harness.rs	//! ## What this DOESN'T do (documented gaps, not silent shortcuts)
+fuel-dispatch/src/fkc/verify/mod.rs	//! NOT yet implemented (later tasks in the same program extend this file's
+fuel-dispatch/src/fkc/verify/seed_cuda_ledger.rs	//! write, so a naive `push` re-run would append duplicates.
+fuel-dispatch/src/fused.rs	/// The CPU naive-attention reference is bit-stable per-hardware
+fuel-dispatch/src/fused.rs	/// headroom vs naive F32 over the per-step state update.
+fuel-dispatch/src/fused.rs	/// naive reference (different reduction tree); that's a GPU-side
+fuel-dispatch/src/jit_cuda_load.rs	//! today's honest shortcut (documented, not hidden).
+fuel-dispatch/src/jit_cuda_load.rs	/// - `art.kind` isn't [`ArtifactKind::Ptx`] (Cubin loading would need
+fuel-dispatch/src/optimize.rs	//! the architect-approved arm-0 temporary lowering).
+fuel-dispatch/src/pipelined.rs	// V.1.B stopgap: D2H → CPU contiguize_cpu → H2D. Mirrors
+fuel-dispatch/src/pipelined.rs	// Vulkan buffer); waiting it would needlessly serialize the
+fuel-dispatch/src/pipelined.rs	/// `capacity`-element U32 primary slot). CPU only for now — device
+fuel-dispatch/src/pipelined.rs	/// copy doesn't read any Vulkan buffer, and waiting Vulkan there would needlessly
+fuel-dispatch/src/pipelined.rs	/// would need N+1 distinct registrations per dtype).
+fuel-dispatch/src/plan.rs	///   `Op::Const`, ops not yet wired into dispatch), the node gets
+fuel-dispatch/src/ranker/cost.rs	//! For Phase 1.4 the picker doesn't yet read live BackendCapabilities
+fuel-dispatch/src/ranker/judge_aware_selector.rs	//! `kernel_source` will get distinguished. For now the selector
+fuel-dispatch/src/residency.rs	//!   would need multiple evict chains.
+fuel-dispatch/src/runtime_fused_kernels.rs	/// both observe "not yet bound" through a read-then-write race window and
+fuel-dispatch/src/telemetry/baracuda_provider.rs	//!   and discriminating, but the output operand's structure is not yet folded in.
+fuel-dispatch/src/telemetry/sink.rs	//! flush time would need the concrete `ProfileJudgeOracle` + the hardware-keyed
+fuel-dispatch/src/telemetry/structure_key.rs	/// for now (its `SType`/`FDXQuant` refinement is a later step).
+fuel-dispatch/src/vulkan_dispatch.rs	// FlashAttnBackwardK,FlashAttnBackwardV}, …)` regs (naive single-pass SDPA;
+fuel-dispatch/src/vulkan_dispatch.rs	// For now, error: N=1 should be optimized at the graph level
+fuel-dispatch/src/vulkan_dispatch.rs	// Other QuantTypes (Q4_1, Q5_*, Q2K/Q3K/Q5K/Q6K, Q8_1) are not yet wired —
+fuel-dispatch/src/vulkan_dispatch.rs	// single-last-dim case, the backend method bails and the executor
+fuel-dispatch/src/vulkan_dispatch.rs	// support it (no scalar-divide pass; would need a sum + affine
+fuel-dispatch/src/vulkan_dispatch.rs	/// AND (h_out * w_out) % 16 == 0. Bails on small shapes — route
+fuel-dispatch/src/vulkan_dispatch.rs	/// COOP-ONLY — bails on small shapes; route picker should fall
+fuel-dispatch/src/vulkan_dispatch.rs	/// Naive single-pass kernel (NOT tiled). Supports GQA, causal,
+fuel-dispatch/src/vulkan_dispatch.rs	/// audited `none(reason)`, `determinism: nondeterministic`): the naive single-pass
+fuel-dispatch/src/vulkan_dispatch.rs	/// float add (not yet wired) and fall through to CPU.
+fuel-dispatch/src/vulkan_dispatch.rs	/// output dQ (same shape as Q). Bails on window/softcap (route
+fuel-examples/src/bs1770.rs	// TODO: Should this branch be marked cold?
+fuel-formats/src/pickle.rs	// TODO: have a separate ordered dict and a separate default dict.
+fuel-graph/src/jit.rs	// The see_through-set skip is a follow-up; for now match `then`
+fuel-graph/src/lib.rs	// gradient is non-trivial and not yet implemented
+fuel-graph/src/lib.rs	// is the workaround if differentiable
+fuel-graph/src/lib.rs	/// Not yet wired through autograd.
+fuel-graph/src/lib.rs	/// Phase D substrate (PR-D1): the classification is recorded but not yet
+fuel-graph/src/lib.rs	/// Phase D substrate (PR-D1); not yet consumed by realize.
+fuel-graph/src/lib.rs	/// Repeat the edge value into the padded region. Not yet
+fuel-graph/src/lib.rs	/// The next data-determined [`SymId`] not yet used by any producer in
+fuel-graph/src/lib.rs	/// `Op::Sigmoid`. Not yet wired through autograd.
+fuel-graph/src/lib.rs	/// `Op::Silu`, mutates input 0. Not yet wired through autograd.
+fuel-graph/src/lib.rs	/// `Step`/`Where`/`Sign` op that is not yet in the catalog and will
+fuel-graph/src/lib.rs	/// `placements`: absent entries mean "not yet resolved" and the
+fuel-graph/src/lib.rs	/// backward through the fused op is not yet implemented.
+fuel-graph/src/lib.rs	/// edge value). Not yet implemented.
+fuel-graph/src/lib.rs	/// hints that the executor may validate but does not yet act on.
+fuel-graph/src/lib.rs	/// mutates input 0. Not yet wired through autograd.
+fuel-graph/src/lib.rs	/// returns a clean "not yet implemented" error.
+fuel-graph/src/lib.rs	/// same formula as `Op::Gelu`. Not yet wired through autograd.
+fuel-graph/src/opt.rs	///    graph-rebinding workaround this fix makes unnecessary for
+fuel-graph/src/opt.rs	///   forward placement. Tracked as a follow-up TODO.
+fuel-graph/src/opt.rs	///   pass can fuse the two — tracked as a TODO alongside Phase 4's
+fuel-graph/src/opt.rs	/// (would need to insert `Copy(X)` then re-derive the view from the
+fuel-graph/src/opt.rs	/// full mechanism and the shipped workaround this makes unnecessary
+fuel-graph/src/registry.rs	/// recover their payload via the `extract:` layer (a follow-up) — for now
+fuel-graph/src/registry/conv_transpose_2d.rs	// not yet in the recipe → surfaced honest-miss fixpoint (never a crash).
+fuel-graph/src/registry/conv_transpose_2d.rs	// or wire a dedicated backward helper. For now NotDifferentiable
+fuel-graph/src/registry/conv_transpose_2d.rs	/// non-2-input arity (the with-bias form is not yet in the recipe — a surfaced
+fuel-graph/src/registry/flash_attn.rs	//! Backward is not yet implemented (panic stub in `Tensor::backward`);
+fuel-graph/src/registry/flash_attn.rs	//! `GraphExecutor::cpu_fallback` to the reference naive-attention
+fuel-graph/src/registry/flash_attn.rs	//! naive form).
+fuel-graph/src/registry/flash_attn.rs	/// (the tiled-softmax numerics aren't bit-identical to the naive
+fuel-graph/src/registry/selective_scan.rs	//! decompose surface a typed error, not silent garbage) and would need a
+fuel-graph/src/run.rs	/// approved temporary fix). The flat executable dispatch order that
+fuel-graph/src/run.rs	/// them). A naive concatenation of all runs would execute every arm.
+fuel-inference/src/chunked_prefill.rs	/// Returns the number of chunks remaining (not yet yielded).
+fuel-inference/src/multi_session.rs	/// - `Prefill`: the prompt has not yet been run through the model. The next
+fuel-inference/src/multi_session.rs	/// persistent`. It implements the CORE trait only: the paged surface would need
+fuel-inference/src/scheduler.rs	//! budget.  A naive approach admits every request immediately, which can cause
+fuel-ir/src/dispatch.rs	/// not a tiled FlashAttention-2 kernel — naive on CPU). Inputs
+fuel-ir/src/dlpack/sidecar.rs	/// Sentinel block id meaning "unmapped / not yet allocated".
+fuel-ir/src/dummy_dtype.rs	//! that are defined in the safetensors spec but not yet fully implemented.
+fuel-ir/src/probe.rs	/// `fuel-metal-backend` (future — not yet probe-wired).
+fuel-ir/src/probe.rs	/// different cells, so the descriptor would need *the admissible
+fuel-ir/src/stype.rs	/// `FDX_BUFFER_NONE` ("scheme described, scale buffer not yet bound" — the
+fuel-kernels-source/src/lib.rs	//!   co-located there; Slang→CUDA unification is planned but not yet
+fuel-lazy-examples/src/bin/yolov8-lazy.rs	// `sigmoid(0) = 0.5` and every anchor passes a naive threshold. To
+fuel-memory/src/dlpack_view.rs	// the GPU path is explicitly TODO rather than silently wrong.
+fuel-memory/src/dlpack_view.rs	//! A naive "store a pointer into my own field" is unsound: moving the
+fuel-memory/src/dlpack_view/tests.rs	// The SCHEME is described, but the scale operand is not yet bound, so the
+fuel-metal-backend/src/ug.rs	// TODO: support more dtypes.
+fuel-metal-kernels/src/kernels/sdpa.rs	/// - final type != bf16 (TODO maybe just template this kernel too?)
+fuel-metal-kernels/src/metal/commands.rs	// TODO: Avoid redundant allocation before drop
+fuel-quantized/src/k_quants.rs	// TODO: Pre-allocate this.
+fuel-quantized/src/neon.rs	// TODO: dotprod
+fuel-tensor-tools/src/main.rs	// Read + requantize into memory first. A streaming writer would need every
+fuel-tensor-tools/src/main.rs	//! payloads, so `print` for pth would need a pickle *payload* reader.
+fuel-vulkan-backend/src/capture.rs	/// for now this backend-level method is the advertisement.
+fuel-vulkan-backend/src/lib.rs	/// ## NOT YET integrated with weight allocation
+fuel-vulkan-backend/src/lib.rs	/// (TODO) plus a rebinding path through VulkanBuffer. Until those
+fuel-vulkan-backend/src/lib.rs	/// (rhs > lhs) bails — falls back to CPU/CUDA alternative.
+fuel-vulkan-backend/src/lib.rs	/// For now, the caller (typically a KV-cache manager) knows its
+fuel-vulkan-backend/src/lib.rs	/// GQA, causal, scale, alibi; bails on Sk > 4096 / D > 256
+fuel-vulkan-backend/src/lib.rs	/// Shared body for all `flash_attn_*_bytes` wrappers. Naive
+fuel-vulkan-backend/src/lib.rs	/// VulkanBackend does not yet own the machinery to issue the GPU
+fuel-vulkan-backend/src/lib.rs	/// allocates zero bytes until `alloc_device_weight` (TODO) hands
+fuel-vulkan-backend/src/lib.rs	/// function uploads it once to a temporary device buffer and
+fuel-vulkan-backend/src/lib.rs	/// to VRAM before any compute op. Not yet emitted by the
+fuel-vulkan-backend/src/mapped_meter.rs	//! Precise BAR-only accounting would need per-allocation memory-type introspection
+fuel-vulkan-backend/src/recorder.rs	/// `SubmittedBatch` that has NOT yet had its fence waited (`consumed == false`)
+fuel-vulkan-kernels/src/lib.rs	/// FlashAttention-shape multi-head attention, f32. Naive
+fuel-vulkan-kernels/src/lib.rs	/// GQA + causal + scale + alibi; bails on window/softcap/Sk>4096/D>256.
+fuel-wasm-examples/quant-qwen3/src/m.rs	/// The token passed in is NOT yet in kv_tokens - it will be added after processing.
+fuel-wasm-examples/segment-anything/src/bin/m.rs	/// three `Sam*Weights` types (and the HF-naming TODOs noted in the
+fuel-wasm-examples/whisper/src/worker.rs	// TODO: Besides suppress tokens, we should apply the heuristics from
+fuel-wasm-examples/yolo/src/worker.rs	// "not yet supported" error. Once a `YoloV8PoseModel` lands the
