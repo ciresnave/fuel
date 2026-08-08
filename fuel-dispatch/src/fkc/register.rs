@@ -1791,6 +1791,9 @@ determinism: same_hardware_bitwise
     // =====================================================================
 
     #[test]
+    /// FKC-CLAUSE: FKC-10.10-0001 — path (1), the FKC IMPORT path MUST PROPAGATE.
+    /// A provider contract is untrusted input, so a duplicate is a rejectable
+    /// contract carrying a typed `FkcError::DuplicateKernelRef`, never a crash.
     fn same_pointer_on_one_key_surfaces_duplicate_kernel_ref() {
         // A hand-built bundle: two sections that resolve to the SAME
         // (op, dtypes, backend) key — and the SameLink maps both

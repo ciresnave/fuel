@@ -2224,10 +2224,35 @@ upgradable as the hashing function lands.
 - **The `register_full_with_source` panic → `Result` change is a firm prerequisite (RESOLVED
   2026-06-17), flagged here, performed with the implementation.** It is a `fuel-dispatch` code
   change (CONSTITUTION-CONFLICT in §10.10), not a spec edit. Per the resolved conversion-plan
-  decision, `register_full_with_source` **MUST become `Result`** (never-panic) `[FKC-10.10-0001]` and is a
-  **prerequisite** of the FKC import path — not merely a future cleanup. The spec makes it a
-  tracked dependency and gives FKC an import-path pre-check so the panic is unreachable in the
-  interim; the actual de-panic lands with the importer implementation.
+  decision, the never-panic requirement `[FKC-10.10-0001]` is satisfied at the **`finalize()`
+  boundary**, not by the registration signature — **AMENDED 2026-08-08 (GAP-036 inc 2), see the
+  divergence note below.** `register_full_with_source` **MUST remain infallible** (`-> ()`):
+  registration is append-only, so there is no per-call error to report, and a `Result` that is
+  always `Ok` is a false signal that trains callers to stop reading `Result`s.
+
+  The duplicate-`KernelRef` condition is detected **once**, by
+  `KernelBindingTable::finalize() -> Result<()>`. Its two callers are deliberately different, and
+  the distinction is normative — **an implementation MUST NOT collapse them**:
+
+  1. **FKC import path — MUST propagate.** The importer maps `finalize()`'s error to a typed
+     `FkcError::DuplicateKernelRef` and returns it (`?`). A provider-supplied contract is
+     untrusted input, so a duplicate there is a *rejectable contract*, never a crash. This is the
+     never-panic guarantee that matters, and the one this clause was originally a prerequisite for.
+  2. **Hand-written static-table init path — MAY fail fast.** The two in-crate registration
+     wrappers `.expect()` on `finalize()`. A duplicate in a checked-in static table is a
+     programmer error in Fuel's own source, detectable only at init, and unrecoverable at runtime;
+     failing fast at the init boundary is the deliberate choice, not an oversight.
+
+  **AMENDMENT HISTORY — recorded rather than rewritten, because the drift is the defect.** This
+  clause previously read: "`register_full_with_source` **MUST become `Result`** (never-panic) and
+  is a **prerequisite** of the FKC import path — not merely a future cleanup … the actual de-panic
+  lands with the importer implementation." The importer landed; the signature did not change. The
+  implementation reached the never-panic goal by a **different route** — the finalize boundary —
+  and nothing detected that the spec still asserted the other one. That is doc-vs-code drift, and
+  it was found by the prose clause gate (`fuel-dispatch/tests/fkc_prose_clause_coverage.rs`),
+  which is blind to nothing here precisely because this MUST binds a Rust API shape and raises no
+  `FkcError`. The narrower claim above — never-panic on the **import** path, fail-fast on the
+  **init** path — is the accurate one; the earlier blanket phrasing was not.
 - **Live-extent (`&SymEnv`) cost re-evaluation is scoped, not designed.** The signature extension
   (`CostFn` + `&SymEnv`, or a `CostFnSym` sibling) is named as the required future change but its
   exact shape is left to the implementation that adds the consumer, consistent with the

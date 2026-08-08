@@ -1785,6 +1785,10 @@ mod tests {
     /// registration. `finalize()` detects the duplicate and returns
     /// `Err`. (Replaces the former `#[should_panic]` guard.)
     #[test]
+    /// FKC-CLAUSE: FKC-10.10-0001 — the boundary itself: registration stays
+    /// infallible and `finalize()` RETURNS the duplicate as an error rather than
+    /// panicking. This is why the clause does not require a `Result` signature on
+    /// `register_full_with_source`.
     fn step_9a_duplicate_kernel_ref_detected_by_finalize_not_panic() {
         use fuel_ir::probe::BackendId;
         let mut table = KernelBindingTable::new();
