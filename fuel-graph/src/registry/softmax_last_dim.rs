@@ -27,6 +27,7 @@ use std::sync::OnceLock;
 /// Metadata-side registry entry for SoftmaxLastDim.
 pub fn entry() -> FusedOpEntry {
     FusedOpEntry {
+        destructive_input: None,
         id:         FusedOps::SOFTMAX_LAST_DIM,
         name:       "SoftmaxLastDim",
         family:     FusedOpFamily::Forward,

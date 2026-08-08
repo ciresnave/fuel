@@ -116,6 +116,7 @@ const NF4_LUT: [f32; 16] = [
 /// Metadata-side registry entry for Nf4Matmul.
 pub fn entry() -> FusedOpEntry {
     FusedOpEntry {
+        destructive_input: None,
         id:         FusedOps::NF4_MATMUL,
         name:       "Nf4Matmul",
         family:     FusedOpFamily::Quantized,

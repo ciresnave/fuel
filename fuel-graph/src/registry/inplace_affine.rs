@@ -30,6 +30,7 @@ use std::sync::OnceLock;
 
 pub fn entry() -> FusedOpEntry {
     FusedOpEntry {
+        destructive_input: Some(0),
         id:         FusedOps::INPLACE_AFFINE,
         name:       "InplaceAffine",
         family:     FusedOpFamily::Forward,

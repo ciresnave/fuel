@@ -47,6 +47,7 @@ use std::sync::OnceLock;
 /// Metadata-side registry entry for RmsNormLastDimBackward.
 pub fn entry() -> FusedOpEntry {
     FusedOpEntry {
+        destructive_input: None,
         id:         FusedOps::RMS_NORM_LAST_DIM_BACKWARD,
         name:       "RmsNormLastDimBackward",
         family:     FusedOpFamily::Backward,

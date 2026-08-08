@@ -64,6 +64,7 @@ use fuel_kernel_seam_types::{OpAttrs, OpTag, PatternNode};
 /// Metadata-side registry entry for Conv2D.
 pub fn entry() -> FusedOpEntry {
     FusedOpEntry {
+        destructive_input: None,
         id:         FusedOps::CONV2D,
         name:       "Conv2D",
         family:     FusedOpFamily::Forward,

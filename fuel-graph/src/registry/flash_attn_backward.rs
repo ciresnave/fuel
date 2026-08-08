@@ -48,6 +48,7 @@ use fuel_kernel_seam_types::{OpAttrs, OpTag, PatternNode};
 /// Metadata-side registry entry for FlashAttnBackwardQ.
 pub fn entry_q() -> FusedOpEntry {
     FusedOpEntry {
+        destructive_input: None,
         id:         FusedOps::FLASH_ATTN_BACKWARD_Q,
         name:       "FlashAttnBackwardQ",
         family:     FusedOpFamily::Attention,
@@ -63,6 +64,7 @@ pub fn entry_q() -> FusedOpEntry {
 /// Metadata-side registry entry for FlashAttnBackwardK.
 pub fn entry_k() -> FusedOpEntry {
     FusedOpEntry {
+        destructive_input: None,
         id:         FusedOps::FLASH_ATTN_BACKWARD_K,
         name:       "FlashAttnBackwardK",
         family:     FusedOpFamily::Attention,
@@ -78,6 +80,7 @@ pub fn entry_k() -> FusedOpEntry {
 /// Metadata-side registry entry for FlashAttnBackwardV.
 pub fn entry_v() -> FusedOpEntry {
     FusedOpEntry {
+        destructive_input: None,
         id:         FusedOps::FLASH_ATTN_BACKWARD_V,
         name:       "FlashAttnBackwardV",
         family:     FusedOpFamily::Attention,

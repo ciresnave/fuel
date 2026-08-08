@@ -119,6 +119,7 @@ use std::sync::Arc;
 /// reports both slots' specs for the bundled allocator.
 pub fn entry() -> FusedOpEntry {
     FusedOpEntry {
+        destructive_input: None,
         id:           FusedOps::SELECTIVE_SCAN,
         name:         "SelectiveScan",
         family:       FusedOpFamily::Forward,

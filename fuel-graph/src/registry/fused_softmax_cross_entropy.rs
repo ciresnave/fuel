@@ -68,6 +68,7 @@ use fuel_kernel_seam_types::{OpAttrs, OpTag, PatternNode};
 /// Metadata-side registry entry for FusedSoftmaxCrossEntropy.
 pub fn entry() -> FusedOpEntry {
     FusedOpEntry {
+        destructive_input: None,
         id:         FusedOps::FUSED_SOFTMAX_CROSS_ENTROPY,
         name:       "FusedSoftmaxCrossEntropy",
         family:     FusedOpFamily::Forward,

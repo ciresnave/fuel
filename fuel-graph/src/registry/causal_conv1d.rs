@@ -67,6 +67,7 @@ use fuel_kernel_seam_types::{OpAttrs, OpTag, PatternNode};
 /// Metadata-side registry entry for CausalConv1d.
 pub fn entry() -> FusedOpEntry {
     FusedOpEntry {
+        destructive_input: None,
         id:         FusedOps::CAUSAL_CONV1D,
         name:       "CausalConv1d",
         family:     FusedOpFamily::Forward,

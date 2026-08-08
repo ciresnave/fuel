@@ -35,6 +35,7 @@ use std::sync::OnceLock;
 /// Metadata-side registry entry for Rope.
 pub fn entry() -> FusedOpEntry {
     FusedOpEntry {
+        destructive_input: None,
         id:         FusedOps::ROPE,
         name:       "Rope",
         family:     FusedOpFamily::Forward,

@@ -3129,6 +3129,7 @@ mod tests {
         }
         // A declaratively-registered fused op for relu(add(a, b)).
         let entry = FusedOpEntry {
+            destructive_input: None,
             id: FusedOps::SOFTMAX_LAST_DIM, // a real parameterless id (plumbing test)
             name: "test_declarative_relu_add",
             family: FusedOpFamily::Forward,

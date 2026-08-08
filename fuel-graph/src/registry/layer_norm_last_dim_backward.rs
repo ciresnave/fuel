@@ -44,6 +44,7 @@ use std::sync::OnceLock;
 /// Metadata-side registry entry for LayerNormLastDimBackward.
 pub fn entry() -> FusedOpEntry {
     FusedOpEntry {
+        destructive_input: None,
         id:         FusedOps::LAYER_NORM_LAST_DIM_BACKWARD,
         name:       "LayerNormLastDimBackward",
         family:     FusedOpFamily::Backward,

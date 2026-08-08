@@ -67,6 +67,7 @@ use fuel_kernel_seam_types::{OpAttrs, OpTag, PatternNode};
 /// Metadata-side registry entry for PagedAttn.
 pub fn entry() -> FusedOpEntry {
     FusedOpEntry {
+        destructive_input: None,
         id:         FusedOps::PAGED_ATTN,
         name:       "PagedAttn",
         family:     FusedOpFamily::Attention,
