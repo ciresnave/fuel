@@ -1,10 +1,44 @@
 # GAP-015 handoff — deadlock in `fuel-dispatch --features cuda` lib tests
 
-**Status:** diagnosed, fix design ruled, **not built**. Everything below is
-operational knowledge that is *not* in the `docs/gaps.md` row — the row carries
-the findings; this carries how to reproduce them, and which instruments lie.
+**Status: BUILT and FIXED @ `ca53d093` (2026-08-07).** Diagnosed 2026-08-07;
+instrument landed at `c9b9e991`. Everything below is operational knowledge that
+is *not* in the `docs/gaps.md` row — the row carries the findings; this carries
+how to reproduce them, and which instruments lie.
 
-Diagnosed 2026-08-07. Instrument landed at `c9b9e991`.
+**Kept, not archived**, for two reasons: §3 (instruments that lie) is about the
+*measurement environment*, not this defect, and §2's recipe is the way to
+re-verify the deadlock is still gone.
+
+**Two things this document got wrong, recorded because it was the handoff:**
+
+1. **§7 over-estimated the blast radius.** It warned that returning `Arc<…>`
+   instead of `RwLockReadGuard<'static, …>` "touches every caller." It does
+   not. Exactly ONE signature named the guard type — `global_bindings()`
+   itself — and `&Arc<T>` deref-coerces at every site `&RwLockReadGuard<T>`
+   did, so all ~80 call sites compiled unchanged. The `--all-targets` × 2
+   crates × 2 features gate was still run and still correct to run; the
+   estimate of what it would find was wrong. Erring toward a wider gate cost
+   little, so this is a cheap direction to be wrong in.
+
+2. **It missed the constraint that makes naive CoW WRONG**, which is the one
+   thing a build-it handoff most needed to carry.
+   `adopt_runtime_fused` requires its check-then-bind to be atomic with
+   respect to other writers (`runtime_fused_kernels.rs:262-274`, its own doc
+   comment). A bare clone-mutate-swap silently breaks it: two threads racing
+   to adopt the same region+kernel both observe "not bound", both register,
+   and reproduce the duplicate-`KernelRef` panic — plus straightforward lost
+   updates, second swap discarding the first's registrations. The fix
+   serializes writers on a separate `BINDINGS_WRITER` mutex. **A reviewer
+   reading only this document would have shipped the broken version and had
+   it pass the `-j32` gate**, because the race needs two adopters of the
+   *same* region and the suite does not reliably produce that.
+
+The generalizable form of (2): the ruling named a *shape* (copy-on-write) and
+the handoff carried the shape faithfully. What neither carried was the
+**invariant the existing code depended on the old lock to provide**. When
+replacing a synchronization primitive, enumerate what callers were getting
+from it incidentally — atomicity here was never written down as a requirement
+of the lock, only as a comment on the caller.
 
 ---
 
