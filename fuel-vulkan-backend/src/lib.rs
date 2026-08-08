@@ -10419,13 +10419,18 @@ impl VulkanBackend {
 // -- utilities ----------------------------------------------------------------
 
 fn dtype_size(dtype: DType) -> usize {
-    match dtype {
-        DType::F32 | DType::U32 | DType::I32 => 4,
-        DType::F64 | DType::I64 => 8,
-        DType::F16 | DType::BF16 | DType::I16 => 2,
-        DType::U8 | DType::I8 | DType::F8E4M3 => 1,
-        _ => 4,
-    }
+    // GAP-075: delegate to the canonical, exhaustive byte-size source instead of
+    // a bespoke lookup with a fabricating `_ => 4` wildcard. `_ => 4` handed 4
+    // bytes to every dtype it didn't list — wrong for the 1-byte FP8 scale
+    // formats (F8E8M0/F8E6M2) and for the sub-byte packed formats (F4/F6*), each
+    // of which sizes a Vulkan buffer. `size_in_bytes()` is exhaustive over every
+    // DType (a new variant is forced to classify at that single source of truth)
+    // and returns the correct width — including 0 for sub-byte, the documented
+    // sentinel, which fails a Vulkan allocation LOUDLY rather than silently
+    // over-sizing by 4x. For the 11 dtypes this fn previously listed, its values
+    // already equalled `size_in_bytes()`, so those paths are unchanged; only the
+    // 5 fabricated ones are corrected.
+    dtype.size_in_bytes()
 }
 
 fn vk_err(e: impl std::fmt::Debug) -> fuel_ir::Error {
@@ -10436,3 +10441,33 @@ fn vk_err(e: impl std::fmt::Debug) -> fuel_ir::Error {
 unsafe fn as_bytes<T: Sized>(p: &T) -> &[u8] { unsafe {
     std::slice::from_raw_parts(p as *const T as *const u8, std::mem::size_of::<T>())
 }}
+
+#[cfg(test)]
+mod gap075_dtype_size_tests {
+    use super::*;
+
+    /// GAP-075: `dtype_size` must not fabricate a byte width. The old `_ => 4`
+    /// wildcard reported 4 for every dtype it didn't explicitly list — wrong
+    /// for the 1-byte FP8 scale dtypes (F8E8M0/F8E6M2) and for the sub-byte
+    /// packed formats (F4/F6*, whose physical width is < 1 byte). Each such
+    /// value sized a Vulkan buffer, so a fabricated width mis-strides memory.
+    /// The fix delegates to the canonical `DType::size_in_bytes()`. This pins
+    /// the concrete expected width for every one of the 16 dtypes (deliberately
+    /// NOT `== size_in_bytes()`, which would be tautological with the fix): the
+    /// five that used to fabricate 4 now read 1/1/0/0/0. A sub-byte 0 is the
+    /// documented sentinel — a loud 0-byte alloc, not a silent 4x over-size.
+    #[test]
+    fn dtype_size_pins_every_dtype_width_no_fabrication() {
+        let cases = [
+            (DType::U8, 1usize), (DType::I8, 1), (DType::U32, 4), (DType::I16, 2),
+            (DType::I32, 4), (DType::I64, 8), (DType::BF16, 2), (DType::F16, 2),
+            (DType::F32, 4), (DType::F64, 8), (DType::F8E4M3, 1),
+            // Previously fabricated as 4 by `_ => 4`:
+            (DType::F8E8M0, 1), (DType::F8E6M2, 1),          // 1-byte, not 4
+            (DType::F4, 0), (DType::F6E2M3, 0), (DType::F6E3M2, 0), // sub-byte sentinel, not 4
+        ];
+        for (dt, want) in cases {
+            assert_eq!(dtype_size(dt), want, "dtype_size({dt:?}) wrong");
+        }
+    }
+}
