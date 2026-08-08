@@ -184,7 +184,7 @@ impl MetalStorage {
                 name,
                 layout.dims(),
                 src,
-                layout.stride(),
+                &layout.stride_unsigned(),
                 &buffer,
                 mul as f32,
                 add as f32,
@@ -240,7 +240,7 @@ impl MetalStorage {
                 name,
                 layout.dims(),
                 src,
-                layout.stride(),
+                &layout.stride_unsigned(),
                 &buffer,
                 pow as f32,
             )
@@ -293,7 +293,7 @@ impl MetalStorage {
                 name,
                 layout.dims(),
                 src,
-                layout.stride(),
+                &layout.stride_unsigned(),
                 &buffer,
                 alpha as f32,
             )
@@ -305,7 +305,7 @@ impl MetalStorage {
     pub fn reduce_op(&self, op: ReduceOp, layout: &Layout, sum_dims: &[usize]) -> Result<Self> {
         let device = self.device.clone();
 
-        let src_stride = layout.stride();
+        let src_stride = &layout.stride_unsigned();
         let src_dims = layout.shape().dims();
         // Source dims and strides with the sum dims at the end.
         let mut dims = vec![];
@@ -326,7 +326,11 @@ impl MetalStorage {
 
         let reduction_shape = Shape::from(dims.clone());
 
-        if layout.is_contiguous() && reduction_shape.is_contiguous(&stride) {
+        // `Shape::is_contiguous` reasons about layout and takes SIGNED strides;
+        // the kernel ABI below takes unsigned. Two consumers, two types — the
+        // conversion belongs at each call, not at the binding.
+        let stride_signed: Vec<isize> = stride.iter().map(|&s| s as isize).collect();
+        if layout.is_contiguous() && reduction_shape.is_contiguous(&stride_signed) {
             let (name, check_empty, return_index) = match (op, self.dtype) {
                 (ReduceOp::Sum, DType::F32) => ("fast_sum_f32", false, false),
                 (ReduceOp::Min, DType::F32) => ("fast_min_f32", true, false),
@@ -486,7 +490,13 @@ impl MetalStorage {
                     DType::U8 => contiguous::const_set::U8,
                     DType::F8E4M3 => fuel_ir::bail!("unsupported const-set f8e4m3"),
                     DType::F64 => fuel_ir::bail!("unsupported const-set f64"),
-                    DType::F4
+                    // I8: PRE-EXISTING gap (added 2026-05-19, never wired here).
+                    // F8E5M2 (GAP-097): declines for want of a Metal kernel, not
+                    // for want of a representation. Both join the dtype-named
+                    // decline, which asserts nothing false about either format.
+                    DType::I8
+                    | DType::F8E5M2
+                    | DType::F4
                     | DType::F6E2M3
                     | DType::F6E3M2
                     | DType::F8E8M0
@@ -518,7 +528,13 @@ impl MetalStorage {
                     DType::U8 => strided::const_set::U8,
                     DType::F8E4M3 => fuel_ir::bail!("unsupported const-set f8e4m3"),
                     DType::F64 => fuel_ir::bail!("unsupported const-set f64"),
-                    DType::F4
+                    // I8: PRE-EXISTING gap (added 2026-05-19, never wired here).
+                    // F8E5M2 (GAP-097): declines for want of a Metal kernel, not
+                    // for want of a representation. Both join the dtype-named
+                    // decline, which asserts nothing false about either format.
+                    DType::I8
+                    | DType::F8E5M2
+                    | DType::F4
                     | DType::F6E2M3
                     | DType::F6E3M2
                     | DType::F8E8M0
@@ -535,7 +551,7 @@ impl MetalStorage {
                     kernel_name,
                     l.dims(),
                     s,
-                    l.stride(),
+                    &l.stride_unsigned(),
                     dst,
                 )
                 .map_err(MetalError::from)?;
@@ -668,7 +684,7 @@ impl MetalStorage {
                 kernel_name,
                 layout.dims(),
                 src,
-                layout.stride(),
+                &layout.stride_unsigned(),
                 &buffer,
             )
             .map_err(MetalError::from)?;
@@ -838,7 +854,7 @@ impl MetalStorage {
                 kernel_name,
                 layout.dims(),
                 src,
-                layout.stride(),
+                &layout.stride_unsigned(),
                 dst,
             )
             .map_err(MetalError::from)?;
@@ -902,13 +918,13 @@ impl MetalStorage {
             dtype.size_in_bytes(),
             dims,
             src,
-            layout.stride(),
+            &layout.stride_unsigned(),
             layout.is_contiguous(),
             t,
-            t_l.stride(),
+            &t_l.stride_unsigned(),
             t_l.is_contiguous(),
             f,
-            f_l.stride(),
+            &f_l.stride_unsigned(),
             f_l.is_contiguous(),
             &buffer,
         )
@@ -926,7 +942,7 @@ impl MetalStorage {
         let device = self.device().clone();
         let shape = layout.shape();
         let dims = shape.dims();
-        let strides = layout.stride();
+        let strides = &layout.stride_unsigned();
 
         let stride = params.stride;
         let dilation = params.dilation;
@@ -1035,7 +1051,7 @@ impl MetalStorage {
                 // This merges the last two dimensions of the kernel together.
                 let kernel_l_mm = Layout::new(
                     (b_size, c_in, k_size * c_out).into(),
-                    smallvec::smallvec![0, k_size * c_out, 1],
+                    smallvec::smallvec![0isize, (k_size * c_out) as isize, 1isize],
                     k_layout.start_offset(),
                 );
                 self.matmul(
@@ -1095,9 +1111,9 @@ impl MetalStorage {
                 l_out,
                 params.b_size,
                 layout.dims(),
-                layout.stride(),
+                &layout.stride_unsigned(),
                 k_layout.dims(),
-                k_layout.stride(),
+                &k_layout.stride_unsigned(),
                 &self.buffer,
                 layout.start_offset() * self.dtype.size_in_bytes(),
                 &k.buffer,
@@ -1152,7 +1168,7 @@ impl MetalStorage {
             &self.device.kernels,
             name,
             layout.shape().dims(),
-            layout.stride(),
+            &layout.stride_unsigned(),
             (h_k, w_k, stride, padding, dilation),
             src,
             &dst,
@@ -1249,9 +1265,9 @@ impl MetalStorage {
                 out_w,
                 b_size: params.b_size,
                 input_dims: l.dims(),
-                input_stride: l.stride(),
+                input_stride: &l.stride_unsigned(),
                 kernel_dims: kernel_l.dims(),
-                kernel_stride: kernel_l.stride(),
+                kernel_stride: &kernel_l.stride_unsigned(),
                 input_offset: l.start_offset() * self.dtype.size_in_bytes(),
                 kernel_offset: kernel_l.start_offset() * kernel.dtype.size_in_bytes(),
             },
@@ -1271,7 +1287,7 @@ impl MetalStorage {
     ) -> Result<Self> {
         let shape = inp_l.shape();
         let (b_size, channels, width, height) = shape.dims4()?;
-        let strides = inp_l.stride();
+        let strides = &inp_l.stride_unsigned();
         let name = match self.dtype {
             DType::F32 => "avg_pool2d_f32",
             DType::F16 => "avg_pool2d_f16",
@@ -1314,7 +1330,7 @@ impl MetalStorage {
     ) -> Result<Self> {
         let shape = inp_l.shape();
         let (b_size, channels, width, height) = shape.dims4()?;
-        let strides = inp_l.stride();
+        let strides = &inp_l.stride_unsigned();
         let name = match self.dtype {
             DType::F32 => "max_pool2d_f32",
             DType::F16 => "max_pool2d_f16",
@@ -1357,7 +1373,7 @@ impl MetalStorage {
         // let inp = &inp.slice(inp_l.start_offset()..);
         let shape = inp_l.shape();
         let dims = shape.dims();
-        let strides = inp_l.stride();
+        let strides = &inp_l.stride_unsigned();
         if dims.len() != 4 {
             fuel_ir::bail!("unexpected input shape for upsample {dims:?}")
         }
@@ -1404,7 +1420,7 @@ impl MetalStorage {
     ) -> Result<Self> {
         let shape = inp_l.shape();
         let dims = shape.dims();
-        let strides = inp_l.stride();
+        let strides = &inp_l.stride_unsigned();
 
         if dims.len() != 4 {
             fuel_ir::bail!("unexpected input shape for upsample_bilinear2d {dims:?}")
@@ -1658,7 +1674,7 @@ impl MetalStorage {
             dim,
             src_l.is_contiguous(),
             src_l.dims(),
-            src_l.stride(),
+            &src_l.stride_unsigned(),
             src,
             ids,
             &buffer,
@@ -1756,10 +1772,10 @@ impl MetalStorage {
             &self.device.kernels,
             dtype,
             (b, m, n, k),
-            lhs_l.stride(),
+            &lhs_l.stride_unsigned(),
             lhs_l.start_offset() * self.dtype.size_in_bytes(),
             &self.buffer,
-            rhs_l.stride(),
+            &rhs_l.stride_unsigned(),
             rhs_l.start_offset() * rhs.dtype.size_in_bytes(),
             &rhs.buffer,
             &buffer,
@@ -1877,7 +1893,7 @@ impl MetalStorage {
                 kernel_name,
                 src_l.dims(),
                 src,
-                src_l.stride(),
+                &src_l.stride_unsigned(),
                 dst,
             )
             .map_err(MetalError::from)?;
@@ -1958,9 +1974,9 @@ impl MetalStorage {
                 self.dtype.size_in_bytes(),
                 lhs_l.dims(),
                 lhs,
-                lhs_l.stride(),
+                &lhs_l.stride_unsigned(),
                 rhs,
-                rhs_l.stride(),
+                &rhs_l.stride_unsigned(),
                 &buffer,
             )
             .map_err(MetalError::from)?;

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Type-checks Fuel's aarch64 code paths from any host, without a Mac and
     without a GPU. (GAP-162)
@@ -61,17 +61,26 @@
        this target only. A host cpu-tuning flag is meaningless for a
        cross-target regardless of the noise.
 
-    Scope is deliberately the three crates that are GREEN today. It excludes
-    `fuel-metal-backend`, which is ~26 errors deep against a stale `Layout`
-    strides API (GAP-160). A standing gate that is RED ON ARRIVAL gets disabled
-    within a week, which is worse than having no gate at all.
+    Scope is the crates that are GREEN. `fuel-metal-backend` was excluded while
+    it was ~26 errors deep against a stale `Layout` strides API, and ADDED once
+    repaired (GAP-160/164) — a standing gate that is RED ON ARRIVAL gets
+    disabled within a week, which is worse than having no gate at all.
+
+    ── AND ONE LIMIT SPECIFIC TO METAL ──
+
+    `fuel-metal-backend` compiling is NOT `fuel-metal-backend` working. There is
+    no Metal hardware on this box and no Metal runtime test anywhere in the
+    repo, so a green here says its types line up — nothing about whether a
+    single shader computes the right answer. The crate went years without
+    compiling; it has never been executed by this project's CI at all. Treat a
+    PASS as "the rot is gone", never as "Metal is supported".
 #>
 [CmdletBinding()]
 param()
 
 $ErrorActionPreference = 'Stop'
 $target = 'aarch64-apple-darwin'
-$crates = @('fuel-cpu-kernels', 'fuel-quantized', 'fuel-cpu-backend')
+$crates = @('fuel-cpu-kernels', 'fuel-quantized', 'fuel-cpu-backend', 'fuel-metal-backend')
 
 $installed = & rustup target list --installed
 if ($installed -notcontains $target) {
@@ -152,4 +161,7 @@ Write-Host "PASS: $($crates -join ', ') type-check for $target." -ForegroundColo
 Write-Host '      Reached: parse, resolution, type-check, exhaustiveness, borrow-check.'
 Write-Host '      NOT reached: linking, codegen, runtime. NEON correctness is UNVERIFIED'
 Write-Host '      by this gate and needs real hardware.'
+Write-Host '      fuel-metal-backend: COMPILE-correct is not KERNEL-correct. No Metal'
+Write-Host '      hardware here and no Metal runtime test exists, so this says its types'
+Write-Host '      line up — NOT that any shader computes the right answer.' -ForegroundColor Yellow
 exit 0

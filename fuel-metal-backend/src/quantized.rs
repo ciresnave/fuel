@@ -213,7 +213,7 @@ impl QMetalStorage {
                 device.device(),
                 &encoder,
                 device.kernels(),
-                self.dtype.into(),
+                to_metal_ggml(self.dtype),
                 (1, 1, n, k),
                 storage.buffer(),
                 (layout.start_offset() + batch_id * k) * storage.dtype().size_in_bytes(),
@@ -297,13 +297,13 @@ impl QMetalStorage {
             device.device(),
             &encoder,
             device.kernels(),
-            self.dtype.into(),
+            to_metal_ggml(self.dtype),
             src0_l.dims(),
             &src0_stride,
             &self.buffer,
             src1_l.dims(),
             &src1_l
-                .stride()
+                .stride_unsigned()
                 .iter()
                 .map(|x| x * DType::F32.size_in_bytes())
                 .collect::<Vec<_>>(),
@@ -454,8 +454,13 @@ fn read_to_vec<T: Clone>(buffer: &Buffer, n: usize) -> Vec<T> {
     slice.to_vec()
 }
 
-impl From<GgmlDType> for fuel_metal_kernels::GgmlDType {
-    fn from(value: GgmlDType) -> Self {
+/// `fuel_ir`'s `GgmlDType` -> `fuel_metal_kernels`' own enum.
+///
+/// A free fn rather than `impl From`: BOTH types are foreign to this crate, so
+/// the impl violated the orphan rule (E0117) and could never have compiled.
+/// Nothing built this crate, so the illegal impl sat here unnoticed.
+pub(crate) fn to_metal_ggml(value: GgmlDType) -> fuel_metal_kernels::GgmlDType {
+    {
         match value {
             GgmlDType::Q4_0 => fuel_metal_kernels::GgmlDType::Q4_0,
             GgmlDType::Q4_1 => fuel_metal_kernels::GgmlDType::Q4_1,
