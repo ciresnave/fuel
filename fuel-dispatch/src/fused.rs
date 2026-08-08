@@ -245,6 +245,55 @@ impl PrecisionGuarantee {
             notes: reason,
         }
     }
+
+    /// Does this guarantee assert nothing machine-checkable — no
+    /// bit-stability, no ULP / relative / absolute bound?
+    ///
+    /// True for BOTH [`UNAUDITED`] and [`none`]: they are field-identical,
+    /// because they make the same (empty) set of claims. What separates them
+    /// is *provenance*, not claim content — see [`Self::is_audited_no_bound`].
+    ///
+    /// [`UNAUDITED`]: PrecisionGuarantee::UNAUDITED
+    /// [`none`]: PrecisionGuarantee::none
+    pub fn makes_no_static_claim(&self) -> bool {
+        !self.bit_stable_on_same_hardware
+            && self.max_ulp.is_none()
+            && self.max_relative.is_none()
+            && self.max_absolute.is_none()
+    }
+
+    /// Is this an **audited conclusion that no static bound applies**
+    /// ([`none(reason)`]) rather than the never-audited placeholder
+    /// ([`UNAUDITED`])?
+    ///
+    /// # Why this is a method and not an open-coded check (GAP-095)
+    ///
+    /// These two states are **field-identical apart from `notes`**, so any
+    /// consumer that must tell them apart is forced to key on a string. Two
+    /// consumers previously invented their own predicate and *disagreed*: the
+    /// bit-stable coverage lint compared `notes` against `UNAUDITED.notes`,
+    /// while [`KernelBindingTable::fill_unset_cpu_precision`] looked only at
+    /// the four value fields — and therefore silently rewrote an audited
+    /// "no static bound applies" conclusion into a
+    /// `bit_stable_on_same_hardware: true` claim the audit had declined to
+    /// make.
+    ///
+    /// One definition, so the next consumer inherits the distinction instead
+    /// of re-deriving it. **This is a seam, not a cure:** a `&'static str`
+    /// remains the load-bearing discriminator, and only making the two states
+    /// structurally distinct would make conflation *unrepresentable*. That
+    /// change is priced at ~64 `PrecisionGuarantee` literals across three
+    /// crates and is tracked separately; when it lands, this method's body
+    /// changes and its callers do not.
+    ///
+    /// [`none(reason)`]: PrecisionGuarantee::none
+    /// [`UNAUDITED`]: PrecisionGuarantee::UNAUDITED
+    /// [`KernelBindingTable::fill_unset_cpu_precision`]: crate::kernel::KernelBindingTable::fill_unset_cpu_precision
+    pub fn is_audited_no_bound(&self) -> bool {
+        self.makes_no_static_claim()
+            && !self.notes.is_empty()
+            && self.notes != Self::UNAUDITED.notes
+    }
 }
 
 /// Opaque revision hash of a registered kernel. Persisted optimization
