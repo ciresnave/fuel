@@ -934,7 +934,14 @@ impl BindingKey {
     }
 }
 
-#[derive(Default)]
+/// `Clone` is load-bearing, not a convenience: the process-wide table is
+/// published as a copy-on-write snapshot (`RwLock<Arc<KernelBindingTable>>`
+/// in `dispatch.rs`), so a writer clones the current table, mutates the
+/// clone, and swaps the pointer. Readers therefore never hold a lock guard.
+/// The clone is shallow-ish and cheap — [`BindingEntry`] is `Copy` and the
+/// keys are `Copy`/`SmallVec`, so it is a `HashMap` bulk copy of POD, on a
+/// write-rare path (backend init + runtime-fusion adoption).
+#[derive(Default, Clone)]
 pub struct KernelBindingTable {
     bindings: HashMap<(BindingKey, KernelDTypes, BackendId), SmallVec<[BindingEntry; 2]>>,
 }

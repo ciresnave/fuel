@@ -22,7 +22,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use fuel_ir::backend::{BackendCapabilities, SubstrateClass, TransferPath};
 use fuel_ir::dispatch::OpKind;
@@ -6192,7 +6192,64 @@ pub fn inflight_count(loc: DeviceLocation) -> u32 {
 /// Process-wide [`KernelBindingTable`]. Initialized on first access
 /// with the CPU dispatch wrappers from [`register_cpu_kernels`].
 /// Other backends extend it when they register.
-static GLOBAL_BINDINGS: OnceLock<RwLock<KernelBindingTable>> = OnceLock::new();
+///
+/// **Copy-on-write (GAP-015).** The lock guards an `Arc` *pointer*, not the
+/// table. [`global_bindings`] clones the `Arc` and drops the read guard
+/// before returning, so no read guard ever escapes the accessor and a
+/// caller cannot hold one across a re-entrant region. That is what makes
+/// the deadlock unrepresentable rather than merely unlikely: std's
+/// `RwLock` blocks new readers once a writer queues (anti-writer-
+/// starvation), so under the old `RwLock<KernelBindingTable>` a thread
+/// holding a read guard that requested a *second* read waited on a lock
+/// its own guard was blocking. Writers clone-mutate-swap.
+static GLOBAL_BINDINGS: OnceLock<RwLock<Arc<KernelBindingTable>>> = OnceLock::new();
+
+/// Serializes *writers* to [`GLOBAL_BINDINGS`], and it is required for
+/// correctness, not just tidiness.
+///
+/// A bare clone-mutate-swap would lose updates: two writers could clone the
+/// same base concurrently and the second swap would silently discard the
+/// first one's registrations. Worse, it would break
+/// [`crate::runtime_fused_kernels::adopt_runtime_fused`], whose contract
+/// requires its check-then-bind ("is this exact `KernelRef` already bound?"
+/// then register) to be **atomic with respect to other writers** — two
+/// threads racing to adopt the same region+kernel would both observe "not
+/// bound" and both register, producing the duplicate-`KernelRef` that
+/// `finalize` rejects.
+///
+/// This is deliberately a separate lock from the `RwLock` above so that the
+/// caller-supplied extender and `finalize` run *outside* the `RwLock`; the
+/// write guard is taken only for the pointer swap. Two consequences: a
+/// panic in `finalize` can no longer poison the read path (the second
+/// incident on this lock — see `runtime_fused_kernels.rs`), and an extender
+/// that happens to call [`global_bindings`] reads a snapshot instead of
+/// self-deadlocking. Poisoning is tolerated on both locks via
+/// `unwrap_or_else(PoisonError::into_inner)`: a panicked writer leaves the
+/// published table untouched, so the state a later caller observes is the
+/// last good one, not a torn one.
+static BINDINGS_WRITER: Mutex<()> = Mutex::new(());
+
+/// Initialize-once accessor for the binding-table cell. Both
+/// [`global_bindings`] and [`extend_global_bindings`] route through this so
+/// the init body exists exactly once.
+fn bindings_cell() -> &'static RwLock<Arc<KernelBindingTable>> {
+    GLOBAL_BINDINGS.get_or_init(|| {
+        lock_trace("  BINDINGS init: begin");
+        let mut t = KernelBindingTable::new();
+        register_cpu_kernels(&mut t);
+        lock_trace("  BINDINGS init: cpu done, entering optional backends");
+        register_optional_backends(&mut t);
+        lock_trace("  BINDINGS init: optional backends done");
+        // Single init-boundary fail-fast: a duplicate `KernelRef` in the
+        // hand-written static tables is a programmer error, surfaced once
+        // here after all backends register — the never-panic replacement
+        // for the former inline registration panic (the dynamic FKC
+        // importer will call `finalize()?`).
+        t.finalize()
+            .expect("KernelBindingTable: duplicate kernel registration at init");
+        RwLock::new(Arc::new(t))
+    })
+}
 
 fn default_cpu_caps() -> BackendCapabilities {
     use std::collections::HashSet;
@@ -6566,34 +6623,41 @@ pub fn register_backend_capabilities(caps: BackendCapabilities) {
     bump_topology_generation();
 }
 
-/// Read-lock the process-wide kernel-binding table. CPU dispatch
-/// wrappers are auto-registered on first access. When built with the
-/// `cuda` feature, the CUDA PTX path + the baracuda-kernels-sys path
+/// Take a **snapshot** of the process-wide kernel-binding table. CPU
+/// dispatch wrappers are auto-registered on first access. When built with
+/// the `cuda` feature, the CUDA PTX path + the baracuda-kernels-sys path
 /// are also auto-registered — production callers picking up the
 /// global table see all available backends without manual init.
-pub fn global_bindings() -> std::sync::RwLockReadGuard<'static, KernelBindingTable> {
-    lock_trace("want BINDINGS.oncelock+read");
-    let __g = GLOBAL_BINDINGS
-        .get_or_init(|| {
-            lock_trace("  BINDINGS init: begin");
-            let mut t = KernelBindingTable::new();
-            register_cpu_kernels(&mut t);
-            lock_trace("  BINDINGS init: cpu done, entering optional backends");
-            register_optional_backends(&mut t);
-            lock_trace("  BINDINGS init: optional backends done");
-            // Single init-boundary fail-fast: a duplicate `KernelRef`
-            // in the hand-written static tables is a programmer error,
-            // surfaced once here after all backends register — the
-            // never-panic replacement for the former inline registration
-            // panic (the dynamic FKC importer will call `finalize()?`).
-            t.finalize()
-                .expect("KernelBindingTable: duplicate kernel registration at init");
-            RwLock::new(t)
-        })
-        .read()
-        .unwrap();
-    lock_trace("got  BINDINGS.read");
-    __g
+///
+/// Returns an owned `Arc`, **not** a lock guard (GAP-015). The read guard
+/// is acquired and released entirely inside this function, so a caller
+/// cannot hold one across a call that might write the table — the shape
+/// that deadlocked. Holding the returned `Arc` indefinitely is safe and
+/// cheap; it keeps that snapshot alive, it does not block anyone.
+///
+/// **Snapshot semantics are a correctness property, not just a side
+/// effect.** A caller sees one point-in-time table for as long as it holds
+/// the `Arc`, so a kernel adopted concurrently is invisible to a pass
+/// already in flight. That makes an optimize pass a pure function of
+/// `(graph, table snapshot)`. Under the old guard, a pass could observe the
+/// table mutate mid-pass and emit a plan not reproducible from its own
+/// inputs — which would break the `base_map_hash` recipe-identity property
+/// that Tier-2 convergence depends on. Adoption exists to affect
+/// *subsequent* passes, so no known path wants mid-pass visibility.
+pub fn global_bindings() -> Arc<KernelBindingTable> {
+    lock_trace("want BINDINGS.oncelock+snapshot");
+    let cell = bindings_cell();
+    let snapshot = {
+        // Poison-tolerant: nothing that can panic runs under this guard
+        // (it wraps an `Arc::clone` and nothing else), so a poisoned flag
+        // here can only have come from an unrelated writer that already
+        // left the published table intact.
+        let guard = cell.read().unwrap_or_else(|e| e.into_inner());
+        Arc::clone(&guard)
+        // guard drops HERE, before returning — this is the whole fix.
+    };
+    lock_trace("got  BINDINGS snapshot (guard already released)");
+    snapshot
 }
 
 /// Auto-register every cargo-feature-gated backend that built. CPU is
@@ -6641,27 +6705,45 @@ fn register_optional_backends(table: &mut KernelBindingTable) {
 /// table. Each backend exposes a `register_*_kernels(table)`
 /// function (see [`register_cpu_kernels`]); per-backend init paths
 /// call this to plug their wrappers into the global table.
+///
+/// Copy-on-write (GAP-015): clones the current table, runs `register` on
+/// the clone, then swaps the published `Arc`. Writers are serialized by
+/// [`BINDINGS_WRITER`] rather than by the `RwLock`, which is what keeps
+/// `adopt_runtime_fused`'s check-then-bind atomic while still leaving
+/// readers unblocked — see that static's docs for why both properties are
+/// required. Readers in flight keep the pre-swap snapshot; they see this
+/// registration on their next call.
 pub fn extend_global_bindings(register: impl FnOnce(&mut KernelBindingTable)) {
-    let lock = GLOBAL_BINDINGS.get_or_init(|| {
-        let mut t = KernelBindingTable::new();
-        register_cpu_kernels(&mut t);
-        register_optional_backends(&mut t);
-        t.finalize()
-            .expect("KernelBindingTable: duplicate kernel registration at init");
-        RwLock::new(t)
-    });
+    let cell = bindings_cell();
     {
-        lock_trace("want BINDINGS.WRITE (extend_global_bindings)");
-        let mut guard = lock.write().unwrap();
-        lock_trace("got  BINDINGS.WRITE -- calling extender while HOLDING it");
-        register(&mut guard);
+        // Writer-side serialization. Held across clone → extend → finalize
+        // → swap so two concurrent writers cannot lose each other's
+        // updates, and so a check-then-bind extender observes a base no
+        // other writer is mutating.
+        lock_trace("want BINDINGS.WRITER (extend_global_bindings)");
+        let _writer = BINDINGS_WRITER.lock().unwrap_or_else(|e| e.into_inner());
+        lock_trace("got  BINDINGS.WRITER -- cloning table, extender runs OFF the RwLock");
+
+        let mut next = {
+            let guard = cell.read().unwrap_or_else(|e| e.into_inner());
+            (**guard).clone()
+        };
+        register(&mut next);
         lock_trace("  extender returned");
         // Re-validate after the extender adds its wrappers (same
-        // never-panic fail-fast as the init boundary above).
-        guard
-            .finalize()
+        // never-panic fail-fast as the init boundary). This runs OUTSIDE
+        // the `RwLock`, so the panic it can raise no longer poisons the
+        // read path — and because `next` is thrown away on unwind, the
+        // published table keeps its last good value instead of a torn one.
+        next.finalize()
             .expect("KernelBindingTable: duplicate kernel registration after extend");
-        lock_trace("released BINDINGS.WRITE");
+
+        // Publish. The write guard covers a pointer swap and nothing else.
+        {
+            let mut guard = cell.write().unwrap_or_else(|e| e.into_inner());
+            *guard = Arc::new(next);
+        }
+        lock_trace("released BINDINGS.WRITE (swap only)");
     }
     bump_topology_generation();
 }
@@ -10110,6 +10192,78 @@ mod tests {
 
         let result = kernel(&inputs, &mut outputs, &[], &OpParams::None);
         assert!(result.is_err());
+    }
+
+    /// GAP-015 regression: a held binding-table snapshot must not block a
+    /// writer, and must not block the holder's own later reads.
+    ///
+    /// This is the deadlock reduced to ONE thread, which is what makes it a
+    /// usable test. The suite-level reproducer needed `--test-threads=24+`
+    /// to get a writer to queue against readers; here the same cycle is
+    /// forced deterministically, because under the old
+    /// `RwLock<KernelBindingTable>` the sequence below is a *self*-deadlock:
+    /// `global_bindings()` returned a live `RwLockReadGuard`, so asking for
+    /// the write lock while still holding it waited on a lock this very
+    /// thread was blocking, forever. Under copy-on-write there is no guard
+    /// to hold, so it just runs.
+    ///
+    /// Watchdog rather than a bare call, because the failure mode is a hang,
+    /// not a panic: without the timeout this test would wedge the whole
+    /// binary instead of reporting. Verified born-red — see the commit.
+    #[test]
+    fn held_snapshot_does_not_block_a_concurrent_write() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            // 1. Take a snapshot and KEEP it across the write below.
+            let snap = global_bindings();
+            let before = snap
+                .lookup(
+                    OpKind::AddElementwise,
+                    &[DType::F32, DType::F32, DType::F32],
+                    BackendId::Cpu,
+                )
+                .is_ok();
+
+            // 2. Write while that snapshot is still alive. This is the step
+            //    that deadlocked. The extender is intentionally a no-op —
+            //    the hazard is the lock transition, not what gets written.
+            extend_global_bindings(|_t| {});
+
+            // 3. Read again while STILL holding the original snapshot. Under
+            //    std's anti-writer-starvation policy this is the second read
+            //    that a queued writer would have blocked.
+            let _snap2 = global_bindings();
+
+            // 4. The original snapshot stays usable — it is an owned Arc, so
+            //    the swap in step 2 cannot invalidate it.
+            let after = snap
+                .lookup(
+                    OpKind::AddElementwise,
+                    &[DType::F32, DType::F32, DType::F32],
+                    BackendId::Cpu,
+                )
+                .is_ok();
+
+            tx.send((before, after)).ok();
+        });
+
+        match rx.recv_timeout(Duration::from_secs(30)) {
+            Ok((before, after)) => {
+                assert!(before, "CPU AddElementwise+F32 should resolve in the snapshot");
+                assert!(
+                    after,
+                    "snapshot must stay readable after a concurrent table swap"
+                );
+            }
+            Err(_) => panic!(
+                "GAP-015 regression: holding a binding-table snapshot across \
+                 extend_global_bindings() deadlocked (30s watchdog). The read \
+                 path must hand out an owned snapshot, not a lock guard."
+            ),
+        }
     }
 
     /// Global registry auto-registers CPU on first access.

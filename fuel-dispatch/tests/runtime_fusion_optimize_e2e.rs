@@ -82,13 +82,25 @@ fn cpu_opts() -> PlanOptions<'static> {
 
 #[test]
 fn production_pipeline_emits_the_fused_arm_and_reset_disarms_it() {
-    // LOCK DISCIPLINE (post binding-key fold): `adopt_runtime_fused` and
-    // `clear_runtime_fused_for_tests` WRITE the global binding table
-    // (`extend_global_bindings`), so a `global_bindings()` read guard must NOT
-    // be held across them — same-thread read-then-write deadlocks. This mirrors
-    // production, where adopt runs on the G7 *background* thread, never the
-    // realize thread that holds read guards. Each optimize call below therefore
-    // scopes its own read guard and drops it before the next adopt/reset.
+    // LOCK DISCIPLINE — RETIRED by GAP-015; kept as history because the
+    // scoping below still reads like it is load-bearing, and it no longer is.
+    //
+    // This used to warn: `adopt_runtime_fused` and `clear_runtime_fused_for_tests`
+    // WRITE the global binding table (`extend_global_bindings`), so a
+    // `global_bindings()` read guard must NOT be held across them — same-thread
+    // read-then-write deadlocks. That was accurate, and each optimize call below
+    // scopes its own guard because of it.
+    //
+    // It was also the *defect*. A hand-maintained, per-test rule is sound in
+    // isolation and unsound across CONCURRENT tests: every individual test can
+    // obey it and the suite still deadlocks, because thread A's correctly-scoped
+    // guard blocks behind a writer that thread B queued. That is exactly what
+    // happened at `--test-threads=24+` (see docs/gaps.md GAP-015).
+    //
+    // `global_bindings()` now returns an owned copy-on-write snapshot rather
+    // than a guard, so there is no guard to hold and the hazard is
+    // unrepresentable — seams beat vigilance. The scoping below is now merely
+    // harmless style, NOT a safety requirement; do not propagate it as one.
 
     // (1) Adopt a runtime op for relu(add) on CPU (no guard held).
     let rid = adopt_runtime_fused(
