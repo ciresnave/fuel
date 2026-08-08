@@ -50,6 +50,16 @@ pub enum DType {
     F64,
     /// 8-bit floating point with 4-bit exponent and 3-bit mantissa.
     F8E4M3,
+    /// 8-bit floating point with 5-bit exponent and 2-bit mantissa — the
+    /// OCP-standard FP8 pair's other half.
+    ///
+    /// E4M3 (above) carries more mantissa and is the forward-pass format;
+    /// E5M2 trades mantissa for exponent range and is the gradient format.
+    /// Shipping one without the other leaves FP8 training unrepresentable,
+    /// and `fuel-cuda-backend`'s cast table already documents six baracuda
+    /// cast pairs it skips for want of this variant. Distinct from
+    /// [`F8E6M2`](Self::F8E6M2), which is a non-OCP block-scale type.
+    F8E5M2,
     /// 6-bit float with 2 exponent bits and 3 mantissa bits (MX6 format).
     F6E2M3,
     /// 6-bit float with 3 exponent bits and 2 mantissa bits (MX6 format).
@@ -86,6 +96,7 @@ impl DType {
         DType::F32,
         DType::F64,
         DType::F8E4M3,
+        DType::F8E5M2,
         DType::F6E2M3,
         DType::F6E3M2,
         DType::F4,
@@ -113,6 +124,7 @@ fn all_variants_witness(dt: DType) {
         | DType::F32
         | DType::F64
         | DType::F8E4M3
+        | DType::F8E5M2
         | DType::F6E2M3
         | DType::F6E3M2
         | DType::F4
@@ -148,6 +160,7 @@ impl std::str::FromStr for DType {
             "f32" => Ok(Self::F32),
             "f64" => Ok(Self::F64),
             "f8e4m3" => Ok(Self::F8E4M3),
+            "f8e5m2" => Ok(Self::F8E5M2),
             "f6e2m3" => Ok(Self::F6E2M3),
             "f6e3m2" => Ok(Self::F6E3M2),
             "f4" => Ok(Self::F4),
@@ -173,6 +186,7 @@ impl DType {
             Self::F32 => "f32",
             Self::F64 => "f64",
             Self::F8E4M3 => "f8e4m3",
+            Self::F8E5M2 => "f8e5m2",
             Self::F6E2M3 => "f6e2m3",
             Self::F6E3M2 => "f6e3m2",
             Self::F4 => "f4",
@@ -197,6 +211,7 @@ impl DType {
             Self::F32 => 4,
             Self::F64 => 8,
             Self::F8E4M3 => 1,
+            Self::F8E5M2 => 1,
             Self::F6E2M3 => 0,
             Self::F6E3M2 => 0,
             Self::F4 => 0,
@@ -214,6 +229,7 @@ impl DType {
             | Self::F32
             | Self::F64
             | Self::F8E4M3
+            | Self::F8E5M2
             | Self::F6E2M3
             | Self::F6E3M2
             | Self::F4
@@ -231,6 +247,7 @@ impl DType {
             | Self::F32
             | Self::F64
             | Self::F8E4M3
+            | Self::F8E5M2
             | Self::F6E2M3
             | Self::F6E3M2
             | Self::F4
@@ -396,6 +413,7 @@ impl From<DType> for st::Dtype {
             DType::F32 => st::Dtype::F32,
             DType::F64 => st::Dtype::F64,
             DType::F8E4M3 => st::Dtype::F8_E4M3,
+            DType::F8E5M2 => st::Dtype::F8_E5M2,
             DType::F6E2M3 => st::Dtype::F6_E2M3,
             DType::F6E3M2 => st::Dtype::F6_E3M2,
             DType::F4 => st::Dtype::F4,
@@ -426,6 +444,7 @@ impl TryFrom<st::Dtype> for DType {
             st::Dtype::F32 => Ok(DType::F32),
             st::Dtype::F64 => Ok(DType::F64),
             st::Dtype::F8_E4M3 => Ok(DType::F8E4M3),
+            st::Dtype::F8_E5M2 => Ok(DType::F8E5M2),
             st::Dtype::F6_E2M3 => Ok(DType::F6E2M3),
             st::Dtype::F6_E3M2 => Ok(DType::F6E3M2),
             st::Dtype::F4 => Ok(DType::F4),

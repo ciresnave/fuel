@@ -1,6 +1,7 @@
 //! Scalar values matching one of the supported [`DType`] variants.
 use crate::DType;
 use float8::F8E4M3 as f8e4m3;
+use float8::F8E5M2 as f8e5m2;
 use half::{bf16, f16};
 
 /// A typed scalar value matching one of the supported [`DType`] variants.
@@ -24,6 +25,8 @@ pub enum Scalar {
     F32(f32),
     F64(f64),
     F8E4M3(f8e4m3),
+    /// 8-bit float, 5-bit exponent, 2-bit mantissa (OCP FP8 gradient format).
+    F8E5M2(f8e5m2),
     /// OCP-MX `E8M0` block scale: raw byte `X` decodes to `2^(X − 127)` for
     /// `X ∈ 0..=254`; `X == 255` is NaN. Unsigned; no zero, no subnormals.
     F8E8M0(u8),
@@ -51,6 +54,7 @@ impl Scalar {
             DType::F32 => Scalar::F32(0.0),
             DType::F64 => Scalar::F64(0.0),
             DType::F8E4M3 => Scalar::F8E4M3(f8e4m3::ZERO),
+            DType::F8E5M2 => Scalar::F8E5M2(f8e5m2::ZERO),
             // Scales: no exact zero (this stays Err even once scales are real).
             DType::F8E8M0 | DType::F8E6M2 => {
                 return Err(crate::Error::NoZeroScalar(dtype));
@@ -81,6 +85,7 @@ impl Scalar {
             DType::F32 => Scalar::F32(1.0),
             DType::F64 => Scalar::F64(1.0),
             DType::F8E4M3 => Scalar::F8E4M3(f8e4m3::ONE),
+            DType::F8E5M2 => Scalar::F8E5M2(f8e5m2::ONE),
             // OCP-MX E8M0: 2^0 => X = 127.
             DType::F8E8M0 => Scalar::F8E8M0(127),
             // F8E6M2: a scale, but its exact bit-encoding is a Fuel-local
@@ -120,6 +125,7 @@ impl Scalar {
             DType::F32 => Scalar::F32(v as f32),
             DType::F64 => Scalar::F64(v),
             DType::F8E4M3 => Scalar::F8E4M3(f8e4m3::from_f64(v)),
+            DType::F8E5M2 => Scalar::F8E5M2(f8e5m2::from_f64(v)),
             // OCP-MX E8M0: nearest power of two, X = round(log2(v)) + 127.
             DType::F8E8M0 => {
                 if !v.is_finite() || v <= 0.0 {
@@ -158,6 +164,7 @@ impl Scalar {
             Scalar::F32(_) => DType::F32,
             Scalar::F64(_) => DType::F64,
             Scalar::F8E4M3(_) => DType::F8E4M3,
+            Scalar::F8E5M2(_) => DType::F8E5M2,
             Scalar::F8E8M0(_) => DType::F8E8M0,
         }
     }
@@ -176,6 +183,7 @@ impl Scalar {
             Scalar::F32(v) => *v as f64,
             Scalar::F64(v) => *v,
             Scalar::F8E4M3(v) => v.to_f64(),
+            Scalar::F8E5M2(v) => v.to_f64(),
             Scalar::F8E8M0(x) => {
                 if *x == 255 {
                     f64::NAN
