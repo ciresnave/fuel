@@ -1360,6 +1360,54 @@ the test suite does not reliably produce.
 
 ---
 
+## 2026-08-08 — Never-panic on registration is met at the `finalize()` boundary, not by the signature
+
+**Decision**: `KernelBindingTable::register_full_with_source` stays **infallible**
+(`-> ()`). The never-panic requirement for kernel registration is satisfied by
+`finalize() -> Result<()>`, whose two callers are deliberately different and
+**must not be collapsed**: the **FKC import path propagates** (maps to a typed
+`FkcError::DuplicateKernelRef` and returns it), while the **hand-written
+static-table init path fails fast** (`.expect()`). FKC §10.10 is amended to say
+this; it previously mandated the signature change.
+
+**Why**: registration is append-only, so there is no per-call error to report —
+the duplicate-`KernelRef` condition is only detectable once, after all
+registrations, which is exactly what `finalize()` is. Forcing a `Result` on
+`register_full_with_source` would make every caller handle an error that cannot
+occur at that call, and **a `Result` that is always `Ok` is a false signal that
+trains callers to stop reading `Result`s** — strictly worse for never-panic than
+the honest infallible signature.
+
+The two-path split is the substantive half. A provider-supplied contract is
+**untrusted input**, so a duplicate there is a *rejectable contract* and must
+never crash the process. A duplicate in a checked-in static table is a
+**programmer error in Fuel's own source**, detectable only at init and
+unrecoverable at runtime; failing fast there is the deliberate choice. Collapsing
+them in either direction is wrong — propagating from init would invent a
+recovery path that cannot exist, and expecting on import would crash on
+third-party input.
+
+**Alternatives considered**: (1) *change the signature as the spec demanded* —
+rejected for the always-`Ok` argument above. (2) *leave the spec alone and treat
+the code as non-conforming* — rejected: the code is right, and a spec that
+asserts a MUST nothing satisfies erodes every other MUST in the document.
+
+**Implications going forward**: the defect this closes is **drift**, not the
+signature. The spec asserted one design while the implementation shipped
+another, both defensible, with nothing detecting the disagreement — for long
+enough that the clause still read "the actual de-panic lands with the importer
+implementation" after the importer had landed. It was found by the prose clause
+gate (`fkc_prose_clause_coverage.rs`), which exists precisely for MUSTs that
+bind something other than the validator and therefore raise no `FkcError`. The
+amendment keeps the superseded text inline rather than rewriting it, because the
+drift — not the outcome — is what a later reader needs to see.
+
+Note the claim is **narrower than it first reads**, and the amendment says so:
+never-panic holds on the *import* path; the init path panics by design. A
+summary that drops that distinction would be cited later as a general guarantee.
+
+---
+
 ## See also
 
 - [00-index §Versioning convention](00-index.md#versioning-convention) — when to bump section versions.

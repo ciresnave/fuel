@@ -53,26 +53,21 @@ const ENFORCED_ELSEWHERE: &[(&str, &str)] = &[(
 /// these — no typed error is involved — and neither can a reader, because the
 /// spec reads as though the rule holds. `docs/architecture` already calls
 /// doc-vs-code drift a defect; this is the mechanism that detects it.
-const DIVERGENCES: &[(&str, &str)] = &[(
-    "FKC-10.10-0001",
-    "SPEC SAYS: `register_full_with_source` MUST become `Result` (never-panic), \
-     a 'firm prerequisite' of the FKC import path. CODE DOES: it returns `()`, \
-     and so does `register_full_with_source_generic`. \
-     RULED (architect, 2026-08-08): amend the SPEC, not the signature. The \
-     never-panic goal IS met, by a different route — registration is \
-     append-only and genuinely infallible; the duplicate-`KernelRef` case is \
-     detected once by `finalize()`, which returns `Result`, and the FKC \
-     importer maps it to a typed `FkcError::DuplicateKernelRef` and propagates \
-     with `?` (register.rs, 'never-panic on the import path'). VERIFIED against \
-     the code rather than inherited from the ruling. Forcing a `Result` here \
-     would make every caller handle an error that cannot occur, and an \
-     always-`Ok` Result trains readers to stop reading Results. \
-     SCOPE LIMIT, stated because the claim is narrower than it looks: the \
-     never-panic property holds for the IMPORT path. The hand-written \
-     static-table init path still `.expect()`s on `finalize()` (two sites), a \
-     deliberate init-boundary fail-fast on a programmer error in checked-in \
-     tables. The defect is the DRIFT, not the signature.",
-)];
+const DIVERGENCES: &[(&str, &str)] = &[
+    // EMPTY, and that is a result rather than a default.
+    //
+    // `FKC-10.10-0001` was the first entry: the spec asserted
+    // `register_full_with_source` MUST become `Result`; the code returned `()`.
+    // RESOLVED 2026-08-08 by amending the SPEC (ruled), because the never-panic
+    // goal was already met by a different route -- the `finalize()` boundary.
+    // The clause now describes what the code does, is cited by two tests
+    // (import-path propagation, and finalize-returns-not-panics), and so lives
+    // in the normal clause->test path instead of here.
+    //
+    // Leave this table in place. A divergence is a real category and it will be
+    // needed again; an empty one says "checked, none outstanding", which is a
+    // different claim from "we don't track that".
+];
 
 /// A parse that finds far fewer clauses than the spec carries is broken, and a
 /// broken parse reports **full coverage over an empty set** — a green that
