@@ -205,13 +205,3 @@ softmax_kernel!(log_softmax_last_dim_f32, log_softmax_f32, 4, "log_softmax_last_
 softmax_kernel!(log_softmax_last_dim_f16, log_softmax_f16, 2, "log_softmax_last_dim_f16");
 softmax_kernel!(log_softmax_last_dim_bf16, log_softmax_bf16, 2, "log_softmax_last_dim_bf16");
 softmax_kernel!(log_softmax_last_dim_f64, log_softmax_f64, 8, "log_softmax_last_dim_f64");
-
-/// Byte-size lookup for softmax dtypes.
-pub fn dtype_byte_size(dt: DType) -> usize {
-    match dt {
-        DType::F32 => 4,
-        DType::F64 => 8,
-        DType::F16 | DType::BF16 => 2,
-        _ => 0,
-    }
-}

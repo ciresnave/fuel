@@ -465,13 +465,3 @@ binary_kernel!(binary_maximum_f64, maximum_f64, 8, "binary_maximum_f64");
 binary_kernel!(binary_minimum_f64, minimum_f64, 8, "binary_minimum_f64");
 binary_kernel!(binary_pow_f64, pow_f64, 8, "binary_pow_f64");
 binary_kernel!(binary_rem_f64, mod_f64, 8, "binary_mod_f64");
-
-/// Byte-size lookup for binary-elementwise dtypes.
-pub fn dtype_byte_size(dt: DType) -> usize {
-    match dt {
-        DType::F32 => 4,
-        DType::F64 => 8,
-        DType::F16 | DType::BF16 => 2,
-        _ => 0,
-    }
-}

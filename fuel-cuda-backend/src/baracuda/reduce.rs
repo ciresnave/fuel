@@ -224,13 +224,3 @@ reduce_kernel!(reduce_sum_f64, sum_f64, 8, "reduce_sum_f64");
 reduce_kernel!(reduce_max_f64, max_f64, 8, "reduce_max_f64");
 reduce_kernel!(reduce_min_f64, min_f64, 8, "reduce_min_f64");
 reduce_kernel!(reduce_mean_f64, mean_f64, 8, "reduce_mean_f64");
-
-/// Byte-size lookup for reduce dtypes.
-pub fn dtype_byte_size(dt: DType) -> usize {
-    match dt {
-        DType::F32 => 4,
-        DType::F64 => 8,
-        DType::F16 | DType::BF16 => 2,
-        _ => 0,
-    }
-}
