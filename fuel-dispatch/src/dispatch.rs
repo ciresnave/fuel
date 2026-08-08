@@ -7740,6 +7740,10 @@ mod tests {
     /// requirement is a feature — the test becomes the canonical
     /// "all kernels accounted for" reference.
     #[test]
+    /// FKC-CLAUSE: FKC-4.8-0001 — the always-built coverage commitment. This is a
+    /// CORPUS property (>=1 bit-stable CPU kernel per primitive op), not a
+    /// per-contract rule, so it raises no FkcError and is invisible to the
+    /// variant-anchored gate in tests/fkc_clause_coverage.rs.
     fn precision_guarantee_lint_bit_stable_cpu_coverage_primitives() {
         use fuel_ir::dispatch::OpKind;
         use fuel_ir::probe::BackendId;

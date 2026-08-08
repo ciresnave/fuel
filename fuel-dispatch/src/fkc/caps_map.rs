@@ -300,6 +300,13 @@ mod tests {
     }
 
     #[test]
+    /// FKC-CLAUSE: FKC-4.3-0001 FKC-4.3-0002 — the layout tri-states project to
+    /// `strided_input`, which is what decides whether the planner inserts
+    /// `Op::Contiguize`. `requires_contiguous` (contiguous: required) projects
+    /// false -> planner inserts; `contiguize_internally`/`handles_strided`
+    /// (strided: accepted) project true -> planner must NOT insert a separate
+    /// Contiguize. Validator rule 5 enforces strategy/flag coherence, so the
+    /// declared strategy reaches the planner THROUGH these flags.
     fn projection_truth_table() {
         // strided accepted + broadcast accepted ⇒ strided_input true.
         let r = resolve(&spec(
