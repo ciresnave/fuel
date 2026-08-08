@@ -1211,14 +1211,28 @@ impl KernelBindingTable {
             }
             for entry in alts.iter_mut() {
                 let p = &mut entry.precision;
-                if !p.bit_stable_on_same_hardware
-                    && p.max_ulp.is_none()
-                    && p.max_relative.is_none()
-                    && p.max_absolute.is_none()
-                {
-                    // Structural detection of UNAUDITED: all four
-                    // value fields at sentinel defaults. A real
-                    // weaker claim would set at least one of them.
+                // Upgrade entries that claim nothing — EXCEPT an audited
+                // "no static bound applies" conclusion.
+                //
+                // GAP-095: the old predicate was purely structural ("all four
+                // value fields at defaults"), and the comment here asserted
+                // that "a real weaker claim would set at least one of them."
+                // That is false for `PrecisionGuarantee::none(reason)`, which
+                // is field-identical to UNAUDITED and sets none of them. The
+                // fill therefore overwrote an explicit audit conclusion with
+                // `bit_stable_on_same_hardware: true` — asserting on the
+                // kernel's behalf exactly what its audit had declined to
+                // claim. FKC-4.8-0001 sanctions this fill for blocks left
+                // absent or `audited: false`; it does not sanction that.
+                //
+                // Note what must KEEP being upgraded: a contract claim that
+                // the V-FKC-9 ledger gate downgraded collapses to the
+                // UNAUDITED sentinel exactly, so it stays eligible here. That
+                // is load-bearing — every one of the CPU table's bit-stable
+                // entries arrives through this path (GAP-077), so excluding
+                // them would break the FKC-4.8-0001 coverage commitment
+                // outright.
+                if p.makes_no_static_claim() && !p.is_audited_no_bound() {
                     *p = default;
                 }
             }
@@ -1920,5 +1934,76 @@ mod tests {
             assert!(e.precision.bit_stable_on_same_hardware);
             assert_eq!(e.precision.max_ulp, Some(0));
         }
+    }
+
+    /// GAP-095: the CPU bulk fill must NOT overwrite an audited
+    /// "no static bound applies" conclusion.
+    ///
+    /// `PrecisionGuarantee::none(reason)` and `PrecisionGuarantee::UNAUDITED`
+    /// carry identical *values* — all four claim fields at their defaults —
+    /// and differ only in `notes`. The fill's predicate was purely
+    /// structural, so it conflated them and rewrote an explicit audit
+    /// conclusion into `PRIMITIVE_DETERMINISTIC_CPU`: it asserted
+    /// `bit_stable_on_same_hardware: true` on a kernel whose audit had
+    /// specifically declined to claim it.
+    ///
+    /// FKC-4.8-0001 sanctions the fill for precision blocks left *absent* or
+    /// `audited: false`. It does not sanction overwriting an `audited: true`
+    /// + `none(reason)` conclusion.
+    ///
+    /// **Both directions asserted.** A test that only checked that
+    /// `none(reason)` survives would also pass with the fill disabled
+    /// outright, so the UNAUDITED sibling must still be upgraded in the same
+    /// run — otherwise the test proves nothing about discrimination.
+    #[test]
+    fn gap_095_fill_preserves_audited_none_but_still_upgrades_unaudited() {
+        use crate::fused::PrecisionGuarantee;
+        use fuel_ir::probe::BackendId;
+        let mut table = KernelBindingTable::new();
+        let dts = [DType::F32, DType::F32, DType::F32];
+
+        const REASON: &str = "audited: accumulation order is scheduler-dependent; \
+                              no static bound applies";
+        // The audited conclusion — must survive untouched.
+        table.register_with_precision(
+            OpKind::MatMul,
+            &dts,
+            BackendId::Cpu,
+            ok_kernel,
+            PrecisionGuarantee::none(REASON),
+        );
+        // The never-audited placeholder — must still be upgraded.
+        table.register(OpKind::AddElementwise, &dts, BackendId::Cpu, ok_kernel);
+
+        table.fill_unset_cpu_precision(PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU);
+
+        let audited = table
+            .lookup_alternatives(OpKind::MatMul, &dts, BackendId::Cpu)
+            .first()
+            .expect("audited-none entry registered")
+            .precision;
+        assert!(
+            !audited.bit_stable_on_same_hardware,
+            "the fill asserted bit-stability on a kernel whose audit \
+             explicitly concluded that no static bound applies",
+        );
+        assert_eq!(
+            audited.notes, REASON,
+            "the audit reason was overwritten — the reasoning that lived at \
+             the registration site is gone",
+        );
+
+        // Opposite direction: the fill must still do its job.
+        let placeholder = table
+            .lookup_alternatives(OpKind::AddElementwise, &dts, BackendId::Cpu)
+            .first()
+            .expect("unaudited entry registered")
+            .precision;
+        assert!(
+            placeholder.bit_stable_on_same_hardware,
+            "control FAILED: the UNAUDITED placeholder was not upgraded, so \
+             this test would pass with the fill disabled entirely and proves \
+             nothing about the discrimination it is meant to check",
+        );
     }
 }
