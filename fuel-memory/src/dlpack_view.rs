@@ -248,13 +248,26 @@ fn is_sub_byte(d: DType) -> bool {
 
 /// `(bit_width, packing)` for a dtype's `FDXDTypeExt` (spec §6.1 table). Only
 /// called for the stand-in (sub-byte) cases here.
-fn sub_byte_bits_and_packing(d: DType) -> (u16, u8) {
+///
+/// GAP-075: fallible. A dtype with no authored sub-byte bit-width/packing must
+/// **decline**, not emit an invented `(8, byte-aligned)`. `bit_width` is an FDX
+/// wire value read *across the process boundary* — a fabricated width makes a
+/// foreign runtime stride over memory with the wrong element size, and nothing
+/// in-repo can distinguish a correct width from one nobody has decided yet, so
+/// no downstream test could ever catch it. Declining mirrors the sibling
+/// [`dtype_to_fdx_code`] (GAP-059): a future sub-byte dtype (`size_in_bytes()
+/// == 0`, so [`is_sub_byte`] routes it here) yields a typed `Err` propagated by
+/// [`view`], never a silent wrong wire value.
+fn sub_byte_bits_and_packing(d: DType) -> Result<(u16, u8)> {
     match d {
-        DType::F4 => (4, PACKING_DENSE_SUBBYTE),
-        DType::F6E2M3 | DType::F6E3M2 => (6, PACKING_DENSE_SUBBYTE),
-        // Not reached for the size==0 set, but kept exhaustive-friendly: a byte
-        // dtype packs one element per byte.
-        _ => (8, PACKING_BYTE_ALIGNED),
+        DType::F4 => Ok((4, PACKING_DENSE_SUBBYTE)),
+        DType::F6E2M3 | DType::F6E3M2 => Ok((6, PACKING_DENSE_SUBBYTE)),
+        other => Err(Error::Msg(format!(
+            "DlpackView: no authored sub-byte bit-width/packing for dtype {other:?}; \
+             declining rather than emitting an invented FDX wire value a foreign \
+             runtime would stride over (GAP-075)"
+        ))
+        .bt()),
     }
 }
 
@@ -670,7 +683,7 @@ pub fn view<'a>(
     // (1) sub-byte dtype → HAS_DTYPE_EXT + FDXDTypeExt.
     if sub_byte {
         flags |= FDX_FLAG_HAS_DTYPE_EXT | FDX_FLAG_MEANING_REQUIRES_EXT;
-        let (bit_width, packing) = sub_byte_bits_and_packing(dtype);
+        let (bit_width, packing) = sub_byte_bits_and_packing(dtype)?;
         dtype_ext = FDXDTypeExt {
             logical_dtype: dtype_to_fdx_code(dtype)?,
             bit_width,
