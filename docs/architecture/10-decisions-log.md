@@ -1195,6 +1195,57 @@ cited) rather than lost. The `DType`-superset-of-`Scalar` model is now explicit.
 
 ---
 
+## 2026-08-07 — The global kernel-binding table is copy-on-write
+
+**Decision**: `dispatch::global_bindings()` returns an owned
+`Arc<KernelBindingTable>` snapshot, not an `RwLockReadGuard`. The read guard is
+acquired and released *inside* the accessor. Writers clone the table, mutate the
+clone, and swap the published `Arc`, serialized against each other by a
+dedicated mutex that is **not** the table's `RwLock`.
+
+**Why**: the guard-returning form made a deadlock *representable*, and the
+codebase was holding it off by hand-maintained per-call discipline. std's
+`RwLock` blocks new readers once a writer queues, so a thread holding a read
+guard that requested a second read waited on a lock its own guard was blocking.
+The discipline was documented, correct, and still insufficient — because it is
+per-call-site, and the failure is *cross-thread*: every individual site can obey
+it and the process still deadlocks. This is the "existence ≠ enforcement — seams
+beat vigilance" pattern; the fix removes the guard rather than restating the
+rule. Measured: `--features cuda` lib tests hung at `-j24+`, pass at every
+thread count after.
+
+**Alternatives considered**: (1) *enforce guard scope structurally* — rejected,
+still a rule whose violation reproduces the deadlock. (2) *take the runtime-fusion
+adopt path off the write lock* — rejected, it does not fix the bug: the blocked
+writers were in the per-backend registration path, so the deadlock stays
+reachable via backend init while a reproducer built around adopt goes green.
+(3) `arc-swap` — deferred; the momentary read lock has not been shown to matter,
+and this keeps the crate dep-free.
+
+**Implications going forward**: an optimize pass is now a pure function of
+`(graph, table snapshot)`. Previously a pass could observe the table mutate
+mid-pass and emit a plan **not reproducible from its own inputs**, which would
+break the `base_map_hash` recipe-identity property Tier-2 convergence depends
+on — so this is a reproducibility repair, not only deadlock avoidance. Adoption
+affects *subsequent* passes by design; no path is known to want mid-pass
+visibility, but that is argued rather than exhaustively proven and should be
+re-checked if a pass ever needs to see its own adoptions.
+
+A second consequence is that panics can no longer poison the read path:
+`finalize()` runs off the `RwLock`, and its unwind discards the clone, leaving
+the published table at its last good value. This retires a real prior incident,
+not a hypothetical one.
+
+**Caveat worth carrying**: replacing a synchronization primitive requires
+enumerating what callers were getting from it *incidentally*. Here the
+runtime-fusion adopt path depended on the write lock for **check-then-bind
+atomicity** — a requirement recorded only as a comment on the caller, never as a
+property of the lock. A naive clone-mutate-swap would have passed the deadlock
+gate while silently reintroducing a duplicate-registration panic under a race
+the test suite does not reliably produce.
+
+---
+
 ## See also
 
 - [00-index §Versioning convention](00-index.md#versioning-convention) — when to bump section versions.
