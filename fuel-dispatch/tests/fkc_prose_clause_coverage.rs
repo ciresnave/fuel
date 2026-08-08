@@ -119,7 +119,16 @@ fn citations() -> BTreeMap<String, Vec<String>> {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests"),
     ];
     while let Some(dir) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        // GAP-157: FAIL, don't silently skip a subtree. `else { continue }` was the
+        // worst shape of the three — a `return` at least truncates visibly if you
+        // watch counts, but `continue` leaves no trace: a truncated sweep still
+        // looks full, so a missing subtree's citations silently go uncounted.
+        let rd = std::fs::read_dir(&dir).unwrap_or_else(|e| {
+            panic!(
+                "citations: read_dir({}) failed: {e} — the citation sweep must FAIL, not silently skip a subtree",
+                dir.display()
+            )
+        });
         for e in rd.flatten() {
             let p = e.path();
             if p.is_dir() {

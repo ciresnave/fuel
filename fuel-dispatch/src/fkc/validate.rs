@@ -2158,7 +2158,16 @@ determinism: same_hardware_bitwise
     /// Recursively collect every `*.fkc.md` under `dir`, excluding any path
     /// containing an `_inventory` component.
     fn collect_fkc_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        // GAP-157: a corpus sweep that can fail must FAIL, not silently truncate.
+        // A read_dir error here would drop `.fkc.md` files from the CI lint's
+        // corpus, and the lint would report "all contracts validated" over an
+        // incomplete set. (Test-only helper — panic is the correct hard failure.)
+        let rd = std::fs::read_dir(dir).unwrap_or_else(|e| {
+            panic!(
+                "collect_fkc_files: read_dir({}) failed: {e} — the FKC file sweep must FAIL, not silently truncate",
+                dir.display()
+            )
+        });
         for entry in rd.flatten() {
             let path = entry.path();
             if path.is_dir() {
