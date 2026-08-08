@@ -59,6 +59,18 @@ use crate::symbol::SymId;
 /// signature does not change again.
 pub fn dtype_to_fdx(d: DType) -> crate::Result<u16> {
     Ok(match d {
+        // GAP-097: E5M2's encoding is NOT unauthored — it is OCP-standard and
+        // `float8::F8E5M2` exists. It declines for a different reason: the FDX
+        // §6.1 table has no code ASSIGNED to it yet, and this module's own rule
+        // is that a code is a stable wire contract assigned deliberately, never
+        // inferred. A DELIBERATE UNDER-SHIPMENT pending that assignment — unlike
+        // F8E6M2 below, where there is no encoding to assign a code *to*.
+        DType::F8E5M2 => {
+            return Err(crate::Error::UnsupportedDTypeForOp(
+                DType::F8E5M2,
+                "no FDX logical-dtype code has been assigned to F8E5M2 yet                  (GAP-097); declining rather than inferring one from adjacency",
+            ));
+        }
         // GAP-045: encoding unauthored — decline, never invent a wire code.
         DType::F8E6M2 => {
             return Err(crate::Error::UnsupportedDTypeForOp(
@@ -146,6 +158,21 @@ pub fn fdx_to_dtype(code: u16) -> Option<DType> {
 pub fn dl_dtype(d: DType) -> crate::Result<DLDataType> {
     use dtype_code::*;
     let (code, bits): (u8, u8) = match d {
+        // GAP-097: E5M2 declines here even though its WIDTH is known (8 bits,
+        // OCP-standard — not a guess, unlike F8E6M2 below). The hazard is
+        // ambiguity, not width: DLPack has no dedicated fp8 code, so E4M3 and
+        // E5M2 both render as `(K_DL_FLOAT, 8)` and are told apart ONLY by the
+        // FDX logical code in the sidecar. No FDX code is assigned to E5M2 yet
+        // (see `dtype_to_fdx`), so emitting this triple would hand a foreign
+        // consumer an 8-bit float it would most plausibly read as E4M3 — a
+        // silent mis-decode of every element, which is exactly the failure this
+        // module declines to enable. Becomes a mapping when the FDX code lands.
+        DType::F8E5M2 => {
+            return Err(crate::Error::UnsupportedDTypeForOp(
+                DType::F8E5M2,
+                "F8E5M2 has no assigned FDX code, and DLPack's `(float, 8)`                  cannot distinguish it from F8E4M3; declining rather than                  exporting an fp8 a consumer would mis-read (GAP-097)",
+            ));
+        }
         // GAP-045: encoding unauthored — decline rather than assert a width.
         DType::F8E6M2 => {
             return Err(crate::Error::UnsupportedDTypeForOp(
