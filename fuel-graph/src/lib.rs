@@ -5735,19 +5735,46 @@ impl Tensor {
                 mask.dtype(),
             )).bt());
         }
-        // GAP-002 (D5): MaskedFill has no meaning on the packed/scale dtypes.
-        // Packed formats (F4/F6*) have no scalar fill value; the block-scales
-        // (F8E8M0/F8E6M2) have no zero, so the backward pass — which fills with
-        // zero — cannot produce a gradient. Reject at graph-build time. This is
-        // also what makes the `Scalar::zero` Err branch in the MaskedFill
-        // `backward` arm provably unreachable in a well-formed graph.
-        if matches!(
-            self.dtype(),
-            DType::F4 | DType::F6E2M3 | DType::F6E3M2 | DType::F8E8M0 | DType::F8E6M2
-        ) {
-            return Err(
-                fuel_ir::Error::UnsupportedDTypeForOp(self.dtype(), "masked_fill").bt(),
-            );
+        // GAP-002 (D5) / GAP-075 (fix B): classify EVERY dtype explicitly — no
+        // wildcard default. The guard is SEMANTIC: masked_fill needs a
+        // representable fill value AND a zero (the backward fills with zero), so
+        // it rejects the packed formats (F4/F6*, no scalar fill) and the
+        // block-scales (F8E8M0/F8E6M2, no zero), and permits the ordinary
+        // numeric dtypes. Rejecting on the guard's own terms also keeps the
+        // `Scalar::zero` Err branch in the MaskedFill `backward` arm provably
+        // unreachable in a well-formed graph.
+        //
+        // Under the OLD denylist (`matches!(reject-set)`, else allow) a FUTURE
+        // dtype fell through to "permitted" SILENTLY. With new dtypes scheduled
+        // (GAP-097: e5m2, complex, sub-byte int, …) that would silently accept
+        // masked_fill on formats whose fill semantics are unsettled. An
+        // exhaustive match makes a new dtype a COMPILE ERROR here, forcing the
+        // person who adds it to decide its permission consciously — the compiler
+        // is the real guard; the tests below protect the existing classification.
+        //
+        // NOTE: "permitted" is a graph-build PERMISSION (is masked_fill
+        // semantically well-defined?), NOT a promise a backend can allocate/run
+        // the dtype. An unimplemented storage still declines loudly downstream
+        // (typed `UnsupportedDTypeForOp` at allocation), which is the sound
+        // composition — a semantically-true guard upstream, a loud capability
+        // decline downstream.
+        match self.dtype() {
+            DType::F4 | DType::F6E2M3 | DType::F6E3M2 | DType::F8E8M0 | DType::F8E6M2 => {
+                return Err(
+                    fuel_ir::Error::UnsupportedDTypeForOp(self.dtype(), "masked_fill").bt(),
+                );
+            }
+            DType::U8
+            | DType::I8
+            | DType::U32
+            | DType::I16
+            | DType::I32
+            | DType::I64
+            | DType::BF16
+            | DType::F16
+            | DType::F32
+            | DType::F64
+            | DType::F8E4M3 => {}
         }
         if value.dtype() != self.dtype() {
             return Err(fuel_ir::Error::Msg(format!(
@@ -12601,6 +12628,62 @@ mod tests {
         assert!(
             msg.contains("unsupported dtype") && msg.contains("masked_fill"),
             "must fail on the packed/scale dtype guard, got: {msg}",
+        );
+    }
+
+    /// GAP-075 fix B: pin the REJECT verdict for every unfillable dtype
+    /// individually (not a bucket count). The guard is semantic — packed
+    /// formats (F4/F6*) have no representable fill value; block-scales
+    /// (F8E8M0/F8E6M2) have no zero for the zero-filling backward — so each must
+    /// be a build-time Err on the dtype GUARD specifically (its message names
+    /// the op). Per-dtype pinning protects the classification: a future dtype
+    /// misfiled into the allow arm can't hide behind a passing tally, and a new
+    /// dtype with no verdict is caught by the compiler (the match is exhaustive,
+    /// no wildcard). Paired with the allow test below (opposite assertion), the
+    /// two are mutually non-vacuous.
+    #[test]
+    fn masked_fill_rejects_every_unfillable_dtype() {
+        for dt in [
+            DType::F4,
+            DType::F6E2M3,
+            DType::F6E3M2,
+            DType::F8E8M0,
+            DType::F8E6M2,
+        ] {
+            let x = Tensor::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+            let t = x.cast(dt);
+            let mask = x.cast(DType::U8);
+            // The dtype guard fires before the value-dtype check, so a dummy
+            // value is fine; the message assertion proves it was the guard.
+            let err = t.masked_fill(&mask, Scalar::F32(0.0));
+            assert!(err.is_err(), "masked_fill must reject {dt:?} at build time");
+            let msg = format!("{}", err.unwrap_err());
+            assert!(
+                msg.contains("unsupported dtype") && msg.contains("masked_fill"),
+                "{dt:?} must fail on the semantic dtype guard, got: {msg}",
+            );
+        }
+    }
+
+    /// GAP-075 fix B: the allow arm is a graph-build PERMISSION (masked_fill is
+    /// semantically well-defined — a fill value + a zero), NOT a claim a backend
+    /// can allocate/run the dtype. F32 is the live consumer path (attention
+    /// masking); I32 is an allowed verdict no consumer currently exercises —
+    /// locking it preserves today's answer without asserting integer masked_fill
+    /// is known to compute correctly (a backend lacking I32 storage still
+    /// declines loudly at allocation, downstream of this permission).
+    #[test]
+    fn masked_fill_permits_fillable_dtypes_as_permission_not_capability() {
+        let x = Tensor::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        let mask = x.cast(DType::U8);
+        assert!(
+            x.masked_fill(&mask, Scalar::F32(0.0)).is_ok(),
+            "F32 masked_fill must build (the live consumer path)",
+        );
+        let xi = x.cast(DType::I32);
+        assert!(
+            xi.masked_fill(&mask, Scalar::one(DType::I32).unwrap()).is_ok(),
+            "I32 masked_fill must build — permission preserved, not a correctness claim",
         );
     }
 
