@@ -158,15 +158,31 @@ pub fn fdx_to_dtype(code: u16) -> Option<DType> {
 pub fn dl_dtype(d: DType) -> crate::Result<DLDataType> {
     use dtype_code::*;
     let (code, bits): (u8, u8) = match d {
-        // GAP-097: E5M2 declines here even though its WIDTH is known (8 bits,
-        // OCP-standard — not a guess, unlike F8E6M2 below). The hazard is
-        // ambiguity, not width: DLPack has no dedicated fp8 code, so E4M3 and
-        // E5M2 both render as `(K_DL_FLOAT, 8)` and are told apart ONLY by the
-        // FDX logical code in the sidecar. No FDX code is assigned to E5M2 yet
-        // (see `dtype_to_fdx`), so emitting this triple would hand a foreign
-        // consumer an 8-bit float it would most plausibly read as E4M3 — a
-        // silent mis-decode of every element, which is exactly the failure this
-        // module declines to enable. Becomes a mapping when the FDX code lands.
+        // GAP-097: E5M2 declines, and READ THE REASON BEFORE "FIXING" THIS BY
+        // ANALOGY WITH F8E4M3 ABOVE — the obvious argument is backwards.
+        //
+        // E5M2's width is KNOWN and CORRECT (8 bits, OCP-standard), unlike
+        // F8E6M2 below whose width is unauthored. That sounds like a reason to
+        // emit. It is the reason NOT to, and the difference is the failure mode:
+        //
+        //   * F8E6M2 — width is a guess. A wrong width MIS-STRIDES the buffer,
+        //     so the consumer desynchronises and the damage is LOUD and fails
+        //     fast.
+        //   * F8E5M2 — width is right, so `(K_DL_FLOAT, 8)` strides PERFECTLY.
+        //     DLPack has no dedicated fp8 code, so E4M3 and E5M2 both render as
+        //     `(float, 8)`, distinguished ONLY by the FDX logical code in the
+        //     sidecar — which E5M2 has not been assigned (see `dtype_to_fdx`).
+        //     A foreign consumer therefore reads it as the fp8 it already knows,
+        //     E4M3. Every element lands in exactly the right place and decodes
+        //     to the WRONG NUMBER — same bytes, different exponent bias.
+        //
+        // A correct stride carrying a wrong interpretation is SILENT numerical
+        // corruption: no layout check, bounds check, or shape assertion can see
+        // it. That is strictly worse than F8E6M2's loud mis-stride, so knowing
+        // the width makes declining MORE important here, not less.
+        //
+        // Becomes a plain mapping the moment an FDX code is assigned to E5M2 —
+        // the decline is waiting on that assignment, not on a design question.
         DType::F8E5M2 => {
             return Err(crate::Error::UnsupportedDTypeForOp(
                 DType::F8E5M2,
