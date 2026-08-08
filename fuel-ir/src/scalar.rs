@@ -4,6 +4,13 @@ use float8::F8E4M3 as f8e4m3;
 use half::{bf16, f16};
 
 /// A typed scalar value matching one of the supported [`DType`] variants.
+// EXHAUSTIVE-BY-DESIGN: `Scalar` is a closed set — every consumer matches it
+// exhaustively (e.g. `scalar_to_bytes` -> `Vec<u8>`, `push_scalar_arg`), and no
+// wildcard arm can encode an unknown variant correctly (it could only panic or
+// emit wrong bytes). Adding a variant is a breaking change: gate it
+// workspace-wide (`cargo check` across every consumer, never just `-p fuel-ir`)
+// and fix each match the compiler names. Do NOT add `#[non_exhaustive]` here —
+// it would silence exactly those errors. See GAP-049.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Scalar {
     U8(u8),
