@@ -48,6 +48,7 @@ use fuel_kernel_seam_types::{OpAttrs, OpTag, PatternNode};
 /// Metadata-side registry entry for FlashAttn.
 pub fn entry() -> FusedOpEntry {
     FusedOpEntry {
+        destructive_input: None,
         id:         FusedOps::FLASH_ATTN,
         name:       "FlashAttn",
         family:     FusedOpFamily::Attention,

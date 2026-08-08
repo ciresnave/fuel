@@ -231,10 +231,14 @@ pub enum PadMode {
 // defaults (`None`/`Err`/skip); execution is gated by `op_to_op_kind` returning
 // `None`, so a new op is never silently mis-executed — that is why a plain
 // wildcard is correct THERE and forbidden in the two forcing functions above.
-// CAVEAT for the next op-adder: `destructive_input` (this file) has an UNSOUND
-// `_ => None` — a new destructive/in-place op will read as non-destructive and
-// the scheduler will omit its ordering edges (a silent data race). Add its arm
-// explicitly. See GAP-049 (the destructive_input hazard is filed as its own row).
+// A THIRD in-crate forcing function joined the two above (GAP-076):
+// `destructive_input` (this file) is now exhaustive as well — a new primitive
+// must classify itself there (destructive → `Some(idx)`, otherwise `None`), and
+// a new *fused* op declares destructiveness as a mandatory `FusedOpEntry` field
+// that `Op::destructive_input` reads via `default_registry()`. The old
+// `_ => None` there silently read a new destructive op as non-destructive and
+// dropped its scheduler ordering edges (a data race); it is gone. See GAP-049
+// and GAP-076.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Op {
     // --- leaves ---
@@ -1205,9 +1209,16 @@ impl Op {
     /// via ordering edges derived by [`opt::derive_ordering`].
     pub fn destructive_input(&self) -> Option<usize> {
         match self {
-            Op::Release | Op::Move { .. } | Op::WriteSlice { .. } | Op::WriteSliceRotating { .. } | Op::WriteSliceDoff { .. } | Op::ZeroFill => Some(0),
-            // In-place unary ops mutate input 0.
-            Op::ReluInplace
+            // --- Destructive: the op writes through input 0 in place, so every
+            // reader of input 0 (and its view-aliases) must be scheduled BEFORE
+            // it (`opt::derive_ordering`). ---
+            Op::Release
+            | Op::Move { .. }
+            | Op::WriteSlice { .. }
+            | Op::WriteSliceRotating { .. }
+            | Op::WriteSliceDoff { .. }
+            | Op::ZeroFill
+            | Op::ReluInplace
             | Op::SiluInplace
             | Op::GeluInplace
             | Op::TanhInplace
@@ -1227,10 +1238,118 @@ impl Op {
             | Op::CeilInplace
             | Op::RoundInplace
             | Op::ErfInplace
-            | Op::GeluErfInplace => Some(0),
-            Op::ClampInplace { .. } | Op::PowIInplace(_) => Some(0),
-            Op::Fused(id, _) if *id == crate::registry::FusedOps::INPLACE_AFFINE => Some(0),
-            _ => None,
+            | Op::GeluErfInplace
+            | Op::ClampInplace { .. }
+            | Op::PowIInplace(_) => Some(0),
+
+            // --- Fused ops declare destructiveness as a MANDATORY
+            // `FusedOpEntry::destructive_input` field (registry-declared, not
+            // hardcoded here), so the fact lives with the thing and cannot drift.
+            // Total by construction: a compile-time fused op cannot be registered
+            // without the field; a runtime-registered fused id is not in the
+            // compile-time registry and its region is a functional recipe (the
+            // PatternNode grammar cannot express a destructive op), so `entry` is
+            // `None` there and the op is non-destructive. GAP-076. ---
+            Op::Fused(id, _) => crate::registry::default_registry()
+                .entry(*id)
+                .and_then(|e| e.destructive_input),
+
+            // --- Non-destructive primitives, listed EXHAUSTIVELY (no wildcard)
+            // so adding an `Op` variant fails to compile here until it is
+            // classified (`Op` is EXHAUSTIVE-BY-DESIGN — see the marker on
+            // `enum Op`). A silent `_ => None` was the GAP-076 hazard: a future
+            // destructive op would read as non-destructive and the scheduler
+            // would drop its ordering edges — an intermittent data race that
+            // points nowhere near this function. ---
+            Op::Const
+            | Op::Iota { .. }
+            | Op::Add
+            | Op::Sub
+            | Op::Mul
+            | Op::Div
+            | Op::Neg
+            | Op::Sqr
+            | Op::Sqrt
+            | Op::Exp
+            | Op::Log
+            | Op::Sin
+            | Op::Cos
+            | Op::Tanh
+            | Op::Sigmoid
+            | Op::Silu
+            | Op::Gelu
+            | Op::Relu
+            | Op::Step
+            | Op::Recip
+            | Op::Abs
+            | Op::Equal
+            | Op::Ne
+            | Op::Lt
+            | Op::Le
+            | Op::Gt
+            | Op::Ge
+            | Op::Where
+            | Op::Floor
+            | Op::Ceil
+            | Op::Round
+            | Op::Sign
+            | Op::Erf
+            | Op::GeluErf
+            | Op::Pow
+            | Op::Rsqrt
+            | Op::Rem
+            | Op::Flip { .. }
+            | Op::Roll { .. }
+            | Op::CumSum { .. }
+            | Op::Triu { .. }
+            | Op::Tril { .. }
+            | Op::LogSoftmaxLastDim
+            | Op::MaskedFill { .. }
+            | Op::Pad { .. }
+            | Op::PadBackward { .. }
+            | Op::MatMul
+            | Op::Transpose
+            | Op::Permute(_)
+            | Op::Cast(_)
+            | Op::BroadcastTo(_)
+            | Op::Reshape(_)
+            | Op::Contiguize
+            | Op::Unsqueeze { .. }
+            | Op::Squeeze { .. }
+            | Op::ReduceSumTo(_)
+            | Op::ReduceMaxTo(_)
+            | Op::SumAll
+            | Op::MaxAll
+            | Op::MinAll
+            | Op::MeanAll
+            | Op::SumDim(_)
+            | Op::MaxDim(_)
+            | Op::MinDim(_)
+            | Op::MeanDim(_)
+            | Op::LogSoftmaxLastDimBackward
+            | Op::ArgMaxDim(_)
+            | Op::ArgMinDim(_)
+            | Op::Concat { .. }
+            | Op::Slice { .. }
+            | Op::AddScalar(_)
+            | Op::MulScalar(_)
+            | Op::PowI(_)
+            | Op::Clamp { .. }
+            | Op::Maximum
+            | Op::Minimum
+            | Op::IndexSelect { .. }
+            | Op::Gather { .. }
+            | Op::IndexAdd { .. }
+            | Op::ScatterAdd { .. }
+            | Op::NonZeroIndices { .. }
+            | Op::Copy { .. }
+            | Op::Alloc { .. }
+            | Op::View { .. }
+            | Op::ViewOwned { .. }
+            | Op::ScatterIntoSlot { .. }
+            | Op::Branch { .. }
+            | Op::Scan { .. }
+            | Op::ScanPlaceholder { .. } => None,
         }
     }
 
@@ -12621,6 +12740,42 @@ mod tests {
     }
 
     #[test]
+    fn destructive_input_for_fused_is_registry_declared() {
+        // GAP-076: a fused op's destructiveness is a MANDATORY declared field on
+        // its registry entry, and `Op::destructive_input` reads that field via
+        // `default_registry()` rather than a hardcoded id match that could drift
+        // out of sync. This locks BOTH directions of the declaration plus the
+        // routing that reads it. Regression lock, not a born-red: no op was
+        // misclassified before the fix — its value is that a future wrong
+        // declaration (or a reverted routing) reddens HERE instead of surfacing
+        // as an intermittent scheduler data race that points nowhere near this
+        // code. The exhaustive match in `Op::destructive_input` and the
+        // mandatory struct field are the compile-time seams; this is the belt.
+        use crate::registry::{default_registry, FusedOps};
+        let reg = default_registry();
+        assert_eq!(
+            reg.entry(FusedOps::INPLACE_AFFINE)
+                .expect("INPLACE_AFFINE is registered")
+                .destructive_input,
+            Some(0),
+            "InplaceAffine must declare itself destructive on input 0",
+        );
+        assert_eq!(
+            reg.entry(FusedOps::SOFTMAX_LAST_DIM)
+                .expect("SOFTMAX_LAST_DIM is registered")
+                .destructive_input,
+            None,
+            "a functional fused op must declare itself non-destructive",
+        );
+        // Routing reads the declared field (not a hardcoded id match).
+        let op = Op::Fused(
+            FusedOps::INPLACE_AFFINE,
+            crate::registry::FusedOpParams::InplaceAffine { mul: 1.0, add: 0.0 },
+        );
+        assert_eq!(op.destructive_input(), Some(0));
+    }
+
+    #[test]
     fn inplace_affine_params_key_dedupe_on_same_mul_add() {
         // Two `InplaceAffine` params with identical (mul, add) hash to the
         // same key; differing values produce distinct keys. Lets CSE / the
@@ -13477,6 +13632,7 @@ mod tests {
             ]
         }
         crate::registry::FusedOpEntry {
+            destructive_input: None,
             id:           crate::registry::FusedOps::SOFTMAX_LAST_DIM, // any id; not registered
             name:         "<synthetic-2-output>",
             family:       crate::registry::FusedOpFamily::Forward,

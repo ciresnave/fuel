@@ -38,6 +38,7 @@ use fuel_kernel_seam_types::{OpAttrs, OpTag, PatternNode};
 /// Metadata-side registry entry for PowIBackward.
 pub fn entry() -> FusedOpEntry {
     FusedOpEntry {
+        destructive_input: None,
         id:         FusedOps::POWI_BACKWARD,
         name:       "PowIBackward",
         family:     FusedOpFamily::Backward,

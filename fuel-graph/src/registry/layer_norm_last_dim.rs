@@ -51,6 +51,7 @@ use std::sync::OnceLock;
 /// Metadata-side registry entry for LayerNormLastDim.
 pub fn entry() -> FusedOpEntry {
     FusedOpEntry {
+        destructive_input: None,
         id:         FusedOps::LAYER_NORM_LAST_DIM,
         name:       "LayerNormLastDim",
         family:     FusedOpFamily::Norm,

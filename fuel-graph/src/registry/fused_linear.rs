@@ -42,6 +42,7 @@ use std::sync::OnceLock;
 /// Metadata-side registry entry for FusedLinear.
 pub fn entry() -> FusedOpEntry {
     FusedOpEntry {
+        destructive_input: None,
         id:         FusedOps::FUSED_LINEAR,
         name:       "FusedLinear",
         family:     FusedOpFamily::Forward,

@@ -40,6 +40,7 @@ use std::sync::OnceLock;
 /// Metadata-side registry entry for ReduceMaxToBackward.
 pub fn entry() -> FusedOpEntry {
     FusedOpEntry {
+        destructive_input: None,
         id:         FusedOps::REDUCE_MAX_TO_BACKWARD,
         name:       "ReduceMaxToBackward",
         family:     FusedOpFamily::Backward,

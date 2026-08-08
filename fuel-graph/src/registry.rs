@@ -147,6 +147,21 @@ pub struct FusedOpEntry {
     /// the same invariants via `set_output_views`'s validation pass.
     pub output_views:
         Option<fn(&[Shape], &[DType], &FusedOpParams) -> Vec<OutputViewSpec>>,
+
+    /// Which input index this fused op DESTROYS (mutates in place) on execution,
+    /// or `None` if it is non-destructive (produces a fresh output, every input
+    /// stays readable). **Mandatory** — declared here, beside `decompose`/
+    /// `pattern`, so a fused op cannot be registered without stating it (the
+    /// recipe principle extended: a third required property of the same object).
+    /// `Op::destructive_input` reads this via `default_registry().entry(id)`
+    /// instead of a separate hand-maintained match, so the fact lives with the
+    /// thing and cannot drift out of sync. A destructive op needs the scheduler
+    /// to pin it after every non-destructive reader of the destroyed input
+    /// (`opt::derive_ordering`); a wrong `None` here is a silent data race. There
+    /// is deliberately no default: `Option<usize>` is the *value* (which input,
+    /// or none), but the field itself must be set at every construction site.
+    /// GAP-076.
+    pub destructive_input: Option<usize>,
 }
 
 /// Categorical bucket for a fused op. Drives telemetry grouping and
@@ -995,6 +1010,7 @@ pub fn decompose_via_recipe(
 /// returned by [`FusedOpRegistry::entry`].
 fn placeholder_entry() -> FusedOpEntry {
     FusedOpEntry {
+        destructive_input: None,
         id: FusedOpId::UNASSIGNED,
         name: "<unassigned>",
         family: FusedOpFamily::Forward,
@@ -1233,6 +1249,7 @@ mod tests {
         }
 
         let r = FusedOpRegistry::new().with_entry(FusedOpEntry {
+            destructive_input: None,
             id: FusedOps::SOFTMAX_LAST_DIM,
             name: "SoftmaxLastDim",
             family: FusedOpFamily::Forward,

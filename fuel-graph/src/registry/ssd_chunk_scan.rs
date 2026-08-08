@@ -108,6 +108,7 @@ use std::sync::Arc;
 /// `last_state`. Mirrors `selective_scan::entry`.
 pub fn entry() -> FusedOpEntry {
     FusedOpEntry {
+        destructive_input: None,
         id:           FusedOps::SSD_CHUNK_SCAN,
         name:         "SsdChunkScan",
         family:       FusedOpFamily::Forward,
