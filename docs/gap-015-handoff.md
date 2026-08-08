@@ -1,6 +1,6 @@
 # GAP-015 handoff — deadlock in `fuel-dispatch --features cuda` lib tests
 
-**Status: BUILT and FIXED @ `ca53d093` (2026-08-07).** Diagnosed 2026-08-07;
+**Status: BUILT and FIXED @ `c95d140a` (2026-08-07).** Diagnosed 2026-08-07;
 instrument landed at `c9b9e991`. Everything below is operational knowledge that
 is *not* in the `docs/gaps.md` row — the row carries the findings; this carries
 how to reproduce them, and which instruments lie.
