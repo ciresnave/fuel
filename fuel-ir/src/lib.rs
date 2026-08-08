@@ -34,7 +34,6 @@ pub mod dispatch;
 #[cfg(feature = "dlpack")]
 pub mod dlpack;
 pub mod dtype;
-pub mod dummy_dtype;
 pub mod error;
 pub mod layout;
 pub mod op;
@@ -53,7 +52,6 @@ pub use probe::{BackendId, BackendProbe, DeviceDescriptor, EquivalenceKey};
 pub use cpu_storage::{CpuDevice, CpuStorage, CpuStorageRef, HostBuffer, HostBufferRef, HostDType};
 pub use device::DeviceLocation;
 pub use dtype::{DType, DTypeParseError, FloatDType, IntDType, WithDType};
-pub use dummy_dtype::{F4, F6E2M3, F6E3M2, F8E8M0};
 pub use error::{Context, Error, Result};
 pub use layout::Layout;
 pub use quant_scale::{ScaleGranularity, ScalePair};
