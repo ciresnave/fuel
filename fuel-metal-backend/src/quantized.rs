@@ -2,7 +2,6 @@
 use fuel_backend_contract::dyn_backend::DynBackendStorage;
 use fuel_backend_contract::quantized::{DynQuantizedStorage, QuantizedDeviceKernels};
 use fuel_ir::quantized::GgmlDType;
-use fuel_quantized::GgmlType;
 use fuel_metal_kernels::metal::Buffer;
 use std::any::Any;
 use std::borrow::Cow;
