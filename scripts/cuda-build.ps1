@@ -63,6 +63,33 @@
   wrapper SETS the variable rather than defaulting it, and logs when it is
   overriding a pre-existing value.
 
+  *** THE THIRD MULTIPLIER: C, CONCURRENT FORGE INVOCATIONS PER BUILD. ***
+  Found by baracuda 2026-08-08, after N and K were already agreed. The budget
+  is not N x K, it is N x C x K.
+    ONE `cargo build` can run SEVERAL -sys build scripts CONCURRENTLY:
+    baracuda-kernels-sys and baracuda-cutlass-kernels-sys are independent
+    crates, so cargo runs both build.rs's at once up to -j, and EACH invokes
+    forge at K. Under a SINGLE wrapper slot that is C x K nvcc, not K.
+  C is invisible to BOTH parties, which is what makes it dangerous: the
+  WRAPPER sees one build, and a per-invocation forge acquire sees each
+  invocation as lone. It is the "most permissive participant wins, silently"
+  shape one level deeper — nobody is misbehaving and the budget is still
+  breached.
+
+  With C=2 (baracuda's two heavy -sys crates), N=2 and K=8 would give 32
+  concurrent nvcc against a measured ~22 ceiling. So K WAS LOWERED 8 -> 4:
+  N x C x K = 2 x 2 x 4 = 16, which is the measured survivable footprint.
+  The alternative on offer was to keep K=8 and DOCUMENT the C=2 overshoot as
+  a known limitation. That was refused: this project's own GAP-157 records
+  that DOCUMENTATION OF A HAZARD IS NOT A CONTROL FOR IT, and shipping a
+  constant known to exceed the ceiling while writing a note about it is
+  precisely that defect.
+
+  K RETURNS TO 8 — in lockstep, not unilaterally — once baracuda-forge lands
+  its per-slot aggregate cap (concurrent forge invocations sharing one
+  CUDA_BUILD_SLOT together honour K regardless of C), since only forge can
+  observe C. At that point N x C x K collapses back to N x K.
+
   *** $SlotCount IS A CONSERVATIVE DEFAULT, NOT A GUARANTEE. ***
   Confirmed by baracuda 2026-08-08: ptxas footprint is KERNEL-DEPENDENT.
   A fused flash-attention or heavily-templated CUTLASS GEMM produces
@@ -105,9 +132,9 @@ $ErrorActionPreference = 'Stop'
 # NEVER change these unilaterally. See the PROTOCOL CONSTANTS block above:
 # a divergent count silently widens the budget for everyone.
 $SlotPrefix      = 'Global\cuda-build-slot-'   # MUST be Global\ (machine-wide), not Local\
-$SlotCount       = 2                           # cross-project constant; raising it is a CROSS-PROJECT change
-$ForgeThreads    = 8                           # per-build nvcc pool; N x K is the real footprint
-$CudaBuildVersion = 1                          # bump on behavioral change; logged, never encoded in the name
+$SlotCount       = 2                           # N — cross-project constant; raising it is a CROSS-PROJECT change
+$ForgeThreads    = 4                           # K — see THE THIRD MULTIPLIER below; was 8, lowered 2026-08-08
+$CudaBuildVersion = 2                          # bump on behavioral change; logged, never encoded in the name
 
 $LockDir = Join-Path $env:TEMP 'cuda-build'
 $LogPath = Join-Path $env:TEMP 'cuda-build.log'
