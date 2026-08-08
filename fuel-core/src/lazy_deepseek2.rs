@@ -1120,15 +1120,16 @@ impl DeepSeek2Model {
 
         // seq == 1. If a session exists but its validity keys no longer
         // match the live cache/model (max_seq_len / n_layers / dtype), it
-        // is stale — drop it so we rebuild fresh below.
-        if let Some(s) = session.as_ref() {
-            if !s.is_valid_for(
-                seq, max_seq_len, cfg.num_hidden_layers, cache_dtype,
-                self.decode_shape_key(), cache.alloc_id(),
-            ) {
-                self.drop_latent_decode_session(session, ctx);
-            }
-        }
+        // is stale — drop it so we rebuild fresh below. A key differing ONLY
+        // in the latent allocation gets a guarded re-bind first (GAP-028);
+        // MLA reuses `DecodeSession` verbatim, so it inherits both the
+        // welding and the guard. No capture exists on this path.
+        crate::lazy::refresh_decode_session(
+            session, ctx, seq, Some(max_seq_len), cache_dtype,
+            cfg.num_hidden_layers, self.decode_shape_key(), cache,
+            || {},
+            |s, c| self.drop_latent_decode_session(s, c),
+        );
 
         match session.as_ref() {
             None => {
@@ -1349,8 +1350,9 @@ impl DeepSeek2Model {
             cfg.num_hidden_layers,
             cache.dtype,
             self.decode_shape_key(),
-            // Which ALLOCATION's latent-slot Arcs are baked into `base_cache`.
-            cache.alloc_id(),
+            // Which ALLOCATION's latent-slot Arcs are baked into `base_cache`,
+            // and where they live — both read from the one source (GAP-028).
+            cache,
         ));
 
         // Bump cache state (identical to the D1 path).
@@ -2899,6 +2901,119 @@ mod tests {
     /// graph each token) or the session re-optimizes, (a) still passes
     /// (D1-equivalent output) but (b)/(c) fail; a corrupted `cached_len_sym`
     /// rebind or a stale `base_cache` would instead break (a).
+    /// GAP-028, MLA carrier — the guarded re-bind reaches `LatentKvCache`, and
+    /// is proven here rather than inferred from the contiguous path.
+    ///
+    /// MLA reuses `DecodeSession` verbatim (its two latent slots ride
+    /// `kv_nodes` as `(latent, kpe)` pairs), so it inherits the welding AND the
+    /// guard by construction. "By construction" is exactly the reasoning that
+    /// left this carrier broken through the whole of GAP-014, whose scope
+    /// turned out to be 3× its filed site: the same welding held in all three
+    /// carriers and only the contiguous one had a test. **Enumerate the
+    /// carriers of a baked thing and test each; sharing an implementation is a
+    /// reason to expect it works, not evidence that it does.**
+    ///
+    /// Both halves, as the invariant requires:
+    ///   (a) a same-geometry latent swap RE-BINDS — the held graph survives,
+    ///       and the logits match a re-planning oracle over the new cache;
+    ///   (b) continuing on the SAME cache keeps the plan (an "always re-bind"
+    ///       or "always drop" guard would satisfy (a) while quietly destroying
+    ///       plan reuse, with every correctness test still green).
+    #[test]
+    fn mla_held_plan_rebinds_onto_a_swapped_latent_cache() {
+        let cfg = tiny_config_plain_q();
+        let model = DeepSeek2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let slot_trailing = vec![vec![cfg.kv_lora_rank], vec![cfg.qk_rope_head_dim]];
+        let max_seq_len = 8usize;
+        let mk = || crate::inference_context::LatentKvCache::with_capacity(
+            cfg.num_hidden_layers, max_seq_len, slot_trailing.clone(), DType::F32, &Device::cpu(),
+        ).expect("with_capacity");
+
+        let prompt_a = [1_u32, 2, 3];
+        let prompt_b = [5_u32, 6, 7];
+        let next = 4_u32;
+
+        // Request A builds a plan welded to cache A's latent slots.
+        let mut cache_a = mk();
+        let mut ctx = crate::inference_context::InferenceContext::new(Device::cpu());
+        let mut session: Option<crate::inference_context::DecodeSession> = None;
+        model.forward_with_latent_kv_context_persistent(&prompt_a, &mut cache_a, &mut ctx, &mut session)
+            .expect("A prefill");
+        model.forward_with_latent_kv_context_persistent(&[9], &mut cache_a, &mut ctx, &mut session)
+            .expect("A's first decode token builds the plan");
+        // Arc identity, NOT a NodeId: data-Const NodeIds are graph-local, so a
+        // REBUILT graph mints the very same ids and the comparison could not
+        // tell reuse from rebuild in either direction.
+        let built = std::sync::Arc::clone(
+            session.as_ref().expect("a held MLA plan").graph(),
+        );
+
+        // Oracle for B's token, on an independent cache via the always-re-planning
+        // path, which holds no session and so cannot be contaminated.
+        let expected = {
+            let mut c = mk();
+            let mut x = crate::inference_context::InferenceContext::new(Device::cpu());
+            model.forward_with_latent_kv_context(&prompt_b, &mut c, &mut x).expect("oracle prefill");
+            model.forward_with_latent_kv_context(&[next], &mut c, &mut x).expect("oracle decode")
+        };
+        // Negative control: A's history and B's history must actually be
+        // separable at this token, or the comparison below proves nothing.
+        let a_history = {
+            let mut c = mk();
+            let mut x = crate::inference_context::InferenceContext::new(Device::cpu());
+            model.forward_with_latent_kv_context(&prompt_a, &mut c, &mut x).expect("ctl prefill");
+            model.forward_with_latent_kv_context(&[9], &mut c, &mut x).expect("ctl decode 1");
+            model.forward_with_latent_kv_context(&[next], &mut c, &mut x).expect("ctl decode 2")
+        };
+        let maxdiff = |a: &[f32], b: &[f32]| {
+            assert_eq!(a.len(), b.len(), "logit rows must be comparable");
+            a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max)
+        };
+        const TOL: f32 = 1e-5;
+        let separation = maxdiff(&expected, &a_history);
+        assert!(
+            separation > 10.0 * TOL,
+            "NEGATIVE CONTROL FAILED: the two histories are only {separation:.3e} apart, \
+             so a {TOL:.0e} check cannot distinguish them and the assertion below is vacuous",
+        );
+
+        // (a) Offer the held plan a step over a DIFFERENT latent cache, primed
+        // with B's own prefix through the re-planning path.
+        let mut cache_b = mk();
+        let mut ctx_b = crate::inference_context::InferenceContext::new(Device::cpu());
+        model.forward_with_latent_kv_context(&prompt_b, &mut cache_b, &mut ctx_b)
+            .expect("B prefill lands in B's OWN latent slots");
+        let got = model
+            .forward_with_latent_kv_context_persistent(&[next], &mut cache_b, &mut ctx, &mut session)
+            .expect("B's decode step, offered the plan A built");
+        let drift = maxdiff(&expected, &got);
+        assert!(
+            drift <= TOL,
+            "CROSS-REQUEST LATENT CONTAMINATION: maxdiff {drift:.3e} vs the re-planned \
+             oracle while the histories are {separation:.3e} apart — this is A's answer",
+        );
+        assert!(
+            session.as_ref()
+                .map(|s| std::sync::Arc::ptr_eq(s.graph(), &built))
+                .unwrap_or(false),
+            "a compatible latent-cache swap must RE-BIND the held plan, not rebuild it \
+             (GAP-028) — the logits above already prove the answer is B's",
+        );
+
+        // (b) The other direction: continuing on the SAME cache must keep the
+        // plan, and must not re-bind on every token.
+        model.forward_with_latent_kv_context_persistent(&[8], &mut cache_b, &mut ctx, &mut session)
+            .expect("second decode token on the SAME cache");
+        assert!(
+            session.as_ref()
+                .map(|s| std::sync::Arc::ptr_eq(s.graph(), &built))
+                .unwrap_or(false),
+            "continuing the same request on its own cache must REUSE the plan — an \
+             always-stale predicate passes every correctness test while silently \
+             destroying plan reuse",
+        );
+    }
+
     #[test]
     fn forward_with_latent_kv_context_persistent_plan_once_matches_d1() {
         for cfg in [tiny_config_plain_q(), tiny_config_lora_q()] {

@@ -8928,19 +8928,15 @@ impl LlamaModel {
 
         // seq == 1. If a session exists but its validity keys no longer
         // match the live cache/model (max_seq_len / n_layers / dtype), it
-        // is stale — drop it so we rebuild fresh below.
-        if let Some(s) = session.as_ref() {
-            let valid = match max_seq_len {
-                Some(msl) => s.is_valid_for(
-                    seq, msl, cfg.n_layers, cache_dtype, self.decode_shape_key(),
-                    cache.alloc_id(),
-                ),
-                None => false,
-            };
-            if !valid {
-                self.drop_decode_session(session, ctx);
-            }
-        }
+        // is stale — drop it so we rebuild fresh below. A key differing ONLY
+        // in the KV allocation gets a guarded re-bind first (GAP-028). No
+        // capture exists on this path, hence the no-op reader retirement.
+        refresh_decode_session(
+            session, ctx, seq, max_seq_len, cache_dtype, cfg.n_layers,
+            self.decode_shape_key(), cache,
+            || {},
+            |s, c| self.drop_decode_session(s, c),
+        );
 
         match session.as_ref() {
             None => {
@@ -9184,8 +9180,9 @@ impl LlamaModel {
             cfg.n_layers,
             cache_dtype,
             self.decode_shape_key(),
-            // Which ALLOCATION's KV Arcs are baked into `base_cache`.
-            cache.alloc_id(),
+            // Which ALLOCATION's KV Arcs are baked into `base_cache`, and
+            // where they live — both read from the one source (GAP-028).
+            cache,
         ));
 
         // Bump cache state (identical to the D1 path).
@@ -9808,7 +9805,7 @@ impl LlamaModel {
             seq,
             cache.max_seq_len,
             cache.dtype.unwrap_or(DType::F32),
-            cache.alloc_id(),
+            cache,
         );
 
         // ---- 2. First decode token: build the held session (unmodified
@@ -9974,11 +9971,11 @@ impl LlamaModel {
         seq: usize,
         max_seq_len: Option<usize>,
         cache_dtype: DType,
-        alloc_id: crate::decode_shape::KvAllocId,
-    ) -> bool {
+        kv: &dyn crate::inference_context::KvRebindSource,
+    ) -> SessionDisposition {
         invalidate_decode_pair_if_stale(
             session, captured, ctx, seq, max_seq_len, cache_dtype,
-            self.config.n_layers, self.decode_shape_key(), alloc_id,
+            self.config.n_layers, self.decode_shape_key(), kv,
             |sess, c| self.drop_decode_session(sess, c),
         )
     }
@@ -10049,27 +10046,110 @@ fn invalidate_decode_pair_if_stale<C>(
     cache_dtype: DType,
     n_layers: usize,
     shape_key: u64,
-    alloc_id: crate::decode_shape::KvAllocId,
+    kv: &dyn crate::inference_context::KvRebindSource,
     drop_session: impl FnOnce(
         &mut Option<crate::inference_context::DecodeSession>,
         &mut InferenceContext,
     ),
-) -> bool {
-    let stale = match session.as_ref() {
-        None => false,
-        Some(s) => match max_seq_len {
-            Some(msl) => {
-                !s.is_valid_for(seq, msl, n_layers, cache_dtype, shape_key, alloc_id)
-            }
-            None => true,
-        },
+) -> SessionDisposition {
+    refresh_decode_session(
+        session, ctx, seq, max_seq_len, cache_dtype, n_layers, shape_key, kv,
+        // Reader before owner — see the doc comment above. This fires for a
+        // re-bind as well as a drop: a capture records FIXED device addresses
+        // drawn from `base_cache`, and `rebind_kv` replaces some of them.
+        || *captured = None,
+        drop_session,
+    )
+}
+
+/// What [`refresh_decode_session`] did to the held plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SessionDisposition {
+    /// There was no held plan; nothing to do.
+    Absent,
+    /// The plan is valid for this step and was left alone.
+    Kept,
+    /// The KV allocation changed and the plan was re-bound onto it (GAP-028).
+    /// Any reader of the plan's device addresses has been retired.
+    Rebound,
+    /// The plan was retired. `Some(refusal)` means a re-bind was attempted and
+    /// declined — carried so a caller (or a test) can distinguish "refused for
+    /// the right reason" from "refused because nothing was tried".
+    Dropped(Option<crate::inference_context::RebindRefusal>),
+}
+
+/// **The single decision point for what happens to a held decode plan at the
+/// top of a decode step.** Every model routes through here, so they cannot
+/// drift on what "stale" means — the reason this was a shared free function
+/// before GAP-028, and more so now that the answer has three outcomes.
+///
+/// Order of business, and why it is this order:
+///
+/// 1. Ask [`DecodeSession::validity_for`] — ONE comparison list, so "is it
+///    valid" and "is only the allocation different" cannot disagree.
+/// 2. On anything but `Valid`, retire readers FIRST via `on_invalidate`. A
+///    `CapturedDecodeSession` replays a recorded CUDA graph over FIXED device
+///    addresses drawn from the session's `base_cache`; both a drop and a
+///    re-bind make some of those addresses stale, and a replay against stale
+///    addresses is silently wrong logits at full speed. Retiring before
+///    touching the owner means no replay can observe a half-updated plan.
+///    Note this fires *before* the re-bind is attempted, not after it
+///    succeeds: a capture is worthless either way, and clearing it early keeps
+///    the ordering true without depending on the outcome.
+/// 3. Try the guarded re-bind. It may refuse; a refusal is not an error.
+/// 4. Otherwise drop, so the caller's first-decode-token arm rebuilds.
+///
+/// Generic in nothing — the capture rides in the `on_invalidate` closure,
+/// which is what lets this compile (and therefore be CPU-tested) without the
+/// `cuda` feature.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn refresh_decode_session(
+    session: &mut Option<crate::inference_context::DecodeSession>,
+    ctx: &mut InferenceContext,
+    seq: usize,
+    max_seq_len: Option<usize>,
+    cache_dtype: DType,
+    n_layers: usize,
+    shape_key: u64,
+    kv: &dyn crate::inference_context::KvRebindSource,
+    on_invalidate: impl FnOnce(),
+    drop_session: impl FnOnce(
+        &mut Option<crate::inference_context::DecodeSession>,
+        &mut InferenceContext,
+    ),
+) -> SessionDisposition {
+    use crate::inference_context::PlanValidity;
+
+    let verdict = match (session.as_ref(), max_seq_len) {
+        (None, _) => return SessionDisposition::Absent,
+        (Some(s), Some(msl)) => {
+            s.validity_for(seq, msl, n_layers, cache_dtype, shape_key, kv.alloc_id())
+        }
+        // A cache with no pre-allocated capacity cannot back a held plan at
+        // all (the graph bakes `max_seq_len` into its KV Const shapes).
+        (Some(_), None) => PlanValidity::Stale,
     };
-    if stale {
-        // Reader before owner — see the doc comment above.
-        *captured = None;
-        drop_session(session, ctx);
+    if verdict == PlanValidity::Valid {
+        return SessionDisposition::Kept;
     }
-    stale
+
+    on_invalidate();
+
+    let refusal = if verdict == PlanValidity::AllocationChanged {
+        match session.as_mut().map(|s| s.rebind_kv(kv)) {
+            Some(Ok(())) => return SessionDisposition::Rebound,
+            Some(Err(r)) => Some(r),
+            // Unreachable: `verdict` was computed from a `Some` session and
+            // nothing above takes it. Handled rather than `expect`ed because
+            // this is a production path.
+            None => None,
+        }
+    } else {
+        None
+    };
+
+    drop_session(session, ctx);
+    SessionDisposition::Dropped(refusal)
 }
 
 struct TokenDataHost {
@@ -11799,19 +11879,15 @@ impl PhiModel {
 
         // seq == 1. If a session exists but its validity keys no longer
         // match the live cache/model (max_seq_len / n_layers / dtype), it
-        // is stale — drop it so we rebuild fresh below.
-        if let Some(s) = session.as_ref() {
-            let valid = match max_seq_len {
-                Some(msl) => s.is_valid_for(
-                    seq, msl, cfg.n_layers, cache_dtype, self.decode_shape_key(),
-                    cache.alloc_id(),
-                ),
-                None => false,
-            };
-            if !valid {
-                self.drop_decode_session(session, ctx);
-            }
-        }
+        // is stale — drop it so we rebuild fresh below. A key differing ONLY
+        // in the KV allocation gets a guarded re-bind first (GAP-028). No
+        // capture exists on this path, hence the no-op reader retirement.
+        refresh_decode_session(
+            session, ctx, seq, max_seq_len, cache_dtype, cfg.n_layers,
+            self.decode_shape_key(), cache,
+            || {},
+            |s, c| self.drop_decode_session(s, c),
+        );
 
         match session.as_ref() {
             None => {
@@ -12016,8 +12092,9 @@ impl PhiModel {
             cfg.n_layers,
             cache_dtype,
             self.decode_shape_key(),
-            // Which ALLOCATION's KV Arcs are baked into `base_cache`.
-            cache.alloc_id(),
+            // Which ALLOCATION's KV Arcs are baked into `base_cache`, and
+            // where they live — both read from the one source (GAP-028).
+            cache,
         ));
 
         // Bump cache state (identical to the D1 path).
@@ -12207,7 +12284,7 @@ impl PhiModel {
             cache.dtype.unwrap_or(DType::F32),
             cfg.n_layers,
             self.decode_shape_key(),
-            cache.alloc_id(),
+            cache,
             |s, ctx| self.drop_decode_session(s, ctx),
         );
 
@@ -15738,13 +15815,27 @@ mod generate_tests {
     /// keeping the test on CPU — `CapturedDecodeSession` is `cuda`-only and a
     /// GPU-gated test could not run in the ordinary suite at all.
     ///
-    /// Three arms, because "it clears things" is not the claim — "it clears
-    /// things exactly when the key mismatches" is:
-    /// - matching key → returns false, BOTH survive (an over-eager check that
+    /// Five arms, because "it clears things" is not the claim — "it does the
+    /// right thing to each of the pair, exactly when the key says so" is:
+    /// - matching key → `Kept`, BOTH survive (an over-eager check that
     ///   invalidated every token would silently cost the whole 223× win while
     ///   every correctness test still passed);
-    /// - mismatched `max_seq_len` → returns true, BOTH cleared;
-    /// - mismatched `cache_dtype` → returns true, BOTH cleared.
+    /// - mismatched `max_seq_len` → `Dropped(None)`, BOTH cleared;
+    /// - mismatched `cache_dtype` → `Dropped(None)`, BOTH cleared;
+    /// - same-geometry allocation swap → `Rebound` (GAP-028): the SESSION
+    ///   survives, the CAPTURE does not, and the plan re-keys to the new
+    ///   allocation so the next token is `Kept` rather than re-binding forever;
+    /// - a swap whose residency cannot be proven → `Dropped(ResidencyUnknown)`,
+    ///   BOTH cleared. That last arm is the one that makes the fourth mean
+    ///   something: a guard is only worth having if it also says no.
+    ///
+    /// **What this test CANNOT see, so that nobody treats it as covering it:**
+    /// whether a re-bind bound the RIGHT storage. Arm 4 asserts `Rebound` and
+    /// the alloc_id re-key, and a `rebind_kv` gutted to skip the `base_cache`
+    /// overwrite entirely produces both — verified by sabotage, this test stays
+    /// green through it. The failure surfaces only in
+    /// [`held_decode_plan_must_not_execute_over_a_swapped_kv_cache`], at the
+    /// logit level. The two are NOT substitutes despite the overlap in subject.
     #[test]
     fn stale_decode_pair_invalidates_session_and_capture_together() {
         let cfg = LlamaConfig {
@@ -15774,21 +15865,28 @@ mod generate_tests {
 
         // --- Arm 1: key MATCHES the live cache → nothing is invalidated. ---
         let mut captured: Option<()> = Some(());
-        let invalidated = model.invalidate_decode_pair_if_stale(
+        let d = model.invalidate_decode_pair_if_stale(
             &mut session, &mut captured, &mut ctx, 1, Some(MSL), DType::F32,
-            cache.alloc_id(),
+            &cache,
         );
-        assert!(!invalidated, "a matching validity key must NOT invalidate");
+        assert_eq!(d, SessionDisposition::Kept, "a matching validity key must NOT invalidate");
         assert!(session.is_some(), "valid session survives");
         assert!(captured.is_some(), "valid capture survives");
 
-        // --- Arm 2: cache resized under the held pair → both retired. ---
+        // --- Arm 2: cache resized under the held pair → both retired. The
+        // refusal is `None`: a structural mismatch is not a re-bind candidate,
+        // so the guard is never consulted. ---
         let mut captured: Option<()> = Some(());
-        let invalidated = model.invalidate_decode_pair_if_stale(
+        let d = model.invalidate_decode_pair_if_stale(
             &mut session, &mut captured, &mut ctx, 1, Some(MSL * 4), DType::F32,
-            cache.alloc_id(),
+            &cache,
         );
-        assert!(invalidated, "a resized cache must invalidate");
+        assert_eq!(
+            d, SessionDisposition::Dropped(None),
+            "a resized cache must be judged STRUCTURALLY stale, not offered to the \
+             re-bind guard — re-binding across `max_seq_len` would feed the plan \
+             storage of the wrong extent",
+        );
         assert!(session.is_none(), "stale session dropped");
         assert!(
             captured.is_none(),
@@ -15802,11 +15900,14 @@ mod generate_tests {
             .expect("rebuild the session after invalidation");
         assert!(session.is_some(), "precondition: session rebuilt");
         let mut captured: Option<()> = Some(());
-        let invalidated = model.invalidate_decode_pair_if_stale(
+        let d = model.invalidate_decode_pair_if_stale(
             &mut session, &mut captured, &mut ctx, 1, Some(MSL), DType::BF16,
-            cache.alloc_id(),
+            &cache,
         );
-        assert!(invalidated, "a cache-dtype swap must invalidate");
+        assert_eq!(
+            d, SessionDisposition::Dropped(None),
+            "a cache-dtype swap must invalidate structurally",
+        );
         assert!(session.is_none() && captured.is_none(), "both retired on dtype mismatch");
 
         // --- Arm 4 (GAP-014): a cache SWAP at identical geometry. The pair is
@@ -15828,16 +15929,82 @@ mod generate_tests {
             "two allocations must never share an id — the counter is never recycled",
         );
         let mut captured: Option<()> = Some(());
-        let invalidated = model.invalidate_decode_pair_if_stale(
+        let d = model.invalidate_decode_pair_if_stale(
             &mut session, &mut captured, &mut ctx, 1, Some(MSL), DType::F32,
-            fresh.alloc_id(),
+            &fresh,
         );
+        // GAP-014 retired the pair here. GAP-028 keeps the plan and re-points
+        // its KV Consts instead — but ONLY the plan. The capture is not
+        // rescuable by any amount of guarding: it is a recorded CUDA graph over
+        // FIXED device addresses, and the re-bind is precisely the act of
+        // changing some of those addresses.
+        assert_eq!(
+            d, SessionDisposition::Rebound,
+            "a same-geometry cache swap must RE-BIND the held plan (GAP-028) — \
+             every other key field matches, so only the allocation id sees it",
+        );
+        assert!(session.is_some(), "the plan survives a guarded re-bind");
         assert!(
-            invalidated,
-            "a same-geometry cache SWAP must invalidate — every other key field \
-             matches, so nothing but the allocation id can catch this",
+            captured.is_none(),
+            "the CAPTURE must die on a re-bind exactly as it dies on a drop — the \
+             re-bind changes the very device addresses the recording baked in",
         );
-        assert!(session.is_none() && captured.is_none(), "both retired on cache swap");
+        // And the plan now answers to the NEW allocation, so the next token
+        // takes the `Kept` path rather than re-binding on every step.
+        let mut captured2: Option<()> = Some(());
+        let d = model.invalidate_decode_pair_if_stale(
+            &mut session, &mut captured2, &mut ctx, 1, Some(MSL), DType::F32,
+            &fresh,
+        );
+        assert_eq!(
+            d, SessionDisposition::Kept,
+            "after a re-bind the plan's alloc_id must name the NEW allocation — \
+             otherwise every subsequent token re-binds and the guard runs forever",
+        );
+
+        // --- Arm 5 (GAP-028 negative control at the disposition level): a swap
+        // the guard must REFUSE, and refuse for a NAMED reason. Accepting a
+        // compatible swap proves nothing on its own; the whole risk of GAP-028
+        // is a guard that says yes too readily, which is GAP-014 restored
+        // behind an optimization. `with_dims` + `set_layer` reaches the one
+        // state the storage bytes cannot describe: residency this cache never
+        // measured. ---
+        let mut unprovable = crate::inference_context::KvCache::with_dims(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim,
+        );
+        unprovable.max_seq_len = Some(MSL);
+        unprovable.dtype = Some(DType::F32);
+        for li in 0..cfg.n_layers {
+            let layer = fresh.layer(li).expect("fresh cache has every layer");
+            unprovable.set_layer(li, crate::inference_context::KvLayer {
+                k: std::sync::Arc::clone(&layer.k),
+                v: std::sync::Arc::clone(&layer.v),
+                k_layout: layer.k_layout.clone(),
+                v_layout: layer.v_layout.clone(),
+                k_version: 0,
+                v_version: 0,
+                k_authority: crate::inference_context::AuthorityState::Host,
+                v_authority: crate::inference_context::AuthorityState::Host,
+            });
+        }
+        // Note what this cache is: byte-for-byte the SAME storage `Arc`s the
+        // held plan is already bound to. Every fingerprint check passes; only
+        // the residency claim is missing. That is deliberate — it isolates the
+        // one guard clause that cannot be derived from the bytes.
+        let mut captured: Option<()> = Some(());
+        let d = model.invalidate_decode_pair_if_stale(
+            &mut session, &mut captured, &mut ctx, 1, Some(MSL), DType::F32,
+            &unprovable,
+        );
+        assert_eq!(
+            d,
+            SessionDisposition::Dropped(Some(
+                crate::inference_context::RebindRefusal::ResidencyUnknown,
+            )),
+            "an unprovable residency must be REFUSED, and refused for that reason — \
+             a guard that refuses by accident is not a guard",
+        );
+        assert!(session.is_none() && captured.is_none(), "both retired on refusal");
     }
 
     /// **The CONTIGUOUS generation API is plan-reuse-by-default, and this is the
@@ -16161,6 +16328,16 @@ mod generate_tests {
     /// The oracle is at LOGIT level, not sampled-token level: on a tiny model
     /// greedy sampling is a fixed point that swallows exactly this kind of
     /// divergence (the null-oracle lesson from the ragged-decode work).
+    ///
+    /// **NOT a substitute for, and not substitutable by,
+    /// [`stale_decode_pair_invalidates_session_and_capture_together`] — they
+    /// look redundant and cover disjoint things.** Measured by sabotage: gutting
+    /// `rebind_kv` so it updates `alloc_id` but never overwrites `base_cache`
+    /// leaves that test fully GREEN (it asserts `Rebound` and the alloc_id
+    /// re-key, both of which a gutted re-bind still produces) while THIS test
+    /// fails at maxdiff 1.032e-1. Only the logit oracle can see a re-bind that
+    /// binds the wrong storage. Deleting either as duplication silently drops a
+    /// whole failure mode.
     #[test]
     fn held_decode_plan_must_not_execute_over_a_swapped_kv_cache() {
         let cfg = LlamaConfig {
@@ -16298,10 +16475,24 @@ mod generate_tests {
     ///
     /// So accepting a compatible swap proves nothing on its own. This asserts
     /// the guard REJECTS: an incompatible cache must fall back to a rebuild,
-    /// never be spliced into the baked plan. `max_seq_len` is the lever here
-    /// because it is baked into the graph's KV `Const` shape AND its causal
-    /// mask, so re-binding across it would feed the plan storage of the wrong
-    /// extent.
+    /// never be spliced into the baked plan.
+    ///
+    /// TWO arms, because the two rejections come from different layers and a
+    /// sabotage run showed the first alone is not a test of the guard:
+    ///
+    /// 1. `max_seq_len` — rejected by [`DecodeSession::validity_for`] as
+    ///    STRUCTURALLY stale. `rebind_kv` is never called. This arm survived
+    ///    both a gutted-re-bind sabotage and a gutted-residency-check sabotage,
+    ///    which is exactly what "it does not exercise the guard" looks like.
+    ///    It is kept because it pins a real decision — that `max_seq_len`
+    ///    stays a structural key and is NOT delegated to the guard — but it is
+    ///    labelled so nobody mistakes it for guard coverage.
+    /// 2. Head geometry — a cache whose per-slot storage is a different
+    ///    EXTENT at the same `max_seq_len`. Every structural field matches
+    ///    (`shape_key` describes the MODEL, not the cache), so `validity_for`
+    ///    says `AllocationChanged` and the guard is the only thing between that
+    ///    storage and a splice into the baked graph. This is the arm that
+    ///    actually tests `rebind_kv`.
     #[test]
     fn incompatible_cache_swap_is_rejected_not_rebound() {
         let cfg = LlamaConfig {
@@ -16366,6 +16557,42 @@ mod generate_tests {
             drift <= 1e-5,
             "rejecting must fall back to a correct REBUILD, not merely refuse to \
              re-bind: maxdiff {drift:.3e} vs the re-planned oracle",
+        );
+
+        // ---- Arm 2: the guard's own rejection. ----
+        //
+        // A cache at the SAME `max_seq_len` whose K/V buffers are a different
+        // extent, because its head geometry differs. Nothing in the structural
+        // key can see this: `shape_key` is the model's identity, and
+        // `n_layers` / `cache_dtype` / `max_seq_len` all match. So
+        // `validity_for` hands it to the guard, and only the per-slot byte
+        // comparison stands between a `[1, 4, 16, 4]` plan and `[1, 8, 16, 4]`
+        // storage.
+        model
+            .forward_with_kv_context_persistent(&[7], &mut cache_wide, &mut ctx, &mut session)
+            .expect("rebuild a plan against the wide cache");
+        let s = session.as_mut().expect("a held plan to offer the guard");
+        let wrong_heads = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads * 2, cfg.head_dim, 16, DType::F32, &dev,
+        ).expect("same max_seq_len, DOUBLE the kv heads");
+        assert_eq!(
+            s.validity_for(
+                1, 16, cfg.n_layers, DType::F32, model.decode_shape_key(),
+                wrong_heads.alloc_id(),
+            ),
+            crate::inference_context::PlanValidity::AllocationChanged,
+            "precondition: the structural key must NOT catch this — if it did, \
+             the guard would never be consulted and the assertion below would \
+             pass vacuously",
+        );
+        assert_eq!(
+            s.rebind_kv(&wrong_heads),
+            Err(crate::inference_context::RebindRefusal::StorageDiffers {
+                layer: 0, which: 0,
+            }),
+            "the guard must refuse storage of the wrong EXTENT, and name it — \
+             splicing it in would give the baked graph a buffer whose bytes do \
+             not match the `Const` shape it was optimized around",
         );
     }
 
