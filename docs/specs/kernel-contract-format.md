@@ -973,9 +973,9 @@ requirement):
 
 | value | meaning | planner consequence |
 |-------|---------|---------------------|
-| `requires_contiguous` | rejects non-contiguous; needs dense zero-offset input | planner MUST insert `Op::Contiguize` for any non-contiguous operand and **adds the Contiguize kernel's cost** to the candidate (see below) |
+| `requires_contiguous` | rejects non-contiguous; needs dense zero-offset input | planner MUST insert `Op::Contiguize` for any non-contiguous operand and **adds the Contiguize kernel's cost** to the candidate (see below) `[FKC-4.3-0001]` |
 | `handles_strided` | walks strides directly; no fixup needed | planner passes the strided view through; no contiguize cost |
-| `contiguize_internally` | accepts strided but **copies to dense inside the kernel** | planner attributes the contiguize cost to *this kernel* (it is part of the kernel's `bytes_moved` / `cost`), and MUST NOT insert a separate `Op::Contiguize` — the fused contiguize+op is costed honestly as one unit |
+| `contiguize_internally` | accepts strided but **copies to dense inside the kernel** | planner attributes the contiguize cost to *this kernel* (it is part of the kernel's `bytes_moved` / `cost`), and MUST NOT insert a separate `Op::Contiguize` — the fused contiguize+op is costed honestly as one unit `[FKC-4.3-0002]` |
 
 `contiguize_internally` is the constitutionally-careful case: a kernel *may* contiguize
 internally (some do — MKL matmul relies on the executor's auto-Contiguize; some quant kernels
@@ -1241,7 +1241,7 @@ These are **starting values, overridable by the Judge** (digest §4): the contra
 fields seed the binding; empirical calibration refines `max_ulp`/`max_relative`/`max_absolute`
 over time (the binding entry is re-readable/overridable post-load, §11).
 
-> **Always-built coverage commitment.** fuel-cpu-backend's contract MUST declare ≥1
+> **Always-built coverage commitment `[FKC-4.8-0001]`.** fuel-cpu-backend's contract MUST declare ≥1
 > `bit_stable_on_same_hardware: true` kernel for every primitive op; a new primitive's contract
 > triggers the CI coverage lint until the bit-stable CPU kernel's contract exists (§10.9,
 > digest §4). The CPU bulk-fill convention (`fill_unset_cpu_precision` →
@@ -2111,7 +2111,7 @@ tracks changing that primitive to `Result`. For a `fused_op` contract:
 cost, precision, caps, revision })`, joined to the graph-side `FusedOp { shape_rule, dtype_rule,
 output_views, … }` by `FusedOpId`.
 
-**A `fused_op` contract MUST carry its recipe (the G1 recipe principle,
+**A `fused_op` contract MUST carry its recipe `[FKC-12.5-0001]` (the G1 recipe principle,
 [10-decisions-log](../architecture/10-decisions-log.md)).** The graph-side `FusedOp` half is required
 to supply **both** inverse directions: a `decompose` (fused → primitive subgraph; *lowers* it onto the
 base map) and a `pattern` (recognize that subgraph; *re-fuse*) — see the
@@ -2224,7 +2224,7 @@ upgradable as the hashing function lands.
 - **The `register_full_with_source` panic → `Result` change is a firm prerequisite (RESOLVED
   2026-06-17), flagged here, performed with the implementation.** It is a `fuel-dispatch` code
   change (CONSTITUTION-CONFLICT in §10.10), not a spec edit. Per the resolved conversion-plan
-  decision, `register_full_with_source` **MUST become `Result`** (never-panic) and is a
+  decision, `register_full_with_source` **MUST become `Result`** (never-panic) `[FKC-10.10-0001]` and is a
   **prerequisite** of the FKC import path — not merely a future cleanup. The spec makes it a
   tracked dependency and gives FKC an import-path pre-check so the panic is unreachable in the
   interim; the actual de-panic lands with the importer implementation.
