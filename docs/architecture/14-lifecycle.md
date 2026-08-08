@@ -1,6 +1,17 @@
 # Lifecycle: from model file to finished inference/training
 
-**Status**: v0.10 (2026-08-07). **v0.10 closes the last of the four Stage-5
+**Status**: v0.11 (2026-08-08). **v0.11 adds a THIRD admissible disposition for
+baked state to the Stage-5 invariant — re-bind it, under a guard that proves
+interchangeability** ([10-decisions-log §2026-08-08](10-decisions-log.md)). The
+first two dispositions ("its identity is in the key", "it cannot change, by
+construction") are *static*: neither can be wrong at runtime. The third is
+*dynamic*, and is admissible only with a proof obligation the other two do not
+carry — if the guard is ever wrong, the failure is the original violation
+restored, behind an optimization that was supposed to be safe. The invariant's
+second half is **not** relaxed: a re-bind retires derived artifacts exactly as a
+drop does. Shipped for the KV allocation on the contiguous and latent carriers
+(GAP-028). The invariant's first half is unchanged and remains normative.
+v0.10 (2026-08-07). **v0.10 closes the last of the four Stage-5
 violations the v0.9 invariant tabulated** — the KV allocation now carries a
 never-recycled `decode_shape::KvAllocId` that enters both decode validity keys,
 in all three carriers (`KvCache`, `LatentKvCache`, `DeviceKvPool`)
@@ -471,11 +482,48 @@ keying code.
 A held plan (`DecodeSession`, `PagedDecodeSession`, a `CapturedDecodeSession`
 recorded over it) **bakes**: the op structure, the weight `Const`s, and the
 storage `Arc`s bound at build time. Per-token data is rebound; **baked state is
-not**. So for each baked thing, one of two must hold:
+not**. So for each baked thing, one of three must hold:
 
 1. its identity is in the validity key, or
 2. it cannot change for the plan's lifetime, *enforced by construction* — not by
-   convention.
+   convention, or
+3. it is **re-bound under a guard that proves the replacement interchangeable**
+   (added v0.11, 2026-08-08).
+
+**Disposition 3 is not a free third option — it is the other two's opposite in
+kind, and the difference is where the risk lives.** 1 and 2 are *static*: a key
+comparison and a construction argument, neither of which can be wrong at runtime.
+3 is *dynamic*. It says the plan may SURVIVE a change to something it baked, on
+the strength of a check — so the guarantee moves from "true by construction" to
+"true if the guard is right", and if the guard is ever wrong the failure mode is
+the original violation restored, at full speed, behind an optimization that was
+supposed to be safe. Disposition 3 therefore carries obligations 1 and 2 do not:
+
+- **Prove the refusals, not just the acceptances.** That a compatible
+  replacement is accepted says nothing; a guard that always says yes passes that
+  test. Every clause needs a case that exercises *it*, and "this test will start
+  covering the guard once the implementation lands" is a prediction, not a fact —
+  see the decisions-log entry for a test that was expected to become load-bearing
+  and provably never could.
+- **Check the replacement against what the plan BAKED, not against what the
+  replacement says about itself.** A cache's own fields describe the cache; the
+  storage in `base_cache` describes what the graph was optimized around. Only the
+  second is ground truth.
+- **Refuse what you cannot prove.** Some properties are not readable from the
+  thing being swapped — residency is the live example: `fuel_memory::Storage`
+  exposes a backend *variant* but no device ordinal, so a same-geometry
+  replacement on a different GPU of the same backend is invisible in the bytes.
+  Unprovable must mean refused, never assumed-equal.
+- **The second half of the invariant still binds.** A re-bind is not a lighter
+  form of a drop where derived artifacts are concerned: it changes the very
+  device addresses a `CapturedDecodeSession` recorded, so the capture dies on a
+  re-bind exactly as it dies on a drop. Retire readers *before* touching the
+  owner, and do it on the verdict rather than on the outcome — a capture is
+  worthless whether the re-bind then succeeds or is refused.
+
+Prefer 1 or 2. Reach for 3 only where rebuilding is a measured cost on a hot
+path — for the KV allocation it is the serving admission path, where a rebuild
+forfeits plan reuse worth a measured 223× on CUDA.
 
 **Four violations found reactively in two days**, all of the same shape, all
 silent, all full-speed, none a crash:
@@ -524,8 +572,25 @@ performance regression rule 3 exists to catch.
 
 **Four instances in two days predicts a fifth.** Anyone adding baked state to a
 session is the person this section is addressed to: put its identity in the key,
-or make it unable to change, and prove both halves. All four are now closed —
-which retires the backlog, not the rule. The rule is about the *next* one.
+make it unable to change, or guard a re-bind — and prove both halves. All four
+are now closed, which retires the backlog, not the rule. The rule is about the
+*next* one.
+
+**Where disposition 3 is used today (2026-08-08, GAP-028), and where it is
+deliberately NOT.** The KV allocation re-binds under a guard on the two
+`DecodeSession` carriers — `KvCache` and `LatentKvCache`, MLA reusing
+`DecodeSession` verbatim. The paged carrier (`DeviceKvPool`) keeps disposition 1,
+invalidate-and-rebuild, **by choice rather than by omission**: in paged serving
+one pool is shared across many sequences and the per-request variation rides
+`block_table`, which already re-binds per token. A pool swap is a server
+lifecycle event, not an admission-path event, so disposition 3 would buy
+approximately nothing there while taking on a second load-bearing guard whose
+failure mode is silent cross-request contamination. That asymmetry is the rule in
+miniature: **the proof obligation is only worth accepting where the rebuild it
+avoids is actually on a hot path.** Recorded as a decision rather than an
+omission (GAP-046), with its re-open condition attached: if paged serving ever
+swaps the pool on the admission path, the missing win appears and the trade
+changes.
 
 ---
 

@@ -991,6 +991,120 @@ This mirrors the CPU kernel, which is itself im2col + batched GEMM (`fuel-cpu-ba
 
 ---
 
+## 2026-08-08 — Baked state may be RE-BOUND under a guard: a third disposition, and its price
+
+**Sections affected**: 14 (Stage-5 NORMATIVE INVARIANT)
+**Phase / PR**: GAP-028
+**Bumped to**: 14 v0.10 → v0.11
+
+**What changed**: the Stage-5 invariant offered two ways to satisfy it for a
+thing a held plan bakes — put its identity in the validity key, or make it
+unable to change by construction. A third is now admissible: **re-bind it, under
+a guard that proves the replacement interchangeable.** Shipped for the KV
+allocation on the two `DecodeSession` carriers (`KvCache`, and `LatentKvCache`
+— MLA reuses `DecodeSession` verbatim).
+
+**Why**: GAP-014 closed the KV-allocation hole with invalidate-and-rebuild. That
+is correct, but it means a slot-pooled server pays a full plan REBUILD on every
+admitted request — forfeiting plan reuse measured at **223× on CUDA** — on the
+one path serving exists to make fast. The per-token data `Const`s already
+demonstrate the alternative: overwrite the entry in the held `base_cache` clone.
+The KV `Const`s can take the same treatment.
+
+**The price, stated plainly, because it is the whole content of this entry.**
+Dispositions 1 and 2 are **static**: a key comparison and a construction
+argument, neither of which can be wrong at runtime. Disposition 3 is **dynamic**.
+Invalidate-and-rebuild is safe *by construction* precisely because there is no
+guard to be wrong; re-binding replaces that with a guarantee that holds *by
+proof*. **If the guard is ever wrong, the failure mode is GAP-014 verbatim** —
+one request's tokens decoded over another's KV, at full speed, with a plausible
+distribution and nothing to report. The gap was originally filed by its own
+author as a "perf follow-up, NOT a correctness gap"; that framing was wrong and
+was retracted before implementation. A guard that rescues a plan is
+correctness-critical infrastructure, not an optimization.
+
+**What the guard checks, and against what.** Not the cache's description of
+itself — the storage **already baked into `base_cache`**, which is what the
+graph was actually optimized around and cannot drift from it the way a struct
+field can. Per slot: dtype, encoding (`SType`), bundling, backend variant, and
+byte extent. Byte extent is the load-bearing one — it collapses `batch ×
+n_kv_heads × max_seq_len × head_dim` into one comparison needing no
+reconstruction of the baked shape.
+
+**Residency is the exception, and it is why a new carrier exists.**
+`fuel_memory::Storage` exposes a backend *variant* but no device ordinal —
+`VulkanStorage` records none at all — so a same-geometry cache on a **different
+GPU of the same backend** is invisible from the bytes. It would pass every check
+above and be spliced into a graph whose placement stamps and residency
+`Op::Copy`s were baked for the old device. `KvCache` therefore records its own
+`DeviceLocation` at construction, where it is handed a `&Device` and residency is
+known for certain; `with_dims` and `set_layer` set it to `None`, and **`None`
+means refused, never CPU-by-default**.
+
+**The capture dies on a re-bind exactly as it dies on a drop.** The invariant's
+second half is not relaxed by disposition 3. A `CapturedDecodeSession` records a
+CUDA graph over FIXED device addresses drawn from `base_cache`, and a re-bind is
+precisely the act of changing some of them. Readers are retired on the *verdict*
+(anything but `Valid`) rather than on the outcome — a capture is worthless
+whether the re-bind then succeeds or is refused, and keying on the verdict keeps
+reader-before-owner ordering true without depending on a result that is not known
+yet.
+
+**One predicate, not two.** A caller needs to distinguish "everything matches"
+from "everything matches except the allocation". The obvious shape is an
+`is_valid_ignoring_alloc` twin, which would leave two comparison lists to keep in
+sync — the exact drift that made the staleness check a shared free function
+rather than a per-model copy. Instead `is_valid_for` became a view over a single
+`validity_for` returning `Valid` / `AllocationChanged` / `Stale`, and all four
+model paths route through one `refresh_decode_session` decision point.
+
+**Alternatives considered**: (a) fold residency into `shape_key` — rejected,
+`shape_key` names the MODEL and a cache is not part of model identity, and
+overloading it would make a model-identity bug and a residency bug
+indistinguishable; (b) derive residency from the storage — rejected, not
+derivable (see above), and a check that silently degrades on one backend is worse
+than no check; (c) apply disposition 3 to the paged carrier too — **declined,
+and recorded as a decision rather than an omission**: in paged serving one pool
+is shared across many sequences and per-request variation rides `block_table`,
+which already re-binds per token, so a pool swap is a server lifecycle event
+rather than an admission-path one. The obligation is only worth accepting where
+the rebuild it avoids is on a hot path.
+
+**A method note worth more than the feature (sabotage 3).** Three sabotages were
+run against the finished implementation, recompilation confirmed on each: gutting
+the re-bind failed the E2E logit oracle at maxdiff 1.032e-1 against a 1.337e-1
+history separation; treating unprovable residency as agreement failed the
+disposition test; **making the storage fingerprint always agree failed nothing.**
+That third result located the real hole. `incompatible_cache_swap_is_rejected_not_rebound`
+survived all three because its lever is `max_seq_len`, which `validity_for`
+rejects as *structurally* stale — so `rebind_kv` is never reached. It had been
+written as the negative control for exactly this feature, with a note predicting
+it would "become load-bearing once the implementation lands." **It provably could
+not.** Two lessons: *a sabotage that catches nothing is a finding, not a wasted
+run* — the two that fired only confirmed the tests work, while the one that did
+not fire identified which test was decorative; and *"this test will start
+covering X later" is a prediction, not a fact*. The repair added an arm at the
+same `max_seq_len` with doubled `kv_heads` — invisible to every structural field,
+since `shape_key` describes the model and not the cache — plus an explicit
+precondition assertion that `validity_for` returns `AllocationChanged`, so the
+test **fails if it ever stops exercising the path it claims to** rather than
+rotting quietly the way its predecessor did. Sabotage 1 also showed the
+disposition-level test cannot see a wrong re-bind at all (`Rebound` and the
+alloc_id re-key both survive a gutted implementation); only the logit oracle can.
+Two tests that look mutually redundant covering disjoint things is more dangerous
+than an obvious gap, because the apparent redundancy invites deleting one as
+cleanup — both sites now say so in a comment.
+
+**Both carriers are tested, not inferred.** MLA reuses `DecodeSession` verbatim,
+so the guard reaches `LatentKvCache` by construction — which is precisely the
+reasoning that left all three carriers welded through the whole of GAP-014 with
+only the contiguous one under test. Sharing an implementation is a reason to
+*expect* a property, never evidence of it. The latent carrier therefore gets its
+own both-halves test with its own negative control, sabotage-verified at maxdiff
+2.452e-2 against a 2.009e-2 history separation.
+
+---
+
 ## 2026-08-07 — Runtime value memoization is DECLINED; invariance is a declaration, not a cache
 
 **Sections affected**: none normatively (records a decision *not* to build)

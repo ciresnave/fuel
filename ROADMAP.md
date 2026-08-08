@@ -405,9 +405,16 @@ nowhere; now captured so they are not forgotten):
   plausible distribution and nothing to report. Closed by `decode_shape::KvAllocId`, a
   never-recycled per-allocation id now in BOTH `is_valid_for`s, across all three carriers
   (`KvCache`, `LatentKvCache`, `DeviceKvPool` — the hole was 3× its filed site). The id names the
-  ALLOCATION, not the conversation: `truncate_to` preserves it, `clear`/`set_layer` re-mint. Perf
-  follow-up filed as GAP-028 (re-bind the KV Arcs on swap instead of rebuilding, so an admission
-  costs nothing rather than one re-optimise). Last of the four
+  ALLOCATION, not the conversation: `truncate_to` preserves it, `clear`/`set_layer` re-mint. Follow-up
+  GAP-028 **CLOSED 2026-08-08**: a swap that changes only the allocation now RE-BINDS the held
+  plan under a guard instead of rebuilding it, so an admission costs nothing rather than one
+  re-optimise. Scoped to the contiguous + latent carriers; the paged half is deliberately DECLINED
+  (GAP-046) — one pool serves many sequences and per-request variation already rides
+  `block_table`, so a guard there would be pure proof-obligation with no win paying for it.
+  This makes [14-lifecycle](docs/architecture/14-lifecycle.md) v0.11 admit a THIRD disposition for
+  baked state — re-bind under a guard — alongside "in the validity key" and "cannot change by
+  construction", and unlike those two it is dynamic, so it can be wrong and carries a proof
+  obligation they do not. Last of the four
   [14-lifecycle](docs/architecture/14-lifecycle.md) Stage-5 invariant violations.
   **Tracked defect — RESOLVED 2026-07-29 (Q2):** `multi_session.rs` moved from
   `fuel-core` to `fuel-inference` (`57abafb4`). The move forced the concrete-model coupling into a

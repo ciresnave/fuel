@@ -42,7 +42,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use fuel_ir::{DType, DeviceLocation, Error, Layout, Result, Shape, SymEnv, SymId};
+use fuel_ir::{DType, DeviceLocation, Error, Layout, Result, SType, Shape, SymEnv, SymId};
 use fuel_graph::{Graph, Node, NodeId, Op};
 use fuel_dispatch::{optimize::OptimizedGraph, pipelined::{PipelinedExecutor, StorageCache}};
 use fuel_memory::{BackendStorage, Storage};
@@ -149,6 +149,25 @@ pub struct KvCache {
     /// `with_dims` path (which leaves dtype to whatever the first
     /// inserted layer specifies).
     pub dtype: Option<DType>,
+    /// Where this cache's storage lives — `Some(loc)` only while every
+    /// buffer is one [`Self::with_capacity`] allocated on `loc`, `None`
+    /// the moment that stops being provable.
+    ///
+    /// Exists for [`DecodeSession::rebind_kv`], which splices these `Arc`s
+    /// into a graph whose placement stamps and residency `Op::Copy`s were
+    /// baked against the *previous* cache. Shape it can prove from the
+    /// storage itself; residency it cannot — `fuel_memory::Storage` exposes
+    /// a backend *variant*, and `VulkanStorage` records no device ordinal at
+    /// all, so a multi-GPU swap is invisible from the bytes. The cache is
+    /// therefore the honest carrier: it is handed a `&Device` at the one
+    /// moment residency is known for certain.
+    ///
+    /// `None` means "cannot prove", not "CPU" — and every consumer must
+    /// treat it as a refusal. [`Self::with_dims`] never had a device;
+    /// [`Self::set_layer`] installs caller-supplied storage from anywhere.
+    /// Both therefore forfeit re-bind and fall back to a plan rebuild,
+    /// which is what shipped in GAP-014 and is safe by construction.
+    device_location: Option<DeviceLocation>,
 }
 
 impl KvCache {
@@ -170,6 +189,10 @@ impl KvCache {
             max_seq_len: None,
             dtype: None,
             alloc_id: KvAllocId::next(),
+            // No device was named, and this constructor's whole shape is
+            // grow-by-replacement — the storage a plan baked is replaced
+            // every step anyway. Unprovable residency, and nothing lost.
+            device_location: None,
         }
     }
 
@@ -321,6 +344,9 @@ impl KvCache {
             max_seq_len: Some(max_seq_len),
             dtype: Some(dtype),
             alloc_id: KvAllocId::next(),
+            // Every buffer above was `Op::Alloc { target: target_loc }`, so
+            // this is measured at the allocation, not inferred later.
+            device_location: Some(target_loc),
         })
     }
 
@@ -376,14 +402,26 @@ impl KvCache {
         self.alloc_id
     }
 
+    /// Where this cache's storage lives, or `None` when that is not provable.
+    /// See the field's doc — `None` is a refusal, never a CPU default.
+    pub fn device_location(&self) -> Option<DeviceLocation> {
+        self.device_location
+    }
+
     /// Install a layer's storage, replacing whatever was there.
     ///
     /// This **re-mints [`Self::alloc_id`]**: the storage `Arc` a held plan
     /// baked into its `base_cache` for this layer is no longer the storage
     /// this cache reads, so any plan welded to the old one must be rebuilt.
+    /// It also clears [`Self::device_location`]: the storage arrives from the
+    /// caller, so where it lives is no longer something this cache measured.
+    /// That forfeits [`DecodeSession::rebind_kv`] for the rest of this cache's
+    /// life — deliberately, because an unprovable residency spliced into a
+    /// baked plan is the GAP-014 failure one layer down.
     pub fn set_layer(&mut self, li: usize, layer: KvLayer) {
         self.layers[li] = Some(layer);
         self.alloc_id = KvAllocId::next();
+        self.device_location = None;
     }
 
     /// Drop every layer; reset `cached_len` to zero. Use between
@@ -400,6 +438,9 @@ impl KvCache {
         }
         self.cached_len = 0;
         self.alloc_id = KvAllocId::next();
+        // There is no storage left to have a residency. Repopulating goes
+        // through `set_layer`, which cannot prove one either.
+        self.device_location = None;
     }
 
     /// Shrink the cache to `new_len` cached positions. Speculative-
@@ -590,6 +631,10 @@ pub struct LatentKvCache {
     /// verbatim (its 2 latent slots ride `kv_nodes` as `(latent, kpe)` pairs),
     /// so it inherits the same welding and needs the same guard.
     alloc_id: KvAllocId,
+    /// Where the slot buffers live. Unconditional here, unlike
+    /// [`KvCache::device_location`]: this type has exactly one constructor
+    /// and it is handed a `&Device`, so residency is never unprovable.
+    device_location: DeviceLocation,
 }
 
 impl LatentKvCache {
@@ -727,6 +772,7 @@ impl LatentKvCache {
             max_seq_len,
             dtype,
             alloc_id: KvAllocId::next(),
+            device_location: target_loc,
         })
     }
 
@@ -794,6 +840,148 @@ impl LatentKvCache {
             self.cached_len = new_len;
         }
     }
+}
+
+// ===========================================================================
+// Guarded KV re-bind (GAP-028)
+// ===========================================================================
+
+/// A KV allocation a held [`DecodeSession`] can be re-bound onto — the one
+/// abstraction over [`KvCache`] (K/V pairs) and [`LatentKvCache`] (MLA's
+/// `(latent, kpe)` pairs), which already share `DecodeSession` verbatim and
+/// therefore share its welding.
+///
+/// Deliberately narrow: identity, residency, and the storage behind a baked
+/// `kv_nodes` slot. Geometry is **not** here, because the guard does not ask
+/// this trait for it — it compares the incoming storage against the storage
+/// already baked into the plan, which is ground truth and cannot drift from
+/// whatever a cache believes about itself.
+pub trait KvRebindSource {
+    /// Identity of this allocation. See [`KvAllocId`].
+    fn alloc_id(&self) -> KvAllocId;
+    /// Where the storage lives, or `None` when that is not provable — which
+    /// [`DecodeSession::rebind_kv`] treats as a refusal, never as a default.
+    fn rebind_location(&self) -> Option<DeviceLocation>;
+    /// Storage for slot `which` (0 or 1) of `layer` — the two halves of the
+    /// plan's `kv_nodes[layer]` pair, in the order the builder bound them.
+    fn rebind_slot(&self, layer: usize, which: usize) -> Option<Arc<RwLock<Storage>>>;
+}
+
+impl KvRebindSource for KvCache {
+    fn alloc_id(&self) -> KvAllocId {
+        KvCache::alloc_id(self)
+    }
+    fn rebind_location(&self) -> Option<DeviceLocation> {
+        self.device_location
+    }
+    fn rebind_slot(&self, layer: usize, which: usize) -> Option<Arc<RwLock<Storage>>> {
+        // The builder pushes `(k_id, v_id)` — this order is the contract.
+        let slot = match which {
+            0 => KvSlot::K,
+            1 => KvSlot::V,
+            _ => return None,
+        };
+        self.slot_storage(layer, slot)
+    }
+}
+
+impl KvRebindSource for LatentKvCache {
+    fn alloc_id(&self) -> KvAllocId {
+        LatentKvCache::alloc_id(self)
+    }
+    fn rebind_location(&self) -> Option<DeviceLocation> {
+        Some(self.device_location)
+    }
+    fn rebind_slot(&self, layer: usize, which: usize) -> Option<Arc<RwLock<Storage>>> {
+        // MLA binds `(latent, kpe)` as slots 0 and 1 — same positional
+        // contract as K/V above, which is why one `DecodeSession` serves both.
+        self.slot_storage(layer, which)
+    }
+}
+
+/// Why a held plan could not be re-bound onto a replacement KV allocation.
+///
+/// A refusal is a normal outcome, not an error: the caller falls back to the
+/// GAP-014 rebuild, which is correct by construction. The variants exist so
+/// the guard's reasons are *nameable in a test* — the point of GAP-028 is that
+/// this guard is load-bearing for correctness, so "it refused" is not enough
+/// to know it refused for the right reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RebindRefusal {
+    /// The replacement cannot say where its storage lives, so residency
+    /// cannot be proven equal to the plan's. See [`KvCache::device_location`].
+    ResidencyUnknown,
+    /// The plan's placement stamps and residency copies were baked for a
+    /// different device.
+    ResidencyDiffers { baked: DeviceLocation, incoming: DeviceLocation },
+    /// The replacement has no storage for a slot the plan writes.
+    MissingSlot { layer: usize, which: usize },
+    /// A baked KV `Const` has no `base_cache` entry — an internal
+    /// inconsistency in the held plan, not a property of the replacement.
+    UnbakedSlot { layer: usize, which: usize },
+    /// The replacement storage is not byte-interchangeable with the baked
+    /// storage: different dtype, encoding, backend variant, or extent.
+    StorageDiffers { layer: usize, which: usize },
+    /// A storage lock was poisoned while comparing. Refuse rather than guess.
+    LockPoisoned,
+}
+
+/// Whether a held plan may serve a step, and if not, why not — **one** set of
+/// comparisons, so the "is it valid" and "is only the allocation different"
+/// questions cannot drift apart. [`DecodeSession::is_valid_for`] is a thin
+/// view over this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanValidity {
+    /// Reuse the plan as-is.
+    Valid,
+    /// Everything the plan bakes still matches **except which KV allocation
+    /// it is welded to.** A guarded [`DecodeSession::rebind_kv`] may rescue
+    /// it; without one, the plan MUST NOT be reused — that is GAP-014.
+    AllocationChanged,
+    /// Something structural differs (shape, layer count, dtype, or the model
+    /// itself). Rebuild.
+    Stale,
+}
+
+/// Everything about a storage that a baked graph depends on and that is
+/// readable from the storage itself. Deliberately excludes residency, which
+/// is NOT readable — see [`DecodeSession::rebind_kv`].
+#[derive(PartialEq, Eq)]
+struct StorageFingerprint {
+    dtype: DType,
+    stype: SType,
+    bundled: bool,
+    backend: std::mem::Discriminant<BackendStorage>,
+    len_bytes: usize,
+}
+
+fn fingerprint(s: &Arc<RwLock<Storage>>) -> Option<StorageFingerprint> {
+    let g = s.read().ok()?;
+    Some(StorageFingerprint {
+        dtype: g.dtype,
+        stype: g.stype.clone(),
+        bundled: g.bundle.is_some(),
+        backend: std::mem::discriminant(&g.inner),
+        len_bytes: g.inner.len_bytes(),
+    })
+}
+
+/// May `incoming` stand in for `baked` inside an already-optimized graph?
+/// `None` means a lock was poisoned and the question could not be answered —
+/// which callers must treat as "no", not as "probably fine".
+///
+/// The two locks are taken one at a time and released before the next, so this
+/// cannot deadlock even if some future caller passes overlapping storage.
+fn storage_is_interchangeable(
+    baked: &Arc<RwLock<Storage>>,
+    incoming: &Arc<RwLock<Storage>>,
+) -> Option<bool> {
+    if Arc::ptr_eq(baked, incoming) {
+        return Some(true);
+    }
+    let a = fingerprint(baked)?;
+    let b = fingerprint(incoming)?;
+    Some(a == b)
 }
 
 // ===========================================================================
@@ -920,9 +1108,16 @@ pub struct DecodeSession {
     /// The KV **allocation** whose storage `Arc`s are baked into `base_cache`.
     /// `rebind_and_realize_prebuilt` never re-binds `kv_nodes`, so this plan
     /// reads and writes THESE buffers regardless of which cache the caller
-    /// hands in — making the id, not the geometry, the thing that decides
-    /// reuse. See [`KvAllocId`] and [`Self::is_valid_for`].
+    /// hands in — unless [`Self::rebind_kv`] re-points them — making the id,
+    /// not the geometry, the thing that decides reuse. See [`KvAllocId`] and
+    /// [`Self::is_valid_for`].
     alloc_id: KvAllocId,
+    /// Where the KV `Arc`s baked into `base_cache` lived when this graph was
+    /// optimized. The placement stamps and residency `Op::Copy`s in `graph`
+    /// were chosen against THIS location, so [`Self::rebind_kv`] must refuse a
+    /// replacement that lives anywhere else. `None` when the source could not
+    /// prove it, which is likewise a refusal.
+    kv_location: Option<DeviceLocation>,
 }
 
 impl DecodeSession {
@@ -951,11 +1146,15 @@ impl DecodeSession {
         n_layers: usize,
         cache_dtype: DType,
         shape_key: u64,
-        alloc_id: KvAllocId,
+        kv: &dyn KvRebindSource,
     ) -> Self {
         Self {
             shape_key,
-            alloc_id,
+            // Identity and residency are read from the SAME source in the same
+            // breath, so they cannot describe different allocations — which a
+            // pair of separate `alloc_id` / `location` parameters could.
+            alloc_id: kv.alloc_id(),
+            kv_location: kv.rebind_location(),
             graph,
             optimized,
             effective_target,
@@ -1049,12 +1248,136 @@ impl DecodeSession {
         shape_key: u64,
         alloc_id: KvAllocId,
     ) -> bool {
-        self.seq == seq
+        matches!(
+            self.validity_for(seq, max_seq_len, n_layers, cache_dtype, shape_key, alloc_id),
+            PlanValidity::Valid,
+        )
+    }
+
+    /// The same comparisons as [`Self::is_valid_for`], reporting *which kind*
+    /// of mismatch occurred rather than collapsing to a bool.
+    ///
+    /// The split exists so GAP-028 does not introduce a second predicate. A
+    /// caller that wants to try [`Self::rebind_kv`] needs to know "everything
+    /// matches except the allocation", and answering that with an
+    /// `is_valid_ignoring_alloc` twin would leave two comparison lists to keep
+    /// in sync — the exact drift that made
+    /// `lazy::invalidate_decode_pair_if_stale` a shared free function instead
+    /// of a per-model copy. There is one list, here.
+    ///
+    /// Note the asymmetry between the two non-`Valid` answers.
+    /// `AllocationChanged` is a *conditional* verdict: it says a re-bind is
+    /// worth attempting, NOT that one is safe. Everything it reports on is a
+    /// property of the held plan; whether the incoming storage is actually
+    /// interchangeable is [`Self::rebind_kv`]'s question, and it is answered
+    /// against the storage itself.
+    pub fn validity_for(
+        &self,
+        seq: usize,
+        max_seq_len: usize,
+        n_layers: usize,
+        cache_dtype: DType,
+        shape_key: u64,
+        alloc_id: KvAllocId,
+    ) -> PlanValidity {
+        let structural = self.seq == seq
             && self.max_seq_len == max_seq_len
             && self.n_layers == n_layers
             && self.cache_dtype == cache_dtype
-            && self.shape_key == shape_key
-            && self.alloc_id == alloc_id
+            && self.shape_key == shape_key;
+        if !structural {
+            return PlanValidity::Stale;
+        }
+        if self.alloc_id == alloc_id {
+            PlanValidity::Valid
+        } else {
+            PlanValidity::AllocationChanged
+        }
+    }
+
+    /// Re-point the held plan's baked KV `Const`s at a replacement allocation,
+    /// or refuse — the GAP-028 alternative to throwing the plan away.
+    ///
+    /// ## What this trades
+    ///
+    /// GAP-014 shipped invalidate-and-rebuild, which is safe **by
+    /// construction**: a plan welded to storage it no longer serves is simply
+    /// destroyed, and no guard can be wrong because there is no guard. This
+    /// method replaces that with a guarantee that holds **by proof**. If the
+    /// checks below ever accept an incompatible allocation, the failure mode is
+    /// GAP-014 verbatim — a plan executing one request's tokens over another's
+    /// KV, at full speed, with a plausible distribution and nothing to report.
+    /// Every check here is therefore load-bearing for correctness, not for
+    /// performance, and the cost of refusing wrongly is only a rebuild.
+    ///
+    /// ## What is checked, and against what
+    ///
+    /// Not against the cache's own description of itself — against the storage
+    /// **already baked into `base_cache`**, which is ground truth and cannot
+    /// disagree with the graph the way a `KvCache` field can. Per slot: dtype,
+    /// encoding, backend variant, bundling, and byte extent. Byte extent is the
+    /// load-bearing one: it collapses `batch × n_kv_heads × max_seq_len ×
+    /// head_dim` into a single comparison that needs no reconstruction of the
+    /// baked shape.
+    ///
+    /// Residency is the exception and is why [`KvRebindSource::rebind_location`]
+    /// exists. `fuel_memory::Storage` exposes a backend *variant* but no device
+    /// ordinal — `VulkanStorage` records none at all — so a same-geometry cache
+    /// on a *different GPU of the same backend* is invisible from the bytes. It
+    /// would pass every check above and be spliced into a graph whose placement
+    /// stamps and residency `Op::Copy`s were baked for the old device. An
+    /// unprovable residency is therefore a refusal, never a default.
+    ///
+    /// ## What the caller still owes
+    ///
+    /// **A re-bind invalidates any capture.** A `CapturedDecodeSession` records
+    /// a CUDA graph over FIXED device addresses drawn from `base_cache`; after
+    /// this returns `Ok`, some of those addresses name the old allocation.
+    /// Callers must clear the capture alongside, on the same
+    /// reader-before-owner rule that governs
+    /// `lazy::invalidate_decode_pair_if_stale`.
+    ///
+    /// Structural validity is NOT rechecked here — call this only when
+    /// [`Self::validity_for`] answered [`PlanValidity::AllocationChanged`].
+    pub fn rebind_kv(&mut self, kv: &dyn KvRebindSource) -> core::result::Result<(), RebindRefusal> {
+        let incoming_loc = kv.rebind_location().ok_or(RebindRefusal::ResidencyUnknown)?;
+        let baked_loc = self.kv_location.ok_or(RebindRefusal::ResidencyUnknown)?;
+        if baked_loc != incoming_loc {
+            return Err(RebindRefusal::ResidencyDiffers {
+                baked: baked_loc,
+                incoming: incoming_loc,
+            });
+        }
+
+        // Collect first, mutate second. A partial re-bind — some slots on the
+        // new allocation, the rest still on the old — is the one state strictly
+        // worse than either endpoint, and the only way to avoid it is to refuse
+        // before touching `base_cache`.
+        let mut staged: Vec<(NodeId, Arc<RwLock<Storage>>)> =
+            Vec::with_capacity(self.kv_nodes.len() * 2);
+        for (layer, &(k_node, v_node)) in self.kv_nodes.iter().enumerate() {
+            for (which, node) in [(0usize, k_node), (1usize, v_node)] {
+                let incoming = kv
+                    .rebind_slot(layer, which)
+                    .ok_or(RebindRefusal::MissingSlot { layer, which })?;
+                let baked = self
+                    .base_cache
+                    .get(&node)
+                    .ok_or(RebindRefusal::UnbakedSlot { layer, which })?;
+                if !storage_is_interchangeable(baked, &incoming)
+                    .ok_or(RebindRefusal::LockPoisoned)?
+                {
+                    return Err(RebindRefusal::StorageDiffers { layer, which });
+                }
+                staged.push((node, incoming));
+            }
+        }
+
+        for (node, arc) in staged {
+            self.base_cache.insert(node, arc);
+        }
+        self.alloc_id = kv.alloc_id();
+        Ok(())
     }
 
     /// The held graph handle (the caller re-binds data Consts + realizes
