@@ -5774,7 +5774,30 @@ impl Tensor {
             | DType::F16
             | DType::F32
             | DType::F64
-            | DType::F8E4M3 => {}
+            | DType::F8E4M3
+            // GAP-097: F8E5M2 is PERMITTED, on the guard's own semantic terms.
+            //
+            // The reject set above is not "exotic dtypes" — it is two distinct
+            // NON-VALUE categories: the block-scales (F8E8M0/F8E6M2) ride as
+            // sibling operands and are not element value dtypes at all, and the
+            // block-scoped elements (F4/F6*) have no standalone byte layout, so
+            // a single element is not addressable without its block. Neither has
+            // a well-defined fill-one-element operation, which is what this op
+            // needs. F8E5M2 is a value dtype in exactly the way F8E4M3 (already
+            // permitted, directly above) is: sign + exponent + mantissa, a
+            // standalone byte layout, a representable zero for the backward, and
+            // a representable fill value. So permitting it CONTINUES the
+            // existing classification; rejecting would be the exception.
+            //
+            // Weighed and rejected as grounds for the opposite call: F8E5M2
+            // currently has NO host or CUDA storage (fuel-cpu-backend and
+            // fuel-cuda-backend both decline it), so this permits a graph the
+            // backends cannot yet allocate. That is the NOTE above working as
+            // designed — permission is semantic, allocation is a capability, and
+            // they are different questions. Writing REJECT here would encode the
+            // claim "F8E5M2 has no representable fill value", which is FALSE and
+            // would outlive the storage gap that motivated it.
+            | DType::F8E5M2 => {}
         }
         if value.dtype() != self.dtype() {
             return Err(fuel_ir::Error::Msg(format!(
