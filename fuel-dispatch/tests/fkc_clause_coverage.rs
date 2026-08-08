@@ -147,7 +147,17 @@ fn derive_clauses() -> BTreeSet<String> {
 fn rust_sources() -> Vec<PathBuf> {
     let mut files = Vec::new();
     fn walk(dir: &Path, files: &mut Vec<PathBuf>) {
-        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        // GAP-157: a discovery step that can fail must FAIL, not silently shrink
+        // its corpus. `else { return }` would truncate the file list on any
+        // read_dir error, and `every_clause_is_cited_by_a_test` would then assert
+        // coverage over an incomplete corpus — the gate silently becoming the
+        // unchecked claim it exists to enforce.
+        let rd = std::fs::read_dir(dir).unwrap_or_else(|e| {
+            panic!(
+                "rust_sources: read_dir({}) failed: {e} — the clause-coverage corpus must FAIL, not silently truncate",
+                dir.display()
+            )
+        });
         for entry in rd.flatten() {
             let p = entry.path();
             if p.is_dir() {
