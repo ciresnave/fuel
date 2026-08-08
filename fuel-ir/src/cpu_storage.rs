@@ -421,29 +421,3 @@ host_dtype!(bf16, BF16);
 host_dtype!(f32, F32);
 host_dtype!(f64, F64);
 host_dtype!(F8E4M3, F8E4M3);
-
-/// Dummy sub-byte float markers carry no real host storage — their conversions
-/// panic / error (parity with the pre-B0.4 `WithDType` dummy impls).
-macro_rules! host_dtype_dummy {
-    ($ty:ty, $dtype:ident) => {
-        impl HostDType for $ty {
-            fn cpu_storage_ref(_data: &[Self]) -> HostBufferRef<'_> {
-                panic!("{} is a dummy type and does not support storage", stringify!($ty))
-            }
-            fn to_cpu_storage_owned(_data: Vec<Self>) -> HostBuffer {
-                panic!("{} is a dummy type and does not support storage", stringify!($ty))
-            }
-            fn cpu_storage_data(_s: HostBuffer) -> Result<Vec<Self>> {
-                Err(Error::UnsupportedDTypeForOp(DType::$dtype, "cpu_storage_data").bt())
-            }
-            fn cpu_storage_as_slice(_s: &HostBuffer) -> Result<&[Self]> {
-                Err(Error::UnsupportedDTypeForOp(DType::$dtype, "cpu_storage_as_slice").bt())
-            }
-        }
-    };
-}
-
-host_dtype_dummy!(crate::F6E2M3, F6E2M3);
-host_dtype_dummy!(crate::F6E3M2, F6E3M2);
-host_dtype_dummy!(crate::F4, F4);
-host_dtype_dummy!(crate::F8E8M0, F8E8M0);
