@@ -2125,11 +2125,15 @@ fn compute_pairwise_consensus(runs: &[CellRun]) -> Vec<usize> {
 ///
 /// - `Ok(())` → `0.0` (output matches fixture within tolerance).
 /// - `Err(OutOfTolerance { rel_err, .. })` → that `rel_err`.
-/// - `Err(LengthMismatch | NonFinite)` → `f32::INFINITY` — these
-///   are categorical failures (wrong shape, or NaN/Inf where finite
-///   was expected). The dispatch picker will rank such an
-///   alternative behind any finite-rel_err peer; the kernel-source
+/// - `Err(LengthMismatch | NonFinite | UnvalidatableDType)` →
+///   `f32::INFINITY` — these are categorical failures (wrong shape,
+///   NaN/Inf where finite was expected, or a dtype this crate has no
+///   element-wise validator for). The dispatch picker will rank such
+///   an alternative behind any finite-rel_err peer; the kernel-source
 ///   tag on the ProfileEntry tells us which alternative blew up.
+///   `UnvalidatableDType` must NOT map to `0.0`: that would report an
+///   unvalidated kernel as *perfectly* correct, out-ranking every
+///   validated peer while the validator certified nothing (GAP-075).
 fn max_rel_err_vs_fixture(out: &[f32], fixture: &CorrectnessFixture) -> f32 {
     let bytes: Vec<u8> = out.iter()
         .flat_map(|x| x.to_le_bytes())
@@ -2139,6 +2143,9 @@ fn max_rel_err_vs_fixture(out: &[f32], fixture: &CorrectnessFixture) -> f32 {
         Err(CorrectnessDrift::OutOfTolerance { rel_err, .. }) => rel_err as f32,
         Err(CorrectnessDrift::LengthMismatch { .. }) => f32::INFINITY,
         Err(CorrectnessDrift::NonFinite { .. }) => f32::INFINITY,
+        // Correctness UNKNOWN (no element-wise validator for this dtype)
+        // ranks as a categorical failure, never as 0.0 "perfect" (GAP-075).
+        Err(CorrectnessDrift::UnvalidatableDType { .. }) => f32::INFINITY,
     }
 }
 
@@ -2272,6 +2279,41 @@ mod tests {
     fn op_kind_display_is_stable() {
         assert_eq!(OpKind::MatMul.to_string(), "matmul");
         assert_eq!(OpKind::AddElementwise.to_string(), "add");
+    }
+
+    /// GAP-075: a fixture whose dtype has no element-wise validator
+    /// wired must rank as a categorical FAILURE (`INFINITY`), never as
+    /// `0.0` ("perfect"). The old `_ => Ok(())` in
+    /// `validate_against_fixture` mapped here to `0.0`, so an
+    /// unvalidated kernel out-ranked every validated peer while the
+    /// validator had certified nothing. This locks the verdict at the
+    /// Judge boundary, where the false-green would otherwise surface as
+    /// a green test suite with no traceable symptom.
+    #[test]
+    fn unvalidatable_dtype_fixture_ranks_as_failure_not_perfect() {
+        use fuel_correctness_fixtures::ToleranceBand;
+        // Byte-lengths must match so we reach the dtype-decline arm, not
+        // LengthMismatch: `out` is f32 (4 B each) → 2 elems = 8 B; the
+        // F16 fixture (2 B each) with 4 elems = 8 B. Equal ⇒ past the
+        // length gate, into the unwired-dtype decline.
+        let out = vec![0.0f32, 0.0f32];
+        let fixture = CorrectnessFixture {
+            op: OpKind::AddElementwise,
+            dtype: DType::F16,
+            size_class: SizeClass(2),
+            input_seed: 1,
+            input_hash: 0,
+            expected_output: vec![0u8; 8],
+            output_element_count: 4,
+            tolerance: ToleranceBand::F32_DEFAULT,
+        };
+        let verdict = max_rel_err_vs_fixture(&out, &fixture);
+        assert_eq!(
+            verdict,
+            f32::INFINITY,
+            "unvalidatable-dtype fixture must rank as failure (INFINITY), \
+             not 0.0 — a false 'perfect' certifies an unchecked kernel",
+        );
     }
 
     /// Session 3 rider: the realizer-measured CellRun records the
