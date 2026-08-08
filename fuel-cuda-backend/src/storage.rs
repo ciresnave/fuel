@@ -99,6 +99,7 @@ fn push_scalar_arg<'a>(scalar: &'a fuel_ir::scalar::Scalar, builder: &mut crate:
         Scalar::F16(v) => builder.arg(v),
         Scalar::BF16(v) => builder.arg(v),
         Scalar::F8E4M3(v) => builder.arg(v),
+        Scalar::F8E5M2(v) => builder.arg(v),
         // OCP-MX E8M0 block scale: pass the raw byte, as `U8` does. The
         // kernel decodes `2^(X-127)` itself, so no host-side conversion.
         Scalar::F8E8M0(v) => builder.arg(v),
@@ -3019,6 +3020,16 @@ impl CudaStorage {
                 let result = dst.clone_dtod(cuda_slice)?;
                 CudaStorageSlice::F8E8M0(result)
             }
+            // GAP-097: declines because no `CudaStorageSlice::F8E5M2` variant
+            // exists — NOT because the dtype lacks a representation. Distinct
+            // from F8E6M2 below, whose encoding is unauthored (GAP-045).
+            DType::F8E5M2 => {
+                return Err(CudaError::UnsupportedDtype {
+                    dtype: self.dtype(),
+                    op: "transfer_to_device",
+                }
+                .into());
+            }
             DType::F8E6M2 => {
                 return Err(CudaError::UnsupportedDtype {
                     dtype: self.dtype(),
@@ -3304,7 +3315,7 @@ impl CudaStorage {
                 dev.synchronize()?;
                 Ok(())
             }
-            DType::F4 | DType::F6E2M3 | DType::F6E3M2 | DType::F8E8M0 | DType::F8E6M2 => {
+            DType::F8E5M2 | DType::F4 | DType::F6E2M3 | DType::F6E3M2 | DType::F8E8M0 | DType::F8E6M2 => {
                 Err(CudaError::UnsupportedDtype {
                     dtype: self.dtype(),
                     op: "const_set",
@@ -3386,6 +3397,14 @@ impl CudaStorage {
             }
             DType::I8 | DType::I16 | DType::I32 => {
                 return Err(CudaError::InternalError("i8,i16,i32 dtypes are not supported as cast targets").into())
+            }
+            // GAP-097: F8E5M2 is an OCP-standard value dtype, not a dummy
+            // type — it declines only for want of a CUDA storage variant.
+            DType::F8E5M2 => {
+                return Err(CudaError::InternalError(
+                    "F8E5M2 has no CudaStorageSlice variant yet (GAP-097); declining rather                      than mislabelling a real OCP format an unsupported dummy type",
+                )
+                .into());
             }
             DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 | DType::F8E6M2 => {
                 return Err(CudaError::InternalError("Dummy types not supported in CUDA backend").into());
