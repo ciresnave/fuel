@@ -99,6 +99,9 @@ fn push_scalar_arg<'a>(scalar: &'a fuel_ir::scalar::Scalar, builder: &mut crate:
         Scalar::F16(v) => builder.arg(v),
         Scalar::BF16(v) => builder.arg(v),
         Scalar::F8E4M3(v) => builder.arg(v),
+        // OCP-MX E8M0 block scale: pass the raw byte, as `U8` does. The
+        // kernel decodes `2^(X-127)` itself, so no host-side conversion.
+        Scalar::F8E8M0(v) => builder.arg(v),
     };
 }
 
