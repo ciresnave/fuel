@@ -1,4 +1,4 @@
-//! Typed byte-shaped kernels — Phase 7.5 B5.
+﻿//! Typed byte-shaped kernels — Phase 7.5 B5.
 //!
 //! These kernels operate on [`CpuStorageBytes`] (bytes-based CPU
 //! storage). They take typed slices via `bytemuck::cast_slice` /
@@ -6021,7 +6021,14 @@ macro_rules! causal_conv1d_native_kernel {
                         }
                         out_view[out_row_off + t] = if use_silu {
                             // SiLU(x) = x * sigmoid(x) = x / (1 + exp(-x))
-                            acc / (<$T>::from(1.0) + (-acc).exp())
+                            // `1.0` alone makes the literal default to f64, and
+                            // `f32: From<f64>` does not hold — rustc falls back to
+                            // inferring f32, which is CORRECT here but is a
+                            // future-compat lint. `1.0_f32` satisfies both
+                            // instantiations exactly (`f32: From<f32>` and
+                            // `f64: From<f32>`), and 1.0 is exactly representable
+                            // in both, so this changes the lint and not the math.
+                            acc / (<$T>::from(1.0_f32) + (-acc).exp())
                         } else {
                             acc
                         };
