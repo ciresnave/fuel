@@ -383,13 +383,3 @@ layer_norm_kernel!(layer_norm_last_dim_f32, f32, 4, "layer_norm_last_dim_f32");
 layer_norm_kernel!(layer_norm_last_dim_f16, f16, 2, "layer_norm_last_dim_f16");
 layer_norm_kernel!(layer_norm_last_dim_bf16, bf16, 2, "layer_norm_last_dim_bf16");
 layer_norm_kernel!(layer_norm_last_dim_f64, f64, 8, "layer_norm_last_dim_f64");
-
-/// Byte-size lookup for norm dtypes.
-pub fn dtype_byte_size(dt: DType) -> usize {
-    match dt {
-        DType::F32 => 4,
-        DType::F64 => 8,
-        DType::F16 | DType::BF16 => 2,
-        _ => 0,
-    }
-}

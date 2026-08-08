@@ -616,15 +616,3 @@ unary_kernel!(unary_round_bf16, unary_round_bf16, 2, "unary_round_bf16");
 unary_kernel!(unary_erf_f64, unary_erf_f64, 8, "unary_erf_f64");
 unary_kernel!(unary_erf_f16, unary_erf_f16, 2, "unary_erf_f16");
 unary_kernel!(unary_erf_bf16, unary_erf_bf16, 2, "unary_erf_bf16");
-
-/// Byte-size lookup for the dtypes baracuda's unary kernels accept.
-/// Used by the registration helper below to pick the right output
-/// stride for a given (op, dtype) entry.
-pub fn dtype_byte_size(dt: DType) -> usize {
-    match dt {
-        DType::F32 => 4,
-        DType::F64 => 8,
-        DType::F16 | DType::BF16 => 2,
-        _ => 0, // unsupported by this surface — caller validates.
-    }
-}
