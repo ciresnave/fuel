@@ -207,6 +207,18 @@ pub enum CorrectnessDrift {
         element_index: usize,
         actual: f64,
     },
+    /// The validator has no element-wise comparison wired for this
+    /// dtype, so it **cannot certify** the output. This is a
+    /// limitation of the *validator*, not (necessarily) a defect in
+    /// the kernel — the output may well be correct, but this crate
+    /// cannot prove it. Callers MUST treat this as "correctness
+    /// unknown" (the same rank as a categorical failure), never as a
+    /// pass: silently returning `Ok(())` for an unhandled dtype would
+    /// certify bytes that were never checked (GAP-075). Add a
+    /// per-dtype arm to [`validate_against_fixture`] to retire it.
+    UnvalidatableDType {
+        dtype: DType,
+    },
 }
 
 impl std::fmt::Display for CorrectnessDrift {
@@ -230,6 +242,11 @@ impl std::fmt::Display for CorrectnessDrift {
             Self::NonFinite { element_index, actual } => write!(
                 f,
                 "element {element_index} non-finite: got {actual}",
+            ),
+            Self::UnvalidatableDType { dtype } => write!(
+                f,
+                "cannot validate fixture: no element-wise comparison wired for dtype {dtype:?} \
+                 (correctness unknown — not a pass)",
             ),
         }
     }
@@ -265,13 +282,14 @@ pub fn validate_against_fixture(
 
     match fixture.dtype {
         DType::F32 => validate_f32(fixture, actual_output),
-        _ => {
-            // Future dtypes: add arms here. For now, treat
-            // unknown-dtype fixtures as length-match-only; callers
-            // that need element-level drift detection on f16/bf16/
-            // f64 cells need a later commit to wire those casts.
-            Ok(())
-        }
+        // No element-wise validator is wired for this dtype yet. DECLINE
+        // rather than fabricate a pass: returning `Ok(())` here would
+        // certify bytes we never compared, and the Judge maps `Ok` →
+        // `0.0` rel_err ("perfect"), ranking an unvalidated kernel ahead
+        // of every validated peer (GAP-075). "Unknown dtype ⇒ cannot
+        // certify" is the sound answer; wire f16/bf16/f64 casts here (as
+        // a dedicated arm) to retire this decline for that dtype.
+        other => Err(CorrectnessDrift::UnvalidatableDType { dtype: other }),
     }
 }
 
@@ -395,6 +413,38 @@ mod tests {
             }
             other => panic!("expected LengthMismatch, got {other:?}"),
         }
+    }
+
+    /// A fixture whose dtype has no element-wise validator wired must
+    /// DECLINE (return `Err`), never silently return `Ok(())`. A false
+    /// `Ok` certifies a kernel output the validator never actually
+    /// checked: the Judge maps `Ok` → `0.0` rel_err ("perfect"), so an
+    /// unvalidated kernel would rank ahead of every validated peer.
+    /// "Unknown dtype ⇒ cannot certify" is the sound answer (GAP-075).
+    #[test]
+    fn unvalidatable_dtype_declines_not_passes() {
+        // F16: `size_in_bytes() == 2`, so a 3-element fixture is 6 bytes.
+        // The length gate therefore passes and we reach the dtype arm —
+        // but there is no f16 element-wise validator wired today.
+        let fixture = CorrectnessFixture {
+            op: OpKind::AddElementwise,
+            dtype: DType::F16,
+            size_class: SizeClass(8),
+            input_seed: 42,
+            input_hash: 0xdeadbeef,
+            expected_output: vec![0u8; 6],
+            output_element_count: 3,
+            tolerance: ToleranceBand::F32_DEFAULT,
+        };
+        // Length-correct actual bytes; contents are deliberately garbage.
+        // A validator that "passes" this has certified nothing.
+        let actual = vec![0xFFu8; 6];
+        let result = validate_against_fixture(&fixture, &actual);
+        assert!(
+            result.is_err(),
+            "non-F32 fixture must DECLINE (Err), got {result:?} — a false Ok \
+             certifies an output the validator never element-wise checked",
+        );
     }
 
     /// Absolute tolerance saves near-zero comparisons (where
