@@ -564,6 +564,7 @@ fn dtype_dir_name(d: DType) -> &'static str {
         DType::F32 => "f32",
         DType::F64 => "f64",
         DType::F8E4M3 => "f8e4m3",
+        DType::F8E5M2 => "f8e5m2",
         DType::F6E2M3 => "f6e2m3",
         DType::F6E3M2 => "f6e3m2",
         DType::F4 => "f4",

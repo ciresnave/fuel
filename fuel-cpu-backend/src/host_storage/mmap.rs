@@ -188,6 +188,15 @@ impl HostStorage for MmappedHostStorage {
                 DType::F6E3M2 => HostBufferRef::F6E3M2(self.typed_slice::<u8>()),
                 DType::F4 => HostBufferRef::F4(self.typed_slice::<u8>()),
                 DType::F8E8M0 => HostBufferRef::F8E8M0(self.typed_slice::<u8>()),
+                // F8E5M2 declines for a DIFFERENT reason than F8E6M2 below:
+                // E5M2 is OCP-standard with a real host type
+                // (`float8::F8E5M2`) and a real DLPack representation. It
+                // declines only because no `HostBufferRef::F8E5M2` variant
+                // exists yet — a DELIBERATE UNDER-SHIPMENT, not an unauthored
+                // encoding.
+                DType::F8E5M2 => {
+                    return Err(Error::UnsupportedDTypeForOp(self.dtype, "as_host_buffer_ref").bt())
+                }
                 // F8E6M2 is a token-only (non-OCP-standard) dtype with no host
                 // storage variant — unsupported for typed host access.
                 DType::F8E6M2 => {
