@@ -1511,6 +1511,75 @@ return:
     /// the `selective_scan_*` / `ssd_chunk_scan_*` families were deferred.
     /// `plain_op` is the no-bundle backward-compat guard: TWO inputs + a regular
     /// `return.outputs`, key `[F32, F32, F32]` (unchanged).
+    /// A `dtype_rule: passthrough(<role>)` naming the LAST input when that
+    /// input is OPTIONAL. Rejected: with the optional operand absent there is
+    /// no operand to take a dtype from, so the output dtype would be
+    /// unresolvable in exactly one arm of the {absent, present} fan.
+    const PASSTHROUGH_OPTIONAL_SYNTH: &str = r#"---
+fkc_version: 1
+provider:
+  name: test-provider
+  backend: Cpu
+  kernel_source: "test-cpu"
+---
+
+# passthrough-names-optional synthetic
+
+## bad_passthrough
+
+A blurb.
+
+```fkc
+kernel: bad_passthrough
+op_kind: AddElementwise
+blurb: "output passthrough names the optional last operand"
+entry_point: "x::add_cpu"
+accept:
+  inputs:
+    - name: x
+      dtypes: [F32]
+    - name: bias
+      dtypes: [F32]
+      optional: true
+return:
+  outputs:
+    - name: out
+      dtype_rule: passthrough(bias)
+```
+"#;
+
+    /// GAP-036: closes a clause that the derived clause->test coverage gate
+    /// (`tests/fkc_clause_coverage.rs`) found unreachable by any test.
+    ///
+    /// `FkcError::PassthroughNamesOptionalOperand` was constructed on a live
+    /// production path (`resolve_output_slot_dtype`) yet nothing proved that
+    /// path was reachable — the "existence != enforcement" shape. The gate
+    /// flagged it; this is the provoking test.
+    ///
+    /// The positive control is the `bias`-vs-`x` contrast: the SAME contract
+    /// with `passthrough(x)` must lower cleanly. Without it this test would
+    /// still pass if the contract were malformed for some unrelated reason and
+    /// every lowering failed — it would be asserting "an error happened",
+    /// not "THIS rule fired".
+    #[test]
+    fn passthrough_naming_the_optional_last_operand_is_rejected() {
+        let err = lower_all(PASSTHROUGH_OPTIONAL_SYNTH, "bad_passthrough")
+            .expect_err("passthrough(bias) names the optional last operand");
+        match err {
+            FkcError::PassthroughNamesOptionalOperand { ref role, .. } => {
+                assert_eq!(role, "bias", "the rejected role is the optional operand");
+            }
+            other => panic!("expected PassthroughNamesOptionalOperand, got {other:?}"),
+        }
+
+        // POSITIVE CONTROL: the identical contract passing through the REQUIRED
+        // operand lowers. Proves the rejection above is caused by the operand
+        // being optional, not by the fixture being broken.
+        let ok = PASSTHROUGH_OPTIONAL_SYNTH.replace("passthrough(bias)", "passthrough(x)");
+        lower_all(&ok, "bad_passthrough")
+            .expect("passthrough(x) names a REQUIRED operand and must lower cleanly");
+    }
+
     const BUNDLE_SYNTH: &str = r#"---
 fkc_version: 1
 provider:
