@@ -119,6 +119,66 @@ pub struct GemCell {
     pub math_precision: GemMathPrecision,
 }
 
+/// The **non-contraction** precision coordinate `(acc + mp)` — the sk4
+/// optional-trailing field of a non-`gem` cell (KISS-CLASSIFY §6.7-0013,
+/// realizing the §6.7-0012 forward requirement).
+///
+/// Spelled **gem-symmetrically** as `<acc>/<mp>`, and it occupies the *same*
+/// optional-trailing slot the contraction group occupies for `gem`. A cell
+/// carries **at most one** precision field and the two **never coexist**, so
+/// the 9-vs-10 field count resolves on the op-family code alone.
+///
+/// # Absence means the diagonal, not "unspecified"
+///
+/// Omitting this is not a gap: per §6.7-0012 an absent coordinate means the
+/// accumulator dtype **equals the compute dtype** (the §6.17-0005 diagonal),
+/// so every pre-sk4 token keeps its meaning. That is what makes the field
+/// additive in the strict sense — no previously-derivable token is affected by
+/// its absence — rather than merely appended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AccMp {
+    /// Accumulator dtype coordinate `<acc>`, from the closed §6.1 set.
+    pub acc_dtype: DType,
+    /// Math-precision coordinate `<mp>`, the same codes as `gem`'s.
+    pub math_precision: GemMathPrecision,
+}
+
+impl AccMp {
+    /// The default math-precision a non-contraction cell is compared against
+    /// for emission purposes.
+    ///
+    /// **Provenance, deliberately recorded rather than cited:** §6.7-0013 says
+    /// the field is emitted when `<mp>` differs from *"the cell's default
+    /// math-precision"* and defers to KISS-Ops §6.17-0006 — **which never uses
+    /// the word "default"** (positive-controlled: 0 hits in 116 lines). The
+    /// value `st` is stated only in a **parenthetical inside a worked example**
+    /// in `classify.md` (`<acc>/<mp>` = `f32/st`, "mp at its `st` default").
+    /// So this constant is correct-but-underspecified upstream; the
+    /// underspecification is raised with KISS. If they pin it normatively this
+    /// comment becomes a citation, and if they pin it *differently* this is the
+    /// one line that has to change.
+    const DEFAULT_MP: GemMathPrecision = GemMathPrecision::BitStable;
+
+    /// §6.7-0013(a): the field is emitted **iff at least one** coordinate
+    /// deviates — accumulator ≠ compute dtype, or `<mp>` ≠ default.
+    ///
+    /// §6.7-0013(d) makes the all-default form **invalid**, so "always emit,
+    /// defaults included" is not a safe simplification.
+    fn deviates_from(&self, compute_dtype: DType) -> bool {
+        self.acc_dtype != compute_dtype || self.math_precision != Self::DEFAULT_MP
+    }
+
+    /// §6.7-0013(b): when emitted, **both** slots are spelled explicitly,
+    /// including one sitting at its default.
+    fn field(&self) -> Option<String> {
+        Some(format!(
+            "{}/{}",
+            dtype_token(self.acc_dtype)?,
+            self.math_precision.code(),
+        ))
+    }
+}
+
 /// The op-family a `structure_key` keys on — the KISS-CLASSIFY §6.5-0006
 /// 3-letter domain (the subset Fuel can present today). `Reduction` carries its
 /// reduce field (§6.6-0009); `Contraction` carries the sk4 [`GemCell`] role
@@ -192,6 +252,29 @@ pub fn derive_structure_key_token(
     operands: &[FdxOperandDesc],
     target: &str,
 ) -> Option<String> {
+    derive_structure_key_token_with_acc_mp(op, operands, target, None)
+}
+
+/// As [`derive_structure_key_token`], plus the sk4 non-contraction precision
+/// coordinate (§6.7-0013).
+///
+/// Passing `None` is **not** "unknown" — it asserts the §6.17-0005 diagonal
+/// (accumulator == compute dtype, `<mp>` at default), which is exactly what an
+/// absent field means. That is why the plain entry point can delegate here
+/// without changing the bytes of any token it produced before.
+///
+/// Declines (`None`) if an `(acc + mp)` is supplied for a `gem` cell: §6.7-0013
+/// pins that a cell carries **at most one** precision field and that the two
+/// never coexist, so emitting both would be invalid rather than merely odd.
+pub fn derive_structure_key_token_with_acc_mp(
+    op: FuelOpCategory,
+    operands: &[FdxOperandDesc],
+    target: &str,
+    acc_mp: Option<AccMp>,
+) -> Option<String> {
+    if acc_mp.is_some() && matches!(op, FuelOpCategory::Contraction(_)) {
+        return None;
+    }
     let first = operands.first()?;
     if operands.len() > 8 {
         return None; // MAX_OPERANDS cap (§6.4-0002)
@@ -280,6 +363,16 @@ pub fn derive_structure_key_token(
         ops = operand_keys.join(";"),
         reduce = op.reduce_field(),
     );
+    // §6.7-0013(c)/(e): the non-contraction precision field is
+    // OMITTED-WHEN-ABSENT — not `-`, not empty. This is a deliberate contrast
+    // with the MANDATORY reduce field above, which emits `-` when
+    // inapplicable. Applying the reduce field's convention here would emit a
+    // spurious trailing `|-` and fail the byte-match. The nearest precedent in
+    // this very token teaches the opposite rule, which is what makes it a trap.
+    if let Some(a) = acc_mp.filter(|a| a.deviates_from(first.dtype)) {
+        token.push('|');
+        token.push_str(&a.field()?);
+    }
     if let Some(c) = contraction {
         token.push('|');
         token.push_str(&c);
@@ -946,6 +1039,107 @@ mod tests {
                 "{dt:?} is NOT in the sk4 §6.1 set and must still typed-decline",
             );
         }
+    }
+
+    // ---- (acc + mp), the sk4 non-contraction precision field ---------------
+
+    /// §6.7-0013(c)/(d): when NEITHER coordinate deviates, the field is omitted
+    /// **entirely** — and the resulting token must be byte-identical to the one
+    /// derived without any `(acc + mp)` at all.
+    ///
+    /// This is the **additivity lock**, asserted rather than cited. §6.7-0013
+    /// claims byte-stability against the pre-sk4 codec; a byte-identity claim
+    /// between two codecs is exactly the kind that reads true and isn't, so it
+    /// is derived here instead of trusted. It is also what makes the field
+    /// additive in KISS's strict sense — *no previously-derivable token is
+    /// affected by its absence* — rather than merely appended.
+    #[test]
+    fn acc_mp_omitted_entirely_when_nothing_deviates() {
+        let ops = [co(&[4096], DType::F32)];
+        let plain = derive_structure_key_token(
+            FuelOpCategory::Reduction(ReduceAxes::All), &ops, "cuda:sm89",
+        )
+        .expect("plain reduction derives");
+
+        // acc == compute dtype, mp == default ⇒ nothing to declare.
+        let diagonal = derive_structure_key_token_with_acc_mp(
+            FuelOpCategory::Reduction(ReduceAxes::All), &ops, "cuda:sm89",
+            Some(AccMp { acc_dtype: DType::F32, math_precision: GemMathPrecision::BitStable }),
+        )
+        .expect("diagonal reduction derives");
+
+        assert_eq!(
+            diagonal, plain,
+            "a non-deviating (acc+mp) must produce a BYTE-IDENTICAL token; any              difference means the field is not additive and every token a              consumer already holds has silently changed meaning",
+        );
+        // §6.7-0013(e): omitted-when-absent, NOT the reduce field's `-`.
+        assert!(
+            !plain.ends_with("|-|-") && !diagonal.ends_with("|-|-"),
+            "a spurious trailing `|-` means the reduce field's MANDATORY              convention was applied to an OMITTED-WHEN-ABSENT field: {diagonal}",
+        );
+    }
+
+    /// §6.7-0013(a)/(b): emitted iff a coordinate deviates, and when emitted
+    /// **both** slots are spelled — including one sitting at its default.
+    #[test]
+    fn acc_mp_emitted_with_both_slots_when_either_deviates() {
+        let ops = [co(&[4096], DType::F16)];
+        let derive = |a: AccMp| {
+            derive_structure_key_token_with_acc_mp(
+                FuelOpCategory::Reduction(ReduceAxes::All), &ops, "cuda:sm89", Some(a),
+            )
+            .expect("derives")
+        };
+
+        // (i) accumulator deviates; mp sits at its default and is STILL spelled.
+        let acc_only = derive(AccMp {
+            acc_dtype: DType::F32,
+            math_precision: GemMathPrecision::BitStable,
+        });
+        assert!(acc_only.ends_with("|f32/st"), "got {acc_only}");
+
+        // (ii) mp deviates; accumulator equals compute dtype and is STILL spelled.
+        let mp_only = derive(AccMp {
+            acc_dtype: DType::F16,
+            math_precision: GemMathPrecision::ReducedMantissa,
+        });
+        assert!(mp_only.ends_with("|f16/rm"), "got {mp_only}");
+
+        // Non-vacuity: the two deviating forms differ from each other AND from
+        // the diagonal, so the field is actually discriminating cells.
+        let diagonal = derive(AccMp {
+            acc_dtype: DType::F16,
+            math_precision: GemMathPrecision::BitStable,
+        });
+        assert_ne!(acc_only, diagonal);
+        assert_ne!(mp_only, diagonal);
+        assert_ne!(acc_only, mp_only);
+
+        // The field is the LAST `|`-part, i.e. the optional-trailing slot.
+        assert_eq!(acc_only.split('|').count(), 10, "9 base fields + 1: {acc_only}");
+    }
+
+    /// §6.7-0013: a cell carries **at most one** precision field, and the
+    /// contraction group and `(acc + mp)` **never coexist**. Supplying both is
+    /// invalid, so the deriver declines rather than emitting an 11-field token
+    /// that no reader's 9-or-10 dispatch could parse.
+    #[test]
+    fn acc_mp_on_a_gem_cell_declines_rather_than_coexisting() {
+        let cell = gem_f32(8, 4096, 4096);
+        let ops = [co(&[8, 4096], DType::F32), co(&[4096, 4096], DType::F32), co(&[8, 4096], DType::F32)];
+        // Control: the same gem cell derives fine with no (acc+mp).
+        assert!(
+            derive_structure_key_token(FuelOpCategory::Contraction(cell), &ops, "cuda:sm89").is_some(),
+            "control: the gem cell must derive without an (acc+mp), or the              decline below proves nothing about coexistence",
+        );
+        assert_eq!(
+            derive_structure_key_token_with_acc_mp(
+                FuelOpCategory::Contraction(cell), &ops, "cuda:sm89",
+                Some(AccMp { acc_dtype: DType::F32, math_precision: GemMathPrecision::ReducedMantissa }),
+            ),
+            None,
+            "a gem cell carrying BOTH precision fields must decline",
+        );
     }
 
     // ---- typed declines ------------------------------------------------------
