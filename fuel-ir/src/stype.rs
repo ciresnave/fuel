@@ -123,13 +123,20 @@ impl SType {
     /// Returns `None` for a plain SType (no quant sidecar) and for the `Mx`
     /// placeholder (reserved, not wired in v1). v1 reads `self.0.first()` (at
     /// most one layer); stacked-layer projection is future work.
-    pub fn to_fdx(&self, scale_buffer: Option<u32>) -> Option<crate::dlpack::sidecar::FDXQuant> {
+    /// GAP-059: returns `Result` because an operand dtype may have no authored
+    /// FDX encoding (`F8E6M2`, GAP-045). `Ok(None)` still means "this encoding
+    /// projects to no FDX quant block" — the two outcomes are kept distinct so a
+    /// decline can never be mistaken for "nothing to describe".
+    pub fn to_fdx(
+        &self,
+        scale_buffer: Option<u32>,
+    ) -> crate::Result<Option<crate::dlpack::sidecar::FDXQuant>> {
         use crate::dlpack::codes::*;
         use crate::dlpack::convert::{dtype_to_fdx, ggml_to_fdx, scale_granularity_to_fdx};
         use crate::dlpack::sidecar::FDXQuant;
 
-        let layer = self.0.first()?;
-        match layer {
+        let Some(layer) = self.0.first() else { return Ok(None) };
+        Ok(match layer {
             // GGML: scale baked INLINE; no separate operand, no granularity.
             Encoding::GgmlBlock { ggml_dtype } => Some(FDXQuant {
                 family: FDX_QUANT_GGML_BLOCK,
@@ -167,7 +174,7 @@ impl SType {
                     baxes[i] = i as i32; // v1: blocks tile leading axes; refine when wiring the op.
                 }
                 let (zp_present, zp_dtype) = match zero_point {
-                    Some(zp) => (1u8, dtype_to_fdx(zp.dtype)),
+                    Some(zp) => (1u8, dtype_to_fdx(zp.dtype)?),
                     None => (0u8, FDX_DTYPE_NONE),
                 };
                 Some(FDXQuant {
@@ -180,7 +187,7 @@ impl SType {
                     pack_order: 0,
                     _pad1: [0; 3],
                     scale_present: 1,
-                    scale_dtype: dtype_to_fdx(scale.dtype),
+                    scale_dtype: dtype_to_fdx(scale.dtype)?,
                     scale_placement: FDX_SCALE_PLACEMENT_SEPARATE_BUFFER, // never INLINE
                     // AFFINE_BLOCK grain rides block_shape, NOT a granularity byte
                     // (spec §6.2); the coarse dispatch-key granularity is kept but
@@ -201,7 +208,7 @@ impl SType {
             }
             // RESERVED placeholder — not wired in v1.
             Encoding::Mx => None,
-        }
+        })
     }
 }
 
@@ -289,7 +296,7 @@ mod to_fdx_tests {
     /// A plain SType has no quant projection.
     #[test]
     fn plain_projects_to_none() {
-        assert!(SType::plain().to_fdx(None).is_none());
+        assert!(SType::plain().to_fdx(None).expect("plain never declines").is_none());
     }
 
     /// GGML projects to the inline GGML_BLOCK family: scale baked inline, no
@@ -298,6 +305,7 @@ mod to_fdx_tests {
     fn ggml_projects_inline() {
         let q = SType::from_layer(Encoding::GgmlBlock { ggml_dtype: GgmlDType::Q4_0 })
             .to_fdx(None)
+            .expect("encodes")
             .expect("GGML projects");
         assert_eq!(q.family, FDX_QUANT_GGML_BLOCK);
         assert_eq!(q.ggml_dtype, FDX_GGML_Q4_0);
@@ -317,7 +325,7 @@ mod to_fdx_tests {
             zero_point: None,
         };
         // Unbound (bare view()).
-        let q = SType::from_layer(enc.clone()).to_fdx(None).expect("projects");
+        let q = SType::from_layer(enc.clone()).to_fdx(None).expect("encodes").expect("projects");
         assert_eq!(q.family, FDX_QUANT_AFFINE_BLOCK);
         assert_eq!(q.ggml_dtype, FDX_DTYPE_NONE);
         assert_eq!(q.block_ndim, 1);
@@ -330,7 +338,7 @@ mod to_fdx_tests {
         assert_eq!(q.scale_buffer, FDX_BUFFER_NONE);
         assert_eq!(q.zp_present, 0);
         // Bound (op-context supplies the buffer-table index).
-        let bound = SType::from_layer(enc).to_fdx(Some(3)).expect("projects");
+        let bound = SType::from_layer(enc).to_fdx(Some(3)).expect("encodes").expect("projects");
         assert_eq!(bound.scale_buffer, 3);
     }
 
@@ -344,6 +352,7 @@ mod to_fdx_tests {
             zero_point: Some(ScaleSpec { dtype: DType::F32, granularity: ScaleGranularity::PerToken }),
         })
         .to_fdx(None)
+        .expect("encodes")
         .expect("projects");
         assert_eq!(q.zp_present, 1);
         assert_eq!(q.zp_dtype, FDX_DTYPE_F32);
@@ -352,6 +361,6 @@ mod to_fdx_tests {
     /// The reserved Mx placeholder is not wired in v1.
     #[test]
     fn mx_projects_to_none() {
-        assert!(SType::from_layer(Encoding::Mx).to_fdx(None).is_none());
+        assert!(SType::from_layer(Encoding::Mx).to_fdx(None).expect("Mx never declines").is_none());
     }
 }
