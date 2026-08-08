@@ -216,6 +216,25 @@ pub enum PadMode {
 /// Adding a new op means (1) adding a variant here, (2) teaching every
 /// backend how to execute it, and (3) teaching the reference backend how
 /// to compute its textbook answer.
+// EXHAUSTIVE-BY-DESIGN: `Op` is the CLOSED graph vocabulary; `OpKind`
+// (fuel-ir/src/dispatch.rs) is the deliberately-`#[non_exhaustive]` EXTENSIBLE
+// dispatch key. This marker makes that split — currently stated only in the doc
+// above — explicit and machine-checkable. The forcing functions are in-crate and
+// exhaustive: `op_short_name` (below) and the autograd `backward` match; adding a
+// variant fails to compile until both get an arm, which is the intended
+// enforcement (a new op with no gradient rule must not compile silently). Because
+// those live in fuel-graph, `-p fuel-graph` DOES catch a variant-add here (unlike
+// Scalar/DType, whose exhaustive consumers are cross-crate) — but do NOT add
+// `#[non_exhaustive]`: it would falsely advertise Op as open to external
+// consumers, contradicting the "teach every backend" contract. Downstream
+// dispatch/cost/telemetry consumers legitimately PARTIAL-match Op with sound
+// defaults (`None`/`Err`/skip); execution is gated by `op_to_op_kind` returning
+// `None`, so a new op is never silently mis-executed — that is why a plain
+// wildcard is correct THERE and forbidden in the two forcing functions above.
+// CAVEAT for the next op-adder: `destructive_input` (this file) has an UNSOUND
+// `_ => None` — a new destructive/in-place op will read as non-destructive and
+// the scheduler will omit its ordering edges (a silent data race). Add its arm
+// explicitly. See GAP-049 (the destructive_input hazard is filed as its own row).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Op {
     // --- leaves ---

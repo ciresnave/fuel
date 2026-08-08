@@ -9,6 +9,20 @@ use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 
 /// The different types of elements allowed in tensors.
+// EXHAUSTIVE-BY-DESIGN: `DType` is a closed set. The consumers that map a dtype
+// to a concrete per-variant fact — `size_in_bytes`, `as_str`, the host-buffer
+// allocation tables (fuel-cpu-backend), the safetensors/FDX/DLPack tag maps
+// (`--features dlpack`), and scalar `zero`/`one`/`from_f64` — match it
+// exhaustively, and several are CROSS-CRATE, so a wildcard there cannot produce a
+// correct answer: it would fabricate a byte size / tag and silently corrupt.
+// Adding a variant is a breaking change: gate it workspace-wide AND under every
+// feature that has a consumer (`--features cuda`/`vulkan`/`dlpack`), never just
+// `-p fuel-ir`. Do NOT add `#[non_exhaustive]` here — it would force wildcards
+// onto those cross-crate exhaustive tables and route a new dtype to the wrong
+// buffer. (The `DType::ALL` + `all_variants_witness` pair below is the existing
+// compile-time tripwire this marker names. Consumers that *decline* an unknown
+// dtype loudly — `Err`/`bail!`/`None` — are fine and expected; only the
+// exhaustive concrete-fact maps are load-bearing.) See GAP-049.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum DType {
