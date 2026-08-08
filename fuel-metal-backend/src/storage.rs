@@ -104,6 +104,12 @@ impl MetalStorage {
     pub fn to_cpu_storage(&self) -> Result<HostBuffer> {
         match self.dtype {
             DType::U8 => Ok(HostBuffer::U8(self.to_cpu()?)),
+            // PRE-EXISTING GAP, not an e5m2 consequence: `DType::I8` was added
+            // 2026-05-19 for int8 GEMM and this arm was never written. It went
+            // unnoticed because nothing on any developer box compiles this
+            // crate — the same invisibility that hid the e5m2 gap hid this one
+            // for months. `HostBuffer::I8` exists, so this is a real mapping.
+            DType::I8 => Ok(HostBuffer::I8(self.to_cpu()?)),
             DType::U32 => Ok(HostBuffer::U32(self.to_cpu()?)),
             DType::I16 => Ok(HostBuffer::I16(self.to_cpu()?)),
             DType::I32 => Ok(HostBuffer::I32(self.to_cpu()?)),
@@ -113,7 +119,13 @@ impl MetalStorage {
             DType::F32 => Ok(HostBuffer::F32(self.to_cpu()?)),
             DType::F64 => Ok(HostBuffer::F64(self.to_cpu()?)),
             DType::F8E4M3 => Ok(HostBuffer::F8E4M3(self.to_cpu()?)),
-            DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 | DType::F8E6M2 => Err(
+            // GAP-097: F8E5M2 declines because Metal has no storage for it —
+            // NOT because Metal cannot support it. The dtype is OCP-standard
+            // and `HostBuffer` simply has no F8E5M2 variant yet (GAP-161: this
+            // decline is correct for a reason that will expire). The arm below
+            // is dtype-parameterised, so joining it names the dtype and asserts
+            // nothing false about the format.
+            DType::F8E5M2 | DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 | DType::F8E6M2 => Err(
                 fuel_ir::Error::UnsupportedDTypeForOp(self.dtype, "to_cpu_storage").bt(),
             ),
         }
@@ -1988,7 +2000,7 @@ impl MetalDevice {
         ));
         let commands = Commands::new(command_queue).map_err(MetalError::from)?;
         Ok(Self {
-            id: DeviceId::new(),
+            id: crate::DeviceId::new(),
             device,
             commands: Arc::new(RwLock::new(commands)),
             buffers: Arc::new(RwLock::new(HashMap::new())),
@@ -2041,6 +2053,8 @@ impl MetalDevice {
     ) -> Result<MetalStorage> {
         let (count, buffer) = match T::cpu_storage_ref(s) {
             HostBufferRef::U8(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+            // PRE-EXISTING: the I8 arm was never added (see `to_cpu_storage`).
+            HostBufferRef::I8(storage) => (storage.len(), self.new_buffer_with_data(storage)),
             HostBufferRef::U32(storage) => (storage.len(), self.new_buffer_with_data(storage)),
             HostBufferRef::I16(storage) => (storage.len(), self.new_buffer_with_data(storage)),
             HostBufferRef::I32(storage) => (storage.len(), self.new_buffer_with_data(storage)),
@@ -2063,6 +2077,8 @@ impl MetalDevice {
     pub fn storage_from_cpu_storage(&self, storage: &HostBuffer) -> Result<MetalStorage> {
         let (count, buffer) = match storage {
             HostBuffer::U8(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+            // PRE-EXISTING: the I8 arm was never added (see `to_cpu_storage`).
+            HostBuffer::I8(storage) => (storage.len(), self.new_buffer_with_data(storage)),
             HostBuffer::U32(storage) => (storage.len(), self.new_buffer_with_data(storage)),
             HostBuffer::I16(storage) => (storage.len(), self.new_buffer_with_data(storage)),
             HostBuffer::I32(storage) => (storage.len(), self.new_buffer_with_data(storage)),
