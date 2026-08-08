@@ -53,6 +53,41 @@ fn fnv1a_matches_the_canonical_vectors() {
 }
 
 
+/// GAP-075: `sub_byte_bits_and_packing` must DECLINE for a dtype it has no
+/// authored sub-byte encoding for, rather than fabricate `(8, byte-aligned)`.
+/// `bit_width` is an FDX wire value read across the process boundary, so a
+/// fabricated width makes a foreign runtime stride over memory wrongly — and
+/// nothing in-repo distinguishes a correct width from an undecided one, so no
+/// downstream test could catch it. F32 stands in for "any dtype outside the
+/// authored sub-byte set" (the future-sub-byte-dtype hazard: a new
+/// `size_in_bytes() == 0` dtype would route here via `is_sub_byte`).
+#[test]
+fn sub_byte_bits_and_packing_declines_unauthored_dtype() {
+    assert!(
+        sub_byte_bits_and_packing(DType::F32).is_err(),
+        "unauthored dtype must DECLINE, not emit an invented FDX bit-width",
+    );
+}
+
+/// The authored sub-byte dtypes keep their spec §6.1 `(bit_width, packing)` —
+/// a regression lock so the fallible conversion did not disturb the wire values
+/// a foreign consumer already relies on.
+#[test]
+fn sub_byte_bits_and_packing_pins_authored_dtypes() {
+    assert_eq!(
+        sub_byte_bits_and_packing(DType::F4).unwrap(),
+        (4, PACKING_DENSE_SUBBYTE),
+    );
+    assert_eq!(
+        sub_byte_bits_and_packing(DType::F6E2M3).unwrap(),
+        (6, PACKING_DENSE_SUBBYTE),
+    );
+    assert_eq!(
+        sub_byte_bits_and_packing(DType::F6E3M2).unwrap(),
+        (6, PACKING_DENSE_SUBBYTE),
+    );
+}
+
 use crate::{BackendStorage, Storage};
 
 /// Build a CPU F32 `Storage` holding `n` zeroed elements.
