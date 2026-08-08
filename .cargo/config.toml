@@ -1,5 +1,32 @@
 [build]
+# `[build] rustflags` applies to EVERY target, cross-compiles included, and
+# `target-cpu=native` means "the CPU cargo is running on" — which is meaningless
+# for a cross-target and produces pages of "not a recognized processor" chatter
+# that buries real diagnostics. Every cross-compiled triple therefore needs its
+# own `[target.<triple>]` entry below to displace this.
+#
+# Cargo does NOT merge the two: when a `[target.<triple>]` entry matches,
+# `[build] rustflags` is ignored ENTIRELY (not appended to). That is the
+# mechanism the entries below already rely on — and it is why an empty
+# `rustflags = []` is a meaningful override rather than a no-op.
+#
+# ADDING A NEW CROSS-TARGET? Add an entry here or it silently inherits this
+# host-only flag. See docs/gaps.md GAP-164.
 rustflags = ["-C", "target-cpu=native"]
+
+# Displaces the host's `target-cpu=native` for the aarch64 cross-check
+# (scripts/aarch64-cross-check.ps1). `generic` rather than a specific Apple
+# core: this target is type-checked here and never executed, so any tuning
+# choice would be unverifiable — while `native` is an outright lie, naming an
+# x86 core to an ARM target. NEON is baseline-mandatory in ARMv8, so `generic`
+# still compiles the NEON paths this gate exists to reach.
+#
+# MUST BE NON-EMPTY. `rustflags = []` does NOT displace `[build] rustflags` —
+# cargo treats an empty list as unset and falls back, so the host flag returns
+# silently. Measured: with `[]` the aarch64 check still emitted 4816 "not a
+# recognized processor" lines. A no-op fix that looks like a fix.
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "target-cpu=generic"]
 
 [target.wasm32-unknown-unknown]
 rustflags = ["-C", "target-feature=+simd128", "--cfg", 'getrandom_backend="wasm_js"']
