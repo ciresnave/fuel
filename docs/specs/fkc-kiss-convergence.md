@@ -165,6 +165,23 @@ Ordered by return, not by size.
 | 4 | **Two version axes + bump-rule table** | GAP-038 | Cheap, mechanical, prevents a class of skew. |
 | 5 | **Upstream Fuel's better parts as KISS extensions** | GAP-039 | Five-flag layouts, cost-as-vector + provenance-flip, precision-before-cost ordering, fixups-as-kernels, the verify-before-adopt ledger (§10.5 item 6 explicitly invites it). |
 
+**Item 5 SPLITS IN TWO, on a firsthand read of KISS-Classify §6.8 (2026-08-07).** The
+capability-vocabulary half is **not an RFC at all**: §6.8-0004 makes each namespace's
+capability-set vocabulary the *namespace maintainer's* to own, and KISS pins only grammar +
+byte-exact matching. What Fuel needs there is a **namespace registration** (§6.8-0003 — a
+merged PR to the ThinkersJournal registry, published as a versioned machine-readable file
+bundled with the Conform suite), which is a smaller and much more likely-to-succeed ask.
+The genuinely RFC-shaped parts are the ones touching KISS-Contract §6.7 itself: five-flag
+layouts, cost-as-vector + the provenance-flip, precision-before-cost ordering,
+fixups-as-kernels, and the verify-before-adopt ledger.
+
+**A new prerequisite for item 1, from GAP-048.** Declaring FKC a KISS-Contract profile
+implies KISS-Ops conformance, and Fuel is currently missing the second half of two §6.15
+op pairs (`rem_trunc`; the IEEE-suppressing `fmax`/`fmin`). Not a live defect — nothing
+computes a wrong answer — but a **hard blocker at the moment of declaring conformance**,
+so it wants resolving (add the ops, or record a deliberate profile deviation) *before*
+item 1 lands rather than after.
+
 Items 1–4 are Fuel-internal and need no external agreement. **Item 5 is the only one
 requiring a KISS RFC**, and it is deliberately last: Fuel should arrive with its own house
 in order, and with the extensions already implemented, since KISS's promotion path requires
@@ -204,11 +221,21 @@ this standard; it is one of the two legs that lets the standard freeze at all.**
   an under-covering suite unbuildable rather than merely failing (§6.2-0005), and a hard
   separation of structural gate from run-time verdict (§6.2-0006). Fuel's GAP-141 gates
   are run-time checks of a structural property — functional, but the weaker shape.
-- Consequently, **claims about KISS-Ops, KISS-Classify and KISS-Conform in this document are
-  from the umbrella's descriptions of them**, not from their own text. The umbrella is
-  informative by its own declaration, so those are second-hand. Anything load-bearing in
-  items 2 and 5 should be re-verified against the owning sub-standard before it is asked
-  for.
-- The "Fuel is materially richer on capabilities" verdict compares FKC §4 against
-  KISS-Contract §6.7 only. If parts of that vocabulary live in KISS-Classify, the gap is
-  smaller than stated here. **Unverified.**
+- **KISS-Ops and KISS-Classify are no longer second-hand either (read 2026-08-07):** KISS-Ops
+  §6.3 (primitive floor), §6.14 (termination) and §6.15 (non-mergeable distinctions);
+  KISS-Classify §6.8 (target-capability descriptor). Still second-hand: `spec/{grammar,
+  announce,synth,consume,emit}.md`.
+- **§3.1 VERIFIED unchanged.** The primitive floor is real and exhaustively enumerated
+  (§6.3-0001), and the termination guarantee is stronger than I paraphrased: integer levels
+  with `level(floor)=0`, a mandated-acyclic decomposition graph, and strict decrease along
+  every edge (§6.14-0001…0003), plus §6.14-0006 closing the subtle case where an op is
+  embedded in a structural atom's scalar body.
+- **The capability caveat is RESOLVED, and it went the OTHER WAY from the direction I
+  hedged toward.** I guessed the gap might be *smaller* because some capability vocabulary
+  might live in KISS-Classify. It does not, and the reason is a deliberate design choice:
+  **KISS-Classify §6.8-0004 says KISS pins only the token grammar and the byte-exact match
+  rule and MUST NOT pin any namespace's capability-set vocabulary**, which "freezes
+  independently". A `target_capability` is `<namespace>:<capability-set>` matched byte-exact
+  with no subset/prefix/implication logic (§6.8-0002). So the verdict stands and is
+  *reinforced* — KISS declines to own this vocabulary by design.
+- **This changes the SHAPE of item 5, not just its size** — see §5.
