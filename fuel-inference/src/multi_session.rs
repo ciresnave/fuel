@@ -1906,15 +1906,27 @@ mod tests {
         }
     }
 
-    /// Prefill `prompt`, then decode one more token, returning the DECODE
-    /// step's logits. Takes `&dyn DecodeModel` so the three arms under test run
-    /// byte-identical driver code and differ only in which model they are.
+    /// Prefill `prompt`, then decode `n_decode` further tokens, returning every
+    /// decode step's logits concatenated. Takes `&dyn DecodeModel` so the three
+    /// arms under test run byte-identical driver code and differ only in which
+    /// model they are.
+    ///
+    /// **`n_decode` must be > 1, and that is a correctness requirement, not
+    /// thoroughness.** The persistent path has two distinct halves — the first
+    /// decode token BUILDS and optimizes the held graph, every later token
+    /// REBINDS it — and `LlamaModel::forward_with_kv_context_persistent_inv_freq`
+    /// documents that threading the RoPE override into only one of them yields a
+    /// model whose first decode token is scaled and whose rest are not: a
+    /// silent, position-dependent wrong answer. A single-token probe exercises
+    /// only the build half and would miss exactly that.
     fn prefill_then_decode(
         m: &dyn DecodeModel,
         prompt: &[u32],
-        next: u32,
+        first_next: u32,
+        n_decode: usize,
         dev: &Device,
     ) -> Vec<f32> {
+        assert!(n_decode > 1, "must cover the rebind half, not just the build half");
         let mut cache = KvCache::with_capacity(
             m.n_layers(), m.n_kv_heads(), m.head_dim(), 128, DType::F32, dev,
         )
@@ -1923,8 +1935,20 @@ mod tests {
         let mut sess: Option<DecodeSession> = None;
         m.forward_with_kv_context_persistent(prompt, &mut cache, &mut ctx, &mut sess)
             .expect("prefill");
-        m.forward_with_kv_context_persistent(&[next], &mut cache, &mut ctx, &mut sess)
-            .expect("decode")
+
+        let mut all = Vec::new();
+        let mut tok = first_next;
+        for step in 0..n_decode {
+            let logits = m
+                .forward_with_kv_context_persistent(&[tok], &mut cache, &mut ctx, &mut sess)
+                .unwrap_or_else(|e| panic!("decode step {step}: {e:?}"));
+            // Feed a deterministic, model-independent next token so all three
+            // arms walk identical token paths — sampling here would let the
+            // arms diverge for a reason unrelated to RoPE.
+            tok = (tok + 1) % 32;
+            all.extend_from_slice(&logits);
+        }
+        all
     }
 
     fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
@@ -1984,14 +2008,18 @@ mod tests {
             (0..40u32).map(|i| i % lazy_cfg.vocab_size as u32).collect();
         let next = 7u32;
 
+        // Four decode steps: the first BUILDS the held graph, the rest REBIND
+        // it. Both halves must carry the scaling (see `prefill_then_decode`).
+        const N_DECODE: usize = 4;
+
         // A — the surface under test: `DecodeModel` on the quantized wrapper.
-        let a = prefill_then_decode(&qmodel, &prompt, next, &dev);
+        let a = prefill_then_decode(&qmodel, &prompt, next, N_DECODE, &dev);
         // B — the CORRECT oracle: the scaling-aware `Llama3Model` it wraps.
-        let b = prefill_then_decode(qmodel.inner(), &prompt, next, &dev);
+        let b = prefill_then_decode(qmodel.inner(), &prompt, next, N_DECODE, &dev);
         // C — the WRONG delegation, simulated: the `LlamaModel` two levels
         //     down, whose own entry point uses the UNSCALED RoPE base. This is
         //     what `forward_hidden` already does by reaching `self.inner.inner`.
-        let c = prefill_then_decode(&qmodel.inner().inner, &prompt, next, &dev);
+        let c = prefill_then_decode(&qmodel.inner().inner, &prompt, next, N_DECODE, &dev);
 
         let ab = max_abs_diff(&a, &b);
         let bc = max_abs_diff(&b, &c);
