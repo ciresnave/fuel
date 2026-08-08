@@ -452,7 +452,7 @@ fn affine_block_view_with_quant_validates() {
     let buffers = v.buffers();
     assert_eq!(buffers.len(), 2);
     assert_eq!(buffers[1].role, FDX_BUFFER_ROLE_SCALE);
-    assert_eq!(buffers[1].dtype, fuel_ir::dlpack::convert::dtype_to_fdx(DType::F32));
+    assert_eq!(buffers[1].dtype, fuel_ir::dlpack::convert::dtype_to_fdx(DType::F32).unwrap());
     assert_eq!(buffers[1].shape[0], 2);
 
     v.validate().expect("bound AFFINE_BLOCK must validate end-to-end");

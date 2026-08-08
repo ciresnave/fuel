@@ -41,8 +41,32 @@ use crate::symbol::SymId;
 /// **Exhaustive `match`, no wildcard** — adding/removing/reordering a `DType`
 /// variant breaks this compile (the §6.0 guarantee). NEVER `d as u16`: the FDX
 /// code is the stable contract, decoupled from the source discriminant.
-pub fn dtype_to_fdx(d: DType) -> u16 {
-    match d {
+///
+/// # Why this returns `Result` (GAP-059)
+///
+/// `F8E6M2` is a **token-only** dtype: Fuel can name and parse it, but its
+/// encoding is deliberately unauthored (GAP-045). There is therefore no
+/// correct FDX code for it, and every available answer would be invented.
+/// Inventing one is the worst option on the table — an FDX code is a **stable
+/// wire contract**, so a placeholder gets read by another process as a real
+/// claim about the bytes, and the mistake surfaces as silently mis-decoded
+/// tensor data rather than as an error.
+///
+/// The decline is therefore typed and loud, and it is deliberately NOT held
+/// until GAP-045 settles: declining is sound *whatever* the encoding turns out
+/// to be, whereas a fabricated code has to be guessed right today and migrated
+/// later. When the encoding is authored this arm becomes a mapping and the
+/// signature does not change again.
+pub fn dtype_to_fdx(d: DType) -> crate::Result<u16> {
+    Ok(match d {
+        // GAP-045: encoding unauthored — decline, never invent a wire code.
+        DType::F8E6M2 => {
+            return Err(crate::Error::UnsupportedDTypeForOp(
+                DType::F8E6M2,
+                "FDX logical-dtype encoding is not authored yet (GAP-045); \
+                 declining rather than emitting an invented wire code",
+            ));
+        }
         DType::U8 => FDX_DTYPE_U8,
         DType::I8 => FDX_DTYPE_I8,
         DType::U32 => FDX_DTYPE_U32,
@@ -58,7 +82,7 @@ pub fn dtype_to_fdx(d: DType) -> u16 {
         DType::F6E3M2 => FDX_DTYPE_F6E3M2,
         DType::F4 => FDX_DTYPE_F4,
         DType::F8E8M0 => FDX_DTYPE_F8E8M0,
-    }
+    })
 }
 
 /// Map an FDX logical-dtype code back to a Fuel [`DType`].
@@ -106,9 +130,30 @@ pub fn fdx_to_dtype(code: u16) -> Option<DType> {
 /// `DLTensor`** to carry the `{kDLUInt, 8, 1}` stand-in for these — substituting
 /// that stand-in is the *view's* job (it carries the true low-bit width in
 /// `FDXDTypeExt`), NOT this function's: `dl_dtype` is the plain faithful map.
-pub fn dl_dtype(d: DType) -> DLDataType {
+/// # Why this returns `Result` (GAP-059)
+///
+/// Same reason as [`dtype_to_fdx`], and if anything sharper here. A
+/// `DLDataType` is `{code, bits, lanes}` — a **numeric claim about the element
+/// width**. `F8E6M2`'s encoding is unauthored (GAP-045), so any `bits` value
+/// emitted for it is a guess that a *consumer in another process* will use to
+/// stride over memory. The failure mode is not a wrong answer in Fuel; it is a
+/// foreign runtime reading the wrong bytes.
+///
+/// A guess would also be *plausible* — 8, by analogy with the other fp8s —
+/// which is what makes it dangerous: it would look right in review and never
+/// trip a test, because nothing here can distinguish "correct width" from
+/// "width nobody has decided yet".
+pub fn dl_dtype(d: DType) -> crate::Result<DLDataType> {
     use dtype_code::*;
     let (code, bits): (u8, u8) = match d {
+        // GAP-045: encoding unauthored — decline rather than assert a width.
+        DType::F8E6M2 => {
+            return Err(crate::Error::UnsupportedDTypeForOp(
+                DType::F8E6M2,
+                "DLPack element width is not authored yet (GAP-045); declining \
+                 rather than asserting a bit-width a consumer would stride on",
+            ));
+        }
         DType::U8 => (K_DL_UINT, 8),
         DType::I8 => (K_DL_INT, 8),
         DType::U32 => (K_DL_UINT, 32),
@@ -129,7 +174,7 @@ pub fn dl_dtype(d: DType) -> DLDataType {
         DType::F6E3M2 => (K_DL_FLOAT, 6),
         DType::F4 => (K_DL_FLOAT, 4),
     };
-    DLDataType { code, bits, lanes: 1 }
+    Ok(DLDataType { code, bits, lanes: 1 })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -395,7 +440,18 @@ mod tests {
     #[test]
     fn dtype_roundtrips_for_every_variant() {
         for d in ALL_DTYPES {
-            let code = dtype_to_fdx(d);
+            // GAP-059: F8E6M2 has no authored FDX encoding (GAP-045) and is
+            // expected to DECLINE. Asserted explicitly rather than skipped —
+            // a skip would silently start passing if the decline were replaced
+            // by an invented code, which is the exact failure being guarded.
+            if d == DType::F8E6M2 {
+                assert!(
+                    dtype_to_fdx(d).is_err(),
+                    "F8E6M2 must decline until its encoding is authored, never                      round-trip through an invented code"
+                );
+                continue;
+            }
+            let code = dtype_to_fdx(d).expect("every authored dtype encodes");
             assert_eq!(
                 fdx_to_dtype(code),
                 Some(d),
@@ -407,50 +463,62 @@ mod tests {
     #[test]
     fn dtype_anchor_codes_match_spec_6_1() {
         // Anchors pinned against the §6.1 logical-dtype table.
-        assert_eq!(dtype_to_fdx(DType::U8), FDX_DTYPE_U8);
-        assert_eq!(dtype_to_fdx(DType::U8), 0);
-        assert_eq!(dtype_to_fdx(DType::I8), 1);
-        assert_eq!(dtype_to_fdx(DType::F32), FDX_DTYPE_F32);
-        assert_eq!(dtype_to_fdx(DType::F32), 8);
-        assert_eq!(dtype_to_fdx(DType::F64), 9);
+        assert_eq!(dtype_to_fdx(DType::U8).unwrap(), FDX_DTYPE_U8);
+        assert_eq!(dtype_to_fdx(DType::U8).unwrap(), 0);
+        assert_eq!(dtype_to_fdx(DType::I8).unwrap(), 1);
+        assert_eq!(dtype_to_fdx(DType::F32).unwrap(), FDX_DTYPE_F32);
+        assert_eq!(dtype_to_fdx(DType::F32).unwrap(), 8);
+        assert_eq!(dtype_to_fdx(DType::F64).unwrap(), 9);
         // The sub-byte / microscaling ones the spec calls out explicitly.
-        assert_eq!(dtype_to_fdx(DType::F8E4M3), 10);
-        assert_eq!(dtype_to_fdx(DType::F6E2M3), 11);
-        assert_eq!(dtype_to_fdx(DType::F6E3M2), 12);
-        assert_eq!(dtype_to_fdx(DType::F4), 13);
-        assert_eq!(dtype_to_fdx(DType::F8E8M0), 14);
+        assert_eq!(dtype_to_fdx(DType::F8E4M3).unwrap(), 10);
+        assert_eq!(dtype_to_fdx(DType::F6E2M3).unwrap(), 11);
+        assert_eq!(dtype_to_fdx(DType::F6E3M2).unwrap(), 12);
+        assert_eq!(dtype_to_fdx(DType::F4).unwrap(), 13);
+        assert_eq!(dtype_to_fdx(DType::F8E8M0).unwrap(), 14);
     }
 
     #[test]
     fn dl_dtype_faithful_descriptors() {
         use dtype_code::*;
         // Standard faithful dtypes — {code, bits, lanes}.
-        assert_eq!(dl_dtype(DType::F32), DLDataType { code: K_DL_FLOAT, bits: 32, lanes: 1 });
-        assert_eq!(dl_dtype(DType::F16), DLDataType { code: K_DL_FLOAT, bits: 16, lanes: 1 });
-        assert_eq!(dl_dtype(DType::BF16), DLDataType { code: K_DL_BFLOAT, bits: 16, lanes: 1 });
-        assert_eq!(dl_dtype(DType::F64), DLDataType { code: K_DL_FLOAT, bits: 64, lanes: 1 });
-        assert_eq!(dl_dtype(DType::I32), DLDataType { code: K_DL_INT, bits: 32, lanes: 1 });
-        assert_eq!(dl_dtype(DType::I64), DLDataType { code: K_DL_INT, bits: 64, lanes: 1 });
-        assert_eq!(dl_dtype(DType::U8), DLDataType { code: K_DL_UINT, bits: 8, lanes: 1 });
-        assert_eq!(dl_dtype(DType::U32), DLDataType { code: K_DL_UINT, bits: 32, lanes: 1 });
-        assert_eq!(dl_dtype(DType::I8), DLDataType { code: K_DL_INT, bits: 8, lanes: 1 });
-        assert_eq!(dl_dtype(DType::I16), DLDataType { code: K_DL_INT, bits: 16, lanes: 1 });
+        assert_eq!(dl_dtype(DType::F32).unwrap(), DLDataType { code: K_DL_FLOAT, bits: 32, lanes: 1 });
+        assert_eq!(dl_dtype(DType::F16).unwrap(), DLDataType { code: K_DL_FLOAT, bits: 16, lanes: 1 });
+        assert_eq!(dl_dtype(DType::BF16).unwrap(), DLDataType { code: K_DL_BFLOAT, bits: 16, lanes: 1 });
+        assert_eq!(dl_dtype(DType::F64).unwrap(), DLDataType { code: K_DL_FLOAT, bits: 64, lanes: 1 });
+        assert_eq!(dl_dtype(DType::I32).unwrap(), DLDataType { code: K_DL_INT, bits: 32, lanes: 1 });
+        assert_eq!(dl_dtype(DType::I64).unwrap(), DLDataType { code: K_DL_INT, bits: 64, lanes: 1 });
+        assert_eq!(dl_dtype(DType::U8).unwrap(), DLDataType { code: K_DL_UINT, bits: 8, lanes: 1 });
+        assert_eq!(dl_dtype(DType::U32).unwrap(), DLDataType { code: K_DL_UINT, bits: 32, lanes: 1 });
+        assert_eq!(dl_dtype(DType::I8).unwrap(), DLDataType { code: K_DL_INT, bits: 8, lanes: 1 });
+        assert_eq!(dl_dtype(DType::I16).unwrap(), DLDataType { code: K_DL_INT, bits: 16, lanes: 1 });
         // Sub-byte ones get a faithful low-bit width (< 8); the VIEW substitutes
         // the {kDLUInt,8,1} honesty stand-in for these, not dl_dtype itself.
-        assert_eq!(dl_dtype(DType::F4).bits, 4);
-        assert_eq!(dl_dtype(DType::F6E2M3).bits, 6);
-        assert_eq!(dl_dtype(DType::F6E3M2).bits, 6);
-        assert_eq!(dl_dtype(DType::F8E4M3).bits, 8);
-        assert_eq!(dl_dtype(DType::F8E8M0).bits, 8);
+        assert_eq!(dl_dtype(DType::F4).unwrap().bits, 4);
+        assert_eq!(dl_dtype(DType::F6E2M3).unwrap().bits, 6);
+        assert_eq!(dl_dtype(DType::F6E3M2).unwrap().bits, 6);
+        assert_eq!(dl_dtype(DType::F8E4M3).unwrap().bits, 8);
+        assert_eq!(dl_dtype(DType::F8E8M0).unwrap().bits, 8);
         // Lanes always 1 for scalar dtypes.
         for d in ALL_DTYPES {
-            assert_eq!(dl_dtype(d).lanes, 1, "DType {d:?} must be scalar (lanes=1)");
+            // GAP-059: F8E6M2 declines (GAP-045, no authored width). Asserted,
+            // not skipped — a skip starts passing silently if the decline is
+            // ever replaced by a fabricated width.
+            if d == DType::F8E6M2 {
+                assert!(dl_dtype(d).is_err(), "F8E6M2 must decline, not assert a width");
+                continue;
+            }
+            assert_eq!(dl_dtype(d).unwrap().lanes, 1, "DType {d:?} must be scalar (lanes=1)");
         }
     }
 
     #[test]
     fn dtype_codes_have_no_duplicates() {
-        let mut codes: Vec<u16> = ALL_DTYPES.iter().copied().map(dtype_to_fdx).collect();
+        // GAP-059: only dtypes with an AUTHORED encoding have a code to collide.
+        // F8E6M2 declines (GAP-045); `flatten()` drops it rather than unwrapping,
+        // and the count below is taken from what was collected, so the assertion
+        // stays exact instead of comparing against a stale ALL_DTYPES length.
+        let mut codes: Vec<u16> =
+            ALL_DTYPES.iter().copied().map(dtype_to_fdx).flatten().collect();
         let n = codes.len();
         codes.sort_unstable();
         codes.dedup();
@@ -637,8 +705,11 @@ mod tests {
 
     #[test]
     fn every_source_variant_maps_to_a_distinct_real_code() {
-        // DType: 15 variants → 15 distinct non-NONE codes.
-        let dt: Vec<u16> = ALL_DTYPES.iter().copied().map(dtype_to_fdx).collect();
+        // DType: every dtype with an AUTHORED encoding maps to a distinct
+        // non-NONE code. GAP-059: F8E6M2 declines (GAP-045) and contributes no
+        // code, so `flatten()` drops it — distinctness is a property of the
+        // codes that exist, not of the variant count.
+        let dt: Vec<u16> = ALL_DTYPES.iter().copied().map(dtype_to_fdx).flatten().collect();
         for &c in &dt {
             assert_ne!(c, FDX_DTYPE_NONE);
             assert!(fdx_to_dtype(c).is_some());

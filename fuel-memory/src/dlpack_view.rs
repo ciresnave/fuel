@@ -491,7 +491,7 @@ fn output_view_to_fdx(ov: &OutputView) -> Result<FDXOutputView> {
     Ok(FDXOutputView {
         byte_offset: ov.byte_offset as u64,
         len_elements: ov.len_elements as u64,
-        dtype: dtype_to_fdx_code(ov.dtype),
+        dtype: dtype_to_fdx_code(ov.dtype)?,
         _pad: [0; 2],
         ndim: ndim as u32,
         shape,
@@ -513,7 +513,10 @@ fn fnv1a(s: &str) -> u64 {
 
 /// FDX logical-dtype code for a Fuel dtype (the §6.1 table), via the
 /// `fuel-core-types` conversion.
-fn dtype_to_fdx_code(d: DType) -> u16 {
+/// GAP-059: fallible because a dtype may have no authored FDX encoding
+/// (`F8E6M2`, GAP-045). Declining beats emitting an invented wire code that a
+/// foreign consumer would read as a real claim about the bytes.
+fn dtype_to_fdx_code(d: DType) -> fuel_ir::Result<u16> {
     fuel_ir::dlpack::convert::dtype_to_fdx(d)
 }
 
@@ -575,7 +578,7 @@ pub fn view<'a>(
     // are e.g. GGML-block or NF4 block-affine. The scale BUFFER binding is still
     // op-context (the consuming op supplies the buffer-table index via a richer
     // entry point); a bare `view()` emits `scale_buffer = FDX_BUFFER_NONE`.
-    let quant_proj = storage.stype.to_fdx(None);
+    let quant_proj = storage.stype.to_fdx(None)?;
     let has_quant = quant_proj.is_some();
     let need_sidecar = sub_byte || symbolic || bundled || has_quant;
 
@@ -618,7 +621,7 @@ pub fn view<'a>(
             shape[i] = dims[i] as i64;
             strides[i] = st[i] as i64;
         }
-        dl_dt = dl_dtype(dtype);
+        dl_dt = dl_dtype(dtype)?;
         byte_offset = (layout.start_offset() as u64)
             .saturating_mul(dtype.size_in_bytes() as u64);
     }
@@ -669,7 +672,7 @@ pub fn view<'a>(
         flags |= FDX_FLAG_HAS_DTYPE_EXT | FDX_FLAG_MEANING_REQUIRES_EXT;
         let (bit_width, packing) = sub_byte_bits_and_packing(dtype);
         dtype_ext = FDXDTypeExt {
-            logical_dtype: dtype_to_fdx_code(dtype),
+            logical_dtype: dtype_to_fdx_code(dtype)?,
             bit_width,
             packing,
             lanes: 1,
@@ -711,7 +714,7 @@ pub fn view<'a>(
     let buffers = vec![FDXBufferRef {
         role: FDX_BUFFER_ROLE_DATA,
         _pad: [0; 1],
-        dtype: if physical_byte_base { FDX_DTYPE_U8 } else { dtype_to_fdx_code(dtype) },
+        dtype: if physical_byte_base { FDX_DTYPE_U8 } else { dtype_to_fdx_code(dtype)? },
         _pad2: 0,
         data,
         device,
@@ -875,7 +878,7 @@ fn scale_buffer_ref(storage: &Storage, layout: &Layout) -> Result<FDXBufferRef> 
     Ok(FDXBufferRef {
         role: FDX_BUFFER_ROLE_SCALE,
         _pad: [0; 1],
-        dtype: dtype_to_fdx_code(dtype),
+        dtype: dtype_to_fdx_code(dtype)?,
         _pad2: 0,
         data,
         device,
