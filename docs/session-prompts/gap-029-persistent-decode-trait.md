@@ -280,6 +280,63 @@ their behaviour is unchanged. **A new family cannot serve as that oracle — it
 has no prior behaviour to be unchanged from.** Net effect is deleting a copy,
 not adding abstraction on spec.
 
+### Increment 2 — measured design, ready to build
+
+**2a — the vocabulary. DONE (`0ef5ae76`).** `fuel-core/src/decode_state_spec.rs`:
+`LayerStateSpec` / `StateSlot` / `collapse_uniform`. Sabotage-validated (see the
+in-file record). 8 tests green.
+
+**2b — the driver de-duplication. Designed, not built.** The two copies of
+`rebind_and_realize_prebuilt` (`lazy.rs:9542` Llama, `:12114` Phi) are **48 lines
+each and structurally identical**, differing in exactly three places:
+
+| # | difference | resolution |
+|---|---|---|
+| 1 | Llama takes `rope_inv_freq: Option<&[f64]>`; Phi does not | per-model opts, carried by the hook |
+| 2 | Llama passes `cache_dtype` + `s.offset_node().is_some()` to the token-data builder | absorbed into the hook |
+| 3 | Llama calls `s.per_token_sym_env(cached_len)`; Phi binds `cached_len_sym` inline | **dissolves — see below** |
+
+**Difference 3 dissolves, and that is a measured result rather than a
+simplification.** `per_token_sym_env` (`inference_context.rs:1429`) is a method
+on `DecodeSession`, a type **both** models already share; it binds
+`cached_len_sym` *and* `attended_len_sym`. Phi's session already carries
+`attended_len_sym = SymId(1)` (`lazy.rs:12088`), documented there as "carried for
+API parity but never referenced/bound". Llama's own doc records that its
+attended-length binding "is unreferenced on today's f32 decode graph (no flash
+arm)" — so **Llama is already binding an unreferenced symbol harmlessly**, and
+Phi doing the same is the identical no-op.
+
+*Risk, stated rather than assumed:* this is still a behaviour change for Phi (one
+extra binding), sound only if `SymId(1)` is genuinely unused in Phi's decode
+graph rather than merely undocumented. The comment asserts it; the gates must
+confirm it.
+
+So the shared driver needs **one** hook, not two:
+
+```rust
+let data = model.build_token_data(&device, cached_len, tokens, s, cache)?;  // HOOK
+let sym_env = s.per_token_sym_env(cached_len)?;                            // shared
+let logits  = s.realize_token(&device, data, &sym_env)?;
+```
+
+**The oracle is confirmed present, which is what makes 2b safe to attempt.** The
+rationale for porting the two existing impls first was that their tests are the
+oracle; that is now measured, not assumed. Phi carries **8** decode tests
+(`lazy.rs:18756, 18806, 18839, 18888, 18953, 19064, 19182, 19278`) and Llama the
+parallel set (`:13652, 14462, 14858, 15351`). Two matter most:
+
+- `phi_persistent_plan_once_matches_d1` (`:18953`) — the persistent/rebind path
+  against the rebuild-every-token path, which is exactly what a botched
+  extraction breaks.
+- `phi_generate_loop_persistent_byte_exact_and_plans_once` (`:19064`) — asserts
+  **byte-exact** output *and* plans-once, so it already walks the multi-token
+  **rebind** path rather than only the build path.
+
+*Residual to watch:* `cache.bump_version(li, KvSlot::K/V)` in the driver
+hardcodes two KV slots. Correct for all 8 in-scope families and left alone
+deliberately — generalizing it reaches into `KvCache`, i.e. the allocator, which
+§3.3 puts out of scope.
+
 **Increment 3 —** the 6 LLaMA-shaped families: Qwen2, Qwen3, Qwen3Moe,
 SmolLm3, Glm4, Phi3. Each = `apply_layer` for its architecture + the quantized
 wrapper's delegation.
