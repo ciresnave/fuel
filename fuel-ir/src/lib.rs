@@ -51,7 +51,10 @@ pub use capability::Capability;
 pub use probe::{BackendId, BackendProbe, DeviceDescriptor, EquivalenceKey};
 pub use cpu_storage::{CpuDevice, CpuStorage, CpuStorageRef, HostBuffer, HostBufferRef, HostDType};
 pub use device::DeviceLocation;
-pub use dtype::{DType, DTypeParseError, FloatDType, IntDType, WithDType};
+pub use dtype::{
+    DType, DTypeParseError, FloatDType, IntDType, RESERVED_DTYPE_TOKENS, WithDType,
+    is_reserved_dtype_token,
+};
 pub use error::{Context, Error, Result};
 pub use layout::Layout;
 pub use quant_scale::{ScaleGranularity, ScalePair};

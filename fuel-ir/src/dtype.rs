@@ -105,6 +105,112 @@ impl DType {
     ];
 }
 
+#[cfg(test)]
+mod reserved_token_tests {
+    use super::*;
+    use std::str::FromStr;
+
+    /// A reserved spelling (KISS-CLASSIFY §6.1's reserved vocabulary) must be
+    /// recognized and declined **distinguishably from an unknown token**.
+    ///
+    /// The whole claim is in one assertion pair: both reject, and they reject
+    /// DIFFERENTLY — matchably, not merely with different prose. (Scope: this
+    /// is the §6.1 vocabulary applied to Fuel's own parser, not §6.1-0001
+    /// conformance — see [`RESERVED_DTYPE_TOKENS`].)
+    #[test]
+    fn reserved_fnuz_declines_distinctly_from_an_unknown_token() {
+        for tok in RESERVED_DTYPE_TOKENS {
+            let err = DType::from_str(tok).expect_err("a reserved token must not parse");
+            assert!(
+                err.is_reserved(),
+                "{tok} is reserved by §6.1 and must decline AS reserved, not as \
+                 unknown — a caller cannot otherwise tell 'wait for a schema bump' \
+                 from 'fix your input'",
+            );
+        }
+
+        // The other side of the distinction. Without this, a deriver that
+        // reported EVERYTHING as reserved would pass the loop above.
+        let unknown = DType::from_str("asdf").expect_err("garbage must not parse");
+        assert!(!unknown.is_reserved(), "an unknown token must NOT report as reserved");
+        assert_eq!(unknown, DTypeParseError::Unknown("asdf".into()));
+    }
+
+    /// The FKC contract spelling is uppercase; the reserved list is canonical
+    /// lowercase. One list serves both, so the comparison must be
+    /// case-insensitive — otherwise the FKC site silently loses the
+    /// distinction while this one keeps it.
+    #[test]
+    fn reserved_lookup_is_case_insensitive_so_one_list_serves_both_sites() {
+        assert!(is_reserved_dtype_token("F8E4M3FNUZ"));
+        assert!(is_reserved_dtype_token("f8e5m2fnuz"));
+        assert!(!is_reserved_dtype_token("f8e4m3fn"), "the OCP form is NOT reserved");
+        assert!(!is_reserved_dtype_token("asdf"));
+    }
+
+    /// **The delimiter trap, named so the next reader sees it.** Every
+    /// supported token here is a PREFIX of a reserved one: `f8e4m3` prefixes
+    /// `f8e4m3fnuz`, `f8e5m2` prefixes `f8e5m2fnuz`. Any `starts_with` /
+    /// `contains` / prefix-strip classifier therefore reads the RESERVED token
+    /// as the SUPPORTED one — and the caller then computes on `fnuz` bytes as
+    /// if they were OCP, which is silent numerical corruption rather than a
+    /// loud failure.
+    ///
+    /// This site is safe *by construction* (`FromStr` is an exact-literal
+    /// `match`, `is_reserved_dtype_token` is whole-token `eq_ignore_ascii_case`)
+    /// — but "safe by construction" is a property of today's implementation,
+    /// so it is asserted rather than assumed. Both directions are checked: a
+    /// reserved token must not resolve to its prefix's dtype, and a supported
+    /// token must not be swept up as reserved.
+    #[test]
+    fn a_reserved_token_is_never_confused_with_the_supported_token_it_extends() {
+        // Direction 1 — the dangerous one. A prefix matcher would return
+        // Ok(F8E4M3) / Ok(F8E5M2) here.
+        assert!(
+            !matches!(DType::from_str("f8e4m3fnuz"), Ok(DType::F8E4M3)),
+            "f8e4m3fnuz must NOT parse as its OCP prefix f8e4m3 — different \
+             exponent bias, so the bytes decode to different numbers",
+        );
+        assert!(
+            !matches!(DType::from_str("f8e5m2fnuz"), Ok(DType::F8E5M2)),
+            "f8e5m2fnuz must NOT parse as its OCP prefix f8e5m2",
+        );
+
+        // Direction 2 — the mirror. A `contains`-style reserved check would
+        // sweep the supported tokens in, declining dtypes Fuel really has.
+        assert!(!is_reserved_dtype_token("f8e4m3"));
+        assert!(!is_reserved_dtype_token("f8e5m2"));
+
+        // Non-vacuity: these ARE genuine prefix pairs, so the assertions above
+        // are exercising the trap and not passing on unrelated strings.
+        for tok in RESERVED_DTYPE_TOKENS {
+            assert!(
+                DType::ALL.iter().any(|d| tok.starts_with(d.as_str())),
+                "{tok} was expected to EXTEND a supported token; if that is no \
+                 longer true this test has stopped testing the prefix trap",
+            );
+        }
+    }
+
+    /// A reserved token must never also be parseable as a real dtype — i.e. the
+    /// reserved list and the accepted set must not overlap. Guards the mirror
+    /// mistake: adding `fnuz` to `FromStr`'s accept arms later would make the
+    /// reserved arm unreachable and silently activate an unimplemented layout.
+    #[test]
+    fn reserved_tokens_are_disjoint_from_the_accepted_set() {
+        for tok in RESERVED_DTYPE_TOKENS {
+            assert!(
+                DType::from_str(tok).is_err(),
+                "{tok} is reserved and must not resolve to a DType",
+            );
+        }
+        // Non-vacuity: the accept path genuinely works, so the loop above is
+        // asserting rejection rather than a broken parser rejecting everything.
+        assert_eq!(DType::from_str("f8e4m3").unwrap(), DType::F8E4M3);
+        assert_eq!(DType::from_str("f8e5m2").unwrap(), DType::F8E5M2);
+    }
+}
+
 /// Compile-time completeness tripwire for [`DType::ALL`]. This wildcard-free
 /// `match` names every variant, so adding a `DType` fails to compile HERE
 /// (non-exhaustive `match`) until the new variant is handled — and
@@ -133,13 +239,125 @@ fn all_variants_witness(dt: DType) {
     }
 }
 
+/// The **single source of truth** for KISS-CLASSIFY §6.1 tokens that are
+/// RESERVED at this schema version.
+///
+/// Canonical lowercase; compare case-insensitively so the FKC contract
+/// spelling (`F8E4M3FNUZ`) resolves against the same list. **One list, two
+/// call sites** — `FromStr` here and the FKC token table in
+/// `fuel-dispatch/src/fkc/lower.rs` — because two hand-copied lists is the
+/// drift pattern this project keeps re-finding.
+///
+/// These are the AMD `fnuz` FP8 layouts. They are **byte-incompatible** with
+/// their OCP counterparts (different exponent bias, no −0, no infinities), so
+/// treating one as the other silently corrupts every element rather than
+/// failing — which is why the two rejections are worth telling apart.
+///
+/// # Provenance, and the spelling that changed
+///
+/// Verbatim from KISS-CLASSIFY at **sk4**: `conformance/src/structure_key.rs`
+/// `RESERVED_DTYPES: [&str; 2]`. sk3 spelled these `e4m3fnuz` / `e5m2fnuz`;
+/// sk4 respells them with the `f8` prefix. **A stale list here would be wrong
+/// in the most expensive way** — tokens that never occur decline nothing, and
+/// every test still passes. Re-check this list against KISS on any schema
+/// bump; read it with `git show origin/main:<path>`, since a KISS working tree
+/// may sit behind its own `origin/main`.
+///
+/// # Scope — what these do and do NOT discharge
+///
+/// KISS-CLASSIFY §6.1-0001 places its obligation on a **reader of a
+/// `structure_key`**. Fuel has no such reader: it DERIVES and emits keys, and
+/// treats foreign ones as opaque bytes by design (K1 opacity —
+/// `telemetry::structure_key::StructureKeyToken`). Measured, not assumed: no
+/// split/decode path over a structure_key exists outside test code, which
+/// parses only Fuel's own just-emitted token to assert its shape.
+///
+/// So this list does **not** make Fuel §6.1-0001-conformant; there is
+/// currently no site in Fuel where that clause applies. What it does is
+/// (a) harden the two dtype-token surfaces Fuel really does ingest — its own
+/// `FromStr` and FKC contract files, which are external, hand-authored input —
+/// so a correctly-spelled `f8e5m2fnuz` is told it is reserved rather than sent
+/// hunting for a typo, and (b) put the vocabulary and the decline shape in one
+/// place for the day Fuel gains a key reader.
+///
+/// Note the two vocabularies differ elsewhere even though they agree here:
+/// Fuel's internal token for the OCP type is `f8e4m3`, while the KISS seam
+/// spells it `f8e4m3fn` (see `telemetry::structure_key_derive`). The reserved
+/// spellings coincide only because Fuel has no `fnuz` type at all.
+///
+/// # This decline EXPIRES (GAP-161)
+///
+/// sk4 §6.1-0001 gives reserved spellings "no computation semantics at this
+/// schema version" and calls activation "a future additive schema event". So
+/// unlike a decline that is permanently correct, this one has a **scheduled
+/// trigger** — it becomes wrong when KISS activates the tokens. What
+/// distinguishes it from a missing-kernel decline is not that it never expires
+/// but that its trigger is **external and announced**: it cannot quietly
+/// become true through a Fuel-side change. The maintenance that follows is to
+/// watch KISS's `RESERVED_DTYPES` on a schema bump, and this const is the
+/// single grep target to flip when that happens.
+pub const RESERVED_DTYPE_TOKENS: &[&str] = &["f8e4m3fnuz", "f8e5m2fnuz"];
+
+/// Is `s` a §6.1 token that is RESERVED at this schema version?
+pub fn is_reserved_dtype_token(s: &str) -> bool {
+    RESERVED_DTYPE_TOKENS
+        .iter()
+        .any(|t| s.eq_ignore_ascii_case(t))
+}
+
 /// Error returned when a string cannot be parsed as a [`DType`].
+///
+/// # Why this distinguishes two rejections
+///
+/// `f8e5m2fnuz` is a real, specified layout this schema version declines to
+/// compute on; `asdf` is not a dtype at all. Those are different facts about
+/// the world, and they imply different actions — *wait for a schema bump* vs
+/// *fix your input*. Collapsing them tells a caller "no" without telling it
+/// *which* no.
+///
+/// **The distinction is a VARIANT, not a message.** A differing `Display`
+/// string is prose a caller cannot act on; the obligation is to a caller of
+/// this API, so it has to be matchable.
+///
+/// For what this does and does not discharge — in particular that it is NOT
+/// KISS-CLASSIFY §6.1-0001 conformance, because that clause binds a reader of
+/// a `structure_key` and Fuel has none — and for the scheduled external expiry
+/// this decline carries, see [`RESERVED_DTYPE_TOKENS`].
 #[derive(Debug, PartialEq, Eq)]
-pub struct DTypeParseError(String);
+pub enum DTypeParseError {
+    /// Not a §6.1 dtype token at all.
+    Unknown(String),
+    /// A §6.1 token that is **reserved** at this schema version: recognized,
+    /// deliberately not computed on.
+    Reserved(String),
+}
+
+impl DTypeParseError {
+    /// The offending token, whichever rejection this is.
+    pub fn token(&self) -> &str {
+        match self {
+            DTypeParseError::Unknown(t) | DTypeParseError::Reserved(t) => t,
+        }
+    }
+
+    /// Was this a recognized-but-reserved spelling?
+    pub fn is_reserved(&self) -> bool {
+        matches!(self, DTypeParseError::Reserved(_))
+    }
+}
 
 impl std::fmt::Display for DTypeParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "cannot parse '{}' as a dtype", self.0)
+        match self {
+            DTypeParseError::Unknown(t) => write!(f, "cannot parse '{t}' as a dtype"),
+            DTypeParseError::Reserved(t) => write!(
+                f,
+                "dtype token '{t}' is RESERVED at this schema version \
+                 (KISS-CLASSIFY §6.1-0001): it names a real layout that is \
+                 byte-incompatible with its OCP counterpart, and is deliberately \
+                 not computed on — this is not an unknown token"
+            ),
+        }
     }
 }
 
@@ -166,7 +384,13 @@ impl std::str::FromStr for DType {
             "f4" => Ok(Self::F4),
             "f8e8m0" => Ok(Self::F8E8M0),
             "f8e6m2" => Ok(Self::F8E6M2),
-            _ => Err(DTypeParseError(s.to_string())),
+            // §6.1-0001: a RESERVED spelling is recognized and declined
+            // DISTINCTLY from an unknown one. Deleting this arm makes
+            // `reserved_fnuz_declines_distinctly_from_an_unknown_token` fail —
+            // that is the born-red evidence for this change, and it was
+            // observed (3 passed / 1 failed, `Compiling fuel-ir` in the run).
+            _ if is_reserved_dtype_token(s) => Err(DTypeParseError::Reserved(s.to_string())),
+            _ => Err(DTypeParseError::Unknown(s.to_string())),
         }
     }
 }

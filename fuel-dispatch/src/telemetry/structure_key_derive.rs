@@ -425,10 +425,27 @@ fn size_class(extent: i64) -> Option<char> {
 /// FP8 tokens are width-prefixed and variant-explicit: Fuel's `F8E4M3` is the
 /// OCP format → `f8e4m3fn`, and `F8E5M2` → `f8e5m2` **unsuffixed**, since only
 /// the `fnuz` layouts deviate from IEEE E5M2. The reserved `fnuz` variants have
-/// no Fuel `DType` and therefore can never be emitted here; Fuel also has no
-/// token *parse* path, so §6.1-0001's reserved-vs-unknown decline distinction
-/// has no site in this emitter (it is a real conformance gap on the parse side,
-/// tracked separately — not something this function can satisfy).
+/// no Fuel `DType` and therefore can never be emitted here.
+///
+/// # §6.1-0001 has no site in Fuel at all — emitter OR parser
+///
+/// That clause binds a **reader of a `structure_key`**, and Fuel is not one: it
+/// derives and emits keys, and treats foreign ones as opaque bytes (K1
+/// opacity). Measured, not assumed — no split/decode path over a structure_key
+/// exists anywhere outside test code, which parses only Fuel's own
+/// just-emitted token to assert its shape.
+///
+/// An earlier version of this comment called the parse side "a real
+/// conformance gap on the parse side, tracked separately". **That was false,
+/// and correcting it is part of GAP-155**: an internal type enum recognizes
+/// nothing, and Fuel's internal dtype vocabulary (`f8e4m3`) is not the seam
+/// spelling (`f8e4m3fn`) a reader would ever see — so no reserved token can
+/// reach `DType::from_str` from inside Fuel. Fuel's KISS-Classify conformance
+/// claim is scoped to the **emit** surface.
+///
+/// The reserved-token declines that do exist — `fuel_ir::RESERVED_DTYPE_TOKENS`
+/// and `FkcError::ReservedScalarType` on hand-authored `.fkc.md` input — are
+/// diagnostics on Fuel's own ingest surfaces, NOT §6.1-0001 conformance.
 ///
 /// The two 8-bit MX **scales** (`F8E8M0`/`F8E6M2`) entered the closed set at
 /// sk4 and are emitted. Note they are dtype-bearing here only via
