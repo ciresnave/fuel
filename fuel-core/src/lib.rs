@@ -245,6 +245,11 @@ pub mod factories;
 /// docs before adding anything to the key: over-keying is a silent performance
 /// regression, under-keying is a silent wrong answer.
 pub mod decode_shape;
+/// Per-layer decode-state description (GAP-029 / GAP-166) — the vocabulary that
+/// DESCRIBES what state a layer requires rather than ASSERTING that every layer
+/// holds per-head K/V. Read its module docs before collapsing a spec to a
+/// `(n_kv_heads, head_dim)` pair; the collapse is deliberately fallible.
+pub mod decode_state_spec;
 pub mod inference_context;
 pub mod kv_block_pool;
 pub mod kv_block_pool_device;
