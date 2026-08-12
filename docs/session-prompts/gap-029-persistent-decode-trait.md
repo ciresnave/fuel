@@ -306,10 +306,43 @@ attended-length binding "is unreferenced on today's f32 decode graph (no flash
 arm)" — so **Llama is already binding an unreferenced symbol harmlessly**, and
 Phi doing the same is the identical no-op.
 
-*Risk, stated rather than assumed:* this is still a behaviour change for Phi (one
-extra binding), sound only if `SymId(1)` is genuinely unused in Phi's decode
-graph rather than merely undocumented. The comment asserts it; the gates must
-confirm it.
+*Risk — RETIRED BY MEASUREMENT (`6a5eb8a4`), not argued away.* The claim was
+sound only if `SymId(1)` is genuinely unused rather than merely undocumented, and
+**the byte-exact tests cannot settle it**: a referenced symbol bound to its usual
+value passes them, so the comment and the passing test are the same evidence.
+The discriminating instrument is a deliberately **wrong** binding.
+
+**The first attempt failed its own positive control on both models, and that was
+the finding.** Perturbing `cached_len_sym` — the supposed known-referenced symbol
+— did not move the output, so the test could not have detected referencedness at
+all. Cause, measured: on the device-offset path the KV write offset rides a
+device-resident **buffer** (`Op::WriteSliceDoff` reads the start from
+`DecodeTokenData::offset` at launch), not the symbol. The proof-of-sight was
+itself blind.
+
+Rebuilt with control **A** (perturb the input token — must always move the
+output) and control **B** (assert the direction matching the session's path
+rather than assuming one). Result:
+
+```
+phi:   offset_node.is_some()=false   (SymEnv path;        SymEnv live=true)
+llama: offset_node.is_some()=true    (device-offset path; SymEnv live=false)
+```
+
+**The two models take different paths, and Phi carries the evidence.** Phi runs
+the SymEnv path where control B passed — a wrong `cached_len_sym` *does* move its
+output — so Phi's SymEnv is demonstrably **live** while `attended_len_sym` is
+**inert**. A sibling symbol in the same env is load-bearing and this one is not.
+That is positive evidence that Phi adopting `per_token_sym_env` is a real no-op.
+
+**Llama's arm proves strictly less.** Its whole SymEnv is inert on the
+device-offset path, so it establishes only *"no symbol drives this path"* — same
+consequence, weaker claim, **not citable about referencedness in either
+direction**. Two greens are not two confirmations.
+
+Scope, per the doc's own qualifier: **F32 / CPU / no flash arm.** A bf16/f16 CUDA
+decode offering the flash arm would reference `attended_len` and must re-run this
+control.
 
 So the shared driver needs **one** hook, not two:
 
