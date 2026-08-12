@@ -1773,6 +1773,66 @@ pub fn realize_many_f32_cuda(
         .expect("realize_many_f32_cuda via PipelinedExecutor")
 }
 
+// ===========================================================================
+// GAP-029 increment 2b — the per-model half of the shared persistent-decode
+// rebind driver. The driver itself lives in `crate::persistent_decode`; these
+// impls are the ONLY places the two models are allowed to differ on this path.
+// ===========================================================================
+
+impl crate::persistent_decode::PersistentDecodeModel for LlamaModel {
+    fn decode_n_layers(&self) -> usize {
+        self.config.n_layers
+    }
+
+    /// Rebuild the per-token offset only if the held session is on the
+    /// device-offset path (`offset_node.is_some()`); SymEnv sessions skip it
+    /// (the offset rides `cached_len_sym`). **Measured: Llama takes the
+    /// device-offset path on CPU/F32** — the driver must not normalise this away.
+    fn build_decode_token_data(
+        &self,
+        device: &Device,
+        cached_len: usize,
+        tokens: &[u32],
+        session: &crate::inference_context::DecodeSession,
+        cache: &KvCache,
+        rope_inv_freq: Option<&[f64]>,
+    ) -> crate::Result<crate::inference_context::DecodeTokenData> {
+        let cache_dtype = cache.dtype.unwrap_or(DType::F32);
+        self.build_token_rope_mask_arcs(
+            device,
+            cached_len,
+            tokens,
+            session.max_seq_len(),
+            cache_dtype,
+            session.offset_node().is_some(),
+            rope_inv_freq,
+        )
+    }
+}
+
+impl crate::persistent_decode::PersistentDecodeModel for PhiModel {
+    fn decode_n_layers(&self) -> usize {
+        self.config.n_layers
+    }
+
+    /// **Measured: Phi takes the SymEnv path on CPU/F32** (`offset: None`), so
+    /// there is no device-offset operand and its builder takes no dtype/offset
+    /// arguments. `rope_inv_freq` is ignored: Phi has no LLaMA-3-style RoPE
+    /// scaling override, and accepting-then-dropping it here is what lets one
+    /// driver serve both without the driver knowing which model it has.
+    fn build_decode_token_data(
+        &self,
+        device: &Device,
+        cached_len: usize,
+        tokens: &[u32],
+        session: &crate::inference_context::DecodeSession,
+        _cache: &KvCache,
+        _rope_inv_freq: Option<&[f64]>,
+    ) -> crate::Result<crate::inference_context::DecodeTokenData> {
+        self.build_token_rope_mask_arcs(device, cached_len, tokens, session.max_seq_len())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -9539,6 +9599,13 @@ impl LlamaModel {
     /// KV Arcs are stable (mutated in place by WriteSlice via the held
     /// base_cache entries) — not touched here. Called for every decode
     /// token after the first.
+    /// Thin forwarder to the shared driver
+    /// ([`crate::persistent_decode::rebind_and_realize_prebuilt`]). See also the
+    /// `PersistentDecodeModel` impls at the end of this module.
+    ///
+    /// GAP-029 2b: this was a hand-copied 48-line body, byte-for-byte parallel
+    /// to `PhiModel`'s. The copies are collapsed; the per-model part is
+    /// [`PersistentDecodeModel::build_decode_token_data`] below.
     fn rebind_and_realize_prebuilt(
         &self,
         tokens: &[u32],
@@ -9547,37 +9614,9 @@ impl LlamaModel {
         session: &Option<crate::inference_context::DecodeSession>,
         rope_inv_freq: Option<&[f64]>,
     ) -> crate::Result<Vec<f32>> {
-        let cfg = &self.config;
-        let seq = tokens.len();
-        let cached_len = cache.cached_len;
-        let device = ctx.device().clone();
-        let cache_dtype = cache.dtype.unwrap_or(DType::F32);
-
-        // Session guaranteed Some + valid by the caller. Recompute the
-        // per-token data Arcs, then realize the held graph via the
-        // prebuilt seam (base_cache clone + overwritten data entries).
-        // ctx is NOT mutated on the reuse path — the data lands in a
-        // clone of the session's held base_cache, not in ctx.persistent.
-        let s = session.as_ref().expect("session is Some");
-        // Rebuild the per-token offset only if the held session is on the
-        // device-offset path (`offset_node.is_some()`); Vulkan/SymEnv
-        // sessions skip it (offset rides `cached_len_sym`).
-        let data = self.build_token_rope_mask_arcs(
-            &device, cached_len, tokens, s.max_seq_len(), cache_dtype,
-            s.offset_node().is_some(), rope_inv_freq,
-        )?;
-        // Bind BOTH per-token symbols: `cached_len` (the KV-write offset)
-        // AND `attended_len = cached_len + seq` (the flash-arm `k_len`).
-        let sym_env = s.per_token_sym_env(cached_len)?;
-        let logits_vec = s.realize_token(&device, data, &sym_env)?;
-
-        // Bump cache state (identical to the D1 path).
-        cache.cached_len += seq;
-        for li in 0..cfg.n_layers {
-            cache.bump_version(li, KvSlot::K);
-            cache.bump_version(li, KvSlot::V);
-        }
-        Ok(logits_vec)
+        crate::persistent_decode::rebind_and_realize_prebuilt(
+            self, tokens, cache, ctx, session, rope_inv_freq,
+        )
     }
 
     /// Compute the per-token RoPE cos/sin tables + causal mask + (on the
@@ -12118,26 +12157,16 @@ impl PhiModel {
         ctx: &InferenceContext,
         session: &Option<crate::inference_context::DecodeSession>,
     ) -> crate::Result<Vec<f32>> {
-        let cfg = &self.config;
-        let seq = tokens.len();
-        let cached_len = cache.cached_len;
-        let device = ctx.device().clone();
-
-        let s = session.as_ref().expect("session is Some");
-        let data = self.build_token_rope_mask_arcs(
-            &device, cached_len, tokens, s.max_seq_len(),
-        )?;
-        let mut sym_env = fuel_ir::SymEnv::new();
-        sym_env.bind(s.cached_len_sym(), cached_len).map_err(crate::Error::from)?;
-        let logits_vec = s.realize_token(&device, data, &sym_env)?;
-
-        // Bump cache state (identical to the D1 path).
-        cache.cached_len += seq;
-        for li in 0..cfg.n_layers {
-            cache.bump_version(li, KvSlot::K);
-            cache.bump_version(li, KvSlot::V);
-        }
-        Ok(logits_vec)
+        // GAP-029 2b: forwards to the shared driver. Phi previously built its
+        // own `SymEnv` binding ONLY `cached_len_sym`; the shared
+        // `per_token_sym_env` also binds `attended_len_sym`. That extra binding
+        // is a measured no-op for Phi — negative-controlled in
+        // `phi_attended_len_sym_is_unreferenced_negative_control`, on the SymEnv
+        // path where a wrong `cached_len_sym` DOES move the logits, so the env
+        // is provably live while this symbol is inert.
+        crate::persistent_decode::rebind_and_realize_prebuilt(
+            self, tokens, cache, ctx, session, None,
+        )
     }
 
     /// Recompute the per-token host bytes (token-ids / RoPE cos+sin sized
