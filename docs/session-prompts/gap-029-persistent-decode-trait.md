@@ -428,6 +428,25 @@ six green. **Corollary: if a family's test cannot be reddened by breaking that
 family's own code, it is not testing that family** — it is testing the shared
 path under a family-shaped name.
 
+### Open hypothesis — Phi's separate body may be almost entirely redundant
+
+**Recorded now, deliberately NOT acted on.** Two step-0 results combine into
+something neither produced alone: most of the 23 Llama-vs-Phi build-path hunks
+are **error-message prefixes**, and the one genuinely architectural axis is
+**rope width — a single `usize`** that increment 3 threads anyway for Glm4. So
+"Phi adopts the shared path" is a far cheaper shape than "collapse two
+interleaved bodies," and it arrived from the *opposite* direction: from the six
+families' requirements rather than from diffing Llama against Phi.
+
+**This is NOT a revival of 2c-2, and the distinction matters.** 2c-2 was declined
+on **multiplier**, not on difficulty. Difficulty falling does not restore a
+multiplier that was measured at zero. If this is ever done it must be justified
+on its own merits — Phi's body as a lone remaining copy, drift risk across two
+carriers — and **never on the 6× that does not exist.**
+
+Sequencing (architect): increment 3 first; nothing here delays it; report as a
+one-line note when increment 3 lands and it gets ruled on then.
+
 **Increment 3 —** the 6 LLaMA-shaped families: Qwen2, Qwen3, Qwen3Moe,
 SmolLm3, Glm4, Phi3. Each = `apply_layer` for its architecture + the quantized
 wrapper's delegation.
