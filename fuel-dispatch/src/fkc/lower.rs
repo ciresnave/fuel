@@ -370,7 +370,11 @@ pub(crate) fn fused_op_id_for_const_name(s: &str) -> Option<FusedOpId> {
 
 /// Map a single dtype token to a [`DType`]. Explicit exhaustive `match`
 /// (FDX codes are a different axis; this is NOT `FromStr`-by-discriminant).
-/// `BadScalarType` on a bad token.
+///
+/// Rejection is **two-way**: `ReservedScalarType` for a token KISS-CLASSIFY
+/// §6.1 reserves at this schema version, `BadScalarType` for anything else.
+/// Both are typed errors — what differs is which fact the contract author is
+/// told, and therefore what they should do about it (§6.1-0001).
 pub(crate) fn lower_dtype(token: &str, section: &str, operand: &str) -> Result<DType, FkcError> {
     let mapped = match token {
         "U8" => Some(DType::U8),
@@ -402,6 +406,41 @@ pub(crate) fn lower_dtype(token: &str, section: &str, operand: &str) -> Result<D
             | DType::F8E6M2 => (),
         };
         Ok(dt)
+    } else if fuel_ir::is_reserved_dtype_token(token) {
+        // Recognized-but-reserved is a DIFFERENT rejection from unknown, and a
+        // contract author must be able to tell them apart. (This is §6.1's
+        // reserved vocabulary applied to an ingest surface Fuel really has —
+        // NOT §6.1-0001 conformance, which binds a reader of a structure_key;
+        // Fuel has no such reader. See `fuel_ir::RESERVED_DTYPE_TOKENS`.)
+        //
+        // Order matches KISS's own reference impl: reserved is checked BEFORE
+        // unknown, because the reserved set is a SUBSET of the vocabulary and
+        // an unknown-first check would swallow it.
+        //
+        // The list lives in `fuel-ir` and is CONSULTED, not copied. Two
+        // hand-maintained lists is the drift pattern this repo keeps
+        // re-finding: the copy that stops being edited silently reverts to
+        // treating reserved tokens as unknown, and nothing fails.
+        //
+        // This does not contradict the module's "explicit table, never
+        // `FromStr`-by-discriminant" rule. The accept table above is still the
+        // exhaustive, compile-anchored `match`; what is shared here is the
+        // RESERVED-token list — a fact about the standard rather than about
+        // Fuel's as-built `DType` set, so it has no exhaustiveness anchor to
+        // lose, and every reserved token is by definition absent from `DType`.
+        //
+        // Order is load-bearing: this arm is only reached because the accept
+        // arms are exact literals and cannot capture a reserved token. That is
+        // asserted rather than assumed (see the tests below) — `F8E5M2` is a
+        // PREFIX of `F8E5M2FNUZ`, so any `starts_with`/`contains` classifier
+        // here would read the reserved token as the supported one and compute
+        // on `fnuz` bytes as if they were OCP: silent numerical corruption,
+        // not a loud failure.
+        Err(FkcError::ReservedScalarType {
+            section: section.to_string(),
+            operand: operand.to_string(),
+            token: token.to_string(),
+        })
     } else {
         Err(FkcError::BadScalarType {
             section: section.to_string(),
@@ -1174,6 +1213,83 @@ mod tests {
     /// must now resolve through the SCREAMING_SNAKE constant table (Task 1).
     const FUSED_NORM_SOFTMAX: &str =
         include_str!("../../../docs/kernel-contracts/fused/norm-softmax.fkc.md");
+
+    // ---- KISS-CLASSIFY §6.1 reserved vocabulary: reserved != unknown ----
+
+    /// At the FKC parse site — a real ingest surface, since contract files are
+    /// external and hand-authored — a reserved spelling declines **matchably
+    /// differently** from an unknown one. Deleting the `ReservedScalarType`
+    /// arm in `lower_dtype` makes this fail; that is the born-red evidence for
+    /// this half of GAP-155.
+    #[test]
+    fn a_reserved_dtype_token_declines_distinctly_from_an_unknown_one() {
+        let reserved = lower_dtype("F8E4M3FNUZ", "sec", "lhs").expect_err("must not lower");
+        assert!(
+            matches!(reserved, FkcError::ReservedScalarType { .. }),
+            "a §6.1-reserved token must decline AS reserved, not as a bad token \
+             — a contract author told 'bad dtype token' goes hunting for a typo \
+             that does not exist; got {reserved:?}",
+        );
+
+        // The other side. Without this, collapsing EVERYTHING into
+        // ReservedScalarType would pass the assertion above.
+        let unknown = lower_dtype("NOT_A_DTYPE", "sec", "lhs").expect_err("must not lower");
+        assert!(
+            matches!(unknown, FkcError::BadScalarType { .. }),
+            "an unknown token must stay BadScalarType; got {unknown:?}",
+        );
+    }
+
+    /// Binds this site to `fuel-ir`'s list rather than to a copy of it. If
+    /// someone adds a token to `RESERVED_DTYPE_TOKENS` and this site keeps a
+    /// private list, the new token silently reverts to "unknown" here — a
+    /// drift that no other test would notice.
+    #[test]
+    fn every_shared_reserved_token_declines_as_reserved_at_this_site() {
+        for tok in fuel_ir::RESERVED_DTYPE_TOKENS {
+            // FKC spells dtype tokens uppercase; the shared list is canonical
+            // lowercase. That mismatch is exactly why the lookup is
+            // case-insensitive, so exercise the FKC spelling here.
+            let upper = tok.to_ascii_uppercase();
+            let err = lower_dtype(&upper, "sec", "lhs")
+                .expect_err("a reserved token must never lower to a DType");
+            assert!(
+                matches!(err, FkcError::ReservedScalarType { .. }),
+                "{upper} is in RESERVED_DTYPE_TOKENS but declined as {err:?} — this \
+                 site has drifted from the shared list",
+            );
+        }
+        // Non-vacuity: an empty list would pass the loop above silently.
+        assert!(!fuel_ir::RESERVED_DTYPE_TOKENS.is_empty());
+    }
+
+    /// The delimiter trap. Every supported FP8 token is a PREFIX of a reserved
+    /// one (`F8E5M2` / `F8E5M2FNUZ`), so a `starts_with`-style classifier would
+    /// accept the reserved token AS the supported one. That failure is silent:
+    /// `fnuz` uses a different exponent bias, so the same bytes decode to
+    /// different numbers and the kernel returns wrong answers rather than an
+    /// error.
+    #[test]
+    fn a_reserved_token_is_not_accepted_as_the_token_it_extends() {
+        assert!(
+            !matches!(lower_dtype("F8E5M2FNUZ", "sec", "lhs"), Ok(DType::F8E5M2)),
+            "F8E5M2FNUZ must not lower to its OCP prefix F8E5M2",
+        );
+        assert!(
+            !matches!(lower_dtype("F8E4M3FNUZ", "sec", "lhs"), Ok(DType::F8E4M3)),
+            "F8E4M3FNUZ must not lower to its OCP prefix F8E4M3",
+        );
+        // Non-vacuity, both ways: the prefixes really are accepted tokens here
+        // (so the pairs above are genuine traps), and the reserved forms really
+        // do extend them.
+        assert_eq!(lower_dtype("F8E5M2", "sec", "lhs").unwrap(), DType::F8E5M2);
+        assert_eq!(lower_dtype("F8E4M3", "sec", "lhs").unwrap(), DType::F8E4M3);
+        assert!(
+            fuel_ir::RESERVED_DTYPE_TOKENS
+                .iter()
+                .any(|t| t.eq_ignore_ascii_case("F8E5M2FNUZ")),
+        );
+    }
 
     // ---- A test LinkRegistry stub mapping every entry_point to a dummy ----
 

@@ -135,6 +135,46 @@ pub enum FkcError {
         token: String,
     },
 
+    /// A dtype token that KISS-CLASSIFY §6.1 **RESERVES** at this schema
+    /// version. It is a real, specified layout (the AMD `fnuz` FP8 forms) that
+    /// Fuel recognizes and deliberately does not compute on.
+    ///
+    /// # Why this is not [`FkcError::BadScalarType`]
+    ///
+    /// A reserved token and an unknown one imply different actions: reserved
+    /// means *wait for a schema bump*, unknown means *fix your contract*.
+    /// Reporting a correctly-spelled `F8E5M2FNUZ` as a "bad dtype token" sends
+    /// a contract author hunting for a typo that isn't there. FKC files are
+    /// external, hand-authored input, so this is a real ingest surface — which
+    /// is what makes the distinction worth a variant here.
+    ///
+    /// # What this is NOT
+    ///
+    /// It is not KISS-CLASSIFY §6.1-0001 conformance. That clause binds a
+    /// **reader of a `structure_key`**, and Fuel has none — it derives and
+    /// emits keys and treats foreign ones as opaque bytes (K1 opacity). This
+    /// is the reserved *vocabulary* of §6.1 applied to a surface Fuel actually
+    /// ingests.
+    ///
+    /// # This decline EXPIRES, on an external trigger (GAP-161)
+    ///
+    /// A decline for want of a kernel becomes wrong the moment the kernel
+    /// lands. This one becomes wrong when KISS activates the tokens — sk4
+    /// §6.1-0001 calls that "a future additive schema event". So it expires
+    /// too; what differs is that its trigger is **external and announced**,
+    /// and cannot quietly become true through a Fuel-side change. See
+    /// [`fuel_ir::RESERVED_DTYPE_TOKENS`], the single grep target to flip.
+    #[error(
+        "FKC §3.4 / KISS-CLASSIFY §6.1: kernel `{section}` operand `{operand}` names \
+         dtype token `{token}`, which is RESERVED at this schema version — recognized, \
+         deliberately not computed on. This is NOT an unknown token; do not look for a typo."
+    )]
+    ReservedScalarType {
+        section: String,
+        operand: String,
+        token: String,
+    },
+
     /// Two operands that both **vary** (enumerate >1 dtype) in one section
     /// disagree on their fan-out dtype list (§3.4 multi-dtype fan-out). ALL
     /// varying operands must enumerate the SAME dtype list in the SAME order
