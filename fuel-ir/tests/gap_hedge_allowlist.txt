@@ -58,7 +58,6 @@ fuel-core/src/lazy_wuerstchen.rs	// conv_transpose2d does not yet plumb the bias
 fuel-core/src/lazy_yolov3.rs	// NOT convs (shortcuts, routes, upsamples, yolo) are skipped.
 fuel-core/src/lazy_yolov3.rs	// shortcut / route / upsample / yolo blocks sit).
 fuel-core/src/train.rs	//! ## Not yet covered
-fuel-correctness-fixtures/src/lib.rs	// Future dtypes: add arms here. For now, treat
 fuel-correctness-fixtures/src/lib.rs	//! ## Not yet in v1 (deferred to follow-up sessions)
 fuel-cpu-backend/src/byte_kernels.rs	// FlashAttn — naive multi-head SDPA (math definition)
 fuel-cpu-backend/src/byte_kernels.rs	// PagedAttn — paged-KV-cache attention (naive)
@@ -179,7 +178,6 @@ fuel-inference/src/multi_session.rs	/// persistent`. It implements the CORE trai
 fuel-inference/src/scheduler.rs	//! budget.  A naive approach admits every request immediately, which can cause
 fuel-ir/src/dispatch.rs	/// not a tiled FlashAttention-2 kernel — naive on CPU). Inputs
 fuel-ir/src/dlpack/sidecar.rs	/// Sentinel block id meaning "unmapped / not yet allocated".
-fuel-ir/src/dummy_dtype.rs	//! that are defined in the safetensors spec but not yet fully implemented.
 fuel-ir/src/probe.rs	/// `fuel-metal-backend` (future — not yet probe-wired).
 fuel-ir/src/probe.rs	/// different cells, so the descriptor would need *the admissible
 fuel-ir/src/stype.rs	/// `FDX_BUFFER_NONE` ("scheme described, scale buffer not yet bound" — the
