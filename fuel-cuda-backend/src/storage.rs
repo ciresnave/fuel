@@ -2944,7 +2944,17 @@ impl CudaStorage {
     }
 
     pub fn transfer_to_device(&self, dst: &CudaDevice) -> Result<Self> {
-        let storage_slice = match self.dtype() {
+        let dt = self.dtype();
+        // GAP-161: gate the accept decision on the single storage authority. The
+        // `Present` set is exactly the dtypes with a `CudaStorageSlice` variant;
+        // a decline derives its typed reason from `cuda_storage_status` instead
+        // of restating it (this site previously returned an identical reasonless
+        // `UnsupportedDtype` for F8E5M2 and F8E6M2, which decline for different
+        // reasons).
+        if !crate::storage_status::cuda_storage_status(dt).is_present() {
+            return Err(crate::storage_status::storage_unavailable(dt, "transfer_to_device").into());
+        }
+        let storage_slice = match dt {
             DType::U8 => {
                 let cuda_slice = self.as_cuda_slice::<u8>()?;
                 let result = dst.clone_dtod(cuda_slice)?;
@@ -3020,22 +3030,14 @@ impl CudaStorage {
                 let result = dst.clone_dtod(cuda_slice)?;
                 CudaStorageSlice::F8E8M0(result)
             }
-            // GAP-097: declines because no `CudaStorageSlice::F8E5M2` variant
-            // exists — NOT because the dtype lacks a representation. Distinct
-            // from F8E6M2 below, whose encoding is unauthored (GAP-045).
-            DType::F8E5M2 => {
-                return Err(CudaError::UnsupportedDtype {
-                    dtype: self.dtype(),
-                    op: "transfer_to_device",
-                }
-                .into());
-            }
-            DType::F8E6M2 => {
-                return Err(CudaError::UnsupportedDtype {
-                    dtype: self.dtype(),
-                    op: "transfer_to_device",
-                }
-                .into());
+            // GAP-161: gated as non-Present above, so these are unreachable in
+            // practice; kept as a never-panic defensive decline (not
+            // `unreachable!`). If storage is later wired by flipping
+            // `cuda_storage_status` to `Present` WITHOUT adding a real
+            // construction arm here, `storage_unavailable` returns its loud
+            // stale-arm error — surfacing the incomplete wiring, not panicking.
+            DType::F8E5M2 | DType::F8E6M2 => {
+                return Err(crate::storage_status::storage_unavailable(dt, "transfer_to_device").into());
             }
         };
 
@@ -3398,15 +3400,13 @@ impl CudaStorage {
             DType::I8 | DType::I16 | DType::I32 => {
                 return Err(CudaError::InternalError("i8,i16,i32 dtypes are not supported as cast targets").into())
             }
-            // GAP-097: F8E5M2 is an OCP-standard value dtype, not a dummy
-            // type — it declines only for want of a CUDA storage variant.
-            DType::F8E5M2 => {
-                return Err(CudaError::InternalError(
-                    "F8E5M2 has no CudaStorageSlice variant yet (GAP-097); declining rather                      than mislabelling a real OCP format an unsupported dummy type",
-                )
-                .into());
+            // GAP-161: F8E5M2/F8E6M2 decline for a STORAGE reason (no output
+            // variant to allocate), single-sourced from `cuda_storage_status`.
+            // The dummy-byte types below decline as cast TARGETS for an op reason.
+            DType::F8E5M2 | DType::F8E6M2 => {
+                return Err(crate::storage_status::storage_unavailable(dtype, "to_dtype").into());
             }
-            DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 | DType::F8E6M2 => {
+            DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 => {
                 return Err(CudaError::InternalError("Dummy types not supported in CUDA backend").into());
             }
         };

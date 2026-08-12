@@ -43,6 +43,7 @@ pub mod quantized;
 pub mod scalar;
 pub mod shape;
 pub mod storage;
+pub mod storage_status;
 pub mod stype;
 pub mod symbol;
 pub mod strided_index;
@@ -56,6 +57,7 @@ pub use dtype::{
     DType, DTypeParseError, FloatDType, IntDType, RESERVED_DTYPE_TOKENS, WithDType,
     is_reserved_dtype_token,
 };
+pub use storage_status::StorageStatus;
 pub use error::{Context, Error, Result};
 pub use token_kind::{
     classify_dtype_token, sk4_token, TokenKind, RECOGNIZED_UNSUPPORTED_DTYPE_TOKENS,
