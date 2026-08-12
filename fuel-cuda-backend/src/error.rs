@@ -31,6 +31,18 @@ pub enum CudaError {
     #[error("unsupported dtype {dtype:?} for {op}")]
     UnsupportedDtype { dtype: DType, op: &'static str },
 
+    /// No CUDA storage exists for `dtype`, carrying the TYPED reason from the
+    /// single authority (`cuda_storage_status`) rather than erasing it into the
+    /// reasonless `UnsupportedDtype`. GAP-161: the reason (unwired-yet vs
+    /// encoding-unauthored vs impossible) is load-bearing and must survive to
+    /// the caller, not live only in a source comment.
+    #[error("no CUDA storage for {dtype:?} ({op}): {reason}")]
+    StorageUnavailable {
+        dtype: DType,
+        op: &'static str,
+        reason: &'static str,
+    },
+
     #[error(
         "cannot view {byte_len} bytes as {dtype_name}: byte length not divisible by size_of::<{dtype_name}>() = {dtype_size}"
     )]
