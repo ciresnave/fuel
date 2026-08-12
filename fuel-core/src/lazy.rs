@@ -13644,6 +13644,180 @@ mod generate_tests {
     ///       builder snuck a `cached_len`-dependent shape / re-splice /
     ///       re-insert back in).
     ///
+    /// GAP-029 increment 2b — is `attended_len_sym` actually UNREFERENCED?
+    ///
+    /// The Llama half of a two-model control; see the Phi twin
+    /// (`phi_attended_len_sym_is_unreferenced_negative_control`) for the full
+    /// rationale. Both halves are needed because the 2b shared-driver design
+    /// rests on TWO comment-sourced claims — Phi's `SymId(1)` is "carried for
+    /// API parity but never referenced/bound" and Llama's is "unreferenced on
+    /// today's f32 decode graph". **Testing one only halves the assumption**: if
+    /// Llama's were referenced while Phi's is not, the "identical no-op"
+    /// argument collapses from the other direction.
+    ///
+    /// The byte-exact persistent tests cannot settle this — a referenced symbol
+    /// bound to its usual value passes them. The discriminating instrument is a
+    /// deliberately WRONG binding, paired with a positive control on
+    /// `cached_len_sym` (which the KV write demonstrably does reference) so that
+    /// "output unchanged" means *unreferenced* rather than *the perturbation
+    /// never reached the graph*.
+    ///
+    /// Scope, per the doc's own qualifier: **F32, CPU, no flash arm.** A
+    /// bf16/f16 CUDA decode offering the flash arm would reference
+    /// `attended_len` and must re-run this control.
+    #[test]
+    fn llama_attended_len_sym_is_unreferenced_negative_control() {
+        let cfg = LlamaConfig {
+            vocab_size: 16,
+            dim:        8,
+            n_layers:   2,
+            n_heads:    4,
+            n_kv_heads: 2,
+            head_dim:   4,
+            ffn_dim:    16,
+            norm_eps:   1e-5,
+            rope_base:  10000.0,
+        };
+        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
+        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+
+        let prompt = [1_u32, 2, 3];
+        let max_seq_len = prompt.len() + 4;
+
+        let dev = Device::cpu();
+        let mut cache = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &dev,
+        ).expect("with_capacity");
+        let mut ctx = InferenceContext::new(dev.clone());
+        let mut session: Option<crate::inference_context::DecodeSession> = None;
+
+        // Prefill, then ONE decode token to BUILD the held session.
+        let _ = model.forward_with_kv_context_persistent(&prompt, &mut cache, &mut ctx, &mut session)
+            .expect("prefill");
+        let _ = model.forward_with_kv_context_persistent(&[4], &mut cache, &mut ctx, &mut session)
+            .expect("build decode session");
+        let s = session.as_ref().expect("session built");
+
+        // Realize the SAME next token three times, varying ONLY the SymEnv.
+        // `realize_token` takes &self and clones `base_cache` internally, so the
+        // three calls cannot pollute each other.
+        let cached_len = cache.cached_len;
+        let next = [5_u32];
+        let cache_dtype = cache.dtype.unwrap_or(DType::F32);
+        let with_off = s.offset_node().is_some();
+        let mk_data = || model
+            .build_token_rope_mask_arcs(
+                &dev, cached_len, &next, s.max_seq_len(), cache_dtype, with_off, None,
+            )
+            .expect("token data");
+
+        // Baseline = exactly what production binds (BOTH symbols).
+        let baseline = s
+            .realize_token(&dev, mk_data(), &s.per_token_sym_env(cached_len).expect("env"))
+            .expect("baseline");
+
+        // --- the measurement: attended_len bound to a WRONG value ---
+        let mut env_bad_attended = fuel_ir::SymEnv::new();
+        env_bad_attended.bind(s.cached_len_sym(), cached_len).expect("bind cached_len");
+        env_bad_attended
+            .bind(s.attended_len_sym(), cached_len + 4242)
+            .expect("bind attended_len (wrong on purpose)");
+        let perturbed_attended = s
+            .realize_token(&dev, mk_data(), &env_bad_attended)
+            .expect("realize with wrong attended_len");
+
+        // --- control A: perturb the DATA, which must always move the output ---
+        // This proves `realize_token` is live and sensitive at all. Without it,
+        // "nothing changed" could mean the realize is returning a cached or
+        // constant result and every verdict below would be vacuous.
+        let other = [6_u32];
+        let data_other = model
+            .build_token_rope_mask_arcs(
+                &dev, cached_len, &other, s.max_seq_len(), cache_dtype, with_off, None,
+            )
+            .expect("token data (different token)");
+        let perturbed_data = s
+            .realize_token(&dev, data_other, &s.per_token_sym_env(cached_len).expect("env"))
+            .expect("realize with different token");
+        assert_ne!(
+            perturbed_data, baseline,
+            "control A FAILED: a DIFFERENT input token produced identical \
+             logits, so realize_token is not responding to its inputs and no \
+             verdict from this test means anything",
+        );
+
+        // --- control B: is the SymEnv consulted AT ALL on this path? ---
+        let mut env_bad_cached = fuel_ir::SymEnv::new();
+        env_bad_cached
+            .bind(s.cached_len_sym(), cached_len + 1)
+            .expect("bind cached_len (wrong on purpose)");
+        env_bad_cached
+            .bind(s.attended_len_sym(), cached_len + 1)
+            .expect("bind attended_len");
+        let perturbed_cached = s
+            .realize_token(&dev, mk_data(), &env_bad_cached)
+            .expect("realize with wrong cached_len");
+
+        // MEASURED, not assumed: on the device-offset path the KV write offset
+        // rides a device-resident BUFFER (`Op::WriteSliceDoff` reads the start
+        // from `DecodeTokenData::offset` at launch), so `cached_len_sym` is NOT
+        // what drives the write and perturbing it is expected to be inert. On
+        // the SymEnv path (`offset_node().is_none()`, Vulkan) the offset rides
+        // the symbol and perturbing it MUST move the output.
+        //
+        // Asserting the direction that matches the path is what keeps this a
+        // control rather than a coin flip: it fails if the relationship between
+        // `offset_node` and symbol-referencedness is ever not what the driver's
+        // own comment claims.
+        if with_off {
+            assert_eq!(
+                perturbed_cached, baseline,
+                "on the device-offset path the KV offset rides the offset \
+                 BUFFER, so a wrong cached_len_sym should be inert — it moved \
+                 the output, meaning the symbol IS load-bearing here and the \
+                 driver's offset_node comment is wrong",
+            );
+        } else {
+            assert_ne!(
+                perturbed_cached, baseline,
+                "on the SymEnv path the KV offset rides cached_len_sym, so a \
+                 wrong binding MUST move the output; it did not, so this test \
+                 cannot detect referencedness and its verdict is vacuous",
+            );
+        }
+
+        assert_eq!(
+            perturbed_attended, baseline,
+            "attended_len_sym IS referenced by Llama's F32 CPU decode graph — \
+             the 'unreferenced on today's f32 decode graph' claim is FALSE, and \
+             the GAP-029 2b shared-driver design is unsound as written",
+        );
+
+        // WHAT THIS ARM PROVES IS WEAKER THAN THE PHI ARM, and the asymmetry is
+        // measured rather than assumed. MEASURED 2026-08-12: Llama runs the
+        // **device-offset path** on CPU (`offset_node().is_some() == true`),
+        // where the KV write offset rides a buffer, so control B took the
+        // `assert_eq` branch — `cached_len_sym` is inert too.
+        //
+        // Therefore Llama's green does NOT establish "attended_len_sym is
+        // unreferenced by the graph". It establishes only "no symbol drives this
+        // path", which is a strictly weaker claim that happens to have the same
+        // consequence here. Phi is the arm carrying the real evidence: it runs
+        // the SymEnv path, where a sibling symbol in the same env demonstrably
+        // IS load-bearing.
+        //
+        // Do not cite this arm as proof of referencedness in either direction,
+        // and note the scope: F32 / CPU / no flash arm. A bf16/f16 CUDA decode
+        // that offers the flash arm would reference `attended_len` and must
+        // re-run this control.
+        eprintln!(
+            "[gap-029 2b control] llama: offset_node.is_some()={with_off} \
+             ({} path; SymEnv live={})",
+            if with_off { "device-offset" } else { "SymEnv" },
+            !with_off,
+        );
+    }
+
     /// Born-red shape: if the data Consts are rebuilt fresh per token
     /// (a new graph each token) OR the session re-optimizes, (a)/(c)
     /// fail; wiring the held session + per-token data re-bind makes them
@@ -19058,6 +19232,157 @@ mod phi_kv_context_tests {
     ///   (c) `optimize_calls_thread_local()` bumps **exactly 2** across
     ///       prefill + N decode (1 prefill fallback + 1 decode-session
     ///       build) regardless of N — plan-once at the loop level.
+    /// GAP-029 increment 2b — is `attended_len_sym` actually UNREFERENCED?
+    ///
+    /// The shared-driver de-duplication rests on a claim made only in comments:
+    /// Phi's session carries `attended_len_sym = SymId(1)` "for API parity but
+    /// never referenced/bound", and Llama's own doc says its attended-length
+    /// binding "is unreferenced on today's f32 decode graph (no flash arm)". If
+    /// both are true, Phi adopting Llama's shared `per_token_sym_env` (which
+    /// binds both symbols) is a no-op and one driver can serve both.
+    ///
+    /// **The byte-exact persistent tests CANNOT settle this.** If the symbol
+    /// were referenced but bound to its usual value, byte-exactness passes and
+    /// says nothing about referencedness — the comment and the passing test are
+    /// the same evidence, and neither discriminates.
+    ///
+    /// The discriminating instrument is a **negative control on the binding**:
+    /// bind the symbol to a deliberately WRONG value and look at the output.
+    ///   - output changes  ⇒ referenced ⇒ the no-op claim is FALSE
+    ///   - output identical ⇒ genuinely unreferenced (positive evidence, not a
+    ///     comment's word)
+    ///
+    /// **A wrong-binding test that sees no change is vacuous on its own**, since
+    /// "the perturbation never reached the graph" produces the identical result.
+    /// So each arm below is paired with a positive control that perturbs
+    /// `cached_len_sym` — a symbol the KV write demonstrably DOES reference —
+    /// and requires the output to change. Only then does "unchanged" mean
+    /// unreferenced rather than "the instrument is blind".
+    ///
+    /// Scope of the claim, per Llama's own qualifier: **F32, CPU, today's decode
+    /// graph, no flash arm.** A bf16/f16 CUDA decode that offers the flash arm
+    /// would reference `attended_len` and must re-run this control.
+    #[test]
+    fn phi_attended_len_sym_is_unreferenced_negative_control() {
+        let cfg = tiny_cfg();
+        let model = PhiModel { config: cfg.clone(), weights: make_tiny_phi(&cfg, 7777) };
+        let prompt = [1_u32, 5, 9];
+        let max_seq_len = prompt.len() + 4;
+
+        let dev = Device::cpu();
+        let mut cache = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_heads, cfg.head_dim, max_seq_len, DType::F32, &dev,
+        ).expect("with_capacity");
+        let mut ctx = InferenceContext::new(dev.clone());
+        let mut session: Option<crate::inference_context::DecodeSession> = None;
+
+        // Prefill, then ONE decode token to BUILD the held session.
+        let _ = model.forward_with_kv_context_persistent(&prompt, &mut cache, &mut ctx, &mut session)
+            .expect("prefill");
+        let _ = model.forward_with_kv_context_persistent(&[12], &mut cache, &mut ctx, &mut session)
+            .expect("build decode session");
+        let s = session.as_ref().expect("session built");
+
+        // Realize the SAME next token three times, varying ONLY the SymEnv.
+        // `realize_token` takes &self and clones `base_cache` internally, so the
+        // three calls cannot pollute each other.
+        let cached_len = cache.cached_len;
+        let next = [3_u32];
+        let mk_data = || model
+            .build_token_rope_mask_arcs(&dev, cached_len, &next, s.max_seq_len())
+            .expect("token data");
+
+        let mut env_ok = fuel_ir::SymEnv::new();
+        env_ok.bind(s.cached_len_sym(), cached_len).expect("bind cached_len");
+        let baseline = s.realize_token(&dev, mk_data(), &env_ok).expect("baseline");
+
+        // --- the measurement: attended_len bound to a WRONG value ---
+        let mut env_bad_attended = fuel_ir::SymEnv::new();
+        env_bad_attended.bind(s.cached_len_sym(), cached_len).expect("bind cached_len");
+        env_bad_attended
+            .bind(s.attended_len_sym(), cached_len + 4242)
+            .expect("bind attended_len (wrong on purpose)");
+        let perturbed_attended = s
+            .realize_token(&dev, mk_data(), &env_bad_attended)
+            .expect("realize with wrong attended_len");
+
+        // --- control A: perturb the DATA, which must always move the output ---
+        // Proves `realize_token` is live and sensitive at all; without it,
+        // "nothing changed" could mean the realize returns a cached or constant
+        // result and every verdict below would be vacuous.
+        let other = [6_u32];
+        let data_other = model
+            .build_token_rope_mask_arcs(&dev, cached_len, &other, s.max_seq_len())
+            .expect("token data (different token)");
+        let mut env_ok2 = fuel_ir::SymEnv::new();
+        env_ok2.bind(s.cached_len_sym(), cached_len).expect("bind cached_len");
+        let perturbed_data = s
+            .realize_token(&dev, data_other, &env_ok2)
+            .expect("realize with different token");
+        assert_ne!(
+            perturbed_data, baseline,
+            "control A FAILED: a DIFFERENT input token produced identical \
+             logits, so realize_token is not responding to its inputs and no \
+             verdict from this test means anything",
+        );
+
+        // --- control B: is the SymEnv consulted AT ALL on this path? ---
+        let with_off = s.offset_node().is_some();
+        let mut env_bad_cached = fuel_ir::SymEnv::new();
+        env_bad_cached
+            .bind(s.cached_len_sym(), cached_len + 1)
+            .expect("bind cached_len (wrong on purpose)");
+        let perturbed_cached = s
+            .realize_token(&dev, mk_data(), &env_bad_cached)
+            .expect("realize with wrong cached_len");
+
+        // See the Llama twin for the full reasoning: on the device-offset path
+        // the KV write offset rides a device-resident BUFFER, so cached_len_sym
+        // is expected inert; on the SymEnv path it drives the write and MUST
+        // move the output. Asserting the direction that matches the path keeps
+        // this a control rather than a coin flip.
+        if with_off {
+            assert_eq!(
+                perturbed_cached, baseline,
+                "on the device-offset path the KV offset rides the offset \
+                 BUFFER, so a wrong cached_len_sym should be inert — it moved \
+                 the output, meaning the symbol IS load-bearing here",
+            );
+        } else {
+            assert_ne!(
+                perturbed_cached, baseline,
+                "on the SymEnv path the KV offset rides cached_len_sym, so a \
+                 wrong binding MUST move the output; it did not, so this test \
+                 cannot detect referencedness and its verdict is vacuous",
+            );
+        }
+
+        assert_eq!(
+            perturbed_attended, baseline,
+            "attended_len_sym IS referenced by Phi's decode graph — the \
+             'carried for API parity but never referenced' comment at \
+             lazy.rs:12088 is FALSE, and sharing per_token_sym_env between \
+             Llama and Phi is NOT the no-op the GAP-029 2b design assumes",
+        );
+
+        // MEASURED 2026-08-12: Phi runs the **SymEnv path** on CPU
+        // (`offset_node().is_none()`), so control B above took the `assert_ne`
+        // branch and PASSED — a wrong `cached_len_sym` does move Phi's output.
+        // The SymEnv is therefore demonstrably LIVE here, which is what makes
+        // the `attended_len` verdict non-vacuous: it is inert while a sibling
+        // symbol in the same env is load-bearing.
+        //
+        // So for Phi this is positive evidence, not a comment's word:
+        // `attended_len_sym` is genuinely unreferenced, and adopting the shared
+        // `per_token_sym_env` (which binds it) is a real no-op.
+        eprintln!(
+            "[gap-029 2b control] phi: offset_node.is_some()={with_off} \
+             ({} path; SymEnv live={})",
+            if with_off { "device-offset" } else { "SymEnv" },
+            !with_off,
+        );
+    }
+
     /// It ALSO drives the real production wrapper `generate_with_kv_context`
     /// and asserts the returned token sequence matches the reference.
     #[test]
