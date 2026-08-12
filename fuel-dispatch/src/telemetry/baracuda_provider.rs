@@ -124,7 +124,23 @@ fn map_element_kind(dt: DType) -> Option<ElementKind> {
         DType::F32 => ElementKind::F32,
         DType::F64 => ElementKind::F64,
         DType::F8E4M3 => ElementKind::Fp8E4M3,
+        // Baracuda ships the matching kind with its own FP8 tensor-core operand
+        // tag (`.e5m2.e5m2.f32`), and `dtype_token` already emits `f8e5m2`, so a
+        // decline here would suppress structure-key derivation for a whole FP8
+        // family that IS supported. GAP-097 residual: this arm was MISSING
+        // entirely and the omission was a hard E0004 that nothing in this
+        // environment compiled — see the note below.
+        DType::F8E5M2 => ElementKind::Fp8E5M2,
         // No faithful Baracuda ElementKind — no signal beats a wrong one.
+        //
+        // NOT AUDITED, and at least one entry here is STALE: `ElementKind::U32`
+        // DOES exist at the locked baracuda-kernel-vocab 0.0.1-alpha.78, so
+        // `DType::U32` is declined against a reason that has expired. Left
+        // as-is deliberately — un-declining it changes BEHAVIOUR, not just a
+        // message (a decline here aborts the WHOLE derivation via `?` at the
+        // call site, so flipping it starts emitting keys for u32 operands that
+        // previously emitted none), and that needs its own test and its own
+        // decision. Filed rather than fixed in passing.
         DType::U32 | DType::I16 | DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 | DType::F8E6M2 => {
             return None;
         }
@@ -258,7 +274,17 @@ mod tests {
         assert_eq!(map_element_kind(DType::BF16), Some(ElementKind::Bf16));
         assert_eq!(map_element_kind(DType::I8), Some(ElementKind::S8));
         assert_eq!(map_element_kind(DType::F8E4M3), Some(ElementKind::Fp8E4M3));
+        // GAP-097 residual: this arm was missing entirely, which was a hard
+        // E0004 that only `--features telemetry,cuda` could ever surface.
+        // Asserted as a MAPPING, not a decline — Baracuda ships the kind, so
+        // declining would have suppressed a supported FP8 family.
+        assert_eq!(map_element_kind(DType::F8E5M2), Some(ElementKind::Fp8E5M2));
         // No faithful equivalent ⇒ decline.
+        //
+        // NOTE: `U32` is asserted to decline because that is what the code does
+        // TODAY, not because it is right — `ElementKind::U32` exists at the
+        // locked alpha.78, so this pins a stale decline. Filed, not fixed here:
+        // flipping it changes derivation behaviour, not just a message.
         assert_eq!(map_element_kind(DType::U32), None);
         assert_eq!(map_element_kind(DType::F4), None);
     }
