@@ -27,7 +27,17 @@ trait."* Two corrections, both measured:
   find what it is looking for.
 
 Across all of `fuel-core`, `forward_with_kv_context_persistent` exists on exactly
-**three** types: `LlamaModel`, `PhiModel` (`lazy.rs:11420`), `Llama3Model`.
+**three** types: `LlamaModel` (`lazy.rs:8885`), `PhiModel` (`lazy.rs:11859`),
+`Llama3Model` (`lazy_llama_full.rs:382`).
+
+> **Correction (2026-08-12).** This line previously cited `lazy.rs:11420` for
+> `PhiModel`. That anchor is wrong — `:11420` is inside `impl PhiConfig`'s
+> `from_json` field parsing. `impl PhiModel` opens at `:11512` and the persistent
+> fn is at `:11859`. The *claim* was right and the *pointer* was not, which is the
+> more dangerous combination: it survives review because the sentence is true.
+> Re-verified against `origin/main` after 73 commits, **zero** of which touched
+> these files (`git log <base>..origin/main -- <files>` → empty), so the drift was
+> mine at authoring time, not the tree's since.
 
 **So this is a decode-coverage gap that would exist identically if quantization
 were deleted.** A reader acting on the original row would have gone looking in
@@ -46,9 +56,19 @@ GGUF internals for a problem that lives in the base models.
 **Those three methods are the variation points, and that is evidence rather than
 judgement:** `PhiModel` already carries its own copy of
 `rebind_and_realize_prebuilt` (`lazy.rs:12114`), `decode_shape_key` (`:11514`),
-and both hooks (`:11561`, `:12189`) parallel to `LlamaModel`'s. **Two copies of
-this machinery are on `main` today.** Eight more ports would make it ten — which
-is why this is *one refactor with eight consumers*, not eight ports.
+and both hooks (`:11561`, `:12189`) parallel to `LlamaModel`'s.
+
+**There are THREE carriers on `main` today, not two — and the third diverged
+rather than duplicated.** `lazy_deepseek2.rs` carries `decode_shape_key`
+(`:499`) and `rebind_and_realize_prebuilt_mla` (`:1373`), but **no**
+`apply_layer_with_kv_writes`; its decode entry point is
+`forward_with_latent_cache` (`:563`). So the machinery has already been copied
+twice and *forked* once. That is worse than three identical copies: a diverged
+carrier cannot be collapsed by deletion, only by design.
+
+Eight more ports would make it ten. Which is why this is **one refactor with
+eight consumers**, not eight ports — and why the refactor has to happen before
+the ports, not after.
 
 ## 3. The constraint that decides the trait's shape
 
@@ -89,6 +109,46 @@ live evidence that per-layer variation is real rather than speculative:
 Gemma3 varies per-layer *behaviour*, LFM2 varies per-layer *state kind* — the
 **same axis**, different payload. The expensive part (making `layer_idx` a real
 parameter rather than a loop counter) is paid once, here.
+
+### 3.2 The constraint is already violated on `main` — MLA is the proof
+
+`DecodeModel` (`fuel-inference/src/multi_session.rs:77`) requires
+`n_kv_heads()` and `head_dim()`, both documented "(cache geometry)".
+**`DeepSeek2Model` is decode-capable on `main` today and has neither**, because
+MLA's decode state is a `LazyLatentCache`, not a `KvCache`: per layer, slot 0 is
+the post-norm compressed latent trailing `[kv_lora_rank]`, slot 1 the post-RoPE
+`k_pe`. The signature diverges too —
+`forward_with_latent_cache(&self, tokens, cache: LazyLatentCache) -> Result<(LazyTensor, LazyLatentCache)>`
+threads the cache **by value and returns it**, where the trait takes
+`&mut KvCache`. Different state kind *and* different ownership shape.
+
+**The hazard is not that DeepSeek2 cannot implement the trait. It is that it
+can, and wrongly.** `DeepSeek2Config` has `num_attention_heads`, and a
+`v_head_dim` exists, so both methods are syntactically returnable. A scheduler
+trusting them allocates a standard `KvCache` of `[n_kv_heads, head_dim] ×
+n_layers` for a model whose decode path never reads a `KvCache` at all. It
+type-checks, it runs, it allocates the wrong state — the exact LFM2 failure mode
+(§6), except **shipped rather than prospective**.
+
+Note where the conflation lives, because it is one sentence. `n_layers`' doc
+reads *"the KV cache geometry the scheduler builds a session's private cache
+against (all sessions share one model, so this is uniform)."* That parenthetical
+is a **correct justification for uniformity across SESSIONS**; the methods use it
+to assert uniformity **across LAYERS and across STATE KINDS**, which it does not
+establish. A true reason carrying a wider claim than it supports.
+
+**Design consequence for increment 2.** MLA is the only *shipped, working,
+non-KV* decode path in the tree, so it is the one consumer that can falsify
+"describe, do not assert" **before** eight impls exist — LFM2 cannot, since
+nothing is built there. It is **out of GAP-029's scope** (no
+`lazy_quantized_deepseek2.rs`; positive-controlled against the 11-file listing)
+and is **not** to be ported here. It is a *design check*: can the geometry
+vocabulary express `LazyLatentCache` without lying? Failing that check costs two
+impls now and ten later.
+
+*(Fact vs consequence: the file:line anchors, cache type and signature are
+measured off `origin/main`. That a scheduler **would** mis-allocate is reasoning
+from the trait's stated contract, not an observed run.)*
 
 ## 4. Increment order
 
