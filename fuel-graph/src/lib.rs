@@ -5792,7 +5792,8 @@ impl Tensor {
             // Weighed and rejected as grounds for the opposite call: F8E5M2
             // currently has NO host or CUDA storage (fuel-cpu-backend and
             // fuel-cuda-backend both decline it), so this permits a graph the
-            // backends cannot yet allocate. That is the NOTE above working as
+            // backends cannot yet allocate — GAP(GAP-161) tracks that storage
+            // decline and its expiry. That is the NOTE above working as
             // designed — permission is semantic, allocation is a capability, and
             // they are different questions. Writing REJECT here would encode the
             // claim "F8E5M2 has no representable fill value", which is FALSE and
