@@ -460,29 +460,23 @@ fn size_class(extent: i64) -> Option<char> {
 /// just this field — so a dtype moving between the emitted and declined sets
 /// changes whether a cell emits a structure key at all.
 ///
-/// Exhaustive so a new Fuel `DType` is a compile error here, not a silent miss.
+/// **Delegates to [`fuel_ir::sk4_token`], the single source of the seam
+/// spelling.** This function used to carry its own copy of the table.
+///
+/// Two hand-maintained copies of one mapping is the drift pattern this repo
+/// keeps re-finding, and it is worse than usual here: the copy that stops
+/// being edited does not fail loudly, it emits a **retired spelling under a
+/// current version prefix** — which §6.1-0004 forbids outright, and which no
+/// test downstream of this function can detect, because the key it produces is
+/// still well-formed.
+///
+/// The exhaustiveness anchor moved with the table rather than being lost:
+/// `sk4_token` is a wildcard-free `match`, so a new Fuel `DType` is still a
+/// compile error forcing a decision — now in the crate that owns `DType`,
+/// where the emitted token is additionally checked against the closed
+/// vocabulary it has to belong to.
 fn dtype_token(dt: DType) -> Option<&'static str> {
-    Some(match dt {
-        DType::F16 => "f16",
-        DType::BF16 => "bf16",
-        DType::F32 => "f32",
-        DType::F64 => "f64",
-        DType::I8 => "i8",
-        DType::I16 => "i16",
-        DType::U8 => "u8",
-        DType::U32 => "u32",
-        DType::I32 => "i32",
-        DType::I64 => "i64",
-        DType::F8E4M3 => "f8e4m3fn",
-        DType::F8E5M2 => "f8e5m2",
-        // The two 8-bit MX SCALES, added to §6.1 at sk4 (additive). Fuel has
-        // both dtypes, so they are emitted, not declined.
-        DType::F8E8M0 => "f8e8m0",
-        DType::F8E6M2 => "f8e6m2",
-        // Block-scoped sub-byte ELEMENT formats — still outside the §6.1 closed
-        // set at sk4 (PR-2, GAP-153). Typed decline, never a guessed token.
-        DType::F6E2M3 | DType::F6E3M2 | DType::F4 => return None,
-    })
+    fuel_ir::sk4_token(dt)
 }
 
 /// One operand's `<contig>/<bcasthex>/<vec>/<div>/<flip>` sub-key (§6.6-0007),

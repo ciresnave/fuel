@@ -46,6 +46,7 @@ pub mod storage;
 pub mod stype;
 pub mod symbol;
 pub mod strided_index;
+pub mod token_kind;
 
 pub use capability::Capability;
 pub use probe::{BackendId, BackendProbe, DeviceDescriptor, EquivalenceKey};
@@ -56,6 +57,10 @@ pub use dtype::{
     is_reserved_dtype_token,
 };
 pub use error::{Context, Error, Result};
+pub use token_kind::{
+    classify_dtype_token, sk4_token, TokenKind, RECOGNIZED_UNSUPPORTED_DTYPE_TOKENS,
+    SK4_DTYPE_TOKENS,
+};
 pub use layout::Layout;
 pub use quant_scale::{ScaleGranularity, ScalePair};
 pub use quantized::GgmlDType;
