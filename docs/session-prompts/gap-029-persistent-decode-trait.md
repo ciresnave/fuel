@@ -150,6 +150,122 @@ impls now and ten later.
 measured off `origin/main`. That a scheduler **would** mis-allocate is reasoning
 from the trait's stated contract, not an observed run.)*
 
+### 3.3 The falsification attempt (GAP-166) — attempted, shown, and it SPLITS
+
+Ruling (architect, 2026-08-12): design the vocabulary *against* DeepSeek2, do not
+port it. The deliverable is an attempt to **express** MLA in the vocabulary, on
+**both** axes, with the concrete text shown — because "I considered it and it
+fits" is the same artifact as not having tried.
+
+**Result: axis 1 passes with a caveat that "it fits" would have concealed;
+axis 2 does NOT, and the failure is not where it looks.**
+
+#### Axis 1 — state kind: EXPRESSIBLE, and the vocabulary already exists twice
+
+I did not need to invent a describing vocabulary. One is shipped, in two
+implementations:
+
+- `LazyLatentCache::new(anchor, n_layers, max_seq_len, slot_trailing: Vec<Vec<usize>>, dtype)`
+  (`lazy_latent_cache.rs:74`), with readers `n_slots()` (`:226`) and
+  `slot_trailing(slot)` (`:228`).
+- `LatentKvCache::with_capacity(n_layers, max_seq_len, slot_trailing: Vec<Vec<usize>>, dtype, device)`
+  (`inference_context.rs:651`) — the device-resident twin, in the *same file* as
+  `KvCache`.
+
+Both state kinds expressed in it, literally:
+
+```rust
+// A standard KV layer — 2 slots, K and V:
+slot_trailing = vec![vec![n_kv_heads, head_dim],
+                     vec![n_kv_heads, head_dim]];
+
+// An MLA layer — 2 slots, compressed latent and post-RoPE positional key:
+slot_trailing = vec![vec![kv_lora_rank],
+                     vec![qk_rope_head_dim]];
+```
+
+So **`KvCache` is the 2-slot special case of the slot vocabulary**, and the
+`(n_kv_heads, head_dim)` pair is not a more primitive fact than
+`slot_trailing` — it is one inhabitant of it. That is the strongest form of the
+argument for the describing spelling: it is not speculative generality, it is
+the generalization the tree *already made twice* and that `DecodeModel` did not
+adopt.
+
+**The caveat, which is the reason to actually attempt the expression rather than
+assert the conclusion.** `slot_trailing` is **one list applied to every layer** —
+`LazyLatentCache::new` loops `for _ in 0..n_layers { for trailing in &slot_trailing { … } }`.
+So it describes **state KIND** generically while still **asserting uniformity
+ACROSS LAYERS**. It solves the MLA axis and leaves the Gemma3/LFM2 axis exactly
+where it was. Adopting it unchanged would buy one of the two dimensions and feel
+like buying both.
+
+**Therefore the vocabulary this trait needs is `slot_trailing` INDEXED BY
+LAYER** — `fn layer_state_spec(&self, layer_idx: usize) -> LayerStateSpec`
+rather than a single model-wide list. Note this lands on the architect's
+independent constraint from the other direction: *`layer_idx` must be a real
+parameter, not a loop counter*. Two separate lines of reasoning converge on the
+same signature, which is the closest thing to corroboration available here.
+
+#### Axis 2 — ownership shape: DOES NOT carry over, and the direction is inverted
+
+This is the axis flagged as the one that would slip, and it did — my first
+reading of it was backwards.
+
+| | MLA (`forward_with_latent_cache`) | `DecodeModel` |
+|---|---|---|
+| threading | `cache: LazyLatentCache` **by value**, returned in the `Ok` tuple | `cache: &mut KvCache` |
+| on `Err` | cache is **consumed and dropped** — caller loses it | caller **retains** the cache |
+
+These are **not the same guarantee, and neither dominates**:
+
+- By-value makes a partially-mutated cache *impossible* — but it also makes
+  recovery impossible, because the handle is gone.
+- `&mut` permits recovery, and is what the scheduler's documented contract
+  actually relies on: the batched arm "may return an error (never a panic)
+  **before mutating any cache**", so `advance_batched` can route that session to
+  the serial arm **with its KV untouched**. Under by-value there is no cache left
+  to route.
+
+I assumed at first that by-value was the stronger guarantee and that adopting
+`&mut` would silently drop it. **Measured, that is wrong in both halves.** All
+six validation errors in `forward_with_latent_cache_impl`
+(`lazy_deepseek2.rs:563`+) fire *before* any mutation — so MLA does satisfy
+all-or-nothing, but via **early validation**, a property entirely independent of
+the by-value threading. The by-value form is carrying something else: it is how a
+*persistent/functional lazy structure* is rebuilt per step, the same reason
+`advance_by(mut self) -> Self` (`:200`) is by-value. It is a data-structure
+idiom, not an error-semantics choice.
+
+**Consequence for the trait.** A trait requiring `&mut Self::State` *can* serve
+MLA — `mem::replace` a placeholder out, call the by-value impl, write the result
+back — but that adaptation **changes MLA's error contract** (the cache now
+survives a failed step instead of being dropped) and must be written
+deliberately, with the recovery semantics chosen rather than inherited. It is
+expressible; it is not free; and it is invisible if you only check that the
+*shapes* line up.
+
+This is the [[replacing-a-lock-enumerate-incidental-guarantees]] pattern in a new
+costume: two signatures that look like a mechanical `&mut`-vs-by-value
+conversion are carrying different incidental properties, and the conversion is
+sound only once you say which one you are keeping.
+
+#### Verdict
+
+**Do not add methods for DeepSeek2's benefit** (per the ruling, and nothing here
+requires it). Take exactly two things from the attempt:
+
+1. **Geometry is a per-layer slot spec, not a `(n_kv_heads, head_dim)` pair** —
+   `LayerStateSpec` indexed by `layer_idx`. Uniform-KV models return the same
+   spec for every layer, so all 8 in-scope families are unaffected in behaviour.
+2. **State ownership is `&mut Self::State`**, chosen because the scheduler's
+   error-recovery path needs the caller to retain the cache — and recorded here
+   as a *choice with a named cost*, not as the obvious default.
+
+Neither widens the increment. Both would have been invisible on a corpus of
+eight uniform-KV models, which is the whole reason the check was run against
+MLA: eight models that all satisfy both spellings **cannot distinguish them**,
+and would have returned a clean `8 of 8` certifying nothing.
+
 ## 4. Increment order
 
 **Increment 1 — DONE (`8e915e19`).** `DecodeModel for QuantizedLlama3Model`,
