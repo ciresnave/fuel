@@ -370,6 +370,64 @@ hardcodes two KV slots. Correct for all 8 in-scope families and left alone
 deliberately — generalizing it reaches into `KvCache`, i.e. the allocator, which
 §3.3 puts out of scope.
 
+### Increment 2c — DECLINED IN FULL (architect ruling, 2026-08-12)
+
+Proposed as "collapse the still-duplicated build path before adding six
+families." **Killed by the premise question: why would a LLaMA-shaped family
+need its own copy of the build path at all?** Measured — it doesn't. The 6×
+multiplier that justified 2c was **zero**, so both halves fell:
+
+- **2c-2** (the 208/178-line build path). Its 23 "interleaved hunks" turned out
+  to be mostly **error-message prefixes** — string literals, not architecture.
+  Remaining value was ~86 lines across **two** carriers. Declined.
+- **2c-1** (`decode_shape_key` 81%, `build_token_rope_mask_bytes` 86%). Declined
+  for consistency: `TokenDataBytes::from_host` is genuinely nameable but has the
+  same zero multiplier, and shipping it after declining 2c-2 would be incoherent.
+  *"It's small" is not an argument, it's the absence of one.*
+
+**`decode_shape_key` is worth recording as its own lesson.** 81% of its *lines*
+match while the **unit of meaning is the field set**, and the sets differ 10 vs
+7 — Phi omits `n_kv_heads`, `ffn_dim`, `norm_eps` because it has no GQA. The
+shared machinery was **already** extracted: `ShapeKeyHasher`. A forced common
+field set is wrong in *both* directions, per `lib.rs:245`: *"over-keying is a
+silent performance regression, under-keying is a silent wrong answer."*
+
+### Increment 3 — step 0 MEASURED (2026-08-12), before any port
+
+"LLaMA-shaped" was an assertion; here it is as a measurement.
+
+| family | partial rotary | GQA | final norm | out bias | layer-weights |
+|---|---|---|---|---|---|
+| Qwen2 | no | yes | RmsNorm | none | reuses `LayerWeights` |
+| Qwen3 | no | yes | RmsNorm | none | reuses `LayerWeights` |
+| SmolLm3 | no | yes | RmsNorm | none | reuses `LayerWeights` |
+| **Phi3** | **no** | yes | RmsNorm | none | reuses `LayerWeights` |
+| Qwen3Moe | no | yes | RmsNorm | none | own `Qwen3MoeLayerWeights` |
+| **Glm4** | **YES** | yes | RmsNorm | none | own `Glm4LayerWeights` |
+
+**Phi3 is Llama-shaped despite its name** — its only `partial_rotary` hit is a
+module doc comment (`lazy_phi3.rs:15`). **Lineage was the wrong predictor**, and
+this document previously bet the other way.
+
+**Glm4 is the outlier and lands on Phi's axis**: `partial_rotary_factor`
+(`lazy_glm4.rs:65`), `rope_dim = partial_rotary_factor * head_dim` (`:76`),
+tested at 0.5 and 1.0. **But that divergence is ONE PARAMETER, not a fork** — in
+the build path it is `[seq, cfg.head_dim]` vs `[seq, cfg.rotary_dim]`. Taking
+rope width as a value covers Llama, Glm4 **and Phi** in one shape, which
+slightly undercuts even Phi's claim to a separate body.
+
+**No family needs its own build path.** Work per family: 4 need the hook +
+`apply_layer` only; Qwen3Moe adds a layer-weights type parameter; Glm4 adds the
+rope-width parameter.
+
+**Gate (architect, sharpened because sharing broke the earlier one):** with all
+seven sharing driver *and* build path, a sabotage of shared code reddens
+everything and proves nothing per-family. Sabotage **each family's own**
+`apply_layer_with_kv_writes` or token-data hook; pass = *that* family red, other
+six green. **Corollary: if a family's test cannot be reddened by breaking that
+family's own code, it is not testing that family** — it is testing the shared
+path under a family-shaped name.
+
 **Increment 3 —** the 6 LLaMA-shaped families: Qwen2, Qwen3, Qwen3Moe,
 SmolLm3, Glm4, Phi3. Each = `apply_layer` for its architecture + the quantized
 wrapper's delegation.
