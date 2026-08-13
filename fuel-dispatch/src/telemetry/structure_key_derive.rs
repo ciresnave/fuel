@@ -186,8 +186,22 @@ impl AccMp {
 /// pending-D1 decline is settled by the sk4 schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FuelOpCategory {
+    /// `une` — unary elementwise (GAP-168 op-family axis). Fuel's LARGEST op
+    /// family by count: 24 `*Elementwise` unary + 23 `*Inplace` `OpKind`s, plus
+    /// `Cast`/`Affine`/`InplaceAffine`, which the production baracuda provider
+    /// already folds in here (`baracuda_provider::map_op_category`). This closes
+    /// a SPELLING gap on the conformance side; it invents no semantics.
+    UnaryElementwise,
     BinaryElementwise,
     TernaryElementwise,
+    /// `scn` — scan / prefix ops (GAP-168 op-family axis): `CumSum`,
+    /// `SelectiveScan`, `SsdChunkScan`, plus graph-level `Op::Scan`.
+    ///
+    /// ⚠️ These ops EXIST. The G3 basis gap is that two of them lack a total
+    /// `decompose` — a DIFFERENT gap from the family being absent. An earlier
+    /// reading took the basis gap to imply Fuel has no scan ops; the published
+    /// corpus carries a live `scn` positive and Fuel ships three.
+    Scan,
     Reduction(ReduceAxes),
     Contraction(GemCell),
     Normalization,
@@ -209,8 +223,10 @@ impl FuelOpCategory {
     /// The §6.5-0006 3-letter family code.
     fn code(self) -> &'static str {
         match self {
+            FuelOpCategory::UnaryElementwise => "une",
             FuelOpCategory::BinaryElementwise => "bin",
             FuelOpCategory::TernaryElementwise => "ter",
+            FuelOpCategory::Scan => "scn",
             FuelOpCategory::Reduction(_) => "red",
             FuelOpCategory::Contraction(_) => "gem",
             FuelOpCategory::Normalization => "nrm",

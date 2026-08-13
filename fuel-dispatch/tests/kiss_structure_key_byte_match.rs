@@ -92,20 +92,27 @@ const KISS_SOURCE_COMMIT: &str = "19c3ad7";
 const FUEL_SK4_SPELLINGS: &[&str] = &[
     "f16", "bf16", "f32", "f64", "i8", "i16", "u8", "u32", "i32", "i64", "f8e4m3fn", "f8e5m2",
     "f8e8m0", "f8e6m2",
+    // GAP-168(c): the Bool cut added `DType::Bool`, so Fuel's token-grammar tier
+    // (instrument 2) moved 14 -> 15. `bool` is in the corpus recognition AND
+    // usable sets and is not reserved. THIS TEST CAUGHT THE OMISSION: the Bool
+    // cut was gated with `--lib`, which does not build `tests/`, so main went
+    // red here. The list is pinned precisely so this is a decision with a diff.
+    "bool",
 ];
 
 /// Positive vectors Fuel cannot express, with the **field** that excludes them.
 ///
-/// Both are field 2, the §6.5-0006 op-family code: `FuelOpCategory::code()` is a
-/// wildcard-free match over 17 variants and neither `une` nor `scn` is among
-/// them (positive-controlled — the same query form finds `bin`/`ter`/`red`/
-/// `gem`/`sft`). This is a capability exclusion with a Fuel owner, not a
-/// disagreement about bytes: for `une`, note that Fuel derives the *identical*
-/// operand sub-keys for the same cell shape and differs only in field 2.
-const OP_FAMILY_EXCLUSIONS: &[(&str, &str)] = &[
-    ("unary_f16_v8", "field 2 (op family) `une` — Fuel has no unary-elementwise FuelOpCategory variant"),
-    ("noncontraction_scan_mp_only", "field 2 (op family) `scn` — Fuel has no scan FuelOpCategory variant"),
-];
+/// **EMPTY as of GAP-168's op-family increment.** It previously held the only two
+/// exclusions — `unary_f16_v8` (`une`) and `noncontraction_scan_mp_only` (`scn`)
+/// — both field 2, the §6.5-0006 op-family code, because `FuelOpCategory` had
+/// neither variant. Both are now spelled, so **all 20 positives are constructed
+/// and byte-matched**; the partition test below asserts the list is empty rather
+/// than deleting it, so a future exclusion has to be added deliberately.
+///
+/// The old note is worth keeping: for `une` Fuel already derived the *identical*
+/// operand sub-keys for the same cell shape and differed ONLY in field 2 — which
+/// is why closing this was a spelling gap, not a semantic disagreement.
+const OP_FAMILY_EXCLUSIONS: &[(&str, &str)] = &[];
 
 // ---- cell construction ---------------------------------------------------
 
@@ -209,6 +216,26 @@ fn cells() -> BTreeMap<&'static str, Cell> {
     m.insert(
         "binary_two_operands",
         cell(BinaryElementwise, vec![f32c(&[128, 256]), f32c(&[128, 256])], "cuda:sm89"),
+    );
+    // GAP-168 op-family increment: the two formerly-excluded positives.
+    // `une` — two f16 v8 operands, work class `grid` (>1024 frame elements).
+    m.insert(
+        "unary_f16_v8",
+        cell(UnaryElementwise, vec![f16c(&[8, 4096]), f16c(&[8, 4096])], "cuda:sm89"),
+    );
+    // `scn` — two f32 v4 operands, work class `warp` (<=32 frame elements), and
+    // the §6.7-0013 non-contraction precision coordinate `f32/rm`: accumulator
+    // EQUALS compute (f32) while the math precision deviates. That trailing
+    // field is why this vector is not merely a family-code change.
+    m.insert(
+        "noncontraction_scan_mp_only",
+        cell_acc_mp(
+            Scan,
+            vec![f32c(&[2, 16]), f32c(&[2, 16])],
+            "cuda:sm89",
+            DType::F32,
+            GemMathPrecision::ReducedMantissa,
+        ),
     );
     m.insert(
         "relu_add_generated_r1",
@@ -430,8 +457,16 @@ fn constructed_and_excluded_partition_the_positive_vectors() {
         published.difference(&covered).collect::<Vec<_>>(),
         covered.difference(&published).collect::<Vec<_>>()
     );
-    assert_eq!(constructed.len(), 18);
-    assert_eq!(excluded.len(), 2);
+    // GAP-168 op-family increment: was 18 constructed / 2 excluded. Both
+    // exclusions were field 2 (`une`, `scn`); both are now spelled, so every
+    // published positive is constructed and byte-matched.
+    assert_eq!(constructed.len(), 20);
+    assert_eq!(
+        excluded.len(),
+        0,
+        "no op-family exclusions remain — a future one must be added \
+         deliberately rather than accumulating silently"
+    );
 }
 
 /// **The leg.** Every expressible positive vector, byte for byte.
@@ -463,7 +498,11 @@ fn positive_vectors_byte_match() {
 
     assert!(mismatches.is_empty(), "byte-match failures:\n{}", mismatches.join("\n"));
     // Non-vacuity: a lookup bug that matched nothing would otherwise pass.
-    assert_eq!(matched, 18, "expected 18 expressible positive vectors");
+    // GAP-168 op-family increment: 18 -> 20. `une` and `scn` were the only two
+    // inexpressible positives and both are now spelled, so EVERY published
+    // positive is byte-matched — the leg no longer carries an op-family
+    // exclusion.
+    assert_eq!(matched, 20, "expected 20 expressible positive vectors");
 }
 
 /// Fuel's emitter never produces a token the corpus publishes as a **decline**.
@@ -573,6 +612,9 @@ fn fuel_emits_only_recognized_sk4_dtype_spellings() {
     }
     // Non-vacuity, and the discrimination check: the set is neither empty nor
     // everything, so `is-a-subset` is a real constraint here.
-    assert_eq!(emitted.len(), 14);
+    // GAP-168(c): 14 -> 15 with `bool`. Instrument 2 (token-grammar tier) is now
+    // 15 of the corpus's 24 recognized spellings — a cross-project number, so it
+    // moves only with a diff like this one.
+    assert_eq!(emitted.len(), 15);
     assert!(emitted.len() < recognized.len());
 }
