@@ -106,8 +106,9 @@ fn push_scalar_arg<'a>(scalar: &'a fuel_ir::scalar::Scalar, builder: &mut crate:
         // GAP-168(c): pass the `bool` directly rather than widening to `u8`.
         // Rust guarantees `bool` is one byte holding exactly 0 or 1, which is
         // the CUDA C++ `bool` ABI, and `bool: DeviceRepr` in baracuda-types.
-        // Widening here would need a temporary, and `builder` borrows the
-        // scalar for `'a` — so the temporary would not live long enough.
+        // Widening is impossible here rather than merely undesirable: `builder`
+        // borrows the scalar for `'a`, so a `u8` materialized inside this arm is
+        // dropped at the end of the statement and fails to borrow-check.
         Scalar::Bool(v) => builder.arg(v),
     };
 }

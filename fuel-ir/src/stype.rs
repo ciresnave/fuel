@@ -283,6 +283,135 @@ mod tests {
         });
         assert!(s.requires_scale_sibling());
     }
+
+    /// **GAP-190 EXPIRY WITNESS — `AffineBlock` cannot distinguish a CODEBOOK
+    /// quant family from a LINEAR one, and Fuel ships kernels for both.**
+    ///
+    /// `fuel-cuda-backend/src/baracuda/quant_w4a16.rs` ships three 4-bit
+    /// weight-only GEMM families behind separate cargo features: Marlin
+    /// (symmetric int4, GPTQ-derived, **linear** `q * scale`), AWQ (asymmetric
+    /// int4), and NF4 (bitsandbytes, **codebook** — 16 non-uniform values via
+    /// lookup). **Marlin and NF4 are both SYMMETRIC 4-BIT**, so they land on one
+    /// `AffineBlock` descriptor and therefore one `structure_key`.
+    ///
+    /// **Why that is worse than picking a slower kernel:** there is no scale for
+    /// which a linear dequant reproduces NF4 — the difference is the
+    /// INTERPRETATION OF IDENTICAL BITS, which is exactly why dtype cannot
+    /// separate them. A cache keyed on `structure_key` alone picks a
+    /// **numerically wrong** kernel, silently. `structure_key` is defined as an
+    /// admissibility predicate, so two requests needing different kernels
+    /// collapsing to one key means the predicate asserts an admissibility that
+    /// does not hold.
+    ///
+    /// **PREMISE ASSERTED, NOT CONCLUSION** (same shape as GAP-169's expiry
+    /// witness): this pins that the two families are indistinguishable *here*.
+    ///
+    /// **HOW IT EXPIRES — the fix trips it, at COMPILE time.** `descriptor`
+    /// below constructs `AffineBlock` field-by-field, so the day the variant
+    /// gains a discriminator (a family / dequant-rule field — the fix this row
+    /// prescribes), this stops compiling and whoever adds it must decide what
+    /// each family sets. If instead the two arms are made to differ, the
+    /// `assert_eq!` fails. Either way the deferral ends on a checkpoint that
+    /// WILL occur rather than on someone remembering.
+    ///
+    /// **⚠️ THE BOUND — what this does NOT detect, stated so it is not read as
+    /// more than it is.** `fuel-ir` cannot see its own consumers, so this CANNOT
+    /// fire on *"a second family got wired in `fuel-cuda-backend`"* — the event
+    /// the obligation is really about. It fires on the SHAPE of the descriptor
+    /// only. **A second family wired while `AffineBlock` is unchanged slips past
+    /// entirely.** That detector has to live where the wiring happens, or in a
+    /// workspace-scope scan.
+    ///
+    /// **Premise measured at head, not inherited:** repo-wide, `AffineBlock`
+    /// occurs 13x in this defining file and 2x in
+    /// `fuel-memory/src/dlpack_view/tests.rs` — **zero non-test, non-defining
+    /// consumers, zero production constructors.** Positive control that
+    /// DISCRIMINATES rather than merely runs: the sibling `Encoding::GgmlBlock`
+    /// *is* found in production at `fuel-memory/src/lib.rs` and
+    /// `fuel-backend-contract/src/storage.rs`, so the query finds wired variants
+    /// when they exist. The collision is therefore **LATENT, with shipped
+    /// kernels and a named trigger** — `AffineInt`/`AffineFloat` are already
+    /// reserved in this enum as planned work.
+    #[test]
+    fn gap190_affine_block_cannot_distinguish_codebook_from_linear() {
+        /// The two symmetric-4-bit families Fuel ships kernels for. Their
+        /// DEQUANT RULES differ irreconcilably; their descriptors do not.
+        #[derive(Debug, Clone, Copy)]
+        enum QuantFamily {
+            /// bitsandbytes / QLoRA. Codebook: 16 non-uniform values by lookup.
+            Nf4,
+            /// GPTQ-derived Marlin. Linear: `q * scale`.
+            Marlin,
+        }
+
+        fn descriptor(f: QuantFamily) -> Encoding {
+            // Both arms are spelled out rather than collapsed, because the POINT
+            // is that there is nothing to vary: same packed code, same block
+            // extent, same scale requirement, both symmetric.
+            let (packed, block_elems) = match f {
+                QuantFamily::Nf4 => (DType::F4, 64u32),
+                QuantFamily::Marlin => (DType::F4, 64u32),
+            };
+            Encoding::AffineBlock {
+                packed,
+                block_shape: smallvec::smallvec![block_elems],
+                scale: ScaleSpec {
+                    dtype: DType::F32,
+                    granularity: ScaleGranularity::PerChannel,
+                },
+                // Symmetric: neither carries a zero point. AWQ, the third
+                // family, is ASYMMETRIC and so IS separable here — which is why
+                // this row names Marlin/NF4 and not AWQ.
+                zero_point: None,
+            }
+        }
+
+        let nf4 = descriptor(QuantFamily::Nf4);
+        let marlin = descriptor(QuantFamily::Marlin);
+
+        assert_eq!(
+            nf4, marlin,
+            "GAP-190: a codebook family (NF4) and a linear family (Marlin) \
+             produce the SAME `Encoding::AffineBlock`, so nothing keyed on it — \
+             `structure_key` included — can tell them apart. If this now FAILS, \
+             a discriminator was added: re-read GAP-190 and make kernel \
+             selection stop keying on `structure_key` alone."
+        );
+
+        // `Encoding` is `Hash` precisely so it can feed structure keys / plan
+        // caches, so hash collision is the operative half, not just `Eq`.
+        fn hash_of(e: &Encoding) -> u64 {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            e.hash(&mut h);
+            h.finish()
+        }
+        assert_eq!(
+            hash_of(&nf4),
+            hash_of(&marlin),
+            "GAP-190: the two families collide under Hash too, which is what a \
+             plan cache actually keys on"
+        );
+
+        // NON-VACUITY / DISCRIMINATION: the equality above must be a real
+        // constraint, not something true of every pair of `Encoding`s.
+        let other_block = Encoding::AffineBlock {
+            packed: DType::F4,
+            block_shape: smallvec::smallvec![32],
+            scale: ScaleSpec { dtype: DType::F32, granularity: ScaleGranularity::PerChannel },
+            zero_point: None,
+        };
+        assert_ne!(
+            nf4, other_block,
+            "non-vacuity: a DIFFERENT block extent must compare unequal, or the \
+             collision assertion above proves nothing"
+        );
+        assert_ne!(
+            nf4,
+            Encoding::GgmlBlock { ggml_dtype: GgmlDType::Q4K },
+            "non-vacuity: a different ENCODING must compare unequal"
+        );
+    }
 }
 
 #[cfg(all(test, feature = "dlpack"))]
