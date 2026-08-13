@@ -76,7 +76,7 @@ pub enum FkcError {
     OrphanFkcBlock { line: usize },
 
     // ===== deserialization / schema =====
-    /// `serde_yml` failed to deserialize a YAML chunk into the schema. The
+    /// `serde_yaml_ng` failed to deserialize a YAML chunk into the schema. The
     /// string carries the underlying error (and the section name when known).
     #[error("FKC: YAML deserialize error: {0}")]
     Yaml(String),
@@ -493,7 +493,7 @@ pub enum FkcError {
 }
 
 impl FkcError {
-    /// Convenience: wrap a `serde_yml` error (optionally tagged with the
+    /// Convenience: wrap a `serde_yaml_ng` error (optionally tagged with the
     /// section name) into [`FkcError::Yaml`].
     pub(crate) fn yaml(section: Option<&str>, err: impl std::fmt::Display) -> Self {
         match section {

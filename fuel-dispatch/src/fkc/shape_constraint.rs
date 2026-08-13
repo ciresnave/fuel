@@ -124,10 +124,10 @@ const PROFILES: [SeedProfile; 3] = [
     SeedProfile { base: 8, odd_last: false }, // C all-8
 ];
 
-fn resolve_rank_spec_field(v: Option<&serde_yml::Value>) -> Option<RankSpec> {
+fn resolve_rank_spec_field(v: Option<&serde_yaml_ng::Value>) -> Option<RankSpec> {
     match v {
-        Some(serde_yml::Value::Number(n)) => n.as_u64().map(|u| RankSpec::Exact(u as usize)),
-        Some(serde_yml::Value::String(s)) => parse_rank_spec(s),
+        Some(serde_yaml_ng::Value::Number(n)) => n.as_u64().map(|u| RankSpec::Exact(u as usize)),
+        Some(serde_yaml_ng::Value::String(s)) => parse_rank_spec(s),
         _ => None,
     }
 }
@@ -507,7 +507,7 @@ mod tests {
             name: Some(name.into()), optional: false,
             dtypes: dtypes.iter().map(|s| s.to_string()).collect(),
             dtype_class: None, layout: None,
-            rank: rank.map(|r| serde_yml::Value::Number(r.into())),
+            rank: rank.map(|r| serde_yaml_ng::Value::Number(r.into())),
             shape_constraint: None, fdx: None, device: None, substrate: None,
         }
     }
@@ -530,7 +530,7 @@ mod tests {
         let any = desc("a", &["F32"], None); // no rank ⇒ Any ⇒ 4
         assert_eq!(solve_probe_shapes(&[any], "s", &mut Vec::new()).unwrap()[0][0].1.rank(), 4);
         let mut open = desc("b", &["F32"], None);
-        open.rank = Some(serde_yml::Value::String("2..".into()));
+        open.rank = Some(serde_yaml_ng::Value::String("2..".into()));
         assert_eq!(solve_probe_shapes(&[open], "s", &mut Vec::new()).unwrap()[0][0].1.rank(), 2);
     }
 
@@ -710,9 +710,9 @@ mod tests {
     fn two_unnamed_operands_are_not_aliased() {
         // Two unnamed operands with DIFFERENT ranks must get their own shapes,
         // not alias to the last-inserted rank.
-        let a = crate::fkc::schema::TensorDesc { name: None, optional: false, dtypes: vec!["F32".into()], dtype_class: None, layout: None, rank: Some(serde_yml::Value::Number(2u64.into())), shape_constraint: None, fdx: None, device: None, substrate: None };
+        let a = crate::fkc::schema::TensorDesc { name: None, optional: false, dtypes: vec!["F32".into()], dtype_class: None, layout: None, rank: Some(serde_yaml_ng::Value::Number(2u64.into())), shape_constraint: None, fdx: None, device: None, substrate: None };
         let mut b = a.clone();
-        b.rank = Some(serde_yml::Value::Number(3u64.into()));
+        b.rank = Some(serde_yaml_ng::Value::Number(3u64.into()));
         let combos = solve_probe_shapes(&[a, b], "s", &mut Vec::new()).unwrap();
         assert_eq!(combos[0][0].1.rank(), 2, "first unnamed operand keeps rank 2");
         assert_eq!(combos[0][1].1.rank(), 3, "second unnamed operand keeps rank 3, not aliased to 2");
@@ -820,7 +820,7 @@ mod tests {
     #[test]
     fn malformed_rank_field_warns_and_defaults_to_rank_4() {
         let mut bad = desc("weird", &["F32"], None);
-        bad.rank = Some(serde_yml::Value::String("banana".into()));
+        bad.rank = Some(serde_yaml_ng::Value::String("banana".into()));
         let mut w = Vec::new();
         let combos = solve_probe_shapes(&[bad], "s", &mut w).unwrap();
         assert_eq!(combos[0][0].1.rank(), 4, "malformed rank field still defaults to rank 4");

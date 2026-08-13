@@ -40,7 +40,7 @@ pub struct LedgerRecord {
     pub dtypes: Vec<String>,
     /// The kernel-contract revision hash (`fkc::compute_revision`) this
     /// result was measured against. `u64` (not `f64`): a plain JSON-number
-    /// ledger loaded through an f64-based parser (e.g. YAML via `serde_yml`)
+    /// ledger loaded through an f64-based parser (e.g. YAML via `serde_yaml_ng`)
     /// would silently round revision hashes above 2^53, corrupting the
     /// lookup key — this is why the ledger is JSON (`serde_json`), which
     /// parses `u64` natively, and not YAML like the rest of FKC.

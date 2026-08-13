@@ -60,10 +60,10 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 # FKC kernel-contract importer deps. FKC is unconditional core infrastructure
 # (the CPU elementwise-binary family registers from its contract in
-# `register_cpu_kernels`), so serde / serde_yml / serde_json are always
+# `register_cpu_kernels`), so serde / serde_yaml_ng / serde_json are always
 # compiled — no feature gate.
 serde = { workspace = true }
-serde_yml = { workspace = true }
+serde_yaml_ng = { workspace = true }
 # serde_json is unconditional core infrastructure: the FKC verification ledger
 # (`fkc/verify/ledger.rs`) parses a git-checked-in JSON ledger via `include_str!`
 # at import time in every build (u64 revision hashes exceed 2^53, so f64-based

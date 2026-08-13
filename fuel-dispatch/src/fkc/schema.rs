@@ -211,7 +211,7 @@ pub struct ReturnBlock {
     /// OR a list of bundle slot specs for multi-output ops (§5.5). Kept opaque
     /// for this slice (the rank/name validation is a later step).
     #[serde(default)]
-    pub bundle: Option<serde_yml::Value>,
+    pub bundle: Option<serde_yaml_ng::Value>,
 }
 
 /// An output descriptor + return rules (§5.1–§5.4). Rule fields are `String`
@@ -267,7 +267,7 @@ pub struct TensorDesc {
     /// Rank: exact int, `"any"`, or a range `"2..=4"`. Kept as a raw scalar so
     /// `2` and `"any"` both parse (the FKC parser interprets it later).
     #[serde(default)]
-    pub rank: Option<serde_yml::Value>,
+    pub rank: Option<serde_yaml_ng::Value>,
     /// Free-predicate shape constraint (§3.5). Carried verbatim.
     #[serde(default)]
     pub shape_constraint: Option<String>,
@@ -358,7 +358,7 @@ pub struct QuantSpec {
     pub granularity: Option<String>,
     /// Per-output-row per-block grain (e.g. `[block_size]`) for AFFINE_BLOCK (§3.9.3 / NF4).
     #[serde(default)]
-    pub block_shape: Option<serde_yml::Value>,
+    pub block_shape: Option<serde_yaml_ng::Value>,
     /// `activation`|`weight` (FDX ScalePair role).
     #[serde(default)]
     pub role: Option<String>,
@@ -395,7 +395,7 @@ pub struct CapsBlock {
     pub awkward_layout_strategy: Option<String>,
     /// Declared fast-path predicates (§4.2). Kept opaque for this slice.
     #[serde(default)]
-    pub fast_paths: Option<serde_yml::Value>,
+    pub fast_paths: Option<serde_yaml_ng::Value>,
     /// `in_place` (§4.6).
     #[serde(default)]
     pub in_place: Option<bool>,
@@ -440,7 +440,7 @@ pub struct CostBlock {
     pub bytes_moved: Option<String>,
     /// Launch overhead. May be a literal number or `~`; kept as a raw scalar.
     #[serde(default)]
-    pub overhead_ns: Option<serde_yml::Value>,
+    pub overhead_ns: Option<serde_yaml_ng::Value>,
     /// Per-tier memory footprint (§4.4) — [consumer-ahead] beyond device_bytes.
     #[serde(default)]
     pub memory: Option<CostMemory>,
@@ -452,13 +452,13 @@ pub struct CostBlock {
 pub struct CostMemory {
     /// Output device alloc (executor pre-allocates).
     #[serde(default)]
-    pub device_bytes: Option<serde_yml::Value>,
+    pub device_bytes: Option<serde_yaml_ng::Value>,
     /// Host-tier bytes.
     #[serde(default)]
-    pub host_bytes: Option<serde_yml::Value>,
+    pub host_bytes: Option<serde_yaml_ng::Value>,
     /// Disk-tier bytes.
     #[serde(default)]
-    pub disk_bytes: Option<serde_yml::Value>,
+    pub disk_bytes: Option<serde_yaml_ng::Value>,
 }
 
 /// Precision block (§4.8) → `PrecisionGuarantee`. Bound fields are raw scalars
@@ -470,13 +470,13 @@ pub struct PrecisionBlock {
     pub bit_stable_on_same_hardware: Option<bool>,
     /// Max ULP error (`~` ⇒ none).
     #[serde(default)]
-    pub max_ulp: Option<serde_yml::Value>,
+    pub max_ulp: Option<serde_yaml_ng::Value>,
     /// Max relative error (`~` ⇒ none).
     #[serde(default)]
-    pub max_relative: Option<serde_yml::Value>,
+    pub max_relative: Option<serde_yaml_ng::Value>,
     /// Max absolute error (`~` ⇒ none).
     #[serde(default)]
-    pub max_absolute: Option<serde_yml::Value>,
+    pub max_absolute: Option<serde_yaml_ng::Value>,
     /// `false` ⇒ UNAUDITED; `true` + all-null ⇒ none(reason) audited-no-bound.
     #[serde(default)]
     pub audited: Option<bool>,

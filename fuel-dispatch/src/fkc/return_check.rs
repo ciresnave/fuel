@@ -631,16 +631,16 @@ pub fn cross_check_fused_section(
             // in `validate.rs::check_bundle_ranks`; this covers the DERIVED
             // case that check never could (no statically-knowable rank for a
             // `shape_rule` string without evaluating it against a real probe).
-            if let serde_yml::Value::Sequence(slots) = bundle {
+            if let serde_yaml_ng::Value::Sequence(slots) = bundle {
                 for (i, slot) in slots.iter().enumerate() {
-                    let serde_yml::Value::Mapping(map) = slot else { continue };
+                    let serde_yaml_ng::Value::Mapping(map) = slot else { continue };
                     let slot_name = map
-                        .get(serde_yml::Value::String("name".into()))
+                        .get(serde_yaml_ng::Value::String("name".into()))
                         .and_then(|v| v.as_str())
                         .map(str::to_string)
                         .unwrap_or_else(|| format!("slot{i}"));
                     if let Some(rule) = map
-                        .get(serde_yml::Value::String("shape_rule".into()))
+                        .get(serde_yaml_ng::Value::String("shape_rule".into()))
                         .and_then(|v| v.as_str())
                     {
                         // C-4 T3: bundle slot rules see the same `key().ints`
@@ -704,15 +704,15 @@ pub fn check_slot_rank(section: &str, slot: &str, shape: &Shape) -> Result<(), F
 pub fn bundle_slot_names(ret: &Option<crate::fkc::schema::ReturnBlock>) -> Vec<String> {
     let Some(ret) = ret.as_ref() else { return Vec::new() };
     let Some(bundle) = ret.bundle.as_ref() else { return Vec::new() };
-    let serde_yml::Value::Sequence(slots) = bundle else { return Vec::new() };
+    let serde_yaml_ng::Value::Sequence(slots) = bundle else { return Vec::new() };
     slots
         .iter()
         .enumerate()
         .map(|(i, slot)| {
-            let serde_yml::Value::Mapping(map) = slot else {
+            let serde_yaml_ng::Value::Mapping(map) = slot else {
                 return format!("slot{i}");
             };
-            map.get(serde_yml::Value::String("name".into()))
+            map.get(serde_yaml_ng::Value::String("name".into()))
                 .and_then(|v| v.as_str())
                 .map(str::to_string)
                 .unwrap_or_else(|| format!("slot{i}"))
@@ -723,9 +723,9 @@ pub fn bundle_slot_names(ret: &Option<crate::fkc::schema::ReturnBlock>) -> Vec<S
 /// §5.5: the declared slot count of a `return.bundle` — a YAML `Sequence`,
 /// one entry per output slot. `None` for a malformed (non-sequence) bundle;
 /// callers treat that as not-evaluable, never a false reject.
-pub fn bundle_slot_count(bundle: &serde_yml::Value) -> Option<usize> {
+pub fn bundle_slot_count(bundle: &serde_yaml_ng::Value) -> Option<usize> {
     match bundle {
-        serde_yml::Value::Sequence(s) => Some(s.len()),
+        serde_yaml_ng::Value::Sequence(s) => Some(s.len()),
         _ => None,
     }
 }
@@ -735,7 +735,7 @@ pub fn bundle_slot_count(bundle: &serde_yml::Value) -> Option<usize> {
 pub fn check_bundle_arity(
     section: &str,
     output_views_arity: usize,
-    bundle: &serde_yml::Value,
+    bundle: &serde_yaml_ng::Value,
 ) -> Result<(), FkcError> {
     if let Some(declared) = bundle_slot_count(bundle) {
         if declared != output_views_arity {
@@ -791,7 +791,7 @@ mod tests {
 
     #[test]
     fn bundle_slot_count_disagreeing_with_output_views_arity_is_rejected() {
-        let two_slots: serde_yml::Value = serde_yml::from_str(
+        let two_slots: serde_yaml_ng::Value = serde_yaml_ng::from_str(
             "- { name: y, shape_rule: same_as(u) }\n- { name: last_state, shape_rule: from_params(state) }").unwrap();
         assert_eq!(bundle_slot_count(&two_slots), Some(2));
         let err = check_bundle_arity("selective_scan", 3, &two_slots)
@@ -918,8 +918,8 @@ mod tests {
     /// (`docs/kernel-contracts/fused/conv-rope.fkc.md`'s `SELECTIVE_SCAN`
     /// bundle: `y` / `last_state`). Bare `y` is a YAML-1.1 "Norway problem"
     /// candidate (`y`/`yes`/`on` historically coerce to bool `true`), but the
-    /// slot names live inside a `serde_yml::Value` (untyped) tree here, and
-    /// `serde_yml` 0.0.12 keeps bare `y` as the plain string `"y"` — pinned by
+    /// slot names live inside a `serde_yaml_ng::Value` (untyped) tree here, and
+    /// `serde_yaml_ng` 0.0.12 keeps bare `y` as the plain string `"y"` — pinned by
     /// this assertion, not just asserted in prose.
     /// Finding 1 (warn-not-silent-skip): a caught panic in a registry rule fn
     /// must now push an `ImportWarning` naming the skipped differential, not
@@ -1224,7 +1224,7 @@ mod tests {
 
     #[test]
     fn bundle_slot_names_extracts_names_from_a_real_return_block() {
-        let ret: crate::fkc::schema::ReturnBlock = serde_yml::from_str(
+        let ret: crate::fkc::schema::ReturnBlock = serde_yaml_ng::from_str(
             "outputs: []\nbundle:\n  - { name: y, shape_rule: same_as(u) }\n  - { name: last_state, shape_rule: from_params(state) }",
         )
         .expect("parses");
