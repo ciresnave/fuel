@@ -3481,28 +3481,43 @@ impl CudaStorage {
             DType::I8 | DType::I16 | DType::I32 => {
                 return Err(CudaError::InternalError("i8,i16,i32 dtypes are not supported as cast targets").into())
             }
-            // GAP-168(c): Bool declines as a cast TARGET on CUDA, and the reason
-            // is a missing kernel rather than missing storage — Bool storage is
-            // fully wired (see `CudaStorageSlice::Bool`). `X -> Bool` requires a
-            // `!= 0` test; baracuda has no such kernel, and routing it through
-            // `cast_*_u8` would TRUNCATE (`5.7 -> 5`), fabricating a
-            // non-canonical Bool. Declining is the honest option; fabricating a
-            // wrong value silently is not.
+            // GAP-168(c): Bool declines as a cast TARGET on CUDA. NOT for want of
+            // storage — `CudaStorageSlice::Bool` is fully wired. `X -> Bool`
+            // needs a `!= 0` test, and routing it through `cast_*_u8` would
+            // TRUNCATE (`5.7 -> 5`), fabricating a non-canonical Bool. Declining
+            // is honest; fabricating a wrong value silently is not.
+            //
+            // ⚠️ TWO DIFFERENT REASONS, AND THEY ARE CARRIED IN THE RETURNED
+            // VALUE RATHER THAN MERGED IN PROSE — GAP-161's defect class is a
+            // single return value whose comment asserts one cause when there are
+            // two. Branching on `src_dtype` keeps them distinguishable to the
+            // caller, not just to a reader of this file:
+            //
+            //   FLOAT source  — the `!= 0` capability EXISTS. `cuda/compare.fkc.md`
+            //     ships `ne_{f32,f64,f16,bf16}_u8` (verified: 4 `ne` kernels, and
+            //     ZERO integer compare kernels). It is simply not reachable from a
+            //     STORAGE-level cast, which cannot compose graph ops; wiring it
+            //     means a graph-level `x.ne(zeros)` rewrite. A WIRING GAP.
+            //   INTEGER source — no CUDA compare kernel exists for integer dtypes
+            //     at all, so there is nothing to wire. A genuine ABSENCE.
             //
             // NOT A REGRESSION: Bool did not exist as a cast target before this
-            // cut. The reverse direction (`Bool -> X`) IS supported — see the
-            // Bool arms in `pick_cast_ffi` — which is what keeps
-            // `mask.to_dtype(F32)` working.
+            // cut. The reverse (`Bool -> X`) IS supported — see `pick_cast_ffi` —
+            // which is what keeps `mask.to_dtype(F32)` working.
             //
-            // ASYMMETRY WITH CPU, recorded rather than smoothed over: the CPU
-            // backend DOES implement `X -> Bool` (22 contract-sourced pairs), so
-            // this is a CUDA capability gap, not a Fuel-wide semantic.
+            // ASYMMETRY WITH CPU, recorded rather than smoothed over: CPU DOES
+            // implement `X -> Bool` (22 contract-sourced pairs). The integer case
+            // is the one a hand-built `U8` mask hits.
             DType::Bool => {
-                return Err(CudaError::UnsupportedDtype {
-                    dtype,
-                    op: "to_dtype: no X->Bool cast kernel on CUDA (Bool->X is supported)",
-                }
-                .into());
+                let op = if src_dtype.is_float() {
+                    "to_dtype: float->Bool not wired on CUDA — the `!= 0` kernels \
+                     exist (cuda/compare.fkc.md ne_{f32,f64,f16,bf16}) but are not \
+                     reachable from a storage-level cast; needs a graph-level x.ne(0)"
+                } else {
+                    "to_dtype: int->Bool has NO CUDA compare kernel at all \
+                     (cuda/compare.fkc.md covers the 4 float dtypes only)"
+                };
+                return Err(CudaError::UnsupportedDtype { dtype, op }.into());
             }
             // GAP-161: F8E5M2/F8E6M2 decline for a STORAGE reason (no output
             // variant to allocate), single-sourced from `cuda_storage_status`.

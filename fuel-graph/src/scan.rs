@@ -391,7 +391,7 @@ mod tests {
             let hole  = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
             let nc    = g.push(Node { op: Op::MulScalar(2.0), inputs: vec![hole], shape: s.clone(), dtype: DType::F32 });
             // predicate sub-DAG over the post-step carry (ignored by unroll).
-            let pred  = g.push(Node { op: Op::Ge, inputs: vec![nc, thr], shape: s.clone(), dtype: DType::U8 });
+            let pred  = g.push(Node { op: Op::Ge, inputs: vec![nc, thr], shape: s.clone(), dtype: DType::Bool });
             g.push(Node {
                 op: Op::Scan { n_xs: 0, bound: 3, emit: ScanEmit::All, early_exit: Some(ScanPredicate) },
                 inputs: vec![carry, thr, nc, nc, pred], // consts=[thr], new_carry=nc, y=nc, pred_exit=pred
@@ -525,7 +525,7 @@ mod tests {
             let hole = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
             let nc   = g.push(Node { op: Op::MulScalar(2.0), inputs: vec![hole], shape: s.clone(), dtype: DType::F32 });
             let thr  = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
-            let pred = g.push(Node { op: Op::Ge, inputs: vec![nc, thr], shape: s.clone(), dtype: DType::U8 });
+            let pred = g.push(Node { op: Op::Ge, inputs: vec![nc, thr], shape: s.clone(), dtype: DType::Bool });
             (nc, thr, pred)
         };
         let nc_t   = Tensor::from_existing(graph.clone(), nc);
@@ -550,7 +550,7 @@ mod tests {
         let thr2 = { let mut g = graph.write().unwrap();
             g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[1]), dtype: DType::F32 }) };
         let pred2 = { let mut g = graph.write().unwrap();
-            g.push(Node { op: Op::Le, inputs: vec![nc, thr2], shape: Shape::from_dims(&[1]), dtype: DType::U8 }) };
+            g.push(Node { op: Op::Le, inputs: vec![nc, thr2], shape: Shape::from_dims(&[1]), dtype: DType::Bool }) };
         let pred2_t = Tensor::from_existing(graph.clone(), pred2);
         let out2 = init.scan_until(&[], &[Tensor::from_existing(graph.clone(), thr2)], &nc_t, &nc_t, &pred2_t, 5, ScanEmit::Final)
             .expect("second scan_until builds");
@@ -563,12 +563,12 @@ mod tests {
         let big = Tensor::from_f32(vec![0.0f32, 1.0], Shape::from_dims(&[2]), cpu_dev()); // wrong graph AND non-scalar
         assert!(init.scan_until(&[], &[thr_t.clone()], &nc_t, &nc_t, &big, 5, ScanEmit::Final).is_err(),
             "non-same-graph / non-scalar predicate must be a typed Err");
-        // Rejection: a non-U8 predicate.
+        // Rejection: a non-Bool predicate.
         let f32pred = { let mut g = graph.write().unwrap();
             g.push(Node { op: Op::Sqr, inputs: vec![nc], shape: Shape::from_dims(&[1]), dtype: DType::F32 }) };
         let f32pred_t = Tensor::from_existing(graph.clone(), f32pred);
         assert!(init.scan_until(&[], &[thr_t], &nc_t, &nc_t, &f32pred_t, 5, ScanEmit::Final).is_err(),
-            "non-U8 predicate must be a typed Err");
+            "non-Bool predicate must be a typed Err");
     }
 
     #[test]
@@ -582,7 +582,7 @@ mod tests {
             let thr   = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
             let hole  = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
             let nc    = g.push(Node { op: Op::MulScalar(2.0), inputs: vec![hole], shape: s.clone(), dtype: DType::F32 });
-            let pred  = g.push(Node { op: Op::Ge, inputs: vec![nc, thr], shape: s.clone(), dtype: DType::U8 });
+            let pred  = g.push(Node { op: Op::Ge, inputs: vec![nc, thr], shape: s.clone(), dtype: DType::Bool });
             g.push(Node {
                 op: Op::Scan { n_xs: 0, bound: 4, emit: ScanEmit::Final, early_exit: Some(ScanPredicate) },
                 inputs: vec![carry, thr, nc, nc, pred],
@@ -624,7 +624,7 @@ mod tests {
             let carry_hole = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
             let nc = g.push(Node { op: Op::Add, inputs: vec![carry_hole, bad_elem], shape: s.clone(), dtype: DType::F32 });
             let thr = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
-            let pred = g.push(Node { op: Op::Ge, inputs: vec![carry_hole, thr], shape: s.clone(), dtype: DType::U8 });
+            let pred = g.push(Node { op: Op::Ge, inputs: vec![carry_hole, thr], shape: s.clone(), dtype: DType::Bool });
             (x, nc, thr, pred)
         };
         let x_t = Tensor::from_existing(graph.clone(), x);

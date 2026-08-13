@@ -509,9 +509,14 @@ macro_rules! cpu_where_wrapper {
                 .bt());
             }
             let cond_guard = read_storage(&inputs[0])?;
-            if cond_guard.dtype != DType::U8 {
+            // GAP-168(c): the cond mask is Bool. This is the RUNTIME arm of the
+            // same rule the graph builder and the LazyTensor wrapper enforce —
+            // three layers, and each had to be flipped separately. Bool and U8
+            // are byte-identical, so this check is the only thing keeping a U8
+            // buffer from being consumed here as if it were a mask.
+            if cond_guard.dtype != DType::Bool {
                 return Err(Error::Msg(format!(
-                    "{}: cond must be U8, got {:?}",
+                    "{}: cond must be Bool, got {:?} (GAP-168(c))",
                     $op_name, cond_guard.dtype,
                 ))
                 .bt());
@@ -990,6 +995,19 @@ pub(crate) fn masked_fill_cpu_wrapper(
     };
     let in_guard = read_storage(&inputs[0])?;
     let mask_guard = read_storage(&inputs[1])?;
+    // GAP-168(c): validate the mask dtype at RUNTIME, matching `where`'s wrapper
+    // and the Vulkan masked_fill. This wrapper previously did NOT check, so a U8
+    // buffer flowed in under a Bool node and worked — the byte-identity hazard
+    // exactly: `Bool` and `U8` are the same bytes, so the wrong wiring produces
+    // the right answer and nothing complains. The graph builder already rejects a
+    // non-Bool mask; this is the second line, for storage assembled directly.
+    if mask_guard.dtype != DType::Bool {
+        return Err(Error::Msg(format!(
+            "masked_fill_cpu_wrapper: mask must be Bool, got {:?} (GAP-168(c))",
+            mask_guard.dtype,
+        ))
+        .bt());
+    }
     let mut out_guard = write_storage(&outputs[0])?;
     let dtype_size = out_guard.dtype.size_in_bytes();
     let in_cpu = cpu_input(&in_guard)?;
@@ -8651,7 +8669,7 @@ mod tests {
         let table = global_bindings();
         let dts = [DType::F32, DType::F64, DType::BF16, DType::F16];
 
-        // -- COMPARE: 6 ops × 4 dtypes, key [T, T, U8] --
+        // -- COMPARE: 6 ops × 4 dtypes, key [T, T, BOOL] (GAP-168c) --
         let compare_families: &[(OpKind, [crate::kernel::KernelRef; 4])] = &[
             (OpKind::EqualElementwise, [
                 eq_elementwise_f32_cpu_wrapper, eq_elementwise_f64_cpu_wrapper,
@@ -8676,8 +8694,9 @@ mod tests {
         let mut checked = 0usize;
         for (op, wrappers) in compare_families {
             for (dt, expected) in dts.iter().zip(wrappers.iter()) {
-                // U8-mask operand-dtype list: [T, T, U8] — NOT [T, T, T].
-                let alts = table.lookup_alternatives(*op, &[*dt, *dt, DType::U8], BackendId::Cpu);
+                // Bool-mask operand-dtype list: [T, T, Bool] — NOT [T, T, T].
+                // GAP-168(c): comparisons key on Bool, not the retired U8 mask.
+                let alts = table.lookup_alternatives(*op, &[*dt, *dt, DType::Bool], BackendId::Cpu);
                 let entry = alts
                     .iter()
                     .find(|e| e.kernel as usize == *expected as usize)
@@ -8715,7 +8734,7 @@ mod tests {
         ];
         for (dt, expected) in dts.iter().zip(where_wrappers.iter()) {
             // Ternary-select list: [U8 cond, T a, T b, T out].
-            let alts = table.lookup_alternatives(OpKind::Where, &[DType::U8, *dt, *dt, *dt], BackendId::Cpu);
+            let alts = table.lookup_alternatives(OpKind::Where, &[DType::Bool, *dt, *dt, *dt], BackendId::Cpu);
             let entry = alts
                 .iter()
                 .find(|e| e.kernel as usize == *expected as usize)
@@ -9493,7 +9512,7 @@ mod tests {
             // MaskedFill — key [T, U8, T].
             check(
                 OpKind::MaskedFill,
-                &[dt, DType::U8, dt],
+                &[dt, DType::Bool, dt],   // GAP-168(c): mask slot is Bool; the outer dt list is DATA dtypes
                 masked_fill_cpu_wrapper,
                 "masked_fill",
             );

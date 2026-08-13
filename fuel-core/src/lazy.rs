@@ -517,9 +517,17 @@ impl LazyTensor {
     ///
     /// Differentiable through `a` and `b` only.
     pub fn where_cond(&self, a: &Self, b: &Self) -> std::result::Result<Self, fuel_ir::Error> {
-        if self.inner.dtype() != fuel_ir::DType::U8 {
+        // GAP-168(c): the cond mask is Bool, matching `masked_fill` and the
+        // `fixed(BOOL)` comparison contracts. The DOC above already said Bool
+        // while this guard still required U8 — prose and check disagreeing, with
+        // the prose right; every comparison feeds `where_cond`, so 22 model tests
+        // failed on it. Cast a numeric mask explicitly (the cast is deliberately
+        // NOT implicit — a silent coercion is what the Bool dtype exists to stop).
+        if self.inner.dtype() != fuel_ir::DType::Bool {
             return Err(fuel_ir::Error::Msg(format!(
-                "where_cond: cond mask must be U8, got {:?}", self.inner.dtype(),
+                "where_cond: cond mask must be Bool, got {:?} — cast a numeric \
+                 mask to Bool explicitly (GAP-168(c))",
+                self.inner.dtype(),
             )).bt());
         }
         if a.inner.dtype() != b.inner.dtype() {
