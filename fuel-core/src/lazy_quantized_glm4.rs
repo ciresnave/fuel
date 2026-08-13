@@ -183,6 +183,7 @@ impl QuantizedGlm4Model {
         let inner = Glm4Model {
             config: cfg,
             weights: Glm4Weights {
+                instance: crate::decode_shape::ModelInstanceId::next(),
                 token_embedding: src.token_embedding,
                 layers,
                 final_norm_gain: src.final_norm_gain,
@@ -341,6 +342,7 @@ impl QuantizedGlm4Model {
         let inner = Glm4Model {
             config: cfg.clone(),
             weights: Glm4Weights {
+                instance: crate::decode_shape::ModelInstanceId::next(),
                 token_embedding: Arc::from(token_embedding),
                 layers, final_norm_gain, lm_head,
             },
@@ -641,7 +643,13 @@ mod tests {
         }).collect();
         let final_norm_gain = Arc::from(vec![1.0_f32; h]);
         let lm_head = Some(WeightStorage::F32(vec_of(h * cfg.vocab_size)));
-        Glm4Weights { token_embedding, layers, final_norm_gain, lm_head }
+        Glm4Weights {
+            instance: crate::decode_shape::ModelInstanceId::next(),
+            token_embedding,
+            layers,
+            final_norm_gain,
+            lm_head,
+        }
     }
 
     #[test]
@@ -707,6 +715,7 @@ mod tests {
         // because tiny_weights assumes the same cfg; just test the
         // check fires by handing in any source.
         let src = Glm4Weights {
+            instance: crate::decode_shape::ModelInstanceId::next(),
             token_embedding: Arc::from(vec![0.0_f32; cfg.vocab_size * 30]),
             layers: Vec::new(),
             final_norm_gain: Arc::from(vec![1.0_f32; 30]),
