@@ -15,11 +15,31 @@
 //! `fuel-core` (it has the concrete oracle + cache dir); this crate owns the
 //! record types and the key derivation.
 
-// The Baracuda-backed provider is the live wire into Baracuda's shipped
-// `structure_key`. It needs `baracuda-kernels-types` (pulled by the `cuda`
-// feature) and is meaningful only for a CUDA target arch, so it is gated on
-// `cuda`; a CPU-only build keeps the `NullStructureKeyProvider`.
-#[cfg(feature = "cuda")]
+// ⚠️ TWO GATES, DELIBERATELY DIFFERENT SCOPES. Do not unify them.
+//
+//   COMPILE-VISIBILITY (here)  -> `baracuda-types`
+//   RUNTIME-SELECTION          -> `cuda`, and it is NOT IN THIS CRATE:
+//                                 `fuel-core/src/telemetry.rs` picks
+//                                 `BaracudaStructureKeyProvider` vs
+//                                 `NullStructureKeyProvider` as a cfg-selected
+//                                 struct field on fuel-core's OWN `cuda` flag.
+//
+// The provider is pure host code — a keying function over operand descriptors
+// in `baracuda-kernels-types`, no FFI and no device — so `baracuda-types` is
+// exactly what it needs to COMPILE. It was gated on `cuda`, which additionally
+// pulls `fuel-cuda-backend` and therefore the kernel forge, so this file could
+// only be type-checked at the cost of a full forge build (measured 1h51m cold,
+// ~14s narrowed). That is why an `E0004` here survived an entire dtype sweep:
+// no gate anyone runs could afford to compile it. (GAP-173.)
+//
+// Narrowing the COMPILE gate must not widen SELECTION: a CPU-only build that
+// started emitting real baracuda structure keys for an arch it is not running
+// would be a WRONG signal, and this module's posture is that no signal beats a
+// wrong one. That separation is structural rather than careful — selection
+// lives in another crate behind another crate's flag, so widening this cfg
+// cannot reach it. The `pub use` below stays on `cuda` for the same reason:
+// it is the name fuel-core imports.
+#[cfg(feature = "baracuda-types")]
 pub mod baracuda_provider;
 pub mod config;
 pub mod hooks;

@@ -127,9 +127,9 @@ $combinations = @(
     },
     @{
         crate    = 'fuel-dispatch'
-        features = 'telemetry,cuda'
-        cuda     = $true
-        why      = '`mod telemetry` is cfg(telemetry) and `mod baracuda_provider` is cfg(cuda) INSIDE it. CI builds each feature separately, so this file is never parsed.'
+        features = 'telemetry,baracuda-types'
+        cuda     = $false
+        why      = '`mod telemetry` is cfg(telemetry) and `mod baracuda_provider` is cfg(baracuda-types) INSIDE it. CI builds each feature separately, so this file is never parsed.'
     }
 )
 
