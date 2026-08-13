@@ -20,8 +20,17 @@ use rand::distr::Distribution;
 use rand::rngs::StdRng;
 
 /// Realize the logits into a host `Vec<f32>` and return it.
+///
+/// GAP-186: this returns `Result`, so it must PROPAGATE a realize failure, not
+/// abort the process. `LazyTensor::realize_f32()` `.expect()`s (a test
+/// convenience) — calling it here made the four `sample_*` functions' `?` a
+/// dead branch and the `Result` signature a lie: a failed realize panicked
+/// instead of returning `Err`. On a serving path that turns one bad request
+/// into a killed session. Use the fallible `pipelined_bridge::realize_one_as`
+/// directly (the same path `train.rs::param_to_host` already relies on).
 fn realize_logits(logits: &LazyTensor) -> Result<Vec<f32>> {
-    let v = logits.realize_f32();
+    let device = crate::Device::cpu();
+    let v = crate::pipelined_bridge::realize_one_as::<f32>(logits.graph(), logits.node_id(), &device)?;
     if v.is_empty() {
         return Err(crate::Error::Msg(
             "sampling: realized logits vector is empty".to_string(),
