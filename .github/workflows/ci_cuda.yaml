@@ -1,3 +1,26 @@
+# ⚠️ THIS WORKFLOW HAS NEVER EXECUTED A SINGLE STEP IN THIS REPOSITORY.
+#
+# MEASURED 2026-08-13: 16 runs from 2026-04-10 to date, all `failure`, and every
+# one reports `steps: []`, `runner_group_name: null`, `labels: []`, with
+# `started_at == completed_at`. There are no logs to read because nothing ran.
+#
+# CAUSE — not a broken or busy runner, and not fixable by re-running:
+# `runs-on: group: aws-g5-4xlarge-cache` is HUGGINGFACE's runner group. It
+# arrived with the Candle fork (`ab56dfee "Update CI (#3194)"` — an upstream PR
+# number), and this repository is `ciresnave/fuel`, which has never had access
+# to that pool. The job asks for another organization's runners, so it is never
+# assigned one. Correct upstream; meaningless here since the fork.
+#
+# CONSEQUENCE: every claim of the form "CUDA is covered in CI" is currently
+# false, including for `cargo test --features cuda` below. Nobody has been
+# ignoring a failing CUDA test — there has never been a runner for one to fail
+# on. Anything that must actually be enforced needs a target that exists; the
+# telemetry-only half of the check below is in `rust-ci.yml` for that reason.
+#
+# KEPT DELIBERATELY, NOT DEAD CONFIG: whether to delete this, self-host a
+# runner, or point it at a hosted GPU target is CireSnave's decision, not a
+# tidy-up. Do not "fix" it by silently swapping the runner.
+
 name: CI / cuda
 
 on:
