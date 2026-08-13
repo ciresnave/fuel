@@ -37,6 +37,30 @@
     COMPILER EXPANDS MACROS. Compiling the combination catches an E0004 inside
     an expansion without anything ever having to find it by reading source.
 
+    ── ASK THE CHEAP QUESTION FIRST: WHICH *SINGLE* NON-DEFAULT FEATURES ARE
+       BUILT BY NOTHING? ──
+
+    This script was motivated by an exotic case (`cuda`+`telemetry`) and named
+    for combinations, and that framing buried a simpler and more productive
+    question. `telemetry` is a SINGLE non-default feature that appears in NO CI
+    job, so the entire telemetry module — eight-plus files — was compiled by
+    nothing at all. That is a far more ordinary hiding place than a two-feature
+    intersection, and it is cheaper to check: the `telemetry` leg needs no
+    CUDA, no SDK, no slot, and no forge, and runs in seconds anywhere.
+
+    So in any future audit: enumerate the SINGLE non-default features first and
+    ask which have no gate. Only then go looking for intersections.
+
+    (Note on what that leg does NOT defend, so nobody over-credits it: Fuel's
+    wire-boundary dtype exhaustiveness — a new `DType` being a compile error
+    before it can reach a structure_key — is NOT enforced here. It used to live
+    in `telemetry/structure_key_derive.rs::dtype_token` behind this very gate;
+    consolidating the sk4 token table into `fuel_ir::sk4_token` moved it into
+    an UNGATED file, so a plain `cargo check -p fuel-ir` now enforces it. That
+    was a side effect of deduplication, not a goal, and it is worth knowing
+    because it is the reason no wildcard-free match requires `telemetry` alone
+    today. Measured: zero such sites.)
+
     ⚠️ THE LIST IS HAND-MAINTAINED, AND THAT MEANS IT ROTS.
     Adding a cargo feature does NOT add a combination here. When it isn't
     added, this gate keeps passing while silently covering less of the
@@ -89,6 +113,12 @@ $repo = Split-Path -Parent $PSScriptRoot
 #   cuda        : needs MSVC env + the machine-wide cuda-build slot
 #   why         : reported on failure so a red is self-explaining
 $combinations = @(
+    @{
+        crate    = 'fuel-dispatch'
+        features = 'telemetry'
+        cuda     = $false
+        why      = '`telemetry` appears in NO CI job, so the whole telemetry module (8+ files) is compiled by nothing. Seconds, no CUDA, machine-independent.'
+    },
     @{
         crate    = 'fuel-ir'
         features = 'dlpack'
