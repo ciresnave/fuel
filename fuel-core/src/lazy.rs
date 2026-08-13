@@ -10311,6 +10311,200 @@ pub(crate) fn build_decode_causal_mask(cached_len: usize, seq: usize, max_seq_le
     mask_data
 }
 
+/// Sliding-window sibling of [`build_decode_causal_mask`] — the decode-time
+/// mask for a layer that attends only to the most recent `window` positions.
+///
+/// # Why this exists (GAP-029 increment 3)
+///
+/// The decode path has always built **one** mask per model, because `LlamaModel`
+/// and `PhiModel` — the only two carriers — have no per-layer mask variation
+/// (measured: **zero** `sliding_window` hits in this file, against a positive
+/// control of hits in five sibling model files). **Four of the six families
+/// GAP-029 increment 3 ports do vary per layer**, three of them via a sliding
+/// window: `Qwen2` (`lazy_qwen2.rs:249-251`), `Qwen3` (`lazy_qwen3.rs:172`) and
+/// `Qwen3Moe` (`lazy_qwen3_moe.rs:192`) all select per layer on
+/// `use_sliding_window && layer_idx < max_window_layers`.
+///
+/// # The predicate, and why it is stated against the prefill path
+///
+/// The shipped **prefill** mask for these families is `j > i || j + window <= i`
+/// over absolute positions (`lazy_qwen2.rs:271`). Decode must agree with it
+/// position-for-position, or a model silently changes behaviour at the
+/// prefill→decode boundary. Here the query's absolute position is
+/// `cached_len + q_idx` and the key's is `k_idx`, giving the same two clauses:
+/// causal (`k_idx > abs_q`) and window (`k_idx + window <= abs_q`).
+///
+/// `window >= max_seq_len` makes the window clause unsatisfiable, so the result
+/// is exactly [`build_decode_causal_mask`] — the property that lets a family
+/// with the window disabled share the dense path rather than a near-copy of it.
+///
+/// # Status: NO PRODUCTION CALLER YET — deliberate, and the `allow` expires
+///
+/// This is a prerequisite landed ahead of its consumer, with its correctness
+/// established independently (see the born-red record in `decode_mask_tests`),
+/// the same shape as increment 2a's `decode_state_spec`. Its consumers are the
+/// three windowed families whose decode paths GAP-029 increment 3 has not built
+/// yet: `Qwen2Model`, `Qwen3Model`, `Qwen3MoeModel`. **Delete the `allow` the
+/// moment the first of them calls this** — if the attribute outlives the port,
+/// it has stopped describing a sequencing decision and started hiding a
+/// genuinely orphaned function.
+#[allow(dead_code)]
+pub(crate) fn build_decode_causal_mask_windowed(
+    cached_len: usize,
+    seq: usize,
+    max_seq_len: usize,
+    window: usize,
+) -> Vec<f32> {
+    let mut mask_data = vec![0.0_f32; seq * max_seq_len];
+    for q_idx in 0..seq {
+        let abs_q = cached_len + q_idx;
+        for k_idx in 0..max_seq_len {
+            // Causal: no future keys. Window: nothing older than `window` back.
+            if k_idx > abs_q || k_idx + window <= abs_q {
+                mask_data[q_idx * max_seq_len + k_idx] = f32::NEG_INFINITY;
+            }
+        }
+    }
+    mask_data
+}
+
+#[cfg(test)]
+mod decode_mask_tests {
+    use super::{build_decode_causal_mask, build_decode_causal_mask_windowed};
+
+    /// Render a mask row as `1` for attend / `0` for masked, so a failure
+    /// prints the shape of the disagreement rather than a wall of `-inf`.
+    fn attendable(row: &[f32]) -> Vec<u8> {
+        row.iter().map(|&v| u8::from(v == 0.0)).collect()
+    }
+
+    /// **The discriminating test.** Hand-computed ground truth, NOT a
+    /// re-derivation of the implementation's own formula: at `cached_len = 3`,
+    /// `seq = 1`, `max_seq_len = 6`, `window = 2` the single query sits at
+    /// absolute position 3 and may attend to positions `{2, 3}` — 3 itself
+    /// (causal boundary) and 2 (one step back, inside a window of 2). Positions
+    /// 0 and 1 fall out of the window; 4 and 5 are the unwritten future tail.
+    #[test]
+    fn windowed_mask_excludes_positions_older_than_the_window() {
+        let m = build_decode_causal_mask_windowed(3, 1, 6, 2);
+        assert_eq!(
+            attendable(&m),
+            vec![0, 0, 1, 1, 0, 0],
+            "window=2 at absolute position 3 must attend to exactly {{2, 3}}",
+        );
+    }
+
+    /// Multi-row (prefill-shaped) ground truth, also by hand: `cached_len = 1`,
+    /// `seq = 2`, `window = 2` puts the queries at absolute positions 1 and 2,
+    /// attending to `{0, 1}` and `{1, 2}` respectively. Guards the `q_idx`
+    /// → `abs_q` offset, which a `seq == 1` test cannot see at all.
+    #[test]
+    fn windowed_mask_offsets_each_row_by_cached_len() {
+        let m = build_decode_causal_mask_windowed(1, 2, 5, 2);
+        assert_eq!(attendable(&m[0..5]), vec![1, 1, 0, 0, 0], "row 0 = abs pos 1");
+        assert_eq!(attendable(&m[5..10]), vec![0, 1, 1, 0, 0], "row 1 = abs pos 2");
+    }
+
+    /// **Non-discrimination control, and it is what keeps the two tests above
+    /// meaningful.** A window at least as wide as the capacity cannot mask
+    /// anything the causal clause does not already mask, so the windowed builder
+    /// must reproduce the dense one byte-for-byte. This passes under BOTH a
+    /// correct implementation and one that ignores `window` entirely — so it
+    /// certifies that the suite is not simply broken, and it must NOT be read as
+    /// evidence that the window works. (Same role as the positive control that
+    /// stayed `ok` in increment 2a's sabotage record.)
+    #[test]
+    fn window_wider_than_capacity_is_byte_identical_to_the_dense_mask() {
+        for (cached_len, seq, max_seq_len) in [(0, 1, 8), (3, 1, 8), (0, 4, 8), (2, 3, 8)] {
+            let dense = build_decode_causal_mask(cached_len, seq, max_seq_len);
+            let windowed =
+                build_decode_causal_mask_windowed(cached_len, seq, max_seq_len, max_seq_len);
+            assert_eq!(
+                dense, windowed,
+                "window == max_seq_len must equal dense at \
+                 (cached_len={cached_len}, seq={seq}, max_seq_len={max_seq_len})",
+            );
+        }
+    }
+
+    /// Decode must agree with the **shipped prefill** mask position-for-position,
+    /// or a windowed model changes behaviour at the prefill→decode boundary.
+    /// This replays `lazy_qwen2.rs:265-277`'s predicate over a full prefill of
+    /// length `n`, then asserts that decoding position `p` with `cached_len = p`
+    /// reproduces prefill row `p`. The prefill mask is `[seq, seq]` and the
+    /// decode mask `[1, max_seq_len]`, so only the first `n` keys are comparable
+    /// — the tail beyond `n` is the unwritten capacity the prefill mask has no
+    /// opinion about.
+    #[test]
+    fn decode_row_matches_the_prefill_mask_row_at_the_same_position() {
+        let (n, window, max_seq_len) = (6_usize, 3_usize, 10_usize);
+
+        // Qwen2's prefill predicate, transcribed from `build_layer_mask`.
+        let mut prefill = vec![0.0_f32; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                if j > i || j + window <= i {
+                    prefill[i * n + j] = f32::NEG_INFINITY;
+                }
+            }
+        }
+
+        for p in 0..n {
+            let decode = build_decode_causal_mask_windowed(p, 1, max_seq_len, window);
+            assert_eq!(
+                attendable(&decode[0..n]),
+                attendable(&prefill[p * n..(p + 1) * n]),
+                "decode at cached_len={p} must match prefill row {p}",
+            );
+            assert!(
+                decode[n..].iter().all(|&v| v == f32::NEG_INFINITY),
+                "the unwritten tail beyond position {n} must stay masked",
+            );
+        }
+    }
+
+    // =======================================================================
+    // BORN-RED RECORD (2026-08-13, GAP-029 increment 3)
+    //
+    // These tests were run FIRST against a deliberately wrong body — the
+    // "old fabrication in the new shape": `build_decode_causal_mask_windowed`
+    // returning `build_decode_causal_mask(..)` and ignoring `window`, which is
+    // precisely what a single-mask decode port computes today. That makes the
+    // red state prove *windowing vs dense* rather than merely proving the tests
+    // execute.
+    //
+    //   windowed_mask_excludes_positions_older_than_the_window   FAILED
+    //       left [1, 1, 1, 1, 0, 0]  right [0, 0, 1, 1, 0, 0]
+    //   windowed_mask_offsets_each_row_by_cached_len             FAILED
+    //       left [1, 1, 1, 0, 0]     right [0, 1, 1, 0, 0]
+    //   decode_row_matches_the_prefill_mask_row_at_the_same_position FAILED
+    //       left [1, 1, 1, 1, 0, 0]  right [0, 1, 1, 1, 0, 0]
+    //   window_wider_than_capacity_is_byte_identical_to_the_dense_mask  ok
+    //   test result: FAILED. 1 passed; 3 failed
+    //
+    // The `ok` line is load-bearing in BOTH directions and is the reason the
+    // control exists: it holds under the correct body AND under the dense
+    // fabrication, so (a) the suite is demonstrably not simply broken, and
+    // (b) it must never be cited as evidence that windowing works. Only the
+    // three that moved carry that claim.
+    //
+    // After the flip: `4 passed; 0 failed`, on a run reporting a 53.44s
+    // compile — i.e. a rebuilt binary, not a cached one. A passing run without
+    // confirmed recompilation would have certified nothing.
+    //
+    // WHAT THIS DOES **NOT** ESTABLISH, stated because the next reader will be
+    // wiring this into a decode path: these are tests of the MASK BYTES ONLY.
+    // No decode has yet been run with a windowed mask, so "a single-mask decode
+    // port is silently wrong for Qwen2/Qwen3/Qwen3Moe" remains an INFERENCE
+    // from the mask's meaning — argued from the fact that one
+    // `[1, 1, seq, max_seq_len]` Const cannot express two layer groups. The
+    // logits-level born-red against Qwen2's live mixed config
+    // (`use_sliding_window: true, max_window_layers: 1` over 2 layers,
+    // `lazy_qwen2.rs:441-443`) is the measurement that would settle it, and it
+    // is NOT in this change.
+    // =======================================================================
+}
+
 /// Build a [`fuel_dispatch::decode_flash::DecodeFlashSpec`] from a decode
 /// attention region's tensor handles and offer the optimizer-owned CUDA
 /// flash-decode arm on the shared graph.
