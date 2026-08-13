@@ -237,7 +237,7 @@ pub fn huber(
     }
     let diff = inp.sub(target)?;
     let abs_diff = diff.abs();
-    // mask = (|diff| <= delta) as U8.
+    // mask = (|diff| <= delta) as Bool.
     let delta_t = abs_diff_like_scalar(&abs_diff, delta)?;
     let mask = abs_diff.le(&delta_t)?;
     let squared_loss = diff.mul(&diff)?.mul_scalar(0.5);

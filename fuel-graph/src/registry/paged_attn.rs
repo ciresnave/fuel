@@ -491,7 +491,10 @@ mod tests {
             op: Op::Ge,
             inputs: vec![pos_bc, cl_bc],
             shape: scores_shape.clone(),
-            dtype: DType::U8,
+            // GAP-168(c): comparisons yield a Bool mask; the recipe re-emit
+            // computes this via primitive_shape (now Bool), so this frozen
+            // mirror must match. The mask feeds MaskedFill, which accepts Bool.
+            dtype: DType::Bool,
         });
         let masked = graph.push(Node {
             op: Op::MaskedFill { value: Scalar::F32(f32::NEG_INFINITY) },

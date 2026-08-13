@@ -30,6 +30,10 @@ pub enum Scalar {
     /// OCP-MX `E8M0` block scale: raw byte `X` decodes to `2^(X − 127)` for
     /// `X ∈ 0..=254`; `X == 255` is NaN. Unsigned; no zero, no subnormals.
     F8E8M0(u8),
+    /// Boolean truth value (the scalar companion of [`DType::Bool`]). One byte;
+    /// `false`/`true`. Not an arithmetic scalar — `to_f64` maps it to `0.0`/`1.0`
+    /// for uniformity, but a mask used AS A NUMBER is rejected upstream.
+    Bool(bool),
 }
 
 impl Scalar {
@@ -55,6 +59,8 @@ impl Scalar {
             DType::F64 => Scalar::F64(0.0),
             DType::F8E4M3 => Scalar::F8E4M3(f8e4m3::ZERO),
             DType::F8E5M2 => Scalar::F8E5M2(f8e5m2::ZERO),
+            // Bool: the `false` value.
+            DType::Bool => Scalar::Bool(false),
             // Scales: no exact zero (this stays Err even once scales are real).
             DType::F8E8M0 | DType::F8E6M2 => {
                 return Err(crate::Error::NoZeroScalar(dtype));
@@ -86,6 +92,8 @@ impl Scalar {
             DType::F64 => Scalar::F64(1.0),
             DType::F8E4M3 => Scalar::F8E4M3(f8e4m3::ONE),
             DType::F8E5M2 => Scalar::F8E5M2(f8e5m2::ONE),
+            // Bool: the `true` value.
+            DType::Bool => Scalar::Bool(true),
             // OCP-MX E8M0: 2^0 => X = 127.
             DType::F8E8M0 => Scalar::F8E8M0(127),
             // F8E6M2: a scale, but its exact bit-encoding is a Fuel-local
@@ -126,6 +134,25 @@ impl Scalar {
             DType::F64 => Scalar::F64(v),
             DType::F8E4M3 => Scalar::F8E4M3(f8e4m3::from_f64(v)),
             DType::F8E5M2 => Scalar::F8E5M2(f8e5m2::from_f64(v)),
+            // Bool is a CONSTRUCTOR target, not a cast: reconstruct the exact
+            // truth value, never invent one. `0.0` -> false, `1.0` -> true; any
+            // other number (`0.5`, `2.0`, NaN) is not a truth value and is
+            // declined as `ScalarUnrepresentable`. The `!= 0` truthiness
+            // coercion is a CAST concern, never a constructor's — conflating the
+            // two is the silent coercion the `Bool` dtype exists to remove
+            // (GAP-168(c)). Chosen over PyTorch's `!= 0` deliberately: `from_f64`
+            // rebuilds a value that WAS a bool, it does not decide truthiness.
+            // (Whether any backend yet implements a float→Bool cast is a
+            // separate question; this constructor simply refuses to BE one.)
+            DType::Bool => {
+                if v == 0.0 {
+                    Scalar::Bool(false)
+                } else if v == 1.0 {
+                    Scalar::Bool(true)
+                } else {
+                    return Err(crate::Error::ScalarUnrepresentable(dtype, v));
+                }
+            }
             // OCP-MX E8M0: nearest power of two, X = round(log2(v)) + 127.
             DType::F8E8M0 => {
                 if !v.is_finite() || v <= 0.0 {
@@ -166,6 +193,7 @@ impl Scalar {
             Scalar::F8E4M3(_) => DType::F8E4M3,
             Scalar::F8E5M2(_) => DType::F8E5M2,
             Scalar::F8E8M0(_) => DType::F8E8M0,
+            Scalar::Bool(_) => DType::Bool,
         }
     }
 
@@ -189,6 +217,13 @@ impl Scalar {
                     f64::NAN
                 } else {
                     2f64.powi(*x as i32 - 127)
+                }
+            }
+            Scalar::Bool(b) => {
+                if *b {
+                    1.0
+                } else {
+                    0.0
                 }
             }
         }
@@ -260,5 +295,37 @@ mod tests {
             assert!(catch_unwind(AssertUnwindSafe(|| Scalar::from_f64(1.0, dt))).is_ok(),
                     "from_f64() unwound for {dt:?}");
         }
+    }
+
+    /// GAP-168(c): `Scalar` carries a real `Bool` value — `zero`/`one` are
+    /// `false`/`true`, never an `Err` (Fuel fully supports the dtype).
+    #[test]
+    fn bool_zero_and_one_are_real_values() {
+        assert_eq!(Scalar::zero(DType::Bool).unwrap(), Scalar::Bool(false));
+        assert_eq!(Scalar::one(DType::Bool).unwrap(), Scalar::Bool(true));
+        assert_eq!(Scalar::Bool(true).dtype(), DType::Bool);
+        assert_eq!(Scalar::Bool(false).to_f64(), 0.0);
+        assert_eq!(Scalar::Bool(true).to_f64(), 1.0);
+    }
+
+    /// GAP-168(c): `from_f64` is a CONSTRUCTOR, not a cast. It rebuilds a value
+    /// that was a bool (`0.0`/`1.0`) and DECLINES a number that never was one
+    /// (`0.5`) rather than silently coercing via `!= 0`. This is the assertion
+    /// that separates the constructor semantics from PyTorch's cast semantics —
+    /// under `Scalar::Bool(v != 0.0)` the `0.5` case would be `Ok(true)` and
+    /// this test would fail.
+    #[test]
+    fn bool_from_f64_is_a_constructor_not_a_cast() {
+        assert_eq!(Scalar::from_f64(0.0, DType::Bool).unwrap(), Scalar::Bool(false));
+        assert_eq!(Scalar::from_f64(1.0, DType::Bool).unwrap(), Scalar::Bool(true));
+        // The whole point: a non-truth-value number is refused, not coerced.
+        assert!(matches!(
+            Scalar::from_f64(0.5, DType::Bool),
+            Err(crate::Error::ScalarUnrepresentable(DType::Bool, _)),
+        ), "0.5 is not a truth value — from_f64 must decline it, not coerce to true");
+        assert!(matches!(
+            Scalar::from_f64(2.0, DType::Bool),
+            Err(crate::Error::ScalarUnrepresentable(DType::Bool, _)),
+        ));
     }
 }

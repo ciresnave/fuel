@@ -510,8 +510,8 @@ impl LazyTensor {
     }
 
     /// Ternary select (typically used to consume a comparison-op
-    /// mask): `result[i] = if self[i] != 0 { a[i] } else { b[i] }`.
-    /// `self` is the cond mask (must be `DType::U8`); `a` and `b`
+    /// mask): `result[i] = if self[i] { a[i] } else { b[i] }`.
+    /// `self` is the cond mask (must be `DType::Bool`, GAP-168(c)); `a` and `b`
     /// share dtype + shape with `self`. Output dtype matches `a`/`b`,
     /// shape matches `self`.
     ///
@@ -1110,6 +1110,16 @@ impl LazyTensor {
         let device = crate::Device::cpu();
         crate::pipelined_bridge::realize_one_as::<u32>(&graph, target, &device)
             .expect("realize_u32 via PipelinedExecutor")
+    }
+
+    /// Realize as raw bytes (`u8`). Used to read a `Bool` mask (0/1 per byte) or
+    /// a `U8` tensor back to host (GAP-168(c)).
+    pub fn realize_u8(&self) -> Vec<u8> {
+        let graph = self.inner.graph().clone();
+        let target = self.inner.id();
+        let device = crate::Device::cpu();
+        crate::pipelined_bridge::realize_one_as::<u8>(&graph, target, &device)
+            .expect("realize_u8 via PipelinedExecutor")
     }
 
     // ---- reductions ----
@@ -20763,12 +20773,47 @@ mod phase_a1_wrapper_tests {
     #[test]
     fn masked_fill_smoke() {
         let t = cpu_f32(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]);
-        // Comparison ops produce U8 masks directly — no F32→U8 cast needed.
+        // Comparison ops produce Bool masks directly (GAP-168(c)) — masked_fill
+        // now accepts Bool, no F32→mask cast needed.
         let probe = t.const_f32_like(vec![0.0, 1.0, 1.0, 0.0], vec![2, 2]);
         let threshold = t.const_f32_like(vec![0.5; 4], vec![2, 2]);
-        let mask = probe.gt(&threshold).unwrap(); // [0, 1, 1, 0] as U8
+        let mask = probe.gt(&threshold).unwrap(); // [0, 1, 1, 0] as Bool
         let out = t.masked_fill(&mask, fuel_ir::Scalar::F32(-9.0)).unwrap();
         assert_eq!(out.realize_f32(), vec![1.0, -9.0, -9.0, 4.0]);
+    }
+
+    /// GAP-168(c) DISCRIMINATION: `Bool` and `U8` are byte-identical in storage,
+    /// which is exactly the condition under which a wrong wiring is *silently
+    /// correct*. This test proves they are NOT interchangeable end-to-end on CPU:
+    /// a comparison yields a `Bool` (not `U8`) tensor, and `to_dtype(Bool)` on a
+    /// `U8` tensor is a real `!= 0` CONVERSION — never a byte reinterpret.
+    #[test]
+    fn bool_is_distinguishable_from_u8_end_to_end() {
+        // (1) A comparison realizes as a Bool tensor whose bytes are 0/1.
+        let t = cpu_f32(vec![0.0, 5.0, 3.0, 0.0], &[4]);
+        let thr = t.const_f32_like(vec![0.5; 4], vec![4]);
+        let mask = t.gt(&thr).unwrap();
+        assert_eq!(mask.dtype(), DType::Bool, "gt yields Bool, not U8");
+        assert_eq!(mask.realize_u8(), vec![0, 1, 1, 0], "mask bytes are 0/1");
+
+        // (2) to_dtype(Bool) on a U8 tensor CONVERTS (`!= 0`), it does NOT
+        // reinterpret the bytes: U8(5) -> Bool(1) and U8(200) -> Bool(1). If this
+        // were a no-op reinterpret the result would read back 5 and 200.
+        let u8t = cpu_f32(vec![0.0, 5.0, 0.0, 200.0], &[4]).to_dtype(DType::U8).unwrap();
+        assert_eq!(u8t.dtype(), DType::U8);
+        assert_eq!(u8t.realize_u8(), vec![0, 5, 0, 200], "sanity: the U8 source is 0/5/0/200");
+        let as_bool = u8t.to_dtype(DType::Bool).unwrap();
+        assert_eq!(as_bool.dtype(), DType::Bool);
+        assert_eq!(
+            as_bool.realize_u8(),
+            vec![0, 1, 0, 1],
+            "U8->Bool must CONVERT (!=0) to 0/1, not reinterpret to 0/5/0/200",
+        );
+
+        // (3) Bool -> U8 extracts the numeric mask (constraint #1's explicit cast).
+        let back = mask.to_dtype(DType::U8).unwrap();
+        assert_eq!(back.dtype(), DType::U8);
+        assert_eq!(back.realize_u8(), vec![0, 1, 1, 0]);
     }
 
     #[test]

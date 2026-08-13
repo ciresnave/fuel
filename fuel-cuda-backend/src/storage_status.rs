@@ -91,7 +91,9 @@ pub(crate) fn cuda_storage_status(dt: DType) -> StorageStatus {
         | DType::F6E2M3
         | DType::F6E3M2
         | DType::F4
-        | DType::F8E8M0 => StorageStatus::Present,
+        | DType::F8E8M0
+        // GAP-168(c): Bool has a `CudaStorageSlice::Bool` variant (byte-backed).
+        | DType::Bool => StorageStatus::Present,
 
         // Expiring: representable (OCP-standard, real host type
         // `float8::F8E5M2`) but no `CudaStorageSlice` variant yet. This decline
@@ -192,6 +194,7 @@ mod tests {
                     | DType::F6E3M2
                     | DType::F4
                     | DType::F8E8M0
+                    | DType::Bool
             );
             assert_eq!(
                 present, expected,

@@ -1813,6 +1813,8 @@ pub fn unary_dispatch<B: UnaryOpT>(storage: &HostBuffer, layout: &Layout) -> Res
         HostBuffer::F6E3M2(_) => Err(Error::UnsupportedDTypeForOp(DType::F6E3M2, "unary").bt()),
         HostBuffer::F4(_) => Err(Error::UnsupportedDTypeForOp(DType::F4, "unary").bt()),
         HostBuffer::F8E8M0(_) => Err(Error::UnsupportedDTypeForOp(DType::F8E8M0, "unary").bt()),
+        // Bool is a mask, not a numeric type — unary ops decline.
+        HostBuffer::Bool(_) => Err(Error::UnsupportedDTypeForOp(DType::Bool, "unary").bt()),
     }
 }
 
