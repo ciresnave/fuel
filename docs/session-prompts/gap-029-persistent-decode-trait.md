@@ -420,6 +420,91 @@ slightly undercuts even Phi's claim to a separate body.
 `apply_layer` only; Qwen3Moe adds a layer-weights type parameter; Glm4 adds the
 rope-width parameter.
 
+### Increment 3 — step 0 was INCOMPLETE. Two corrections, measured 2026-08-13
+
+The six-axis table above answers all six axes correctly. **Every one of those
+axes is MODEL-SCALAR, so the set cannot see per-layer variation — the property
+§3 says decides the trait's shape.** A checklist of axes is itself a population
+claim: positive controls validated each axis, nothing validated the axis *set*.
+
+#### Correction 1 — Gemma3 is not the only family with per-layer variation
+
+| family | per-layer variation | mechanism | site |
+|---|---|---|---|
+| Qwen2 | **YES — mask** | `use_sliding_window && layer_idx < max_window_layers` | `lazy_qwen2.rs:249-251` |
+| Qwen3 | **YES — mask** | same predicate | `lazy_qwen3.rs:172` |
+| Qwen3Moe | **YES — mask** | same predicate | `lazy_qwen3_moe.rs:192` |
+| SmolLm3 | **YES — RoPE** | `no_rope_layers[i]` **skips RoPE entirely** | `lazy_smollm3.rs:38,150,197` |
+| Phi3 | no | zero `sliding_window` hits | `:182` |
+| Glm4 | no | `sliding_window` appears only in a doc comment | `:215` |
+| **Llama (control)** | **no** | **zero** `sliding_window` hits in `lazy.rs` | — |
+
+Positive control on the nulls: the same pattern hits in five sibling files, so
+the zeros are measurements. **It is live in the existing corpus, not merely a
+settable field:** `lazy_qwen2.rs:441-443` is `use_sliding_window: true,
+max_window_layers: 1` over **2** layers — genuinely mixed — and
+`lazy_smollm3.rs:383` sets `no_rope_layers = Some(vec![0, 1])`.
+
+**Name the axis by the BEHAVIOUR THAT VARIES ("per-layer attention behaviour"),
+not by the first mechanism found ("sliding window").** Anyone grepping
+`sliding_window` off the first three rows would have **cleared SmolLm3**, whose
+variation is RoPE-on/off — a different payload on the same axis.
+
+**This is not a scope increase.** `layer_idx` threading and N rope/mask variants
+are §3's own mandated items. What the measurement corrects is *when they are
+exercised*: increment 3, not increment 4 — which is strictly better, because the
+machinery can be born-red against a live mixed config instead of shipped on spec.
+
+**Ruled (A) by the architect 2026-08-13: honour the window fully via N=2 now.**
+The rejected alternative (decline mixed mode, lift it in increment 4) would have
+**deliberately manufactured an expiring decline** — the defect class GAP-161/171
+established has no detector — when (A) was available and subsumes it.
+
+**Design (approved): stack the variants on a leading axis.** The mask Const
+becomes `[n_variants, 1, seq, max_seq_len]`; the build path hoists `n_variants`
+width-1 slices **once** before the layer loop; layer `i` takes
+`&masks[variant_for_layer(i)]`. `DecodeTokenData`, `DecodeSession`, the shared
+driver, Phi and DeepSeek are **untouched** (one mask Arc, one `mask_node`, as
+today), and **N=1 skips the slice entirely and is byte-identical** — uniform
+families pay nothing. The `Vec<Arc<..>>` alternative was priced first (3
+construction sites, 5 `mask_node` touches) and is unnecessary.
+
+#### Correction 2 — the six families have NO D1 path, and the persistent path needs one
+
+Measured: `grep -c forward_with_kv_context` → **0** in each of `lazy_qwen2`,
+`lazy_qwen3`, `lazy_smollm3`, `lazy_phi3`, `lazy_glm4`; **309** in `lazy.rs`
+(positive control).
+
+`forward_with_kv_context_persistent_inv_freq` has **two** arms that call the D1
+path: `lazy.rs:8984` (`seq != 1` → **prefill**) and `:9017-9022`
+(`TopologyChanged` → fallback **for that token**). **So a family ported with
+hook + `apply_layer` alone has no prefill and no invalidation fallback**, and
+§4's per-family list above is wrong.
+
+**But `forward_with_kv_context_impl` (`:8638`) is the SAME SEAM as the D2 build
+path** — embed → rope → mask → per-layer `apply_layer_with_kv_writes` → final
+norm → logits — differing only in concrete Consts vs re-bindable placeholders.
+**One parameterised body serves both, BUT ONLY IF BUILT TO SERVE BOTH FROM THE
+FIRST LINE. Built for D2 alone, D1 becomes a second per-family copy, six times
+over** — the reproduction-mechanism argument applied *prospectively*.
+
+#### Increment 3's real per-family content: SEVEN items, not two
+
+`decode_shape_key` · `apply_layer_with_kv_writes` · host-data + arcs hook ·
+**D1 path** · persistent entry point · `PersistentDecodeModel` impl · **N=2
+masks where the family needs them.** The first four are shareable through one
+seam; two are genuinely per-family.
+
+#### Landed 2026-08-13: the windowed decode-mask primitive
+
+`build_decode_causal_mask_windowed` (`lazy.rs`), born-red via the old
+fabrication (return the dense mask, ignore `window`) — 3 discriminating tests
+red, the non-discrimination control green (`1 passed; 3 failed`), then `4 passed`
+on a confirmed recompile. **Mask BYTES only: no decode has been run with a
+windowed mask, so "a single-mask port is silently wrong" is still inference.**
+The logits-level born-red against Qwen2's live mixed config is the measurement
+that settles it, and it is the next step.
+
 **Gate (architect, sharpened because sharing broke the earlier one):** with all
 seven sharing driver *and* build path, a sabotage of shared code reddens
 everything and proves nothing per-family. Sabotage **each family's own**
@@ -451,8 +536,16 @@ one-line note when increment 3 lands and it gets ruled on then.
 SmolLm3, Glm4, Phi3. Each = `apply_layer` for its architecture + the quantized
 wrapper's delegation.
 
-**Increment 4 —** Gemma3, which is what forces the N-variant rope/mask and
-`layer_idx` machinery to actually be exercised rather than merely present.
+**Increment 4 —** Gemma3.
+
+> **Corrected 2026-08-13.** This line previously read *"which is what forces the
+> N-variant rope/mask and `layer_idx` machinery to actually be exercised rather
+> than merely present."* **That sequencing is wrong: four of increment 3's own
+> six families vary per layer** (three by sliding-window mask, SmolLm3 by
+> per-layer RoPE), so the machinery is exercised an increment earlier than this
+> claimed — see *"Increment 3 — step 0 was INCOMPLETE"* above. Gemma3 remains
+> increment 4; what it uniquely adds is per-layer variation of the **RoPE base**
+> (local vs global), not the existence of per-layer variation.
 
 ## 5. Gates
 
