@@ -674,6 +674,9 @@ impl DynBackendStorage for CpuStorage {
             HostBuffer::I16(pred) => Map2::map(&crate::ops::WCond(pred, cond_layout), &t.0, on_true_layout, &f.0, on_false_layout)?,
             HostBuffer::I32(pred) => Map2::map(&crate::ops::WCond(pred, cond_layout), &t.0, on_true_layout, &f.0, on_false_layout)?,
             HostBuffer::I64(pred) => Map2::map(&crate::ops::WCond(pred, cond_layout), &t.0, on_true_layout, &f.0, on_false_layout)?,
+            // GAP-168(c): Bool is the canonical `where` cond — the mask bytes
+            // (0/1) are the predicate, byte-identical to the U8 case.
+            HostBuffer::Bool(pred) => Map2::map(&crate::ops::WCond(pred, cond_layout), &t.0, on_true_layout, &f.0, on_false_layout)?,
             _ => return Err(Error::UnsupportedDTypeForOp(self.0.dtype(), "where-cond").bt()),
         };
         Ok(Box::new(CpuStorage(result)))
@@ -1144,6 +1147,8 @@ fn cpu_zeros(shape: &Shape, dtype: DType) -> Result<HostBuffer> {
         // DELIBERATE UNDER-SHIPMENT (the fix is to add the buffer variant),
         // not an absent representation (F8E6M2, whose encoding is unauthored).
         DType::F8E5M2 => return Err(Error::UnsupportedDTypeForOp(dtype, "zeros").bt()),
+        // GAP-168(c): Bool zeros = all `false` (0 bytes), byte-backed like u8.
+        DType::Bool => HostBuffer::Bool(vec![0u8; elem_count]),
         DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 | DType::F8E6M2 => {
             return Err(Error::UnsupportedDTypeForOp(dtype, "zeros").bt())
         }
@@ -1173,6 +1178,8 @@ unsafe fn cpu_alloc_uninit(shape: &Shape, dtype: DType) -> Result<HostBuffer> {
         // DELIBERATE UNDER-SHIPMENT (the fix is to add the buffer variant),
         // not an absent representation (F8E6M2, whose encoding is unauthored).
         DType::F8E5M2 => return Err(Error::UnsupportedDTypeForOp(dtype, "alloc_uninit").bt()),
+        // GAP-168(c): Bool uninit = a byte buffer (byte-backed like u8).
+        DType::Bool => { let mut v = Vec::with_capacity(elem_count); unsafe { v.set_len(elem_count) }; HostBuffer::Bool(v) }
         DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 | DType::F8E6M2 => {
             return Err(Error::UnsupportedDTypeForOp(dtype, "alloc_uninit").bt())
         }
@@ -1377,6 +1384,8 @@ fn cpu_to_dtype(src: &HostBuffer, layout: &Layout, dtype: DType) -> Result<HostB
             HostBuffer::F32(d) => Ok(HostBuffer::F32(unary_map(d, layout, |v: f32| v))),
             HostBuffer::F64(d) => Ok(HostBuffer::F64(unary_map(d, layout, |v: f64| v))),
             HostBuffer::F8E4M3(d) => Ok(HostBuffer::F8E4M3(unary_map(d, layout, |v: F8E4M3| v))),
+            // GAP-168(c): Bool identity clone (byte copy).
+            HostBuffer::Bool(d) => Ok(HostBuffer::Bool(unary_map(d, layout, |v: u8| v))),
             _ => Err(Error::UnsupportedDTypeForOp(src.dtype(), "to_dtype").bt()),
         };
     }
@@ -1394,6 +1403,9 @@ fn cpu_to_dtype(src: &HostBuffer, layout: &Layout, dtype: DType) -> Result<HostB
         HostBuffer::F32(d) => unary_map(d, layout, |v: f32| v as f64),
         HostBuffer::F64(d) => unary_map(d, layout, |v: f64| v),
         HostBuffer::F8E4M3(d) => unary_map(d, layout, |v: F8E4M3| v.to_f64()),
+        // GAP-168(c): Bool as cast SOURCE — a mask byte (0/1) is 0.0/1.0, so a
+        // numeric value can be extracted (constraint #1's explicit `.cast(U8)`).
+        HostBuffer::Bool(d) => unary_map(d, layout, |v: u8| v as f64),
         _ => return Err(Error::UnsupportedDTypeForOp(src.dtype(), "to_dtype").bt()),
     };
 
@@ -1408,6 +1420,13 @@ fn cpu_to_dtype(src: &HostBuffer, layout: &Layout, dtype: DType) -> Result<HostB
         DType::F32 => Ok(HostBuffer::F32(as_f64.into_iter().map(|v| v as f32).collect())),
         DType::F64 => Ok(HostBuffer::F64(as_f64)),
         DType::F8E4M3 => Ok(HostBuffer::F8E4M3(as_f64.into_iter().map(F8E4M3::from_f64).collect())),
+        // GAP-168(c): Bool as cast TARGET — this is the TRUTHINESS coercion
+        // (`!= 0`), which belongs in a CAST (unlike `Scalar::from_f64`, the
+        // constructor, which declines a non-truth-value). A real conversion, NOT
+        // a byte reinterpret: `U8(5) -> 5.0 -> true`, so Bool ≠ U8.
+        DType::Bool => Ok(HostBuffer::Bool(
+            as_f64.into_iter().map(|v| if v != 0.0 { 1u8 } else { 0u8 }).collect(),
+        )),
         _ => Err(Error::UnsupportedDTypeForOp(dtype, "to_dtype").bt()),
     }
 }

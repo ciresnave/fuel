@@ -24,6 +24,8 @@ pub trait Map1 {
             C::F6E3M2(_) => Err(Error::UnsupportedDTypeForOp(vs.dtype(), "map1").bt()),
             C::F4(_) => Err(Error::UnsupportedDTypeForOp(vs.dtype(), "map1").bt()),
             C::F8E8M0(_) => Err(Error::UnsupportedDTypeForOp(vs.dtype(), "map1").bt()),
+            // Bool is a mask, not a numeric type — unary ops decline.
+            C::Bool(_) => Err(Error::UnsupportedDTypeForOp(vs.dtype(), "map1").bt()),
         }
     }
 }
@@ -49,6 +51,8 @@ pub trait Map1Any {
             C::F6E3M2(_) => Err(Error::UnsupportedDTypeForOp(vs.dtype(), "map1any").bt()),
             C::F4(_) => Err(Error::UnsupportedDTypeForOp(vs.dtype(), "map1any").bt()),
             C::F8E8M0(_) => Err(Error::UnsupportedDTypeForOp(vs.dtype(), "map1any").bt()),
+            // Bool is a mask, not a numeric type — unary ops decline.
+            C::Bool(_) => Err(Error::UnsupportedDTypeForOp(vs.dtype(), "map1any").bt()),
         }
     }
 }

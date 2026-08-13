@@ -202,6 +202,8 @@ impl HostStorage for MmappedHostStorage {
                 DType::F8E6M2 => {
                     return Err(Error::UnsupportedDTypeForOp(self.dtype, "as_host_buffer_ref").bt())
                 }
+                // GAP-168(c): Bool bytes reinterpret as u8 (byte-identical).
+                DType::Bool => HostBufferRef::Bool(self.typed_slice::<u8>()),
             }
         };
         Ok(r)

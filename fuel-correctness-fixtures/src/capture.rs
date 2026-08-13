@@ -570,6 +570,7 @@ fn dtype_dir_name(d: DType) -> &'static str {
         DType::F4 => "f4",
         DType::F8E8M0 => "f8e8m0",
         DType::F8E6M2 => "f8e6m2",
+        DType::Bool => "bool",
     }
 }
 

@@ -3437,6 +3437,7 @@ fn scalar_to_bytes(s: fuel_ir::Scalar) -> Vec<u8> {
         Scalar::F16(v) => v.to_le_bytes().to_vec(),
         Scalar::F32(v) => v.to_le_bytes().to_vec(),
         Scalar::F64(v) => v.to_le_bytes().to_vec(),
+        Scalar::Bool(b) => vec![b as u8],
         Scalar::F8E4M3(v) => vec![v.to_bits()],
         Scalar::F8E5M2(v) => vec![v.to_bits()],
         // OCP-MX E8M0 block scale is a raw byte on the wire (`2^(X-127)`,

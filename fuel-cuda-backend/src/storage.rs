@@ -135,6 +135,9 @@ pub enum CudaStorageSlice {
     F6E3M2(CudaSlice<u8>),
     F4(CudaSlice<u8>),
     F8E8M0(CudaSlice<u8>),
+    /// Boolean mask (GAP-168(c)) — one byte per element, byte-identical to `U8`
+    /// but a DISTINCT variant so a `Bool` slice is never consumed as `U8`.
+    Bool(CudaSlice<u8>),
 }
 
 struct Clone;
@@ -2328,6 +2331,20 @@ fn pick_where_strided(cond_dt: DType, val_dt: DType) -> Option<WhereStridedRun> 
         (DType::U8, DType::I32)    => sym!(where_u8cond_i32_strided_run),
         (DType::U8, DType::I64)    => sym!(where_u8cond_i64_strided_run),
         (DType::U8, DType::F8E4M3) => sym!(where_u8cond_fp8e4m3_strided_run),
+        // Bool cond (GAP-168(c)): a comparison mask is the canonical `where`
+        // cond. Byte-identical to U8, so it reuses the U8-cond kernels — the
+        // storage variant differs, the kernel does not.
+        (DType::Bool, DType::F32)    => sym!(where_f32_strided_run),
+        (DType::Bool, DType::F64)    => sym!(where_f64_strided_run),
+        (DType::Bool, DType::F16)    => sym!(where_f16_strided_run),
+        (DType::Bool, DType::BF16)   => sym!(where_bf16_strided_run),
+        (DType::Bool, DType::U8)     => sym!(where_u8cond_u8_strided_run),
+        (DType::Bool, DType::I8)     => sym!(where_u8cond_i8_strided_run),
+        (DType::Bool, DType::U32)    => sym!(where_u8cond_u32_strided_run),
+        (DType::Bool, DType::I16)    => sym!(where_u8cond_i16_strided_run),
+        (DType::Bool, DType::I32)    => sym!(where_u8cond_i32_strided_run),
+        (DType::Bool, DType::I64)    => sym!(where_u8cond_i64_strided_run),
+        (DType::Bool, DType::F8E4M3) => sym!(where_u8cond_fp8e4m3_strided_run),
         // U32 cond + all values.
         (DType::U32, DType::F32)    => sym!(where_u32cond_f32_strided_run),
         (DType::U32, DType::F64)    => sym!(where_u32cond_f64_strided_run),
@@ -2401,6 +2418,11 @@ impl Map2 for WhereCond<'_> {
                 sl.as_raw().0 as *const std::ffi::c_void
             }
             CudaStorageSlice::I64(s) => {
+                let sl = s.slice(cond_layout.start_offset()..s.len());
+                sl.as_raw().0 as *const std::ffi::c_void
+            }
+            // GAP-168(c): Bool cond — byte-identical to U8, same raw pointer.
+            CudaStorageSlice::Bool(s) => {
                 let sl = s.slice(cond_layout.start_offset()..s.len());
                 sl.as_raw().0 as *const std::ffi::c_void
             }
@@ -2638,7 +2660,10 @@ impl Map2Any for Cmp {
             .bt()
         })?;
         let el = lhs_l.shape().elem_count();
-        // u8 output for boolean comparison results.
+        // GAP-168(c): the mask bytes are one-per-cell (0/1); the OUTPUT dtype is
+        // Bool, not U8. Byte layout is identical to u8 (so the kernel is
+        // unchanged), but the storage variant is Bool so the result can never be
+        // silently consumed as a numeric U8.
         let out = unsafe { dev.alloc::<u8>(el)? };
         let lhs_slice = lhs.slice(lhs_l.start_offset()..lhs.len());
         let rhs_slice = rhs.slice(rhs_l.start_offset()..rhs.len());
@@ -2648,7 +2673,7 @@ impl Map2Any for Cmp {
             out.as_raw().0 as *mut std::ffi::c_void,
             lhs_l, rhs_l, contig, strided, kernel, dev,
         )?;
-        Ok(S::U8(out))
+        Ok(S::Bool(out))
     }
 }
 
@@ -3189,6 +3214,7 @@ impl CudaStorage {
             CudaStorageSlice::F6E3M2(_) => DType::F6E3M2,
             CudaStorageSlice::F4(_) => DType::F4,
             CudaStorageSlice::F8E8M0(_) => DType::F8E8M0,
+            CudaStorageSlice::Bool(_) => DType::Bool,
         }
     }
 

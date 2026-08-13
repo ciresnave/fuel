@@ -382,35 +382,35 @@ pub enum Op {
     /// (mirrors Op::PowI).
     PowIInplace(i32),
 
-    // --- element-wise comparison (output is U8 mask) ---
-    /// Element-wise equality (`a == b`) producing a `U8` mask: `1`
+    // --- element-wise comparison (output is Bool mask) ---
+    /// Element-wise equality (`a == b`) producing a `Bool` mask: `1`
     /// where the inputs are equal, `0` otherwise. Both operands must
     /// share dtype and shape. NaN follows IEEE-754 (`NaN == NaN` is
-    /// false). Output dtype is always `U8`, regardless of input dtype
-    /// — the binding-table key is `[T, T, U8]`.
+    /// false). Output dtype is always `Bool`, regardless of input dtype
+    /// — the binding-table key is `[T, T, Bool]`.
     ///
     /// Non-differentiable: backward returns `None` for both inputs
     /// (registered via [`crate::grad::NoGradientBinaryRule`]).
     Equal,
-    /// Element-wise inequality (`a != b`) producing a `U8` mask: `1`
+    /// Element-wise inequality (`a != b`) producing a `Bool` mask: `1`
     /// where unequal, `0` otherwise. Same shape/dtype contract as
     /// [`Op::Equal`]. NaN follows IEEE-754 (`NaN != NaN` is true →
     /// `1`). Non-differentiable.
     Ne,
-    /// Element-wise strictly-less (`a < b`) producing a `U8` mask: `1`
+    /// Element-wise strictly-less (`a < b`) producing a `Bool` mask: `1`
     /// where lhs is strictly less than rhs, `0` otherwise. Same
     /// shape/dtype contract as [`Op::Equal`]. NaN-on-either-side is
     /// always `0` (IEEE-754 unordered comparison). Non-differentiable.
     Lt,
-    /// Element-wise less-or-equal (`a <= b`) producing a `U8` mask.
+    /// Element-wise less-or-equal (`a <= b`) producing a `Bool` mask.
     /// Same shape/dtype contract as [`Op::Equal`]. NaN-on-either-side
     /// is always `0`. Non-differentiable.
     Le,
-    /// Element-wise strictly-greater (`a > b`) producing a `U8` mask.
+    /// Element-wise strictly-greater (`a > b`) producing a `Bool` mask.
     /// Same shape/dtype contract as [`Op::Equal`]. NaN-on-either-side
     /// is always `0`. Non-differentiable.
     Gt,
-    /// Element-wise greater-or-equal (`a >= b`) producing a `U8` mask.
+    /// Element-wise greater-or-equal (`a >= b`) producing a `Bool` mask.
     /// Same shape/dtype contract as [`Op::Equal`]. NaN-on-either-side
     /// is always `0`. Non-differentiable. Final variant of the
     /// comparison family (`Equal`, `Ne`, `Lt`, `Le`, `Gt`, `Ge`).
@@ -5710,8 +5710,8 @@ impl Tensor {
         })
     }
 
-    /// Append a `MaskedFill` node. `mask` must be U8 and have the same
-    /// shape as `self`. Every position where `mask != 0` gets `value`;
+    /// Append a `MaskedFill` node. `mask` must be `Bool` (GAP-168(c)) and have
+    /// the same shape as `self`. Every position where `mask` is true gets `value`;
     /// every position where `mask == 0` passes `self` through. `value`
     /// is a scalar of `self`'s dtype.
     ///
@@ -5729,9 +5729,10 @@ impl Tensor {
                 self.shape().dims(), mask.shape().dims(),
             )).bt());
         }
-        if mask.dtype() != DType::U8 {
+        if mask.dtype() != DType::Bool {
             return Err(fuel_ir::Error::Msg(format!(
-                "masked_fill: mask dtype must be U8, got {:?}",
+                "masked_fill: mask dtype must be Bool, got {:?} — cast a numeric \
+                 mask to Bool explicitly (GAP-168(c))",
                 mask.dtype(),
             )).bt());
         }
@@ -5798,7 +5799,13 @@ impl Tensor {
             // they are different questions. Writing REJECT here would encode the
             // claim "F8E5M2 has no representable fill value", which is FALSE and
             // would outlive the storage gap that motivated it.
-            | DType::F8E5M2 => {}
+            | DType::F8E5M2
+            // GAP-168(c): Bool is a value dtype with a representable fill value
+            // (true/false) and a zero for the backward (false) — permitted on
+            // this guard's own semantic terms, exactly as the FP8 value dtypes
+            // are. (This is the FILLED tensor's dtype; the MASK dtype is checked
+            // separately above.)
+            | DType::Bool => {}
         }
         if value.dtype() != self.dtype() {
             return Err(fuel_ir::Error::Msg(format!(
@@ -5865,51 +5872,51 @@ impl Tensor {
         })
     }
 
-    /// Append an `Equal` node (`self == other`) producing a `U8` mask.
-    /// Both operands must share dtype and shape; output dtype is `U8`
+    /// Append an `Equal` node (`self == other`) producing a `Bool` mask.
+    /// Both operands must share dtype and shape; output dtype is `Bool`
     /// (`1` where equal, `0` otherwise). NaN follows IEEE-754
     /// (`NaN == NaN` is false). Non-differentiable.
     pub fn eq(&self, other: &Tensor) -> Tensor {
         self.binary_compare_op("eq", Op::Equal, other)
     }
 
-    /// Append a `Ne` node (`self != other`) producing a `U8` mask.
+    /// Append a `Ne` node (`self != other`) producing a `Bool` mask.
     /// Same shape/dtype contract as [`Self::eq`]. NaN follows
     /// IEEE-754 (`NaN != NaN` is true → `1`). Non-differentiable.
     pub fn ne(&self, other: &Tensor) -> Tensor {
         self.binary_compare_op("ne", Op::Ne, other)
     }
 
-    /// Append an `Lt` node (`self < other`) producing a `U8` mask.
+    /// Append an `Lt` node (`self < other`) producing a `Bool` mask.
     /// Same shape/dtype contract as [`Self::eq`]. NaN-on-either-side
     /// is always `0` (IEEE-754 unordered). Non-differentiable.
     pub fn lt(&self, other: &Tensor) -> Tensor {
         self.binary_compare_op("lt", Op::Lt, other)
     }
 
-    /// Append an `Le` node (`self <= other`) producing a `U8` mask.
+    /// Append an `Le` node (`self <= other`) producing a `Bool` mask.
     /// Same shape/dtype contract as [`Self::eq`]. NaN-on-either-side
     /// is always `0`. Non-differentiable.
     pub fn le(&self, other: &Tensor) -> Tensor {
         self.binary_compare_op("le", Op::Le, other)
     }
 
-    /// Append a `Gt` node (`self > other`) producing a `U8` mask.
+    /// Append a `Gt` node (`self > other`) producing a `Bool` mask.
     /// Same shape/dtype contract as [`Self::eq`]. NaN-on-either-side
     /// is always `0`. Non-differentiable.
     pub fn gt(&self, other: &Tensor) -> Tensor {
         self.binary_compare_op("gt", Op::Gt, other)
     }
 
-    /// Append a `Ge` node (`self >= other`) producing a `U8` mask.
+    /// Append a `Ge` node (`self >= other`) producing a `Bool` mask.
     /// Same shape/dtype contract as [`Self::eq`]. NaN-on-either-side
     /// is always `0`. Non-differentiable.
     pub fn ge(&self, other: &Tensor) -> Tensor {
         self.binary_compare_op("ge", Op::Ge, other)
     }
 
-    /// Ternary select: `result[i] = if self[i] != 0 { a[i] } else { b[i] }`.
-    /// Receiver is the `cond` mask (must be `DType::U8`); `a` and `b`
+    /// Ternary select: `result[i] = if self[i] { a[i] } else { b[i] }`.
+    /// Receiver is the `cond` mask (must be `DType::Bool`, GAP-168(c)); `a` and `b`
     /// must share dtype with each other and shape with `self`. Output
     /// dtype matches `a`/`b`. Returning a new tensor where each slot is
     /// picked from `a` (cond=1) or `b` (cond=0).
@@ -5927,8 +5934,9 @@ impl Tensor {
         );
         assert_eq!(
             self.dtype(),
-            DType::U8,
-            "where_cond: cond must be U8, got {:?}",
+            DType::Bool,
+            "where_cond: cond must be Bool (GAP-168(c)), got {:?} — cast a numeric \
+             mask to Bool explicitly",
             self.dtype(),
         );
         assert_eq!(
@@ -7796,7 +7804,11 @@ impl Tensor {
             op,
             inputs: vec![self.id, other.id],
             shape,
-            dtype: DType::U8,
+            // GAP-168(c): comparisons yield a `Bool` mask. This BUILDER path is
+            // the one eq/ne/lt/le/gt/ge take; it must agree with the
+            // `primitive_shape` comparison arm (fuel-graph/src/shape.rs), which
+            // is the OTHER site that decides this dtype (reached on re-lowering).
+            dtype: DType::Bool,
         });
         Self {
             graph: self.graph.clone(),
@@ -12232,17 +12244,38 @@ mod tests {
     }
 
     #[test]
-    fn eq_builder_produces_u8_output_with_input_shape() {
-        // Tensor::eq builds a binary node whose dtype is U8 regardless
-        // of input dtype, with shape == lhs.shape() (and == rhs.shape()).
+    fn eq_builder_produces_bool_output_with_input_shape() {
+        // GAP-168(c): Tensor::eq builds a binary node whose dtype is Bool
+        // regardless of input dtype (CireSnave's ruling — "Fuel uses Bool
+        // where possible"), with shape == lhs.shape() (and == rhs.shape()).
         let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let b = a.const_f32_like(vec![1.0, 5.0, 3.0], Shape::from_dims(&[3]));
         let m = a.eq(&b);
         assert_eq!(m.shape().dims(), &[3]);
-        assert_eq!(m.dtype(), DType::U8, "eq output must be U8");
+        assert_eq!(m.dtype(), DType::Bool, "eq output must be Bool");
         let m_node = m.graph().read().unwrap().node(m.id()).clone();
         assert!(matches!(m_node.op, Op::Equal));
         assert_eq!(m_node.inputs, vec![a.id(), b.id()]);
+    }
+
+    #[test]
+    fn all_six_comparisons_produce_bool() {
+        // GAP-168(c): eq/ne/lt/le/gt/ge every one returns DType::Bool, not the
+        // legacy U8 mask. Shape is preserved (== lhs == rhs). One assertion per
+        // operator so a regression names the operator that drifted.
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let b = a.const_f32_like(vec![1.0, 5.0, 3.0], Shape::from_dims(&[3]));
+        for (name, m) in [
+            ("eq", a.eq(&b)),
+            ("ne", a.ne(&b)),
+            ("lt", a.lt(&b)),
+            ("le", a.le(&b)),
+            ("gt", a.gt(&b)),
+            ("ge", a.ge(&b)),
+        ] {
+            assert_eq!(m.dtype(), DType::Bool, "{name} output must be Bool");
+            assert_eq!(m.shape().dims(), &[3], "{name} preserves input shape");
+        }
     }
 
     #[test]
@@ -12400,7 +12433,7 @@ mod tests {
         // node carries 3 inputs in order (cond, a, b).
         let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let b = a.const_f32_like(vec![10.0, 20.0, 30.0], Shape::from_dims(&[3]));
-        let eq_a_b = a.eq(&b);  // U8 mask
+        let eq_a_b = a.eq(&b);  // Bool mask
         let picked = eq_a_b.where_cond(&a, &b);
         assert_eq!(picked.shape().dims(), &[3]);
         assert_eq!(picked.dtype(), DType::F32, "Where output dtype = a/b dtype");
@@ -12639,11 +12672,11 @@ mod tests {
         // F8E8M0 is a block-scale dtype: it HAS a scalar value (so the
         // value-dtype check passes) but no zero, so the MaskedFill backward
         // cannot produce a gradient. Reject at build time — and this must fail
-        // on the dtype guard specifically: graph / shape / mask-U8 / value-dtype
+        // on the dtype guard specifically: graph / shape / mask-Bool / value-dtype
         // are all satisfied, so a bare `is_err()` can only be the guard firing.
         let x = Tensor::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
         let scale = x.cast(DType::F8E8M0);
-        let mask = x.cast(DType::U8);
+        let mask = x.cast(DType::Bool);
         let value = Scalar::one(DType::F8E8M0).unwrap();
 
         let err = scale.masked_fill(&mask, value);
@@ -12676,7 +12709,7 @@ mod tests {
         ] {
             let x = Tensor::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
             let t = x.cast(dt);
-            let mask = x.cast(DType::U8);
+            let mask = x.cast(DType::Bool);
             // The dtype guard fires before the value-dtype check, so a dummy
             // value is fine; the message assertion proves it was the guard.
             let err = t.masked_fill(&mask, Scalar::F32(0.0));
@@ -12699,7 +12732,7 @@ mod tests {
     #[test]
     fn masked_fill_permits_fillable_dtypes_as_permission_not_capability() {
         let x = Tensor::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
-        let mask = x.cast(DType::U8);
+        let mask = x.cast(DType::Bool);
         assert!(
             x.masked_fill(&mask, Scalar::F32(0.0)).is_ok(),
             "F32 masked_fill must build (the live consumer path)",

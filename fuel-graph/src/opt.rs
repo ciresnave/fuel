@@ -440,7 +440,7 @@ pub fn base_map_hash(graph: &Graph, root: NodeId) -> u64 {
     fn fold_host_buffer(buf: &fuel_ir::HostBuffer, hasher: &mut DefaultHasher) {
         use fuel_ir::HostBuffer as H;
         match buf {
-            H::U8(v) | H::F6E2M3(v) | H::F6E3M2(v) | H::F4(v) | H::F8E8M0(v) => v.hash(hasher),
+            H::U8(v) | H::F6E2M3(v) | H::F6E3M2(v) | H::F4(v) | H::F8E8M0(v) | H::Bool(v) => v.hash(hasher),
             H::I8(v) => v.hash(hasher),
             H::U32(v) => v.hash(hasher),
             H::I16(v) => v.hash(hasher),
