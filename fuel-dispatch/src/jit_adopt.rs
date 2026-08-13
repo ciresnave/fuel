@@ -38,22 +38,21 @@ use crate::runtime_fused_kernels::adopt_runtime_fused;
 /// provider's `map_element_kind`** — which is what an earlier version of this
 /// comment claimed, and the claim was load-bearing in the wrong direction.
 ///
-/// Those two are not one function with two copies; they answer to different
-/// contracts, and their domains differ because of it. This pair covers the
-/// **nine** kinds that ROUND-TRIP — `dtype_to_element_kind` is gated by a
-/// round-trip identity test, since a non-identity trip would describe operands
-/// the caller does not have. `map_element_kind` is **one-way**, exists only to
-/// derive a structure key, carries no inverse obligation, and therefore maps
-/// **eleven**, including `Fp8E4M3`/`Fp8E5M2` — which have no *mapping* arm
-/// here (they fall in this function's explicit decline arm; GAP-177 (ii) would
-/// add the mapping).
+/// Those two answer to different CONTRACTS, and that — not their domain — is
+/// what keeps them apart. This pair is a BIJECTION over the mapped set:
+/// `dtype_to_element_kind` is gated by a round-trip identity test, since a
+/// non-identity trip would describe operands the caller does not have.
+/// `map_element_kind` is **one-way** (structure-key derivation only) and carries
+/// no inverse obligation. After GAP-177 (ii) both map the SAME eleven types
+/// including `Fp8E4M3`/`Fp8E5M2`, so the domains coincide and only the
+/// round-trip obligation distinguishes them.
 ///
-/// Why the misattribution mattered: it licensed consolidating the two into
-/// "one authority", which the round-trip test would then reject, because this
-/// function has no FP8 *mapping* arm to trip back through. **Before consolidating two
-/// similar functions, check whether they are subject to the same invariants —
-/// a shared signature over an overlapping domain is not a shared contract.**
-/// See GAP-177.
+/// Why this matters: it once licensed consolidating the two into "one
+/// authority" on the theory that a shared signature over an overlapping domain
+/// is a shared contract. It is not — the round-trip invariant lives on this
+/// pair and not on `map_element_kind`. **Before consolidating two similar
+/// functions, check whether they are subject to the same invariants.** See
+/// GAP-177.
 ///
 /// `pub(crate)` (widened from private) so [`crate::jit_ingest_probe`]'s
 /// `probe_from_operands` can reuse it instead of duplicating the match —
@@ -77,16 +76,19 @@ pub(crate) fn element_kind_to_dtype(ek: ElementKind) -> Option<DType> {
         // Fuel `DType` at all — an interop gap that would have bitten on the
         // first indexed region regardless of anything else.
         ElementKind::U32 => DType::U32,
+        // FP8 (GAP-177 (ii)). OCP finite E4M3 / E5M2 — the same format Fuel's
+        // `DType` names (GAP-169); the telemetry structure-key path asserts the
+        // identical pair. See `fp8_maps_to_baracuda_ocp_element_kinds`.
+        ElementKind::Fp8E4M3 => DType::F8E4M3,
+        ElementKind::Fp8E5M2 => DType::F8E5M2,
         // No Fuel `DType` for these seam kinds — decline rather than substitute
         // a wrong one. Enumerated (never `_`) so a new baracuda `ElementKind`
         // becomes a COMPILE ERROR here, forcing a map-or-decline decision at the
         // bump instead of a silent decline. `ElementKind` is not
         // `#[non_exhaustive]` at the locked vocab, so this exhaustive match is
-        // legal across the crate boundary. GAP-177 (i) — zero behaviour change.
+        // legal across the crate boundary. GAP-177 (i).
         ElementKind::F32Strict
         | ElementKind::Bool
-        | ElementKind::Fp8E4M3
-        | ElementKind::Fp8E5M2
         | ElementKind::S4
         | ElementKind::U4
         | ElementKind::Bin
@@ -117,15 +119,17 @@ pub(crate) fn dtype_to_element_kind(dt: DType) -> Option<ElementKind> {
         DType::F32 => ElementKind::F32,
         DType::F64 => ElementKind::F64,
         DType::U32 => ElementKind::U32,
+        // FP8 (GAP-177 (ii)). OCP finite E4M3 / E5M2 mapped to baracuda's OCP FP8
+        // kinds — the same format on both sides (GAP-169), the identity the
+        // telemetry structure-key path already ships and tests. Behaviour change:
+        // FP8-operand regions become adoptable on the JIT path where they used to
+        // decline. See `fp8_maps_to_baracuda_ocp_element_kinds`.
+        DType::F8E4M3 => ElementKind::Fp8E4M3,
+        DType::F8E5M2 => ElementKind::Fp8E5M2,
         // No seam `ElementKind` for these Fuel dtypes — decline rather than a
         // lossy substitution. Enumerated (never `_`) so a new `DType` is a
-        // COMPILE ERROR here instead of a silent decline — which is exactly how
-        // FP8 (F8E4M3/F8E5M2) came to sit here unmapped. Mapping FP8 is GAP-177
-        // step (ii): a JIT-path behaviour change with its own test, deliberately
-        // NOT done here. GAP-177 (i) — zero behaviour change.
+        // COMPILE ERROR here instead of a silent decline. GAP-177 (i).
         DType::I16
-        | DType::F8E4M3
-        | DType::F8E5M2
         | DType::F6E2M3
         | DType::F6E3M2
         | DType::F4
@@ -193,6 +197,10 @@ mod tests {
             DType::U8, DType::I8, DType::I32, DType::I64,
             DType::BF16, DType::F16, DType::F32, DType::F64,
             DType::U32,
+            // FP8 (GAP-177 (ii)). Same OCP format on both sides — pinned exactly
+            // by `fp8_maps_to_baracuda_ocp_element_kinds` below — so they
+            // round-trip like the rest.
+            DType::F8E4M3, DType::F8E5M2,
         ];
 
         for &dt in MAPPED {
@@ -212,6 +220,36 @@ mod tests {
             dtype_to_element_kind(DType::I16).is_none(),
             "I16 has no ElementKind spelling (the seam has S8/U8/I32/I64/U32, no 16-bit int) — it must decline, not substitute — a lossy mapping asks about a different kernel than the caller's",
         );
+    }
+
+    /// **FP8 (E4M3/E5M2) maps to baracuda's OCP FP8 element kinds — GAP-177 (ii).**
+    ///
+    /// Behaviour change: FP8-operand regions become adoptable on the JIT path
+    /// where they previously declined. It is safe because it is the SAME format
+    /// on both sides, not a newly invented identification:
+    /// - Fuel `DType::F8E4M3` is OCP finite E4M3 (bias 7, max ±448, no infinities,
+    ///   single NaN) — GAP-169; the sibling `F8E5M2` doc names E4M3 as "the
+    ///   OCP-standard FP8 pair's other half".
+    /// - baracuda `ElementKind::Fp8E4M3` is documented bias 7 / max-finite 448 /
+    ///   no infinities — the same OCP finite E4M3. `Fp8E5M2` is bias 15 / IEEE
+    ///   inf-nan — the same OCP E5M2, which Fuel's `F8E5M2` already matches.
+    /// - The telemetry structure-key path already ships AND tests this exact pair
+    ///   (`telemetry::baracuda_provider::map_element_kind`); this pins the JIT
+    ///   path to the same committed identity rather than inventing one.
+    #[test]
+    fn fp8_maps_to_baracuda_ocp_element_kinds() {
+        use super::{dtype_to_element_kind, element_kind_to_dtype};
+        use baracuda_kernels_types::ElementKind;
+        use fuel_ir::DType;
+
+        // Outbound: Fuel FP8 dtype -> the OCP seam kind (exact, not just
+        // round-trip-consistent).
+        assert_eq!(dtype_to_element_kind(DType::F8E4M3), Some(ElementKind::Fp8E4M3));
+        assert_eq!(dtype_to_element_kind(DType::F8E5M2), Some(ElementKind::Fp8E5M2));
+        // Inbound: required by the round-trip invariant and by the caller that
+        // reads a returned contract's FP8 operands back into Fuel dtypes.
+        assert_eq!(element_kind_to_dtype(ElementKind::Fp8E4M3), Some(DType::F8E4M3));
+        assert_eq!(element_kind_to_dtype(ElementKind::Fp8E5M2), Some(DType::F8E5M2));
     }
 
     use super::*;
