@@ -235,6 +235,13 @@ fn total_device_local_memory(p: &PhysicalDevice) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // GAP-157: these tests REQUIRE a live Vulkan device. They are `#[ignore]`d,
+    // so they run only when explicitly asked for — which makes a missing device
+    // a FAILURE, not a silent early return that reports `ok` having asserted
+    // nothing. Run them with the documented runner:
+    //   pwsh scripts/gpu-run.ps1 -Project fuel -- \
+    //       cargo test -p fuel-vulkan-backend --features vulkan -- --ignored
+    use fuel_test_support::{required, required_ok};
 
     /// The fan-out this memoization exists to kill.
     ///
@@ -380,15 +387,10 @@ mod tests {
     /// hardware rasterizer). In either case, every entry we do
     /// return must key-match its own ordinal and carry non-zero
     /// vendor/device ids (vulkane-side guarantees).
+    #[ignore = "requires a live Vulkan device"]
     #[test]
     fn vulkan_probe_is_total() {
-        let devices = match enumerate_devices() {
-            Ok(d) => d,
-            Err(e) => {
-                eprintln!("vulkan probe skipped: {e}");
-                return;
-            }
-        };
+        let devices = required_ok("a live Vulkan device", enumerate_devices());
         for d in &devices {
             assert_eq!(d.backend, BackendId::Vulkan);
             match d.location {
@@ -406,15 +408,10 @@ mod tests {
     /// produce on an implementation that ignored the struct. Vulkan
     /// guarantees a subgroup size that is a power of two in `1..=128`, so
     /// anything else means we misread the property.
+    #[ignore = "requires a live Vulkan device"]
     #[test]
     fn subgroup_width_is_never_a_zeroed_read() {
-        let devices = match enumerate_devices() {
-            Ok(d) => d,
-            Err(e) => {
-                eprintln!("vulkan probe skipped: {e}");
-                return;
-            }
-        };
+        let devices = required_ok("a live Vulkan device", enumerate_devices());
         // Report what was actually seen. A device list that is EMPTY passes
         // every loop below vacuously, which is indistinguishable from a real
         // pass in the summary line — so print the count and let `--nocapture`
@@ -450,20 +447,24 @@ mod tests {
     ///
     /// The only hard assertion is the invariant that must hold either way:
     /// effective version can never exceed the instance version we asked for.
+    #[ignore = "requires a live Vulkan device"]
     #[test]
     fn v1_3_instance_bump_characterization() {
-        let instance = match new_instance_preferring_v1_3(|api_version| InstanceCreateInfo {
-            engine_name: Some("fuel-vulkan-backend probe"),
-            api_version,
-            ..Default::default()
-        }) {
-            Ok(i) => i,
-            Err(e) => { eprintln!("vulkan unavailable, skipped: {e}"); return; }
-        };
-        let physicals = match instance.enumerate_physical_devices() {
-            Ok(p) => p,
-            Err(e) => { eprintln!("enumeration failed, skipped: {e:?}"); return; }
-        };
+        let instance = required_ok(
+            "a live Vulkan instance",
+            new_instance_preferring_v1_3(|api_version| InstanceCreateInfo {
+                engine_name: Some("fuel-vulkan-backend probe"),
+                api_version,
+                ..Default::default()
+            }),
+        );
+        let physicals = required_ok(
+            "Vulkan physical-device enumeration",
+            // `{e:?}` rather than `{e}`: this error is Debug-only, and dropping
+            // it to use the Display-bounded helper would trade a diagnosable
+            // failure for a mysterious one.
+            instance.enumerate_physical_devices().map_err(|e| format!("{e:?}")),
+        );
         eprintln!("=== V1_3 instance bump: {} device(s) ===", physicals.len());
         for (i, p) in physicals.iter().enumerate() {
             let eff = p.effective_api_version();
@@ -512,6 +513,7 @@ mod tests {
     ///
     /// Asserted rather than merely observed because the consequence is a silent
     /// cache-key split, not a visible error.
+    #[ignore = "requires a live Vulkan device"]
     #[test]
     fn driver_identity_is_stable_across_instance_version() {
         let mk = |api: ApiVersion| {
@@ -537,10 +539,8 @@ mod tests {
                 Some(v)
             })
         };
-        let (Some(at_1_2), Some(at_1_3)) = (mk(ApiVersion::V1_2), mk(ApiVersion::V1_3)) else {
-            eprintln!("vulkan unavailable at one or both versions, skipped");
-            return;
-        };
+        let at_1_2 = required("a live Vulkan device at instance API V1_2", mk(ApiVersion::V1_2));
+        let at_1_3 = required("a live Vulkan device at instance API V1_3", mk(ApiVersion::V1_3));
         eprintln!("V1_2: {at_1_2:#?}");
         eprintln!("V1_3: {at_1_3:#?}");
         assert_eq!(
@@ -554,15 +554,10 @@ mod tests {
     /// whitespace-only string would silently collapse distinct drivers into
     /// one Judge profile class. Whether it came from `driver_properties()`
     /// or the raw-hex fallback, it must be non-empty.
+    #[ignore = "requires a live Vulkan device"]
     #[test]
     fn driver_version_key_is_never_empty() {
-        let devices = match enumerate_devices() {
-            Ok(d) => d,
-            Err(e) => {
-                eprintln!("vulkan probe skipped: {e}");
-                return;
-            }
-        };
+        let devices = required_ok("a live Vulkan device", enumerate_devices());
         for d in &devices {
             assert!(
                 !d.driver_version.trim().is_empty(),

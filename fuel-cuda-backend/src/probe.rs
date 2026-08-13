@@ -156,23 +156,22 @@ pub fn enumerate_devices_uncached() -> Result<Vec<DeviceDescriptor>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // GAP-157: these tests REQUIRE a live CUDA device. They are `#[ignore]`d,
+    // so they run only when explicitly asked for — which makes a missing device
+    // a FAILURE, not a silent early return that reports `ok` having asserted
+    // nothing. Run them with the documented runner:
+    //   pwsh scripts/gpu-run.ps1 -Project fuel -- \
+    //       cargo test -p fuel-cuda-backend --features cuda -- --ignored
+    use fuel_test_support::required_ok;
 
     /// On machines without any CUDA device (headless CI, for example)
     /// the probe should return `Ok(vec![])`, not error. Where a GPU
     /// does exist, every descriptor should carry NVIDIA's vendor id
     /// and a CUDA `DeviceLocation` matching its ordinal.
+    #[ignore = "requires a live CUDA device"]
     #[test]
     fn cuda_probe_is_total() {
-        let devices = match enumerate_devices() {
-            Ok(d) => d,
-            Err(e) => {
-                // Driver dynamic-load failed — only acceptable on
-                // hosts without the CUDA runtime at all. Log and
-                // bail cleanly.
-                eprintln!("cuda probe skipped: {e}");
-                return;
-            }
-        };
+        let devices = required_ok("a live CUDA device", enumerate_devices());
         for d in &devices {
             assert_eq!(d.backend, BackendId::Cuda);
             assert_eq!(d.vendor_id, NVIDIA_VENDOR_ID);
@@ -189,6 +188,9 @@ mod tests {
 #[cfg(test)]
 mod probe_memoization_tests {
     use super::*;
+    // GAP-157: `#[ignore]`d — see the note in `tests` above. A missing CUDA
+    // runtime is a FAILURE here, not a silent `return` that reports `ok`.
+    use fuel_test_support::require;
 
     /// K threads racing a cold probe must produce **exactly one** real driver
     /// enumeration.
@@ -207,14 +209,14 @@ mod probe_memoization_tests {
     /// touch it. Getting that wrong turns an `== 1` proof of memoization into a
     /// `>= 1` proof of nothing.
     ///
-    /// Skips on a box with no CUDA runtime: a cached `Err` is still exactly one
-    /// probe, so the property holds, but there is no point asserting it where
-    /// the driver never loads.
+    /// Requires a CUDA runtime: a cached `Err` is still exactly one probe, so
+    /// the property holds vacuously where the driver never loads — which is why
+    /// this is `#[ignore]`d and REQUIRES the device rather than returning early
+    /// (GAP-157: an early return reports `ok` having asserted nothing).
+    #[ignore = "requires a live CUDA device"]
     #[test]
     fn concurrent_enumeration_probes_the_driver_exactly_once() {
-        if enumerate_devices().is_err() {
-            return; // no CUDA runtime here
-        }
+        require("a live CUDA runtime", enumerate_devices().is_ok());
         let before = memoized_probe_call_count();
 
         let threads: Vec<_> = (0..16)
@@ -244,11 +246,10 @@ mod probe_memoization_tests {
     /// NOT actually re-probe per call, the memoization assertion would pass
     /// trivially and prove nothing — the same vacuous-oracle shape that has
     /// bitten this codebase repeatedly.
+    #[ignore = "requires a live CUDA device"]
     #[test]
     fn uncached_enumeration_really_does_re_probe() {
-        if enumerate_devices().is_err() {
-            return; // no CUDA runtime here
-        }
+        require("a live CUDA runtime", enumerate_devices().is_ok());
         let before = probe_call_count();
         let _ = enumerate_devices_uncached();
         let _ = enumerate_devices_uncached();

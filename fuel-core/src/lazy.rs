@@ -18548,20 +18548,22 @@ mod generate_tests {
     /// `Device::custom`, the pipelined executor + binding-table
     /// dispatch route the per-op kernels to Vulkan SPIR-V.
     ///
-    /// Skips with a logged message if no Vulkan device is available
-    /// so CI machines without a GPU stay green.
+    /// GAP-157: this test is `#[cfg(feature = "vulkan")]`, so it is compiled
+    /// only when someone asked for the Vulkan path to be tested — a CI machine
+    /// without a GPU never builds it and stays green that way. It therefore
+    /// REQUIRES a Vulkan device rather than skipping: the old
+    /// `eprintln!("skipping: …"); return` silently converted an explicit
+    /// request into a test that reported `ok` having asserted nothing.
     #[test]
     #[cfg(feature = "vulkan")]
     fn forward_with_kv_context_vulkan_matches_cpu() {
         use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
 
-        let vk_backend = match VulkanBackend::with_selection(DeviceSelection::PreferDiscrete) {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("skipping: no Vulkan device ({e:?})");
-                return;
-            }
-        };
+        let vk_backend = fuel_test_support::required_ok(
+            "a live Vulkan device",
+            VulkanBackend::with_selection(DeviceSelection::PreferDiscrete)
+                .map_err(|e| format!("{e:?}")),
+        );
         let vk_device: Device = vk_backend.into();
 
         let cfg = LlamaConfig {
