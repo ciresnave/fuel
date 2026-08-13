@@ -61,9 +61,25 @@ jobs:
       # Runs on one OS deliberately: this checks feature-gated compilation, which
       # is platform-independent, so a matrix would buy five copies of one answer.
       #
-      # NOT the whole module. `telemetry/baracuda_provider.rs` additionally needs
-      # `baracuda-types` (hence the CUDA SDK), and its combined step lives in
-      # ci_cuda.yaml — which does not currently execute. See the note there.
+      # NOT the whole module, and the remainder is currently UNCOVERED.
+      # `telemetry/baracuda_provider.rs` additionally needs `baracuda-types`,
+      # which reaches `baracuda-cuda-sys` and therefore requires the CUDA SDK to
+      # be PRESENT (its build script is 321 bytes and invokes no nvcc, so nothing
+      # is forged — this is an SDK requirement, not a GPU one).
+      #
+      # That step used to live in ci_cuda.yaml. THAT WORKFLOW WAS DELETED
+      # (GAP-181): it requested HuggingFace's `aws-g5-4xlarge-cache` runner
+      # group, inherited from the Candle fork, and so never executed a single
+      # step in 16 runs across four months. CireSnave's ruling: a CI workflow
+      # that requires CUDA will never run here, so remove it rather than let a
+      # red X stand in for coverage.
+      #
+      # The residual gap is real and deliberately NOT papered over. Restoring it
+      # needs an SDK-bearing runner WITHOUT a GPU — e.g. this job in an
+      # `nvidia/cuda:*-devel` container on ordinary ubuntu-latest, since the
+      # check only compiles. That is a CANDIDATE, not a plan: nobody has
+      # demonstrated it, and per GAP-181 an unrun CI step must never be
+      # described as coverage. Demonstrate it failing before claiming it works.
       - name: Check telemetry-gated dispatch (sk4 wire codec)
         if: matrix.os == 'ubuntu-latest'
         run: cargo check -p fuel-dispatch --features telemetry --all-targets

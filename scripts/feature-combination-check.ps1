@@ -9,17 +9,41 @@
         CI  rust-ci.yml   cargo check --workspace
                           cargo check --workspace --features metal
                           cargo test  --workspace
-        CI  ci_cuda.yaml  cargo test --features cuda
+                          cargo check -p fuel-dispatch --features telemetry
         local             aarch64-cross-check.ps1  (default features)
 
-    Each feature separately. NEVER two at once — and `telemetry` appears in no
-    CI job at all. That is a structural hole, not an oversight in one sweep, and
+    Each feature separately. NEVER two at once. That is a structural hole, not
+    an oversight in one sweep, and
     `fuel-dispatch/src/telemetry/baracuda_provider.rs` was the first thing to
     fall through it: `mod telemetry` is `#[cfg(feature = "telemetry")]`, and
-    `mod baracuda_provider` is `#[cfg(feature = "cuda")]` INSIDE it, so the file
-    is parsed ONLY under the COMBINATION. It sat with a missing `DType::F8E5M2`
-    arm — a hard E0004 — through an entire dtype sweep, because
-    `--all-targets` is not `--all-features`, and one feature is not two.
+    `mod baracuda_provider` is cfg'd INSIDE it, so the file is parsed ONLY under
+    the COMBINATION. It sat with a missing `DType::F8E5M2` arm — a hard E0004 —
+    through an entire dtype sweep, because `--all-targets` is not
+    `--all-features`, and one feature is not two.
+
+    ── THREE CORRECTIONS TO THE ABOVE, ALL DATED 2026-08-13 ──
+
+    (1) `ci_cuda.yaml` USED TO APPEAR IN THAT TABLE, RUNNING
+        `cargo test --features cuda`. THE WORKFLOW WAS DELETED (GAP-181): it
+        requested HuggingFace's `aws-g5-4xlarge-cache` runner group, inherited
+        from the Candle fork, and NEVER EXECUTED A SINGLE STEP in 16 runs across
+        four months. It was listed here as a gate this project runs. It was not
+        one. Note what that means for this script's own premise: the hole was
+        WIDER than the docstring claimed, because one of the four listed gates
+        was imaginary.
+
+    (2) "`telemetry` appears in no CI job at all" WAS TRUE WHEN WRITTEN and is
+        now false — `rust-ci.yml` gained the telemetry-only step above (GAP-173).
+        That step covers `structure_key_derive.rs`, NOT this file.
+
+    (3) THIS DOCSTRING SAID `mod baracuda_provider` IS `#[cfg(feature = "cuda")]`.
+        It is `#[cfg(feature = "baracuda-types")]` — changed by `f1d475d2`
+        ("gate the provider on what it needs, not on what implies it"). The same
+        rotted sentence was simultaneously live in CLAUDE.md; both are fixed.
+        The correction MATTERS RATHER THAN BEING PEDANTRY: the minimal gate for
+        this file is `--features telemetry,baracuda-types`, which needs the CUDA
+        SDK but NO GPU and NO forge — so it is seconds on any SDK-bearing
+        machine, where the old text implied a GPU-class build.
 
     ── WHAT THIS GATE'S CORRECTNESS DEPENDS ON, AND WHAT IT DOES NOT ──
 
