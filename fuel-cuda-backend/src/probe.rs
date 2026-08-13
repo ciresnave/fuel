@@ -235,7 +235,7 @@ mod probe_memoization_tests {
         assert_eq!(
             memoized_probe_call_count(),
             before,
-            "16 racing threads triggered {} additional real driver probes; the              memoized path must probe exactly once per process",
+            "16 racing threads triggered {} additional real driver probes; the memoized path must probe exactly once per process",
             memoized_probe_call_count() - before,
         );
     }
@@ -255,7 +255,7 @@ mod probe_memoization_tests {
         assert_eq!(
             probe_call_count() - before,
             2,
-            "the uncached path must re-probe on every call, or the memoization              test above is vacuous",
+            "the uncached path must re-probe on every call, or the memoization test above is vacuous",
         );
     }
 }

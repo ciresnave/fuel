@@ -2405,7 +2405,7 @@ determinism: same_hardware_bitwise
         // Report what the instrument actually SAW — a loop that silently
         // examined nothing passes identically to one that examined everything.
         eprintln!(
-            "FKC corpus entry-point uniqueness: {checked} registrable contracts across {} files,              {} distinct (kernel_source, entry_point) keys",
+            "FKC corpus entry-point uniqueness: {checked} registrable contracts across {} files, {} distinct (kernel_source, entry_point) keys",
             files.len(),
             claimed.len()
         );
@@ -2469,7 +2469,7 @@ determinism: same_hardware_bitwise
                 eprintln!("  STALE ALLOWLIST ENTRY (no longer collides): {ks} :: {ep}");
             }
             panic!(
-                "{} allowlisted collision(s) no longer occur — delete them from KNOWN so the                  list keeps reflecting the real debt",
+                "{} allowlisted collision(s) no longer occur — delete them from KNOWN so the list keeps reflecting the real debt",
                 stale.len()
             );
         }
@@ -2479,7 +2479,7 @@ determinism: same_hardware_bitwise
                 eprintln!("  NEW COLLISION: kernel_source `{ks}` entry_point `{ep}` — {who}");
             }
             panic!(
-                "{} NEW cross-file entry-point collision(s) — each would resolve to one                  KernelRef and trip the duplicate gate at registration. Give the new contract                  its own entry point, or mark it `registrable: false` if it is documentation.",
+                "{} NEW cross-file entry-point collision(s) — each would resolve to one KernelRef and trip the duplicate gate at registration. Give the new contract its own entry point, or mark it `registrable: false` if it is documentation.",
                 novel.len()
             );
         }

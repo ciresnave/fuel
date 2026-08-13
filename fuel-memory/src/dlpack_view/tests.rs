@@ -47,7 +47,7 @@ fn fnv1a_matches_the_canonical_vectors() {
         let got = fnv1a(input);
         assert_eq!(
             got, *want,
-            "FNV-1a(\"{input}\") = 0x{got:016x}, want 0x{want:016x} — the FDX              slot-name hash drifted from the spec, which silently breaks every              bundle name side-table already written"
+            "FNV-1a(\"{input}\") = 0x{got:016x}, want 0x{want:016x} — the FDX slot-name hash drifted from the spec, which silently breaks every bundle name side-table already written"
         );
     }
 }

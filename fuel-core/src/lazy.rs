@@ -14781,7 +14781,7 @@ mod generate_tests {
         }
 
         let cap = captured.as_ref().expect(
-            "Llama's decode graph is capturable — if this is None the capture              declined and there are no intermediates to inspect",
+            "Llama's decode graph is capturable — if this is None the capture declined and there are no intermediates to inspect",
         );
         let outputs = cap.node_outputs();
         let graph_len = s_cap.as_ref().expect("session").graph_node_count();
@@ -14792,7 +14792,7 @@ mod generate_tests {
         println!("graph nodes: {graph_len}   retained buffers: {}", outputs.len());
         assert!(
             outputs.len() >= graph_len / 4,
-            "capture retained only {} buffers for a {graph_len}-node graph —              node_outputs is supposed to expose EVERY compute node's output, so              a near-empty map means the inspection surface is not what it claims",
+            "capture retained only {} buffers for a {graph_len}-node graph — node_outputs is supposed to expose EVERY compute node's output, so a near-empty map means the inspection surface is not what it claims",
             outputs.len(),
         );
 
@@ -14811,7 +14811,7 @@ mod generate_tests {
         assert!(checked > 0, "no retained buffer was readable — the surface is unusable");
         assert!(
             nonfinite.is_empty(),
-            "retained intermediates contain non-finite values at {nonfinite:?} —              the signature of replay against freed/uninitialised memory, which a              logits-only check would not localise",
+            "retained intermediates contain non-finite values at {nonfinite:?} — the signature of replay against freed/uninitialised memory, which a logits-only check would not localise",
         );
 
         // (3) WHOLE-GRAPH AGREEMENT — the run those intermediates came from was
@@ -16645,7 +16645,7 @@ mod generate_tests {
         let key_b = model_b.decode_shape_key();
         assert_ne!(
             key_a, key_b,
-            "two same-shaped models with distinct weights must key differently —              the paged session bakes their Consts",
+            "two same-shaped models with distinct weights must key differently — the paged session bakes their Consts",
         );
         // CONTROL: the key is stable for one model, or "always invalidate"
         // would satisfy the assertion above while destroying plan reuse.
@@ -16685,7 +16685,7 @@ mod generate_tests {
         // Same geometry, model B's key => STALE.
         assert!(
             !s.is_valid_for(8, cfg.n_layers, 4, DType::F32, key_b, pool_id),
-            "a plan baked for model A must NOT be judged valid for model B at              identical geometry — this is the silent-wrong-weights hole",
+            "a plan baked for model A must NOT be judged valid for model B at identical geometry — this is the silent-wrong-weights hole",
         );
 
         // GAP-014, paged half: same model, same geometry, a DIFFERENT pool.
@@ -19759,7 +19759,7 @@ mod phi_kv_context_tests {
         let opt = s.optimized();
         assert!(
             opt.has_placements(),
-            "placement NOT COMPUTED — every lookup would be None and the report              below would describe a missing instrument, not the graph",
+            "placement NOT COMPUTED — every lookup would be None and the report below would describe a missing instrument, not the graph",
         );
 
         let g = s.graph().read().expect("graph lock");
@@ -19889,7 +19889,7 @@ mod phi_kv_context_tests {
 
             assert_eq!(
                 got, ref_logits[i],
-                "Phi captured decode token {i} must be BYTE-IDENTICAL to the persistent                  path (same plan => same kernels). A mismatch here on tokens 3+ is the                  partial-rotary replay-bytes failure this test exists for.",
+                "Phi captured decode token {i} must be BYTE-IDENTICAL to the persistent path (same plan => same kernels). A mismatch here on tokens 3+ is the partial-rotary replay-bytes failure this test exists for.",
             );
 
             if i == 0 {
@@ -19924,7 +19924,7 @@ mod phi_kv_context_tests {
             println!("Phi capture FORMED — the decode graph is fully CUDA-resident");
         } else {
             println!(
-                "Phi capture DECLINED (expected today) — host-placed fused                  LayerNormLastDim/ROPE force a cross-device Copy. Results were                  byte-identical via the persistent fallback, which is the                  property that matters: capture degrades, never fails."
+                "Phi capture DECLINED (expected today) — host-placed fused LayerNormLastDim/ROPE force a cross-device Copy. Results were byte-identical via the persistent fallback, which is the property that matters: capture degrades, never fails."
             );
         }
     }
