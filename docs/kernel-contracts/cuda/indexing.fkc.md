@@ -234,7 +234,7 @@ accept:
       rank: any
       shape_constraint: "same_as=out"
     - name: mask
-      dtypes: [U8]
+      dtypes: [BOOL]                     # GAP-168(c): mask is Bool
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
       rank: any
       shape_constraint: "same_as=source"   # element-count match; nonzero → fill

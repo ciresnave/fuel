@@ -1104,6 +1104,31 @@ pub static CPU_CAST_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     ep!("cast", "u32_to_i64", cast_to_i64_cpu_wrapper),
     ep!("cast", "i16_to_i64", cast_to_i64_cpu_wrapper),
     ep!("cast", "i32_to_i64", cast_to_i64_cpu_wrapper),
+    // ---- Bool cast pairs (GAP-168) ----
+    // 11 sources -> Bool, all binding the one per-target Bool wrapper.
+    ep!("cast", "f32_to_bool", cast_to_bool_cpu_wrapper),
+    ep!("cast", "f64_to_bool", cast_to_bool_cpu_wrapper),
+    ep!("cast", "f16_to_bool", cast_to_bool_cpu_wrapper),
+    ep!("cast", "bf16_to_bool", cast_to_bool_cpu_wrapper),
+    ep!("cast", "f8e4m3_to_bool", cast_to_bool_cpu_wrapper),
+    ep!("cast", "u8_to_bool", cast_to_bool_cpu_wrapper),
+    ep!("cast", "i8_to_bool", cast_to_bool_cpu_wrapper),
+    ep!("cast", "u32_to_bool", cast_to_bool_cpu_wrapper),
+    ep!("cast", "i16_to_bool", cast_to_bool_cpu_wrapper),
+    ep!("cast", "i32_to_bool", cast_to_bool_cpu_wrapper),
+    ep!("cast", "i64_to_bool", cast_to_bool_cpu_wrapper),
+    // Bool -> 11 targets, each binding that target's existing wrapper.
+    ep!("cast", "bool_to_f32", cast_to_f32_cpu_wrapper),
+    ep!("cast", "bool_to_f64", cast_to_f64_cpu_wrapper),
+    ep!("cast", "bool_to_f16", cast_to_f16_cpu_wrapper),
+    ep!("cast", "bool_to_bf16", cast_to_bf16_cpu_wrapper),
+    ep!("cast", "bool_to_f8e4m3", cast_to_f8e4m3_cpu_wrapper),
+    ep!("cast", "bool_to_u8", cast_to_u8_cpu_wrapper),
+    ep!("cast", "bool_to_i8", cast_to_i8_cpu_wrapper),
+    ep!("cast", "bool_to_u32", cast_to_u32_cpu_wrapper),
+    ep!("cast", "bool_to_i16", cast_to_i16_cpu_wrapper),
+    ep!("cast", "bool_to_i32", cast_to_i32_cpu_wrapper),
+    ep!("cast", "bool_to_i64", cast_to_i64_cpu_wrapper),
 ];
 
 /// The CPU norm/softmax **FUSED** family's `symbol → production wrapper` map —

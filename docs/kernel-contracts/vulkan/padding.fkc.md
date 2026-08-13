@@ -1724,7 +1724,7 @@ accept:
       rank: any
       shape_constraint: "same_as=out; same_as=mask"
     - name: mask
-      dtypes: [U8]                           # mask is ALWAYS U8 (nonzero = fill)
+      dtypes: [BOOL]                         # GAP-168(c): mask is ALWAYS Bool (nonzero = fill)
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
       rank: any
       shape_constraint: "same_as=input"

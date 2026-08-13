@@ -19,12 +19,23 @@ differ, so the output byte size differs from the input. The binding-table lookup
 ordered (src, dst) dtype slots make each direction a distinct dispatch key (§12.1).
 
 This contract covers the **COMPLETE directed-pair matrix**: every ordered pair of the 11 real
-numeric dtypes {F32, F64, F16, BF16, F8E4M3, U8, I8, U32, I16, I32, I64}, identity pairs excluded
-(the optimizer elides `Cast` where src == dst), = **11 × 10 = 110 kernels**. The MX dummy dtypes
-(F6E2M3, F6E3M2, F4, F8E8M0) have no Rust scalar type and are out of scope. The first twelve sections
-below (the float/fp8 f32-hub + f8-spoke pairs) were authored first; the remaining ninety-eight (all
-integer casts + the non-f32-hub float pairs) complete the matrix and retire the last hand-written
-`table.register(Cast, …)` regs — the family is now **fully contract-sourced**.
+numeric dtypes {F32, F64, F16, BF16, F8E4M3, U8, I8, U32, I16, I32, I64} **plus `Bool`**, identity
+pairs excluded (the optimizer elides `Cast` where src == dst), = **12 × 11 = 132 kernels**. The MX
+dummy dtypes (F6E2M3, F6E3M2, F4, F8E8M0) have no Rust scalar type and are out of scope. The first
+twelve sections below (the float/fp8 f32-hub + f8-spoke pairs) were authored first; the next
+ninety-eight (all integer casts + the non-f32-hub float pairs) completed the numeric matrix and
+retired the last hand-written `table.register(Cast, …)` regs; the final **22** (GAP-168) add the
+`Bool` row and column — the family is now **fully contract-sourced**.
+
+**`Bool` is not a numeric dtype and its 22 pairs are not numeric conversions.** It is a one-byte
+truth value (`0` = false, `1` = true) that is *byte-identical to `U8`*, which is exactly why these
+kernels must exist rather than aliasing `U8`'s: **`X → Bool` is a truth-valued projection (`x != 0`),
+not a reinterpret**, so `U8(5) → Bool` is `1` and not `5`. `Bool → X` maps `false`/`true` to `0`/`1`.
+Float sources follow IEEE-754 comparison, so `-0.0` is `false` and **NaN is `true`** — matching
+PyTorch's `.bool()`, per the standing *match external convention for well-known ops* rule. The
+`!= 0` on the `Bool`-source side is a **defensive normalization**: Fuel only ever writes `0`/`1` into
+`Bool` storage, so it is a no-op on every value Fuel produces, but a non-canonical byte resolves to
+`true` rather than leaking a raw integer into the output.
 
 Three implementation families back these 110 kernels:
 
@@ -42,11 +53,12 @@ Three implementation families back these 110 kernels:
   F8E4M3 **pivots through f32** (`float8::F8E4M3` only exposes `from_f32`/`to_f32`); the f32 pivot
   leg is lossless for both f16 and bf16 (each is a strict subset of f32).
 - **Per-TARGET dispatch wrappers** (`fuel-dispatch/src/dispatch.rs`, the `cpu_cast_wrapper!` macro —
-  `cast_to_{f32,f64,f16,bf16,f8e4m3,u8,i8,u32,i16,i32,i64}_cpu_wrapper`). The binding-table lookup is
-  keyed on the **target** dtype, so all 10 of a target's source pairs resolve to the SAME per-target
-  wrapper, which `match`es on the source dtype to pick the right byte kernel. Each contract section's
-  specific `cast_<src>_to_<dst>` `entry_point` maps to its target's wrapper in the `link_registry`
-  (`CPU_CAST_ENTRY_POINTS`) — the synthetic-umbrella precedent: 10 distinct entry_points → 1 wrapper.
+  `cast_to_{f32,f64,f16,bf16,f8e4m3,u8,i8,u32,i16,i32,i64,bool}_cpu_wrapper`). The binding-table
+  lookup is keyed on the **target** dtype, so all 11 of a target's source pairs resolve to the SAME
+  per-target wrapper, which `match`es on the source dtype to pick the right byte kernel. Each contract
+  section's specific `cast_<src>_to_<dst>` `entry_point` maps to its target's wrapper in the
+  `link_registry` (`CPU_CAST_ENTRY_POINTS`) — the synthetic-umbrella precedent: 11 distinct
+  entry_points → 1 wrapper.
 
 **Cross-cutting facts (inventory §"Cross-cutting facts" / §"Cast"):** every cast operates on a flat
 `CpuStorageBytes` slice via `as_slice()` / `bytes()`, validates **byte length only**, and never
@@ -6525,3 +6537,1279 @@ precision:
 determinism: same_hardware_bitwise
 ```
 
+
+## cast_f32_to_bool  (f32 → bool)
+
+Convert `f32` → `bool`. **Truth-valued projection** — `0.0` (and `-0.0`) → `false`, every other value → `true`, including NaN and negatives.
+
+Walks a contiguous, zero-offset, row-major `f32` buffer and writes `(in[i] != 0.0) as u8` into a contiguous 1-byte-per-element `bool` output, element count preserved. Validates byte lengths only and returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first). The comparison is IEEE-754, so `-0.0` compares equal to zero and is `false`, while NaN compares unequal and is `true` — matching PyTorch's `.bool()`.
+
+```fkc
+kernel: cast_f32_to_bool
+op_kind: Cast
+blurb: "Cast f32 -> bool; contiguous; nonzero is true."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_f32_to_bool"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(BOOL)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (4 + 1)"          # read N*4 (f32) + write N*1 (bool)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic truth-valued projection; `x != 0.0` per IEEE-754, so `-0.0` is false and NaN is true (matches PyTorch `.bool()`); bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_f64_to_bool  (f64 → bool)
+
+Convert `f64` → `bool`. **Truth-valued projection** — `0.0` (and `-0.0`) → `false`, every other value → `true`, including NaN and negatives.
+
+Walks a contiguous, zero-offset, row-major `f64` buffer and writes `(in[i] != 0.0) as u8` into a contiguous 1-byte-per-element `bool` output, element count preserved. Validates byte lengths only and returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first). The comparison is IEEE-754, so `-0.0` compares equal to zero and is `false`, while NaN compares unequal and is `true` — matching PyTorch's `.bool()`.
+
+```fkc
+kernel: cast_f64_to_bool
+op_kind: Cast
+blurb: "Cast f64 -> bool; contiguous; nonzero is true."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_f64_to_bool"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [F64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(BOOL)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (8 + 1)"          # read N*8 (f64) + write N*1 (bool)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic truth-valued projection; `x != 0.0` per IEEE-754, so `-0.0` is false and NaN is true (matches PyTorch `.bool()`); bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_f16_to_bool  (f16 → bool)
+
+Convert `f16` → `bool`. **Truth-valued projection** — `0.0` (and `-0.0`) → `false`, every other value → `true`, including NaN and negatives.
+
+Walks a contiguous, zero-offset, row-major `f16` buffer and writes `(in[i] != 0.0) as u8` into a contiguous 1-byte-per-element `bool` output, element count preserved. Validates byte lengths only and returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first). The comparison is IEEE-754, so `-0.0` compares equal to zero and is `false`, while NaN compares unequal and is `true` — matching PyTorch's `.bool()`.
+
+```fkc
+kernel: cast_f16_to_bool
+op_kind: Cast
+blurb: "Cast f16 -> bool; contiguous; nonzero is true."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_f16_to_bool"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(BOOL)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (2 + 1)"          # read N*2 (f16) + write N*1 (bool)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic truth-valued projection; `x != 0.0` per IEEE-754, so `-0.0` is false and NaN is true (matches PyTorch `.bool()`); bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_bf16_to_bool  (bf16 → bool)
+
+Convert `bf16` → `bool`. **Truth-valued projection** — `0.0` (and `-0.0`) → `false`, every other value → `true`, including NaN and negatives.
+
+Walks a contiguous, zero-offset, row-major `bf16` buffer and writes `(in[i] != 0.0) as u8` into a contiguous 1-byte-per-element `bool` output, element count preserved. Validates byte lengths only and returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first). The comparison is IEEE-754, so `-0.0` compares equal to zero and is `false`, while NaN compares unequal and is `true` — matching PyTorch's `.bool()`.
+
+```fkc
+kernel: cast_bf16_to_bool
+op_kind: Cast
+blurb: "Cast bf16 -> bool; contiguous; nonzero is true."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_bf16_to_bool"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [BF16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(BOOL)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (2 + 1)"          # read N*2 (bf16) + write N*1 (bool)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic truth-valued projection; `x != 0.0` per IEEE-754, so `-0.0` is false and NaN is true (matches PyTorch `.bool()`); bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_f8e4m3_to_bool  (F8E4M3 → bool)
+
+Convert `F8E4M3` → `bool`. **Truth-valued projection** — `0.0` (and `-0.0`) → `false`, every other value → `true`, including NaN and negatives.
+
+Walks a contiguous, zero-offset, row-major `F8E4M3` buffer and writes `(in[i] != 0.0) as u8` into a contiguous 1-byte-per-element `bool` output, element count preserved. Validates byte lengths only and returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first). The comparison is IEEE-754, so `-0.0` compares equal to zero and is `false`, while NaN compares unequal and is `true` — matching PyTorch's `.bool()`.
+
+```fkc
+kernel: cast_f8e4m3_to_bool
+op_kind: Cast
+blurb: "Cast F8E4M3 -> bool; contiguous; nonzero is true."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_f8e4m3_to_bool"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [F8E4M3]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(BOOL)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 1)"          # read N*1 (F8E4M3) + write N*1 (bool)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic truth-valued projection; `x != 0.0` per IEEE-754, so `-0.0` is false and NaN is true (matches PyTorch `.bool()`); bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_u8_to_bool  (u8 → bool)
+
+Convert `u8` → `bool`. **Truth-valued projection** — `0` → `false`, every nonzero value → `true`.
+
+Walks a contiguous, zero-offset, row-major `u8` buffer and writes `(in[i] != 0) as u8` into a contiguous 1-byte-per-element `bool` output, element count preserved. Validates byte lengths only and returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first). This is a real conversion and NOT a reinterpret: `u8` `5` becomes `1`, which is what makes a `Bool` tensor distinguishable from the byte-identical `U8` one.
+
+```fkc
+kernel: cast_u8_to_bool
+op_kind: Cast
+blurb: "Cast u8 -> bool; contiguous; nonzero is true."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_u8_to_bool"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [U8]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(BOOL)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 1)"          # read N*1 (u8) + write N*1 (bool)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic truth-valued projection; every nonzero U8 maps to 1 and 0 maps to 0; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i8_to_bool  (i8 → bool)
+
+Convert `i8` → `bool`. **Truth-valued projection** — `0` → `false`, every nonzero value → `true`.
+
+Walks a contiguous, zero-offset, row-major `i8` buffer and writes `(in[i] != 0) as u8` into a contiguous 1-byte-per-element `bool` output, element count preserved. Validates byte lengths only and returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first). This is a real conversion and NOT a reinterpret: `i8` `5` becomes `1`, which is what makes a `Bool` tensor distinguishable from the byte-identical `U8` one.
+
+```fkc
+kernel: cast_i8_to_bool
+op_kind: Cast
+blurb: "Cast i8 -> bool; contiguous; nonzero is true."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i8_to_bool"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I8]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(BOOL)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 1)"          # read N*1 (i8) + write N*1 (bool)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic truth-valued projection; every nonzero I8 maps to 1 and 0 maps to 0; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_u32_to_bool  (u32 → bool)
+
+Convert `u32` → `bool`. **Truth-valued projection** — `0` → `false`, every nonzero value → `true`.
+
+Walks a contiguous, zero-offset, row-major `u32` buffer and writes `(in[i] != 0) as u8` into a contiguous 1-byte-per-element `bool` output, element count preserved. Validates byte lengths only and returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first). This is a real conversion and NOT a reinterpret: `u32` `5` becomes `1`, which is what makes a `Bool` tensor distinguishable from the byte-identical `U8` one.
+
+```fkc
+kernel: cast_u32_to_bool
+op_kind: Cast
+blurb: "Cast u32 -> bool; contiguous; nonzero is true."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_u32_to_bool"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [U32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(BOOL)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (4 + 1)"          # read N*4 (u32) + write N*1 (bool)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic truth-valued projection; every nonzero U32 maps to 1 and 0 maps to 0; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i16_to_bool  (i16 → bool)
+
+Convert `i16` → `bool`. **Truth-valued projection** — `0` → `false`, every nonzero value → `true`.
+
+Walks a contiguous, zero-offset, row-major `i16` buffer and writes `(in[i] != 0) as u8` into a contiguous 1-byte-per-element `bool` output, element count preserved. Validates byte lengths only and returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first). This is a real conversion and NOT a reinterpret: `i16` `5` becomes `1`, which is what makes a `Bool` tensor distinguishable from the byte-identical `U8` one.
+
+```fkc
+kernel: cast_i16_to_bool
+op_kind: Cast
+blurb: "Cast i16 -> bool; contiguous; nonzero is true."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i16_to_bool"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(BOOL)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (2 + 1)"          # read N*2 (i16) + write N*1 (bool)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic truth-valued projection; every nonzero I16 maps to 1 and 0 maps to 0; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i32_to_bool  (i32 → bool)
+
+Convert `i32` → `bool`. **Truth-valued projection** — `0` → `false`, every nonzero value → `true`.
+
+Walks a contiguous, zero-offset, row-major `i32` buffer and writes `(in[i] != 0) as u8` into a contiguous 1-byte-per-element `bool` output, element count preserved. Validates byte lengths only and returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first). This is a real conversion and NOT a reinterpret: `i32` `5` becomes `1`, which is what makes a `Bool` tensor distinguishable from the byte-identical `U8` one.
+
+```fkc
+kernel: cast_i32_to_bool
+op_kind: Cast
+blurb: "Cast i32 -> bool; contiguous; nonzero is true."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i32_to_bool"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(BOOL)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (4 + 1)"          # read N*4 (i32) + write N*1 (bool)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic truth-valued projection; every nonzero I32 maps to 1 and 0 maps to 0; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i64_to_bool  (i64 → bool)
+
+Convert `i64` → `bool`. **Truth-valued projection** — `0` → `false`, every nonzero value → `true`.
+
+Walks a contiguous, zero-offset, row-major `i64` buffer and writes `(in[i] != 0) as u8` into a contiguous 1-byte-per-element `bool` output, element count preserved. Validates byte lengths only and returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first). This is a real conversion and NOT a reinterpret: `i64` `5` becomes `1`, which is what makes a `Bool` tensor distinguishable from the byte-identical `U8` one.
+
+```fkc
+kernel: cast_i64_to_bool
+op_kind: Cast
+blurb: "Cast i64 -> bool; contiguous; nonzero is true."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i64_to_bool"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(BOOL)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (8 + 1)"          # read N*8 (i64) + write N*1 (bool)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic truth-valued projection; every nonzero I64 maps to 1 and 0 maps to 0; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_bool_to_f32  (bool → f32)
+
+Convert `bool` → `f32`. **Exact** — `false` → `0.0`, `true` → `1.0`; both values are exactly representable in F32.
+
+Walks a contiguous, zero-offset, row-major 1-byte-per-element `bool` buffer and writes `1.0` for every nonzero byte and `0.0` otherwise into a contiguous `f32` output, element count preserved. Validates byte lengths only and returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first). The `!= 0` test is a DEFENSIVE NORMALIZATION — Fuel only ever writes 0/1 into `Bool` storage, so it is a no-op on every value Fuel produces, but a non-canonical byte resolves to `1.0` rather than leaking a raw integer into the output.
+
+```fkc
+kernel: cast_bool_to_f32
+op_kind: Cast
+blurb: "Cast bool -> f32; contiguous; false->0.0, true->1.0."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_bool_to_f32"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [BOOL]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(F32)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 4)"          # read N*1 (bool) + write N*4 (f32)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 4", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic; the two Bool values map to 0.0/1.0, both exactly representable in F32; a non-canonical nonzero byte normalizes to 1.0; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_bool_to_f64  (bool → f64)
+
+Convert `bool` → `f64`. **Exact** — `false` → `0.0`, `true` → `1.0`; both values are exactly representable in F64.
+
+Walks a contiguous, zero-offset, row-major 1-byte-per-element `bool` buffer and writes `1.0` for every nonzero byte and `0.0` otherwise into a contiguous `f64` output, element count preserved. Validates byte lengths only and returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first). The `!= 0` test is a DEFENSIVE NORMALIZATION — Fuel only ever writes 0/1 into `Bool` storage, so it is a no-op on every value Fuel produces, but a non-canonical byte resolves to `1.0` rather than leaking a raw integer into the output.
+
+```fkc
+kernel: cast_bool_to_f64
+op_kind: Cast
+blurb: "Cast bool -> f64; contiguous; false->0.0, true->1.0."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_bool_to_f64"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [BOOL]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(F64)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 8)"          # read N*1 (bool) + write N*8 (f64)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 8", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic; the two Bool values map to 0.0/1.0, both exactly representable in F64; a non-canonical nonzero byte normalizes to 1.0; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_bool_to_f16  (bool → f16)
+
+Convert `bool` → `f16`. **Exact** — `false` → `0.0`, `true` → `1.0`; both values are exactly representable in F16.
+
+Walks a contiguous, zero-offset, row-major 1-byte-per-element `bool` buffer and writes `1.0` for every nonzero byte and `0.0` otherwise into a contiguous `f16` output, element count preserved. Validates byte lengths only and returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first). The `!= 0` test is a DEFENSIVE NORMALIZATION — Fuel only ever writes 0/1 into `Bool` storage, so it is a no-op on every value Fuel produces, but a non-canonical byte resolves to `1.0` rather than leaking a raw integer into the output.
+
+```fkc
+kernel: cast_bool_to_f16
+op_kind: Cast
+blurb: "Cast bool -> f16; contiguous; false->0.0, true->1.0."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_bool_to_f16"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [BOOL]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(F16)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 2)"          # read N*1 (bool) + write N*2 (f16)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 2", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic; the two Bool values map to 0.0/1.0, both exactly representable in F16; a non-canonical nonzero byte normalizes to 1.0; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_bool_to_bf16  (bool → bf16)
+
+Convert `bool` → `bf16`. **Exact** — `false` → `0.0`, `true` → `1.0`; both values are exactly representable in BF16.
+
+Walks a contiguous, zero-offset, row-major 1-byte-per-element `bool` buffer and writes `1.0` for every nonzero byte and `0.0` otherwise into a contiguous `bf16` output, element count preserved. Validates byte lengths only and returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first). The `!= 0` test is a DEFENSIVE NORMALIZATION — Fuel only ever writes 0/1 into `Bool` storage, so it is a no-op on every value Fuel produces, but a non-canonical byte resolves to `1.0` rather than leaking a raw integer into the output.
+
+```fkc
+kernel: cast_bool_to_bf16
+op_kind: Cast
+blurb: "Cast bool -> bf16; contiguous; false->0.0, true->1.0."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_bool_to_bf16"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [BOOL]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(BF16)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 2)"          # read N*1 (bool) + write N*2 (bf16)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 2", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic; the two Bool values map to 0.0/1.0, both exactly representable in BF16; a non-canonical nonzero byte normalizes to 1.0; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_bool_to_f8e4m3  (bool → F8E4M3)
+
+Convert `bool` → `F8E4M3`. **Exact** — `false` → `0.0`, `true` → `1.0`; both values are exactly representable in F8E4M3.
+
+Walks a contiguous, zero-offset, row-major 1-byte-per-element `bool` buffer and writes `1.0` for every nonzero byte and `0.0` otherwise into a contiguous `F8E4M3` output, element count preserved. Validates byte lengths only and returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first). The `!= 0` test is a DEFENSIVE NORMALIZATION — Fuel only ever writes 0/1 into `Bool` storage, so it is a no-op on every value Fuel produces, but a non-canonical byte resolves to `1.0` rather than leaking a raw integer into the output.
+
+```fkc
+kernel: cast_bool_to_f8e4m3
+op_kind: Cast
+blurb: "Cast bool -> F8E4M3; contiguous; false->0.0, true->1.0."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_bool_to_f8e4m3"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [BOOL]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(F8E4M3)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 1)"          # read N*1 (bool) + write N*1 (F8E4M3)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic; the two Bool values map to 0.0/1.0, both exactly representable in F8E4M3; a non-canonical nonzero byte normalizes to 1.0; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_bool_to_u8  (bool → u8)
+
+Convert `bool` → `u8`. **Exact** — `false` → `0`, `true` → `1`; both values are exactly representable in U8.
+
+Walks a contiguous, zero-offset, row-major 1-byte-per-element `bool` buffer and writes `1` for every nonzero byte and `0` otherwise into a contiguous `u8` output, element count preserved. Validates byte lengths only and returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first). The `!= 0` test is a DEFENSIVE NORMALIZATION — Fuel only ever writes 0/1 into `Bool` storage, so it is a no-op on every value Fuel produces, but a non-canonical byte resolves to `1` rather than leaking a raw integer into the output.
+
+```fkc
+kernel: cast_bool_to_u8
+op_kind: Cast
+blurb: "Cast bool -> u8; contiguous; false->0, true->1."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_bool_to_u8"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [BOOL]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(U8)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 1)"          # read N*1 (bool) + write N*1 (u8)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic; the two Bool values map to 0/1, both exactly representable in U8; a non-canonical nonzero byte normalizes to 1; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_bool_to_i8  (bool → i8)
+
+Convert `bool` → `i8`. **Exact** — `false` → `0`, `true` → `1`; both values are exactly representable in I8.
+
+Walks a contiguous, zero-offset, row-major 1-byte-per-element `bool` buffer and writes `1` for every nonzero byte and `0` otherwise into a contiguous `i8` output, element count preserved. Validates byte lengths only and returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first). The `!= 0` test is a DEFENSIVE NORMALIZATION — Fuel only ever writes 0/1 into `Bool` storage, so it is a no-op on every value Fuel produces, but a non-canonical byte resolves to `1` rather than leaking a raw integer into the output.
+
+```fkc
+kernel: cast_bool_to_i8
+op_kind: Cast
+blurb: "Cast bool -> i8; contiguous; false->0, true->1."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_bool_to_i8"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [BOOL]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I8)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 1)"          # read N*1 (bool) + write N*1 (i8)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic; the two Bool values map to 0/1, both exactly representable in I8; a non-canonical nonzero byte normalizes to 1; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_bool_to_u32  (bool → u32)
+
+Convert `bool` → `u32`. **Exact** — `false` → `0`, `true` → `1`; both values are exactly representable in U32.
+
+Walks a contiguous, zero-offset, row-major 1-byte-per-element `bool` buffer and writes `1` for every nonzero byte and `0` otherwise into a contiguous `u32` output, element count preserved. Validates byte lengths only and returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first). The `!= 0` test is a DEFENSIVE NORMALIZATION — Fuel only ever writes 0/1 into `Bool` storage, so it is a no-op on every value Fuel produces, but a non-canonical byte resolves to `1` rather than leaking a raw integer into the output.
+
+```fkc
+kernel: cast_bool_to_u32
+op_kind: Cast
+blurb: "Cast bool -> u32; contiguous; false->0, true->1."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_bool_to_u32"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [BOOL]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(U32)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 4)"          # read N*1 (bool) + write N*4 (u32)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 4", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic; the two Bool values map to 0/1, both exactly representable in U32; a non-canonical nonzero byte normalizes to 1; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_bool_to_i16  (bool → i16)
+
+Convert `bool` → `i16`. **Exact** — `false` → `0`, `true` → `1`; both values are exactly representable in I16.
+
+Walks a contiguous, zero-offset, row-major 1-byte-per-element `bool` buffer and writes `1` for every nonzero byte and `0` otherwise into a contiguous `i16` output, element count preserved. Validates byte lengths only and returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first). The `!= 0` test is a DEFENSIVE NORMALIZATION — Fuel only ever writes 0/1 into `Bool` storage, so it is a no-op on every value Fuel produces, but a non-canonical byte resolves to `1` rather than leaking a raw integer into the output.
+
+```fkc
+kernel: cast_bool_to_i16
+op_kind: Cast
+blurb: "Cast bool -> i16; contiguous; false->0, true->1."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_bool_to_i16"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [BOOL]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I16)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 2)"          # read N*1 (bool) + write N*2 (i16)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 2", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic; the two Bool values map to 0/1, both exactly representable in I16; a non-canonical nonzero byte normalizes to 1; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_bool_to_i32  (bool → i32)
+
+Convert `bool` → `i32`. **Exact** — `false` → `0`, `true` → `1`; both values are exactly representable in I32.
+
+Walks a contiguous, zero-offset, row-major 1-byte-per-element `bool` buffer and writes `1` for every nonzero byte and `0` otherwise into a contiguous `i32` output, element count preserved. Validates byte lengths only and returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first). The `!= 0` test is a DEFENSIVE NORMALIZATION — Fuel only ever writes 0/1 into `Bool` storage, so it is a no-op on every value Fuel produces, but a non-canonical byte resolves to `1` rather than leaking a raw integer into the output.
+
+```fkc
+kernel: cast_bool_to_i32
+op_kind: Cast
+blurb: "Cast bool -> i32; contiguous; false->0, true->1."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_bool_to_i32"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [BOOL]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I32)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 4)"          # read N*1 (bool) + write N*4 (i32)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 4", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic; the two Bool values map to 0/1, both exactly representable in I32; a non-canonical nonzero byte normalizes to 1; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_bool_to_i64  (bool → i64)
+
+Convert `bool` → `i64`. **Exact** — `false` → `0`, `true` → `1`; both values are exactly representable in I64.
+
+Walks a contiguous, zero-offset, row-major 1-byte-per-element `bool` buffer and writes `1` for every nonzero byte and `0` otherwise into a contiguous `i64` output, element count preserved. Validates byte lengths only and returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first). The `!= 0` test is a DEFENSIVE NORMALIZATION — Fuel only ever writes 0/1 into `Bool` storage, so it is a no-op on every value Fuel produces, but a non-canonical byte resolves to `1` rather than leaking a raw integer into the output.
+
+```fkc
+kernel: cast_bool_to_i64
+op_kind: Cast
+blurb: "Cast bool -> i64; contiguous; false->0, true->1."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_bool_to_i64"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [BOOL]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I64)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 8)"          # read N*1 (bool) + write N*8 (i64)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 8", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic; the two Bool values map to 0/1, both exactly representable in I64; a non-canonical nonzero byte normalizes to 1; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```

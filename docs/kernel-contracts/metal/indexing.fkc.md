@@ -468,7 +468,7 @@ kernel_revision_hash: auto
 accept:
   inputs:
     - name: cond
-      dtypes: [U8, U32]            # backend-wired set; graph builder pins U8 (lib.rs:4887)
+      dtypes: [BOOL, U32]          # GAP-168(c): builder now pins Bool; U32 left wired (untestable here)
       layout: { contiguous: accepted, strided: accepted, broadcast_stride0: accepted, start_offset: accepted, reverse_strides: rejected }
       rank: any
     - name: t                      # value chosen where cond != 0

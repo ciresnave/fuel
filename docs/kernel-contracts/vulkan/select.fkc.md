@@ -231,7 +231,7 @@ accept:
       rank: any
       shape_constraint: "same shape as out"
     - name: mask
-      dtypes: [U8]
+      dtypes: [BOOL]
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
       rank: any
       shape_constraint: "same element count as data; mask != 0 selects the constant fill"
@@ -243,7 +243,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: passthrough(data)        # byte-width select preserves data dtype; key [T, U8, T]
+      dtype_rule: passthrough(data)        # byte-width select preserves data dtype; key [T, BOOL, T]
       shape_rule: same_as(data)
       layout_guarantee: contiguous
       aliasing: none

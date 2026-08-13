@@ -4164,6 +4164,154 @@ cast_kernel!(
     "Convert `i64` -> `i32`."
 );
 
+// ---------------------------------------------------------------------------
+// Bool cast pairs (GAP-168).  `DType::Bool` is one byte per element carrying
+// 0 = false / 1 = true, so every kernel below uses `u8` as the CARRIER type
+// (`bool` is not `bytemuck::Pod` — it has invalid bit patterns — while the
+// storage byte is unconstrained until we normalize it).
+//
+// Semantics match PyTorch's `.bool()` / `.to(dtype)`:
+//   X -> Bool : `x != 0`, so `-0.0` is FALSE and NaN is TRUE.
+//   Bool -> X : `false` -> 0, `true` -> 1.
+// The `!= 0` on the Bool-source side is a DEFENSIVE NORMALIZATION: Fuel only
+// ever writes 0/1 into Bool storage, but a non-canonical byte reaching here
+// resolves to `true` rather than propagating a raw integer into a float.
+// This is what makes Bool DISTINGUISHABLE from U8 rather than a reinterpret:
+// `U8(5) -> Bool` is 1, not 5.
+
+cast_kernel!(
+    cast_f32_to_bool,
+    f32, u8,
+    |x: f32| (x != 0.0) as u8,
+    "Convert `f32` -> `bool`. Nonzero (incl. NaN) is true."
+);
+cast_kernel!(
+    cast_f64_to_bool,
+    f64, u8,
+    |x: f64| (x != 0.0) as u8,
+    "Convert `f64` -> `bool`. Nonzero (incl. NaN) is true."
+);
+cast_kernel!(
+    cast_f16_to_bool,
+    half::f16, u8,
+    |x: half::f16| (x.to_f32() != 0.0) as u8,
+    "Convert `f16` -> `bool`. Nonzero (incl. NaN) is true."
+);
+cast_kernel!(
+    cast_bf16_to_bool,
+    half::bf16, u8,
+    |x: half::bf16| (x.to_f32() != 0.0) as u8,
+    "Convert `bf16` -> `bool`. Nonzero (incl. NaN) is true."
+);
+cast_kernel_from_fp8!(
+    cast_f8e4m3_to_bool,
+    u8,
+    |x: float8::F8E4M3| (x.to_f32() != 0.0) as u8,
+    "Convert `F8E4M3` -> `bool` via f32. Nonzero (incl. NaN) is true."
+);
+cast_kernel!(
+    cast_u8_to_bool,
+    u8, u8,
+    |x: u8| (x != 0) as u8,
+    "Convert `u8` -> `bool`. Nonzero is true."
+);
+cast_kernel!(
+    cast_i8_to_bool,
+    i8, u8,
+    |x: i8| (x != 0) as u8,
+    "Convert `i8` -> `bool`. Nonzero is true."
+);
+cast_kernel!(
+    cast_u32_to_bool,
+    u32, u8,
+    |x: u32| (x != 0) as u8,
+    "Convert `u32` -> `bool`. Nonzero is true."
+);
+cast_kernel!(
+    cast_i16_to_bool,
+    i16, u8,
+    |x: i16| (x != 0) as u8,
+    "Convert `i16` -> `bool`. Nonzero is true."
+);
+cast_kernel!(
+    cast_i32_to_bool,
+    i32, u8,
+    |x: i32| (x != 0) as u8,
+    "Convert `i32` -> `bool`. Nonzero is true."
+);
+cast_kernel!(
+    cast_i64_to_bool,
+    i64, u8,
+    |x: i64| (x != 0) as u8,
+    "Convert `i64` -> `bool`. Nonzero is true."
+);
+cast_kernel!(
+    cast_bool_to_f32,
+    u8, f32,
+    |b: u8| (b != 0) as u8 as f32,
+    "Convert `bool` -> `f32`. false -> 0, true -> 1."
+);
+cast_kernel!(
+    cast_bool_to_f64,
+    u8, f64,
+    |b: u8| (b != 0) as u8 as f64,
+    "Convert `bool` -> `f64`. false -> 0, true -> 1."
+);
+cast_kernel!(
+    cast_bool_to_f16,
+    u8, half::f16,
+    |b: u8| half::f16::from_f32((b != 0) as u8 as f32),
+    "Convert `bool` -> `f16`. false -> 0, true -> 1."
+);
+cast_kernel!(
+    cast_bool_to_bf16,
+    u8, half::bf16,
+    |b: u8| half::bf16::from_f32((b != 0) as u8 as f32),
+    "Convert `bool` -> `bf16`. false -> 0, true -> 1."
+);
+cast_kernel_to_fp8!(
+    cast_bool_to_f8e4m3,
+    u8,
+    |b: u8| float8::F8E4M3::from_f32((b != 0) as u8 as f32),
+    "Convert `bool` -> `F8E4M3` via f32. false -> 0.0, true -> 1.0."
+);
+cast_kernel!(
+    cast_bool_to_u8,
+    u8, u8,
+    |b: u8| (b != 0) as u8,
+    "Convert `bool` -> `u8`. false -> 0, true -> 1."
+);
+cast_kernel!(
+    cast_bool_to_i8,
+    u8, i8,
+    |b: u8| (b != 0) as u8 as i8,
+    "Convert `bool` -> `i8`. false -> 0, true -> 1."
+);
+cast_kernel!(
+    cast_bool_to_u32,
+    u8, u32,
+    |b: u8| (b != 0) as u8 as u32,
+    "Convert `bool` -> `u32`. false -> 0, true -> 1."
+);
+cast_kernel!(
+    cast_bool_to_i16,
+    u8, i16,
+    |b: u8| (b != 0) as u8 as i16,
+    "Convert `bool` -> `i16`. false -> 0, true -> 1."
+);
+cast_kernel!(
+    cast_bool_to_i32,
+    u8, i32,
+    |b: u8| (b != 0) as u8 as i32,
+    "Convert `bool` -> `i32`. false -> 0, true -> 1."
+);
+cast_kernel!(
+    cast_bool_to_i64,
+    u8, i64,
+    |b: u8| (b != 0) as u8 as i64,
+    "Convert `bool` -> `i64`. false -> 0, true -> 1."
+);
+
 // =============================================================================
 // Matrix multiplication (f32)
 // =============================================================================

@@ -485,7 +485,7 @@ accept:
       rank: any
       shape_constraint: "same_as=mask"   # x and mask share the element shape; out shape == x
     - name: mask
-      dtypes: [U8]
+      dtypes: [BOOL]                           # GAP-168(c): mask is Bool
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
       rank: any
       shape_constraint: "same_as=x"   # any nonzero byte selects the fill

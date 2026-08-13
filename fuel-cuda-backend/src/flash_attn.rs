@@ -245,6 +245,10 @@ pub(crate) fn launch(
             CudaStorageSlice::F6E3M2(b) => b.as_raw().0,
             CudaStorageSlice::F4(b) => b.as_raw().0,
             CudaStorageSlice::F8E8M0(b) => b.as_raw().0,
+            // GAP-168(c): a device address is dtype-agnostic, so this arm asserts
+            // nothing about flash-attn accepting Bool operands — the caller's own
+            // dtype checks decide that, as they do for every other arm here.
+            CudaStorageSlice::Bool(b) => b.as_raw().0,
         }
     }
     let q_ptr = raw_ptr(q);

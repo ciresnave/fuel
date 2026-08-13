@@ -103,6 +103,12 @@ fn push_scalar_arg<'a>(scalar: &'a fuel_ir::scalar::Scalar, builder: &mut crate:
         // OCP-MX E8M0 block scale: pass the raw byte, as `U8` does. The
         // kernel decodes `2^(X-127)` itself, so no host-side conversion.
         Scalar::F8E8M0(v) => builder.arg(v),
+        // GAP-168(c): pass the `bool` directly rather than widening to `u8`.
+        // Rust guarantees `bool` is one byte holding exactly 0 or 1, which is
+        // the CUDA C++ `bool` ABI, and `bool: DeviceRepr` in baracuda-types.
+        // Widening here would need a temporary, and `builder` borrows the
+        // scalar for `'a` — so the temporary would not live long enough.
+        Scalar::Bool(v) => builder.arg(v),
     };
 }
 
@@ -2857,6 +2863,37 @@ fn pick_cast_ffi(src: DType, dst: DType) -> Option<CastRun> {
         (DType::F8E4M3, DType::BF16) => Some(sys::baracuda_kernels_cast_fp8e4m3_bf16_run as CastRun),
         (DType::F8E4M3, DType::F16) => Some(sys::baracuda_kernels_cast_fp8e4m3_f16_run as CastRun),
         (DType::F8E4M3, DType::F32) => Some(sys::baracuda_kernels_cast_fp8e4m3_f32_run as CastRun),
+        // ---- GAP-168(c): Bool as a cast SOURCE, routed to the U8 kernels ----
+        //
+        // WHY THIS IS NOT A REINTERPRET: `Bool` storage is canonically 0/1, and
+        // the numeric value of those bytes IS the truth value, so `u8 -> X` on
+        // 0/1 produces exactly the 0/1 a `bool -> X` kernel would. Reusing the
+        // U8 kernel is therefore correct rather than convenient.
+        //
+        // WHY IT IS LOAD-BEARING: before comparisons returned `Bool`, a mask was
+        // `U8` and `mask.to_dtype(F32)` resolved to `(U8, F32)` here. Without
+        // these arms that call would start failing on CUDA — a REGRESSION
+        // introduced by the Bool cut, not a pre-existing gap.
+        //
+        // ⚠️ THE INVARIANT THIS LEANS ON, STATED SO IT IS NOT REDISCOVERED: it is
+        // correct only while Bool storage holds 0/1. Fuel's CPU `bool -> X`
+        // kernels DEFENSIVELY NORMALIZE with `!= 0`; these do NOT, because the
+        // U8 kernel converts the byte's numeric value. So a non-canonical byte
+        // would read as itself here and as 1 on CPU. Every Fuel writer of Bool
+        // storage (comparison kernels, fill via `bool as u8`, the X->Bool casts)
+        // produces 0/1, so the two agree today — but a backend divergence that
+        // depends on an invariant is worth knowing about before it bites.
+        //
+        // The reverse direction (X -> Bool) is deliberately ABSENT: it needs a
+        // `!= 0` test, and the U8 kernel TRUNCATES instead (`5.7 -> 5`), which
+        // would fabricate a non-canonical Bool. It declines in `to_dtype`.
+        (DType::Bool, DType::U8) => Some(sys::baracuda_kernels_cast_u8_u8_run as CastRun),
+        (DType::Bool, DType::U32) => Some(sys::baracuda_kernels_cast_u8_u32_run as CastRun),
+        (DType::Bool, DType::I64) => Some(sys::baracuda_kernels_cast_u8_i64_run as CastRun),
+        (DType::Bool, DType::BF16) => Some(sys::baracuda_kernels_cast_u8_bf16_run as CastRun),
+        (DType::Bool, DType::F16) => Some(sys::baracuda_kernels_cast_u8_f16_run as CastRun),
+        (DType::Bool, DType::F32) => Some(sys::baracuda_kernels_cast_u8_f32_run as CastRun),
+        (DType::Bool, DType::F64) => Some(sys::baracuda_kernels_cast_u8_f64_run as CastRun),
         _ => None,
     }
 }
@@ -3054,6 +3091,14 @@ impl CudaStorage {
                 let cuda_slice = self.as_cuda_slice::<u8>()?;
                 let result = dst.clone_dtod(cuda_slice)?;
                 CudaStorageSlice::F8E8M0(result)
+            }
+            // GAP-168(c): Bool is a real device-to-device copy — byte-backed, so
+            // the same `u8` slice mechanics as the raw-byte dtypes, but it lands
+            // in `CudaStorageSlice::Bool` so the dtype tag survives the copy.
+            DType::Bool => {
+                let cuda_slice = self.as_cuda_slice::<u8>()?;
+                let result = dst.clone_dtod(cuda_slice)?;
+                CudaStorageSlice::Bool(result)
             }
             // GAP-161: gated as non-Present above, so these are unreachable in
             // practice; kept as a never-panic defensive decline (not
@@ -3305,6 +3350,13 @@ impl CudaStorage {
         }
         match self.dtype() {
             DType::U8  => launch!(U8,  U8,  u8,  baracuda_kernels_fill_u8_strided_run,  "fill_u8_strided"),
+            // GAP-168(c): Bool reuses the U8 fill kernel — the storage is one byte
+            // per element and byte-identical. No new kernel is needed, and the
+            // macro's `v as $value_ty` is `bool as u8`, which Rust defines as
+            // exactly 0/1 — so the canonical Bool encoding falls out of the cast
+            // rather than being asserted separately. The DESTINATION variant is
+            // still `S::Bool`, so a Bool buffer is never filled through U8's arm.
+            DType::Bool => launch!(Bool, Bool, u8, baracuda_kernels_fill_u8_strided_run, "fill_u8_strided"),
             DType::I8  => launch!(I8,  I8,  i8,  baracuda_kernels_fill_i8_strided_run,  "fill_i8_strided"),
             DType::U32 => launch!(U32, U32, u32, baracuda_kernels_fill_u32_strided_run, "fill_u32_strided"),
             DType::I16 => launch!(I16, I16, i16, baracuda_kernels_fill_i16_strided_run, "fill_i16_strided"),
@@ -3376,6 +3428,9 @@ impl CudaStorage {
             CudaStorageSlice::F32(s) => slice_ptr(s, start_o).0 as *const std::ffi::c_void,
             CudaStorageSlice::F64(s) => slice_ptr(s, start_o).0 as *const std::ffi::c_void,
             CudaStorageSlice::F8E4M3(s) => slice_ptr(s, start_o).0 as *const std::ffi::c_void,
+            // GAP-168(c): Bool has real device storage, so it yields a real
+            // pointer here rather than declining with the unbacked dummies.
+            CudaStorageSlice::Bool(s) => slice_ptr(s, start_o).0 as *const std::ffi::c_void,
             CudaStorageSlice::F4(_)
             | CudaStorageSlice::F6E2M3(_)
             | CudaStorageSlice::F6E3M2(_)
@@ -3425,6 +3480,29 @@ impl CudaStorage {
             }
             DType::I8 | DType::I16 | DType::I32 => {
                 return Err(CudaError::InternalError("i8,i16,i32 dtypes are not supported as cast targets").into())
+            }
+            // GAP-168(c): Bool declines as a cast TARGET on CUDA, and the reason
+            // is a missing kernel rather than missing storage — Bool storage is
+            // fully wired (see `CudaStorageSlice::Bool`). `X -> Bool` requires a
+            // `!= 0` test; baracuda has no such kernel, and routing it through
+            // `cast_*_u8` would TRUNCATE (`5.7 -> 5`), fabricating a
+            // non-canonical Bool. Declining is the honest option; fabricating a
+            // wrong value silently is not.
+            //
+            // NOT A REGRESSION: Bool did not exist as a cast target before this
+            // cut. The reverse direction (`Bool -> X`) IS supported — see the
+            // Bool arms in `pick_cast_ffi` — which is what keeps
+            // `mask.to_dtype(F32)` working.
+            //
+            // ASYMMETRY WITH CPU, recorded rather than smoothed over: the CPU
+            // backend DOES implement `X -> Bool` (22 contract-sourced pairs), so
+            // this is a CUDA capability gap, not a Fuel-wide semantic.
+            DType::Bool => {
+                return Err(CudaError::UnsupportedDtype {
+                    dtype,
+                    op: "to_dtype: no X->Bool cast kernel on CUDA (Bool->X is supported)",
+                }
+                .into());
             }
             // GAP-161: F8E5M2/F8E6M2 decline for a STORAGE reason (no output
             // variant to allocate), single-sourced from `cuda_storage_status`.
@@ -4189,6 +4267,16 @@ impl CudaStorage {
                 let cpu_storage = device.clone_dtoh(&slice.as_slice())?;
                 Ok(HostBuffer::F8E4M3(cpu_storage))
             }
+            // GAP-168(c): device→host readback for Bool. This one is load-bearing
+            // for the whole cut: realize splices `Op::Copy { target: Cpu }`, so
+            // WITHOUT this arm every realized CUDA comparison would fail here.
+            // Lands in `HostBuffer::Bool`, never `HostBuffer::U8` — the dtype tag
+            // has to survive the transfer or the two become indistinguishable on
+            // the host side, where the bytes alone cannot tell them apart.
+            CudaStorageSlice::Bool(slice) => {
+                let cpu_storage = device.clone_dtoh(&slice.as_slice())?;
+                Ok(HostBuffer::Bool(cpu_storage))
+            }
             CudaStorageSlice::F4(_)
             | CudaStorageSlice::F6E2M3(_)
             | CudaStorageSlice::F6E3M2(_)
@@ -4603,6 +4691,13 @@ impl CudaStorage {
                     (s.slice(src_o..s.len()).as_raw(), d.slice(dst_o..d.len()).as_raw(), 1)
                 }
                 (S::F8E8M0(s), S::F8E8M0(d)) => {
+                    (s.slice(src_o..s.len()).as_raw(), d.slice(dst_o..d.len()).as_raw(), 1)
+                }
+                // GAP-168(c). NOTE: this match ends in a `_` arm, so a missing
+                // Bool pair is NOT a compile error — it would surface as a
+                // runtime "dtype mismatch in copy2d" on any strided Bool copy.
+                // Added deliberately, not by following the compiler.
+                (S::Bool(s), S::Bool(d)) => {
                     (s.slice(src_o..s.len()).as_raw(), d.slice(dst_o..d.len()).as_raw(), 1)
                 }
                 _ => Err(CudaError::InternalError("dtype mismatch in copy2d"))?,

@@ -119,6 +119,10 @@ impl MetalStorage {
             DType::F32 => Ok(HostBuffer::F32(self.to_cpu()?)),
             DType::F64 => Ok(HostBuffer::F64(self.to_cpu()?)),
             DType::F8E4M3 => Ok(HostBuffer::F8E4M3(self.to_cpu()?)),
+            // GAP-168(c): Bool reads back as bytes into `HostBuffer::Bool`, never
+            // `HostBuffer::U8`. Metal storage is raw bytes tagged by a dtype
+            // field, so Bool costs no new storage here — only the correct tag.
+            DType::Bool => Ok(HostBuffer::Bool(self.to_cpu()?)),
             // GAP-097: F8E5M2 declines because Metal has no storage for it —
             // NOT because Metal cannot support it. The dtype is OCP-standard
             // and `HostBuffer` simply has no F8E5M2 variant yet (GAP-161: this
@@ -502,7 +506,11 @@ impl MetalStorage {
                     | DType::F8E8M0
                     | DType::F8E6M2
                     | DType::I16
-                    | DType::I32 => {
+                    | DType::I32
+                    // GAP-168(c): Bool has Metal STORAGE (see `to_cpu_storage`)
+                    // but no const-set path. Declines for want of a wired kernel,
+                    // not for want of a representation.
+                    | DType::Bool => {
                         return Err(Error::UnsupportedDTypeForOp(dtype, "const-set").bt());
                     }
                 };
@@ -540,7 +548,11 @@ impl MetalStorage {
                     | DType::F8E8M0
                     | DType::F8E6M2
                     | DType::I16
-                    | DType::I32 => {
+                    | DType::I32
+                    // GAP-168(c): Bool has Metal STORAGE (see `to_cpu_storage`)
+                    // but no const-set path. Declines for want of a wired kernel,
+                    // not for want of a representation.
+                    | DType::Bool => {
                         return Err(Error::UnsupportedDTypeForOp(dtype, "const-set").bt());
                     }
                 };
@@ -2080,6 +2092,8 @@ impl MetalDevice {
             HostBufferRef::F32(storage) => (storage.len(), self.new_buffer_with_data(storage)),
             HostBufferRef::F64(storage) => (storage.len(), self.new_buffer_with_data(storage)),
             HostBufferRef::F8E4M3(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+            // GAP-168(c): Bool uploads as bytes; the dtype tag rides on MetalStorage.
+            HostBufferRef::Bool(storage) => (storage.len(), self.new_buffer_with_data(storage)),
             HostBufferRef::F6E2M3(_)
             | HostBufferRef::F6E3M2(_)
             | HostBufferRef::F4(_)
@@ -2104,6 +2118,8 @@ impl MetalDevice {
             HostBuffer::F32(storage) => (storage.len(), self.new_buffer_with_data(storage)),
             HostBuffer::F64(storage) => (storage.len(), self.new_buffer_with_data(storage)),
             HostBuffer::F8E4M3(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+            // GAP-168(c): Bool uploads as bytes; the dtype tag rides on MetalStorage.
+            HostBuffer::Bool(storage) => (storage.len(), self.new_buffer_with_data(storage)),
             HostBuffer::F6E2M3(_)
             | HostBuffer::F6E3M2(_)
             | HostBuffer::F4(_)
