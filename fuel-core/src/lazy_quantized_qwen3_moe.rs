@@ -96,6 +96,43 @@ impl QuantizedQwen3MoeModel {
         self.inner.embed_tokens_anchored(anchor, tokens)
     }
 
+    /// Decode/prefill through a pre-allocated KV cache (GAP-029 increment 3).
+    ///
+    /// **Delegates ONE level, and that is the only level there is** —
+    /// `Qwen3MoeModel` is a leaf (`config` + `weights`). Recorded because the sibling
+    /// `QuantizedLlama3Model` has precedent for reaching `self.inner.inner` and
+    /// silently losing LLaMA-3.1 RoPE scaling; that trap needs two levels AND a
+    /// scaled-frequency variant, and this family has neither.
+    pub fn forward_with_kv_context(
+        &self,
+        tokens: &[u32],
+        cache: &mut crate::inference_context::KvCache,
+        ctx: &mut crate::inference_context::InferenceContext,
+    ) -> Result<Vec<f32>> {
+        self.inner.forward_with_kv_context(tokens, cache, ctx)
+    }
+
+    /// Plan-once persistent decode.
+    pub fn forward_with_kv_context_persistent(
+        &self,
+        tokens: &[u32],
+        cache: &mut crate::inference_context::KvCache,
+        ctx: &mut crate::inference_context::InferenceContext,
+        session: &mut Option<crate::inference_context::DecodeSession>,
+    ) -> Result<Vec<f32>> {
+        self.inner.forward_with_kv_context_persistent(tokens, cache, ctx, session)
+    }
+
+    /// Persistent decode with the session owned by the `InferenceContext`.
+    pub fn forward_decode_step(
+        &self,
+        tokens: &[u32],
+        cache: &mut crate::inference_context::KvCache,
+        ctx: &mut crate::inference_context::InferenceContext,
+    ) -> Result<Vec<f32>> {
+        self.inner.forward_decode_step(tokens, cache, ctx)
+    }
+
     /// Model configuration.
     pub fn config(&self) -> &Qwen3MoeConfig { &self.inner.config }
 
@@ -213,6 +250,7 @@ impl QuantizedQwen3MoeModel {
         let inner = Qwen3MoeModel {
             config: cfg,
             weights: Qwen3MoeWeights {
+                instance: crate::decode_shape::ModelInstanceId::next(),
                 token_embedding: src.token_embedding,
                 layers,
                 final_norm_gain: src.final_norm_gain,
@@ -396,6 +434,7 @@ impl QuantizedQwen3MoeModel {
         let inner = Qwen3MoeModel {
             config: cfg.clone(),
             weights: Qwen3MoeWeights {
+                instance: crate::decode_shape::ModelInstanceId::next(),
                 token_embedding: Arc::from(token_embedding),
                 layers, final_norm_gain, output,
             },
@@ -611,12 +650,67 @@ mod tests {
         }).collect();
         let final_norm_gain = Arc::from(vec![1.0_f32; h]);
         let output = WeightStorage::F32(vec_of(h * cfg.vocab_size));
-        Qwen3MoeWeights { token_embedding, layers, final_norm_gain, output }
+        Qwen3MoeWeights { instance: crate::decode_shape::ModelInstanceId::next(), token_embedding, layers, final_norm_gain, output }
+    }
+
+    /// **GAP-029 increment 3 — the quantized wrapper's decode delegation.**
+    ///
+    /// The module's `test_cfg()` is deliberately dense (`sliding_window: None`),
+    /// so this overrides it to a MIXED window over 4 layers with
+    /// `decoder_sparse_step: 2` — layers 0 and 1 windowed, 2 and 3 dense, with
+    /// MoE on layers 1 and 3. That puts a windowed MoE layer, a windowed dense
+    /// layer, and their unwindowed counterparts in ONE decode graph, over Q4_0
+    /// storage. Three decode steps, so the assertions reach the REBIND path.
+    #[test]
+    fn quantized_qwen3_moe_windowed_decode_matches_quantized_forward() {
+        use crate::inference_context::{DecodeSession, InferenceContext, KvCache};
+        use crate::Device;
+        use fuel_ir::DType;
+
+        let cfg = Qwen3MoeConfig {
+            sliding_window: Some(4),
+            max_window_layers: 2,
+            use_sliding_window: true,
+            ..test_cfg()
+        };
+        assert!(!cfg.layer_uses_moe(0) && cfg.layer_uses_moe(1),
+            "the windowed span must cover both a dense and a MoE layer");
+        let model =
+            QuantizedQwen3MoeModel::from_f32_bake(cfg.clone(), tiny_weights(&cfg)).unwrap();
+        let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6];
+        assert!(tokens.len() > 4, "non-vacuity: the window must actually bite");
+        let prefill = 3;
+
+        let dev = Device::cpu();
+        let mut cache = KvCache::with_capacity(
+            cfg.num_hidden_layers, cfg.num_key_value_heads, cfg.head_dim,
+            tokens.len(), DType::F32, &dev,
+        ).expect("with_capacity");
+        let mut ctx = InferenceContext::new(dev);
+        let mut session: Option<DecodeSession> = None;
+
+        model.forward_with_kv_context_persistent(
+            &tokens[..prefill], &mut cache, &mut ctx, &mut session,
+        ).expect("prefill");
+
+        for pos in prefill..tokens.len() {
+            let got = model.forward_with_kv_context_persistent(
+                &tokens[pos..=pos], &mut cache, &mut ctx, &mut session,
+            ).expect("decode");
+            let full = model.forward(&tokens[..=pos], 0).unwrap().realize_f32();
+            let expected = &full[pos * cfg.vocab_size..(pos + 1) * cfg.vocab_size];
+            let worst = got.iter().zip(expected.iter())
+                .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
+            assert!(
+                worst < 1e-5,
+                "quantized Qwen3Moe windowed decode at position {pos} diverged by {worst}",
+            );
+        }
+        assert_eq!(cache.cached_len, tokens.len());
     }
 
     #[test]
-    fn forward_shape_finite_with_q4_0_weights() {
-        let cfg = test_cfg();
+    fn forward_shape_finite_with_q4_0_weights() {        let cfg = test_cfg();
         let src = tiny_weights(&cfg);
         let model = QuantizedQwen3MoeModel::from_f32_bake(cfg.clone(), src).unwrap();
 

@@ -11,9 +11,14 @@
 //! evaluated, weighted by full router softmax) — same trade-off
 //! as Mixtral. No shared expert.
 
+use crate::inference_context::{DecodeSession, DecodeTokenData, InferenceContext, KvCache};
 use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy_qwen3::{qwen3_attn_with_kv_writes, Qwen3AttnBlock};
+use crate::persistent_decode::{
+    DecodeBackbone, DecodeDims, DecodeLayerInputs, MaskPlan, PersistentDecodeModel,
+};
 use crate::{Device, Result};
-use fuel_ir::Shape;
+use fuel_ir::{DType, Shape};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -87,6 +92,10 @@ pub enum Qwen3MoeFfn {
 
 #[derive(Debug, Clone)]
 pub struct Qwen3MoeWeights {
+    /// Process-unique identity for THIS weight set — what lets a held decode
+    /// plan tell two same-architecture models apart (GAP-029). Mint with
+    /// [`crate::decode_shape::ModelInstanceId::next`].
+    pub instance: crate::decode_shape::ModelInstanceId,
     pub token_embedding: Arc<[f32]>,
     pub layers: Vec<Qwen3MoeLayerWeights>,
     pub final_norm_gain: Arc<[f32]>,
@@ -311,6 +320,199 @@ impl Qwen3MoeModel {
     }
 }
 
+// ---- GAP-029 increment 3 · persistent-KV decode -----------------------------
+
+impl Qwen3MoeModel {
+    /// **Per-layer attention variation** — the same predicate and the same
+    /// `sliding_window: None` ⇒ dense subtlety as [`crate::lazy_qwen3`]: prefill
+    /// widens an absent window to `seq + 1`, which excludes nothing, so
+    /// `use_sliding_window` without a width is dense at every layer.
+    ///
+    /// Note this is the **attention** axis only. Qwen3Moe's *other* per-layer
+    /// variation — dense-vs-MoE FFN on the `decoder_sparse_step` cadence — needs
+    /// nothing from the seam: it already lives inside the layer hook, at the
+    /// right granularity.
+    pub fn decode_mask_plan(&self) -> MaskPlan {
+        let cfg = &self.config;
+        match (cfg.use_sliding_window, cfg.sliding_window) {
+            (true, Some(w)) => MaskPlan::split_window(
+                cfg.num_hidden_layers, cfg.max_window_layers, w,
+            ),
+            _ => MaskPlan::dense(cfg.num_hidden_layers),
+        }
+    }
+
+    /// Identity a held decode plan is baked against.
+    ///
+    /// `decoder_sparse_step`, `num_experts` and `moe_intermediate_size` ARE
+    /// mixed: unlike the window width they are **structural** — they decide
+    /// which layers emit a router plus `num_experts` expert subgraphs, so two
+    /// configs differing only there produce genuinely different graphs and must
+    /// never share a held plan.
+    pub fn decode_shape_key(&self) -> u64 {
+        let cfg = &self.config;
+        let mut h = crate::decode_shape::ShapeKeyHasher::new();
+        h.mix_str("qwen3_moe")
+            .mix_instance(self.weights.instance)
+            .mix_u64(cfg.num_hidden_layers as u64)
+            .mix_u64(cfg.num_attention_heads as u64)
+            .mix_u64(cfg.num_key_value_heads as u64)
+            .mix_u64(cfg.head_dim as u64)
+            .mix_u64(cfg.hidden_size as u64)
+            .mix_u64(cfg.intermediate_size as u64)
+            .mix_u64(cfg.vocab_size as u64)
+            .mix_u64(cfg.decoder_sparse_step as u64)
+            .mix_u64(cfg.num_experts as u64)
+            .mix_u64(cfg.moe_intermediate_size as u64)
+            .mix_f64(cfg.rms_norm_eps);
+        self.decode_mask_plan().mix_into(&mut h);
+        h.finish()
+    }
+
+    /// Decode/prefill through a pre-allocated [`KvCache`], rebuilding the graph
+    /// each step.
+    pub fn forward_with_kv_context(
+        &self,
+        tokens: &[u32],
+        cache: &mut KvCache,
+        ctx: &mut InferenceContext,
+    ) -> Result<Vec<f32>> {
+        crate::persistent_decode::forward_with_kv_context(self, tokens, cache, ctx, false, None)
+    }
+
+    /// Plan-once persistent decode.
+    pub fn forward_with_kv_context_persistent(
+        &self,
+        tokens: &[u32],
+        cache: &mut KvCache,
+        ctx: &mut InferenceContext,
+        session: &mut Option<DecodeSession>,
+    ) -> Result<Vec<f32>> {
+        crate::persistent_decode::forward_with_kv_context_persistent(
+            self, tokens, cache, ctx, session, None,
+        )
+    }
+
+    /// Persistent decode with the session owned by the `InferenceContext`.
+    pub fn forward_decode_step(
+        &self,
+        tokens: &[u32],
+        cache: &mut KvCache,
+        ctx: &mut InferenceContext,
+    ) -> Result<Vec<f32>> {
+        let mut session = ctx.take_decode_session();
+        let out = self.forward_with_kv_context_persistent(tokens, cache, ctx, &mut session);
+        ctx.put_decode_session(session);
+        out
+    }
+}
+
+impl PersistentDecodeModel for Qwen3MoeModel {
+    fn decode_n_layers(&self) -> usize {
+        self.config.num_hidden_layers
+    }
+
+    fn build_decode_token_data(
+        &self,
+        device: &Device,
+        cached_len: usize,
+        tokens: &[u32],
+        session: &DecodeSession,
+        cache: &KvCache,
+        rope_inv_freq: Option<&[f64]>,
+    ) -> Result<DecodeTokenData> {
+        let host = crate::persistent_decode::compute_decode_token_host(
+            self, cached_len, tokens, session.max_seq_len(), rope_inv_freq,
+        );
+        crate::persistent_decode::upload_decode_token_data(
+            device,
+            &host,
+            cache.dtype.unwrap_or(DType::F32),
+            session.offset_node().is_some().then_some(cached_len),
+        )
+    }
+}
+
+impl DecodeBackbone for Qwen3MoeModel {
+    fn decode_family(&self) -> &'static str {
+        "Qwen3MoeModel"
+    }
+
+    fn decode_dims(&self) -> DecodeDims {
+        let cfg = &self.config;
+        DecodeDims {
+            n_layers: cfg.num_hidden_layers,
+            n_kv_heads: cfg.num_key_value_heads,
+            head_dim: cfg.head_dim,
+            hidden: cfg.hidden_size,
+            vocab: cfg.vocab_size,
+            rope_width: cfg.head_dim,
+            rope_base: cfg.rope_theta,
+        }
+    }
+
+    fn decode_shape_key(&self) -> u64 {
+        Qwen3MoeModel::decode_shape_key(self)
+    }
+
+    fn decode_mask_plan(&self) -> MaskPlan {
+        Qwen3MoeModel::decode_mask_plan(self)
+    }
+
+    fn decode_token_embedding(&self) -> Arc<[f32]> {
+        self.weights.token_embedding.clone()
+    }
+
+    /// Attention comes from the shared Qwen3-family block; the FFN is where this
+    /// family actually differs, and it reuses [`Self::apply_ffn`] unchanged —
+    /// the routing was already at the right granularity for a decode step
+    /// (`batch = seq = 1`).
+    fn decode_apply_layer(
+        &self,
+        layer_idx: usize,
+        inputs: &DecodeLayerInputs<'_>,
+    ) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let layer = &self.weights.layers[layer_idx];
+        let dims = inputs.x.shape();
+        let dims = dims.dims();
+        let (batch, seq) = (dims[0], dims[1]);
+
+        let h1 = qwen3_attn_with_kv_writes(
+            &Qwen3AttnBlock {
+                hidden_size: cfg.hidden_size,
+                num_attention_heads: cfg.num_attention_heads,
+                num_key_value_heads: cfg.num_key_value_heads,
+                head_dim: cfg.head_dim,
+                rms_norm_eps: cfg.rms_norm_eps,
+                attn_norm_gain: &layer.attn_norm_gain,
+                attn_q: &layer.attn_q,
+                attn_q_bias: layer.attn_q_bias.as_ref(),
+                attn_k: &layer.attn_k,
+                attn_k_bias: layer.attn_k_bias.as_ref(),
+                attn_v: &layer.attn_v,
+                attn_v_bias: layer.attn_v_bias.as_ref(),
+                attn_o: &layer.attn_o,
+                q_norm_gain: &layer.q_norm_gain,
+                k_norm_gain: &layer.k_norm_gain,
+            },
+            inputs,
+        )?;
+
+        let h1_norm = h1.rms_norm_affine(Arc::clone(&layer.ffn_norm_gain), cfg.rms_norm_eps)?;
+        let ffn_out = self.apply_ffn(&h1_norm, &layer.ffn, batch, seq)?;
+        h1.add(&ffn_out)
+    }
+
+    fn decode_final_norm_and_head(&self, h: &LazyTensor) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let h_norm = h.rms_norm_affine(
+            Arc::clone(&self.weights.final_norm_gain), cfg.rms_norm_eps,
+        )?;
+        Ok(self.weights.output.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size)?)
+    }
+}
+
 // ---- HuggingFace safetensors loader ----------------------------------------
 
 impl Qwen3MoeWeights {
@@ -406,7 +608,13 @@ impl Qwen3MoeWeights {
             ),
         };
 
-        Ok(Self { token_embedding, layers, final_norm_gain, output })
+        Ok(Self {
+            instance: crate::decode_shape::ModelInstanceId::next(),
+            token_embedding,
+            layers,
+            final_norm_gain,
+            output,
+        })
     }
 }
 
@@ -464,7 +672,7 @@ mod tests {
         }).collect();
         let final_norm_gain = Arc::from(vec![1.0_f32; h]);
         let output = WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *nb));
-        Qwen3MoeWeights { token_embedding, layers, final_norm_gain, output }
+        Qwen3MoeWeights { instance: crate::decode_shape::ModelInstanceId::next(), token_embedding, layers, final_norm_gain, output }
     }
 
     #[test]
@@ -571,5 +779,189 @@ mod tests {
             .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
         assert!(max_diff < 1e-5,
             "Qwen3MoE forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})");
+    }
+
+    // ---- GAP-029 increment 3, family 4: persistent decode -------------------
+
+    /// Measured, not inherited — the natural template's `diff < 5e-3 ||
+    /// rel < 1e-2` sits ABOVE the ~7e-3 single-mask divergence.
+    const DECODE_ORACLE_ABS: f32 = 1e-5;
+
+    /// 2 layers, window 4, `max_window_layers: 1`. `decoder_sparse_step: 1` so
+    /// **every** layer is MoE — the decode path must carry router + experts, not
+    /// just the dense-FFN arm.
+    fn mixed_window_cfg() -> Qwen3MoeConfig {
+        Qwen3MoeConfig {
+            vocab_size: 32,
+            hidden_size: 16,
+            intermediate_size: 32,
+            num_hidden_layers: 2,
+            num_attention_heads: 4,
+            head_dim: 4,
+            attention_bias: true,
+            num_key_value_heads: 2,
+            max_position_embeddings: 64,
+            sliding_window: Some(4),
+            max_window_layers: 1,
+            use_sliding_window: true,
+            rope_theta: 10_000.0,
+            rms_norm_eps: 1e-5,
+            decoder_sparse_step: 1,
+            moe_intermediate_size: 16,
+            num_experts: 3,
+            num_experts_per_tok: 3,
+        }
+    }
+
+    /// Max |logit diff| per decode step against the per-layer-gated non-cached
+    /// forward. `>= 3` decode steps so the assertions reach the REBIND path.
+    fn decode_vs_forward_max_abs(
+        cfg: &Qwen3MoeConfig, tokens: &[u32], prefill: usize,
+    ) -> Vec<f32> {
+        let n_decode = tokens.len() - prefill;
+        assert!(n_decode >= 3, "need >= 3 decode tokens to reach the rebind path");
+        let model = Qwen3MoeModel { config: cfg.clone(), weights: tiny_weights(cfg) };
+
+        let dev = Device::cpu();
+        let mut cache = KvCache::with_capacity(
+            cfg.num_hidden_layers, cfg.num_key_value_heads, cfg.head_dim,
+            tokens.len(), DType::F32, &dev,
+        ).expect("with_capacity");
+        let mut ctx = InferenceContext::new(dev);
+        let mut session: Option<DecodeSession> = None;
+
+        model.forward_with_kv_context_persistent(
+            &tokens[..prefill], &mut cache, &mut ctx, &mut session,
+        ).expect("prefill");
+        assert!(session.is_none(), "prefill (seq > 1) must NOT build the held session");
+
+        let mut out = Vec::with_capacity(n_decode);
+        for pos in prefill..tokens.len() {
+            let got = model.forward_with_kv_context_persistent(
+                &tokens[pos..=pos], &mut cache, &mut ctx, &mut session,
+            ).expect("decode");
+            assert!(session.is_some(), "decode must hold a session from token 1");
+            let full = model.forward(&tokens[..=pos], 0).unwrap().realize_f32();
+            let expected = &full[pos * cfg.vocab_size..(pos + 1) * cfg.vocab_size];
+            out.push(
+                got.iter().zip(expected.iter())
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0.0_f32, f32::max),
+            );
+        }
+        assert_eq!(cache.cached_len, tokens.len(), "cache must advance every step");
+        out
+    }
+
+    /// ⚠️ **NON-DISCRIMINATION CONTROL.** With `max_window_layers: 0` the plan is
+    /// a single dense variant, so this passes under BOTH a correct windowed plan
+    /// and one that ignores windowing. It certifies the seam, the shared Qwen3
+    /// attention block **and the MoE routing under decode** — never the
+    /// windowing.
+    #[test]
+    fn qwen3_moe_decode_matches_forward_when_no_layer_is_windowed() {
+        let cfg = Qwen3MoeConfig { max_window_layers: 0, ..mixed_window_cfg() };
+        let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6];
+        let diffs = decode_vs_forward_max_abs(&cfg, &tokens, 3);
+        let worst = diffs.iter().copied().fold(0.0_f32, f32::max);
+        assert!(
+            worst < DECODE_ORACLE_ABS,
+            "unwindowed Qwen3Moe decode diverged: per-step max|diff| = {diffs:?}. \
+             This is the CONTROL — the windowed test proves nothing until it is green.",
+        );
+    }
+
+    /// **GAP-029 family 4 — Qwen3Moe windowed persistent decode, every layer MoE.**
+    ///
+    /// **Born red, observed.** With `decode_mask_plan` returning
+    /// `MaskPlan::dense(..)` — precisely what a single-mask decode port
+    /// computes — the measured per-step divergence was
+    ///
+    /// ```text
+    /// absolute position 3, 4, 5 : [0.0, 4.654333e-3, 1.5804386e-2]
+    /// ```
+    ///
+    /// while the control stayed green (`7 passed; 2 failed`, the other failure
+    /// being the dense-FFN sibling). Restoring the real `split_window` plan took
+    /// every step to **0.0**.
+    ///
+    /// **The leading zero is the discrimination evidence:** a window of 4 cannot
+    /// exclude anything until absolute position 4, so a degenerate oracle would
+    /// have shown three zeros and this showed one. **Both failing steps are
+    /// REBIND steps.**
+    ///
+    /// Note the divergence GROWS with position here (4.7e-3 → 1.6e-2) where
+    /// Qwen3's shrank — expected, since more prefix falls outside the window as
+    /// position advances, and nothing about decode forces the trend either way.
+    #[test]
+    fn qwen3_moe_windowed_decode_matches_per_layer_gated_forward() {
+        let cfg = mixed_window_cfg();
+        let window = cfg.sliding_window.expect("mixed config carries a window width");
+        let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6];
+        assert!(tokens.len() > window, "non-vacuity: the window must actually bite");
+        let diffs = decode_vs_forward_max_abs(&cfg, &tokens, 3);
+        let worst = diffs.iter().copied().fold(0.0_f32, f32::max);
+        assert!(
+            worst < DECODE_ORACLE_ABS,
+            "windowed Qwen3Moe decode diverged from the per-layer-gated forward: \
+             per-step max|diff| at absolute positions 3..=5 = {diffs:?} (limit \
+             {DECODE_ORACLE_ABS:e}).",
+        );
+    }
+
+    /// **The same claim on the OTHER FFN cadence**, which is a different code
+    /// path through `apply_ffn`, not a different tolerance.
+    ///
+    /// `decoder_sparse_step: 2` over 2 layers puts a **dense SwiGLU** on layer 0
+    /// (the windowed one) and MoE on layer 1 — the mirror of the sibling above,
+    /// where every layer is MoE. Both cadences are real Qwen3Moe configurations
+    /// and both must agree with prefill.
+    ///
+    /// Measured born-red under a single-mask plan:
+    ///
+    /// ```text
+    /// absolute position 3, 4, 5 : [0.0, 2.6300699e-3, 9.746924e-3]
+    /// ```
+    ///
+    /// **0.0 at every step** under the real plan.
+    ///
+    /// ⚠️ **A prediction of mine was refuted here and the record is kept rather
+    /// than tidied.** Before measuring, I expected the all-MoE sibling to be
+    /// *unable* to discriminate windowing — reasoning that dense routing
+    /// softmaxes over every expert and would average the layer-0 masking
+    /// difference away before it reached the logits. **That was wrong: the
+    /// all-MoE config diverges MORE (1.58e-2) than this one (9.7e-3).** The
+    /// argument was plausible and unmeasured, and had it not been run it would
+    /// have been written into the file as a reason. Both tests are kept for the
+    /// real reason — two FFN cadences, two code paths — not the invented one.
+    #[test]
+    fn qwen3_moe_dense_ffn_layers_expose_the_windowed_mask() {
+        let cfg = Qwen3MoeConfig { decoder_sparse_step: 2, ..mixed_window_cfg() };
+        assert!(!cfg.layer_uses_moe(0), "layer 0 (the windowed one) must be dense here");
+        assert!(cfg.layer_uses_moe(1), "layer 1 must still be MoE");
+        let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6];
+        let diffs = decode_vs_forward_max_abs(&cfg, &tokens, 3);
+        let worst = diffs.iter().copied().fold(0.0_f32, f32::max);
+        assert!(
+            worst < DECODE_ORACLE_ABS,
+            "windowed Qwen3Moe decode (dense FFN on the windowed layer) diverged: \
+             per-step max|diff| at absolute positions 3..=5 = {diffs:?} (limit \
+             {DECODE_ORACLE_ABS:e}). A single mask on every layer produces exactly \
+             this signature and leaves position 3 clean.",
+        );
+    }
+
+    /// ⚠️ `use_sliding_window: true` with `sliding_window: None` is **dense** —
+    /// prefill widens an absent width to `seq + 1`, which excludes nothing.
+    #[test]
+    fn qwen3_moe_absent_window_width_is_dense_at_every_layer() {
+        let cfg = Qwen3MoeConfig {
+            sliding_window: None,
+            max_window_layers: 2,
+            ..mixed_window_cfg()
+        };
+        let plan = Qwen3MoeModel { config: cfg.clone(), weights: tiny_weights(&cfg) }
+            .decode_mask_plan();
+        assert_eq!(plan.n_variants(), 1, "absent width must collapse to one dense variant");
     }
 }

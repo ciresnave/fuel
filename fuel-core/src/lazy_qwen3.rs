@@ -10,9 +10,13 @@
 //! Reuses `crate::lazy::LayerWeights` for the standard fields and
 //! stores the per-head QK-norm gains in `Qwen3LayerExtras`.
 
+use crate::inference_context::{DecodeSession, DecodeTokenData, InferenceContext, KvCache};
 use crate::lazy::{LayerWeights, LazyTensor, WeightStorage};
+use crate::persistent_decode::{
+    DecodeBackbone, DecodeDims, DecodeLayerInputs, MaskPlan, PersistentDecodeModel,
+};
 use crate::{Device, Result};
-use fuel_ir::Shape;
+use fuel_ir::{DType, Shape};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -44,6 +48,10 @@ pub struct Qwen3LayerExtras {
 
 #[derive(Debug, Clone)]
 pub struct Qwen3Weights {
+    /// Process-unique identity for THIS weight set — what lets a held decode
+    /// plan tell two same-architecture models apart (GAP-029). Mint with
+    /// [`crate::decode_shape::ModelInstanceId::next`].
+    pub instance: crate::decode_shape::ModelInstanceId,
     pub token_embedding: Arc<[f32]>,
     pub layers: Vec<LayerWeights>,
     pub layer_extras: Vec<Qwen3LayerExtras>,
@@ -252,6 +260,342 @@ impl Qwen3Model {
     }
 }
 
+// ---- GAP-029 increment 3 · persistent-KV decode -----------------------------
+
+/// The Qwen3-family attention block's weights + geometry, borrowed.
+///
+/// **Exists so Qwen3 and Qwen3Moe do not get two copies of one attention
+/// block.** Their attention halves are identical — biased Q/K/V, per-head
+/// QK-norm, GQA, explicit `head_dim` — and differ only in the *type* holding
+/// the weights (`LayerWeights` + [`Qwen3LayerExtras`] versus
+/// `Qwen3MoeLayerWeights`, which inlines the norm gains). Two hand-maintained
+/// copies of a decode attention block is the reproduction mechanism GAP-029
+/// increment 3 exists to avoid, so the differing part is a borrow and the
+/// identical part is written once.
+///
+/// The FFN is deliberately **not** here: that is where the two families really
+/// diverge (SwiGLU versus router + experts).
+pub(crate) struct Qwen3AttnBlock<'a> {
+    pub hidden_size: usize,
+    pub num_attention_heads: usize,
+    pub num_key_value_heads: usize,
+    pub head_dim: usize,
+    pub rms_norm_eps: f64,
+    pub attn_norm_gain: &'a Arc<[f32]>,
+    pub attn_q: &'a WeightStorage,
+    pub attn_q_bias: Option<&'a Arc<[f32]>>,
+    pub attn_k: &'a WeightStorage,
+    pub attn_k_bias: Option<&'a Arc<[f32]>>,
+    pub attn_v: &'a WeightStorage,
+    pub attn_v_bias: Option<&'a Arc<[f32]>>,
+    pub attn_o: &'a WeightStorage,
+    /// `[head_dim]` per-head QK-norm gains — the Qwen3 addition over Qwen2.
+    pub q_norm_gain: &'a Arc<[f32]>,
+    pub k_norm_gain: &'a Arc<[f32]>,
+}
+
+/// Qwen3-family attention against the pre-allocated KV buffers, returning the
+/// post-attention residual `x + attn_out` (the caller adds its own FFN).
+///
+/// This step's K/V slab is written at the runtime offset `cached_len`, then
+/// attention reads the **full fixed-capacity** buffers under this layer's mask
+/// variant — which excludes future positions, the unwritten tail, and (on a
+/// windowed layer) everything older than the window.
+///
+/// Two deliberate differences from the prefill twin, both shared with Qwen2:
+/// GQA rides `matmul`'s head broadcast instead of materialising
+/// `repeat_interleave` over the whole `max_seq_len` cache; and **no
+/// flash-decode arm is offered**, because the CUDA arm's single
+/// `k_len = cached_len + seq` cannot represent a sliding window and would
+/// silently drop it on bf16/CUDA.
+pub(crate) fn qwen3_attn_with_kv_writes(
+    blk: &Qwen3AttnBlock<'_>,
+    inputs: &DecodeLayerInputs<'_>,
+) -> Result<LazyTensor> {
+    let x = inputs.x;
+    let x_shape = x.shape();
+    let dims = x_shape.dims();
+    let batch = dims[0];
+    let seq = dims[1];
+    let kv_dim = blk.num_key_value_heads * blk.head_dim;
+    let act_dtype = x.dtype();
+
+    let x_norm = x.rms_norm_affine(Arc::clone(blk.attn_norm_gain), blk.rms_norm_eps)?;
+
+    let q = blk.attn_q
+        .apply_linear(&x_norm, blk.hidden_size, blk.hidden_size)?
+        .add_optional_trailing_bias(blk.attn_q_bias)?;
+    let k = blk.attn_k
+        .apply_linear(&x_norm, blk.hidden_size, kv_dim)?
+        .add_optional_trailing_bias(blk.attn_k_bias)?;
+    let v = blk.attn_v
+        .apply_linear(&x_norm, blk.hidden_size, kv_dim)?
+        .add_optional_trailing_bias(blk.attn_v_bias)?;
+
+    let q = q.split_heads(blk.num_attention_heads, blk.head_dim)?;
+    let k = k.split_heads(blk.num_key_value_heads, blk.head_dim)?;
+    let v_h = v.split_heads(blk.num_key_value_heads, blk.head_dim)?;
+
+    // Per-head QK-norm: RmsNorm along head_dim, BEFORE RoPE — same order as
+    // the prefill path, which is what makes decode agree with it.
+    let q = q.rms_norm_affine(Arc::clone(blk.q_norm_gain), blk.rms_norm_eps)?;
+    let k = k.rms_norm_affine(Arc::clone(blk.k_norm_gain), blk.rms_norm_eps)?;
+
+    // RoPE runs in f32 (build-time requirement); no-op casts under f32 caches.
+    let q_r = q.to_dtype(DType::F32)?
+        .rope_with_tables(inputs.rope_cos, inputs.rope_sin)?
+        .to_dtype(act_dtype)?;
+    let k_r = k.to_dtype(DType::F32)?
+        .rope_with_tables(inputs.rope_cos, inputs.rope_sin)?
+        .to_dtype(act_dtype)?;
+
+    let write_ranges = vec![
+        (0, batch),
+        (0, blk.num_key_value_heads),
+        (0, seq), // axis-2 start is dynamic; width = seq
+        (0, blk.head_dim),
+    ];
+    let (full_k, full_v) = match inputs.offset {
+        // Device-resident offset (`Op::WriteSliceDoff`, CPU/CUDA) — read at
+        // kernel launch, so the step stays CUDA-graph-capturable.
+        Some(off) => (
+            inputs.k_cache.write_slice_doff(&k_r, off, 2, write_ranges.clone())?,
+            inputs.v_cache.write_slice_doff(&v_h, off, 2, write_ranges)?,
+        ),
+        // Backend-generic `SymEnv` offset (Vulkan). Bit-identical write.
+        None => {
+            let dyn_off = fuel_ir::DynScalar::Sym(inputs.cached_len_sym);
+            (
+                inputs.k_cache.write_slice_dyn(&k_r, write_ranges.clone(), 2, dyn_off)?,
+                inputs.v_cache.write_slice_dyn(&v_h, write_ranges, 2, dyn_off)?,
+            )
+        }
+    };
+
+    let k_t = full_k.transpose()?;
+    let scale = 1.0_f64 / (blk.head_dim as f64).sqrt();
+    let scores = q_r.matmul(&k_t)?;
+    let scores_scaled = scores.mul_scalar(scale);
+    let scores_masked = scores_scaled.broadcast_add(inputs.mask)?;
+    let attn = scores_masked.softmax_last_dim()?;
+    let attn_v = attn.matmul(&full_v)?;
+
+    let merged = attn_v.merge_heads()?;
+    let attn_out = blk.attn_o.apply_linear(&merged, blk.hidden_size, blk.hidden_size)?;
+    x.add(&attn_out)
+}
+
+// ===========================================================================
+// SABOTAGE RECORD — QWEN3 / QWEN3MOE (GAP-029 increment 3, families 3 & 4)
+//
+// Three sabotages, because "does this test test THIS family" and "what is the
+// shared block's blast radius" are different questions. All runs carried
+// `Compiling fuel-core`.
+//
+// (a) Qwen3's OWN `decode_apply_layer` — drop the FFN residual:
+//       lazy_qwen3::tests  x3 FAILED    -> 82 passed; 3 failed
+//     Qwen2, Qwen3Moe, Llama, Llama3 and Phi all GREEN. Exactly one family, as
+//     increment 3's constraint (1) requires.
+//
+// (b) Qwen3Moe's OWN `decode_apply_layer` — same defect:
+//       lazy_qwen3_moe::tests x3 FAILED -> 82 passed; 3 failed
+//     Exactly one family again, and notably NOT Qwen3 — the two share an
+//     attention block, so this is the run that shows the sharing did not make
+//     their suites interchangeable.
+//
+// (c) The SHARED `qwen3_attn_with_kv_writes` — drop the attention residual:
+//       lazy_qwen3::tests x3 + lazy_qwen3_moe::tests x3 FAILED
+//                                       -> 79 passed; 6 failed
+//     BOTH Qwen3 families red, and Qwen2 / Llama / Llama3 / Phi still green.
+//     That is the block's blast radius MEASURED rather than intended: it proves
+//     both families really execute the shared code (neither kept a private copy
+//     the compiler happily retained), and that sharing it did not silently widen
+//     its reach into the families that do not use it.
+// ===========================================================================
+
+impl Qwen3Model {
+    /// **Per-layer attention variation**, gated exactly as the prefill path
+    /// gates it (`use_sliding_window && layer_idx < max_window_layers`).
+    ///
+    /// ⚠️ **`sliding_window: None` is DENSE, not "windowed with some default".**
+    /// Prefill computes its width as `sliding_window.unwrap_or(seq + 1)`, and a
+    /// window of `seq + 1` cannot exclude anything — so a config with
+    /// `use_sliding_window: true` and no width is dense at every layer, and the
+    /// plan must say so. Reading the flag alone and inventing a width would
+    /// window layers prefill leaves dense.
+    pub fn decode_mask_plan(&self) -> MaskPlan {
+        let cfg = &self.config;
+        match (cfg.use_sliding_window, cfg.sliding_window) {
+            (true, Some(w)) => MaskPlan::split_window(
+                cfg.num_hidden_layers, cfg.max_window_layers, w,
+            ),
+            _ => MaskPlan::dense(cfg.num_hidden_layers),
+        }
+    }
+
+    /// Identity a held decode plan is baked against. `rope_theta` and the window
+    /// *width* are absent deliberately — both are per-token data, rebound every
+    /// step; the plan contributes only structure (variant count + per-layer
+    /// assignment).
+    pub fn decode_shape_key(&self) -> u64 {
+        let cfg = &self.config;
+        let mut h = crate::decode_shape::ShapeKeyHasher::new();
+        h.mix_str("qwen3")
+            .mix_instance(self.weights.instance)
+            .mix_u64(cfg.num_hidden_layers as u64)
+            .mix_u64(cfg.num_attention_heads as u64)
+            .mix_u64(cfg.num_key_value_heads as u64)
+            .mix_u64(cfg.head_dim as u64)
+            .mix_u64(cfg.hidden_size as u64)
+            .mix_u64(cfg.intermediate_size as u64)
+            .mix_u64(cfg.vocab_size as u64)
+            .mix_f64(cfg.rms_norm_eps);
+        self.decode_mask_plan().mix_into(&mut h);
+        h.finish()
+    }
+
+    /// Decode/prefill through a pre-allocated [`KvCache`], rebuilding the graph
+    /// each step. The primitive the persistent path falls back to.
+    pub fn forward_with_kv_context(
+        &self,
+        tokens: &[u32],
+        cache: &mut KvCache,
+        ctx: &mut InferenceContext,
+    ) -> Result<Vec<f32>> {
+        crate::persistent_decode::forward_with_kv_context(self, tokens, cache, ctx, false, None)
+    }
+
+    /// Plan-once persistent decode: the first `seq == 1` token builds and
+    /// optimizes the graph, later tokens rebind data and skip optimize.
+    pub fn forward_with_kv_context_persistent(
+        &self,
+        tokens: &[u32],
+        cache: &mut KvCache,
+        ctx: &mut InferenceContext,
+        session: &mut Option<DecodeSession>,
+    ) -> Result<Vec<f32>> {
+        crate::persistent_decode::forward_with_kv_context_persistent(
+            self, tokens, cache, ctx, session, None,
+        )
+    }
+
+    /// Persistent decode with the session owned by the `InferenceContext`.
+    pub fn forward_decode_step(
+        &self,
+        tokens: &[u32],
+        cache: &mut KvCache,
+        ctx: &mut InferenceContext,
+    ) -> Result<Vec<f32>> {
+        let mut session = ctx.take_decode_session();
+        let out = self.forward_with_kv_context_persistent(tokens, cache, ctx, &mut session);
+        ctx.put_decode_session(session);
+        out
+    }
+}
+
+impl PersistentDecodeModel for Qwen3Model {
+    fn decode_n_layers(&self) -> usize {
+        self.config.num_hidden_layers
+    }
+
+    fn build_decode_token_data(
+        &self,
+        device: &Device,
+        cached_len: usize,
+        tokens: &[u32],
+        session: &DecodeSession,
+        cache: &KvCache,
+        rope_inv_freq: Option<&[f64]>,
+    ) -> Result<DecodeTokenData> {
+        let host = crate::persistent_decode::compute_decode_token_host(
+            self, cached_len, tokens, session.max_seq_len(), rope_inv_freq,
+        );
+        crate::persistent_decode::upload_decode_token_data(
+            device,
+            &host,
+            cache.dtype.unwrap_or(DType::F32),
+            session.offset_node().is_some().then_some(cached_len),
+        )
+    }
+}
+
+impl DecodeBackbone for Qwen3Model {
+    fn decode_family(&self) -> &'static str {
+        "Qwen3Model"
+    }
+
+    fn decode_dims(&self) -> DecodeDims {
+        let cfg = &self.config;
+        DecodeDims {
+            n_layers: cfg.num_hidden_layers,
+            n_kv_heads: cfg.num_key_value_heads,
+            head_dim: cfg.head_dim,
+            hidden: cfg.hidden_size,
+            vocab: cfg.vocab_size,
+            // Full rotary over the explicit `head_dim` — no partial-rotary field.
+            rope_width: cfg.head_dim,
+            rope_base: cfg.rope_theta,
+        }
+    }
+
+    fn decode_shape_key(&self) -> u64 {
+        Qwen3Model::decode_shape_key(self)
+    }
+
+    fn decode_mask_plan(&self) -> MaskPlan {
+        Qwen3Model::decode_mask_plan(self)
+    }
+
+    fn decode_token_embedding(&self) -> Arc<[f32]> {
+        self.weights.token_embedding.clone()
+    }
+
+    fn decode_apply_layer(
+        &self,
+        layer_idx: usize,
+        inputs: &DecodeLayerInputs<'_>,
+    ) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let layer = &self.weights.layers[layer_idx];
+        let extras = &self.weights.layer_extras[layer_idx];
+        let h1 = qwen3_attn_with_kv_writes(
+            &Qwen3AttnBlock {
+                hidden_size: cfg.hidden_size,
+                num_attention_heads: cfg.num_attention_heads,
+                num_key_value_heads: cfg.num_key_value_heads,
+                head_dim: cfg.head_dim,
+                rms_norm_eps: cfg.rms_norm_eps,
+                attn_norm_gain: &layer.attn_norm_gain,
+                attn_q: &layer.attn_q,
+                attn_q_bias: layer.attn_q_bias.as_ref(),
+                attn_k: &layer.attn_k,
+                attn_k_bias: layer.attn_k_bias.as_ref(),
+                attn_v: &layer.attn_v,
+                attn_v_bias: layer.attn_v_bias.as_ref(),
+                attn_o: &layer.attn_o,
+                q_norm_gain: &extras.q_norm_gain,
+                k_norm_gain: &extras.k_norm_gain,
+            },
+            inputs,
+        )?;
+
+        let h1_norm = h1.rms_norm_affine(Arc::clone(&layer.ffn_norm_gain), cfg.rms_norm_eps)?;
+        let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let up = layer.ffn_up.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let swiglu = gate.silu().mul(&up)?;
+        let ffn_out = layer.ffn_down.apply_linear(&swiglu, cfg.intermediate_size, cfg.hidden_size)?;
+        h1.add(&ffn_out)
+    }
+
+    fn decode_final_norm_and_head(&self, h: &LazyTensor) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let h_norm = h.rms_norm_affine(
+            Arc::clone(&self.weights.final_norm_gain), cfg.rms_norm_eps,
+        )?;
+        Ok(self.weights.output.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size)?)
+    }
+}
+
 // ---- HuggingFace safetensors loader ----------------------------------------
 
 impl Qwen3Weights {
@@ -332,6 +676,7 @@ impl Qwen3Weights {
             )?
         };
         Ok(Self {
+            instance: crate::decode_shape::ModelInstanceId::next(),
             token_embedding,
             layers,
             layer_extras,
@@ -382,7 +727,7 @@ mod tests {
         }
         let final_norm_gain = Arc::from(vec![1.0_f32; h]);
         let output = WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *nb));
-        Qwen3Weights { token_embedding, layers, layer_extras, final_norm_gain, output }
+        Qwen3Weights { instance: crate::decode_shape::ModelInstanceId::next(), token_embedding, layers, layer_extras, final_norm_gain, output }
     }
 
     #[test]
@@ -479,5 +824,168 @@ mod tests {
             .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
         assert!(max_diff < 1e-5,
             "Qwen3 forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})");
+    }
+
+    // ---- GAP-029 increment 3, family 3: persistent decode -------------------
+
+    /// Oracle threshold, measured rather than inherited — see the identical
+    /// argument in `lazy_qwen2`. The natural template
+    /// (`forward_with_kv_context_decode_matches_non_cached_forward`) asserts
+    /// `diff < 5e-3 || rel < 1e-2`, which sits ABOVE the ~7e-3 single-mask
+    /// divergence and would go green on the very defect this tests for.
+    const DECODE_ORACLE_ABS: f32 = 1e-5;
+
+    /// 2 layers, window 4, `max_window_layers: 1` — layer 0 windowed, layer 1
+    /// dense. `sliding_window` is `Some`, which matters: `None` is dense.
+    fn mixed_window_cfg() -> Qwen3Config {
+        Qwen3Config {
+            vocab_size: 32,
+            hidden_size: 16,
+            intermediate_size: 32,
+            num_hidden_layers: 2,
+            num_attention_heads: 4,
+            num_key_value_heads: 2,
+            head_dim: 4,
+            max_position_embeddings: 64,
+            sliding_window: Some(4),
+            max_window_layers: 1,
+            use_sliding_window: true,
+            rope_theta: 10_000.0,
+            rms_norm_eps: 1e-5,
+            attention_bias: true,
+            tie_word_embeddings: false,
+        }
+    }
+
+    /// Max |logit diff| per decode step against the shipped, per-layer-gated
+    /// non-cached forward at the same absolute position.
+    ///
+    /// **The `>= 3` decode steps are load-bearing:** one decode token exercises
+    /// only the held-graph BUILD path, and the per-token REBIND path is first
+    /// reached on step 2. The assert lives here so a caller cannot weaken it.
+    fn decode_vs_forward_max_abs(
+        cfg: &Qwen3Config, tokens: &[u32], prefill: usize,
+    ) -> Vec<f32> {
+        let n_decode = tokens.len() - prefill;
+        assert!(n_decode >= 3, "need >= 3 decode tokens to reach the rebind path");
+        let model = Qwen3Model { config: cfg.clone(), weights: tiny_weights(cfg) };
+
+        let dev = Device::cpu();
+        let mut cache = KvCache::with_capacity(
+            cfg.num_hidden_layers, cfg.num_key_value_heads, cfg.head_dim,
+            tokens.len(), DType::F32, &dev,
+        ).expect("with_capacity");
+        let mut ctx = InferenceContext::new(dev);
+        let mut session: Option<DecodeSession> = None;
+
+        model.forward_with_kv_context_persistent(
+            &tokens[..prefill], &mut cache, &mut ctx, &mut session,
+        ).expect("prefill");
+        assert!(session.is_none(), "prefill (seq > 1) must NOT build the held session");
+
+        let mut out = Vec::with_capacity(n_decode);
+        for pos in prefill..tokens.len() {
+            let got = model.forward_with_kv_context_persistent(
+                &tokens[pos..=pos], &mut cache, &mut ctx, &mut session,
+            ).expect("decode");
+            assert!(session.is_some(), "decode must hold a session from token 1");
+            let full = model.forward(&tokens[..=pos], 0).unwrap().realize_f32();
+            let expected = &full[pos * cfg.vocab_size..(pos + 1) * cfg.vocab_size];
+            out.push(
+                got.iter().zip(expected.iter())
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0.0_f32, f32::max),
+            );
+        }
+        assert_eq!(cache.cached_len, tokens.len(), "cache must advance every step");
+        out
+    }
+
+    /// ⚠️ **NON-DISCRIMINATION CONTROL — what makes the sibling's red mean
+    /// anything.** With `max_window_layers: 0` the plan collapses to one dense
+    /// variant, so this passes under BOTH a correct windowed mask plan and one
+    /// that ignores windowing entirely. It certifies the seam, the QK-norm
+    /// attention block, the KV writes and the rebind — never the windowing.
+    #[test]
+    fn qwen3_decode_matches_forward_when_no_layer_is_windowed() {
+        let cfg = Qwen3Config { max_window_layers: 0, ..mixed_window_cfg() };
+        let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6];
+        for (k, diff) in decode_vs_forward_max_abs(&cfg, &tokens, 3).iter().enumerate() {
+            assert!(
+                *diff < DECODE_ORACLE_ABS,
+                "unwindowed Qwen3 decode step {k} (absolute position {}) diverged by \
+                 {diff}. This is the CONTROL — the windowed test below proves nothing \
+                 until this is green.",
+                3 + k,
+            );
+        }
+    }
+
+    /// **GAP-029 family 3 — Qwen3 windowed persistent decode.**
+    ///
+    /// **Born red, observed.** With `decode_mask_plan` returning
+    /// `MaskPlan::dense(..)` — precisely what a single-mask decode port
+    /// computes — the measured per-step divergence was
+    ///
+    /// ```text
+    /// absolute position 3, 4, 5 : [0.0, 7.854598e-3, 6.385114e-3]
+    /// ```
+    ///
+    /// while the control above and the absent-width sibling stayed green
+    /// (`7 passed; 1 failed`). Restoring the real `split_window` plan took every
+    /// step to **0.0**.
+    ///
+    /// **The leading zero is the discrimination evidence, not a weakness:** a
+    /// window of 4 cannot exclude anything until absolute position 4, so a
+    /// degenerate oracle would have shown three zeros in the red run and this
+    /// showed one. **Both failing steps are REBIND steps** — the session is built
+    /// on decode step 0 — so a single-decode-token test could not see this.
+    #[test]
+    fn qwen3_windowed_decode_matches_per_layer_gated_forward() {
+        let cfg = mixed_window_cfg();
+        let window = cfg.sliding_window.expect("mixed config carries a window width");
+        let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6];
+        assert!(tokens.len() > window, "non-vacuity: the window must actually bite");
+        let diffs = decode_vs_forward_max_abs(&cfg, &tokens, 3);
+        assert!(
+            3 + diffs.len() > window,
+            "non-vacuity: no decoded position is far enough in for the window to bite",
+        );
+        // Report the WHOLE per-step vector on any failure: which steps diverge
+        // is the discrimination evidence (a window of 4 must leave position 3
+        // untouched), and a first-failure-only message throws that away.
+        let worst = diffs.iter().copied().fold(0.0_f32, f32::max);
+        assert!(
+            worst < DECODE_ORACLE_ABS,
+            "windowed Qwen3 decode diverged from the per-layer-gated forward: \
+             per-step max|diff| at absolute positions 3..=5 = {diffs:?} (limit \
+             {DECODE_ORACLE_ABS:e}). A single mask applied to every layer produces \
+             exactly this signature, and leaves position 3 clean.",
+        );
+    }
+
+    /// ⚠️ **`use_sliding_window: true` with `sliding_window: None` is DENSE.**
+    ///
+    /// Prefill computes its width as `sliding_window.unwrap_or(seq + 1)`, and a
+    /// window of `seq + 1` excludes nothing. Reading the flag alone and
+    /// inventing a width would window layers the shipped path leaves dense —
+    /// a divergence no test of a `Some(..)` config can see.
+    #[test]
+    fn qwen3_absent_window_width_is_dense_at_every_layer() {
+        let cfg = Qwen3Config {
+            sliding_window: None,
+            max_window_layers: 2, // would window BOTH layers if a width existed
+            ..mixed_window_cfg()
+        };
+        let plan = Qwen3Model { config: cfg.clone(), weights: tiny_weights(&cfg) }
+            .decode_mask_plan();
+        assert_eq!(
+            plan.n_variants(), 1,
+            "an absent window width must collapse to a single dense variant",
+        );
+        let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6];
+        for (k, diff) in decode_vs_forward_max_abs(&cfg, &tokens, 3).iter().enumerate() {
+            assert!(*diff < DECODE_ORACLE_ABS, "step {k} diverged by {diff}");
+        }
     }
 }
