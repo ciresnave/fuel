@@ -42,6 +42,7 @@ members = [
     "fuel-ug",
     "fuel-wasm-examples/*",
     "fuel-tensor-tools",
+    "fuel-test-support",
 ]
 # What `cargo build`, `cargo check`, `cargo test` without `-p` or
 # `--workspace` will actually build. Matches the pre-restructure
@@ -76,6 +77,10 @@ default-members = [
     "fuel-training",
     "fuel-ug",
     "fuel-wasm-examples/*",
+    # Dependency-free and toolchain-free, so it belongs in the DEFAULT set: a
+    # plain `cargo check` must build the helper that every live test's gate now
+    # routes through (GAP-157).
+    "fuel-test-support",
 ]
 resolver = "2"
 
@@ -111,6 +116,7 @@ byteorder = "1.4.3"
 fuel = { path = "./fuel-core", package = "fuel-core", version = "0.10.3" }
 fuel-aocl-cpu-backend = { path = "./fuel-aocl-cpu-backend", version = "0.10.3" }
 fuel-conv = { path = "./fuel-conv", version = "0.10.3" }
+fuel-test-support = { path = "./fuel-test-support", version = "0.10.3" }
 fuel-ir = { path = "./fuel-ir", version = "0.10.3" }
 fuel-backend-contract = { path = "./fuel-backend-contract", version = "0.10.3" }
 fuel-cpu-kernels = { path = "./fuel-cpu-kernels", version = "0.10.3" }

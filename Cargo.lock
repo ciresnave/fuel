@@ -2093,6 +2093,7 @@ dependencies = [
  "fuel-metal-kernels",
  "fuel-mkl-cpu-backend",
  "fuel-quantized",
+ "fuel-test-support",
  "fuel-ug",
  "fuel-vulkan-backend",
  "gemm 0.19.0",
@@ -2532,6 +2533,10 @@ dependencies = [
  "fuel-quantized",
  "safetensors 0.7.0",
 ]
+
+[[package]]
+name = "fuel-test-support"
+version = "0.10.3"
 
 [[package]]
 name = "fuel-training"

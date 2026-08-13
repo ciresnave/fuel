@@ -12,9 +12,20 @@
 use fuel_core::lazy::LazyTensor;
 use fuel_ir::{probe::BackendId, Shape};
 
-fn cuda_present() -> bool {
+/// A live CUDA device is **required** here, not optional.
+///
+/// GAP-157: this file is `#![cfg(feature = "cuda")]`, so it is compiled only
+/// when someone explicitly asked for the CUDA path to be tested. The previous
+/// `if !cuda_present() { return; }` silently converted that request into a test
+/// that reported `ok` having asserted nothing -- and because an early `return`
+/// from a `#[test]` is a PASS, no coverage mechanism could see it. The device
+/// requirement is real; it was simply never *declared*, so now it fails loudly.
+fn require_cuda() {
     let probe = fuel_core::probe::ProbeReport::probe_all();
-    probe.devices.iter().any(|d| d.backend == BackendId::Cuda)
+    fuel_test_support::require(
+        "a live CUDA device",
+        probe.devices.iter().any(|d| d.backend == BackendId::Cuda),
+    );
 }
 
 fn cuda_device() -> fuel_cuda_backend::CudaDevice {
@@ -26,10 +37,7 @@ fn cuda_device() -> fuel_cuda_backend::CudaDevice {
 /// oracle.
 #[test]
 fn rotating_within_window_cuda() {
-    if !cuda_present() {
-        eprintln!("skipping: no CUDA device visible to Fuel");
-        return;
-    }
+    require_cuda();
     let device = fuel_core::Device::cpu();
     let dest = LazyTensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
     let src = dest.const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]));
@@ -47,10 +55,7 @@ fn rotating_within_window_cuda() {
 /// the two-chunk dispatch path (first row at index 3, wrapped row at 0).
 #[test]
 fn rotating_splits_across_boundary_cuda() {
-    if !cuda_present() {
-        eprintln!("skipping: no CUDA device visible to Fuel");
-        return;
-    }
+    require_cuda();
     let device = fuel_core::Device::cpu();
     let dest = LazyTensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
     let src = dest.const_f32_like(
@@ -71,10 +76,7 @@ fn rotating_splits_across_boundary_cuda() {
 /// oracle, but every rotating-write executes baracuda kernels.
 #[test]
 fn rotating_mistral_style_decode_loop_cuda() {
-    if !cuda_present() {
-        eprintln!("skipping: no CUDA device visible to Fuel");
-        return;
-    }
+    require_cuda();
     let device = fuel_core::Device::cpu();
     let window = 3_usize;
     let head_dim = 2_usize;

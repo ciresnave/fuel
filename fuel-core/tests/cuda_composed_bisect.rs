@@ -21,9 +21,20 @@ fn gen_lcg(seed: u32, n: usize) -> Vec<f32> {
     }).collect()
 }
 
-fn cuda_present() -> bool {
+/// A live CUDA device is **required** here, not optional.
+///
+/// GAP-157: this file is `#![cfg(feature = "cuda")]`, so it is compiled only
+/// when someone explicitly asked for the CUDA path to be tested. The previous
+/// `if !cuda_present() { return; }` silently converted that request into a test
+/// that reported `ok` having asserted nothing -- and because an early `return`
+/// from a `#[test]` is a PASS, no coverage mechanism could see it. The device
+/// requirement is real; it was simply never *declared*, so now it fails loudly.
+fn require_cuda() {
     let probe = fuel_core::probe::ProbeReport::probe_all();
-    probe.devices.iter().any(|d| d.backend == BackendId::Cuda)
+    fuel_test_support::require(
+        "a live CUDA device",
+        probe.devices.iter().any(|d| d.backend == BackendId::Cuda),
+    );
 }
 
 /// Realize on CPU and on CUDA — both through the pipelined bridge
@@ -88,7 +99,7 @@ fn build_inputs() -> Inputs {
 
 #[test]
 fn bisect_a_just_first_matmul() -> Result<(), Box<dyn std::error::Error>> {
-    if !cuda_present() { return Ok(()); }
+    require_cuda();
     let i = build_inputs();
     let y = i.x.matmul(&i.w1)?;
     let (r, c) = realize_both(&y);
@@ -99,7 +110,7 @@ fn bisect_a_just_first_matmul() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn bisect_b_matmul_then_rmsnorm() -> Result<(), Box<dyn std::error::Error>> {
-    if !cuda_present() { return Ok(()); }
+    require_cuda();
     let i = build_inputs();
     let y = i.x.matmul(&i.w1)?.rms_norm_last_dim(1e-5)?;
     let (r, c) = realize_both(&y);
@@ -110,7 +121,7 @@ fn bisect_b_matmul_then_rmsnorm() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn bisect_c_just_rmsnorm() -> Result<(), Box<dyn std::error::Error>> {
-    if !cuda_present() { return Ok(()); }
+    require_cuda();
     // [1, 8, 32] direct rms_norm — skip the upstream matmul, supply
     // the "post-matmul" tensor directly so we isolate rms_norm's
     // behaviour from any contiguity / stride state matmul might leave
@@ -128,7 +139,7 @@ fn bisect_c_just_rmsnorm() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn bisect_d_rmsnorm_then_matmul() -> Result<(), Box<dyn std::error::Error>> {
-    if !cuda_present() { return Ok(()); }
+    require_cuda();
     let seq = 8_usize;
     let dim_mid = 32_usize;
     let dim_out = 8_usize;
@@ -147,7 +158,7 @@ fn bisect_d_rmsnorm_then_matmul() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn bisect_e_full_chain() -> Result<(), Box<dyn std::error::Error>> {
-    if !cuda_present() { return Ok(()); }
+    require_cuda();
     let i = build_inputs();
     let y = i.x.matmul(&i.w1)?.rms_norm_last_dim(1e-5)?.matmul(&i.w2)?;
     let (r, c) = realize_both(&y);

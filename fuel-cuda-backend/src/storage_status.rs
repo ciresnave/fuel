@@ -206,11 +206,26 @@ mod tests {
     /// No decline may carry an empty reason (the erasure GAP-161 exists to stop).
     #[test]
     fn every_decline_carries_a_nonempty_reason() {
+        let mut declines = 0_usize;
         for &dt in DType::ALL {
             if let Some(r) = cuda_storage_status(dt).decline_reason() {
+                declines += 1;
                 assert!(!r.is_empty(), "empty decline reason for {dt:?}");
             }
         }
+        // GAP-157: the assertion above sits inside an `if let`, so a run in
+        // which NOTHING declines executes it zero times and this test reports
+        // `ok` having checked nothing — indistinguishable in the summary line
+        // from a real pass. Same silent-green as an early `return`, reached
+        // through an unentered conditional instead of a skip. Assert the
+        // derived set is NON-TRIVIAL so the oracle cannot go vacuous.
+        assert!(
+            declines > 0,
+            "no dtype declined at all, so the assertion above never ran and this \
+             test proves nothing. Either CUDA gained storage for every dtype in \
+             DType::ALL (then update this test) or `cuda_storage_status` has \
+             regressed to reporting everything present"
+        );
     }
 
     /// The stale-arm tripwire is a hard error, not a silent bogus decline:

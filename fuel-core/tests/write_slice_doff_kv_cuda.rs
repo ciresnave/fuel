@@ -16,9 +16,20 @@
 use fuel_core::lazy::LazyTensor;
 use fuel_ir::{probe::BackendId, Shape};
 
-fn cuda_present() -> bool {
+/// A live CUDA device is **required** here, not optional.
+///
+/// GAP-157: this file is `#![cfg(feature = "cuda")]`, so it is compiled only
+/// when someone explicitly asked for the CUDA path to be tested. The previous
+/// `if !cuda_present() { return; }` silently converted that request into a test
+/// that reported `ok` having asserted nothing -- and because an early `return`
+/// from a `#[test]` is a PASS, no coverage mechanism could see it. The device
+/// requirement is real; it was simply never *declared*, so now it fails loudly.
+fn require_cuda() {
     let probe = fuel_core::probe::ProbeReport::probe_all();
-    probe.devices.iter().any(|d| d.backend == BackendId::Cuda)
+    fuel_test_support::require(
+        "a live CUDA device",
+        probe.devices.iter().any(|d| d.backend == BackendId::Cuda),
+    );
 }
 
 fn cuda_device() -> fuel_cuda_backend::CudaDevice {
@@ -30,10 +41,7 @@ fn cuda_device() -> fuel_cuda_backend::CudaDevice {
 /// `doff_writes_at_device_offset` oracle.
 #[test]
 fn doff_writes_at_device_offset_cuda() {
-    if !cuda_present() {
-        eprintln!("skipping: no CUDA device visible to Fuel");
-        return;
-    }
+    require_cuda();
     let device = fuel_core::Device::cpu();
     let dest = LazyTensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
     let src = dest.const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]));
@@ -50,10 +58,7 @@ fn doff_writes_at_device_offset_cuda() {
 /// Offset 0 → leading row (no wrap) on CUDA.
 #[test]
 fn doff_offset_zero_writes_leading_row_cuda() {
-    if !cuda_present() {
-        eprintln!("skipping: no CUDA device visible to Fuel");
-        return;
-    }
+    require_cuda();
     let device = fuel_core::Device::cpu();
     let dest = LazyTensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
     let src = dest.const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]));
@@ -72,10 +77,7 @@ fn doff_offset_zero_writes_leading_row_cuda() {
 /// running the baracuda `_doff` kernel with a device-resident start.
 #[test]
 fn doff_decode_loop_appends_at_cached_len_cuda() {
-    if !cuda_present() {
-        eprintln!("skipping: no CUDA device visible to Fuel");
-        return;
-    }
+    require_cuda();
     let device = fuel_core::Device::cpu();
     let max_seq = 4_usize;
     let head_dim = 2_usize;
@@ -105,10 +107,7 @@ fn doff_decode_loop_appends_at_cached_len_cuda() {
 /// Interior write on a non-leading axis on CUDA: offset 2 on axis 1.
 #[test]
 fn doff_writes_on_non_leading_axis_cuda() {
-    if !cuda_present() {
-        eprintln!("skipping: no CUDA device visible to Fuel");
-        return;
-    }
+    require_cuda();
     let device = fuel_core::Device::cpu();
     let dest = LazyTensor::from_f32(vec![0.0_f32; 10], Shape::from_dims(&[2, 5]), &device);
     let src = dest.const_f32_like(
