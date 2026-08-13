@@ -52,3 +52,8 @@
 
 [target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))'.dependencies]
     fuel-ug = { workspace = true, optional = true }
+
+[dev-dependencies]
+# GAP-157: `require`/`required_ok` — a missing device is a FAILURE, not a
+# silent early return that reports `ok` having asserted nothing.
+fuel-test-support = { workspace = true }
