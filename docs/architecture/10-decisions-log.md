@@ -1461,6 +1461,43 @@ entry's *why* is the interim protection. GAP-016 census: this removes the
 `WithDType`/num/ops + 2 `HostDType`), taking the production `panic!` surface
 **118 → 99** — nearly all of fuel-ir's 20.
 
+## 2026-08-12 — A decline carries TWO axes: what KIND of token it is, and WHY the capability is absent. They compose as two fields and never merge.
+
+**Sections affected**: none bumped — this adds a cross-cutting *idiom* for how declines are expressed; it changes no existing claim. Nearest homes are §11 (backend contract) and §15 (consumer contract), both of which already say backends advertise capability without making strategic decisions; this entry records HOW that advertisement is spelled when the answer is "no".
+**Phase / PR**: GAP-161 increment 1 (`625c6b4d`), GAP-155 (`4133df43`), GAP-171/177. Provenance: KISS #167.
+**Bumped to**: n/a (new idiom, no superseded claim).
+
+**What changed.** Fuel now expresses a decline as **two independent facts**, each with its own type in `fuel-ir`:
+
+- **KIND** — `TokenKind` (`fuel-ir/src/token_kind.rs`): a fact about a **token's membership in the interop vocabulary**. `Supported` / `RecognizedUnsupported` / `Reserved` / `Unknown`, a **total partition** of KISS sk4's 24 tokens (14 + 8 + 2 = 24), asserted against the standard's own list with the `Supported` side **derived** from `DType::ALL` rather than hand-listed.
+- **WHY** — `StorageStatus` (`fuel-ir/src/storage_status.rs`): a fact about **a `DType`'s capability on a backend**. `Present` / `Impossible` / `UnimplementedYet` / `UndefinedEncoding`, wildcard-free, with the **expiry information living in the variant** — only `UnimplementedYet` expires.
+
+**Why they cannot be one enum, and this is the load-bearing part: THEY HAVE DIFFERENT DOMAINS, so the separation is a type-level impossibility rather than a discipline anyone must maintain.** KIND classifies a `&str` — including strings that are not `DType`s at all. WHY classifies a `DType` already in the enum. **`StorageStatus` literally cannot be called on `"f8e4m3fnuz"`.** A single flat enum would have to pick which question it answers and lose the other.
+
+**The worked example, which is a live disagreement rather than an argument: `f8e5m2` is KIND=`Supported` (Fuel has the `DType`, the seam emits a legal sk4 token, Baracuda ships the matching `ElementKind`) and simultaneously WHY=`UnimplementedYet` (no `CudaStorageSlice` variant exists).** Both axes apply and give different answers, and **both are correct**. That case arrived by accident from an unrelated emit-side fix in another lane, which is what turned the two-axis design from a structural argument into a demonstrated necessity. (`f8e4m3fnuz` is KIND-only and cannot demonstrate it — a reserved token has no `DType` for WHY to classify.)
+
+**Per-backend FUNCTIONS differ; the TYPE does not.** `cuda_storage_status` is CUDA's authority; Vulkan/CPU/Metal get their own functions. The `StorageStatus` **type** lives in `fuel-ir` (a fact *about* a `DType`, zero new dep edges — all four backends already depend on it). Letting each backend invent its own status type would be the private-idiom defect one level up, and it is cheap to prevent on day one and a three-copy rollout to fix later.
+
+**What this replaces, recorded because the rejected forms were the obvious ones.**
+
+1. **A `decline_pending!` macro** — REJECTED. A macro can record a reason but cannot observe the capability arriving, so it produces better *documentation* of a hazard. Documentation is not a control; this is the same finding as the runtime-skip program (GAP-157), where a skip that declared itself in prose was invisible.
+2. **A canary over a hand-declared `(backend, dtype)` pair list** — REJECTED, and it was the architect's own proposal. It puts the decline (the arm) and its declaration (a list in a test) in **two separate acts**, which is exactly the state KISS #141 abolished with *"the skip mechanism and the declaration are now the same act."* Worse, its predicate could not observe the event: several dtypes already exist as raw-byte `CudaSlice<u8>` variants, so a canary asserting "no typed variant" would never move if storage arrived by that route. And the key was ill-typed — the same dtype is *present* at `transfer_to_device` and *declining* at a compute op, so storage and kernel are two populations.
+3. **A single flat enum** — REJECTED per the domain argument above.
+
+**The defect this is written against, and its precise name.** `fuel-cuda-backend/src/storage.rs` spelled **three distinct decline reasons in comments** — *"declines because no variant exists — NOT because the dtype lacks a representation… distinct from F8E6M2, whose encoding is unauthored"* — and returned the **identical** value for all three. The precise statement is **not** "the reasons were undocumented" (they were documented) and **not** "the mapping is non-injective" (a decline reason legitimately may be many-to-one). It is: **a distinction stated in prose MUST be carried in the type** — the author knew the distinctions, wrote them down, and shipped an interface that could not express them, so **the comment claimed a resolution the type did not have.**
+
+**The scoping rule that keeps this from over-reaching, because a universal version would be wrong: injectivity is MANDATORY where a mapping's output is an IDENTITY, OPTIONAL where it is a CLASSIFICATION, and for DIAGNOSTICS the rule is the prose-in-type one above.** `sk4_token` is an identity — a collision means two operand shapes share a `structure_key`, which is cache soundness. `map_element_kind` is a classification — **two Fuel dtypes legitimately COULD map to one backend kind if the backend does not distinguish them**, and requiring injectivity there would force implementations to invent distinctions their hardware does not have.
+
+**And the honest form of a lossy decline is permitted.** `fuel-metal-backend/src/storage.rs` joins six dtypes into one decline arm and is **correct**: the error is dtype-parameterised, and its comment claims only that the join *"asserts nothing false about the format"* — weaker, and true. It remains lossy (a consumer cannot tell *no storage yet* from *packed format, no addressable single element*). **Lossy-and-honest is fine; lossy-while-asserting-otherwise is the defect.** A comment that documents its own loss is rarer than one that is simply right, and more useful, because it tells the next reader what they may **not** conclude.
+
+**Stated limits, recorded in the code and not only here.**
+
+- **The storage authority is strong, not airtight.** Without a macro co-generating the `CudaStorageSlice` variants and the `Present` arms from one list, someone can wire storage via a non-gated site without flipping the central classification. The macro form is a later increment; the limit sits in `cuda_storage_status`'s own doc comment.
+- **A canary must probe on the SAME SIDE as the trigger.** Storage's only expiry trigger is Fuel-side — `CudaStorageSlice` is a Fuel enum, so no external bump can create storage. A Fuel-mirrored assertion is therefore complete *for storage*. Reused for an **externally**-triggered capability it is blind **by construction**: `ElementKind::U32` appeared in a dependency's vocabulary and a Fuel-side list could never have seen it. For those, the instrument is a **wildcard-free match over the external enum**, which becomes a compile error on a dependency bump — available only when that enum is not `#[non_exhaustive]` (`ElementKind` is not; `OpKind` is, and `fkc/lower.rs` already documents that the anchor is impossible there). **Availability is a property of the specific dependency, not a technique.**
+- **Sabotage coverage is recorded at the level it reaches.** The mechanism is sabotage-validated; the four repointed sites' live runtime paths are not — they are device-gated, and are covered instead by compile-level routing (the sites demonstrably call the shared helper; the old hardcoded errors are gone) plus transitive classification corruption. Closing that with a live GPU test was **declined**: it would rest on a fragile `Display`-through-`fuel_ir::Error` assertion, and a weak test where a compile-level proof already exists is worse than none.
+
+---
+
 ---
 
 ## See also
