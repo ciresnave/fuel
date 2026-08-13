@@ -253,7 +253,23 @@ pub struct DecodeDims {
     /// `rotary_dim`. Carried as a value rather than assumed, because that one
     /// `usize` is the whole of Glm4's divergence from this path.
     pub rope_width: usize,
-    pub rope_base: f64,
+    /// Multiplier applied to the token embeddings before the layer loop.
+    /// `None` = no scaling, and `None` **emits no graph node at all** — a
+    /// `Some(1.0)` would still cost a `mul_scalar`, which is why this is an
+    /// `Option` rather than a plain `f64` defaulting to 1.
+    ///
+    /// Gemma-family models pass `Some(sqrt(hidden_size))`; everyone else `None`.
+    ///
+    /// ⚠️ **It is the SEAM that applies this, deliberately, and the ordering is
+    /// the reason.** The scale must land BEFORE the activation dtype cast:
+    /// prefill scales in f32, so scaling after a cast would round in bf16 on a
+    /// bf16 cache and diverge — **invisible on an f32 gate**. A hook would let
+    /// each family put it wherever, making that hazard per-family and silent;
+    /// a value applied at one fixed point makes the ordering unforgettable.
+    ///
+    /// It is a scalar rather than a dimension, which the struct's name does not
+    /// quite cover — stated here rather than left to overreach quietly.
+    pub embed_scale: Option<f64>,
 }
 
 /// **Per-layer attention-mask variation** — the axis GAP-029 measured across
@@ -369,6 +385,112 @@ impl MaskPlan {
     }
 }
 
+/// **Per-layer RoPE-BASE variation** — the sibling axis to [`MaskPlan`], and
+/// the one Gemma3 forced.
+///
+/// A family with two RoPE bases (Gemma3: `rope_theta` for global layers,
+/// `rope_local_base_freq` for sliding ones) produces **different table bytes per
+/// variant**, so — exactly like the mask — the Const must physically carry N of
+/// them and the layer loop must select.
+///
+/// This is the criterion that separates it from SmolLm3's per-layer RoPE
+/// *gating*, which needs nothing: **variation in DATA needs a variant axis;
+/// variation in WHETHER-TO-APPLY does not.** A skipping layer simply does not
+/// consume the shared tables; a differently-based layer needs different bytes.
+///
+/// # Shape, and an honest asymmetry with `MaskPlan`
+///
+/// `n_variants == 1` mints `[seq, rope_width]` — **exactly today's shape, with
+/// no slice and no reshape** — so every single-base family's graph is unchanged
+/// (pinned by the `*_held_decode_graph_has_not_grown` node-count tests).
+///
+/// `n_variants > 1` mints `[n, seq, rope_width]` and hoists the per-variant
+/// views once before the layer loop. Unlike the mask — whose Const is already
+/// rank-4, so a width-1 slice is directly usable — RoPE tables are rank-2, so
+/// each variant costs a slice **and** a reshape. That cost is real and is named
+/// here rather than presented as symmetric.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RopePlan {
+    bases: Vec<f64>,
+    per_layer: Vec<usize>,
+}
+
+impl RopePlan {
+    /// The single-base plan — what every family except Gemma3 uses.
+    pub fn single(base: f64, n_layers: usize) -> Self {
+        Self { bases: vec![base], per_layer: vec![0; n_layers] }
+    }
+
+    /// Validated at construction, like [`MaskPlan::new`]: an out-of-range
+    /// variant index would otherwise be a panic in the layer loop or, worse, a
+    /// layer silently roped at the wrong frequency.
+    pub fn new(bases: Vec<f64>, per_layer: Vec<usize>) -> Result<Self> {
+        if bases.is_empty() {
+            return Err(fuel_ir::Error::Msg(
+                "RopePlan: needs at least one base".to_string(),
+            ).bt());
+        }
+        if let Some((li, v)) = per_layer.iter().enumerate().find(|(_, v)| **v >= bases.len()) {
+            return Err(fuel_ir::Error::Msg(format!(
+                "RopePlan: layer {li} selects RoPE variant {v} but only {} base(s) \
+                 are defined",
+                bases.len(),
+            )).bt());
+        }
+        Ok(Self { bases, per_layer })
+    }
+
+    pub fn n_variants(&self) -> usize {
+        self.bases.len()
+    }
+
+    pub fn n_layers(&self) -> usize {
+        self.per_layer.len()
+    }
+
+    pub fn variant_for_layer(&self, layer_idx: usize) -> usize {
+        self.per_layer[layer_idx]
+    }
+
+    /// Mix the plan's **structural** content into a decode shape key: the
+    /// variant count and per-layer assignment wire the graph. The base *values*
+    /// are excluded for the same reason `rope_base` always was — they are data,
+    /// recomputed and rebound every token, so baking them would forfeit plan
+    /// reuse across a change already handled correctly.
+    pub fn mix_into(&self, h: &mut crate::decode_shape::ShapeKeyHasher) {
+        h.mix_u64(self.bases.len() as u64);
+        for v in &self.per_layer {
+            h.mix_u64(*v as u64);
+        }
+    }
+}
+
+/// Build the stacked RoPE cos/sin tables, variants concatenated along a leading
+/// axis. Single source of table bytes for both the build path and every rebind.
+fn build_rope_variants(
+    plan: &RopePlan,
+    width: usize,
+    cached_len: usize,
+    seq: usize,
+    rope_inv_freq: Option<&[f64]>,
+) -> (Vec<f32>, Vec<f32>) {
+    // A caller-supplied inverse-frequency vector (scaled RoPE) replaces the
+    // base entirely, so it applies to every variant — a scaled multi-base model
+    // would need per-variant inv_freq, and no such model exists yet. Single-base
+    // is the only shape that reaches here with `Some`.
+    if let Some(inv) = rope_inv_freq {
+        return fuel_graph::build_rope_tables_with_inv_freq(inv, cached_len, seq, width);
+    }
+    let mut cos = Vec::with_capacity(plan.n_variants() * seq * width);
+    let mut sin = Vec::with_capacity(plan.n_variants() * seq * width);
+    for base in &plan.bases {
+        let (c, s) = fuel_graph::build_rope_tables(*base, cached_len, seq, width);
+        cos.extend_from_slice(&c);
+        sin.extend_from_slice(&s);
+    }
+    (cos, sin)
+}
+
 /// Build the `[n_variants, 1, seq, max_seq_len]` decode mask, variants
 /// concatenated along the leading axis.
 ///
@@ -419,6 +541,12 @@ pub trait DecodeBackbone: PersistentDecodeModel {
     fn decode_shape_key(&self) -> u64;
 
     fn decode_mask_plan(&self) -> MaskPlan;
+
+    /// Per-layer RoPE-base assignment. **Required, not defaulted, on purpose:**
+    /// a default would be silently correct for the single-base families and
+    /// silently WRONG for a multi-base one that forgot to override it. Every
+    /// family stating it is the compiler enumerating them.
+    fn decode_rope_plan(&self) -> RopePlan;
 
     /// The `[vocab, hidden]` embedding table the token lookup reads.
     fn decode_token_embedding(&self) -> Arc<[f32]>;
@@ -481,14 +609,9 @@ pub(crate) fn compute_decode_token_host<M: DecodeBackbone + ?Sized>(
 ) -> DecodeTokenHost {
     let dims = model.decode_dims();
     let seq = tokens.len();
-    let (rope_cos, rope_sin) = match rope_inv_freq {
-        Some(inv) => fuel_graph::build_rope_tables_with_inv_freq(
-            inv, cached_len, seq, dims.rope_width,
-        ),
-        None => fuel_graph::build_rope_tables(
-            dims.rope_base, cached_len, seq, dims.rope_width,
-        ),
-    };
+    let (rope_cos, rope_sin) = build_rope_variants(
+        &model.decode_rope_plan(), dims.rope_width, cached_len, seq, rope_inv_freq,
+    );
     DecodeTokenHost {
         token_ids: tokens.to_vec(),
         rope_cos,
@@ -610,13 +733,44 @@ fn build_decode_graph<M: DecodeBackbone + ?Sized>(
     let mut h = embed
         .index_select(0, &token_ids)?
         .reshape(Shape::from_dims(&[batch, seq, dims.hidden]))?;
+    // Embedding scale (Gemma family: sqrt(hidden_size)) — applied HERE, before
+    // the dtype cast, because prefill scales in f32 and scaling after the cast
+    // would round in bf16 on a bf16 cache. `None` emits no node at all.
+    if let Some(scale) = dims.embed_scale {
+        h = h.mul_scalar(scale);
+    }
     // BF16-throughout decode (Phase D increment A): the embedding table stays
     // f32 (CUDA IndexSelect has no BF16 key), but every activation downstream
     // tracks the cache dtype. No-op for f32 caches.
     h = h.to_dtype(cache_dtype)?;
 
-    // ---- RoPE cos/sin tables, shared across layers ----
-    let rope_shape = Shape::from_dims(&[seq, dims.rope_width]);
+    // ---- RoPE cos/sin tables ----
+    // Single-variant families mint `[seq, rope_width]` exactly as before — no
+    // stack, no slice, no reshape — so their graphs are unchanged.
+    let rope_plan = model.decode_rope_plan();
+    if rope_plan.n_layers() != dims.n_layers {
+        return Err(fuel_ir::Error::Msg(format!(
+            "{family}::{entry}: RoPE plan covers {} layer(s) but the model has {}",
+            rope_plan.n_layers(), dims.n_layers,
+        )).bt());
+    }
+    // A caller-supplied inv_freq replaces the base for every variant, so a
+    // multi-base family cannot express per-variant scaling. Refused rather than
+    // silently applying one variant's frequencies to all of them.
+    if rope_inv_freq.is_some() && rope_plan.n_variants() > 1 {
+        return Err(fuel_ir::Error::Msg(format!(
+            "{family}::{entry}: rope_inv_freq override is single-base only, but this \
+             model declares {} RoPE variants; per-variant scaled frequencies are not \
+             expressible yet",
+            rope_plan.n_variants(),
+        )).bt());
+    }
+    let n_rope = rope_plan.n_variants();
+    let rope_shape = if n_rope == 1 {
+        Shape::from_dims(&[seq, dims.rope_width])
+    } else {
+        Shape::from_dims(&[n_rope, seq, dims.rope_width])
+    };
     let (rope_cos, rope_sin) = match consts {
         DataConsts::Baked => (
             h.const_f32_like(host.rope_cos.clone(), rope_shape.clone()),
@@ -629,6 +783,21 @@ fn build_decode_graph<M: DecodeBackbone + ?Sized>(
     };
     let rope_cos_node = rope_cos.inner.id();
     let rope_sin_node = rope_sin.inner.id();
+    // Hoist the per-variant views ONCE, before the layer loop. The rank-2 table
+    // needs a reshape after the slice; the uniform case takes the Const itself
+    // and emits neither.
+    let rope_2d = Shape::from_dims(&[seq, dims.rope_width]);
+    let (rope_cos_v, rope_sin_v): (Vec<LazyTensor>, Vec<LazyTensor>) = if n_rope == 1 {
+        (vec![rope_cos], vec![rope_sin])
+    } else {
+        let mut cs = Vec::with_capacity(n_rope);
+        let mut ss = Vec::with_capacity(n_rope);
+        for v in 0..n_rope {
+            cs.push(rope_cos.slice(0, v, 1)?.reshape(rope_2d.clone())?);
+            ss.push(rope_sin.slice(0, v, 1)?.reshape(rope_2d.clone())?);
+        }
+        (cs, ss)
+    };
 
     // ---- Stacked causal mask: [n_variants, 1, seq, max_seq_len] ----
     // Dtype tracks the activation dtype it is broadcast-added onto.
@@ -703,8 +872,8 @@ fn build_decode_graph<M: DecodeBackbone + ?Sized>(
             cached_len_sym,
             attended_len_sym,
             offset: offset_tensor.as_ref(),
-            rope_cos: &rope_cos,
-            rope_sin: &rope_sin,
+            rope_cos: &rope_cos_v[rope_plan.variant_for_layer(li)],
+            rope_sin: &rope_sin_v[rope_plan.variant_for_layer(li)],
             mask: &masks[plan.variant_for_layer(li)],
         })?;
     }

@@ -529,7 +529,7 @@ impl DecodeBackbone for Phi3Model {
             // measured for increment 3's step 0, and the reason Phi3 sits on
             // this seam rather than beside Phi.
             rope_width: cfg.head_dim(),
-            rope_base: cfg.rope_theta,
+            embed_scale: None,
         }
     }
 
@@ -539,6 +539,10 @@ impl DecodeBackbone for Phi3Model {
 
     fn decode_mask_plan(&self) -> MaskPlan {
         Phi3Model::decode_mask_plan(self)
+    }
+
+    fn decode_rope_plan(&self) -> crate::persistent_decode::RopePlan {
+        crate::persistent_decode::RopePlan::single(self.config.rope_theta, self.decode_dims().n_layers)
     }
 
     fn decode_token_embedding(&self) -> Arc<[f32]> {
@@ -872,6 +876,43 @@ mod tests {
             "Phi3 persistent decode diverged from the non-cached forward: per-step \
              max|diff| at absolute positions 3..=5 = {diffs:?} (limit \
              {DECODE_ORACLE_ABS:e})",
+        );
+    }
+
+    /// Node count of Phi3's held decode graph — see
+    /// [`phi3_held_decode_graph_has_not_grown`]. Measured, not predicted.
+    const PHI3_DECODE_GRAPH_NODES: usize = 130;
+
+    fn gap029_phi3_decode_graph_nodes() -> usize {
+        let cfg = decode_cfg();
+        let model = Phi3Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let dev = Device::cpu();
+        let mut cache = KvCache::with_capacity(
+            cfg.num_hidden_layers, cfg.num_key_value_heads, cfg.head_dim(),
+            6, DType::F32, &dev,
+        ).expect("with_capacity");
+        let mut ctx = InferenceContext::new(dev);
+        let mut session: Option<DecodeSession> = None;
+        model.forward_with_kv_context_persistent(&[1, 2, 3], &mut cache, &mut ctx, &mut session)
+            .expect("prefill");
+        model.forward_with_kv_context_persistent(&[4], &mut cache, &mut ctx, &mut session)
+            .expect("decode");
+        session.expect("session built on the first decode token").graph_node_count()
+    }
+
+    /// **STRUCTURAL baseline for a fully uniform family**, captured 2026-08-13
+    /// before the Gemma3 seam work. Phi3 is single-variant on BOTH axes (one
+    /// mask, one RoPE base) and has no embedding scale, so it is the strictest
+    /// witness that the new machinery costs a non-Gemma family literally
+    /// nothing: `embed_scale == None` must emit no multiply and
+    /// `n_rope_variants == 1` must emit neither a slice nor a reshape.
+    ///
+    /// A logits golden cannot see node growth. This can.
+    #[test]
+    fn phi3_held_decode_graph_has_not_grown() {
+        assert_eq!(
+            gap029_phi3_decode_graph_nodes(), PHI3_DECODE_GRAPH_NODES,
+            "Phi3's held decode graph changed size",
         );
     }
 

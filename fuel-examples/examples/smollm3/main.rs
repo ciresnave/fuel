@@ -136,6 +136,10 @@ fn main() -> Result<()> {
     let llama_weights: LlamaWeights = LlamaWeights::load_from_mmapped(&st, &llama_cfg)
         .map_err(|e| E::msg(format!("load weights: {e}")))?;
     let weights = SmolLm3Weights {
+        // A fresh weight-set identity: these weights are loaded here, not shared
+        // with the `LlamaWeights` they were read through, so a held decode plan
+        // must be able to tell them apart.
+        instance: fuel::decode_shape::ModelInstanceId::next(),
         token_embedding: llama_weights.token_embedding,
         layers: llama_weights.layers,
         final_norm_gain: llama_weights.final_norm_gain,

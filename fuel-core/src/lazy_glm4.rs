@@ -557,7 +557,7 @@ impl DecodeBackbone for Glm4Model {
             // divergence from the LLaMA shape; the interleaved *application*
             // lives in `apply_layer_with_kv_writes`.
             rope_width: cfg.rope_dim(),
-            rope_base: cfg.rope_theta,
+            embed_scale: None,
         }
     }
 
@@ -567,6 +567,10 @@ impl DecodeBackbone for Glm4Model {
 
     fn decode_mask_plan(&self) -> MaskPlan {
         Glm4Model::decode_mask_plan(self)
+    }
+
+    fn decode_rope_plan(&self) -> crate::persistent_decode::RopePlan {
+        crate::persistent_decode::RopePlan::single(self.config.rope_theta, self.decode_dims().n_layers)
     }
 
     fn decode_token_embedding(&self) -> Arc<[f32]> {
