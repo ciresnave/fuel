@@ -164,14 +164,71 @@ fn map_element_kind(dt: DType) -> Option<ElementKind> {
 /// tokens are `"sm80"` / `"sm89"` / `"sm90a"`. Accept either the underscore or
 /// bare form and map to the single SKU Baracuda ships per family. `"cpu"` and
 /// any unshipped SKU decline (no build matrix ⇒ no key).
+///
+/// ⚠️ **`"90"` and `"90a"` both map to [`ArchSku::Sm90a`] — a non-injective arm
+/// on an axis where injectivity is required**, since a capability token NAMES a
+/// target and is therefore an identity, not a classification. It is
+/// **lossy-but-FORCED rather than a mistake**: there is no `ArchSku::Sm90` at
+/// the locked `baracuda-kernel-vocab 0.0.1-alpha.78` to map `"90"` onto. See
+/// [`arch_sku_digits`] for the compile-time trap that fires when that changes.
 fn map_arch_sku(arch: &str) -> Option<ArchSku> {
     let digits = arch.strip_prefix("sm_").or_else(|| arch.strip_prefix("sm"))?;
     Some(match digits {
         "80" => ArchSku::Sm80,
         "89" => ArchSku::Sm89,
+        // NOT splittable today — see `arch_sku_digits`. `"90"` is the ALIAS;
+        // `"90a"` is this SKU's canonical spelling.
         "90" | "90a" => ArchSku::Sm90a,
         _ => return None,
     })
+}
+
+/// The canonical arch-tag digits of each [`ArchSku`] **this build** knows.
+///
+/// # This function exists in order to FAIL TO COMPILE
+///
+/// [`map_arch_sku`] matches on Fuel's arch-tag **string**, so it is
+/// *structurally* incapable of noticing a new `ArchSku`: its scrutinee is a
+/// `&str`, and a variant added upstream changes nothing it can see. This
+/// match's scrutinee **is** `ArchSku`, so it is the one place in Fuel where a
+/// variant added to a vocabulary we do not own becomes an `E0004` instead of a
+/// silent change in behaviour.
+///
+/// Upstream intends precisely this: `baracuda-kernel-vocab`'s own doc calls
+/// `ArchSku` *"intentionally NOT `#[non_exhaustive]`"*, because a new arch
+/// *"deserves to surface as a build break across every match site"* (Blackwell
+/// `Sm100a` is on their roadmap). Verified at the locked `0.0.1-alpha.78`,
+/// which carries exactly `Sm80` / `Sm89` / `Sm90a`.
+///
+/// # What to do when this breaks
+///
+/// It breaks on a **baracuda bump**, not on a Fuel change — that is the point
+/// (GAP-179). When it does:
+///
+/// 1. add the arm here;
+/// 2. add the arm to [`map_arch_sku`];
+/// 3. **if the new variant is `Sm90`, SPLIT the `"90" | "90a"` arm.** Today
+///    both spellings collapse onto `Sm90a` because there is no `Sm90` to map
+///    `"90"` onto. The moment there is, the collapse stops being merely lossy
+///    and becomes a **wrong answer**: `sm_90` would claim Hopper-*specialized*
+///    kernels that a portable-baseline `sm90` target was never built for.
+///    `Sm90` already exists in `unpopped-vocab 0.2.0`, so the chain is
+///    unpopped-vocab → baracuda re-publishes its vocab → Fuel bumps.
+///
+/// Nothing inside Fuel changes to cause that, which is why it needs a trap
+/// rather than vigilance: without this, the first symptom would be a mis-keyed
+/// structure key, not a build error.
+// Deliberately unused in production — being type-checked IS the job. Dead code
+// is still exhaustiveness-checked, so the `E0004` fires on a plain
+// `cargo check`, not only when tests are compiled.
+#[allow(dead_code)]
+fn arch_sku_digits(sku: ArchSku) -> &'static str {
+    match sku {
+        ArchSku::Sm80 => "80",
+        ArchSku::Sm89 => "89",
+        // `Sm90a`, NOT `Sm90` — see the split note above.
+        ArchSku::Sm90a => "90a",
+    }
 }
 
 /// Map a Fuel `OpKind` Debug name (the `op_class` string the emission site
@@ -338,12 +395,97 @@ mod tests {
         assert_eq!(map_element_kind(DType::F4), None);
     }
 
+    /// Every [`ArchSku`] this build knows is reachable from its own canonical
+    /// digits, in both accepted spellings.
+    ///
+    /// This is what keeps [`arch_sku_digits`] from being satisfiable by an arm
+    /// that returns a spelling [`map_arch_sku`] does not accept — the witness
+    /// forces a decision, and this forces that decision to be a *correct* one.
+    ///
+    /// ⚠️ **`KNOWN` is CONVENIENCE, NOT THE ANCHOR.** A hand-written list
+    /// cannot detect a variant added upstream — it just stays short, silently.
+    /// `arch_sku_digits` can, and breaks *first*, because it is the only
+    /// construct here whose scrutinee is the enum itself. If you are reading
+    /// this because the list looks stale, the error you should already have
+    /// seen is an `E0004` in that match.
+    #[test]
+    fn every_known_arch_sku_round_trips_through_its_canonical_digits() {
+        const KNOWN: &[ArchSku] = &[ArchSku::Sm80, ArchSku::Sm89, ArchSku::Sm90a];
+
+        for &sku in KNOWN {
+            let digits = arch_sku_digits(sku);
+            assert_eq!(
+                map_arch_sku(&format!("sm_{digits}")),
+                Some(sku),
+                "sm_{digits} must select {sku:?}"
+            );
+            assert_eq!(
+                map_arch_sku(&format!("sm{digits}")),
+                Some(sku),
+                "sm{digits} (bare form) must select {sku:?}"
+            );
+        }
+
+        // The CANONICAL direction must be injective, or the round-trip above is
+        // satisfiable by a table that collapses two variants onto one spelling
+        // — which is exactly the defect this row is about, one level up.
+        let mut seen = std::collections::BTreeSet::new();
+        for &sku in KNOWN {
+            assert!(
+                seen.insert(arch_sku_digits(sku)),
+                "two ArchSku variants share canonical digits {:?}",
+                arch_sku_digits(sku)
+            );
+        }
+        assert_eq!(seen.len(), 3, "non-vacuity: the known-SKU set is not empty");
+    }
+
+    // ⚠️ THIS TEST AND `the_bare_90_alias_...` ARE NOT REDUNDANT, and the
+    // reason is not visible by reading them. MEASURED by sabotage: setting
+    // `arch_sku_digits(Sm90a)` to the ALIAS `"90"` leaves the round-trip above
+    // GREEN — because `map_arch_sku` accepts `"90"` too, so a wrong canonical
+    // spelling still round-trips. Only the explicit
+    // `arch_sku_digits(Sm90a) == "90a"` assertion catches it. Do not delete
+    // that one on the grounds that this one covers it; it does not.
+
+    /// The one NON-INJECTIVE arm, pinned together with its reason and expiry.
+    ///
+    /// `"90"` and `"90a"` are two distinct targets sharing one internal value.
+    /// By Fuel's own cut — injectivity is *mandatory* where the output is an
+    /// IDENTITY, optional where it is a CLASSIFICATION — a capability token
+    /// names a target, so injectivity is required and this arm violates it.
+    ///
+    /// It is nevertheless **correct today**, because there is nothing else to
+    /// map `"90"` onto. That is the distinction this test exists to record:
+    /// LATENT, not live-wrong. [`arch_sku_digits`] is what converts it from a
+    /// fact someone has to remember into a build failure.
+    #[test]
+    fn the_bare_90_alias_is_a_forced_collapse_not_a_mapping() {
+        assert_eq!(
+            map_arch_sku("sm_90"),
+            map_arch_sku("sm_90a"),
+            "the collapse is the documented state; if this now FAILS, the arm \
+             was split and this test should be deleted, not repaired"
+        );
+        assert_eq!(map_arch_sku("sm_90"), Some(ArchSku::Sm90a));
+        // `"90a"` is the CANONICAL spelling of that SKU, so `"90"` is the extra
+        // one. That asymmetry is what makes the eventual split mechanical:
+        // `Sm90` takes `"90"` and this arm keeps `"90a"`.
+        assert_eq!(arch_sku_digits(ArchSku::Sm90a), "90a");
+    }
+
     /// The arch + op-class mapping (incl. the underscore-tolerant form and the
     /// arity-driven elementwise families).
     #[test]
     fn arch_and_op_class_mapping() {
         assert_eq!(map_arch_sku("sm_80"), Some(ArchSku::Sm80));
         assert_eq!(map_arch_sku("sm_89"), Some(ArchSku::Sm89));
+        // ⚠️ This asserts what the code DOES, not what is RIGHT — the same
+        // shape as the `map_element_kind(U32)` line above before GAP-171 fixed
+        // it. `sm_90` landing on the Hopper-SPECIALIZED SKU is a forced
+        // collapse, not a mapping; see `the_bare_90_alias_is_a_forced_collapse`
+        // for the reason and the expiry. Kept because it pins today's
+        // behaviour, and it MUST change when `ArchSku::Sm90` lands (GAP-179).
         assert_eq!(map_arch_sku("sm_90"), Some(ArchSku::Sm90a));
         assert_eq!(map_arch_sku("sm89"), Some(ArchSku::Sm89));
         assert_eq!(map_arch_sku("cpu"), None);
