@@ -582,6 +582,15 @@ impl CudaDevice {
                 let data = self.alloc_zeros::<F8E4M3>(elem_count)?;
                 CudaStorageSlice::F8E4M3(data)
             }
+            // GAP-168(c): Bool is a REAL allocation, not a decline. One byte per
+            // element and all-zero is the valid `false` bit pattern, so `alloc_zeros`
+            // is correct as-is. It lands in `CudaStorageSlice::Bool` — NOT `U8` —
+            // which is the whole point: the two are byte-identical, so wiring Bool
+            // into U8's slot would work by accident and erase the distinction.
+            DType::Bool => {
+                let data = self.alloc_zeros::<u8>(elem_count)?;
+                CudaStorageSlice::Bool(data)
+            }
             // GAP-161: F8E5M2 and F8E6M2 decline for a STORAGE reason (no variant
             // / unauthored encoding), single-sourced from `cuda_storage_status`
             // rather than restated here and NOT mislabelled as "dummy types". The
@@ -630,7 +639,12 @@ impl CudaDevice {
                 curand.0.uniform_f64(&mut data).w()?;
                 CudaStorageSlice::F64(data)
             }
-            DType::F8E4M3 | DType::F8E5M2 | DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 | DType::F8E6M2 => {
+            // GAP-168(c): Bool declines here deliberately — a continuous uniform
+            // has no meaning on a two-valued type, and PyTorch rejects it too
+            // (`torch.rand(..., dtype=torch.bool)` errors). The decline is honest
+            // rather than lossy: `UnsupportedDtype` carries `dtype`, so Bool's
+            // decline is a DISTINCT value from every other member of this arm.
+            DType::F8E4M3 | DType::F8E5M2 | DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 | DType::F8E6M2 | DType::Bool => {
                 Err(CudaError::UnsupportedDtype {
                     dtype,
                     op: "rand_uniform",
@@ -689,7 +703,9 @@ impl CudaDevice {
                 curand.0.normal_f64(&mut data, mean, std).w()?;
                 CudaStorageSlice::F64(data)
             }
-            DType::F8E4M3 | DType::F8E5M2 | DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 | DType::F8E6M2 => {
+            // GAP-168(c): Bool declines — see `rand_uniform` above; a normal
+            // distribution has no meaning on a two-valued type.
+            DType::F8E4M3 | DType::F8E5M2 | DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 | DType::F8E6M2 | DType::Bool => {
                 Err(CudaError::UnsupportedDtype {
                     dtype,
                     op: "rand_normal",
@@ -749,6 +765,16 @@ impl CudaDevice {
             DType::F8E4M3 => {
                 let data = unsafe { self.alloc::<F8E4M3>(elem_count) }?;
                 CudaStorageSlice::F8E4M3(data)
+            }
+            // GAP-168(c): Bool allocates for real — one byte per element, same as
+            // `U8`, but into `CudaStorageSlice::Bool` so the two stay distinct.
+            // Uninit is as safe here as for any other dtype: `u8` has no invalid
+            // bit patterns, so an uninitialized Bool buffer is at worst
+            // non-canonical (a byte outside {0,1}), never undefined — and every
+            // Bool consumer normalizes with `!= 0`.
+            DType::Bool => {
+                let data = unsafe { self.alloc::<u8>(elem_count) }?;
+                CudaStorageSlice::Bool(data)
             }
             // GAP-161: F8E5M2 and F8E6M2 decline for a STORAGE reason (no variant
             // / unauthored encoding), single-sourced from `cuda_storage_status`
@@ -816,6 +842,12 @@ impl CudaDevice {
                 let data = self.clone_htod(storage)?;
                 CudaStorageSlice::F8E4M3(data)
             }
+            // GAP-168(c): Bool transfers as raw bytes (it IS `&[u8]`), but lands in
+            // the Bool slice variant, never `U8`.
+            HostBufferRef::Bool(storage) => {
+                let data = self.clone_htod(storage)?;
+                CudaStorageSlice::Bool(data)
+            }
             HostBufferRef::F4(_)
             | HostBufferRef::F6E2M3(_)
             | HostBufferRef::F6E3M2(_)
@@ -879,6 +911,11 @@ impl CudaDevice {
                 let data = self.clone_htod(storage)?;
                 CudaStorageSlice::F8E4M3(data)
             }
+            // GAP-168(c): Bool is byte-backed; transfers as bytes, lands as Bool.
+            HostBuffer::Bool(storage) => {
+                let data = self.clone_htod(storage)?;
+                CudaStorageSlice::Bool(data)
+            }
             HostBuffer::F4(_)
             | HostBuffer::F6E2M3(_)
             | HostBuffer::F6E3M2(_)
@@ -941,6 +978,11 @@ impl CudaDevice {
             HostBuffer::F8E4M3(storage) => {
                 let data = self.clone_htod(&storage)?;
                 CudaStorageSlice::F8E4M3(data)
+            }
+            // GAP-168(c): Bool is byte-backed; transfers as bytes, lands as Bool.
+            HostBuffer::Bool(storage) => {
+                let data = self.clone_htod(&storage)?;
+                CudaStorageSlice::Bool(data)
             }
             HostBuffer::F4(_)
             | HostBuffer::F6E2M3(_)

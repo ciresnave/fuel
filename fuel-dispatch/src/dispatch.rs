@@ -3751,6 +3751,7 @@ cpu_cast_wrapper!(
         DType::I16     => fuel_cpu_backend::byte_kernels::cast_i16_to_f32,
         DType::I32     => fuel_cpu_backend::byte_kernels::cast_i32_to_f32,
         DType::I64     => fuel_cpu_backend::byte_kernels::cast_i64_to_f32,
+        DType::Bool    => fuel_cpu_backend::byte_kernels::cast_bool_to_f32,
     },
 );
 cpu_cast_wrapper!(
@@ -3768,6 +3769,7 @@ cpu_cast_wrapper!(
         DType::I16     => fuel_cpu_backend::byte_kernels::cast_i16_to_f64,
         DType::I32     => fuel_cpu_backend::byte_kernels::cast_i32_to_f64,
         DType::I64     => fuel_cpu_backend::byte_kernels::cast_i64_to_f64,
+        DType::Bool    => fuel_cpu_backend::byte_kernels::cast_bool_to_f64,
     },
 );
 cpu_cast_wrapper!(
@@ -3785,6 +3787,7 @@ cpu_cast_wrapper!(
         DType::I16     => fuel_cpu_backend::byte_kernels::cast_i16_to_bf16,
         DType::I32     => fuel_cpu_backend::byte_kernels::cast_i32_to_bf16,
         DType::I64     => fuel_cpu_backend::byte_kernels::cast_i64_to_bf16,
+        DType::Bool    => fuel_cpu_backend::byte_kernels::cast_bool_to_bf16,
     },
 );
 cpu_cast_wrapper!(
@@ -3802,6 +3805,7 @@ cpu_cast_wrapper!(
         DType::I16     => fuel_cpu_backend::byte_kernels::cast_i16_to_f16,
         DType::I32     => fuel_cpu_backend::byte_kernels::cast_i32_to_f16,
         DType::I64     => fuel_cpu_backend::byte_kernels::cast_i64_to_f16,
+        DType::Bool    => fuel_cpu_backend::byte_kernels::cast_bool_to_f16,
     },
 );
 cpu_cast_wrapper!(
@@ -3819,6 +3823,7 @@ cpu_cast_wrapper!(
         DType::I16     => fuel_cpu_backend::byte_kernels::cast_i16_to_f8e4m3,
         DType::I32     => fuel_cpu_backend::byte_kernels::cast_i32_to_f8e4m3,
         DType::I64     => fuel_cpu_backend::byte_kernels::cast_i64_to_f8e4m3,
+        DType::Bool    => fuel_cpu_backend::byte_kernels::cast_bool_to_f8e4m3,
     },
 );
 cpu_cast_wrapper!(
@@ -3836,6 +3841,7 @@ cpu_cast_wrapper!(
         DType::I16     => fuel_cpu_backend::byte_kernels::cast_i16_to_u8,
         DType::I32     => fuel_cpu_backend::byte_kernels::cast_i32_to_u8,
         DType::I64     => fuel_cpu_backend::byte_kernels::cast_i64_to_u8,
+        DType::Bool    => fuel_cpu_backend::byte_kernels::cast_bool_to_u8,
     },
 );
 cpu_cast_wrapper!(
@@ -3853,6 +3859,7 @@ cpu_cast_wrapper!(
         DType::I16     => fuel_cpu_backend::byte_kernels::cast_i16_to_i8,
         DType::I32     => fuel_cpu_backend::byte_kernels::cast_i32_to_i8,
         DType::I64     => fuel_cpu_backend::byte_kernels::cast_i64_to_i8,
+        DType::Bool    => fuel_cpu_backend::byte_kernels::cast_bool_to_i8,
     },
 );
 cpu_cast_wrapper!(
@@ -3870,6 +3877,7 @@ cpu_cast_wrapper!(
         DType::I16     => fuel_cpu_backend::byte_kernels::cast_i16_to_u32,
         DType::I32     => fuel_cpu_backend::byte_kernels::cast_i32_to_u32,
         DType::I64     => fuel_cpu_backend::byte_kernels::cast_i64_to_u32,
+        DType::Bool    => fuel_cpu_backend::byte_kernels::cast_bool_to_u32,
     },
 );
 cpu_cast_wrapper!(
@@ -3887,6 +3895,7 @@ cpu_cast_wrapper!(
         DType::U32     => fuel_cpu_backend::byte_kernels::cast_u32_to_i16,
         DType::I32     => fuel_cpu_backend::byte_kernels::cast_i32_to_i16,
         DType::I64     => fuel_cpu_backend::byte_kernels::cast_i64_to_i16,
+        DType::Bool    => fuel_cpu_backend::byte_kernels::cast_bool_to_i16,
     },
 );
 cpu_cast_wrapper!(
@@ -3904,6 +3913,7 @@ cpu_cast_wrapper!(
         DType::U32     => fuel_cpu_backend::byte_kernels::cast_u32_to_i32,
         DType::I16     => fuel_cpu_backend::byte_kernels::cast_i16_to_i32,
         DType::I64     => fuel_cpu_backend::byte_kernels::cast_i64_to_i32,
+        DType::Bool    => fuel_cpu_backend::byte_kernels::cast_bool_to_i32,
     },
 );
 cpu_cast_wrapper!(
@@ -3921,6 +3931,29 @@ cpu_cast_wrapper!(
         DType::U32     => fuel_cpu_backend::byte_kernels::cast_u32_to_i64,
         DType::I16     => fuel_cpu_backend::byte_kernels::cast_i16_to_i64,
         DType::I32     => fuel_cpu_backend::byte_kernels::cast_i32_to_i64,
+        DType::Bool    => fuel_cpu_backend::byte_kernels::cast_bool_to_i64,
+    },
+);
+
+// Cast TO Bool (GAP-168) -- the 12th target. `Bool` is byte-backed like `U8`,
+// so this wrapper exists precisely to keep the two DISTINGUISHABLE: every arm
+// runs a real `!= 0` conversion rather than reinterpreting the source bytes.
+cpu_cast_wrapper!(
+    cast_to_bool_cpu_wrapper,
+    DType::Bool,
+    "bool",
+    {
+        DType::F32     => fuel_cpu_backend::byte_kernels::cast_f32_to_bool,
+        DType::F64     => fuel_cpu_backend::byte_kernels::cast_f64_to_bool,
+        DType::F16     => fuel_cpu_backend::byte_kernels::cast_f16_to_bool,
+        DType::BF16    => fuel_cpu_backend::byte_kernels::cast_bf16_to_bool,
+        DType::F8E4M3  => fuel_cpu_backend::byte_kernels::cast_f8e4m3_to_bool,
+        DType::U8      => fuel_cpu_backend::byte_kernels::cast_u8_to_bool,
+        DType::I8      => fuel_cpu_backend::byte_kernels::cast_i8_to_bool,
+        DType::U32     => fuel_cpu_backend::byte_kernels::cast_u32_to_bool,
+        DType::I16     => fuel_cpu_backend::byte_kernels::cast_i16_to_bool,
+        DType::I32     => fuel_cpu_backend::byte_kernels::cast_i32_to_bool,
+        DType::I64     => fuel_cpu_backend::byte_kernels::cast_i64_to_bool,
     },
 );
 
@@ -6028,6 +6061,12 @@ pub fn register_cuda_kernels(table: &mut KernelBindingTable) {
     let copy_dtypes = [
         DType::F32, DType::BF16, DType::F16, DType::U32,
         DType::F64, DType::U8, DType::I16, DType::I32, DType::I64,
+        // GAP-168(c): Bool (a comparison mask) must be copyable — realize splices
+        // `Op::Copy { target: Cpu }` to materialize a device result to host, so
+        // WITHOUT this every realized CUDA comparison fails to dispatch. This is a
+        // byte-level transfer via `to_cpu_bytes`, so no new kernel is required —
+        // only the registration. Mirrors the CPU list above, which already has it.
+        DType::Bool,
     ];
     for dt in copy_dtypes {
         table.register(Copy, &[dt, dt], cuda, copy_from_cuda_wrapper);

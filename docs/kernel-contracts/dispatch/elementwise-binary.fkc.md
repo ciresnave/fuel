@@ -1596,7 +1596,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: fixed(U8)              # mask: 1 where predicate holds, 0 otherwise
+      dtype_rule: fixed(BOOL)            # mask: 1 where predicate holds, 0 otherwise (GAP-168c)
       shape_rule: broadcast(lhs, rhs)
       layout_guarantee: contiguous
       aliasing: none
@@ -1664,7 +1664,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: fixed(U8)
+      dtype_rule: fixed(BOOL)
       shape_rule: broadcast(lhs, rhs)
       layout_guarantee: contiguous
       aliasing: none
@@ -1732,7 +1732,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: fixed(U8)
+      dtype_rule: fixed(BOOL)
       shape_rule: broadcast(lhs, rhs)
       layout_guarantee: contiguous
       aliasing: none
@@ -1800,7 +1800,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: fixed(U8)
+      dtype_rule: fixed(BOOL)
       shape_rule: broadcast(lhs, rhs)
       layout_guarantee: contiguous
       aliasing: none
@@ -1868,7 +1868,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: fixed(U8)
+      dtype_rule: fixed(BOOL)
       shape_rule: broadcast(lhs, rhs)
       layout_guarantee: contiguous
       aliasing: none
@@ -1936,7 +1936,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: fixed(U8)
+      dtype_rule: fixed(BOOL)
       shape_rule: broadcast(lhs, rhs)
       layout_guarantee: contiguous
       aliasing: none
@@ -1993,7 +1993,7 @@ kernel_revision_hash: auto
 accept:
   inputs:
     - name: cond
-      dtypes: [U8]                        # validated == U8 in the wrapper (dispatch.rs:483)
+      dtypes: [BOOL]                      # GAP-168(c): cond is a Bool mask, validated in the wrapper
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
       rank: any
       shape_constraint: broadcast_to=a
@@ -2012,7 +2012,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: passthrough(a)          # output dtype is the a/b dtype T, NOT the U8 cond
+      dtype_rule: passthrough(a)          # output dtype is the a/b dtype T, NOT the Bool cond
       shape_rule: broadcast(cond, a, b)
       layout_guarantee: contiguous
       aliasing: none

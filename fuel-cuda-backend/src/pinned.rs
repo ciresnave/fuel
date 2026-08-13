@@ -61,6 +61,9 @@ pub enum PinnedHostStorage {
     F6E3M2(PinnedBuffer<u8>),
     F4(PinnedBuffer<u8>),
     F8E8M0(PinnedBuffer<u8>),
+    /// Boolean mask (GAP-168(c)) — one byte per element, byte-identical to `U8`
+    /// but a DISTINCT variant so a pinned `Bool` buffer is never staged as `U8`.
+    Bool(PinnedBuffer<u8>),
 }
 
 impl std::fmt::Debug for PinnedHostStorage {
@@ -109,11 +112,19 @@ impl PinnedHostStorage {
     ctor!(zeros_f32, F32, f32);
     ctor!(zeros_f64, F64, f64);
     ctor!(zeros_f8e4m3, F8E4M3, float8::F8E4M3);
+    // GAP-168(c): Bool stages through pinned memory like any other dtype. One
+    // byte per element, and all-zero is the valid `false` pattern.
+    ctor!(zeros_bool, Bool, u8);
 
     /// Allocate a zeroed pinned buffer for any supported dtype.
     pub fn zeros(dev: &CudaDevice, dtype: DType, len: usize) -> Result<Self> {
         match dtype {
             DType::U8 => Self::zeros_u8(dev, len),
+            // GAP-168(c). NOTE: this match ends in a wildcard, so a missing arm
+            // here is NOT a compile error — it would be a silent runtime decline
+            // on every pinned Bool staging buffer. Added deliberately, not by
+            // following the compiler.
+            DType::Bool => Self::zeros_bool(dev, len),
             DType::U32 => Self::zeros_u32(dev, len),
             DType::I16 => Self::zeros_i16(dev, len),
             DType::I32 => Self::zeros_i32(dev, len),
@@ -149,6 +160,7 @@ impl PinnedHostStorage {
             Self::F6E3M2(_) => DType::F6E3M2,
             Self::F4(_) => DType::F4,
             Self::F8E8M0(_) => DType::F8E8M0,
+            Self::Bool(_) => DType::Bool,
         }
     }
 
@@ -169,6 +181,7 @@ impl PinnedHostStorage {
             Self::F6E3M2(b) => b.len(),
             Self::F4(b) => b.len(),
             Self::F8E8M0(b) => b.len(),
+            Self::Bool(b) => b.len(),
         }
     }
 
@@ -199,6 +212,7 @@ impl PinnedHostStorage {
             Self::F6E3M2(b) => (b.as_mut_ptr() as *mut u8, b.len()),
             Self::F4(b) => (b.as_mut_ptr() as *mut u8, b.len()),
             Self::F8E8M0(b) => (b.as_mut_ptr() as *mut u8, b.len()),
+            Self::Bool(b) => (b.as_mut_ptr() as *mut u8, b.len()),
         };
         if bytes == 0 || ptr.is_null() {
             return None;
@@ -248,6 +262,7 @@ impl HostStorage for PinnedHostStorage {
             Self::F6E3M2(b) => HostBufferRef::F6E3M2(&**b),
             Self::F4(b) => HostBufferRef::F4(&**b),
             Self::F8E8M0(b) => HostBufferRef::F8E8M0(&**b),
+            Self::Bool(b) => HostBufferRef::Bool(&**b),
         })
     }
 

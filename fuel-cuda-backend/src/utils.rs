@@ -29,6 +29,17 @@ pub trait Map1 {
             S::F32(s) => S::F32(self.f(s, d, l)?),
             S::F64(s) => S::F64(self.f(s, d, l)?),
             S::F8E4M3(s) => S::F8E4M3(self.f(s, d, l)?),
+            // GAP-168(c): Bool declines for a DIFFERENT reason than the raw-byte
+            // dummies below — those have no authored encoding, whereas Bool has
+            // real storage and simply has no elementwise ARITHMETIC. Its own arm
+            // with its own message, so the two reasons stay distinguishable
+            // instead of collapsing to one value.
+            S::Bool(_) => {
+                fuel_ir::bail!(
+                    "Map1 does not support Bool: elementwise arithmetic has no \
+                     meaning on a truth value (cast to a numeric dtype first)."
+                );
+            }
             S::F4(_) | S::F6E2M3(_) | S::F6E3M2(_) | S::F8E8M0(_) => {
                 fuel_ir::bail!("Map1 does not uspport this dtype.");
             }
@@ -163,6 +174,15 @@ pub trait Map1Any {
             S::F32(s) => self.f(s, d, l, S::F32)?,
             S::F64(s) => self.f(s, d, l, S::F64)?,
             S::F8E4M3(s) => self.f(s, d, l, S::F8E4M3)?,
+            // GAP-168(c): see the sibling `map` above — Bool has real storage but
+            // no elementwise arithmetic, a distinct reason from the dummies'
+            // missing encoding.
+            S::Bool(_) => {
+                fuel_ir::bail!(
+                    "Map1 does not support Bool: elementwise arithmetic has no \
+                     meaning on a truth value (cast to a numeric dtype first)."
+                );
+            }
             S::F4(_) | S::F6E2M3(_) | S::F6E3M2(_) | S::F8E8M0(_) => {
                 fuel_ir::bail!("Map1 does not uspport this dtype.");
             }

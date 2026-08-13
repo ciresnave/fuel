@@ -20799,12 +20799,55 @@ mod phase_a1_wrapper_tests {
         assert_eq!(mask.dtype(), DType::Bool, "gt yields Bool, not U8");
         assert_eq!(mask.realize_u8(), vec![0, 1, 1, 0], "mask bytes are 0/1");
 
-        // NOTE (GAP-168(c) follow-up): the `to_dtype(U8→Bool)` real-`!=0`-
-        // conversion discrimination (cpu_to_dtype already implements it, dyn_impl.rs)
-        // is not yet DISPATCHABLE — Cast is registered per (src,dst) pair from
-        // cast.fkc.md, and the ~20 Bool cast pairs (Bool↔every numeric) plus their
-        // per-pair kernels are a mapped follow-up. Tracked with the where/masked_fill
-        // FKC cond/mask bindings and the CUDA/Vulkan/Metal replication.
+        // ---- The cast discrimination, now that the 22 Bool pairs are wired ----
+        //
+        // NEGATIVE CONTROL FIRST, or the assertion below is vacuous: build a U8
+        // tensor that genuinely holds 5. If this line ever came back as 0/1, the
+        // real test would pass for the wrong reason — it would be comparing 0/1
+        // against 0/1 and could not tell a conversion from a reinterpret.
+        let u8_vals = t
+            .const_f32_like(vec![0.0, 5.0, 3.0, 0.0], vec![4])
+            .to_dtype(DType::U8)
+            .unwrap();
+        assert_eq!(u8_vals.dtype(), DType::U8);
+        assert_eq!(
+            u8_vals.realize_u8(),
+            vec![0, 5, 3, 0],
+            "negative control: the U8 source must really hold 5 and 3, else the \
+             conversion assertion below cannot discriminate"
+        );
+
+        // THE DISCRIMINATION: U8 -> Bool is a real `!= 0` conversion. A byte
+        // reinterpret would yield [0, 5, 3, 0] — byte-identical storage makes
+        // that the silently-correct-looking failure. A conversion yields 0/1.
+        let as_bool = u8_vals.to_dtype(DType::Bool).unwrap();
+        assert_eq!(as_bool.dtype(), DType::Bool);
+        assert_eq!(
+            as_bool.realize_u8(),
+            vec![0, 1, 1, 0],
+            "U8->Bool must CONVERT (5 -> 1), not reinterpret (5 -> 5)"
+        );
+
+        // And back out: Bool -> F32 is exactly 0.0/1.0.
+        assert_eq!(
+            as_bool.to_dtype(DType::F32).unwrap().realize_f32(),
+            vec![0.0, 1.0, 1.0, 0.0],
+            "Bool->F32 yields 0.0/1.0"
+        );
+        // Bool -> U8 keeps the canonical 0/1 (this direction IS byte-preserving,
+        // which is fine — it is the OTHER direction that must not be).
+        assert_eq!(mask.to_dtype(DType::U8).unwrap().realize_u8(), vec![0, 1, 1, 0]);
+
+        // FINALLY, the two are not INTERCHANGEABLE at the API, which is what
+        // stops a numeric mask being coerced silently: `masked_fill` requires a
+        // Bool mask and rejects U8 at GRAPH-BUILD time, so the cast is explicit
+        // at the call site rather than implied.
+        let err = t.masked_fill(&u8_vals, fuel_ir::Scalar::F32(-9.0));
+        assert!(
+            err.is_err(),
+            "a U8 mask must be REJECTED by masked_fill — Bool and U8 are \
+             byte-identical, so accepting it would 'work' and erase the distinction"
+        );
     }
 
     #[test]
