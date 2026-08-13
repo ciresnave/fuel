@@ -172,7 +172,7 @@ mod tests {
             assert_eq!(
                 element_kind_to_dtype(ek),
                 Some(dt),
-                "{dt:?} -> {ek:?} -> back must be the identity; a non-identity                  round trip means a request describes operands the caller does                  not have",
+                "{dt:?} -> {ek:?} -> back must be the identity; a non-identity round trip means a request describes operands the caller does not have",
             );
         }
 
@@ -181,7 +181,7 @@ mod tests {
         // satisfy every assertion above.
         assert!(
             dtype_to_element_kind(DType::I16).is_none(),
-            "I16 has no ElementKind spelling (the seam has S8/U8/I32/I64/U32, no 16-bit int) — it must decline, not substitute — a lossy              mapping asks about a different kernel than the caller's",
+            "I16 has no ElementKind spelling (the seam has S8/U8/I32/I64/U32, no 16-bit int) — it must decline, not substitute — a lossy mapping asks about a different kernel than the caller's",
         );
     }
 

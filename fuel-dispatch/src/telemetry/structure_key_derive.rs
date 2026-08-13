@@ -1081,12 +1081,12 @@ mod tests {
 
         assert_eq!(
             diagonal, plain,
-            "a non-deviating (acc+mp) must produce a BYTE-IDENTICAL token; any              difference means the field is not additive and every token a              consumer already holds has silently changed meaning",
+            "a non-deviating (acc+mp) must produce a BYTE-IDENTICAL token; any difference means the field is not additive and every token a consumer already holds has silently changed meaning",
         );
         // §6.7-0013(e): omitted-when-absent, NOT the reduce field's `-`.
         assert!(
             !plain.ends_with("|-|-") && !diagonal.ends_with("|-|-"),
-            "a spurious trailing `|-` means the reduce field's MANDATORY              convention was applied to an OMITTED-WHEN-ABSENT field: {diagonal}",
+            "a spurious trailing `|-` means the reduce field's MANDATORY convention was applied to an OMITTED-WHEN-ABSENT field: {diagonal}",
         );
     }
 
@@ -1141,7 +1141,7 @@ mod tests {
         // Control: the same gem cell derives fine with no (acc+mp).
         assert!(
             derive_structure_key_token(FuelOpCategory::Contraction(cell), &ops, "cuda:sm89").is_some(),
-            "control: the gem cell must derive without an (acc+mp), or the              decline below proves nothing about coexistence",
+            "control: the gem cell must derive without an (acc+mp), or the decline below proves nothing about coexistence",
         );
         assert_eq!(
             derive_structure_key_token_with_acc_mp(

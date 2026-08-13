@@ -68,7 +68,7 @@ pub fn dtype_to_fdx(d: DType) -> crate::Result<u16> {
         DType::F8E5M2 => {
             return Err(crate::Error::UnsupportedDTypeForOp(
                 DType::F8E5M2,
-                "no FDX logical-dtype code has been assigned to F8E5M2 yet                  (GAP-097); declining rather than inferring one from adjacency",
+                "no FDX logical-dtype code has been assigned to F8E5M2 yet (GAP-097); declining rather than inferring one from adjacency",
             ));
         }
         // GAP-045: encoding unauthored — decline, never invent a wire code.
@@ -186,7 +186,7 @@ pub fn dl_dtype(d: DType) -> crate::Result<DLDataType> {
         DType::F8E5M2 => {
             return Err(crate::Error::UnsupportedDTypeForOp(
                 DType::F8E5M2,
-                "F8E5M2 has no assigned FDX code, and DLPack's `(float, 8)`                  cannot distinguish it from F8E4M3; declining rather than                  exporting an fp8 a consumer would mis-read (GAP-097)",
+                "F8E5M2 has no assigned FDX code, and DLPack's `(float, 8)` cannot distinguish it from F8E4M3; declining rather than exporting an fp8 a consumer would mis-read (GAP-097)",
             ));
         }
         // GAP-045: encoding unauthored — decline rather than assert a width.
@@ -490,7 +490,7 @@ mod tests {
             if d == DType::F8E6M2 {
                 assert!(
                     dtype_to_fdx(d).is_err(),
-                    "F8E6M2 must decline until its encoding is authored, never                      round-trip through an invented code"
+                    "F8E6M2 must decline until its encoding is authored, never round-trip through an invented code"
                 );
                 continue;
             }

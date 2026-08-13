@@ -385,7 +385,7 @@ mod tests {
         let second = ModelInstanceId::next().get();
         assert!(
             second > first,
-            "id {second} did not advance past the dropped {first} — a recycled id              would let a stale plan be judged valid for a different model",
+            "id {second} did not advance past the dropped {first} — a recycled id would let a stale plan be judged valid for a different model",
         );
     }
 
@@ -433,7 +433,7 @@ mod tests {
         assert_ne!(
             a.decode_shape_key(),
             b.decode_shape_key(),
-            "identical geometry, different weights — a held plan for one must not              be judged valid for the other",
+            "identical geometry, different weights — a held plan for one must not be judged valid for the other",
         );
 
         // The half that guards the 223x: a model must still match ITSELF, and a
@@ -444,7 +444,7 @@ mod tests {
         assert_eq!(
             a.decode_shape_key(),
             a_clone.decode_shape_key(),
-            "two models sharing one weight set may share a plan — over-keying here              costs reuse for no correctness gain",
+            "two models sharing one weight set may share a plan — over-keying here costs reuse for no correctness gain",
         );
     }
 }

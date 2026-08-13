@@ -922,7 +922,7 @@ mod tests {
             .fold(0.0_f32, f32::max);
         assert!(
             max_diff > 10.0 * PARITY_TOL,
-            "scaled and unscaled decode are indistinguishable (max diff {max_diff}) —              the parity test above would pass with the override removed",
+            "scaled and unscaled decode are indistinguishable (max diff {max_diff}) — the parity test above would pass with the override removed",
         );
     }
 }
