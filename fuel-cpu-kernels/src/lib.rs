@@ -93,9 +93,18 @@ pub use neon::CurrentCpu;
 pub unsafe fn vec_dot_f32(a_row: *const f32, b_row: *const f32, c: *mut f32, k: usize) {
     let np = k & !(CurrentCpu::STEP - 1);
 
-    let mut sum = CurrentCpu::zero_array();
-    let mut ax = CurrentCpu::zero_array();
-    let mut ay = CurrentCpu::zero_array();
+    // SAFETY: the `unsafe fn` contract guarantees the SIMD target feature this
+    // function is `cfg`-gated on (`neon` / `avx2` / `simd128`) is available,
+    // and that is `zero_array`'s ONLY precondition — it takes no pointer and
+    // touches no memory, so there is no validity, alignment or aliasing
+    // obligation to discharge. All three initializers rest on that single
+    // shared obligation. They are three blocks rather than one only because
+    // each binding must escape into the enclosing scope, which one wrapping
+    // block would prevent; the grouping is stated here so the repetition is
+    // not read as three independent justifications.
+    let mut sum = unsafe { CurrentCpu::zero_array() };
+    let mut ax = unsafe { CurrentCpu::zero_array() };
+    let mut ay = unsafe { CurrentCpu::zero_array() };
 
     for i in (0..np).step_by(CurrentCpu::STEP) {
         for j in 0..CurrentCpu::n() {
@@ -138,8 +147,14 @@ pub unsafe fn vec_dot_f32(a_row: *const f32, b_row: *const f32, c: *mut f32, k: 
 pub unsafe fn vec_sum(row: *const f32, b: *mut f32, k: usize) {
     let np = k & !(CurrentCpu::STEP - 1);
 
-    let mut sum = CurrentCpu::zero_array();
-    let mut x = CurrentCpu::zero_array();
+    // SAFETY: the `unsafe fn` contract guarantees the SIMD target feature this
+    // function is `cfg`-gated on (`neon` / `avx2` / `simd128`) is available,
+    // and that is `zero_array`'s ONLY precondition — it takes no pointer and
+    // touches no memory. Both initializers rest on that single shared
+    // obligation; they are two blocks rather than one only because each
+    // binding must escape into the enclosing scope.
+    let mut sum = unsafe { CurrentCpu::zero_array() };
+    let mut x = unsafe { CurrentCpu::zero_array() };
 
     for i in (0..np).step_by(CurrentCpu::STEP) {
         for j in 0..CurrentCpu::n() {

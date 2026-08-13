@@ -621,7 +621,22 @@ unsafe fn multiply_accum_with_scale(
     q2bytes: int8x16x2_t,
     q8bytes: int8x16x2_t,
 ) -> i32 {
-    let p1 = vdotq_s32(q2bytes.0, q8bytes.0);
-    let p2 = vdotq_s32(q2bytes.1, q8bytes.1);
-    vaddvq_s32(p1) * aux[is + index] as i32 + vaddvq_s32(p2) * aux[is + 1 + index] as i32
+    // SAFETY: the `unsafe fn` contract guarantees the `neon` target feature is
+    // available, and that is the sole obligation for every operation below:
+    // both `vdotq_s32` calls (whichever of the two `cfg` arms above is
+    // compiled — the SDOT arm's additional `dotprod` feature is guaranteed
+    // statically by its own `cfg`, not by the caller) and both `vaddvq_s32`
+    // horizontal adds. None of the four takes a pointer, so there is no
+    // validity, alignment or aliasing obligation. One block covers the whole
+    // body because all four share that one obligation; splitting would repeat
+    // the same note four times inside a single expression.
+    //
+    // The `aux[..]` reads are NOT part of the safety argument: they are
+    // ordinary bounds-checked indexing, so an out-of-range `is + index` would
+    // panic rather than cause UB.
+    unsafe {
+        let p1 = vdotq_s32(q2bytes.0, q8bytes.0);
+        let p2 = vdotq_s32(q2bytes.1, q8bytes.1);
+        vaddvq_s32(p1) * aux[is + index] as i32 + vaddvq_s32(p2) * aux[is + 1 + index] as i32
+    }
 }
