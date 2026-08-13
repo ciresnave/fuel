@@ -20858,6 +20858,35 @@ mod phase_a1_wrapper_tests {
         );
     }
 
+    /// GAP-183: `float -> Bool` is lowered in the optimizer to `Ne(x, x*0)` so it
+    /// reaches CUDA's shipped `ne_{f32,f64,f16,bf16}` kernels, which a
+    /// storage-level cast cannot compose. This pins the VALUES end-to-end, and
+    /// the three interesting inputs are the whole point of the test — a lowering
+    /// that got only the ordinary cases right would still be wrong:
+    ///
+    ///   -0.0  -> FALSE   (IEEE `-0.0 == 0.0`)
+    ///   NaN   -> TRUE    (matches PyTorch `.bool()`)
+    ///   ±inf  -> TRUE
+    ///
+    /// The zeros operand is itself NaN for non-finite x; that is harmless because
+    /// `x != NaN` and `x != 0` agree for every non-finite x. This test is what
+    /// would catch it if that ever stopped being true.
+    #[test]
+    fn float_to_bool_lowering_preserves_ieee_semantics() {
+        let t = cpu_f32(
+            vec![0.0, -0.0, 5.0, -3.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY],
+            &[7],
+        );
+        let b = t.to_dtype(DType::Bool).unwrap();
+        assert_eq!(b.dtype(), DType::Bool, "to_dtype(Bool) still yields Bool");
+        assert_eq!(
+            b.realize_u8(),
+            vec![0, 0, 1, 1, 1, 1, 1],
+            "0 and -0.0 are false; every other value including NaN and both \
+             infinities is true",
+        );
+    }
+
     #[test]
     fn index_add_smoke() {
         let base = cpu_f32(vec![1.0, 1.0, 1.0, 1.0], &[2, 2]);

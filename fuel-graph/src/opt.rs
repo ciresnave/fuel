@@ -1188,6 +1188,60 @@ pub fn optimize(graph: &SharedGraph, roots: &[NodeId]) -> Vec<NodeId> {
                 remap.insert(id, mapped_inputs[0]);
                 continue;
             }
+            //    GAP-183: lower `Cast(float -> Bool)` to `Ne(x, x*0)`.
+            //
+            //    WHY A LOWERING RATHER THAN A KERNEL: CUDA already ships the
+            //    `!= 0` test — `ne_{f32,f64,f16,bf16}_u8` in
+            //    `cuda/compare.fkc.md` — but a STORAGE-level cast cannot compose
+            //    graph ops, so those kernels are unreachable from `to_dtype`.
+            //    Rewriting here reaches them. The INTEGER half is deliberately
+            //    left alone: CUDA has no integer compare kernel, so lowering it
+            //    would relocate the same decline while bypassing CPU's real
+            //    int->Bool cast kernels.
+            //
+            //    WHY `MulScalar(0.0)` FOR THE ZEROS: its own doc says it exists
+            //    "to avoid building a full-shape const just to add or multiply by
+            //    a constant" — so the zeros inherit shape AND dtype from the
+            //    input by construction, with nothing materialized. `Op::ZeroFill`
+            //    is NOT usable here: it is DESTRUCTIVE (writes through input 0).
+            //
+            //    ⚠️ THE IEEE REASONING, because a reader will stop at `x*0` and
+            //    wonder about non-finite inputs:
+            //      finite x != 0 : x*0 = ±0        -> x != 0     -> true
+            //      x = ±0.0      : x*0 = ±0        -> equal      -> false
+            //                      (IEEE: -0.0 == 0.0, so -0.0 is FALSE)
+            //      x = NaN       : NaN*0 = NaN     -> NaN != NaN -> TRUE
+            //      x = ±inf      : inf*0 = NaN     -> x != NaN   -> true
+            //    NaN being truthy matches PyTorch's `.bool()` and the CPU cast
+            //    kernels, so both paths agree.
+            //
+            //    NOTE the zeros operand is NaN (not 0) whenever x is NaN or ±inf,
+            //    and that is HARMLESS rather than load-bearing: for every
+            //    non-finite x, `x != NaN` and `x != 0` are both true, so the two
+            //    spellings agree everywhere. A future "x*0 => zeros" fold would
+            //    therefore be SAFE here — recorded because the opposite is the
+            //    intuitive guess, and an earlier draft of this comment asserted
+            //    it as a hazard. Only `AddScalar(0)`/`MulScalar(1)` fold today.
+            if *target == fuel_ir::DType::Bool {
+                let src_dtype = g.node(mapped_inputs[0]).dtype;
+                if src_dtype.is_float() {
+                    let src_shape = g.node(mapped_inputs[0]).shape.clone();
+                    let zeros = g.push(Node {
+                        op: Op::MulScalar(0.0),
+                        inputs: vec![mapped_inputs[0]],
+                        shape: src_shape.clone(),
+                        dtype: src_dtype,
+                    });
+                    let ne = g.push(Node {
+                        op: Op::Ne,
+                        inputs: vec![mapped_inputs[0], zeros],
+                        shape: src_shape,
+                        dtype: fuel_ir::DType::Bool,
+                    });
+                    remap.insert(id, ne);
+                    continue;
+                }
+            }
         }
         if let Some(aliased) = try_simplify(&op, &mapped_inputs) {
             remap.insert(id, aliased);
@@ -3099,6 +3153,59 @@ mod tests {
             new_roots[0],
             a.id(),
             "Cast(d) on a dtype-d input should alias to input",
+        );
+    }
+
+    /// GAP-183: `Cast(float -> Bool)` lowers to `Ne(x, x*0)` at the GRAPH level.
+    ///
+    /// WHY A LOWERING AND NOT A KERNEL: CUDA already ships the `!= 0` test —
+    /// `ne_{f32,f64,f16,bf16}_u8` in `cuda/compare.fkc.md` — but those kernels are
+    /// UNREACHABLE from a storage-level cast, which cannot compose graph ops. So
+    /// the fix belongs here, not in the storage layer.
+    ///
+    /// BORN-RED: before the rewrite this root is an `Op::Cast(Bool)`.
+    #[test]
+    fn lowers_float_cast_to_bool_into_ne_against_zero() {
+        let (graph, a) = make_scalar_graph(); // F32
+        let as_bool = a.cast(fuel_ir::DType::Bool);
+        let new_roots = optimize(&graph, &[as_bool.id()]);
+        let g = graph.read().unwrap();
+        let root = g.node(new_roots[0]);
+        assert!(
+            matches!(root.op, Op::Ne),
+            "float -> Bool must lower to Op::Ne, got {:?}",
+            root.op,
+        );
+        assert_eq!(root.dtype, fuel_ir::DType::Bool, "the lowered root still yields Bool");
+        // RHS is zeros from `MulScalar(0.0)` over the SAME input — not a
+        // materialized const, so shape and dtype match by construction.
+        let rhs = g.node(root.inputs[1]);
+        assert!(
+            matches!(rhs.op, Op::MulScalar(c) if c == 0.0),
+            "rhs must be MulScalar(0.0) (shape-preserving zeros), got {:?}",
+            rhs.op,
+        );
+        assert_eq!(
+            rhs.inputs[0], root.inputs[0],
+            "zeros must derive from the cast's own input",
+        );
+    }
+
+    /// GAP-183 companion: the INTEGER half is deliberately NOT lowered — there is
+    /// no CUDA integer compare kernel, so rewriting would move the same decline
+    /// one layer out while bypassing CPU's real int->Bool cast kernels.
+    #[test]
+    fn does_not_lower_integer_cast_to_bool() {
+        let (graph, a) = make_scalar_graph();
+        let as_u8 = a.cast(fuel_ir::DType::U8);
+        let as_bool = as_u8.cast(fuel_ir::DType::Bool);
+        let new_roots = optimize(&graph, &[as_bool.id()]);
+        let g = graph.read().unwrap();
+        let root = g.node(new_roots[0]);
+        assert!(
+            matches!(root.op, Op::Cast(fuel_ir::DType::Bool)),
+            "int -> Bool stays an Op::Cast (genuine decline on CUDA), got {:?}",
+            root.op,
         );
     }
 
