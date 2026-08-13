@@ -44,7 +44,7 @@
 //!   - `lm_head.weight` → `output` (or tied to `token_embedding` when
 //!     `tie_word_embeddings == true`; safetensors loader resolves it)
 
-use crate::inference_context::{DecodeSession, DecodeTokenData, InferenceContext, KvCache, KvSlot};
+use crate::inference_context::{DecodeSession, DecodeTokenData, InferenceContext, KvCache};
 use crate::lazy::{LayerWeights, LazyTensor, WeightStorage};
 use crate::persistent_decode::{
     DecodeBackbone, DecodeDims, DecodeLayerInputs, MaskPlan, PersistentDecodeModel,

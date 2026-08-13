@@ -8887,6 +8887,13 @@ impl LlamaModel {
     /// Delegates to the shared decode BUILD path — see
     /// [`crate::persistent_decode`], which now owns this body for every
     /// LLaMA-shaped family. A change there is a change for all of them.
+    // Only remaining caller is `forward_with_kv_context_captured`, which is
+    // `#[cfg(feature = "cuda")]` — GAP-029 increment 3 moved the non-CUDA
+    // callers onto the shared seam in `crate::persistent_decode`. So "never
+    // used" on a default build is a FALSE signal from a feature-gated caller,
+    // not an orphan: deleting this breaks `--features cuda`, which no gate on
+    // this machine compiles cheaply.
+    #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
     fn build_and_realize_first_decode_token(
         &self,
         tokens: &[u32],
@@ -9252,6 +9259,13 @@ impl LlamaModel {
     /// GAP-029 2b: this was a hand-copied 48-line body, byte-for-byte parallel
     /// to `PhiModel`'s. The copies are collapsed; the per-model part is
     /// [`PersistentDecodeModel::build_decode_token_data`] below.
+    // Only remaining caller is `forward_with_kv_context_captured`, which is
+    // `#[cfg(feature = "cuda")]` — GAP-029 increment 3 moved the non-CUDA
+    // callers onto the shared seam in `crate::persistent_decode`. So "never
+    // used" on a default build is a FALSE signal from a feature-gated caller,
+    // not an orphan: deleting this breaks `--features cuda`, which no gate on
+    // this machine compiles cheaply.
+    #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
     fn rebind_and_realize_prebuilt(
         &self,
         tokens: &[u32],
@@ -9660,6 +9674,13 @@ impl LlamaModel {
     ///
     /// Returns whether it invalidated. On `true` the caller's `session` is
     /// `None`, so the ordinary "first decode token" arm rebuilds both.
+    // Only remaining caller is `forward_with_kv_context_captured`, which is
+    // `#[cfg(feature = "cuda")]` — GAP-029 increment 3 moved the non-CUDA
+    // callers onto the shared seam in `crate::persistent_decode`. So "never
+    // used" on a default build is a FALSE signal from a feature-gated caller,
+    // not an orphan: deleting this breaks `--features cuda`, which no gate on
+    // this machine compiles cheaply.
+    #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
     fn invalidate_decode_pair_if_stale<C>(
         &self,
         session: &mut Option<crate::inference_context::DecodeSession>,
@@ -9681,6 +9702,13 @@ impl LlamaModel {
     /// data-Const / KV bindings from `ctx` (defensive — the build path
     /// already removes them once the session owns `base_cache`; this
     /// covers the invalidation path). No-op if `session` is `None`.
+    // Only remaining caller is `forward_with_kv_context_captured`, which is
+    // `#[cfg(feature = "cuda")]` — GAP-029 increment 3 moved the non-CUDA
+    // callers onto the shared seam in `crate::persistent_decode`. So "never
+    // used" on a default build is a FALSE signal from a feature-gated caller,
+    // not an orphan: deleting this breaks `--features cuda`, which no gate on
+    // this machine compiles cheaply.
+    #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
     fn drop_decode_session(
         &self,
         session: &mut Option<crate::inference_context::DecodeSession>,

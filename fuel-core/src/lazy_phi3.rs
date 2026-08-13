@@ -24,9 +24,13 @@
 //! Forward-only, single sequence (`batch == 1`), no KV cache, F32
 //! activations. Strict lower-triangular causal mask.
 
+use crate::inference_context::{DecodeSession, DecodeTokenData, InferenceContext, KvCache};
 use crate::lazy::{LayerWeights, LazyTensor, WeightStorage};
+use crate::persistent_decode::{
+    DecodeBackbone, DecodeDims, DecodeLayerInputs, MaskPlan, PersistentDecodeModel,
+};
 use crate::{Device, Result};
-use fuel_ir::Shape;
+use fuel_ir::{DType, Shape};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -67,6 +71,10 @@ impl Phi3Config {
 
 #[derive(Debug, Clone)]
 pub struct Phi3Weights {
+    /// Process-unique identity for THIS weight set — what lets a held decode
+    /// plan tell two same-architecture models apart (GAP-029). Mint with
+    /// [`crate::decode_shape::ModelInstanceId::next`].
+    pub instance: crate::decode_shape::ModelInstanceId,
     pub token_embedding: Arc<[f32]>,
     pub layers: Vec<LayerWeights>,
     pub final_norm_gain: Arc<[f32]>,
@@ -276,6 +284,284 @@ fn split_phi3_qkv(
     (q, k, v)
 }
 
+// ---- GAP-029 increment 3 · persistent-KV decode -----------------------------
+//
+// Phi3 is family 6, and it is the FIRST UNIFORM one on this seam: a strict
+// lower-triangular causal mask at every layer, no sliding window, no per-layer
+// variation of any kind. That is not a gap in the port — it is what the mask
+// plan's `n_variants == 1` case exists for, and it means Phi3's decode graph
+// carries no mask slice node at all.
+//
+// ⚠️ NAME COLLISION WORTH READING ONCE: `Phi3Model` (here) is NOT `PhiModel`
+// (`crate::lazy`). They are different architectures — Phi has a parallel
+// attention block, LayerNorm + bias, and its OWN hand-written decode body that
+// GAP-029 deliberately does not touch. Phi3 measured LLaMA-shaped despite the
+// lineage in its name, which is why it is on the shared seam and Phi is not.
+// The sabotage record below pins that boundary by measurement.
+
+impl Phi3Model {
+    /// **No per-layer attention variation.** Measured for GAP-029 increment 3:
+    /// zero `sliding_window` hits in this file, against a positive control of
+    /// hits in five sibling model files. `apply_layer` builds a strict causal
+    /// mask unconditionally.
+    ///
+    /// The uniform plan emits no slice node and its host bytes are byte-identical
+    /// to `build_decode_causal_mask` (asserted in
+    /// `crate::persistent_decode`), so a family with no windowing pays literally
+    /// nothing for the N-variant machinery.
+    pub fn decode_mask_plan(&self) -> MaskPlan {
+        MaskPlan::dense(self.config.num_hidden_layers)
+    }
+
+    /// Identity a held decode plan is baked against. `rope_theta` is absent
+    /// deliberately — RoPE tables are rebound per token, so baking it would
+    /// forfeit plan reuse across a change already handled correctly.
+    pub fn decode_shape_key(&self) -> u64 {
+        let cfg = &self.config;
+        let mut h = crate::decode_shape::ShapeKeyHasher::new();
+        h.mix_str("phi3")
+            .mix_instance(self.weights.instance)
+            .mix_u64(cfg.num_hidden_layers as u64)
+            .mix_u64(cfg.num_attention_heads as u64)
+            .mix_u64(cfg.num_key_value_heads as u64)
+            .mix_u64(cfg.head_dim() as u64)
+            .mix_u64(cfg.hidden_size as u64)
+            .mix_u64(cfg.intermediate_size as u64)
+            .mix_u64(cfg.vocab_size as u64)
+            .mix_f64(cfg.rms_norm_eps);
+        self.decode_mask_plan().mix_into(&mut h);
+        h.finish()
+    }
+
+    /// Decode/prefill through a pre-allocated [`KvCache`], rebuilding the graph
+    /// each step. The primitive the persistent path falls back to.
+    pub fn forward_with_kv_context(
+        &self,
+        tokens: &[u32],
+        cache: &mut KvCache,
+        ctx: &mut InferenceContext,
+    ) -> Result<Vec<f32>> {
+        crate::persistent_decode::forward_with_kv_context(self, tokens, cache, ctx, false, None)
+    }
+
+    /// Plan-once persistent decode.
+    pub fn forward_with_kv_context_persistent(
+        &self,
+        tokens: &[u32],
+        cache: &mut KvCache,
+        ctx: &mut InferenceContext,
+        session: &mut Option<DecodeSession>,
+    ) -> Result<Vec<f32>> {
+        crate::persistent_decode::forward_with_kv_context_persistent(
+            self, tokens, cache, ctx, session, None,
+        )
+    }
+
+    /// Persistent decode with the session owned by the `InferenceContext`.
+    pub fn forward_decode_step(
+        &self,
+        tokens: &[u32],
+        cache: &mut KvCache,
+        ctx: &mut InferenceContext,
+    ) -> Result<Vec<f32>> {
+        let mut session = ctx.take_decode_session();
+        let out = self.forward_with_kv_context_persistent(tokens, cache, ctx, &mut session);
+        ctx.put_decode_session(session);
+        out
+    }
+
+    /// One Phi3 layer against the pre-allocated KV buffers.
+    ///
+    /// Phi3's attention is Qwen2's **without the Q/K/V biases** (`linear_no_bias`
+    /// throughout). The fused `qkv_proj` / `gate_up_proj` are a *load-time*
+    /// concern — they are already split into `LayerWeights` fields before any
+    /// graph is built — so nothing about the fusion reaches this path.
+    ///
+    /// Same two deliberate differences from the prefill twin as every family on
+    /// this seam: GQA rides `matmul`'s head broadcast rather than materialising
+    /// `repeat_interleave` over the whole cache, and **no flash-decode arm is
+    /// offered** (see `lazy_qwen2` for the correctness argument; it is not
+    /// window-specific — an unwindowed family simply has no benefit yet to
+    /// justify shipping an arm this lane cannot test).
+    fn apply_layer_with_kv_writes(
+        &self,
+        layer: &LayerWeights,
+        inputs: &DecodeLayerInputs<'_>,
+    ) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let head_dim = cfg.head_dim();
+        let x = inputs.x;
+        let x_shape = x.shape();
+        let dims = x_shape.dims();
+        let batch = dims[0];
+        let seq = dims[1];
+        let kv_dim = cfg.num_key_value_heads * head_dim;
+        let act_dtype = x.dtype();
+
+        let x_norm = x.rms_norm_affine(Arc::clone(&layer.attn_norm_gain), cfg.rms_norm_eps)?;
+
+        // Bias-free Q / K / V — Phi-3 uses `linear_no_bias` for all.
+        let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size)?;
+        let k = layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?;
+        let v = layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?;
+
+        let q = q.split_heads(cfg.num_attention_heads, head_dim)?;
+        let k = k.split_heads(cfg.num_key_value_heads, head_dim)?;
+        let v_h = v.split_heads(cfg.num_key_value_heads, head_dim)?;
+
+        let q_r = q.to_dtype(DType::F32)?
+            .rope_with_tables(inputs.rope_cos, inputs.rope_sin)?
+            .to_dtype(act_dtype)?;
+        let k_r = k.to_dtype(DType::F32)?
+            .rope_with_tables(inputs.rope_cos, inputs.rope_sin)?
+            .to_dtype(act_dtype)?;
+
+        let write_ranges = vec![
+            (0, batch),
+            (0, cfg.num_key_value_heads),
+            (0, seq), // axis-2 start is dynamic; width = seq
+            (0, head_dim),
+        ];
+        let (full_k, full_v) = match inputs.offset {
+            Some(off) => (
+                inputs.k_cache.write_slice_doff(&k_r, off, 2, write_ranges.clone())?,
+                inputs.v_cache.write_slice_doff(&v_h, off, 2, write_ranges)?,
+            ),
+            None => {
+                let dyn_off = fuel_ir::DynScalar::Sym(inputs.cached_len_sym);
+                (
+                    inputs.k_cache.write_slice_dyn(&k_r, write_ranges.clone(), 2, dyn_off)?,
+                    inputs.v_cache.write_slice_dyn(&v_h, write_ranges, 2, dyn_off)?,
+                )
+            }
+        };
+
+        let k_t = full_k.transpose()?;
+        let scale = 1.0_f64 / (head_dim as f64).sqrt();
+        let scores = q_r.matmul(&k_t)?;
+        let scores_scaled = scores.mul_scalar(scale);
+        let scores_masked = scores_scaled.broadcast_add(inputs.mask)?;
+        let attn = scores_masked.softmax_last_dim()?;
+        let attn_v = attn.matmul(&full_v)?;
+
+        let merged = attn_v.merge_heads()?;
+        let attn_out = layer.attn_o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?;
+
+        let h1 = x.add(&attn_out)?;
+        let h1_norm = h1.rms_norm_affine(Arc::clone(&layer.ffn_norm_gain), cfg.rms_norm_eps)?;
+        let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let up = layer.ffn_up.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let swiglu = gate.silu().mul(&up)?;
+        let ffn_out = layer.ffn_down.apply_linear(&swiglu, cfg.intermediate_size, cfg.hidden_size)?;
+        h1.add(&ffn_out)
+    }
+}
+
+// ===========================================================================
+// SABOTAGE RECORD — PHI3 (GAP-029 increment 3, family 6, 2026-08-13)
+//
+// `phi3_decode_matches_non_cached_forward` is BORN GREEN — Phi3 is uniform, so
+// the single-mask born-red that works for the windowed families does not exist
+// here (a single mask is CORRECT for Phi3). Its discrimination therefore has to
+// be established separately, and this is it.
+//
+// Sabotage: drop the FFN residual in Phi3's OWN `apply_layer_with_kv_writes`.
+// Run carried `Compiling fuel-core`:
+//
+//   lazy_phi3::phi3_decode_matches_non_cached_forward   FAILED
+//   test result: FAILED. 91 passed; 1 failed
+//
+// EXACTLY ONE test red, and the 91 green are what make it mean anything.
+//
+// ⚠️ THE GREEN THAT MATTERS MOST IS `phi_kv_context::*` — `PhiModel`, which is
+// a DIFFERENT architecture that keeps its own hand-written decode body and is
+// deliberately NOT on this seam. Two families one character apart in name, one
+// on the shared path and one off it: this run is what makes that boundary a
+// measurement instead of an intention. Qwen2, Qwen3, Qwen3Moe, Llama and
+// Llama3 also stayed green.
+//
+// NOTE `phi3_mask_plan_is_a_single_dense_variant` stayed green too, correctly:
+// it asserts plan STRUCTURE, not numerics, so it cannot see this defect and
+// must not be cited as covering it.
+// ===========================================================================
+
+impl PersistentDecodeModel for Phi3Model {
+    fn decode_n_layers(&self) -> usize {
+        self.config.num_hidden_layers
+    }
+
+    fn build_decode_token_data(
+        &self,
+        device: &Device,
+        cached_len: usize,
+        tokens: &[u32],
+        session: &DecodeSession,
+        cache: &KvCache,
+        rope_inv_freq: Option<&[f64]>,
+    ) -> Result<DecodeTokenData> {
+        let host = crate::persistent_decode::compute_decode_token_host(
+            self, cached_len, tokens, session.max_seq_len(), rope_inv_freq,
+        );
+        crate::persistent_decode::upload_decode_token_data(
+            device,
+            &host,
+            cache.dtype.unwrap_or(DType::F32),
+            session.offset_node().is_some().then_some(cached_len),
+        )
+    }
+}
+
+impl DecodeBackbone for Phi3Model {
+    fn decode_family(&self) -> &'static str {
+        "Phi3Model"
+    }
+
+    fn decode_dims(&self) -> DecodeDims {
+        let cfg = &self.config;
+        DecodeDims {
+            n_layers: cfg.num_hidden_layers,
+            n_kv_heads: cfg.num_key_value_heads,
+            head_dim: cfg.head_dim(),
+            hidden: cfg.hidden_size,
+            vocab: cfg.vocab_size,
+            // Full rotary. The module doc mentions `partial_rotary_factor`, but
+            // no such field exists and `apply_layer` rotates the whole head —
+            // measured for increment 3's step 0, and the reason Phi3 sits on
+            // this seam rather than beside Phi.
+            rope_width: cfg.head_dim(),
+            rope_base: cfg.rope_theta,
+        }
+    }
+
+    fn decode_shape_key(&self) -> u64 {
+        Phi3Model::decode_shape_key(self)
+    }
+
+    fn decode_mask_plan(&self) -> MaskPlan {
+        Phi3Model::decode_mask_plan(self)
+    }
+
+    fn decode_token_embedding(&self) -> Arc<[f32]> {
+        self.weights.token_embedding.clone()
+    }
+
+    fn decode_apply_layer(
+        &self,
+        layer_idx: usize,
+        inputs: &DecodeLayerInputs<'_>,
+    ) -> Result<LazyTensor> {
+        self.apply_layer_with_kv_writes(&self.weights.layers[layer_idx], inputs)
+    }
+
+    fn decode_final_norm_and_head(&self, h: &LazyTensor) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let h_norm = h.rms_norm_affine(
+            Arc::clone(&self.weights.final_norm_gain), cfg.rms_norm_eps,
+        )?;
+        Ok(self.weights.output.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size)?)
+    }
+}
+
 /// Split fused gate_up_proj [hidden_size, 2*intermediate] into gate and up.
 fn split_phi3_gate_up(transposed: &[f32], hidden_size: usize, inter: usize) -> (Vec<f32>, Vec<f32>) {
     let out_dim = 2 * inter;
@@ -352,7 +638,13 @@ impl Phi3Weights {
             )?
         };
 
-        Ok(Self { token_embedding, layers, final_norm_gain, output })
+        Ok(Self {
+            instance: crate::decode_shape::ModelInstanceId::next(),
+            token_embedding,
+            layers,
+            final_norm_gain,
+            output,
+        })
     }
 }
 
@@ -391,7 +683,7 @@ mod tests {
         }).collect();
         let final_norm_gain = Arc::from(vec![1.0_f32; h]);
         let output = WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *next_box));
-        Phi3Weights { token_embedding, layers, final_norm_gain, output }
+        Phi3Weights { instance: crate::decode_shape::ModelInstanceId::next(), token_embedding, layers, final_norm_gain, output }
     }
 
     #[test]
@@ -496,5 +788,106 @@ mod tests {
             .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
         assert!(max_diff < 1e-5,
             "Phi3 forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})");
+    }
+
+    // ---- GAP-029 increment 3, family 6: persistent decode -------------------
+
+    /// Measured, not inherited — the natural template's `diff < 5e-3 ||
+    /// rel < 1e-2` sits above the ~7e-3 divergences the windowed families
+    /// measured, so it cannot certify a decode port on this seam.
+    const DECODE_ORACLE_ABS: f32 = 1e-5;
+
+    fn decode_cfg() -> Phi3Config {
+        Phi3Config {
+            vocab_size: 32,
+            hidden_size: 16,
+            intermediate_size: 32,
+            num_hidden_layers: 2,
+            num_attention_heads: 4,
+            num_key_value_heads: 2, // exercise GQA (n_rep = 2)
+            max_position_embeddings: 64,
+            rope_theta: 10_000.0,
+            rms_norm_eps: 1e-5,
+            tie_word_embeddings: false,
+        }
+    }
+
+    /// **Phi3 is the first UNIFORM family on this seam, so it has NO born-red
+    /// and this test is BORN GREEN. That is stated rather than presented as
+    /// evidence.**
+    ///
+    /// The windowed families (Qwen2/Qwen3/Qwen3Moe) could be born red by handing
+    /// the port a single-mask plan, because a single mask is *wrong* for them.
+    /// Phi3 has a strict causal mask at every layer — a single mask is exactly
+    /// **correct** — so that instrument does not exist here, and inventing one
+    /// would be theatre.
+    ///
+    /// What this test IS: an independent oracle. `forward` is a different code
+    /// path (no KV cache, mask rebuilt per layer, `repeat_interleave` GQA) that
+    /// already shipped, so decode agreeing with it position-for-position is a
+    /// real claim, not a tautology. What certifies that it *discriminates* is
+    /// the sabotage record below — not its passing.
+    ///
+    /// `>= 3` decode steps so the assertions land on the per-token REBIND path.
+    #[test]
+    fn phi3_decode_matches_non_cached_forward() {
+        let cfg = decode_cfg();
+        let model = Phi3Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6];
+        let prefill = 3;
+        let head_dim = cfg.head_dim();
+
+        let dev = Device::cpu();
+        let mut cache = KvCache::with_capacity(
+            cfg.num_hidden_layers, cfg.num_key_value_heads, head_dim,
+            tokens.len(), DType::F32, &dev,
+        ).expect("with_capacity");
+        let mut ctx = InferenceContext::new(dev);
+        let mut session: Option<DecodeSession> = None;
+
+        model.forward_with_kv_context_persistent(
+            &tokens[..prefill], &mut cache, &mut ctx, &mut session,
+        ).expect("prefill");
+        assert!(session.is_none(), "prefill (seq > 1) must NOT build the held session");
+
+        let mut diffs = Vec::new();
+        for pos in prefill..tokens.len() {
+            let got = model.forward_with_kv_context_persistent(
+                &tokens[pos..=pos], &mut cache, &mut ctx, &mut session,
+            ).expect("decode");
+            assert!(session.is_some(), "decode must hold a session from token 1");
+            let full = model.forward(&tokens[..=pos], 0).unwrap().realize_f32();
+            let expected = &full[pos * cfg.vocab_size..(pos + 1) * cfg.vocab_size];
+            diffs.push(
+                got.iter().zip(expected.iter())
+                    .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max),
+            );
+        }
+        assert_eq!(cache.cached_len, tokens.len(), "cache must advance every step");
+        assert!(diffs.len() >= 3, "need >= 3 decode steps to reach the rebind path");
+
+        let worst = diffs.iter().copied().fold(0.0_f32, f32::max);
+        assert!(
+            worst < DECODE_ORACLE_ABS,
+            "Phi3 persistent decode diverged from the non-cached forward: per-step \
+             max|diff| at absolute positions 3..=5 = {diffs:?} (limit \
+             {DECODE_ORACLE_ABS:e})",
+        );
+    }
+
+    /// Phi3's uniform plan must stay single-variant: that is what makes its
+    /// decode graph carry no mask slice node and its mask bytes byte-identical
+    /// to the pre-GAP-029 dense builder. A regression here would be silent —
+    /// correct output, extra nodes — so it is asserted rather than assumed.
+    #[test]
+    fn phi3_mask_plan_is_a_single_dense_variant() {
+        let cfg = decode_cfg();
+        let plan = Phi3Model { config: cfg.clone(), weights: tiny_weights(&cfg) }
+            .decode_mask_plan();
+        assert_eq!(plan.n_variants(), 1, "Phi3 has no per-layer attention variation");
+        assert_eq!(plan.n_layers(), cfg.num_hidden_layers);
+        for li in 0..cfg.num_hidden_layers {
+            assert_eq!(plan.variant_for_layer(li), 0, "layer {li} must take the dense variant");
+        }
     }
 }

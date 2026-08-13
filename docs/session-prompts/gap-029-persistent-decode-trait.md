@@ -691,6 +691,73 @@ have exercised the delegation while never touching the N=2 mask path. The
 Qwen3Moe test puts a windowed MoE layer, a windowed dense layer and their
 unwindowed counterparts in one decode graph over Q4_0 storage.
 
+#### Landed 2026-08-13: increment 3, FAMILY 6 — Phi3 (the first UNIFORM family)
+
+Phi3 is `LayerWeights`-based, bias-free, full-rotary, GQA, **strict causal mask at
+every layer**. Its `MaskPlan` is `dense(n_layers)` — one variant, **no slice
+node**, mask bytes byte-identical to the pre-GAP-029 dense builder. The fused
+`qkv_proj`/`gate_up_proj` are a load-time concern and never reach the decode path.
+
+**⚠️ Phi3 has NO born-red, and the test says so.** The single-mask instrument
+works for the windowed families because a single mask is *wrong* for them; for
+Phi3 a single mask is **correct**, so that instrument does not exist and
+inventing one would be theatre. `phi3_decode_matches_non_cached_forward` is
+therefore **born green and labelled as such** — its value is that `forward` is an
+independent shipped code path (no KV cache, per-layer mask rebuild,
+`repeat_interleave` GQA), so agreement is a real claim; its *discrimination* comes
+from the sabotage, not from its passing.
+
+**Sabotage (Phi3's own `apply_layer_with_kv_writes`, FFN residual dropped):
+`91 passed; 1 failed` — exactly one test.** The green that matters most is
+**`phi_kv_context::*`**: `PhiModel` is a different architecture one character
+away in name, keeps its own hand-written decode body, and is deliberately off
+this seam. **That boundary is now a measurement rather than an intention.**
+Recorded in-file that `phi3_mask_plan_is_a_single_dense_variant` also stayed
+green — it asserts plan *structure*, not numerics, so it must not be cited as
+covering this.
+
+`QuantizedPhi3Model` delegates one level with a Q4_0 decode test.
+
+#### SmolLm3 — SHAPE REPORT (requested before building; nothing built)
+
+**Correcting my own earlier warning: SmolLm3 is EASIER than Qwen3, not harder,
+and it needs NOTHING from the seam.** I had flagged it as "an axis `MaskPlan`
+does not carry", which is true and was the wrong thing to measure.
+
+**The distinction that resolves it: variation in DATA needs a variant axis;
+variation in WHETHER-TO-APPLY does not.** The mask needed `MaskPlan` because the
+mask *bytes* differ per variant, so the Const itself must carry N of them.
+SmolLm3's RoPE gating needs no different data at all — the RoPE tables are
+already shared across layers, and a skipping layer simply does not consume them.
+`decode_apply_layer(layer_idx, inputs)` already receives both `layer_idx` and the
+tables, so the shipped branch
+
+```rust
+let (q_r, k_r) = if uses_rope { (q.rope(..)?, k.rope(..)?) } else { (q, k) };
+```
+
+transplants **verbatim** into the layer hook. **Zero seam change.**
+
+**And its mask is uniform**: `build_mask` uses `sliding_window.unwrap_or(seq + 1)`
+with **no `max_window_layers` gate** — every layer gets the same width. So its
+plan is single-variant either way: `None` → `dense`, `Some(w)` →
+`split_window(n, n, w)`, which collapses to one windowed variant. **That
+degenerate branch had no test; it does now**
+(`both_degenerate_splits_collapse_to_a_single_variant`), including that
+collapsing to one variant does not silently collapse to the *dense* one.
+
+> Writing that test I first chose `cached_len = 5` against a window of 8 — where
+> the window excludes nothing and the two masks coincide legitimately. **The
+> assertion caught my own vacuous parameters**, which is the same trap
+> `window_wider_than_capacity_is_byte_identical_to_the_dense_mask` records, met
+> from the other side.
+
+**Remaining shape:** `LayerWeights`, optional biases, explicit `head_dim`, GQA,
+no QK-norm — i.e. Qwen2's attention plus the RoPE branch. Its born-red would be
+the RoPE-gating analogue (port with unconditional RoPE, watch a `no_rope_layers`
+config diverge), and `lazy_smollm3.rs:383` already sets
+`no_rope_layers = Some(vec![0, 1])` in the existing corpus.
+
 ### Open hypothesis — Phi's separate body may be almost entirely redundant
 
 **Recorded now, deliberately NOT acted on.** Two step-0 results combine into
@@ -710,8 +777,9 @@ carriers — and **never on the 6× that does not exist.**
 Sequencing (architect): increment 3 first; nothing here delays it; report as a
 one-line note when increment 3 lands and it gets ruled on then.
 
-**Increment 3 —** the 6 LLaMA-shaped families: **Qwen2, Qwen3, Qwen3Moe (ALL
-LANDED 2026-08-13)**, SmolLm3, Glm4, Phi3.
+**Increment 3 —** the 6 LLaMA-shaped families: **Qwen2, Qwen3, Qwen3Moe, Phi3
+(ALL LANDED 2026-08-13)**; Glm4 (Fuel 1, in flight); SmolLm3 (shape reported
+above, not built).
 
 > **Corrected 2026-08-13.** This line previously read *"Each = `apply_layer` for
 > its architecture + the quantized wrapper's delegation"* — the two-item list

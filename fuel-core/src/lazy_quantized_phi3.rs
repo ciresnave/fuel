@@ -74,9 +74,43 @@ impl QuantizedPhi3Model {
         self.inner.embed_tokens_anchored(anchor, tokens)
     }
 
+    /// Decode/prefill through a pre-allocated KV cache (GAP-029 increment 3).
+    ///
+    /// **Delegates ONE level** — `Phi3Model` is a leaf (`config` + `weights`),
+    /// and Phi3 has no scaled-RoPE variant, so the `inner.inner` trap that cost
+    /// `QuantizedLlama3Model` its LLaMA-3.1 scaling has no shape to take here.
+    pub fn forward_with_kv_context(
+        &self,
+        tokens: &[u32],
+        cache: &mut crate::inference_context::KvCache,
+        ctx: &mut crate::inference_context::InferenceContext,
+    ) -> Result<Vec<f32>> {
+        self.inner.forward_with_kv_context(tokens, cache, ctx)
+    }
+
+    /// Plan-once persistent decode.
+    pub fn forward_with_kv_context_persistent(
+        &self,
+        tokens: &[u32],
+        cache: &mut crate::inference_context::KvCache,
+        ctx: &mut crate::inference_context::InferenceContext,
+        session: &mut Option<crate::inference_context::DecodeSession>,
+    ) -> Result<Vec<f32>> {
+        self.inner.forward_with_kv_context_persistent(tokens, cache, ctx, session)
+    }
+
+    /// Persistent decode with the session owned by the `InferenceContext`.
+    pub fn forward_decode_step(
+        &self,
+        tokens: &[u32],
+        cache: &mut crate::inference_context::KvCache,
+        ctx: &mut crate::inference_context::InferenceContext,
+    ) -> Result<Vec<f32>> {
+        self.inner.forward_decode_step(tokens, cache, ctx)
+    }
+
     /// Model configuration.
     pub fn config(&self) -> &Phi3Config { &self.inner.config }
-
     /// Underlying [`Phi3Model`] for direct access to the lazy graph
     /// API. The wrapper exists solely to label the quantization origin.
     pub fn inner(&self) -> &Phi3Model { &self.inner }
@@ -162,6 +196,7 @@ impl QuantizedPhi3Model {
         let inner = Phi3Model {
             config: cfg,
             weights: Phi3Weights {
+                instance: crate::decode_shape::ModelInstanceId::next(),
                 token_embedding: src.token_embedding,
                 layers,
                 final_norm_gain: src.final_norm_gain,
@@ -297,6 +332,7 @@ impl QuantizedPhi3Model {
         let inner = Phi3Model {
             config: cfg.clone(),
             weights: Phi3Weights {
+                instance: crate::decode_shape::ModelInstanceId::next(),
                 token_embedding: Arc::from(token_embedding),
                 layers, final_norm_gain, output,
             },
@@ -488,12 +524,52 @@ mod tests {
         }).collect();
         let final_norm_gain = Arc::from(vec![1.0_f32; h]);
         let output = WeightStorage::F32(vec_of(h * cfg.vocab_size));
-        Phi3Weights { token_embedding, layers, final_norm_gain, output }
+        Phi3Weights { instance: crate::decode_shape::ModelInstanceId::next(), token_embedding, layers, final_norm_gain, output }
+    }
+
+    /// **GAP-029 increment 3 — the quantized wrapper's decode delegation**, over
+    /// Q4_0 weight storage on the decode path. Three decode steps so the
+    /// assertions land on the per-token REBIND path, not just the held-graph
+    /// build.
+    #[test]
+    fn quantized_phi3_decode_matches_quantized_forward() {
+        use crate::inference_context::{DecodeSession, InferenceContext, KvCache};
+        use crate::Device;
+        use fuel_ir::DType;
+
+        let cfg = test_cfg();
+        let model = QuantizedPhi3Model::from_f32_bake(cfg.clone(), tiny_weights(&cfg)).unwrap();
+        let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6];
+        let prefill = 3;
+
+        let dev = Device::cpu();
+        let mut cache = KvCache::with_capacity(
+            cfg.num_hidden_layers, cfg.num_key_value_heads, cfg.head_dim(),
+            tokens.len(), DType::F32, &dev,
+        ).expect("with_capacity");
+        let mut ctx = InferenceContext::new(dev);
+        let mut session: Option<DecodeSession> = None;
+
+        model.forward_with_kv_context_persistent(
+            &tokens[..prefill], &mut cache, &mut ctx, &mut session,
+        ).expect("prefill");
+
+        for pos in prefill..tokens.len() {
+            let got = model.forward_with_kv_context_persistent(
+                &tokens[pos..=pos], &mut cache, &mut ctx, &mut session,
+            ).expect("decode");
+            let full = model.forward(&tokens[..=pos], 0).unwrap().realize_f32();
+            let expected = &full[pos * cfg.vocab_size..(pos + 1) * cfg.vocab_size];
+            let worst = got.iter().zip(expected.iter())
+                .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
+            assert!(worst < 1e-5,
+                "quantized Phi3 decode at position {pos} diverged by {worst}");
+        }
+        assert_eq!(cache.cached_len, tokens.len());
     }
 
     #[test]
-    fn forward_shape_finite_with_q4_0_weights() {
-        let cfg = test_cfg();
+    fn forward_shape_finite_with_q4_0_weights() {        let cfg = test_cfg();
         let src = tiny_weights(&cfg);
         let model = QuantizedPhi3Model::from_f32_bake(cfg.clone(), src).unwrap();
         // Sanity: all Linear projections in layer 0 are now Q4_0.
@@ -544,6 +620,7 @@ mod tests {
             ffn_norm_gain:  Arc::from(vec![1.0_f32; h]),
         };
         let src = Phi3Weights {
+            instance: crate::decode_shape::ModelInstanceId::next(),
             token_embedding: Arc::from(vec![0.0_f32; bad_cfg.vocab_size * h]),
             layers: vec![stub_layer],
             final_norm_gain: Arc::from(vec![1.0_f32; h]),
