@@ -612,7 +612,7 @@ impl DecodeBackbone for Qwen2Model {
             vocab: cfg.vocab_size,
             // Full rotary — Qwen2 has no `rotary_dim`/`partial_rotary_factor`.
             rope_width: cfg.head_dim(),
-            rope_base: cfg.rope_theta,
+            embed_scale: None,
         }
     }
 
@@ -622,6 +622,10 @@ impl DecodeBackbone for Qwen2Model {
 
     fn decode_mask_plan(&self) -> MaskPlan {
         Qwen2Model::decode_mask_plan(self)
+    }
+
+    fn decode_rope_plan(&self) -> crate::persistent_decode::RopePlan {
+        crate::persistent_decode::RopePlan::single(self.config.rope_theta, self.decode_dims().n_layers)
     }
 
     fn decode_token_embedding(&self) -> Arc<[f32]> {
@@ -1205,6 +1209,42 @@ mod tests {
         assert!(
             max_abs > THRESHOLD,
             "a SINGLE mask reproduced the per-layer-gated logits to within {max_abs} (threshold {THRESHOLD:e}). The GAP-029 inference that a one-mask decode port is silently wrong for this family would then be FALSE, and the N=2 mask machinery must be re-examined before it is built.",
+        );
+    }
+
+    /// Node count of the held decode graph on the MIXED (two-variant) config —
+    /// see [`qwen2_held_decode_graph_has_not_grown`]. Measured, not predicted.
+    const QWEN2_DECODE_GRAPH_NODES: usize = 150;
+
+    fn gap029_qwen2_decode_graph_nodes() -> usize {
+        let cfg = mixed_window_cfg();
+        let model = Qwen2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let dev = Device::cpu();
+        let mut cache = KvCache::with_capacity(
+            cfg.num_hidden_layers, cfg.num_key_value_heads, cfg.head_dim(),
+            6, DType::F32, &dev,
+        ).expect("with_capacity");
+        let mut ctx = InferenceContext::new(dev);
+        let mut session: Option<DecodeSession> = None;
+        model.forward_with_kv_context_persistent(&[1, 2, 3], &mut cache, &mut ctx, &mut session)
+            .expect("prefill");
+        model.forward_with_kv_context_persistent(&[4], &mut cache, &mut ctx, &mut session)
+            .expect("decode");
+        session.expect("session built on the first decode token").graph_node_count()
+    }
+
+    /// **STRUCTURAL baseline for the TWO-VARIANT case**, captured 2026-08-13
+    /// before the Gemma3 seam work. The Llama/Phi3 siblings pin `n == 1`; this
+    /// pins that a genuinely windowed family's graph does not grow either when
+    /// the RoPE-variant machinery arrives (Qwen2 has one RoPE base, so its
+    /// count must be untouched by it — only its MASK is multi-variant).
+    ///
+    /// A logits golden cannot see node growth. This can.
+    #[test]
+    fn qwen2_held_decode_graph_has_not_grown() {
+        assert_eq!(
+            gap029_qwen2_decode_graph_nodes(), QWEN2_DECODE_GRAPH_NODES,
+            "Qwen2's held decode graph changed size",
         );
     }
 

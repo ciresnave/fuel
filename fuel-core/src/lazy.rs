@@ -1868,7 +1868,7 @@ impl crate::persistent_decode::DecodeBackbone for LlamaModel {
             vocab: cfg.vocab_size,
             // Full rotary — Llama rotates the whole head.
             rope_width: cfg.head_dim,
-            rope_base: cfg.rope_base,
+            embed_scale: None,
         }
     }
 
@@ -1882,6 +1882,10 @@ impl crate::persistent_decode::DecodeBackbone for LlamaModel {
     /// Llama's decode graph is byte-identical to the pre-GAP-029 one.
     fn decode_mask_plan(&self) -> crate::persistent_decode::MaskPlan {
         crate::persistent_decode::MaskPlan::dense(self.config.n_layers)
+    }
+
+    fn decode_rope_plan(&self) -> crate::persistent_decode::RopePlan {
+        crate::persistent_decode::RopePlan::single(self.config.rope_base, self.decode_dims().n_layers)
     }
 
     fn decode_token_embedding(&self) -> Arc<[f32]> {
@@ -13801,6 +13805,55 @@ mod generate_tests {
         -0.025251985_f32, -0.027037866_f32, -0.328116179_f32, -0.087185904_f32,
         0.152396053_f32, -0.154513642_f32, 0.104392514_f32, 0.062370289_f32,
     ];
+
+    /// Node count of `LlamaModel`'s held decode graph — see
+    /// [`llama_held_decode_graph_has_not_grown`]. Measured, not predicted.
+    const GAP029_LLAMA_DECODE_GRAPH_NODES: usize = 186;
+
+    /// Build one held decode session and report its graph node count. Shared by
+    /// the capture and the assertion so the two cannot drift.
+    fn gap029_llama_decode_graph_nodes() -> usize {
+        let cfg = gap029_golden_cfg();
+        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let dev = Device::cpu();
+        let mut cache = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, 6, DType::F32, &dev,
+        ).expect("with_capacity");
+        let mut ctx = InferenceContext::new(dev);
+        let mut session: Option<crate::inference_context::DecodeSession> = None;
+        model.forward_with_kv_context_persistent(&[1, 2, 3], &mut cache, &mut ctx, &mut session)
+            .expect("prefill");
+        model.forward_with_kv_context_persistent(&[4], &mut cache, &mut ctx, &mut session)
+            .expect("decode");
+        session.expect("session built on the first decode token").graph_node_count()
+    }
+
+    /// **STRUCTURAL baseline, captured 2026-08-13 BEFORE the Gemma3 seam work
+    /// (per-layer RoPE variants + `embed_scale`).**
+    ///
+    /// [`llama_decode_logits_unchanged_by_the_shared_build_path`] proves the
+    /// NUMBERS did not move. It cannot prove the GRAPH did not grow: an extra
+    /// `mul_scalar(1.0)`, or a slice+reshape a single-variant family should
+    /// never emit, is **numerically invisible and structurally real** — it costs
+    /// a node in every held decode plan for the life of the session, and a
+    /// logits golden would sail straight past it.
+    ///
+    /// So "uniform families pay literally nothing" is pinned as a node COUNT
+    /// rather than asserted in prose: `embed_scale == None` must emit no
+    /// multiply, and `n_rope_variants == 1` must emit neither a slice nor a
+    /// reshape.
+    ///
+    /// If an unrelated graph-construction change moves this, re-capture it
+    /// deliberately and say so in the commit — do not nudge the constant until
+    /// it passes.
+    #[test]
+    fn llama_held_decode_graph_has_not_grown() {
+        assert_eq!(
+            gap029_llama_decode_graph_nodes(),
+            GAP029_LLAMA_DECODE_GRAPH_NODES,
+            "Llama's held decode graph changed size",
+        );
+    }
 
     /// **GAP-029 increment 3, step 1 — the oracle for a behaviour-preserving
     /// refactor, and the reason it is not the pre-existing suite.**

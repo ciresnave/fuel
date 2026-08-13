@@ -460,7 +460,8 @@ impl DecodeBackbone for SmolLm3Model {
             // Full rotary — SmolLm3 has no partial-rotary factor. The rope tables
             // are built unconditionally; no-rope layers just don't apply them.
             rope_width: cfg.head_dim,
-            rope_base: cfg.rope_theta,
+            // No embedding scale — that is a Gemma-family trait.
+            embed_scale: None,
         }
     }
 
@@ -470,6 +471,21 @@ impl DecodeBackbone for SmolLm3Model {
 
     fn decode_mask_plan(&self) -> MaskPlan {
         SmolLm3Model::decode_mask_plan(self)
+    }
+
+    /// **One RoPE base for every layer** — and this is the family that makes the
+    /// distinction concrete. SmolLm3 varies RoPE *per layer*, but by SKIPPING it
+    /// (`no_rope_layers`), not by changing its base. Skipping needs no different
+    /// table bytes, so it stays inside `decode_apply_layer` and the plan is
+    /// single-variant; Gemma3's dual base genuinely differs in bytes and is what
+    /// `RopePlan` exists for.
+    ///
+    /// Variation in DATA needs a variant axis; variation in WHETHER-TO-APPLY
+    /// does not.
+    fn decode_rope_plan(&self) -> crate::persistent_decode::RopePlan {
+        crate::persistent_decode::RopePlan::single(
+            self.config.rope_theta, self.decode_dims().n_layers,
+        )
     }
 
     fn decode_token_embedding(&self) -> Arc<[f32]> {

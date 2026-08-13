@@ -534,7 +534,7 @@ impl DecodeBackbone for Qwen3Model {
             vocab: cfg.vocab_size,
             // Full rotary over the explicit `head_dim` — no partial-rotary field.
             rope_width: cfg.head_dim,
-            rope_base: cfg.rope_theta,
+            embed_scale: None,
         }
     }
 
@@ -544,6 +544,10 @@ impl DecodeBackbone for Qwen3Model {
 
     fn decode_mask_plan(&self) -> MaskPlan {
         Qwen3Model::decode_mask_plan(self)
+    }
+
+    fn decode_rope_plan(&self) -> crate::persistent_decode::RopePlan {
+        crate::persistent_decode::RopePlan::single(self.config.rope_theta, self.decode_dims().n_layers)
     }
 
     fn decode_token_embedding(&self) -> Arc<[f32]> {
