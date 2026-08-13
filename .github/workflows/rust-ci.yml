@@ -118,6 +118,32 @@ jobs:
       - name: Run tests (Windows & macOS)
         if: runner.os != 'Linux'
         run: cargo test --workspace
+      - name: Run telemetry-gated dispatch tests (sk4 wire codec)
+        if: runner.os == 'Linux'
+        # `cargo test --workspace` above uses DEFAULT features, so the
+        # telemetry-gated tests — notably
+        # `fuel_emits_only_recognized_sk4_dtype_spellings` — BUILD but never RUN
+        # there. Compiling telemetry-gated code proves it BUILDS, never that its
+        # assertions HOLD: "the feature is compiled" (the Check job's
+        # `check -p fuel-dispatch --features telemetry --all-targets`, which we
+        # KEEP — it compiles benches/examples this step does not) and "the
+        # feature's tests ran" are DIFFERENT claims, and only the second catches
+        # `FUEL_SK4_SPELLINGS` drifting. That is exactly how a red sk4 spelling
+        # test reached main (the Bool cut was gated with `--lib`, which does not
+        # build `tests/`). This step makes the second claim; the test is
+        # OS-independent so one platform suffices. It ALSO fails on a ZERO test
+        # count: a filter or an unbuilt target that runs nothing exits 0 too (the
+        # `running 0 tests` trap). NOTE: rust-ci.yml is red on content, so this
+        # RUNS AND REPORTS; it is NOT "enforced by CI" until the workflow is
+        # green. GAP-173 residual / today's red #1.
+        run: |
+          set -uo pipefail
+          out="${RUNNER_TEMP:-/tmp}/sk4-telemetry-test.log"
+          cargo test -p fuel-dispatch --features telemetry 2>&1 | tee "$out"
+          st=${PIPESTATUS[0]}
+          [ "$st" -eq 0 ] || exit "$st"
+          grep -qE 'test result: ok\. [1-9]' "$out" \
+            || { echo '::error::telemetry test step ran ZERO tests — a filter, a missing feature gate, or unbuilt test targets. This step exists specifically to not be blind; see GAP-173.'; exit 1; }
 
   fmt:
     name: Rustfmt
