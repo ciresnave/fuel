@@ -338,10 +338,22 @@ mod tests {
     /// Judge report dir (may be `None` in a restricted environment).
     #[test]
     fn default_telemetry_dir_matches_the_profile_cache_dir() {
-        let dir = default_telemetry_dir();
-        if let Some(dir) = dir {
-            let report = crate::judge::default_report_path().expect("report path present");
-            assert_eq!(Some(dir.as_path()), report.parent());
+        // GAP-157: this was `if let Some(dir) = dir { assert … }` with no
+        // `else`. In a restricted environment `dir` is `None`, the body never
+        // runs, and the test reports `ok` having asserted nothing — the same
+        // silent green as an early `return`, reached through an unentered
+        // conditional. Both directions of the projection are assertable, so
+        // assert both: there is no environment in which this proves nothing.
+        match default_telemetry_dir() {
+            Some(dir) => {
+                let report = crate::judge::default_report_path().expect("report path present");
+                assert_eq!(Some(dir.as_path()), report.parent());
+            }
+            None => assert!(
+                crate::judge::default_report_path().is_none(),
+                "default_telemetry_dir() is a plain projection of the Judge report \
+                 dir: it may only be None when the report path is also None",
+            ),
         }
     }
 }

@@ -75,6 +75,9 @@ criterion = { workspace = true }
 tempfile = { workspace = true }
 # Direct-conv parity oracle for the CV1 im2col-recipe realize test.
 fuel-conv = { workspace = true }
+# GAP-157: `require`/`required` — a missing device is a FAILURE, not a silent
+# early return that reports `ok` having asserted nothing.
+fuel-test-support = { workspace = true }
 
 [features]
 # CPU-only build is the default. Omitting all GPU features produces a clean

@@ -1,0 +1,14 @@
+[package]
+    categories.workspace = true
+    description          = "Shared test-gate helpers: turn an undeclared runtime skip into a loud failure (GAP-157)"
+    edition.workspace    = true
+    keywords.workspace   = true
+    license.workspace    = true
+    name                 = "fuel-test-support"
+    repository.workspace = true
+    version.workspace    = true
+
+# Intentionally dependency-free, and intentionally carrying NO `[features]`.
+# See the crate docs: a helper that could be compiled out to nothing would
+# reintroduce the exact defect it exists to remove.
+[dependencies]

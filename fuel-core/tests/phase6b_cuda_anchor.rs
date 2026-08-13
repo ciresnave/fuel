@@ -41,7 +41,7 @@ use fuel_ir::{probe::BackendId, Shape};
 use std::sync::Arc;
 
 /// Construct a fresh CUDA device handle on device 0. Asserts presence —
-/// only call from inside a `cuda_present()` guard. Post-9c-E.2:
+/// only call from inside a `require_cuda()` guard. Post-9c-E.2:
 /// `realize_f32_cuda` takes `&CudaDevice` instead of `&mut GraphExecutor`.
 fn cuda_executor() -> fuel_cuda_backend::CudaDevice {
     fuel_cuda_backend::CudaDevice::new(0)
@@ -66,17 +66,25 @@ fn assert_cuda_oracle(t: &LazyTensor, atol: f32, rtol: f32) {
     fuel_core::test_utils::assert_allclose_f32(&cuda, &reference, atol, rtol);
 }
 
-fn cuda_present() -> bool {
+/// A live CUDA device is **required** here, not optional.
+///
+/// GAP-157: this file is `#![cfg(feature = "cuda")]`, so it is compiled only
+/// when someone explicitly asked for the CUDA path to be tested. The previous
+/// `if !cuda_present() { return; }` silently converted that request into a test
+/// that reported `ok` having asserted nothing -- and because an early `return`
+/// from a `#[test]` is a PASS, no coverage mechanism could see it. The device
+/// requirement is real; it was simply never *declared*, so now it fails loudly.
+fn require_cuda() {
     let probe = fuel_core::probe::ProbeReport::probe_all();
-    probe.devices.iter().any(|d| d.backend == BackendId::Cuda)
+    fuel_test_support::require(
+        "a live CUDA device",
+        probe.devices.iter().any(|d| d.backend == BackendId::Cuda),
+    );
 }
 
 #[test]
 fn single_matmul_cuda_matches_reference_within_tolerance() -> Result<()> {
-    if !cuda_present() {
-        eprintln!("skipping: no CUDA device visible to Fuel");
-        return Ok(());
-    }
+    require_cuda();
 
     // 32×48 @ 48×24 — deterministic inputs.
     let (m, k, n) = (32usize, 48, 24);
@@ -145,10 +153,7 @@ fn tiny_llama_weights(cfg: &Llama2cConfig) -> LlamaWeights {
 /// graph — a real end-to-end anchor smoke vs a minimal subgraph.
 #[test]
 fn llama_2layer_cuda_matches_reference() {
-    if !cuda_present() {
-        eprintln!("skipping: no CUDA device visible to Fuel");
-        return;
-    }
+    require_cuda();
 
     let cfg = Llama2cConfig {
         vocab_size:     32,
@@ -192,7 +197,7 @@ fn llama_2layer_cuda_matches_reference() {
 /// row/col-major contiguous cases.
 #[test]
 fn bert_cuda_matches_reference() -> Result<()> {
-    if !cuda_present() { return Ok(()); }
+    require_cuda();
     let cfg = BertConfig {
         vocab_size:              100,
         hidden_size:             32,
@@ -234,7 +239,7 @@ fn bert_cuda_matches_reference() -> Result<()> {
 /// pattern that the gemm_config strided-input fix unblocked.
 #[test]
 fn sd_clip_text_encoder_cuda_matches_reference() -> Result<()> {
-    if !cuda_present() { return Ok(()); }
+    require_cuda();
     let cfg = ClipTextConfig {
         vocab_size: 100, hidden_size: 16,
         num_hidden_layers: 2, num_attention_heads: 4,
@@ -275,7 +280,7 @@ fn sd_clip_text_encoder_cuda_matches_reference() -> Result<()> {
 /// per-expert weighted-sum matmul chain.
 #[test]
 fn qwen2_moe_cuda_matches_reference() -> Result<()> {
-    if !cuda_present() { return Ok(()); }
+    require_cuda();
     // Minimal MoE config — same shapes as the existing CPU oracle test
     // in fuel-core/src/lazy_qwen2_moe.rs `tiny_cfg`.
     // Mirrors lazy_qwen2_moe::tests::tiny_cfg — these are the exact
@@ -341,7 +346,7 @@ fn qwen2_moe_cuda_matches_reference() -> Result<()> {
 /// of the encoder's output.
 #[test]
 fn whisper_decoder_cuda_matches_reference() -> Result<()> {
-    if !cuda_present() { return Ok(()); }
+    require_cuda();
     let cfg = fuel_core::lazy_whisper::tiny_cfg();
     let weights = fuel_core::lazy_whisper::zero_weights(&cfg);
     let model = WhisperModel { config: cfg.clone(), weights };
@@ -362,7 +367,7 @@ fn whisper_decoder_cuda_matches_reference() -> Result<()> {
 /// produces oracle-equivalent output.
 #[test]
 fn convnext_cuda_matches_reference() -> Result<()> {
-    if !cuda_present() { return Ok(()); }
+    require_cuda();
     let cfg = fuel_core::lazy_convnext::tiny_cfg();
     let weights = fuel_core::lazy_convnext::zero_weights(&cfg);
     let model = ConvNextModel { weights, config: cfg.clone() };
@@ -379,7 +384,7 @@ fn convnext_cuda_matches_reference() -> Result<()> {
 /// (im2col fallback bails on groups>1).
 #[test]
 fn cuda_depthwise_conv2d_matches_reference() -> Result<()> {
-    if !cuda_present() { return Ok(()); }
+    require_cuda();
     let (n, c, h, w_sz) = (1usize, 16, 8, 8);
     let k = 7;
     let pad = 3;
@@ -396,7 +401,7 @@ fn cuda_depthwise_conv2d_matches_reference() -> Result<()> {
 
 #[test]
 fn yolov8_cuda_matches_reference() -> Result<()> {
-    if !cuda_present() { return Ok(()); }
+    require_cuda();
     // YOLOv8 is conv-heavy; Conv2D currently CPU-falls-back inside the
     // CUDA executor. Test still verifies end-to-end correctness.
     let mut cfg = YoloV8Config::v8n();
