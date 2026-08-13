@@ -74,6 +74,18 @@ pub enum DType {
     /// value dtype. (The "8-bit float, 6 exp, 2 mant" framing it shipped with in
     /// e275538c was a misread: 1+6+2=9 doesn't fit a signed byte.)
     F8E6M2,
+    /// Boolean truth value, one byte per element (`0` = false, `1` = true).
+    ///
+    /// The output dtype of the element-wise comparisons
+    /// (`eq`/`ne`/`lt`/`le`/`gt`/`ge`) — GAP-168(c) / CireSnave's 2026-08-12
+    /// ruling that Fuel "uses `Bool` where possible and casts to `U8` when
+    /// necessary". Storage width equals `u8` (KISS-CLASSIFY `bool`: "1-byte
+    /// truth value; storage width equals `u8`"), so a backend may store it in
+    /// a `U8` buffer — but it is a DISTINCT logical dtype: neither an integer
+    /// nor a floating-point value (`is_int` and `is_float` are both `false`),
+    /// so using a mask AS A NUMBER (multiply/sum/accumulate) is rejected at
+    /// build time and extracting a number requires an explicit `.cast(U8)`.
+    Bool,
 }
 
 impl DType {
@@ -102,6 +114,7 @@ impl DType {
         DType::F4,
         DType::F8E8M0,
         DType::F8E6M2,
+        DType::Bool,
     ];
 }
 
@@ -235,7 +248,8 @@ fn all_variants_witness(dt: DType) {
         | DType::F6E3M2
         | DType::F4
         | DType::F8E8M0
-        | DType::F8E6M2 => {}
+        | DType::F8E6M2
+        | DType::Bool => {}
     }
 }
 
@@ -384,6 +398,7 @@ impl std::str::FromStr for DType {
             "f4" => Ok(Self::F4),
             "f8e8m0" => Ok(Self::F8E8M0),
             "f8e6m2" => Ok(Self::F8E6M2),
+            "bool" => Ok(Self::Bool),
             // §6.1-0001: a RESERVED spelling is recognized and declined
             // DISTINCTLY from an unknown one. Deleting this arm makes
             // `reserved_fnuz_declines_distinctly_from_an_unknown_token` fail —
@@ -416,6 +431,7 @@ impl DType {
             Self::F4 => "f4",
             Self::F8E8M0 => "f8e8m0",
             Self::F8E6M2 => "f8e6m2",
+            Self::Bool => "bool",
         }
     }
 
@@ -441,6 +457,8 @@ impl DType {
             Self::F4 => 0,
             Self::F8E8M0 => 1,
             Self::F8E6M2 => 1,
+            // Boolean: one byte per element (storage width equals u8).
+            Self::Bool => 1,
         }
     }
 
@@ -458,14 +476,17 @@ impl DType {
             | Self::F6E3M2
             | Self::F4
             | Self::F8E8M0
-            | Self::F8E6M2 => false,
+            | Self::F8E6M2
+            // Bool is a truth value, not an integer.
+            | Self::Bool => false,
         }
     }
 
     /// Returns `true` if this is a floating-point type.
     pub fn is_float(&self) -> bool {
         match self {
-            Self::U8 | Self::I8 | Self::U32 | Self::I16 | Self::I32 | Self::I64 => false,
+            // Bool is a truth value, neither integer nor float.
+            Self::U8 | Self::I8 | Self::U32 | Self::I16 | Self::I32 | Self::I64 | Self::Bool => false,
             Self::BF16
             | Self::F16
             | Self::F32
@@ -642,6 +663,7 @@ impl From<DType> for st::Dtype {
             DType::F6E3M2 => st::Dtype::F6_E3M2,
             DType::F4 => st::Dtype::F4,
             DType::F8E8M0 => st::Dtype::F8_E8M0,
+            DType::Bool => st::Dtype::BOOL,
             // safetensors 0.7.0 tracks the OCP MX + standard FP8 set
             // (E4M3/E5M2/E8M0/F6/F4). F8E6M2 is a non-OCP-standard token with no
             // safetensors representation, so it cannot be serialized there.
@@ -673,6 +695,7 @@ impl TryFrom<st::Dtype> for DType {
             st::Dtype::F6_E3M2 => Ok(DType::F6E3M2),
             st::Dtype::F4 => Ok(DType::F4),
             st::Dtype::F8_E8M0 => Ok(DType::F8E8M0),
+            st::Dtype::BOOL => Ok(DType::Bool),
             dtype => Err(Error::UnsupportedSafeTensorDtype(dtype)),
         }
     }

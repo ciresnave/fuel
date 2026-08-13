@@ -56,7 +56,7 @@ pub const SK4_DTYPE_TOKENS: [&str; 24] = [
 /// exists — a fact no backend can change. "This backend cannot do a dtype Fuel
 /// *does* have" is the other axis entirely (`storage_status` (lane B, landing separately in this crate)).
 pub const RECOGNIZED_UNSUPPORTED_DTYPE_TOKENS: &[&str] =
-    &["u16", "u64", "bool", "i4", "u4", "b1", "c64", "c128"];
+    &["u16", "u64", "i4", "u4", "b1", "c64", "c128"];
 
 /// The **sk4 seam spelling** of a Fuel [`DType`], or `None` for a dtype outside
 /// the closed vocabulary.
@@ -88,6 +88,9 @@ pub fn sk4_token(dt: DType) -> Option<&'static str> {
         DType::F8E5M2 => "f8e5m2",
         DType::F8E8M0 => "f8e8m0",
         DType::F8E6M2 => "f8e6m2",
+        // GAP-168(c): Fuel now HAS a Bool dtype, so bool is Supported (moved out
+        // of RECOGNIZED_UNSUPPORTED_DTYPE_TOKENS). Seam spelling == internal.
+        DType::Bool => "bool",
         // Block-scoped sub-byte ELEMENT formats — outside the sk4 closed set.
         DType::F6E2M3 | DType::F6E3M2 | DType::F4 => return None,
     })
@@ -156,7 +159,8 @@ mod tests {
     }
 
     /// **The completeness gate.** The three in-vocabulary kinds partition the
-    /// sk4 vocabulary exactly — 14 + 8 + 2 = 24.
+    /// sk4 vocabulary exactly — 15 + 7 + 2 = 24. (Was 14 + 8 + 2 before
+    /// GAP-168(c) gave Fuel a `Bool` dtype, moving `bool` supported.)
     ///
     /// This is what makes the taxonomy checkable rather than merely tidy: a new
     /// sk4 token, or a new Fuel `DType`, breaks the arithmetic and fails HERE
@@ -172,8 +176,8 @@ mod tests {
             RECOGNIZED_UNSUPPORTED_DTYPE_TOKENS.iter().copied().collect();
         let reserved: BTreeSet<&str> = RESERVED_DTYPE_TOKENS.iter().copied().collect();
 
-        assert_eq!(supported.len(), 14, "supported: {supported:?}");
-        assert_eq!(recognized.len(), 8, "recognized-unsupported: {recognized:?}");
+        assert_eq!(supported.len(), 15, "supported: {supported:?}");
+        assert_eq!(recognized.len(), 7, "recognized-unsupported: {recognized:?}");
         assert_eq!(reserved.len(), 2, "reserved: {reserved:?}");
         assert_eq!(
             supported.len() + recognized.len() + reserved.len(),
@@ -207,7 +211,7 @@ mod tests {
         assert_eq!(vocabulary.len(), 24, "sk4 tokens must be distinct");
     }
 
-    /// Every Fuel `DType` is accounted for: 14 carry a seam token, 3 are
+    /// Every Fuel `DType` is accounted for: 15 carry a seam token, 3 are
     /// block-scoped elements outside the vocabulary. Guards the other
     /// direction from the partition test — a new `DType` that returned a token
     /// already in the vocabulary would pass this but break the partition, and
@@ -216,7 +220,7 @@ mod tests {
     fn every_fuel_dtype_either_has_a_seam_token_or_is_outside_the_vocabulary() {
         let with = DType::ALL.iter().filter(|d| sk4_token(**d).is_some()).count();
         let without = DType::ALL.iter().filter(|d| sk4_token(**d).is_none()).count();
-        assert_eq!(with, 14);
+        assert_eq!(with, 15);
         assert_eq!(without, 3, "the block-scoped sub-byte element formats");
         assert_eq!(with + without, DType::ALL.len());
 
@@ -250,7 +254,8 @@ mod tests {
     fn classify_covers_all_four_kinds_and_resists_the_prefix_trap() {
         assert_eq!(classify_dtype_token("f32"), TokenKind::Supported);
         assert_eq!(classify_dtype_token("f8e4m3fn"), TokenKind::Supported);
-        assert_eq!(classify_dtype_token("bool"), TokenKind::RecognizedUnsupported);
+        // GAP-168(c): bool is now Supported (Fuel has DType::Bool).
+        assert_eq!(classify_dtype_token("bool"), TokenKind::Supported);
         assert_eq!(classify_dtype_token("c128"), TokenKind::RecognizedUnsupported);
         assert_eq!(classify_dtype_token("f8e5m2fnuz"), TokenKind::Reserved);
         assert_eq!(classify_dtype_token("asdf"), TokenKind::Unknown);
