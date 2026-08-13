@@ -87,7 +87,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: fixed(U8)          # output is always U8 (1/0 mask), independent of input dtype
+      dtype_rule: fixed(BOOL)          # output is always Bool (1/0 mask), independent of input dtype (GAP-168c)
       shape_rule: same_as(lhs)       # one mask byte per element
       layout_guarantee: contiguous
       aliasing: none
@@ -152,7 +152,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: fixed(U8)
+      dtype_rule: fixed(BOOL)
       shape_rule: same_as(lhs)
       layout_guarantee: contiguous
       aliasing: none
@@ -217,7 +217,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: fixed(U8)
+      dtype_rule: fixed(BOOL)
       shape_rule: same_as(lhs)
       layout_guarantee: contiguous
       aliasing: none
@@ -284,7 +284,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: fixed(U8)
+      dtype_rule: fixed(BOOL)
       shape_rule: same_as(lhs)
       layout_guarantee: contiguous
       aliasing: none
@@ -350,7 +350,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: fixed(U8)
+      dtype_rule: fixed(BOOL)
       shape_rule: same_as(lhs)
       layout_guarantee: contiguous
       aliasing: none
@@ -416,7 +416,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: fixed(U8)
+      dtype_rule: fixed(BOOL)
       shape_rule: same_as(lhs)
       layout_guarantee: contiguous
       aliasing: none
@@ -481,7 +481,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: fixed(U8)
+      dtype_rule: fixed(BOOL)
       shape_rule: same_as(lhs)
       layout_guarantee: contiguous
       aliasing: none
@@ -546,7 +546,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: fixed(U8)
+      dtype_rule: fixed(BOOL)
       shape_rule: same_as(lhs)
       layout_guarantee: contiguous
       aliasing: none
@@ -611,7 +611,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: fixed(U8)
+      dtype_rule: fixed(BOOL)
       shape_rule: same_as(lhs)
       layout_guarantee: contiguous
       aliasing: none
@@ -676,7 +676,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: fixed(U8)
+      dtype_rule: fixed(BOOL)
       shape_rule: same_as(lhs)
       layout_guarantee: contiguous
       aliasing: none
@@ -741,7 +741,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: fixed(U8)
+      dtype_rule: fixed(BOOL)
       shape_rule: same_as(lhs)
       layout_guarantee: contiguous
       aliasing: none
@@ -806,7 +806,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: fixed(U8)
+      dtype_rule: fixed(BOOL)
       shape_rule: same_as(lhs)
       layout_guarantee: contiguous
       aliasing: none
@@ -871,7 +871,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: fixed(U8)
+      dtype_rule: fixed(BOOL)
       shape_rule: same_as(lhs)
       layout_guarantee: contiguous
       aliasing: none
@@ -936,7 +936,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: fixed(U8)
+      dtype_rule: fixed(BOOL)
       shape_rule: same_as(lhs)
       layout_guarantee: contiguous
       aliasing: none
@@ -1001,7 +1001,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: fixed(U8)
+      dtype_rule: fixed(BOOL)
       shape_rule: same_as(lhs)
       layout_guarantee: contiguous
       aliasing: none
@@ -1066,7 +1066,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: fixed(U8)
+      dtype_rule: fixed(BOOL)
       shape_rule: same_as(lhs)
       layout_guarantee: contiguous
       aliasing: none
@@ -1131,7 +1131,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: fixed(U8)
+      dtype_rule: fixed(BOOL)
       shape_rule: same_as(lhs)
       layout_guarantee: contiguous
       aliasing: none
@@ -1196,7 +1196,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: fixed(U8)
+      dtype_rule: fixed(BOOL)
       shape_rule: same_as(lhs)
       layout_guarantee: contiguous
       aliasing: none
@@ -1261,7 +1261,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: fixed(U8)
+      dtype_rule: fixed(BOOL)
       shape_rule: same_as(lhs)
       layout_guarantee: contiguous
       aliasing: none
@@ -1326,7 +1326,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: fixed(U8)
+      dtype_rule: fixed(BOOL)
       shape_rule: same_as(lhs)
       layout_guarantee: contiguous
       aliasing: none
@@ -1391,7 +1391,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: fixed(U8)
+      dtype_rule: fixed(BOOL)
       shape_rule: same_as(lhs)
       layout_guarantee: contiguous
       aliasing: none
@@ -1456,7 +1456,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: fixed(U8)
+      dtype_rule: fixed(BOOL)
       shape_rule: same_as(lhs)
       layout_guarantee: contiguous
       aliasing: none
@@ -1521,7 +1521,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: fixed(U8)
+      dtype_rule: fixed(BOOL)
       shape_rule: same_as(lhs)
       layout_guarantee: contiguous
       aliasing: none
@@ -1586,7 +1586,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: fixed(U8)
+      dtype_rule: fixed(BOOL)
       shape_rule: same_as(lhs)
       layout_guarantee: contiguous
       aliasing: none
@@ -1651,7 +1651,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: fixed(U8)
+      dtype_rule: fixed(BOOL)
       shape_rule: same_as(lhs)
       layout_guarantee: contiguous
       aliasing: none
@@ -1717,7 +1717,7 @@ kernel_revision_hash: auto
 accept:
   inputs:
     - name: cond
-      dtypes: [U8]
+      dtypes: [BOOL]
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
       rank: any
       shape_constraint: same_as=a

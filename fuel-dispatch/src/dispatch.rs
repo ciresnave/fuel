@@ -5831,6 +5831,9 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // on the universal fallback).
     let copy_dtypes = [
         f32_dt, f64_dt, bf16_dt, f16_dt, u32_dt, u8_dt, DType::I16, DType::I32, DType::I64,
+        // GAP-168(c): Bool (a comparison mask) must be copyable — realize splices
+        // Op::Copy to materialize a result to host.
+        DType::Bool,
     ];
     for dt in copy_dtypes {
         table.register(Copy, &[dt, dt], cpu, copy_from_cpu_wrapper);

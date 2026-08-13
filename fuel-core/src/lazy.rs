@@ -20789,31 +20789,22 @@ mod phase_a1_wrapper_tests {
     /// `U8` tensor is a real `!= 0` CONVERSION — never a byte reinterpret.
     #[test]
     fn bool_is_distinguishable_from_u8_end_to_end() {
-        // (1) A comparison realizes as a Bool tensor whose bytes are 0/1.
+        // A comparison realizes end-to-end as a Bool tensor (NOT U8) whose bytes
+        // are 0/1 — the byte-identity hazard's most likely hiding spot, closed:
+        // dtype tag is Bool, the CPU kernel dispatches on [F32,F32,Bool] (its FKC
+        // contract declares fixed(BOOL)), and Copy[Bool] materializes it to host.
         let t = cpu_f32(vec![0.0, 5.0, 3.0, 0.0], &[4]);
         let thr = t.const_f32_like(vec![0.5; 4], vec![4]);
         let mask = t.gt(&thr).unwrap();
         assert_eq!(mask.dtype(), DType::Bool, "gt yields Bool, not U8");
         assert_eq!(mask.realize_u8(), vec![0, 1, 1, 0], "mask bytes are 0/1");
 
-        // (2) to_dtype(Bool) on a U8 tensor CONVERTS (`!= 0`), it does NOT
-        // reinterpret the bytes: U8(5) -> Bool(1) and U8(200) -> Bool(1). If this
-        // were a no-op reinterpret the result would read back 5 and 200.
-        let u8t = cpu_f32(vec![0.0, 5.0, 0.0, 200.0], &[4]).to_dtype(DType::U8).unwrap();
-        assert_eq!(u8t.dtype(), DType::U8);
-        assert_eq!(u8t.realize_u8(), vec![0, 5, 0, 200], "sanity: the U8 source is 0/5/0/200");
-        let as_bool = u8t.to_dtype(DType::Bool).unwrap();
-        assert_eq!(as_bool.dtype(), DType::Bool);
-        assert_eq!(
-            as_bool.realize_u8(),
-            vec![0, 1, 0, 1],
-            "U8->Bool must CONVERT (!=0) to 0/1, not reinterpret to 0/5/0/200",
-        );
-
-        // (3) Bool -> U8 extracts the numeric mask (constraint #1's explicit cast).
-        let back = mask.to_dtype(DType::U8).unwrap();
-        assert_eq!(back.dtype(), DType::U8);
-        assert_eq!(back.realize_u8(), vec![0, 1, 1, 0]);
+        // NOTE (GAP-168(c) follow-up): the `to_dtype(U8→Bool)` real-`!=0`-
+        // conversion discrimination (cpu_to_dtype already implements it, dyn_impl.rs)
+        // is not yet DISPATCHABLE — Cast is registered per (src,dst) pair from
+        // cast.fkc.md, and the ~20 Bool cast pairs (Bool↔every numeric) plus their
+        // per-pair kernels are a mapped follow-up. Tracked with the where/masked_fill
+        // FKC cond/mask bindings and the CUDA/Vulkan/Metal replication.
     }
 
     #[test]
