@@ -84,7 +84,7 @@ tempfile = { workspace = true }
 
 [features]
 # FKC is NOT a feature — it is unconditional core infrastructure. serde /
-# serde_yml / serde_json are always-on deps and `pub mod fkc` is unconditional. There is
+# serde_yaml_ng / serde_json are always-on deps and `pub mod fkc` is unconditional. There is
 # deliberately no `fkc` gate: once a family's hand-written registration is
 # deleted on migration to its contract (the CPU elementwise-binary family
 # already is — see `register_cpu_kernels`), a build without the importer would
