@@ -44,11 +44,13 @@ use crate::runtime_fused_kernels::adopt_runtime_fused;
 /// round-trip identity test, since a non-identity trip would describe operands
 /// the caller does not have. `map_element_kind` is **one-way**, exists only to
 /// derive a structure key, carries no inverse obligation, and therefore maps
-/// **eleven**, including `Fp8E4M3`/`Fp8E5M2` — which have no arm here.
+/// **eleven**, including `Fp8E4M3`/`Fp8E5M2` — which have no *mapping* arm
+/// here (they fall in this function's explicit decline arm; GAP-177 (ii) would
+/// add the mapping).
 ///
 /// Why the misattribution mattered: it licensed consolidating the two into
 /// "one authority", which the round-trip test would then reject, because this
-/// function has no FP8 arms to trip back through. **Before consolidating two
+/// function has no FP8 *mapping* arm to trip back through. **Before consolidating two
 /// similar functions, check whether they are subject to the same invariants —
 /// a shared signature over an overlapping domain is not a shared contract.**
 /// See GAP-177.
@@ -75,7 +77,21 @@ pub(crate) fn element_kind_to_dtype(ek: ElementKind) -> Option<DType> {
         // Fuel `DType` at all — an interop gap that would have bitten on the
         // first indexed region regardless of anything else.
         ElementKind::U32 => DType::U32,
-        _ => return None,
+        // No Fuel `DType` for these seam kinds — decline rather than substitute
+        // a wrong one. Enumerated (never `_`) so a new baracuda `ElementKind`
+        // becomes a COMPILE ERROR here, forcing a map-or-decline decision at the
+        // bump instead of a silent decline. `ElementKind` is not
+        // `#[non_exhaustive]` at the locked vocab, so this exhaustive match is
+        // legal across the crate boundary. GAP-177 (i) — zero behaviour change.
+        ElementKind::F32Strict
+        | ElementKind::Bool
+        | ElementKind::Fp8E4M3
+        | ElementKind::Fp8E5M2
+        | ElementKind::S4
+        | ElementKind::U4
+        | ElementKind::Bin
+        | ElementKind::Complex32
+        | ElementKind::Complex64 => return None,
     })
 }
 
@@ -101,7 +117,20 @@ pub(crate) fn dtype_to_element_kind(dt: DType) -> Option<ElementKind> {
         DType::F32 => ElementKind::F32,
         DType::F64 => ElementKind::F64,
         DType::U32 => ElementKind::U32,
-        _ => return None,
+        // No seam `ElementKind` for these Fuel dtypes — decline rather than a
+        // lossy substitution. Enumerated (never `_`) so a new `DType` is a
+        // COMPILE ERROR here instead of a silent decline — which is exactly how
+        // FP8 (F8E4M3/F8E5M2) came to sit here unmapped. Mapping FP8 is GAP-177
+        // step (ii): a JIT-path behaviour change with its own test, deliberately
+        // NOT done here. GAP-177 (i) — zero behaviour change.
+        DType::I16
+        | DType::F8E4M3
+        | DType::F8E5M2
+        | DType::F6E2M3
+        | DType::F6E3M2
+        | DType::F4
+        | DType::F8E8M0
+        | DType::F8E6M2 => return None,
     })
 }
 
