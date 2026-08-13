@@ -31,5 +31,33 @@ jobs:
       - name: Install Rust Stable
         uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # WHY THIS LIVES ON THE CUDA RUNNER, AND WHY IT IS NOT `cargo test --features cuda`.
+      #
+      # `fuel-dispatch/src/telemetry/` is reachable only under `telemetry`, and
+      # `telemetry/baracuda_provider.rs` needs `telemetry` AND `baracuda-types`.
+      # `telemetry` appears in NO other job, and `--features cuda` below enables
+      # `baracuda-types` but NOT `telemetry` — so before this step, NOTHING in CI
+      # compiled that module. One feature is not two: a gate covering each
+      # feature separately covers no intersection. (GAP-173, GAP-179.)
+      #
+      # DO NOT MOVE THIS TO A CHEAPER RUNNER. `baracuda-types` pulls
+      # `baracuda-kernels-types`, which reaches `baracuda-cuda-sys`, whose build
+      # script requires the CUDA SDK to be present. This container has it; the
+      # plain rust-ci runners do not, and there the step fails for a reason that
+      # has nothing to do with the code.
+      #
+      # It does NOT forge kernels: `baracuda-kernels-types` is `build = false`
+      # and does not depend on `baracuda-kernels-sys`. Seconds, not minutes —
+      # which is why it runs BEFORE the `--features cuda` step and fails fast
+      # ahead of the kernel forge rather than after it.
+      #
+      # What it protects: the exhaustive `DType` matches at Fuel's wire boundary
+      # to KISS (`telemetry/structure_key_derive.rs`, the sk4 codec) and the
+      # `ArchSku` witness in `baracuda_provider.rs`, which is designed to fail to
+      # compile when a baracuda bump adds an arch variant. That bump arrives as a
+      # PR that changes no Fuel source, so this job is the only place the trap
+      # can fire for the person who needs to see it.
+      - name: Check (telemetry + baracuda-types)
+        run: cargo check -p fuel-dispatch --features telemetry,baracuda-types --all-targets
       - name: Test (cuda)
         run: cargo test --features cuda
