@@ -42,7 +42,31 @@ jobs:
         if: matrix.os == 'ubuntu-24.04-arm'
         run: |
           export RUSTFLAGS="-C target-feature=neon"
-          cargo check --workspace 
+          cargo check --workspace
+
+      # `fuel-dispatch/src/telemetry/` is gated on the non-default `telemetry`
+      # feature, so `cargo check --workspace` above — which uses default
+      # features — does not parse a single file in it. That includes
+      # `telemetry/structure_key_derive.rs`, whose wildcard-free `DType` matches
+      # are what make "a new Fuel dtype is a compile error BEFORE it can reach
+      # the wire" true at Fuel's sk4 boundary to KISS. Until this step, nothing
+      # in any workflow compiled it. (GAP-173.)
+      #
+      # Needs no CUDA and no SDK — `telemetry = ["fuel-ir/serde"]` pulls no
+      # baracuda dependency — so it belongs on an ordinary runner. MEASURED, not
+      # assumed: seeding a non-exhaustive match in that file makes exactly this
+      # command exit 101 with E0004, while `cargo check -p fuel-dispatch
+      # --all-targets` (default features) stays exit 0.
+      #
+      # Runs on one OS deliberately: this checks feature-gated compilation, which
+      # is platform-independent, so a matrix would buy five copies of one answer.
+      #
+      # NOT the whole module. `telemetry/baracuda_provider.rs` additionally needs
+      # `baracuda-types` (hence the CUDA SDK), and its combined step lives in
+      # ci_cuda.yaml — which does not currently execute. See the note there.
+      - name: Check telemetry-gated dispatch (sk4 wire codec)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo check -p fuel-dispatch --features telemetry --all-targets
 
   test:
     name: Test Suite
