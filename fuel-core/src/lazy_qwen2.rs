@@ -44,9 +44,13 @@
 //!   - `lm_head.weight` → `output` (or tied to `token_embedding` when
 //!     `tie_word_embeddings == true`; safetensors loader resolves it)
 
+use crate::inference_context::{DecodeSession, DecodeTokenData, InferenceContext, KvCache, KvSlot};
 use crate::lazy::{LayerWeights, LazyTensor, WeightStorage};
+use crate::persistent_decode::{
+    DecodeBackbone, DecodeDims, DecodeLayerInputs, MaskPlan, PersistentDecodeModel,
+};
 use crate::{Device, Result};
-use fuel_ir::Shape;
+use fuel_ir::{DType, Shape};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -97,6 +101,15 @@ impl Qwen2Config {
 
 #[derive(Debug, Clone)]
 pub struct Qwen2Weights {
+    /// Process-unique identity for THIS weight set — the component that lets a
+    /// held decode plan tell two same-architecture models apart (GAP-029).
+    ///
+    /// On the weights rather than on the model for the reason `LlamaWeights`
+    /// gives: the weights are what a held graph bakes as `Const`s, so two models
+    /// over one weight set may legitimately share a plan while two with distinct
+    /// weights must not. Mint with
+    /// [`crate::decode_shape::ModelInstanceId::next`].
+    pub instance: crate::decode_shape::ModelInstanceId,
     pub token_embedding: Arc<[f32]>,
     pub layers: Vec<LayerWeights>,
     pub final_norm_gain: Arc<[f32]>,
@@ -343,6 +356,305 @@ impl Qwen2Model {
 /// per-port wrapper is preserved so call sites inside this module
 /// keep their existing signature.
 
+// ---- GAP-029 increment 3 · persistent-KV decode -----------------------------
+//
+// Qwen2 is family 1 of the eleven. It does NOT get its own build path: the
+// embed → RoPE → mask → per-layer → norm → logits body lives in
+// `crate::persistent_decode` and serves D1 and D2 from one parameterised
+// source. What lives here is the part that is genuinely Qwen2: the attention
+// block, and the per-layer mask variation the rest of the tree has no analogue
+// for.
+
+impl Qwen2Model {
+    /// **Per-layer attention variation.** Qwen2 gates on
+    /// `use_sliding_window && layer_idx < max_window_layers`
+    /// (`run_backbone_embeds`), so a decode port that builds ONE mask and hands
+    /// it to every layer is silently wrong for any mixed config — measured at
+    /// **7.9e-3** max |logit diff| on the live 2-layer/window-4 config, ~800x
+    /// the f32 noise floor.
+    ///
+    /// Expressed through [`MaskPlan::split_window`], which Qwen3 and Qwen3Moe
+    /// share verbatim (same predicate, same fields).
+    pub fn decode_mask_plan(&self) -> MaskPlan {
+        let cfg = &self.config;
+        if cfg.use_sliding_window {
+            MaskPlan::split_window(
+                cfg.num_hidden_layers, cfg.max_window_layers, cfg.sliding_window,
+            )
+        } else {
+            MaskPlan::dense(cfg.num_hidden_layers)
+        }
+    }
+
+    /// Identity a held decode plan for THIS model is baked against: family +
+    /// the config values that change graph structure + this weight set.
+    ///
+    /// `rope_theta` and `sliding_window` are deliberately absent — both are
+    /// per-token *data* (RoPE tables and mask bytes are rebound every step), so
+    /// baking them would forfeit plan reuse across a change that is already
+    /// handled correctly. What the *plan* contributes is structural: how many
+    /// mask variants exist and which layer reads which.
+    pub fn decode_shape_key(&self) -> u64 {
+        let cfg = &self.config;
+        let mut h = crate::decode_shape::ShapeKeyHasher::new();
+        h.mix_str("qwen2")
+            .mix_instance(self.weights.instance)
+            .mix_u64(cfg.num_hidden_layers as u64)
+            .mix_u64(cfg.num_attention_heads as u64)
+            .mix_u64(cfg.num_key_value_heads as u64)
+            .mix_u64(cfg.head_dim() as u64)
+            .mix_u64(cfg.hidden_size as u64)
+            .mix_u64(cfg.intermediate_size as u64)
+            .mix_u64(cfg.vocab_size as u64)
+            .mix_f64(cfg.rms_norm_eps);
+        self.decode_mask_plan().mix_into(&mut h);
+        h.finish()
+    }
+
+    /// Decode/prefill through a pre-allocated [`KvCache`], rebuilding the graph
+    /// each step. The primitive the persistent path falls back to.
+    pub fn forward_with_kv_context(
+        &self,
+        tokens: &[u32],
+        cache: &mut KvCache,
+        ctx: &mut InferenceContext,
+    ) -> Result<Vec<f32>> {
+        crate::persistent_decode::forward_with_kv_context(self, tokens, cache, ctx, false, None)
+    }
+
+    /// Plan-once persistent decode: the first `seq == 1` token builds and
+    /// optimizes the graph, every later token rebinds data and skips optimize.
+    /// `seq != 1` falls back to [`Self::forward_with_kv_context`].
+    pub fn forward_with_kv_context_persistent(
+        &self,
+        tokens: &[u32],
+        cache: &mut KvCache,
+        ctx: &mut InferenceContext,
+        session: &mut Option<DecodeSession>,
+    ) -> Result<Vec<f32>> {
+        crate::persistent_decode::forward_with_kv_context_persistent(
+            self, tokens, cache, ctx, session, None,
+        )
+    }
+
+    /// [`Self::forward_with_kv_context_persistent`] at the ergonomic call shape
+    /// — the session rides in the `InferenceContext`, so a hand-rolled decode
+    /// loop gets plan reuse without knowing `DecodeSession` exists. The result
+    /// is bound BEFORE the session is put back so an error path cannot silently
+    /// downgrade every later token to re-planning.
+    pub fn forward_decode_step(
+        &self,
+        tokens: &[u32],
+        cache: &mut KvCache,
+        ctx: &mut InferenceContext,
+    ) -> Result<Vec<f32>> {
+        let mut session = ctx.take_decode_session();
+        let out = self.forward_with_kv_context_persistent(tokens, cache, ctx, &mut session);
+        ctx.put_decode_session(session);
+        out
+    }
+
+    /// One Qwen2 layer against the pre-allocated KV buffers: the fresh K/V slab
+    /// is written at the runtime offset `cached_len`, then attention reads the
+    /// **full fixed-capacity** buffers under a `[1, 1, seq, max_seq_len]` mask
+    /// that excludes both future positions and the unwritten tail. Nothing in
+    /// the graph's shape depends on `cached_len`, which is what makes the decode
+    /// step reusable across tokens.
+    ///
+    /// Same math as [`Self::apply_layer`] — biased Q/K/V, GQA, SwiGLU — with
+    /// two deliberate differences from the prefill twin:
+    ///
+    /// - **GQA is left to `matmul`'s head broadcast** rather than materialised
+    ///   with `repeat_interleave`. Replicating K/V here would mean expanding the
+    ///   whole `max_seq_len` cache every token, not just this step's row.
+    /// - **No flash-decode arm is offered, and that is a correctness decision,
+    ///   not caution.** The CUDA flash arm expresses its key range as a single
+    ///   `k_len = cached_len + seq`, which cannot represent a sliding window: on
+    ///   a windowed layer it would attend to the whole prefix and **silently
+    ///   drop the window** on bf16/CUDA, the exact defect this port exists to
+    ///   fix — while being invisible to this lane's f32/CPU gate, where the arm
+    ///   declines anyway. Offering it needs a windowed `k` range first.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_layer_with_kv_writes(
+        &self,
+        x: &LazyTensor,
+        layer: &LayerWeights,
+        k_cache_const: &LazyTensor,
+        v_cache_const: &LazyTensor,
+        cached_len_sym: fuel_ir::SymId,
+        offset: Option<&LazyTensor>,
+        rope_cos: &LazyTensor,
+        rope_sin: &LazyTensor,
+        mask: &LazyTensor,
+    ) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let head_dim = cfg.head_dim();
+        let x_shape = x.shape();
+        let dims = x_shape.dims();
+        let batch = dims[0];
+        let seq = dims[1];
+        let kv_dim = cfg.num_key_value_heads * head_dim;
+        let act_dtype = x.dtype();
+
+        let x_norm = x.rms_norm_affine(Arc::clone(&layer.attn_norm_gain), cfg.rms_norm_eps)?;
+
+        // Q / K / V projections with Qwen2's biases.
+        let q = layer.attn_q
+            .apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size)?
+            .add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
+        let k = layer.attn_k
+            .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
+            .add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
+        let v = layer.attn_v
+            .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
+            .add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
+
+        let q_h = q.split_heads(cfg.num_attention_heads, head_dim)?;
+        let k_h = k.split_heads(cfg.num_key_value_heads, head_dim)?;
+        let v_h = v.split_heads(cfg.num_key_value_heads, head_dim)?;
+        // RoPE runs in f32 (its build-time requirement); the casts are no-ops
+        // when the activation dtype is already f32.
+        let q_r = q_h.to_dtype(DType::F32)?
+            .rope_with_tables(rope_cos, rope_sin)?
+            .to_dtype(act_dtype)?;
+        let k_r = k_h.to_dtype(DType::F32)?
+            .rope_with_tables(rope_cos, rope_sin)?
+            .to_dtype(act_dtype)?;
+
+        // Write this step's K/V into the pre-allocated buffers at the runtime
+        // offset. The returned tensor's Storage Arc IS the cache const's Arc —
+        // the write mutates in place and everything downstream reads the
+        // post-write buffer.
+        let write_ranges = vec![
+            (0, batch),
+            (0, cfg.num_key_value_heads),
+            (0, seq), // axis-2 start is dynamic; width = seq
+            (0, head_dim),
+        ];
+        let (full_k, full_v) = match offset {
+            // Device-resident offset (`Op::WriteSliceDoff`, CPU/CUDA): read at
+            // kernel launch, so the step is CUDA-graph-capturable.
+            Some(off) => (
+                k_cache_const.write_slice_doff(&k_r, off, 2, write_ranges.clone())?,
+                v_cache_const.write_slice_doff(&v_h, off, 2, write_ranges)?,
+            ),
+            // Backend-generic `SymEnv` offset (Vulkan). Bit-identical write.
+            None => {
+                let dyn_off = fuel_ir::DynScalar::Sym(cached_len_sym);
+                (
+                    k_cache_const.write_slice_dyn(&k_r, write_ranges.clone(), 2, dyn_off)?,
+                    v_cache_const.write_slice_dyn(&v_h, write_ranges, 2, dyn_off)?,
+                )
+            }
+        };
+
+        let k_t = full_k.transpose()?;
+        let scale = 1.0_f64 / (head_dim as f64).sqrt();
+        let scores = q_r.matmul(&k_t)?;
+        let scores_scaled = scores.mul_scalar(scale);
+        let scores_masked = scores_scaled.broadcast_add(mask)?;
+        let attn = scores_masked.softmax_last_dim()?;
+        let attn_v = attn.matmul(&full_v)?;
+
+        let merged = attn_v.merge_heads()?;
+        let attn_out = layer.attn_o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?;
+
+        let h1 = x.add(&attn_out)?;
+        let h1_norm = h1.rms_norm_affine(Arc::clone(&layer.ffn_norm_gain), cfg.rms_norm_eps)?;
+        let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let up = layer.ffn_up.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let swiglu = gate.silu().mul(&up)?;
+        let ffn_out = layer.ffn_down.apply_linear(&swiglu, cfg.intermediate_size, cfg.hidden_size)?;
+        h1.add(&ffn_out)
+    }
+}
+
+impl PersistentDecodeModel for Qwen2Model {
+    fn decode_n_layers(&self) -> usize {
+        self.config.num_hidden_layers
+    }
+
+    fn build_decode_token_data(
+        &self,
+        device: &Device,
+        cached_len: usize,
+        tokens: &[u32],
+        session: &DecodeSession,
+        cache: &KvCache,
+        rope_inv_freq: Option<&[f64]>,
+    ) -> Result<DecodeTokenData> {
+        let host = crate::persistent_decode::compute_decode_token_host(
+            self, cached_len, tokens, session.max_seq_len(), rope_inv_freq,
+        );
+        crate::persistent_decode::upload_decode_token_data(
+            device,
+            &host,
+            cache.dtype.unwrap_or(DType::F32),
+            // Only the device-offset path carries an offset buffer; a SymEnv
+            // session gets its offset through `cached_len_sym` instead.
+            session.offset_node().is_some().then_some(cached_len),
+        )
+    }
+}
+
+impl DecodeBackbone for Qwen2Model {
+    fn decode_family(&self) -> &'static str {
+        "Qwen2Model"
+    }
+
+    fn decode_dims(&self) -> DecodeDims {
+        let cfg = &self.config;
+        DecodeDims {
+            n_layers: cfg.num_hidden_layers,
+            n_kv_heads: cfg.num_key_value_heads,
+            head_dim: cfg.head_dim(),
+            hidden: cfg.hidden_size,
+            vocab: cfg.vocab_size,
+            // Full rotary — Qwen2 has no `rotary_dim`/`partial_rotary_factor`.
+            rope_width: cfg.head_dim(),
+            rope_base: cfg.rope_theta,
+        }
+    }
+
+    fn decode_shape_key(&self) -> u64 {
+        Qwen2Model::decode_shape_key(self)
+    }
+
+    fn decode_mask_plan(&self) -> MaskPlan {
+        Qwen2Model::decode_mask_plan(self)
+    }
+
+    fn decode_token_embedding(&self) -> Arc<[f32]> {
+        self.weights.token_embedding.clone()
+    }
+
+    fn decode_apply_layer(
+        &self,
+        layer_idx: usize,
+        inputs: &DecodeLayerInputs<'_>,
+    ) -> Result<LazyTensor> {
+        self.apply_layer_with_kv_writes(
+            inputs.x,
+            &self.weights.layers[layer_idx],
+            inputs.k_cache,
+            inputs.v_cache,
+            inputs.cached_len_sym,
+            inputs.offset,
+            inputs.rope_cos,
+            inputs.rope_sin,
+            inputs.mask,
+        )
+    }
+
+    fn decode_final_norm_and_head(&self, h: &LazyTensor) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let h_norm = h.rms_norm_affine(
+            Arc::clone(&self.weights.final_norm_gain), cfg.rms_norm_eps,
+        )?;
+        Ok(self.weights.output.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size)?)
+    }
+}
+
 // ---- HuggingFace safetensors loader ----------------------------------------
 
 impl Qwen2Weights {
@@ -386,7 +698,13 @@ impl Qwen2Weights {
         } else {
             load_transposed_matrix_preserve_dtype(st, "lm_head.weight", cfg.vocab_size, h)?
         };
-        Ok(Self { token_embedding, layers, final_norm_gain, output })
+        Ok(Self {
+            instance: crate::decode_shape::ModelInstanceId::next(),
+            token_embedding,
+            layers,
+            final_norm_gain,
+            output,
+        })
     }
 }
 
@@ -425,7 +743,7 @@ mod tests {
         }).collect();
         let final_norm_gain = Arc::from(vec![1.0_f32; h]);
         let output = WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *next_box));
-        Qwen2Weights { token_embedding, layers, final_norm_gain, output }
+        Qwen2Weights { instance: crate::decode_shape::ModelInstanceId::next(), token_embedding, layers, final_norm_gain, output }
     }
 
     #[test]
@@ -716,6 +1034,113 @@ mod tests {
         (per_layer, single)
     }
 
+    // ---- GAP-029 increment 3, family 1: persistent decode ------------------
+
+    /// Prefill `tokens[..prefill]`, then decode the rest ONE token at a time
+    /// through the persistent path, returning each decode step's logits.
+    ///
+    /// **The `>= 3` decode steps are load-bearing, not padding.** One decode
+    /// token exercises only the held-graph BUILD path; the per-token REBIND path
+    /// — where the mask bytes for the new position are recomputed and written
+    /// into the held Const — is first reached on step 2. A 1-step test passes on
+    /// a model that is wrong from token 2 onward. The assert lives here rather
+    /// than in a caller so a later test cannot quietly weaken it.
+    fn decode_steps(model: &Qwen2Model, tokens: &[u32], prefill: usize) -> Vec<Vec<f32>> {
+        let cfg = &model.config;
+        let n_decode = tokens.len() - prefill;
+        assert!(
+            n_decode >= 3,
+            "decode_steps: need >= 3 decode tokens to reach the rebind path \
+             (got {n_decode}); a 1-token test only walks the build path",
+        );
+        let dev = Device::cpu();
+        let mut cache = KvCache::with_capacity(
+            cfg.num_hidden_layers,
+            cfg.num_key_value_heads,
+            cfg.head_dim(),
+            tokens.len(),
+            DType::F32,
+            &dev,
+        )
+        .expect("with_capacity");
+        let mut ctx = InferenceContext::new(dev);
+        let mut session: Option<DecodeSession> = None;
+
+        model
+            .forward_with_kv_context_persistent(
+                &tokens[..prefill], &mut cache, &mut ctx, &mut session,
+            )
+            .expect("prefill");
+        assert!(session.is_none(), "prefill (seq > 1) must NOT build the held session");
+
+        let mut out = Vec::with_capacity(n_decode);
+        for i in prefill..tokens.len() {
+            out.push(
+                model
+                    .forward_with_kv_context_persistent(
+                        &tokens[i..=i], &mut cache, &mut ctx, &mut session,
+                    )
+                    .expect("decode"),
+            );
+            assert!(session.is_some(), "decode must hold a session from token 1");
+        }
+        assert_eq!(cache.cached_len, tokens.len(), "cache must advance every step");
+        out
+    }
+
+    /// Max |logit diff| between each decode step and the **shipped, per-layer
+    /// gated** non-cached forward at the same absolute position.
+    ///
+    /// `forward` is the oracle because it is the path that already honours
+    /// `use_sliding_window && layer_idx < max_window_layers`; decode agreeing
+    /// with it is the whole claim.
+    fn decode_vs_forward_max_abs(
+        cfg: &Qwen2Config,
+        tokens: &[u32],
+        prefill: usize,
+    ) -> Vec<f32> {
+        let model = Qwen2Model { config: cfg.clone(), weights: tiny_weights(cfg) };
+        let steps = decode_steps(&model, tokens, prefill);
+        steps
+            .iter()
+            .enumerate()
+            .map(|(k, got)| {
+                let pos = prefill + k;
+                let full = model.forward(&tokens[..=pos], 0).unwrap().realize_f32();
+                let expected = &full[pos * cfg.vocab_size..(pos + 1) * cfg.vocab_size];
+                assert_eq!(got.len(), expected.len());
+                got.iter()
+                    .zip(expected.iter())
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0.0_f32, f32::max)
+            })
+            .collect()
+    }
+
+    /// The oracle's threshold. **Not inherited — measured.**
+    ///
+    /// The obvious template, `forward_with_kv_context_decode_matches_non_cached_
+    /// forward` (`lazy.rs`), asserts `diff < 5e-3 || rel < 1e-2`. GAP-029's
+    /// measured single-mask divergence is **7.9e-3**: only 1.6x that abs bound,
+    /// and the `||` means the `rel` arm alone can pass it outright. **A Qwen2
+    /// decode test written on that template would go GREEN on a single-mask
+    /// port** — a vacuous oracle arriving through the tolerance rather than
+    /// through the assertion target.
+    ///
+    /// Measured separation on this config (prefill 3, decode 3):
+    ///
+    /// ```text
+    /// correct windowed decode vs forward : 0.0, 0.0, 0.0     (bit-exact)
+    /// single-mask decode      vs forward : 0.0, 7.04e-3, 7.95e-3
+    /// ```
+    ///
+    /// So the margin is not a factor of two — it is total. `1e-5` sits ~790x
+    /// below the divergence while leaving headroom for a legitimate future
+    /// reassociation (a fused kernel, a different reduction order). Asserting
+    /// the measured `0.0` would be tighter but would fire on non-defects, and a
+    /// test that fires on non-defects is a test somebody weakens.
+    const DECODE_ORACLE_ABS: f32 = 1e-5;
+
     /// ⚠️ NON-DISCRIMINATION CONTROL — RUN THIS FIRST WHEN READING.
     ///
     /// The two paths under comparison are DIFFERENT FUNCTIONS
@@ -781,5 +1206,121 @@ mod tests {
             max_abs > THRESHOLD,
             "a SINGLE mask reproduced the per-layer-gated logits to within {max_abs} (threshold {THRESHOLD:e}). The GAP-029 inference that a one-mask decode port is silently wrong for this family would then be FALSE, and the N=2 mask machinery must be re-examined before it is built.",
         );
+    }
+
+    /// ⚠️ **NON-DISCRIMINATION CONTROL for the windowed decode test below —
+    /// and it is what makes that test's red mean anything.**
+    ///
+    /// With `max_window_layers: 0` no layer uses the window, so the mask plan
+    /// collapses to a single dense variant and persistent decode must reproduce
+    /// the non-cached forward. **This passes under BOTH a correct windowed mask
+    /// builder and one that ignores the window entirely** — so it certifies that
+    /// the decode seam, the KV writes, the held graph and the per-token rebind
+    /// are sound, and it must NOT be read as evidence that windowing works.
+    ///
+    /// Its job is to separate two explanations of the sibling's failure: "the
+    /// mask is wrong" versus "Qwen2 decode is simply broken". Without it, a red
+    /// there is uninterpretable.
+    #[test]
+    fn qwen2_decode_matches_forward_when_no_layer_is_windowed() {
+        let cfg = Qwen2Config { max_window_layers: 0, ..mixed_window_cfg() };
+        let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6];
+        for (k, diff) in decode_vs_forward_max_abs(&cfg, &tokens, 3).iter().enumerate() {
+            assert!(
+                *diff < DECODE_ORACLE_ABS,
+                "unwindowed decode step {k} (absolute position {}) diverged from the \
+                 non-cached forward by {diff} (limit {DECODE_ORACLE_ABS:e}). This is the \
+                 CONTROL: the seam itself is broken, and the windowed test below \
+                 proves nothing until this is green.",
+                3 + k,
+            );
+        }
+    }
+
+    /// **GAP-029 family 1 — the measurement the whole increment exists for.**
+    ///
+    /// Qwen2's shipped prefill gates per layer (`use_sliding_window &&
+    /// layer_idx < max_window_layers`). Persistent decode must agree with it
+    /// position-for-position, or the model silently changes behaviour at the
+    /// prefill→decode boundary.
+    ///
+    /// **Born red, observed rather than asserted.** The mask builder first
+    /// returned the DENSE mask for every variant — byte-identically what a
+    /// single-mask decode port computes — giving `[0.0, 7.04e-3, 7.95e-3]`
+    /// against this oracle, i.e. failing on both steps where the window bites.
+    /// Making [`crate::lazy::build_decode_causal_mask_windowed`] the windowed
+    /// variant's source took it to `[0.0, 0.0, 0.0]`.
+    ///
+    /// **The zeros are not vacuous, and the shape of the result is the proof.**
+    /// Absolute position 3 agrees under BOTH bodies, because a window of 4
+    /// cannot exclude anything until position 4 — so a degenerate oracle would
+    /// have shown three zeros in the red run too, and it showed one. The
+    /// divergence appears exactly where the predicate says it must.
+    ///
+    /// **Both failing steps are REBIND steps** (the session is built on decode
+    /// step 0, at position 3). The defect therefore could not have been seen by
+    /// a single-decode-token test, which walks only the held-graph build path.
+    #[test]
+    fn qwen2_windowed_decode_matches_per_layer_gated_forward() {
+        let cfg = mixed_window_cfg();
+        let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6];
+        assert!(
+            tokens.len() > cfg.sliding_window,
+            "non-vacuity: the sequence must outrun the window or both masks are \
+             byte-identical and this test asserts nothing",
+        );
+        let diffs = decode_vs_forward_max_abs(&cfg, &tokens, 3);
+        // The window first bites at absolute position 4, so this is where a
+        // single-mask port and a windowed one must part company. Stated as an
+        // assertion rather than a comment: if the config ever changes so that no
+        // tested step is windowed, this test silently stops discriminating.
+        assert!(
+            3 + diffs.len() > cfg.sliding_window,
+            "non-vacuity: no decoded position is far enough in for the window to \
+             exclude anything",
+        );
+        for (k, diff) in diffs.iter().enumerate() {
+            assert!(
+                *diff < DECODE_ORACLE_ABS,
+                "windowed decode step {k} (absolute position {}) diverged from the \
+                 per-layer-gated forward by {diff} (limit {DECODE_ORACLE_ABS:e}). \
+                 A single mask applied to every layer produces exactly this \
+                 signature — see `MaskPlan` and `build_decode_causal_mask_windowed`.",
+                3 + k,
+            );
+        }
+    }
+
+    /// The persistent path must not be the only one that is right: `seq != 1`
+    /// falls back to D1, and D1 builds the same stacked mask from the same plan.
+    /// A windowed family whose prefill-through-the-cache disagreed with its own
+    /// non-cached forward would corrupt the KV state every later decode reads.
+    #[test]
+    fn qwen2_windowed_multi_token_prefill_through_the_cache_matches_forward() {
+        let cfg = mixed_window_cfg();
+        let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6];
+        let model = Qwen2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+
+        let dev = Device::cpu();
+        let mut cache = KvCache::with_capacity(
+            cfg.num_hidden_layers, cfg.num_key_value_heads, cfg.head_dim(),
+            tokens.len(), DType::F32, &dev,
+        ).expect("with_capacity");
+        let mut ctx = InferenceContext::new(dev);
+        // One 6-token D1 pass — `seq > window`, so the window genuinely bites
+        // inside a single call rather than across steps.
+        let got = model
+            .forward_with_kv_context(&tokens, &mut cache, &mut ctx)
+            .expect("prefill through the cache");
+
+        let full = model.forward(&tokens, 0).unwrap().realize_f32();
+        let last = tokens.len() - 1;
+        let expected = &full[last * cfg.vocab_size..(last + 1) * cfg.vocab_size];
+        for (i, (a, b)) in got.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (a - b).abs() < DECODE_ORACLE_ABS,
+                "D1 prefill logit[{i}]: cached={a}, non-cached={b}",
+            );
+        }
     }
 }

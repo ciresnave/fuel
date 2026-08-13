@@ -306,6 +306,7 @@ fn load_qwen2_weights(
     };
 
     Ok(Qwen2Weights {
+        instance: fuel::decode_shape::ModelInstanceId::next(),
         token_embedding: Arc::from(token_embedding),
         layers,
         final_norm_gain: Arc::from(final_norm_gain),

@@ -91,6 +91,48 @@ impl QuantizedQwen2Model {
             .forward_hidden_embeds_with_mask(embeds, attention_mask, start_pos)
     }
 
+    /// Decode/prefill through a pre-allocated KV cache (GAP-029 increment 3),
+    /// rebuilding the graph each step.
+    ///
+    /// **Delegates ONE level, to `Qwen2Model` — which is the only level there
+    /// is.** Recorded rather than assumed, because the sibling wrapper
+    /// `QuantizedLlama3Model` has precedent for reaching `self.inner.inner` and
+    /// thereby silently losing LLaMA-3.1 RoPE scaling. That trap needs two
+    /// levels *and* a scaled-frequency variant to hide in: `Qwen2Model` is a leaf
+    /// (`config` + `weights`, no `inner`) and Qwen2 has no scaled-RoPE variant,
+    /// so there is no deeper target to reach here by mistake.
+    pub fn forward_with_kv_context(
+        &self,
+        tokens: &[u32],
+        cache: &mut crate::inference_context::KvCache,
+        ctx: &mut crate::inference_context::InferenceContext,
+    ) -> Result<Vec<f32>> {
+        self.inner.forward_with_kv_context(tokens, cache, ctx)
+    }
+
+    /// Plan-once persistent decode — see
+    /// [`Qwen2Model::forward_with_kv_context_persistent`].
+    pub fn forward_with_kv_context_persistent(
+        &self,
+        tokens: &[u32],
+        cache: &mut crate::inference_context::KvCache,
+        ctx: &mut crate::inference_context::InferenceContext,
+        session: &mut Option<crate::inference_context::DecodeSession>,
+    ) -> Result<Vec<f32>> {
+        self.inner
+            .forward_with_kv_context_persistent(tokens, cache, ctx, session)
+    }
+
+    /// Persistent decode with the session owned by the `InferenceContext`.
+    pub fn forward_decode_step(
+        &self,
+        tokens: &[u32],
+        cache: &mut crate::inference_context::KvCache,
+        ctx: &mut crate::inference_context::InferenceContext,
+    ) -> Result<Vec<f32>> {
+        self.inner.forward_decode_step(tokens, cache, ctx)
+    }
+
     /// Model configuration.
     pub fn config(&self) -> &Qwen2Config { &self.inner.config }
 
@@ -179,6 +221,7 @@ impl QuantizedQwen2Model {
         let inner = Qwen2Model {
             config: cfg,
             weights: Qwen2Weights {
+                instance: crate::decode_shape::ModelInstanceId::next(),
                 token_embedding: src.token_embedding,
                 layers,
                 final_norm_gain: src.final_norm_gain,
@@ -320,6 +363,7 @@ impl QuantizedQwen2Model {
         let inner = Qwen2Model {
             config: cfg.clone(),
             weights: Qwen2Weights {
+                instance: crate::decode_shape::ModelInstanceId::next(),
                 token_embedding: Arc::from(token_embedding),
                 layers, final_norm_gain, output,
             },
@@ -518,7 +562,66 @@ mod tests {
         }).collect();
         let final_norm_gain = Arc::from(vec![1.0_f32; h]);
         let output = WeightStorage::F32(vec_of(h * cfg.vocab_size));
-        Qwen2Weights { token_embedding, layers, final_norm_gain, output }
+        Qwen2Weights { instance: crate::decode_shape::ModelInstanceId::next(), token_embedding, layers, final_norm_gain, output }
+    }
+
+    /// **GAP-029 increment 3 — the quantized wrapper's decode delegation.**
+    ///
+    /// Not merely a "does the forward compile" check: `test_cfg()` is a MIXED
+    /// window config (`use_sliding_window: true`, `max_window_layers: 1` over 2
+    /// layers) and the sequence outruns the window, so this exercises the N=2
+    /// stacked-mask path with **Q4_0 weight storage** on the decode side — a
+    /// combination no f32 test reaches.
+    ///
+    /// Three decode steps, so the assertion lands on the per-token REBIND path
+    /// rather than only the held-graph build.
+    #[test]
+    fn quantized_decode_matches_quantized_forward() {
+        use crate::inference_context::{DecodeSession, InferenceContext, KvCache};
+        use crate::Device;
+        use fuel_ir::DType;
+
+        let cfg = test_cfg();
+        let model =
+            QuantizedQwen2Model::from_f32_bake(cfg.clone(), tiny_weights(&cfg)).unwrap();
+        let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6];
+        assert!(
+            tokens.len() > cfg.sliding_window,
+            "non-vacuity: the window must actually bite",
+        );
+        let prefill = 3;
+
+        let dev = Device::cpu();
+        let mut cache = KvCache::with_capacity(
+            cfg.num_hidden_layers, cfg.num_key_value_heads, cfg.head_dim(),
+            tokens.len(), DType::F32, &dev,
+        ).expect("with_capacity");
+        let mut ctx = InferenceContext::new(dev);
+        let mut session: Option<DecodeSession> = None;
+
+        model
+            .forward_with_kv_context_persistent(
+                &tokens[..prefill], &mut cache, &mut ctx, &mut session,
+            )
+            .expect("prefill");
+
+        for pos in prefill..tokens.len() {
+            let got = model
+                .forward_with_kv_context_persistent(
+                    &tokens[pos..=pos], &mut cache, &mut ctx, &mut session,
+                )
+                .expect("decode");
+            let full = model.forward(&tokens[..=pos], 0).unwrap().realize_f32();
+            let expected = &full[pos * cfg.vocab_size..(pos + 1) * cfg.vocab_size];
+            for (i, (a, b)) in got.iter().zip(expected.iter()).enumerate() {
+                assert!(
+                    (a - b).abs() < 1e-5,
+                    "quantized decode at position {pos}, logit[{i}]: cached={a}, \
+                     non-cached={b}. A single-mask decode port shows ~7e-3 here.",
+                );
+            }
+        }
+        assert_eq!(cache.cached_len, tokens.len());
     }
 
     #[test]
@@ -601,6 +704,7 @@ mod tests {
             ffn_norm_gain:  zeros(h),
         };
         let src = Qwen2Weights {
+            instance: crate::decode_shape::ModelInstanceId::next(),
             token_embedding: zeros(cfg.vocab_size * h),
             layers: vec![layer],
             final_norm_gain: zeros(h),
