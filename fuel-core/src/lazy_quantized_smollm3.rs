@@ -148,6 +148,7 @@ impl QuantizedSmolLm3Model {
         let inner = SmolLm3Model {
             config: cfg,
             weights: SmolLm3Weights {
+                instance: crate::decode_shape::ModelInstanceId::next(),
                 token_embedding: src.token_embedding,
                 layers,
                 final_norm_gain: src.final_norm_gain,
@@ -279,6 +280,7 @@ impl QuantizedSmolLm3Model {
         let inner = SmolLm3Model {
             config: cfg.clone(),
             weights: SmolLm3Weights {
+                instance: crate::decode_shape::ModelInstanceId::next(),
                 token_embedding: Arc::from(token_embedding),
                 layers, final_norm_gain, output,
             },
@@ -463,7 +465,13 @@ mod tests {
         }).collect();
         let final_norm_gain = Arc::from(vec![1.0_f32; h]);
         let output = WeightStorage::F32(vec_of(h * cfg.vocab_size));
-        SmolLm3Weights { token_embedding, layers, final_norm_gain, output }
+        SmolLm3Weights {
+            instance: crate::decode_shape::ModelInstanceId::next(),
+            token_embedding,
+            layers,
+            final_norm_gain,
+            output,
+        }
     }
 
     #[test]

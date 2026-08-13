@@ -10,9 +10,13 @@
 //! Otherwise: GQA + RmsNorm + SwiGLU FFN + optional Q/K/V/O biases
 //! via `cfg.attention_bias`. Reuses `crate::lazy::LayerWeights`.
 
+use crate::inference_context::{DecodeSession, DecodeTokenData, InferenceContext, KvCache};
 use crate::lazy::{LayerWeights, LazyTensor, WeightStorage};
+use crate::persistent_decode::{
+    DecodeBackbone, DecodeDims, DecodeLayerInputs, MaskPlan, PersistentDecodeModel,
+};
 use crate::{Device, Result};
-use fuel_ir::Shape;
+use fuel_ir::{DType, Shape};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -45,6 +49,10 @@ impl SmolLm3Config {
 
 #[derive(Debug, Clone)]
 pub struct SmolLm3Weights {
+    /// Identity of this weight set, folded into [`SmolLm3Model::decode_shape_key`]
+    /// so a held decode plan (which bakes these weights as graph Consts) is
+    /// never reused for a different SmolLm3 model that shares a config.
+    pub instance: crate::decode_shape::ModelInstanceId,
     pub token_embedding: Arc<[f32]>,
     pub layers: Vec<LayerWeights>,
     pub final_norm_gain: Arc<[f32]>,
@@ -227,6 +235,272 @@ impl SmolLm3Model {
         let ffn_out = layer.ffn_down.apply_linear(&swiglu, cfg.intermediate_size, cfg.hidden_size)?;
         h1.add(&ffn_out)
     }
+
+    // ---- Persistent KV-context decode (GAP-029 family 6) --------------------
+
+    /// Decode/prefill through a pre-allocated [`KvCache`], rebuilding the graph
+    /// each step. The primitive the persistent path falls back to on `seq != 1`.
+    pub fn forward_with_kv_context(
+        &self,
+        tokens: &[u32],
+        cache: &mut KvCache,
+        ctx: &mut InferenceContext,
+    ) -> Result<Vec<f32>> {
+        crate::persistent_decode::forward_with_kv_context(self, tokens, cache, ctx, false, None)
+    }
+
+    /// Plan-once persistent decode: the first `seq == 1` token builds + optimizes
+    /// the graph, later tokens rebind data and skip optimize. `seq != 1` falls
+    /// back to [`Self::forward_with_kv_context`].
+    pub fn forward_with_kv_context_persistent(
+        &self,
+        tokens: &[u32],
+        cache: &mut KvCache,
+        ctx: &mut InferenceContext,
+        session: &mut Option<DecodeSession>,
+    ) -> Result<Vec<f32>> {
+        crate::persistent_decode::forward_with_kv_context_persistent(
+            self, tokens, cache, ctx, session, None,
+        )
+    }
+
+    /// [`Self::forward_with_kv_context_persistent`] at the ergonomic call shape —
+    /// the session rides in the `InferenceContext`.
+    pub fn forward_decode_step(
+        &self,
+        tokens: &[u32],
+        cache: &mut KvCache,
+        ctx: &mut InferenceContext,
+    ) -> Result<Vec<f32>> {
+        let mut session = ctx.take_decode_session();
+        let out = self.forward_with_kv_context_persistent(tokens, cache, ctx, &mut session);
+        ctx.put_decode_session(session);
+        out
+    }
+
+    /// Identity of a held decode plan for THIS model: family + config values that
+    /// change graph *structure* + this weight set.
+    ///
+    /// The per-layer **RoPE-on/off pattern is STRUCTURAL** — a no-rope layer
+    /// omits the rope op, so two models with different patterns build different
+    /// graphs, and the pattern is folded in. The sliding-window **width is NOT**
+    /// (it is per-token data, rebound every step; only the mask-plan structure
+    /// — how many variants and which layer reads which — is folded, via
+    /// [`MaskPlan::mix_into`]). `instance` distinguishes weight sets.
+    pub fn decode_shape_key(&self) -> u64 {
+        let cfg = &self.config;
+        let mut h = crate::decode_shape::ShapeKeyHasher::new();
+        h.mix_str("smollm3")
+            .mix_instance(self.weights.instance)
+            .mix_u64(cfg.num_hidden_layers as u64)
+            .mix_u64(cfg.num_attention_heads as u64)
+            .mix_u64(cfg.num_key_value_heads as u64)
+            .mix_u64(cfg.head_dim as u64)
+            .mix_u64(cfg.hidden_size as u64)
+            .mix_u64(cfg.intermediate_size as u64)
+            .mix_u64(cfg.vocab_size as u64)
+            .mix_f64(cfg.rms_norm_eps);
+        for i in 0..cfg.num_hidden_layers {
+            h.mix_u64(cfg.layer_uses_rope(i) as u64);
+        }
+        self.decode_mask_plan().mix_into(&mut h);
+        h.finish()
+    }
+
+    /// SmolLm3's sliding window is MODEL-UNIFORM (every layer shares one mask),
+    /// so the plan is a single variant: dense when `sliding_window` is `None`,
+    /// or one windowed variant (the `split >= n_layers` collapse of
+    /// [`MaskPlan::split_window`]) when `Some`. No per-layer split — SmolLm3's
+    /// per-layer axis is RoPE-on/off, not the mask.
+    pub fn decode_mask_plan(&self) -> MaskPlan {
+        let n = self.config.num_hidden_layers;
+        match self.config.sliding_window {
+            None => MaskPlan::dense(n),
+            Some(w) => MaskPlan::split_window(n, n, w),
+        }
+    }
+
+    /// One SmolLm3 layer against the pre-allocated KV buffers — the decode twin
+    /// of [`Self::apply_layer`]. Same math as the prefill twin (biased Q/K/V,
+    /// GQA, SwiGLU) plus **per-layer conditional RoPE** (`uses_rope`), with the
+    /// seam's two decode differences shared by every ported family: GQA left to
+    /// `matmul`'s head broadcast (no `repeat_interleave`), and no flash-decode arm.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_layer_with_kv_writes(
+        &self,
+        x: &LazyTensor,
+        layer: &LayerWeights,
+        uses_rope: bool,
+        k_cache_const: &LazyTensor,
+        v_cache_const: &LazyTensor,
+        cached_len_sym: fuel_ir::SymId,
+        offset: Option<&LazyTensor>,
+        rope_cos: &LazyTensor,
+        rope_sin: &LazyTensor,
+        mask: &LazyTensor,
+    ) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let head_dim = cfg.head_dim;
+        let x_shape = x.shape();
+        let dims = x_shape.dims();
+        let batch = dims[0];
+        let seq = dims[1];
+        let kv_dim = cfg.num_key_value_heads * head_dim;
+        let act_dtype = x.dtype();
+
+        let x_norm = x.rms_norm_affine(Arc::clone(&layer.attn_norm_gain), cfg.rms_norm_eps)?;
+
+        let q = layer.attn_q
+            .apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size)?
+            .add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
+        let k = layer.attn_k
+            .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
+            .add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
+        let v = layer.attn_v
+            .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
+            .add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
+
+        let q_h = q.split_heads(cfg.num_attention_heads, head_dim)?;
+        let k_h = k.split_heads(cfg.num_key_value_heads, head_dim)?;
+        let v_h = v.split_heads(cfg.num_key_value_heads, head_dim)?;
+
+        // Per-layer conditional RoPE — skipped on `no_rope_layers` (NoPE). RoPE
+        // runs in f32 (build-time requirement); the casts are no-ops at f32.
+        let (q_r, k_r) = if uses_rope {
+            (
+                q_h.to_dtype(DType::F32)?.rope_with_tables(rope_cos, rope_sin)?.to_dtype(act_dtype)?,
+                k_h.to_dtype(DType::F32)?.rope_with_tables(rope_cos, rope_sin)?.to_dtype(act_dtype)?,
+            )
+        } else {
+            (q_h, k_h)
+        };
+
+        // Write this step's K/V at the runtime offset — K is post-RoPE-or-not, V
+        // raw. GQA is NOT replicated here (the cache holds `num_key_value_heads`,
+        // matmul broadcasts to Q's heads).
+        let write_ranges = vec![
+            (0, batch),
+            (0, cfg.num_key_value_heads),
+            (0, seq),
+            (0, head_dim),
+        ];
+        let (full_k, full_v) = match offset {
+            Some(off) => (
+                k_cache_const.write_slice_doff(&k_r, off, 2, write_ranges.clone())?,
+                v_cache_const.write_slice_doff(&v_h, off, 2, write_ranges)?,
+            ),
+            None => {
+                let dyn_off = fuel_ir::DynScalar::Sym(cached_len_sym);
+                (
+                    k_cache_const.write_slice_dyn(&k_r, write_ranges.clone(), 2, dyn_off)?,
+                    v_cache_const.write_slice_dyn(&v_h, write_ranges, 2, dyn_off)?,
+                )
+            }
+        };
+
+        let k_t = full_k.transpose()?;
+        let scale = 1.0_f64 / (head_dim as f64).sqrt();
+        let scores = q_r.matmul(&k_t)?;
+        let scores_scaled = scores.mul_scalar(scale);
+        let scores_masked = scores_scaled.broadcast_add(mask)?;
+        let attn = scores_masked.softmax_last_dim()?;
+        let attn_v = attn.matmul(&full_v)?;
+
+        let merged = attn_v.merge_heads()?;
+        let attn_out = layer.attn_o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?;
+        let h1 = x.add(&attn_out)?;
+        let h1_norm = h1.rms_norm_affine(Arc::clone(&layer.ffn_norm_gain), cfg.rms_norm_eps)?;
+        let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let up = layer.ffn_up.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let swiglu = gate.silu().mul(&up)?;
+        let ffn_out = layer.ffn_down.apply_linear(&swiglu, cfg.intermediate_size, cfg.hidden_size)?;
+        h1.add(&ffn_out)
+    }
+}
+
+impl PersistentDecodeModel for SmolLm3Model {
+    fn decode_n_layers(&self) -> usize {
+        self.config.num_hidden_layers
+    }
+
+    fn build_decode_token_data(
+        &self,
+        device: &Device,
+        cached_len: usize,
+        tokens: &[u32],
+        session: &DecodeSession,
+        cache: &KvCache,
+        rope_inv_freq: Option<&[f64]>,
+    ) -> Result<DecodeTokenData> {
+        let host = crate::persistent_decode::compute_decode_token_host(
+            self, cached_len, tokens, session.max_seq_len(), rope_inv_freq,
+        );
+        crate::persistent_decode::upload_decode_token_data(
+            device,
+            &host,
+            cache.dtype.unwrap_or(DType::F32),
+            session.offset_node().is_some().then_some(cached_len),
+        )
+    }
+}
+
+impl DecodeBackbone for SmolLm3Model {
+    fn decode_family(&self) -> &'static str {
+        "SmolLm3Model"
+    }
+
+    fn decode_dims(&self) -> DecodeDims {
+        let cfg = &self.config;
+        DecodeDims {
+            n_layers: cfg.num_hidden_layers,
+            n_kv_heads: cfg.num_key_value_heads,
+            head_dim: cfg.head_dim,
+            hidden: cfg.hidden_size,
+            vocab: cfg.vocab_size,
+            // Full rotary — SmolLm3 has no partial-rotary factor. The rope tables
+            // are built unconditionally; no-rope layers just don't apply them.
+            rope_width: cfg.head_dim,
+            rope_base: cfg.rope_theta,
+        }
+    }
+
+    fn decode_shape_key(&self) -> u64 {
+        SmolLm3Model::decode_shape_key(self)
+    }
+
+    fn decode_mask_plan(&self) -> MaskPlan {
+        SmolLm3Model::decode_mask_plan(self)
+    }
+
+    fn decode_token_embedding(&self) -> Arc<[f32]> {
+        self.weights.token_embedding.clone()
+    }
+
+    fn decode_apply_layer(
+        &self,
+        layer_idx: usize,
+        inputs: &DecodeLayerInputs<'_>,
+    ) -> Result<LazyTensor> {
+        self.apply_layer_with_kv_writes(
+            inputs.x,
+            &self.weights.layers[layer_idx],
+            self.config.layer_uses_rope(layer_idx),
+            inputs.k_cache,
+            inputs.v_cache,
+            inputs.cached_len_sym,
+            inputs.offset,
+            inputs.rope_cos,
+            inputs.rope_sin,
+            inputs.mask,
+        )
+    }
+
+    fn decode_final_norm_and_head(&self, h: &LazyTensor) -> Result<LazyTensor> {
+        let h_norm = h.rms_norm_affine(
+            Arc::clone(&self.weights.final_norm_gain), self.config.rms_norm_eps,
+        )?;
+        self.apply_lm_head(&h_norm)
+    }
 }
 
 // ---- HuggingFace safetensors loader ----------------------------------------
@@ -307,6 +581,7 @@ impl SmolLm3Weights {
         )?;
 
         Ok(Self {
+            instance: crate::decode_shape::ModelInstanceId::next(),
             token_embedding,
             layers,
             final_norm_gain,
@@ -348,7 +623,13 @@ mod tests {
         }).collect();
         let final_norm_gain = Arc::from(vec![1.0_f32; h]);
         let output = WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *nb));
-        SmolLm3Weights { token_embedding, layers, final_norm_gain, output }
+        SmolLm3Weights {
+            instance: crate::decode_shape::ModelInstanceId::next(),
+            token_embedding,
+            layers,
+            final_norm_gain,
+            output,
+        }
     }
 
     #[test]
@@ -459,5 +740,170 @@ mod tests {
             .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
         assert!(max_diff < 1e-5,
             "SmolLm3 forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})");
+    }
+
+    // ==== GAP-029 family 6: persistent KV-context decode =====================
+
+    /// Standard tiny config with GQA (4 heads / 2 KV heads) — override
+    /// `no_rope_layers` / `sliding_window` per test.
+    fn base_cfg() -> SmolLm3Config {
+        SmolLm3Config {
+            vocab_size: 32, hidden_size: 16, intermediate_size: 32,
+            num_hidden_layers: 2, num_attention_heads: 4, num_key_value_heads: 2,
+            head_dim: 4, rms_norm_eps: 1e-5, rope_theta: 10_000.0,
+            max_position_embeddings: 64, attention_bias: false,
+            sliding_window: None, no_rope_layers: None,
+        }
+    }
+
+    /// Prefill `tokens[..prefill]`, then decode the rest one token at a time
+    /// through the persistent path; return each decode step's logits.
+    ///
+    /// **`>= 3` decode steps are load-bearing:** the per-token REBIND path is
+    /// first reached on step 2, so a 1-step test passes on a model wrong from
+    /// token 2.
+    fn decode_steps(model: &SmolLm3Model, tokens: &[u32], prefill: usize) -> Vec<Vec<f32>> {
+        let cfg = &model.config;
+        let n_decode = tokens.len() - prefill;
+        assert!(n_decode >= 3, "need >= 3 decode tokens to reach the rebind path (got {n_decode})");
+        let dev = Device::cpu();
+        let mut cache = KvCache::with_capacity(
+            cfg.num_hidden_layers, cfg.num_key_value_heads, cfg.head_dim,
+            tokens.len(), DType::F32, &dev,
+        )
+        .expect("with_capacity");
+        let mut ctx = InferenceContext::new(dev);
+        let mut session: Option<DecodeSession> = None;
+
+        model
+            .forward_with_kv_context_persistent(&tokens[..prefill], &mut cache, &mut ctx, &mut session)
+            .expect("prefill");
+        assert!(session.is_none(), "prefill (seq > 1) must NOT build the held session");
+
+        let mut out = Vec::with_capacity(n_decode);
+        for i in prefill..tokens.len() {
+            out.push(
+                model
+                    .forward_with_kv_context_persistent(&tokens[i..=i], &mut cache, &mut ctx, &mut session)
+                    .expect("decode"),
+            );
+            assert!(session.is_some(), "decode must hold a session from token 1");
+        }
+        assert_eq!(cache.cached_len, tokens.len(), "cache must advance every step");
+        out
+    }
+
+    /// Max |logit diff| between each decode step and the shipped prefill
+    /// [`SmolLm3Model::forward`] at the same absolute position.
+    ///
+    /// `forward` is an INDEPENDENT correct reference: the born-red sabotage lives
+    /// only in the decode layer, so this is an absolute oracle against
+    /// unsabotaged code — NOT a relative A-vs-B over shared code.
+    fn decode_vs_forward_max_abs(model: &SmolLm3Model, tokens: &[u32], prefill: usize) -> Vec<f32> {
+        let cfg = &model.config;
+        let steps = decode_steps(model, tokens, prefill);
+        steps
+            .iter()
+            .enumerate()
+            .map(|(k, got)| {
+                let pos = prefill + k;
+                let full = model.forward(&tokens[..=pos], 0).unwrap().realize_f32();
+                let expected = &full[pos * cfg.vocab_size..(pos + 1) * cfg.vocab_size];
+                assert_eq!(got.len(), expected.len());
+                got.iter().zip(expected.iter()).map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max)
+            })
+            .collect()
+    }
+
+    /// The oracle threshold — **measured, not inherited**, set BETWEEN the
+    /// correct drift and the sabotaged divergence.
+    ///
+    /// The ambient decode template (`diff < 5e-3 || rel < 1e-2`) would badly
+    /// miss this: SmolLm3's rope-gating divergence on a tiny model is **small
+    /// and does not amplify with position** (measured identical at 3 and 9
+    /// decode steps). Measured on the mixed-rope config (prefill 3, decode 9),
+    /// decode vs the shipped prefill `forward`, via [`measure_smollm3_decode_drift`]:
+    ///
+    /// ```text
+    /// (a) correct conditional-rope decode : [0.0; 9]                    bit-exact
+    /// (b) rope-everywhere (sabotaged)     : 1.14e-5 .. 3.52e-5 (max)    divergence
+    /// control (no_rope_layers = None)     : [0.0; 9] under BOTH bodies  insensitive
+    /// ```
+    ///
+    /// `1e-6` sits **~11.4x below the SMALLEST sabotaged step (1.14e-5)** — the
+    /// margin standard set for Glm4 (which was 8.4x). (a) is bit-exact `0.0`
+    /// **measured on this box**, so the accept side has full headroom; the ~1e-7
+    /// cross-machine gemm-reassociation figure below is an **ESTIMATE for other
+    /// hardware, NOT a measurement** — do not cite it as observed. `1e-6` leaves
+    /// ~10x over that estimate. Tighter than Glm4's `1e-5` **because this
+    /// divergence is ~40x smaller**, not because the accept side drifts, and set
+    /// below the SMALLEST divergent step so every decode position discriminates,
+    /// not just the largest.
+    const DECODE_ORACLE_ABS: f32 = 1e-6;
+
+    /// DISCRIMINATOR — mixed RoPE (`no_rope_layers = Some(vec![0,1])`: layer 0
+    /// NoPE, layer 1 RoPE). Dropping the per-layer conditional in
+    /// `apply_layer_with_kv_writes` (applying RoPE everywhere, the "copied
+    /// always-rope Qwen2 line" mistake) reddens exactly this test — the born-red.
+    #[test]
+    fn smollm3_decode_matches_forward_mixed_rope() {
+        let cfg = SmolLm3Config { no_rope_layers: Some(vec![0, 1]), ..base_cfg() };
+        assert!(!cfg.layer_uses_rope(0) && cfg.layer_uses_rope(1), "layer 0 NoPE, layer 1 RoPE");
+        let model = SmolLm3Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let tokens: Vec<u32> = (1u32..=12).collect();
+        for (k, d) in decode_vs_forward_max_abs(&model, &tokens, 3).iter().enumerate() {
+            assert!(
+                *d < DECODE_ORACLE_ABS,
+                "mixed-rope decode step {k} diverges from forward by {d} (>= {DECODE_ORACLE_ABS})",
+            );
+        }
+    }
+
+    /// NON-DISCRIMINATION CONTROL — read first. With `no_rope_layers = None`,
+    /// `layer_uses_rope` is always true, so "apply RoPE everywhere" (the
+    /// sabotage) is IDENTICAL to the correct conditional BY CONSTRUCTION — the
+    /// sabotage CANNOT be sensitive here. Green isolates "seam/plumbing works"
+    /// from "the gating is right": if this fails, the discriminator proves
+    /// nothing (the instrument would be measuring plumbing, not gating).
+    #[test]
+    fn control_decode_matches_forward_all_rope() {
+        let cfg = base_cfg(); // no_rope_layers = None
+        assert!(cfg.layer_uses_rope(0) && cfg.layer_uses_rope(1), "control: every layer uses rope");
+        let model = SmolLm3Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let tokens: Vec<u32> = (1u32..=12).collect();
+        for (k, d) in decode_vs_forward_max_abs(&model, &tokens, 3).iter().enumerate() {
+            assert!(*d < DECODE_ORACLE_ABS, "control decode step {k} diverges from forward by {d}");
+        }
+    }
+
+    /// Axis-B coverage: model-uniform sliding window (`Some(4)`) with all-rope.
+    /// Exercises the `MaskPlan::split_window(n, n, w)` single-windowed-variant
+    /// collapse end-to-end (decode vs windowed `forward`).
+    #[test]
+    fn smollm3_decode_matches_forward_windowed() {
+        let cfg = SmolLm3Config { sliding_window: Some(4), ..base_cfg() };
+        assert_eq!(SmolLm3Model { config: cfg.clone(), weights: tiny_weights(&cfg) }
+            .decode_mask_plan().n_variants(), 1, "model-uniform window is a single variant");
+        let model = SmolLm3Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        // seq 6 > window 4 so the window actually bites.
+        let tokens: Vec<u32> = (1u32..=12).collect();
+        for (k, d) in decode_vs_forward_max_abs(&model, &tokens, 3).iter().enumerate() {
+            assert!(*d < DECODE_ORACLE_ABS, "windowed decode step {k} diverges from forward by {d}");
+        }
+    }
+
+    /// Prints measured drift for both bodies — run with `--nocapture` for (a)/(b).
+    #[test]
+    fn measure_smollm3_decode_drift() {
+        let mixed = SmolLm3Config { no_rope_layers: Some(vec![0, 1]), ..base_cfg() };
+        let m_mixed = SmolLm3Model { config: mixed.clone(), weights: tiny_weights(&mixed) };
+        let ctrl = base_cfg();
+        let m_ctrl = SmolLm3Model { config: ctrl.clone(), weights: tiny_weights(&ctrl) };
+        let tokens: Vec<u32> = (1u32..=12).collect();
+        println!(
+            "SMOLLM3-DRIFT mixed_rope={:?} control_all_rope={:?}",
+            decode_vs_forward_max_abs(&m_mixed, &tokens, 3),
+            decode_vs_forward_max_abs(&m_ctrl, &tokens, 3),
+        );
     }
 }
