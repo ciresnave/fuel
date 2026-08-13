@@ -1,0 +1,578 @@
+//! Fuel × KISS `structure_key` **byte-match** — the GAP-168 *token-tier* leg.
+//!
+//! Binds KISS's published, codec-generated reference vectors and asserts that
+//! Fuel's independent `sk4` deriver reproduces them **byte for byte**.
+//!
+//! # Provenance — three commits, because a number is a claim about a tree on BOTH sides
+//!
+//! - **Artifact read:** KISS `a43a96f` — `conformance/corpus/structure_key_vectors.json`,
+//!   blob `f4ec8d44329ce0aec84747aecea832a3d3b11263`,
+//!   sha256 `a31c624c3171f91974a7eda3232f0ffa753c0d57d76a6c23dab2072a4eef32aa`,
+//!   12283 bytes. Read with `git show origin/main:<path>` in `C:\Projects\KISS`
+//!   (never the working tree, which is checked out stale); `origin/main` was
+//!   confirmed equal to `git ls-remote origin refs/heads/main` at read time, so
+//!   this is the live tip and **no invariance claim is needed** — the file has
+//!   no `coverage_note` key, i.e. it is the pre-#169 artifact as published.
+//! - **Spec provenance:** the corpus's own `source_commit` = `19c3ad7`
+//!   (asserted below, so swapping the vendored file for one of different
+//!   provenance fails rather than passing quietly).
+//! - **Fuel side:** whatever commit this file lands on. The Fuel-side numbers
+//!   below are NOT stable across commits — the derivable set was 10 one hour
+//!   before it was 11, on a one-line arm.
+//!
+//! The vendored copy under `tests/corpus/` is byte-identical to the KISS blob.
+//! It is **vendored, not retyped**: the corpus is codec-generated with nothing
+//! hand-typed, and retyping a token would destroy exactly that property.
+//!
+//! # What this leg does and does not measure — three instruments, not two
+//!
+//! 1. **Vocabulary** — the dtype manifest: **24** tokens a reader must recognize.
+//! 2. **Token-grammar** — what Fuel can *spell*: **14** (`fuel_ir::sk4_token`,
+//!    asserted in [`fuel_emits_only_recognized_sk4_dtype_spellings`]).
+//! 3. **Capability** — what Fuel can actually *derive a key for* on the
+//!    production path: **11**.
+//!
+//! **This file exercises instrument 2.** The **binding stage** on the
+//! production path is neither of the stages this file touches: it is the
+//! **operand-descriptor path**, `telemetry::baracuda_provider::map_element_kind`,
+//! whose `None` aborts the whole derivation through a `?` at the call site.
+//! Three dtypes — `i16`, `f8e8m0`, `f8e6m2` — have perfectly legal sk4
+//! spellings, serialize correctly, and still cannot produce a key, because
+//! Baracuda's `ElementKind` (18 variants at the locked
+//! `baracuda-kernel-vocab 0.0.1-alpha.78`) has no counterpart. **A green run
+//! here therefore does NOT license "Fuel covers 14 dtypes."** That gap is
+//! invisible to both artifact-side instruments by construction, which is why
+//! the report format requires the binding stage to be named rather than
+//! inferred.
+//!
+//! `map_element_kind` is not asserted here because it compiles only under
+//! `baracuda-types`, a strictly narrower gate than this file's `telemetry`.
+//!
+//! # Exclusion is not mismatch, and the two are never summed
+//!
+//! A **mismatch** is Fuel deriving *different bytes* for a cell it can express.
+//! An **exclusion** is a cell Fuel cannot express at all — conformant under
+//! KISS-CLASSIFY §6.8, with a named Fuel owner. Two of the 20 positive vectors
+//! are op-family exclusions (`une`, `scn`); see [`OP_FAMILY_EXCLUSIONS`]. They
+//! are reported as a list, never folded into the match count.
+//!
+//! # Why this is an agreement and not a fit
+//!
+//! Every cell below is Fuel's **pre-existing** cell, lifted from the unit tests
+//! in `telemetry::structure_key_derive`, whose construction idiom dates to
+//! `fdc1e987` — months before KISS published this corpus at `958a4ab`
+//! (2026-08-12). The inputs were derived from the spec clauses, not fitted to
+//! these bytes. The five genuinely new cells (the Vulkan-target twin, the mixed
+//! `f8e5m2` weight, and the three `(acc + mp)` cells) are built from the
+//! *semantics* in each vector's `note`, reusing the same shapes as their
+//! nearest existing sibling, with only the coordinate under test changed.
+
+#![cfg(feature = "telemetry")]
+
+use fuel_dispatch::telemetry::structure_key::FdxOperandDesc;
+use fuel_dispatch::telemetry::structure_key_derive::{
+    derive_structure_key_token_with_acc_mp, AccMp, FuelOpCategory, GemCell, GemMathPrecision,
+    ReduceAxes,
+};
+use fuel_ir::{DType, Layout, Shape, StrideVec};
+use std::collections::{BTreeMap, BTreeSet};
+
+/// Byte-identical vendored copy of the KISS artifact — see the module header.
+const CORPUS: &str = include_str!("corpus/structure_key_vectors.json");
+
+/// The corpus's declared spec provenance. Distinct from the artifact commit
+/// (`a43a96f`); conflating the two leaves the report unfalsifiable.
+const KISS_SOURCE_COMMIT: &str = "19c3ad7";
+
+/// The sk4 dtype spellings Fuel can emit — instrument 2, the *token-grammar*
+/// tier. Pinned as a list rather than a count so a change is a decision with a
+/// diff, not a number that silently moves.
+///
+/// **Not** the set Fuel can key: see the module header on the binding stage.
+const FUEL_SK4_SPELLINGS: &[&str] = &[
+    "f16", "bf16", "f32", "f64", "i8", "i16", "u8", "u32", "i32", "i64", "f8e4m3fn", "f8e5m2",
+    "f8e8m0", "f8e6m2",
+];
+
+/// Positive vectors Fuel cannot express, with the **field** that excludes them.
+///
+/// Both are field 2, the §6.5-0006 op-family code: `FuelOpCategory::code()` is a
+/// wildcard-free match over 17 variants and neither `une` nor `scn` is among
+/// them (positive-controlled — the same query form finds `bin`/`ter`/`red`/
+/// `gem`/`sft`). This is a capability exclusion with a Fuel owner, not a
+/// disagreement about bytes: for `une`, note that Fuel derives the *identical*
+/// operand sub-keys for the same cell shape and differs only in field 2.
+const OP_FAMILY_EXCLUSIONS: &[(&str, &str)] = &[
+    ("unary_f16_v8", "field 2 (op family) `une` — Fuel has no unary-elementwise FuelOpCategory variant"),
+    ("noncontraction_scan_mp_only", "field 2 (op family) `scn` — Fuel has no scan FuelOpCategory variant"),
+];
+
+// ---- cell construction ---------------------------------------------------
+
+fn co(dims: &[usize], dtype: DType) -> FdxOperandDesc {
+    FdxOperandDesc::from_layout(&Layout::contiguous(Shape::from_dims(dims)), dtype)
+}
+
+fn f32c(dims: &[usize]) -> FdxOperandDesc {
+    co(dims, DType::F32)
+}
+
+fn f16c(dims: &[usize]) -> FdxOperandDesc {
+    co(dims, DType::F16)
+}
+
+/// An FP8 operand at a 4-byte-aligned base (offset 4 elems × 1 byte), the
+/// existing `sk4_gem_mixed_fp8` idiom — which is what derives `v4` rather than
+/// `v8` for a 1-byte element.
+fn f8(dims: &[usize]) -> FdxOperandDesc {
+    FdxOperandDesc::from_layout(
+        &Layout::new(
+            Shape::from_dims(dims),
+            Layout::contiguous(Shape::from_dims(dims))
+                .stride()
+                .iter()
+                .copied()
+                .collect::<StrideVec>(),
+            4,
+        ),
+        DType::F8E4M3,
+    )
+}
+
+/// A bit-stable non-batched f32 gem cell with the given role extents.
+fn gem_f32(m: i64, n: i64, k: i64) -> GemCell {
+    GemCell {
+        m,
+        n,
+        k,
+        batch: None,
+        weight_dtype: DType::F32,
+        acc_dtype: DType::F32,
+        out_dtype: DType::F32,
+        math_precision: GemMathPrecision::BitStable,
+    }
+}
+
+struct Cell {
+    op: FuelOpCategory,
+    operands: Vec<FdxOperandDesc>,
+    target: &'static str,
+    acc_mp: Option<AccMp>,
+}
+
+impl Cell {
+    fn derive(&self) -> Option<String> {
+        derive_structure_key_token_with_acc_mp(self.op, &self.operands, self.target, self.acc_mp)
+    }
+}
+
+fn cell(op: FuelOpCategory, operands: Vec<FdxOperandDesc>, target: &'static str) -> Cell {
+    Cell { op, operands, target, acc_mp: None }
+}
+
+fn cell_acc_mp(
+    op: FuelOpCategory,
+    operands: Vec<FdxOperandDesc>,
+    target: &'static str,
+    acc_dtype: DType,
+    math_precision: GemMathPrecision,
+) -> Cell {
+    Cell {
+        op,
+        operands,
+        target,
+        acc_mp: Some(AccMp { acc_dtype, math_precision }),
+    }
+}
+
+/// Fuel's cell for each expressible positive vector, keyed by the corpus's own
+/// vector `name`.
+fn cells() -> BTreeMap<&'static str, Cell> {
+    use FuelOpCategory::*;
+
+    // The gem operand triple shared by the sm89/sm90/vulkan f32 contractions.
+    let gem_ops = || vec![f32c(&[8, 4096]), f32c(&[4096, 4096]), f32c(&[8, 4096])];
+    // The rank-2 reduction operand pair (`[4,8] -> [4,1]`).
+    let red_ops = || vec![f32c(&[4, 8]), f32c(&[4, 1])];
+
+    let mut m: BTreeMap<&'static str, Cell> = BTreeMap::new();
+
+    // -- elementwise ------------------------------------------------------
+    m.insert(
+        "elementwise_binary_canonical",
+        cell(
+            BinaryElementwise,
+            vec![f32c(&[128, 256]), f32c(&[128, 256]), f32c(&[128, 256])],
+            "cuda:sm89",
+        ),
+    );
+    m.insert(
+        "binary_two_operands",
+        cell(BinaryElementwise, vec![f32c(&[128, 256]), f32c(&[128, 256])], "cuda:sm89"),
+    );
+    m.insert(
+        "relu_add_generated_r1",
+        cell(BinaryElementwise, vec![f32c(&[4096]), f32c(&[4096]), f32c(&[4096])], "cuda:sm89"),
+    );
+    // Middle operand broadcasts on axis 0: extent-128 axis at stride 0.
+    let bcast = FdxOperandDesc::from_layout(
+        &Layout::new(
+            Shape::from(vec![128usize, 256]),
+            [0isize, 1].into_iter().collect::<StrideVec>(),
+            0,
+        ),
+        DType::F32,
+    );
+    m.insert(
+        "elementwise_broadcast_operand",
+        cell(
+            BinaryElementwise,
+            vec![f32c(&[128, 256]), bcast, f32c(&[128, 256])],
+            "cuda:sm89",
+        ),
+    );
+
+    // -- reductions -------------------------------------------------------
+    m.insert(
+        "reduction_trailing_axis",
+        cell(Reduction(ReduceAxes::TrailingAxis), red_ops(), "cuda:sm89"),
+    );
+    m.insert("reduction_all_axes", cell(Reduction(ReduceAxes::All), red_ops(), "cuda:sm89"));
+    m.insert(
+        "reduction_rank1_all_axes",
+        cell(Reduction(ReduceAxes::All), vec![f32c(&[8]), f32c(&[1])], "cuda:sm89"),
+    );
+    m.insert(
+        "reduction_subset_mask",
+        cell(
+            Reduction(ReduceAxes::Keepdim(0x0a)),
+            vec![f32c(&[2, 4, 3, 5]), f32c(&[2, 1, 3, 1])],
+            "cuda:sm89",
+        ),
+    );
+
+    // -- contractions -----------------------------------------------------
+    m.insert(
+        "dense_contraction_cuda",
+        cell(Contraction(gem_f32(8, 4096, 4096)), gem_ops(), "cuda:sm89"),
+    );
+    // Same cell, Vulkan capability-set target. §6.8-0002 makes the target a
+    // byte-exact passthrough coordinate, so this vector tests that Fuel does
+    // not normalize, reorder or otherwise touch a namespaced target string.
+    m.insert(
+        "dense_contraction_vulkan_target",
+        cell(
+            Contraction(gem_f32(8, 4096, 4096)),
+            gem_ops(),
+            "vulkan:sg64.ops-abr.arith-f16.cm-none",
+        ),
+    );
+    m.insert("simt_f32", cell(Contraction(gem_f32(8, 4096, 4096)), gem_ops(), "cuda:sm90"));
+    m.insert(
+        "tf32",
+        cell(
+            Contraction(GemCell {
+                math_precision: GemMathPrecision::ReducedMantissa,
+                ..gem_f32(8, 4096, 4096)
+            }),
+            gem_ops(),
+            "cuda:sm90",
+        ),
+    );
+    m.insert(
+        "gem_batched_cell",
+        cell(
+            Contraction(GemCell { batch: Some(256), ..gem_f32(256, 4096, 4096) }),
+            vec![f32c(&[256, 4096]), f32c(&[4096, 4096]), f32c(&[256, 4096])],
+            "cuda:sm90",
+        ),
+    );
+    m.insert(
+        "mixed_fp8_e4m3_x_e4m3_f16",
+        cell(
+            Contraction(GemCell {
+                weight_dtype: DType::F8E4M3,
+                acc_dtype: DType::F32,
+                out_dtype: DType::F16,
+                ..gem_f32(8, 4096, 4096)
+            }),
+            vec![f8(&[8, 4096]), f8(&[4096, 4096]), f8(&[8, 4096])],
+            "cuda:sm90",
+        ),
+    );
+    m.insert(
+        "mixed_fp8_e4m3_x_e5m2_f32",
+        cell(
+            Contraction(GemCell {
+                weight_dtype: DType::F8E5M2,
+                acc_dtype: DType::F32,
+                out_dtype: DType::F32,
+                ..gem_f32(8, 4096, 4096)
+            }),
+            vec![f8(&[8, 4096]), f8(&[4096, 4096]), f8(&[8, 4096])],
+            "cuda:sm90",
+        ),
+    );
+
+    // -- non-contraction (acc + mp), §6.7-0013 ----------------------------
+    // Accumulator deviates from an f16 compute dtype.
+    m.insert(
+        "noncontraction_acc_mp_field",
+        cell_acc_mp(
+            Reduction(ReduceAxes::TrailingAxis),
+            vec![f16c(&[4, 8]), f16c(&[4, 1])],
+            "cuda:sm89",
+            DType::F32,
+            GemMathPrecision::BitStable,
+        ),
+    );
+    // Accumulator deviates (f64) from an f32 compute dtype, mp at default.
+    m.insert(
+        "noncontraction_acc_deviating_f64",
+        cell_acc_mp(
+            Reduction(ReduceAxes::All),
+            red_ops(),
+            "cuda:sm89",
+            DType::F64,
+            GemMathPrecision::BitStable,
+        ),
+    );
+    // Accumulator EQUALS compute (f32); only `<mp>` deviates. Both slots must
+    // still be spelled explicitly (§6.7-0013(b)).
+    m.insert(
+        "noncontraction_reduction_mp_only",
+        cell_acc_mp(
+            Reduction(ReduceAxes::All),
+            red_ops(),
+            "cuda:sm89",
+            DType::F32,
+            GemMathPrecision::ReducedMantissa,
+        ),
+    );
+
+    m
+}
+
+// ---- corpus access -------------------------------------------------------
+
+fn corpus() -> serde_json::Value {
+    serde_json::from_str(CORPUS).expect("vendored KISS corpus must parse")
+}
+
+fn strs(v: &serde_json::Value, key: &str) -> Vec<String> {
+    v[key]
+        .as_array()
+        .unwrap_or_else(|| panic!("corpus key `{key}` must be an array"))
+        .iter()
+        .map(|s| s.as_str().expect("string").to_string())
+        .collect()
+}
+
+fn vectors<'a>(v: &'a serde_json::Value, key: &str) -> &'a Vec<serde_json::Value> {
+    v[key].as_array().unwrap_or_else(|| panic!("corpus key `{key}` must be an array"))
+}
+
+fn field<'a>(v: &'a serde_json::Value, key: &str) -> &'a str {
+    v[key].as_str().unwrap_or_else(|| panic!("vector is missing string field `{key}`"))
+}
+
+// ---- tests ---------------------------------------------------------------
+
+/// The vendored artifact is the one this leg claims to have been bound to.
+///
+/// Asserting the corpus's *own* declared provenance is what makes the report's
+/// commit citations falsifiable: swapping the file for a different schema
+/// version or spec commit fails here rather than silently re-baselining every
+/// byte-match below.
+#[test]
+fn corpus_is_the_artifact_this_leg_was_bound_to() {
+    let c = corpus();
+    assert_eq!(field(&c, "schema"), "kiss-structure-key-vectors-v1");
+    assert_eq!(field(&c, "source_commit"), KISS_SOURCE_COMMIT);
+    assert_eq!(field(&c, "token_prefix"), "sk4");
+    assert_eq!(c["structure_key_schema_version"].as_u64(), Some(4));
+    assert_eq!(c["recognition_count"].as_u64(), Some(24));
+    assert_eq!(c["usable_count"].as_u64(), Some(22));
+    assert_eq!(strs(&c, "dtype_recognition_set").len(), 24);
+    assert_eq!(strs(&c, "dtype_usable_set").len(), 22);
+    assert_eq!(strs(&c, "target_namespaces"), vec!["cuda", "vulkan"]);
+    assert_eq!(vectors(&c, "positive_vectors").len(), 20);
+    assert_eq!(vectors(&c, "decline_vectors").len(), 10);
+}
+
+/// Every positive vector is either **constructed** or **explicitly excluded** —
+/// and the two sets partition the corpus exactly.
+///
+/// This is the anti-drift assertion. Without it a vector added upstream would
+/// simply not be looked up, and the byte-match would keep reporting a clean
+/// N/N over a silently shrinking denominator — a false negative, the direction
+/// that gets filed rather than investigated.
+#[test]
+fn constructed_and_excluded_partition_the_positive_vectors() {
+    let c = corpus();
+    let published: BTreeSet<String> =
+        vectors(&c, "positive_vectors").iter().map(|v| field(v, "name").to_string()).collect();
+    assert_eq!(published.len(), 20, "vector names must be unique");
+
+    let constructed: BTreeSet<String> = cells().keys().map(|s| s.to_string()).collect();
+    let excluded: BTreeSet<String> =
+        OP_FAMILY_EXCLUSIONS.iter().map(|(n, _)| n.to_string()).collect();
+
+    assert!(
+        constructed.is_disjoint(&excluded),
+        "a vector cannot be both constructed and excluded: {:?}",
+        constructed.intersection(&excluded).collect::<Vec<_>>()
+    );
+    let covered: BTreeSet<String> = constructed.union(&excluded).cloned().collect();
+    assert_eq!(
+        covered, published,
+        "unhandled upstream vectors: {:?} / stale local names: {:?}",
+        published.difference(&covered).collect::<Vec<_>>(),
+        covered.difference(&published).collect::<Vec<_>>()
+    );
+    assert_eq!(constructed.len(), 18);
+    assert_eq!(excluded.len(), 2);
+}
+
+/// **The leg.** Every expressible positive vector, byte for byte.
+#[test]
+fn positive_vectors_byte_match() {
+    let c = corpus();
+    let cells = cells();
+    let mut matched = 0usize;
+    let mut mismatches: Vec<String> = Vec::new();
+
+    for v in vectors(&c, "positive_vectors") {
+        let name = field(v, "name");
+        let Some(cell) = cells.get(name) else { continue };
+        let expected = field(v, "token");
+        match cell.derive() {
+            // A `None` here is NOT an exclusion — it is a cell Fuel claims to
+            // express and then declined to key, which is a defect.
+            None => mismatches.push(format!(
+                "{name} [{}]: Fuel DECLINED a cell it claims to express\n  expected: {expected}",
+                field(v, "clause")
+            )),
+            Some(got) if got == expected => matched += 1,
+            Some(got) => mismatches.push(format!(
+                "{name} [{}]:\n  expected: {expected}\n  got:      {got}",
+                field(v, "clause")
+            )),
+        }
+    }
+
+    assert!(mismatches.is_empty(), "byte-match failures:\n{}", mismatches.join("\n"));
+    // Non-vacuity: a lookup bug that matched nothing would otherwise pass.
+    assert_eq!(matched, 18, "expected 18 expressible positive vectors");
+}
+
+/// Fuel's emitter never produces a token the corpus publishes as a **decline**.
+///
+/// Fuel is not a *reader* — it has no `structure_key` parse path — so KISS's
+/// decline kinds have no Fuel site to map onto, and their `mapping_guard_note`
+/// does not bite us on the decline-kind axis. What Fuel *can* be held to is the
+/// emit-side dual: an invalid token must be **unrepresentable**, which is
+/// strictly stronger than declining it on parse.
+///
+/// Each is excluded by a **field**, never by a count:
+/// - field 1 `<version>` — `sk9`/`sk3`/`sk04`: the prefix is a `sk4|` literal.
+/// - field 2 `<op family>` — `zzz`: `FuelOpCategory::code()` is wildcard-free.
+/// - field 3 `<dtype>` — `f99`, `f8e4m3fnuz`: sourced from `fuel_ir::sk4_token`,
+///   wildcard-free over a closed `DType` with no `fnuz` variant.
+/// - field 10 `<contraction>` / `<acc+mp>` — a reserved `<wdt>`, and the `zz`
+///   `<mp>` codes: `GemMathPrecision` has exactly two variants, and the dtype
+///   coordinates are `DType`s spelled at emission, not free strings.
+#[test]
+fn fuel_never_emits_a_published_decline_token() {
+    let c = corpus();
+    let declines: BTreeMap<&str, &str> = vectors(&c, "decline_vectors")
+        .iter()
+        .map(|v| (field(v, "token"), field(v, "name")))
+        .collect();
+    assert_eq!(declines.len(), 10);
+
+    for (name, cell) in cells() {
+        let Some(token) = cell.derive() else { continue };
+        assert!(
+            !declines.contains_key(token.as_str()),
+            "cell `{name}` emitted the token published as decline `{}`",
+            declines[token.as_str()]
+        );
+        assert!(token.starts_with("sk4|"), "cell `{name}` emitted a non-sk4 prefix: {token}");
+    }
+}
+
+/// §6.7-0013(d) — the all-default `(acc + mp)` spelling is a **forbidden
+/// redundant emission**, and Fuel makes it unreachable rather than checking for
+/// it.
+///
+/// Directly against the published decline vector: hand the `rall` f32 cell an
+/// `(acc + mp)` that is entirely at its defaults (`f32/st` on an `f32` compute
+/// dtype) and Fuel emits the *field-absent* form — which is the corpus's own
+/// `reduction_all_axes` **positive** vector — not the redundant form it
+/// publishes as `RedundantAccMpField`.
+///
+/// The two vectors differ by exactly the trailing field, so this asserts the
+/// §6.7-0013(c)/(e) omitted-when-absent rule at the same time: the trap here is
+/// that the mandatory reduce field one slot earlier emits `-` when inapplicable,
+/// and copying that convention would append a spurious `|-`.
+#[test]
+fn redundant_acc_mp_is_unrepresentable_on_the_emit_path() {
+    let c = corpus();
+    let redundant = vectors(&c, "decline_vectors")
+        .iter()
+        .find(|v| field(v, "name") == "redundant_acc_mp_all_default")
+        .expect("corpus must publish the rule-(d) decline vector");
+    let field_absent = vectors(&c, "positive_vectors")
+        .iter()
+        .find(|v| field(v, "name") == "reduction_all_axes")
+        .expect("corpus must publish the field-absent twin");
+
+    let token = cell_acc_mp(
+        FuelOpCategory::Reduction(ReduceAxes::All),
+        vec![f32c(&[4, 8]), f32c(&[4, 1])],
+        "cuda:sm89",
+        DType::F32,
+        GemMathPrecision::BitStable,
+    )
+    .derive()
+    .expect("the all-default (acc + mp) cell must still derive a token");
+
+    assert_ne!(token, field(redundant, "token"), "emitted the rule-(d) redundant form");
+    assert_eq!(token, field(field_absent, "token"));
+    // The two vectors really do differ only by the trailing field — otherwise
+    // the assertion above would be passing for an unrelated reason.
+    assert_eq!(
+        field(redundant, "token"),
+        format!("{}|f32/st", field(field_absent, "token")),
+        "corpus invariant this test leans on has changed"
+    );
+}
+
+/// Every dtype spelling Fuel can emit is in the corpus's **recognition set**,
+/// and none is a **reserved** token.
+///
+/// Instrument 2, and the guard against the one drift that produces a
+/// well-formed key nothing downstream can catch: a *retired* spelling under a
+/// *current* version prefix (§6.1-0004).
+#[test]
+fn fuel_emits_only_recognized_sk4_dtype_spellings() {
+    let c = corpus();
+    let recognized: BTreeSet<String> = strs(&c, "dtype_recognition_set").into_iter().collect();
+    let reserved: BTreeSet<String> = strs(&c, "reserved_dtypes").into_iter().collect();
+
+    let emitted: BTreeSet<String> =
+        DType::ALL.iter().filter_map(|&dt| fuel_ir::sk4_token(dt)).map(String::from).collect();
+
+    let expected: BTreeSet<String> = FUEL_SK4_SPELLINGS.iter().map(|s| s.to_string()).collect();
+    assert_eq!(emitted, expected, "Fuel's sk4 spelling set moved");
+
+    for tok in &emitted {
+        assert!(recognized.contains(tok), "`{tok}` is outside the closed sk4 vocabulary");
+        assert!(!reserved.contains(tok), "`{tok}` is RESERVED at sk4 and must never be emitted");
+    }
+    // Non-vacuity, and the discrimination check: the set is neither empty nor
+    // everything, so `is-a-subset` is a real constraint here.
+    assert_eq!(emitted.len(), 14);
+    assert!(emitted.len() < recognized.len());
+}
