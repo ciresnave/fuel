@@ -37,6 +37,7 @@ use std::collections::HashMap;
 use fuel_ir::{DType, Error};
 
 use fuel::Device;
+use fuel::decode_state_spec::LayerStateSpec;
 use fuel::inference_context::{
     DecodeSession, InferenceContext, KvCache, PagedDecodePlan, PagedDecodeSession,
 };
@@ -79,10 +80,20 @@ pub trait DecodeModel {
     /// session's private cache against (all sessions share one model, so this is
     /// uniform).
     fn n_layers(&self) -> usize;
-    /// KV head count (cache geometry).
-    fn n_kv_heads(&self) -> usize;
-    /// Head dimension (cache geometry).
-    fn head_dim(&self) -> usize;
+    /// The decode state each layer keeps, **indexed by layer**. The scheduler
+    /// collapses this to a single `(n_kv_heads, head_dim)` cache geometry via
+    /// [`LayerStateSpec::collapse_uniform`] at construction — and that collapse
+    /// FAILS LOUDLY for a model whose layers are not uniform per-head KV, rather
+    /// than fabricating a pair the model never keeps.
+    ///
+    /// This replaces the former scalar `n_kv_heads()` / `head_dim()`, which
+    /// asserted every model's state is uniform per-head KV — a claim MLA
+    /// (`DeepSeek2Model`, whose decode state is a `LazyLatentCache` of
+    /// `[latent, k_pe]` slots) cannot honor, yet was syntactically able to
+    /// return, mis-allocating silently. A uniform per-head-KV model returns the
+    /// same [`LayerStateSpec::KeyValue`] for every index and is unaffected. See
+    /// GAP-166 and [`fuel::decode_state_spec`].
+    fn layer_state_specs(&self) -> Vec<LayerStateSpec>;
 
     /// One persistent-KV forward: run `tokens` (full prompt on prefill, the last
     /// token on decode), mutating the session's `cache`/`ctx`/`session` in place,
@@ -209,11 +220,14 @@ impl DecodeModel for LlamaModel {
     fn n_layers(&self) -> usize {
         self.config.n_layers
     }
-    fn n_kv_heads(&self) -> usize {
-        self.config.n_kv_heads
-    }
-    fn head_dim(&self) -> usize {
-        self.config.head_dim
+    fn layer_state_specs(&self) -> Vec<LayerStateSpec> {
+        vec![
+            LayerStateSpec::KeyValue {
+                n_kv_heads: self.config.n_kv_heads,
+                head_dim: self.config.head_dim,
+            };
+            self.config.n_layers
+        ]
     }
     fn forward_with_kv_context_persistent(
         &self,
@@ -253,11 +267,14 @@ impl DecodeModel for fuel::lazy_llama_full::Llama3Model {
     fn n_layers(&self) -> usize {
         self.inner.config.n_layers
     }
-    fn n_kv_heads(&self) -> usize {
-        self.inner.config.n_kv_heads
-    }
-    fn head_dim(&self) -> usize {
-        self.inner.config.head_dim
+    fn layer_state_specs(&self) -> Vec<LayerStateSpec> {
+        vec![
+            LayerStateSpec::KeyValue {
+                n_kv_heads: self.inner.config.n_kv_heads,
+                head_dim: self.inner.config.head_dim,
+            };
+            self.inner.config.n_layers
+        ]
     }
     fn forward_with_kv_context_persistent(
         &self,
@@ -300,11 +317,8 @@ impl DecodeModel for fuel::lazy_quantized_llama::QuantizedLlama3Model {
     fn n_layers(&self) -> usize {
         DecodeModel::n_layers(self.inner())
     }
-    fn n_kv_heads(&self) -> usize {
-        DecodeModel::n_kv_heads(self.inner())
-    }
-    fn head_dim(&self) -> usize {
-        DecodeModel::head_dim(self.inner())
+    fn layer_state_specs(&self) -> Vec<LayerStateSpec> {
+        DecodeModel::layer_state_specs(self.inner())
     }
     fn forward_with_kv_context_persistent(
         &self,
@@ -402,6 +416,27 @@ pub struct ModelDims {
     pub n_layers: usize,
     pub n_kv_heads: usize,
     pub head_dim: usize,
+}
+
+impl ModelDims {
+    /// The single cache geometry the scheduler allocates a session's KV against,
+    /// extracted from a model's per-layer decode-state description
+    /// ([`DecodeModel::layer_state_specs`]) — **failing** when the layers are not
+    /// uniform per-head KV.
+    ///
+    /// This is the one place the old `(n_kv_heads, head_dim)` scalar assumption
+    /// survives, and it is a `Result` rather than a silent pair precisely so a
+    /// non-uniform / non-KV model (MLA today, a future LFM2) is declined *here*,
+    /// at scheduler construction, instead of mis-allocated. `ModelDims` and
+    /// [`KvGeometry`] keep their scalar fields untouched — their vLLM
+    /// shared-block-table commitment is not widened; they simply receive the
+    /// collapsed pair through a fallible boundary. See GAP-166 / GAP-170 and
+    /// [`LayerStateSpec::collapse_uniform`].
+    pub fn from_model<M: DecodeModel + ?Sized>(model: &M) -> fuel::Result<Self> {
+        let (n_kv_heads, head_dim) =
+            LayerStateSpec::collapse_uniform(&model.layer_state_specs())?;
+        Ok(Self { n_layers: model.n_layers(), n_kv_heads, head_dim })
+    }
 }
 
 /// One decode session's mutable state — a faithful bundle of the four
@@ -704,22 +739,28 @@ impl<'m, M: DecodeModel> SessionScheduler<'m, M> {
     /// sessions against a KV block-pool budget (C-1). The pool's per-token head
     /// geometry is taken from the model (all sessions share it); `budget` sets
     /// the block size + total blocks.
+    ///
+    /// **Returns `Err` when the model's layers are not uniform per-head KV** —
+    /// the [`ModelDims::from_model`] collapse boundary. A model whose decode
+    /// state is not a single `(n_kv_heads, head_dim)` (MLA, a future LFM2) is
+    /// declined here rather than silently mis-allocated (GAP-166).
     pub fn new(
         model: &'m M,
         device: Device,
         dtype: DType,
         policy: SchedulePolicy,
         budget: KvBudget,
-    ) -> Self {
+    ) -> fuel::Result<Self> {
+        let dims = ModelDims::from_model(model)?;
         let kv_pool = KvBlockPool::new(KvGeometry {
-            n_layers: model.n_layers(),
-            n_kv_heads: model.n_kv_heads(),
-            head_dim: model.head_dim(),
+            n_layers: dims.n_layers,
+            n_kv_heads: dims.n_kv_heads,
+            head_dim: dims.head_dim,
             num_blocks: budget.num_blocks,
             block_size: budget.block_size,
             elem_size: dtype.size_in_bytes(),
         });
-        Self {
+        Ok(Self {
             model,
             device,
             dtype,
@@ -728,7 +769,7 @@ impl<'m, M: DecodeModel> SessionScheduler<'m, M> {
             next_id: 0,
             kv_pool,
             kv_handles: HashMap::new(),
-        }
+        })
     }
 
     // --- C-1 capacity advertisement (the admission primitives) -----------
@@ -790,11 +831,7 @@ impl<'m, M: DecodeModel> SessionScheduler<'m, M> {
         }
 
         let id = SessionId(self.next_id);
-        let dims = ModelDims {
-            n_layers: self.model.n_layers(),
-            n_kv_heads: self.model.n_kv_heads(),
-            head_dim: self.model.head_dim(),
-        };
+        let dims = ModelDims::from_model(self.model)?;
         // Build the cache first (an empty-prompt / zero-budget error must not
         // consume a reservation), THEN reserve — both are pre-gated above so
         // neither the build nor the reserve can fail on capacity here.
@@ -1206,11 +1243,12 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
         dtype: DType,
         device: &Device,
     ) -> fuel::Result<Self> {
+        let dims = ModelDims::from_model(model)?;
         let pool = DeviceKvPool::new(
             KvGeometry {
-                n_layers: model.n_layers(),
-                n_kv_heads: model.n_kv_heads(),
-                head_dim: model.head_dim(),
+                n_layers: dims.n_layers,
+                n_kv_heads: dims.n_kv_heads,
+                head_dim: dims.head_dim,
                 num_blocks: budget.num_blocks,
                 block_size: budget.block_size,
                 elem_size: dtype.size_in_bytes(),
@@ -1927,8 +1965,9 @@ mod tests {
         dev: &Device,
     ) -> Vec<f32> {
         assert!(n_decode > 1, "must cover the rebind half, not just the build half");
+        let dims = ModelDims::from_model(m).expect("uniform per-head KV geometry");
         let mut cache = KvCache::with_capacity(
-            m.n_layers(), m.n_kv_heads(), m.head_dim(), 128, DType::F32, dev,
+            dims.n_layers, dims.n_kv_heads, dims.head_dim, 128, DType::F32, dev,
         )
         .expect("kv cache");
         let mut ctx = InferenceContext::new(dev.clone());
@@ -2077,9 +2116,12 @@ mod tests {
         let src = tiny_weights(&cfg.to_lazy_config(), 4242);
         let m = QuantizedLlama3Model::from_f32_bake(cfg.clone(), src).expect("Q4_0 bake");
 
-        assert_eq!(DecodeModel::n_layers(&m), cfg.num_hidden_layers);
-        assert_eq!(DecodeModel::n_kv_heads(&m), cfg.num_key_value_heads);
-        assert_eq!(DecodeModel::head_dim(&m), cfg.head_dim);
+        // The wrapper's per-layer specs must collapse to the inner geometry —
+        // the path the scheduler actually takes at construction.
+        let dims = ModelDims::from_model(&m).expect("uniform per-head KV geometry");
+        assert_eq!(dims.n_layers, cfg.num_hidden_layers);
+        assert_eq!(dims.n_kv_heads, cfg.num_key_value_heads);
+        assert_eq!(dims.head_dim, cfg.head_dim);
         // Guards the consistency rule the trait documents: the batched-arm
         // predicate and the batched-arm method must agree. Delegated, so this
         // stays true if `Llama3Model` ever gains the arm.
@@ -2154,7 +2196,7 @@ mod tests {
             &prompt, max_new, SamplingStrategy::Greedy, None, &Device::cpu(), DType::F32).unwrap();
 
         let mut sched = SessionScheduler::new(
-            &model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, test_budget());
+            &model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, test_budget()).unwrap();
         let id = sched.add_session(&prompt, SamplingStrategy::Greedy, None, max_new).unwrap();
         let out = sched.run_to_completion().unwrap();
         assert_eq!(out.len(), 1);
@@ -2173,7 +2215,7 @@ mod tests {
         // block_size 8; a (prompt 3 + max_new 5 = 8)-token session = exactly 1 block.
         let budget = KvBudget { block_size: 8, num_blocks: 2 };
         let mut sched =
-            SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, budget);
+            SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, budget).unwrap();
         let prompt = [1u32, 2, 3];
 
         assert_eq!(sched.kv_blocks_required(prompt.len(), 5), 1, "8 tokens / block_size 8 = 1 block");
@@ -2209,7 +2251,7 @@ mod tests {
         let model = tiny_model(7);
         let budget = KvBudget { block_size: 4, num_blocks: 16 };
         let mut sched =
-            SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, budget);
+            SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, budget).unwrap();
         let prompt = [1u32, 2, 3, 4, 5]; // 5 + max_new 6 = 11 tokens → ceil(11/4) = 3 blocks
         assert_eq!(sched.kv_blocks_required(prompt.len(), 6), 3);
         let free_before = sched.kv_free_blocks();
@@ -2823,7 +2865,7 @@ mod tests {
 
         // K=2 scheduled together.
         let mut sched = SessionScheduler::new(
-            &model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, test_budget());
+            &model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, test_budget()).unwrap();
         let ida = sched.add_session(&prompt_a, SamplingStrategy::Greedy, None, max_new).unwrap();
         let idb = sched.add_session(&prompt_b, SamplingStrategy::Greedy, None, max_new).unwrap();
         let out = sched.run_to_completion().unwrap();
@@ -2839,16 +2881,16 @@ mod tests {
         let (pa, pb, max_new) = ([1u32,2,3], [5u32,6], 6);
 
         // Round-robin (both added, then run together).
-        let mut rr = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, test_budget());
+        let mut rr = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, test_budget()).unwrap();
         let a1 = rr.add_session(&pa, SamplingStrategy::Greedy, None, max_new).unwrap();
         let b1 = rr.add_session(&pb, SamplingStrategy::Greedy, None, max_new).unwrap();
         let out_rr = rr.run_to_completion().unwrap();
 
         // One-then-the-other: A alone to completion, then B alone.
-        let mut s_a = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, test_budget());
+        let mut s_a = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, test_budget()).unwrap();
         s_a.add_session(&pa, SamplingStrategy::Greedy, None, max_new).unwrap();
         let just_a = s_a.run_to_completion().unwrap();
-        let mut s_b = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, test_budget());
+        let mut s_b = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, test_budget()).unwrap();
         s_b.add_session(&pb, SamplingStrategy::Greedy, None, max_new).unwrap();
         let just_b = s_b.run_to_completion().unwrap();
 
@@ -2864,7 +2906,7 @@ mod tests {
         let max_new = 8;
 
         // Same prompt, DIFFERENT seeds → different streams.
-        let mut sched = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, test_budget());
+        let mut sched = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, test_budget()).unwrap();
         let id1 = sched.add_session(&prompt, SamplingStrategy::Temperature{temp:1.0, seed:1}, None, max_new).unwrap();
         let id2 = sched.add_session(&prompt, SamplingStrategy::Temperature{temp:1.0, seed:2}, None, max_new).unwrap();
         let out = sched.run_to_completion().unwrap();
@@ -2882,7 +2924,7 @@ mod tests {
     fn t4_session_isolation_on_error() {
         let model = tiny_model(9999);
         let good = [1u32,2,3];
-        let mut sched = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, test_budget());
+        let mut sched = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, test_budget()).unwrap();
         let bad_id  = sched.add_poisoned_session_for_test(&[4u32,5], 5).unwrap();
         let good_id = sched.add_session(&good, SamplingStrategy::Greedy, None, 5).unwrap();
 
@@ -2904,7 +2946,7 @@ mod tests {
         let pb = [8u32,1];
         let max_new = 6;
 
-        let mut sched = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, test_budget());
+        let mut sched = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, test_budget()).unwrap();
         let ida = sched.add_session(&pa, SamplingStrategy::Greedy, None, max_new).unwrap();
         // Advance A alone for two steps.
         sched.step().unwrap();
@@ -2935,7 +2977,7 @@ mod tests {
         let model = tiny_model(9999);
         let (pa, pb, max_new) = ([1u32,2,3], [5u32,6,7], 6);
         let run = |policy| {
-            let mut s = SessionScheduler::new(&model, Device::cpu(), DType::F32, policy, test_budget());
+            let mut s = SessionScheduler::new(&model, Device::cpu(), DType::F32, policy, test_budget()).unwrap();
             let a = s.add_session(&pa, SamplingStrategy::Greedy, None, max_new).unwrap();
             let b = s.add_session(&pb, SamplingStrategy::Greedy, None, max_new).unwrap();
             (a, b, s.run_to_completion().unwrap())
@@ -3141,7 +3183,7 @@ mod tests {
             })
             .collect();
 
-        let mut sched = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::Batched { max_batch: 2 }, test_budget());
+        let mut sched = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::Batched { max_batch: 2 }, test_budget()).unwrap();
         let ids: Vec<SessionId> = cases
             .iter()
             .map(|(p, eos, mn)| sched.add_session(p, SamplingStrategy::Greedy, *eos, *mn).unwrap())
@@ -3175,7 +3217,7 @@ mod tests {
             .map(|p| model.generate_with_kv_context(p, max_new, SamplingStrategy::Greedy, None, &Device::cpu(), DType::F32).unwrap())
             .collect();
 
-        let mut sched = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::Batched { max_batch: 4 }, test_budget());
+        let mut sched = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::Batched { max_batch: 4 }, test_budget()).unwrap();
         let ids: Vec<SessionId> = prompts
             .iter()
             .map(|p| sched.add_session(p, SamplingStrategy::Greedy, None, max_new).unwrap())
@@ -3210,11 +3252,8 @@ mod tests {
         fn n_layers(&self) -> usize {
             2
         }
-        fn n_kv_heads(&self) -> usize {
-            2
-        }
-        fn head_dim(&self) -> usize {
-            4
+        fn layer_state_specs(&self) -> Vec<LayerStateSpec> {
+            vec![LayerStateSpec::KeyValue { n_kv_heads: 2, head_dim: 4 }; 2]
         }
 
         /// Deterministic and **cache-dependent**: the argmax walks with
@@ -3245,7 +3284,7 @@ mod tests {
             DType::F32,
             SchedulePolicy::RoundRobin,
             test_budget(),
-        );
+        ).unwrap();
         let id = sched
             .add_session(&[1u32, 2, 3], SamplingStrategy::Greedy, None, 4)
             .expect("a core-only model must be admissible");
@@ -3260,6 +3299,76 @@ mod tests {
         // 1 more — so the generated tail is strictly increasing. A scheduler that
         // failed to thread the cache through would produce a constant tail.
         assert_eq!(&toks[3..], &[3, 4, 5, 6], "cache did not advance per step");
+    }
+
+    /// A model whose decode state is NOT per-head KV — two layers, each an MLA
+    /// slot pair (`[kv_lora_rank]` latent + `[qk_rope_head_dim]` `k_pe`), exactly
+    /// the shape `DeepSeek2Model` decodes through a `LazyLatentCache`. It has no
+    /// honest `(n_kv_heads, head_dim)`; the scheduler must decline it at
+    /// construction rather than allocate a KV cache it never reads (GAP-166).
+    struct MlaShapedModel;
+
+    impl DecodeModel for MlaShapedModel {
+        fn n_layers(&self) -> usize {
+            2
+        }
+        fn layer_state_specs(&self) -> Vec<LayerStateSpec> {
+            vec![
+                LayerStateSpec::Slots(vec![
+                    fuel::decode_state_spec::StateSlot::new(vec![512usize]),
+                    fuel::decode_state_spec::StateSlot::new(vec![64usize]),
+                ]);
+                2
+            ]
+        }
+        fn forward_with_kv_context_persistent(
+            &self,
+            _tokens: &[u32],
+            _cache: &mut KvCache,
+            _ctx: &mut InferenceContext,
+            _session: &mut Option<DecodeSession>,
+        ) -> fuel::Result<Vec<f32>> {
+            // Unreachable in this test: the model is declined at construction,
+            // before any forward runs. A non-`KvCache` model cannot honestly
+            // serve this `&mut KvCache` surface — that is Unit B (`type State`,
+            // GAP-166); this body exists only to satisfy the trait.
+            Err(Error::Msg(
+                "MlaShapedModel: decode unreachable — declined at construction".into(),
+            ))
+        }
+    }
+
+    /// GAP-166: the scheduler seam must DECLINE a model whose layers are not
+    /// uniform per-head KV — at construction — instead of fabricating a
+    /// `(n_kv_heads, head_dim)` pair and allocating the wrong state. This is the
+    /// test that proves [`LayerStateSpec::collapse_uniform`] is a LIVE guard on
+    /// the seam rather than a helper exercised only by its own unit tests. The
+    /// accept side is covered by every uniform-KV `SessionScheduler::new(..)
+    /// .unwrap()` above (e.g. `core_only_model_is_servable_by_the_serial_scheduler`).
+    #[test]
+    fn mla_shaped_model_is_declined_at_scheduler_construction() {
+        let model = MlaShapedModel;
+        // `SessionScheduler` is not `Debug`, so `expect_err` doesn't apply — match
+        // explicitly. The accept branch panics: reaching it means the seam
+        // fabricated a geometry for a non-KV model, the exact GAP-166 defect.
+        let err = match SessionScheduler::new(
+            &model,
+            Device::cpu(),
+            DType::F32,
+            SchedulePolicy::RoundRobin,
+            test_budget(),
+        ) {
+            Ok(_) => panic!(
+                "a model whose layers are not per-head KV must be declined at \
+                 construction, not allocated a KV cache it never reads (GAP-166)"
+            ),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("not per-head KV"),
+            "decline must come from the collapse boundary \
+             (LayerStateSpec::collapse_uniform), got: {err}",
+        );
     }
 
     /// The predicate and the method must agree, or `supports_batched_decode`
@@ -3339,7 +3448,7 @@ mod tests {
             DType::F32,
             SchedulePolicy::Batched { max_batch: 4 },
             test_budget(),
-        );
+        ).unwrap();
         let ids: Vec<SessionId> = [&[1u32, 2, 3][..], &[4u32, 5, 6][..]]
             .iter()
             .map(|p| sched.add_session(p, SamplingStrategy::Greedy, None, 3).unwrap())
@@ -3372,7 +3481,7 @@ mod tests {
             DType::F32,
             SchedulePolicy::RoundRobin,
             test_budget(),
-        );
+        ).unwrap();
         let id = sched
             .add_session(&[1u32, 2, 3], SamplingStrategy::Greedy, None, 4)
             .expect("Llama3Model must be admissible");
