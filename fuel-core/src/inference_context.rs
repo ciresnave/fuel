@@ -1426,6 +1426,37 @@ impl DecodeSession {
     /// decode graph (no flash arm) and becomes load-bearing the moment a
     /// bf16/f16 CUDA decode offers the arm. Write-once per pass (a
     /// conflicting rebind surfaces a typed error, never a panic).
+    /// # DO NOT DELETE THE `cached_len_sym` BINDING BECAUSE IT LOOKS DEAD
+    ///
+    /// **`LlamaModel` and `PhiModel` take DIFFERENT decode paths on CPU/F32,
+    /// measured 2026-08-12 (GAP-029 2b):**
+    ///
+    /// ```text
+    /// llama: offset_node.is_some() == true   → device-offset path; SymEnv INERT
+    /// phi:   offset_node.is_some() == false  → SymEnv path;        SymEnv LIVE
+    /// ```
+    ///
+    /// On the device-offset path the KV write offset rides a device-resident
+    /// buffer (`Op::WriteSliceDoff` reads the start from
+    /// [`DecodeTokenData::offset`] at launch), so **no symbol here drives
+    /// Llama's write** and both bindings are inert for it. On the SymEnv path
+    /// the offset rides `cached_len_sym`, and it is **load-bearing for Phi** —
+    /// proved by negative control: binding it wrong moves Phi's logits
+    /// (`phi_attended_len_sym_is_unreferenced_negative_control`).
+    ///
+    /// The trap this comment exists to prevent: someone profiling or tracing
+    /// **the Llama path** sees a binding nothing consumes and removes it as dead
+    /// code. **Their evidence would be about Llama; the requirement comes from
+    /// Phi**, and the breakage would be silent — wrong KV write offsets, not a
+    /// compile error. Whichever model you were looking at, you were looking at
+    /// half the callers.
+    ///
+    /// `attended_len_sym` is separately inert on **both** paths today (F32, CPU,
+    /// no flash arm) and is bound anyway: it becomes load-bearing the moment a
+    /// bf16/f16 CUDA decode offers the flash arm, and binding it unconditionally
+    /// is what makes that switch a no-op rather than a hunt. That claim is
+    /// scoped — re-run the controls above before relying on it under any other
+    /// dtype/graph.
     pub fn per_token_sym_env(&self, cached_len: usize) -> Result<SymEnv> {
         let mut env = SymEnv::new();
         env.bind(self.cached_len_sym, cached_len)?;

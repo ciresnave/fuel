@@ -245,8 +245,18 @@ pub mod factories;
 /// docs before adding anything to the key: over-keying is a silent performance
 /// regression, under-keying is a silent wrong answer.
 pub mod decode_shape;
+/// Per-layer decode-state description (GAP-029 / GAP-166) — the vocabulary that
+/// DESCRIBES what state a layer requires rather than ASSERTING that every layer
+/// holds per-head K/V. Read its module docs before collapsing a spec to a
+/// `(n_kv_heads, head_dim)` pair; the collapse is deliberately fallible.
+pub mod decode_state_spec;
 pub mod inference_context;
 pub mod kv_block_pool;
+/// The shared persistent-decode rebind driver (GAP-029 2b). Collapses what were
+/// two hand-copied 48-line per-model bodies. Read its module docs before adding
+/// a model: the Llama/Phi decode-path divergence is preserved deliberately, not
+/// an accident to be tidied.
+pub mod persistent_decode;
 pub mod kv_block_pool_device;
 // `multi_session` (the K-way decode scheduler) moved to `fuel-inference` (Q2,
 // 2026-07-29): it is consumer-side orchestration, not a Foundation primitive.
