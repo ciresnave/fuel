@@ -48,7 +48,29 @@ pub enum DType {
     F32,
     /// Floating-point using double precision (64 bits).
     F64,
-    /// 8-bit floating point with 4-bit exponent and 3-bit mantissa.
+    /// 8-bit floating point, 4-bit exponent + 3-bit mantissa — specifically
+    /// **OCP finite E4M3FN**: bias 7, max-finite ±448, no infinities, single
+    /// NaN. This is the only E4M3 format Fuel represents, so the bare name is
+    /// unambiguous today (enforced by
+    /// `reserved_token_tests::exactly_one_e4m3_family_dtype_or_revisit_gap_169`).
+    ///
+    /// The identity `F8E4M3 == OCP E4M3FN` is committed and tested at three
+    /// independent sites: the structure-key path (`fuel-dispatch`
+    /// `telemetry::baracuda_provider::map_element_kind`), the JIT seam
+    /// (`fuel-dispatch` `jit_adopt::fp8_maps_to_baracuda_ocp_element_kinds`),
+    /// and the external-contract parser (`fuel-dispatch` `fkc::lower`'s
+    /// "F8E4M3FNUZ must not lower to F8E4M3" prefix rejection).
+    ///
+    /// **The name is deliberately NOT `F8E4M3FN`** (GAP-169). A rename would
+    /// touch ~110 sites across every backend, cascade through the
+    /// `cuda_dtype!` / `ctor!` macros into `CudaStorageSlice` / `PinnedBuffer`,
+    /// and break 3 `fuel-metal-backend` sites that cannot be compiled on the
+    /// primary dev box — all for reader clarity only. The interop token is
+    /// already `f8e4m3fn` on the sk4 path (`token_kind`), and this dtype's own
+    /// token stays `f8e4m3` for the checked-in `.fkc.md` contracts that author
+    /// it (see the `RESERVED_DTYPE_TOKENS` note below). Revisit only when a
+    /// second E4M3-family variant (e.g. `F8E4M3FNUZ`) actually lands — the
+    /// witness above fires then.
     F8E4M3,
     /// 8-bit floating point with 5-bit exponent and 2-bit mantissa — the
     /// OCP-standard FP8 pair's other half.
@@ -208,6 +230,55 @@ mod reserved_token_tests {
         // asserting rejection rather than a broken parser rejecting everything.
         assert_eq!(DType::from_str("f8e4m3").unwrap(), DType::F8E4M3);
         assert_eq!(DType::from_str("f8e5m2").unwrap(), DType::F8E5M2);
+    }
+
+    /// **GAP-169 deferral expiry witness.** The bare name `F8E4M3` is
+    /// unambiguous only while there is exactly ONE E4M3-family dtype — today,
+    /// the OCP-finite `F8E4M3`. If a second ever lands (e.g. an AMD
+    /// `F8E4M3FNUZ`: different bias, no −0), the bare name becomes ambiguous and
+    /// the rename deferred in GAP-169 (see `DType::F8E4M3`'s doc) must be
+    /// revisited. This asserts the **premise** (exactly one E4M3 today), not the
+    /// conclusion (the name is fine).
+    ///
+    /// **Completeness is inherited, not assumed:** the population is
+    /// [`DType::ALL`], which [`all_variants_witness`] keeps exhaustive (a variant
+    /// cannot exist without appearing there), and the count is derived through
+    /// the same `is_e4m3_family` predicate that feeds the assertion — so the
+    /// perturbation control (widen the predicate, watch it fire at two) actually
+    /// exercises the detection path. Keep the filter on `DType::ALL`: this file
+    /// also holds the raw literals `"f8e4m3fn"` / `"f8e4m3fnuz"` (reserved-token
+    /// rejection), which are not any variant's [`as_str`](DType::as_str), so
+    /// pointing the predicate at raw tokens would inflate the count with no
+    /// variant added.
+    ///
+    /// **Bound:** this detects a sibling *spelled* `f8e4m3*`, not the E4M3
+    /// *format* in the abstract — a sibling spelled otherwise (e.g. a bare
+    /// `e4m3fnuz`, the pre-respell sk4 form) would slip past. The prefix match
+    /// is deliberate and is NOT the delimiter trap: that trap is a guard firing
+    /// on a longer string it did not mean to catch, whereas this witness WANTS
+    /// every longer `f8e4m3*` spelling — so `starts_with` is the intended
+    /// semantics; do not "fix" it into `==`, which silently destroys the
+    /// detection. The token it keys on cannot drift: GAP-169 ruled `as_str()`
+    /// must stay `f8e4m3` because external `.fkc.md` contracts parse it, so the
+    /// deferral protects its own expiry witness.
+    #[test]
+    fn exactly_one_e4m3_family_dtype_or_revisit_gap_169() {
+        fn is_e4m3_family(dt: DType) -> bool {
+            // Prefix, not equality: every `f8e4m3*` spelling (e.g. a future
+            // `f8e4m3fnuz`) is E4M3-family and must count. See the bound above.
+            dt.as_str().starts_with("f8e4m3")
+        }
+        let e4m3: Vec<DType> =
+            DType::ALL.iter().copied().filter(|&dt| is_e4m3_family(dt)).collect();
+        assert_eq!(
+            e4m3.as_slice(),
+            [DType::F8E4M3].as_slice(),
+            "GAP-169 deferral premise broken: the E4M3 family now has {} members \
+             ({e4m3:?}), not one. A sibling E4M3 variant exists, so the bare \
+             `F8E4M3` name is now ambiguous — revisit GAP-169 (rename to \
+             F8E4M3FN vs the sibling; see DType::F8E4M3's doc).",
+            e4m3.len(),
+        );
     }
 }
 
