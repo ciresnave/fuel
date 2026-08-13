@@ -272,6 +272,75 @@ impl DecodeModel for fuel::lazy_llama_full::Llama3Model {
     }
 }
 
+/// GGUF/Q4_0-quantized LLaMA — the decode surface GAP-029 was filed for.
+///
+/// **Every method delegates to [`Self::inner`], the wrapped
+/// [`fuel::lazy_llama_full::Llama3Model`], and that choice is the entire
+/// content of this impl.** `QuantizedLlama3Model` nests two levels
+/// (`QuantizedLlama3Model → Llama3Model → LlamaModel`) and only the *middle*
+/// layer knows about LLaMA-3.1 RoPE scaling: `Llama3Model` threads
+/// `rope_inv_freq()` into `LlamaModel::forward_with_kv_context_persistent_inv_freq`,
+/// while `LlamaModel`'s own entry point uses the **unscaled** RoPE base.
+///
+/// So delegating one level too deep — to `self.inner().inner` — compiles, runs,
+/// and is **silently wrong** on any scaled (LLaMA-3.1) checkpoint: slightly
+/// wrong long-context attention, no error. That is not hypothetical here;
+/// `QuantizedLlama3Model::forward_hidden` already reaches through to
+/// `self.inner.inner` and its own doc comment admits it therefore loses the
+/// scaling. This impl must not repeat it, and
+/// `quantized_llama_decode_delegates_to_scaling_aware_inner` is the test that
+/// fails if it ever does.
+///
+/// The batched-arm pair (`supports_batched_decode` +
+/// `build_batched_decode_logits`) is delegated rather than left to default so
+/// the two cannot desync from the inner model: if `Llama3Model` ever gains a
+/// batched arm, the quantized wrapper inherits it and its capability predicate
+/// in the same change.
+impl DecodeModel for fuel::lazy_quantized_llama::QuantizedLlama3Model {
+    fn n_layers(&self) -> usize {
+        DecodeModel::n_layers(self.inner())
+    }
+    fn n_kv_heads(&self) -> usize {
+        DecodeModel::n_kv_heads(self.inner())
+    }
+    fn head_dim(&self) -> usize {
+        DecodeModel::head_dim(self.inner())
+    }
+    fn forward_with_kv_context_persistent(
+        &self,
+        tokens: &[u32],
+        cache: &mut KvCache,
+        ctx: &mut InferenceContext,
+        session: &mut Option<DecodeSession>,
+    ) -> fuel::Result<Vec<f32>> {
+        DecodeModel::forward_with_kv_context_persistent(
+            self.inner(),
+            tokens,
+            cache,
+            ctx,
+            session,
+        )
+    }
+    fn supports_batched_decode(&self) -> bool {
+        DecodeModel::supports_batched_decode(self.inner())
+    }
+    fn build_batched_decode_logits(
+        &self,
+        caches: &mut [&mut KvCache],
+        last_tokens: &[u32],
+        device: &Device,
+        dtype: DType,
+    ) -> fuel::Result<Vec<Vec<f32>>> {
+        DecodeModel::build_batched_decode_logits(
+            self.inner(),
+            caches,
+            last_tokens,
+            device,
+            dtype,
+        )
+    }
+}
+
 impl PagedDecodeModel for LlamaModel {
     fn forward_paged_step(
         &self,
@@ -1801,6 +1870,223 @@ mod tests {
     }
     fn dims(cfg: &LlamaConfig) -> ModelDims {
         ModelDims { n_layers: cfg.n_layers, n_kv_heads: cfg.n_kv_heads, head_dim: cfg.head_dim }
+    }
+
+    // ---------------- GAP-029: quantized LLaMA decode surface ----------------
+
+    /// A Q4_0-bakeable LLaMA-3.1 config **whose scaling is not a no-op**, which
+    /// is a real constraint rather than an arbitrary choice — see the arithmetic
+    /// in `quantized_llama_decode_delegates_to_scaling_aware_inner`.
+    /// `hidden_size` and `intermediate_size` must both be multiples of 32 (Q4_0
+    /// blocks run along in-features).
+    fn scaled_q4_0_cfg() -> fuel::lazy_llama_full::LlamaFullConfig {
+        use fuel::lazy_llama_full::{Llama3RopeConfig, Llama3RopeType, LlamaFullConfig};
+        LlamaFullConfig {
+            hidden_size: 32,
+            intermediate_size: 64,
+            vocab_size: 32,
+            num_hidden_layers: 2,
+            num_attention_heads: 4,
+            num_key_value_heads: 4,
+            head_dim: 8,
+            rms_norm_eps: 1e-5,
+            rope_theta: 10_000.0,
+            max_position_embeddings: 128,
+            bos_token_id: None,
+            eos_token_id: None,
+            // The real LLaMA-3.1 constants.
+            rope_scaling: Some(Llama3RopeConfig {
+                factor: 8.0,
+                low_freq_factor: 1.0,
+                high_freq_factor: 4.0,
+                original_max_position_embeddings: 8192,
+                rope_type: Llama3RopeType::Llama3,
+            }),
+            tie_word_embeddings: false,
+        }
+    }
+
+    /// Prefill `prompt`, then decode `n_decode` further tokens, returning every
+    /// decode step's logits concatenated. Takes `&dyn DecodeModel` so the three
+    /// arms under test run byte-identical driver code and differ only in which
+    /// model they are.
+    ///
+    /// **`n_decode` must be > 1, and that is a correctness requirement, not
+    /// thoroughness.** The persistent path has two distinct halves — the first
+    /// decode token BUILDS and optimizes the held graph, every later token
+    /// REBINDS it — and `LlamaModel::forward_with_kv_context_persistent_inv_freq`
+    /// documents that threading the RoPE override into only one of them yields a
+    /// model whose first decode token is scaled and whose rest are not: a
+    /// silent, position-dependent wrong answer. A single-token probe exercises
+    /// only the build half and would miss exactly that.
+    fn prefill_then_decode(
+        m: &dyn DecodeModel,
+        prompt: &[u32],
+        first_next: u32,
+        n_decode: usize,
+        dev: &Device,
+    ) -> Vec<f32> {
+        assert!(n_decode > 1, "must cover the rebind half, not just the build half");
+        let mut cache = KvCache::with_capacity(
+            m.n_layers(), m.n_kv_heads(), m.head_dim(), 128, DType::F32, dev,
+        )
+        .expect("kv cache");
+        let mut ctx = InferenceContext::new(dev.clone());
+        let mut sess: Option<DecodeSession> = None;
+        m.forward_with_kv_context_persistent(prompt, &mut cache, &mut ctx, &mut sess)
+            .expect("prefill");
+
+        let mut all = Vec::new();
+        let mut tok = first_next;
+        for step in 0..n_decode {
+            let logits = m
+                .forward_with_kv_context_persistent(&[tok], &mut cache, &mut ctx, &mut sess)
+                .unwrap_or_else(|e| panic!("decode step {step}: {e:?}"));
+            // Feed a deterministic, model-independent next token so all three
+            // arms walk identical token paths — sampling here would let the
+            // arms diverge for a reason unrelated to RoPE.
+            tok = (tok + 1) % 32;
+            all.extend_from_slice(&logits);
+        }
+        all
+    }
+
+    fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
+        assert_eq!(a.len(), b.len(), "logit rows must be the same width");
+        a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max)
+    }
+
+    /// GAP-029 — the quantized LLaMA decode surface must delegate to the
+    /// **scaling-aware** `Llama3Model`, not to the `LlamaModel` two levels down.
+    ///
+    /// ## Why the negative control *is* the test
+    ///
+    /// LLaMA-3.1 RoPE scaling is a per-dimension transform of `inv_freq`, and
+    /// the angle it feeds is `pos * inv_freq`. So scaled and unscaled agree
+    /// **exactly at position 0** and diverge **linearly with position**. At low
+    /// positions the real LLaMA-3.1 constants separate the two arms by ~1e-7 —
+    /// below f32 realize noise — so a parity check near the start of a sequence
+    /// passes no matter which arm the impl delegates to. That has already
+    /// produced one green-but-vacuous decode test in this project, so the
+    /// load-bearing assertion here is not `A == B`; it is the **negative
+    /// control** that the correct arm (scaled) and the wrong arm (unscaled, two
+    /// levels down) are genuinely far apart at the position under test. If that
+    /// separation ever collapses, this test announces its own vacuity by
+    /// failing instead of passing quietly.
+    ///
+    /// ## Why this shape, specifically
+    ///
+    /// With `head_dim = 8` and `rope_theta = 1e4`, `inv_freq` is
+    /// `[1e0, 1e-1, 1e-2, 1e-3]` → wavelengths `[6.3, 63, 628, 6283]`. The
+    /// LLaMA-3.1 cuts are `orig/high = 8192/4 = 2048` and
+    /// `orig/low = 8192/1 = 8192`. Only the last wavelength sits between them,
+    /// so exactly one of four dimensions lands in the smooth interpolation band
+    /// and moves `1e-3 → ~2.14e-4`. At position 40 that is an angle separation
+    /// of ~0.031 rad — five orders of magnitude above f32 noise.
+    ///
+    /// Note `tiny_cfg`'s `head_dim = 4` would make the scaling a **no-op**: its
+    /// wavelengths (6.3, 628) both sit below the 2048 cut, nothing is rescaled,
+    /// and the negative control would correctly refuse to certify the test.
+    ///
+    /// Asserts on LOGITS, not sampled tokens — this module's tiny random model
+    /// has a greedy argmax that is a fixed point (see the `tiny_model` caution
+    /// above), so token equality would be vacuous here as well.
+    ///
+    /// ## Measured, so the next reader knows the actual headroom
+    ///
+    /// `|A-B| = 0.000e0` (bit-identical — both arms call the same function, as
+    /// a pure delegation should) and `|B-C| = 2.118e-3` against a `1e-3` floor.
+    /// So discrimination is total — exact-zero versus 2.1e-3 — but the margin
+    /// above the floor is only **~2.1×**, not orders of magnitude. Lowering the
+    /// decode position or shrinking `head_dim` will drop it under, at which
+    /// point the negative control fires and the test declares its own vacuity.
+    /// That is the intended behaviour; do not "fix" it by lowering the floor.
+    ///
+    /// Note also what `2.118e-3` corroborates: it sits right at the ~1e-3 scale
+    /// that seeded temperature sampling is documented to swallow. A
+    /// token-equality oracle would have seen **nothing** here — which is the
+    /// scar this module's `tiny_model` comment already records, now with a
+    /// number attached.
+    #[test]
+    fn quantized_llama_decode_delegates_to_scaling_aware_inner() {
+        use fuel::lazy_quantized_llama::QuantizedLlama3Model;
+
+        let dev = Device::cpu();
+        let cfg = scaled_q4_0_cfg();
+        let lazy_cfg = cfg.to_lazy_config();
+        let src = tiny_weights(&lazy_cfg, 909);
+        let qmodel = QuantizedLlama3Model::from_f32_bake(cfg.clone(), src)
+            .expect("Q4_0 bake");
+
+        // Position 40 for the decode step — high enough that scaled/unscaled
+        // separate (see the arithmetic above), well inside max_position 128.
+        let prompt: Vec<u32> =
+            (0..40u32).map(|i| i % lazy_cfg.vocab_size as u32).collect();
+        let next = 7u32;
+
+        // Four decode steps: the first BUILDS the held graph, the rest REBIND
+        // it. Both halves must carry the scaling (see `prefill_then_decode`).
+        const N_DECODE: usize = 4;
+
+        // A — the surface under test: `DecodeModel` on the quantized wrapper.
+        let a = prefill_then_decode(&qmodel, &prompt, next, N_DECODE, &dev);
+        // B — the CORRECT oracle: the scaling-aware `Llama3Model` it wraps.
+        let b = prefill_then_decode(qmodel.inner(), &prompt, next, N_DECODE, &dev);
+        // C — the WRONG delegation, simulated: the `LlamaModel` two levels
+        //     down, whose own entry point uses the UNSCALED RoPE base. This is
+        //     what `forward_hidden` already does by reaching `self.inner.inner`.
+        let c = prefill_then_decode(&qmodel.inner().inner, &prompt, next, N_DECODE, &dev);
+
+        let ab = max_abs_diff(&a, &b);
+        let bc = max_abs_diff(&b, &c);
+        eprintln!(
+            "[GAP-029] delegation parity: |A-B| = {ab:.3e} (want ~0), \
+             separation |B-C| = {bc:.3e} (want >> 0)"
+        );
+
+        // NEGATIVE CONTROL FIRST: if the two arms are not distinguishable at
+        // this position, nothing below this line means anything.
+        assert!(
+            bc > 1e-3,
+            "VACUOUS TEST: scaled and unscaled RoPE differ by only {bc:.3e} at \
+             position {}, so `A == B` cannot distinguish correct delegation \
+             from delegating one level too deep. Raise the decode position or \
+             fix the config so the scaling is not a no-op — do NOT lower this \
+             threshold.",
+            prompt.len(),
+        );
+
+        // The actual claim: the wrapper's decode surface IS the scaled path.
+        assert!(
+            ab < 1e-6,
+            "QuantizedLlama3Model's DecodeModel impl does not match the \
+             scaling-aware Llama3Model (|A-B| = {ab:.3e}). It is almost \
+             certainly delegating to `self.inner().inner` (the unscaled \
+             LlamaModel); |B-C| here is {bc:.3e}.",
+        );
+    }
+
+    /// The dims the scheduler builds a session's KV cache from must come from
+    /// the quantized wrapper unchanged — a wrong `n_kv_heads`/`head_dim` would
+    /// mis-shape every cache allocated for a GGUF model.
+    #[test]
+    fn quantized_llama_reports_inner_cache_geometry() {
+        use fuel::lazy_quantized_llama::QuantizedLlama3Model;
+
+        let cfg = scaled_q4_0_cfg();
+        let src = tiny_weights(&cfg.to_lazy_config(), 4242);
+        let m = QuantizedLlama3Model::from_f32_bake(cfg.clone(), src).expect("Q4_0 bake");
+
+        assert_eq!(DecodeModel::n_layers(&m), cfg.num_hidden_layers);
+        assert_eq!(DecodeModel::n_kv_heads(&m), cfg.num_key_value_heads);
+        assert_eq!(DecodeModel::head_dim(&m), cfg.head_dim);
+        // Guards the consistency rule the trait documents: the batched-arm
+        // predicate and the batched-arm method must agree. Delegated, so this
+        // stays true if `Llama3Model` ever gains the arm.
+        assert_eq!(
+            DecodeModel::supports_batched_decode(&m),
+            DecodeModel::supports_batched_decode(m.inner()),
+        );
     }
 
     #[test]
