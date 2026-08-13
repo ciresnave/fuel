@@ -618,6 +618,79 @@ exit 0 (188 `fuel-core` diagnostic lines — artifact present, not a warm cache)
 `-p fuel-core --lib` **1456 passed / 0 failed / 12 ignored / 0 filtered out**;
 `-p fuel-core --tests` exit 0.
 
+#### Landed 2026-08-13: increment 3, FAMILIES 3 & 4 — Qwen3 and Qwen3Moe
+
+**The seam held: neither family needed anything it does not have.** Per family:
+`decode_apply_layer`, `decode_final_norm_and_head`, `decode_dims`,
+`decode_shape_key`, `decode_mask_plan` (one `MaskPlan::split_window` call), a
+`build_decode_token_data` delegating to the shared host builder, three public
+entry points, and the quantized wrapper's three forwards. **No D1 path, no
+persistent entry point, no build path** — those stopped being per-family when
+family 1 landed.
+
+**One new shared piece, added rather than copied.** Qwen3 and Qwen3Moe have
+*identical* attention (biased Q/K/V, per-head QK-norm, GQA, explicit `head_dim`)
+and differ only in the type holding the weights and in the FFN. Writing it twice
+would have been the reproduction mechanism this increment exists to prevent, so
+it is `lazy_qwen3::qwen3_attn_with_kv_writes` + `Qwen3AttnBlock` (borrowed
+weights), with each family supplying its own FFN — SwiGLU for Qwen3, the
+existing `apply_ffn` router for Qwen3Moe.
+
+**Qwen3Moe needed nothing for MoE**, as predicted: routing was already inside
+the layer hook at the right granularity, and `apply_ffn` is reused unchanged.
+
+##### ⚠️ `sliding_window: None` is DENSE, and it is a real trap
+
+Both families type `sliding_window` as `Option<usize>`, and prefill computes the
+width as **`sliding_window.unwrap_or(seq + 1)`** — a window of `seq + 1` excludes
+nothing. So `use_sliding_window: true` with **no width** is dense at every layer.
+Reading the flag alone and inventing a width would window layers the shipped path
+leaves dense — a divergence no test of a `Some(..)` config can see. Both families
+have an explicit test (`*_absent_window_width_is_dense_at_every_layer`).
+
+##### Born-red, measured per family (single-mask plan → real plan)
+
+```text
+Qwen3      (2 layers, window 4, mwl 1) : [0.0, 7.854598e-3, 6.385114e-3] -> [0,0,0]
+Qwen3Moe   (all layers MoE)            : [0.0, 4.654333e-3, 1.5804386e-2] -> [0,0,0]
+Qwen3Moe   (dense FFN on windowed lyr) : [0.0, 2.6300699e-3, 9.746924e-3] -> [0,0,0]
+```
+
+Same shape as Qwen2 in every case: **absolute position 3 clean under both bodies**
+(a window of 4 cannot exclude anything until position 4), divergence at 4 and 5,
+**both of which are REBIND steps**. Controls (`max_window_layers: 0`) green
+throughout. Oracle `1e-5`, measured not inherited.
+
+> **⚠️ A prediction of mine was refuted and the record is kept.** I expected the
+> all-MoE Qwen3Moe config to be *unable* to discriminate windowing — reasoning
+> that dense routing softmaxes over every expert and would average the layer-0
+> masking difference away before the logits. **Wrong: it diverges MORE (1.58e-2)
+> than the dense-FFN config (9.7e-3).** The argument was plausible and unmeasured;
+> had it not been run it would have been written into the file as a *reason*, and
+> the second test would have been justified on a fiction. Both tests are kept for
+> the real reason — two FFN cadences are two code paths through `apply_ffn`.
+
+##### Sabotage — three, because "does this test this family" and "what is the
+##### shared block's blast radius" are different questions
+
+- Qwen3's own `decode_apply_layer` → **3 red, all Qwen3**; `82 passed; 3 failed`.
+- Qwen3Moe's own `decode_apply_layer` → **3 red, all Qwen3Moe**; `82 passed; 3
+  failed`. Notably **not** Qwen3 — the two share an attention block, and this is
+  the run showing that did not make their suites interchangeable.
+- The **shared** `qwen3_attn_with_kv_writes` → **both Qwen3 families red (6),
+  Qwen2/Llama/Llama3/Phi green**; `79 passed; 6 failed`. The block's blast radius
+  measured rather than intended.
+
+##### Quantized wrappers
+
+`QuantizedQwen3Model` and `QuantizedQwen3MoeModel` delegate one level (both inner
+models are leaves — the `inner.inner` trap needs two levels *and* a scaled-RoPE
+variant, and neither family has either). Both quantized `test_cfg()`s are
+**dense**, so the tests override to mixed-window configs — otherwise they would
+have exercised the delegation while never touching the N=2 mask path. The
+Qwen3Moe test puts a windowed MoE layer, a windowed dense layer and their
+unwindowed counterparts in one decode graph over Q4_0 storage.
+
 ### Open hypothesis — Phi's separate body may be almost entirely redundant
 
 **Recorded now, deliberately NOT acted on.** Two step-0 results combine into
@@ -637,8 +710,8 @@ carriers — and **never on the 6× that does not exist.**
 Sequencing (architect): increment 3 first; nothing here delays it; report as a
 one-line note when increment 3 lands and it gets ruled on then.
 
-**Increment 3 —** the 6 LLaMA-shaped families: **Qwen2 (LANDED 2026-08-13)**,
-Qwen3, Qwen3Moe, SmolLm3, Glm4, Phi3.
+**Increment 3 —** the 6 LLaMA-shaped families: **Qwen2, Qwen3, Qwen3Moe (ALL
+LANDED 2026-08-13)**, SmolLm3, Glm4, Phi3.
 
 > **Corrected 2026-08-13.** This line previously read *"Each = `apply_layer` for
 > its architecture + the quantized wrapper's delegation"* — the two-item list
