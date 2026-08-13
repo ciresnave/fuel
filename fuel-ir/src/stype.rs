@@ -9,6 +9,22 @@
 //! DECISION 2026-06-18). The SCHEME is self-describing on the tensor; the scale
 //! VALUES are a sibling graph operand (model B); FDX re-unites them at the kernel
 //! boundary (`SType::to_fdx`, behind the `dlpack` feature — step 3).
+//!
+//! # ⚠️ Wiring a quantized weight through this layer? Read GAP-190 first
+//!
+//! The `structure_key` these encodings feed is a v1 cache key that CANNOT
+//! distinguish two quant families that both map to FDX `AFFINE_BLOCK`: Marlin
+//! (linear `q*scale`) and NF4 (a CODEBOOK). There is NO scale for which a linear
+//! dequant reproduces NF4, so a cache keyed on the key alone (baracuda's) would
+//! return a NUMERICALLY WRONG kernel — silently. Today this is latent: there are
+//! ZERO production constructors of ANY `Encoding` variant — the whole layer is
+//! described-but-unwired. **The FIRST production construction of a quant
+//! `Encoding` is the moment to decide the discriminator strategy; the resolution
+//! is UPSTREAM — KISS #189, a family sub-code in the key.** The shape-level
+//! collision is already pinned with a compile-time expiry witness in this file's
+//! tests (GAP-190). This note is DOCUMENTED, NOT ENFORCED — no scan gates it,
+//! because a heuristic scan over a layer with zero production constructors would
+//! be an unfalsifiable tripwire (see GAP-190 for the option analysis).
 
 use smallvec::SmallVec;
 
@@ -45,6 +61,15 @@ pub enum Encoding {
     /// (family 4): low-bit packed data + a SEPARATE per-block absmax scale
     /// operand (model B). `packed` is the sub-byte storage code (`DType::F4`
     /// for 4-bit; FDX has no distinct NF4 code in v1 — see plan deferred list).
+    ///
+    /// ⚠️ **GAP-190 — this variant is a `structure_key` COLLISION point.** Both
+    /// NF4 (a codebook) and Marlin (linear `q*scale`) map to `AFFINE_BLOCK`, and
+    /// the v1 key cannot tell them apart — no scale makes a linear dequant
+    /// reproduce NF4, so a key-keyed kernel cache picks the wrong one silently.
+    /// ZERO production constructors exist today; if you are wiring the FIRST,
+    /// decide the discriminator strategy first (resolution is upstream —
+    /// KISS #189). The shape-level collision is guarded by the GAP-190 expiry
+    /// witness in this file's tests. Documented, not enforced.
     AffineBlock {
         /// Sub-byte packed storage code (e.g. `DType::F4`).
         packed: DType,
