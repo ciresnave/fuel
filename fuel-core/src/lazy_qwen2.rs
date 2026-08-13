@@ -653,4 +653,133 @@ mod tests {
                 "forward_hidden_embeds must match forward_hidden: {a} vs {b}");
         }
     }
+
+    /// The config every windowed-decode design rests on: 2 layers, window 4,
+    /// `max_window_layers: 1` — layer 0 windowed, layer 1 dense.
+    fn mixed_window_cfg() -> Qwen2Config {
+        Qwen2Config {
+            vocab_size: 32,
+            hidden_size: 16,
+            intermediate_size: 32,
+            num_hidden_layers: 2,
+            num_attention_heads: 4,
+            num_key_value_heads: 2,
+            max_position_embeddings: 64,
+            sliding_window: 4,
+            max_window_layers: 1,
+            use_sliding_window: true,
+            rope_theta: 10_000.0,
+            rms_norm_eps: 1e-5,
+            tie_word_embeddings: false,
+        }
+    }
+
+    /// Logits from the SHIPPED per-layer gating (`forward`), and logits from a
+    /// SINGLE mask applied to every layer — which is exactly what a one-mask
+    /// decode port computes. `window` selects the single mask's width, so the
+    /// same helper serves both the discriminating case and its control.
+    fn per_layer_vs_single_mask(cfg: &Qwen2Config, tokens: &[u32], single_window: usize)
+        -> (Vec<f32>, Vec<f32>)
+    {
+        let model = Qwen2Model { config: cfg.clone(), weights: tiny_weights(cfg) };
+        let per_layer = model.forward(tokens, 0).unwrap().realize_f32();
+
+        let seq = tokens.len();
+        let embeds = LazyTensor::embed_tokens(
+            model.weights.token_embedding.clone(),
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
+            &Device::cpu(),
+        )
+        .unwrap();
+        // Same predicate as `build_layer_mask`, so the only thing that varies
+        // between the two paths is WHICH layers see WHICH width.
+        let mut mask_data = vec![0.0_f32; seq * seq];
+        for i in 0..seq {
+            for j in 0..seq {
+                if j > i || j + single_window <= i {
+                    mask_data[i * seq + j] = f32::NEG_INFINITY;
+                }
+            }
+        }
+        let mask = embeds.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]));
+        let hidden = model
+            .forward_hidden_embeds_with_mask(&embeds, &mask, 0)
+            .unwrap();
+        let single = model
+            .weights
+            .output
+            .apply_linear(&hidden, cfg.hidden_size, cfg.vocab_size)
+            .unwrap()
+            .realize_f32();
+        (per_layer, single)
+    }
+
+    /// ⚠️ NON-DISCRIMINATION CONTROL — RUN THIS FIRST WHEN READING.
+    ///
+    /// The two paths under comparison are DIFFERENT FUNCTIONS
+    /// (`run_backbone_embeds` vs `forward_hidden_embeds_with_mask`), so a
+    /// logits difference between them is NOT self-evidently caused by masking:
+    /// it could come from any unrelated divergence in those bodies. This pins
+    /// that down. With `max_window_layers: 0` no layer uses the window, so the
+    /// per-layer path applies the strict-causal mask everywhere — which is
+    /// exactly the single mask supplied here — and the two MUST agree.
+    ///
+    /// If this test ever fails, the sibling below proves NOTHING: the
+    /// instrument would be measuring path divergence, not window divergence.
+    #[test]
+    fn control_the_two_paths_agree_when_no_layer_uses_the_window() {
+        let cfg = Qwen2Config { max_window_layers: 0, ..mixed_window_cfg() };
+        let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6];
+        // `seq + 1` is `build_layer_mask`'s own strict-causal width.
+        let (per_layer, single) = per_layer_vs_single_mask(&cfg, &tokens, tokens.len() + 1);
+        assert_eq!(per_layer.len(), single.len());
+        for (i, (a, b)) in per_layer.iter().zip(single.iter()).enumerate() {
+            assert!(
+                (a - b).abs() < 1e-6,
+                "control: the two paths must agree when no layer is windowed, but logit {i} is {a} vs {b}. The sibling test is then measuring PATH divergence, not WINDOW divergence.",
+            );
+        }
+    }
+
+    /// GAP-029: converts the row's central claim from INFERENCE to MEASUREMENT.
+    ///
+    /// The row records *"a single-mask decode port is silently wrong for
+    /// Qwen2/Qwen3/Qwen3Moe"* as an inference from the mask's SHAPE — the
+    /// existing mask tests compare BYTES and no forward pass had been run. This
+    /// asserts it at the LOGITS level (never sampled tokens, which are a vacuous
+    /// oracle for a tiny model) on the live mixed config.
+    ///
+    /// `seq = 6 > sliding_window = 4`, deliberately: at `seq <= window` the two
+    /// masks are byte-identical and this test would pass vacuously — the same
+    /// non-discrimination trap `window_wider_than_capacity_is_byte_identical_to_
+    /// the_dense_mask` records for the mask primitive.
+    ///
+    /// A FAILURE HERE IS A REAL FINDING, not a broken test: it would mean
+    /// per-layer window gating does not change this model's output, and the
+    /// N=2-variant decode machinery would need re-examining before being built.
+    #[test]
+    fn single_mask_diverges_from_per_layer_gating_at_the_logits_level() {
+        let cfg = mixed_window_cfg();
+        let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6];
+        assert!(
+            tokens.len() > cfg.sliding_window,
+            "non-vacuity: the window must actually bite",
+        );
+        let (per_layer, single) = per_layer_vs_single_mask(&cfg, &tokens, tokens.len() + 1);
+        assert_eq!(per_layer.len(), single.len());
+
+        // Far above f32 noise: the measured divergence is ~8e-3, ~800x this.
+        const THRESHOLD: f32 = 1e-5;
+        let max_abs = per_layer
+            .iter()
+            .zip(single.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_abs > THRESHOLD,
+            "a SINGLE mask reproduced the per-layer-gated logits to within {max_abs} (threshold {THRESHOLD:e}). The GAP-029 inference that a one-mask decode port is silently wrong for this family would then be FALSE, and the N=2 mask machinery must be re-examined before it is built.",
+        );
+    }
 }
