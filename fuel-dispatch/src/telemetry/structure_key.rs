@@ -18,14 +18,45 @@ use fuel_ir::{DType, Layout};
 /// Opaque structure-key token. Baracuda owns the encoding (a string or a `u64`
 /// rendered as a string); Fuel treats it as bytes for the `(structure_key,
 /// chosen)` join and never derives it.
+///
+/// GAP-178: `#[non_exhaustive]` reserves the type — downstream cannot construct
+/// it with the bare tuple syntax `StructureKeyToken(s)` nor pattern-destructure
+/// it, so a future field (or a switch to a `u64` payload) does not break every
+/// call site. Construct with [`StructureKeyToken::new`]; read with
+/// [`StructureKeyToken::as_str`] (the `pub` field stays readable, but the
+/// accessor is the honest surface). Reserved in the GAP-168(c) breaking cut so
+/// it costs one migration, not a second breaking release.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct StructureKeyToken(pub String);
+
+impl StructureKeyToken {
+    /// The only way to construct a token from outside this crate (the bare
+    /// tuple syntax is closed by `#[non_exhaustive]`). Stable across a future
+    /// payload change, which is the point of the reservation.
+    pub fn new(token: impl Into<String>) -> Self {
+        Self(token.into())
+    }
+
+    /// Borrow the token bytes. The honest external read surface — downstream
+    /// should not depend on the tuple field surviving a payload change.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
 
 /// The contiguity class of one operand as the structure-key input sees it.
 /// A thin two-state projection of the live [`Layout`]; the richer classes
 /// (inner-div / vec-width) Baracuda keys on are derived provider-side from the
 /// full descriptor, not here (Fuel never derives the key).
+///
+/// GAP-178 (the priority reservation): `#[non_exhaustive]` because this is a
+/// **pub enum where a new variant would be a downstream `match` break** — the
+/// hazard in its most direct form. Adding a richer contiguity class later
+/// (e.g. `InnerDivisible`) then forces only a `_` arm downstream instead of a
+/// compile break at every match. Reserved in the GAP-168(c) breaking cut.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Contiguity {
     /// Row-major C-contiguous (dense inner walk).
     Contiguous,
@@ -50,7 +81,17 @@ pub enum Contiguity {
 /// site AS flipped rather than laundered into a contiguous copy. It is the one
 /// derived axis with a live Fuel consumer, so the projection must preserve it —
 /// and the raw negative stride survives in `strides` for Baracuda too.
+///
+/// GAP-178: `#[non_exhaustive]` reserves this 7-field descriptor. Fuel's own
+/// history shows field growth (`align_bytes` arrived after the original shape),
+/// and the FDX quant/`SType` refinement is a scheduled later step — each is a
+/// wire event that should NOT also be a source break for downstream. Construct
+/// with [`FdxOperandDesc::from_layout`] (fields stay readable via `.field`); it
+/// derives every field from `(Layout, DType)`, so a future field changes NO call
+/// site — a field-by-field `new` would merely move the break from a struct
+/// literal to a function signature, which is not a reservation.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct FdxOperandDesc {
     /// The operand's logical element dtype.
     pub dtype: DType,
@@ -185,6 +226,18 @@ impl StructureKeyProvider for NullStructureKeyProvider {
 mod tests {
     use super::*;
     use fuel_ir::{Layout, Shape, StrideVec};
+
+    /// GAP-178: the reserved `StructureKeyToken` constructs via `::new` and reads
+    /// via `::as_str` — the surface that survives `#[non_exhaustive]`. (The
+    /// external-construction block itself can only be observed from another
+    /// crate; this pins the honest in-crate surface the reservation provides.)
+    #[test]
+    fn structure_key_token_constructs_and_reads_through_the_reserved_surface() {
+        let t = StructureKeyToken::new("matmul:innerdiv16:vec8:f16");
+        assert_eq!(t.as_str(), "matmul:innerdiv16:vec8:f16");
+        // `new` accepts anything `Into<String>` and round-trips through Eq.
+        assert_eq!(t, StructureKeyToken::new(String::from("matmul:innerdiv16:vec8:f16")));
+    }
 
     /// A NEGATIVE inner stride surfaces as `flipped == true` in the FDX
     /// descriptor. Load-bearing: negative-strides-first-class keeps this axis

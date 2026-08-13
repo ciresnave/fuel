@@ -54,10 +54,15 @@ pub fn primitive_shape(
         | CumSum { .. } | Flip { .. } | Roll { .. } | Triu { .. } | Tril { .. }
         | LogSoftmaxLastDim | LogSoftmaxLastDimBackward | MaskedFill { .. } => elem0()?,
 
-        // --- comparison → U8 ---
+        // --- comparison → Bool ---
+        // GAP-168(c) / CireSnave's ruling: comparisons yield a `Bool` mask, not
+        // a `U8` one. This is the single graph-level site where the output dtype
+        // of eq/ne/lt/le/gt/ge is decided (fuel-ir/shape.rs has no comparison
+        // arm). Extracting a NUMBER from a mask now requires an explicit
+        // `.cast(U8)`, so a numeric use of a mask is a build-time dtype error.
         Equal | Ne | Lt | Le | Gt | Ge => {
             need(input_shapes, 1, op)?;
-            (input_shapes[0].clone(), DType::U8)
+            (input_shapes[0].clone(), DType::Bool)
         }
 
         // --- Where: shape = cond (in[0]), dtype = a (in[1]) ---
@@ -300,9 +305,11 @@ mod tests {
     }
 
     #[test]
-    fn comparison_forces_u8() {
+    fn comparison_forces_bool() {
+        // GAP-168(c): comparisons yield a Bool mask, not U8 (input dtype is
+        // erased — F32 in, Bool out).
         let (sh, dt) = primitive_shape(&Op::Lt, &[s(&[5]), s(&[5])], &[DType::F32, DType::F32]).unwrap();
-        assert_eq!((sh, dt), (s(&[5]), DType::U8));
+        assert_eq!((sh, dt), (s(&[5]), DType::Bool));
     }
 
     #[test]

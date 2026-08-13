@@ -615,6 +615,7 @@ fn dtype_size_bytes(d: DType) -> usize {
         DType::F64 | DType::I64 => 8,
         DType::F16 | DType::BF16 | DType::I16 => 2,
         DType::U8 | DType::I8 | DType::F8E4M3 | DType::F8E5M2 | DType::F8E8M0 | DType::F8E6M2 => 1,
+        DType::Bool => 1,       // one byte per element (storage width == u8)
         DType::F4 => 1,         // packed; per-element fractional, round up
         DType::F6E2M3 | DType::F6E3M2 => 1,
     }

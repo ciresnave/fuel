@@ -35,6 +35,11 @@ pub enum HostBuffer {
     F6E3M2(Vec<u8>),
     F4(Vec<u8>),
     F8E8M0(Vec<u8>),
+    /// Boolean mask storage (GAP-168(c)). One byte per element (`0`/`1`),
+    /// byte-identical to `U8` — but a DISTINCT variant so a `Bool` buffer can
+    /// never be silently consumed as `U8`. The comparison kernels write `0`/`1`
+    /// bytes here; `where_cond`/`masked_fill` read it as a byte mask.
+    Bool(Vec<u8>),
 }
 
 /// Backwards-compatibility alias. New code should use [`HostBuffer`].
@@ -59,6 +64,9 @@ pub enum HostBufferRef<'a> {
     F6E3M2(&'a [u8]),
     F4(&'a [u8]),
     F8E8M0(&'a [u8]),
+    /// Boolean mask (GAP-168(c)) — byte-backed like the raw-byte dummies, but a
+    /// distinct variant so `Bool` is never read back as `U8`.
+    Bool(&'a [u8]),
 }
 
 /// Backwards-compatibility alias. New code should use [`HostBufferRef`].
@@ -87,6 +95,7 @@ impl HostBuffer {
             Self::F6E3M2(_) => DType::F6E3M2,
             Self::F4(_) => DType::F4,
             Self::F8E8M0(_) => DType::F8E8M0,
+            Self::Bool(_) => DType::Bool,
         }
     }
 
@@ -249,6 +258,16 @@ impl HostBuffer {
                     .collect::<crate::Result<Vec<_>>>()?;
                 Self::F8E8M0(storages.concat())
             }
+            Self::Bool(_) => {
+                let storages = storages
+                    .iter()
+                    .map(|s| match s {
+                        Self::Bool(s) => Ok(s.as_slice()),
+                        _ => crate::bail!("dtype mismatch"),
+                    })
+                    .collect::<crate::Result<Vec<_>>>()?;
+                Self::Bool(storages.concat())
+            }
         };
         Ok(s)
     }
@@ -274,6 +293,7 @@ impl HostBuffer {
             Self::F6E3M2(v) => HostBufferRef::F6E3M2(v),
             Self::F4(v) => HostBufferRef::F4(v),
             Self::F8E8M0(v) => HostBufferRef::F8E8M0(v),
+            Self::Bool(v) => HostBufferRef::Bool(v),
         }
     }
 }
@@ -297,6 +317,7 @@ impl<'a> HostBufferRef<'a> {
             Self::F6E3M2(_) => DType::F6E3M2,
             Self::F4(_) => DType::F4,
             Self::F8E8M0(_) => DType::F8E8M0,
+            Self::Bool(_) => DType::Bool,
         }
     }
 
@@ -318,6 +339,7 @@ impl<'a> HostBufferRef<'a> {
             Self::F6E3M2(v) => v.len(),
             Self::F4(v) => v.len(),
             Self::F8E8M0(v) => v.len(),
+            Self::Bool(v) => v.len(),
         }
     }
 
@@ -349,6 +371,7 @@ impl<'a> HostBufferRef<'a> {
             Self::F6E3M2(v) => HostBuffer::F6E3M2(v.to_vec()),
             Self::F4(v) => HostBuffer::F4(v.to_vec()),
             Self::F8E8M0(v) => HostBuffer::F8E8M0(v.to_vec()),
+            Self::Bool(v) => HostBuffer::Bool(v.to_vec()),
         }
     }
 }

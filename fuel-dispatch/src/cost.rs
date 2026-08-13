@@ -58,6 +58,8 @@ pub(crate) fn dtype_bytes(dt: DType) -> u64 {
         DType::F64 | DType::I64 => 8,
         DType::BF16 | DType::F16 | DType::I16 => 2,
         DType::U8 | DType::I8 => 1,
+        // Bool is one byte per element (storage width equals u8).
+        DType::Bool => 1,
         DType::F8E4M3 | DType::F8E5M2 | DType::F8E8M0 | DType::F8E6M2 => 1,
         // 6-bit and 4-bit float micro-types are byte-packed; treat
         // them as 1 byte/elem for the bandwidth estimate.

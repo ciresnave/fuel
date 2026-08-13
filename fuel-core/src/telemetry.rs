@@ -282,7 +282,7 @@ mod tests {
             let mut s = sink().lock().expect("sink");
             s.record_dispatch(DispatchRecord {
                 schema: TELEMETRY_SCHEMA_VERSION,
-                structure_key: Some(StructureKeyToken(uniq.clone())),
+                structure_key: Some(StructureKeyToken::new(uniq.clone())),
                 chosen: impl_id("portable-cpu"),
                 candidates: vec![Candidate {
                     impl_id: impl_id("portable-cpu"),
@@ -293,7 +293,7 @@ mod tests {
             });
             s.record_miss(MissRecord {
                 schema: TELEMETRY_SCHEMA_VERSION,
-                wanted: StructureKeyToken(uniq.clone()),
+                wanted: StructureKeyToken::new(uniq.clone()),
                 fallback: impl_id("baracuda-generic-strided"),
                 count: 1,
                 hw: cpu_hw(),

@@ -1498,6 +1498,7 @@ fn host_buffer_dtype(buf: &HostBuffer) -> fuel_ir::DType {
         HostBuffer::F6E3M2(_) => DType::F6E3M2,
         HostBuffer::F4(_) => DType::F4,
         HostBuffer::F8E8M0(_) => DType::F8E8M0,
+        HostBuffer::Bool(_) => DType::Bool,
     }
 }
 
@@ -1512,6 +1513,8 @@ fn host_buffer_dtype(buf: &HostBuffer) -> fuel_ir::DType {
 pub(crate) fn host_buffer_to_bytes(buf: &HostBuffer) -> Vec<u8> {
     match buf {
         HostBuffer::U8(v) => v.clone(),
+        // GAP-168(c): Bool is one byte per element (0/1) — raw bytes.
+        HostBuffer::Bool(v) => v.clone(),
         HostBuffer::I8(v) => bytemuck::cast_slice(v).to_vec(),
         HostBuffer::U32(v) => bytemuck::cast_slice(v).to_vec(),
         HostBuffer::I16(v) => bytemuck::cast_slice(v).to_vec(),

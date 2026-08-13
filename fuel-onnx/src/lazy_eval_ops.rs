@@ -203,8 +203,9 @@ pub(crate) fn try_dispatch(
 
         // ---- Where: cond ? x : y ----
         "Where" => {
-            // `where_cond` wants a U8 selector; the F32 mask casts cleanly.
-            let cond = nonzero_f32(&input(node, values, 0)?)?.to_dtype(DType::U8)?;
+            // `where_cond` wants a Bool selector (GAP-168(c)); the F32 nonzero
+            // mask (0.0/1.0) casts to Bool.
+            let cond = nonzero_f32(&input(node, values, 0)?)?.to_dtype(DType::Bool)?;
             let x = input(node, values, 1)?;
             let y = input(node, values, 2)?;
             // All three broadcast together; do it pairwise against the result
