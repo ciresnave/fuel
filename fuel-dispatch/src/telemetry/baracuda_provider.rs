@@ -146,6 +146,23 @@ fn map_element_kind(dt: DType) -> Option<ElementKind> {
         // scatter/gather, `PagedAttn`'s `block_table` and `context_lens`. The
         // expired decline was silencing that whole class of telemetry.
         DType::U32 => ElementKind::U32,
+        // GAP-168(c). `ElementKind::Bool` EXISTS at the locked
+        // baracuda-kernel-vocab 0.0.1-alpha.78 — "1-byte storage, 0/non-zero
+        // truthiness", which is exactly Fuel's `DType::Bool`. So this is a real
+        // mapping, not a decline: declining would have been an EXPIRED decline
+        // from birth, the GAP-171 shape with the clock already run out.
+        //
+        // ⚠️ THIS ARM WAS MISSING and it was a latent E0004, not a silent
+        // fallthrough — the match is wildcard-free. It survived the Bool cut
+        // because this file compiles only under `telemetry` AND `cuda`, and that
+        // combination is built by no gate the cut ran. Same structural hole as
+        // GAP-097's missing `F8E5M2` arm, recurring one dtype later.
+        //
+        // Un-declining is a BEHAVIOUR change: a `None` aborts the whole
+        // derivation via `?`, so a cell with a Bool operand went from emitting
+        // NOTHING to emitting a key. Comparison outputs are Bool now, so that is
+        // every mask-producing cell.
+        DType::Bool => ElementKind::Bool,
         // No faithful Baracuda ElementKind — no signal beats a wrong one.
         //
         // VERIFIED against alpha.78's 18 variants rather than assumed: there is
