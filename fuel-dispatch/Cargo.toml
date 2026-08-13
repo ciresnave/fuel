@@ -90,10 +90,36 @@ tempfile = { workspace = true }
 # already is — see `register_cpu_kernels`), a build without the importer would
 # silently lose that family. No gate ⇒ no such doomed config.
 default = []
+# Baracuda's PURE HOST type vocabulary (`ElementKind`, `OperandDesc`,
+# `structure_key_token`). NOT the kernel forge: `baracuda-kernels-types` has
+# `build = false` and does not depend on `baracuda-kernels-sys`, so enabling
+# this compiles NO CUDA kernels. (It does still reach `baracuda-cuda-sys`, whose
+# build script is 321 bytes and invokes no nvcc — so the CUDA SDK must be
+# present, but nothing is forged.)
+#
+# WHY THIS EXISTS AS ITS OWN FEATURE RATHER THAN RIDING `cuda` OR `jit`.
+# `telemetry/baracuda_provider.rs` needs exactly this crate and nothing else
+# CUDA-ish, but was gated on `cuda` — which additionally pulls
+# `fuel-cuda-backend` and therefore the kernel forge. That made a `cargo test`
+# over a pure-host keying function cost a full forge build (measured: 1h51m on
+# a cold cache, ~14s once the gate is narrowed), and it is a cost paid EXACTLY
+# on a baracuda bump, i.e. precisely when someone is verifying something.
+#
+# Gating the module on `any(cuda, jit)` was rejected deliberately: that would be
+# correct only because `jit` happens to list this dep, a justification living in
+# ANOTHER feature's list that could expire silently if JIT stopped needing it —
+# the module would quietly stop compiling under the narrow gate with no error.
+# Naming the real requirement makes the gate's coverage unbreakable from
+# elsewhere. (GAP-173.)
+#
+# Feature resolution is UNCHANGED for every existing consumer: `cuda` and `jit`
+# both already listed `dep:baracuda-kernels-types` directly and now go through
+# this instead.
+baracuda-types = ["dep:baracuda-kernels-types"]
 # Per-backend dispatch wrappers. Feature flags propagate the same shape
 # fuel-memory used: each GPU backend's registration entry-point is
 # gated behind its feature.
-cuda = ["dep:fuel-cuda-backend", "dep:baracuda-kernels-types", "dep:baracuda-nvrtc", "fuel-memory/cuda", "fuel-hardware/cuda", "dep:fuel-kiss-ref-backend"]
+cuda = ["dep:fuel-cuda-backend", "baracuda-types", "dep:baracuda-nvrtc", "fuel-memory/cuda", "fuel-hardware/cuda", "dep:fuel-kiss-ref-backend"]
 vulkan = ["dep:fuel-vulkan-backend", "fuel-memory/vulkan", "fuel-hardware/vulkan"]
 metal = ["dep:fuel-metal-backend", "fuel-memory/metal"]
 # Baracuda dispatch-telemetry / miss-reporting emission (docs/session-prompts/
@@ -105,7 +131,7 @@ telemetry = ["fuel-ir/serde"]
 # JIT-on-request adopt glue (the seam-consumption site): synthesize -> take_kernel
 # -> load kernel (caller-provided CUDA seam) -> adopt_runtime_fused. Pulls the
 # envelope crate + baracuda's OperandDesc (ElementKind). Default OFF.
-jit = ["dep:fuel-kernel-seam", "dep:baracuda-kernels-types", "dep:kiss-ops-vocab"]
+jit = ["dep:fuel-kernel-seam", "baracuda-types", "dep:kiss-ops-vocab"]
 # The LIVE JIT loop on published crates: jit + cuda + the real BaracudaSynthesizer
 # (baracuda-kernelgen, seam+nvrtc). Enables the on-device test that drives
 # synthesize -> take_kernel -> load_synth_kernel -> launch with Baracuda's own
