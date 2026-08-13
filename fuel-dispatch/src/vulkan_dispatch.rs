@@ -2019,9 +2019,13 @@ pub mod masked_fill {
         };
         let in_guard = read_storage(&inputs[0])?;
         let mask_guard = read_storage(&inputs[1])?;
-        if mask_guard.dtype != DType::U8 {
+        // GAP-168(c): mask is Bool, matching vulkan/select.fkc.md and
+        // vulkan/padding.fkc.md. Vulkan storage is raw bytes tagged by dtype, so
+        // this check is the only thing distinguishing a Bool mask from a
+        // byte-identical U8 buffer.
+        if mask_guard.dtype != DType::Bool {
             return Err(Error::Msg(format!(
-                "vulkan_dispatch::masked_fill::masked_fill: mask must be U8, got {:?}",
+                "vulkan_dispatch::masked_fill::masked_fill: mask must be Bool, got {:?} (GAP-168(c))",
                 mask_guard.dtype,
             )).bt());
         }

@@ -9517,14 +9517,14 @@ mod tests {
         assert_eq!(c.as_slice::<f64>().unwrap(), &[11.0_f64, 22.0, 33.0]);
     }
 
-    /// E2E: Op::Equal F32 → U8 mask through the pipelined executor.
+    /// E2E: Op::Equal F32 → Bool mask through the pipelined executor (GAP-168c).
     /// Verifies (a) the binding-table key `(EqualElementwise, [F32, F32, U8],
     /// Cpu)` resolves, (b) the executor allocates a U8-sized output
     /// buffer (1 byte per element, not 4), (c) the kernel writes the
     /// expected mask bits including IEEE-754 NaN handling
     /// (`NaN == NaN` is false).
     #[test]
-    fn pipelined_realize_eq_f32_to_u8_mask() {
+    fn pipelined_realize_eq_f32_to_bool_mask() {
         let lhs = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, f32::NAN, 0.0]);
         let rhs = fuel_memory::from_slice_cpu(&[1.0_f32, 5.0, 3.0, f32::NAN, -0.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
@@ -9540,7 +9540,7 @@ mod tests {
             });
             let eq = g.push(Node {
                 op: Op::Equal, inputs: vec![l, r],
-                shape: Shape::from_dims(&[5]), dtype: DType::U8,
+                shape: Shape::from_dims(&[5]), dtype: DType::Bool,
             });
             g.set_target_backend(eq, BackendId::Cpu);
             (l, r, eq)
@@ -9551,7 +9551,7 @@ mod tests {
         let (result_arc, _) =
             PipelinedExecutor::realize(graph, eq_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        assert_eq!(guard.dtype, DType::U8);
+        assert_eq!(guard.dtype, DType::Bool);
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
@@ -9564,11 +9564,11 @@ mod tests {
         assert_eq!(mask, &[1, 0, 1, 0, 1]);
     }
 
-    /// E2E: Op::Ne F32 → U8 mask. Mirrors the Eq F32 test with
+    /// E2E: Op::Ne F32 → Bool mask. Mirrors the Eq F32 test with
     /// inverted predicate; NaN-vs-NaN slot now yields `1` (since
     /// `NaN != NaN` per IEEE-754).
     #[test]
-    fn pipelined_realize_ne_f32_to_u8_mask() {
+    fn pipelined_realize_ne_f32_to_bool_mask() {
         let lhs = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, f32::NAN, 0.0]);
         let rhs = fuel_memory::from_slice_cpu(&[1.0_f32, 5.0, 3.0, f32::NAN, -0.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
@@ -9584,7 +9584,7 @@ mod tests {
             });
             let ne = g.push(Node {
                 op: Op::Ne, inputs: vec![l, r],
-                shape: Shape::from_dims(&[5]), dtype: DType::U8,
+                shape: Shape::from_dims(&[5]), dtype: DType::Bool,
             });
             g.set_target_backend(ne, BackendId::Cpu);
             (l, r, ne)
@@ -9595,7 +9595,7 @@ mod tests {
         let (result_arc, _) =
             PipelinedExecutor::realize(graph, ne_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        assert_eq!(guard.dtype, DType::U8);
+        assert_eq!(guard.dtype, DType::Bool);
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
@@ -9606,11 +9606,11 @@ mod tests {
         assert_eq!(mask, &[0, 1, 0, 1, 0]);
     }
 
-    /// E2E: Op::Lt F32 → U8 mask. Confirms strict-less-than semantics
+    /// E2E: Op::Lt F32 → Bool mask. Confirms strict-less-than semantics
     /// + IEEE-754 NaN handling (any comparison with NaN is unordered →
     /// `0`).
     #[test]
-    fn pipelined_realize_lt_f32_to_u8_mask() {
+    fn pipelined_realize_lt_f32_to_bool_mask() {
         let lhs = fuel_memory::from_slice_cpu(&[1.0_f32, 5.0, 3.0, f32::NAN, -1.0]);
         let rhs = fuel_memory::from_slice_cpu(&[2.0_f32, 5.0, 3.0, 0.0,      0.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
@@ -9626,7 +9626,7 @@ mod tests {
             });
             let lt = g.push(Node {
                 op: Op::Lt, inputs: vec![l, r],
-                shape: Shape::from_dims(&[5]), dtype: DType::U8,
+                shape: Shape::from_dims(&[5]), dtype: DType::Bool,
             });
             g.set_target_backend(lt, BackendId::Cpu);
             (l, r, lt)
@@ -9637,7 +9637,7 @@ mod tests {
         let (result_arc, _) =
             PipelinedExecutor::realize(graph, lt_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        assert_eq!(guard.dtype, DType::U8);
+        assert_eq!(guard.dtype, DType::Bool);
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
@@ -9647,10 +9647,10 @@ mod tests {
         assert_eq!(mask, &[1, 0, 0, 0, 1]);
     }
 
-    /// E2E: Op::Le F32 → U8 mask. Distinct from Lt at the equal slot
+    /// E2E: Op::Le F32 → Bool mask. Distinct from Lt at the equal slot
     /// (`5.0 <= 5.0` = 1, vs Lt's `5.0 < 5.0` = 0). NaN unordered → 0.
     #[test]
-    fn pipelined_realize_le_f32_to_u8_mask() {
+    fn pipelined_realize_le_f32_to_bool_mask() {
         let lhs = fuel_memory::from_slice_cpu(&[1.0_f32, 5.0, 3.0, f32::NAN, -1.0]);
         let rhs = fuel_memory::from_slice_cpu(&[2.0_f32, 5.0, 2.0, 0.0,      0.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
@@ -9666,7 +9666,7 @@ mod tests {
             });
             let le = g.push(Node {
                 op: Op::Le, inputs: vec![l, r],
-                shape: Shape::from_dims(&[5]), dtype: DType::U8,
+                shape: Shape::from_dims(&[5]), dtype: DType::Bool,
             });
             g.set_target_backend(le, BackendId::Cpu);
             (l, r, le)
@@ -9677,7 +9677,7 @@ mod tests {
         let (result_arc, _) =
             PipelinedExecutor::realize(graph, le_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        assert_eq!(guard.dtype, DType::U8);
+        assert_eq!(guard.dtype, DType::Bool);
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
@@ -9687,10 +9687,10 @@ mod tests {
         assert_eq!(mask, &[1, 1, 0, 0, 1]);
     }
 
-    /// E2E: Op::Gt F32 → U8 mask. Strict-greater: equality slot is
+    /// E2E: Op::Gt F32 → Bool mask. Strict-greater: equality slot is
     /// `0`. NaN unordered → `0`.
     #[test]
-    fn pipelined_realize_gt_f32_to_u8_mask() {
+    fn pipelined_realize_gt_f32_to_bool_mask() {
         let lhs = fuel_memory::from_slice_cpu(&[3.0_f32, 5.0, 2.0, f32::NAN, 1.0]);
         let rhs = fuel_memory::from_slice_cpu(&[2.0_f32, 5.0, 3.0, 0.0,      0.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
@@ -9706,7 +9706,7 @@ mod tests {
             });
             let gt = g.push(Node {
                 op: Op::Gt, inputs: vec![l, r],
-                shape: Shape::from_dims(&[5]), dtype: DType::U8,
+                shape: Shape::from_dims(&[5]), dtype: DType::Bool,
             });
             g.set_target_backend(gt, BackendId::Cpu);
             (l, r, gt)
@@ -9717,7 +9717,7 @@ mod tests {
         let (result_arc, _) =
             PipelinedExecutor::realize(graph, gt_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        assert_eq!(guard.dtype, DType::U8);
+        assert_eq!(guard.dtype, DType::Bool);
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
@@ -9727,12 +9727,12 @@ mod tests {
         assert_eq!(mask, &[1, 0, 0, 0, 1]);
     }
 
-    /// E2E: Op::Ge F32 → U8 mask. Greater-or-equal: equality slot
+    /// E2E: Op::Ge F32 → Bool mask. Greater-or-equal: equality slot
     /// is `1` (distinguishes from Gt). NaN unordered → `0`. Closes
     /// the comparison family with full `[Eq, Ne, Lt, Le, Gt, Ge]`
     /// coverage.
     #[test]
-    fn pipelined_realize_ge_f32_to_u8_mask() {
+    fn pipelined_realize_ge_f32_to_bool_mask() {
         let lhs = fuel_memory::from_slice_cpu(&[3.0_f32, 5.0, 2.0, f32::NAN, 0.0]);
         let rhs = fuel_memory::from_slice_cpu(&[2.0_f32, 5.0, 3.0, 0.0,      0.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
@@ -9748,7 +9748,7 @@ mod tests {
             });
             let ge = g.push(Node {
                 op: Op::Ge, inputs: vec![l, r],
-                shape: Shape::from_dims(&[5]), dtype: DType::U8,
+                shape: Shape::from_dims(&[5]), dtype: DType::Bool,
             });
             g.set_target_backend(ge, BackendId::Cpu);
             (l, r, ge)
@@ -9759,7 +9759,7 @@ mod tests {
         let (result_arc, _) =
             PipelinedExecutor::realize(graph, ge_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        assert_eq!(guard.dtype, DType::U8);
+        assert_eq!(guard.dtype, DType::Bool);
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
@@ -9769,11 +9769,11 @@ mod tests {
         assert_eq!(mask, &[1, 1, 0, 0, 1]);
     }
 
-    /// E2E: Op::Equal F64 → U8 mask. Confirms the F64 wrapper is
+    /// E2E: Op::Equal F64 → Bool mask. Confirms the F64 wrapper is
     /// independently registered and routed (binding-table key
     /// `(EqualElementwise, [F64, F64, U8], Cpu)`).
     #[test]
-    fn pipelined_realize_eq_f64_to_u8_mask() {
+    fn pipelined_realize_eq_f64_to_bool_mask() {
         let lhs = fuel_memory::from_slice_cpu(&[1.0_f64, 2.0, 3.0]);
         let rhs = fuel_memory::from_slice_cpu(&[1.0_f64, 2.0, 4.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
@@ -9789,7 +9789,7 @@ mod tests {
             });
             let eq = g.push(Node {
                 op: Op::Equal, inputs: vec![l, r],
-                shape: Shape::from_dims(&[3]), dtype: DType::U8,
+                shape: Shape::from_dims(&[3]), dtype: DType::Bool,
             });
             g.set_target_backend(eq, BackendId::Cpu);
             (l, r, eq)
@@ -9800,7 +9800,7 @@ mod tests {
         let (result_arc, _) =
             PipelinedExecutor::realize(graph, eq_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        assert_eq!(guard.dtype, DType::U8);
+        assert_eq!(guard.dtype, DType::Bool);
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
@@ -9809,14 +9809,19 @@ mod tests {
     }
 
     /// E2E: Op::Where ternary select — `out[i] = if cond[i] != 0 { a[i] } else { b[i] }`.
-    /// Validates (a) the binding-table key `(Where, [U8, F32, F32, F32], Cpu)`
-    /// resolves to the where_f32 wrapper, (b) the U8 cond input drives
+    /// Validates (a) the binding-table key `(Where, [Bool, F32, F32, F32], Cpu)`
+    /// resolves to the where_f32 wrapper, (b) the Bool cond input drives
     /// the per-slot pick, (c) outputs preserve the input dtype.
+    ///
+    /// GAP-168(c): the cond STORAGE is tagged Bool, not merely the graph node.
+    /// Bool and U8 are byte-identical, so leaving the storage U8 under a Bool
+    /// node is exactly the mismatch this cut exists to make visible.
     #[test]
-    fn pipelined_realize_where_f32_picks_per_slot_from_u8_mask() {
+    fn pipelined_realize_where_f32_picks_per_slot_from_bool_mask() {
         // cond = [1, 0, 1, 0, 1]; a = [1, 2, 3, 4, 5]; b = [10, 20, 30, 40, 50]
         // expected = [1, 20, 3, 40, 5]
-        let cond_storage = fuel_memory::from_slice_cpu(&[1u8, 0, 1, 0, 1]);
+        let mut cond_storage = fuel_memory::from_slice_cpu(&[1u8, 0, 1, 0, 1]);
+        cond_storage.dtype = DType::Bool;   // GAP-168(c): a Bool mask, not U8 bytes
         let a_storage = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0]);
         let b_storage = fuel_memory::from_slice_cpu(&[10.0_f32, 20.0, 30.0, 40.0, 50.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
@@ -9824,7 +9829,7 @@ mod tests {
             let mut g = graph.write().unwrap();
             let cond = g.push(Node {
                 op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[5]), dtype: DType::U8,
+                shape: Shape::from_dims(&[5]), dtype: DType::Bool,
             });
             let a = g.push(Node {
                 op: Op::Const, inputs: vec![],
@@ -9857,7 +9862,7 @@ mod tests {
     }
 
     /// E2E: full chain `eq → where`. Compares two f32 vectors, then
-    /// uses the resulting U8 mask to pick from a third tensor (or a
+    /// uses the resulting Bool mask to pick from a third tensor (or a
     /// fallback). Validates the comparison-family + Where ops compose
     /// end-to-end.
     #[test]
@@ -9890,7 +9895,7 @@ mod tests {
             });
             let eq = g.push(Node {
                 op: Op::Equal, inputs: vec![a, b],
-                shape: Shape::from_dims(&[3]), dtype: DType::U8,
+                shape: Shape::from_dims(&[3]), dtype: DType::Bool,
             });
             let w = g.push(Node {
                 op: Op::Where, inputs: vec![eq, pick, fb],
@@ -13575,7 +13580,8 @@ mod tests {
     #[test]
     fn pipelined_realize_masked_fill_attention_pattern() {
         let x_storage = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0]);
-        let mask_storage = fuel_memory::from_slice_cpu(&[0u8, 1, 0, 1]);
+        let mut mask_storage = fuel_memory::from_slice_cpu(&[0u8, 1, 0, 1]);
+        mask_storage.dtype = DType::Bool;   // GAP-168(c): a Bool mask, not U8 bytes
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (x_id, mask_id, out_id) = {
             let mut g = graph.write().unwrap();
@@ -13585,7 +13591,7 @@ mod tests {
             });
             let mask = g.push(Node {
                 op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[4]), dtype: DType::U8,
+                shape: Shape::from_dims(&[4]), dtype: DType::Bool,
             });
             let out = g.push(Node {
                 op: Op::MaskedFill { value: fuel_ir::Scalar::F32(-1000.0) },

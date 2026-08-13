@@ -5586,11 +5586,14 @@ impl Tensor {
             let g = self.graph.read().unwrap();
             crate::scan::validate_scan_body_placeholders(&g, &[body_new_carry.id, body_y.id], xs.len())?;
         }
-        // Predicate must be a scalar U8 boolean (shape [] or product == 1) — a
+        // Predicate must be a scalar Bool (shape [] or product == 1) — a
         // convergence flag, not a per-element mask. Validate at build time.
-        if pred_exit.dtype() != fuel_ir::DType::U8 {
+        // GAP-168(c): Bool, not U8. A predicate's natural producer is a
+        // comparison, and those now yield Bool, so requiring U8 here would make
+        // the ordinary `carry.ge(&thr)` path unusable as a predicate.
+        if pred_exit.dtype() != fuel_ir::DType::Bool {
             return Err(fuel_ir::Error::Msg(format!(
-                "scan_until: pred_exit must be U8 (a boolean flag), got {:?}", pred_exit.dtype(),
+                "scan_until: pred_exit must be Bool (a boolean flag), got {:?}", pred_exit.dtype(),
             )).bt());
         }
         let pred_dims = pred_exit.shape();
@@ -12428,9 +12431,9 @@ mod tests {
 
     #[test]
     fn where_cond_builder_produces_ternary_with_a_dtype() {
-        // self is U8 cond; a/b are F32. Output dtype = F32 (= a's dtype),
-        // shape = self.shape() (= a.shape() = b.shape()). Op::Where
-        // node carries 3 inputs in order (cond, a, b).
+        // self is a Bool cond (GAP-168(c)); a/b are F32. Output dtype = F32
+        // (= a's dtype), shape = self.shape() (= a.shape() = b.shape()).
+        // Op::Where node carries 3 inputs in order (cond, a, b).
         let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let b = a.const_f32_like(vec![10.0, 20.0, 30.0], Shape::from_dims(&[3]));
         let eq_a_b = a.eq(&b);  // Bool mask
