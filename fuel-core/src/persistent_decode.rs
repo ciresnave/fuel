@@ -1090,6 +1090,51 @@ mod mask_plan_tests {
         );
     }
 
+    /// **Both degenerate splits must collapse to ONE variant**, or a family that
+    /// windows every layer (or none) silently pays for a slice node and an
+    /// N-wide mask Const it cannot use.
+    ///
+    /// The `split >= n_layers` arm is the one with no family on it yet and is
+    /// tested for that reason: SmolLm3's mask is uniform-windowed
+    /// (`sliding_window` with no `max_window_layers` gate), so it will land here
+    /// rather than on the two-variant path.
+    #[test]
+    fn both_degenerate_splits_collapse_to_a_single_variant() {
+        let all_dense = MaskPlan::split_window(4, 0, 8);
+        assert_eq!(all_dense.n_variants(), 1, "split 0 must be the dense plan");
+        assert_eq!(all_dense, MaskPlan::dense(4), "and identical to it");
+
+        for split in [4, 9] {
+            let all_windowed = MaskPlan::split_window(4, split, 8);
+            assert_eq!(
+                all_windowed.n_variants(), 1,
+                "split {split} covers every layer — one windowed variant, no slice",
+            );
+            for li in 0..4 {
+                assert_eq!(all_windowed.variant_for_layer(li), 0);
+            }
+            // ...and it must be the WINDOWED variant, not silently the dense one.
+            //
+            // `cached_len` must exceed `window` or the two masks coincide
+            // legitimately and this assertion is vacuous — the same trap
+            // `window_wider_than_capacity_is_byte_identical_to_the_dense_mask`
+            // records. (Written first with `cached_len = 5` against a window of
+            // 8, which is exactly that mistake; the assertion caught it.)
+            let (cached_len, seq, max_seq_len, window) = (10, 1, 12, 8);
+            assert!(cached_len > window, "non-vacuity: the window must bite here");
+            assert_ne!(
+                build_decode_mask_variants(
+                    &MaskPlan::split_window(4, split, window), cached_len, seq, max_seq_len,
+                ),
+                crate::lazy::build_decode_causal_mask(cached_len, seq, max_seq_len),
+                "collapsing to one variant must not collapse to the DENSE one",
+            );
+        }
+
+        // A genuinely mixed split keeps both.
+        assert_eq!(MaskPlan::split_window(4, 2, 8).n_variants(), 2);
+    }
+
     /// Build-time validation, per the no-`try_*`/validate-early rule: an
     /// out-of-range variant index would otherwise land as a panic deep inside
     /// the layer loop — or, worse, as a silently mis-masked layer.
