@@ -162,6 +162,14 @@ pub fn clip_grad_norm(
         .bt());
     }
 
+    // GAP-186: realize per-tensor reductions FALLIBLY. This is production
+    // training code — a failed realize must return Err, not `.expect()` like
+    // `LazyTensor::realize_f32` (whose panic is a test convenience). Uses the
+    // same fallible path as `train.rs::param_to_host`.
+    fn host_f32(t: &LazyTensor) -> Result<Vec<f32>> {
+        crate::pipelined_bridge::realize_one_as::<f32>(t.graph(), t.node_id(), &crate::Device::cpu())
+    }
+
     // Host-side total-norm computation. We realize per-tensor reductions
     // to host scalars and aggregate there:
     //   * L2 (the LLM-training default): one `sqr().sum_all()` per tensor
@@ -179,7 +187,7 @@ pub fn clip_grad_norm(
     let total_norm: f64 = if is_inf {
         let mut best: f64 = 0.0;
         for g in grads.values() {
-            let abs_host = g.abs().realize_f32();
+            let abs_host = host_f32(&g.abs())?;
             for x in abs_host {
                 let v = x as f64;
                 if v > best {
@@ -191,21 +199,21 @@ pub fn clip_grad_norm(
     } else if (norm_type - 2.0).abs() < f64::EPSILON {
         let mut acc: f64 = 0.0;
         for g in grads.values() {
-            let host = g.sqr().sum_all().realize_f32();
+            let host = host_f32(&g.sqr().sum_all())?;
             acc += host[0] as f64;
         }
         acc.sqrt()
     } else if (norm_type - 1.0).abs() < f64::EPSILON {
         let mut acc: f64 = 0.0;
         for g in grads.values() {
-            let host = g.abs().sum_all().realize_f32();
+            let host = host_f32(&g.abs().sum_all())?;
             acc += host[0] as f64;
         }
         acc
     } else {
         let mut acc: f64 = 0.0;
         for g in grads.values() {
-            let abs_host = g.abs().realize_f32();
+            let abs_host = host_f32(&g.abs())?;
             for x in abs_host {
                 acc += (x as f64).powf(norm_type);
             }
