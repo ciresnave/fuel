@@ -5,9 +5,14 @@ data/
 dist/
 target/
 
-# Remove Cargo.lock from gitignore if creating an executable, leave it for libraries
+# Cargo.lock IS TRACKED — do not re-add it here. The line this replaces was
+# inherited from the upstream Candle fork, whose own comment read "Remove
+# Cargo.lock from gitignore if creating an executable, leave it for libraries".
+# Fuel ships a [[bin]], has CI, and has a 30-56 minute kernel forge whose warm
+# artifacts are keyed on the resolved dependency set — so an unpinned resolution
+# costs an hour, not a rebuild. Measured 2026-08-13 (GAP-180): four checkouts of
+# this repo held two different resolutions differing across ~1904 lockfile lines.
 # More information here https://doc.rust-lang.org/cargo/guide/cargo-toml-vs-cargo-lock.html
-Cargo.lock
 
 # editor config
 .helix
