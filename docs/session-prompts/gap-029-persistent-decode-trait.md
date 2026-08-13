@@ -513,6 +513,111 @@ six green. **Corollary: if a family's test cannot be reddened by breaking that
 family's own code, it is not testing that family** — it is testing the shared
 path under a family-shaped name.
 
+#### Landed 2026-08-13: increment 3, FAMILY 1 — Qwen2 on the shared build path
+
+**The build path is no longer a `LlamaModel` inherent method.**
+`forward_with_kv_context_impl` (D1), `build_and_realize_first_decode_token` (D2)
+and `forward_with_kv_context_persistent_inv_freq` now live in
+`crate::persistent_decode` beside the rebind driver, as **one**
+`build_decode_graph` plus two tails, with `DataConsts::{Baked, Rebindable}` as
+the sole D1/D2 difference inside the graph-building half. Llama's three bodies
+are 12-line delegations.
+
+Relocating rather than doc-commenting answers the "shared implementation wearing
+a private name" hazard **structurally**: there is no longer a `LlamaModel`
+method for someone to optimise "for Llama" while seven families ride it. Model
+identity is threaded through as `DecodeBackbone::decode_family`, so a Qwen3Moe
+failure will not report a Llama-shaped error.
+
+**Phi and DeepSeek2 are NOT on this path**, and that is now *measured* rather
+than intended — see the sabotage record below.
+
+**Per-layer masks:** `MaskPlan` (`windows: Vec<Option<usize>>` +
+`per_layer: Vec<usize>`), validated at construction. The mask Const is
+`[n_variants, 1, seq, max_seq_len]` with the width-1 slices hoisted once before
+the layer loop. `n_variants == 1` emits **no slice node**, and the host bytes are
+asserted byte-identical to `build_decode_causal_mask` — which mattered more than
+expected, since Llama's *rebind* side was also repointed at the shared builder.
+`MaskPlan::split_window` expresses the `layer_idx < max_window_layers` predicate
+Qwen2/Qwen3/Qwen3Moe share, and is total (both degenerate splits collapse to one
+variant).
+
+**`build_decode_causal_mask_windowed` has its production caller; the
+`#[allow(dead_code)]` is deleted, not renewed.** The architect's checkpoint is
+answered by the port.
+
+##### The oracle, and why the existing suite could not serve as one
+
+`forward_with_kv_context_decode_matches_non_cached_forward` asserts
+`diff < 5e-3 || rel < 1e-2`. GAP-029's measured single-mask divergence is
+**7.9e-3** — 1.6x that abs bound, and the `||` lets the `rel` arm pass it
+outright. **A Qwen2 decode test written on that template goes GREEN on a
+single-mask port**: a vacuous oracle arriving through the *tolerance* rather than
+through the assertion target. Thresholds here are measured, not inherited.
+
+Measured separation (prefill 3, decode 3, live mixed config — 2 layers,
+window 4, `max_window_layers: 1`, `seq 6 > window`):
+
+```text
+correct windowed decode vs per-layer-gated forward : 0.0, 0.0,      0.0
+single-mask   decode    vs the same forward        : 0.0, 7.04e-3,  7.95e-3
+```
+
+**Born red, observed.** The mask builder first returned the dense mask for every
+variant — byte-identically what a single-mask port computes — and both windowed
+arms failed; the `max_window_layers: 0` control passed, which is what separates
+"the mask is wrong" from "the seam is broken". `9 passed; 2 failed` → `11 passed`
+after pointing the windowed variant at `build_decode_causal_mask_windowed`.
+
+**The zeros are not vacuous and the shape of the result is the proof:** absolute
+position 3 agrees under *both* bodies, because a window of 4 cannot exclude
+anything until position 4. A degenerate oracle would have shown three zeros in
+the red run; it showed one. Both failing steps are **rebind** steps, so a
+single-decode-token test could not have seen this at all.
+
+##### Sabotage record
+
+- **Shared** (swap `rope_cos`/`rope_sin` in the layer loop): `41 passed; 6
+  failed` — Llama, Llama3-via-delegation and Qwen2 all red, so all three
+  demonstrably execute the shared body. **`phi_*` and `lazy_deepseek2::*` stayed
+  green**, which is the negative control for "increment 3 did not conscript Phi".
+  Two passes are the more interesting result: `..._persistent_plan_once_matches_d1`
+  passed because it compares D2 to D1 and both were sabotaged identically — a
+  relative oracle is *structurally blind* to a defect in shared code — and
+  `..._decode_matches_non_cached_forward` passed because a RoPE cos/sin swap does
+  not move a tiny model past `5e-3`. Together these are why a **1e-6 golden was
+  captured before the refactor**: `GAP029_LLAMA_DECODE_GOLDEN` holds for D1 and
+  D2 across the extraction, and goes red under this sabotage.
+- **Per-family** (drop Qwen2's Q bias): `44 passed; 3 failed`, **exactly one
+  family red**. Llama, Llama3, Phi, DeepSeek2 untouched.
+
+##### Scope, stated as decisions rather than omissions
+
+- **No `forward_with_kv_context_all_positions` for Qwen2** — spec-decode's
+  verification entry, no consumer, not among the seven per-family items.
+- **No flash-decode arm offered for Qwen2, and this is a CORRECTNESS decision.**
+  The CUDA flash arm expresses its key range as a single
+  `k_len = cached_len + seq`, which **cannot represent a sliding window**: on a
+  windowed layer it would attend to the whole prefix and silently drop the
+  window on bf16/CUDA — the exact defect this port exists to fix, and invisible
+  to an f32/CPU gate where the arm declines anyway. Offering it needs a windowed
+  `k` range first.
+- **One behaviour deliberately preserved rather than fixed:** the old D2 path did
+  not check cache-vs-config KV geometry while D1 did. The asymmetry is kept,
+  gated on mode, because making D2 stricter would be a semantic change smuggled
+  into a behaviour-preserving refactor. Real follow-up, not a decision to inherit
+  silently.
+- `Qwen2Weights` gained `instance: ModelInstanceId` (a held plan must be able to
+  tell two same-architecture models apart). A field add is the change-kind that
+  has broken integration targets here before, so the gate covered
+  **`-p fuel-core -p fuel-examples -p fuel-inference --all-targets`** — and
+  `fuel-examples` did carry two construction sites `-p fuel-core` cannot see.
+
+**Gates:** `-p fuel-core -p fuel-examples -p fuel-inference --all-targets -j 4`
+exit 0 (188 `fuel-core` diagnostic lines — artifact present, not a warm cache);
+`-p fuel-core --lib` **1456 passed / 0 failed / 12 ignored / 0 filtered out**;
+`-p fuel-core --tests` exit 0.
+
 ### Open hypothesis — Phi's separate body may be almost entirely redundant
 
 **Recorded now, deliberately NOT acted on.** Two step-0 results combine into
@@ -532,9 +637,28 @@ carriers — and **never on the 6× that does not exist.**
 Sequencing (architect): increment 3 first; nothing here delays it; report as a
 one-line note when increment 3 lands and it gets ruled on then.
 
-**Increment 3 —** the 6 LLaMA-shaped families: Qwen2, Qwen3, Qwen3Moe,
-SmolLm3, Glm4, Phi3. Each = `apply_layer` for its architecture + the quantized
-wrapper's delegation.
+**Increment 3 —** the 6 LLaMA-shaped families: **Qwen2 (LANDED 2026-08-13)**,
+Qwen3, Qwen3Moe, SmolLm3, Glm4, Phi3.
+
+> **Corrected 2026-08-13.** This line previously read *"Each = `apply_layer` for
+> its architecture + the quantized wrapper's delegation"* — the two-item list
+> *"Correction 2"* above already showed to be wrong (the real content is seven
+> items, four of them shareable). Corrected here rather than only recorded
+> above, so the summary line cannot be read on its own and mislead.
+>
+> **With the shared seam landed, the remaining five families are back down to
+> roughly that two-item shape in practice** — `decode_apply_layer`,
+> `decode_final_norm_and_head`, `decode_dims`, `decode_shape_key`,
+> `decode_mask_plan` (one call to `MaskPlan::split_window` for Qwen3/Qwen3Moe),
+> a `build_decode_token_data` that delegates to the shared host builder, plus the
+> quantized wrapper's forwards. **The D1 path and the persistent entry point are
+> no longer per-family at all.** Qwen2's whole port is ~230 lines, of which the
+> attention block is ~110.
+>
+> **SmolLm3 is the one that is not shaped like this**: its per-layer variation is
+> RoPE-on/off, not a mask, so it needs a variation axis `MaskPlan` does not carry.
+> Nothing in the seam blocks it — `decode_apply_layer` already receives
+> `layer_idx` — but it should not be estimated off Qwen2's number.
 
 **Increment 4 —** Gemma3.
 

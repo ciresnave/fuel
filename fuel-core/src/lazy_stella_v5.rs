@@ -271,6 +271,7 @@ mod tests {
             })
             .collect();
         Qwen2Weights {
+            instance: crate::decode_shape::ModelInstanceId::next(),
             token_embedding,
             layers,
             final_norm_gain: Arc::from(vec![1.0_f32; h]),

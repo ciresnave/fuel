@@ -95,7 +95,11 @@ use std::sync::Arc;
 /// matrices sharing one graph.
 #[derive(Clone, Debug)]
 pub struct LazyTensor {
-    inner: fuel_graph::Tensor,
+    // `pub(crate)`: the shared decode build path lives in
+    // `crate::persistent_decode` (GAP-029 increment 3) and needs the graph +
+    // NodeId handles to mint Consts and name realize roots. Still private to
+    // the crate — no consumer sees the graph representation.
+    pub(crate) inner: fuel_graph::Tensor,
 }
 
 impl LazyTensor {
@@ -1842,6 +1846,71 @@ impl crate::persistent_decode::PersistentDecodeModel for LlamaModel {
             session.offset_node().is_some(),
             rope_inv_freq,
         )
+    }
+}
+
+/// GAP-029 increment 3 — `LlamaModel`'s half of the shared decode **build**
+/// path. The body it used to own now lives in [`crate::persistent_decode`];
+/// what remains here is the architecture, which is the only part that was ever
+/// Llama-specific.
+impl crate::persistent_decode::DecodeBackbone for LlamaModel {
+    fn decode_family(&self) -> &'static str {
+        "LlamaModel"
+    }
+
+    fn decode_dims(&self) -> crate::persistent_decode::DecodeDims {
+        let cfg = &self.config;
+        crate::persistent_decode::DecodeDims {
+            n_layers: cfg.n_layers,
+            n_kv_heads: cfg.n_kv_heads,
+            head_dim: cfg.head_dim,
+            hidden: cfg.dim,
+            vocab: cfg.vocab_size,
+            // Full rotary — Llama rotates the whole head.
+            rope_width: cfg.head_dim,
+            rope_base: cfg.rope_base,
+        }
+    }
+
+    fn decode_shape_key(&self) -> u64 {
+        LlamaModel::decode_shape_key(self)
+    }
+
+    /// Llama has **no** per-layer attention variation: measured **zero**
+    /// `sliding_window` hits in this file, against a positive control of hits in
+    /// five sibling model files. The uniform plan emits no slice node, so
+    /// Llama's decode graph is byte-identical to the pre-GAP-029 one.
+    fn decode_mask_plan(&self) -> crate::persistent_decode::MaskPlan {
+        crate::persistent_decode::MaskPlan::dense(self.config.n_layers)
+    }
+
+    fn decode_token_embedding(&self) -> Arc<[f32]> {
+        self.weights.token_embedding.clone()
+    }
+
+    fn decode_apply_layer(
+        &self,
+        layer_idx: usize,
+        inputs: &crate::persistent_decode::DecodeLayerInputs<'_>,
+    ) -> crate::Result<LazyTensor> {
+        self.apply_layer_with_kv_writes(
+            inputs.x,
+            &self.weights.layers[layer_idx],
+            inputs.k_cache,
+            inputs.v_cache,
+            inputs.cached_len_sym,
+            inputs.attended_len_sym,
+            inputs.offset,
+            inputs.rope_cos,
+            inputs.rope_sin,
+            inputs.mask,
+        )
+    }
+
+    fn decode_final_norm_and_head(&self, h: &LazyTensor) -> crate::Result<LazyTensor> {
+        let cfg = &self.config;
+        let h_norm = apply_affine_rms_norm(h, &self.weights.final_norm_gain, cfg.dim, cfg.norm_eps);
+        Ok(self.weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size)?)
     }
 }
 
@@ -8620,6 +8689,11 @@ impl LlamaModel {
             .mix_u64(self.config.ffn_dim as u64)
             .mix_u64(self.config.vocab_size as u64)
             .mix_f64(self.config.norm_eps);
+        // The mask plan wires the graph (how many mask variants exist and which
+        // layer reads which), so a session built under one plan must not be
+        // reused under another. Uniform for Llama — mixed unconditionally
+        // anyway, so the key cannot silently stop covering it if that changes.
+        crate::persistent_decode::MaskPlan::dense(self.config.n_layers).mix_into(&mut h);
         h.finish()
     }
 
@@ -8678,215 +8752,9 @@ impl LlamaModel {
         return_all_positions: bool,
         rope_inv_freq: Option<&[f64]>,
     ) -> crate::Result<Vec<f32>> {
-        let cfg = &self.config;
-        let weights = &self.weights;
-        let seq = tokens.len();
-        let batch = 1;
-        let cached_len = cache.cached_len;
-
-        if seq == 0 {
-            return Err(fuel_ir::Error::Msg(
-                "forward_with_kv_context: zero tokens".to_string(),
-            ).bt());
-        }
-        if cache.n_layers() != cfg.n_layers {
-            return Err(fuel_ir::Error::Msg(format!(
-                "forward_with_kv_context: cache n_layers {} != model n_layers {}",
-                cache.n_layers(), cfg.n_layers,
-            )).bt());
-        }
-        let max_seq_len = cache.max_seq_len.ok_or_else(|| {
-            fuel_ir::Error::Msg(
-                "forward_with_kv_context: cache was constructed via with_dims (no \
-                 pre-allocated buffers); call KvCache::with_capacity(...) for the \
-                 WriteSlice path".to_string(),
-            ).bt()
-        })?;
-        if cached_len + seq > max_seq_len {
-            return Err(fuel_ir::Error::Msg(format!(
-                "forward_with_kv_context: cached_len ({cached_len}) + seq ({seq}) > \
-                 max_seq_len ({max_seq_len})",
-            )).bt());
-        }
-        let cache_dtype = cache.dtype.unwrap_or(DType::F32);
-        if cache.n_kv_heads != cfg.n_kv_heads || cache.head_dim != cfg.head_dim {
-            return Err(fuel_ir::Error::Msg(format!(
-                "forward_with_kv_context: cache shape (n_kv_heads={}, head_dim={}) \
-                 disagrees with model config (n_kv_heads={}, head_dim={})",
-                cache.n_kv_heads, cache.head_dim, cfg.n_kv_heads, cfg.head_dim,
-            )).bt());
-        }
-
-        // Embed lookup + reshape to [batch, seq, dim].
-        let embed = LazyTensor::from_f32(
-            weights.token_embedding.clone(),
-            Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
-            &Device::cpu(),
-        );
-        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
-        let mut h = embed
-            .index_select(0, &token_ids).unwrap()
-            .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
-        // BF16-throughout decode (Phase D increment A): the embedding
-        // table stays f32 (CUDA IndexSelect has no BF16 key), but every
-        // activation downstream of this point tracks the cache dtype.
-        // No-op for f32 caches (the default / today's only path).
-        h = h.to_dtype(cache_dtype)?;
-
-        // RoPE cos/sin tables shared across layers.
-        let (rope_cos, rope_sin) = match rope_inv_freq {
-            Some(inv) => {
-                let (c, sn) = fuel_graph::build_rope_tables_with_inv_freq(
-                    inv, cached_len, seq, cfg.head_dim,
-                );
-                let shape = Shape::from_dims(&[seq, cfg.head_dim]);
-                (
-                    h.const_f32_like(Arc::from(c), shape.clone()),
-                    h.const_f32_like(Arc::from(sn), shape),
-                )
-            }
-            None => h.rope_tables_const(cfg.rope_base, cached_len, seq, cfg.head_dim),
-        };
-
-        // Phase D: the per-token KV-write offset (`cached_len`) is a
-        // runtime symbol bound through the per-pass `SymEnv` at realize,
-        // not baked into the graph. One symbol shared across all layers
-        // (they all append at the same offset). A fixed id (re-bound each
-        // pass) keeps the decode-step graph structurally identical across
-        // tokens — the prerequisite for plan-once persistent decode.
-        let cached_len_sym = fuel_ir::SymId(0);
-        // The live attended-prefix length (`cached_len + seq`) — the CUDA
-        // flash decode arm's `k_len`. A SECOND fixed symbol bound alongside
-        // `cached_len_sym` each pass (the `DecodeFlashSpec`-endorsed option:
-        // no `DynScalar` arithmetic extension). Unreferenced on the f32
-        // decode graph (no flash arm offered) — a harmless extra binding.
-        let attended_len_sym = fuel_ir::SymId(1);
-
-        // Phase D · D2b: the causal mask is hoisted to ONE Const built
-        // here (was one Const per layer) and shared across all layers
-        // (byte-identical across layers — it depends only on
-        // `cached_len`, `seq`, `max_seq_len`). Fewer nodes + a single
-        // per-token re-bind on the persistent path.
-        let mask_data = build_decode_causal_mask(cached_len, seq, max_seq_len);
-        // Mask dtype must match the activation dtype it's broadcast-added
-        // onto (`scores_scaled`, which tracks `cache_dtype`) — BF16-
-        // throughout decode (Phase D increment A). No-op for f32 caches.
-        let mask = h.const_like_dtype(
-            &mask_data,
-            Shape::from_dims(&[1, 1, seq, max_seq_len]),
-            cache_dtype,
-        )?;
-
-        // Per-layer: bind the cache K + V Arcs to fresh Const NodeIds,
-        // dispatch through the WriteSlice variant. Track the NodeIds
-        // we insert into ctx so we can clean them up after realize
-        // (the per-step NodeIds reference a graph that drops at end
-        // of this method; leaving them in ctx.persistent would leak).
-        let cache_shape = Shape::from_dims(
-            &[batch, cfg.n_kv_heads, max_seq_len, cfg.head_dim],
-        );
-        let mut bound_node_ids: Vec<fuel_graph::NodeId> =
-            Vec::with_capacity(2 * cfg.n_layers);
-        for (li, layer_weights) in weights.layers.iter().enumerate() {
-            let k_arc = cache.slot_storage(li, KvSlot::K).ok_or_else(|| {
-                fuel_ir::Error::Msg(format!(
-                    "forward_with_kv_context: cache layer {li} has no K slot \
-                     (with_capacity should have populated all layers)",
-                )).bt()
-            })?;
-            let v_arc = cache.slot_storage(li, KvSlot::V).ok_or_else(|| {
-                fuel_ir::Error::Msg(format!(
-                    "forward_with_kv_context: cache layer {li} has no V slot",
-                )).bt()
-            })?;
-            let k_cache_node = h.const_placeholder_like(cache_shape.clone(), cache_dtype);
-            let v_cache_node = h.const_placeholder_like(cache_shape.clone(), cache_dtype);
-            let k_id = k_cache_node.inner.id();
-            let v_id = v_cache_node.inner.id();
-            ctx.insert(k_id, k_arc);
-            ctx.insert(v_id, v_arc);
-            bound_node_ids.push(k_id);
-            bound_node_ids.push(v_id);
-
-            h = self.apply_layer_with_kv_writes(
-                &h,
-                layer_weights,
-                &k_cache_node,
-                &v_cache_node,
-                cached_len_sym,
-                attended_len_sym,
-                // D1 rebuild-per-step path: no capture, so keep the
-                // backend-generic SymEnv `Op::WriteSlice` offset. (Bit-
-                // identical KV write to the D2 device-offset path.)
-                None,
-                &rope_cos,
-                &rope_sin,
-                &mask,
-            )?;
-        }
-
-        let h_norm = apply_affine_rms_norm(&h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps);
-        let logits = weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size)?;
-        // For spec-decode verification we need per-position logits;
-        // otherwise slice to the last position for decode/prefill.
-        let logits_root = if return_all_positions {
-            logits.reshape(Shape::from_dims(&[seq * cfg.vocab_size]))?
-        } else {
-            let last_pos = seq - 1;
-            logits
-                .slice(1, last_pos, 1)?
-                .reshape(Shape::from_dims(&[cfg.vocab_size]))?
-        };
-        // `realize_one_as_with_env::<f32>` below reinterprets the root's
-        // raw bytes as `[f32]` (no dtype-aware decode) — a BF16 root
-        // would be UB (half the byte width, silently wrong data). Cast
-        // to f32 here, right before realize; no-op under f32 caches.
-        let logits_root = logits_root.to_dtype(DType::F32)?;
-
-        // Planner Stage 4a: populate the plan store for this step's
-        // graph before realizing — realize's planning half then HITs
-        // the store instead of rebuilding. This is the v1 (synchronous)
-        // load-time-planning seam; Stage 4b moves the warm onto a
-        // background thread fed by graph-construction events so
-        // planning overlaps weight page-in and upstream execution.
-        // Advisory by design: warm failures are discarded because the
-        // realize below runs the identical planning path and surfaces
-        // any genuine error with full realize context — nothing is
-        // masked, only deferred a few lines.
-        let _ = crate::planner::Planner::warm(
-            logits_root.inner.graph(),
-            &[logits_root.inner.id()],
-            ctx.device(),
-        );
-
-        // Realize through InferenceContext. The WriteSlice nodes mutate
-        // the cache buffers in place at the runtime offset `cached_len`,
-        // supplied for this pass via the `SymEnv`; downstream attention
-        // reads the post-write full-capacity buffers.
-        let mut sym_env = fuel_ir::SymEnv::new();
-        sym_env.bind(cached_len_sym, cached_len).map_err(crate::Error::from)?;
-        sym_env.bind(attended_len_sym, cached_len + seq).map_err(crate::Error::from)?;
-        let logits_vec = ctx.realize_one_as_with_env::<f32>(
-            logits_root.inner.graph(),
-            logits_root.inner.id(),
-            &sym_env,
-        )?;
-
-        // Clean up per-step bindings from ctx so they don't accumulate
-        // across decode steps (each step gets a fresh graph; the
-        // previous step's NodeIds are dead).
-        for id in bound_node_ids {
-            ctx.remove(id);
-        }
-
-        // Bump cache state.
-        cache.cached_len += seq;
-        for li in 0..cfg.n_layers {
-            cache.bump_version(li, KvSlot::K);
-            cache.bump_version(li, KvSlot::V);
-        }
-
-        Ok(logits_vec)
+        crate::persistent_decode::forward_with_kv_context(
+            self, tokens, cache, ctx, return_all_positions, rope_inv_freq,
+        )
     }
 
     /// **Plan-reuse decode at the SAME call shape as
@@ -9007,65 +8875,18 @@ impl LlamaModel {
         session: &mut Option<crate::inference_context::DecodeSession>,
         rope_inv_freq: Option<&[f64]>,
     ) -> crate::Result<Vec<f32>> {
-        let cfg = &self.config;
-        let seq = tokens.len();
-        let max_seq_len = cache.max_seq_len;
-        let cache_dtype = cache.dtype.unwrap_or(DType::F32);
-
-        // A non-`seq==1` step (prefill / spec-decode verification) is
-        // shape-distinct from the held decode graph — drop any session and
-        // fall back to the D1 rebuild path (the session rebuilds on the
-        // next decode token).
-        if seq != 1 {
-            self.drop_decode_session(session, ctx);
-            return self.forward_with_kv_context_inv_freq(tokens, cache, ctx, rope_inv_freq);
-        }
-
-        // seq == 1. If a session exists but its validity keys no longer
-        // match the live cache/model (max_seq_len / n_layers / dtype), it
-        // is stale — drop it so we rebuild fresh below. A key differing ONLY
-        // in the KV allocation gets a guarded re-bind first (GAP-028). No
-        // capture exists on this path, hence the no-op reader retirement.
-        refresh_decode_session(
-            session, ctx, seq, max_seq_len, cache_dtype, cfg.n_layers,
-            self.decode_shape_key(), cache,
-            || {},
-            |s, c| self.drop_decode_session(s, c),
-        );
-
-        match session.as_ref() {
-            None => {
-                // ---- First decode token (or post-invalidation): build +
-                // optimize the held graph ONCE. ----
-                self.build_and_realize_first_decode_token(
-                    tokens, cache, ctx, session, rope_inv_freq,
-                )
-            }
-            Some(_) => {
-                // ---- Subsequent decode token: re-bind data + skip optimize. ----
-                let res =
-                    self.rebind_and_realize_prebuilt(
-                        tokens, cache, &*ctx, &*session, rope_inv_freq,
-                    );
-                match res {
-                    Ok(logits) => Ok(logits),
-                    Err(e) if matches!(e, crate::Error::TopologyChanged { .. }) => {
-                        // Stale cached generation — drop the session and
-                        // rebuild via the D1 path this token; the session
-                        // rebuilds on the next decode token.
-                        self.drop_decode_session(session, ctx);
-                        self.forward_with_kv_context_inv_freq(tokens, cache, ctx, rope_inv_freq)
-                    }
-                    Err(e) => Err(e),
-                }
-            }
-        }
+        crate::persistent_decode::forward_with_kv_context_persistent(
+            self, tokens, cache, ctx, session, rope_inv_freq,
+        )
     }
 
     /// Build the held decode-step graph with STABLE re-bindable data
     /// Consts, optimize it ONCE via `prebuild_optimized_env`, populate
     /// `session`, and return the first token's logits. Only called for
     /// the first `seq == 1` decode token when there is no valid session.
+    /// Delegates to the shared decode BUILD path — see
+    /// [`crate::persistent_decode`], which now owns this body for every
+    /// LLaMA-shaped family. A change there is a change for all of them.
     fn build_and_realize_first_decode_token(
         &self,
         tokens: &[u32],
@@ -9074,219 +8895,9 @@ impl LlamaModel {
         session: &mut Option<crate::inference_context::DecodeSession>,
         rope_inv_freq: Option<&[f64]>,
     ) -> crate::Result<Vec<f32>> {
-        let cfg = &self.config;
-        let weights = &self.weights;
-        let seq = tokens.len();
-        let batch = 1;
-        let cached_len = cache.cached_len;
-        let max_seq_len = cache.max_seq_len.ok_or_else(|| {
-            fuel_ir::Error::Msg(
-                "forward_with_kv_context_persistent: cache built via with_dims \
-                 (no pre-allocated buffers); use KvCache::with_capacity"
-                    .to_string(),
-            ).bt()
-        })?;
-        if cache.n_layers() != cfg.n_layers {
-            return Err(fuel_ir::Error::Msg(format!(
-                "forward_with_kv_context_persistent: cache n_layers {} != model {}",
-                cache.n_layers(), cfg.n_layers,
-            )).bt());
-        }
-        if cached_len + seq > max_seq_len {
-            return Err(fuel_ir::Error::Msg(format!(
-                "forward_with_kv_context_persistent: cached_len ({cached_len}) + \
-                 seq ({seq}) > max_seq_len ({max_seq_len})",
-            )).bt());
-        }
-        let cache_dtype = cache.dtype.unwrap_or(DType::F32);
-
-        // Embed lookup + reshape to [batch, seq, dim]. Token-ids is a
-        // STABLE re-bindable placeholder Const (bytes bound via ctx).
-        let embed = LazyTensor::from_f32(
-            weights.token_embedding.clone(),
-            Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
-            &Device::cpu(),
-        );
-        let token_ids = embed.const_placeholder_like(
-            Shape::from_dims(&[seq]), DType::U32,
-        );
-        let token_ids_node = token_ids.inner.id();
-        let mut h = embed
-            .index_select(0, &token_ids)?
-            .reshape(Shape::from_dims(&[batch, seq, cfg.dim]))?;
-        // BF16-throughout decode (Phase D increment A) — see the D1
-        // twin (`forward_with_kv_context_impl`) for the full rationale.
-        // No-op for f32 caches.
-        h = h.to_dtype(cache_dtype)?;
-
-        // RoPE cos/sin: STABLE re-bindable placeholder Consts.
-        let rope_shape = Shape::from_dims(&[seq, cfg.head_dim]);
-        let rope_cos = h.const_placeholder_like(rope_shape.clone(), DType::F32);
-        let rope_sin = h.const_placeholder_like(rope_shape, DType::F32);
-        let rope_cos_node = rope_cos.inner.id();
-        let rope_sin_node = rope_sin.inner.id();
-
-        // Mask: STABLE re-bindable placeholder Const (hoisted; shared).
-        // Dtype tracks the cache dtype (BF16-throughout decode, Phase D
-        // increment A) — see the D1 twin for the full rationale. No-op
-        // (stays F32) for f32 caches.
-        let mask = h.const_placeholder_like(
-            Shape::from_dims(&[1, 1, seq, max_seq_len]), cache_dtype,
-        );
-        let mask_node = mask.inner.id();
-
-        // Device-offset (CapturedRun-capturable) KV-write path vs SymEnv
-        // (Vulkan) path. `Op::WriteSliceDoff` has CPU + CUDA bindings only:
-        // on those targets the KV-write start (`cached_len`) is a stable
-        // device-resident rank-0 I64 Const read at kernel launch (no host
-        // round-trip → CUDA-graph-capturable). On Vulkan (no WriteSliceDoff
-        // binding) we keep the backend-generic SymEnv `Op::WriteSlice`
-        // path (offset via `cached_len_sym`). The two produce bit-identical
-        // KV writes; only the offset carrier differs.
-        let use_device_offset = ctx.device().is_cpu() || ctx.device().is_cuda();
-        let offset_tensor = if use_device_offset {
-            Some(h.const_placeholder_like(Shape::from_dims(&[]), DType::I64))
-        } else {
-            None
-        };
-        let offset_node = offset_tensor.as_ref().map(|t| t.inner.id());
-
-        let cached_len_sym = fuel_ir::SymId(0);
-        // The live attended-prefix length (`cached_len + seq`) — the CUDA
-        // flash decode arm's `k_len`. A SECOND fixed symbol bound alongside
-        // `cached_len_sym`, stored on the held `DecodeSession` and re-bound
-        // per token (see `DecodeSession::per_token_sym_env`). Unreferenced on
-        // the f32 decode graph (no flash arm offered) — a harmless binding.
-        let attended_len_sym = fuel_ir::SymId(1);
-        let cache_shape = Shape::from_dims(
-            &[batch, cfg.n_kv_heads, max_seq_len, cfg.head_dim],
-        );
-
-        // Per-layer KV placeholder Consts (STABLE). The Arcs are bound
-        // ONCE here and mutate in place via Op::WriteSlice each token.
-        let mut kv_nodes: Vec<(fuel_graph::NodeId, fuel_graph::NodeId)> =
-            Vec::with_capacity(cfg.n_layers);
-        for (li, layer_weights) in weights.layers.iter().enumerate() {
-            let k_arc = cache.slot_storage(li, KvSlot::K).ok_or_else(|| {
-                fuel_ir::Error::Msg(format!(
-                    "forward_with_kv_context_persistent: cache layer {li} has no K slot",
-                )).bt()
-            })?;
-            let v_arc = cache.slot_storage(li, KvSlot::V).ok_or_else(|| {
-                fuel_ir::Error::Msg(format!(
-                    "forward_with_kv_context_persistent: cache layer {li} has no V slot",
-                )).bt()
-            })?;
-            let k_cache_node = h.const_placeholder_like(cache_shape.clone(), cache_dtype);
-            let v_cache_node = h.const_placeholder_like(cache_shape.clone(), cache_dtype);
-            let k_id = k_cache_node.inner.id();
-            let v_id = v_cache_node.inner.id();
-            ctx.insert(k_id, k_arc);
-            ctx.insert(v_id, v_arc);
-            kv_nodes.push((k_id, v_id));
-
-            h = self.apply_layer_with_kv_writes(
-                &h,
-                layer_weights,
-                &k_cache_node,
-                &v_cache_node,
-                cached_len_sym,
-                attended_len_sym,
-                // D2 persistent path: device-offset (WriteSliceDoff) on
-                // CUDA/CPU (capture-ready); `None` → SymEnv on Vulkan.
-                offset_tensor.as_ref(),
-                &rope_cos,
-                &rope_sin,
-                &mask,
-            )?;
-        }
-
-        let h_norm = apply_affine_rms_norm(&h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps);
-        let logits = weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size)?;
-        let last_pos = seq - 1;
-        let logits_root = logits
-            .slice(1, last_pos, 1)?
-            .reshape(Shape::from_dims(&[cfg.vocab_size]))?;
-        // Same UB hazard as the D1 twin: the realize below is asked for
-        // `<f32>` and reinterprets raw bytes — cast to f32 before this
-        // becomes the held graph's realize root. No-op for f32 caches.
-        let logits_root = logits_root.to_dtype(DType::F32)?;
-        let logits_node = logits_root.inner.id();
-        let graph = logits_root.inner.graph().clone();
-
-        // Bind the per-token DATA into ctx (token-ids / RoPE / mask) as
-        // device-resident Arcs so the FIRST realize's const-cache walk
-        // resolves them (they are placeholders, not in graph.storage_map).
-        // KV Arcs were already inserted above. The optimize + realize
-        // then runs ONCE, capturing the reusable artifacts + the full
-        // realized cache (weights + KV + data) for the held session.
-        let data = self.build_token_rope_mask_arcs(
-            ctx.device(), cached_len, tokens, max_seq_len, cache_dtype,
-            use_device_offset, rope_inv_freq,
-        )?;
-        ctx.insert(token_ids_node, Arc::clone(&data.token_ids));
-        ctx.insert(rope_cos_node, Arc::clone(&data.rope_cos));
-        ctx.insert(rope_sin_node, Arc::clone(&data.rope_sin));
-        ctx.insert(mask_node, Arc::clone(&data.mask));
-        // Device-offset path: seed the first realize's const-cache with the
-        // KV-write offset Const (the held `Op::WriteSliceDoff` nodes read it).
-        if let (Some(off_node), Some(off_arc)) = (offset_node, data.offset.as_ref()) {
-            ctx.insert(off_node, Arc::clone(off_arc));
-        }
-
-        let mut sym_env = fuel_ir::SymEnv::new();
-        sym_env.bind(cached_len_sym, cached_len).map_err(crate::Error::from)?;
-        sym_env.bind(attended_len_sym, cached_len + seq).map_err(crate::Error::from)?;
-
-        let (effective_target, optimized, base_cache, logits_vec) =
-            ctx.prebuild_optimized_capturing_as_with_env::<f32>(&graph, logits_node, &sym_env)?;
-
-        // The held session now owns the graph + base_cache; drop the
-        // transient ctx bindings (they live in base_cache from here on —
-        // re-bound per token into a clone of base_cache, not ctx).
-        ctx.remove(token_ids_node);
-        ctx.remove(rope_cos_node);
-        ctx.remove(rope_sin_node);
-        ctx.remove(mask_node);
-        if let Some(off_node) = offset_node {
-            ctx.remove(off_node);
-        }
-        for (k, v) in &kv_nodes {
-            ctx.remove(*k);
-            ctx.remove(*v);
-        }
-
-        *session = Some(crate::inference_context::DecodeSession::new(
-            graph,
-            optimized,
-            effective_target,
-            logits_node,
-            token_ids_node,
-            rope_cos_node,
-            rope_sin_node,
-            mask_node,
-            kv_nodes,
-            offset_node,
-            cached_len_sym,
-            attended_len_sym,
-            base_cache,
-            seq,
-            max_seq_len,
-            cfg.n_layers,
-            cache_dtype,
-            self.decode_shape_key(),
-            // Which ALLOCATION's KV Arcs are baked into `base_cache`, and
-            // where they live — both read from the one source (GAP-028).
-            cache,
-        ));
-
-        // Bump cache state (identical to the D1 path).
-        cache.cached_len += seq;
-        for li in 0..cfg.n_layers {
-            cache.bump_version(li, KvSlot::K);
-            cache.bump_version(li, KvSlot::V);
-        }
-        Ok(logits_vec)
+        crate::persistent_decode::build_and_realize_first_decode_token(
+            self, tokens, cache, ctx, session, rope_inv_freq,
+        )
     }
 
     /// Multi-session serving Increment 1 (C3): one **live batched** decode step
@@ -9688,7 +9299,19 @@ impl LlamaModel {
         };
         let rope_cos = fuel_ir::HostBuffer::F32(cos_data);
         let rope_sin = fuel_ir::HostBuffer::F32(sin_data);
-        let mask_data = build_decode_causal_mask(cached_len, seq, max_seq_len);
+        // Sourced from the SHARED variant builder, not from `build_decode_causal_mask`
+        // directly: the held graph's mask Const is minted by the shared build path
+        // through that same function, and two mask formulas — one for the build,
+        // one for the rebind — is exactly the divergence that would stay invisible
+        // until a windowed family decoded its second token. Byte-identical to the
+        // dense builder for Llama's uniform plan (asserted, not assumed — see
+        // `mask_variants_match_the_dense_builder_when_uniform`).
+        let mask_data = crate::persistent_decode::build_decode_mask_variants(
+            &crate::persistent_decode::DecodeBackbone::decode_mask_plan(self),
+            cached_len,
+            seq,
+            max_seq_len,
+        );
         // Mask dtype tracks the cache dtype (BF16-throughout decode,
         // Phase D increment A) — the held graph's mask Const placeholder
         // was minted at `cache_dtype` (see
@@ -10063,16 +9686,7 @@ impl LlamaModel {
         session: &mut Option<crate::inference_context::DecodeSession>,
         ctx: &mut InferenceContext,
     ) {
-        if let Some(s) = session.take() {
-            ctx.remove(s.token_ids_node());
-            ctx.remove(s.rope_cos_node());
-            ctx.remove(s.rope_sin_node());
-            ctx.remove(s.mask_node());
-            for (k, v) in s.kv_nodes() {
-                ctx.remove(*k);
-                ctx.remove(*v);
-            }
-        }
+        crate::persistent_decode::drop_decode_session(session, ctx)
     }
 }
 
@@ -10373,17 +9987,18 @@ pub(crate) fn build_decode_causal_mask(cached_len: usize, seq: usize, max_seq_le
 /// is exactly [`build_decode_causal_mask`] — the property that lets a family
 /// with the window disabled share the dense path rather than a near-copy of it.
 ///
-/// # Status: NO PRODUCTION CALLER YET — deliberate, and the `allow` expires
+/// # Status: LIVE. `#[allow(dead_code)]` removed 2026-08-13 — this has a caller.
 ///
-/// This is a prerequisite landed ahead of its consumer, with its correctness
-/// established independently (see the born-red record in `decode_mask_tests`),
-/// the same shape as increment 2a's `decode_state_spec`. Its consumers are the
-/// three windowed families whose decode paths GAP-029 increment 3 has not built
-/// yet: `Qwen2Model`, `Qwen3Model`, `Qwen3MoeModel`. **Delete the `allow` the
-/// moment the first of them calls this** — if the attribute outlives the port,
-/// it has stopped describing a sequencing decision and started hiding a
-/// genuinely orphaned function.
-#[allow(dead_code)]
+/// It landed ahead of its consumer with its correctness established
+/// independently (see the born-red record in `decode_mask_tests`), under an
+/// architect-owned checkpoint: *land family 1 or the function is deleted*.
+/// GAP-029 increment 3 landed `Qwen2Model`'s decode path, and
+/// [`crate::persistent_decode::build_decode_mask_variants`] calls this for every
+/// windowed mask variant — so the attribute is gone rather than renewed.
+///
+/// It is now on the live decode path of the three windowed families as they
+/// arrive (`Qwen2Model` today; `Qwen3Model`, `Qwen3MoeModel` next), reached
+/// through `MaskPlan::split_window`.
 pub(crate) fn build_decode_causal_mask_windowed(
     cached_len: usize,
     seq: usize,
@@ -14074,6 +13689,137 @@ mod generate_tests {
             if with_off { "device-offset" } else { "SymEnv" },
             !with_off,
         );
+    }
+
+    /// The fixed tiny model the GAP-029 step-1 golden is captured against.
+    /// Shared by the capture printer and the assertion so they cannot drift.
+    fn gap029_golden_cfg() -> LlamaConfig {
+        let cfg = LlamaConfig {
+            vocab_size: 16,
+            dim:        8,
+            n_layers:   2,
+            n_heads:    4,
+            n_kv_heads: 2, // exercise GQA (n_rep = 2)
+            head_dim:   4,
+            ffn_dim:    16,
+            norm_eps:   1e-5,
+            rope_base:  10000.0,
+        };
+        LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg }
+    }
+
+    /// Prefill 3 tokens, then decode 3 through `path`, returning the decode
+    /// steps' logits flattened. `persistent` selects D2 (held graph + rebind)
+    /// over D1 (rebuild per step).
+    fn gap029_golden_decode(persistent: bool) -> Vec<f32> {
+        let cfg = gap029_golden_cfg();
+        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let prompt = [1_u32, 2, 3];
+        let decode_tokens = [4_u32, 5, 6];
+        let max_seq_len = prompt.len() + decode_tokens.len();
+
+        let dev = Device::cpu();
+        let mut cache = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &dev,
+        ).expect("with_capacity");
+        let mut ctx = InferenceContext::new(dev);
+        let mut session: Option<crate::inference_context::DecodeSession> = None;
+
+        let mut out = Vec::new();
+        if persistent {
+            let _ = model
+                .forward_with_kv_context_persistent(&prompt, &mut cache, &mut ctx, &mut session)
+                .expect("prefill");
+            for &tok in &decode_tokens {
+                out.extend(
+                    model
+                        .forward_with_kv_context_persistent(
+                            &[tok], &mut cache, &mut ctx, &mut session,
+                        )
+                        .expect("decode"),
+                );
+            }
+        } else {
+            let _ = model
+                .forward_with_kv_context(&prompt, &mut cache, &mut ctx)
+                .expect("prefill");
+            for &tok in &decode_tokens {
+                out.extend(
+                    model
+                        .forward_with_kv_context(&[tok], &mut cache, &mut ctx)
+                        .expect("decode"),
+                );
+            }
+        }
+        out
+    }
+
+    /// `LlamaModel`'s decode logits, **captured on `0c04a7bb` before GAP-029
+    /// increment 3 moved the build path into `crate::persistent_decode`.**
+    ///
+    /// 3 prefill tokens then 3 decode steps, flattened — see
+    /// [`gap029_golden_decode`].
+    const GAP029_LLAMA_DECODE_GOLDEN: [f32; 48] = [
+        0.235882401_f32, 0.079829141_f32, -0.130090356_f32, -0.102592126_f32,
+        -0.065259621_f32, 0.086530462_f32, -0.204395950_f32, 0.017957900_f32,
+        0.064830668_f32, -0.197869897_f32, -0.218223333_f32, 0.039521270_f32,
+        0.181455895_f32, -0.014700335_f32, 0.325861752_f32, 0.119164757_f32,
+        -0.124628991_f32, -0.219824359_f32, 0.088146292_f32, 0.069199830_f32,
+        -0.053305764_f32, -0.030561801_f32, 0.031161062_f32, -0.083186984_f32,
+        -0.013608441_f32, 0.065507233_f32, -0.085608765_f32, -0.016087107_f32,
+        0.061509483_f32, 0.099036664_f32, -0.117331989_f32, -0.176698670_f32,
+        0.132780492_f32, -0.045753848_f32, -0.103880905_f32, -0.083950274_f32,
+        -0.068138495_f32, 0.013806637_f32, -0.149572328_f32, -0.053597312_f32,
+        -0.025251985_f32, -0.027037866_f32, -0.328116179_f32, -0.087185904_f32,
+        0.152396053_f32, -0.154513642_f32, 0.104392514_f32, 0.062370289_f32,
+    ];
+
+    /// **GAP-029 increment 3, step 1 — the oracle for a behaviour-preserving
+    /// refactor, and the reason it is not the pre-existing suite.**
+    ///
+    /// Moving `LlamaModel`'s D1+D2 build path into the shared, parameterised
+    /// `crate::persistent_decode` seam has **no born-red state**: "the tests
+    /// still pass" is also exactly what a no-op produces. The obvious oracle —
+    /// the existing decode suite — is *too loose to serve*:
+    /// `forward_with_kv_context_decode_matches_non_cached_forward` asserts
+    /// `diff < 5e-3 || rel < 1e-2`, and GAP-029 measured a real, silently-wrong
+    /// masking divergence at **7.9e-3**. A tolerance that swallows a known
+    /// defect cannot certify "behaviour preserved"; it certifies only that
+    /// nothing gross broke.
+    ///
+    /// So the values above were captured from the **pre-refactor** code and are
+    /// asserted here at **1e-6** — tight enough that any reassociation of the
+    /// decode arithmetic shows up, loose enough to absorb nothing but f32
+    /// print/parse round-off.
+    ///
+    /// **This test is BORN GREEN and that is stated rather than presented as
+    /// evidence.** Its value is entirely in *when* the numbers were taken. Its
+    /// discrimination is established separately, by the sabotage record in
+    /// `crate::persistent_decode`: breaking the shared build path reddens this
+    /// test. A golden nobody has ever seen fail is a constant, not an oracle.
+    ///
+    /// Both paths are asserted because the refactor parameterises **both**:
+    /// D2 riding a correct D1 would otherwise hide a D2-only regression.
+    #[test]
+    fn llama_decode_logits_unchanged_by_the_shared_build_path() {
+        for (persistent, label) in [(false, "D1 rebuild"), (true, "D2 persistent")] {
+            let got = gap029_golden_decode(persistent);
+            assert_eq!(
+                got.len(),
+                GAP029_LLAMA_DECODE_GOLDEN.len(),
+                "{label}: decode step count changed",
+            );
+            for (i, (a, b)) in got.iter().zip(GAP029_LLAMA_DECODE_GOLDEN.iter()).enumerate() {
+                assert!(
+                    (a - b).abs() < 1e-6,
+                    "{label}: logit[{i}] drifted across the GAP-029 build-path \
+                     extraction: got {a}, pre-refactor golden {b} (diff {}). This \
+                     refactor is behaviour-preserving by contract — widen nothing; \
+                     find what changed.",
+                    (a - b).abs(),
+                );
+            }
+        }
     }
 
     /// Born-red shape: if the data Consts are rebuilt fresh per token
