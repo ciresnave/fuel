@@ -39,18 +39,18 @@ fn intern(s: &str) -> &'static str {
     leaked
 }
 
-/// Read a bound field that the schema carries as a raw `serde_yml::Value`
+/// Read a bound field that the schema carries as a raw `serde_yaml_ng::Value`
 /// (it may be `~`/null, an integer, or a float). Returns `None` for
 /// null/absent, `Some(f64)` for a numeric, and an error for a non-numeric.
 fn read_f64(
-    v: &Option<serde_yml::Value>,
+    v: &Option<serde_yaml_ng::Value>,
     section: &str,
     field: &str,
 ) -> Result<Option<f64>, FkcError> {
     match v {
         None => Ok(None),
-        Some(serde_yml::Value::Null) => Ok(None),
-        Some(serde_yml::Value::Number(n)) => Ok(n.as_f64()),
+        Some(serde_yaml_ng::Value::Null) => Ok(None),
+        Some(serde_yaml_ng::Value::Number(n)) => Ok(n.as_f64()),
         Some(other) => Err(FkcError::Yaml(format!(
             "section `{section}`: precision field `{field}` must be a number or null, got {other:?}"
         ))),
@@ -59,7 +59,7 @@ fn read_f64(
 
 /// Same as [`read_f64`] but coerces to `u32` for `max_ulp`.
 fn read_u32(
-    v: &Option<serde_yml::Value>,
+    v: &Option<serde_yaml_ng::Value>,
     section: &str,
     field: &str,
 ) -> Result<Option<u32>, FkcError> {
@@ -171,8 +171,8 @@ pub fn lower_precision(
 mod tests {
     use super::*;
 
-    fn num(v: f64) -> Option<serde_yml::Value> {
-        Some(serde_yml::Value::Number(v.into()))
+    fn num(v: f64) -> Option<serde_yaml_ng::Value> {
+        Some(serde_yaml_ng::Value::Number(v.into()))
     }
 
     #[test]

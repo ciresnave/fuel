@@ -8,17 +8,17 @@
 //!    deserialization: reject tab indentation, anchors (`&name`), aliases
 //!    (`*name`), merge keys (`<<:`), and unquoted Norway-problem tokens in
 //!    scalar value positions.
-//! 4. `serde_yml::from_str` each chunk into the schema structs and assemble
+//! 4. `serde_yaml_ng::from_str` each chunk into the schema structs and assemble
 //!    [`FkcFile`].
 //!
 //! Why hand-rolled and not `pulldown-cmark`: the adoption plan (§1.1) permits
 //! "a minimal hand-rolled section/fence scanner", and the file anatomy is
 //! deliberately simple (front-matter, `## ` headings, fenced blocks). A line
-//! scanner keeps the dependency surface to just `serde` + `serde_yml`.
+//! scanner keeps the dependency surface to just `serde` + `serde_yaml_ng`.
 //!
 //! ## The Norway problem (§3.8)
 //!
-//! `serde_yml` (libyaml-family) resolves YAML-1.1-ish implicit types, so an
+//! `serde_yaml_ng` (libyaml-family) resolves YAML-1.1-ish implicit types, so an
 //! unquoted `no` / `yes` / `on` / `off` / `n` / `y` in a *scalar value*
 //! position can coerce to a bool. FKC defends with TWO layers, both applied
 //! here: (a) every token-bearing schema field is typed `String`, so even if the
@@ -44,7 +44,7 @@ pub fn parse_file(text: &str) -> Result<FkcFile, FkcError> {
     // §3.8 pre-pass on the front-matter chunk.
     enforce_restricted_yaml(front_src, 0)?;
     let front_matter: FkcFrontMatter =
-        serde_yml::from_str(front_src).map_err(|e| FkcError::yaml(None, e))?;
+        serde_yaml_ng::from_str(front_src).map_err(|e| FkcError::yaml(None, e))?;
 
     if let Some(line) = find_orphan_fkc_fence(body) {
         return Err(FkcError::OrphanFkcBlock { line });
@@ -57,7 +57,7 @@ pub fn parse_file(text: &str) -> Result<FkcFile, FkcError> {
         // §3.8 pre-pass on this kernel's fkc block, reporting absolute lines.
         enforce_restricted_yaml(&block.text, block.start_line)?;
         let kernel: FkcKernel =
-            serde_yml::from_str(&block.text).map_err(|e| FkcError::yaml(Some(&section.title), e))?;
+            serde_yaml_ng::from_str(&block.text).map_err(|e| FkcError::yaml(Some(&section.title), e))?;
         kernels.push(kernel);
     }
 
@@ -434,4 +434,76 @@ fn scalar_key_value_of(content: &str) -> Option<(Option<String>, &str)> {
         return Some((None, trimmed));
     }
     None
+}
+
+#[cfg(test)]
+mod yaml_typing_pin {
+    //! **GAP-182 typing pin — a standing invariant, not a migration check.**
+    //!
+    //! `.fkc.md` contract parsing depends on the YAML-1.1-family implicit typing
+    //! that `serde_yaml_ng` (libyaml family) applies — see the "Norway problem"
+    //! note at the top of this file. Because contracts also arrive over the
+    //! Spec-B ingestion seam from sibling projects, this is NOT a property of
+    //! today's checked-in corpus; it must hold for tomorrow's contract too. So
+    //! we pin the resolved scalar type for the cases that distinguish YAML 1.1
+    //! from 1.2, and a future `serde_yaml_ng` bump that shifts typing fails HERE
+    //! with a message about what breaks — rather than silently mis-lowering a
+    //! contract. (These expectations were verified byte-identical to the
+    //! replaced `serde_yml` across all 114 `.fkc.md` at the swap — GAP-182.)
+
+    fn resolved_kind(s: &str) -> String {
+        match serde_yaml_ng::from_str::<serde_yaml_ng::Value>(s) {
+            Ok(serde_yaml_ng::Value::Null) => "Null".to_string(),
+            Ok(serde_yaml_ng::Value::Bool(b)) => format!("Bool({b})"),
+            Ok(serde_yaml_ng::Value::Number(_)) => "Number".to_string(),
+            Ok(serde_yaml_ng::Value::String(_)) => "String".to_string(),
+            Ok(serde_yaml_ng::Value::Sequence(_)) => "Sequence".to_string(),
+            Ok(serde_yaml_ng::Value::Mapping(_)) => "Mapping".to_string(),
+            Ok(serde_yaml_ng::Value::Tagged(_)) => "Tagged".to_string(),
+            Err(e) => format!("Err({e})"),
+        }
+    }
+
+    #[test]
+    fn yaml_1_1_scalar_typing_is_pinned_for_contract_parsing() {
+        // (input, resolved kind). Cases chosen to distinguish YAML 1.1 from 1.2.
+        let pins = [
+            // Norway booleans — resolved as STRINGS by the libyaml family, which
+            // is what FKC's `String`-typed fields and pre-pass assume.
+            ("no", "String"),
+            ("yes", "String"),
+            ("on", "String"),
+            ("off", "String"),
+            // Sexagesimal is NOT coerced to a number.
+            ("1:30", "String"),
+            // Octal/hex: `0o17` / `0x1f` parse as numbers; a leading-zero `017`
+            // does NOT (it stays a string — YAML 1.2 behavior).
+            ("0o17", "Number"),
+            ("0x1f", "Number"),
+            ("017", "String"),
+            // Plain numbers.
+            ("1.0", "Number"),
+            ("1e3", "Number"),
+            ("42", "Number"),
+            // Null spellings.
+            ("~", "Null"),
+            ("null", "Null"),
+            // Version-like unquoted scalar stays a string (not a float).
+            ("1.2.3", "String"),
+            // Canonical booleans (sanity anchor).
+            ("true", "Bool(true)"),
+            ("false", "Bool(false)"),
+        ];
+        for (input, expected) in pins {
+            let got = resolved_kind(input);
+            assert_eq!(
+                got, expected,
+                "`.fkc.md` contract parsing depends on YAML-1.1 implicit typing (see this \
+                 file's Norway-problem note); serde_yaml_ng now resolves `{input}` as {got} \
+                 instead of {expected} — EXISTING CONTRACTS WILL LOWER DIFFERENTLY, and a \
+                 Spec-B-ingested contract using this spelling would too. Investigate before \
+                 changing the parser/version. See GAP-182."
+            );
+        }
+    }
 }

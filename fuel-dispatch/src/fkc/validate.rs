@@ -1044,23 +1044,23 @@ fn check_output_dtype_rule(section: &str, operand: &str, rule: &str) -> Result<(
 /// (Finding 5.3).
 fn check_bundle_ranks(
     section: &str,
-    bundle: &serde_yml::Value,
+    bundle: &serde_yaml_ng::Value,
 ) -> Result<(), FkcError> {
-    let serde_yml::Value::Sequence(slots) = bundle else {
+    let serde_yaml_ng::Value::Sequence(slots) = bundle else {
         return Ok(());
     };
     for (i, slot) in slots.iter().enumerate() {
-        let serde_yml::Value::Mapping(map) = slot else {
+        let serde_yaml_ng::Value::Mapping(map) = slot else {
             continue;
         };
         let slot_name = map
-            .get(serde_yml::Value::String("name".into()))
+            .get(serde_yaml_ng::Value::String("name".into()))
             .and_then(|v| v.as_str())
             .map(str::to_string)
             .unwrap_or_else(|| format!("slot{i}"));
         // A static `shape:` literal list is rank-checkable.
-        if let Some(serde_yml::Value::Sequence(dims)) =
-            map.get(serde_yml::Value::String("shape".into()))
+        if let Some(serde_yaml_ng::Value::Sequence(dims)) =
+            map.get(serde_yaml_ng::Value::String("shape".into()))
         {
             if dims.len() > 6 {
                 return Err(FkcError::BundleSlotRankExceeded {
@@ -1110,7 +1110,7 @@ fn validate_cost(kernel: &FkcKernel, section: &str) -> Result<(), FkcError> {
     };
     parse("flops", cost.flops.as_deref())?;
     parse("bytes_moved", cost.bytes_moved.as_deref())?;
-    if let Some(serde_yml::Value::String(s)) = &cost.overhead_ns {
+    if let Some(serde_yaml_ng::Value::String(s)) = &cost.overhead_ns {
         parse("overhead_ns", Some(s))?;
     }
     if let Some(mem) = &cost.memory {
@@ -1119,7 +1119,7 @@ fn validate_cost(kernel: &FkcKernel, section: &str) -> Result<(), FkcError> {
             ("memory.host_bytes", &mem.host_bytes),
             ("memory.disk_bytes", &mem.disk_bytes),
         ] {
-            if let Some(serde_yml::Value::String(s)) = v {
+            if let Some(serde_yaml_ng::Value::String(s)) = v {
                 parse(field, Some(s))?;
             }
         }

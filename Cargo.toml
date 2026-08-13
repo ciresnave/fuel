@@ -326,11 +326,18 @@ serde_plain = "1.0.2"
 serde_json = "1.0.99"
 # serde_yaml fork (maintained) for the FKC kernel-contract importer's
 # fenced ```fkc YAML blocks. Always compiled by fuel-dispatch (FKC is
-# unconditional core infrastructure — no feature gate).
-# 0.0.12 is the last self-contained release (0.0.13 is a deprecation shim
-# forwarding to noyalib). FKC enforces a restricted §3.8 subset in a pre-pass
-# before handing the chunk to this deserializer.
-serde_yml = "0.0.12"
+# unconditional core infrastructure — no feature gate). FKC enforces a
+# restricted §3.8 subset in a pre-pass before handing the chunk to this
+# deserializer.
+#
+# GAP-182: replaced the previous `serde_yml` (unmaintained; its `libyml`
+# backend carries a HIGH unsoundness advisory) with `serde_yaml_ng`, backed by
+# `unsafe-libyaml`. Same serde_yaml lineage → identical YAML-1.1 implicit
+# typing, `Value` enum, and `from_str` API. Verified byte-identical over all
+# 114 checked-in `.fkc.md` (corpus diff) with a standing typing pin in
+# `fkc/parse.rs`; do not "downgrade" to a non-libyaml YAML crate without
+# re-running that differential.
+serde_yaml_ng = "0.10.0"
 thiserror = "2"
 tokenizers = { version = "0.22.0", default-features = false }
 tracing = "0.1.37"

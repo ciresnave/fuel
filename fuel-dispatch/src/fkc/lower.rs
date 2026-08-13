@@ -818,7 +818,7 @@ fn resolve_output_slot_dtype(
 
 /// Extract the PRIMARY (first) slot's `(name, dtype_rule)` from a
 /// `return.bundle` value (§5.5 Option C multi-output). The bundle is carried
-/// opaquely in the schema — a `serde_yml::Value` sequence of
+/// opaquely in the schema — a `serde_yaml_ng::Value` sequence of
 /// `{ name, dtype_rule, shape_rule, … }` slot maps (its rank/name validation is
 /// a separate slice) — but the binding KEY only needs the first slot's
 /// `dtype_rule` string, which is then fed through the regular
@@ -826,19 +826,19 @@ fn resolve_output_slot_dtype(
 /// entry. Returns `None` when the bundle is not a non-empty sequence of maps or
 /// the first slot declares no `dtype_rule` (best-effort — a malformed bundle is
 /// a validation concern, never a key that silently mirrors the wrong operand).
-fn bundle_primary_dtype_rule(bundle: &serde_yml::Value) -> Option<(String, String)> {
-    let serde_yml::Value::Sequence(slots) = bundle else {
+fn bundle_primary_dtype_rule(bundle: &serde_yaml_ng::Value) -> Option<(String, String)> {
+    let serde_yaml_ng::Value::Sequence(slots) = bundle else {
         return None;
     };
-    let serde_yml::Value::Mapping(first) = slots.first()? else {
+    let serde_yaml_ng::Value::Mapping(first) = slots.first()? else {
         return None;
     };
     let rule = first
-        .get(serde_yml::Value::String("dtype_rule".into()))
+        .get(serde_yaml_ng::Value::String("dtype_rule".into()))
         .and_then(|v| v.as_str())?
         .to_string();
     let name = first
-        .get(serde_yml::Value::String("name".into()))
+        .get(serde_yaml_ng::Value::String("name".into()))
         .and_then(|v| v.as_str())
         .unwrap_or("<bundle>")
         .to_string();
@@ -904,11 +904,11 @@ fn compile_cost(block: Option<&CostBlock>, section: &str) -> Result<CompiledCost
     // overhead_ns / memory.device_bytes are raw scalars (number or `~`);
     // when they are an expression STRING they are parse-validated too.
     if let Some(mem) = &cost.memory {
-        if let Some(serde_yml::Value::String(s)) = &mem.device_bytes {
+        if let Some(serde_yaml_ng::Value::String(s)) = &mem.device_bytes {
             let _ = parse("memory.device_bytes", Some(s))?;
         }
     }
-    if let Some(serde_yml::Value::String(s)) = &cost.overhead_ns {
+    if let Some(serde_yaml_ng::Value::String(s)) = &cost.overhead_ns {
         let _ = parse("overhead_ns", Some(s))?;
     }
 
