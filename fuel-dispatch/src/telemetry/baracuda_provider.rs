@@ -131,17 +131,28 @@ fn map_element_kind(dt: DType) -> Option<ElementKind> {
         // entirely and the omission was a hard E0004 that nothing in this
         // environment compiled — see the note below.
         DType::F8E5M2 => ElementKind::Fp8E5M2,
+        // GAP-171. `ElementKind::U32` EXISTS at the locked
+        // baracuda-kernel-vocab 0.0.1-alpha.78, so declining it here was a
+        // decline whose stated reason ("no faithful Baracuda ElementKind") had
+        // EXPIRED — correct when written, silently wrong once the seam gained
+        // the variant.
+        //
+        // Un-declining is a BEHAVIOUR change, not a message change: a decline
+        // aborts the WHOLE derivation via `?` at the call site, so a cell with
+        // a u32 operand went from emitting NOTHING to emitting a key.
+        //
+        // And it is not an exotic case. `u32` is the seam's gather/scatter
+        // INDEX ctype, so every indexed region carries one — `IndexSelect`,
+        // scatter/gather, `PagedAttn`'s `block_table` and `context_lens`. The
+        // expired decline was silencing that whole class of telemetry.
+        DType::U32 => ElementKind::U32,
         // No faithful Baracuda ElementKind — no signal beats a wrong one.
         //
-        // NOT AUDITED, and at least one entry here is STALE: `ElementKind::U32`
-        // DOES exist at the locked baracuda-kernel-vocab 0.0.1-alpha.78, so
-        // `DType::U32` is declined against a reason that has expired. Left
-        // as-is deliberately — un-declining it changes BEHAVIOUR, not just a
-        // message (a decline here aborts the WHOLE derivation via `?` at the
-        // call site, so flipping it starts emitting keys for u32 operands that
-        // previously emitted none), and that needs its own test and its own
-        // decision. Filed rather than fixed in passing.
-        DType::U32 | DType::I16 | DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 | DType::F8E6M2 => {
+        // VERIFIED against alpha.78's 18 variants rather than assumed: there is
+        // no `I16`, no `F8E8M0`, no `F8E6M2`. These declines are still CORRECT,
+        // so they must NOT be batched with `U32`'s — the arm shared one comment
+        // for two different situations, which is how the expired one hid.
+        DType::I16 | DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 | DType::F8E6M2 => {
             return None;
         }
     })
@@ -267,6 +278,46 @@ mod tests {
         assert!(mapped.symbolic.is_none(), "v1 does not fabricate symbolic facts");
     }
 
+    /// **GAP-171, asserted as BEHAVIOUR rather than as a table entry — because
+    /// the behaviour is what changes.**
+    ///
+    /// A decline in `map_element_kind` aborts the WHOLE derivation (`?` in
+    /// `map_operand`, then `?` in `structure_key`), so un-declining `U32` does
+    /// not add a field to an existing key: it turns a cell that emitted
+    /// **nothing** into one that emits a key. Telemetry rows that never existed
+    /// start existing. A test that only checked the mapping table would not
+    /// have said that.
+    #[test]
+    fn a_u32_operand_now_derives_a_key_where_it_previously_derived_none() {
+        let p = BaracudaStructureKeyProvider;
+        let u32s = [contig_of(&[128, 256], DType::U32), contig_of(&[128, 256], DType::U32)];
+        let t = p
+            .structure_key("MatMul", &u32s, "sm_89")
+            .expect("a u32 operand must derive a key — before GAP-171 this was None");
+        assert!(!t.0.is_empty(), "token must be non-empty");
+
+        // The dtype must actually REACH the key. Without this, a mapping that
+        // silently collapsed u32 onto some other kind would still pass above.
+        let f16s = [contig_of(&[128, 256], DType::F16), contig_of(&[128, 256], DType::F16)];
+        assert_ne!(
+            t,
+            p.structure_key("MatMul", &f16s, "sm_89").expect("f16 derives"),
+            "u32 must key DIFFERENTLY from f16, or the dtype is being dropped",
+        );
+
+        // CONTROL — the rest of that decline arm is untouched, so nobody
+        // batches it. `I16`/`F8E8M0`/`F8E6M2` have no `ElementKind` at the
+        // locked baracuda-kernel-vocab 0.0.1-alpha.78 (verified against the
+        // enum's 18 variants), so their declines are still CORRECT, not stale.
+        for dt in [DType::I16, DType::F8E8M0, DType::F8E6M2] {
+            assert_eq!(
+                map_element_kind(dt),
+                None,
+                "{dt:?} has no faithful ElementKind at alpha.78 and must stay declined",
+            );
+        }
+    }
+
     /// The dtype mapping table (representative + a decline).
     #[test]
     fn element_kind_mapping() {
@@ -279,13 +330,11 @@ mod tests {
         // Asserted as a MAPPING, not a decline — Baracuda ships the kind, so
         // declining would have suppressed a supported FP8 family.
         assert_eq!(map_element_kind(DType::F8E5M2), Some(ElementKind::Fp8E5M2));
-        // No faithful equivalent ⇒ decline.
-        //
-        // NOTE: `U32` is asserted to decline because that is what the code does
-        // TODAY, not because it is right — `ElementKind::U32` exists at the
-        // locked alpha.78, so this pins a stale decline. Filed, not fixed here:
-        // flipping it changes derivation behaviour, not just a message.
-        assert_eq!(map_element_kind(DType::U32), None);
+        // GAP-171: this asserted `None` while that was merely what the code
+        // DID. It now asserts what is RIGHT — `ElementKind::U32` exists at the
+        // locked alpha.78, so declining it was an expired decline.
+        assert_eq!(map_element_kind(DType::U32), Some(ElementKind::U32));
+        // Still no faithful equivalent ⇒ still declines. Correct, not stale.
         assert_eq!(map_element_kind(DType::F4), None);
     }
 
@@ -328,9 +377,19 @@ mod tests {
             p.structure_key("ReluElementwise", &f16, "cpu").is_none(),
             "CPU arch has no Baracuda build matrix ⇒ no key"
         );
-        let u32op = [contig_of(&[8, 16], DType::U32)];
+        // GAP-171: this used `U32` as the unmappable example, and `U32` now
+        // MAPS (`ElementKind::U32` exists at alpha.78). The assertion's intent
+        // is unchanged — an unmappable dtype must still yield no key — so it
+        // moves to a dtype that genuinely is one rather than being deleted.
+        //
+        // `I16` is verified unmappable against alpha.78's 18 `ElementKind`
+        // variants: the seam has S8/U8/I32/I64/U32 and no 16-bit int.
+        //
+        // That this test failed at all is the point: un-declining `U32` was a
+        // BEHAVIOUR change, and it reached a test that never mentioned GAP-171.
+        let i16op = [contig_of(&[8, 16], DType::I16)];
         assert!(
-            p.structure_key("ReluElementwise", &u32op, "sm_89").is_none(),
+            p.structure_key("ReluElementwise", &i16op, "sm_89").is_none(),
             "unmappable dtype ⇒ no key"
         );
     }

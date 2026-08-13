@@ -31,8 +31,27 @@ use fuel_kernel_seam::{JitRequest, JitResponse, SynthArtifact, Synthesizer};
 use crate::kernel::KernelRef;
 use crate::runtime_fused_kernels::adopt_runtime_fused;
 
-/// Baracuda [`ElementKind`] → Fuel [`DType`] (the inverse of the telemetry
-/// provider's `map_element_kind`). `None` for a kind with no Fuel dtype.
+/// Baracuda [`ElementKind`] → Fuel [`DType`]. `None` for a kind with no Fuel
+/// dtype.
+///
+/// ⚠️ **It is the inverse of [`dtype_to_element_kind`], NOT of the telemetry
+/// provider's `map_element_kind`** — which is what an earlier version of this
+/// comment claimed, and the claim was load-bearing in the wrong direction.
+///
+/// Those two are not one function with two copies; they answer to different
+/// contracts, and their domains differ because of it. This pair covers the
+/// **nine** kinds that ROUND-TRIP — `dtype_to_element_kind` is gated by a
+/// round-trip identity test, since a non-identity trip would describe operands
+/// the caller does not have. `map_element_kind` is **one-way**, exists only to
+/// derive a structure key, carries no inverse obligation, and therefore maps
+/// **eleven**, including `Fp8E4M3`/`Fp8E5M2` — which have no arm here.
+///
+/// Why the misattribution mattered: it licensed consolidating the two into
+/// "one authority", which the round-trip test would then reject, because this
+/// function has no FP8 arms to trip back through. **Before consolidating two
+/// similar functions, check whether they are subject to the same invariants —
+/// a shared signature over an overlapping domain is not a shared contract.**
+/// See GAP-177.
 ///
 /// `pub(crate)` (widened from private) so [`crate::jit_ingest_probe`]'s
 /// `probe_from_operands` can reuse it instead of duplicating the match —

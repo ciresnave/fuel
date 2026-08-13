@@ -25,7 +25,7 @@
 //! module exists to classify tokens on the surfaces Fuel *does* ingest, and to
 //! give the emit path one place to name the seam spelling.
 
-use crate::dtype::{is_reserved_dtype_token, DType, RESERVED_DTYPE_TOKENS};
+use crate::dtype::{is_reserved_dtype_token, DType};
 
 /// The KISS-CLASSIFY **sk4** closed dtype vocabulary — all 24 tokens, verbatim
 /// from `conformance/src/structure_key.rs` `DTYPES: [&str; 24]` at KISS
@@ -146,6 +146,9 @@ pub fn classify_dtype_token(token: &str) -> TokenKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Test-only: the parent module does not use this, so importing it there
+    // warned `unused_imports` in a non-test build.
+    use crate::dtype::RESERVED_DTYPE_TOKENS;
     use std::collections::BTreeSet;
 
     fn supported_set() -> BTreeSet<&'static str> {
