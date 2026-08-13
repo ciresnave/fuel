@@ -10,41 +10,73 @@ use core::arch::x86::*;
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::*;
 
+// GAP-176 `unsafe` block form (ratified at `605df851`): ONE documented block
+// per function, not one per operation. Every intrinsic in a given function here
+// shares a single obligation — the `avx2` availability the `unsafe fn` contract
+// already promises — so per-operation blocks would repeat one identical note up
+// to eight times inside a short register pipeline. Where a function also takes a
+// pointer, that second obligation is named explicitly alongside it.
+
 #[inline(always)]
 pub(crate) unsafe fn sum_i16_pairs_float(x: __m256i) -> __m256 {
-    let ones = _mm256_set1_epi16(1);
-    let summed_pairs = _mm256_madd_epi16(ones, x);
-    _mm256_cvtepi32_ps(summed_pairs)
+    // SAFETY: `avx2` available (the `unsafe fn` contract). All three operations
+    // are register-only — no pointer, no memory access, no further precondition.
+    unsafe {
+        let ones = _mm256_set1_epi16(1);
+        let summed_pairs = _mm256_madd_epi16(ones, x);
+        _mm256_cvtepi32_ps(summed_pairs)
+    }
 }
 
 #[inline(always)]
 pub(crate) unsafe fn mul_sum_us8_pairs_float(ax: __m256i, sy: __m256i) -> __m256 {
-    let dot = _mm256_maddubs_epi16(ax, sy);
-    sum_i16_pairs_float(dot)
+    // SAFETY: `avx2` available (the `unsafe fn` contract); register-only.
+    // `sum_i16_pairs_float` is an `unsafe fn` whose only precondition is that
+    // same target feature, which this contract discharges.
+    unsafe {
+        let dot = _mm256_maddubs_epi16(ax, sy);
+        sum_i16_pairs_float(dot)
+    }
 }
 
 #[inline(always)]
 pub(crate) unsafe fn hsum_float_8(x: __m256) -> f32 {
-    let res = _mm256_extractf128_ps(x, 1);
-    let res = _mm_add_ps(res, _mm256_castps256_ps128(x));
-    let res = _mm_add_ps(res, _mm_movehl_ps(res, res));
-    let res = _mm_add_ss(res, _mm_movehdup_ps(res));
-    _mm_cvtss_f32(res)
+    // SAFETY: `avx`/`sse3` available (the `unsafe fn` contract). The whole
+    // horizontal-sum ladder is register-only — no pointer, no memory access.
+    unsafe {
+        let res = _mm256_extractf128_ps(x, 1);
+        let res = _mm_add_ps(res, _mm256_castps256_ps128(x));
+        let res = _mm_add_ps(res, _mm_movehl_ps(res, res));
+        let res = _mm_add_ss(res, _mm_movehdup_ps(res));
+        _mm_cvtss_f32(res)
+    }
 }
 
 #[inline(always)]
 pub(crate) unsafe fn bytes_from_nibbles_32(rsi: *const u8) -> __m256i {
-    let tmp = _mm_loadu_si128(rsi as *const __m128i);
-    let bytes = _mm256_insertf128_si256::<1>(_mm256_castsi128_si256(tmp), _mm_srli_epi16(tmp, 4));
-    let low_mask = _mm256_set1_epi8(0xF);
-    _mm256_and_si256(low_mask, bytes)
+    // SAFETY: `avx2` available, and the `unsafe fn` contract requires `rsi` to
+    // point to 16 readable, contiguous bytes — exactly the 128 bits
+    // `loadu_si128` reads, and it needs no alignment. Everything after the load
+    // is register-only.
+    unsafe {
+        let tmp = _mm_loadu_si128(rsi as *const __m128i);
+        let bytes =
+            _mm256_insertf128_si256::<1>(_mm256_castsi128_si256(tmp), _mm_srli_epi16(tmp, 4));
+        let low_mask = _mm256_set1_epi8(0xF);
+        _mm256_and_si256(low_mask, bytes)
+    }
 }
 
 #[inline(always)]
 pub(crate) unsafe fn mul_sum_i8_pairs_float(x: __m256i, y: __m256i) -> __m256 {
-    let ax = _mm256_sign_epi8(x, x);
-    let sy = _mm256_sign_epi8(y, x);
-    mul_sum_us8_pairs_float(ax, sy)
+    // SAFETY: `avx2` available (the `unsafe fn` contract); register-only.
+    // `mul_sum_us8_pairs_float` is an `unsafe fn` whose only precondition is
+    // that same target feature.
+    unsafe {
+        let ax = _mm256_sign_epi8(x, x);
+        let sy = _mm256_sign_epi8(y, x);
+        mul_sum_us8_pairs_float(ax, sy)
+    }
 }
 
 #[inline(always)]
@@ -93,34 +125,40 @@ pub(crate) fn vec_dot_q8_0_q8_0(n: usize, xs: &[BlockQ8_0], ys: &[BlockQ8_0]) ->
 #[inline(always)]
 pub(crate) unsafe fn bytes_from_bits_32_fifth(qh: &[u8; 4]) -> __m256i {
     let qh_val = LittleEndian::read_u32(qh);
-    let qh_broadcast = _mm256_set1_epi32(qh_val as i32);
+    // SAFETY: `avx2` available (the `unsafe fn` contract). Everything below is
+    // register-only — `qh` was already read through a safe `&[u8; 4]` above, so
+    // no operation in this block touches memory and the target feature is the
+    // single shared obligation.
+    unsafe {
+        let qh_broadcast = _mm256_set1_epi32(qh_val as i32);
 
-    // Shuffle: select the right source byte for each output byte position.
-    // Low lane bytes 0-7 need qh[0], bytes 8-15 need qh[1].
-    // High lane bytes 16-23 need qh[2], bytes 24-31 need qh[3].
-    // _mm256_shuffle_epi8 operates within each 128-bit lane independently.
-    // After set1_epi32 broadcast, bytes 0-3 of each lane are [qh[0], qh[1], qh[2], qh[3]].
-    let shuffle = _mm256_set_epi8(
-        3, 3, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2, // high lane
-        1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, // low lane
-    );
-    let qh_expanded = _mm256_shuffle_epi8(qh_broadcast, shuffle);
+        // Shuffle: select the right source byte for each output byte position.
+        // Low lane bytes 0-7 need qh[0], bytes 8-15 need qh[1].
+        // High lane bytes 16-23 need qh[2], bytes 24-31 need qh[3].
+        // _mm256_shuffle_epi8 operates within each 128-bit lane independently.
+        // After set1_epi32 broadcast, bytes 0-3 of each lane are [qh[0], qh[1], qh[2], qh[3]].
+        let shuffle = _mm256_set_epi8(
+            3, 3, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2, // high lane
+            1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, // low lane
+        );
+        let qh_expanded = _mm256_shuffle_epi8(qh_broadcast, shuffle);
 
-    // Bit masks: within each group of 8 bytes, test bits 0..7 of the source byte.
-    // _mm256_set_epi8 takes (byte31, byte30, ..., byte1, byte0).
-    let bit_masks = _mm256_set_epi8(
-        -128i8, 64, 32, 16, 8, 4, 2, 1, // bytes 31..24 (bits 7..0 of qh[3])
-        -128i8, 64, 32, 16, 8, 4, 2, 1, // bytes 23..16 (bits 7..0 of qh[2])
-        -128i8, 64, 32, 16, 8, 4, 2, 1, // bytes 15..8  (bits 7..0 of qh[1])
-        -128i8, 64, 32, 16, 8, 4, 2, 1, // bytes 7..0   (bits 7..0 of qh[0])
-    );
-    let qh_bits = _mm256_and_si256(qh_expanded, bit_masks);
+        // Bit masks: within each group of 8 bytes, test bits 0..7 of the source byte.
+        // _mm256_set_epi8 takes (byte31, byte30, ..., byte1, byte0).
+        let bit_masks = _mm256_set_epi8(
+            -128i8, 64, 32, 16, 8, 4, 2, 1, // bytes 31..24 (bits 7..0 of qh[3])
+            -128i8, 64, 32, 16, 8, 4, 2, 1, // bytes 23..16 (bits 7..0 of qh[2])
+            -128i8, 64, 32, 16, 8, 4, 2, 1, // bytes 15..8  (bits 7..0 of qh[1])
+            -128i8, 64, 32, 16, 8, 4, 2, 1, // bytes 7..0   (bits 7..0 of qh[0])
+        );
+        let qh_bits = _mm256_and_si256(qh_expanded, bit_masks);
 
-    // Compare: 0xFF where bit was set (qh_bits == bit_masks), 0x00 otherwise.
-    let qh_mask = _mm256_cmpeq_epi8(qh_bits, bit_masks);
+        // Compare: 0xFF where bit was set (qh_bits == bit_masks), 0x00 otherwise.
+        let qh_mask = _mm256_cmpeq_epi8(qh_bits, bit_masks);
 
-    // Convert to 0x10 or 0x00 (the 5th bit at position 4).
-    _mm256_and_si256(qh_mask, _mm256_set1_epi8(0x10))
+        // Convert to 0x10 or 0x00 (the 5th bit at position 4).
+        _mm256_and_si256(qh_mask, _mm256_set1_epi8(0x10))
+    }
 }
 
 #[inline(always)]
@@ -251,7 +289,12 @@ unsafe fn get_scale_shuffle(i: usize) -> __m128i {
         11, 11, 11, 11, 11, 11, 11, 11, 12, 12, 12, 12, 12, 12, 12, 12, 13, 13, 13, 13, 13, 13, 13,
         13, 14, 14, 14, 14, 14, 14, 14, 14, 15, 15, 15, 15, 15, 15, 15, 15,
     ];
-    _mm_loadu_si128((K_SHUFFLE.as_ptr() as *const __m128i).add(i))
+    // SAFETY: `sse2` available (the `unsafe fn` contract). The pointer offset is
+    // the real obligation and is NOT the target feature: `K_SHUFFLE` is 128
+    // bytes = 8 x `__m128i`, so the caller must pass `i < 8`. `loadu` needs no
+    // alignment, and the constant is `'static`, so the load is valid for any
+    // in-range `i`.
+    unsafe { _mm_loadu_si128((K_SHUFFLE.as_ptr() as *const __m128i).add(i)) }
 }
 
 #[inline(always)]
@@ -268,7 +311,11 @@ unsafe fn get_scale_shuffle_k4(i: usize) -> __m256i {
         13, 12, 13, 14, 15, 14, 15, 14, 15, 14, 15, 14, 15, 14, 15, 14, 15, 14, 15, 14, 15, 14, 15,
         14, 15, 14, 15, 14, 15, 14, 15, 14, 15, 14, 15,
     ];
-    _mm256_loadu_si256((K_SHUFFLE.as_ptr() as *const __m256i).add(i))
+    // SAFETY: `avx` available (the `unsafe fn` contract). The pointer offset is
+    // the real obligation: `K_SHUFFLE` is 256 bytes = 8 x `__m256i`, so the
+    // caller must pass `i < 8`. `loadu` needs no alignment and the constant is
+    // `'static`.
+    unsafe { _mm256_loadu_si256((K_SHUFFLE.as_ptr() as *const __m256i).add(i)) }
 }
 
 #[inline(always)]
@@ -280,7 +327,12 @@ unsafe fn get_scale_shuffle_q3k(i: usize) -> __m256i {
         10, 11, 10, 11, 10, 11, 10, 11, 12, 13, 12, 13, 12, 13, 12, 13, 12, 13, 12, 13, 12, 13, 12,
         13, 14, 15, 14, 15, 14, 15, 14, 15, 14, 15, 14, 15, 14, 15, 14, 15,
     ];
-    _mm256_loadu_si256((K_SHUFFLE.as_ptr() as *const __m256i).add(i))
+    // SAFETY: `avx` available (the `unsafe fn` contract). The pointer offset is
+    // the real obligation, and note the bound DIFFERS from the sibling above:
+    // this `K_SHUFFLE` is 128 bytes = 4 x `__m256i`, so the caller must pass
+    // `i < 4`, not `i < 8`. `loadu` needs no alignment; the constant is
+    // `'static`.
+    unsafe { _mm256_loadu_si256((K_SHUFFLE.as_ptr() as *const __m256i).add(i)) }
 }
 
 #[inline(always)]
@@ -373,7 +425,9 @@ pub(crate) fn vec_dot_q6k_q8k(n: usize, xs: &[BlockQ6K], ys: &[BlockQ8K]) -> f32
 
 #[inline(always)]
 unsafe fn mm256_set_m128i(a: __m128i, b: __m128i) -> __m256i {
-    _mm256_insertf128_si256(_mm256_castsi128_si256(b), a, 1)
+    // SAFETY: `avx` available (the `unsafe fn` contract). Register-only lane
+    // concatenation — no pointer, no memory access, no further precondition.
+    unsafe { _mm256_insertf128_si256(_mm256_castsi128_si256(b), a, 1) }
 }
 
 #[inline(always)]
