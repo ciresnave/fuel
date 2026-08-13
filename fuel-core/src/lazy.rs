@@ -1122,6 +1122,10 @@ impl LazyTensor {
 
     /// Realize as raw bytes (`u8`). Used to read a `Bool` mask (0/1 per byte) or
     /// a `U8` tensor back to host (GAP-168(c)).
+    ///
+    /// **PANICS** on a realize failure; for a fallible realize use
+    /// [`crate::pipelined_bridge::realize_one_as`] (`::<u8>`). See
+    /// [`Self::realize_f32`] for the documented-not-enforced rationale (GAP-186).
     pub fn realize_u8(&self) -> Vec<u8> {
         let graph = self.inner.graph().clone();
         let target = self.inner.id();
@@ -1640,6 +1644,19 @@ impl LazyTensor {
     /// `judge::cached()` branch that swapped in a Router-backed
     /// `GraphExecutor` instead — the picker consumes the same Judge
     /// data without leaving the production executor.
+    ///
+    /// **Convenience accessor — PANICS on a realize failure** (`.expect()`).
+    /// That is a deliberate choice for the test / example / notebook callers
+    /// who want `.realize_f32()[0]` without error-handling clutter, NOT a trap:
+    /// a caller that must PROPAGATE a realize failure (any serving / production
+    /// path) has a documented fallible sibling —
+    /// [`crate::pipelined_bridge::realize_one_as`] (with `::<f32>`) — which
+    /// returns `Result`. GAP-186: this is DOCUMENTED, NOT ENFORCED. `realize_*`
+    /// is a genuine public API (13 `fuel-core/tests/` integration crates plus
+    /// `fuel-examples` and `fuel-book` call it), so it cannot be made
+    /// test-only; the never-panic obligation lives on the production callers,
+    /// which use the fallible sibling directly (as `train.rs::param_to_host`
+    /// does).
     pub fn realize_f32(&self) -> Vec<f32> {
         let graph = self.inner.graph().clone();
         let target = self.inner.id();

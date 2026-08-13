@@ -1610,6 +1610,12 @@ impl DeepSeek2Model {
         if cached_len == 0 {
             return Ok(cache);
         }
+        // GAP-186: production decode — realize the cached slots FALLIBLY, not
+        // via `LazyTensor::realize_f32`'s `.expect()` (a test convenience).
+        // Same fallible path as `train.rs::param_to_host`.
+        fn host_f32(t: &LazyTensor) -> Result<Vec<f32>> {
+            crate::pipelined_bridge::realize_one_as::<f32>(t.graph(), t.node_id(), &Device::cpu())
+        }
         let cfg = &self.config;
         let fresh_anchor = LazyTensor::from_f32(
             vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
@@ -1622,8 +1628,8 @@ impl DeepSeek2Model {
             DType::F32,
         )?;
         for layer in 0..cache.n_layers() {
-            let latent_prefix = cache.slot(layer, 0).realize_f32();
-            let kpe_prefix = cache.slot(layer, 1).realize_f32();
+            let latent_prefix = host_f32(&cache.slot(layer, 0))?;
+            let kpe_prefix = host_f32(&cache.slot(layer, 1))?;
             let latent_c = fresh_anchor.const_f32_like(
                 latent_prefix, Shape::from_dims(&[cached_len, cfg.kv_lora_rank]),
             );
