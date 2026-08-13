@@ -1239,14 +1239,141 @@ determinism: same_hardware_bitwise
     /// Replace `from` → `to` exactly once, asserting `from` occurs EXACTLY once
     /// in `src` — so a mutation test can never silently no-op (a 0-count replace
     /// would leave the bundle unmutated and hide a cross-check that never fired).
+    /// GAP-175: the anchor is located **whitespace-tolerantly** (see
+    /// [`find_ws_tolerant`]) so a `.fkc.md` reflow cannot break these tests.
+    /// **The EXACTLY-ONCE guard is unchanged, deliberately** — loosening the
+    /// ANCHOR and loosening the COUNT are different changes and only the first
+    /// is wanted. A 0- or 2-count must still fail loudly.
     fn mutate_once(src: &str, from: &str, to: &str) -> String {
+        let spans = find_ws_tolerant(src, from);
         assert_eq!(
-            src.matches(from).count(),
+            spans.len(),
             1,
-            "mutation anchor `{from}` must occur EXACTLY once (got {})",
-            src.matches(from).count()
+            "mutation anchor `{from}` must occur EXACTLY once (got {}). \
+             NOTE (GAP-175): anchors are matched WHITESPACE-TOLERANTLY — a run \
+             of spaces matches one-or-more — so a count of 0 is NOT a column \
+             alignment problem in the .fkc.md. Look for a changed token, a \
+             reworded comment, or a removed contract section instead.",
+            spans.len()
         );
-        src.replacen(from, to, 1)
+        let (start, end) = spans[0];
+        format!("{}{}{}", &src[..start], to, &src[end..])
+    }
+
+    /// Locate `needle` in `hay` treating **each run of spaces in `needle` as
+    /// "one or more spaces"**; every other character matches exactly. Returns
+    /// non-overlapping match spans as byte ranges.
+    ///
+    /// GAP-175: the mutation anchors below quote lines out of `.fkc.md` contract
+    /// files whose columns are PADDED for readability, e.g.
+    /// `same_as(q)<17 spaces># FusedOp.shape_rule = q shape`. Under exact
+    /// matching that padding is load-bearing — realign a table, run a formatter,
+    /// reflow a comment, and the anchor silently stops matching, reporting a
+    /// MISSING ANCHOR and sending the reader after a contract-parsing bug that
+    /// does not exist. Matching space runs elastically makes these tests depend
+    /// on the contract's CONTENT rather than its FORMATTING, which was always
+    /// the intent.
+    ///
+    /// Deliberately hand-rolled: `fuel-dispatch` has no `regex` dependency (nor
+    /// a dev-dependency on one), and a test helper does not justify adding one.
+    fn find_ws_tolerant(hay: &str, needle: &str) -> Vec<(usize, usize)> {
+        let h: Vec<(usize, char)> = hay.char_indices().collect();
+        let n: Vec<char> = needle.chars().collect();
+        let mut out = Vec::new();
+        if n.is_empty() {
+            return out;
+        }
+        let mut i = 0usize;
+        while i < h.len() {
+            let mut hi = i;
+            let mut ni = 0usize;
+            let matched = loop {
+                if ni == n.len() {
+                    break true;
+                }
+                if n[ni] == ' ' {
+                    // A run of spaces in the needle consumes 1+ spaces in the hay.
+                    let mut seen = 0usize;
+                    while hi < h.len() && h[hi].1 == ' ' {
+                        hi += 1;
+                        seen += 1;
+                    }
+                    if seen == 0 {
+                        break false;
+                    }
+                    while ni < n.len() && n[ni] == ' ' {
+                        ni += 1;
+                    }
+                } else {
+                    if hi >= h.len() || h[hi].1 != n[ni] {
+                        break false;
+                    }
+                    hi += 1;
+                    ni += 1;
+                }
+            };
+            if matched {
+                let start = h[i].0;
+                let end = if hi < h.len() { h[hi].0 } else { hay.len() };
+                out.push((start, end));
+                i = hi.max(i + 1); // non-overlapping
+            } else {
+                i += 1;
+            }
+        }
+        out
+    }
+
+    /// **GAP-175 born-red witness: a `.fkc.md` reflow must not break a mutation
+    /// anchor.** The exact-match form finds the anchor in the aligned text and
+    /// NOT in the reflowed text — that is the defect, demonstrated rather than
+    /// asserted. The whitespace-tolerant form finds it in both.
+    #[test]
+    fn mutation_anchor_survives_a_contract_reflow() {
+        let aligned = "  - { name: dq, dtype_rule: passthrough(q), \
+                       shape_rule: same_as(q)                 # FusedOp.shape_rule_q\n";
+        // The SAME content with the column padding collapsed — an innocuous
+        // reflow, the event this row is about.
+        let reflowed = "  - { name: dq, dtype_rule: passthrough(q), \
+                        shape_rule: same_as(q)   # FusedOp.shape_rule_q\n";
+        let anchor = "shape_rule: same_as(q)                 # FusedOp.shape_rule_q";
+
+        // The old behaviour, kept as the CONTRAST that makes this test mean
+        // something: exact matching is what breaks.
+        assert_eq!(aligned.matches(anchor).count(), 1, "exact match works on the aligned text");
+        assert_eq!(
+            reflowed.matches(anchor).count(),
+            0,
+            "exact match FAILS after a reflow — this is the defect GAP-175 names"
+        );
+
+        // The fix: content-dependent, not formatting-dependent.
+        assert_eq!(find_ws_tolerant(aligned, anchor).len(), 1);
+        assert_eq!(
+            find_ws_tolerant(reflowed, anchor).len(),
+            1,
+            "GAP-175: a column reflow must NOT break the anchor"
+        );
+        let out = mutate_once(reflowed, anchor, "shape_rule: const(9) # FusedOp.shape_rule_q");
+        assert!(out.contains("const(9)"), "the mutation applies to the reflowed text");
+        assert!(!out.contains("same_as(q)"), "and the original rule is gone");
+    }
+
+    /// GAP-175: loosening the ANCHOR must not loosen the COUNT guard. A 0-count
+    /// is the case that would silently no-op and hide a cross-check that never
+    /// fired, so it must still panic.
+    #[test]
+    #[should_panic(expected = "must occur EXACTLY once")]
+    fn mutate_once_still_rejects_a_zero_count() {
+        mutate_once("shape_rule: same_as(q)\n", "shape_rule: same_as(NOPE)", "x");
+    }
+
+    /// GAP-175: and a 2-count must still panic — whitespace tolerance widens
+    /// what matches, so the ambiguity guard matters MORE, not less.
+    #[test]
+    #[should_panic(expected = "must occur EXACTLY once")]
+    fn mutate_once_still_rejects_a_multiple_count() {
+        mutate_once("a  b\nand again a b\n", "a b", "x");
     }
 
     /// A link registry that resolves EVERY symbol to a no-op kernel. The
