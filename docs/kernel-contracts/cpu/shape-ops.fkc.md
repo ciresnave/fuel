@@ -743,7 +743,8 @@ accept:
     - name: input
       # Byte-dtype-agnostic data; REGISTRATION trimmed to the 6 production dtypes.
       # `input` is the sole varying operand, so it drives the fan; `mask` stays the
-      # fixed U8 slot and `out` is passthrough(input) — key `[T, U8, T]` per dtype,
+      # fixed Bool slot (GAP-168(c); byte-identical to U8) and `out` is
+      # passthrough(input) — key `[T, Bool, T]` per dtype,
       # ALL → `masked_fill_cpu_wrapper`. Matches the deleted
       # `table.register(MaskedFill, &masked_dtypes(t), …)` regs.
       dtypes: [F32, F64, BF16, F16, U32, U8]
@@ -751,7 +752,7 @@ accept:
       rank: any
       shape_constraint: same_as=out
     - name: mask
-      dtypes: [U8]                    # 1 byte per element; non-zero ⇒ write fill
+      dtypes: [BOOL]                  # GAP-168(c): 1 byte per element; non-zero ⇒ write fill
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
       rank: any
       shape_constraint: "element count == input element count (no broadcasting)"
