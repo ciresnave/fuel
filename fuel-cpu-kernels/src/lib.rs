@@ -194,9 +194,18 @@ pub unsafe fn vec_dot_f16(a_row: *const f16, b_row: *const f16, c: *mut f32, k: 
     let mut sumf = 0.0f32;
     let np = k & !(CurrentCpuF16::STEP - 1);
 
-    let mut sum = CurrentCpuF16::zero_array();
-    let mut ax = CurrentCpuF16::zero_array();
-    let mut ay = CurrentCpuF16::zero_array();
+    // SAFETY: the `unsafe fn` contract guarantees `avx2` — the target feature
+    // this function is `cfg`-gated on — is available, and that is
+    // `zero_array`'s ONLY precondition: it takes no pointer and touches no
+    // memory, so there is no validity, alignment or aliasing obligation to
+    // discharge. All three initializers rest on that single shared obligation.
+    // They are three blocks rather than one only because each binding must
+    // escape into the enclosing scope, which one wrapping block would prevent;
+    // the grouping is stated here so the repetition is not read as three
+    // independent justifications.
+    let mut sum = unsafe { CurrentCpuF16::zero_array() };
+    let mut ax = unsafe { CurrentCpuF16::zero_array() };
+    let mut ay = unsafe { CurrentCpuF16::zero_array() };
 
     for i in (0..np).step_by(CurrentCpuF16::STEP) {
         for j in 0..CurrentCpuF16::n() {
@@ -224,9 +233,18 @@ pub unsafe fn vec_dot_bf16(a_row: *const bf16, b_row: *const bf16, c: *mut f32, 
     let mut sumf = 0.0f32;
     let np = k & !(CurrentCpuBF16::STEP - 1);
 
-    let mut sum = CurrentCpuBF16::zero_array();
-    let mut ax = CurrentCpuBF16::zero_array();
-    let mut ay = CurrentCpuBF16::zero_array();
+    // SAFETY: the `unsafe fn` contract guarantees `avx2` — the target feature
+    // this function is `cfg`-gated on — is available, and that is
+    // `zero_array`'s ONLY precondition: it takes no pointer and touches no
+    // memory, so there is no validity, alignment or aliasing obligation to
+    // discharge. All three initializers rest on that single shared obligation.
+    // They are three blocks rather than one only because each binding must
+    // escape into the enclosing scope, which one wrapping block would prevent;
+    // the grouping is stated here so the repetition is not read as three
+    // independent justifications.
+    let mut sum = unsafe { CurrentCpuBF16::zero_array() };
+    let mut ax = unsafe { CurrentCpuBF16::zero_array() };
+    let mut ay = unsafe { CurrentCpuBF16::zero_array() };
 
     for i in (0..np).step_by(CurrentCpuBF16::STEP) {
         for j in 0..CurrentCpuBF16::n() {
