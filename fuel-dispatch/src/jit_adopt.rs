@@ -81,6 +81,20 @@ pub(crate) fn element_kind_to_dtype(ek: ElementKind) -> Option<DType> {
         // identical pair. See `fp8_maps_to_baracuda_ocp_element_kinds`.
         ElementKind::Fp8E4M3 => DType::F8E4M3,
         ElementKind::Fp8E5M2 => DType::F8E5M2,
+        // `Bool` (GAP-193). This sat in the decline list below until
+        // `DType::Bool` landed with the GAP-168(c) comparison cut — at which
+        // moment the decline's stated reason, "no Fuel `DType` for these seam
+        // kinds", became FALSE. baracuda's `Bool` is 1-byte storage with
+        // 0/non-zero truthiness and Fuel's is canonically 0/1 in one byte: the
+        // same representation on both sides, and the same identity the telemetry
+        // `map_element_kind` path already ships.
+        //
+        // ⚠️ NOTE THE ASYMMETRY THAT LET THIS ROT SILENTLY: adding a Fuel `DType`
+        // makes the OUTBOUND match (`dtype_to_element_kind`) a compile error, but
+        // this INBOUND match keys on `ElementKind`, so a new Fuel dtype applies no
+        // exhaustiveness pressure here at all. The outbound direction broke
+        // loudly; this one just became quietly wrong.
+        ElementKind::Bool => DType::Bool,
         // No Fuel `DType` for these seam kinds — decline rather than substitute
         // a wrong one. Enumerated (never `_`) so a new baracuda `ElementKind`
         // becomes a COMPILE ERROR here, forcing a map-or-decline decision at the
@@ -88,7 +102,6 @@ pub(crate) fn element_kind_to_dtype(ek: ElementKind) -> Option<DType> {
         // `#[non_exhaustive]` at the locked vocab, so this exhaustive match is
         // legal across the crate boundary. GAP-177 (i).
         ElementKind::F32Strict
-        | ElementKind::Bool
         | ElementKind::S4
         | ElementKind::U4
         | ElementKind::Bin
@@ -126,6 +139,14 @@ pub(crate) fn dtype_to_element_kind(dt: DType) -> Option<ElementKind> {
         // decline. See `fp8_maps_to_baracuda_ocp_element_kinds`.
         DType::F8E4M3 => ElementKind::Fp8E4M3,
         DType::F8E5M2 => ElementKind::Fp8E5M2,
+        // `Bool` (GAP-193). The GAP-168(c) comparison cut added `DType::Bool`
+        // and did not gate `--features jit`, so this match went non-exhaustive
+        // and `main` was RED under that feature from that merge until it was
+        // found. The exhaustiveness GAP-177 (i) added is what turned a silent
+        // mis-mapping into a build failure — it worked exactly as designed; the
+        // gate was simply never pointed at this feature. See the inbound arm for
+        // why `Bool` maps rather than declines.
+        DType::Bool => ElementKind::Bool,
         // No seam `ElementKind` for these Fuel dtypes — decline rather than a
         // lossy substitution. Enumerated (never `_`) so a new `DType` is a
         // COMPILE ERROR here instead of a silent decline. GAP-177 (i).
@@ -236,6 +257,26 @@ mod tests {
     /// - The telemetry structure-key path already ships AND tests this exact pair
     ///   (`telemetry::baracuda_provider::map_element_kind`); this pins the JIT
     ///   path to the same committed identity rather than inventing one.
+    #[test]
+    fn bool_maps_to_the_seam_bool_and_did_not_stay_declined() {
+        use super::{dtype_to_element_kind, element_kind_to_dtype};
+        use baracuda_kernels_types::ElementKind;
+        use fuel_ir::DType;
+
+        // GAP-193. `DType::Bool` arrived with the GAP-168(c) comparison cut and
+        // made this pair's declines wrong in BOTH directions — but only one
+        // direction said so. Outbound went non-exhaustive (a hard E0004 that sat
+        // on `main` because no gate ran `--features jit`); inbound kept declining
+        // under a comment — "no Fuel `DType` for these seam kinds" — that had
+        // become false, with nothing to detect it, because a new Fuel dtype
+        // applies no exhaustiveness pressure to a match keyed on `ElementKind`.
+        //
+        // Both are pinned here so a future decline has to argue with a test
+        // rather than only with a comment.
+        assert_eq!(dtype_to_element_kind(DType::Bool), Some(ElementKind::Bool));
+        assert_eq!(element_kind_to_dtype(ElementKind::Bool), Some(DType::Bool));
+    }
+
     #[test]
     fn fp8_maps_to_baracuda_ocp_element_kinds() {
         use super::{dtype_to_element_kind, element_kind_to_dtype};
