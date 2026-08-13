@@ -144,6 +144,15 @@ jobs:
           [ "$st" -eq 0 ] || exit "$st"
           grep -qE 'test result: ok\. [1-9]' "$out" \
             || { echo '::error::telemetry test step ran ZERO tests — a filter, a missing feature gate, or unbuilt test targets. This step exists specifically to not be blind; see GAP-173.'; exit 1; }
+          # The count above proves SOMETHING ran, not that the sk4 test did:
+          # `cargo test` emits one `test result:` line per suite, so if the lib
+          # suite runs 800 and the integration target holding the byte-match runs
+          # zero (gated away / renamed / excluded), the count guard passes on the
+          # lib's number alone — the exact drift this step exists to catch, one
+          # level in. So also require the specific test by name. A legitimate
+          # RENAME of the test is a valid reason to update this line.
+          grep -q 'fuel_emits_only_recognized_sk4_dtype_spellings' "$out" \
+            || { echo '::error::the sk4 byte-match test (fuel_emits_only_recognized_sk4_dtype_spellings) did not run — its integration target was gated away, renamed, or excluded. If it was RENAMED, update this grep; otherwise re-enable the target. See GAP-173.'; exit 1; }
 
   fmt:
     name: Rustfmt
