@@ -357,6 +357,33 @@ impl MaskPlan {
         }
     }
 
+    /// **Arbitrary per-layer window selection, TOTAL by construction.**
+    ///
+    /// [`Self::split_window`] covers the *prefix* predicate Qwen2/Qwen3/Qwen3Moe
+    /// share. Gemma3's is **modular** (`(i + 1) % sliding_window_pattern > 0`),
+    /// so it needs a free selector — and it cannot use [`Self::new`], because
+    /// `decode_mask_plan` is infallible and `expect`-ing a `Result` on a
+    /// production path is exactly the never-panic violation this project bans.
+    /// A closure returning `bool` over exactly two defined variants cannot
+    /// produce an out-of-range index, so this needs no `Result` at all.
+    ///
+    /// Collapses to a single variant when the selector is constant, so a config
+    /// that happens to window every layer (or none) still emits no slice.
+    pub fn per_layer_window(
+        n_layers: usize,
+        window: usize,
+        uses_window: impl Fn(usize) -> bool,
+    ) -> Self {
+        let per_layer: Vec<usize> =
+            (0..n_layers).map(|i| usize::from(!uses_window(i))).collect();
+        match (per_layer.iter().any(|v| *v == 0), per_layer.iter().any(|v| *v == 1)) {
+            (true, false) => Self { windows: vec![Some(window)], per_layer: vec![0; n_layers] },
+            (false, true) => Self::dense(n_layers),
+            // Mixed (or zero layers): keep both variants, windowed first.
+            _ => Self { windows: vec![Some(window), None], per_layer },
+        }
+    }
+
     pub fn n_variants(&self) -> usize {
         self.windows.len()
     }
@@ -438,6 +465,40 @@ impl RopePlan {
             )).bt());
         }
         Ok(Self { bases, per_layer })
+    }
+
+    /// **Two-base per-layer selection, TOTAL by construction** — the sibling of
+    /// [`MaskPlan::per_layer_window`], and what Gemma3 uses: `base_when_true` is
+    /// its `rope_local_base_freq` (sliding layers), `base_when_false` its
+    /// `rope_theta` (full-causal layers).
+    ///
+    /// Infallible for the same reason: a `bool` selector over exactly two
+    /// defined bases cannot index out of range, so `decode_rope_plan` needs no
+    /// `Result` and no `expect`.
+    ///
+    /// ⚠️ **Collapses to a single base when the two are EQUAL** — which is not a
+    /// micro-optimisation but a correctness-of-measurement matter: Gemma3's
+    /// shipped fixtures set `rope_local_base_freq == rope_theta`, and a plan
+    /// that still reported 2 variants there would make the graph *look*
+    /// dual-base while every layer read identical bytes. Collapsing makes the
+    /// degeneracy visible in `n_variants()`, which is what the non-vacuity
+    /// assertions in Gemma3's tests key on.
+    pub fn per_layer_base(
+        n_layers: usize,
+        base_when_true: f64,
+        base_when_false: f64,
+        uses_first: impl Fn(usize) -> bool,
+    ) -> Self {
+        if base_when_true == base_when_false {
+            return Self::single(base_when_true, n_layers);
+        }
+        let per_layer: Vec<usize> =
+            (0..n_layers).map(|i| usize::from(!uses_first(i))).collect();
+        match (per_layer.iter().any(|v| *v == 0), per_layer.iter().any(|v| *v == 1)) {
+            (true, false) => Self::single(base_when_true, n_layers),
+            (false, true) => Self::single(base_when_false, n_layers),
+            _ => Self { bases: vec![base_when_true, base_when_false], per_layer },
+        }
     }
 
     pub fn n_variants(&self) -> usize {

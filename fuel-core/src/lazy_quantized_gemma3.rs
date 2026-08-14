@@ -87,6 +87,41 @@ impl QuantizedGemma3Model {
         self.inner.embed_tokens_anchored(anchor, tokens)
     }
 
+    /// Decode/prefill through a pre-allocated KV cache (GAP-029).
+    ///
+    /// **Delegates ONE level** — `Gemma3Model` is a leaf (`config` + `weights`),
+    /// so the `inner.inner` trap that cost `QuantizedLlama3Model` its RoPE
+    /// scaling has no shape to take here.
+    pub fn forward_with_kv_context(
+        &self,
+        tokens: &[u32],
+        cache: &mut crate::inference_context::KvCache,
+        ctx: &mut crate::inference_context::InferenceContext,
+    ) -> Result<Vec<f32>> {
+        self.inner.forward_with_kv_context(tokens, cache, ctx)
+    }
+
+    /// Plan-once persistent decode.
+    pub fn forward_with_kv_context_persistent(
+        &self,
+        tokens: &[u32],
+        cache: &mut crate::inference_context::KvCache,
+        ctx: &mut crate::inference_context::InferenceContext,
+        session: &mut Option<crate::inference_context::DecodeSession>,
+    ) -> Result<Vec<f32>> {
+        self.inner.forward_with_kv_context_persistent(tokens, cache, ctx, session)
+    }
+
+    /// Persistent decode with the session owned by the `InferenceContext`.
+    pub fn forward_decode_step(
+        &self,
+        tokens: &[u32],
+        cache: &mut crate::inference_context::KvCache,
+        ctx: &mut crate::inference_context::InferenceContext,
+    ) -> Result<Vec<f32>> {
+        self.inner.forward_decode_step(tokens, cache, ctx)
+    }
+
     /// Model configuration.
     pub fn config(&self) -> &Gemma3Config { &self.inner.config }
 
@@ -172,6 +207,7 @@ impl QuantizedGemma3Model {
         let inner = Gemma3Model {
             config: cfg,
             weights: Gemma3Weights {
+                instance: crate::decode_shape::ModelInstanceId::next(),
                 token_embedding: src.token_embedding,
                 layers,
                 final_norm_gain: src.final_norm_gain,
@@ -327,6 +363,7 @@ impl QuantizedGemma3Model {
         let inner = Gemma3Model {
             config: cfg.clone(),
             weights: Gemma3Weights {
+                instance: crate::decode_shape::ModelInstanceId::next(),
                 token_embedding: Arc::from(token_embedding),
                 layers,
                 final_norm_gain,
@@ -537,7 +574,59 @@ mod tests {
             })
             .collect();
         let final_norm_gain = Arc::from(vec![0.05_f32; h]);
-        Gemma3Weights { token_embedding, layers, final_norm_gain }
+        Gemma3Weights { instance: crate::decode_shape::ModelInstanceId::next(), token_embedding, layers, final_norm_gain }
+    }
+
+    /// **GAP-029 — the quantized wrapper's decode delegation**, over Q4_0
+    /// storage with BOTH per-layer axes live.
+    ///
+    /// ⚠️ **This module's `test_cfg()` is RoPE-degenerate too** — it sets
+    /// `rope_local_base_freq: 10_000.0` alongside `rope_theta: 10_000.0`, so a
+    /// test on the unmodified fixture would exercise one RoPE table and pass
+    /// under a single-base port. The override, and the `n_variants() == 2`
+    /// assertions, are what make this a real dual-base test rather than a
+    /// fixture-shaped one.
+    #[test]
+    fn quantized_gemma3_per_layer_decode_matches_quantized_forward() {
+        use crate::inference_context::{DecodeSession, InferenceContext, KvCache};
+        use crate::Device;
+        use fuel_ir::DType;
+
+        let cfg = Gemma3Config { rope_local_base_freq: 1_000.0, ..test_cfg() };
+        let model =
+            QuantizedGemma3Model::from_f32_bake(cfg.clone(), tiny_weights(&cfg)).unwrap();
+        assert_ne!(cfg.rope_local_base_freq, cfg.rope_theta, "fixture guard");
+        assert_eq!(model.inner().decode_rope_plan().n_variants(), 2, "dual base must be live");
+        assert_eq!(model.inner().decode_mask_plan().n_variants(), 2, "mixed mask must be live");
+
+        let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6];
+        assert!(tokens.len() > cfg.sliding_window, "non-vacuity: the window must bite");
+        let prefill = 3;
+
+        let dev = Device::cpu();
+        let mut cache = KvCache::with_capacity(
+            cfg.num_hidden_layers, cfg.num_key_value_heads, cfg.head_dim,
+            tokens.len(), DType::F32, &dev,
+        ).expect("with_capacity");
+        let mut ctx = InferenceContext::new(dev);
+        let mut session: Option<DecodeSession> = None;
+
+        model.forward_with_kv_context_persistent(
+            &tokens[..prefill], &mut cache, &mut ctx, &mut session,
+        ).expect("prefill");
+
+        for pos in prefill..tokens.len() {
+            let got = model.forward_with_kv_context_persistent(
+                &tokens[pos..=pos], &mut cache, &mut ctx, &mut session,
+            ).expect("decode");
+            let full = model.forward(&tokens[..=pos], 0).unwrap().realize_f32();
+            let expected = &full[pos * cfg.vocab_size..(pos + 1) * cfg.vocab_size];
+            let worst = got.iter().zip(expected.iter())
+                .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
+            assert!(worst < 1e-5,
+                "quantized Gemma3 decode at position {pos} diverged by {worst}");
+        }
+        assert_eq!(cache.cached_len, tokens.len());
     }
 
     #[test]
