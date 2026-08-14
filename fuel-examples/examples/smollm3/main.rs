@@ -224,7 +224,11 @@ fn smollm3_config_from_hf_json_str(json: &str) -> Result<SmolLm3Config> {
     let max_position_embeddings = get_usize("max_position_embeddings").unwrap_or(65_536);
     let attention_bias = get_bool("attention_bias").unwrap_or(false);
     let sliding_window = get_usize("sliding_window");
-    let no_rope_layers = v
+    // HF's config key is `no_rope_layers` (kept verbatim — it IS the upstream
+    // wire name); the Fuel field it feeds is `uses_rope_per_layer`, renamed
+    // because the HF name reads backwards (1 = USES rope, not "no rope"). Do
+    // NOT rename the "no_rope_layers" string below to match the field. GAP-196.
+    let uses_rope_per_layer = v
         .get("no_rope_layers")
         .and_then(|arr| arr.as_array())
         .map(|arr| arr.iter()
@@ -243,7 +247,7 @@ fn smollm3_config_from_hf_json_str(json: &str) -> Result<SmolLm3Config> {
         max_position_embeddings,
         attention_bias,
         sliding_window,
-        no_rope_layers,
+        uses_rope_per_layer,
     })
 }
 

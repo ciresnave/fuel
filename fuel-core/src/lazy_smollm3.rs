@@ -2,15 +2,17 @@
 //!
 //! Phase D LLM port. SmolLM3 (HuggingFace small-model line) is a
 //! Qwen2-shape transformer with two notable extras:
-//! - **Per-layer RoPE gating** — `no_rope_layers` is a per-layer 0/1
-//!   flag, NOT a list of layer indices: `no_rope_layers[i] == 1` means
+//! - **Per-layer RoPE gating** — `uses_rope_per_layer` is a per-layer 0/1
+//!   flag, NOT a list of layer indices: `uses_rope_per_layer[i] == 1` means
 //!   layer `i` **uses** RoPE; `== 0` marks a **NoPE** (position-agnostic)
 //!   layer. This matches the code (`layer_uses_rope`) and HuggingFace
 //!   Transformers `configuration_smollm3.py`: *"A `1` at an index
 //!   position indicates that the corresponding layer will use RoPE,
-//!   while a `0` indicates that it's a NoPE layer."* ⚠️ The field name
-//!   reads backwards — `no_rope_layers[i] == 1` is a *RoPE* layer, not a
-//!   no-rope one (GAP-196).
+//!   while a `0` indicates that it's a NoPE layer."* This field is named for
+//!   what it holds; HuggingFace's config key is `no_rope_layers`, kept
+//!   verbatim as the wire name in the loader even though it reads backwards
+//!   (`no_rope_layers[i] == 1` is a *RoPE* layer). Renamed from
+//!   `no_rope_layers` to remove that second wrong signal (GAP-196).
 //! - **Optional sliding window** (Mistral-style).
 //!
 //! Otherwise: GQA + RmsNorm + SwiGLU FFN + optional Q/K/V/O biases
@@ -41,12 +43,12 @@ pub struct SmolLm3Config {
     pub sliding_window: Option<usize>,
     /// One entry per layer: `1` = use RoPE on that layer, `0` = skip
     /// RoPE. `None` = use RoPE on every layer (Llama default).
-    pub no_rope_layers: Option<Vec<usize>>,
+    pub uses_rope_per_layer: Option<Vec<usize>>,
 }
 
 impl SmolLm3Config {
     fn layer_uses_rope(&self, layer_idx: usize) -> bool {
-        match &self.no_rope_layers {
+        match &self.uses_rope_per_layer {
             Some(v) => v.get(layer_idx).copied().unwrap_or(1) == 1,
             None => true,
         }
@@ -207,7 +209,7 @@ impl SmolLm3Model {
         let k = k.split_heads(cfg.num_key_value_heads, cfg.head_dim)?;
         let v = v.split_heads(cfg.num_key_value_heads, cfg.head_dim)?;
 
-        // Conditional RoPE — skipped only on NoPE layers (`no_rope_layers[i] == 0`).
+        // Conditional RoPE — skipped only on NoPE layers (`uses_rope_per_layer[i] == 0`).
         let (q_r, k_r) = if uses_rope {
             (
                 q.rope_with_tables(rope_cos, rope_sin)?,
@@ -370,7 +372,7 @@ impl SmolLm3Model {
         let k_h = k.split_heads(cfg.num_key_value_heads, head_dim)?;
         let v_h = v.split_heads(cfg.num_key_value_heads, head_dim)?;
 
-        // Per-layer conditional RoPE — skipped only on NoPE layers (`no_rope_layers[i] == 0`). RoPE
+        // Per-layer conditional RoPE — skipped only on NoPE layers (`uses_rope_per_layer[i] == 0`). RoPE
         // runs in f32 (build-time requirement); the casts are no-ops at f32.
         let (q_r, k_r) = if uses_rope {
             (
@@ -481,7 +483,7 @@ impl DecodeBackbone for SmolLm3Model {
 
     /// **One RoPE base for every layer** — and this is the family that makes the
     /// distinction concrete. SmolLm3 varies RoPE *per layer*, but by SKIPPING it
-    /// (`no_rope_layers`), not by changing its base. Skipping needs no different
+    /// (`uses_rope_per_layer`), not by changing its base. Skipping needs no different
     /// table bytes, so it stays inside `decode_apply_layer` and the plan is
     /// single-variant; Gemma3's dual base genuinely differs in bytes and is what
     /// `RopePlan` exists for.
@@ -661,7 +663,7 @@ mod tests {
             num_hidden_layers: 2, num_attention_heads: 4, num_key_value_heads: 4,
             head_dim: 4, rms_norm_eps: 1e-5, rope_theta: 10_000.0,
             max_position_embeddings: 64, attention_bias: false,
-            sliding_window: None, no_rope_layers: None,
+            sliding_window: None, uses_rope_per_layer: None,
         };
         let model = SmolLm3Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
         let logits = model.forward(&[1, 2, 3], 0).unwrap();
@@ -669,7 +671,7 @@ mod tests {
         for &v in &logits.realize_f32() { assert!(v.is_finite()); }
     }
 
-    /// `no_rope_layers = [0, 1]` skips RoPE on layer 0 only.
+    /// `uses_rope_per_layer = [0, 1]` skips RoPE on layer 0 only.
     /// Output must differ from the all-RoPE configuration.
     #[test]
     fn skipping_rope_on_one_layer_changes_output() {
@@ -678,12 +680,12 @@ mod tests {
             num_hidden_layers: 2, num_attention_heads: 2, num_key_value_heads: 2,
             head_dim: 4, rms_norm_eps: 1e-5, rope_theta: 10_000.0,
             max_position_embeddings: 32, attention_bias: false,
-            sliding_window: None, no_rope_layers: None,
+            sliding_window: None, uses_rope_per_layer: None,
         };
         let weights = tiny_weights(&cfg);
         let out_all = SmolLm3Model { config: cfg.clone(), weights: weights.clone() }
             .forward(&[1, 2, 3, 4], 0).unwrap().realize_f32();
-        cfg.no_rope_layers = Some(vec![0, 1]); // skip RoPE on layer 0
+        cfg.uses_rope_per_layer = Some(vec![0, 1]); // skip RoPE on layer 0
         let out_partial = SmolLm3Model { config: cfg, weights }
             .forward(&[1, 2, 3, 4], 0).unwrap().realize_f32();
         let any_diff = out_all.iter().zip(out_partial.iter())
@@ -698,7 +700,7 @@ mod tests {
             num_hidden_layers: 2, num_attention_heads: 4, num_key_value_heads: 4,
             head_dim: 4, rms_norm_eps: 1e-5, rope_theta: 10_000.0,
             max_position_embeddings: 64, attention_bias: false,
-            sliding_window: None, no_rope_layers: None,
+            sliding_window: None, uses_rope_per_layer: None,
         };
         let model = SmolLm3Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
@@ -715,7 +717,7 @@ mod tests {
             num_hidden_layers: 2, num_attention_heads: 4, num_key_value_heads: 4,
             head_dim: 4, rms_norm_eps: 1e-5, rope_theta: 10_000.0,
             max_position_embeddings: 64, attention_bias: false,
-            sliding_window: None, no_rope_layers: None,
+            sliding_window: None, uses_rope_per_layer: None,
         }
     }
 
@@ -767,14 +769,14 @@ mod tests {
     // ==== GAP-029 family 6: persistent KV-context decode =====================
 
     /// Standard tiny config with GQA (4 heads / 2 KV heads) — override
-    /// `no_rope_layers` / `sliding_window` per test.
+    /// `uses_rope_per_layer` / `sliding_window` per test.
     fn base_cfg() -> SmolLm3Config {
         SmolLm3Config {
             vocab_size: 32, hidden_size: 16, intermediate_size: 32,
             num_hidden_layers: 2, num_attention_heads: 4, num_key_value_heads: 2,
             head_dim: 4, rms_norm_eps: 1e-5, rope_theta: 10_000.0,
             max_position_embeddings: 64, attention_bias: false,
-            sliding_window: None, no_rope_layers: None,
+            sliding_window: None, uses_rope_per_layer: None,
         }
     }
 
@@ -849,7 +851,7 @@ mod tests {
     /// ```text
     /// (a) correct conditional-rope decode : [0.0; 9]                    bit-exact
     /// (b) rope-everywhere (sabotaged)     : 1.14e-5 .. 3.52e-5 (max)    divergence
-    /// control (no_rope_layers = None)     : [0.0; 9] under BOTH bodies  insensitive
+    /// control (uses_rope_per_layer = None)     : [0.0; 9] under BOTH bodies  insensitive
     /// ```
     ///
     /// `1e-6` sits **~11.4x below the SMALLEST sabotaged step (1.14e-5)** — the
@@ -863,13 +865,13 @@ mod tests {
     /// not just the largest.
     const DECODE_ORACLE_ABS: f32 = 1e-6;
 
-    /// DISCRIMINATOR — mixed RoPE (`no_rope_layers = Some(vec![0,1])`: layer 0
+    /// DISCRIMINATOR — mixed RoPE (`uses_rope_per_layer = Some(vec![0,1])`: layer 0
     /// NoPE, layer 1 RoPE). Dropping the per-layer conditional in
     /// `apply_layer_with_kv_writes` (applying RoPE everywhere, the "copied
     /// always-rope Qwen2 line" mistake) reddens exactly this test — the born-red.
     #[test]
     fn smollm3_decode_matches_forward_mixed_rope() {
-        let cfg = SmolLm3Config { no_rope_layers: Some(vec![0, 1]), ..base_cfg() };
+        let cfg = SmolLm3Config { uses_rope_per_layer: Some(vec![0, 1]), ..base_cfg() };
         assert!(!cfg.layer_uses_rope(0) && cfg.layer_uses_rope(1), "layer 0 NoPE, layer 1 RoPE");
         let model = SmolLm3Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
         let tokens: Vec<u32> = (1u32..=12).collect();
@@ -881,7 +883,7 @@ mod tests {
         }
     }
 
-    /// NON-DISCRIMINATION CONTROL — read first. With `no_rope_layers = None`,
+    /// NON-DISCRIMINATION CONTROL — read first. With `uses_rope_per_layer = None`,
     /// `layer_uses_rope` is always true, so "apply RoPE everywhere" (the
     /// sabotage) is IDENTICAL to the correct conditional BY CONSTRUCTION — the
     /// sabotage CANNOT be sensitive here. Green isolates "seam/plumbing works"
@@ -889,7 +891,7 @@ mod tests {
     /// nothing (the instrument would be measuring plumbing, not gating).
     #[test]
     fn control_decode_matches_forward_all_rope() {
-        let cfg = base_cfg(); // no_rope_layers = None
+        let cfg = base_cfg(); // uses_rope_per_layer = None
         assert!(cfg.layer_uses_rope(0) && cfg.layer_uses_rope(1), "control: every layer uses rope");
         let model = SmolLm3Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
         let tokens: Vec<u32> = (1u32..=12).collect();
@@ -917,7 +919,7 @@ mod tests {
     /// Prints measured drift for both bodies — run with `--nocapture` for (a)/(b).
     #[test]
     fn measure_smollm3_decode_drift() {
-        let mixed = SmolLm3Config { no_rope_layers: Some(vec![0, 1]), ..base_cfg() };
+        let mixed = SmolLm3Config { uses_rope_per_layer: Some(vec![0, 1]), ..base_cfg() };
         let m_mixed = SmolLm3Model { config: mixed.clone(), weights: tiny_weights(&mixed) };
         let ctrl = base_cfg();
         let m_ctrl = SmolLm3Model { config: ctrl.clone(), weights: tiny_weights(&ctrl) };
