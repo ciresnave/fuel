@@ -6,6 +6,46 @@ on:
 
 name: Continuous integration
 
+# ⚠️ `--workspace` HERE IS NOT "the whole repo builds" — it excludes three
+# crates, and every job below that uses `$WORKSPACE_EXCLUDES` is making a
+# NARROWER claim than it looks like. Never report a green from this workflow as
+# "workspace-clean" without naming these.
+#
+#   fuel-metal-backend / fuel-metal-kernels
+#       Pull `objc2`, which hard-errors "only works on Apple platforms" on any
+#       non-Apple target. They are deliberately kept OFF `default-members` so a
+#       plain `cargo build` works without Apple toolchains — but `--workspace`
+#       RE-INCLUDES them, which is exactly how this reached CI. The macOS
+#       "Run macos with metal" step deliberately does NOT use this variable: it
+#       is the only job on the matrix that can compile Metal, and therefore the
+#       only Metal coverage that exists anywhere.
+#
+#   fuel-mkl-cpu-backend
+#       Its `onemkl-sys` build script fails when oneMKL is absent, which it is
+#       on every hosted runner. Excluded for a DIFFERENT reason than the Metal
+#       pair — a missing SDK, not a wrong platform — and listed here so the next
+#       person does not clear one layer and rediscover the other a CI run later.
+#
+# The Metal and MKL arms are therefore UNVERIFIED on Linux/Windows/arm. That is
+# a known and stated hole, not an oversight.
+#
+# Written as a GitHub expression (`${{ env.WORKSPACE_EXCLUDES }}`) at each use
+# rather than a shell variable: the "Run normal cpu" step runs on BOTH ubuntu
+# and windows, and `$VAR` does not expand in PowerShell, which is the default
+# shell on Windows runners. The runner substitutes the expression before any
+# shell sees it, so one spelling works on every OS.
+env:
+  WORKSPACE_EXCLUDES: >-
+    --exclude fuel-metal-backend
+    --exclude fuel-metal-kernels
+    --exclude fuel-mkl-cpu-backend
+  # macOS CAN build the Metal crates, so it excludes only the SDK-missing one.
+  # Kept separate rather than folded into the list above: the two exclusions
+  # have different causes and different lifetimes — the Metal one disappears if
+  # a job ever targets Apple, the MKL one disappears only if a runner gains
+  # oneMKL.
+  MACOS_EXCLUDES: --exclude fuel-mkl-cpu-backend
+
 jobs:
   check:
     name: Check
@@ -24,25 +64,29 @@ jobs:
         run: rm -f .cargo/config.toml
       - uses: dtolnay/rust-toolchain@stable
 
+      # NO exclusions here, deliberately: this is the ONLY job that can compile
+      # fuel-metal-backend / fuel-metal-kernels, so it is the only Metal
+      # coverage in the entire matrix. Do not "make it consistent" with the
+      # others — consistency here would mean nothing builds Metal at all.
       - name: Run macos with metal
-        if: matrix.os == 'macOS-latest' 
+        if: matrix.os == 'macOS-latest'
         run: cargo check --workspace --features metal
 
       - name: Run normal cpu
         if: matrix.os == 'ubuntu-latest' || matrix.os == 'windows-latest'
-        run: cargo check --workspace
+        run: cargo check --workspace ${{ env.WORKSPACE_EXCLUDES }}
 
       - name: Run with avx2
         if: matrix.os == 'ubuntu-24.04'
         run: |
           export RUSTFLAGS="-C target-feature=avx2"
-          cargo check --workspace 
+          cargo check --workspace ${{ env.WORKSPACE_EXCLUDES }}
 
       - name: Run with arm neon
         if: matrix.os == 'ubuntu-24.04-arm'
         run: |
           export RUSTFLAGS="-C target-feature=neon"
-          cargo check --workspace
+          cargo check --workspace ${{ env.WORKSPACE_EXCLUDES }}
 
       # `fuel-dispatch/src/telemetry/` is gated on the non-default `telemetry`
       # feature, so `cargo check --workspace` above — which uses default
@@ -114,10 +158,20 @@ jobs:
         if: runner.os == 'Linux'
         env:
           RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
-        run: cargo test --workspace
-      - name: Run tests (Windows & macOS)
-        if: runner.os != 'Linux'
-        run: cargo test --workspace
+        run: cargo test --workspace ${{ env.WORKSPACE_EXCLUDES }}
+      - name: Run tests (Windows)
+        if: runner.os == 'Windows'
+        run: cargo test --workspace ${{ env.WORKSPACE_EXCLUDES }}
+      # macOS gets its OWN exclusion set, and the difference is the point: this
+      # runner CAN build the Metal crates (objc2 is happy on Apple), so
+      # excluding them here would throw away the only Metal test coverage in the
+      # matrix. It still cannot build `fuel-mkl-cpu-backend` — `onemkl-sys`
+      # needs a oneMKL install that no hosted runner has, which is a
+      # platform-independent gap. Two exclusions for two different reasons; do
+      # not collapse them into one list.
+      - name: Run tests (macOS)
+        if: runner.os == 'macOS'
+        run: cargo test --workspace ${{ env.MACOS_EXCLUDES }}
       - name: Run telemetry-gated dispatch tests (sk4 wire codec)
         if: runner.os == 'Linux'
         # `cargo test --workspace` above uses DEFAULT features, so the
@@ -172,5 +226,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - run: cargo clippy --workspace --tests --examples --benches -- -D warnings
+      # Runs on ubuntu-latest, so it needs the full non-Apple exclusion set —
+      # clippy compiles what it lints, and would die on `objc2` exactly as
+      # `cargo check` does.
+      - run: cargo clippy --workspace --tests --examples --benches ${{ env.WORKSPACE_EXCLUDES }} -- -D warnings
  
