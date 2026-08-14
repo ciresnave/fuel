@@ -97,18 +97,6 @@ pub fn with_neon() -> bool {
     cfg!(target_feature = "neon")
 }
 
-/// Returns `true` if the binary was compiled targeting the WebAssembly `simd128` feature.
-///
-/// # Example
-///
-/// ```rust
-/// use fuel_core::utils::with_simd128;
-/// let _ = with_simd128();
-/// ```
-pub fn with_simd128() -> bool {
-    cfg!(target_feature = "simd128")
-}
-
 /// Returns `true` if the binary was compiled targeting the x86 `f16c` CPU feature.
 ///
 /// # Example
