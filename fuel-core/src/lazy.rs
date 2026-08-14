@@ -1908,6 +1908,7 @@ impl crate::persistent_decode::DecodeBackbone for LlamaModel {
             inputs.rope_cos,
             inputs.rope_sin,
             inputs.mask,
+            inputs.attn_window,
         )
     }
 
@@ -7684,6 +7685,10 @@ impl LlamaModel {
         rope_cos: &LazyTensor,
         rope_sin: &LazyTensor,
         mask: &LazyTensor,
+        // GAP-194: this layer's own window, so the flash-arm offer states the
+        // truth rather than asserting `None`. Always `None` for Llama — but
+        // DERIVED from its mask plan, not assumed.
+        attn_window: Option<usize>,
     ) -> crate::Result<LazyTensor> {
         let cfg = &self.config;
         let x_shape = x.shape();
@@ -7775,6 +7780,8 @@ impl LlamaModel {
             attn_v_permuted.inner.id(),
             scale as f32,
             attended_len_sym,
+            attn_window,
+            None, // Llama has no attention-logit softcap
             fuel_dispatch::decode_flash::FlashArmCapability::production(),
         )?;
 
@@ -9128,6 +9135,7 @@ impl LlamaModel {
                 &rope_cos,
                 &rope_sin,
                 &mask,
+                None, // Llama has no sliding window
             )?;
         }
 
@@ -10210,6 +10218,28 @@ mod decode_mask_tests {
 /// emitter's gate declines — f32/f64 dtype, `seq_q != 1` (prefill),
 /// `head_dim > 128`, or a non-CUDA / kernel-absent topology. Never panics.
 #[allow(clippy::too_many_arguments)]
+/// Translate a Fuel sliding-window width into the FA-v2 `window_size_*`
+/// convention the CUDA flash path speaks.
+///
+/// Fuel's mask predicate is `j > i || j + window <= i`, i.e. query `i` attends
+/// keys `j ∈ [i - window + 1, i]` — **`window - 1` positions LEFT and `0`
+/// RIGHT**. FA-v2 reads `is_causal` as `window_size_right == 0 &&
+/// window_size_left < 0`, and treats *both* bounds `>= 0` as opting into local
+/// attention (`fuel-cuda-backend/src/flash_attn.rs::translate_window`).
+///
+/// `None` (a dense layer) stays `(None, None)` — plain causal, which is what
+/// every non-windowed family wants and what the decode kernel implements.
+///
+/// The `w - 1` is saturating: a nonsensical `window == 0` yields `Some(0)`,
+/// which the admissibility gate rejects along with every other window. It never
+/// silently becomes "no window".
+pub(crate) fn flash_window_bounds(window: Option<usize>) -> (Option<usize>, Option<usize>) {
+    match window {
+        None => (None, None),
+        Some(w) => (Some(w.saturating_sub(1)), Some(0)),
+    }
+}
+
 fn offer_flash_decode_arm_for_region(
     graph: &fuel_graph::SharedGraph,
     q: fuel_graph::NodeId,
@@ -10219,9 +10249,12 @@ fn offer_flash_decode_arm_for_region(
     reconverge: fuel_graph::NodeId,
     softmax_scale: f32,
     attended_len_sym: fuel_ir::SymId,
+    attn_window: Option<usize>,
+    softcap: Option<f32>,
     cap: fuel_dispatch::decode_flash::FlashArmCapability,
 ) -> crate::Result<Option<fuel_graph::NodeId>> {
     use fuel_dispatch::decode_flash::{offer_decode_flash_arm, DecodeFlashSpec};
+    let (window_size_left, window_size_right) = flash_window_bounds(attn_window);
     let spec = DecodeFlashSpec {
         q,
         k,
@@ -10229,9 +10262,15 @@ fn offer_flash_decode_arm_for_region(
         alibi: None,
         softmax_scale,
         causal: true,
-        window_size_left: None,
-        window_size_right: None,
-        softcap: None,
+        // ⚠️ GAP-194: these three were hardcoded `None`. That is TRUE for
+        // `LlamaModel` — no window, no softcap — and would be a LIE for a
+        // windowed or softcapped family, whose arm would then attend the whole
+        // prefix and skip the cap, silently. A guard must not encode a claim
+        // that is false: the caller states them, and the admissibility gate
+        // declines what `flash_decoding` cannot implement.
+        window_size_left,
+        window_size_right,
+        softcap,
         k_len: fuel_ir::DynScalar::Sym(attended_len_sym),
         decomposed_out,
         reconverge,
@@ -15030,6 +15069,7 @@ mod generate_tests {
                 &rope_cos,
                 &rope_sin,
                 &mask,
+                None, // dense
             ).expect("apply_layer_with_kv_writes");
         }
 
@@ -15325,7 +15365,10 @@ mod generate_tests {
         let cap = FlashArmCapability { cuda_flash_kernel: true, cuda_in_topology: true };
 
         let branch = super::offer_flash_decode_arm_for_region(
-            &graph, q, k, v, attn_v, reconverge, 0.125, attended, cap,
+            &graph, q, k, v, attn_v, reconverge, 0.125, attended,
+            None, // dense layer: no window — and now DERIVED, not asserted
+            None, // no softcap
+            cap,
         )
         .expect("well-formed region")
         .expect("supported f16 decode shape + capability ⇒ arm offered");
@@ -15357,6 +15400,121 @@ mod generate_tests {
             g.node(reconverge).inputs.contains(&attn_v),
             "reconverge reads arm 0 ⇒ an unpicked/non-CUDA graph realizes decomposed",
         );
+    }
+
+    /// **GAP-194 — the offer site must state its window, and a windowed layer
+    /// must therefore be DECLINED.**
+    ///
+    /// The defect was never that the arm cannot express a window: `DecodeFlash
+    /// Spec` carries `window_size_left`/`window_size_right`, and
+    /// `flash_decode_admissible` already declines them because the
+    /// `flash_decoding` capacity-K kernel does not implement local attention.
+    /// The defect was that the offer site **hardcoded `None`** — true for
+    /// `LlamaModel`, a lie for any windowed family, and the lie is what would
+    /// have made the arm attend the whole prefix and silently drop the window.
+    ///
+    /// So this asserts the claim, not the kernel: the SAME region offered with
+    /// a window gets **no arm**, and offered dense gets one. Both halves in one
+    /// test, because a decline that also declines the dense case would prove
+    /// nothing.
+    ///
+    /// ⚠️ **This covers the DECLINE half only.** That a dense layer's arm is
+    /// actually *taken* cannot be observed here or on any f32/CPU gate — real
+    /// admission needs bf16 + a CUDA topology, and `flash_decode_admissible`
+    /// rejects on capability and dtype long before it reaches the window check.
+    /// A green CPU suite is not evidence for the admit half and must not be
+    /// cited as such.
+    #[test]
+    fn gap194_windowed_layer_is_declined_and_dense_layer_is_offered() {
+        use std::sync::RwLock;
+        use fuel_graph::{Graph, Node, Op};
+        use fuel_graph::registry::{FusedOpParams, FusedOps};
+        use fuel_ir::{DType, Shape, SymId};
+        use fuel_dispatch::decode_flash::FlashArmCapability;
+
+        // One region builder, so the two arms of the comparison differ ONLY in
+        // the window argument.
+        let build = |window: Option<usize>| {
+            let (h, d, sk) = (4usize, 64usize, 37usize);
+            let dt = DType::F16;
+            let mut g = Graph::new();
+            let leaf = |g: &mut Graph, dims: &[usize]| {
+                g.push(Node {
+                    op: Op::Const, inputs: vec![],
+                    shape: Shape::from_dims(dims), dtype: dt,
+                })
+            };
+            let q = leaf(&mut g, &[1, h, 1, d]);
+            let k = leaf(&mut g, &[1, h, sk, d]);
+            let v = leaf(&mut g, &[1, h, sk, d]);
+            let mask = leaf(&mut g, &[1, h, 1, sk]);
+            let kt = g.push(Node {
+                op: Op::Permute(vec![0, 1, 3, 2]), inputs: vec![k],
+                shape: Shape::from_dims(&[1, h, d, sk]), dtype: dt,
+            });
+            let scores = g.push(Node {
+                op: Op::MatMul, inputs: vec![q, kt],
+                shape: Shape::from_dims(&[1, h, 1, sk]), dtype: dt,
+            });
+            let scaled = g.push(Node {
+                op: Op::MulScalar(0.125), inputs: vec![scores],
+                shape: Shape::from_dims(&[1, h, 1, sk]), dtype: dt,
+            });
+            let masked = g.push(Node {
+                op: Op::Add, inputs: vec![scaled, mask],
+                shape: Shape::from_dims(&[1, h, 1, sk]), dtype: dt,
+            });
+            let probs = g.push(Node {
+                op: Op::Fused(FusedOps::SOFTMAX_LAST_DIM, FusedOpParams::SoftmaxLastDim),
+                inputs: vec![masked], shape: Shape::from_dims(&[1, h, 1, sk]), dtype: dt,
+            });
+            let attn_v = g.push(Node {
+                op: Op::MatMul, inputs: vec![probs, v],
+                shape: Shape::from_dims(&[1, h, 1, d]), dtype: dt,
+            });
+            let reconverge = g.push(Node {
+                op: Op::Permute(vec![0, 2, 1, 3]), inputs: vec![attn_v],
+                shape: Shape::from_dims(&[1, 1, h, d]), dtype: dt,
+            });
+            let graph = std::sync::Arc::new(RwLock::new(g));
+            let cap = FlashArmCapability { cuda_flash_kernel: true, cuda_in_topology: true };
+            super::offer_flash_decode_arm_for_region(
+                &graph, q, k, v, attn_v, reconverge, 0.125, SymId(1), window, None, cap,
+            )
+            .expect("well-formed region")
+        };
+
+        // Positive control: identical region, no window ⇒ the arm IS offered.
+        // Without this the decline below could be caused by anything.
+        assert!(
+            build(None).is_some(),
+            "dense f16 decode region must still be offered the arm — otherwise the \
+             decline below is not attributable to the window",
+        );
+        assert!(
+            build(Some(4)).is_none(),
+            "a WINDOWED layer must be declined: `flash_decoding` cannot express local \
+             attention, and offering it anyway is exactly the silent window-drop \
+             GAP-194 records",
+        );
+    }
+
+    /// The FA-v2 translation of a Fuel window width, asserted against the
+    /// convention `fuel-cuda-backend::translate_window` reads: local attention
+    /// is *both* bounds `>= 0`; `is_causal` is `right == 0 && left < 0`.
+    ///
+    /// Fuel's mask attends `j ∈ [i - w + 1, i]`, i.e. `w - 1` back and `0`
+    /// forward — so a width of 1 is "this position only" (`left = 0`), not
+    /// "unbounded".
+    #[test]
+    fn gap194_window_bounds_translation() {
+        assert_eq!(super::flash_window_bounds(None), (None, None), "dense stays causal");
+        assert_eq!(super::flash_window_bounds(Some(1)), (Some(0), Some(0)));
+        assert_eq!(super::flash_window_bounds(Some(4)), (Some(3), Some(0)));
+        // Degenerate width must NOT silently become "no window" — `(None, None)`
+        // is the one answer that would re-introduce the defect.
+        assert_eq!(super::flash_window_bounds(Some(0)), (Some(0), Some(0)));
+        assert_ne!(super::flash_window_bounds(Some(0)), (None, None));
     }
 
     /// (B) A real (f32) persistent decode session allocates the
