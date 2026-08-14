@@ -15,6 +15,7 @@
 //!     `temporary` (checked against the lowercased line).
 //!   - Case-SENSITIVE substrings (uppercase-marker convention): `TODO`, `FIXME`,
 //!     `XXX`, `HACK` (checked against the original line).
+//!
 //! No regex crate — std only.
 //!
 //! # The GAP-001 near-miss (why the pattern set leans inclusive)
@@ -194,11 +195,10 @@ fn scan_file_hedges(rel_path: &str, text: &str) -> Vec<HedgeHit> {
         }
 
         depth += opens - closes;
-        if let Some(d) = skip_until_depth {
-            if depth <= d {
+        if let Some(d) = skip_until_depth
+            && depth <= d {
                 skip_until_depth = None;
             }
-        }
     }
 
     hits
@@ -232,13 +232,11 @@ fn workspace_root() -> PathBuf {
     let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     loop {
         let manifest = dir.join("Cargo.toml");
-        if manifest.exists() {
-            if let Ok(txt) = std::fs::read_to_string(&manifest) {
-                if txt.contains("[workspace]") {
+        if manifest.exists()
+            && let Ok(txt) = std::fs::read_to_string(&manifest)
+                && txt.contains("[workspace]") {
                     return dir;
                 }
-            }
-        }
         if !dir.pop() {
             panic!("could not find a Cargo.toml containing [workspace] above CARGO_MANIFEST_DIR");
         }
@@ -340,11 +338,10 @@ fn parent_gates_as_cfg_test(path: &Path) -> bool {
         if cand == path {
             continue; // a file is never its own parent module
         }
-        if let Ok(txt) = std::fs::read_to_string(&cand) {
-            if parent_declares_mod_cfg_test(&txt, stem) {
+        if let Ok(txt) = std::fs::read_to_string(&cand)
+            && parent_declares_mod_cfg_test(&txt, stem) {
                 return true;
             }
-        }
     }
     false
 }

@@ -243,9 +243,9 @@ mod tests {
     #[test]
     fn ctors_return_err_not_panic_for_subbyte_dtypes() {
         for dt in [DType::F6E2M3, DType::F6E3M2, DType::F4] {
-            assert!(matches!(Scalar::zero(dt), Err(_)), "{dt:?} zero");
-            assert!(matches!(Scalar::one(dt), Err(_)), "{dt:?} one");
-            assert!(matches!(Scalar::from_f64(1.0, dt), Err(_)), "{dt:?} from_f64");
+            assert!(Scalar::zero(dt).is_err(), "{dt:?} zero");
+            assert!(Scalar::one(dt).is_err(), "{dt:?} one");
+            assert!(Scalar::from_f64(1.0, dt).is_err(), "{dt:?} from_f64");
         }
     }
 

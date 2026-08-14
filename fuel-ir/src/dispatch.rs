@@ -775,8 +775,8 @@ impl SizeClass {
     /// total element count via [`SizeClass::from_elem_count`]. Empty
     /// shapes (nullary op) → `SizeClass(0)`.
     pub fn for_op(op: OpKind, input_shapes: &[Shape]) -> Self {
-        if op == OpKind::MatMul {
-            if let (Some(lhs), Some(rhs)) = (input_shapes.first(), input_shapes.get(1)) {
+        if op == OpKind::MatMul
+            && let (Some(lhs), Some(rhs)) = (input_shapes.first(), input_shapes.get(1)) {
                 let (ld, rd) = (lhs.dims(), rhs.dims());
                 if ld.len() >= 2 && rd.len() >= 2 {
                     let m = ld[ld.len() - 2];
@@ -785,7 +785,6 @@ impl SizeClass {
                     return Self::matmul(m, n, k);
                 }
             }
-        }
         if op == OpKind::FlashAttn {
             // Operand layout: q = [B, Hq, Sq, D], k = [B, Hkv, k_len, D]
             // (v matches k). Read `hq`/`d` from q and the attended length
@@ -1213,9 +1212,17 @@ mod size_class_tests {
         let square = SizeClass::matmul(64, 64, 64);
 
         // Old scalar key: identical (both log2(4096) = 12) → collision.
+        // `1 * 4096` is the GEMV output 1·4096, written to mirror `64 * 64`
+        // (square output 64·64) so the two colliding shapes read in parallel —
+        // the `1 *` is the GEMV's `m` dim, not a no-op. Stripping it would
+        // destroy the shape structure the test documents, so identity_op is
+        // wrong here.
+        #[allow(clippy::identity_op)] // `1 *` is the GEMV `m` dim, kept for parallel with `64 * 64`
+        let gemv_elems = 1 * 4096; // [1, 4096]
+        let square_elems = 64 * 64; // [64, 64]
         assert_eq!(
-            SizeClass::from_elem_count(1 * 4096),
-            SizeClass::from_elem_count(64 * 64),
+            SizeClass::from_elem_count(gemv_elems),
+            SizeClass::from_elem_count(square_elems),
             "sanity: equal output size → the OLD scalar keys collided",
         );
         // v4 aspect key: distinct (the log2(m) byte differs, 0 vs 6).

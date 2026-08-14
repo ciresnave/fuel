@@ -12,6 +12,7 @@
 //!     admits a gap *in words* rather than as a macro call. GAP-001's founding
 //!     case is exactly such a prose hedge (a `//!` doc comment). Prose hedges
 //!     belong to **Increment 2**, so this check does **NOT** close that class.
+//!
 //! Do not read a green result here as "the tree has no unfinished work"; read
 //! it as "no un-referenced `todo!`/`unimplemented!` macro on a production path".
 //!
@@ -163,11 +164,10 @@ fn scan_production_file(path: &str, text: &str) -> FileScan {
         }
 
         depth += opens - closes;
-        if let Some(d) = skip_until_depth {
-            if depth <= d {
+        if let Some(d) = skip_until_depth
+            && depth <= d {
                 skip_until_depth = None;
             }
-        }
     }
 
     scan
@@ -230,11 +230,10 @@ fn parent_gates_as_cfg_test(path: &Path) -> bool {
         if cand == path {
             continue; // a file is never its own parent module
         }
-        if let Ok(txt) = std::fs::read_to_string(&cand) {
-            if parent_declares_mod_cfg_test(&txt, stem) {
+        if let Ok(txt) = std::fs::read_to_string(&cand)
+            && parent_declares_mod_cfg_test(&txt, stem) {
                 return true;
             }
-        }
     }
     false
 }
@@ -245,13 +244,11 @@ fn workspace_root() -> PathBuf {
     let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     loop {
         let manifest = dir.join("Cargo.toml");
-        if manifest.exists() {
-            if let Ok(txt) = std::fs::read_to_string(&manifest) {
-                if txt.contains("[workspace]") {
+        if manifest.exists()
+            && let Ok(txt) = std::fs::read_to_string(&manifest)
+                && txt.contains("[workspace]") {
                     return dir;
                 }
-            }
-        }
         if !dir.pop() {
             panic!(
                 "could not find a Cargo.toml containing [workspace] above CARGO_MANIFEST_DIR"
