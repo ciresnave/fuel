@@ -157,10 +157,9 @@ async fn main() -> anyhow::Result<()> {
         None
     };
     println!(
-        "avx: {}, neon: {}, simd128: {}, f16c: {}",
+        "avx: {}, neon: {}, f16c: {}",
         fuel::utils::with_avx(),
         fuel::utils::with_neon(),
-        fuel::utils::with_simd128(),
         fuel::utils::with_f16c()
     );
     println!(

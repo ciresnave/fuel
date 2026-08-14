@@ -2466,7 +2466,33 @@ LazyTensor signatures).
 - **rwkv** — needs the RWKV tokenizer ported (~95 LOC, inline-able) into `lazy_rwkv5` or a sibling tokenizer module; the model layers themselves are already lazy via `lazy_rwkv5` / `lazy_rwkv7`.
 - **trocr** — needs `vit` + `trocr` ported into `lazy_vit` / `lazy_trocr` internals (the OCR-specific decoder is the trocr-specific part; the ViT encoder body is shared with the broader ViT port).
 
-### 2. Re-migrate the 10 fuel-wasm-examples crates + fuel-wasm-tests
+### 2. ~~Re-migrate the 10 fuel-wasm-examples crates + fuel-wasm-tests~~ — WASM RETIRED 2026-08-14
+
+> **⚠️ WASM SUPPORT IS RETIRED. HARD BREAK, CireSnave's decision 2026-08-14.** The
+> `fuel-wasm-examples` tree (11 crates, 100 files), the WASM SIMD128 kernels
+> (`fuel-cpu-kernels/src/simd128.rs`, `fuel-quantized/src/simd128.rs`, and their
+> `k_quants` dispatch arms), the `with_simd128()` capability probe, the
+> `[target.wasm32-unknown-unknown]` cargo config block and gemm's
+> `wasm-simd128-enable` feature are all **deleted**. Retrievable from git history.
+>
+> **WHY, so it is not relitigated from the code's absence.** Two of Fuel's three
+> optimizer premises do not hold on `wasm32-unknown-unknown`: the cost model
+> assumes *"wall-clock under expected concurrency, not strict-serial sum"* and the
+> placement DP needs more than one device — a single-threaded, single-backend
+> target switches both off. **And weight storage is required to support OS-level
+> page sharing and lazy residency (mmap), which is what makes MULTI-SESSION
+> SERVING memory-viable — WASM has no analogue.** So WASM was never a smaller
+> Fuel; it was a Fuel with the optimizer's premises removed.
+>
+> It had also been **unbuildable for its own target for an unknown period** and
+> nobody noticed, because no gate built for `wasm32`. The tree type-checked on
+> HOST, which is what kept it looking alive.
+>
+> **Not deleted:** `#[cfg(not(target_arch = "wasm32"))]` guards scattered across
+> `fuel-ir`, `fuel-cuda-backend`, `fuel-metal-backend` and `fuel-core`. Those are
+> guards *against* wasm, now permanently true; removing them is cosmetic churn
+> across several crates and is deliberately left undone.
+
 
 > **ARCHIVED 2026-07-31 — `fuel-pyo3` and `fuel-wasm-tests` are removed from the
 > workspace and deleted from the tree.** Both were unmaintained, neither is needed to

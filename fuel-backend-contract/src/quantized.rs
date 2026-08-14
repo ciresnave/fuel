@@ -5,7 +5,7 @@
 //! [`QuantizedDeviceKernels`] for their device handle. fuel-core dispatches
 //! through these traits without naming concrete backend types.
 //!
-//! The CPU "fast path" is the bare ggml block math (avx/neon/simd128
+//! The CPU "fast path" is the bare ggml block math (avx/neon
 //! vec_dots inside `k_quants.rs`); it stays in fuel-core because
 //! `BlockQX` types and the file-format readers (gguf/ggml/imatrix) are a
 //! single cohesive numerics unit. The trait still covers the CPU case via

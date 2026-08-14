@@ -40,7 +40,6 @@ members = [
     "fuel-training",
     "fuel-transformers",
     "fuel-ug",
-    "fuel-wasm-examples/*",
     "fuel-tensor-tools",
     "fuel-test-support",
 ]
@@ -76,7 +75,6 @@ default-members = [
     "fuel-transformers",
     "fuel-training",
     "fuel-ug",
-    "fuel-wasm-examples/*",
     # Dependency-free and toolchain-free, so it belongs in the DEFAULT set: a
     # plain `cargo check` must build the helper that every live test's gate now
     # routes through (GAP-157).
@@ -293,7 +291,7 @@ baracuda-kernels-sys   = { version = "0.0.1-alpha.78", features = [
     "fa2",
 ] }
 fancy-regex = "0.17.0"
-gemm = { version = "0.19.0", features = ["wasm-simd128-enable"] }
+gemm = { version = "0.19.0" }
 hf-hub = "0.5.0"
 half = { version = "2.5.0", features = [
     "num-traits",

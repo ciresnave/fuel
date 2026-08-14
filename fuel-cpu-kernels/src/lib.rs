@@ -70,12 +70,6 @@ pub mod avx;
 #[cfg(target_feature = "avx2")]
 pub use avx::{CurrentCpu, CurrentCpuBF16, CurrentCpuF16};
 
-#[cfg(target_arch = "wasm32")]
-#[cfg(target_feature = "simd128")]
-pub mod simd128;
-#[cfg(target_arch = "wasm32")]
-#[cfg(target_feature = "simd128")]
-pub use simd128::CurrentCpu;
 
 #[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
 #[cfg(target_feature = "neon")]
@@ -86,15 +80,14 @@ pub use neon::CurrentCpu;
 
 #[cfg(any(
     target_feature = "neon",
-    target_feature = "avx2",
-    target_feature = "simd128"
+    target_feature = "avx2"
 ))]
 #[inline(always)]
 pub unsafe fn vec_dot_f32(a_row: *const f32, b_row: *const f32, c: *mut f32, k: usize) {
     let np = k & !(CurrentCpu::STEP - 1);
 
     // SAFETY: the `unsafe fn` contract guarantees the SIMD target feature this
-    // function is `cfg`-gated on (`neon` / `avx2` / `simd128`) is available,
+    // function is `cfg`-gated on (`neon` / `avx2`) is available,
     // and that is `zero_array`'s ONLY precondition — it takes no pointer and
     // touches no memory, so there is no validity, alignment or aliasing
     // obligation to discharge. All three initializers rest on that single
@@ -127,8 +120,7 @@ pub unsafe fn vec_dot_f32(a_row: *const f32, b_row: *const f32, c: *mut f32, k: 
 
 #[cfg(not(any(
     target_feature = "neon",
-    target_feature = "avx2",
-    target_feature = "simd128"
+    target_feature = "avx2"
 )))]
 #[inline(always)]
 pub unsafe fn vec_dot_f32(a_row: *const f32, b_row: *const f32, c: *mut f32, k: usize) {
@@ -140,15 +132,14 @@ pub unsafe fn vec_dot_f32(a_row: *const f32, b_row: *const f32, c: *mut f32, k: 
 
 #[cfg(any(
     target_feature = "neon",
-    target_feature = "avx2",
-    target_feature = "simd128"
+    target_feature = "avx2"
 ))]
 #[inline(always)]
 pub unsafe fn vec_sum(row: *const f32, b: *mut f32, k: usize) {
     let np = k & !(CurrentCpu::STEP - 1);
 
     // SAFETY: the `unsafe fn` contract guarantees the SIMD target feature this
-    // function is `cfg`-gated on (`neon` / `avx2` / `simd128`) is available,
+    // function is `cfg`-gated on (`neon` / `avx2`) is available,
     // and that is `zero_array`'s ONLY precondition — it takes no pointer and
     // touches no memory. Both initializers rest on that single shared
     // obligation; they are two blocks rather than one only because each
@@ -175,8 +166,7 @@ pub unsafe fn vec_sum(row: *const f32, b: *mut f32, k: usize) {
 
 #[cfg(not(any(
     target_feature = "neon",
-    target_feature = "avx2",
-    target_feature = "simd128"
+    target_feature = "avx2"
 )))]
 #[inline(always)]
 pub unsafe fn vec_sum(row: *const f32, b: *mut f32, k: usize) {
