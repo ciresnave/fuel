@@ -768,6 +768,82 @@ mod tests {
         );
     }
 
+    /// The namespaced target is a **byte-exact passthrough coordinate**
+    /// (§6.8-0002): whatever the caller supplies appears as field 4 of the
+    /// token, character for character — no normalization, no reordering, and
+    /// **no assumption about how many `.`-separated fields it has**.
+    ///
+    /// # Why a property, when goldens already cover this
+    ///
+    /// The goldens above pin *specific vocabulary spellings*, and those
+    /// spellings belong to a vocabulary **Fuel does not own**. KISS #200 takes
+    /// `vulkan:` from four fields to five (cooperative *vector* is structurally
+    /// unmergeable with cooperative *matrix*, so it cannot share the `<coop>`
+    /// tuple grammar), which changes the bytes of **every** `vulkan:` token —
+    /// including the four-field `vulkan:sg64.ops-abr.arith-f16.cm-none` this
+    /// crate's byte-match corpus pins. A golden per vocabulary version means a
+    /// Fuel-side edit per foreign vocabulary cut, forever.
+    ///
+    /// This test asserts the property those goldens are *evidence for*, so it
+    /// is invariant under every future vocabulary version. The v4 five-field
+    /// shape is exercised below **before it exists upstream** — that case is
+    /// the reason this test was written and it is not reachable from any
+    /// current corpus.
+    ///
+    /// # Why the goldens are KEPT rather than replaced
+    ///
+    /// A property test is **self-authored**: it proves the class while
+    /// comparing this implementation against itself, so it would accept a
+    /// *wrong* passthrough that still round-trips. The corpus goldens are the
+    /// only assertions here whose expected value has an author who is not
+    /// Fuel. Strengthening the class check must not trade away the single
+    /// cross-authored comparison, so this is strictly additive.
+    #[test]
+    fn namespaced_target_is_a_byte_exact_passthrough_for_any_vocabulary() {
+        let ops = [f32c(&[8, 4096]), f32c(&[4096, 4096]), f32c(&[8, 4096])];
+        let cell = FuelOpCategory::Contraction(gem_f32(8, 4096, 4096));
+
+        // Deliberately spans: the two spellings the goldens pin, the four-field
+        // v3 capability set the corpus hardcodes, the **v4 five-field shape
+        // that does not exist yet**, and a namespace Fuel has never seen whose
+        // mixed case and separators would be destroyed by any normalization.
+        let targets = [
+            "cuda:sm89",
+            "vulkan:spirv1.6",
+            "vulkan:sg64.ops-abr.arith-f16.cm-none",
+            "vulkan:sg64.ops-abr.arith-f16.cm-none.cv-none",
+            "zzfuture:A-b.C_9.MixedCase.trailing-Z",
+        ];
+
+        for target in targets {
+            let token = derive_structure_key_token(cell, &ops, target)
+                .unwrap_or_else(|| panic!("`{target}` is namespaced and must derive"));
+            let fields: Vec<&str> = token.split('|').collect();
+            // Non-vacuity: a token too short to *have* a target field would
+            // otherwise let the equality below pass over `None`-ish nonsense.
+            assert!(
+                fields.len() > 3,
+                "`{target}`: token has {} fields, no target coordinate to check: {token}",
+                fields.len()
+            );
+            assert_eq!(
+                fields[3], target,
+                "target must survive byte-exact as field 4 (§6.8-0002); token: {token}"
+            );
+        }
+
+        // Negative control, and it is what makes the loop above mean something:
+        // the *only* thing admitting these strings is the namespace separator
+        // (§6.8-0001). Strip the `:` from a target that just passed and the
+        // deriver must decline — otherwise "it passed for every input" would be
+        // consistent with the target field being ignored entirely.
+        assert_eq!(
+            derive_structure_key_token(cell, &ops, "vulkansg64.ops-abr.arith-f16.cm-none"),
+            None,
+            "a non-namespaced target must decline, not pass through"
+        );
+    }
+
     /// A batched gem cell carries the conditionally-present `b<class>` right
     /// after `<kdiv>` (7 `/`-parts); the non-batched twin omits it entirely
     /// (6 parts). Byte-for-byte the staged `sk4_gem_batched_cell` golden.
