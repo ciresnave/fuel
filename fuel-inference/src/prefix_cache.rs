@@ -21,7 +21,7 @@
 //!
 //! ```rust
 //! use fuel_inference::prefix_cache::PrefixCache;
-//! use fuel::{DType, Device, Tensor};
+//! use fuel::{DType, Device, lazy::LazyTensor};
 //!
 //! # fn main() -> fuel::Result<()> {
 //! let mut cache = PrefixCache::new(16); // up to 16 cached prefixes
@@ -33,8 +33,8 @@
 //! assert!(cache.lookup(&system_tokens).is_none());
 //!
 //! // After prefill, store the KV states (one pair per layer)
-//! let k = Tensor::zeros((1, 4, 5, 64), DType::F32, &Device::cpu())?;
-//! let v = Tensor::zeros((1, 4, 5, 64), DType::F32, &Device::cpu())?;
+//! let k = LazyTensor::zeros((1, 4, 5, 64), DType::F32, &Device::cpu())?;
+//! let v = LazyTensor::zeros((1, 4, 5, 64), DType::F32, &Device::cpu())?;
 //! let kv_states = vec![(k, v)]; // 1-layer example
 //! cache.insert(&system_tokens, kv_states);
 //!

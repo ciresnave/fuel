@@ -54,14 +54,14 @@
 //!
 //! ```no_run
 //! use fuel_inference::generation::{LogitsProcessor, Sampling};
-//! use fuel::{Device, Tensor};
+//! use fuel::{Device, lazy::LazyTensor};
 //!
 //! # fn main() -> fuel::Result<()> {
-//! let device = Device::Cpu;
+//! let device = Device::cpu();
 //! let mut lp = LogitsProcessor::new(42, Some(0.7), None);
 //!
 //! // logits: shape [vocab_size]
-//! let logits = Tensor::zeros(32_000usize, fuel::DType::F32, &device)?;
+//! let logits = LazyTensor::zeros(32_000usize, fuel::DType::F32, &device)?;
 //! // let next_token = lp.sample(&logits)?;
 //! # Ok(())
 //! # }

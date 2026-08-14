@@ -24,7 +24,7 @@
 //! # fn main() -> fuel::Result<()> {
 //! let eval = LazyOnnxEval::from_path("path/to/model.onnx")?;
 //! let inputs = HashMap::new(); // populate with fuel::lazy::LazyTensor values
-//! let outputs = eval.run(inputs)?;
+//! let outputs = eval.run(&inputs)?;
 //! # Ok(()) }
 //! ```
 //!
