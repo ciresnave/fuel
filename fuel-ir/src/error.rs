@@ -51,14 +51,14 @@ pub enum Error {
     // === Dimension Index Errors ===
     #[error("{op}: dimension index {dim} out of range for shape {shape:?}")]
     DimOutOfRange {
-        shape: Shape,
+        shape: Box<Shape>,
         dim: i32,
         op: &'static str,
     },
 
     #[error("{op}: duplicate dim index {dims:?} for shape {shape:?}")]
     DuplicateDimIndex {
-        shape: Shape,
+        shape: Box<Shape>,
         dims: Vec<usize>,
         op: &'static str,
     },
@@ -68,25 +68,25 @@ pub enum Error {
     UnexpectedNumberOfDims {
         expected: usize,
         got: usize,
-        shape: Shape,
+        shape: Box<Shape>,
     },
 
     #[error("{msg}, expected: {expected:?}, got: {got:?}")]
     UnexpectedShape {
         msg: String,
-        expected: Shape,
-        got: Shape,
+        expected: Box<Shape>,
+        got: Box<Shape>,
     },
 
     #[error(
         "Shape mismatch, got buffer of size {buffer_size} which is compatible with shape {shape:?}"
     )]
-    ShapeMismatch { buffer_size: usize, shape: Shape },
+    ShapeMismatch { buffer_size: usize, shape: Box<Shape> },
 
     #[error("shape mismatch in {op}, lhs: {lhs:?}, rhs: {rhs:?}")]
     ShapeMismatchBinaryOp {
-        lhs: Shape,
-        rhs: Shape,
+        lhs: Box<Shape>,
+        rhs: Box<Shape>,
         op: &'static str,
     },
 
@@ -95,14 +95,14 @@ pub enum Error {
     )]
     ShapeMismatchCat {
         dim: usize,
-        first_shape: Shape,
+        first_shape: Box<Shape>,
         n: usize,
-        nth_shape: Shape,
+        nth_shape: Box<Shape>,
     },
 
     #[error("Cannot divide tensor of shape {shape:?} equally along dim {dim} into {n_parts}")]
     ShapeMismatchSplit {
-        shape: Shape,
+        shape: Box<Shape>,
         dim: usize,
         n_parts: usize,
     },
@@ -124,7 +124,7 @@ pub enum Error {
     // === Op Specific Errors ===
     #[error("narrow invalid args {msg}: {shape:?}, dim: {dim}, start: {start}, len:{len}")]
     NarrowInvalidArgs {
-        shape: Shape,
+        shape: Box<Shape>,
         dim: usize,
         start: usize,
         len: usize,
@@ -135,8 +135,8 @@ pub enum Error {
         "conv1d invalid args {msg}: inp: {inp_shape:?}, k: {k_shape:?}, pad: {padding}, stride: {stride}"
     )]
     Conv1dInvalidArgs {
-        inp_shape: Shape,
-        k_shape: Shape,
+        inp_shape: Box<Shape>,
+        k_shape: Box<Shape>,
         padding: usize,
         stride: usize,
         msg: &'static str,
@@ -150,7 +150,7 @@ pub enum Error {
     },
 
     #[error("cannot broadcast {src_shape:?} to {dst_shape:?}")]
-    BroadcastIncompatibleShapes { src_shape: Shape, dst_shape: Shape },
+    BroadcastIncompatibleShapes { src_shape: Box<Shape>, dst_shape: Box<Shape> },
 
     #[error("cannot set variable {msg}")]
     CannotSetVar { msg: &'static str },
@@ -380,6 +380,28 @@ pub enum Error {
 
 /// A specialized [`Result`](std::result::Result) type for fuel operations.
 pub type Result<T> = std::result::Result<T, Error>;
+
+// ── Error size guard (clippy::result_large_err) ────────────────────────────
+// `Result<T>` here is `Result<T, Error>`, so EVERY fallible fuel-ir function —
+// **including the Ok path** — carries `size_of::<Error>()` bytes inline. The
+// diagnostic variants used to embed `Shape` (128 bytes) BY VALUE, which bloated
+// `Error` to 288 bytes and every `Result<T>` with it (clippy fired
+// `result_large_err` on 58 sites); the `Shape` fields are now `Box<Shape>` and
+// `Error` measures 80 bytes (`-Zprint-type-sizes`, 2026-08-14).
+//
+// This guard keeps that win maintained rather than one-time: a NEW variant that
+// embeds a large type by value (another `Shape`, a big struct) is a HOT-PATH
+// regression — not cosmetic — and trips here at COMPILE time, before it can
+// re-inflate every `Result<T>`. Same shape as a retained sabotage control: a
+// one-time fix becomes a maintained property. Raising the bound is a DELIBERATE
+// decision about that Ok-path cost, not a formality — measure the new size and
+// justify it. 96 = the measured 80 + headroom, and stays well under clippy's
+// 128-byte threshold so this catches a regression before the lint would.
+const _: () = assert!(
+    std::mem::size_of::<Error>() <= 96,
+    "fuel_ir::Error exceeded its size budget: a Result<T> hot-path regression. \
+     Box the large field, or consciously raise the bound (see the comment above)."
+);
 
 impl Error {
     /// Wraps an arbitrary displayable error.

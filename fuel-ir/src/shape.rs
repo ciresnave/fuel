@@ -195,7 +195,7 @@ macro_rules! extract_dims {
                 Err($crate::Error::UnexpectedNumberOfDims {
                     expected: $cnt,
                     got: dims.len(),
-                    shape: $crate::Shape::from(dims),
+                    shape: Box::new($crate::Shape::from(dims)),
                 }
                 .bt())
             } else {
@@ -414,8 +414,8 @@ impl Shape {
                 l_value
             } else {
                 Err(Error::ShapeMismatchBinaryOp {
-                    lhs: lhs.clone(),
-                    rhs: rhs.clone(),
+                    lhs: Box::new(lhs.clone()),
+                    rhs: Box::new(rhs.clone()),
                     op,
                 }
                 .bt())?
@@ -464,7 +464,7 @@ impl Dim for usize {
         let dim = *self;
         if dim >= shape.dims().len() {
             Err(Error::DimOutOfRange {
-                shape: shape.clone(),
+                shape: Box::new(shape.clone()),
                 dim: dim as i32,
                 op,
             }
@@ -478,7 +478,7 @@ impl Dim for usize {
         let dim = *self;
         if dim > shape.dims().len() {
             Err(Error::DimOutOfRange {
-                shape: shape.clone(),
+                shape: Box::new(shape.clone()),
                 dim: dim as i32,
                 op,
             }
@@ -511,7 +511,7 @@ impl D {
             Self::Minus(u) => -(*u as i32),
         };
         Error::DimOutOfRange {
-            shape: shape.clone(),
+            shape: Box::new(shape.clone()),
             dim,
             op,
         }
@@ -553,7 +553,7 @@ pub trait Dims: Sized {
         for (i, &dim) in dims.iter().enumerate() {
             if dims[..i].contains(&dim) {
                 Err(Error::DuplicateDimIndex {
-                    shape: shape.clone(),
+                    shape: Box::new(shape.clone()),
                     dims: dims.clone(),
                     op,
                 }
@@ -561,7 +561,7 @@ pub trait Dims: Sized {
             }
             if dim >= shape.rank() {
                 Err(Error::DimOutOfRange {
-                    shape: shape.clone(),
+                    shape: Box::new(shape.clone()),
                     dim: dim as i32,
                     op,
                 }
@@ -710,7 +710,7 @@ extract_dims!(
 pub fn stride_dims2(stride: &[isize]) -> Result<(usize, usize)> {
     if stride.len() != 2 {
         return Err(Error::UnexpectedNumberOfDims {
-            expected: 2, got: stride.len(), shape: Shape::from(&[][..]),
+            expected: 2, got: stride.len(), shape: Box::new(Shape::from(&[][..])),
         }.bt());
     }
     debug_assert!(stride.iter().all(|&s| s >= 0), "stride_dims2: negative stride");
@@ -721,7 +721,7 @@ pub fn stride_dims2(stride: &[isize]) -> Result<(usize, usize)> {
 pub fn stride_dims3(stride: &[isize]) -> Result<(usize, usize, usize)> {
     if stride.len() != 3 {
         return Err(Error::UnexpectedNumberOfDims {
-            expected: 3, got: stride.len(), shape: Shape::from(&[][..]),
+            expected: 3, got: stride.len(), shape: Box::new(Shape::from(&[][..])),
         }.bt());
     }
     debug_assert!(stride.iter().all(|&s| s >= 0), "stride_dims3: negative stride");
@@ -732,7 +732,7 @@ pub fn stride_dims3(stride: &[isize]) -> Result<(usize, usize, usize)> {
 pub fn stride_dims4(stride: &[isize]) -> Result<(usize, usize, usize, usize)> {
     if stride.len() != 4 {
         return Err(Error::UnexpectedNumberOfDims {
-            expected: 4, got: stride.len(), shape: Shape::from(&[][..]),
+            expected: 4, got: stride.len(), shape: Box::new(Shape::from(&[][..])),
         }.bt());
     }
     debug_assert!(stride.iter().all(|&s| s >= 0), "stride_dims4: negative stride");
@@ -743,7 +743,7 @@ pub fn stride_dims4(stride: &[isize]) -> Result<(usize, usize, usize, usize)> {
 pub fn stride_dims5(stride: &[isize]) -> Result<(usize, usize, usize, usize, usize)> {
     if stride.len() != 5 {
         return Err(Error::UnexpectedNumberOfDims {
-            expected: 5, got: stride.len(), shape: Shape::from(&[][..]),
+            expected: 5, got: stride.len(), shape: Box::new(Shape::from(&[][..])),
         }.bt());
     }
     debug_assert!(stride.iter().all(|&s| s >= 0), "stride_dims5: negative stride");

@@ -632,7 +632,7 @@ impl<I: IntDType> Map1 for IndexSelect<'_, I> {
             d => Err(Error::UnexpectedNumberOfDims {
                 expected: 1,
                 got: d.len(),
-                shape: self.ids_l.shape().clone(),
+                shape: Box::new(self.ids_l.shape().clone()),
             }
             .bt())?,
         };
