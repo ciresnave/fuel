@@ -2,9 +2,15 @@
 //!
 //! Phase D LLM port. SmolLM3 (HuggingFace small-model line) is a
 //! Qwen2-shape transformer with two notable extras:
-//! - **Per-layer RoPE gating** — `no_rope_layers[i] == 1` skips RoPE
-//!   for layer `i`. Useful for hybrid attention patterns where some
-//!   layers run position-agnostic.
+//! - **Per-layer RoPE gating** — `no_rope_layers` is a per-layer 0/1
+//!   flag, NOT a list of layer indices: `no_rope_layers[i] == 1` means
+//!   layer `i` **uses** RoPE; `== 0` marks a **NoPE** (position-agnostic)
+//!   layer. This matches the code (`layer_uses_rope`) and HuggingFace
+//!   Transformers `configuration_smollm3.py`: *"A `1` at an index
+//!   position indicates that the corresponding layer will use RoPE,
+//!   while a `0` indicates that it's a NoPE layer."* ⚠️ The field name
+//!   reads backwards — `no_rope_layers[i] == 1` is a *RoPE* layer, not a
+//!   no-rope one (GAP-196).
 //! - **Optional sliding window** (Mistral-style).
 //!
 //! Otherwise: GQA + RmsNorm + SwiGLU FFN + optional Q/K/V/O biases
@@ -201,7 +207,7 @@ impl SmolLm3Model {
         let k = k.split_heads(cfg.num_key_value_heads, cfg.head_dim)?;
         let v = v.split_heads(cfg.num_key_value_heads, cfg.head_dim)?;
 
-        // Conditional RoPE — skip for layers in `no_rope_layers`.
+        // Conditional RoPE — skipped only on NoPE layers (`no_rope_layers[i] == 0`).
         let (q_r, k_r) = if uses_rope {
             (
                 q.rope_with_tables(rope_cos, rope_sin)?,
@@ -364,7 +370,7 @@ impl SmolLm3Model {
         let k_h = k.split_heads(cfg.num_key_value_heads, head_dim)?;
         let v_h = v.split_heads(cfg.num_key_value_heads, head_dim)?;
 
-        // Per-layer conditional RoPE — skipped on `no_rope_layers` (NoPE). RoPE
+        // Per-layer conditional RoPE — skipped only on NoPE layers (`no_rope_layers[i] == 0`). RoPE
         // runs in f32 (build-time requirement); the casts are no-ops at f32.
         let (q_r, k_r) = if uses_rope {
             (
