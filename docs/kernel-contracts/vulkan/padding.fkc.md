@@ -1697,7 +1697,7 @@ determinism: nondeterministic
 
 ## masked_fill_b1  (masked fill — 1-byte elements)
 
-One-line: masked fill for 1-byte elements; out[i] = mask[i] != 0 ? fill : input[i] (mask is U8).
+One-line: masked fill for 1-byte elements; out[i] = mask[i] != 0 ? fill : input[i] (mask is Bool).
 
 Masked fill (`OpKind::MaskedFill`) for 1-byte elements: elementwise `out[i] = mask[i] != 0 ? fill :
 input[i]`. One thread per element, fully 1:1 (no shape/stride decomposition — pure positional walk).
@@ -1710,7 +1710,7 @@ output all **contiguous, offset 0**, same element count; no broadcasting.
 ```fkc
 kernel: masked_fill_b1
 op_kind: MaskedFill                 # 1-byte element variant
-blurb: "Masked fill for 1-byte elements; out[i] = mask[i] != 0 ? fill : input[i] (mask is U8)."
+blurb: "Masked fill for 1-byte elements; out[i] = mask[i] != 0 ? fill : input[i] (mask is Bool)."
 backend: Vulkan
 kernel_source: "vulkan-slang"
 entry_point: "fuel_vulkan_backend::fkc::masked_fill_b1"   # wrapper masked_fill_bytes lib.rs:6982; masked_fill_b4.slang:16 (b1 variant)
@@ -1770,7 +1770,7 @@ determinism: bitwise                          # exact data-dependent select, har
 
 ## masked_fill_b2  (masked fill — 2-byte elements)
 
-One-line: masked fill for 2-byte elements; out[i] = mask[i] != 0 ? fill : input[i] (mask is U8).
+One-line: masked fill for 2-byte elements; out[i] = mask[i] != 0 ? fill : input[i] (mask is Bool).
 
 Masked fill for 2-byte elements — same elementwise select keyed to a 2-byte element. One thread per
 element, 1:1; the mask is **always U8** (packed 4-per-u32), the element/mask are read from packed
@@ -1781,7 +1781,7 @@ words. Numerics: none — select between the input word and `fill_value` low 16 
 ```fkc
 kernel: masked_fill_b2
 op_kind: MaskedFill                 # 2-byte element variant
-blurb: "Masked fill for 2-byte elements; out[i] = mask[i] != 0 ? fill : input[i] (mask is U8)."
+blurb: "Masked fill for 2-byte elements; out[i] = mask[i] != 0 ? fill : input[i] (mask is Bool)."
 backend: Vulkan
 kernel_source: "vulkan-slang"
 entry_point: "fuel_vulkan_backend::fkc::masked_fill_b2"   # wrapper masked_fill_bytes lib.rs:6982; masked_fill_b4.slang:16 (b2 variant)
@@ -1795,7 +1795,7 @@ accept:
       rank: any
       shape_constraint: "same_as=out; same_as=mask"
     - name: mask
-      dtypes: [U8]                           # mask is ALWAYS U8
+      dtypes: [BOOL]                         # GAP-168(c): mask is ALWAYS Bool (nonzero = fill)
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
       rank: any
       shape_constraint: "same_as=input"
@@ -1841,7 +1841,7 @@ determinism: bitwise
 
 ## masked_fill_b4  (masked fill — 4-byte elements)
 
-One-line: masked fill for 4-byte elements; out[i] = mask[i] != 0 ? fill : input[i] (mask is U8).
+One-line: masked fill for 4-byte elements; out[i] = mask[i] != 0 ? fill : input[i] (mask is Bool).
 
 Masked fill for 4-byte elements — the canonical variant whose Slang source (`masked_fill_b4.slang:16`)
 backs the family. One thread per element, 1:1; reads `input[i]` and the mask word indexed `i>>2`
@@ -1852,7 +1852,7 @@ input + mask + output contiguous, offset 0, same element count; no broadcasting.
 ```fkc
 kernel: masked_fill_b4
 op_kind: MaskedFill                 # 4-byte element variant (canonical)
-blurb: "Masked fill for 4-byte elements; out[i] = mask[i] != 0 ? fill : input[i] (mask is U8)."
+blurb: "Masked fill for 4-byte elements; out[i] = mask[i] != 0 ? fill : input[i] (mask is Bool)."
 backend: Vulkan
 kernel_source: "vulkan-slang"
 entry_point: "fuel_vulkan_backend::fkc::masked_fill_b4"   # wrapper masked_fill_bytes lib.rs:6982; masked_fill_b4.slang:16
@@ -1866,7 +1866,7 @@ accept:
       rank: any
       shape_constraint: "same_as=out; same_as=mask"
     - name: mask
-      dtypes: [U8]                           # mask is ALWAYS U8 (word indexed i>>2)
+      dtypes: [BOOL]                         # GAP-168(c): mask is ALWAYS Bool (word indexed i>>2)
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
       rank: any
       shape_constraint: "same_as=input"
@@ -1912,7 +1912,7 @@ determinism: bitwise
 
 ## masked_fill_b8  (masked fill — 8-byte elements)
 
-One-line: masked fill for 8-byte elements; out[i] = mask[i] != 0 ? fill : input[i] (mask is U8).
+One-line: masked fill for 8-byte elements; out[i] = mask[i] != 0 ? fill : input[i] (mask is Bool).
 
 Masked fill for 8-byte elements — same elementwise select keyed to an 8-byte element (handled as a
 u32-pair move). One thread per element, 1:1; the mask is **always U8**. Numerics: none — select
@@ -1922,7 +1922,7 @@ pass. Limitations: input + mask + output contiguous, offset 0, same element coun
 ```fkc
 kernel: masked_fill_b8
 op_kind: MaskedFill                 # 8-byte element variant
-blurb: "Masked fill for 8-byte elements; out[i] = mask[i] != 0 ? fill : input[i] (mask is U8)."
+blurb: "Masked fill for 8-byte elements; out[i] = mask[i] != 0 ? fill : input[i] (mask is Bool)."
 backend: Vulkan
 kernel_source: "vulkan-slang"
 entry_point: "fuel_vulkan_backend::fkc::masked_fill_b8"   # wrapper masked_fill_bytes lib.rs:6982; masked_fill_b4.slang:16 (b8 variant)
@@ -1936,7 +1936,7 @@ accept:
       rank: any
       shape_constraint: "same_as=out; same_as=mask"
     - name: mask
-      dtypes: [U8]                           # mask is ALWAYS U8
+      dtypes: [BOOL]                         # GAP-168(c): mask is ALWAYS Bool (nonzero = fill)
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
       rank: any
       shape_constraint: "same_as=input"
