@@ -3,6 +3,7 @@ pub mod bs1770;
 pub mod chat_template;
 pub mod coco_classes;
 pub mod imagenet;
+pub mod mnist_train;
 pub mod token_output_stream;
 pub mod wav;
 use fuel::utils::{cuda_is_available, metal_is_available};
