@@ -157,7 +157,86 @@ if ($missing.Count -gt 0) {
     exit 3
 }
 
+# ─── SECOND PASS: the baseline this gate was BLIND TO ───────────────────────
+#
+# NOTE 3, added after this script reported PASS on fuel-quantized while CI
+# failed on the same crate, same target, same rustc version.
+#
+# The pass above runs under `.cargo/config.toml`'s
+# `[target.aarch64-apple-darwin] rustflags = ["-C", "target-cpu=generic"]`.
+# `generic` is ARMv8.0-A and does NOT include `dotprod`, so anything behind
+# `#[cfg(target_feature = "dotprod")]` is NEVER COMPILED by that pass.
+#
+# Apple Silicon enables `dotprod` in its BASELINE, and the macOS CI job DELETES
+# `.cargo/config.toml` (the ring-crate workaround) — so CI compiles the OPPOSITE
+# arm from the one this gate was checking. `fuel-quantized/src/neon.rs`'s
+# hardware SDOT path reached main that way and broke both macOS jobs with E0658
+# while this script said PASS.
+#
+# The config comment justifying `generic` argues NEON is baseline-mandatory in
+# ARMv8 so the NEON paths still compile. That is TRUE of baseline NEON and
+# FALSE of dotprod-gated NEON: a correct reason covering strictly less than the
+# claim it was supporting.
+#
+# So run it again with the Apple-Silicon feature set — same crates, same
+# target, the other arm.
+# ⚠️ AND THE SECOND BLIND SPOT, which a sabotage run exposed: the pass above
+# runs on the DEFAULT toolchain, which on this box is nightly. CI runs STABLE.
+# `core::arch::aarch64::vdotq_s32` is an unstable library feature, so it
+# compiles clean on nightly and fails E0658 on stable — meaning a +dotprod pass
+# on nightly STILL reports PASS on the exact defect that broke CI. Re-adding
+# the defect and re-running proved it: PASS, exit 0.
+#
+# A gate that does not match CI's TOOLCHAIN is as blind as one that does not
+# match its FEATURE SET. This pass must pin both.
+$stableOk = $true
+$stableTargets = & rustup +stable target list --installed 2>$null
+if ($LASTEXITCODE -ne 0) { $stableOk = $false }
+elseif ($stableTargets -notcontains $target) { $stableOk = $false }
+if (-not $stableOk) {
+    Write-Host ''
+    Write-Host "FAIL: the stable toolchain with target '$target' is required." -ForegroundColor Red
+    Write-Host '      CI compiles this crate on STABLE, and unstable-feature errors' -ForegroundColor Red
+    Write-Host '      (E0658) are INVISIBLE on nightly. Without it this gate cannot' -ForegroundColor Red
+    Write-Host '      see the class of defect it exists to catch.' -ForegroundColor Red
+    Write-Host "      rustup toolchain install stable; rustup +stable target add $target" -ForegroundColor Yellow
+    exit 2
+}
+
+$env:CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS = '-C target-feature=+dotprod'
+Write-Host ''
+Write-Host 'second pass (STABLE toolchain, +dotprod — exactly what the macOS runner compiles)'
+$json2 = & cargo +stable @cargoArgs 2>$null
+$exit2 = $LASTEXITCODE
+$diag2 = @()
+$seen2 = @{}
+foreach ($line in $json2) {
+    if (-not $line) { continue }
+    try { $m = $line | ConvertFrom-Json } catch { continue }
+    if ($m.reason -eq 'compiler-message' -and $m.message.rendered) { $diag2 += $m.message.rendered }
+    if ($m.reason -eq 'compiler-artifact') {
+        foreach ($c in $crates) { if ($m.package_id -match [regex]::Escape($c)) { $seen2[$c] = $true } }
+    }
+}
+foreach ($d in $diag2) { Write-Host $d }
+# Same ordering rule as the first pass: EXIT CODE before artifacts, because a
+# failed compile and a never-attempted one both produce no artifact.
+if ($exit2 -ne 0) {
+    Write-Host ''
+    Write-Host "FAIL: cargo exited $exit2 for $target with +dotprod." -ForegroundColor Red
+    Write-Host '      This is the arm the macOS runner compiles; a PASS from the' -ForegroundColor Red
+    Write-Host '      first pass alone does NOT cover it.' -ForegroundColor Red
+    exit $exit2
+}
+$missing2 = $crates | Where-Object { -not $seen2.ContainsKey($_) }
+if ($missing2.Count -gt 0) {
+    Write-Host ''
+    Write-Host "FAIL: +dotprod pass produced no artifact for: $($missing2 -join ', ')" -ForegroundColor Red
+    exit 3
+}
+
 Write-Host "PASS: $($crates -join ', ') type-check for $target." -ForegroundColor Green
+Write-Host '      BOTH baselines: target-cpu=generic AND +dotprod (Apple Silicon).'
 Write-Host '      Reached: parse, resolution, type-check, exhaustiveness, borrow-check.'
 Write-Host '      NOT reached: linking, codegen, runtime. NEON correctness is UNVERIFIED'
 Write-Host '      by this gate and needs real hardware.'

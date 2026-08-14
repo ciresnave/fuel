@@ -8,6 +8,23 @@
     repository.workspace = true
     version.workspace    = true
 
+[features]
+    default = []
+    # Opt in to the hardware SDOT path in `src/neon.rs` (ARMv8.2-A+).
+    #
+    # OFF BY DEFAULT ON PURPOSE, and not out of conservatism: the intrinsic
+    # `core::arch::aarch64::vdotq_s32` is an UNSTABLE library feature
+    # (`stdarch_neon_dotprod`, rust#117224) and cannot compile on stable Rust at
+    # all. Apple Silicon enables `dotprod` in its BASELINE target features, so
+    # gating on `target_feature = "dotprod"` alone selected the hardware arm for
+    # every stable aarch64-apple-darwin build and failed E0658 — which is how it
+    # broke both macOS CI jobs.
+    #
+    # Enable only on a toolchain where the intrinsic is available. The software
+    # fallback is not a correctness compromise: it computes the same total (see
+    # the contract note at the top of `src/neon.rs`), only more slowly.
+    neon-dotprod = []
+
 [dependencies]
     fuel-ir  = { workspace = true }
     fuel-cpu-kernels = { workspace = true }
