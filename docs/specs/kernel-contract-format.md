@@ -19,7 +19,15 @@ contiguize-vs-strided-vs-materialize. Importing a provider's contract file(s) **
 every kernel** onto Fuel's dispatch surface.
 **Audience:** kernel providers (Baracuda CUDA, `fuel-vulkan-kernels` Slang, `fuel-metal-kernels`,
 `fuel-cpu-backend`, MKL/AOCL, `fuel-quantized`, external third parties) and Fuel's
-`fuel-dispatch` / `fuel-graph` import path. Drops straight into the `fuel-book` mdBook.
+the `fuel-dispatch` / `fuel-graph` import path.
+
+> **Correction (2026-08-14).** This previously read *"Drops straight into the `fuel-book`
+> mdBook."* **That was never true and is now unrepresentable — `fuel-book` was deleted**
+> (fork-inherited Candle content, no live consumer). **Contracts have always lived in
+> `docs/kernel-contracts/` — 115 `.fkc.md` files there, and `fuel-book` held ZERO.** The
+> mdBook destination was aspirational and never wired: measured at deletion time, **no
+> `.rs` file and no CI job referenced `fuel-book` at all.** Recorded rather than silently
+> repointed, because the sentence asserted a *destination* the artifacts never had.
 
 Authoritative inputs: the architecture-constraints digest
 (`docs/specs/_research/architecture-constraints.md`); the as-built dispatch types in
