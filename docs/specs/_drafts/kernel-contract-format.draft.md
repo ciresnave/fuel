@@ -16,7 +16,7 @@ contiguize-vs-strided-vs-materialize. Importing a provider's contract file(s) **
 every kernel** onto Fuel's dispatch surface.
 **Audience:** kernel providers (Baracuda CUDA, `fuel-vulkan-kernels` Slang, `fuel-metal-kernels`,
 `fuel-cpu-backend`, MKL/AOCL, `fuel-quantized`, external third parties) and Fuel's
-`fuel-dispatch` / `fuel-graph` import path. Drops straight into the `fuel-book` mdBook.
+`fuel-dispatch` / `fuel-graph` import path. (**2026-08-14:** the `fuel-book` mdBook destination named here was never wired and the crate is deleted — see the ratified spec. Contracts live in `docs/kernel-contracts/`.)
 
 Authoritative inputs: the architecture-constraints digest
 (`docs/specs/_research/architecture-constraints.md`); the as-built dispatch types in

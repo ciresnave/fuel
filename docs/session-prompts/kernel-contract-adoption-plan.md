@@ -628,7 +628,7 @@ unconditional; see the status update above.)
 Author the contracts beside the existing inventories: promote
 `docs/kernel-contracts/_inventory/*.md` into validated `docs/kernel-contracts/*.fkc.md` bundles (the
 inventories are the prose seed; the `.fkc.md` adds the ` ```fkc ` blocks). They drop straight into the
-`fuel-book` mdBook (FKC G1). The CI lint and the runtime importer both read from there. The
+`fuel-book` mdBook (FKC G1). **⚠️ CORRECTED 2026-08-14 — THIS SENTENCE ASSERTED A WIRING THAT NEVER EXISTED, WHICH IS WORSE THAN A STALE POINTER.** It read: *"The CI lint and the runtime importer both read from there."* **Neither ever did.** Measured when `fuel-book` was deleted: **zero `.rs` files and zero CI jobs referenced it, and it contained zero `.fkc` files** — while `docs/kernel-contracts/` holds **115**. So the plan described a pipeline reading from a location that never held the artifacts, and a reader would have gone looking for a lint that was never written. **The FKC-as-mdBook goal is UNREALIZED and now has no target crate; whether to recreate one is an open design question, not a documented plan.** This is the existence-is-not-enforcement pattern one level up: not a validator that is never invoked, but a *specification* asserting a mechanism nobody built. The
 provider's `link_registry` front-matter names the Rust symbol path
 (e.g. `fuel_cpu_backend::fkc::ENTRY_POINTS`) the `LinkRegistry` impl wraps.
 
