@@ -1,7 +1,8 @@
 //! Multi-output bundle **data** types.
 //!
-//! As of B0.3 the type-erased `Storage` handle (`Box<dyn DynBackendStorage>`
-//! + eager-dispatch ops) and `allocate_bundled_storage` moved to the
+//! As of B0.3 the type-erased `Storage` handle
+//! (`Box<dyn DynBackendStorage>` + eager-dispatch ops) and
+//! `allocate_bundled_storage` moved to the
 //! `fuel-backend-contract` crate — they name the backend-contract traits, which
 //! sit above this vocabulary crate. What stays here is the bundle **data**:
 //! [`OutputView`] (per-slot description), [`OutputViewSpec`] (author-side spec),
@@ -212,8 +213,7 @@ mod multi_output_specs {
     /// compose_bundle rejects an empty spec list.
     #[test]
     fn compose_bundle_rejects_empty() {
-        let err = compose_bundle(&[]).err()
-            .expect("empty spec list must error");
+        let err = compose_bundle(&[]).expect_err("empty spec list must error");
         assert!(format!("{err}").contains("non-empty"));
     }
 
@@ -229,8 +229,7 @@ mod multi_output_specs {
             layout: bogus_layout,
             name:   None,
         };
-        let err = compose_bundle(&[bad]).err()
-            .expect("shape/layout mismatch must error");
+        let err = compose_bundle(&[bad]).expect_err("shape/layout mismatch must error");
         assert!(format!("{err}").contains("disagrees"));
     }
 

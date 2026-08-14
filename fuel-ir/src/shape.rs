@@ -111,12 +111,11 @@ pub const SCALAR: Shape = Shape {
 
 impl std::fmt::Debug for Shape {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", &self.dims())?;
-        if let Some(dyn_axes) = &self.dynamic {
-            if !dyn_axes.is_empty() {
+        write!(f, "{:?}", self.dims())?;
+        if let Some(dyn_axes) = &self.dynamic
+            && !dyn_axes.is_empty() {
                 write!(f, "{{dyn: {dyn_axes:?}}}")?;
             }
-        }
         Ok(())
     }
 }
@@ -249,11 +248,10 @@ impl Shape {
     /// `min`, the `dims()` bound as `max`, and its `sym`), else a `Scalar` of
     /// the bound. The symbolic *view* over `dims()`. Phase D step 1b.
     pub fn extent(&self, axis: usize) -> Extent {
-        if let Some(dyn_axes) = &self.dynamic {
-            if let Some(da) = dyn_axes.iter().find(|d| d.axis == axis) {
+        if let Some(dyn_axes) = &self.dynamic
+            && let Some(da) = dyn_axes.iter().find(|d| d.axis == axis) {
                 return Extent::Range { min: da.min, max: self.dims[axis], sym: da.sym };
             }
-        }
         Extent::Scalar(self.dims[axis])
     }
 
