@@ -20,11 +20,21 @@ name: Continuous integration
 #       is the only job on the matrix that can compile Metal, and therefore the
 #       only Metal coverage that exists anywhere.
 #
-#   fuel-mkl-cpu-backend
-#       Its `onemkl-sys` build script fails when oneMKL is absent, which it is
-#       on every hosted runner. Excluded for a DIFFERENT reason than the Metal
-#       pair — a missing SDK, not a wrong platform — and listed here so the next
-#       person does not clear one layer and rediscover the other a CI run later.
+#   fuel-mkl-cpu-backend / fuel-aocl-cpu-backend
+#       MISSING-SDK exclusions, a different reason from the Metal pair (which is
+#       wrong-platform). `onemkl-sys` needs a oneMKL install and `aocl-build`
+#       panics outright — "Could not locate AOCL. Install AOCL … and set
+#       AOCL_ROOT" — and no hosted runner has either. Both deps are
+#       NON-OPTIONAL in their crates (no feature gate), so `--workspace` builds
+#       them unconditionally on every OS.
+#
+#       ⚠️ `fuel-aocl-cpu-backend` is the one that is INVISIBLE LOCALLY, and it
+#       is why CLAUDE.md's stated "honest workspace gate" (which names only the
+#       Metal pair and MKL) is incomplete: the dev box has AOCL installed, so
+#       that crate compiles there and fails only in a clean environment. Same
+#       shape as the private-git-rev that took CI down — a developer machine
+#       cannot see it by construction. Do not trust a local `--workspace` green
+#       as evidence about CI.
 #
 # The Metal and MKL arms are therefore UNVERIFIED on Linux/Windows/arm. That is
 # a known and stated hole, not an oversight.
@@ -35,16 +45,21 @@ name: Continuous integration
 # shell on Windows runners. The runner substitutes the expression before any
 # shell sees it, so one spelling works on every OS.
 env:
+  # WORKSPACE_EXCLUDES = the missing-SDK pair + the wrong-platform pair.
   WORKSPACE_EXCLUDES: >-
+    --exclude fuel-mkl-cpu-backend
+    --exclude fuel-aocl-cpu-backend
     --exclude fuel-metal-backend
     --exclude fuel-metal-kernels
+  # macOS CAN build the Metal crates, so it excludes only the missing-SDK pair.
+  # Kept separate rather than folded into the list above: the two groups have
+  # different causes and different lifetimes — the Metal exclusion ends if a job
+  # ever targets Apple, the SDK ones end only if a runner gains oneMKL/AOCL.
+  # These two lists MUST stay in sync on the SDK half; if you add a third
+  # missing-SDK crate it belongs in BOTH.
+  MACOS_EXCLUDES: >-
     --exclude fuel-mkl-cpu-backend
-  # macOS CAN build the Metal crates, so it excludes only the SDK-missing one.
-  # Kept separate rather than folded into the list above: the two exclusions
-  # have different causes and different lifetimes — the Metal one disappears if
-  # a job ever targets Apple, the MKL one disappears only if a runner gains
-  # oneMKL.
-  MACOS_EXCLUDES: --exclude fuel-mkl-cpu-backend
+    --exclude fuel-aocl-cpu-backend
 
 jobs:
   check:
@@ -64,13 +79,20 @@ jobs:
         run: rm -f .cargo/config.toml
       - uses: dtolnay/rust-toolchain@stable
 
-      # NO exclusions here, deliberately: this is the ONLY job that can compile
+      # Keeps the Metal crates — this is the ONLY job that can compile
       # fuel-metal-backend / fuel-metal-kernels, so it is the only Metal
       # coverage in the entire matrix. Do not "make it consistent" with the
-      # others — consistency here would mean nothing builds Metal at all.
+      # others by adding the Metal excludes here; consistency would mean nothing
+      # builds Metal at all.
+      #
+      # It DOES need the MKL exclusion, for the unrelated reason: `onemkl` is a
+      # NON-optional dependency of fuel-mkl-cpu-backend with no feature gate, so
+      # `--workspace` builds `onemkl-sys` on macOS exactly as it does on Linux,
+      # and no hosted runner has oneMKL. Metal is a wrong-platform exclusion;
+      # MKL is a missing-SDK one, and macOS needs the second but not the first.
       - name: Run macos with metal
         if: matrix.os == 'macOS-latest'
-        run: cargo check --workspace --features metal
+        run: cargo check --workspace --features metal ${{ env.MACOS_EXCLUDES }}
 
       - name: Run normal cpu
         if: matrix.os == 'ubuntu-latest' || matrix.os == 'windows-latest'
