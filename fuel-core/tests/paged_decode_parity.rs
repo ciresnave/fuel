@@ -510,9 +510,56 @@ fn shifted_prefix_reuse_is_exact_at_depth_1_and_lossy_deeper() {
     let d1 = run(1);
     let d2 = run(2);
     // Position-exact + context-free at depth 1: a wrong delta-rotation breaks this.
-    assert_eq!(
-        d1, 0.0,
-        "n_layers=1: shifted reuse is byte-exact (layer-0 K/V is context-free); maxdiff {d1}",
+    //
+    // ⚠️ BOUNDED, NOT `== 0.0`, and the reason is arithmetic — NOT a concession
+    // about context. This asserted exact equality until 2026-08-14, passed on
+    // x86, and failed on aarch64 macOS at maxdiff 1.4901161e-8 (= 2^-26).
+    //
+    // "Layer-0 K/V is context-free" licenses the two paths reaching the SAME
+    // VALUE. It does not license the same BITS, because they get there by
+    // different arithmetic: the reference applies RoPE ONCE at the final
+    // position, while the reuse path applies it at the donor position and then
+    // `splice_prefix_shifted` DELTA-ROTATES by the offset. `rotate(θ₁)` then
+    // `rotate(θ₂)` equals `rotate(θ₁+θ₂)` algebraically and not in floating
+    // point — two roundings versus one. x86 passed on an arithmetic
+    // coincidence; aarch64's contraction breaks the coincidence.
+    //
+    // NOT RECOVERABLE BY CONSTRUCTION without changing what the cache stores:
+    // a single rotation to the final position needs the PRE-RoPE keys, and the
+    // pool caches K POST-RoPE (see `splice_prefix_shifted`: the keys "were
+    // rotated for positions 0..N"). Retaining pre-rotation K means a
+    // cache-format change or recomputation, which defeats the point of reuse.
+    // So this is qualified deliberately — not because nobody tried.
+    //
+    // CALIBRATION — one observation, and the headroom is small on purpose:
+    //   correct path, aarch64 2-layer fixture : 1.4901161e-8  (= 2^-26)
+    //   correct path, x86_64                  : 0.0  (the old `== 0.0` passed here)
+    //   bound here                            : 1e-7   (~6.7x the observation)
+    //   SABOTAGED delta-rotation (m -> m+1)   : 6.7964196e-5
+    //                                           = 680x the bound, 4560x the drift
+    //   depth-2 structural context loss       : ~2.1e-3 (the `d2` guard below)
+    //
+    // The sabotage is the one this assertion exists to catch — "a wrong
+    // delta-rotation breaks this" — and it lands three orders clear of the
+    // bound, so bounding has not blunted it.
+    //
+    // ⚠️ IF THIS BOUND IS EXCEEDED, THE FIRST QUESTION IS WHETHER THE FIXTURE
+    // GREW — not whether the bound is wrong. `maxdiff` is a max over elements,
+    // so more elements or a wider `head_dim` can legitimately push it up with
+    // nothing broken. The answer is a NEW MEASUREMENT on the new fixture, not a
+    // reflexive loosening: a bound raised once without a measurement stops
+    // being calibrated and becomes a number someone tuned.
+    //
+    // The plan authored 2026-08-05 pre-authorised exactly this
+    // (docs/superpowers/plans/2026-08-05-rope-rung2-shifted-prefix.md:282):
+    // "if a tiny nonzero drift appears from realize reassociation, calibrate a
+    // `< 1e-6` bound against a sabotage run … and document it". Only the
+    // optimistic branch of that instruction had been implemented.
+    assert!(
+        d1 < 1e-7,
+        "n_layers=1: shifted reuse is position-exact and context-free, so it must agree with \
+         the from-scratch path to within delta-rotation rounding (two rotations vs one); \
+         maxdiff {d1} exceeds 1e-7 — check whether the FIXTURE grew before touching this bound",
     );
     // Context loss is REAL at depth >= 2 — mid-prompt reuse is not exact. Guards
     // against anyone re-labeling it exact by loosening a tolerance.
