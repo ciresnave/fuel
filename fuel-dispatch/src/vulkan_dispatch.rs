@@ -1994,7 +1994,7 @@ pub mod gather {
 pub mod masked_fill {
     use super::*;
 
-    /// MaskedFill — 2 inputs (input, mask) + 1 output. mask is U8.
+    /// MaskedFill — 2 inputs (input, mask) + 1 output. mask is **Bool** (GAP-168(c)).
     /// Byte width is taken from the OUTPUT dtype size; same dispatch
     /// shim handles all dtypes.
     pub fn masked_fill(
@@ -5981,6 +5981,7 @@ mod select_contract_tests {
 
         let f32 = DType::F32; let f16 = DType::F16; let bf16 = DType::BF16;
         let f64 = DType::F64; let u8 = DType::U8; let u32 = DType::U32;
+        let boolean = DType::Bool;
 
         // (OpKind, key dtypes, expected production wrapper). Every select binding
         // is contiguous-only (strided_input == false), checked uniformly below.
@@ -5997,13 +5998,29 @@ mod select_contract_tests {
             (OpKind::Gather, &[f64,  u32, f64],  gather::gather as KernelRef),
             (OpKind::Gather, &[u8,   u32, u8],   gather::gather as KernelRef),
             (OpKind::Gather, &[u32,  u32, u32],  gather::gather as KernelRef),
-            // MaskedFill: [data, U8 mask, out]; ONE wrapper across 6 keys.
-            (OpKind::MaskedFill, &[f32,  u8, f32],  masked_fill::masked_fill as KernelRef),
-            (OpKind::MaskedFill, &[f16,  u8, f16],  masked_fill::masked_fill as KernelRef),
-            (OpKind::MaskedFill, &[bf16, u8, bf16], masked_fill::masked_fill as KernelRef),
-            (OpKind::MaskedFill, &[f64,  u8, f64],  masked_fill::masked_fill as KernelRef),
-            (OpKind::MaskedFill, &[u8,   u8, u8],   masked_fill::masked_fill as KernelRef),
-            (OpKind::MaskedFill, &[u32,  u8, u32],  masked_fill::masked_fill as KernelRef),
+            // MaskedFill: [data, BOOL mask, out]; ONE wrapper across 6 keys.
+            //
+            // The mask slot is `Bool`, NOT `U8`. GAP-168(c) moved it;
+            // `Graph::masked_fill` enforces it at BUILD time
+            // (fuel-graph/src/lib.rs:5716 — "`mask` must be `Bool`
+            // (GAP-168(c))"), and all five backend contracts declare
+            // `dtypes: [BOOL]`. This test still asserted the pre-Bool
+            // `[T, U8, T]` key, so it looked up a binding that no longer exists
+            // and reported `found 0 alt(s) with sources []` — which reads like a
+            // MISSING REGISTRATION rather than a stale key, and cost a full
+            // diagnostic pass to tell apart. The registration is fine: the
+            // IndexSelect and Gather cases above import from the same contract
+            // file and pass.
+            //
+            // It survived the Bool cut because it needs `--features vulkan`:
+            // that sweep was gated with `--lib`, and CI could not build the
+            // workspace at all, so nothing executed this until today.
+            (OpKind::MaskedFill, &[f32,  boolean, f32],  masked_fill::masked_fill as KernelRef),
+            (OpKind::MaskedFill, &[f16,  boolean, f16],  masked_fill::masked_fill as KernelRef),
+            (OpKind::MaskedFill, &[bf16, boolean, bf16], masked_fill::masked_fill as KernelRef),
+            (OpKind::MaskedFill, &[f64,  boolean, f64],  masked_fill::masked_fill as KernelRef),
+            (OpKind::MaskedFill, &[u8,   boolean, u8],   masked_fill::masked_fill as KernelRef),
+            (OpKind::MaskedFill, &[u32,  boolean, u32],  masked_fill::masked_fill as KernelRef),
         ];
 
         let mut checked = 0usize;
