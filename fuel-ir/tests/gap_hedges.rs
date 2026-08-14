@@ -352,11 +352,25 @@ fn allowlist_path(root: &Path) -> PathBuf {
 }
 
 /// Load the allowlist as a set of keys. Missing file ⇒ empty set.
+///
+/// Each line is `<rel-path>\t<trimmed comment text>` — the same key the scanner
+/// builds. An OPTIONAL third tab-separated field is a human REASON (why this
+/// hedge is allowlisted) and is NOT part of the key. The reason is load-bearing:
+/// a lexical hedge guard cannot distinguish a *hedge* (prose substituting for
+/// work) from a *boundary statement* (a measured limit stated honestly) — they
+/// share vocabulary — so the reason is the only place that distinction lives.
+/// Two-field entries (no reason) still parse; the key is unchanged.
 fn load_allowlist(root: &Path) -> HashSet<String> {
     let txt = std::fs::read_to_string(allowlist_path(root)).unwrap_or_default();
     txt.lines()
         .filter(|l| !l.trim().is_empty())
-        .map(|l| l.to_string())
+        .map(|l| {
+            let mut fields = l.splitn(3, '\t');
+            match (fields.next(), fields.next()) {
+                (Some(path), Some(text)) => format!("{path}\t{text}"),
+                _ => l.to_string(),
+            }
+        })
         .collect()
 }
 

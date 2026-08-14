@@ -207,7 +207,5 @@ fuel-vulkan-backend/src/mapped_meter.rs	//! Precise BAR-only accounting would ne
 fuel-vulkan-backend/src/recorder.rs	/// `SubmittedBatch` that has NOT yet had its fence waited (`consumed == false`)
 fuel-vulkan-kernels/src/lib.rs	/// FlashAttention-shape multi-head attention, f32. Naive
 fuel-vulkan-kernels/src/lib.rs	/// GQA + causal + scale + alibi; bails on window/softcap/Sk>4096/D>256.
-fuel-wasm-examples/quant-qwen3/src/m.rs	/// The token passed in is NOT yet in kv_tokens - it will be added after processing.
-fuel-wasm-examples/segment-anything/src/bin/m.rs	/// three `Sam*Weights` types (and the HF-naming TODOs noted in the
-fuel-wasm-examples/whisper/src/worker.rs	// TODO: Besides suppress tokens, we should apply the heuristics from
-fuel-wasm-examples/yolo/src/worker.rs	// "not yet supported" error. Once a `YoloV8PoseModel` lands the
+fuel-core/src/persistent_decode.rs	// would need per-variant inv_freq, and no such model exists yet. Single-base	documented scope boundary with a stated trigger; not an unfinished-work admission (architect-authorised)
+fuel-examples/src/mnist_train.rs	//! behaviour across platforms/backends is NOT yet established and must not be	required boundary statement: records what the convergence oracle does NOT prove
