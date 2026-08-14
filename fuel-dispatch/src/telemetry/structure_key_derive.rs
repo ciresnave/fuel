@@ -637,6 +637,71 @@ mod tests {
         co(dims, DType::F32)
     }
 
+    /// **SPELLED and DERIVABLE are different axes, and only one of them was ever
+    /// measured.** `fuel_ir::sk4_token` maps a `DType` to its seam token — that is
+    /// *spelling*, and `token_kind.rs` already asserts a 15/7/2 partition over it.
+    /// This asks the other question: **can Fuel construct a real cell whose operand 0
+    /// carries that dtype, so a token containing the spelling actually comes out?**
+    ///
+    /// Written because a cross-project record carried three dtypes (`i16`, `f8e8m0`,
+    /// `f8e6m2`) as *"legal token but not derivable"* — a Fuel-side capability gap.
+    /// The claim conflated the axes: all three are spelled (`token_kind.rs:82,89,90`).
+    /// Rather than answer for those three and leave the rest assumed, this measures
+    /// **every** dtype that has a spelling, so the answer cannot rot into a claim
+    /// about a subset someone happened to ask about.
+    ///
+    /// The assertion is `spelled ⇒ derivable`, and it is deliberately exhaustive over
+    /// `DType::ALL`: a future dtype that can be spelled but not built at operand 0
+    /// fails **here**, with its name, instead of being discovered by a peer.
+    #[test]
+    fn every_spelled_dtype_is_also_derivable_at_operand_zero() {
+        let mut spelled = 0usize;
+        let mut not_derivable: Vec<(DType, &'static str)> = Vec::new();
+        let mut mismatched: Vec<(DType, &'static str, String)> = Vec::new();
+
+        for dt in DType::ALL.iter().copied() {
+            let Some(spelling) = fuel_ir::sk4_token(dt) else {
+                continue; // no seam token — outside this axis by construction
+            };
+            spelled += 1;
+
+            // The simplest cell that puts a dtype at operand 0.
+            let ops = [co(&[4096], dt), co(&[4096], dt)];
+            match derive_structure_key_token(
+                FuelOpCategory::BinaryElementwise,
+                &ops,
+                "cuda:sm89",
+            ) {
+                None => not_derivable.push((dt, spelling)),
+                Some(token) => {
+                    // Field 3 (0-indexed 2) is `<dtype>`: sk4|<op>|<dtype>|<target>|…
+                    let got = token.split('|').nth(2).unwrap_or("<missing>");
+                    if got != spelling {
+                        mismatched.push((dt, spelling, got.to_string()));
+                    }
+                }
+            }
+        }
+
+        // Non-vacuity: if `sk4_token` ever returned `None` for everything, the loop
+        // above would pass by examining nothing. 15 is the measured supported count
+        // that `token_kind.rs`'s partition test pins independently.
+        assert_eq!(
+            spelled, 15,
+            "expected 15 spelled dtypes (token_kind.rs pins this); got {spelled} — \
+             this test would be vacuous at 0",
+        );
+        assert!(
+            not_derivable.is_empty(),
+            "spelled but NOT derivable at operand 0: {not_derivable:?} — \
+             a dtype with a seam token that no cell can carry is a real capability gap",
+        );
+        assert!(
+            mismatched.is_empty(),
+            "derived token's dtype field disagrees with the spelling: {mismatched:?}",
+        );
+    }
+
     /// A bit-stable non-batched f32 gem cell with the given role extents.
     fn gem_f32(m: i64, n: i64, k: i64) -> GemCell {
         GemCell {
