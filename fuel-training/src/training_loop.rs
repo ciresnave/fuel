@@ -30,7 +30,7 @@
 //! use fuel_training::training_loop::TrainingLoop;
 //!
 //! # fn main() -> fuel::Result<()> {
-//! let var = LazyVar::new("w", vec![1.0_f32, 2.0, 3.0]);
+//! let var = LazyVar::new("w", 3usize, vec![1.0_f32, 2.0, 3.0])?;
 //! let mut opt = LazyAdamW::new(vec![var.clone()], AdamWConfig::default())?;
 //! let sched = CosineSchedule { base_lr: 1e-3, warmup_steps: 10, total_steps: 100 };
 //! let mut loop_ = TrainingLoop::new()

@@ -27,10 +27,10 @@
 //! ## Quick start
 //!
 //! ```rust,no_run
-//! use fuel::{Device, DType};
-//! use fuel_nn::VarBuilder;
-//! // Load weights from a safetensors file, then run a forward pass.
-//! // (See fuel-examples/ for complete runnable examples per model.)
+//! use fuel::lazy_nn_varbuilder::LazyVarBuilder;
+//! // Build a `LazyVarBuilder` over safetensors weights, then run a model's
+//! // forward pass. (See fuel-examples/ for complete runnable examples per model.)
+//! # let _entry = std::marker::PhantomData::<LazyVarBuilder>;
 //! ```
 //!
 //! ## What is explicitly NOT here
