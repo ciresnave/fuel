@@ -46,5 +46,20 @@ fn main() {
     // FUEL_BUILDTIME_MODEL_REVISION="sentence-transformers/all-MiniLM-L6-v2:c9745ed1d9f207416be6d2e6f8de32d1f16199bf"
     if let Some(model_rev) = core::option_env!("FUEL_BUILDTIME_MODEL_REVISION") {
         buildtime_downloader::download_model(model_rev).expect("Model download failed!");
+    } else if std::env::var_os("CARGO_FEATURE_BUILDTIME_DOWNLOAD").is_some() {
+        // The `buildtime-download` feature (bert_single_file_binary) is enabled
+        // but no revision was given, so the download never ran and the three
+        // `FUEL_BUILDTIME_MODEL_*` env vars are unset. Fail with a clear,
+        // actionable message here instead of the cryptic downstream
+        // `env!("FUEL_BUILDTIME_MODEL_CONFIG") not defined`. The revision is a
+        // required build-time input — no default is invented (there is no
+        // sensible default model to download).
+        println!(
+            "cargo::error=the `buildtime-download` feature (the \
+             bert_single_file_binary example) requires FUEL_BUILDTIME_MODEL_REVISION \
+             to be set at build time. Example: FUEL_BUILDTIME_MODEL_REVISION=\
+             \"sentence-transformers/all-MiniLM-L6-v2:<revision-sha>\" cargo build \
+             --example bert_single_file_binary --release --features buildtime-download"
+        );
     }
 }
