@@ -291,7 +291,7 @@ fn cells() -> BTreeMap<&'static str, Cell> {
         cell(
             Contraction(gem_f32(8, 4096, 4096)),
             gem_ops(),
-            "vulkan:sg64.ops-abr.arith-f16.cm-none",
+            "vulkan:sg64.ops-abr.arith-f16.cm-none.cv-none",
         ),
     );
     m.insert("simt_f32", cell(Contraction(gem_f32(8, 4096, 4096)), gem_ops(), "cuda:sm90"));
@@ -423,8 +423,17 @@ fn corpus_is_the_artifact_this_leg_was_bound_to() {
     assert_eq!(strs(&c, "dtype_recognition_set").len(), 24);
     assert_eq!(strs(&c, "dtype_usable_set").len(), 22);
     assert_eq!(strs(&c, "target_namespaces"), vec!["cuda", "vulkan"]);
+    // The per-namespace vocabulary versions (KISS #200). ASSERTED, not read:
+    // a field a consumer only reads is documentation. This is the field whose
+    // absence let Fuel and KISS agree on a four-field `vulkan:` token that the
+    // vulkan maintainer's own doc had declared malformed four weeks earlier —
+    // the byte-match did not fail, it AGREED, because neither side was pointed
+    // at the namespace doc. Pinning it here means a vocabulary bump reddens
+    // this leg instead of passing through it.
+    assert_eq!(c["namespace_vocabulary_versions"]["cuda"].as_u64(), Some(1));
+    assert_eq!(c["namespace_vocabulary_versions"]["vulkan"].as_u64(), Some(4));
     assert_eq!(vectors(&c, "positive_vectors").len(), 20);
-    assert_eq!(vectors(&c, "decline_vectors").len(), 10);
+    assert_eq!(vectors(&c, "decline_vectors").len(), 17);
 }
 
 /// Every positive vector is either **constructed** or **explicitly excluded** —
@@ -528,7 +537,20 @@ fn fuel_never_emits_a_published_decline_token() {
         .iter()
         .map(|v| (field(v, "token"), field(v, "name")))
         .collect();
-    assert_eq!(declines.len(), 10);
+    // ⚠️ `declines` is keyed by TOKEN, so this length is the DISTINCT-token
+    // count — NOT the vector count. Bumping it alone would pass even if two
+    // decline vectors collided on one token, which is exactly the
+    // non-injectivity failure that makes a false agreement look like a real
+    // one. Assert BOTH, so the pair is a real injectivity check on the
+    // published decline set rather than an accident of two numbers matching.
+    let published = vectors(&c, "decline_vectors").len();
+    assert_eq!(published, 17, "published decline vectors");
+    assert_eq!(
+        declines.len(),
+        published,
+        "two decline vectors share a token — the decline set is not injective, \
+         so a Fuel emission matching one of them would be attributed ambiguously",
+    );
 
     for (name, cell) in cells() {
         let Some(token) = cell.derive() else { continue };

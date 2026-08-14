@@ -3,6 +3,11 @@
   "generated_from": "spec/classify.md",
   "source_commit": "19c3ad7",
   "clause": "KISS-CLASSIFY-6.7",
+  "namespace_vocabulary_note": "Each <namespace>: token is spelled in a vocabulary owned by that namespace's maintainer (KISS-CLASSIFY-6.8-0004), versioned independently of this artifact. These are the versions the tokens below were GENERATED AGAINST; a consumer asserting a vocabulary version (KISS-CLASSIFY-6.8-0009) asserts against these. The generator FAILS rather than emit a token whose vocabulary version it cannot state.",
+  "namespace_vocabulary_versions": {
+    "cuda": 1,
+    "vulkan": 4
+  },
   "structure_key_schema_version": 4,
   "token_prefix": "sk4",
   "dtype_axis_note": "recognition_set is all 24 tokens a reader MUST recognize on parse (reserved ones typed-decline, distinct from unknown); usable_set is the 22 a byte-match runs over. The two are different obligations (KISS-CLASSIFY-6.1-0001).",
@@ -68,6 +73,7 @@
     "vulkan"
   ],
   "mapping_guard_note": "The `decline` kind strings are KISS's vocabulary. KISS enforces their exhaustiveness at generation time (a new KeyDecline variant is a build error) — that protects only the KISS side. A consumer mapping these onto its own decline enum MUST guard the mapping itself; a variant added on either side silently staleness the table.",
+  "coverage_note": "The positive vectors exercise the structure_key token GRAMMAR — field order, optional-field presence, sentinel spellings, work-class/dispatch, and decline verdicts — NOT the dtype vocabulary: they place only a few of the 22 usable dtypes in the dtype position, so a dtype-spelling divergence on a token that never appears is invisible to a byte-match against this set. Vocabulary agreement is a DIFFERENT instrument's job and IS closed there: the dtype-manifest gate — tools/test_kiss_dtypes_manifest.py, over conformance/corpus/dtype_manifest.json — asserts each dtype token's metadata, so a c128->c127 respell raises there, naming the token. Nor do the POSITIVE vectors test decline-side rules: rule (d) — rejecting the all-default redundant (acc+mp) form — is exercised only by the decline vector 'redundant_acc_mp_all_default' -> RedundantAccMpField (a deriver covers it by running the DECLINE vectors on the parse side, or by proving the redundant form unconstructible on the emit side; never by the positive byte-match). So 'the byte-match passed' means the token grammar agrees; the vocabulary is confirmed by the manifest and the decline-side rules by the decline vectors, not by this positive set.",
   "positive_vectors": [
     {
       "clause": "KISS-CLASSIFY-6.7-0001",
@@ -153,9 +159,9 @@
       "clause": "KISS-CLASSIFY-6.8",
       "name": "dense_contraction_vulkan_target",
       "note": "same gem cell on a vulkan capability-set target",
-      "target": "vulkan:sg64.ops-abr.arith-f16.cm-none",
+      "target": "vulkan:sg64.ops-abr.arith-f16.cm-none.cv-none",
       "target_namespace": "vulkan",
-      "token": "sk4|gem|f32|vulkan:sg64.ops-abr.arith-f16.cm-none|ix32|grid|r2|co/00/v4/d16/f;co/00/v4/d16/f;co/00/v4/d16/f|-|ctll/d16/f32/f32/f32/st"
+      "token": "sk4|gem|f32|vulkan:sg64.ops-abr.arith-f16.cm-none.cv-none|ix32|grid|r2|co/00/v4/d16/f;co/00/v4/d16/f;co/00/v4/d16/f|-|ctll/d16/f32/f32/f32/st"
     },
     {
       "clause": "KISS-CLASSIFY-6.7-0006",
@@ -302,6 +308,55 @@
       "note": "the gem precision group with an unrecognized math-precision code (zz)",
       "token": "sk4|gem|f32|cuda:sm89|ix32|grid|r2|co/00/v4/d16/f;co/00/v4/d16/f;co/00/v4/d16/f|-|ctll/d16/f32/f32/f32/zz",
       "decline": "BadContractionField"
+    },
+    {
+      "clause": "KISS-CLASSIFY-6.7-0005",
+      "name": "noncanonical_reduce_all_axes_r2",
+      "note": "x03 at rank 2 is the all-axes set — MUST be rall, never a bitmask",
+      "token": "sk4|red|f32|cuda:sm89|ix32|warp|r2|co/00/v1/d8/f;co/00/v1/da/f|x03",
+      "decline": "NonCanonicalReduceField"
+    },
+    {
+      "clause": "KISS-CLASSIFY-6.7-0005",
+      "name": "noncanonical_reduce_trailing_r2",
+      "note": "x02 at rank 2 is the lone innermost axis — MUST be rlast, never a bitmask",
+      "token": "sk4|red|f32|cuda:sm89|ix32|warp|r2|co/00/v1/d8/f;co/00/v1/da/f|x02",
+      "decline": "NonCanonicalReduceField"
+    },
+    {
+      "clause": "KISS-CLASSIFY-6.7-0005",
+      "name": "noncanonical_reduce_rank1",
+      "note": "x01 at rank 1 is both all-axes and lone-trailing (they coincide) — MUST be rall (§6.6-0009 tie-break)",
+      "token": "sk4|red|f32|cuda:sm89|ix32|warp|r1|co/00/v1/d8/f;co/00/v1/da/f|x01",
+      "decline": "NonCanonicalReduceField"
+    },
+    {
+      "clause": "KISS-CLASSIFY-6.7-0005",
+      "name": "noncanonical_reduce_empty",
+      "note": "x00 is the empty reduced set — that is not a reduction, spelled `-`, never a bitmask",
+      "token": "sk4|red|f32|cuda:sm89|ix32|warp|r2|co/00/v1/d8/f;co/00/v1/da/f|x00",
+      "decline": "NonCanonicalReduceField"
+    },
+    {
+      "clause": "KISS-CLASSIFY-6.7-0009",
+      "name": "out_of_range_reduce_mask_r2",
+      "note": "x04 at rank 2 sets bit 2, an axis that does not exist — out-of-range mask, not a sentinel overload",
+      "token": "sk4|red|f32|cuda:sm89|ix32|warp|r2|co/00/v1/d8/f;co/00/v1/da/f|x04",
+      "decline": "BadReduceField"
+    },
+    {
+      "clause": "KISS-CLASSIFY-6.6-0009",
+      "name": "noncanonical_reduce_rall_rank0",
+      "note": "rall at rank 0 is the full set of zero axes = the empty set — a real set spelled wrong that `-` owns, exactly x00's shape",
+      "token": "sk4|red|f32|cuda:sm89|ix32|warp|r0|co/00/v1/d8/f;co/00/v1/da/f|rall",
+      "decline": "NonCanonicalReduceField"
+    },
+    {
+      "clause": "KISS-CLASSIFY-6.6-0009",
+      "name": "out_of_range_reduce_rlast_rank0",
+      "note": "rlast at rank 0 names a lone innermost axis that does not exist — a set that cannot exist for the rank, exactly x04@r2's out-of-range shape",
+      "token": "sk4|red|f32|cuda:sm89|ix32|warp|r0|co/00/v1/d8/f;co/00/v1/da/f|rlast",
+      "decline": "BadReduceField"
     }
   ]
 }
