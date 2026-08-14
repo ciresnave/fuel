@@ -133,7 +133,34 @@ fn matmul_f32_aocl_cpu_wrapper(
             m,
             n,
             k,
-        } => (lhs_batch_dims, rhs_batch_dims, *m, *n, *k),
+            m_compute,
+        } => {
+            // Data-determined-M (sparse MoE): `m` is the row CAPACITY and only
+            // `m_compute` rows are real; the tail is uninitialized capacity.
+            // The AOCL path hands `m` straight to a BLAS gemm, which has no
+            // row-limit concept — so for anything but `All` it would compute
+            // rows past the valid data and write plausible-looking garbage.
+            // DECLINE loudly rather than fabricate.
+            //
+            // Matched exhaustively on purpose (no `..`, no wildcard): a new
+            // `MatmulM` variant must be a compile error here, not a silent
+            // fallthrough into the all-rows path. That enforcement is exactly
+            // what surfaced this arm — `m_compute` was added to
+            // `OpParams::Matmul` and this crate is NOT a `default-member`, so
+            // no gate compiled it and the break rode into CI.
+            match m_compute {
+                fuel_dispatch::kernel::MatmulM::All => {}
+                other => {
+                    return Err(Error::Msg(format!(
+                        "matmul_f32_aocl wrapper: only MatmulM::All is supported; the AOCL \
+                         BLAS gemm path computes all {m} rows and cannot honour a reduced \
+                         row count, got {other:?}",
+                    ))
+                    .bt());
+                }
+            }
+            (lhs_batch_dims, rhs_batch_dims, *m, *n, *k)
+        }
         other => {
             return Err(Error::Msg(format!(
                 "matmul_f32_aocl wrapper expects OpParams::Matmul, got {other:?}",
