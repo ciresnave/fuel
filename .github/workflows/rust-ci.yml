@@ -297,25 +297,14 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
-      # `fuel-onnx`'s build script calls `prost_build::compile_protos`, and
-      # prost-build 0.13 does NOT bundle a `protoc` (dropped in 0.11) — so
-      # without one the crate fails at BUILD SCRIPT time, before compiling a
-      # line, and takes the whole `--workspace` job with it.
-      #
-      # INSTALLED rather than excluded, deliberately, and the distinction from
-      # the exclusion list above is the point: CUDA / oneMKL / AOCL / Metal are
-      # heavy or platform-impossible on a hosted runner, so excluding them is
-      # the only option and costs real coverage. `protoc` is a small package
-      # available on every platform, so installing it KEEPS fuel-onnx covered
-      # for a few seconds of CI time. Prefer installing a missing tool over
-      # excluding a crate whenever the tool is actually installable.
+        with:
+          components: clippy
+      # See the identical step in the `check` job for why protoc is INSTALLED
+      # rather than fuel-onnx being excluded.
       - name: Install protoc (fuel-onnx build script)
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-        with:
-          components: clippy
       # Runs on ubuntu-latest, so it needs the full non-Apple exclusion set —
       # clippy compiles what it lints, and would die on `objc2` exactly as
       # `cargo check` does.
