@@ -444,7 +444,28 @@ impl Phi3Model {
         let attn = scores_masked.softmax_last_dim()?;
         let attn_v = attn.matmul(&full_v)?;
 
-        let merged = attn_v.merge_heads()?;
+        // `merge_heads()` inlined as permute + reshape so `attn_v`'s SOLE
+        // consumer (the permute) can be named as the flash arm's reconverge —
+        // arm-0 runnability requires the merge to read arm 0.
+        let attn_v_permuted = attn_v.permute([0, 2, 1, 3_usize])?;
+        crate::lazy::offer_flash_decode_arm_for_region(
+            q_r.inner.graph(),
+            q_r.inner.id(),
+            full_k.inner.id(),
+            full_v.inner.id(),
+            attn_v.inner.id(),
+            attn_v_permuted.inner.id(),
+            scale as f32,
+            inputs.attended_len_sym,
+            // Phi3 is uniformly dense, so this is always `None` — but DERIVED
+            // from its mask plan (GAP-194), not asserted.
+            inputs.attn_window,
+            None, // no attention-logit softcap
+            fuel_dispatch::decode_flash::FlashArmCapability::production(),
+        )?;
+        let merged = attn_v_permuted.reshape(Shape::from_dims(&[
+            batch, seq, cfg.num_attention_heads * head_dim,
+        ]))?;
         let attn_out = layer.attn_o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?;
 
         let h1 = x.add(&attn_out)?;

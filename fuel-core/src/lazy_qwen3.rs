@@ -380,7 +380,30 @@ pub(crate) fn qwen3_attn_with_kv_writes(
     let attn = scores_masked.softmax_last_dim()?;
     let attn_v = attn.matmul(&full_v)?;
 
-    let merged = attn_v.merge_heads()?;
+    // `merge_heads()` inlined as permute + reshape so `attn_v`'s SOLE consumer
+    // (the permute) can be named as the flash arm's reconverge — arm-0
+    // runnability requires the merge to read arm 0. Same split `LlamaModel`
+    // makes, for the same reason.
+    let attn_v_permuted = attn_v.permute([0, 2, 1, 3_usize])?;
+    crate::lazy::offer_flash_decode_arm_for_region(
+        q_r.inner.graph(),
+        q_r.inner.id(),
+        full_k.inner.id(),
+        full_v.inner.id(),
+        attn_v.inner.id(),
+        attn_v_permuted.inner.id(),
+        scale as f32,
+        inputs.attended_len_sym,
+        // GAP-194: this layer's OWN window — declined by the admissibility gate
+        // on a windowed layer, eligible on a dense one. Asserting `None` here
+        // would make the arm attend the whole prefix.
+        inputs.attn_window,
+        None, // no attention-logit softcap in the Qwen3 family
+        fuel_dispatch::decode_flash::FlashArmCapability::production(),
+    )?;
+    let merged = attn_v_permuted.reshape(Shape::from_dims(&[
+        batch, seq, blk.num_attention_heads * blk.head_dim,
+    ]))?;
     let attn_out = blk.attn_o.apply_linear(&merged, blk.hidden_size, blk.hidden_size)?;
     x.add(&attn_out)
 }

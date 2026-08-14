@@ -482,10 +482,16 @@ impl Qwen2Model {
         k_cache_const: &LazyTensor,
         v_cache_const: &LazyTensor,
         cached_len_sym: fuel_ir::SymId,
+        // The live attended prefix (`cached_len + seq`) — the flash arm's
+        // `k_len`. Inert on the f32 decode graph, where the arm declines.
+        attended_len_sym: fuel_ir::SymId,
         offset: Option<&LazyTensor>,
         rope_cos: &LazyTensor,
         rope_sin: &LazyTensor,
         mask: &LazyTensor,
+        // GAP-194: this layer's own window, from the same plan entry `mask`
+        // came from — so the arm and the mask cannot disagree.
+        attn_window: Option<usize>,
     ) -> Result<LazyTensor> {
         let cfg = &self.config;
         let head_dim = cfg.head_dim();
@@ -556,7 +562,31 @@ impl Qwen2Model {
         let attn = scores_masked.softmax_last_dim()?;
         let attn_v = attn.matmul(&full_v)?;
 
-        let merged = attn_v.merge_heads()?;
+        // `merge_heads()` inlined as permute + reshape so `attn_v`'s SOLE
+        // consumer (the permute) can be named as the flash arm's reconverge —
+        // arm-0 runnability requires the merge to read arm 0. The same split
+        // `LlamaModel` makes, for the same reason.
+        let attn_v_permuted = attn_v.permute([0, 2, 1, 3_usize])?;
+        crate::lazy::offer_flash_decode_arm_for_region(
+            q_r.inner.graph(),
+            q_r.inner.id(),
+            full_k.inner.id(),
+            full_v.inner.id(),
+            attn_v.inner.id(),
+            attn_v_permuted.inner.id(),
+            scale as f32,
+            attended_len_sym,
+            // GAP-194: this layer's OWN window. A windowed layer is declined by
+            // the admissibility gate (`flash_decoding` implements no local
+            // attention); a dense layer is eligible. Stating it is what makes
+            // the offer honest — asserting `None` here would be the defect.
+            attn_window,
+            None, // Qwen2 has no attention-logit softcap
+            fuel_dispatch::decode_flash::FlashArmCapability::production(),
+        )?;
+        let merged = attn_v_permuted.reshape(Shape::from_dims(&[
+            batch, seq, cfg.num_attention_heads * head_dim,
+        ]))?;
         let attn_out = layer.attn_o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?;
 
         let h1 = x.add(&attn_out)?;
@@ -643,10 +673,12 @@ impl DecodeBackbone for Qwen2Model {
             inputs.k_cache,
             inputs.v_cache,
             inputs.cached_len_sym,
+            inputs.attended_len_sym,
             inputs.offset,
             inputs.rope_cos,
             inputs.rope_sin,
             inputs.mask,
+            inputs.attn_window,
         )
     }
 
