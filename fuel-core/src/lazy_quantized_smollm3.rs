@@ -435,7 +435,7 @@ mod tests {
             num_hidden_layers: 2, num_attention_heads: 4, num_key_value_heads: 4,
             head_dim: 8, rms_norm_eps: 1e-5, rope_theta: 10_000.0,
             max_position_embeddings: 64, attention_bias: false,
-            sliding_window: None, no_rope_layers: None,
+            sliding_window: None, uses_rope_per_layer: None,
         }
     }
 
