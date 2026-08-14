@@ -35,15 +35,12 @@ pyo3 = { version = "0.29", features = [
     "abi3-py313",
 ], optional = true }
 rayon = { workspace = true }
-rubato = { version = "1", optional = true }
 safetensors = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 symphonia = { version = "0.5.3", features = ["all"], optional = true }
 tokenizers = { workspace = true, features = ["fancy-regex"] }
-cpal = { version = "0.15.2", optional = true }
 pdf2image = { version = "0.1.2", optional = true }
-tekken-rs = { version = "0.1.1", optional = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
@@ -87,12 +84,7 @@ mkl = [
 nccl = ["cuda", "fuel/nccl", "dep:baracuda-nccl", "dep:half"]
 onnx = ["fuel-onnx"]
 metal = ["fuel/metal"]
-microphone = ["cpal", "rubato"]
-encodec = ["cpal", "symphonia", "rubato"]
-mimi = ["cpal", "symphonia", "rubato"]
-snac = ["cpal", "symphonia", "rubato"]
 depth_anything_v2 = ["palette", "enterpolation"]
-tekken = ["tekken-rs"]
 buildtime-download = []
 
 [[example]]
@@ -116,27 +108,11 @@ name = "whisper"
 required-features = ["symphonia"]
 
 [[example]]
-name = "whisper-microphone"
-required-features = ["microphone"]
-
-[[example]]
 name = "mnist-training"
 required-features = ["fuel-datasets"]
 
 [[example]]
 name = "llama2-c"
-
-[[example]]
-name = "mimi"
-required-features = ["mimi"]
-
-[[example]]
-name = "snac"
-required-features = ["snac"]
-
-[[example]]
-name = "encodec"
-required-features = ["encodec"]
 
 [[example]]
 name = "depth_anything_v2"
@@ -149,10 +125,6 @@ required-features = ["onnx"]
 [[example]]
 name = "colpali"
 required-features = ["pdf2image"]
-
-[[example]]
-name = "voxtral"
-required-features = ["symphonia"]
 
 [[example]]
 name = "bert_single_file_binary"
