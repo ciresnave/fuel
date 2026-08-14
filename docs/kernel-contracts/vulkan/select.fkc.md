@@ -13,14 +13,16 @@ provider:
 The Vulkan backend's byte-level **data-selection** primitives (crate `vulkan`, family `select`):
 `OpKind::IndexSelect` (row-wise lookup along a dim by a rank-1 U32 index tensor),
 `OpKind::Gather` (N-D gather along a dim by a same-shape U32 index tensor), and
-`OpKind::MaskedFill` (per-element select between the data value and a constant fill by a U8 mask).
+`OpKind::MaskedFill` (per-element select between the data value and a constant fill by a **Bool** mask;
+GAP-168(c) — the mask was U8 before that ruling, and stale prose saying `U8` is what made a stale test
+look like a missing registration).
 Every kernel here is a **pure byte / word data mover** — it copies the selected element's bytes
 through with no arithmetic, so the result is **bit-identical on any hardware** (byte-exact,
 `determinism: bitwise`).
 
 **As-built binding model — production truth.** The three OpKinds register as PRIMITIVE bindings keyed
 `(OpKind, [data_dtype, index_dtype, out_dtype], Vulkan) + kernel_source`; the index slot is `U32`
-(IndexSelect / Gather) or `U8` (MaskedFill mask). Two wrapper shapes:
+(IndexSelect / Gather) or `BOOL` (MaskedFill mask, GAP-168(c)). Two wrapper shapes:
 
 - **IndexSelect** has FOUR distinct per-dtype wrappers (`indexing::index_select_{f32,f16,bf16,f64}` →
   `VulkanBackend::index_select_*_bytes`); the `index_select` section below fans `[F32, F16, BF16, F64]`
@@ -203,7 +205,7 @@ determinism: bitwise
 
 ---
 
-## masked_fill  (per-element select data-vs-constant by a U8 mask; f32/f16/bf16/f64/u8/u32)
+## masked_fill  (per-element select data-vs-constant by a Bool mask; f32/f16/bf16/f64/u8/u32)
 
 Two inputs (`data`, `mask`) → one output: where `mask != 0` the output takes the constant fill bytes,
 else it copies `data` through (a per-element byte select, no arithmetic). The mask is `U8`, contiguous;
@@ -212,12 +214,12 @@ the fill constant rides in `OpParams::MaskedFill.fill_bytes`. ONE dtype-agnostic
 the OUTPUT dtype at the shim, so every fanned dtype key resolves to the SAME `KernelRef` (synthetic-
 base umbrella). This section fans `[F32, F16, BF16, F64, U8, U32]`; the link registry maps every
 `masked_fill_<suffix>` symbol to the one wrapper. Contiguous-only binding. Dispatch key
-`(MaskedFill, [T, U8, T], Vulkan)`.
+`(MaskedFill, [T, BOOL, T], Vulkan)` (GAP-168(c)).
 
 ```fkc
 kernel: masked_fill
 op_kind: MaskedFill
-blurb: "Per-element select data-vs-constant by a U8 mask; dtype-agnostic byte-width copy; contiguous-only binding."
+blurb: "Per-element select data-vs-constant by a Bool mask; dtype-agnostic byte-width copy; contiguous-only binding."
 backend: Vulkan
 kernel_source: "vulkan-slang"
 entry_point: "fuel_vulkan_backend::fkc::masked_fill"   # BASE symbol; fans masked_fill_<suffix>, all → masked_fill::masked_fill
@@ -268,7 +270,7 @@ precision:
   max_relative: 0.0
   max_absolute: 0.0
   audited: true
-  notes: "exact per-element byte select (data vs constant fill by U8 mask); no arithmetic, bit-identical across any hardware."
+  notes: "exact per-element byte select (data vs constant fill by Bool mask); no arithmetic, bit-identical across any hardware."
 
 determinism: bitwise
 ```
