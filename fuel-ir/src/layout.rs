@@ -144,7 +144,7 @@ impl Layout {
         let dims = self.shape().dims();
         if dim >= dims.len() {
             Err(Error::DimOutOfRange {
-                shape: self.shape().clone(),
+                shape: Box::new(self.shape().clone()),
                 dim: dim as i32,
                 op: "narrow",
             }
@@ -152,7 +152,7 @@ impl Layout {
         }
         if start + len > dims[dim] {
             Err(Error::NarrowInvalidArgs {
-                shape: self.shape.clone(),
+                shape: Box::new(self.shape.clone()),
                 dim,
                 start,
                 len,
@@ -186,7 +186,7 @@ impl Layout {
             Err(Error::UnexpectedNumberOfDims {
                 expected: usize::max(dim1, dim2),
                 got: rank,
-                shape: self.shape().clone(),
+                shape: Box::new(self.shape().clone()),
             }
             .bt())?
         }
@@ -331,8 +331,8 @@ impl Layout {
         let shape = shape.into();
         if shape.rank() < self.shape().rank() {
             return Err(Error::BroadcastIncompatibleShapes {
-                src_shape: self.shape().clone(),
-                dst_shape: shape,
+                src_shape: Box::new(self.shape().clone()),
+                dst_shape: Box::new(shape),
             }
             .bt());
         }
@@ -346,8 +346,8 @@ impl Layout {
                 src_stride
             } else if src_dim != 1 {
                 return Err(Error::BroadcastIncompatibleShapes {
-                    src_shape: self.shape().clone(),
-                    dst_shape: shape,
+                    src_shape: Box::new(self.shape().clone()),
+                    dst_shape: Box::new(shape),
                 }
                 .bt());
             } else {
