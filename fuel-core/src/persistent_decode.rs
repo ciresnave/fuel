@@ -396,6 +396,18 @@ impl MaskPlan {
         self.per_layer[layer_idx]
     }
 
+    /// This layer's window width, or `None` if it attends densely.
+    ///
+    /// **The single source shared with the mask bytes** — the CUDA flash arm's
+    /// `window_size_*` and the mask Const come from the *same* plan entry, so
+    /// they cannot disagree. A family deriving the window separately for the arm
+    /// would be free to drift from the mask it actually applies, and *"arm says
+    /// dense, mask says windowed"* is precisely the silent defect GAP-194 was
+    /// filed about.
+    pub fn window_for_layer(&self, layer_idx: usize) -> Option<usize> {
+        self.windows[self.per_layer[layer_idx]]
+    }
+
     /// Mix the plan's **structural** content into a decode shape key.
     ///
     /// The variant count and the per-layer assignment change the graph's shape
@@ -646,6 +658,16 @@ pub struct DecodeLayerInputs<'a> {
     pub rope_sin: &'a LazyTensor,
     /// **This layer's** mask variant, already sliced out of the stacked Const.
     pub mask: &'a LazyTensor,
+    /// **This layer's** window width, or `None` if it attends densely — the
+    /// same plan entry `mask` was built from ([`MaskPlan::window_for_layer`]).
+    ///
+    /// Carried so a layer offering the CUDA flash-decode arm can state the
+    /// truth about its own key range instead of asserting `None`. The arm's
+    /// `flash_decoding` kernel does not implement local attention, so a
+    /// windowed layer's offer is *declined* — which is correct and is the
+    /// point. Asserting `None` there would make the arm attend the whole
+    /// prefix and silently drop the window (GAP-194).
+    pub attn_window: Option<usize>,
 }
 
 /// Per-token host data, before it becomes either a baked Const or an upload.
@@ -936,6 +958,7 @@ fn build_decode_graph<M: DecodeBackbone + ?Sized>(
             rope_cos: &rope_cos_v[rope_plan.variant_for_layer(li)],
             rope_sin: &rope_sin_v[rope_plan.variant_for_layer(li)],
             mask: &masks[plan.variant_for_layer(li)],
+            attn_window: plan.window_for_layer(li),
         })?;
     }
 
