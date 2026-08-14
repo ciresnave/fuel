@@ -758,6 +758,71 @@ the RoPE-gating analogue (port with unconditional RoPE, watch a `no_rope_layers`
 config diverge), and `lazy_smollm3.rs:383` already sets
 `no_rope_layers = Some(vec![0, 1])` in the existing corpus.
 
+#### Landed 2026-08-14: GEMMA3 — both per-layer axes, and a degenerate fixture
+
+Gemma3 is the only family that varies **both** axes per layer: sliding-window vs
+full-causal mask on a **modular** pattern, and `rope_local_base_freq` vs
+`rope_theta` — a **RoPE BASE**, i.e. different table bytes. It also scales
+embeddings by `sqrt(hidden_size)`, and is the first family here where
+`hidden_size != num_attention_heads * head_dim`.
+
+Both seam capabilities it needed landed separately at `4256c817` with their
+byte-identity proof attributable to them. This commit adds two **total** plan
+constructors — `MaskPlan::per_layer_window` and `RopePlan::per_layer_base` —
+because Gemma3's assignment is modular and `decode_mask_plan`/`decode_rope_plan`
+are infallible: `MaskPlan::new` returns `Result`, and `expect`-ing it on a
+production path is the never-panic violation this project bans. A `bool`
+selector over exactly two defined variants cannot index out of range, so the
+constructors need no `Result` at all. Both collapse to a single variant when the
+selector is constant *or* (for RoPE) when the two bases are equal.
+
+##### ⚠️ The fixture was degenerate on the axis under test — a THIRD route to a vacuous oracle
+
+`lazy_gemma3.rs` and `lazy_quantized_gemma3.rs` both ship
+`rope_local_base_freq: 10_000.0` alongside `rope_theta: 10_000.0`, deliberately
+("for the tables match test"). **A decode test on the unmodified fixture
+exercises one RoPE table and passes under a single-base port.** Tolerance fine,
+assertion fine, *input* collapses the axis.
+
+Both tests override the local base, and — more importantly — assert the
+**derived** structure rather than the config: `decode_rope_plan().n_variants() ==
+2`. A sibling test (`gemma3_equal_rope_bases_collapse_to_one_variant`) pins that
+`n_variants()` genuinely tracks the fixture, so the `== 2` assertion is a real
+check and not a tautology.
+
+##### Born red on EACH axis separately
+
+```text
+mask axis (plan -> dense)              : [5.876e-2, 3.466e-2, 9.661e-2]
+rope axis (plan -> single global base) : [1.235e-3, 8.673e-4, 1.031e-3]
+correct (both plans)                   : [0.0, 0.0, 0.0]
+control (sliding_window_pattern: 1)    : [0.0, 0.0, 0.0]
+```
+
+**⚠️ The RoPE number is the one to read.** At ~1e-3 it is ~100× the 1e-5 oracle
+and **comfortably under** the `diff < 5e-3 || rel < 1e-2` of the decode test this
+port would naturally have been modelled on. **That template goes green on a
+dual-base defect.** A measured threshold is the only reason the axis is covered.
+
+**⚠️ And a cross-family inference that does NOT port:** unlike Qwen2, *all three*
+positions diverge on Gemma3's mask axis. Qwen2's leading step was clean because
+its window (4) could not exclude anything until absolute position 4; Gemma3's
+window is 3, so it bites from position 3. "The leading zero proves
+discrimination" is **config-specific**, not a property of the seam.
+
+With the guards restored, both sabotages are caught by the `n_variants()`
+assertions *before* the logits comparison — a structural failure naming the
+broken axis. The magnitudes were measured with those guards bypassed and recorded
+in-file, since the threshold's calibration is otherwise unverifiable.
+
+**Sabotage (Gemma3's own layer, FFN residual dropped): `135 passed; 2 failed`** —
+exactly one family, with all seven others green including the six sharing the
+build path.
+
+**Gates:** `-p fuel-core -p fuel-examples -p fuel-inference --all-targets -j 4`
+exit 0 (184 artifacts); `-p fuel-core --lib` **1484 passed / 0 failed / 12
+ignored / 0 filtered out**.
+
 ### Open hypothesis — Phi's separate body may be almost entirely redundant
 
 **Recorded now, deliberately NOT acted on.** Two step-0 results combine into
