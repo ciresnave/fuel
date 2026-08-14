@@ -188,6 +188,17 @@ jobs:
     name: Test Suite
     runs-on: ${{ matrix.os }}
     strategy:
+      # The `check` job above already sets this; `test` did not, and the
+      # asymmetry destroys data exactly when it is most wanted. On the first run
+      # where the suite could execute at all, macOS failed and ubuntu + windows
+      # were CANCELLED mid-run — so a triage of "what is actually broken"
+      # returned one OS out of three, and the other two reported `cancelled`,
+      # which is not a result in either direction.
+      #
+      # Test failures are usually PLATFORM-SPECIFIC, so cancelling the siblings
+      # of a failure discards the most informative comparison available: did
+      # this break everywhere, or only here?
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macOS-latest]
     steps:

@@ -18706,13 +18706,28 @@ mod generate_tests {
     /// `Device::custom`, the pipelined executor + binding-table
     /// dispatch route the per-op kernels to Vulkan SPIR-V.
     ///
-    /// GAP-157: this test is `#[cfg(feature = "vulkan")]`, so it is compiled
-    /// only when someone asked for the Vulkan path to be tested — a CI machine
-    /// without a GPU never builds it and stays green that way. It therefore
-    /// REQUIRES a Vulkan device rather than skipping: the old
-    /// `eprintln!("skipping: …"); return` silently converted an explicit
-    /// request into a test that reported `ok` having asserted nothing.
+    /// GAP-157: REQUIRES a live Vulkan device — the old
+    /// `eprintln!("skipping: …"); return` reported `ok` having asserted
+    /// nothing, and it did so on **every macOS CI run**.
+    ///
+    /// ⚠️ `#[ignore]` IS LOAD-BEARING HERE, and the reason corrects an earlier
+    /// claim in this very comment. It previously read: *"this test is
+    /// `#[cfg(feature = "vulkan")]`, so a CI machine without a GPU never builds
+    /// it"*. **That is FALSE.** `cargo test --workspace` unifies features
+    /// across the whole selected graph INCLUDING dev-dependencies, and
+    /// `fuel-vulkan-backend` -> `fuel-dispatch/vulkan` -> `fuel-core/vulkan`
+    /// turns this feature ON in an ordinary default build (measured with
+    /// `cargo tree -e features --workspace`). So it compiled and RAN on macOS
+    /// CI, found no Vulkan loader, returned early, and passed.
+    ///
+    /// A `#[cfg(feature = …)]` gate is therefore NOT evidence that CI skips a
+    /// test — feature unification can enable it from a crate you never think
+    /// about. The device requirement needs its own DECLARED gate, which is what
+    /// `#[ignore]` is: run it explicitly on a box that has Vulkan
+    ///   `pwsh scripts/gpu-run.ps1 -Project fuel -- cargo test -p fuel-core \
+    ///        --features vulkan --lib forward_with_kv_context_vulkan -- --ignored`
     #[test]
+    #[ignore = "requires a live Vulkan device"]
     #[cfg(feature = "vulkan")]
     fn forward_with_kv_context_vulkan_matches_cpu() {
         use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
