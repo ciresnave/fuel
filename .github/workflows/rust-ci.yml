@@ -28,6 +28,21 @@ name: Continuous integration
 #       NON-OPTIONAL in their crates (no feature gate), so `--workspace` builds
 #       them unconditionally on every OS.
 #
+#   fuel-cuda-backend
+#       Its `baracuda-kernels-sys` build script forges CUDA kernels
+#       UNCONDITIONALLY — it does not consult the `cuda` feature — and panics
+#       `NvccNotFound` when nvcc is absent, which it is on every hosted runner.
+#       ⚠️ NOTE WHAT THIS COSTS: CUDA code is therefore NOT COMPILED BY CI AT
+#       ALL. That is a real coverage hole, stated here rather than discovered
+#       later from a green badge. It is currently unavoidable — a runner with
+#       CUDA, or a build script that degrades instead of panicking (a
+#       propose-first ask to baracuda, a sibling project), are the two ways out.
+#
+#       Every dependent declares it `optional = true` behind a `cuda` feature,
+#       so nothing pulls it into a default build except its WORKSPACE
+#       MEMBERSHIP — which is also why excluding it removes the forge from the
+#       graph entirely rather than merely skipping one crate.
+#
 #       ⚠️ `fuel-aocl-cpu-backend` is the one that is INVISIBLE LOCALLY, and it
 #       is why CLAUDE.md's stated "honest workspace gate" (which names only the
 #       Metal pair and MKL) is incomplete: the dev box has AOCL installed, so
@@ -45,10 +60,11 @@ name: Continuous integration
 # shell on Windows runners. The runner substitutes the expression before any
 # shell sees it, so one spelling works on every OS.
 env:
-  # WORKSPACE_EXCLUDES = the missing-SDK pair + the wrong-platform pair.
+  # WORKSPACE_EXCLUDES = the missing-SDK crates + the wrong-platform pair.
   WORKSPACE_EXCLUDES: >-
     --exclude fuel-mkl-cpu-backend
     --exclude fuel-aocl-cpu-backend
+    --exclude fuel-cuda-backend
     --exclude fuel-metal-backend
     --exclude fuel-metal-kernels
   # macOS CAN build the Metal crates, so it excludes only the missing-SDK pair.
@@ -60,6 +76,7 @@ env:
   MACOS_EXCLUDES: >-
     --exclude fuel-mkl-cpu-backend
     --exclude fuel-aocl-cpu-backend
+    --exclude fuel-cuda-backend
 
 jobs:
   check:
