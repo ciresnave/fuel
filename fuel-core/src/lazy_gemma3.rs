@@ -547,7 +547,30 @@ impl Gemma3Model {
         let attn = scores_masked.softmax_last_dim()?;
         let attn_v = attn.matmul(&full_v)?;
 
-        let merged = attn_v.merge_heads()?;
+        // `merge_heads()` inlined as permute + reshape so `attn_v`'s SOLE
+        // consumer (the permute) can be named as the flash arm's reconverge —
+        // arm-0 runnability requires the merge to read arm 0.
+        let attn_v_permuted = attn_v.permute([0, 2, 1, 3_usize])?;
+        crate::lazy::offer_flash_decode_arm_for_region(
+            q_r.inner.graph(),
+            q_r.inner.id(),
+            full_k.inner.id(),
+            full_v.inner.id(),
+            attn_v.inner.id(),
+            attn_v_permuted.inner.id(),
+            scale as f32,
+            inputs.attended_len_sym,
+            // GAP-194: this layer's own window — sliding layers are declined.
+            inputs.attn_window,
+            // ⚠️ AND THE SOFTCAP, which is the second false field the original
+            // offer site hardcoded. Gemma3 is the family that has one: passing
+            // `None` here would let the arm compute UNCAPPED attention while
+            // the decomposed path caps it. It disqualifies (no kernel support),
+            // which is correct — the point is that it is STATED.
+            cfg.attn_logit_softcapping.map(|v| v as f32),
+            fuel_dispatch::decode_flash::FlashArmCapability::production(),
+        )?;
+        let merged = attn_v_permuted.reshape(Shape::from_dims(&[batch, seq, q_dim]))?;
         let attn_out = layer.attn_o.apply_linear(&merged, q_dim, cfg.hidden_size)?
             .add_optional_trailing_bias(layer.attn_o_bias.as_ref())?;
         // post_attention_layernorm wraps the attn output BEFORE the residual add.

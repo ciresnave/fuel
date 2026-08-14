@@ -10240,7 +10240,7 @@ pub(crate) fn flash_window_bounds(window: Option<usize>) -> (Option<usize>, Opti
     }
 }
 
-fn offer_flash_decode_arm_for_region(
+pub(crate) fn offer_flash_decode_arm_for_region(
     graph: &fuel_graph::SharedGraph,
     q: fuel_graph::NodeId,
     k: fuel_graph::NodeId,
