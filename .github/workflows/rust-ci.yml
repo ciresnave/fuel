@@ -238,14 +238,24 @@ jobs:
       - name: Install lld (Linux only)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y lld
+      # `--no-fail-fast`: cargo stops after the FIRST failing test BINARY by
+      # default, so every later suite silently never runs. Measured on this
+      # repo: a run that halted in fuel-core's `paged_decode_parity` executed
+      # 21 `test result:` suites; with that one failure fixed the same job
+      # executed 72 — and the extra 51 contained a REAL pre-existing defect
+      # (MaskedFill Vulkan precision coverage) that no CI run had ever reached.
+      #
+      # Same masking as the matrix `fail-fast` above, one level down: there a
+      # failing OS cancelled its siblings, here a failing BINARY cancels every
+      # binary after it. Triage needs the whole list, not the first entry.
       - name: Run tests (with lld on Linux)
         if: runner.os == 'Linux'
         env:
           RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
-        run: cargo test --workspace ${{ env.WORKSPACE_EXCLUDES }}
+        run: cargo test --workspace --no-fail-fast ${{ env.WORKSPACE_EXCLUDES }}
       - name: Run tests (Windows)
         if: runner.os == 'Windows'
-        run: cargo test --workspace ${{ env.WORKSPACE_EXCLUDES }}
+        run: cargo test --workspace --no-fail-fast ${{ env.WORKSPACE_EXCLUDES }}
       # macOS gets its OWN exclusion set, and the difference is the point: this
       # runner CAN build the Metal crates (objc2 is happy on Apple), so
       # excluding them here would throw away the only Metal test coverage in the
@@ -255,7 +265,7 @@ jobs:
       # not collapse them into one list.
       - name: Run tests (macOS)
         if: runner.os == 'macOS'
-        run: cargo test --workspace ${{ env.MACOS_EXCLUDES }}
+        run: cargo test --workspace --no-fail-fast ${{ env.MACOS_EXCLUDES }}
       - name: Run telemetry-gated dispatch tests (sk4 wire codec)
         if: runner.os == 'Linux'
         # `cargo test --workspace` above uses DEFAULT features, so the
