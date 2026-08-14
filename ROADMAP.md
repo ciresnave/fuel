@@ -1324,13 +1324,18 @@ B's factory migration plugs into.
       returns near-zero by construction** — scanning both aliases moved
       the external hit count from ~5 files to 137.
 
-      Still open, tracked separately: `fuel-onnx`'s eager `eval.rs`
-      (`simple_eval`, with live consumers in `fuel-onnx/tests/ops.rs` and
-      `fuel-examples/examples/onnx_basics.rs`; the lazy evaluator covers
-      41 of 82 ops and says so itself), and `fuel-book`. Neither is a
-      default-member. The `if tensor.item::<f32>() > 0.5` idiom question
-      is moot for Rust callers — there is no eager value left to
-      inspect — but resurfaces if Python bindings are revived.
+      B6's residual is now CLOSED (2026-08-14). `fuel-onnx` was fully
+      lazy-ported — the eager `eval.rs`/`simple_eval` was deleted
+      (`67c5a2b3`, `1c94dfe4` "eager consumers gone") and it compiles
+      clean; `fuel-book` (fork-inherited Candle book, whose snippets
+      still used the deleted eager API) was deleted wholesale rather than
+      ported, since it had no live consumer and its content had diverged
+      from Fuel — recoverable from git if the book is recreated later.
+      The two dead feature-gated examples were handled too
+      (`reinforcement-learning` deleted, `mnist-training` ported). The
+      `if tensor.item::<f32>() > 0.5` idiom question is moot for Rust
+      callers — there is no eager value left to inspect — but resurfaces
+      if Python bindings are revived.
 
 **C. Sever `Op`-as-IR from `BackpropOp`-as-tape-entry; move
 backward to `fuel-autograd`.**
@@ -2422,7 +2427,8 @@ captures one such item with the minimum context needed to pick it up cold in a
 future session. Group ordering mirrors the rough cost ladder — the binaries
 need lazy ports of missing model families; the WASM crates need a workspace-
 wide swap; the fuel-core integration tests are small mechanical fixes; the
-fuel-book work is documentation; the lazy-side gaps are net-new primitives.
+fuel-book work was documentation (now closed by deleting the crate — see 4-5);
+the lazy-side gaps are net-new primitives.
 
 ### 0. Closed (deleted)
 
@@ -2573,21 +2579,15 @@ API, not architectural follow-ups.
 - `tests/cuda_composed_bisect.rs` — same `Result`-vs-`LazyTensor` mismatch across `realize_f32`, `matmul`, and `rms_norm_last_dim` call sites.
 - `tests/tensor_tests.rs` — the storage seam now returns `Arc<RwLock<Storage>>` instead of a `RwLockReadGuard`; the test reaches through the old guard shape and needs to be retargeted at the `Arc<RwLock<...>>` API.
 
-### 4. fuel-book doctest cleanup
+### 4-5. fuel-book (doctest cleanup + markdown docs) — CLOSED by deletion (2026-08-14)
 
-`fuel-book/src/simplified.rs` is currently `mod`-gated off because it consumed
-`fuel_nn::{Linear, VarMap, VarBuilder, SGD, Module, Optimizer, ops::log_softmax,
-loss::nll}` — all retired in Phase β4. Port it to the lazy substrate:
-`LazyTensor` + `LazyVar` + `lazy_nn_loss::nll` + `LazyAdamW` (SGD's lazy
-equivalent is the AdamW family; for a strict SGD port, a `LazySGD` would be a
-small additional follow-up).
-
-### 5. fuel-book markdown docs
-
-Five `.md` files under `fuel-book/src/guide` and `fuel-book/src/inference`
-reference `fuel_nn` in prose and in inline code examples. Update both to use
-the lazy substrate (`LazyTensor`, `lazy_nn::*`, `LazyVar`, `lazy_nn_loss::*`,
-and `LazyAdamW`). Doc-only change; no fuel-core code touched.
+Both follow-ups were about porting `fuel-book` content off the eager API
+(`fuel-book/src/simplified.rs` was `mod`-gated on retired `fuel_nn`; five `.md`
+files under `guide`/`inference` referenced `fuel_nn` in prose + inline code).
+`fuel-book` was fork-inherited Candle book content whose snippets and prose
+had diverged from Fuel and still used the API retired in B6. Rather than port
+it (no live consumer), the whole crate was deleted — closing both items and
+B6's residual. Recoverable from git if a Fuel book is written later.
 
 ### 6. Lazy-side primitive gaps surfaced during retirement (defer to follow-up)
 

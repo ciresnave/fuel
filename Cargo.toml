@@ -6,7 +6,6 @@
 # still works on machines that don't have those toolchains.
 members = [
     "fuel-aocl-cpu-backend",
-    "fuel-book",
     "fuel-conv",
     "fuel-core",
     "fuel-ir",

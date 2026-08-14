@@ -1783,36 +1783,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fuel-book"
-version = "0.10.3"
-dependencies = [
- "accelerate-src",
- "anyhow",
- "baracuda-driver",
- "byteorder",
- "clap",
- "fuel-core",
- "fuel-datasets",
- "fuel-transformers",
- "half",
- "hf-hub",
- "image",
- "intel-mkl-src",
- "memmap2",
- "num-traits",
- "parquet",
- "rand",
- "safetensors 0.7.0",
- "serde",
- "serde_json",
- "tokenizers",
- "tokio",
- "tracing",
- "tracing-chrome",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "fuel-conv"
 version = "0.10.3"
 dependencies = [

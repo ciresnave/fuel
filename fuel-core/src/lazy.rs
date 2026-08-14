@@ -1657,7 +1657,7 @@ impl LazyTensor {
     /// [`crate::pipelined_bridge::realize_one_as`] (with `::<f32>`) — which
     /// returns `Result`. GAP-186: this is DOCUMENTED, NOT ENFORCED. `realize_*`
     /// is a genuine public API (13 `fuel-core/tests/` integration crates plus
-    /// `fuel-examples` and `fuel-book` call it), so it cannot be made
+    /// `fuel-examples` call it), so it cannot be made
     /// test-only; the never-panic obligation lives on the production callers,
     /// which use the fallible sibling directly (as `train.rs::param_to_host`
     /// does).
