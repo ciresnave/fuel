@@ -11,19 +11,64 @@ use core::arch::arm::*;
 #[cfg(target_arch = "aarch64")]
 use core::arch::aarch64::*;
 
-#[cfg(all(target_arch = "aarch64", target_feature = "dotprod"))]
+// ─── `vdotq_s32` — CONTRACT, and it is weaker than the name suggests ─────────
+//
+// **Only the SUM of the four returned lanes is specified**: it equals the dot
+// product of all 16 signed byte pairs. **Individual lanes are NOT specified,
+// and the two implementations below genuinely disagree on them.**
+//
+// SDOT computes lane `i` = `sum(a[4i..4i+4] * b[4i..4i+4])`. The software
+// fallback uses `vpaddlq_s16`, which folds *adjacent* i16 lanes, so its lane 0
+// is `a0b0 + a1b1 + a8b8 + a9b9` — a different partition of the same 16
+// products. Both totals are identical; the distribution is not.
+//
+// That is sound here because EVERY caller reduces the result horizontally
+// (`vaddvq_s32`, or `vaddq_s32` then `vaddvq_*`) under a single scalar weight,
+// so the partition cannot be observed — verified across all 20 call sites in
+// this file. **It stops being sound the moment a caller applies a PER-LANE
+// scale before reducing.** If you write such a caller, this function is the
+// wrong primitive: the fallback will return plausible, wrong numbers on every
+// machine that lacks hardware SDOT, and nothing here will catch it.
+//
+// The test at the bottom of this file asserts the contract as stated — the
+// lane SUM against a scalar reference — rather than per-lane equality, which
+// the fallback would fail by design.
+
+/// Hardware SDOT (ARMv8.2-A+). Requires the `neon-dotprod` cargo feature.
+///
+/// `core::arch::aarch64::vdotq_s32` is an UNSTABLE library feature
+/// (`stdarch_neon_dotprod`, rust#117224), so this arm cannot compile on stable
+/// Rust. It is gated behind an opt-in feature rather than on `target_feature`
+/// alone because Apple Silicon enables `dotprod` in its BASELINE: without the
+/// extra gate, every stable aarch64-apple-darwin build selects this arm and
+/// fails with E0658 — which is exactly how it reached CI and broke the macOS
+/// jobs. Enable only on a toolchain where the intrinsic is available.
+#[cfg(all(
+    target_arch = "aarch64",
+    target_feature = "dotprod",
+    feature = "neon-dotprod"
+))]
 #[inline(always)]
 unsafe fn vdotq_s32(a: int8x16_t, b: int8x16_t) -> int32x4_t {
-    // Use the hardware dot-product instruction (SDOT) available on ARMv8.2-A+.
-    // core::arch::aarch64::vdotq_s32(acc, a, b) computes acc + dot(a, b),
-    // so we pass a zero accumulator to get just the dot product.
+    // `vdotq_s32(acc, a, b)` computes acc + dot(a, b), so a zero accumulator
+    // yields just the dot product.
     unsafe { core::arch::aarch64::vdotq_s32(vdupq_n_s32(0), a, b) }
 }
 
-#[cfg(not(all(target_arch = "aarch64", target_feature = "dotprod")))]
+/// Software emulation: widen to i16, pairwise-add to i32.
+///
+/// The `cfg` is the EXACT COMPLEMENT of the hardware arm's. Keep it that way:
+/// if the two ever overlap you get a duplicate definition (loud), and if they
+/// ever leave a gap you get NO definition on some target — which compiles fine
+/// on every machine that has the other arm and fails only on one nobody here
+/// builds.
+#[cfg(not(all(
+    target_arch = "aarch64",
+    target_feature = "dotprod",
+    feature = "neon-dotprod"
+)))]
 #[inline(always)]
 unsafe fn vdotq_s32(a: int8x16_t, b: int8x16_t) -> int32x4_t {
-    // Software emulation: widen to i16, pairwise-add to i32.
     unsafe {
         let p0 = vmull_s8(vget_low_s8(a), vget_low_s8(b));
         let p1 = vmull_s8(vget_high_s8(a), vget_high_s8(b));
@@ -638,5 +683,74 @@ unsafe fn multiply_accum_with_scale(
         let p1 = vdotq_s32(q2bytes.0, q8bytes.0);
         let p2 = vdotq_s32(q2bytes.1, q8bytes.1);
         vaddvq_s32(p1) * aux[is + index] as i32 + vaddvq_s32(p2) * aux[is + 1 + index] as i32
+    }
+}
+
+#[cfg(all(test, target_arch = "aarch64"))]
+mod dotprod_contract_tests {
+    use super::*;
+
+    /// Ground truth: the dot product of all 16 signed byte pairs, in plain
+    /// scalar Rust. Deliberately not NEON — an oracle written with the same
+    /// intrinsics as the code under test can share its bug.
+    fn scalar_dot16(a: &[i8; 16], b: &[i8; 16]) -> i32 {
+        (0..16).map(|i| a[i] as i32 * b[i] as i32).sum()
+    }
+
+    fn lane_sum(a: &[i8; 16], b: &[i8; 16]) -> i32 {
+        unsafe {
+            let va = vld1q_s8(a.as_ptr());
+            let vb = vld1q_s8(b.as_ptr());
+            vaddvq_s32(vdotq_s32(va, vb))
+        }
+    }
+
+    /// THE CONTRACT: the SUM of the lanes is the 16-way dot product.
+    ///
+    /// Asserted rather than trusted. The comment on `vdotq_s32` used to say
+    /// "software emulation", which reads as "equivalent" — and per LANE the two
+    /// implementations are NOT equivalent (`vpaddlq_s16` folds adjacent pairs,
+    /// SDOT folds groups of four). Only the total agrees, and only the total is
+    /// what every caller consumes. This test pins the property the callers
+    /// actually depend on, and it validates WHICHEVER arm the cfg selected —
+    /// so it is meaningful on stable (fallback) and with `neon-dotprod`
+    /// (hardware SDOT) alike.
+    #[test]
+    fn lane_sum_equals_scalar_dot_product() {
+        // Includes i8::MIN/MAX so a bad widening (i8 -> i16 -> i32) shows up as
+        // a sign or overflow error rather than passing on small values.
+        let cases: [([i8; 16], [i8; 16]); 4] = [
+            ([1; 16], [1; 16]),
+            (
+                [1, -2, 3, -4, 5, -6, 7, -8, 9, -10, 11, -12, 13, -14, 15, -16],
+                [-1, 2, -3, 4, -5, 6, -7, 8, -9, 10, -11, 12, -13, 14, -15, 16],
+            ),
+            ([i8::MIN; 16], [i8::MAX; 16]),
+            (
+                [i8::MIN, i8::MAX, 0, 1, -1, 64, -64, 127, -128, 2, 3, 4, 5, 6, 7, 8],
+                [i8::MAX, i8::MIN, 0, -1, 1, -64, 64, -128, 127, 8, 7, 6, 5, 4, 3, 2],
+            ),
+        ];
+        for (a, b) in &cases {
+            assert_eq!(
+                lane_sum(a, b),
+                scalar_dot16(a, b),
+                "lane sum must equal the 16-way dot product for a={a:?} b={b:?}",
+            );
+        }
+    }
+
+    /// Non-triviality: the oracle must not be returning 0 for everything, which
+    /// would make the test above pass against almost any implementation.
+    #[test]
+    fn the_oracle_discriminates() {
+        let a = [1i8; 16];
+        let b = [2i8; 16];
+        assert_eq!(scalar_dot16(&a, &b), 32, "oracle arithmetic");
+        assert_ne!(
+            scalar_dot16(&a, &b),
+            scalar_dot16(&a, &[3i8; 16]),
+            "the oracle must distinguish different inputs, or the contract test is vacuous",
+        );
     }
 }
