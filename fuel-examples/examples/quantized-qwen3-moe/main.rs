@@ -250,21 +250,24 @@ fn qwen3_moe_config_from_gguf(
         .map(|x| x as usize)
         .unwrap_or(moe_intermediate_size);
 
-    // vocab_size: inferred from the token_embd.weight shape ([vocab, hidden]).
+    // vocab_size: inferred from the token_embd.weight shape. After the GGUF
+    // reader reverses tensor dims (fuel-formats `gguf.rs`), the layout is
+    // [vocab, hidden] — so vocab_size is dims[0], NOT the last dim. (Matches
+    // quantized-qwen2-instruct's runtime assert and lazy_quantized_qwen3.rs,
+    // both of which read dims[0] as the vocabulary axis.)
     let vocab_size = {
         let info = mc.content().tensor_infos.get("token_embd.weight").ok_or_else(
             || E::msg("missing tensor token_embd.weight in GGUF for vocab_size inference"),
         )?;
         let dims = info.shape.dims();
-        if dims.len() < 2 {
+        // Fail loudly on an unexpected shape rather than silently returning the
+        // wrong axis: the layout is [vocab, hidden], so dims[1] must be hidden.
+        if dims.len() != 2 || dims[1] != hidden_size {
             anyhow::bail!(
-                "token_embd.weight has rank {}, expected at least 2 for vocab_size inference",
-                dims.len()
+                "token_embd.weight has unexpected shape {dims:?}; expected [vocab_size, {hidden_size}]"
             );
         }
-        // llama.cpp convention: token_embd.weight is [hidden_size, vocab_size]
-        // in dimensions order; vocab_size is the last dim.
-        dims[dims.len() - 1]
+        dims[0]
     };
 
     // Qwen3 ships attention biases in the base config; the GGUF
