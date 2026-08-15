@@ -72,6 +72,7 @@ mod bit_stability;
 mod ledger;
 mod ulp;
 mod invoker_cpu;
+mod probe_recipes;
 mod seed_cpu_ledger;
 #[cfg(feature = "cuda")]
 mod invoker_cuda;
