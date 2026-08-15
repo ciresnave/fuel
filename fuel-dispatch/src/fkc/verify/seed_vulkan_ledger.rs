@@ -274,10 +274,23 @@ fn build_vulkan_probe(op: OpKind, dtypes: &[DType], seed: u64) -> Option<Probe> 
             })
         }
 
-        // --- MaskedFill (in + U8 mask) -------------------------------------
+        // --- MaskedFill (in + Bool mask) -----------------------------------
+        //
+        // ⚠️ The mask is `Bool`, NOT `U8`. GAP-168(c) migrated it, and this
+        // probe was not migrated with it — the kernel then rejected every
+        // attempt with "mask must be Bool, got U8", so all six dtype
+        // combinations failed and NO record could be written under the new
+        // `[T, Bool, T]` key. The six earned `[T, U8, T]` records were left
+        // orphaned in place, and re-running the seeder could never restore
+        // them: the harness itself had to move first.
+        //
+        // That is the shape worth remembering — a contract dtype change
+        // invalidates the ledger key silently, AND can break the very harness
+        // that would re-earn the record. Fixing the key without fixing the
+        // probe just reproduces the hole one run later.
         OpKind::MaskedFill => {
             let x = ht(dt, vec![4], &fill_deterministic(4, seed))?;
-            let mask = HostTensor { dtype: DType::U8, shape: vec![4], bytes: vec![0u8, 1, 0, 1] };
+            let mask = HostTensor { dtype: DType::Bool, shape: vec![4], bytes: vec![0u8, 1, 0, 1] };
             // fill_bytes is one element's worth in the output dtype.
             let fill = to_bytes(dt, &[0.0])?;
             Some(Probe { inputs: vec![x, mask], params: OpParams::MaskedFill { fill_bytes: fill }, out_dtype: dt, out_shape: vec![4] })
