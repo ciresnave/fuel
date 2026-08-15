@@ -87,11 +87,20 @@ pub fn read_string<R: Read>(reader: &mut R, magic: &VersionedMagic) -> Result<St
     if read != len {
         bail!("gguf: declared string length {len} exceeds available data ({read} bytes read)");
     }
-    // GGUF strings are supposed to be non-null terminated but in practice this happens.
+    // ⚠️ KNOWN LIMITATION (GAP-205 — DEFERRED to `mlmf-gguf`, not a bug to fix
+    // here). A GGUF string is a length-prefixed BYTE ARRAY, but this function is
+    // LOSSY twice: it (a) strips a RUN of trailing NULs and (b) replaces invalid
+    // UTF-8 with U+FFFD via `from_utf8_lossy`. It is used for metadata keys,
+    // string values, tokens, merges AND TENSOR NAMES — so a tensor name that is
+    // NUL-terminated or non-UTF-8 no longer byte-matches the file, and a lookup
+    // by the original name silently fails. The fix is to keep names as raw bytes
+    // (MLMF's replacement adds a `Bytes(Vec<u8>)` value for exactly this). It is
+    // an API-semantics change deliberately deferred to the `mlmf-gguf` crate that
+    // replaces this file, NOT made on this retirement-path file — and the harm on
+    // real tensor names is as yet UNMEASURED, which an API break would need first.
     while let Some(0) = v.last() {
         v.pop();
     }
-    // GGUF strings are utf8 encoded but there are cases that don't seem to be valid.
     Ok(String::from_utf8_lossy(&v).into_owned())
 }
 
@@ -410,7 +419,16 @@ impl Value {
 #[derive(Debug)]
 pub struct Content {
     pub magic: VersionedMagic,
+    /// ⚠️ KNOWN LIMITATION (GAP-205 — DEFERRED to `mlmf-gguf`): a `HashMap` drops
+    /// the file's declared order and SILENTLY LAST-WINS on a duplicate metadata
+    /// key or tensor name — a malformed or hostile file with a repeated key
+    /// keeps only the last value, with no error. MLMF's replacement uses a
+    /// Vec-in-declared-order plus an index, with a duplicate tensor name made
+    /// fatal; that ordering/dup fix is an API change deferred to the replacement
+    /// crate, not made on this retirement-path file.
     pub metadata: HashMap<String, Value>,
+    /// See the note on the `metadata` field — the same `HashMap` last-wins
+    /// caveat applies to duplicate tensor names.
     pub tensor_infos: HashMap<String, TensorInfo>,
     pub tensor_data_offset: u64,
 }
