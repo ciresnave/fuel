@@ -11,12 +11,17 @@
 //! those steps need a `Device` and read/write `QTensor` data.
 
 use std::collections::HashMap;
-use std::io::{Read, Seek, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use fuel_ir::{Context, Error, GgmlDType, Result, Shape, bail};
 
 pub const DEFAULT_ALIGNMENT: u64 = 32;
+
+/// Maximum GGUF array nesting depth. Arrays can nest, and the reader recurses
+/// per level; an untrusted file with unbounded nesting is a stack-overflow
+/// abort. ggml itself never nests deeply — this bound is generous.
+const MAX_ARRAY_DEPTH: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Magic {
@@ -72,8 +77,16 @@ pub fn read_string<R: Read>(reader: &mut R, magic: &VersionedMagic) -> Result<St
             reader.read_u64::<LittleEndian>()? as usize
         }
     };
-    let mut v = vec![0u8; len];
-    reader.read_exact(&mut v)?;
+    // Read up to `len` bytes WITHOUT pre-allocating `len`: a `.gguf` is
+    // untrusted and can declare a length far larger than it contains, so
+    // `vec![0u8; len]` is a `len`-sized allocation an attacker controls (abort
+    // from a 4/8-byte field). `take` + `read_to_end` grows `v` to the ACTUAL
+    // bytes available; if fewer than `len` arrive the declared length is a lie.
+    let mut v = Vec::new();
+    let read = reader.by_ref().take(len as u64).read_to_end(&mut v)?;
+    if read != len {
+        bail!("gguf: declared string length {len} exceeds available data ({read} bytes read)");
+    }
     // GGUF strings are supposed to be non-null terminated but in practice this happens.
     while let Some(0) = v.last() {
         v.pop();
@@ -298,6 +311,19 @@ impl Value {
         value_type: ValueType,
         magic: &VersionedMagic,
     ) -> Result<Self> {
+        Self::read_bounded(reader, value_type, magic, 0)
+    }
+
+    /// Depth-tracked reader. `depth` is the current array-nesting level; the
+    /// public [`Value::read`] enters at 0. Arrays recurse at `depth + 1` and
+    /// are rejected past [`MAX_ARRAY_DEPTH`] so a hostile file cannot overflow
+    /// the stack.
+    fn read_bounded<R: Read>(
+        reader: &mut R,
+        value_type: ValueType,
+        magic: &VersionedMagic,
+        depth: usize,
+    ) -> Result<Self> {
         let v = match value_type {
             ValueType::U8 => Self::U8(reader.read_u8()?),
             ValueType::I8 => Self::I8(reader.read_i8()?),
@@ -316,6 +342,9 @@ impl Value {
             },
             ValueType::String => Self::String(read_string(reader, magic)?),
             ValueType::Array => {
+                if depth >= MAX_ARRAY_DEPTH {
+                    bail!("gguf: array nesting exceeds the limit of {MAX_ARRAY_DEPTH}");
+                }
                 let value_type = reader.read_u32::<LittleEndian>()?;
                 let value_type = ValueType::from_u32(value_type)?;
                 let len = match magic {
@@ -324,9 +353,13 @@ impl Value {
                         reader.read_u64::<LittleEndian>()? as usize
                     }
                 };
-                let mut vs = Vec::with_capacity(len);
+                // Do NOT `Vec::with_capacity(len)` — `len` is untrusted and can
+                // be far larger than the file holds. `Vec::new()` grows to the
+                // ACTUAL element count; a too-large `len` runs out of file and
+                // the inner read errors, bounding memory to real data.
+                let mut vs = Vec::new();
                 for _ in 0..len {
-                    vs.push(Value::read(reader, value_type, magic)?);
+                    vs.push(Value::read_bounded(reader, value_type, magic, depth + 1)?);
                 }
                 Self::Array(vs)
             }
@@ -387,6 +420,13 @@ impl Content {
     /// stream position points to the start of the tensor data
     /// section (post-padding).
     pub fn read<R: Read + Seek>(reader: &mut R) -> Result<Self> {
+        // Total stream length — used to reject declared lengths/counts that
+        // exceed what the file can hold (each declared item needs >= 1 byte on
+        // disk). Preserve the reader's starting position rather than forcing 0,
+        // so this keeps reading from wherever the caller left it.
+        let start = reader.stream_position()?;
+        let file_len = reader.seek(SeekFrom::End(0))?;
+        reader.seek(SeekFrom::Start(start))?;
         let magic = VersionedMagic::read(reader)?;
 
         let tensor_count = match magic {
@@ -414,6 +454,15 @@ impl Content {
         for _idx in 0..tensor_count {
             let tensor_name = read_string(reader, &magic)?;
             let n_dimensions = reader.read_u32::<LittleEndian>()?;
+            // Each dimension is 4 (v1) or 8 (v2/v3) bytes on disk, so a count
+            // exceeding the bytes left in the file is malformed — reject before
+            // `vec![0; n]` (n_dimensions is a u32: up to 34 GB from a 4-byte field).
+            let remaining = file_len.saturating_sub(reader.stream_position()?);
+            if n_dimensions as u64 > remaining {
+                bail!(
+                    "gguf: tensor dimension count {n_dimensions} exceeds the {remaining} bytes left in the file"
+                );
+            }
 
             let mut dimensions: Vec<usize> = match magic {
                 VersionedMagic::GgufV1 => {
@@ -544,5 +593,93 @@ mod tests {
         let content = Content::read(&mut Cursor::new(gguf_with_alignment(None)))
             .expect("default alignment parses");
         assert_eq!(content.tensor_data_offset % DEFAULT_ALIGNMENT, 0);
+    }
+
+    // ---- hardening: unbounded allocations from declared lengths ----
+
+    /// Build a v3 GGUF with a single metadata KV whose raw value bytes are
+    /// supplied verbatim, so a test can hand-craft a malformed value.
+    fn gguf_with_kv(key: &str, value_type: ValueType, value_bytes: &[u8]) -> Vec<u8> {
+        let mut buf: Vec<u8> = Vec::new();
+        buf.write_u32::<LittleEndian>(0x4655_4747).unwrap(); // "GGUF"
+        buf.write_u32::<LittleEndian>(3).unwrap();
+        buf.write_u64::<LittleEndian>(0).unwrap(); // tensor_count
+        buf.write_u64::<LittleEndian>(1).unwrap(); // metadata_kv_count
+        write_string(&mut buf, key).unwrap();
+        buf.write_u32::<LittleEndian>(value_type.to_u32()).unwrap();
+        buf.extend_from_slice(value_bytes);
+        buf
+    }
+
+    fn u64le(v: u64) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.write_u64::<LittleEndian>(v).unwrap();
+        b
+    }
+
+    /// A string value declaring `u64::MAX` bytes with none present must be a
+    /// typed error, not a `vec![0u8; u64::MAX]` allocation. Born-red: without
+    /// the fix that allocation is a capacity-overflow PANIC (or, at a length
+    /// between RAM and isize::MAX, an uncatchable OOM abort).
+    #[test]
+    fn string_declared_length_beyond_data_is_rejected() {
+        let buf = gguf_with_kv("k", ValueType::String, &u64le(u64::MAX));
+        let err = Content::read(&mut Cursor::new(buf))
+            .expect_err("an over-long declared string length must be a typed error");
+        let msg = format!("{err}").to_lowercase();
+        assert!(msg.contains("string") || msg.contains("length"), "names the problem: {msg}");
+    }
+
+    /// An array declaring `u64::MAX` elements with none present must be a typed
+    /// error, not `Vec::with_capacity(u64::MAX)`. Born-red: without the fix that
+    /// preallocation is a capacity-overflow PANIC.
+    #[test]
+    fn array_declared_length_beyond_data_is_rejected() {
+        let mut val = Vec::new();
+        val.write_u32::<LittleEndian>(ValueType::U8.to_u32()).unwrap(); // element type
+        val.extend_from_slice(&u64le(u64::MAX)); // element count
+        let buf = gguf_with_kv("k", ValueType::Array, &val);
+        Content::read(&mut Cursor::new(buf))
+            .expect_err("an over-long declared array length must be a typed error");
+    }
+
+    /// A tensor declaring a huge `n_dimensions` must be rejected before
+    /// `vec![0; n]` — at `u32::MAX` that is 34 GB from a 4-byte field. Born-red:
+    /// without the fix a large-but-not-abortive n (1e6) allocates then errors
+    /// generically at read; with the fix it is a typed dimension error.
+    #[test]
+    fn tensor_ndimensions_beyond_file_is_rejected() {
+        let mut buf: Vec<u8> = Vec::new();
+        buf.write_u32::<LittleEndian>(0x4655_4747).unwrap();
+        buf.write_u32::<LittleEndian>(3).unwrap();
+        buf.write_u64::<LittleEndian>(1).unwrap(); // tensor_count = 1
+        buf.write_u64::<LittleEndian>(0).unwrap(); // metadata_kv_count = 0
+        write_string(&mut buf, "t").unwrap(); // tensor name
+        buf.write_u32::<LittleEndian>(1_000_000).unwrap(); // n_dimensions, far beyond the file
+        let err = Content::read(&mut Cursor::new(buf))
+            .expect_err("a huge n_dimensions must be a typed error before allocating");
+        assert!(format!("{err}").to_lowercase().contains("dimension"), "names the field");
+    }
+
+    /// Deeply-nested arrays must be bounded — unbounded recursion is a stack
+    /// overflow (an uncatchable abort). Born-red: without the depth limit a
+    /// 200-deep nest parses to Ok; with it, a typed nesting error.
+    #[test]
+    fn deeply_nested_array_is_rejected() {
+        // innermost: an empty U8 array; then wrap it 200 times in single-element arrays.
+        let mut val = Vec::new();
+        val.write_u32::<LittleEndian>(ValueType::U8.to_u32()).unwrap();
+        val.extend_from_slice(&u64le(0)); // empty innermost
+        for _ in 0..200 {
+            let mut outer = Vec::new();
+            outer.write_u32::<LittleEndian>(ValueType::Array.to_u32()).unwrap();
+            outer.extend_from_slice(&u64le(1)); // one element: the previous level
+            outer.extend_from_slice(&val);
+            val = outer;
+        }
+        let buf = gguf_with_kv("k", ValueType::Array, &val);
+        let err = Content::read(&mut Cursor::new(buf))
+            .expect_err("excessive array nesting must be a typed error");
+        assert!(format!("{err}").to_lowercase().contains("nest"), "names the problem");
     }
 }
