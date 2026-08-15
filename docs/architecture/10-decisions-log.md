@@ -1500,6 +1500,57 @@ entry's *why* is the interim protection. GAP-016 census: this removes the
 
 ---
 
+## 2026-08-15 — Precision claims are DERIVED, not asserted: `fill_unset_cpu_precision` retires and every backend earns `bit_stable` empirically
+
+**Sections affected**: none revised yet — this records the ruling and the program; section edits land with the work
+**Phase / PR**: GAP-096 answered; GAP-205/GAP-207 in flight
+**Ruled by**: CireSnave, 2026-08-15
+
+**What changed.** Fuel's precision commitment moves from *declared by a contract author and spot-checked* to *earned by measurement*. `KernelBindingTable::fill_unset_cpu_precision` — which stamped `PRIMITIVE_DETERMINISTIC_CPU` (`bit_stable_on_same_hardware: true`) onto every CPU entry left `UNAUDITED` — **is retired.** Every backend's kernels earn `bit_stable_on_same_hardware` through the same empirical route instead.
+
+**Why, and the measurement that made it decidable.** The FKC seam already refuses to let a contract self-certify: `verify::ledger::gate_precision` downgrades any declared claim lacking a passing `VerificationLedger` record keyed on `(backend, dtypes, kernel_revision_hash, claim)`. That gate **fires correctly and is then overwritten** — measured under GAP-077 @ `c81fcfab`: **636 CPU entries, 636 bit-stable, 636 owed to the fill, ZERO from a contract**, with **281 downgrade events at import** (re-measured 2026-08-14 as **303 events / 176 distinct tuples** — the recorded figure counted events and the corpus has since grown; both numbers were right about different constructs).
+
+**The reframing that decided it.** The bulk fill looked like it was covering something unverifiable, because CPU cannot be ULP-verified — `verify_precision_bound` compares a candidate invoker against a *reference* invoker, and **CPU is the reference the GPU backends are measured against** (`seed_vulkan_ledger:457`, `seed_cuda_ledger:397` both use `CpuInvoker`). But **`PRIMITIVE_DETERMINISTIC_CPU` asserts only `bit_stable_on_same_hardware`, and `verify_bit_stability` needs NO REFERENCE AT ALL** — invoke 16 times, require byte-identical output. **So the fill was never papering over an unverifiable property. It was papering over an unrun harness**, and the same scheme proves the claim on CUDA and Vulkan identically.
+
+**Consequence, stated rather than discovered.** Retiring the fill sends the entries it covered to `UNAUDITED` and fires the coverage lint — on the order of **~559 CPU entries** against 77 existing records. **That red is TRUE.** It is the honest state of a claim nobody had earned, and it closes as the seeding lands.
+
+**What this does NOT settle.** `max_ulp` / `max_relative` / `max_absolute` on CPU remain unverifiable by this route, because they are defined against *the IEEE-754 correctly-rounded result* and no higher-precision oracle exists in the tree. That residue is the scope of the derived-precision program (below) — and **its size is currently unknown precisely because the fill hides it.** Landing this produces the number.
+
+**Trigger.** A live instance surfaced by CI reaching Fuel's tests for the first time: six `masked_fill`/Vulkan keys reporting `UNAUDITED`, because Vulkan has no equivalent bulk fill and is therefore **the only backend where the seam's verdict has ever survived to a lint.**
+
+---
+
+## 2026-08-15 — The derived-precision program: a bound computed from a verified basis, not declared
+
+**Sections affected**: none yet — recorded as a costed option before any code
+**Phase / PR**: design pass — no code
+**Authorised by**: CireSnave, 2026-08-15, explicitly as a capability with no current consumer
+
+**The idea.** Every fused op carries a total, never-panic `decompose` into a **build-time-closed primitive basis** (~36 `Op` variants, 31 `decompose` impls) — the recipe principle, which exists for optimizer reasons and turns out to be the substrate for a precision proof. Verify the primitives against a higher-precision oracle; **derive** a bound for a composition by propagating those bounds through the recipe; then bound a fused kernel by comparing it against its own decomposition and adding the derived bar:
+
+```text
+|fused - true|  <=  |fused - decomposed|   +   |decomposed - true|
+                     measured                  DERIVED from the primitives
+```
+
+**Why Fuel specifically.** The closed basis and total `decompose` already exist. Almost no framework can state a precision guarantee that is *computed* rather than *asserted*; Fuel is unusually positioned because the prerequisites were built for an unrelated reason.
+
+**What already exists, measured 2026-08-15 — this is NOT from scratch.**
+- **The propagation model exists**: `jit_ingest.rs::advisory_ulp_band(region)` — *single exact op -> exact; multi-node exact-only -> `n_ops - 1`; transcendental-containing -> `Sum of per-op ceilings + (n_exact - 1)`*.
+- **The per-op ceiling table is NOT Fuel-authored**: `kiss_ops_vocab::Op::ulp_ceiling`, pinned, covering Exp/Log/Sin/Cos/Erf/Tanh/Sigmoid/Silu/Gelu/GeluErf/Rsqrt. Exact-class ops (including IEEE-correctly-rounded `Sqrt`/`Recip`) feed the `n-1` term instead; classification delegates to `ulp.rs::is_transcendental` as a single source.
+
+**What does NOT exist.**
+- **A higher-precision oracle.** Only `invoker_cpu`/`invoker_cuda`/`invoker_vulkan` implement `KernelInvoker`; there is no f64 reference. `fuel-cpu-backend` has 60 `F64` references, so f32-vs-f64 on a primitive is the cheapest credible oracle and is not yet wired.
+- **A runner for decompositions.** `KernelInvoker::invoke` takes a `BindingEntry` (one registered kernel); `decompose_via_recipe` mutates a `Graph` and returns a `NodeId`. **A `GraphInvoker` is the missing piece** — and it must route through the fallible `pipelined_bridge::realize_one_as::<T>()` path, never GAP-186's panicking `realize_*` accessors.
+
+**⚠️ The blocking decision, and it is not a wiring change.** `advisory_ulp_band` is **advisory by design**, and its own doc pins the reason: *"linear ULP addition is a first-order model — cancellation-heavy regions can exceed the band and flag spuriously."* Cancellation (subtracting near-equal intermediates) can make relative error unbounded. **Promoting an advisory band to a verdict is a decision about what a derived guarantee is permitted to claim, and must be made deliberately rather than inherited by wiring an advisory number into a verdict path.**
+
+**Two further limits recorded so they are not rediscovered.** Fusion *deliberately* changes arithmetic and is often **more** accurate than its decomposition (FMA, wider accumulators, unmaterialized intermediates) — so a large `|fused - decomposed|` does not identify which side is worse without the derived bar. And this route **can never produce a `max_ulp: 0` claim**: a fused kernel bit-identical to its decomposition would be coincidence, so byte-movers and exact ops still need direct verification.
+
+**Sequencing.** Explicitly behind blocking work. Its true scope is unknown until `fill_unset_cpu_precision` retires and the bit-stable seeding lands, because **what remains unverified after that is exactly the set that needs an oracle.**
+
+---
+
 ## See also
 
 - [00-index §Versioning convention](00-index.md#versioning-convention) — when to bump section versions.
