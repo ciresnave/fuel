@@ -451,6 +451,16 @@ impl Content {
             Some(Value::I32(v)) if *v >= 0 => *v as u64,
             _ => DEFAULT_ALIGNMENT,
         };
+        // `general.alignment` is UNTRUSTED file metadata. Reject 0 — the
+        // `div_ceil(0)` below is an integer divide-by-zero that aborts the
+        // process — and non-powers-of-two — ggml pads with a `GGML_PAD`
+        // bitmask, so `div_ceil` would compute a DIFFERENT `tensor_data_offset`
+        // than every other reader (pos 11, align 3 → 12 vs 13), silently
+        // reading the wrong bytes. `is_power_of_two()` is false for both 0 and
+        // any non-power-of-two, so this one check covers both.
+        if !alignment.is_power_of_two() {
+            bail!("gguf: general.alignment must be a non-zero power of two, got {alignment}");
+        }
         let tensor_data_offset = position.div_ceil(alignment) * alignment;
         Ok(Self {
             magic,
@@ -458,5 +468,81 @@ impl Content {
             tensor_infos,
             tensor_data_offset,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    /// Build a minimal valid GGUF v3 header (0 tensors) with an optional
+    /// `general.alignment` U32 metadata value. Exercises the alignment
+    /// validation path with hand-crafted, potentially-malformed input —
+    /// the whole point being that a `.gguf` is UNTRUSTED user data.
+    fn gguf_with_alignment(align: Option<u32>) -> Vec<u8> {
+        let mut buf: Vec<u8> = Vec::new();
+        buf.write_u32::<LittleEndian>(0x4655_4747).unwrap(); // "GGUF" magic
+        buf.write_u32::<LittleEndian>(3).unwrap(); // version 3
+        buf.write_u64::<LittleEndian>(0).unwrap(); // tensor_count = 0
+        buf.write_u64::<LittleEndian>(align.is_some() as u64).unwrap(); // metadata_kv_count
+        if let Some(a) = align {
+            write_string(&mut buf, "general.alignment").unwrap();
+            buf.write_u32::<LittleEndian>(ValueType::U32.to_u32()).unwrap();
+            buf.write_u32::<LittleEndian>(a).unwrap();
+        }
+        buf
+    }
+
+    /// `general.alignment == 0` must be a typed error, NOT a divide-by-zero
+    /// abort. `position.div_ceil(0)` panics ("attempt to divide by zero"),
+    /// reachable from any untrusted `.gguf` — a never-panic violation on the
+    /// most exposed path Fuel has. Born-red: without the check this test
+    /// PANICS inside `Content::read` before it can return.
+    #[test]
+    fn alignment_zero_is_rejected_not_a_panic() {
+        let buf = gguf_with_alignment(Some(0));
+        let err = Content::read(&mut Cursor::new(buf))
+            .expect_err("alignment 0 must be a typed error, not a panic");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("alignment") && msg.contains('0'),
+            "error must name the offending value: {msg}"
+        );
+    }
+
+    /// A non-power-of-two alignment must be REJECTED. ggml pads with a
+    /// `GGML_PAD` bitmask, so `div_ceil` and the bitmask DISAGREE — position
+    /// 11 with alignment 3 gives 12 via `div_ceil` and 13 via the bitmask —
+    /// so we would compute a different `tensor_data_offset` than every other
+    /// reader, SILENTLY. Born-red: without the check this returns `Ok` with a
+    /// wrong offset and `expect_err` fails.
+    #[test]
+    fn alignment_non_power_of_two_is_rejected() {
+        let buf = gguf_with_alignment(Some(3));
+        let err = Content::read(&mut Cursor::new(buf))
+            .expect_err("non-power-of-two alignment must be a typed error");
+        assert!(format!("{err}").contains('3'), "error must name the value");
+    }
+
+    /// POSITIVE CONTROL: a valid power-of-two alignment parses, and the data
+    /// offset is aligned up from the end of the header.
+    #[test]
+    fn alignment_power_of_two_is_accepted() {
+        let buf = gguf_with_alignment(Some(64));
+        let header_len = buf.len() as u64;
+        let content =
+            Content::read(&mut Cursor::new(buf)).expect("valid power-of-two alignment parses");
+        assert_eq!(content.tensor_data_offset % 64, 0, "offset must be 64-aligned");
+        assert!(content.tensor_data_offset >= header_len);
+    }
+
+    /// POSITIVE CONTROL: absent `general.alignment` falls back to the 32-byte
+    /// default and parses — the check must not reject the common case.
+    #[test]
+    fn absent_alignment_uses_default() {
+        let content = Content::read(&mut Cursor::new(gguf_with_alignment(None)))
+            .expect("default alignment parses");
+        assert_eq!(content.tensor_data_offset % DEFAULT_ALIGNMENT, 0);
     }
 }
