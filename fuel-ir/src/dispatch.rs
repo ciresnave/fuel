@@ -552,125 +552,124 @@ pub enum OpKind {
 impl OpKind {
     pub fn as_str(self) -> &'static str {
         match self {
-            OpKind::MatMul           => "matmul",
-            OpKind::AddElementwise   => "add",
-            OpKind::SubElementwise   => "sub",
-            OpKind::MulElementwise   => "mul",
-            OpKind::DivElementwise   => "div",
-            OpKind::ReluElementwise  => "relu",
-            OpKind::NegElementwise   => "neg",
-            OpKind::SqrElementwise   => "sqr",
-            OpKind::SqrtElementwise  => "sqrt",
+            OpKind::MatMul => "matmul",
+            OpKind::AddElementwise => "add",
+            OpKind::SubElementwise => "sub",
+            OpKind::MulElementwise => "mul",
+            OpKind::DivElementwise => "div",
+            OpKind::ReluElementwise => "relu",
+            OpKind::NegElementwise => "neg",
+            OpKind::SqrElementwise => "sqr",
+            OpKind::SqrtElementwise => "sqrt",
             OpKind::RecipElementwise => "recip",
-            OpKind::AbsElementwise   => "abs",
-            OpKind::TanhElementwise  => "tanh",
-            OpKind::ExpElementwise    => "exp",
-            OpKind::LogElementwise    => "log",
-            OpKind::SinElementwise    => "sin",
-            OpKind::CosElementwise    => "cos",
+            OpKind::AbsElementwise => "abs",
+            OpKind::TanhElementwise => "tanh",
+            OpKind::ExpElementwise => "exp",
+            OpKind::LogElementwise => "log",
+            OpKind::SinElementwise => "sin",
+            OpKind::CosElementwise => "cos",
             OpKind::SigmoidElementwise => "sigmoid",
-            OpKind::SiluElementwise   => "silu",
-            OpKind::GeluElementwise   => "gelu",
-            OpKind::StepElementwise   => "step",
-            OpKind::SumReduce         => "sum_reduce",
-            OpKind::MaxReduce         => "max_reduce",
-            OpKind::MinReduce         => "min_reduce",
-            OpKind::MeanReduce        => "mean_reduce",
-            OpKind::Cast              => "cast",
-            OpKind::Conv2D            => "conv2d",
-            OpKind::ConvTranspose2D   => "conv_transpose2d",
-            OpKind::ReduceSumTo       => "reduce_sum_to",
-            OpKind::ReduceMaxTo       => "reduce_max_to",
-            OpKind::FusedLinear       => "fused_linear",
-            OpKind::FlashAttn         => "flash_attn",
+            OpKind::SiluElementwise => "silu",
+            OpKind::GeluElementwise => "gelu",
+            OpKind::StepElementwise => "step",
+            OpKind::SumReduce => "sum_reduce",
+            OpKind::MaxReduce => "max_reduce",
+            OpKind::MinReduce => "min_reduce",
+            OpKind::MeanReduce => "mean_reduce",
+            OpKind::Cast => "cast",
+            OpKind::Conv2D => "conv2d",
+            OpKind::ConvTranspose2D => "conv_transpose2d",
+            OpKind::ReduceSumTo => "reduce_sum_to",
+            OpKind::ReduceMaxTo => "reduce_max_to",
+            OpKind::FusedLinear => "fused_linear",
+            OpKind::FlashAttn => "flash_attn",
             OpKind::FlashAttnBackwardQ => "flash_attn_backward_q",
             OpKind::FlashAttnBackwardK => "flash_attn_backward_k",
             OpKind::FlashAttnBackwardV => "flash_attn_backward_v",
-            OpKind::PagedAttn         => "paged_attn",
-            OpKind::Affine            => "affine",
-            OpKind::ClampElementwise  => "clamp",
-            OpKind::PowIElementwise   => "powi",
+            OpKind::PagedAttn => "paged_attn",
+            OpKind::Affine => "affine",
+            OpKind::ClampElementwise => "clamp",
+            OpKind::PowIElementwise => "powi",
             OpKind::PowIElementwiseBackward => "powi_backward",
             OpKind::MaximumElementwise => "maximum",
             OpKind::MinimumElementwise => "minimum",
-            OpKind::EqualElementwise   => "eq",
+            OpKind::EqualElementwise => "eq",
             OpKind::NotEqualElementwise => "ne",
-            OpKind::LessElementwise    => "lt",
+            OpKind::LessElementwise => "lt",
             OpKind::LessEqualElementwise => "le",
             OpKind::GreaterElementwise => "gt",
             OpKind::GreaterEqualElementwise => "ge",
-            OpKind::Where              => "where",
-            OpKind::FloorElementwise   => "floor",
-            OpKind::CeilElementwise    => "ceil",
-            OpKind::RoundElementwise   => "round",
-            OpKind::SignElementwise    => "sign",
-            OpKind::ErfElementwise     => "erf",
+            OpKind::Where => "where",
+            OpKind::FloorElementwise => "floor",
+            OpKind::CeilElementwise => "ceil",
+            OpKind::RoundElementwise => "round",
+            OpKind::SignElementwise => "sign",
+            OpKind::ErfElementwise => "erf",
             OpKind::GeluErfElementwise => "gelu_erf",
-            OpKind::PowElementwise     => "pow",
-            OpKind::RsqrtElementwise   => "rsqrt",
-            OpKind::RemElementwise     => "rem",
-            OpKind::Flip               => "flip",
-            OpKind::Roll               => "roll",
-            OpKind::CumSum             => "cumsum",
-            OpKind::Pad                => "pad",
-            OpKind::PadBackward        => "pad_backward",
-            OpKind::Triu               => "triu",
-            OpKind::Tril               => "tril",
-            OpKind::LogSoftmaxLastDim  => "log_softmax_last_dim",
-            OpKind::LogSoftmaxLastDimBackward
-                                       => "log_softmax_last_dim_backward",
-            OpKind::MaskedFill         => "masked_fill",
-            OpKind::Concat            => "concat",
-            OpKind::SoftmaxLastDim    => "softmax_last_dim",
+            OpKind::PowElementwise => "pow",
+            OpKind::RsqrtElementwise => "rsqrt",
+            OpKind::RemElementwise => "rem",
+            OpKind::Flip => "flip",
+            OpKind::Roll => "roll",
+            OpKind::CumSum => "cumsum",
+            OpKind::Pad => "pad",
+            OpKind::PadBackward => "pad_backward",
+            OpKind::Triu => "triu",
+            OpKind::Tril => "tril",
+            OpKind::LogSoftmaxLastDim => "log_softmax_last_dim",
+            OpKind::LogSoftmaxLastDimBackward => "log_softmax_last_dim_backward",
+            OpKind::MaskedFill => "masked_fill",
+            OpKind::Concat => "concat",
+            OpKind::SoftmaxLastDim => "softmax_last_dim",
             OpKind::SoftmaxLastDimBackward => "softmax_last_dim_backward",
-            OpKind::RmsNormLastDim    => "rms_norm_last_dim",
+            OpKind::RmsNormLastDim => "rms_norm_last_dim",
             OpKind::RmsNormLastDimBackward => "rms_norm_last_dim_backward",
-            OpKind::LayerNormLastDim  => "layer_norm_last_dim",
+            OpKind::LayerNormLastDim => "layer_norm_last_dim",
             OpKind::LayerNormLastDimBackward => "layer_norm_last_dim_backward",
             OpKind::ReduceMaxToBackward => "reduce_max_to_backward",
-            OpKind::IndexSelect       => "index_select",
-            OpKind::Gather            => "gather",
-            OpKind::Rope              => "rope",
-            OpKind::IndexAdd          => "index_add",
-            OpKind::ScatterAdd        => "scatter_add",
-            OpKind::ArgMaxDim         => "argmax_dim",
-            OpKind::ArgMinDim         => "argmin_dim",
-            OpKind::QMatMul           => "qmatmul",
-            OpKind::WriteSlice        => "write_slice",
+            OpKind::IndexSelect => "index_select",
+            OpKind::Gather => "gather",
+            OpKind::Rope => "rope",
+            OpKind::IndexAdd => "index_add",
+            OpKind::ScatterAdd => "scatter_add",
+            OpKind::ArgMaxDim => "argmax_dim",
+            OpKind::ArgMinDim => "argmin_dim",
+            OpKind::QMatMul => "qmatmul",
+            OpKind::WriteSlice => "write_slice",
             OpKind::WriteSliceRotating => "write_slice_rotating",
-            OpKind::WriteSliceDoff    => "write_slice_doff",
-            OpKind::Copy              => "copy",
-            OpKind::ReluInplace       => "relu_inplace",
-            OpKind::SiluInplace       => "silu_inplace",
-            OpKind::GeluInplace       => "gelu_inplace",
-            OpKind::TanhInplace       => "tanh_inplace",
-            OpKind::SigmoidInplace    => "sigmoid_inplace",
-            OpKind::NegInplace        => "neg_inplace",
-            OpKind::AbsInplace        => "abs_inplace",
-            OpKind::SqrInplace        => "sqr_inplace",
-            OpKind::SqrtInplace       => "sqrt_inplace",
-            OpKind::RsqrtInplace      => "rsqrt_inplace",
-            OpKind::RecipInplace      => "recip_inplace",
-            OpKind::ExpInplace        => "exp_inplace",
-            OpKind::LogInplace        => "log_inplace",
-            OpKind::SinInplace        => "sin_inplace",
-            OpKind::CosInplace        => "cos_inplace",
-            OpKind::SignInplace       => "sign_inplace",
-            OpKind::FloorInplace      => "floor_inplace",
-            OpKind::CeilInplace       => "ceil_inplace",
-            OpKind::RoundInplace      => "round_inplace",
-            OpKind::ErfInplace        => "erf_inplace",
-            OpKind::GeluErfInplace    => "gelu_erf_inplace",
-            OpKind::ClampInplace      => "clamp_inplace",
-            OpKind::PowIInplace       => "powi_inplace",
-            OpKind::InplaceAffine     => "inplace_affine",
+            OpKind::WriteSliceDoff => "write_slice_doff",
+            OpKind::Copy => "copy",
+            OpKind::ReluInplace => "relu_inplace",
+            OpKind::SiluInplace => "silu_inplace",
+            OpKind::GeluInplace => "gelu_inplace",
+            OpKind::TanhInplace => "tanh_inplace",
+            OpKind::SigmoidInplace => "sigmoid_inplace",
+            OpKind::NegInplace => "neg_inplace",
+            OpKind::AbsInplace => "abs_inplace",
+            OpKind::SqrInplace => "sqr_inplace",
+            OpKind::SqrtInplace => "sqrt_inplace",
+            OpKind::RsqrtInplace => "rsqrt_inplace",
+            OpKind::RecipInplace => "recip_inplace",
+            OpKind::ExpInplace => "exp_inplace",
+            OpKind::LogInplace => "log_inplace",
+            OpKind::SinInplace => "sin_inplace",
+            OpKind::CosInplace => "cos_inplace",
+            OpKind::SignInplace => "sign_inplace",
+            OpKind::FloorInplace => "floor_inplace",
+            OpKind::CeilInplace => "ceil_inplace",
+            OpKind::RoundInplace => "round_inplace",
+            OpKind::ErfInplace => "erf_inplace",
+            OpKind::GeluErfInplace => "gelu_erf_inplace",
+            OpKind::ClampInplace => "clamp_inplace",
+            OpKind::PowIInplace => "powi_inplace",
+            OpKind::InplaceAffine => "inplace_affine",
             OpKind::FusedSoftmaxCrossEntropy => "fused_softmax_cross_entropy",
-            OpKind::CausalConv1d        => "causal_conv1d",
-            OpKind::SelectiveScan       => "selective_scan",
-            OpKind::SsdChunkScan        => "ssd_chunk_scan",
-            OpKind::Nf4Matmul           => "nf4_matmul",
-            OpKind::RuntimeFused        => "runtime_fused",
-            OpKind::NonZeroIndices      => "nonzero_indices",
+            OpKind::CausalConv1d => "causal_conv1d",
+            OpKind::SelectiveScan => "selective_scan",
+            OpKind::SsdChunkScan => "ssd_chunk_scan",
+            OpKind::Nf4Matmul => "nf4_matmul",
+            OpKind::RuntimeFused => "runtime_fused",
+            OpKind::NonZeroIndices => "nonzero_indices",
         }
     }
 }
@@ -776,15 +775,16 @@ impl SizeClass {
     /// shapes (nullary op) → `SizeClass(0)`.
     pub fn for_op(op: OpKind, input_shapes: &[Shape]) -> Self {
         if op == OpKind::MatMul
-            && let (Some(lhs), Some(rhs)) = (input_shapes.first(), input_shapes.get(1)) {
-                let (ld, rd) = (lhs.dims(), rhs.dims());
-                if ld.len() >= 2 && rd.len() >= 2 {
-                    let m = ld[ld.len() - 2];
-                    let k = ld[ld.len() - 1];
-                    let n = rd[rd.len() - 1];
-                    return Self::matmul(m, n, k);
-                }
+            && let (Some(lhs), Some(rhs)) = (input_shapes.first(), input_shapes.get(1))
+        {
+            let (ld, rd) = (lhs.dims(), rhs.dims());
+            if ld.len() >= 2 && rd.len() >= 2 {
+                let m = ld[ld.len() - 2];
+                let k = ld[ld.len() - 1];
+                let n = rd[rd.len() - 1];
+                return Self::matmul(m, n, k);
             }
+        }
         if op == OpKind::FlashAttn {
             // Operand layout: q = [B, Hq, Sq, D], k = [B, Hkv, k_len, D]
             // (v matches k). Read `hq`/`d` from q and the attended length
@@ -823,15 +823,15 @@ impl SizeClass {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ProfileEntry {
-    pub op:            OpKind,
-    pub dtype:         DType,
-    pub size_class:    SizeClass,
-    pub backend:       BackendId,
-    pub device_index:  u32,
+    pub op: OpKind,
+    pub dtype: DType,
+    pub size_class: SizeClass,
+    pub backend: BackendId,
+    pub device_index: u32,
     /// Median wall-clock time per invocation over `iterations`.
-    pub latency_ns:    u64,
+    pub latency_ns: u64,
     /// Number of timed iterations that produced `latency_ns`.
-    pub iterations:    u32,
+    pub iterations: u32,
     /// Max relative element-wise error vs the reference backend's
     /// output on the same input.
     pub max_rel_error: f32,
@@ -870,8 +870,9 @@ impl ProfileReport {
         let tmp = path.with_extension("tmp");
         std::fs::write(&tmp, &json)
             .map_err(|e| crate::Error::Msg(format!("judge: write {tmp:?} failed: {e}")))?;
-        std::fs::rename(&tmp, path)
-            .map_err(|e| crate::Error::Msg(format!("judge: rename {tmp:?} → {path:?} failed: {e}")))?;
+        std::fs::rename(&tmp, path).map_err(|e| {
+            crate::Error::Msg(format!("judge: rename {tmp:?} → {path:?} failed: {e}"))
+        })?;
         Ok(())
     }
 
@@ -882,7 +883,11 @@ impl ProfileReport {
         let bytes = match std::fs::read(path) {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(crate::Error::Msg(format!("judge: read {path:?} failed: {e}"))),
+            Err(e) => {
+                return Err(crate::Error::Msg(format!(
+                    "judge: read {path:?} failed: {e}"
+                )));
+            }
         };
         let report: Self = serde_json::from_slice(&bytes)
             .map_err(|e| crate::Error::Msg(format!("judge: parse {path:?} failed: {e}")))?;
@@ -908,9 +913,9 @@ pub enum Criterion {
 impl Criterion {
     pub fn as_str(self) -> &'static str {
         match self {
-            Criterion::Fastest      => "fastest",
+            Criterion::Fastest => "fastest",
             Criterion::MostAccurate => "accurate",
-            Criterion::Balanced     => "balanced",
+            Criterion::Balanced => "balanced",
         }
     }
 }
@@ -929,10 +934,10 @@ pub const DEFAULT_ACCURACY_PENALTY: f64 = 100.0;
 /// (what + on what data + how big) with the user's criterion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct DispatchKey {
-    op:         OpKind,
-    dtype:      DType,
+    op: OpKind,
+    dtype: DType,
     size_class: SizeClass,
-    criterion:  Criterion,
+    criterion: Criterion,
 }
 
 /// Where the dispatch table decided an op should run, and which
@@ -962,7 +967,7 @@ struct DispatchKey {
 /// `Pick` is regenerated by calling [`DispatchTable::build`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Pick {
-    pub backend:      BackendId,
+    pub backend: BackendId,
     pub device_index: u32,
     /// Diagnostic tag from the winning [`ProfileEntry::kernel_source`].
     /// `""` when no sibling distinguishes the cell.
@@ -984,15 +989,15 @@ pub struct Pick {
 /// Add new tags here as new vendor backends land.
 pub fn kernel_source_intern(s: &str) -> &'static str {
     match s {
-        ""             => "",
+        "" => "",
         "portable-cpu" => "portable-cpu",
-        "aocl"         => "aocl",
-        "mkl"          => "mkl",
-        "cublas"       => "cublas",
-        "cutlass"      => "cutlass",
-        "baracuda"     => "baracuda",
-        "slang"        => "slang",
-        tag            => {
+        "aocl" => "aocl",
+        "mkl" => "mkl",
+        "cublas" => "cublas",
+        "cutlass" => "cutlass",
+        "baracuda" => "baracuda",
+        "slang" => "slang",
+        tag => {
             debug_assert!(
                 false,
                 "kernel_source_intern: unknown tag {tag:?}; map silently drops it. \
@@ -1003,19 +1008,21 @@ pub fn kernel_source_intern(s: &str) -> &'static str {
                  router will not be able to disambiguate same-backend siblings."
             );
             ""
-        },
+        }
     }
 }
 
 /// Options for building a [`DispatchTable`].
 #[derive(Debug, Clone, Copy)]
 pub struct DispatchOptions {
-    pub accuracy_penalty:  f64,
+    pub accuracy_penalty: f64,
 }
 
 impl Default for DispatchOptions {
     fn default() -> Self {
-        Self { accuracy_penalty: DEFAULT_ACCURACY_PENALTY }
+        Self {
+            accuracy_penalty: DEFAULT_ACCURACY_PENALTY,
+        }
     }
 }
 
@@ -1046,8 +1053,8 @@ impl DispatchTable {
 
     pub fn build_with(report: &ProfileReport, opts: DispatchOptions) -> Self {
         let mut tbl = Self {
-            entries:          HashMap::new(),
-            size_index:       HashMap::new(),
+            entries: HashMap::new(),
+            size_index: HashMap::new(),
             accuracy_penalty: opts.accuracy_penalty,
         };
         tbl.rebuild_from(report);
@@ -1059,20 +1066,38 @@ impl DispatchTable {
         self.size_index.clear();
         let mut groups: HashMap<(OpKind, DType, SizeClass), Vec<&ProfileEntry>> = HashMap::new();
         for e in &report.entries {
-            groups.entry((e.op, e.dtype, e.size_class)).or_default().push(e);
+            groups
+                .entry((e.op, e.dtype, e.size_class))
+                .or_default()
+                .push(e);
         }
         for ((op, dtype, size_class), group) in &groups {
-            for &criterion in &[Criterion::Fastest, Criterion::MostAccurate, Criterion::Balanced] {
+            for &criterion in &[
+                Criterion::Fastest,
+                Criterion::MostAccurate,
+                Criterion::Balanced,
+            ] {
                 if let Some(winner) = self.pick_winner(group, criterion) {
-                    let key = DispatchKey { op: *op, dtype: *dtype, size_class: *size_class, criterion };
-                    self.entries.insert(key, Pick {
-                        backend:       winner.backend,
-                        device_index:  winner.device_index,
-                        kernel_source: kernel_source_intern(&winner.kernel_source),
-                    });
+                    let key = DispatchKey {
+                        op: *op,
+                        dtype: *dtype,
+                        size_class: *size_class,
+                        criterion,
+                    };
+                    self.entries.insert(
+                        key,
+                        Pick {
+                            backend: winner.backend,
+                            device_index: winner.device_index,
+                            kernel_source: kernel_source_intern(&winner.kernel_source),
+                        },
+                    );
                 }
             }
-            self.size_index.entry((*op, *dtype)).or_default().push(*size_class);
+            self.size_index
+                .entry((*op, *dtype))
+                .or_default()
+                .push(*size_class);
         }
         for classes in self.size_index.values_mut() {
             classes.sort_by_key(|s| s.0);
@@ -1080,32 +1105,55 @@ impl DispatchTable {
         }
     }
 
-    fn pick_winner<'a>(&self, group: &[&'a ProfileEntry], crit: Criterion) -> Option<&'a ProfileEntry> {
+    fn pick_winner<'a>(
+        &self,
+        group: &[&'a ProfileEntry],
+        crit: Criterion,
+    ) -> Option<&'a ProfileEntry> {
         match crit {
-            Criterion::Fastest => group.iter().copied()
-                .min_by_key(|e| e.latency_ns),
-            Criterion::MostAccurate => group.iter().copied()
-                .min_by(|a, b| {
-                    a.max_rel_error.total_cmp(&b.max_rel_error)
-                        .then(a.latency_ns.cmp(&b.latency_ns))
-                }),
-            Criterion::Balanced => group.iter().copied()
-                .min_by(|a, b| {
-                    let sa = a.latency_ns as f64 * (1.0 + self.accuracy_penalty * a.max_rel_error as f64);
-                    let sb = b.latency_ns as f64 * (1.0 + self.accuracy_penalty * b.max_rel_error as f64);
-                    sa.total_cmp(&sb)
-                }),
+            Criterion::Fastest => group.iter().copied().min_by_key(|e| e.latency_ns),
+            Criterion::MostAccurate => group.iter().copied().min_by(|a, b| {
+                a.max_rel_error
+                    .total_cmp(&b.max_rel_error)
+                    .then(a.latency_ns.cmp(&b.latency_ns))
+            }),
+            Criterion::Balanced => group.iter().copied().min_by(|a, b| {
+                let sa =
+                    a.latency_ns as f64 * (1.0 + self.accuracy_penalty * a.max_rel_error as f64);
+                let sb =
+                    b.latency_ns as f64 * (1.0 + self.accuracy_penalty * b.max_rel_error as f64);
+                sa.total_cmp(&sb)
+            }),
         }
     }
 
     /// Exact lookup — returns `None` if the requested size class
     /// wasn't profiled.
-    pub fn pick(&self, op: OpKind, dtype: DType, size_class: SizeClass, criterion: Criterion) -> Option<Pick> {
-        self.entries.get(&DispatchKey { op, dtype, size_class, criterion }).copied()
+    pub fn pick(
+        &self,
+        op: OpKind,
+        dtype: DType,
+        size_class: SizeClass,
+        criterion: Criterion,
+    ) -> Option<Pick> {
+        self.entries
+            .get(&DispatchKey {
+                op,
+                dtype,
+                size_class,
+                criterion,
+            })
+            .copied()
     }
 
     /// Nearest-neighbour lookup. Ties go to the larger size class.
-    pub fn pick_nearest(&self, op: OpKind, dtype: DType, size_class: SizeClass, criterion: Criterion) -> Option<Pick> {
+    pub fn pick_nearest(
+        &self,
+        op: OpKind,
+        dtype: DType,
+        size_class: SizeClass,
+        criterion: Criterion,
+    ) -> Option<Pick> {
         if let Some(p) = self.pick(op, dtype, size_class, criterion) {
             return Some(p);
         }
@@ -1114,16 +1162,19 @@ impl DispatchTable {
             return None;
         }
         let target = size_class.0 as i32;
-        let nearest = classes.iter()
-            .min_by_key(|c| {
-                let diff = (c.0 as i32 - target).abs();
-                (diff, -(c.0 as i32))
-            })?;
+        let nearest = classes.iter().min_by_key(|c| {
+            let diff = (c.0 as i32 - target).abs();
+            (diff, -(c.0 as i32))
+        })?;
         self.pick(op, dtype, *nearest, criterion)
     }
 
-    pub fn len(&self) -> usize { self.entries.len() }
-    pub fn is_empty(&self) -> bool { self.entries.is_empty() }
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
 
     /// Every distinct `(op, dtype, size_class)` for which the table
     /// has at least one criterion entry. Sorted, stable across calls.
@@ -1134,7 +1185,8 @@ impl DispatchTable {
         }
         let mut out: Vec<_> = seen.into_iter().collect();
         out.sort_by(|a, b| {
-            a.0.as_str().cmp(b.0.as_str())
+            a.0.as_str()
+                .cmp(b.0.as_str())
                 .then(format!("{:?}", a.1).cmp(&format!("{:?}", b.1)))
                 .then(a.2.0.cmp(&b.2.0))
         });
@@ -1195,7 +1247,10 @@ mod size_class_tests {
         );
         let batched = SizeClass::for_op(
             OpKind::MatMul,
-            &[Shape::from_dims(&[32, 1, 64]), Shape::from_dims(&[32, 64, 128])],
+            &[
+                Shape::from_dims(&[32, 1, 64]),
+                Shape::from_dims(&[32, 64, 128]),
+            ],
         );
         assert_eq!(per_head, batched);
         assert_eq!(per_head, SizeClass::matmul(1, 128, 64));

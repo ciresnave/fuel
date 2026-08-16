@@ -83,10 +83,10 @@ impl BackendId {
     /// paths, and JSON keys. Stable across Fuel versions.
     pub fn as_str(self) -> &'static str {
         match self {
-            BackendId::Cpu       => "cpu",
-            BackendId::Cuda      => "cuda",
-            BackendId::Vulkan    => "vulkan",
-            BackendId::Metal     => "metal",
+            BackendId::Cpu => "cpu",
+            BackendId::Cuda => "cuda",
+            BackendId::Vulkan => "vulkan",
+            BackendId::Metal => "metal",
         }
     }
 }
@@ -170,11 +170,11 @@ impl DeviceDescriptor {
     /// up the equivalence key rather than the full descriptor.
     pub fn equivalence_key(&self) -> EquivalenceKey {
         EquivalenceKey {
-            backend:            self.backend,
-            vendor_id:          self.vendor_id,
-            device_id:          self.device_id,
+            backend: self.backend,
+            vendor_id: self.vendor_id,
+            device_id: self.device_id,
             compute_capability: self.compute_capability,
-            driver_version:     self.driver_version.clone(),
+            driver_version: self.driver_version.clone(),
         }
     }
 }
@@ -191,11 +191,11 @@ impl DeviceDescriptor {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct EquivalenceKey {
-    pub backend:            BackendId,
-    pub vendor_id:          u32,
-    pub device_id:          u32,
+    pub backend: BackendId,
+    pub vendor_id: u32,
+    pub device_id: u32,
     pub compute_capability: Option<(u32, u32)>,
-    pub driver_version:     String,
+    pub driver_version: String,
 }
 
 /// Marker trait documenting the enumeration contract each backend
@@ -230,16 +230,18 @@ mod tests {
     #[test]
     fn equivalence_key_collapses_identical_cuda_devices() {
         let make = |idx: u32| DeviceDescriptor {
-            backend:            BackendId::Cuda,
-            device_index:       idx,
-            hardware_sku:       "NVIDIA GeForce RTX 4090".to_string(),
-            vendor_id:          0x10DE,
-            device_id:          0x2684,
+            backend: BackendId::Cuda,
+            device_index: idx,
+            hardware_sku: "NVIDIA GeForce RTX 4090".to_string(),
+            vendor_id: 0x10DE,
+            device_id: 0x2684,
             compute_capability: Some((8, 9)),
-            subgroup_width:     Some(32),   // NVIDIA warp
-            driver_version:     "550.54.14".to_string(),
+            subgroup_width: Some(32), // NVIDIA warp
+            driver_version: "550.54.14".to_string(),
             total_memory_bytes: 25_769_803_776,
-            location:           DeviceLocation::Cuda { gpu_id: idx as usize },
+            location: DeviceLocation::Cuda {
+                gpu_id: idx as usize,
+            },
         };
         let a = make(0);
         let b = make(1);
@@ -252,28 +254,28 @@ mod tests {
     #[test]
     fn equivalence_key_splits_same_silicon_across_backends() {
         let cuda = DeviceDescriptor {
-            backend:            BackendId::Cuda,
-            device_index:       0,
-            hardware_sku:       "NVIDIA GeForce RTX 4090".to_string(),
-            vendor_id:          0x10DE,
-            device_id:          0x2684,
+            backend: BackendId::Cuda,
+            device_index: 0,
+            hardware_sku: "NVIDIA GeForce RTX 4090".to_string(),
+            vendor_id: 0x10DE,
+            device_id: 0x2684,
             compute_capability: Some((8, 9)),
-            subgroup_width:     Some(32),
-            driver_version:     "550.54.14".to_string(),
+            subgroup_width: Some(32),
+            driver_version: "550.54.14".to_string(),
             total_memory_bytes: 25_769_803_776,
-            location:           DeviceLocation::Cuda { gpu_id: 0 },
+            location: DeviceLocation::Cuda { gpu_id: 0 },
         };
         let vulkan = DeviceDescriptor {
-            backend:            BackendId::Vulkan,
-            device_index:       0,
-            hardware_sku:       "NVIDIA GeForce RTX 4090".to_string(),
-            vendor_id:          0x10DE,
-            device_id:          0x2684,
-            compute_capability: None,  // Vulkan doesn't expose CUDA CC.
-            subgroup_width:     Some(32),
-            driver_version:     "550.54.14".to_string(),
+            backend: BackendId::Vulkan,
+            device_index: 0,
+            hardware_sku: "NVIDIA GeForce RTX 4090".to_string(),
+            vendor_id: 0x10DE,
+            device_id: 0x2684,
+            compute_capability: None, // Vulkan doesn't expose CUDA CC.
+            subgroup_width: Some(32),
+            driver_version: "550.54.14".to_string(),
             total_memory_bytes: 25_769_803_776,
-            location:           DeviceLocation::Cpu,  // placeholder; vulkane uses a different variant
+            location: DeviceLocation::Cpu, // placeholder; vulkane uses a different variant
         };
         // Same chip, different submission paths → different classes.
         assert_ne!(cuda.equivalence_key(), vulkan.equivalence_key());
@@ -282,18 +284,21 @@ mod tests {
     #[test]
     fn equivalence_key_splits_on_driver_version() {
         let base = DeviceDescriptor {
-            backend:            BackendId::Cuda,
-            device_index:       0,
-            hardware_sku:       "X".to_string(),
-            vendor_id:          1,
-            device_id:          2,
+            backend: BackendId::Cuda,
+            device_index: 0,
+            hardware_sku: "X".to_string(),
+            vendor_id: 1,
+            device_id: 2,
             compute_capability: Some((8, 9)),
-            subgroup_width:     Some(32),
-            driver_version:     "550".to_string(),
+            subgroup_width: Some(32),
+            driver_version: "550".to_string(),
             total_memory_bytes: 0,
-            location:           DeviceLocation::Cuda { gpu_id: 0 },
+            location: DeviceLocation::Cuda { gpu_id: 0 },
         };
-        let newer = DeviceDescriptor { driver_version: "560".to_string(), ..base.clone() };
+        let newer = DeviceDescriptor {
+            driver_version: "560".to_string(),
+            ..base.clone()
+        };
         assert_ne!(base.equivalence_key(), newer.equivalence_key());
     }
 
@@ -305,18 +310,21 @@ mod tests {
     #[test]
     fn equivalence_key_ignores_subgroup_width() {
         let base = DeviceDescriptor {
-            backend:            BackendId::Vulkan,
-            device_index:       0,
-            hardware_sku:       "X".to_string(),
-            vendor_id:          1,
-            device_id:          2,
+            backend: BackendId::Vulkan,
+            device_index: 0,
+            hardware_sku: "X".to_string(),
+            vendor_id: 1,
+            device_id: 2,
             compute_capability: None,
-            subgroup_width:     None,
-            driver_version:     "550".to_string(),
+            subgroup_width: None,
+            driver_version: "550".to_string(),
             total_memory_bytes: 0,
-            location:           DeviceLocation::Vulkan { gpu_id: 0 },
+            location: DeviceLocation::Vulkan { gpu_id: 0 },
         };
-        let with_width = DeviceDescriptor { subgroup_width: Some(64), ..base.clone() };
+        let with_width = DeviceDescriptor {
+            subgroup_width: Some(64),
+            ..base.clone()
+        };
         // Descriptors differ...
         assert_ne!(base, with_width);
         // ...but they profile identically, so the key must collapse them.

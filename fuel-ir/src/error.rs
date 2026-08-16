@@ -1,4 +1,4 @@
-﻿//! Fuel-specific Error and Result types.
+//! Fuel-specific Error and Result types.
 use std::{convert::Infallible, fmt::Display};
 
 use crate::{DType, DeviceLocation, Layout, Shape};
@@ -81,7 +81,10 @@ pub enum Error {
     #[error(
         "Shape mismatch, got buffer of size {buffer_size} which is compatible with shape {shape:?}"
     )]
-    ShapeMismatch { buffer_size: usize, shape: Box<Shape> },
+    ShapeMismatch {
+        buffer_size: usize,
+        shape: Box<Shape>,
+    },
 
     #[error("shape mismatch in {op}, lhs: {lhs:?}, rhs: {rhs:?}")]
     ShapeMismatchBinaryOp {
@@ -150,7 +153,10 @@ pub enum Error {
     },
 
     #[error("cannot broadcast {src_shape:?} to {dst_shape:?}")]
-    BroadcastIncompatibleShapes { src_shape: Box<Shape>, dst_shape: Box<Shape> },
+    BroadcastIncompatibleShapes {
+        src_shape: Box<Shape>,
+        dst_shape: Box<Shape>,
+    },
 
     #[error("cannot set variable {msg}")]
     CannotSetVar { msg: &'static str },
@@ -189,19 +195,13 @@ pub enum Error {
         op: crate::dispatch::OpKind,
         dtypes: Vec<DType>,
         available_backends: Vec<crate::probe::BackendId>,
-        supported_combinations: Vec<(
-            crate::probe::BackendId,
-            crate::dispatch::OpKind,
-            Vec<DType>,
-        )>,
+        supported_combinations: Vec<(crate::probe::BackendId, crate::dispatch::OpKind, Vec<DType>)>,
     },
 
     /// No transfer path connects `from` and `to` directly, and
     /// host-staging fallback isn't available either (e.g. neither
     /// device can copy_to_host). Fires at DAG construction.
-    #[error(
-        "unsupported transfer from {from:?} to {to:?}; available paths: {available_paths:?}"
-    )]
+    #[error("unsupported transfer from {from:?} to {to:?}; available paths: {available_paths:?}")]
     UnsupportedTransfer {
         from: DeviceLocation,
         to: DeviceLocation,
@@ -211,9 +211,7 @@ pub enum Error {
     /// Source storage's alignment doesn't meet the destination
     /// backend's required alignment, and Router has no way to
     /// repack on this path. Fires at DAG construction.
-    #[error(
-        "alignment mismatch on {backend:?}: required {required} bytes, got {actual} bytes"
-    )]
+    #[error("alignment mismatch on {backend:?}: required {required} bytes, got {actual} bytes")]
     AlignmentMismatch {
         backend: crate::probe::BackendId,
         required: usize,

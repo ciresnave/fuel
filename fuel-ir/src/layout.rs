@@ -105,11 +105,17 @@ impl Layout {
     /// strides (e.g. is the consumer of an `Op::Flip` view): iterate
     /// via [`crate::StridedIndex`] which handles the sign correctly.
     pub fn stride_unsigned(&self) -> DimVec {
-        self.stride.iter().map(|&s| {
-            debug_assert!(s >= 0, "stride_unsigned() called on a layout with negative stride; \
-                use StridedIndex or operate on signed strides");
-            s as usize
-        }).collect()
+        self.stride
+            .iter()
+            .map(|&s| {
+                debug_assert!(
+                    s >= 0,
+                    "stride_unsigned() called on a layout with negative stride; \
+                use StridedIndex or operate on signed strides"
+                );
+                s as usize
+            })
+            .collect()
     }
 
     /// Returns the start offset into the underlying storage.
@@ -264,10 +270,9 @@ impl Layout {
     pub fn squeeze(&self, dim: usize) -> Result<Self> {
         let rank = self.shape().rank();
         if dim >= rank {
-            return Err(Error::Msg(format!(
-                "squeeze: dim {dim} out of bounds for rank {rank}",
-            ))
-            .bt());
+            return Err(
+                Error::Msg(format!("squeeze: dim {dim} out of bounds for rank {rank}",)).bt(),
+            );
         }
         if self.shape().dims()[dim] != 1 {
             return Err(Error::Msg(format!(
@@ -299,10 +304,7 @@ impl Layout {
     pub fn flip(&self, dim: usize) -> Result<Self> {
         let rank = self.shape().rank();
         if dim >= rank {
-            return Err(Error::Msg(format!(
-                "flip: dim {dim} out of bounds for rank {rank}",
-            ))
-            .bt());
+            return Err(Error::Msg(format!("flip: dim {dim} out of bounds for rank {rank}",)).bt());
         }
         let size = self.shape().dims()[dim];
         let mut new_stride = StrideVec::from_slice(self.stride());

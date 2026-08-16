@@ -126,8 +126,7 @@ fn scan_production_file(path: &str, text: &str) -> FileScan {
         // `"#[cfg(test)]"`, so a `#[cfg(test)]` line never double-triggers here.
         // Guard against re-arming while already inside a region so a nested
         // attribute cannot corrupt the depth we must return to (naive safety).
-        if skip_until_depth.is_none()
-            && (line.contains("#[cfg(test)]") || line.contains("#[test]"))
+        if skip_until_depth.is_none() && (line.contains("#[cfg(test)]") || line.contains("#[test]"))
         {
             pending_cfg_test = true;
         }
@@ -165,9 +164,10 @@ fn scan_production_file(path: &str, text: &str) -> FileScan {
 
         depth += opens - closes;
         if let Some(d) = skip_until_depth
-            && depth <= d {
-                skip_until_depth = None;
-            }
+            && depth <= d
+        {
+            skip_until_depth = None;
+        }
     }
 
     scan
@@ -231,9 +231,10 @@ fn parent_gates_as_cfg_test(path: &Path) -> bool {
             continue; // a file is never its own parent module
         }
         if let Ok(txt) = std::fs::read_to_string(&cand)
-            && parent_declares_mod_cfg_test(&txt, stem) {
-                return true;
-            }
+            && parent_declares_mod_cfg_test(&txt, stem)
+        {
+            return true;
+        }
     }
     false
 }
@@ -246,13 +247,12 @@ fn workspace_root() -> PathBuf {
         let manifest = dir.join("Cargo.toml");
         if manifest.exists()
             && let Ok(txt) = std::fs::read_to_string(&manifest)
-                && txt.contains("[workspace]") {
-                    return dir;
-                }
+            && txt.contains("[workspace]")
+        {
+            return dir;
+        }
         if !dir.pop() {
-            panic!(
-                "could not find a Cargo.toml containing [workspace] above CARGO_MANIFEST_DIR"
-            );
+            panic!("could not find a Cargo.toml containing [workspace] above CARGO_MANIFEST_DIR");
         }
     }
 }
@@ -364,7 +364,10 @@ mod unit {
     #[test]
     fn parent_cfg_test_detection_both_directions() {
         // A `#[cfg(test)]`-attributed `mod foo;` in a parent gates foo.rs as test.
-        assert!(parent_declares_mod_cfg_test("#[cfg(test)]\nmod foo;", "foo"));
+        assert!(parent_declares_mod_cfg_test(
+            "#[cfg(test)]\nmod foo;",
+            "foo"
+        ));
         // A plain `mod foo;` (no attribute) does not.
         assert!(!parent_declares_mod_cfg_test("mod foo;", "foo"));
     }

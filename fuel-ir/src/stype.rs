@@ -160,7 +160,9 @@ impl SType {
         use crate::dlpack::convert::{dtype_to_fdx, ggml_to_fdx, scale_granularity_to_fdx};
         use crate::dlpack::sidecar::FDXQuant;
 
-        let Some(layer) = self.0.first() else { return Ok(None) };
+        let Some(layer) = self.0.first() else {
+            return Ok(None);
+        };
         Ok(match layer {
             // GGML: scale baked INLINE; no separate operand, no granularity.
             Encoding::GgmlBlock { ggml_dtype } => Some(FDXQuant {
@@ -190,7 +192,12 @@ impl SType {
             }),
             // AFFINE_BLOCK (NF4/QLoRA): low-bit packed data + a SEPARATE per-block
             // absmax scale operand (model B). `scale_buffer` is bound by the op.
-            Encoding::AffineBlock { packed: _, block_shape, scale, zero_point } => {
+            Encoding::AffineBlock {
+                packed: _,
+                block_shape,
+                scale,
+                zero_point,
+            } => {
                 let mut bshape = [0u32; 4];
                 let mut baxes = [-1i32; 4];
                 let n = block_shape.len().min(4);
@@ -241,14 +248,17 @@ impl SType {
 mod tests {
     use super::*;
     use crate::DType;
-    use crate::quantized::GgmlDType;
     use crate::quant_scale::ScaleGranularity;
+    use crate::quantized::GgmlDType;
 
     /// Default SType is empty = plain (the byte-identical default).
     #[test]
     fn default_stype_is_empty_plain() {
         let s = SType::default();
-        assert!(s.is_plain(), "default SType must be plain (empty layer stack)");
+        assert!(
+            s.is_plain(),
+            "default SType must be plain (empty layer stack)"
+        );
         assert_eq!(s.layers().len(), 0);
     }
 
@@ -256,8 +266,12 @@ mod tests {
     #[test]
     fn stype_is_eq_and_hash() {
         use std::collections::HashSet;
-        let a = SType::from_layer(Encoding::GgmlBlock { ggml_dtype: GgmlDType::Q4_0 });
-        let b = SType::from_layer(Encoding::GgmlBlock { ggml_dtype: GgmlDType::Q4_0 });
+        let a = SType::from_layer(Encoding::GgmlBlock {
+            ggml_dtype: GgmlDType::Q4_0,
+        });
+        let b = SType::from_layer(Encoding::GgmlBlock {
+            ggml_dtype: GgmlDType::Q4_0,
+        });
         assert_eq!(a, b);
         let mut set = HashSet::new();
         set.insert(a);
@@ -271,7 +285,10 @@ mod tests {
         let enc = Encoding::AffineBlock {
             packed: DType::F4,
             block_shape: smallvec::smallvec![64],
-            scale: ScaleSpec { dtype: DType::F32, granularity: ScaleGranularity::PerChannel },
+            scale: ScaleSpec {
+                dtype: DType::F32,
+                granularity: ScaleGranularity::PerChannel,
+            },
             zero_point: None,
         };
         let s = SType::from_layer(enc.clone());
@@ -280,7 +297,11 @@ mod tests {
         // The packed sub-byte storage is F4; the LOGICAL dtype is NOT here — it
         // lives on Storage.dtype (step 2). Encoding never names the logical float.
         match &s.layers()[0] {
-            Encoding::AffineBlock { packed, block_shape, .. } => {
+            Encoding::AffineBlock {
+                packed,
+                block_shape,
+                ..
+            } => {
                 assert_eq!(*packed, DType::F4);
                 assert_eq!(block_shape.as_slice(), &[64u32]);
             }
@@ -291,10 +312,14 @@ mod tests {
     /// GgmlBlock is a single self-contained inline layer (no scale sibling).
     #[test]
     fn ggml_block_is_inline_single_layer() {
-        let s = SType::from_layer(Encoding::GgmlBlock { ggml_dtype: GgmlDType::Q4K });
+        let s = SType::from_layer(Encoding::GgmlBlock {
+            ggml_dtype: GgmlDType::Q4K,
+        });
         assert_eq!(s.layers().len(), 1);
-        assert!(!s.requires_scale_sibling(),
-            "GGML scale is baked inline; no sibling operand required");
+        assert!(
+            !s.requires_scale_sibling(),
+            "GGML scale is baked inline; no sibling operand required"
+        );
     }
 
     /// AffineBlock requires a scale sibling operand (the absmax).
@@ -303,7 +328,10 @@ mod tests {
         let s = SType::from_layer(Encoding::AffineBlock {
             packed: DType::F4,
             block_shape: smallvec::smallvec![64],
-            scale: ScaleSpec { dtype: DType::F32, granularity: ScaleGranularity::PerChannel },
+            scale: ScaleSpec {
+                dtype: DType::F32,
+                granularity: ScaleGranularity::PerChannel,
+            },
             zero_point: None,
         });
         assert!(s.requires_scale_sibling());
@@ -423,7 +451,10 @@ mod tests {
         let other_block = Encoding::AffineBlock {
             packed: DType::F4,
             block_shape: smallvec::smallvec![32],
-            scale: ScaleSpec { dtype: DType::F32, granularity: ScaleGranularity::PerChannel },
+            scale: ScaleSpec {
+                dtype: DType::F32,
+                granularity: ScaleGranularity::PerChannel,
+            },
             zero_point: None,
         };
         assert_ne!(
@@ -433,7 +464,9 @@ mod tests {
         );
         assert_ne!(
             nf4,
-            Encoding::GgmlBlock { ggml_dtype: GgmlDType::Q4K },
+            Encoding::GgmlBlock {
+                ggml_dtype: GgmlDType::Q4K
+            },
             "non-vacuity: a different ENCODING must compare unequal"
         );
     }
@@ -443,24 +476,31 @@ mod tests {
 mod to_fdx_tests {
     use super::*;
     use crate::DType;
-    use crate::quantized::GgmlDType;
-    use crate::quant_scale::ScaleGranularity;
     use crate::dlpack::codes::*;
+    use crate::quant_scale::ScaleGranularity;
+    use crate::quantized::GgmlDType;
 
     /// A plain SType has no quant projection.
     #[test]
     fn plain_projects_to_none() {
-        assert!(SType::plain().to_fdx(None).expect("plain never declines").is_none());
+        assert!(
+            SType::plain()
+                .to_fdx(None)
+                .expect("plain never declines")
+                .is_none()
+        );
     }
 
     /// GGML projects to the inline GGML_BLOCK family: scale baked inline, no
     /// separate operand, ggml_dtype carried through.
     #[test]
     fn ggml_projects_inline() {
-        let q = SType::from_layer(Encoding::GgmlBlock { ggml_dtype: GgmlDType::Q4_0 })
-            .to_fdx(None)
-            .expect("encodes")
-            .expect("GGML projects");
+        let q = SType::from_layer(Encoding::GgmlBlock {
+            ggml_dtype: GgmlDType::Q4_0,
+        })
+        .to_fdx(None)
+        .expect("encodes")
+        .expect("GGML projects");
         assert_eq!(q.family, FDX_QUANT_GGML_BLOCK);
         assert_eq!(q.ggml_dtype, FDX_GGML_Q4_0);
         assert_eq!(q.scale_present, 0);
@@ -475,11 +515,17 @@ mod to_fdx_tests {
         let enc = Encoding::AffineBlock {
             packed: DType::F4,
             block_shape: smallvec::smallvec![64],
-            scale: ScaleSpec { dtype: DType::F32, granularity: ScaleGranularity::PerChannel },
+            scale: ScaleSpec {
+                dtype: DType::F32,
+                granularity: ScaleGranularity::PerChannel,
+            },
             zero_point: None,
         };
         // Unbound (bare view()).
-        let q = SType::from_layer(enc.clone()).to_fdx(None).expect("encodes").expect("projects");
+        let q = SType::from_layer(enc.clone())
+            .to_fdx(None)
+            .expect("encodes")
+            .expect("projects");
         assert_eq!(q.family, FDX_QUANT_AFFINE_BLOCK);
         assert_eq!(q.ggml_dtype, FDX_DTYPE_NONE);
         assert_eq!(q.block_ndim, 1);
@@ -492,7 +538,10 @@ mod to_fdx_tests {
         assert_eq!(q.scale_buffer, FDX_BUFFER_NONE);
         assert_eq!(q.zp_present, 0);
         // Bound (op-context supplies the buffer-table index).
-        let bound = SType::from_layer(enc).to_fdx(Some(3)).expect("encodes").expect("projects");
+        let bound = SType::from_layer(enc)
+            .to_fdx(Some(3))
+            .expect("encodes")
+            .expect("projects");
         assert_eq!(bound.scale_buffer, 3);
     }
 
@@ -502,8 +551,14 @@ mod to_fdx_tests {
         let q = SType::from_layer(Encoding::AffineBlock {
             packed: DType::F4,
             block_shape: smallvec::smallvec![32],
-            scale: ScaleSpec { dtype: DType::F32, granularity: ScaleGranularity::PerToken },
-            zero_point: Some(ScaleSpec { dtype: DType::F32, granularity: ScaleGranularity::PerToken }),
+            scale: ScaleSpec {
+                dtype: DType::F32,
+                granularity: ScaleGranularity::PerToken,
+            },
+            zero_point: Some(ScaleSpec {
+                dtype: DType::F32,
+                granularity: ScaleGranularity::PerToken,
+            }),
         })
         .to_fdx(None)
         .expect("encodes")
@@ -515,6 +570,11 @@ mod to_fdx_tests {
     /// The reserved Mx placeholder is not wired in v1.
     #[test]
     fn mx_projects_to_none() {
-        assert!(SType::from_layer(Encoding::Mx).to_fdx(None).expect("Mx never declines").is_none());
+        assert!(
+            SType::from_layer(Encoding::Mx)
+                .to_fdx(None)
+                .expect("Mx never declines")
+                .is_none()
+        );
     }
 }
