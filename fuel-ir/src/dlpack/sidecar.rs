@@ -464,7 +464,11 @@ mod tests {
     #[test]
     fn spec_stated_sizes() {
         // §6.4 / §6.4.1: "EXACTLY 16 bytes" and "sizeof == 8 + 8 + 4*16 == 80".
-        assert_eq!(size_of::<FDXAffineTerm>(), 16, "spec §6.4: FDXAffineTerm == 16");
+        assert_eq!(
+            size_of::<FDXAffineTerm>(),
+            16,
+            "spec §6.4: FDXAffineTerm == 16"
+        );
         assert_eq!(size_of::<FDXAffine>(), 80, "spec §6.4: FDXAffine == 80");
     }
 
@@ -531,6 +535,9 @@ mod tests {
             offset_of!(FDXSidecar, reserved),
             offset_of!(FDXSidecar, gather) + size_of::<FDXIndexedResidency>()
         );
-        assert_eq!(size_of::<FDXSidecar>(), offset_of!(FDXSidecar, reserved) + 16);
+        assert_eq!(
+            size_of::<FDXSidecar>(),
+            offset_of!(FDXSidecar, reserved) + 16
+        );
     }
 }

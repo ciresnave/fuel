@@ -1,4 +1,4 @@
-﻿//! Core vocabulary types for the fuel ML framework.
+//! Core vocabulary types for the fuel ML framework.
 //!
 //! This crate contains the foundational types (`DType`, `Shape`, `Layout`, `Error`),
 //! the backend capability **data** (`BackendCapabilities`, `SubstrateClass`,
@@ -44,30 +44,30 @@ pub mod scalar;
 pub mod shape;
 pub mod storage;
 pub mod storage_status;
+pub mod strided_index;
 pub mod stype;
 pub mod symbol;
-pub mod strided_index;
 pub mod token_kind;
 
 pub use capability::Capability;
-pub use probe::{BackendId, BackendProbe, DeviceDescriptor, EquivalenceKey};
 pub use cpu_storage::{CpuDevice, CpuStorage, CpuStorageRef, HostBuffer, HostBufferRef, HostDType};
 pub use device::DeviceLocation;
 pub use dtype::{
     DType, DTypeParseError, FloatDType, IntDType, RESERVED_DTYPE_TOKENS, WithDType,
     is_reserved_dtype_token,
 };
-pub use storage_status::StorageStatus;
 pub use error::{Context, Error, Result};
-pub use token_kind::{
-    classify_dtype_token, sk4_token, TokenKind, RECOGNIZED_UNSUPPORTED_DTYPE_TOKENS,
-    SK4_DTYPE_TOKENS,
-};
 pub use layout::Layout;
+pub use probe::{BackendId, BackendProbe, DeviceDescriptor, EquivalenceKey};
 pub use quant_scale::{ScaleGranularity, ScalePair};
 pub use quantized::GgmlDType;
 pub use scalar::Scalar;
 pub use shape::{D, Dim, Dims, Shape, ShapeWithOneHole};
-pub use stype::{Encoding, SType, ScaleSpec};
+pub use storage_status::StorageStatus;
 pub use strided_index::{StridedBlocks, StridedIndex};
+pub use stype::{Encoding, SType, ScaleSpec};
 pub use symbol::{DynScalar, SymEnv, SymGen, SymId};
+pub use token_kind::{
+    RECOGNIZED_UNSUPPORTED_DTYPE_TOKENS, SK4_DTYPE_TOKENS, TokenKind, classify_dtype_token,
+    sk4_token,
+};

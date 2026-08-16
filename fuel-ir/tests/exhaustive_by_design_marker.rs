@@ -153,9 +153,10 @@ fn workspace_root() -> PathBuf {
         let manifest = dir.join("Cargo.toml");
         if manifest.exists()
             && let Ok(txt) = std::fs::read_to_string(&manifest)
-                && txt.contains("[workspace]") {
-                    return dir;
-                }
+            && txt.contains("[workspace]")
+        {
+            return dir;
+        }
         if !dir.pop() {
             panic!("could not find a Cargo.toml containing [workspace] above CARGO_MANIFEST_DIR");
         }

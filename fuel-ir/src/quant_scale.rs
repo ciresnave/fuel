@@ -153,8 +153,14 @@ mod tests {
 
     #[test]
     fn presets_have_expected_pairings() {
-        assert_eq!(ScalePair::PRODUCTION_DECODE.activation, ScaleGranularity::PerToken);
-        assert_eq!(ScalePair::PRODUCTION_DECODE.weight, ScaleGranularity::PerChannel);
+        assert_eq!(
+            ScalePair::PRODUCTION_DECODE.activation,
+            ScaleGranularity::PerToken
+        );
+        assert_eq!(
+            ScalePair::PRODUCTION_DECODE.weight,
+            ScaleGranularity::PerChannel
+        );
         assert_eq!(ScalePair::SIMPLE.activation, ScaleGranularity::PerTensor);
         assert_eq!(ScalePair::SIMPLE.weight, ScaleGranularity::PerTensor);
     }

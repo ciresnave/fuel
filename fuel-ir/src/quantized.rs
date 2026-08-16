@@ -79,18 +79,18 @@ impl GgmlDType {
             Self::F32 => 4,
             Self::F16 | Self::BF16 => 2,
             // ggml block sizes (must match k_quants::BlockQX struct sizes)
-            Self::Q4_0 => 18,  // 2 + 16
-            Self::Q4_1 => 20,  // 4 + 16
-            Self::Q5_0 => 22,  // 2 + 4 + 16
-            Self::Q5_1 => 24,  // 4 + 4 + 16
-            Self::Q8_0 => 34,  // 2 + 32
-            Self::Q8_1 => 36,  // 4 + 32
-            Self::Q2K => 84,   // QK_K/16 + QK_K/4 + 2 + 2
-            Self::Q3K => 110,  // QK_K/8 + QK_K/4 + 12 + 2
-            Self::Q4K => 144,  // 2 + 2 + 12 + QK_K/2
-            Self::Q5K => 176,  // 2 + 2 + 12 + QK_K/8 + QK_K/2
-            Self::Q6K => 210,  // QK_K/2 + QK_K/4 + QK_K/16 + 2
-            Self::Q8K => 292,  // 4 + QK_K + QK_K/16 * 2
+            Self::Q4_0 => 18, // 2 + 16
+            Self::Q4_1 => 20, // 4 + 16
+            Self::Q5_0 => 22, // 2 + 4 + 16
+            Self::Q5_1 => 24, // 4 + 4 + 16
+            Self::Q8_0 => 34, // 2 + 32
+            Self::Q8_1 => 36, // 4 + 32
+            Self::Q2K => 84,  // QK_K/16 + QK_K/4 + 2 + 2
+            Self::Q3K => 110, // QK_K/8 + QK_K/4 + 12 + 2
+            Self::Q4K => 144, // 2 + 2 + 12 + QK_K/2
+            Self::Q5K => 176, // 2 + 2 + 12 + QK_K/8 + QK_K/2
+            Self::Q6K => 210, // QK_K/2 + QK_K/4 + QK_K/16 + 2
+            Self::Q8K => 292, // 4 + QK_K + QK_K/16 * 2
         }
     }
 

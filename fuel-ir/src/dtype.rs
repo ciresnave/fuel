@@ -280,6 +280,29 @@ mod reserved_token_tests {
     /// detection. The token it keys on cannot drift: GAP-169 ruled `as_str()`
     /// must stay `f8e4m3` because external `.fkc.md` contracts parse it, so the
     /// deferral protects its own expiry witness.
+    #[test]
+    fn exactly_one_e4m3_family_dtype_or_revisit_gap_169() {
+        fn is_e4m3_family(dt: DType) -> bool {
+            // Prefix, not equality: every `f8e4m3*` spelling (e.g. a future
+            // `f8e4m3fnuz`) is E4M3-family and must count. See the bound above.
+            dt.as_str().starts_with("f8e4m3")
+        }
+        let e4m3: Vec<DType> = DType::ALL
+            .iter()
+            .copied()
+            .filter(|&dt| is_e4m3_family(dt))
+            .collect();
+        assert_eq!(
+            e4m3.as_slice(),
+            [DType::F8E4M3].as_slice(),
+            "GAP-169 deferral premise broken: the E4M3 family now has {} members \
+             ({e4m3:?}), not one. A sibling E4M3 variant exists, so the bare \
+             `F8E4M3` name is now ambiguous — revisit GAP-169 (rename to \
+             F8E4M3FN vs the sibling; see DType::F8E4M3's doc).",
+            e4m3.len(),
+        );
+    }
+
     /// Every variant in [`DType::ALL`] must return a consistent byte count
     /// from [`size_in_bytes`](DType::size_in_bytes). An incorrect value
     /// silently corrupts memory allocation, stride computation, and buffer
@@ -310,8 +333,20 @@ mod reserved_token_tests {
             (DType::F8E6M2, 1),
             (DType::Bool, 1),
         ];
-        assert_eq!(DType::ALL.len(), expected.len());
-        for &(dt, size) in expected {
+        assert_eq!(
+            DType::ALL.len(),
+            expected.len(),
+            "DType::ALL has {} variants but expected list has {} — \
+             add the new variant to the expected list above",
+            DType::ALL.len(),
+            expected.len(),
+        );
+        let map: std::collections::HashMap<DType, usize> = expected.iter().copied().collect();
+        for &dt in DType::ALL {
+            let size = map
+                .get(&dt)
+                .copied()
+                .unwrap_or_else(|| panic!("DType::{dt:?} missing from expected list"));
             assert_eq!(
                 dt.size_in_bytes(),
                 size,
@@ -319,29 +354,6 @@ mod reserved_token_tests {
                 dt.size_in_bytes(),
             );
         }
-    }
-
-    #[test]
-    fn exactly_one_e4m3_family_dtype_or_revisit_gap_169() {
-        fn is_e4m3_family(dt: DType) -> bool {
-            // Prefix, not equality: every `f8e4m3*` spelling (e.g. a future
-            // `f8e4m3fnuz`) is E4M3-family and must count. See the bound above.
-            dt.as_str().starts_with("f8e4m3")
-        }
-        let e4m3: Vec<DType> = DType::ALL
-            .iter()
-            .copied()
-            .filter(|&dt| is_e4m3_family(dt))
-            .collect();
-        assert_eq!(
-            e4m3.as_slice(),
-            [DType::F8E4M3].as_slice(),
-            "GAP-169 deferral premise broken: the E4M3 family now has {} members \
-             ({e4m3:?}), not one. A sibling E4M3 variant exists, so the bare \
-             `F8E4M3` name is now ambiguous — revisit GAP-169 (rename to \
-             F8E4M3FN vs the sibling; see DType::F8E4M3's doc).",
-            e4m3.len(),
-        );
     }
 }
 

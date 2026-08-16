@@ -292,9 +292,9 @@ fn header_define_constants_match_codes() {
 
     macro_rules! check {
         ($name:literal, $rust:expr) => {{
-            let got = *defines.get($name).unwrap_or_else(|| {
-                panic!("header is missing a parseable `#define {} N`", $name)
-            });
+            let got = *defines
+                .get($name)
+                .unwrap_or_else(|| panic!("header is missing a parseable `#define {} N`", $name));
             assert_eq!(
                 got, $rust as u64,
                 "header `#define {}` == {}, codes.rs == {}",
