@@ -167,7 +167,10 @@ mod reserved_token_tests {
         // The other side of the distinction. Without this, a deriver that
         // reported EVERYTHING as reserved would pass the loop above.
         let unknown = DType::from_str("asdf").expect_err("garbage must not parse");
-        assert!(!unknown.is_reserved(), "an unknown token must NOT report as reserved");
+        assert!(
+            !unknown.is_reserved(),
+            "an unknown token must NOT report as reserved"
+        );
         assert_eq!(unknown, DTypeParseError::Unknown("asdf".into()));
     }
 
@@ -179,7 +182,10 @@ mod reserved_token_tests {
     fn reserved_lookup_is_case_insensitive_so_one_list_serves_both_sites() {
         assert!(is_reserved_dtype_token("F8E4M3FNUZ"));
         assert!(is_reserved_dtype_token("f8e5m2fnuz"));
-        assert!(!is_reserved_dtype_token("f8e4m3fn"), "the OCP form is NOT reserved");
+        assert!(
+            !is_reserved_dtype_token("f8e4m3fn"),
+            "the OCP form is NOT reserved"
+        );
         assert!(!is_reserved_dtype_token("asdf"));
     }
 
@@ -274,6 +280,47 @@ mod reserved_token_tests {
     /// detection. The token it keys on cannot drift: GAP-169 ruled `as_str()`
     /// must stay `f8e4m3` because external `.fkc.md` contracts parse it, so the
     /// deferral protects its own expiry witness.
+    /// Every variant in [`DType::ALL`] must return a consistent byte count
+    /// from [`size_in_bytes`](DType::size_in_bytes). An incorrect value
+    /// silently corrupts memory allocation, stride computation, and buffer
+    /// sizing — so this is a regression gate: a new variant that forgets its
+    /// size gets caught here rather than in a downstream OOM.
+    ///
+    /// Sub-byte types (F6E2M3, F6E3M2, F4) legitimately return 0 — they are
+    /// packed in hardware and have no natural byte-aligned storage width.
+    #[test]
+    fn size_in_bytes_is_consistent_for_every_variant() {
+        let expected: &[(DType, usize)] = &[
+            (DType::U8, 1),
+            (DType::I8, 1),
+            (DType::U32, 4),
+            (DType::I16, 2),
+            (DType::I32, 4),
+            (DType::I64, 8),
+            (DType::BF16, 2),
+            (DType::F16, 2),
+            (DType::F32, 4),
+            (DType::F64, 8),
+            (DType::F8E4M3, 1),
+            (DType::F8E5M2, 1),
+            (DType::F6E2M3, 0),
+            (DType::F6E3M2, 0),
+            (DType::F4, 0),
+            (DType::F8E8M0, 1),
+            (DType::F8E6M2, 1),
+            (DType::Bool, 1),
+        ];
+        assert_eq!(DType::ALL.len(), expected.len());
+        for &(dt, size) in expected {
+            assert_eq!(
+                dt.size_in_bytes(),
+                size,
+                "{dt:?}.size_in_bytes() returned {} but expected {size}",
+                dt.size_in_bytes(),
+            );
+        }
+    }
+
     #[test]
     fn exactly_one_e4m3_family_dtype_or_revisit_gap_169() {
         fn is_e4m3_family(dt: DType) -> bool {
@@ -281,8 +328,11 @@ mod reserved_token_tests {
             // `f8e4m3fnuz`) is E4M3-family and must count. See the bound above.
             dt.as_str().starts_with("f8e4m3")
         }
-        let e4m3: Vec<DType> =
-            DType::ALL.iter().copied().filter(|&dt| is_e4m3_family(dt)).collect();
+        let e4m3: Vec<DType> = DType::ALL
+            .iter()
+            .copied()
+            .filter(|&dt| is_e4m3_family(dt))
+            .collect();
         assert_eq!(
             e4m3.as_slice(),
             [DType::F8E4M3].as_slice(),
@@ -557,7 +607,9 @@ impl DType {
     pub fn is_float(&self) -> bool {
         match self {
             // Bool is a truth value, neither integer nor float.
-            Self::U8 | Self::I8 | Self::U32 | Self::I16 | Self::I32 | Self::I64 | Self::Bool => false,
+            Self::U8 | Self::I8 | Self::U32 | Self::I16 | Self::I32 | Self::I64 | Self::Bool => {
+                false
+            }
             Self::BF16
             | Self::F16
             | Self::F32

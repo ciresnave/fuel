@@ -978,4 +978,67 @@ mod tests {
         assert_eq!(rlayout.dims(), &[1, 32, 53, 128]);
         assert_eq!(rlayout.stride(), layout.stride(), "strides stay capacity-based");
     }
+
+    #[test]
+    fn broadcast_identical_shapes() {
+        let a = Shape::from((2, 3));
+        let b = Shape::from((2, 3));
+        let result = a.broadcast_shape_binary_op(&b, "add").unwrap();
+        assert_eq!(result.dims(), &[2, 3]);
+    }
+
+    #[test]
+    fn broadcast_broadcasts_one_on_lhs() {
+        let a = Shape::from((1, 3));
+        let b = Shape::from((2, 3));
+        let result = a.broadcast_shape_binary_op(&b, "add").unwrap();
+        assert_eq!(result.dims(), &[2, 3]);
+    }
+
+    #[test]
+    fn broadcast_broadcasts_one_on_rhs() {
+        let a = Shape::from((2, 1));
+        let b = Shape::from((2, 3));
+        let result = a.broadcast_shape_binary_op(&b, "add").unwrap();
+        assert_eq!(result.dims(), &[2, 3]);
+    }
+
+    #[test]
+    fn broadcast_scalar_with_matrix() {
+        let a = Shape::from(());
+        let b = Shape::from((2, 3));
+        let result = a.broadcast_shape_binary_op(&b, "add").unwrap();
+        assert_eq!(result.dims(), &[2, 3]);
+    }
+
+    #[test]
+    fn broadcast_different_ranks() {
+        let a = Shape::from((1,));
+        let b = Shape::from((3, 4, 5));
+        let result = a.broadcast_shape_binary_op(&b, "add").unwrap();
+        assert_eq!(result.dims(), &[3, 4, 5]);
+    }
+
+    #[test]
+    fn broadcast_incompatible_shapes() {
+        let a = Shape::from((2, 3));
+        let b = Shape::from((4, 3));
+        assert!(a.broadcast_shape_binary_op(&b, "add").is_err());
+    }
+
+    #[test]
+    fn broadcast_both_ones_differ() {
+        let a = Shape::from((1, 3));
+        let b = Shape::from((2, 1));
+        let result = a.broadcast_shape_binary_op(&b, "add").unwrap();
+        assert_eq!(result.dims(), &[2, 3]);
+    }
+
+    #[test]
+    fn broadcast_3d_mixed() {
+        let a = Shape::from((2, 1, 4));
+        let b = Shape::from((1, 3, 1));
+        let result = a.broadcast_shape_binary_op(&b, "mul").unwrap();
+        assert_eq!(result.dims(), &[2, 3, 4]);
+    }
 }
