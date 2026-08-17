@@ -25,7 +25,7 @@
 //! module exists to classify tokens on the surfaces Fuel *does* ingest, and to
 //! give the emit path one place to name the seam spelling.
 
-use crate::dtype::{is_reserved_dtype_token, DType};
+use crate::dtype::{DType, is_reserved_dtype_token};
 
 /// The KISS-CLASSIFY **sk4** closed dtype vocabulary — all 24 tokens, verbatim
 /// from `conformance/src/structure_key.rs` `DTYPES: [&str; 24]` at KISS
@@ -39,8 +39,29 @@ use crate::dtype::{is_reserved_dtype_token, DType};
 /// KISS working tree can sit behind its own `origin/main`, and sk3→sk4 already
 /// respelled tokens once (`e4m3fnuz` → `f8e4m3fnuz`).
 pub const SK4_DTYPE_TOKENS: [&str; 24] = [
-    "f16", "bf16", "f32", "f64", "i8", "i16", "u8", "u16", "i32", "i64", "u32", "u64", "bool",
-    "f8e4m3fn", "f8e4m3fnuz", "f8e5m2", "f8e5m2fnuz", "f8e8m0", "f8e6m2", "i4", "u4", "b1", "c64",
+    "f16",
+    "bf16",
+    "f32",
+    "f64",
+    "i8",
+    "i16",
+    "u8",
+    "u16",
+    "i32",
+    "i64",
+    "u32",
+    "u64",
+    "bool",
+    "f8e4m3fn",
+    "f8e4m3fnuz",
+    "f8e5m2",
+    "f8e5m2fnuz",
+    "f8e8m0",
+    "f8e6m2",
+    "i4",
+    "u4",
+    "b1",
+    "c64",
     "c128",
 ];
 
@@ -172,12 +193,18 @@ mod tests {
     #[test]
     fn the_three_kinds_partition_the_sk4_vocabulary_exactly() {
         let supported = supported_set();
-        let recognized: BTreeSet<&str> =
-            RECOGNIZED_UNSUPPORTED_DTYPE_TOKENS.iter().copied().collect();
+        let recognized: BTreeSet<&str> = RECOGNIZED_UNSUPPORTED_DTYPE_TOKENS
+            .iter()
+            .copied()
+            .collect();
         let reserved: BTreeSet<&str> = RESERVED_DTYPE_TOKENS.iter().copied().collect();
 
         assert_eq!(supported.len(), 15, "supported: {supported:?}");
-        assert_eq!(recognized.len(), 7, "recognized-unsupported: {recognized:?}");
+        assert_eq!(
+            recognized.len(),
+            7,
+            "recognized-unsupported: {recognized:?}"
+        );
         assert_eq!(reserved.len(), 2, "reserved: {reserved:?}");
         assert_eq!(
             supported.len() + recognized.len() + reserved.len(),
@@ -218,8 +245,14 @@ mod tests {
     /// one that returned `None` breaks this.
     #[test]
     fn every_fuel_dtype_either_has_a_seam_token_or_is_outside_the_vocabulary() {
-        let with = DType::ALL.iter().filter(|d| sk4_token(**d).is_some()).count();
-        let without = DType::ALL.iter().filter(|d| sk4_token(**d).is_none()).count();
+        let with = DType::ALL
+            .iter()
+            .filter(|d| sk4_token(**d).is_some())
+            .count();
+        let without = DType::ALL
+            .iter()
+            .filter(|d| sk4_token(**d).is_none())
+            .count();
         assert_eq!(with, 15);
         assert_eq!(without, 3, "the block-scoped sub-byte element formats");
         assert_eq!(with + without, DType::ALL.len());
@@ -256,7 +289,10 @@ mod tests {
         assert_eq!(classify_dtype_token("f8e4m3fn"), TokenKind::Supported);
         // GAP-168(c): bool is now Supported (Fuel has DType::Bool).
         assert_eq!(classify_dtype_token("bool"), TokenKind::Supported);
-        assert_eq!(classify_dtype_token("c128"), TokenKind::RecognizedUnsupported);
+        assert_eq!(
+            classify_dtype_token("c128"),
+            TokenKind::RecognizedUnsupported
+        );
         assert_eq!(classify_dtype_token("f8e5m2fnuz"), TokenKind::Reserved);
         assert_eq!(classify_dtype_token("asdf"), TokenKind::Unknown);
 
@@ -286,6 +322,9 @@ mod tests {
         }
         // Non-vacuity: the classifier CAN return Unknown, so the loop above is
         // asserting something rather than being satisfied by a stuck function.
-        assert_eq!(classify_dtype_token("definitely-not-a-dtype"), TokenKind::Unknown);
+        assert_eq!(
+            classify_dtype_token("definitely-not-a-dtype"),
+            TokenKind::Unknown
+        );
     }
 }

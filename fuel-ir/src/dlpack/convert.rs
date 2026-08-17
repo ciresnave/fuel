@@ -21,7 +21,7 @@
 //! `GENERIC_LOW_BIT_*`, `COMPLEX64`, `BOOL`), and an out-of-range integer is not
 //! a valid code. `None` means "no corresponding Fuel value", never a panic (G6).
 
-use super::abi::{dtype_code, DLDataType};
+use super::abi::{DLDataType, dtype_code};
 use super::codes::*;
 use super::sidecar::{FDXAffine, FDXAffineTerm, FDXExtent};
 use crate::backend::SubstrateClass;
@@ -217,7 +217,11 @@ pub fn dl_dtype(d: DType) -> crate::Result<DLDataType> {
         DType::F6E3M2 => (K_DL_FLOAT, 6),
         DType::F4 => (K_DL_FLOAT, 4),
     };
-    Ok(DLDataType { code, bits, lanes: 1 })
+    Ok(DLDataType {
+        code,
+        bits,
+        lanes: 1,
+    })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -408,15 +412,8 @@ pub fn extent_to_fdx(e: Extent) -> FDXExtent {
         }; FDX_AFFINE_MAX_TERMS],
     };
     let (kind, min, capacity, sym_id) = match e {
-        Extent::Scalar(v) => (
-            FDX_EXTENT_SCALAR as u8,
-            v as u64,
-            v as u64,
-            FDX_SYM_NONE,
-        ),
-        Extent::Range { min, max, sym } => {
-            (FDX_EXTENT_RANGE as u8, min as u64, max as u64, sym.0)
-        }
+        Extent::Scalar(v) => (FDX_EXTENT_SCALAR as u8, v as u64, v as u64, FDX_SYM_NONE),
+        Extent::Range { min, max, sym } => (FDX_EXTENT_RANGE as u8, min as u64, max as u64, sym.0),
     };
     FDXExtent {
         kind,
@@ -524,16 +521,86 @@ mod tests {
     fn dl_dtype_faithful_descriptors() {
         use dtype_code::*;
         // Standard faithful dtypes — {code, bits, lanes}.
-        assert_eq!(dl_dtype(DType::F32).unwrap(), DLDataType { code: K_DL_FLOAT, bits: 32, lanes: 1 });
-        assert_eq!(dl_dtype(DType::F16).unwrap(), DLDataType { code: K_DL_FLOAT, bits: 16, lanes: 1 });
-        assert_eq!(dl_dtype(DType::BF16).unwrap(), DLDataType { code: K_DL_BFLOAT, bits: 16, lanes: 1 });
-        assert_eq!(dl_dtype(DType::F64).unwrap(), DLDataType { code: K_DL_FLOAT, bits: 64, lanes: 1 });
-        assert_eq!(dl_dtype(DType::I32).unwrap(), DLDataType { code: K_DL_INT, bits: 32, lanes: 1 });
-        assert_eq!(dl_dtype(DType::I64).unwrap(), DLDataType { code: K_DL_INT, bits: 64, lanes: 1 });
-        assert_eq!(dl_dtype(DType::U8).unwrap(), DLDataType { code: K_DL_UINT, bits: 8, lanes: 1 });
-        assert_eq!(dl_dtype(DType::U32).unwrap(), DLDataType { code: K_DL_UINT, bits: 32, lanes: 1 });
-        assert_eq!(dl_dtype(DType::I8).unwrap(), DLDataType { code: K_DL_INT, bits: 8, lanes: 1 });
-        assert_eq!(dl_dtype(DType::I16).unwrap(), DLDataType { code: K_DL_INT, bits: 16, lanes: 1 });
+        assert_eq!(
+            dl_dtype(DType::F32).unwrap(),
+            DLDataType {
+                code: K_DL_FLOAT,
+                bits: 32,
+                lanes: 1
+            }
+        );
+        assert_eq!(
+            dl_dtype(DType::F16).unwrap(),
+            DLDataType {
+                code: K_DL_FLOAT,
+                bits: 16,
+                lanes: 1
+            }
+        );
+        assert_eq!(
+            dl_dtype(DType::BF16).unwrap(),
+            DLDataType {
+                code: K_DL_BFLOAT,
+                bits: 16,
+                lanes: 1
+            }
+        );
+        assert_eq!(
+            dl_dtype(DType::F64).unwrap(),
+            DLDataType {
+                code: K_DL_FLOAT,
+                bits: 64,
+                lanes: 1
+            }
+        );
+        assert_eq!(
+            dl_dtype(DType::I32).unwrap(),
+            DLDataType {
+                code: K_DL_INT,
+                bits: 32,
+                lanes: 1
+            }
+        );
+        assert_eq!(
+            dl_dtype(DType::I64).unwrap(),
+            DLDataType {
+                code: K_DL_INT,
+                bits: 64,
+                lanes: 1
+            }
+        );
+        assert_eq!(
+            dl_dtype(DType::U8).unwrap(),
+            DLDataType {
+                code: K_DL_UINT,
+                bits: 8,
+                lanes: 1
+            }
+        );
+        assert_eq!(
+            dl_dtype(DType::U32).unwrap(),
+            DLDataType {
+                code: K_DL_UINT,
+                bits: 32,
+                lanes: 1
+            }
+        );
+        assert_eq!(
+            dl_dtype(DType::I8).unwrap(),
+            DLDataType {
+                code: K_DL_INT,
+                bits: 8,
+                lanes: 1
+            }
+        );
+        assert_eq!(
+            dl_dtype(DType::I16).unwrap(),
+            DLDataType {
+                code: K_DL_INT,
+                bits: 16,
+                lanes: 1
+            }
+        );
         // Sub-byte ones get a faithful low-bit width (< 8); the VIEW substitutes
         // the {kDLUInt,8,1} honesty stand-in for these, not dl_dtype itself.
         assert_eq!(dl_dtype(DType::F4).unwrap().bits, 4);
@@ -547,10 +614,17 @@ mod tests {
             // not skipped — a skip starts passing silently if the decline is
             // ever replaced by a fabricated width.
             if d == DType::F8E6M2 {
-                assert!(dl_dtype(d).is_err(), "F8E6M2 must decline, not assert a width");
+                assert!(
+                    dl_dtype(d).is_err(),
+                    "F8E6M2 must decline, not assert a width"
+                );
                 continue;
             }
-            assert_eq!(dl_dtype(d).unwrap().lanes, 1, "DType {d:?} must be scalar (lanes=1)");
+            assert_eq!(
+                dl_dtype(d).unwrap().lanes,
+                1,
+                "DType {d:?} must be scalar (lanes=1)"
+            );
         }
     }
 
@@ -560,12 +634,20 @@ mod tests {
         // F8E6M2 declines (GAP-045); `flatten()` drops it rather than unwrapping,
         // and the count below is taken from what was collected, so the assertion
         // stays exact instead of comparing against a stale ALL_DTYPES length.
-        let mut codes: Vec<u16> =
-            ALL_DTYPES.iter().copied().map(dtype_to_fdx).flatten().collect();
+        let mut codes: Vec<u16> = ALL_DTYPES
+            .iter()
+            .copied()
+            .map(dtype_to_fdx)
+            .flatten()
+            .collect();
         let n = codes.len();
         codes.sort_unstable();
         codes.dedup();
-        assert_eq!(codes.len(), n, "FDX_DTYPE_* set must have no duplicate codes");
+        assert_eq!(
+            codes.len(),
+            n,
+            "FDX_DTYPE_* set must have no duplicate codes"
+        );
     }
 
     #[test]
@@ -654,7 +736,11 @@ mod tests {
     fn scale_granularity_roundtrips_for_every_variant() {
         for g in ALL_GRAN {
             let code = scale_granularity_to_fdx(g);
-            assert_eq!(fdx_to_scale_granularity(code), Some(g), "gran {g:?} round-trip");
+            assert_eq!(
+                fdx_to_scale_granularity(code),
+                Some(g),
+                "gran {g:?} round-trip"
+            );
         }
         assert_eq!(scale_granularity_to_fdx(ScaleGranularity::PerTensor), 0);
         assert_eq!(scale_granularity_to_fdx(ScaleGranularity::PerToken), 1);
@@ -670,8 +756,12 @@ mod tests {
 
     // ── BackendId ─────────────────────────────────────────────────────────
 
-    const ALL_BACKENDS: [BackendId; 4] =
-        [BackendId::Cpu, BackendId::Cuda, BackendId::Vulkan, BackendId::Metal];
+    const ALL_BACKENDS: [BackendId; 4] = [
+        BackendId::Cpu,
+        BackendId::Cuda,
+        BackendId::Vulkan,
+        BackendId::Metal,
+    ];
 
     #[test]
     fn backend_roundtrips_for_every_variant() {
@@ -699,7 +789,11 @@ mod tests {
     fn substrate_roundtrips_for_every_variant() {
         for s in ALL_SUBSTRATES {
             let code = substrate_to_fdx(s);
-            assert_eq!(fdx_to_substrate(code), Some(s), "substrate {s:?} round-trip");
+            assert_eq!(
+                fdx_to_substrate(code),
+                Some(s),
+                "substrate {s:?} round-trip"
+            );
         }
         assert_eq!(substrate_to_fdx(SubstrateClass::HostBytes), 0);
         assert_eq!(substrate_to_fdx(SubstrateClass::CudaUntyped), 1);
@@ -724,7 +818,11 @@ mod tests {
 
     #[test]
     fn extent_range_roundtrips() {
-        let e = Extent::Range { min: 1, max: 8192, sym: SymId(7) };
+        let e = Extent::Range {
+            min: 1,
+            max: 8192,
+            sym: SymId(7),
+        };
         let x = extent_to_fdx(e);
         assert_eq!(x.kind as u16, FDX_EXTENT_RANGE);
         assert_eq!(x.min, 1);
@@ -752,12 +850,25 @@ mod tests {
         // non-NONE code. GAP-059: F8E6M2 declines (GAP-045) and contributes no
         // code, so `flatten()` drops it — distinctness is a property of the
         // codes that exist, not of the variant count.
-        let dt: Vec<u16> = ALL_DTYPES.iter().copied().map(dtype_to_fdx).flatten().collect();
+        let dt: Vec<u16> = ALL_DTYPES
+            .iter()
+            .copied()
+            .map(dtype_to_fdx)
+            .flatten()
+            .collect();
         for &c in &dt {
             assert_ne!(c, FDX_DTYPE_NONE);
             assert!(fdx_to_dtype(c).is_some());
         }
-        assert_eq!({ let mut v = dt.clone(); v.sort_unstable(); v.dedup(); v.len() }, dt.len());
+        assert_eq!(
+            {
+                let mut v = dt.clone();
+                v.sort_unstable();
+                v.dedup();
+                v.len()
+            },
+            dt.len()
+        );
 
         // GgmlDType: 15 variants → 15 distinct codes, none == NONE sentinel.
         let gg: Vec<u16> = ALL_GGML.iter().copied().map(ggml_to_fdx).collect();
@@ -765,14 +876,30 @@ mod tests {
             assert_ne!(c, FDX_QUANT_NONE);
             assert!(fdx_to_ggml(c).is_some());
         }
-        assert_eq!({ let mut v = gg.clone(); v.sort_unstable(); v.dedup(); v.len() }, gg.len());
+        assert_eq!(
+            {
+                let mut v = gg.clone();
+                v.sort_unstable();
+                v.dedup();
+                v.len()
+            },
+            gg.len()
+        );
 
         // ScaleGranularity / BackendId / SubstrateClass: total + distinct.
-        let gr: Vec<u8> = ALL_GRAN.iter().copied().map(scale_granularity_to_fdx).collect();
+        let gr: Vec<u8> = ALL_GRAN
+            .iter()
+            .copied()
+            .map(scale_granularity_to_fdx)
+            .collect();
         assert!(gr.iter().all(|&c| fdx_to_scale_granularity(c).is_some()));
         let bk: Vec<u8> = ALL_BACKENDS.iter().copied().map(backend_to_fdx).collect();
         assert!(bk.iter().all(|&c| fdx_to_backend(c).is_some()));
-        let su: Vec<u8> = ALL_SUBSTRATES.iter().copied().map(substrate_to_fdx).collect();
+        let su: Vec<u8> = ALL_SUBSTRATES
+            .iter()
+            .copied()
+            .map(substrate_to_fdx)
+            .collect();
         assert!(su.iter().all(|&c| fdx_to_substrate(c).is_some()));
     }
 }

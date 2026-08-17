@@ -163,8 +163,7 @@ fn scan_file_hedges(rel_path: &str, text: &str) -> Vec<HedgeHit> {
         // `"#[cfg(test)]"`, so a `#[cfg(test)]` line never double-triggers here.
         // Guard against re-arming while already inside a region so a nested
         // attribute cannot corrupt the depth we must return to (naive safety).
-        if skip_until_depth.is_none()
-            && (line.contains("#[cfg(test)]") || line.contains("#[test]"))
+        if skip_until_depth.is_none() && (line.contains("#[cfg(test)]") || line.contains("#[test]"))
         {
             pending_cfg_test = true;
         }
@@ -190,15 +189,21 @@ fn scan_file_hedges(rel_path: &str, text: &str) -> Vec<HedgeHit> {
                     "{rel_path}:{line_no}: {trimmed} — new untracked prose hedge \
                      (add // GAP(GAP-NNN), reword, or allowlist)"
                 );
-                hits.push(HedgeHit { key, tracked, desc, patterns });
+                hits.push(HedgeHit {
+                    key,
+                    tracked,
+                    desc,
+                    patterns,
+                });
             }
         }
 
         depth += opens - closes;
         if let Some(d) = skip_until_depth
-            && depth <= d {
-                skip_until_depth = None;
-            }
+            && depth <= d
+        {
+            skip_until_depth = None;
+        }
     }
 
     hits
@@ -234,9 +239,10 @@ fn workspace_root() -> PathBuf {
         let manifest = dir.join("Cargo.toml");
         if manifest.exists()
             && let Ok(txt) = std::fs::read_to_string(&manifest)
-                && txt.contains("[workspace]") {
-                    return dir;
-                }
+            && txt.contains("[workspace]")
+        {
+            return dir;
+        }
         if !dir.pop() {
             panic!("could not find a Cargo.toml containing [workspace] above CARGO_MANIFEST_DIR");
         }
@@ -339,16 +345,19 @@ fn parent_gates_as_cfg_test(path: &Path) -> bool {
             continue; // a file is never its own parent module
         }
         if let Ok(txt) = std::fs::read_to_string(&cand)
-            && parent_declares_mod_cfg_test(&txt, stem) {
-                return true;
-            }
+            && parent_declares_mod_cfg_test(&txt, stem)
+        {
+            return true;
+        }
     }
     false
 }
 
 /// Path to the checked-in baseline allowlist.
 fn allowlist_path(root: &Path) -> PathBuf {
-    root.join("fuel-ir").join("tests").join("gap_hedge_allowlist.txt")
+    root.join("fuel-ir")
+        .join("tests")
+        .join("gap_hedge_allowlist.txt")
 }
 
 /// Load the allowlist as a set of keys. Missing file ⇒ empty set.
@@ -385,19 +394,31 @@ mod unit {
     #[test]
     fn flags_unallowlisted_hedge() {
         let v = scan_hedges("x.rs", "    // this is a shortcut for now", &allowlist(&[]));
-        assert_eq!(v.len(), 1, "a new un-allowlisted hedge must be flagged: {v:?}");
+        assert_eq!(
+            v.len(),
+            1,
+            "a new un-allowlisted hedge must be flagged: {v:?}"
+        );
     }
 
     #[test]
     fn passes_allowlisted_hedge() {
         let key = "x.rs\t// this is a shortcut for now";
-        let v = scan_hedges("x.rs", "    // this is a shortcut for now", &allowlist(&[key]));
+        let v = scan_hedges(
+            "x.rs",
+            "    // this is a shortcut for now",
+            &allowlist(&[key]),
+        );
         assert_eq!(v.len(), 0, "an allowlisted hedge must pass: {v:?}");
     }
 
     #[test]
     fn passes_gap_referenced_hedge() {
-        let v = scan_hedges("x.rs", "    // shortcut for now GAP(GAP-001)", &allowlist(&[]));
+        let v = scan_hedges(
+            "x.rs",
+            "    // shortcut for now GAP(GAP-001)",
+            &allowlist(&[]),
+        );
         assert_eq!(v.len(), 0, "a GAP-referenced hedge must pass: {v:?}");
     }
 
@@ -412,17 +433,29 @@ mod unit {
     fn skips_cfg_test_hedge() {
         let text = "#[cfg(test)]\nmod tests {\n  // for now\n}\n";
         let v = scan_hedges("x.rs", text, &allowlist(&[]));
-        assert_eq!(v.len(), 0, "hedges inside #[cfg(test)] are test code: {v:?}");
+        assert_eq!(
+            v.len(),
+            0,
+            "hedges inside #[cfg(test)] are test code: {v:?}"
+        );
     }
 
     #[test]
     fn flags_uppercase_marker() {
         let v = scan_hedges("x.rs", "    // TODO: wire this", &allowlist(&[]));
-        assert_eq!(v.len(), 1, "an uppercase TODO marker must be flagged: {v:?}");
+        assert_eq!(
+            v.len(),
+            1,
+            "an uppercase TODO marker must be flagged: {v:?}"
+        );
         // Lowercase "todo" is NOT one of the case-insensitive phrases, and the
         // case-sensitive TODO marker requires uppercase — so this must not match.
         let v = scan_hedges("x.rs", "    // todo lowercase prose", &allowlist(&[]));
-        assert_eq!(v.len(), 0, "lowercase 'todo' prose must not match the marker: {v:?}");
+        assert_eq!(
+            v.len(),
+            0,
+            "lowercase 'todo' prose must not match the marker: {v:?}"
+        );
     }
 
     #[test]
@@ -431,7 +464,11 @@ mod unit {
         // is test code. Real case: dlpack/header_check.rs.
         let text = "#[test]\nfn t() {\n  // for now\n}\n";
         let v = scan_hedges("x.rs", text, &allowlist(&[]));
-        assert_eq!(v.len(), 0, "a hedge inside a bare #[test] fn must be excluded: {v:?}");
+        assert_eq!(
+            v.len(),
+            0,
+            "a hedge inside a bare #[test] fn must be excluded: {v:?}"
+        );
     }
 
     #[test]
@@ -440,13 +477,20 @@ mod unit {
         // still be flagged — the fix must not over-broaden into ordinary code.
         let text = "fn real() {\n  // for now\n}\n";
         let v = scan_hedges("x.rs", text, &allowlist(&[]));
-        assert_eq!(v.len(), 1, "a production hedge must still be flagged: {v:?}");
+        assert_eq!(
+            v.len(),
+            1,
+            "a production hedge must still be flagged: {v:?}"
+        );
     }
 
     #[test]
     fn parent_cfg_test_detection_both_directions() {
         // A `#[cfg(test)]`-attributed `mod foo;` in a parent gates foo.rs as test.
-        assert!(parent_declares_mod_cfg_test("#[cfg(test)]\nmod foo;", "foo"));
+        assert!(parent_declares_mod_cfg_test(
+            "#[cfg(test)]\nmod foo;",
+            "foo"
+        ));
         // A plain `mod foo;` (no attribute) does not.
         assert!(!parent_declares_mod_cfg_test("mod foo;", "foo"));
     }
@@ -456,7 +500,10 @@ mod unit {
         let al = allowlist(&["a.rs\t// foo"]);
         // Key absent from the tree ⇒ stale.
         let seen: HashSet<String> = HashSet::new();
-        assert_eq!(stale_allowlist_keys(&al, &seen), vec!["a.rs\t// foo".to_string()]);
+        assert_eq!(
+            stale_allowlist_keys(&al, &seen),
+            vec!["a.rs\t// foo".to_string()]
+        );
         // Same key present ⇒ not stale.
         let seen: HashSet<String> = ["a.rs\t// foo".to_string()].into_iter().collect();
         assert!(stale_allowlist_keys(&al, &seen).is_empty());
@@ -610,5 +657,8 @@ fn regenerate_allowlist() {
         format!("{}\n", keys.join("\n"))
     };
     std::fs::write(allowlist_path(&root), body).unwrap();
-    eprintln!("wrote {} allowlist keys to gap_hedge_allowlist.txt", keys.len());
+    eprintln!(
+        "wrote {} allowlist keys to gap_hedge_allowlist.txt",
+        keys.len()
+    );
 }
