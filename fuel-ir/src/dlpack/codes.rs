@@ -204,7 +204,10 @@ mod tests {
         }
         assert_eq!(seen.count_ones() as usize, FDX_FLAG_ALL.len());
         // gather implies meaning-requires-ext per §6.9/V18; both bits exist.
-        assert_ne!(FDX_FLAG_HAS_GATHER & FDX_FLAG_MEANING_REQUIRES_EXT, FDX_FLAG_HAS_GATHER);
+        assert_ne!(
+            FDX_FLAG_HAS_GATHER & FDX_FLAG_MEANING_REQUIRES_EXT,
+            FDX_FLAG_HAS_GATHER
+        );
     }
 
     #[test]
@@ -248,8 +251,14 @@ mod tests {
                 assert_ne!(a, b, "low-bit logical codes must be distinct");
             }
             // In the 0x01xx low-bit family, above the contiguous Fuel range (0..=14).
-            assert!(*a > FDX_DTYPE_F8E8M0, "low-bit code {a:#06x} must sit above the Fuel range");
-            assert!(*a < 0x0200, "low-bit code {a:#06x} must sit in the 0x01xx family");
+            assert!(
+                *a > FDX_DTYPE_F8E8M0,
+                "low-bit code {a:#06x} must sit above the Fuel range"
+            );
+            assert!(
+                *a < 0x0200,
+                "low-bit code {a:#06x} must sit in the 0x01xx family"
+            );
             assert_ne!(*a, FDX_DTYPE_NONE);
         }
     }

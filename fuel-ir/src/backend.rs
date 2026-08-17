@@ -9,7 +9,7 @@
 //! backends). What remains here is the **data** they traffic in: the capability
 //! advertisement ([`BackendCapabilities`] / [`SubstrateClass`] / [`TransferPath`])
 //! and the predictive [`FitStatus`].
-use crate::{dispatch::OpKind, probe::BackendId, DType, DeviceLocation};
+use crate::{DType, DeviceLocation, dispatch::OpKind, probe::BackendId};
 use std::collections::HashSet;
 
 // =============================================================================
@@ -181,8 +181,15 @@ mod tests {
         assert_eq!(caps.backend_id, BackendId::Cpu);
         assert_eq!(caps.required_alignment, 64);
         assert_eq!(caps.access_granularity_bits, 8);
-        assert!(caps.op_dtype_support.contains(&(OpKind::MatMul, DType::F32)));
-        assert!(!caps.op_dtype_support.contains(&(OpKind::MatMul, DType::BF16)));
+        assert!(
+            caps.op_dtype_support
+                .contains(&(OpKind::MatMul, DType::F32))
+        );
+        assert!(
+            !caps
+                .op_dtype_support
+                .contains(&(OpKind::MatMul, DType::BF16))
+        );
     }
 
     /// Smoke: TransferPath enum is comparable + hashable.
@@ -196,7 +203,7 @@ mod tests {
         // Hashable — can be a key in HashSet/HashMap.
         let mut set = HashSet::new();
         set.insert(TransferPath::Peer);
-        set.insert(TransferPath::Peer);  // dup
+        set.insert(TransferPath::Peer); // dup
         set.insert(TransferPath::DeviceCopy);
         assert_eq!(set.len(), 2);
     }

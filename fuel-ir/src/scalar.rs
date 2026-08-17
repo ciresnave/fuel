@@ -253,16 +253,18 @@ mod tests {
     fn ctors_ok_for_real_dtypes() {
         assert_eq!(Scalar::zero(DType::F32).unwrap(), Scalar::F32(0.0));
         assert_eq!(Scalar::one(DType::I64).unwrap(), Scalar::I64(1));
-        assert_eq!(Scalar::from_f64(-1.0, DType::F16).unwrap(),
-                   Scalar::F16(f16::from_f64(-1.0)));
+        assert_eq!(
+            Scalar::from_f64(-1.0, DType::F16).unwrap(),
+            Scalar::F16(f16::from_f64(-1.0))
+        );
     }
 
     #[test]
     fn f8e8m0_decode_matches_ocp() {
         // value = 2^(X - 127); X = 255 => NaN. No zero, no negatives.
-        assert_eq!(Scalar::F8E8M0(127).to_f64(), 1.0);          // 2^0
-        assert_eq!(Scalar::F8E8M0(128).to_f64(), 2.0);          // 2^1
-        assert_eq!(Scalar::F8E8M0(126).to_f64(), 0.5);          // 2^-1
+        assert_eq!(Scalar::F8E8M0(127).to_f64(), 1.0); // 2^0
+        assert_eq!(Scalar::F8E8M0(128).to_f64(), 2.0); // 2^1
+        assert_eq!(Scalar::F8E8M0(126).to_f64(), 0.5); // 2^-1
         assert!(Scalar::F8E8M0(255).to_f64().is_nan());
     }
 
@@ -270,30 +272,41 @@ mod tests {
     fn f8e8m0_roundtrip_all_finite_bytes() {
         for x in 0u8..=254 {
             let v = Scalar::F8E8M0(x).to_f64();
-            assert_eq!(Scalar::from_f64(v, DType::F8E8M0).unwrap(),
-                       Scalar::F8E8M0(x), "byte {x}");
+            assert_eq!(
+                Scalar::from_f64(v, DType::F8E8M0).unwrap(),
+                Scalar::F8E8M0(x),
+                "byte {x}"
+            );
         }
     }
 
     #[test]
     fn f8e8m0_one_and_no_zero() {
         assert_eq!(Scalar::one(DType::F8E8M0).unwrap(), Scalar::F8E8M0(127));
-        assert!(matches!(Scalar::zero(DType::F8E8M0),
-                         Err(crate::Error::NoZeroScalar(DType::F8E8M0))));
+        assert!(matches!(
+            Scalar::zero(DType::F8E8M0),
+            Err(crate::Error::NoZeroScalar(DType::F8E8M0))
+        ));
     }
 
     #[test]
     fn scalar_ctors_never_unwind_over_all_dtypes() {
-        use std::panic::{catch_unwind, AssertUnwindSafe};
+        use std::panic::{AssertUnwindSafe, catch_unwind};
         // DType::ALL is compile-complete (see dtype.rs `all_variants_witness`),
         // so this sweep provably covers every variant — no vacuous pass.
         for &dt in DType::ALL {
-            assert!(catch_unwind(AssertUnwindSafe(|| Scalar::zero(dt))).is_ok(),
-                    "zero() unwound for {dt:?}");
-            assert!(catch_unwind(AssertUnwindSafe(|| Scalar::one(dt))).is_ok(),
-                    "one() unwound for {dt:?}");
-            assert!(catch_unwind(AssertUnwindSafe(|| Scalar::from_f64(1.0, dt))).is_ok(),
-                    "from_f64() unwound for {dt:?}");
+            assert!(
+                catch_unwind(AssertUnwindSafe(|| Scalar::zero(dt))).is_ok(),
+                "zero() unwound for {dt:?}"
+            );
+            assert!(
+                catch_unwind(AssertUnwindSafe(|| Scalar::one(dt))).is_ok(),
+                "one() unwound for {dt:?}"
+            );
+            assert!(
+                catch_unwind(AssertUnwindSafe(|| Scalar::from_f64(1.0, dt))).is_ok(),
+                "from_f64() unwound for {dt:?}"
+            );
         }
     }
 
@@ -316,13 +329,22 @@ mod tests {
     /// this test would fail.
     #[test]
     fn bool_from_f64_is_a_constructor_not_a_cast() {
-        assert_eq!(Scalar::from_f64(0.0, DType::Bool).unwrap(), Scalar::Bool(false));
-        assert_eq!(Scalar::from_f64(1.0, DType::Bool).unwrap(), Scalar::Bool(true));
+        assert_eq!(
+            Scalar::from_f64(0.0, DType::Bool).unwrap(),
+            Scalar::Bool(false)
+        );
+        assert_eq!(
+            Scalar::from_f64(1.0, DType::Bool).unwrap(),
+            Scalar::Bool(true)
+        );
         // The whole point: a non-truth-value number is refused, not coerced.
-        assert!(matches!(
-            Scalar::from_f64(0.5, DType::Bool),
-            Err(crate::Error::ScalarUnrepresentable(DType::Bool, _)),
-        ), "0.5 is not a truth value — from_f64 must decline it, not coerce to true");
+        assert!(
+            matches!(
+                Scalar::from_f64(0.5, DType::Bool),
+                Err(crate::Error::ScalarUnrepresentable(DType::Bool, _)),
+            ),
+            "0.5 is not a truth value — from_f64 must decline it, not coerce to true"
+        );
         assert!(matches!(
             Scalar::from_f64(2.0, DType::Bool),
             Err(crate::Error::ScalarUnrepresentable(DType::Bool, _)),

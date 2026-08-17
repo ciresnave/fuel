@@ -4,7 +4,7 @@
 //! directly. Tests run under `--features dlpack`.
 
 use super::*;
-use crate::dlpack::abi::{dtype_code, DLDataType, DLDevice};
+use crate::dlpack::abi::{DLDataType, DLDevice, dtype_code};
 use crate::dlpack::sidecar::{
     FDXAffine, FDXAffineTerm, FDXBlockTable, FDXBufferRef, FDXDTypeExt, FDXExtent,
     FDXIndexedResidency, FDXOutputView, FDXQuant, FDXResidency, FDXStorage, FDXSymBinding,
@@ -803,7 +803,10 @@ fn v10_pass() {
     let b = 4u64;
     let v = 8u64;
     let total = b * v * 4 + b * 8;
-    let views = [view(0, b * v, FDX_DTYPE_F32), view(b * v * 4, b, FDX_DTYPE_I64)];
+    let views = [
+        view(0, b * v, FDX_DTYPE_F32),
+        view(b * v * 4, b, FDX_DTYPE_I64),
+    ];
     let mut sc = sidecar(FDX_FLAG_IS_BUNDLE);
     sc.views_count = 2;
     sc.views = views.as_ptr();
@@ -1104,7 +1107,14 @@ fn gather_fixture() -> (FDXSidecar, DLTensor, Vec<FDXBufferRef>, [i64; 1], [i64;
     g.pool_buffer = 0;
     g.physical_ndim = 4;
     g.physical_shape = [num_blocks, block_size, hkv, d, 0, 0];
-    g.physical_strides = [(block_size * hkv * d) as i64, (hkv * d) as i64, d as i64, 1, 0, 0];
+    g.physical_strides = [
+        (block_size * hkv * d) as i64,
+        (hkv * d) as i64,
+        d as i64,
+        1,
+        0,
+        0,
+    ];
     g.element_dtype = FDX_DTYPE_F16;
     g.block_table = FDXBlockTable {
         table_buffer: 1,
@@ -1133,7 +1143,8 @@ fn gather_fixture() -> (FDXSidecar, DLTensor, Vec<FDXBufferRef>, [i64; 1], [i64;
     g.context_len_sym = 11;
     g.context_len_scope = 0;
 
-    let mut sc = sidecar(FDX_FLAG_HAS_GATHER | FDX_FLAG_HAS_SYMBOLIC | FDX_FLAG_MEANING_REQUIRES_EXT);
+    let mut sc =
+        sidecar(FDX_FLAG_HAS_GATHER | FDX_FLAG_HAS_SYMBOLIC | FDX_FLAG_MEANING_REQUIRES_EXT);
     sc.gather = g;
     // base extents: 1-D byte pool, Scalar(pool_bytes).
     sc.buffers_count = 3;
@@ -1147,7 +1158,14 @@ fn gather_fixture() -> (FDXSidecar, DLTensor, Vec<FDXBufferRef>, [i64; 1], [i64;
     pool.dtype = FDX_DTYPE_F16;
     pool.ndim = 4;
     pool.shape = [num_blocks, block_size, hkv, d, 0, 0];
-    pool.strides = [(block_size * hkv * d) as i64, (hkv * d) as i64, d as i64, 1, 0, 0];
+    pool.strides = [
+        (block_size * hkv * d) as i64,
+        (hkv * d) as i64,
+        d as i64,
+        1,
+        0,
+        0,
+    ];
 
     let mut bt = data_buffer(num_seq * max_blocks_per_seq as u64 * 4);
     bt.role = FDX_BUFFER_ROLE_BLOCK_TABLE;

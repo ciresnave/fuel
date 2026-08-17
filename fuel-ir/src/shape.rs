@@ -113,40 +113,56 @@ impl std::fmt::Debug for Shape {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", self.dims())?;
         if let Some(dyn_axes) = &self.dynamic
-            && !dyn_axes.is_empty() {
-                write!(f, "{{dyn: {dyn_axes:?}}}")?;
-            }
+            && !dyn_axes.is_empty()
+        {
+            write!(f, "{{dyn: {dyn_axes:?}}}")?;
+        }
         Ok(())
     }
 }
 
 impl<const C: usize> From<&[usize; C]> for Shape {
     fn from(dims: &[usize; C]) -> Self {
-        Self { dims: DimVec::from_slice(dims), dynamic: None }
+        Self {
+            dims: DimVec::from_slice(dims),
+            dynamic: None,
+        }
     }
 }
 
 impl From<&[usize]> for Shape {
     fn from(dims: &[usize]) -> Self {
-        Self { dims: DimVec::from_slice(dims), dynamic: None }
+        Self {
+            dims: DimVec::from_slice(dims),
+            dynamic: None,
+        }
     }
 }
 
 impl From<&Shape> for Shape {
     fn from(shape: &Shape) -> Self {
-        Self { dims: shape.dims.clone(), dynamic: shape.dynamic.clone() }
+        Self {
+            dims: shape.dims.clone(),
+            dynamic: shape.dynamic.clone(),
+        }
     }
 }
 
 impl From<()> for Shape {
     fn from(_: ()) -> Self {
-        Self { dims: smallvec![], dynamic: None }
+        Self {
+            dims: smallvec![],
+            dynamic: None,
+        }
     }
 }
 
 impl From<usize> for Shape {
     fn from(d1: usize) -> Self {
-        Self { dims: smallvec![d1], dynamic: None }
+        Self {
+            dims: smallvec![d1],
+            dynamic: None,
+        }
     }
 }
 
@@ -169,13 +185,19 @@ impl_from_tuple!((usize, usize, usize, usize, usize, usize), 0, 1, 2, 3, 4, 5);
 
 impl From<Vec<usize>> for Shape {
     fn from(dims: Vec<usize>) -> Self {
-        Self { dims: DimVec::from(dims), dynamic: None }
+        Self {
+            dims: DimVec::from(dims),
+            dynamic: None,
+        }
     }
 }
 
 impl From<DimVec> for Shape {
     fn from(dims: DimVec) -> Self {
-        Self { dims, dynamic: None }
+        Self {
+            dims,
+            dynamic: None,
+        }
     }
 }
 
@@ -222,7 +244,10 @@ macro_rules! extract_dims {
 impl Shape {
     /// Creates a shape from a slice of dimension sizes.
     pub fn from_dims(dims: &[usize]) -> Self {
-        Self { dims: DimVec::from_slice(dims), dynamic: None }
+        Self {
+            dims: DimVec::from_slice(dims),
+            dynamic: None,
+        }
     }
 
     /// The rank is the number of dimensions, 0 for a scalar value, 1 for a vector, etc.
@@ -249,9 +274,14 @@ impl Shape {
     /// the bound. The symbolic *view* over `dims()`. Phase D step 1b.
     pub fn extent(&self, axis: usize) -> Extent {
         if let Some(dyn_axes) = &self.dynamic
-            && let Some(da) = dyn_axes.iter().find(|d| d.axis == axis) {
-                return Extent::Range { min: da.min, max: self.dims[axis], sym: da.sym };
-            }
+            && let Some(da) = dyn_axes.iter().find(|d| d.axis == axis)
+        {
+            return Extent::Range {
+                min: da.min,
+                max: self.dims[axis],
+                sym: da.sym,
+            };
+        }
         Extent::Scalar(self.dims[axis])
     }
 
@@ -307,7 +337,10 @@ impl Shape {
                 }
             }
         }
-        Ok(Shape { dims, dynamic: None })
+        Ok(Shape {
+            dims,
+            dynamic: None,
+        })
     }
 
     /// The dimension size for a specified dimension index.
@@ -710,10 +743,16 @@ extract_dims!(
 pub fn stride_dims2(stride: &[isize]) -> Result<(usize, usize)> {
     if stride.len() != 2 {
         return Err(Error::UnexpectedNumberOfDims {
-            expected: 2, got: stride.len(), shape: Box::new(Shape::from(&[][..])),
-        }.bt());
+            expected: 2,
+            got: stride.len(),
+            shape: Box::new(Shape::from(&[][..])),
+        }
+        .bt());
     }
-    debug_assert!(stride.iter().all(|&s| s >= 0), "stride_dims2: negative stride");
+    debug_assert!(
+        stride.iter().all(|&s| s >= 0),
+        "stride_dims2: negative stride"
+    );
     Ok((stride[0] as usize, stride[1] as usize))
 }
 
@@ -721,10 +760,16 @@ pub fn stride_dims2(stride: &[isize]) -> Result<(usize, usize)> {
 pub fn stride_dims3(stride: &[isize]) -> Result<(usize, usize, usize)> {
     if stride.len() != 3 {
         return Err(Error::UnexpectedNumberOfDims {
-            expected: 3, got: stride.len(), shape: Box::new(Shape::from(&[][..])),
-        }.bt());
+            expected: 3,
+            got: stride.len(),
+            shape: Box::new(Shape::from(&[][..])),
+        }
+        .bt());
     }
-    debug_assert!(stride.iter().all(|&s| s >= 0), "stride_dims3: negative stride");
+    debug_assert!(
+        stride.iter().all(|&s| s >= 0),
+        "stride_dims3: negative stride"
+    );
     Ok((stride[0] as usize, stride[1] as usize, stride[2] as usize))
 }
 
@@ -732,22 +777,45 @@ pub fn stride_dims3(stride: &[isize]) -> Result<(usize, usize, usize)> {
 pub fn stride_dims4(stride: &[isize]) -> Result<(usize, usize, usize, usize)> {
     if stride.len() != 4 {
         return Err(Error::UnexpectedNumberOfDims {
-            expected: 4, got: stride.len(), shape: Box::new(Shape::from(&[][..])),
-        }.bt());
+            expected: 4,
+            got: stride.len(),
+            shape: Box::new(Shape::from(&[][..])),
+        }
+        .bt());
     }
-    debug_assert!(stride.iter().all(|&s| s >= 0), "stride_dims4: negative stride");
-    Ok((stride[0] as usize, stride[1] as usize, stride[2] as usize, stride[3] as usize))
+    debug_assert!(
+        stride.iter().all(|&s| s >= 0),
+        "stride_dims4: negative stride"
+    );
+    Ok((
+        stride[0] as usize,
+        stride[1] as usize,
+        stride[2] as usize,
+        stride[3] as usize,
+    ))
 }
 
 /// Validates 5 strides and returns them as `(usize, usize, usize, usize, usize)`.
 pub fn stride_dims5(stride: &[isize]) -> Result<(usize, usize, usize, usize, usize)> {
     if stride.len() != 5 {
         return Err(Error::UnexpectedNumberOfDims {
-            expected: 5, got: stride.len(), shape: Box::new(Shape::from(&[][..])),
-        }.bt());
+            expected: 5,
+            got: stride.len(),
+            shape: Box::new(Shape::from(&[][..])),
+        }
+        .bt());
     }
-    debug_assert!(stride.iter().all(|&s| s >= 0), "stride_dims5: negative stride");
-    Ok((stride[0] as usize, stride[1] as usize, stride[2] as usize, stride[3] as usize, stride[4] as usize))
+    debug_assert!(
+        stride.iter().all(|&s| s >= 0),
+        "stride_dims5: negative stride"
+    );
+    Ok((
+        stride[0] as usize,
+        stride[1] as usize,
+        stride[2] as usize,
+        stride[3] as usize,
+        stride[4] as usize,
+    ))
 }
 
 /// A trait for shape specifications that may contain one unknown dimension marked with `()`.
@@ -901,7 +969,10 @@ mod tests {
         let shape = Shape::from((42, 1337));
         assert_eq!(shape.stride_contiguous().to_vec(), [1337_isize, 1]);
         let shape = Shape::from((299, 792, 458));
-        assert_eq!(shape.stride_contiguous().to_vec(), [458_isize * 792, 458, 1]);
+        assert_eq!(
+            shape.stride_contiguous().to_vec(),
+            [458_isize * 792, 458, 1]
+        );
     }
 
     #[test]
@@ -940,7 +1011,14 @@ mod tests {
 
         // extent() is the symbolic view.
         assert_eq!(shape.extent(0), Extent::Scalar(1));
-        assert_eq!(shape.extent(2), Extent::Range { min: 0, max: 4096, sym });
+        assert_eq!(
+            shape.extent(2),
+            Extent::Range {
+                min: 0,
+                max: 4096,
+                sym
+            }
+        );
         assert_eq!(shape.extent(2).bound(), 4096);
         assert!(shape.extent(2).is_dynamic());
         assert_eq!(shape.extent(2).sym(), Some(sym));
@@ -976,6 +1054,73 @@ mod tests {
         assert!(layout.has_dynamic());
         let rlayout = layout.resolve(&env).unwrap();
         assert_eq!(rlayout.dims(), &[1, 32, 53, 128]);
-        assert_eq!(rlayout.stride(), layout.stride(), "strides stay capacity-based");
+        assert_eq!(
+            rlayout.stride(),
+            layout.stride(),
+            "strides stay capacity-based"
+        );
+    }
+
+    #[test]
+    fn broadcast_identical_shapes() {
+        let a = Shape::from((2, 3));
+        let b = Shape::from((2, 3));
+        let result = a.broadcast_shape_binary_op(&b, "add").unwrap();
+        assert_eq!(result.dims(), &[2, 3]);
+    }
+
+    #[test]
+    fn broadcast_broadcasts_one_on_lhs() {
+        let a = Shape::from((1, 3));
+        let b = Shape::from((2, 3));
+        let result = a.broadcast_shape_binary_op(&b, "add").unwrap();
+        assert_eq!(result.dims(), &[2, 3]);
+    }
+
+    #[test]
+    fn broadcast_broadcasts_one_on_rhs() {
+        let a = Shape::from((2, 1));
+        let b = Shape::from((2, 3));
+        let result = a.broadcast_shape_binary_op(&b, "add").unwrap();
+        assert_eq!(result.dims(), &[2, 3]);
+    }
+
+    #[test]
+    fn broadcast_scalar_with_matrix() {
+        let a = Shape::from(());
+        let b = Shape::from((2, 3));
+        let result = a.broadcast_shape_binary_op(&b, "add").unwrap();
+        assert_eq!(result.dims(), &[2, 3]);
+    }
+
+    #[test]
+    fn broadcast_different_ranks() {
+        let a = Shape::from((1,));
+        let b = Shape::from((3, 4, 5));
+        let result = a.broadcast_shape_binary_op(&b, "add").unwrap();
+        assert_eq!(result.dims(), &[3, 4, 5]);
+    }
+
+    #[test]
+    fn broadcast_incompatible_shapes() {
+        let a = Shape::from((2, 3));
+        let b = Shape::from((4, 3));
+        assert!(a.broadcast_shape_binary_op(&b, "add").is_err());
+    }
+
+    #[test]
+    fn broadcast_both_ones_differ() {
+        let a = Shape::from((1, 3));
+        let b = Shape::from((2, 1));
+        let result = a.broadcast_shape_binary_op(&b, "add").unwrap();
+        assert_eq!(result.dims(), &[2, 3]);
+    }
+
+    #[test]
+    fn broadcast_3d_mixed() {
+        let a = Shape::from((2, 1, 4));
+        let b = Shape::from((1, 3, 1));
+        let result = a.broadcast_shape_binary_op(&b, "mul").unwrap();
+        assert_eq!(result.dims(), &[2, 3, 4]);
     }
 }

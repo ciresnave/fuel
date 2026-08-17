@@ -24,7 +24,7 @@ use crate::{DType, Error, Layout, Result, Shape};
 pub struct OutputView {
     /// Byte offset into the bundle's inner buffer where this slot
     /// starts. Must satisfy the slot's dtype alignment.
-    pub byte_offset:  usize,
+    pub byte_offset: usize,
     /// Number of dtype-sized elements this slot covers. Must equal
     /// `shape.elem_count()` for contiguous slots; for strided slots,
     /// it bounds the slot's reachable byte range (typically equal to
@@ -32,17 +32,17 @@ pub struct OutputView {
     pub len_elements: usize,
     /// The slot's element dtype. Independent of every other slot's
     /// dtype and of the bundle's "primary" dtype.
-    pub dtype:        DType,
+    pub dtype: DType,
     /// The slot's logical shape.
-    pub shape:        Shape,
+    pub shape: Shape,
     /// The slot's logical layout (strides, contiguity, start offset
     /// *within the slot*). The `Layout::start_offset` is element-
     /// counted within the slot, NOT the bundle — it composes with
     /// `byte_offset` at access time.
-    pub layout:       Layout,
+    pub layout: Layout,
     /// Optional debugging name (`Some("y")`, `Some("last_state")`).
     /// Not load-bearing; the slot index is the dispatch key.
-    pub name:         Option<&'static str>,
+    pub name: Option<&'static str>,
 }
 
 impl OutputView {
@@ -65,16 +65,16 @@ impl OutputView {
 #[derive(Debug, Clone)]
 pub struct OutputViewSpec {
     /// The slot's element dtype.
-    pub dtype:  DType,
+    pub dtype: DType,
     /// The slot's logical shape.
-    pub shape:  Shape,
+    pub shape: Shape,
     /// The slot's logical layout. For a freshly allocated slot the
     /// caller typically passes [`Layout::contiguous(shape)`]; strided
     /// slots are permitted but currently uncommon (the kernel would
     /// need to honour them on writes).
     pub layout: Layout,
     /// Optional debugging name.
-    pub name:   Option<&'static str>,
+    pub name: Option<&'static str>,
 }
 
 impl OutputViewSpec {
@@ -82,7 +82,12 @@ impl OutputViewSpec {
     /// `Layout::contiguous(shape)` and no name.
     pub fn contiguous(dtype: DType, shape: Shape) -> Self {
         let layout = Layout::contiguous(shape.clone());
-        Self { dtype, shape, layout, name: None }
+        Self {
+            dtype,
+            shape,
+            layout,
+            name: None,
+        }
     }
 
     /// Element count of this slot — `shape.elem_count()` for
@@ -114,13 +119,9 @@ impl OutputViewSpec {
 /// - any slot whose `layout.shape()` disagrees with its `shape`
 ///   (mirrors the `Storage::with_bundle` / `Graph::set_output_views`
 ///   coherence rule).
-pub fn compose_bundle(
-    specs: &[OutputViewSpec],
-) -> Result<(usize, Vec<OutputView>)> {
+pub fn compose_bundle(specs: &[OutputViewSpec]) -> Result<(usize, Vec<OutputView>)> {
     if specs.is_empty() {
-        return Err(Error::Msg(
-            "compose_bundle: spec list must be non-empty".into(),
-        ).bt());
+        return Err(Error::Msg("compose_bundle: spec list must be non-empty".into()).bt());
     }
     let mut views = Vec::with_capacity(specs.len());
     let mut cursor: usize = 0;
@@ -129,8 +130,10 @@ pub fn compose_bundle(
             return Err(Error::Msg(format!(
                 "compose_bundle: slot {i} layout.shape() = {:?} \
                  disagrees with spec shape {:?}",
-                spec.layout.shape(), spec.shape,
-            )).bt());
+                spec.layout.shape(),
+                spec.shape,
+            ))
+            .bt());
         }
         let align = spec.dtype.size_in_bytes().max(1);
         let rem = cursor % align;
@@ -139,16 +142,14 @@ pub fn compose_bundle(
         }
         let len_elements = spec.elem_count();
         views.push(OutputView {
-            byte_offset:  cursor,
+            byte_offset: cursor,
             len_elements,
-            dtype:        spec.dtype,
-            shape:        spec.shape.clone(),
-            layout:       spec.layout.clone(),
-            name:         spec.name,
+            dtype: spec.dtype,
+            shape: spec.shape.clone(),
+            layout: spec.layout.clone(),
+            name: spec.name,
         });
-        cursor = cursor.saturating_add(
-            len_elements.saturating_mul(spec.dtype.size_in_bytes()),
-        );
+        cursor = cursor.saturating_add(len_elements.saturating_mul(spec.dtype.size_in_bytes()));
     }
     Ok((cursor, views))
 }
@@ -224,10 +225,10 @@ mod multi_output_specs {
         let s = Shape::from_dims(&[2, 3]);
         let bogus_layout = Layout::contiguous(Shape::from_dims(&[3, 2]));
         let bad = OutputViewSpec {
-            dtype:  DType::F32,
-            shape:  s,
+            dtype: DType::F32,
+            shape: s,
             layout: bogus_layout,
-            name:   None,
+            name: None,
         };
         let err = compose_bundle(&[bad]).expect_err("shape/layout mismatch must error");
         assert!(format!("{err}").contains("disagrees"));

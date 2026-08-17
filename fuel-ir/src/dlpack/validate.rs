@@ -18,7 +18,7 @@
 //! and the standard [`super::abi::DLTensor`]; all codes/sentinels come from
 //! [`super::codes`]. Nothing here re-defines a struct or a code.
 
-use super::abi::{dtype_code, DLTensor};
+use super::abi::{DLTensor, dtype_code};
 use super::codes::*;
 use super::sidecar::{
     FDXBufferRef, FDXExtent, FDXIndexedResidency, FDXOutputView, FDXSidecar, FDXSymEnv,
@@ -309,10 +309,7 @@ pub fn check_v3_honesty_dtype(sidecar: &FDXSidecar, base: &DLTensor) -> R {
     if !meaning_bearing {
         return Ok(());
     }
-    if base.dtype.code != dtype_code::K_DL_UINT
-        || base.dtype.bits != 8
-        || base.dtype.lanes != 1
-    {
+    if base.dtype.code != dtype_code::K_DL_UINT || base.dtype.bits != 8 || base.dtype.lanes != 1 {
         return Err(FdxValidationError::DishonestBase {
             detail: "meaning-bearing tensor must carry base dtype {kDLUInt,8,1}",
         });
@@ -525,13 +522,12 @@ pub fn check_v6_scale_shape(sidecar: &FDXSidecar, base: &DLTensor, buffers: &[FD
         // byte extent to logical elements via the dtype-ext bit width before
         // tiling. Without this, `ceil(byte_len / block_shape)` undercounts by the
         // pack factor and would reject the spec's own NF4 example (§13.5a).
-        let subbyte_bits: Option<u128> =
-            if flag_set(sidecar.flags, FDX_FLAG_HAS_DTYPE_EXT) {
-                let bw = sidecar.dtype_ext.bit_width as u128;
-                if bw > 0 && bw < 8 { Some(bw) } else { None }
-            } else {
-                None
-            };
+        let subbyte_bits: Option<u128> = if flag_set(sidecar.flags, FDX_FLAG_HAS_DTYPE_EXT) {
+            let bw = sidecar.dtype_ext.bit_width as u128;
+            if bw > 0 && bw < 8 { Some(bw) } else { None }
+        } else {
+            None
+        };
         // one scale per block: Π ceil(base_dim_a / block_shape[a]) over tiled axes.
         let mut expected: u128 = 1;
         let bn = q.block_ndim as usize;
@@ -718,9 +714,7 @@ pub fn check_v8_capacity_backing(
     base: &DLTensor,
     buffers: &[FDXBufferRef],
 ) -> R {
-    if flag_set(sidecar.flags, FDX_FLAG_HAS_GATHER)
-        || flag_set(sidecar.flags, FDX_FLAG_IS_BUNDLE)
-    {
+    if flag_set(sidecar.flags, FDX_FLAG_HAS_GATHER) || flag_set(sidecar.flags, FDX_FLAG_IS_BUNDLE) {
         return Ok(());
     }
     // If meaning-requires-ext is set, the producer has already declared the base
@@ -788,8 +782,8 @@ pub fn check_v9_buffer_refs(sidecar: &FDXSidecar, buffers: &[FDXBufferRef]) -> R
     let role0 = buffers[0].role;
     let pool_aliases_0 =
         flag_set(sidecar.flags, FDX_FLAG_HAS_GATHER) && sidecar.gather.pool_buffer == 0;
-    let role0_ok = role0 == FDX_BUFFER_ROLE_DATA
-        || (pool_aliases_0 && role0 == FDX_BUFFER_ROLE_POOL);
+    let role0_ok =
+        role0 == FDX_BUFFER_ROLE_DATA || (pool_aliases_0 && role0 == FDX_BUFFER_ROLE_POOL);
     if !role0_ok {
         return Err(FdxValidationError::FlagFieldIncoherent {
             detail: "buffer index 0 must have role Data (or POOL for an aliased gather pool)",
@@ -1050,10 +1044,7 @@ fn check_v13_buffers(buffers: &[FDXBufferRef]) -> R {
 /// carries pointers, so it is exposed separately and NOT run by [`validate`]
 /// (which validates a live sidecar). Call it on a deserialized blob.
 pub fn check_v15_no_serialized_pointers(sidecar: &FDXSidecar, buffers: &[FDXBufferRef]) -> R {
-    if !sidecar.extents.is_null()
-        || !sidecar.buffers.is_null()
-        || !sidecar.views.is_null()
-    {
+    if !sidecar.extents.is_null() || !sidecar.buffers.is_null() || !sidecar.views.is_null() {
         return Err(FdxValidationError::PointerInSerializedForm {
             detail: "FDXSidecar array pointers must be 0 in serialized form",
         });
@@ -1149,7 +1140,11 @@ pub fn check_v16_affine(ext: &FDXExtent, axis: usize) -> R {
 /// `>= 0` (a negative i128 is `ExtentOutOfRange` BEFORE narrowing) and narrow to
 /// `usize`/`u64` (32-bit host: `> usize::MAX` ⇒ `ExtentOutOfRange`, never
 /// truncated). Returns the safe non-negative live value. Runs BEFORE V14.
-pub fn check_v17_affine_eval(ext: &FDXExtent, axis: usize, env: &FDXSymEnv) -> Result<u64, FdxValidationError> {
+pub fn check_v17_affine_eval(
+    ext: &FDXExtent,
+    axis: usize,
+    env: &FDXSymEnv,
+) -> Result<u64, FdxValidationError> {
     let a = &ext.affine;
     let mut value: i128 = a.c0 as i128;
     for i in 0..(a.term_count as usize) {
@@ -1204,10 +1199,12 @@ pub fn check_v14_extent_bounds(
 ) -> Result<u64, FdxValidationError> {
     let value: u64 = match ext.kind as u16 {
         FDX_EXTENT_SCALAR => ext.capacity,
-        FDX_EXTENT_RANGE => env_lookup(env, ext.sym_id).ok_or(FdxValidationError::UnboundSymbol {
-            axis,
-            sym_id: ext.sym_id,
-        })?,
+        FDX_EXTENT_RANGE => {
+            env_lookup(env, ext.sym_id).ok_or(FdxValidationError::UnboundSymbol {
+                axis,
+                sym_id: ext.sym_id,
+            })?
+        }
         FDX_EXTENT_AFFINE => {
             // V16 well-formedness first (build-time), then V17 eval (runs before V14).
             check_v16_affine(ext, axis)?;
@@ -1408,13 +1405,14 @@ pub fn check_v20_pool_backing(sidecar: &FDXSidecar, buffers: &[FDXBufferRef]) ->
     let elem = whole_byte_width(g.element_dtype).ok_or(FdxValidationError::GatherIncoherent {
         detail: "gather element_dtype must be a whole-byte type",
     })?;
-    let pool = buffers
-        .get(g.pool_buffer as usize)
-        .ok_or(FdxValidationError::BufferRefOutOfRange {
-            index: g.pool_buffer,
-            count: buffers.len() as u32,
-            detail: "pool_buffer index out of range",
-        })?;
+    let pool =
+        buffers
+            .get(g.pool_buffer as usize)
+            .ok_or(FdxValidationError::BufferRefOutOfRange {
+                index: g.pool_buffer,
+                count: buffers.len() as u32,
+                detail: "pool_buffer index out of range",
+            })?;
     // Every physical axis: stride*extent*elem must be backed; the slowest axis
     // (block axis, physical_strides[0]*num_blocks) is the dominant term.
     let need = pool_byte_len(g, elem)?;
@@ -1443,13 +1441,14 @@ pub fn check_v21a_gather_buffers(sidecar: &FDXSidecar, buffers: &[FDXBufferRef])
     let g = &sidecar.gather;
     let count = buffers.len() as u32;
 
-    let pool = buffers
-        .get(g.pool_buffer as usize)
-        .ok_or(FdxValidationError::BufferRefOutOfRange {
-            index: g.pool_buffer,
-            count,
-            detail: "pool_buffer index out of range",
-        })?;
+    let pool =
+        buffers
+            .get(g.pool_buffer as usize)
+            .ok_or(FdxValidationError::BufferRefOutOfRange {
+                index: g.pool_buffer,
+                count,
+                detail: "pool_buffer index out of range",
+            })?;
     if pool.role != FDX_BUFFER_ROLE_POOL && pool.role != FDX_BUFFER_ROLE_DATA {
         return Err(FdxValidationError::GatherIncoherent {
             detail: "pool_buffer role must be POOL (or Data when aliasing index 0)",
@@ -1479,13 +1478,13 @@ pub fn check_v21a_gather_buffers(sidecar: &FDXSidecar, buffers: &[FDXBufferRef])
     }
 
     if g.context_lens_buffer != FDX_BUFFER_NONE {
-        let cl = buffers
-            .get(g.context_lens_buffer as usize)
-            .ok_or(FdxValidationError::BufferRefOutOfRange {
+        let cl = buffers.get(g.context_lens_buffer as usize).ok_or(
+            FdxValidationError::BufferRefOutOfRange {
                 index: g.context_lens_buffer,
                 count,
                 detail: "context_lens_buffer index out of range",
-            })?;
+            },
+        )?;
         if cl.role != FDX_BUFFER_ROLE_CONTEXT_LENS {
             return Err(FdxValidationError::GatherIncoherent {
                 detail: "context_lens buffer role must be CONTEXT_LENS",
@@ -1598,11 +1597,7 @@ pub fn check_v21e_logical_extents(sidecar: &FDXSidecar) -> R {
 /// `0 <= L <= max_seq_capacity` and `ceil(L/block_size) <= max_blocks_per_seq`,
 /// with u64/checked address-overflow guards re-checked against the runtime
 /// `usize`. `L == 0` is LEGAL (skipped sequence).
-pub fn check_v21d_seq_live_length(
-    sidecar: &FDXSidecar,
-    seq_index: usize,
-    live_len: u64,
-) -> R {
+pub fn check_v21d_seq_live_length(sidecar: &FDXSidecar, seq_index: usize, live_len: u64) -> R {
     let g = &sidecar.gather;
     if live_len > g.max_seq_capacity {
         return Err(FdxValidationError::ExtentOutOfRange {
