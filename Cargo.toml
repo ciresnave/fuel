@@ -247,7 +247,41 @@ baracuda-nvrtc         = { version = "0.0.1-alpha.78" }
 # baracuda-kernels-sys is a shared extern-C dep, so leaving kernelgen at alpha.76
 # while the rest is alpha.77 would pull two kernels-sys versions and duplicate the
 # FFI symbols. Pulled only under fuel-dispatch's `jit-synth` feature.
-baracuda-kernelgen     = { version = "=0.0.1-alpha.77" }  # alpha.78 has an all-zero-output regression (bisected 77->78); revert when fixed
+# ⚠️ THE REASON THIS PIN CARRIED FOR ELEVEN DAYS WAS A FALSE ACCUSATION AGAINST
+# A SIBLING PROJECT, RETRACTED 2026-08-19. It read: "alpha.78 has an all-zero-
+# output regression (bisected 77->78); revert when fixed."
+#
+# MEASURED at alpha.78, NaN-prefilled output, 20 fresh-process repeats under
+# `gpu-run`: 15/20 clean, 5/20 with ALL SEVEN output elements still holding the
+# pre-fill NaN. ~25% intermittent, one test only
+# (`live_baracuda_synthesizer_full_loop_scalar`); the two mock-PTX tests passed
+# 20/20 through the identical loader, launcher, prefill and readback, which is
+# the in-run control.
+#
+# SO THE BISECT WAS MEASURING A COIN FLIP. `.76` PASS / `.77` PASS / `.78` FAIL
+# on ONE trial each is an unremarkable draw at p~0.25. There is no demonstrated
+# version boundary, and the original zero-filled harness could not tell "wrote
+# zeros" from "never wrote" in the first place (`CudaStorageBytes::alloc` uses
+# `alloc_zeros`, and `relu(a+b)` legitimately yields 0.0 on 4 of 7 expected
+# outputs — a never-launched kernel AGREES with the oracle on the majority).
+#
+# ATTRIBUTION IS OURS, BY ELIMINATION, NOT BY DEMONSTRATION: of the four
+# candidate mechanisms, three are deterministic by construction (wrong count,
+# marshaling mismatch, body defect); only a write landing outside the buffer we
+# read is state-dependent, so the VARIATION points there. Baracuda's gate-5/6
+# on-device evidence found the emitted kernel and launch contract byte-unchanged
+# across the bump. Fuel's computed `n` (elements, `elem_count()` = 7) AGREES
+# with the contract's declared `count_unit: elements`, so it is not a contract
+# mismatch either.
+#
+# THE PIN STAYS FOR NOW ONLY BECAUSE `.78` DOES FAIL ~25% OF THE TIME — that is
+# a separate decision from the retracted reason. Pending measurement: the same
+# 20x at `=alpha.77`. If it also fails ~25%, the version is conclusively
+# irrelevant and this pin comes out. See docs/gaps.md GAP-001.
+#
+# NOTE: kernelgen is RETIRED at .78 (no .79); its replacement is
+# `baracuda-cuda-emit`. Removing this pin and migrating are the same move.
+baracuda-kernelgen     = { version = "=0.0.1-alpha.77" }
 baracuda-nccl-sys      = { version = "0.0.1-alpha.78" }
 baracuda-nccl          = { version = "0.0.1-alpha.78", features = ["half-crate"] }
 baracuda-cutlass       = { version = "0.0.1-alpha.78" }

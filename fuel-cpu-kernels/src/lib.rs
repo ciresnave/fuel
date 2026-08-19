@@ -82,6 +82,20 @@ pub use neon::CurrentCpu;
     target_feature = "neon",
     target_feature = "avx2"
 ))]
+/// # Safety
+///
+/// - `a_row` and `b_row` must each be valid for reads of `k` consecutive `f32`
+///   values, properly aligned, and the whole range must belong to one
+///   allocation.
+/// - `c` must be valid for writes of one `f32`, properly aligned.
+/// - The three ranges must not overlap.
+/// - `k` may be `0`; no memory is touched in that case.
+///
+/// # Result semantics
+///
+/// `*c` is **overwritten** with the dot product; it is not accumulated into,
+/// so the caller need not pre-initialise it. Both the SIMD and scalar arms
+/// behave this way (unified at `78f94467`).
 #[inline(always)]
 pub unsafe fn vec_dot_f32(a_row: *const f32, b_row: *const f32, c: *mut f32, k: usize) {
     let np = k & !(CurrentCpu::STEP - 1);
@@ -122,6 +136,20 @@ pub unsafe fn vec_dot_f32(a_row: *const f32, b_row: *const f32, c: *mut f32, k: 
     target_feature = "neon",
     target_feature = "avx2"
 )))]
+/// # Safety
+///
+/// - `a_row` and `b_row` must each be valid for reads of `k` consecutive `f32`
+///   values, properly aligned, and the whole range must belong to one
+///   allocation.
+/// - `c` must be valid for writes of one `f32`, properly aligned.
+/// - The three ranges must not overlap.
+/// - `k` may be `0`; no memory is touched in that case.
+///
+/// # Result semantics
+///
+/// `*c` is **overwritten** with the dot product; it is not accumulated into,
+/// so the caller need not pre-initialise it. Both the SIMD and scalar arms
+/// behave this way (unified at `78f94467`).
 #[inline(always)]
 pub unsafe fn vec_dot_f32(a_row: *const f32, b_row: *const f32, c: *mut f32, k: usize) {
     // Overwrite semantics, matching the SIMD arm above and the other seven arms
@@ -140,6 +168,14 @@ pub unsafe fn vec_dot_f32(a_row: *const f32, b_row: *const f32, c: *mut f32, k: 
     target_feature = "neon",
     target_feature = "avx2"
 ))]
+/// # Safety
+///
+/// - `row` and `row` must each be valid for reads of `k` consecutive `f32`
+///   values, properly aligned, and the whole range must belong to one
+///   allocation.
+/// - `b` must be valid for writes to one `f32`, properly aligned.
+/// - The three ranges must not overlap.
+/// - `k` may be `0`; no memory is touched in that case.
 #[inline(always)]
 pub unsafe fn vec_sum(row: *const f32, b: *mut f32, k: usize) {
     let np = k & !(CurrentCpu::STEP - 1);
@@ -174,6 +210,14 @@ pub unsafe fn vec_sum(row: *const f32, b: *mut f32, k: usize) {
     target_feature = "neon",
     target_feature = "avx2"
 )))]
+/// # Safety
+///
+/// - `row` and `row` must each be valid for reads of `k` consecutive `f32`
+///   values, properly aligned, and the whole range must belong to one
+///   allocation.
+/// - `b` must be valid for writes to one `f32`, properly aligned.
+/// - The three ranges must not overlap.
+/// - `k` may be `0`; no memory is touched in that case.
 #[inline(always)]
 pub unsafe fn vec_sum(row: *const f32, b: *mut f32, k: usize) {
     unsafe {
@@ -184,6 +228,14 @@ pub unsafe fn vec_sum(row: *const f32, b: *mut f32, k: usize) {
     }
 }
 
+/// # Safety
+///
+/// - `a_row` and `b_row` must each be valid for reads of `k` consecutive `f16`
+///   values, properly aligned, and the whole range must belong to one
+///   allocation.
+/// - `c` must be valid for writes to one `f32`, properly aligned.
+/// - The three ranges must not overlap.
+/// - `k` may be `0`; no memory is touched in that case.
 #[cfg(target_feature = "avx2")]
 #[inline(always)]
 pub unsafe fn vec_dot_f16(a_row: *const f16, b_row: *const f16, c: *mut f32, k: usize) {
@@ -223,6 +275,14 @@ pub unsafe fn vec_dot_f16(a_row: *const f16, b_row: *const f16, c: *mut f32, k: 
     unsafe { *c = sumf };
 }
 
+/// # Safety
+///
+/// - `a_row` and `b_row` must each be valid for reads of `k` consecutive `bf16`
+///   values, properly aligned, and the whole range must belong to one
+///   allocation.
+/// - `c` must be valid for writes to one `f32`, properly aligned.
+/// - The three ranges must not overlap.
+/// - `k` may be `0`; no memory is touched in that case.
 #[cfg(target_feature = "avx2")]
 #[inline(always)]
 pub unsafe fn vec_dot_bf16(a_row: *const bf16, b_row: *const bf16, c: *mut f32, k: usize) {
@@ -262,6 +322,14 @@ pub unsafe fn vec_dot_bf16(a_row: *const bf16, b_row: *const bf16, c: *mut f32, 
     unsafe { *c = sumf };
 }
 
+/// # Safety
+///
+/// - `a_row` and `b_row` must each be valid for reads of `k` consecutive `f16`
+///   values, properly aligned, and the whole range must belong to one
+///   allocation.
+/// - `c` must be valid for writes to one `f32`, properly aligned.
+/// - The three ranges must not overlap.
+/// - `k` may be `0`; no memory is touched in that case.
 #[cfg(not(target_feature = "avx2"))]
 #[inline(always)]
 pub unsafe fn vec_dot_f16(a_row: *const f16, b_row: *const f16, c: *mut f32, k: usize) {
@@ -274,6 +342,14 @@ pub unsafe fn vec_dot_f16(a_row: *const f16, b_row: *const f16, c: *mut f32, k: 
     }
 }
 
+/// # Safety
+///
+/// - `a_row` and `b_row` must each be valid for reads of `k` consecutive `bf16`
+///   values, properly aligned, and the whole range must belong to one
+///   allocation.
+/// - `c` must be valid for writes to one `f32`, properly aligned.
+/// - The three ranges must not overlap.
+/// - `k` may be `0`; no memory is touched in that case.
 #[cfg(not(target_feature = "avx2"))]
 #[inline(always)]
 pub unsafe fn vec_dot_bf16(a_row: *const bf16, b_row: *const bf16, c: *mut f32, k: usize) {

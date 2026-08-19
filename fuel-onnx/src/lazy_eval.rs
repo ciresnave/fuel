@@ -1163,10 +1163,19 @@ mod tests {
 
     #[test]
     fn unsupported_op_errors_cleanly() {
-        // Sub-port 3 territory: a softmax-class op still routes through the
+        // Sub-port 3 territory: a norm-class op still routes through the
         // sub-port pointer pattern.
+        //
+        // This test names a REAL op that is genuinely unimplemented, so it
+        // expires when that op lands. When it does: RE-AIM it at another
+        // still-unsupported op (check `classify_op_sub_port` against the
+        // dispatch arms) — do NOT flip the assertion to expect success. The
+        // property under test is that an unsupported op declines cleanly and
+        // names its target sub-port; asserting success instead would leave a
+        // green test that no longer covers the decline path at all.
+        // It was previously aimed at "Softmax", which sub-port 3 implemented.
         let graph = onnx::GraphProto {
-            node: vec![node("Softmax", "sm", &["X"], &["Y"])],
+            node: vec![node("InstanceNormalization", "inorm", &["X"], &["Y"])],
             input: vec![value_info("X")],
             output: vec![value_info("Y")],
             ..Default::default()
@@ -1186,7 +1195,10 @@ mod tests {
 
         let err = evaluator.run(&inputs).unwrap_err();
         let msg = format!("{err}");
-        assert!(msg.contains("Softmax"), "error must mention op name: {msg}");
+        assert!(
+            msg.contains("InstanceNormalization"),
+            "error must mention op name: {msg}"
+        );
         assert!(
             msg.contains("sub-port 3"),
             "error must mention target sub-port: {msg}"

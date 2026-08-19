@@ -5,10 +5,27 @@
 //!
 //! # Provenance — three commits, because a number is a claim about a tree on BOTH sides
 //!
+//! ⚠️ **THE sha256 AND BLOB IDS BELOW ARE A RECORDED STAMP, NOT AN ENFORCED
+//! CHECK. Nothing in this file hashes the corpus.** They document which
+//! artifact was read; they cannot detect a later edit to it. The binding that
+//! IS enforced is field-wise, in `corpus_is_the_artifact_this_leg_was_bound_to`
+//! (schema, `source_commit`, counts, per-namespace vocabulary versions) plus
+//! the per-vector token assertions in `positive_vectors_byte_match` — which
+//! together cover strictly more than a digest would for everything this leg
+//! reads. A digest was deliberately NOT added: it would duplicate that
+//! coverage and require a `sha2` dev-dep. **Recorded here because a hash
+//! sitting in a comment READS as a control, and an unlabelled one is a false
+//! guard** — the reader must not conclude currency is verified.
+//!
 //! - **Artifact read:** KISS `a43a96f` — `conformance/corpus/structure_key_vectors.json`,
 //!   blob `f4ec8d44329ce0aec84747aecea832a3d3b11263`,
-//!   sha256 `a31c624c3171f91974a7eda3232f0ffa753c0d57d76a6c23dab2072a4eef32aa`,
-//!   12283 bytes. Read with `git show origin/main:<path>` in `C:\Projects\KISS`
+//!   sha256 `619c834e563fb5bce565915b2d3f225cdf2e71ea803d04a6404ed1cedd29656e`,
+//!   16458 bytes. ⚠️ **CORRECTED 2026-08-19: this stamp read `a31c624c…` / 12283
+//!   bytes, which described the PRE-`f600d870` corpus — the re-vendor (+7
+//!   declines, 10 -> 17) did not update it. An unenforced stamp went stale
+//!   silently and then caused a real misread: a portfolio-level review
+//!   concluded Fuel was seven declines behind KISS on the strength of it.
+//!   RE-MEASURE THIS ON EVERY RE-VENDOR.** Read with `git show origin/main:<path>` in `C:\Projects\KISS`
 //!   (never the working tree, which is checked out stale); `origin/main` was
 //!   confirmed equal to `git ls-remote origin refs/heads/main` at read time, so
 //!   this is the live tip and **no invariance claim is needed** — the file has
@@ -448,7 +465,14 @@ fn constructed_and_excluded_partition_the_positive_vectors() {
     let c = corpus();
     let published: BTreeSet<String> =
         vectors(&c, "positive_vectors").iter().map(|v| field(v, "name").to_string()).collect();
-    assert_eq!(published.len(), 20, "vector names must be unique");
+    // Uniqueness asserted AS uniqueness: the deduped set must be the same size
+    // as the raw list. Written as `== 20` this silently doubled as a corpus-size
+    // assertion, so a re-vendor changed the meaning of a test about names.
+    assert_eq!(
+        published.len(),
+        vectors(&c, "positive_vectors").len(),
+        "two positive vectors share a name"
+    );
 
     let constructed: BTreeSet<String> = cells().keys().map(|s| s.to_string()).collect();
     let excluded: BTreeSet<String> =
@@ -469,7 +493,12 @@ fn constructed_and_excluded_partition_the_positive_vectors() {
     // GAP-168 op-family increment: was 18 constructed / 2 excluded. Both
     // exclusions were field 2 (`une`, `scn`); both are now spelled, so every
     // published positive is constructed and byte-matched.
-    assert_eq!(constructed.len(), 20);
+    //
+    // `constructed.len() == 20` USED to sit here and has been REMOVED as
+    // redundant: `covered == published` above is a SET equality that already
+    // pins every name on both sides, and `is_disjoint` pins the split. The
+    // count added no coverage and made a corpus re-vendor look like a defect in
+    // this test.
     assert_eq!(
         excluded.len(),
         0,
@@ -511,7 +540,22 @@ fn positive_vectors_byte_match() {
     // inexpressible positives and both are now spelled, so EVERY published
     // positive is byte-matched — the leg no longer carries an op-family
     // exclusion.
-    assert_eq!(matched, 20, "expected 20 expressible positive vectors");
+    // THE INVARIANT, stated directly: every published positive is either
+    // byte-matched or a NAMED op-family exclusion.
+    //
+    // This used to be `matched == 20`, which enforced the invariant only in
+    // combination with `positive_vectors.len() == 20` in the binding test —
+    // two magic numbers in two tests, whose CONJUNCTION carried a guarantee
+    // neither stated. The hole that opens if either is relaxed: `cells.get`
+    // above `continue`s on an unknown name, so an unhandled vector would be
+    // skipped and `matched` would still hit its number. Counting against the
+    // published total plus the named exclusions closes that by construction and
+    // needs no edit when the corpus grows.
+    assert_eq!(
+        matched + OP_FAMILY_EXCLUSIONS.len(),
+        vectors(&c, "positive_vectors").len(),
+        "a published positive was neither byte-matched nor a named op-family exclusion"
+    );
 }
 
 /// Fuel's emitter never produces a token the corpus publishes as a **decline**.

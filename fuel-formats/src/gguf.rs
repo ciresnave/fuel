@@ -97,7 +97,7 @@ pub fn read_string<R: Read>(reader: &mut R, magic: &VersionedMagic) -> Result<St
     // (MLMF's replacement adds a `Bytes(Vec<u8>)` value for exactly this). It is
     // an API-semantics change deliberately deferred to the `mlmf-gguf` crate that
     // replaces this file, NOT made on this retirement-path file — and the harm on
-    // real tensor names is as yet UNMEASURED, which an API break would need first.
+    // real tensor names is as yet UNMEASURED, which an API break would need first. GAP(GAP-205)
     while let Some(0) = v.last() {
         v.pop();
     }
