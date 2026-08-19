@@ -1,4 +1,8 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: Apache-2.0
+// ^ NOT dual-licensed like the rest of Fuel. This file is a verbatim copy
+// of a third-party Apache-2.0 work (see the notice below); the copyright
+// holder never granted an MIT option, so stamping `MIT OR Apache-2.0`
+// here would assert a licence grant that does not exist.
 // Copied from https://github.com/ruuda/bs1770/blob/master/src/lib.rs
 // BS1770 -- Loudness analysis library conforming to ITU-R BS.1770
 // Copyright 2020 Ruud van Asseldonk
