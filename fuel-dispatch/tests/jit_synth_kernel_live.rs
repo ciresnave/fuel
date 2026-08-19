@@ -271,11 +271,12 @@ fn jit_adopt_loads_and_launches_a_synthesized_cuda_kernel() {
         budget: JitBudget { max_compile_ms: 5_000 },
     };
 
-    let id = adopt_from_response(&synth, &req, BackendId::Cuda, |art| {
+    let adopted = adopt_from_response(&synth, &req, BackendId::Cuda, |art| {
         load_synth_kernel(art, &device)
     })
     .expect("adopt_from_response should not error")
     .expect("the mock synthesizer always synthesizes");
+    let id = adopted.id;
 
     assert!(id.is_runtime(), "adopted a runtime FusedOpId");
     assert!(
@@ -398,11 +399,12 @@ fn jit_scalar_param_kernel_launches_with_live_value() {
         arch: ArchSku::Sm89,
         budget: JitBudget { max_compile_ms: 5_000 },
     };
-    let id = adopt_from_response(&synth, &req, BackendId::Cuda, |art| {
+    let adopted = adopt_from_response(&synth, &req, BackendId::Cuda, |art| {
         load_synth_kernel(art, &device)
     })
     .expect("adopt_from_response should not error")
     .expect("the mock synthesizer always synthesizes");
+    let id = adopted.id;
     assert!(id.is_runtime());
 
     let kernel = lookup_runtime_kernel(id, BackendId::Cuda)
@@ -483,7 +485,7 @@ fn live_baracuda_synthesizer_full_loop_scalar() {
     }
 
     // (2) The full adopt path: (re-)synthesize -> take_kernel -> load_synth_kernel.
-    let id = adopt_from_response(&synth, &req, BackendId::Cuda, |art| {
+    let adopted = adopt_from_response(&synth, &req, BackendId::Cuda, |art| {
         eprintln!("synth emitted symbol: {}  (kind {:?})", art.link.symbol, art.kind);
         // GAP-001's "First diagnostic" (docs/gaps.md), made runnable: dump what the
         // synthesizer DECLARES, so it can be compared against what Fuel COMPUTES.
@@ -530,6 +532,7 @@ fn live_baracuda_synthesizer_full_loop_scalar() {
     })
     .expect("adopt_from_response: the full loop reached adopt")
     .expect("the real synthesizer produced an adoptable kernel");
+    let id = adopted.id;
 
     assert!(id.is_runtime(), "adopted a runtime FusedOpId");
     assert!(
@@ -538,9 +541,39 @@ fn live_baracuda_synthesizer_full_loop_scalar() {
     );
 
     // (3) Launch Baracuda's generated kernel and verify relu(a + b) on-device.
-    let kernel = lookup_runtime_kernel(id, BackendId::Cuda)
-        .expect("kernel bound on Cuda")
-        .kernel;
+    // Dispatch through the kernel THIS adoption loaded, never through a lookup
+    // by id. Was `lookup_runtime_kernel(id, ..).kernel`, and that is the whole
+    // GAP-001 defect (see the assertion below).
+    let kernel = adopted.kernel;
+    // *** GAP-001 (b): the kernel we LAUNCH must be the kernel we ADOPTED. ***
+    // Born red on purpose. A `FusedOpId` names a RECIPE, not an artifact, so
+    // resolving one back to "the" kernel returns an ALTERNATIVE — today the
+    // first-registered (GAP-213). An earlier test in this binary synthesizes
+    // the same `relu_add_region()` at f32, so it registers first and this
+    // lookup hands back ITS kernel, bound to a `CudaDevice` already dropped.
+    // Both kernels compute relu(add) on f32, so whenever that stale launch
+    // happens to work the values are CORRECT and this test passes while
+    // exercising the mock instead of the live synthesizer.
+    // Trivially true as written — and that is the point: it fails the moment
+    // anyone reintroduces a lookup-by-id here. Observed RED before the line
+    // above changed (~2 of 5 full-suite runs); never RED alone, because alone
+    // there is no second alternative.
+    //
+    // MEASURED mechanism, and it is worse than "first-registered wins"
+    // (GAP-213). `bindings` is keyed on `(BindingKey, KernelDTypes, BackendId)`
+    // — but `first_runtime_fused`'s predicate matches on `fid` and `backend`
+    // ONLY and ignores dtypes. An earlier test in this binary adopts the same
+    // `relu_add_region()` declaring 2 operands (`[F32, F32]`); this one
+    // declares 3 (`[F32, F32, F32]`). Same recipe id, same backend, DIFFERENT
+    // dtype keys ⇒ two distinct HashMap entries, BOTH matching the predicate,
+    // and `HashMap::iter()` order decides which one answers. Order is seeded
+    // per process, so the selection — and therefore whether this test launched
+    // its own kernel or a kernel bound to an already-dropped `CudaDevice` — was
+    // a coin flip on every run. That is the ~40%.
+    assert!(
+        std::ptr::fn_addr_eq(kernel, adopted.kernel),
+        "launching a DIFFERENT kernel than was adopted — an id resolved to another          alternative. Dispatch through `adopted.kernel`; an id names a RECIPE, and          a recipe legitimately has many kernels (GAP-213).",
+    );
     let a = [1.0_f32, -5.0, 2.0, -0.5, 3.0, -7.0, 0.0];
     let b = [2.0_f32, 3.0, -10.0, 0.5, -1.0, 7.0, 4.0];
     let lhs = Arc::new(RwLock::new(upload_f32(&device, &a)));

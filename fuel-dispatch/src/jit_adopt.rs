@@ -165,19 +165,51 @@ fn operand_dtypes(operands: &[OperandDesc]) -> Vec<DType> {
     operands.iter().filter_map(|o| element_kind_to_dtype(o.dtype)).collect()
 }
 
-/// Run the JIT adopt loop for `req.region`. Returns the adopted runtime
-/// [`FusedOpId`] on success, `Ok(None)` if the synthesizer declined. `load_kernel`
+/// Run the JIT adopt loop for `req.region`. Returns the [`Adopted`] pair
+/// (recipe id + **the kernel this call loaded**) on success, `Ok(None)` if the
+/// synthesizer declined. `load_kernel`
 /// is the backend-specific step (PTX → `KernelRef`); the caller provides it.
 ///
 /// Never a realize-time action — this runs in the optimizer's background
 /// (idle-time, G7) adopt path; after it returns, `offer_runtime_fused_arm` will
 /// emit the fused arm on the next optimize pass.
+/// What an adoption produced: the recipe's runtime [`FusedOpId`] **and the
+/// [`KernelRef`] this call loaded**.
+///
+/// The kernel is returned because it **cannot be recovered from the id**, and
+/// that is by design rather than an oversight. A `FusedOpId` names a *recipe*,
+/// not an artifact: `register_runtime_fused` deduplicates on the region's
+/// base-map hash and ignores the name, so two adoptions of the same recipe
+/// share one id (`fuel-graph/src/runtime_fused.rs`, whose own doc says "two
+/// calls with the same shape but different `name`s return the same id"), and
+/// `docs/architecture/04-optimization.md` ratifies multiple kernels under one
+/// decision point.
+///
+/// So looking the id back up returns *an* alternative, and today that is the
+/// **first-registered** one on both paths — `first_runtime_fused` takes
+/// `alts.first()`, and `lookup_with_caps`'s own comment records that with no
+/// binding setting `requires_broadcast` it is "byte-identical to returning the
+/// first-registered alternative". **For the second adopter of a recipe that is
+/// somebody else's kernel** (GAP-213); and if that kernel's device has since
+/// been dropped it is not merely wrong but undefined (GAP-214).
+///
+/// Measured: two tests adopting the same `relu(add)` f32 region both received
+/// `FusedOpId(32768)`, and the second launched the first's entry point.
+#[derive(Clone, Copy, Debug)]
+pub struct Adopted {
+    /// The recipe's runtime id. Shared with any other adoption of the same recipe.
+    pub id: FusedOpId,
+    /// The kernel **this** adoption loaded. Dispatch through this; do not
+    /// re-derive it from `id`.
+    pub kernel: KernelRef,
+}
+
 pub fn adopt_from_response(
     synth: &dyn Synthesizer,
     req: &JitRequest,
     backend: BackendId,
     load_kernel: impl FnOnce(&SynthArtifact) -> Result<KernelRef>,
-) -> Result<Option<FusedOpId>> {
+) -> Result<Option<Adopted>> {
     let entry_point = match synth.synthesize(req) {
         JitResponse::Synthesized { entry_point } => entry_point,
         JitResponse::Declined { .. } => return Ok(None),
@@ -189,7 +221,8 @@ pub fn adopt_from_response(
     let dtypes = operand_dtypes(&req.operands);
     // req.region IS the recipe's decompose (fuel_graph::jit::PatternNode re-exports
     // the envelope's PatternNode), so adopt registers it as the runtime op's recipe.
-    Ok(adopt_runtime_fused(entry_point, req.region.clone(), kernel, dtypes, backend))
+    Ok(adopt_runtime_fused(entry_point, req.region.clone(), kernel, dtypes, backend)
+        .map(|id| Adopted { id, kernel }))
 }
 
 #[cfg(test)]
@@ -382,13 +415,20 @@ mod tests {
             MockSynth { decline: false, art: Mutex::new(Some(artifact("mock::abs_sub"))) };
         // The load_kernel seam: a real backend loads art.artifact as a module +
         // resolves art.link.symbol; here it just yields a no-op KernelRef.
-        let id = adopt_from_response(&synth, &req(), BackendId::Cpu, |_art| {
+        let adopted = adopt_from_response(&synth, &req(), BackendId::Cpu, |_art| {
             Ok(noop_kernel as KernelRef)
         })
         .expect("no error")
         .expect("synthesized ⇒ adopted");
+        let id = adopted.id;
 
         assert!(id.is_runtime(), "adopted a runtime FusedOpId");
+        // The kernel comes back with the id, and is the one THIS call loaded —
+        // not whatever the recipe id happens to resolve to. See `Adopted`.
+        assert!(
+            std::ptr::fn_addr_eq(adopted.kernel, noop_kernel as KernelRef),
+            "adoption returned the kernel this call loaded",
+        );
         assert!(
             crate::runtime_fused_kernels::fused_kernel_available(id, BackendId::Cpu),
             "the adopted op's kernel is now visible to the capability gate",
