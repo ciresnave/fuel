@@ -43,6 +43,28 @@ hardware discovery, the backend contract, and the CPU SIMD primitives each have 
 remains of the broader retirement (fuel-core itself dissolving; the Storage-unification) is downstream
 of other programs (eager-dispatch retirement B6), not B0.
 
+> ⚠️ **AMENDED 2026-08-19 — THAT SEQUENCING IS NOW STALE, AND IT READ AS A
+> BLOCKER LONG AFTER THE BLOCKER CLEARED. B6 IS COMPLETE** (eager `Tensor`,
+> `BackpropOp` and `fuel-core/src/op.rs` are all gone — measured at
+> `origin/main`, positive-controlled). **So the dissolution is NOT blocked. It
+> is UNSCOPED** — nobody has written the steps, which is a different problem
+> with a different fix, and the sentence above sends a reader to wait for
+> something that already happened.
+>
+> **A "blocked on X" record expires and nothing tells you.** A program name is
+> a question identifier: it stays live until a human retires it, and retiring
+> it is nobody's build step. This one was dead for weeks inside a document that
+> reads as authoritative.
+>
+> **First separable piece, measured 2026-08-19: `fuel-nn`.** The NN surface is
+> 22 files / ~8,855 lines (`lazy_nn_*.rs` + `lazy_nn/`) with **zero** eager-
+> `Tensor` dependency — the one apparent exception, `lazy_nn_optim.rs:167`, is
+> `fuel_graph::Tensor`, the graph handle from a crate already BELOW `fuel-core`.
+> `lazy.rs` references `lazy_nn` zero times, so there is no cycle. It goes
+> **above** `fuel-core` as a consumer crate and re-points its `use` lines when
+> the dissolution eventually runs. Unblocks the Lightbulb port's
+> `use fuel_nn::VarBuilder` wall (recorded in `02-layers.md`, 2026-07-29).
+
 NOTE on verification cost: a `fuel-cuda-backend` build is ~36 min cold (baracuda nvcc);
 metal is unbuildable here — so per-step, verify the CPU path (fuel-ir+cpu-backend+fuel-core, ~40s)
 and batch one cuda build to confirm the cross-backend re-points. This doc is the resume artifact —
