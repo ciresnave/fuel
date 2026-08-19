@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Carry-forward placement DP — planner Stage 3
 //! (`docs/session-prompts/load-time-incremental-planner.md`,
 //! architecture `04-optimization` §Load-time incremental planning,

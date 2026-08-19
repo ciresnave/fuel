@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Live CUDA `load_kernel` for a JIT-synthesized kernel (kernel-seam-interop
 //! §5.2's device-specific step): given a [`SynthArtifact`] (PTX bytes + a
 //! symbol name), load it as a CUDA module, resolve the function, and wrap it

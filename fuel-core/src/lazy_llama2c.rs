@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Llama2-C decoder ported to the lazy-graph API.
 //!
 //! Phase D LLM port. Llama2-C is Andrej Karpathy's stripped-down

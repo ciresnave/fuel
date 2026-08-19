@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Bridge between [`fuel_vulkan_backend::VulkanBackend`] and
 //! [`crate::Device`].
 //!

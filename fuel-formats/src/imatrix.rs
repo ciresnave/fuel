@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! imatrix (importance matrix) parser — llama.cpp activation
 //! statistics for quantization calibration.
 //!

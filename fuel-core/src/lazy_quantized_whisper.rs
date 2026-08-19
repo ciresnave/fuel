@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! GGUF-quantized Whisper speech-recognition model.
 //!
 //! Architecture parallels [`crate::lazy_whisper`] one-to-one. The only

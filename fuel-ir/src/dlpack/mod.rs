@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! FDX — the Fuel DLPack eXtension: a versioned, optional sidecar over
 //! standard DLPack for tensor interchange between Fuel, its kernels, and the
 //! ecosystem. Canonical design: `docs/specs/dlpack-extension.md`.

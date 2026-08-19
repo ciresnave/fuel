@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Lazy `QuantizableLinear` — a `Linear` layer that transparently
 //! accepts F32, BF16, or Q4_0 base weight storages.
 //!

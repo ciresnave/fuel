@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! PaliGemma multimodal model ported to the lazy-graph API.
 //!
 //! PaliGemma from Google (Beyer et al. 2024). First multimodal

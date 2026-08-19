@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! OLMo2 decoder ported to the lazy-graph API.
 //!
 //! Phase D LLM port. OLMo2 evolves OLMo with two changes:

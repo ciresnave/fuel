@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Kernel-seam JIT-on-request envelope (kernel-seam-interop §5.2) — the live-call
 //! protocol between Fuel (the strategist) and a JIT kernel synthesizer (e.g.
 //! Baracuda). Fuel chooses a region + a synthesis budget and cost-gates adoption;

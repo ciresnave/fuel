@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! CSM (Conversational Speech Model) — lazy port demo, v1 surface only.
 //!
 //! Sesame's CSM is a two-stage speech-token model: a Llama-1B backbone

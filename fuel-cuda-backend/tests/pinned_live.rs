@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Live-device smoke tests for [`PinnedHostStorage`].
 //!
 //! Gated with `#[ignore]` — run with `cargo test -- --ignored` on a

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Mmap-backed host storage for evicted GPU tensors.
 //!
 //! When VRAM is tight, cold tensors get spilled out of VRAM and land

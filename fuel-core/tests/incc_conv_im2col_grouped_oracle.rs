@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! CV2 (Increment C, im2col-2): real-backend numerical parity for the migrated
 //! GROUPED `Conv2D` (`groups>1`, including depthwise) index-gather im2col recipe.
 //!

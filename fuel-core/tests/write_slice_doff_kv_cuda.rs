@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Phase 1 (CapturedRun) — Op::WriteSliceDoff live-CUDA end-to-end.
 //!
 //! Mirrors the CPU integration tests in `write_slice_doff_kv.rs` but

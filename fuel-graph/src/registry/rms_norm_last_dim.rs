@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! RmsNormLastDim — `x / sqrt(mean(x²) + eps)` along the last dim.
 //! Increment C slice 1, T7 — migrated (with LayerNormLastDim) to a portable
 //! `PatternNode` DATA recipe, and the first op to carry an OPEN scalar slot

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! EVA-02 — lazy port.
 //!
 //! ViT-shape Pre-LN backbone with **interleaved RoPE** applied to

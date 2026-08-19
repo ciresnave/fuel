@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Soft, non-fatal FKC import diagnostics.
 //!
 //! FKC's importer surfaces *failures* as typed [`crate::fkc::FkcError`] values.

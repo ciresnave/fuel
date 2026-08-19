@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Z-Image Text-to-Image Generation — lazy port migration.
 //!
 //! Z-Image is Alibaba's text-to-image Flow Matching model. The eager

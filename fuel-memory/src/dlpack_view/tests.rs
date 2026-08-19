@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Born-red tests for the DLPack + FDX borrowed view (plan §2, gates T7–T9).
 //!
 //! All CPU — the only backend wired in this slice. Each test asserts the

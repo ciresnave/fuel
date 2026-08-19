@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The Baracuda-backed [`StructureKeyProvider`] — the live wire into Baracuda's
 //! shipped `structure_key` keying function.
 //!

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 use crate::utils::{
     get_scale_min_k4, group_for_dequantization, group_for_quantization, make_q3_quants,
     make_qkx1_quants, make_qkx3_quants, make_qp_quants, make_qx_quants, nearest_int,

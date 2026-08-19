@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Binary-elementwise chassis — one shape/loop pass shared by every
 //! per-(op, dtype) binary kernel (Add / Sub / Mul / Div / Maximum /
 //! Minimum / Pow / Rem, across f32 / f64 / bf16 / f16).

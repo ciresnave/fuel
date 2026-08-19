@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Fuel's independent typed shape-expression AST + §6.19 canonical wire codec +
 //! evaluator (KISS-Ops §6.20). Byte-matches the KISS reference
 //! (`conformance/src/shape_expr.rs`), verified against the vendored golden vectors —

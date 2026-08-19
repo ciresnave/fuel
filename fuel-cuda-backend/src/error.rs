@@ -1,4 +1,5 @@
-﻿use fuel_ir::{DType, Layout};
+﻿// SPDX-License-Identifier: MIT OR Apache-2.0
+use fuel_ir::{DType, Layout};
 
 /// Errors from the CUDA backend — driver, NVRTC, cuBLAS, and curand
 /// failures, plus Fuel-local variants for missing kernels / dtype

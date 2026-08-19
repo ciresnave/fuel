@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Pinned (page-locked) host memory as a [`HostStorage`] impl.
 //!
 //! Backed by `baracuda_driver::PinnedBuffer<T>`, which calls

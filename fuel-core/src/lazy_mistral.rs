@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Mistral decoder ported to the lazy-graph API.
 //!
 //! Phase D LLM port. The Mistral architecture is "LLaMA with sliding-

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Live-CUDA tests for baracuda-kernels-sys-backed Triu / Tril
 //! (Phase 7.6 step 9c E.3.2.4). Verifies the per-dtype triangular
 //! mask kernels produce the right output for a few canonical shapes.

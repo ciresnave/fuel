@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Reduction chassis — one shape/loop pass shared by every
 //! per-axis reduce kernel (Sum / Max / Min / Mean, across every
 //! supported dtype).

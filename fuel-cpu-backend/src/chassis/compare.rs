@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Binary-compare chassis — elementwise comparison kernels with
 //! typed input and U8 output. Covers Eq / Ne / Lt / Le / Gt / Ge
 //! across f32 / f64 / bf16 / f16.

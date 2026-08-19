@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! FastViT — lazy port.
 //!
 //! Hierarchical 4-stage hybrid backbone: stem → 4 stages, each

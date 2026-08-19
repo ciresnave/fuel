@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Based (Stanford Hazy Research) decoder ported to the lazy-graph API.
 //!
 //! Phase D specialized port. Based mixes **three mixer types**

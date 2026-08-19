@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Lazy port of `fuel-nn`'s loss functions.
 //!
 //! Each loss is a small composition of [`LazyTensor`] primitives and

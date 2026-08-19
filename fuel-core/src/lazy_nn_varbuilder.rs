@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `LazyVarBuilder` — a name-prefixing wrapper around [`LazyVarMap`]
 //! for constructing named lazy parameters.
 //!

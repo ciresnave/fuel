@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Training checkpoint management (lazy).
 //!
 //! Extends [`fuel::lazy_nn_varmap::LazyVarMap`]'s basic save/load with

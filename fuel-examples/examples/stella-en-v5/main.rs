@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // Stella-en-v5 embedding model — lazy-graph port.
 //
 // v1 of the lazy port supports the 1.5B Large variant only.

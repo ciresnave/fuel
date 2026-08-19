@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Step E A4a-1 — multi-device realize on a SINGLE pass (CPU + CUDA).
 //!
 //! The async foundation (A1 completion-handle seam, A2 Vulkan async, A3 CUDA

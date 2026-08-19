@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Shared inference-loop utilities.
 //!
 //! After the eager-`Tensor` retirement, the only remaining helper is the

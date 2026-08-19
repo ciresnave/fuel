@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Lazy-graph CUDA backend for `Op::FlashAttn` — baracuda FA2 path.
 //!
 //! Calls `baracuda_kernels_fa2_sdpa_<dt>_run_v2` (alpha.60, Phase

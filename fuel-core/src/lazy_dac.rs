@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Descript Audio Codec (DAC) — lazy port.
 //!
 //! Discrete codes `(batch, n_codebooks, time)` → waveform

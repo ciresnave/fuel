@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Phi-3 decoder ported to the lazy-graph API.
 //!
 //! Phase D LLM port. Phi-3 (Phi-3-mini-4k-instruct etc.) is a

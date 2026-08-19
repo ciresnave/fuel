@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Pixtral (Mistral AI vision-language model) ported to the
 //! lazy-graph API.
 //!

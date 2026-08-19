@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Flux (Black Forest Labs) — rectified-flow MMDiT image diffusion,
 //! ported to the lazy-graph API.
 //!

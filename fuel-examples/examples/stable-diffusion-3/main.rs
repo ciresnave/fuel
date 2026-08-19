@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Stable Diffusion 3 / 3.5 text-to-image — lazy port.
 //!
 //! Migrated from the retired eager binary at

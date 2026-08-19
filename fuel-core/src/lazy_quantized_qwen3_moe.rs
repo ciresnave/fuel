@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! GGUF-quantized Qwen3-MoE ported to the lazy-graph API.
 //!
 //! Qwen3-MoE with Q4_0 block-quantized Linear weights. The forward

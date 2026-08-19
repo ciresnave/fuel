@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `serde::Deserialize` structs mirroring the FKC structured schema
 //! (§3.1 file anatomy + §3.3 per-kernel block + §3.2 tensor descriptors).
 //!

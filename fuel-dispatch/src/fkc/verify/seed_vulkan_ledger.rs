@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Empirical seeding of the **Vulkan** verification ledger — the V-FKC-9
 //! precision half for the Vulkan backend.
 //!

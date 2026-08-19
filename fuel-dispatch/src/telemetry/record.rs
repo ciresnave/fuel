@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The `DispatchRecord` / `MissRecord` JSONL wire schema.
 //!
 //! One compact JSON object per line (JSONL — append-friendly: a long run streams

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Runtime fused-op kernel registration — the **adopt/gate facade** over the
 //! ONE binding registry.
 //!

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! FDX sidecar `#[repr(C)]` POD structs — the optional, versioned sidecar
 //! communicated alongside a standard `DLTensor` (spec §5.3, §6.1–§6.9, §7).
 //!

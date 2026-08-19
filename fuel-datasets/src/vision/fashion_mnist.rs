@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Zalando Fashion MNIST dataset.
 //! A slightly more difficult dataset that is drop-in compatible with MNIST.
 //!

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! End-to-end integration test for the capture → fixture → Judge
 //! round-trip.
 //!

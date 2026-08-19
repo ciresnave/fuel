@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Voxtral (Mistral AI) speech-language model ported to the lazy-graph API.
 //!
 //! Phase D multimodal port. Voxtral combines a **Whisper-compatible

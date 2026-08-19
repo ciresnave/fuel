@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Mimi SeaNet — lazy port.
 //!
 //! Convolutional encoder/decoder that surrounds Mimi's

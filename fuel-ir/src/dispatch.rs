@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Cross-crate dispatch table types — Phase 6b's empirical
 //! `(op, dtype, size_class) → (backend, device)` lookup.
 //!

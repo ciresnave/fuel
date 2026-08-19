@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! GGUF-quantized Gemma 3 ported to the lazy-graph API.
 //!
 //! Gemma 3 with Q4_0 block-quantized Linear weights. The forward path is

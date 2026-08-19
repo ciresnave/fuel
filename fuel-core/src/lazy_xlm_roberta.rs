@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! XLM-RoBERTa (multilingual BERT variant) ported to the
 //! lazy-graph API.
 //!

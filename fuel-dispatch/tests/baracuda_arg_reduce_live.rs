@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Live-CUDA tests for baracuda-kernels-sys-backed ArgMaxDim /
 //! ArgMinDim (U32 output, alpha.28) registered as sibling alternatives
 //! at `(OpKind::Arg{Max,Min}Dim, [input_dt, U32], BackendId::Cuda)`.

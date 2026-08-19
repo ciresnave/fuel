@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Backend storage capability traits — the object-safe contract surface
 //! every backend implements.
 //!

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Distributed KV cache coordination for multi-GPU inference.
 //!
 //! When running pipeline- or tensor-parallel inference, the KV cache for each

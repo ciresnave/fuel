@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Two-projection attention (shared K = V).
 //!
 //! Implements the shared-KV attention variant from ["Do Transformers Need

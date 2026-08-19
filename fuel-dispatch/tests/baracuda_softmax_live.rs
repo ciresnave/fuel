@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Live-CUDA tests for baracuda-kernels-sys-backed softmax /
 //! log-softmax at Fuel's `*LastDim` shape.
 

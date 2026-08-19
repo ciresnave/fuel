@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Integer GEMM kernels from `baracuda-kernels-sys` — Phase 1 of the
 //! W8A8 quantization path. Identity epilogue only this session;
 //! Bias / BiasRelu / BiasGelu / BiasSilu variants are deferred until

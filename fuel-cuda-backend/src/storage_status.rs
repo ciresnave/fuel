@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `cuda_storage_status` — the single authority for *"does the CUDA backend have
 //! STORAGE for this dtype"*, plus the decline-error helper that single-sources
 //! the reason from it (GAP-161).

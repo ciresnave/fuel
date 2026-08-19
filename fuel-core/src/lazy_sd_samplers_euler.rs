@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Euler-ancestral discrete Stable-Diffusion scheduler — lazy-graph port.
 //!
 //! Ports the eager `EulerAncestralDiscreteScheduler` from

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Span-level KV cache eviction.
 //!
 //! Rather than evicting individual token positions, **segmented eviction**

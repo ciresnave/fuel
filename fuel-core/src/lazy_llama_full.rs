@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! LLaMA-3 long-context RoPE scaling on top of the lazy
 //! [`LlamaModel`](crate::lazy::LlamaModel).
 //!

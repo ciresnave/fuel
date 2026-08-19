@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! MetaVoice speaker encoder — lazy port.
 //!
 //! Multi-layer LSTM that maps a mel-spectrogram input

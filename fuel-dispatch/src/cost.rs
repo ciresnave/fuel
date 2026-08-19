@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Phase 7.6 step 8 — Layer-1 cost model for primitive ops.
 //!
 //! Each primitive `OpKind` registered in [`crate::kernel::KernelBindingTable`]

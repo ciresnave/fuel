@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! [`PrecisionBlock`] → [`PrecisionGuarantee`] lowering (adoption plan
 //! §2.1 / FKC §4.8).
 //!

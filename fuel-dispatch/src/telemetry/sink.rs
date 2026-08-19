@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The batch/offline JSONL sink — in-memory aggregation, flushed at run cadence.
 //!
 //! A process accumulates aggregated [`MissRecord`] counts (keyed by `(wanted,

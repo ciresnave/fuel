@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! # FKC kernel-contract importer (`fkc`)
 //!
 //! The Fuel Kernel Contract (FKC) importer: parse a provider's markdown

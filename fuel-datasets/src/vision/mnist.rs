@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The MNIST hand-written digit dataset.
 //!
 //! The files can be obtained from the following link:

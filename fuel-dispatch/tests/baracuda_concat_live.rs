@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Live-CUDA tests for baracuda-kernels-sys-backed Concat
 //! (N-ary via N-1 chained concat2 calls) registered as sibling
 //! alternatives at `(OpKind::Concat, [dt, dt], BackendId::Cuda)`.

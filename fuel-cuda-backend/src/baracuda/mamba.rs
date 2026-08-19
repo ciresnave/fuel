@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Mamba / Mamba-2 state-space model (SSM) primitives from baracuda
 //! alpha.58 (Phase 50 + Phase 50b):
 //!

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! EnCodec — lazy port (decoder + RVQ).
 //!
 //! Discrete codes `(1, n_codebooks, T)` → waveform via:

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! DistilBERT (distilled BERT) ported to the lazy-graph API.
 //!
 //! Sanh et al. 2019. Distilled, smaller, faster, lighter version

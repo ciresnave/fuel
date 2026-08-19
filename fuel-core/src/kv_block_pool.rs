@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! KV block-pool allocator — the host-side mechanism behind `Op::PagedAttn`
 //! (multi-session serving, Increment 2).
 //!

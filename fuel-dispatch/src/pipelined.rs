@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Pipelined compile + execute. Phase 7.5 B4.
 //!
 //! [`PipelinedExecutor::realize`] runs compilation and execution on

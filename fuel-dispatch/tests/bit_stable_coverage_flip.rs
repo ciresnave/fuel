@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! GAP-077 — bit-stable coverage differ under a simulated GAP-058 flip.
 //!
 //! # The question

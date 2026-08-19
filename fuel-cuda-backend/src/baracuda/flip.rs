@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Flip (reverse along selected axes) kernels from
 //! `baracuda-kernels-sys`. Per-dtype symbols cover f32/f16/bf16/f64.
 //!

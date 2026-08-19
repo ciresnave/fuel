@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Elementwise unary / binary / ternary / cmp / cast / affine kernels
 //! from `baracuda-kernels-sys`. Each kernel becomes a public Rust
 //! function with the `(src*, layout*) -> Result<CudaStorageBytes>`

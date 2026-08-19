@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Empirical precision-bound verification (`V-FKC-9`, Task 4.4).
 //!
 //! [`verify_precision_bound`] diffs a *candidate* kernel invocation against a

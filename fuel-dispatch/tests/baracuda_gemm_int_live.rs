@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Live-CUDA tests for baracuda-kernels-sys int8 GEMM. The s8 / u8
 //! RRR Identity SKUs land at the `(OpKind::MatMul, [I8, I8, I8],
 //! Cuda)` and `[U8, U8, U8]` keys — first non-FP MatMul coverage on

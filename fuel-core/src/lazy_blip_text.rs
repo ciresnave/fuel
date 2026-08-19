@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! BLIP text decoder — lazy port.
 //!
 //! BERT-shape decoder with Post-LN inside each attention sublayer.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! GGUF-quantized LFM2 (Liquid Foundation Model 2) example.
 //!
 //! Loads an LFM2 GGUF and runs greedy text generation via the lazy

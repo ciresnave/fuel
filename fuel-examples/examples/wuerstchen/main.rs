@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Wuerstchen — lazy port migration.
 //!
 //! This binary used to drive the full Wuerstchen v2 cascaded LDM

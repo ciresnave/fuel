@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! EfficientNet implementation.
 //!
 //! https://arxiv.org/abs/1905.11946

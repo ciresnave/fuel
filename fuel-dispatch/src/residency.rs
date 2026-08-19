@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Residency analysis + eviction for the pipelined executor.
 //!
 //! Ported from `fuel-graph-router::{residency_planner,

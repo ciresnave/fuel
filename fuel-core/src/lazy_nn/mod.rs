@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Lazy-graph Module wrappers.
 //!
 //! Port of `fuel-nn` over `LazyTensor`. Each module is a thin wrapper

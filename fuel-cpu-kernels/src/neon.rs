@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 use super::Cpu;
 #[cfg(target_arch = "arm")]
 use core::arch::arm::*;

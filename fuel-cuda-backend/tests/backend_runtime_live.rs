@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Live-device tests for `impl BackendRuntime for CudaDevice` — the
 //! contract-v0.3 memory-pressure surface backed by baracuda alpha.66's
 //! `cuMemGetInfo` wrappers. Gated `#[ignore]` — run with

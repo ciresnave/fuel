@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Capture pipeline for correctness fixtures.
 //!
 //! This module provides the building blocks for the

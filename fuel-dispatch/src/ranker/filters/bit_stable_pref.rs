@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Soft preference: when at least `min_remaining` bit-stable
 //! candidates exist, drop the non-bit-stable ones. Otherwise the
 //! pipeline skips this filter (preferences yield to availability).

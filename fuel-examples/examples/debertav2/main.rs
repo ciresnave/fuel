@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! DeBERTa-v2 / v3 example wired against the lazy-graph encoder.
 //!
 //! Supports two task heads today:

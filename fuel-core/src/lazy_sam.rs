@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Segment Anything Model (SAM) — ViT-B image encoder, lazy port.
 //!
 //! Phase D vision port. SAM (Meta AI 2023) provides a 3-stage

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The miss signal, read out of ordinary FKC contract matching.
 //!
 //! A **structural miss** is *definitionally* "at this dispatch key, the tightest

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Training loop abstraction (lazy-graph).
 //!
 //! [`TrainingLoop`] provides a structured training loop that composes

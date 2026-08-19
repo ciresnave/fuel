@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Hiera — lazy port (hierarchical ViT without bells-and-whistles).
 //!
 //! Reference: timm `hiera.py`.

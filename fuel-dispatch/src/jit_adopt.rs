@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! JIT-on-request **adopt glue** — the seam-consumption site (kernel-seam-interop
 //! §5.2). Given a [`Synthesizer`] and a Fuel-chosen [`JitRequest`], run the
 //! two-step handover and register the result as a Tier-2 runtime fused op:

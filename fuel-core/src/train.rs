@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Training utilities: parameters, optimizers, and the training-step
 //! driver. Backend-agnostic: the loop realizes through the production
 //! pipelined executor

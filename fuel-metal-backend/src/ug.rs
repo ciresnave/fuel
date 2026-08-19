@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Metal bridge for fuel-ug compiled kernels.
 //!
 //! `MetalUgIOp1` wraps a compiled Metal `ComputePipeline` produced by

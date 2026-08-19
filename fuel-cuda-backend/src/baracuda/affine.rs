@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Affine kernels from `baracuda-kernels-sys` — `y = a * x + b` with
 //! scalar `(a, b)`.
 //!

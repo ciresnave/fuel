@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Tensor parallelism: column-parallel and row-parallel linear layers — **lazy-only**.
 //!
 //! Tensor parallelism (TP) splits weight matrices across devices so each device

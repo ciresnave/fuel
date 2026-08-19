@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Types for elements that can be stored and manipulated using tensors.
 //!
 //! The [`DType`] enum represents the element type of a tensor, and the [`WithDType`] trait

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! 1D and 2D convolution parameter structs.
 //!
 //! This module defines the parameter structs that describe a convolution's

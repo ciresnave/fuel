@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Live-device validation that the host-visible mapped-byte meter is actually
 //! wired into the H2D staging path (increment 2 of the aperture instrument).
 //! Gated `#[ignore]` — run under the GPU lock:

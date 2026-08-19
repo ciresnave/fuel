@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Dense FP matmul over baracuda's Phase 74 `gemm_dense_*` facade
 //! (alpha.67) — the cuBLAS-backed flat-C GEMM family that answers
 //! Fuel's 2026-06-10 ask and retires the last hand-written matmul

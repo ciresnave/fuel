@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 use baracuda_driver::DeviceBuffer;
 use baracuda_types::{DeviceRepr, ValidAsZeroBits};
 /// Helper functions to plug cuda kernels in fuel.

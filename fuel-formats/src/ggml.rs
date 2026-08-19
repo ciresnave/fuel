@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! GGML legacy tensor format parser.
 //!
 //! Wire layout: `[magic][optional version][HParams][Vocab][tensor]*`

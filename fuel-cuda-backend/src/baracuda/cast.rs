@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Cast kernels from `baracuda-kernels-sys` — the 8×8 = 64 dtype-pair
 //! cross product over `{f32, f64, f16, bf16, i32, i64, u8, i8}`.
 //!

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Tool call infrastructure for function-calling models.
 //!
 //! Provides structured parsing, dispatch, and result injection for

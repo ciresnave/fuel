@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! PyTorch-oracle parity for `LazyTensor::conv_transpose1d`.
 //!
 //! The lazy primitive is built by lifting the rank-3 input + weight

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `fuel-tensor-tools` — inspect and requantize model weight files.
 //!
 //! # Why this is host code, not tensor code

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! CausalConv1d — depthwise 1-D convolution + causal masking + optional
 //! fused SiLU activation. Second FusedOpRegistry entry added by the
 //! re-framed CPU OpKind coverage plan (after FusedSoftmaxCrossEntropy).

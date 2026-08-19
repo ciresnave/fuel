@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Live-Vulkan bridge realize — proves the `optimize_graph` realize
 //! path (the single path after Phase A PR-A3b-2) realizes correctly on
 //! the Vulkan backend through `pipelined_bridge`

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Mixture-of-Experts (MoE) token routing.
 //!
 //! MoE architectures (Mixtral, Qwen-MoE, DeepSeek-MoE, etc.) activate only a

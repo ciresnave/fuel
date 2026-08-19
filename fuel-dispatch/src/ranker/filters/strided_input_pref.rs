@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Soft preference: when the decision point's inputs are
 //! non-contiguous AND at least one candidate advertises
 //! `caps.strided_input`, drop the candidates that don't. Avoids the

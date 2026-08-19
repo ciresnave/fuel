@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Phase 6a oracle gate: anchor-class CPU forward passes match the
 //! reference backend within tolerance.
 //!

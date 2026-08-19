@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! # fuel-mkl-cpu-backend
 //!
 //! Intel oneMKL-backed CPU matmul/conv2d kernels for the fuel lazy-graph

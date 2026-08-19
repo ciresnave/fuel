@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Phase C — Op::WriteSliceRotating live-CUDA end-to-end.
 //!
 //! Mirrors the CPU integration tests in `phase_c_rotating_kv.rs` but

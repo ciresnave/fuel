@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Backend-agnostic quantized (ggml/gguf block-format) numerics.
 //!
 //! This crate owns the format-side of fuel's quantization stack:

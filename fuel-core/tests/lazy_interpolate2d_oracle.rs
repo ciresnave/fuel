@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Arbitrary-scale `LazyTensor::interpolate2d` parity with the
 //! eager UpsampleNearest2D kernel.
 //!

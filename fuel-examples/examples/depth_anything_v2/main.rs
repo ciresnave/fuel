@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Depth Anything V2
 //! https://huggingface.co/spaces/depth-anything/Depth-Anything-V2
 

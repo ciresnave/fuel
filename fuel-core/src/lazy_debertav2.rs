@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! DeBERTa-v2 / v3 — lazy port.
 //!
 //! Encoder-only Transformer with **disentangled attention**: in

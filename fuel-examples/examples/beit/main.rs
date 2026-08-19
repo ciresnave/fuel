@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! BEiT: BERT Pre-Training of Image Transformers
 //! https://github.com/microsoft/unilm/tree/master/beit
 

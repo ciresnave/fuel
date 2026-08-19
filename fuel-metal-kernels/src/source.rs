@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 pub const AFFINE: &str = include_str!("metal_src/affine.metal");
 pub const BINARY: &str = include_str!("metal_src/binary.metal");
 pub const CAST: &str = include_str!("metal_src/cast.metal");

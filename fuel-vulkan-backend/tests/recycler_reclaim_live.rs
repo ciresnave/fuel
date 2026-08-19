@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Live-device regression guard for the Vulkan realize memory-reclaim
 //! bug (the D1 replan decode path OOM'd on 12 GB after ~4 full realizes).
 //!

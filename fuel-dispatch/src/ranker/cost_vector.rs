@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `CostVector` — the per-path cost VECTOR the rankers produce, and
 //! the Pareto-dominance relation over it.
 //!

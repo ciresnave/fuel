@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Single-axis reduction kernels from `baracuda-kernels-sys`.
 //!
 //! Each baracuda reduce kernel signature is:

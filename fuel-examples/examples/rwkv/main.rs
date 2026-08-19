@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! RWKV (v5 / v7) inference binary on the lazy-graph API.
 //!
 //! Revival of the retired eager `fuel-rwkv` example. Wires the freshly

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Lazy LSTM — PyTorch-shape multi-layer LSTM unrolled at
 //! graph-build time.
 //!

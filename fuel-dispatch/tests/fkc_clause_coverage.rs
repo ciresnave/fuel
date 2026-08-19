@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! GAP-036 increment 1 — **derived, bidirectional clause→test coverage for the
 //! FKC enforcement surface.**
 //!

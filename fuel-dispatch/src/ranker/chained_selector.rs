@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `ChainedSelector` — the production Picker 2 composition:
 //! VRAM-pressure GUARD → Judge-measured RANK → static-winner
 //! fallback.

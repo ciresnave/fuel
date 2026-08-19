@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! MusicGen (Facebook / Meta AI) — lazy port.
 //!
 //! Decoder-only LM that predicts EnCodec audio tokens

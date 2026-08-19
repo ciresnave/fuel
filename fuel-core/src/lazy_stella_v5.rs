@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Stella-en-v5 (Dunzhang 2024) ported to the lazy-graph API.
 //!
 //! Stella v5 is a text-embedding model built on the Qwen2

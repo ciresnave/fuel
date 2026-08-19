@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Triu / Tril kernels from `baracuda-kernels-sys` — upper- and
 //! lower-triangular masking with per-dtype symbols. baracuda's
 //! Triu/Tril operate on tensors of rank >= 2 (`[..., rows, cols]`);

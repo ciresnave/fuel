@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `DynBackendStorage` and `DynBackendDevice` implementations for the Metal backend.
 //!
 //! `DynBackendStorage` is implemented directly on `MetalStorage`, and

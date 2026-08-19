@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Rope — rotary position embedding with caller-supplied cos/sin
 //! tables. Increment C slice 1, T6 — the fifth op migrated to a portable
 //! `PatternNode` DATA recipe (after SoftmaxLastDim), and the first to carry

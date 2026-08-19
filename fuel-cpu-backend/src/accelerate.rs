@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 #![allow(dead_code)]
 use libc::{c_char, c_double, c_float, c_int, c_long, c_ulong};
 

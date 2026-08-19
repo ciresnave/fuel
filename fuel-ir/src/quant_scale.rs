@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Scale-granularity tagging for dynamic quantization formats.
 //!
 //! Some quant formats (FP8 E4M3 / E5M2, Int8 dynamic, Int4

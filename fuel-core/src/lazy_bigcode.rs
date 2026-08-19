@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! BigCode (StarCoder-1) decoder ported to the lazy-graph API.
 //!
 //! Phase D LLM port. BigCode is a GPT-2-style transformer:

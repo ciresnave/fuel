@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Multi-output bundle **data** types.
 //!
 //! As of B0.3 the type-erased `Storage` handle

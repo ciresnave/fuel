@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! # fuel-aocl-cpu-backend
 //!
 //! AMD AOCL-BLAS-backed CPU matmul/conv2d kernels for the fuel

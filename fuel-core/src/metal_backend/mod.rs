@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Thin re-export layer for Metal backend types, plus the bridge that turns
 //! a [`fuel_metal_backend::MetalDevice`] into a [`crate::Device`].
 //!

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! GAP-029 Step 0 — **measurement, not a unit test**: does a Q4_0 `qmatmul` at
 //! `m > 1` (a *prefill* shape) actually reach CUDA's `matmul_q4_0`, which
 //! hard-`bail!`s on `total_rows != 1`?

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Moondream — lazy port.
 //!
 //! The eager binary ran a custom incremental generation loop with the

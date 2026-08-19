@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `DeviceLoadSelector` + the `load_tier` bucketing — Step E Phase C,
 //! PR C2: the **live-load arm re-pick**.
 //!

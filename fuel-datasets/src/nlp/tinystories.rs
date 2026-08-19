@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Helper functions for the tinystories dataset. This uses the pre-tokenized version as generated
 //! by the tools from https://github.com/karpathy/llama2.c
 use fuel::Result;

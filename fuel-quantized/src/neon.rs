@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 use super::k_quants::{
     BlockQ2K, BlockQ3K, BlockQ4_0, BlockQ4K, BlockQ5K, BlockQ6K, BlockQ8_0, BlockQ8K, QK_K, QK8_0,
 };

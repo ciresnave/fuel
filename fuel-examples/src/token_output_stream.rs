@@ -1,4 +1,5 @@
-﻿use fuel::Result;
+﻿// SPDX-License-Identifier: MIT OR Apache-2.0
+use fuel::Result;
 
 /// This is a wrapper around a tokenizer to ensure that tokens can be returned to the user in a
 /// streaming way rather than having to wait for the full decoding.

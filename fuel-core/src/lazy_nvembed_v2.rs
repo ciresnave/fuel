@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! NV-Embed v2 (NVIDIA 2024) ported to the lazy-graph API.
 //!
 //! NV-Embed v2 is a text-embedding model built on a Mistral 7B

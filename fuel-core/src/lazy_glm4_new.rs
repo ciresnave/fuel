@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! GLM-4 (new architecture, ChatGLM-4-style) ported to the
 //! lazy-graph API.
 //!

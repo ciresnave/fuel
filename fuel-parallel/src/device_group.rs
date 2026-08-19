@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Single-process, multi-device collectives — **lazy-only**.
 //!
 //! # Why this exists alongside [`crate::comm::Communicator`]

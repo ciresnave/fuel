@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Load-time planning driver.
 //!
 //! Program anchor: `docs/session-prompts/plan-is-graph-rebuild.md`

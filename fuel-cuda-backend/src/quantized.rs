@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 use crate::WrapErr;
 use crate::{CudaDevice, CudaStorage, Result, builder_arg as barg};
 use fuel_backend_contract::dyn_backend::DynBackendStorage;

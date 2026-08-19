@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `DynBackendDevice` implementation for the Vulkan backend.
 //!
 //! `VulkanBackendDevice` is the wrapper type that satisfies

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Paged-decode parity (multi-session serving, paged-storage integration PS2):
 //! `LlamaModel::forward_paged_step` — sessions' KV physically in `DeviceKvPool`
 //! blocks, decoded via `Op::PagedAttn` — produces logits ε-close to the

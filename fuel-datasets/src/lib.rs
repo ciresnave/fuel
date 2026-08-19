@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! # fuel-datasets
 //!
 //! **Layer**: IO — parallel to `fuel-core`'s serialization layer. Provides Rust

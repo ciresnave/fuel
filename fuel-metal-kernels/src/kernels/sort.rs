@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 use crate::utils::{BufferOffset, EncoderProvider};
 use crate::{set_params, Kernels, MetalDType, MetalKernelError, Source};
 use crate::{Buffer, ComputeCommandEncoder, Device, MTLSize, RESOURCE_OPTIONS};

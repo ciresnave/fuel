@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Phase 6a bridge: a lazy-computation-graph tensor that wraps
 //! [`fuel_graph::Tensor`] and presents it through an API compatible
 //! with fuel-core's eager [`Tensor`](crate::tensor::Tensor).

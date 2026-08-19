@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! EfficientNet (Tan & Le 2019, "EfficientNet: Rethinking
 //! Model Scaling for Convolutional Neural Networks") ported
 //! to the lazy-graph API. All eight depth variants B0–B7 are

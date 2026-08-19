@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Frozen kernel-seam wire types — the JIT region / declarative-pattern grammar
 //! shared across the Fuel <-> backend-synthesizer seam (kernel-seam-interop
 //! §3/§5; fkc-fusion-patterns §3). **Types only, no logic, no Fuel-graph

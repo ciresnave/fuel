@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Clamp kernels from `baracuda-kernels-sys`. Baracuda exposes clamp
 //! as a *ternary* op `y = clamp(a, b, c)` where `b`/`c` are the lower
 //! and upper bound tensors. Fuel's `OpKind::ClampElementwise` carries

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Multi-session serving — Increment 1: the host-side multi-session decode
 //! substrate.
 //!

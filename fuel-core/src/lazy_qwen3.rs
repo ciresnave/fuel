@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Qwen3 decoder ported to the lazy-graph API.
 //!
 //! Phase D LLM port. Qwen3 evolves Qwen2 with **per-head QK-norm**:

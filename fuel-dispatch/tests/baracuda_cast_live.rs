@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Live-CUDA tests for baracuda-kernels-sys-backed Cast registered as
 //! sibling alternatives at `(OpKind::Cast, [src_dt, dst_dt], Cuda)`
 //! decision points.

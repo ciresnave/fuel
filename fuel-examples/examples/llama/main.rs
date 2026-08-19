@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // An implementation of LLaMA https://github.com/facebookresearch/llama
 //
 // This is based on nanoGPT in a similar way to:

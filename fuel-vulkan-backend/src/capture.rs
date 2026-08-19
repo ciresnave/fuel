@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Vulkan command-buffer capture of a "run" — Phase C PR-C2b.
 //!
 //! The Vulkan analogue of CUDA-graph capture (see fuel-cuda-backend's

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! bitsandbytes NF4 weight materialization helpers.
 //!
 //! Companion to [`fuel_graph::Tensor::nf4_matmul`] (registered as

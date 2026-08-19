@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The JIT **carrier** — the trigger that turns a region no backend can run
 //! into a [`JitRequest`].
 //!

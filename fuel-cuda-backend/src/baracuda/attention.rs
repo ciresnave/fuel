@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Attention kernels from `baracuda-kernels-sys`: RoPE, SDPA, and
 //! FlashSDPA. Per OP-MATRIX in baracuda alpha.27.
 //!

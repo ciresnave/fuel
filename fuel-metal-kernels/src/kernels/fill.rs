@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 use crate::linear_split;
 use crate::{
     set_params, Buffer, ComputeCommandEncoder, Device, EncoderParam, EncoderProvider, Kernels,

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! MobileCLIP — lazy port.
 //!
 //! Composition wrapper: pairs a [`crate::lazy_fastvit::FastVitModel`]

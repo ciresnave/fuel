@@ -1,4 +1,5 @@
-﻿use super::*;
+﻿// SPDX-License-Identifier: MIT OR Apache-2.0
+use super::*;
 use crate::metal::{create_command_buffer, CommandSemaphore, Commands};
 use core::ffi::c_void;
 use half::{bf16, f16};

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Build-time validators (the `V-FKC-*` battery, FKC §10).
 //!
 //! These run at import time, `Result`-returning, never panicking, never a

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! 4-bit weight-only GEMM families from baracuda alpha.58:
 //!
 //! - **Marlin** (Phase 48, `marlin` feature) — symmetric int4 W4A16 GEMM.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! TrOCR — lazy port.
 //!
 //! Image → ViT encoder (delegated to `lazy_vit::VitModel` with

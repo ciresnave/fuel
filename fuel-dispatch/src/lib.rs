@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! # fuel-dispatch
 //!
 //! Dispatch infrastructure for fuel — extracted from fuel-storage

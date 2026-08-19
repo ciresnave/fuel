@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Mimi ProjectedTransformer — lazy port.
 //!
 //! Pre-LN transformer with rotary positional embeddings, learnable

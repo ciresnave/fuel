@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Host-side sampling helpers over `LazyTensor` logits.
 //!
 //! Realizes the input logits with [`LazyTensor::realize_f32`] and runs

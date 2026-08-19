@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Cost-expression mini-parser + evaluator (FKC §4.4 / adoption plan §2.3,
 //! strategy **(A)** — the AST half only).
 //!

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The opt-in telemetry emission flag — **off by default**.
 //!
 //! No record is ever written unless emission is explicitly enabled. This is the

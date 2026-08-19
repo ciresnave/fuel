@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Broadcast-reverse reductions over baracuda's `reduce_{sum,max}_to_*`
 //! family — the autograd gradient-of-broadcast primitive Fuel calls
 //! `ReduceSumTo` / `ReduceMaxTo`.

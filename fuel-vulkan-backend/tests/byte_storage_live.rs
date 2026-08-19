@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Live-device tests for the Phase 7.5 A4 substrate methods on
 //! [`VulkanBackend`] / [`VulkanStorageBytes`]. Gated `#[ignore]` —
 //! run with:

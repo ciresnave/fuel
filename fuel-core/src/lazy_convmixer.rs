@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! ConvMixer (Trockman & Kolter 2022 "Patches Are All You Need?")
 //! ported to the lazy-graph API.
 //!

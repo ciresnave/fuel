@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Byte-shaped Vulkan storage — Phase 7.5 storage-unification target.
 //!
 //! `VulkanStorageBytes` is the new Vulkan storage type that replaces

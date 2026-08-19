@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // SPLADE — sparse-lexical retrieval model on top of BERT MLM,
 // migrated to the lazy-graph API. Lazy port runs single-sequence
 // (batch == 1); the eager batch-cosine demo uses padded batches +

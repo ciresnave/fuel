@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Decode flash-arm emission — the safe, gated `Op::Branch` that makes the
 //! CUDA `flash_decoding` binding (commit `f693da2c`) reachable in decode.
 //!

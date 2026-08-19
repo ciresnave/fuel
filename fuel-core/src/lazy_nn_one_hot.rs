@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Lazy port of `fuel-nn`'s one-hot encoding helper.
 //!
 //! Given a `U32` [`LazyTensor`] of label indices of arbitrary shape

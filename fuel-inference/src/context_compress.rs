@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Context compression for long conversations.
 //!
 //! When a conversation grows beyond the model's context window the oldest

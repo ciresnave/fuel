@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! FlashAttn — multi-head scaled-dot-product attention with
 //! FlashAttention-shaped kernel hooks. Phase 7.6 step 4 (continued —
 //! eighth op migrated).

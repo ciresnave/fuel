@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Lazy-graph ONNX evaluator — sub-port 1 of `port-onnx-eval.md`.
 //!
 //! Walks an ONNX graph and dispatches each node to the matching

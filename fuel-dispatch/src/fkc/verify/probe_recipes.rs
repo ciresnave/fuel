@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Backend-agnostic probe recipes for primitive kernels.
 //!
 //! Extracted VERBATIM from `seed_vulkan_ledger` (pure move, no behaviour

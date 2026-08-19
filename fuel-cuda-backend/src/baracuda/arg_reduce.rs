@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! ArgMaxDim / ArgMinDim kernels from `baracuda-kernels-sys`.
 //! Alpha.28 added U32 + I32 output variants alongside the existing
 //! I64 default — the wrapper picks the output-dtype variant by trait

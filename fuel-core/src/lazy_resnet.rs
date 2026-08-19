@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! ResNet (He et al. 2015 "Deep Residual Learning for Image
 //! Recognition") ported to the lazy-graph API.
 //!

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! In-place custom operations.
 //!
 //! Traits in this module describe operations that mutate a tensor's storage

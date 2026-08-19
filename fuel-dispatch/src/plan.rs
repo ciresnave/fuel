@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Execution plan — per-realize compilation output, Phase 1.5
 //! reshape of the picker-work arc.
 //!

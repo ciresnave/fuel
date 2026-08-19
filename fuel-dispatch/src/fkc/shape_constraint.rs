@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! §3.5 shape/rank constraint vocabulary — parser + probe-shape solver.
 //!
 //! Structured like `cost_expr.rs`. The `<expr>` grammar inside `dim[i]=<expr>`,

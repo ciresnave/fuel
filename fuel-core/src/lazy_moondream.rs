@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Moondream vision-language model ported to the lazy-graph API.
 //!
 //! Moondream (Vikhyat Korrapati). Lightweight (1.6B param)

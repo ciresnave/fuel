@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! PaddleOCR-VL — lazy-graph port.
 //!
 //! v1 of this revived binary:

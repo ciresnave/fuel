@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Phase C — Op::WriteSliceRotating end-to-end through PipelinedExecutor.
 //!
 //! Validates that a sliding-window KV cache pattern (Mistral / Phi-3

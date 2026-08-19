@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `unroll_scan`: materialize a bounded [`crate::Op::Scan`] into real
 //! primitive nodes on demand. Used as (a) the FKC/Spec-B numeric oracle and
 //! (b) the fallback lowering for a backend without a scan kernel. NOT

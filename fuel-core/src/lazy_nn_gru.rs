@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Lazy GRU — PyTorch-shape multi-layer GRU unrolled at
 //! graph-build time.
 //!

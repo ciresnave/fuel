@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Post-backend-extensions-Phase-2 (2026-06-08): AOCL and oneMKL
 //! kernels are now siblings of the portable CPU conv2d at one
 //! `(Conv2D, [F32×N], BackendId::Cpu)` binding-table key,

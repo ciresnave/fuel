@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Qwen3-VL multimodal composition (vision + text + DeepStack).
 //!
 //! Sub-port 3 of `docs/session-prompts/shipped/port-qwen3-vl.md` —

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Mimi streaming-capable 1-D convolution primitive (sub-port 1 of
 //! port-mimi-conv.md).
 //!

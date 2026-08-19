@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Qwen2 (non-MoE) decoder ported to the lazy-graph API.
 //!
 //! Phase D LLM port. Qwen2 = Mistral + Q/K/V biases + per-layer

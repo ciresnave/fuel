@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `Candidate` — one (kernel, placement, precision, cost) bundle that
 //! the optimizer ranker is considering at a graph decision point.
 //!

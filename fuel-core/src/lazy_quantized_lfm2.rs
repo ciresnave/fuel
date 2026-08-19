@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! GGUF-quantized LFM2 (Liquid Foundation Model 2) ported to the lazy-graph API.
 //!
 //! LFM2 with Q4_0 / Q4_K_M block-quantized Linear weights. The forward

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Host-side tensor storage types.
 //!
 //! The canonical type is [`HostBuffer`] — a dtype-tagged owned `Vec<T>`

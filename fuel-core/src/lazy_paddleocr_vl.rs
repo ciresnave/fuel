@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! PaddleOCR-VL top-level composition: text + vision + tile glue.
 //!
 //! Sub-port 3 of three for PaddleOCR-VL. Bundles the already-shipped

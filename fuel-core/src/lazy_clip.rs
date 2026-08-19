@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! CLIP (Contrastive Language-Image Pre-Training) ported to the
 //! lazy-graph API.
 //!

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Live-CUDA tests for baracuda-kernels-sys-backed Contiguize
 //! (Phase 7.6 step 9c E.3.2.4). Exercises every layout shape the
 //! executor's auto_contiguize pass must handle: transpose (positive

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Live-Vulkan tests for Op::WriteSliceRotating (Phase C).
 //!
 //! Mirrors the WriteSlice live-Vulkan tests in

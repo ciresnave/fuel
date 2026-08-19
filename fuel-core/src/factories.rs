@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Backend factory registry — Step 12 of the backend-agnostic refactor.
 //!
 //! Every backend that fuel-core can drive at runtime declares a single

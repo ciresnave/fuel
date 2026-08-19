@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Kernel-Seam handshake envelope + profile negotiation (Profile v1,
 //! `docs/specs/kernel-seam-interop.md` §3).
 //!

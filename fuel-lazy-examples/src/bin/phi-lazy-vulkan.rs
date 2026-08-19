@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // Vulkan GPU-accelerated Phi-2 runner.
 //
 // Phi-2 (microsoft/phi-2, 2.7B params) uses a different architecture

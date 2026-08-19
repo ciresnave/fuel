@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! SsdChunkScan — Mamba-2's State-Space Duality chunked scan
 //! (forward). Fourth FusedOpRegistry entry added by the re-framed
 //! CPU OpKind coverage plan; completes the Mamba-adjacent trio

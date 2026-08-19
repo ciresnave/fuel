@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! SegFormer — lazy port.
 //!
 //! Hierarchical 4-stage transformer encoder with two heads:

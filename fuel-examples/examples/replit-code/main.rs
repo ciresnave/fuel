@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // Replit-Code (MPT-3B) — lazy-graph port.
 //
 // Forward-only inference using `fuel::lazy_mpt::MptModel`. Builds the

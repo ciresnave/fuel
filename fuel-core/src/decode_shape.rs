@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The identity a held decode plan is baked against.
 //!
 //! A [`DecodeSession`](crate::inference_context::DecodeSession) holds a graph

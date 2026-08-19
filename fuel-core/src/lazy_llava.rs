@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! LLaVA (Large Language and Vision Assistant) ported to the
 //! lazy-graph API.
 //!

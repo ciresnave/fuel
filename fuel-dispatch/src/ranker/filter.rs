@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `AlternativeFilter` trait + `FilterClass` + `FilterContext`.
 //!
 //! Phase 1.1 of the picker-work arc. The trait shape is the

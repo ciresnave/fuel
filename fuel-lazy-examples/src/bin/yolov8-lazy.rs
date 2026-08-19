@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // End-to-end YOLOv8 runner. Phase 6a anchor #7.
 //
 // USAGE

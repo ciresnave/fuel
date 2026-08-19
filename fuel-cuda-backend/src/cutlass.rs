@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! CUTLASS bridge — registers CUTLASS-backed GEMM kernels as alternative
 //! implementations at the `(MatMul, *, Cuda)` and `(FusedLinear, *, Cuda)`
 //! decision points.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Phase 8 Tier 2 lazy-IR oracle: a graph containing `Op::FlashAttn`
 //! realizes to the same output as the composed
 //! `softmax(Q·K^T·scale + mask)·V` graph.

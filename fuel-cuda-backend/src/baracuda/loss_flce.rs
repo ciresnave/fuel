@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Fused Linear Cross-Entropy (FLCE) primitives from baracuda
 //! alpha.58 (Phase 47, Liger-Kernel algorithm port — BSD-2-Clause
 //! credit, clean-room CUDA reimplementation).

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! BLIP image-captioning composition — lazy port.
 //!
 //! Top-level wrapper that composes the BLIP vision encoder

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Progress reporting for model loading.
 //!
 //! Loading a multi-GB model takes seconds-to-minutes depending on disk

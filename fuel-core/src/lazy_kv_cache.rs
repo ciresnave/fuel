@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `LazyKvCache` — functional KV cache backed by [`LazyTensor`].
 //!
 //! Phase B of the eager-`Tensor` retirement program

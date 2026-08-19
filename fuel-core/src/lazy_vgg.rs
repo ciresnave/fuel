@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! VGG-13 / VGG-16 / VGG-19 (Simonyan & Zisserman 2014, "Very
 //! Deep Convolutional Networks for Large-Scale Image
 //! Recognition") ported to the lazy-graph API.

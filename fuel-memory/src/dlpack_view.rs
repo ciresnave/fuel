@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Borrowed, zero-copy DLPack + FDX-sidecar **view** over a Fuel
 //! `(Storage, Layout[, SymEnv])` triple at the kernel-call boundary.
 //!

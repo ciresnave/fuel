@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `LazySequential` — a Vec of boxed [`LazyModule`]s applied left-to-right.
 
 use super::LazyModule;

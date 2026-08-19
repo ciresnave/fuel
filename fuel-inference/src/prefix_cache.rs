@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Hash-based prefix caching for KV state reuse.
 //!
 //! When multiple inference requests share a common prefix (e.g., a system prompt,

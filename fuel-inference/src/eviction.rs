@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Composable KV cache eviction policies.
 //!
 //! This module provides an [`EvictionPolicy`] trait and several implementations for

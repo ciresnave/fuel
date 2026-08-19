@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Phase 6d Track 1 lazy-IR oracle: `LazyTensor::paged_attn` realized
 //! through the CPU executor matches the reference attention_paged_naive.
 //!

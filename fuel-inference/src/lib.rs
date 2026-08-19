@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! # fuel-inference
 //!
 //! **Layer**: Inference  |  **Stability**: experimental

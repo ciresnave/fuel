@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 use crate::kernels::sdpa::SdpaDType;
 
 #[derive(thiserror::Error, Debug)]

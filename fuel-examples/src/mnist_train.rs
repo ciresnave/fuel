@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Lazy-graph MLP training core for the `mnist-training` example.
 //!
 //! A minimal 2-layer MLP (`in → hidden → (ReLU) → out`) trained with AdamW on

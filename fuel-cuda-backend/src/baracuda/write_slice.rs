@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! WriteSlice kernels from `baracuda-kernels-sys` — in-place
 //! rectangular slab assignment. Byte-width-dispatched (b1/b2/b4/b8/
 //! b16) covering all aligned-element dtypes; the nibble variant

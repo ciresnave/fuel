@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! NomicBert (nomic-embed-text-v1.x) ported to the lazy-graph API.
 //!
 //! Nussbaum et al. 2024. A BERT variant designed for text

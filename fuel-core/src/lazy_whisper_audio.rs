@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Whisper audio preprocessing — pure host-side STFT + log-mel.
 //!
 //! Ports `fuel_transformers::models::audio::whisper::audio` to a

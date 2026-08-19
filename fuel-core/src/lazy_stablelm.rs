@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! StableLM decoder ported to the lazy-graph API.
 //!
 //! Phase D LLM port. StableLM (Stability AI) is structurally

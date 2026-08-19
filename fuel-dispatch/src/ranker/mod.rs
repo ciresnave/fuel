@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Optimizer ranker (Picker 1) substrate — Phase 1.1 of the
 //! picker-work arc.
 //!

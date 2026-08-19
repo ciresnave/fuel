@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! x86 AVX SIMD kernels.
 //!
 //! # `unsafe` block form (GAP-176, ratified at `605df851`)

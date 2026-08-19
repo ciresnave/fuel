@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Enumerate every device Fuel's backends can reach and print a
 //! human-readable report plus the equivalence-class summary.
 //!

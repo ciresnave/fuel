@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! SoftmaxLastDimBackward — fused backward helper for the
 //! `SoftmaxLastDim` forward. Phase 7.6 step 4 (continued — first
 //! backward helper migrated; activates the registry's

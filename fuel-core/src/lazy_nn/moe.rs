@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Lazy Mixture-of-Experts router + experts + layer.
 //!
 //! A standard top-K MoE layer over `LazyTensor`. Tokens are routed

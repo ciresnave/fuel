@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! ModernBERT (Warner et al. 2024 "Smarter, Better, Faster,
 //! Longer") ported to the lazy-graph API.
 //!

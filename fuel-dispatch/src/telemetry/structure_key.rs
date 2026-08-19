@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The `StructureKey` join token + the provider seam Fuel CALLS.
 //!
 //! Baracuda owns the structure-key encoding and ships the callable

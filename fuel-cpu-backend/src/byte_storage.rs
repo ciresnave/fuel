@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Byte-shaped CPU storage — Phase 7.5 storage-unification target.
 //!
 //! `CpuStorageBytes` is the new CPU storage type that replaces the

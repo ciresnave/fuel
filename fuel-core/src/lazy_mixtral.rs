@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Mixtral (sparse Mixture-of-Experts) decoder ported to the
 //! lazy-graph API.
 //!

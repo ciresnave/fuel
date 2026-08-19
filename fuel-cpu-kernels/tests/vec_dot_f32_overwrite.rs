@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Born-red for the `vec_dot_f32` target-dependent-semantics defect.
 //!
 //! The SIMD arm OVERWRITES `*c` (`vec_reduce` stores, then the leftover loop

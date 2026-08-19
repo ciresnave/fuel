@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Core vocabulary types for the fuel ML framework.
 //!
 //! This crate contains the foundational types (`DType`, `Shape`, `Layout`, `Error`),

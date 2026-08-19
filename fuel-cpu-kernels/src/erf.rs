@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 #![allow(clippy::excessive_precision)]
 // Code taken from https://github.com/statrs-dev/statrs
 //! Provides the [error](https://en.wikipedia.org/wiki/Error_function) and

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Memory-aware inference scheduler.
 //!
 //! In a serving context, multiple requests compete for a fixed KV cache memory

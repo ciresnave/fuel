@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Best-effort Windows DLL search path extension for oneMKL.
 //!
 //! Mirrors `fuel-aocl-cpu-backend`'s `dll_path` module. The Intel

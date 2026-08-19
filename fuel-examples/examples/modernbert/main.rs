@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // ModernBERT — lazy-graph port (fill-mask demo).
 //
 // The lazy port exposes the encoder backbone (`forward(...)` returns

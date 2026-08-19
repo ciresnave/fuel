@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Chat template support for LLM examples
 //!
 //! This module provides Jinja-based chat template rendering compatible with

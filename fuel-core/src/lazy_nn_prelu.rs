@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Lazy port of `fuel-nn`'s `PReLU` activation.
 //!
 //! `PReLU(x) = max(0, x) + alpha * min(0, x)` — a leaky ReLU

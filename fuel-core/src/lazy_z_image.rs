@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Z-Image text-to-image diffusion model ported to the lazy-graph API.
 //!
 //! Z-Image-Turbo is a Flow Matching T2I generator from Alibaba's

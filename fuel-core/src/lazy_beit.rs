@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! BEiT (BERT pre-training of Image Transformers) ported to the
 //! lazy-graph API.
 //!

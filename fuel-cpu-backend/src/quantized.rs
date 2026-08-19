@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! CPU-side quantized storage adapter — bridges `Box<dyn QuantizedType>`
 //! (per-block-format scalar ops from fuel-quantized) to the
 //! backend-agnostic `DynQuantizedStorage` trait that fuel-core dispatches

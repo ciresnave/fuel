@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Shared test-gate helpers — **a missing prerequisite is a failure, not a skip.**
 //!
 //! # The defect this crate exists to remove (GAP-157)

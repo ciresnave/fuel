@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `VramPressureSelector` — Phase 5.2 runtime selector that demotes
 //! or skips candidates whose backend can't fit the projected output
 //! at dispatch time.

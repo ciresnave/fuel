@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Stable Diffusion 3 / 3.5 triple-CLIP text-encoder composer
 //! ported to the lazy-graph API.
 //!

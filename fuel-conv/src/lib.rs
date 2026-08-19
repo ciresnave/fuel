@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! # fuel-conv
 //!
 //! Reference 2D convolution primitives, deliberately backend-agnostic.

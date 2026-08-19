@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Mimi Encodec — top-level neural audio codec.
 //!
 //! Composition port of `fuel-transformers/src/models/audio/mimi/encodec.rs`.

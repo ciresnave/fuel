@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Device enumeration — the hardware-discovery half of what used to be
 //! `fuel-core`'s `BackendFactory`. Each compiled-in backend contributes a
 //! [`HardwareEnumerator`] that delegates to the backend crate's free

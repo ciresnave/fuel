@@ -1,4 +1,5 @@
-﻿//! # fuel-transformers
+﻿// SPDX-License-Identifier: MIT OR Apache-2.0
+//! # fuel-transformers
 //!
 //! **Layer**: Models — sits above `fuel-nn` and `fuel-core`. Provides published
 //! model architectures. The dependency arrow goes downward only: nothing in

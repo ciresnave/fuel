@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // gte-Qwen embedding model — lazy-graph port.
 //
 // The lazy port runs single-sequence (batch == 1). Each prompt is

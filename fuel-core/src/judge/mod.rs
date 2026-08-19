@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The Judge — Phase 6b's empirical profiler.
 //!
 //! For every `(backend, device)` pair the probe report knows about,

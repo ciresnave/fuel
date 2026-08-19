@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // TinyLlama fine-tuning example — trains only the output head (lm_head).
 //
 // USAGE

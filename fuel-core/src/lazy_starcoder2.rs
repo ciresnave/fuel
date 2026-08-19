@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! StarCoder2 decoder ported to the lazy-graph API.
 //!
 //! Phase D LLM port. StarCoder2 is GQA + RoPE + LayerNorm + plain

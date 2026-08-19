@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Communication abstraction for collective operations — **lazy-only**.
 //!
 //! Defines the [`Communicator`] trait that backends (NCCL, Gloo, etc.) implement

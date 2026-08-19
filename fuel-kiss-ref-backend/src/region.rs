@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Composed-**region** reference / differential over the mapped floor.
 //!
 //! Translates a Fuel recipe region ([`PatternNode`]) into a kiss-ref §6.13

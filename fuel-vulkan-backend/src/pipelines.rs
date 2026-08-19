@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Compute pipeline management for the precompiled SPIR-V shaders
 //! shipped in `fuel-graph-executor`.
 

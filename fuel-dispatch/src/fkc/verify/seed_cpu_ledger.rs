@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Task 4.5b — empirical seeding of the CPU verification ledger.
 //!
 //! Background: on 2026-07-03 (commit `18502e77`) ~18 fused-op CPU

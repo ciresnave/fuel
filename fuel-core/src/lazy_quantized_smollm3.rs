@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! GGUF-quantized SmolLM3 ported to the lazy-graph API.
 //!
 //! SmolLM3 with Q4_0 block-quantized Linear weights. The forward path is

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Vulkan [`KernelInvoker`] scaffold (Task 4.5). Mirrors
 //! [`super::invoker_cpu::CpuInvoker`] / [`super::invoker_cuda::CudaInvoker`]
 //! but stages `HostTensor` bytes through a Vulkan device: H2D via

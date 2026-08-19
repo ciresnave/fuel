@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Mimi — top-level Encodec model.
 //!
 //! Composes the four lazy Mimi building blocks shipped earlier

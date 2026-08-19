@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! MobileNetV4 — lazy port.
 //!
 //! Pipeline: image → stem (3×3 stride-2 conv-BN-act) → 5 stages

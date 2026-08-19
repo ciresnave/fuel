@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Device enumeration for the CUDA backend.
 //!
 //! Walks `baracuda_driver::Device::count()`, queries each device's name

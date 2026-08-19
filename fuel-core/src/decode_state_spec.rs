@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Per-layer decode-state description (GAP-029 / GAP-166).
 //!
 //! # Why this exists

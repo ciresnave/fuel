@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! GAP-036 increment 2 — **clause IDs on the FKC spec PROSE, derived by
 //! parsing the spec, bidirectionally gated.**
 //!

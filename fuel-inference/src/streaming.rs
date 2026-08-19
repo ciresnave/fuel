@@ -1,4 +1,5 @@
-﻿//! StreamingLLM: Sink-token + recent-window KV cache management.
+﻿// SPDX-License-Identifier: MIT OR Apache-2.0
+//! StreamingLLM: Sink-token + recent-window KV cache management.
 //!
 //! When generating very long sequences that exceed the model's training context window,
 //! standard KV caches either truncate (losing early context) or OOM. StreamingLLM

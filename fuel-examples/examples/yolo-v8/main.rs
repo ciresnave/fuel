@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! YOLOv8 object detection — lazy-graph port.
 //!
 //! The eager `fuel_transformers`/`fuel_nn` YOLOv8 + Pose implementation

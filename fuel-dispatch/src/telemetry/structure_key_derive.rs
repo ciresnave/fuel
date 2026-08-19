@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Fuel's INDEPENDENT `structure_key` derivation — the second implementation
 //! for the two-implementation freeze-gate (KISS-CLASSIFY §6.6/§6.7).
 //!

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Logit Processing and Sampling
 //!
 //! Functionality for modeling sampling strategies and logits processing in text generation

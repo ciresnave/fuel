@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Mimi resampler — lazy port.
 //!
 //! Thin wrappers around a strided causal `Conv1d` (for downsampling)

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Compile a contract's parsed cost AST into the live ranking cost path (§2.3).
 //! The parser/evaluator (`cost_expr.rs`) is complete; this only adds wiring.
 use crate::fkc::cost_expr::{CompiledCostExpr, CostEvalError, eval};

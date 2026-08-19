@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Reader for the vendored KISS conformance corpus (`kiss-oracle-vectors-v1`).
 //!
 //! This is the DATA-READER half of the kiss-ref verdict seam. It parses the

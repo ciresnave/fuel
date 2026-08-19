@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Mamba-2 decoder ported to the lazy-graph API.
 //!
 //! Phase D LLM port. Mamba-2 generalizes Mamba's selective-scan

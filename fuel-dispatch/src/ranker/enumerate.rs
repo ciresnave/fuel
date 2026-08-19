@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Candidate enumeration — walk the binding table for each
 //! `(BackendId, DeviceLocation)` placement the caller hands in and
 //! produce an [`AlternativeSet`] populated with one [`Candidate`]

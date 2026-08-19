@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! MNIST MLP training example — Fuel's lazy graph + autograd.
 //!
 //! Trains a 2-layer MLP (`784 → 100 → (ReLU) → 10`) with AdamW on Fuel's lazy

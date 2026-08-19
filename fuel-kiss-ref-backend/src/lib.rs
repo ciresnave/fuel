@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! # fuel-kiss-ref-backend
 //!
 //! CPU, never-panic adapter exposing [`kiss_ref_core`] as Fuel's primitive-floor

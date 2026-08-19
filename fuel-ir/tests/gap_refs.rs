@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! GAP-141 Increment 1 — CI guard: every `todo!()` / `unimplemented!()` on a
 //! non-test path must carry a `// GAP(GAP-NNN)` registry reference, so an
 //! incomplete-work marker cannot silently drop off the schedule. This is the

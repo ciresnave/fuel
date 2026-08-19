@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! CSM (Conversational Speech Model) — lazy port.
 //!
 //! CSM is Sesame's open speech-token model with a two-stage

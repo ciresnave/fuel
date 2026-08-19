@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Backend trait re-exports (legacy module path).
 //!
 //! After step 8 of the backend-agnostic refactor (2026-04-30), the static

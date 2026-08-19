@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // Print GGUF metadata keys and tensor names. Helps debug loader issues.
 //
 // Usage: cargo run --release --bin gguf-inspect -- path/to/model.gguf

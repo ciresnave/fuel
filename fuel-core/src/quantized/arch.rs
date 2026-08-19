@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Model architecture detection from GGUF metadata or tensor names.
 //!
 //! GGUF files carry a `general.architecture` metadata key which is the

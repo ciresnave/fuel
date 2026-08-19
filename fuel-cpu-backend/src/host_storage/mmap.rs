@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Memory-mapped [`HostStorage`] — zero-copy view over a file on disk.
 //!
 //! Primary use case: loading large weight tensors (safetensors, GGUF) without

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Bridge from fuel-core's user-facing `Tensor::realize_*` API to
 //! fuel-storage's `PipelinedExecutor` (Phase 7.6 step 9c, sub-phases
 //! E.1 + E.2).

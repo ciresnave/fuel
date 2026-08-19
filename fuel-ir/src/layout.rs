@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Tensor memory layout: shape, strides, and start offset.
 //!
 //! A [`Layout`] describes how a tensor's elements are stored in memory.
