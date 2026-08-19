@@ -20,9 +20,11 @@ use std::sync::Arc;
 /// (mean=0.5, std=0.5 per channel). Returns a flat row-major Vec<f32>
 /// laid out as CHW for a single 384x384 RGB image.
 pub fn load_image384_beit_norm<P: AsRef<std::path::Path>>(p: P) -> anyhow::Result<Vec<f32>> {
-    let img = image::ImageReader::open(p)?
-        .decode()?
-        .resize_to_fill(384, 384, image::imageops::FilterType::Triangle);
+    let img = image::ImageReader::open(p)?.decode()?.resize_to_fill(
+        384,
+        384,
+        image::imageops::FilterType::Triangle,
+    );
     let img = img.to_rgb8();
     let raw = img.into_raw();
     // raw is HWC u8 — convert to CHW f32 normalized with mean=std=0.5.
@@ -81,8 +83,8 @@ pub fn main() -> anyhow::Result<()> {
     let cfg = BeitConfig::vit_base();
     let st = unsafe { MmapedSafetensors::multi(&[&model_file]) }
         .map_err(|e| E::msg(format!("mmap: {e}")))?;
-    let weights = BeitWeights::load_from_mmapped(&st, &cfg)
-        .map_err(|e| E::msg(format!("weights: {e}")))?;
+    let weights =
+        BeitWeights::load_from_mmapped(&st, &cfg).map_err(|e| E::msg(format!("weights: {e}")))?;
     let model = BeitModel::new(cfg, weights);
     println!("model built");
 

@@ -47,11 +47,15 @@ pub trait BinaryOpCore {
 // Blanket impls.
 
 impl<O: BinaryOpCore> BinaryOp<f32> for O {
-    fn apply(a: f32, b: f32) -> f32 { <O as BinaryOpCore>::f32(a, b) }
+    fn apply(a: f32, b: f32) -> f32 {
+        <O as BinaryOpCore>::f32(a, b)
+    }
 }
 
 impl<O: BinaryOpCore> BinaryOp<f64> for O {
-    fn apply(a: f64, b: f64) -> f64 { <O as BinaryOpCore>::f64(a, b) }
+    fn apply(a: f64, b: f64) -> f64 {
+        <O as BinaryOpCore>::f64(a, b)
+    }
 }
 
 impl<O: BinaryOpCore> BinaryOp<half::bf16> for O {
@@ -113,29 +117,45 @@ where
 /// Elementwise addition.
 pub struct Add;
 impl BinaryOpCore for Add {
-    fn f32(a: f32, b: f32) -> f32 { a + b }
-    fn f64(a: f64, b: f64) -> f64 { a + b }
+    fn f32(a: f32, b: f32) -> f32 {
+        a + b
+    }
+    fn f64(a: f64, b: f64) -> f64 {
+        a + b
+    }
 }
 
 /// Elementwise subtraction.
 pub struct Sub;
 impl BinaryOpCore for Sub {
-    fn f32(a: f32, b: f32) -> f32 { a - b }
-    fn f64(a: f64, b: f64) -> f64 { a - b }
+    fn f32(a: f32, b: f32) -> f32 {
+        a - b
+    }
+    fn f64(a: f64, b: f64) -> f64 {
+        a - b
+    }
 }
 
 /// Elementwise multiplication.
 pub struct Mul;
 impl BinaryOpCore for Mul {
-    fn f32(a: f32, b: f32) -> f32 { a * b }
-    fn f64(a: f64, b: f64) -> f64 { a * b }
+    fn f32(a: f32, b: f32) -> f32 {
+        a * b
+    }
+    fn f64(a: f64, b: f64) -> f64 {
+        a * b
+    }
 }
 
 /// Elementwise division. Division by zero yields IEEE-754 inf/NaN.
 pub struct Div;
 impl BinaryOpCore for Div {
-    fn f32(a: f32, b: f32) -> f32 { a / b }
-    fn f64(a: f64, b: f64) -> f64 { a / b }
+    fn f32(a: f32, b: f32) -> f32 {
+        a / b
+    }
+    fn f64(a: f64, b: f64) -> f64 {
+        a / b
+    }
 }
 
 /// Elementwise maximum. NaN-propagating (torch parity —
@@ -148,10 +168,22 @@ impl BinaryOpCore for Div {
 pub struct Maximum;
 impl BinaryOpCore for Maximum {
     fn f32(a: f32, b: f32) -> f32 {
-        if a.is_nan() { a } else if b.is_nan() { b } else { a.max(b) }
+        if a.is_nan() {
+            a
+        } else if b.is_nan() {
+            b
+        } else {
+            a.max(b)
+        }
     }
     fn f64(a: f64, b: f64) -> f64 {
-        if a.is_nan() { a } else if b.is_nan() { b } else { a.max(b) }
+        if a.is_nan() {
+            a
+        } else if b.is_nan() {
+            b
+        } else {
+            a.max(b)
+        }
     }
 }
 
@@ -160,10 +192,22 @@ impl BinaryOpCore for Maximum {
 pub struct Minimum;
 impl BinaryOpCore for Minimum {
     fn f32(a: f32, b: f32) -> f32 {
-        if a.is_nan() { a } else if b.is_nan() { b } else { a.min(b) }
+        if a.is_nan() {
+            a
+        } else if b.is_nan() {
+            b
+        } else {
+            a.min(b)
+        }
     }
     fn f64(a: f64, b: f64) -> f64 {
-        if a.is_nan() { a } else if b.is_nan() { b } else { a.min(b) }
+        if a.is_nan() {
+            a
+        } else if b.is_nan() {
+            b
+        } else {
+            a.min(b)
+        }
     }
 }
 
@@ -171,16 +215,24 @@ impl BinaryOpCore for Minimum {
 /// NaN follows IEEE-754 (e.g. `pow(-2, 0.5) = NaN`).
 pub struct Pow;
 impl BinaryOpCore for Pow {
-    fn f32(a: f32, b: f32) -> f32 { a.powf(b) }
-    fn f64(a: f64, b: f64) -> f64 { a.powf(b) }
+    fn f32(a: f32, b: f32) -> f32 {
+        a.powf(b)
+    }
+    fn f64(a: f64, b: f64) -> f64 {
+        a.powf(b)
+    }
 }
 
 /// Elementwise remainder, PyTorch convention: `a - floor(a/b) * b`.
 /// Sign follows the divisor (not the dividend, as `%` would).
 pub struct Rem;
 impl BinaryOpCore for Rem {
-    fn f32(a: f32, b: f32) -> f32 { a - (a / b).floor() * b }
-    fn f64(a: f64, b: f64) -> f64 { a - (a / b).floor() * b }
+    fn f32(a: f32, b: f32) -> f32 {
+        a - (a / b).floor() * b
+    }
+    fn f64(a: f64, b: f64) -> f64 {
+        a - (a / b).floor() * b
+    }
 }
 
 // =============================================================================

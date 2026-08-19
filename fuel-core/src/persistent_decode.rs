@@ -44,9 +44,7 @@
 //! its own token data exactly as before, and this driver never inspects which
 //! path it got.
 
-use crate::inference_context::{
-    DecodeSession, DecodeTokenData, InferenceContext, KvCache, KvSlot,
-};
+use crate::inference_context::{DecodeSession, DecodeTokenData, InferenceContext, KvCache, KvSlot};
 use crate::lazy::LazyTensor;
 use crate::{Device, Result};
 use fuel_ir::{DType, Shape};
@@ -306,7 +304,10 @@ impl MaskPlan {
     /// prefix. What `LlamaModel` and every other non-varying family use, and
     /// byte-identical to the pre-GAP-029 single-mask decode path.
     pub fn dense(n_layers: usize) -> Self {
-        Self { windows: vec![None], per_layer: vec![0; n_layers] }
+        Self {
+            windows: vec![None],
+            per_layer: vec![0; n_layers],
+        }
     }
 
     /// Validated at construction, per the build-time-validation rule: an
@@ -314,9 +315,9 @@ impl MaskPlan {
     /// the layer loop, or — worse — as a silently mis-masked layer.
     pub fn new(windows: Vec<Option<usize>>, per_layer: Vec<usize>) -> Result<Self> {
         if windows.is_empty() {
-            return Err(fuel_ir::Error::Msg(
-                "MaskPlan: needs at least one variant".to_string(),
-            ).bt());
+            return Err(
+                fuel_ir::Error::Msg("MaskPlan: needs at least one variant".to_string()).bt(),
+            );
         }
         if let Some((li, v)) = per_layer
             .iter()
@@ -327,7 +328,8 @@ impl MaskPlan {
                 "MaskPlan: layer {li} selects mask variant {v} but only {} \
                  variant(s) are defined",
                 windows.len(),
-            )).bt());
+            ))
+            .bt());
         }
         Ok(Self { windows, per_layer })
     }
@@ -349,7 +351,10 @@ impl MaskPlan {
             return Self::dense(n_layers);
         }
         if split == n_layers {
-            return Self { windows: vec![Some(window)], per_layer: vec![0; n_layers] };
+            return Self {
+                windows: vec![Some(window)],
+                per_layer: vec![0; n_layers],
+            };
         }
         Self {
             windows: vec![Some(window), None],
@@ -374,13 +379,23 @@ impl MaskPlan {
         window: usize,
         uses_window: impl Fn(usize) -> bool,
     ) -> Self {
-        let per_layer: Vec<usize> =
-            (0..n_layers).map(|i| usize::from(!uses_window(i))).collect();
-        match (per_layer.iter().any(|v| *v == 0), per_layer.iter().any(|v| *v == 1)) {
-            (true, false) => Self { windows: vec![Some(window)], per_layer: vec![0; n_layers] },
+        let per_layer: Vec<usize> = (0..n_layers)
+            .map(|i| usize::from(!uses_window(i)))
+            .collect();
+        match (
+            per_layer.iter().any(|v| *v == 0),
+            per_layer.iter().any(|v| *v == 1),
+        ) {
+            (true, false) => Self {
+                windows: vec![Some(window)],
+                per_layer: vec![0; n_layers],
+            },
             (false, true) => Self::dense(n_layers),
             // Mixed (or zero layers): keep both variants, windowed first.
-            _ => Self { windows: vec![Some(window), None], per_layer },
+            _ => Self {
+                windows: vec![Some(window), None],
+                per_layer,
+            },
         }
     }
 
@@ -457,7 +472,10 @@ pub struct RopePlan {
 impl RopePlan {
     /// The single-base plan — what every family except Gemma3 uses.
     pub fn single(base: f64, n_layers: usize) -> Self {
-        Self { bases: vec![base], per_layer: vec![0; n_layers] }
+        Self {
+            bases: vec![base],
+            per_layer: vec![0; n_layers],
+        }
     }
 
     /// Validated at construction, like [`MaskPlan::new`]: an out-of-range
@@ -465,16 +483,19 @@ impl RopePlan {
     /// layer silently roped at the wrong frequency.
     pub fn new(bases: Vec<f64>, per_layer: Vec<usize>) -> Result<Self> {
         if bases.is_empty() {
-            return Err(fuel_ir::Error::Msg(
-                "RopePlan: needs at least one base".to_string(),
-            ).bt());
+            return Err(fuel_ir::Error::Msg("RopePlan: needs at least one base".to_string()).bt());
         }
-        if let Some((li, v)) = per_layer.iter().enumerate().find(|(_, v)| **v >= bases.len()) {
+        if let Some((li, v)) = per_layer
+            .iter()
+            .enumerate()
+            .find(|(_, v)| **v >= bases.len())
+        {
             return Err(fuel_ir::Error::Msg(format!(
                 "RopePlan: layer {li} selects RoPE variant {v} but only {} base(s) \
                  are defined",
                 bases.len(),
-            )).bt());
+            ))
+            .bt());
         }
         Ok(Self { bases, per_layer })
     }
@@ -504,12 +525,17 @@ impl RopePlan {
         if base_when_true == base_when_false {
             return Self::single(base_when_true, n_layers);
         }
-        let per_layer: Vec<usize> =
-            (0..n_layers).map(|i| usize::from(!uses_first(i))).collect();
-        match (per_layer.iter().any(|v| *v == 0), per_layer.iter().any(|v| *v == 1)) {
+        let per_layer: Vec<usize> = (0..n_layers).map(|i| usize::from(!uses_first(i))).collect();
+        match (
+            per_layer.iter().any(|v| *v == 0),
+            per_layer.iter().any(|v| *v == 1),
+        ) {
             (true, false) => Self::single(base_when_true, n_layers),
             (false, true) => Self::single(base_when_false, n_layers),
-            _ => Self { bases: vec![base_when_true, base_when_false], per_layer },
+            _ => Self {
+                bases: vec![base_when_true, base_when_false],
+                per_layer,
+            },
         }
     }
 
@@ -582,10 +608,15 @@ pub(crate) fn build_decode_mask_variants(
     for window in &plan.windows {
         match window {
             None => out.extend_from_slice(&crate::lazy::build_decode_causal_mask(
-                cached_len, seq, max_seq_len,
+                cached_len,
+                seq,
+                max_seq_len,
             )),
             Some(window) => out.extend_from_slice(&crate::lazy::build_decode_causal_mask_windowed(
-                cached_len, seq, max_seq_len, *window,
+                cached_len,
+                seq,
+                max_seq_len,
+                *window,
             )),
         }
     }
@@ -693,15 +724,17 @@ pub(crate) fn compute_decode_token_host<M: DecodeBackbone + ?Sized>(
     let dims = model.decode_dims();
     let seq = tokens.len();
     let (rope_cos, rope_sin) = build_rope_variants(
-        &model.decode_rope_plan(), dims.rope_width, cached_len, seq, rope_inv_freq,
+        &model.decode_rope_plan(),
+        dims.rope_width,
+        cached_len,
+        seq,
+        rope_inv_freq,
     );
     DecodeTokenHost {
         token_ids: tokens.to_vec(),
         rope_cos,
         rope_sin,
-        mask: build_decode_mask_variants(
-            &model.decode_mask_plan(), cached_len, seq, max_seq_len,
-        ),
+        mask: build_decode_mask_variants(&model.decode_mask_plan(), cached_len, seq, max_seq_len),
     }
 }
 
@@ -751,34 +784,38 @@ fn build_decode_graph<M: DecodeBackbone + ?Sized>(
     let cached_len = cache.cached_len;
 
     if seq == 0 {
-        return Err(fuel_ir::Error::Msg(format!(
-            "{family}::{entry}: zero tokens",
-        )).bt());
+        return Err(fuel_ir::Error::Msg(format!("{family}::{entry}: zero tokens",)).bt());
     }
     if cache.n_layers() != dims.n_layers {
         return Err(fuel_ir::Error::Msg(format!(
             "{family}::{entry}: cache n_layers {} != model n_layers {}",
-            cache.n_layers(), dims.n_layers,
-        )).bt());
+            cache.n_layers(),
+            dims.n_layers,
+        ))
+        .bt());
     }
     if plan.n_layers() != dims.n_layers {
         return Err(fuel_ir::Error::Msg(format!(
             "{family}::{entry}: mask plan covers {} layer(s) but the model has {}",
-            plan.n_layers(), dims.n_layers,
-        )).bt());
+            plan.n_layers(),
+            dims.n_layers,
+        ))
+        .bt());
     }
     let max_seq_len = cache.max_seq_len.ok_or_else(|| {
         fuel_ir::Error::Msg(format!(
             "{family}::{entry}: cache was constructed via with_dims (no \
              pre-allocated buffers); call KvCache::with_capacity(...) for the \
              WriteSlice path",
-        )).bt()
+        ))
+        .bt()
     })?;
     if cached_len + seq > max_seq_len {
         return Err(fuel_ir::Error::Msg(format!(
             "{family}::{entry}: cached_len ({cached_len}) + seq ({seq}) > \
              max_seq_len ({max_seq_len})",
-        )).bt());
+        ))
+        .bt());
     }
     let cache_dtype = cache.dtype.unwrap_or(DType::F32);
     // Behaviour preserved deliberately: the pre-GAP-029 D2 path did NOT check
@@ -793,7 +830,8 @@ fn build_decode_graph<M: DecodeBackbone + ?Sized>(
             "{family}::{entry}: cache shape (n_kv_heads={}, head_dim={}) \
              disagrees with model config (n_kv_heads={}, head_dim={})",
             cache.n_kv_heads, cache.head_dim, dims.n_kv_heads, dims.head_dim,
-        )).bt());
+        ))
+        .bt());
     }
 
     let host = compute_decode_token_host(model, cached_len, tokens, max_seq_len, rope_inv_freq);
@@ -805,9 +843,7 @@ fn build_decode_graph<M: DecodeBackbone + ?Sized>(
         &Device::cpu(),
     );
     let token_ids = match consts {
-        DataConsts::Baked => {
-            embed.const_u32_like(host.token_ids.clone(), Shape::from_dims(&[seq]))
-        }
+        DataConsts::Baked => embed.const_u32_like(host.token_ids.clone(), Shape::from_dims(&[seq])),
         DataConsts::Rebindable => {
             embed.const_placeholder_like(Shape::from_dims(&[seq]), DType::U32)
         }
@@ -834,8 +870,10 @@ fn build_decode_graph<M: DecodeBackbone + ?Sized>(
     if rope_plan.n_layers() != dims.n_layers {
         return Err(fuel_ir::Error::Msg(format!(
             "{family}::{entry}: RoPE plan covers {} layer(s) but the model has {}",
-            rope_plan.n_layers(), dims.n_layers,
-        )).bt());
+            rope_plan.n_layers(),
+            dims.n_layers,
+        ))
+        .bt());
     }
     // A caller-supplied inv_freq replaces the base for every variant, so a
     // multi-base family cannot express per-variant scaling. Refused rather than
@@ -846,7 +884,8 @@ fn build_decode_graph<M: DecodeBackbone + ?Sized>(
              model declares {} RoPE variants; per-variant scaled frequencies are not \
              expressible yet",
             rope_plan.n_variants(),
-        )).bt());
+        ))
+        .bt());
     }
     let n_rope = rope_plan.n_variants();
     let rope_shape = if n_rope == 1 {
@@ -907,8 +946,8 @@ fn build_decode_graph<M: DecodeBackbone + ?Sized>(
     // serve). D2 uses the device-resident `Op::WriteSliceDoff` offset where the
     // binding exists (CPU/CUDA) so the step is CUDA-graph-capturable, and falls
     // back to SymEnv on Vulkan. The two produce bit-identical KV writes.
-    let use_device_offset = consts == DataConsts::Rebindable
-        && (ctx.device().is_cpu() || ctx.device().is_cuda());
+    let use_device_offset =
+        consts == DataConsts::Rebindable && (ctx.device().is_cpu() || ctx.device().is_cuda());
     let offset_tensor = if use_device_offset {
         Some(h.const_placeholder_like(Shape::from_dims(&[]), DType::I64))
     } else {
@@ -923,9 +962,7 @@ fn build_decode_graph<M: DecodeBackbone + ?Sized>(
     let attended_len_sym = fuel_ir::SymId(1);
 
     // ---- Per-layer: bind the cache K + V Arcs, run the family's block ----
-    let cache_shape = Shape::from_dims(
-        &[batch, dims.n_kv_heads, max_seq_len, dims.head_dim],
-    );
+    let cache_shape = Shape::from_dims(&[batch, dims.n_kv_heads, max_seq_len, dims.head_dim]);
     let mut kv_nodes: Vec<(fuel_graph::NodeId, fuel_graph::NodeId)> =
         Vec::with_capacity(dims.n_layers);
     for li in 0..dims.n_layers {
@@ -933,12 +970,11 @@ fn build_decode_graph<M: DecodeBackbone + ?Sized>(
             fuel_ir::Error::Msg(format!(
                 "{family}::{entry}: cache layer {li} has no K slot \
                  (with_capacity should have populated all layers)",
-            )).bt()
+            ))
+            .bt()
         })?;
         let v_arc = cache.slot_storage(li, KvSlot::V).ok_or_else(|| {
-            fuel_ir::Error::Msg(format!(
-                "{family}::{entry}: cache layer {li} has no V slot",
-            )).bt()
+            fuel_ir::Error::Msg(format!("{family}::{entry}: cache layer {li} has no V slot",)).bt()
         })?;
         let k_cache_node = h.const_placeholder_like(cache_shape.clone(), cache_dtype);
         let v_cache_node = h.const_placeholder_like(cache_shape.clone(), cache_dtype);
@@ -948,18 +984,21 @@ fn build_decode_graph<M: DecodeBackbone + ?Sized>(
         ctx.insert(v_id, v_arc);
         kv_nodes.push((k_id, v_id));
 
-        h = model.decode_apply_layer(li, &DecodeLayerInputs {
-            x: &h,
-            k_cache: &k_cache_node,
-            v_cache: &v_cache_node,
-            cached_len_sym,
-            attended_len_sym,
-            offset: offset_tensor.as_ref(),
-            rope_cos: &rope_cos_v[rope_plan.variant_for_layer(li)],
-            rope_sin: &rope_sin_v[rope_plan.variant_for_layer(li)],
-            mask: &masks[plan.variant_for_layer(li)],
-            attn_window: plan.window_for_layer(li),
-        })?;
+        h = model.decode_apply_layer(
+            li,
+            &DecodeLayerInputs {
+                x: &h,
+                k_cache: &k_cache_node,
+                v_cache: &v_cache_node,
+                cached_len_sym,
+                attended_len_sym,
+                offset: offset_tensor.as_ref(),
+                rope_cos: &rope_cos_v[rope_plan.variant_for_layer(li)],
+                rope_sin: &rope_sin_v[rope_plan.variant_for_layer(li)],
+                mask: &masks[plan.variant_for_layer(li)],
+                attn_window: plan.window_for_layer(li),
+            },
+        )?;
     }
 
     // ---- Final norm + LM head ----
@@ -986,7 +1025,10 @@ fn build_decode_graph<M: DecodeBackbone + ?Sized>(
             mask_node,
             offset_node,
             first_token: upload_decode_token_data(
-                ctx.device(), &host, cache_dtype, use_device_offset.then_some(cached_len),
+                ctx.device(),
+                &host,
+                cache_dtype,
+                use_device_offset.then_some(cached_len),
             )?,
         }),
     };
@@ -1012,12 +1054,15 @@ pub(crate) fn upload_decode_token_data(
     let upload = crate::pipelined_bridge::upload_host_buffer_to_device;
     let mask = match cache_dtype {
         DType::F32 => fuel_ir::HostBuffer::F32(host.mask.clone()),
-        DType::BF16 => fuel_ir::HostBuffer::BF16(
-            host.mask.iter().map(|&v| half::bf16::from_f32(v)).collect(),
-        ),
-        other => return Err(fuel_ir::Error::Msg(format!(
-            "decode token data: unsupported cache dtype {other:?} (expected F32 or BF16)",
-        )).bt()),
+        DType::BF16 => {
+            fuel_ir::HostBuffer::BF16(host.mask.iter().map(|&v| half::bf16::from_f32(v)).collect())
+        }
+        other => {
+            return Err(fuel_ir::Error::Msg(format!(
+                "decode token data: unsupported cache dtype {other:?} (expected F32 or BF16)",
+            ))
+            .bt());
+        }
     };
     Ok(DecodeTokenData {
         token_ids: upload(device, fuel_ir::HostBuffer::U32(host.token_ids.clone()))?,
@@ -1044,7 +1089,13 @@ pub fn forward_with_kv_context<M: DecodeBackbone + ?Sized>(
 ) -> Result<Vec<f32>> {
     let seq = tokens.len();
     let built = build_decode_graph(
-        model, DataConsts::Baked, tokens, &*cache, ctx, return_all_positions, rope_inv_freq,
+        model,
+        DataConsts::Baked,
+        tokens,
+        &*cache,
+        ctx,
+        return_all_positions,
+        rope_inv_freq,
     )?;
     let cached_len = cache.cached_len;
 
@@ -1093,21 +1144,33 @@ pub fn build_and_realize_first_decode_token<M: DecodeBackbone + ?Sized>(
     let cache_dtype = cache.dtype.unwrap_or(DType::F32);
     let dims = model.decode_dims();
     let built = build_decode_graph(
-        model, DataConsts::Rebindable, tokens, &*cache, ctx, false, rope_inv_freq,
+        model,
+        DataConsts::Rebindable,
+        tokens,
+        &*cache,
+        ctx,
+        false,
+        rope_inv_freq,
     )?;
     let max_seq_len = cache.max_seq_len.expect("checked in build_decode_graph");
-    let nodes = built.rebindable.expect("Rebindable mode yields rebindable nodes");
+    let nodes = built
+        .rebindable
+        .expect("Rebindable mode yields rebindable nodes");
     let logits_node = built.logits_root.inner.id();
     let graph = built.logits_root.inner.graph().clone();
 
     // Bind the per-token DATA into ctx so the FIRST realize's const-cache walk
     // resolves them (they are placeholders, absent from graph.storage_map). The
     // KV Arcs went in during the build.
-    ctx.insert(nodes.token_ids_node, Arc::clone(&nodes.first_token.token_ids));
+    ctx.insert(
+        nodes.token_ids_node,
+        Arc::clone(&nodes.first_token.token_ids),
+    );
     ctx.insert(nodes.rope_cos_node, Arc::clone(&nodes.first_token.rope_cos));
     ctx.insert(nodes.rope_sin_node, Arc::clone(&nodes.first_token.rope_sin));
     ctx.insert(nodes.mask_node, Arc::clone(&nodes.first_token.mask));
-    if let (Some(off_node), Some(off_arc)) = (nodes.offset_node, nodes.first_token.offset.as_ref()) {
+    if let (Some(off_node), Some(off_arc)) = (nodes.offset_node, nodes.first_token.offset.as_ref())
+    {
         ctx.insert(off_node, Arc::clone(off_arc));
     }
 
@@ -1203,16 +1266,22 @@ pub fn forward_with_kv_context_persistent<M: DecodeBackbone + ?Sized>(
     }
 
     crate::lazy::refresh_decode_session(
-        session, ctx, seq, max_seq_len, cache_dtype, n_layers,
-        model.decode_shape_key(), cache,
+        session,
+        ctx,
+        seq,
+        max_seq_len,
+        cache_dtype,
+        n_layers,
+        model.decode_shape_key(),
+        cache,
         || {},
         drop_decode_session,
     );
 
     match session.as_ref() {
-        None => build_and_realize_first_decode_token(
-            model, tokens, cache, ctx, session, rope_inv_freq,
-        ),
+        None => {
+            build_and_realize_first_decode_token(model, tokens, cache, ctx, session, rope_inv_freq)
+        }
         Some(_) => {
             match rebind_and_realize_prebuilt(model, tokens, cache, &*ctx, &*session, rope_inv_freq)
             {
@@ -1318,7 +1387,11 @@ mod mask_plan_tests {
             [(0, 1, 8, 2), (3, 1, 8, 4), (0, 5, 8, 1), (2, 3, 16, 3)]
         {
             let plan = MaskPlan::dense(n_layers);
-            assert_eq!(plan.n_variants(), 1, "the dense plan must be single-variant");
+            assert_eq!(
+                plan.n_variants(),
+                1,
+                "the dense plan must be single-variant"
+            );
             assert_eq!(
                 build_decode_mask_variants(&plan, cached_len, seq, max_seq_len),
                 crate::lazy::build_decode_causal_mask(cached_len, seq, max_seq_len),
@@ -1360,7 +1433,8 @@ mod mask_plan_tests {
         for split in [4, 9] {
             let all_windowed = MaskPlan::split_window(4, split, 8);
             assert_eq!(
-                all_windowed.n_variants(), 1,
+                all_windowed.n_variants(),
+                1,
                 "split {split} covers every layer — one windowed variant, no slice",
             );
             for li in 0..4 {
@@ -1374,10 +1448,16 @@ mod mask_plan_tests {
             // records. (Written first with `cached_len = 5` against a window of
             // 8, which is exactly that mistake; the assertion caught it.)
             let (cached_len, seq, max_seq_len, window) = (10, 1, 12, 8);
-            assert!(cached_len > window, "non-vacuity: the window must bite here");
+            assert!(
+                cached_len > window,
+                "non-vacuity: the window must bite here"
+            );
             assert_ne!(
                 build_decode_mask_variants(
-                    &MaskPlan::split_window(4, split, window), cached_len, seq, max_seq_len,
+                    &MaskPlan::split_window(4, split, window),
+                    cached_len,
+                    seq,
+                    max_seq_len,
                 ),
                 crate::lazy::build_decode_causal_mask(cached_len, seq, max_seq_len),
                 "collapsing to one variant must not collapse to the DENSE one",
@@ -1399,6 +1479,9 @@ mod mask_plan_tests {
             msg.contains("layer 1") && msg.contains("variant 1"),
             "the refusal must name the offending layer and variant, got: {msg}",
         );
-        assert!(MaskPlan::new(vec![], vec![]).is_err(), "a plan needs a variant");
+        assert!(
+            MaskPlan::new(vec![], vec![]).is_err(),
+            "a plan needs a variant"
+        );
     }
 }

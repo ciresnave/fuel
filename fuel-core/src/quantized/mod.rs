@@ -26,8 +26,8 @@
 pub use fuel_backend_contract::quantized::{DynQuantizedStorage, QuantizedDeviceKernels};
 pub use fuel_ir::quantized::GgmlDType;
 pub use fuel_quantized::{
-    BlockQ2K, BlockQ3K, BlockQ4K, BlockQ4_0, BlockQ4_1, BlockQ5K, BlockQ5_0, BlockQ5_1, BlockQ6K,
-    BlockQ8K, BlockQ8_0, BlockQ8_1, GgmlType, QuantizedType,
+    BlockQ2K, BlockQ3K, BlockQ4_0, BlockQ4_1, BlockQ4K, BlockQ5_0, BlockQ5_1, BlockQ5K, BlockQ6K,
+    BlockQ8_0, BlockQ8_1, BlockQ8K, GgmlType, QuantizedType,
 };
 
 pub mod arch;

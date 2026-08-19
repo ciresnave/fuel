@@ -96,7 +96,9 @@ pub fn jit_request_for_unplaceable_fused(
     let mut key_dtypes: Vec<fuel_ir::DType> =
         node.inputs.iter().map(|&i| graph.node(i).dtype).collect();
     key_dtypes.push(node.dtype);
-    if let Some(op_kind) = crate::runtime_fused_kernels::static_fused_id_to_binding_table_op_kind(fused_id) {
+    if let Some(op_kind) =
+        crate::runtime_fused_kernels::static_fused_id_to_binding_table_op_kind(fused_id)
+    {
         if table.lookup(op_kind, &key_dtypes, backend).is_ok() {
             return None; // already runnable here — the seam is for gaps
         }
@@ -113,7 +115,12 @@ pub fn jit_request_for_unplaceable_fused(
     }
     operands.push(operand_desc(graph, id)?);
 
-    Some(JitRequest { region, operands, arch, budget })
+    Some(JitRequest {
+        region,
+        operands,
+        arch,
+        budget,
+    })
 }
 
 /// One node's shape/strides/dtype as an [`OperandDesc`]. `None` if the dtype has
@@ -141,7 +148,12 @@ mod tests {
     use fuel_ir::{DType, Shape};
 
     fn leaf(g: &mut Graph, dims: &[usize], dtype: DType) -> NodeId {
-        g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(dims), dtype })
+        g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(dims),
+            dtype,
+        })
     }
 
     /// A well-formed `PagedAttn` node: F32 data operands, **U32 index operands**.
@@ -151,8 +163,11 @@ mod tests {
         let vc = leaf(g, &[32, 4, 4, 4], DType::F32);
         let bt = leaf(g, &[1, 8], DType::U32);
         let cl = leaf(g, &[1], DType::U32);
-        let params =
-            FusedOpParams::PagedAttn { softmax_scale: 0.5, block_size: 4, softcap: None };
+        let params = FusedOpParams::PagedAttn {
+            softmax_scale: 0.5,
+            block_size: 4,
+            softcap: None,
+        };
         let id = g.push(Node {
             op: Op::Fused(FusedOps::PAGED_ATTN, params.clone()),
             inputs: vec![q, kc, vc, bt, cl],
@@ -186,11 +201,17 @@ mod tests {
             BackendId::Cuda,
             &table,
             ArchSku::Sm89,
-            JitBudget { max_compile_ms: 1_000 },
+            JitBudget {
+                max_compile_ms: 1_000,
+            },
         )
         .expect("a fused op with no kernel here yields a request");
 
-        assert_eq!(req.operands.len(), 6, "5 inputs + 1 output, bind order then output");
+        assert_eq!(
+            req.operands.len(),
+            6,
+            "5 inputs + 1 output, bind order then output"
+        );
         assert_eq!(req.operands[0].dtype, ElementKind::F32, "q is F32");
         assert_eq!(
             req.operands[3].dtype,
@@ -198,7 +219,11 @@ mod tests {
             "block_table must be U32 — widening it to I32 makes every operand \
              uniform and turns a real MixedDtype decline into a false accept",
         );
-        assert_eq!(req.operands[4].dtype, ElementKind::U32, "context_lens must be U32");
+        assert_eq!(
+            req.operands[4].dtype,
+            ElementKind::U32,
+            "context_lens must be U32"
+        );
         assert_eq!(req.operands[5].dtype, ElementKind::F32, "output is F32");
         assert!(
             matches!(req.region, fuel_graph::jit::PatternNode::Op { .. }),
@@ -218,8 +243,14 @@ mod tests {
         let table = KernelBindingTable::new();
         assert!(
             jit_request_for_unplaceable_fused(
-                &g, c, BackendId::Cuda, &table, ArchSku::Sm89,
-                JitBudget { max_compile_ms: 1_000 },
+                &g,
+                c,
+                BackendId::Cuda,
+                &table,
+                ArchSku::Sm89,
+                JitBudget {
+                    max_compile_ms: 1_000
+                },
             )
             .is_none(),
             "only fused ops have a region to hand over",
@@ -243,7 +274,11 @@ mod tests {
         let id = g.push(Node {
             op: Op::Fused(
                 FusedOps::PAGED_ATTN,
-                FusedOpParams::PagedAttn { softmax_scale: 0.5, block_size: 4, softcap: None },
+                FusedOpParams::PagedAttn {
+                    softmax_scale: 0.5,
+                    block_size: 4,
+                    softcap: None,
+                },
             ),
             inputs: vec![q, kc, vc, bt, cl],
             shape: Shape::from_dims(&[1, 4, 1, 4]),
@@ -252,8 +287,14 @@ mod tests {
         let table = KernelBindingTable::new();
         assert!(
             jit_request_for_unplaceable_fused(
-                &g, id, BackendId::Cuda, &table, ArchSku::Sm89,
-                JitBudget { max_compile_ms: 1_000 },
+                &g,
+                id,
+                BackendId::Cuda,
+                &table,
+                ArchSku::Sm89,
+                JitBudget {
+                    max_compile_ms: 1_000
+                },
             )
             .is_none(),
             "an unspellable operand dtype must decline, not approximate",

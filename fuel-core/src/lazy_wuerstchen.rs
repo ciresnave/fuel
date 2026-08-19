@@ -116,7 +116,7 @@ impl WuerstchenConfig {
 #[derive(Debug, Clone)]
 pub struct GrnWeights {
     pub gamma: Arc<[f32]>,
-    pub beta:  Arc<[f32]>,
+    pub beta: Arc<[f32]>,
 }
 
 /// Wuerstchen ResBlock (used by `PriorModel` and inside `DiffNeXt`):
@@ -131,7 +131,7 @@ pub struct ResBlockWeights {
     /// fc1: `[4C, C]`, stored as `[C, 4C]` for matmul.
     pub fc1_w: Arc<[f32]>,
     pub fc1_b: Arc<[f32]>,
-    pub grn:   GrnWeights,
+    pub grn: GrnWeights,
     /// fc2: `[C, 4C]`, stored as `[4C, C]`.
     pub fc2_w: Arc<[f32]>,
     pub fc2_b: Arc<[f32]>,
@@ -174,8 +174,8 @@ pub struct AttnBlockWeights {
 /// One `(ResBlock, TimestepBlock, AttnBlock)` triple from `PriorModel`.
 #[derive(Debug, Clone)]
 pub struct PriorBlockWeights {
-    pub res:  ResBlockWeights,
-    pub ts:   TimestepBlockWeights,
+    pub res: ResBlockWeights,
+    pub ts: TimestepBlockWeights,
     pub attn: AttnBlockWeights,
 }
 
@@ -201,8 +201,8 @@ pub struct PriorWeights {
 /// cross-attention.
 #[derive(Debug, Clone)]
 pub struct DiffNextSubBlockWeights {
-    pub res:  ResBlockWeights,
-    pub ts:   TimestepBlockWeights,
+    pub res: ResBlockWeights,
+    pub ts: TimestepBlockWeights,
     pub attn: Option<AttnBlockWeights>,
 }
 
@@ -228,7 +228,7 @@ pub struct DiffNextWeights {
     pub embed_w: Arc<[f32]>,
     pub embed_b: Arc<[f32]>,
     pub down_levels: Vec<DiffNextLevelWeights>,
-    pub up_levels:   Vec<DiffNextLevelWeights>,
+    pub up_levels: Vec<DiffNextLevelWeights>,
     /// clf 1×1 conv to `[2 * c_out * patch², C_HIDDEN[0], 1, 1]`.
     pub clf_w: Arc<[f32]>,
     pub clf_b: Arc<[f32]>,
@@ -280,7 +280,13 @@ pub struct PaellaUpLevelWeights {
 
 /// `(1, C, H, W)` LayerNorm over the channel axis with no affine.
 /// Matches eager `WLayerNorm`: permute NHWC, LN(last dim), permute back.
-fn w_layer_norm(x: &LazyTensor, c: usize, h: usize, w: usize, eps: f64) -> crate::Result<LazyTensor> {
+fn w_layer_norm(
+    x: &LazyTensor,
+    c: usize,
+    h: usize,
+    w: usize,
+    eps: f64,
+) -> crate::Result<LazyTensor> {
     let x_nhwc = x.permute([0, 2, 3, 1_usize])?;
     let x_flat = x_nhwc.reshape(Shape::from_dims(&[1, h * w, c]))?;
     let normed = x_flat.layer_norm_last_dim(eps)?;
@@ -339,15 +345,15 @@ pub fn global_response_norm(
     w: usize,
 ) -> crate::Result<LazyTensor> {
     // sum over (h, w) per channel.
-    let sq = x.mul(x)?;  // [1, C, H, W]
-    let agg = sq.reduce_sum_to(Shape::from_dims(&[1, c, 1, 1])).sqrt();  // [1, C, 1, 1]
+    let sq = x.mul(x)?; // [1, C, H, W]
+    let agg = sq.reduce_sum_to(Shape::from_dims(&[1, c, 1, 1])).sqrt(); // [1, C, 1, 1]
     // mean over channels via reduce_sum + scalar mul.
     let agg_sum = agg.reduce_sum_to(Shape::from_dims(&[1, 1, 1, 1]));
-    let mean_c = agg_sum.mul_scalar(1.0_f64 / c as f64);  // [1, 1, 1, 1]
+    let mean_c = agg_sum.mul_scalar(1.0_f64 / c as f64); // [1, 1, 1, 1]
     let denom = mean_c
         .add_scalar(1e-6_f64)
         .broadcast_to(Shape::from_dims(&[1, c, 1, 1]))?;
-    let stand = agg.div(&denom)?;  // [1, C, 1, 1]
+    let stand = agg.div(&denom)?; // [1, C, 1, 1]
     let stand_b = stand.broadcast_to(Shape::from_dims(&[1, c, h, w]))?;
     let g = x
         .const_f32_like(gamma.clone(), Shape::from_dims(&[c]))
@@ -394,7 +400,7 @@ fn apply_res_block(
     let conv = xs.conv2d(&dw_w, Some(&dw_b), (1, 1), (k / 2, k / 2), c)?;
     let norm = w_layer_norm(&conv, c, h, w, eps)?;
     // Channelwise MLP. Permute to NHWC for the linears.
-    let nhwc = norm.permute([0, 2, 3, 1_usize])?;  // [1, H, W, C]
+    let nhwc = norm.permute([0, 2, 3, 1_usize])?; // [1, H, W, C]
     let flat = nhwc.reshape(Shape::from_dims(&[1, h * w, c]))?;
     let fc1 = linear(&flat, &rw.fc1_w, Some(&rw.fc1_b), c, 4 * c, 1, h * w)?.gelu();
     // GRN expects [1, C, H, W]; bridge: reshape fc1 to that.
@@ -437,9 +443,17 @@ fn apply_res_block_stage_b(
         None => norm,
     };
     let merged_nhwc = merged.permute([0, 2, 3, 1_usize])?;
-    let merged_flat = merged_nhwc
-        .reshape(Shape::from_dims(&[1, h * w, c + c_skip]))?;
-    let fc1 = linear(&merged_flat, &rw.fc1_w, Some(&rw.fc1_b), c + c_skip, 4 * c, 1, h * w)?.gelu();
+    let merged_flat = merged_nhwc.reshape(Shape::from_dims(&[1, h * w, c + c_skip]))?;
+    let fc1 = linear(
+        &merged_flat,
+        &rw.fc1_w,
+        Some(&rw.fc1_b),
+        c + c_skip,
+        4 * c,
+        1,
+        h * w,
+    )?
+    .gelu();
     let fc1_chw = fc1
         .reshape(Shape::from_dims(&[1, h, w, 4 * c]))?
         .permute([0, 3, 1, 2_usize])?;
@@ -458,7 +472,7 @@ fn apply_res_block_stage_b(
 fn apply_timestep_block(
     x: &LazyTensor,
     tw: &TimestepBlockWeights,
-    t: &LazyTensor,  // [1, 1, c_timestep]
+    t: &LazyTensor, // [1, 1, c_timestep]
     h: usize,
     w: usize,
 ) -> crate::Result<LazyTensor> {
@@ -481,7 +495,7 @@ fn apply_timestep_block(
 fn apply_attn_block(
     x: &LazyTensor,
     aw: &AttnBlockWeights,
-    kv_raw: &LazyTensor,    // [1, S_kv, c_cond]
+    kv_raw: &LazyTensor, // [1, S_kv, c_cond]
     s_kv: usize,
     h: usize,
     w: usize,
@@ -496,8 +510,12 @@ fn apply_attn_block(
     // kv: silu(kv_raw) → kv_mapper linear.
     let kv = linear(
         &kv_raw.silu(),
-        &aw.kv_mapper_w, Some(&aw.kv_mapper_b),
-        aw.c_cond, c, 1, s_kv,
+        &aw.kv_mapper_w,
+        Some(&aw.kv_mapper_b),
+        aw.c_cond,
+        c,
+        1,
+        s_kv,
     )?;
     // norm_xs as [1, H*W, C].
     let norm_seq = norm
@@ -511,8 +529,8 @@ fn apply_attn_block(
     };
     // Q from norm_xs; K/V from kv_full.
     let q = linear(&norm_seq, &aw.to_q_w, Some(&aw.to_q_b), c, c, 1, h * w)?;
-    let k = linear(&kv_full,  &aw.to_k_w, Some(&aw.to_k_b), c, c, 1, s_total)?;
-    let v = linear(&kv_full,  &aw.to_v_w, Some(&aw.to_v_b), c, c, 1, s_total)?;
+    let k = linear(&kv_full, &aw.to_k_w, Some(&aw.to_k_b), c, c, 1, s_total)?;
+    let v = linear(&kv_full, &aw.to_v_w, Some(&aw.to_v_b), c, c, 1, s_total)?;
     // Reshape to heads. [1, S, C] → [1, S, H, D] → [1, H, S, D].
     let q_h = q
         .reshape(Shape::from_dims(&[1, h * w, heads, d_head]))?
@@ -523,19 +541,17 @@ fn apply_attn_block(
     let v_h = v
         .reshape(Shape::from_dims(&[1, s_total, heads, d_head]))?
         .permute([0, 2, 1, 3_usize])?;
-    let k_t = k_h.permute([0, 1, 3, 2_usize])?;  // [1, H, D, S]
+    let k_t = k_h.permute([0, 1, 3, 2_usize])?; // [1, H, D, S]
     let scale = 1.0_f64 / (d_head as f64).sqrt();
-    let scores = q_h.matmul(&k_t)?.mul_scalar(scale);  // [1, H, hw, S]
+    let scores = q_h.matmul(&k_t)?.mul_scalar(scale); // [1, H, hw, S]
     let probs = scores.softmax_last_dim()?;
-    let out_h = probs.matmul(&v_h)?;  // [1, H, hw, D]
+    let out_h = probs.matmul(&v_h)?; // [1, H, hw, D]
     let out = out_h
         .permute([0, 2, 1, 3_usize])?
         .reshape(Shape::from_dims(&[1, h * w, c]))?;
     let proj = linear(&out, &aw.to_out_w, Some(&aw.to_out_b), c, c, 1, h * w)?;
     // Back to [1, C, H, W] and residual-add with original x.
-    let proj_chw = proj
-        .transpose()?
-        .reshape(Shape::from_dims(&[1, c, h, w]))?;
+    let proj_chw = proj.transpose()?.reshape(Shape::from_dims(&[1, c, h, w]))?;
     x.add(&proj_chw)
 }
 
@@ -571,7 +587,7 @@ fn r_embedding_host(r: f32, c_r: usize) -> Vec<f32> {
 /// Wuerstchen Stage C — text → low-resolution latent denoising model.
 #[derive(Debug, Clone)]
 pub struct PriorModel {
-    pub config:  WuerstchenConfig,
+    pub config: WuerstchenConfig,
     pub weights: PriorWeights,
 }
 
@@ -597,22 +613,37 @@ impl PriorModel {
         // x_in for the final shift+scale.
         let x_in = xs.clone();
         // projection: 1×1 conv `c_in → c`.
-        let proj_w = xs.const_f32_like(self.weights.projection_w.clone(),
-            Shape::from_dims(&[c, c_in, 1, 1]));
-        let proj_b = xs.const_f32_like(self.weights.projection_b.clone(),
-            Shape::from_dims(&[c]));
+        let proj_w = xs.const_f32_like(
+            self.weights.projection_w.clone(),
+            Shape::from_dims(&[c, c_in, 1, 1]),
+        );
+        let proj_b = xs.const_f32_like(self.weights.projection_b.clone(), Shape::from_dims(&[c]));
         let mut x = xs.conv2d(&proj_w, Some(&proj_b), (1, 1), (0, 0), 1)?;
 
         // Cond-mapper: linear → leaky_relu(0.2) → linear.
-        let c1 = linear(c_embed, &self.weights.cond1_w, Some(&self.weights.cond1_b),
-            c_cond, c, 1, s_kv)?;
+        let c1 = linear(
+            c_embed,
+            &self.weights.cond1_w,
+            Some(&self.weights.cond1_b),
+            c_cond,
+            c,
+            1,
+            s_kv,
+        )?;
         // leaky_relu(0.2): max(x, 0.2 * x). Compose via where_cond.
         let c1_neg = c1.mul_scalar(0.2_f64);
         let zero = c1.const_f32_like(vec![0.0_f32; c1.elem_count()], c1.shape());
         let mask = c1.gt(&zero)?;
         let c1_act = mask.where_cond(&c1, &c1_neg)?;
-        let c_embed_mapped = linear(&c1_act, &self.weights.cond2_w, Some(&self.weights.cond2_b),
-            c, c, 1, s_kv)?;
+        let c_embed_mapped = linear(
+            &c1_act,
+            &self.weights.cond2_w,
+            Some(&self.weights.cond2_b),
+            c,
+            c,
+            1,
+            s_kv,
+        )?;
 
         // r_embed.
         let r_vec = r_embedding_host(r, cfg.c_r);
@@ -628,10 +659,14 @@ impl PriorModel {
 
         // out_ln + out_conv → chunk(2, dim=1) → (x_in - a0) / (|a1 - 1| + eps).
         let normed = w_layer_norm(&x, c, h, w, eps)?;
-        let out_w = xs.const_f32_like(self.weights.out_conv_w.clone(),
-            Shape::from_dims(&[c_in * 2, c, 1, 1]));
-        let out_b = xs.const_f32_like(self.weights.out_conv_b.clone(),
-            Shape::from_dims(&[c_in * 2]));
+        let out_w = xs.const_f32_like(
+            self.weights.out_conv_w.clone(),
+            Shape::from_dims(&[c_in * 2, c, 1, 1]),
+        );
+        let out_b = xs.const_f32_like(
+            self.weights.out_conv_b.clone(),
+            Shape::from_dims(&[c_in * 2]),
+        );
         let out = normed.conv2d(&out_w, Some(&out_b), (1, 1), (0, 0), 1)?;
         let ab = out.chunk(2, 1_usize)?;
         let a0 = &ab[0];
@@ -647,7 +682,7 @@ impl PriorModel {
 /// Wuerstchen Stage B — DiffNeXt UNet that denoises VQ latents.
 #[derive(Debug, Clone)]
 pub struct DiffNextModel {
-    pub config:  WuerstchenConfig,
+    pub config: WuerstchenConfig,
     pub weights: DiffNextWeights,
 }
 
@@ -672,7 +707,8 @@ impl DiffNextModel {
         if levels.is_empty() {
             return Err(crate::Error::Msg(
                 "DiffNextModel.forward: diffnext_c_hidden is empty".into(),
-            ).bt());
+            )
+            .bt());
         }
         if h_in % p != 0 || w_in % p != 0 {
             return Err(crate::Error::Msg(format!(
@@ -685,8 +721,15 @@ impl DiffNextModel {
 
         // clip mapper: linear + LN-no-affine.
         let s_kv = clip.dim(1_usize)?;
-        let c_embed = linear(clip, &self.weights.clip_mapper_w, Some(&self.weights.clip_mapper_b),
-            cfg.clip_embed, c_cond, 1, s_kv)?;
+        let c_embed = linear(
+            clip,
+            &self.weights.clip_mapper_w,
+            Some(&self.weights.clip_mapper_b),
+            cfg.clip_embed,
+            c_cond,
+            1,
+            s_kv,
+        )?;
         let c_embed = ln_last_no_affine(&c_embed, eps)?;
 
         // r_embed.
@@ -700,10 +743,11 @@ impl DiffNextModel {
         let mut w = w_in / p;
         let xu = pixel_unshuffle(xs, c_in, h_in, w_in, p)?;
         // embedding 1×1 conv: c_in*p² → C_HIDDEN[0].
-        let emb_w = xs.const_f32_like(self.weights.embed_w.clone(),
-            Shape::from_dims(&[levels[0], c_in * p * p, 1, 1]));
-        let emb_b = xs.const_f32_like(self.weights.embed_b.clone(),
-            Shape::from_dims(&[levels[0]]));
+        let emb_w = xs.const_f32_like(
+            self.weights.embed_w.clone(),
+            Shape::from_dims(&[levels[0], c_in * p * p, 1, 1]),
+        );
+        let emb_b = xs.const_f32_like(self.weights.embed_b.clone(), Shape::from_dims(&[levels[0]]));
         let mut x = xu.conv2d(&emb_w, Some(&emb_b), (1, 1), (0, 0), 1)?;
         x = w_layer_norm(&x, levels[0], h, w, eps)?;
 
@@ -775,10 +819,14 @@ impl DiffNextModel {
         // --- classifier ---
         let last_h = levels[0];
         x = w_layer_norm(&x, last_h, h, w, eps)?;
-        let clf_w = xs.const_f32_like(self.weights.clf_w.clone(),
-            Shape::from_dims(&[2 * c_out * p * p, last_h, 1, 1]));
-        let clf_b = xs.const_f32_like(self.weights.clf_b.clone(),
-            Shape::from_dims(&[2 * c_out * p * p]));
+        let clf_w = xs.const_f32_like(
+            self.weights.clf_w.clone(),
+            Shape::from_dims(&[2 * c_out * p * p, last_h, 1, 1]),
+        );
+        let clf_b = xs.const_f32_like(
+            self.weights.clf_b.clone(),
+            Shape::from_dims(&[2 * c_out * p * p]),
+        );
         let out = x.conv2d(&clf_w, Some(&clf_b), (1, 1), (0, 0), 1)?;
         // pixel_shuffle by p: [1, 2*c_out*p², H, W] → [1, 2*c_out, H*p, W*p].
         let out = pixel_shuffle(&out, 2 * c_out * p * p, h, w, p)?;
@@ -797,7 +845,13 @@ impl DiffNextModel {
 /// Pixel-unshuffle (a.k.a. space-to-depth) by factor `p`. Input
 /// `[1, C, H, W]` → output `[1, C*p², H/p, W/p]`. Implemented as a
 /// reshape+permute composition.
-fn pixel_unshuffle(x: &LazyTensor, c: usize, h: usize, w: usize, p: usize) -> crate::Result<LazyTensor> {
+fn pixel_unshuffle(
+    x: &LazyTensor,
+    c: usize,
+    h: usize,
+    w: usize,
+    p: usize,
+) -> crate::Result<LazyTensor> {
     let h_out = h / p;
     let w_out = w / p;
     let r = x.reshape(Shape::from_dims(&[1, c, h_out, p, w_out, p]))?;
@@ -808,7 +862,13 @@ fn pixel_unshuffle(x: &LazyTensor, c: usize, h: usize, w: usize, p: usize) -> cr
 
 /// Pixel-shuffle (depth-to-space) by factor `p`. Input `[1, C, H, W]`
 /// → output `[1, C/p², H*p, W*p]`. Inverse of `pixel_unshuffle`.
-fn pixel_shuffle(x: &LazyTensor, c: usize, h: usize, w: usize, p: usize) -> crate::Result<LazyTensor> {
+fn pixel_shuffle(
+    x: &LazyTensor,
+    c: usize,
+    h: usize,
+    w: usize,
+    p: usize,
+) -> crate::Result<LazyTensor> {
     let c_out = c / (p * p);
     let r = x.reshape(Shape::from_dims(&[1, c_out, p, p, h, w]))?;
     // permute to [1, C_out, H, p, W, p].
@@ -822,7 +882,7 @@ fn pixel_shuffle(x: &LazyTensor, c: usize, h: usize, w: usize, p: usize) -> crat
 /// (inference goes Stage C → B → A-decode).
 #[derive(Debug, Clone)]
 pub struct PaellaVqModel {
-    pub config:  WuerstchenConfig,
+    pub config: WuerstchenConfig,
     pub weights: PaellaVqWeights,
 }
 
@@ -837,21 +897,25 @@ impl PaellaVqModel {
         if dims.len() != 4 {
             return Err(crate::Error::Msg(format!(
                 "PaellaVqModel.decode: latents must be rank 4 [1, C, H, W], got {dims:?}",
-            )).bt());
+            ))
+            .bt());
         }
         if dims[1] != cfg.paella_latent_channels {
             return Err(crate::Error::Msg(format!(
                 "PaellaVqModel.decode: latent channel mismatch (have {}, cfg {})",
                 dims[1], cfg.paella_latent_channels,
-            )).bt());
+            ))
+            .bt());
         }
         let (mut h, mut w) = (dims[2], dims[3]);
         // up_in 1×1 conv.
         let levels = &cfg.paella_levels;
-        let in_w = latents.const_f32_like(self.weights.up_in_w.clone(),
-            Shape::from_dims(&[levels[0], cfg.paella_latent_channels, 1, 1]));
-        let in_b = latents.const_f32_like(self.weights.up_in_b.clone(),
-            Shape::from_dims(&[levels[0]]));
+        let in_w = latents.const_f32_like(
+            self.weights.up_in_w.clone(),
+            Shape::from_dims(&[levels[0], cfg.paella_latent_channels, 1, 1]),
+        );
+        let in_b =
+            latents.const_f32_like(self.weights.up_in_b.clone(), Shape::from_dims(&[levels[0]]));
         let mut x = latents.conv2d(&in_w, Some(&in_b), (1, 1), (0, 0), 1)?;
         for (i, lw) in self.weights.up_levels.iter().enumerate() {
             let c_lvl = levels[i];
@@ -860,8 +924,8 @@ impl PaellaVqModel {
             }
             if let (Some(uw), Some(ub)) = (&lw.upsample_w, &lw.upsample_b) {
                 let next = levels[i + 1];
-                let uw_t = latents.const_f32_like(uw.clone(),
-                    Shape::from_dims(&[c_lvl, next, 4, 4]));
+                let uw_t =
+                    latents.const_f32_like(uw.clone(), Shape::from_dims(&[c_lvl, next, 4, 4]));
                 let x_t = x.conv_transpose2d(&uw_t, (2, 2), (1, 1), (0, 0), (1, 1), 1)?;
                 let new_h = h * 2;
                 let new_w = w * 2;
@@ -875,12 +939,15 @@ impl PaellaVqModel {
             }
         }
         // out_block: 1×1 conv → pixel_shuffle by 2.
-        let last_c = *levels.last().ok_or_else(|| fuel_ir::Error::Msg("wuerstchen: levels must not be empty".to_string()))?;
+        let last_c = *levels.last().ok_or_else(|| {
+            fuel_ir::Error::Msg("wuerstchen: levels must not be empty".to_string())
+        })?;
         let oc = cfg.paella_out_channels;
-        let ow = latents.const_f32_like(self.weights.out_w.clone(),
-            Shape::from_dims(&[oc * 4, last_c, 1, 1]));
-        let ob = latents.const_f32_like(self.weights.out_b.clone(),
-            Shape::from_dims(&[oc * 4]));
+        let ow = latents.const_f32_like(
+            self.weights.out_w.clone(),
+            Shape::from_dims(&[oc * 4, last_c, 1, 1]),
+        );
+        let ob = latents.const_f32_like(self.weights.out_b.clone(), Shape::from_dims(&[oc * 4]));
         let out = x.conv2d(&ow, Some(&ob), (1, 1), (0, 0), 1)?;
         let out = pixel_shuffle(&out, oc * 4, h, w, 2)?;
         // Final tanh: bring into [-1, 1] (matches Paella's reference output range).
@@ -914,8 +981,7 @@ fn apply_paella_mixing_res(
 
     // Branch 2: norm2 → affine(1+g3, g4) → channelwise MLP (linear,
     //           GELU, linear) → scale by g5, residual.
-    let temp = w_layer_norm(&xs, c, h, w, eps)?
-        .affine(1.0 + g[3] as f64, g[4] as f64);
+    let temp = w_layer_norm(&xs, c, h, w, eps)?.affine(1.0 + g[3] as f64, g[4] as f64);
     let nhwc = temp.permute([0, 2, 3, 1_usize])?;
     let flat = nhwc.reshape(Shape::from_dims(&[1, h * w, c]))?;
     let embed_dim = bw.fc1_b.len();
@@ -929,7 +995,13 @@ fn apply_paella_mixing_res(
 
 /// Replication-pad 2D by `pad` on every side. Input `[1, C, H, W]` →
 /// output `[1, C, H + 2*pad, W + 2*pad]`.
-fn replicate_pad_2d(x: &LazyTensor, c: usize, h: usize, w: usize, pad: usize) -> crate::Result<LazyTensor> {
+fn replicate_pad_2d(
+    x: &LazyTensor,
+    c: usize,
+    h: usize,
+    w: usize,
+    pad: usize,
+) -> crate::Result<LazyTensor> {
     if pad == 0 {
         return Ok(x.clone());
     }
@@ -938,7 +1010,9 @@ fn replicate_pad_2d(x: &LazyTensor, c: usize, h: usize, w: usize, pad: usize) ->
     let right_col = x.narrow(3_usize, w - 1, 1)?;
     let left_block = left_col.repeat(Shape::from_dims(&[1, 1, 1, pad]))?;
     let right_block = right_col.repeat(Shape::from_dims(&[1, 1, 1, pad]))?;
-    let padded_w = left_block.concat(x, 3_usize)?.concat(&right_block, 3_usize)?;
+    let padded_w = left_block
+        .concat(x, 3_usize)?
+        .concat(&right_block, 3_usize)?;
     // Then pad along H (dim 2).
     let h2 = padded_w.dim(2_usize)?;
     let _ = (h, w);
@@ -946,7 +1020,9 @@ fn replicate_pad_2d(x: &LazyTensor, c: usize, h: usize, w: usize, pad: usize) ->
     let bot_row = padded_w.narrow(2_usize, h2 - 1, 1)?;
     let top_block = top_row.repeat(Shape::from_dims(&[1, 1, pad, 1]))?;
     let bot_block = bot_row.repeat(Shape::from_dims(&[1, 1, pad, 1]))?;
-    top_block.concat(&padded_w, 2_usize)?.concat(&bot_block, 2_usize)
+    top_block
+        .concat(&padded_w, 2_usize)?
+        .concat(&bot_block, 2_usize)
 }
 
 // ---- End-to-end generate ---------------------------------------------------
@@ -1025,7 +1101,9 @@ fn small_normal_vec(n: usize, seed: u64) -> Vec<f32> {
     let mut s = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
     let mut out = Vec::with_capacity(n);
     for _ in 0..n {
-        s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         let v = (((s >> 33) as u32 as f32) / (u32::MAX as f32) - 0.5) * 0.05;
         out.push(v);
     }
@@ -1034,15 +1112,21 @@ fn small_normal_vec(n: usize, seed: u64) -> Vec<f32> {
 
 // ---- Test fixtures ---------------------------------------------------------
 
-fn arc_zeros(n: usize) -> Arc<[f32]> { Arc::from(vec![0.0_f32; n]) }
-fn arc_ones(n: usize) -> Arc<[f32]> { Arc::from(vec![1.0_f32; n]) }
+fn arc_zeros(n: usize) -> Arc<[f32]> {
+    Arc::from(vec![0.0_f32; n])
+}
+fn arc_ones(n: usize) -> Arc<[f32]> {
+    Arc::from(vec![1.0_f32; n])
+}
 
 fn small_normal(n: usize, seed: u64) -> Arc<[f32]> {
     // Deterministic pseudo-random small values for shape/finite tests.
     let mut s = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
     let mut out = Vec::with_capacity(n);
     for _ in 0..n {
-        s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         let v = (((s >> 33) as u32 as f32) / (u32::MAX as f32) - 0.5) * 0.05;
         out.push(v);
     }
@@ -1050,7 +1134,10 @@ fn small_normal(n: usize, seed: u64) -> Arc<[f32]> {
 }
 
 fn make_grn(c: usize) -> GrnWeights {
-    GrnWeights { gamma: arc_ones(c), beta: arc_zeros(c) }
+    GrnWeights {
+        gamma: arc_ones(c),
+        beta: arc_zeros(c),
+    }
 }
 
 fn make_res_block(c: usize, c_skip: usize, ksize: usize, seed: u64) -> ResBlockWeights {
@@ -1062,7 +1149,9 @@ fn make_res_block(c: usize, c_skip: usize, ksize: usize, seed: u64) -> ResBlockW
         grn: make_grn(4 * c),
         fc2_w: small_normal(4 * c * c, seed + 2),
         fc2_b: arc_zeros(c),
-        c, c_skip, ksize,
+        c,
+        c_skip,
+        ksize,
     }
 }
 
@@ -1070,7 +1159,8 @@ fn make_ts_block(c: usize, c_timestep: usize, seed: u64) -> TimestepBlockWeights
     TimestepBlockWeights {
         w: small_normal(c_timestep * 2 * c, seed),
         b: arc_zeros(2 * c),
-        c, c_timestep,
+        c,
+        c_timestep,
     }
 }
 
@@ -1086,7 +1176,9 @@ fn make_attn_block(c: usize, c_cond: usize, heads: usize, seed: u64) -> AttnBloc
         to_v_b: arc_zeros(c),
         to_out_w: small_normal(c * c, seed + 4),
         to_out_b: arc_zeros(c),
-        c, c_cond, heads,
+        c,
+        c_cond,
+        heads,
     }
 }
 
@@ -1100,7 +1192,7 @@ pub fn make_prior_weights(cfg: &WuerstchenConfig) -> PriorWeights {
         let base = 100 + (i as u64) * 100;
         blocks.push(PriorBlockWeights {
             res: make_res_block(c, 0, 3, base),
-            ts:  make_ts_block(c, cfg.c_r, base + 10),
+            ts: make_ts_block(c, cfg.c_r, base + 10),
             attn: make_attn_block(c, c, cfg.prior_nhead, base + 20),
         });
     }
@@ -1132,19 +1224,35 @@ pub fn make_diffnext_weights(cfg: &WuerstchenConfig) -> DiffNextWeights {
             let seed = 1000 + (i as u64) * 100 + (j as u64) * 10;
             subs.push(DiffNextSubBlockWeights {
                 res: make_res_block(c_lvl, 0, 3, seed),
-                ts:  make_ts_block(c_lvl, cfg.c_r, seed + 1),
+                ts: make_ts_block(c_lvl, cfg.c_r, seed + 1),
                 attn: if cfg.diffnext_nhead[i] > 0 {
-                    Some(make_attn_block(c_lvl, c_cond, cfg.diffnext_nhead[i], seed + 2))
-                } else { None },
+                    Some(make_attn_block(
+                        c_lvl,
+                        c_cond,
+                        cfg.diffnext_nhead[i],
+                        seed + 2,
+                    ))
+                } else {
+                    None
+                },
             });
         }
         let (down_w, down_b) = if i > 0 {
             let prev = levels[i - 1];
-            (Some(small_normal(c_lvl * prev * 4, 2000 + i as u64)), Some(arc_zeros(c_lvl)))
+            (
+                Some(small_normal(c_lvl * prev * 4, 2000 + i as u64)),
+                Some(arc_zeros(c_lvl)),
+            )
         } else {
             (None, None)
         };
-        down_levels.push(DiffNextLevelWeights { down_w, down_b, up_w: None, up_b: None, subs });
+        down_levels.push(DiffNextLevelWeights {
+            down_w,
+            down_b,
+            up_w: None,
+            up_b: None,
+            subs,
+        });
     }
 
     let mut up_levels = Vec::with_capacity(levels.len());
@@ -1158,19 +1266,35 @@ pub fn make_diffnext_weights(cfg: &WuerstchenConfig) -> DiffNextWeights {
             let c_skip = if j == 0 && i > 0 { c_lvl } else { 0 };
             subs.push(DiffNextSubBlockWeights {
                 res: make_res_block(c_lvl, c_skip, 3, seed),
-                ts:  make_ts_block(c_lvl, cfg.c_r, seed + 1),
+                ts: make_ts_block(c_lvl, cfg.c_r, seed + 1),
                 attn: if cfg.diffnext_nhead[lvl_idx] > 0 {
-                    Some(make_attn_block(c_lvl, c_cond, cfg.diffnext_nhead[lvl_idx], seed + 2))
-                } else { None },
+                    Some(make_attn_block(
+                        c_lvl,
+                        c_cond,
+                        cfg.diffnext_nhead[lvl_idx],
+                        seed + 2,
+                    ))
+                } else {
+                    None
+                },
             });
         }
         let (up_w, up_b) = if lvl_idx > 0 {
             let next = levels[lvl_idx - 1];
-            (Some(small_normal(c_lvl * next * 4, 4000 + i as u64)), Some(arc_zeros(next)))
+            (
+                Some(small_normal(c_lvl * next * 4, 4000 + i as u64)),
+                Some(arc_zeros(next)),
+            )
         } else {
             (None, None)
         };
-        up_levels.push(DiffNextLevelWeights { down_w: None, down_b: None, up_w, up_b, subs });
+        up_levels.push(DiffNextLevelWeights {
+            down_w: None,
+            down_b: None,
+            up_w,
+            up_b,
+            subs,
+        });
     }
 
     DiffNextWeights {
@@ -1193,7 +1317,11 @@ pub fn make_paella_weights(cfg: &WuerstchenConfig) -> PaellaVqWeights {
     let mut up_levels = Vec::with_capacity(levels.len());
     for (i, &c_lvl) in levels.iter().enumerate() {
         let mut res_blocks = Vec::new();
-        let n_bottleneck = if i == 0 { cfg.paella_bottleneck_blocks } else { 1 };
+        let n_bottleneck = if i == 0 {
+            cfg.paella_bottleneck_blocks
+        } else {
+            1
+        };
         for j in 0..n_bottleneck {
             let seed = 5000 + (i as u64) * 100 + (j as u64) * 10;
             let embed_dim = c_lvl * 4;
@@ -1210,11 +1338,18 @@ pub fn make_paella_weights(cfg: &WuerstchenConfig) -> PaellaVqWeights {
         }
         let (upsample_w, upsample_b) = if i < levels.len() - 1 {
             let next = levels[i + 1];
-            (Some(small_normal(c_lvl * next * 16, 6000 + i as u64)), Some(arc_zeros(next)))
+            (
+                Some(small_normal(c_lvl * next * 16, 6000 + i as u64)),
+                Some(arc_zeros(next)),
+            )
         } else {
             (None, None)
         };
-        up_levels.push(PaellaUpLevelWeights { res_blocks, upsample_w, upsample_b });
+        up_levels.push(PaellaUpLevelWeights {
+            res_blocks,
+            upsample_w,
+            upsample_b,
+        });
     }
     let last_c = *levels.last().expect("wuerstchen: levels must not be empty");
     PaellaVqWeights {
@@ -1240,7 +1375,8 @@ fn load_arc_f32(
         return Err(crate::Error::Msg(format!(
             "wuerstchen load: tensor {name:?} has {} elements, expected {expected}",
             v.len(),
-        )).bt());
+        ))
+        .bt());
     }
     Ok(Arc::from(v))
 }
@@ -1264,7 +1400,7 @@ fn load_grn(
 ) -> crate::Result<GrnWeights> {
     Ok(GrnWeights {
         gamma: load_arc_f32(st, &format!("{prefix}.gamma"), c)?,
-        beta:  load_arc_f32(st, &format!("{prefix}.beta"),  c)?,
+        beta: load_arc_f32(st, &format!("{prefix}.beta"), c)?,
     })
 }
 
@@ -1277,9 +1413,14 @@ fn load_res_block(
 ) -> crate::Result<ResBlockWeights> {
     // depthwise conv: [C, 1, K, K]
     let dw_w = load_arc_f32(st, &format!("{prefix}.depthwise.weight"), c * ksize * ksize)?;
-    let dw_b = load_arc_f32(st, &format!("{prefix}.depthwise.bias"),   c)?;
+    let dw_b = load_arc_f32(st, &format!("{prefix}.depthwise.bias"), c)?;
     // channelwise.0 (fc1): linear (c + c_skip) → 4c
-    let fc1_w = load_linear_f32(st, &format!("{prefix}.channelwise.0.weight"), 4 * c, c + c_skip)?;
+    let fc1_w = load_linear_f32(
+        st,
+        &format!("{prefix}.channelwise.0.weight"),
+        4 * c,
+        c + c_skip,
+    )?;
     let fc1_b = load_arc_f32(st, &format!("{prefix}.channelwise.0.bias"), 4 * c)?;
     // channelwise.2 (grn) gamma/beta shape [4*C].
     let grn = load_grn(st, &format!("{prefix}.channelwise.2"), 4 * c)?;
@@ -1287,8 +1428,16 @@ fn load_res_block(
     let fc2_w = load_linear_f32(st, &format!("{prefix}.channelwise.4.weight"), c, 4 * c)?;
     let fc2_b = load_arc_f32(st, &format!("{prefix}.channelwise.4.bias"), c)?;
     Ok(ResBlockWeights {
-        dw_w, dw_b, fc1_w, fc1_b, grn, fc2_w, fc2_b,
-        c, c_skip, ksize,
+        dw_w,
+        dw_b,
+        fc1_w,
+        fc1_b,
+        grn,
+        fc2_w,
+        fc2_b,
+        c,
+        c_skip,
+        ksize,
     })
 }
 
@@ -1300,7 +1449,12 @@ fn load_ts_block(
 ) -> crate::Result<TimestepBlockWeights> {
     let w = load_linear_f32(st, &format!("{prefix}.mapper.weight"), 2 * c, c_timestep)?;
     let b = load_arc_f32(st, &format!("{prefix}.mapper.bias"), 2 * c)?;
-    Ok(TimestepBlockWeights { w, b, c, c_timestep })
+    Ok(TimestepBlockWeights {
+        w,
+        b,
+        c,
+        c_timestep,
+    })
 }
 
 fn load_attn_block(
@@ -1321,10 +1475,19 @@ fn load_attn_block(
     let to_out_w = load_linear_f32(st, &format!("{prefix}.attention.to_out.0.weight"), c, c)?;
     let to_out_b = load_arc_f32(st, &format!("{prefix}.attention.to_out.0.bias"), c)?;
     Ok(AttnBlockWeights {
-        kv_mapper_w, kv_mapper_b,
-        to_q_w, to_q_b, to_k_w, to_k_b, to_v_w, to_v_b,
-        to_out_w, to_out_b,
-        c, c_cond, heads,
+        kv_mapper_w,
+        kv_mapper_b,
+        to_q_w,
+        to_q_b,
+        to_k_w,
+        to_k_b,
+        to_v_w,
+        to_v_b,
+        to_out_w,
+        to_out_b,
+        c,
+        c_cond,
+        heads,
     })
 }
 
@@ -1352,7 +1515,7 @@ impl PriorWeights {
         let c_cond = cfg.prior_c_cond;
         // 1×1 conv => [c, c_in, 1, 1].
         let projection_w = load_arc_f32(st, "projection.weight", c * c_in)?;
-        let projection_b = load_arc_f32(st, "projection.bias",   c)?;
+        let projection_b = load_arc_f32(st, "projection.bias", c)?;
         let cond1_w = load_linear_f32(st, "cond_mapper.0.weight", c, c_cond)?;
         let cond1_b = load_arc_f32(st, "cond_mapper.0.bias", c)?;
         let cond2_w = load_linear_f32(st, "cond_mapper.2.weight", c, c)?;
@@ -1360,18 +1523,24 @@ impl PriorWeights {
         let mut blocks = Vec::with_capacity(cfg.prior_depth);
         for i in 0..cfg.prior_depth {
             blocks.push(PriorBlockWeights {
-                res:  load_res_block(st, &format!("blocks.{i}.0"), c, 0, 3)?,
-                ts:   load_ts_block(st, &format!("blocks.{i}.1"), c, cfg.c_r)?,
+                res: load_res_block(st, &format!("blocks.{i}.0"), c, 0, 3)?,
+                ts: load_ts_block(st, &format!("blocks.{i}.1"), c, cfg.c_r)?,
                 attn: load_attn_block(st, &format!("blocks.{i}.2"), c, c, cfg.prior_nhead)?,
             });
         }
         // out.0 is the 1×1 conv `c → 2*c_in`.
         let out_conv_w = load_arc_f32(st, "out.0.weight", c_in * 2 * c)?;
-        let out_conv_b = load_arc_f32(st, "out.0.bias",   c_in * 2)?;
+        let out_conv_b = load_arc_f32(st, "out.0.bias", c_in * 2)?;
         Ok(PriorWeights {
-            projection_w, projection_b,
-            cond1_w, cond1_b, cond2_w, cond2_b,
-            blocks, out_conv_w, out_conv_b,
+            projection_w,
+            projection_b,
+            cond1_w,
+            cond1_b,
+            cond2_w,
+            cond2_b,
+            blocks,
+            out_conv_w,
+            out_conv_b,
         })
     }
 }
@@ -1400,13 +1569,14 @@ impl DiffNextWeights {
         if levels.is_empty() {
             return Err(crate::Error::Msg(
                 "DiffNextWeights.load_from_mmapped: diffnext_c_hidden empty".into(),
-            ).bt());
+            )
+            .bt());
         }
         let clip_mapper_w = load_linear_f32(st, "clip_mapper.weight", c_cond, cfg.clip_embed)?;
         let clip_mapper_b = load_arc_f32(st, "clip_mapper.bias", c_cond)?;
         // 1×1 conv: [C_HIDDEN[0], c_in * p*p, 1, 1]
         let embed_w = load_arc_f32(st, "embedding.1.weight", levels[0] * c_in * p * p)?;
-        let embed_b = load_arc_f32(st, "embedding.1.bias",   levels[0])?;
+        let embed_b = load_arc_f32(st, "embedding.1.bias", levels[0])?;
 
         // Down levels.
         let mut down_levels = Vec::with_capacity(levels.len());
@@ -1415,7 +1585,7 @@ impl DiffNextWeights {
                 let prev = levels[i - 1];
                 // stride-2 2×2 conv: [Cout, Cin, 2, 2].
                 let w = load_arc_f32(st, &format!("down_blocks.{i}.0.1.weight"), c_lvl * prev * 4)?;
-                let b = load_arc_f32(st, &format!("down_blocks.{i}.0.1.bias"),   c_lvl)?;
+                let b = load_arc_f32(st, &format!("down_blocks.{i}.0.1.bias"), c_lvl)?;
                 (Some(w), Some(b))
             } else {
                 (None, None)
@@ -1428,13 +1598,27 @@ impl DiffNextWeights {
                 let sub_pfx = format!("down_blocks.{i}.{sub_idx}");
                 subs.push(DiffNextSubBlockWeights {
                     res: load_res_block(st, &format!("{sub_pfx}.0"), c_lvl, 0, 3)?,
-                    ts:  load_ts_block(st, &format!("{sub_pfx}.1"), c_lvl, cfg.c_r)?,
+                    ts: load_ts_block(st, &format!("{sub_pfx}.1"), c_lvl, cfg.c_r)?,
                     attn: if cfg.diffnext_nhead[i] > 0 {
-                        Some(load_attn_block(st, &format!("{sub_pfx}.2"), c_lvl, c_cond, cfg.diffnext_nhead[i])?)
-                    } else { None },
+                        Some(load_attn_block(
+                            st,
+                            &format!("{sub_pfx}.2"),
+                            c_lvl,
+                            c_cond,
+                            cfg.diffnext_nhead[i],
+                        )?)
+                    } else {
+                        None
+                    },
                 });
             }
-            down_levels.push(DiffNextLevelWeights { down_w, down_b, up_w: None, up_b: None, subs });
+            down_levels.push(DiffNextLevelWeights {
+                down_w,
+                down_b,
+                up_w: None,
+                up_b: None,
+                subs,
+            });
         }
 
         // Up levels.
@@ -1448,10 +1632,18 @@ impl DiffNextWeights {
                 let c_skip = if j == 0 && i > 0 { c_lvl } else { 0 };
                 subs.push(DiffNextSubBlockWeights {
                     res: load_res_block(st, &format!("{sub_pfx}.0"), c_lvl, c_skip, 3)?,
-                    ts:  load_ts_block(st, &format!("{sub_pfx}.1"), c_lvl, cfg.c_r)?,
+                    ts: load_ts_block(st, &format!("{sub_pfx}.1"), c_lvl, cfg.c_r)?,
                     attn: if cfg.diffnext_nhead[lvl_idx] > 0 {
-                        Some(load_attn_block(st, &format!("{sub_pfx}.2"), c_lvl, c_cond, cfg.diffnext_nhead[lvl_idx])?)
-                    } else { None },
+                        Some(load_attn_block(
+                            st,
+                            &format!("{sub_pfx}.2"),
+                            c_lvl,
+                            c_cond,
+                            cfg.diffnext_nhead[lvl_idx],
+                        )?)
+                    } else {
+                        None
+                    },
                 });
             }
             let (up_w, up_b) = if lvl_idx > 0 {
@@ -1459,29 +1651,37 @@ impl DiffNextWeights {
                 // Trailing conv-transpose 2×2: stored at the end of the level.
                 let after_subs = cfg.diffnext_blocks[lvl_idx];
                 let w = load_arc_f32(
-                    st, &format!("up_blocks.{i}.{after_subs}.1.weight"),
+                    st,
+                    &format!("up_blocks.{i}.{after_subs}.1.weight"),
                     c_lvl * next * 4,
                 )?;
-                let b = load_arc_f32(
-                    st, &format!("up_blocks.{i}.{after_subs}.1.bias"),
-                    next,
-                )?;
+                let b = load_arc_f32(st, &format!("up_blocks.{i}.{after_subs}.1.bias"), next)?;
                 (Some(w), Some(b))
             } else {
                 (None, None)
             };
-            up_levels.push(DiffNextLevelWeights { down_w: None, down_b: None, up_w, up_b, subs });
+            up_levels.push(DiffNextLevelWeights {
+                down_w: None,
+                down_b: None,
+                up_w,
+                up_b,
+                subs,
+            });
         }
 
         // clf.1 is a 1×1 conv (clf.0 is the LN).
         let clf_w = load_arc_f32(st, "clf.1.weight", 2 * c_out * p * p * levels[0])?;
-        let clf_b = load_arc_f32(st, "clf.1.bias",   2 * c_out * p * p)?;
+        let clf_b = load_arc_f32(st, "clf.1.bias", 2 * c_out * p * p)?;
 
         Ok(DiffNextWeights {
-            clip_mapper_w, clip_mapper_b,
-            embed_w, embed_b,
-            down_levels, up_levels,
-            clf_w, clf_b,
+            clip_mapper_w,
+            clip_mapper_b,
+            embed_w,
+            embed_b,
+            down_levels,
+            up_levels,
+            clf_w,
+            clf_b,
         })
     }
 }
@@ -1494,14 +1694,18 @@ fn load_paella_mixing_res(
     let embed_dim = 4 * c;
     let gammas_vec = load_arc_f32(st, &format!("{prefix}.gammas"), 6)?;
     let gammas = [
-        gammas_vec[0], gammas_vec[1], gammas_vec[2],
-        gammas_vec[3], gammas_vec[4], gammas_vec[5],
+        gammas_vec[0],
+        gammas_vec[1],
+        gammas_vec[2],
+        gammas_vec[3],
+        gammas_vec[4],
+        gammas_vec[5],
     ];
     Ok(PaellaMixingResWeights {
         gammas,
         // Depthwise conv: [C, 1, 3, 3]. eager calls it `.depthwise.1` (with replication pad at .0).
         dw_w: load_arc_f32(st, &format!("{prefix}.depthwise.1.weight"), c * 9)?,
-        dw_b: load_arc_f32(st, &format!("{prefix}.depthwise.1.bias"),   c)?,
+        dw_b: load_arc_f32(st, &format!("{prefix}.depthwise.1.bias"), c)?,
         fc1_w: load_linear_f32(st, &format!("{prefix}.channelwise.0.weight"), embed_dim, c)?,
         fc1_b: load_arc_f32(st, &format!("{prefix}.channelwise.0.bias"), embed_dim)?,
         fc2_w: load_linear_f32(st, &format!("{prefix}.channelwise.2.weight"), c, embed_dim)?,
@@ -1531,14 +1735,19 @@ impl PaellaVqWeights {
         if levels.is_empty() {
             return Err(crate::Error::Msg(
                 "PaellaVqWeights.load_from_mmapped: paella_levels empty".into(),
-            ).bt());
+            )
+            .bt());
         }
         let up_in_w = load_arc_f32(st, "up_blocks.0.0.0.weight", levels[0] * lc)?;
-        let up_in_b = load_arc_f32(st, "up_blocks.0.0.0.bias",   levels[0])?;
+        let up_in_b = load_arc_f32(st, "up_blocks.0.0.0.bias", levels[0])?;
         let mut up_levels = Vec::with_capacity(levels.len());
         for (i, &c_lvl) in levels.iter().enumerate() {
             let mut res_blocks = Vec::new();
-            let n_res = if i == 0 { cfg.paella_bottleneck_blocks } else { 1 };
+            let n_res = if i == 0 {
+                cfg.paella_bottleneck_blocks
+            } else {
+                1
+            };
             for j in 0..n_res {
                 let pfx = format!("up_blocks.{i}.{j}.1");
                 res_blocks.push(load_paella_mixing_res(st, &pfx, c_lvl)?);
@@ -1548,24 +1757,32 @@ impl PaellaVqWeights {
                 // Conv-transpose 4×4 stride 2: [Cin, Cout, 4, 4].
                 let w_off = n_res; // upsample slot index in this level group.
                 let w = load_arc_f32(
-                    st, &format!("up_blocks.{i}.{w_off}.0.weight"),
+                    st,
+                    &format!("up_blocks.{i}.{w_off}.0.weight"),
                     c_lvl * next * 16,
                 )?;
-                let b = load_arc_f32(
-                    st, &format!("up_blocks.{i}.{w_off}.0.bias"),
-                    next,
-                )?;
+                let b = load_arc_f32(st, &format!("up_blocks.{i}.{w_off}.0.bias"), next)?;
                 (Some(w), Some(b))
             } else {
                 (None, None)
             };
-            up_levels.push(PaellaUpLevelWeights { res_blocks, upsample_w, upsample_b });
+            up_levels.push(PaellaUpLevelWeights {
+                res_blocks,
+                upsample_w,
+                upsample_b,
+            });
         }
-        let last_c = *levels.last().ok_or_else(|| fuel_ir::Error::Msg("wuerstchen: levels must not be empty".to_string()))?;
+        let last_c = *levels.last().ok_or_else(|| {
+            fuel_ir::Error::Msg("wuerstchen: levels must not be empty".to_string())
+        })?;
         let out_w = load_arc_f32(st, "out_block.1.weight", oc * 4 * last_c)?;
-        let out_b = load_arc_f32(st, "out_block.1.bias",   oc * 4)?;
+        let out_b = load_arc_f32(st, "out_block.1.bias", oc * 4)?;
         Ok(PaellaVqWeights {
-            up_in_w, up_in_b, up_levels, out_w, out_b,
+            up_in_w,
+            up_in_b,
+            up_levels,
+            out_w,
+            out_b,
         })
     }
 }
@@ -1576,7 +1793,9 @@ impl PaellaVqWeights {
 mod tests {
     use super::*;
 
-    fn dev() -> crate::Device { crate::Device::cpu() }
+    fn dev() -> crate::Device {
+        crate::Device::cpu()
+    }
 
     /// GlobalResponseNorm hand-check: with `x = [1, 0; 0, 0]` on `C=1`,
     /// `agg = sqrt(sum_HW(x²)) = sqrt(1) = 1`.
@@ -1585,16 +1804,17 @@ mod tests {
     /// `y = x * stand * γ + β + x = x * 1 * 1 + 0 + x = 2x`.
     #[test]
     fn global_response_norm_hand_computed() {
-        let x_data = vec![1.0_f32, 0.0, 0.0, 0.0];  // [1, 1, 2, 2]
+        let x_data = vec![1.0_f32, 0.0, 0.0, 0.0]; // [1, 1, 2, 2]
         let x = LazyTensor::from_f32(x_data.clone(), Shape::from_dims(&[1, 1, 2, 2]), &dev());
         let gamma = arc_ones(1);
         let beta = arc_zeros(1);
-        let out = global_response_norm(&x, &gamma, &beta, 1, 2, 2).unwrap().realize_f32();
+        let out = global_response_norm(&x, &gamma, &beta, 1, 2, 2)
+            .unwrap()
+            .realize_f32();
         // Expected: y[i] ≈ x[i] * 1 + x[i] = 2 * x[i] (with tiny eps drift).
         let expected: Vec<f32> = x_data.iter().map(|&v| 2.0 * v).collect();
         for (i, (a, e)) in out.iter().zip(expected.iter()).enumerate() {
-            assert!((a - e).abs() < 1e-4,
-                "GRN[{i}]: expected {e}, got {a}");
+            assert!((a - e).abs() < 1e-4, "GRN[{i}]: expected {e}, got {a}");
         }
     }
 
@@ -1604,7 +1824,10 @@ mod tests {
     fn paella_vq_decoder_shape() {
         let cfg = WuerstchenConfig::tiny();
         let weights = make_paella_weights(&cfg);
-        let model = PaellaVqModel { config: cfg.clone(), weights };
+        let model = PaellaVqModel {
+            config: cfg.clone(),
+            weights,
+        };
         // Latent shape: spatial 8x8.
         let lat_data = vec![0.01_f32; 1 * 4 * 8 * 8];
         let lat = LazyTensor::from_f32(lat_data, Shape::from_dims(&[1, 4, 8, 8]), &dev());
@@ -1612,8 +1835,12 @@ mod tests {
         // n_levels = 2 → one upsample (×2) followed by pixel_shuffle ×2 = total ×4.
         assert_eq!(img.shape().dims(), &[1, 3, 32, 32]);
         let flat = img.realize_f32();
-        for v in &flat { assert!(v.is_finite(), "non-finite paella decoder pixel: {v}"); }
-        for v in &flat { assert!(v.abs() <= 1.0 + 1e-5, "tanh out-of-range: {v}"); }
+        for v in &flat {
+            assert!(v.is_finite(), "non-finite paella decoder pixel: {v}");
+        }
+        for v in &flat {
+            assert!(v.abs() <= 1.0 + 1e-5, "tanh out-of-range: {v}");
+        }
     }
 
     /// PriorModel forward: tiny config 2×2 spatial prior, finite output.
@@ -1621,9 +1848,16 @@ mod tests {
     fn prior_forward_shape_finite_tiny() {
         let cfg = WuerstchenConfig::tiny();
         let weights = make_prior_weights(&cfg);
-        let model = PriorModel { config: cfg.clone(), weights };
+        let model = PriorModel {
+            config: cfg.clone(),
+            weights,
+        };
         let xs_data = vec![0.01_f32; 1 * cfg.prior_c_in * 2 * 2];
-        let xs = LazyTensor::from_f32(xs_data, Shape::from_dims(&[1, cfg.prior_c_in, 2, 2]), &dev());
+        let xs = LazyTensor::from_f32(
+            xs_data,
+            Shape::from_dims(&[1, cfg.prior_c_in, 2, 2]),
+            &dev(),
+        );
         let txt_data = vec![0.01_f32; 1 * 4 * cfg.prior_c_cond];
         let txt = xs.const_f32_like(txt_data, Shape::from_dims(&[1, 4, cfg.prior_c_cond]));
         let out = model.forward(&xs, 0.5, &txt, 2, 2).unwrap();
@@ -1638,10 +1872,18 @@ mod tests {
     fn diffnext_forward_shape_finite_tiny() {
         let cfg = WuerstchenConfig::tiny();
         let weights = make_diffnext_weights(&cfg);
-        let model = DiffNextModel { config: cfg.clone(), weights };
-        let h = 4; let w = 4;
+        let model = DiffNextModel {
+            config: cfg.clone(),
+            weights,
+        };
+        let h = 4;
+        let w = 4;
         let xs_data = vec![0.01_f32; 1 * cfg.diffnext_c_in * h * w];
-        let xs = LazyTensor::from_f32(xs_data, Shape::from_dims(&[1, cfg.diffnext_c_in, h, w]), &dev());
+        let xs = LazyTensor::from_f32(
+            xs_data,
+            Shape::from_dims(&[1, cfg.diffnext_c_in, h, w]),
+            &dev(),
+        );
         let txt_data = vec![0.01_f32; 1 * 4 * cfg.clip_embed];
         let txt = xs.const_f32_like(txt_data, Shape::from_dims(&[1, 4, cfg.clip_embed]));
         let out = model.forward(&xs, 0.5, &txt, h, w).unwrap();
@@ -1654,15 +1896,15 @@ mod tests {
     /// End-to-end generate: tiny config; text → 32×32 RGB image; finite
     // ---- Safetensors loader smoke tests -------------------------------
 
-    fn write_tmp_safetensors_w(
-        tensors: &[(String, Vec<usize>, Vec<f32>)],
-    ) -> std::path::PathBuf {
+    fn write_tmp_safetensors_w(tensors: &[(String, Vec<usize>, Vec<f32>)]) -> std::path::PathBuf {
         use safetensors::tensor::TensorView;
         use std::collections::HashMap;
-        let bytes_store: Vec<Vec<u8>> = tensors.iter()
+        let bytes_store: Vec<Vec<u8>> = tensors
+            .iter()
             .map(|(_, _, data)| data.iter().flat_map(|f| f.to_le_bytes()).collect())
             .collect();
-        let views: HashMap<String, TensorView<'_>> = tensors.iter()
+        let views: HashMap<String, TensorView<'_>> = tensors
+            .iter()
             .zip(bytes_store.iter())
             .map(|((name, shape, _), bytes)| {
                 let v = TensorView::new(safetensors::Dtype::F32, shape.clone(), bytes)
@@ -1674,7 +1916,10 @@ mod tests {
         let bytes_out = safetensors::serialize(&views, metadata).unwrap();
         let path = std::env::temp_dir().join(format!(
             "fuel_lazy_wuerst_test_{}_{}.safetensors",
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
             std::process::id(),
         ));
         std::fs::write(&path, bytes_out).unwrap();
@@ -1692,39 +1937,103 @@ mod tests {
         let c_cond = cfg.prior_c_cond;
         let mut t: Vec<(String, Vec<usize>, Vec<f32>)> = Vec::new();
         // projection: [c, c_in, 1, 1]
-        t.push(("projection.weight".into(), vec![c, c_in, 1, 1], vec![0.0; c * c_in]));
-        t.push(("projection.bias".into(),   vec![c], vec![0.0; c]));
+        t.push((
+            "projection.weight".into(),
+            vec![c, c_in, 1, 1],
+            vec![0.0; c * c_in],
+        ));
+        t.push(("projection.bias".into(), vec![c], vec![0.0; c]));
         // cond_mapper.0 + .2 (linears) — HF stores as [out_f, in_f].
-        t.push(("cond_mapper.0.weight".into(), vec![c, c_cond], vec![0.0; c * c_cond]));
-        t.push(("cond_mapper.0.bias".into(),   vec![c], vec![0.0; c]));
+        t.push((
+            "cond_mapper.0.weight".into(),
+            vec![c, c_cond],
+            vec![0.0; c * c_cond],
+        ));
+        t.push(("cond_mapper.0.bias".into(), vec![c], vec![0.0; c]));
         t.push(("cond_mapper.2.weight".into(), vec![c, c], vec![0.0; c * c]));
-        t.push(("cond_mapper.2.bias".into(),   vec![c], vec![0.0; c]));
+        t.push(("cond_mapper.2.bias".into(), vec![c], vec![0.0; c]));
         // One block (matches tiny.prior_depth = 1).
         let pfx = "blocks.0";
         // ResBlock at .0: depthwise [c, 1, 3, 3].
-        t.push((format!("{pfx}.0.depthwise.weight"), vec![c, 1, 3, 3], vec![0.0; c * 9]));
-        t.push((format!("{pfx}.0.depthwise.bias"),   vec![c], vec![0.0; c]));
-        t.push((format!("{pfx}.0.channelwise.0.weight"), vec![4 * c, c], vec![0.0; 4 * c * c]));
-        t.push((format!("{pfx}.0.channelwise.0.bias"),   vec![4 * c], vec![0.0; 4 * c]));
-        t.push((format!("{pfx}.0.channelwise.2.gamma"), vec![4 * c], vec![1.0; 4 * c]));
-        t.push((format!("{pfx}.0.channelwise.2.beta"),  vec![4 * c], vec![0.0; 4 * c]));
-        t.push((format!("{pfx}.0.channelwise.4.weight"), vec![c, 4 * c], vec![0.0; 4 * c * c]));
-        t.push((format!("{pfx}.0.channelwise.4.bias"),   vec![c], vec![0.0; c]));
+        t.push((
+            format!("{pfx}.0.depthwise.weight"),
+            vec![c, 1, 3, 3],
+            vec![0.0; c * 9],
+        ));
+        t.push((format!("{pfx}.0.depthwise.bias"), vec![c], vec![0.0; c]));
+        t.push((
+            format!("{pfx}.0.channelwise.0.weight"),
+            vec![4 * c, c],
+            vec![0.0; 4 * c * c],
+        ));
+        t.push((
+            format!("{pfx}.0.channelwise.0.bias"),
+            vec![4 * c],
+            vec![0.0; 4 * c],
+        ));
+        t.push((
+            format!("{pfx}.0.channelwise.2.gamma"),
+            vec![4 * c],
+            vec![1.0; 4 * c],
+        ));
+        t.push((
+            format!("{pfx}.0.channelwise.2.beta"),
+            vec![4 * c],
+            vec![0.0; 4 * c],
+        ));
+        t.push((
+            format!("{pfx}.0.channelwise.4.weight"),
+            vec![c, 4 * c],
+            vec![0.0; 4 * c * c],
+        ));
+        t.push((format!("{pfx}.0.channelwise.4.bias"), vec![c], vec![0.0; c]));
         // TimestepBlock at .1: mapper [2c, c_r].
-        t.push((format!("{pfx}.1.mapper.weight"), vec![2 * c, cfg.c_r], vec![0.0; 2 * c * cfg.c_r]));
-        t.push((format!("{pfx}.1.mapper.bias"),   vec![2 * c], vec![0.0; 2 * c]));
+        t.push((
+            format!("{pfx}.1.mapper.weight"),
+            vec![2 * c, cfg.c_r],
+            vec![0.0; 2 * c * cfg.c_r],
+        ));
+        t.push((
+            format!("{pfx}.1.mapper.bias"),
+            vec![2 * c],
+            vec![0.0; 2 * c],
+        ));
         // AttnBlock at .2.
-        t.push((format!("{pfx}.2.kv_mapper.1.weight"), vec![c, c], vec![0.0; c * c]));
-        t.push((format!("{pfx}.2.kv_mapper.1.bias"),   vec![c], vec![0.0; c]));
+        t.push((
+            format!("{pfx}.2.kv_mapper.1.weight"),
+            vec![c, c],
+            vec![0.0; c * c],
+        ));
+        t.push((format!("{pfx}.2.kv_mapper.1.bias"), vec![c], vec![0.0; c]));
         for kind in ["q", "k", "v"] {
-            t.push((format!("{pfx}.2.attention.to_{kind}.weight"), vec![c, c], vec![0.0; c * c]));
-            t.push((format!("{pfx}.2.attention.to_{kind}.bias"),   vec![c], vec![0.0; c]));
+            t.push((
+                format!("{pfx}.2.attention.to_{kind}.weight"),
+                vec![c, c],
+                vec![0.0; c * c],
+            ));
+            t.push((
+                format!("{pfx}.2.attention.to_{kind}.bias"),
+                vec![c],
+                vec![0.0; c],
+            ));
         }
-        t.push((format!("{pfx}.2.attention.to_out.0.weight"), vec![c, c], vec![0.0; c * c]));
-        t.push((format!("{pfx}.2.attention.to_out.0.bias"),   vec![c], vec![0.0; c]));
+        t.push((
+            format!("{pfx}.2.attention.to_out.0.weight"),
+            vec![c, c],
+            vec![0.0; c * c],
+        ));
+        t.push((
+            format!("{pfx}.2.attention.to_out.0.bias"),
+            vec![c],
+            vec![0.0; c],
+        ));
         // out.0 conv [c_in*2, c, 1, 1].
-        t.push(("out.0.weight".into(), vec![c_in * 2, c, 1, 1], vec![0.0; c_in * 2 * c]));
-        t.push(("out.0.bias".into(),   vec![c_in * 2], vec![0.0; c_in * 2]));
+        t.push((
+            "out.0.weight".into(),
+            vec![c_in * 2, c, 1, 1],
+            vec![0.0; c_in * 2 * c],
+        ));
+        t.push(("out.0.bias".into(), vec![c_in * 2], vec![0.0; c_in * 2]));
 
         let path = write_tmp_safetensors_w(&t);
         let st = unsafe { crate::safetensors::MmapedSafetensors::new(&path).unwrap() };
@@ -1738,9 +2047,18 @@ mod tests {
     #[test]
     fn end_to_end_generate_tiny() {
         let cfg = WuerstchenConfig::tiny();
-        let prior = PriorModel { config: cfg.clone(), weights: make_prior_weights(&cfg) };
-        let diffnext = DiffNextModel { config: cfg.clone(), weights: make_diffnext_weights(&cfg) };
-        let paella   = PaellaVqModel { config: cfg.clone(), weights: make_paella_weights(&cfg) };
+        let prior = PriorModel {
+            config: cfg.clone(),
+            weights: make_prior_weights(&cfg),
+        };
+        let diffnext = DiffNextModel {
+            config: cfg.clone(),
+            weights: make_diffnext_weights(&cfg),
+        };
+        let paella = PaellaVqModel {
+            config: cfg.clone(),
+            weights: make_paella_weights(&cfg),
+        };
         let txt_data = vec![0.01_f32; 1 * 4 * cfg.clip_embed];
         let txt = LazyTensor::from_f32(txt_data, Shape::from_dims(&[1, 4, cfg.clip_embed]), &dev());
         let img = generate(&prior, &diffnext, &paella, &txt, 0, 0, 2, 2, 8, 8).unwrap();

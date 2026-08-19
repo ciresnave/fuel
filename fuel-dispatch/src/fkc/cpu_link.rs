@@ -110,25 +110,25 @@ pub static CPU_BINARY_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// still map to the contract's `clamp_f32` / `powi_f32` entry points.
 pub static CPU_AFFINE_CLAMP_POWI_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     // affine (y = mul*x + add)
-    ep!("affine", "f32",  affine_f32_cpu_wrapper),
-    ep!("affine", "f64",  affine_f64_cpu_wrapper),
+    ep!("affine", "f32", affine_f32_cpu_wrapper),
+    ep!("affine", "f64", affine_f64_cpu_wrapper),
     ep!("affine", "bf16", affine_bf16_cpu_wrapper),
-    ep!("affine", "f16",  affine_f16_cpu_wrapper),
+    ep!("affine", "f16", affine_f16_cpu_wrapper),
     // clamp (y = clamp(x, min, max))
-    ep!("clamp",  "f32",  clamp_elementwise_f32_cpu_wrapper),
-    ep!("clamp",  "f64",  clamp_f64_cpu_wrapper),
-    ep!("clamp",  "bf16", clamp_bf16_cpu_wrapper),
-    ep!("clamp",  "f16",  clamp_f16_cpu_wrapper),
+    ep!("clamp", "f32", clamp_elementwise_f32_cpu_wrapper),
+    ep!("clamp", "f64", clamp_f64_cpu_wrapper),
+    ep!("clamp", "bf16", clamp_bf16_cpu_wrapper),
+    ep!("clamp", "f16", clamp_f16_cpu_wrapper),
     // powi (y = x.powi(exp))
-    ep!("powi",   "f32",  powi_elementwise_f32_cpu_wrapper),
-    ep!("powi",   "f64",  powi_f64_cpu_wrapper),
-    ep!("powi",   "bf16", powi_bf16_cpu_wrapper),
-    ep!("powi",   "f16",  powi_f16_cpu_wrapper),
+    ep!("powi", "f32", powi_elementwise_f32_cpu_wrapper),
+    ep!("powi", "f64", powi_f64_cpu_wrapper),
+    ep!("powi", "bf16", powi_bf16_cpu_wrapper),
+    ep!("powi", "f16", powi_f16_cpu_wrapper),
     // powi_backward (grad_x = exp*x^(exp-1)*upstream) — TWO inputs (x, upstream)
-    ep!("powi_backward", "f32",  powi_backward_f32_cpu_wrapper),
-    ep!("powi_backward", "f64",  powi_backward_f64_cpu_wrapper),
+    ep!("powi_backward", "f32", powi_backward_f32_cpu_wrapper),
+    ep!("powi_backward", "f64", powi_backward_f64_cpu_wrapper),
     ep!("powi_backward", "bf16", powi_backward_bf16_cpu_wrapper),
-    ep!("powi_backward", "f16",  powi_backward_f16_cpu_wrapper),
+    ep!("powi_backward", "f16", powi_backward_f16_cpu_wrapper),
 ];
 
 /// The CPU elementwise-unary family's `symbol → production wrapper` map
@@ -144,96 +144,96 @@ pub static CPU_AFFINE_CLAMP_POWI_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// umbrella is `registrable: false` (§3.10 describe-only) and never resolves,
 /// so it is absent here.
 pub static CPU_UNARY_ENTRY_POINTS: &[(&str, KernelRef)] = &[
-    ep!("relu", "f32",  relu_elementwise_f32_cpu_wrapper),
-    ep!("relu", "f64",  relu_elementwise_f64_cpu_wrapper),
+    ep!("relu", "f32", relu_elementwise_f32_cpu_wrapper),
+    ep!("relu", "f64", relu_elementwise_f64_cpu_wrapper),
     ep!("relu", "bf16", relu_elementwise_bf16_cpu_wrapper),
-    ep!("relu", "f16",  relu_elementwise_f16_cpu_wrapper),
-    ep!("neg", "f32",  neg_elementwise_f32_cpu_wrapper),
-    ep!("neg", "f64",  neg_elementwise_f64_cpu_wrapper),
+    ep!("relu", "f16", relu_elementwise_f16_cpu_wrapper),
+    ep!("neg", "f32", neg_elementwise_f32_cpu_wrapper),
+    ep!("neg", "f64", neg_elementwise_f64_cpu_wrapper),
     ep!("neg", "bf16", neg_elementwise_bf16_cpu_wrapper),
-    ep!("neg", "f16",  neg_elementwise_f16_cpu_wrapper),
-    ep!("sqr", "f32",  sqr_elementwise_f32_cpu_wrapper),
-    ep!("sqr", "f64",  sqr_elementwise_f64_cpu_wrapper),
+    ep!("neg", "f16", neg_elementwise_f16_cpu_wrapper),
+    ep!("sqr", "f32", sqr_elementwise_f32_cpu_wrapper),
+    ep!("sqr", "f64", sqr_elementwise_f64_cpu_wrapper),
     ep!("sqr", "bf16", sqr_elementwise_bf16_cpu_wrapper),
-    ep!("sqr", "f16",  sqr_elementwise_f16_cpu_wrapper),
-    ep!("sqrt", "f32",  sqrt_elementwise_f32_cpu_wrapper),
-    ep!("sqrt", "f64",  sqrt_elementwise_f64_cpu_wrapper),
+    ep!("sqr", "f16", sqr_elementwise_f16_cpu_wrapper),
+    ep!("sqrt", "f32", sqrt_elementwise_f32_cpu_wrapper),
+    ep!("sqrt", "f64", sqrt_elementwise_f64_cpu_wrapper),
     ep!("sqrt", "bf16", sqrt_elementwise_bf16_cpu_wrapper),
-    ep!("sqrt", "f16",  sqrt_elementwise_f16_cpu_wrapper),
-    ep!("recip", "f32",  recip_elementwise_f32_cpu_wrapper),
-    ep!("recip", "f64",  recip_elementwise_f64_cpu_wrapper),
+    ep!("sqrt", "f16", sqrt_elementwise_f16_cpu_wrapper),
+    ep!("recip", "f32", recip_elementwise_f32_cpu_wrapper),
+    ep!("recip", "f64", recip_elementwise_f64_cpu_wrapper),
     ep!("recip", "bf16", recip_elementwise_bf16_cpu_wrapper),
-    ep!("recip", "f16",  recip_elementwise_f16_cpu_wrapper),
-    ep!("abs", "f32",  abs_elementwise_f32_cpu_wrapper),
-    ep!("abs", "f64",  abs_elementwise_f64_cpu_wrapper),
+    ep!("recip", "f16", recip_elementwise_f16_cpu_wrapper),
+    ep!("abs", "f32", abs_elementwise_f32_cpu_wrapper),
+    ep!("abs", "f64", abs_elementwise_f64_cpu_wrapper),
     ep!("abs", "bf16", abs_elementwise_bf16_cpu_wrapper),
-    ep!("abs", "f16",  abs_elementwise_f16_cpu_wrapper),
-    ep!("tanh", "f32",  tanh_elementwise_f32_cpu_wrapper),
-    ep!("tanh", "f64",  tanh_elementwise_f64_cpu_wrapper),
+    ep!("abs", "f16", abs_elementwise_f16_cpu_wrapper),
+    ep!("tanh", "f32", tanh_elementwise_f32_cpu_wrapper),
+    ep!("tanh", "f64", tanh_elementwise_f64_cpu_wrapper),
     ep!("tanh", "bf16", tanh_elementwise_bf16_cpu_wrapper),
-    ep!("tanh", "f16",  tanh_elementwise_f16_cpu_wrapper),
-    ep!("exp", "f32",  exp_elementwise_f32_cpu_wrapper),
-    ep!("exp", "f64",  exp_elementwise_f64_cpu_wrapper),
+    ep!("tanh", "f16", tanh_elementwise_f16_cpu_wrapper),
+    ep!("exp", "f32", exp_elementwise_f32_cpu_wrapper),
+    ep!("exp", "f64", exp_elementwise_f64_cpu_wrapper),
     ep!("exp", "bf16", exp_elementwise_bf16_cpu_wrapper),
-    ep!("exp", "f16",  exp_elementwise_f16_cpu_wrapper),
-    ep!("log", "f32",  log_elementwise_f32_cpu_wrapper),
-    ep!("log", "f64",  log_elementwise_f64_cpu_wrapper),
+    ep!("exp", "f16", exp_elementwise_f16_cpu_wrapper),
+    ep!("log", "f32", log_elementwise_f32_cpu_wrapper),
+    ep!("log", "f64", log_elementwise_f64_cpu_wrapper),
     ep!("log", "bf16", log_elementwise_bf16_cpu_wrapper),
-    ep!("log", "f16",  log_elementwise_f16_cpu_wrapper),
-    ep!("sin", "f32",  sin_elementwise_f32_cpu_wrapper),
-    ep!("sin", "f64",  sin_elementwise_f64_cpu_wrapper),
+    ep!("log", "f16", log_elementwise_f16_cpu_wrapper),
+    ep!("sin", "f32", sin_elementwise_f32_cpu_wrapper),
+    ep!("sin", "f64", sin_elementwise_f64_cpu_wrapper),
     ep!("sin", "bf16", sin_elementwise_bf16_cpu_wrapper),
-    ep!("sin", "f16",  sin_elementwise_f16_cpu_wrapper),
-    ep!("cos", "f32",  cos_elementwise_f32_cpu_wrapper),
-    ep!("cos", "f64",  cos_elementwise_f64_cpu_wrapper),
+    ep!("sin", "f16", sin_elementwise_f16_cpu_wrapper),
+    ep!("cos", "f32", cos_elementwise_f32_cpu_wrapper),
+    ep!("cos", "f64", cos_elementwise_f64_cpu_wrapper),
     ep!("cos", "bf16", cos_elementwise_bf16_cpu_wrapper),
-    ep!("cos", "f16",  cos_elementwise_f16_cpu_wrapper),
-    ep!("sigmoid", "f32",  sigmoid_elementwise_f32_cpu_wrapper),
-    ep!("sigmoid", "f64",  sigmoid_elementwise_f64_cpu_wrapper),
+    ep!("cos", "f16", cos_elementwise_f16_cpu_wrapper),
+    ep!("sigmoid", "f32", sigmoid_elementwise_f32_cpu_wrapper),
+    ep!("sigmoid", "f64", sigmoid_elementwise_f64_cpu_wrapper),
     ep!("sigmoid", "bf16", sigmoid_elementwise_bf16_cpu_wrapper),
-    ep!("sigmoid", "f16",  sigmoid_elementwise_f16_cpu_wrapper),
-    ep!("silu", "f32",  silu_elementwise_f32_cpu_wrapper),
-    ep!("silu", "f64",  silu_elementwise_f64_cpu_wrapper),
+    ep!("sigmoid", "f16", sigmoid_elementwise_f16_cpu_wrapper),
+    ep!("silu", "f32", silu_elementwise_f32_cpu_wrapper),
+    ep!("silu", "f64", silu_elementwise_f64_cpu_wrapper),
     ep!("silu", "bf16", silu_elementwise_bf16_cpu_wrapper),
-    ep!("silu", "f16",  silu_elementwise_f16_cpu_wrapper),
-    ep!("step", "f32",  step_elementwise_f32_cpu_wrapper),
-    ep!("step", "f64",  step_elementwise_f64_cpu_wrapper),
+    ep!("silu", "f16", silu_elementwise_f16_cpu_wrapper),
+    ep!("step", "f32", step_elementwise_f32_cpu_wrapper),
+    ep!("step", "f64", step_elementwise_f64_cpu_wrapper),
     ep!("step", "bf16", step_elementwise_bf16_cpu_wrapper),
-    ep!("step", "f16",  step_elementwise_f16_cpu_wrapper),
+    ep!("step", "f16", step_elementwise_f16_cpu_wrapper),
     // gelu_tanh (the canonical Gelu): base `gelu`, wrapper `gelu_elementwise_*`.
-    ep!("gelu", "f32",  gelu_elementwise_f32_cpu_wrapper),
-    ep!("gelu", "f64",  gelu_elementwise_f64_cpu_wrapper),
+    ep!("gelu", "f32", gelu_elementwise_f32_cpu_wrapper),
+    ep!("gelu", "f64", gelu_elementwise_f64_cpu_wrapper),
     ep!("gelu", "bf16", gelu_elementwise_bf16_cpu_wrapper),
-    ep!("gelu", "f16",  gelu_elementwise_f16_cpu_wrapper),
-    ep!("floor", "f32",  floor_elementwise_f32_cpu_wrapper),
-    ep!("floor", "f64",  floor_elementwise_f64_cpu_wrapper),
+    ep!("gelu", "f16", gelu_elementwise_f16_cpu_wrapper),
+    ep!("floor", "f32", floor_elementwise_f32_cpu_wrapper),
+    ep!("floor", "f64", floor_elementwise_f64_cpu_wrapper),
     ep!("floor", "bf16", floor_elementwise_bf16_cpu_wrapper),
-    ep!("floor", "f16",  floor_elementwise_f16_cpu_wrapper),
-    ep!("ceil", "f32",  ceil_elementwise_f32_cpu_wrapper),
-    ep!("ceil", "f64",  ceil_elementwise_f64_cpu_wrapper),
+    ep!("floor", "f16", floor_elementwise_f16_cpu_wrapper),
+    ep!("ceil", "f32", ceil_elementwise_f32_cpu_wrapper),
+    ep!("ceil", "f64", ceil_elementwise_f64_cpu_wrapper),
     ep!("ceil", "bf16", ceil_elementwise_bf16_cpu_wrapper),
-    ep!("ceil", "f16",  ceil_elementwise_f16_cpu_wrapper),
-    ep!("round", "f32",  round_elementwise_f32_cpu_wrapper),
-    ep!("round", "f64",  round_elementwise_f64_cpu_wrapper),
+    ep!("ceil", "f16", ceil_elementwise_f16_cpu_wrapper),
+    ep!("round", "f32", round_elementwise_f32_cpu_wrapper),
+    ep!("round", "f64", round_elementwise_f64_cpu_wrapper),
     ep!("round", "bf16", round_elementwise_bf16_cpu_wrapper),
-    ep!("round", "f16",  round_elementwise_f16_cpu_wrapper),
-    ep!("sign", "f32",  sign_elementwise_f32_cpu_wrapper),
-    ep!("sign", "f64",  sign_elementwise_f64_cpu_wrapper),
+    ep!("round", "f16", round_elementwise_f16_cpu_wrapper),
+    ep!("sign", "f32", sign_elementwise_f32_cpu_wrapper),
+    ep!("sign", "f64", sign_elementwise_f64_cpu_wrapper),
     ep!("sign", "bf16", sign_elementwise_bf16_cpu_wrapper),
-    ep!("sign", "f16",  sign_elementwise_f16_cpu_wrapper),
-    ep!("erf", "f32",  erf_elementwise_f32_cpu_wrapper),
-    ep!("erf", "f64",  erf_elementwise_f64_cpu_wrapper),
+    ep!("sign", "f16", sign_elementwise_f16_cpu_wrapper),
+    ep!("erf", "f32", erf_elementwise_f32_cpu_wrapper),
+    ep!("erf", "f64", erf_elementwise_f64_cpu_wrapper),
     ep!("erf", "bf16", erf_elementwise_bf16_cpu_wrapper),
-    ep!("erf", "f16",  erf_elementwise_f16_cpu_wrapper),
+    ep!("erf", "f16", erf_elementwise_f16_cpu_wrapper),
     // gelu_erf (exact-erf GELU): base `gelu_erf`, DISTINCT from `gelu` above.
-    ep!("gelu_erf", "f32",  gelu_erf_elementwise_f32_cpu_wrapper),
-    ep!("gelu_erf", "f64",  gelu_erf_elementwise_f64_cpu_wrapper),
+    ep!("gelu_erf", "f32", gelu_erf_elementwise_f32_cpu_wrapper),
+    ep!("gelu_erf", "f64", gelu_erf_elementwise_f64_cpu_wrapper),
     ep!("gelu_erf", "bf16", gelu_erf_elementwise_bf16_cpu_wrapper),
-    ep!("gelu_erf", "f16",  gelu_erf_elementwise_f16_cpu_wrapper),
-    ep!("rsqrt", "f32",  rsqrt_elementwise_f32_cpu_wrapper),
-    ep!("rsqrt", "f64",  rsqrt_elementwise_f64_cpu_wrapper),
+    ep!("gelu_erf", "f16", gelu_erf_elementwise_f16_cpu_wrapper),
+    ep!("rsqrt", "f32", rsqrt_elementwise_f32_cpu_wrapper),
+    ep!("rsqrt", "f64", rsqrt_elementwise_f64_cpu_wrapper),
     ep!("rsqrt", "bf16", rsqrt_elementwise_bf16_cpu_wrapper),
-    ep!("rsqrt", "f16",  rsqrt_elementwise_f16_cpu_wrapper),
+    ep!("rsqrt", "f16", rsqrt_elementwise_f16_cpu_wrapper),
 ];
 
 /// The CPU elementwise-COMPARE family's `symbol → production wrapper` map
@@ -247,30 +247,30 @@ pub static CPU_UNARY_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// umbrella is `registrable: false` (§3.10 describe-only) and never resolves,
 /// so it is absent here.
 pub static CPU_COMPARE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
-    ep!("eq", "f32_u8",  eq_elementwise_f32_cpu_wrapper),
-    ep!("eq", "f64_u8",  eq_elementwise_f64_cpu_wrapper),
+    ep!("eq", "f32_u8", eq_elementwise_f32_cpu_wrapper),
+    ep!("eq", "f64_u8", eq_elementwise_f64_cpu_wrapper),
     ep!("eq", "bf16_u8", eq_elementwise_bf16_cpu_wrapper),
-    ep!("eq", "f16_u8",  eq_elementwise_f16_cpu_wrapper),
-    ep!("ne", "f32_u8",  ne_elementwise_f32_cpu_wrapper),
-    ep!("ne", "f64_u8",  ne_elementwise_f64_cpu_wrapper),
+    ep!("eq", "f16_u8", eq_elementwise_f16_cpu_wrapper),
+    ep!("ne", "f32_u8", ne_elementwise_f32_cpu_wrapper),
+    ep!("ne", "f64_u8", ne_elementwise_f64_cpu_wrapper),
     ep!("ne", "bf16_u8", ne_elementwise_bf16_cpu_wrapper),
-    ep!("ne", "f16_u8",  ne_elementwise_f16_cpu_wrapper),
-    ep!("lt", "f32_u8",  lt_elementwise_f32_cpu_wrapper),
-    ep!("lt", "f64_u8",  lt_elementwise_f64_cpu_wrapper),
+    ep!("ne", "f16_u8", ne_elementwise_f16_cpu_wrapper),
+    ep!("lt", "f32_u8", lt_elementwise_f32_cpu_wrapper),
+    ep!("lt", "f64_u8", lt_elementwise_f64_cpu_wrapper),
     ep!("lt", "bf16_u8", lt_elementwise_bf16_cpu_wrapper),
-    ep!("lt", "f16_u8",  lt_elementwise_f16_cpu_wrapper),
-    ep!("le", "f32_u8",  le_elementwise_f32_cpu_wrapper),
-    ep!("le", "f64_u8",  le_elementwise_f64_cpu_wrapper),
+    ep!("lt", "f16_u8", lt_elementwise_f16_cpu_wrapper),
+    ep!("le", "f32_u8", le_elementwise_f32_cpu_wrapper),
+    ep!("le", "f64_u8", le_elementwise_f64_cpu_wrapper),
     ep!("le", "bf16_u8", le_elementwise_bf16_cpu_wrapper),
-    ep!("le", "f16_u8",  le_elementwise_f16_cpu_wrapper),
-    ep!("gt", "f32_u8",  gt_elementwise_f32_cpu_wrapper),
-    ep!("gt", "f64_u8",  gt_elementwise_f64_cpu_wrapper),
+    ep!("le", "f16_u8", le_elementwise_f16_cpu_wrapper),
+    ep!("gt", "f32_u8", gt_elementwise_f32_cpu_wrapper),
+    ep!("gt", "f64_u8", gt_elementwise_f64_cpu_wrapper),
     ep!("gt", "bf16_u8", gt_elementwise_bf16_cpu_wrapper),
-    ep!("gt", "f16_u8",  gt_elementwise_f16_cpu_wrapper),
-    ep!("ge", "f32_u8",  ge_elementwise_f32_cpu_wrapper),
-    ep!("ge", "f64_u8",  ge_elementwise_f64_cpu_wrapper),
+    ep!("gt", "f16_u8", gt_elementwise_f16_cpu_wrapper),
+    ep!("ge", "f32_u8", ge_elementwise_f32_cpu_wrapper),
+    ep!("ge", "f64_u8", ge_elementwise_f64_cpu_wrapper),
     ep!("ge", "bf16_u8", ge_elementwise_bf16_cpu_wrapper),
-    ep!("ge", "f16_u8",  ge_elementwise_f16_cpu_wrapper),
+    ep!("ge", "f16_u8", ge_elementwise_f16_cpu_wrapper),
 ];
 
 /// The CPU ternary-select (`where`) family's `symbol → production wrapper` map
@@ -281,10 +281,10 @@ pub static CPU_COMPARE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// `where_{f32,f64,bf16,f16}` against this table. The binding key is
 /// `[U8, T, T, T]` (cond U8 + a/b/out share T; `out: passthrough(a)` → T).
 pub static CPU_WHERE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
-    ep!("where", "f32",  where_f32_cpu_wrapper),
-    ep!("where", "f64",  where_f64_cpu_wrapper),
+    ep!("where", "f32", where_f32_cpu_wrapper),
+    ep!("where", "f64", where_f64_cpu_wrapper),
     ep!("where", "bf16", where_bf16_cpu_wrapper),
-    ep!("where", "f16",  where_f16_cpu_wrapper),
+    ep!("where", "f16", where_f16_cpu_wrapper),
 ];
 
 /// The CPU per-axis REDUCE family's `symbol → production wrapper` map
@@ -299,22 +299,22 @@ pub static CPU_WHERE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// `registrable: false` (deferred — production registers Arg{Max,Min}Dim for all
 /// input dtypes via a hand-written dispatch) and are likewise absent.
 pub static CPU_REDUCE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
-    ep!("sum_reduce",  "f32",  sum_reduce_f32_cpu_wrapper),
-    ep!("sum_reduce",  "f64",  sum_reduce_f64_cpu_wrapper),
-    ep!("sum_reduce",  "bf16", sum_reduce_bf16_cpu_wrapper),
-    ep!("sum_reduce",  "f16",  sum_reduce_f16_cpu_wrapper),
-    ep!("mean_reduce", "f32",  mean_reduce_f32_cpu_wrapper),
-    ep!("mean_reduce", "f64",  mean_reduce_f64_cpu_wrapper),
+    ep!("sum_reduce", "f32", sum_reduce_f32_cpu_wrapper),
+    ep!("sum_reduce", "f64", sum_reduce_f64_cpu_wrapper),
+    ep!("sum_reduce", "bf16", sum_reduce_bf16_cpu_wrapper),
+    ep!("sum_reduce", "f16", sum_reduce_f16_cpu_wrapper),
+    ep!("mean_reduce", "f32", mean_reduce_f32_cpu_wrapper),
+    ep!("mean_reduce", "f64", mean_reduce_f64_cpu_wrapper),
     ep!("mean_reduce", "bf16", mean_reduce_bf16_cpu_wrapper),
-    ep!("mean_reduce", "f16",  mean_reduce_f16_cpu_wrapper),
-    ep!("max_reduce",  "f32",  max_reduce_f32_cpu_wrapper),
-    ep!("max_reduce",  "f64",  max_reduce_f64_cpu_wrapper),
-    ep!("max_reduce",  "bf16", max_reduce_bf16_cpu_wrapper),
-    ep!("max_reduce",  "f16",  max_reduce_f16_cpu_wrapper),
-    ep!("min_reduce",  "f32",  min_reduce_f32_cpu_wrapper),
-    ep!("min_reduce",  "f64",  min_reduce_f64_cpu_wrapper),
-    ep!("min_reduce",  "bf16", min_reduce_bf16_cpu_wrapper),
-    ep!("min_reduce",  "f16",  min_reduce_f16_cpu_wrapper),
+    ep!("mean_reduce", "f16", mean_reduce_f16_cpu_wrapper),
+    ep!("max_reduce", "f32", max_reduce_f32_cpu_wrapper),
+    ep!("max_reduce", "f64", max_reduce_f64_cpu_wrapper),
+    ep!("max_reduce", "bf16", max_reduce_bf16_cpu_wrapper),
+    ep!("max_reduce", "f16", max_reduce_f16_cpu_wrapper),
+    ep!("min_reduce", "f32", min_reduce_f32_cpu_wrapper),
+    ep!("min_reduce", "f64", min_reduce_f64_cpu_wrapper),
+    ep!("min_reduce", "bf16", min_reduce_bf16_cpu_wrapper),
+    ep!("min_reduce", "f16", min_reduce_f16_cpu_wrapper),
 ];
 
 /// The CPU broadcast-target REDUCE-TO family's `symbol → production wrapper`
@@ -331,18 +331,34 @@ pub static CPU_REDUCE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// and never resolves, so it is absent here (without it the chassis would
 /// double-register `ReduceSumTo`/`[F32]` → `DuplicateKernelRef` at init).
 pub static CPU_REDUCE_TO_ENTRY_POINTS: &[(&str, KernelRef)] = &[
-    ep!("reduce_sum_to", "f32",  reduce_sum_to_f32_cpu_wrapper),
-    ep!("reduce_sum_to", "f64",  reduce_sum_to_f64_cpu_wrapper),
+    ep!("reduce_sum_to", "f32", reduce_sum_to_f32_cpu_wrapper),
+    ep!("reduce_sum_to", "f64", reduce_sum_to_f64_cpu_wrapper),
     ep!("reduce_sum_to", "bf16", reduce_sum_to_bf16_cpu_wrapper),
-    ep!("reduce_sum_to", "f16",  reduce_sum_to_f16_cpu_wrapper),
-    ep!("reduce_max_to", "f32",  reduce_max_to_f32_cpu_wrapper),
-    ep!("reduce_max_to", "f64",  reduce_max_to_f64_cpu_wrapper),
+    ep!("reduce_sum_to", "f16", reduce_sum_to_f16_cpu_wrapper),
+    ep!("reduce_max_to", "f32", reduce_max_to_f32_cpu_wrapper),
+    ep!("reduce_max_to", "f64", reduce_max_to_f64_cpu_wrapper),
     ep!("reduce_max_to", "bf16", reduce_max_to_bf16_cpu_wrapper),
-    ep!("reduce_max_to", "f16",  reduce_max_to_f16_cpu_wrapper),
-    ep!("reduce_max_to_backward", "f32",  reduce_max_to_backward_f32_cpu_wrapper),
-    ep!("reduce_max_to_backward", "f64",  reduce_max_to_backward_f64_cpu_wrapper),
-    ep!("reduce_max_to_backward", "bf16", reduce_max_to_backward_bf16_cpu_wrapper),
-    ep!("reduce_max_to_backward", "f16",  reduce_max_to_backward_f16_cpu_wrapper),
+    ep!("reduce_max_to", "f16", reduce_max_to_f16_cpu_wrapper),
+    ep!(
+        "reduce_max_to_backward",
+        "f32",
+        reduce_max_to_backward_f32_cpu_wrapper
+    ),
+    ep!(
+        "reduce_max_to_backward",
+        "f64",
+        reduce_max_to_backward_f64_cpu_wrapper
+    ),
+    ep!(
+        "reduce_max_to_backward",
+        "bf16",
+        reduce_max_to_backward_bf16_cpu_wrapper
+    ),
+    ep!(
+        "reduce_max_to_backward",
+        "f16",
+        reduce_max_to_backward_f16_cpu_wrapper
+    ),
 ];
 
 /// The CPU last-dim NORM (forward) family's `symbol → production wrapper` map
@@ -362,22 +378,58 @@ pub static CPU_REDUCE_TO_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// chassis umbrella section, so there is no `registrable: false` describe-only
 /// entry to omit; the BACKWARD forms live in a separate norm-backward contract.
 pub static CPU_NORM_ENTRY_POINTS: &[(&str, KernelRef)] = &[
-    ep!("softmax_last_dim", "f32",  softmax_last_dim_f32_cpu_wrapper),
-    ep!("softmax_last_dim", "f64",  softmax_last_dim_f64_cpu_wrapper),
-    ep!("softmax_last_dim", "bf16", softmax_last_dim_bf16_cpu_wrapper),
-    ep!("softmax_last_dim", "f16",  softmax_last_dim_f16_cpu_wrapper),
-    ep!("log_softmax_last_dim", "f32",  log_softmax_f32_cpu_wrapper),
-    ep!("log_softmax_last_dim", "f64",  log_softmax_f64_cpu_wrapper),
+    ep!("softmax_last_dim", "f32", softmax_last_dim_f32_cpu_wrapper),
+    ep!("softmax_last_dim", "f64", softmax_last_dim_f64_cpu_wrapper),
+    ep!(
+        "softmax_last_dim",
+        "bf16",
+        softmax_last_dim_bf16_cpu_wrapper
+    ),
+    ep!("softmax_last_dim", "f16", softmax_last_dim_f16_cpu_wrapper),
+    ep!("log_softmax_last_dim", "f32", log_softmax_f32_cpu_wrapper),
+    ep!("log_softmax_last_dim", "f64", log_softmax_f64_cpu_wrapper),
     ep!("log_softmax_last_dim", "bf16", log_softmax_bf16_cpu_wrapper),
-    ep!("log_softmax_last_dim", "f16",  log_softmax_f16_cpu_wrapper),
-    ep!("rms_norm_last_dim", "f32",  rms_norm_last_dim_f32_cpu_wrapper),
-    ep!("rms_norm_last_dim", "f64",  rms_norm_last_dim_f64_cpu_wrapper),
-    ep!("rms_norm_last_dim", "bf16", rms_norm_last_dim_bf16_cpu_wrapper),
-    ep!("rms_norm_last_dim", "f16",  rms_norm_last_dim_f16_cpu_wrapper),
-    ep!("layer_norm_last_dim", "f32",  layer_norm_last_dim_f32_cpu_wrapper),
-    ep!("layer_norm_last_dim", "f64",  layer_norm_last_dim_f64_cpu_wrapper),
-    ep!("layer_norm_last_dim", "bf16", layer_norm_last_dim_bf16_cpu_wrapper),
-    ep!("layer_norm_last_dim", "f16",  layer_norm_last_dim_f16_cpu_wrapper),
+    ep!("log_softmax_last_dim", "f16", log_softmax_f16_cpu_wrapper),
+    ep!(
+        "rms_norm_last_dim",
+        "f32",
+        rms_norm_last_dim_f32_cpu_wrapper
+    ),
+    ep!(
+        "rms_norm_last_dim",
+        "f64",
+        rms_norm_last_dim_f64_cpu_wrapper
+    ),
+    ep!(
+        "rms_norm_last_dim",
+        "bf16",
+        rms_norm_last_dim_bf16_cpu_wrapper
+    ),
+    ep!(
+        "rms_norm_last_dim",
+        "f16",
+        rms_norm_last_dim_f16_cpu_wrapper
+    ),
+    ep!(
+        "layer_norm_last_dim",
+        "f32",
+        layer_norm_last_dim_f32_cpu_wrapper
+    ),
+    ep!(
+        "layer_norm_last_dim",
+        "f64",
+        layer_norm_last_dim_f64_cpu_wrapper
+    ),
+    ep!(
+        "layer_norm_last_dim",
+        "bf16",
+        layer_norm_last_dim_bf16_cpu_wrapper
+    ),
+    ep!(
+        "layer_norm_last_dim",
+        "f16",
+        layer_norm_last_dim_f16_cpu_wrapper
+    ),
 ];
 
 /// The CPU last-dim NORM-BACKWARD family's `symbol → production wrapper` map
@@ -399,22 +451,86 @@ pub static CPU_NORM_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// chassis umbrella section, so there is no `registrable: false` describe-only entry
 /// to omit; the FORWARD forms live in the separate norm contract.
 pub static CPU_NORM_BACKWARD_ENTRY_POINTS: &[(&str, KernelRef)] = &[
-    ep!("softmax_last_dim_backward", "f32",  softmax_last_dim_backward_f32_cpu_wrapper),
-    ep!("softmax_last_dim_backward", "f64",  softmax_last_dim_backward_f64_cpu_wrapper),
-    ep!("softmax_last_dim_backward", "bf16", softmax_last_dim_backward_bf16_cpu_wrapper),
-    ep!("softmax_last_dim_backward", "f16",  softmax_last_dim_backward_f16_cpu_wrapper),
-    ep!("log_softmax_last_dim_backward", "f32",  log_softmax_backward_f32_cpu_wrapper),
-    ep!("log_softmax_last_dim_backward", "f64",  log_softmax_backward_f64_cpu_wrapper),
-    ep!("log_softmax_last_dim_backward", "bf16", log_softmax_backward_bf16_cpu_wrapper),
-    ep!("log_softmax_last_dim_backward", "f16",  log_softmax_backward_f16_cpu_wrapper),
-    ep!("rms_norm_last_dim_backward", "f32",  rms_norm_last_dim_backward_f32_cpu_wrapper),
-    ep!("rms_norm_last_dim_backward", "f64",  rms_norm_last_dim_backward_f64_cpu_wrapper),
-    ep!("rms_norm_last_dim_backward", "bf16", rms_norm_last_dim_backward_bf16_cpu_wrapper),
-    ep!("rms_norm_last_dim_backward", "f16",  rms_norm_last_dim_backward_f16_cpu_wrapper),
-    ep!("layer_norm_last_dim_backward", "f32",  layer_norm_last_dim_backward_f32_cpu_wrapper),
-    ep!("layer_norm_last_dim_backward", "f64",  layer_norm_last_dim_backward_f64_cpu_wrapper),
-    ep!("layer_norm_last_dim_backward", "bf16", layer_norm_last_dim_backward_bf16_cpu_wrapper),
-    ep!("layer_norm_last_dim_backward", "f16",  layer_norm_last_dim_backward_f16_cpu_wrapper),
+    ep!(
+        "softmax_last_dim_backward",
+        "f32",
+        softmax_last_dim_backward_f32_cpu_wrapper
+    ),
+    ep!(
+        "softmax_last_dim_backward",
+        "f64",
+        softmax_last_dim_backward_f64_cpu_wrapper
+    ),
+    ep!(
+        "softmax_last_dim_backward",
+        "bf16",
+        softmax_last_dim_backward_bf16_cpu_wrapper
+    ),
+    ep!(
+        "softmax_last_dim_backward",
+        "f16",
+        softmax_last_dim_backward_f16_cpu_wrapper
+    ),
+    ep!(
+        "log_softmax_last_dim_backward",
+        "f32",
+        log_softmax_backward_f32_cpu_wrapper
+    ),
+    ep!(
+        "log_softmax_last_dim_backward",
+        "f64",
+        log_softmax_backward_f64_cpu_wrapper
+    ),
+    ep!(
+        "log_softmax_last_dim_backward",
+        "bf16",
+        log_softmax_backward_bf16_cpu_wrapper
+    ),
+    ep!(
+        "log_softmax_last_dim_backward",
+        "f16",
+        log_softmax_backward_f16_cpu_wrapper
+    ),
+    ep!(
+        "rms_norm_last_dim_backward",
+        "f32",
+        rms_norm_last_dim_backward_f32_cpu_wrapper
+    ),
+    ep!(
+        "rms_norm_last_dim_backward",
+        "f64",
+        rms_norm_last_dim_backward_f64_cpu_wrapper
+    ),
+    ep!(
+        "rms_norm_last_dim_backward",
+        "bf16",
+        rms_norm_last_dim_backward_bf16_cpu_wrapper
+    ),
+    ep!(
+        "rms_norm_last_dim_backward",
+        "f16",
+        rms_norm_last_dim_backward_f16_cpu_wrapper
+    ),
+    ep!(
+        "layer_norm_last_dim_backward",
+        "f32",
+        layer_norm_last_dim_backward_f32_cpu_wrapper
+    ),
+    ep!(
+        "layer_norm_last_dim_backward",
+        "f64",
+        layer_norm_last_dim_backward_f64_cpu_wrapper
+    ),
+    ep!(
+        "layer_norm_last_dim_backward",
+        "bf16",
+        layer_norm_last_dim_backward_bf16_cpu_wrapper
+    ),
+    ep!(
+        "layer_norm_last_dim_backward",
+        "f16",
+        layer_norm_last_dim_backward_f16_cpu_wrapper
+    ),
 ];
 
 /// The CPU RoPE (rotary position embedding) family's `symbol → production
@@ -434,10 +550,10 @@ pub static CPU_NORM_BACKWARD_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// registry seam and stays untouched; this map only serves the
 /// `KernelBindingTable` primitive path.
 pub static CPU_ROPE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
-    ep!("rope", "f32",  rope_f32_cpu_wrapper),
-    ep!("rope", "f64",  rope_f64_cpu_wrapper),
+    ep!("rope", "f32", rope_f32_cpu_wrapper),
+    ep!("rope", "f64", rope_f64_cpu_wrapper),
     ep!("rope", "bf16", rope_bf16_cpu_wrapper),
-    ep!("rope", "f16",  rope_f16_cpu_wrapper),
+    ep!("rope", "f16", rope_f16_cpu_wrapper),
 ];
 
 /// The CPU SSM / Mamba family's `symbol → production wrapper` map — the FULL
@@ -464,22 +580,38 @@ pub static CPU_ROPE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// These sections have NO `##` chassis umbrella, so there is no
 /// `registrable: false` describe-only entry to omit.
 pub static CPU_SSM_ENTRY_POINTS: &[(&str, KernelRef)] = &[
-    ep!("fused_softmax_cross_entropy", "f32",  fused_softmax_cross_entropy_f32_cpu_wrapper),
-    ep!("fused_softmax_cross_entropy", "f64",  fused_softmax_cross_entropy_f64_cpu_wrapper),
-    ep!("fused_softmax_cross_entropy", "bf16", fused_softmax_cross_entropy_bf16_cpu_wrapper),
-    ep!("fused_softmax_cross_entropy", "f16",  fused_softmax_cross_entropy_f16_cpu_wrapper),
-    ep!("causal_conv1d", "f32",  causal_conv1d_f32_cpu_wrapper),
-    ep!("causal_conv1d", "f64",  causal_conv1d_f64_cpu_wrapper),
+    ep!(
+        "fused_softmax_cross_entropy",
+        "f32",
+        fused_softmax_cross_entropy_f32_cpu_wrapper
+    ),
+    ep!(
+        "fused_softmax_cross_entropy",
+        "f64",
+        fused_softmax_cross_entropy_f64_cpu_wrapper
+    ),
+    ep!(
+        "fused_softmax_cross_entropy",
+        "bf16",
+        fused_softmax_cross_entropy_bf16_cpu_wrapper
+    ),
+    ep!(
+        "fused_softmax_cross_entropy",
+        "f16",
+        fused_softmax_cross_entropy_f16_cpu_wrapper
+    ),
+    ep!("causal_conv1d", "f32", causal_conv1d_f32_cpu_wrapper),
+    ep!("causal_conv1d", "f64", causal_conv1d_f64_cpu_wrapper),
     ep!("causal_conv1d", "bf16", causal_conv1d_bf16_cpu_wrapper),
-    ep!("causal_conv1d", "f16",  causal_conv1d_f16_cpu_wrapper),
-    ep!("selective_scan", "f32",  selective_scan_f32_cpu_wrapper),
-    ep!("selective_scan", "f64",  selective_scan_f64_cpu_wrapper),
+    ep!("causal_conv1d", "f16", causal_conv1d_f16_cpu_wrapper),
+    ep!("selective_scan", "f32", selective_scan_f32_cpu_wrapper),
+    ep!("selective_scan", "f64", selective_scan_f64_cpu_wrapper),
     ep!("selective_scan", "bf16", selective_scan_bf16_cpu_wrapper),
-    ep!("selective_scan", "f16",  selective_scan_f16_cpu_wrapper),
-    ep!("ssd_chunk_scan", "f32",  ssd_chunk_scan_f32_cpu_wrapper),
-    ep!("ssd_chunk_scan", "f64",  ssd_chunk_scan_f64_cpu_wrapper),
+    ep!("selective_scan", "f16", selective_scan_f16_cpu_wrapper),
+    ep!("ssd_chunk_scan", "f32", ssd_chunk_scan_f32_cpu_wrapper),
+    ep!("ssd_chunk_scan", "f64", ssd_chunk_scan_f64_cpu_wrapper),
     ep!("ssd_chunk_scan", "bf16", ssd_chunk_scan_bf16_cpu_wrapper),
-    ep!("ssd_chunk_scan", "f16",  ssd_chunk_scan_f16_cpu_wrapper),
+    ep!("ssd_chunk_scan", "f16", ssd_chunk_scan_f16_cpu_wrapper),
 ];
 
 /// The CPU 2D-convolution family's `symbol → production wrapper` map — the FULL
@@ -504,14 +636,18 @@ pub static CPU_SSM_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// `KernelBindingTable` primitive path. These sections have NO `##` chassis
 /// umbrella, so there is no `registrable: false` describe-only entry to omit.
 pub static CPU_CONV_ENTRY_POINTS: &[(&str, KernelRef)] = &[
-    ep!("conv2d", "f32",  conv2d_f32_cpu_wrapper),
-    ep!("conv2d", "f64",  conv2d_f64_cpu_wrapper),
+    ep!("conv2d", "f32", conv2d_f32_cpu_wrapper),
+    ep!("conv2d", "f64", conv2d_f64_cpu_wrapper),
     ep!("conv2d", "bf16", conv2d_bf16_cpu_wrapper),
-    ep!("conv2d", "f16",  conv2d_f16_cpu_wrapper),
-    ep!("conv_transpose2d", "f32",  conv_transpose2d_f32_cpu_wrapper),
-    ep!("conv_transpose2d", "f64",  conv_transpose2d_f64_cpu_wrapper),
-    ep!("conv_transpose2d", "bf16", conv_transpose2d_bf16_cpu_wrapper),
-    ep!("conv_transpose2d", "f16",  conv_transpose2d_f16_cpu_wrapper),
+    ep!("conv2d", "f16", conv2d_f16_cpu_wrapper),
+    ep!("conv_transpose2d", "f32", conv_transpose2d_f32_cpu_wrapper),
+    ep!("conv_transpose2d", "f64", conv_transpose2d_f64_cpu_wrapper),
+    ep!(
+        "conv_transpose2d",
+        "bf16",
+        conv_transpose2d_bf16_cpu_wrapper
+    ),
+    ep!("conv_transpose2d", "f16", conv_transpose2d_f16_cpu_wrapper),
 ];
 
 /// The CPU **padding** family's `symbol → production wrapper` map — the FULL
@@ -545,17 +681,17 @@ pub static CPU_CONV_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 pub static CPU_PADDING_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     // Forward Pad — mode-unified dtype-agnostic byte kernel; the fabricated
     // `pad_cpu_<dt>` symbol maps to the ONE mode-dispatching `pad_cpu_wrapper`.
-    ep!("pad_cpu", "u8",   pad_cpu_wrapper),
-    ep!("pad_cpu", "u32",  pad_cpu_wrapper),
+    ep!("pad_cpu", "u8", pad_cpu_wrapper),
+    ep!("pad_cpu", "u32", pad_cpu_wrapper),
     ep!("pad_cpu", "bf16", pad_cpu_wrapper),
-    ep!("pad_cpu", "f16",  pad_cpu_wrapper),
-    ep!("pad_cpu", "f32",  pad_cpu_wrapper),
-    ep!("pad_cpu", "f64",  pad_cpu_wrapper),
+    ep!("pad_cpu", "f16", pad_cpu_wrapper),
+    ep!("pad_cpu", "f32", pad_cpu_wrapper),
+    ep!("pad_cpu", "f64", pad_cpu_wrapper),
     // PadBackward — per-dtype typed accumulation; resolved AS-IS (no fan).
-    ep!("pad_backward", "f32",  pad_backward_f32_cpu_wrapper),
-    ep!("pad_backward", "f64",  pad_backward_f64_cpu_wrapper),
+    ep!("pad_backward", "f32", pad_backward_f32_cpu_wrapper),
+    ep!("pad_backward", "f64", pad_backward_f64_cpu_wrapper),
     ep!("pad_backward", "bf16", pad_backward_bf16_cpu_wrapper),
-    ep!("pad_backward", "f16",  pad_backward_f16_cpu_wrapper),
+    ep!("pad_backward", "f16", pad_backward_f16_cpu_wrapper),
 ];
 
 /// The CPU **shape-ops** family's `symbol → production wrapper` map — the
@@ -592,69 +728,93 @@ pub static CPU_PADDING_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// OpKinds, not a keyable section).
 pub static CPU_SHAPE_OPS_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     // Flip — dtype-agnostic byte reorder; one wrapper fanned per dtype.
-    ep!("flip_cpu", "f32",  flip_cpu_wrapper),
-    ep!("flip_cpu", "f64",  flip_cpu_wrapper),
+    ep!("flip_cpu", "f32", flip_cpu_wrapper),
+    ep!("flip_cpu", "f64", flip_cpu_wrapper),
     ep!("flip_cpu", "bf16", flip_cpu_wrapper),
-    ep!("flip_cpu", "f16",  flip_cpu_wrapper),
-    ep!("flip_cpu", "u32",  flip_cpu_wrapper),
-    ep!("flip_cpu", "u8",   flip_cpu_wrapper),
+    ep!("flip_cpu", "f16", flip_cpu_wrapper),
+    ep!("flip_cpu", "u32", flip_cpu_wrapper),
+    ep!("flip_cpu", "u8", flip_cpu_wrapper),
     // Roll — dtype-agnostic cyclic shift.
-    ep!("roll_cpu", "f32",  roll_cpu_wrapper),
-    ep!("roll_cpu", "f64",  roll_cpu_wrapper),
+    ep!("roll_cpu", "f32", roll_cpu_wrapper),
+    ep!("roll_cpu", "f64", roll_cpu_wrapper),
     ep!("roll_cpu", "bf16", roll_cpu_wrapper),
-    ep!("roll_cpu", "f16",  roll_cpu_wrapper),
-    ep!("roll_cpu", "u32",  roll_cpu_wrapper),
-    ep!("roll_cpu", "u8",   roll_cpu_wrapper),
+    ep!("roll_cpu", "f16", roll_cpu_wrapper),
+    ep!("roll_cpu", "u32", roll_cpu_wrapper),
+    ep!("roll_cpu", "u8", roll_cpu_wrapper),
     // Concat — variadic uniform-dtype join collapsed to the [T, T] shorthand.
-    ep!("concat_cpu", "f32",  concat_cpu_wrapper),
-    ep!("concat_cpu", "f64",  concat_cpu_wrapper),
+    ep!("concat_cpu", "f32", concat_cpu_wrapper),
+    ep!("concat_cpu", "f64", concat_cpu_wrapper),
     ep!("concat_cpu", "bf16", concat_cpu_wrapper),
-    ep!("concat_cpu", "f16",  concat_cpu_wrapper),
-    ep!("concat_cpu", "u32",  concat_cpu_wrapper),
-    ep!("concat_cpu", "u8",   concat_cpu_wrapper),
-    ep!("concat_cpu", "i16",  concat_cpu_wrapper),
-    ep!("concat_cpu", "i32",  concat_cpu_wrapper),
-    ep!("concat_cpu", "i64",  concat_cpu_wrapper),
+    ep!("concat_cpu", "f16", concat_cpu_wrapper),
+    ep!("concat_cpu", "u32", concat_cpu_wrapper),
+    ep!("concat_cpu", "u8", concat_cpu_wrapper),
+    ep!("concat_cpu", "i16", concat_cpu_wrapper),
+    ep!("concat_cpu", "i32", concat_cpu_wrapper),
+    ep!("concat_cpu", "i64", concat_cpu_wrapper),
     // MaskedFill — dtype-agnostic data + fixed U8 mask; key [T, U8, T].
-    ep!("masked_fill_cpu", "f32",  masked_fill_cpu_wrapper),
-    ep!("masked_fill_cpu", "f64",  masked_fill_cpu_wrapper),
+    ep!("masked_fill_cpu", "f32", masked_fill_cpu_wrapper),
+    ep!("masked_fill_cpu", "f64", masked_fill_cpu_wrapper),
     ep!("masked_fill_cpu", "bf16", masked_fill_cpu_wrapper),
-    ep!("masked_fill_cpu", "f16",  masked_fill_cpu_wrapper),
-    ep!("masked_fill_cpu", "u32",  masked_fill_cpu_wrapper),
-    ep!("masked_fill_cpu", "u8",   masked_fill_cpu_wrapper),
+    ep!("masked_fill_cpu", "f16", masked_fill_cpu_wrapper),
+    ep!("masked_fill_cpu", "u32", masked_fill_cpu_wrapper),
+    ep!("masked_fill_cpu", "u8", masked_fill_cpu_wrapper),
     // CumSum — per-dtype typed kernels, resolved AS-IS (no fan).
-    ep!("cumsum", "f32",  cumsum_f32_cpu_wrapper),
-    ep!("cumsum", "f64",  cumsum_f64_cpu_wrapper),
+    ep!("cumsum", "f32", cumsum_f32_cpu_wrapper),
+    ep!("cumsum", "f64", cumsum_f64_cpu_wrapper),
     ep!("cumsum", "bf16", cumsum_bf16_cpu_wrapper),
-    ep!("cumsum", "f16",  cumsum_f16_cpu_wrapper),
+    ep!("cumsum", "f16", cumsum_f16_cpu_wrapper),
     // WriteSlice — in-place rectangular scatter; dtype-agnostic byte copy, one
     // wrapper fanned per dtype. `dest` is the in-place OUTPUT slot, so the key is
     // `[T_src, T_out]` = [T, T]; the fabricated `write_slice_cpu_<dt>` symbol maps
     // to the ONE dtype-agnostic wrapper.
-    ep!("write_slice_cpu", "f32",  write_slice_cpu_wrapper),
-    ep!("write_slice_cpu", "f64",  write_slice_cpu_wrapper),
+    ep!("write_slice_cpu", "f32", write_slice_cpu_wrapper),
+    ep!("write_slice_cpu", "f64", write_slice_cpu_wrapper),
     ep!("write_slice_cpu", "bf16", write_slice_cpu_wrapper),
-    ep!("write_slice_cpu", "f16",  write_slice_cpu_wrapper),
-    ep!("write_slice_cpu", "u32",  write_slice_cpu_wrapper),
-    ep!("write_slice_cpu", "u8",   write_slice_cpu_wrapper),
+    ep!("write_slice_cpu", "f16", write_slice_cpu_wrapper),
+    ep!("write_slice_cpu", "u32", write_slice_cpu_wrapper),
+    ep!("write_slice_cpu", "u8", write_slice_cpu_wrapper),
     // WriteSliceRotating — in-place ring-buffer scatter; same [T, T] key (dest =
     // output slot; the runtime `position` U32 operand is NOT a key slot). One
     // dtype-agnostic wrapper fanned per dtype.
-    ep!("write_slice_rotating_cpu", "f32",  write_slice_rotating_cpu_wrapper),
-    ep!("write_slice_rotating_cpu", "f64",  write_slice_rotating_cpu_wrapper),
-    ep!("write_slice_rotating_cpu", "bf16", write_slice_rotating_cpu_wrapper),
-    ep!("write_slice_rotating_cpu", "f16",  write_slice_rotating_cpu_wrapper),
-    ep!("write_slice_rotating_cpu", "u32",  write_slice_rotating_cpu_wrapper),
-    ep!("write_slice_rotating_cpu", "u8",   write_slice_rotating_cpu_wrapper),
+    ep!(
+        "write_slice_rotating_cpu",
+        "f32",
+        write_slice_rotating_cpu_wrapper
+    ),
+    ep!(
+        "write_slice_rotating_cpu",
+        "f64",
+        write_slice_rotating_cpu_wrapper
+    ),
+    ep!(
+        "write_slice_rotating_cpu",
+        "bf16",
+        write_slice_rotating_cpu_wrapper
+    ),
+    ep!(
+        "write_slice_rotating_cpu",
+        "f16",
+        write_slice_rotating_cpu_wrapper
+    ),
+    ep!(
+        "write_slice_rotating_cpu",
+        "u32",
+        write_slice_rotating_cpu_wrapper
+    ),
+    ep!(
+        "write_slice_rotating_cpu",
+        "u8",
+        write_slice_rotating_cpu_wrapper
+    ),
     // WriteSliceDoff — in-place scatter with a device-resident I64 start on one
     // axis (no wrap). Same [T, T] key (dest = output slot; the runtime I64
     // `offset` operand is NOT a key slot). One dtype-agnostic wrapper per dtype.
-    ep!("write_slice_doff_cpu", "f32",  write_slice_doff_cpu_wrapper),
-    ep!("write_slice_doff_cpu", "f64",  write_slice_doff_cpu_wrapper),
+    ep!("write_slice_doff_cpu", "f32", write_slice_doff_cpu_wrapper),
+    ep!("write_slice_doff_cpu", "f64", write_slice_doff_cpu_wrapper),
     ep!("write_slice_doff_cpu", "bf16", write_slice_doff_cpu_wrapper),
-    ep!("write_slice_doff_cpu", "f16",  write_slice_doff_cpu_wrapper),
-    ep!("write_slice_doff_cpu", "u32",  write_slice_doff_cpu_wrapper),
-    ep!("write_slice_doff_cpu", "u8",   write_slice_doff_cpu_wrapper),
+    ep!("write_slice_doff_cpu", "f16", write_slice_doff_cpu_wrapper),
+    ep!("write_slice_doff_cpu", "u32", write_slice_doff_cpu_wrapper),
+    ep!("write_slice_doff_cpu", "u8", write_slice_doff_cpu_wrapper),
 ];
 
 /// The CPU **indexing / gather / scatter** family's `symbol → production
@@ -682,35 +842,35 @@ pub static CPU_SHAPE_OPS_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 pub static CPU_INDEXING_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     // IndexSelect — dtype-agnostic byte copy; the fabricated
     // `index_select_cpu_<dt>` symbol maps to the ONE `index_select_cpu_wrapper`.
-    ep!("index_select_cpu", "f32",  index_select_cpu_wrapper),
-    ep!("index_select_cpu", "f64",  index_select_cpu_wrapper),
+    ep!("index_select_cpu", "f32", index_select_cpu_wrapper),
+    ep!("index_select_cpu", "f64", index_select_cpu_wrapper),
     ep!("index_select_cpu", "bf16", index_select_cpu_wrapper),
-    ep!("index_select_cpu", "f16",  index_select_cpu_wrapper),
-    ep!("index_select_cpu", "u32",  index_select_cpu_wrapper),
-    ep!("index_select_cpu", "u8",   index_select_cpu_wrapper),
-    ep!("index_select_cpu", "i16",  index_select_cpu_wrapper),
-    ep!("index_select_cpu", "i32",  index_select_cpu_wrapper),
-    ep!("index_select_cpu", "i64",  index_select_cpu_wrapper),
+    ep!("index_select_cpu", "f16", index_select_cpu_wrapper),
+    ep!("index_select_cpu", "u32", index_select_cpu_wrapper),
+    ep!("index_select_cpu", "u8", index_select_cpu_wrapper),
+    ep!("index_select_cpu", "i16", index_select_cpu_wrapper),
+    ep!("index_select_cpu", "i32", index_select_cpu_wrapper),
+    ep!("index_select_cpu", "i64", index_select_cpu_wrapper),
     // Gather — dtype-agnostic byte copy.
-    ep!("gather_cpu", "f32",  gather_cpu_wrapper),
-    ep!("gather_cpu", "f64",  gather_cpu_wrapper),
+    ep!("gather_cpu", "f32", gather_cpu_wrapper),
+    ep!("gather_cpu", "f64", gather_cpu_wrapper),
     ep!("gather_cpu", "bf16", gather_cpu_wrapper),
-    ep!("gather_cpu", "f16",  gather_cpu_wrapper),
-    ep!("gather_cpu", "u32",  gather_cpu_wrapper),
-    ep!("gather_cpu", "u8",   gather_cpu_wrapper),
-    ep!("gather_cpu", "i16",  gather_cpu_wrapper),
-    ep!("gather_cpu", "i32",  gather_cpu_wrapper),
-    ep!("gather_cpu", "i64",  gather_cpu_wrapper),
+    ep!("gather_cpu", "f16", gather_cpu_wrapper),
+    ep!("gather_cpu", "u32", gather_cpu_wrapper),
+    ep!("gather_cpu", "u8", gather_cpu_wrapper),
+    ep!("gather_cpu", "i16", gather_cpu_wrapper),
+    ep!("gather_cpu", "i32", gather_cpu_wrapper),
+    ep!("gather_cpu", "i64", gather_cpu_wrapper),
     // IndexAdd — per-dtype typed accumulation; resolved AS-IS (no fan).
-    ep!("index_add", "f32",  index_add_f32_cpu_wrapper),
-    ep!("index_add", "f64",  index_add_f64_cpu_wrapper),
+    ep!("index_add", "f32", index_add_f32_cpu_wrapper),
+    ep!("index_add", "f64", index_add_f64_cpu_wrapper),
     ep!("index_add", "bf16", index_add_bf16_cpu_wrapper),
-    ep!("index_add", "f16",  index_add_f16_cpu_wrapper),
+    ep!("index_add", "f16", index_add_f16_cpu_wrapper),
     // ScatterAdd — per-dtype typed accumulation; resolved AS-IS (no fan).
-    ep!("scatter_add", "f32",  scatter_add_f32_cpu_wrapper),
-    ep!("scatter_add", "f64",  scatter_add_f64_cpu_wrapper),
+    ep!("scatter_add", "f32", scatter_add_f32_cpu_wrapper),
+    ep!("scatter_add", "f64", scatter_add_f64_cpu_wrapper),
     ep!("scatter_add", "bf16", scatter_add_bf16_cpu_wrapper),
-    ep!("scatter_add", "f16",  scatter_add_f16_cpu_wrapper),
+    ep!("scatter_add", "f16", scatter_add_f16_cpu_wrapper),
 ];
 
 /// The CPU **matmul** family's `symbol → production wrapper` map — the FULL
@@ -746,17 +906,17 @@ pub static CPU_INDEXING_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// untouched — this map only serves the `KernelBindingTable` primitive path.
 pub static CPU_MATMUL_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     // Bare batched MatMul — key [T, T, T].
-    ep!("matmul", "f32",  matmul_f32_cpu_wrapper),
-    ep!("matmul", "f64",  matmul_f64_cpu_wrapper),
+    ep!("matmul", "f32", matmul_f32_cpu_wrapper),
+    ep!("matmul", "f64", matmul_f64_cpu_wrapper),
     ep!("matmul", "bf16", matmul_bf16_cpu_wrapper),
-    ep!("matmul", "f16",  matmul_f16_cpu_wrapper),
-    ep!("matmul", "i8",   matmul_i8_cpu_wrapper),
-    ep!("matmul", "u8",   matmul_u8_cpu_wrapper),
+    ep!("matmul", "f16", matmul_f16_cpu_wrapper),
+    ep!("matmul", "i8", matmul_i8_cpu_wrapper),
+    ep!("matmul", "u8", matmul_u8_cpu_wrapper),
     // Fused matmul + bias-add — key [T, T, T, T].
-    ep!("fused_linear", "f32",  fused_linear_f32_cpu_wrapper),
-    ep!("fused_linear", "f64",  fused_linear_f64_cpu_wrapper),
+    ep!("fused_linear", "f32", fused_linear_f32_cpu_wrapper),
+    ep!("fused_linear", "f64", fused_linear_f64_cpu_wrapper),
     ep!("fused_linear", "bf16", fused_linear_bf16_cpu_wrapper),
-    ep!("fused_linear", "f16",  fused_linear_f16_cpu_wrapper),
+    ep!("fused_linear", "f16", fused_linear_f16_cpu_wrapper),
 ];
 
 /// The CPU **attention** family's `symbol → production wrapper` map — the
@@ -798,10 +958,10 @@ pub static CPU_MATMUL_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// this map only serves the `KernelBindingTable` primitive path.
 pub static CPU_ATTENTION_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     // Forward FlashAttn — byte-kernel symbols; keys [T,T,T,T] / [T,T,T,T,T].
-    ep!("flash_attn", "f32",  flash_attn_f32_cpu_wrapper),
-    ep!("flash_attn", "f64",  flash_attn_f64_cpu_wrapper),
+    ep!("flash_attn", "f32", flash_attn_f32_cpu_wrapper),
+    ep!("flash_attn", "f64", flash_attn_f64_cpu_wrapper),
     ep!("flash_attn", "bf16", flash_attn_bf16_cpu_wrapper),
-    ep!("flash_attn", "f16",  flash_attn_f16_cpu_wrapper),
+    ep!("flash_attn", "f16", flash_attn_f16_cpu_wrapper),
     // FlashAttnBackward{Q,K,V} — dispatch-layer wrapper symbols;
     // keys [T,T,T,T,T] / [T,T,T,T,T,T].
     ep_dispatch!(flash_attn_backward_q_f32_cpu_wrapper),
@@ -818,10 +978,10 @@ pub static CPU_ATTENTION_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     ep_dispatch!(flash_attn_backward_v_f16_cpu_wrapper),
     // PagedAttn — byte-kernel symbols; keys [T,T,T,U32,U32,T] (+[T] with-alibi).
     // The optional-operand fan resolves both keys to the same per-dtype wrapper.
-    ep!("paged_attn", "f32",  paged_attn_f32_cpu_wrapper),
-    ep!("paged_attn", "f64",  paged_attn_f64_cpu_wrapper),
+    ep!("paged_attn", "f32", paged_attn_f32_cpu_wrapper),
+    ep!("paged_attn", "f64", paged_attn_f64_cpu_wrapper),
     ep!("paged_attn", "bf16", paged_attn_bf16_cpu_wrapper),
-    ep!("paged_attn", "f16",  paged_attn_f16_cpu_wrapper),
+    ep!("paged_attn", "f16", paged_attn_f16_cpu_wrapper),
 ];
 
 /// The CPU **in-place scalar-param** family's `symbol → production wrapper`
@@ -859,106 +1019,110 @@ pub static CPU_ATTENTION_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// (§3.10 describe-only) and never resolves, so it is absent here.
 pub static CPU_INPLACE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     // In-place unary — 21 ops × 4 dtypes, base `<op>_inplace` fanned per dtype.
-    ep!("relu_inplace", "f32",  relu_inplace_f32_cpu_wrapper),
-    ep!("relu_inplace", "f64",  relu_inplace_f64_cpu_wrapper),
+    ep!("relu_inplace", "f32", relu_inplace_f32_cpu_wrapper),
+    ep!("relu_inplace", "f64", relu_inplace_f64_cpu_wrapper),
     ep!("relu_inplace", "bf16", relu_inplace_bf16_cpu_wrapper),
-    ep!("relu_inplace", "f16",  relu_inplace_f16_cpu_wrapper),
-    ep!("silu_inplace", "f32",  silu_inplace_f32_cpu_wrapper),
-    ep!("silu_inplace", "f64",  silu_inplace_f64_cpu_wrapper),
+    ep!("relu_inplace", "f16", relu_inplace_f16_cpu_wrapper),
+    ep!("silu_inplace", "f32", silu_inplace_f32_cpu_wrapper),
+    ep!("silu_inplace", "f64", silu_inplace_f64_cpu_wrapper),
     ep!("silu_inplace", "bf16", silu_inplace_bf16_cpu_wrapper),
-    ep!("silu_inplace", "f16",  silu_inplace_f16_cpu_wrapper),
-    ep!("gelu_inplace", "f32",  gelu_inplace_f32_cpu_wrapper),
-    ep!("gelu_inplace", "f64",  gelu_inplace_f64_cpu_wrapper),
+    ep!("silu_inplace", "f16", silu_inplace_f16_cpu_wrapper),
+    ep!("gelu_inplace", "f32", gelu_inplace_f32_cpu_wrapper),
+    ep!("gelu_inplace", "f64", gelu_inplace_f64_cpu_wrapper),
     ep!("gelu_inplace", "bf16", gelu_inplace_bf16_cpu_wrapper),
-    ep!("gelu_inplace", "f16",  gelu_inplace_f16_cpu_wrapper),
-    ep!("tanh_inplace", "f32",  tanh_inplace_f32_cpu_wrapper),
-    ep!("tanh_inplace", "f64",  tanh_inplace_f64_cpu_wrapper),
+    ep!("gelu_inplace", "f16", gelu_inplace_f16_cpu_wrapper),
+    ep!("tanh_inplace", "f32", tanh_inplace_f32_cpu_wrapper),
+    ep!("tanh_inplace", "f64", tanh_inplace_f64_cpu_wrapper),
     ep!("tanh_inplace", "bf16", tanh_inplace_bf16_cpu_wrapper),
-    ep!("tanh_inplace", "f16",  tanh_inplace_f16_cpu_wrapper),
-    ep!("sigmoid_inplace", "f32",  sigmoid_inplace_f32_cpu_wrapper),
-    ep!("sigmoid_inplace", "f64",  sigmoid_inplace_f64_cpu_wrapper),
+    ep!("tanh_inplace", "f16", tanh_inplace_f16_cpu_wrapper),
+    ep!("sigmoid_inplace", "f32", sigmoid_inplace_f32_cpu_wrapper),
+    ep!("sigmoid_inplace", "f64", sigmoid_inplace_f64_cpu_wrapper),
     ep!("sigmoid_inplace", "bf16", sigmoid_inplace_bf16_cpu_wrapper),
-    ep!("sigmoid_inplace", "f16",  sigmoid_inplace_f16_cpu_wrapper),
-    ep!("neg_inplace", "f32",  neg_inplace_f32_cpu_wrapper),
-    ep!("neg_inplace", "f64",  neg_inplace_f64_cpu_wrapper),
+    ep!("sigmoid_inplace", "f16", sigmoid_inplace_f16_cpu_wrapper),
+    ep!("neg_inplace", "f32", neg_inplace_f32_cpu_wrapper),
+    ep!("neg_inplace", "f64", neg_inplace_f64_cpu_wrapper),
     ep!("neg_inplace", "bf16", neg_inplace_bf16_cpu_wrapper),
-    ep!("neg_inplace", "f16",  neg_inplace_f16_cpu_wrapper),
-    ep!("abs_inplace", "f32",  abs_inplace_f32_cpu_wrapper),
-    ep!("abs_inplace", "f64",  abs_inplace_f64_cpu_wrapper),
+    ep!("neg_inplace", "f16", neg_inplace_f16_cpu_wrapper),
+    ep!("abs_inplace", "f32", abs_inplace_f32_cpu_wrapper),
+    ep!("abs_inplace", "f64", abs_inplace_f64_cpu_wrapper),
     ep!("abs_inplace", "bf16", abs_inplace_bf16_cpu_wrapper),
-    ep!("abs_inplace", "f16",  abs_inplace_f16_cpu_wrapper),
-    ep!("sqr_inplace", "f32",  sqr_inplace_f32_cpu_wrapper),
-    ep!("sqr_inplace", "f64",  sqr_inplace_f64_cpu_wrapper),
+    ep!("abs_inplace", "f16", abs_inplace_f16_cpu_wrapper),
+    ep!("sqr_inplace", "f32", sqr_inplace_f32_cpu_wrapper),
+    ep!("sqr_inplace", "f64", sqr_inplace_f64_cpu_wrapper),
     ep!("sqr_inplace", "bf16", sqr_inplace_bf16_cpu_wrapper),
-    ep!("sqr_inplace", "f16",  sqr_inplace_f16_cpu_wrapper),
-    ep!("sqrt_inplace", "f32",  sqrt_inplace_f32_cpu_wrapper),
-    ep!("sqrt_inplace", "f64",  sqrt_inplace_f64_cpu_wrapper),
+    ep!("sqr_inplace", "f16", sqr_inplace_f16_cpu_wrapper),
+    ep!("sqrt_inplace", "f32", sqrt_inplace_f32_cpu_wrapper),
+    ep!("sqrt_inplace", "f64", sqrt_inplace_f64_cpu_wrapper),
     ep!("sqrt_inplace", "bf16", sqrt_inplace_bf16_cpu_wrapper),
-    ep!("sqrt_inplace", "f16",  sqrt_inplace_f16_cpu_wrapper),
-    ep!("rsqrt_inplace", "f32",  rsqrt_inplace_f32_cpu_wrapper),
-    ep!("rsqrt_inplace", "f64",  rsqrt_inplace_f64_cpu_wrapper),
+    ep!("sqrt_inplace", "f16", sqrt_inplace_f16_cpu_wrapper),
+    ep!("rsqrt_inplace", "f32", rsqrt_inplace_f32_cpu_wrapper),
+    ep!("rsqrt_inplace", "f64", rsqrt_inplace_f64_cpu_wrapper),
     ep!("rsqrt_inplace", "bf16", rsqrt_inplace_bf16_cpu_wrapper),
-    ep!("rsqrt_inplace", "f16",  rsqrt_inplace_f16_cpu_wrapper),
-    ep!("recip_inplace", "f32",  recip_inplace_f32_cpu_wrapper),
-    ep!("recip_inplace", "f64",  recip_inplace_f64_cpu_wrapper),
+    ep!("rsqrt_inplace", "f16", rsqrt_inplace_f16_cpu_wrapper),
+    ep!("recip_inplace", "f32", recip_inplace_f32_cpu_wrapper),
+    ep!("recip_inplace", "f64", recip_inplace_f64_cpu_wrapper),
     ep!("recip_inplace", "bf16", recip_inplace_bf16_cpu_wrapper),
-    ep!("recip_inplace", "f16",  recip_inplace_f16_cpu_wrapper),
-    ep!("exp_inplace", "f32",  exp_inplace_f32_cpu_wrapper),
-    ep!("exp_inplace", "f64",  exp_inplace_f64_cpu_wrapper),
+    ep!("recip_inplace", "f16", recip_inplace_f16_cpu_wrapper),
+    ep!("exp_inplace", "f32", exp_inplace_f32_cpu_wrapper),
+    ep!("exp_inplace", "f64", exp_inplace_f64_cpu_wrapper),
     ep!("exp_inplace", "bf16", exp_inplace_bf16_cpu_wrapper),
-    ep!("exp_inplace", "f16",  exp_inplace_f16_cpu_wrapper),
-    ep!("log_inplace", "f32",  log_inplace_f32_cpu_wrapper),
-    ep!("log_inplace", "f64",  log_inplace_f64_cpu_wrapper),
+    ep!("exp_inplace", "f16", exp_inplace_f16_cpu_wrapper),
+    ep!("log_inplace", "f32", log_inplace_f32_cpu_wrapper),
+    ep!("log_inplace", "f64", log_inplace_f64_cpu_wrapper),
     ep!("log_inplace", "bf16", log_inplace_bf16_cpu_wrapper),
-    ep!("log_inplace", "f16",  log_inplace_f16_cpu_wrapper),
-    ep!("sin_inplace", "f32",  sin_inplace_f32_cpu_wrapper),
-    ep!("sin_inplace", "f64",  sin_inplace_f64_cpu_wrapper),
+    ep!("log_inplace", "f16", log_inplace_f16_cpu_wrapper),
+    ep!("sin_inplace", "f32", sin_inplace_f32_cpu_wrapper),
+    ep!("sin_inplace", "f64", sin_inplace_f64_cpu_wrapper),
     ep!("sin_inplace", "bf16", sin_inplace_bf16_cpu_wrapper),
-    ep!("sin_inplace", "f16",  sin_inplace_f16_cpu_wrapper),
-    ep!("cos_inplace", "f32",  cos_inplace_f32_cpu_wrapper),
-    ep!("cos_inplace", "f64",  cos_inplace_f64_cpu_wrapper),
+    ep!("sin_inplace", "f16", sin_inplace_f16_cpu_wrapper),
+    ep!("cos_inplace", "f32", cos_inplace_f32_cpu_wrapper),
+    ep!("cos_inplace", "f64", cos_inplace_f64_cpu_wrapper),
     ep!("cos_inplace", "bf16", cos_inplace_bf16_cpu_wrapper),
-    ep!("cos_inplace", "f16",  cos_inplace_f16_cpu_wrapper),
-    ep!("sign_inplace", "f32",  sign_inplace_f32_cpu_wrapper),
-    ep!("sign_inplace", "f64",  sign_inplace_f64_cpu_wrapper),
+    ep!("cos_inplace", "f16", cos_inplace_f16_cpu_wrapper),
+    ep!("sign_inplace", "f32", sign_inplace_f32_cpu_wrapper),
+    ep!("sign_inplace", "f64", sign_inplace_f64_cpu_wrapper),
     ep!("sign_inplace", "bf16", sign_inplace_bf16_cpu_wrapper),
-    ep!("sign_inplace", "f16",  sign_inplace_f16_cpu_wrapper),
-    ep!("floor_inplace", "f32",  floor_inplace_f32_cpu_wrapper),
-    ep!("floor_inplace", "f64",  floor_inplace_f64_cpu_wrapper),
+    ep!("sign_inplace", "f16", sign_inplace_f16_cpu_wrapper),
+    ep!("floor_inplace", "f32", floor_inplace_f32_cpu_wrapper),
+    ep!("floor_inplace", "f64", floor_inplace_f64_cpu_wrapper),
     ep!("floor_inplace", "bf16", floor_inplace_bf16_cpu_wrapper),
-    ep!("floor_inplace", "f16",  floor_inplace_f16_cpu_wrapper),
-    ep!("ceil_inplace", "f32",  ceil_inplace_f32_cpu_wrapper),
-    ep!("ceil_inplace", "f64",  ceil_inplace_f64_cpu_wrapper),
+    ep!("floor_inplace", "f16", floor_inplace_f16_cpu_wrapper),
+    ep!("ceil_inplace", "f32", ceil_inplace_f32_cpu_wrapper),
+    ep!("ceil_inplace", "f64", ceil_inplace_f64_cpu_wrapper),
     ep!("ceil_inplace", "bf16", ceil_inplace_bf16_cpu_wrapper),
-    ep!("ceil_inplace", "f16",  ceil_inplace_f16_cpu_wrapper),
-    ep!("round_inplace", "f32",  round_inplace_f32_cpu_wrapper),
-    ep!("round_inplace", "f64",  round_inplace_f64_cpu_wrapper),
+    ep!("ceil_inplace", "f16", ceil_inplace_f16_cpu_wrapper),
+    ep!("round_inplace", "f32", round_inplace_f32_cpu_wrapper),
+    ep!("round_inplace", "f64", round_inplace_f64_cpu_wrapper),
     ep!("round_inplace", "bf16", round_inplace_bf16_cpu_wrapper),
-    ep!("round_inplace", "f16",  round_inplace_f16_cpu_wrapper),
-    ep!("erf_inplace", "f32",  erf_inplace_f32_cpu_wrapper),
-    ep!("erf_inplace", "f64",  erf_inplace_f64_cpu_wrapper),
+    ep!("round_inplace", "f16", round_inplace_f16_cpu_wrapper),
+    ep!("erf_inplace", "f32", erf_inplace_f32_cpu_wrapper),
+    ep!("erf_inplace", "f64", erf_inplace_f64_cpu_wrapper),
     ep!("erf_inplace", "bf16", erf_inplace_bf16_cpu_wrapper),
-    ep!("erf_inplace", "f16",  erf_inplace_f16_cpu_wrapper),
-    ep!("gelu_erf_inplace", "f32",  gelu_erf_inplace_f32_cpu_wrapper),
-    ep!("gelu_erf_inplace", "f64",  gelu_erf_inplace_f64_cpu_wrapper),
-    ep!("gelu_erf_inplace", "bf16", gelu_erf_inplace_bf16_cpu_wrapper),
-    ep!("gelu_erf_inplace", "f16",  gelu_erf_inplace_f16_cpu_wrapper),
+    ep!("erf_inplace", "f16", erf_inplace_f16_cpu_wrapper),
+    ep!("gelu_erf_inplace", "f32", gelu_erf_inplace_f32_cpu_wrapper),
+    ep!("gelu_erf_inplace", "f64", gelu_erf_inplace_f64_cpu_wrapper),
+    ep!(
+        "gelu_erf_inplace",
+        "bf16",
+        gelu_erf_inplace_bf16_cpu_wrapper
+    ),
+    ep!("gelu_erf_inplace", "f16", gelu_erf_inplace_f16_cpu_wrapper),
     // InplaceAffine — symbol `affine_inplace_<dt>`, wrapper `inplace_affine_<dt>_cpu_wrapper`
     // (words swapped); resolved AS-IS (single-dtype sections).
-    ep!("affine_inplace", "f32",  inplace_affine_f32_cpu_wrapper),
-    ep!("affine_inplace", "f64",  inplace_affine_f64_cpu_wrapper),
+    ep!("affine_inplace", "f32", inplace_affine_f32_cpu_wrapper),
+    ep!("affine_inplace", "f64", inplace_affine_f64_cpu_wrapper),
     ep!("affine_inplace", "bf16", inplace_affine_bf16_cpu_wrapper),
-    ep!("affine_inplace", "f16",  inplace_affine_f16_cpu_wrapper),
+    ep!("affine_inplace", "f16", inplace_affine_f16_cpu_wrapper),
     // ClampInplace — symbol == wrapper base; resolved AS-IS.
-    ep!("clamp_inplace", "f32",  clamp_inplace_f32_cpu_wrapper),
-    ep!("clamp_inplace", "f64",  clamp_inplace_f64_cpu_wrapper),
+    ep!("clamp_inplace", "f32", clamp_inplace_f32_cpu_wrapper),
+    ep!("clamp_inplace", "f64", clamp_inplace_f64_cpu_wrapper),
     ep!("clamp_inplace", "bf16", clamp_inplace_bf16_cpu_wrapper),
-    ep!("clamp_inplace", "f16",  clamp_inplace_f16_cpu_wrapper),
+    ep!("clamp_inplace", "f16", clamp_inplace_f16_cpu_wrapper),
     // PowIInplace — symbol == wrapper base; resolved AS-IS.
-    ep!("powi_inplace", "f32",  powi_inplace_f32_cpu_wrapper),
-    ep!("powi_inplace", "f64",  powi_inplace_f64_cpu_wrapper),
+    ep!("powi_inplace", "f32", powi_inplace_f32_cpu_wrapper),
+    ep!("powi_inplace", "f64", powi_inplace_f64_cpu_wrapper),
     ep!("powi_inplace", "bf16", powi_inplace_bf16_cpu_wrapper),
-    ep!("powi_inplace", "f16",  powi_inplace_f16_cpu_wrapper),
+    ep!("powi_inplace", "f16", powi_inplace_f16_cpu_wrapper),
 ];
 
 /// The CPU **cast** family's `symbol → production wrapper` map — the FULL
@@ -1158,40 +1322,115 @@ pub static CPU_CAST_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// real CPU fused kernels (FKC P9 — no raw pointers in the serialized contract).
 pub static CPU_FUSED_NORM_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     // Forward (key [T, T]) — SoftmaxLastDim / RmsNormLastDim / LayerNormLastDim.
-    fep!("softmax_last_dim_cpu_f32",  softmax_last_dim_f32_cpu_wrapper),
-    fep!("softmax_last_dim_cpu_f64",  softmax_last_dim_f64_cpu_wrapper),
-    fep!("softmax_last_dim_cpu_bf16", softmax_last_dim_bf16_cpu_wrapper),
-    fep!("softmax_last_dim_cpu_f16",  softmax_last_dim_f16_cpu_wrapper),
-    fep!("rms_norm_last_dim_cpu_f32",  rms_norm_last_dim_f32_cpu_wrapper),
-    fep!("rms_norm_last_dim_cpu_f64",  rms_norm_last_dim_f64_cpu_wrapper),
-    fep!("rms_norm_last_dim_cpu_bf16", rms_norm_last_dim_bf16_cpu_wrapper),
-    fep!("rms_norm_last_dim_cpu_f16",  rms_norm_last_dim_f16_cpu_wrapper),
-    fep!("layer_norm_last_dim_cpu_f32",  layer_norm_last_dim_f32_cpu_wrapper),
-    fep!("layer_norm_last_dim_cpu_f64",  layer_norm_last_dim_f64_cpu_wrapper),
-    fep!("layer_norm_last_dim_cpu_bf16", layer_norm_last_dim_bf16_cpu_wrapper),
-    fep!("layer_norm_last_dim_cpu_f16",  layer_norm_last_dim_f16_cpu_wrapper),
+    fep!("softmax_last_dim_cpu_f32", softmax_last_dim_f32_cpu_wrapper),
+    fep!("softmax_last_dim_cpu_f64", softmax_last_dim_f64_cpu_wrapper),
+    fep!(
+        "softmax_last_dim_cpu_bf16",
+        softmax_last_dim_bf16_cpu_wrapper
+    ),
+    fep!("softmax_last_dim_cpu_f16", softmax_last_dim_f16_cpu_wrapper),
+    fep!(
+        "rms_norm_last_dim_cpu_f32",
+        rms_norm_last_dim_f32_cpu_wrapper
+    ),
+    fep!(
+        "rms_norm_last_dim_cpu_f64",
+        rms_norm_last_dim_f64_cpu_wrapper
+    ),
+    fep!(
+        "rms_norm_last_dim_cpu_bf16",
+        rms_norm_last_dim_bf16_cpu_wrapper
+    ),
+    fep!(
+        "rms_norm_last_dim_cpu_f16",
+        rms_norm_last_dim_f16_cpu_wrapper
+    ),
+    fep!(
+        "layer_norm_last_dim_cpu_f32",
+        layer_norm_last_dim_f32_cpu_wrapper
+    ),
+    fep!(
+        "layer_norm_last_dim_cpu_f64",
+        layer_norm_last_dim_f64_cpu_wrapper
+    ),
+    fep!(
+        "layer_norm_last_dim_cpu_bf16",
+        layer_norm_last_dim_bf16_cpu_wrapper
+    ),
+    fep!(
+        "layer_norm_last_dim_cpu_f16",
+        layer_norm_last_dim_f16_cpu_wrapper
+    ),
     // Backward (key [T, T, T]) — Softmax / LayerNorm / RmsNorm backward.
-    fep!("softmax_last_dim_backward_cpu_f32",  softmax_last_dim_backward_f32_cpu_wrapper),
-    fep!("softmax_last_dim_backward_cpu_f64",  softmax_last_dim_backward_f64_cpu_wrapper),
-    fep!("softmax_last_dim_backward_cpu_bf16", softmax_last_dim_backward_bf16_cpu_wrapper),
-    fep!("softmax_last_dim_backward_cpu_f16",  softmax_last_dim_backward_f16_cpu_wrapper),
-    fep!("layer_norm_last_dim_backward_cpu_f32",  layer_norm_last_dim_backward_f32_cpu_wrapper),
-    fep!("layer_norm_last_dim_backward_cpu_f64",  layer_norm_last_dim_backward_f64_cpu_wrapper),
-    fep!("layer_norm_last_dim_backward_cpu_bf16", layer_norm_last_dim_backward_bf16_cpu_wrapper),
-    fep!("layer_norm_last_dim_backward_cpu_f16",  layer_norm_last_dim_backward_f16_cpu_wrapper),
-    fep!("rms_norm_last_dim_backward_cpu_f32",  rms_norm_last_dim_backward_f32_cpu_wrapper),
-    fep!("rms_norm_last_dim_backward_cpu_f64",  rms_norm_last_dim_backward_f64_cpu_wrapper),
-    fep!("rms_norm_last_dim_backward_cpu_bf16", rms_norm_last_dim_backward_bf16_cpu_wrapper),
-    fep!("rms_norm_last_dim_backward_cpu_f16",  rms_norm_last_dim_backward_f16_cpu_wrapper),
+    fep!(
+        "softmax_last_dim_backward_cpu_f32",
+        softmax_last_dim_backward_f32_cpu_wrapper
+    ),
+    fep!(
+        "softmax_last_dim_backward_cpu_f64",
+        softmax_last_dim_backward_f64_cpu_wrapper
+    ),
+    fep!(
+        "softmax_last_dim_backward_cpu_bf16",
+        softmax_last_dim_backward_bf16_cpu_wrapper
+    ),
+    fep!(
+        "softmax_last_dim_backward_cpu_f16",
+        softmax_last_dim_backward_f16_cpu_wrapper
+    ),
+    fep!(
+        "layer_norm_last_dim_backward_cpu_f32",
+        layer_norm_last_dim_backward_f32_cpu_wrapper
+    ),
+    fep!(
+        "layer_norm_last_dim_backward_cpu_f64",
+        layer_norm_last_dim_backward_f64_cpu_wrapper
+    ),
+    fep!(
+        "layer_norm_last_dim_backward_cpu_bf16",
+        layer_norm_last_dim_backward_bf16_cpu_wrapper
+    ),
+    fep!(
+        "layer_norm_last_dim_backward_cpu_f16",
+        layer_norm_last_dim_backward_f16_cpu_wrapper
+    ),
+    fep!(
+        "rms_norm_last_dim_backward_cpu_f32",
+        rms_norm_last_dim_backward_f32_cpu_wrapper
+    ),
+    fep!(
+        "rms_norm_last_dim_backward_cpu_f64",
+        rms_norm_last_dim_backward_f64_cpu_wrapper
+    ),
+    fep!(
+        "rms_norm_last_dim_backward_cpu_bf16",
+        rms_norm_last_dim_backward_bf16_cpu_wrapper
+    ),
+    fep!(
+        "rms_norm_last_dim_backward_cpu_f16",
+        rms_norm_last_dim_backward_f16_cpu_wrapper
+    ),
     // Backward of primitives (key [T, T, T]) — ReduceMaxTo / PowI backward.
-    fep!("reduce_max_to_backward_cpu_f32",  reduce_max_to_backward_f32_cpu_wrapper),
-    fep!("reduce_max_to_backward_cpu_f64",  reduce_max_to_backward_f64_cpu_wrapper),
-    fep!("reduce_max_to_backward_cpu_bf16", reduce_max_to_backward_bf16_cpu_wrapper),
-    fep!("reduce_max_to_backward_cpu_f16",  reduce_max_to_backward_f16_cpu_wrapper),
-    fep!("powi_backward_cpu_f32",  powi_backward_f32_cpu_wrapper),
-    fep!("powi_backward_cpu_f64",  powi_backward_f64_cpu_wrapper),
+    fep!(
+        "reduce_max_to_backward_cpu_f32",
+        reduce_max_to_backward_f32_cpu_wrapper
+    ),
+    fep!(
+        "reduce_max_to_backward_cpu_f64",
+        reduce_max_to_backward_f64_cpu_wrapper
+    ),
+    fep!(
+        "reduce_max_to_backward_cpu_bf16",
+        reduce_max_to_backward_bf16_cpu_wrapper
+    ),
+    fep!(
+        "reduce_max_to_backward_cpu_f16",
+        reduce_max_to_backward_f16_cpu_wrapper
+    ),
+    fep!("powi_backward_cpu_f32", powi_backward_f32_cpu_wrapper),
+    fep!("powi_backward_cpu_f64", powi_backward_f64_cpu_wrapper),
     fep!("powi_backward_cpu_bf16", powi_backward_bf16_cpu_wrapper),
-    fep!("powi_backward_cpu_f16",  powi_backward_f16_cpu_wrapper),
+    fep!("powi_backward_cpu_f16", powi_backward_f16_cpu_wrapper),
 ];
 
 /// The CPU **linear / quantized-matmul** FUSED family's `symbol → production
@@ -1237,23 +1476,35 @@ pub static CPU_FUSED_NORM_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// primitive `KernelBindingTable`.
 pub static CPU_FUSED_LINEAR_QUANT_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     // FUSED_LINEAR — key [T, T, T, T]; multi-dtype fan over {F32, F64, BF16, F16}.
-    fep!("fused_linear_cpu_f32",  fused_linear_f32_cpu_wrapper),
-    fep!("fused_linear_cpu_f64",  fused_linear_f64_cpu_wrapper),
+    fep!("fused_linear_cpu_f32", fused_linear_f32_cpu_wrapper),
+    fep!("fused_linear_cpu_f64", fused_linear_f64_cpu_wrapper),
     fep!("fused_linear_cpu_bf16", fused_linear_bf16_cpu_wrapper),
-    fep!("fused_linear_cpu_f16",  fused_linear_f16_cpu_wrapper),
+    fep!("fused_linear_cpu_f16", fused_linear_f16_cpu_wrapper),
     // QMATMUL — key [F32, U32, F32]; NON-fanning, BASE symbol resolved AS-IS.
     fep!("qmatmul_cpu", qmatmul_f32_cpu_wrapper),
     // INPLACE_AFFINE — key [T, T]; multi-dtype fan. Symbol `inplace_affine_cpu_<dt>`
     // → wrapper `inplace_affine_<dt>_cpu_wrapper` (the `_cpu`/`_<dt>` skew).
-    fep!("inplace_affine_cpu_f32",  inplace_affine_f32_cpu_wrapper),
-    fep!("inplace_affine_cpu_f64",  inplace_affine_f64_cpu_wrapper),
+    fep!("inplace_affine_cpu_f32", inplace_affine_f32_cpu_wrapper),
+    fep!("inplace_affine_cpu_f64", inplace_affine_f64_cpu_wrapper),
     fep!("inplace_affine_cpu_bf16", inplace_affine_bf16_cpu_wrapper),
-    fep!("inplace_affine_cpu_f16",  inplace_affine_f16_cpu_wrapper),
+    fep!("inplace_affine_cpu_f16", inplace_affine_f16_cpu_wrapper),
     // FUSED_SOFTMAX_CROSS_ENTROPY — key [T, I64, F32]; fan varies ONLY logits.
-    fep!("fused_softmax_cross_entropy_cpu_f32",  fused_softmax_cross_entropy_f32_cpu_wrapper),
-    fep!("fused_softmax_cross_entropy_cpu_f64",  fused_softmax_cross_entropy_f64_cpu_wrapper),
-    fep!("fused_softmax_cross_entropy_cpu_bf16", fused_softmax_cross_entropy_bf16_cpu_wrapper),
-    fep!("fused_softmax_cross_entropy_cpu_f16",  fused_softmax_cross_entropy_f16_cpu_wrapper),
+    fep!(
+        "fused_softmax_cross_entropy_cpu_f32",
+        fused_softmax_cross_entropy_f32_cpu_wrapper
+    ),
+    fep!(
+        "fused_softmax_cross_entropy_cpu_f64",
+        fused_softmax_cross_entropy_f64_cpu_wrapper
+    ),
+    fep!(
+        "fused_softmax_cross_entropy_cpu_bf16",
+        fused_softmax_cross_entropy_bf16_cpu_wrapper
+    ),
+    fep!(
+        "fused_softmax_cross_entropy_cpu_f16",
+        fused_softmax_cross_entropy_f16_cpu_wrapper
+    ),
 ];
 
 /// The CPU **conv / RoPE / SSM** FUSED family's `symbol → production wrapper`
@@ -1294,35 +1545,38 @@ pub static CPU_FUSED_LINEAR_QUANT_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// `cpu/rope.fkc.md` primitive tables are separate and stay untouched).
 pub static CPU_FUSED_CONV_ROPE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     // ROPE — key [T, T, T, T] (x, cos, sin + passthrough(x) out); 4 dtypes.
-    fep!("rope_cpu_f32",  rope_f32_cpu_wrapper),
-    fep!("rope_cpu_f64",  rope_f64_cpu_wrapper),
+    fep!("rope_cpu_f32", rope_f32_cpu_wrapper),
+    fep!("rope_cpu_f64", rope_f64_cpu_wrapper),
     fep!("rope_cpu_bf16", rope_bf16_cpu_wrapper),
-    fep!("rope_cpu_f16",  rope_f16_cpu_wrapper),
+    fep!("rope_cpu_f16", rope_f16_cpu_wrapper),
     // CONV2D — optional bias fans no-bias [T,T,T] + with-bias [T,T,T,T]; 4 rows → 8 impls.
-    fep!("conv2d_cpu_f32",  conv2d_f32_cpu_wrapper),
-    fep!("conv2d_cpu_f64",  conv2d_f64_cpu_wrapper),
+    fep!("conv2d_cpu_f32", conv2d_f32_cpu_wrapper),
+    fep!("conv2d_cpu_f64", conv2d_f64_cpu_wrapper),
     fep!("conv2d_cpu_bf16", conv2d_bf16_cpu_wrapper),
-    fep!("conv2d_cpu_f16",  conv2d_f16_cpu_wrapper),
+    fep!("conv2d_cpu_f16", conv2d_f16_cpu_wrapper),
     // CONV_TRANSPOSE2D — optional bias fans no-bias + with-bias; 4 rows → 8 impls.
-    fep!("conv_transpose2d_cpu_f32",  conv_transpose2d_f32_cpu_wrapper),
-    fep!("conv_transpose2d_cpu_f64",  conv_transpose2d_f64_cpu_wrapper),
-    fep!("conv_transpose2d_cpu_bf16", conv_transpose2d_bf16_cpu_wrapper),
-    fep!("conv_transpose2d_cpu_f16",  conv_transpose2d_f16_cpu_wrapper),
+    fep!("conv_transpose2d_cpu_f32", conv_transpose2d_f32_cpu_wrapper),
+    fep!("conv_transpose2d_cpu_f64", conv_transpose2d_f64_cpu_wrapper),
+    fep!(
+        "conv_transpose2d_cpu_bf16",
+        conv_transpose2d_bf16_cpu_wrapper
+    ),
+    fep!("conv_transpose2d_cpu_f16", conv_transpose2d_f16_cpu_wrapper),
     // CAUSAL_CONV1D — key [T, T, T, T] (x, weight, bias + passthrough(x) out); 4 dtypes.
-    fep!("causal_conv1d_cpu_f32",  causal_conv1d_f32_cpu_wrapper),
-    fep!("causal_conv1d_cpu_f64",  causal_conv1d_f64_cpu_wrapper),
+    fep!("causal_conv1d_cpu_f32", causal_conv1d_f32_cpu_wrapper),
+    fep!("causal_conv1d_cpu_f64", causal_conv1d_f64_cpu_wrapper),
     fep!("causal_conv1d_cpu_bf16", causal_conv1d_bf16_cpu_wrapper),
-    fep!("causal_conv1d_cpu_f16",  causal_conv1d_f16_cpu_wrapper),
+    fep!("causal_conv1d_cpu_f16", causal_conv1d_f16_cpu_wrapper),
     // SELECTIVE_SCAN — return.bundle: 5 inputs + primary-slot dtype → key [T; 6]; 4 dtypes.
-    fep!("selective_scan_cpu_f32",  selective_scan_f32_cpu_wrapper),
-    fep!("selective_scan_cpu_f64",  selective_scan_f64_cpu_wrapper),
+    fep!("selective_scan_cpu_f32", selective_scan_f32_cpu_wrapper),
+    fep!("selective_scan_cpu_f64", selective_scan_f64_cpu_wrapper),
     fep!("selective_scan_cpu_bf16", selective_scan_bf16_cpu_wrapper),
-    fep!("selective_scan_cpu_f16",  selective_scan_f16_cpu_wrapper),
+    fep!("selective_scan_cpu_f16", selective_scan_f16_cpu_wrapper),
     // SSD_CHUNK_SCAN — return.bundle: 5 inputs + primary-slot dtype → key [T; 6]; 4 dtypes.
-    fep!("ssd_chunk_scan_cpu_f32",  ssd_chunk_scan_f32_cpu_wrapper),
-    fep!("ssd_chunk_scan_cpu_f64",  ssd_chunk_scan_f64_cpu_wrapper),
+    fep!("ssd_chunk_scan_cpu_f32", ssd_chunk_scan_f32_cpu_wrapper),
+    fep!("ssd_chunk_scan_cpu_f64", ssd_chunk_scan_f64_cpu_wrapper),
     fep!("ssd_chunk_scan_cpu_bf16", ssd_chunk_scan_bf16_cpu_wrapper),
-    fep!("ssd_chunk_scan_cpu_f16",  ssd_chunk_scan_f16_cpu_wrapper),
+    fep!("ssd_chunk_scan_cpu_f16", ssd_chunk_scan_f16_cpu_wrapper),
 ];
 
 /// The built-in CPU backend's [`LinkRegistry`] — resolves a contract's

@@ -83,13 +83,28 @@ pub struct VggConfig {
 
 impl VggConfig {
     pub fn vgg13(nclasses: usize) -> Self {
-        Self { variant: VggVariant::Vgg13, nclasses, head_spatial: 7, head_hidden: 4096 }
+        Self {
+            variant: VggVariant::Vgg13,
+            nclasses,
+            head_spatial: 7,
+            head_hidden: 4096,
+        }
     }
     pub fn vgg16(nclasses: usize) -> Self {
-        Self { variant: VggVariant::Vgg16, nclasses, head_spatial: 7, head_hidden: 4096 }
+        Self {
+            variant: VggVariant::Vgg16,
+            nclasses,
+            head_spatial: 7,
+            head_hidden: 4096,
+        }
     }
     pub fn vgg19(nclasses: usize) -> Self {
-        Self { variant: VggVariant::Vgg19, nclasses, head_spatial: 7, head_hidden: 4096 }
+        Self {
+            variant: VggVariant::Vgg19,
+            nclasses,
+            head_spatial: 7,
+            head_hidden: 4096,
+        }
     }
 }
 
@@ -141,16 +156,22 @@ impl VggModel {
         let c = final_dims[1];
         let h = final_dims[2];
         let w = final_dims[3];
-        assert_eq!(h, cfg.head_spatial,
+        assert_eq!(
+            h, cfg.head_spatial,
             "VGG head expects post-conv spatial size {}, got {}",
-            cfg.head_spatial, h);
-        assert_eq!(w, cfg.head_spatial,
+            cfg.head_spatial, h
+        );
+        assert_eq!(
+            w, cfg.head_spatial,
             "VGG head expects post-conv spatial size {}, got {}",
-            cfg.head_spatial, w);
+            cfg.head_spatial, w
+        );
         let flat_dim = c * h * w;
-        assert_eq!(flat_dim, self.weights.fc1.in_features,
+        assert_eq!(
+            flat_dim, self.weights.fc1.in_features,
             "VGG fc1.in_features mismatch: flattened {flat_dim} vs weight {}",
-            self.weights.fc1.in_features);
+            self.weights.fc1.in_features
+        );
         let flat = x.reshape(Shape::from_dims(&[n, flat_dim]))?;
 
         let h1 = self.apply_fc(&flat, &self.weights.fc1)?.relu();
@@ -191,9 +212,9 @@ impl VggModel {
     }
 
     fn apply_conv(&self, x: &LazyTensor, conv: &VggConvWeights) -> Result<LazyTensor> {
-        let w = conv.w.const_like(
-            x, Shape::from_dims(&[conv.c_out, conv.c_in, 3, 3]),
-        )?;
+        let w = conv
+            .w
+            .const_like(x, Shape::from_dims(&[conv.c_out, conv.c_in, 3, 3]))?;
         let out = x.conv2d(&w, None, (1, 1), (1, 1), 1)?;
         let bias_t = x
             .const_f32_like(Arc::clone(&conv.b), Shape::from_dims(&[conv.c_out]))
@@ -203,9 +224,7 @@ impl VggModel {
 
     fn apply_fc(&self, x: &LazyTensor, fc: &VggHeadFc) -> Result<LazyTensor> {
         let out = fc.w.apply_linear(x, fc.in_features, fc.out_features)?;
-        let bias_t = x.const_f32_like(
-            Arc::clone(&fc.b), Shape::from_dims(&[fc.out_features]),
-        );
+        let bias_t = x.const_f32_like(Arc::clone(&fc.b), Shape::from_dims(&[fc.out_features]));
         out.broadcast_add(&bias_t)
     }
 }
@@ -241,12 +260,13 @@ impl VggWeights {
                 let b_name = format!("features.{feature_idx}.bias");
                 // Conv2d weight is `[c_out, c_in, 3, 3]` stored row-major;
                 // load as f32 flat (treated as opaque buffer by conv2d code).
-                let w = WeightStorage::F32(Arc::from(
-                    load_tensor_as_f32(st, &w_name)?,
-                ));
+                let w = WeightStorage::F32(Arc::from(load_tensor_as_f32(st, &w_name)?));
                 let bias = Arc::from(load_tensor_as_f32(st, &b_name)?);
                 convs.push(VggConvWeights {
-                    w, b: bias, c_in: prev_c, c_out,
+                    w,
+                    b: bias,
+                    c_in: prev_c,
+                    c_out,
                 });
                 prev_c = c_out;
                 // Each conv in timm vgg features takes 2 indices (Conv + ReLU)
@@ -263,7 +283,12 @@ impl VggWeights {
         let load_fc = |prefix: &str, in_f: usize, out_f: usize| -> Result<VggHeadFc> {
             let w = ltm(st, &format!("{prefix}.weight"), out_f, in_f)?;
             let b = Arc::from(load_tensor_as_f32(st, &format!("{prefix}.bias"))?);
-            Ok(VggHeadFc { w, b, in_features: in_f, out_features: out_f })
+            Ok(VggHeadFc {
+                w,
+                b,
+                in_features: in_f,
+                out_features: out_f,
+            })
         };
 
         let fc1 = load_fc("pre_logits.fc1", head_dim, cfg.head_hidden)
@@ -273,7 +298,12 @@ impl VggWeights {
         let fc3 = load_fc("head.fc", cfg.head_hidden, cfg.nclasses)
             .or_else(|_| load_fc("classifier.6", cfg.head_hidden, cfg.nclasses))?;
 
-        Ok(Self { blocks, fc1, fc2, fc3 })
+        Ok(Self {
+            blocks,
+            fc1,
+            fc2,
+            fc3,
+        })
     }
 }
 
@@ -297,7 +327,10 @@ mod tests {
         // Use a tiny "feature scale" — 32×32 input → 1×1 after 5 pools.
         // Channels follow the canonical VGG pattern but at small width.
         VggConfig {
-            variant, nclasses: 10, head_spatial: 1, head_hidden: 16,
+            variant,
+            nclasses: 10,
+            head_spatial: 1,
+            head_hidden: 16,
         }
     }
 
@@ -311,7 +344,8 @@ mod tests {
         VggConvWeights {
             w: WeightStorage::F32(vec_of(c_out * c_in * 3 * 3, nb)),
             b: vec_of(c_out, nb),
-            c_in, c_out,
+            c_in,
+            c_out,
         }
     }
 
@@ -324,7 +358,11 @@ mod tests {
         for (block_idx, &n_conv) in convs_per_block.iter().enumerate() {
             let mut block = Vec::with_capacity(n_conv);
             for conv_idx in 0..n_conv {
-                let c_in = if conv_idx == 0 { c_prev } else { block_ch[block_idx] };
+                let c_in = if conv_idx == 0 {
+                    c_prev
+                } else {
+                    block_ch[block_idx]
+                };
                 let c_out = block_ch[block_idx];
                 block.push(build_conv(c_in, c_out, &mut nb));
             }
@@ -350,14 +388,17 @@ mod tests {
             in_features: cfg.head_hidden,
             out_features: cfg.nclasses,
         };
-        VggWeights { blocks, fc1, fc2, fc3 }
+        VggWeights {
+            blocks,
+            fc1,
+            fc2,
+            fc3,
+        }
     }
 
     fn tiny_image(h: usize) -> LazyTensor {
         let mut nb = rng_seed(123);
-        let data: Arc<[f32]> = Arc::from(
-            (0..3 * h * h).map(|_| nb()).collect::<Vec<_>>()
-        );
+        let data: Arc<[f32]> = Arc::from((0..3 * h * h).map(|_| nb()).collect::<Vec<_>>());
         LazyTensor::from_f32(data, Shape::from_dims(&[1, 3, h, h]), &Device::cpu())
     }
 
@@ -365,7 +406,10 @@ mod tests {
     fn vgg13_forward_shape() {
         let cfg = tiny_cfg(VggVariant::Vgg13);
         let weights = build_weights(&cfg, 11);
-        let model = VggModel { config: cfg, weights };
+        let model = VggModel {
+            config: cfg,
+            weights,
+        };
         let img = tiny_image(32);
         let logits = model.forward(&img).unwrap();
         assert_eq!(logits.shape().dims(), &[1, 10]);
@@ -380,7 +424,10 @@ mod tests {
     fn vgg16_forward_shape() {
         let cfg = tiny_cfg(VggVariant::Vgg16);
         let weights = build_weights(&cfg, 22);
-        let model = VggModel { config: cfg, weights };
+        let model = VggModel {
+            config: cfg,
+            weights,
+        };
         let img = tiny_image(32);
         let logits = model.forward(&img).unwrap();
         assert_eq!(logits.shape().dims(), &[1, 10]);
@@ -393,7 +440,10 @@ mod tests {
     fn vgg19_forward_shape() {
         let cfg = tiny_cfg(VggVariant::Vgg19);
         let weights = build_weights(&cfg, 33);
-        let model = VggModel { config: cfg, weights };
+        let model = VggModel {
+            config: cfg,
+            weights,
+        };
         let img = tiny_image(32);
         let logits = model.forward(&img).unwrap();
         assert_eq!(logits.shape().dims(), &[1, 10]);
@@ -414,7 +464,10 @@ mod tests {
     fn forward_features_shape_and_finite() {
         let cfg = tiny_cfg(VggVariant::Vgg13);
         let weights = build_weights(&cfg, 44);
-        let model = VggModel { config: cfg.clone(), weights };
+        let model = VggModel {
+            config: cfg.clone(),
+            weights,
+        };
         let img = tiny_image(32);
         let feats = model.forward_features(&img).unwrap();
         let shape = feats.shape();

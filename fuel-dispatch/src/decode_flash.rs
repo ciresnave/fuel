@@ -89,7 +89,10 @@ impl FlashArmCapability {
     /// the shape/dtype/config gate without a CUDA build.
     #[cfg(test)]
     pub fn all_available() -> Self {
-        Self { cuda_flash_kernel: true, cuda_in_topology: true }
+        Self {
+            cuda_flash_kernel: true,
+            cuda_in_topology: true,
+        }
     }
 
     /// The flash arm may be offered only when both halves hold.
@@ -397,22 +400,36 @@ mod tests {
             .expect("supported shape ⇒ arm offered");
 
         // A Branch was recorded.
-        assert!(matches!(g.node(branch).op, Op::Branch { .. }), "branch node emitted");
+        assert!(
+            matches!(g.node(branch).op, Op::Branch { .. }),
+            "branch node emitted"
+        );
         let arms = g.node(branch).inputs.clone();
         assert_eq!(arms.len(), 2, "2-arm branch (decomposed + flash)");
         // arm 0 = the decomposed oracle.
-        assert_eq!(arms[0], attn_v, "arm 0 is the decomposed region output (the oracle)");
+        assert_eq!(
+            arms[0], attn_v,
+            "arm 0 is the decomposed region output (the oracle)"
+        );
         // arm 1 = a CUDA-pinned Fused(FLASH_ATTN, { k_len: Some }).
         let flash = arms[1];
         match &g.node(flash).op {
             Op::Fused(fid, FusedOpParams::FlashAttn { k_len, .. }) => {
                 assert_eq!(*fid, FusedOps::FLASH_ATTN, "arm 1 is FLASH_ATTN");
-                assert_eq!(*k_len, Some(DynScalar::Concrete(37)), "arm 1 carries the live k_len");
+                assert_eq!(
+                    *k_len,
+                    Some(DynScalar::Concrete(37)),
+                    "arm 1 carries the live k_len"
+                );
             }
             other => panic!("arm 1 must be Fused(FLASH_ATTN, FlashAttn), got {other:?}"),
         }
         assert_eq!(g.node(flash).inputs, vec![q, k, v], "flash reads q, k, v");
-        assert_eq!(g.target_backend(flash), Some(BackendId::Cuda), "arm 1 pinned to CUDA");
+        assert_eq!(
+            g.target_backend(flash),
+            Some(BackendId::Cuda),
+            "arm 1 pinned to CUDA"
+        );
         // Arm-0 runnability: the merge still reads the decomposed output.
         assert!(
             g.node(merged).inputs.contains(&attn_v),
@@ -431,7 +448,11 @@ mod tests {
         let branch = offer_decode_flash_arm(&mut g, &spec, FlashArmCapability::all_available())
             .expect("well-formed spec");
         assert!(branch.is_none(), "f32 ⇒ no flash arm");
-        assert_eq!(g.len(), before, "graph untouched (no flash node, no branch)");
+        assert_eq!(
+            g.len(),
+            before,
+            "graph untouched (no flash node, no branch)"
+        );
     }
 
     /// GUARD: head_dim > 128 ⇒ no arm (outside the kernel's `_can_implement`).
@@ -484,13 +505,31 @@ mod tests {
         let before = g.len();
 
         // No kernel bound.
-        let no_kernel = FlashArmCapability { cuda_flash_kernel: false, cuda_in_topology: true };
-        assert!(offer_decode_flash_arm(&mut g, &spec, no_kernel).unwrap().is_none());
+        let no_kernel = FlashArmCapability {
+            cuda_flash_kernel: false,
+            cuda_in_topology: true,
+        };
+        assert!(
+            offer_decode_flash_arm(&mut g, &spec, no_kernel)
+                .unwrap()
+                .is_none()
+        );
         // No CUDA device present.
-        let no_device = FlashArmCapability { cuda_flash_kernel: true, cuda_in_topology: false };
-        assert!(offer_decode_flash_arm(&mut g, &spec, no_device).unwrap().is_none());
+        let no_device = FlashArmCapability {
+            cuda_flash_kernel: true,
+            cuda_in_topology: false,
+        };
+        assert!(
+            offer_decode_flash_arm(&mut g, &spec, no_device)
+                .unwrap()
+                .is_none()
+        );
 
-        assert_eq!(g.len(), before, "no capability ⇒ decomposed-only, graph untouched");
+        assert_eq!(
+            g.len(),
+            before,
+            "no capability ⇒ decomposed-only, graph untouched"
+        );
     }
 
     /// GUARD: window / softcap / ALiBi each disqualify (no kernel support).

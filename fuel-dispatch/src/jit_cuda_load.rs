@@ -166,7 +166,10 @@ fn output_numel(out: &Storage, layouts: &[Layout], n_inputs: usize) -> usize {
     }
 }
 
-fn cuda_storage<'a>(s: &'a Storage, entry_point: &str) -> Result<&'a fuel_cuda_backend::CudaStorageBytes> {
+fn cuda_storage<'a>(
+    s: &'a Storage,
+    entry_point: &str,
+) -> Result<&'a fuel_cuda_backend::CudaStorageBytes> {
     match &s.inner {
         BackendStorage::Cuda(c) => Ok(c),
         #[allow(unreachable_patterns)]
@@ -289,7 +292,14 @@ fn dispatch_slot<const N: usize>(
         ))
         .bt()
     })?;
-    launch_scalar(&slot.func, inputs, outputs, layouts, params, &slot.entry_point)
+    launch_scalar(
+        &slot.func,
+        inputs,
+        outputs,
+        layouts,
+        params,
+        &slot.entry_point,
+    )
 }
 
 macro_rules! dispatch_table {

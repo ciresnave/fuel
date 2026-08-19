@@ -50,8 +50,7 @@
 //! not a rewrite.
 
 use crate::lazy::{
-    load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
-    LazyTensor, WeightStorage,
+    LazyTensor, WeightStorage, load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
 };
 use crate::{Device, Result};
 use fuel_ir::Shape;
@@ -170,11 +169,7 @@ impl PaddleOcrVlVisionModel {
     /// Output shape is
     /// `((num_tiles * num_patches_per_tile) / spatial_merge_size^2,
     ///   text_hidden_size)`.
-    pub fn forward(
-        &self,
-        pixels: &LazyTensor,
-        tile_grid: (usize, usize),
-    ) -> Result<LazyTensor> {
+    pub fn forward(&self, pixels: &LazyTensor, tile_grid: (usize, usize)) -> Result<LazyTensor> {
         let cfg = &self.config;
         let (rows, cols) = tile_grid;
         let num_tiles = rows * cols;
@@ -207,11 +202,7 @@ impl PaddleOcrVlVisionModel {
         assert_eq!(head_dim % 2, 0, "head_dim must be even for split-half RoPE");
 
         // Pre-compute the per-tile 2D RoPE tables once and reuse for each tile.
-        let (cos_data, sin_data) = build_2d_rope_tables(
-            cfg.rope_theta,
-            head_dim,
-            patches_per_side,
-        );
+        let (cos_data, sin_data) = build_2d_rope_tables(cfg.rope_theta, head_dim, patches_per_side);
         let cos = pixels.const_f32_like(
             Arc::from(cos_data),
             Shape::from_dims(&[num_patches_per_tile, head_dim]),
@@ -590,43 +581,44 @@ pub fn load_paddleocr_vl_vision_weights(
     let merged_hidden = h * m * m;
 
     let patch_proj = load_tensor_as_f32(
-        st, &format!("{vision_prefix}embeddings.patch_embedding.weight"),
+        st,
+        &format!("{vision_prefix}embeddings.patch_embedding.weight"),
     )?;
     let expected_patch = h * cfg.num_channels * cfg.patch_size * cfg.patch_size;
     if patch_proj.len() != expected_patch {
         crate::bail!(
             "{vision_prefix}embeddings.patch_embedding.weight: {} elts, expected {}",
-            patch_proj.len(), expected_patch,
+            patch_proj.len(),
+            expected_patch,
         );
     }
     let patch_proj_bias = load_tensor_as_f32(
-        st, &format!("{vision_prefix}embeddings.patch_embedding.bias"),
+        st,
+        &format!("{vision_prefix}embeddings.patch_embedding.bias"),
     )?;
     if patch_proj_bias.len() != h {
         crate::bail!(
             "{vision_prefix}embeddings.patch_embedding.bias: {} elts, expected {}",
-            patch_proj_bias.len(), h,
+            patch_proj_bias.len(),
+            h,
         );
     }
     let position_embedding = load_tensor_as_f32(
-        st, &format!("{vision_prefix}embeddings.position_embedding.weight"),
+        st,
+        &format!("{vision_prefix}embeddings.position_embedding.weight"),
     )?;
     if position_embedding.len() != np * h {
         crate::bail!(
             "{vision_prefix}embeddings.position_embedding.weight: {} elts, expected {}",
-            position_embedding.len(), np * h,
+            position_embedding.len(),
+            np * h,
         );
     }
 
-    let post_ln_gain = load_tensor_as_f32(
-        st, &format!("{vision_prefix}post_layernorm.weight"),
-    )?;
-    let post_ln_bias = load_tensor_as_f32(
-        st, &format!("{vision_prefix}post_layernorm.bias"),
-    )?;
+    let post_ln_gain = load_tensor_as_f32(st, &format!("{vision_prefix}post_layernorm.weight"))?;
+    let post_ln_bias = load_tensor_as_f32(st, &format!("{vision_prefix}post_layernorm.bias"))?;
 
-    let mut blocks: Vec<PaddleOcrVlVisionBlockWeights> =
-        Vec::with_capacity(cfg.num_hidden_layers);
+    let mut blocks: Vec<PaddleOcrVlVisionBlockWeights> = Vec::with_capacity(cfg.num_hidden_layers);
     for i in 0..cfg.num_hidden_layers {
         let p = format!("{vision_prefix}encoder.layers.{i}");
         let ln1_gain = load_tensor_as_f32(st, &format!("{p}.layer_norm1.weight"))?;
@@ -634,66 +626,76 @@ pub fn load_paddleocr_vl_vision_weights(
         let ln2_gain = load_tensor_as_f32(st, &format!("{p}.layer_norm2.weight"))?;
         let ln2_bias = load_tensor_as_f32(st, &format!("{p}.layer_norm2.bias"))?;
         let q_proj = load_transposed_matrix_preserve_dtype(
-            st, &format!("{p}.self_attn.q_proj.weight"), h, h,
+            st,
+            &format!("{p}.self_attn.q_proj.weight"),
+            h,
+            h,
         )?;
         let q_proj_bias = load_tensor_as_f32(st, &format!("{p}.self_attn.q_proj.bias"))?;
         let k_proj = load_transposed_matrix_preserve_dtype(
-            st, &format!("{p}.self_attn.k_proj.weight"), h, h,
+            st,
+            &format!("{p}.self_attn.k_proj.weight"),
+            h,
+            h,
         )?;
         let k_proj_bias = load_tensor_as_f32(st, &format!("{p}.self_attn.k_proj.bias"))?;
         let v_proj = load_transposed_matrix_preserve_dtype(
-            st, &format!("{p}.self_attn.v_proj.weight"), h, h,
+            st,
+            &format!("{p}.self_attn.v_proj.weight"),
+            h,
+            h,
         )?;
         let v_proj_bias = load_tensor_as_f32(st, &format!("{p}.self_attn.v_proj.bias"))?;
         let out_proj = load_transposed_matrix_preserve_dtype(
-            st, &format!("{p}.self_attn.out_proj.weight"), h, h,
+            st,
+            &format!("{p}.self_attn.out_proj.weight"),
+            h,
+            h,
         )?;
-        let out_proj_bias = load_tensor_as_f32(
-            st, &format!("{p}.self_attn.out_proj.bias"),
-        )?;
-        let fc1 = load_transposed_matrix_preserve_dtype(
-            st, &format!("{p}.mlp.fc1.weight"), inter, h,
-        )?;
+        let out_proj_bias = load_tensor_as_f32(st, &format!("{p}.self_attn.out_proj.bias"))?;
+        let fc1 =
+            load_transposed_matrix_preserve_dtype(st, &format!("{p}.mlp.fc1.weight"), inter, h)?;
         let fc1_bias = load_tensor_as_f32(st, &format!("{p}.mlp.fc1.bias"))?;
-        let fc2 = load_transposed_matrix_preserve_dtype(
-            st, &format!("{p}.mlp.fc2.weight"), h, inter,
-        )?;
+        let fc2 =
+            load_transposed_matrix_preserve_dtype(st, &format!("{p}.mlp.fc2.weight"), h, inter)?;
         let fc2_bias = load_tensor_as_f32(st, &format!("{p}.mlp.fc2.bias"))?;
         blocks.push(PaddleOcrVlVisionBlockWeights {
             ln1_gain: Arc::from(ln1_gain),
             ln1_bias: Arc::from(ln1_bias),
-            q_proj, q_proj_bias: Arc::from(q_proj_bias),
-            k_proj, k_proj_bias: Arc::from(k_proj_bias),
-            v_proj, v_proj_bias: Arc::from(v_proj_bias),
-            out_proj, out_proj_bias: Arc::from(out_proj_bias),
+            q_proj,
+            q_proj_bias: Arc::from(q_proj_bias),
+            k_proj,
+            k_proj_bias: Arc::from(k_proj_bias),
+            v_proj,
+            v_proj_bias: Arc::from(v_proj_bias),
+            out_proj,
+            out_proj_bias: Arc::from(out_proj_bias),
             ln2_gain: Arc::from(ln2_gain),
             ln2_bias: Arc::from(ln2_bias),
-            fc1, fc1_bias: Arc::from(fc1_bias),
-            fc2, fc2_bias: Arc::from(fc2_bias),
+            fc1,
+            fc1_bias: Arc::from(fc1_bias),
+            fc2,
+            fc2_bias: Arc::from(fc2_bias),
         });
     }
 
     // Projector (`mlp_AR` in HF): pre_norm + 2-layer MLP.
-    let pre_norm_gain = load_tensor_as_f32(
-        st, &format!("{projector_prefix}pre_norm.weight"),
-    )?;
-    let pre_norm_bias = load_tensor_as_f32(
-        st, &format!("{projector_prefix}pre_norm.bias"),
-    )?;
+    let pre_norm_gain = load_tensor_as_f32(st, &format!("{projector_prefix}pre_norm.weight"))?;
+    let pre_norm_bias = load_tensor_as_f32(st, &format!("{projector_prefix}pre_norm.bias"))?;
     let linear_1 = load_transposed_matrix_preserve_dtype(
-        st, &format!("{projector_prefix}linear_1.weight"),
-        merged_hidden, merged_hidden,
+        st,
+        &format!("{projector_prefix}linear_1.weight"),
+        merged_hidden,
+        merged_hidden,
     )?;
-    let linear_1_bias = load_tensor_as_f32(
-        st, &format!("{projector_prefix}linear_1.bias"),
-    )?;
+    let linear_1_bias = load_tensor_as_f32(st, &format!("{projector_prefix}linear_1.bias"))?;
     let linear_2 = load_transposed_matrix_preserve_dtype(
-        st, &format!("{projector_prefix}linear_2.weight"),
-        text_hidden_size, merged_hidden,
+        st,
+        &format!("{projector_prefix}linear_2.weight"),
+        text_hidden_size,
+        merged_hidden,
     )?;
-    let linear_2_bias = load_tensor_as_f32(
-        st, &format!("{projector_prefix}linear_2.bias"),
-    )?;
+    let linear_2_bias = load_tensor_as_f32(st, &format!("{projector_prefix}linear_2.bias"))?;
 
     let projector = PaddleOcrVlVisionProjectorWeights {
         pre_norm_gain: Arc::from(pre_norm_gain),
@@ -728,7 +730,11 @@ impl PaddleOcrVlVisionWeights {
         text_hidden_size: usize,
     ) -> Result<Self> {
         load_paddleocr_vl_vision_weights(
-            st, cfg, text_hidden_size, "visual.vision_model.", "mlp_AR.",
+            st,
+            cfg,
+            text_hidden_size,
+            "visual.vision_model.",
+            "mlp_AR.",
         )
     }
 }
@@ -843,7 +849,10 @@ struct PosEmbedLfuCache {
 
 impl PosEmbedLfuCache {
     fn new(max_size: usize) -> Self {
-        Self { entries: HashMap::with_capacity(max_size.max(1)), max_size: max_size.max(1) }
+        Self {
+            entries: HashMap::with_capacity(max_size.max(1)),
+            max_size: max_size.max(1),
+        }
     }
 
     fn get(&mut self, key: (usize, usize)) -> Option<Arc<[f32]>> {
@@ -862,9 +871,7 @@ impl PosEmbedLfuCache {
         }
         if self.entries.len() >= self.max_size {
             // Evict the least frequently used entry.
-            if let Some((&lfu_key, _)) =
-                self.entries.iter().min_by_key(|(_, (_, freq))| *freq)
-            {
+            if let Some((&lfu_key, _)) = self.entries.iter().min_by_key(|(_, (_, freq))| *freq) {
                 self.entries.remove(&lfu_key);
             }
         }
@@ -938,7 +945,10 @@ impl PaddleOcrVlNaVitModel {
     /// cache-hit behaviour without exposing the internal map.
     #[doc(hidden)]
     pub fn pos_embed_cache_len(&self) -> usize {
-        self.pos_embed_cache.lock().expect("pos_embed_cache lock").len()
+        self.pos_embed_cache
+            .lock()
+            .expect("pos_embed_cache lock")
+            .len()
     }
 
     /// Forward pass on a single image.
@@ -1004,12 +1014,8 @@ impl PaddleOcrVlNaVitModel {
         assert_eq!(head_dim % 2, 0, "head_dim must be even for split-half RoPE");
 
         // 2D RoPE tables for this specific grid.
-        let (cos_data, sin_data) = build_2d_rope_tables_hw(
-            cfg.rope_theta,
-            head_dim,
-            h_patches,
-            w_patches,
-        );
+        let (cos_data, sin_data) =
+            build_2d_rope_tables_hw(cfg.rope_theta, head_dim, h_patches, w_patches);
         let cos = pixel_values.const_f32_like(
             Arc::from(cos_data),
             Shape::from_dims(&[num_patches, head_dim]),
@@ -1188,11 +1194,7 @@ impl PaddleOcrVlNaVitModel {
     /// requested `(target_h, target_w)` patch grid. Cached with LFU
     /// eviction (default capacity = 16). Matches PyTorch's
     /// `nn.functional.interpolate(mode='bilinear', align_corners=False)`.
-    fn interpolated_position_embedding(
-        &self,
-        target_h: usize,
-        target_w: usize,
-    ) -> Arc<[f32]> {
+    fn interpolated_position_embedding(&self, target_h: usize, target_w: usize) -> Arc<[f32]> {
         let key = (target_h, target_w);
         if let Some(cached) = self
             .pos_embed_cache
@@ -1350,13 +1352,10 @@ pub fn load_paddleocr_vl_navit_weights(
         );
     }
 
-    let post_ln_gain =
-        load_tensor_as_f32(st, &format!("{vision_prefix}post_layernorm.weight"))?;
-    let post_ln_bias =
-        load_tensor_as_f32(st, &format!("{vision_prefix}post_layernorm.bias"))?;
+    let post_ln_gain = load_tensor_as_f32(st, &format!("{vision_prefix}post_layernorm.weight"))?;
+    let post_ln_bias = load_tensor_as_f32(st, &format!("{vision_prefix}post_layernorm.bias"))?;
 
-    let mut blocks: Vec<PaddleOcrVlVisionBlockWeights> =
-        Vec::with_capacity(cfg.num_hidden_layers);
+    let mut blocks: Vec<PaddleOcrVlVisionBlockWeights> = Vec::with_capacity(cfg.num_hidden_layers);
     for i in 0..cfg.num_hidden_layers {
         let p = format!("{vision_prefix}encoder.layers.{i}");
         let ln1_gain = load_tensor_as_f32(st, &format!("{p}.layer_norm1.weight"))?;
@@ -1369,45 +1368,33 @@ pub fn load_paddleocr_vl_navit_weights(
             h,
             h,
         )?;
-        let q_proj_bias =
-            load_tensor_as_f32(st, &format!("{p}.self_attn.q_proj.bias"))?;
+        let q_proj_bias = load_tensor_as_f32(st, &format!("{p}.self_attn.q_proj.bias"))?;
         let k_proj = load_transposed_matrix_preserve_dtype(
             st,
             &format!("{p}.self_attn.k_proj.weight"),
             h,
             h,
         )?;
-        let k_proj_bias =
-            load_tensor_as_f32(st, &format!("{p}.self_attn.k_proj.bias"))?;
+        let k_proj_bias = load_tensor_as_f32(st, &format!("{p}.self_attn.k_proj.bias"))?;
         let v_proj = load_transposed_matrix_preserve_dtype(
             st,
             &format!("{p}.self_attn.v_proj.weight"),
             h,
             h,
         )?;
-        let v_proj_bias =
-            load_tensor_as_f32(st, &format!("{p}.self_attn.v_proj.bias"))?;
+        let v_proj_bias = load_tensor_as_f32(st, &format!("{p}.self_attn.v_proj.bias"))?;
         let out_proj = load_transposed_matrix_preserve_dtype(
             st,
             &format!("{p}.self_attn.out_proj.weight"),
             h,
             h,
         )?;
-        let out_proj_bias =
-            load_tensor_as_f32(st, &format!("{p}.self_attn.out_proj.bias"))?;
-        let fc1 = load_transposed_matrix_preserve_dtype(
-            st,
-            &format!("{p}.mlp.fc1.weight"),
-            inter,
-            h,
-        )?;
+        let out_proj_bias = load_tensor_as_f32(st, &format!("{p}.self_attn.out_proj.bias"))?;
+        let fc1 =
+            load_transposed_matrix_preserve_dtype(st, &format!("{p}.mlp.fc1.weight"), inter, h)?;
         let fc1_bias = load_tensor_as_f32(st, &format!("{p}.mlp.fc1.bias"))?;
-        let fc2 = load_transposed_matrix_preserve_dtype(
-            st,
-            &format!("{p}.mlp.fc2.weight"),
-            h,
-            inter,
-        )?;
+        let fc2 =
+            load_transposed_matrix_preserve_dtype(st, &format!("{p}.mlp.fc2.weight"), h, inter)?;
         let fc2_bias = load_tensor_as_f32(st, &format!("{p}.mlp.fc2.bias"))?;
         blocks.push(PaddleOcrVlVisionBlockWeights {
             ln1_gain: Arc::from(ln1_gain),
@@ -1429,26 +1416,22 @@ pub fn load_paddleocr_vl_navit_weights(
         });
     }
 
-    let pre_norm_gain =
-        load_tensor_as_f32(st, &format!("{projector_prefix}pre_norm.weight"))?;
-    let pre_norm_bias =
-        load_tensor_as_f32(st, &format!("{projector_prefix}pre_norm.bias"))?;
+    let pre_norm_gain = load_tensor_as_f32(st, &format!("{projector_prefix}pre_norm.weight"))?;
+    let pre_norm_bias = load_tensor_as_f32(st, &format!("{projector_prefix}pre_norm.bias"))?;
     let linear_1 = load_transposed_matrix_preserve_dtype(
         st,
         &format!("{projector_prefix}linear_1.weight"),
         merged_hidden,
         merged_hidden,
     )?;
-    let linear_1_bias =
-        load_tensor_as_f32(st, &format!("{projector_prefix}linear_1.bias"))?;
+    let linear_1_bias = load_tensor_as_f32(st, &format!("{projector_prefix}linear_1.bias"))?;
     let linear_2 = load_transposed_matrix_preserve_dtype(
         st,
         &format!("{projector_prefix}linear_2.weight"),
         text_hidden_size,
         merged_hidden,
     )?;
-    let linear_2_bias =
-        load_tensor_as_f32(st, &format!("{projector_prefix}linear_2.bias"))?;
+    let linear_2_bias = load_tensor_as_f32(st, &format!("{projector_prefix}linear_2.bias"))?;
 
     let projector = PaddleOcrVlVisionProjectorWeights {
         pre_norm_gain: Arc::from(pre_norm_gain),
@@ -1680,8 +1663,12 @@ mod tests {
         // Split into 1x2 tiles (each 2x2). Tile 0 keeps the left half
         // of both channels, tile 1 keeps the right half.
         let mut img2 = Vec::with_capacity(16);
-        for v in 0..8 { img2.push(v as f32); }
-        for v in 8..16 { img2.push(v as f32); }
+        for v in 0..8 {
+            img2.push(v as f32);
+        }
+        for v in 8..16 {
+            img2.push(v as f32);
+        }
         let tiles2 = partition_image(&img2, 2, 2, 4, 1, 2);
         assert_eq!(tiles2.len(), 2);
         // Tile 0 channels concatenated:
@@ -1711,8 +1698,8 @@ mod tests {
 
     mod load {
         use super::*;
-        use safetensors::tensor::TensorView;
         use safetensors::Dtype;
+        use safetensors::tensor::TensorView;
         use std::collections::HashMap;
 
         fn put(
@@ -1738,7 +1725,9 @@ mod tests {
                 "lazy_paddleocr_vl_vision_load_{}_{}.safetensors",
                 std::process::id(),
                 std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos(),
             ));
             std::fs::write(&path, bytes).expect("write tempfile");
             path
@@ -1763,49 +1752,113 @@ mod tests {
             let merged_hidden = h * m * m;
 
             let vp = "visual.vision_model.";
-            put(&mut map, &format!("{vp}embeddings.patch_embedding.weight"),
+            put(
+                &mut map,
+                &format!("{vp}embeddings.patch_embedding.weight"),
                 &[h, cfg.num_channels, cfg.patch_size, cfg.patch_size],
-                &vec_n(h * cfg.num_channels * cfg.patch_size * cfg.patch_size));
-            put(&mut map, &format!("{vp}embeddings.patch_embedding.bias"),
-                &[h], &vec_n(h));
-            put(&mut map, &format!("{vp}embeddings.position_embedding.weight"),
-                &[np, h], &vec_n(np * h));
-            put(&mut map, &format!("{vp}post_layernorm.weight"), &[h], &vec_n(h));
-            put(&mut map, &format!("{vp}post_layernorm.bias"), &[h], &vec_n(h));
+                &vec_n(h * cfg.num_channels * cfg.patch_size * cfg.patch_size),
+            );
+            put(
+                &mut map,
+                &format!("{vp}embeddings.patch_embedding.bias"),
+                &[h],
+                &vec_n(h),
+            );
+            put(
+                &mut map,
+                &format!("{vp}embeddings.position_embedding.weight"),
+                &[np, h],
+                &vec_n(np * h),
+            );
+            put(
+                &mut map,
+                &format!("{vp}post_layernorm.weight"),
+                &[h],
+                &vec_n(h),
+            );
+            put(
+                &mut map,
+                &format!("{vp}post_layernorm.bias"),
+                &[h],
+                &vec_n(h),
+            );
             for i in 0..cfg.num_hidden_layers {
                 let p = format!("{vp}encoder.layers.{i}");
-                put(&mut map, &format!("{p}.layer_norm1.weight"), &[h], &vec_n(h));
+                put(
+                    &mut map,
+                    &format!("{p}.layer_norm1.weight"),
+                    &[h],
+                    &vec_n(h),
+                );
                 put(&mut map, &format!("{p}.layer_norm1.bias"), &[h], &vec_n(h));
-                put(&mut map, &format!("{p}.layer_norm2.weight"), &[h], &vec_n(h));
+                put(
+                    &mut map,
+                    &format!("{p}.layer_norm2.weight"),
+                    &[h],
+                    &vec_n(h),
+                );
                 put(&mut map, &format!("{p}.layer_norm2.bias"), &[h], &vec_n(h));
                 for proj in &["q_proj", "k_proj", "v_proj", "out_proj"] {
-                    put(&mut map, &format!("{p}.self_attn.{proj}.weight"),
-                        &[h, h], &vec_n(h * h));
-                    put(&mut map, &format!("{p}.self_attn.{proj}.bias"),
-                        &[h], &vec_n(h));
+                    put(
+                        &mut map,
+                        &format!("{p}.self_attn.{proj}.weight"),
+                        &[h, h],
+                        &vec_n(h * h),
+                    );
+                    put(
+                        &mut map,
+                        &format!("{p}.self_attn.{proj}.bias"),
+                        &[h],
+                        &vec_n(h),
+                    );
                 }
-                put(&mut map, &format!("{p}.mlp.fc1.weight"),
-                    &[inter, h], &vec_n(inter * h));
-                put(&mut map, &format!("{p}.mlp.fc1.bias"),
-                    &[inter], &vec_n(inter));
-                put(&mut map, &format!("{p}.mlp.fc2.weight"),
-                    &[h, inter], &vec_n(h * inter));
-                put(&mut map, &format!("{p}.mlp.fc2.bias"),
-                    &[h], &vec_n(h));
+                put(
+                    &mut map,
+                    &format!("{p}.mlp.fc1.weight"),
+                    &[inter, h],
+                    &vec_n(inter * h),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.mlp.fc1.bias"),
+                    &[inter],
+                    &vec_n(inter),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.mlp.fc2.weight"),
+                    &[h, inter],
+                    &vec_n(h * inter),
+                );
+                put(&mut map, &format!("{p}.mlp.fc2.bias"), &[h], &vec_n(h));
             }
             let pp = "mlp_AR.";
             put(&mut map, &format!("{pp}pre_norm.weight"), &[h], &vec_n(h));
             put(&mut map, &format!("{pp}pre_norm.bias"), &[h], &vec_n(h));
-            put(&mut map, &format!("{pp}linear_1.weight"),
+            put(
+                &mut map,
+                &format!("{pp}linear_1.weight"),
                 &[merged_hidden, merged_hidden],
-                &vec_n(merged_hidden * merged_hidden));
-            put(&mut map, &format!("{pp}linear_1.bias"),
-                &[merged_hidden], &vec_n(merged_hidden));
-            put(&mut map, &format!("{pp}linear_2.weight"),
+                &vec_n(merged_hidden * merged_hidden),
+            );
+            put(
+                &mut map,
+                &format!("{pp}linear_1.bias"),
+                &[merged_hidden],
+                &vec_n(merged_hidden),
+            );
+            put(
+                &mut map,
+                &format!("{pp}linear_2.weight"),
                 &[text_hidden, merged_hidden],
-                &vec_n(text_hidden * merged_hidden));
-            put(&mut map, &format!("{pp}linear_2.bias"),
-                &[text_hidden], &vec_n(text_hidden));
+                &vec_n(text_hidden * merged_hidden),
+            );
+            put(
+                &mut map,
+                &format!("{pp}linear_2.bias"),
+                &[text_hidden],
+                &vec_n(text_hidden),
+            );
             serialize_to_tempfile(&map)
         }
 
@@ -1816,14 +1869,17 @@ mod tests {
             let path = build_tiny_safetensors(&cfg, text_hidden);
             let st = unsafe { crate::safetensors::MmapedSafetensors::new(&path) }
                 .expect("mmap safetensors");
-            let weights = PaddleOcrVlVisionWeights::load_from_mmapped(
-                &st, &cfg, text_hidden,
-            ).expect("PaddleOcrVlVisionWeights::load_from_mmapped");
+            let weights = PaddleOcrVlVisionWeights::load_from_mmapped(&st, &cfg, text_hidden)
+                .expect("PaddleOcrVlVisionWeights::load_from_mmapped");
             assert_eq!(weights.blocks.len(), cfg.num_hidden_layers);
-            assert_eq!(weights.patch_proj.len(),
-                cfg.hidden_size * cfg.num_channels * cfg.patch_size * cfg.patch_size);
-            assert_eq!(weights.position_embedding.len(),
-                cfg.num_patches_per_tile() * cfg.hidden_size);
+            assert_eq!(
+                weights.patch_proj.len(),
+                cfg.hidden_size * cfg.num_channels * cfg.patch_size * cfg.patch_size
+            );
+            assert_eq!(
+                weights.position_embedding.len(),
+                cfg.num_patches_per_tile() * cfg.hidden_size
+            );
 
             let model = PaddleOcrVlVisionModel {
                 config: cfg.clone(),
@@ -1926,15 +1982,9 @@ mod tests {
             let projector = PaddleOcrVlVisionProjectorWeights {
                 pre_norm_gain: Arc::from(vec![1.0_f32; h]),
                 pre_norm_bias: Arc::from(vec![0.0_f32; h]),
-                linear_1: WeightStorage::F32(vec_of(
-                    merged_hidden * merged_hidden,
-                    &mut *nb,
-                )),
+                linear_1: WeightStorage::F32(vec_of(merged_hidden * merged_hidden, &mut *nb)),
                 linear_1_bias: vec_of(merged_hidden, &mut *nb),
-                linear_2: WeightStorage::F32(vec_of(
-                    merged_hidden * text_hidden,
-                    &mut *nb,
-                )),
+                linear_2: WeightStorage::F32(vec_of(merged_hidden * text_hidden, &mut *nb)),
                 linear_2_bias: vec_of(text_hidden, &mut *nb),
             };
 
@@ -1949,11 +1999,7 @@ mod tests {
             }
         }
 
-        fn navit_pixels(
-            cfg: &PaddleOcrVlNaVitConfig,
-            h: usize,
-            w: usize,
-        ) -> LazyTensor {
+        fn navit_pixels(cfg: &PaddleOcrVlNaVitConfig, h: usize, w: usize) -> LazyTensor {
             let n_pix = cfg.num_channels * h * w;
             let data: Vec<f32> = (0..n_pix).map(|i| i as f32 / n_pix as f32).collect();
             LazyTensor::from_f32(
@@ -1998,11 +2044,7 @@ mod tests {
             // multiples of spatial_merge_size=2.
             let h_patches = 4_usize;
             let w_patches = 6_usize;
-            let pixels = navit_pixels(
-                &cfg,
-                h_patches * cfg.patch_size,
-                w_patches * cfg.patch_size,
-            );
+            let pixels = navit_pixels(&cfg, h_patches * cfg.patch_size, w_patches * cfg.patch_size);
             let out = model.forward(&pixels).expect("NaVit forward");
             let merge = cfg.spatial_merge_size;
             let expected = (h_patches * w_patches) / (merge * merge);
@@ -2032,10 +2074,8 @@ mod tests {
             //   (0,0): [0,1,2,3]    (0,1): [10,11,12,13]
             //   (1,0): [100,101,102,103] (1,1): [110,111,112,113]
             let src: Vec<f32> = vec![
-                0.0, 1.0, 2.0, 3.0,
-                10.0, 11.0, 12.0, 13.0,
-                100.0, 101.0, 102.0, 103.0,
-                110.0, 111.0, 112.0, 113.0,
+                0.0, 1.0, 2.0, 3.0, 10.0, 11.0, 12.0, 13.0, 100.0, 101.0, 102.0, 103.0, 110.0,
+                111.0, 112.0, 113.0,
             ];
 
             let target_h = 3_usize;
@@ -2169,8 +2209,8 @@ mod tests {
         /// `(base_num_positions, hidden)` position-embedding shape.
         #[test]
         fn load_from_mmapped_round_trip() {
-            use safetensors::tensor::TensorView;
             use safetensors::Dtype;
+            use safetensors::tensor::TensorView;
             use std::collections::HashMap;
 
             let cfg = navit_cfg();
@@ -2198,49 +2238,113 @@ mod tests {
                 map.insert(name.to_string(), (Dtype::F32, shape.to_vec(), bytes));
             };
             let vp = "visual.vision_model.";
-            put(&mut map, &format!("{vp}embeddings.patch_embedding.weight"),
+            put(
+                &mut map,
+                &format!("{vp}embeddings.patch_embedding.weight"),
                 &[h, cfg.num_channels, cfg.patch_size, cfg.patch_size],
-                &vec_n(h * cfg.num_channels * cfg.patch_size * cfg.patch_size));
-            put(&mut map, &format!("{vp}embeddings.patch_embedding.bias"),
-                &[h], &vec_n(h));
-            put(&mut map, &format!("{vp}embeddings.position_embedding.weight"),
-                &[np, h], &vec_n(np * h));
-            put(&mut map, &format!("{vp}post_layernorm.weight"), &[h], &vec_n(h));
-            put(&mut map, &format!("{vp}post_layernorm.bias"), &[h], &vec_n(h));
+                &vec_n(h * cfg.num_channels * cfg.patch_size * cfg.patch_size),
+            );
+            put(
+                &mut map,
+                &format!("{vp}embeddings.patch_embedding.bias"),
+                &[h],
+                &vec_n(h),
+            );
+            put(
+                &mut map,
+                &format!("{vp}embeddings.position_embedding.weight"),
+                &[np, h],
+                &vec_n(np * h),
+            );
+            put(
+                &mut map,
+                &format!("{vp}post_layernorm.weight"),
+                &[h],
+                &vec_n(h),
+            );
+            put(
+                &mut map,
+                &format!("{vp}post_layernorm.bias"),
+                &[h],
+                &vec_n(h),
+            );
             for i in 0..cfg.num_hidden_layers {
                 let p = format!("{vp}encoder.layers.{i}");
-                put(&mut map, &format!("{p}.layer_norm1.weight"), &[h], &vec_n(h));
+                put(
+                    &mut map,
+                    &format!("{p}.layer_norm1.weight"),
+                    &[h],
+                    &vec_n(h),
+                );
                 put(&mut map, &format!("{p}.layer_norm1.bias"), &[h], &vec_n(h));
-                put(&mut map, &format!("{p}.layer_norm2.weight"), &[h], &vec_n(h));
+                put(
+                    &mut map,
+                    &format!("{p}.layer_norm2.weight"),
+                    &[h],
+                    &vec_n(h),
+                );
                 put(&mut map, &format!("{p}.layer_norm2.bias"), &[h], &vec_n(h));
                 for proj in &["q_proj", "k_proj", "v_proj", "out_proj"] {
-                    put(&mut map, &format!("{p}.self_attn.{proj}.weight"),
-                        &[h, h], &vec_n(h * h));
-                    put(&mut map, &format!("{p}.self_attn.{proj}.bias"),
-                        &[h], &vec_n(h));
+                    put(
+                        &mut map,
+                        &format!("{p}.self_attn.{proj}.weight"),
+                        &[h, h],
+                        &vec_n(h * h),
+                    );
+                    put(
+                        &mut map,
+                        &format!("{p}.self_attn.{proj}.bias"),
+                        &[h],
+                        &vec_n(h),
+                    );
                 }
-                put(&mut map, &format!("{p}.mlp.fc1.weight"),
-                    &[inter, h], &vec_n(inter * h));
-                put(&mut map, &format!("{p}.mlp.fc1.bias"),
-                    &[inter], &vec_n(inter));
-                put(&mut map, &format!("{p}.mlp.fc2.weight"),
-                    &[h, inter], &vec_n(h * inter));
-                put(&mut map, &format!("{p}.mlp.fc2.bias"),
-                    &[h], &vec_n(h));
+                put(
+                    &mut map,
+                    &format!("{p}.mlp.fc1.weight"),
+                    &[inter, h],
+                    &vec_n(inter * h),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.mlp.fc1.bias"),
+                    &[inter],
+                    &vec_n(inter),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.mlp.fc2.weight"),
+                    &[h, inter],
+                    &vec_n(h * inter),
+                );
+                put(&mut map, &format!("{p}.mlp.fc2.bias"), &[h], &vec_n(h));
             }
             let pp = "mlp_AR.";
             put(&mut map, &format!("{pp}pre_norm.weight"), &[h], &vec_n(h));
             put(&mut map, &format!("{pp}pre_norm.bias"), &[h], &vec_n(h));
-            put(&mut map, &format!("{pp}linear_1.weight"),
+            put(
+                &mut map,
+                &format!("{pp}linear_1.weight"),
                 &[merged_hidden, merged_hidden],
-                &vec_n(merged_hidden * merged_hidden));
-            put(&mut map, &format!("{pp}linear_1.bias"),
-                &[merged_hidden], &vec_n(merged_hidden));
-            put(&mut map, &format!("{pp}linear_2.weight"),
+                &vec_n(merged_hidden * merged_hidden),
+            );
+            put(
+                &mut map,
+                &format!("{pp}linear_1.bias"),
+                &[merged_hidden],
+                &vec_n(merged_hidden),
+            );
+            put(
+                &mut map,
+                &format!("{pp}linear_2.weight"),
                 &[text_hidden, merged_hidden],
-                &vec_n(text_hidden * merged_hidden));
-            put(&mut map, &format!("{pp}linear_2.bias"),
-                &[text_hidden], &vec_n(text_hidden));
+                &vec_n(text_hidden * merged_hidden),
+            );
+            put(
+                &mut map,
+                &format!("{pp}linear_2.bias"),
+                &[text_hidden],
+                &vec_n(text_hidden),
+            );
 
             let mut views: HashMap<String, TensorView<'_>> = HashMap::new();
             for (k, (dt, shape, data)) in &map {
@@ -2260,10 +2364,8 @@ mod tests {
 
             let st = unsafe { crate::safetensors::MmapedSafetensors::new(&path) }
                 .expect("mmap safetensors");
-            let weights = PaddleOcrVlNaVitWeights::load_from_mmapped(
-                &st, &cfg, text_hidden,
-            )
-            .expect("PaddleOcrVlNaVitWeights::load_from_mmapped");
+            let weights = PaddleOcrVlNaVitWeights::load_from_mmapped(&st, &cfg, text_hidden)
+                .expect("PaddleOcrVlNaVitWeights::load_from_mmapped");
             assert_eq!(weights.blocks.len(), cfg.num_hidden_layers);
             assert_eq!(
                 weights.patch_proj.len(),

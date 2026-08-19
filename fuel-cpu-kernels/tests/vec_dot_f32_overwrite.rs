@@ -43,7 +43,8 @@ fn check_overwrite(k: usize) {
     unsafe { vec_dot_f32(a.as_ptr(), b.as_ptr(), &mut c, k) };
 
     assert_eq!(
-        c, expected,
+        c,
+        expected,
         "k={k}: vec_dot_f32 must OVERWRITE *c with the dot product; got {c}, \
          expected {expected} (an accumulate-into-uninitialised arm would give {})",
         SENTINEL + expected

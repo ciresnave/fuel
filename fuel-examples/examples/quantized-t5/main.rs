@@ -10,7 +10,7 @@ use anyhow::{Error as E, Result};
 use clap::{Parser, ValueEnum};
 use fuel::lazy_quantized_t5::QuantizedT5Model;
 use fuel::lazy_t5::{T5Activation, T5Config};
-use hf_hub::{api::sync::Api, api::sync::ApiRepo, Repo, RepoType};
+use hf_hub::{Repo, RepoType, api::sync::Api, api::sync::ApiRepo};
 use tokenizers::Tokenizer;
 
 #[derive(Clone, Debug, Copy, ValueEnum)]
@@ -88,20 +88,18 @@ struct LoadedT5 {
 }
 
 fn parse_t5_config(json: &str) -> Result<LoadedT5> {
-    let v: serde_json::Value = serde_json::from_str(json)
-        .map_err(|e| E::msg(format!("parsing T5 config.json: {e}")))?;
+    let v: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| E::msg(format!("parsing T5 config.json: {e}")))?;
     let get_usize = |key: &str| -> Result<usize> {
         v.get(key)
             .and_then(|x| x.as_u64())
             .map(|x| x as usize)
             .ok_or_else(|| E::msg(format!("T5 config.json: missing/invalid field {key:?}")))
     };
-    let get_usize_opt = |key: &str| -> Option<usize> {
-        v.get(key).and_then(|x| x.as_u64()).map(|x| x as usize)
-    };
-    let get_f64 = |key: &str, default: f64| -> f64 {
-        v.get(key).and_then(|x| x.as_f64()).unwrap_or(default)
-    };
+    let get_usize_opt =
+        |key: &str| -> Option<usize> { v.get(key).and_then(|x| x.as_u64()).map(|x| x as usize) };
+    let get_f64 =
+        |key: &str, default: f64| -> f64 { v.get(key).and_then(|x| x.as_f64()).unwrap_or(default) };
     let get_bool = |key: &str, default: bool| -> bool {
         v.get(key).and_then(|x| x.as_bool()).unwrap_or(default)
     };
@@ -363,7 +361,10 @@ fn sample(logits: &[f32], temperature: f32, top_p: Option<f32>, seed: u64) -> u3
     }
     let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let inv_t = 1.0 / temperature.max(1e-6);
-    let mut probs: Vec<f32> = logits.iter().map(|&x| ((x - max_l) * inv_t).exp()).collect();
+    let mut probs: Vec<f32> = logits
+        .iter()
+        .map(|&x| ((x - max_l) * inv_t).exp())
+        .collect();
     let sum: f32 = probs.iter().sum();
     for p in &mut probs {
         *p /= sum.max(1e-30);

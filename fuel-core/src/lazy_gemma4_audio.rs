@@ -90,9 +90,7 @@ impl Gemma4AudioConfig {
         //   +(chunk_size - 1).
         // We bound by the larger so all reachable signed offsets
         // survive the clamp.
-        self.conf_left_chunks * self.conf_attention_chunk_size
-            + self.conf_attention_chunk_size
-            - 1
+        self.conf_left_chunks * self.conf_attention_chunk_size + self.conf_attention_chunk_size - 1
     }
 }
 
@@ -171,19 +169,21 @@ impl Gemma4AudioModel {
         if dims.len() != 3 {
             return Err(crate::Error::Msg(format!(
                 "Gemma4AudioModel::forward: mel must be rank 3 (B, T, n_mels), got {dims:?}",
-            )).bt());
+            ))
+            .bt());
         }
         let (b, t_in, n_mels) = (dims[0], dims[1], dims[2]);
         if n_mels != cfg.input_feat_size {
             return Err(crate::Error::Msg(format!(
                 "Gemma4AudioModel::forward: mel n_mels={n_mels} != input_feat_size={}",
                 cfg.input_feat_size,
-            )).bt());
+            ))
+            .bt());
         }
         if t_in == 0 {
-            return Err(crate::Error::Msg(
-                "Gemma4AudioModel::forward: T_in must be > 0".into(),
-            ).bt());
+            return Err(
+                crate::Error::Msg("Gemma4AudioModel::forward: T_in must be > 0".into()).bt(),
+            );
         }
         // (B, T, F) -> (B, 1, T, F)
         let x = mel.unsqueeze(1_usize)?;
@@ -196,14 +196,13 @@ impl Gemma4AudioModel {
         }
         // x : (B, C_out, T_sub, F_out) → (B, T_sub, F_out * C_out)
         let c_out = cfg.sscp_conv_channel_size[1];
-        let x = x
-            .permute([0_usize, 2, 3, 1])?
-            .reshape(Shape::from_dims(&[b, t_cur, f_cur * c_out]))?;
-        let mut h = self.weights.sscp_input_proj.apply_linear(
-            &x,
-            f_cur * c_out,
-            cfg.hidden_size,
-        )?;
+        let x =
+            x.permute([0_usize, 2, 3, 1])?
+                .reshape(Shape::from_dims(&[b, t_cur, f_cur * c_out]))?;
+        let mut h =
+            self.weights
+                .sscp_input_proj
+                .apply_linear(&x, f_cur * c_out, cfg.hidden_size)?;
 
         // Chunked attention mask + rel-pos offsets — shared across layers.
         let t_seq = t_cur;
@@ -231,9 +230,9 @@ impl Gemma4AudioModel {
         };
 
         if let Some(ref out_proj) = self.weights.output_proj {
-            let out_dim = cfg.output_proj_dims.expect(
-                "output_proj weights present but output_proj_dims is None",
-            );
+            let out_dim = cfg
+                .output_proj_dims
+                .expect("output_proj weights present but output_proj_dims is None");
             Ok(out_proj.apply_linear(&h, cfg.hidden_size, out_dim)?)
         } else {
             Ok(h)
@@ -253,7 +252,11 @@ impl Gemma4AudioModel {
         let kf = cfg.sscp_conv_kernel_size[idx][1];
         let st = cfg.sscp_conv_stride_size[idx][0];
         let sf = cfg.sscp_conv_stride_size[idx][1];
-        let cin = if idx == 0 { 1 } else { cfg.sscp_conv_channel_size[idx - 1] };
+        let cin = if idx == 0 {
+            1
+        } else {
+            cfg.sscp_conv_channel_size[idx - 1]
+        };
         let cout = cfg.sscp_conv_channel_size[idx];
 
         // Semicausal-style padding: half on each side along T, +1 on each side along F.
@@ -263,7 +266,9 @@ impl Gemma4AudioModel {
         let x_padded = x
             .pad_with_zeros(2_usize, pad_t, pad_t)?
             .pad_with_zeros(3_usize, pad_f, pad_f)?;
-        let w = block.conv.const_like(&x_padded, Shape::from_dims(&[cout, cin, kt, kf]))?;
+        let w = block
+            .conv
+            .const_like(&x_padded, Shape::from_dims(&[cout, cin, kt, kf]))?;
         let conv_out = x_padded.conv2d(&w, None, (st, sf), (0, 0), 1)?;
         // Output T_out / F_out from conv arithmetic.
         let t_out = (t_in + 2 * pad_t - kt) / st + 1;
@@ -305,14 +310,7 @@ impl Gemma4AudioModel {
         )?;
 
         // Attention ────────────────────────────────────────────────────
-        let h = self.attention(
-            &h,
-            layer,
-            attn_mask,
-            rel_pos_idx,
-            t_seq,
-            clip,
-        )?;
+        let h = self.attention(&h, layer, attn_mask, rel_pos_idx, t_seq, clip)?;
 
         // Light Conv1D ──────────────────────────────────────────────────
         let h = self.light_conv1d(&h, layer, clip)?;
@@ -376,16 +374,25 @@ impl Gemma4AudioModel {
         let x = x.clamp(-clip, clip);
         let x_n = x.rms_norm_affine(Arc::clone(&layer.attn_pre_norm), cfg.rms_norm_eps)?;
 
-        let q = layer.attn_q.apply_linear(&x_n, hidden, n_heads * head_dim)?;
-        let k = layer.attn_k.apply_linear(&x_n, hidden, n_heads * head_dim)?;
-        let v = layer.attn_v.apply_linear(&x_n, hidden, n_heads * head_dim)?;
+        let q = layer
+            .attn_q
+            .apply_linear(&x_n, hidden, n_heads * head_dim)?;
+        let k = layer
+            .attn_k
+            .apply_linear(&x_n, hidden, n_heads * head_dim)?;
+        let v = layer
+            .attn_v
+            .apply_linear(&x_n, hidden, n_heads * head_dim)?;
 
         // (B, T, H, D) → (B, H, T, D)
-        let q = q.reshape(Shape::from_dims(&[b, t_seq, n_heads, head_dim]))?
+        let q = q
+            .reshape(Shape::from_dims(&[b, t_seq, n_heads, head_dim]))?
             .permute([0_usize, 2, 1, 3])?;
-        let k = k.reshape(Shape::from_dims(&[b, t_seq, n_heads, head_dim]))?
+        let k = k
+            .reshape(Shape::from_dims(&[b, t_seq, n_heads, head_dim]))?
             .permute([0_usize, 2, 1, 3])?;
-        let v = v.reshape(Shape::from_dims(&[b, t_seq, n_heads, head_dim]))?
+        let v = v
+            .reshape(Shape::from_dims(&[b, t_seq, n_heads, head_dim]))?
             .permute([0_usize, 2, 1, 3])?;
 
         // QKᵀ scaled.
@@ -421,9 +428,13 @@ impl Gemma4AudioModel {
 
         // probs : (B, H, T, T), v : (B, H, T, D) → (B, H, T, D)
         let ctx = probs.matmul(&v)?;
-        let ctx = ctx.permute([0_usize, 2, 1, 3])?
+        let ctx = ctx
+            .permute([0_usize, 2, 1, 3])?
             .reshape(Shape::from_dims(&[b, t_seq, hidden]))?;
-        let out = layer.attn_o.apply_linear(&ctx, hidden, hidden)?.clamp(-clip, clip);
+        let out = layer
+            .attn_o
+            .apply_linear(&ctx, hidden, hidden)?
+            .clamp(-clip, clip);
         let out_n = out.rms_norm_affine(Arc::clone(&layer.attn_post_norm), cfg.rms_norm_eps)?;
         residual.add(&out_n)
     }
@@ -440,7 +451,9 @@ impl Gemma4AudioModel {
 
         let residual = x.clone();
         let x_n = x.rms_norm_affine(Arc::clone(&layer.lconv_pre_norm), cfg.rms_norm_eps)?;
-        let y = layer.lconv_linear_start.apply_linear(&x_n, hidden, hidden * 2)?;
+        let y = layer
+            .lconv_linear_start
+            .apply_linear(&x_n, hidden, hidden * 2)?;
         // GLU: split last dim in half, mul by sigmoid of the other half.
         let half = hidden;
         let y1 = y.narrow(2_usize, 0, half)?;
@@ -451,16 +464,17 @@ impl Gemma4AudioModel {
         let y_bct = y.permute([0_usize, 2, 1])?;
         // Causal pad (left = k-1) on the temporal axis.
         let y_padded = y_bct.pad_with_zeros(2_usize, k - 1, 0)?;
-        let w = layer.lconv_depthwise.const_like(
-            &y_padded,
-            Shape::from_dims(&[hidden, 1, k]),
-        )?;
+        let w = layer
+            .lconv_depthwise
+            .const_like(&y_padded, Shape::from_dims(&[hidden, 1, k]))?;
         let y_conv = y_padded.conv1d(&w, None, 1, 0, hidden)?;
         // (B, C, T) → (B, T, C)
         let y_btc = y_conv.permute([0_usize, 2, 1])?.clamp(-clip, clip);
         let y_n = y_btc.rms_norm_affine(Arc::clone(&layer.lconv_inner_norm), cfg.rms_norm_eps)?;
         let y_act = y_n.silu();
-        let y_out = layer.lconv_linear_end.apply_linear(&y_act, hidden, hidden)?;
+        let y_out = layer
+            .lconv_linear_end
+            .apply_linear(&y_act, hidden, hidden)?;
         residual.add(&y_out)
     }
 
@@ -468,11 +482,9 @@ impl Gemma4AudioModel {
     /// negative number where not. Block-band over T_seq.
     fn build_block_band_mask(&self, anchor: &LazyTensor, t_seq: usize) -> Result<LazyTensor> {
         let cfg = &self.config;
-        let mask = chunked_band_mask_values(t_seq, cfg.conf_attention_chunk_size, cfg.conf_left_chunks);
-        Ok(anchor.const_f32_like(
-            Arc::from(mask),
-            Shape::from_dims(&[1, 1, t_seq, t_seq]),
-        ))
+        let mask =
+            chunked_band_mask_values(t_seq, cfg.conf_attention_chunk_size, cfg.conf_left_chunks);
+        Ok(anchor.const_f32_like(Arc::from(mask), Shape::from_dims(&[1, 1, t_seq, t_seq])))
     }
 
     /// Build a flat `(T*T,)` U32 index tensor selecting rows from the
@@ -587,7 +599,11 @@ impl Gemma4AudioWeights {
         let mut sscp_blocks: Vec<SscpBlockWeights> = Vec::with_capacity(2);
         let mut current_f = cfg.input_feat_size;
         for i in 0..2 {
-            let cin = if i == 0 { 1 } else { cfg.sscp_conv_channel_size[i - 1] };
+            let cin = if i == 0 {
+                1
+            } else {
+                cfg.sscp_conv_channel_size[i - 1]
+            };
             let cout = cfg.sscp_conv_channel_size[i];
             let kt = cfg.sscp_conv_kernel_size[i][0];
             let kf = cfg.sscp_conv_kernel_size[i][1];
@@ -600,7 +616,12 @@ impl Gemma4AudioWeights {
                 crate::bail!(
                     "{prefix}subsample_conv_projection.layer{i}.conv.weight: \
                      {} elts, expected {} ({}×{}×{}×{})",
-                    conv_flat.len(), expected, cout, cin, kt, kf,
+                    conv_flat.len(),
+                    expected,
+                    cout,
+                    cin,
+                    kt,
+                    kf,
                 );
             }
             sscp_blocks.push(SscpBlockWeights {
@@ -623,101 +644,151 @@ impl Gemma4AudioWeights {
         )?;
 
         // ---- Conformer layers ----------------------------------------------
-        let mut layers: Vec<ConformerLayerWeights> =
-            Vec::with_capacity(cfg.conf_num_hidden_layers);
+        let mut layers: Vec<ConformerLayerWeights> = Vec::with_capacity(cfg.conf_num_hidden_layers);
         for li in 0..cfg.conf_num_hidden_layers {
             let p = format!("{prefix}conformer.{li}");
 
             // FF1
-            let ff1_pre_norm = Arc::from(
-                load_tensor_as_f32(st, &format!("{p}.feed_forward1.pre_layer_norm.weight"))?,
-            );
-            let ff1_post_norm = Arc::from(
-                load_tensor_as_f32(st, &format!("{p}.feed_forward1.post_layer_norm.weight"))?,
-            );
+            let ff1_pre_norm = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.feed_forward1.pre_layer_norm.weight"),
+            )?);
+            let ff1_post_norm = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.feed_forward1.post_layer_norm.weight"),
+            )?);
             let ff1_w1 = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.feed_forward1.ffw_layer_1.weight"), h * 4, h,
+                st,
+                &format!("{p}.feed_forward1.ffw_layer_1.weight"),
+                h * 4,
+                h,
             )?;
             let ff1_w2 = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.feed_forward1.ffw_layer_2.weight"), h, h * 4,
+                st,
+                &format!("{p}.feed_forward1.ffw_layer_2.weight"),
+                h,
+                h * 4,
             )?;
 
             // Attention norms
-            let attn_pre_norm = Arc::from(
-                load_tensor_as_f32(st, &format!("{p}.norm_pre_attn.weight"))?,
-            );
-            let attn_post_norm = Arc::from(
-                load_tensor_as_f32(st, &format!("{p}.norm_post_attn.weight"))?,
-            );
+            let attn_pre_norm = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.norm_pre_attn.weight"),
+            )?);
+            let attn_post_norm = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.norm_post_attn.weight"),
+            )?);
 
             // Attention projections
             let attn_q = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.q_proj.weight"), q_dim, h,
+                st,
+                &format!("{p}.self_attn.q_proj.weight"),
+                q_dim,
+                h,
             )?;
             let attn_k = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.k_proj.weight"), q_dim, h,
+                st,
+                &format!("{p}.self_attn.k_proj.weight"),
+                q_dim,
+                h,
             )?;
             let attn_v = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.v_proj.weight"), q_dim, h,
+                st,
+                &format!("{p}.self_attn.v_proj.weight"),
+                q_dim,
+                h,
             )?;
             let attn_o = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.post.weight"), h, q_dim,
+                st,
+                &format!("{p}.self_attn.post.weight"),
+                h,
+                q_dim,
             )?;
 
             // Shaw-style rel-pos table — no HF source; default to zeros.
             let rel_pos_bias = Arc::from(vec![0.0_f32; span * n_heads]);
 
             // Light Conv1D
-            let lconv_pre_norm = Arc::from(
-                load_tensor_as_f32(st, &format!("{p}.lconv1d.pre_layer_norm.weight"))?,
-            );
-            let lconv_inner_norm = Arc::from(
-                load_tensor_as_f32(st, &format!("{p}.lconv1d.conv_norm.weight"))?,
-            );
+            let lconv_pre_norm = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.lconv1d.pre_layer_norm.weight"),
+            )?);
+            let lconv_inner_norm = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.lconv1d.conv_norm.weight"),
+            )?);
             let lconv_linear_start = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.lconv1d.linear_start.weight"), h * 2, h,
+                st,
+                &format!("{p}.lconv1d.linear_start.weight"),
+                h * 2,
+                h,
             )?;
             let lconv_linear_end = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.lconv1d.linear_end.weight"), h, h,
+                st,
+                &format!("{p}.lconv1d.linear_end.weight"),
+                h,
+                h,
             )?;
-            let lconv_depthwise_flat = load_tensor_as_f32(
-                st, &format!("{p}.lconv1d.depthwise_conv1d.weight"),
-            )?;
+            let lconv_depthwise_flat =
+                load_tensor_as_f32(st, &format!("{p}.lconv1d.depthwise_conv1d.weight"))?;
             let expected_dw = h * k_lc;
             if lconv_depthwise_flat.len() != expected_dw {
                 crate::bail!(
                     "{p}.lconv1d.depthwise_conv1d.weight: {} elts, expected {} ({}×1×{})",
-                    lconv_depthwise_flat.len(), expected_dw, h, k_lc,
+                    lconv_depthwise_flat.len(),
+                    expected_dw,
+                    h,
+                    k_lc,
                 );
             }
             let lconv_depthwise = WeightStorage::F32(Arc::from(lconv_depthwise_flat));
 
             // FF2
-            let ff2_pre_norm = Arc::from(
-                load_tensor_as_f32(st, &format!("{p}.feed_forward2.pre_layer_norm.weight"))?,
-            );
-            let ff2_post_norm = Arc::from(
-                load_tensor_as_f32(st, &format!("{p}.feed_forward2.post_layer_norm.weight"))?,
-            );
+            let ff2_pre_norm = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.feed_forward2.pre_layer_norm.weight"),
+            )?);
+            let ff2_post_norm = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.feed_forward2.post_layer_norm.weight"),
+            )?);
             let ff2_w1 = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.feed_forward2.ffw_layer_1.weight"), h * 4, h,
+                st,
+                &format!("{p}.feed_forward2.ffw_layer_1.weight"),
+                h * 4,
+                h,
             )?;
             let ff2_w2 = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.feed_forward2.ffw_layer_2.weight"), h, h * 4,
+                st,
+                &format!("{p}.feed_forward2.ffw_layer_2.weight"),
+                h,
+                h * 4,
             )?;
 
-            let out_norm = Arc::from(
-                load_tensor_as_f32(st, &format!("{p}.norm_out.weight"))?,
-            );
+            let out_norm = Arc::from(load_tensor_as_f32(st, &format!("{p}.norm_out.weight"))?);
 
             layers.push(ConformerLayerWeights {
-                ff1_pre_norm, ff1_post_norm, ff1_w1, ff1_w2,
-                attn_pre_norm, attn_post_norm,
-                attn_q, attn_k, attn_v, attn_o,
+                ff1_pre_norm,
+                ff1_post_norm,
+                ff1_w1,
+                ff1_w2,
+                attn_pre_norm,
+                attn_post_norm,
+                attn_q,
+                attn_k,
+                attn_v,
+                attn_o,
                 rel_pos_bias,
-                lconv_pre_norm, lconv_inner_norm,
-                lconv_linear_start, lconv_linear_end, lconv_depthwise,
-                ff2_pre_norm, ff2_post_norm, ff2_w1, ff2_w2,
+                lconv_pre_norm,
+                lconv_inner_norm,
+                lconv_linear_start,
+                lconv_linear_end,
+                lconv_depthwise,
+                ff2_pre_norm,
+                ff2_post_norm,
+                ff2_w1,
+                ff2_w2,
                 out_norm,
             });
         }
@@ -725,17 +796,21 @@ impl Gemma4AudioWeights {
         // ---- Output projection (optional) ----------------------------------
         let output_proj = if let Some(out_dim) = cfg.output_proj_dims {
             Some(load_transposed_matrix_preserve_dtype(
-                st, &format!("{prefix}output_proj.weight"), out_dim, h,
+                st,
+                &format!("{prefix}output_proj.weight"),
+                out_dim,
+                h,
             )?)
         } else {
             None
         };
 
-        let sscp: [SscpBlockWeights; 2] = sscp_blocks
-            .try_into()
-            .map_err(|_| crate::Error::Msg(
+        let sscp: [SscpBlockWeights; 2] = sscp_blocks.try_into().map_err(|_| {
+            crate::Error::Msg(
                 "Gemma4AudioWeights::load_from_mmapped: SSCP block count mismatch".into(),
-            ).bt())?;
+            )
+            .bt()
+        })?;
 
         Ok(Gemma4AudioWeights {
             sscp,
@@ -866,7 +941,10 @@ mod tests {
     #[test]
     fn forward_shape_and_finite_tiny() {
         let cfg = tiny_config();
-        let model = Gemma4AudioModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Gemma4AudioModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let b = 1;
         let t_in = 64;
         let n_mels = cfg.input_feat_size;
@@ -881,8 +959,13 @@ mod tests {
         let out = model.forward(&mel).unwrap();
         // T: 64 -> 32 -> 16 after two stride-2 convs.
         let dims = out.shape().dims().to_vec();
-        assert_eq!(dims, vec![b, 16, cfg.hidden_size],
-            "expected (1, 16, {}), got {:?}", cfg.hidden_size, dims);
+        assert_eq!(
+            dims,
+            vec![b, 16, cfg.hidden_size],
+            "expected (1, 16, {}), got {:?}",
+            cfg.hidden_size,
+            dims
+        );
         let realized = out.realize_f32();
         for &v in &realized {
             assert!(v.is_finite(), "got non-finite encoder output {v}");
@@ -899,17 +982,22 @@ mod tests {
         let m = chunked_band_mask_values(t, chunk, left);
         for i in 0..t {
             let q_chunk = i / chunk;
-            let lo = if q_chunk == 0 { 0 } else { (q_chunk - left) * chunk };
+            let lo = if q_chunk == 0 {
+                0
+            } else {
+                (q_chunk - left) * chunk
+            };
             let hi = (q_chunk + 1) * chunk;
             for j in 0..t {
                 let attend = j >= lo && j < hi;
                 let val = m[i * t + j];
                 if attend {
-                    assert_eq!(val, 0.0,
-                        "i={i} j={j}: expected attend (0.0), got {val}");
+                    assert_eq!(val, 0.0, "i={i} j={j}: expected attend (0.0), got {val}");
                 } else {
-                    assert!(val < -1.0e8,
-                        "i={i} j={j}: expected block (large negative), got {val}");
+                    assert!(
+                        val < -1.0e8,
+                        "i={i} j={j}: expected block (large negative), got {val}"
+                    );
                 }
             }
         }
@@ -939,8 +1027,11 @@ mod tests {
         }
         // Diagonal (i == j) must map to the "zero offset" bucket = max_rel.
         for i in 0..t_seq {
-            assert_eq!(expected[i * t_seq + i], max_rel as u32,
-                "diagonal at i={i} must be the zero-offset bucket {max_rel}");
+            assert_eq!(
+                expected[i * t_seq + i],
+                max_rel as u32,
+                "diagonal at i={i} must be the zero-offset bucket {max_rel}"
+            );
         }
         // The (i=3, j=0) offset is +3 which is within max_rel → bucket = max_rel + 3.
         assert_eq!(expected[3 * t_seq + 0], (max_rel + 3) as u32);
@@ -949,7 +1040,10 @@ mod tests {
 
         // Now build the same index tensor through the model and read
         // it back, asserting the realized values match.
-        let model = Gemma4AudioModel { config: cfg, weights: tiny_weights(&tiny_config()) };
+        let model = Gemma4AudioModel {
+            config: cfg,
+            weights: tiny_weights(&tiny_config()),
+        };
         let anchor = LazyTensor::from_f32(
             Arc::from(vec![0.0_f32; t_seq]),
             Shape::from_dims(&[t_seq]),

@@ -16,7 +16,7 @@ use fuel::lazy_pixtral::{
     PixtralWeights,
 };
 use fuel::{Device, Shape};
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use hf_hub::{Repo, RepoType, api::sync::Api};
 use tokenizers::Tokenizer;
 
 #[derive(Parser, Debug)]
@@ -88,8 +88,8 @@ fn parse_activation(s: Option<&str>) -> PixtralActivation {
 }
 
 fn pixtral_config_from_hf_json_str(json: &str) -> Result<PixtralConfig> {
-    let v: serde_json::Value = serde_json::from_str(json)
-        .map_err(|e| E::msg(format!("parsing config.json: {e}")))?;
+    let v: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| E::msg(format!("parsing config.json: {e}")))?;
     let vc = v
         .get("vision_config")
         .cloned()
@@ -143,10 +143,7 @@ fn pixtral_config_from_hf_json_str(json: &str) -> Result<PixtralConfig> {
         sliding_window: get_usize_opt(&tc, "sliding_window"),
     };
 
-    let projector_act = parse_activation(
-        v.get("projector_hidden_act")
-            .and_then(|x| x.as_str()),
-    );
+    let projector_act = parse_activation(v.get("projector_hidden_act").and_then(|x| x.as_str()));
     let projector = PixtralProjectorConfig {
         in_dim: vision.hidden_size,
         out_dim: text.hidden_size,
@@ -240,7 +237,9 @@ fn main() -> Result<()> {
         let weights = PixtralWeights::load_from_mmapped(&st, &config)
             .map_err(|e| E::msg(format!("load weights: {e}")))?;
         let _ = weights;
-        println!("vision-only loaded; lazy_pixtral does not expose a standalone vision forward, skipping.");
+        println!(
+            "vision-only loaded; lazy_pixtral does not expose a standalone vision forward, skipping."
+        );
         return Ok(());
     }
 
@@ -248,7 +247,10 @@ fn main() -> Result<()> {
     let start = std::time::Instant::now();
     let weights = PixtralWeights::load_from_mmapped(&st, &config)
         .map_err(|e| E::msg(format!("load weights: {e}")))?;
-    let model = PixtralModel { config: config.clone(), weights };
+    let model = PixtralModel {
+        config: config.clone(),
+        weights,
+    };
     println!("loaded the model in {:?}", start.elapsed());
 
     let pixel_values = LazyTensor::from_f32(
@@ -334,7 +336,10 @@ fn sample(logits: &[f32], temperature: f32, top_p: Option<f32>, seed: u64) -> u3
     }
     let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let inv_t = 1.0 / temperature.max(1e-6);
-    let mut probs: Vec<f32> = logits.iter().map(|&x| ((x - max_l) * inv_t).exp()).collect();
+    let mut probs: Vec<f32> = logits
+        .iter()
+        .map(|&x| ((x - max_l) * inv_t).exp())
+        .collect();
     let sum: f32 = probs.iter().sum();
     for p in &mut probs {
         *p /= sum.max(1e-30);
@@ -372,7 +377,9 @@ fn sample(logits: &[f32], temperature: f32, top_p: Option<f32>, seed: u64) -> u3
     } else {
         return 0;
     }
-    let mut state = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    let mut state = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
     state ^= state >> 33;
     state = state.wrapping_mul(0xff51_afd7_ed55_8ccd);
     state ^= state >> 33;

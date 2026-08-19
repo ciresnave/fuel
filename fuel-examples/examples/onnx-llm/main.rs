@@ -6,8 +6,8 @@ extern crate accelerate_src;
 
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
-use fuel::lazy::LazyTensor;
 use fuel::Device;
+use fuel::lazy::LazyTensor;
 use hf_hub::api::sync::Api;
 use serde::Deserialize;
 use std::io::Write;
@@ -66,7 +66,10 @@ struct Args {
 struct Lcg(u64);
 impl Lcg {
     fn new(seed: u64) -> Self {
-        Self(seed.wrapping_mul(2862933555777941757).wrapping_add(3037000493))
+        Self(
+            seed.wrapping_mul(2862933555777941757)
+                .wrapping_add(3037000493),
+        )
     }
     fn next_f32(&mut self) -> f32 {
         self.0 = self
@@ -102,11 +105,7 @@ fn sample(
     let max = scaled.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
     let exp: Vec<f32> = scaled.iter().map(|&l| (l - max).exp()).collect();
     let sum: f32 = exp.iter().sum();
-    let mut probs: Vec<(usize, f32)> = exp
-        .iter()
-        .enumerate()
-        .map(|(i, &e)| (i, e / sum))
-        .collect();
+    let mut probs: Vec<(usize, f32)> = exp.iter().enumerate().map(|(i, &e)| (i, e / sum)).collect();
     // Top-k filter.
     if let Some(k) = top_k {
         probs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
@@ -141,7 +140,11 @@ fn sample(
 
 pub fn main() -> Result<()> {
     let args = Args::parse();
-    let _device = if args.cpu { Device::cpu() } else { Device::cpu() };
+    let _device = if args.cpu {
+        Device::cpu()
+    } else {
+        Device::cpu()
+    };
 
     let (model_id, tokenizer_id) = match args.which {
         Which::SmolLM135M => ("HuggingFaceTB/SmolLM-135M", "HuggingFaceTB/SmolLM-135M"),
@@ -182,8 +185,12 @@ pub fn main() -> Result<()> {
     let head_dim = config.hidden_size / config.num_attention_heads;
 
     // (past_kv[layer].0 = key flat host data, key shape ; past_kv[layer].1 = value flat, shape).
-    let mut past_kv: Option<Vec<((Vec<f32>, (usize, usize, usize, usize)), (Vec<f32>, (usize, usize, usize, usize)))>> =
-        None;
+    let mut past_kv: Option<
+        Vec<(
+            (Vec<f32>, (usize, usize, usize, usize)),
+            (Vec<f32>, (usize, usize, usize, usize)),
+        )>,
+    > = None;
 
     let device = Device::cpu();
 
@@ -192,8 +199,7 @@ pub fn main() -> Result<()> {
         // sample-rate-like dummy — but we need a real F32 anchor. Use
         // the first KV tensor (always present) or a fresh zero f32
         // anchor.
-        let anchor =
-            LazyTensor::from_f32(vec![0.0_f32; 1], (1usize,), &device);
+        let anchor = LazyTensor::from_f32(vec![0.0_f32; 1], (1usize,), &device);
 
         let mut inputs: std::collections::HashMap<String, LazyTensor> =
             std::collections::HashMap::new();
@@ -208,8 +214,7 @@ pub fn main() -> Result<()> {
             let attn = anchor.const_i64_like(vec![1_i64; seq_len], (1usize, seq_len));
             inputs.insert("attention_mask".to_string(), attn);
 
-            let pos =
-                anchor.const_i64_like(vec![(seq_len - 1) as i64], (1usize, 1usize));
+            let pos = anchor.const_i64_like(vec![(seq_len - 1) as i64], (1usize, 1usize));
             inputs.insert("position_ids".to_string(), pos);
 
             for (i, (k_pair, v_pair)) in past.iter().enumerate() {
@@ -227,10 +232,7 @@ pub fn main() -> Result<()> {
         } else {
             // Prefill: feed full prompt.
             let seq_len = generated_tokens.len();
-            let input_ids = anchor.const_i64_like(
-                generated_tokens.clone(),
-                (1usize, seq_len),
-            );
+            let input_ids = anchor.const_i64_like(generated_tokens.clone(), (1usize, seq_len));
             inputs.insert("input_ids".to_string(), input_ids);
 
             let attn = anchor.const_i64_like(vec![1_i64; seq_len], (1usize, seq_len));
@@ -248,10 +250,8 @@ pub fn main() -> Result<()> {
                     Arc::<[f32]>::from(empty.clone().into_boxed_slice()),
                     empty_shape,
                 );
-                let v = anchor.const_f32_like(
-                    Arc::<[f32]>::from(empty.into_boxed_slice()),
-                    empty_shape,
-                );
+                let v = anchor
+                    .const_f32_like(Arc::<[f32]>::from(empty.into_boxed_slice()), empty_shape);
                 inputs.insert(format!("past_key_values.{}.key", i), k);
                 inputs.insert(format!("past_key_values.{}.value", i), v);
             }
@@ -271,13 +271,7 @@ pub fn main() -> Result<()> {
         let logits_vec = logits.realize_f32();
         let last_row = &logits_vec[(seq - 1) * vocab..seq * vocab];
 
-        let next_id = sample(
-            last_row,
-            args.temperature,
-            args.top_k,
-            args.top_p,
-            &mut rng,
-        );
+        let next_id = sample(last_row, args.temperature, args.top_k, args.top_p, &mut rng);
         let next_token_id = next_id as u32;
         generated_tokens.push(next_token_id as i64);
 

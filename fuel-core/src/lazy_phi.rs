@@ -141,9 +141,7 @@ impl PhiModel {
     ///
     /// `embeds` shape: `(1, seq, hidden_size)`. Phi does NOT scale
     /// embeddings — `embeds` is passed raw.
-    pub fn forward_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
         let h_norm = self.run_backbone_embeds(embeds, start_pos)?;
         self.apply_lm_head(&h_norm)
     }
@@ -151,20 +149,22 @@ impl PhiModel {
     /// Hidden-state variant of [`Self::forward_embeds`]. Returns the
     /// post-final-LayerNorm states `(1, seq, hidden_size)`.
     pub fn forward_hidden_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
+        &self,
+        embeds: &LazyTensor,
+        start_pos: usize,
     ) -> Result<LazyTensor> {
         self.run_backbone_embeds(embeds, start_pos)
     }
 
     /// Build per-token embeddings without running the decoder. Used by
     /// multimodal compositions. Returns shape `(1, seq, hidden_size)`.
-    pub fn embed_tokens_anchored(
-        &self, anchor: &LazyTensor, tokens: &[u32],
-    ) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
-            cfg.vocab_size, cfg.hidden_size, tokens,
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
         )
     }
 
@@ -173,11 +173,14 @@ impl PhiModel {
         let weights = &self.weights;
         match &weights.lm_head_bias {
             Some(b) => weights.lm_head.apply_linear_with_bias(
-                h_norm, cfg.hidden_size, cfg.vocab_size, Arc::clone(b),
+                h_norm,
+                cfg.hidden_size,
+                cfg.vocab_size,
+                Arc::clone(b),
             ),
-            None => Ok(weights.lm_head.apply_linear(
-                h_norm, cfg.hidden_size, cfg.vocab_size,
-            )?),
+            None => Ok(weights
+                .lm_head
+                .apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?),
         }
     }
 
@@ -188,14 +191,16 @@ impl PhiModel {
         assert!(seq > 0, "PhiModel: tokens must be non-empty");
 
         let h = LazyTensor::embed_tokens(
-            weights.token_embedding.clone(), cfg.vocab_size, cfg.hidden_size, tokens, &Device::cpu(),
+            weights.token_embedding.clone(),
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
+            &Device::cpu(),
         )?;
         self.run_backbone_embeds(&h, start_pos)
     }
 
-    fn run_backbone_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
-    ) -> Result<LazyTensor> {
+    fn run_backbone_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -205,36 +210,37 @@ impl PhiModel {
                 "PhiModel::forward_embeds: expected embeds shape \
                  (1, seq, hidden_size={}), got {:?}",
                 cfg.hidden_size, dims,
-            )).bt());
+            ))
+            .bt());
         }
         let seq = dims[1];
         if seq == 0 {
-            return Err(crate::Error::Msg(
-                "PhiModel::forward_embeds: seq must be > 0".into(),
-            ).bt());
+            return Err(crate::Error::Msg("PhiModel::forward_embeds: seq must be > 0".into()).bt());
         }
         if cfg.num_attention_heads * cfg.head_dim != cfg.hidden_size {
             return Err(crate::Error::Msg(
                 "PhiConfig: num_attention_heads * head_dim must equal hidden_size".into(),
-            ).bt());
+            )
+            .bt());
         }
         if cfg.qk_layernorm {
             return Err(crate::Error::Msg(
-                "PhiModel v1: qk_layernorm not yet supported (reference Phi-2 sets it false)".into(),
-            ).bt());
+                "PhiModel v1: qk_layernorm not yet supported (reference Phi-2 sets it false)"
+                    .into(),
+            )
+            .bt());
         }
         let rope_dim = cfg.rope_dim();
         if rope_dim == 0 || rope_dim > cfg.head_dim {
             return Err(crate::Error::Msg(format!(
                 "PhiConfig: rope_dim ({}) out of [1, head_dim ({})]",
                 rope_dim, cfg.head_dim,
-            )).bt());
+            ))
+            .bt());
         }
         let mut h = embeds.clone();
 
-        let (rope_cos, rope_sin) = h.rope_tables_const(
-            cfg.rope_theta, start_pos, seq, rope_dim,
-        );
+        let (rope_cos, rope_sin) = h.rope_tables_const(cfg.rope_theta, start_pos, seq, rope_dim);
 
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin)?;
@@ -263,12 +269,31 @@ impl PhiModel {
         let rope_dim = cfg.rope_dim();
 
         // Single LN feeds BOTH attention and MLP paths (Phi parallel block).
-        let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&layer.input_ln_gain), std::sync::Arc::clone(&layer.input_ln_bias), cfg.layer_norm_eps)?;
+        let x_norm = x.layer_norm_affine(
+            std::sync::Arc::clone(&layer.input_ln_gain),
+            std::sync::Arc::clone(&layer.input_ln_bias),
+            cfg.layer_norm_eps,
+        )?;
 
         // ---- Attention path -------------------------------------------------
-        let q = layer.attn_q.apply_linear_with_bias(&x_norm, cfg.hidden_size, cfg.hidden_size, std::sync::Arc::clone(&layer.attn_q_bias))?;
-        let k = layer.attn_k.apply_linear_with_bias(&x_norm, cfg.hidden_size, kv_dim, std::sync::Arc::clone(&layer.attn_k_bias))?;
-        let v = layer.attn_v.apply_linear_with_bias(&x_norm, cfg.hidden_size, kv_dim, std::sync::Arc::clone(&layer.attn_v_bias))?;
+        let q = layer.attn_q.apply_linear_with_bias(
+            &x_norm,
+            cfg.hidden_size,
+            cfg.hidden_size,
+            std::sync::Arc::clone(&layer.attn_q_bias),
+        )?;
+        let k = layer.attn_k.apply_linear_with_bias(
+            &x_norm,
+            cfg.hidden_size,
+            kv_dim,
+            std::sync::Arc::clone(&layer.attn_k_bias),
+        )?;
+        let v = layer.attn_v.apply_linear_with_bias(
+            &x_norm,
+            cfg.hidden_size,
+            kv_dim,
+            std::sync::Arc::clone(&layer.attn_v_bias),
+        )?;
 
         let _ = (batch, seq);
         let q = q.split_heads(cfg.num_attention_heads, cfg.head_dim)?;
@@ -301,15 +326,30 @@ impl PhiModel {
         let attn_v = attn.matmul(&v_full)?;
 
         let merged = attn_v.merge_heads()?;
-        let attn_out = layer.attn_dense.apply_linear_with_bias(&merged, cfg.hidden_size, cfg.hidden_size, std::sync::Arc::clone(&layer.attn_dense_bias))?;
+        let attn_out = layer.attn_dense.apply_linear_with_bias(
+            &merged,
+            cfg.hidden_size,
+            cfg.hidden_size,
+            std::sync::Arc::clone(&layer.attn_dense_bias),
+        )?;
 
         // ---- MLP path (uses the SAME x_norm) --------------------------------
-        let fc1_out = layer.fc1.apply_linear_with_bias(&x_norm, cfg.hidden_size, cfg.intermediate_size, std::sync::Arc::clone(&layer.fc1_bias))?;
+        let fc1_out = layer.fc1.apply_linear_with_bias(
+            &x_norm,
+            cfg.hidden_size,
+            cfg.intermediate_size,
+            std::sync::Arc::clone(&layer.fc1_bias),
+        )?;
         let activated = match cfg.hidden_activation {
             PhiActivation::Gelu => fc1_out.gelu_erf(),
             PhiActivation::GeluPytorchTanh => fc1_out.gelu(),
         };
-        let mlp_out = layer.fc2.apply_linear_with_bias(&activated, cfg.intermediate_size, cfg.hidden_size, std::sync::Arc::clone(&layer.fc2_bias))?;
+        let mlp_out = layer.fc2.apply_linear_with_bias(
+            &activated,
+            cfg.intermediate_size,
+            cfg.hidden_size,
+            std::sync::Arc::clone(&layer.fc2_bias),
+        )?;
 
         // Parallel combine: residual + attn + mlp.
         x.add(&attn_out)?.add(&mlp_out)
@@ -371,7 +411,8 @@ impl PhiConfig {
         if qk_layernorm {
             return Err(crate::Error::Msg(
                 "Phi: qk_layernorm=true is not yet supported by the standalone port (v1)".into(),
-            ).bt());
+            )
+            .bt());
         }
 
         Ok(PhiConfig {
@@ -409,9 +450,10 @@ impl PhiWeights {
         let n_kv = cfg.num_kv_heads();
         let kv_dim = n_kv * cfg.head_dim;
 
-        let token_embedding = Arc::from(
-            crate::lazy::load_tensor_as_f32(st, "model.embed_tokens.weight")?,
-        );
+        let token_embedding = Arc::from(crate::lazy::load_tensor_as_f32(
+            st,
+            "model.embed_tokens.weight",
+        )?);
 
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         for li in 0..cfg.num_hidden_layers {
@@ -443,15 +485,20 @@ impl PhiWeights {
             });
         }
 
-        let final_ln_gain = Arc::from(
-            crate::lazy::load_tensor_as_f32(st, "model.final_layernorm.weight")?,
-        );
-        let final_ln_bias = Arc::from(
-            crate::lazy::load_tensor_as_f32(st, "model.final_layernorm.bias")?,
-        );
-        let lm_head = WeightStorage::F32(Arc::from(
-            crate::lazy::load_transposed_matrix(st, "lm_head.weight", cfg.vocab_size, h)?,
-        ));
+        let final_ln_gain = Arc::from(crate::lazy::load_tensor_as_f32(
+            st,
+            "model.final_layernorm.weight",
+        )?);
+        let final_ln_bias = Arc::from(crate::lazy::load_tensor_as_f32(
+            st,
+            "model.final_layernorm.bias",
+        )?);
+        let lm_head = WeightStorage::F32(Arc::from(crate::lazy::load_transposed_matrix(
+            st,
+            "lm_head.weight",
+            cfg.vocab_size,
+            h,
+        )?));
         let lm_head_bias = crate::lazy::load_tensor_as_f32(st, "lm_head.bias")
             .ok()
             .map(Arc::from);
@@ -505,11 +552,10 @@ impl PhiModel {
                 }
                 paths
             }
-            Err(_) => vec![repo
-                .get("model.safetensors")
-                .map_err(|e| {
-                    crate::Error::Msg(format!("hf-hub model.safetensors: {e}"))
-                })?],
+            Err(_) => vec![
+                repo.get("model.safetensors")
+                    .map_err(|e| crate::Error::Msg(format!("hf-hub model.safetensors: {e}")))?,
+            ],
         };
 
         let st = unsafe { crate::safetensors::MmapedSafetensors::multi(&weight_paths) }?;
@@ -562,9 +608,12 @@ mod tests {
         let lm_head = WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *nb));
         let lm_head_bias = Some(vec_of(cfg.vocab_size, &mut *nb));
         PhiWeights {
-            token_embedding, layers,
-            final_ln_gain, final_ln_bias,
-            lm_head, lm_head_bias,
+            token_embedding,
+            layers,
+            final_ln_gain,
+            final_ln_bias,
+            lm_head,
+            lm_head_bias,
         }
     }
 
@@ -616,8 +665,8 @@ mod tests {
             "max_position_embeddings": 2048
         }"#;
         let cfg = PhiConfig::from_hf_json_str(json).unwrap();
-        assert_eq!(cfg.num_key_value_heads, None);  // MHA — no GQA
-        assert_eq!(cfg.head_dim, 64);  // 1024 / 16
+        assert_eq!(cfg.num_key_value_heads, None); // MHA — no GQA
+        assert_eq!(cfg.head_dim, 64); // 1024 / 16
         assert!((cfg.layer_norm_eps - 1e-5).abs() < 1e-12);
         assert!((cfg.rope_theta - 10000.0).abs() < 1e-9);
         assert!((cfg.partial_rotary_factor - 0.4).abs() < 1e-9);
@@ -648,10 +697,15 @@ mod tests {
 
     fn tiny_config() -> PhiConfig {
         PhiConfig {
-            vocab_size: 32, hidden_size: 16, intermediate_size: 32,
-            num_hidden_layers: 2, num_attention_heads: 4,
-            num_key_value_heads: None, head_dim: 4,
-            layer_norm_eps: 1e-5, rope_theta: 10_000.0,
+            vocab_size: 32,
+            hidden_size: 16,
+            intermediate_size: 32,
+            num_hidden_layers: 2,
+            num_attention_heads: 4,
+            num_key_value_heads: None,
+            head_dim: 4,
+            layer_norm_eps: 1e-5,
+            rope_theta: 10_000.0,
             max_position_embeddings: 64,
             partial_rotary_factor: 0.5, // rope_dim = 2
             qk_layernorm: false,
@@ -662,7 +716,10 @@ mod tests {
     #[test]
     fn forward_shape_and_finite() {
         let cfg = tiny_config();
-        let model = PhiModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = PhiModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4, 5];
         let logits = model.forward(&tokens, 0).unwrap();
         assert_eq!(logits.shape().dims(), &[1, tokens.len(), cfg.vocab_size]);
@@ -680,7 +737,10 @@ mod tests {
         let cfg = tiny_config();
         let mut weights = tiny_weights(&cfg);
         weights.lm_head_bias = None;
-        let model = PhiModel { config: cfg.clone(), weights };
+        let model = PhiModel {
+            config: cfg.clone(),
+            weights,
+        };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits = model.forward(&tokens, 0).unwrap();
         assert_eq!(logits.shape().dims(), &[1, tokens.len(), cfg.vocab_size]);
@@ -700,18 +760,27 @@ mod tests {
         // Path A: bias = None.
         let mut weights_none = base.clone();
         weights_none.lm_head_bias = None;
-        let m_none = PhiModel { config: cfg.clone(), weights: weights_none };
+        let m_none = PhiModel {
+            config: cfg.clone(),
+            weights: weights_none,
+        };
         let a = m_none.forward(&[1, 2, 3], 0).unwrap().realize_f32();
 
         // Path B: bias = Some(zeros).
         let mut weights_zero = base.clone();
         weights_zero.lm_head_bias = Some(Arc::from(vec![0.0_f32; cfg.vocab_size]));
-        let m_zero = PhiModel { config: cfg.clone(), weights: weights_zero };
+        let m_zero = PhiModel {
+            config: cfg.clone(),
+            weights: weights_zero,
+        };
         let b = m_zero.forward(&[1, 2, 3], 0).unwrap().realize_f32();
 
         assert_eq!(a.len(), b.len());
         for (i, (av, bv)) in a.iter().zip(b.iter()).enumerate() {
-            assert!((av - bv).abs() < 1e-5, "logit[{i}]: none={av} vs zero-bias={bv}");
+            assert!(
+                (av - bv).abs() < 1e-5,
+                "logit[{i}]: none={av} vs zero-bias={bv}"
+            );
         }
     }
 
@@ -721,7 +790,10 @@ mod tests {
         let mut cfg = tiny_config();
         cfg.partial_rotary_factor = 1.0;
         assert_eq!(cfg.rope_dim(), cfg.head_dim);
-        let model = PhiModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = PhiModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let logits = model.forward(&[1, 2, 3], 0).unwrap().realize_f32();
         assert_eq!(logits.len(), 3 * cfg.vocab_size);
     }
@@ -734,7 +806,10 @@ mod tests {
     /// independently.
     #[test]
     fn parallel_paths_are_additive() {
-        let cfg = PhiConfig { num_hidden_layers: 1, ..tiny_config() };
+        let cfg = PhiConfig {
+            num_hidden_layers: 1,
+            ..tiny_config()
+        };
         let base = tiny_weights(&cfg);
 
         let mut no_mlp = base.clone();
@@ -757,8 +832,14 @@ mod tests {
 
         // Both should produce finite, non-trivial outputs different
         // from each other (different paths active).
-        let m_no_mlp = PhiModel { config: cfg.clone(), weights: no_mlp };
-        let m_no_attn = PhiModel { config: cfg.clone(), weights: no_attn };
+        let m_no_mlp = PhiModel {
+            config: cfg.clone(),
+            weights: no_mlp,
+        };
+        let m_no_attn = PhiModel {
+            config: cfg.clone(),
+            weights: no_attn,
+        };
         let toks = [3_u32, 7, 2];
         let a = m_no_mlp.forward(&toks, 0).unwrap().realize_f32();
         let b = m_no_attn.forward(&toks, 0).unwrap().realize_f32();
@@ -768,8 +849,10 @@ mod tests {
         for (av, bv) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((av - bv).abs());
         }
-        assert!(max_diff > 1e-6,
-            "no-mlp vs no-attn must produce different outputs: {max_diff}");
+        assert!(
+            max_diff > 1e-6,
+            "no-mlp vs no-attn must produce different outputs: {max_diff}"
+        );
     }
 
     #[test]
@@ -784,7 +867,10 @@ mod tests {
     #[test]
     fn forward_hidden_shape_and_finite() {
         let cfg = tiny_config();
-        let model = PhiModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = PhiModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
         let hidden = model.forward_hidden(&tokens, 0).unwrap();
         assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
@@ -796,27 +882,37 @@ mod tests {
     #[test]
     fn forward_embeds_matches_forward_after_token_lookup() {
         let cfg = tiny_config();
-        let model = PhiModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = PhiModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
-        let max_diff = logits_ref.iter().zip(logits_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "Phi forward vs forward_embeds must agree (max diff {max_diff})");
+        let max_diff = logits_ref
+            .iter()
+            .zip(logits_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "Phi forward vs forward_embeds must agree (max diff {max_diff})"
+        );
     }
 
     #[test]
     fn forward_embeds_rejects_bad_shape() {
         let cfg = tiny_config();
-        let model = PhiModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = PhiModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let bad = LazyTensor::from_f32(
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
-            Shape::from_dims(&[1, 3, cfg.hidden_size + 1]), &Device::cpu(),
+            Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
+            &Device::cpu(),
         );
         assert!(model.forward_embeds(&bad, 0).is_err());
     }
@@ -824,17 +920,26 @@ mod tests {
     #[test]
     fn forward_hidden_embeds_matches_forward_hidden() {
         let cfg = tiny_config();
-        let model = PhiModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = PhiModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
-        let h_via_embeds = model.forward_hidden_embeds(&embeds, 0).unwrap().realize_f32();
-        let max_diff = h_ref.iter().zip(h_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "Phi forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})");
+        let h_via_embeds = model
+            .forward_hidden_embeds(&embeds, 0)
+            .unwrap()
+            .realize_f32();
+        let max_diff = h_ref
+            .iter()
+            .zip(h_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "Phi forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})"
+        );
     }
 }

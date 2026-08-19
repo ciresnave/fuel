@@ -39,7 +39,9 @@ fn check_q4_0(leading: &[usize], k: usize, n: usize) {
     let label = format!("qmatmul_q4_0(leading={leading:?} k={k} n={n})");
 
     // --- deterministic, well-scaled weight; quantize to real Q4_0 blocks. ---
-    let w_f32: Vec<f32> = (0..n * k).map(|i| ((i as f32) * 0.021).sin() * 0.7).collect();
+    let w_f32: Vec<f32> = (0..n * k)
+        .map(|i| ((i as f32) * 0.021).sin() * 0.7)
+        .collect();
     let blocks_per_row = k / BlockQ4_0::BLCK_SIZE;
     let mut w_blocks = vec![BlockQ4_0::zeros(); n * blocks_per_row];
     BlockQ4_0::from_float(&w_f32, &mut w_blocks);
@@ -48,10 +50,17 @@ fn check_q4_0(leading: &[usize], k: usize, n: usize) {
     // stream the loader/builder expect (verbatim, little-endian).
     let bytes_per_block = std::mem::size_of::<BlockQ4_0>();
     let w_bytes: Vec<u8> = unsafe {
-        std::slice::from_raw_parts(w_blocks.as_ptr() as *const u8, w_blocks.len() * bytes_per_block)
+        std::slice::from_raw_parts(
+            w_blocks.as_ptr() as *const u8,
+            w_blocks.len() * bytes_per_block,
+        )
     }
     .to_vec();
-    assert_eq!(w_bytes.len() % 4, 0, "{label}: block bytes must pack into u32");
+    assert_eq!(
+        w_bytes.len() % 4,
+        0,
+        "{label}: block bytes must pack into u32"
+    );
     let w_u32: Vec<u32> = w_bytes
         .chunks_exact(4)
         .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
@@ -139,7 +148,10 @@ fn check_q4_0(leading: &[usize], k: usize, n: usize) {
     }
     // The correct recipe lands orders of magnitude below the bound; a sabotaged
     // f16 decode / nibble unpack / layout drives max_rel to O(1) (the teeth).
-    assert!(max_rel < 1e-5, "{label}: max relative error {max_rel} exceeds 1e-5");
+    assert!(
+        max_rel < 1e-5,
+        "{label}: max relative error {max_rel} exceeds 1e-5"
+    );
 }
 
 /// Single-block-per-row (K=32), then multi-block rows and product-collapsed

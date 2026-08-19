@@ -35,24 +35,24 @@
 //! Phase C adds the rest as more (op, dtype) bindings register.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::mpsc::{channel, Sender};
+use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, RwLock};
 use std::thread;
 
-use fuel_ir::dispatch::OpKind;
-use fuel_ir::probe::BackendId;
-use fuel_ir::{DType, DeviceLocation, Error, Layout, Result, SymEnv};
 use fuel_graph::opt::{execution_plan, insert_safety_copies};
 use fuel_graph::registry::FusedOpParams;
 use fuel_graph::{Graph, Node, NodeId, Op, PickedRoute};
+use fuel_ir::dispatch::OpKind;
+use fuel_ir::probe::BackendId;
+use fuel_ir::{DType, DeviceLocation, Error, Layout, Result, SymEnv};
 
 use crate::compiled::{
-    compile_node, execute_compiled_with_wait_hint, CompiledNode, CompletionHandle,
+    CompiledNode, CompletionHandle, compile_node, execute_compiled_with_wait_hint,
 };
 use crate::dispatch::global_bindings;
 use crate::kernel::{KernelBindingTable, KernelDTypes, MatmulM, OpParams};
 use crate::optimize::OptimizedGraph;
-use crate::ranker::{resolve_branch, BackendRuntimeLookup, RuntimeSelector};
+use crate::ranker::{BackendRuntimeLookup, RuntimeSelector, resolve_branch};
 // `pick_route` is called only by the streamed-vs-one-shot equivalence test
 // below; the executor itself resolves branch-by-branch via `resolve_branch`.
 #[cfg(test)]
@@ -179,13 +179,19 @@ enum PersistentMode {
 impl PersistentOutputs {
     /// A fresh recording map for the warm run.
     pub fn recording() -> Self {
-        Self { map: HashMap::new(), mode: PersistentMode::Record }
+        Self {
+            map: HashMap::new(),
+            mode: PersistentMode::Record,
+        }
     }
 
     /// A reuse map for the capture / replay run, seeded with the buffers
     /// a prior warm run recorded.
     pub fn reuse(map: HashMap<NodeId, Arc<RwLock<Storage>>>) -> Self {
-        Self { map, mode: PersistentMode::Reuse }
+        Self {
+            map,
+            mode: PersistentMode::Reuse,
+        }
     }
 
     /// Consume, yielding the recorded NodeId→buffer map (to seed a
@@ -429,7 +435,12 @@ impl CapturedDecodeSession {
             }
         };
         let captured = PipelinedExecutor::capture_decode(graph, target, inputs, sym_env)?;
-        Ok(Self { device, captured, per_token_inputs, _retained_inputs: retained_inputs })
+        Ok(Self {
+            device,
+            captured,
+            per_token_inputs,
+            _retained_inputs: retained_inputs,
+        })
     }
 
     /// Replay one token. For each `(node_id, host_bytes)` in `updates`,
@@ -518,17 +529,13 @@ enum WorkItemKind {
     /// `Op::BroadcastTo`): the output's Storage Arc IS the
     /// input's Storage Arc (bytes shared); `output_layout`
     /// describes the strided view.
-    ViewOf {
-        input: NodeId,
-    },
+    ViewOf { input: NodeId },
     /// Reshape-style adoption: the output is contiguous in
     /// `output_layout.shape()`. If the input is already contiguous
     /// + zero offset, the output Arc is the input Arc (zero copy).
     /// Otherwise, the executor auto-contiguizes the input into a
     /// fresh Arc and uses that.
-    ContiguizeOf {
-        input: NodeId,
-    },
+    ContiguizeOf { input: NodeId },
     /// Computational kernel: allocate output, run the compiled
     /// kernel, store the result. `compiled` is `Some(...)`.
     Kernel,
@@ -566,10 +573,7 @@ enum WorkItemKind {
     /// `Op::WriteSlice`'s destructive_input == Some(0) contract).
     /// Downstream consumers read post-write bytes via this op's
     /// own NodeId, not the dest's.
-    WriteSlice {
-        dest: NodeId,
-        source: NodeId,
-    },
+    WriteSlice { dest: NodeId, source: NodeId },
     /// `Op::WriteSliceRotating` — like `WriteSlice` but the rotating
     /// axis wraps modulo `modulus`. Carries `dest`/`source`/`position`
     /// NodeIds; the kernel reads the U32 position from `position`'s
@@ -608,9 +612,7 @@ enum WorkItemKind {
     /// per-variant `match self` in `BackendStorage::read_to_cpu_bytes`
     /// (deleted alongside this commit) with a graph-level node the
     /// optimizer can see, cost, and eventually fuse.
-    Copy {
-        target_location: DeviceLocation,
-    },
+    Copy { target_location: DeviceLocation },
     /// `Op::Move { target }` — `Op::Copy`'s destructive sibling:
     /// produce a fresh Storage on `target_location` via the same
     /// data-movement kernel (binding-table lookup at
@@ -634,9 +636,7 @@ enum WorkItemKind {
     /// `GraphExecutor` contract: a plain copy producing fresh
     /// storage on the same device, with the source still evicted
     /// afterward.
-    Move {
-        target_location: DeviceLocation,
-    },
+    Move { target_location: DeviceLocation },
     /// `Op::Alloc { target }` — produce a freshly-allocated, zero-
     /// initialized Storage on `target_location` with the node's shape
     /// + dtype. Zero inputs.
@@ -654,9 +654,7 @@ enum WorkItemKind {
     /// can see; the per-backend match moves from fuel-core's bridge
     /// layer into fuel-storage's executor (the architectural dispatch
     /// layer).
-    Alloc {
-        target_location: DeviceLocation,
-    },
+    Alloc { target_location: DeviceLocation },
     /// `Op::ZeroFill` — fill the input's storage bytes with zero,
     /// in place. Adopts the input's Storage Arc as the output (same
     /// Storage; bytes mutated). Destructive on `inputs[0]`.
@@ -710,9 +708,7 @@ enum WorkItemKind {
     /// slot's first byte. Structurally identical to [`Self::ViewOf`]
     /// at execute time — kept distinct so error messages and
     /// telemetry have a clean dispatch point.
-    SlotView {
-        producer: NodeId,
-    },
+    SlotView { producer: NodeId },
     /// `Op::ViewOwned { slot }` — multi-output projection with an
     /// independent destination buffer. At realize time, allocate a
     /// fresh contiguous Storage of the slot's `(shape, dtype)` on
@@ -721,10 +717,7 @@ enum WorkItemKind {
     /// into the new storage. Session 4 ships the CPU path; non-CPU
     /// backends return a typed error until their copy-with-offset
     /// hooks land in the followup session.
-    SlotOwn {
-        producer: NodeId,
-        slot:     u32,
-    },
+    SlotOwn { producer: NodeId, slot: u32 },
 }
 
 /// One unit of work emitted by the compiler thread to the executor
@@ -876,8 +869,14 @@ impl PipelinedExecutor {
         target: NodeId,
         inputs: StorageCache,
     ) -> Result<(Arc<RwLock<Storage>>, Layout)> {
-        Self::realize_inner(graph, target, inputs, OrderSource::Default, SymEnv::default())
-            .map(|(s, l, _produced)| (s, l))
+        Self::realize_inner(
+            graph,
+            target,
+            inputs,
+            OrderSource::Default,
+            SymEnv::default(),
+        )
+        .map(|(s, l, _produced)| (s, l))
     }
 
     /// Env-carrying sibling of [`realize`]: realize `target` with a
@@ -940,7 +939,10 @@ impl PipelinedExecutor {
             graph,
             target,
             inputs,
-            OrderSource::Optimized { optimized, route: None },
+            OrderSource::Optimized {
+                optimized,
+                route: None,
+            },
             SymEnv::default(),
         )
         .map(|(s, l, _produced)| (s, l))
@@ -963,7 +965,10 @@ impl PipelinedExecutor {
             graph,
             target,
             inputs,
-            OrderSource::Optimized { optimized, route: None },
+            OrderSource::Optimized {
+                optimized,
+                route: None,
+            },
             sym_env,
         )
         .map(|(s, l, _produced)| (s, l))
@@ -989,7 +994,10 @@ impl PipelinedExecutor {
             graph,
             target,
             inputs,
-            OrderSource::Optimized { optimized, route: Some(route) },
+            OrderSource::Optimized {
+                optimized,
+                route: Some(route),
+            },
             SymEnv::default(),
         )
         .map(|(s, l, _produced)| (s, l))
@@ -1010,7 +1018,10 @@ impl PipelinedExecutor {
             graph,
             target,
             inputs,
-            OrderSource::Optimized { optimized, route: Some(route) },
+            OrderSource::Optimized {
+                optimized,
+                route: Some(route),
+            },
             sym_env,
         )
         .map(|(s, l, _produced)| (s, l))
@@ -1049,13 +1060,14 @@ impl PipelinedExecutor {
                 graph,
                 target,
                 inputs,
-                OrderSource::Streaming { optimized, pick: &pick },
+                OrderSource::Streaming {
+                    optimized,
+                    pick: &pick,
+                },
                 sym_env,
             )
             .map(|(s, l, _produced)| (s, l)),
-            None => Self::realize_with_optimized_env(
-                graph, target, inputs, optimized, sym_env,
-            ),
+            None => Self::realize_with_optimized_env(graph, target, inputs, optimized, sym_env),
         }
     }
 
@@ -1082,8 +1094,7 @@ impl PipelinedExecutor {
         let g = graph
             .read()
             .map_err(|_| Error::Msg("graph lock poisoned".into()).bt())?;
-        let has_branch =
-            (0..g.len()).any(|i| matches!(g.node(NodeId(i)).op, Op::Branch { .. }));
+        let has_branch = (0..g.len()).any(|i| matches!(g.node(NodeId(i)).op, Op::Branch { .. }));
         if !has_branch {
             return Ok(None);
         }
@@ -1172,7 +1183,10 @@ impl PipelinedExecutor {
                             .as_ref()
                             .map(|c| format!("{:?} dtypes={:?}", c.op, c.dtypes))
                             .unwrap_or_else(|| "?".to_string());
-                        Some(format!("node {:?}: {desc} on {:?}", it.node_id, it.target_backend))
+                        Some(format!(
+                            "node {:?}: {desc} on {:?}",
+                            it.node_id, it.target_backend
+                        ))
                     }
                     _ => None,
                 })
@@ -1265,14 +1279,18 @@ impl PipelinedExecutor {
                     // so reject N>2 explicitly here, BEFORE the warm pass —
                     // see op_kind_is_capture_writeinto's doc comment.
                     if op == OpKind::Concat {
-                        if let OpParams::Concat { input_dim_sizes, .. } = &compiled.op_params {
+                        if let OpParams::Concat {
+                            input_dim_sizes, ..
+                        } = &compiled.op_params
+                        {
                             if input_dim_sizes.len() != 2 {
                                 return Err(Error::Msg(format!(
                                     "capture_decode: Concat node {:?} has {} inputs; only \
                                      2-input concat (the rope rotate-half shape) has a \
                                      write-into CUDA path today — N-ary (N>2) concat would \
                                      allocate mid-capture.",
-                                    item.node_id, input_dim_sizes.len(),
+                                    item.node_id,
+                                    input_dim_sizes.len(),
                                 ))
                                 .bt());
                             }
@@ -1403,7 +1421,11 @@ impl PipelinedExecutor {
         // integrates `derive_ordering`'s view-aware pinning so
         // destructive ops run AFTER non-destructive readers of
         // their targets.
-        let (compiler_work, wait_set, mut layout_cache): (CompilerWork, WaitSet, HashMap<NodeId, Layout>) = {
+        let (compiler_work, wait_set, mut layout_cache): (
+            CompilerWork,
+            WaitSet,
+            HashMap<NodeId, Layout>,
+        ) = {
             let g = graph.read().map_err(|_| poisoned("graph lock"))?;
             let effective_roots = extend_with_side_effect_roots(&g, &[target]);
             // PR-A3b-1: the OptimizedGraph path lowers via
@@ -1421,7 +1443,8 @@ impl PipelinedExecutor {
             // Step E A4b open question #4: the SAME pass also derives the
             // `WaitSet` from the materialized order ("event only where
             // waited" — see `compiler_work_and_wait_set_for`).
-            let (work, wait_set) = compiler_work_and_wait_set_for(&g, &effective_roots, &order_source);
+            let (work, wait_set) =
+                compiler_work_and_wait_set_for(&g, &effective_roots, &order_source);
             let mut layouts = HashMap::with_capacity(inputs.len());
             for &id in inputs.keys() {
                 layouts.insert(id, g.layout(id));
@@ -1438,9 +1461,7 @@ impl PipelinedExecutor {
         // at the frontier (the SAME VRAM-only selector the one-shot picker
         // uses) before compiling that arm's runs.
         let compiler = thread::spawn(move || {
-            compiler_thread_body(
-                graph_for_compiler, compiler_work, sym_env, tx,
-            );
+            compiler_thread_body(graph_for_compiler, compiler_work, sym_env, tx);
         });
 
         // Executor on this thread: consume WorkItems, gather
@@ -1541,7 +1562,10 @@ impl PipelinedExecutor {
                 drain_inflight_vulkan(&mut inflight_vulkan)?;
             }
             // Step E A4b-3 + A4b-4: the cross-device residency boundary.
-            if matches!(item.kind, WorkItemKind::Copy { .. } | WorkItemKind::Move { .. }) {
+            if matches!(
+                item.kind,
+                WorkItemKind::Copy { .. } | WorkItemKind::Move { .. }
+            ) {
                 // A4b-4: before we (possibly) block the host on the CUDA producer,
                 // eager-submit any open Vulkan chunk so the iGPU runs it WHILE we
                 // wait on CUDA (the §5.1 ordering — submit Vulkan *before* draining
@@ -1689,7 +1713,13 @@ impl PipelinedExecutor {
         targets: &[NodeId],
         inputs: StorageCache,
     ) -> Result<Vec<(Arc<RwLock<Storage>>, Layout)>> {
-        Self::realize_many_inner(graph, targets, inputs, OrderSource::Default, SymEnv::default())
+        Self::realize_many_inner(
+            graph,
+            targets,
+            inputs,
+            OrderSource::Default,
+            SymEnv::default(),
+        )
     }
 
     /// Multi-target PR-A3b-1 entry — the `realize_many` sibling of
@@ -1707,7 +1737,10 @@ impl PipelinedExecutor {
             graph,
             targets,
             inputs,
-            OrderSource::Optimized { optimized, route: None },
+            OrderSource::Optimized {
+                optimized,
+                route: None,
+            },
             SymEnv::default(),
         )
     }
@@ -1725,7 +1758,10 @@ impl PipelinedExecutor {
             graph,
             targets,
             inputs,
-            OrderSource::Optimized { optimized, route: None },
+            OrderSource::Optimized {
+                optimized,
+                route: None,
+            },
             sym_env,
         )
     }
@@ -1745,7 +1781,10 @@ impl PipelinedExecutor {
             graph,
             targets,
             inputs,
-            OrderSource::Optimized { optimized, route: Some(route) },
+            OrderSource::Optimized {
+                optimized,
+                route: Some(route),
+            },
             SymEnv::default(),
         )
     }
@@ -1764,7 +1803,10 @@ impl PipelinedExecutor {
             graph,
             targets,
             inputs,
-            OrderSource::Optimized { optimized, route: Some(route) },
+            OrderSource::Optimized {
+                optimized,
+                route: Some(route),
+            },
             sym_env,
         )
     }
@@ -1788,12 +1830,15 @@ impl PipelinedExecutor {
                 graph,
                 targets,
                 inputs,
-                OrderSource::Streaming { optimized, pick: &pick },
+                OrderSource::Streaming {
+                    optimized,
+                    pick: &pick,
+                },
                 sym_env,
             ),
-            None => Self::realize_many_with_optimized_env(
-                graph, targets, inputs, optimized, sym_env,
-            ),
+            None => {
+                Self::realize_many_with_optimized_env(graph, targets, inputs, optimized, sym_env)
+            }
         }
     }
 
@@ -1824,7 +1869,11 @@ impl PipelinedExecutor {
         // reachable from any target. `execution_plan` integrates
         // `derive_ordering`'s view-aware pinning so destructive ops
         // run AFTER non-destructive readers of their targets.
-        let (compiler_work, wait_set, mut layout_cache): (CompilerWork, WaitSet, HashMap<NodeId, Layout>) = {
+        let (compiler_work, wait_set, mut layout_cache): (
+            CompilerWork,
+            WaitSet,
+            HashMap<NodeId, Layout>,
+        ) = {
             let g = graph.read().map_err(|_| poisoned("graph lock"))?;
             let effective_roots = extend_with_side_effect_roots(&g, targets);
             // PR-A3b-1: derive from the OptimizedGraph's run lowering
@@ -1836,7 +1885,8 @@ impl PipelinedExecutor {
             //
             // Step E A4b open question #4: also derives the `WaitSet`
             // ("event only where waited") from the same materialized order.
-            let (work, wait_set) = compiler_work_and_wait_set_for(&g, &effective_roots, &order_source);
+            let (work, wait_set) =
+                compiler_work_and_wait_set_for(&g, &effective_roots, &order_source);
             let mut layouts = HashMap::with_capacity(inputs.len());
             for &id in inputs.keys() {
                 layouts.insert(id, g.layout(id));
@@ -1852,9 +1902,7 @@ impl PipelinedExecutor {
         let graph_for_compiler = Arc::clone(&graph);
 
         let compiler = thread::spawn(move || {
-            compiler_thread_body(
-                graph_for_compiler, compiler_work, sym_env, tx,
-            );
+            compiler_thread_body(graph_for_compiler, compiler_work, sym_env, tx);
         });
 
         // Phase 4.3: per-chunk SystemTopology generation check (see
@@ -1916,7 +1964,10 @@ impl PipelinedExecutor {
             }
             // Step E A4b-3 + A4b-4: cross-device residency boundary. See
             // realize_inner for the full rationale.
-            if matches!(item.kind, WorkItemKind::Copy { .. } | WorkItemKind::Move { .. }) {
+            if matches!(
+                item.kind,
+                WorkItemKind::Copy { .. } | WorkItemKind::Move { .. }
+            ) {
                 // A4b-4: submit any open Vulkan chunk so the iGPU runs while the
                 // host (possibly) waits on the CUDA producer.
                 if multi_backend {
@@ -2047,7 +2098,10 @@ fn order_for(
         // lazily-resolved order eagerly (the streaming walk with the same
         // `resolve_branch` over the threaded selector), which equals the
         // one-shot `lower_picked_route(pick_route(..))` order.
-        OrderSource::Streaming { optimized: _optimized, pick } => {
+        OrderSource::Streaming {
+            optimized: _optimized,
+            pick,
+        } => {
             let bindings = global_bindings();
             fuel_graph::lower_picked_route_streaming(graph, effective_roots, |branch| {
                 resolve_branch(graph, branch, &bindings, pick.selector.as_ref())
@@ -2066,9 +2120,7 @@ fn order_for(
             // byte-identical to arm-0, so the two paths agree whenever
             // the picker chose arm-0 everywhere (the no-pressure case).
             match route {
-                Some(route) => {
-                    fuel_graph::lower_picked_route(graph, effective_roots, route)
-                }
+                Some(route) => fuel_graph::lower_picked_route(graph, effective_roots, route),
                 None => {
                     // A transient view built solely to call `dispatch_order`;
                     // it does no planning, so it carries no placements. The
@@ -2169,9 +2221,7 @@ fn compiler_work_and_wait_set_for(
 /// chunk-boundary check. Uses the `OptimizedGraph`'s optimize-time
 /// generation (PR-A3b-1 path). `None` ⇒ no check (the plain
 /// `realize`/`realize_many` entries).
-fn generation_for(
-    order_source: &OrderSource<'_>,
-) -> Option<u64> {
+fn generation_for(order_source: &OrderSource<'_>) -> Option<u64> {
     match order_source {
         OrderSource::Optimized { optimized, .. } => Some(optimized.generation),
         OrderSource::Streaming { optimized, .. } => Some(optimized.generation),
@@ -2231,9 +2281,7 @@ fn compiler_thread_body(
     // `compile_one` for one node + send; returns `false` to stop the walk
     // (channel closed or compile error). Shared by both work modes so the
     // streamed and frozen-order paths compile identically.
-    let compile_and_send = |id: NodeId,
-                            layout_cache: &mut HashMap<NodeId, Layout>|
-     -> bool {
+    let compile_and_send = |id: NodeId, layout_cache: &mut HashMap<NodeId, Layout>| -> bool {
         let item = compile_one(&g, id, layout_cache, &bindings, &sym_env);
         let stop_on_err = item.is_err();
         if tx.send(item).is_err() {
@@ -2377,7 +2425,9 @@ fn compile_one(
             elem_count,
             dtype: node.dtype,
             target_backend,
-            kind: WorkItemKind::ViewOf { input: node.inputs[0] },
+            kind: WorkItemKind::ViewOf {
+                input: node.inputs[0],
+            },
             compiled: None,
             output_layout,
             destructive_input,
@@ -2397,7 +2447,8 @@ fn compile_one(
             return Err(Error::Msg(format!(
                 "Op::View expects 1 input (the producer), got {}",
                 inputs.len(),
-            )).bt());
+            ))
+            .bt());
         }
         let output_layout = graph.layout(id);
         layout_cache.insert(id, output_layout.clone());
@@ -2411,7 +2462,9 @@ fn compile_one(
             elem_count,
             dtype: node.dtype,
             target_backend,
-            kind: WorkItemKind::SlotView { producer: inputs[0] },
+            kind: WorkItemKind::SlotView {
+                producer: inputs[0],
+            },
             compiled: None,
             output_layout,
             destructive_input,
@@ -2428,7 +2481,8 @@ fn compile_one(
             return Err(Error::Msg(format!(
                 "Op::ViewOwned expects 1 input (the producer), got {}",
                 inputs.len(),
-            )).bt());
+            ))
+            .bt());
         }
         let output_layout = Layout::contiguous(node.shape.clone());
         layout_cache.insert(id, output_layout.clone());
@@ -2442,7 +2496,10 @@ fn compile_one(
             elem_count,
             dtype: node.dtype,
             target_backend,
-            kind: WorkItemKind::SlotOwn { producer: inputs[0], slot },
+            kind: WorkItemKind::SlotOwn {
+                producer: inputs[0],
+                slot,
+            },
             compiled: None,
             output_layout,
             destructive_input,
@@ -2457,11 +2514,9 @@ fn compile_one(
         // The actual deallocation of `inputs[0]` happens in the
         // realize loop via `destructive_input` cleanup.
         if inputs.len() != 1 {
-            return Err(Error::Msg(format!(
-                "Op::Release expects 1 input, got {}",
-                inputs.len(),
-            ))
-            .bt());
+            return Err(
+                Error::Msg(format!("Op::Release expects 1 input, got {}", inputs.len(),)).bt(),
+            );
         }
         let output_layout = Layout::contiguous(node.shape.clone());
         layout_cache.insert(id, output_layout.clone());
@@ -2493,15 +2548,22 @@ fn compile_one(
     // `op.destructive_input().is_some()` AND NOT one of the
     // structural ops (WriteSlice / ZeroFill / Release / Move) which
     // have their own dedicated WorkItemKind arms in this function.
-    if !matches!(node.op,
-        Op::WriteSlice { .. } | Op::WriteSliceRotating { .. } | Op::WriteSliceDoff { .. } | Op::ZeroFill | Op::Release | Op::Move { .. },
+    if !matches!(
+        node.op,
+        Op::WriteSlice { .. }
+            | Op::WriteSliceRotating { .. }
+            | Op::WriteSliceDoff { .. }
+            | Op::ZeroFill
+            | Op::Release
+            | Op::Move { .. },
     ) {
         if let Some(target_idx) = node.op.destructive_input() {
             if inputs.len() <= target_idx {
                 return Err(Error::Msg(format!(
                     "in-place op {:?} declares destructive_input={target_idx} \
                      but has only {} input(s)",
-                    node.op, inputs.len(),
+                    node.op,
+                    inputs.len(),
                 ))
                 .bt());
             }
@@ -2520,9 +2582,7 @@ fn compile_one(
             })?;
             let op_params = op_to_op_params(graph, node, id, layout_cache, sym_env)?;
             let dtypes = build_lookup_dtypes(graph, node);
-            let compiled = resolve_compiled(
-                op_kind, &dtypes, target_backend, op_params, bindings,
-            )?;
+            let compiled = resolve_compiled(op_kind, &dtypes, target_backend, op_params, bindings)?;
             // Output adopts target's Layout (same Storage Arc, same shape).
             let output_layout = graph.layout(inputs[target_idx]);
             layout_cache.insert(id, output_layout.clone());
@@ -2564,7 +2624,11 @@ fn compile_one(
         let op_params = op_to_op_params(graph, node, id, layout_cache, sym_env)?;
         let dtypes = build_lookup_dtypes(graph, node);
         let compiled = resolve_compiled(
-            OpKind::WriteSlice, &dtypes, target_backend, op_params, bindings,
+            OpKind::WriteSlice,
+            &dtypes,
+            target_backend,
+            op_params,
+            bindings,
         )?;
         // Output adopts the destination's Layout — same Storage Arc,
         // same shape. Downstream consumers that want a post-write
@@ -2578,7 +2642,10 @@ fn compile_one(
             elem_count,
             dtype: node.dtype,
             target_backend,
-            kind: WorkItemKind::WriteSlice { dest: inputs[0], source: inputs[1] },
+            kind: WorkItemKind::WriteSlice {
+                dest: inputs[0],
+                source: inputs[1],
+            },
             compiled: Some(compiled),
             output_layout,
             destructive_input,
@@ -2609,7 +2676,11 @@ fn compile_one(
         let op_params = op_to_op_params(graph, node, id, layout_cache, sym_env)?;
         let dtypes = build_lookup_dtypes(graph, node);
         let compiled = resolve_compiled(
-            OpKind::WriteSliceRotating, &dtypes, target_backend, op_params, bindings,
+            OpKind::WriteSliceRotating,
+            &dtypes,
+            target_backend,
+            op_params,
+            bindings,
         )?;
         let output_layout = graph.layout(inputs[0]);
         layout_cache.insert(id, output_layout.clone());
@@ -2620,7 +2691,9 @@ fn compile_one(
             dtype: node.dtype,
             target_backend,
             kind: WorkItemKind::WriteSliceRotating {
-                dest: inputs[0], source: inputs[1], position: inputs[2],
+                dest: inputs[0],
+                source: inputs[1],
+                position: inputs[2],
             },
             compiled: Some(compiled),
             output_layout,
@@ -2652,7 +2725,11 @@ fn compile_one(
         let op_params = op_to_op_params(graph, node, id, layout_cache, sym_env)?;
         let dtypes = build_lookup_dtypes(graph, node);
         let compiled = resolve_compiled(
-            OpKind::WriteSliceDoff, &dtypes, target_backend, op_params, bindings,
+            OpKind::WriteSliceDoff,
+            &dtypes,
+            target_backend,
+            op_params,
+            bindings,
         )?;
         let output_layout = graph.layout(inputs[0]);
         layout_cache.insert(id, output_layout.clone());
@@ -2663,7 +2740,9 @@ fn compile_one(
             dtype: node.dtype,
             target_backend,
             kind: WorkItemKind::WriteSliceDoff {
-                dest: inputs[0], source: inputs[1], offset: inputs[2],
+                dest: inputs[0],
+                source: inputs[1],
+                offset: inputs[2],
             },
             compiled: Some(compiled),
             output_layout,
@@ -2679,11 +2758,9 @@ fn compile_one(
         // binding-table lookup (the device handle threading isn't
         // expressible through the binding table's current key shape).
         if !inputs.is_empty() {
-            return Err(Error::Msg(format!(
-                "Op::Alloc expects 0 inputs, got {}",
-                inputs.len(),
-            ))
-            .bt());
+            return Err(
+                Error::Msg(format!("Op::Alloc expects 0 inputs, got {}", inputs.len(),)).bt(),
+            );
         }
         let output_layout = Layout::contiguous(node.shape.clone());
         layout_cache.insert(id, output_layout.clone());
@@ -2703,7 +2780,9 @@ fn compile_one(
             elem_count,
             dtype: node.dtype,
             target_backend,
-            kind: WorkItemKind::Alloc { target_location: target },
+            kind: WorkItemKind::Alloc {
+                target_location: target,
+            },
             compiled: None,
             output_layout,
             destructive_input,
@@ -2717,11 +2796,9 @@ fn compile_one(
         // WorkItemKind::Iota — no binding-table lookup (a leaf has no
         // inputs[0] to inherit a backend from). Modeled on Op::Alloc.
         if !inputs.is_empty() {
-            return Err(Error::Msg(format!(
-                "Op::Iota expects 0 inputs, got {}",
-                inputs.len(),
-            ))
-            .bt());
+            return Err(
+                Error::Msg(format!("Op::Iota expects 0 inputs, got {}", inputs.len(),)).bt(),
+            );
         }
         let output_layout = Layout::contiguous(node.shape.clone());
         layout_cache.insert(id, output_layout.clone());
@@ -2789,11 +2866,9 @@ fn compile_one(
         // by `target_location` and allocated in `execute_work_item`'s
         // WorkItemKind::Copy arm.
         if inputs.len() != 1 {
-            return Err(Error::Msg(format!(
-                "Op::Copy expects 1 input, got {}",
-                inputs.len(),
-            ))
-            .bt());
+            return Err(
+                Error::Msg(format!("Op::Copy expects 1 input, got {}", inputs.len(),)).bt(),
+            );
         }
         let target_backend = graph.target_backend(id).ok_or_else(|| {
             Error::Msg(format!(
@@ -2806,9 +2881,8 @@ fn compile_one(
         })?;
         let op_params = OpParams::None;
         let dtypes = build_lookup_dtypes(graph, node);
-        let compiled = resolve_compiled(
-            OpKind::Copy, &dtypes, target_backend, op_params, bindings,
-        )?;
+        let compiled =
+            resolve_compiled(OpKind::Copy, &dtypes, target_backend, op_params, bindings)?;
         // Output layout: contiguous in the node's shape (mirrors the
         // source's logical shape). Auto-contiguize on the input side
         // (in execute_work_item) handles strided source views by
@@ -2822,7 +2896,9 @@ fn compile_one(
             elem_count,
             dtype: node.dtype,
             target_backend,
-            kind: WorkItemKind::Copy { target_location: target },
+            kind: WorkItemKind::Copy {
+                target_location: target,
+            },
             compiled: Some(compiled),
             output_layout,
             destructive_input,
@@ -2843,11 +2919,9 @@ fn compile_one(
         // Move is pinned after every non-destructive reader of the
         // source's alias set before any work item is emitted.
         if inputs.len() != 1 {
-            return Err(Error::Msg(format!(
-                "Op::Move expects 1 input, got {}",
-                inputs.len(),
-            ))
-            .bt());
+            return Err(
+                Error::Msg(format!("Op::Move expects 1 input, got {}", inputs.len(),)).bt(),
+            );
         }
         let target_backend = graph.target_backend(id).ok_or_else(|| {
             Error::Msg(format!(
@@ -2860,9 +2934,8 @@ fn compile_one(
         })?;
         let op_params = OpParams::None;
         let dtypes = build_lookup_dtypes(graph, node);
-        let compiled = resolve_compiled(
-            OpKind::Copy, &dtypes, target_backend, op_params, bindings,
-        )?;
+        let compiled =
+            resolve_compiled(OpKind::Copy, &dtypes, target_backend, op_params, bindings)?;
         // Output layout: contiguous in the node's shape, same as
         // Op::Copy (the transfer materializes strided sources via
         // auto-contiguize on the input side).
@@ -2874,7 +2947,9 @@ fn compile_one(
             elem_count,
             dtype: node.dtype,
             target_backend,
-            kind: WorkItemKind::Move { target_location: target },
+            kind: WorkItemKind::Move {
+                target_location: target,
+            },
             compiled: Some(compiled),
             output_layout,
             destructive_input,
@@ -2884,11 +2959,9 @@ fn compile_one(
 
     if matches!(node.op, Op::Reshape(_)) {
         if inputs.len() != 1 {
-            return Err(Error::Msg(format!(
-                "Op::Reshape expects 1 input, got {}",
-                inputs.len(),
-            ))
-            .bt());
+            return Err(
+                Error::Msg(format!("Op::Reshape expects 1 input, got {}", inputs.len(),)).bt(),
+            );
         }
         let input_layout = graph.layout(inputs[0]);
         // Output is contiguous in the new shape — bytes per element
@@ -2916,7 +2989,9 @@ fn compile_one(
             elem_count,
             dtype: node.dtype,
             target_backend,
-            kind: WorkItemKind::ContiguizeOf { input: node.inputs[0] },
+            kind: WorkItemKind::ContiguizeOf {
+                input: node.inputs[0],
+            },
             compiled: None,
             output_layout,
             destructive_input,
@@ -2950,7 +3025,9 @@ fn compile_one(
             elem_count,
             dtype: node.dtype,
             target_backend,
-            kind: WorkItemKind::ContiguizeOf { input: node.inputs[0] },
+            kind: WorkItemKind::ContiguizeOf {
+                input: node.inputs[0],
+            },
             compiled: None,
             output_layout,
             destructive_input,
@@ -3003,7 +3080,9 @@ fn compile_one(
             // pointers + element count).
             let op_params = match &node.op {
                 Op::Fused(_, FusedOpParams::Runtime { scalars }) if !scalars.is_empty() => {
-                    OpParams::JitScalars { scalars: scalars.clone() }
+                    OpParams::JitScalars {
+                        scalars: scalars.clone(),
+                    }
                 }
                 _ => OpParams::None,
             };
@@ -3130,11 +3209,7 @@ pub(crate) fn build_lookup_dtypes(graph: &Graph, node: &Node) -> Vec<DType> {
             .unwrap_or(node.dtype);
         return vec![src_dt, node.dtype];
     }
-    let mut dts: Vec<DType> = node
-        .inputs
-        .iter()
-        .map(|&id| graph.node(id).dtype)
-        .collect();
+    let mut dts: Vec<DType> = node.inputs.iter().map(|&id| graph.node(id).dtype).collect();
     dts.push(node.dtype);
     dts
 }
@@ -3163,69 +3238,67 @@ fn op_is_fused_linear(op: &Op) -> bool {
 /// `Op::Const`, not-yet-migrated ops) when building bindings.
 pub(crate) fn op_to_op_kind(op: &Op) -> Option<OpKind> {
     match op {
-        Op::Add           => Some(OpKind::AddElementwise),
-        Op::Sub           => Some(OpKind::SubElementwise),
-        Op::Mul           => Some(OpKind::MulElementwise),
-        Op::Div           => Some(OpKind::DivElementwise),
-        Op::Relu          => Some(OpKind::ReluElementwise),
-        Op::Neg           => Some(OpKind::NegElementwise),
-        Op::Sqr           => Some(OpKind::SqrElementwise),
-        Op::Sqrt          => Some(OpKind::SqrtElementwise),
-        Op::Tanh          => Some(OpKind::TanhElementwise),
-        Op::Exp           => Some(OpKind::ExpElementwise),
-        Op::Log           => Some(OpKind::LogElementwise),
-        Op::Sin           => Some(OpKind::SinElementwise),
-        Op::Cos           => Some(OpKind::CosElementwise),
-        Op::Sigmoid       => Some(OpKind::SigmoidElementwise),
-        Op::Silu          => Some(OpKind::SiluElementwise),
-        Op::Gelu          => Some(OpKind::GeluElementwise),
-        Op::Step          => Some(OpKind::StepElementwise),
-        Op::Recip         => Some(OpKind::RecipElementwise),
-        Op::Abs           => Some(OpKind::AbsElementwise),
-        Op::Equal         => Some(OpKind::EqualElementwise),
-        Op::Ne            => Some(OpKind::NotEqualElementwise),
-        Op::Lt            => Some(OpKind::LessElementwise),
-        Op::Le            => Some(OpKind::LessEqualElementwise),
-        Op::Gt            => Some(OpKind::GreaterElementwise),
-        Op::Ge            => Some(OpKind::GreaterEqualElementwise),
-        Op::Where         => Some(OpKind::Where),
-        Op::Floor         => Some(OpKind::FloorElementwise),
-        Op::Ceil          => Some(OpKind::CeilElementwise),
-        Op::Round         => Some(OpKind::RoundElementwise),
-        Op::Sign          => Some(OpKind::SignElementwise),
-        Op::Erf           => Some(OpKind::ErfElementwise),
-        Op::GeluErf       => Some(OpKind::GeluErfElementwise),
-        Op::Pow           => Some(OpKind::PowElementwise),
-        Op::Rsqrt         => Some(OpKind::RsqrtElementwise),
-        Op::Rem           => Some(OpKind::RemElementwise),
-        Op::Flip { .. }   => Some(OpKind::Flip),
-        Op::Roll { .. }   => Some(OpKind::Roll),
+        Op::Add => Some(OpKind::AddElementwise),
+        Op::Sub => Some(OpKind::SubElementwise),
+        Op::Mul => Some(OpKind::MulElementwise),
+        Op::Div => Some(OpKind::DivElementwise),
+        Op::Relu => Some(OpKind::ReluElementwise),
+        Op::Neg => Some(OpKind::NegElementwise),
+        Op::Sqr => Some(OpKind::SqrElementwise),
+        Op::Sqrt => Some(OpKind::SqrtElementwise),
+        Op::Tanh => Some(OpKind::TanhElementwise),
+        Op::Exp => Some(OpKind::ExpElementwise),
+        Op::Log => Some(OpKind::LogElementwise),
+        Op::Sin => Some(OpKind::SinElementwise),
+        Op::Cos => Some(OpKind::CosElementwise),
+        Op::Sigmoid => Some(OpKind::SigmoidElementwise),
+        Op::Silu => Some(OpKind::SiluElementwise),
+        Op::Gelu => Some(OpKind::GeluElementwise),
+        Op::Step => Some(OpKind::StepElementwise),
+        Op::Recip => Some(OpKind::RecipElementwise),
+        Op::Abs => Some(OpKind::AbsElementwise),
+        Op::Equal => Some(OpKind::EqualElementwise),
+        Op::Ne => Some(OpKind::NotEqualElementwise),
+        Op::Lt => Some(OpKind::LessElementwise),
+        Op::Le => Some(OpKind::LessEqualElementwise),
+        Op::Gt => Some(OpKind::GreaterElementwise),
+        Op::Ge => Some(OpKind::GreaterEqualElementwise),
+        Op::Where => Some(OpKind::Where),
+        Op::Floor => Some(OpKind::FloorElementwise),
+        Op::Ceil => Some(OpKind::CeilElementwise),
+        Op::Round => Some(OpKind::RoundElementwise),
+        Op::Sign => Some(OpKind::SignElementwise),
+        Op::Erf => Some(OpKind::ErfElementwise),
+        Op::GeluErf => Some(OpKind::GeluErfElementwise),
+        Op::Pow => Some(OpKind::PowElementwise),
+        Op::Rsqrt => Some(OpKind::RsqrtElementwise),
+        Op::Rem => Some(OpKind::RemElementwise),
+        Op::Flip { .. } => Some(OpKind::Flip),
+        Op::Roll { .. } => Some(OpKind::Roll),
         Op::CumSum { .. } => Some(OpKind::CumSum),
-        Op::Triu { .. }   => Some(OpKind::Triu),
-        Op::Tril { .. }   => Some(OpKind::Tril),
+        Op::Triu { .. } => Some(OpKind::Triu),
+        Op::Tril { .. } => Some(OpKind::Tril),
         Op::LogSoftmaxLastDim => Some(OpKind::LogSoftmaxLastDim),
         Op::LogSoftmaxLastDimBackward => Some(OpKind::LogSoftmaxLastDimBackward),
         Op::MaskedFill { .. } => Some(OpKind::MaskedFill),
-        Op::Pad { .. }    => Some(OpKind::Pad),
+        Op::Pad { .. } => Some(OpKind::Pad),
         Op::PadBackward { .. } => Some(OpKind::PadBackward),
-        Op::SumDim(_)     => Some(OpKind::SumReduce),
-        Op::MaxDim(_)     => Some(OpKind::MaxReduce),
-        Op::MinDim(_)     => Some(OpKind::MinReduce),
-        Op::MeanDim(_)    => Some(OpKind::MeanReduce),
-        Op::SumAll        => Some(OpKind::SumReduce),
-        Op::MaxAll        => Some(OpKind::MaxReduce),
-        Op::MinAll        => Some(OpKind::MinReduce),
-        Op::MeanAll       => Some(OpKind::MeanReduce),
-        Op::MatMul        => Some(OpKind::MatMul),
-        Op::Cast(_)       => Some(OpKind::Cast),
+        Op::SumDim(_) => Some(OpKind::SumReduce),
+        Op::MaxDim(_) => Some(OpKind::MaxReduce),
+        Op::MinDim(_) => Some(OpKind::MinReduce),
+        Op::MeanDim(_) => Some(OpKind::MeanReduce),
+        Op::SumAll => Some(OpKind::SumReduce),
+        Op::MaxAll => Some(OpKind::MaxReduce),
+        Op::MinAll => Some(OpKind::MinReduce),
+        Op::MeanAll => Some(OpKind::MeanReduce),
+        Op::MatMul => Some(OpKind::MatMul),
+        Op::Cast(_) => Some(OpKind::Cast),
         // Phase 7.6 step 5: fused-op dispatch routes through
         // `Op::Fused(fid, _)`; the legacy `Op::Conv2D` /
         // `Op::FusedLinear` / `Op::SoftmaxLastDim` /
         // `Op::RmsNormLastDim` / `Op::LayerNormLastDim` / `Op::Rope`
         // arms were dropped together with the variants.
-        Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::CONV2D => {
-            Some(OpKind::Conv2D)
-        }
+        Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::CONV2D => Some(OpKind::Conv2D),
         // Phase 7.6 step 5 (final): legacy `Op::ConvTranspose2D` /
         // `Op::FlashAttn` / `Op::PagedAttn` arms dropped with the
         // variants; dispatch flows only through `Op::Fused`.
@@ -3240,23 +3313,19 @@ pub(crate) fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::PAGED_ATTN => {
             Some(OpKind::PagedAttn)
         }
-        Op::AddScalar(_)  => Some(OpKind::Affine),
-        Op::MulScalar(_)  => Some(OpKind::Affine),
-        Op::Clamp { .. }  => Some(OpKind::ClampElementwise),
-        Op::PowI(_)       => Some(OpKind::PowIElementwise),
-        Op::Maximum       => Some(OpKind::MaximumElementwise),
-        Op::Minimum       => Some(OpKind::MinimumElementwise),
+        Op::AddScalar(_) => Some(OpKind::Affine),
+        Op::MulScalar(_) => Some(OpKind::Affine),
+        Op::Clamp { .. } => Some(OpKind::ClampElementwise),
+        Op::PowI(_) => Some(OpKind::PowIElementwise),
+        Op::Maximum => Some(OpKind::MaximumElementwise),
+        Op::Minimum => Some(OpKind::MinimumElementwise),
         Op::Concat { .. } => Some(OpKind::Concat),
-        Op::Fused(fid, _)
-            if *fid == fuel_graph::registry::FusedOps::SOFTMAX_LAST_DIM =>
-        {
+        Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::SOFTMAX_LAST_DIM => {
             Some(OpKind::SoftmaxLastDim)
         }
         // Phase 7.6 step 6 follow-up: backward helpers now route
         // through the byte-level binding table too.
-        Op::Fused(fid, _)
-            if *fid == fuel_graph::registry::FusedOps::SOFTMAX_LAST_DIM_BACKWARD =>
-        {
+        Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::SOFTMAX_LAST_DIM_BACKWARD => {
             Some(OpKind::SoftmaxLastDimBackward)
         }
         Op::Fused(fid, _)
@@ -3264,41 +3333,27 @@ pub(crate) fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         {
             Some(OpKind::LayerNormLastDimBackward)
         }
-        Op::Fused(fid, _)
-            if *fid == fuel_graph::registry::FusedOps::RMS_NORM_LAST_DIM_BACKWARD =>
-        {
+        Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::RMS_NORM_LAST_DIM_BACKWARD => {
             Some(OpKind::RmsNormLastDimBackward)
         }
-        Op::Fused(fid, _)
-            if *fid == fuel_graph::registry::FusedOps::REDUCE_MAX_TO_BACKWARD =>
-        {
+        Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::REDUCE_MAX_TO_BACKWARD => {
             Some(OpKind::ReduceMaxToBackward)
         }
-        Op::Fused(fid, _)
-            if *fid == fuel_graph::registry::FusedOps::POWI_BACKWARD =>
-        {
+        Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::POWI_BACKWARD => {
             Some(OpKind::PowIElementwiseBackward)
         }
-        Op::Fused(fid, _)
-            if *fid == fuel_graph::registry::FusedOps::FUSED_LINEAR =>
-        {
+        Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::FUSED_LINEAR => {
             Some(OpKind::FusedLinear)
         }
-        Op::Fused(fid, _)
-            if *fid == fuel_graph::registry::FusedOps::RMS_NORM_LAST_DIM =>
-        {
+        Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::RMS_NORM_LAST_DIM => {
             Some(OpKind::RmsNormLastDim)
         }
-        Op::Fused(fid, _)
-            if *fid == fuel_graph::registry::FusedOps::LAYER_NORM_LAST_DIM =>
-        {
+        Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::LAYER_NORM_LAST_DIM => {
             Some(OpKind::LayerNormLastDim)
         }
         Op::IndexSelect { .. } => Some(OpKind::IndexSelect),
         Op::Gather { .. } => Some(OpKind::Gather),
-        Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::ROPE => {
-            Some(OpKind::Rope)
-        }
+        Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::ROPE => Some(OpKind::Rope),
         Op::IndexAdd { .. } => Some(OpKind::IndexAdd),
         Op::ScatterAdd { .. } => Some(OpKind::ScatterAdd),
         Op::NonZeroIndices { .. } => Some(OpKind::NonZeroIndices),
@@ -3330,29 +3385,29 @@ pub(crate) fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         // variant maps to its OpKind so the binding-table dispatch can
         // resolve a kernel. The executor's dedicated WorkItemKind
         // arms (added alongside) handle the storage-Arc adoption.
-        Op::ReluInplace        => Some(OpKind::ReluInplace),
-        Op::SiluInplace        => Some(OpKind::SiluInplace),
-        Op::GeluInplace        => Some(OpKind::GeluInplace),
-        Op::TanhInplace        => Some(OpKind::TanhInplace),
-        Op::SigmoidInplace     => Some(OpKind::SigmoidInplace),
-        Op::NegInplace         => Some(OpKind::NegInplace),
-        Op::AbsInplace         => Some(OpKind::AbsInplace),
-        Op::SqrInplace         => Some(OpKind::SqrInplace),
-        Op::SqrtInplace        => Some(OpKind::SqrtInplace),
-        Op::RsqrtInplace       => Some(OpKind::RsqrtInplace),
-        Op::RecipInplace       => Some(OpKind::RecipInplace),
-        Op::ExpInplace         => Some(OpKind::ExpInplace),
-        Op::LogInplace         => Some(OpKind::LogInplace),
-        Op::SinInplace         => Some(OpKind::SinInplace),
-        Op::CosInplace         => Some(OpKind::CosInplace),
-        Op::SignInplace        => Some(OpKind::SignInplace),
-        Op::FloorInplace       => Some(OpKind::FloorInplace),
-        Op::CeilInplace        => Some(OpKind::CeilInplace),
-        Op::RoundInplace       => Some(OpKind::RoundInplace),
-        Op::ErfInplace         => Some(OpKind::ErfInplace),
-        Op::GeluErfInplace     => Some(OpKind::GeluErfInplace),
+        Op::ReluInplace => Some(OpKind::ReluInplace),
+        Op::SiluInplace => Some(OpKind::SiluInplace),
+        Op::GeluInplace => Some(OpKind::GeluInplace),
+        Op::TanhInplace => Some(OpKind::TanhInplace),
+        Op::SigmoidInplace => Some(OpKind::SigmoidInplace),
+        Op::NegInplace => Some(OpKind::NegInplace),
+        Op::AbsInplace => Some(OpKind::AbsInplace),
+        Op::SqrInplace => Some(OpKind::SqrInplace),
+        Op::SqrtInplace => Some(OpKind::SqrtInplace),
+        Op::RsqrtInplace => Some(OpKind::RsqrtInplace),
+        Op::RecipInplace => Some(OpKind::RecipInplace),
+        Op::ExpInplace => Some(OpKind::ExpInplace),
+        Op::LogInplace => Some(OpKind::LogInplace),
+        Op::SinInplace => Some(OpKind::SinInplace),
+        Op::CosInplace => Some(OpKind::CosInplace),
+        Op::SignInplace => Some(OpKind::SignInplace),
+        Op::FloorInplace => Some(OpKind::FloorInplace),
+        Op::CeilInplace => Some(OpKind::CeilInplace),
+        Op::RoundInplace => Some(OpKind::RoundInplace),
+        Op::ErfInplace => Some(OpKind::ErfInplace),
+        Op::GeluErfInplace => Some(OpKind::GeluErfInplace),
         Op::ClampInplace { .. } => Some(OpKind::ClampInplace),
-        Op::PowIInplace(_)      => Some(OpKind::PowIInplace),
+        Op::PowIInplace(_) => Some(OpKind::PowIInplace),
         // In-place binary variants (Add/Sub/Mul/Div/MaskedFill) and
         // their OpKind siblings are tracked by a parallel session and
         // toggle in and out of the Op enum as that work progresses.
@@ -3366,24 +3421,16 @@ pub(crate) fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         {
             Some(OpKind::FusedSoftmaxCrossEntropy)
         }
-        Op::Fused(fid, _)
-            if *fid == fuel_graph::registry::FusedOps::CAUSAL_CONV1D =>
-        {
+        Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::CAUSAL_CONV1D => {
             Some(OpKind::CausalConv1d)
         }
-        Op::Fused(fid, _)
-            if *fid == fuel_graph::registry::FusedOps::SELECTIVE_SCAN =>
-        {
+        Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::SELECTIVE_SCAN => {
             Some(OpKind::SelectiveScan)
         }
-        Op::Fused(fid, _)
-            if *fid == fuel_graph::registry::FusedOps::SSD_CHUNK_SCAN =>
-        {
+        Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::SSD_CHUNK_SCAN => {
             Some(OpKind::SsdChunkScan)
         }
-        Op::Fused(fid, _)
-            if *fid == fuel_graph::registry::FusedOps::NF4_MATMUL =>
-        {
+        Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::NF4_MATMUL => {
             Some(OpKind::Nf4Matmul)
         }
         // Phase 3a (post-9c): Op::Alloc + Op::ZeroFill are structural
@@ -3417,7 +3464,8 @@ fn encode_value_to_bytes(dtype: DType, value: f64) -> Result<Vec<u8>> {
         DType::U32 => Ok((value as u32).to_le_bytes().to_vec()),
         other => Err(Error::Msg(format!(
             "encode_value_to_bytes: dtype {other:?} not yet supported for Pad fill",
-        )).bt()),
+        ))
+        .bt()),
     }
 }
 
@@ -3427,8 +3475,8 @@ fn encode_value_to_bytes(dtype: DType, value: f64) -> Result<Vec<u8>> {
 fn scalar_to_bytes(s: fuel_ir::Scalar) -> Vec<u8> {
     use fuel_ir::Scalar;
     match s {
-        Scalar::U8(v)  => vec![v],
-        Scalar::I8(v)  => vec![v as u8],
+        Scalar::U8(v) => vec![v],
+        Scalar::I8(v) => vec![v as u8],
         Scalar::U32(v) => v.to_le_bytes().to_vec(),
         Scalar::I16(v) => v.to_le_bytes().to_vec(),
         Scalar::I32(v) => v.to_le_bytes().to_vec(),
@@ -3511,12 +3559,10 @@ fn op_to_op_params(
                 keepdim: false,
             }
         }
-        Op::SumDim(d) | Op::MaxDim(d) | Op::MinDim(d) | Op::MeanDim(d) => {
-            OpParams::Reduce {
-                dims: vec![*d],
-                keepdim: false,
-            }
-        }
+        Op::SumDim(d) | Op::MaxDim(d) | Op::MinDim(d) | Op::MeanDim(d) => OpParams::Reduce {
+            dims: vec![*d],
+            keepdim: false,
+        },
         Op::SumAll | Op::MaxAll | Op::MinAll | Op::MeanAll => {
             let il = input_layout(node.inputs[0]);
             let rank = il.shape().rank();
@@ -3603,9 +3649,7 @@ fn op_to_op_params(
                         MatmulM::Rows(c)
                     }
                     None => match dyn_m {
-                        fuel_ir::DynScalar::Sym(s)
-                            if graph.binds_data_determined_sym(s) =>
-                        {
+                        fuel_ir::DynScalar::Sym(s) if graph.binds_data_determined_sym(s) => {
                             MatmulM::Deferred(dyn_m)
                         }
                         _ => {
@@ -3737,7 +3781,12 @@ fn op_to_op_params(
                 .product::<usize>()
                 .max(1);
             let targets_layout = input_layout(node.inputs[1]);
-            let target_count: usize = targets_layout.shape().dims().iter().product::<usize>().max(1);
+            let target_count: usize = targets_layout
+                .shape()
+                .dims()
+                .iter()
+                .product::<usize>()
+                .max(1);
             if target_count != n_rows {
                 return Err(Error::Msg(format!(
                     "FusedSoftmaxCrossEntropy: targets element count {target_count} must \
@@ -3757,10 +3806,7 @@ fn op_to_op_params(
         // from the input layouts. x is `[batch, channels, seq_in]`
         // (caller pre-pads with kernel-1 zeros), weight is
         // `[channels, 1, kernel]`. seq_out = seq_in - (kernel - 1).
-        Op::Fused(
-            _,
-            fuel_graph::registry::FusedOpParams::CausalConv1d { use_silu },
-        ) => {
+        Op::Fused(_, fuel_graph::registry::FusedOpParams::CausalConv1d { use_silu }) => {
             if node.inputs.len() != 3 {
                 return Err(Error::Msg(format!(
                     "CausalConv1d expects 3 inputs (x, weight, bias), got {}",
@@ -3808,10 +3854,7 @@ fn op_to_op_params(
         }
         // SelectiveScan: derive (batch, seqlen, dim, dstate) from the
         // input layouts. u: [batch, seqlen, dim]; a: [dim, dstate].
-        Op::Fused(
-            _,
-            fuel_graph::registry::FusedOpParams::SelectiveScan { delta_softplus },
-        ) => {
+        Op::Fused(_, fuel_graph::registry::FusedOpParams::SelectiveScan { delta_softplus }) => {
             if node.inputs.len() != 5 {
                 return Err(Error::Msg(format!(
                     "SelectiveScan expects 5 inputs (u, delta, a, b, c), got {}",
@@ -3841,7 +3884,8 @@ fn op_to_op_params(
             let dstate = a_dims[1];
             if a_dims[0] != dim {
                 return Err(Error::Msg(format!(
-                    "SelectiveScan: a's first dim {} must equal dim {dim}", a_dims[0],
+                    "SelectiveScan: a's first dim {} must equal dim {dim}",
+                    a_dims[0],
                 ))
                 .bt());
             }
@@ -3856,10 +3900,7 @@ fn op_to_op_params(
         // SsdChunkScan: derive (batch, seqlen, heads, head_dim,
         // state_dim) from x and b layouts. x: [batch, seqlen, heads,
         // head_dim]; b: [batch, seqlen, heads, state_dim].
-        Op::Fused(
-            _,
-            fuel_graph::registry::FusedOpParams::SsdChunkScan { chunk_size },
-        ) => {
+        Op::Fused(_, fuel_graph::registry::FusedOpParams::SsdChunkScan { chunk_size }) => {
             if node.inputs.len() != 5 {
                 return Err(Error::Msg(format!(
                     "SsdChunkScan expects 5 inputs (x, dt, a, b, c), got {}",
@@ -3900,10 +3941,7 @@ fn op_to_op_params(
         // Nf4Matmul: derive (batch, m, n, k) from activations + w_packed
         // layouts. activations: [..., m, k] (leading dims flatten into
         // batch); w_packed: [n, k/2] U8.
-        Op::Fused(
-            _,
-            fuel_graph::registry::FusedOpParams::Nf4Matmul { block_size },
-        ) => {
+        Op::Fused(_, fuel_graph::registry::FusedOpParams::Nf4Matmul { block_size }) => {
             if node.inputs.len() != 3 {
                 return Err(Error::Msg(format!(
                     "Nf4Matmul expects 3 inputs (activations, w_packed, absmax), got {}",
@@ -3945,7 +3983,9 @@ fn op_to_op_params(
             }
             if w_dims[1] != k / 2 {
                 return Err(Error::Msg(format!(
-                    "Nf4Matmul: w_packed second dim {} must equal k/2 = {}", w_dims[1], k / 2,
+                    "Nf4Matmul: w_packed second dim {} must equal k/2 = {}",
+                    w_dims[1],
+                    k / 2,
                 ))
                 .bt());
             }
@@ -3970,14 +4010,14 @@ fn op_to_op_params(
             let il = input_layout(node.inputs[0]);
             let dims = il.shape().dims();
             if dims.is_empty() {
-                return Err(Error::Msg(
-                    "Op::SoftmaxLastDim requires rank ≥ 1".to_string(),
-                )
-                .bt());
+                return Err(Error::Msg("Op::SoftmaxLastDim requires rank ≥ 1".to_string()).bt());
             }
             let last_dim = *dims.last().unwrap();
             let outer_count: usize = dims[..dims.len() - 1].iter().product();
-            OpParams::SoftmaxLastDim { outer_count, last_dim }
+            OpParams::SoftmaxLastDim {
+                outer_count,
+                last_dim,
+            }
         }
         Op::Flip { dim } => {
             // Single input. Precompute the flat-3-axis split
@@ -4001,7 +4041,12 @@ fn op_to_op_params(
             let outer_count: usize = in_dims[..*dim].iter().product();
             let dim_size = in_dims[*dim];
             let inner_count: usize = in_dims[*dim + 1..].iter().product();
-            OpParams::Flip { outer_count, dim_size, inner_count, axis: *dim }
+            OpParams::Flip {
+                outer_count,
+                dim_size,
+                inner_count,
+                axis: *dim,
+            }
         }
         Op::Roll { dim, shift } => {
             if node.inputs.len() != 1 {
@@ -4024,7 +4069,11 @@ fn op_to_op_params(
             let dim_size = in_dims[*dim];
             let inner_count: usize = in_dims[*dim + 1..].iter().product();
             OpParams::Roll {
-                outer_count, dim_size, inner_count, shift: *shift, axis: *dim,
+                outer_count,
+                dim_size,
+                inner_count,
+                shift: *shift,
+                axis: *dim,
             }
         }
         Op::CumSum { dim } => {
@@ -4047,7 +4096,12 @@ fn op_to_op_params(
             let outer_count: usize = in_dims[..*dim].iter().product();
             let dim_size = in_dims[*dim];
             let inner_count: usize = in_dims[*dim + 1..].iter().product();
-            OpParams::CumSum { outer_count, dim_size, inner_count, axis: *dim }
+            OpParams::CumSum {
+                outer_count,
+                dim_size,
+                inner_count,
+                axis: *dim,
+            }
         }
         Op::Triu { diagonal } | Op::Tril { diagonal } => {
             if node.inputs.len() != 1 {
@@ -4069,8 +4123,15 @@ fn op_to_op_params(
             let rows = in_dims[in_dims.len() - 2];
             let cols = in_dims[in_dims.len() - 1];
             let batch_count: usize = in_dims[..in_dims.len() - 2]
-                .iter().product::<usize>().max(1);
-            OpParams::Triangular { batch_count, rows, cols, diagonal: *diagonal }
+                .iter()
+                .product::<usize>()
+                .max(1);
+            OpParams::Triangular {
+                batch_count,
+                rows,
+                cols,
+                diagonal: *diagonal,
+            }
         }
         Op::LogSoftmaxLastDim => {
             if node.inputs.len() != 1 {
@@ -4083,14 +4144,14 @@ fn op_to_op_params(
             let in_layout = input_layout(node.inputs[0]);
             let in_dims = in_layout.shape().dims();
             if in_dims.is_empty() {
-                return Err(Error::Msg(
-                    "Op::LogSoftmaxLastDim requires rank ≥ 1".to_string(),
-                )
-                .bt());
+                return Err(Error::Msg("Op::LogSoftmaxLastDim requires rank ≥ 1".to_string()).bt());
             }
             let last_dim = *in_dims.last().unwrap();
             let outer_count: usize = in_dims[..in_dims.len() - 1].iter().product();
-            OpParams::LogSoftmaxLastDim { outer_count, last_dim }
+            OpParams::LogSoftmaxLastDim {
+                outer_count,
+                last_dim,
+            }
         }
         Op::LogSoftmaxLastDimBackward => {
             // Inputs: (forward_output_y, upstream_grad). Same shape contract
@@ -4112,7 +4173,10 @@ fn op_to_op_params(
             }
             let last_dim = *in_dims.last().unwrap();
             let outer_count: usize = in_dims[..in_dims.len() - 1].iter().product();
-            OpParams::LogSoftmaxLastDim { outer_count, last_dim }
+            OpParams::LogSoftmaxLastDim {
+                outer_count,
+                last_dim,
+            }
         }
         Op::MaskedFill { value } => {
             if node.inputs.len() != 2 {
@@ -4127,7 +4191,11 @@ fn op_to_op_params(
         }
         // Op::MaskedFillInplace tracked by the parallel in-place
         // binary family session — not in HEAD's Op enum right now.
-        Op::PadBackward { in_shape, padding, mode } => {
+        Op::PadBackward {
+            in_shape,
+            padding,
+            mode,
+        } => {
             // Single input is the upstream gradient; output is the
             // input gradient (shape == `in_shape`).
             if node.inputs.len() != 1 {
@@ -4140,7 +4208,9 @@ fn op_to_op_params(
             let in_dims: Vec<usize> = in_shape.dims().to_vec();
             // Output of the original forward Pad is the input shape
             // of the backward (== upstream's shape).
-            let out_dims: Vec<usize> = in_dims.iter().zip(padding.iter())
+            let out_dims: Vec<usize> = in_dims
+                .iter()
+                .zip(padding.iter())
                 .map(|(&d, &(b, a))| d + b + a)
                 .collect();
             let mode_tag: u8 = match mode {
@@ -4155,7 +4225,11 @@ fn op_to_op_params(
                 mode_tag,
             }
         }
-        Op::Pad { padding, mode, value } => {
+        Op::Pad {
+            padding,
+            mode,
+            value,
+        } => {
             if node.inputs.len() != 1 {
                 return Err(Error::Msg(format!(
                     "Op::Pad expects 1 input, got {}",
@@ -4168,11 +4242,14 @@ fn op_to_op_params(
             if padding.len() != in_dims.len() {
                 return Err(Error::Msg(format!(
                     "Op::Pad: padding.len() ({}) != input rank ({})",
-                    padding.len(), in_dims.len(),
+                    padding.len(),
+                    in_dims.len(),
                 ))
                 .bt());
             }
-            let out_dims: Vec<usize> = in_dims.iter().zip(padding.iter())
+            let out_dims: Vec<usize> = in_dims
+                .iter()
+                .zip(padding.iter())
                 .map(|(&d, &(b, a))| d + b + a)
                 .collect();
             let mode_tag: u8 = match mode {
@@ -4225,7 +4302,8 @@ fn op_to_op_params(
             if base_dims.len() != src_dims.len() {
                 return Err(Error::Msg(format!(
                     "Op::IndexAdd: base rank ({}) != src rank ({})",
-                    base_dims.len(), src_dims.len(),
+                    base_dims.len(),
+                    src_dims.len(),
                 ))
                 .bt());
             }
@@ -4255,7 +4333,8 @@ fn op_to_op_params(
             if base_shape.len() != src_shape.len() {
                 return Err(Error::Msg(format!(
                     "Op::ScatterAdd: base rank ({}) != src rank ({})",
-                    base_shape.len(), src_shape.len(),
+                    base_shape.len(),
+                    src_shape.len(),
                 ))
                 .bt());
             }
@@ -4287,15 +4366,18 @@ fn op_to_op_params(
             let x_layout = input_layout(node.inputs[0]);
             let x_dims = x_layout.shape().dims();
             if x_dims.len() < 2 {
-                return Err(Error::Msg(format!(
-                    "Op::Rope: x must have rank ≥ 2, got {x_dims:?}",
-                ))
-                .bt());
+                return Err(
+                    Error::Msg(format!("Op::Rope: x must have rank ≥ 2, got {x_dims:?}",)).bt(),
+                );
             }
             let head_dim = *x_dims.last().unwrap();
             let seq = x_dims[x_dims.len() - 2];
             let outer_count: usize = x_dims[..x_dims.len() - 2].iter().product();
-            OpParams::Rope { outer_count, seq, head_dim }
+            OpParams::Rope {
+                outer_count,
+                seq,
+                head_dim,
+            }
         }
         Op::Gather { dim } => {
             // inputs[0] = source, inputs[1] = U32 indices (same rank).
@@ -4401,10 +4483,13 @@ fn op_to_op_params(
                 fuel_graph::registry::FusedOpParams::LayerNormLastDim { eps } => *eps,
                 fuel_graph::registry::FusedOpParams::RmsNormLastDimBackward { eps } => *eps,
                 fuel_graph::registry::FusedOpParams::LayerNormLastDimBackward { eps } => *eps,
-                _ => return Err(Error::Msg(format!(
-                    "Op::Fused(NORM_LAST_DIM[_BACKWARD], _) expected \
+                _ => {
+                    return Err(Error::Msg(format!(
+                        "Op::Fused(NORM_LAST_DIM[_BACKWARD], _) expected \
                      RmsNormLastDim[Backward] or LayerNormLastDim[Backward] params, got {params:?}",
-                )).bt()),
+                    ))
+                    .bt());
+                }
             };
             let il = input_layout(node.inputs[0]);
             let dims = il.shape().dims();
@@ -4416,25 +4501,31 @@ fn op_to_op_params(
             }
             let last_dim = *dims.last().unwrap();
             let outer_count: usize = dims[..dims.len() - 1].iter().product();
-            OpParams::NormLastDim { outer_count, last_dim, eps }
+            OpParams::NormLastDim {
+                outer_count,
+                last_dim,
+                eps,
+            }
         }
         // ReduceMaxToBackward: shape pair via the new
         // OpParams::ReduceMaxToBackward variant. x's shape is
         // `input_shape`; upstream's shape is `output_shape`.
-        Op::Fused(fid, _)
-            if *fid == fuel_graph::registry::FusedOps::REDUCE_MAX_TO_BACKWARD =>
-        {
+        Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::REDUCE_MAX_TO_BACKWARD => {
             if node.inputs.len() != 2 {
                 return Err(Error::Msg(format!(
                     "Op::Fused(REDUCE_MAX_TO_BACKWARD) expects 2 inputs, got {}",
                     node.inputs.len(),
-                )).bt());
+                ))
+                .bt());
             }
             let x_layout = input_layout(node.inputs[0]);
             let up_layout = input_layout(node.inputs[1]);
             let input_shape: Vec<usize> = x_layout.shape().dims().to_vec();
             let output_shape: Vec<usize> = up_layout.shape().dims().to_vec();
-            OpParams::ReduceMaxToBackward { input_shape, output_shape }
+            OpParams::ReduceMaxToBackward {
+                input_shape,
+                output_shape,
+            }
         }
         Op::Concat { dim } => {
             // Output's shape: [..., total_dim, ...]. Compute outer
@@ -4442,10 +4533,7 @@ fn op_to_op_params(
             // [dim+1..]; per-input dim sizes from each input's
             // layout shape at index `dim`.
             if node.inputs.is_empty() {
-                return Err(Error::Msg(
-                    "Op::Concat requires at least 1 input".to_string(),
-                )
-                .bt());
+                return Err(Error::Msg("Op::Concat requires at least 1 input".to_string()).bt());
             }
             let out_dims = node.shape.dims();
             if *dim >= out_dims.len() {
@@ -4479,9 +4567,15 @@ fn op_to_op_params(
         }
         Op::AddScalar(c) => OpParams::Affine { mul: 1.0, add: *c },
         Op::MulScalar(c) => OpParams::Affine { mul: *c, add: 0.0 },
-        Op::Clamp { min, max } => OpParams::Clamp { min: *min, max: *max },
+        Op::Clamp { min, max } => OpParams::Clamp {
+            min: *min,
+            max: *max,
+        },
         Op::PowI(exp) => OpParams::PowI { exp: *exp },
-        Op::ClampInplace { min, max } => OpParams::Clamp { min: *min, max: *max },
+        Op::ClampInplace { min, max } => OpParams::Clamp {
+            min: *min,
+            max: *max,
+        },
         Op::PowIInplace(exp) => OpParams::PowI { exp: *exp },
         // PowI backward — `(x, upstream) → grad_x = exp · x^(exp-1) ·
         // upstream`. Pulls the same `exp` as the forward through
@@ -4495,11 +4589,21 @@ fn op_to_op_params(
         // the input; the structural decision lives in the executor's
         // dedicated `WorkItemKind::InplaceKernel` arm.
         Op::Fused(_, fuel_graph::registry::FusedOpParams::InplaceAffine { mul, add }) => {
-            OpParams::Affine { mul: *mul, add: *add }
+            OpParams::Affine {
+                mul: *mul,
+                add: *add,
+            }
         }
         // Phase 7.6 step 5: legacy `Op::Conv2D` arm retired with the
         // variant; Conv2D routes through `Op::Fused(CONV2D, _)`.
-        Op::Fused(_, fuel_graph::registry::FusedOpParams::Conv2D { stride, padding, groups }) => {
+        Op::Fused(
+            _,
+            fuel_graph::registry::FusedOpParams::Conv2D {
+                stride,
+                padding,
+                groups,
+            },
+        ) => {
             // Inputs[0] = x [N, Cin, Hin, Win]; inputs[1] = weight
             // [Cout, Cin/groups, Kh, Kw]; inputs[2] (optional) = bias [Cout].
             // Output (this Node's shape) = [N, Cout, Hout, Wout].
@@ -4541,9 +4645,14 @@ fn op_to_op_params(
             }
         }
         // Phase 7.6 step 5 (final): legacy `Op::PagedAttn` arm dropped.
-        Op::Fused(_, fuel_graph::registry::FusedOpParams::PagedAttn {
-            softmax_scale, block_size, softcap,
-        }) => {
+        Op::Fused(
+            _,
+            fuel_graph::registry::FusedOpParams::PagedAttn {
+                softmax_scale,
+                block_size,
+                softcap,
+            },
+        ) => {
             // Inputs[0]=q [B,Hq,Sq,D], inputs[1]=k_cache [num_blocks,
             // block_size, Hkv, D], inputs[2]=v_cache same shape,
             // inputs[3]=block_table [B, max_blocks_per_seq] U32,
@@ -4603,9 +4712,17 @@ fn op_to_op_params(
             }
         }
         // Phase 7.6 step 5 (final): legacy `Op::FlashAttn` arm dropped.
-        Op::Fused(_, fuel_graph::registry::FusedOpParams::FlashAttn {
-            softmax_scale, causal, window_size_left, window_size_right, softcap, k_len,
-        }) => {
+        Op::Fused(
+            _,
+            fuel_graph::registry::FusedOpParams::FlashAttn {
+                softmax_scale,
+                causal,
+                window_size_left,
+                window_size_right,
+                softcap,
+                k_len,
+            },
+        ) => {
             // Inputs[0]=q [B,Hq,Sq,D], inputs[1]=k [B,Hkv,Sk,D],
             // inputs[2]=v [B,Hkv,Sk,D], inputs[3]=alibi_slopes [Hq] (optional).
             // `sk` is the PHYSICAL K extent (capacity, for strides/bytes);
@@ -4697,7 +4814,10 @@ fn op_to_op_params(
             let in_layout = input_layout(node.inputs[0]);
             let input_shape: Vec<usize> = in_layout.shape().dims().to_vec();
             let output_shape: Vec<usize> = target_shape.dims().to_vec();
-            OpParams::ReduceSumTo { input_shape, output_shape }
+            OpParams::ReduceSumTo {
+                input_shape,
+                output_shape,
+            }
         }
         Op::ReduceMaxTo(target_shape) => {
             if node.inputs.len() != 1 {
@@ -4710,12 +4830,22 @@ fn op_to_op_params(
             let in_layout = input_layout(node.inputs[0]);
             let input_shape: Vec<usize> = in_layout.shape().dims().to_vec();
             let output_shape: Vec<usize> = target_shape.dims().to_vec();
-            OpParams::ReduceMaxTo { input_shape, output_shape }
+            OpParams::ReduceMaxTo {
+                input_shape,
+                output_shape,
+            }
         }
         // Phase 7.6 step 5 (final): legacy `Op::ConvTranspose2D` arm dropped.
-        Op::Fused(_, fuel_graph::registry::FusedOpParams::ConvTranspose2D {
-            stride, padding, output_padding, dilation, groups,
-        }) => {
+        Op::Fused(
+            _,
+            fuel_graph::registry::FusedOpParams::ConvTranspose2D {
+                stride,
+                padding,
+                output_padding,
+                dilation,
+                groups,
+            },
+        ) => {
             // Inputs[0] = x [N, Cin, Hin, Win]; inputs[1] = weight
             // [Cin, Cout/groups, Kh, Kw]; inputs[2] (optional) = bias [Cout].
             // Output (this Node's shape) = [N, Cout, Hout, Wout].
@@ -4774,7 +4904,8 @@ fn op_to_op_params(
             if ranges.len() != dest_dims.len() {
                 return Err(Error::Msg(format!(
                     "Op::WriteSlice: ranges.len() ({}) must equal destination rank ({})",
-                    ranges.len(), dest_dims.len(),
+                    ranges.len(),
+                    dest_dims.len(),
                 ))
                 .bt());
             }
@@ -4852,7 +4983,11 @@ fn op_to_op_params(
                 deferred_dyn_offset,
             }
         }
-        Op::WriteSliceRotating { axis, modulus, ranges } => {
+        Op::WriteSliceRotating {
+            axis,
+            modulus,
+            ranges,
+        } => {
             // inputs[0] = destination, inputs[1] = source slab,
             // inputs[2] = dynamic position scalar (U32). The builder
             // already validated rank / dtype / shape parity; the
@@ -4869,7 +5004,8 @@ fn op_to_op_params(
             if ranges.len() != dest_dims.len() {
                 return Err(Error::Msg(format!(
                     "Op::WriteSliceRotating: ranges.len() ({}) must equal destination rank ({})",
-                    ranges.len(), dest_dims.len(),
+                    ranges.len(),
+                    dest_dims.len(),
                 ))
                 .bt());
             }
@@ -4912,7 +5048,8 @@ fn op_to_op_params(
             if ranges.len() != dest_dims.len() {
                 return Err(Error::Msg(format!(
                     "Op::WriteSliceDoff: ranges.len() ({}) must equal destination rank ({})",
-                    ranges.len(), dest_dims.len(),
+                    ranges.len(),
+                    dest_dims.len(),
                 ))
                 .bt());
             }
@@ -4953,11 +5090,7 @@ fn op_to_op_params(
 /// error passes through unchanged — the location is a navigation aid, never
 /// worth masking the real error with a lock issue. Zero happy-path cost: only
 /// the error branch touches the graph.
-fn with_node_location(
-    graph: &Arc<RwLock<Graph>>,
-    node_id: NodeId,
-    err: Error,
-) -> Error {
+fn with_node_location(graph: &Arc<RwLock<Graph>>, node_id: NodeId, err: Error) -> Error {
     match graph.read() {
         Ok(g) => err.context(g.describe_node(node_id)),
         Err(_) => err,
@@ -4989,7 +5122,9 @@ fn bind_data_determined_count(
     count_sym: fuel_ir::SymId,
     produced_syms: &mut SymEnv,
 ) -> Result<()> {
-    let guard = arc.read().map_err(|_| poisoned("NonZeroIndices output storage"))?;
+    let guard = arc
+        .read()
+        .map_err(|_| poisoned("NonZeroIndices output storage"))?;
     let count_byte_off = capacity * std::mem::size_of::<u32>();
     let end = count_byte_off + std::mem::size_of::<u32>();
     // The non-CPU `BackendStorage` variants are cfg-gated; with GPU
@@ -5042,7 +5177,11 @@ fn resolve_deferred_write_slice(
     produced_syms: &SymEnv,
     node_id: NodeId,
 ) -> Result<Option<CompiledNode>> {
-    let OpParams::WriteSlice { dest_shape, ranges, deferred_dyn_offset } = &compiled.op_params
+    let OpParams::WriteSlice {
+        dest_shape,
+        ranges,
+        deferred_dyn_offset,
+    } = &compiled.op_params
     else {
         return Ok(None);
     };
@@ -5217,7 +5356,8 @@ fn execute_work_item(
                 .bt()
             })?;
             let new_storage = {
-                let guard = producer_arc.read()
+                let guard = producer_arc
+                    .read()
                     .map_err(|_| poisoned("ViewOwned producer storage"))?;
                 let bundle = guard.bundle().ok_or_else(|| {
                     Error::Msg(format!(
@@ -5226,14 +5366,18 @@ fn execute_work_item(
                          Storage::with_bundle / new_bundled at allocation \
                          time. Node {:?} slot {} cannot resolve its source.",
                         producer, item.node_id, slot,
-                    )).bt()
+                    ))
+                    .bt()
                 })?;
                 let sv = bundle.get(*slot as usize).cloned().ok_or_else(|| {
                     Error::Msg(format!(
                         "Op::ViewOwned: slot {} out of range for producer {:?} \
                          (bundle has {} slots)",
-                        slot, producer, bundle.len(),
-                    )).bt()
+                        slot,
+                        producer,
+                        bundle.len(),
+                    ))
+                    .bt()
                 })?;
                 use fuel_memory::BackendStorage;
                 match &guard.inner {
@@ -5244,26 +5388,22 @@ fn execute_work_item(
                             return Err(Error::Msg(format!(
                                 "Op::ViewOwned: slot {} byte range [{}..{}) \
                                  exceeds producer's CPU byte length {}",
-                                slot, sv.byte_offset, end, src_bytes.len(),
-                            )).bt());
+                                slot,
+                                sv.byte_offset,
+                                end,
+                                src_bytes.len(),
+                            ))
+                            .bt());
                         }
                         let owned = fuel_cpu_backend::CpuStorageBytes::from_bytes(
                             &src_bytes[sv.byte_offset..end],
                         );
-                        fuel_memory::Storage::new(
-                            BackendStorage::Cpu(owned),
-                            sv.dtype,
-                        )
+                        fuel_memory::Storage::new(BackendStorage::Cpu(owned), sv.dtype)
                     }
                     #[cfg(feature = "cuda")]
                     BackendStorage::Cuda(cuda_bytes) => {
-                        let dst = cuda_bytes.slot_copy_to_new(
-                            sv.byte_offset, sv.len_bytes(),
-                        )?;
-                        fuel_memory::Storage::new(
-                            BackendStorage::Cuda(dst),
-                            sv.dtype,
-                        )
+                        let dst = cuda_bytes.slot_copy_to_new(sv.byte_offset, sv.len_bytes())?;
+                        fuel_memory::Storage::new(BackendStorage::Cuda(dst), sv.dtype)
                     }
                     #[cfg(feature = "vulkan")]
                     BackendStorage::Vulkan(vk_bytes) => {
@@ -5276,15 +5416,15 @@ fn execute_work_item(
                                  upload_bytes_handle so the bundle's slot extraction \
                                  path can reach the backend.",
                                 producer,
-                            )).bt()
+                            ))
+                            .bt()
                         })?;
                         let dst = backend.slot_copy_to_new_handle(
-                            vk_bytes, sv.byte_offset, sv.len_bytes(),
+                            vk_bytes,
+                            sv.byte_offset,
+                            sv.len_bytes(),
                         )?;
-                        fuel_memory::Storage::new(
-                            BackendStorage::Vulkan(dst),
-                            sv.dtype,
-                        )
+                        fuel_memory::Storage::new(BackendStorage::Vulkan(dst), sv.dtype)
                     }
                     #[allow(unreachable_patterns)]
                     _ => {
@@ -5295,7 +5435,8 @@ fn execute_work_item(
                              `slot_copy_to_new`-equivalent and extend the \
                              match arm.",
                             producer,
-                        )).bt());
+                        ))
+                        .bt());
                     }
                 }
             };
@@ -5371,8 +5512,7 @@ fn execute_work_item(
                     .map_err(|_| poisoned("WriteSlice source storage"))?
                     .inner
                     .len_bytes();
-                let layout_bytes =
-                    source_layout.shape().elem_count() * s_dtype.size_in_bytes();
+                let layout_bytes = source_layout.shape().elem_count() * s_dtype.size_in_bytes();
                 let bytes_match_shape = s_len_bytes == layout_bytes;
                 let already_contig = source_layout.is_contiguous()
                     && source_layout.start_offset() == 0
@@ -5383,8 +5523,7 @@ fn execute_work_item(
                     auto_contiguize(&source_arc, &source_layout)?
                 }
             };
-            let source_layout_kernel =
-                fuel_ir::Layout::contiguous(source_layout.shape().clone());
+            let source_layout_kernel = fuel_ir::Layout::contiguous(source_layout.shape().clone());
             // The kernel sees inputs=[source] and outputs=[dest_arc].
             // The dest input slot is intentionally absent — the kernel
             // doesn't read from dest; it only writes to its bytes
@@ -5393,10 +5532,13 @@ fn execute_work_item(
             let mut output_arcs = vec![dest_arc.clone()];
             let kernel_layouts = vec![source_layout_kernel, dest_layout.clone()];
             // A4b-1: defer the wait — return the handle to the realize loop.
-            let handle =
-                execute_compiled_with_wait_hint(
-                    compiled, &input_arcs, &mut output_arcs, &kernel_layouts, will_be_waited,
-                )?;
+            let handle = execute_compiled_with_wait_hint(
+                compiled,
+                &input_arcs,
+                &mut output_arcs,
+                &kernel_layouts,
+                will_be_waited,
+            )?;
             // Adopt the dest Arc at this WriteSlice node's slot. The
             // realize loop's destructive_input cleanup evicts the
             // dest's own NodeId from the cache afterward — downstream
@@ -5405,7 +5547,11 @@ fn execute_work_item(
             layout_cache.insert(item.node_id, item.output_layout.clone());
             Ok(handle)
         }
-        WorkItemKind::WriteSliceRotating { dest, source, position } => {
+        WorkItemKind::WriteSliceRotating {
+            dest,
+            source,
+            position,
+        } => {
             // Same shape as WriteSlice but with a position input.
             // Kernel sees `[source, position]` as inputs; `dest` is the
             // pre-allocated output buffer (in-place adoption).
@@ -5470,8 +5616,7 @@ fn execute_work_item(
                     .map_err(|_| poisoned("WriteSliceRotating source storage"))?
                     .inner
                     .len_bytes();
-                let layout_bytes =
-                    source_layout.shape().elem_count() * s_dtype.size_in_bytes();
+                let layout_bytes = source_layout.shape().elem_count() * s_dtype.size_in_bytes();
                 let bytes_match_shape = s_len_bytes == layout_bytes;
                 let already_contig = source_layout.is_contiguous()
                     && source_layout.start_offset() == 0
@@ -5482,26 +5627,28 @@ fn execute_work_item(
                     auto_contiguize(&source_arc, &source_layout)?
                 }
             };
-            let source_layout_kernel =
-                fuel_ir::Layout::contiguous(source_layout.shape().clone());
-            let position_layout = fuel_ir::Layout::contiguous(
-                fuel_ir::Shape::from_dims(&[]),
-            );
+            let source_layout_kernel = fuel_ir::Layout::contiguous(source_layout.shape().clone());
+            let position_layout = fuel_ir::Layout::contiguous(fuel_ir::Shape::from_dims(&[]));
             let input_arcs = vec![source_arc_contig, position_arc];
             let mut output_arcs = vec![dest_arc.clone()];
-            let kernel_layouts = vec![
-                source_layout_kernel, position_layout, dest_layout.clone(),
-            ];
+            let kernel_layouts = vec![source_layout_kernel, position_layout, dest_layout.clone()];
             // A4b-1: defer the wait — return the handle to the realize loop.
-            let handle =
-                execute_compiled_with_wait_hint(
-                    compiled, &input_arcs, &mut output_arcs, &kernel_layouts, will_be_waited,
-                )?;
+            let handle = execute_compiled_with_wait_hint(
+                compiled,
+                &input_arcs,
+                &mut output_arcs,
+                &kernel_layouts,
+                will_be_waited,
+            )?;
             cache.insert(item.node_id, dest_arc);
             layout_cache.insert(item.node_id, item.output_layout.clone());
             Ok(handle)
         }
-        WorkItemKind::WriteSliceDoff { dest, source, offset } => {
+        WorkItemKind::WriteSliceDoff {
+            dest,
+            source,
+            offset,
+        } => {
             // Same shape as WriteSliceRotating: kernel sees
             // `[source, offset]` as inputs; `dest` is the pre-allocated
             // output buffer (in-place adoption). The offset (rank-0
@@ -5570,8 +5717,7 @@ fn execute_work_item(
                     .map_err(|_| poisoned("WriteSliceDoff source storage"))?
                     .inner
                     .len_bytes();
-                let layout_bytes =
-                    source_layout.shape().elem_count() * s_dtype.size_in_bytes();
+                let layout_bytes = source_layout.shape().elem_count() * s_dtype.size_in_bytes();
                 let bytes_match_shape = s_len_bytes == layout_bytes;
                 let already_contig = source_layout.is_contiguous()
                     && source_layout.start_offset() == 0
@@ -5582,21 +5728,19 @@ fn execute_work_item(
                     auto_contiguize(&source_arc, &source_layout)?
                 }
             };
-            let source_layout_kernel =
-                fuel_ir::Layout::contiguous(source_layout.shape().clone());
-            let offset_layout = fuel_ir::Layout::contiguous(
-                fuel_ir::Shape::from_dims(&[]),
-            );
+            let source_layout_kernel = fuel_ir::Layout::contiguous(source_layout.shape().clone());
+            let offset_layout = fuel_ir::Layout::contiguous(fuel_ir::Shape::from_dims(&[]));
             let input_arcs = vec![source_arc_contig, offset_arc];
             let mut output_arcs = vec![dest_arc.clone()];
-            let kernel_layouts = vec![
-                source_layout_kernel, offset_layout, dest_layout.clone(),
-            ];
+            let kernel_layouts = vec![source_layout_kernel, offset_layout, dest_layout.clone()];
             // A4b-1: defer the wait — return the handle to the realize loop.
-            let handle =
-                execute_compiled_with_wait_hint(
-                    compiled, &input_arcs, &mut output_arcs, &kernel_layouts, will_be_waited,
-                )?;
+            let handle = execute_compiled_with_wait_hint(
+                compiled,
+                &input_arcs,
+                &mut output_arcs,
+                &kernel_layouts,
+                will_be_waited,
+            )?;
             cache.insert(item.node_id, dest_arc);
             layout_cache.insert(item.node_id, item.output_layout.clone());
             Ok(handle)
@@ -5618,15 +5762,17 @@ fn execute_work_item(
                 DeviceLocation::Cpu => fuel_memory::alloc_cpu_zeroed(item.dtype, item.elem_count)?,
                 #[cfg(feature = "cuda")]
                 DeviceLocation::Cuda { gpu_id } => {
-                    let cuda_dev = find_cuda_device_in_cache(cache, *gpu_id)
-                        .ok_or_else(|| Error::Msg(format!(
+                    let cuda_dev = find_cuda_device_in_cache(cache, *gpu_id).ok_or_else(|| {
+                        Error::Msg(format!(
                             "Op::Alloc on Cuda {{ gpu_id: {} }}: no CUDA \
                              storage in input cache to derive the device \
                              handle from. The caller must seed the cache \
                              (e.g. via `fuel-core::pipelined_bridge::\
                              device_seed_storage`) before realizing.",
                             gpu_id,
-                        )).bt())?;
+                        ))
+                        .bt()
+                    })?;
                     // Phase 3a follow-up: true uninit alloc via
                     // baracuda alpha.30's unsafe alloc. The bytes are
                     // uninit until a subsequent Op::ZeroFill or full-
@@ -5641,20 +5787,25 @@ fn execute_work_item(
                 DeviceLocation::Cuda { .. } => {
                     return Err(Error::Msg(
                         "Op::Alloc on Cuda but fuel-storage wasn't built \
-                         with --features cuda".to_string(),
-                    ).bt());
+                         with --features cuda"
+                            .to_string(),
+                    )
+                    .bt());
                 }
                 #[cfg(feature = "vulkan")]
                 DeviceLocation::Vulkan { gpu_id } => {
-                    let backend = find_vulkan_backend_in_cache(cache, *gpu_id)
-                        .ok_or_else(|| Error::Msg(format!(
-                            "Op::Alloc on Vulkan {{ gpu_id: {} }}: no Vulkan \
+                    let backend =
+                        find_vulkan_backend_in_cache(cache, *gpu_id).ok_or_else(|| {
+                            Error::Msg(format!(
+                                "Op::Alloc on Vulkan {{ gpu_id: {} }}: no Vulkan \
                              storage in input cache to derive the backend \
                              handle from. The caller must seed the cache \
                              (e.g. via `fuel-core::pipelined_bridge::\
                              device_seed_storage`) before realizing.",
-                            gpu_id,
-                        )).bt())?;
+                                gpu_id,
+                            ))
+                            .bt()
+                        })?;
                     // Phase 3a follow-up: true uninit alloc. The old
                     // `upload_bytes_handle(vec![0u8; n])` host-staged
                     // zeros (~2× the bandwidth of a device-side fill);
@@ -5668,16 +5819,20 @@ fn execute_work_item(
                 DeviceLocation::Vulkan { .. } => {
                     return Err(Error::Msg(
                         "Op::Alloc on Vulkan but fuel-storage wasn't built \
-                         with --features vulkan".to_string(),
-                    ).bt());
+                         with --features vulkan"
+                            .to_string(),
+                    )
+                    .bt());
                 }
                 other => {
                     return Err(Error::Msg(format!(
                         "Op::Alloc on {:?}: target not yet wired (CPU + \
                          CUDA + Vulkan land in Phase 3a of bridge-retirement; \
                          Metal extends when its byte-storage substrate is \
-                         ready).", other,
-                    )).bt());
+                         ready).",
+                        other,
+                    ))
+                    .bt());
                 }
             };
             cache.insert(item.node_id, Arc::new(RwLock::new(alloced)));
@@ -5712,8 +5867,10 @@ fn execute_work_item(
                 return Err(Error::Msg(format!(
                     "PipelinedExecutor: ZeroFill work item {:?} expects \
                      1 input, got {}",
-                    item.node_id, item.inputs.len(),
-                )).bt());
+                    item.node_id,
+                    item.inputs.len(),
+                ))
+                .bt());
             }
             let src_id = item.inputs[0];
             let src_arc = cache.get(&src_id).cloned().ok_or_else(|| {
@@ -5744,14 +5901,19 @@ fn execute_work_item(
                     }
                     #[cfg(feature = "vulkan")]
                     fuel_memory::BackendStorage::Vulkan(v) => {
-                        let backend = v.backend().ok_or_else(|| {
-                            Error::Msg(
-                                "Op::ZeroFill on Vulkan: input has no \
+                        let backend = v
+                            .backend()
+                            .ok_or_else(|| {
+                                Error::Msg(
+                                    "Op::ZeroFill on Vulkan: input has no \
                                  attached backend handle. Storage must \
                                  come from VulkanBackend::alloc_bytes_handle \
-                                 / upload_bytes_handle.".to_string()
-                            ).bt()
-                        })?.clone();
+                                 / upload_bytes_handle."
+                                        .to_string(),
+                                )
+                                .bt()
+                            })?
+                            .clone();
                         backend.fill_bytes_zero(v)?;
                     }
                     #[allow(unreachable_patterns)]
@@ -5760,7 +5922,8 @@ fn execute_work_item(
                             "Op::ZeroFill: backend not wired ({other:?}); \
                              CPU + CUDA + Vulkan covered, Metal extends \
                              when its byte-storage substrate is ready.",
-                        )).bt());
+                        ))
+                        .bt());
                     }
                 }
             }
@@ -5776,8 +5939,7 @@ fn execute_work_item(
             // (unchanged) and same-stream ordering — `Ready` is behavior-preserving.
             Ok(CompletionHandle::Ready)
         }
-        WorkItemKind::Copy { target_location }
-        | WorkItemKind::Move { target_location } => {
+        WorkItemKind::Copy { target_location } | WorkItemKind::Move { target_location } => {
             // Op::Copy / Op::Move { target }: kernel lookup at
             // (OpKind::Copy, [dt, dt], source_backend) — the wrapper
             // downloads from its own residency into a freshly-
@@ -5805,8 +5967,10 @@ fn execute_work_item(
             if item.inputs.len() != 1 {
                 return Err(Error::Msg(format!(
                     "PipelinedExecutor: {op_label} work item {:?} expects 1 input, got {}",
-                    item.node_id, item.inputs.len(),
-                )).bt());
+                    item.node_id,
+                    item.inputs.len(),
+                ))
+                .bt());
             }
             let src_id = item.inputs[0];
             let src_arc = cache.get(&src_id).cloned().ok_or_else(|| {
@@ -5834,7 +5998,9 @@ fn execute_work_item(
             // The guard only fires when the Copy targets the bundle
             // root directly.
             {
-                let guard = src_arc.read().map_err(|_| poisoned("Copy source storage"))?;
+                let guard = src_arc
+                    .read()
+                    .map_err(|_| poisoned("Copy source storage"))?;
                 if guard.is_bundled() {
                     let layout_bytes_for_guard = layout_cache
                         .get(&src_id)
@@ -5850,7 +6016,8 @@ fn execute_work_item(
                              per-slot cross-device moves, or wait for the \
                              per-backend whole-bundle-Copy hook.",
                             src_id,
-                        )).bt());
+                        ))
+                        .bt());
                     }
                 }
             }
@@ -5870,19 +6037,16 @@ fn execute_work_item(
                 .map_err(|_| poisoned("Copy source storage"))?
                 .inner
                 .len_bytes();
-            let layout_bytes =
-                src_layout.shape().elem_count() * src_dtype.size_in_bytes();
+            let layout_bytes = src_layout.shape().elem_count() * src_dtype.size_in_bytes();
             let bytes_match_shape = src_len_bytes == layout_bytes;
-            let already_contig = src_layout.is_contiguous()
-                && src_layout.start_offset() == 0
-                && bytes_match_shape;
+            let already_contig =
+                src_layout.is_contiguous() && src_layout.start_offset() == 0 && bytes_match_shape;
             let src_input = if already_contig {
                 src_arc
             } else {
                 auto_contiguize(&src_arc, &src_layout)?
             };
-            let kernel_input_layout =
-                fuel_ir::Layout::contiguous(src_layout.shape().clone());
+            let kernel_input_layout = fuel_ir::Layout::contiguous(src_layout.shape().clone());
             // CapturedRun build-out (4b-ζ): in Reuse (capture/replay) mode,
             // reuse the fixed-address buffer recorded during the warm run
             // instead of allocating — device allocation is illegal inside a
@@ -5919,16 +6083,19 @@ fn execute_work_item(
                     }
                     #[cfg(feature = "cuda")]
                     DeviceLocation::Cuda { gpu_id } => {
-                        let cuda_dev = find_cuda_device_in_cache(cache, *gpu_id)
-                            .ok_or_else(|| Error::Msg(format!(
-                                "Op::{op_label} on Cuda {{ gpu_id: {} }}: no CUDA \
+                        let cuda_dev =
+                            find_cuda_device_in_cache(cache, *gpu_id).ok_or_else(|| {
+                                Error::Msg(format!(
+                                    "Op::{op_label} on Cuda {{ gpu_id: {} }}: no CUDA \
                                  storage in input cache to derive the device \
                                  handle from. The caller must seed the cache \
                                  (e.g. via `fuel-core::pipelined_bridge::\
                                  device_seed_storage`) before realizing an \
                                  H2D Op::{op_label}.",
-                                gpu_id,
-                            )).bt())?;
+                                    gpu_id,
+                                ))
+                                .bt()
+                            })?;
                         let cuda_bytes =
                             fuel_cuda_backend::CudaStorageBytes::alloc_uninit(&cuda_dev, n_bytes)?;
                         Storage::new(fuel_memory::BackendStorage::Cuda(cuda_bytes), item.dtype)
@@ -5938,20 +6105,24 @@ fn execute_work_item(
                         return Err(Error::Msg(format!(
                             "Op::{op_label} target Cuda but fuel-storage wasn't built \
                              with --features cuda",
-                        )).bt());
+                        ))
+                        .bt());
                     }
                     #[cfg(feature = "vulkan")]
                     DeviceLocation::Vulkan { gpu_id } => {
-                        let backend = find_vulkan_backend_in_cache(cache, *gpu_id)
-                            .ok_or_else(|| Error::Msg(format!(
-                                "Op::{op_label} on Vulkan {{ gpu_id: {} }}: no Vulkan \
+                        let backend =
+                            find_vulkan_backend_in_cache(cache, *gpu_id).ok_or_else(|| {
+                                Error::Msg(format!(
+                                    "Op::{op_label} on Vulkan {{ gpu_id: {} }}: no Vulkan \
                                  storage in input cache to derive the backend \
                                  handle from. The caller must seed the cache \
                                  (e.g. via `fuel-core::pipelined_bridge::\
                                  device_seed_storage`) before realizing an \
                                  H2D Op::{op_label}.",
-                                gpu_id,
-                            )).bt())?;
+                                    gpu_id,
+                                ))
+                                .bt()
+                            })?;
                         let vk_bytes = backend.alloc_bytes_handle(n_bytes)?;
                         Storage::new(fuel_memory::BackendStorage::Vulkan(vk_bytes), item.dtype)
                     }
@@ -5960,7 +6131,8 @@ fn execute_work_item(
                         return Err(Error::Msg(format!(
                             "Op::{op_label} target Vulkan but fuel-storage wasn't built \
                              with --features vulkan",
-                        )).bt());
+                        ))
+                        .bt());
                     }
                     other => {
                         return Err(Error::Msg(format!(
@@ -5968,18 +6140,21 @@ fn execute_work_item(
                              wired (CPU + CUDA + Vulkan covered; Metal extends when \
                              its byte-storage substrate is ready).",
                             other
-                        )).bt());
+                        ))
+                        .bt());
                     }
                 };
                 vec![Arc::new(RwLock::new(output))]
             };
-            let kernel_layouts =
-                vec![kernel_input_layout, item.output_layout.clone()];
+            let kernel_layouts = vec![kernel_input_layout, item.output_layout.clone()];
             // A4b-1: defer the wait — return the handle to the realize loop.
-            let handle =
-                execute_compiled_with_wait_hint(
-                    compiled, &input_arcs, &mut output_arcs, &kernel_layouts, will_be_waited,
-                )?;
+            let handle = execute_compiled_with_wait_hint(
+                compiled,
+                &input_arcs,
+                &mut output_arcs,
+                &kernel_layouts,
+                will_be_waited,
+            )?;
             let arc = output_arcs.into_iter().next().expect("one output");
             // CapturedRun build-out (4b-ζ): Record (warm) mode remembers this
             // node's fixed output buffer so the capture run reuses the
@@ -6126,33 +6301,25 @@ fn execute_work_item(
                 // assumes storage.len_bytes() == layout.elem_count() *
                 // dtype.size_bytes(). Until kernels universally trust
                 // layout over storage, we conservatively materialize.
-                let in_dtype = in_arc
-                    .read()
-                    .map_err(|_| poisoned("input storage"))?
-                    .dtype;
+                let in_dtype = in_arc.read().map_err(|_| poisoned("input storage"))?.dtype;
                 let in_len_bytes = in_arc
                     .read()
                     .map_err(|_| poisoned("input storage"))?
                     .inner
                     .len_bytes();
-                let layout_bytes =
-                    in_layout.shape().elem_count() * in_dtype.size_in_bytes();
+                let layout_bytes = in_layout.shape().elem_count() * in_dtype.size_in_bytes();
                 let bytes_match_shape = in_len_bytes == layout_bytes;
-                let already_contig = in_layout.is_contiguous()
-                    && in_layout.start_offset() == 0
-                    && bytes_match_shape;
-                let strided_ok = kernel_handles_strided
-                    && in_layout.start_offset() == 0
-                    && bytes_match_shape;
+                let already_contig =
+                    in_layout.is_contiguous() && in_layout.start_offset() == 0 && bytes_match_shape;
+                let strided_ok =
+                    kernel_handles_strided && in_layout.start_offset() == 0 && bytes_match_shape;
                 if already_contig || strided_ok {
                     input_arcs.push(in_arc);
                     kernel_layouts.push(in_layout);
                 } else {
                     let contig_arc = auto_contiguize(&in_arc, &in_layout)?;
                     input_arcs.push(contig_arc);
-                    kernel_layouts.push(fuel_ir::Layout::contiguous(
-                        in_layout.shape().clone(),
-                    ));
+                    kernel_layouts.push(fuel_ir::Layout::contiguous(in_layout.shape().clone()));
                 }
             }
             kernel_layouts.push(item.output_layout.clone());
@@ -6188,8 +6355,8 @@ fn execute_work_item(
             // baked kernel arguments valid on replay. In Record (warm) or None
             // mode, allocate as usual (below).
             let reuse_arc = match &persistent {
-                Some(p) if p.mode == PersistentMode::Reuse => Some(
-                    p.map.get(&item.node_id).cloned().ok_or_else(|| {
+                Some(p) if p.mode == PersistentMode::Reuse => {
+                    Some(p.map.get(&item.node_id).cloned().ok_or_else(|| {
                         Error::Msg(format!(
                             "PipelinedExecutor: capture (reuse) mode has no persistent \
                              output buffer for kernel node {:?}; the warm (record) run \
@@ -6197,116 +6364,125 @@ fn execute_work_item(
                             item.node_id,
                         ))
                         .bt()
-                    })?,
-                ),
+                    })?)
+                }
                 _ => None,
             };
             let mut output_arcs = if let Some(arc) = reuse_arc {
                 vec![arc]
             } else {
-            let output = match item.target_backend {
-                BackendId::Cpu => fuel_memory::alloc_cpu_zeroed(item.dtype, alloc_elem_count)?,
-                #[cfg(feature = "cuda")]
-                BackendId::Cuda => {
-                    let first_in = input_arcs.first().ok_or_else(|| {
-                        Error::Msg(format!(
-                            "PipelinedExecutor: kernel {:?} on Cuda has no inputs; \
+                let output = match item.target_backend {
+                    BackendId::Cpu => fuel_memory::alloc_cpu_zeroed(item.dtype, alloc_elem_count)?,
+                    #[cfg(feature = "cuda")]
+                    BackendId::Cuda => {
+                        let first_in = input_arcs.first().ok_or_else(|| {
+                            Error::Msg(format!(
+                                "PipelinedExecutor: kernel {:?} on Cuda has no inputs; \
                              cannot derive device for output allocation",
-                            item.node_id,
-                        ))
-                        .bt()
-                    })?;
-                    let guard = first_in.read().map_err(|_| poisoned("input storage"))?;
-                    let cuda_in = match &guard.inner {
-                        fuel_memory::BackendStorage::Cuda(c) => c,
-                        other => {
-                            return Err(Error::Msg(format!(
-                                "PipelinedExecutor: kernel {:?} target_backend=Cuda but \
+                                item.node_id,
+                            ))
+                            .bt()
+                        })?;
+                        let guard = first_in.read().map_err(|_| poisoned("input storage"))?;
+                        let cuda_in = match &guard.inner {
+                            fuel_memory::BackendStorage::Cuda(c) => c,
+                            other => {
+                                return Err(Error::Msg(format!(
+                                    "PipelinedExecutor: kernel {:?} target_backend=Cuda but \
                                  input has BackendStorage::{:?}; mixed-backend kernels \
                                  require an explicit Op::Copy first",
-                                item.node_id,
-                                std::mem::discriminant(other),
-                            ))
-                            .bt());
-                        }
-                    };
-                    let n_bytes = alloc_elem_count * item.dtype.size_in_bytes();
-                    let cuda_bytes =
-                        fuel_cuda_backend::CudaStorageBytes::alloc(cuda_in.device(), n_bytes)?;
-                    fuel_memory::Storage::new(fuel_memory::BackendStorage::Cuda(cuda_bytes), item.dtype)
-                }
-                #[cfg(feature = "vulkan")]
-                BackendId::Vulkan => {
-                    // Mirror the CUDA path: derive the backend handle
-                    // from the first input's `VulkanStorageBytes::backend()`.
-                    // Vulkan catch-up V.1.B (2026-05-21) — requires
-                    // inputs constructed via `alloc_bytes_handle` /
-                    // `upload_bytes_handle` so they carry the
-                    // `Arc<VulkanBackend>` (mirroring CUDA's
-                    // `Arc<CudaDevice>`).
-                    let first_in = input_arcs.first().ok_or_else(|| {
-                        Error::Msg(format!(
-                            "PipelinedExecutor: kernel {:?} on Vulkan has no inputs; \
+                                    item.node_id,
+                                    std::mem::discriminant(other),
+                                ))
+                                .bt());
+                            }
+                        };
+                        let n_bytes = alloc_elem_count * item.dtype.size_in_bytes();
+                        let cuda_bytes =
+                            fuel_cuda_backend::CudaStorageBytes::alloc(cuda_in.device(), n_bytes)?;
+                        fuel_memory::Storage::new(
+                            fuel_memory::BackendStorage::Cuda(cuda_bytes),
+                            item.dtype,
+                        )
+                    }
+                    #[cfg(feature = "vulkan")]
+                    BackendId::Vulkan => {
+                        // Mirror the CUDA path: derive the backend handle
+                        // from the first input's `VulkanStorageBytes::backend()`.
+                        // Vulkan catch-up V.1.B (2026-05-21) — requires
+                        // inputs constructed via `alloc_bytes_handle` /
+                        // `upload_bytes_handle` so they carry the
+                        // `Arc<VulkanBackend>` (mirroring CUDA's
+                        // `Arc<CudaDevice>`).
+                        let first_in = input_arcs.first().ok_or_else(|| {
+                            Error::Msg(format!(
+                                "PipelinedExecutor: kernel {:?} on Vulkan has no inputs; \
                              cannot derive backend handle for output allocation",
-                            item.node_id,
-                        ))
-                        .bt()
-                    })?;
-                    let guard = first_in.read().map_err(|_| poisoned("input storage"))?;
-                    let vk_in = match &guard.inner {
-                        fuel_memory::BackendStorage::Vulkan(v) => v,
-                        other => {
-                            return Err(Error::Msg(format!(
-                                "PipelinedExecutor: kernel {:?} target_backend=Vulkan but \
+                                item.node_id,
+                            ))
+                            .bt()
+                        })?;
+                        let guard = first_in.read().map_err(|_| poisoned("input storage"))?;
+                        let vk_in = match &guard.inner {
+                            fuel_memory::BackendStorage::Vulkan(v) => v,
+                            other => {
+                                return Err(Error::Msg(format!(
+                                    "PipelinedExecutor: kernel {:?} target_backend=Vulkan but \
                                  input has BackendStorage::{:?}; mixed-backend kernels \
                                  require an explicit Op::Copy first",
-                                item.node_id,
-                                std::mem::discriminant(other),
-                            ))
-                            .bt());
-                        }
-                    };
-                    let backend = vk_in.backend().ok_or_else(|| {
-                        Error::Msg(format!(
-                            "PipelinedExecutor: Vulkan kernel {:?} input has no backend \
+                                    item.node_id,
+                                    std::mem::discriminant(other),
+                                ))
+                                .bt());
+                            }
+                        };
+                        let backend = vk_in.backend().ok_or_else(|| {
+                            Error::Msg(format!(
+                                "PipelinedExecutor: Vulkan kernel {:?} input has no backend \
                              handle. Storages flowing through the pipelined executor's \
                              Vulkan path must be constructed via \
                              VulkanBackend::alloc_bytes_handle / upload_bytes_handle \
                              (not the legacy alloc_bytes / upload_bytes which leave \
                              VulkanStorageBytes::backend = None).",
-                            item.node_id,
-                        ))
-                        .bt()
-                    })?;
-                    let n_bytes = alloc_elem_count * item.dtype.size_in_bytes();
-                    let vk_bytes = backend.alloc_bytes_handle(n_bytes)?;
-                    fuel_memory::Storage::new(fuel_memory::BackendStorage::Vulkan(vk_bytes), item.dtype)
-                }
-                other => {
-                    return Err(Error::Msg(format!(
-                        "PipelinedExecutor: target_backend {:?} output allocation \
+                                item.node_id,
+                            ))
+                            .bt()
+                        })?;
+                        let n_bytes = alloc_elem_count * item.dtype.size_in_bytes();
+                        let vk_bytes = backend.alloc_bytes_handle(n_bytes)?;
+                        fuel_memory::Storage::new(
+                            fuel_memory::BackendStorage::Vulkan(vk_bytes),
+                            item.dtype,
+                        )
+                    }
+                    other => {
+                        return Err(Error::Msg(format!(
+                            "PipelinedExecutor: target_backend {:?} output allocation \
                          not yet implemented (CPU + CUDA + Vulkan wired; Metal extends later)",
-                        other
-                    ))
-                    .bt());
-                }
-            };
-            // Attach bundle metadata when this is a multi-output op.
-            // The kernel sees the allocated bytes; the bundle lives
-            // at the Storage wrapper level so downstream Op::View /
-            // Op::ViewOwned can resolve their slot windows.
-            let output = match bundle_to_attach {
-                Some(bundle) => output.with_bundle(bundle)?,
-                None => output,
-            };
-            vec![Arc::new(RwLock::new(output))]
+                            other
+                        ))
+                        .bt());
+                    }
+                };
+                // Attach bundle metadata when this is a multi-output op.
+                // The kernel sees the allocated bytes; the bundle lives
+                // at the Storage wrapper level so downstream Op::View /
+                // Op::ViewOwned can resolve their slot windows.
+                let output = match bundle_to_attach {
+                    Some(bundle) => output.with_bundle(bundle)?,
+                    None => output,
+                };
+                vec![Arc::new(RwLock::new(output))]
             };
 
             // A4b-1: defer the wait — return the handle to the realize loop.
-            let handle =
-                execute_compiled_with_wait_hint(
-                    compiled, &input_arcs, &mut output_arcs, &kernel_layouts, will_be_waited,
-                )?;
+            let handle = execute_compiled_with_wait_hint(
+                compiled,
+                &input_arcs,
+                &mut output_arcs,
+                &kernel_layouts,
+                will_be_waited,
+            )?;
 
             let arc = output_arcs.into_iter().next().expect("one output");
 
@@ -6329,7 +6505,11 @@ fn execute_work_item(
             // prior binds are host-known before realize). Single-threaded:
             // the executor runs items topologically, so this bind precedes
             // any consumer's execute-time resolution.
-            if let OpParams::NonZeroIndices { capacity, count_sym } = &compiled.op_params {
+            if let OpParams::NonZeroIndices {
+                capacity,
+                count_sym,
+            } = &compiled.op_params
+            {
                 bind_data_determined_count(&arc, *capacity, *count_sym, produced_syms)?;
             }
 
@@ -6349,7 +6529,9 @@ fn execute_work_item(
                 Error::Msg(format!(
                     "PipelinedExecutor: InplaceKernel work item {:?} target_idx={} \
                      out of bounds (inputs.len()={})",
-                    item.node_id, target_idx, item.inputs.len(),
+                    item.node_id,
+                    target_idx,
+                    item.inputs.len(),
                 ))
                 .bt()
             })?;
@@ -6416,10 +6598,13 @@ fn execute_work_item(
             let mut output_arcs = vec![target_arc.clone()];
             kernel_layouts.push(target_layout.clone());
             // A4b-1: defer the wait — return the handle to the realize loop.
-            let handle =
-                execute_compiled_with_wait_hint(
-                    compiled, &input_arcs, &mut output_arcs, &kernel_layouts, will_be_waited,
-                )?;
+            let handle = execute_compiled_with_wait_hint(
+                compiled,
+                &input_arcs,
+                &mut output_arcs,
+                &kernel_layouts,
+                will_be_waited,
+            )?;
             // Adopt the target Arc at this node's slot. The realize
             // loop's destructive_input cleanup evicts the target's own
             // NodeId from the cache afterward.
@@ -6533,7 +6718,10 @@ fn drain_handles(handles: &mut HashMap<NodeId, CompletionHandle>) -> Result<()> 
     // handle at the call site. The drain consumes the whole map, so it is empty
     // here by construction; assert it to catch a future leak (e.g. a new
     // dispatch path that forgets to thread its handle through `store_handle`).
-    debug_assert!(handles.is_empty(), "A4b-1: handle map must be empty after drain");
+    debug_assert!(
+        handles.is_empty(),
+        "A4b-1: handle map must be empty after drain"
+    );
     Ok(())
 }
 
@@ -6567,13 +6755,16 @@ fn drain_handles(handles: &mut HashMap<NodeId, CompletionHandle>) -> Result<()> 
 /// No-op when `cache` holds no CUDA storage (CPU/Vulkan-only realize).
 #[cfg(feature = "cuda")]
 fn sync_active_cuda_devices(cache: &StorageCache) -> Result<()> {
-    let mut devices: HashMap<fuel_ir::DeviceLocation, fuel_cuda_backend::CudaDevice> = HashMap::new();
+    let mut devices: HashMap<fuel_ir::DeviceLocation, fuel_cuda_backend::CudaDevice> =
+        HashMap::new();
     for arc in cache.values() {
         let guard = arc
             .read()
             .map_err(|_| poisoned("cache storage (cuda realize-end sync scan)"))?;
         if let fuel_memory::BackendStorage::Cuda(c) = &guard.inner {
-            devices.entry(c.device().location()).or_insert_with(|| c.device().clone());
+            devices
+                .entry(c.device().location())
+                .or_insert_with(|| c.device().clone());
         }
     }
     for dev in devices.values() {
@@ -6680,7 +6871,10 @@ fn copy_source_is_vulkan(cache: &StorageCache, producer: NodeId) -> Result<bool>
         let guard = arc
             .read()
             .map_err(|_| poisoned("storage lock probing copy-source backend"))?;
-        return Ok(matches!(guard.inner, fuel_memory::BackendStorage::Vulkan(_)));
+        return Ok(matches!(
+            guard.inner,
+            fuel_memory::BackendStorage::Vulkan(_)
+        ));
     }
     Ok(false)
 }
@@ -6711,7 +6905,11 @@ impl VulkanCompletion {
         loc: fuel_ir::DeviceLocation,
     ) -> Self {
         crate::dispatch::inflight_inc(loc);
-        Self { backend, batch: Some(batch), loc }
+        Self {
+            backend,
+            batch: Some(batch),
+            loc,
+        }
     }
 
     /// Block on this batch's fence, retire pools, then free the batch. Consumes
@@ -6815,7 +7013,9 @@ fn eager_submit_all_vulkan(
         // Step E B1: the per-device location for the in-flight counter. A batch
         // submitted here is one in-flight unit on this iGPU until its handle's
         // `Drop` (after `drain_inflight_vulkan` / realize-end).
-        let loc = DeviceLocation::Vulkan { gpu_id: backend.gpu_id };
+        let loc = DeviceLocation::Vulkan {
+            gpu_id: backend.gpu_id,
+        };
         if let Some(batch) = backend.submit_pending()? {
             inflight.push(VulkanCompletion::new(backend, batch, loc));
         }
@@ -6825,7 +7025,10 @@ fn eager_submit_all_vulkan(
 
 #[cfg(not(feature = "vulkan"))]
 #[inline]
-fn eager_submit_all_vulkan(_cache: &StorageCache, _inflight: &mut Vec<InflightVulkan>) -> Result<()> {
+fn eager_submit_all_vulkan(
+    _cache: &StorageCache,
+    _inflight: &mut Vec<InflightVulkan>,
+) -> Result<()> {
     Ok(())
 }
 
@@ -6893,7 +7096,9 @@ fn drain_vulkan_pending(cache: &StorageCache) -> Result<()> {
         // Step E B1: `new` increments the in-flight counter for this device;
         // `handle.wait()` waits + drops the `VulkanCompletion`, decrementing it
         // — a balanced submit/retire even on this transient realize-end path.
-        let loc = DeviceLocation::Vulkan { gpu_id: backend.gpu_id };
+        let loc = DeviceLocation::Vulkan {
+            gpu_id: backend.gpu_id,
+        };
         if let Some(batch) = backend.submit_pending()? {
             let handle: CompletionHandle =
                 CompletionHandle::Pending(Box::new(VulkanCompletion::new(backend, batch, loc)));
@@ -6992,7 +7197,9 @@ fn defer_evicted_vulkan_buffer(
     // Non-Vulkan storage, a host-evicted (no device buffer) Vulkan storage, or an
     // absent entry → nothing to retain (no Vulkan reader can hold a device buffer).
     let buf = {
-        let Some(arc) = cache.get(&destroyed) else { return Ok(()) };
+        let Some(arc) = cache.get(&destroyed) else {
+            return Ok(());
+        };
         let guard = arc
             .read()
             .map_err(|_| poisoned("storage lock during deferred-eviction retain"))?;
@@ -7088,10 +7295,7 @@ fn find_vulkan_backend_in_cache(
 /// in the cache so other consumers still see the strided view).
 ///
 /// Stage 4 of Layout-on-Node — auto-Contiguize.
-fn auto_contiguize(
-    arc: &Arc<RwLock<Storage>>,
-    layout: &Layout,
-) -> Result<Arc<RwLock<Storage>>> {
+fn auto_contiguize(arc: &Arc<RwLock<Storage>>, layout: &Layout) -> Result<Arc<RwLock<Storage>>> {
     let in_guard = arc
         .read()
         .map_err(|_| poisoned("input storage lock during auto_contiguize"))?;
@@ -7115,10 +7319,9 @@ fn auto_contiguize(
             // → one thread per output element. Retires the prior
             // D2H → CPU contiguize_cpu → H2D fallback (two device
             // round-trips per non-contig input).
-            let contig =
-                fuel_cuda_backend::baracuda::contiguize::contiguize_to_fresh(
-                    c, layout, dtype_size,
-                )?;
+            let contig = fuel_cuda_backend::baracuda::contiguize::contiguize_to_fresh(
+                c, layout, dtype_size,
+            )?;
             Storage::new(fuel_memory::BackendStorage::Cuda(contig), dtype)
         }
         #[cfg(feature = "vulkan")]
@@ -7141,11 +7344,9 @@ fn auto_contiguize(
                 .bt()
             })?;
             let host_bytes = backend.download_bytes(v)?;
-            let host_cpu =
-                fuel_cpu_backend::byte_storage::CpuStorageBytes::from_bytes(&host_bytes);
-            let contig_cpu = fuel_cpu_backend::byte_kernels::contiguize_cpu(
-                &host_cpu, layout, dtype_size,
-            )?;
+            let host_cpu = fuel_cpu_backend::byte_storage::CpuStorageBytes::from_bytes(&host_bytes);
+            let contig_cpu =
+                fuel_cpu_backend::byte_kernels::contiguize_cpu(&host_cpu, layout, dtype_size)?;
             let host_contig_bytes = contig_cpu.bytes().to_vec();
             let vk_bytes = backend.upload_bytes_handle(&host_contig_bytes)?;
             Storage::new(fuel_memory::BackendStorage::Vulkan(vk_bytes), dtype)
@@ -7224,8 +7425,8 @@ fn contiguize_into(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_ir::Shape;
     use fuel_graph::Node;
+    use fuel_ir::Shape;
 
     /// Task 5 (C6): `Op::Scan` has no native kernel in Phase 1 — it is
     /// always lowered/re-fused before execution — so `op_to_op_kind` must
@@ -7236,7 +7437,12 @@ mod tests {
     fn scan_has_no_dispatch_op_kind() {
         use fuel_graph::{Op, ScanEmit};
         assert_eq!(
-            crate::pipelined::op_to_op_kind(&Op::Scan { n_xs: 0, bound: 2, emit: ScanEmit::All, early_exit: None }),
+            crate::pipelined::op_to_op_kind(&Op::Scan {
+                n_xs: 0,
+                bound: 2,
+                emit: ScanEmit::All,
+                early_exit: None
+            }),
             None,
         );
     }
@@ -7264,7 +7470,9 @@ mod tests {
         });
         // A cross-device Copy whose producer is `same_device_id`.
         let copy_id = g.push(Node {
-            op: Op::Copy { target: DeviceLocation::Cuda { gpu_id: 0 } },
+            op: Op::Copy {
+                target: DeviceLocation::Cuda { gpu_id: 0 },
+            },
             inputs: vec![same_device_id],
             shape: Shape::from_dims(&[4]),
             dtype: DType::F32,
@@ -7284,7 +7492,11 @@ mod tests {
             !set.contains(&copy_id),
             "the Copy node itself is not its own producer"
         );
-        assert_eq!(set.len(), 1, "only the one true cross-device producer is in the set");
+        assert_eq!(
+            set.len(),
+            1,
+            "only the one true cross-device producer is in the set"
+        );
     }
 
     /// A `Move` producer is collected the same way as a `Copy` producer.
@@ -7298,7 +7510,9 @@ mod tests {
             dtype: DType::F32,
         });
         let move_id = g.push(Node {
-            op: Op::Move { target: DeviceLocation::Cpu },
+            op: Op::Move {
+                target: DeviceLocation::Cpu,
+            },
             inputs: vec![const_id],
             shape: Shape::from_dims(&[4]),
             dtype: DType::F32,
@@ -7306,7 +7520,10 @@ mod tests {
         let order = vec![const_id, move_id];
 
         let set = build_wait_set(&g, &order);
-        assert!(set.contains(&const_id), "the Move's producer must be in the wait set");
+        assert!(
+            set.contains(&const_id),
+            "the Move's producer must be in the wait set"
+        );
         assert_eq!(set.len(), 1);
     }
 
@@ -7330,7 +7547,10 @@ mod tests {
         let order = vec![const_id, contig_id];
 
         let set = build_wait_set(&g, &order);
-        assert!(set.is_empty(), "a CPU-only order (no Copy/Move) yields an empty wait set");
+        assert!(
+            set.is_empty(),
+            "a CPU-only order (no Copy/Move) yields an empty wait set"
+        );
     }
 
     /// `will_be_waited`'s two arms: the conservative `None` fallback (the
@@ -7367,8 +7587,8 @@ mod tests {
     /// `drain_handles` waits each pending handle exactly once then empties the map.
     #[test]
     fn handle_map_stores_pending_and_drains_once() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc as StdArc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         let mut handles: HashMap<NodeId, CompletionHandle> = HashMap::new();
 
@@ -7391,7 +7611,11 @@ mod tests {
         assert_eq!(handles.len(), 2);
 
         drain_handles(&mut handles).expect("drain");
-        assert_eq!(waited.load(Ordering::SeqCst), 2, "each pending handle waited once");
+        assert_eq!(
+            waited.load(Ordering::SeqCst),
+            2,
+            "each pending handle waited once"
+        );
         assert!(handles.is_empty(), "map empty after drain");
     }
 
@@ -7400,8 +7624,8 @@ mod tests {
     /// waits it. Defensive — NodeIds are unique per realize in practice.
     #[test]
     fn handle_map_rekey_waits_previous() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc as StdArc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         let mut handles: HashMap<NodeId, CompletionHandle> = HashMap::new();
         let waited = StdArc::new(AtomicUsize::new(0));
@@ -7417,11 +7641,19 @@ mod tests {
             NodeId(7),
             CompletionHandle::Pending(Box::new(FlagCompletion(waited.clone()))),
         );
-        assert_eq!(waited.load(Ordering::SeqCst), 1, "rekey waited the prior pending");
+        assert_eq!(
+            waited.load(Ordering::SeqCst),
+            1,
+            "rekey waited the prior pending"
+        );
 
         // Store Ready over the live Pending → it is waited too.
         store_handle(&mut handles, NodeId(7), CompletionHandle::Ready);
-        assert_eq!(waited.load(Ordering::SeqCst), 2, "Ready-over-Pending waited it");
+        assert_eq!(
+            waited.load(Ordering::SeqCst),
+            2,
+            "Ready-over-Pending waited it"
+        );
         assert!(handles.is_empty());
 
         drain_handles(&mut handles).expect("drain empty");
@@ -7435,8 +7667,8 @@ mod tests {
     /// remains — no double-wait.
     #[test]
     fn wait_producer_handle_consumes_named_handle_once() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc as StdArc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         let mut handles: HashMap<NodeId, CompletionHandle> = HashMap::new();
         let waited = StdArc::new(AtomicUsize::new(0));
@@ -7455,14 +7687,25 @@ mod tests {
 
         // Absent producer → no-op (a CPU/Vulkan-Ready source has no handle).
         wait_producer_handle(&mut handles, NodeId(99)).expect("absent is no-op");
-        assert_eq!(waited.load(Ordering::SeqCst), 0, "absent producer waited nothing");
+        assert_eq!(
+            waited.load(Ordering::SeqCst),
+            0,
+            "absent producer waited nothing"
+        );
         assert_eq!(handles.len(), 2);
 
         // The cross-device copy's source: waited once, removed from the map.
         wait_producer_handle(&mut handles, NodeId(2)).expect("wait source");
-        assert_eq!(waited.load(Ordering::SeqCst), 1, "source producer waited once");
+        assert_eq!(
+            waited.load(Ordering::SeqCst),
+            1,
+            "source producer waited once"
+        );
         assert!(!handles.contains_key(&NodeId(2)), "source handle consumed");
-        assert!(handles.contains_key(&NodeId(5)), "unrelated handle untouched");
+        assert!(
+            handles.contains_key(&NodeId(5)),
+            "unrelated handle untouched"
+        );
 
         // Re-waiting the (now absent) source is a no-op — no double-wait.
         wait_producer_handle(&mut handles, NodeId(2)).expect("re-wait is no-op");
@@ -7470,7 +7713,11 @@ mod tests {
 
         // Realize-end drain waits only the remaining unrelated producer.
         drain_handles(&mut handles).expect("drain");
-        assert_eq!(waited.load(Ordering::SeqCst), 2, "drain waited the remaining one");
+        assert_eq!(
+            waited.load(Ordering::SeqCst),
+            2,
+            "drain waited the remaining one"
+        );
         assert!(handles.is_empty());
     }
 
@@ -7653,11 +7900,36 @@ mod tests {
             let graph = Arc::new(RwLock::new(Graph::new()));
             let (a, b, c, z) = {
                 let mut g = graph.write().unwrap();
-                let a = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[4]), dtype: DType::F32 });
-                let b = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[4]), dtype: DType::F32 });
-                let c = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[4]), dtype: DType::F32 });
-                let y = g.push(Node { op: Op::Add, inputs: vec![a, b], shape: Shape::from_dims(&[4]), dtype: DType::F32 });
-                let z = g.push(Node { op: Op::Mul, inputs: vec![y, c], shape: Shape::from_dims(&[4]), dtype: DType::F32 });
+                let a = g.push(Node {
+                    op: Op::Const,
+                    inputs: vec![],
+                    shape: Shape::from_dims(&[4]),
+                    dtype: DType::F32,
+                });
+                let b = g.push(Node {
+                    op: Op::Const,
+                    inputs: vec![],
+                    shape: Shape::from_dims(&[4]),
+                    dtype: DType::F32,
+                });
+                let c = g.push(Node {
+                    op: Op::Const,
+                    inputs: vec![],
+                    shape: Shape::from_dims(&[4]),
+                    dtype: DType::F32,
+                });
+                let y = g.push(Node {
+                    op: Op::Add,
+                    inputs: vec![a, b],
+                    shape: Shape::from_dims(&[4]),
+                    dtype: DType::F32,
+                });
+                let z = g.push(Node {
+                    op: Op::Mul,
+                    inputs: vec![y, c],
+                    shape: Shape::from_dims(&[4]),
+                    dtype: DType::F32,
+                });
                 g.set_target_backend(y, BackendId::Cuda);
                 g.set_target_backend(z, BackendId::Cuda);
                 (a, b, c, z)
@@ -7668,11 +7940,16 @@ mod tests {
         let up = |v: &[f32]| -> Arc<RwLock<Storage>> {
             let bytes: &[u8] = bytemuck::cast_slice(v);
             let cb = CudaStorageBytes::from_cpu_bytes(&dev, bytes).expect("h2d");
-            Arc::new(RwLock::new(Storage::new(BackendStorage::Cuda(cb), DType::F32)))
+            Arc::new(RwLock::new(Storage::new(
+                BackendStorage::Cuda(cb),
+                DType::F32,
+            )))
         };
         let read = |arc: &Arc<RwLock<Storage>>| -> Vec<f32> {
             let g = arc.read().unwrap();
-            let BackendStorage::Cuda(c) = &g.inner else { panic!("not cuda") };
+            let BackendStorage::Cuda(c) = &g.inner else {
+                panic!("not cuda")
+            };
             let host = c.to_cpu_bytes().expect("d2h");
             bytemuck::cast_slice(&host).to_vec()
         };
@@ -7693,16 +7970,16 @@ mod tests {
         inputs.insert(b, b_arc.clone());
         inputs.insert(c, c_arc.clone());
 
-        let captured = PipelinedExecutor::capture_decode(
-            Arc::clone(&graph),
-            z,
-            inputs,
-            SymEnv::default(),
-        )
-        .expect("capture_decode");
+        let captured =
+            PipelinedExecutor::capture_decode(Arc::clone(&graph), z, inputs, SymEnv::default())
+                .expect("capture_decode");
 
         // (1) warm-run result sits in the captured output buffer.
-        assert_eq!(read(&captured.output), &expect0, "warm-run result after capture");
+        assert_eq!(
+            read(&captured.output),
+            &expect0,
+            "warm-run result after capture"
+        );
 
         // (2) replay with the same inputs recomputes bit-exactly.
         captured.run.replay(&dev).expect("replay");
@@ -7715,8 +7992,11 @@ mod tests {
         let a2 = [100.0_f32, 200.0, 300.0, 400.0];
         {
             let g = a_arc.read().unwrap();
-            let BackendStorage::Cuda(c) = &g.inner else { panic!("a not cuda") };
-            c.write_from_host(bytemuck::cast_slice(&a2)).expect("in-place H2D");
+            let BackendStorage::Cuda(c) = &g.inner else {
+                panic!("a not cuda")
+            };
+            c.write_from_host(bytemuck::cast_slice(&a2))
+                .expect("in-place H2D");
         }
         captured.run.replay(&dev).expect("replay 2");
         dev.synchronize().expect("sync 2");
@@ -7730,7 +8010,10 @@ mod tests {
         let (ref_arc, _) =
             PipelinedExecutor::realize(graph_ref, zr, inputs_ref).expect("ref realize");
         let expect1 = read(&ref_arc); // (a2+b)*c = [220,440,660,880]
-        assert_eq!(got, expect1, "replay after in-place input update matches uncaptured realize");
+        assert_eq!(
+            got, expect1,
+            "replay after in-place input update matches uncaptured realize"
+        );
         assert_eq!(expect1, vec![220.0, 440.0, 660.0, 880.0]);
     }
 
@@ -7762,9 +8045,24 @@ mod tests {
             let graph = Arc::new(RwLock::new(Graph::new()));
             let (a, w, y) = {
                 let mut g = graph.write().unwrap();
-                let a = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[1, H]), dtype: DType::F32 });
-                let w = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[H, F]), dtype: DType::F32 });
-                let y = g.push(Node { op: Op::MatMul, inputs: vec![a, w], shape: Shape::from_dims(&[1, F]), dtype: DType::F32 });
+                let a = g.push(Node {
+                    op: Op::Const,
+                    inputs: vec![],
+                    shape: Shape::from_dims(&[1, H]),
+                    dtype: DType::F32,
+                });
+                let w = g.push(Node {
+                    op: Op::Const,
+                    inputs: vec![],
+                    shape: Shape::from_dims(&[H, F]),
+                    dtype: DType::F32,
+                });
+                let y = g.push(Node {
+                    op: Op::MatMul,
+                    inputs: vec![a, w],
+                    shape: Shape::from_dims(&[1, F]),
+                    dtype: DType::F32,
+                });
                 g.set_target_backend(y, BackendId::Cuda);
                 (a, w, y)
             };
@@ -7772,12 +8070,21 @@ mod tests {
         };
         let up = |v: &[f32]| {
             let b: Vec<u8> = v.iter().flat_map(|f| f.to_le_bytes()).collect();
-            Arc::new(RwLock::new(Storage::new(BackendStorage::Cuda(CudaStorageBytes::from_cpu_bytes(&dev, &b).unwrap()), DType::F32)))
+            Arc::new(RwLock::new(Storage::new(
+                BackendStorage::Cuda(CudaStorageBytes::from_cpu_bytes(&dev, &b).unwrap()),
+                DType::F32,
+            )))
         };
         let read = |arc: &Arc<RwLock<Storage>>| -> Vec<f32> {
             let g = arc.read().unwrap();
-            let BackendStorage::Cuda(c) = &g.inner else { panic!("not cuda") };
-            c.to_cpu_bytes().unwrap().chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect()
+            let BackendStorage::Cuda(c) = &g.inner else {
+                panic!("not cuda")
+            };
+            c.to_cpu_bytes()
+                .unwrap()
+                .chunks_exact(4)
+                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .collect()
         };
         // Reference (uncaptured).
         let (gr, ar, wr, yr) = build();
@@ -7791,7 +8098,9 @@ mod tests {
         let mut inputs = StorageCache::new();
         inputs.insert(a, up(&a_data));
         inputs.insert(w, up(&w_data));
-        let captured = PipelinedExecutor::capture_decode(Arc::clone(&graph), y, inputs, SymEnv::default()).expect("capture");
+        let captured =
+            PipelinedExecutor::capture_decode(Arc::clone(&graph), y, inputs, SymEnv::default())
+                .expect("capture");
         assert_eq!(read(&captured.output), expect, "warm result after capture");
         // FORCE freed-memory reuse: same-size (H*F) garbage buffers. If `w`
         // were dangling, replay would read 999.0s.
@@ -7809,7 +8118,10 @@ mod tests {
                 bad += 1;
             }
         }
-        assert_eq!(bad, 0, "cuBLAS matmul capture replays bit-exact ({bad}/50 wrong)");
+        assert_eq!(
+            bad, 0,
+            "cuBLAS matmul capture replays bit-exact ({bad}/50 wrong)"
+        );
     }
 
     /// `Op::MulScalar` / `OpKind::Affine` (the `1/√d` attention scale) is
@@ -7828,23 +8140,44 @@ mod tests {
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (x, y) = {
             let mut g = graph.write().unwrap();
-            let x = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[1, N]), dtype: DType::F32 });
-            let y = g.push(Node { op: Op::MulScalar(0.5), inputs: vec![x], shape: Shape::from_dims(&[1, N]), dtype: DType::F32 });
+            let x = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, N]),
+                dtype: DType::F32,
+            });
+            let y = g.push(Node {
+                op: Op::MulScalar(0.5),
+                inputs: vec![x],
+                shape: Shape::from_dims(&[1, N]),
+                dtype: DType::F32,
+            });
             g.set_target_backend(y, BackendId::Cuda);
             (x, y)
         };
         let up = |v: &[f32]| {
             let b: Vec<u8> = v.iter().flat_map(|f| f.to_le_bytes()).collect();
-            Arc::new(RwLock::new(Storage::new(BackendStorage::Cuda(CudaStorageBytes::from_cpu_bytes(&dev, &b).unwrap()), DType::F32)))
+            Arc::new(RwLock::new(Storage::new(
+                BackendStorage::Cuda(CudaStorageBytes::from_cpu_bytes(&dev, &b).unwrap()),
+                DType::F32,
+            )))
         };
         let read = |arc: &Arc<RwLock<Storage>>| -> Vec<f32> {
             let g = arc.read().unwrap();
-            let BackendStorage::Cuda(c) = &g.inner else { panic!("not cuda") };
-            c.to_cpu_bytes().unwrap().chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect()
+            let BackendStorage::Cuda(c) = &g.inner else {
+                panic!("not cuda")
+            };
+            c.to_cpu_bytes()
+                .unwrap()
+                .chunks_exact(4)
+                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .collect()
         };
         let mut inputs = StorageCache::new();
         inputs.insert(x, up(&x_data));
-        let captured = PipelinedExecutor::capture_decode(Arc::clone(&graph), y, inputs, SymEnv::default()).expect("capture");
+        let captured =
+            PipelinedExecutor::capture_decode(Arc::clone(&graph), y, inputs, SymEnv::default())
+                .expect("capture");
         assert_eq!(read(&captured.output), expect, "warm result after capture");
         let mut sq = Vec::new();
         for _ in 0..8 {
@@ -7885,31 +8218,64 @@ mod tests {
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (tok, wte, emb) = {
             let mut g = graph.write().unwrap();
-            let tok = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[1]), dtype: DType::U32 });
-            let wte = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[V, H]), dtype: DType::F32 });
-            let emb = g.push(Node { op: Op::IndexSelect { dim: 0 }, inputs: vec![wte, tok], shape: Shape::from_dims(&[1, H]), dtype: DType::F32 });
+            let tok = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1]),
+                dtype: DType::U32,
+            });
+            let wte = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[V, H]),
+                dtype: DType::F32,
+            });
+            let emb = g.push(Node {
+                op: Op::IndexSelect { dim: 0 },
+                inputs: vec![wte, tok],
+                shape: Shape::from_dims(&[1, H]),
+                dtype: DType::F32,
+            });
             g.set_target_backend(emb, BackendId::Cuda);
             (tok, wte, emb)
         };
         let up_f32 = |v: &[f32]| {
             let b: Vec<u8> = v.iter().flat_map(|f| f.to_le_bytes()).collect();
-            Arc::new(RwLock::new(Storage::new(BackendStorage::Cuda(CudaStorageBytes::from_cpu_bytes(&dev, &b).unwrap()), DType::F32)))
+            Arc::new(RwLock::new(Storage::new(
+                BackendStorage::Cuda(CudaStorageBytes::from_cpu_bytes(&dev, &b).unwrap()),
+                DType::F32,
+            )))
         };
         let up_u32 = |v: &[u32]| {
             let b: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
-            Arc::new(RwLock::new(Storage::new(BackendStorage::Cuda(CudaStorageBytes::from_cpu_bytes(&dev, &b).unwrap()), DType::U32)))
+            Arc::new(RwLock::new(Storage::new(
+                BackendStorage::Cuda(CudaStorageBytes::from_cpu_bytes(&dev, &b).unwrap()),
+                DType::U32,
+            )))
         };
         let read = |arc: &Arc<RwLock<Storage>>| -> Vec<f32> {
             let g = arc.read().unwrap();
-            let BackendStorage::Cuda(c) = &g.inner else { panic!("not cuda") };
-            c.to_cpu_bytes().unwrap().chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect()
+            let BackendStorage::Cuda(c) = &g.inner else {
+                panic!("not cuda")
+            };
+            c.to_cpu_bytes()
+                .unwrap()
+                .chunks_exact(4)
+                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .collect()
         };
         let tok_arc = up_u32(&[0]);
         let mut inputs = StorageCache::new();
         inputs.insert(tok, tok_arc.clone());
         inputs.insert(wte, up_f32(&wte_data));
-        let captured = PipelinedExecutor::capture_decode(Arc::clone(&graph), emb, inputs, SymEnv::default()).expect("capture");
-        assert_eq!(read(&captured.output), vec![1.0, 2.0, 3.0, 4.0], "warm result after capture");
+        let captured =
+            PipelinedExecutor::capture_decode(Arc::clone(&graph), emb, inputs, SymEnv::default())
+                .expect("capture");
+        assert_eq!(
+            read(&captured.output),
+            vec![1.0, 2.0, 3.0, 4.0],
+            "warm result after capture"
+        );
         // FORCE freed-memory reuse: same-size (V*H) garbage buffers reclaim
         // `wte`'s slot if it were dangling — replay would then read 999.0s.
         let mut squatters = Vec::new();
@@ -7926,7 +8292,10 @@ mod tests {
                 bad += 1;
             }
         }
-        assert_eq!(bad, 0, "index_select capture replays bit-exact ({bad}/50 wrong)");
+        assert_eq!(
+            bad, 0,
+            "index_select capture replays bit-exact ({bad}/50 wrong)"
+        );
     }
 
     ///   n1 = rms_norm(x);  s = silu(n1);  p = softmax(s);
@@ -7961,9 +8330,19 @@ mod tests {
             let (x, y) = {
                 let mut g = graph.write().unwrap();
                 let mk = |g: &mut Graph, op: Op, ins: Vec<NodeId>, dims: &[usize]| {
-                    g.push(Node { op, inputs: ins, shape: Shape::from_dims(dims), dtype: DType::F32 })
+                    g.push(Node {
+                        op,
+                        inputs: ins,
+                        shape: Shape::from_dims(dims),
+                        dtype: DType::F32,
+                    })
                 };
-                let rms = || Op::Fused(FusedOps::RMS_NORM_LAST_DIM, FusedOpParams::RmsNormLastDim { eps });
+                let rms = || {
+                    Op::Fused(
+                        FusedOps::RMS_NORM_LAST_DIM,
+                        FusedOpParams::RmsNormLastDim { eps },
+                    )
+                };
                 let sm = || Op::Fused(FusedOps::SOFTMAX_LAST_DIM, FusedOpParams::SoftmaxLastDim);
                 let x = mk(&mut g, Op::Const, vec![], &[1, H]);
                 let n1 = mk(&mut g, rms(), vec![x], &[1, H]);
@@ -7982,11 +8361,16 @@ mod tests {
 
         let up = |v: &[f32]| -> Arc<RwLock<Storage>> {
             let cb = CudaStorageBytes::from_cpu_bytes(&dev, bytemuck::cast_slice(v)).expect("h2d");
-            Arc::new(RwLock::new(Storage::new(BackendStorage::Cuda(cb), DType::F32)))
+            Arc::new(RwLock::new(Storage::new(
+                BackendStorage::Cuda(cb),
+                DType::F32,
+            )))
         };
         let read = |arc: &Arc<RwLock<Storage>>| -> Vec<f32> {
             let g = arc.read().unwrap();
-            let BackendStorage::Cuda(c) = &g.inner else { panic!("not cuda") };
+            let BackendStorage::Cuda(c) = &g.inner else {
+                panic!("not cuda")
+            };
             bytemuck::cast_slice(&c.to_cpu_bytes().expect("d2h")).to_vec()
         };
 
@@ -7996,13 +8380,9 @@ mod tests {
         let mut inputs = StorageCache::new();
         inputs.insert(x, x_arc.clone());
 
-        let captured = PipelinedExecutor::capture_decode(
-            Arc::clone(&graph),
-            y,
-            inputs,
-            SymEnv::default(),
-        )
-        .expect("capture_decode norm/silu/softmax");
+        let captured =
+            PipelinedExecutor::capture_decode(Arc::clone(&graph), y, inputs, SymEnv::default())
+                .expect("capture_decode norm/silu/softmax");
 
         let realize_ref = |xv: &[f32]| -> Vec<f32> {
             let (g, xr, yr) = build();
@@ -8025,12 +8405,19 @@ mod tests {
         let x2: Vec<f32> = (0..H).map(|c| 0.3 * (c as f32 + 1.0)).collect();
         {
             let g = x_arc.read().unwrap();
-            let BackendStorage::Cuda(c) = &g.inner else { panic!("x not cuda") };
-            c.write_from_host(bytemuck::cast_slice(&x2)).expect("in-place H2D");
+            let BackendStorage::Cuda(c) = &g.inner else {
+                panic!("x not cuda")
+            };
+            c.write_from_host(bytemuck::cast_slice(&x2))
+                .expect("in-place H2D");
         }
         captured.run.replay(&dev).expect("replay 2");
         dev.synchronize().expect("sync 2");
-        assert_eq!(read(&captured.output), realize_ref(&x2), "replay after x update matches realize");
+        assert_eq!(
+            read(&captured.output),
+            realize_ref(&x2),
+            "replay after x update matches realize"
+        );
     }
 
     /// CapturedRun executor build-out (Increment 4b-γ): make `ContiguizeOf`
@@ -8062,24 +8449,34 @@ mod tests {
             let (x, b, y) = {
                 let mut g = graph.write().unwrap();
                 let x = g.push(Node {
-                    op: Op::Const, inputs: vec![],
-                    shape: Shape::from_dims(&[2, 3, 4]), dtype: DType::F32,
+                    op: Op::Const,
+                    inputs: vec![],
+                    shape: Shape::from_dims(&[2, 3, 4]),
+                    dtype: DType::F32,
                 });
                 let p = g.push(Node {
-                    op: Op::Permute(vec![1, 0, 2]), inputs: vec![x],
-                    shape: Shape::from_dims(&[3, 2, 4]), dtype: DType::F32,
+                    op: Op::Permute(vec![1, 0, 2]),
+                    inputs: vec![x],
+                    shape: Shape::from_dims(&[3, 2, 4]),
+                    dtype: DType::F32,
                 });
                 let r = g.push(Node {
-                    op: Op::Reshape(Shape::from_dims(&[3, 8])), inputs: vec![p],
-                    shape: Shape::from_dims(&[3, 8]), dtype: DType::F32,
+                    op: Op::Reshape(Shape::from_dims(&[3, 8])),
+                    inputs: vec![p],
+                    shape: Shape::from_dims(&[3, 8]),
+                    dtype: DType::F32,
                 });
                 let b = g.push(Node {
-                    op: Op::Const, inputs: vec![],
-                    shape: Shape::from_dims(&[3, 8]), dtype: DType::F32,
+                    op: Op::Const,
+                    inputs: vec![],
+                    shape: Shape::from_dims(&[3, 8]),
+                    dtype: DType::F32,
                 });
                 let y = g.push(Node {
-                    op: Op::Concat { dim: 1 }, inputs: vec![r, b],
-                    shape: Shape::from_dims(&[3, 16]), dtype: DType::F32,
+                    op: Op::Concat { dim: 1 },
+                    inputs: vec![r, b],
+                    shape: Shape::from_dims(&[3, 16]),
+                    dtype: DType::F32,
                 });
                 g.set_target_backend(p, BackendId::Cuda);
                 g.set_target_backend(r, BackendId::Cuda);
@@ -8091,11 +8488,16 @@ mod tests {
 
         let up = |v: &[f32]| -> Arc<RwLock<Storage>> {
             let cb = CudaStorageBytes::from_cpu_bytes(&dev, bytemuck::cast_slice(v)).expect("h2d");
-            Arc::new(RwLock::new(Storage::new(BackendStorage::Cuda(cb), DType::F32)))
+            Arc::new(RwLock::new(Storage::new(
+                BackendStorage::Cuda(cb),
+                DType::F32,
+            )))
         };
         let read = |arc: &Arc<RwLock<Storage>>| -> Vec<f32> {
             let g = arc.read().unwrap();
-            let BackendStorage::Cuda(c) = &g.inner else { panic!("not cuda") };
+            let BackendStorage::Cuda(c) = &g.inner else {
+                panic!("not cuda")
+            };
             bytemuck::cast_slice(&c.to_cpu_bytes().expect("d2h")).to_vec()
         };
 
@@ -8110,13 +8512,9 @@ mod tests {
         // the matmul/index_select regression precedent.
         inputs.insert(b, up(&b_data));
 
-        let captured = PipelinedExecutor::capture_decode(
-            Arc::clone(&graph),
-            y,
-            inputs,
-            SymEnv::default(),
-        )
-        .expect("capture_decode contiguize+concat");
+        let captured =
+            PipelinedExecutor::capture_decode(Arc::clone(&graph), y, inputs, SymEnv::default())
+                .expect("capture_decode contiguize+concat");
 
         let realize_ref = |xv: &[f32], bv: &[f32]| -> Vec<f32> {
             let (g, xr, br, yr) = build();
@@ -8136,9 +8534,16 @@ mod tests {
         //     reuse (both the ContiguizeOf intermediate and the Concat
         //     output) holds across multiple replay() calls, not just one.
         for i in 0..2 {
-            captured.run.replay(&dev).unwrap_or_else(|e| panic!("replay {i}: {e:?}"));
+            captured
+                .run
+                .replay(&dev)
+                .unwrap_or_else(|e| panic!("replay {i}: {e:?}"));
             dev.synchronize().expect("sync");
-            assert_eq!(read(&captured.output), expect0, "replay {i} reproduces result");
+            assert_eq!(
+                read(&captured.output),
+                expect0,
+                "replay {i} reproduces result"
+            );
         }
 
         // (3) overwrite x in place (a DIFFERENT value-set), replay again ->
@@ -8148,8 +8553,11 @@ mod tests {
         let x2: Vec<f32> = (0..24).map(|i| 1000.0 + i as f32).collect();
         {
             let g = x_arc.read().unwrap();
-            let BackendStorage::Cuda(c) = &g.inner else { panic!("x not cuda") };
-            c.write_from_host(bytemuck::cast_slice(&x2)).expect("in-place H2D");
+            let BackendStorage::Cuda(c) = &g.inner else {
+                panic!("x not cuda")
+            };
+            c.write_from_host(bytemuck::cast_slice(&x2))
+                .expect("in-place H2D");
         }
         captured.run.replay(&dev).expect("replay 3");
         dev.synchronize().expect("sync 3");
@@ -8188,22 +8596,31 @@ mod tests {
             let (x, b, y) = {
                 let mut g = graph.write().unwrap();
                 let x = g.push(Node {
-                    op: Op::Const, inputs: vec![],
-                    shape: Shape::from_dims(&[2, 4]), dtype: DType::F32,
+                    op: Op::Const,
+                    inputs: vec![],
+                    shape: Shape::from_dims(&[2, 4]),
+                    dtype: DType::F32,
                 });
                 let b = g.push(Node {
-                    op: Op::Const, inputs: vec![],
-                    shape: Shape::from_dims(&[2, 4]), dtype: DType::F32,
+                    op: Op::Const,
+                    inputs: vec![],
+                    shape: Shape::from_dims(&[2, 4]),
+                    dtype: DType::F32,
                 });
                 // Same-device CUDA->CUDA copy — the write-into-safe case.
                 let c = g.push(Node {
-                    op: Op::Copy { target: DeviceLocation::Cuda { gpu_id: 0 } },
+                    op: Op::Copy {
+                        target: DeviceLocation::Cuda { gpu_id: 0 },
+                    },
                     inputs: vec![x],
-                    shape: Shape::from_dims(&[2, 4]), dtype: DType::F32,
+                    shape: Shape::from_dims(&[2, 4]),
+                    dtype: DType::F32,
                 });
                 let y = g.push(Node {
-                    op: Op::Add, inputs: vec![c, b],
-                    shape: Shape::from_dims(&[2, 4]), dtype: DType::F32,
+                    op: Op::Add,
+                    inputs: vec![c, b],
+                    shape: Shape::from_dims(&[2, 4]),
+                    dtype: DType::F32,
                 });
                 // Copy's target_backend = SOURCE backend (x is Cuda-resident).
                 g.set_target_backend(c, BackendId::Cuda);
@@ -8215,11 +8632,16 @@ mod tests {
 
         let up = |v: &[f32]| -> Arc<RwLock<Storage>> {
             let cb = CudaStorageBytes::from_cpu_bytes(&dev, bytemuck::cast_slice(v)).expect("h2d");
-            Arc::new(RwLock::new(Storage::new(BackendStorage::Cuda(cb), DType::F32)))
+            Arc::new(RwLock::new(Storage::new(
+                BackendStorage::Cuda(cb),
+                DType::F32,
+            )))
         };
         let read = |arc: &Arc<RwLock<Storage>>| -> Vec<f32> {
             let g = arc.read().unwrap();
-            let BackendStorage::Cuda(c) = &g.inner else { panic!("not cuda") };
+            let BackendStorage::Cuda(c) = &g.inner else {
+                panic!("not cuda")
+            };
             bytemuck::cast_slice(&c.to_cpu_bytes().expect("d2h")).to_vec()
         };
 
@@ -8233,13 +8655,9 @@ mod tests {
         // reliance on `capture_decode`'s own `retained_inputs`.
         inputs.insert(b, up(&b_data));
 
-        let captured = PipelinedExecutor::capture_decode(
-            Arc::clone(&graph),
-            y,
-            inputs,
-            SymEnv::default(),
-        )
-        .expect("capture_decode same-device copy");
+        let captured =
+            PipelinedExecutor::capture_decode(Arc::clone(&graph), y, inputs, SymEnv::default())
+                .expect("capture_decode same-device copy");
 
         let realize_ref = |xv: &[f32], bv: &[f32]| -> Vec<f32> {
             let (g, xr, br, yr) = build();
@@ -8257,9 +8675,16 @@ mod tests {
         // (2) replay TWICE with unchanged inputs — the Copy's write-into
         //     destination buffer must stay bit-exact across replays.
         for i in 0..2 {
-            captured.run.replay(&dev).unwrap_or_else(|e| panic!("replay {i}: {e:?}"));
+            captured
+                .run
+                .replay(&dev)
+                .unwrap_or_else(|e| panic!("replay {i}: {e:?}"));
             dev.synchronize().expect("sync");
-            assert_eq!(read(&captured.output), expect0, "replay {i} reproduces result");
+            assert_eq!(
+                read(&captured.output),
+                expect0,
+                "replay {i} reproduces result"
+            );
         }
 
         // (3) overwrite x in place (a DIFFERENT value-set), replay again ->
@@ -8268,8 +8693,11 @@ mod tests {
         let x2: Vec<f32> = (0..8).map(|i| 1000.0 + i as f32).collect();
         {
             let g = x_arc.read().unwrap();
-            let BackendStorage::Cuda(c) = &g.inner else { panic!("x not cuda") };
-            c.write_from_host(bytemuck::cast_slice(&x2)).expect("in-place H2D");
+            let BackendStorage::Cuda(c) = &g.inner else {
+                panic!("x not cuda")
+            };
+            c.write_from_host(bytemuck::cast_slice(&x2))
+                .expect("in-place H2D");
         }
         captured.run.replay(&dev).expect("replay 3");
         dev.synchronize().expect("sync 3");
@@ -8302,22 +8730,31 @@ mod tests {
         let (x, y) = {
             let mut g = graph.write().unwrap();
             let x = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2, 4]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 4]),
+                dtype: DType::F32,
             });
             // Genuinely cross-device: D2H.
             let y = g.push(Node {
-                op: Op::Copy { target: DeviceLocation::Cpu },
+                op: Op::Copy {
+                    target: DeviceLocation::Cpu,
+                },
                 inputs: vec![x],
-                shape: Shape::from_dims(&[2, 4]), dtype: DType::F32,
+                shape: Shape::from_dims(&[2, 4]),
+                dtype: DType::F32,
             });
             g.set_target_backend(y, BackendId::Cuda); // source backend = Cuda
             (x, y)
         };
 
         let x_data: Vec<f32> = (0..8).map(|i| i as f32).collect();
-        let cb = CudaStorageBytes::from_cpu_bytes(&dev, bytemuck::cast_slice(&x_data)).expect("h2d");
-        let x_arc = Arc::new(RwLock::new(Storage::new(BackendStorage::Cuda(cb), DType::F32)));
+        let cb =
+            CudaStorageBytes::from_cpu_bytes(&dev, bytemuck::cast_slice(&x_data)).expect("h2d");
+        let x_arc = Arc::new(RwLock::new(Storage::new(
+            BackendStorage::Cuda(cb),
+            DType::F32,
+        )));
         let mut inputs = StorageCache::new();
         inputs.insert(x, x_arc);
 
@@ -8360,9 +8797,19 @@ mod tests {
             let (x, y) = {
                 let mut g = graph.write().unwrap();
                 let mk = |g: &mut Graph, op: Op, ins: Vec<NodeId>, dims: &[usize]| {
-                    g.push(Node { op, inputs: ins, shape: Shape::from_dims(dims), dtype: DType::F32 })
+                    g.push(Node {
+                        op,
+                        inputs: ins,
+                        shape: Shape::from_dims(dims),
+                        dtype: DType::F32,
+                    })
                 };
-                let rms = || Op::Fused(FusedOps::RMS_NORM_LAST_DIM, FusedOpParams::RmsNormLastDim { eps });
+                let rms = || {
+                    Op::Fused(
+                        FusedOps::RMS_NORM_LAST_DIM,
+                        FusedOpParams::RmsNormLastDim { eps },
+                    )
+                };
                 let sm = || Op::Fused(FusedOps::SOFTMAX_LAST_DIM, FusedOpParams::SoftmaxLastDim);
                 let x = mk(&mut g, Op::Const, vec![], &[1, H]);
                 let n1 = mk(&mut g, rms(), vec![x], &[1, H]);
@@ -8380,11 +8827,16 @@ mod tests {
         };
         let up = |v: &[f32]| -> Arc<RwLock<Storage>> {
             let cb = CudaStorageBytes::from_cpu_bytes(&dev, bytemuck::cast_slice(v)).expect("h2d");
-            Arc::new(RwLock::new(Storage::new(BackendStorage::Cuda(cb), DType::F32)))
+            Arc::new(RwLock::new(Storage::new(
+                BackendStorage::Cuda(cb),
+                DType::F32,
+            )))
         };
         let read = |arc: &Arc<RwLock<Storage>>| -> Vec<f32> {
             let g = arc.read().unwrap();
-            let BackendStorage::Cuda(c) = &g.inner else { panic!("not cuda") };
+            let BackendStorage::Cuda(c) = &g.inner else {
+                panic!("not cuda")
+            };
             bytemuck::cast_slice(&c.to_cpu_bytes().expect("d2h")).to_vec()
         };
         let realize_ref = |xv: &[f32]| -> Vec<f32> {
@@ -8397,7 +8849,11 @@ mod tests {
 
         // 5 distinct "tokens" (distinct per-token input value-sets).
         let tokens: Vec<Vec<f32>> = (0..5)
-            .map(|t| (0..H).map(|c| 0.1 * (t as f32 + 1.0) * (c as f32 + 1.0)).collect())
+            .map(|t| {
+                (0..H)
+                    .map(|c| 0.1 * (t as f32 + 1.0) * (c as f32 + 1.0))
+                    .collect()
+            })
             .collect();
 
         // Capture ONCE against token 0's fixed input buffer.
@@ -8405,17 +8861,16 @@ mod tests {
         let (graph, x, y) = build();
         let mut inputs = StorageCache::new();
         inputs.insert(x, x_arc.clone());
-        let session = CapturedDecodeSession::capture(
-            Arc::clone(&graph),
-            y,
-            inputs,
-            &[x],
-            SymEnv::default(),
-        )
-        .expect("capture session");
+        let session =
+            CapturedDecodeSession::capture(Arc::clone(&graph), y, inputs, &[x], SymEnv::default())
+                .expect("capture session");
 
         // Warm result (token 0) already sits in the output buffer.
-        assert_eq!(read(session.output()), realize_ref(&tokens[0]), "warm token 0");
+        assert_eq!(
+            read(session.output()),
+            realize_ref(&tokens[0]),
+            "warm token 0"
+        );
 
         // The decode loop: replay every token (incl. re-replaying token 0) via
         // in-place H2D update of the fixed input + one graph launch.
@@ -8423,10 +8878,18 @@ mod tests {
             let out = session
                 .replay_token(&[(x, bytemuck::cast_slice(tok))])
                 .expect("replay_token");
-            assert_eq!(read(&out), realize_ref(tok), "replayed token {t} matches uncaptured realize");
+            assert_eq!(
+                read(&out),
+                realize_ref(tok),
+                "replayed token {t} matches uncaptured realize"
+            );
         }
         // Distinct tokens must give distinct outputs (live recompute, not stale).
-        assert_ne!(realize_ref(&tokens[0]), realize_ref(&tokens[1]), "tokens must differ");
+        assert_ne!(
+            realize_ref(&tokens[0]),
+            realize_ref(&tokens[1]),
+            "tokens must differ"
+        );
     }
 
     /// PR-C1 behavior contract: `realize_with_optimized_route` with an
@@ -8466,11 +8929,15 @@ mod tests {
             let mut inputs = StorageCache::new();
             inputs.insert(
                 lhs_id,
-                Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0]))),
+                Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[
+                    1.0_f32, 2.0, 3.0,
+                ]))),
             );
             inputs.insert(
                 rhs_id,
-                Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[10.0_f32, 20.0, 30.0]))),
+                Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[
+                    10.0_f32, 20.0, 30.0,
+                ]))),
             );
             (graph, add_id, inputs)
         };
@@ -8501,20 +8968,26 @@ mod tests {
 
         // Arm-0 path.
         let (g_a, add_a, in_a) = build();
-        let opt_a = OptimizedGraph { roots: vec![add_a], generation: live_gen, placements: None };
-        let (arm0_arc, _) =
-            PipelinedExecutor::realize_with_optimized(g_a, add_a, in_a, &opt_a)
-                .expect("arm-0 realize");
+        let opt_a = OptimizedGraph {
+            roots: vec![add_a],
+            generation: live_gen,
+            placements: None,
+        };
+        let (arm0_arc, _) = PipelinedExecutor::realize_with_optimized(g_a, add_a, in_a, &opt_a)
+            .expect("arm-0 realize");
         let arm0 = read_bytes(&arm0_arc);
 
         // Empty-route path — must match arm-0 exactly.
         let (g_r, add_r, in_r) = build();
-        let opt_r = OptimizedGraph { roots: vec![add_r], generation: live_gen, placements: None };
+        let opt_r = OptimizedGraph {
+            roots: vec![add_r],
+            generation: live_gen,
+            placements: None,
+        };
         let empty_route = PickedRoute::new();
-        let (route_arc, _) = PipelinedExecutor::realize_with_optimized_route(
-            g_r, add_r, in_r, &opt_r, &empty_route,
-        )
-        .expect("empty-route realize");
+        let (route_arc, _) =
+            PipelinedExecutor::realize_with_optimized_route(g_r, add_r, in_r, &opt_r, &empty_route)
+                .expect("empty-route realize");
         let routed = read_bytes(&route_arc);
 
         assert_eq!(arm0, vec![11.0, 22.0, 33.0]);
@@ -8553,7 +9026,12 @@ mod tests {
         // HEAVIER (4 vs 2) so the critical-path reorder emits it first.
         // (Stamps only; not realized here — the ordering proof, CPU-runnable.)
         let n = |g: &mut Graph, op: Op, inputs: Vec<NodeId>| {
-            g.push(Node { op, inputs, shape: Shape::from_dims(&[3]), dtype: DType::F32 })
+            g.push(Node {
+                op,
+                inputs,
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
+            })
         };
         let mut g = Graph::new();
         let ca = n(&mut g, Op::Const, vec![]);
@@ -8575,7 +9053,9 @@ mod tests {
         // Vulkan -> CUDA copy (residency seam), then reconverge on CUDA with
         // inputs [cuda_root, copy] (cuda-first).
         let copy = g.push(Node {
-            op: Op::Copy { target: DeviceLocation::Cuda { gpu_id: 0 } },
+            op: Op::Copy {
+                target: DeviceLocation::Cuda { gpu_id: 0 },
+            },
             inputs: vec![v2],
             shape: Shape::from_dims(&[3]),
             dtype: DType::F32,
@@ -8604,8 +9084,11 @@ mod tests {
 
         // (3) The reordered order is a VALID topological order: every node
         //     appears after all of its inputs that are in the order.
-        let pos: std::collections::HashMap<NodeId, usize> =
-            reordered.iter().enumerate().map(|(i, &node)| (node, i)).collect();
+        let pos: std::collections::HashMap<NodeId, usize> = reordered
+            .iter()
+            .enumerate()
+            .map(|(i, &node)| (node, i))
+            .collect();
         for (i, &node) in reordered.iter().enumerate() {
             for &inp in &g.node(node).inputs {
                 if let Some(&j) = pos.get(&inp) {
@@ -8661,7 +9144,12 @@ mod tests {
         // up 1:1 between the two builds (only the add's input order differs).
         let build = |cuda_first: bool| -> (Graph, NodeId) {
             let n = |g: &mut Graph, op: Op, inputs: Vec<NodeId>| {
-                g.push(Node { op, inputs, shape: Shape::from_dims(&[3]), dtype: DType::F32 })
+                g.push(Node {
+                    op,
+                    inputs,
+                    shape: Shape::from_dims(&[3]),
+                    dtype: DType::F32,
+                })
             };
             let mut g = Graph::new();
             let ca = n(&mut g, Op::Const, vec![]);
@@ -8679,14 +9167,20 @@ mod tests {
             }
             let v2 = vprev;
             let copy = g.push(Node {
-                op: Op::Copy { target: DeviceLocation::Cuda { gpu_id: 0 } },
+                op: Op::Copy {
+                    target: DeviceLocation::Cuda { gpu_id: 0 },
+                },
                 inputs: vec![v2],
                 shape: Shape::from_dims(&[3]),
                 dtype: DType::F32,
             });
             g.set_target_backend(copy, BackendId::Cuda);
             // The ONE knob: the reconverge's two inputs, swapped.
-            let inputs = if cuda_first { vec![c2, copy] } else { vec![copy, c2] };
+            let inputs = if cuda_first {
+                vec![c2, copy]
+            } else {
+                vec![copy, c2]
+            };
             let out = n(&mut g, Op::Add, inputs);
             g.set_target_backend(out, BackendId::Cuda);
             (g, out)
@@ -8744,7 +9238,12 @@ mod tests {
     #[cfg(test)]
     fn picking_diamond() -> (Arc<RwLock<Graph>>, NodeId, NodeId) {
         let node = |g: &mut Graph, op: Op, inputs: Vec<NodeId>| {
-            g.push(Node { op, inputs, shape: Shape::from_dims(&[2]), dtype: DType::F32 })
+            g.push(Node {
+                op,
+                inputs,
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F32,
+            })
         };
         let mut g = Graph::new();
         let pre = node(&mut g, Op::Const, vec![]);
@@ -8796,7 +9295,12 @@ mod tests {
 
         // (3) branchless graph + selector ⇒ None (the fast-path).
         let node = |g: &mut Graph, op: Op, inputs: Vec<NodeId>| {
-            g.push(Node { op, inputs, shape: Shape::from_dims(&[2]), dtype: DType::F32 })
+            g.push(Node {
+                op,
+                inputs,
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F32,
+            })
         };
         let bl_graph = {
             let mut g = Graph::new();
@@ -8972,8 +9476,7 @@ mod tests {
         let mut inputs = StorageCache::new();
         inputs.insert(in_id, Arc::new(RwLock::new(storage)));
 
-        let (result_arc, _) =
-            PipelinedExecutor::realize(graph, relu_id, inputs).expect("realize");
+        let (result_arc, _) = PipelinedExecutor::realize(graph, relu_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
             let typed: &[f32] = c.as_slice().expect("f32 cast");
@@ -8994,31 +9497,43 @@ mod tests {
         let (a_id, b_id, c_id, sub_id, mul_id, div_id) = {
             let mut g = graph.write().unwrap();
             let a = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F32,
             });
             let b = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F32,
             });
             let c = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F32,
             });
             // (a - b)         = [7, 15]
             let sub = g.push(Node {
-                op: Op::Sub, inputs: vec![a, b],
-                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+                op: Op::Sub,
+                inputs: vec![a, b],
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F32,
             });
             // (a - b) * c     = [14, 60]
             let mul = g.push(Node {
-                op: Op::Mul, inputs: vec![sub, c],
-                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+                op: Op::Mul,
+                inputs: vec![sub, c],
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F32,
             });
             // ((a-b)*c) / b   = [14/3, 12]
             let div = g.push(Node {
-                op: Op::Div, inputs: vec![mul, b],
-                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+                op: Op::Div,
+                inputs: vec![mul, b],
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F32,
             });
             g.set_target_backend(sub, BackendId::Cpu);
             g.set_target_backend(mul, BackendId::Cpu);
@@ -9032,8 +9547,7 @@ mod tests {
         inputs.insert(b_id, Arc::new(RwLock::new(b_storage)));
         inputs.insert(c_id, Arc::new(RwLock::new(c_storage)));
 
-        let (result_arc, _) =
-            PipelinedExecutor::realize(graph, div_id, inputs).expect("realize");
+        let (result_arc, _) = PipelinedExecutor::realize(graph, div_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
             let typed: &[f32] = c.as_slice().unwrap();
@@ -9053,12 +9567,16 @@ mod tests {
         let (in_id, t_id) = {
             let mut g = graph.write().unwrap();
             let in_id = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]),
+                dtype: DType::F32,
             });
             let t_id = g.push(Node {
-                op: Op::Transpose, inputs: vec![in_id],
-                shape: Shape::from_dims(&[3, 2]), dtype: DType::F32,
+                op: Op::Transpose,
+                inputs: vec![in_id],
+                shape: Shape::from_dims(&[3, 2]),
+                dtype: DType::F32,
             });
             // Note: NO set_target_backend — transpose is metadata-only
             // and doesn't run on a backend.
@@ -9073,7 +9591,10 @@ mod tests {
 
         // The output Storage Arc is the SAME Arc as the input —
         // metadata-only adoption shares bytes.
-        assert!(Arc::ptr_eq(&result_arc, &in_arc), "transpose must share input bytes");
+        assert!(
+            Arc::ptr_eq(&result_arc, &in_arc),
+            "transpose must share input bytes"
+        );
 
         // The output Layout is the transposed view.
         assert_eq!(result_layout.shape().dims(), &[3, 2]);
@@ -9094,12 +9615,16 @@ mod tests {
         let (in_id, f_id) = {
             let mut g = graph.write().unwrap();
             let in_id = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3, 4]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3, 4]),
+                dtype: DType::F32,
             });
             let f_id = g.push(Node {
-                op: Op::Flip { dim: 0 }, inputs: vec![in_id],
-                shape: Shape::from_dims(&[3, 4]), dtype: DType::F32,
+                op: Op::Flip { dim: 0 },
+                inputs: vec![in_id],
+                shape: Shape::from_dims(&[3, 4]),
+                dtype: DType::F32,
             });
             (in_id, f_id)
         };
@@ -9110,7 +9635,10 @@ mod tests {
         let (result_arc, result_layout) =
             PipelinedExecutor::realize(graph, f_id, inputs).expect("realize");
 
-        assert!(Arc::ptr_eq(&result_arc, &in_arc), "flip must share input bytes");
+        assert!(
+            Arc::ptr_eq(&result_arc, &in_arc),
+            "flip must share input bytes"
+        );
         assert_eq!(result_layout.shape().dims(), &[3, 4]);
         assert_eq!(result_layout.stride(), &[-4_isize, 1]);
         assert_eq!(result_layout.start_offset(), 8);
@@ -9128,12 +9656,16 @@ mod tests {
         let (in_id, p_id) = {
             let mut g = graph.write().unwrap();
             let in_id = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2, 3, 4]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 3, 4]),
+                dtype: DType::F32,
             });
             let p_id = g.push(Node {
-                op: Op::Permute(vec![2, 0, 1]), inputs: vec![in_id],
-                shape: Shape::from_dims(&[4, 2, 3]), dtype: DType::F32,
+                op: Op::Permute(vec![2, 0, 1]),
+                inputs: vec![in_id],
+                shape: Shape::from_dims(&[4, 2, 3]),
+                dtype: DType::F32,
             });
             (in_id, p_id)
         };
@@ -9161,12 +9693,16 @@ mod tests {
         let (in_id, c_id) = {
             let mut g = graph.write().unwrap();
             let in_id = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             let c_id = g.push(Node {
-                op: Op::Cast(DType::F64), inputs: vec![in_id],
-                shape: Shape::from_dims(&[3]), dtype: DType::F64,
+                op: Op::Cast(DType::F64),
+                inputs: vec![in_id],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F64,
             });
             g.set_target_backend(c_id, BackendId::Cpu);
             (in_id, c_id)
@@ -9197,16 +9733,22 @@ mod tests {
         let (in_id, c1_id, c2_id) = {
             let mut g = graph.write().unwrap();
             let in_id = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[4]),
+                dtype: DType::F32,
             });
             let c1_id = g.push(Node {
-                op: Op::Cast(DType::BF16), inputs: vec![in_id],
-                shape: Shape::from_dims(&[4]), dtype: DType::BF16,
+                op: Op::Cast(DType::BF16),
+                inputs: vec![in_id],
+                shape: Shape::from_dims(&[4]),
+                dtype: DType::BF16,
             });
             let c2_id = g.push(Node {
-                op: Op::Cast(DType::F32), inputs: vec![c1_id],
-                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+                op: Op::Cast(DType::F32),
+                inputs: vec![c1_id],
+                shape: Shape::from_dims(&[4]),
+                dtype: DType::F32,
             });
             g.set_target_backend(c1_id, BackendId::Cpu);
             g.set_target_backend(c2_id, BackendId::Cpu);
@@ -9216,8 +9758,7 @@ mod tests {
         let mut inputs = StorageCache::new();
         inputs.insert(in_id, Arc::new(RwLock::new(storage)));
 
-        let (result_arc, _) =
-            PipelinedExecutor::realize(graph, c2_id, inputs).expect("realize");
+        let (result_arc, _) = PipelinedExecutor::realize(graph, c2_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::F32);
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
@@ -9239,11 +9780,17 @@ mod tests {
         let (in_id, s_id) = {
             let mut g = graph.write().unwrap();
             let in_id = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[5]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[5]),
+                dtype: DType::F32,
             });
             let s_id = g.push(Node {
-                op: Op::Slice { dim: 0, start: 1, len: 3 },
+                op: Op::Slice {
+                    dim: 0,
+                    start: 1,
+                    len: 3,
+                },
                 inputs: vec![in_id],
                 shape: Shape::from_dims(&[3]),
                 dtype: DType::F32,
@@ -9278,18 +9825,26 @@ mod tests {
         let (in_id, s_id, sum_id) = {
             let mut g = graph.write().unwrap();
             let in_id = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[5]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[5]),
+                dtype: DType::F32,
             });
             let s_id = g.push(Node {
-                op: Op::Slice { dim: 0, start: 1, len: 3 },
+                op: Op::Slice {
+                    dim: 0,
+                    start: 1,
+                    len: 3,
+                },
                 inputs: vec![in_id],
                 shape: Shape::from_dims(&[3]),
                 dtype: DType::F32,
             });
             let sum_id = g.push(Node {
-                op: Op::SumAll, inputs: vec![s_id],
-                shape: Shape::from_dims(&[]), dtype: DType::F32,
+                op: Op::SumAll,
+                inputs: vec![s_id],
+                shape: Shape::from_dims(&[]),
+                dtype: DType::F32,
             });
             g.set_target_backend(sum_id, BackendId::Cpu);
             (in_id, s_id, sum_id)
@@ -9298,8 +9853,7 @@ mod tests {
         let mut inputs = StorageCache::new();
         inputs.insert(in_id, Arc::new(RwLock::new(storage)));
 
-        let (result_arc, _) =
-            PipelinedExecutor::realize(graph, sum_id, inputs).expect("realize");
+        let (result_arc, _) = PipelinedExecutor::realize(graph, sum_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
@@ -9319,16 +9873,22 @@ mod tests {
         let (in_id, _f_id, r_id) = {
             let mut g = graph.write().unwrap();
             let in_id = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[4]),
+                dtype: DType::F32,
             });
             let f_id = g.push(Node {
-                op: Op::Flip { dim: 0 }, inputs: vec![in_id],
-                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+                op: Op::Flip { dim: 0 },
+                inputs: vec![in_id],
+                shape: Shape::from_dims(&[4]),
+                dtype: DType::F32,
             });
             let r_id = g.push(Node {
-                op: Op::Relu, inputs: vec![f_id],
-                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+                op: Op::Relu,
+                inputs: vec![f_id],
+                shape: Shape::from_dims(&[4]),
+                dtype: DType::F32,
             });
             g.set_target_backend(r_id, BackendId::Cpu);
             (in_id, f_id, r_id)
@@ -9358,8 +9918,10 @@ mod tests {
         let (in_id, b_id) = {
             let mut g = graph.write().unwrap();
             let in_id = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             let b_id = g.push(Node {
                 op: Op::BroadcastTo(Shape::from_dims(&[4, 3])),
@@ -9397,16 +9959,22 @@ mod tests {
         let (lhs_id, rhs_id, mm_id) = {
             let mut g = graph.write().unwrap();
             let lhs = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]),
+                dtype: DType::F32,
             });
             let rhs = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3, 2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3, 2]),
+                dtype: DType::F32,
             });
             let mm = g.push(Node {
-                op: Op::MatMul, inputs: vec![lhs, rhs],
-                shape: Shape::from_dims(&[2, 2]), dtype: DType::F32,
+                op: Op::MatMul,
+                inputs: vec![lhs, rhs],
+                shape: Shape::from_dims(&[2, 2]),
+                dtype: DType::F32,
             });
             g.set_target_backend(mm, BackendId::Cpu);
             (lhs, rhs, mm)
@@ -9434,7 +10002,7 @@ mod tests {
     fn pipelined_realize_matmul_batched_2x_2x2_times_2x2() {
         let lhs_storage = fuel_memory::from_slice_cpu(&[
             1.0_f32, 2.0, 3.0, 4.0, // batch 0
-            1.0, 0.0, 0.0, 1.0,     // batch 1 (identity)
+            1.0, 0.0, 0.0, 1.0, // batch 1 (identity)
         ]);
         let rhs_storage = fuel_memory::from_slice_cpu(&[
             5.0_f32, 6.0, 7.0, 8.0, // batch 0
@@ -9445,16 +10013,22 @@ mod tests {
         let (lhs_id, rhs_id, mm_id) = {
             let mut g = graph.write().unwrap();
             let lhs = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2, 2, 2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 2, 2]),
+                dtype: DType::F32,
             });
             let rhs = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2, 2, 2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 2, 2]),
+                dtype: DType::F32,
             });
             let mm = g.push(Node {
-                op: Op::MatMul, inputs: vec![lhs, rhs],
-                shape: Shape::from_dims(&[2, 2, 2]), dtype: DType::F32,
+                op: Op::MatMul,
+                inputs: vec![lhs, rhs],
+                shape: Shape::from_dims(&[2, 2, 2]),
+                dtype: DType::F32,
             });
             g.set_target_backend(mm, BackendId::Cpu);
             (lhs, rhs, mm)
@@ -9491,16 +10065,22 @@ mod tests {
         let (l_id, r_id, op_id) = {
             let mut g = graph.write().unwrap();
             let l = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3]), dtype: DType::F64,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F64,
             });
             let r = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3]), dtype: DType::F64,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F64,
             });
             let op = g.push(Node {
-                op: Op::Add, inputs: vec![l, r],
-                shape: Shape::from_dims(&[3]), dtype: DType::F64,
+                op: Op::Add,
+                inputs: vec![l, r],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F64,
             });
             g.set_target_backend(op, BackendId::Cpu);
             (l, r, op)
@@ -9531,16 +10111,22 @@ mod tests {
         let (l_id, r_id, eq_id) = {
             let mut g = graph.write().unwrap();
             let l = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[5]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[5]),
+                dtype: DType::F32,
             });
             let r = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[5]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[5]),
+                dtype: DType::F32,
             });
             let eq = g.push(Node {
-                op: Op::Equal, inputs: vec![l, r],
-                shape: Shape::from_dims(&[5]), dtype: DType::Bool,
+                op: Op::Equal,
+                inputs: vec![l, r],
+                shape: Shape::from_dims(&[5]),
+                dtype: DType::Bool,
             });
             g.set_target_backend(eq, BackendId::Cpu);
             (l, r, eq)
@@ -9548,8 +10134,7 @@ mod tests {
         let mut inputs = StorageCache::new();
         inputs.insert(l_id, Arc::new(RwLock::new(lhs)));
         inputs.insert(r_id, Arc::new(RwLock::new(rhs)));
-        let (result_arc, _) =
-            PipelinedExecutor::realize(graph, eq_id, inputs).expect("realize");
+        let (result_arc, _) = PipelinedExecutor::realize(graph, eq_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::Bool);
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
@@ -9575,16 +10160,22 @@ mod tests {
         let (l_id, r_id, ne_id) = {
             let mut g = graph.write().unwrap();
             let l = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[5]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[5]),
+                dtype: DType::F32,
             });
             let r = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[5]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[5]),
+                dtype: DType::F32,
             });
             let ne = g.push(Node {
-                op: Op::Ne, inputs: vec![l, r],
-                shape: Shape::from_dims(&[5]), dtype: DType::Bool,
+                op: Op::Ne,
+                inputs: vec![l, r],
+                shape: Shape::from_dims(&[5]),
+                dtype: DType::Bool,
             });
             g.set_target_backend(ne, BackendId::Cpu);
             (l, r, ne)
@@ -9592,8 +10183,7 @@ mod tests {
         let mut inputs = StorageCache::new();
         inputs.insert(l_id, Arc::new(RwLock::new(lhs)));
         inputs.insert(r_id, Arc::new(RwLock::new(rhs)));
-        let (result_arc, _) =
-            PipelinedExecutor::realize(graph, ne_id, inputs).expect("realize");
+        let (result_arc, _) = PipelinedExecutor::realize(graph, ne_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::Bool);
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
@@ -9612,21 +10202,27 @@ mod tests {
     #[test]
     fn pipelined_realize_lt_f32_to_bool_mask() {
         let lhs = fuel_memory::from_slice_cpu(&[1.0_f32, 5.0, 3.0, f32::NAN, -1.0]);
-        let rhs = fuel_memory::from_slice_cpu(&[2.0_f32, 5.0, 3.0, 0.0,      0.0]);
+        let rhs = fuel_memory::from_slice_cpu(&[2.0_f32, 5.0, 3.0, 0.0, 0.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (l_id, r_id, lt_id) = {
             let mut g = graph.write().unwrap();
             let l = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[5]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[5]),
+                dtype: DType::F32,
             });
             let r = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[5]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[5]),
+                dtype: DType::F32,
             });
             let lt = g.push(Node {
-                op: Op::Lt, inputs: vec![l, r],
-                shape: Shape::from_dims(&[5]), dtype: DType::Bool,
+                op: Op::Lt,
+                inputs: vec![l, r],
+                shape: Shape::from_dims(&[5]),
+                dtype: DType::Bool,
             });
             g.set_target_backend(lt, BackendId::Cpu);
             (l, r, lt)
@@ -9634,8 +10230,7 @@ mod tests {
         let mut inputs = StorageCache::new();
         inputs.insert(l_id, Arc::new(RwLock::new(lhs)));
         inputs.insert(r_id, Arc::new(RwLock::new(rhs)));
-        let (result_arc, _) =
-            PipelinedExecutor::realize(graph, lt_id, inputs).expect("realize");
+        let (result_arc, _) = PipelinedExecutor::realize(graph, lt_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::Bool);
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
@@ -9652,21 +10247,27 @@ mod tests {
     #[test]
     fn pipelined_realize_le_f32_to_bool_mask() {
         let lhs = fuel_memory::from_slice_cpu(&[1.0_f32, 5.0, 3.0, f32::NAN, -1.0]);
-        let rhs = fuel_memory::from_slice_cpu(&[2.0_f32, 5.0, 2.0, 0.0,      0.0]);
+        let rhs = fuel_memory::from_slice_cpu(&[2.0_f32, 5.0, 2.0, 0.0, 0.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (l_id, r_id, le_id) = {
             let mut g = graph.write().unwrap();
             let l = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[5]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[5]),
+                dtype: DType::F32,
             });
             let r = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[5]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[5]),
+                dtype: DType::F32,
             });
             let le = g.push(Node {
-                op: Op::Le, inputs: vec![l, r],
-                shape: Shape::from_dims(&[5]), dtype: DType::Bool,
+                op: Op::Le,
+                inputs: vec![l, r],
+                shape: Shape::from_dims(&[5]),
+                dtype: DType::Bool,
             });
             g.set_target_backend(le, BackendId::Cpu);
             (l, r, le)
@@ -9674,8 +10275,7 @@ mod tests {
         let mut inputs = StorageCache::new();
         inputs.insert(l_id, Arc::new(RwLock::new(lhs)));
         inputs.insert(r_id, Arc::new(RwLock::new(rhs)));
-        let (result_arc, _) =
-            PipelinedExecutor::realize(graph, le_id, inputs).expect("realize");
+        let (result_arc, _) = PipelinedExecutor::realize(graph, le_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::Bool);
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
@@ -9692,21 +10292,27 @@ mod tests {
     #[test]
     fn pipelined_realize_gt_f32_to_bool_mask() {
         let lhs = fuel_memory::from_slice_cpu(&[3.0_f32, 5.0, 2.0, f32::NAN, 1.0]);
-        let rhs = fuel_memory::from_slice_cpu(&[2.0_f32, 5.0, 3.0, 0.0,      0.0]);
+        let rhs = fuel_memory::from_slice_cpu(&[2.0_f32, 5.0, 3.0, 0.0, 0.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (l_id, r_id, gt_id) = {
             let mut g = graph.write().unwrap();
             let l = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[5]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[5]),
+                dtype: DType::F32,
             });
             let r = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[5]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[5]),
+                dtype: DType::F32,
             });
             let gt = g.push(Node {
-                op: Op::Gt, inputs: vec![l, r],
-                shape: Shape::from_dims(&[5]), dtype: DType::Bool,
+                op: Op::Gt,
+                inputs: vec![l, r],
+                shape: Shape::from_dims(&[5]),
+                dtype: DType::Bool,
             });
             g.set_target_backend(gt, BackendId::Cpu);
             (l, r, gt)
@@ -9714,8 +10320,7 @@ mod tests {
         let mut inputs = StorageCache::new();
         inputs.insert(l_id, Arc::new(RwLock::new(lhs)));
         inputs.insert(r_id, Arc::new(RwLock::new(rhs)));
-        let (result_arc, _) =
-            PipelinedExecutor::realize(graph, gt_id, inputs).expect("realize");
+        let (result_arc, _) = PipelinedExecutor::realize(graph, gt_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::Bool);
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
@@ -9734,21 +10339,27 @@ mod tests {
     #[test]
     fn pipelined_realize_ge_f32_to_bool_mask() {
         let lhs = fuel_memory::from_slice_cpu(&[3.0_f32, 5.0, 2.0, f32::NAN, 0.0]);
-        let rhs = fuel_memory::from_slice_cpu(&[2.0_f32, 5.0, 3.0, 0.0,      0.0]);
+        let rhs = fuel_memory::from_slice_cpu(&[2.0_f32, 5.0, 3.0, 0.0, 0.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (l_id, r_id, ge_id) = {
             let mut g = graph.write().unwrap();
             let l = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[5]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[5]),
+                dtype: DType::F32,
             });
             let r = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[5]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[5]),
+                dtype: DType::F32,
             });
             let ge = g.push(Node {
-                op: Op::Ge, inputs: vec![l, r],
-                shape: Shape::from_dims(&[5]), dtype: DType::Bool,
+                op: Op::Ge,
+                inputs: vec![l, r],
+                shape: Shape::from_dims(&[5]),
+                dtype: DType::Bool,
             });
             g.set_target_backend(ge, BackendId::Cpu);
             (l, r, ge)
@@ -9756,8 +10367,7 @@ mod tests {
         let mut inputs = StorageCache::new();
         inputs.insert(l_id, Arc::new(RwLock::new(lhs)));
         inputs.insert(r_id, Arc::new(RwLock::new(rhs)));
-        let (result_arc, _) =
-            PipelinedExecutor::realize(graph, ge_id, inputs).expect("realize");
+        let (result_arc, _) = PipelinedExecutor::realize(graph, ge_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::Bool);
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
@@ -9780,16 +10390,22 @@ mod tests {
         let (l_id, r_id, eq_id) = {
             let mut g = graph.write().unwrap();
             let l = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3]), dtype: DType::F64,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F64,
             });
             let r = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3]), dtype: DType::F64,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F64,
             });
             let eq = g.push(Node {
-                op: Op::Equal, inputs: vec![l, r],
-                shape: Shape::from_dims(&[3]), dtype: DType::Bool,
+                op: Op::Equal,
+                inputs: vec![l, r],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::Bool,
             });
             g.set_target_backend(eq, BackendId::Cpu);
             (l, r, eq)
@@ -9797,8 +10413,7 @@ mod tests {
         let mut inputs = StorageCache::new();
         inputs.insert(l_id, Arc::new(RwLock::new(lhs)));
         inputs.insert(r_id, Arc::new(RwLock::new(rhs)));
-        let (result_arc, _) =
-            PipelinedExecutor::realize(graph, eq_id, inputs).expect("realize");
+        let (result_arc, _) = PipelinedExecutor::realize(graph, eq_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::Bool);
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
@@ -9821,27 +10436,35 @@ mod tests {
         // cond = [1, 0, 1, 0, 1]; a = [1, 2, 3, 4, 5]; b = [10, 20, 30, 40, 50]
         // expected = [1, 20, 3, 40, 5]
         let mut cond_storage = fuel_memory::from_slice_cpu(&[1u8, 0, 1, 0, 1]);
-        cond_storage.dtype = DType::Bool;   // GAP-168(c): a Bool mask, not U8 bytes
+        cond_storage.dtype = DType::Bool; // GAP-168(c): a Bool mask, not U8 bytes
         let a_storage = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0]);
         let b_storage = fuel_memory::from_slice_cpu(&[10.0_f32, 20.0, 30.0, 40.0, 50.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (cond_id, a_id, b_id, where_id) = {
             let mut g = graph.write().unwrap();
             let cond = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[5]), dtype: DType::Bool,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[5]),
+                dtype: DType::Bool,
             });
             let a = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[5]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[5]),
+                dtype: DType::F32,
             });
             let b = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[5]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[5]),
+                dtype: DType::F32,
             });
             let w = g.push(Node {
-                op: Op::Where, inputs: vec![cond, a, b],
-                shape: Shape::from_dims(&[5]), dtype: DType::F32,
+                op: Op::Where,
+                inputs: vec![cond, a, b],
+                shape: Shape::from_dims(&[5]),
+                dtype: DType::F32,
             });
             g.set_target_backend(w, BackendId::Cpu);
             (cond, a, b, w)
@@ -9850,8 +10473,7 @@ mod tests {
         inputs.insert(cond_id, Arc::new(RwLock::new(cond_storage)));
         inputs.insert(a_id, Arc::new(RwLock::new(a_storage)));
         inputs.insert(b_id, Arc::new(RwLock::new(b_storage)));
-        let (result_arc, _) =
-            PipelinedExecutor::realize(graph, where_id, inputs).expect("realize");
+        let (result_arc, _) = PipelinedExecutor::realize(graph, where_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::F32);
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
@@ -9878,28 +10500,40 @@ mod tests {
         let (a_id, b_id, pick_id, fb_id, where_id) = {
             let mut g = graph.write().unwrap();
             let a = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             let b = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             let pick = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             let fb = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             let eq = g.push(Node {
-                op: Op::Equal, inputs: vec![a, b],
-                shape: Shape::from_dims(&[3]), dtype: DType::Bool,
+                op: Op::Equal,
+                inputs: vec![a, b],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::Bool,
             });
             let w = g.push(Node {
-                op: Op::Where, inputs: vec![eq, pick, fb],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                op: Op::Where,
+                inputs: vec![eq, pick, fb],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             g.set_target_backend(eq, BackendId::Cpu);
             g.set_target_backend(w, BackendId::Cpu);
@@ -9910,8 +10544,7 @@ mod tests {
         inputs.insert(b_id, Arc::new(RwLock::new(b_storage)));
         inputs.insert(pick_id, Arc::new(RwLock::new(pick_storage)));
         inputs.insert(fb_id, Arc::new(RwLock::new(fb_storage)));
-        let (result_arc, _) =
-            PipelinedExecutor::realize(graph, where_id, inputs).expect("realize");
+        let (result_arc, _) = PipelinedExecutor::realize(graph, where_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
@@ -9942,9 +10575,9 @@ mod tests {
         }
         // Weight tensor is U32-typed (rank-1, length = bytes/4)
         let w_storage = fuel_memory::Storage::new(
-            fuel_memory::BackendStorage::Cpu(
-                fuel_cpu_backend::CpuStorageBytes::from_bytes(&w_bytes),
-            ),
+            fuel_memory::BackendStorage::Cpu(fuel_cpu_backend::CpuStorageBytes::from_bytes(
+                &w_bytes,
+            )),
             DType::U32,
         );
 
@@ -9955,11 +10588,14 @@ mod tests {
         let (act_id, w_id, mm_id) = {
             let mut g = graph.write().unwrap();
             let act = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 32]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 32]),
+                dtype: DType::F32,
             });
             let w = g.push(Node {
-                op: Op::Const, inputs: vec![],
+                op: Op::Const,
+                inputs: vec![],
                 shape: Shape::from_dims(&[w_bytes.len() / 4]),
                 dtype: DType::U32,
             });
@@ -9967,7 +10603,9 @@ mod tests {
                 op: Op::Fused(
                     fuel_graph::registry::FusedOps::QMATMUL,
                     fuel_graph::registry::FusedOpParams::QMatMul {
-                        quant_type: QuantType::Q4_0, k: 32, n: 2,
+                        quant_type: QuantType::Q4_0,
+                        k: 32,
+                        n: 2,
                     },
                 ),
                 inputs: vec![act, w],
@@ -10019,9 +10657,9 @@ mod tests {
         }
         .to_vec();
         let w_storage = fuel_memory::Storage::new(
-            fuel_memory::BackendStorage::Cpu(
-                fuel_cpu_backend::CpuStorageBytes::from_bytes(&w_bytes),
-            ),
+            fuel_memory::BackendStorage::Cpu(fuel_cpu_backend::CpuStorageBytes::from_bytes(
+                &w_bytes,
+            )),
             DType::U32,
         );
         let act_vec: Vec<f32> = (1..=k).map(|x| x as f32).collect();
@@ -10035,11 +10673,14 @@ mod tests {
         let (act_id, w_id, mm_id) = {
             let mut g = graph.write().unwrap();
             let act = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, k]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, k]),
+                dtype: DType::F32,
             });
             let w = g.push(Node {
-                op: Op::Const, inputs: vec![],
+                op: Op::Const,
+                inputs: vec![],
                 shape: Shape::from_dims(&[w_bytes.len() / 4]),
                 dtype: DType::U32,
             });
@@ -10047,7 +10688,9 @@ mod tests {
                 op: Op::Fused(
                     fuel_graph::registry::FusedOps::QMATMUL,
                     fuel_graph::registry::FusedOpParams::QMatMul {
-                        quant_type: QuantType::Q5_0, k, n,
+                        quant_type: QuantType::Q5_0,
+                        k,
+                        n,
                     },
                 ),
                 inputs: vec![act, w],
@@ -10068,8 +10711,11 @@ mod tests {
         let r: &[f32] = c.as_slice().unwrap();
         // Bit-exact against same kernel via the trait, since both
         // paths run fuel_quantized::matmul<BlockQ5_0>.
-        assert_eq!(r, ref_out.as_slice(),
-            "pipelined Q5_0 differs from reference: got {r:?}, want {ref_out:?}");
+        assert_eq!(
+            r,
+            ref_out.as_slice(),
+            "pipelined Q5_0 differs from reference: got {r:?}, want {ref_out:?}"
+        );
     }
 
     /// E2E: QMatMul with Q6K (256-element super-block k-quant).
@@ -10095,9 +10741,9 @@ mod tests {
         }
         .to_vec();
         let w_storage = fuel_memory::Storage::new(
-            fuel_memory::BackendStorage::Cpu(
-                fuel_cpu_backend::CpuStorageBytes::from_bytes(&w_bytes),
-            ),
+            fuel_memory::BackendStorage::Cpu(fuel_cpu_backend::CpuStorageBytes::from_bytes(
+                &w_bytes,
+            )),
             DType::U32,
         );
         let act_vec: Vec<f32> = (1..=k).map(|x| x as f32 / 100.0).collect();
@@ -10110,11 +10756,14 @@ mod tests {
         let (act_id, w_id, mm_id) = {
             let mut g = graph.write().unwrap();
             let act = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, k]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, k]),
+                dtype: DType::F32,
             });
             let w = g.push(Node {
-                op: Op::Const, inputs: vec![],
+                op: Op::Const,
+                inputs: vec![],
                 shape: Shape::from_dims(&[w_bytes.len() / 4]),
                 dtype: DType::U32,
             });
@@ -10122,7 +10771,9 @@ mod tests {
                 op: Op::Fused(
                     fuel_graph::registry::FusedOps::QMATMUL,
                     fuel_graph::registry::FusedOpParams::QMatMul {
-                        quant_type: QuantType::Q6K, k, n,
+                        quant_type: QuantType::Q6K,
+                        k,
+                        n,
                     },
                 ),
                 inputs: vec![act, w],
@@ -10141,8 +10792,11 @@ mod tests {
             panic!("expected Cpu storage");
         };
         let r: &[f32] = c.as_slice().unwrap();
-        assert_eq!(r, ref_out.as_slice(),
-            "pipelined Q6K differs from reference: got {r:?}, want {ref_out:?}");
+        assert_eq!(
+            r,
+            ref_out.as_slice(),
+            "pipelined Q6K differs from reference: got {r:?}, want {ref_out:?}"
+        );
     }
 
     /// E2E: BF16 RmsNormLastDim through the pipelined executor.
@@ -10152,21 +10806,27 @@ mod tests {
     #[test]
     fn pipelined_realize_rms_norm_bf16() {
         let v: Vec<half::bf16> = [3.0_f32, 4.0]
-            .iter().map(|&x| half::bf16::from_f32(x)).collect();
+            .iter()
+            .map(|&x| half::bf16::from_f32(x))
+            .collect();
         let storage = fuel_memory::from_slice_cpu(&v);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, op_id) = {
             let mut g = graph.write().unwrap();
             let in_id = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 2]), dtype: DType::BF16,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 2]),
+                dtype: DType::BF16,
             });
             let op_id = g.push(Node {
                 op: Op::Fused(
                     fuel_graph::registry::FusedOps::RMS_NORM_LAST_DIM,
                     fuel_graph::registry::FusedOpParams::RmsNormLastDim { eps: 0.0 },
-                ), inputs: vec![in_id],
-                shape: Shape::from_dims(&[1, 2]), dtype: DType::BF16,
+                ),
+                inputs: vec![in_id],
+                shape: Shape::from_dims(&[1, 2]),
+                dtype: DType::BF16,
             });
             g.set_target_backend(op_id, BackendId::Cpu);
             (in_id, op_id)
@@ -10193,25 +10853,35 @@ mod tests {
     #[test]
     fn pipelined_realize_matmul_bf16_identity() {
         let lhs_v: Vec<half::bf16> = [1.0_f32, 2.0, 3.0, 4.0]
-            .iter().map(|&x| half::bf16::from_f32(x)).collect();
+            .iter()
+            .map(|&x| half::bf16::from_f32(x))
+            .collect();
         let rhs_v: Vec<half::bf16> = [1.0_f32, 0.0, 0.0, 1.0]
-            .iter().map(|&x| half::bf16::from_f32(x)).collect();
+            .iter()
+            .map(|&x| half::bf16::from_f32(x))
+            .collect();
         let lhs = fuel_memory::from_slice_cpu(&lhs_v);
         let rhs = fuel_memory::from_slice_cpu(&rhs_v);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (l_id, r_id, mm_id) = {
             let mut g = graph.write().unwrap();
             let l = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2, 2]), dtype: DType::BF16,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 2]),
+                dtype: DType::BF16,
             });
             let r = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2, 2]), dtype: DType::BF16,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 2]),
+                dtype: DType::BF16,
             });
             let mm = g.push(Node {
-                op: Op::MatMul, inputs: vec![l, r],
-                shape: Shape::from_dims(&[2, 2]), dtype: DType::BF16,
+                op: Op::MatMul,
+                inputs: vec![l, r],
+                shape: Shape::from_dims(&[2, 2]),
+                dtype: DType::BF16,
             });
             g.set_target_backend(mm, BackendId::Cpu);
             (l, r, mm)
@@ -10235,18 +10905,24 @@ mod tests {
     #[test]
     fn pipelined_realize_sum_dim_f16() {
         let v: Vec<half::f16> = [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]
-            .iter().map(|&x| half::f16::from_f32(x)).collect();
+            .iter()
+            .map(|&x| half::f16::from_f32(x))
+            .collect();
         let storage = fuel_memory::from_slice_cpu(&v);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, sum_id) = {
             let mut g = graph.write().unwrap();
             let in_id = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2, 3]), dtype: DType::F16,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]),
+                dtype: DType::F16,
             });
             let sum_id = g.push(Node {
-                op: Op::SumDim(1), inputs: vec![in_id],
-                shape: Shape::from_dims(&[2]), dtype: DType::F16,
+                op: Op::SumDim(1),
+                inputs: vec![in_id],
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F16,
             });
             g.set_target_backend(sum_id, BackendId::Cpu);
             (in_id, sum_id)
@@ -10268,25 +10944,35 @@ mod tests {
     #[test]
     fn pipelined_realize_add_bf16() {
         let lhs_vec: Vec<half::bf16> = [1.0_f32, 2.0, 3.0]
-            .iter().map(|&x| half::bf16::from_f32(x)).collect();
+            .iter()
+            .map(|&x| half::bf16::from_f32(x))
+            .collect();
         let rhs_vec: Vec<half::bf16> = [10.0_f32, 20.0, 30.0]
-            .iter().map(|&x| half::bf16::from_f32(x)).collect();
+            .iter()
+            .map(|&x| half::bf16::from_f32(x))
+            .collect();
         let lhs = fuel_memory::from_slice_cpu(&lhs_vec);
         let rhs = fuel_memory::from_slice_cpu(&rhs_vec);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (l_id, r_id, op_id) = {
             let mut g = graph.write().unwrap();
             let l = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3]), dtype: DType::BF16,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::BF16,
             });
             let r = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3]), dtype: DType::BF16,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::BF16,
             });
             let op = g.push(Node {
-                op: Op::Add, inputs: vec![l, r],
-                shape: Shape::from_dims(&[3]), dtype: DType::BF16,
+                op: Op::Add,
+                inputs: vec![l, r],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::BF16,
             });
             g.set_target_backend(op, BackendId::Cpu);
             (l, r, op)
@@ -10311,22 +10997,30 @@ mod tests {
     #[test]
     fn pipelined_realize_sqr_then_sqrt_f16() {
         let v: Vec<half::f16> = [1.0_f32, 4.0, 9.0]
-            .iter().map(|&x| half::f16::from_f32(x)).collect();
+            .iter()
+            .map(|&x| half::f16::from_f32(x))
+            .collect();
         let storage = fuel_memory::from_slice_cpu(&v);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, sqrt_id) = {
             let mut g = graph.write().unwrap();
             let in_id = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3]), dtype: DType::F16,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F16,
             });
             let sqr_id = g.push(Node {
-                op: Op::Sqr, inputs: vec![in_id],
-                shape: Shape::from_dims(&[3]), dtype: DType::F16,
+                op: Op::Sqr,
+                inputs: vec![in_id],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F16,
             });
             let sqrt_id = g.push(Node {
-                op: Op::Sqrt, inputs: vec![sqr_id],
-                shape: Shape::from_dims(&[3]), dtype: DType::F16,
+                op: Op::Sqrt,
+                inputs: vec![sqr_id],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F16,
             });
             g.set_target_backend(sqr_id, BackendId::Cpu);
             g.set_target_backend(sqrt_id, BackendId::Cpu);
@@ -10357,12 +11051,16 @@ mod tests {
         let (in_id, sum_id) = {
             let mut g = graph.write().unwrap();
             let in_id = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2, 3]), dtype: DType::F64,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]),
+                dtype: DType::F64,
             });
             let sum_id = g.push(Node {
-                op: Op::SumDim(1), inputs: vec![in_id],
-                shape: Shape::from_dims(&[2]), dtype: DType::F64,
+                op: Op::SumDim(1),
+                inputs: vec![in_id],
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F64,
             });
             g.set_target_backend(sum_id, BackendId::Cpu);
             (in_id, sum_id)
@@ -10387,16 +11085,22 @@ mod tests {
         let (l_id, r_id, mm_id) = {
             let mut g = graph.write().unwrap();
             let l = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2, 3]), dtype: DType::F64,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]),
+                dtype: DType::F64,
             });
             let r = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3, 2]), dtype: DType::F64,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3, 2]),
+                dtype: DType::F64,
             });
             let mm = g.push(Node {
-                op: Op::MatMul, inputs: vec![l, r],
-                shape: Shape::from_dims(&[2, 2]), dtype: DType::F64,
+                op: Op::MatMul,
+                inputs: vec![l, r],
+                shape: Shape::from_dims(&[2, 2]),
+                dtype: DType::F64,
             });
             g.set_target_backend(mm, BackendId::Cpu);
             (l, r, mm)
@@ -10410,7 +11114,10 @@ mod tests {
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
-        assert_eq!(c.as_slice::<f64>().unwrap(), &[58.0_f64, 64.0, 139.0, 154.0]);
+        assert_eq!(
+            c.as_slice::<f64>().unwrap(),
+            &[58.0_f64, 64.0, 139.0, 154.0]
+        );
     }
 
     /// E2E: F64 unary chain — Const + Sqr + Sqrt — verifies that
@@ -10423,16 +11130,22 @@ mod tests {
         let (in_id, sqrt_id) = {
             let mut g = graph.write().unwrap();
             let in_id = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3]), dtype: DType::F64,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F64,
             });
             let sqr_id = g.push(Node {
-                op: Op::Sqr, inputs: vec![in_id],
-                shape: Shape::from_dims(&[3]), dtype: DType::F64,
+                op: Op::Sqr,
+                inputs: vec![in_id],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F64,
             });
             let sqrt_id = g.push(Node {
-                op: Op::Sqrt, inputs: vec![sqr_id],
-                shape: Shape::from_dims(&[3]), dtype: DType::F64,
+                op: Op::Sqrt,
+                inputs: vec![sqr_id],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F64,
             });
             g.set_target_backend(sqr_id, BackendId::Cpu);
             g.set_target_backend(sqrt_id, BackendId::Cpu);
@@ -10459,12 +11172,16 @@ mod tests {
         let (in_id, op_id) = {
             let mut g = graph.write().unwrap();
             let in_id = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]),
+                dtype: DType::F32,
             });
             let op_id = g.push(Node {
-                op: Op::ArgMaxDim(1), inputs: vec![in_id],
-                shape: Shape::from_dims(&[2]), dtype: DType::U32,
+                op: Op::ArgMaxDim(1),
+                inputs: vec![in_id],
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::U32,
             });
             g.set_target_backend(op_id, BackendId::Cpu);
             (in_id, op_id)
@@ -10491,20 +11208,28 @@ mod tests {
         let (b_id, i_id, s_id, op_id) = {
             let mut g = graph.write().unwrap();
             let b = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             let i = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2]), dtype: DType::U32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::U32,
             });
             let s = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F32,
             });
             let op = g.push(Node {
-                op: Op::IndexAdd { dim: 0 }, inputs: vec![b, i, s],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                op: Op::IndexAdd { dim: 0 },
+                inputs: vec![b, i, s],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             g.set_target_backend(op, BackendId::Cpu);
             (b, i, s, op)
@@ -10536,20 +11261,28 @@ mod tests {
         let (b_id, i_id, s_id, op_id) = {
             let mut g = graph.write().unwrap();
             let b = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3, 2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3, 2]),
+                dtype: DType::F32,
             });
             let i = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2, 2]), dtype: DType::U32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 2]),
+                dtype: DType::U32,
             });
             let s = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2, 2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 2]),
+                dtype: DType::F32,
             });
             let op = g.push(Node {
-                op: Op::ScatterAdd { dim: 0 }, inputs: vec![b, i, s],
-                shape: Shape::from_dims(&[3, 2]), dtype: DType::F32,
+                op: Op::ScatterAdd { dim: 0 },
+                inputs: vec![b, i, s],
+                shape: Shape::from_dims(&[3, 2]),
+                dtype: DType::F32,
             });
             g.set_target_backend(op, BackendId::Cpu);
             (b, i, s, op)
@@ -10563,7 +11296,10 @@ mod tests {
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
-        assert_eq!(c.as_slice::<f32>().unwrap(), &[1.0, 4.0, 0.0, 2.0, 3.0, 0.0]);
+        assert_eq!(
+            c.as_slice::<f32>().unwrap(),
+            &[1.0, 4.0, 0.0, 2.0, 3.0, 0.0]
+        );
     }
 
     /// E2E: Rope through the pipelined executor. cos=0, sin=1
@@ -10580,16 +11316,22 @@ mod tests {
         let (x_id, cos_id, sin_id, r_id) = {
             let mut g = graph.write().unwrap();
             let x = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 1, 4]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 4]),
+                dtype: DType::F32,
             });
             let c = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 4]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 4]),
+                dtype: DType::F32,
             });
             let s = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 4]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 4]),
+                dtype: DType::F32,
             });
             let r = g.push(Node {
                 op: Op::Fused(
@@ -10597,7 +11339,8 @@ mod tests {
                     fuel_graph::registry::FusedOpParams::Rope,
                 ),
                 inputs: vec![x, c, s],
-                shape: Shape::from_dims(&[1, 1, 4]), dtype: DType::F32,
+                shape: Shape::from_dims(&[1, 1, 4]),
+                dtype: DType::F32,
             });
             g.set_target_backend(r, BackendId::Cpu);
             (x, c, s, r)
@@ -10618,25 +11361,29 @@ mod tests {
     /// output [2, 3] = picks from each row by per-row indices.
     #[test]
     fn pipelined_realize_gather_inner_dim() {
-        let source = fuel_memory::from_slice_cpu(&[
-            10.0_f32, 20.0, 30.0, 40.0,
-            50.0, 60.0, 70.0, 80.0,
-        ]);
+        let source =
+            fuel_memory::from_slice_cpu(&[10.0_f32, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0]);
         let indices = fuel_memory::from_slice_cpu(&[0u32, 2, 1, 3, 0, 0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (src_id, idx_id, g_id) = {
             let mut g = graph.write().unwrap();
             let s = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2, 4]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 4]),
+                dtype: DType::F32,
             });
             let i = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2, 3]), dtype: DType::U32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]),
+                dtype: DType::U32,
             });
             let g_id = g.push(Node {
-                op: Op::Gather { dim: 1 }, inputs: vec![s, i],
-                shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+                op: Op::Gather { dim: 1 },
+                inputs: vec![s, i],
+                shape: Shape::from_dims(&[2, 3]),
+                dtype: DType::F32,
             });
             g.set_target_backend(g_id, BackendId::Cpu);
             (s, i, g_id)
@@ -10661,26 +11408,32 @@ mod tests {
     #[test]
     fn pipelined_realize_index_select_embedding_lookup() {
         let table = fuel_memory::from_slice_cpu(&[
-            10.0_f32, 11.0, 12.0,    // row 0
-            20.0, 21.0, 22.0,        // row 1
-            30.0, 31.0, 32.0,        // row 2
-            40.0, 41.0, 42.0,        // row 3
+            10.0_f32, 11.0, 12.0, // row 0
+            20.0, 21.0, 22.0, // row 1
+            30.0, 31.0, 32.0, // row 2
+            40.0, 41.0, 42.0, // row 3
         ]);
         let indices = fuel_memory::from_slice_cpu(&[2u32, 0, 2]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (table_id, idx_id, sel_id) = {
             let mut g = graph.write().unwrap();
             let t = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[4, 3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[4, 3]),
+                dtype: DType::F32,
             });
             let i = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3]), dtype: DType::U32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::U32,
             });
             let s = g.push(Node {
-                op: Op::IndexSelect { dim: 0 }, inputs: vec![t, i],
-                shape: Shape::from_dims(&[3, 3]), dtype: DType::F32,
+                op: Op::IndexSelect { dim: 0 },
+                inputs: vec![t, i],
+                shape: Shape::from_dims(&[3, 3]),
+                dtype: DType::F32,
             });
             g.set_target_backend(s, BackendId::Cpu);
             (t, i, s)
@@ -10706,15 +11459,17 @@ mod tests {
     #[test]
     fn pipelined_realize_rms_norm_last_dim() {
         let storage = fuel_memory::from_slice_cpu(&[
-            3.0_f32, 4.0,    // row 0: rms = sqrt(12.5)
-            6.0, 8.0,        // row 1: rms = sqrt(50.0) = 5*sqrt(2)
+            3.0_f32, 4.0, // row 0: rms = sqrt(12.5)
+            6.0, 8.0, // row 1: rms = sqrt(50.0) = 5*sqrt(2)
         ]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, op_id) = {
             let mut g = graph.write().unwrap();
             let in_id = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2, 2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 2]),
+                dtype: DType::F32,
             });
             let op_id = g.push(Node {
                 op: Op::Fused(
@@ -10722,7 +11477,8 @@ mod tests {
                     fuel_graph::registry::FusedOpParams::RmsNormLastDim { eps: 0.0 },
                 ),
                 inputs: vec![in_id],
-                shape: Shape::from_dims(&[2, 2]), dtype: DType::F32,
+                shape: Shape::from_dims(&[2, 2]),
+                dtype: DType::F32,
             });
             g.set_target_backend(op_id, BackendId::Cpu);
             (in_id, op_id)
@@ -10749,16 +11505,15 @@ mod tests {
     /// unit variance.
     #[test]
     fn pipelined_realize_layer_norm_last_dim() {
-        let storage = fuel_memory::from_slice_cpu(&[
-            1.0_f32, 2.0, 3.0,
-            10.0, 20.0, 30.0,
-        ]);
+        let storage = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 10.0, 20.0, 30.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, op_id) = {
             let mut g = graph.write().unwrap();
             let in_id = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]),
+                dtype: DType::F32,
             });
             let op_id = g.push(Node {
                 op: Op::Fused(
@@ -10766,7 +11521,8 @@ mod tests {
                     fuel_graph::registry::FusedOpParams::LayerNormLastDim { eps: 0.0 },
                 ),
                 inputs: vec![in_id],
-                shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+                shape: Shape::from_dims(&[2, 3]),
+                dtype: DType::F32,
             });
             g.set_target_backend(op_id, BackendId::Cpu);
             (in_id, op_id)
@@ -10785,8 +11541,15 @@ mod tests {
             let sum: f32 = result[off..off + 3].iter().sum();
             let mean = sum / 3.0;
             assert!(mean.abs() < 1e-6, "row {row} mean should be 0, got {mean}");
-            let var: f32 = result[off..off + 3].iter().map(|v| (v - mean).powi(2)).sum::<f32>() / 3.0;
-            assert!((var - 1.0).abs() < 1e-6, "row {row} var should be 1, got {var}");
+            let var: f32 = result[off..off + 3]
+                .iter()
+                .map(|v| (v - mean).powi(2))
+                .sum::<f32>()
+                / 3.0;
+            assert!(
+                (var - 1.0).abs() < 1e-6,
+                "row {row} var should be 1, got {var}"
+            );
         }
     }
 
@@ -10796,16 +11559,15 @@ mod tests {
     fn pipelined_realize_softmax_last_dim() {
         // Row 0: [1, 1, 1, 1] → uniform 0.25 each
         // Row 1: [0, 0, 0, 100] → effectively a one-hot at position 3
-        let storage = fuel_memory::from_slice_cpu(&[
-            1.0_f32, 1.0, 1.0, 1.0,
-            0.0, 0.0, 0.0, 100.0,
-        ]);
+        let storage = fuel_memory::from_slice_cpu(&[1.0_f32, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 100.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, op_id) = {
             let mut g = graph.write().unwrap();
             let in_id = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2, 4]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 4]),
+                dtype: DType::F32,
             });
             let op_id = g.push(Node {
                 op: Op::Fused(
@@ -10813,7 +11575,8 @@ mod tests {
                     fuel_graph::registry::FusedOpParams::SoftmaxLastDim,
                 ),
                 inputs: vec![in_id],
-                shape: Shape::from_dims(&[2, 4]), dtype: DType::F32,
+                shape: Shape::from_dims(&[2, 4]),
+                dtype: DType::F32,
             });
             g.set_target_backend(op_id, BackendId::Cpu);
             (in_id, op_id)
@@ -10834,9 +11597,16 @@ mod tests {
         // Row 1: positions 0..3 ≈ 0, position 4 (= last column) ≈ 1
         // (e^100 dominates).
         for v in &result[4..7] {
-            assert!(*v < 1e-30, "row-1 leading positions should be near 0, got {v}");
+            assert!(
+                *v < 1e-30,
+                "row-1 leading positions should be near 0, got {v}"
+            );
         }
-        assert!(result[7] > 0.999, "row-1 last position should dominate, got {}", result[7]);
+        assert!(
+            result[7] > 0.999,
+            "row-1 last position should dominate, got {}",
+            result[7]
+        );
         // Each row sums to 1.
         let row0_sum: f32 = result[..4].iter().sum();
         let row1_sum: f32 = result[4..].iter().sum();
@@ -10853,16 +11623,22 @@ mod tests {
         let (a_id, b_id, c_id) = {
             let mut g = graph.write().unwrap();
             let a = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]),
+                dtype: DType::F32,
             });
             let b = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]),
+                dtype: DType::F32,
             });
             let c = g.push(Node {
-                op: Op::Concat { dim: 1 }, inputs: vec![a, b],
-                shape: Shape::from_dims(&[2, 6]), dtype: DType::F32,
+                op: Op::Concat { dim: 1 },
+                inputs: vec![a, b],
+                shape: Shape::from_dims(&[2, 6]),
+                dtype: DType::F32,
             });
             g.set_target_backend(c, BackendId::Cpu);
             (a, b, c)
@@ -10879,7 +11655,9 @@ mod tests {
         };
         assert_eq!(
             c.as_slice::<f32>().unwrap(),
-            &[1.0, 2.0, 3.0, 7.0, 8.0, 9.0, 4.0, 5.0, 6.0, 10.0, 11.0, 12.0]
+            &[
+                1.0, 2.0, 3.0, 7.0, 8.0, 9.0, 4.0, 5.0, 6.0, 10.0, 11.0, 12.0
+            ]
         );
     }
 
@@ -10894,20 +11672,28 @@ mod tests {
         let (a_id, b_id, c_id, cat_id) = {
             let mut g = graph.write().unwrap();
             let a = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F32,
             });
             let b = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F32,
             });
             let c = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F32,
             });
             let cat = g.push(Node {
-                op: Op::Concat { dim: 0 }, inputs: vec![a, b, c],
-                shape: Shape::from_dims(&[6]), dtype: DType::F32,
+                op: Op::Concat { dim: 0 },
+                inputs: vec![a, b, c],
+                shape: Shape::from_dims(&[6]),
+                dtype: DType::F32,
             });
             g.set_target_backend(cat, BackendId::Cpu);
             (a, b, c, cat)
@@ -10921,7 +11707,10 @@ mod tests {
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
-        assert_eq!(c.as_slice::<f32>().unwrap(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(
+            c.as_slice::<f32>().unwrap(),
+            &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+        );
     }
 
     /// E2E: AddScalar — graph emits Op::AddScalar; the executor
@@ -10933,12 +11722,16 @@ mod tests {
         let (in_id, op_id) = {
             let mut g = graph.write().unwrap();
             let in_id = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             let op_id = g.push(Node {
-                op: Op::AddScalar(10.0), inputs: vec![in_id],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                op: Op::AddScalar(10.0),
+                inputs: vec![in_id],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             g.set_target_backend(op_id, BackendId::Cpu);
             (in_id, op_id)
@@ -10961,12 +11754,19 @@ mod tests {
         let (in_id, op_id) = {
             let mut g = graph.write().unwrap();
             let in_id = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             let op_id = g.push(Node {
-                op: Op::Clamp { min: -2.0, max: 2.0 }, inputs: vec![in_id],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                op: Op::Clamp {
+                    min: -2.0,
+                    max: 2.0,
+                },
+                inputs: vec![in_id],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             g.set_target_backend(op_id, BackendId::Cpu);
             (in_id, op_id)
@@ -10990,16 +11790,22 @@ mod tests {
         let (lhs_id, rhs_id, op_id) = {
             let mut g = graph.write().unwrap();
             let lhs = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             let rhs = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             let op = g.push(Node {
-                op: Op::Maximum, inputs: vec![lhs, rhs],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                op: Op::Maximum,
+                inputs: vec![lhs, rhs],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             g.set_target_backend(op, BackendId::Cpu);
             (lhs, rhs, op)
@@ -11022,29 +11828,32 @@ mod tests {
         // x [1, 1, 3, 3]: [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
         // weight [1, 1, 2, 2]: all-ones
         // → out [1, 1, 2, 2]: [[12, 16], [24, 28]]
-        let x_storage = fuel_memory::from_slice_cpu(&[
-            1.0_f32, 2.0, 3.0,
-            4.0, 5.0, 6.0,
-            7.0, 8.0, 9.0,
-        ]);
+        let x_storage =
+            fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
         let w_storage = fuel_memory::from_slice_cpu(&[1.0_f32, 1.0, 1.0, 1.0]);
 
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (x_id, w_id, c_id) = {
             let mut g = graph.write().unwrap();
             let x = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 1, 3, 3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 3, 3]),
+                dtype: DType::F32,
             });
             let w = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]),
+                dtype: DType::F32,
             });
             let c = g.push(Node {
                 op: Op::Fused(
                     fuel_graph::registry::FusedOps::CONV2D,
                     fuel_graph::registry::FusedOpParams::Conv2D {
-                        stride: (1, 1), padding: (0, 0), groups: 1,
+                        stride: (1, 1),
+                        padding: (0, 0),
+                        groups: 1,
                     },
                 ),
                 inputs: vec![x, w],
@@ -11072,11 +11881,8 @@ mod tests {
     /// E2E: Conv2D with bias (3 inputs).
     #[test]
     fn pipelined_realize_conv2d_with_bias() {
-        let x_storage = fuel_memory::from_slice_cpu(&[
-            1.0_f32, 2.0, 3.0,
-            4.0, 5.0, 6.0,
-            7.0, 8.0, 9.0,
-        ]);
+        let x_storage =
+            fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
         let w_storage = fuel_memory::from_slice_cpu(&[1.0_f32, 1.0, 1.0, 1.0]);
         let bias_storage = fuel_memory::from_slice_cpu(&[100.0_f32]);
 
@@ -11084,22 +11890,30 @@ mod tests {
         let (x_id, w_id, b_id, c_id) = {
             let mut g = graph.write().unwrap();
             let x = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 1, 3, 3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 3, 3]),
+                dtype: DType::F32,
             });
             let w = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]),
+                dtype: DType::F32,
             });
             let b = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1]),
+                dtype: DType::F32,
             });
             let c = g.push(Node {
                 op: Op::Fused(
                     fuel_graph::registry::FusedOps::CONV2D,
                     fuel_graph::registry::FusedOpParams::Conv2D {
-                        stride: (1, 1), padding: (0, 0), groups: 1,
+                        stride: (1, 1),
+                        padding: (0, 0),
+                        groups: 1,
                     },
                 ),
                 inputs: vec![x, w, b],
@@ -11114,8 +11928,7 @@ mod tests {
         inputs.insert(w_id, Arc::new(RwLock::new(w_storage)));
         inputs.insert(b_id, Arc::new(RwLock::new(bias_storage)));
 
-        let (result_arc, _) =
-            PipelinedExecutor::realize(graph, c_id, inputs).expect("realize");
+        let (result_arc, _) = PipelinedExecutor::realize(graph, c_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
@@ -11126,29 +11939,32 @@ mod tests {
     /// E2E: Conv2D in F64 — same 2x2 sum-kernel test as F32, on doubles.
     #[test]
     fn pipelined_realize_conv2d_f64() {
-        let x_storage = fuel_memory::from_slice_cpu(&[
-            1.0_f64, 2.0, 3.0,
-            4.0, 5.0, 6.0,
-            7.0, 8.0, 9.0,
-        ]);
+        let x_storage =
+            fuel_memory::from_slice_cpu(&[1.0_f64, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
         let w_storage = fuel_memory::from_slice_cpu(&[1.0_f64, 1.0, 1.0, 1.0]);
 
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (x_id, w_id, c_id) = {
             let mut g = graph.write().unwrap();
             let x = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 1, 3, 3]), dtype: DType::F64,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 3, 3]),
+                dtype: DType::F64,
             });
             let w = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F64,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]),
+                dtype: DType::F64,
             });
             let c = g.push(Node {
                 op: Op::Fused(
                     fuel_graph::registry::FusedOps::CONV2D,
                     fuel_graph::registry::FusedOpParams::Conv2D {
-                        stride: (1, 1), padding: (0, 0), groups: 1,
+                        stride: (1, 1),
+                        padding: (0, 0),
+                        groups: 1,
                     },
                 ),
                 inputs: vec![x, w],
@@ -11173,9 +11989,13 @@ mod tests {
     #[test]
     fn pipelined_realize_conv2d_bf16() {
         let x_data: Vec<half::bf16> = [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]
-            .iter().map(|v| half::bf16::from_f32(*v)).collect();
+            .iter()
+            .map(|v| half::bf16::from_f32(*v))
+            .collect();
         let w_data: Vec<half::bf16> = [1.0_f32, 1.0, 1.0, 1.0]
-            .iter().map(|v| half::bf16::from_f32(*v)).collect();
+            .iter()
+            .map(|v| half::bf16::from_f32(*v))
+            .collect();
         let x_storage = fuel_memory::from_slice_cpu(&x_data);
         let w_storage = fuel_memory::from_slice_cpu(&w_data);
 
@@ -11183,18 +12003,24 @@ mod tests {
         let (x_id, w_id, c_id) = {
             let mut g = graph.write().unwrap();
             let x = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 1, 3, 3]), dtype: DType::BF16,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 3, 3]),
+                dtype: DType::BF16,
             });
             let w = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::BF16,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]),
+                dtype: DType::BF16,
             });
             let c = g.push(Node {
                 op: Op::Fused(
                     fuel_graph::registry::FusedOps::CONV2D,
                     fuel_graph::registry::FusedOpParams::Conv2D {
-                        stride: (1, 1), padding: (0, 0), groups: 1,
+                        stride: (1, 1),
+                        padding: (0, 0),
+                        groups: 1,
                     },
                 ),
                 inputs: vec![x, w],
@@ -11212,8 +12038,12 @@ mod tests {
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
-        let got: Vec<f32> = c.as_slice::<half::bf16>().unwrap()
-            .iter().map(|v| v.to_f32()).collect();
+        let got: Vec<f32> = c
+            .as_slice::<half::bf16>()
+            .unwrap()
+            .iter()
+            .map(|v| v.to_f32())
+            .collect();
         let want = [12.0_f32, 16.0, 24.0, 28.0];
         for (g, w) in got.iter().zip(want.iter()) {
             assert!((g - w).abs() < 0.5, "got {got:?} want {want:?}");
@@ -11224,9 +12054,13 @@ mod tests {
     #[test]
     fn pipelined_realize_conv2d_f16() {
         let x_data: Vec<half::f16> = [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]
-            .iter().map(|v| half::f16::from_f32(*v)).collect();
+            .iter()
+            .map(|v| half::f16::from_f32(*v))
+            .collect();
         let w_data: Vec<half::f16> = [1.0_f32, 1.0, 1.0, 1.0]
-            .iter().map(|v| half::f16::from_f32(*v)).collect();
+            .iter()
+            .map(|v| half::f16::from_f32(*v))
+            .collect();
         let x_storage = fuel_memory::from_slice_cpu(&x_data);
         let w_storage = fuel_memory::from_slice_cpu(&w_data);
 
@@ -11234,18 +12068,24 @@ mod tests {
         let (x_id, w_id, c_id) = {
             let mut g = graph.write().unwrap();
             let x = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 1, 3, 3]), dtype: DType::F16,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 3, 3]),
+                dtype: DType::F16,
             });
             let w = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F16,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]),
+                dtype: DType::F16,
             });
             let c = g.push(Node {
                 op: Op::Fused(
                     fuel_graph::registry::FusedOps::CONV2D,
                     fuel_graph::registry::FusedOpParams::Conv2D {
-                        stride: (1, 1), padding: (0, 0), groups: 1,
+                        stride: (1, 1),
+                        padding: (0, 0),
+                        groups: 1,
                     },
                 ),
                 inputs: vec![x, w],
@@ -11263,8 +12103,12 @@ mod tests {
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
-        let got: Vec<f32> = c.as_slice::<half::f16>().unwrap()
-            .iter().map(|v| v.to_f32()).collect();
+        let got: Vec<f32> = c
+            .as_slice::<half::f16>()
+            .unwrap()
+            .iter()
+            .map(|v| v.to_f32())
+            .collect();
         let want = [12.0_f32, 16.0, 24.0, 28.0];
         for (g, w) in got.iter().zip(want.iter()) {
             assert!((g - w).abs() < 0.05, "got {got:?} want {want:?}");
@@ -11291,49 +12135,62 @@ mod tests {
         let k_cache = fuel_memory::from_slice_cpu(&[1.0_f32, 0.0, 0.0, 1.0]);
         let v_cache = fuel_memory::from_slice_cpu(&[10.0_f32, 0.0, 0.0, 10.0]);
         let block_table_u32 = fuel_memory::Storage::new(
-            fuel_memory::BackendStorage::Cpu(
-                fuel_cpu_backend::CpuStorageBytes::from_slice(&[0_u32]),
-            ),
+            fuel_memory::BackendStorage::Cpu(fuel_cpu_backend::CpuStorageBytes::from_slice(&[
+                0_u32,
+            ])),
             DType::U32,
         );
         let context_lens_u32 = fuel_memory::Storage::new(
-            fuel_memory::BackendStorage::Cpu(
-                fuel_cpu_backend::CpuStorageBytes::from_slice(&[2_u32]),
-            ),
+            fuel_memory::BackendStorage::Cpu(fuel_cpu_backend::CpuStorageBytes::from_slice(&[
+                2_u32,
+            ])),
             DType::U32,
         );
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (q_id, kc_id, vc_id, bt_id, cl_id, op_id) = {
             let mut g = graph.write().unwrap();
             let q = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 1, 1, 2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 1, 2]),
+                dtype: DType::F32,
             });
             let kc = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 2, 1, 2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 2, 1, 2]),
+                dtype: DType::F32,
             });
             let vc = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 2, 1, 2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 2, 1, 2]),
+                dtype: DType::F32,
             });
             let bt = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 1]), dtype: DType::U32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 1]),
+                dtype: DType::U32,
             });
             let cl = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1]), dtype: DType::U32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1]),
+                dtype: DType::U32,
             });
             let op = g.push(Node {
                 op: Op::Fused(
                     fuel_graph::registry::FusedOps::PAGED_ATTN,
                     fuel_graph::registry::FusedOpParams::PagedAttn {
-                        softmax_scale: 1.0, block_size: 2, softcap: None,
+                        softmax_scale: 1.0,
+                        block_size: 2,
+                        softcap: None,
                     },
                 ),
                 inputs: vec![q, kc, vc, bt, cl],
-                shape: Shape::from_dims(&[1, 1, 1, 2]), dtype: DType::F32,
+                shape: Shape::from_dims(&[1, 1, 1, 2]),
+                dtype: DType::F32,
             });
             g.set_target_backend(op, BackendId::Cpu);
             (q, kc, vc, bt, cl, op)
@@ -11352,68 +12209,95 @@ mod tests {
         let r = c.as_slice::<f32>().unwrap();
         let expected_p0 = 2.0_f32.exp() / (2.0_f32.exp() + 1.0);
         let expected_p1 = 1.0_f32 / (2.0_f32.exp() + 1.0);
-        assert!((r[0] - 10.0 * expected_p0).abs() < 1e-5,
-            "row[0]: got {} expected {}", r[0], 10.0 * expected_p0);
-        assert!((r[1] - 10.0 * expected_p1).abs() < 1e-5,
-            "row[1]: got {} expected {}", r[1], 10.0 * expected_p1);
+        assert!(
+            (r[0] - 10.0 * expected_p0).abs() < 1e-5,
+            "row[0]: got {} expected {}",
+            r[0],
+            10.0 * expected_p0
+        );
+        assert!(
+            (r[1] - 10.0 * expected_p1).abs() < 1e-5,
+            "row[1]: got {} expected {}",
+            r[1],
+            10.0 * expected_p1
+        );
     }
 
     /// E2E: PagedAttn BF16 — same single-row test, tolerant.
     #[test]
     fn pipelined_realize_paged_attn_bf16() {
         let q_v: Vec<half::bf16> = [2.0_f32, 0.0]
-            .iter().map(|x| half::bf16::from_f32(*x)).collect();
+            .iter()
+            .map(|x| half::bf16::from_f32(*x))
+            .collect();
         let kc_v: Vec<half::bf16> = [1.0_f32, 0.0, 0.0, 1.0]
-            .iter().map(|x| half::bf16::from_f32(*x)).collect();
+            .iter()
+            .map(|x| half::bf16::from_f32(*x))
+            .collect();
         let vc_v: Vec<half::bf16> = [10.0_f32, 0.0, 0.0, 10.0]
-            .iter().map(|x| half::bf16::from_f32(*x)).collect();
+            .iter()
+            .map(|x| half::bf16::from_f32(*x))
+            .collect();
         let q = fuel_memory::from_slice_cpu(&q_v);
         let k_cache = fuel_memory::from_slice_cpu(&kc_v);
         let v_cache = fuel_memory::from_slice_cpu(&vc_v);
         let bt = fuel_memory::Storage::new(
-            fuel_memory::BackendStorage::Cpu(
-                fuel_cpu_backend::CpuStorageBytes::from_slice(&[0_u32]),
-            ),
+            fuel_memory::BackendStorage::Cpu(fuel_cpu_backend::CpuStorageBytes::from_slice(&[
+                0_u32,
+            ])),
             DType::U32,
         );
         let cl = fuel_memory::Storage::new(
-            fuel_memory::BackendStorage::Cpu(
-                fuel_cpu_backend::CpuStorageBytes::from_slice(&[2_u32]),
-            ),
+            fuel_memory::BackendStorage::Cpu(fuel_cpu_backend::CpuStorageBytes::from_slice(&[
+                2_u32,
+            ])),
             DType::U32,
         );
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (q_id, kc_id, vc_id, bt_id, cl_id, op_id) = {
             let mut g = graph.write().unwrap();
             let q = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 1, 1, 2]), dtype: DType::BF16,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 1, 2]),
+                dtype: DType::BF16,
             });
             let kc = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 2, 1, 2]), dtype: DType::BF16,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 2, 1, 2]),
+                dtype: DType::BF16,
             });
             let vc = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 2, 1, 2]), dtype: DType::BF16,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 2, 1, 2]),
+                dtype: DType::BF16,
             });
             let bt = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 1]), dtype: DType::U32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 1]),
+                dtype: DType::U32,
             });
             let cl = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1]), dtype: DType::U32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1]),
+                dtype: DType::U32,
             });
             let op = g.push(Node {
                 op: Op::Fused(
                     fuel_graph::registry::FusedOps::PAGED_ATTN,
                     fuel_graph::registry::FusedOpParams::PagedAttn {
-                        softmax_scale: 1.0, block_size: 2, softcap: None,
+                        softmax_scale: 1.0,
+                        block_size: 2,
+                        softcap: None,
                     },
                 ),
                 inputs: vec![q, kc, vc, bt, cl],
-                shape: Shape::from_dims(&[1, 1, 1, 2]), dtype: DType::BF16,
+                shape: Shape::from_dims(&[1, 1, 1, 2]),
+                dtype: DType::BF16,
             });
             g.set_target_backend(op, BackendId::Cpu);
             (q, kc, vc, bt, cl, op)
@@ -11429,7 +12313,12 @@ mod tests {
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
-        let got: Vec<f32> = c.as_slice::<half::bf16>().unwrap().iter().map(|v| v.to_f32()).collect();
+        let got: Vec<f32> = c
+            .as_slice::<half::bf16>()
+            .unwrap()
+            .iter()
+            .map(|v| v.to_f32())
+            .collect();
         let expected_p0 = 2.0_f32.exp() / (2.0_f32.exp() + 1.0);
         let expected_p1 = 1.0_f32 / (2.0_f32.exp() + 1.0);
         let want = [10.0 * expected_p0, 10.0 * expected_p1];
@@ -11454,16 +12343,22 @@ mod tests {
         let (q_id, k_id, v_id, op_id) = {
             let mut g = graph.write().unwrap();
             let q = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 1, 1, 2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 1, 2]),
+                dtype: DType::F32,
             });
             let k = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]),
+                dtype: DType::F32,
             });
             let v = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]),
+                dtype: DType::F32,
             });
             let op = g.push(Node {
                 op: Op::Fused(
@@ -11496,10 +12391,18 @@ mod tests {
         let r = c.as_slice::<f32>().unwrap();
         let expected_p0 = 2.0_f32.exp() / (2.0_f32.exp() + 1.0);
         let expected_p1 = 1.0_f32 / (2.0_f32.exp() + 1.0);
-        assert!((r[0] - 10.0 * expected_p0).abs() < 1e-5,
-            "row[0]: got {} expected {}", r[0], 10.0 * expected_p0);
-        assert!((r[1] - 10.0 * expected_p1).abs() < 1e-5,
-            "row[1]: got {} expected {}", r[1], 10.0 * expected_p1);
+        assert!(
+            (r[0] - 10.0 * expected_p0).abs() < 1e-5,
+            "row[0]: got {} expected {}",
+            r[0],
+            10.0 * expected_p0
+        );
+        assert!(
+            (r[1] - 10.0 * expected_p1).abs() < 1e-5,
+            "row[1]: got {} expected {}",
+            r[1],
+            10.0 * expected_p1
+        );
     }
 
     /// E2E: FlashAttn with causal mask — second query position
@@ -11522,29 +12425,38 @@ mod tests {
         let (q_id, k_id, v_id, op_id) = {
             let mut g = graph.write().unwrap();
             let q = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]),
+                dtype: DType::F32,
             });
             let k = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]),
+                dtype: DType::F32,
             });
             let v = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]),
+                dtype: DType::F32,
             });
             let op = g.push(Node {
                 op: Op::Fused(
                     fuel_graph::registry::FusedOps::FLASH_ATTN,
                     fuel_graph::registry::FusedOpParams::FlashAttn {
-                        softmax_scale: 1.0, causal: true,
-                        window_size_left: None, window_size_right: None,
+                        softmax_scale: 1.0,
+                        causal: true,
+                        window_size_left: None,
+                        window_size_right: None,
                         softcap: None,
                         k_len: None,
                     },
                 ),
                 inputs: vec![q, k, v],
-                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F32,
+                shape: Shape::from_dims(&[1, 1, 2, 2]),
+                dtype: DType::F32,
             });
             g.set_target_backend(op, BackendId::Cpu);
             (q, k, v, op)
@@ -11566,8 +12478,18 @@ mod tests {
         let denom = (1.0_f32).exp() + 1.0;
         let expected_a = 5.0 / denom + 7.0 * (1.0_f32).exp() / denom;
         let expected_b = 6.0 / denom + 8.0 * (1.0_f32).exp() / denom;
-        assert!((r[2] - expected_a).abs() < 1e-5, "row1[0]: got {} expected {}", r[2], expected_a);
-        assert!((r[3] - expected_b).abs() < 1e-5, "row1[1]: got {} expected {}", r[3], expected_b);
+        assert!(
+            (r[2] - expected_a).abs() < 1e-5,
+            "row1[0]: got {} expected {}",
+            r[2],
+            expected_a
+        );
+        assert!(
+            (r[3] - expected_b).abs() < 1e-5,
+            "row1[1]: got {} expected {}",
+            r[3],
+            expected_b
+        );
     }
 
     /// E2E: FlashAttn over a fixed-**capacity** K/V with a runtime
@@ -11582,47 +12504,52 @@ mod tests {
         use fuel_ir::{DynScalar, SymId};
         // q [1,1,2,2]; K/V capacity [1,1,4,2]; bind k_len = 3 so row 3
         // (the "poison" row) is never attended.
-        let q = fuel_memory::from_slice_cpu(&[1.0_f32, 0.0,  0.0, 1.0]);
+        let q = fuel_memory::from_slice_cpu(&[1.0_f32, 0.0, 0.0, 1.0]);
         let k = fuel_memory::from_slice_cpu(&[
-            1.0_f32, 0.0,
-            0.0,     1.0,
-            1.0,     1.0,
-            100.0,   100.0,   // poison row 3 — must be ignored (k_len=3)
+            1.0_f32, 0.0, 0.0, 1.0, 1.0, 1.0, 100.0,
+            100.0, // poison row 3 — must be ignored (k_len=3)
         ]);
         let v = fuel_memory::from_slice_cpu(&[
-            5.0_f32, 6.0,
-            7.0,     8.0,
-            9.0,     10.0,
-            999.0,   999.0,   // poison row 3 — must be ignored
+            5.0_f32, 6.0, 7.0, 8.0, 9.0, 10.0, 999.0,
+            999.0, // poison row 3 — must be ignored
         ]);
         let sym = SymId(0);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (q_id, k_id, v_id, op_id) = {
             let mut g = graph.write().unwrap();
             let q = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]),
+                dtype: DType::F32,
             });
             let k = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 1, 4, 2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 4, 2]),
+                dtype: DType::F32,
             });
             let v = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 1, 4, 2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 4, 2]),
+                dtype: DType::F32,
             });
             let op = g.push(Node {
                 op: Op::Fused(
                     fuel_graph::registry::FusedOps::FLASH_ATTN,
                     fuel_graph::registry::FusedOpParams::FlashAttn {
-                        softmax_scale: 1.0, causal: true,
-                        window_size_left: None, window_size_right: None,
+                        softmax_scale: 1.0,
+                        causal: true,
+                        window_size_left: None,
+                        window_size_right: None,
                         softcap: None,
                         k_len: Some(DynScalar::Sym(sym)),
                     },
                 ),
                 inputs: vec![q, k, v],
-                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F32,
+                shape: Shape::from_dims(&[1, 1, 2, 2]),
+                dtype: DType::F32,
             });
             g.set_target_backend(op, BackendId::Cpu);
             (q, k, v, op)
@@ -11633,9 +12560,8 @@ mod tests {
         inputs.insert(v_id, Arc::new(RwLock::new(v)));
         let mut env = SymEnv::new();
         env.bind(sym, 3).unwrap();
-        let (result_arc, _) =
-            PipelinedExecutor::realize_with_env(graph, op_id, inputs, env)
-                .expect("realize_with_env");
+        let (result_arc, _) = PipelinedExecutor::realize_with_env(graph, op_id, inputs, env)
+            .expect("realize_with_env");
         let guard = result_arc.read().unwrap();
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
@@ -11671,21 +12597,39 @@ mod tests {
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (q_id, k_id, v_id, op_id) = {
             let mut g = graph.write().unwrap();
-            let q = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F32 });
-            let k = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[1, 1, 4, 2]), dtype: DType::F32 });
-            let v = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[1, 1, 4, 2]), dtype: DType::F32 });
+            let q = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]),
+                dtype: DType::F32,
+            });
+            let k = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 4, 2]),
+                dtype: DType::F32,
+            });
+            let v = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 4, 2]),
+                dtype: DType::F32,
+            });
             let op = g.push(Node {
                 op: Op::Fused(
                     fuel_graph::registry::FusedOps::FLASH_ATTN,
                     fuel_graph::registry::FusedOpParams::FlashAttn {
-                        softmax_scale: 1.0, causal: true,
-                        window_size_left: None, window_size_right: None,
+                        softmax_scale: 1.0,
+                        causal: true,
+                        window_size_left: None,
+                        window_size_right: None,
                         softcap: None,
                         k_len: Some(DynScalar::Sym(SymId(0))),
                     },
                 ),
                 inputs: vec![q, k, v],
-                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F32,
+                shape: Shape::from_dims(&[1, 1, 2, 2]),
+                dtype: DType::F32,
             });
             g.set_target_backend(op, BackendId::Cpu);
             (q, k, v, op)
@@ -11696,18 +12640,27 @@ mod tests {
         inputs.insert(v_id, Arc::new(RwLock::new(v)));
         // Empty env — the k_len symbol is unbound.
         let result = PipelinedExecutor::realize_with_env(graph, op_id, inputs, SymEnv::new());
-        assert!(result.is_err(), "unbound flash k_len symbol must surface a typed error");
+        assert!(
+            result.is_err(),
+            "unbound flash k_len symbol must surface a typed error"
+        );
     }
 
     /// E2E: FlashAttn BF16 — same single-row test as f32, tolerant.
     #[test]
     fn pipelined_realize_flash_attn_bf16() {
         let q_v: Vec<half::bf16> = [2.0_f32, 0.0]
-            .iter().map(|x| half::bf16::from_f32(*x)).collect();
+            .iter()
+            .map(|x| half::bf16::from_f32(*x))
+            .collect();
         let k_v: Vec<half::bf16> = [1.0_f32, 0.0, 0.0, 1.0]
-            .iter().map(|x| half::bf16::from_f32(*x)).collect();
+            .iter()
+            .map(|x| half::bf16::from_f32(*x))
+            .collect();
         let v_v: Vec<half::bf16> = [10.0_f32, 0.0, 0.0, 10.0]
-            .iter().map(|x| half::bf16::from_f32(*x)).collect();
+            .iter()
+            .map(|x| half::bf16::from_f32(*x))
+            .collect();
         let q = fuel_memory::from_slice_cpu(&q_v);
         let k = fuel_memory::from_slice_cpu(&k_v);
         let v = fuel_memory::from_slice_cpu(&v_v);
@@ -11715,29 +12668,38 @@ mod tests {
         let (q_id, k_id, v_id, op_id) = {
             let mut g = graph.write().unwrap();
             let q = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 1, 1, 2]), dtype: DType::BF16,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 1, 2]),
+                dtype: DType::BF16,
             });
             let k = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::BF16,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]),
+                dtype: DType::BF16,
             });
             let v = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::BF16,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]),
+                dtype: DType::BF16,
             });
             let op = g.push(Node {
                 op: Op::Fused(
                     fuel_graph::registry::FusedOps::FLASH_ATTN,
                     fuel_graph::registry::FusedOpParams::FlashAttn {
-                        softmax_scale: 1.0, causal: false,
-                        window_size_left: None, window_size_right: None,
+                        softmax_scale: 1.0,
+                        causal: false,
+                        window_size_left: None,
+                        window_size_right: None,
                         softcap: None,
                         k_len: None,
                     },
                 ),
                 inputs: vec![q, k, v],
-                shape: Shape::from_dims(&[1, 1, 1, 2]), dtype: DType::BF16,
+                shape: Shape::from_dims(&[1, 1, 1, 2]),
+                dtype: DType::BF16,
             });
             g.set_target_backend(op, BackendId::Cpu);
             (q, k, v, op)
@@ -11751,7 +12713,12 @@ mod tests {
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
-        let got: Vec<f32> = c.as_slice::<half::bf16>().unwrap().iter().map(|v| v.to_f32()).collect();
+        let got: Vec<f32> = c
+            .as_slice::<half::bf16>()
+            .unwrap()
+            .iter()
+            .map(|v| v.to_f32())
+            .collect();
         let expected_p0 = 2.0_f32.exp() / (2.0_f32.exp() + 1.0);
         let expected_p1 = 1.0_f32 / (2.0_f32.exp() + 1.0);
         let want = [10.0 * expected_p0, 10.0 * expected_p1];
@@ -11773,16 +12740,22 @@ mod tests {
         let (a_id, b_id, bias_id, op_id) = {
             let mut g = graph.write().unwrap();
             let a = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 2, 3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 2, 3]),
+                dtype: DType::F32,
             });
             let b = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 3, 2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 3, 2]),
+                dtype: DType::F32,
             });
             let bias = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F32,
             });
             let op = g.push(Node {
                 op: Op::Fused(
@@ -11790,7 +12763,8 @@ mod tests {
                     fuel_graph::registry::FusedOpParams::FusedLinear,
                 ),
                 inputs: vec![a, b, bias],
-                shape: Shape::from_dims(&[1, 2, 2]), dtype: DType::F32,
+                shape: Shape::from_dims(&[1, 2, 2]),
+                dtype: DType::F32,
             });
             g.set_target_backend(op, BackendId::Cpu);
             (a, b, bias, op)
@@ -11817,16 +12791,22 @@ mod tests {
         let (a_id, b_id, bias_id, op_id) = {
             let mut g = graph.write().unwrap();
             let a = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 2, 3]), dtype: DType::F64,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 2, 3]),
+                dtype: DType::F64,
             });
             let b = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 3, 2]), dtype: DType::F64,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 3, 2]),
+                dtype: DType::F64,
             });
             let bias = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2]), dtype: DType::F64,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F64,
             });
             let op = g.push(Node {
                 op: Op::Fused(
@@ -11834,7 +12814,8 @@ mod tests {
                     fuel_graph::registry::FusedOpParams::FusedLinear,
                 ),
                 inputs: vec![a, b, bias],
-                shape: Shape::from_dims(&[1, 2, 2]), dtype: DType::F64,
+                shape: Shape::from_dims(&[1, 2, 2]),
+                dtype: DType::F64,
             });
             g.set_target_backend(op, BackendId::Cpu);
             (a, b, bias, op)
@@ -11855,11 +12836,17 @@ mod tests {
     #[test]
     fn pipelined_realize_fused_linear_bf16() {
         let a_v: Vec<half::bf16> = [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]
-            .iter().map(|x| half::bf16::from_f32(*x)).collect();
+            .iter()
+            .map(|x| half::bf16::from_f32(*x))
+            .collect();
         let b_v: Vec<half::bf16> = [1.0_f32, 0.0, 0.0, 1.0, 1.0, 1.0]
-            .iter().map(|x| half::bf16::from_f32(*x)).collect();
+            .iter()
+            .map(|x| half::bf16::from_f32(*x))
+            .collect();
         let bias_v: Vec<half::bf16> = [10.0_f32, 20.0]
-            .iter().map(|x| half::bf16::from_f32(*x)).collect();
+            .iter()
+            .map(|x| half::bf16::from_f32(*x))
+            .collect();
         let a = fuel_memory::from_slice_cpu(&a_v);
         let b = fuel_memory::from_slice_cpu(&b_v);
         let bias = fuel_memory::from_slice_cpu(&bias_v);
@@ -11867,16 +12854,22 @@ mod tests {
         let (a_id, b_id, bias_id, op_id) = {
             let mut g = graph.write().unwrap();
             let a = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 2, 3]), dtype: DType::BF16,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 2, 3]),
+                dtype: DType::BF16,
             });
             let b = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 3, 2]), dtype: DType::BF16,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 3, 2]),
+                dtype: DType::BF16,
             });
             let bias = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2]), dtype: DType::BF16,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::BF16,
             });
             let op = g.push(Node {
                 op: Op::Fused(
@@ -11884,7 +12877,8 @@ mod tests {
                     fuel_graph::registry::FusedOpParams::FusedLinear,
                 ),
                 inputs: vec![a, b, bias],
-                shape: Shape::from_dims(&[1, 2, 2]), dtype: DType::BF16,
+                shape: Shape::from_dims(&[1, 2, 2]),
+                dtype: DType::BF16,
             });
             g.set_target_backend(op, BackendId::Cpu);
             (a, b, bias, op)
@@ -11898,7 +12892,12 @@ mod tests {
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
-        let got: Vec<f32> = c.as_slice::<half::bf16>().unwrap().iter().map(|v| v.to_f32()).collect();
+        let got: Vec<f32> = c
+            .as_slice::<half::bf16>()
+            .unwrap()
+            .iter()
+            .map(|v| v.to_f32())
+            .collect();
         let want = [14.0_f32, 25.0, 20.0, 31.0];
         for (g, w) in got.iter().zip(want.iter()) {
             assert!((g - w).abs() < 0.5, "got {got:?} want {want:?}");
@@ -11914,13 +12913,16 @@ mod tests {
         let (in_id, op_id) = {
             let mut g = graph.write().unwrap();
             let in_id = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]),
+                dtype: DType::F32,
             });
             let op_id = g.push(Node {
                 op: Op::ReduceSumTo(Shape::from_dims(&[3])),
                 inputs: vec![in_id],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             g.set_target_backend(op_id, BackendId::Cpu);
             (in_id, op_id)
@@ -11948,13 +12950,16 @@ mod tests {
         let (in_id, op_id) = {
             let mut g = graph.write().unwrap();
             let in_id = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2, 3, 4]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 3, 4]),
+                dtype: DType::F32,
             });
             let op_id = g.push(Node {
                 op: Op::ReduceSumTo(Shape::from_dims(&[2, 1, 4])),
                 inputs: vec![in_id],
-                shape: Shape::from_dims(&[2, 1, 4]), dtype: DType::F32,
+                shape: Shape::from_dims(&[2, 1, 4]),
+                dtype: DType::F32,
             });
             g.set_target_backend(op_id, BackendId::Cpu);
             (in_id, op_id)
@@ -11982,13 +12987,16 @@ mod tests {
         let (in_id, op_id) = {
             let mut g = graph.write().unwrap();
             let in_id = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2, 3]), dtype: DType::F64,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]),
+                dtype: DType::F64,
             });
             let op_id = g.push(Node {
                 op: Op::ReduceSumTo(Shape::from_dims(&[3])),
                 inputs: vec![in_id],
-                shape: Shape::from_dims(&[3]), dtype: DType::F64,
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F64,
             });
             g.set_target_backend(op_id, BackendId::Cpu);
             (in_id, op_id)
@@ -12013,13 +13021,16 @@ mod tests {
         let (in_id, op_id) = {
             let mut g = graph.write().unwrap();
             let in_id = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]),
+                dtype: DType::F32,
             });
             let op_id = g.push(Node {
                 op: Op::ReduceMaxTo(Shape::from_dims(&[3])),
                 inputs: vec![in_id],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             g.set_target_backend(op_id, BackendId::Cpu);
             (in_id, op_id)
@@ -12045,13 +13056,16 @@ mod tests {
         let (in_id, op_id) = {
             let mut g = graph.write().unwrap();
             let in_id = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]),
+                dtype: DType::F32,
             });
             let op_id = g.push(Node {
                 op: Op::ReduceMaxTo(Shape::from_dims(&[2, 1])),
                 inputs: vec![in_id],
-                shape: Shape::from_dims(&[2, 1]), dtype: DType::F32,
+                shape: Shape::from_dims(&[2, 1]),
+                dtype: DType::F32,
             });
             g.set_target_backend(op_id, BackendId::Cpu);
             (in_id, op_id)
@@ -12070,19 +13084,24 @@ mod tests {
     #[test]
     fn pipelined_realize_reduce_sum_to_bf16() {
         let v: Vec<half::bf16> = [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]
-            .iter().map(|x| half::bf16::from_f32(*x)).collect();
+            .iter()
+            .map(|x| half::bf16::from_f32(*x))
+            .collect();
         let s = fuel_memory::from_slice_cpu(&v);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, op_id) = {
             let mut g = graph.write().unwrap();
             let in_id = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2, 3]), dtype: DType::BF16,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]),
+                dtype: DType::BF16,
             });
             let op_id = g.push(Node {
                 op: Op::ReduceSumTo(Shape::from_dims(&[3])),
                 inputs: vec![in_id],
-                shape: Shape::from_dims(&[3]), dtype: DType::BF16,
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::BF16,
             });
             g.set_target_backend(op_id, BackendId::Cpu);
             (in_id, op_id)
@@ -12094,7 +13113,12 @@ mod tests {
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
-        let got: Vec<f32> = c.as_slice::<half::bf16>().unwrap().iter().map(|v| v.to_f32()).collect();
+        let got: Vec<f32> = c
+            .as_slice::<half::bf16>()
+            .unwrap()
+            .iter()
+            .map(|v| v.to_f32())
+            .collect();
         let want = [5.0_f32, 7.0, 9.0];
         for (g, w) in got.iter().zip(want.iter()) {
             assert!((g - w).abs() < 0.5, "got {got:?} want {want:?}");
@@ -12116,19 +13140,26 @@ mod tests {
         let (x_id, w_id, c_id) = {
             let mut g = graph.write().unwrap();
             let x = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]),
+                dtype: DType::F32,
             });
             let w = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]),
+                dtype: DType::F32,
             });
             let c = g.push(Node {
                 op: Op::Fused(
                     fuel_graph::registry::FusedOps::CONV_TRANSPOSE2D,
                     fuel_graph::registry::FusedOpParams::ConvTranspose2D {
-                        stride: (1, 1), padding: (0, 0),
-                        output_padding: (0, 0), dilation: (1, 1), groups: 1,
+                        stride: (1, 1),
+                        padding: (0, 0),
+                        output_padding: (0, 0),
+                        dilation: (1, 1),
+                        groups: 1,
                     },
                 ),
                 inputs: vec![x, w],
@@ -12161,19 +13192,26 @@ mod tests {
         let (x_id, w_id, c_id) = {
             let mut g = graph.write().unwrap();
             let x = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F64,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]),
+                dtype: DType::F64,
             });
             let w = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F64,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]),
+                dtype: DType::F64,
             });
             let c = g.push(Node {
                 op: Op::Fused(
                     fuel_graph::registry::FusedOps::CONV_TRANSPOSE2D,
                     fuel_graph::registry::FusedOpParams::ConvTranspose2D {
-                        stride: (1, 1), padding: (0, 0),
-                        output_padding: (0, 0), dilation: (1, 1), groups: 1,
+                        stride: (1, 1),
+                        padding: (0, 0),
+                        output_padding: (0, 0),
+                        dilation: (1, 1),
+                        groups: 1,
                     },
                 ),
                 inputs: vec![x, w],
@@ -12201,28 +13239,39 @@ mod tests {
     #[test]
     fn pipelined_realize_conv_transpose2d_bf16() {
         let x: Vec<half::bf16> = [1.0_f32, 2.0, 3.0, 4.0]
-            .iter().map(|v| half::bf16::from_f32(*v)).collect();
+            .iter()
+            .map(|v| half::bf16::from_f32(*v))
+            .collect();
         let w: Vec<half::bf16> = [1.0_f32, 1.0, 1.0, 1.0]
-            .iter().map(|v| half::bf16::from_f32(*v)).collect();
+            .iter()
+            .map(|v| half::bf16::from_f32(*v))
+            .collect();
         let x_storage = fuel_memory::from_slice_cpu(&x);
         let w_storage = fuel_memory::from_slice_cpu(&w);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (x_id, w_id, c_id) = {
             let mut g = graph.write().unwrap();
             let x = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::BF16,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]),
+                dtype: DType::BF16,
             });
             let w = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::BF16,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]),
+                dtype: DType::BF16,
             });
             let c = g.push(Node {
                 op: Op::Fused(
                     fuel_graph::registry::FusedOps::CONV_TRANSPOSE2D,
                     fuel_graph::registry::FusedOpParams::ConvTranspose2D {
-                        stride: (1, 1), padding: (0, 0),
-                        output_padding: (0, 0), dilation: (1, 1), groups: 1,
+                        stride: (1, 1),
+                        padding: (0, 0),
+                        output_padding: (0, 0),
+                        dilation: (1, 1),
+                        groups: 1,
                     },
                 ),
                 inputs: vec![x, w],
@@ -12240,7 +13289,12 @@ mod tests {
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
-        let got: Vec<f32> = c.as_slice::<half::bf16>().unwrap().iter().map(|v| v.to_f32()).collect();
+        let got: Vec<f32> = c
+            .as_slice::<half::bf16>()
+            .unwrap()
+            .iter()
+            .map(|v| v.to_f32())
+            .collect();
         let want = [1.0_f32, 3.0, 2.0, 4.0, 10.0, 6.0, 3.0, 7.0, 4.0];
         for (g, w) in got.iter().zip(want.iter()) {
             assert!((g - w).abs() < 0.5, "got {got:?} want {want:?}");
@@ -12255,31 +13309,30 @@ mod tests {
         // lhs [4, 1, 2]: heads 0..3 are [[1,2]], [[3,4]], [[5,6]], [[7,8]]
         // rhs [2, 2, 1]: heads 0,1 are [[1],[0]], [[0],[1]]
         // Expected out [4, 1, 1]: [[1]], [[3]], [[6]], [[8]]
-        let lhs_storage = fuel_memory::from_slice_cpu(&[
-            1.0_f32, 2.0,
-            3.0, 4.0,
-            5.0, 6.0,
-            7.0, 8.0,
-        ]);
-        let rhs_storage = fuel_memory::from_slice_cpu(&[
-            1.0_f32, 0.0,
-            0.0, 1.0,
-        ]);
+        let lhs_storage =
+            fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
+        let rhs_storage = fuel_memory::from_slice_cpu(&[1.0_f32, 0.0, 0.0, 1.0]);
 
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (lhs_id, rhs_id, mm_id) = {
             let mut g = graph.write().unwrap();
             let lhs = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[4, 1, 2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[4, 1, 2]),
+                dtype: DType::F32,
             });
             let rhs = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2, 2, 1]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 2, 1]),
+                dtype: DType::F32,
             });
             let mm = g.push(Node {
-                op: Op::MatMul, inputs: vec![lhs, rhs],
-                shape: Shape::from_dims(&[4, 1, 1]), dtype: DType::F32,
+                op: Op::MatMul,
+                inputs: vec![lhs, rhs],
+                shape: Shape::from_dims(&[4, 1, 1]),
+                dtype: DType::F32,
             });
             g.set_target_backend(mm, BackendId::Cpu);
             (lhs, rhs, mm)
@@ -12316,20 +13369,28 @@ mod tests {
         let (lhs_id, rhs_id, t_id, mm_id) = {
             let mut g = graph.write().unwrap();
             let lhs = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2, 2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 2]),
+                dtype: DType::F32,
             });
             let rhs = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2, 2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 2]),
+                dtype: DType::F32,
             });
             let t = g.push(Node {
-                op: Op::Transpose, inputs: vec![rhs],
-                shape: Shape::from_dims(&[2, 2]), dtype: DType::F32,
+                op: Op::Transpose,
+                inputs: vec![rhs],
+                shape: Shape::from_dims(&[2, 2]),
+                dtype: DType::F32,
             });
             let mm = g.push(Node {
-                op: Op::MatMul, inputs: vec![lhs, t],
-                shape: Shape::from_dims(&[2, 2]), dtype: DType::F32,
+                op: Op::MatMul,
+                inputs: vec![lhs, t],
+                shape: Shape::from_dims(&[2, 2]),
+                dtype: DType::F32,
             });
             g.set_target_backend(mm, BackendId::Cpu);
             (lhs, rhs, t, mm)
@@ -12339,8 +13400,7 @@ mod tests {
         inputs.insert(lhs_id, Arc::new(RwLock::new(lhs_storage)));
         inputs.insert(rhs_id, Arc::new(RwLock::new(rhs_storage)));
 
-        let (result_arc, _) =
-            PipelinedExecutor::realize(graph, mm_id, inputs).expect("realize");
+        let (result_arc, _) = PipelinedExecutor::realize(graph, mm_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
@@ -12358,8 +13418,10 @@ mod tests {
         let (in_id, r_id) = {
             let mut g = graph.write().unwrap();
             let in_id = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]),
+                dtype: DType::F32,
             });
             let r_id = g.push(Node {
                 op: Op::Reshape(Shape::from_dims(&[3, 2])),
@@ -12377,7 +13439,10 @@ mod tests {
             PipelinedExecutor::realize(graph, r_id, inputs).expect("realize");
 
         // Zero copy — same Arc.
-        assert!(Arc::ptr_eq(&result_arc, &in_arc), "contiguous reshape must zero-copy");
+        assert!(
+            Arc::ptr_eq(&result_arc, &in_arc),
+            "contiguous reshape must zero-copy"
+        );
         assert_eq!(result_layout.shape().dims(), &[3, 2]);
         assert!(result_layout.is_contiguous());
 
@@ -12386,7 +13451,10 @@ mod tests {
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
-        assert_eq!(c.as_slice::<f32>().unwrap(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(
+            c.as_slice::<f32>().unwrap(),
+            &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+        );
     }
 
     /// E2E: Const + Transpose + Reshape — reshape on a strided
@@ -12403,16 +13471,22 @@ mod tests {
         let (in_id, t_id, r_id) = {
             let mut g = graph.write().unwrap();
             let in_id = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]),
+                dtype: DType::F32,
             });
             let t_id = g.push(Node {
-                op: Op::Transpose, inputs: vec![in_id],
-                shape: Shape::from_dims(&[3, 2]), dtype: DType::F32,
+                op: Op::Transpose,
+                inputs: vec![in_id],
+                shape: Shape::from_dims(&[3, 2]),
+                dtype: DType::F32,
             });
             let r_id = g.push(Node {
-                op: Op::Reshape(Shape::from_dims(&[6])), inputs: vec![t_id],
-                shape: Shape::from_dims(&[6]), dtype: DType::F32,
+                op: Op::Reshape(Shape::from_dims(&[6])),
+                inputs: vec![t_id],
+                shape: Shape::from_dims(&[6]),
+                dtype: DType::F32,
             });
             (in_id, t_id, r_id)
         };
@@ -12434,7 +13508,10 @@ mod tests {
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
-        assert_eq!(c.as_slice::<f32>().unwrap(), &[1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
+        assert_eq!(
+            c.as_slice::<f32>().unwrap(),
+            &[1.0, 4.0, 2.0, 5.0, 3.0, 6.0]
+        );
     }
 
     /// E2E: Const + Transpose + SumDim — exercises stage 3
@@ -12454,16 +13531,22 @@ mod tests {
         let (in_id, t_id, sum_id) = {
             let mut g = graph.write().unwrap();
             let in_id = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]),
+                dtype: DType::F32,
             });
             let t_id = g.push(Node {
-                op: Op::Transpose, inputs: vec![in_id],
-                shape: Shape::from_dims(&[3, 2]), dtype: DType::F32,
+                op: Op::Transpose,
+                inputs: vec![in_id],
+                shape: Shape::from_dims(&[3, 2]),
+                dtype: DType::F32,
             });
             let sum_id = g.push(Node {
-                op: Op::SumDim(1), inputs: vec![t_id],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                op: Op::SumDim(1),
+                inputs: vec![t_id],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             // Only the reduce kernel runs on the backend; the
             // transpose is metadata-only and doesn't need a target.
@@ -12504,12 +13587,16 @@ mod tests {
         let (bc_in_id, plus_in_id, b_id, add_id) = {
             let mut g = graph.write().unwrap();
             let bc_in = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             let plus_in = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]),
+                dtype: DType::F32,
             });
             let b = g.push(Node {
                 op: Op::BroadcastTo(Shape::from_dims(&[2, 3])),
@@ -12552,12 +13639,16 @@ mod tests {
         let (in_id, sum_id) = {
             let mut g = graph.write().unwrap();
             let in_id = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]),
+                dtype: DType::F32,
             });
             let sum_id = g.push(Node {
-                op: Op::SumDim(1), inputs: vec![in_id],
-                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+                op: Op::SumDim(1),
+                inputs: vec![in_id],
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F32,
             });
             g.set_target_backend(sum_id, BackendId::Cpu);
             (in_id, sum_id)
@@ -12565,8 +13656,7 @@ mod tests {
         let mut inputs = StorageCache::new();
         inputs.insert(in_id, Arc::new(RwLock::new(storage)));
 
-        let (result_arc, _) =
-            PipelinedExecutor::realize(graph, sum_id, inputs).expect("realize");
+        let (result_arc, _) = PipelinedExecutor::realize(graph, sum_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
             let typed: &[f32] = c.as_slice().unwrap();
@@ -12584,12 +13674,16 @@ mod tests {
         let (in_id, sum_id) = {
             let mut g = graph.write().unwrap();
             let in_id = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2, 3, 4]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 3, 4]),
+                dtype: DType::F32,
             });
             let sum_id = g.push(Node {
-                op: Op::SumAll, inputs: vec![in_id],
-                shape: Shape::from_dims(&[]), dtype: DType::F32,
+                op: Op::SumAll,
+                inputs: vec![in_id],
+                shape: Shape::from_dims(&[]),
+                dtype: DType::F32,
             });
             g.set_target_backend(sum_id, BackendId::Cpu);
             (in_id, sum_id)
@@ -12597,8 +13691,7 @@ mod tests {
         let mut inputs = StorageCache::new();
         inputs.insert(in_id, Arc::new(RwLock::new(storage)));
 
-        let (result_arc, _) =
-            PipelinedExecutor::realize(graph, sum_id, inputs).expect("realize");
+        let (result_arc, _) = PipelinedExecutor::realize(graph, sum_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
             let typed: &[f32] = c.as_slice().unwrap();
@@ -12617,16 +13710,22 @@ mod tests {
         let (in_id, mean_id) = {
             let mut g = graph.write().unwrap();
             let in_id = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]),
+                dtype: DType::F32,
             });
             let max_id = g.push(Node {
-                op: Op::MaxDim(1), inputs: vec![in_id],
-                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+                op: Op::MaxDim(1),
+                inputs: vec![in_id],
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F32,
             });
             let mean_id = g.push(Node {
-                op: Op::MeanDim(0), inputs: vec![max_id],
-                shape: Shape::from_dims(&[]), dtype: DType::F32,
+                op: Op::MeanDim(0),
+                inputs: vec![max_id],
+                shape: Shape::from_dims(&[]),
+                dtype: DType::F32,
             });
             g.set_target_backend(max_id, BackendId::Cpu);
             g.set_target_backend(mean_id, BackendId::Cpu);
@@ -12635,8 +13734,7 @@ mod tests {
         let mut inputs = StorageCache::new();
         inputs.insert(in_id, Arc::new(RwLock::new(storage)));
 
-        let (result_arc, _) =
-            PipelinedExecutor::realize(graph, mean_id, inputs).expect("realize");
+        let (result_arc, _) = PipelinedExecutor::realize(graph, mean_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
             let typed: &[f32] = c.as_slice().unwrap();
@@ -12656,17 +13754,23 @@ mod tests {
         let (in_id, sig_id, silu_id) = {
             let mut g = graph.write().unwrap();
             let in_id = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             let sig_id = g.push(Node {
-                op: Op::Sigmoid, inputs: vec![in_id],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                op: Op::Sigmoid,
+                inputs: vec![in_id],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             // Silu of the sigmoid output — chains to confirm cache flow.
             let silu_id = g.push(Node {
-                op: Op::Silu, inputs: vec![sig_id],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                op: Op::Silu,
+                inputs: vec![sig_id],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             g.set_target_backend(sig_id, BackendId::Cpu);
             g.set_target_backend(silu_id, BackendId::Cpu);
@@ -12676,8 +13780,7 @@ mod tests {
         let mut inputs = StorageCache::new();
         inputs.insert(in_id, Arc::new(RwLock::new(storage)));
 
-        let (result_arc, _) =
-            PipelinedExecutor::realize(graph, silu_id, inputs).expect("realize");
+        let (result_arc, _) = PipelinedExecutor::realize(graph, silu_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
             let typed: &[f32] = c.as_slice().unwrap();
@@ -12695,16 +13798,22 @@ mod tests {
         let (in_id, sqrt_id) = {
             let mut g = graph.write().unwrap();
             let in_id = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             let sqr_id = g.push(Node {
-                op: Op::Sqr, inputs: vec![in_id],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                op: Op::Sqr,
+                inputs: vec![in_id],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             let sqrt_id = g.push(Node {
-                op: Op::Sqrt, inputs: vec![sqr_id],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                op: Op::Sqrt,
+                inputs: vec![sqr_id],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             g.set_target_backend(sqr_id, BackendId::Cpu);
             g.set_target_backend(sqrt_id, BackendId::Cpu);
@@ -12713,8 +13822,7 @@ mod tests {
         let mut inputs = StorageCache::new();
         inputs.insert(in_id, Arc::new(RwLock::new(storage)));
 
-        let (result_arc, _) =
-            PipelinedExecutor::realize(graph, sqrt_id, inputs).expect("realize");
+        let (result_arc, _) = PipelinedExecutor::realize(graph, sqrt_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
             let typed: &[f32] = c.as_slice().unwrap();
@@ -12775,8 +13883,7 @@ mod tests {
         inputs.insert(b_id, Arc::new(RwLock::new(b_storage)));
         inputs.insert(c_id, Arc::new(RwLock::new(c_storage)));
 
-        let (result_arc, _) =
-            PipelinedExecutor::realize(graph, abc_id, inputs).expect("realize");
+        let (result_arc, _) = PipelinedExecutor::realize(graph, abc_id, inputs).expect("realize");
         // Suppress unused warning for the intermediate id.
         let _ = ab_id;
 
@@ -12793,78 +13900,70 @@ mod tests {
     /// Output: [1 2 3 / 0 5 6 / 0 0 9]
     #[test]
     fn pipelined_realize_triu_3x3_diag0() {
-        let storage = fuel_memory::from_slice_cpu(&[
-            1.0_f32, 2.0, 3.0,
-            4.0,     5.0, 6.0,
-            7.0,     8.0, 9.0,
-        ]);
+        let storage =
+            fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, out_id) = {
             let mut g = graph.write().unwrap();
             let in_id = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3, 3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3, 3]),
+                dtype: DType::F32,
             });
             let out_id = g.push(Node {
-                op: Op::Triu { diagonal: 0 }, inputs: vec![in_id],
-                shape: Shape::from_dims(&[3, 3]), dtype: DType::F32,
+                op: Op::Triu { diagonal: 0 },
+                inputs: vec![in_id],
+                shape: Shape::from_dims(&[3, 3]),
+                dtype: DType::F32,
             });
             g.set_target_backend(out_id, BackendId::Cpu);
             (in_id, out_id)
         };
         let mut inputs = StorageCache::new();
         inputs.insert(in_id, Arc::new(RwLock::new(storage)));
-        let (result_arc, _) =
-            PipelinedExecutor::realize(graph, out_id, inputs).expect("realize");
+        let (result_arc, _) = PipelinedExecutor::realize(graph, out_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let out: &[f32] = c.as_slice().unwrap();
-        assert_eq!(out, &[
-            1.0, 2.0, 3.0,
-            0.0, 5.0, 6.0,
-            0.0, 0.0, 9.0,
-        ]);
+        assert_eq!(out, &[1.0, 2.0, 3.0, 0.0, 5.0, 6.0, 0.0, 0.0, 9.0,]);
     }
 
     /// E2E: tril(diagonal=0) on a 3×3 matrix — the canonical causal mask.
     /// Output: [1 0 0 / 4 5 0 / 7 8 9]
     #[test]
     fn pipelined_realize_tril_3x3_diag0_causal_mask() {
-        let storage = fuel_memory::from_slice_cpu(&[
-            1.0_f32, 2.0, 3.0,
-            4.0,     5.0, 6.0,
-            7.0,     8.0, 9.0,
-        ]);
+        let storage =
+            fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, out_id) = {
             let mut g = graph.write().unwrap();
             let in_id = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3, 3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3, 3]),
+                dtype: DType::F32,
             });
             let out_id = g.push(Node {
-                op: Op::Tril { diagonal: 0 }, inputs: vec![in_id],
-                shape: Shape::from_dims(&[3, 3]), dtype: DType::F32,
+                op: Op::Tril { diagonal: 0 },
+                inputs: vec![in_id],
+                shape: Shape::from_dims(&[3, 3]),
+                dtype: DType::F32,
             });
             g.set_target_backend(out_id, BackendId::Cpu);
             (in_id, out_id)
         };
         let mut inputs = StorageCache::new();
         inputs.insert(in_id, Arc::new(RwLock::new(storage)));
-        let (result_arc, _) =
-            PipelinedExecutor::realize(graph, out_id, inputs).expect("realize");
+        let (result_arc, _) = PipelinedExecutor::realize(graph, out_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let out: &[f32] = c.as_slice().unwrap();
-        assert_eq!(out, &[
-            1.0, 0.0, 0.0,
-            4.0, 5.0, 0.0,
-            7.0, 8.0, 9.0,
-        ]);
+        assert_eq!(out, &[1.0, 0.0, 0.0, 4.0, 5.0, 0.0, 7.0, 8.0, 9.0,]);
     }
 
     /// E2E: log_softmax over a 2×3 input. Rows are [1,2,3] and [3,2,1].
@@ -12875,36 +13974,40 @@ mod tests {
     /// Row 1 is row 0 reversed: [-0.4076, -1.4076, -2.4076].
     #[test]
     fn pipelined_realize_log_softmax_last_dim() {
-        let storage = fuel_memory::from_slice_cpu(&[
-            1.0_f32, 2.0, 3.0,
-            3.0,     2.0, 1.0,
-        ]);
+        let storage = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 3.0, 2.0, 1.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, out_id) = {
             let mut g = graph.write().unwrap();
             let in_id = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]),
+                dtype: DType::F32,
             });
             let out_id = g.push(Node {
-                op: Op::LogSoftmaxLastDim, inputs: vec![in_id],
-                shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+                op: Op::LogSoftmaxLastDim,
+                inputs: vec![in_id],
+                shape: Shape::from_dims(&[2, 3]),
+                dtype: DType::F32,
             });
             g.set_target_backend(out_id, BackendId::Cpu);
             (in_id, out_id)
         };
         let mut inputs = StorageCache::new();
         inputs.insert(in_id, Arc::new(RwLock::new(storage)));
-        let (result_arc, _) =
-            PipelinedExecutor::realize(graph, out_id, inputs).expect("realize");
+        let (result_arc, _) = PipelinedExecutor::realize(graph, out_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let out: &[f32] = c.as_slice().unwrap();
         let expected = [
-            -2.4076059, -1.4076059, -0.40760595_f32,
-            -0.40760595, -1.4076059, -2.4076059,
+            -2.4076059,
+            -1.4076059,
+            -0.40760595_f32,
+            -0.40760595,
+            -1.4076059,
+            -2.4076059,
         ];
         for (a, b) in out.iter().zip(expected.iter()) {
             assert!((a - b).abs() < 1e-5, "log_softmax mismatch: {a} vs {b}");
@@ -12912,7 +14015,10 @@ mod tests {
         // The exp() of the output should sum to 1 per row.
         for row in out.chunks(3) {
             let sum: f32 = row.iter().map(|x| x.exp()).sum();
-            assert!((sum - 1.0).abs() < 1e-5, "softmax(log_softmax) row sum != 1: {sum}");
+            assert!(
+                (sum - 1.0).abs() < 1e-5,
+                "softmax(log_softmax) row sum != 1: {sum}"
+            );
         }
     }
 
@@ -12938,29 +14044,39 @@ mod tests {
         let (a_id, b_id, c_id, add_id, release_id) = {
             let mut g = graph.write().unwrap();
             let a = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F32,
             });
             let b = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F32,
             });
             // c is NOT reachable from add; its Release IS marked as
             // a side-effect root.
             let c = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F32,
             });
             let add = g.push(Node {
-                op: Op::Add, inputs: vec![a, b],
-                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+                op: Op::Add,
+                inputs: vec![a, b],
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F32,
             });
             // Production shape: Op::Release on c, marked as
             // side-effect root so it fires even though no graph
             // node reads its output.
             let release = g.push(Node {
-                op: Op::Release, inputs: vec![c],
-                shape: Shape::from_dims(&[0]), dtype: DType::F32,
+                op: Op::Release,
+                inputs: vec![c],
+                shape: Shape::from_dims(&[0]),
+                dtype: DType::F32,
             });
             g.set_target_backend(add, BackendId::Cpu);
             g.set_target_backend(release, BackendId::Cpu);
@@ -12976,11 +14092,12 @@ mod tests {
 
         // Only `add` is requested. The Release on c is a side-effect
         // root that must still fire.
-        let out = PipelinedExecutor::realize_many(graph, &[add_id], inputs)
-            .expect("realize_many");
+        let out = PipelinedExecutor::realize_many(graph, &[add_id], inputs).expect("realize_many");
         assert_eq!(out.len(), 1);
         let add_guard = out[0].0.read().unwrap();
-        let fuel_memory::BackendStorage::Cpu(arr) = &add_guard.inner else { panic!() };
+        let fuel_memory::BackendStorage::Cpu(arr) = &add_guard.inner else {
+            panic!()
+        };
         assert_eq!(arr.as_slice::<f32>().unwrap(), &[11.0, 22.0]);
 
         // The Release's destructive_input cleanup dropped the
@@ -13005,12 +14122,16 @@ mod tests {
         let (src_id, release_id) = {
             let mut g = graph_rc.write().unwrap();
             let src = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F32,
             });
             let release = g.push(Node {
-                op: Op::Release, inputs: vec![src],
-                shape: Shape::from_dims(&[0]), dtype: DType::F32,
+                op: Op::Release,
+                inputs: vec![src],
+                shape: Shape::from_dims(&[0]),
+                dtype: DType::F32,
             });
             g.set_target_backend(release, BackendId::Cpu);
             (src, release)
@@ -13018,12 +14139,21 @@ mod tests {
         let g = graph_rc.read().unwrap();
         let bindings = crate::dispatch::global_bindings();
         let mut layout_cache: HashMap<NodeId, Layout> = HashMap::new();
-        let item = compile_one(&g, release_id, &mut layout_cache, &bindings, &SymEnv::default())
-            .expect("compile_one Op::Release");
+        let item = compile_one(
+            &g,
+            release_id,
+            &mut layout_cache,
+            &bindings,
+            &SymEnv::default(),
+        )
+        .expect("compile_one Op::Release");
         assert!(matches!(item.kind, WorkItemKind::ReleaseMarker));
         assert_eq!(item.destructive_input, Some(0));
         assert_eq!(item.inputs, vec![src_id]);
-        assert_eq!(item.elem_count, 0, "Release output is the zero-element marker");
+        assert_eq!(
+            item.elem_count, 0,
+            "Release output is the zero-element marker"
+        );
     }
 
     // --- Op::Move (executor-unification Session 1, gap 13) --------
@@ -13038,12 +14168,18 @@ mod tests {
         let (src_id, move_id) = {
             let mut g = graph_rc.write().unwrap();
             let src = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F32,
             });
             let mv = g.push(Node {
-                op: Op::Move { target: DeviceLocation::Cpu }, inputs: vec![src],
-                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+                op: Op::Move {
+                    target: DeviceLocation::Cpu,
+                },
+                inputs: vec![src],
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F32,
             });
             g.set_target_backend(mv, BackendId::Cpu);
             (src, mv)
@@ -13051,11 +14187,19 @@ mod tests {
         let g = graph_rc.read().unwrap();
         let bindings = crate::dispatch::global_bindings();
         let mut layout_cache: HashMap<NodeId, Layout> = HashMap::new();
-        let item = compile_one(&g, move_id, &mut layout_cache, &bindings, &SymEnv::default())
-            .expect("compile_one Op::Move");
+        let item = compile_one(
+            &g,
+            move_id,
+            &mut layout_cache,
+            &bindings,
+            &SymEnv::default(),
+        )
+        .expect("compile_one Op::Move");
         assert!(matches!(
             item.kind,
-            WorkItemKind::Move { target_location: DeviceLocation::Cpu },
+            WorkItemKind::Move {
+                target_location: DeviceLocation::Cpu
+            },
         ));
         assert_eq!(item.destructive_input, Some(0), "Move destroys its source");
         assert_eq!(item.inputs, vec![src_id]);
@@ -13110,15 +14254,23 @@ mod tests {
             let mut g = graph_rc.write().unwrap();
             let s = Shape::from_dims(&[4]);
             let a = g.push(Node {
-                op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: s.clone(),
+                dtype: DType::F32,
             });
             let b = g.push(Node {
-                op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: s.clone(),
+                dtype: DType::F32,
             });
             let fused = g.push(Node {
                 op: Op::Fused(
                     rid,
-                    fuel_graph::registry::FusedOpParams::Runtime { scalars: Vec::new() },
+                    fuel_graph::registry::FusedOpParams::Runtime {
+                        scalars: Vec::new(),
+                    },
                 ),
                 inputs: vec![a, b],
                 shape: s,
@@ -13131,8 +14283,14 @@ mod tests {
         let g = graph_rc.read().unwrap();
         let bindings = crate::dispatch::global_bindings();
         let mut layout_cache: HashMap<NodeId, Layout> = HashMap::new();
-        let item = compile_one(&g, fused_id, &mut layout_cache, &bindings, &SymEnv::default())
-            .expect("compile_one runtime fused op");
+        let item = compile_one(
+            &g,
+            fused_id,
+            &mut layout_cache,
+            &bindings,
+            &SymEnv::default(),
+        )
+        .expect("compile_one runtime fused op");
         assert!(matches!(item.kind, WorkItemKind::Kernel));
         let compiled = item.compiled.expect("resolved a kernel");
         assert_eq!(compiled.op, fuel_ir::dispatch::OpKind::RuntimeFused);
@@ -13141,7 +14299,10 @@ mod tests {
             std::ptr::fn_addr_eq(compiled.kernel, sentinel_kernel as crate::kernel::KernelRef),
             "the kernel pointer is exactly the adopted one",
         );
-        assert!(layout_cache.contains_key(&fused_id), "output layout cached for consumers");
+        assert!(
+            layout_cache.contains_key(&fused_id),
+            "output layout cached for consumers"
+        );
     }
 
     /// The dtype belt-and-suspenders guard: an `Op::Fused(runtime)` node
@@ -13185,15 +14346,23 @@ mod tests {
             let s = Shape::from_dims(&[4]);
             // …but the node's operands are F64.
             let a = g.push(Node {
-                op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F64,
+                op: Op::Const,
+                inputs: vec![],
+                shape: s.clone(),
+                dtype: DType::F64,
             });
             let b = g.push(Node {
-                op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F64,
+                op: Op::Const,
+                inputs: vec![],
+                shape: s.clone(),
+                dtype: DType::F64,
             });
             let fused = g.push(Node {
                 op: Op::Fused(
                     rid,
-                    fuel_graph::registry::FusedOpParams::Runtime { scalars: Vec::new() },
+                    fuel_graph::registry::FusedOpParams::Runtime {
+                        scalars: Vec::new(),
+                    },
                 ),
                 inputs: vec![a, b],
                 shape: s,
@@ -13205,8 +14374,13 @@ mod tests {
         let g = graph_rc.read().unwrap();
         let bindings = crate::dispatch::global_bindings();
         let mut layout_cache: HashMap<NodeId, Layout> = HashMap::new();
-        let err = match compile_one(&g, fused_id, &mut layout_cache, &bindings, &SymEnv::default())
-        {
+        let err = match compile_one(
+            &g,
+            fused_id,
+            &mut layout_cache,
+            &bindings,
+            &SymEnv::default(),
+        ) {
             Ok(_) => panic!("dtype mismatch must be a typed error"),
             Err(e) => e,
         };
@@ -13216,7 +14390,10 @@ mod tests {
         assert!(
             matches!(
                 err,
-                fuel_ir::Error::NoBackendForOp { op: fuel_ir::dispatch::OpKind::RuntimeFused, .. }
+                fuel_ir::Error::NoBackendForOp {
+                    op: fuel_ir::dispatch::OpKind::RuntimeFused,
+                    ..
+                }
             ),
             "a dtype mismatch is an honest binding miss: {err}",
         );
@@ -13260,12 +14437,17 @@ mod tests {
             let mut g = graph_rc.write().unwrap();
             let s = Shape::from_dims(&[4]);
             let x = g.push(Node {
-                op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: s.clone(),
+                dtype: DType::F32,
             });
             let fused = g.push(Node {
                 op: Op::Fused(
                     rid,
-                    fuel_graph::registry::FusedOpParams::Runtime { scalars: vec![3.5, -1.25] },
+                    fuel_graph::registry::FusedOpParams::Runtime {
+                        scalars: vec![3.5, -1.25],
+                    },
                 ),
                 inputs: vec![x],
                 shape: s,
@@ -13277,8 +14459,14 @@ mod tests {
         let g = graph_rc.read().unwrap();
         let bindings = crate::dispatch::global_bindings();
         let mut layout_cache: HashMap<NodeId, Layout> = HashMap::new();
-        let item = compile_one(&g, fused_id, &mut layout_cache, &bindings, &SymEnv::default())
-            .expect("compile_one runtime fused op with scalars");
+        let item = compile_one(
+            &g,
+            fused_id,
+            &mut layout_cache,
+            &bindings,
+            &SymEnv::default(),
+        )
+        .expect("compile_one runtime fused op with scalars");
         let compiled = item.compiled.expect("resolved a kernel");
         assert!(
             matches!(
@@ -13303,12 +14491,18 @@ mod tests {
         let (src_id, move_id) = {
             let mut g = graph.write().unwrap();
             let src = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[4]),
+                dtype: DType::F32,
             });
             let mv = g.push(Node {
-                op: Op::Move { target: DeviceLocation::Cpu }, inputs: vec![src],
-                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+                op: Op::Move {
+                    target: DeviceLocation::Cpu,
+                },
+                inputs: vec![src],
+                shape: Shape::from_dims(&[4]),
+                dtype: DType::F32,
             });
             g.set_target_backend(mv, BackendId::Cpu);
             (src, mv)
@@ -13321,7 +14515,9 @@ mod tests {
         let (out, layout) =
             PipelinedExecutor::realize(graph, move_id, inputs).expect("realize Op::Move");
         let guard = out.read().unwrap();
-        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else { panic!() };
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!()
+        };
         assert_eq!(
             c.as_slice::<f32>().unwrap(),
             &[1.0, 2.0, 3.0, 4.0],
@@ -13362,20 +14558,30 @@ mod tests {
         let (a_id, out_id) = {
             let mut g = graph.write().unwrap();
             let a = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[4]),
+                dtype: DType::F32,
             });
             let b = g.push(Node {
-                op: Op::Relu, inputs: vec![a],
-                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+                op: Op::Relu,
+                inputs: vec![a],
+                shape: Shape::from_dims(&[4]),
+                dtype: DType::F32,
             });
             let m = g.push(Node {
-                op: Op::Move { target: DeviceLocation::Cpu }, inputs: vec![a],
-                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+                op: Op::Move {
+                    target: DeviceLocation::Cpu,
+                },
+                inputs: vec![a],
+                shape: Shape::from_dims(&[4]),
+                dtype: DType::F32,
             });
             let out = g.push(Node {
-                op: Op::Add, inputs: vec![b, m],
-                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+                op: Op::Add,
+                inputs: vec![b, m],
+                shape: Shape::from_dims(&[4]),
+                dtype: DType::F32,
             });
             g.set_target_backend(b, BackendId::Cpu);
             g.set_target_backend(m, BackendId::Cpu);
@@ -13388,7 +14594,9 @@ mod tests {
         let (out, _) = PipelinedExecutor::realize(graph, out_id, inputs)
             .expect("realize add(relu(a), move(a))");
         let guard = out.read().unwrap();
-        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else { panic!() };
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!()
+        };
         assert_eq!(
             c.as_slice::<f32>().unwrap(),
             &[2.0, 4.0, 6.0, 8.0],
@@ -13407,12 +14615,18 @@ mod tests {
         let (a_id, move_id) = {
             let mut g = graph.write().unwrap();
             let a = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F32,
             });
             let mv = g.push(Node {
-                op: Op::Move { target: DeviceLocation::Cpu }, inputs: vec![a],
-                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+                op: Op::Move {
+                    target: DeviceLocation::Cpu,
+                },
+                inputs: vec![a],
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F32,
             });
             g.set_target_backend(mv, BackendId::Cpu);
             (a, mv)
@@ -13426,7 +14640,9 @@ mod tests {
             .expect("realize_many [move, source]");
         assert_eq!(out.len(), 2);
         let mv_guard = out[0].0.read().unwrap();
-        let fuel_memory::BackendStorage::Cpu(c) = &mv_guard.inner else { panic!() };
+        let fuel_memory::BackendStorage::Cpu(c) = &mv_guard.inner else {
+            panic!()
+        };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[5.0, 6.0]);
         assert!(
             Arc::ptr_eq(&out[1].0, &a_arc_external),
@@ -13457,20 +14673,28 @@ mod tests {
         let (lhs_id, rhs_id, add_id, mul_id) = {
             let mut g = graph.write().unwrap();
             let lhs = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             let rhs = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             let add = g.push(Node {
-                op: Op::Add, inputs: vec![lhs, rhs],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                op: Op::Add,
+                inputs: vec![lhs, rhs],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             let mul = g.push(Node {
-                op: Op::Mul, inputs: vec![lhs, rhs],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                op: Op::Mul,
+                inputs: vec![lhs, rhs],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             g.set_target_backend(add, BackendId::Cpu);
             g.set_target_backend(mul, BackendId::Cpu);
@@ -13482,16 +14706,20 @@ mod tests {
 
         // Pass mul first to confirm return order matches targets order
         // (not graph order — graph order would put add first).
-        let out =
-            PipelinedExecutor::realize_many(graph, &[mul_id, add_id], inputs).expect("realize_many");
+        let out = PipelinedExecutor::realize_many(graph, &[mul_id, add_id], inputs)
+            .expect("realize_many");
         assert_eq!(out.len(), 2);
 
         let mul_guard = out[0].0.read().unwrap();
-        let fuel_memory::BackendStorage::Cpu(c) = &mul_guard.inner else { panic!() };
+        let fuel_memory::BackendStorage::Cpu(c) = &mul_guard.inner else {
+            panic!()
+        };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[10.0, 40.0, 90.0]);
 
         let add_guard = out[1].0.read().unwrap();
-        let fuel_memory::BackendStorage::Cpu(c) = &add_guard.inner else { panic!() };
+        let fuel_memory::BackendStorage::Cpu(c) = &add_guard.inner else {
+            panic!()
+        };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[11.0, 22.0, 33.0]);
     }
 
@@ -13504,12 +14732,16 @@ mod tests {
         let (in_id, neg_id) = {
             let mut g = graph.write().unwrap();
             let in_id = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             let neg = g.push(Node {
-                op: Op::Neg, inputs: vec![in_id],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                op: Op::Neg,
+                inputs: vec![in_id],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             g.set_target_backend(neg, BackendId::Cpu);
             (in_id, neg)
@@ -13537,20 +14769,28 @@ mod tests {
         let (a_id, b_id, add_id, mul_id) = {
             let mut g = graph.write().unwrap();
             let a = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             let b = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             let add = g.push(Node {
-                op: Op::Add, inputs: vec![a, b],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                op: Op::Add,
+                inputs: vec![a, b],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             let mul = g.push(Node {
-                op: Op::Mul, inputs: vec![add, a],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                op: Op::Mul,
+                inputs: vec![add, a],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             g.set_target_backend(add, BackendId::Cpu);
             g.set_target_backend(mul, BackendId::Cpu);
@@ -13565,11 +14805,15 @@ mod tests {
         assert_eq!(out.len(), 2);
 
         let add_guard = out[0].0.read().unwrap();
-        let fuel_memory::BackendStorage::Cpu(c) = &add_guard.inner else { panic!() };
+        let fuel_memory::BackendStorage::Cpu(c) = &add_guard.inner else {
+            panic!()
+        };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[11.0, 22.0, 33.0]);
 
         let mul_guard = out[1].0.read().unwrap();
-        let fuel_memory::BackendStorage::Cpu(c) = &mul_guard.inner else { panic!() };
+        let fuel_memory::BackendStorage::Cpu(c) = &mul_guard.inner else {
+            panic!()
+        };
         // (a + b) * a = [11*1, 22*2, 33*3] = [11, 44, 99].
         assert_eq!(c.as_slice::<f32>().unwrap(), &[11.0, 44.0, 99.0]);
     }
@@ -13581,22 +14825,29 @@ mod tests {
     fn pipelined_realize_masked_fill_attention_pattern() {
         let x_storage = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0]);
         let mut mask_storage = fuel_memory::from_slice_cpu(&[0u8, 1, 0, 1]);
-        mask_storage.dtype = DType::Bool;   // GAP-168(c): a Bool mask, not U8 bytes
+        mask_storage.dtype = DType::Bool; // GAP-168(c): a Bool mask, not U8 bytes
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (x_id, mask_id, out_id) = {
             let mut g = graph.write().unwrap();
             let x = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[4]),
+                dtype: DType::F32,
             });
             let mask = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[4]), dtype: DType::Bool,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[4]),
+                dtype: DType::Bool,
             });
             let out = g.push(Node {
-                op: Op::MaskedFill { value: fuel_ir::Scalar::F32(-1000.0) },
+                op: Op::MaskedFill {
+                    value: fuel_ir::Scalar::F32(-1000.0),
+                },
                 inputs: vec![x, mask],
-                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+                shape: Shape::from_dims(&[4]),
+                dtype: DType::F32,
             });
             g.set_target_backend(out, BackendId::Cpu);
             (x, mask, out)
@@ -13604,8 +14855,7 @@ mod tests {
         let mut inputs = StorageCache::new();
         inputs.insert(x_id, Arc::new(RwLock::new(x_storage)));
         inputs.insert(mask_id, Arc::new(RwLock::new(mask_storage)));
-        let (result_arc, _) =
-            PipelinedExecutor::realize(graph, out_id, inputs).expect("realize");
+        let (result_arc, _) = PipelinedExecutor::realize(graph, out_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
@@ -13622,26 +14872,29 @@ mod tests {
     #[test]
     fn pipelined_realize_write_slice_kv_cache_append() {
         let dest_storage = fuel_memory::from_slice_cpu(&[0.0_f32; 24]);
-        let src_storage = fuel_memory::from_slice_cpu(&[
-            1.0_f32, 2.0,
-            3.0,     4.0,
-            5.0,     6.0,
-        ]);
+        let src_storage = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (dest_id, src_id, ws_id) = {
             let mut g = graph.write().unwrap();
             let dest = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[4, 3, 2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[4, 3, 2]),
+                dtype: DType::F32,
             });
             let src = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 3, 2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 3, 2]),
+                dtype: DType::F32,
             });
             let ws = g.push(Node {
-                op: Op::WriteSlice { ranges: vec![(2, 3), (0, 3), (0, 2)], dyn_offset: None },
+                op: Op::WriteSlice {
+                    ranges: vec![(2, 3), (0, 3), (0, 2)],
+                    dyn_offset: None,
+                },
                 inputs: vec![dest, src],
-                shape: Shape::from_dims(&[4, 3, 2]),  // adopts dest shape
+                shape: Shape::from_dims(&[4, 3, 2]), // adopts dest shape
                 dtype: DType::F32,
             });
             g.set_target_backend(ws, BackendId::Cpu);
@@ -13650,17 +14903,15 @@ mod tests {
         let mut inputs = StorageCache::new();
         inputs.insert(dest_id, Arc::new(RwLock::new(dest_storage)));
         inputs.insert(src_id, Arc::new(RwLock::new(src_storage)));
-        let (result_arc, _) =
-            PipelinedExecutor::realize(graph, ws_id, inputs).expect("realize");
+        let (result_arc, _) = PipelinedExecutor::realize(graph, ws_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let out: &[f32] = c.as_slice().unwrap();
         let expected = [
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            1.0, 2.0, 3.0, 4.0, 5.0, 6.0,  // row 2 = source
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0,
+            6.0, // row 2 = source
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
         ];
         assert_eq!(out, &expected);
@@ -13678,15 +14929,22 @@ mod tests {
         let (dest_id, src_id, ws_id, dest_arc_external) = {
             let mut g = graph.write().unwrap();
             let dest = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3, 2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3, 2]),
+                dtype: DType::F32,
             });
             let src = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[1, 2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1, 2]),
+                dtype: DType::F32,
             });
             let ws = g.push(Node {
-                op: Op::WriteSlice { ranges: vec![(1, 2), (0, 2)], dyn_offset: None },
+                op: Op::WriteSlice {
+                    ranges: vec![(1, 2), (0, 2)],
+                    dyn_offset: None,
+                },
                 inputs: vec![dest, src],
                 shape: Shape::from_dims(&[3, 2]),
                 dtype: DType::F32,
@@ -13698,8 +14956,7 @@ mod tests {
         let mut inputs = StorageCache::new();
         inputs.insert(dest_id, Arc::clone(&dest_arc_external));
         inputs.insert(src_id, Arc::new(RwLock::new(src_storage)));
-        let (result_arc, _) =
-            PipelinedExecutor::realize(graph, ws_id, inputs).expect("realize");
+        let (result_arc, _) = PipelinedExecutor::realize(graph, ws_id, inputs).expect("realize");
         // Bytes were written into the same Arc the caller held —
         // the WriteSlice op aliases dest's Storage Arc, not allocates
         // a fresh buffer.
@@ -13732,12 +14989,16 @@ mod tests {
         let (dest_id, src_id, ws_id) = {
             let mut g = graph.write().unwrap();
             let dest = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[6]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[6]),
+                dtype: DType::F32,
             });
             let src = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F32,
             });
             let ws = g.push(Node {
                 // ranges[0] = (0, 2): the start is a placeholder (ignored —
@@ -13761,16 +15022,16 @@ mod tests {
         let mut env = SymEnv::new();
         env.bind(sym, 3).unwrap();
 
-        let (result_arc, _) =
-            PipelinedExecutor::realize_with_env(graph, ws_id, inputs, env)
-                .expect("realize_with_env");
+        let (result_arc, _) = PipelinedExecutor::realize_with_env(graph, ws_id, inputs, env)
+            .expect("realize_with_env");
         let guard = result_arc.read().unwrap();
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let out: &[f32] = c.as_slice().unwrap();
         assert_eq!(
-            out, &[0.0, 0.0, 0.0, 7.0, 8.0, 0.0],
+            out,
+            &[0.0, 0.0, 0.0, 7.0, 8.0, 0.0],
             "slab must land at the SymEnv-bound offset 3, not the static placeholder 0",
         );
     }
@@ -13783,8 +15044,8 @@ mod tests {
     /// keystone capability for SSM decode / MoE sparsity / MLA KV.
     #[test]
     fn pipelined_realize_nonzero_indices_publishes_count() {
-        use fuel_ir::storage::{compose_bundle, OutputViewSpec};
         use fuel_ir::SymId;
+        use fuel_ir::storage::{OutputViewSpec, compose_bundle};
         // flat [0,1,0,1,1,0] → 3 nonzeros at 1,3,4; capacity 6.
         let x_storage = fuel_memory::from_slice_cpu(&[0.0_f32, 1.0, 0.0, 1.0, 1.0, 0.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
@@ -13821,20 +15082,17 @@ mod tests {
                 shape: idx_shape,
                 dtype: DType::U32,
             });
-            g.set_output_views(nzi, Arc::from(views.into_boxed_slice())).unwrap();
+            g.set_output_views(nzi, Arc::from(views.into_boxed_slice()))
+                .unwrap();
             g.set_target_backend(nzi, BackendId::Cpu);
             (x, nzi)
         };
         let mut inputs = StorageCache::new();
         inputs.insert(x_id, Arc::new(RwLock::new(x_storage)));
 
-        let (_arc, _layout, produced) = PipelinedExecutor::realize_with_env_producing(
-            graph,
-            nzi_id,
-            inputs,
-            SymEnv::new(),
-        )
-        .expect("realize_with_env_producing");
+        let (_arc, _layout, produced) =
+            PipelinedExecutor::realize_with_env_producing(graph, nzi_id, inputs, SymEnv::new())
+                .expect("realize_with_env_producing");
 
         assert_eq!(
             produced.get(count_sym),
@@ -13854,12 +15112,16 @@ mod tests {
         let (dest_id, src_id, ws_id) = {
             let mut g = graph.write().unwrap();
             let dest = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[6]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[6]),
+                dtype: DType::F32,
             });
             let src = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F32,
             });
             let ws = g.push(Node {
                 op: Op::WriteSlice {
@@ -13877,8 +15139,7 @@ mod tests {
         inputs.insert(dest_id, Arc::new(RwLock::new(dest_storage)));
         inputs.insert(src_id, Arc::new(RwLock::new(src_storage)));
         // Empty env — the symbol is unbound.
-        let result =
-            PipelinedExecutor::realize_with_env(graph, ws_id, inputs, SymEnv::new());
+        let result = PipelinedExecutor::realize_with_env(graph, ws_id, inputs, SymEnv::new());
         assert!(
             result.is_err(),
             "unbound dyn_offset symbol must surface a typed error, not a panic",
@@ -13897,12 +15158,16 @@ mod tests {
         let (dest_id, src_id, ws_id) = {
             let mut g = graph.write().unwrap();
             let dest = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[6]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[6]),
+                dtype: DType::F32,
             });
             let src = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F32,
             });
             let ws = g.push(Node {
                 op: Op::WriteSlice {
@@ -13954,16 +15219,22 @@ mod tests {
         let (x_id, step_id, sig_id) = {
             let mut g = graph.write().unwrap();
             let x = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[4]),
+                dtype: DType::F32,
             });
             let step = g.push(Node {
-                op: Op::Step, inputs: vec![x],
-                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+                op: Op::Step,
+                inputs: vec![x],
+                shape: Shape::from_dims(&[4]),
+                dtype: DType::F32,
             });
             let sig = g.push(Node {
-                op: Op::SigmoidInplace, inputs: vec![x],
-                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+                op: Op::SigmoidInplace,
+                inputs: vec![x],
+                shape: Shape::from_dims(&[4]),
+                dtype: DType::F32,
             });
             g.set_target_backend(step, BackendId::Cpu);
             g.set_target_backend(sig, BackendId::Cpu);
@@ -13973,9 +15244,8 @@ mod tests {
         let mut cache = StorageCache::new();
         cache.insert(x_id, Arc::new(RwLock::new(src_storage)));
 
-        let results = PipelinedExecutor::realize_many(
-            graph, &[step_id, sig_id], cache,
-        ).expect("realize_many");
+        let results = PipelinedExecutor::realize_many(graph, &[step_id, sig_id], cache)
+            .expect("realize_many");
 
         // step_x must reflect pre-mutation x: sign of [1, -2, 3, -4] →
         // [1, 0, 1, 0]. If the executor ran SigmoidInplace first, step
@@ -13986,7 +15256,8 @@ mod tests {
         };
         let step_out: &[f32] = c.as_slice().expect("f32 cast");
         assert_eq!(
-            step_out, &[1.0_f32, 0.0, 1.0, 0.0],
+            step_out,
+            &[1.0_f32, 0.0, 1.0, 0.0],
             "Step must run before SigmoidInplace; got post-mutation bytes"
         );
         drop(step_guard);
@@ -14033,16 +15304,22 @@ mod tests {
         let (x_id, _y_id, z_id) = {
             let mut g = graph.write().unwrap();
             let x = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[4]),
+                dtype: DType::F32,
             });
             let y = g.push(Node {
-                op: Op::ReluInplace, inputs: vec![x],
-                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+                op: Op::ReluInplace,
+                inputs: vec![x],
+                shape: Shape::from_dims(&[4]),
+                dtype: DType::F32,
             });
             let z = g.push(Node {
-                op: Op::Add, inputs: vec![y, x],
-                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+                op: Op::Add,
+                inputs: vec![y, x],
+                shape: Shape::from_dims(&[4]),
+                dtype: DType::F32,
             });
             g.set_target_backend(y, BackendId::Cpu);
             g.set_target_backend(z, BackendId::Cpu);
@@ -14052,9 +15329,8 @@ mod tests {
         let mut cache = StorageCache::new();
         cache.insert(x_id, Arc::new(RwLock::new(src_storage)));
 
-        let (result_arc, _) =
-            PipelinedExecutor::realize(graph, z_id, cache)
-                .expect("realize z — insert_safety_copies must break the cycle");
+        let (result_arc, _) = PipelinedExecutor::realize(graph, z_id, cache)
+            .expect("realize z — insert_safety_copies must break the cycle");
 
         let guard = result_arc.read().unwrap();
         let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
@@ -14062,7 +15338,8 @@ mod tests {
         };
         let got: &[f32] = c.as_slice().expect("f32 cast");
         assert_eq!(
-            got, &[2.0_f32, -2.0, 6.0, -4.0],
+            got,
+            &[2.0_f32, -2.0, 6.0, -4.0],
             "Add must read pre-mutation x via the inserted safety copy"
         );
     }
@@ -14077,22 +15354,19 @@ mod tests {
     fn cpu_const_f32(
         graph: &Arc<RwLock<Graph>>,
         cache: &mut StorageCache,
-        data:  &[f32],
-        dims:  &[usize],
+        data: &[f32],
+        dims: &[usize],
     ) -> NodeId {
         let id = {
             let mut g = graph.write().unwrap();
             g.push(Node {
-                op:     Op::Const,
+                op: Op::Const,
                 inputs: vec![],
-                shape:  Shape::from_dims(dims),
-                dtype:  DType::F32,
+                shape: Shape::from_dims(dims),
+                dtype: DType::F32,
             })
         };
-        cache.insert(
-            id,
-            Arc::new(RwLock::new(fuel_memory::from_slice_cpu(data))),
-        );
+        cache.insert(id, Arc::new(RwLock::new(fuel_memory::from_slice_cpu(data))));
         id
     }
 
@@ -14105,18 +15379,18 @@ mod tests {
         let graph: Arc<RwLock<Graph>> = Arc::new(RwLock::new(Graph::new()));
         let mut cache = StorageCache::new();
 
-        let u_id     = cpu_const_f32(&graph, &mut cache, &[3.0], &[1, 1, 1]);
+        let u_id = cpu_const_f32(&graph, &mut cache, &[3.0], &[1, 1, 1]);
         let delta_id = cpu_const_f32(&graph, &mut cache, &[1.0], &[1, 1, 1]);
-        let a_id     = cpu_const_f32(&graph, &mut cache, &[-1.0], &[1, 1]);
-        let b_id     = cpu_const_f32(&graph, &mut cache, &[2.0], &[1, 1, 1]);
-        let c_id     = cpu_const_f32(&graph, &mut cache, &[0.5], &[1, 1, 1]);
+        let a_id = cpu_const_f32(&graph, &mut cache, &[-1.0], &[1, 1]);
+        let b_id = cpu_const_f32(&graph, &mut cache, &[2.0], &[1, 1, 1]);
+        let c_id = cpu_const_f32(&graph, &mut cache, &[0.5], &[1, 1, 1]);
 
         let (y_id, last_state_id) = {
-            let u_t     = fuel_graph::Tensor::from_existing(Arc::clone(&graph), u_id);
+            let u_t = fuel_graph::Tensor::from_existing(Arc::clone(&graph), u_id);
             let delta_t = fuel_graph::Tensor::from_existing(Arc::clone(&graph), delta_id);
-            let a_t     = fuel_graph::Tensor::from_existing(Arc::clone(&graph), a_id);
-            let b_t     = fuel_graph::Tensor::from_existing(Arc::clone(&graph), b_id);
-            let c_t     = fuel_graph::Tensor::from_existing(Arc::clone(&graph), c_id);
+            let a_t = fuel_graph::Tensor::from_existing(Arc::clone(&graph), a_id);
+            let b_t = fuel_graph::Tensor::from_existing(Arc::clone(&graph), b_id);
+            let c_t = fuel_graph::Tensor::from_existing(Arc::clone(&graph), c_id);
             let (y, last_state) = u_t
                 .selective_scan_bundled(&delta_t, &a_t, &b_t, &c_t, /* delta_softplus */ false)
                 .expect("selective_scan_bundled");
@@ -14129,9 +15403,9 @@ mod tests {
             g.set_target_backend(producer, BackendId::Cpu);
         }
 
-        let outputs = PipelinedExecutor::realize_many(
-            Arc::clone(&graph), &[y_id, last_state_id], cache,
-        ).expect("realize_many");
+        let outputs =
+            PipelinedExecutor::realize_many(Arc::clone(&graph), &[y_id, last_state_id], cache)
+                .expect("realize_many");
         let (y_arc, y_layout) = outputs[0].clone();
         let (last_state_arc, last_state_layout) = outputs[1].clone();
 
@@ -14154,11 +15428,15 @@ mod tests {
         let y_value = typed[y_layout.start_offset()];
         assert!((y_value - 3.0).abs() < 1e-5, "y expected 3.0 got {y_value}");
         assert_eq!(
-            last_state_layout.start_offset(), 1,
+            last_state_layout.start_offset(),
+            1,
             "slot 1 byte_offset 4 / sizeof(f32) = 1",
         );
         let ls_value = typed[last_state_layout.start_offset()];
-        assert!((ls_value - 6.0).abs() < 1e-5, "last_state expected 6.0 got {ls_value}");
+        assert!(
+            (ls_value - 6.0).abs() < 1e-5,
+            "last_state expected 6.0 got {ls_value}"
+        );
     }
 
     // ---- Ordering-defect repros (MLA decode multi-round WriteSlice) -----
@@ -14183,26 +15461,40 @@ mod tests {
         let (k_id, y_id) = {
             let mut g = graph.write().unwrap();
             let x_id = g.push(Node {
-                op: Op::WriteSlice { ranges: vec![(0, 2)], dyn_offset: None },
+                op: Op::WriteSlice {
+                    ranges: vec![(0, 2)],
+                    dyn_offset: None,
+                },
                 inputs: vec![b_id, src1_id],
-                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+                shape: Shape::from_dims(&[4]),
+                dtype: DType::F32,
             });
             let s_id = g.push(Node {
-                op: Op::Slice { dim: 0, start: 0, len: 2 },
+                op: Op::Slice {
+                    dim: 0,
+                    start: 0,
+                    len: 2,
+                },
                 inputs: vec![x_id],
-                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F32,
             });
             let k_id = g.push(Node {
                 op: Op::Relu,
                 inputs: vec![s_id],
-                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F32,
             });
             // Round 2 OVERLAPS round 1's [0,2) range so a wrong-order
             // execution would be numerically visible in K's output.
             let y_id = g.push(Node {
-                op: Op::WriteSlice { ranges: vec![(0, 2)], dyn_offset: None },
+                op: Op::WriteSlice {
+                    ranges: vec![(0, 2)],
+                    dyn_offset: None,
+                },
                 inputs: vec![x_id, src2_id],
-                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+                shape: Shape::from_dims(&[4]),
+                dtype: DType::F32,
             });
             g.set_target_backend(x_id, BackendId::Cpu);
             g.set_target_backend(k_id, BackendId::Cpu);
@@ -14211,10 +15503,7 @@ mod tests {
         };
 
         let plan = fuel_graph::opt::execution_plan(&graph.read().unwrap(), &[k_id, y_id]);
-        eprintln!(
-            "[diagnostic plain-slice] execution_plan = {:?}",
-            plan,
-        );
+        eprintln!("[diagnostic plain-slice] execution_plan = {:?}", plan,);
 
         let outputs = PipelinedExecutor::realize_many(Arc::clone(&graph), &[k_id, y_id], cache)
             .expect("realize_many: plain slice reader must not error");
@@ -14225,8 +15514,10 @@ mod tests {
         };
         let out: &[f32] = c.as_slice().unwrap();
         assert_eq!(
-            out, &[1.0, 2.0],
-            "K = relu(slice(X,0,2)) must read PRE-round-2 bytes; got {:?}", out,
+            out,
+            &[1.0, 2.0],
+            "K = relu(slice(X,0,2)) must read PRE-round-2 bytes; got {:?}",
+            out,
         );
     }
 
@@ -14258,35 +15549,50 @@ mod tests {
         let (x_id, k_id, y_id) = {
             let mut g = graph.write().unwrap();
             let x_id = g.push(Node {
-                op: Op::WriteSlice { ranges: vec![(0, 2)], dyn_offset: None },
+                op: Op::WriteSlice {
+                    ranges: vec![(0, 2)],
+                    dyn_offset: None,
+                },
                 inputs: vec![b_id, src1_id],
-                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+                shape: Shape::from_dims(&[4]),
+                dtype: DType::F32,
             });
             let s_id = g.push(Node {
                 // OFFSET-0 contiguous prefix slice — ContiguizeOf's
                 // zero-copy fast path requires this at execute time.
-                op: Op::Slice { dim: 0, start: 0, len: 2 },
+                op: Op::Slice {
+                    dim: 0,
+                    start: 0,
+                    len: 2,
+                },
                 inputs: vec![x_id],
-                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F32,
             });
             let r_id = g.push(Node {
                 op: Op::Reshape(Shape::from_dims(&[2])),
                 inputs: vec![s_id],
-                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F32,
             });
             let k_id = g.push(Node {
                 op: Op::Relu,
                 inputs: vec![r_id],
-                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F32,
             });
             // Round 2 OVERLAPS round 1's [0,2) range (not the [2,4)
             // tail) so a wrong-order execution is numerically visible
             // in K's output — a disjoint round 2 would corrupt bytes
             // K never reads, masking the defect.
             let y_id = g.push(Node {
-                op: Op::WriteSlice { ranges: vec![(0, 2)], dyn_offset: None },
+                op: Op::WriteSlice {
+                    ranges: vec![(0, 2)],
+                    dyn_offset: None,
+                },
                 inputs: vec![x_id, src2_id],
-                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+                shape: Shape::from_dims(&[4]),
+                dtype: DType::F32,
             });
             g.set_target_backend(x_id, BackendId::Cpu);
             g.set_target_backend(k_id, BackendId::Cpu);
@@ -14314,9 +15620,11 @@ mod tests {
         // [0,2) range with [99.0, 98.0] — if Y (round 2) runs before K
         // (the ordering defect), K instead observes [99.0, 98.0].
         assert_eq!(
-            out, &[1.0, 2.0],
+            out,
+            &[1.0, 2.0],
             "K must read PRE-round-2 bytes through the adopted Arc; got {:?} \
-             (post-round-2 corruption if this fails)", out,
+             (post-round-2 corruption if this fails)",
+            out,
         );
     }
 
@@ -14344,40 +15652,59 @@ mod tests {
             let mut g = graph.write().unwrap();
             // Round N, layer L: append src_l_n into b_l.
             let x_l_n = g.push(Node {
-                op: Op::WriteSlice { ranges: vec![(0, 2)], dyn_offset: None },
+                op: Op::WriteSlice {
+                    ranges: vec![(0, 2)],
+                    dyn_offset: None,
+                },
                 inputs: vec![b_l_id, src_l_n_id],
-                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+                shape: Shape::from_dims(&[4]),
+                dtype: DType::F32,
             });
             // "Attention math" for round N at layer L: read the filled
             // prefix, reshape (head-split-style hop), then a kernel.
             let s_l_n = g.push(Node {
-                op: Op::Slice { dim: 0, start: 0, len: 2 },
+                op: Op::Slice {
+                    dim: 0,
+                    start: 0,
+                    len: 2,
+                },
                 inputs: vec![x_l_n],
-                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F32,
             });
             let rs_l_n = g.push(Node {
                 op: Op::Reshape(Shape::from_dims(&[2])),
                 inputs: vec![s_l_n],
-                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F32,
             });
             let r_l_n = g.push(Node {
                 op: Op::Relu,
                 inputs: vec![rs_l_n],
-                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F32,
             });
             // Round N, layer L+1: append the attention-math result.
             let x_l1_n = g.push(Node {
-                op: Op::WriteSlice { ranges: vec![(0, 2)], dyn_offset: None },
+                op: Op::WriteSlice {
+                    ranges: vec![(0, 2)],
+                    dyn_offset: None,
+                },
                 inputs: vec![b_l1_id, r_l_n],
-                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+                shape: Shape::from_dims(&[4]),
+                dtype: DType::F32,
             });
             // Round N+1, layer L: append into x_l_n directly (SAME node
             // s_l_n/rs_l_n/r_l_n read from) — OVERLAPPING range so a
             // wrong-order execution is numerically visible downstream.
             let x_l_n1 = g.push(Node {
-                op: Op::WriteSlice { ranges: vec![(0, 2)], dyn_offset: None },
+                op: Op::WriteSlice {
+                    ranges: vec![(0, 2)],
+                    dyn_offset: None,
+                },
                 inputs: vec![x_l_n, src_l_n1_id],
-                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+                shape: Shape::from_dims(&[4]),
+                dtype: DType::F32,
             });
             g.set_target_backend(x_l_n, BackendId::Cpu);
             g.set_target_backend(r_l_n, BackendId::Cpu);
@@ -14386,14 +15713,12 @@ mod tests {
             (x_l_n1, x_l1_n)
         };
 
-        let plan = fuel_graph::opt::execution_plan(
-            &graph.read().unwrap(), &[x_l1_n_id, x_l_n1_id],
-        );
+        let plan = fuel_graph::opt::execution_plan(&graph.read().unwrap(), &[x_l1_n_id, x_l_n1_id]);
         eprintln!("[diagnostic mla-2-layer] execution_plan = {:?}", plan);
 
-        let outputs = PipelinedExecutor::realize_many(
-            Arc::clone(&graph), &[x_l1_n_id, x_l_n1_id], cache,
-        ).expect("realize_many");
+        let outputs =
+            PipelinedExecutor::realize_many(Arc::clone(&graph), &[x_l1_n_id, x_l_n1_id], cache)
+                .expect("realize_many");
         // outputs[0] = x_l1_n = write_slice(b_l1, relu(reshape(slice(x_l_n))))
         // Must reflect round-N's PRE-round-(N+1) bytes: relu([1,2]) = [1,2].
         let (x_l1_n_arc, _) = &outputs[0];
@@ -14403,9 +15728,11 @@ mod tests {
         };
         let out: &[f32] = c.as_slice().unwrap();
         assert_eq!(
-            out, &[1.0, 2.0, 0.0, 0.0],
+            out,
+            &[1.0, 2.0, 0.0, 0.0],
             "layer L+1's round-N append must reflect PRE-round-(N+1) attention \
-             math output; got {:?} (post-round-(N+1) corruption if this fails)", out,
+             math output; got {:?} (post-round-(N+1) corruption if this fails)",
+            out,
         );
     }
 }

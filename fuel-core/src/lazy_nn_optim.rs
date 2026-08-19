@@ -27,10 +27,10 @@
 //!
 //! [`step`]: LazyOptimizer::step
 
-use crate::lazy::{realize_many_f32, LazyTensor};
 use crate::Result;
-use fuel_ir::{Error, Shape};
+use crate::lazy::{LazyTensor, realize_many_f32};
 use fuel_graph::NodeId;
+use fuel_ir::{Error, Shape};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
@@ -162,10 +162,8 @@ pub trait LazyOptimizer: Sized {
             let Some(node_id) = var.last_node_id() else {
                 continue;
             };
-            let handle = fuel_graph::Tensor::from_existing(
-                loss.graph_tensor().graph().clone(),
-                node_id,
-            );
+            let handle =
+                fuel_graph::Tensor::from_existing(loss.graph_tensor().graph().clone(), node_id);
             if let Some(grad) = grad_map.get(&handle) {
                 grads.insert(var.name().to_string(), LazyTensor::from_graph_tensor(grad));
             }
@@ -763,11 +761,7 @@ mod tests {
         let cfg = SgdConfig::new(0.1);
         let mut opt = LazySgd::new(vec![w.clone()], cfg).unwrap();
 
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32; 2],
-            Shape::from_dims(&[2]),
-            &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32; 2], Shape::from_dims(&[2]), &Device::cpu());
         let target = anchor.const_f32_like(vec![1.0_f32, 1.0], Shape::from_dims(&[2]));
         let w_t = w.tensor(&anchor);
         let diff = w_t.sub(&target).unwrap();
@@ -780,7 +774,11 @@ mod tests {
         // Gradient of (w - target)^2 wrt w is 2*(w - target).
         // For w0 = [3, -1], target = [1, 1], grad = [4, -4].
         // SGD step: w1 = w0 - 0.1 * grad = [3 - 0.4, -1 + 0.4] = [2.6, -0.6].
-        assert!((w1[0] - 2.6).abs() < 1e-5, "got {:?}, expected ~[2.6, -0.6]", w1);
+        assert!(
+            (w1[0] - 2.6).abs() < 1e-5,
+            "got {:?}, expected ~[2.6, -0.6]",
+            w1
+        );
         assert!((w1[1] - (-0.6)).abs() < 1e-5, "got {:?}", w1);
         assert!(w1 != w0, "params should have changed");
     }

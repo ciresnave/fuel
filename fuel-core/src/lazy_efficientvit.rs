@@ -24,9 +24,9 @@
 //!   - BatchNorm is fused-affine (inference mode).
 //!   - Forward-only (no autograd in scope).
 
+use crate::Result;
 use crate::lazy::{LazyTensor, WeightStorage};
 use crate::lazy_convmixer::BatchNormParams;
-use crate::Result;
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -55,25 +55,34 @@ impl EfficientVitConfig {
     /// EfficientViT-MSRA M0 (smallest variant). image_size=224.
     pub fn m0() -> Self {
         Self {
-            channels: [64, 128, 192], blocks: [1, 2, 3],
-            heads: [4, 4, 4], kernels: vec![5, 5, 5, 5],
-            stage_resolutions: [14, 7, 4], key_dim: 16,
+            channels: [64, 128, 192],
+            blocks: [1, 2, 3],
+            heads: [4, 4, 4],
+            kernels: vec![5, 5, 5, 5],
+            stage_resolutions: [14, 7, 4],
+            key_dim: 16,
         }
     }
     /// EfficientViT-MSRA M1.
     pub fn m1() -> Self {
         Self {
-            channels: [128, 144, 192], blocks: [1, 2, 3],
-            heads: [2, 3, 3], kernels: vec![7, 5, 3, 3],
-            stage_resolutions: [14, 7, 4], key_dim: 16,
+            channels: [128, 144, 192],
+            blocks: [1, 2, 3],
+            heads: [2, 3, 3],
+            kernels: vec![7, 5, 3, 3],
+            stage_resolutions: [14, 7, 4],
+            key_dim: 16,
         }
     }
     /// EfficientViT-MSRA M2.
     pub fn m2() -> Self {
         Self {
-            channels: [128, 192, 224], blocks: [1, 2, 3],
-            heads: [4, 3, 2], kernels: vec![7, 5, 3, 3],
-            stage_resolutions: [14, 7, 4], key_dim: 16,
+            channels: [128, 192, 224],
+            blocks: [1, 2, 3],
+            heads: [4, 3, 2],
+            kernels: vec![7, 5, 3, 3],
+            stage_resolutions: [14, 7, 4],
+            key_dim: 16,
         }
     }
 }
@@ -223,9 +232,7 @@ impl EfficientVitModel {
                 let flat = bn_out.reshape(Shape::from_dims(&[1, c]))?;
                 let n_out = lin_b.len();
                 let logits = lin_w.apply_linear(&flat, c, n_out)?;
-                let bias = image.const_f32_like(
-                    Arc::clone(lin_b), Shape::from_dims(&[n_out]),
-                );
+                let bias = image.const_f32_like(Arc::clone(lin_b), Shape::from_dims(&[n_out]));
                 logits.broadcast_add(&bias)
             }
         }
@@ -264,35 +271,26 @@ impl EfficientVitModel {
 
 // ---- Component helpers -----------------------------------------------------
 
-fn apply_bn(
-    x: &LazyTensor, bn: &BatchNormParams, channels: usize,
-) -> Result<LazyTensor> {
+fn apply_bn(x: &LazyTensor, bn: &BatchNormParams, channels: usize) -> Result<LazyTensor> {
     let _ = channels;
     x.channel_affine_4d(Arc::clone(&bn.w), Arc::clone(&bn.b))
 }
 
-fn apply_conv_bn(
-    x: &LazyTensor, c: &ConvBnWeights, anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+fn apply_conv_bn(x: &LazyTensor, c: &ConvBnWeights, anchor: &LazyTensor) -> Result<LazyTensor> {
     let w = anchor.const_f32_like(
         Arc::clone(&c.conv_w),
         Shape::from_dims(&[c.c_out, c.c_in / c.groups, c.k, c.k]),
     );
-    let conv = x.conv2d(
-        &w, None,
-        (c.stride, c.stride),
-        (c.pad, c.pad),
-        c.groups,
-    )?;
+    let conv = x.conv2d(&w, None, (c.stride, c.stride), (c.pad, c.pad), c.groups)?;
     apply_bn(&conv, &c.bn, c.c_out)
 }
 
 fn apply_conv1x1_bias(
-    x: &LazyTensor, c: &Conv1x1BiasWeights, anchor: &LazyTensor,
+    x: &LazyTensor,
+    c: &Conv1x1BiasWeights,
+    anchor: &LazyTensor,
 ) -> Result<LazyTensor> {
-    let w = anchor.const_f32_like(
-        Arc::clone(&c.w), Shape::from_dims(&[c.c_out, c.c_in, 1, 1]),
-    );
+    let w = anchor.const_f32_like(Arc::clone(&c.w), Shape::from_dims(&[c.c_out, c.c_in, 1, 1]));
     let conv = x.conv2d(&w, None, (1, 1), (0, 0), 1)?;
     let bias = anchor
         .const_f32_like(Arc::clone(&c.b), Shape::from_dims(&[c.c_out]))
@@ -300,22 +298,19 @@ fn apply_conv1x1_bias(
     conv.broadcast_add(&bias)
 }
 
-fn apply_conv_mlp(
-    x: &LazyTensor, m: &ConvMlpWeights, anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+fn apply_conv_mlp(x: &LazyTensor, m: &ConvMlpWeights, anchor: &LazyTensor) -> Result<LazyTensor> {
     let h = apply_conv_bn(x, &m.pw1, anchor)?.relu();
     apply_conv_bn(&h, &m.pw2, anchor)
 }
 
-fn apply_se(
-    x: &LazyTensor, se: &SeWeights, anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+fn apply_se(x: &LazyTensor, se: &SeWeights, anchor: &LazyTensor) -> Result<LazyTensor> {
     // Mean over (H, W) keeping dims: reshape from (B, C, H, W) →
     // (B, C, 1, 1).
     let dims = x.shape();
     let dims = dims.dims();
     let c = dims[1];
-    let pooled = x.global_avg_pool_2d()?
+    let pooled = x
+        .global_avg_pool_2d()?
         .reshape(Shape::from_dims(&[dims[0], c, 1, 1]))?;
     let g = apply_conv1x1_bias(&pooled, &se.fc1, anchor)?.relu();
     let g = apply_conv1x1_bias(&g, &se.fc2, anchor)?.sigmoid();
@@ -324,7 +319,9 @@ fn apply_se(
 }
 
 fn apply_patchmerge(
-    x: &LazyTensor, p: &PatchMergeWeights, anchor: &LazyTensor,
+    x: &LazyTensor,
+    p: &PatchMergeWeights,
+    anchor: &LazyTensor,
 ) -> Result<LazyTensor> {
     let x = apply_conv_bn(x, &p.conv1, anchor)?.relu();
     let x = apply_conv_bn(&x, &p.conv2, anchor)?.relu();
@@ -332,9 +329,7 @@ fn apply_patchmerge(
     apply_conv_bn(&x, &p.conv3, anchor)
 }
 
-fn apply_res_block(
-    x: &LazyTensor, r: &ResBlockWeights, anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+fn apply_res_block(x: &LazyTensor, r: &ResBlockWeights, anchor: &LazyTensor) -> Result<LazyTensor> {
     let y = apply_conv_bn(x, &r.dw, anchor)?;
     let x = x.add(&y)?;
     let y = apply_conv_mlp(&x, &r.mlp, anchor)?;
@@ -342,7 +337,9 @@ fn apply_res_block(
 }
 
 fn apply_downsample(
-    x: &LazyTensor, d: &DownsampleWeights, anchor: &LazyTensor,
+    x: &LazyTensor,
+    d: &DownsampleWeights,
+    anchor: &LazyTensor,
 ) -> Result<LazyTensor> {
     let x = apply_res_block(x, &d.res1, anchor)?;
     let x = apply_patchmerge(&x, &d.patchmerge, anchor)?;
@@ -350,8 +347,11 @@ fn apply_downsample(
 }
 
 fn apply_block(
-    x: &LazyTensor, b: &EfficientVitBlockWeights,
-    cfg: &EfficientVitConfig, stage: usize, anchor: &LazyTensor,
+    x: &LazyTensor,
+    b: &EfficientVitBlockWeights,
+    cfg: &EfficientVitConfig,
+    stage: usize,
+    anchor: &LazyTensor,
 ) -> Result<LazyTensor> {
     let y = apply_conv_bn(x, &b.dw0, anchor)?;
     let x = x.add(&y)?;
@@ -367,8 +367,11 @@ fn apply_block(
 
 /// CGA + optional 7×7 windowing.
 fn apply_cga_attn(
-    x: &LazyTensor, w: &CgaWeights,
-    cfg: &EfficientVitConfig, stage: usize, anchor: &LazyTensor,
+    x: &LazyTensor,
+    w: &CgaWeights,
+    cfg: &EfficientVitConfig,
+    stage: usize,
+    anchor: &LazyTensor,
 ) -> Result<LazyTensor> {
     let win_res = 7;
     let need_windowing = cfg.stage_resolutions[stage] > win_res;
@@ -416,7 +419,9 @@ fn apply_cga_attn(
 
 /// CGA forward without windowing — assumes input fits as-is.
 fn cga_core(
-    x: &LazyTensor, w: &CgaWeights, cfg: &EfficientVitConfig,
+    x: &LazyTensor,
+    w: &CgaWeights,
+    cfg: &EfficientVitConfig,
     anchor: &LazyTensor,
 ) -> Result<LazyTensor> {
     let dims = x.shape();
@@ -475,9 +480,7 @@ fn cga_core(
 
 /// Pad a single dim with `right` zeros at the end. Composite using
 /// `concat` against a freshly-built zero tensor of matching shape.
-fn pad_dim_with_zeros(
-    x: &LazyTensor, dim: usize, right: usize,
-) -> Result<LazyTensor> {
+fn pad_dim_with_zeros(x: &LazyTensor, dim: usize, right: usize) -> Result<LazyTensor> {
     if right == 0 {
         return Ok(x.clone());
     }
@@ -506,8 +509,9 @@ impl EfficientVitWeights {
             "EfficientVitWeights::load_from_mmapped: HF tensor naming is \
              nested across CGA / Sandwich / MBConv stages; canonical mapping \
              is pending. Construct weights directly or contribute the loader."
-            .to_string()
-        ).bt())
+                .to_string(),
+        )
+        .bt())
     }
 }
 
@@ -528,30 +532,50 @@ mod tests {
     fn vec_of(n: usize, nb: &mut dyn FnMut() -> f32) -> Arc<[f32]> {
         Arc::from((0..n).map(|_| nb()).collect::<Vec<_>>())
     }
-    fn arc_ones(n: usize) -> Arc<[f32]> { Arc::from(vec![1.0_f32; n]) }
-    fn arc_zeros(n: usize) -> Arc<[f32]> { Arc::from(vec![0.0_f32; n]) }
+    fn arc_ones(n: usize) -> Arc<[f32]> {
+        Arc::from(vec![1.0_f32; n])
+    }
+    fn arc_zeros(n: usize) -> Arc<[f32]> {
+        Arc::from(vec![0.0_f32; n])
+    }
     fn tiny_bn(c: usize) -> BatchNormParams {
-        BatchNormParams { w: arc_ones(c), b: arc_zeros(c) }
+        BatchNormParams {
+            w: arc_ones(c),
+            b: arc_zeros(c),
+        }
     }
 
     fn conv_bn_w(
-        c_in: usize, c_out: usize, k: usize, stride: usize, pad: usize,
-        groups: usize, nb: &mut dyn FnMut() -> f32,
+        c_in: usize,
+        c_out: usize,
+        k: usize,
+        stride: usize,
+        pad: usize,
+        groups: usize,
+        nb: &mut dyn FnMut() -> f32,
     ) -> ConvBnWeights {
         ConvBnWeights {
             conv_w: vec_of(c_out * (c_in / groups) * k * k, nb),
             bn: tiny_bn(c_out),
-            c_in, c_out, k, stride, pad, groups,
+            c_in,
+            c_out,
+            k,
+            stride,
+            pad,
+            groups,
         }
     }
 
     fn conv1x1_bias_w(
-        c_in: usize, c_out: usize, nb: &mut dyn FnMut() -> f32,
+        c_in: usize,
+        c_out: usize,
+        nb: &mut dyn FnMut() -> f32,
     ) -> Conv1x1BiasWeights {
         Conv1x1BiasWeights {
             w: vec_of(c_out * c_in, nb),
             b: vec_of(c_out, nb),
-            c_in, c_out,
+            c_in,
+            c_out,
         }
     }
 
@@ -563,7 +587,10 @@ mod tests {
     }
 
     fn cga_w(
-        c_in: usize, n_heads: usize, key_dim: usize, kernels: &[usize],
+        c_in: usize,
+        n_heads: usize,
+        key_dim: usize,
+        kernels: &[usize],
         nb: &mut dyn FnMut() -> f32,
     ) -> CgaWeights {
         let val_dim = c_in / n_heads;
@@ -580,7 +607,10 @@ mod tests {
     }
 
     fn block_w(
-        dim: usize, n_heads: usize, key_dim: usize, kernels: &[usize],
+        dim: usize,
+        n_heads: usize,
+        key_dim: usize,
+        kernels: &[usize],
         nb: &mut dyn FnMut() -> f32,
     ) -> EfficientVitBlockWeights {
         EfficientVitBlockWeights {
@@ -599,9 +629,7 @@ mod tests {
         }
     }
 
-    fn patchmerge_w(
-        in_c: usize, out_c: usize, nb: &mut dyn FnMut() -> f32,
-    ) -> PatchMergeWeights {
+    fn patchmerge_w(in_c: usize, out_c: usize, nb: &mut dyn FnMut() -> f32) -> PatchMergeWeights {
         let hid = in_c * 4;
         PatchMergeWeights {
             conv1: conv_bn_w(in_c, hid, 1, 1, 0, 1, nb),
@@ -614,9 +642,7 @@ mod tests {
         }
     }
 
-    fn downsample_w(
-        in_c: usize, out_c: usize, nb: &mut dyn FnMut() -> f32,
-    ) -> DownsampleWeights {
+    fn downsample_w(in_c: usize, out_c: usize, nb: &mut dyn FnMut() -> f32) -> DownsampleWeights {
         DownsampleWeights {
             res1: res_block_w(in_c, nb),
             patchmerge: patchmerge_w(in_c, out_c, nb),
@@ -679,10 +705,16 @@ mod tests {
     fn forward_features_shape_and_finite() {
         let cfg = tiny_config();
         let weights = tiny_weights(&cfg);
-        let model = EfficientVitModel { config: cfg.clone(), weights };
+        let model = EfficientVitModel {
+            config: cfg.clone(),
+            weights,
+        };
         let img = LazyTensor::from_f32(
-            (0..(3 * 64 * 64)).map(|i| i as f32 * 0.01).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, 3, 64, 64]), &Device::cpu(),
+            (0..(3 * 64 * 64))
+                .map(|i| i as f32 * 0.01)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 3, 64, 64]),
+            &Device::cpu(),
         );
         let feats = model.forward_features(&img).unwrap();
         let shape = feats.shape();
@@ -708,12 +740,18 @@ mod tests {
         let mut cfg = tiny_config();
         cfg.stage_resolutions[0] = 8; // > 7 → triggers windowing
         let weights = tiny_weights(&cfg);
-        let model = EfficientVitModel { config: cfg.clone(), weights };
+        let model = EfficientVitModel {
+            config: cfg.clone(),
+            weights,
+        };
         // image_size=128 → stem /16 = 8 at stage 0. Windowing
         // will tile into (8/7) → pad to 14 → 2x2 windows of 7x7.
         let img = LazyTensor::from_f32(
-            (0..(3 * 128 * 128)).map(|i| (i as f32) * 0.001).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, 3, 128, 128]), &Device::cpu(),
+            (0..(3 * 128 * 128))
+                .map(|i| (i as f32) * 0.001)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 3, 128, 128]),
+            &Device::cpu(),
         );
         let feats = model.forward_features(&img).unwrap();
         let shape = feats.shape();
@@ -733,17 +771,26 @@ mod tests {
         let dim = 16;
         let cga = cga_w(dim, 2, 4, &[3, 3], &mut nb);
         let cfg = EfficientVitConfig {
-            channels: [dim, dim, dim], blocks: [1, 1, 1],
-            heads: [2, 2, 2], kernels: vec![3, 3],
-            stage_resolutions: [4, 2, 1], key_dim: 4,
+            channels: [dim, dim, dim],
+            blocks: [1, 1, 1],
+            heads: [2, 2, 2],
+            kernels: vec![3, 3],
+            stage_resolutions: [4, 2, 1],
+            key_dim: 4,
         };
         let a = LazyTensor::from_f32(
-            (0..(dim * 4 * 4)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, dim, 4, 4]), &Device::cpu(),
+            (0..(dim * 4 * 4))
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, dim, 4, 4]),
+            &Device::cpu(),
         );
         let b = LazyTensor::from_f32(
-            (0..(dim * 4 * 4)).map(|i| (i as f32) * 0.01 + 0.5).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, dim, 4, 4]), &Device::cpu(),
+            (0..(dim * 4 * 4))
+                .map(|i| (i as f32) * 0.01 + 0.5)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, dim, 4, 4]),
+            &Device::cpu(),
         );
         let out_a = cga_core(&a, &cga, &cfg, &a).unwrap().realize_f32();
         let out_b = cga_core(&b, &cga, &cfg, &b).unwrap().realize_f32();
@@ -751,8 +798,10 @@ mod tests {
         for (x, y) in out_a.iter().zip(out_b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-7,
-            "CGA must respond to input changes, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-7,
+            "CGA must respond to input changes, max_diff = {max_diff}"
+        );
     }
 
     #[test]

@@ -12,7 +12,7 @@ use fuel::lazy_gemma::GemmaActivation;
 use fuel::lazy_gemma4_text::{
     Gemma4LayerType, Gemma4TextConfig, Gemma4TextModel, Gemma4TextWeights,
 };
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use hf_hub::{Repo, RepoType, api::sync::Api};
 use tokenizers::Tokenizer;
 
 #[derive(Parser, Debug)]
@@ -257,19 +257,11 @@ fn gemma4_text_config_from_hf_json_str(
         text_v.get(key).and_then(|x| x.as_u64()).map(|x| x as usize)
     };
     let get_f64 = |key: &str, default: f64| -> f64 {
-        text_v
-            .get(key)
-            .and_then(|x| x.as_f64())
-            .unwrap_or(default)
+        text_v.get(key).and_then(|x| x.as_f64()).unwrap_or(default)
     };
-    let get_f64_opt = |key: &str| -> Option<f64> {
-        text_v.get(key).and_then(|x| x.as_f64())
-    };
+    let get_f64_opt = |key: &str| -> Option<f64> { text_v.get(key).and_then(|x| x.as_f64()) };
     let get_bool = |key: &str, default: bool| -> bool {
-        text_v
-            .get(key)
-            .and_then(|x| x.as_bool())
-            .unwrap_or(default)
+        text_v.get(key).and_then(|x| x.as_bool()).unwrap_or(default)
     };
 
     // Layer-type strings → enum vec.
@@ -285,9 +277,7 @@ fn gemma4_text_config_from_hf_json_str(
                 })
                 .collect()
         })
-        .unwrap_or_else(|| {
-            vec![Gemma4LayerType::SlidingAttention; num_hidden_layers]
-        });
+        .unwrap_or_else(|| vec![Gemma4LayerType::SlidingAttention; num_hidden_layers]);
 
     // rope_parameters parsing.
     let rope_params = text_v.get("rope_parameters");
@@ -361,7 +351,10 @@ fn sample(
     }
     let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let inv_t = 1.0 / temperature.max(1e-6);
-    let mut probs: Vec<f32> = logits.iter().map(|&x| ((x - max_l) * inv_t).exp()).collect();
+    let mut probs: Vec<f32> = logits
+        .iter()
+        .map(|&x| ((x - max_l) * inv_t).exp())
+        .collect();
     let sum: f32 = probs.iter().sum();
     for p in &mut probs {
         *p /= sum.max(1e-30);

@@ -62,11 +62,15 @@ pub trait UnaryOpCore {
 // Blanket impls.
 
 impl<O: UnaryOpCore> UnaryOp<f32> for O {
-    fn apply(x: f32) -> f32 { <O as UnaryOpCore>::f32(x) }
+    fn apply(x: f32) -> f32 {
+        <O as UnaryOpCore>::f32(x)
+    }
 }
 
 impl<O: UnaryOpCore> UnaryOp<f64> for O {
-    fn apply(x: f64) -> f64 { <O as UnaryOpCore>::f64(x) }
+    fn apply(x: f64) -> f64 {
+        <O as UnaryOpCore>::f64(x)
+    }
 }
 
 impl<O: UnaryOpCore> UnaryOp<half::bf16> for O {
@@ -91,11 +95,7 @@ impl<O: UnaryOpCore> UnaryOp<half::f16> for O {
 ///
 /// `name` appears in size-mismatch error messages so the
 /// diagnostic points at the entry the caller invoked.
-pub fn unary<T, U>(
-    name: &str,
-    input: &CpuStorageBytes,
-    output: &mut CpuStorageBytes,
-) -> Result<()>
+pub fn unary<T, U>(name: &str, input: &CpuStorageBytes, output: &mut CpuStorageBytes) -> Result<()>
 where
     T: Copy + Pod,
     U: UnaryOp<T>,
@@ -133,138 +133,222 @@ where
 /// 2026-07-08 (NaN) + 2026-07-14 (`-0.0`, `docs/architecture/10-decisions-log.md`).
 pub struct Relu;
 impl UnaryOpCore for Relu {
-    fn f32(x: f32) -> f32 { if x < 0.0 { 0.0 } else { x } }
-    fn f64(x: f64) -> f64 { if x < 0.0 { 0.0 } else { x } }
+    fn f32(x: f32) -> f32 {
+        if x < 0.0 { 0.0 } else { x }
+    }
+    fn f64(x: f64) -> f64 {
+        if x < 0.0 { 0.0 } else { x }
+    }
 }
 
 /// Negation: `-x`.
 pub struct Neg;
 impl UnaryOpCore for Neg {
-    fn f32(x: f32) -> f32 { -x }
-    fn f64(x: f64) -> f64 { -x }
+    fn f32(x: f32) -> f32 {
+        -x
+    }
+    fn f64(x: f64) -> f64 {
+        -x
+    }
 }
 
 /// Square: `x * x`.
 pub struct Sqr;
 impl UnaryOpCore for Sqr {
-    fn f32(x: f32) -> f32 { x * x }
-    fn f64(x: f64) -> f64 { x * x }
+    fn f32(x: f32) -> f32 {
+        x * x
+    }
+    fn f64(x: f64) -> f64 {
+        x * x
+    }
 }
 
 /// Square root. Negative inputs yield NaN per IEEE-754.
 pub struct Sqrt;
 impl UnaryOpCore for Sqrt {
-    fn f32(x: f32) -> f32 { x.sqrt() }
-    fn f64(x: f64) -> f64 { x.sqrt() }
+    fn f32(x: f32) -> f32 {
+        x.sqrt()
+    }
+    fn f64(x: f64) -> f64 {
+        x.sqrt()
+    }
 }
 
 /// Reciprocal: `1 / x`. Zero input yields IEEE-754 inf/NaN.
 pub struct Recip;
 impl UnaryOpCore for Recip {
-    fn f32(x: f32) -> f32 { 1.0 / x }
-    fn f64(x: f64) -> f64 { 1.0 / x }
+    fn f32(x: f32) -> f32 {
+        1.0 / x
+    }
+    fn f64(x: f64) -> f64 {
+        1.0 / x
+    }
 }
 
 /// Absolute value: `|x|`.
 pub struct Abs;
 impl UnaryOpCore for Abs {
-    fn f32(x: f32) -> f32 { x.abs() }
-    fn f64(x: f64) -> f64 { x.abs() }
+    fn f32(x: f32) -> f32 {
+        x.abs()
+    }
+    fn f64(x: f64) -> f64 {
+        x.abs()
+    }
 }
 
 /// Hyperbolic tangent.
 pub struct Tanh;
 impl UnaryOpCore for Tanh {
-    fn f32(x: f32) -> f32 { x.tanh() }
-    fn f64(x: f64) -> f64 { x.tanh() }
+    fn f32(x: f32) -> f32 {
+        x.tanh()
+    }
+    fn f64(x: f64) -> f64 {
+        x.tanh()
+    }
 }
 
 /// Exponential: `e^x`.
 pub struct Exp;
 impl UnaryOpCore for Exp {
-    fn f32(x: f32) -> f32 { x.exp() }
-    fn f64(x: f64) -> f64 { x.exp() }
+    fn f32(x: f32) -> f32 {
+        x.exp()
+    }
+    fn f64(x: f64) -> f64 {
+        x.exp()
+    }
 }
 
 /// Natural log. Negative inputs yield NaN per IEEE-754.
 pub struct Log;
 impl UnaryOpCore for Log {
-    fn f32(x: f32) -> f32 { x.ln() }
-    fn f64(x: f64) -> f64 { x.ln() }
+    fn f32(x: f32) -> f32 {
+        x.ln()
+    }
+    fn f64(x: f64) -> f64 {
+        x.ln()
+    }
 }
 
 /// Sine.
 pub struct Sin;
 impl UnaryOpCore for Sin {
-    fn f32(x: f32) -> f32 { x.sin() }
-    fn f64(x: f64) -> f64 { x.sin() }
+    fn f32(x: f32) -> f32 {
+        x.sin()
+    }
+    fn f64(x: f64) -> f64 {
+        x.sin()
+    }
 }
 
 /// Cosine.
 pub struct Cos;
 impl UnaryOpCore for Cos {
-    fn f32(x: f32) -> f32 { x.cos() }
-    fn f64(x: f64) -> f64 { x.cos() }
+    fn f32(x: f32) -> f32 {
+        x.cos()
+    }
+    fn f64(x: f64) -> f64 {
+        x.cos()
+    }
 }
 
 /// Logistic sigmoid: `1 / (1 + exp(-x))`.
 pub struct Sigmoid;
 impl UnaryOpCore for Sigmoid {
-    fn f32(x: f32) -> f32 { 1.0 / (1.0 + (-x).exp()) }
-    fn f64(x: f64) -> f64 { 1.0 / (1.0 + (-x).exp()) }
+    fn f32(x: f32) -> f32 {
+        1.0 / (1.0 + (-x).exp())
+    }
+    fn f64(x: f64) -> f64 {
+        1.0 / (1.0 + (-x).exp())
+    }
 }
 
 /// SiLU / Swish: `x * sigmoid(x)`.
 pub struct Silu;
 impl UnaryOpCore for Silu {
-    fn f32(x: f32) -> f32 { x / (1.0 + (-x).exp()) }
-    fn f64(x: f64) -> f64 { x / (1.0 + (-x).exp()) }
+    fn f32(x: f32) -> f32 {
+        x / (1.0 + (-x).exp())
+    }
+    fn f64(x: f64) -> f64 {
+        x / (1.0 + (-x).exp())
+    }
 }
 
 /// Heaviside step: `1 where x > 0, else 0`.
 pub struct Step;
 impl UnaryOpCore for Step {
-    fn f32(x: f32) -> f32 { if x > 0.0 { 1.0 } else { 0.0 } }
-    fn f64(x: f64) -> f64 { if x > 0.0 { 1.0 } else { 0.0 } }
+    fn f32(x: f32) -> f32 {
+        if x > 0.0 { 1.0 } else { 0.0 }
+    }
+    fn f64(x: f64) -> f64 {
+        if x > 0.0 { 1.0 } else { 0.0 }
+    }
 }
 
 /// Floor: `⌊x⌋`.
 pub struct Floor;
 impl UnaryOpCore for Floor {
-    fn f32(x: f32) -> f32 { x.floor() }
-    fn f64(x: f64) -> f64 { x.floor() }
+    fn f32(x: f32) -> f32 {
+        x.floor()
+    }
+    fn f64(x: f64) -> f64 {
+        x.floor()
+    }
 }
 
 /// Ceiling: `⌈x⌉`.
 pub struct Ceil;
 impl UnaryOpCore for Ceil {
-    fn f32(x: f32) -> f32 { x.ceil() }
-    fn f64(x: f64) -> f64 { x.ceil() }
+    fn f32(x: f32) -> f32 {
+        x.ceil()
+    }
+    fn f64(x: f64) -> f64 {
+        x.ceil()
+    }
 }
 
 /// Round-half-to-even (banker's rounding, IEEE-754 roundeven).
 pub struct Round;
 impl UnaryOpCore for Round {
-    fn f32(x: f32) -> f32 { x.round_ties_even() }
-    fn f64(x: f64) -> f64 { x.round_ties_even() }
+    fn f32(x: f32) -> f32 {
+        x.round_ties_even()
+    }
+    fn f64(x: f64) -> f64 {
+        x.round_ties_even()
+    }
 }
 
 /// Sign: `-1 / 0 / 1`. `sign(0) = 0` by subgradient convention.
 pub struct Sign;
 impl UnaryOpCore for Sign {
     fn f32(x: f32) -> f32 {
-        if x > 0.0 { 1.0 } else if x < 0.0 { -1.0 } else { 0.0 }
+        if x > 0.0 {
+            1.0
+        } else if x < 0.0 {
+            -1.0
+        } else {
+            0.0
+        }
     }
     fn f64(x: f64) -> f64 {
-        if x > 0.0 { 1.0 } else if x < 0.0 { -1.0 } else { 0.0 }
+        if x > 0.0 {
+            1.0
+        } else if x < 0.0 {
+            -1.0
+        } else {
+            0.0
+        }
     }
 }
 
 /// Gauss error function (`erf` via libm).
 pub struct Erf;
 impl UnaryOpCore for Erf {
-    fn f32(x: f32) -> f32 { libm::erff(x) }
-    fn f64(x: f64) -> f64 { libm::erf(x) }
+    fn f32(x: f32) -> f32 {
+        libm::erff(x)
+    }
+    fn f64(x: f64) -> f64 {
+        libm::erf(x)
+    }
 }
 
 /// GELU (exact erf form): `0.5 * x * (1 + erf(x/√2))`.
@@ -281,8 +365,12 @@ impl UnaryOpCore for GeluErf {
 /// Reciprocal square root: `1 / sqrt(x)`.
 pub struct Rsqrt;
 impl UnaryOpCore for Rsqrt {
-    fn f32(x: f32) -> f32 { 1.0 / x.sqrt() }
-    fn f64(x: f64) -> f64 { 1.0 / x.sqrt() }
+    fn f32(x: f32) -> f32 {
+        1.0 / x.sqrt()
+    }
+    fn f64(x: f64) -> f64 {
+        1.0 / x.sqrt()
+    }
 }
 
 /// GELU (tanh approximation): `0.5 * x * (1 + tanh(√(2/π) * (x + 0.044715 * x³)))`.

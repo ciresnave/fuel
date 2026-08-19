@@ -66,11 +66,11 @@ pub use jit_ingest::{
 };
 #[cfg(feature = "jit")]
 mod jit_ingest_probe;
+pub mod kernel;
 /// Reader for the vendored KISS conformance corpus (staged for the corrected
 /// `corpus_verdict` seam; see the module doc + its `PROVENANCE.md`).
 #[cfg(feature = "jit")]
 mod kiss_corpus;
-pub mod kernel;
 pub mod optimize;
 pub mod pipelined;
 pub mod plan;
@@ -86,27 +86,24 @@ pub mod variant_bake;
 pub mod vulkan_dispatch;
 
 pub use compiled::{
-    compile_node, dispatched_kernel_source, execute_compiled, Completion, CompiledNode,
-    CompletionHandle,
+    CompiledNode, Completion, CompletionHandle, compile_node, dispatched_kernel_source,
+    execute_compiled,
 };
 pub use driver::{
-    FrontierConvergenceOptimizer, OptimizationContext, Optimizer, PassRegistry,
-    Pathfinder, PlacementForkPathfinder,
+    FrontierConvergenceOptimizer, OptimizationContext, Optimizer, PassRegistry, Pathfinder,
+    PlacementForkPathfinder,
 };
 pub use kernel::{KernelBindingTable, KernelDTypes, KernelRef, OpParams};
+pub use optimize::{OptimizedGraph, optimize_graph};
 pub use pipelined::PipelinedExecutor;
-pub use optimize::{optimize_graph, OptimizedGraph};
-pub use plan::{compile_plan, ExecutionPlan, PlanOptions};
+pub use plan::{ExecutionPlan, PlanOptions, compile_plan};
 pub use ranker::{
-    apply_filter_chain, apply_inbound_transfer_costs, composite_ns,
-    compute_static_costs, default_chain, enumerate_candidates,
-    AlternativeFilter, AlternativeSet,
-    BitStablePreferenceFilter, CapabilitiesLookup, Candidate,
-    CouplingAdjustment, FilterClass, FilterContext, HashMapJudge, JudgeOracle,
-    PrecisionFloorFilter, PrecisionRequirement, StridedInputPreferenceFilter,
-    TransferEstimator, KEEP_PER_DEVICE,
+    AlternativeFilter, AlternativeSet, BitStablePreferenceFilter, Candidate, CapabilitiesLookup,
+    CouplingAdjustment, FilterClass, FilterContext, HashMapJudge, JudgeOracle, KEEP_PER_DEVICE,
+    PrecisionFloorFilter, PrecisionRequirement, StridedInputPreferenceFilter, TransferEstimator,
+    apply_filter_chain, apply_inbound_transfer_costs, composite_ns, compute_static_costs,
+    default_chain, enumerate_candidates,
 };
 pub use residency::{
-    insert_residency_evictions, EvictReload, LiveRange, ResidencyPlanner,
-    ResidencyReport,
+    EvictReload, LiveRange, ResidencyPlanner, ResidencyReport, insert_residency_evictions,
 };

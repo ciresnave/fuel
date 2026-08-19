@@ -114,7 +114,10 @@ fn relu_add_region() -> PatternNode {
         operands: vec![PatternNode::Op {
             op: OpTag::Add,
             attrs: OpAttrs::default(),
-            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+            operands: vec![
+                PatternNode::Bind { index: 0 },
+                PatternNode::Bind { index: 1 },
+            ],
         }],
     }
 }
@@ -129,7 +132,9 @@ struct MockSynth {
 
 impl Synthesizer for MockSynth {
     fn synthesize(&self, _req: &JitRequest) -> JitResponse {
-        JitResponse::Synthesized { entry_point: ENTRY.into() }
+        JitResponse::Synthesized {
+            entry_point: ENTRY.into(),
+        }
     }
     fn take_kernel(&self, entry_point: &str) -> Option<SynthArtifact> {
         if entry_point != ENTRY {
@@ -216,8 +221,12 @@ fn alloc_out_nan_filled(dev: &CudaDevice, n: usize) -> Arc<RwLock<Storage>> {
 /// does not follow from this assertion alone and must not be reported as if it
 /// did.
 fn assert_fully_written(got: &[f32], label: &str) {
-    let unwritten: Vec<usize> =
-        got.iter().enumerate().filter(|(_, v)| v.is_nan()).map(|(i, _)| i).collect();
+    let unwritten: Vec<usize> = got
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| v.is_nan())
+        .map(|(i, _)| i)
+        .collect();
     if unwritten.is_empty() {
         return;
     }
@@ -244,7 +253,9 @@ got: {got:?}",
 #[ignore]
 fn jit_adopt_loads_and_launches_a_synthesized_cuda_kernel() {
     let Some(device) = dev_or_skip() else {
-        eprintln!("skipping jit_adopt_loads_and_launches_a_synthesized_cuda_kernel: no CUDA device");
+        eprintln!(
+            "skipping jit_adopt_loads_and_launches_a_synthesized_cuda_kernel: no CUDA device"
+        );
         return;
     };
 
@@ -259,7 +270,9 @@ fn jit_adopt_loads_and_launches_a_synthesized_cuda_kernel() {
         },
         contract: "## fused_op: fuel_test_jit_relu_add\ncost: n\n".into(),
     };
-    let synth = MockSynth { art: std::sync::Mutex::new(Some(artifact)) };
+    let synth = MockSynth {
+        art: std::sync::Mutex::new(Some(artifact)),
+    };
 
     let req = JitRequest {
         region: relu_add_region(),
@@ -268,7 +281,9 @@ fn jit_adopt_loads_and_launches_a_synthesized_cuda_kernel() {
             OperandDesc::new(1, &[4], &[1], ElementKind::F32, 256),
         ],
         arch: ArchSku::Sm89,
-        budget: JitBudget { max_compile_ms: 5_000 },
+        budget: JitBudget {
+            max_compile_ms: 5_000,
+        },
     };
 
     let adopted = adopt_from_response(&synth, &req, BackendId::Cuda, |art| {
@@ -305,7 +320,11 @@ fn jit_adopt_loads_and_launches_a_synthesized_cuda_kernel() {
     .expect("launch");
 
     let got = download_f32(&out.read().unwrap());
-    let want: Vec<f32> = a.iter().zip(b.iter()).map(|(x, y)| (x + y).max(0.0)).collect();
+    let want: Vec<f32> = a
+        .iter()
+        .zip(b.iter())
+        .map(|(x, y)| (x + y).max(0.0))
+        .collect();
     // CONTROL for the NaN prefill: this kernel is a hand-written PTX mock that
     // is known to work on the current pin. If the prefill itself were broken
     // (e.g. the upload didn't land, or `download_f32` re-read a stale buffer),
@@ -382,7 +401,9 @@ fn jit_scalar_param_kernel_launches_with_live_value() {
     }
     impl Synthesizer for ParamSynth {
         fn synthesize(&self, _req: &JitRequest) -> JitResponse {
-            JitResponse::Synthesized { entry_point: PARAM_ENTRY.into() }
+            JitResponse::Synthesized {
+                entry_point: PARAM_ENTRY.into(),
+            }
         }
         fn take_kernel(&self, entry_point: &str) -> Option<SynthArtifact> {
             if entry_point != PARAM_ENTRY {
@@ -391,13 +412,17 @@ fn jit_scalar_param_kernel_launches_with_live_value() {
             self.art.lock().unwrap().take()
         }
     }
-    let synth = ParamSynth { art: std::sync::Mutex::new(Some(artifact)) };
+    let synth = ParamSynth {
+        art: std::sync::Mutex::new(Some(artifact)),
+    };
 
     let req = JitRequest {
         region: mul_scalar_slot_region(),
         operands: vec![OperandDesc::new(1, &[4], &[1], ElementKind::F32, 256)],
         arch: ArchSku::Sm89,
-        budget: JitBudget { max_compile_ms: 5_000 },
+        budget: JitBudget {
+            max_compile_ms: 5_000,
+        },
     };
     let adopted = adopt_from_response(&synth, &req, BackendId::Cuda, |art| {
         load_synth_kernel(art, &device)
@@ -432,7 +457,10 @@ fn jit_scalar_param_kernel_launches_with_live_value() {
     let got = download_f32(&out.read().unwrap());
     let want: Vec<f32> = x.iter().map(|v| v * 2.5).collect();
     assert_fully_written(&got, "mock mul_param scalar-Param kernel");
-    assert_eq!(got, want, "x * p0 via the JIT-loaded scalar-Param CUDA kernel");
+    assert_eq!(
+        got, want,
+        "x * p0 via the JIT-loaded scalar-Param CUDA kernel"
+    );
 }
 
 // ---- the REAL BaracudaSynthesizer (alpha.76, published) — the milestone -----
@@ -471,7 +499,9 @@ fn live_baracuda_synthesizer_full_loop_scalar() {
         region: relu_add_region(),
         operands: vec![operand(), operand(), operand()],
         arch: ArchSku::Sm89,
-        budget: JitBudget { max_compile_ms: 5_000 },
+        budget: JitBudget {
+            max_compile_ms: 5_000,
+        },
     };
 
     // (1) The synthesizer accepts + builds the region (independent of our loader).
@@ -486,7 +516,10 @@ fn live_baracuda_synthesizer_full_loop_scalar() {
 
     // (2) The full adopt path: (re-)synthesize -> take_kernel -> load_synth_kernel.
     let adopted = adopt_from_response(&synth, &req, BackendId::Cuda, |art| {
-        eprintln!("synth emitted symbol: {}  (kind {:?})", art.link.symbol, art.kind);
+        eprintln!(
+            "synth emitted symbol: {}  (kind {:?})",
+            art.link.symbol, art.kind
+        );
         // GAP-001's "First diagnostic" (docs/gaps.md), made runnable: dump what the
         // synthesizer DECLARES, so it can be compared against what Fuel COMPUTES.
         // The row records that diagnostic as "cuda-build-blocked"; it is closer to
@@ -520,8 +553,12 @@ fn live_baracuda_synthesizer_full_loop_scalar() {
         let mut declared = 0usize;
         for line in art.contract.lines() {
             let l = line.to_ascii_lowercase();
-            if l.contains("count") || l.contains("launch") || l.contains("grid")
-                || l.contains("block") || l.contains("schedule") || l.contains("elem")
+            if l.contains("count")
+                || l.contains("launch")
+                || l.contains("grid")
+                || l.contains("block")
+                || l.contains("schedule")
+                || l.contains("elem")
             {
                 declared += 1;
                 eprintln!("  contract| {}", line.trim_end());
@@ -598,7 +635,11 @@ fn live_baracuda_synthesizer_full_loop_scalar() {
     .expect("launch Baracuda's synthesized relu(add)");
 
     let got = download_f32(&out.read().unwrap());
-    let want: Vec<f32> = a.iter().zip(b.iter()).map(|(x, y)| (x + y).max(0.0)).collect();
+    let want: Vec<f32> = a
+        .iter()
+        .zip(b.iter())
+        .map(|(x, y)| (x + y).max(0.0))
+        .collect();
     // ⚠️ THE DISCRIMINATOR, and it must be read BEFORE the value comparison.
     //
     //   surviving NaN  ⇒ the kernel NEVER WROTE these elements. A launch /
@@ -666,7 +707,12 @@ fn live_baracuda_synthesizer_paged_attn_dense_region() {
 
     let mut g = Graph::new();
     let leaf = |g: &mut Graph, dims: &[usize], dtype: DType| {
-        g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(dims), dtype })
+        g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(dims),
+            dtype,
+        })
     };
     let q = leaf(&mut g, &[B, HQ, SQ, D], DType::F32);
     let kc = leaf(&mut g, &[NUM_BLOCKS, BLOCK_SIZE, HKV, D], DType::F32);
@@ -707,12 +753,12 @@ fn live_baracuda_synthesizer_paged_attn_dense_region() {
         OperandDesc::new(dims.len(), &d, &s, k, elem)
     };
     let operands = vec![
-        od(&[B, HQ, SQ, D], ElementKind::F32, 4),                 // 0 q
+        od(&[B, HQ, SQ, D], ElementKind::F32, 4), // 0 q
         od(&[NUM_BLOCKS, BLOCK_SIZE, HKV, D], ElementKind::F32, 4), // 1 k_cache
         od(&[NUM_BLOCKS, BLOCK_SIZE, HKV, D], ElementKind::F32, 4), // 2 v_cache
-        od(&[B, MAX_BLK], ElementKind::U32, 4),                   // 3 block_table
-        od(&[B], ElementKind::U32, 4),                            // 4 context_lens
-        od(&[B, HQ, SQ, D], ElementKind::F32, 4),                 // out
+        od(&[B, MAX_BLK], ElementKind::U32, 4),   // 3 block_table
+        od(&[B], ElementKind::U32, 4),            // 4 context_lens
+        od(&[B, HQ, SQ, D], ElementKind::F32, 4), // out
     ];
 
     let synth = BaracudaSynthesizer::new(10_000);
@@ -720,7 +766,9 @@ fn live_baracuda_synthesizer_paged_attn_dense_region() {
         region,
         operands,
         arch: ArchSku::Sm89,
-        budget: JitBudget { max_compile_ms: 10_000 },
+        budget: JitBudget {
+            max_compile_ms: 10_000,
+        },
     };
 
     println!("\n=== PagedAttn dense region -> real BaracudaSynthesizer ===");

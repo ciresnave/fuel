@@ -36,7 +36,7 @@ use tokenizers::Tokenizer;
 use fuel::lazy::LazyTensor;
 use fuel::lazy_clip::{ClipTextConfig, ClipTextModel, ClipTextWeights};
 use fuel::lazy_flux::{
-    generate, FlowMatchScheduler, FluxConfig, FluxModel, FluxWeights, QuantizedFluxModel,
+    FlowMatchScheduler, FluxConfig, FluxModel, FluxWeights, QuantizedFluxModel, generate,
 };
 use fuel::lazy_t5::{T5Activation, T5Config, T5Model, T5Weights};
 use fuel::safetensors::MmapedSafetensors;

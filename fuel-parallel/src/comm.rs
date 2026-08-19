@@ -117,7 +117,10 @@ pub struct IdentityComm;
 
 impl Communicator for IdentityComm {
     fn info(&self) -> CommInfo {
-        CommInfo { rank: 0, world_size: 1 }
+        CommInfo {
+            rank: 0,
+            world_size: 1,
+        }
     }
 
     fn all_reduce(&self, tensor: &LazyTensor, _op: ReduceOp) -> Result<LazyTensor> {
@@ -128,7 +131,12 @@ impl Communicator for IdentityComm {
         Ok(tensor.clone())
     }
 
-    fn reduce_scatter(&self, tensor: &LazyTensor, _op: ReduceOp, _dim: usize) -> Result<LazyTensor> {
+    fn reduce_scatter(
+        &self,
+        tensor: &LazyTensor,
+        _op: ReduceOp,
+        _dim: usize,
+    ) -> Result<LazyTensor> {
         Ok(tensor.clone())
     }
 
@@ -148,7 +156,11 @@ mod tests {
 
     /// A 1-D f32 lazy tensor on CPU, on a fresh graph.
     fn t(data: &[f32]) -> LazyTensor {
-        LazyTensor::from_f32(data.to_vec(), Shape::from_dims(&[data.len()]), &Device::cpu())
+        LazyTensor::from_f32(
+            data.to_vec(),
+            Shape::from_dims(&[data.len()]),
+            &Device::cpu(),
+        )
     }
 
     #[test]
@@ -163,7 +175,9 @@ mod tests {
     #[test]
     fn identity_all_reduce() {
         let comm = IdentityComm;
-        let result = comm.all_reduce(&t(&[1.0, 2.0, 3.0]), ReduceOp::Sum).unwrap();
+        let result = comm
+            .all_reduce(&t(&[1.0, 2.0, 3.0]), ReduceOp::Sum)
+            .unwrap();
         assert_eq!(result.realize_f32(), vec![1.0, 2.0, 3.0]);
     }
 
@@ -215,7 +229,9 @@ mod tests {
     #[test]
     fn identity_reduce_scatter() {
         let comm = IdentityComm;
-        let result = comm.reduce_scatter(&t(&[1.0, 2.0, 3.0]), ReduceOp::Sum, 0).unwrap();
+        let result = comm
+            .reduce_scatter(&t(&[1.0, 2.0, 3.0]), ReduceOp::Sum, 0)
+            .unwrap();
         assert_eq!(result.realize_f32(), vec![1.0, 2.0, 3.0]);
     }
 
@@ -227,14 +243,22 @@ mod tests {
 
     #[test]
     fn comm_info_non_root() {
-        let info = CommInfo { rank: 3, world_size: 4 };
+        let info = CommInfo {
+            rank: 3,
+            world_size: 4,
+        };
         assert!(!info.is_root());
     }
 
     #[test]
     fn reduce_op_variants() {
         // Ensure all variants exist and are distinct
-        let ops = [ReduceOp::Sum, ReduceOp::Product, ReduceOp::Min, ReduceOp::Max];
+        let ops = [
+            ReduceOp::Sum,
+            ReduceOp::Product,
+            ReduceOp::Min,
+            ReduceOp::Max,
+        ];
         for (i, a) in ops.iter().enumerate() {
             for (j, b) in ops.iter().enumerate() {
                 assert_eq!(i == j, a == b);

@@ -63,12 +63,7 @@ use crate::kernel::OpParams;
 pub trait TransferEstimator: Send + Sync {
     /// Estimated wall-clock nanoseconds to move `bytes` from `src`
     /// to `dst`. Zero when `src == dst`.
-    fn estimate_transfer_ns(
-        &self,
-        src: DeviceLocation,
-        dst: DeviceLocation,
-        bytes: u64,
-    ) -> u64;
+    fn estimate_transfer_ns(&self, src: DeviceLocation, dst: DeviceLocation, bytes: u64) -> u64;
 }
 
 /// Populate [`super::Candidate::inbound_transfer_ns`] on every
@@ -237,12 +232,17 @@ pub fn compute_static_costs(
     for i in 0..set.len() {
         let (kernel_ptr, backend, op_params) = {
             let c = &set.alternatives()[i];
-            (c.kernel as *const () as usize, c.backend, c.op_params.clone())
+            (
+                c.kernel as *const () as usize,
+                c.backend,
+                c.op_params.clone(),
+            )
         };
         let entries = bindings.lookup_alternatives(op_kind, dtypes, backend);
-        let Some(entry) = entries.iter().find(|e| {
-            (e.kernel as *const () as usize) == kernel_ptr
-        }) else {
+        let Some(entry) = entries
+            .iter()
+            .find(|e| (e.kernel as *const () as usize) == kernel_ptr)
+        else {
             continue;
         };
         let Some(caps) = capabilities_for(backend) else {
@@ -283,8 +283,8 @@ pub fn compute_static_costs(
     for i in 0..set.len() {
         let backend = set.alternatives()[i].backend;
         let kernel_source = set.alternatives()[i].kernel_source;
-        let Some(latency_ns) = judge
-            .measured_latency_ns(op_kind, principal_dtype, size_class, backend, kernel_source)
+        let Some(latency_ns) =
+            judge.measured_latency_ns(op_kind, principal_dtype, size_class, backend, kernel_source)
         else {
             continue;
         };
@@ -309,7 +309,7 @@ pub fn compute_static_costs(
 mod tests {
     use super::*;
     use crate::fused::PrecisionGuarantee;
-    use crate::kernel::{unknown_cost, KernelBindingTable, KernelCaps};
+    use crate::kernel::{KernelBindingTable, KernelCaps, unknown_cost};
     use crate::ranker::alternative_set::AlternativeSet;
     use crate::ranker::candidate::Candidate;
     use fuel_ir::backend::{BackendCapabilities, SubstrateClass, TransferPath};
@@ -393,7 +393,11 @@ mod tests {
     #[test]
     fn composite_ns_zero_cost_is_zero() {
         assert_eq!(
-            composite_ns(&CostEstimate::default(), CPU_COMPUTE_FLOPS_PER_NS, CPU_MEM_BYTES_PER_NS),
+            composite_ns(
+                &CostEstimate::default(),
+                CPU_COMPUTE_FLOPS_PER_NS,
+                CPU_MEM_BYTES_PER_NS
+            ),
             0
         );
     }
@@ -401,30 +405,58 @@ mod tests {
     #[test]
     fn composite_ns_flops_dominant() {
         // 1000 FLOPs, 0 bytes, 0 overhead → 1000 ns.
-        let c = CostEstimate { flops: 1000, bytes_moved: 0, kernel_overhead_ns: 0 };
-        assert_eq!(composite_ns(&c, CPU_COMPUTE_FLOPS_PER_NS, CPU_MEM_BYTES_PER_NS), 1000);
+        let c = CostEstimate {
+            flops: 1000,
+            bytes_moved: 0,
+            kernel_overhead_ns: 0,
+        };
+        assert_eq!(
+            composite_ns(&c, CPU_COMPUTE_FLOPS_PER_NS, CPU_MEM_BYTES_PER_NS),
+            1000
+        );
     }
 
     #[test]
     fn composite_ns_memory_dominant() {
         // 0 FLOPs, 4000 bytes, 0 overhead → 1000 ns (4 bytes/ns).
-        let c = CostEstimate { flops: 0, bytes_moved: 4000, kernel_overhead_ns: 0 };
-        assert_eq!(composite_ns(&c, CPU_COMPUTE_FLOPS_PER_NS, CPU_MEM_BYTES_PER_NS), 1000);
+        let c = CostEstimate {
+            flops: 0,
+            bytes_moved: 4000,
+            kernel_overhead_ns: 0,
+        };
+        assert_eq!(
+            composite_ns(&c, CPU_COMPUTE_FLOPS_PER_NS, CPU_MEM_BYTES_PER_NS),
+            1000
+        );
     }
 
     #[test]
     fn composite_ns_takes_max_of_compute_and_memory() {
         // Compute = 500 ns, memory = 1000 ns → max is 1000 (parallel).
-        let c = CostEstimate { flops: 500, bytes_moved: 4000, kernel_overhead_ns: 0 };
-        assert_eq!(composite_ns(&c, CPU_COMPUTE_FLOPS_PER_NS, CPU_MEM_BYTES_PER_NS), 1000);
+        let c = CostEstimate {
+            flops: 500,
+            bytes_moved: 4000,
+            kernel_overhead_ns: 0,
+        };
+        assert_eq!(
+            composite_ns(&c, CPU_COMPUTE_FLOPS_PER_NS, CPU_MEM_BYTES_PER_NS),
+            1000
+        );
     }
 
     #[test]
     fn composite_ns_overhead_serial_after_parallel() {
         // Parallel work = max(500, 800) = 800. Overhead = 200.
         // Total = 1000.
-        let c = CostEstimate { flops: 500, bytes_moved: 3200, kernel_overhead_ns: 200 };
-        assert_eq!(composite_ns(&c, CPU_COMPUTE_FLOPS_PER_NS, CPU_MEM_BYTES_PER_NS), 1000);
+        let c = CostEstimate {
+            flops: 500,
+            bytes_moved: 3200,
+            kernel_overhead_ns: 200,
+        };
+        assert_eq!(
+            composite_ns(&c, CPU_COMPUTE_FLOPS_PER_NS, CPU_MEM_BYTES_PER_NS),
+            1000
+        );
     }
 
     #[test]
@@ -445,15 +477,38 @@ mod tests {
 
     #[test]
     fn rank_by_composite_cost_orders_ascending() {
-        let mut set = AlternativeSet::from_candidates(
-            vec![
-                candidate_with_cost(noop_a, CostEstimate { flops: 300, bytes_moved: 0, kernel_overhead_ns: 0 }),
-                candidate_with_cost(noop_b, CostEstimate { flops: 100, bytes_moved: 0, kernel_overhead_ns: 0 }),
-                candidate_with_cost(noop_a, CostEstimate { flops: 200, bytes_moved: 0, kernel_overhead_ns: 0 }),
-            ],
-        );
+        let mut set = AlternativeSet::from_candidates(vec![
+            candidate_with_cost(
+                noop_a,
+                CostEstimate {
+                    flops: 300,
+                    bytes_moved: 0,
+                    kernel_overhead_ns: 0,
+                },
+            ),
+            candidate_with_cost(
+                noop_b,
+                CostEstimate {
+                    flops: 100,
+                    bytes_moved: 0,
+                    kernel_overhead_ns: 0,
+                },
+            ),
+            candidate_with_cost(
+                noop_a,
+                CostEstimate {
+                    flops: 200,
+                    bytes_moved: 0,
+                    kernel_overhead_ns: 0,
+                },
+            ),
+        ]);
         set.rank_by_composite_cost();
-        let costs: Vec<u64> = set.alternatives().iter().map(|c| c.static_cost.flops).collect();
+        let costs: Vec<u64> = set
+            .alternatives()
+            .iter()
+            .map(|c| c.static_cost.flops)
+            .collect();
         assert_eq!(costs, vec![100, 200, 300]);
     }
 
@@ -466,17 +521,30 @@ mod tests {
     fn rank_then_retain_keeps_undominated_only() {
         let mut set = AlternativeSet::from_candidates(
             (0..5)
-                .map(|i| candidate_with_cost(noop_a, CostEstimate {
-                    flops: (5 - i) * 100,
-                    bytes_moved: 0,
-                    kernel_overhead_ns: 0,
-                }))
+                .map(|i| {
+                    candidate_with_cost(
+                        noop_a,
+                        CostEstimate {
+                            flops: (5 - i) * 100,
+                            bytes_moved: 0,
+                            kernel_overhead_ns: 0,
+                        },
+                    )
+                })
                 .collect(),
         );
         set.rank_by_composite_cost();
         set.retain_per_device_frontier(crate::ranker::KEEP_PER_DEVICE);
-        assert_eq!(set.len(), 1, "all but the time-best are dominated on one device");
-        let costs: Vec<u64> = set.alternatives().iter().map(|c| c.static_cost.flops).collect();
+        assert_eq!(
+            set.len(),
+            1,
+            "all but the time-best are dominated on one device"
+        );
+        let costs: Vec<u64> = set
+            .alternatives()
+            .iter()
+            .map(|c| c.static_cost.flops)
+            .collect();
         assert_eq!(costs, vec![100], "the fastest (arm-0 winner) survives");
     }
 
@@ -486,13 +554,21 @@ mod tests {
         // a simple two-tier setup is enough.
         // Hack: define a closure-like family by using nested fn defs.
         let _ = (flops, bytes, overhead);
-        |_, _, _, _| CostEstimate { flops: 1000, bytes_moved: 0, kernel_overhead_ns: 0 }
+        |_, _, _, _| CostEstimate {
+            flops: 1000,
+            bytes_moved: 0,
+            kernel_overhead_ns: 0,
+        }
     }
 
     #[test]
     fn compute_static_costs_populates_via_binding_lookup() {
         fn cost_a(_: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities) -> CostEstimate {
-            CostEstimate { flops: 500, bytes_moved: 0, kernel_overhead_ns: 0 }
+            CostEstimate {
+                flops: 500,
+                bytes_moved: 0,
+                kernel_overhead_ns: 0,
+            }
         }
         let mut bindings = KernelBindingTable::new();
         let dtypes = [DType::F32, DType::F32, DType::F32];
@@ -506,9 +582,10 @@ mod tests {
             cost_a,
         );
 
-        let mut set = AlternativeSet::from_candidates(
-            vec![candidate_with_cost(noop_a, CostEstimate::default())],
-        );
+        let mut set = AlternativeSet::from_candidates(vec![candidate_with_cost(
+            noop_a,
+            CostEstimate::default(),
+        )]);
 
         let cpu_caps = caps_for_test(BackendId::Cpu);
         let lookup: HashMap<BackendId, BackendCapabilities> =
@@ -557,9 +634,10 @@ mod tests {
             Some(expr),
         );
 
-        let mut set = AlternativeSet::from_candidates(
-            vec![candidate_with_cost(noop_a, CostEstimate::default())],
-        );
+        let mut set = AlternativeSet::from_candidates(vec![candidate_with_cost(
+            noop_a,
+            CostEstimate::default(),
+        )]);
 
         let cpu_caps = caps_for_test(BackendId::Cpu);
         let lookup: HashMap<BackendId, BackendCapabilities> =
@@ -576,7 +654,8 @@ mod tests {
         );
 
         assert_eq!(
-            set.alternatives()[0].static_cost.flops, 6,
+            set.alternatives()[0].static_cost.flops,
+            6,
             "2 * n with n = elem_count([3]) = 3",
         );
     }
@@ -592,7 +671,10 @@ mod tests {
         _p: &OpParams,
         _c: &BackendCapabilities,
     ) -> CostEstimate {
-        CostEstimate { flops: 42, ..Default::default() }
+        CostEstimate {
+            flops: 42,
+            ..Default::default()
+        }
     }
 
     /// Task 2.3 fallback safety property: when `cost_expr` is `Some` but
@@ -644,9 +726,10 @@ mod tests {
             Some(expr),
         );
 
-        let mut set = AlternativeSet::from_candidates(
-            vec![candidate_with_cost(noop_a, CostEstimate::default())],
-        );
+        let mut set = AlternativeSet::from_candidates(vec![candidate_with_cost(
+            noop_a,
+            CostEstimate::default(),
+        )]);
 
         let cpu_caps = caps_for_test(BackendId::Cpu);
         let lookup: HashMap<BackendId, BackendCapabilities> =
@@ -663,7 +746,8 @@ mod tests {
         );
 
         assert_eq!(
-            set.alternatives()[0].static_cost.flops, 42,
+            set.alternatives()[0].static_cost.flops,
+            42,
             "undefined symbol => cost_estimate errors => .unwrap_or_else falls back \
              to sentinel_cost_42, never panics",
         );
@@ -682,9 +766,10 @@ mod tests {
             PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
             unknown_cost,
         );
-        let mut set = AlternativeSet::from_candidates(
-            vec![candidate_with_cost(noop_a, CostEstimate::default())],
-        );
+        let mut set = AlternativeSet::from_candidates(vec![candidate_with_cost(
+            noop_a,
+            CostEstimate::default(),
+        )]);
         // Empty lookup → no caps → cost not computed.
         let empty_lookup = |_: BackendId| -> Option<&BackendCapabilities> { None };
         compute_static_costs(
@@ -742,7 +827,11 @@ mod tests {
         // Layer 1 says this kernel is 1000 ns; Judge measured 250 ns.
         // After refinement composite_ns should report the measurement.
         fn layer1(_: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities) -> CostEstimate {
-            CostEstimate { flops: 1000, bytes_moved: 0, kernel_overhead_ns: 0 }
+            CostEstimate {
+                flops: 1000,
+                bytes_moved: 0,
+                kernel_overhead_ns: 0,
+            }
         }
         let mut bindings = KernelBindingTable::new();
         let dtypes = [DType::F32, DType::F32, DType::F32];
@@ -756,9 +845,10 @@ mod tests {
             layer1,
         );
 
-        let mut set = AlternativeSet::from_candidates(
-            vec![candidate_with_cost(noop_a, CostEstimate::default())],
-        );
+        let mut set = AlternativeSet::from_candidates(vec![candidate_with_cost(
+            noop_a,
+            CostEstimate::default(),
+        )]);
         let cpu_caps = caps_for_test(BackendId::Cpu);
         let lookup: HashMap<BackendId, BackendCapabilities> =
             [(BackendId::Cpu, cpu_caps)].into_iter().collect();
@@ -766,7 +856,14 @@ mod tests {
         let sc = SizeClass::from_elem_count(4);
 
         let mut judge = HashMapJudge::new();
-        judge.insert(OpKind::AddElementwise, DType::F32, sc, BackendId::Cpu, "", 250);
+        judge.insert(
+            OpKind::AddElementwise,
+            DType::F32,
+            sc,
+            BackendId::Cpu,
+            "",
+            250,
+        );
 
         compute_static_costs(
             &mut set,
@@ -781,20 +878,31 @@ mod tests {
         let c = &set.alternatives()[0];
         assert_eq!(c.static_cost.flops, 0, "Layer-2 zeroes FLOPs");
         assert_eq!(c.static_cost.bytes_moved, 0, "Layer-2 zeroes bytes");
-        assert_eq!(c.static_cost.kernel_overhead_ns, 250, "Layer-2 stamps latency");
+        assert_eq!(
+            c.static_cost.kernel_overhead_ns, 250,
+            "Layer-2 stamps latency"
+        );
         // The Judge packs its latency into kernel_overhead_ns with
         // flops = bytes = 0, so composite_ns returns it unchanged for
         // ANY throughput — verified here with a GPU rate to prove the
         // per-backend scaling never touches the measured leg.
         let (cr, bw) = default_backend_rates(BackendId::Cuda);
-        assert_eq!(composite_ns(&c.static_cost, cr, bw), 250, "composite returns measurement");
+        assert_eq!(
+            composite_ns(&c.static_cost, cr, bw),
+            250,
+            "composite returns measurement"
+        );
     }
 
     #[test]
     fn judge_missing_measurement_leaves_layer1_intact() {
         // Cell isn't in the Judge map → Layer-1 estimate stays.
         fn layer1(_: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities) -> CostEstimate {
-            CostEstimate { flops: 1000, bytes_moved: 4000, kernel_overhead_ns: 50 }
+            CostEstimate {
+                flops: 1000,
+                bytes_moved: 4000,
+                kernel_overhead_ns: 50,
+            }
         }
         let mut bindings = KernelBindingTable::new();
         let dtypes = [DType::F32, DType::F32, DType::F32];
@@ -807,9 +915,10 @@ mod tests {
             PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
             layer1,
         );
-        let mut set = AlternativeSet::from_candidates(
-            vec![candidate_with_cost(noop_a, CostEstimate::default())],
-        );
+        let mut set = AlternativeSet::from_candidates(vec![candidate_with_cost(
+            noop_a,
+            CostEstimate::default(),
+        )]);
         let cpu_caps = caps_for_test(BackendId::Cpu);
         let lookup: HashMap<BackendId, BackendCapabilities> =
             [(BackendId::Cpu, cpu_caps)].into_iter().collect();
@@ -834,42 +943,93 @@ mod tests {
         // Two backends. Layer-1 says CPU cheap, Aocl expensive.
         // Judge measured opposite: Aocl 100ns, CPU 500ns.
         // After refinement + rank, Aocl wins.
-        fn cpu_layer1(_: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities) -> CostEstimate {
-            CostEstimate { flops: 100, bytes_moved: 0, kernel_overhead_ns: 0 }
+        fn cpu_layer1(
+            _: &[Shape],
+            _: &[DType],
+            _: &OpParams,
+            _: &BackendCapabilities,
+        ) -> CostEstimate {
+            CostEstimate {
+                flops: 100,
+                bytes_moved: 0,
+                kernel_overhead_ns: 0,
+            }
         }
-        fn aocl_layer1(_: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities) -> CostEstimate {
-            CostEstimate { flops: 1000, bytes_moved: 0, kernel_overhead_ns: 0 }
+        fn aocl_layer1(
+            _: &[Shape],
+            _: &[DType],
+            _: &OpParams,
+            _: &BackendCapabilities,
+        ) -> CostEstimate {
+            CostEstimate {
+                flops: 1000,
+                bytes_moved: 0,
+                kernel_overhead_ns: 0,
+            }
         }
         let mut bindings = KernelBindingTable::new();
         let dtypes = [DType::F32, DType::F32, DType::F32];
         bindings.register_full(
-            OpKind::AddElementwise, &dtypes, BackendId::Cpu, noop_a,
-            KernelCaps::empty(), PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+            OpKind::AddElementwise,
+            &dtypes,
+            BackendId::Cpu,
+            noop_a,
+            KernelCaps::empty(),
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
             cpu_layer1,
         );
         bindings.register_full(
-            OpKind::AddElementwise, &dtypes, BackendId::Cuda, noop_b,
-            KernelCaps::empty(), PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+            OpKind::AddElementwise,
+            &dtypes,
+            BackendId::Cuda,
+            noop_b,
+            KernelCaps::empty(),
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
             aocl_layer1,
         );
-        let mut set = AlternativeSet::from_candidates(
-            vec![
-                Candidate { backend: BackendId::Cpu, ..candidate_with_cost(noop_a, CostEstimate::default()) },
-                Candidate { backend: BackendId::Cuda, ..candidate_with_cost(noop_b, CostEstimate::default()) },
-            ],
-        );
+        let mut set = AlternativeSet::from_candidates(vec![
+            Candidate {
+                backend: BackendId::Cpu,
+                ..candidate_with_cost(noop_a, CostEstimate::default())
+            },
+            Candidate {
+                backend: BackendId::Cuda,
+                ..candidate_with_cost(noop_b, CostEstimate::default())
+            },
+        ]);
         let lookup: HashMap<BackendId, BackendCapabilities> = [
             (BackendId::Cpu, caps_for_test(BackendId::Cpu)),
             (BackendId::Cuda, caps_for_test(BackendId::Cuda)),
-        ].into_iter().collect();
+        ]
+        .into_iter()
+        .collect();
         let sc = SizeClass::from_elem_count(4);
         let mut judge = crate::ranker::judge::HashMapJudge::new();
-        judge.insert(OpKind::AddElementwise, DType::F32, sc, BackendId::Cpu, "", 500);
-        judge.insert(OpKind::AddElementwise, DType::F32, sc, BackendId::Cuda, "", 100);
+        judge.insert(
+            OpKind::AddElementwise,
+            DType::F32,
+            sc,
+            BackendId::Cpu,
+            "",
+            500,
+        );
+        judge.insert(
+            OpKind::AddElementwise,
+            DType::F32,
+            sc,
+            BackendId::Cuda,
+            "",
+            100,
+        );
 
         compute_static_costs(
-            &mut set, OpKind::AddElementwise, &dtypes,
-            &[Shape::from(vec![4])], &bindings, &|b| lookup.get(&b), Some(&judge),
+            &mut set,
+            OpKind::AddElementwise,
+            &dtypes,
+            &[Shape::from(vec![4])],
+            &bindings,
+            &|b| lookup.get(&b),
+            Some(&judge),
         );
         set.rank_by_composite_cost();
         assert_eq!(
@@ -884,45 +1044,87 @@ mod tests {
         // Two backends. Judge measured ONE of them; the other keeps
         // Layer-1. Ranking has to handle the mixed-shape cost.
         fn cheap(_: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities) -> CostEstimate {
-            CostEstimate { flops: 50, bytes_moved: 0, kernel_overhead_ns: 0 }
+            CostEstimate {
+                flops: 50,
+                bytes_moved: 0,
+                kernel_overhead_ns: 0,
+            }
         }
-        fn expensive(_: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities) -> CostEstimate {
-            CostEstimate { flops: 10_000, bytes_moved: 0, kernel_overhead_ns: 0 }
+        fn expensive(
+            _: &[Shape],
+            _: &[DType],
+            _: &OpParams,
+            _: &BackendCapabilities,
+        ) -> CostEstimate {
+            CostEstimate {
+                flops: 10_000,
+                bytes_moved: 0,
+                kernel_overhead_ns: 0,
+            }
         }
         let mut bindings = KernelBindingTable::new();
         let dtypes = [DType::F32, DType::F32, DType::F32];
         bindings.register_full(
-            OpKind::AddElementwise, &dtypes, BackendId::Cpu, noop_a,
-            KernelCaps::empty(), PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU, cheap,
+            OpKind::AddElementwise,
+            &dtypes,
+            BackendId::Cpu,
+            noop_a,
+            KernelCaps::empty(),
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+            cheap,
         );
         bindings.register_full(
-            OpKind::AddElementwise, &dtypes, BackendId::Cuda, noop_b,
-            KernelCaps::empty(), PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU, expensive,
+            OpKind::AddElementwise,
+            &dtypes,
+            BackendId::Cuda,
+            noop_b,
+            KernelCaps::empty(),
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+            expensive,
         );
-        let mut set = AlternativeSet::from_candidates(
-            vec![
-                Candidate { backend: BackendId::Cpu, ..candidate_with_cost(noop_a, CostEstimate::default()) },
-                Candidate { backend: BackendId::Cuda, ..candidate_with_cost(noop_b, CostEstimate::default()) },
-            ],
-        );
+        let mut set = AlternativeSet::from_candidates(vec![
+            Candidate {
+                backend: BackendId::Cpu,
+                ..candidate_with_cost(noop_a, CostEstimate::default())
+            },
+            Candidate {
+                backend: BackendId::Cuda,
+                ..candidate_with_cost(noop_b, CostEstimate::default())
+            },
+        ]);
         let lookup: HashMap<BackendId, BackendCapabilities> = [
             (BackendId::Cpu, caps_for_test(BackendId::Cpu)),
             (BackendId::Cuda, caps_for_test(BackendId::Cuda)),
-        ].into_iter().collect();
+        ]
+        .into_iter()
+        .collect();
         let sc = SizeClass::from_elem_count(4);
         let mut judge = crate::ranker::judge::HashMapJudge::new();
         // Only measure Aocl (Judge said it's 20ns — way better than
         // Layer-1's 10000-FLOP estimate).
-        judge.insert(OpKind::AddElementwise, DType::F32, sc, BackendId::Cuda, "", 20);
+        judge.insert(
+            OpKind::AddElementwise,
+            DType::F32,
+            sc,
+            BackendId::Cuda,
+            "",
+            20,
+        );
 
         compute_static_costs(
-            &mut set, OpKind::AddElementwise, &dtypes,
-            &[Shape::from(vec![4])], &bindings, &|b| lookup.get(&b), Some(&judge),
+            &mut set,
+            OpKind::AddElementwise,
+            &dtypes,
+            &[Shape::from(vec![4])],
+            &bindings,
+            &|b| lookup.get(&b),
+            Some(&judge),
         );
         set.rank_by_composite_cost();
         // CPU = Layer-1 cost = 50 ns; Aocl = Layer-2 = 20 ns → Aocl wins.
         assert_eq!(
-            set.winner().unwrap().backend, BackendId::Cuda,
+            set.winner().unwrap().backend,
+            BackendId::Cuda,
             "partial Judge coverage still influences ranking",
         );
     }
@@ -930,29 +1132,49 @@ mod tests {
     #[test]
     fn judge_saturates_above_u32_max_ns() {
         fn layer1(_: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities) -> CostEstimate {
-            CostEstimate { flops: 1, bytes_moved: 0, kernel_overhead_ns: 0 }
+            CostEstimate {
+                flops: 1,
+                bytes_moved: 0,
+                kernel_overhead_ns: 0,
+            }
         }
         let mut bindings = KernelBindingTable::new();
         let dtypes = [DType::F32, DType::F32, DType::F32];
         bindings.register_full(
-            OpKind::AddElementwise, &dtypes, BackendId::Cpu, noop_a,
-            KernelCaps::empty(), PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU, layer1,
+            OpKind::AddElementwise,
+            &dtypes,
+            BackendId::Cpu,
+            noop_a,
+            KernelCaps::empty(),
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+            layer1,
         );
-        let mut set = AlternativeSet::from_candidates(
-            vec![candidate_with_cost(noop_a, CostEstimate::default())],
-        );
+        let mut set = AlternativeSet::from_candidates(vec![candidate_with_cost(
+            noop_a,
+            CostEstimate::default(),
+        )]);
         let lookup: HashMap<BackendId, BackendCapabilities> =
-            [(BackendId::Cpu, caps_for_test(BackendId::Cpu))].into_iter().collect();
+            [(BackendId::Cpu, caps_for_test(BackendId::Cpu))]
+                .into_iter()
+                .collect();
         let mut judge = crate::ranker::judge::HashMapJudge::new();
         // Latency exceeds u32::MAX ns (~4.3 s).
         judge.insert(
-            OpKind::AddElementwise, DType::F32,
-            SizeClass::from_elem_count(4), BackendId::Cpu, "",
+            OpKind::AddElementwise,
+            DType::F32,
+            SizeClass::from_elem_count(4),
+            BackendId::Cpu,
+            "",
             u64::MAX,
         );
         compute_static_costs(
-            &mut set, OpKind::AddElementwise, &dtypes,
-            &[Shape::from(vec![4])], &bindings, &|b| lookup.get(&b), Some(&judge),
+            &mut set,
+            OpKind::AddElementwise,
+            &dtypes,
+            &[Shape::from(vec![4])],
+            &bindings,
+            &|b| lookup.get(&b),
+            Some(&judge),
         );
         assert_eq!(
             set.alternatives()[0].static_cost.kernel_overhead_ns,
@@ -968,24 +1190,26 @@ mod tests {
     #[test]
     fn inbound_transfer_sums_over_offdevice_inputs_only() {
         let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
-        let mut set = AlternativeSet::from_candidates(
-            vec![
-                // Local CPU candidate.
-                candidate_with_cost(noop_a, CostEstimate::default()),
-                // Off-device CUDA candidate.
-                Candidate {
-                    backend: BackendId::Cuda,
-                    device: cuda0,
-                    ..candidate_with_cost(noop_b, CostEstimate::default())
-                },
-            ],
-        );
-        let est = FlatEstimator { ns_per_byte: 1, latency_ns: 100 };
+        let mut set = AlternativeSet::from_candidates(vec![
+            // Local CPU candidate.
+            candidate_with_cost(noop_a, CostEstimate::default()),
+            // Off-device CUDA candidate.
+            Candidate {
+                backend: BackendId::Cuda,
+                device: cuda0,
+                ..candidate_with_cost(noop_b, CostEstimate::default())
+            },
+        ]);
+        let est = FlatEstimator {
+            ns_per_byte: 1,
+            latency_ns: 100,
+        };
         // Two inputs resident on CPU: 12 bytes and 8 bytes.
         let inputs = [(DeviceLocation::Cpu, 12_u64), (DeviceLocation::Cpu, 8_u64)];
         apply_inbound_transfer_costs(&mut set, &inputs, &est);
         assert_eq!(
-            set.alternatives()[0].inbound_transfer_ns, 0,
+            set.alternatives()[0].inbound_transfer_ns,
+            0,
             "co-resident inputs price zero",
         );
         assert_eq!(
@@ -999,10 +1223,14 @@ mod tests {
     /// fires, candidates keep zero.
     #[test]
     fn inbound_transfer_empty_inputs_prices_zero() {
-        let mut set = AlternativeSet::from_candidates(
-            vec![candidate_with_cost(noop_a, CostEstimate::default())],
-        );
-        let est = FlatEstimator { ns_per_byte: 1_000_000, latency_ns: u64::MAX };
+        let mut set = AlternativeSet::from_candidates(vec![candidate_with_cost(
+            noop_a,
+            CostEstimate::default(),
+        )]);
+        let est = FlatEstimator {
+            ns_per_byte: 1_000_000,
+            latency_ns: u64::MAX,
+        };
         apply_inbound_transfer_costs(&mut set, &[], &est);
         assert_eq!(set.alternatives()[0].inbound_transfer_ns, 0);
     }
@@ -1012,14 +1240,15 @@ mod tests {
     #[test]
     fn inbound_transfer_saturates() {
         let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
-        let mut set = AlternativeSet::from_candidates(
-            vec![Candidate {
-                backend: BackendId::Cuda,
-                device: cuda0,
-                ..candidate_with_cost(noop_a, CostEstimate::default())
-            }],
-        );
-        let est = FlatEstimator { ns_per_byte: 0, latency_ns: u64::MAX };
+        let mut set = AlternativeSet::from_candidates(vec![Candidate {
+            backend: BackendId::Cuda,
+            device: cuda0,
+            ..candidate_with_cost(noop_a, CostEstimate::default())
+        }]);
+        let est = FlatEstimator {
+            ns_per_byte: 0,
+            latency_ns: u64::MAX,
+        };
         let inputs = [(DeviceLocation::Cpu, 1_u64), (DeviceLocation::Cpu, 1_u64)];
         apply_inbound_transfer_costs(&mut set, &inputs, &est);
         assert_eq!(set.alternatives()[0].inbound_transfer_ns, u64::MAX);
@@ -1031,36 +1260,44 @@ mod tests {
     #[test]
     fn inbound_transfer_flips_rank_only_when_it_dominates() {
         let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
-        let local = |ns: u64| candidate_with_cost(
-            noop_a,
-            CostEstimate { flops: ns, bytes_moved: 0, kernel_overhead_ns: 0 },
-        );
+        let local = |ns: u64| {
+            candidate_with_cost(
+                noop_a,
+                CostEstimate {
+                    flops: ns,
+                    bytes_moved: 0,
+                    kernel_overhead_ns: 0,
+                },
+            )
+        };
         let remote = |ns: u64| Candidate {
             backend: BackendId::Cuda,
             device: cuda0,
-            ..candidate_with_cost(noop_b, CostEstimate {
-                flops: ns,
-                bytes_moved: 0,
-                kernel_overhead_ns: 0,
-            })
+            ..candidate_with_cost(
+                noop_b,
+                CostEstimate {
+                    flops: ns,
+                    bytes_moved: 0,
+                    kernel_overhead_ns: 0,
+                },
+            )
         };
-        let est = FlatEstimator { ns_per_byte: 0, latency_ns: 1_000 };
+        let est = FlatEstimator {
+            ns_per_byte: 0,
+            latency_ns: 1_000,
+        };
         let inputs = [(DeviceLocation::Cpu, 4_u64)];
 
         // Tiny op: remote kernel "faster" (500 vs 600) but the 1µs
         // crossing dominates → local wins.
-        let mut tiny = AlternativeSet::from_candidates(
-            vec![remote(500), local(600)],
-        );
+        let mut tiny = AlternativeSet::from_candidates(vec![remote(500), local(600)]);
         apply_inbound_transfer_costs(&mut tiny, &inputs, &est);
         tiny.rank_by_composite_cost();
         assert_eq!(tiny.winner().unwrap().device, DeviceLocation::Cpu);
 
         // Huge op: kernel gap (10µs) dwarfs the crossing → remote
         // wins despite paying the transfer.
-        let mut huge = AlternativeSet::from_candidates(
-            vec![local(20_000), remote(10_000)],
-        );
+        let mut huge = AlternativeSet::from_candidates(vec![local(20_000), remote(10_000)]);
         apply_inbound_transfer_costs(&mut huge, &inputs, &est);
         huge.rank_by_composite_cost();
         assert_eq!(huge.winner().unwrap().device, cuda0);

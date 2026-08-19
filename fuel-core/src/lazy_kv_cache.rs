@@ -96,14 +96,12 @@ impl LazyKvCache {
         dtype: DType,
     ) -> std::result::Result<Self, fuel_ir::Error> {
         if n_layers == 0 {
-            return Err(fuel_ir::Error::Msg(
-                "LazyKvCache::new: n_layers must be ≥ 1".into(),
-            ).bt());
+            return Err(fuel_ir::Error::Msg("LazyKvCache::new: n_layers must be ≥ 1".into()).bt());
         }
         if max_seq_len == 0 {
-            return Err(fuel_ir::Error::Msg(
-                "LazyKvCache::new: max_seq_len must be ≥ 1".into(),
-            ).bt());
+            return Err(
+                fuel_ir::Error::Msg("LazyKvCache::new: max_seq_len must be ≥ 1".into()).bt(),
+            );
         }
         let buffer_shape = Shape::from_dims(&[max_seq_len, n_kv_heads, head_dim]);
         let buffer_elems = max_seq_len * n_kv_heads * head_dim;
@@ -160,16 +158,15 @@ impl LazyKvCache {
             );
         }
         if k_dims != v_dims {
-            crate::bail!(
-                "LazyKvCache::append: k_new shape {k_dims:?} != v_new shape {v_dims:?}",
-            );
+            crate::bail!("LazyKvCache::append: k_new shape {k_dims:?} != v_new shape {v_dims:?}",);
         }
         let seqlen_new = k_dims[0];
         if k_dims[1] != self.n_kv_heads || k_dims[2] != self.head_dim {
             crate::bail!(
                 "LazyKvCache::append: k_new shape {k_dims:?} doesn't match cache geometry \
                  [n_kv_heads={}, head_dim={}]",
-                self.n_kv_heads, self.head_dim,
+                self.n_kv_heads,
+                self.head_dim,
             );
         }
         let new_end = self.current_seq_len + seqlen_new;
@@ -177,7 +174,8 @@ impl LazyKvCache {
             crate::bail!(
                 "LazyKvCache::append: appending {seqlen_new} tokens at position {} would \
                  exceed max_seq_len {}",
-                self.current_seq_len, self.max_seq_len,
+                self.current_seq_len,
+                self.max_seq_len,
             );
         }
         let ranges = vec![
@@ -249,7 +247,8 @@ impl LazyKvCache {
             crate::bail!(
                 "LazyKvCache::append_rotating: k_new shape {k_dims:?} doesn't match cache geometry \
                  [n_kv_heads={}, head_dim={}]",
-                self.n_kv_heads, self.head_dim,
+                self.n_kv_heads,
+                self.head_dim,
             );
         }
         if seqlen_new > self.max_seq_len {
@@ -261,18 +260,16 @@ impl LazyKvCache {
         }
         // ranges[axis].0 is ignored by the executor (dynamic start);
         // ranges[axis].1 must equal seqlen_new for the slab width.
-        let ranges = vec![
-            (0, seqlen_new),
-            (0, self.n_kv_heads),
-            (0, self.head_dim),
-        ];
+        let ranges = vec![(0, seqlen_new), (0, self.n_kv_heads), (0, self.head_dim)];
         let (k_buffer, v_buffer) = self.layers[layer].clone();
         let new_k = k_buffer.write_slice_rotating(
-            k_new, position, /* axis */ 0, /* modulus */ self.max_seq_len, ranges.clone(),
+            k_new,
+            position,
+            /* axis */ 0,
+            /* modulus */ self.max_seq_len,
+            ranges.clone(),
         )?;
-        let new_v = v_buffer.write_slice_rotating(
-            v_new, position, 0, self.max_seq_len, ranges,
-        )?;
+        let new_v = v_buffer.write_slice_rotating(v_new, position, 0, self.max_seq_len, ranges)?;
         self.layers[layer] = (new_k, new_v);
         Ok(self)
     }
@@ -292,12 +289,18 @@ impl LazyKvCache {
     /// Slice K-buffer for `layer` to `[0..current_seq_len]` along dim 0.
     /// Returns the slice on the same graph as the cache.
     pub fn k(&self, layer: usize) -> LazyTensor {
-        self.layers[layer].0.slice(0_usize, 0, self.current_seq_len.max(1)).unwrap()
+        self.layers[layer]
+            .0
+            .slice(0_usize, 0, self.current_seq_len.max(1))
+            .unwrap()
     }
 
     /// Slice V-buffer for `layer` to `[0..current_seq_len]` along dim 0.
     pub fn v(&self, layer: usize) -> LazyTensor {
-        self.layers[layer].1.slice(0_usize, 0, self.current_seq_len.max(1)).unwrap()
+        self.layers[layer]
+            .1
+            .slice(0_usize, 0, self.current_seq_len.max(1))
+            .unwrap()
     }
 
     /// Underlying full-capacity K-buffer (rank 3, `[max_seq, n_kv_heads,
@@ -345,16 +348,19 @@ impl LazyKvCache {
 /// takes a separate shape rather than copying `anchor`'s, since the
 /// cache buffers have a different shape from the anchor.
 fn zero_const_on(
-    anchor: &LazyTensor, dtype: DType, shape: Shape, elems: usize,
+    anchor: &LazyTensor,
+    dtype: DType,
+    shape: Shape,
+    elems: usize,
 ) -> std::result::Result<LazyTensor, fuel_ir::Error> {
     match dtype {
         DType::F32 => Ok(anchor.const_f32_like(vec![0.0_f32; elems], shape)),
         DType::F64 => Ok(anchor.const_f64_like(vec![0.0_f64; elems], shape)),
         DType::BF16 => Ok(anchor.const_bf16_like(vec![half::bf16::ZERO; elems], shape)),
         DType::F16 => Ok(anchor.const_f16_like(vec![half::f16::ZERO; elems], shape)),
-        other => Err(fuel_ir::Error::Msg(format!(
-            "LazyKvCache: unsupported dtype {other:?}",
-        )).bt()),
+        other => {
+            Err(fuel_ir::Error::Msg(format!("LazyKvCache: unsupported dtype {other:?}",)).bt())
+        }
     }
 }
 

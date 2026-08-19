@@ -46,13 +46,49 @@ pub fn primitive_shape(
     };
     Ok(match op {
         // --- elementwise unary + binary + scalar-param (shape=in[0], dtype=in[0]) ---
-        Add | Sub | Mul | Div | Maximum | Minimum | Pow | Rem
-        | Neg | Abs | Sqr | Sqrt | Rsqrt | Recip | Exp | Log | Sin | Cos
-        | Tanh | Sigmoid | Silu | Gelu | GeluErf | Relu | Erf | Step
-        | Floor | Ceil | Round | Sign | Contiguize
-        | AddScalar(_) | MulScalar(_) | PowI(_) | Clamp { .. }
-        | CumSum { .. } | Flip { .. } | Roll { .. } | Triu { .. } | Tril { .. }
-        | LogSoftmaxLastDim | LogSoftmaxLastDimBackward | MaskedFill { .. } => elem0()?,
+        Add
+        | Sub
+        | Mul
+        | Div
+        | Maximum
+        | Minimum
+        | Pow
+        | Rem
+        | Neg
+        | Abs
+        | Sqr
+        | Sqrt
+        | Rsqrt
+        | Recip
+        | Exp
+        | Log
+        | Sin
+        | Cos
+        | Tanh
+        | Sigmoid
+        | Silu
+        | Gelu
+        | GeluErf
+        | Relu
+        | Erf
+        | Step
+        | Floor
+        | Ceil
+        | Round
+        | Sign
+        | Contiguize
+        | AddScalar(_)
+        | MulScalar(_)
+        | PowI(_)
+        | Clamp { .. }
+        | CumSum { .. }
+        | Flip { .. }
+        | Roll { .. }
+        | Triu { .. }
+        | Tril { .. }
+        | LogSoftmaxLastDim
+        | LogSoftmaxLastDimBackward
+        | MaskedFill { .. } => elem0()?,
 
         // --- comparison → Bool ---
         // GAP-168(c) / CireSnave's ruling: comparisons yield a `Bool` mask, not
@@ -133,7 +169,12 @@ pub fn primitive_shape(
                 ))
                 .bt());
             }
-            let out: Vec<usize> = d.iter().enumerate().filter(|(i, _)| *i != *dim).map(|(_, &v)| v).collect();
+            let out: Vec<usize> = d
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i != *dim)
+                .map(|(_, &v)| v)
+                .collect();
             (Shape::from_dims(&out), input_dtypes[0])
         }
         Slice { dim, start, len } => {
@@ -170,7 +211,8 @@ pub fn primitive_shape(
                 if d.len() != a.len() {
                     return Err(Error::Msg(format!(
                         "primitive_shape: Concat input {i} has rank {} but input 0 has rank {}",
-                        d.len(), a.len(),
+                        d.len(),
+                        a.len(),
                     ))
                     .bt());
                 }
@@ -197,14 +239,21 @@ pub fn primitive_shape(
                 ))
                 .bt());
             }
-            let out: Vec<usize> = d.iter().zip(padding).map(|(&x, (b, a))| x + b + a).collect();
+            let out: Vec<usize> = d
+                .iter()
+                .zip(padding)
+                .map(|(&x, (b, a))| x + b + a)
+                .collect();
             (Shape::from_dims(&out), input_dtypes[0])
         }
 
         // --- rank-reducing reductions ---
         SumDim(dim) | MaxDim(dim) | MinDim(dim) | MeanDim(dim) => {
             need(input_shapes, 1, op)?;
-            (reduce_remove(input_shapes[0].dims(), *dim, op)?, input_dtypes[0])
+            (
+                reduce_remove(input_shapes[0].dims(), *dim, op)?,
+                input_dtypes[0],
+            )
         }
         ArgMaxDim(dim) | ArgMinDim(dim) => {
             need(input_shapes, 1, op)?;
@@ -284,7 +333,12 @@ fn reduce_remove(dims: &[usize], dim: usize, op: &Op) -> Result<Shape, Error> {
         ))
         .bt());
     }
-    let out: Vec<usize> = dims.iter().enumerate().filter(|(i, _)| *i != dim).map(|(_, &v)| v).collect();
+    let out: Vec<usize> = dims
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != dim)
+        .map(|(_, &v)| v)
+        .collect();
     Ok(Shape::from_dims(&out))
 }
 
@@ -294,11 +348,18 @@ mod tests {
     use crate::{Op, PadMode};
     use fuel_ir::{DType, Shape};
 
-    fn s(d: &[usize]) -> Shape { Shape::from_dims(d) }
+    fn s(d: &[usize]) -> Shape {
+        Shape::from_dims(d)
+    }
 
     #[test]
     fn elementwise_preserves_shape_and_dtype() {
-        let (sh, dt) = primitive_shape(&Op::Add, &[s(&[2, 3]), s(&[2, 3])], &[DType::F32, DType::F32]).unwrap();
+        let (sh, dt) = primitive_shape(
+            &Op::Add,
+            &[s(&[2, 3]), s(&[2, 3])],
+            &[DType::F32, DType::F32],
+        )
+        .unwrap();
         assert_eq!((sh, dt), (s(&[2, 3]), DType::F32));
         let (sh, dt) = primitive_shape(&Op::Neg, &[s(&[4])], &[DType::BF16]).unwrap();
         assert_eq!((sh, dt), (s(&[4]), DType::BF16));
@@ -308,25 +369,41 @@ mod tests {
     fn comparison_forces_bool() {
         // GAP-168(c): comparisons yield a Bool mask, not U8 (input dtype is
         // erased — F32 in, Bool out).
-        let (sh, dt) = primitive_shape(&Op::Lt, &[s(&[5]), s(&[5])], &[DType::F32, DType::F32]).unwrap();
+        let (sh, dt) =
+            primitive_shape(&Op::Lt, &[s(&[5]), s(&[5])], &[DType::F32, DType::F32]).unwrap();
         assert_eq!((sh, dt), (s(&[5]), DType::Bool));
     }
 
     #[test]
     fn cast_takes_target_dtype() {
-        let (sh, dt) = primitive_shape(&Op::Cast(DType::F16), &[s(&[2, 2])], &[DType::F32]).unwrap();
+        let (sh, dt) =
+            primitive_shape(&Op::Cast(DType::F16), &[s(&[2, 2])], &[DType::F32]).unwrap();
         assert_eq!((sh, dt), (s(&[2, 2]), DType::F16));
     }
 
     #[test]
     fn slice_shrinks_named_dim() {
-        let (sh, dt) = primitive_shape(&Op::Slice { dim: 1, start: 2, len: 3 }, &[s(&[4, 8])], &[DType::F32]).unwrap();
+        let (sh, dt) = primitive_shape(
+            &Op::Slice {
+                dim: 1,
+                start: 2,
+                len: 3,
+            },
+            &[s(&[4, 8])],
+            &[DType::F32],
+        )
+        .unwrap();
         assert_eq!((sh, dt), (s(&[4, 3]), DType::F32));
     }
 
     #[test]
     fn concat_sums_the_join_dim() {
-        let (sh, _) = primitive_shape(&Op::Concat { dim: 0 }, &[s(&[2, 4]), s(&[5, 4])], &[DType::F32, DType::F32]).unwrap();
+        let (sh, _) = primitive_shape(
+            &Op::Concat { dim: 0 },
+            &[s(&[2, 4]), s(&[5, 4])],
+            &[DType::F32, DType::F32],
+        )
+        .unwrap();
         assert_eq!(sh, s(&[7, 4]));
     }
 
@@ -355,7 +432,8 @@ mod tests {
 
     #[test]
     fn permute_reorders_axes() {
-        let (sh, _) = primitive_shape(&Op::Permute(vec![2, 0, 1]), &[s(&[2, 3, 4])], &[DType::F32]).unwrap();
+        let (sh, _) =
+            primitive_shape(&Op::Permute(vec![2, 0, 1]), &[s(&[2, 3, 4])], &[DType::F32]).unwrap();
         assert_eq!(sh, s(&[4, 2, 3]));
     }
 
@@ -363,7 +441,8 @@ mod tests {
     fn reshape_and_broadcast_take_target() {
         let (sh, _) = primitive_shape(&Op::Reshape(s(&[6])), &[s(&[2, 3])], &[DType::F32]).unwrap();
         assert_eq!(sh, s(&[6]));
-        let (sh, _) = primitive_shape(&Op::BroadcastTo(s(&[2, 3])), &[s(&[1, 3])], &[DType::F32]).unwrap();
+        let (sh, _) =
+            primitive_shape(&Op::BroadcastTo(s(&[2, 3])), &[s(&[1, 3])], &[DType::F32]).unwrap();
         assert_eq!(sh, s(&[2, 3]));
     }
 
@@ -375,7 +454,8 @@ mod tests {
 
     #[test]
     fn reduce_to_and_scalar_reductions() {
-        let (sh, _) = primitive_shape(&Op::ReduceMaxTo(s(&[2, 1])), &[s(&[2, 5])], &[DType::F32]).unwrap();
+        let (sh, _) =
+            primitive_shape(&Op::ReduceMaxTo(s(&[2, 1])), &[s(&[2, 5])], &[DType::F32]).unwrap();
         assert_eq!(sh, s(&[2, 1]));
         let (sh, _) = primitive_shape(&Op::SumAll, &[s(&[3, 3])], &[DType::F32]).unwrap();
         assert_eq!(sh, s(&[]));
@@ -389,34 +469,66 @@ mod tests {
 
     #[test]
     fn matmul_contracts_inner_dim() {
-        let (sh, _) = primitive_shape(&Op::MatMul, &[s(&[2, 3]), s(&[3, 5])], &[DType::F32, DType::F32]).unwrap();
+        let (sh, _) = primitive_shape(
+            &Op::MatMul,
+            &[s(&[2, 3]), s(&[3, 5])],
+            &[DType::F32, DType::F32],
+        )
+        .unwrap();
         assert_eq!(sh, s(&[2, 5]));
         // batched, same-rank
-        let (sh, _) = primitive_shape(&Op::MatMul, &[s(&[7, 2, 3]), s(&[7, 3, 5])], &[DType::F32, DType::F32]).unwrap();
+        let (sh, _) = primitive_shape(
+            &Op::MatMul,
+            &[s(&[7, 2, 3]), s(&[7, 3, 5])],
+            &[DType::F32, DType::F32],
+        )
+        .unwrap();
         assert_eq!(sh, s(&[7, 2, 5]));
     }
 
     #[test]
     fn where_is_cond_shape_a_dtype() {
-        let (sh, dt) = primitive_shape(&Op::Where, &[s(&[4]), s(&[4]), s(&[4])], &[DType::U8, DType::F32, DType::F32]).unwrap();
+        let (sh, dt) = primitive_shape(
+            &Op::Where,
+            &[s(&[4]), s(&[4]), s(&[4])],
+            &[DType::U8, DType::F32, DType::F32],
+        )
+        .unwrap();
         assert_eq!((sh, dt), (s(&[4]), DType::F32));
     }
 
     #[test]
     fn index_ops() {
         // IndexSelect: dim replaced by index length (index is in[1], 1-D)
-        let (sh, _) = primitive_shape(&Op::IndexSelect { dim: 0 }, &[s(&[8, 4]), s(&[3])], &[DType::F32, DType::U32]).unwrap();
+        let (sh, _) = primitive_shape(
+            &Op::IndexSelect { dim: 0 },
+            &[s(&[8, 4]), s(&[3])],
+            &[DType::F32, DType::U32],
+        )
+        .unwrap();
         assert_eq!(sh, s(&[3, 4]));
         // Gather: out == index shape
-        let (sh, _) = primitive_shape(&Op::Gather { dim: 1 }, &[s(&[2, 8]), s(&[2, 3])], &[DType::F32, DType::U32]).unwrap();
+        let (sh, _) = primitive_shape(
+            &Op::Gather { dim: 1 },
+            &[s(&[2, 8]), s(&[2, 3])],
+            &[DType::F32, DType::U32],
+        )
+        .unwrap();
         assert_eq!(sh, s(&[2, 3]));
     }
 
     #[test]
     fn pad_extends_each_axis() {
         let (sh, _) = primitive_shape(
-            &Op::Pad { padding: vec![(1, 1), (0, 2)], mode: PadMode::Constant, value: 0.0 },
-            &[s(&[3, 4])], &[DType::F32]).unwrap();
+            &Op::Pad {
+                padding: vec![(1, 1), (0, 2)],
+                mode: PadMode::Constant,
+                value: 0.0,
+            },
+            &[s(&[3, 4])],
+            &[DType::F32],
+        )
+        .unwrap();
         assert_eq!(sh, s(&[5, 6]));
     }
 
@@ -437,8 +549,26 @@ mod tests {
         // Elementwise with no inputs.
         assert!(primitive_shape(&Op::Add, &[], &[]).is_err());
         // Slice dim out of range.
-        assert!(primitive_shape(&Op::Slice { dim: 5, start: 0, len: 1 }, &[s(&[2, 2])], &[DType::F32]).is_err());
+        assert!(
+            primitive_shape(
+                &Op::Slice {
+                    dim: 5,
+                    start: 0,
+                    len: 1
+                },
+                &[s(&[2, 2])],
+                &[DType::F32]
+            )
+            .is_err()
+        );
         // MatMul inner-dim mismatch.
-        assert!(primitive_shape(&Op::MatMul, &[s(&[2, 3]), s(&[4, 5])], &[DType::F32, DType::F32]).is_err());
+        assert!(
+            primitive_shape(
+                &Op::MatMul,
+                &[s(&[2, 3]), s(&[4, 5])],
+                &[DType::F32, DType::F32]
+            )
+            .is_err()
+        );
     }
 }

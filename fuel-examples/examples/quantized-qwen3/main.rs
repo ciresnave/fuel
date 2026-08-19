@@ -9,8 +9,8 @@ use clap::{Parser, ValueEnum};
 use std::io::Write;
 use tokenizers::Tokenizer;
 
-use fuel::lazy_qwen3::Qwen3Config;
 use fuel::lazy_quantized_qwen3::QuantizedQwen3Model;
+use fuel::lazy_qwen3::Qwen3Config;
 use fuel::quantized::gguf_mmap::MmapedContent;
 use fuel_transformers::generation::{LogitsProcessor, Sampling};
 
@@ -166,7 +166,8 @@ fn format_size(size_in_bytes: usize) -> String {
 fn qwen3_cfg_from_gguf(mc: &MmapedContent) -> Result<Qwen3Config> {
     let md = mc.metadata();
     let get = |k: &str| -> Result<&fuel::quantized::gguf_file::Value> {
-        md.get(k).ok_or_else(|| E::msg(format!("gguf metadata: missing key {k:?}")))
+        md.get(k)
+            .ok_or_else(|| E::msg(format!("gguf metadata: missing key {k:?}")))
     };
     let num_attention_heads = get("qwen3.attention.head_count")?.to_u32()? as usize;
     let num_key_value_heads = get("qwen3.attention.head_count_kv")?.to_u32()? as usize;
@@ -269,10 +270,7 @@ fn main() -> anyhow::Result<()> {
     drop(mmaped);
     let model = QuantizedQwen3Model::from_gguf(&model_path, &cfg)
         .map_err(|e| E::msg(format!("from_gguf: {e}")))?;
-    println!(
-        "model built in {:.2}s total",
-        start.elapsed().as_secs_f32()
-    );
+    println!("model built in {:.2}s total", start.elapsed().as_secs_f32());
 
     let tokenizer = args.tokenizer()?;
     let mut tos = TokenOutputStream::new(tokenizer);

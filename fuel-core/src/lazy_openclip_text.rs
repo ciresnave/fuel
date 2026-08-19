@@ -25,8 +25,8 @@
 //!     `fuel-transformers/src/models/multimodal/openclip/text_model.rs`).
 //!   - Pre-LN structure.
 
-use crate::lazy::{LazyTensor, WeightStorage};
 use crate::Result;
+use crate::lazy::{LazyTensor, WeightStorage};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -123,12 +123,13 @@ impl OpenClipTextModel {
     /// end-of-text token in `input_ids` (CLIP's standard pooling
     /// picks the argmax-token-id position; v1 takes it as an
     /// explicit parameter so the lazy graph stays shape-static).
-    pub fn forward_pooled(
-        &self, input_ids: &[u32], eot_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_pooled(&self, input_ids: &[u32], eot_pos: usize) -> Result<LazyTensor> {
         let cfg = &self.config;
-        assert!(eot_pos < input_ids.len(),
-            "eot_pos {eot_pos} must be < seq_len {}", input_ids.len());
+        assert!(
+            eot_pos < input_ids.len(),
+            "eot_pos {eot_pos} must be < seq_len {}",
+            input_ids.len()
+        );
         let hidden = self.run_backbone(input_ids)?;
         // (1, seq, embed_dim) → narrow seq to single position → squeeze → (1, embed_dim).
         let pooled = hidden
@@ -144,7 +145,8 @@ impl OpenClipTextModel {
         assert!(seq > 0, "input_ids must be non-empty");
         assert!(
             seq <= cfg.max_position_embeddings,
-            "seq_len {seq} > max_position_embeddings {}", cfg.max_position_embeddings,
+            "seq_len {seq} > max_position_embeddings {}",
+            cfg.max_position_embeddings,
         );
 
         // Token embedding lookup.
@@ -153,9 +155,7 @@ impl OpenClipTextModel {
             Shape::from_dims(&[cfg.vocab_size, cfg.embed_dim]),
             &crate::Device::cpu(),
         );
-        let ids = token_table.const_u32_like(
-            input_ids.to_vec(), Shape::from_dims(&[seq]),
-        );
+        let ids = token_table.const_u32_like(input_ids.to_vec(), Shape::from_dims(&[seq]));
         let tok = token_table
             .index_select(0_usize, &ids)?
             .reshape(Shape::from_dims(&[1, seq, cfg.embed_dim]))?;
@@ -173,7 +173,11 @@ impl OpenClipTextModel {
         for layer in &w.layers {
             x = apply_layer(&x, layer, cfg, &token_table)?;
         }
-        Ok(x.layer_norm_affine(Arc::clone(&w.final_ln.gain), Arc::clone(&w.final_ln.bias), 1e-5)?)
+        Ok(x.layer_norm_affine(
+            Arc::clone(&w.final_ln.gain),
+            Arc::clone(&w.final_ln.bias),
+            1e-5,
+        )?)
     }
 }
 
@@ -190,7 +194,13 @@ fn apply_layer(
 
     let residual = x.clone();
     let normed = x.layer_norm_affine(Arc::clone(&w.ln2.gain), Arc::clone(&w.ln2.bias), 1e-5)?;
-    let mlp_out = apply_mlp(&normed, &w.mlp, cfg.embed_dim, cfg.intermediate_size, anchor)?;
+    let mlp_out = apply_mlp(
+        &normed,
+        &w.mlp,
+        cfg.embed_dim,
+        cfg.intermediate_size,
+        anchor,
+    )?;
     residual.add(&mlp_out)
 }
 
@@ -202,15 +212,22 @@ fn apply_attention(
 ) -> Result<LazyTensor> {
     let dims = x.shape();
     let dims = dims.dims();
-    let b = dims[0]; let seq = dims[1];
+    let b = dims[0];
+    let seq = dims[1];
     let embed = cfg.embed_dim;
     let n_heads = cfg.num_attention_heads;
     let head_dim = cfg.head_dim();
     let scale = 1.0_f64 / (head_dim as f64).sqrt();
 
-    let q = w.q_proj.apply_linear_with_bias(x, embed, embed, std::sync::Arc::clone(&w.q_proj_bias))?;
-    let k = w.k_proj.apply_linear_with_bias(x, embed, embed, std::sync::Arc::clone(&w.k_proj_bias))?;
-    let v = w.v_proj.apply_linear_with_bias(x, embed, embed, std::sync::Arc::clone(&w.v_proj_bias))?;
+    let q =
+        w.q_proj
+            .apply_linear_with_bias(x, embed, embed, std::sync::Arc::clone(&w.q_proj_bias))?;
+    let k =
+        w.k_proj
+            .apply_linear_with_bias(x, embed, embed, std::sync::Arc::clone(&w.k_proj_bias))?;
+    let v =
+        w.v_proj
+            .apply_linear_with_bias(x, embed, embed, std::sync::Arc::clone(&w.v_proj_bias))?;
 
     let q = q.mul_scalar(scale);
 
@@ -224,7 +241,8 @@ fn apply_attention(
     let scores = q.matmul(&kt)?;
     let probs = scores.softmax_last_dim()?;
     let ctx = probs.matmul(&v)?.merge_heads()?;
-    w.out_proj.apply_linear_with_bias(&ctx, embed, embed, std::sync::Arc::clone(&w.out_proj_bias))
+    w.out_proj
+        .apply_linear_with_bias(&ctx, embed, embed, std::sync::Arc::clone(&w.out_proj_bias))
 }
 
 fn apply_mlp(
@@ -234,12 +252,13 @@ fn apply_mlp(
     hidden_dim: usize,
     anchor: &LazyTensor,
 ) -> Result<LazyTensor> {
-    let h1 = m.fc1.apply_linear_with_bias(x, in_dim, hidden_dim, std::sync::Arc::clone(&m.fc1_bias))?;
+    let h1 =
+        m.fc1
+            .apply_linear_with_bias(x, in_dim, hidden_dim, std::sync::Arc::clone(&m.fc1_bias))?;
     let h1 = h1.gelu_erf();
-    m.fc2.apply_linear_with_bias(&h1, hidden_dim, in_dim, std::sync::Arc::clone(&m.fc2_bias))
+    m.fc2
+        .apply_linear_with_bias(&h1, hidden_dim, in_dim, std::sync::Arc::clone(&m.fc2_bias))
 }
-
-
 
 // ---- HuggingFace safetensors loader ----------------------------------------
 
@@ -252,16 +271,15 @@ impl OpenClipTextWeights {
         st: &crate::safetensors::MmapedSafetensors,
         cfg: &OpenClipTextConfig,
     ) -> Result<Self> {
-        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix, load_transposed_matrix_preserve_dtype as ltm};
+        use crate::lazy::{
+            load_tensor_as_f32, load_transposed_matrix,
+            load_transposed_matrix_preserve_dtype as ltm,
+        };
         let h = cfg.embed_dim;
         let inter = cfg.intermediate_size;
 
-        let token_embedding = Arc::from(load_tensor_as_f32(
-            st, "token_embedding.weight",
-        )?);
-        let position_embedding = Arc::from(load_tensor_as_f32(
-            st, "positional_embedding",
-        )?);
+        let token_embedding = Arc::from(load_tensor_as_f32(st, "token_embedding.weight")?);
+        let position_embedding = Arc::from(load_tensor_as_f32(st, "positional_embedding")?);
 
         let load_ln = |prefix: &str| -> Result<LayerNormWeights> {
             Ok(LayerNormWeights {
@@ -275,20 +293,18 @@ impl OpenClipTextWeights {
             let p = format!("transformer.resblocks.{i}");
             let ln1 = load_ln(&format!("{p}.ln_1"))?;
             // Fused in_proj: [3*h, h]; split into Q, K, V.
-            let in_proj_w = load_transposed_matrix(
-                st, &format!("{p}.attn.in_proj_weight"), 3 * h, h,
-            )?;
+            let in_proj_w =
+                load_transposed_matrix(st, &format!("{p}.attn.in_proj_weight"), 3 * h, h)?;
             let in_proj_b = load_tensor_as_f32(st, &format!("{p}.attn.in_proj_bias"))?;
             let mut q = vec![0.0_f32; h * h];
             let mut k = vec![0.0_f32; h * h];
             let mut v = vec![0.0_f32; h * h];
             for row in 0..h {
-                q[row * h..(row + 1) * h].copy_from_slice(
-                    &in_proj_w[row * 3 * h..row * 3 * h + h]);
-                k[row * h..(row + 1) * h].copy_from_slice(
-                    &in_proj_w[row * 3 * h + h..row * 3 * h + 2 * h]);
-                v[row * h..(row + 1) * h].copy_from_slice(
-                    &in_proj_w[row * 3 * h + 2 * h..row * 3 * h + 3 * h]);
+                q[row * h..(row + 1) * h].copy_from_slice(&in_proj_w[row * 3 * h..row * 3 * h + h]);
+                k[row * h..(row + 1) * h]
+                    .copy_from_slice(&in_proj_w[row * 3 * h + h..row * 3 * h + 2 * h]);
+                v[row * h..(row + 1) * h]
+                    .copy_from_slice(&in_proj_w[row * 3 * h + 2 * h..row * 3 * h + 3 * h]);
             }
             let attn = OpenClipAttentionWeights {
                 q_proj: WeightStorage::F32(Arc::from(q)),
@@ -299,26 +315,33 @@ impl OpenClipTextWeights {
                 v_proj_bias: Arc::from(&in_proj_b[2 * h..3 * h]),
                 out_proj: ltm(st, &format!("{p}.attn.out_proj.weight"), h, h)?,
                 out_proj_bias: Arc::from(load_tensor_as_f32(
-                    st, &format!("{p}.attn.out_proj.bias"),
+                    st,
+                    &format!("{p}.attn.out_proj.bias"),
                 )?),
             };
             let ln2 = load_ln(&format!("{p}.ln_2"))?;
             let mlp = MlpWeights {
                 fc1: ltm(st, &format!("{p}.mlp.c_fc.weight"), inter, h)?,
-                fc1_bias: Arc::from(load_tensor_as_f32(
-                    st, &format!("{p}.mlp.c_fc.bias"),
-                )?),
+                fc1_bias: Arc::from(load_tensor_as_f32(st, &format!("{p}.mlp.c_fc.bias"))?),
                 fc2: ltm(st, &format!("{p}.mlp.c_proj.weight"), h, inter)?,
-                fc2_bias: Arc::from(load_tensor_as_f32(
-                    st, &format!("{p}.mlp.c_proj.bias"),
-                )?),
+                fc2_bias: Arc::from(load_tensor_as_f32(st, &format!("{p}.mlp.c_proj.bias"))?),
             };
-            layers.push(OpenClipEncoderLayerWeights { ln1, attn, ln2, mlp });
+            layers.push(OpenClipEncoderLayerWeights {
+                ln1,
+                attn,
+                ln2,
+                mlp,
+            });
         }
 
         let final_ln = load_ln("ln_final")?;
 
-        Ok(Self { token_embedding, position_embedding, layers, final_ln })
+        Ok(Self {
+            token_embedding,
+            position_embedding,
+            layers,
+            final_ln,
+        })
     }
 }
 
@@ -362,14 +385,18 @@ mod tests {
     fn tiny_weights(cfg: &OpenClipTextConfig) -> OpenClipTextWeights {
         let mut nb = rng_seed(2026);
         let e = cfg.embed_dim;
-        let layers: Vec<OpenClipEncoderLayerWeights> = (0..cfg.num_hidden_layers).map(|_| {
-            OpenClipEncoderLayerWeights {
+        let layers: Vec<OpenClipEncoderLayerWeights> = (0..cfg.num_hidden_layers)
+            .map(|_| OpenClipEncoderLayerWeights {
                 ln1: ln_w(e),
                 attn: OpenClipAttentionWeights {
-                    q_proj: ws(e * e, &mut nb), q_proj_bias: vec_of(e, &mut nb),
-                    k_proj: ws(e * e, &mut nb), k_proj_bias: vec_of(e, &mut nb),
-                    v_proj: ws(e * e, &mut nb), v_proj_bias: vec_of(e, &mut nb),
-                    out_proj: ws(e * e, &mut nb), out_proj_bias: vec_of(e, &mut nb),
+                    q_proj: ws(e * e, &mut nb),
+                    q_proj_bias: vec_of(e, &mut nb),
+                    k_proj: ws(e * e, &mut nb),
+                    k_proj_bias: vec_of(e, &mut nb),
+                    v_proj: ws(e * e, &mut nb),
+                    v_proj_bias: vec_of(e, &mut nb),
+                    out_proj: ws(e * e, &mut nb),
+                    out_proj_bias: vec_of(e, &mut nb),
                 },
                 ln2: ln_w(e),
                 mlp: MlpWeights {
@@ -378,8 +405,8 @@ mod tests {
                     fc2: ws(cfg.intermediate_size * e, &mut nb),
                     fc2_bias: vec_of(e, &mut nb),
                 },
-            }
-        }).collect();
+            })
+            .collect();
         OpenClipTextWeights {
             token_embedding: vec_of(cfg.vocab_size * e, &mut nb),
             position_embedding: vec_of(cfg.max_position_embeddings * e, &mut nb),
@@ -392,7 +419,10 @@ mod tests {
     fn forward_shape_and_finite() {
         let cfg = tiny_config();
         let weights = tiny_weights(&cfg);
-        let model = OpenClipTextModel { config: cfg.clone(), weights };
+        let model = OpenClipTextModel {
+            config: cfg.clone(),
+            weights,
+        };
         let ids = vec![1_u32, 5, 10, 31];
         let out = model.forward(&ids).unwrap();
         assert_eq!(out.shape().dims(), &[1, ids.len(), cfg.embed_dim]);
@@ -405,7 +435,10 @@ mod tests {
     fn forward_pooled_picks_eot_position() {
         let cfg = tiny_config();
         let weights = tiny_weights(&cfg);
-        let model = OpenClipTextModel { config: cfg.clone(), weights };
+        let model = OpenClipTextModel {
+            config: cfg.clone(),
+            weights,
+        };
         // 4 tokens; EOT at position 2.
         let ids = vec![1_u32, 5, 31, 0];
         let full = model.forward(&ids).unwrap().realize_f32();
@@ -414,8 +447,11 @@ mod tests {
         let pooled_data = pooled.realize_f32();
         for d in 0..cfg.embed_dim {
             let expected = full[2 * cfg.embed_dim + d];
-            assert!((pooled_data[d] - expected).abs() < 1e-5,
-                "pooled[{d}] = {} != full[2, {d}] = {expected}", pooled_data[d]);
+            assert!(
+                (pooled_data[d] - expected).abs() < 1e-5,
+                "pooled[{d}] = {} != full[2, {d}] = {expected}",
+                pooled_data[d]
+            );
         }
     }
 
@@ -423,15 +459,20 @@ mod tests {
     fn forward_responds_to_input() {
         let cfg = tiny_config();
         let weights = tiny_weights(&cfg);
-        let model = OpenClipTextModel { config: cfg, weights };
+        let model = OpenClipTextModel {
+            config: cfg,
+            weights,
+        };
         let a = model.forward(&[1_u32, 5, 10, 31]).unwrap().realize_f32();
         let b = model.forward(&[3_u32, 7, 20, 31]).unwrap().realize_f32();
         let mut max_diff = 0.0_f32;
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-7,
-            "text encoder must respond to token changes, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-7,
+            "text encoder must respond to token changes, max_diff = {max_diff}"
+        );
     }
 
     #[test]

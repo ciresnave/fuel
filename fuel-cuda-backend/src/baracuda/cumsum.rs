@@ -89,7 +89,8 @@ fn cumsum_run(
         if axis >= rank {
             return Err(Error::Msg(format!(
                 "{op_label}: axis {axis} out of range for rank {rank}",
-            )).bt());
+            ))
+            .bt());
         }
         let mut shape_i32: Vec<i32> = Vec::with_capacity(rank);
         for (i, &d) in dims.iter().enumerate() {
@@ -130,11 +131,7 @@ fn cumsum_run(
             i32_or(1, dim_size)?,
             i32_or(2, inner_count)?,
         ];
-        let stride_x_i64: [i64; 3] = [
-            (dim_size * inner_count) as i64,
-            inner_count as i64,
-            1,
-        ];
+        let stride_x_i64: [i64; 3] = [(dim_size * inner_count) as i64, inner_count as i64, 1];
         let stride_y_i64 = stride_x_i64;
         let scan_axis: i32 = 1;
         let scan_extent: i32 = shape_i32[1];
@@ -159,7 +156,11 @@ fn cumsum_run(
         }
     };
     check(status, op_label)?;
-    Ok(CudaStorageBytes::from_parts(Arc::new(out), device, out_bytes))
+    Ok(CudaStorageBytes::from_parts(
+        Arc::new(out),
+        device,
+        out_bytes,
+    ))
 }
 
 macro_rules! cumsum_kernel {
@@ -184,7 +185,27 @@ macro_rules! cumsum_kernel {
     };
 }
 
-cumsum_kernel!(cumsum_f32,  baracuda_kernels_scan_cumsum_f32_run,  4, "cumsum_f32");
-cumsum_kernel!(cumsum_f64,  baracuda_kernels_scan_cumsum_f64_run,  8, "cumsum_f64");
-cumsum_kernel!(cumsum_f16,  baracuda_kernels_scan_cumsum_f16_run,  2, "cumsum_f16");
-cumsum_kernel!(cumsum_bf16, baracuda_kernels_scan_cumsum_bf16_run, 2, "cumsum_bf16");
+cumsum_kernel!(
+    cumsum_f32,
+    baracuda_kernels_scan_cumsum_f32_run,
+    4,
+    "cumsum_f32"
+);
+cumsum_kernel!(
+    cumsum_f64,
+    baracuda_kernels_scan_cumsum_f64_run,
+    8,
+    "cumsum_f64"
+);
+cumsum_kernel!(
+    cumsum_f16,
+    baracuda_kernels_scan_cumsum_f16_run,
+    2,
+    "cumsum_f16"
+);
+cumsum_kernel!(
+    cumsum_bf16,
+    baracuda_kernels_scan_cumsum_bf16_run,
+    2,
+    "cumsum_bf16"
+);

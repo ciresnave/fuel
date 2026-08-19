@@ -81,7 +81,11 @@ mod tests {
     fn candidate(strided: bool) -> Candidate {
         Candidate {
             kernel: noop,
-            caps: if strided { KernelCaps::strided_input() } else { KernelCaps::empty() },
+            caps: if strided {
+                KernelCaps::strided_input()
+            } else {
+                KernelCaps::empty()
+            },
             backend: BackendId::Cpu,
             device: DeviceLocation::Cpu,
             precision: PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
@@ -120,7 +124,12 @@ mod tests {
     #[test]
     fn non_contiguous_input_prefers_strided_capable() {
         let f = StridedInputPreferenceFilter::default();
-        let alts = vec![candidate(false), candidate(true), candidate(false), candidate(true)];
+        let alts = vec![
+            candidate(false),
+            candidate(true),
+            candidate(false),
+            candidate(true),
+        ];
         assert_eq!(f.filter(&alts, &non_contig_ctx()), vec![1, 3]);
     }
 
@@ -133,9 +142,7 @@ mod tests {
         use crate::ranker::alternative_set::AlternativeSet;
         use crate::ranker::chain::apply_filter_chain;
         let f = StridedInputPreferenceFilter::default();
-        let mut set = AlternativeSet::from_candidates(
-            vec![candidate(false), candidate(false)],
-        );
+        let mut set = AlternativeSet::from_candidates(vec![candidate(false), candidate(false)]);
         let filters: Vec<Box<dyn AlternativeFilter>> = vec![Box::new(f)];
         apply_filter_chain(&mut set, &filters, &non_contig_ctx()).expect("soft skip");
         assert_eq!(set.len(), 2, "no strided-capable → filter skipped");

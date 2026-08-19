@@ -12,14 +12,12 @@ extern crate accelerate_src;
 #[cfg(feature = "mkl")]
 extern crate intel_mkl_src;
 
-use anyhow::{bail, Error as E, Result};
+use anyhow::{Error as E, Result, bail};
 use clap::{Parser, ValueEnum};
 
 use fuel::lazy::{LlamaConfig, LlamaModel, LlamaWeights};
-use fuel::lazy_llama_full::{
-    build_llama3_model, Llama3Model, LlamaEosToks, LlamaFullConfig,
-};
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use fuel::lazy_llama_full::{Llama3Model, LlamaEosToks, LlamaFullConfig, build_llama3_model};
+use hf_hub::{Repo, RepoType, api::sync::Api};
 use std::io::Write;
 
 const EOS_TOKEN: &str = "</s>";
@@ -166,7 +164,11 @@ fn main() -> Result<()> {
     });
     println!("loading the model weights from {model_id}");
     let revision = args.revision.unwrap_or("main".to_string());
-    let api = api.repo(Repo::with_revision(model_id.clone(), RepoType::Model, revision));
+    let api = api.repo(Repo::with_revision(
+        model_id.clone(),
+        RepoType::Model,
+        revision,
+    ));
 
     let tokenizer_filename = api.get("tokenizer.json")?;
 
@@ -209,20 +211,25 @@ fn main() -> Result<()> {
         .map_err(|e| E::msg(format!("mmap safetensors: {e}")))?;
     let weights: LlamaWeights = LlamaWeights::load_from_mmapped(&st, &lazy_cfg)
         .map_err(|e| E::msg(format!("load weights: {e}")))?;
-    let llama_inner = LlamaModel { config: lazy_cfg.clone(), weights };
+    let llama_inner = LlamaModel {
+        config: lazy_cfg.clone(),
+        weights,
+    };
     let llama = build_llama3_model(&full_cfg, llama_inner.weights.clone());
     let llama = Llama3Model {
-        inner: LlamaModel { config: lazy_cfg, weights: llama.inner.weights },
+        inner: LlamaModel {
+            config: lazy_cfg,
+            weights: llama.inner.weights,
+        },
         rope_scaling: llama.rope_scaling,
         eos_token_id: llama.eos_token_id,
     };
 
     let tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(E::msg)?;
-    let eos_token_id: Option<LlamaEosToks> = full_cfg.eos_token_id.clone().or_else(|| {
-        tokenizer
-            .token_to_id(EOS_TOKEN)
-            .map(LlamaEosToks::Single)
-    });
+    let eos_token_id: Option<LlamaEosToks> = full_cfg
+        .eos_token_id
+        .clone()
+        .or_else(|| tokenizer.token_to_id(EOS_TOKEN).map(LlamaEosToks::Single));
     let prompt = args.prompt.as_ref().map_or(DEFAULT_PROMPT, |p| p.as_str());
     let mut tokens = tokenizer
         .encode(prompt, true)
@@ -252,8 +259,7 @@ fn main() -> Result<()> {
         let vocab_size = llama.inner.config.vocab_size;
         let seq = tokens.len();
         let last_offset = (seq - 1) * vocab_size;
-        let mut last_logits: Vec<f32> =
-            logits_data[last_offset..last_offset + vocab_size].to_vec();
+        let mut last_logits: Vec<f32> = logits_data[last_offset..last_offset + vocab_size].to_vec();
 
         // Repeat penalty.
         if args.repeat_penalty != 1.0 {
@@ -411,7 +417,9 @@ fn sample(
     }
 
     // Deterministic LCG over `seed`.
-    let mut state = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    let mut state = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
     state ^= state >> 33;
     state = state.wrapping_mul(0xff51_afd7_ed55_8ccd);
     state ^= state >> 33;

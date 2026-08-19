@@ -8,7 +8,7 @@
 //! and `Drop` (correct dealloc) so it can be wrapped in `Arc` for
 //! cheap-clone, copy-on-write behavior at the `CpuStorage` layer.
 
-use std::alloc::{alloc_zeroed, dealloc, handle_alloc_error, Layout};
+use std::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
 use std::ptr::NonNull;
 
 /// Aligned byte buffer: heap allocation with caller-specified
@@ -52,8 +52,8 @@ impl AlignedBytes {
             let ptr = NonNull::new(align as *mut u8).unwrap_or(NonNull::dangling());
             return Self { ptr, len: 0, align };
         }
-        let layout = Layout::from_size_align(len, align)
-            .expect("AlignedBytes layout: size+align overflow");
+        let layout =
+            Layout::from_size_align(len, align).expect("AlignedBytes layout: size+align overflow");
         // SAFETY: layout is non-zero (len > 0 above) and properly
         // aligned. alloc_zeroed returns either a valid pointer or
         // null on failure.

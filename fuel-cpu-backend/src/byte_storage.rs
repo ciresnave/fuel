@@ -62,7 +62,9 @@ impl CpuStorageBytes {
         if !src.is_empty() {
             buf.as_slice_mut().copy_from_slice(src);
         }
-        Self { bytes: Arc::new(buf) }
+        Self {
+            bytes: Arc::new(buf),
+        }
     }
 
     /// Allocate a fresh aligned buffer and copy a typed slice into
@@ -132,14 +134,20 @@ impl CpuStorageBytes {
         if size != 0 && len_bytes % size != 0 {
             return Err(Error::Msg(format!(
                 "CpuStorageBytes::as_slice_mut<{}>: byte length {} not a multiple of T size {}",
-                std::any::type_name::<T>(), len_bytes, size,
-            )).bt());
+                std::any::type_name::<T>(),
+                len_bytes,
+                size,
+            ))
+            .bt());
         }
         if align > CPU_ALIGN_BYTES {
             return Err(Error::Msg(format!(
                 "CpuStorageBytes::as_slice_mut<{}>: T alignment {} exceeds buffer alignment {}",
-                std::any::type_name::<T>(), align, CPU_ALIGN_BYTES,
-            )).bt());
+                std::any::type_name::<T>(),
+                align,
+                CPU_ALIGN_BYTES,
+            ))
+            .bt());
         }
         let bytes = self.bytes_mut();
         bytemuck::try_cast_slice_mut(bytes).map_err(|e| {

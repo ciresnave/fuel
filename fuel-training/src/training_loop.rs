@@ -205,15 +205,10 @@ fn harvest_grads(loss: &LazyTensor, vars: &[LazyVar]) -> HashMap<String, LazyTen
         let Some(node_id) = var.last_node_id() else {
             continue;
         };
-        let handle = fuel_graph::Tensor::from_existing(
-            loss.graph_tensor().graph().clone(),
-            node_id,
-        );
+        let handle =
+            fuel_graph::Tensor::from_existing(loss.graph_tensor().graph().clone(), node_id);
         if let Some(grad) = grad_map.get(&handle) {
-            grads.insert(
-                var.name().to_string(),
-                LazyTensor::from_graph_tensor(grad),
-            );
+            grads.insert(var.name().to_string(), LazyTensor::from_graph_tensor(grad));
         }
     }
     grads

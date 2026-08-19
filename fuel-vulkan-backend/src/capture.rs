@@ -160,7 +160,9 @@ mod tests {
     #[test]
     #[ignore = "requires a live Vulkan device"]
     fn capture_replay_rebind_affine() {
-        let Some(backend) = backend_or_skip() else { return };
+        let Some(backend) = backend_or_skip() else {
+            return;
+        };
         let n = 4usize;
         let bytes = n * std::mem::size_of::<f32>();
         let layout = Layout::contiguous(Shape::from_dims(&[n]));

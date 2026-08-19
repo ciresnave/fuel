@@ -34,11 +34,11 @@ extern crate intel_mkl_src;
 #[cfg(feature = "accelerate")]
 extern crate accelerate_src;
 
-use anyhow::{bail, Error as E, Result};
+use anyhow::{Error as E, Result, bail};
 use clap::Parser;
 
 use fuel::lazy::LazyTensor;
-use fuel::lazy_mixformer::{MixFormerConfig, MixFormerActivation};
+use fuel::lazy_mixformer::{MixFormerActivation, MixFormerConfig};
 use fuel::lazy_moondream::{
     MoondreamConfig, MoondreamModel, MoondreamProjectionConfig, MoondreamVisionConfig,
     MoondreamWeights,
@@ -234,7 +234,12 @@ async fn main() -> anyhow::Result<()> {
     let image_data = load_image_nchw(&args.image)?;
     let pixel_values = LazyTensor::from_f32(
         Arc::<[f32]>::from(image_data),
-        Shape::from_dims(&[1, cfg.vision.num_channels, cfg.vision.image_size, cfg.vision.image_size]),
+        Shape::from_dims(&[
+            1,
+            cfg.vision.num_channels,
+            cfg.vision.image_size,
+            cfg.vision.image_size,
+        ]),
         &device,
     );
     println!(
@@ -295,9 +300,7 @@ async fn main() -> anyhow::Result<()> {
         );
         tokens.push(next_token);
         generated_tokens += 1;
-        if next_token == eos_token
-            || tokens.ends_with(&[27, 10619, 29] /* <END> */)
-        {
+        if next_token == eos_token || tokens.ends_with(&[27, 10619, 29] /* <END> */) {
             break;
         }
         let token_str = tokenizer.decode(&[next_token], true).map_err(E::msg)?;
@@ -354,12 +357,7 @@ fn apply_repeat_penalty(logits: &mut [f32], penalty: f32, context: &[u32]) {
 
 /// Local sampler — mirrors the `helium` lazy binary. `temperature <= 0.0`
 /// is treated as greedy.
-fn sample(
-    logits: &[f32],
-    temperature: f32,
-    top_p: Option<f32>,
-    seed: u64,
-) -> u32 {
+fn sample(logits: &[f32], temperature: f32, top_p: Option<f32>, seed: u64) -> u32 {
     if temperature <= 0.0 {
         let mut best_i = 0usize;
         let mut best = logits[0];
@@ -373,7 +371,10 @@ fn sample(
     }
     let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let inv_t = 1.0 / temperature.max(1e-6);
-    let mut probs: Vec<f32> = logits.iter().map(|&x| ((x - max_l) * inv_t).exp()).collect();
+    let mut probs: Vec<f32> = logits
+        .iter()
+        .map(|&x| ((x - max_l) * inv_t).exp())
+        .collect();
     let sum: f32 = probs.iter().sum();
     for p in &mut probs {
         *p /= sum.max(1e-30);
@@ -427,4 +428,3 @@ fn sample(
     }
     (filtered.len() - 1) as u32
 }
-

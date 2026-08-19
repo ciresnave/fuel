@@ -32,11 +32,20 @@ fn main() -> Result<()> {
         data.train_samples, data.test_samples, data.image_dims,
     );
 
-    let cfg = MlpConfig { in_dim: IMAGE_DIM, hidden: 100, out_dim: LABELS, lr: 1e-3, seed: 1 };
+    let cfg = MlpConfig {
+        in_dim: IMAGE_DIM,
+        hidden: 100,
+        out_dim: LABELS,
+        lr: 1e-3,
+        seed: 1,
+    };
     let mut trainer = MnistTrainer::new(cfg)?;
 
     let n_batches = data.train_samples / BSIZE;
-    eprintln!("Training MLP (784→100→10) with AdamW lr={}, {EPOCHS} epochs × {n_batches} batches:", cfg.lr);
+    eprintln!(
+        "Training MLP (784→100→10) with AdamW lr={}, {EPOCHS} epochs × {n_batches} batches:",
+        cfg.lr
+    );
 
     for epoch in 0..EPOCHS {
         let mut sum_loss = 0.0f32;

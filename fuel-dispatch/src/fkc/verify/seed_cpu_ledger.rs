@@ -35,15 +35,15 @@
 //! (which ops verified, which didn't, and why).
 
 use fuel_graph::registry::{FusedOpId, FusedOps, Reduction};
-use fuel_ir::probe::BackendId;
 use fuel_ir::DType;
+use fuel_ir::probe::BackendId;
 
 use crate::fkc::verify::bit_stability::{
-    fill_deterministic, verify_bit_stability, HostTensor, ProbeInputs, VerifyOutcome,
+    HostTensor, ProbeInputs, VerifyOutcome, fill_deterministic, verify_bit_stability,
 };
 use crate::fkc::verify::invoker_cpu::CpuInvoker;
 use crate::fkc::verify::ledger::LedgerRecord;
-use crate::fused::{default_kernel_registry, BackendImpl};
+use crate::fused::{BackendImpl, default_kernel_registry};
 use crate::kernel::{BindingEntry, MatmulM, OpParams};
 
 /// Repeat-call count per probe for the `bit_stable_on_same_hardware`
@@ -96,24 +96,76 @@ struct Probe {
 /// only (the ledger's match key is `(kernel_revision_hash, backend,
 /// dtypes, claim)` — see `ledger::VerificationLedger::has_pass`).
 const TARGETS: &[(FusedOpId, Family, &str)] = &[
-    (FusedOps::SOFTMAX_LAST_DIM, Family::SoftmaxFwd, "softmax_last_dim"),
-    (FusedOps::RMS_NORM_LAST_DIM, Family::NormFwd, "rms_norm_last_dim"),
-    (FusedOps::LAYER_NORM_LAST_DIM, Family::NormFwd, "layer_norm_last_dim"),
-    (FusedOps::SOFTMAX_LAST_DIM_BACKWARD, Family::SoftmaxBwd, "softmax_last_dim_backward"),
-    (FusedOps::LAYER_NORM_LAST_DIM_BACKWARD, Family::NormBwd, "layer_norm_last_dim_backward"),
-    (FusedOps::RMS_NORM_LAST_DIM_BACKWARD, Family::NormBwd, "rms_norm_last_dim_backward"),
-    (FusedOps::REDUCE_MAX_TO_BACKWARD, Family::ReduceMaxToBwd, "reduce_max_to_backward"),
+    (
+        FusedOps::SOFTMAX_LAST_DIM,
+        Family::SoftmaxFwd,
+        "softmax_last_dim",
+    ),
+    (
+        FusedOps::RMS_NORM_LAST_DIM,
+        Family::NormFwd,
+        "rms_norm_last_dim",
+    ),
+    (
+        FusedOps::LAYER_NORM_LAST_DIM,
+        Family::NormFwd,
+        "layer_norm_last_dim",
+    ),
+    (
+        FusedOps::SOFTMAX_LAST_DIM_BACKWARD,
+        Family::SoftmaxBwd,
+        "softmax_last_dim_backward",
+    ),
+    (
+        FusedOps::LAYER_NORM_LAST_DIM_BACKWARD,
+        Family::NormBwd,
+        "layer_norm_last_dim_backward",
+    ),
+    (
+        FusedOps::RMS_NORM_LAST_DIM_BACKWARD,
+        Family::NormBwd,
+        "rms_norm_last_dim_backward",
+    ),
+    (
+        FusedOps::REDUCE_MAX_TO_BACKWARD,
+        Family::ReduceMaxToBwd,
+        "reduce_max_to_backward",
+    ),
     (FusedOps::POWI_BACKWARD, Family::PowiBwd, "powi_backward"),
     (FusedOps::FUSED_LINEAR, Family::FusedLinear, "fused_linear"),
     (FusedOps::QMATMUL, Family::QMatMul, "qmatmul"),
-    (FusedOps::INPLACE_AFFINE, Family::InplaceAffine, "inplace_affine"),
-    (FusedOps::FUSED_SOFTMAX_CROSS_ENTROPY, Family::Fsce, "fused_softmax_cross_entropy"),
+    (
+        FusedOps::INPLACE_AFFINE,
+        Family::InplaceAffine,
+        "inplace_affine",
+    ),
+    (
+        FusedOps::FUSED_SOFTMAX_CROSS_ENTROPY,
+        Family::Fsce,
+        "fused_softmax_cross_entropy",
+    ),
     (FusedOps::ROPE, Family::Rope, "rope"),
     (FusedOps::CONV2D, Family::Conv2D, "conv2d"),
-    (FusedOps::CONV_TRANSPOSE2D, Family::ConvTranspose2D, "conv_transpose2d"),
-    (FusedOps::CAUSAL_CONV1D, Family::CausalConv1d, "causal_conv1d"),
-    (FusedOps::SELECTIVE_SCAN, Family::SelectiveScan, "selective_scan"),
-    (FusedOps::SSD_CHUNK_SCAN, Family::SsdChunkScan, "ssd_chunk_scan"),
+    (
+        FusedOps::CONV_TRANSPOSE2D,
+        Family::ConvTranspose2D,
+        "conv_transpose2d",
+    ),
+    (
+        FusedOps::CAUSAL_CONV1D,
+        Family::CausalConv1d,
+        "causal_conv1d",
+    ),
+    (
+        FusedOps::SELECTIVE_SCAN,
+        Family::SelectiveScan,
+        "selective_scan",
+    ),
+    (
+        FusedOps::SSD_CHUNK_SCAN,
+        Family::SsdChunkScan,
+        "ssd_chunk_scan",
+    ),
 ];
 
 /// Encode `vals` (logical float values) into `dt`'s byte representation.
@@ -165,7 +217,11 @@ pub(crate) fn to_bytes(dt: DType, vals: &[f32]) -> Option<Vec<u8>> {
 /// Build a `HostTensor` for `dt` from logical float values. `None` if
 /// `dt` isn't an encodable float dtype (see [`to_bytes`]).
 fn ht(dt: DType, shape: Vec<usize>, vals: &[f32]) -> Option<HostTensor> {
-    Some(HostTensor { dtype: dt, shape, bytes: to_bytes(dt, vals)? })
+    Some(HostTensor {
+        dtype: dt,
+        shape,
+        bytes: to_bytes(dt, vals)?,
+    })
 }
 
 /// Build a real, valid probe for `family` at the exact registered
@@ -182,14 +238,28 @@ fn build_probe(family: Family, dtypes: &[DType], seed: u64) -> Option<Probe> {
             }
             let dt = dtypes[0];
             let (outer, last) = (2usize, 4usize);
-            let x = ht(dt, vec![outer * last], &fill_deterministic(outer * last, seed))?;
+            let x = ht(
+                dt,
+                vec![outer * last],
+                &fill_deterministic(outer * last, seed),
+            )?;
             let params = match family {
-                Family::SoftmaxFwd => {
-                    OpParams::SoftmaxLastDim { outer_count: outer, last_dim: last }
-                }
-                _ => OpParams::NormLastDim { outer_count: outer, last_dim: last, eps: 1e-5 },
+                Family::SoftmaxFwd => OpParams::SoftmaxLastDim {
+                    outer_count: outer,
+                    last_dim: last,
+                },
+                _ => OpParams::NormLastDim {
+                    outer_count: outer,
+                    last_dim: last,
+                    eps: 1e-5,
+                },
             };
-            Some(Probe { inputs: vec![x], params, out_dtype: dt, out_shape: vec![outer * last] })
+            Some(Probe {
+                inputs: vec![x],
+                params,
+                out_dtype: dt,
+                out_shape: vec![outer * last],
+            })
         }
         Family::SoftmaxBwd | Family::NormBwd => {
             if dtypes.len() != 3 {
@@ -197,15 +267,33 @@ fn build_probe(family: Family, dtypes: &[DType], seed: u64) -> Option<Probe> {
             }
             let dt = dtypes[0];
             let (outer, last) = (2usize, 4usize);
-            let y = ht(dt, vec![outer * last], &fill_deterministic(outer * last, seed))?;
-            let g = ht(dt, vec![outer * last], &fill_deterministic(outer * last, seed ^ 0x9E37_79B9))?;
+            let y = ht(
+                dt,
+                vec![outer * last],
+                &fill_deterministic(outer * last, seed),
+            )?;
+            let g = ht(
+                dt,
+                vec![outer * last],
+                &fill_deterministic(outer * last, seed ^ 0x9E37_79B9),
+            )?;
             let params = match family {
-                Family::SoftmaxBwd => {
-                    OpParams::SoftmaxLastDim { outer_count: outer, last_dim: last }
-                }
-                _ => OpParams::NormLastDim { outer_count: outer, last_dim: last, eps: 1e-5 },
+                Family::SoftmaxBwd => OpParams::SoftmaxLastDim {
+                    outer_count: outer,
+                    last_dim: last,
+                },
+                _ => OpParams::NormLastDim {
+                    outer_count: outer,
+                    last_dim: last,
+                    eps: 1e-5,
+                },
             };
-            Some(Probe { inputs: vec![y, g], params, out_dtype: dt, out_shape: vec![outer * last] })
+            Some(Probe {
+                inputs: vec![y, g],
+                params,
+                out_dtype: dt,
+                out_shape: vec![outer * last],
+            })
         }
         Family::ReduceMaxToBwd => {
             if dtypes.len() != 3 {
@@ -221,7 +309,10 @@ fn build_probe(family: Family, dtypes: &[DType], seed: u64) -> Option<Probe> {
             let up = ht(dt, vec![1], &fill_deterministic(1, seed ^ 0xA5A5_A5A5))?;
             Some(Probe {
                 inputs: vec![x, up],
-                params: OpParams::ReduceMaxToBackward { input_shape: vec![1], output_shape: vec![1] },
+                params: OpParams::ReduceMaxToBackward {
+                    input_shape: vec![1],
+                    output_shape: vec![1],
+                },
                 out_dtype: dt,
                 out_shape: vec![1],
             })
@@ -264,7 +355,11 @@ fn build_probe(family: Family, dtypes: &[DType], seed: u64) -> Option<Probe> {
             })
         }
         Family::QMatMul => {
-            if dtypes.len() != 3 || dtypes[0] != DType::F32 || dtypes[1] != DType::U32 || dtypes[2] != DType::F32 {
+            if dtypes.len() != 3
+                || dtypes[0] != DType::F32
+                || dtypes[1] != DType::U32
+                || dtypes[2] != DType::F32
+            {
                 return None;
             }
             // GGML Q4_0 block: 2-byte f16 scale + 16 packed-nibble bytes = 18
@@ -286,8 +381,16 @@ fn build_probe(family: Family, dtypes: &[DType], seed: u64) -> Option<Probe> {
             let w_len = w_bytes.len() / 4;
             Some(Probe {
                 inputs: vec![
-                    HostTensor { dtype: DType::F32, shape: vec![32], bytes: act_bytes },
-                    HostTensor { dtype: DType::U32, shape: vec![w_len], bytes: w_bytes },
+                    HostTensor {
+                        dtype: DType::F32,
+                        shape: vec![32],
+                        bytes: act_bytes,
+                    },
+                    HostTensor {
+                        dtype: DType::U32,
+                        shape: vec![w_len],
+                        bytes: w_bytes,
+                    },
                 ],
                 params: OpParams::QMatMul {
                     quant_type: fuel_graph::QuantType::Q4_0,
@@ -319,7 +422,11 @@ fn build_probe(family: Family, dtypes: &[DType], seed: u64) -> Option<Probe> {
             }
             let dt = dtypes[0];
             let (n_rows, vocab) = (2usize, 4usize);
-            let logits = ht(dt, vec![n_rows * vocab], &fill_deterministic(n_rows * vocab, seed))?;
+            let logits = ht(
+                dt,
+                vec![n_rows * vocab],
+                &fill_deterministic(n_rows * vocab, seed),
+            )?;
             let targets = HostTensor {
                 dtype: DType::I64,
                 shape: vec![n_rows],
@@ -343,12 +450,28 @@ fn build_probe(family: Family, dtypes: &[DType], seed: u64) -> Option<Probe> {
             }
             let dt = dtypes[0];
             let (outer, seq, head_dim) = (1usize, 1usize, 2usize);
-            let x = ht(dt, vec![outer * seq * head_dim], &fill_deterministic(outer * seq * head_dim, seed))?;
-            let cos = ht(dt, vec![seq * head_dim], &fill_deterministic(seq * head_dim, seed ^ 0x1111))?;
-            let sin = ht(dt, vec![seq * head_dim], &fill_deterministic(seq * head_dim, seed ^ 0x2222))?;
+            let x = ht(
+                dt,
+                vec![outer * seq * head_dim],
+                &fill_deterministic(outer * seq * head_dim, seed),
+            )?;
+            let cos = ht(
+                dt,
+                vec![seq * head_dim],
+                &fill_deterministic(seq * head_dim, seed ^ 0x1111),
+            )?;
+            let sin = ht(
+                dt,
+                vec![seq * head_dim],
+                &fill_deterministic(seq * head_dim, seed ^ 0x2222),
+            )?;
             Some(Probe {
                 inputs: vec![x, cos, sin],
-                params: OpParams::Rope { outer_count: outer, seq, head_dim },
+                params: OpParams::Rope {
+                    outer_count: outer,
+                    seq,
+                    head_dim,
+                },
                 out_dtype: dt,
                 out_shape: vec![outer * seq * head_dim],
             })
@@ -361,15 +484,17 @@ fn build_probe(family: Family, dtypes: &[DType], seed: u64) -> Option<Probe> {
             };
             let dt = dtypes[0];
             let is_transpose = matches!(family, Family::ConvTranspose2D);
-            let (x_shape, w_shape, out_shape): ([usize; 4], [usize; 4], [usize; 4]) = if is_transpose {
-                // H_out = (H_in-1)*stride - 2*pad + dil*(Kh-1) + out_pad + 1
-                //       = (2-1)*1 - 0 + 1*(2-1) + 0 + 1 = 3
-                ([1, 1, 2, 2], [1, 1, 2, 2], [1, 1, 3, 3])
-            } else {
-                // H_out = H_in + 2*pad - dil*(Kh-1) - 1)/stride + 1 = 3-2+1 = 2
-                ([1, 1, 3, 3], [1, 1, 2, 2], [1, 1, 2, 2])
-            };
-            let (stride, padding, dilation, groups) = ((1usize, 1usize), (0usize, 0usize), (1usize, 1usize), 1usize);
+            let (x_shape, w_shape, out_shape): ([usize; 4], [usize; 4], [usize; 4]) =
+                if is_transpose {
+                    // H_out = (H_in-1)*stride - 2*pad + dil*(Kh-1) + out_pad + 1
+                    //       = (2-1)*1 - 0 + 1*(2-1) + 0 + 1 = 3
+                    ([1, 1, 2, 2], [1, 1, 2, 2], [1, 1, 3, 3])
+                } else {
+                    // H_out = H_in + 2*pad - dil*(Kh-1) - 1)/stride + 1 = 3-2+1 = 2
+                    ([1, 1, 3, 3], [1, 1, 2, 2], [1, 1, 2, 2])
+                };
+            let (stride, padding, dilation, groups) =
+                ((1usize, 1usize), (0usize, 0usize), (1usize, 1usize), 1usize);
             let x_len: usize = x_shape.iter().product();
             let w_len: usize = w_shape.iter().product();
             let out_len: usize = out_shape.iter().product();
@@ -378,7 +503,11 @@ fn build_probe(family: Family, dtypes: &[DType], seed: u64) -> Option<Probe> {
             let w = ht(dt, vec![w_len], &fill_deterministic(w_len, seed ^ 0x3333))?;
             let mut inputs = vec![x, w];
             if with_bias {
-                inputs.push(ht(dt, vec![cout], &fill_deterministic(cout, seed ^ 0x4444))?);
+                inputs.push(ht(
+                    dt,
+                    vec![cout],
+                    &fill_deterministic(cout, seed ^ 0x4444),
+                )?);
             }
             let params = if is_transpose {
                 OpParams::ConvTranspose2D {
@@ -392,16 +521,30 @@ fn build_probe(family: Family, dtypes: &[DType], seed: u64) -> Option<Probe> {
                     groups,
                 }
             } else {
-                OpParams::Conv2D { x_shape, w_shape, out_shape, stride, padding, dilation, groups }
+                OpParams::Conv2D {
+                    x_shape,
+                    w_shape,
+                    out_shape,
+                    stride,
+                    padding,
+                    dilation,
+                    groups,
+                }
             };
-            Some(Probe { inputs, params, out_dtype: dt, out_shape: vec![out_len] })
+            Some(Probe {
+                inputs,
+                params,
+                out_dtype: dt,
+                out_shape: vec![out_len],
+            })
         }
         Family::CausalConv1d => {
             if dtypes.len() != 4 {
                 return None;
             }
             let dt = dtypes[0];
-            let (batch, channels, seq_in, seq_out, kernel) = (1usize, 1usize, 4usize, 2usize, 3usize);
+            let (batch, channels, seq_in, seq_out, kernel) =
+                (1usize, 1usize, 4usize, 2usize, 3usize);
             // Hand-verified values (fuel-cpu-backend
             // `causal_conv1d_f32_no_silu_basic`): x pre-padded, out[0]=2.1,
             // out[1]=5.1 — a real, known-sane invocation, not arbitrary bytes.
@@ -410,7 +553,14 @@ fn build_probe(family: Family, dtypes: &[DType], seed: u64) -> Option<Probe> {
             let b = ht(dt, vec![channels], &[0.1])?;
             Some(Probe {
                 inputs: vec![x, w, b],
-                params: OpParams::CausalConv1d { batch, channels, seq_in, seq_out, kernel, use_silu: false },
+                params: OpParams::CausalConv1d {
+                    batch,
+                    channels,
+                    seq_in,
+                    seq_out,
+                    kernel,
+                    use_silu: false,
+                },
                 out_dtype: dt,
                 out_shape: vec![batch * channels * seq_out],
             })
@@ -430,7 +580,13 @@ fn build_probe(family: Family, dtypes: &[DType], seed: u64) -> Option<Probe> {
             let c = ht(dt, vec![1], &[0.5])?;
             Some(Probe {
                 inputs: vec![u, delta, a, b, c],
-                params: OpParams::SelectiveScan { batch: 1, seqlen: 1, dim: 1, dstate: 1, delta_softplus: false },
+                params: OpParams::SelectiveScan {
+                    batch: 1,
+                    seqlen: 1,
+                    dim: 1,
+                    dstate: 1,
+                    delta_softplus: false,
+                },
                 out_dtype: dt,
                 out_shape: vec![2],
             })
@@ -520,7 +676,8 @@ pub fn run_cpu_verification() -> (Vec<LedgerRecord>, Vec<SeedAttempt>) {
             }
             let dtypes: Vec<DType> = imp.dtypes.to_vec();
             let rev = imp.revision.0;
-            let seed = 0x2545_F491_4F6C_DD1D_u64 ^ (id.0 as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            let seed =
+                0x2545_F491_4F6C_DD1D_u64 ^ (id.0 as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
             let probe = match build_probe(family, imp.dtypes, seed) {
                 Some(p) => p,
                 None => {
@@ -563,7 +720,12 @@ pub fn run_cpu_verification() -> (Vec<LedgerRecord>, Vec<SeedAttempt>) {
                 Ok(Err(e)) => format!("unverified: invoke error {e:?}"),
                 Err(_) => "unverified: kernel invocation panicked".to_string(),
             };
-            log.push(SeedAttempt { op_name: name, dtypes, kernel_revision_hash: rev, outcome });
+            log.push(SeedAttempt {
+                op_name: name,
+                dtypes,
+                kernel_revision_hash: rev,
+                outcome,
+            });
         }
     }
     (records, log)

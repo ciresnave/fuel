@@ -1,4 +1,4 @@
-﻿//! CPU backend computation kernels for fuel.
+//! CPU backend computation kernels for fuel.
 //!
 //! This crate contains the core CPU computation helpers (MatMul, pooling,
 //! convolution, reductions, etc.) extracted from `fuel-core` so they can be
@@ -39,7 +39,7 @@ pub mod byte_kernels;
 /// lives in tiny trait impls. See [`chassis::reduction`].
 pub mod chassis;
 
-pub use byte_storage::{CpuStorageBytes, CPU_ALIGN_BYTES};
+pub use byte_storage::{CPU_ALIGN_BYTES, CpuStorageBytes};
 pub use dyn_impl::CpuStorage;
 pub use ops::*;
 pub use quantized::CpuQStorage;

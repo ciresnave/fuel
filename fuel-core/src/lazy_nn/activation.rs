@@ -96,11 +96,7 @@ mod tests {
     use std::sync::Arc;
 
     fn scalar_tensor(val: f32) -> LazyTensor {
-        LazyTensor::from_f32(
-            Arc::from(vec![val]),
-            Shape::from_dims(&[1]),
-            &Device::cpu(),
-        )
+        LazyTensor::from_f32(Arc::from(vec![val]), Shape::from_dims(&[1]), &Device::cpu())
     }
 
     fn first(t: LazyTensor) -> f32 {

@@ -101,7 +101,11 @@ mod tests {
             backend: BackendId::Cpu,
             device: DeviceLocation::Cpu,
             precision: PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
-            static_cost: CostEstimate { flops, bytes_moved: 0, kernel_overhead_ns: 0 },
+            static_cost: CostEstimate {
+                flops,
+                bytes_moved: 0,
+                kernel_overhead_ns: 0,
+            },
             inbound_transfer_ns: 0,
             op_params: OpParams::None,
             coupling: Vec::new(),
@@ -110,9 +114,11 @@ mod tests {
     }
 
     fn three_candidates() -> AlternativeSet {
-        AlternativeSet::from_candidates(
-            vec![dummy_candidate(1), dummy_candidate(2), dummy_candidate(3)],
-        )
+        AlternativeSet::from_candidates(vec![
+            dummy_candidate(1),
+            dummy_candidate(2),
+            dummy_candidate(3),
+        ])
     }
 
     /// Mock filter — returns a hand-coded keep-mask regardless of
@@ -137,9 +143,7 @@ mod tests {
     fn ctx() -> FilterContext<'static> {
         // 'static layouts via leak — only valid inside test bodies.
         static LAYOUTS: std::sync::OnceLock<Vec<Layout>> = std::sync::OnceLock::new();
-        let layouts = LAYOUTS.get_or_init(|| {
-            vec![Layout::contiguous(Shape::from(vec![4]))]
-        });
+        let layouts = LAYOUTS.get_or_init(|| vec![Layout::contiguous(Shape::from(vec![4]))]);
         FilterContext::new(OpKind::AddElementwise, &[DType::F32], layouts)
     }
 
@@ -161,7 +165,11 @@ mod tests {
         })];
         let err = apply_filter_chain(&mut set, &filters, &ctx()).unwrap_err();
         match err {
-            Error::FilterRejected { filter, available_alternatives, ctx_summary } => {
+            Error::FilterRejected {
+                filter,
+                available_alternatives,
+                ctx_summary,
+            } => {
                 assert_eq!(filter, "drop-all-hard");
                 assert_eq!(available_alternatives, 3);
                 assert!(ctx_summary.contains("AddElementwise"));
@@ -182,7 +190,8 @@ mod tests {
         })];
         apply_filter_chain(&mut set, &filters, &ctx()).expect("soft skip succeeds");
         assert_eq!(
-            set.len(), 3,
+            set.len(),
+            3,
             "soft filter that would empty the set must be skipped",
         );
     }
@@ -198,7 +207,8 @@ mod tests {
         })];
         apply_filter_chain(&mut set, &filters, &ctx()).expect("soft skip succeeds");
         assert_eq!(
-            set.len(), 3,
+            set.len(),
+            3,
             "soft filter that would leave fewer than min_remaining must be skipped",
         );
     }
@@ -214,7 +224,11 @@ mod tests {
         })];
         apply_filter_chain(&mut set, &filters, &ctx()).expect("apply");
         assert_eq!(set.len(), 2);
-        let flops: Vec<u64> = set.alternatives().iter().map(|c| c.static_cost.flops).collect();
+        let flops: Vec<u64> = set
+            .alternatives()
+            .iter()
+            .map(|c| c.static_cost.flops)
+            .collect();
         assert_eq!(flops, vec![1, 3], "kept candidates at indices 0 and 2");
     }
 
@@ -228,7 +242,11 @@ mod tests {
         })];
         apply_filter_chain(&mut set, &filters, &ctx()).expect("apply");
         assert_eq!(set.len(), 2);
-        let flops: Vec<u64> = set.alternatives().iter().map(|c| c.static_cost.flops).collect();
+        let flops: Vec<u64> = set
+            .alternatives()
+            .iter()
+            .map(|c| c.static_cost.flops)
+            .collect();
         assert_eq!(flops, vec![2, 3]);
     }
 
@@ -315,7 +333,10 @@ mod tests {
         })];
         let err = apply_filter_chain(&mut set, &filters, &ctx()).unwrap_err();
         match err {
-            Error::FilterRejected { available_alternatives, .. } => {
+            Error::FilterRejected {
+                available_alternatives,
+                ..
+            } => {
                 assert_eq!(available_alternatives, 0);
             }
             other => panic!("expected FilterRejected, got {other:?}"),

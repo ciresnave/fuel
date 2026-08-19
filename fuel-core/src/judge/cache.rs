@@ -47,8 +47,8 @@
 use crate::judge::oracle::ProfileJudgeOracle;
 use fuel_ir::Result;
 pub use fuel_ir::dispatch::{
-    Criterion, DispatchOptions, DispatchTable, OpKind, Pick, ProfileEntry, ProfileReport,
-    SizeClass, DEFAULT_ACCURACY_PENALTY,
+    Criterion, DEFAULT_ACCURACY_PENALTY, DispatchOptions, DispatchTable, OpKind, Pick,
+    ProfileEntry, ProfileReport, SizeClass,
 };
 
 use std::sync::{Arc, OnceLock, RwLock};
@@ -64,14 +64,14 @@ use std::sync::{Arc, OnceLock, RwLock};
 ///   ([`fuel_dispatch::plan::PlanOptions::with_judge`]).
 #[derive(Clone)]
 struct CachedJudge {
-    table:  Arc<DispatchTable>,
+    table: Arc<DispatchTable>,
     oracle: Arc<ProfileJudgeOracle>,
 }
 
 impl CachedJudge {
     fn from_report(report: &ProfileReport) -> Self {
         Self {
-            table:  Arc::new(DispatchTable::build(report)),
+            table: Arc::new(DispatchTable::build(report)),
             oracle: Arc::new(ProfileJudgeOracle::from_report(report)),
         }
     }
@@ -146,7 +146,9 @@ pub fn cached_oracle() -> Option<Arc<ProfileJudgeOracle>> {
 /// blocks for tens of seconds on first-ever run, instant on every
 /// subsequent run thanks to disk cache.
 pub fn populate_dispatch_table() -> Result<()> {
-    if cached().is_some() { return Ok(()); }
+    if cached().is_some() {
+        return Ok(());
+    }
     let probe = crate::probe::ProbeReport::probe_all();
     if let Some(p) = crate::probe::default_report_path() {
         if let Some(parent) = p.parent() {
@@ -164,8 +166,7 @@ pub fn populate_dispatch_table() -> Result<()> {
     let built = CachedJudge::from_report(&report);
     *slot()
         .write()
-        .map_err(|_| fuel_ir::Error::Msg("judge cache lock poisoned".into()))? =
-        Some(built);
+        .map_err(|_| fuel_ir::Error::Msg("judge cache lock poisoned".into()))? = Some(built);
     Ok(())
 }
 
@@ -198,7 +199,9 @@ pub fn invalidate() -> Result<()> {
 /// profile was last saved.
 fn try_load_persisted() -> Option<CachedJudge> {
     let probe_path = crate::probe::default_report_path()?;
-    let prior_probe = crate::probe::ProbeReport::load(&probe_path).ok().flatten()?;
+    let prior_probe = crate::probe::ProbeReport::load(&probe_path)
+        .ok()
+        .flatten()?;
     let now_probe = crate::probe::ProbeReport::probe_all();
     if now_probe.diff(&prior_probe).needs_rejudge() {
         return None;
@@ -212,18 +215,18 @@ fn try_load_persisted() -> Option<CachedJudge> {
 mod tests {
     use super::*;
     use crate::judge::PROFILE_REPORT_VERSION;
-    use fuel_ir::probe::BackendId;
     use fuel_ir::DType;
+    use fuel_ir::probe::BackendId;
 
     fn entry(backend: BackendId, op: OpKind, size: u32, latency: u64, err: f32) -> ProfileEntry {
         ProfileEntry {
             op,
-            dtype:         DType::F32,
-            size_class:    SizeClass(size),
+            dtype: DType::F32,
+            size_class: SizeClass(size),
             backend,
-            device_index:  0,
-            latency_ns:    latency,
-            iterations:    7,
+            device_index: 0,
+            latency_ns: latency,
+            iterations: 7,
             max_rel_error: err,
             kernel_source: String::new(),
         }
@@ -243,12 +246,12 @@ mod tests {
     ) -> ProfileEntry {
         ProfileEntry {
             op,
-            dtype:         DType::F32,
-            size_class:    SizeClass(size),
+            dtype: DType::F32,
+            size_class: SizeClass(size),
             backend,
-            device_index:  0,
-            latency_ns:    latency,
-            iterations:    7,
+            device_index: 0,
+            latency_ns: latency,
+            iterations: 7,
             max_rel_error: err,
             kernel_source: kernel_source.to_string(),
         }
@@ -259,11 +262,11 @@ mod tests {
             version: PROFILE_REPORT_VERSION,
             entries: vec![
                 // Size class 12: CUDA wins fastest (2ms < 10ms) but errs more
-                entry(BackendId::Cpu,       OpKind::MatMul, 12, 10_000_000, 1e-6),
-                entry(BackendId::Cuda,      OpKind::MatMul, 12,  2_000_000, 1e-4),
+                entry(BackendId::Cpu, OpKind::MatMul, 12, 10_000_000, 1e-6),
+                entry(BackendId::Cuda, OpKind::MatMul, 12, 2_000_000, 1e-4),
                 // Size class 16: CPU is fastest + most accurate
-                entry(BackendId::Cpu,       OpKind::MatMul, 16,   500_000, 1e-6),
-                entry(BackendId::Cuda,      OpKind::MatMul, 16, 1_000_000, 1e-3),
+                entry(BackendId::Cpu, OpKind::MatMul, 16, 500_000, 1e-6),
+                entry(BackendId::Cuda, OpKind::MatMul, 16, 1_000_000, 1e-3),
             ],
         }
     }
@@ -271,24 +274,44 @@ mod tests {
     #[test]
     fn fastest_picks_lowest_latency() {
         let tbl = DispatchTable::build(&sample_report());
-        let p = tbl.pick(OpKind::MatMul, DType::F32, SizeClass(12), Criterion::Fastest).unwrap();
-        assert_eq!(p, Pick {
-            backend: BackendId::Cuda,
-            device_index: 0,
-            kernel_source: "",
-        });
+        let p = tbl
+            .pick(
+                OpKind::MatMul,
+                DType::F32,
+                SizeClass(12),
+                Criterion::Fastest,
+            )
+            .unwrap();
+        assert_eq!(
+            p,
+            Pick {
+                backend: BackendId::Cuda,
+                device_index: 0,
+                kernel_source: "",
+            }
+        );
     }
 
     #[test]
     fn most_accurate_picks_lowest_rel_err() {
         let tbl = DispatchTable::build(&sample_report());
-        let p = tbl.pick(OpKind::MatMul, DType::F32, SizeClass(12), Criterion::MostAccurate).unwrap();
+        let p = tbl
+            .pick(
+                OpKind::MatMul,
+                DType::F32,
+                SizeClass(12),
+                Criterion::MostAccurate,
+            )
+            .unwrap();
         // CPU has 1e-6 rel_err; CUDA has 1e-4. CPU wins MostAccurate.
-        assert_eq!(p, Pick {
-            backend: BackendId::Cpu,
-            device_index: 0,
-            kernel_source: "",
-        });
+        assert_eq!(
+            p,
+            Pick {
+                backend: BackendId::Cpu,
+                device_index: 0,
+                kernel_source: "",
+            }
+        );
     }
 
     #[test]
@@ -296,12 +319,22 @@ mod tests {
         let tbl = DispatchTable::build(&sample_report());
         // Size class 14: not profiled. Nearest are 12 (diff 2) and 16
         // (diff 2). Tie-break prefers larger → 16 → CPU wins fastest.
-        let p = tbl.pick_nearest(OpKind::MatMul, DType::F32, SizeClass(14), Criterion::Fastest).unwrap();
-        assert_eq!(p, Pick {
-            backend: BackendId::Cpu,
-            device_index: 0,
-            kernel_source: "",
-        });
+        let p = tbl
+            .pick_nearest(
+                OpKind::MatMul,
+                DType::F32,
+                SizeClass(14),
+                Criterion::Fastest,
+            )
+            .unwrap();
+        assert_eq!(
+            p,
+            Pick {
+                backend: BackendId::Cpu,
+                device_index: 0,
+                kernel_source: "",
+            }
+        );
     }
 
     #[test]
@@ -326,11 +359,14 @@ mod tests {
                 // (200 µs) vs portable-cpu (1 ms). They differ ONLY in
                 // kernel_source — same backend, same device.
                 entry_with_source(
-                    BackendId::Cpu, OpKind::MatMul, 12, 1_000_000, 1e-6, "portable-cpu",
+                    BackendId::Cpu,
+                    OpKind::MatMul,
+                    12,
+                    1_000_000,
+                    1e-6,
+                    "portable-cpu",
                 ),
-                entry_with_source(
-                    BackendId::Cpu, OpKind::MatMul, 12,   200_000, 1e-6, "aocl",
-                ),
+                entry_with_source(BackendId::Cpu, OpKind::MatMul, 12, 200_000, 1e-6, "aocl"),
             ],
         };
 
@@ -338,16 +374,23 @@ mod tests {
         // kernel_source field distinguishes them.
         assert_eq!(report.entries.len(), 2);
         let portable = &report.entries[0];
-        let aocl     = &report.entries[1];
+        let aocl = &report.entries[1];
         assert_eq!(portable.kernel_source, "portable-cpu");
-        assert_eq!(aocl.kernel_source,     "aocl");
+        assert_eq!(aocl.kernel_source, "aocl");
         assert_eq!(portable.backend, aocl.backend); // same backend
         assert_eq!(portable.device_index, aocl.device_index); // same device
 
         // DispatchTable picks the winner ACROSS kernel_sources at one
         // cell. Pick.kernel_source identifies it.
         let tbl = DispatchTable::build(&report);
-        let p = tbl.pick(OpKind::MatMul, DType::F32, SizeClass(12), Criterion::Fastest).unwrap();
+        let p = tbl
+            .pick(
+                OpKind::MatMul,
+                DType::F32,
+                SizeClass(12),
+                Criterion::Fastest,
+            )
+            .unwrap();
         assert_eq!(p.backend, BackendId::Cpu);
         assert_eq!(p.device_index, 0);
         // AOCL is faster → wins Fastest.

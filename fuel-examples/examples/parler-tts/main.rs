@@ -26,6 +26,7 @@ use std::sync::Arc;
 use anyhow::Error as E;
 use clap::Parser;
 
+use fuel::Shape;
 use fuel::lazy::LazyTensor;
 use fuel::lazy_dac::{DacConfig, DacModel, DacWeights};
 use fuel::lazy_parler_tts::{
@@ -33,7 +34,6 @@ use fuel::lazy_parler_tts::{
 };
 use fuel::lazy_t5::{T5Activation, T5Config, T5Model, T5Weights};
 use fuel::safetensors::MmapedSafetensors;
-use fuel::Shape;
 use tokenizers::Tokenizer;
 
 #[derive(Parser)]
@@ -188,7 +188,7 @@ fn parse_parler_config(json: &str) -> anyhow::Result<ParlerConfig> {
         other => {
             return Err(E::msg(format!(
                 "parler config.json: unsupported activation_function {other:?}"
-            )))
+            )));
         }
     };
 
@@ -321,7 +321,10 @@ fn sample(logits: &[f32], temperature: f32, top_p: Option<f32>, seed: u64) -> u3
     }
     let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let inv_t = 1.0 / temperature.max(1e-6);
-    let mut probs: Vec<f32> = logits.iter().map(|&x| ((x - max_l) * inv_t).exp()).collect();
+    let mut probs: Vec<f32> = logits
+        .iter()
+        .map(|&x| ((x - max_l) * inv_t).exp())
+        .collect();
     let sum: f32 = probs.iter().sum();
     for p in &mut probs {
         *p /= sum.max(1e-30);
@@ -545,10 +548,8 @@ fn main() -> anyhow::Result<()> {
         Arc::clone(&embed_prompts),
         Shape::from_dims(&[cfg.prompt_vocab_size, h_dim]),
     );
-    let prompt_ids_lt = anchor.const_u32_like(
-        prompt_token_ids.clone(),
-        Shape::from_dims(&[prompt_len]),
-    );
+    let prompt_ids_lt =
+        anchor.const_u32_like(prompt_token_ids.clone(), Shape::from_dims(&[prompt_len]));
     let prompt_hidden_states = embed_table
         .index_select(0_usize, &prompt_ids_lt)
         .map_err(|e| E::msg(format!("prompt embedding lookup: {e}")))?
@@ -596,7 +597,8 @@ fn main() -> anyhow::Result<()> {
                 &last_logits,
                 args.temperature as f32,
                 args.top_p.map(|p| p as f32),
-                args.seed.wrapping_add((step * num_codebooks + cb_idx) as u64),
+                args.seed
+                    .wrapping_add((step * num_codebooks + cb_idx) as u64),
             );
             audio_tokens[cb_idx] = token;
         }
@@ -623,10 +625,8 @@ fn main() -> anyhow::Result<()> {
     let codes_flat: Vec<u32> = (0..num_codebooks)
         .flat_map(|cb| all_audio_tokens[cb].iter().copied())
         .collect();
-    let codes_lt = anchor.const_u32_like(
-        codes_flat,
-        Shape::from_dims(&[1, num_codebooks, min_len]),
-    );
+    let codes_lt =
+        anchor.const_u32_like(codes_flat, Shape::from_dims(&[1, num_codebooks, min_len]));
 
     let pcm = audio_encoder
         .decode_codes(&codes_lt)

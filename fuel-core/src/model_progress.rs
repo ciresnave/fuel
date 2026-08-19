@@ -32,11 +32,18 @@ pub enum ProgressEvent {
     /// About to open and mmap a single file.
     OpeningFile { path: PathBuf, format: &'static str },
     /// Finished parsing the header; known how many tensors are coming.
-    MetadataParsed { format: &'static str, tensor_count: usize },
+    MetadataParsed {
+        format: &'static str,
+        tensor_count: usize,
+    },
     /// Architecture was detected (from metadata or tensor names).
     ArchitectureDetected { architecture: String },
     /// A single tensor has just been materialized.
-    TensorLoaded { name: String, index: usize, total: usize },
+    TensorLoaded {
+        name: String,
+        index: usize,
+        total: usize,
+    },
     /// A whole file has been fully processed.
     FileComplete { path: PathBuf, tensor_count: usize },
     /// Everything across all files is done.
@@ -69,7 +76,9 @@ impl ProgressReporter {
     where
         F: Fn(&ProgressEvent) + Send + Sync + 'static,
     {
-        Self { cb: Some(Arc::new(cb)) }
+        Self {
+            cb: Some(Arc::new(cb)),
+        }
     }
 
     /// Emit an event if a callback is attached.

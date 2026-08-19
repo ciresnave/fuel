@@ -29,8 +29,8 @@
 //! proof of the evaluator + routing that already existed unexercised.
 
 use crate::registry::{
-    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps,
-    PatternMatch, SubgraphPattern, decompose_via_recipe,
+    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps, PatternMatch,
+    SubgraphPattern, decompose_via_recipe,
 };
 use crate::{Graph, NodeId, Op};
 use fuel_ir::{DType, Shape};
@@ -43,17 +43,17 @@ use std::sync::OnceLock;
 pub fn entry() -> FusedOpEntry {
     FusedOpEntry {
         destructive_input: None,
-        id:         FusedOps::FUSED_LINEAR,
-        name:       "FusedLinear",
-        family:     FusedOpFamily::Forward,
-        pattern:    SubgraphPattern::Callable(canonical_pattern),
+        id: FusedOps::FUSED_LINEAR,
+        name: "FusedLinear",
+        family: FusedOpFamily::Forward,
+        pattern: SubgraphPattern::Callable(canonical_pattern),
         decompose,
         // The backward fused-op isn't part of the registry yet (a later
         // step migrates each fused-backward helper). Tensor::backward
         // dispatches `Op::Fused(FUSED_LINEAR, _)` through a per-id arm
         // that emits the same three-grad decomposition as the legacy
         // `Op::FusedLinear` arm.
-        backward:   BackwardKind::NotDifferentiable,
+        backward: BackwardKind::NotDifferentiable,
         shape_rule: matmul_output_shape,
         dtype_rule: dtype_passthrough,
         output_views: None,
@@ -64,7 +64,11 @@ pub fn entry() -> FusedOpEntry {
 /// `[..., M, N]` where `a` is `[..., M, K]` and `b` is `[..., K, N]`.
 /// Bias is rank-1 `[N]` and broadcasts implicitly.
 fn matmul_output_shape(input_shapes: &[Shape], _params: &FusedOpParams) -> Shape {
-    debug_assert_eq!(input_shapes.len(), 3, "FusedLinear takes 3 inputs (a, b, bias)");
+    debug_assert_eq!(
+        input_shapes.len(),
+        3,
+        "FusedLinear takes 3 inputs (a, b, bias)"
+    );
     let a = &input_shapes[0];
     let b = &input_shapes[1];
     let a_rank = a.rank();
@@ -72,8 +76,8 @@ fn matmul_output_shape(input_shapes: &[Shape], _params: &FusedOpParams) -> Shape
     debug_assert!(a_rank >= 2 && b_rank >= 2);
     debug_assert_eq!(a_rank, b_rank, "FusedLinear: a/b ranks must match");
     let mut dims: Vec<usize> = a.dims()[..a_rank - 2].to_vec();
-    dims.push(a.dims()[a_rank - 2]);          // M
-    dims.push(b.dims()[b_rank - 1]);          // N
+    dims.push(a.dims()[a_rank - 2]); // M
+    dims.push(b.dims()[b_rank - 1]); // N
     Shape::from_dims(&dims)
 }
 
@@ -107,7 +111,11 @@ fn dtype_passthrough(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
 fn recipe() -> &'static PatternNode {
     static RECIPE: OnceLock<PatternNode> = OnceLock::new();
     RECIPE.get_or_init(|| {
-        let op = |op, attrs, operands| PatternNode::Op { op, attrs, operands };
+        let op = |op, attrs, operands| PatternNode::Op {
+            op,
+            attrs,
+            operands,
+        };
         let a = || PatternNode::Bind { index: 0 };
         let b = || PatternNode::Bind { index: 1 };
         let bias = || PatternNode::Bind { index: 2 };
@@ -117,14 +125,21 @@ fn recipe() -> &'static PatternNode {
             target_shape_rel: Some(ShapeExpr::WithDim {
                 operand: 0,
                 axis: LAST,
-                dim: Box::new(Dim::Extent { operand: 1, axis: LAST }),
+                dim: Box::new(Dim::Extent {
+                    operand: 1,
+                    axis: LAST,
+                }),
             }),
             ..OpAttrs::default()
         };
-        op(OpTag::Add, OpAttrs::default(), vec![
-            op(OpTag::MatMul, OpAttrs::default(), vec![a(), b()]),
-            op(OpTag::BroadcastTo, bias_target, vec![bias()]),
-        ])
+        op(
+            OpTag::Add,
+            OpAttrs::default(),
+            vec![
+                op(OpTag::MatMul, OpAttrs::default(), vec![a(), b()]),
+                op(OpTag::BroadcastTo, bias_target, vec![bias()]),
+            ],
+        )
     })
 }
 
@@ -180,31 +195,40 @@ pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeI
 /// auto-generated FusionRule does.
 pub fn canonical_pattern(graph: &Graph, add_id: NodeId) -> Option<PatternMatch> {
     let add = graph.node(add_id);
-    if !matches!(add.op, Op::Add) { return None; }
-    if add.inputs.len() != 2 { return None; }
+    if !matches!(add.op, Op::Add) {
+        return None;
+    }
+    if add.inputs.len() != 2 {
+        return None;
+    }
     let mm_id = add.inputs[0];
     let rhs_id = add.inputs[1];
 
     let mm = graph.node(mm_id);
-    if !matches!(mm.op, Op::MatMul) { return None; }
-    if mm.inputs.len() != 2 { return None; }
+    if !matches!(mm.op, Op::MatMul) {
+        return None;
+    }
+    if mm.inputs.len() != 2 {
+        return None;
+    }
     let a_id = mm.inputs[0];
     let b_id = mm.inputs[1];
 
     let mm_dims = mm.shape.dims();
-    if mm_dims.is_empty() { return None; }
+    if mm_dims.is_empty() {
+        return None;
+    }
     let last_dim = mm_dims[mm_dims.len() - 1];
 
     let rhs = graph.node(rhs_id);
-    let bcst_operand =
-        if matches!(rhs.op, Op::BroadcastTo(_)) && rhs.inputs.len() == 1 {
-            rhs.inputs[0]
-        } else {
-            // Defensive: a rank-1 bias directly on Add's RHS only type-checks if
-            // Add allows implicit broadcasting — the legacy walker accepted it,
-            // so we mirror that.
-            rhs_id
-        };
+    let bcst_operand = if matches!(rhs.op, Op::BroadcastTo(_)) && rhs.inputs.len() == 1 {
+        rhs.inputs[0]
+    } else {
+        // Defensive: a rank-1 bias directly on Add's RHS only type-checks if
+        // Add allows implicit broadcasting — the legacy walker accepted it,
+        // so we mirror that.
+        rhs_id
+    };
 
     // Peel an OPTIONAL leading-1 pad Reshape (the recipe/D4 spelling): the
     // WithDim-derived broadcast target rank-raises the rank-1 bias, so emit
@@ -233,7 +257,9 @@ pub fn canonical_pattern(graph: &Graph, add_id: NodeId) -> Option<PatternMatch> 
     };
 
     let bias_dims = graph.node(bias_src_id).shape.dims();
-    if bias_dims.len() != 1 || bias_dims[0] != last_dim { return None; }
+    if bias_dims.len() != 1 || bias_dims[0] != last_dim {
+        return None;
+    }
 
     // Conservativeness: the inner MatMul must have THIS Add as its sole
     // consumer (else fusing duplicates the matmul); and a peeled pad Reshape
@@ -250,7 +276,7 @@ pub fn canonical_pattern(graph: &Graph, add_id: NodeId) -> Option<PatternMatch> 
 
     Some(PatternMatch {
         bindings: vec![(0, a_id), (1, b_id), (2, bias_src_id)],
-        params:   FusedOpParams::FusedLinear,
+        params: FusedOpParams::FusedLinear,
     })
 }
 
@@ -286,9 +312,24 @@ mod tests {
         let mut out_dims = a_dims[..ar - 2].to_vec();
         out_dims.push(a_dims[ar - 2]);
         out_dims.push(n);
-        let a = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(a_dims), dtype: DType::F32 });
-        let b = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(b_dims), dtype: DType::F32 });
-        let bias = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[n]), dtype: DType::F32 });
+        let a = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(a_dims),
+            dtype: DType::F32,
+        });
+        let b = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(b_dims),
+            dtype: DType::F32,
+        });
+        let bias = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[n]),
+            dtype: DType::F32,
+        });
         let fused = g.push(Node {
             op: Op::Fused(FusedOps::FUSED_LINEAR, FusedOpParams::FusedLinear),
             inputs: vec![a, b, bias],
@@ -306,9 +347,9 @@ mod tests {
     #[test]
     fn canonical_pattern_matches_the_recipe_spelling() {
         for (a_dims, b_dims) in [
-            (vec![2usize, 3], vec![3usize, 4]),   // rank-2
-            (vec![5, 2, 3], vec![5, 3, 4]),       // rank-3 batched
-            (vec![8, 16, 64], vec![8, 64, 128]),  // GQA-ish batched
+            (vec![2usize, 3], vec![3usize, 4]),  // rank-2
+            (vec![5, 2, 3], vec![5, 3, 4]),      // rank-3 batched
+            (vec![8, 16, 64], vec![8, 64, 128]), // GQA-ish batched
         ] {
             let mut g = Graph::new();
             let (a, b, bias, fused) = fused_node(&mut g, &a_dims, &b_dims);
@@ -317,7 +358,9 @@ mod tests {
             // The recipe emission rank-raises the rank-1 bias → a D4 pad Reshape.
             let reachable = crate::topo_order_multi(&g, &[root]);
             assert!(
-                reachable.iter().any(|&n| matches!(g.node(n).op, Op::Reshape(_))),
+                reachable
+                    .iter()
+                    .any(|&n| matches!(g.node(n).op, Op::Reshape(_))),
                 "the WithDim rank-raise materializes a D4 pad Reshape at a={a_dims:?}",
             );
             let m = canonical_pattern(&g, root)
@@ -337,7 +380,12 @@ mod tests {
     #[test]
     fn canonical_pattern_still_matches_the_legacy_spelling() {
         let mut g = Graph::new();
-        let f32_node = |op, inputs, shape| Node { op, inputs, shape, dtype: DType::F32 };
+        let f32_node = |op, inputs, shape| Node {
+            op,
+            inputs,
+            shape,
+            dtype: DType::F32,
+        };
         let a = g.push(f32_node(Op::Const, vec![], Shape::from_dims(&[2, 3])));
         let b = g.push(f32_node(Op::Const, vec![], Shape::from_dims(&[3, 4])));
         let bias = g.push(f32_node(Op::Const, vec![], Shape::from_dims(&[4])));

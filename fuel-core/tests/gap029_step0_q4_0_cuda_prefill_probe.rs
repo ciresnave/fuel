@@ -65,14 +65,19 @@ enum Outcome {
 /// dequant reference so the caller can check numerics.
 fn realize_q4_0(m: usize, k: usize, n: usize, dev: &Device) -> (Outcome, Vec<f32>) {
     // Deterministic, well-scaled weights; quantize to real Q4_0 blocks.
-    let w_f32: Vec<f32> = (0..n * k).map(|i| ((i as f32) * 0.021).sin() * 0.7).collect();
+    let w_f32: Vec<f32> = (0..n * k)
+        .map(|i| ((i as f32) * 0.021).sin() * 0.7)
+        .collect();
     let blocks_per_row = k / BlockQ4_0::BLCK_SIZE;
     let mut w_blocks = vec![BlockQ4_0::zeros(); n * blocks_per_row];
     BlockQ4_0::from_float(&w_f32, &mut w_blocks);
 
     let bytes_per_block = std::mem::size_of::<BlockQ4_0>();
     let w_bytes: Vec<u8> = unsafe {
-        std::slice::from_raw_parts(w_blocks.as_ptr() as *const u8, w_blocks.len() * bytes_per_block)
+        std::slice::from_raw_parts(
+            w_blocks.as_ptr() as *const u8,
+            w_blocks.len() * bytes_per_block,
+        )
     }
     .to_vec();
     assert_eq!(w_bytes.len() % 4, 0, "block bytes must pack into u32");
@@ -136,7 +141,10 @@ fn max_rel(got: &[f32], want: &[f32]) -> f32 {
 /// bigger max". This metric can: the denominator is fixed by the tensor, not
 /// by the element.
 fn scale_rel(got: &[f32], want: &[f32]) -> f32 {
-    let scale = want.iter().fold(0.0f32, |m, &e| m.max(e.abs())).max(f32::MIN_POSITIVE);
+    let scale = want
+        .iter()
+        .fold(0.0f32, |m, &e| m.max(e.abs()))
+        .max(f32::MIN_POSITIVE);
     let max_abs = got
         .iter()
         .zip(want.iter())

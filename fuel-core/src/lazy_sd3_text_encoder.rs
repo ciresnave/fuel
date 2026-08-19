@@ -56,12 +56,12 @@
 //! encoders must be exactly 77 long (CLIP/T5 share the
 //! `max_position_embeddings = 77` budget that SD3 ships with).
 
+use crate::Result;
 use crate::lazy::{LazyTensor, WeightStorage};
 use crate::lazy_sd_text_encoder::{
     ClipTextActivation, ClipTextConfig, ClipTextWeights, SdTextEncoder,
 };
 use crate::lazy_t5::{T5Config, T5Model, T5Weights};
-use crate::Result;
 use fuel_ir::Shape;
 
 /// SD3 max position embeddings for each of the three encoders.
@@ -192,10 +192,7 @@ impl Sd3TripleClip {
     /// projection. Convenience wrapper that mirrors the eager
     /// `StableDiffusion3TripleClipWithTokenizer::new_split`
     /// constructor structurally.
-    pub fn new(
-        config: Sd3TripleClipConfig,
-        weights: Sd3TripleClipWeights,
-    ) -> Self {
+    pub fn new(config: Sd3TripleClipConfig, weights: Sd3TripleClipWeights) -> Self {
         let clip_l = SdTextEncoder {
             config: config.clip_l.clone(),
             weights: weights.clip_l,
@@ -251,26 +248,27 @@ impl Sd3TripleClip {
             return Err(crate::Error::Msg(format!(
                 "Sd3TripleClip::encode: prompt_tokens_clip_l has {} tokens, expected {seq}",
                 prompt_tokens_clip_l.len(),
-            )).bt());
+            ))
+            .bt());
         }
         if prompt_tokens_clip_g.len() != seq {
             return Err(crate::Error::Msg(format!(
                 "Sd3TripleClip::encode: prompt_tokens_clip_g has {} tokens, expected {seq}",
                 prompt_tokens_clip_g.len(),
-            )).bt());
+            ))
+            .bt());
         }
         if prompt_tokens_t5.len() != seq {
             return Err(crate::Error::Msg(format!(
                 "Sd3TripleClip::encode: prompt_tokens_t5 has {} tokens, expected {seq}",
                 prompt_tokens_t5.len(),
-            )).bt());
+            ))
+            .bt());
         }
-        let eos_pos_clip_l = find_eos_pos(
-            prompt_tokens_clip_l, self.config.clip_l.eos_token_id, seq,
-        );
-        let eos_pos_clip_g = find_eos_pos(
-            prompt_tokens_clip_g, self.config.clip_g.eos_token_id, seq,
-        );
+        let eos_pos_clip_l =
+            find_eos_pos(prompt_tokens_clip_l, self.config.clip_l.eos_token_id, seq);
+        let eos_pos_clip_g =
+            find_eos_pos(prompt_tokens_clip_g, self.config.clip_g.eos_token_id, seq);
 
         let clip_l_dim = self.config.clip_l.hidden_size;
         let clip_g_dim = self.config.clip_g.hidden_size;
@@ -284,7 +282,8 @@ impl Sd3TripleClip {
         if t5_dim != SD3_CONTEXT_DIM {
             return Err(crate::Error::Msg(format!(
                 "Sd3TripleClip::encode: t5.d_model ({t5_dim}) != SD3_CONTEXT_DIM {SD3_CONTEXT_DIM}",
-            )).bt());
+            ))
+            .bt());
         }
 
         // 1. CLIP-L: penultimate-layer hidden + EOS-pooled final hidden.
@@ -300,15 +299,17 @@ impl Sd3TripleClip {
 
         // 2. CLIP-G: penultimate-layer hidden + EOS-pooled final hidden,
         //    then project the pooled vector through the no-bias linear.
-        let (clip_g_final, clip_g_pen) = self
-            .clip_g
-            .forward_until_encoder_layer_anchored(&clip_l_final, prompt_tokens_clip_g, -2)?;
+        let (clip_g_final, clip_g_pen) = self.clip_g.forward_until_encoder_layer_anchored(
+            &clip_l_final,
+            prompt_tokens_clip_g,
+            -2,
+        )?;
         let clip_g_pooled_raw = clip_g_final
             .slice(1_usize, eos_pos_clip_g, 1)?
             .reshape(Shape::from_dims(&[1, clip_g_dim]))?;
-        let clip_g_pooled = self.clip_g_text_projection.apply_linear(
-            &clip_g_pooled_raw, clip_g_dim, clip_g_dim,
-        )?;
+        let clip_g_pooled =
+            self.clip_g_text_projection
+                .apply_linear(&clip_g_pooled_raw, clip_g_dim, clip_g_dim)?;
 
         // 3. y vector: concat pooled CLIP-L + projected CLIP-G pooled.
         let y = clip_l_pooled.concat(&clip_g_pooled, 1_usize)?;
@@ -338,10 +339,7 @@ impl Sd3TripleClip {
 /// behavior of using `tokens.len() - 1` after the tokenizer adds
 /// the EOS to the tail.
 fn find_eos_pos(tokens: &[u32], eos_id: u32, seq: usize) -> usize {
-    tokens
-        .iter()
-        .position(|&t| t == eos_id)
-        .unwrap_or(seq - 1)
+    tokens.iter().position(|&t| t == eos_id).unwrap_or(seq - 1)
 }
 
 // ---- Safetensors loader ----------------------------------------------------
@@ -399,7 +397,10 @@ impl Sd3TripleClipWeights {
         // monolithic checkpoint stores it under
         // `clip_g.transformer.text_projection.weight`. Try both names.
         let clip_g_text_projection = match load_transposed_matrix_preserve_dtype(
-            st_clip_g, "text_projection.weight", config.clip_g.hidden_size, config.clip_g.hidden_size,
+            st_clip_g,
+            "text_projection.weight",
+            config.clip_g.hidden_size,
+            config.clip_g.hidden_size,
         ) {
             Ok(w) => w,
             Err(_) => load_transposed_matrix_preserve_dtype(
@@ -427,7 +428,9 @@ impl Sd3TripleClipWeights {
 mod tests {
     use super::*;
     use crate::lazy_sd_text_encoder::ClipLayerWeights;
-    use crate::lazy_t5::{T5AttentionWeights, T5DecoderLayerWeights, T5EncoderLayerWeights, T5FfnWeights};
+    use crate::lazy_t5::{
+        T5AttentionWeights, T5DecoderLayerWeights, T5EncoderLayerWeights, T5FfnWeights,
+    };
     use std::sync::Arc;
 
     fn arc(v: Vec<f32>) -> Arc<[f32]> {
@@ -439,7 +442,11 @@ mod tests {
     /// then mirror that into the composer's
     /// `SD3_*` shape contract by patching the constants we care
     /// about (see `tiny_triple_config`).
-    fn tiny_clip_cfg(hidden: usize, n_layers: usize, activation: ClipTextActivation) -> ClipTextConfig {
+    fn tiny_clip_cfg(
+        hidden: usize,
+        n_layers: usize,
+        activation: ClipTextActivation,
+    ) -> ClipTextConfig {
         // `hidden` must match SD3's required shape contract
         // (CLIP-L=768, CLIP-G=1280), but the MLP can be tiny in a
         // unit test — the activation + layer-loop structure is
@@ -556,14 +563,8 @@ mod tests {
         let inner = cfg.num_heads * cfg.d_kv;
         let d_ff = cfg.d_ff;
         let shared_embedding = vec_of(cfg.vocab_size * d, &mut *nb);
-        let encoder_rel_bias = vec_of(
-            cfg.relative_attention_num_buckets * cfg.num_heads,
-            &mut *nb,
-        );
-        let decoder_rel_bias = vec_of(
-            cfg.relative_attention_num_buckets * cfg.num_heads,
-            &mut *nb,
-        );
+        let encoder_rel_bias = vec_of(cfg.relative_attention_num_buckets * cfg.num_heads, &mut *nb);
+        let decoder_rel_bias = vec_of(cfg.relative_attention_num_buckets * cfg.num_heads, &mut *nb);
         let encoder_layers: Vec<T5EncoderLayerWeights> = (0..cfg.num_layers)
             .map(|_| T5EncoderLayerWeights {
                 self_attn_norm_gain: arc(vec![1.0_f32; d]),
@@ -572,16 +573,17 @@ mod tests {
                 ffn: mk_ffn(d, d_ff, &mut *nb),
             })
             .collect();
-        let decoder_layers: Vec<T5DecoderLayerWeights> = (0..cfg.num_decoder_layers.unwrap_or(cfg.num_layers))
-            .map(|_| T5DecoderLayerWeights {
-                self_attn_norm_gain: arc(vec![1.0_f32; d]),
-                self_attn: mk_attn(d, inner, &mut *nb),
-                cross_attn_norm_gain: arc(vec![1.0_f32; d]),
-                cross_attn: mk_attn(d, inner, &mut *nb),
-                ffn_norm_gain: arc(vec![1.0_f32; d]),
-                ffn: mk_ffn(d, d_ff, &mut *nb),
-            })
-            .collect();
+        let decoder_layers: Vec<T5DecoderLayerWeights> =
+            (0..cfg.num_decoder_layers.unwrap_or(cfg.num_layers))
+                .map(|_| T5DecoderLayerWeights {
+                    self_attn_norm_gain: arc(vec![1.0_f32; d]),
+                    self_attn: mk_attn(d, inner, &mut *nb),
+                    cross_attn_norm_gain: arc(vec![1.0_f32; d]),
+                    cross_attn: mk_attn(d, inner, &mut *nb),
+                    ffn_norm_gain: arc(vec![1.0_f32; d]),
+                    ffn: mk_ffn(d, d_ff, &mut *nb),
+                })
+                .collect();
         let lm_head = if cfg.tie_word_embeddings {
             None
         } else {
@@ -618,7 +620,8 @@ mod tests {
             }
         });
         let proj_data: Vec<f32> = (0..(SD3_CLIP_G_DIM * SD3_CLIP_G_DIM))
-            .map(|_| nb()).collect();
+            .map(|_| nb())
+            .collect();
         let clip_g_text_projection = WeightStorage::F32(Arc::from(proj_data));
         let t5_w = tiny_t5_weights(&t5, 44);
 

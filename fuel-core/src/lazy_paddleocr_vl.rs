@@ -43,8 +43,8 @@
 
 use crate::lazy::LazyTensor;
 use crate::lazy_paddleocr_vl_text::{
-    load_paddleocr_vl_text_weights_with_prefix,
     PaddleOcrVlTextConfig, PaddleOcrVlTextModel, PaddleOcrVlTextWeights,
+    load_paddleocr_vl_text_weights_with_prefix,
 };
 use crate::lazy_paddleocr_vl_vision::{
     PaddleOcrVlVisionConfig, PaddleOcrVlVisionModel, PaddleOcrVlVisionWeights,
@@ -115,7 +115,8 @@ impl PaddleOcrVlModel {
         if text_tokens.is_empty() {
             return Err(crate::Error::Msg(
                 "PaddleOcrVlModel: text_tokens must be non-empty".into(),
-            ).bt());
+            )
+            .bt());
         }
 
         match image_pixels {
@@ -148,7 +149,8 @@ impl PaddleOcrVlModel {
             return Err(crate::Error::Msg(format!(
                 "PaddleOcrVlModel: image_pixels must be (C={}, H, W), got {:?}",
                 v_cfg.num_channels, dims,
-            )).bt());
+            ))
+            .bt());
         }
         let channels = dims[0];
         let height = dims[1];
@@ -156,7 +158,8 @@ impl PaddleOcrVlModel {
         if height == 0 || width == 0 {
             return Err(crate::Error::Msg(
                 "PaddleOcrVlModel: image height/width must be > 0".into(),
-            ).bt());
+            )
+            .bt());
         }
 
         let (rows, cols) = aspect_ratio_chooser(height, width, cfg.max_tiles_per_side);
@@ -177,14 +180,23 @@ impl PaddleOcrVlModel {
                 "PaddleOcrVlModel: image_pixels realize length {} mismatch C*H*W = {}",
                 pixel_data.len(),
                 channels * height * width,
-            )).bt());
+            ))
+            .bt());
         }
         let tiles = partition_image(&pixel_data, channels, height, width, rows, cols);
 
         let target = v_cfg.image_size;
         let mut tile_pixels: Vec<f32> = Vec::with_capacity(num_tiles * channels * target * target);
         for tile in &tiles {
-            resize_nearest_chw(tile, channels, tile_h, tile_w, target, target, &mut tile_pixels);
+            resize_nearest_chw(
+                tile,
+                channels,
+                tile_h,
+                tile_w,
+                target,
+                target,
+                &mut tile_pixels,
+            );
         }
 
         let stacked = LazyTensor::from_f32(
@@ -207,7 +219,8 @@ impl PaddleOcrVlModel {
             return Err(crate::Error::Msg(format!(
                 "PaddleOcrVlModel: vision features shape {:?} must be (N, text_hidden={})",
                 v_dims, t_cfg.hidden_size,
-            )).bt());
+            ))
+            .bt());
         }
         let num_vision_tokens = v_dims[0];
 
@@ -221,8 +234,11 @@ impl PaddleOcrVlModel {
 
         // Promote vision features to (1, N_vision, hidden) so concat
         // aligns with the text embedding axis layout.
-        let vision_embeds = vision_features
-            .reshape(Shape::from_dims(&[1, num_vision_tokens, t_cfg.hidden_size]))?;
+        let vision_embeds = vision_features.reshape(Shape::from_dims(&[
+            1,
+            num_vision_tokens,
+            t_cfg.hidden_size,
+        ]))?;
 
         // Embed all text tokens, then splice in vision features by
         // walking host-side runs of (text-tokens vs image-tokens) and
@@ -236,12 +252,8 @@ impl PaddleOcrVlModel {
             text_tokens,
         )?;
 
-        let combined = splice_image_slots(
-            &text_embeds,
-            &vision_embeds,
-            text_tokens,
-            image_token_id,
-        )?;
+        let combined =
+            splice_image_slots(&text_embeds, &vision_embeds, text_tokens, image_token_id)?;
 
         self.text_model().forward_embeds(&combined, start_pos)
     }
@@ -357,14 +369,16 @@ pub fn bilinear_resize_to_grid(
     if supported_grids.is_empty() {
         return Err(crate::Error::Msg(
             "bilinear_resize_to_grid: supported_grids must be non-empty".into(),
-        ).bt());
+        )
+        .bt());
     }
     let src_w = image.width() as usize;
     let src_h = image.height() as usize;
     if src_w == 0 || src_h == 0 {
         return Err(crate::Error::Msg(format!(
             "bilinear_resize_to_grid: image dimensions must be > 0 (got {src_w}x{src_h})",
-        )).bt());
+        ))
+        .bt());
     }
     if let Some((idx, &(gh, gw))) = supported_grids
         .iter()
@@ -373,7 +387,8 @@ pub fn bilinear_resize_to_grid(
     {
         return Err(crate::Error::Msg(format!(
             "bilinear_resize_to_grid: supported_grids[{idx}] = ({gh}, {gw}) has a zero dim",
-        )).bt());
+        ))
+        .bt());
     }
 
     // Aspect-ratio nearest match. We measure log-ratio distance so a
@@ -447,9 +462,8 @@ impl PaddleOcrVlModel {
         st: &crate::safetensors::MmapedSafetensors,
         cfg: &PaddleOcrVlConfig,
     ) -> Result<Self> {
-        let vision = PaddleOcrVlVisionWeights::load_from_mmapped(
-            st, &cfg.vision, cfg.text.hidden_size,
-        )?;
+        let vision =
+            PaddleOcrVlVisionWeights::load_from_mmapped(st, &cfg.vision, cfg.text.hidden_size)?;
         let text = load_paddleocr_vl_text_weights_with_prefix(st, &cfg.text, "")?;
         Ok(PaddleOcrVlModel {
             config: cfg.clone(),
@@ -543,7 +557,10 @@ mod tests {
         }
     }
 
-    fn tiny_vision_weights(cfg: &PaddleOcrVlVisionConfig, text_hidden: usize) -> PaddleOcrVlVisionWeights {
+    fn tiny_vision_weights(
+        cfg: &PaddleOcrVlVisionConfig,
+        text_hidden: usize,
+    ) -> PaddleOcrVlVisionWeights {
         let mut s: u32 = 414141;
         let mut next = move || -> f32 {
             s = s.wrapping_mul(1103515245).wrapping_add(12345);
@@ -644,7 +661,10 @@ mod tests {
         let tokens: Vec<u32> = vec![1, 2, 3, 4, 5];
         let image_token_id: u32 = 31;
 
-        let composed = model.forward(None, &tokens, image_token_id, 0).unwrap().realize_f32();
+        let composed = model
+            .forward(None, &tokens, image_token_id, 0)
+            .unwrap()
+            .realize_f32();
 
         let text_model = PaddleOcrVlTextModel {
             config: model.config.text.clone(),
@@ -683,17 +703,29 @@ mod tests {
         // Reversed pixel values -> distinctly different image content.
         let cfg = v_cfg;
         let n_pix = cfg.num_channels * cfg.image_size * cfg.image_size;
-        let data_b: Vec<f32> = (0..n_pix).rev().map(|i| (i as f32 / n_pix as f32)).collect();
+        let data_b: Vec<f32> = (0..n_pix)
+            .rev()
+            .map(|i| (i as f32 / n_pix as f32))
+            .collect();
         let img_b = LazyTensor::from_f32(
             Arc::from(data_b),
             Shape::from_dims(&[cfg.num_channels, cfg.image_size, cfg.image_size]),
             &Device::cpu(),
         );
 
-        let out_a = model.forward(Some(&img_a), &tokens, image_token_id, 0).unwrap().realize_f32();
-        let out_b = model.forward(Some(&img_b), &tokens, image_token_id, 0).unwrap().realize_f32();
+        let out_a = model
+            .forward(Some(&img_a), &tokens, image_token_id, 0)
+            .unwrap()
+            .realize_f32();
+        let out_b = model
+            .forward(Some(&img_b), &tokens, image_token_id, 0)
+            .unwrap()
+            .realize_f32();
         assert_eq!(out_a.len(), out_b.len());
-        let any_diff = out_a.iter().zip(out_b.iter()).any(|(a, b)| (a - b).abs() > 1e-6);
+        let any_diff = out_a
+            .iter()
+            .zip(out_b.iter())
+            .any(|(a, b)| (a - b).abs() > 1e-6);
         assert!(any_diff, "swapping image content must change logits");
         for &v in &out_a {
             assert!(v.is_finite(), "out_a non-finite: {v}");
@@ -839,8 +871,7 @@ mod tests {
         fn picks_square_grid_for_square_input() {
             let img = synthetic_rgb(40, 40);
             let grids = [(28, 28), (28, 56), (56, 28)];
-            let (pixels, h, w) =
-                bilinear_resize_to_grid(&img, &grids).expect("resize");
+            let (pixels, h, w) = bilinear_resize_to_grid(&img, &grids).expect("resize");
             assert_eq!((h, w), (28, 28));
             assert_eq!(pixels.shape().dims(), &[1, 3, 28, 28]);
             let data = pixels.realize_f32();
@@ -856,8 +887,7 @@ mod tests {
             // 2:1 landscape input.
             let img = synthetic_rgb(80, 40);
             let grids = [(28, 28), (28, 56), (56, 28)];
-            let (_, h, w) =
-                bilinear_resize_to_grid(&img, &grids).expect("resize");
+            let (_, h, w) = bilinear_resize_to_grid(&img, &grids).expect("resize");
             assert_eq!((h, w), (28, 56), "expected (28, 56) for 2:1 landscape");
         }
 
@@ -866,8 +896,7 @@ mod tests {
         fn picks_portrait_grid_for_portrait_input() {
             let img = synthetic_rgb(40, 80);
             let grids = [(28, 28), (28, 56), (56, 28)];
-            let (_, h, w) =
-                bilinear_resize_to_grid(&img, &grids).expect("resize");
+            let (_, h, w) = bilinear_resize_to_grid(&img, &grids).expect("resize");
             assert_eq!((h, w), (56, 28), "expected (56, 28) for 1:2 portrait");
         }
 
@@ -878,8 +907,7 @@ mod tests {
         #[test]
         fn normalization_matches_imagenet_constants() {
             let img = solid_rgb(8, 8, [128, 128, 128]);
-            let (pixels, h, w) =
-                bilinear_resize_to_grid(&img, &[(28, 28)]).expect("resize");
+            let (pixels, h, w) = bilinear_resize_to_grid(&img, &[(28, 28)]).expect("resize");
             let data = pixels.realize_f32();
             let plane = h * w;
             let v = 128.0_f32 / 255.0;
@@ -933,8 +961,8 @@ mod tests {
 
     mod load {
         use super::*;
-        use safetensors::tensor::TensorView;
         use safetensors::Dtype;
+        use safetensors::tensor::TensorView;
         use std::collections::HashMap;
 
         fn put(
@@ -960,7 +988,9 @@ mod tests {
                 "lazy_paddleocr_vl_load_{}_{}.safetensors",
                 std::process::id(),
                 std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos(),
             ));
             std::fs::write(&path, bytes).expect("write tempfile");
             path
@@ -984,79 +1014,189 @@ mod tests {
             let m = v_cfg.spatial_merge_size;
             let merged_hidden = h * m * m;
             let vp = "visual.vision_model.";
-            put(&mut map, &format!("{vp}embeddings.patch_embedding.weight"),
+            put(
+                &mut map,
+                &format!("{vp}embeddings.patch_embedding.weight"),
                 &[h, v_cfg.num_channels, v_cfg.patch_size, v_cfg.patch_size],
-                &vec_n(h * v_cfg.num_channels * v_cfg.patch_size * v_cfg.patch_size));
-            put(&mut map, &format!("{vp}embeddings.patch_embedding.bias"),
-                &[h], &vec_n(h));
-            put(&mut map, &format!("{vp}embeddings.position_embedding.weight"),
-                &[np, h], &vec_n(np * h));
-            put(&mut map, &format!("{vp}post_layernorm.weight"), &[h], &vec_n(h));
-            put(&mut map, &format!("{vp}post_layernorm.bias"), &[h], &vec_n(h));
+                &vec_n(h * v_cfg.num_channels * v_cfg.patch_size * v_cfg.patch_size),
+            );
+            put(
+                &mut map,
+                &format!("{vp}embeddings.patch_embedding.bias"),
+                &[h],
+                &vec_n(h),
+            );
+            put(
+                &mut map,
+                &format!("{vp}embeddings.position_embedding.weight"),
+                &[np, h],
+                &vec_n(np * h),
+            );
+            put(
+                &mut map,
+                &format!("{vp}post_layernorm.weight"),
+                &[h],
+                &vec_n(h),
+            );
+            put(
+                &mut map,
+                &format!("{vp}post_layernorm.bias"),
+                &[h],
+                &vec_n(h),
+            );
             for i in 0..v_cfg.num_hidden_layers {
                 let p = format!("{vp}encoder.layers.{i}");
-                put(&mut map, &format!("{p}.layer_norm1.weight"), &[h], &vec_n(h));
+                put(
+                    &mut map,
+                    &format!("{p}.layer_norm1.weight"),
+                    &[h],
+                    &vec_n(h),
+                );
                 put(&mut map, &format!("{p}.layer_norm1.bias"), &[h], &vec_n(h));
-                put(&mut map, &format!("{p}.layer_norm2.weight"), &[h], &vec_n(h));
+                put(
+                    &mut map,
+                    &format!("{p}.layer_norm2.weight"),
+                    &[h],
+                    &vec_n(h),
+                );
                 put(&mut map, &format!("{p}.layer_norm2.bias"), &[h], &vec_n(h));
                 for proj in &["q_proj", "k_proj", "v_proj", "out_proj"] {
-                    put(&mut map, &format!("{p}.self_attn.{proj}.weight"),
-                        &[h, h], &vec_n(h * h));
-                    put(&mut map, &format!("{p}.self_attn.{proj}.bias"),
-                        &[h], &vec_n(h));
+                    put(
+                        &mut map,
+                        &format!("{p}.self_attn.{proj}.weight"),
+                        &[h, h],
+                        &vec_n(h * h),
+                    );
+                    put(
+                        &mut map,
+                        &format!("{p}.self_attn.{proj}.bias"),
+                        &[h],
+                        &vec_n(h),
+                    );
                 }
-                put(&mut map, &format!("{p}.mlp.fc1.weight"),
-                    &[inter, h], &vec_n(inter * h));
-                put(&mut map, &format!("{p}.mlp.fc1.bias"), &[inter], &vec_n(inter));
-                put(&mut map, &format!("{p}.mlp.fc2.weight"),
-                    &[h, inter], &vec_n(h * inter));
+                put(
+                    &mut map,
+                    &format!("{p}.mlp.fc1.weight"),
+                    &[inter, h],
+                    &vec_n(inter * h),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.mlp.fc1.bias"),
+                    &[inter],
+                    &vec_n(inter),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.mlp.fc2.weight"),
+                    &[h, inter],
+                    &vec_n(h * inter),
+                );
                 put(&mut map, &format!("{p}.mlp.fc2.bias"), &[h], &vec_n(h));
             }
             let pp = "mlp_AR.";
             put(&mut map, &format!("{pp}pre_norm.weight"), &[h], &vec_n(h));
             put(&mut map, &format!("{pp}pre_norm.bias"), &[h], &vec_n(h));
-            put(&mut map, &format!("{pp}linear_1.weight"),
+            put(
+                &mut map,
+                &format!("{pp}linear_1.weight"),
                 &[merged_hidden, merged_hidden],
-                &vec_n(merged_hidden * merged_hidden));
-            put(&mut map, &format!("{pp}linear_1.bias"),
-                &[merged_hidden], &vec_n(merged_hidden));
-            put(&mut map, &format!("{pp}linear_2.weight"),
+                &vec_n(merged_hidden * merged_hidden),
+            );
+            put(
+                &mut map,
+                &format!("{pp}linear_1.bias"),
+                &[merged_hidden],
+                &vec_n(merged_hidden),
+            );
+            put(
+                &mut map,
+                &format!("{pp}linear_2.weight"),
                 &[text_hidden, merged_hidden],
-                &vec_n(text_hidden * merged_hidden));
-            put(&mut map, &format!("{pp}linear_2.bias"),
-                &[text_hidden], &vec_n(text_hidden));
+                &vec_n(text_hidden * merged_hidden),
+            );
+            put(
+                &mut map,
+                &format!("{pp}linear_2.bias"),
+                &[text_hidden],
+                &vec_n(text_hidden),
+            );
 
             // Text model at top level (`model.*` + `lm_head.weight`).
             let t_cfg = &cfg.text;
             let d = t_cfg.hidden_size;
             let kv = t_cfg.num_key_value_heads * t_cfg.head_dim;
-            put(&mut map, "model.embed_tokens.weight",
-                &[t_cfg.vocab_size, d], &vec_n(t_cfg.vocab_size * d));
+            put(
+                &mut map,
+                "model.embed_tokens.weight",
+                &[t_cfg.vocab_size, d],
+                &vec_n(t_cfg.vocab_size * d),
+            );
             for i in 0..t_cfg.num_hidden_layers {
                 let p = format!("model.layers.{i}");
-                put(&mut map, &format!("{p}.self_attn.q_proj.weight"),
-                    &[d, d], &vec_n(d * d));
-                put(&mut map, &format!("{p}.self_attn.k_proj.weight"),
-                    &[kv, d], &vec_n(kv * d));
-                put(&mut map, &format!("{p}.self_attn.v_proj.weight"),
-                    &[kv, d], &vec_n(kv * d));
-                put(&mut map, &format!("{p}.self_attn.o_proj.weight"),
-                    &[d, d], &vec_n(d * d));
-                put(&mut map, &format!("{p}.mlp.gate_proj.weight"),
-                    &[t_cfg.intermediate_size, d], &vec_n(t_cfg.intermediate_size * d));
-                put(&mut map, &format!("{p}.mlp.up_proj.weight"),
-                    &[t_cfg.intermediate_size, d], &vec_n(t_cfg.intermediate_size * d));
-                put(&mut map, &format!("{p}.mlp.down_proj.weight"),
-                    &[d, t_cfg.intermediate_size], &vec_n(d * t_cfg.intermediate_size));
-                put(&mut map, &format!("{p}.input_layernorm.weight"),
-                    &[d], &vec_n(d));
-                put(&mut map, &format!("{p}.post_attention_layernorm.weight"),
-                    &[d], &vec_n(d));
+                put(
+                    &mut map,
+                    &format!("{p}.self_attn.q_proj.weight"),
+                    &[d, d],
+                    &vec_n(d * d),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.self_attn.k_proj.weight"),
+                    &[kv, d],
+                    &vec_n(kv * d),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.self_attn.v_proj.weight"),
+                    &[kv, d],
+                    &vec_n(kv * d),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.self_attn.o_proj.weight"),
+                    &[d, d],
+                    &vec_n(d * d),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.mlp.gate_proj.weight"),
+                    &[t_cfg.intermediate_size, d],
+                    &vec_n(t_cfg.intermediate_size * d),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.mlp.up_proj.weight"),
+                    &[t_cfg.intermediate_size, d],
+                    &vec_n(t_cfg.intermediate_size * d),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.mlp.down_proj.weight"),
+                    &[d, t_cfg.intermediate_size],
+                    &vec_n(d * t_cfg.intermediate_size),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.input_layernorm.weight"),
+                    &[d],
+                    &vec_n(d),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.post_attention_layernorm.weight"),
+                    &[d],
+                    &vec_n(d),
+                );
             }
             put(&mut map, "model.norm.weight", &[d], &vec_n(d));
             if !t_cfg.tie_word_embeddings {
-                put(&mut map, "lm_head.weight",
-                    &[t_cfg.vocab_size, d], &vec_n(t_cfg.vocab_size * d));
+                put(
+                    &mut map,
+                    "lm_head.weight",
+                    &[t_cfg.vocab_size, d],
+                    &vec_n(t_cfg.vocab_size * d),
+                );
             }
 
             serialize_to_tempfile(&map)
@@ -1077,7 +1217,10 @@ mod tests {
             let model = PaddleOcrVlModel::load_from_mmapped(&st, &cfg)
                 .expect("PaddleOcrVlModel::load_from_mmapped");
             assert_eq!(model.weights.text.layers.len(), text_cfg.num_hidden_layers);
-            assert_eq!(model.weights.vision.blocks.len(), vision_cfg.num_hidden_layers);
+            assert_eq!(
+                model.weights.vision.blocks.len(),
+                vision_cfg.num_hidden_layers
+            );
 
             let tokens: Vec<u32> = vec![1, 2, 3, 4];
             let logits = model.forward(None, &tokens, 31, 0).unwrap().realize_f32();

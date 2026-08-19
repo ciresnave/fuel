@@ -5,11 +5,11 @@
 //! the FDX validator surface so the honesty invariant is mechanically checked.
 
 use super::*;
+use fuel_cpu_backend::CpuStorageBytes;
 use fuel_ir::dlpack::abi::{device_type, dtype_code};
 use fuel_ir::shape::Shape;
 use fuel_ir::symbol::SymId;
 use fuel_ir::{DType, Layout, SymEnv};
-use fuel_cpu_backend::CpuStorageBytes;
 
 /// Canonical FNV-1a 64-bit known-answer vectors — **the same table** pinned by
 /// `fuel_dispatch::fkc::revhash`'s `FNV1A64_KAT`.
@@ -51,7 +51,6 @@ fn fnv1a_matches_the_canonical_vectors() {
         );
     }
 }
-
 
 /// GAP-075: `sub_byte_bits_and_packing` must DECLINE for a dtype it has no
 /// authored sub-byte encoding for, rather than fabricate `(8, byte-aligned)`.
@@ -148,7 +147,10 @@ fn plain_f32_contiguous_is_faithful_no_sidecar() {
     assert!(!dl.shape.is_null());
     assert!(!dl.strides.is_null());
     assert_eq!(unsafe { core::slice::from_raw_parts(dl.shape, 2) }, &[3, 4]);
-    assert_eq!(unsafe { core::slice::from_raw_parts(dl.strides, 2) }, &[4, 1]);
+    assert_eq!(
+        unsafe { core::slice::from_raw_parts(dl.strides, 2) },
+        &[4, 1]
+    );
 
     // validator surface is a no-op (and Ok) for sidecar-None.
     v.validate().expect("plain view validates");
@@ -300,7 +302,11 @@ fn symbolic_v14_passes_in_range_fails_out_of_range() {
     let mut env_ok = SymEnv::new();
     env_ok.bind(sym, 5).unwrap();
     let v_ok = view(&storage, &layout, Some(&env_ok));
-    assert!(v_ok.is_ok(), "live=5 in [1,8] must pass V14: {:?}", v_ok.err());
+    assert!(
+        v_ok.is_ok(),
+        "live=5 in [1,8] must pass V14: {:?}",
+        v_ok.err()
+    );
 
     // Out-of-range: live = 99 > capacity 8 ⇒ view() fails (V14 caught).
     let mut env_bad = SymEnv::new();
@@ -335,7 +341,7 @@ fn symbolic_v14_does_not_bake_resolved_value() {
 
 #[test]
 fn bundled_storage_sets_is_bundle_and_views() {
-    use fuel_ir::storage::{compose_bundle, OutputViewSpec};
+    use fuel_ir::storage::{OutputViewSpec, compose_bundle};
     use std::sync::Arc;
 
     // 2-slot bundle: F32[2,3] (y) + F32[1] (extra) — primary dtype F32.
@@ -391,7 +397,9 @@ fn bundled_storage_sets_is_bundle_and_views() {
 fn rank_exceeds_6_is_typed_error() {
     let storage = cpu_f32(2 * 2 * 2 * 2 * 2 * 2 * 2);
     let layout = Layout::contiguous(Shape::from_dims(&[2, 2, 2, 2, 2, 2, 2])); // rank 7
-    let err = view(&storage, &layout, None).err().expect("rank 7 must error");
+    let err = view(&storage, &layout, None)
+        .err()
+        .expect("rank 7 must error");
     assert!(format!("{err}").contains("exceeds 6"));
 }
 
@@ -404,7 +412,9 @@ fn rank_exceeds_6_is_typed_error() {
 fn ggml_block_stype_emits_inline_quant() {
     use fuel_ir::{Encoding, GgmlDType, SType};
     let storage = cpu_bytes(DType::F32, 18) // one Q4_0 block (18 bytes)
-        .with_stype(SType::from_layer(Encoding::GgmlBlock { ggml_dtype: GgmlDType::Q4_0 }));
+        .with_stype(SType::from_layer(Encoding::GgmlBlock {
+            ggml_dtype: GgmlDType::Q4_0,
+        }));
     let layout = Layout::contiguous(Shape::from_dims(&[18]));
     let v = view(&storage, &layout, None).expect("view");
 
@@ -419,7 +429,8 @@ fn ggml_block_stype_emits_inline_quant() {
     assert_eq!(v.dl.dtype.code, fuel_ir::dlpack::abi::dtype_code::K_DL_UINT);
     assert_eq!(v.dl.dtype.bits, 8);
 
-    v.validate().expect("GGML_BLOCK sidecar must pass FDX validators");
+    v.validate()
+        .expect("GGML_BLOCK sidecar must pass FDX validators");
 }
 
 /// An AFFINE_BLOCK (NF4) SType projects to FDX AFFINE_BLOCK with
@@ -429,32 +440,45 @@ fn ggml_block_stype_emits_inline_quant() {
 /// unbound scale buffer until then.
 #[test]
 fn affine_block_stype_emits_scheme_scale_unbound() {
-    use fuel_ir::{Encoding, ScaleSpec, SType};
     use fuel_ir::ScaleGranularity;
-    let storage = cpu_bytes(DType::F4, 64).with_stype(SType::from_layer(
-        Encoding::AffineBlock {
-            packed: DType::F4,
-            block_shape: smallvec::smallvec![64],
-            scale: ScaleSpec { dtype: DType::F32, granularity: ScaleGranularity::PerChannel },
-            zero_point: None,
+    use fuel_ir::{Encoding, SType, ScaleSpec};
+    let storage = cpu_bytes(DType::F4, 64).with_stype(SType::from_layer(Encoding::AffineBlock {
+        packed: DType::F4,
+        block_shape: smallvec::smallvec![64],
+        scale: ScaleSpec {
+            dtype: DType::F32,
+            granularity: ScaleGranularity::PerChannel,
         },
-    ));
+        zero_point: None,
+    }));
     let layout = Layout::contiguous(Shape::from_dims(&[64]));
     let v = view(&storage, &layout, None).expect("view");
 
-    let sc = v.sidecar.as_ref().expect("AFFINE_BLOCK must emit a sidecar");
+    let sc = v
+        .sidecar
+        .as_ref()
+        .expect("AFFINE_BLOCK must emit a sidecar");
     assert_ne!(sc.flags & FDX_FLAG_HAS_QUANT, 0, "HAS_QUANT must be set");
     assert_eq!(sc.quant.family, FDX_QUANT_AFFINE_BLOCK);
     assert_eq!(sc.quant.scale_present, 1);
-    assert_eq!(sc.quant.scale_placement, FDX_SCALE_PLACEMENT_SEPARATE_BUFFER);
-    assert_eq!(sc.quant.scale_buffer, FDX_BUFFER_NONE, "scale unbound until op binds it");
+    assert_eq!(
+        sc.quant.scale_placement,
+        FDX_SCALE_PLACEMENT_SEPARATE_BUFFER
+    );
+    assert_eq!(
+        sc.quant.scale_buffer, FDX_BUFFER_NONE,
+        "scale unbound until op binds it"
+    );
     assert_eq!(sc.quant.block_ndim, 1);
     assert_eq!(sc.quant.block_shape[0], 64);
 
     // The SCHEME is described, but the scale operand is not yet bound, so the
     // validator correctly reports the out-of-range scale buffer (the documented
     // step-4 boundary: the consuming op binds the sibling via view_with_quant).
-    assert!(v.validate().is_err(), "unbound AFFINE scale must fail validation");
+    assert!(
+        v.validate().is_err(),
+        "unbound AFFINE scale must fail validation"
+    );
 }
 
 /// view_with_quant binds the sibling absmax scale operand into the FDX buffer
@@ -462,17 +486,18 @@ fn affine_block_stype_emits_scheme_scale_unbound() {
 /// validates END-TO-END (the consuming-op binding the bare view() left unbound).
 #[test]
 fn affine_block_view_with_quant_validates() {
-    use fuel_ir::{Encoding, ScaleSpec, SType};
     use fuel_ir::ScaleGranularity;
+    use fuel_ir::{Encoding, SType, ScaleSpec};
     // 64 packed bytes = 128 logical F4 elements; block 64 ⇒ 2 blocks ⇒ scale [2].
-    let weight = cpu_bytes(DType::F4, 64).with_stype(SType::from_layer(
-        Encoding::AffineBlock {
-            packed: DType::F4,
-            block_shape: smallvec::smallvec![64],
-            scale: ScaleSpec { dtype: DType::F32, granularity: ScaleGranularity::PerChannel },
-            zero_point: None,
+    let weight = cpu_bytes(DType::F4, 64).with_stype(SType::from_layer(Encoding::AffineBlock {
+        packed: DType::F4,
+        block_shape: smallvec::smallvec![64],
+        scale: ScaleSpec {
+            dtype: DType::F32,
+            granularity: ScaleGranularity::PerChannel,
         },
-    ));
+        zero_point: None,
+    }));
     let wlayout = Layout::contiguous(Shape::from_dims(&[128]));
     let scale = cpu_f32(2);
     let slayout = Layout::contiguous(Shape::from_dims(&[2]));
@@ -480,17 +505,24 @@ fn affine_block_view_with_quant_validates() {
     let v = view_with_quant(&weight, &wlayout, None, (&scale, &slayout)).expect("view_with_quant");
     let sc = v.sidecar.as_ref().expect("AFFINE_BLOCK sidecar");
     assert_eq!(sc.quant.family, FDX_QUANT_AFFINE_BLOCK);
-    assert_eq!(sc.quant.scale_buffer, 1, "scale operand bound at buffer index 1");
+    assert_eq!(
+        sc.quant.scale_buffer, 1,
+        "scale operand bound at buffer index 1"
+    );
     assert_eq!(sc.buffers_count, 2, "data buffer + scale buffer");
 
     // The scale operand is buffers[1], role SCALE, shape [2].
     let buffers = v.buffers();
     assert_eq!(buffers.len(), 2);
     assert_eq!(buffers[1].role, FDX_BUFFER_ROLE_SCALE);
-    assert_eq!(buffers[1].dtype, fuel_ir::dlpack::convert::dtype_to_fdx(DType::F32).unwrap());
+    assert_eq!(
+        buffers[1].dtype,
+        fuel_ir::dlpack::convert::dtype_to_fdx(DType::F32).unwrap()
+    );
     assert_eq!(buffers[1].shape[0], 2);
 
-    v.validate().expect("bound AFFINE_BLOCK must validate end-to-end");
+    v.validate()
+        .expect("bound AFFINE_BLOCK must validate end-to-end");
 }
 
 /// view_with_quant on a non-separate-scale weight (plain or inline GGML) is a
@@ -498,8 +530,9 @@ fn affine_block_view_with_quant_validates() {
 #[test]
 fn view_with_quant_passthrough_when_no_scale_sibling() {
     use fuel_ir::{Encoding, GgmlDType, SType};
-    let weight = cpu_bytes(DType::F32, 18)
-        .with_stype(SType::from_layer(Encoding::GgmlBlock { ggml_dtype: GgmlDType::Q4_0 }));
+    let weight = cpu_bytes(DType::F32, 18).with_stype(SType::from_layer(Encoding::GgmlBlock {
+        ggml_dtype: GgmlDType::Q4_0,
+    }));
     let wlayout = Layout::contiguous(Shape::from_dims(&[18]));
     let scale = cpu_f32(1);
     let slayout = Layout::contiguous(Shape::from_dims(&[1]));
@@ -524,7 +557,7 @@ fn plain_storage_still_no_quant_sidecar() {
 
 #[test]
 fn fdx_output_view_slot_name_is_recoverable_from_the_name_table() {
-    use fuel_ir::{DType, Shape, Layout};
+    use fuel_ir::{DType, Layout, Shape};
     let ov = OutputView {
         byte_offset: 0,
         len_elements: 6,

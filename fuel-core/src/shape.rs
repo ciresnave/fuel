@@ -14,8 +14,6 @@
 // Re-export all shape types, traits, and free functions from the types crate.
 pub use fuel_ir::shape::*;
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -29,7 +27,10 @@ mod tests {
         let shape = Shape::from((42, 1337));
         assert_eq!(shape.stride_contiguous().to_vec(), [1337_isize, 1]);
         let shape = Shape::from((299, 792, 458));
-        assert_eq!(shape.stride_contiguous().to_vec(), [458_isize * 792, 458, 1]);
+        assert_eq!(
+            shape.stride_contiguous().to_vec(),
+            [458_isize * 792, 458, 1]
+        );
     }
 
     #[test]

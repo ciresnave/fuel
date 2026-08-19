@@ -310,9 +310,7 @@ impl AlternativeSet {
                 }
             }
             for &b in &backends_in_bucket {
-                let on_frontier = frontier
-                    .iter()
-                    .any(|&i| self.candidates[i].backend == b);
+                let on_frontier = frontier.iter().any(|&i| self.candidates[i].backend == b);
                 if !on_frontier {
                     if let Some(&best) = bucket
                         .iter()
@@ -325,9 +323,7 @@ impl AlternativeSet {
             }
 
             // The global winner must never be dropped from its bucket.
-            if self.candidates.first().is_some()
-                && _dev == &winner_device
-                && !frontier.contains(&0)
+            if self.candidates.first().is_some() && _dev == &winner_device && !frontier.contains(&0)
             {
                 frontier.push(0);
             }
@@ -509,10 +505,12 @@ fn crowding_cap(
         // Drop the droppable entry with the lowest crowding distance.
         let mut victim: Option<(usize, f64)> = None; // (position in frontier, distance)
         for (pos, &i) in frontier.iter().enumerate() {
-            let is_winner =
-                i == 0 && winner_present && candidates[i].device == winner_device;
-            let is_sole_backend =
-                backend_counts.get(&candidates[i].backend).copied().unwrap_or(0) <= 1;
+            let is_winner = i == 0 && winner_present && candidates[i].device == winner_device;
+            let is_sole_backend = backend_counts
+                .get(&candidates[i].backend)
+                .copied()
+                .unwrap_or(0)
+                <= 1;
             if is_winner || is_sole_backend {
                 continue;
             }
@@ -619,7 +617,11 @@ mod tests {
             backend: BackendId::Cpu,
             device: DeviceLocation::Cpu,
             precision: PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
-            static_cost: CostEstimate { flops, bytes_moved: 0, kernel_overhead_ns: 0 },
+            static_cost: CostEstimate {
+                flops,
+                bytes_moved: 0,
+                kernel_overhead_ns: 0,
+            },
             inbound_transfer_ns: 0,
             op_params: OpParams::None,
             coupling: Vec::new(),
@@ -641,7 +643,11 @@ mod tests {
             backend,
             device,
             precision,
-            static_cost: CostEstimate { flops, bytes_moved: bytes, kernel_overhead_ns: 0 },
+            static_cost: CostEstimate {
+                flops,
+                bytes_moved: bytes,
+                kernel_overhead_ns: 0,
+            },
             ..dummy_candidate(0)
         }
     }
@@ -686,14 +692,16 @@ mod tests {
             let (cr, bw) = default_backend_rates(c.backend);
             composite_ns(&c.static_cost, cr, bw).saturating_add(c.inbound_transfer_ns)
         });
-        let expected_flops: Vec<u64> =
-            expected.iter().map(|c| c.static_cost.flops).collect();
+        let expected_flops: Vec<u64> = expected.iter().map(|c| c.static_cost.flops).collect();
 
         // Order from the NEW cost-vector rank.
         let mut set = AlternativeSet::from_candidates(cands);
         set.rank_by_cost();
-        let got_flops: Vec<u64> =
-            set.alternatives().iter().map(|c| c.static_cost.flops).collect();
+        let got_flops: Vec<u64> = set
+            .alternatives()
+            .iter()
+            .map(|c| c.static_cost.flops)
+            .collect();
 
         assert_eq!(
             got_flops, expected_flops,
@@ -706,7 +714,10 @@ mod tests {
     #[test]
     fn rank_includes_inbound_transfer_term() {
         let mut s = AlternativeSet::from_candidates(vec![
-            Candidate { inbound_transfer_ns: 5_000, ..dummy_candidate(100) },
+            Candidate {
+                inbound_transfer_ns: 5_000,
+                ..dummy_candidate(100)
+            },
             dummy_candidate(200),
         ]);
         s.rank_by_composite_cost();
@@ -742,26 +753,29 @@ mod tests {
             dummy_candidate(3),
         ]);
         assert_eq!(s.len(), 3);
-        let flops: Vec<u64> = s.alternatives().iter().map(|c| c.static_cost.flops).collect();
+        let flops: Vec<u64> = s
+            .alternatives()
+            .iter()
+            .map(|c| c.static_cost.flops)
+            .collect();
         assert_eq!(flops, vec![1, 2, 3]);
     }
 
     #[test]
     fn retain_indices_keeps_selected_entries() {
-        let mut s = AlternativeSet::from_candidates(
-            (0..5).map(|i| dummy_candidate(i)).collect(),
-        );
+        let mut s = AlternativeSet::from_candidates((0..5).map(|i| dummy_candidate(i)).collect());
         s.retain_indices(&[0, 2, 4]);
-        let flops: Vec<u64> = s.alternatives().iter().map(|c| c.static_cost.flops).collect();
+        let flops: Vec<u64> = s
+            .alternatives()
+            .iter()
+            .map(|c| c.static_cost.flops)
+            .collect();
         assert_eq!(flops, vec![0, 2, 4]);
     }
 
     #[test]
     fn retain_indices_empty_clears_set() {
-        let mut s = AlternativeSet::from_candidates(vec![
-            dummy_candidate(1),
-            dummy_candidate(2),
-        ]);
+        let mut s = AlternativeSet::from_candidates(vec![dummy_candidate(1), dummy_candidate(2)]);
         s.retain_indices(&[]);
         assert!(s.is_empty());
     }
@@ -780,10 +794,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "sorted strictly ascending")]
     fn retain_indices_unsorted_panics_in_debug() {
-        let mut s = AlternativeSet::from_candidates(vec![
-            dummy_candidate(1),
-            dummy_candidate(2),
-        ]);
+        let mut s = AlternativeSet::from_candidates(vec![dummy_candidate(1), dummy_candidate(2)]);
         s.retain_indices(&[1, 0]);
     }
 
@@ -799,8 +810,8 @@ mod tests {
     /// candidates).
     #[test]
     fn context_round_trips_and_survives_mutation() {
-        use fuel_ir::dispatch::{OpKind, SizeClass};
         use fuel_ir::DType;
+        use fuel_ir::dispatch::{OpKind, SizeClass};
 
         let mut s = AlternativeSet::from_candidates(vec![
             dummy_candidate(1),
@@ -818,11 +829,7 @@ mod tests {
         assert_eq!(s.context(), Some(&ctx));
 
         s.retain_indices(&[0, 2]);
-        assert_eq!(
-            s.context(),
-            Some(&ctx),
-            "context survives retain",
-        );
+        assert_eq!(s.context(), Some(&ctx), "context survives retain",);
     }
 
     // ===== Phase B PR-B2: per-ending-device Pareto frontier +
@@ -839,10 +846,34 @@ mod tests {
         // top-3 keeps only the 3 CPU ones (CUDA stranded). The
         // per-device frontier must keep ≥1 CPU and the 1 CUDA.
         let cands = vec![
-            cand(DeviceLocation::Cpu, BackendId::Cpu, 100, 0, PrecisionGuarantee::REFERENCE),
-            cand(DeviceLocation::Cpu, BackendId::Cpu, 200, 0, PrecisionGuarantee::REFERENCE),
-            cand(DeviceLocation::Cpu, BackendId::Cpu, 300, 0, PrecisionGuarantee::REFERENCE),
-            cand(cuda(0), BackendId::Cuda, 10_000, 0, PrecisionGuarantee::REFERENCE),
+            cand(
+                DeviceLocation::Cpu,
+                BackendId::Cpu,
+                100,
+                0,
+                PrecisionGuarantee::REFERENCE,
+            ),
+            cand(
+                DeviceLocation::Cpu,
+                BackendId::Cpu,
+                200,
+                0,
+                PrecisionGuarantee::REFERENCE,
+            ),
+            cand(
+                DeviceLocation::Cpu,
+                BackendId::Cpu,
+                300,
+                0,
+                PrecisionGuarantee::REFERENCE,
+            ),
+            cand(
+                cuda(0),
+                BackendId::Cuda,
+                10_000,
+                0,
+                PrecisionGuarantee::REFERENCE,
+            ),
         ];
         let mut set = AlternativeSet::from_candidates(cands);
         set.rank_by_cost();
@@ -856,7 +887,10 @@ mod tests {
             .alternatives()
             .iter()
             .any(|c| c.device == DeviceLocation::Cpu);
-        assert!(has_cuda, "slow CUDA path must NOT be stranded by a global top-N");
+        assert!(
+            has_cuda,
+            "slow CUDA path must NOT be stranded by a global top-N"
+        );
         assert!(has_cpu, "CPU path survives");
 
         // Arm-0 winner is the fastest overall (CPU flops=100).
@@ -872,8 +906,20 @@ mod tests {
         // dominated: slower + lower precision (UNAUDITED) — strictly
         //            worse on time AND precision AND accuracy.
         let cands = vec![
-            cand(DeviceLocation::Cpu, BackendId::Cpu, 100, 0, PrecisionGuarantee::REFERENCE),
-            cand(DeviceLocation::Cpu, BackendId::Cpu, 500, 0, PrecisionGuarantee::UNAUDITED),
+            cand(
+                DeviceLocation::Cpu,
+                BackendId::Cpu,
+                100,
+                0,
+                PrecisionGuarantee::REFERENCE,
+            ),
+            cand(
+                DeviceLocation::Cpu,
+                BackendId::Cpu,
+                500,
+                0,
+                PrecisionGuarantee::UNAUDITED,
+            ),
         ];
         let mut set = AlternativeSet::from_candidates(cands);
         set.rank_by_cost();
@@ -908,7 +954,13 @@ mod tests {
                 max_absolute: None,
                 notes: "frontier",
             };
-            cands.push(cand(DeviceLocation::Cpu, BackendId::Cpu, 100 + k * 100, 0, p));
+            cands.push(cand(
+                DeviceLocation::Cpu,
+                BackendId::Cpu,
+                100 + k * 100,
+                0,
+                p,
+            ));
         }
         let fastest_time_flops = 100; // k=0
         let slowest_time_flops = 100 + (n - 1) * 100; // k=9 → 1000
@@ -921,8 +973,11 @@ mod tests {
         assert_eq!(set.len(), keep, "capped to exactly keep");
 
         // Spread preserved: the time-axis extremes survive.
-        let times: Vec<u64> =
-            set.alternatives().iter().map(|c| c.static_cost.flops).collect();
+        let times: Vec<u64> = set
+            .alternatives()
+            .iter()
+            .map(|c| c.static_cost.flops)
+            .collect();
         assert!(
             times.contains(&fastest_time_flops),
             "fastest (time-axis min) boundary survives crowding; got {times:?}",
@@ -941,7 +996,11 @@ mod tests {
         let mut cands = Vec::new();
         for d in 0..3usize {
             let dev = if d == 0 { DeviceLocation::Cpu } else { cuda(d) };
-            let backend = if d == 0 { BackendId::Cpu } else { BackendId::Cuda };
+            let backend = if d == 0 {
+                BackendId::Cpu
+            } else {
+                BackendId::Cuda
+            };
             for k in 0..6u64 {
                 // mutually non-dominated within a device (time↔precision)
                 let rel = 10f64.powi(-(2 + (6 - k) as i32));
@@ -963,7 +1022,11 @@ mod tests {
         // ≥1 per device.
         for d in 0..3usize {
             let dev = if d == 0 { DeviceLocation::Cpu } else { cuda(d) };
-            let count = set.alternatives().iter().filter(|c| c.device == dev).count();
+            let count = set
+                .alternatives()
+                .iter()
+                .filter(|c| c.device == dev)
+                .count();
             assert!(count >= 1, "device {dev:?} must keep ≥1 path");
         }
         // total ≤ keep × devices.
@@ -988,7 +1051,13 @@ mod tests {
         // slower + unaudited. Different device ⇒ different bucket ⇒
         // Vulkan's bucket keeps it by the per-device frontier.
         let cands = vec![
-            cand(DeviceLocation::Cpu, BackendId::Cpu, 100, 0, PrecisionGuarantee::REFERENCE),
+            cand(
+                DeviceLocation::Cpu,
+                BackendId::Cpu,
+                100,
+                0,
+                PrecisionGuarantee::REFERENCE,
+            ),
             cand(
                 DeviceLocation::Vulkan { gpu_id: 0 },
                 BackendId::Vulkan,
@@ -1005,7 +1074,10 @@ mod tests {
             .alternatives()
             .iter()
             .any(|c| matches!(c.device, DeviceLocation::Vulkan { .. }));
-        assert!(has_vulkan, "last Vulkan (device, backend) must never be stranded");
+        assert!(
+            has_vulkan,
+            "last Vulkan (device, backend) must never be stranded"
+        );
     }
 
     /// A fully-dominated device bucket whose sole candidate is globally
@@ -1017,7 +1089,13 @@ mod tests {
     #[test]
     fn never_strands_globally_dominated_sole_path() {
         let cands = vec![
-            cand(DeviceLocation::Cpu, BackendId::Cpu, 100, 0, PrecisionGuarantee::REFERENCE),
+            cand(
+                DeviceLocation::Cpu,
+                BackendId::Cpu,
+                100,
+                0,
+                PrecisionGuarantee::REFERENCE,
+            ),
             cand(
                 DeviceLocation::Metal { gpu_id: 0 },
                 BackendId::Metal,
@@ -1030,8 +1108,7 @@ mod tests {
         set.rank_by_cost();
         set.retain_per_device_frontier(KEEP_PER_DEVICE);
 
-        let backends: Vec<BackendId> =
-            set.alternatives().iter().map(|c| c.backend).collect();
+        let backends: Vec<BackendId> = set.alternatives().iter().map(|c| c.backend).collect();
         assert!(backends.contains(&BackendId::Cpu), "CPU dominator kept");
         assert!(
             backends.contains(&BackendId::Metal),
@@ -1044,9 +1121,27 @@ mod tests {
     #[test]
     fn arm0_winner_unchanged_by_retention() {
         let cands = vec![
-            cand(DeviceLocation::Cpu, BackendId::Cpu, 300, 0, PrecisionGuarantee::REFERENCE),
-            cand(cuda(0), BackendId::Cuda, 100, 0, PrecisionGuarantee::REFERENCE),
-            cand(DeviceLocation::Cpu, BackendId::Cpu, 200, 0, PrecisionGuarantee::REFERENCE),
+            cand(
+                DeviceLocation::Cpu,
+                BackendId::Cpu,
+                300,
+                0,
+                PrecisionGuarantee::REFERENCE,
+            ),
+            cand(
+                cuda(0),
+                BackendId::Cuda,
+                100,
+                0,
+                PrecisionGuarantee::REFERENCE,
+            ),
+            cand(
+                DeviceLocation::Cpu,
+                BackendId::Cpu,
+                200,
+                0,
+                PrecisionGuarantee::REFERENCE,
+            ),
         ];
         // B1 winner: lowest time (flops=100 on CUDA).
         let mut b1 = AlternativeSet::from_candidates(cands.clone());
@@ -1058,7 +1153,10 @@ mod tests {
         set.retain_per_device_frontier(KEEP_PER_DEVICE);
         let b2_winner = (set.winner().unwrap().backend, set.winner().unwrap().device);
 
-        assert_eq!(b1_winner, b2_winner, "arm-0 winner unchanged by B2 retention");
+        assert_eq!(
+            b1_winner, b2_winner,
+            "arm-0 winner unchanged by B2 retention"
+        );
         assert_eq!(set.winner().unwrap().static_cost.flops, 100);
     }
 

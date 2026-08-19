@@ -149,7 +149,10 @@ pub fn main() -> anyhow::Result<()> {
     let cfg = args.which.config();
     let st = unsafe { MmapedSafetensors::new(&model_file) }?;
     let weights = ConvNextWeights::load_from_mmapped(&st, &cfg)?;
-    let model = ConvNextModel { config: cfg, weights };
+    let model = ConvNextModel {
+        config: cfg,
+        weights,
+    };
     println!("model built");
 
     let logits_t = model.forward(&image_vec)?;

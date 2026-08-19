@@ -42,16 +42,16 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
+use fuel_graph::registry::FusedOpParams;
+use fuel_ir::Shape;
 use fuel_ir::backend::BackendCapabilities;
 use fuel_ir::probe::BackendId;
-use fuel_ir::Shape;
-use fuel_graph::registry::FusedOpParams;
 
 use crate::fkc::error::FkcError;
-use crate::fkc::lower::{lower_file, LinkRegistry, Resolved, ResolvedFused, ResolvedPrimitive};
+use crate::fkc::lower::{LinkRegistry, Resolved, ResolvedFused, ResolvedPrimitive, lower_file};
 use crate::fkc::parse::parse_file;
 use crate::fused::{BackendImpl, CostEstimate, FusedKernelRegistry};
-use crate::kernel::{unknown_cost, KernelBindingTable};
+use crate::kernel::{KernelBindingTable, unknown_cost};
 
 // ===========================================================================
 // kernel_source interner (§1.3)
@@ -336,10 +336,7 @@ impl ImportedProvider {
 ///
 /// `parse_file` → `lower_file(.., link)` → assemble. Every failure is a
 /// typed [`FkcError`]; never panics.
-pub fn import_bundle_str(
-    src: &str,
-    link: &dyn LinkRegistry,
-) -> Result<ImportedProvider, FkcError> {
+pub fn import_bundle_str(src: &str, link: &dyn LinkRegistry) -> Result<ImportedProvider, FkcError> {
     let file = parse_file(src)?;
     // Run the build-time validators (the V-FKC-* battery, §10) AFTER parse so a
     // structurally / coherence-bad contract fails import before any lowering or
@@ -386,7 +383,8 @@ pub fn import_bundle_str(
                     dtypes: p.dtypes.as_slice(),
                     kernel_revision_hash: p.revision.0,
                 };
-                p.precision = crate::fkc::verify::gate_precision(p.precision, &q, ledger, &mut warnings);
+                p.precision =
+                    crate::fkc::verify::gate_precision(p.precision, &q, ledger, &mut warnings);
             }
             Resolved::Fused(f) => {
                 let q = crate::fkc::verify::LedgerQuery {
@@ -395,7 +393,8 @@ pub fn import_bundle_str(
                     dtypes: f.dtypes.as_slice(),
                     kernel_revision_hash: f.revision.0,
                 };
-                f.precision = crate::fkc::verify::gate_precision(f.precision, &q, ledger, &mut warnings);
+                f.precision =
+                    crate::fkc::verify::gate_precision(f.precision, &q, ledger, &mut warnings);
             }
         }
     }
@@ -440,10 +439,7 @@ pub fn import_bundle(
 /// `<dir>/<filename-pattern>` where the filename pattern may contain `*`
 /// wildcards (e.g. `docs/kernel-contracts/cpu/*.fkc.md`); `**` is not
 /// supported (a single directory level, matching the per-provider layout).
-pub fn import_glob(
-    pattern: &str,
-    link: &dyn LinkRegistry,
-) -> Result<ImportedProvider, FkcError> {
+pub fn import_glob(pattern: &str, link: &dyn LinkRegistry) -> Result<ImportedProvider, FkcError> {
     let mut paths = glob_files(pattern)?;
     paths.sort(); // deterministic order
 
@@ -636,9 +632,9 @@ mod tests {
     use crate::fkc::lower::ResolvedFused;
     use crate::fused::{KernelRevisionHash, PrecisionGuarantee};
     use crate::kernel::{KernelCaps, KernelDTypes, KernelRef};
-    use fuel_ir::dispatch::OpKind;
-    use fuel_ir::DType;
     use fuel_graph::registry::FusedOps;
+    use fuel_ir::DType;
+    use fuel_ir::dispatch::OpKind;
     use smallvec::SmallVec;
     use std::sync::{Arc, RwLock};
 
@@ -822,7 +818,10 @@ mod tests {
         // add_f32 wrapper is present *among the alternatives* and invoke it.
         let expected: KernelRef = crate::dispatch::add_elementwise_f32_cpu_wrapper;
         let alts = table.lookup_alternatives(OpKind::AddElementwise, &key, BackendId::Cpu);
-        assert!(!alts.is_empty(), "AddElementwise/[F32,F32,F32]/Cpu present after FKC import");
+        assert!(
+            !alts.is_empty(),
+            "AddElementwise/[F32,F32,F32]/Cpu present after FKC import"
+        );
 
         // (1) The FKC-imported binding IS the real production kernel — not a
         // stub, not a different fn — proven by pointer identity.
@@ -833,8 +832,12 @@ mod tests {
             .expect("FKC import must bind the real add_f32 wrapper among the alternatives");
 
         // (2) It actually runs end-to-end on real F32 storage: [1,2,3]+[4,5,6].
-        let a = Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[1.0f32, 2.0, 3.0])));
-        let b = Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[4.0f32, 5.0, 6.0])));
+        let a = Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[
+            1.0f32, 2.0, 3.0,
+        ])));
+        let b = Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[
+            4.0f32, 5.0, 6.0,
+        ])));
         let out = Arc::new(RwLock::new(
             fuel_memory::alloc_cpu_zeroed(DType::F32, 3).expect("alloc out"),
         ));
@@ -845,8 +848,13 @@ mod tests {
             fuel_ir::Layout::contiguous(shape.clone()),
             fuel_ir::Layout::contiguous(shape),
         ];
-        resolved(&inputs, &mut outputs, &layouts, &crate::kernel::OpParams::None)
-            .expect("the FKC-resolved add_f32 kernel executes on real storage");
+        resolved(
+            &inputs,
+            &mut outputs,
+            &layouts,
+            &crate::kernel::OpParams::None,
+        )
+        .expect("the FKC-resolved add_f32 kernel executes on real storage");
     }
 
     // =====================================================================
@@ -948,7 +956,10 @@ mod tests {
             crate::dispatch::pow_elementwise_bf16_cpu_wrapper as usize,
         );
 
-        assert!(table.finalize().is_ok(), "finalize is Ok after a real-link import");
+        assert!(
+            table.finalize().is_ok(),
+            "finalize is Ok after a real-link import"
+        );
     }
 
     // =====================================================================
@@ -1119,10 +1130,15 @@ mod tests {
         // Real SoftmaxLastDim dtype_rule is passthrough(input0) = F32 at the F32 probe.
         // Mutate ONLY the first section's declared dtype_rule to fixed(F16): now it
         // disagrees with the registered fused fn at every probe combo → hard reject.
-        let mutated = FUSED_NORM_SOFTMAX.replacen("dtype_rule: passthrough(x)", "dtype_rule: fixed(F16)", 1);
-        let err = import_bundle_str(&mutated, &crate::fkc::CpuLinkRegistry)
-            .expect_err("a return rule that disagrees with the registered fused fn must be rejected");
-        assert!(matches!(err, FkcError::ShapeRuleMismatch { .. }), "expected ShapeRuleMismatch, got {err:?}");
+        let mutated =
+            FUSED_NORM_SOFTMAX.replacen("dtype_rule: passthrough(x)", "dtype_rule: fixed(F16)", 1);
+        let err = import_bundle_str(&mutated, &crate::fkc::CpuLinkRegistry).expect_err(
+            "a return rule that disagrees with the registered fused fn must be rejected",
+        );
+        assert!(
+            matches!(err, FkcError::ShapeRuleMismatch { .. }),
+            "expected ShapeRuleMismatch, got {err:?}"
+        );
     }
 
     #[test]
@@ -1340,7 +1356,11 @@ determinism: same_hardware_bitwise
 
         // The old behaviour, kept as the CONTRAST that makes this test mean
         // something: exact matching is what breaks.
-        assert_eq!(aligned.matches(anchor).count(), 1, "exact match works on the aligned text");
+        assert_eq!(
+            aligned.matches(anchor).count(),
+            1,
+            "exact match works on the aligned text"
+        );
         assert_eq!(
             reflowed.matches(anchor).count(),
             0,
@@ -1354,8 +1374,15 @@ determinism: same_hardware_bitwise
             1,
             "GAP-175: a column reflow must NOT break the anchor"
         );
-        let out = mutate_once(reflowed, anchor, "shape_rule: const(9) # FusedOp.shape_rule_q");
-        assert!(out.contains("const(9)"), "the mutation applies to the reflowed text");
+        let out = mutate_once(
+            reflowed,
+            anchor,
+            "shape_rule: const(9) # FusedOp.shape_rule_q",
+        );
+        assert!(
+            out.contains("const(9)"),
+            "the mutation applies to the reflowed text"
+        );
         assert!(!out.contains("same_as(q)"), "and the original rule is gone");
     }
 
@@ -1410,10 +1437,18 @@ determinism: same_hardware_bitwise
         // InplaceAffine now synth-supported; its `same_as(x)` (= input 0) is
         // evaluable. Mutating it to a rank-1 `const(9)` disagrees with the real
         // registry fn (which returns x's shape) at every probe → hard reject.
-        let mutated = mutate_once(FUSED_LINEAR_QUANT, "shape_rule: same_as(x)", "shape_rule: const(9)");
-        let err = import_bundle_str(&mutated, &crate::fkc::CpuLinkRegistry)
-            .expect_err("a mutated InplaceAffine shape_rule must be rejected (proves the check FIRES)");
-        assert!(matches!(err, FkcError::ShapeRuleMismatch { .. }), "expected ShapeRuleMismatch, got {err:?}");
+        let mutated = mutate_once(
+            FUSED_LINEAR_QUANT,
+            "shape_rule: same_as(x)",
+            "shape_rule: const(9)",
+        );
+        let err = import_bundle_str(&mutated, &crate::fkc::CpuLinkRegistry).expect_err(
+            "a mutated InplaceAffine shape_rule must be rejected (proves the check FIRES)",
+        );
+        assert!(
+            matches!(err, FkcError::ShapeRuleMismatch { .. }),
+            "expected ShapeRuleMismatch, got {err:?}"
+        );
     }
 
     #[test]
@@ -1423,10 +1458,18 @@ determinism: same_hardware_bitwise
         // [M, N]); the UNMUTATED contract agrees (proven below). Mutate the rule
         // to `same_as(bias)` (rank-1 [N]) — disagrees with the rank-2 [M, N]
         // matmul output at every probe → hard reject (proves the check FIRES).
-        let mutated = mutate_once(FUSED_LINEAR_QUANT, "shape_rule: matmul(a, b)", "shape_rule: same_as(bias)");
-        let err = import_bundle_str(&mutated, &crate::fkc::CpuLinkRegistry)
-            .expect_err("a mutated fused_linear shape_rule must be rejected (proves the matmul check FIRES)");
-        assert!(matches!(err, FkcError::ShapeRuleMismatch { .. }), "expected ShapeRuleMismatch, got {err:?}");
+        let mutated = mutate_once(
+            FUSED_LINEAR_QUANT,
+            "shape_rule: matmul(a, b)",
+            "shape_rule: same_as(bias)",
+        );
+        let err = import_bundle_str(&mutated, &crate::fkc::CpuLinkRegistry).expect_err(
+            "a mutated fused_linear shape_rule must be rejected (proves the matmul check FIRES)",
+        );
+        assert!(
+            matches!(err, FkcError::ShapeRuleMismatch { .. }),
+            "expected ShapeRuleMismatch, got {err:?}"
+        );
     }
 
     #[test]
@@ -1436,10 +1479,17 @@ determinism: same_hardware_bitwise
         // const, preserving the `#` comment (the `q shape` tail is unique to
         // FlashAttn vs PagedAttn's `q (decode)` and dQ's `shape_rule_q`).
         let anchor = "same_as(q)                 # FusedOp.shape_rule = q shape";
-        let mutated = mutate_once(FUSED_ATTENTION, anchor, "const(9) # FusedOp.shape_rule = q shape");
+        let mutated = mutate_once(
+            FUSED_ATTENTION,
+            anchor,
+            "const(9) # FusedOp.shape_rule = q shape",
+        );
         let err = import_bundle_str(&mutated, &StubResolveAll)
             .expect_err("a mutated FlashAttn shape_rule must be rejected (proves the check FIRES)");
-        assert!(matches!(err, FkcError::ShapeRuleMismatch { .. }), "expected ShapeRuleMismatch, got {err:?}");
+        assert!(
+            matches!(err, FkcError::ShapeRuleMismatch { .. }),
+            "expected ShapeRuleMismatch, got {err:?}"
+        );
     }
 
     #[test]
@@ -1448,10 +1498,17 @@ determinism: same_hardware_bitwise
         // registry fn returns input 0 (q). Mutate ONLY the value, preserving the
         // `#` comment (`q (decode)` is unique to PagedAttn).
         let anchor = "same_as(q)                 # FusedOp.shape_rule = q (decode)";
-        let mutated = mutate_once(FUSED_ATTENTION, anchor, "const(9) # FusedOp.shape_rule = q (decode)");
+        let mutated = mutate_once(
+            FUSED_ATTENTION,
+            anchor,
+            "const(9) # FusedOp.shape_rule = q (decode)",
+        );
         let err = import_bundle_str(&mutated, &StubResolveAll)
             .expect_err("a mutated PagedAttn shape_rule must be rejected (proves the check FIRES)");
-        assert!(matches!(err, FkcError::ShapeRuleMismatch { .. }), "expected ShapeRuleMismatch, got {err:?}");
+        assert!(
+            matches!(err, FkcError::ShapeRuleMismatch { .. }),
+            "expected ShapeRuleMismatch, got {err:?}"
+        );
     }
 
     #[test]
@@ -1466,25 +1523,42 @@ determinism: same_hardware_bitwise
         );
         let err = import_bundle_str(&mutated, &StubResolveAll)
             .expect_err("a mutated FlashAttnBackwardQ shape_rule must be rejected");
-        assert!(matches!(err, FkcError::ShapeRuleMismatch { .. }), "expected ShapeRuleMismatch, got {err:?}");
+        assert!(
+            matches!(err, FkcError::ShapeRuleMismatch { .. }),
+            "expected ShapeRuleMismatch, got {err:?}"
+        );
     }
 
     #[test]
     fn flash_attn_backward_k_cross_check_fires() {
         // dK = same_as(k) (= input 1); `same_as(k)` (parenthesised) is unique.
-        let mutated = mutate_once(FUSED_ATTENTION, "shape_rule: same_as(k)", "shape_rule: const(9)");
+        let mutated = mutate_once(
+            FUSED_ATTENTION,
+            "shape_rule: same_as(k)",
+            "shape_rule: const(9)",
+        );
         let err = import_bundle_str(&mutated, &StubResolveAll)
             .expect_err("a mutated FlashAttnBackwardK shape_rule must be rejected");
-        assert!(matches!(err, FkcError::ShapeRuleMismatch { .. }), "expected ShapeRuleMismatch, got {err:?}");
+        assert!(
+            matches!(err, FkcError::ShapeRuleMismatch { .. }),
+            "expected ShapeRuleMismatch, got {err:?}"
+        );
     }
 
     #[test]
     fn flash_attn_backward_v_cross_check_fires() {
         // dV = same_as(v) (= input 2); `same_as(v)` (parenthesised) is unique.
-        let mutated = mutate_once(FUSED_ATTENTION, "shape_rule: same_as(v)", "shape_rule: const(9)");
+        let mutated = mutate_once(
+            FUSED_ATTENTION,
+            "shape_rule: same_as(v)",
+            "shape_rule: const(9)",
+        );
         let err = import_bundle_str(&mutated, &StubResolveAll)
             .expect_err("a mutated FlashAttnBackwardV shape_rule must be rejected");
-        assert!(matches!(err, FkcError::ShapeRuleMismatch { .. }), "expected ShapeRuleMismatch, got {err:?}");
+        assert!(
+            matches!(err, FkcError::ShapeRuleMismatch { .. }),
+            "expected ShapeRuleMismatch, got {err:?}"
+        );
     }
 
     #[test]
@@ -1495,11 +1569,16 @@ determinism: same_hardware_bitwise
         let mutated = mutate_once(
             FUSED_CONV_ROPE,
             ys,
-            &format!("{ys}\n    - {{ name: phantom, dtype_rule: passthrough(u), shape_rule: same_as(u), layout_guarantee: contiguous }}"),
+            &format!(
+                "{ys}\n    - {{ name: phantom, dtype_rule: passthrough(u), shape_rule: same_as(u), layout_guarantee: contiguous }}"
+            ),
         );
         let err = import_bundle_str(&mutated, &crate::fkc::CpuLinkRegistry)
             .expect_err("a SelectiveScan bundle with a phantom slot must be rejected");
-        assert!(matches!(err, FkcError::BundleArityMismatch { .. }), "expected BundleArityMismatch, got {err:?}");
+        assert!(
+            matches!(err, FkcError::BundleArityMismatch { .. }),
+            "expected BundleArityMismatch, got {err:?}"
+        );
     }
 
     #[test]
@@ -1509,11 +1588,16 @@ determinism: same_hardware_bitwise
         let mutated = mutate_once(
             FUSED_CONV_ROPE,
             ys,
-            &format!("{ys}\n    - {{ name: phantom, dtype_rule: passthrough(x), shape_rule: same_as(x), layout_guarantee: contiguous }}"),
+            &format!(
+                "{ys}\n    - {{ name: phantom, dtype_rule: passthrough(x), shape_rule: same_as(x), layout_guarantee: contiguous }}"
+            ),
         );
         let err = import_bundle_str(&mutated, &crate::fkc::CpuLinkRegistry)
             .expect_err("an SsdChunkScan bundle with a phantom slot must be rejected");
-        assert!(matches!(err, FkcError::BundleArityMismatch { .. }), "expected BundleArityMismatch, got {err:?}");
+        assert!(
+            matches!(err, FkcError::BundleArityMismatch { .. }),
+            "expected BundleArityMismatch, got {err:?}"
+        );
     }
 
     #[test]
@@ -1646,9 +1730,13 @@ determinism: same_hardware_bitwise
             "dtype_rule: fixed(F32)          # ALWAYS F32 regardless of input dtype",
             "dtype_rule: fixed(F16)          # ALWAYS F32 regardless of input dtype",
         );
-        let err = import_bundle_str(&mutated, &crate::fkc::CpuLinkRegistry)
-            .expect_err("an FSCE dtype_rule disagreeing with the constant-F32 real fn must be rejected");
-        assert!(matches!(err, FkcError::ShapeRuleMismatch { .. }), "expected ShapeRuleMismatch, got {err:?}");
+        let err = import_bundle_str(&mutated, &crate::fkc::CpuLinkRegistry).expect_err(
+            "an FSCE dtype_rule disagreeing with the constant-F32 real fn must be rejected",
+        );
+        assert!(
+            matches!(err, FkcError::ShapeRuleMismatch { .. }),
+            "expected ShapeRuleMismatch, got {err:?}"
+        );
     }
 
     #[test]
@@ -1660,9 +1748,13 @@ determinism: same_hardware_bitwise
             "dtype_rule: fixed(F32)          # output is always F32 (dequant-and-contract); = a (F32)",
             "dtype_rule: fixed(F16)          # output is always F32 (dequant-and-contract); = a (F32)",
         );
-        let err = import_bundle_str(&mutated, &crate::fkc::CpuLinkRegistry)
-            .expect_err("a QMatMul dtype_rule disagreeing with the real passthrough fn must be rejected");
-        assert!(matches!(err, FkcError::ShapeRuleMismatch { .. }), "expected ShapeRuleMismatch, got {err:?}");
+        let err = import_bundle_str(&mutated, &crate::fkc::CpuLinkRegistry).expect_err(
+            "a QMatMul dtype_rule disagreeing with the real passthrough fn must be rejected",
+        );
+        assert!(
+            matches!(err, FkcError::ShapeRuleMismatch { .. }),
+            "expected ShapeRuleMismatch, got {err:?}"
+        );
     }
 
     #[test]
@@ -1676,9 +1768,13 @@ determinism: same_hardware_bitwise
             "dtype_rule: passthrough(x)\n      shape_rule: conv2d(params)",
             "dtype_rule: fixed(F64)\n      shape_rule: conv2d(params)",
         );
-        let err = import_bundle_str(&mutated, &crate::fkc::CpuLinkRegistry)
-            .expect_err("a Conv2D dtype_rule disagreeing with the real passthrough fn must be rejected");
-        assert!(matches!(err, FkcError::ShapeRuleMismatch { .. }), "expected ShapeRuleMismatch, got {err:?}");
+        let err = import_bundle_str(&mutated, &crate::fkc::CpuLinkRegistry).expect_err(
+            "a Conv2D dtype_rule disagreeing with the real passthrough fn must be rejected",
+        );
+        assert!(
+            matches!(err, FkcError::ShapeRuleMismatch { .. }),
+            "expected ShapeRuleMismatch, got {err:?}"
+        );
     }
 
     #[test]
@@ -1696,7 +1792,10 @@ determinism: same_hardware_bitwise
         );
         let err = import_bundle_str(&mutated, &crate::fkc::CpuLinkRegistry)
             .expect_err("a ConvTranspose2D dtype_rule disagreeing with the real passthrough fn must be rejected");
-        assert!(matches!(err, FkcError::ShapeRuleMismatch { .. }), "expected ShapeRuleMismatch, got {err:?}");
+        assert!(
+            matches!(err, FkcError::ShapeRuleMismatch { .. }),
+            "expected ShapeRuleMismatch, got {err:?}"
+        );
     }
 
     #[test]
@@ -1706,9 +1805,13 @@ determinism: same_hardware_bitwise
             "dtype_rule: passthrough(x)\n      shape_rule: from_params(seq_out)",
             "dtype_rule: fixed(F64)\n      shape_rule: from_params(seq_out)",
         );
-        let err = import_bundle_str(&mutated, &crate::fkc::CpuLinkRegistry)
-            .expect_err("a CausalConv1d dtype_rule disagreeing with the real passthrough fn must be rejected");
-        assert!(matches!(err, FkcError::ShapeRuleMismatch { .. }), "expected ShapeRuleMismatch, got {err:?}");
+        let err = import_bundle_str(&mutated, &crate::fkc::CpuLinkRegistry).expect_err(
+            "a CausalConv1d dtype_rule disagreeing with the real passthrough fn must be rejected",
+        );
+        assert!(
+            matches!(err, FkcError::ShapeRuleMismatch { .. }),
+            "expected ShapeRuleMismatch, got {err:?}"
+        );
     }
 
     /// C-4 T3 (regression + never-panic): the UNMUTATED corpus imports with
@@ -1719,7 +1822,10 @@ determinism: same_hardware_bitwise
     /// SHAPE rules remain non-evaluable → documented skips, unchanged.
     #[test]
     fn unmutated_corpus_dtype_differentials_run_without_guard_panics() {
-        for (src, name) in [(FUSED_LINEAR_QUANT, "linear-quant"), (FUSED_CONV_ROPE, "conv-rope")] {
+        for (src, name) in [
+            (FUSED_LINEAR_QUANT, "linear-quant"),
+            (FUSED_CONV_ROPE, "conv-rope"),
+        ] {
             let provider = import_bundle_str(src, &crate::fkc::CpuLinkRegistry)
                 .unwrap_or_else(|e| panic!("{name} must import clean: {e:?}"));
             let panicked: Vec<_> = provider
@@ -2028,12 +2134,26 @@ determinism: same_hardware_bitwise
         let provider = import_bundle_str(src, &SameLink).expect("declared-cost contract imports");
         let mut table = KernelBindingTable::new();
         let mut fused = FusedKernelRegistry::new();
-        provider.register_into(&mut table, &mut fused).expect("registers");
-        let alts = table.lookup_alternatives(OpKind::AddElementwise, &[DType::F32, DType::F32, DType::F32], BackendId::Cpu);
+        provider
+            .register_into(&mut table, &mut fused)
+            .expect("registers");
+        let alts = table.lookup_alternatives(
+            OpKind::AddElementwise,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cpu,
+        );
         let entry = alts.first().expect("binding present");
-        let expr = entry.cost_expr.expect("declared flops formula reaches the binding as a compiled AST");
-        let est = crate::fkc::cost_estimate(expr, OpKind::AddElementwise, &[fuel_ir::Shape::from_dims(&[4])],
-            &[DType::F32, DType::F32, DType::F32], &crate::kernel::OpParams::None).expect("declared cost evaluates");
+        let expr = entry
+            .cost_expr
+            .expect("declared flops formula reaches the binding as a compiled AST");
+        let est = crate::fkc::cost_estimate(
+            expr,
+            OpKind::AddElementwise,
+            &[fuel_ir::Shape::from_dims(&[4])],
+            &[DType::F32, DType::F32, DType::F32],
+            &crate::kernel::OpParams::None,
+        )
+        .expect("declared cost evaluates");
         assert_eq!(est.flops, 4, "flops = n = elem_count([4])");
     }
 
@@ -2056,7 +2176,14 @@ determinism: same_hardware_bitwise
         entry: &str,
         revision_base: Option<&str>,
     ) -> String {
-        bundle_with_front_matter(provider_backend, kernel, op_kind, entry, revision_base, None)
+        bundle_with_front_matter(
+            provider_backend,
+            kernel,
+            op_kind,
+            entry,
+            revision_base,
+            None,
+        )
     }
 
     fn bundle_with_link_registry(
@@ -2066,7 +2193,14 @@ determinism: same_hardware_bitwise
         entry: &str,
         link_registry: Option<&str>,
     ) -> String {
-        bundle_with_front_matter(provider_backend, kernel, op_kind, entry, None, link_registry)
+        bundle_with_front_matter(
+            provider_backend,
+            kernel,
+            op_kind,
+            entry,
+            None,
+            link_registry,
+        )
     }
 
     fn bundle_with_front_matter(
@@ -2166,13 +2300,27 @@ determinism: same_hardware_bitwise
         // And they register end-to-end.
         let mut table = KernelBindingTable::new();
         let mut fused = FusedKernelRegistry::new();
-        provider.register_into(&mut table, &mut fused).expect("merged provider registers");
-        assert!(table
-            .lookup(OpKind::AddElementwise, &[DType::F32, DType::F32, DType::F32], BackendId::Cpu)
-            .is_ok());
-        assert!(table
-            .lookup(OpKind::SubElementwise, &[DType::F32, DType::F32, DType::F32], BackendId::Cpu)
-            .is_ok());
+        provider
+            .register_into(&mut table, &mut fused)
+            .expect("merged provider registers");
+        assert!(
+            table
+                .lookup(
+                    OpKind::AddElementwise,
+                    &[DType::F32, DType::F32, DType::F32],
+                    BackendId::Cpu
+                )
+                .is_ok()
+        );
+        assert!(
+            table
+                .lookup(
+                    OpKind::SubElementwise,
+                    &[DType::F32, DType::F32, DType::F32],
+                    BackendId::Cpu
+                )
+                .is_ok()
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2327,7 +2475,13 @@ determinism: same_hardware_bitwise
             write_temp(
                 &dir,
                 f,
-                &bundle_with_link_registry("Cpu", k, op, e, Some("fuel_cpu_backend::fkc::ENTRY_POINTS")),
+                &bundle_with_link_registry(
+                    "Cpu",
+                    k,
+                    op,
+                    e,
+                    Some("fuel_cpu_backend::fkc::ENTRY_POINTS"),
+                ),
             );
         }
 
@@ -2485,13 +2639,15 @@ determinism: same_hardware_bitwise
         provider
             .register_into(&mut table, &mut fused)
             .expect("register_into succeeds (no describe-only section reaches the table)");
-        assert!(table
-            .lookup(
-                OpKind::AddElementwise,
-                &[DType::F32, DType::F32, DType::F32],
-                BackendId::Cpu
-            )
-            .is_ok());
+        assert!(
+            table
+                .lookup(
+                    OpKind::AddElementwise,
+                    &[DType::F32, DType::F32, DType::F32],
+                    BackendId::Cpu
+                )
+                .is_ok()
+        );
     }
 
     // =====================================================================
@@ -2621,13 +2777,15 @@ determinism: same_hardware_bitwise
         provider
             .register_into(&mut table, &mut fused)
             .expect("the valid sibling registers end-to-end");
-        assert!(table
-            .lookup(
-                OpKind::AddElementwise,
-                &[DType::F32, DType::F32, DType::F32],
-                BackendId::Cpu
-            )
-            .is_ok());
+        assert!(
+            table
+                .lookup(
+                    OpKind::AddElementwise,
+                    &[DType::F32, DType::F32, DType::F32],
+                    BackendId::Cpu
+                )
+                .is_ok()
+        );
     }
 
     // =====================================================================
@@ -2829,8 +2987,7 @@ determinism: same_hardware_bitwise
     #[test]
     fn multi_dtype_section_fans_out_into_per_dtype_bindings() {
         let link = FanStubLink::new();
-        let provider =
-            import_bundle_str(FANOUT_CONTRACT, &link).expect("fan-out contract imports");
+        let provider = import_bundle_str(FANOUT_CONTRACT, &link).expect("fan-out contract imports");
 
         // (1) FAN-OUT: `relu` (1 varying input) + `where_op` (2 varying inputs)
         // each fan to 4 per-dtype bindings ⇒ 8 primitives. Pre-change the
@@ -2873,7 +3030,11 @@ determinism: same_hardware_bitwise
             // The OLD buggy key (passthrough mirrored cond=U8) must NOT exist.
             assert!(
                 table
-                    .lookup(OpKind::Where, &[DType::U8, dt, dt, DType::U8], BackendId::Cpu)
+                    .lookup(
+                        OpKind::Where,
+                        &[DType::U8, dt, dt, DType::U8],
+                        BackendId::Cpu
+                    )
                     .is_err(),
                 "the pre-fix buggy key [U8,{dt:?},{dt:?},U8] must NOT be registered",
             );
@@ -2885,11 +3046,15 @@ determinism: same_hardware_bitwise
         let requested = link.requested.lock().unwrap().clone();
         for suffix in ["f32", "f64", "bf16", "f16"] {
             assert!(
-                requested.iter().any(|s| s == &format!("stub::relu_{suffix}")),
+                requested
+                    .iter()
+                    .any(|s| s == &format!("stub::relu_{suffix}")),
                 "relu variant must resolve stub::relu_{suffix}; requested={requested:?}",
             );
             assert!(
-                requested.iter().any(|s| s == &format!("stub::where_{suffix}")),
+                requested
+                    .iter()
+                    .any(|s| s == &format!("stub::where_{suffix}")),
                 "where variant must resolve stub::where_{suffix}; requested={requested:?}",
             );
         }
@@ -3055,8 +3220,11 @@ determinism: same_hardware_bitwise
         );
 
         // The two keys are exactly `[x, out]` and `[x, bias, out]`.
-        let mut keys: Vec<Vec<DType>> =
-            provider.primitives.iter().map(|p| p.dtypes.to_vec()).collect();
+        let mut keys: Vec<Vec<DType>> = provider
+            .primitives
+            .iter()
+            .map(|p| p.dtypes.to_vec())
+            .collect();
         keys.sort_by_key(|k| k.len());
         assert_eq!(
             keys[0],
@@ -3077,7 +3245,11 @@ determinism: same_hardware_bitwise
             .expect("both keys register");
         assert!(
             table
-                .lookup(OpKind::AddElementwise, &[DType::F32, DType::F32], BackendId::Cpu)
+                .lookup(
+                    OpKind::AddElementwise,
+                    &[DType::F32, DType::F32],
+                    BackendId::Cpu
+                )
                 .is_ok(),
             "no-optional key [F32, F32] is bound",
         );
@@ -3102,8 +3274,7 @@ determinism: same_hardware_bitwise
         // BACKWARD-COMPAT: the SAME contract WITHOUT the `optional: true` flag is
         // a plain 2-input section → EXACTLY ONE binding (the fan is driven ONLY
         // by the optional flag; nothing else changed).
-        let non_optional =
-            OPTIONAL_LAST_OPERAND_CONTRACT.replace("      optional: true\n", "");
+        let non_optional = OPTIONAL_LAST_OPERAND_CONTRACT.replace("      optional: true\n", "");
         let link2 = FanStubLink::new();
         let provider2 =
             import_bundle_str(&non_optional, &link2).expect("non-optional twin imports");
@@ -3138,7 +3309,11 @@ determinism: same_hardware_bitwise
         _p: &crate::kernel::OpParams,
         _c: &fuel_ir::backend::BackendCapabilities,
     ) -> CostEstimate {
-        CostEstimate { flops: 999_999, bytes_moved: 0, kernel_overhead_ns: 0 }
+        CostEstimate {
+            flops: 999_999,
+            bytes_moved: 0,
+            kernel_overhead_ns: 0,
+        }
     }
 
     /// A `LinkRegistry` that resolves the `cost.cost_fn` name `test_pinned_cost`

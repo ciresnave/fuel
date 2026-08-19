@@ -96,9 +96,12 @@ pub fn main() -> anyhow::Result<()> {
     let cfg = args.which.config();
     let st = unsafe { MmapedSafetensors::multi(&[&model_file]) }
         .map_err(|e| E::msg(format!("mmap: {e}")))?;
-    let weights = HieraWeights::load_from_mmapped(&st, &cfg)
-        .map_err(|e| E::msg(format!("weights: {e}")))?;
-    let model = HieraModel { config: cfg, weights };
+    let weights =
+        HieraWeights::load_from_mmapped(&st, &cfg).map_err(|e| E::msg(format!("weights: {e}")))?;
+    let model = HieraModel {
+        config: cfg,
+        weights,
+    };
     println!("model built");
 
     let logits_t = model.forward(&image)?;

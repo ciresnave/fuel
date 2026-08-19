@@ -1,4 +1,4 @@
-﻿//! Span-level KV cache eviction.
+//! Span-level KV cache eviction.
 //!
 //! Rather than evicting individual token positions, **segmented eviction**
 //! groups contiguous token ranges into named *spans* (e.g. a system prompt,
@@ -310,11 +310,7 @@ impl SpanRegistry {
         }
 
         // Collect unpinned spans and sort by eviction priority.
-        let mut candidates: Vec<&SpanInfo> = self
-            .spans
-            .values()
-            .filter(|s| !s.pinned)
-            .collect();
+        let mut candidates: Vec<&SpanInfo> = self.spans.values().filter(|s| !s.pinned).collect();
 
         // Sort: lowest priority first, then oldest insertion order first.
         candidates.sort_by(|a, b| {
@@ -409,10 +405,10 @@ mod tests {
     fn eviction_respects_priority_order() {
         let mut reg = SpanRegistry::new(2048);
         let _sys = reg.register("system", SpanKind::System, 0..50);
-        let other = reg.register("misc", SpanKind::Other, 50..200);    // priority 30
-        let doc = reg.register("doc", SpanKind::Document, 200..500);   // priority 50
-        let tool = reg.register("tool", SpanKind::Tool, 500..700);     // priority 80
-        let turn = reg.register("turn", SpanKind::Turn, 700..1000);    // priority 100
+        let other = reg.register("misc", SpanKind::Other, 50..200); // priority 30
+        let doc = reg.register("doc", SpanKind::Document, 200..500); // priority 50
+        let tool = reg.register("tool", SpanKind::Tool, 500..700); // priority 80
+        let turn = reg.register("turn", SpanKind::Turn, 700..1000); // priority 100
 
         // Need a lot — should evict in priority order: Other, Document, Tool, Turn
         let plan = reg.plan_eviction(2000);
@@ -491,7 +487,7 @@ mod tests {
     #[test]
     fn custom_priority() {
         let mut reg = SpanRegistry::new(2048);
-        let t1 = reg.register("turn-1", SpanKind::Turn, 0..200);   // priority 100
+        let t1 = reg.register("turn-1", SpanKind::Turn, 0..200); // priority 100
         let t2 = reg.register("turn-2", SpanKind::Turn, 200..400); // priority 100
 
         // Boost turn-1 priority so turn-2 is evicted first
@@ -540,8 +536,8 @@ mod tests {
     #[test]
     fn insufficient_evictable_space() {
         let mut reg = SpanRegistry::new(1024);
-        let _ = reg.register("sys", SpanKind::System, 0..800);   // pinned
-        let _ = reg.register("turn", SpanKind::Turn, 800..900);  // 100 positions
+        let _ = reg.register("sys", SpanKind::System, 0..800); // pinned
+        let _ = reg.register("turn", SpanKind::Turn, 800..900); // 100 positions
 
         // Need 500 but only 100 are evictable
         let plan = reg.plan_eviction(500);

@@ -48,9 +48,7 @@ impl QuantizedPhi3Model {
 
     /// Forward over pre-computed embeddings, skipping the token-embedding
     /// lookup. Embeds must have shape `(1, seq, hidden_size)`.
-    pub fn forward_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
         self.inner.forward_embeds(embeds, start_pos)
     }
 
@@ -62,15 +60,15 @@ impl QuantizedPhi3Model {
 
     /// Pre-embedded variant of [`Self::forward_hidden`].
     pub fn forward_hidden_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
+        &self,
+        embeds: &LazyTensor,
+        start_pos: usize,
     ) -> Result<LazyTensor> {
         self.inner.forward_hidden_embeds(embeds, start_pos)
     }
 
     /// Build per-token embeddings without running the decoder.
-    pub fn embed_tokens_anchored(
-        &self, anchor: &LazyTensor, tokens: &[u32],
-    ) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
         self.inner.embed_tokens_anchored(anchor, tokens)
     }
 
@@ -96,7 +94,8 @@ impl QuantizedPhi3Model {
         ctx: &mut crate::inference_context::InferenceContext,
         session: &mut Option<crate::inference_context::DecodeSession>,
     ) -> Result<Vec<f32>> {
-        self.inner.forward_with_kv_context_persistent(tokens, cache, ctx, session)
+        self.inner
+            .forward_with_kv_context_persistent(tokens, cache, ctx, session)
     }
 
     /// Persistent decode with the session owned by the `InferenceContext`.
@@ -110,10 +109,14 @@ impl QuantizedPhi3Model {
     }
 
     /// Model configuration.
-    pub fn config(&self) -> &Phi3Config { &self.inner.config }
+    pub fn config(&self) -> &Phi3Config {
+        &self.inner.config
+    }
     /// Underlying [`Phi3Model`] for direct access to the lazy graph
     /// API. The wrapper exists solely to label the quantization origin.
-    pub fn inner(&self) -> &Phi3Model { &self.inner }
+    pub fn inner(&self) -> &Phi3Model {
+        &self.inner
+    }
 
     /// Convenience: load f32 Phi-3 weights from HF safetensors and
     /// quantize each Linear weight to Q4_0. Equivalent to
@@ -149,44 +152,65 @@ impl QuantizedPhi3Model {
         // Q4_0 blocks run along K only. kv (= num_key_value_heads *
         // head_dim) is only ever an out_features (attn_k / attn_v)
         // and needs no divisibility (mirrors the gemma3 gate).
-        check_q4_0_divisible("hidden_size (attn_q/k/v/o, ffn_gate/up, output in-features)", h)?;
+        check_q4_0_divisible(
+            "hidden_size (attn_q/k/v/o, ffn_gate/up, output in-features)",
+            h,
+        )?;
         check_q4_0_divisible("intermediate_size (ffn_down in-features)", i)?;
 
-        let quantize_linear = |w: &WeightStorage, in_features: usize, out_features: usize| -> Result<WeightStorage> {
-            let f32_in_out = match w {
+        let quantize_linear =
+            |w: &WeightStorage, in_features: usize, out_features: usize| -> Result<WeightStorage> {
+                let f32_in_out = match w {
                 WeightStorage::F32(a) => a.to_vec(),
                 _ => return Err(crate::Error::Msg(
-                    "QuantizedPhi3Model::from_f32_bake: source weights must be WeightStorage::F32".into(),
-                ).bt()),
+                    "QuantizedPhi3Model::from_f32_bake: source weights must be WeightStorage::F32"
+                        .into(),
+                )
+                .bt()),
             };
-            if f32_in_out.len() != in_features * out_features {
-                return Err(crate::Error::Msg(format!(
-                    "QuantizedPhi3Model::from_f32_bake: weight has {} elems, expected {}×{}",
-                    f32_in_out.len(), in_features, out_features,
-                )).bt());
-            }
-            quantize_in_out_to_q4_0(&f32_in_out, in_features, out_features)
-        };
+                if f32_in_out.len() != in_features * out_features {
+                    return Err(crate::Error::Msg(format!(
+                        "QuantizedPhi3Model::from_f32_bake: weight has {} elems, expected {}×{}",
+                        f32_in_out.len(),
+                        in_features,
+                        out_features,
+                    ))
+                    .bt());
+                }
+                quantize_in_out_to_q4_0(&f32_in_out, in_features, out_features)
+            };
 
         let mut layers: Vec<LayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
         for (idx, layer) in src.layers.into_iter().enumerate() {
-            let attn_q   = quantize_linear(&layer.attn_q,   h, h ).map_err(|e| layer_err(idx, "attn_q",   e))?;
-            let attn_k   = quantize_linear(&layer.attn_k,   h, kv).map_err(|e| layer_err(idx, "attn_k",   e))?;
-            let attn_v   = quantize_linear(&layer.attn_v,   h, kv).map_err(|e| layer_err(idx, "attn_v",   e))?;
-            let attn_o   = quantize_linear(&layer.attn_o,   h, h ).map_err(|e| layer_err(idx, "attn_o",   e))?;
-            let ffn_gate = quantize_linear(&layer.ffn_gate, h, i ).map_err(|e| layer_err(idx, "ffn_gate", e))?;
-            let ffn_up   = quantize_linear(&layer.ffn_up,   h, i ).map_err(|e| layer_err(idx, "ffn_up",   e))?;
-            let ffn_down = quantize_linear(&layer.ffn_down, i, h ).map_err(|e| layer_err(idx, "ffn_down", e))?;
+            let attn_q =
+                quantize_linear(&layer.attn_q, h, h).map_err(|e| layer_err(idx, "attn_q", e))?;
+            let attn_k =
+                quantize_linear(&layer.attn_k, h, kv).map_err(|e| layer_err(idx, "attn_k", e))?;
+            let attn_v =
+                quantize_linear(&layer.attn_v, h, kv).map_err(|e| layer_err(idx, "attn_v", e))?;
+            let attn_o =
+                quantize_linear(&layer.attn_o, h, h).map_err(|e| layer_err(idx, "attn_o", e))?;
+            let ffn_gate = quantize_linear(&layer.ffn_gate, h, i)
+                .map_err(|e| layer_err(idx, "ffn_gate", e))?;
+            let ffn_up =
+                quantize_linear(&layer.ffn_up, h, i).map_err(|e| layer_err(idx, "ffn_up", e))?;
+            let ffn_down = quantize_linear(&layer.ffn_down, i, h)
+                .map_err(|e| layer_err(idx, "ffn_down", e))?;
             // Phi-3 has no attention biases (linear_no_bias for QKV/O);
             // preserve the (always-None) bias slots verbatim.
             layers.push(LayerWeights {
-                attn_q, attn_q_bias: layer.attn_q_bias,
-                attn_k, attn_k_bias: layer.attn_k_bias,
-                attn_v, attn_v_bias: layer.attn_v_bias,
+                attn_q,
+                attn_q_bias: layer.attn_q_bias,
+                attn_k,
+                attn_k_bias: layer.attn_k_bias,
+                attn_v,
+                attn_v_bias: layer.attn_v_bias,
                 attn_o,
-                ffn_gate, ffn_up, ffn_down,
+                ffn_gate,
+                ffn_up,
+                ffn_down,
                 attn_norm_gain: layer.attn_norm_gain,
-                ffn_norm_gain:  layer.ffn_norm_gain,
+                ffn_norm_gain: layer.ffn_norm_gain,
             });
         }
 
@@ -218,9 +242,7 @@ impl QuantizedPhi3Model {
     /// `blk.{i}.attn_norm.weight`, `blk.{i}.ffn_norm.weight`, plus
     /// global `token_embd.weight`, `output_norm.weight`, and optional
     /// `output.weight` (tied to `token_embd` if absent).
-    pub fn from_gguf<P: AsRef<std::path::Path>>(
-        path: P, cfg: &Phi3Config,
-    ) -> Result<Self> {
+    pub fn from_gguf<P: AsRef<std::path::Path>>(path: P, cfg: &Phi3Config) -> Result<Self> {
         use crate::quantized::gguf_mmap::MmapedContent;
         let mc = MmapedContent::from_path(path)?;
         let content = mc.content();
@@ -228,23 +250,32 @@ impl QuantizedPhi3Model {
         let mmap_bytes: &[u8] = &mmap_arc[..];
         let data_off = content.tensor_data_offset as usize;
 
-        let get_tensor_bytes = |name: &str| -> Result<(&[u8], crate::quantized::GgmlDType, Vec<usize>)> {
-            let info = content.tensor_infos.get(name).ok_or_else(|| {
-                crate::Error::Msg(format!("gguf: missing tensor {name:?}"))
-            })?;
-            let elems = info.shape.elem_count();
-            let block_size = info.ggml_dtype.block_size();
-            let bytes_len = elems / block_size * info.ggml_dtype.type_size();
-            let start = data_off + info.offset as usize;
-            Ok((&mmap_bytes[start..start + bytes_len], info.ggml_dtype, info.shape.dims().to_vec()))
-        };
+        let get_tensor_bytes =
+            |name: &str| -> Result<(&[u8], crate::quantized::GgmlDType, Vec<usize>)> {
+                let info = content
+                    .tensor_infos
+                    .get(name)
+                    .ok_or_else(|| crate::Error::Msg(format!("gguf: missing tensor {name:?}")))?;
+                let elems = info.shape.elem_count();
+                let block_size = info.ggml_dtype.block_size();
+                let bytes_len = elems / block_size * info.ggml_dtype.type_size();
+                let start = data_off + info.offset as usize;
+                Ok((
+                    &mmap_bytes[start..start + bytes_len],
+                    info.ggml_dtype,
+                    info.shape.dims().to_vec(),
+                ))
+            };
 
         let load_f32 = |name: &str| -> Result<Vec<f32>> {
             let (bytes, dt, _) = get_tensor_bytes(name)?;
             dequant_bytes_to_f32(bytes, dt, name)
         };
 
-        let load_weight = |name: &str, out_features: usize, in_features: usize| -> Result<WeightStorage> {
+        let load_weight = |name: &str,
+                           out_features: usize,
+                           in_features: usize|
+         -> Result<WeightStorage> {
             let (bytes, dt, dims) = get_tensor_bytes(name)?;
             let expected = out_features * in_features;
             let actual: usize = dims.iter().product();
@@ -283,30 +314,41 @@ impl QuantizedPhi3Model {
         if token_embedding.len() != cfg.vocab_size * h {
             return Err(crate::Error::Msg(format!(
                 "gguf token_embd.weight: {} elems, expected {}×{}",
-                token_embedding.len(), cfg.vocab_size, h,
-            )).bt());
+                token_embedding.len(),
+                cfg.vocab_size,
+                h,
+            ))
+            .bt());
         }
 
         let mut layers: Vec<LayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
         for idx in 0..cfg.num_hidden_layers {
             let prefix = format!("blk.{idx}");
-            let attn_q   = load_weight(&format!("{prefix}.attn_q.weight"),      h,  h)?;
-            let attn_k   = load_weight(&format!("{prefix}.attn_k.weight"),      kv, h)?;
-            let attn_v   = load_weight(&format!("{prefix}.attn_v.weight"),      kv, h)?;
-            let attn_o   = load_weight(&format!("{prefix}.attn_output.weight"), h,  h)?;
-            let ffn_gate = load_weight(&format!("{prefix}.ffn_gate.weight"),    i,  h)?;
-            let ffn_up   = load_weight(&format!("{prefix}.ffn_up.weight"),      i,  h)?;
-            let ffn_down = load_weight(&format!("{prefix}.ffn_down.weight"),    h,  i)?;
-            let attn_norm_gain: Arc<[f32]> = Arc::from(load_f32(&format!("{prefix}.attn_norm.weight"))?);
-            let ffn_norm_gain:  Arc<[f32]> = Arc::from(load_f32(&format!("{prefix}.ffn_norm.weight"))?);
+            let attn_q = load_weight(&format!("{prefix}.attn_q.weight"), h, h)?;
+            let attn_k = load_weight(&format!("{prefix}.attn_k.weight"), kv, h)?;
+            let attn_v = load_weight(&format!("{prefix}.attn_v.weight"), kv, h)?;
+            let attn_o = load_weight(&format!("{prefix}.attn_output.weight"), h, h)?;
+            let ffn_gate = load_weight(&format!("{prefix}.ffn_gate.weight"), i, h)?;
+            let ffn_up = load_weight(&format!("{prefix}.ffn_up.weight"), i, h)?;
+            let ffn_down = load_weight(&format!("{prefix}.ffn_down.weight"), h, i)?;
+            let attn_norm_gain: Arc<[f32]> =
+                Arc::from(load_f32(&format!("{prefix}.attn_norm.weight"))?);
+            let ffn_norm_gain: Arc<[f32]> =
+                Arc::from(load_f32(&format!("{prefix}.ffn_norm.weight"))?);
             // Phi-3 has no attention biases — leave them as None.
             layers.push(LayerWeights {
-                attn_q, attn_q_bias: None,
-                attn_k, attn_k_bias: None,
-                attn_v, attn_v_bias: None,
+                attn_q,
+                attn_q_bias: None,
+                attn_k,
+                attn_k_bias: None,
+                attn_v,
+                attn_v_bias: None,
                 attn_o,
-                ffn_gate, ffn_up, ffn_down,
-                attn_norm_gain, ffn_norm_gain,
+                ffn_gate,
+                ffn_up,
+                ffn_down,
+                attn_norm_gain,
+                ffn_norm_gain,
             });
         }
 
@@ -334,7 +376,9 @@ impl QuantizedPhi3Model {
             weights: Phi3Weights {
                 instance: crate::decode_shape::ModelInstanceId::next(),
                 token_embedding: Arc::from(token_embedding),
-                layers, final_norm_gain, output,
+                layers,
+                final_norm_gain,
+                output,
             },
         };
         Ok(Self { inner })
@@ -360,14 +404,17 @@ fn check_q4_0_divisible(name: &str, n: usize) -> Result<()> {
 /// layout. The implementation does the `[in, out] → [out, in]` transpose
 /// first, then runs the per-row Q4_0 quantization.
 fn quantize_in_out_to_q4_0(
-    f32_in_out: &[f32], in_features: usize, out_features: usize,
+    f32_in_out: &[f32],
+    in_features: usize,
+    out_features: usize,
 ) -> Result<WeightStorage> {
     use fuel_quantized::{BlockQ4_0, GgmlType};
     const QK4_0: usize = 32;
     if !in_features.is_multiple_of(QK4_0) {
         return Err(crate::Error::Msg(format!(
             "Q4_0 quantize: in_features ({in_features}) must be divisible by {QK4_0}"
-        )).bt());
+        ))
+        .bt());
     }
 
     // Transpose [in, out] → [out, in] so each row is contiguous in K.
@@ -384,15 +431,15 @@ fn quantize_in_out_to_q4_0(
 
     // BlockQ4_0 is repr(C) and exactly 18 bytes; reinterpret as bytes.
     let bytes_len = n_blocks * std::mem::size_of::<BlockQ4_0>();
-    let byte_slice: &[u8] = unsafe {
-        std::slice::from_raw_parts(blocks.as_ptr() as *const u8, bytes_len)
-    };
+    let byte_slice: &[u8] =
+        unsafe { std::slice::from_raw_parts(blocks.as_ptr() as *const u8, bytes_len) };
     // Q4_0 storage holds u32 words; pad bytes to a multiple of 4 by
     // copying into a Vec<u8> first.
     let padded_len = bytes_len.div_ceil(4) * 4;
     let mut padded = vec![0_u8; padded_len];
     padded[..bytes_len].copy_from_slice(byte_slice);
-    let words: Vec<u32> = padded.chunks_exact(4)
+    let words: Vec<u32> = padded
+        .chunks_exact(4)
         .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     Ok(WeightStorage::Q4_0 {
@@ -407,7 +454,8 @@ fn bytes_to_u32_arc(bytes: &[u8]) -> Arc<[u32]> {
     let padded_len = bytes.len().div_ceil(4) * 4;
     let mut padded = vec![0_u8; padded_len];
     padded[..bytes.len()].copy_from_slice(bytes);
-    let words: Vec<u32> = padded.chunks_exact(4)
+    let words: Vec<u32> = padded
+        .chunks_exact(4)
         .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     Arc::from(words)
@@ -417,7 +465,9 @@ fn bytes_to_u32_arc(bytes: &[u8]) -> Arc<[u32]> {
 /// Mirrors the small Phi-2 helper but lives here so this module stays
 /// independent of the Phi internals.
 fn dequant_bytes_to_f32(
-    bytes: &[u8], dt: crate::quantized::GgmlDType, name: &str,
+    bytes: &[u8],
+    dt: crate::quantized::GgmlDType,
+    name: &str,
 ) -> Result<Vec<f32>> {
     use crate::quantized::GgmlDType;
     use half::{bf16, f16};
@@ -425,34 +475,47 @@ fn dequant_bytes_to_f32(
         GgmlDType::F32 => {
             if bytes.len() % 4 != 0 {
                 return Err(crate::Error::Msg(format!(
-                    "gguf {name}: F32 byte count {} not multiple of 4", bytes.len(),
-                )).bt());
+                    "gguf {name}: F32 byte count {} not multiple of 4",
+                    bytes.len(),
+                ))
+                .bt());
             }
-            Ok(bytes.chunks_exact(4)
-                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
+            Ok(bytes
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect())
         }
         GgmlDType::F16 => {
             if bytes.len() % 2 != 0 {
                 return Err(crate::Error::Msg(format!(
-                    "gguf {name}: F16 byte count {} not multiple of 2", bytes.len(),
-                )).bt());
+                    "gguf {name}: F16 byte count {} not multiple of 2",
+                    bytes.len(),
+                ))
+                .bt());
             }
-            Ok(bytes.chunks_exact(2)
-                .map(|c| f16::from_le_bytes([c[0], c[1]]).to_f32()).collect())
+            Ok(bytes
+                .chunks_exact(2)
+                .map(|c| f16::from_le_bytes([c[0], c[1]]).to_f32())
+                .collect())
         }
         GgmlDType::BF16 => {
             if bytes.len() % 2 != 0 {
                 return Err(crate::Error::Msg(format!(
-                    "gguf {name}: BF16 byte count {} not multiple of 2", bytes.len(),
-                )).bt());
+                    "gguf {name}: BF16 byte count {} not multiple of 2",
+                    bytes.len(),
+                ))
+                .bt());
             }
-            Ok(bytes.chunks_exact(2)
-                .map(|c| bf16::from_le_bytes([c[0], c[1]]).to_f32()).collect())
+            Ok(bytes
+                .chunks_exact(2)
+                .map(|c| bf16::from_le_bytes([c[0], c[1]]).to_f32())
+                .collect())
         }
         GgmlDType::Q4_0 => Ok(cpu_dequant_q4_0_bytes(bytes)),
         other => Err(crate::Error::Msg(format!(
             "gguf {name}: dequant of {other:?} is not supported by lazy_quantized_phi3",
-        )).bt()),
+        ))
+        .bt()),
     }
 }
 
@@ -470,7 +533,7 @@ fn cpu_dequant_q4_0_bytes(bytes: &[u8]) -> Vec<f32> {
             let packed = bytes[off + 2 + kk];
             let lo = (packed & 0x0F) as i32 - 8;
             let hi = ((packed >> 4) & 0x0F) as i32 - 8;
-            out[base + kk]      = lo as f32 * d;
+            out[base + kk] = lo as f32 * d;
             out[base + 16 + kk] = hi as f32 * d;
         }
     }
@@ -504,27 +567,37 @@ mod tests {
             s = s.wrapping_mul(1103515245).wrapping_add(12345);
             ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
         };
-        let mut vec_of = |n: usize| -> Arc<[f32]> {
-            Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
-        };
+        let mut vec_of =
+            |n: usize| -> Arc<[f32]> { Arc::from((0..n).map(|_| next()).collect::<Vec<_>>()) };
         let h = cfg.hidden_size;
         let i = cfg.intermediate_size;
         let kv = cfg.num_key_value_heads * cfg.head_dim();
         let token_embedding = vec_of(cfg.vocab_size * h);
-        let layers: Vec<LayerWeights> = (0..cfg.num_hidden_layers).map(|_| LayerWeights {
-            attn_q: WeightStorage::F32(vec_of(h * h)),  attn_q_bias: None,
-            attn_k: WeightStorage::F32(vec_of(h * kv)), attn_k_bias: None,
-            attn_v: WeightStorage::F32(vec_of(h * kv)), attn_v_bias: None,
-            attn_o: WeightStorage::F32(vec_of(h * h)),
-            ffn_gate: WeightStorage::F32(vec_of(h * i)),
-            ffn_up:   WeightStorage::F32(vec_of(h * i)),
-            ffn_down: WeightStorage::F32(vec_of(i * h)),
-            attn_norm_gain: Arc::from(vec![1.0_f32; h]),
-            ffn_norm_gain:  Arc::from(vec![1.0_f32; h]),
-        }).collect();
+        let layers: Vec<LayerWeights> = (0..cfg.num_hidden_layers)
+            .map(|_| LayerWeights {
+                attn_q: WeightStorage::F32(vec_of(h * h)),
+                attn_q_bias: None,
+                attn_k: WeightStorage::F32(vec_of(h * kv)),
+                attn_k_bias: None,
+                attn_v: WeightStorage::F32(vec_of(h * kv)),
+                attn_v_bias: None,
+                attn_o: WeightStorage::F32(vec_of(h * h)),
+                ffn_gate: WeightStorage::F32(vec_of(h * i)),
+                ffn_up: WeightStorage::F32(vec_of(h * i)),
+                ffn_down: WeightStorage::F32(vec_of(i * h)),
+                attn_norm_gain: Arc::from(vec![1.0_f32; h]),
+                ffn_norm_gain: Arc::from(vec![1.0_f32; h]),
+            })
+            .collect();
         let final_norm_gain = Arc::from(vec![1.0_f32; h]);
         let output = WeightStorage::F32(vec_of(h * cfg.vocab_size));
-        Phi3Weights { instance: crate::decode_shape::ModelInstanceId::next(), token_embedding, layers, final_norm_gain, output }
+        Phi3Weights {
+            instance: crate::decode_shape::ModelInstanceId::next(),
+            token_embedding,
+            layers,
+            final_norm_gain,
+            output,
+        }
     }
 
     /// **GAP-029 increment 3 — the quantized wrapper's decode delegation**, over
@@ -533,8 +606,8 @@ mod tests {
     /// build.
     #[test]
     fn quantized_phi3_decode_matches_quantized_forward() {
-        use crate::inference_context::{DecodeSession, InferenceContext, KvCache};
         use crate::Device;
+        use crate::inference_context::{DecodeSession, InferenceContext, KvCache};
         use fuel_ir::DType;
 
         let cfg = test_cfg();
@@ -544,32 +617,53 @@ mod tests {
 
         let dev = Device::cpu();
         let mut cache = KvCache::with_capacity(
-            cfg.num_hidden_layers, cfg.num_key_value_heads, cfg.head_dim(),
-            tokens.len(), DType::F32, &dev,
-        ).expect("with_capacity");
+            cfg.num_hidden_layers,
+            cfg.num_key_value_heads,
+            cfg.head_dim(),
+            tokens.len(),
+            DType::F32,
+            &dev,
+        )
+        .expect("with_capacity");
         let mut ctx = InferenceContext::new(dev);
         let mut session: Option<DecodeSession> = None;
 
-        model.forward_with_kv_context_persistent(
-            &tokens[..prefill], &mut cache, &mut ctx, &mut session,
-        ).expect("prefill");
+        model
+            .forward_with_kv_context_persistent(
+                &tokens[..prefill],
+                &mut cache,
+                &mut ctx,
+                &mut session,
+            )
+            .expect("prefill");
 
         for pos in prefill..tokens.len() {
-            let got = model.forward_with_kv_context_persistent(
-                &tokens[pos..=pos], &mut cache, &mut ctx, &mut session,
-            ).expect("decode");
+            let got = model
+                .forward_with_kv_context_persistent(
+                    &tokens[pos..=pos],
+                    &mut cache,
+                    &mut ctx,
+                    &mut session,
+                )
+                .expect("decode");
             let full = model.forward(&tokens[..=pos], 0).unwrap().realize_f32();
             let expected = &full[pos * cfg.vocab_size..(pos + 1) * cfg.vocab_size];
-            let worst = got.iter().zip(expected.iter())
-                .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-            assert!(worst < 1e-5,
-                "quantized Phi3 decode at position {pos} diverged by {worst}");
+            let worst = got
+                .iter()
+                .zip(expected.iter())
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0_f32, f32::max);
+            assert!(
+                worst < 1e-5,
+                "quantized Phi3 decode at position {pos} diverged by {worst}"
+            );
         }
         assert_eq!(cache.cached_len, tokens.len());
     }
 
     #[test]
-    fn forward_shape_finite_with_q4_0_weights() {        let cfg = test_cfg();
+    fn forward_shape_finite_with_q4_0_weights() {
+        let cfg = test_cfg();
         let src = tiny_weights(&cfg);
         let model = QuantizedPhi3Model::from_f32_bake(cfg.clone(), src).unwrap();
         // Sanity: all Linear projections in layer 0 are now Q4_0.
@@ -579,9 +673,12 @@ mod tests {
         assert!(matches!(l0.attn_v, WeightStorage::Q4_0 { .. }));
         assert!(matches!(l0.attn_o, WeightStorage::Q4_0 { .. }));
         assert!(matches!(l0.ffn_gate, WeightStorage::Q4_0 { .. }));
-        assert!(matches!(l0.ffn_up,   WeightStorage::Q4_0 { .. }));
+        assert!(matches!(l0.ffn_up, WeightStorage::Q4_0 { .. }));
         assert!(matches!(l0.ffn_down, WeightStorage::Q4_0 { .. }));
-        assert!(matches!(model.inner().weights.output, WeightStorage::Q4_0 { .. }));
+        assert!(matches!(
+            model.inner().weights.output,
+            WeightStorage::Q4_0 { .. }
+        ));
         // Phi-3 keeps QKV bias-free under quantization.
         assert!(l0.attn_q_bias.is_none());
         assert!(l0.attn_k_bias.is_none());
@@ -598,10 +695,15 @@ mod tests {
     fn from_f32_bake_rejects_non_divisible_hidden_size() {
         // hidden_size = 30 is not a multiple of 32 → must reject up front.
         let bad_cfg = Phi3Config {
-            vocab_size: 32, hidden_size: 30, intermediate_size: 64,
-            num_hidden_layers: 1, num_attention_heads: 2, num_key_value_heads: 2,
+            vocab_size: 32,
+            hidden_size: 30,
+            intermediate_size: 64,
+            num_hidden_layers: 1,
+            num_attention_heads: 2,
+            num_key_value_heads: 2,
             max_position_embeddings: 32,
-            rope_theta: 10_000.0, rms_norm_eps: 1e-5,
+            rope_theta: 10_000.0,
+            rms_norm_eps: 1e-5,
             tie_word_embeddings: false,
         };
         // Build a stub Phi3Weights with shapes consistent with bad_cfg.
@@ -609,15 +711,18 @@ mod tests {
         let i = bad_cfg.intermediate_size;
         let kv = bad_cfg.num_key_value_heads * bad_cfg.head_dim();
         let stub_layer = LayerWeights {
-            attn_q: WeightStorage::F32(Arc::from(vec![0.0_f32; h * h])),  attn_q_bias: None,
-            attn_k: WeightStorage::F32(Arc::from(vec![0.0_f32; h * kv])), attn_k_bias: None,
-            attn_v: WeightStorage::F32(Arc::from(vec![0.0_f32; h * kv])), attn_v_bias: None,
+            attn_q: WeightStorage::F32(Arc::from(vec![0.0_f32; h * h])),
+            attn_q_bias: None,
+            attn_k: WeightStorage::F32(Arc::from(vec![0.0_f32; h * kv])),
+            attn_k_bias: None,
+            attn_v: WeightStorage::F32(Arc::from(vec![0.0_f32; h * kv])),
+            attn_v_bias: None,
             attn_o: WeightStorage::F32(Arc::from(vec![0.0_f32; h * h])),
             ffn_gate: WeightStorage::F32(Arc::from(vec![0.0_f32; h * i])),
-            ffn_up:   WeightStorage::F32(Arc::from(vec![0.0_f32; h * i])),
+            ffn_up: WeightStorage::F32(Arc::from(vec![0.0_f32; h * i])),
             ffn_down: WeightStorage::F32(Arc::from(vec![0.0_f32; i * h])),
             attn_norm_gain: Arc::from(vec![1.0_f32; h]),
-            ffn_norm_gain:  Arc::from(vec![1.0_f32; h]),
+            ffn_norm_gain: Arc::from(vec![1.0_f32; h]),
         };
         let src = Phi3Weights {
             instance: crate::decode_shape::ModelInstanceId::next(),
@@ -636,14 +741,17 @@ mod tests {
         let model = QuantizedPhi3Model::from_f32_bake(cfg.clone(), src).unwrap();
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
-        let max_diff = logits_ref.iter().zip(logits_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-4,
-            "Quantized Phi3 forward vs forward_embeds must agree (max diff {max_diff})");
+        let max_diff = logits_ref
+            .iter()
+            .zip(logits_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-4,
+            "Quantized Phi3 forward vs forward_embeds must agree (max diff {max_diff})"
+        );
     }
 }

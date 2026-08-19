@@ -243,8 +243,7 @@ impl DeepSeek2Weights {
         cfg: &DeepSeek2Config,
     ) -> Result<Self> {
         use crate::lazy::{
-            load_tensor_as_f32, load_transposed_matrix,
-            load_transposed_matrix_preserve_dtype,
+            load_tensor_as_f32, load_transposed_matrix, load_transposed_matrix_preserve_dtype,
         };
 
         let h = cfg.hidden_size;
@@ -259,61 +258,80 @@ impl DeepSeek2Weights {
         if token_embedding.len() != cfg.vocab_size * h {
             crate::bail!(
                 "model.embed_tokens.weight: {} elts, expected {} ({}×{})",
-                token_embedding.len(), cfg.vocab_size * h, cfg.vocab_size, h,
+                token_embedding.len(),
+                cfg.vocab_size * h,
+                cfg.vocab_size,
+                h,
             );
         }
 
-        let mut layers: Vec<DeepSeek2LayerWeights> =
-            Vec::with_capacity(cfg.num_hidden_layers);
+        let mut layers: Vec<DeepSeek2LayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
         for li in 0..cfg.num_hidden_layers {
             let p = format!("model.layers.{li}");
 
             // --- Norms -------------------------------------------------
             let input_norm_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.input_layernorm.weight"),
+                st,
+                &format!("{p}.input_layernorm.weight"),
             )?);
             let post_attn_norm_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.post_attention_layernorm.weight"),
+                st,
+                &format!("{p}.post_attention_layernorm.weight"),
             )?);
 
             // --- MLA attention ----------------------------------------
             let q_proj = match cfg.q_lora_rank {
                 Some(lora) => {
                     let a = load_transposed_matrix_preserve_dtype(
-                        st, &format!("{p}.self_attn.q_a_proj.weight"), lora, h,
+                        st,
+                        &format!("{p}.self_attn.q_a_proj.weight"),
+                        lora,
+                        h,
                     )?;
                     let norm_gain = Arc::from(load_tensor_as_f32(
-                        st, &format!("{p}.self_attn.q_a_layernorm.weight"),
+                        st,
+                        &format!("{p}.self_attn.q_a_layernorm.weight"),
                     )?);
                     let b = load_transposed_matrix_preserve_dtype(
-                        st, &format!("{p}.self_attn.q_b_proj.weight"),
-                        n_heads * q_head_dim, lora,
+                        st,
+                        &format!("{p}.self_attn.q_b_proj.weight"),
+                        n_heads * q_head_dim,
+                        lora,
                     )?;
                     DeepSeek2QProj::Lora { a, norm_gain, b }
                 }
                 None => {
                     let plain = load_transposed_matrix_preserve_dtype(
-                        st, &format!("{p}.self_attn.q_proj.weight"),
-                        n_heads * q_head_dim, h,
+                        st,
+                        &format!("{p}.self_attn.q_proj.weight"),
+                        n_heads * q_head_dim,
+                        h,
                     )?;
                     DeepSeek2QProj::Plain(plain)
                 }
             };
 
             let kv_a_proj_with_mqa = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.kv_a_proj_with_mqa.weight"),
-                kv_lora + rope, h,
+                st,
+                &format!("{p}.self_attn.kv_a_proj_with_mqa.weight"),
+                kv_lora + rope,
+                h,
             )?;
             let kv_a_layernorm_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.self_attn.kv_a_layernorm.weight"),
+                st,
+                &format!("{p}.self_attn.kv_a_layernorm.weight"),
             )?);
             let kv_b_proj = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.kv_b_proj.weight"),
-                n_heads * (nope + v_dim), kv_lora,
+                st,
+                &format!("{p}.self_attn.kv_b_proj.weight"),
+                n_heads * (nope + v_dim),
+                kv_lora,
             )?;
             let o_proj = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.o_proj.weight"),
-                h, n_heads * v_dim,
+                st,
+                &format!("{p}.self_attn.o_proj.weight"),
+                h,
+                n_heads * v_dim,
             )?;
 
             let mla = DeepSeek2MlaWeights {
@@ -332,23 +350,30 @@ impl DeepSeek2Weights {
 
                 // Router: HF `[n_routed_experts, hidden_size]` →
                 // flat `[hidden_size, n_routed_experts]`.
-                let router_flat = load_transposed_matrix(
-                    st, &format!("{p}.mlp.gate.weight"), n_routed, h,
-                )?;
+                let router_flat =
+                    load_transposed_matrix(st, &format!("{p}.mlp.gate.weight"), n_routed, h)?;
                 let router: Arc<[f32]> = Arc::from(router_flat);
 
-                let mut experts: Vec<DeepSeek2ExpertWeights> =
-                    Vec::with_capacity(n_routed);
+                let mut experts: Vec<DeepSeek2ExpertWeights> = Vec::with_capacity(n_routed);
                 for ei in 0..n_routed {
                     let ep = format!("{p}.mlp.experts.{ei}");
                     let gate = load_transposed_matrix_preserve_dtype(
-                        st, &format!("{ep}.gate_proj.weight"), inter, h,
+                        st,
+                        &format!("{ep}.gate_proj.weight"),
+                        inter,
+                        h,
                     )?;
                     let up = load_transposed_matrix_preserve_dtype(
-                        st, &format!("{ep}.up_proj.weight"), inter, h,
+                        st,
+                        &format!("{ep}.up_proj.weight"),
+                        inter,
+                        h,
                     )?;
                     let down = load_transposed_matrix_preserve_dtype(
-                        st, &format!("{ep}.down_proj.weight"), h, inter,
+                        st,
+                        &format!("{ep}.down_proj.weight"),
+                        h,
+                        inter,
                     )?;
                     experts.push(DeepSeek2ExpertWeights { gate, up, down });
                 }
@@ -360,13 +385,22 @@ impl DeepSeek2Weights {
                 let (shared_gate, shared_up, shared_down) = if n_shared > 0 {
                     let sp = format!("{p}.mlp.shared_experts");
                     let g = load_transposed_matrix_preserve_dtype(
-                        st, &format!("{sp}.gate_proj.weight"), shared_inter, h,
+                        st,
+                        &format!("{sp}.gate_proj.weight"),
+                        shared_inter,
+                        h,
                     )?;
                     let u = load_transposed_matrix_preserve_dtype(
-                        st, &format!("{sp}.up_proj.weight"), shared_inter, h,
+                        st,
+                        &format!("{sp}.up_proj.weight"),
+                        shared_inter,
+                        h,
                     )?;
                     let d = load_transposed_matrix_preserve_dtype(
-                        st, &format!("{sp}.down_proj.weight"), h, shared_inter,
+                        st,
+                        &format!("{sp}.down_proj.weight"),
+                        h,
+                        shared_inter,
                     )?;
                     (g, u, d)
                 } else {
@@ -388,17 +422,24 @@ impl DeepSeek2Weights {
             } else {
                 let inter = cfg.intermediate_size;
                 let gate = load_transposed_matrix_preserve_dtype(
-                    st, &format!("{p}.mlp.gate_proj.weight"), inter, h,
+                    st,
+                    &format!("{p}.mlp.gate_proj.weight"),
+                    inter,
+                    h,
                 )?;
                 let up = load_transposed_matrix_preserve_dtype(
-                    st, &format!("{p}.mlp.up_proj.weight"), inter, h,
+                    st,
+                    &format!("{p}.mlp.up_proj.weight"),
+                    inter,
+                    h,
                 )?;
                 let down = load_transposed_matrix_preserve_dtype(
-                    st, &format!("{p}.mlp.down_proj.weight"), h, inter,
+                    st,
+                    &format!("{p}.mlp.down_proj.weight"),
+                    h,
+                    inter,
                 )?;
-                DeepSeek2FfnWeights::Dense(DeepSeek2DenseMlpWeights {
-                    gate, up, down,
-                })
+                DeepSeek2FfnWeights::Dense(DeepSeek2DenseMlpWeights { gate, up, down })
             };
 
             layers.push(DeepSeek2LayerWeights {
@@ -409,9 +450,7 @@ impl DeepSeek2Weights {
             });
         }
 
-        let final_norm_gain = Arc::from(load_tensor_as_f32(
-            st, "model.norm.weight",
-        )?);
+        let final_norm_gain = Arc::from(load_tensor_as_f32(st, "model.norm.weight")?);
 
         // Optional separate lm_head. None ⇒ tied to token_embedding at
         // apply_lm_head time. Honour cfg.tie_word_embeddings first: when
@@ -419,9 +458,7 @@ impl DeepSeek2Weights {
         let lm_head = if cfg.tie_word_embeddings {
             None
         } else {
-            load_transposed_matrix_preserve_dtype(
-                st, "lm_head.weight", cfg.vocab_size, h,
-            ).ok()
+            load_transposed_matrix_preserve_dtype(st, "lm_head.weight", cfg.vocab_size, h).ok()
         };
 
         Ok(DeepSeek2Weights {
@@ -462,7 +499,8 @@ fn absorb_split_kv_b(
             return Err(crate::Error::Msg(format!(
                 "absorb_split_kv_b: MLA weight absorption is F32-only today, got {:?}",
                 other.dtype(),
-            )).bt());
+            ))
+            .bt());
         }
     };
     let out_features = n_heads * (nope + v_dim);
@@ -472,7 +510,8 @@ fn absorb_split_kv_b(
             "absorb_split_kv_b: kv_b_proj has {} elements, expected {expected} \
              (kv_lora_rank={kvr} * n_heads*(nope+v_dim)={out_features})",
             arc.len(),
-        )).bt());
+        ))
+        .bt());
     }
 
     let mut w_uk_t = vec![0.0_f32; n_heads * nope * kvr];
@@ -522,16 +561,16 @@ impl DeepSeek2Model {
 
     /// Multimodal entry point. Skips token embedding; runs the decoder
     /// over pre-embedded inputs. DeepSeek-V2 does NOT scale embeddings.
-    pub fn forward_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
         let h_norm = self.run_backbone_embeds(embeds, start_pos)?;
         self.apply_lm_head(&h_norm)
     }
 
     /// Hidden-state variant of [`Self::forward_embeds`].
     pub fn forward_hidden_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
+        &self,
+        embeds: &LazyTensor,
+        start_pos: usize,
     ) -> Result<LazyTensor> {
         self.run_backbone_embeds(embeds, start_pos)
     }
@@ -603,35 +642,43 @@ impl DeepSeek2Model {
         if tokens.is_empty() {
             return Err(crate::Error::Msg(
                 "DeepSeek2Model::forward_with_latent_cache: tokens must be non-empty".into(),
-            ).bt());
+            )
+            .bt());
         }
         if cache.n_layers() != cfg.num_hidden_layers {
             return Err(crate::Error::Msg(format!(
                 "DeepSeek2Model::forward_with_latent_cache: cache n_layers ({}) != model \
                  num_hidden_layers ({})",
-                cache.n_layers(), cfg.num_hidden_layers,
-            )).bt());
+                cache.n_layers(),
+                cfg.num_hidden_layers,
+            ))
+            .bt());
         }
         if cache.n_slots() != 2 {
             return Err(crate::Error::Msg(format!(
                 "DeepSeek2Model::forward_with_latent_cache: MLA latent cache needs exactly 2 \
                  slots (compressed latent + k_pe), got {}",
                 cache.n_slots(),
-            )).bt());
+            ))
+            .bt());
         }
         if cache.slot_trailing(0).to_vec() != vec![cfg.kv_lora_rank] {
             return Err(crate::Error::Msg(format!(
                 "DeepSeek2Model::forward_with_latent_cache: slot 0 trailing shape {:?} != \
                  [kv_lora_rank={}]",
-                cache.slot_trailing(0), cfg.kv_lora_rank,
-            )).bt());
+                cache.slot_trailing(0),
+                cfg.kv_lora_rank,
+            ))
+            .bt());
         }
         if cache.slot_trailing(1).to_vec() != vec![cfg.qk_rope_head_dim] {
             return Err(crate::Error::Msg(format!(
                 "DeepSeek2Model::forward_with_latent_cache: slot 1 trailing shape {:?} != \
                  [qk_rope_head_dim={}]",
-                cache.slot_trailing(1), cfg.qk_rope_head_dim,
-            )).bt());
+                cache.slot_trailing(1),
+                cfg.qk_rope_head_dim,
+            ))
+            .bt());
         }
 
         let cached_len = cache.current_seq_len();
@@ -642,7 +689,8 @@ impl DeepSeek2Model {
                 "DeepSeek2Model::forward_with_latent_cache: cached_len ({cached_len}) + \
                  seq_new ({seq_new}) = {total_len} exceeds cache max_seq_len ({})",
                 cache.max_seq_len(),
-            )).bt());
+            ))
+            .bt());
         }
 
         // Re-anchor onto a FRESH graph, rebinding the realized prefix via
@@ -656,9 +704,8 @@ impl DeepSeek2Model {
         let h = self.embed_tokens_anchored(&anchor, tokens)?;
 
         // RoPE tables for THIS step at the absolute start position.
-        let (rope_cos, rope_sin) = h.rope_tables_const(
-            cfg.rope_theta, cached_len, seq_new, cfg.qk_rope_head_dim,
-        );
+        let (rope_cos, rope_sin) =
+            h.rope_tables_const(cfg.rope_theta, cached_len, seq_new, cfg.qk_rope_head_dim);
 
         // Decode mask, built once and shared across every layer.
         let mask_data = crate::lazy::build_decode_causal_mask(cached_len, seq_new, total_len);
@@ -677,7 +724,8 @@ impl DeepSeek2Model {
         }
 
         let h_norm = x.rms_norm_affine(
-            std::sync::Arc::clone(&self.weights.final_norm_gain), cfg.rms_norm_eps,
+            std::sync::Arc::clone(&self.weights.final_norm_gain),
+            cfg.rms_norm_eps,
         )?;
         let logits = self.apply_lm_head(&h_norm)?;
         let cache = cache.advance_by(seq_new);
@@ -723,42 +771,51 @@ impl DeepSeek2Model {
         if tokens.is_empty() {
             return Err(crate::Error::Msg(
                 "DeepSeek2Model::forward_with_latent_kv_context: tokens must be non-empty".into(),
-            ).bt());
+            )
+            .bt());
         }
         if cache.n_layers() != cfg.num_hidden_layers {
             return Err(crate::Error::Msg(format!(
                 "DeepSeek2Model::forward_with_latent_kv_context: cache n_layers ({}) != model \
                  num_hidden_layers ({})",
-                cache.n_layers(), cfg.num_hidden_layers,
-            )).bt());
+                cache.n_layers(),
+                cfg.num_hidden_layers,
+            ))
+            .bt());
         }
         if cache.n_slots() != 2 {
             return Err(crate::Error::Msg(format!(
                 "DeepSeek2Model::forward_with_latent_kv_context: MLA latent cache needs exactly \
                  2 slots (compressed latent + k_pe), got {}",
                 cache.n_slots(),
-            )).bt());
+            ))
+            .bt());
         }
         if cache.slot_trailing(0).to_vec() != vec![cfg.kv_lora_rank] {
             return Err(crate::Error::Msg(format!(
                 "DeepSeek2Model::forward_with_latent_kv_context: slot 0 trailing shape {:?} != \
                  [kv_lora_rank={}]",
-                cache.slot_trailing(0), cfg.kv_lora_rank,
-            )).bt());
+                cache.slot_trailing(0),
+                cfg.kv_lora_rank,
+            ))
+            .bt());
         }
         if cache.slot_trailing(1).to_vec() != vec![cfg.qk_rope_head_dim] {
             return Err(crate::Error::Msg(format!(
                 "DeepSeek2Model::forward_with_latent_kv_context: slot 1 trailing shape {:?} != \
                  [qk_rope_head_dim={}]",
-                cache.slot_trailing(1), cfg.qk_rope_head_dim,
-            )).bt());
+                cache.slot_trailing(1),
+                cfg.qk_rope_head_dim,
+            ))
+            .bt());
         }
         if cache.dtype != DType::F32 {
             return Err(crate::Error::Msg(format!(
                 "DeepSeek2Model::forward_with_latent_kv_context: cache dtype {:?} != F32 \
                  (MLA weight absorption is F32-only today)",
                 cache.dtype,
-            )).bt());
+            ))
+            .bt());
         }
         let cached_len = cache.cached_len;
         let max_seq_len = cache.max_seq_len;
@@ -766,13 +823,17 @@ impl DeepSeek2Model {
             return Err(crate::Error::Msg(format!(
                 "DeepSeek2Model::forward_with_latent_kv_context: cached_len ({cached_len}) + \
                  seq ({seq}) > max_seq_len ({max_seq_len})",
-            )).bt());
+            ))
+            .bt());
         }
 
         // Bootstrap the fresh graph exactly like run_backbone: token
         // embedding lookup → (1, seq, hidden).
         let mut h = LazyTensor::embed_tokens(
-            self.weights.token_embedding.clone(), cfg.vocab_size, cfg.hidden_size, tokens,
+            self.weights.token_embedding.clone(),
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
             &Device::cpu(),
         )?;
 
@@ -787,9 +848,8 @@ impl DeepSeek2Model {
         let cached_len_sym = fuel_ir::SymId(0);
 
         // RoPE tables at the absolute start position, shared across layers.
-        let (rope_cos, rope_sin) = h.rope_tables_const(
-            cfg.rope_theta, cached_len, seq, cfg.qk_rope_head_dim,
-        );
+        let (rope_cos, rope_sin) =
+            h.rope_tables_const(cfg.rope_theta, cached_len, seq, cfg.qk_rope_head_dim);
 
         // Decode mask, hoisted once and shared across every layer. Width
         // is max_seq_len (full capacity), NOT cached_len + seq — the
@@ -812,17 +872,25 @@ impl DeepSeek2Model {
         let mut bound_node_ids: Vec<fuel_graph::NodeId> =
             Vec::with_capacity(2 * cfg.num_hidden_layers);
         for (li, layer_weights) in self.weights.layers.iter().enumerate() {
-            let latent_arc = cache.slot_storage(li, 0).ok_or_else(|| crate::Error::Msg(format!(
-                "DeepSeek2Model::forward_with_latent_kv_context: cache layer {li} has no \
+            let latent_arc = cache.slot_storage(li, 0).ok_or_else(|| {
+                crate::Error::Msg(format!(
+                    "DeepSeek2Model::forward_with_latent_kv_context: cache layer {li} has no \
                  latent slot (with_capacity should have populated all layers)",
-            )).bt())?;
-            let kpe_arc = cache.slot_storage(li, 1).ok_or_else(|| crate::Error::Msg(format!(
-                "DeepSeek2Model::forward_with_latent_kv_context: cache layer {li} has no \
+                ))
+                .bt()
+            })?;
+            let kpe_arc = cache.slot_storage(li, 1).ok_or_else(|| {
+                crate::Error::Msg(format!(
+                    "DeepSeek2Model::forward_with_latent_kv_context: cache layer {li} has no \
                  k_pe slot",
-            )).bt())?;
+                ))
+                .bt()
+            })?;
 
-            let latent_c = h.const_placeholder_like(Shape::from_dims(&[max_seq_len, kvr]), DType::F32);
-            let kpe_c = h.const_placeholder_like(Shape::from_dims(&[max_seq_len, rope]), DType::F32);
+            let latent_c =
+                h.const_placeholder_like(Shape::from_dims(&[max_seq_len, kvr]), DType::F32);
+            let kpe_c =
+                h.const_placeholder_like(Shape::from_dims(&[max_seq_len, rope]), DType::F32);
             let latent_id = latent_c.node_id();
             let kpe_id = kpe_c.node_id();
             ctx.insert(latent_id, latent_arc);
@@ -831,12 +899,21 @@ impl DeepSeek2Model {
             bound_node_ids.push(kpe_id);
 
             h = self.apply_layer_with_latent_kv_writes(
-                &h, layer_weights, li, &rope_cos, &rope_sin, &mask, &latent_c, &kpe_c, cached_len_sym,
+                &h,
+                layer_weights,
+                li,
+                &rope_cos,
+                &rope_sin,
+                &mask,
+                &latent_c,
+                &kpe_c,
+                cached_len_sym,
             )?;
         }
 
         let h_norm = h.rms_norm_affine(
-            std::sync::Arc::clone(&self.weights.final_norm_gain), cfg.rms_norm_eps,
+            std::sync::Arc::clone(&self.weights.final_norm_gain),
+            cfg.rms_norm_eps,
         )?;
         let logits = self.apply_lm_head(&h_norm)?; // (1, seq, vocab_size)
         let last_pos = seq - 1;
@@ -849,7 +926,9 @@ impl DeepSeek2Model {
         // supplied for this pass via the SymEnv; downstream attention
         // reads the post-write full-capacity buffers.
         let mut sym_env = fuel_ir::SymEnv::new();
-        sym_env.bind(cached_len_sym, cached_len).map_err(crate::Error::from)?;
+        sym_env
+            .bind(cached_len_sym, cached_len)
+            .map_err(crate::Error::from)?;
         let logits_vec = ctx.realize_one_as_with_env::<f32>(
             logits_root.graph_handle(),
             logits_root.node_id(),
@@ -898,19 +977,30 @@ impl DeepSeek2Model {
 
         let x_norm = x.rms_norm_affine(Arc::clone(&layer.input_norm_gain), cfg.rms_norm_eps)?;
         let attn = self.mla_attention_latent_kv(
-            &x_norm, &layer.mla, rope_cos, rope_sin, mask, latent_c, kpe_c, cached_len_sym,
+            &x_norm,
+            &layer.mla,
+            rope_cos,
+            rope_sin,
+            mask,
+            latent_c,
+            kpe_c,
+            cached_len_sym,
         )?;
         let h1 = x.add(&attn)?;
 
-        let h1_norm = h1.rms_norm_affine(Arc::clone(&layer.post_attn_norm_gain), cfg.rms_norm_eps)?;
+        let h1_norm =
+            h1.rms_norm_affine(Arc::clone(&layer.post_attn_norm_gain), cfg.rms_norm_eps)?;
         let expected_moe = cfg.layer_uses_moe(layer_idx);
         let mlp_out = match (&layer.ffn, expected_moe) {
             (DeepSeek2FfnWeights::Dense(w), false) => self.apply_dense_mlp(&h1_norm, w)?,
             (DeepSeek2FfnWeights::Moe(w), true) => self.apply_moe(&h1_norm, w)?,
-            _ => return Err(crate::Error::Msg(format!(
-                "DeepSeek-V2 layer {layer_idx}: FFN weight kind does not match \
+            _ => {
+                return Err(crate::Error::Msg(format!(
+                    "DeepSeek-V2 layer {layer_idx}: FFN weight kind does not match \
                  config-derived kind (uses_moe={expected_moe}) — config + weights are inconsistent",
-            )).bt()),
+                ))
+                .bt());
+            }
         };
         h1.add(&mlp_out)
     }
@@ -982,16 +1072,18 @@ impl DeepSeek2Model {
         let q_pe_rot = apply_interleaved_partial_rope(&q_pe, rope_cos, rope_sin, rope, rope)?;
 
         // ---- New KV latents for this step's tokens only ---------------------
-        let kv_a = w.kv_a_proj_with_mqa.apply_linear(x, cfg.hidden_size, kvr + rope)?;
+        let kv_a = w
+            .kv_a_proj_with_mqa
+            .apply_linear(x, cfg.hidden_size, kvr + rope)?;
         let compressed_kv = kv_a.slice(2_usize, 0, kvr)?;
         let k_pe_single = kv_a.slice(2_usize, kvr, rope)?;
 
-        let compressed_kv_norm = compressed_kv.rms_norm_affine(
-            Arc::clone(&w.kv_a_layernorm_gain), cfg.rms_norm_eps,
-        )?;
+        let compressed_kv_norm =
+            compressed_kv.rms_norm_affine(Arc::clone(&w.kv_a_layernorm_gain), cfg.rms_norm_eps)?;
 
         let k_pe_single_h = k_pe_single.split_heads(1, rope)?;
-        let k_pe_rot = apply_interleaved_partial_rope(&k_pe_single_h, rope_cos, rope_sin, rope, rope)?;
+        let k_pe_rot =
+            apply_interleaved_partial_rope(&k_pe_single_h, rope_cos, rope_sin, rope, rope)?;
 
         // ---- Write this step's slabs into the persistent capacity buffers ---
         // Destructive on latent_c/kpe_c: the returned tensors are the
@@ -1000,12 +1092,9 @@ impl DeepSeek2Model {
         let latent_new = compressed_kv_norm.reshape(Shape::from_dims(&[s, kvr]))?; // [s, kvr]
         let kpe_new = k_pe_rot.reshape(Shape::from_dims(&[s, rope]))?; // [s, rope]
         let dyn_off = fuel_ir::DynScalar::Sym(cached_len_sym);
-        let latent_full = latent_c.write_slice_dyn(
-            &latent_new, vec![(0, s), (0, kvr)], 0, dyn_off,
-        )?; // [max_seq, kvr]
-        let kpe_full = kpe_c.write_slice_dyn(
-            &kpe_new, vec![(0, s), (0, rope)], 0, dyn_off,
-        )?; // [max_seq, rope]
+        let latent_full =
+            latent_c.write_slice_dyn(&latent_new, vec![(0, s), (0, kvr)], 0, dyn_off)?; // [max_seq, kvr]
+        let kpe_full = kpe_c.write_slice_dyn(&kpe_new, vec![(0, s), (0, rope)], 0, dyn_off)?; // [max_seq, rope]
 
         // ---- Absorbed weights: kv_b_proj split into per-head W_UK^T / W_UV --
         let (w_uk_t_data, w_uv_data) = absorb_split_kv_b(&w.kv_b_proj, kvr, n_heads, nope, v_dim)?;
@@ -1039,7 +1128,9 @@ impl DeepSeek2Model {
         let ctx = ctx_latent.matmul(&w_uv)?; // (1, H, s, v_dim)
 
         let merged = ctx.merge_heads()?;
-        let out = w.o_proj.apply_linear(&merged, n_heads * v_dim, cfg.hidden_size)?;
+        let out = w
+            .o_proj
+            .apply_linear(&merged, n_heads * v_dim, cfg.hidden_size)?;
         Ok(out)
     }
 
@@ -1125,8 +1216,14 @@ impl DeepSeek2Model {
         // MLA reuses `DecodeSession` verbatim, so it inherits both the
         // welding and the guard. No capture exists on this path.
         crate::lazy::refresh_decode_session(
-            session, ctx, seq, Some(max_seq_len), cache_dtype,
-            cfg.num_hidden_layers, self.decode_shape_key(), cache,
+            session,
+            ctx,
+            seq,
+            Some(max_seq_len),
+            cache_dtype,
+            cfg.num_hidden_layers,
+            self.decode_shape_key(),
+            cache,
             || {},
             |s, c| self.drop_latent_decode_session(s, c),
         );
@@ -1139,8 +1236,7 @@ impl DeepSeek2Model {
             }
             Some(_) => {
                 // ---- Subsequent decode token: re-bind data + skip optimize. ----
-                let res =
-                    self.rebind_and_realize_prebuilt_mla(tokens, cache, &*ctx, &*session);
+                let res = self.rebind_and_realize_prebuilt_mla(tokens, cache, &*ctx, &*session);
                 match res {
                     Ok(logits) => Ok(logits),
                     Err(e) if matches!(e, crate::Error::TopologyChanged { .. }) => {
@@ -1182,42 +1278,51 @@ impl DeepSeek2Model {
         if cache.n_layers() != cfg.num_hidden_layers {
             return Err(crate::Error::Msg(format!(
                 "forward_with_latent_kv_context_persistent: cache n_layers {} != model {}",
-                cache.n_layers(), cfg.num_hidden_layers,
-            )).bt());
+                cache.n_layers(),
+                cfg.num_hidden_layers,
+            ))
+            .bt());
         }
         if cache.n_slots() != 2 {
             return Err(crate::Error::Msg(format!(
                 "forward_with_latent_kv_context_persistent: MLA latent cache needs exactly 2 \
                  slots (compressed latent + k_pe), got {}",
                 cache.n_slots(),
-            )).bt());
+            ))
+            .bt());
         }
         if cache.slot_trailing(0).to_vec() != vec![cfg.kv_lora_rank] {
             return Err(crate::Error::Msg(format!(
                 "forward_with_latent_kv_context_persistent: slot 0 trailing shape {:?} != \
                  [kv_lora_rank={}]",
-                cache.slot_trailing(0), cfg.kv_lora_rank,
-            )).bt());
+                cache.slot_trailing(0),
+                cfg.kv_lora_rank,
+            ))
+            .bt());
         }
         if cache.slot_trailing(1).to_vec() != vec![cfg.qk_rope_head_dim] {
             return Err(crate::Error::Msg(format!(
                 "forward_with_latent_kv_context_persistent: slot 1 trailing shape {:?} != \
                  [qk_rope_head_dim={}]",
-                cache.slot_trailing(1), cfg.qk_rope_head_dim,
-            )).bt());
+                cache.slot_trailing(1),
+                cfg.qk_rope_head_dim,
+            ))
+            .bt());
         }
         if cache.dtype != DType::F32 {
             return Err(crate::Error::Msg(format!(
                 "forward_with_latent_kv_context_persistent: cache dtype {:?} != F32 \
                  (MLA weight absorption is F32-only today)",
                 cache.dtype,
-            )).bt());
+            ))
+            .bt());
         }
         if cached_len + seq > max_seq_len {
             return Err(crate::Error::Msg(format!(
                 "forward_with_latent_kv_context_persistent: cached_len ({cached_len}) + \
                  seq ({seq}) > max_seq_len ({max_seq_len})",
-            )).bt());
+            ))
+            .bt());
         }
 
         // Embed lookup + reshape to [1, seq, hidden]. Token-ids is a STABLE
@@ -1230,9 +1335,7 @@ impl DeepSeek2Model {
             Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
             &Device::cpu(),
         );
-        let token_ids = embed.const_placeholder_like(
-            Shape::from_dims(&[seq]), DType::U32,
-        );
+        let token_ids = embed.const_placeholder_like(Shape::from_dims(&[seq]), DType::U32);
         let token_ids_node = token_ids.node_id();
         let mut h = embed
             .index_select(0_usize, &token_ids)?
@@ -1247,9 +1350,8 @@ impl DeepSeek2Model {
         let rope_sin_node = rope_sin.node_id();
 
         // Mask: STABLE re-bindable placeholder Const (hoisted; shared).
-        let mask = h.const_placeholder_like(
-            Shape::from_dims(&[1, 1, seq, max_seq_len]), DType::F32,
-        );
+        let mask =
+            h.const_placeholder_like(Shape::from_dims(&[1, 1, seq, max_seq_len]), DType::F32);
         let mask_node = mask.node_id();
 
         let cached_len_sym = fuel_ir::SymId(0);
@@ -1267,16 +1369,24 @@ impl DeepSeek2Model {
         let mut kv_nodes: Vec<(fuel_graph::NodeId, fuel_graph::NodeId)> =
             Vec::with_capacity(cfg.num_hidden_layers);
         for (li, layer_weights) in weights.layers.iter().enumerate() {
-            let latent_arc = cache.slot_storage(li, 0).ok_or_else(|| crate::Error::Msg(format!(
-                "forward_with_latent_kv_context_persistent: cache layer {li} has no \
+            let latent_arc = cache.slot_storage(li, 0).ok_or_else(|| {
+                crate::Error::Msg(format!(
+                    "forward_with_latent_kv_context_persistent: cache layer {li} has no \
                  latent slot (with_capacity should have populated all layers)",
-            )).bt())?;
-            let kpe_arc = cache.slot_storage(li, 1).ok_or_else(|| crate::Error::Msg(format!(
-                "forward_with_latent_kv_context_persistent: cache layer {li} has no k_pe slot",
-            )).bt())?;
+                ))
+                .bt()
+            })?;
+            let kpe_arc = cache.slot_storage(li, 1).ok_or_else(|| {
+                crate::Error::Msg(format!(
+                    "forward_with_latent_kv_context_persistent: cache layer {li} has no k_pe slot",
+                ))
+                .bt()
+            })?;
 
-            let latent_c = h.const_placeholder_like(Shape::from_dims(&[max_seq_len, kvr]), DType::F32);
-            let kpe_c = h.const_placeholder_like(Shape::from_dims(&[max_seq_len, rope]), DType::F32);
+            let latent_c =
+                h.const_placeholder_like(Shape::from_dims(&[max_seq_len, kvr]), DType::F32);
+            let kpe_c =
+                h.const_placeholder_like(Shape::from_dims(&[max_seq_len, rope]), DType::F32);
             let latent_id = latent_c.node_id();
             let kpe_id = kpe_c.node_id();
             ctx.insert(latent_id, latent_arc);
@@ -1284,7 +1394,15 @@ impl DeepSeek2Model {
             kv_nodes.push((latent_id, kpe_id));
 
             h = self.apply_layer_with_latent_kv_writes(
-                &h, layer_weights, li, &rope_cos, &rope_sin, &mask, &latent_c, &kpe_c, cached_len_sym,
+                &h,
+                layer_weights,
+                li,
+                &rope_cos,
+                &rope_sin,
+                &mask,
+                &latent_c,
+                &kpe_c,
+                cached_len_sym,
             )?;
         }
 
@@ -1303,15 +1421,20 @@ impl DeepSeek2Model {
         // KV Arcs were already inserted above. The optimize + realize then
         // runs ONCE, capturing the reusable artifacts + the full realized
         // cache (weights + KV + data) for the held session.
-        let data = self.build_mla_token_rope_mask_arcs(ctx.device(), cached_len, tokens, max_seq_len)?;
+        let data =
+            self.build_mla_token_rope_mask_arcs(ctx.device(), cached_len, tokens, max_seq_len)?;
         ctx.insert(token_ids_node, Arc::clone(&data.token_ids));
         ctx.insert(rope_cos_node, Arc::clone(&data.rope_cos));
         ctx.insert(rope_sin_node, Arc::clone(&data.rope_sin));
         ctx.insert(mask_node, Arc::clone(&data.mask));
 
         let mut sym_env = fuel_ir::SymEnv::new();
-        sym_env.bind(cached_len_sym, cached_len).map_err(crate::Error::from)?;
-        sym_env.bind(attended_len_sym, cached_len + seq).map_err(crate::Error::from)?;
+        sym_env
+            .bind(cached_len_sym, cached_len)
+            .map_err(crate::Error::from)?;
+        sym_env
+            .bind(attended_len_sym, cached_len + seq)
+            .map_err(crate::Error::from)?;
 
         let (effective_target, optimized, base_cache, logits_vec) =
             ctx.prebuild_optimized_capturing_as_with_env::<f32>(&graph, logits_node, &sym_env)?;
@@ -1386,9 +1509,8 @@ impl DeepSeek2Model {
         // per-token data Arcs, then realize the held graph via the
         // prebuilt seam (base_cache clone + overwritten data entries).
         let s = session.as_ref().expect("session is Some");
-        let data = self.build_mla_token_rope_mask_arcs(
-            &device, cached_len, tokens, s.max_seq_len(),
-        )?;
+        let data =
+            self.build_mla_token_rope_mask_arcs(&device, cached_len, tokens, s.max_seq_len())?;
         // Bind BOTH per-token symbols: `cached_len` (the KV-write offset)
         // AND `attended_len = cached_len + seq` (dormant on MLA's f32
         // decode graph — see `forward_with_latent_kv_context_persistent`'s
@@ -1425,9 +1547,8 @@ impl DeepSeek2Model {
         let upload = crate::pipelined_bridge::upload_host_buffer_to_device;
 
         let token_ids = upload(device, fuel_ir::HostBuffer::U32(tokens.to_vec()))?;
-        let (cos_data, sin_data) = fuel_graph::build_rope_tables(
-            cfg.rope_theta, cached_len, seq, cfg.qk_rope_head_dim,
-        );
+        let (cos_data, sin_data) =
+            fuel_graph::build_rope_tables(cfg.rope_theta, cached_len, seq, cfg.qk_rope_head_dim);
         let rope_cos = upload(device, fuel_ir::HostBuffer::F32(cos_data))?;
         let rope_sin = upload(device, fuel_ir::HostBuffer::F32(sin_data))?;
         let mask_data = crate::lazy::build_decode_causal_mask(cached_len, seq, max_seq_len);
@@ -1486,7 +1607,8 @@ impl DeepSeek2Model {
         if prompt_tokens.is_empty() {
             return Err(crate::Error::Msg(
                 "generate_streaming_with_latent_kv_context: prompt is empty".to_string(),
-            ).bt());
+            )
+            .bt());
         }
         let mut tokens: Vec<u32> = prompt_tokens.to_vec();
         let mut rng_state: u64 = match strategy {
@@ -1514,7 +1636,10 @@ impl DeepSeek2Model {
 
         // Prefill: one forward pass over the full prompt.
         let mut last_logits = self.forward_with_latent_kv_context_persistent(
-            prompt_tokens, &mut cache, &mut ctx, &mut session,
+            prompt_tokens,
+            &mut cache,
+            &mut ctx,
+            &mut session,
         )?;
 
         // Decode loop.
@@ -1528,7 +1653,10 @@ impl DeepSeek2Model {
                 }
             }
             last_logits = self.forward_with_latent_kv_context_persistent(
-                &[next], &mut cache, &mut ctx, &mut session,
+                &[next],
+                &mut cache,
+                &mut ctx,
+                &mut session,
             )?;
         }
         Ok(tokens)
@@ -1545,7 +1673,11 @@ impl DeepSeek2Model {
         eos_id: Option<u32>,
     ) -> Result<Vec<u32>> {
         self.generate_streaming_with_latent_kv_context(
-            prompt_tokens, max_new_tokens, strategy, eos_id, |_| {},
+            prompt_tokens,
+            max_new_tokens,
+            strategy,
+            eos_id,
+            |_| {},
         )
     }
 
@@ -1605,7 +1737,9 @@ impl DeepSeek2Model {
     /// the executor's assumption. Uses only [`LazyLatentCache`]'s public
     /// API (`new` + `append` + `advance_by`), no changes to that type.
     fn rebind_latent_cache_fresh_graph(
-        &self, cache: LazyLatentCache, cached_len: usize,
+        &self,
+        cache: LazyLatentCache,
+        cached_len: usize,
     ) -> Result<LazyLatentCache> {
         if cached_len == 0 {
             return Ok(cache);
@@ -1617,24 +1751,28 @@ impl DeepSeek2Model {
             crate::pipelined_bridge::realize_one_as::<f32>(t.graph(), t.node_id(), &Device::cpu())
         }
         let cfg = &self.config;
-        let fresh_anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let fresh_anchor =
+            LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let mut fresh = LazyLatentCache::new(
             &fresh_anchor,
             cache.n_layers(),
             cache.max_seq_len(),
-            vec![cache.slot_trailing(0).to_vec(), cache.slot_trailing(1).to_vec()],
+            vec![
+                cache.slot_trailing(0).to_vec(),
+                cache.slot_trailing(1).to_vec(),
+            ],
             DType::F32,
         )?;
         for layer in 0..cache.n_layers() {
             let latent_prefix = host_f32(&cache.slot(layer, 0))?;
             let kpe_prefix = host_f32(&cache.slot(layer, 1))?;
             let latent_c = fresh_anchor.const_f32_like(
-                latent_prefix, Shape::from_dims(&[cached_len, cfg.kv_lora_rank]),
+                latent_prefix,
+                Shape::from_dims(&[cached_len, cfg.kv_lora_rank]),
             );
             let kpe_c = fresh_anchor.const_f32_like(
-                kpe_prefix, Shape::from_dims(&[cached_len, cfg.qk_rope_head_dim]),
+                kpe_prefix,
+                Shape::from_dims(&[cached_len, cfg.qk_rope_head_dim]),
             );
             fresh = fresh.append(layer, &[&latent_c, &kpe_c])?;
         }
@@ -1642,13 +1780,13 @@ impl DeepSeek2Model {
     }
 
     /// Build per-token embeddings without running the decoder.
-    pub fn embed_tokens_anchored(
-        &self, anchor: &LazyTensor, tokens: &[u32],
-    ) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
-            cfg.vocab_size, cfg.hidden_size, tokens,
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
         )
     }
 
@@ -1668,14 +1806,16 @@ impl DeepSeek2Model {
         assert!(seq > 0);
 
         let h = LazyTensor::embed_tokens(
-            weights.token_embedding.clone(), cfg.vocab_size, cfg.hidden_size, tokens, &Device::cpu(),
+            weights.token_embedding.clone(),
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
+            &Device::cpu(),
         )?;
         self.run_backbone_embeds(&h, start_pos)
     }
 
-    fn run_backbone_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
-    ) -> Result<LazyTensor> {
+    fn run_backbone_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -1690,24 +1830,29 @@ impl DeepSeek2Model {
         if seq == 0 {
             return Err(crate::Error::Msg(
                 "DeepSeek2Model::forward_embeds: seq must be > 0".into(),
-            ).bt());
+            )
+            .bt());
         }
         if weights.layers.len() != cfg.num_hidden_layers {
             return Err(crate::Error::Msg(format!(
                 "DeepSeek2Weights: layers length ({}) must match num_hidden_layers ({})",
-                weights.layers.len(), cfg.num_hidden_layers,
-            )).bt());
+                weights.layers.len(),
+                cfg.num_hidden_layers,
+            ))
+            .bt());
         }
         let mut h = embeds.clone();
 
-        let (rope_cos, rope_sin) = h.rope_tables_const(
-            cfg.rope_theta, start_pos, seq, cfg.qk_rope_head_dim,
-        );
+        let (rope_cos, rope_sin) =
+            h.rope_tables_const(cfg.rope_theta, start_pos, seq, cfg.qk_rope_head_dim);
 
         for (idx, layer) in weights.layers.iter().enumerate() {
             h = self.apply_layer(&h, layer, idx, &rope_cos, &rope_sin)?;
         }
-        h.rms_norm_affine(std::sync::Arc::clone(&weights.final_norm_gain), cfg.rms_norm_eps)
+        h.rms_norm_affine(
+            std::sync::Arc::clone(&weights.final_norm_gain),
+            cfg.rms_norm_eps,
+        )
     }
 
     fn apply_layer(
@@ -1721,19 +1866,28 @@ impl DeepSeek2Model {
         let cfg = &self.config;
         let h = cfg.hidden_size;
 
-        let x_norm = x.rms_norm_affine(std::sync::Arc::clone(&layer.input_norm_gain), cfg.rms_norm_eps)?;
+        let x_norm = x.rms_norm_affine(
+            std::sync::Arc::clone(&layer.input_norm_gain),
+            cfg.rms_norm_eps,
+        )?;
         let attn = self.mla_attention(&x_norm, &layer.mla, rope_cos, rope_sin)?;
         let h1 = x.add(&attn)?;
 
-        let h1_norm = h1.rms_norm_affine(std::sync::Arc::clone(&layer.post_attn_norm_gain), cfg.rms_norm_eps)?;
+        let h1_norm = h1.rms_norm_affine(
+            std::sync::Arc::clone(&layer.post_attn_norm_gain),
+            cfg.rms_norm_eps,
+        )?;
         let expected_moe = cfg.layer_uses_moe(layer_idx);
         let mlp_out = match (&layer.ffn, expected_moe) {
             (DeepSeek2FfnWeights::Dense(w), false) => self.apply_dense_mlp(&h1_norm, w)?,
             (DeepSeek2FfnWeights::Moe(w), true) => self.apply_moe(&h1_norm, w)?,
-            _ => return Err(crate::Error::Msg(format!(
-                "DeepSeek-V2 layer {layer_idx}: FFN weight kind does not match \
+            _ => {
+                return Err(crate::Error::Msg(format!(
+                    "DeepSeek-V2 layer {layer_idx}: FFN weight kind does not match \
                  config-derived kind (uses_moe={expected_moe}) — config + weights are inconsistent",
-            )).bt()),
+                ))
+                .bt());
+            }
         };
         h1.add(&mlp_out)
     }
@@ -1758,7 +1912,10 @@ impl DeepSeek2Model {
     ) -> Result<(LazyTensor, LazyLatentCache)> {
         let cfg = &self.config;
 
-        let x_norm = x.rms_norm_affine(std::sync::Arc::clone(&layer.input_norm_gain), cfg.rms_norm_eps)?;
+        let x_norm = x.rms_norm_affine(
+            std::sync::Arc::clone(&layer.input_norm_gain),
+            cfg.rms_norm_eps,
+        )?;
         let (attn, cache) = if absorb {
             self.mla_attention_cached_absorbed(
                 &x_norm, &layer.mla, rope_cos, rope_sin, mask, cache, layer_idx, cached_len,
@@ -1770,15 +1927,21 @@ impl DeepSeek2Model {
         };
         let h1 = x.add(&attn)?;
 
-        let h1_norm = h1.rms_norm_affine(std::sync::Arc::clone(&layer.post_attn_norm_gain), cfg.rms_norm_eps)?;
+        let h1_norm = h1.rms_norm_affine(
+            std::sync::Arc::clone(&layer.post_attn_norm_gain),
+            cfg.rms_norm_eps,
+        )?;
         let expected_moe = cfg.layer_uses_moe(layer_idx);
         let mlp_out = match (&layer.ffn, expected_moe) {
             (DeepSeek2FfnWeights::Dense(w), false) => self.apply_dense_mlp(&h1_norm, w)?,
             (DeepSeek2FfnWeights::Moe(w), true) => self.apply_moe(&h1_norm, w)?,
-            _ => return Err(crate::Error::Msg(format!(
-                "DeepSeek-V2 layer {layer_idx}: FFN weight kind does not match \
+            _ => {
+                return Err(crate::Error::Msg(format!(
+                    "DeepSeek-V2 layer {layer_idx}: FFN weight kind does not match \
                  config-derived kind (uses_moe={expected_moe}) — config + weights are inconsistent",
-            )).bt()),
+                ))
+                .bt());
+            }
         };
         let out = h1.add(&mlp_out)?;
         Ok((out, cache))
@@ -1831,16 +1994,18 @@ impl DeepSeek2Model {
         let q_pe_rot = apply_interleaved_partial_rope(&q_pe, rope_cos, rope_sin, rope, rope)?;
 
         // ---- New KV latents for this step's tokens only ---------------------
-        let kv_a = w.kv_a_proj_with_mqa.apply_linear(x, cfg.hidden_size, kvr + rope)?;
+        let kv_a = w
+            .kv_a_proj_with_mqa
+            .apply_linear(x, cfg.hidden_size, kvr + rope)?;
         let compressed_kv = kv_a.slice(2_usize, 0, kvr)?;
         let k_pe_single = kv_a.slice(2_usize, kvr, rope)?;
 
-        let compressed_kv_norm = compressed_kv.rms_norm_affine(
-            Arc::clone(&w.kv_a_layernorm_gain), cfg.rms_norm_eps,
-        )?;
+        let compressed_kv_norm =
+            compressed_kv.rms_norm_affine(Arc::clone(&w.kv_a_layernorm_gain), cfg.rms_norm_eps)?;
 
         let k_pe_single_h = k_pe_single.split_heads(1, rope)?;
-        let k_pe_rot = apply_interleaved_partial_rope(&k_pe_single_h, rope_cos, rope_sin, rope, rope)?;
+        let k_pe_rot =
+            apply_interleaved_partial_rope(&k_pe_single_h, rope_cos, rope_sin, rope, rope)?;
 
         // ---- Append to cache (squeeze the batch==1 dim) ----------------------
         let latent_new = compressed_kv_norm.reshape(Shape::from_dims(&[s, kvr]))?;
@@ -1862,7 +2027,9 @@ impl DeepSeek2Model {
             .broadcast_to(Shape::from_dims(&[1, n_heads, total, rope]))?;
 
         // ---- Up-project the whole latent prefix (cached + new) ---------------
-        let kv = w.kv_b_proj.apply_linear(&latent_all, kvr, n_heads * (nope + v_dim))?;
+        let kv = w
+            .kv_b_proj
+            .apply_linear(&latent_all, kvr, n_heads * (nope + v_dim))?;
         let kv = kv.split_heads(n_heads, nope + v_dim)?;
         let k_nope = kv.slice(3_usize, 0, nope)?;
         let v = kv.slice(3_usize, nope, v_dim)?;
@@ -1881,7 +2048,9 @@ impl DeepSeek2Model {
         let ctx = probs.matmul(&v)?; // (1, H, s, v_dim)
 
         let merged = ctx.merge_heads()?;
-        let out = w.o_proj.apply_linear(&merged, n_heads * v_dim, cfg.hidden_size)?;
+        let out = w
+            .o_proj
+            .apply_linear(&merged, n_heads * v_dim, cfg.hidden_size)?;
         Ok((out, cache))
     }
 
@@ -1966,16 +2135,18 @@ impl DeepSeek2Model {
         let q_pe_rot = apply_interleaved_partial_rope(&q_pe, rope_cos, rope_sin, rope, rope)?;
 
         // ---- New KV latents for this step's tokens only ---------------------
-        let kv_a = w.kv_a_proj_with_mqa.apply_linear(x, cfg.hidden_size, kvr + rope)?;
+        let kv_a = w
+            .kv_a_proj_with_mqa
+            .apply_linear(x, cfg.hidden_size, kvr + rope)?;
         let compressed_kv = kv_a.slice(2_usize, 0, kvr)?;
         let k_pe_single = kv_a.slice(2_usize, kvr, rope)?;
 
-        let compressed_kv_norm = compressed_kv.rms_norm_affine(
-            Arc::clone(&w.kv_a_layernorm_gain), cfg.rms_norm_eps,
-        )?;
+        let compressed_kv_norm =
+            compressed_kv.rms_norm_affine(Arc::clone(&w.kv_a_layernorm_gain), cfg.rms_norm_eps)?;
 
         let k_pe_single_h = k_pe_single.split_heads(1, rope)?;
-        let k_pe_rot = apply_interleaved_partial_rope(&k_pe_single_h, rope_cos, rope_sin, rope, rope)?;
+        let k_pe_rot =
+            apply_interleaved_partial_rope(&k_pe_single_h, rope_cos, rope_sin, rope, rope)?;
 
         // ---- Append to cache (squeeze the batch==1 dim) ----------------------
         let latent_new = compressed_kv_norm.reshape(Shape::from_dims(&[s, kvr]))?;
@@ -2028,7 +2199,9 @@ impl DeepSeek2Model {
         let ctx = ctx_latent.matmul(&w_uv)?; // (1, H, s, v_dim)
 
         let merged = ctx.merge_heads()?;
-        let out = w.o_proj.apply_linear(&merged, n_heads * v_dim, cfg.hidden_size)?;
+        let out = w
+            .o_proj
+            .apply_linear(&merged, n_heads * v_dim, cfg.hidden_size)?;
         Ok((out, cache))
     }
 
@@ -2068,17 +2241,22 @@ impl DeepSeek2Model {
         let q_pe = q.slice(3_usize, nope, rope)?;
 
         // ---- KV compressed projection ---------------------------------------
-        let kv_a = w.kv_a_proj_with_mqa.apply_linear(
-            x, cfg.hidden_size, cfg.kv_lora_rank + rope,
-        )?;
+        let kv_a =
+            w.kv_a_proj_with_mqa
+                .apply_linear(x, cfg.hidden_size, cfg.kv_lora_rank + rope)?;
         let compressed_kv = kv_a.slice(2_usize, 0, cfg.kv_lora_rank)?;
         let k_pe_single = kv_a.slice(2_usize, cfg.kv_lora_rank, rope)?;
         // k_pe shape (b, seq, rope) → (b, 1, seq, rope) for MQA broadcast.
         let k_pe_single_h = k_pe_single.split_heads(1, rope)?;
 
-        let compressed_kv_norm = compressed_kv.rms_norm_affine(std::sync::Arc::clone(&w.kv_a_layernorm_gain), cfg.rms_norm_eps)?;
+        let compressed_kv_norm = compressed_kv.rms_norm_affine(
+            std::sync::Arc::clone(&w.kv_a_layernorm_gain),
+            cfg.rms_norm_eps,
+        )?;
         let kv = w.kv_b_proj.apply_linear(
-            &compressed_kv_norm, cfg.kv_lora_rank, n_heads * (nope + v_dim),
+            &compressed_kv_norm,
+            cfg.kv_lora_rank,
+            n_heads * (nope + v_dim),
         )?;
         let kv = kv.split_heads(n_heads, nope + v_dim)?;
         let k_nope = kv.slice(3_usize, 0, nope)?;
@@ -2086,11 +2264,11 @@ impl DeepSeek2Model {
 
         // ---- RoPE on q_pe and k_pe (interleaved) ----------------------------
         let q_pe_rot = apply_interleaved_partial_rope(&q_pe, rope_cos, rope_sin, rope, rope)?;
-        let k_pe_rot = apply_interleaved_partial_rope(&k_pe_single_h, rope_cos, rope_sin, rope, rope)?;
+        let k_pe_rot =
+            apply_interleaved_partial_rope(&k_pe_single_h, rope_cos, rope_sin, rope, rope)?;
 
         // Broadcast k_pe_rot from (b, 1, seq, rope) to (b, n_heads, seq, rope).
-        let k_pe_full = k_pe_rot
-            .broadcast_to(Shape::from_dims(&[batch, n_heads, seq, rope]))?;
+        let k_pe_full = k_pe_rot.broadcast_to(Shape::from_dims(&[batch, n_heads, seq, rope]))?;
 
         // Cat Q and K along the head_dim axis.
         let q_full = q_nope.concat(&q_pe_rot, 3_usize)?;
@@ -2108,14 +2286,11 @@ impl DeepSeek2Model {
         let ctx = probs.matmul(&v)?; // (b, n_heads, seq, v_dim)
 
         let merged = ctx.merge_heads()?;
-        Ok(w.o_proj.apply_linear(&merged, n_heads * v_dim, cfg.hidden_size)?)
+        Ok(w.o_proj
+            .apply_linear(&merged, n_heads * v_dim, cfg.hidden_size)?)
     }
 
-    fn apply_dense_mlp(
-        &self,
-        x: &LazyTensor,
-        w: &DeepSeek2DenseMlpWeights,
-    ) -> Result<LazyTensor> {
+    fn apply_dense_mlp(&self, x: &LazyTensor, w: &DeepSeek2DenseMlpWeights) -> Result<LazyTensor> {
         let cfg = &self.config;
         let h = cfg.hidden_size;
         let inter = cfg.intermediate_size;
@@ -2129,11 +2304,7 @@ impl DeepSeek2Model {
         Ok(w.down.apply_linear(&inner, inter, h)?)
     }
 
-    fn apply_moe(
-        &self,
-        x: &LazyTensor,
-        w: &DeepSeek2MoeWeights,
-    ) -> Result<LazyTensor> {
+    fn apply_moe(&self, x: &LazyTensor, w: &DeepSeek2MoeWeights) -> Result<LazyTensor> {
         let cfg = &self.config;
         let x_shape = x.shape();
         let dims = x_shape.dims();
@@ -2144,15 +2315,15 @@ impl DeepSeek2Model {
         let n_routed = cfg.n_routed_experts.unwrap_or(0);
         let n_shared = cfg.n_shared_experts.unwrap_or(0);
         assert!(n_routed > 0, "MoE block requires n_routed_experts > 0");
-        assert_eq!(w.experts.len(), n_routed,
+        assert_eq!(
+            w.experts.len(),
+            n_routed,
             "MoE weights expert count {} != n_routed_experts {n_routed}",
-            w.experts.len());
+            w.experts.len()
+        );
 
         // Routed path (dense routing — full softmax × every expert).
-        let router_t = x.const_f32_like(
-            w.router.clone(),
-            Shape::from_dims(&[h, n_routed]),
-        );
+        let router_t = x.const_f32_like(w.router.clone(), Shape::from_dims(&[h, n_routed]));
         let router_logits = x.matmul(&router_t)?;
         let routing_weights = router_logits.softmax_last_dim()?;
 
@@ -2201,7 +2372,10 @@ mod tests {
         Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
     }
 
-    fn tiny_mla_weights(cfg: &DeepSeek2Config, nb: &mut Box<dyn FnMut() -> f32>) -> DeepSeek2MlaWeights {
+    fn tiny_mla_weights(
+        cfg: &DeepSeek2Config,
+        nb: &mut Box<dyn FnMut() -> f32>,
+    ) -> DeepSeek2MlaWeights {
         let h = cfg.hidden_size;
         let n_heads = cfg.num_attention_heads;
         let q_head_dim = cfg.q_head_dim();
@@ -2210,7 +2384,10 @@ mod tests {
         let v_dim = cfg.v_head_dim;
 
         let q_proj = match cfg.q_lora_rank {
-            None => DeepSeek2QProj::Plain(WeightStorage::F32(vec_of(h * n_heads * q_head_dim, &mut **nb))),
+            None => DeepSeek2QProj::Plain(WeightStorage::F32(vec_of(
+                h * n_heads * q_head_dim,
+                &mut **nb,
+            ))),
             Some(lora) => DeepSeek2QProj::Lora {
                 a: WeightStorage::F32(vec_of(h * lora, &mut **nb)),
                 norm_gain: Arc::from(vec![1.0_f32; lora]),
@@ -2219,14 +2396,23 @@ mod tests {
         };
         DeepSeek2MlaWeights {
             q_proj,
-            kv_a_proj_with_mqa: WeightStorage::F32(vec_of(h * (cfg.kv_lora_rank + rope), &mut **nb)),
+            kv_a_proj_with_mqa: WeightStorage::F32(vec_of(
+                h * (cfg.kv_lora_rank + rope),
+                &mut **nb,
+            )),
             kv_a_layernorm_gain: Arc::from(vec![1.0_f32; cfg.kv_lora_rank]),
-            kv_b_proj: WeightStorage::F32(vec_of(cfg.kv_lora_rank * n_heads * (nope + v_dim), &mut **nb)),
+            kv_b_proj: WeightStorage::F32(vec_of(
+                cfg.kv_lora_rank * n_heads * (nope + v_dim),
+                &mut **nb,
+            )),
             o_proj: WeightStorage::F32(vec_of(n_heads * v_dim * h, &mut **nb)),
         }
     }
 
-    fn tiny_dense_mlp(cfg: &DeepSeek2Config, nb: &mut Box<dyn FnMut() -> f32>) -> DeepSeek2DenseMlpWeights {
+    fn tiny_dense_mlp(
+        cfg: &DeepSeek2Config,
+        nb: &mut Box<dyn FnMut() -> f32>,
+    ) -> DeepSeek2DenseMlpWeights {
         let h = cfg.hidden_size;
         let i = cfg.intermediate_size;
         DeepSeek2DenseMlpWeights {
@@ -2251,7 +2437,8 @@ mod tests {
             })
             .collect();
         DeepSeek2MoeWeights {
-            router, experts,
+            router,
+            experts,
             shared_gate: WeightStorage::F32(vec_of(h * shared_inter, &mut **nb)),
             shared_up: WeightStorage::F32(vec_of(h * shared_inter, &mut **nb)),
             shared_down: WeightStorage::F32(vec_of(shared_inter * h, &mut **nb)),
@@ -2291,22 +2478,26 @@ mod tests {
         };
         DeepSeek2Weights {
             instance: crate::decode_shape::ModelInstanceId::next(),
-            token_embedding, layers,
-            final_norm_gain, lm_head,
+            token_embedding,
+            layers,
+            final_norm_gain,
+            lm_head,
         }
     }
 
     fn tiny_config_lora_q() -> DeepSeek2Config {
         DeepSeek2Config {
-            vocab_size: 16, hidden_size: 16,
-            intermediate_size: 32, moe_intermediate_size: 8,
+            vocab_size: 16,
+            hidden_size: 16,
+            intermediate_size: 32,
+            moe_intermediate_size: 8,
             num_hidden_layers: 3,
             num_attention_heads: 4,
             n_shared_experts: Some(1),
             n_routed_experts: Some(2),
             num_experts_per_tok: Some(1),
             moe_layer_freq: 1,
-            first_k_dense_replace: 1,  // layer 0 is dense; layers 1, 2 are MoE
+            first_k_dense_replace: 1, // layer 0 is dense; layers 1, 2 are MoE
             norm_topk_prob: false,
             hidden_activation: DeepSeek2Activation::Silu,
             max_position_embeddings: 32,
@@ -2323,13 +2514,19 @@ mod tests {
     }
 
     fn tiny_config_plain_q() -> DeepSeek2Config {
-        DeepSeek2Config { q_lora_rank: None, ..tiny_config_lora_q() }
+        DeepSeek2Config {
+            q_lora_rank: None,
+            ..tiny_config_lora_q()
+        }
     }
 
     #[test]
     fn forward_shape_and_finite_lora_q() {
         let cfg = tiny_config_lora_q();
-        let model = DeepSeek2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = DeepSeek2Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits = model.forward(&tokens, 0).unwrap();
         assert_eq!(logits.shape().dims(), &[1, tokens.len(), cfg.vocab_size]);
@@ -2341,7 +2538,10 @@ mod tests {
     #[test]
     fn forward_shape_and_finite_plain_q() {
         let cfg = tiny_config_plain_q();
-        let model = DeepSeek2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = DeepSeek2Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits = model.forward(&tokens, 0).unwrap();
         assert_eq!(logits.shape().dims(), &[1, tokens.len(), cfg.vocab_size]);
@@ -2365,7 +2565,10 @@ mod tests {
     /// output changes.
     #[test]
     fn mla_k_pe_is_wired() {
-        let cfg = DeepSeek2Config { num_hidden_layers: 1, ..tiny_config_lora_q() };
+        let cfg = DeepSeek2Config {
+            num_hidden_layers: 1,
+            ..tiny_config_lora_q()
+        };
         let h = cfg.hidden_size;
         let base = tiny_weights(&cfg);
         let mut zeroed = base.clone();
@@ -2382,8 +2585,14 @@ mod tests {
             }
         }
         zeroed.layers[0].mla.kv_a_proj_with_mqa = WeightStorage::F32(Arc::from(kv_a_v));
-        let m_base = DeepSeek2Model { config: cfg.clone(), weights: base };
-        let m_zero = DeepSeek2Model { config: cfg, weights: zeroed };
+        let m_base = DeepSeek2Model {
+            config: cfg.clone(),
+            weights: base,
+        };
+        let m_zero = DeepSeek2Model {
+            config: cfg,
+            weights: zeroed,
+        };
         let toks = [1_u32, 2, 3];
         let a = m_base.forward(&toks, 0).unwrap().realize_f32();
         let b = m_zero.forward(&toks, 0).unwrap().realize_f32();
@@ -2391,8 +2600,10 @@ mod tests {
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-8,
-            "k_pe path must be wired (zeroing kv_a's rope cols alters output), max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-8,
+            "k_pe path must be wired (zeroing kv_a's rope cols alters output), max_diff = {max_diff}"
+        );
     }
 
     /// Shared expert must contribute alongside routed experts.
@@ -2416,8 +2627,14 @@ mod tests {
         } else {
             panic!("expected MoE FFN");
         }
-        let m_base = DeepSeek2Model { config: cfg.clone(), weights: base };
-        let m_zero = DeepSeek2Model { config: cfg, weights: zeroed };
+        let m_base = DeepSeek2Model {
+            config: cfg.clone(),
+            weights: base,
+        };
+        let m_zero = DeepSeek2Model {
+            config: cfg,
+            weights: zeroed,
+        };
         let toks = [1_u32, 2, 3];
         let a = m_base.forward(&toks, 0).unwrap().realize_f32();
         let b = m_zero.forward(&toks, 0).unwrap().realize_f32();
@@ -2425,14 +2642,19 @@ mod tests {
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-8,
-            "shared expert path must contribute, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-8,
+            "shared expert path must contribute, max_diff = {max_diff}"
+        );
     }
 
     #[test]
     fn forward_hidden_shape_and_finite() {
         let cfg = tiny_config_lora_q();
-        let model = DeepSeek2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = DeepSeek2Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
         let hidden = model.forward_hidden(&tokens, 0).unwrap();
         assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
@@ -2444,27 +2666,37 @@ mod tests {
     #[test]
     fn forward_embeds_matches_forward_after_token_lookup() {
         let cfg = tiny_config_lora_q();
-        let model = DeepSeek2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = DeepSeek2Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
-        let max_diff = logits_ref.iter().zip(logits_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "DeepSeek-V2 forward vs forward_embeds must agree (max diff {max_diff})");
+        let max_diff = logits_ref
+            .iter()
+            .zip(logits_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "DeepSeek-V2 forward vs forward_embeds must agree (max diff {max_diff})"
+        );
     }
 
     #[test]
     fn forward_embeds_rejects_bad_shape() {
         let cfg = tiny_config_lora_q();
-        let model = DeepSeek2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = DeepSeek2Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let bad = LazyTensor::from_f32(
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
-            Shape::from_dims(&[1, 3, cfg.hidden_size + 1]), &Device::cpu(),
+            Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
+            &Device::cpu(),
         );
         assert!(model.forward_embeds(&bad, 0).is_err());
     }
@@ -2476,7 +2708,10 @@ mod tests {
     #[test]
     fn forward_with_latent_cache_matches_one_shot_forward() {
         for cfg in [tiny_config_plain_q(), tiny_config_lora_q()] {
-            let model = DeepSeek2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+            let model = DeepSeek2Model {
+                config: cfg.clone(),
+                weights: tiny_weights(&cfg),
+            };
             let vocab = cfg.vocab_size;
             let tokens: Vec<u32> = vec![1, 2, 3, 4];
 
@@ -2495,14 +2730,16 @@ mod tests {
             // `forward_with_latent_cache` now works around it internally
             // (rebinding each call onto its own fresh graph), so plain
             // per-step realize works here without any test-side fallback.
-            let anchor = LazyTensor::from_f32(
-                vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-            );
+            let anchor =
+                LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
             let cache = LazyLatentCache::new(
-                &anchor, cfg.num_hidden_layers, 8,
+                &anchor,
+                cfg.num_hidden_layers,
+                8,
                 vec![vec![cfg.kv_lora_rank], vec![cfg.qk_rope_head_dim]],
                 DType::F32,
-            ).unwrap();
+            )
+            .unwrap();
 
             let (logits_a, cache) = model.forward_with_latent_cache(&[1, 2], cache).unwrap();
             assert_eq!(logits_a.shape().dims(), &[1, 2, vocab]);
@@ -2538,11 +2775,14 @@ mod tests {
             if !bit_exact {
                 eprintln!(
                     "forward_with_latent_cache_matches_one_shot_forward: not bit-exact \
-                     (q_lora_rank={:?}), max abs diff = {max_diff}", cfg.q_lora_rank,
+                     (q_lora_rank={:?}), max abs diff = {max_diff}",
+                    cfg.q_lora_rank,
                 );
-                assert!(max_diff < 1e-5,
+                assert!(
+                    max_diff < 1e-5,
                     "forward_with_latent_cache vs one-shot forward diverge beyond tolerance: \
-                     max_diff={max_diff}");
+                     max_diff={max_diff}"
+                );
             }
         }
     }
@@ -2552,54 +2792,87 @@ mod tests {
     #[test]
     fn forward_with_latent_cache_rejects_bad_cache_geometry() {
         let cfg = tiny_config_lora_q();
-        let model = DeepSeek2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let model = DeepSeek2Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
 
         // Wrong slot count (1 slot instead of 2).
         let bad_slots = LazyLatentCache::new(
-            &anchor, cfg.num_hidden_layers, 8, vec![vec![cfg.kv_lora_rank]], DType::F32,
-        ).unwrap();
+            &anchor,
+            cfg.num_hidden_layers,
+            8,
+            vec![vec![cfg.kv_lora_rank]],
+            DType::F32,
+        )
+        .unwrap();
         assert!(model.forward_with_latent_cache(&[1, 2], bad_slots).is_err());
 
         // Wrong trailing shape on slot 0.
         let bad_trailing = LazyLatentCache::new(
-            &anchor, cfg.num_hidden_layers, 8,
-            vec![vec![cfg.kv_lora_rank + 1], vec![cfg.qk_rope_head_dim]], DType::F32,
-        ).unwrap();
-        assert!(model.forward_with_latent_cache(&[1, 2], bad_trailing).is_err());
+            &anchor,
+            cfg.num_hidden_layers,
+            8,
+            vec![vec![cfg.kv_lora_rank + 1], vec![cfg.qk_rope_head_dim]],
+            DType::F32,
+        )
+        .unwrap();
+        assert!(
+            model
+                .forward_with_latent_cache(&[1, 2], bad_trailing)
+                .is_err()
+        );
 
         // Exceeding capacity: max_seq_len 2, feed 3 tokens.
         let small_cap = LazyLatentCache::new(
-            &anchor, cfg.num_hidden_layers, 2,
-            vec![vec![cfg.kv_lora_rank], vec![cfg.qk_rope_head_dim]], DType::F32,
-        ).unwrap();
-        assert!(model.forward_with_latent_cache(&[1, 2, 3], small_cap).is_err());
+            &anchor,
+            cfg.num_hidden_layers,
+            2,
+            vec![vec![cfg.kv_lora_rank], vec![cfg.qk_rope_head_dim]],
+            DType::F32,
+        )
+        .unwrap();
+        assert!(
+            model
+                .forward_with_latent_cache(&[1, 2, 3], small_cap)
+                .is_err()
+        );
     }
 
     #[test]
     fn forward_hidden_embeds_matches_forward_hidden() {
         let cfg = tiny_config_lora_q();
-        let model = DeepSeek2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = DeepSeek2Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
-        let h_via_embeds = model.forward_hidden_embeds(&embeds, 0).unwrap().realize_f32();
-        let max_diff = h_ref.iter().zip(h_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "DeepSeek-V2 forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})");
+        let h_via_embeds = model
+            .forward_hidden_embeds(&embeds, 0)
+            .unwrap()
+            .realize_f32();
+        let max_diff = h_ref
+            .iter()
+            .zip(h_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "DeepSeek-V2 forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})"
+        );
     }
 
     /// Argmax of a logits row (greedy-decode robustness check).
     fn argmax_row(row: &[f32]) -> usize {
-        row.iter().enumerate()
+        row.iter()
+            .enumerate()
             .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-            .unwrap().0
+            .unwrap()
+            .0
     }
 
     /// MLA weight-absorption decode trick: `forward_with_latent_cache_absorbed`
@@ -2625,22 +2898,30 @@ mod tests {
     #[test]
     fn forward_with_latent_cache_absorbed_matches_unabsorbed() {
         for cfg in [tiny_config_plain_q(), tiny_config_lora_q()] {
-            let model = DeepSeek2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+            let model = DeepSeek2Model {
+                config: cfg.clone(),
+                weights: tiny_weights(&cfg),
+            };
             let vocab = cfg.vocab_size;
 
-            let anchor = LazyTensor::from_f32(
-                vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-            );
+            let anchor =
+                LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
             let cache_u = LazyLatentCache::new(
-                &anchor, cfg.num_hidden_layers, 8,
+                &anchor,
+                cfg.num_hidden_layers,
+                8,
                 vec![vec![cfg.kv_lora_rank], vec![cfg.qk_rope_head_dim]],
                 DType::F32,
-            ).unwrap();
+            )
+            .unwrap();
             let cache_a = LazyLatentCache::new(
-                &anchor, cfg.num_hidden_layers, 8,
+                &anchor,
+                cfg.num_hidden_layers,
+                8,
                 vec![vec![cfg.kv_lora_rank], vec![cfg.qk_rope_head_dim]],
                 DType::F32,
-            ).unwrap();
+            )
+            .unwrap();
 
             let mut max_diff = 0.0_f32;
             let mut check = |u: &[f32], a: &[f32]| {
@@ -2650,22 +2931,31 @@ mod tests {
                 for row in 0..(u.len() / vocab) {
                     let urow = &u[row * vocab..(row + 1) * vocab];
                     let arow = &a[row * vocab..(row + 1) * vocab];
-                    assert_eq!(argmax_row(urow), argmax_row(arow),
+                    assert_eq!(
+                        argmax_row(urow),
+                        argmax_row(arow),
                         "argmax mismatch absorbed vs unabsorbed (q_lora_rank={:?}, row={row})",
-                        cfg.q_lora_rank);
+                        cfg.q_lora_rank
+                    );
                 }
             };
 
             let (logits_a_u, cache_u) = model.forward_with_latent_cache(&[1, 2], cache_u).unwrap();
-            let (logits_a_a, cache_a) = model.forward_with_latent_cache_absorbed(&[1, 2], cache_a).unwrap();
+            let (logits_a_a, cache_a) = model
+                .forward_with_latent_cache_absorbed(&[1, 2], cache_a)
+                .unwrap();
             check(&logits_a_u.realize_f32(), &logits_a_a.realize_f32());
 
             let (logits_b_u, cache_u) = model.forward_with_latent_cache(&[3], cache_u).unwrap();
-            let (logits_b_a, cache_a) = model.forward_with_latent_cache_absorbed(&[3], cache_a).unwrap();
+            let (logits_b_a, cache_a) = model
+                .forward_with_latent_cache_absorbed(&[3], cache_a)
+                .unwrap();
             check(&logits_b_u.realize_f32(), &logits_b_a.realize_f32());
 
             let (logits_c_u, cache_u) = model.forward_with_latent_cache(&[4], cache_u).unwrap();
-            let (logits_c_a, cache_a) = model.forward_with_latent_cache_absorbed(&[4], cache_a).unwrap();
+            let (logits_c_a, cache_a) = model
+                .forward_with_latent_cache_absorbed(&[4], cache_a)
+                .unwrap();
             check(&logits_c_u.realize_f32(), &logits_c_a.realize_f32());
 
             assert_eq!(cache_u.current_seq_len(), 4);
@@ -2673,10 +2963,13 @@ mod tests {
 
             eprintln!(
                 "forward_with_latent_cache_absorbed_matches_unabsorbed: q_lora_rank={:?} \
-                 max abs diff = {max_diff}", cfg.q_lora_rank,
+                 max abs diff = {max_diff}",
+                cfg.q_lora_rank,
             );
-            assert!(max_diff < 1e-6,
-                "absorbed vs unabsorbed cached decode diverge beyond tolerance: max_diff={max_diff}");
+            assert!(
+                max_diff < 1e-6,
+                "absorbed vs unabsorbed cached decode diverge beyond tolerance: max_diff={max_diff}"
+            );
         }
     }
 
@@ -2686,26 +2979,37 @@ mod tests {
     #[test]
     fn forward_with_latent_cache_absorbed_matches_one_shot() {
         for cfg in [tiny_config_plain_q(), tiny_config_lora_q()] {
-            let model = DeepSeek2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+            let model = DeepSeek2Model {
+                config: cfg.clone(),
+                weights: tiny_weights(&cfg),
+            };
             let vocab = cfg.vocab_size;
             let tokens: Vec<u32> = vec![1, 2, 3, 4];
 
             let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
 
-            let anchor = LazyTensor::from_f32(
-                vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-            );
+            let anchor =
+                LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
             let cache = LazyLatentCache::new(
-                &anchor, cfg.num_hidden_layers, 8,
+                &anchor,
+                cfg.num_hidden_layers,
+                8,
                 vec![vec![cfg.kv_lora_rank], vec![cfg.qk_rope_head_dim]],
                 DType::F32,
-            ).unwrap();
+            )
+            .unwrap();
 
-            let (logits_a, cache) = model.forward_with_latent_cache_absorbed(&[1, 2], cache).unwrap();
+            let (logits_a, cache) = model
+                .forward_with_latent_cache_absorbed(&[1, 2], cache)
+                .unwrap();
             let logits_a = logits_a.realize_f32();
-            let (logits_b, cache) = model.forward_with_latent_cache_absorbed(&[3], cache).unwrap();
+            let (logits_b, cache) = model
+                .forward_with_latent_cache_absorbed(&[3], cache)
+                .unwrap();
             let logits_b = logits_b.realize_f32();
-            let (logits_c, cache) = model.forward_with_latent_cache_absorbed(&[4], cache).unwrap();
+            let (logits_c, cache) = model
+                .forward_with_latent_cache_absorbed(&[4], cache)
+                .unwrap();
             let logits_c = logits_c.realize_f32();
             assert_eq!(cache.current_seq_len(), 4);
 
@@ -2714,9 +3018,13 @@ mod tests {
                 for (r, g) in ref_row.iter().zip(got.iter()) {
                     max_diff = max_diff.max((r - g).abs());
                 }
-                assert_eq!(argmax_row(ref_row), argmax_row(got),
+                assert_eq!(
+                    argmax_row(ref_row),
+                    argmax_row(got),
                     "argmax mismatch absorbed cached decode vs one-shot forward \
-                     (q_lora_rank={:?})", cfg.q_lora_rank);
+                     (q_lora_rank={:?})",
+                    cfg.q_lora_rank
+                );
             };
             check_row(&logits_ref[0..2 * vocab], &logits_a);
             check_row(&logits_ref[2 * vocab..3 * vocab], &logits_b);
@@ -2724,11 +3032,14 @@ mod tests {
 
             eprintln!(
                 "forward_with_latent_cache_absorbed_matches_one_shot: q_lora_rank={:?} \
-                 max abs diff = {max_diff}", cfg.q_lora_rank,
+                 max abs diff = {max_diff}",
+                cfg.q_lora_rank,
             );
-            assert!(max_diff < 1e-6,
+            assert!(
+                max_diff < 1e-6,
                 "forward_with_latent_cache_absorbed vs one-shot forward diverge beyond tolerance: \
-                 max_diff={max_diff}");
+                 max_diff={max_diff}"
+            );
         }
     }
 
@@ -2768,7 +3079,10 @@ mod tests {
     #[test]
     fn forward_with_latent_kv_context_decode_matches_one_shot() {
         for cfg in [tiny_config_plain_q(), tiny_config_lora_q()] {
-            let model = DeepSeek2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+            let model = DeepSeek2Model {
+                config: cfg.clone(),
+                weights: tiny_weights(&cfg),
+            };
             let vocab = cfg.vocab_size;
 
             let prompt = [1_u32, 2, 3];
@@ -2779,14 +3093,18 @@ mod tests {
             // 3-token prompt and the full 4-token sequence.
             let prefill_logits = model.forward(&prompt, 0).unwrap();
             let prefill_expected = prefill_logits
-                .slice(1_usize, prompt.len() - 1, 1).unwrap()
-                .reshape(Shape::from_dims(&[vocab])).unwrap()
+                .slice(1_usize, prompt.len() - 1, 1)
+                .unwrap()
+                .reshape(Shape::from_dims(&[vocab]))
+                .unwrap()
                 .realize_f32();
 
             let full_logits = model.forward(&full, 0).unwrap();
             let full_expected = full_logits
-                .slice(1_usize, full.len() - 1, 1).unwrap()
-                .reshape(Shape::from_dims(&[vocab])).unwrap()
+                .slice(1_usize, full.len() - 1, 1)
+                .unwrap()
+                .reshape(Shape::from_dims(&[vocab]))
+                .unwrap()
                 .realize_f32();
 
             // Cached run through the persistent path.
@@ -2796,7 +3114,8 @@ mod tests {
                 vec![vec![cfg.kv_lora_rank], vec![cfg.qk_rope_head_dim]],
                 DType::F32,
                 &Device::cpu(),
-            ).expect("LatentKvCache::with_capacity");
+            )
+            .expect("LatentKvCache::with_capacity");
             let mut ctx = crate::inference_context::InferenceContext::new(Device::cpu());
 
             let prefill_actual = model
@@ -2818,7 +3137,8 @@ mod tests {
             }
             eprintln!(
                 "forward_with_latent_kv_context_decode_matches_one_shot: q_lora_rank={:?} \
-                 max abs diff = {max_diff}", cfg.q_lora_rank,
+                 max abs diff = {max_diff}",
+                cfg.q_lora_rank,
             );
             // Tolerance calibration (sabotage-measured, 2026-07-08):
             // genuine drift is ~7.5e-9 / ~1.5e-8 (plain-Q / LoRA-Q) from
@@ -2828,16 +3148,26 @@ mod tests {
             // decode step overwrites the prefix) moves the logits by
             // ~7.7e-3. 1e-6 sits ~67x above genuine drift and ~7700x
             // below the corruption signal.
-            assert!(max_diff < 1e-6,
+            assert!(
+                max_diff < 1e-6,
                 "forward_with_latent_kv_context vs one-shot forward diverge beyond tolerance: \
-                 max_diff={max_diff}");
+                 max_diff={max_diff}"
+            );
 
             // Version contract: two forward_with_latent_kv_context calls ⇒
             // both slots of every layer bumped exactly twice.
             for li in 0..cfg.num_hidden_layers {
                 let layer = cache.layers[li].as_ref().expect("layer populated");
-                assert_eq!(layer[0].version, 2, "latent slot version (q_lora_rank={:?})", cfg.q_lora_rank);
-                assert_eq!(layer[1].version, 2, "k_pe slot version (q_lora_rank={:?})", cfg.q_lora_rank);
+                assert_eq!(
+                    layer[0].version, 2,
+                    "latent slot version (q_lora_rank={:?})",
+                    cfg.q_lora_rank
+                );
+                assert_eq!(
+                    layer[1].version, 2,
+                    "k_pe slot version (q_lora_rank={:?})",
+                    cfg.q_lora_rank
+                );
             }
         }
     }
@@ -2847,41 +3177,74 @@ mod tests {
     #[test]
     fn forward_with_latent_kv_context_rejects_bad_geometry() {
         let cfg = tiny_config_lora_q();
-        let model = DeepSeek2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = DeepSeek2Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
 
         // Wrong n_layers.
         let mut bad_layers = crate::inference_context::LatentKvCache::with_capacity(
-            cfg.num_hidden_layers + 1, 8,
+            cfg.num_hidden_layers + 1,
+            8,
             vec![vec![cfg.kv_lora_rank], vec![cfg.qk_rope_head_dim]],
-            DType::F32, &Device::cpu(),
-        ).unwrap();
+            DType::F32,
+            &Device::cpu(),
+        )
+        .unwrap();
         let mut ctx = crate::inference_context::InferenceContext::new(Device::cpu());
-        assert!(model.forward_with_latent_kv_context(&[1, 2], &mut bad_layers, &mut ctx).is_err());
+        assert!(
+            model
+                .forward_with_latent_kv_context(&[1, 2], &mut bad_layers, &mut ctx)
+                .is_err()
+        );
 
         // Wrong slot count (1 slot instead of 2).
         let mut bad_slots = crate::inference_context::LatentKvCache::with_capacity(
-            cfg.num_hidden_layers, 8, vec![vec![cfg.kv_lora_rank]], DType::F32, &Device::cpu(),
-        ).unwrap();
+            cfg.num_hidden_layers,
+            8,
+            vec![vec![cfg.kv_lora_rank]],
+            DType::F32,
+            &Device::cpu(),
+        )
+        .unwrap();
         let mut ctx = crate::inference_context::InferenceContext::new(Device::cpu());
-        assert!(model.forward_with_latent_kv_context(&[1, 2], &mut bad_slots, &mut ctx).is_err());
+        assert!(
+            model
+                .forward_with_latent_kv_context(&[1, 2], &mut bad_slots, &mut ctx)
+                .is_err()
+        );
 
         // Wrong trailing shape on slot 0.
         let mut bad_trailing = crate::inference_context::LatentKvCache::with_capacity(
-            cfg.num_hidden_layers, 8,
+            cfg.num_hidden_layers,
+            8,
             vec![vec![cfg.kv_lora_rank + 1], vec![cfg.qk_rope_head_dim]],
-            DType::F32, &Device::cpu(),
-        ).unwrap();
+            DType::F32,
+            &Device::cpu(),
+        )
+        .unwrap();
         let mut ctx = crate::inference_context::InferenceContext::new(Device::cpu());
-        assert!(model.forward_with_latent_kv_context(&[1, 2], &mut bad_trailing, &mut ctx).is_err());
+        assert!(
+            model
+                .forward_with_latent_kv_context(&[1, 2], &mut bad_trailing, &mut ctx)
+                .is_err()
+        );
 
         // Capacity overflow: max_seq_len 2, feed 3 tokens.
         let mut small_cap = crate::inference_context::LatentKvCache::with_capacity(
-            cfg.num_hidden_layers, 2,
+            cfg.num_hidden_layers,
+            2,
             vec![vec![cfg.kv_lora_rank], vec![cfg.qk_rope_head_dim]],
-            DType::F32, &Device::cpu(),
-        ).unwrap();
+            DType::F32,
+            &Device::cpu(),
+        )
+        .unwrap();
         let mut ctx = crate::inference_context::InferenceContext::new(Device::cpu());
-        assert!(model.forward_with_latent_kv_context(&[1, 2, 3], &mut small_cap, &mut ctx).is_err());
+        assert!(
+            model
+                .forward_with_latent_kv_context(&[1, 2, 3], &mut small_cap, &mut ctx)
+                .is_err()
+        );
     }
 
     // ---- forward_with_latent_kv_context_persistent (MLA D2 — plan-once ----
@@ -2928,12 +3291,22 @@ mod tests {
     #[test]
     fn mla_held_plan_rebinds_onto_a_swapped_latent_cache() {
         let cfg = tiny_config_plain_q();
-        let model = DeepSeek2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = DeepSeek2Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let slot_trailing = vec![vec![cfg.kv_lora_rank], vec![cfg.qk_rope_head_dim]];
         let max_seq_len = 8usize;
-        let mk = || crate::inference_context::LatentKvCache::with_capacity(
-            cfg.num_hidden_layers, max_seq_len, slot_trailing.clone(), DType::F32, &Device::cpu(),
-        ).expect("with_capacity");
+        let mk = || {
+            crate::inference_context::LatentKvCache::with_capacity(
+                cfg.num_hidden_layers,
+                max_seq_len,
+                slot_trailing.clone(),
+                DType::F32,
+                &Device::cpu(),
+            )
+            .expect("with_capacity")
+        };
 
         let prompt_a = [1_u32, 2, 3];
         let prompt_b = [5_u32, 6, 7];
@@ -2943,37 +3316,55 @@ mod tests {
         let mut cache_a = mk();
         let mut ctx = crate::inference_context::InferenceContext::new(Device::cpu());
         let mut session: Option<crate::inference_context::DecodeSession> = None;
-        model.forward_with_latent_kv_context_persistent(&prompt_a, &mut cache_a, &mut ctx, &mut session)
+        model
+            .forward_with_latent_kv_context_persistent(
+                &prompt_a,
+                &mut cache_a,
+                &mut ctx,
+                &mut session,
+            )
             .expect("A prefill");
-        model.forward_with_latent_kv_context_persistent(&[9], &mut cache_a, &mut ctx, &mut session)
+        model
+            .forward_with_latent_kv_context_persistent(&[9], &mut cache_a, &mut ctx, &mut session)
             .expect("A's first decode token builds the plan");
         // Arc identity, NOT a NodeId: data-Const NodeIds are graph-local, so a
         // REBUILT graph mints the very same ids and the comparison could not
         // tell reuse from rebuild in either direction.
-        let built = std::sync::Arc::clone(
-            session.as_ref().expect("a held MLA plan").graph(),
-        );
+        let built = std::sync::Arc::clone(session.as_ref().expect("a held MLA plan").graph());
 
         // Oracle for B's token, on an independent cache via the always-re-planning
         // path, which holds no session and so cannot be contaminated.
         let expected = {
             let mut c = mk();
             let mut x = crate::inference_context::InferenceContext::new(Device::cpu());
-            model.forward_with_latent_kv_context(&prompt_b, &mut c, &mut x).expect("oracle prefill");
-            model.forward_with_latent_kv_context(&[next], &mut c, &mut x).expect("oracle decode")
+            model
+                .forward_with_latent_kv_context(&prompt_b, &mut c, &mut x)
+                .expect("oracle prefill");
+            model
+                .forward_with_latent_kv_context(&[next], &mut c, &mut x)
+                .expect("oracle decode")
         };
         // Negative control: A's history and B's history must actually be
         // separable at this token, or the comparison below proves nothing.
         let a_history = {
             let mut c = mk();
             let mut x = crate::inference_context::InferenceContext::new(Device::cpu());
-            model.forward_with_latent_kv_context(&prompt_a, &mut c, &mut x).expect("ctl prefill");
-            model.forward_with_latent_kv_context(&[9], &mut c, &mut x).expect("ctl decode 1");
-            model.forward_with_latent_kv_context(&[next], &mut c, &mut x).expect("ctl decode 2")
+            model
+                .forward_with_latent_kv_context(&prompt_a, &mut c, &mut x)
+                .expect("ctl prefill");
+            model
+                .forward_with_latent_kv_context(&[9], &mut c, &mut x)
+                .expect("ctl decode 1");
+            model
+                .forward_with_latent_kv_context(&[next], &mut c, &mut x)
+                .expect("ctl decode 2")
         };
         let maxdiff = |a: &[f32], b: &[f32]| {
             assert_eq!(a.len(), b.len(), "logit rows must be comparable");
-            a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max)
+            a.iter()
+                .zip(b)
+                .map(|(x, y)| (x - y).abs())
+                .fold(0.0f32, f32::max)
         };
         const TOL: f32 = 1e-5;
         let separation = maxdiff(&expected, &a_history);
@@ -2987,10 +3378,16 @@ mod tests {
         // with B's own prefix through the re-planning path.
         let mut cache_b = mk();
         let mut ctx_b = crate::inference_context::InferenceContext::new(Device::cpu());
-        model.forward_with_latent_kv_context(&prompt_b, &mut cache_b, &mut ctx_b)
+        model
+            .forward_with_latent_kv_context(&prompt_b, &mut cache_b, &mut ctx_b)
             .expect("B prefill lands in B's OWN latent slots");
         let got = model
-            .forward_with_latent_kv_context_persistent(&[next], &mut cache_b, &mut ctx, &mut session)
+            .forward_with_latent_kv_context_persistent(
+                &[next],
+                &mut cache_b,
+                &mut ctx,
+                &mut session,
+            )
             .expect("B's decode step, offered the plan A built");
         let drift = maxdiff(&expected, &got);
         assert!(
@@ -2999,7 +3396,8 @@ mod tests {
              oracle while the histories are {separation:.3e} apart — this is A's answer",
         );
         assert!(
-            session.as_ref()
+            session
+                .as_ref()
                 .map(|s| std::sync::Arc::ptr_eq(s.graph(), &built))
                 .unwrap_or(false),
             "a compatible latent-cache swap must RE-BIND the held plan, not rebuild it \
@@ -3008,10 +3406,12 @@ mod tests {
 
         // (b) The other direction: continuing on the SAME cache must keep the
         // plan, and must not re-bind on every token.
-        model.forward_with_latent_kv_context_persistent(&[8], &mut cache_b, &mut ctx, &mut session)
+        model
+            .forward_with_latent_kv_context_persistent(&[8], &mut cache_b, &mut ctx, &mut session)
             .expect("second decode token on the SAME cache");
         assert!(
-            session.as_ref()
+            session
+                .as_ref()
                 .map(|s| std::sync::Arc::ptr_eq(s.graph(), &built))
                 .unwrap_or(false),
             "continuing the same request on its own cache must REUSE the plan — an \
@@ -3025,8 +3425,14 @@ mod tests {
         for cfg in [tiny_config_plain_q(), tiny_config_lora_q()] {
             let check_opt_and_node_count = cfg.q_lora_rank.is_none();
 
-            let model_d2 = DeepSeek2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
-            let model_d1 = DeepSeek2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+            let model_d2 = DeepSeek2Model {
+                config: cfg.clone(),
+                weights: tiny_weights(&cfg),
+            };
+            let model_d1 = DeepSeek2Model {
+                config: cfg.clone(),
+                weights: tiny_weights(&cfg),
+            };
 
             let prompt = [1_u32, 2, 3];
             let decode_tokens = [4_u32, 5, 6, 7]; // >= 3 decode tokens
@@ -3037,8 +3443,13 @@ mod tests {
             // per-token re-plans do NOT pollute the optimize-count window we
             // measure around the D2 loop. Store the expected logits. ---
             let mut cache1 = crate::inference_context::LatentKvCache::with_capacity(
-                cfg.num_hidden_layers, max_seq_len, slot_trailing.clone(), DType::F32, &Device::cpu(),
-            ).expect("with_capacity d1");
+                cfg.num_hidden_layers,
+                max_seq_len,
+                slot_trailing.clone(),
+                DType::F32,
+                &Device::cpu(),
+            )
+            .expect("with_capacity d1");
             let mut ctx1 = crate::inference_context::InferenceContext::new(Device::cpu());
             let _ = model_d1
                 .forward_with_latent_kv_context(&prompt, &mut cache1, &mut ctx1)
@@ -3054,24 +3465,42 @@ mod tests {
 
             // --- D2 (persistent) session state ---
             let mut cache2 = crate::inference_context::LatentKvCache::with_capacity(
-                cfg.num_hidden_layers, max_seq_len, slot_trailing.clone(), DType::F32, &Device::cpu(),
-            ).expect("with_capacity d2");
+                cfg.num_hidden_layers,
+                max_seq_len,
+                slot_trailing.clone(),
+                DType::F32,
+                &Device::cpu(),
+            )
+            .expect("with_capacity d2");
             let mut ctx2 = crate::inference_context::InferenceContext::new(Device::cpu());
             let mut session: Option<crate::inference_context::DecodeSession> = None;
 
             // Prefill the D2 path (seq > 1 -> the persistent path falls back
             // to the rebuild path; the session is NOT built here).
             let _ = model_d2
-                .forward_with_latent_kv_context_persistent(&prompt, &mut cache2, &mut ctx2, &mut session)
+                .forward_with_latent_kv_context_persistent(
+                    &prompt,
+                    &mut cache2,
+                    &mut ctx2,
+                    &mut session,
+                )
                 .expect("d2 prefill");
-            assert!(session.is_none(), "prefill (seq>1) must NOT build the held session");
+            assert!(
+                session.is_none(),
+                "prefill (seq>1) must NOT build the held session"
+            );
 
             let opt_before = crate::pipelined_bridge::optimize_calls_thread_local();
             let mut len_at_token2: Option<usize> = None;
 
             for (i, &tok) in decode_tokens.iter().enumerate() {
                 let d2 = model_d2
-                    .forward_with_latent_kv_context_persistent(&[tok], &mut cache2, &mut ctx2, &mut session)
+                    .forward_with_latent_kv_context_persistent(
+                        &[tok],
+                        &mut cache2,
+                        &mut ctx2,
+                        &mut session,
+                    )
                     .expect("d2 decode");
 
                 // (a) bit-exact vs. the D1 cached path (same plan -> same
@@ -3084,14 +3513,17 @@ mod tests {
                 );
 
                 if check_opt_and_node_count {
-                    let sess = session.as_ref().expect("session built on first decode token");
+                    let sess = session
+                        .as_ref()
+                        .expect("session built on first decode token");
                     let graph_len = sess.graph_node_count();
                     if i == 1 {
                         len_at_token2 = Some(graph_len);
                     } else if i >= 2 {
                         // (c) node count stable from token 2 onward.
                         assert_eq!(
-                            Some(graph_len), len_at_token2,
+                            Some(graph_len),
+                            len_at_token2,
                             "held graph must NOT grow from token 2 onward (token {i})",
                         );
                     }
@@ -3102,7 +3534,8 @@ mod tests {
                 // (b) optimize bumped EXACTLY ONCE across all decode tokens.
                 let opt_after = crate::pipelined_bridge::optimize_calls_thread_local();
                 assert_eq!(
-                    opt_after - opt_before, 1,
+                    opt_after - opt_before,
+                    1,
                     "persistent decode must optimize EXACTLY ONCE across {} decode tokens \
                      (the first builds the session; the rest skip optimize): {opt_before} -> {opt_after}",
                     decode_tokens.len(),
@@ -3135,7 +3568,10 @@ mod tests {
     #[test]
     fn generate_streaming_with_latent_kv_context_byte_exact_and_plans_once() {
         let cfg = tiny_config_plain_q();
-        let model = DeepSeek2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = DeepSeek2Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
 
         let prompt = [1_u32, 2, 3];
         let max_new = 4;
@@ -3147,8 +3583,13 @@ mod tests {
         // per-token re-plans do NOT pollute the optimize-count window we
         // measure around the D2 loop. ----
         let mut cache1 = crate::inference_context::LatentKvCache::with_capacity(
-            cfg.num_hidden_layers, max_seq_len, slot_trailing.clone(), DType::F32, &Device::cpu(),
-        ).expect("with_capacity d1");
+            cfg.num_hidden_layers,
+            max_seq_len,
+            slot_trailing.clone(),
+            DType::F32,
+            &Device::cpu(),
+        )
+        .expect("with_capacity d1");
         let mut ctx1 = crate::inference_context::InferenceContext::new(Device::cpu());
         let mut rng1: u64 = 0;
         let mut ref_tokens: Vec<u32> = prompt.to_vec();
@@ -3171,22 +3612,40 @@ mod tests {
         let opt_before = crate::pipelined_bridge::optimize_calls_thread_local();
 
         let mut cache2 = crate::inference_context::LatentKvCache::with_capacity(
-            cfg.num_hidden_layers, max_seq_len, slot_trailing.clone(), DType::F32, &Device::cpu(),
-        ).expect("with_capacity d2");
+            cfg.num_hidden_layers,
+            max_seq_len,
+            slot_trailing.clone(),
+            DType::F32,
+            &Device::cpu(),
+        )
+        .expect("with_capacity d2");
         let mut ctx2 = crate::inference_context::InferenceContext::new(Device::cpu());
         let mut rng2: u64 = 0;
         let mut session: Option<crate::inference_context::DecodeSession> = None;
         let mut d2_tokens: Vec<u32> = prompt.to_vec();
         let mut d2_step_logits: Vec<Vec<f32>> = Vec::with_capacity(max_new);
         let mut last2 = model
-            .forward_with_latent_kv_context_persistent(&prompt, &mut cache2, &mut ctx2, &mut session)
+            .forward_with_latent_kv_context_persistent(
+                &prompt,
+                &mut cache2,
+                &mut ctx2,
+                &mut session,
+            )
             .expect("d2 prefill");
-        assert!(session.is_none(), "prefill (seq>1) must NOT build the held session");
+        assert!(
+            session.is_none(),
+            "prefill (seq>1) must NOT build the held session"
+        );
         for _ in 0..max_new {
             let next = crate::lazy::sample_logits(&last2, strategy, &mut rng2);
             d2_tokens.push(next);
             last2 = model
-                .forward_with_latent_kv_context_persistent(&[next], &mut cache2, &mut ctx2, &mut session)
+                .forward_with_latent_kv_context_persistent(
+                    &[next],
+                    &mut cache2,
+                    &mut ctx2,
+                    &mut session,
+                )
                 .expect("d2 decode");
             d2_step_logits.push(last2.clone());
         }
@@ -3202,7 +3661,11 @@ mod tests {
 
         // (b) Each step's logits exactly == the D1 cached path.
         assert_eq!(d2_step_logits.len(), ref_step_logits.len());
-        for (i, (d2, d1)) in d2_step_logits.iter().zip(ref_step_logits.iter()).enumerate() {
+        for (i, (d2, d1)) in d2_step_logits
+            .iter()
+            .zip(ref_step_logits.iter())
+            .enumerate()
+        {
             assert_eq!(
                 d2, d1,
                 "persistent decode step {i} logits must be byte-identical to the D1 cached path",
@@ -3212,7 +3675,8 @@ mod tests {
         // (c) optimize bumped only ~once for the decode portion (prefill
         // fallback = 1, session build = 1; total 2 regardless of N).
         assert_eq!(
-            opt_after - opt_before, 2,
+            opt_after - opt_before,
+            2,
             "persistent generate must optimize EXACTLY twice (1 prefill fallback + 1 \
              decode-session build) regardless of N={max_new} decode tokens: {opt_before} -> {opt_after}",
         );
@@ -3244,14 +3708,22 @@ mod tests {
     #[test]
     fn latent_kv_persistent_invalidates_on_non_decode_step() {
         let cfg = tiny_config_plain_q();
-        let model = DeepSeek2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = DeepSeek2Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
 
         let prompt = [1_u32, 2];
         let max_seq_len = 8;
         let slot_trailing = vec![vec![cfg.kv_lora_rank], vec![cfg.qk_rope_head_dim]];
         let mut cache = crate::inference_context::LatentKvCache::with_capacity(
-            cfg.num_hidden_layers, max_seq_len, slot_trailing.clone(), DType::F32, &Device::cpu(),
-        ).expect("with_capacity");
+            cfg.num_hidden_layers,
+            max_seq_len,
+            slot_trailing.clone(),
+            DType::F32,
+            &Device::cpu(),
+        )
+        .expect("with_capacity");
         let mut ctx = crate::inference_context::InferenceContext::new(Device::cpu());
         let mut session: Option<crate::inference_context::DecodeSession> = None;
 
@@ -3296,7 +3768,10 @@ mod tests {
         let d2 = model
             .forward_with_latent_kv_context_persistent(&[6], &mut cache, &mut ctx, &mut session)
             .expect("decode after fallback");
-        assert!(session.is_some(), "session rebuilt on the next decode token");
+        assert!(
+            session.is_some(),
+            "session rebuilt on the next decode token"
+        );
         let graph_ptr_2 = Arc::as_ptr(session.as_ref().unwrap().graph());
         assert!(
             graph_ptr_1 != graph_ptr_2,
@@ -3306,13 +3781,26 @@ mod tests {
 
         // Byte-exact vs. a fresh D1 run over the identical token history.
         let mut cache_ref = crate::inference_context::LatentKvCache::with_capacity(
-            cfg.num_hidden_layers, max_seq_len, slot_trailing, DType::F32, &Device::cpu(),
-        ).expect("with_capacity ref");
+            cfg.num_hidden_layers,
+            max_seq_len,
+            slot_trailing,
+            DType::F32,
+            &Device::cpu(),
+        )
+        .expect("with_capacity ref");
         let mut ctx_ref = crate::inference_context::InferenceContext::new(Device::cpu());
-        let _ = model.forward_with_latent_kv_context(&prompt, &mut cache_ref, &mut ctx_ref).unwrap();
-        let _ = model.forward_with_latent_kv_context(&[3], &mut cache_ref, &mut ctx_ref).unwrap();
-        let _ = model.forward_with_latent_kv_context(&[4, 5], &mut cache_ref, &mut ctx_ref).unwrap();
-        let d1 = model.forward_with_latent_kv_context(&[6], &mut cache_ref, &mut ctx_ref).unwrap();
+        let _ = model
+            .forward_with_latent_kv_context(&prompt, &mut cache_ref, &mut ctx_ref)
+            .unwrap();
+        let _ = model
+            .forward_with_latent_kv_context(&[3], &mut cache_ref, &mut ctx_ref)
+            .unwrap();
+        let _ = model
+            .forward_with_latent_kv_context(&[4, 5], &mut cache_ref, &mut ctx_ref)
+            .unwrap();
+        let d1 = model
+            .forward_with_latent_kv_context(&[6], &mut cache_ref, &mut ctx_ref)
+            .unwrap();
         assert_eq!(d2, d1, "post-fallback decode must match the D1 cached path");
     }
 }

@@ -61,19 +61,24 @@ impl PReLU {
             .bt());
         }
         if num_parameters == 0 {
-            return Err(crate::Error::Msg(
-                "PReLU::new: num_parameters must be >= 1".to_string(),
-            )
-            .bt());
+            return Err(
+                crate::Error::Msg("PReLU::new: num_parameters must be >= 1".to_string()).bt(),
+            );
         }
-        Ok(Self { weight, num_parameters })
+        Ok(Self {
+            weight,
+            num_parameters,
+        })
     }
 
     /// Construct a shared-scalar PReLU. PyTorch's default
     /// initializer is `0.25`.
     pub fn scalar(alpha: f32) -> Self {
         let w: Arc<[f32]> = Arc::<[f32]>::from(vec![alpha]);
-        Self { weight: w, num_parameters: 1 }
+        Self {
+            weight: w,
+            num_parameters: 1,
+        }
     }
 
     /// Construct a per-channel PReLU with `c` channels initialized
@@ -86,7 +91,10 @@ impl PReLU {
             .bt());
         }
         let w: Arc<[f32]> = Arc::<[f32]>::from(vec![0.25_f32; c]);
-        Ok(Self { weight: w, num_parameters: c })
+        Ok(Self {
+            weight: w,
+            num_parameters: c,
+        })
     }
 
     /// Apply the activation. Returns a `LazyTensor` of the same
@@ -104,10 +112,7 @@ impl PReLU {
         // shape we need.
         let weight = if self.num_parameters == 1 {
             // Rank-0 scalar; broadcasts against anything.
-            let w = x.const_f32_like(
-                Arc::clone(&self.weight),
-                Shape::from_dims(&[]),
-            );
+            let w = x.const_f32_like(Arc::clone(&self.weight), Shape::from_dims(&[]));
             w
         } else {
             // Per-channel — require rank >= 2 and channel-axis match.
@@ -133,18 +138,12 @@ impl PReLU {
             // axis so broadcast_mul picks the right alpha per channel.
             let mut bshape: Vec<usize> = vec![1; dims.len()];
             bshape[1] = c;
-            x.const_f32_like(
-                Arc::clone(&self.weight),
-                Shape::from_dims(&bshape),
-            )
+            x.const_f32_like(Arc::clone(&self.weight), Shape::from_dims(&bshape))
         };
 
         // pos = relu(x); neg = min(x, 0)
         let pos = x.relu();
-        let zero = x.const_f32_like(
-            Arc::<[f32]>::from(vec![0.0_f32]),
-            Shape::from_dims(&[]),
-        );
+        let zero = x.const_f32_like(Arc::<[f32]>::from(vec![0.0_f32]), Shape::from_dims(&[]));
         let neg = x.minimum(&broadcast_zero_like(&zero, x)?)?;
 
         // weighted_neg = alpha * neg (broadcast).
@@ -167,23 +166,20 @@ impl PReLU {
         let n = num_parameters.unwrap_or(1);
         let w = load_tensor_as_f32(st, &format!("{prefix}.weight"))?;
         if w.len() != n {
-            crate::bail!(
-                "{prefix}.weight: {} elements, expected {n}",
-                w.len(),
-            );
+            crate::bail!("{prefix}.weight: {} elements, expected {n}", w.len(),);
         }
         let weight: Arc<[f32]> = Arc::from(w);
-        Ok(PReLU { weight, num_parameters: n })
+        Ok(PReLU {
+            weight,
+            num_parameters: n,
+        })
     }
 }
 
 /// Broadcast a rank-0 zero against `like`'s shape so that
 /// `x.minimum(&zero)` lands in the strict-shape path. Promotes the
 /// scalar via `broadcast_to`.
-fn broadcast_zero_like(
-    zero_scalar: &LazyTensor,
-    like: &LazyTensor,
-) -> Result<LazyTensor> {
+fn broadcast_zero_like(zero_scalar: &LazyTensor, like: &LazyTensor) -> Result<LazyTensor> {
     Ok(zero_scalar.broadcast_to(like.shape())?)
 }
 
@@ -213,10 +209,7 @@ mod tests {
         assert_eq!(y.len(), 5);
         let expected = [-0.2_f32, -0.1, 0.0, 1.0, 2.0];
         for (got, want) in y.iter().zip(expected.iter()) {
-            assert!(
-                approx_eq(*got, *want, 1e-6),
-                "got {got} expected {want}",
-            );
+            assert!(approx_eq(*got, *want, 1e-6), "got {got} expected {want}",);
         }
     }
 
@@ -229,8 +222,7 @@ mod tests {
         //   ch0 = [-1.0, -0.5, 0]
         //   ch1 = [-1.5, 1.0, -0.5]
         let device = Device::cpu();
-        let weights: Arc<[f32]> =
-            Arc::<[f32]>::from(vec![0.25_f32, 0.5]);
+        let weights: Arc<[f32]> = Arc::<[f32]>::from(vec![0.25_f32, 0.5]);
         let act = PReLU::new(weights, 2).unwrap();
         let x = LazyTensor::from_f32(
             vec![-4.0_f32, -2.0, 0.0, -3.0, 1.0, -1.0],
@@ -238,16 +230,10 @@ mod tests {
             &device,
         );
         let y = act.forward(&x).unwrap().realize_f32();
-        let expected = [
-            -1.0_f32, -0.5, 0.0,
-            -1.5, 1.0, -0.5,
-        ];
+        let expected = [-1.0_f32, -0.5, 0.0, -1.5, 1.0, -0.5];
         assert_eq!(y.len(), expected.len());
         for (got, want) in y.iter().zip(expected.iter()) {
-            assert!(
-                approx_eq(*got, *want, 1e-6),
-                "got {got} expected {want}",
-            );
+            assert!(approx_eq(*got, *want, 1e-6), "got {got} expected {want}",);
         }
     }
 
@@ -264,10 +250,7 @@ mod tests {
         let y = act.forward(&x).unwrap().realize_f32();
         let expected = [0.0_f32, 0.5, 1.0, 2.5, 100.0];
         for (got, want) in y.iter().zip(expected.iter()) {
-            assert!(
-                approx_eq(*got, *want, 1e-6),
-                "got {got} expected {want}",
-            );
+            assert!(approx_eq(*got, *want, 1e-6), "got {got} expected {want}",);
         }
     }
 
@@ -293,9 +276,6 @@ mod tests {
         );
         let err = act.forward(&x).unwrap_err();
         let msg = format!("{err}");
-        assert!(
-            msg.contains("rank >= 2"),
-            "expected rank-error, got {msg}",
-        );
+        assert!(msg.contains("rank >= 2"), "expected rank-error, got {msg}",);
     }
 }

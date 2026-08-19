@@ -12,8 +12,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for k in &keys {
         let v = &mc.metadata()[*k];
         let repr = match v {
-            fuel::quantized::gguf_file::Value::U8(x)  => format!("U8({x})"),
-            fuel::quantized::gguf_file::Value::I8(x)  => format!("I8({x})"),
+            fuel::quantized::gguf_file::Value::U8(x) => format!("U8({x})"),
+            fuel::quantized::gguf_file::Value::I8(x) => format!("I8({x})"),
             fuel::quantized::gguf_file::Value::U16(x) => format!("U16({x})"),
             fuel::quantized::gguf_file::Value::I16(x) => format!("I16({x})"),
             fuel::quantized::gguf_file::Value::U32(x) => format!("U32({x})"),
@@ -24,7 +24,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             fuel::quantized::gguf_file::Value::F64(x) => format!("F64({x})"),
             fuel::quantized::gguf_file::Value::Bool(x) => format!("Bool({x})"),
             fuel::quantized::gguf_file::Value::String(s) => {
-                if s.len() > 80 { format!("String({:?}...)", &s[..80]) } else { format!("String({s:?})") }
+                if s.len() > 80 {
+                    format!("String({:?}...)", &s[..80])
+                } else {
+                    format!("String({s:?})")
+                }
             }
             fuel::quantized::gguf_file::Value::Array(a) => format!("Array(len={})", a.len()),
         };
@@ -40,12 +44,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("  --- non-layer tensors ---");
     for n in names.iter().filter(|n| !n.starts_with("blk.")) {
         let info = mc.content().tensor_infos.get(n).unwrap();
-        eprintln!("  {n:65}  dtype={:?}  shape={:?}", info.ggml_dtype, info.shape.dims());
+        eprintln!(
+            "  {n:65}  dtype={:?}  shape={:?}",
+            info.ggml_dtype,
+            info.shape.dims()
+        );
     }
     eprintln!("  --- first layer tensors ---");
     for n in names.iter().filter(|n| n.starts_with("blk.0.")) {
         let info = mc.content().tensor_infos.get(n).unwrap();
-        eprintln!("  {n:65}  dtype={:?}  shape={:?}", info.ggml_dtype, info.shape.dims());
+        eprintln!(
+            "  {n:65}  dtype={:?}  shape={:?}",
+            info.ggml_dtype,
+            info.shape.dims()
+        );
     }
     Ok(())
 }

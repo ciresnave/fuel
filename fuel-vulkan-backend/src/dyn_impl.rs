@@ -56,7 +56,10 @@ impl VulkanBackendDevice {
     /// Wrap an `Arc<VulkanBackend>` so it can stand in as an
     /// `Arc<dyn DynBackendDevice>` for `fuel_core::Device`.
     pub fn new(inner: Arc<VulkanBackend>) -> Self {
-        Self { inner, seed: Mutex::new(0) }
+        Self {
+            inner,
+            seed: Mutex::new(0),
+        }
     }
 
     /// Borrow the wrapped `Arc<VulkanBackend>`.
@@ -113,7 +116,9 @@ fn vulkan_dyn_err(method: &'static str) -> Error {
 
 impl DynBackendDevice for VulkanBackendDevice {
     fn location_dyn(&self) -> DeviceLocation {
-        DeviceLocation::Vulkan { gpu_id: self.inner.gpu_id }
+        DeviceLocation::Vulkan {
+            gpu_id: self.inner.gpu_id,
+        }
     }
 
     fn as_backend_runtime(&self) -> Option<&dyn fuel_backend_contract::backend::BackendRuntime> {

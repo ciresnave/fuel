@@ -144,7 +144,10 @@ pub fn detect_language(
     let last_off = (tokens.len() - 1) * vocab;
     let logits = &logits_flat[last_off..last_off + vocab];
     // Softmax over the picked language token ids only.
-    let picked: Vec<f32> = language_token_ids.iter().map(|&i| logits[i as usize]).collect();
+    let picked: Vec<f32> = language_token_ids
+        .iter()
+        .map(|&i| logits[i as usize])
+        .collect();
     let probs = softmax_vec(&picked);
     let mut probs_lang: Vec<((&str, &str), f32)> =
         LANGUAGES.iter().copied().zip(probs.into_iter()).collect();
@@ -152,7 +155,7 @@ pub fn detect_language(
     for ((_, language), p) in probs_lang.iter().take(5) {
         println!("{language}: {p}")
     }
-    let language = crate::token_id(tokenizer, &format!("<|{}|>", probs_lang[0].0 .0))
+    let language = crate::token_id(tokenizer, &format!("<|{}|>", probs_lang[0].0.0))
         .map_err(|e| anyhow::Error::msg(format!("language token id: {e}")))?;
     Ok(language)
 }

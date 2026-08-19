@@ -127,7 +127,9 @@ impl Qwen2Model {
         let cfg = &self.config;
         let weights = &self.weights;
         let h_norm = self.run_backbone(tokens, start_pos)?;
-        Ok(weights.output.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size)?)
+        Ok(weights
+            .output
+            .apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 
     /// Run the encoder forward up to the final RmsNorm and
@@ -165,23 +167,26 @@ impl Qwen2Model {
         assert_eq!(dims[2], cfg.hidden_size);
         let head_dim = cfg.head_dim();
         assert_eq!(
-            cfg.num_attention_heads * head_dim, cfg.hidden_size,
+            cfg.num_attention_heads * head_dim,
+            cfg.hidden_size,
             "Qwen2Config: num_attention_heads * head_dim must equal hidden_size",
         );
         assert_eq!(
-            cfg.num_attention_heads % cfg.num_key_value_heads, 0,
+            cfg.num_attention_heads % cfg.num_key_value_heads,
+            0,
             "Qwen2Config: num_attention_heads must be a multiple of num_key_value_heads",
         );
 
         let mut h = embeds.clone();
-        let (rope_cos, rope_sin) = h.rope_tables_const(
-            cfg.rope_theta, start_pos, seq, head_dim,
-        );
+        let (rope_cos, rope_sin) = h.rope_tables_const(cfg.rope_theta, start_pos, seq, head_dim);
 
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, attention_mask)?;
         }
-        Ok(h.rms_norm_affine(std::sync::Arc::clone(&weights.final_norm_gain), cfg.rms_norm_eps)?)
+        Ok(h.rms_norm_affine(
+            std::sync::Arc::clone(&weights.final_norm_gain),
+            cfg.rms_norm_eps,
+        )?)
     }
 
     /// Shared backbone for the causal-mask paths
@@ -205,11 +210,7 @@ impl Qwen2Model {
         self.run_backbone_embeds(embeds, start_pos)
     }
 
-    fn run_backbone(
-        &self,
-        tokens: &[u32],
-        start_pos: usize,
-    ) -> Result<LazyTensor> {
+    fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
@@ -217,16 +218,16 @@ impl Qwen2Model {
         assert!(seq > 0, "Qwen2Model: tokens must be non-empty");
 
         let h = LazyTensor::embed_tokens(
-            weights.token_embedding.clone(), cfg.vocab_size, cfg.hidden_size, tokens, &Device::cpu(),
+            weights.token_embedding.clone(),
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
+            &Device::cpu(),
         )?;
         self.run_backbone_embeds(&h, start_pos)
     }
 
-    fn run_backbone_embeds(
-        &self,
-        embeds: &LazyTensor,
-        start_pos: usize,
-    ) -> Result<LazyTensor> {
+    fn run_backbone_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -244,13 +245,12 @@ impl Qwen2Model {
             cfg.num_attention_heads % cfg.num_key_value_heads,
             0,
             "Qwen2Config: num_attention_heads ({}) must be a multiple of num_key_value_heads ({})",
-            cfg.num_attention_heads, cfg.num_key_value_heads,
+            cfg.num_attention_heads,
+            cfg.num_key_value_heads,
         );
 
         let mut h = embeds.clone();
-        let (rope_cos, rope_sin) = h.rope_tables_const(
-            cfg.rope_theta, start_pos, seq, head_dim,
-        );
+        let (rope_cos, rope_sin) = h.rope_tables_const(cfg.rope_theta, start_pos, seq, head_dim);
 
         let causal_window = if cfg.use_sliding_window {
             Some(self.build_layer_mask(&h, seq, true))
@@ -260,16 +260,20 @@ impl Qwen2Model {
         let causal_strict = self.build_layer_mask(&h, seq, false);
 
         for (layer_idx, layer) in weights.layers.iter().enumerate() {
-            let uses_window =
-                cfg.use_sliding_window && layer_idx < cfg.max_window_layers;
+            let uses_window = cfg.use_sliding_window && layer_idx < cfg.max_window_layers;
             let mask = if uses_window {
-                causal_window.as_ref().expect("windowed mask built when use_sliding_window")
+                causal_window
+                    .as_ref()
+                    .expect("windowed mask built when use_sliding_window")
             } else {
                 &causal_strict
             };
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, mask)?;
         }
-        Ok(h.rms_norm_affine(std::sync::Arc::clone(&weights.final_norm_gain), cfg.rms_norm_eps)?)
+        Ok(h.rms_norm_affine(
+            std::sync::Arc::clone(&weights.final_norm_gain),
+            cfg.rms_norm_eps,
+        )?)
     }
 
     /// Build the attention mask for one layer. `uses_window == true`
@@ -277,7 +281,11 @@ impl Qwen2Model {
     /// strict lower-triangular causal mask.
     fn build_layer_mask(&self, anchor: &LazyTensor, seq: usize, uses_window: bool) -> LazyTensor {
         let cfg = &self.config;
-        let window = if uses_window { cfg.sliding_window } else { seq + 1 };
+        let window = if uses_window {
+            cfg.sliding_window
+        } else {
+            seq + 1
+        };
         let mut mask_data = vec![0.0_f32; seq * seq];
         for i in 0..seq {
             for j in 0..seq {
@@ -305,12 +313,24 @@ impl Qwen2Model {
         let seq = dims[1];
         let kv_dim = cfg.num_key_value_heads * head_dim;
 
-        let x_norm = x.rms_norm_affine(std::sync::Arc::clone(&layer.attn_norm_gain), cfg.rms_norm_eps)?;
+        let x_norm = x.rms_norm_affine(
+            std::sync::Arc::clone(&layer.attn_norm_gain),
+            cfg.rms_norm_eps,
+        )?;
 
         // Q / K / V projections with optional biases (Qwen2 has them).
-        let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size)?.add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
-        let k = layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
-        let v = layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
+        let q = layer
+            .attn_q
+            .apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size)?
+            .add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
+        let k = layer
+            .attn_k
+            .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
+            .add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
+        let v = layer
+            .attn_v
+            .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
+            .add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
 
         let _ = (batch, seq);
         let q = q.split_heads(cfg.num_attention_heads, head_dim)?;
@@ -336,15 +356,27 @@ impl Qwen2Model {
         let attn_v = attn.matmul(&v_full)?;
 
         let merged = attn_v.merge_heads()?;
-        let attn_out = layer.attn_o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?;
+        let attn_out = layer
+            .attn_o
+            .apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?;
 
         let h1 = x.add(&attn_out)?;
-        let h1_norm = h1.rms_norm_affine(std::sync::Arc::clone(&layer.ffn_norm_gain), cfg.rms_norm_eps)?;
+        let h1_norm = h1.rms_norm_affine(
+            std::sync::Arc::clone(&layer.ffn_norm_gain),
+            cfg.rms_norm_eps,
+        )?;
 
-        let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
-        let up = layer.ffn_up.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let gate = layer
+            .ffn_gate
+            .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let up = layer
+            .ffn_up
+            .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
         let swiglu = gate.silu().mul(&up)?;
-        let ffn_out = layer.ffn_down.apply_linear(&swiglu, cfg.intermediate_size, cfg.hidden_size)?;
+        let ffn_out =
+            layer
+                .ffn_down
+                .apply_linear(&swiglu, cfg.intermediate_size, cfg.hidden_size)?;
 
         h1.add(&ffn_out)
     }
@@ -379,7 +411,9 @@ impl Qwen2Model {
         let cfg = &self.config;
         if cfg.use_sliding_window {
             MaskPlan::split_window(
-                cfg.num_hidden_layers, cfg.max_window_layers, cfg.sliding_window,
+                cfg.num_hidden_layers,
+                cfg.max_window_layers,
+                cfg.sliding_window,
             )
         } else {
             MaskPlan::dense(cfg.num_hidden_layers)
@@ -505,13 +539,16 @@ impl Qwen2Model {
         let x_norm = x.rms_norm_affine(Arc::clone(&layer.attn_norm_gain), cfg.rms_norm_eps)?;
 
         // Q / K / V projections with Qwen2's biases.
-        let q = layer.attn_q
+        let q = layer
+            .attn_q
             .apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size)?
             .add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
-        let k = layer.attn_k
+        let k = layer
+            .attn_k
             .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
             .add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
-        let v = layer.attn_v
+        let v = layer
+            .attn_v
             .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
             .add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
 
@@ -520,10 +557,12 @@ impl Qwen2Model {
         let v_h = v.split_heads(cfg.num_key_value_heads, head_dim)?;
         // RoPE runs in f32 (its build-time requirement); the casts are no-ops
         // when the activation dtype is already f32.
-        let q_r = q_h.to_dtype(DType::F32)?
+        let q_r = q_h
+            .to_dtype(DType::F32)?
             .rope_with_tables(rope_cos, rope_sin)?
             .to_dtype(act_dtype)?;
-        let k_r = k_h.to_dtype(DType::F32)?
+        let k_r = k_h
+            .to_dtype(DType::F32)?
             .rope_with_tables(rope_cos, rope_sin)?
             .to_dtype(act_dtype)?;
 
@@ -585,16 +624,27 @@ impl Qwen2Model {
             fuel_dispatch::decode_flash::FlashArmCapability::production(),
         )?;
         let merged = attn_v_permuted.reshape(Shape::from_dims(&[
-            batch, seq, cfg.num_attention_heads * head_dim,
+            batch,
+            seq,
+            cfg.num_attention_heads * head_dim,
         ]))?;
-        let attn_out = layer.attn_o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?;
+        let attn_out = layer
+            .attn_o
+            .apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?;
 
         let h1 = x.add(&attn_out)?;
         let h1_norm = h1.rms_norm_affine(Arc::clone(&layer.ffn_norm_gain), cfg.rms_norm_eps)?;
-        let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
-        let up = layer.ffn_up.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let gate = layer
+            .ffn_gate
+            .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let up = layer
+            .ffn_up
+            .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
         let swiglu = gate.silu().mul(&up)?;
-        let ffn_out = layer.ffn_down.apply_linear(&swiglu, cfg.intermediate_size, cfg.hidden_size)?;
+        let ffn_out =
+            layer
+                .ffn_down
+                .apply_linear(&swiglu, cfg.intermediate_size, cfg.hidden_size)?;
         h1.add(&ffn_out)
     }
 }
@@ -614,7 +664,11 @@ impl PersistentDecodeModel for Qwen2Model {
         rope_inv_freq: Option<&[f64]>,
     ) -> Result<DecodeTokenData> {
         let host = crate::persistent_decode::compute_decode_token_host(
-            self, cached_len, tokens, session.max_seq_len(), rope_inv_freq,
+            self,
+            cached_len,
+            tokens,
+            session.max_seq_len(),
+            rope_inv_freq,
         );
         crate::persistent_decode::upload_decode_token_data(
             device,
@@ -655,7 +709,10 @@ impl DecodeBackbone for Qwen2Model {
     }
 
     fn decode_rope_plan(&self) -> crate::persistent_decode::RopePlan {
-        crate::persistent_decode::RopePlan::single(self.config.rope_theta, self.decode_dims().n_layers)
+        crate::persistent_decode::RopePlan::single(
+            self.config.rope_theta,
+            self.decode_dims().n_layers,
+        )
     }
 
     fn decode_token_embedding(&self) -> Arc<[f32]> {
@@ -684,10 +741,12 @@ impl DecodeBackbone for Qwen2Model {
 
     fn decode_final_norm_and_head(&self, h: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
-        let h_norm = h.rms_norm_affine(
-            Arc::clone(&self.weights.final_norm_gain), cfg.rms_norm_eps,
-        )?;
-        Ok(self.weights.output.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size)?)
+        let h_norm =
+            h.rms_norm_affine(Arc::clone(&self.weights.final_norm_gain), cfg.rms_norm_eps)?;
+        Ok(self
+            .weights
+            .output
+            .apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 }
 
@@ -711,26 +770,90 @@ impl Qwen2Weights {
         let mut layers: Vec<LayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
         for i in 0..cfg.num_hidden_layers {
             let p = format!("model.layers.{i}");
-            let attn_q = load_transposed_matrix_preserve_dtype(st, &format!("{p}.self_attn.q_proj.weight"), q_dim, h)?;
-            let attn_q_bias = Some(Arc::from(load_tensor_as_f32(st, &format!("{p}.self_attn.q_proj.bias"))?));
-            let attn_k = load_transposed_matrix_preserve_dtype(st, &format!("{p}.self_attn.k_proj.weight"), kv_dim, h)?;
-            let attn_k_bias = Some(Arc::from(load_tensor_as_f32(st, &format!("{p}.self_attn.k_proj.bias"))?));
-            let attn_v = load_transposed_matrix_preserve_dtype(st, &format!("{p}.self_attn.v_proj.weight"), kv_dim, h)?;
-            let attn_v_bias = Some(Arc::from(load_tensor_as_f32(st, &format!("{p}.self_attn.v_proj.bias"))?));
-            let attn_o = load_transposed_matrix_preserve_dtype(st, &format!("{p}.self_attn.o_proj.weight"), h, q_dim)?;
-            let ffn_gate = load_transposed_matrix_preserve_dtype(st, &format!("{p}.mlp.gate_proj.weight"), inter, h)?;
-            let ffn_up = load_transposed_matrix_preserve_dtype(st, &format!("{p}.mlp.up_proj.weight"), inter, h)?;
-            let ffn_down = load_transposed_matrix_preserve_dtype(st, &format!("{p}.mlp.down_proj.weight"), h, inter)?;
-            let attn_norm_gain = Arc::from(load_tensor_as_f32(st, &format!("{p}.input_layernorm.weight"))?);
-            let ffn_norm_gain = Arc::from(load_tensor_as_f32(st, &format!("{p}.post_attention_layernorm.weight"))?);
+            let attn_q = load_transposed_matrix_preserve_dtype(
+                st,
+                &format!("{p}.self_attn.q_proj.weight"),
+                q_dim,
+                h,
+            )?;
+            let attn_q_bias = Some(Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.self_attn.q_proj.bias"),
+            )?));
+            let attn_k = load_transposed_matrix_preserve_dtype(
+                st,
+                &format!("{p}.self_attn.k_proj.weight"),
+                kv_dim,
+                h,
+            )?;
+            let attn_k_bias = Some(Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.self_attn.k_proj.bias"),
+            )?));
+            let attn_v = load_transposed_matrix_preserve_dtype(
+                st,
+                &format!("{p}.self_attn.v_proj.weight"),
+                kv_dim,
+                h,
+            )?;
+            let attn_v_bias = Some(Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.self_attn.v_proj.bias"),
+            )?));
+            let attn_o = load_transposed_matrix_preserve_dtype(
+                st,
+                &format!("{p}.self_attn.o_proj.weight"),
+                h,
+                q_dim,
+            )?;
+            let ffn_gate = load_transposed_matrix_preserve_dtype(
+                st,
+                &format!("{p}.mlp.gate_proj.weight"),
+                inter,
+                h,
+            )?;
+            let ffn_up = load_transposed_matrix_preserve_dtype(
+                st,
+                &format!("{p}.mlp.up_proj.weight"),
+                inter,
+                h,
+            )?;
+            let ffn_down = load_transposed_matrix_preserve_dtype(
+                st,
+                &format!("{p}.mlp.down_proj.weight"),
+                h,
+                inter,
+            )?;
+            let attn_norm_gain = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.input_layernorm.weight"),
+            )?);
+            let ffn_norm_gain = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.post_attention_layernorm.weight"),
+            )?);
             layers.push(LayerWeights {
-                attn_q, attn_q_bias, attn_k, attn_k_bias, attn_v, attn_v_bias, attn_o,
-                ffn_gate, ffn_up, ffn_down, attn_norm_gain, ffn_norm_gain,
+                attn_q,
+                attn_q_bias,
+                attn_k,
+                attn_k_bias,
+                attn_v,
+                attn_v_bias,
+                attn_o,
+                ffn_gate,
+                ffn_up,
+                ffn_down,
+                attn_norm_gain,
+                ffn_norm_gain,
             });
         }
         let final_norm_gain = Arc::from(load_tensor_as_f32(st, "model.norm.weight")?);
         let output = if cfg.tie_word_embeddings {
-            crate::lazy_llama_full::tied_lm_head_from_embeddings(&token_embedding, cfg.vocab_size, h)
+            crate::lazy_llama_full::tied_lm_head_from_embeddings(
+                &token_embedding,
+                cfg.vocab_size,
+                h,
+            )
         } else {
             load_transposed_matrix_preserve_dtype(st, "lm_head.weight", cfg.vocab_size, h)?
         };
@@ -743,7 +866,6 @@ impl Qwen2Weights {
         })
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -763,23 +885,31 @@ mod tests {
         let kv = cfg.num_key_value_heads * cfg.head_dim();
         let mut next_box: Box<dyn FnMut() -> f32> = Box::new(next);
         let token_embedding = vec_of(cfg.vocab_size * h, &mut *next_box);
-        let layers: Vec<LayerWeights> = (0..cfg.num_hidden_layers).map(|_| LayerWeights {
-            attn_q: WeightStorage::F32(vec_of(h * h, &mut *next_box)),
-            attn_q_bias: Some(vec_of(h, &mut *next_box)),
-            attn_k: WeightStorage::F32(vec_of(h * kv, &mut *next_box)),
-            attn_k_bias: Some(vec_of(kv, &mut *next_box)),
-            attn_v: WeightStorage::F32(vec_of(h * kv, &mut *next_box)),
-            attn_v_bias: Some(vec_of(kv, &mut *next_box)),
-            attn_o: WeightStorage::F32(vec_of(h * h, &mut *next_box)),
-            ffn_gate: WeightStorage::F32(vec_of(h * i, &mut *next_box)),
-            ffn_up:   WeightStorage::F32(vec_of(h * i, &mut *next_box)),
-            ffn_down: WeightStorage::F32(vec_of(i * h, &mut *next_box)),
-            attn_norm_gain: Arc::from(vec![1.0_f32; h]),
-            ffn_norm_gain:  Arc::from(vec![1.0_f32; h]),
-        }).collect();
+        let layers: Vec<LayerWeights> = (0..cfg.num_hidden_layers)
+            .map(|_| LayerWeights {
+                attn_q: WeightStorage::F32(vec_of(h * h, &mut *next_box)),
+                attn_q_bias: Some(vec_of(h, &mut *next_box)),
+                attn_k: WeightStorage::F32(vec_of(h * kv, &mut *next_box)),
+                attn_k_bias: Some(vec_of(kv, &mut *next_box)),
+                attn_v: WeightStorage::F32(vec_of(h * kv, &mut *next_box)),
+                attn_v_bias: Some(vec_of(kv, &mut *next_box)),
+                attn_o: WeightStorage::F32(vec_of(h * h, &mut *next_box)),
+                ffn_gate: WeightStorage::F32(vec_of(h * i, &mut *next_box)),
+                ffn_up: WeightStorage::F32(vec_of(h * i, &mut *next_box)),
+                ffn_down: WeightStorage::F32(vec_of(i * h, &mut *next_box)),
+                attn_norm_gain: Arc::from(vec![1.0_f32; h]),
+                ffn_norm_gain: Arc::from(vec![1.0_f32; h]),
+            })
+            .collect();
         let final_norm_gain = Arc::from(vec![1.0_f32; h]);
         let output = WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *next_box));
-        Qwen2Weights { instance: crate::decode_shape::ModelInstanceId::next(), token_embedding, layers, final_norm_gain, output }
+        Qwen2Weights {
+            instance: crate::decode_shape::ModelInstanceId::next(),
+            token_embedding,
+            layers,
+            final_norm_gain,
+            output,
+        }
     }
 
     #[test]
@@ -799,7 +929,10 @@ mod tests {
             rms_norm_eps: 1e-5,
             tie_word_embeddings: false,
         };
-        let model = Qwen2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Qwen2Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4, 5];
         let logits = model.forward(&tokens, 0).unwrap();
         assert_eq!(logits.shape().dims(), &[1, tokens.len(), cfg.vocab_size]);
@@ -835,10 +968,20 @@ mod tests {
         cfg_b.max_window_layers = 0; // every layer is "past" the window cutoff → dense
         let weights = tiny_weights(&cfg_a);
         let tokens: Vec<u32> = vec![1, 2, 3, 4, 5];
-        let out_a = Qwen2Model { config: cfg_a, weights: weights.clone() }
-            .forward(&tokens, 0).unwrap().realize_f32();
-        let out_b = Qwen2Model { config: cfg_b, weights }
-            .forward(&tokens, 0).unwrap().realize_f32();
+        let out_a = Qwen2Model {
+            config: cfg_a,
+            weights: weights.clone(),
+        }
+        .forward(&tokens, 0)
+        .unwrap()
+        .realize_f32();
+        let out_b = Qwen2Model {
+            config: cfg_b,
+            weights,
+        }
+        .forward(&tokens, 0)
+        .unwrap()
+        .realize_f32();
         assert_eq!(out_a, out_b);
     }
 
@@ -865,12 +1008,24 @@ mod tests {
         cfg_dense.use_sliding_window = false;
         let weights = tiny_weights(&cfg_window);
         let tokens: Vec<u32> = vec![1, 2, 3, 4, 5];
-        let out_window = Qwen2Model { config: cfg_window.clone(), weights: weights.clone() }
-            .forward(&tokens, 0).unwrap().realize_f32();
+        let out_window = Qwen2Model {
+            config: cfg_window.clone(),
+            weights: weights.clone(),
+        }
+        .forward(&tokens, 0)
+        .unwrap()
+        .realize_f32();
         let _ = cfg_window;
-        let out_dense = Qwen2Model { config: cfg_dense, weights }
-            .forward(&tokens, 0).unwrap().realize_f32();
-        let any_diff = out_window.iter().zip(out_dense.iter())
+        let out_dense = Qwen2Model {
+            config: cfg_dense,
+            weights,
+        }
+        .forward(&tokens, 0)
+        .unwrap()
+        .realize_f32();
+        let any_diff = out_window
+            .iter()
+            .zip(out_dense.iter())
             .any(|(&a, &b)| (a - b).abs() > 1e-5);
         assert!(any_diff, "sliding window should diverge from dense run");
     }
@@ -905,11 +1060,23 @@ mod tests {
         }
         let wt_random = tiny_weights(&cfg);
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
-        let out_zero = Qwen2Model { config: cfg.clone(), weights: wt_zero }
-            .forward(&tokens, 0).unwrap().realize_f32();
-        let out_random = Qwen2Model { config: cfg, weights: wt_random }
-            .forward(&tokens, 0).unwrap().realize_f32();
-        let any_diff = out_zero.iter().zip(out_random.iter())
+        let out_zero = Qwen2Model {
+            config: cfg.clone(),
+            weights: wt_zero,
+        }
+        .forward(&tokens, 0)
+        .unwrap()
+        .realize_f32();
+        let out_random = Qwen2Model {
+            config: cfg,
+            weights: wt_random,
+        }
+        .forward(&tokens, 0)
+        .unwrap()
+        .realize_f32();
+        let any_diff = out_zero
+            .iter()
+            .zip(out_random.iter())
             .any(|(&a, &b)| (a - b).abs() > 1e-5);
         assert!(any_diff, "non-zero Q/K/V biases must change output");
     }
@@ -937,7 +1104,10 @@ mod tests {
             rms_norm_eps: 1e-5,
             tie_word_embeddings: false,
         };
-        let model = Qwen2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Qwen2Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
         let h_causal = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
 
@@ -948,24 +1118,31 @@ mod tests {
             Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
             &Device::cpu(),
         );
-        let token_ids = embed_table.const_u32_like(
-            tokens.clone(), Shape::from_dims(&[tokens.len()]),
-        );
+        let token_ids =
+            embed_table.const_u32_like(tokens.clone(), Shape::from_dims(&[tokens.len()]));
         let embeds = embed_table
-            .index_select(0_usize, &token_ids).unwrap()
-            .reshape(Shape::from_dims(&[1, tokens.len(), cfg.hidden_size])).unwrap();
+            .index_select(0_usize, &token_ids)
+            .unwrap()
+            .reshape(Shape::from_dims(&[1, tokens.len(), cfg.hidden_size]))
+            .unwrap();
         let zero_mask: Arc<[f32]> = Arc::from(vec![0.0_f32; tokens.len() * tokens.len()]);
         let mask = embeds.const_f32_like(
-            zero_mask, Shape::from_dims(&[1, 1, tokens.len(), tokens.len()]),
+            zero_mask,
+            Shape::from_dims(&[1, 1, tokens.len(), tokens.len()]),
         );
-        let h_bidir = model.forward_hidden_embeds_with_mask(&embeds, &mask, 0).unwrap().realize_f32();
+        let h_bidir = model
+            .forward_hidden_embeds_with_mask(&embeds, &mask, 0)
+            .unwrap()
+            .realize_f32();
         assert_eq!(h_causal.len(), h_bidir.len());
         let mut max_diff = 0.0_f32;
         for (x, y) in h_causal.iter().zip(h_bidir.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-7,
-            "bidirectional hidden states must differ from causal, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-7,
+            "bidirectional hidden states must differ from causal, max_diff = {max_diff}"
+        );
         for &v in &h_bidir {
             assert!(v.is_finite(), "non-finite bidirectional hidden: {v}");
         }
@@ -979,13 +1156,24 @@ mod tests {
     #[test]
     fn forward_hidden_embeds_matches_forward_hidden() {
         let cfg = Qwen2Config {
-            vocab_size: 16, hidden_size: 8, intermediate_size: 16,
-            num_hidden_layers: 1, num_attention_heads: 2, num_key_value_heads: 1,
-            max_position_embeddings: 32, sliding_window: 32, max_window_layers: 0,
-            use_sliding_window: false, rope_theta: 10_000.0, rms_norm_eps: 1e-5,
+            vocab_size: 16,
+            hidden_size: 8,
+            intermediate_size: 16,
+            num_hidden_layers: 1,
+            num_attention_heads: 2,
+            num_key_value_heads: 1,
+            max_position_embeddings: 32,
+            sliding_window: 32,
+            max_window_layers: 0,
+            use_sliding_window: false,
+            rope_theta: 10_000.0,
+            rms_norm_eps: 1e-5,
             tie_word_embeddings: false,
         };
-        let model = Qwen2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Qwen2Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
         let from_tokens = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
 
@@ -994,17 +1182,23 @@ mod tests {
             Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
             &Device::cpu(),
         );
-        let token_ids = embed_table.const_u32_like(
-            tokens.clone(), Shape::from_dims(&[tokens.len()]),
-        );
+        let token_ids =
+            embed_table.const_u32_like(tokens.clone(), Shape::from_dims(&[tokens.len()]));
         let embeds = embed_table
-            .index_select(0_usize, &token_ids).unwrap()
-            .reshape(Shape::from_dims(&[1, tokens.len(), cfg.hidden_size])).unwrap();
-        let from_embeds = model.forward_hidden_embeds(&embeds, 0).unwrap().realize_f32();
+            .index_select(0_usize, &token_ids)
+            .unwrap()
+            .reshape(Shape::from_dims(&[1, tokens.len(), cfg.hidden_size]))
+            .unwrap();
+        let from_embeds = model
+            .forward_hidden_embeds(&embeds, 0)
+            .unwrap()
+            .realize_f32();
         assert_eq!(from_tokens.len(), from_embeds.len());
         for (a, b) in from_tokens.iter().zip(from_embeds.iter()) {
-            assert!((a - b).abs() < 1e-6,
-                "forward_hidden_embeds must match forward_hidden: {a} vs {b}");
+            assert!(
+                (a - b).abs() < 1e-6,
+                "forward_hidden_embeds must match forward_hidden: {a} vs {b}"
+            );
         }
     }
 
@@ -1032,10 +1226,15 @@ mod tests {
     /// SINGLE mask applied to every layer — which is exactly what a one-mask
     /// decode port computes. `window` selects the single mask's width, so the
     /// same helper serves both the discriminating case and its control.
-    fn per_layer_vs_single_mask(cfg: &Qwen2Config, tokens: &[u32], single_window: usize)
-        -> (Vec<f32>, Vec<f32>)
-    {
-        let model = Qwen2Model { config: cfg.clone(), weights: tiny_weights(cfg) };
+    fn per_layer_vs_single_mask(
+        cfg: &Qwen2Config,
+        tokens: &[u32],
+        single_window: usize,
+    ) -> (Vec<f32>, Vec<f32>) {
+        let model = Qwen2Model {
+            config: cfg.clone(),
+            weights: tiny_weights(cfg),
+        };
         let per_layer = model.forward(tokens, 0).unwrap().realize_f32();
 
         let seq = tokens.len();
@@ -1104,23 +1303,36 @@ mod tests {
 
         model
             .forward_with_kv_context_persistent(
-                &tokens[..prefill], &mut cache, &mut ctx, &mut session,
+                &tokens[..prefill],
+                &mut cache,
+                &mut ctx,
+                &mut session,
             )
             .expect("prefill");
-        assert!(session.is_none(), "prefill (seq > 1) must NOT build the held session");
+        assert!(
+            session.is_none(),
+            "prefill (seq > 1) must NOT build the held session"
+        );
 
         let mut out = Vec::with_capacity(n_decode);
         for i in prefill..tokens.len() {
             out.push(
                 model
                     .forward_with_kv_context_persistent(
-                        &tokens[i..=i], &mut cache, &mut ctx, &mut session,
+                        &tokens[i..=i],
+                        &mut cache,
+                        &mut ctx,
+                        &mut session,
                     )
                     .expect("decode"),
             );
             assert!(session.is_some(), "decode must hold a session from token 1");
         }
-        assert_eq!(cache.cached_len, tokens.len(), "cache must advance every step");
+        assert_eq!(
+            cache.cached_len,
+            tokens.len(),
+            "cache must advance every step"
+        );
         out
     }
 
@@ -1130,12 +1342,11 @@ mod tests {
     /// `forward` is the oracle because it is the path that already honours
     /// `use_sliding_window && layer_idx < max_window_layers`; decode agreeing
     /// with it is the whole claim.
-    fn decode_vs_forward_max_abs(
-        cfg: &Qwen2Config,
-        tokens: &[u32],
-        prefill: usize,
-    ) -> Vec<f32> {
-        let model = Qwen2Model { config: cfg.clone(), weights: tiny_weights(cfg) };
+    fn decode_vs_forward_max_abs(cfg: &Qwen2Config, tokens: &[u32], prefill: usize) -> Vec<f32> {
+        let model = Qwen2Model {
+            config: cfg.clone(),
+            weights: tiny_weights(cfg),
+        };
         let steps = decode_steps(&model, tokens, prefill);
         steps
             .iter()
@@ -1191,7 +1402,10 @@ mod tests {
     /// instrument would be measuring path divergence, not window divergence.
     #[test]
     fn control_the_two_paths_agree_when_no_layer_uses_the_window() {
-        let cfg = Qwen2Config { max_window_layers: 0, ..mixed_window_cfg() };
+        let cfg = Qwen2Config {
+            max_window_layers: 0,
+            ..mixed_window_cfg()
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6];
         // `seq + 1` is `build_layer_mask`'s own strict-causal width.
         let (per_layer, single) = per_layer_vs_single_mask(&cfg, &tokens, tokens.len() + 1);
@@ -1250,19 +1464,31 @@ mod tests {
 
     fn gap029_qwen2_decode_graph_nodes() -> usize {
         let cfg = mixed_window_cfg();
-        let model = Qwen2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Qwen2Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let dev = Device::cpu();
         let mut cache = KvCache::with_capacity(
-            cfg.num_hidden_layers, cfg.num_key_value_heads, cfg.head_dim(),
-            6, DType::F32, &dev,
-        ).expect("with_capacity");
+            cfg.num_hidden_layers,
+            cfg.num_key_value_heads,
+            cfg.head_dim(),
+            6,
+            DType::F32,
+            &dev,
+        )
+        .expect("with_capacity");
         let mut ctx = InferenceContext::new(dev);
         let mut session: Option<DecodeSession> = None;
-        model.forward_with_kv_context_persistent(&[1, 2, 3], &mut cache, &mut ctx, &mut session)
+        model
+            .forward_with_kv_context_persistent(&[1, 2, 3], &mut cache, &mut ctx, &mut session)
             .expect("prefill");
-        model.forward_with_kv_context_persistent(&[4], &mut cache, &mut ctx, &mut session)
+        model
+            .forward_with_kv_context_persistent(&[4], &mut cache, &mut ctx, &mut session)
             .expect("decode");
-        session.expect("session built on the first decode token").graph_node_count()
+        session
+            .expect("session built on the first decode token")
+            .graph_node_count()
     }
 
     /// **STRUCTURAL baseline for the TWO-VARIANT case**, captured 2026-08-13
@@ -1275,7 +1501,8 @@ mod tests {
     #[test]
     fn qwen2_held_decode_graph_has_not_grown() {
         assert_eq!(
-            gap029_qwen2_decode_graph_nodes(), QWEN2_DECODE_GRAPH_NODES,
+            gap029_qwen2_decode_graph_nodes(),
+            QWEN2_DECODE_GRAPH_NODES,
             "Qwen2's held decode graph changed size",
         );
     }
@@ -1295,9 +1522,15 @@ mod tests {
     /// there is uninterpretable.
     #[test]
     fn qwen2_decode_matches_forward_when_no_layer_is_windowed() {
-        let cfg = Qwen2Config { max_window_layers: 0, ..mixed_window_cfg() };
+        let cfg = Qwen2Config {
+            max_window_layers: 0,
+            ..mixed_window_cfg()
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6];
-        for (k, diff) in decode_vs_forward_max_abs(&cfg, &tokens, 3).iter().enumerate() {
+        for (k, diff) in decode_vs_forward_max_abs(&cfg, &tokens, 3)
+            .iter()
+            .enumerate()
+        {
             assert!(
                 *diff < DECODE_ORACLE_ABS,
                 "unwindowed decode step {k} (absolute position {}) diverged from the \
@@ -1371,13 +1604,21 @@ mod tests {
     fn qwen2_windowed_multi_token_prefill_through_the_cache_matches_forward() {
         let cfg = mixed_window_cfg();
         let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6];
-        let model = Qwen2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Qwen2Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
 
         let dev = Device::cpu();
         let mut cache = KvCache::with_capacity(
-            cfg.num_hidden_layers, cfg.num_key_value_heads, cfg.head_dim(),
-            tokens.len(), DType::F32, &dev,
-        ).expect("with_capacity");
+            cfg.num_hidden_layers,
+            cfg.num_key_value_heads,
+            cfg.head_dim(),
+            tokens.len(),
+            DType::F32,
+            &dev,
+        )
+        .expect("with_capacity");
         let mut ctx = InferenceContext::new(dev);
         // One 6-token D1 pass — `seq > window`, so the window genuinely bites
         // inside a single call rather than across steps.

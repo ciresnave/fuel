@@ -43,7 +43,7 @@
 //! Generation loops (Lightbulb) consult
 //! [`LlamaEosToks::is_eos`](LlamaEosToks::is_eos) per token.
 
-use crate::lazy::{LlamaConfig, LlamaModel, LlamaWeights, LazyTensor};
+use crate::lazy::{LazyTensor, LlamaConfig, LlamaModel, LlamaWeights};
 use crate::{Error, Result};
 use fuel_ir::Shape;
 use std::f64::consts::PI;
@@ -131,8 +131,11 @@ impl LlamaFullConfig {
     /// to LLaMA's documented defaults (`rope_theta=10000.0`,
     /// `rms_norm_eps=1e-5`, `tie_word_embeddings=false`, no scaling).
     pub fn from_hf_json_str(json: &str) -> Result<Self> {
-        let v: serde_json::Value = serde_json::from_str(json)
-            .map_err(|e| Error::Msg(format!("LlamaFullConfig::from_hf_json_str: parsing config.json: {e}")))?;
+        let v: serde_json::Value = serde_json::from_str(json).map_err(|e| {
+            Error::Msg(format!(
+                "LlamaFullConfig::from_hf_json_str: parsing config.json: {e}"
+            ))
+        })?;
 
         let get_usize = |key: &str| -> Result<usize> {
             v.get(key)
@@ -143,9 +146,8 @@ impl LlamaFullConfig {
         let opt_usize = |key: &str| -> Option<usize> {
             v.get(key).and_then(|x| x.as_u64()).map(|x| x as usize)
         };
-        let opt_u32 = |key: &str| -> Option<u32> {
-            v.get(key).and_then(|x| x.as_u64()).map(|x| x as u32)
-        };
+        let opt_u32 =
+            |key: &str| -> Option<u32> { v.get(key).and_then(|x| x.as_u64()).map(|x| x as u32) };
         let opt_f64 = |key: &str| -> Option<f64> { v.get(key).and_then(|x| x.as_f64()) };
         let opt_bool = |key: &str| -> Option<bool> { v.get(key).and_then(|x| x.as_bool()) };
 
@@ -159,17 +161,17 @@ impl LlamaFullConfig {
             if let Some(n) = x.as_u64() {
                 Some(LlamaEosToks::Single(n as u32))
             } else if let Some(arr) = x.as_array() {
-                let vec: Option<Vec<u32>> = arr
-                    .iter()
-                    .map(|e| e.as_u64().map(|n| n as u32))
-                    .collect();
+                let vec: Option<Vec<u32>> =
+                    arr.iter().map(|e| e.as_u64().map(|n| n as u32)).collect();
                 vec.map(LlamaEosToks::Multiple)
             } else {
                 None
             }
         });
 
-        let rope_scaling = v.get("rope_scaling").and_then(|s| parse_llama3_rope_scaling(s));
+        let rope_scaling = v
+            .get("rope_scaling")
+            .and_then(|s| parse_llama3_rope_scaling(s));
 
         Ok(Self {
             hidden_size,
@@ -250,7 +252,10 @@ pub fn build_llama3_rope_tables(
     seq: usize,
     head_dim: usize,
 ) -> (Vec<f32>, Vec<f32>) {
-    assert!(head_dim.is_multiple_of(2), "build_llama3_rope_tables: head_dim {head_dim} must be even");
+    assert!(
+        head_dim.is_multiple_of(2),
+        "build_llama3_rope_tables: head_dim {head_dim} must be even"
+    );
     let inv_freq = compute_llama3_inv_freq(rope_base, scaling, head_dim);
     let half = head_dim / 2;
     let mut cos_data = vec![0.0_f32; seq * head_dim];
@@ -331,7 +336,11 @@ impl Llama3Model {
         rope_scaling: Option<Llama3RopeConfig>,
         eos_token_id: Option<LlamaEosToks>,
     ) -> Self {
-        Self { inner, rope_scaling, eos_token_id }
+        Self {
+            inner,
+            rope_scaling,
+            eos_token_id,
+        }
     }
 
     /// This model's RoPE inverse frequencies — `config.rope_base`'s defaults
@@ -367,7 +376,8 @@ impl Llama3Model {
         ctx: &mut crate::inference_context::InferenceContext,
     ) -> Result<Vec<f32>> {
         let inv = self.rope_inv_freq();
-        self.inner.forward_with_kv_context_inv_freq(tokens, cache, ctx, Some(&inv))
+        self.inner
+            .forward_with_kv_context_inv_freq(tokens, cache, ctx, Some(&inv))
     }
 
     /// Persistent-KV forward: build + optimize the decode graph once, then
@@ -387,8 +397,13 @@ impl Llama3Model {
         session: &mut Option<crate::inference_context::DecodeSession>,
     ) -> Result<Vec<f32>> {
         let inv = self.rope_inv_freq();
-        self.inner
-            .forward_with_kv_context_persistent_inv_freq(tokens, cache, ctx, session, Some(&inv))
+        self.inner.forward_with_kv_context_persistent_inv_freq(
+            tokens,
+            cache,
+            ctx,
+            session,
+            Some(&inv),
+        )
     }
 
     /// Forward from token ids. Returns logits `[1, seq, vocab_size]`.
@@ -415,7 +430,9 @@ impl Llama3Model {
         let cfg = &self.inner.config;
         let weights = &self.inner.weights;
         let h_norm = self.run_backbone_embeds(embeds, start_pos)?;
-        Ok(weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size)?)
+        Ok(weights
+            .output
+            .apply_linear(&h_norm, cfg.dim, cfg.vocab_size)?)
     }
 
     /// Forward from pre-computed embeddings; skip the LM head and
@@ -428,11 +445,7 @@ impl Llama3Model {
         self.run_backbone_embeds(embeds, start_pos)
     }
 
-    fn run_backbone_embeds(
-        &self,
-        embeds: &LazyTensor,
-        start_pos: usize,
-    ) -> Result<LazyTensor> {
+    fn run_backbone_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
         let cfg = &self.inner.config;
         let dims = embeds.shape();
         let dims = dims.dims();
@@ -441,7 +454,11 @@ impl Llama3Model {
         assert_eq!(dims[2], cfg.dim);
 
         let (cos_data, sin_data) = build_llama3_rope_tables(
-            cfg.rope_base, self.rope_scaling.as_ref(), start_pos, seq, cfg.head_dim,
+            cfg.rope_base,
+            self.rope_scaling.as_ref(),
+            start_pos,
+            seq,
+            cfg.head_dim,
         );
         let rope_shape = Shape::from_dims(&[seq, cfg.head_dim]);
         let rope_cos = embeds.const_f32_like(Arc::from(cos_data), rope_shape.clone());
@@ -450,7 +467,8 @@ impl Llama3Model {
         let mask = LazyTensor::additive_causal_mask_like(embeds, seq)
             .reshape(Shape::from_dims(&[1, 1, seq, seq]))?;
 
-        self.inner.run_backbone_with_rope_tables(embeds, &rope_cos, &rope_sin, &mask)
+        self.inner
+            .run_backbone_with_rope_tables(embeds, &rope_cos, &rope_sin, &mask)
     }
 }
 
@@ -543,7 +561,10 @@ mod tests {
         let output = WeightStorage::F32(buf(h * cfg.vocab_size, &mut *next_box));
         LlamaWeights {
             instance: crate::decode_shape::ModelInstanceId::next(),
-            token_embedding, layers, final_norm_gain, output,
+            token_embedding,
+            layers,
+            final_norm_gain,
+            output,
         }
     }
 
@@ -569,7 +590,10 @@ mod tests {
     fn unscaled_matches_inner_forward() {
         let cfg = tiny_cfg();
         let weights = tiny_weights(&cfg);
-        let inner = LlamaModel { config: cfg.clone(), weights };
+        let inner = LlamaModel {
+            config: cfg.clone(),
+            weights,
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6, 7, 8];
 
         let baseline = inner.forward(&tokens, 0).unwrap().realize_f32();
@@ -612,14 +636,16 @@ mod tests {
         assert!(
             (scaled[last] - plain[last] / 8.0).abs() < 1e-12,
             "lowest-freq band should be divided by factor=8: plain={}, scaled={}",
-            plain[last], scaled[last],
+            plain[last],
+            scaled[last],
         );
         // Highest-frequency entries (i=0) — wavelen = 2*PI/1.0 = 6.28 —
         // are below high_freq_wavelen = 8192/4 = 2048 → unscaled.
         assert!(
             (plain[0] - scaled[0]).abs() < 1e-12,
             "highest-freq band should be unscaled: plain={}, scaled={}",
-            plain[0], scaled[0],
+            plain[0],
+            scaled[0],
         );
     }
 
@@ -653,7 +679,10 @@ mod tests {
     fn scaled_forward_shape_and_finite() {
         let cfg = tiny_cfg();
         let weights = tiny_weights(&cfg);
-        let inner = LlamaModel { config: cfg.clone(), weights };
+        let inner = LlamaModel {
+            config: cfg.clone(),
+            weights,
+        };
         let scaling = Llama3RopeConfig {
             factor: 8.0,
             low_freq_factor: 1.0,
@@ -740,8 +769,14 @@ mod tests {
             "tie_word_embeddings": false
         }"#;
         let cfg = LlamaFullConfig::from_hf_json_str(json).unwrap();
-        assert_eq!(cfg.num_key_value_heads, 32, "LLaMA-2 had no GQA, should default to num_attention_heads");
-        assert!((cfg.rope_theta - 10_000.0).abs() < 1e-6, "rope_theta defaults to 10000.0");
+        assert_eq!(
+            cfg.num_key_value_heads, 32,
+            "LLaMA-2 had no GQA, should default to num_attention_heads"
+        );
+        assert!(
+            (cfg.rope_theta - 10_000.0).abs() < 1e-6,
+            "rope_theta defaults to 10000.0"
+        );
         assert_eq!(cfg.bos_token_id, Some(1));
         assert_eq!(cfg.eos_token_id, Some(LlamaEosToks::Single(2)));
         assert!(cfg.rope_scaling.is_none());
@@ -770,7 +805,11 @@ mod tests {
     fn tied_lm_head_is_transpose_of_embeddings() {
         let vocab_size = 5;
         let hidden_size = 3;
-        let wte: Arc<[f32]> = Arc::from((0..vocab_size * hidden_size).map(|i| i as f32).collect::<Vec<_>>());
+        let wte: Arc<[f32]> = Arc::from(
+            (0..vocab_size * hidden_size)
+                .map(|i| i as f32)
+                .collect::<Vec<_>>(),
+        );
         let lm = tied_lm_head_from_embeddings(&wte, vocab_size, hidden_size);
         let lm_data = match &lm {
             crate::lazy::WeightStorage::F32(a) => a.clone(),
@@ -839,18 +878,23 @@ mod tests {
         let cfg = &m.inner.config;
         let dev = crate::Device::cpu();
         let mut cache = crate::inference_context::KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim,
-            prompt.len() + extra.len() + 1, fuel_ir::DType::F32, &dev,
-        ).unwrap();
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            prompt.len() + extra.len() + 1,
+            fuel_ir::DType::F32,
+            &dev,
+        )
+        .unwrap();
         let mut ctx = crate::inference_context::InferenceContext::new(dev);
         let mut session = None;
-        let mut logits = m.forward_with_kv_context_persistent(
-            prompt, &mut cache, &mut ctx, &mut session,
-        ).unwrap();
+        let mut logits = m
+            .forward_with_kv_context_persistent(prompt, &mut cache, &mut ctx, &mut session)
+            .unwrap();
         for &t in extra {
-            logits = m.forward_with_kv_context_persistent(
-                &[t], &mut cache, &mut ctx, &mut session,
-            ).unwrap();
+            logits = m
+                .forward_with_kv_context_persistent(&[t], &mut cache, &mut ctx, &mut session)
+                .unwrap();
         }
         logits
     }
@@ -869,7 +913,10 @@ mod tests {
     #[test]
     fn scaled_persistent_decode_matches_full_prefix_forward() {
         let cfg = scaled_cfg();
-        let inner = LlamaModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let inner = LlamaModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let m = Llama3Model::new(inner, Some(llama3_scaling()), None);
 
         let prompt = [1u32, 2, 3, 4];
@@ -881,7 +928,11 @@ mod tests {
         let full = m.forward(&all, 0).unwrap().realize_f32();
         let want = &full[(all.len() - 1) * cfg.vocab_size..];
 
-        assert_eq!(got.len(), cfg.vocab_size, "decode returns last-position logits");
+        assert_eq!(
+            got.len(),
+            cfg.vocab_size,
+            "decode returns last-position logits"
+        );
         for (i, (a, b)) in got.iter().zip(want.iter()).enumerate() {
             assert!(
                 (a - b).abs() < PARITY_TOL,
@@ -900,12 +951,18 @@ mod tests {
         let cfg = scaled_cfg();
         let weights = tiny_weights(&cfg);
         let scaled = Llama3Model::new(
-            LlamaModel { config: cfg.clone(), weights: weights.clone() },
+            LlamaModel {
+                config: cfg.clone(),
+                weights: weights.clone(),
+            },
             Some(llama3_scaling()),
             None,
         );
         let unscaled = Llama3Model::new(
-            LlamaModel { config: cfg.clone(), weights },
+            LlamaModel {
+                config: cfg.clone(),
+                weights,
+            },
             None,
             None,
         );

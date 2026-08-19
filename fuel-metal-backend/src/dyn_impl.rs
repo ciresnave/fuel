@@ -12,12 +12,10 @@
 //! `UnaryOp`/`BinaryOp` enum variants to kernel name strings and call the
 //! non-generic `MetalStorage::unary()` / `MetalStorage::binary()` methods.
 
-use fuel_ir::conv::{
-    ParamsConv1D, ParamsConv2D, ParamsConvTranspose1D, ParamsConvTranspose2D,
-};
 use fuel_backend_contract::dyn_backend::{DynBackendDevice, DynBackendStorage};
+use fuel_ir::conv::{ParamsConv1D, ParamsConv2D, ParamsConvTranspose1D, ParamsConvTranspose2D};
 use fuel_ir::op::{BinaryOp, CmpOp, ReduceOp, UnaryOp};
-use fuel_ir::{HostBuffer, DType, DeviceLocation, Layout, Result, Scalar, Shape};
+use fuel_ir::{DType, DeviceLocation, HostBuffer, Layout, Result, Scalar, Shape};
 use std::any::Any;
 use std::sync::Arc;
 
@@ -43,16 +41,14 @@ pub type MetalBackendDevice = MetalDevice;
 // ---------------------------------------------------------------------------
 
 fn downcast(s: &dyn DynBackendStorage) -> Result<&MetalStorage> {
-    s.as_any()
-        .downcast_ref::<MetalStorage>()
-        .ok_or_else(|| {
-            fuel_ir::Error::DeviceMismatchBinaryOp {
-                lhs: DeviceLocation::Metal { gpu_id: 0 },
-                rhs: s.device_dyn().location_dyn(),
-                op: "metal_dyn_backend",
-            }
-            .bt()
-        })
+    s.as_any().downcast_ref::<MetalStorage>().ok_or_else(|| {
+        fuel_ir::Error::DeviceMismatchBinaryOp {
+            lhs: DeviceLocation::Metal { gpu_id: 0 },
+            rhs: s.device_dyn().location_dyn(),
+            op: "metal_dyn_backend",
+        }
+        .bt()
+    })
 }
 
 fn downcast_mut(s: &mut dyn DynBackendStorage) -> Result<&mut MetalStorage> {
@@ -286,7 +282,8 @@ impl DynBackendStorage for MetalStorage {
         target_h: usize,
         target_w: usize,
     ) -> Result<Box<dyn DynBackendStorage>> {
-        self.upsample_nearest2d(layout, target_h, target_w).map(wrap)
+        self.upsample_nearest2d(layout, target_h, target_w)
+            .map(wrap)
     }
 
     fn upsample_bilinear2d_dyn(
@@ -350,7 +347,8 @@ impl DynBackendStorage for MetalStorage {
         dim: usize,
     ) -> Result<Box<dyn DynBackendStorage>> {
         let ids = downcast(ids)?;
-        self.index_select(ids, src_layout, ids_layout, dim).map(wrap)
+        self.index_select(ids, src_layout, ids_layout, dim)
+            .map(wrap)
     }
 
     fn index_add_dyn(
@@ -400,7 +398,15 @@ impl DynBackendStorage for MetalStorage {
         dst_offset: usize,
     ) -> Result<()> {
         let dst = downcast_mut(dst)?;
-        self.copy2d(dst, d1, d2, src_stride1, dst_stride1, src_offset, dst_offset)
+        self.copy2d(
+            dst,
+            d1,
+            d2,
+            src_stride1,
+            dst_stride1,
+            src_offset,
+            dst_offset,
+        )
     }
 
     fn const_set_dyn(&mut self, value: Scalar, layout: &Layout) -> Result<()> {

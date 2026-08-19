@@ -28,8 +28,8 @@
 //!   second consumer needs it (sum of N parallel 2D convs over chunks
 //!   of N consecutive frames, stride N).
 
-use crate::lazy::LazyTensor;
 use crate::Result;
+use crate::lazy::LazyTensor;
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -47,7 +47,12 @@ pub struct Conv3dTemporal2Config {
 
 impl Default for Conv3dTemporal2Config {
     fn default() -> Self {
-        Self { padding: 0, stride: 1, dilation: 1, groups: 1 }
+        Self {
+            padding: 0,
+            stride: 1,
+            dilation: 1,
+            groups: 1,
+        }
     }
 }
 
@@ -196,8 +201,14 @@ mod tests {
         // (out=2, in=3, T=2, kH=1, kW=1) → 12 floats, w1/w2 each 6.
         let raw: Vec<f32> = (0..12).map(|i| i as f32).collect();
         let w = Conv3dTemporal2Weights::from_raw_weight(
-            &raw, 2, 3, 1, 1, Conv3dTemporal2Config::default(),
-        ).unwrap();
+            &raw,
+            2,
+            3,
+            1,
+            1,
+            Conv3dTemporal2Config::default(),
+        )
+        .unwrap();
         // outer iteration order: o in 0..(out * in/g) = 6 outer slabs of (2 * 1 * 1) = 2 floats each.
         // For outer o=0: w1 picks raw[0], w2 picks raw[1].
         // outer o=1: w1 picks raw[2], w2 picks raw[3]. … etc.
@@ -210,7 +221,10 @@ mod tests {
     #[test]
     fn from_raw_weight_rejects_dilation_other_than_1() {
         let raw = raw_weight(2, 3, 1, 1);
-        let cfg = Conv3dTemporal2Config { dilation: 2, ..Default::default() };
+        let cfg = Conv3dTemporal2Config {
+            dilation: 2,
+            ..Default::default()
+        };
         assert!(Conv3dTemporal2Weights::from_raw_weight(&raw, 2, 3, 1, 1, cfg).is_err());
     }
 
@@ -219,7 +233,12 @@ mod tests {
         let raw = raw_weight(2, 3, 1, 1);
         // Asking for out_channels=4 needs 24 floats, but raw has 12.
         let r = Conv3dTemporal2Weights::from_raw_weight(
-            &raw, 4, 3, 1, 1, Conv3dTemporal2Config::default(),
+            &raw,
+            4,
+            3,
+            1,
+            1,
+            Conv3dTemporal2Config::default(),
         );
         assert!(r.is_err());
     }
@@ -236,8 +255,14 @@ mod tests {
         //              (out=0, in=1): w1=[raw[2]], w2=[raw[3]].
         let raw = vec![1.0_f32, 2.0, 3.0, 4.0];
         let w = Conv3dTemporal2Weights::from_raw_weight(
-            &raw, 1, 2, 1, 1, Conv3dTemporal2Config::default(),
-        ).unwrap();
+            &raw,
+            1,
+            2,
+            1,
+            1,
+            Conv3dTemporal2Config::default(),
+        )
+        .unwrap();
         // Input (B=1, C=2, T=2, H=1, W=1): just 4 scalars.
         //   x[0, 0, 0, 0, 0] = 10
         //   x[0, 0, 1, 0, 0] = 20
@@ -262,15 +287,25 @@ mod tests {
         //   sum = 300
         let got = y.realize_f32();
         assert_eq!(got.len(), 1);
-        assert!((got[0] - 300.0).abs() < 1e-5, "expected 300.0, got {}", got[0]);
+        assert!(
+            (got[0] - 300.0).abs() < 1e-5,
+            "expected 300.0, got {}",
+            got[0]
+        );
     }
 
     #[test]
     fn apply_rejects_t_other_than_2() {
         let raw = vec![0.1_f32; 4];
         let w = Conv3dTemporal2Weights::from_raw_weight(
-            &raw, 1, 2, 1, 1, Conv3dTemporal2Config::default(),
-        ).unwrap();
+            &raw,
+            1,
+            2,
+            1,
+            1,
+            Conv3dTemporal2Config::default(),
+        )
+        .unwrap();
         // Input shape (1, 2, 1, 1, 1) → 2 elements; T=1 should error.
         let input = LazyTensor::from_f32(
             Arc::from(vec![1.0_f32; 2]),
@@ -286,7 +321,10 @@ mod tests {
         // Tiny version: out_c=4, in_c=3, kH=kW=2, stride=2. Input H=W=4 →
         // H_out = W_out = (4 - 2)/2 + 1 = 2.
         let raw = raw_weight(4, 3, 2, 2);
-        let cfg = Conv3dTemporal2Config { stride: 2, ..Default::default() };
+        let cfg = Conv3dTemporal2Config {
+            stride: 2,
+            ..Default::default()
+        };
         let w = Conv3dTemporal2Weights::from_raw_weight(&raw, 4, 3, 2, 2, cfg).unwrap();
 
         let x_len = 1 * 3 * 2 * 4 * 4;

@@ -168,8 +168,15 @@ fn tri_backend_all_reduce_sums_across_cpu_cuda_and_vulkan() {
         .expect("tri-backend all_reduce builds");
 
     let got = group.realize_f32(&out).expect("multi-device realize");
-    assert_eq!(got, vec![7.0f32; LEN], "1 + 2 + 4 across CPU, CUDA and Vulkan");
-    eprintln!("PROOF tri_backend_sum: CPU + CUDA + Vulkan({vk_name}) reduced to {}", got[0]);
+    assert_eq!(
+        got,
+        vec![7.0f32; LEN],
+        "1 + 2 + 4 across CPU, CUDA and Vulkan"
+    );
+    eprintln!(
+        "PROOF tri_backend_sum: CPU + CUDA + Vulkan({vk_name}) reduced to {}",
+        got[0]
+    );
 }
 
 #[test]
@@ -192,8 +199,15 @@ fn cross_vendor_leader_stages_through_host() {
         .expect("cross-vendor all_reduce builds");
 
     let got = group.realize_f32(&out).expect("multi-device realize");
-    assert_eq!(got, vec![60.0f32; LEN], "CUDA leader, Vulkan shard staged via host");
-    eprintln!("PROOF cross_vendor_staging: CUDA leader + Vulkan({vk_name}) shard staged via host -> {}", got[0]);
+    assert_eq!(
+        got,
+        vec![60.0f32; LEN],
+        "CUDA leader, Vulkan shard staged via host"
+    );
+    eprintln!(
+        "PROOF cross_vendor_staging: CUDA leader + Vulkan({vk_name}) shard staged via host -> {}",
+        got[0]
+    );
 }
 
 #[test]
@@ -216,5 +230,8 @@ fn tri_backend_all_reduce_max_is_elementwise() {
 
     let got = group.realize_f32(&out).expect("multi-device realize");
     assert_eq!(got, vec![9.0f32; LEN], "max over the three shards");
-    eprintln!("PROOF tri_backend_max: CPU + CUDA + Vulkan({vk_name}) max -> {}", got[0]);
+    eprintln!(
+        "PROOF tri_backend_max: CPU + CUDA + Vulkan({vk_name}) max -> {}",
+        got[0]
+    );
 }

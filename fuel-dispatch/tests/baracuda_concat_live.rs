@@ -8,9 +8,13 @@
 
 use std::sync::{Arc, RwLock};
 
-use fuel_ir::{dispatch::OpKind, probe::BackendId, DType};
 use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
-use fuel_dispatch::{baracuda_dispatch::register_baracuda_cuda_kernels, dispatch::register_cuda_kernels, kernel::{KernelBindingTable, OpParams}};
+use fuel_dispatch::{
+    baracuda_dispatch::register_baracuda_cuda_kernels,
+    dispatch::register_cuda_kernels,
+    kernel::{KernelBindingTable, OpParams},
+};
+use fuel_ir::{DType, dispatch::OpKind, probe::BackendId};
 use fuel_memory::{BackendStorage, Storage};
 
 fn dev_or_skip() -> Option<CudaDevice> {
@@ -122,7 +126,9 @@ fn baracuda_concat_f32_pair() {
     //   outer 1: [5,6, 7,8, 11,12]
     assert_eq!(
         got,
-        vec![1.0, 2.0, 3.0, 4.0, 9.0, 10.0, 5.0, 6.0, 7.0, 8.0, 11.0, 12.0],
+        vec![
+            1.0, 2.0, 3.0, 4.0, 9.0, 10.0, 5.0, 6.0, 7.0, 8.0, 11.0, 12.0
+        ],
     );
 }
 

@@ -59,8 +59,8 @@
 //! data model + loader + validator so the consumers can plug in
 //! without rediscovery.
 
-use fuel_ir::dispatch::{OpKind, SizeClass};
 use fuel_ir::DType;
+use fuel_ir::dispatch::{OpKind, SizeClass};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -203,10 +203,7 @@ pub enum CorrectnessDrift {
     /// `OutOfTolerance` because NaN propagation typically indicates
     /// a different bug class (uninitialized memory, divide-by-zero
     /// in an edge case).
-    NonFinite {
-        element_index: usize,
-        actual: f64,
-    },
+    NonFinite { element_index: usize, actual: f64 },
     /// The validator has no element-wise comparison wired for this
     /// dtype, so it **cannot certify** the output. This is a
     /// limitation of the *validator*, not (necessarily) a defect in
@@ -216,15 +213,16 @@ pub enum CorrectnessDrift {
     /// pass: silently returning `Ok(())` for an unhandled dtype would
     /// certify bytes that were never checked (GAP-075). Add a
     /// per-dtype arm to [`validate_against_fixture`] to retire it.
-    UnvalidatableDType {
-        dtype: DType,
-    },
+    UnvalidatableDType { dtype: DType },
 }
 
 impl std::fmt::Display for CorrectnessDrift {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::LengthMismatch { expected_bytes, actual_bytes } => write!(
+            Self::LengthMismatch {
+                expected_bytes,
+                actual_bytes,
+            } => write!(
                 f,
                 "length mismatch: fixture expects {expected_bytes} bytes, got {actual_bytes}",
             ),
@@ -239,10 +237,10 @@ impl std::fmt::Display for CorrectnessDrift {
                 "element {element_index} out of tolerance: \
                  expected {expected}, got {actual}, rel_err {rel_err:e}, abs_err {abs_err:e}",
             ),
-            Self::NonFinite { element_index, actual } => write!(
-                f,
-                "element {element_index} non-finite: got {actual}",
-            ),
+            Self::NonFinite {
+                element_index,
+                actual,
+            } => write!(f, "element {element_index} non-finite: got {actual}",),
             Self::UnvalidatableDType { dtype } => write!(
                 f,
                 "cannot validate fixture: no element-wise comparison wired for dtype {dtype:?} \
@@ -311,9 +309,7 @@ fn validate_f32(
         let abs_err = (e - a).abs();
         let denom = e.abs().max(a.abs()).max(f64::MIN_POSITIVE);
         let rel_err = abs_err / denom;
-        if rel_err > fixture.tolerance.max_relative
-            && abs_err > fixture.tolerance.max_absolute
-        {
+        if rel_err > fixture.tolerance.max_relative && abs_err > fixture.tolerance.max_absolute {
             return Err(CorrectnessDrift::OutOfTolerance {
                 element_index: i,
                 expected: e,
@@ -332,10 +328,7 @@ mod tests {
 
     fn make_f32_fixture(expected: Vec<f32>) -> CorrectnessFixture {
         let elem_count = expected.len();
-        let bytes: Vec<u8> = expected
-            .iter()
-            .flat_map(|x| x.to_le_bytes())
-            .collect();
+        let bytes: Vec<u8> = expected.iter().flat_map(|x| x.to_le_bytes()).collect();
         CorrectnessFixture {
             op: OpKind::AddElementwise,
             dtype: DType::F32,
@@ -407,7 +400,10 @@ mod tests {
         let actual = bytes_of(&[1.0, 2.0]); // missing one element
         let err = validate_against_fixture(&fixture, &actual).unwrap_err();
         match err {
-            CorrectnessDrift::LengthMismatch { expected_bytes, actual_bytes } => {
+            CorrectnessDrift::LengthMismatch {
+                expected_bytes,
+                actual_bytes,
+            } => {
                 assert_eq!(expected_bytes, 12);
                 assert_eq!(actual_bytes, 8);
             }

@@ -36,9 +36,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .include_args(true)
             .build();
         use tracing_subscriber::prelude::*;
-        tracing_subscriber::registry()
-            .with(chrome_layer)
-            .init();
+        tracing_subscriber::registry().with(chrome_layer).init();
         eprintln!("Tracing enabled → trace.json");
         Some(guard)
     } else {
@@ -57,7 +55,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Parse device selection.
-    let selection = args.iter()
+    let selection = args
+        .iter()
         .find(|a| a.starts_with("--device="))
         .map(|a| {
             let val = &a["--device=".len()..];
@@ -69,13 +68,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or(DeviceSelection::PreferDiscrete);
 
     // Filter out our flags for positional args.
-    let positional: Vec<&str> = args.iter()
+    let positional: Vec<&str> = args
+        .iter()
         .skip(1)
         .filter(|a| !a.starts_with("--"))
         .map(|s| s.as_str())
         .collect();
 
-    let model_id = positional.first().copied().unwrap_or("TinyLlama/TinyLlama-1.1B-Chat-v1.0");
+    let model_id = positional
+        .first()
+        .copied()
+        .unwrap_or("TinyLlama/TinyLlama-1.1B-Chat-v1.0");
     let prompt = positional.get(1).copied().unwrap_or("Once upon a time");
     let max_new: usize = positional.get(2).and_then(|s| s.parse().ok()).unwrap_or(32);
 
@@ -103,8 +106,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("done in {:.2?}", t0.elapsed());
     eprintln!(
         "  config: dim={}  layers={}  heads={}  kv_heads={}  vocab={}",
-        model.config.dim, model.config.n_layers, model.config.n_heads,
-        model.config.n_kv_heads, model.config.vocab_size,
+        model.config.dim,
+        model.config.n_layers,
+        model.config.n_heads,
+        model.config.n_kv_heads,
+        model.config.vocab_size,
     );
 
     eprint!("Loading tokenizer...             ");
@@ -131,7 +137,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output_tokens = model.generate_streaming_with_kv_context(
         &prompt_tokens,
         max_new,
-        SamplingStrategy::Temperature { temp: 0.8, seed: 42 },
+        SamplingStrategy::Temperature {
+            temp: 0.8,
+            seed: 42,
+        },
         tokenizer.eos_id(),
         &device,
         DType::F32,

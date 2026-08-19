@@ -52,14 +52,12 @@ type Concat2Run = unsafe extern "C" fn(
     stream: *mut std::ffi::c_void,
 ) -> i32;
 
-fn i32_or(
-    op_label: &'static str,
-    dim_index: usize,
-    dim_value: usize,
-) -> Result<i32> {
+fn i32_or(op_label: &'static str, dim_index: usize, dim_value: usize) -> Result<i32> {
     i32::try_from(dim_value).map_err(|_| {
         Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
-            op: op_label, dim_index, dim_value,
+            op: op_label,
+            dim_index,
+            dim_value,
         })
     })
 }
@@ -110,14 +108,17 @@ fn concat2_run(
     if a_dims.len() != b_dims.len() {
         return Err(Error::Msg(format!(
             "{op_label}: input ranks differ (a={}, b={})",
-            a_dims.len(), b_dims.len(),
-        )).bt());
+            a_dims.len(),
+            b_dims.len(),
+        ))
+        .bt());
     }
     let rank = a_dims.len();
     if axis >= rank {
         return Err(Error::Msg(format!(
             "{op_label}: axis {axis} out of range for rank {rank}",
-        )).bt());
+        ))
+        .bt());
     }
     let mut out_dims = a_dims.to_vec();
     out_dims[axis] = a_dims[axis] + b_dims[axis];
@@ -159,7 +160,9 @@ fn concat2_run(
             stride_a_i64.as_ptr(),
             stride_b_i64.as_ptr(),
             stride_y_i64.as_ptr(),
-            a_ptr, b_ptr, y_ptr,
+            a_ptr,
+            b_ptr,
+            y_ptr,
             scratch.as_raw(),
             scratch.bytes(),
             stream,
@@ -204,14 +207,17 @@ pub fn concat2_into(
     if a_dims.len() != b_dims.len() {
         return Err(Error::Msg(format!(
             "{op_label}_into: input ranks differ (a={}, b={})",
-            a_dims.len(), b_dims.len(),
-        )).bt());
+            a_dims.len(),
+            b_dims.len(),
+        ))
+        .bt());
     }
     let rank = a_dims.len();
     if axis >= rank {
         return Err(Error::Msg(format!(
             "{op_label}_into: axis {axis} out of range for rank {rank}",
-        )).bt());
+        ))
+        .bt());
     }
     let mut out_dims = a_dims.to_vec();
     out_dims[axis] = a_dims[axis] + b_dims[axis];
@@ -222,7 +228,8 @@ pub fn concat2_into(
             "{op_label}_into: dest buffer is {} bytes, expected {out_bytes} for output \
              shape {out_dims:?}",
             dest.len_bytes(),
-        )).bt());
+        ))
+        .bt());
     }
     if out_bytes == 0 {
         // Empty tensor — no-op write, don't call the kernel.
@@ -259,7 +266,9 @@ pub fn concat2_into(
             stride_a_i64.as_ptr(),
             stride_b_i64.as_ptr(),
             stride_y_i64.as_ptr(),
-            a_ptr, b_ptr, y_ptr,
+            a_ptr,
+            b_ptr,
+            y_ptr,
             scratch.as_raw(),
             scratch.bytes(),
             stream,
@@ -283,8 +292,10 @@ fn concat_n_chain(
     if inputs.len() != input_layouts.len() {
         return Err(Error::Msg(format!(
             "{op_label}: inputs.len()={} != input_layouts.len()={}",
-            inputs.len(), input_layouts.len(),
-        )).bt());
+            inputs.len(),
+            input_layouts.len(),
+        ))
+        .bt());
     }
     match inputs.len() {
         0 => Err(Error::Msg(format!("{op_label}: zero inputs")).bt()),
@@ -297,15 +308,25 @@ fn concat_n_chain(
         }
         _ => {
             let (mut acc, mut acc_layout) = concat2_run(
-                inputs[0], &input_layouts[0],
-                inputs[1], &input_layouts[1],
-                axis, kernel, op_label, dtype_size_bytes,
+                inputs[0],
+                &input_layouts[0],
+                inputs[1],
+                &input_layouts[1],
+                axis,
+                kernel,
+                op_label,
+                dtype_size_bytes,
             )?;
             for i in 2..inputs.len() {
                 let (next_acc, next_layout) = concat2_run(
-                    &acc, &acc_layout,
-                    inputs[i], &input_layouts[i],
-                    axis, kernel, op_label, dtype_size_bytes,
+                    &acc,
+                    &acc_layout,
+                    inputs[i],
+                    &input_layouts[i],
+                    axis,
+                    kernel,
+                    op_label,
+                    dtype_size_bytes,
                 )?;
                 acc = next_acc;
                 acc_layout = next_layout;
@@ -410,7 +431,7 @@ macro_rules! concat_kernel_into {
                 if inputs.len() != 2 {
                     return Err(Error::Msg(format!(
                         "{}_into: N-ary (N>2) concat has no write-into path yet — only \
-                         2-input concat is capture-safe today (got {} inputs)",
+2-input concat is capture-safe today (got {} inputs)",
                         $op_label, inputs.len(),
                     )).bt());
                 }
@@ -483,7 +504,14 @@ mod tests {
         let kernel = sys::baracuda_kernels_concat2_f32_run;
 
         let (expect, expect_layout) = concat2_run(
-            &a, &a_layout, &b, &b_layout, 1, kernel, "concat_f32_test", 4,
+            &a,
+            &a_layout,
+            &b,
+            &b_layout,
+            1,
+            kernel,
+            "concat_f32_test",
+            4,
         )
         .unwrap();
         let expect_bytes = expect.to_cpu_bytes().unwrap();
@@ -491,7 +519,15 @@ mod tests {
 
         let dest = CudaStorageBytes::alloc(&dev, expect.len_bytes()).unwrap();
         concat2_into(
-            &a, &a_layout, &b, &b_layout, 1, &dest, kernel, "concat_f32_test", 4,
+            &a,
+            &a_layout,
+            &b,
+            &b_layout,
+            1,
+            &dest,
+            kernel,
+            "concat_f32_test",
+            4,
         )
         .unwrap();
         let got_bytes = dest.to_cpu_bytes().unwrap();
@@ -515,6 +551,9 @@ mod tests {
         let dest = CudaStorageBytes::alloc(&dev, 36).unwrap();
         let inputs: [&CudaStorageBytes; 3] = [&a, &b, &c];
         let err = concat_f32_into(&inputs, None, 1, 1, &[3, 3, 3], 1, &dest);
-        assert!(err.is_err(), "N=3 concat_f32_into must refuse, not silently allocate");
+        assert!(
+            err.is_err(),
+            "N=3 concat_f32_into must refuse, not silently allocate"
+        );
     }
 }

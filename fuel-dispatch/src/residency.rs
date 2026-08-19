@@ -48,8 +48,8 @@
 //!   graph-level planning.
 
 use crate::plan::backend_for_device;
+use fuel_graph::{Graph, NodeId, SharedGraph, opt, topo_order_multi};
 use fuel_ir::{DeviceLocation, Error, Result};
-use fuel_graph::{opt, topo_order_multi, Graph, NodeId, SharedGraph};
 // `Op` is named only by the test-module graph builders below (this module
 // emits `Op::Move`/`Op::Copy` through `opt`'s helpers, never by naming the
 // variant), so the import is `cfg(test)`-scoped to keep the lib build clean.
@@ -400,8 +400,8 @@ fn write_graph(graph: &SharedGraph) -> Result<std::sync::RwLockWriteGuard<'_, Gr
 mod tests {
     use super::*;
     use crate::pipelined::{PipelinedExecutor, StorageCache};
-    use fuel_ir::{probe::BackendId, DType, Shape};
     use fuel_graph::Node;
+    use fuel_ir::{DType, Shape, probe::BackendId};
     use std::sync::{Arc, RwLock};
 
     fn shared() -> SharedGraph {
@@ -419,7 +419,9 @@ mod tests {
 
     fn count_op(graph: &SharedGraph, pred: impl Fn(&Op) -> bool) -> usize {
         let g = graph.read().unwrap();
-        (0..g.len()).filter(|i| pred(&g.node(NodeId(*i)).op)).count()
+        (0..g.len())
+            .filter(|i| pred(&g.node(NodeId(*i)).op))
+            .count()
     }
 
     // ---- analysis (ported from fuel-graph-router residency_planner) ----
@@ -523,12 +525,20 @@ mod tests {
         let moves_before = count_op(&graph, |op| matches!(op, Op::Move { .. }));
         let copies_before = count_op(&graph, |op| matches!(op, Op::Copy { .. }));
 
-        let chains =
-            insert_residency_evictions(&graph, &[out], 1_000_000_000, 16, |_| None)
-                .expect("eviction pass");
-        assert!(chains.is_empty(), "under-budget graph should emit no chains");
-        assert_eq!(count_op(&graph, |op| matches!(op, Op::Move { .. })), moves_before);
-        assert_eq!(count_op(&graph, |op| matches!(op, Op::Copy { .. })), copies_before);
+        let chains = insert_residency_evictions(&graph, &[out], 1_000_000_000, 16, |_| None)
+            .expect("eviction pass");
+        assert!(
+            chains.is_empty(),
+            "under-budget graph should emit no chains"
+        );
+        assert_eq!(
+            count_op(&graph, |op| matches!(op, Op::Move { .. })),
+            moves_before
+        );
+        assert_eq!(
+            count_op(&graph, |op| matches!(op, Op::Copy { .. })),
+            copies_before
+        );
     }
 
     #[test]
@@ -536,12 +546,14 @@ mod tests {
         let (graph, a, out) = over_budget_graph();
 
         // Budget: 1 byte (effectively zero).
-        let chains = insert_residency_evictions(&graph, &[out], 1, 16, |_| {
-            Some(DeviceLocation::Cpu)
-        })
-        .expect("eviction pass");
+        let chains =
+            insert_residency_evictions(&graph, &[out], 1, 16, |_| Some(DeviceLocation::Cpu))
+                .expect("eviction pass");
 
-        assert!(!chains.is_empty(), "over-budget graph should emit at least one chain");
+        assert!(
+            !chains.is_empty(),
+            "over-budget graph should emit at least one chain"
+        );
         assert!(
             count_op(&graph, |op| matches!(op, Op::Move { .. })) >= 1,
             "over-budget graph should emit at least one Op::Move",
@@ -553,11 +565,16 @@ mod tests {
 
         // The top-scoring candidate is `a` (biggest gap × bytes among
         // multi-consumer nodes); its chain must be Move(a) → Copy.
-        let chain = chains.iter().find(|c| c.candidate == a).unwrap_or(&chains[0]);
+        let chain = chains
+            .iter()
+            .find(|c| c.candidate == a)
+            .unwrap_or(&chains[0]);
         let g = graph.read().unwrap();
         assert!(matches!(
             g.node(chain.move_node).op,
-            Op::Move { target: DeviceLocation::Cpu },
+            Op::Move {
+                target: DeviceLocation::Cpu
+            },
         ));
         assert_eq!(g.node(chain.reload).inputs, vec![chain.move_node]);
         // Both stamped so the pipelined executor can compile them.
@@ -619,8 +636,8 @@ mod tests {
     #[test]
     fn eviction_terminates_when_budget_unreachable() {
         let (graph, _a, out) = over_budget_graph();
-        let chains = insert_residency_evictions(&graph, &[out], 0, 16, |_| None)
-            .expect("eviction pass");
+        let chains =
+            insert_residency_evictions(&graph, &[out], 0, 16, |_| None).expect("eviction pass");
         let len_after = graph.read().unwrap().len();
         // A second run finds the same candidates already evicted (or
         // gapless) and makes no further progress.

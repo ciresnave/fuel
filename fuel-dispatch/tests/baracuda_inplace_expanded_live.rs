@@ -18,9 +18,13 @@
 
 use std::sync::{Arc, RwLock};
 
-use fuel_ir::{dispatch::OpKind, probe::BackendId, DType};
 use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
-use fuel_dispatch::{baracuda_dispatch::register_baracuda_cuda_kernels, dispatch::register_cuda_kernels, kernel::{KernelBindingTable, OpParams}};
+use fuel_dispatch::{
+    baracuda_dispatch::register_baracuda_cuda_kernels,
+    dispatch::register_cuda_kernels,
+    kernel::{KernelBindingTable, OpParams},
+};
+use fuel_ir::{DType, dispatch::OpKind, probe::BackendId};
 use fuel_memory::{BackendStorage, Storage};
 
 fn dev_or_skip() -> Option<CudaDevice> {
@@ -68,8 +72,7 @@ fn run_inplace<T: bytemuck::Pod>(
         "no alternatives at ({op:?}, [{dt:?}, {dt:?}], Cuda)",
     );
     let kernel = alternatives[0].kernel;
-    kernel(&[], &mut [target_arc.clone()], &[], &params)
-        .expect("inplace kernel call");
+    kernel(&[], &mut [target_arc.clone()], &[], &params).expect("inplace kernel call");
     download_bytes(&target_arc.read().unwrap())
 }
 
@@ -86,7 +89,9 @@ fn baracuda_neg_inplace_f32() {
     let Some(_dev) = dev_or_skip() else { return };
     let out = run_inplace(
         &dual_table(),
-        OpKind::NegInplace, DType::F32, OpParams::None,
+        OpKind::NegInplace,
+        DType::F32,
+        OpParams::None,
         &[1.0_f32, -2.0, 3.0, -4.0],
     );
     let got: &[f32] = bytemuck::cast_slice(&out);
@@ -100,8 +105,14 @@ fn baracuda_abs_inplace_bf16() {
     let Some(_dev) = dev_or_skip() else { return };
     let out = run_inplace(
         &dual_table(),
-        OpKind::AbsInplace, DType::BF16, OpParams::None,
-        &[bf16::from_f32(-1.5), bf16::from_f32(0.0), bf16::from_f32(2.5)],
+        OpKind::AbsInplace,
+        DType::BF16,
+        OpParams::None,
+        &[
+            bf16::from_f32(-1.5),
+            bf16::from_f32(0.0),
+            bf16::from_f32(2.5),
+        ],
     );
     let got: &[bf16] = bytemuck::cast_slice(&out);
     assert!((got[0].to_f32() - 1.5).abs() < 1e-2);
@@ -115,7 +126,9 @@ fn baracuda_sqr_inplace_f64() {
     let Some(_dev) = dev_or_skip() else { return };
     let out = run_inplace(
         &dual_table(),
-        OpKind::SqrInplace, DType::F64, OpParams::None,
+        OpKind::SqrInplace,
+        DType::F64,
+        OpParams::None,
         &[2.0_f64, -3.0, 4.0],
     );
     let got: &[f64] = bytemuck::cast_slice(&out);
@@ -130,7 +143,9 @@ fn baracuda_exp_inplace_f32() {
     let Some(_dev) = dev_or_skip() else { return };
     let out = run_inplace(
         &dual_table(),
-        OpKind::ExpInplace, DType::F32, OpParams::None,
+        OpKind::ExpInplace,
+        DType::F32,
+        OpParams::None,
         &[0.0_f32, 1.0, 2.0],
     );
     let got: &[f32] = bytemuck::cast_slice(&out);
@@ -145,7 +160,9 @@ fn baracuda_log_inplace_f32() {
     let Some(_dev) = dev_or_skip() else { return };
     let out = run_inplace(
         &dual_table(),
-        OpKind::LogInplace, DType::F32, OpParams::None,
+        OpKind::LogInplace,
+        DType::F32,
+        OpParams::None,
         &[1.0_f32, std::f32::consts::E, 10.0],
     );
     let got: &[f32] = bytemuck::cast_slice(&out);
@@ -160,7 +177,9 @@ fn baracuda_floor_inplace_f32() {
     let Some(_dev) = dev_or_skip() else { return };
     let out = run_inplace(
         &dual_table(),
-        OpKind::FloorInplace, DType::F32, OpParams::None,
+        OpKind::FloorInplace,
+        DType::F32,
+        OpParams::None,
         &[1.7_f32, -2.3, 3.0, -0.5],
     );
     let got: &[f32] = bytemuck::cast_slice(&out);
@@ -173,7 +192,9 @@ fn baracuda_sign_inplace_f32() {
     let Some(_dev) = dev_or_skip() else { return };
     let out = run_inplace(
         &dual_table(),
-        OpKind::SignInplace, DType::F32, OpParams::None,
+        OpKind::SignInplace,
+        DType::F32,
+        OpParams::None,
         &[-2.0_f32, 0.0, 3.0],
     );
     let got: &[f32] = bytemuck::cast_slice(&out);
@@ -186,7 +207,9 @@ fn baracuda_erf_inplace_f32() {
     let Some(_dev) = dev_or_skip() else { return };
     let out = run_inplace(
         &dual_table(),
-        OpKind::ErfInplace, DType::F32, OpParams::None,
+        OpKind::ErfInplace,
+        DType::F32,
+        OpParams::None,
         &[0.0_f32, 1.0, -1.0],
     );
     let got: &[f32] = bytemuck::cast_slice(&out);
@@ -206,8 +229,12 @@ fn baracuda_clamp_inplace_f32() {
     let Some(_dev) = dev_or_skip() else { return };
     let out = run_inplace(
         &dual_table(),
-        OpKind::ClampInplace, DType::F32,
-        OpParams::Clamp { min: -1.0, max: 1.0 },
+        OpKind::ClampInplace,
+        DType::F32,
+        OpParams::Clamp {
+            min: -1.0,
+            max: 1.0,
+        },
         &[-5.0_f32, 0.0, 5.0, 2.5],
     );
     let got: &[f32] = bytemuck::cast_slice(&out);
@@ -221,9 +248,14 @@ fn baracuda_clamp_inplace_bf16() {
     let Some(_dev) = dev_or_skip() else { return };
     let out = run_inplace(
         &dual_table(),
-        OpKind::ClampInplace, DType::BF16,
+        OpKind::ClampInplace,
+        DType::BF16,
         OpParams::Clamp { min: 0.0, max: 2.0 },
-        &[bf16::from_f32(-1.0), bf16::from_f32(1.5), bf16::from_f32(3.0)],
+        &[
+            bf16::from_f32(-1.0),
+            bf16::from_f32(1.5),
+            bf16::from_f32(3.0),
+        ],
     );
     let got: &[bf16] = bytemuck::cast_slice(&out);
     assert_eq!(got[0].to_f32(), 0.0);
@@ -237,7 +269,8 @@ fn baracuda_powi_inplace_f32() {
     let Some(_dev) = dev_or_skip() else { return };
     let out = run_inplace(
         &dual_table(),
-        OpKind::PowIInplace, DType::F32,
+        OpKind::PowIInplace,
+        DType::F32,
         OpParams::PowI { exp: 3 },
         &[2.0_f32, -3.0, 4.0],
     );
@@ -253,7 +286,8 @@ fn baracuda_powi_inplace_f64() {
     let Some(_dev) = dev_or_skip() else { return };
     let out = run_inplace(
         &dual_table(),
-        OpKind::PowIInplace, DType::F64,
+        OpKind::PowIInplace,
+        DType::F64,
         OpParams::PowI { exp: 2 },
         &[1.5_f64, -2.5, 3.5],
     );

@@ -24,10 +24,8 @@ use anyhow::{Context, Error as E, Result};
 use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
 
-use fuel::lazy_xlm_roberta::{
-    XlmrConfig, XlmrForMaskedLM, XlmrForSequenceClassification,
-};
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use fuel::lazy_xlm_roberta::{XlmrConfig, XlmrForMaskedLM, XlmrForSequenceClassification};
+use hf_hub::{Repo, RepoType, api::sync::Api};
 use tokenizers::Tokenizer;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -73,17 +71,21 @@ struct Args {
 
 fn default_model_id(task: Task) -> &'static str {
     match task {
-        Task::FillMask       => "FacebookAI/xlm-roberta-base",
-        Task::Reranker       => "BAAI/bge-reranker-base",
+        Task::FillMask => "FacebookAI/xlm-roberta-base",
+        Task::Reranker => "BAAI/bge-reranker-base",
         Task::Classification => "s-nlp/xlmr_formality_classifier",
     }
 }
 
 fn default_prompt(task: Task) -> &'static str {
     match task {
-        Task::FillMask       => "Hello I'm a <mask> model.",
-        Task::Reranker       => "what is panda?</s>The giant panda (Ailuropoda melanoleuca) is a bear species endemic to China.",
-        Task::Classification => "I feel deep regret and sadness about the situation in international politics.",
+        Task::FillMask => "Hello I'm a <mask> model.",
+        Task::Reranker => {
+            "what is panda?</s>The giant panda (Ailuropoda melanoleuca) is a bear species endemic to China."
+        }
+        Task::Classification => {
+            "I feel deep regret and sadness about the situation in international politics."
+        }
     }
 }
 
@@ -165,15 +167,13 @@ fn main() -> Result<()> {
             let vocab = cfg.vocab_size;
             let start = mask_pos * vocab;
             let row = &flat[start..start + vocab];
-            let (best_id, best_logit) = row
-                .iter()
-                .enumerate()
-                .fold((0_usize, f32::NEG_INFINITY), |(bi, bv), (i, &v)| {
-                    if v > bv { (i, v) } else { (bi, bv) }
-                });
-            let decoded = tokenizer
-                .decode(&[best_id as u32], true)
-                .map_err(E::msg)?;
+            let (best_id, best_logit) =
+                row.iter()
+                    .enumerate()
+                    .fold((0_usize, f32::NEG_INFINITY), |(bi, bv), (i, &v)| {
+                        if v > bv { (i, v) } else { (bi, bv) }
+                    });
+            let decoded = tokenizer.decode(&[best_id as u32], true).map_err(E::msg)?;
             println!(
                 "fill-mask: position {mask_pos} -> id {best_id} (logit {best_logit:.4}) -> {decoded:?}",
             );
@@ -183,30 +183,30 @@ fn main() -> Result<()> {
             // BAAI/bge-reranker-* models are sequence-classification
             // with num_labels = 1. Sigmoid of the logit is the
             // pointwise relevance score.
-            let model = XlmrForSequenceClassification::load_from_mmapped(
-                &st, cfg.clone(), 1,
-            )
-            .map_err(|e| E::msg(format!("load XlmrForSequenceClassification (reranker): {e}")))?;
+            let model = XlmrForSequenceClassification::load_from_mmapped(&st, cfg.clone(), 1)
+                .map_err(|e| {
+                    E::msg(format!(
+                        "load XlmrForSequenceClassification (reranker): {e}"
+                    ))
+                })?;
             let logits = model
                 .forward(&token_ids, None)
                 .map_err(|e| E::msg(format!("forward: {e}")))?;
             // logits: (1, 1). sigmoid -> realize.
             let score = logits.sigmoid().realize_f32();
-            let score = score
-                .first()
-                .copied()
-                .context("empty reranker score")?;
+            let score = score.first().copied().context("empty reranker score")?;
             println!("reranker score: {score:.4}");
         }
 
         Task::Classification => {
             let num_labels = args.num_labels;
-            let model = XlmrForSequenceClassification::load_from_mmapped(
-                &st, cfg.clone(), num_labels,
-            )
-            .map_err(|e| E::msg(format!(
-                "load XlmrForSequenceClassification ({num_labels} labels): {e}",
-            )))?;
+            let model =
+                XlmrForSequenceClassification::load_from_mmapped(&st, cfg.clone(), num_labels)
+                    .map_err(|e| {
+                        E::msg(format!(
+                            "load XlmrForSequenceClassification ({num_labels} labels): {e}",
+                        ))
+                    })?;
             let logits = model
                 .forward(&token_ids, None)
                 .map_err(|e| E::msg(format!("forward: {e}")))?;
@@ -216,12 +216,13 @@ fn main() -> Result<()> {
                 .softmax_last_dim()
                 .map_err(|e| E::msg(format!("softmax: {e}")))?
                 .realize_f32();
-            let (best, best_p) = probs
-                .iter()
-                .enumerate()
-                .fold((0_usize, f32::NEG_INFINITY), |(bi, bv), (i, &v)| {
-                    if v > bv { (i, v) } else { (bi, bv) }
-                });
+            let (best, best_p) =
+                probs
+                    .iter()
+                    .enumerate()
+                    .fold((0_usize, f32::NEG_INFINITY), |(bi, bv), (i, &v)| {
+                        if v > bv { (i, v) } else { (bi, bv) }
+                    });
             println!("classification probabilities ({num_labels} labels):");
             for (i, p) in probs.iter().enumerate() {
                 println!("  label {i}: {p:.4}");

@@ -1,5 +1,5 @@
-﻿use enterpolation::linear::ConstEquidistantLinear;
 use enterpolation::Generator;
+use enterpolation::linear::ConstEquidistantLinear;
 use palette::LinSrgb;
 
 pub struct SpectralRColormap {

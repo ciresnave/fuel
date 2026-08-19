@@ -19,7 +19,7 @@
 //! a later task) downgrades everything rather than trusting a claim that
 //! was never checked.
 
-use fuel_ir::{probe::BackendId, DType};
+use fuel_ir::{DType, probe::BackendId};
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
@@ -247,7 +247,12 @@ pub(crate) fn write_merged_ledger(fresh: &[LedgerRecord]) -> LedgerWriteSummary 
         .unwrap_or_else(|e| panic!("failed to open ledger at {path:?} for writing: {e}"));
     f.write_all(json.as_bytes()).expect("write ledger json");
     f.write_all(b"\n").expect("write trailing newline");
-    LedgerWriteSummary { before, after: ledger.len(), fresh: fresh.len(), path }
+    LedgerWriteSummary {
+        before,
+        after: ledger.len(),
+        fresh: fresh.len(),
+        path,
+    }
 }
 
 fn backend_label(b: BackendId) -> &'static str {
@@ -298,8 +303,7 @@ pub fn gate_precision(
     warnings: &mut Vec<ImportWarning>,
 ) -> PrecisionGuarantee {
     let mut unbacked: Vec<&'static str> = Vec::new();
-    let check =
-        |c: &'static str| ledger.has_pass(q.backend, q.dtypes, q.kernel_revision_hash, c);
+    let check = |c: &'static str| ledger.has_pass(q.backend, q.dtypes, q.kernel_revision_hash, c);
     if declared.bit_stable_on_same_hardware && !check("bit_stable_on_same_hardware") {
         unbacked.push("bit_stable_on_same_hardware");
     }
@@ -329,7 +333,7 @@ pub fn gate_precision(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_ir::{probe::BackendId, DType};
+    use fuel_ir::{DType, probe::BackendId};
 
     #[test]
     fn ledger_from_json_roundtrips_and_has_pass_matches_on_revision_and_claim() {
@@ -340,13 +344,43 @@ mod tests {
             "evidence": {"repeat_calls": 150}
         }]"#;
         let ledger = VerificationLedger::from_json(json).expect("parses");
-        assert!(ledger.has_pass(BackendId::Cuda, &[DType::F32], 1234567890123456789, "bit_stable_on_same_hardware"));
-        assert!(!ledger.has_pass(BackendId::Cuda, &[DType::F32], 1234567890123456788, "bit_stable_on_same_hardware"));
-        assert!(!ledger.has_pass(BackendId::Cuda, &[DType::F32], 1234567890123456789, "max_ulp"));
-        assert!(!ledger.has_pass(BackendId::Cpu, &[DType::F32], 1234567890123456789, "bit_stable_on_same_hardware"));
-        assert!(!ledger.has_pass(BackendId::Cuda, &[DType::F16], 1234567890123456789, "bit_stable_on_same_hardware"));
+        assert!(ledger.has_pass(
+            BackendId::Cuda,
+            &[DType::F32],
+            1234567890123456789,
+            "bit_stable_on_same_hardware"
+        ));
+        assert!(!ledger.has_pass(
+            BackendId::Cuda,
+            &[DType::F32],
+            1234567890123456788,
+            "bit_stable_on_same_hardware"
+        ));
+        assert!(!ledger.has_pass(
+            BackendId::Cuda,
+            &[DType::F32],
+            1234567890123456789,
+            "max_ulp"
+        ));
+        assert!(!ledger.has_pass(
+            BackendId::Cpu,
+            &[DType::F32],
+            1234567890123456789,
+            "bit_stable_on_same_hardware"
+        ));
+        assert!(!ledger.has_pass(
+            BackendId::Cuda,
+            &[DType::F16],
+            1234567890123456789,
+            "bit_stable_on_same_hardware"
+        ));
         let failing = VerificationLedger::from_json(&json.replace("\"pass\"", "\"fail\"")).unwrap();
-        assert!(!failing.has_pass(BackendId::Cuda, &[DType::F32], 1234567890123456789, "bit_stable_on_same_hardware"));
+        assert!(!failing.has_pass(
+            BackendId::Cuda,
+            &[DType::F32],
+            1234567890123456789,
+            "bit_stable_on_same_hardware"
+        ));
         // Task 4.1 shipped this as `assert_eq!(embedded().len(), 0)` — the
         // ledger was an intentional Task-4.1 placeholder (`[]`). Task 4.5b
         // (2026-07-12) populated it with REAL empirically-verified CPU
@@ -369,17 +403,37 @@ mod tests {
 mod gate_tests {
     use super::*;
     use crate::fused::PrecisionGuarantee;
-    use fuel_ir::{probe::BackendId, DType};
+    use fuel_ir::{DType, probe::BackendId};
 
     fn claim() -> PrecisionGuarantee {
-        PrecisionGuarantee { bit_stable_on_same_hardware: true, max_ulp: Some(0), max_relative: None, max_absolute: None, notes: "audited exact f32 add" }
+        PrecisionGuarantee {
+            bit_stable_on_same_hardware: true,
+            max_ulp: Some(0),
+            max_relative: None,
+            max_absolute: None,
+            notes: "audited exact f32 add",
+        }
     }
     fn q() -> LedgerQuery<'static> {
-        LedgerQuery { kernel_ref: "rope_apply_f32", backend: BackendId::Cuda, dtypes: &[DType::F32], kernel_revision_hash: 42 }
+        LedgerQuery {
+            kernel_ref: "rope_apply_f32",
+            backend: BackendId::Cuda,
+            dtypes: &[DType::F32],
+            kernel_revision_hash: 42,
+        }
     }
     fn pass(c: &str) -> LedgerRecord {
-        LedgerRecord { kernel_ref: "rope_apply_f32".into(), backend: "Cuda".into(), dtypes: vec!["F32".into()],
-            kernel_revision_hash: 42, claim: c.into(), result: "pass".into(), verified_at: "t".into(), protocol_version: 1, evidence: serde_json::Value::Null }
+        LedgerRecord {
+            kernel_ref: "rope_apply_f32".into(),
+            backend: "Cuda".into(),
+            dtypes: vec!["F32".into()],
+            kernel_revision_hash: 42,
+            claim: c.into(),
+            result: "pass".into(),
+            verified_at: "t".into(),
+            protocol_version: 1,
+            evidence: serde_json::Value::Null,
+        }
     }
 
     #[test]
@@ -390,11 +444,18 @@ mod gate_tests {
         assert!(!g.bit_stable_on_same_hardware);
         assert!(g.max_ulp.is_none());
         assert_eq!(w.len(), 1);
-        assert!(w[0].message.contains("rope_apply_f32") && w[0].message.contains("bit_stable_on_same_hardware") && w[0].message.contains("max_ulp"));
+        assert!(
+            w[0].message.contains("rope_apply_f32")
+                && w[0].message.contains("bit_stable_on_same_hardware")
+                && w[0].message.contains("max_ulp")
+        );
     }
     #[test]
     fn matching_pass_entries_for_every_claim_are_honored() {
-        let ledger = VerificationLedger::from_records(vec![pass("bit_stable_on_same_hardware"), pass("max_ulp")]);
+        let ledger = VerificationLedger::from_records(vec![
+            pass("bit_stable_on_same_hardware"),
+            pass("max_ulp"),
+        ]);
         let mut w = Vec::new();
         let g = gate_precision(claim(), &q(), &ledger, &mut w);
         assert!(g.bit_stable_on_same_hardware && g.max_ulp == Some(0) && w.is_empty());
@@ -406,14 +467,26 @@ mod gate_tests {
         let g = gate_precision(claim(), &q(), &ledger, &mut w);
         assert_eq!(g.notes, PrecisionGuarantee::UNAUDITED.notes);
         assert!(w[0].message.contains("max_ulp"));
-        assert!(!g.bit_stable_on_same_hardware, "whole-collapse: even the backed bit_stable claim is dropped");
-        assert!(g.max_ulp.is_none(), "whole-collapse: the unbacked max_ulp bound is dropped");
+        assert!(
+            !g.bit_stable_on_same_hardware,
+            "whole-collapse: even the backed bit_stable claim is dropped"
+        );
+        assert!(
+            g.max_ulp.is_none(),
+            "whole-collapse: the unbacked max_ulp bound is dropped"
+        );
     }
     #[test]
     fn stale_hash_downgrades_even_with_a_pass_for_the_old_hash() {
-        let mut old = pass("bit_stable_on_same_hardware"); old.kernel_revision_hash = 41;
+        let mut old = pass("bit_stable_on_same_hardware");
+        old.kernel_revision_hash = 41;
         let mut w = Vec::new();
-        let g = gate_precision(claim(), &q(), &VerificationLedger::from_records(vec![old]), &mut w);
+        let g = gate_precision(
+            claim(),
+            &q(),
+            &VerificationLedger::from_records(vec![old]),
+            &mut w,
+        );
         assert_eq!(g.notes, PrecisionGuarantee::UNAUDITED.notes);
     }
     #[test]
@@ -487,7 +560,10 @@ mod gate_tests {
             "re-verifying an existing key must replace its row, not append a second one"
         );
         assert!(
-            remerged.records().iter().any(|r| r.verified_at == "epoch:1"),
+            remerged
+                .records()
+                .iter()
+                .any(|r| r.verified_at == "epoch:1"),
             "the replacement row did not take effect"
         );
     }
@@ -541,14 +617,18 @@ mod gate_tests {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/fkc/verify");
         let mut scanned = 0usize;
         let mut offenders: Vec<String> = Vec::new();
-        let entries = std::fs::read_dir(&dir)
-            .unwrap_or_else(|e| panic!("cannot read {dir:?}: {e}"));
+        let entries =
+            std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("cannot read {dir:?}: {e}"));
         for entry in entries {
             let path = entry.expect("dir entry").path();
             if path.extension().and_then(|e| e.to_str()) != Some("rs") {
                 continue;
             }
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
             let src = std::fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("cannot read {path:?}: {e}"));
             let src = strip_line_comments(&src);

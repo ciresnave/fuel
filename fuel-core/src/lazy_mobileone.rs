@@ -54,7 +54,7 @@
 //! Forward-only, batch == 1, F32. Returns `(1, nclasses)`
 //! with the classifier head or `(1, last_channels)` without.
 
-use crate::lazy::{load_tensor_as_f32, LazyTensor, WeightStorage};
+use crate::lazy::{LazyTensor, WeightStorage, load_tensor_as_f32};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -75,19 +75,39 @@ pub struct MobileOneConfig {
 
 impl MobileOneConfig {
     pub fn s0(nclasses: Option<usize>) -> Self {
-        Self { k: 4, alphas: [0.75, 0.75, 1.0, 1.0, 2.0], nclasses }
+        Self {
+            k: 4,
+            alphas: [0.75, 0.75, 1.0, 1.0, 2.0],
+            nclasses,
+        }
     }
     pub fn s1(nclasses: Option<usize>) -> Self {
-        Self { k: 1, alphas: [1.5, 1.5, 1.5, 2.0, 2.5], nclasses }
+        Self {
+            k: 1,
+            alphas: [1.5, 1.5, 1.5, 2.0, 2.5],
+            nclasses,
+        }
     }
     pub fn s2(nclasses: Option<usize>) -> Self {
-        Self { k: 1, alphas: [1.5, 1.5, 2.0, 2.5, 4.0], nclasses }
+        Self {
+            k: 1,
+            alphas: [1.5, 1.5, 2.0, 2.5, 4.0],
+            nclasses,
+        }
     }
     pub fn s3(nclasses: Option<usize>) -> Self {
-        Self { k: 1, alphas: [2.0, 2.0, 2.5, 3.0, 4.0], nclasses }
+        Self {
+            k: 1,
+            alphas: [2.0, 2.0, 2.5, 3.0, 4.0],
+            nclasses,
+        }
     }
     pub fn s4(nclasses: Option<usize>) -> Self {
-        Self { k: 1, alphas: [3.0, 3.0, 3.5, 3.5, 4.0], nclasses }
+        Self {
+            k: 1,
+            alphas: [3.0, 3.0, 3.5, 3.5, 4.0],
+            nclasses,
+        }
     }
 
     /// Output channels for stage `stage` (0 = stem,
@@ -158,9 +178,7 @@ impl MobileOneModel {
                 let n = cfg.nclasses.expect("head present but cfg.nclasses == None");
                 let last_c = cfg.channels_at(4);
                 let logits = w.apply_linear(&pooled, last_c, n)?;
-                let bias_t = pooled.const_f32_like(
-                    Arc::clone(b), Shape::from_dims(&[n]),
-                );
+                let bias_t = pooled.const_f32_like(Arc::clone(b), Shape::from_dims(&[n]));
                 logits.broadcast_add(&bias_t)
             }
         }
@@ -191,12 +209,16 @@ impl MobileOneModel {
 
     fn apply_layer(&self, x: &LazyTensor, layer: &MobileOneLayerWeights) -> Result<LazyTensor> {
         let w_shape = Shape::from_dims(&[
-            layer.c_out, layer.c_in / layer.groups, layer.kernel, layer.kernel,
+            layer.c_out,
+            layer.c_in / layer.groups,
+            layer.kernel,
+            layer.kernel,
         ]);
         let w = layer.conv_w.const_like(x, w_shape)?;
         let pad = if layer.kernel > 1 { 1 } else { 0 };
         let conv_out = x.conv2d(
-            &w, None,
+            &w,
+            None,
             (layer.stride, layer.stride),
             (pad, pad),
             layer.groups,
@@ -225,7 +247,8 @@ impl MobileOneModel {
         x: &LazyTensor,
         w: &WeightStorage,
         b: &Arc<[f32]>,
-        c_in: usize, c_out: usize,
+        c_in: usize,
+        c_out: usize,
     ) -> Result<LazyTensor> {
         let wt = w.const_like(x, Shape::from_dims(&[c_out, c_in, 1, 1]))?;
         let conv = x.conv2d(&wt, None, (1, 1), (0, 0), 1)?;
@@ -281,17 +304,9 @@ impl MobileOneWeights {
         // block on the stem in the S4 variant.
         let stem_dim = cfg.channels_at(0);
         let stem = mobileone_load_layer(
-            st,
-            "stem",
-            cfg,
-            /* has_identity = */ false,
-            /* c_in = */ 3,
-            /* c_out = */ stem_dim,
-            /* kernel = */ 3,
-            /* stride = */ 2,
-            /* groups = */ 1,
-            /* k = */ 1,
-            has_se,
+            st, "stem", cfg, /* has_identity = */ false, /* c_in = */ 3,
+            /* c_out = */ stem_dim, /* kernel = */ 3, /* stride = */ 2,
+            /* groups = */ 1, /* k = */ 1, has_se,
         )?;
 
         let mut stages: [Vec<MobileOneLayerWeights>; 4] = Default::default();
@@ -305,16 +320,32 @@ impl MobileOneWeights {
                 // Depthwise: kernel=3, groups=in_c, c_out=in_c.
                 let dw_prefix = format!("stages.{}.{}", stage_idx - 1, b * 2);
                 let dw = mobileone_load_layer(
-                    st, &dw_prefix, cfg, has_identity,
-                    in_c, in_c, 3, stride, in_c, cfg.k,
+                    st,
+                    &dw_prefix,
+                    cfg,
+                    has_identity,
+                    in_c,
+                    in_c,
+                    3,
+                    stride,
+                    in_c,
+                    cfg.k,
                     /* has_se = */ false,
                 )?;
                 layers.push(dw);
                 // Pointwise: kernel=1, groups=1, c_in=in_c, c_out=out_c.
                 let pw_prefix = format!("stages.{}.{}", stage_idx - 1, b * 2 + 1);
                 let pw = mobileone_load_layer(
-                    st, &pw_prefix, cfg, has_identity,
-                    in_c, out_c, 1, /* stride = */ 1, /* groups = */ 1, cfg.k,
+                    st,
+                    &pw_prefix,
+                    cfg,
+                    has_identity,
+                    in_c,
+                    out_c,
+                    1,
+                    /* stride = */ 1,
+                    /* groups = */ 1,
+                    cfg.k,
                     /* has_se = */ has_se,
                 )?;
                 layers.push(pw);
@@ -371,35 +402,48 @@ fn mobileone_load_layer(
 
     // k parallel kxk conv+BN branches.
     for i in 0..k {
-        let conv_w = mobileone_load_check(
-            st,
-            &format!("{prefix}.conv_kxk.{i}.conv.weight"),
-            n_w,
-        )?;
-        let (gain, bias, mean, var) = mobileone_load_bn(
-            st, &format!("{prefix}.conv_kxk.{i}.bn"), c_out,
-        )?;
+        let conv_w = mobileone_load_check(st, &format!("{prefix}.conv_kxk.{i}.conv.weight"), n_w)?;
+        let (gain, bias, mean, var) =
+            mobileone_load_bn(st, &format!("{prefix}.conv_kxk.{i}.bn"), c_out)?;
         let (wk, bk) = fuse_conv_bn_kernel(
-            &conv_w, &gain, &bias, &mean, &var,
-            MOBILEONE_BN_EPS, c_out, c_in_per_group, kernel_elems,
+            &conv_w,
+            &gain,
+            &bias,
+            &mean,
+            &var,
+            MOBILEONE_BN_EPS,
+            c_out,
+            c_in_per_group,
+            kernel_elems,
         );
-        for j in 0..n_w { fused_w[j] += wk[j]; }
-        for j in 0..c_out { fused_b[j] += bk[j]; }
+        for j in 0..n_w {
+            fused_w[j] += wk[j];
+        }
+        for j in 0..c_out {
+            fused_b[j] += bk[j];
+        }
     }
 
     // Optional 1×1 scale branch (only when kernel > 1). The fused 1×1
     // conv is padded into the kxk center.
     if kernel > 1 {
         let scale_w = mobileone_load_check(
-            st, &format!("{prefix}.conv_scale.conv.weight"),
+            st,
+            &format!("{prefix}.conv_scale.conv.weight"),
             c_out * c_in_per_group,
         )?;
-        let (gain, bias, mean, var) = mobileone_load_bn(
-            st, &format!("{prefix}.conv_scale.bn"), c_out,
-        )?;
+        let (gain, bias, mean, var) =
+            mobileone_load_bn(st, &format!("{prefix}.conv_scale.bn"), c_out)?;
         let (ws, bs) = fuse_conv_bn_kernel(
-            &scale_w, &gain, &bias, &mean, &var,
-            MOBILEONE_BN_EPS, c_out, c_in_per_group, 1,
+            &scale_w,
+            &gain,
+            &bias,
+            &mean,
+            &var,
+            MOBILEONE_BN_EPS,
+            c_out,
+            c_in_per_group,
+            1,
         );
         // Place each (o, i) 1×1 value into the kxk center.
         let center = kernel_elems / 2;
@@ -410,7 +454,9 @@ fn mobileone_load_layer(
                 fused_w[off] += v;
             }
         }
-        for j in 0..c_out { fused_b[j] += bs[j]; }
+        for j in 0..c_out {
+            fused_b[j] += bs[j];
+        }
     }
 
     // Optional identity branch (only when stride==1 && c_in==c_out).
@@ -428,15 +474,24 @@ fn mobileone_load_layer(
                 delta[i * (id + 1)] = 1.0;
             }
         }
-        let (gain, bias, mean, var) = mobileone_load_bn(
-            st, &format!("{prefix}.identity"), c_out,
-        )?;
+        let (gain, bias, mean, var) = mobileone_load_bn(st, &format!("{prefix}.identity"), c_out)?;
         let (wi, bi) = fuse_conv_bn_kernel(
-            &delta, &gain, &bias, &mean, &var,
-            MOBILEONE_BN_EPS, c_out, c_in_per_group, kernel_elems,
+            &delta,
+            &gain,
+            &bias,
+            &mean,
+            &var,
+            MOBILEONE_BN_EPS,
+            c_out,
+            c_in_per_group,
+            kernel_elems,
         );
-        for j in 0..n_w { fused_w[j] += wi[j]; }
-        for j in 0..c_out { fused_b[j] += bi[j]; }
+        for j in 0..n_w {
+            fused_w[j] += wi[j];
+        }
+        for j in 0..c_out {
+            fused_b[j] += bi[j];
+        }
     }
 
     // Optional SE block — probe the safetensors. The 1×1 conv shapes in
@@ -447,22 +502,12 @@ fn mobileone_load_layer(
         // Probe — if the SE entries are missing, fall through with `None`.
         let probe = format!("{prefix}.attn.fc1.weight");
         if st.get(&probe).is_ok() {
-            let fc1_w = mobileone_load_check(
-                st, &format!("{prefix}.attn.fc1.weight"),
-                squeeze * c_out,
-            )?;
-            let fc1_b = mobileone_load_check(
-                st, &format!("{prefix}.attn.fc1.bias"),
-                squeeze,
-            )?;
-            let fc2_w = mobileone_load_check(
-                st, &format!("{prefix}.attn.fc2.weight"),
-                c_out * squeeze,
-            )?;
-            let fc2_b = mobileone_load_check(
-                st, &format!("{prefix}.attn.fc2.bias"),
-                c_out,
-            )?;
+            let fc1_w =
+                mobileone_load_check(st, &format!("{prefix}.attn.fc1.weight"), squeeze * c_out)?;
+            let fc1_b = mobileone_load_check(st, &format!("{prefix}.attn.fc1.bias"), squeeze)?;
+            let fc2_w =
+                mobileone_load_check(st, &format!("{prefix}.attn.fc2.weight"), c_out * squeeze)?;
+            let fc2_b = mobileone_load_check(st, &format!("{prefix}.attn.fc2.bias"), c_out)?;
             Some(MobileOneSeWeights {
                 fc1_w: WeightStorage::F32(Arc::from(fc1_w)),
                 fc1_b: Arc::from(fc1_b),
@@ -481,7 +526,12 @@ fn mobileone_load_layer(
     Ok(MobileOneLayerWeights {
         conv_w: WeightStorage::F32(Arc::from(fused_w)),
         conv_b: Arc::from(fused_b),
-        c_in, c_out, kernel, stride, groups, se,
+        c_in,
+        c_out,
+        kernel,
+        stride,
+        groups,
+        se,
     })
 }
 
@@ -490,8 +540,15 @@ fn mobileone_load_layer(
 /// [`crate::lazy_repvgg::fuse_conv_bn_kernel`] (kept local to avoid a
 /// pub-promotion just for an internal helper).
 fn fuse_conv_bn_kernel(
-    w: &[f32], gain: &[f32], bias: &[f32], mean: &[f32], var: &[f32],
-    eps: f64, c_out: usize, c_in_per_group: usize, kernel_elems: usize,
+    w: &[f32],
+    gain: &[f32],
+    bias: &[f32],
+    mean: &[f32],
+    var: &[f32],
+    eps: f64,
+    c_out: usize,
+    c_in_per_group: usize,
+    kernel_elems: usize,
 ) -> (Vec<f32>, Vec<f32>) {
     assert_eq!(w.len(), c_out * c_in_per_group * kernel_elems);
     assert_eq!(gain.len(), c_out);
@@ -520,9 +577,9 @@ fn mobileone_load_bn(
     channels: usize,
 ) -> crate::Result<(Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>)> {
     let gain = mobileone_load_check(st, &format!("{prefix}.weight"), channels)?;
-    let bias = mobileone_load_check(st, &format!("{prefix}.bias"),   channels)?;
+    let bias = mobileone_load_check(st, &format!("{prefix}.bias"), channels)?;
     let mean = mobileone_load_check(st, &format!("{prefix}.running_mean"), channels)?;
-    let var  = mobileone_load_check(st, &format!("{prefix}.running_var"),  channels)?;
+    let var = mobileone_load_check(st, &format!("{prefix}.running_var"), channels)?;
     Ok((gain, bias, mean, var))
 }
 
@@ -535,7 +592,8 @@ fn mobileone_load_check(
     if v.len() != expected_len {
         return Err(crate::Error::Msg(format!(
             "MobileOne load {name:?}: got {} elements, expected {}",
-            v.len(), expected_len,
+            v.len(),
+            expected_len,
         ))
         .bt());
     }
@@ -599,7 +657,11 @@ mod tests {
     }
 
     fn build_layer(
-        c_in: usize, c_out: usize, kernel: usize, stride: usize, groups: usize,
+        c_in: usize,
+        c_out: usize,
+        kernel: usize,
+        stride: usize,
+        groups: usize,
         with_se: bool,
         nb: &mut dyn FnMut() -> f32,
     ) -> MobileOneLayerWeights {
@@ -620,7 +682,12 @@ mod tests {
         MobileOneLayerWeights {
             conv_w: WeightStorage::F32(vec_of(w_len, nb)),
             conv_b: vec_of(c_out, nb),
-            c_in, c_out, kernel, stride, groups, se,
+            c_in,
+            c_out,
+            kernel,
+            stride,
+            groups,
+            se,
         }
     }
 
@@ -664,7 +731,10 @@ mod tests {
     fn mobileone_s0_forward_shape() {
         let cfg = MobileOneConfig::s0(Some(10));
         let weights = build_weights(&cfg, false, 11);
-        let model = MobileOneModel { config: cfg, weights };
+        let model = MobileOneModel {
+            config: cfg,
+            weights,
+        };
         let img = tiny_image(32);
         let logits = model.forward(&img).unwrap();
         assert_eq!(logits.shape().dims(), &[1, 10]);
@@ -682,7 +752,10 @@ mod tests {
     fn mobileone_s4_with_se() {
         let cfg = MobileOneConfig::s4(Some(5));
         let weights = build_weights(&cfg, true, 33);
-        let model = MobileOneModel { config: cfg, weights };
+        let model = MobileOneModel {
+            config: cfg,
+            weights,
+        };
         let img = tiny_image(32);
         let logits = model.forward(&img).unwrap();
         assert_eq!(logits.shape().dims(), &[1, 5]);
@@ -727,8 +800,14 @@ mod tests {
         // [4, 16, 20, 2] after dw+pw doubling.
         let expected_layer_counts = [4, 16, 20, 2];
         for (i, count) in expected_layer_counts.iter().enumerate() {
-            assert_eq!(weights.stages[i].len(), *count,
-                "stage {} expected {} layers, got {}", i + 1, count, weights.stages[i].len());
+            assert_eq!(
+                weights.stages[i].len(),
+                *count,
+                "stage {} expected {} layers, got {}",
+                i + 1,
+                count,
+                weights.stages[i].len()
+            );
         }
     }
 
@@ -736,7 +815,10 @@ mod tests {
     fn forward_features_shape_and_finite() {
         let cfg = MobileOneConfig::s0(Some(10));
         let weights = build_weights(&cfg, false, 44);
-        let model = MobileOneModel { config: cfg, weights };
+        let model = MobileOneModel {
+            config: cfg,
+            weights,
+        };
         let img = tiny_image(32);
         let feats = model.forward_features(&img).unwrap();
         let shape = feats.shape();
@@ -777,10 +859,10 @@ mod tests {
         channels: usize,
     ) {
         for (suffix, raw) in [
-            ("weight",        raw_f32_const(channels, 1.0)),
-            ("bias",          raw_f32_const(channels, 0.0)),
-            ("running_mean",  raw_f32_const(channels, 0.0)),
-            ("running_var",   raw_f32_const(channels, 1.0)),
+            ("weight", raw_f32_const(channels, 1.0)),
+            ("bias", raw_f32_const(channels, 0.0)),
+            ("running_mean", raw_f32_const(channels, 0.0)),
+            ("running_var", raw_f32_const(channels, 1.0)),
         ] {
             owned.push((format!("{prefix}.{suffix}"), vec![channels], raw));
         }
@@ -869,8 +951,8 @@ mod tests {
             tensors.insert(name.clone(), view);
         }
         let metadata: Option<HashMap<String, String>> = None;
-        let serialized = safetensors::serialize(&tensors, metadata)
-            .expect("safetensors::serialize");
+        let serialized =
+            safetensors::serialize(&tensors, metadata).expect("safetensors::serialize");
 
         let tmp = std::env::temp_dir().join(format!(
             "fuel_mobileone_load_test_{}.safetensors",
@@ -891,16 +973,22 @@ mod tests {
             WeightStorage::F32(arc) => arc.clone(),
             other => panic!("expected F32 stem conv, got {other:?}"),
         };
-        let raw_3x3 = &owned.iter()
+        let raw_3x3 = &owned
+            .iter()
             .find(|(n, _, _)| n == "stem.conv_kxk.0.conv.weight")
-            .unwrap().2;
-        let raw_1x1 = &owned.iter()
+            .unwrap()
+            .2;
+        let raw_1x1 = &owned
+            .iter()
             .find(|(n, _, _)| n == "stem.conv_scale.conv.weight")
-            .unwrap().2;
-        let raw_3x3_f: Vec<f32> = raw_3x3.chunks_exact(4)
+            .unwrap()
+            .2;
+        let raw_3x3_f: Vec<f32> = raw_3x3
+            .chunks_exact(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
-        let raw_1x1_f: Vec<f32> = raw_1x1.chunks_exact(4)
+        let raw_1x1_f: Vec<f32> = raw_1x1
+            .chunks_exact(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         for o in 0..stem_dim {
@@ -910,8 +998,10 @@ mod tests {
                     let w1 = raw_1x1_f[o * 3 + i];
                     let expected = bn_scale * (w3 + if k == 4 { w1 } else { 0.0 });
                     let got = conv[o * 3 * 9 + i * 9 + k];
-                    assert!((got - expected).abs() < 1e-6,
-                        "stem fused (o={o},i={i},k={k}) expected {expected}, got {got}");
+                    assert!(
+                        (got - expected).abs() < 1e-6,
+                        "stem fused (o={o},i={i},k={k}) expected {expected}, got {got}"
+                    );
                 }
             }
         }
@@ -929,13 +1019,18 @@ mod tests {
         // No SE was wired on any layer (S1 has has_se == false).
         for stage in &loaded.stages {
             for layer in stage {
-                assert!(layer.se.is_none(),
-                    "S1 should have no SE; got Some on a layer");
+                assert!(
+                    layer.se.is_none(),
+                    "S1 should have no SE; got Some on a layer"
+                );
             }
         }
 
         // Forward chain runs end-to-end on the loaded weights.
-        let model = MobileOneModel { config: cfg.clone(), weights: loaded };
+        let model = MobileOneModel {
+            config: cfg.clone(),
+            weights: loaded,
+        };
         let img = tiny_image(32);
         let feats = model.forward(&img).unwrap();
         assert_eq!(feats.shape().dims(), &[1, cfg.channels_at(4)]);
@@ -958,9 +1053,8 @@ mod tests {
     #[ignore]
     fn from_hub_smoke_mobileone_s0() {
         let cfg = MobileOneConfig::s0(Some(1000));
-        let model = MobileOneModel::from_hub_with_config(
-            "timm/mobileone_s0.apple_in1k", cfg,
-        ).expect("from_hub_with_config");
+        let model = MobileOneModel::from_hub_with_config("timm/mobileone_s0.apple_in1k", cfg)
+            .expect("from_hub_with_config");
         assert!(model.weights.head.is_some());
     }
 }

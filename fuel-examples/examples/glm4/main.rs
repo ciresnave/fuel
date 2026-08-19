@@ -3,9 +3,7 @@ use clap::Parser;
 use std::io::Write;
 use std::sync::Arc;
 
-use fuel::lazy::{
-    load_tensor_as_f32, load_transposed_matrix_preserve_dtype, WeightStorage,
-};
+use fuel::lazy::{WeightStorage, load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
 use fuel::lazy_glm4_new::{
     Glm4NewActivation, Glm4NewConfig, Glm4NewLayerWeights, Glm4NewModel, Glm4NewWeights,
 };
@@ -109,14 +107,17 @@ fn main() -> Result<()> {
     let _device = fuel_examples::device(args.cpu)?;
     let api = match args.cache_path.as_ref() {
         None => hf_hub::api::sync::Api::new()?,
-        Some(path) => hf_hub::api::sync::ApiBuilder::from_cache(
-            hf_hub::Cache::new(path.to_string().into()),
-        )
-        .build()
-        .map_err(anyhow::Error::msg)?,
+        Some(path) => {
+            hf_hub::api::sync::ApiBuilder::from_cache(hf_hub::Cache::new(path.to_string().into()))
+                .build()
+                .map_err(anyhow::Error::msg)?
+        }
     };
 
-    let model_id = args.model_id.clone().unwrap_or_else(|| "THUDM/GLM-4-9B-0414".to_string());
+    let model_id = args
+        .model_id
+        .clone()
+        .unwrap_or_else(|| "THUDM/GLM-4-9B-0414".to_string());
     let revision = args.revision.clone().unwrap_or_else(|| "main".to_string());
     let repo = api.repo(Repo::with_revision(model_id, RepoType::Model, revision));
 
@@ -157,7 +158,10 @@ fn main() -> Result<()> {
     let st = unsafe { fuel::safetensors::MmapedSafetensors::multi(&filenames) }
         .map_err(|e| E::msg(format!("mmap safetensors: {e}")))?;
     let weights = load_glm4_new_weights(&st, &cfg)?;
-    let model = Glm4NewModel { config: cfg.clone(), weights };
+    let model = Glm4NewModel {
+        config: cfg.clone(),
+        weights,
+    };
 
     let mut tok_stream = fuel_examples::token_output_stream::TokenOutputStream::new(tokenizer);
     if args.verbose {
@@ -242,55 +246,85 @@ fn load_glm4_new_weights(
                 .map_err(|e| E::msg(format!("input_norm L{i}: {e}")))?,
         );
         let post_self_attn_norm_gain: Arc<[f32]> = Arc::from(
-            load_tensor_as_f32(st, &format!("model.layers.{i}.post_self_attn_layernorm.weight"))
-                .map_err(|e| E::msg(format!("post_self_attn_norm L{i}: {e}")))?,
+            load_tensor_as_f32(
+                st,
+                &format!("model.layers.{i}.post_self_attn_layernorm.weight"),
+            )
+            .map_err(|e| E::msg(format!("post_self_attn_norm L{i}: {e}")))?,
         );
         let post_attn_norm_gain: Arc<[f32]> = Arc::from(
-            load_tensor_as_f32(st, &format!("model.layers.{i}.post_attention_layernorm.weight"))
-                .map_err(|e| E::msg(format!("post_attn_norm L{i}: {e}")))?,
+            load_tensor_as_f32(
+                st,
+                &format!("model.layers.{i}.post_attention_layernorm.weight"),
+            )
+            .map_err(|e| E::msg(format!("post_attn_norm L{i}: {e}")))?,
         );
         let post_mlp_norm_gain: Arc<[f32]> = Arc::from(
             load_tensor_as_f32(st, &format!("model.layers.{i}.post_mlp_layernorm.weight"))
                 .map_err(|e| E::msg(format!("post_mlp_norm L{i}: {e}")))?,
         );
         let q = load_transposed_matrix_preserve_dtype(
-            st, &format!("model.layers.{i}.self_attn.q_proj.weight"),
-            q_dim, cfg.hidden_size,
-        ).map_err(|e| E::msg(format!("q L{i}: {e}")))?;
+            st,
+            &format!("model.layers.{i}.self_attn.q_proj.weight"),
+            q_dim,
+            cfg.hidden_size,
+        )
+        .map_err(|e| E::msg(format!("q L{i}: {e}")))?;
         let q_bias = load_tensor_as_f32(st, &format!("model.layers.{i}.self_attn.q_proj.bias"))
-            .ok().map(Arc::from);
+            .ok()
+            .map(Arc::from);
         let k = load_transposed_matrix_preserve_dtype(
-            st, &format!("model.layers.{i}.self_attn.k_proj.weight"),
-            kv_dim, cfg.hidden_size,
-        ).map_err(|e| E::msg(format!("k L{i}: {e}")))?;
+            st,
+            &format!("model.layers.{i}.self_attn.k_proj.weight"),
+            kv_dim,
+            cfg.hidden_size,
+        )
+        .map_err(|e| E::msg(format!("k L{i}: {e}")))?;
         let k_bias = load_tensor_as_f32(st, &format!("model.layers.{i}.self_attn.k_proj.bias"))
-            .ok().map(Arc::from);
+            .ok()
+            .map(Arc::from);
         let v = load_transposed_matrix_preserve_dtype(
-            st, &format!("model.layers.{i}.self_attn.v_proj.weight"),
-            kv_dim, cfg.hidden_size,
-        ).map_err(|e| E::msg(format!("v L{i}: {e}")))?;
+            st,
+            &format!("model.layers.{i}.self_attn.v_proj.weight"),
+            kv_dim,
+            cfg.hidden_size,
+        )
+        .map_err(|e| E::msg(format!("v L{i}: {e}")))?;
         let v_bias = load_tensor_as_f32(st, &format!("model.layers.{i}.self_attn.v_proj.bias"))
-            .ok().map(Arc::from);
+            .ok()
+            .map(Arc::from);
         let o = load_transposed_matrix_preserve_dtype(
-            st, &format!("model.layers.{i}.self_attn.o_proj.weight"),
-            cfg.hidden_size, q_dim,
-        ).map_err(|e| E::msg(format!("o L{i}: {e}")))?;
+            st,
+            &format!("model.layers.{i}.self_attn.o_proj.weight"),
+            cfg.hidden_size,
+            q_dim,
+        )
+        .map_err(|e| E::msg(format!("o L{i}: {e}")))?;
         let gate_up = load_transposed_matrix_preserve_dtype(
-            st, &format!("model.layers.{i}.mlp.gate_up_proj.weight"),
-            2 * cfg.intermediate_size, cfg.hidden_size,
-        ).map_err(|e| E::msg(format!("gate_up L{i}: {e}")))?;
+            st,
+            &format!("model.layers.{i}.mlp.gate_up_proj.weight"),
+            2 * cfg.intermediate_size,
+            cfg.hidden_size,
+        )
+        .map_err(|e| E::msg(format!("gate_up L{i}: {e}")))?;
         let down = load_transposed_matrix_preserve_dtype(
-            st, &format!("model.layers.{i}.mlp.down_proj.weight"),
-            cfg.hidden_size, cfg.intermediate_size,
-        ).map_err(|e| E::msg(format!("down L{i}: {e}")))?;
+            st,
+            &format!("model.layers.{i}.mlp.down_proj.weight"),
+            cfg.hidden_size,
+            cfg.intermediate_size,
+        )
+        .map_err(|e| E::msg(format!("down L{i}: {e}")))?;
         layers.push(Glm4NewLayerWeights {
             input_norm_gain,
             post_self_attn_norm_gain,
             post_attn_norm_gain,
             post_mlp_norm_gain,
-            q, q_bias,
-            k, k_bias,
-            v, v_bias,
+            q,
+            q_bias,
+            k,
+            k_bias,
+            v,
+            v_bias,
             o,
             gate_up,
             down,
@@ -303,19 +337,29 @@ fn load_glm4_new_weights(
     let lm_head = if cfg.tie_word_embeddings {
         None
     } else {
-        Some(load_transposed_matrix_preserve_dtype(
-            st, "lm_head.weight", cfg.vocab_size, cfg.hidden_size,
-        ).unwrap_or_else(|_| WeightStorage::F32(token_embedding.clone())))
+        Some(
+            load_transposed_matrix_preserve_dtype(
+                st,
+                "lm_head.weight",
+                cfg.vocab_size,
+                cfg.hidden_size,
+            )
+            .unwrap_or_else(|_| WeightStorage::F32(token_embedding.clone())),
+        )
     };
-    Ok(Glm4NewWeights { token_embedding, layers, final_norm_gain, lm_head })
+    Ok(Glm4NewWeights {
+        token_embedding,
+        layers,
+        final_norm_gain,
+        lm_head,
+    })
 }
 
 fn glm4_new_config_from_hf_json_str(json: &str) -> Result<Glm4NewConfig> {
-    let v: serde_json::Value = serde_json::from_str(json)
-        .map_err(|e| E::msg(format!("parsing config.json: {e}")))?;
-    let get_usize = |key: &str| -> Option<usize> {
-        v.get(key).and_then(|x| x.as_u64()).map(|x| x as usize)
-    };
+    let v: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| E::msg(format!("parsing config.json: {e}")))?;
+    let get_usize =
+        |key: &str| -> Option<usize> { v.get(key).and_then(|x| x.as_u64()).map(|x| x as usize) };
     let get_f64 = |key: &str| -> Option<f64> { v.get(key).and_then(|x| x.as_f64()) };
     let get_bool = |key: &str| -> Option<bool> { v.get(key).and_then(|x| x.as_bool()) };
     let vocab_size = get_usize("vocab_size").unwrap_or(151_552);
@@ -341,10 +385,21 @@ fn glm4_new_config_from_hf_json_str(json: &str) -> Result<Glm4NewConfig> {
         _ => Glm4NewActivation::Silu,
     };
     Ok(Glm4NewConfig {
-        vocab_size, hidden_size, intermediate_size, num_hidden_layers,
-        num_attention_heads, num_key_value_heads, head_dim, partial_rotary_factor,
-        attention_bias, max_position_embeddings, sliding_window, tie_word_embeddings,
-        rope_theta, rms_norm_eps, hidden_act,
+        vocab_size,
+        hidden_size,
+        intermediate_size,
+        num_hidden_layers,
+        num_attention_heads,
+        num_key_value_heads,
+        head_dim,
+        partial_rotary_factor,
+        attention_bias,
+        max_position_embeddings,
+        sliding_window,
+        tie_word_embeddings,
+        rope_theta,
+        rms_norm_eps,
+        hidden_act,
     })
 }
 
@@ -354,7 +409,8 @@ fn parse_eos_token_ids(json: &str) -> Option<Vec<u32>> {
     if let Some(single) = raw.as_u64() {
         Some(vec![single as u32])
     } else if let Some(arr) = raw.as_array() {
-        let ids = arr.iter()
+        let ids = arr
+            .iter()
             .filter_map(|x| x.as_u64().map(|v| v as u32))
             .collect::<Vec<_>>();
         if ids.is_empty() { None } else { Some(ids) }
@@ -397,7 +453,10 @@ fn sample(
     }
     let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let inv_t = 1.0 / temperature.max(1e-6);
-    let mut probs: Vec<f32> = logits.iter().map(|&x| ((x - max_l) * inv_t).exp()).collect();
+    let mut probs: Vec<f32> = logits
+        .iter()
+        .map(|&x| ((x - max_l) * inv_t).exp())
+        .collect();
     let sum: f32 = probs.iter().sum();
     for p in &mut probs {
         *p /= sum.max(1e-30);
@@ -440,7 +499,9 @@ fn sample(
     } else {
         return 0;
     }
-    let mut state = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    let mut state = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
     state ^= state >> 33;
     state = state.wrapping_mul(0xff51_afd7_ed55_8ccd);
     state ^= state >> 33;

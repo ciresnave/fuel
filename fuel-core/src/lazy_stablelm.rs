@@ -104,34 +104,37 @@ impl StableLmModel {
 
     /// Multimodal entry point. Skips token embedding; runs the decoder
     /// over pre-embedded inputs. StableLM does NOT scale embeddings.
-    pub fn forward_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
         let h_norm = self.run_backbone_embeds(embeds, start_pos)?;
         self.apply_lm_head(&h_norm)
     }
 
     /// Hidden-state variant of [`Self::forward_embeds`].
     pub fn forward_hidden_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
+        &self,
+        embeds: &LazyTensor,
+        start_pos: usize,
     ) -> Result<LazyTensor> {
         self.run_backbone_embeds(embeds, start_pos)
     }
 
     /// Build per-token embeddings without running the decoder.
-    pub fn embed_tokens_anchored(
-        &self, anchor: &LazyTensor, tokens: &[u32],
-    ) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
-            cfg.vocab_size, cfg.hidden_size, tokens,
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
         )
     }
 
     fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
-        Ok(self.weights.output.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
+        Ok(self
+            .weights
+            .output
+            .apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 
     fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
@@ -141,14 +144,16 @@ impl StableLmModel {
         assert!(seq > 0);
 
         let h = LazyTensor::embed_tokens(
-            weights.token_embedding.clone(), cfg.vocab_size, cfg.hidden_size, tokens, &Device::cpu(),
+            weights.token_embedding.clone(),
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
+            &Device::cpu(),
         )?;
         self.run_backbone_embeds(&h, start_pos)
     }
 
-    fn run_backbone_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
-    ) -> Result<LazyTensor> {
+    fn run_backbone_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -161,21 +166,20 @@ impl StableLmModel {
         }
         let seq = dims[1];
         if seq == 0 {
-            return Err(crate::Error::Msg(
-                "StableLmModel::forward_embeds: seq must be > 0".into(),
-            ).bt());
+            return Err(
+                crate::Error::Msg("StableLmModel::forward_embeds: seq must be > 0".into()).bt(),
+            );
         }
         if cfg.num_attention_heads * cfg.head_dim != cfg.hidden_size {
             return Err(crate::Error::Msg(
                 "StableLmConfig: num_attention_heads * head_dim must equal hidden_size".into(),
-            ).bt());
+            )
+            .bt());
         }
         let mut h = embeds.clone();
 
         let rope_dim = cfg.rope_dim();
-        let (rope_cos, rope_sin) = h.rope_tables_const(
-            cfg.rope_theta, start_pos, seq, rope_dim,
-        );
+        let (rope_cos, rope_sin) = h.rope_tables_const(cfg.rope_theta, start_pos, seq, rope_dim);
 
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin)?;
@@ -203,11 +207,24 @@ impl StableLmModel {
         let seq = dims[1];
         let kv_dim = cfg.num_key_value_heads * head_dim;
 
-        let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&layer.input_ln_gain), std::sync::Arc::clone(&layer.input_ln_bias), cfg.layer_norm_eps)?;
+        let x_norm = x.layer_norm_affine(
+            std::sync::Arc::clone(&layer.input_ln_gain),
+            std::sync::Arc::clone(&layer.input_ln_bias),
+            cfg.layer_norm_eps,
+        )?;
 
-        let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size)?.add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
-        let k = layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
-        let v = layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
+        let q = layer
+            .attn_q
+            .apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size)?
+            .add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
+        let k = layer
+            .attn_k
+            .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
+            .add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
+        let v = layer
+            .attn_v
+            .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
+            .add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
 
         let _ = (batch, seq);
         let q = q.split_heads(cfg.num_attention_heads, head_dim)?;
@@ -229,7 +246,9 @@ impl StableLmModel {
         let scores_scaled = scores.mul_scalar(scale);
         let mut mask_data = vec![0.0_f32; seq * seq];
         for i in 0..seq {
-            for j in (i + 1)..seq { mask_data[i * seq + j] = f32::NEG_INFINITY; }
+            for j in (i + 1)..seq {
+                mask_data[i * seq + j] = f32::NEG_INFINITY;
+            }
         }
         let mask = x.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]));
         let scores_masked = scores_scaled.broadcast_add(&mask)?;
@@ -237,14 +256,27 @@ impl StableLmModel {
         let attn_v = attn.matmul(&v_full)?;
 
         let merged = attn_v.merge_heads()?;
-        let attn_out = layer.attn_o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?;
+        let attn_out = layer
+            .attn_o
+            .apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?;
 
         let h1 = x.add(&attn_out)?;
-        let h1_norm = h1.layer_norm_affine(std::sync::Arc::clone(&layer.post_attn_ln_gain), std::sync::Arc::clone(&layer.post_attn_ln_bias), cfg.layer_norm_eps)?;
-        let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
-        let up = layer.ffn_up.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let h1_norm = h1.layer_norm_affine(
+            std::sync::Arc::clone(&layer.post_attn_ln_gain),
+            std::sync::Arc::clone(&layer.post_attn_ln_bias),
+            cfg.layer_norm_eps,
+        )?;
+        let gate = layer
+            .ffn_gate
+            .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let up = layer
+            .ffn_up
+            .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
         let swiglu = gate.silu().mul(&up)?;
-        let ffn_out = layer.ffn_down.apply_linear(&swiglu, cfg.intermediate_size, cfg.hidden_size)?;
+        let ffn_out =
+            layer
+                .ffn_down
+                .apply_linear(&swiglu, cfg.intermediate_size, cfg.hidden_size)?;
         h1.add(&ffn_out)
     }
 }
@@ -267,37 +299,112 @@ impl StableLmWeights {
         let mut layers: Vec<StableLmLayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
         for i in 0..cfg.num_hidden_layers {
             let p = format!("model.layers.{i}");
-            let input_ln_gain = Arc::from(load_tensor_as_f32(st, &format!("{p}.input_layernorm.weight"))?);
-            let input_ln_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.input_layernorm.bias"))?);
-            let post_attn_ln_gain = Arc::from(load_tensor_as_f32(st, &format!("{p}.post_attention_layernorm.weight"))?);
-            let post_attn_ln_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.post_attention_layernorm.bias"))?);
-            let attn_q = load_transposed_matrix_preserve_dtype(st, &format!("{p}.self_attn.q_proj.weight"), q_dim, h)?;
-            let attn_k = load_transposed_matrix_preserve_dtype(st, &format!("{p}.self_attn.k_proj.weight"), kv_dim, h)?;
-            let attn_v = load_transposed_matrix_preserve_dtype(st, &format!("{p}.self_attn.v_proj.weight"), kv_dim, h)?;
-            let attn_o = load_transposed_matrix_preserve_dtype(st, &format!("{p}.self_attn.o_proj.weight"), h, q_dim)?;
+            let input_ln_gain = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.input_layernorm.weight"),
+            )?);
+            let input_ln_bias = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.input_layernorm.bias"),
+            )?);
+            let post_attn_ln_gain = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.post_attention_layernorm.weight"),
+            )?);
+            let post_attn_ln_bias = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.post_attention_layernorm.bias"),
+            )?);
+            let attn_q = load_transposed_matrix_preserve_dtype(
+                st,
+                &format!("{p}.self_attn.q_proj.weight"),
+                q_dim,
+                h,
+            )?;
+            let attn_k = load_transposed_matrix_preserve_dtype(
+                st,
+                &format!("{p}.self_attn.k_proj.weight"),
+                kv_dim,
+                h,
+            )?;
+            let attn_v = load_transposed_matrix_preserve_dtype(
+                st,
+                &format!("{p}.self_attn.v_proj.weight"),
+                kv_dim,
+                h,
+            )?;
+            let attn_o = load_transposed_matrix_preserve_dtype(
+                st,
+                &format!("{p}.self_attn.o_proj.weight"),
+                h,
+                q_dim,
+            )?;
             let (attn_q_bias, attn_k_bias, attn_v_bias) = if cfg.use_qkv_bias {
                 (
-                    Some(Arc::from(load_tensor_as_f32(st, &format!("{p}.self_attn.q_proj.bias"))?)),
-                    Some(Arc::from(load_tensor_as_f32(st, &format!("{p}.self_attn.k_proj.bias"))?)),
-                    Some(Arc::from(load_tensor_as_f32(st, &format!("{p}.self_attn.v_proj.bias"))?)),
+                    Some(Arc::from(load_tensor_as_f32(
+                        st,
+                        &format!("{p}.self_attn.q_proj.bias"),
+                    )?)),
+                    Some(Arc::from(load_tensor_as_f32(
+                        st,
+                        &format!("{p}.self_attn.k_proj.bias"),
+                    )?)),
+                    Some(Arc::from(load_tensor_as_f32(
+                        st,
+                        &format!("{p}.self_attn.v_proj.bias"),
+                    )?)),
                 )
-            } else { (None, None, None) };
-            let ffn_gate = load_transposed_matrix_preserve_dtype(st, &format!("{p}.mlp.gate_proj.weight"), inter, h)?;
-            let ffn_up = load_transposed_matrix_preserve_dtype(st, &format!("{p}.mlp.up_proj.weight"), inter, h)?;
-            let ffn_down = load_transposed_matrix_preserve_dtype(st, &format!("{p}.mlp.down_proj.weight"), h, inter)?;
+            } else {
+                (None, None, None)
+            };
+            let ffn_gate = load_transposed_matrix_preserve_dtype(
+                st,
+                &format!("{p}.mlp.gate_proj.weight"),
+                inter,
+                h,
+            )?;
+            let ffn_up = load_transposed_matrix_preserve_dtype(
+                st,
+                &format!("{p}.mlp.up_proj.weight"),
+                inter,
+                h,
+            )?;
+            let ffn_down = load_transposed_matrix_preserve_dtype(
+                st,
+                &format!("{p}.mlp.down_proj.weight"),
+                h,
+                inter,
+            )?;
             layers.push(StableLmLayerWeights {
-                input_ln_gain, input_ln_bias, post_attn_ln_gain, post_attn_ln_bias,
-                attn_q, attn_q_bias, attn_k, attn_k_bias, attn_v, attn_v_bias, attn_o,
-                ffn_gate, ffn_up, ffn_down,
+                input_ln_gain,
+                input_ln_bias,
+                post_attn_ln_gain,
+                post_attn_ln_bias,
+                attn_q,
+                attn_q_bias,
+                attn_k,
+                attn_k_bias,
+                attn_v,
+                attn_v_bias,
+                attn_o,
+                ffn_gate,
+                ffn_up,
+                ffn_down,
             });
         }
         let final_ln_gain = Arc::from(load_tensor_as_f32(st, "model.norm.weight")?);
         let final_ln_bias = Arc::from(load_tensor_as_f32(st, "model.norm.bias")?);
-        let output = load_transposed_matrix_preserve_dtype(st, "lm_head.weight", cfg.vocab_size, h)?;
-        Ok(Self { token_embedding, layers, final_ln_gain, final_ln_bias, output })
+        let output =
+            load_transposed_matrix_preserve_dtype(st, "lm_head.weight", cfg.vocab_size, h)?;
+        Ok(Self {
+            token_embedding,
+            layers,
+            final_ln_gain,
+            final_ln_bias,
+            output,
+        })
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -311,48 +418,84 @@ mod tests {
         let vec_of = |n: usize, next: &mut dyn FnMut() -> f32| -> Arc<[f32]> {
             Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
         };
-        let h = cfg.hidden_size; let i = cfg.intermediate_size;
+        let h = cfg.hidden_size;
+        let i = cfg.intermediate_size;
         let kv = cfg.num_key_value_heads * cfg.head_dim;
         let mut nb: Box<dyn FnMut() -> f32> = Box::new(next);
         let token_embedding = vec_of(cfg.vocab_size * h, &mut *nb);
-        let layers: Vec<StableLmLayerWeights> = (0..cfg.num_hidden_layers).map(|_| StableLmLayerWeights {
-            input_ln_gain:     Arc::from(vec![1.0_f32; h]),
-            input_ln_bias:     Arc::from(vec![0.0_f32; h]),
-            post_attn_ln_gain: Arc::from(vec![1.0_f32; h]),
-            post_attn_ln_bias: Arc::from(vec![0.0_f32; h]),
-            attn_q:        WeightStorage::F32(vec_of(h * h, &mut *nb)),
-            attn_q_bias:   if cfg.use_qkv_bias { Some(vec_of(h, &mut *nb)) } else { None },
-            attn_k:        WeightStorage::F32(vec_of(h * kv, &mut *nb)),
-            attn_k_bias:   if cfg.use_qkv_bias { Some(vec_of(kv, &mut *nb)) } else { None },
-            attn_v:        WeightStorage::F32(vec_of(h * kv, &mut *nb)),
-            attn_v_bias:   if cfg.use_qkv_bias { Some(vec_of(kv, &mut *nb)) } else { None },
-            attn_o:        WeightStorage::F32(vec_of(h * h, &mut *nb)),
-            ffn_gate:      WeightStorage::F32(vec_of(h * i, &mut *nb)),
-            ffn_up:        WeightStorage::F32(vec_of(h * i, &mut *nb)),
-            ffn_down:      WeightStorage::F32(vec_of(i * h, &mut *nb)),
-        }).collect();
+        let layers: Vec<StableLmLayerWeights> = (0..cfg.num_hidden_layers)
+            .map(|_| StableLmLayerWeights {
+                input_ln_gain: Arc::from(vec![1.0_f32; h]),
+                input_ln_bias: Arc::from(vec![0.0_f32; h]),
+                post_attn_ln_gain: Arc::from(vec![1.0_f32; h]),
+                post_attn_ln_bias: Arc::from(vec![0.0_f32; h]),
+                attn_q: WeightStorage::F32(vec_of(h * h, &mut *nb)),
+                attn_q_bias: if cfg.use_qkv_bias {
+                    Some(vec_of(h, &mut *nb))
+                } else {
+                    None
+                },
+                attn_k: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
+                attn_k_bias: if cfg.use_qkv_bias {
+                    Some(vec_of(kv, &mut *nb))
+                } else {
+                    None
+                },
+                attn_v: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
+                attn_v_bias: if cfg.use_qkv_bias {
+                    Some(vec_of(kv, &mut *nb))
+                } else {
+                    None
+                },
+                attn_o: WeightStorage::F32(vec_of(h * h, &mut *nb)),
+                ffn_gate: WeightStorage::F32(vec_of(h * i, &mut *nb)),
+                ffn_up: WeightStorage::F32(vec_of(h * i, &mut *nb)),
+                ffn_down: WeightStorage::F32(vec_of(i * h, &mut *nb)),
+            })
+            .collect();
         let final_ln_gain = Arc::from(vec![1.0_f32; h]);
         let final_ln_bias = Arc::from(vec![0.0_f32; h]);
         let output = WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *nb));
-        StableLmWeights { token_embedding, layers, final_ln_gain, final_ln_bias, output }
+        StableLmWeights {
+            token_embedding,
+            layers,
+            final_ln_gain,
+            final_ln_bias,
+            output,
+        }
     }
 
     #[test]
     fn forward_partial_rotary_factor_0_25() {
         let cfg = StableLmConfig {
-            vocab_size: 32, hidden_size: 16, intermediate_size: 32,
-            num_hidden_layers: 2, num_attention_heads: 4, num_key_value_heads: 4,
-            head_dim: 4, layer_norm_eps: 1e-5, rope_theta: 10_000.0,
-            max_position_embeddings: 64, partial_rotary_factor: 0.25,
+            vocab_size: 32,
+            hidden_size: 16,
+            intermediate_size: 32,
+            num_hidden_layers: 2,
+            num_attention_heads: 4,
+            num_key_value_heads: 4,
+            head_dim: 4,
+            layer_norm_eps: 1e-5,
+            rope_theta: 10_000.0,
+            max_position_embeddings: 64,
+            partial_rotary_factor: 0.25,
             use_qkv_bias: false,
         };
         // 4 * 0.25 = 1 → rope_dim = 0 (rounded to even). Bump to 1.0
         // for this smoke test so RoPE actually fires.
-        let cfg_full = StableLmConfig { partial_rotary_factor: 1.0, ..cfg };
-        let model = StableLmModel { config: cfg_full.clone(), weights: tiny_weights(&cfg_full) };
+        let cfg_full = StableLmConfig {
+            partial_rotary_factor: 1.0,
+            ..cfg
+        };
+        let model = StableLmModel {
+            config: cfg_full.clone(),
+            weights: tiny_weights(&cfg_full),
+        };
         let logits = model.forward(&[1, 2, 3], 0).unwrap();
         assert_eq!(logits.shape().dims(), &[1, 3, cfg_full.vocab_size]);
-        for &v in &logits.realize_f32() { assert!(v.is_finite()); }
+        for &v in &logits.realize_f32() {
+            assert!(v.is_finite());
+        }
     }
 
     /// With a head_dim large enough that partial rotary is genuinely
@@ -361,19 +504,38 @@ mod tests {
     #[test]
     fn partial_rotary_differs_from_full() {
         let mut cfg = StableLmConfig {
-            vocab_size: 16, hidden_size: 16, intermediate_size: 32,
-            num_hidden_layers: 1, num_attention_heads: 2, num_key_value_heads: 2,
-            head_dim: 8, layer_norm_eps: 1e-5, rope_theta: 10_000.0,
-            max_position_embeddings: 32, partial_rotary_factor: 0.5, // → rope_dim = 4
+            vocab_size: 16,
+            hidden_size: 16,
+            intermediate_size: 32,
+            num_hidden_layers: 1,
+            num_attention_heads: 2,
+            num_key_value_heads: 2,
+            head_dim: 8,
+            layer_norm_eps: 1e-5,
+            rope_theta: 10_000.0,
+            max_position_embeddings: 32,
+            partial_rotary_factor: 0.5, // → rope_dim = 4
             use_qkv_bias: false,
         };
         let weights = tiny_weights(&cfg);
-        let out_partial = StableLmModel { config: cfg.clone(), weights: weights.clone() }
-            .forward(&[1, 2, 3, 4], 0).unwrap().realize_f32();
+        let out_partial = StableLmModel {
+            config: cfg.clone(),
+            weights: weights.clone(),
+        }
+        .forward(&[1, 2, 3, 4], 0)
+        .unwrap()
+        .realize_f32();
         cfg.partial_rotary_factor = 1.0; // full rotary
-        let out_full = StableLmModel { config: cfg, weights }
-            .forward(&[1, 2, 3, 4], 0).unwrap().realize_f32();
-        let any_diff = out_partial.iter().zip(out_full.iter())
+        let out_full = StableLmModel {
+            config: cfg,
+            weights,
+        }
+        .forward(&[1, 2, 3, 4], 0)
+        .unwrap()
+        .realize_f32();
+        let any_diff = out_partial
+            .iter()
+            .zip(out_full.iter())
             .any(|(&a, &b)| (a - b).abs() > 1e-7);
         assert!(any_diff, "partial vs full rotary must differ");
     }
@@ -383,13 +545,23 @@ mod tests {
     #[test]
     fn forward_hidden_shape_and_finite() {
         let cfg = StableLmConfig {
-            vocab_size: 32, hidden_size: 16, intermediate_size: 32,
-            num_hidden_layers: 2, num_attention_heads: 4, num_key_value_heads: 4,
-            head_dim: 4, layer_norm_eps: 1e-5, rope_theta: 10_000.0,
-            max_position_embeddings: 64, partial_rotary_factor: 1.0,
+            vocab_size: 32,
+            hidden_size: 16,
+            intermediate_size: 32,
+            num_hidden_layers: 2,
+            num_attention_heads: 4,
+            num_key_value_heads: 4,
+            head_dim: 4,
+            layer_norm_eps: 1e-5,
+            rope_theta: 10_000.0,
+            max_position_embeddings: 64,
+            partial_rotary_factor: 1.0,
             use_qkv_bias: false,
         };
-        let model = StableLmModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = StableLmModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
         let hidden = model.forward_hidden(&tokens, 0).unwrap();
         assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
@@ -400,10 +572,17 @@ mod tests {
 
     fn forward_embeds_test_cfg() -> StableLmConfig {
         StableLmConfig {
-            vocab_size: 32, hidden_size: 16, intermediate_size: 32,
-            num_hidden_layers: 2, num_attention_heads: 4, num_key_value_heads: 4,
-            head_dim: 4, layer_norm_eps: 1e-5, rope_theta: 10_000.0,
-            max_position_embeddings: 64, partial_rotary_factor: 1.0,
+            vocab_size: 32,
+            hidden_size: 16,
+            intermediate_size: 32,
+            num_hidden_layers: 2,
+            num_attention_heads: 4,
+            num_key_value_heads: 4,
+            head_dim: 4,
+            layer_norm_eps: 1e-5,
+            rope_theta: 10_000.0,
+            max_position_embeddings: 64,
+            partial_rotary_factor: 1.0,
             use_qkv_bias: false,
         }
     }
@@ -411,27 +590,37 @@ mod tests {
     #[test]
     fn forward_embeds_matches_forward_after_token_lookup() {
         let cfg = forward_embeds_test_cfg();
-        let model = StableLmModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = StableLmModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
-        let max_diff = logits_ref.iter().zip(logits_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "StableLm forward vs forward_embeds must agree (max diff {max_diff})");
+        let max_diff = logits_ref
+            .iter()
+            .zip(logits_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "StableLm forward vs forward_embeds must agree (max diff {max_diff})"
+        );
     }
 
     #[test]
     fn forward_embeds_rejects_bad_shape() {
         let cfg = forward_embeds_test_cfg();
-        let model = StableLmModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = StableLmModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let bad = LazyTensor::from_f32(
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
-            Shape::from_dims(&[1, 3, cfg.hidden_size + 1]), &Device::cpu(),
+            Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
+            &Device::cpu(),
         );
         assert!(model.forward_embeds(&bad, 0).is_err());
     }
@@ -439,17 +628,26 @@ mod tests {
     #[test]
     fn forward_hidden_embeds_matches_forward_hidden() {
         let cfg = forward_embeds_test_cfg();
-        let model = StableLmModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = StableLmModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
-        let h_via_embeds = model.forward_hidden_embeds(&embeds, 0).unwrap().realize_f32();
-        let max_diff = h_ref.iter().zip(h_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "StableLm forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})");
+        let h_via_embeds = model
+            .forward_hidden_embeds(&embeds, 0)
+            .unwrap()
+            .realize_f32();
+        let max_diff = h_ref
+            .iter()
+            .zip(h_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "StableLm forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})"
+        );
     }
 }

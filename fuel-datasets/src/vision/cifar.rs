@@ -5,7 +5,7 @@
 //! The binary version of the dataset is used.
 use crate::vision::Dataset;
 use fuel::{Error, Result};
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use hf_hub::{Repo, RepoType, api::sync::Api};
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use std::fs::File;
 use std::io::{BufReader, Read};

@@ -236,7 +236,10 @@ mod tests {
         let t = StructureKeyToken::new("matmul:innerdiv16:vec8:f16");
         assert_eq!(t.as_str(), "matmul:innerdiv16:vec8:f16");
         // `new` accepts anything `Into<String>` and round-trips through Eq.
-        assert_eq!(t, StructureKeyToken::new(String::from("matmul:innerdiv16:vec8:f16")));
+        assert_eq!(
+            t,
+            StructureKeyToken::new(String::from("matmul:innerdiv16:vec8:f16"))
+        );
     }
 
     /// A NEGATIVE inner stride surfaces as `flipped == true` in the FDX
@@ -252,7 +255,11 @@ mod tests {
 
         let desc = FdxOperandDesc::from_layout(&layout, DType::F32);
         assert!(desc.flipped, "negative stride must set flipped");
-        assert_eq!(desc.contiguity, Contiguity::Strided, "a flip is not contiguous");
+        assert_eq!(
+            desc.contiguity,
+            Contiguity::Strided,
+            "a flip is not contiguous"
+        );
         assert!(!desc.broadcast, "no stride-0 axis here");
     }
 

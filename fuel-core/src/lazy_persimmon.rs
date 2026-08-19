@@ -97,34 +97,37 @@ impl PersimmonModel {
 
     /// Multimodal entry point. Skips token embedding; runs the decoder
     /// over pre-embedded inputs. Persimmon does NOT scale embeddings.
-    pub fn forward_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
         let h_norm = self.run_backbone_embeds(embeds, start_pos)?;
         self.apply_lm_head(&h_norm)
     }
 
     /// Hidden-state variant of [`Self::forward_embeds`].
     pub fn forward_hidden_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
+        &self,
+        embeds: &LazyTensor,
+        start_pos: usize,
     ) -> Result<LazyTensor> {
         self.run_backbone_embeds(embeds, start_pos)
     }
 
     /// Build per-token embeddings without running the decoder.
-    pub fn embed_tokens_anchored(
-        &self, anchor: &LazyTensor, tokens: &[u32],
-    ) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
-            cfg.vocab_size, cfg.hidden_size, tokens,
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
         )
     }
 
     fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
-        Ok(self.weights.output.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
+        Ok(self
+            .weights
+            .output
+            .apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 
     fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
@@ -134,14 +137,16 @@ impl PersimmonModel {
         assert!(seq > 0);
 
         let h = LazyTensor::embed_tokens(
-            weights.token_embedding.clone(), cfg.vocab_size, cfg.hidden_size, tokens, &Device::cpu(),
+            weights.token_embedding.clone(),
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
+            &Device::cpu(),
         )?;
         self.run_backbone_embeds(&h, start_pos)
     }
 
-    fn run_backbone_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
-    ) -> Result<LazyTensor> {
+    fn run_backbone_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -156,19 +161,19 @@ impl PersimmonModel {
         if seq == 0 {
             return Err(crate::Error::Msg(
                 "PersimmonModel::forward_embeds: seq must be > 0".into(),
-            ).bt());
+            )
+            .bt());
         }
         if cfg.num_attention_heads * cfg.head_dim != cfg.hidden_size {
             return Err(crate::Error::Msg(
                 "PersimmonConfig: num_attention_heads * head_dim must equal hidden_size".into(),
-            ).bt());
+            )
+            .bt());
         }
         let mut h = embeds.clone();
 
         let rope_dim = cfg.rope_dim();
-        let (rope_cos, rope_sin) = h.rope_tables_const(
-            cfg.rope_theta, start_pos, seq, rope_dim,
-        );
+        let (rope_cos, rope_sin) = h.rope_tables_const(cfg.rope_theta, start_pos, seq, rope_dim);
 
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin)?;
@@ -195,18 +200,45 @@ impl PersimmonModel {
         let seq = dims[1];
         let kv_dim = cfg.num_key_value_heads * head_dim;
 
-        let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&layer.input_ln_gain), std::sync::Arc::clone(&layer.input_ln_bias), cfg.layer_norm_eps)?;
+        let x_norm = x.layer_norm_affine(
+            std::sync::Arc::clone(&layer.input_ln_gain),
+            std::sync::Arc::clone(&layer.input_ln_bias),
+            cfg.layer_norm_eps,
+        )?;
 
         // Q/K/V projections — always have biases on Persimmon.
-        let q = layer.attn_q.apply_linear_with_bias(&x_norm, cfg.hidden_size, cfg.hidden_size, std::sync::Arc::clone(&layer.attn_q_bias))?;
-        let k = layer.attn_k.apply_linear_with_bias(&x_norm, cfg.hidden_size, kv_dim, std::sync::Arc::clone(&layer.attn_k_bias))?;
-        let v = layer.attn_v.apply_linear_with_bias(&x_norm, cfg.hidden_size, kv_dim, std::sync::Arc::clone(&layer.attn_v_bias))?;
+        let q = layer.attn_q.apply_linear_with_bias(
+            &x_norm,
+            cfg.hidden_size,
+            cfg.hidden_size,
+            std::sync::Arc::clone(&layer.attn_q_bias),
+        )?;
+        let k = layer.attn_k.apply_linear_with_bias(
+            &x_norm,
+            cfg.hidden_size,
+            kv_dim,
+            std::sync::Arc::clone(&layer.attn_k_bias),
+        )?;
+        let v = layer.attn_v.apply_linear_with_bias(
+            &x_norm,
+            cfg.hidden_size,
+            kv_dim,
+            std::sync::Arc::clone(&layer.attn_v_bias),
+        )?;
 
         // QK-LayerNorm BEFORE head reshape.
         let (q, k) = match (&layer.q_norm, &layer.k_norm) {
             (Some((qg, qb)), Some((kg, kb))) => {
-                let q = q.layer_norm_affine(std::sync::Arc::clone(&qg), std::sync::Arc::clone(&qb), cfg.layer_norm_eps)?;
-                let k = k.layer_norm_affine(std::sync::Arc::clone(&kg), std::sync::Arc::clone(&kb), cfg.layer_norm_eps)?;
+                let q = q.layer_norm_affine(
+                    std::sync::Arc::clone(&qg),
+                    std::sync::Arc::clone(&qb),
+                    cfg.layer_norm_eps,
+                )?;
+                let k = k.layer_norm_affine(
+                    std::sync::Arc::clone(&kg),
+                    std::sync::Arc::clone(&kb),
+                    cfg.layer_norm_eps,
+                )?;
                 (q, k)
             }
             _ => (q, k),
@@ -235,14 +267,33 @@ impl PersimmonModel {
         let attn_v = attn.matmul(&v_full)?;
 
         let merged = attn_v.merge_heads()?;
-        let attn_out = layer.attn_o.apply_linear_with_bias(&merged, cfg.hidden_size, cfg.hidden_size, std::sync::Arc::clone(&layer.attn_o_bias))?;
+        let attn_out = layer.attn_o.apply_linear_with_bias(
+            &merged,
+            cfg.hidden_size,
+            cfg.hidden_size,
+            std::sync::Arc::clone(&layer.attn_o_bias),
+        )?;
 
         let h1 = x.add(&attn_out)?;
-        let h1_norm = h1.layer_norm_affine(std::sync::Arc::clone(&layer.post_attn_ln_gain), std::sync::Arc::clone(&layer.post_attn_ln_bias), cfg.layer_norm_eps)?;
+        let h1_norm = h1.layer_norm_affine(
+            std::sync::Arc::clone(&layer.post_attn_ln_gain),
+            std::sync::Arc::clone(&layer.post_attn_ln_bias),
+            cfg.layer_norm_eps,
+        )?;
         // MLP: simple `down(relu(up(x)))`.
-        let up = layer.mlp_up.apply_linear_with_bias(&h1_norm, cfg.hidden_size, cfg.intermediate_size, std::sync::Arc::clone(&layer.mlp_up_bias))?;
+        let up = layer.mlp_up.apply_linear_with_bias(
+            &h1_norm,
+            cfg.hidden_size,
+            cfg.intermediate_size,
+            std::sync::Arc::clone(&layer.mlp_up_bias),
+        )?;
         let up_act = up.relu();
-        let ffn_out = layer.mlp_down.apply_linear_with_bias(&up_act, cfg.intermediate_size, cfg.hidden_size, std::sync::Arc::clone(&layer.mlp_down_bias))?;
+        let ffn_out = layer.mlp_down.apply_linear_with_bias(
+            &up_act,
+            cfg.intermediate_size,
+            cfg.hidden_size,
+            std::sync::Arc::clone(&layer.mlp_down_bias),
+        )?;
         h1.add(&ffn_out)
     }
 }
@@ -261,92 +312,121 @@ impl PersimmonWeights {
         let q_dim = cfg.num_attention_heads * cfg.head_dim;
         let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
 
-        let token_embedding = Arc::from(load_tensor_as_f32(
-            st, "model.embed_tokens.weight",
-        )?);
+        let token_embedding = Arc::from(load_tensor_as_f32(st, "model.embed_tokens.weight")?);
 
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         for i in 0..cfg.num_hidden_layers {
             let p = format!("model.layers.{i}");
             let input_ln_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.input_layernorm.weight"),
+                st,
+                &format!("{p}.input_layernorm.weight"),
             )?);
             let input_ln_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.input_layernorm.bias"),
+                st,
+                &format!("{p}.input_layernorm.bias"),
             )?);
             let post_attn_ln_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.post_attention_layernorm.weight"),
+                st,
+                &format!("{p}.post_attention_layernorm.weight"),
             )?);
             let post_attn_ln_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.post_attention_layernorm.bias"),
+                st,
+                &format!("{p}.post_attention_layernorm.bias"),
             )?);
             let attn_q = ltm(st, &format!("{p}.self_attn.q_proj.weight"), q_dim, h)?;
             let attn_q_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.self_attn.q_proj.bias"),
+                st,
+                &format!("{p}.self_attn.q_proj.bias"),
             )?);
             let attn_k = ltm(st, &format!("{p}.self_attn.k_proj.weight"), kv_dim, h)?;
             let attn_k_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.self_attn.k_proj.bias"),
+                st,
+                &format!("{p}.self_attn.k_proj.bias"),
             )?);
             let attn_v = ltm(st, &format!("{p}.self_attn.v_proj.weight"), kv_dim, h)?;
             let attn_v_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.self_attn.v_proj.bias"),
+                st,
+                &format!("{p}.self_attn.v_proj.bias"),
             )?);
             let attn_o = ltm(st, &format!("{p}.self_attn.dense.weight"), h, q_dim)?;
             let attn_o_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.self_attn.dense.bias"),
+                st,
+                &format!("{p}.self_attn.dense.bias"),
             )?);
 
             let q_norm = if cfg.qk_layernorm {
                 let g = Arc::from(load_tensor_as_f32(
-                    st, &format!("{p}.self_attn.q_layernorm.weight"),
+                    st,
+                    &format!("{p}.self_attn.q_layernorm.weight"),
                 )?);
                 let b = Arc::from(load_tensor_as_f32(
-                    st, &format!("{p}.self_attn.q_layernorm.bias"),
+                    st,
+                    &format!("{p}.self_attn.q_layernorm.bias"),
                 )?);
                 Some((g, b))
-            } else { None };
+            } else {
+                None
+            };
             let k_norm = if cfg.qk_layernorm {
                 let g = Arc::from(load_tensor_as_f32(
-                    st, &format!("{p}.self_attn.k_layernorm.weight"),
+                    st,
+                    &format!("{p}.self_attn.k_layernorm.weight"),
                 )?);
                 let b = Arc::from(load_tensor_as_f32(
-                    st, &format!("{p}.self_attn.k_layernorm.bias"),
+                    st,
+                    &format!("{p}.self_attn.k_layernorm.bias"),
                 )?);
                 Some((g, b))
-            } else { None };
+            } else {
+                None
+            };
 
             let mlp_up = ltm(st, &format!("{p}.mlp.dense_h_to_4h.weight"), inter, h)?;
             let mlp_up_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.mlp.dense_h_to_4h.bias"),
+                st,
+                &format!("{p}.mlp.dense_h_to_4h.bias"),
             )?);
             let mlp_down = ltm(st, &format!("{p}.mlp.dense_4h_to_h.weight"), h, inter)?;
             let mlp_down_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.mlp.dense_4h_to_h.bias"),
+                st,
+                &format!("{p}.mlp.dense_4h_to_h.bias"),
             )?);
 
             layers.push(PersimmonLayerWeights {
-                input_ln_gain, input_ln_bias, post_attn_ln_gain, post_attn_ln_bias,
-                attn_q, attn_q_bias, attn_k, attn_k_bias, attn_v, attn_v_bias,
-                attn_o, attn_o_bias, q_norm, k_norm,
-                mlp_up, mlp_up_bias, mlp_down, mlp_down_bias,
+                input_ln_gain,
+                input_ln_bias,
+                post_attn_ln_gain,
+                post_attn_ln_bias,
+                attn_q,
+                attn_q_bias,
+                attn_k,
+                attn_k_bias,
+                attn_v,
+                attn_v_bias,
+                attn_o,
+                attn_o_bias,
+                q_norm,
+                k_norm,
+                mlp_up,
+                mlp_up_bias,
+                mlp_down,
+                mlp_down_bias,
             });
         }
 
-        let final_ln_gain = Arc::from(load_tensor_as_f32(
-            st, "model.final_layernorm.weight",
-        )?);
-        let final_ln_bias = Arc::from(load_tensor_as_f32(
-            st, "model.final_layernorm.bias",
-        )?);
+        let final_ln_gain = Arc::from(load_tensor_as_f32(st, "model.final_layernorm.weight")?);
+        let final_ln_bias = Arc::from(load_tensor_as_f32(st, "model.final_layernorm.bias")?);
         let output = ltm(st, "lm_head.weight", cfg.vocab_size, h)?;
 
         Ok(Self {
-            token_embedding, layers, final_ln_gain, final_ln_bias, output,
+            token_embedding,
+            layers,
+            final_ln_gain,
+            final_ln_bias,
+            output,
         })
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -360,65 +440,100 @@ mod tests {
         let vec_of = |n: usize, next: &mut dyn FnMut() -> f32| -> Arc<[f32]> {
             Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
         };
-        let h = cfg.hidden_size; let i = cfg.intermediate_size;
+        let h = cfg.hidden_size;
+        let i = cfg.intermediate_size;
         let kv = cfg.num_key_value_heads * cfg.head_dim;
         let mut nb: Box<dyn FnMut() -> f32> = Box::new(next);
         let token_embedding = vec_of(cfg.vocab_size * h, &mut *nb);
-        let layers: Vec<PersimmonLayerWeights> = (0..cfg.num_hidden_layers).map(|_| PersimmonLayerWeights {
-            input_ln_gain:     Arc::from(vec![1.0_f32; h]),
-            input_ln_bias:     Arc::from(vec![0.0_f32; h]),
-            post_attn_ln_gain: Arc::from(vec![1.0_f32; h]),
-            post_attn_ln_bias: Arc::from(vec![0.0_f32; h]),
-            attn_q: WeightStorage::F32(vec_of(h * h, &mut *nb)),
-            attn_q_bias: vec_of(h, &mut *nb),
-            attn_k: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
-            attn_k_bias: vec_of(kv, &mut *nb),
-            attn_v: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
-            attn_v_bias: vec_of(kv, &mut *nb),
-            attn_o: WeightStorage::F32(vec_of(h * h, &mut *nb)),
-            attn_o_bias: vec_of(h, &mut *nb),
-            q_norm: if cfg.qk_layernorm {
-                Some((Arc::from(vec![1.0_f32; h]), Arc::from(vec![0.0_f32; h])))
-            } else { None },
-            k_norm: if cfg.qk_layernorm {
-                Some((Arc::from(vec![1.0_f32; kv]), Arc::from(vec![0.0_f32; kv])))
-            } else { None },
-            mlp_up: WeightStorage::F32(vec_of(h * i, &mut *nb)),
-            mlp_up_bias: vec_of(i, &mut *nb),
-            mlp_down: WeightStorage::F32(vec_of(i * h, &mut *nb)),
-            mlp_down_bias: vec_of(h, &mut *nb),
-        }).collect();
+        let layers: Vec<PersimmonLayerWeights> = (0..cfg.num_hidden_layers)
+            .map(|_| PersimmonLayerWeights {
+                input_ln_gain: Arc::from(vec![1.0_f32; h]),
+                input_ln_bias: Arc::from(vec![0.0_f32; h]),
+                post_attn_ln_gain: Arc::from(vec![1.0_f32; h]),
+                post_attn_ln_bias: Arc::from(vec![0.0_f32; h]),
+                attn_q: WeightStorage::F32(vec_of(h * h, &mut *nb)),
+                attn_q_bias: vec_of(h, &mut *nb),
+                attn_k: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
+                attn_k_bias: vec_of(kv, &mut *nb),
+                attn_v: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
+                attn_v_bias: vec_of(kv, &mut *nb),
+                attn_o: WeightStorage::F32(vec_of(h * h, &mut *nb)),
+                attn_o_bias: vec_of(h, &mut *nb),
+                q_norm: if cfg.qk_layernorm {
+                    Some((Arc::from(vec![1.0_f32; h]), Arc::from(vec![0.0_f32; h])))
+                } else {
+                    None
+                },
+                k_norm: if cfg.qk_layernorm {
+                    Some((Arc::from(vec![1.0_f32; kv]), Arc::from(vec![0.0_f32; kv])))
+                } else {
+                    None
+                },
+                mlp_up: WeightStorage::F32(vec_of(h * i, &mut *nb)),
+                mlp_up_bias: vec_of(i, &mut *nb),
+                mlp_down: WeightStorage::F32(vec_of(i * h, &mut *nb)),
+                mlp_down_bias: vec_of(h, &mut *nb),
+            })
+            .collect();
         let final_ln_gain = Arc::from(vec![1.0_f32; h]);
         let final_ln_bias = Arc::from(vec![0.0_f32; h]);
         let output = WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *nb));
-        PersimmonWeights { token_embedding, layers, final_ln_gain, final_ln_bias, output }
+        PersimmonWeights {
+            token_embedding,
+            layers,
+            final_ln_gain,
+            final_ln_bias,
+            output,
+        }
     }
 
     #[test]
     fn forward_with_qk_layernorm_and_partial_rotary() {
         let cfg = PersimmonConfig {
-            vocab_size: 32, hidden_size: 16, intermediate_size: 32,
-            num_hidden_layers: 2, num_attention_heads: 4, num_key_value_heads: 4,
-            head_dim: 4, layer_norm_eps: 1e-5, rope_theta: 25_000.0,
-            max_position_embeddings: 64, partial_rotary_factor: 1.0,
+            vocab_size: 32,
+            hidden_size: 16,
+            intermediate_size: 32,
+            num_hidden_layers: 2,
+            num_attention_heads: 4,
+            num_key_value_heads: 4,
+            head_dim: 4,
+            layer_norm_eps: 1e-5,
+            rope_theta: 25_000.0,
+            max_position_embeddings: 64,
+            partial_rotary_factor: 1.0,
             qk_layernorm: true,
         };
-        let model = PersimmonModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = PersimmonModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let logits = model.forward(&[1, 2, 3], 0).unwrap();
         assert_eq!(logits.shape().dims(), &[1, 3, cfg.vocab_size]);
-        for &v in &logits.realize_f32() { assert!(v.is_finite()); }
+        for &v in &logits.realize_f32() {
+            assert!(v.is_finite());
+        }
     }
 
     #[test]
     fn forward_hidden_shape_and_finite() {
         let cfg = PersimmonConfig {
-            vocab_size: 32, hidden_size: 16, intermediate_size: 32,
-            num_hidden_layers: 2, num_attention_heads: 4, num_key_value_heads: 4,
-            head_dim: 4, layer_norm_eps: 1e-5, rope_theta: 25_000.0,
-            max_position_embeddings: 64, partial_rotary_factor: 1.0,
+            vocab_size: 32,
+            hidden_size: 16,
+            intermediate_size: 32,
+            num_hidden_layers: 2,
+            num_attention_heads: 4,
+            num_key_value_heads: 4,
+            head_dim: 4,
+            layer_norm_eps: 1e-5,
+            rope_theta: 25_000.0,
+            max_position_embeddings: 64,
+            partial_rotary_factor: 1.0,
             qk_layernorm: true,
         };
-        let model = PersimmonModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = PersimmonModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
         let hidden = model.forward_hidden(&tokens, 0).unwrap();
         assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
@@ -429,10 +544,17 @@ mod tests {
 
     fn forward_embeds_test_cfg() -> PersimmonConfig {
         PersimmonConfig {
-            vocab_size: 32, hidden_size: 16, intermediate_size: 32,
-            num_hidden_layers: 2, num_attention_heads: 4, num_key_value_heads: 4,
-            head_dim: 4, layer_norm_eps: 1e-5, rope_theta: 25_000.0,
-            max_position_embeddings: 64, partial_rotary_factor: 1.0,
+            vocab_size: 32,
+            hidden_size: 16,
+            intermediate_size: 32,
+            num_hidden_layers: 2,
+            num_attention_heads: 4,
+            num_key_value_heads: 4,
+            head_dim: 4,
+            layer_norm_eps: 1e-5,
+            rope_theta: 25_000.0,
+            max_position_embeddings: 64,
+            partial_rotary_factor: 1.0,
             qk_layernorm: true,
         }
     }
@@ -440,27 +562,37 @@ mod tests {
     #[test]
     fn forward_embeds_matches_forward_after_token_lookup() {
         let cfg = forward_embeds_test_cfg();
-        let model = PersimmonModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = PersimmonModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
-        let max_diff = logits_ref.iter().zip(logits_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "Persimmon forward vs forward_embeds must agree (max diff {max_diff})");
+        let max_diff = logits_ref
+            .iter()
+            .zip(logits_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "Persimmon forward vs forward_embeds must agree (max diff {max_diff})"
+        );
     }
 
     #[test]
     fn forward_embeds_rejects_bad_shape() {
         let cfg = forward_embeds_test_cfg();
-        let model = PersimmonModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = PersimmonModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let bad = LazyTensor::from_f32(
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
-            Shape::from_dims(&[1, 3, cfg.hidden_size + 1]), &Device::cpu(),
+            Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
+            &Device::cpu(),
         );
         assert!(model.forward_embeds(&bad, 0).is_err());
     }
@@ -468,17 +600,26 @@ mod tests {
     #[test]
     fn forward_hidden_embeds_matches_forward_hidden() {
         let cfg = forward_embeds_test_cfg();
-        let model = PersimmonModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = PersimmonModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
-        let h_via_embeds = model.forward_hidden_embeds(&embeds, 0).unwrap().realize_f32();
-        let max_diff = h_ref.iter().zip(h_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "Persimmon forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})");
+        let h_via_embeds = model
+            .forward_hidden_embeds(&embeds, 0)
+            .unwrap()
+            .realize_f32();
+        let max_diff = h_ref
+            .iter()
+            .zip(h_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "Persimmon forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})"
+        );
     }
 }

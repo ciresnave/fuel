@@ -37,8 +37,8 @@
 //! [`MusicGenModel::forward_with_encoder_states`].
 
 use crate::lazy::{
-    load_tensor_as_f32, load_transposed_matrix, load_transposed_matrix_preserve_dtype,
-    LazyTensor, WeightStorage,
+    LazyTensor, WeightStorage, load_tensor_as_f32, load_transposed_matrix,
+    load_transposed_matrix_preserve_dtype,
 };
 use crate::{Device, Result};
 use fuel_ir::Shape;
@@ -230,24 +230,23 @@ impl MusicGenModel {
 
         // Anchor on the encoder states' graph so cross-attention
         // composes correctly.
-        self.decode(encoder_states, audio_tokens, seq_len, encoder_states, start_pos)
+        self.decode(
+            encoder_states,
+            audio_tokens,
+            seq_len,
+            encoder_states,
+            start_pos,
+        )
     }
 
-    fn encode_text_adapter(
-        &self,
-        anchor: &LazyTensor,
-        text_tokens: &[u32],
-    ) -> Result<LazyTensor> {
+    fn encode_text_adapter(&self, anchor: &LazyTensor, text_tokens: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         let text_len = text_tokens.len();
         let embed = anchor.const_f32_like(
             Arc::clone(&self.weights.text_encoder_embedding),
             Shape::from_dims(&[cfg.text_vocab_size, cfg.encoder_hidden_size]),
         );
-        let ids = anchor.const_u32_like(
-            text_tokens.to_vec(),
-            Shape::from_dims(&[text_len]),
-        );
+        let ids = anchor.const_u32_like(text_tokens.to_vec(), Shape::from_dims(&[text_len]));
         embed
             .index_select(0_usize, &ids)?
             .reshape(Shape::from_dims(&[1, text_len, cfg.encoder_hidden_size]))
@@ -282,8 +281,7 @@ impl MusicGenModel {
                 Arc::clone(&weights.embed_tokens[cb]),
                 Shape::from_dims(&[embed_dim, cfg.hidden_size]),
             );
-            let ids = anchor
-                .const_u32_like(slice.to_vec(), Shape::from_dims(&[seq_len]));
+            let ids = anchor.const_u32_like(slice.to_vec(), Shape::from_dims(&[seq_len]));
             let part = table
                 .index_select(0_usize, &ids)?
                 .reshape(Shape::from_dims(&[batch, seq_len, cfg.hidden_size]))?;
@@ -298,9 +296,7 @@ impl MusicGenModel {
         }
 
         // Sinusoidal positional embedding.
-        let pos_table = build_sinusoidal_table(
-            cfg.max_position_embeddings, cfg.hidden_size,
-        );
+        let pos_table = build_sinusoidal_table(cfg.max_position_embeddings, cfg.hidden_size);
         let pos_full = anchor.const_f32_like(
             Arc::from(pos_table),
             Shape::from_dims(&[cfg.max_position_embeddings, cfg.hidden_size]),
@@ -308,9 +304,11 @@ impl MusicGenModel {
         let pos_slice = pos_full
             .slice(0_usize, start_pos, seq_len)?
             .reshape(Shape::from_dims(&[1, seq_len, cfg.hidden_size]))?;
-        h = h.add(&pos_slice.broadcast_to(
-            Shape::from_dims(&[batch, seq_len, cfg.hidden_size]),
-        )?)?;
+        h = h.add(&pos_slice.broadcast_to(Shape::from_dims(&[
+            batch,
+            seq_len,
+            cfg.hidden_size,
+        ]))?)?;
 
         // Causal mask `[1, 1, seq, seq]`.
         let mut mask_data = vec![0.0_f32; seq_len * seq_len];
@@ -319,9 +317,8 @@ impl MusicGenModel {
                 mask_data[i * seq_len + j] = f32::NEG_INFINITY;
             }
         }
-        let causal_mask = anchor.const_f32_like(
-            mask_data, Shape::from_dims(&[1, 1, seq_len, seq_len]),
-        );
+        let causal_mask =
+            anchor.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq_len, seq_len]));
 
         for layer in &weights.layers {
             h = self.apply_decoder_layer(&h, layer, encoder_states, &causal_mask)?;
@@ -396,14 +393,18 @@ impl MusicGenModel {
             Arc::clone(&layer.final_ln_bias),
             1e-5,
         )?;
-        let fc1 = layer.fc1.apply_linear(&h2_norm, cfg.hidden_size, cfg.ffn_dim)?;
+        let fc1 = layer
+            .fc1
+            .apply_linear(&h2_norm, cfg.hidden_size, cfg.ffn_dim)?;
         let activated = match cfg.activation_function {
             MusicGenActivation::Relu => fc1.relu(),
             MusicGenActivation::Gelu => fc1.gelu_erf(),
             MusicGenActivation::GeluPytorchTanh => fc1.gelu(),
             MusicGenActivation::Silu => fc1.silu(),
         };
-        let fc2 = layer.fc2.apply_linear(&activated, cfg.ffn_dim, cfg.hidden_size)?;
+        let fc2 = layer
+            .fc2
+            .apply_linear(&activated, cfg.ffn_dim, cfg.hidden_size)?;
         residual.add(&fc2)
     }
 
@@ -427,7 +428,10 @@ impl MusicGenModel {
         let head_dim = cfg.head_dim();
         let scaling = 1.0_f64 / (head_dim as f64).sqrt();
 
-        let q = w.q_proj.apply_linear(q_src, q_in_dim, inner)?.mul_scalar(scaling);
+        let q = w
+            .q_proj
+            .apply_linear(q_src, q_in_dim, inner)?
+            .mul_scalar(scaling);
         let k = w.k_proj.apply_linear(kv_src, kv_in_dim, inner)?;
         let v = w.v_proj.apply_linear(kv_src, kv_in_dim, inner)?;
 
@@ -509,15 +513,17 @@ impl MusicGenWeights {
         let prefix = "decoder.model.decoder";
 
         // ---- Multi-codebook embed_tokens -------------------------
-        let mut embed_tokens: Vec<Arc<[f32]>> =
-            Vec::with_capacity(cfg.num_codebooks);
+        let mut embed_tokens: Vec<Arc<[f32]>> = Vec::with_capacity(cfg.num_codebooks);
         for cb in 0..cfg.num_codebooks {
             let name = format!("{prefix}.embed_tokens.{cb}.weight");
             let v = load_tensor_as_f32(st, &name)?;
             if v.len() != embed_dim * h {
                 crate::bail!(
                     "{name}: {} elts, expected {} ({}×{})",
-                    v.len(), embed_dim * h, embed_dim, h,
+                    v.len(),
+                    embed_dim * h,
+                    embed_dim,
+                    h,
                 );
             }
             embed_tokens.push(Arc::from(v));
@@ -531,61 +537,85 @@ impl MusicGenWeights {
 
             let self_attn = MusicGenAttentionWeights {
                 q_proj: load_transposed_matrix_preserve_dtype(
-                    st, &format!("{p}.self_attn.q_proj.weight"), h, h,
+                    st,
+                    &format!("{p}.self_attn.q_proj.weight"),
+                    h,
+                    h,
                 )?,
                 k_proj: load_transposed_matrix_preserve_dtype(
-                    st, &format!("{p}.self_attn.k_proj.weight"), h, h,
+                    st,
+                    &format!("{p}.self_attn.k_proj.weight"),
+                    h,
+                    h,
                 )?,
                 v_proj: load_transposed_matrix_preserve_dtype(
-                    st, &format!("{p}.self_attn.v_proj.weight"), h, h,
+                    st,
+                    &format!("{p}.self_attn.v_proj.weight"),
+                    h,
+                    h,
                 )?,
                 out_proj: load_transposed_matrix_preserve_dtype(
-                    st, &format!("{p}.self_attn.out_proj.weight"), h, h,
+                    st,
+                    &format!("{p}.self_attn.out_proj.weight"),
+                    h,
+                    h,
                 )?,
             };
             let self_attn_ln_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.self_attn_layer_norm.weight"),
+                st,
+                &format!("{p}.self_attn_layer_norm.weight"),
             )?);
             let self_attn_ln_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.self_attn_layer_norm.bias"),
+                st,
+                &format!("{p}.self_attn_layer_norm.bias"),
             )?);
 
             let encoder_attn = MusicGenAttentionWeights {
                 q_proj: load_transposed_matrix_preserve_dtype(
-                    st, &format!("{p}.encoder_attn.q_proj.weight"), h, h,
+                    st,
+                    &format!("{p}.encoder_attn.q_proj.weight"),
+                    h,
+                    h,
                 )?,
                 k_proj: load_transposed_matrix_preserve_dtype(
                     st,
                     &format!("{p}.encoder_attn.k_proj.weight"),
-                    h, cfg.encoder_hidden_size,
+                    h,
+                    cfg.encoder_hidden_size,
                 )?,
                 v_proj: load_transposed_matrix_preserve_dtype(
                     st,
                     &format!("{p}.encoder_attn.v_proj.weight"),
-                    h, cfg.encoder_hidden_size,
+                    h,
+                    cfg.encoder_hidden_size,
                 )?,
                 out_proj: load_transposed_matrix_preserve_dtype(
-                    st, &format!("{p}.encoder_attn.out_proj.weight"), h, h,
+                    st,
+                    &format!("{p}.encoder_attn.out_proj.weight"),
+                    h,
+                    h,
                 )?,
             };
             let encoder_attn_ln_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.encoder_attn_layer_norm.weight"),
+                st,
+                &format!("{p}.encoder_attn_layer_norm.weight"),
             )?);
             let encoder_attn_ln_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.encoder_attn_layer_norm.bias"),
+                st,
+                &format!("{p}.encoder_attn_layer_norm.bias"),
             )?);
 
-            let fc1 = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.fc1.weight"), i_dim, h,
-            )?;
-            let fc2 = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.fc2.weight"), h, i_dim,
-            )?;
+            let fc1 =
+                load_transposed_matrix_preserve_dtype(st, &format!("{p}.fc1.weight"), i_dim, h)?;
+            let fc2 =
+                load_transposed_matrix_preserve_dtype(st, &format!("{p}.fc2.weight"), h, i_dim)?;
             let final_ln_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.final_layer_norm.weight"),
+                st,
+                &format!("{p}.final_layer_norm.weight"),
             )?);
             let final_ln_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.final_layer_norm.bias"),
+                st,
+                &format!("{p}.final_layer_norm.bias"),
             )?);
 
             layers.push(MusicGenDecoderLayerWeights {
@@ -604,10 +634,12 @@ impl MusicGenWeights {
 
         // ---- Post-stack LayerNorm --------------------------------
         let final_ln_gain = Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}.layer_norm.weight"),
+            st,
+            &format!("{prefix}.layer_norm.weight"),
         )?);
         let final_ln_bias = Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}.layer_norm.bias"),
+            st,
+            &format!("{prefix}.layer_norm.bias"),
         )?);
 
         // ---- Per-codebook lm_heads -------------------------------
@@ -616,27 +648,27 @@ impl MusicGenWeights {
             let v = load_transposed_matrix(
                 st,
                 &format!("decoder.lm_heads.{cb}.weight"),
-                cfg.vocab_size, h,
+                cfg.vocab_size,
+                h,
             )?;
             lm_heads.push(WeightStorage::F32(Arc::from(v)));
         }
 
         // ---- Optional text encoder embedding ---------------------
-        let text_encoder_embedding: Arc<[f32]> =
-            match st.get("text_encoder.shared.weight") {
-                Ok(_) => {
-                    let v = load_tensor_as_f32(st, "text_encoder.shared.weight")?;
-                    let expected = cfg.text_vocab_size * cfg.encoder_hidden_size;
-                    if v.len() != expected {
-                        crate::bail!(
-                            "text_encoder.shared.weight: {} elts, expected {expected}",
-                            v.len(),
-                        );
-                    }
-                    Arc::from(v)
+        let text_encoder_embedding: Arc<[f32]> = match st.get("text_encoder.shared.weight") {
+            Ok(_) => {
+                let v = load_tensor_as_f32(st, "text_encoder.shared.weight")?;
+                let expected = cfg.text_vocab_size * cfg.encoder_hidden_size;
+                if v.len() != expected {
+                    crate::bail!(
+                        "text_encoder.shared.weight: {} elts, expected {expected}",
+                        v.len(),
+                    );
                 }
-                Err(_) => Arc::from(vec![0.0_f32; 1]),
-            };
+                Arc::from(v)
+            }
+            Err(_) => Arc::from(vec![0.0_f32; 1]),
+        };
 
         Ok(Self {
             embed_tokens,
@@ -684,7 +716,10 @@ mod tests {
     }
 
     fn tiny_attention_weights(
-        out_dim: usize, q_in: usize, kv_in: usize, nb: &mut dyn FnMut() -> f32,
+        out_dim: usize,
+        q_in: usize,
+        kv_in: usize,
+        nb: &mut dyn FnMut() -> f32,
     ) -> MusicGenAttentionWeights {
         MusicGenAttentionWeights {
             q_proj: ws(q_in * out_dim, nb),
@@ -707,9 +742,7 @@ mod tests {
                 self_attn: tiny_attention_weights(h, h, h, &mut nb),
                 self_attn_ln_gain: Arc::from(vec![1.0_f32; h]),
                 self_attn_ln_bias: Arc::from(vec![0.0_f32; h]),
-                encoder_attn: tiny_attention_weights(
-                    h, h, cfg.encoder_hidden_size, &mut nb,
-                ),
+                encoder_attn: tiny_attention_weights(h, h, cfg.encoder_hidden_size, &mut nb),
                 encoder_attn_ln_gain: Arc::from(vec![1.0_f32; h]),
                 encoder_attn_ln_bias: Arc::from(vec![0.0_f32; h]),
                 fc1: ws(h * i_dim, &mut nb),
@@ -723,8 +756,7 @@ mod tests {
         let lm_heads: Vec<WeightStorage> = (0..cfg.num_codebooks)
             .map(|_| ws(h * cfg.vocab_size, &mut nb))
             .collect();
-        let text_encoder_embedding =
-            vec_of(cfg.text_vocab_size * cfg.encoder_hidden_size, &mut nb);
+        let text_encoder_embedding = vec_of(cfg.text_vocab_size * cfg.encoder_hidden_size, &mut nb);
         MusicGenWeights {
             embed_tokens,
             layers,
@@ -738,7 +770,10 @@ mod tests {
     fn tiny_model() -> MusicGenModel {
         let cfg = tiny_cfg();
         let weights = tiny_weights(&cfg, 2026);
-        MusicGenModel { config: cfg, weights }
+        MusicGenModel {
+            config: cfg,
+            weights,
+        }
     }
 
     #[test]
@@ -773,7 +808,9 @@ mod tests {
             .collect();
         let a = model.forward(&[1, 2, 3], &audio, 0).unwrap().realize_f32();
         let b = model.forward(&[7, 8, 9], &audio, 0).unwrap().realize_f32();
-        let max_diff = a.iter().zip(b.iter())
+        let max_diff = a
+            .iter()
+            .zip(b.iter())
             .map(|(x, y)| (x - y).abs())
             .fold(0.0_f32, f32::max);
         assert!(
@@ -793,7 +830,10 @@ mod tests {
         let audio: Vec<u32> = (0..(cfg.num_codebooks * seq_len) as u32)
             .map(|i| i % cfg.vocab_size as u32)
             .collect();
-        let direct = model.forward(&text_tokens, &audio, 0).unwrap().realize_f32();
+        let direct = model
+            .forward(&text_tokens, &audio, 0)
+            .unwrap()
+            .realize_f32();
 
         // Hand-build encoder states the same way the adapter does.
         let anchor = LazyTensor::from_f32(
@@ -807,7 +847,9 @@ mod tests {
             .unwrap()
             .realize_f32();
         assert_eq!(direct.len(), via_enc.len());
-        let max_diff = direct.iter().zip(via_enc.iter())
+        let max_diff = direct
+            .iter()
+            .zip(via_enc.iter())
             .map(|(x, y)| (x - y).abs())
             .fold(0.0_f32, f32::max);
         assert!(
@@ -833,8 +875,14 @@ mod tests {
         let idx = seq_len - 1;
         audio_b[idx] = (audio_a[idx] + 3) % cfg.vocab_size as u32;
 
-        let a = model.forward(&text_tokens, &audio_a, 0).unwrap().realize_f32();
-        let b = model.forward(&text_tokens, &audio_b, 0).unwrap().realize_f32();
+        let a = model
+            .forward(&text_tokens, &audio_a, 0)
+            .unwrap()
+            .realize_f32();
+        let b = model
+            .forward(&text_tokens, &audio_b, 0)
+            .unwrap()
+            .realize_f32();
 
         // Per-codebook logits live at [cb, t, col] in the
         // (num_codebooks, seq_len, vocab) output. Compare positions
@@ -847,7 +895,8 @@ mod tests {
                     assert!(
                         (a[i] - b[i]).abs() < 1e-4,
                         "causal mask violated at cb={cb} t={t} col={col}: {} vs {}",
-                        a[i], b[i],
+                        a[i],
+                        b[i],
                     );
                 }
             }
@@ -865,7 +914,11 @@ mod tests {
         // Position 0: cos(0)=1, sin(0)=0.
         for i in 0..half {
             assert!((t[i] - 1.0).abs() < 1e-6, "cos[0, {i}] = {} != 1", t[i]);
-            assert!(t[half + i].abs() < 1e-6, "sin[0, {i}] = {} != 0", t[half + i]);
+            assert!(
+                t[half + i].abs() < 1e-6,
+                "sin[0, {i}] = {} != 0",
+                t[half + i]
+            );
         }
     }
 

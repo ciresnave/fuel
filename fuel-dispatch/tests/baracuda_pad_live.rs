@@ -5,9 +5,13 @@
 
 use std::sync::{Arc, RwLock};
 
-use fuel_ir::{dispatch::OpKind, probe::BackendId, DType};
 use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
-use fuel_dispatch::{baracuda_dispatch::register_baracuda_cuda_kernels, dispatch::register_cuda_kernels, kernel::{KernelBindingTable, OpParams}};
+use fuel_dispatch::{
+    baracuda_dispatch::register_baracuda_cuda_kernels,
+    dispatch::register_cuda_kernels,
+    kernel::{KernelBindingTable, OpParams},
+};
+use fuel_ir::{DType, dispatch::OpKind, probe::BackendId};
 use fuel_memory::{BackendStorage, Storage};
 
 fn dev_or_skip() -> Option<CudaDevice> {
@@ -52,11 +56,7 @@ fn baracuda_pad_const_f32_1d() {
     let in_arc = Arc::new(RwLock::new(upload(&dev, DType::F32, &src)));
     let out_arc = Arc::new(RwLock::new(alloc_out(&dev, DType::F32, 6, 4)));
 
-    let alts = table.lookup_alternatives(
-        OpKind::Pad,
-        &[DType::F32, DType::F32],
-        BackendId::Cuda,
-    );
+    let alts = table.lookup_alternatives(OpKind::Pad, &[DType::F32, DType::F32], BackendId::Cuda);
     let kernel = alts[0].kernel;
 
     let params = OpParams::Pad {
@@ -83,11 +83,7 @@ fn baracuda_pad_reflect_f32_1d() {
     let in_arc = Arc::new(RwLock::new(upload(&dev, DType::F32, &src)));
     let out_arc = Arc::new(RwLock::new(alloc_out(&dev, DType::F32, 7, 4)));
 
-    let alts = table.lookup_alternatives(
-        OpKind::Pad,
-        &[DType::F32, DType::F32],
-        BackendId::Cuda,
-    );
+    let alts = table.lookup_alternatives(OpKind::Pad, &[DType::F32, DType::F32], BackendId::Cuda);
     let kernel = alts[0].kernel;
 
     let params = OpParams::Pad {
@@ -113,11 +109,7 @@ fn baracuda_pad_replicate_f32_1d() {
     let in_arc = Arc::new(RwLock::new(upload(&dev, DType::F32, &src)));
     let out_arc = Arc::new(RwLock::new(alloc_out(&dev, DType::F32, 6, 4)));
 
-    let alts = table.lookup_alternatives(
-        OpKind::Pad,
-        &[DType::F32, DType::F32],
-        BackendId::Cuda,
-    );
+    let alts = table.lookup_alternatives(OpKind::Pad, &[DType::F32, DType::F32], BackendId::Cuda);
     let kernel = alts[0].kernel;
 
     let params = OpParams::Pad {
@@ -144,11 +136,7 @@ fn baracuda_pad_const_f32_2d() {
     let in_arc = Arc::new(RwLock::new(upload(&dev, DType::F32, &src)));
     let out_arc = Arc::new(RwLock::new(alloc_out(&dev, DType::F32, 16, 4)));
 
-    let alts = table.lookup_alternatives(
-        OpKind::Pad,
-        &[DType::F32, DType::F32],
-        BackendId::Cuda,
-    );
+    let alts = table.lookup_alternatives(OpKind::Pad, &[DType::F32, DType::F32], BackendId::Cuda);
     let kernel = alts[0].kernel;
 
     let params = OpParams::Pad {
@@ -162,10 +150,7 @@ fn baracuda_pad_const_f32_2d() {
 
     let got = download::<f32>(&out_arc.read().unwrap());
     let expected = vec![
-        0.0, 0.0, 0.0, 0.0,
-        1.0, 2.0, 0.0, 0.0,
-        3.0, 4.0, 0.0, 0.0,
-        0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 0.0, 0.0, 3.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
     ];
     assert_eq!(got, expected);
 }
@@ -206,11 +191,7 @@ fn pad_registered_for_4_float_dtypes() {
     let table = dual_table();
     for dt in [DType::F32, DType::F64, DType::F16, DType::BF16] {
         for op in [OpKind::Pad, OpKind::PadBackward] {
-            let alts = table.lookup_alternatives(
-                op,
-                &[dt, dt],
-                BackendId::Cuda,
-            );
+            let alts = table.lookup_alternatives(op, &[dt, dt], BackendId::Cuda);
             assert!(
                 !alts.is_empty(),
                 "no {op:?} CUDA registration for dtype {dt:?}",

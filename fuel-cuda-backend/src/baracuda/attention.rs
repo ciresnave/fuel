@@ -48,8 +48,12 @@ type RopeStridedRun = unsafe extern "C" fn(
     heads: i32,
     seq: i32,
     head_dim: i32,
-    stride_x_b: i64, stride_x_h: i64, stride_x_s: i64,
-    stride_y_b: i64, stride_y_h: i64, stride_y_s: i64,
+    stride_x_b: i64,
+    stride_x_h: i64,
+    stride_x_s: i64,
+    stride_y_b: i64,
+    stride_y_h: i64,
+    stride_y_s: i64,
     base: f32,
     pos_default_flag: i32,
     x: *const std::ffi::c_void,
@@ -131,7 +135,8 @@ fn rope_run(
     if head_dim % 2 != 0 {
         return Err(Error::Msg(format!(
             "{op_label}: head_dim must be even (got {head_dim})",
-        )).bt());
+        ))
+        .bt());
     }
     let device = src.device().clone();
     let numel = outer_count * seq * head_dim;
@@ -185,7 +190,8 @@ fn rope_run_into(
     if head_dim % 2 != 0 {
         return Err(Error::Msg(format!(
             "{op_label}: head_dim must be even (got {head_dim})",
-        )).bt());
+        ))
+        .bt());
     }
     let device = src.device().clone();
     let numel = outer_count * seq * head_dim;
@@ -198,7 +204,8 @@ fn rope_run_into(
             "{op_label}: write-into output buffer too small ({} < {} bytes)",
             out.len_bytes(),
             out_bytes,
-        )).bt());
+        ))
+        .bt());
     }
     let scratch = Workspace::alloc(&device, 0)?;
     let stream = device.stream().as_raw() as *mut std::ffi::c_void;
@@ -207,17 +214,23 @@ fn rope_run_into(
 
     let heads_i32 = i32::try_from(outer_count).map_err(|_| {
         Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
-            op: op_label, dim_index: 0, dim_value: outer_count,
+            op: op_label,
+            dim_index: 0,
+            dim_value: outer_count,
         })
     })?;
     let seq_i32 = i32::try_from(seq).map_err(|_| {
         Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
-            op: op_label, dim_index: 1, dim_value: seq,
+            op: op_label,
+            dim_index: 1,
+            dim_value: seq,
         })
     })?;
     let head_dim_i32 = i32::try_from(head_dim).map_err(|_| {
         Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
-            op: op_label, dim_index: 2, dim_value: head_dim,
+            op: op_label,
+            dim_index: 2,
+            dim_value: head_dim,
         })
     })?;
 
@@ -231,14 +244,15 @@ fn rope_run_into(
         // strides for (batch=1, heads=outer_count, seq).
         let layout = src_layout.expect("guarded by take_strided");
         let strides = layout.stride();
-        let last_stride = *strides.last().ok_or_else(|| {
-            Error::Msg(format!("{op_label}: rank-0 input not supported")).bt()
-        })?;
+        let last_stride = *strides
+            .last()
+            .ok_or_else(|| Error::Msg(format!("{op_label}: rank-0 input not supported")).bt())?;
         if last_stride != 1 {
             return Err(Error::Msg(format!(
                 "{op_label}: RoPE requires head_dim stride == 1 (got {last_stride}); \
                  Contiguize the input before dispatching"
-            )).bt());
+            ))
+            .bt());
         }
         // Derive (stride_b, stride_h, stride_s) from the input's
         // rank-N layout. For rank-3 [outer, seq, head_dim] we treat
@@ -260,7 +274,8 @@ fn rope_run_into(
             other => {
                 return Err(Error::Msg(format!(
                     "{op_label}: RoPE expects rank 3 or 4 input (got {other})",
-                )).bt());
+                ))
+                .bt());
             }
         };
         let stride_y_h = (seq * head_dim) as i64;
@@ -268,12 +283,24 @@ fn rope_run_into(
         // SAFETY: pointers + dims validated.
         unsafe {
             strided(
-                1, heads_i32, seq_i32, head_dim_i32,
-                stride_b, stride_h, stride_s,
-                0, stride_y_h, stride_y_s,
-                10000.0, 1,
-                x_ptr, std::ptr::null(), y_ptr,
-                scratch.as_raw(), scratch.bytes(), stream,
+                1,
+                heads_i32,
+                seq_i32,
+                head_dim_i32,
+                stride_b,
+                stride_h,
+                stride_s,
+                0,
+                stride_y_h,
+                stride_y_s,
+                10000.0,
+                1,
+                x_ptr,
+                std::ptr::null(),
+                y_ptr,
+                scratch.as_raw(),
+                scratch.bytes(),
+                stream,
             )
         }
     } else {
@@ -281,10 +308,18 @@ fn rope_run_into(
         // via pos_default_flag=1 + null positions pointer.
         unsafe {
             contig(
-                1, heads_i32, seq_i32, head_dim_i32,
-                10000.0, 1,
-                x_ptr, std::ptr::null(), y_ptr,
-                scratch.as_raw(), scratch.bytes(), stream,
+                1,
+                heads_i32,
+                seq_i32,
+                head_dim_i32,
+                10000.0,
+                1,
+                x_ptr,
+                std::ptr::null(),
+                y_ptr,
+                scratch.as_raw(),
+                scratch.bytes(),
+                stream,
             )
         }
     };
@@ -526,7 +561,8 @@ fn rope_apply_run_into(
     if head_dim % 2 != 0 {
         return Err(Error::Msg(format!(
             "{op_label}: head_dim must be even (got {head_dim})",
-        )).bt());
+        ))
+        .bt());
     }
     let device = x.device().clone();
     let numel = outer_count * seq * head_dim;
@@ -537,8 +573,10 @@ fn rope_apply_run_into(
     if out.len_bytes() < out_bytes {
         return Err(Error::Msg(format!(
             "{op_label}: write-into output buffer too small ({} < {} bytes)",
-            out.len_bytes(), out_bytes,
-        )).bt());
+            out.len_bytes(),
+            out_bytes,
+        ))
+        .bt());
     }
     // cos/sin are ALWAYS F32, half-width [seq, head_dim/2] — validate the
     // byte length up front so a shape mismatch is a typed error, never an
@@ -549,23 +587,32 @@ fn rope_apply_run_into(
         return Err(Error::Msg(format!(
             "{op_label}: cos/sin table too small for [seq={seq}, head_dim/2={}] F32 \
              (need >= {expected_trig_bytes} bytes each, got cos={} sin={})",
-            head_dim / 2, cos.len_bytes(), sin.len_bytes(),
-        )).bt());
+            head_dim / 2,
+            cos.len_bytes(),
+            sin.len_bytes(),
+        ))
+        .bt());
     }
 
     let bh = i32::try_from(outer_count).map_err(|_| {
         Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
-            op: op_label, dim_index: 0, dim_value: outer_count,
+            op: op_label,
+            dim_index: 0,
+            dim_value: outer_count,
         })
     })?;
     let td = i32::try_from(seq * head_dim).map_err(|_| {
         Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
-            op: op_label, dim_index: 1, dim_value: seq * head_dim,
+            op: op_label,
+            dim_index: 1,
+            dim_value: seq * head_dim,
         })
     })?;
     let d = i32::try_from(head_dim).map_err(|_| {
         Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
-            op: op_label, dim_index: 2, dim_value: head_dim,
+            op: op_label,
+            dim_index: 2,
+            dim_value: head_dim,
         })
     })?;
     let stride_b: i32 = 0; // single shared cos/sin table across every outer row
@@ -579,9 +626,17 @@ fn rope_apply_run_into(
 
     let status = unsafe {
         run(
-            bh, td, d, stride_b,
-            x_ptr, cos_ptr, sin_ptr, y_ptr,
-            scratch.as_raw(), scratch.bytes(), stream,
+            bh,
+            td,
+            d,
+            stride_b,
+            x_ptr,
+            cos_ptr,
+            sin_ptr,
+            y_ptr,
+            scratch.as_raw(),
+            scratch.bytes(),
+            stream,
         )
     };
     check(status, op_label)
@@ -674,7 +729,7 @@ fn narrow_rope_table_f32(
     op_label: &'static str,
 ) -> Result<CudaStorageBytes> {
     use baracuda_cuda_sys::driver;
-    use baracuda_cuda_sys::types::{CUmemorytype, CUDA_MEMCPY2D};
+    use baracuda_cuda_sys::types::{CUDA_MEMCPY2D, CUmemorytype};
 
     let half = head_dim / 2;
     let device = full.device().clone();
@@ -689,7 +744,8 @@ fn narrow_rope_table_f32(
             "{op_label}: full-width cos/sin table too small for [seq={seq}, head_dim={head_dim}] \
              F32 (need >= {expected_full_bytes} bytes, got {})",
             full.len_bytes(),
-        )).bt());
+        ))
+        .bt());
     }
     // Grow-only capture-safe scratch: reuses a fixed device buffer per slot
     // across a stable-capacity decode loop (no per-call `cuMemAlloc`). The
@@ -710,9 +766,9 @@ fn narrow_rope_table_f32(
         ..Default::default()
     };
     let d = driver().map_err(|e| Error::Msg(format!("{op_label}: driver(): {e:?}")).bt())?;
-    let cu = d.cu_memcpy_2d_async().map_err(|e| {
-        Error::Msg(format!("{op_label}: cu_memcpy_2d_async: {e:?}")).bt()
-    })?;
+    let cu = d
+        .cu_memcpy_2d_async()
+        .map_err(|e| Error::Msg(format!("{op_label}: cu_memcpy_2d_async: {e:?}")).bt())?;
     let stream = device.stream().as_raw();
     // SAFETY: src/dst are live device buffers of the checked byte sizes (the
     // cached slot buffer is >= dst_bytes, grow-only); pitches + width/height
@@ -724,7 +780,8 @@ fn narrow_rope_table_f32(
     if status.0 != 0 {
         return Err(Error::Msg(format!(
             "{op_label}: cuMemcpy2DAsync failed: status={status:?}",
-        )).bt());
+        ))
+        .bt());
     }
     Ok(CudaStorageBytes::from_parts(dst_arc, device, dst_bytes))
 }
@@ -741,8 +798,20 @@ pub fn rope_apply_fused_f32_into(
     head_dim: usize,
     out: &CudaStorageBytes,
 ) -> Result<()> {
-    let cos_half = narrow_rope_table_f32(cos_full, seq, head_dim, RopeTableSlot::Cos, "rope_apply_fused_f32:cos")?;
-    let sin_half = narrow_rope_table_f32(sin_full, seq, head_dim, RopeTableSlot::Sin, "rope_apply_fused_f32:sin")?;
+    let cos_half = narrow_rope_table_f32(
+        cos_full,
+        seq,
+        head_dim,
+        RopeTableSlot::Cos,
+        "rope_apply_fused_f32:cos",
+    )?;
+    let sin_half = narrow_rope_table_f32(
+        sin_full,
+        seq,
+        head_dim,
+        RopeTableSlot::Sin,
+        "rope_apply_fused_f32:sin",
+    )?;
     rope_apply_f32_into(x, &cos_half, &sin_half, outer_count, seq, head_dim, out)
 }
 
@@ -759,8 +828,20 @@ pub fn rope_apply_fused_f16_into(
     head_dim: usize,
     out: &CudaStorageBytes,
 ) -> Result<()> {
-    let cos_half = narrow_rope_table_f32(cos_full, seq, head_dim, RopeTableSlot::Cos, "rope_apply_fused_f16:cos")?;
-    let sin_half = narrow_rope_table_f32(sin_full, seq, head_dim, RopeTableSlot::Sin, "rope_apply_fused_f16:sin")?;
+    let cos_half = narrow_rope_table_f32(
+        cos_full,
+        seq,
+        head_dim,
+        RopeTableSlot::Cos,
+        "rope_apply_fused_f16:cos",
+    )?;
+    let sin_half = narrow_rope_table_f32(
+        sin_full,
+        seq,
+        head_dim,
+        RopeTableSlot::Sin,
+        "rope_apply_fused_f16:sin",
+    )?;
     rope_apply_f16_into(x, &cos_half, &sin_half, outer_count, seq, head_dim, out)
 }
 
@@ -777,8 +858,20 @@ pub fn rope_apply_fused_bf16_into(
     head_dim: usize,
     out: &CudaStorageBytes,
 ) -> Result<()> {
-    let cos_half = narrow_rope_table_f32(cos_full, seq, head_dim, RopeTableSlot::Cos, "rope_apply_fused_bf16:cos")?;
-    let sin_half = narrow_rope_table_f32(sin_full, seq, head_dim, RopeTableSlot::Sin, "rope_apply_fused_bf16:sin")?;
+    let cos_half = narrow_rope_table_f32(
+        cos_full,
+        seq,
+        head_dim,
+        RopeTableSlot::Cos,
+        "rope_apply_fused_bf16:cos",
+    )?;
+    let sin_half = narrow_rope_table_f32(
+        sin_full,
+        seq,
+        head_dim,
+        RopeTableSlot::Sin,
+        "rope_apply_fused_bf16:sin",
+    )?;
     rope_apply_bf16_into(x, &cos_half, &sin_half, outer_count, seq, head_dim, out)
 }
 
@@ -795,8 +888,20 @@ pub fn rope_apply_fused_f64_into(
     head_dim: usize,
     out: &CudaStorageBytes,
 ) -> Result<()> {
-    let cos_half = narrow_rope_table_f32(cos_full, seq, head_dim, RopeTableSlot::Cos, "rope_apply_fused_f64:cos")?;
-    let sin_half = narrow_rope_table_f32(sin_full, seq, head_dim, RopeTableSlot::Sin, "rope_apply_fused_f64:sin")?;
+    let cos_half = narrow_rope_table_f32(
+        cos_full,
+        seq,
+        head_dim,
+        RopeTableSlot::Cos,
+        "rope_apply_fused_f64:cos",
+    )?;
+    let sin_half = narrow_rope_table_f32(
+        sin_full,
+        seq,
+        head_dim,
+        RopeTableSlot::Sin,
+        "rope_apply_fused_f64:sin",
+    )?;
     rope_apply_f64_into(x, &cos_half, &sin_half, outer_count, seq, head_dim, out)
 }
 
@@ -865,7 +970,12 @@ fn sdpa_arbmask_run(
             i32_or(5, d_v)?,
             scale,
             if is_causal { 1 } else { 0 },
-            q_ptr, k_ptr, v_ptr, mask_ptr, y_ptr, lse_ptr,
+            q_ptr,
+            k_ptr,
+            v_ptr,
+            mask_ptr,
+            y_ptr,
+            lse_ptr,
             scratch.as_raw(),
             scratch.bytes(),
             stream,
@@ -926,14 +1036,22 @@ macro_rules! sdpa_arbmask_can_impl {
     ($name:ident, $sys:ident, $label:expr $(,)?) => {
         #[doc = concat!("Pre-launch validation for `", $label, "_run`.")]
         pub fn $name(
-            batch: i32, heads: i32,
-            q_len: i32, k_len: i32,
-            d_k: i32, d_v: i32,
+            batch: i32,
+            heads: i32,
+            q_len: i32,
+            k_len: i32,
+            d_k: i32,
+            d_v: i32,
             is_causal: bool,
         ) -> Result<()> {
             let status = unsafe {
                 sys::$sys(
-                    batch, heads, q_len, k_len, d_k, d_v,
+                    batch,
+                    heads,
+                    q_len,
+                    k_len,
+                    d_k,
+                    d_v,
                     if is_causal { 1 } else { 0 },
                 )
             };
@@ -942,10 +1060,26 @@ macro_rules! sdpa_arbmask_can_impl {
     };
 }
 
-sdpa_arbmask_can_impl!(sdpa_arbmask_f32_can_implement,  baracuda_kernels_sdpa_f32_arbmask_can_implement,  "sdpa_arbmask_f32");
-sdpa_arbmask_can_impl!(sdpa_arbmask_f64_can_implement,  baracuda_kernels_sdpa_f64_arbmask_can_implement,  "sdpa_arbmask_f64");
-sdpa_arbmask_can_impl!(sdpa_arbmask_f16_can_implement,  baracuda_kernels_sdpa_f16_arbmask_can_implement,  "sdpa_arbmask_f16");
-sdpa_arbmask_can_impl!(sdpa_arbmask_bf16_can_implement, baracuda_kernels_sdpa_bf16_arbmask_can_implement, "sdpa_arbmask_bf16");
+sdpa_arbmask_can_impl!(
+    sdpa_arbmask_f32_can_implement,
+    baracuda_kernels_sdpa_f32_arbmask_can_implement,
+    "sdpa_arbmask_f32"
+);
+sdpa_arbmask_can_impl!(
+    sdpa_arbmask_f64_can_implement,
+    baracuda_kernels_sdpa_f64_arbmask_can_implement,
+    "sdpa_arbmask_f64"
+);
+sdpa_arbmask_can_impl!(
+    sdpa_arbmask_f16_can_implement,
+    baracuda_kernels_sdpa_f16_arbmask_can_implement,
+    "sdpa_arbmask_f16"
+);
+sdpa_arbmask_can_impl!(
+    sdpa_arbmask_bf16_can_implement,
+    baracuda_kernels_sdpa_bf16_arbmask_can_implement,
+    "sdpa_arbmask_bf16"
+);
 
 // ─────────────────────── FlashDecoding (decode-flash) ───────────────────────
 //
@@ -1035,12 +1169,8 @@ type FlashDecodingCanImpl = unsafe extern "C" fn(
     head_dim: i32,
 ) -> i32;
 
-type FlashDecodingWorkspaceBytes = unsafe extern "C" fn(
-    batch: i32,
-    heads: i32,
-    k_len: i32,
-    head_dim: i32,
-) -> usize;
+type FlashDecodingWorkspaceBytes =
+    unsafe extern "C" fn(batch: i32, heads: i32, k_len: i32, head_dim: i32) -> usize;
 
 /// Derive `(b_stride, h_stride, seq_stride)` in ELEMENT units for a rank-4
 /// `[B, H, S, D]` tensor from its `Layout` (decoupled from `k_len` — the
@@ -1152,12 +1282,9 @@ fn flash_decoding_run(
     let out_buf = device.alloc_zeros::<u8>(out_bytes)?;
 
     // Per-tensor strides (element units), decoupled from k_len.
-    let (q_b, q_h, _q_s) =
-        flash_decoding_rank4_strides(q_layout, [b, hq, sq, d], op_label, "q")?;
-    let (k_b, k_h, k_s) =
-        flash_decoding_rank4_strides(k_layout, [b, hkv, sk, d], op_label, "k")?;
-    let (v_b, v_h, v_s) =
-        flash_decoding_rank4_strides(v_layout, [b, hkv, sk, d], op_label, "v")?;
+    let (q_b, q_h, _q_s) = flash_decoding_rank4_strides(q_layout, [b, hq, sq, d], op_label, "q")?;
+    let (k_b, k_h, k_s) = flash_decoding_rank4_strides(k_layout, [b, hkv, sk, d], op_label, "k")?;
+    let (v_b, v_h, v_s) = flash_decoding_rank4_strides(v_layout, [b, hkv, sk, d], op_label, "v")?;
     // Output is freshly allocated contiguous [B, Hq, 1, D].
     let y_b = (hq * sq * d) as i64;
     let y_h = (sq * d) as i64;
@@ -1180,32 +1307,49 @@ fn flash_decoding_run(
     // SAFETY: pointers are live device buffers of the checked byte sizes;
     // strides are element units matching the ABI; workspace >= the kernel's
     // capacity requirement; stream is this device's stream.
-    let status = device.flash_workspace().with(&device, ws_need, |ws_ptr, ws_len| unsafe {
-        run(
-            q_ptr, k_ptr, v_ptr, y_ptr,
-            // `a` (per-head attention weights) and `a_mean` (their head-average)
-            // are OPTIONAL outputs added by baracuda's flash-decode
-            // attention-weights work. NULL is baracuda's own encoding for "not
-            // requested" — its Rust API derives these pointers as
-            // `args.a.as_ref().map_or(null_mut(), ..)` — and passing null skips
-            // the extra reduction launch entirely.
-            //
-            // Fuel does not consume attention weights today. When it does (H2O /
-            // R-KV style KV eviction scoring is the consumer shape these exist
-            // for), `a_mean` is the head-aggregated statistic to request, and
-            // note `a_mean` REQUIRES `a` to be non-null — the per-head output is
-            // its input.
-            core::ptr::null_mut(), core::ptr::null_mut(),
-            ws_ptr, ws_len,
-            batch_i, heads_i, kv_heads_i, k_len_i, d_i,
-            q_b, q_h,
-            k_b, k_h, k_s,
-            v_b, v_h, v_s,
-            y_b, y_h,
-            scale,
-            stream,
-        )
-    })?;
+    let status = device
+        .flash_workspace()
+        .with(&device, ws_need, |ws_ptr, ws_len| unsafe {
+            run(
+                q_ptr,
+                k_ptr,
+                v_ptr,
+                y_ptr,
+                // `a` (per-head attention weights) and `a_mean` (their head-average)
+                // are OPTIONAL outputs added by baracuda's flash-decode
+                // attention-weights work. NULL is baracuda's own encoding for "not
+                // requested" — its Rust API derives these pointers as
+                // `args.a.as_ref().map_or(null_mut(), ..)` — and passing null skips
+                // the extra reduction launch entirely.
+                //
+                // Fuel does not consume attention weights today. When it does (H2O /
+                // R-KV style KV eviction scoring is the consumer shape these exist
+                // for), `a_mean` is the head-aggregated statistic to request, and
+                // note `a_mean` REQUIRES `a` to be non-null — the per-head output is
+                // its input.
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                ws_ptr,
+                ws_len,
+                batch_i,
+                heads_i,
+                kv_heads_i,
+                k_len_i,
+                d_i,
+                q_b,
+                q_h,
+                k_b,
+                k_h,
+                k_s,
+                v_b,
+                v_h,
+                v_s,
+                y_b,
+                y_h,
+                scale,
+                stream,
+            )
+        })?;
     check(status, op_label)?;
     Ok(CudaStorageBytes::from_parts(
         Arc::new(out_buf),
@@ -1215,7 +1359,11 @@ fn flash_decoding_run(
 }
 
 fn shape_overflow(op: &'static str, dim_index: usize, dim_value: usize) -> Error {
-    Error::cuda(crate::error::CudaError::BaracudaShapeOverflow { op, dim_index, dim_value })
+    Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
+        op,
+        dim_index,
+        dim_value,
+    })
 }
 
 macro_rules! flash_decoding_kernel {
@@ -1253,7 +1401,7 @@ macro_rules! flash_decoding_kernel {
     };
 }
 
-flash_decoding_kernel!(flash_decoding_f16,  f16,  2, "flash_decoding_f16");
+flash_decoding_kernel!(flash_decoding_f16, f16, 2, "flash_decoding_f16");
 flash_decoding_kernel!(flash_decoding_bf16, bf16, 2, "flash_decoding_bf16");
 
 // ---------------------------------------------------------------------------
@@ -1370,8 +1518,10 @@ mod fused_rope_tests {
 
         // Device round-trip through the (staged, unwired) fused driver.
         let x_d = CudaStorageBytes::from_cpu_bytes(&dev, &f32s_to_bytes(&x)).expect("x upload");
-        let cos_d = CudaStorageBytes::from_cpu_bytes(&dev, &f32s_to_bytes(&cos_full)).expect("cos upload");
-        let sin_d = CudaStorageBytes::from_cpu_bytes(&dev, &f32s_to_bytes(&sin_full)).expect("sin upload");
+        let cos_d =
+            CudaStorageBytes::from_cpu_bytes(&dev, &f32s_to_bytes(&cos_full)).expect("cos upload");
+        let sin_d =
+            CudaStorageBytes::from_cpu_bytes(&dev, &f32s_to_bytes(&sin_full)).expect("sin upload");
         let out_d = CudaStorageBytes::alloc(&dev, n * 4).expect("out alloc");
 
         rope_apply_fused_f32_into(&x_d, &cos_d, &sin_d, OUTER, SEQ, HD, &out_d)
@@ -1422,21 +1572,29 @@ mod fused_rope_tests {
         let x: Vec<f32> = (0..n).map(|i| (i as f32) * 0.07).collect();
         let trig: Vec<f32> = (0..SEQ * HD).map(|i| (i as f32) * 0.01).collect();
         let x_d = CudaStorageBytes::from_cpu_bytes(&dev, &f32s_to_bytes(&x)).expect("x upload");
-        let cos_d = CudaStorageBytes::from_cpu_bytes(&dev, &f32s_to_bytes(&trig)).expect("cos upload");
-        let sin_d = CudaStorageBytes::from_cpu_bytes(&dev, &f32s_to_bytes(&trig)).expect("sin upload");
+        let cos_d =
+            CudaStorageBytes::from_cpu_bytes(&dev, &f32s_to_bytes(&trig)).expect("cos upload");
+        let sin_d =
+            CudaStorageBytes::from_cpu_bytes(&dev, &f32s_to_bytes(&trig)).expect("sin upload");
         let out_d = CudaStorageBytes::alloc(&dev, n * 4).expect("out alloc");
 
-        assert_eq!(dev.rope_tables().allocation_count(), 0, "fresh device cache starts empty");
+        assert_eq!(
+            dev.rope_tables().allocation_count(),
+            0,
+            "fresh device cache starts empty"
+        );
 
         rope_apply_fused_f32_into(&x_d, &cos_d, &sin_d, OUTER, SEQ, HD, &out_d).expect("launch 1");
         assert_eq!(
-            dev.rope_tables().allocation_count(), 2,
+            dev.rope_tables().allocation_count(),
+            2,
             "first fused launch allocates cos + sin scratch once each",
         );
 
         rope_apply_fused_f32_into(&x_d, &cos_d, &sin_d, OUTER, SEQ, HD, &out_d).expect("launch 2");
         assert_eq!(
-            dev.rope_tables().allocation_count(), 2,
+            dev.rope_tables().allocation_count(),
+            2,
             "second same-shape fused launch must REUSE the scratch (zero alloc during capture)",
         );
         eprintln!("[fused_rope] capture-safe: 2 launches, 2 allocations total (reuse confirmed)");

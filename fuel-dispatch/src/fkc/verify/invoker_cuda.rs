@@ -33,7 +33,12 @@ impl CudaInvoker {
     /// New invoker bound to `device`, for an op whose output is
     /// `out_dtype`/`out_shape`, with no auxiliary op params.
     pub fn new(device: CudaDevice, out_dtype: DType, out_shape: Vec<usize>) -> Self {
-        Self { device, out_dtype, out_shape, params: OpParams::None }
+        Self {
+            device,
+            out_dtype,
+            out_shape,
+            params: OpParams::None,
+        }
     }
 
     /// Builder-style override for ops that need non-`None` `OpParams`.
@@ -44,7 +49,11 @@ impl CudaInvoker {
 }
 
 impl KernelInvoker for CudaInvoker {
-    fn invoke(&self, entry: &BindingEntry, inputs: &[HostTensor]) -> Result<HostTensor, VerifyError> {
+    fn invoke(
+        &self,
+        entry: &BindingEntry,
+        inputs: &[HostTensor],
+    ) -> Result<HostTensor, VerifyError> {
         // H2D: upload every probe input's bytes into fresh device storage.
         let ins: Vec<Arc<RwLock<fuel_memory::Storage>>> = inputs
             .iter()
@@ -71,25 +80,35 @@ impl KernelInvoker for CudaInvoker {
         let layouts: Vec<Layout> = inputs
             .iter()
             .map(|t| Layout::contiguous(Shape::from_dims(&t.shape)))
-            .chain(std::iter::once(Layout::contiguous(Shape::from_dims(&self.out_shape))))
+            .chain(std::iter::once(Layout::contiguous(Shape::from_dims(
+                &self.out_shape,
+            ))))
             .collect();
 
         (entry.kernel)(&ins, &mut outs, &layouts, &self.params)
             .map_err(|e| VerifyError::Invoke(format!("{e:?}")))?;
 
         // D2H: read the output storage's bytes back to host.
-        let guard = out
-            .read()
-            .map_err(|_| VerifyError::Backend("CudaInvoker: output storage RwLock poisoned".to_string()))?;
+        let guard = out.read().map_err(|_| {
+            VerifyError::Backend("CudaInvoker: output storage RwLock poisoned".to_string())
+        })?;
         let bytes = match &guard.inner {
-            fuel_memory::BackendStorage::Cuda(c) => {
-                c.to_cpu_bytes().map_err(|e| VerifyError::Backend(e.to_string()))?
-            }
+            fuel_memory::BackendStorage::Cuda(c) => c
+                .to_cpu_bytes()
+                .map_err(|e| VerifyError::Backend(e.to_string()))?,
             #[allow(unreachable_patterns)]
-            _ => return Err(VerifyError::Backend("CudaInvoker: output storage is not CUDA".to_string())),
+            _ => {
+                return Err(VerifyError::Backend(
+                    "CudaInvoker: output storage is not CUDA".to_string(),
+                ));
+            }
         };
 
-        Ok(HostTensor { dtype: self.out_dtype, shape: self.out_shape.clone(), bytes })
+        Ok(HostTensor {
+            dtype: self.out_dtype,
+            shape: self.out_shape.clone(),
+            bytes,
+        })
     }
 }
 

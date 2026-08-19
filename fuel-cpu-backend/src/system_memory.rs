@@ -138,21 +138,17 @@ fn capture_platform() -> (Option<u64>, Option<u64>) {
     }
     // Older kernels (<3.14) lack MemAvailable; fall back to
     // MemFree + Buffers + Cached as a coarse approximation.
-    let available = available.or_else(|| {
-        match (mem_free, buffers, cached) {
-            (Some(f), Some(b), Some(c)) => Some(f + b + c),
-            (Some(f), _, _) => Some(f),
-            _ => None,
-        }
+    let available = available.or_else(|| match (mem_free, buffers, cached) {
+        (Some(f), Some(b), Some(c)) => Some(f + b + c),
+        (Some(f), _, _) => Some(f),
+        _ => None,
     });
     (available, total)
 }
 
 #[cfg(target_os = "windows")]
 fn capture_platform() -> (Option<u64>, Option<u64>) {
-    use windows_sys::Win32::System::SystemInformation::{
-        GlobalMemoryStatusEx, MEMORYSTATUSEX,
-    };
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
     let mut status: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
     status.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
     let ok = unsafe { GlobalMemoryStatusEx(&mut status) };

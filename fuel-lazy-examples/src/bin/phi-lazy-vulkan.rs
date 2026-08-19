@@ -51,7 +51,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let selection = args.iter()
+    let selection = args
+        .iter()
         .find(|a| a.starts_with("--device="))
         .map(|a| {
             let val = &a["--device=".len()..];
@@ -66,15 +67,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // (e.g. TheBloke/phi-2-GGUF's phi-2.Q4_0.gguf). When set, tokenizer
     // still loads from the safetensors repo since GGUF tokenizer extract
     // is a separate plumbing exercise.
-    let gguf_path: Option<String> = args.iter()
+    let gguf_path: Option<String> = args
+        .iter()
         .find(|a| a.starts_with("--gguf="))
         .map(|a| a["--gguf=".len()..].to_string());
-    let tokenizer_repo: String = args.iter()
+    let tokenizer_repo: String = args
+        .iter()
         .find(|a| a.starts_with("--tokenizer="))
         .map(|a| a["--tokenizer=".len()..].to_string())
         .unwrap_or_else(|| "microsoft/phi-2".to_string());
 
-    let positional: Vec<&str> = args.iter()
+    let positional: Vec<&str> = args
+        .iter()
         .skip(1)
         .filter(|a| !a.starts_with("--"))
         .map(|s| s.as_str())
@@ -117,8 +121,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("done in {:.2?}", t0.elapsed());
     eprintln!(
         "  config: dim={}  layers={}  heads={}  ffn={}  rotary_dim={}  vocab={}",
-        model.config.dim, model.config.n_layers, model.config.n_heads,
-        model.config.ffn_dim, model.config.rotary_dim, model.config.vocab_size,
+        model.config.dim,
+        model.config.n_layers,
+        model.config.n_heads,
+        model.config.ffn_dim,
+        model.config.rotary_dim,
+        model.config.vocab_size,
     );
 
     eprint!("Loading tokenizer...             ");
@@ -141,7 +149,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output_tokens = model.generate_streaming_with_kv_context(
         &prompt_tokens,
         max_new,
-        SamplingStrategy::Temperature { temp: 0.8, seed: 42 },
+        SamplingStrategy::Temperature {
+            temp: 0.8,
+            seed: 42,
+        },
         tokenizer.eos_id(),
         &device,
         DType::F32,

@@ -86,7 +86,8 @@ fn roll_run(
         if axis >= rank {
             return Err(Error::Msg(format!(
                 "{op_label}: axis {axis} out of range for rank {rank}",
-            )).bt());
+            ))
+            .bt());
         }
         let mut shape_i32: Vec<i32> = Vec::with_capacity(rank);
         for (i, &d) in dims.iter().enumerate() {
@@ -125,11 +126,7 @@ fn roll_run(
             i32_or(2, inner_count)?,
         ];
         let shifts_i32: [i32; 3] = [0, shift_i32, 0];
-        let stride_x_i64: [i64; 3] = [
-            (dim_size * inner_count) as i64,
-            inner_count as i64,
-            1,
-        ];
+        let stride_x_i64: [i64; 3] = [(dim_size * inner_count) as i64, inner_count as i64, 1];
         let stride_y_i64 = stride_x_i64;
         // SAFETY: pointers valid; stack-arrays live for the FFI call.
         unsafe {
@@ -149,7 +146,11 @@ fn roll_run(
         }
     };
     check(status, op_label)?;
-    Ok(CudaStorageBytes::from_parts(Arc::new(out), device, out_bytes))
+    Ok(CudaStorageBytes::from_parts(
+        Arc::new(out),
+        device,
+        out_bytes,
+    ))
 }
 
 macro_rules! roll_kernel {
@@ -175,7 +176,7 @@ macro_rules! roll_kernel {
     };
 }
 
-roll_kernel!(roll_f32,  baracuda_kernels_roll_f32_run,  4, "roll_f32");
-roll_kernel!(roll_f64,  baracuda_kernels_roll_f64_run,  8, "roll_f64");
-roll_kernel!(roll_f16,  baracuda_kernels_roll_f16_run,  2, "roll_f16");
+roll_kernel!(roll_f32, baracuda_kernels_roll_f32_run, 4, "roll_f32");
+roll_kernel!(roll_f64, baracuda_kernels_roll_f64_run, 8, "roll_f64");
+roll_kernel!(roll_f16, baracuda_kernels_roll_f16_run, 2, "roll_f16");
 roll_kernel!(roll_bf16, baracuda_kernels_roll_bf16_run, 2, "roll_bf16");

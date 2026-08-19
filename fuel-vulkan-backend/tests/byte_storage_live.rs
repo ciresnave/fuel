@@ -83,11 +83,16 @@ fn one_mib_roundtrip_preserves_bytes() {
 fn device_storage_has_valid_buffer_device_address() {
     let Some(b) = backend_or_skip() else { return };
     let storage = b.alloc_bytes(256).expect("alloc");
-    let buf = storage.buffer_opt().expect("device-resident storage must carry a buffer");
+    let buf = storage
+        .buffer_opt()
+        .expect("device-resident storage must carry a buffer");
     let addr = buf
         .device_address()
         .expect("device_address must succeed (BDA feature + usage must be enabled)");
-    assert_ne!(addr, 0, "a SHADER_DEVICE_ADDRESS buffer must have a non-zero device address");
+    assert_ne!(
+        addr, 0,
+        "a SHADER_DEVICE_ADDRESS buffer must have a non-zero device address"
+    );
     eprintln!("BDA device_address = {addr:#018x}");
 }
 
@@ -108,7 +113,10 @@ fn bda_does_not_disturb_transfer_path() {
         .expect("bda");
     assert_ne!(addr, 0);
     let got = b.download_bytes(&storage).expect("d2h");
-    assert_eq!(got, src, "BDA enablement must not disturb the transfer path");
+    assert_eq!(
+        got, src,
+        "BDA enablement must not disturb the transfer path"
+    );
 }
 
 /// Step E A4b-2: the async submit/wait split — `submit_pending` (submit a

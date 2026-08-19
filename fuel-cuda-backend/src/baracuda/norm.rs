@@ -43,15 +43,15 @@ fn shape_and_strides_from_layout(
     let dims = layout.shape().dims();
     let rank = dims.len();
     if rank == 0 {
-        return Err(fuel_ir::Error::Msg(format!(
-            "{op_label}: rank-0 input not supported",
-        )).bt());
+        return Err(fuel_ir::Error::Msg(format!("{op_label}: rank-0 input not supported",)).bt());
     }
     let mut shape_i32: Vec<i32> = Vec::with_capacity(rank);
     for (i, &d) in dims.iter().enumerate() {
         shape_i32.push(i32::try_from(d).map_err(|_| {
             fuel_ir::Error::cuda(CudaError::BaracudaShapeOverflow {
-                op: op_label, dim_index: i, dim_value: d,
+                op: op_label,
+                dim_index: i,
+                dim_value: d,
             })
         })?);
     }
@@ -139,7 +139,15 @@ fn rms_norm_last_dim_run(
     }
     let out_buf = device.alloc_zeros::<u8>(out_bytes)?;
     let out = CudaStorageBytes::from_parts(Arc::new(out_buf), device, out_bytes);
-    rms_norm_last_dim_run_into(src, src_layout, eps, &out, kernel, op_label, dtype_size_bytes)?;
+    rms_norm_last_dim_run_into(
+        src,
+        src_layout,
+        eps,
+        &out,
+        kernel,
+        op_label,
+        dtype_size_bytes,
+    )?;
     Ok(out)
 }
 
@@ -170,9 +178,9 @@ fn rms_norm_last_dim_run_into(
     let device = src.device().clone();
     let dims = src_layout.shape().dims();
     let rank = dims.len();
-    let last_dim = *dims.last().ok_or_else(|| fuel_ir::Error::Msg(
-        format!("{op_label}: rank-0 input not supported"),
-    ).bt())?;
+    let last_dim = *dims.last().ok_or_else(|| {
+        fuel_ir::Error::Msg(format!("{op_label}: rank-0 input not supported")).bt()
+    })?;
     let numel: i64 = src_layout.shape().elem_count() as i64;
     let outer_count = (numel as usize) / last_dim.max(1);
     let out_bytes = (numel as usize) * dtype_size_bytes;
@@ -195,7 +203,9 @@ fn rms_norm_last_dim_run_into(
         shape_and_strides_from_layout(src_layout, op_label)?;
     let ld_i32 = i32::try_from(last_dim).map_err(|_| {
         fuel_ir::Error::cuda(CudaError::BaracudaShapeOverflow {
-            op: op_label, dim_index: rank - 1, dim_value: last_dim,
+            op: op_label,
+            dim_index: rank - 1,
+            dim_value: last_dim,
         })
     })?;
     let axes_mask: i32 = 1 << (rank as i32 - 1);
@@ -205,31 +215,33 @@ fn rms_norm_last_dim_run_into(
 
     // Per-row RMS scratch from the fixed-address grow-only WorkspaceCache:
     // no allocation inside a capture scope once the warm pass has sized it.
-    let status = device.flash_workspace().with(&device, rms_bytes, |rms_ptr, _ws_bytes| {
-        // SAFETY: pointers + lengths validated; shape/stride buffers owned
-        // through the call; `rms_ptr` is the fixed workspace scratch, live
-        // for the launch (the cache lock is held across this closure).
-        unsafe {
-            kernel(
-                eps as f32,
-                numel,
-                rank as i32,
-                shape_i32.as_ptr(),
-                stride_x.as_ptr(),
-                stride_y.as_ptr(),
-                stride_rms.as_ptr(),
-                axes_mask,
-                ld_i32,
-                x_ptr,
-                std::ptr::null(), // no affine gamma
-                y_ptr,
-                rms_ptr,
-                scratch.as_raw(),
-                scratch.bytes(),
-                stream,
-            )
-        }
-    })?;
+    let status = device
+        .flash_workspace()
+        .with(&device, rms_bytes, |rms_ptr, _ws_bytes| {
+            // SAFETY: pointers + lengths validated; shape/stride buffers owned
+            // through the call; `rms_ptr` is the fixed workspace scratch, live
+            // for the launch (the cache lock is held across this closure).
+            unsafe {
+                kernel(
+                    eps as f32,
+                    numel,
+                    rank as i32,
+                    shape_i32.as_ptr(),
+                    stride_x.as_ptr(),
+                    stride_y.as_ptr(),
+                    stride_rms.as_ptr(),
+                    axes_mask,
+                    ld_i32,
+                    x_ptr,
+                    std::ptr::null(), // no affine gamma
+                    y_ptr,
+                    rms_ptr,
+                    scratch.as_raw(),
+                    scratch.bytes(),
+                    stream,
+                )
+            }
+        })?;
     check(status, op_label)?;
     Ok(())
 }
@@ -248,9 +260,9 @@ fn layer_norm_last_dim_run(
     let device = src.device().clone();
     let dims = src_layout.shape().dims();
     let rank = dims.len();
-    let last_dim = *dims.last().ok_or_else(|| fuel_ir::Error::Msg(
-        format!("{op_label}: rank-0 input not supported"),
-    ).bt())?;
+    let last_dim = *dims.last().ok_or_else(|| {
+        fuel_ir::Error::Msg(format!("{op_label}: rank-0 input not supported")).bt()
+    })?;
     let numel: i64 = src_layout.shape().elem_count() as i64;
     let outer_count = (numel as usize) / last_dim.max(1);
     let out_bytes = (numel as usize) * dtype_size_bytes;
@@ -267,7 +279,9 @@ fn layer_norm_last_dim_run(
         shape_and_strides_from_layout(src_layout, op_label)?;
     let ld_i32 = i32::try_from(last_dim).map_err(|_| {
         fuel_ir::Error::cuda(CudaError::BaracudaShapeOverflow {
-            op: op_label, dim_index: rank - 1, dim_value: last_dim,
+            op: op_label,
+            dim_index: rank - 1,
+            dim_value: last_dim,
         })
     })?;
     let axes_mask: i32 = 1 << (rank as i32 - 1);
@@ -381,5 +395,10 @@ rms_norm_kernel!(rms_norm_last_dim_f64, f64, 8, "rms_norm_last_dim_f64");
 
 layer_norm_kernel!(layer_norm_last_dim_f32, f32, 4, "layer_norm_last_dim_f32");
 layer_norm_kernel!(layer_norm_last_dim_f16, f16, 2, "layer_norm_last_dim_f16");
-layer_norm_kernel!(layer_norm_last_dim_bf16, bf16, 2, "layer_norm_last_dim_bf16");
+layer_norm_kernel!(
+    layer_norm_last_dim_bf16,
+    bf16,
+    2,
+    "layer_norm_last_dim_bf16"
+);
 layer_norm_kernel!(layer_norm_last_dim_f64, f64, 8, "layer_norm_last_dim_f64");

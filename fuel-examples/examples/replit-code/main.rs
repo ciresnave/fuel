@@ -11,12 +11,12 @@ extern crate intel_mkl_src;
 #[cfg(feature = "accelerate")]
 extern crate accelerate_src;
 
-use anyhow::{anyhow, Error as E, Result};
+use anyhow::{Error as E, Result, anyhow};
 use clap::Parser;
 
-use fuel::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype, WeightStorage};
+use fuel::lazy::{WeightStorage, load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
 use fuel::lazy_mpt::{MptConfig, MptLayerWeights, MptModel, MptWeights};
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use hf_hub::{Repo, RepoType, api::sync::Api};
 use std::sync::Arc;
 use tokenizers::Tokenizer;
 
@@ -114,26 +114,21 @@ fn load_mpt_weights(
 
     let mut layers: Vec<MptLayerWeights> = Vec::with_capacity(cfg.n_layers);
     for i in 0..cfg.n_layers {
-        let norm1_gain =
-            load_tensor_as_f32(st, &format!("transformer.blocks.{i}.norm_1.weight"))
-                .map_err(|e| anyhow!("{e}"))?;
+        let norm1_gain = load_tensor_as_f32(st, &format!("transformer.blocks.{i}.norm_1.weight"))
+            .map_err(|e| anyhow!("{e}"))?;
         // norm_1.bias is absent in some MPT checkpoints; fall back to zeros.
         let norm1_bias = load_tensor_as_f32(st, &format!("transformer.blocks.{i}.norm_1.bias"))
             .unwrap_or_else(|_| vec![0.0_f32; h]);
-        let norm2_gain =
-            load_tensor_as_f32(st, &format!("transformer.blocks.{i}.norm_2.weight"))
-                .map_err(|e| anyhow!("{e}"))?;
+        let norm2_gain = load_tensor_as_f32(st, &format!("transformer.blocks.{i}.norm_2.weight"))
+            .map_err(|e| anyhow!("{e}"))?;
         let norm2_bias = load_tensor_as_f32(st, &format!("transformer.blocks.{i}.norm_2.bias"))
             .unwrap_or_else(|_| vec![0.0_f32; h]);
 
         // Wqkv: HF stores `[out=d_model + 2*kv_dim, in=d_model]` flat row-major.
         // We split that into Q (d_model rows), K (kv_dim rows), V (kv_dim rows)
         // and transpose each into our `[in, out]` layout.
-        let wqkv_flat = load_tensor_as_f32(
-            st,
-            &format!("transformer.blocks.{i}.attn.Wqkv.weight"),
-        )
-        .map_err(|e| anyhow!("{e}"))?;
+        let wqkv_flat = load_tensor_as_f32(st, &format!("transformer.blocks.{i}.attn.Wqkv.weight"))
+            .map_err(|e| anyhow!("{e}"))?;
         let expected = (h + 2 * kv_dim) * h;
         if wqkv_flat.len() != expected {
             anyhow::bail!(
@@ -221,8 +216,8 @@ fn load_mpt_weights(
 
     let final_ln_gain =
         load_tensor_as_f32(st, "transformer.norm_f.weight").map_err(|e| anyhow!("{e}"))?;
-    let final_ln_bias = load_tensor_as_f32(st, "transformer.norm_f.bias")
-        .unwrap_or_else(|_| vec![0.0_f32; h]);
+    let final_ln_bias =
+        load_tensor_as_f32(st, "transformer.norm_f.bias").unwrap_or_else(|_| vec![0.0_f32; h]);
 
     // MPT/replit-code ties the output head to the input embedding —
     // there is no separate `lm_head.weight`. Transpose wte for the
@@ -274,7 +269,10 @@ fn main() -> Result<()> {
 
     let start = std::time::Instant::now();
     let api = Api::new()?;
-    let model_id = args.model_id.clone().unwrap_or_else(|| "lmz/fuel-replit-code".to_string());
+    let model_id = args
+        .model_id
+        .clone()
+        .unwrap_or_else(|| "lmz/fuel-replit-code".to_string());
     let revision = args.revision.clone().unwrap_or_else(|| "main".to_string());
     let repo = api.repo(Repo::with_revision(model_id, RepoType::Model, revision));
     let tokenizer_filename = match args.tokenizer.clone() {
@@ -294,10 +292,15 @@ fn main() -> Result<()> {
     let st = unsafe { fuel::safetensors::MmapedSafetensors::multi(&[filename]) }
         .map_err(|e| anyhow!("mmap safetensors: {e}"))?;
     let weights = load_mpt_weights(&st, &cfg)?;
-    let model = MptModel { config: cfg.clone(), weights };
+    let model = MptModel {
+        config: cfg.clone(),
+        weights,
+    };
     println!("loaded the model in {:?}", start.elapsed());
 
-    let tokens = tokenizer.encode(args.prompt.clone(), true).map_err(E::msg)?;
+    let tokens = tokenizer
+        .encode(args.prompt.clone(), true)
+        .map_err(E::msg)?;
     if tokens.is_empty() {
         anyhow::bail!("Empty prompts are not supported.")
     }
@@ -389,7 +392,10 @@ fn sample(
     }
     let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let inv_t = 1.0 / temperature.max(1e-6);
-    let mut probs: Vec<f32> = logits.iter().map(|&x| ((x - max_l) * inv_t).exp()).collect();
+    let mut probs: Vec<f32> = logits
+        .iter()
+        .map(|&x| ((x - max_l) * inv_t).exp())
+        .collect();
     let sum: f32 = probs.iter().sum();
     for p in &mut probs {
         *p /= sum.max(1e-30);

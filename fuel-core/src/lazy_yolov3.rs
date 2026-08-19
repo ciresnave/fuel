@@ -46,7 +46,7 @@
 //!   arrays — identical pattern to `lazy_yolov8::decode_and_nms`.
 
 use crate::lazy::{
-    load_tensor_as_f32, load_transposed_matrix, load_transposed_matrix_preserve_dtype, LazyTensor,
+    LazyTensor, load_tensor_as_f32, load_transposed_matrix, load_transposed_matrix_preserve_dtype,
 };
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -106,8 +106,8 @@ impl YoloV3Config {
             // Stride 32 sees the largest objects; stride 8 the smallest.
             anchors: [
                 [(116, 90), (156, 198), (373, 326)],
-                [( 30, 61), ( 62,  45), ( 59, 119)],
-                [( 10, 13), ( 16,  30), ( 33,  23)],
+                [(30, 61), (62, 45), (59, 119)],
+                [(10, 13), (16, 30), (33, 23)],
             ],
             bn_eps: 1e-5,
             leaky_slope: 0.1,
@@ -209,27 +209,27 @@ pub struct HeadStackWeights {
 #[derive(Debug, Clone)]
 pub struct YoloV3Weights {
     // Backbone.
-    pub stem: CbnWeights, // 3 → 32, k=3, s=1
+    pub stem: CbnWeights,             // 3 → 32, k=3, s=1
     pub stage1: BackboneStageWeights, // 32 → 64,   1 block
     pub stage2: BackboneStageWeights, // 64 → 128,  2 blocks
     pub stage3: BackboneStageWeights, // 128 → 256, 8 blocks  (-> route to scale 3)
     pub stage4: BackboneStageWeights, // 256 → 512, 8 blocks  (-> route to scale 2)
     pub stage5: BackboneStageWeights, // 512 → 1024, 4 blocks (-> head scale 1)
     // Head scale 1 (stride 32, deepest features).
-    pub head1: HeadStackWeights, // 1024 → 512 final
-    pub final1_cv: CbnWeights,   // 3×3 conv 512 → 1024 before the detect conv
+    pub head1: HeadStackWeights,    // 1024 → 512 final
+    pub final1_cv: CbnWeights,      // 3×3 conv 512 → 1024 before the detect conv
     pub detect1: DetectConvWeights, // 1024 → 3*(5+nc)
     // Lateral from head1 to head2.
     pub lat1: CbnWeights, // 1×1 conv 512 → 256, then 2× upsample, then concat with stage4
     // Head scale 2 (stride 16).
-    pub head2: HeadStackWeights, // (256+512) → 256
-    pub final2_cv: CbnWeights,   // 3×3 conv 256 → 512
+    pub head2: HeadStackWeights,    // (256+512) → 256
+    pub final2_cv: CbnWeights,      // 3×3 conv 256 → 512
     pub detect2: DetectConvWeights, // 512 → 3*(5+nc)
     // Lateral from head2 to head3.
     pub lat2: CbnWeights, // 1×1 conv 256 → 128, then 2× upsample, then concat with stage3
     // Head scale 3 (stride 8).
-    pub head3: HeadStackWeights, // (128+256) → 128
-    pub final3_cv: CbnWeights,   // 3×3 conv 128 → 256
+    pub head3: HeadStackWeights,    // (128+256) → 128
+    pub final3_cv: CbnWeights,      // 3×3 conv 128 → 256
     pub detect3: DetectConvWeights, // 256 → 3*(5+nc)
 }
 
@@ -246,16 +246,12 @@ fn per_channel_affine(
 ) -> crate::Result<LazyTensor> {
     let s = x
         .const_f32_like(scale.clone(), Shape::from_dims(&[c]))
-        .reshape(Shape::from_dims(&[1, c, 1, 1]))
-        ?
-        .broadcast_to(Shape::from_dims(&[1, c, h, w]))
-        ?;
+        .reshape(Shape::from_dims(&[1, c, 1, 1]))?
+        .broadcast_to(Shape::from_dims(&[1, c, h, w]))?;
     let sh = x
         .const_f32_like(shift.clone(), Shape::from_dims(&[c]))
-        .reshape(Shape::from_dims(&[1, c, 1, 1]))
-        ?
-        .broadcast_to(Shape::from_dims(&[1, c, h, w]))
-        ?;
+        .reshape(Shape::from_dims(&[1, c, 1, 1]))?
+        .broadcast_to(Shape::from_dims(&[1, c, h, w]))?;
     x.mul(&s)?.add(&sh)
 }
 
@@ -281,10 +277,7 @@ fn cbn(
     cfg: &YoloV3Config,
 ) -> crate::Result<LazyTensor> {
     let p = (k - 1) / 2;
-    let w_t = x.const_f32_like(
-        cw.conv_w.clone(),
-        Shape::from_dims(&[c_out, c_in, k, k]),
-    );
+    let w_t = x.const_f32_like(cw.conv_w.clone(), Shape::from_dims(&[c_out, c_in, k, k]));
     let conv = x.conv2d(&w_t, None, (stride, stride), (p, p), 1)?;
     let affine = per_channel_affine(&conv, &cw.bn_scale, &cw.bn_shift, c_out, h_out, w_out)?;
     leaky_relu(&affine, cfg.leaky_slope)
@@ -355,10 +348,7 @@ fn raw_conv_1x1_bias(
     c_in: usize,
     c_out: usize,
 ) -> crate::Result<LazyTensor> {
-    let w_t = x.const_f32_like(
-        dw.conv_w.clone(),
-        Shape::from_dims(&[c_out, c_in, 1, 1]),
-    );
+    let w_t = x.const_f32_like(dw.conv_w.clone(), Shape::from_dims(&[c_out, c_in, 1, 1]));
     let b_t = x.const_f32_like(dw.conv_b.clone(), Shape::from_dims(&[c_out]));
     x.conv2d(&w_t, Some(&b_t), (1, 1), (0, 0), 1)
 }
@@ -381,12 +371,9 @@ fn decode_scale(
     // [1, 3*attrs, H, W] → [1, 3, attrs, H*W] → [1, 3, H*W, attrs] →
     // [1, 3*H*W, attrs]
     let x = raw
-        .reshape(Shape::from_dims(&[1, n_anchors, attrs, h * w]))
-        ?
-        .permute([0_usize, 1, 3, 2])
-        ?
-        .reshape(Shape::from_dims(&[1, n_anchors * h * w, attrs]))
-        ?;
+        .reshape(Shape::from_dims(&[1, n_anchors, attrs, h * w]))?
+        .permute([0_usize, 1, 3, 2])?
+        .reshape(Shape::from_dims(&[1, n_anchors * h * w, attrs]))?;
     let n = n_anchors * h * w;
 
     // Build the (grid_x, grid_y, anchor_w, anchor_h) constants —
@@ -428,10 +415,7 @@ fn decode_scale(
     let xy_sig = xy.sigmoid();
     // Build a [1, N, 2] tensor of (grid_x, grid_y) by concatenating.
     let grid_xy = g_x.concat(&g_y, 2)?;
-    let xy_pix = xy_sig
-        .add(&grid_xy)
-        ?
-        .mul_scalar(stride as f64);
+    let xy_pix = xy_sig.add(&grid_xy)?.mul_scalar(stride as f64);
 
     // wh: exp(t) * anchor_pixel.
     // anchor here is in grid units (anchors / stride); multiply by
@@ -443,11 +427,7 @@ fn decode_scale(
     let conf_sig = conf.sigmoid();
 
     // Concat along the attr axis: [xy(2), wh(2), conf(1+nc)] = 5+nc.
-    let row = xy_pix
-        .concat(&wh_pix, 2)
-        ?
-        .concat(&conf_sig, 2)
-        ?;
+    let row = xy_pix.concat(&wh_pix, 2)?.concat(&conf_sig, 2)?;
     Ok(row)
 }
 
@@ -509,7 +489,17 @@ impl YoloV3Model {
 
         // --- Head scale 1 (deepest, stride 32, anchors[0]) ---
         let head1 = head_stack(&route_s1, &self.weights.head1, 1024, 512, h1, w1, cfg)?;
-        let final1 = cbn(&head1, &self.weights.final1_cv, 512, 1024, 3, 1, h1, w1, cfg)?;
+        let final1 = cbn(
+            &head1,
+            &self.weights.final1_cv,
+            512,
+            1024,
+            3,
+            1,
+            h1,
+            w1,
+            cfg,
+        )?;
         let detect1_raw = raw_conv_1x1_bias(
             &final1,
             &self.weights.detect1,
@@ -600,25 +590,24 @@ fn canonical_layer_indices() -> [usize; 75] {
     // Detect 3: 105
     [
         // Backbone
-        0,
-        1, 2, 3,                                                // stage 1: ds + 1 block
-        5, 6, 7, 9, 10,                                         // stage 2: ds + 2 blocks
-        12, 13, 14, 16, 17, 19, 20, 22, 23,
-        25, 26, 28, 29, 31, 32, 34, 35,                         // stage 3: ds + 8 blocks
-        37, 38, 39, 41, 42, 44, 45, 47, 48,
-        50, 51, 53, 54, 56, 57, 59, 60,                         // stage 4: ds + 8 blocks
-        62, 63, 64, 66, 67, 69, 70, 72, 73,                     // stage 5: ds + 4 blocks
+        0, 1, 2, 3, // stage 1: ds + 1 block
+        5, 6, 7, 9, 10, // stage 2: ds + 2 blocks
+        12, 13, 14, 16, 17, 19, 20, 22, 23, 25, 26, 28, 29, 31, 32, 34,
+        35, // stage 3: ds + 8 blocks
+        37, 38, 39, 41, 42, 44, 45, 47, 48, 50, 51, 53, 54, 56, 57, 59,
+        60, // stage 4: ds + 8 blocks
+        62, 63, 64, 66, 67, 69, 70, 72, 73, // stage 5: ds + 4 blocks
         // Head scale 1
-        75, 76, 77, 78, 79, 80,                                 // DBL × 5 + final 3×3
-        81,                                                     // detect conv (no BN)
-        84,                                                     // lat1
+        75, 76, 77, 78, 79, 80, // DBL × 5 + final 3×3
+        81, // detect conv (no BN)
+        84, // lat1
         // Head scale 2
-        87, 88, 89, 90, 91, 92,                                 // DBL × 5 + final 3×3
-        93,                                                     // detect conv (no BN)
-        96,                                                     // lat2
+        87, 88, 89, 90, 91, 92, // DBL × 5 + final 3×3
+        93, // detect conv (no BN)
+        96, // lat2
         // Head scale 3
-        99, 100, 101, 102, 103, 104,                            // DBL × 5 + final 3×3
-        105,                                                    // detect conv (no BN)
+        99, 100, 101, 102, 103, 104, // DBL × 5 + final 3×3
+        105, // detect conv (no BN)
     ]
 }
 
@@ -639,14 +628,8 @@ fn load_cbn(
             expected,
         );
     }
-    let bn_g = load_tensor_as_f32(
-        st,
-        &format!("{layer_idx}.batch_norm_{layer_idx}.weight"),
-    )?;
-    let bn_b = load_tensor_as_f32(
-        st,
-        &format!("{layer_idx}.batch_norm_{layer_idx}.bias"),
-    )?;
+    let bn_g = load_tensor_as_f32(st, &format!("{layer_idx}.batch_norm_{layer_idx}.weight"))?;
+    let bn_b = load_tensor_as_f32(st, &format!("{layer_idx}.batch_norm_{layer_idx}.bias"))?;
     let bn_m = load_tensor_as_f32(
         st,
         &format!("{layer_idx}.batch_norm_{layer_idx}.running_mean"),
@@ -708,7 +691,10 @@ impl YoloV3Weights {
         let s1_b0_cv2 = load_cbn(st, 3, 64, 32, 3, eps)?;
         let stage1 = BackboneStageWeights {
             downsample: s1_ds,
-            blocks: vec![ResidualWeights { cv1: s1_b0_cv1, cv2: s1_b0_cv2 }],
+            blocks: vec![ResidualWeights {
+                cv1: s1_b0_cv1,
+                cv2: s1_b0_cv2,
+            }],
         };
 
         // --- Stage 2: 64 → 128, 2 blocks ---
@@ -720,8 +706,14 @@ impl YoloV3Weights {
         let stage2 = BackboneStageWeights {
             downsample: s2_ds,
             blocks: vec![
-                ResidualWeights { cv1: s2_b0_cv1, cv2: s2_b0_cv2 },
-                ResidualWeights { cv1: s2_b1_cv1, cv2: s2_b1_cv2 },
+                ResidualWeights {
+                    cv1: s2_b0_cv1,
+                    cv2: s2_b0_cv2,
+                },
+                ResidualWeights {
+                    cv1: s2_b1_cv1,
+                    cv2: s2_b1_cv2,
+                },
             ],
         };
 
@@ -730,8 +722,14 @@ impl YoloV3Weights {
         // Block pairs at indices (13,14), (16,17), (19,20), (22,23),
         // (25,26), (28,29), (31,32), (34,35).
         let s3_block_pairs: [(usize, usize); 8] = [
-            (13, 14), (16, 17), (19, 20), (22, 23),
-            (25, 26), (28, 29), (31, 32), (34, 35),
+            (13, 14),
+            (16, 17),
+            (19, 20),
+            (22, 23),
+            (25, 26),
+            (28, 29),
+            (31, 32),
+            (34, 35),
         ];
         let mut s3_blocks = Vec::with_capacity(8);
         for (i1, i2) in s3_block_pairs {
@@ -740,13 +738,22 @@ impl YoloV3Weights {
                 cv2: load_cbn(st, i2, 256, 128, 3, eps)?,
             });
         }
-        let stage3 = BackboneStageWeights { downsample: s3_ds, blocks: s3_blocks };
+        let stage3 = BackboneStageWeights {
+            downsample: s3_ds,
+            blocks: s3_blocks,
+        };
 
         // --- Stage 4: 256 → 512, 8 blocks ---
         let s4_ds = load_cbn(st, 37, 512, 256, 3, eps)?;
         let s4_block_pairs: [(usize, usize); 8] = [
-            (38, 39), (41, 42), (44, 45), (47, 48),
-            (50, 51), (53, 54), (56, 57), (59, 60),
+            (38, 39),
+            (41, 42),
+            (44, 45),
+            (47, 48),
+            (50, 51),
+            (53, 54),
+            (56, 57),
+            (59, 60),
         ];
         let mut s4_blocks = Vec::with_capacity(8);
         for (i1, i2) in s4_block_pairs {
@@ -755,13 +762,14 @@ impl YoloV3Weights {
                 cv2: load_cbn(st, i2, 512, 256, 3, eps)?,
             });
         }
-        let stage4 = BackboneStageWeights { downsample: s4_ds, blocks: s4_blocks };
+        let stage4 = BackboneStageWeights {
+            downsample: s4_ds,
+            blocks: s4_blocks,
+        };
 
         // --- Stage 5: 512 → 1024, 4 blocks ---
         let s5_ds = load_cbn(st, 62, 1024, 512, 3, eps)?;
-        let s5_block_pairs: [(usize, usize); 4] = [
-            (63, 64), (66, 67), (69, 70), (72, 73),
-        ];
+        let s5_block_pairs: [(usize, usize); 4] = [(63, 64), (66, 67), (69, 70), (72, 73)];
         let mut s5_blocks = Vec::with_capacity(4);
         for (i1, i2) in s5_block_pairs {
             s5_blocks.push(ResidualWeights {
@@ -769,7 +777,10 @@ impl YoloV3Weights {
                 cv2: load_cbn(st, i2, 1024, 512, 3, eps)?,
             });
         }
-        let stage5 = BackboneStageWeights { downsample: s5_ds, blocks: s5_blocks };
+        let stage5 = BackboneStageWeights {
+            downsample: s5_ds,
+            blocks: s5_blocks,
+        };
 
         // --- Head scale 1: stride 32, deepest. ---
         // 75 (1×1 1024→512), 76 (3×3 512→1024), 77 (1×1 1024→512),
@@ -815,10 +826,22 @@ impl YoloV3Weights {
 
         Ok(Self {
             stem,
-            stage1, stage2, stage3, stage4, stage5,
-            head1, final1_cv, detect1, lat1,
-            head2, final2_cv, detect2, lat2,
-            head3, final3_cv, detect3,
+            stage1,
+            stage2,
+            stage3,
+            stage4,
+            stage5,
+            head1,
+            final1_cv,
+            detect1,
+            lat1,
+            head2,
+            final2_cv,
+            detect2,
+            lat2,
+            head3,
+            final3_cv,
+            detect3,
         })
     }
 }
@@ -907,7 +930,11 @@ pub fn decode_and_nms(
             });
         }
     }
-    out.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    out.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     out
 }
 
@@ -922,11 +949,7 @@ fn iou_xyxy(a: &[f32; 4], b: &[f32; 4]) -> f32 {
     let a_area = (a[2] - a[0]).max(0.0) * (a[3] - a[1]).max(0.0);
     let b_area = (b[2] - b[0]).max(0.0) * (b[3] - b[1]).max(0.0);
     let union = a_area + b_area - inter;
-    if union <= 0.0 {
-        0.0
-    } else {
-        inter / union
-    }
+    if union <= 0.0 { 0.0 } else { inter / union }
 }
 
 // ---- Synthetic-weights helpers (for shape smoke tests) -------------------
@@ -950,13 +973,12 @@ impl YoloV3Weights {
                 cv2: cbn_zero(c / 2, c, 3),
             }
         };
-        let stage_zero =
-            |c_in: usize, c_out: usize, n: usize| -> BackboneStageWeights {
-                BackboneStageWeights {
-                    downsample: cbn_zero(c_in, c_out, 3),
-                    blocks: (0..n).map(|_| res_zero(c_out)).collect(),
-                }
-            };
+        let stage_zero = |c_in: usize, c_out: usize, n: usize| -> BackboneStageWeights {
+            BackboneStageWeights {
+                downsample: cbn_zero(c_in, c_out, 3),
+                blocks: (0..n).map(|_| res_zero(c_out)).collect(),
+            }
+        };
         let head_stack_zero = |c_in: usize, c: usize| -> HeadStackWeights {
             HeadStackWeights {
                 cv1: cbn_zero(c_in, c, 1),
@@ -1039,7 +1061,12 @@ mod tests {
         // The indices should be strictly increasing (Darknet block
         // indices follow forward order).
         for w in idxs.windows(2) {
-            assert!(w[0] < w[1], "layer indices not increasing: {} >= {}", w[0], w[1]);
+            assert!(
+                w[0] < w[1],
+                "layer indices not increasing: {} >= {}",
+                w[0],
+                w[1]
+            );
         }
         // Final detect index is 105 (per yolo-v3.cfg).
         assert_eq!(*idxs.last().unwrap(), 105);
@@ -1053,7 +1080,10 @@ mod tests {
         let mut cfg = YoloV3Config::yolo_v3();
         cfg.image_size = 64;
         let weights = YoloV3Weights::zeros(&cfg);
-        let model = YoloV3Model { config: cfg.clone(), weights };
+        let model = YoloV3Model {
+            config: cfg.clone(),
+            weights,
+        };
         let image = vec![0.0_f32; 3 * cfg.image_size * cfg.image_size];
         let raw = model.forward(&image).unwrap();
         let dims = raw.predictions.shape().dims().to_vec();
@@ -1108,11 +1138,8 @@ mod tests {
                 }
             }
         }
-        let raw = LazyTensor::from_f32(
-            data,
-            Shape::from_dims(&[1, c, h, w]),
-            &crate::Device::cpu(),
-        );
+        let raw =
+            LazyTensor::from_f32(data, Shape::from_dims(&[1, c, h, w]), &crate::Device::cpu());
         let anchors = [(20_usize, 30_usize), (40, 60), (80, 90)];
         let stride = 32_usize;
         let decoded = decode_scale(&raw, &anchors, stride, num_classes, h, w).unwrap();
@@ -1138,10 +1165,22 @@ mod tests {
                     let expected_cy = (0.5 + y as f32) * stride as f32;
                     let expected_bw = anchors[a].0 as f32;
                     let expected_bh = anchors[a].1 as f32;
-                    assert!((cx - expected_cx).abs() < 1e-3, "cx mismatch: {cx} vs {expected_cx}");
-                    assert!((cy - expected_cy).abs() < 1e-3, "cy mismatch: {cy} vs {expected_cy}");
-                    assert!((bw - expected_bw).abs() < 1e-2, "bw mismatch: {bw} vs {expected_bw}");
-                    assert!((bh - expected_bh).abs() < 1e-2, "bh mismatch: {bh} vs {expected_bh}");
+                    assert!(
+                        (cx - expected_cx).abs() < 1e-3,
+                        "cx mismatch: {cx} vs {expected_cx}"
+                    );
+                    assert!(
+                        (cy - expected_cy).abs() < 1e-3,
+                        "cy mismatch: {cy} vs {expected_cy}"
+                    );
+                    assert!(
+                        (bw - expected_bw).abs() < 1e-2,
+                        "bw mismatch: {bw} vs {expected_bw}"
+                    );
+                    assert!(
+                        (bh - expected_bh).abs() < 1e-2,
+                        "bh mismatch: {bh} vs {expected_bh}"
+                    );
                     assert!(obj > 0.9, "obj sigmoid below 0.9: {obj}");
                     idx += 1;
                 }

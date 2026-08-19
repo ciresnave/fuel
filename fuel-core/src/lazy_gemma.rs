@@ -107,7 +107,11 @@ impl GemmaModel {
 
         // Embedding lookup + sqrt(hidden_size) scaling (Gemma-specific).
         let h = LazyTensor::embed_tokens(
-            weights.token_embedding.clone(), cfg.vocab_size, cfg.hidden_size, tokens, &Device::cpu(),
+            weights.token_embedding.clone(),
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
+            &Device::cpu(),
         )?;
         let scale = (cfg.hidden_size as f64).sqrt();
         let h = h.mul_scalar(scale);
@@ -128,26 +132,32 @@ impl GemmaModel {
         let dims = dims.dims();
         assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, hidden]");
         let seq = dims[1];
-        assert_eq!(dims[2], cfg.hidden_size, "embeds last dim must equal hidden_size");
         assert_eq!(
-            cfg.num_attention_heads % cfg.num_key_value_heads, 0,
+            dims[2], cfg.hidden_size,
+            "embeds last dim must equal hidden_size"
+        );
+        assert_eq!(
+            cfg.num_attention_heads % cfg.num_key_value_heads,
+            0,
             "GemmaConfig: num_attention_heads must be a multiple of num_key_value_heads",
         );
 
         let mut h = embeds.clone();
 
         // Shared RoPE tables — built fresh per call because seq may vary.
-        let (rope_cos, rope_sin) = h.rope_tables_const(
-            cfg.rope_theta, start_pos, seq, cfg.head_dim,
-        );
+        let (rope_cos, rope_sin) =
+            h.rope_tables_const(cfg.rope_theta, start_pos, seq, cfg.head_dim);
 
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin)?;
         }
 
         // Final offset RmsNorm + lm_head.
-        let h_norm = h.rms_norm_affine_with_offset(&weights.final_norm_gain, 1.0, cfg.rms_norm_eps)?;
-        Ok(weights.output.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size)?)
+        let h_norm =
+            h.rms_norm_affine_with_offset(&weights.final_norm_gain, 1.0, cfg.rms_norm_eps)?;
+        Ok(weights
+            .output
+            .apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 
     /// Run the decoder forward up to the final offset RmsNorm
@@ -161,10 +171,17 @@ impl GemmaModel {
         let weights = &self.weights;
         let seq = tokens.len();
         let batch = 1;
-        assert!(seq > 0, "GemmaModel::forward_hidden: tokens must be non-empty");
+        assert!(
+            seq > 0,
+            "GemmaModel::forward_hidden: tokens must be non-empty"
+        );
 
         let h_raw = LazyTensor::embed_tokens(
-            weights.token_embedding.clone(), cfg.vocab_size, cfg.hidden_size, tokens, &Device::cpu(),
+            weights.token_embedding.clone(),
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
+            &Device::cpu(),
         )?;
         // Gemma scales the token-embedding output by sqrt(hidden_size).
         let h_scaled = h_raw.mul_scalar((cfg.hidden_size as f64).sqrt());
@@ -175,7 +192,11 @@ impl GemmaModel {
     /// projection and returns the post-RmsNorm hidden states.
     /// Caller is responsible for the `sqrt(hidden_size)`
     /// embedding scaling that `forward_hidden()` applies.
-    pub fn forward_hidden_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_hidden_embeds(
+        &self,
+        embeds: &LazyTensor,
+        start_pos: usize,
+    ) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -185,9 +206,8 @@ impl GemmaModel {
         assert_eq!(dims[2], cfg.hidden_size);
 
         let mut h = embeds.clone();
-        let (rope_cos, rope_sin) = h.rope_tables_const(
-            cfg.rope_theta, start_pos, seq, cfg.head_dim,
-        );
+        let (rope_cos, rope_sin) =
+            h.rope_tables_const(cfg.rope_theta, start_pos, seq, cfg.head_dim);
 
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin)?;
@@ -213,9 +233,18 @@ impl GemmaModel {
         let x_norm = x.rms_norm_affine_with_offset(&layer.attn_norm_gain, 1.0, cfg.rms_norm_eps)?;
 
         // Q / K / V — biases are honored when the config flag is on.
-        let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size)?.add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
-        let k = layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
-        let v = layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
+        let q = layer
+            .attn_q
+            .apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size)?
+            .add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
+        let k = layer
+            .attn_k
+            .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
+            .add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
+        let v = layer
+            .attn_v
+            .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
+            .add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
 
         let _ = (batch, seq);
         let q = q.split_heads(cfg.num_attention_heads, cfg.head_dim)?;
@@ -247,25 +276,38 @@ impl GemmaModel {
         let attn_v = attn.matmul(&v_full)?;
 
         let merged = attn_v.merge_heads()?;
-        let attn_out = layer.attn_o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?.add_optional_trailing_bias(// LayerWeights doesn't carry an explicit attn_o_bias; reuse
-            // attn_q_bias's None branch by passing None here. Gemma's
-            // o_proj bias support would need a LayerWeights extension if
-            // a checkpoint requires it (rare).
-            None)?;
+        let attn_out = layer
+            .attn_o
+            .apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?
+            .add_optional_trailing_bias(
+                // LayerWeights doesn't carry an explicit attn_o_bias; reuse
+                // attn_q_bias's None branch by passing None here. Gemma's
+                // o_proj bias support would need a LayerWeights extension if
+                // a checkpoint requires it (rare).
+                None,
+            )?;
         let h1 = x.add(&attn_out)?;
 
         // Pre-FFN offset RmsNorm.
-        let h1_norm = h1.rms_norm_affine_with_offset(&layer.ffn_norm_gain, 1.0, cfg.rms_norm_eps)?;
+        let h1_norm =
+            h1.rms_norm_affine_with_offset(&layer.ffn_norm_gain, 1.0, cfg.rms_norm_eps)?;
 
         // GELU gated FFN: `down(gelu(gate) * up)`.
-        let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
-        let up = layer.ffn_up.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let gate = layer
+            .ffn_gate
+            .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let up = layer
+            .ffn_up
+            .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
         let activated_gate = match cfg.hidden_activation {
             GemmaActivation::Gelu => gate.gelu_erf(),
             GemmaActivation::GeluPytorchTanh => gate.gelu(),
         };
         let ffn_in = activated_gate.mul(&up)?;
-        let ffn_out = layer.ffn_down.apply_linear(&ffn_in, cfg.intermediate_size, cfg.hidden_size)?;
+        let ffn_out =
+            layer
+                .ffn_down
+                .apply_linear(&ffn_in, cfg.intermediate_size, cfg.hidden_size)?;
 
         h1.add(&ffn_out)
     }
@@ -308,7 +350,10 @@ impl GemmaWeights {
         if token_embedding.len() != cfg.vocab_size * h {
             crate::bail!(
                 "model.embed_tokens.weight: {} elts, expected {} ({}×{})",
-                token_embedding.len(), cfg.vocab_size * h, cfg.vocab_size, h,
+                token_embedding.len(),
+                cfg.vocab_size * h,
+                cfg.vocab_size,
+                h,
             );
         }
 
@@ -316,58 +361,84 @@ impl GemmaWeights {
         for li in 0..cfg.num_hidden_layers {
             let p = format!("model.layers.{li}");
             let attn_q = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.q_proj.weight"), h, h,
+                st,
+                &format!("{p}.self_attn.q_proj.weight"),
+                h,
+                h,
             )?;
             let attn_k = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.k_proj.weight"), kv_dim, h,
+                st,
+                &format!("{p}.self_attn.k_proj.weight"),
+                kv_dim,
+                h,
             )?;
             let attn_v = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.v_proj.weight"), kv_dim, h,
+                st,
+                &format!("{p}.self_attn.v_proj.weight"),
+                kv_dim,
+                h,
             )?;
             let attn_o = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.o_proj.weight"), h, h,
+                st,
+                &format!("{p}.self_attn.o_proj.weight"),
+                h,
+                h,
             )?;
             let ffn_gate = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.mlp.gate_proj.weight"), i_dim, h,
+                st,
+                &format!("{p}.mlp.gate_proj.weight"),
+                i_dim,
+                h,
             )?;
             let ffn_up = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.mlp.up_proj.weight"), i_dim, h,
+                st,
+                &format!("{p}.mlp.up_proj.weight"),
+                i_dim,
+                h,
             )?;
             let ffn_down = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.mlp.down_proj.weight"), h, i_dim,
+                st,
+                &format!("{p}.mlp.down_proj.weight"),
+                h,
+                i_dim,
             )?;
-            let attn_norm_gain = load_tensor_as_f32(
-                st, &format!("{p}.input_layernorm.weight"),
-            )?;
-            let ffn_norm_gain = load_tensor_as_f32(
-                st, &format!("{p}.post_attention_layernorm.weight"),
-            )?;
+            let attn_norm_gain = load_tensor_as_f32(st, &format!("{p}.input_layernorm.weight"))?;
+            let ffn_norm_gain =
+                load_tensor_as_f32(st, &format!("{p}.post_attention_layernorm.weight"))?;
             // Optional biases — present only when `attention_bias == true`
             // in HF config; absent biases are not an error.
             let attn_q_bias = if cfg.attention_bias {
                 load_tensor_as_f32(st, &format!("{p}.self_attn.q_proj.bias"))
-                    .ok().map(Arc::from)
+                    .ok()
+                    .map(Arc::from)
             } else {
                 None
             };
             let attn_k_bias = if cfg.attention_bias {
                 load_tensor_as_f32(st, &format!("{p}.self_attn.k_proj.bias"))
-                    .ok().map(Arc::from)
+                    .ok()
+                    .map(Arc::from)
             } else {
                 None
             };
             let attn_v_bias = if cfg.attention_bias {
                 load_tensor_as_f32(st, &format!("{p}.self_attn.v_proj.bias"))
-                    .ok().map(Arc::from)
+                    .ok()
+                    .map(Arc::from)
             } else {
                 None
             };
             layers.push(LayerWeights {
-                attn_q, attn_q_bias,
-                attn_k, attn_k_bias,
-                attn_v, attn_v_bias,
+                attn_q,
+                attn_q_bias,
+                attn_k,
+                attn_k_bias,
+                attn_v,
+                attn_v_bias,
                 attn_o,
-                ffn_gate, ffn_up, ffn_down,
+                ffn_gate,
+                ffn_up,
+                ffn_down,
                 attn_norm_gain: Arc::from(attn_norm_gain),
                 ffn_norm_gain: Arc::from(ffn_norm_gain),
             });
@@ -378,20 +449,19 @@ impl GemmaWeights {
         // Gemma v1 ties lm_head to token embeddings. Try the explicit
         // `lm_head.weight` first (some forks publish it), fall back to
         // a transposed copy of the token embedding.
-        let output: WeightStorage = match load_transposed_matrix_preserve_dtype(
-            st, "lm_head.weight", cfg.vocab_size, h,
-        ) {
-            Ok(w) => w,
-            Err(_) => {
-                let mut transposed = vec![0.0_f32; h * cfg.vocab_size];
-                for i in 0..cfg.vocab_size {
-                    for j in 0..h {
-                        transposed[j * cfg.vocab_size + i] = token_embedding[i * h + j];
+        let output: WeightStorage =
+            match load_transposed_matrix_preserve_dtype(st, "lm_head.weight", cfg.vocab_size, h) {
+                Ok(w) => w,
+                Err(_) => {
+                    let mut transposed = vec![0.0_f32; h * cfg.vocab_size];
+                    for i in 0..cfg.vocab_size {
+                        for j in 0..h {
+                            transposed[j * cfg.vocab_size + i] = token_embedding[i * h + j];
+                        }
                     }
+                    WeightStorage::F32(Arc::from(transposed))
                 }
-                WeightStorage::F32(Arc::from(transposed))
-            }
-        };
+            };
 
         Ok(GemmaWeights {
             token_embedding: Arc::from(token_embedding),
@@ -401,7 +471,6 @@ impl GemmaWeights {
         })
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -421,23 +490,42 @@ mod tests {
         let kv = cfg.num_key_value_heads * cfg.head_dim;
         let mut next_box: Box<dyn FnMut() -> f32> = Box::new(next);
         let token_embedding = vec_of(cfg.vocab_size * h, &mut *next_box);
-        let layers: Vec<LayerWeights> = (0..cfg.num_hidden_layers).map(|_| LayerWeights {
-            attn_q: WeightStorage::F32(vec_of(h * h, &mut *next_box)),
-            attn_q_bias: if cfg.attention_bias { Some(vec_of(h, &mut *next_box)) } else { None },
-            attn_k: WeightStorage::F32(vec_of(h * kv, &mut *next_box)),
-            attn_k_bias: if cfg.attention_bias { Some(vec_of(kv, &mut *next_box)) } else { None },
-            attn_v: WeightStorage::F32(vec_of(h * kv, &mut *next_box)),
-            attn_v_bias: if cfg.attention_bias { Some(vec_of(kv, &mut *next_box)) } else { None },
-            attn_o: WeightStorage::F32(vec_of(h * h, &mut *next_box)),
-            ffn_gate: WeightStorage::F32(vec_of(h * i, &mut *next_box)),
-            ffn_up:   WeightStorage::F32(vec_of(h * i, &mut *next_box)),
-            ffn_down: WeightStorage::F32(vec_of(i * h, &mut *next_box)),
-            attn_norm_gain: Arc::from(vec![0.1_f32; h]), // non-zero so the +1 offset is visible
-            ffn_norm_gain:  Arc::from(vec![0.1_f32; h]),
-        }).collect();
+        let layers: Vec<LayerWeights> = (0..cfg.num_hidden_layers)
+            .map(|_| LayerWeights {
+                attn_q: WeightStorage::F32(vec_of(h * h, &mut *next_box)),
+                attn_q_bias: if cfg.attention_bias {
+                    Some(vec_of(h, &mut *next_box))
+                } else {
+                    None
+                },
+                attn_k: WeightStorage::F32(vec_of(h * kv, &mut *next_box)),
+                attn_k_bias: if cfg.attention_bias {
+                    Some(vec_of(kv, &mut *next_box))
+                } else {
+                    None
+                },
+                attn_v: WeightStorage::F32(vec_of(h * kv, &mut *next_box)),
+                attn_v_bias: if cfg.attention_bias {
+                    Some(vec_of(kv, &mut *next_box))
+                } else {
+                    None
+                },
+                attn_o: WeightStorage::F32(vec_of(h * h, &mut *next_box)),
+                ffn_gate: WeightStorage::F32(vec_of(h * i, &mut *next_box)),
+                ffn_up: WeightStorage::F32(vec_of(h * i, &mut *next_box)),
+                ffn_down: WeightStorage::F32(vec_of(i * h, &mut *next_box)),
+                attn_norm_gain: Arc::from(vec![0.1_f32; h]), // non-zero so the +1 offset is visible
+                ffn_norm_gain: Arc::from(vec![0.1_f32; h]),
+            })
+            .collect();
         let final_norm_gain = Arc::from(vec![0.1_f32; h]);
         let output = WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *next_box));
-        GemmaWeights { token_embedding, layers, final_norm_gain, output }
+        GemmaWeights {
+            token_embedding,
+            layers,
+            final_norm_gain,
+            output,
+        }
     }
 
     #[test]
@@ -456,7 +544,10 @@ mod tests {
             attention_bias: false,
             hidden_activation: GemmaActivation::GeluPytorchTanh,
         };
-        let model = GemmaModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = GemmaModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4, 5];
         let logits = model.forward(&tokens, 0).unwrap();
         assert_eq!(logits.shape().dims(), &[1, tokens.len(), cfg.vocab_size]);
@@ -480,7 +571,9 @@ mod tests {
         );
         let zero_gain: Arc<[f32]> = Arc::from(vec![0.0_f32; dim]);
         let unity_gain: Arc<[f32]> = Arc::from(vec![1.0_f32; dim]);
-        let offset = x.rms_norm_affine_with_offset(&zero_gain, 1.0, 1e-6).unwrap();
+        let offset = x
+            .rms_norm_affine_with_offset(&zero_gain, 1.0, 1e-6)
+            .unwrap();
         let unity = x.rms_norm_affine(Arc::clone(&unity_gain), 1e-6).unwrap();
         let a = offset.realize_f32();
         let b = unity.realize_f32();
@@ -518,7 +611,10 @@ mod tests {
         };
         // hidden_size = 4, so sqrt = 2.0.
         assert!(((cfg.hidden_size as f64).sqrt() - 2.0).abs() < 1e-12);
-        let model = GemmaModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = GemmaModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         // Just smoke-test that forward runs without panic.
         let logits = model.forward(&[0, 1, 2], 0).unwrap().realize_f32();
         assert_eq!(logits.len(), 3 * cfg.vocab_size);

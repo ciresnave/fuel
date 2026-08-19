@@ -16,21 +16,21 @@
 
 use baracuda_kernels_types::OperandDesc;
 
-use crate::fkc::verify::{fill_deterministic, to_bytes, HostTensor};
+use crate::fkc::verify::{HostTensor, fill_deterministic, to_bytes};
 use crate::jit_adopt::element_kind_to_dtype;
 
 #[cfg(feature = "cuda")]
-use std::sync::{Arc, RwLock};
+use crate::pipelined::{PipelinedExecutor, StorageCache};
 #[cfg(feature = "cuda")]
 use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
 #[cfg(feature = "cuda")]
 use fuel_graph::jit::PatternNode;
 #[cfg(feature = "cuda")]
-use fuel_graph::runtime_fused::emit_region;
-#[cfg(feature = "cuda")]
 use fuel_graph::opt::lower_to_base_map;
 #[cfg(feature = "cuda")]
 use fuel_graph::registry::{FusedOpId, FusedOpParams};
+#[cfg(feature = "cuda")]
+use fuel_graph::runtime_fused::emit_region;
 #[cfg(feature = "cuda")]
 use fuel_graph::topo_order_multi;
 #[cfg(feature = "cuda")]
@@ -40,7 +40,7 @@ use fuel_ir::probe::BackendId;
 #[cfg(feature = "cuda")]
 use fuel_ir::{DType, Error, Result, Shape};
 #[cfg(feature = "cuda")]
-use crate::pipelined::{PipelinedExecutor, StorageCache};
+use std::sync::{Arc, RwLock};
 
 /// Build one deterministic float-fill [`HostTensor`] per `operands` entry,
 /// sized from that operand's `rank`/`shape` (extent = product of
@@ -67,7 +67,11 @@ pub fn probe_from_operands(operands: &[OperandDesc], seed: u64) -> Option<Vec<Ho
             let dtype = element_kind_to_dtype(operand.dtype)?;
             let vals = fill_deterministic(extent, seed ^ (i as u64));
             let bytes = to_bytes(dtype, &vals)?;
-            Some(HostTensor { dtype, shape, bytes })
+            Some(HostTensor {
+                dtype,
+                shape,
+                bytes,
+            })
         })
         .collect()
 }
@@ -161,21 +165,25 @@ pub fn reference_output(
 
     // (g) D2H: read the CUDA output storage back to host bytes.
     let bytes = {
-        let guard = out_arc
-            .read()
-            .map_err(|_| Error::Msg("reference_output: output storage RwLock poisoned".to_string()))?;
+        let guard = out_arc.read().map_err(|_| {
+            Error::Msg("reference_output: output storage RwLock poisoned".to_string())
+        })?;
         match &guard.inner {
             fuel_memory::BackendStorage::Cuda(c) => c.to_cpu_bytes()?,
             #[allow(unreachable_patterns)]
             _ => {
                 return Err(Error::Msg(
                     "reference_output: realized output storage is not CUDA".to_string(),
-                ))
+                ));
             }
         }
     };
 
-    Ok(HostTensor { dtype: out_dtype, shape: out_shape, bytes })
+    Ok(HostTensor {
+        dtype: out_dtype,
+        shape: out_shape,
+        bytes,
+    })
 }
 
 /// Realize FUEL's **registered recipe** for `claimed_op` — its primitive base
@@ -293,12 +301,16 @@ pub fn reference_from_registered_recipe(
                 return Err(Error::Msg(
                     "reference_from_registered_recipe: realized output storage is not CUDA"
                         .to_string(),
-                ))
+                ));
             }
         }
     };
 
-    Ok(HostTensor { dtype: out_dtype, shape: out_shape, bytes })
+    Ok(HostTensor {
+        dtype: out_dtype,
+        shape: out_shape,
+        bytes,
+    })
 }
 
 #[cfg(test)]
@@ -315,7 +327,10 @@ mod tests {
         assert_eq!(p[0].shape, vec![4]);
         assert_eq!(p[0].dtype, DType::F32);
         assert_eq!(p[0].bytes.len(), 16);
-        assert_eq!(probe_from_operands(&[od, od], 0x1234).unwrap()[0].bytes, p[0].bytes); // deterministic
+        assert_eq!(
+            probe_from_operands(&[od, od], 0x1234).unwrap()[0].bytes,
+            p[0].bytes
+        ); // deterministic
     }
 
     /// Task-3 carry-forward (negative path, deferred to Task 5): an operand
@@ -477,7 +492,10 @@ mod tests {
         let region = PatternNode::Op {
             op: OpTag::Add,
             attrs: OpAttrs::default(),
-            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+            operands: vec![
+                PatternNode::Bind { index: 0 },
+                PatternNode::Bind { index: 1 },
+            ],
         };
         let a = ht_f32(&[1.0, 2.0, 3.0, 4.0]);
         let b = ht_f32(&[10.0, 20.0, 30.0, 40.0]);

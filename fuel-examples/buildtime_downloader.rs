@@ -1,5 +1,5 @@
-﻿use anyhow::Result;
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use anyhow::Result;
+use hf_hub::{Repo, RepoType, api::sync::Api};
 
 pub fn download_model(model_and_revision: &str) -> Result<()> {
     let (model_id, revision) = match model_and_revision.split_once(":") {

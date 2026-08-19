@@ -4,9 +4,13 @@
 
 use std::sync::{Arc, RwLock};
 
-use fuel_ir::{dispatch::OpKind, probe::BackendId, DType};
 use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
-use fuel_dispatch::{baracuda_dispatch::register_baracuda_cuda_kernels, dispatch::register_cuda_kernels, kernel::{KernelBindingTable, OpParams}};
+use fuel_dispatch::{
+    baracuda_dispatch::register_baracuda_cuda_kernels,
+    dispatch::register_cuda_kernels,
+    kernel::{KernelBindingTable, OpParams},
+};
+use fuel_ir::{DType, dispatch::OpKind, probe::BackendId};
 use fuel_memory::{BackendStorage, Storage};
 
 fn dev_or_skip() -> Option<CudaDevice> {
@@ -66,19 +70,12 @@ fn baracuda_index_select_f32_picks_rows() {
     //   row 2: [30, 31, 32]
     //   row 3: [40, 41, 42]
     let source: Vec<f32> = vec![
-        10.0, 11.0, 12.0,
-        20.0, 21.0, 22.0,
-        30.0, 31.0, 32.0,
-        40.0, 41.0, 42.0,
+        10.0, 11.0, 12.0, 20.0, 21.0, 22.0, 30.0, 31.0, 32.0, 40.0, 41.0, 42.0,
     ];
     // Indices: pick rows [2, 0, 3] in that order.
     let indices: Vec<u32> = vec![2, 0, 3];
     // Expected: [30, 31, 32, 10, 11, 12, 40, 41, 42] (3 selected rows × 3 cols).
-    let expected: Vec<f32> = vec![
-        30.0, 31.0, 32.0,
-        10.0, 11.0, 12.0,
-        40.0, 41.0, 42.0,
-    ];
+    let expected: Vec<f32> = vec![30.0, 31.0, 32.0, 10.0, 11.0, 12.0, 40.0, 41.0, 42.0];
 
     let src_storage = upload_f32(&dev, &source);
     let idx_storage = upload_u32(&dev, &indices);
@@ -182,17 +179,13 @@ fn baracuda_index_select_f32_with_outer_batch() {
     //   batch 0: row 0 = [10, 11], row 1 = [20, 21], row 2 = [30, 31]
     //   batch 1: row 0 = [40, 41], row 1 = [50, 51], row 2 = [60, 61]
     let source: Vec<f32> = vec![
-        10.0, 11.0, 20.0, 21.0, 30.0, 31.0,
-        40.0, 41.0, 50.0, 51.0, 60.0, 61.0,
+        10.0, 11.0, 20.0, 21.0, 30.0, 31.0, 40.0, 41.0, 50.0, 51.0, 60.0, 61.0,
     ];
     let indices: Vec<u32> = vec![2, 0];
     // Each batch picks rows [2, 0]:
     //   batch 0: [30, 31, 10, 11]
     //   batch 1: [60, 61, 40, 41]
-    let expected: Vec<f32> = vec![
-        30.0, 31.0, 10.0, 11.0,
-        60.0, 61.0, 40.0, 41.0,
-    ];
+    let expected: Vec<f32> = vec![30.0, 31.0, 10.0, 11.0, 60.0, 61.0, 40.0, 41.0];
 
     let src_storage = upload_f32(&dev, &source);
     let idx_storage = upload_u32(&dev, &indices);

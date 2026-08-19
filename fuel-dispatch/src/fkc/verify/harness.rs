@@ -52,10 +52,10 @@
 //!   baracuda-native half-width relationship a generic solver hasn't been
 //!   taught.
 
+use fuel_cuda_backend::CudaDevice;
 use fuel_ir::dispatch::OpKind;
 use fuel_ir::probe::BackendId;
 use fuel_ir::{DType, Error, Layout, Result};
-use fuel_cuda_backend::CudaDevice;
 use std::sync::{Arc, RwLock};
 
 use crate::dispatch::{cuda_input, cuda_output, read_storage, write_storage};
@@ -68,8 +68,8 @@ use fuel_memory::Storage;
 // through their parent's public names, the same way every other file in
 // this crate consumes them.
 use super::{
-    fill_deterministic, verify_bit_stability, CudaInvoker, HostTensor, LedgerRecord, ProbeInputs,
-    VerificationLedger, VerifyError, VerifyOutcome,
+    CudaInvoker, HostTensor, LedgerRecord, ProbeInputs, VerificationLedger, VerifyError,
+    VerifyOutcome, fill_deterministic, verify_bit_stability,
 };
 
 /// The rope-apply contract source, embedded so the harness never touches
@@ -103,15 +103,23 @@ macro_rules! rope_apply_wrapper {
                         stringify!($wrapper_name),
                         ": expected 3 inputs (x, cos, sin) + 1 output, got {} + {}",
                     ),
-                    inputs.len(), outputs.len(),
+                    inputs.len(),
+                    outputs.len(),
                 ))
                 .bt());
             }
             let (outer_count, seq, head_dim) = match params {
-                OpParams::Rope { outer_count, seq, head_dim } => (*outer_count, *seq, *head_dim),
+                OpParams::Rope {
+                    outer_count,
+                    seq,
+                    head_dim,
+                } => (*outer_count, *seq, *head_dim),
                 other => {
                     return Err(Error::Msg(format!(
-                        concat!(stringify!($wrapper_name), ": expected OpParams::Rope, got {:?}"),
+                        concat!(
+                            stringify!($wrapper_name),
+                            ": expected OpParams::Rope, got {:?}"
+                        ),
                         other,
                     ))
                     .bt())
@@ -125,15 +133,35 @@ macro_rules! rope_apply_wrapper {
             let cos_cuda = cuda_input(&cos_guard)?;
             let sin_cuda = cuda_input(&sin_guard)?;
             let out_cuda = cuda_output(&mut out_guard)?;
-            $driver(x_cuda, cos_cuda, sin_cuda, outer_count, seq, head_dim, out_cuda)
+            $driver(
+                x_cuda,
+                cos_cuda,
+                sin_cuda,
+                outer_count,
+                seq,
+                head_dim,
+                out_cuda,
+            )
         }
     };
 }
 
-rope_apply_wrapper!(rope_apply_f32, fuel_cuda_backend::baracuda::attention::rope_apply_f32_into);
-rope_apply_wrapper!(rope_apply_f16, fuel_cuda_backend::baracuda::attention::rope_apply_f16_into);
-rope_apply_wrapper!(rope_apply_bf16, fuel_cuda_backend::baracuda::attention::rope_apply_bf16_into);
-rope_apply_wrapper!(rope_apply_f64, fuel_cuda_backend::baracuda::attention::rope_apply_f64_into);
+rope_apply_wrapper!(
+    rope_apply_f32,
+    fuel_cuda_backend::baracuda::attention::rope_apply_f32_into
+);
+rope_apply_wrapper!(
+    rope_apply_f16,
+    fuel_cuda_backend::baracuda::attention::rope_apply_f16_into
+);
+rope_apply_wrapper!(
+    rope_apply_bf16,
+    fuel_cuda_backend::baracuda::attention::rope_apply_bf16_into
+);
+rope_apply_wrapper!(
+    rope_apply_f64,
+    fuel_cuda_backend::baracuda::attention::rope_apply_f64_into
+);
 
 /// Harness-local [`LinkRegistry`]: resolves ONLY the rope-apply contract's
 /// four fanned symbols (`baracuda_kernels_rope_apply_<dt>`, per the
@@ -193,7 +221,11 @@ fn to_bytes(dt: DType, vals: &[f32]) -> Option<Vec<u8>> {
 }
 
 fn ht(dt: DType, shape: Vec<usize>, vals: &[f32]) -> Option<HostTensor> {
-    Some(HostTensor { dtype: dt, shape, bytes: to_bytes(dt, vals)? })
+    Some(HostTensor {
+        dtype: dt,
+        shape,
+        bytes: to_bytes(dt, vals)?,
+    })
 }
 
 /// Build a real, valid `(x, cos, sin)` probe for `dt` at the fixed probe
@@ -203,9 +235,21 @@ fn ht(dt: DType, shape: Vec<usize>, vals: &[f32]) -> Option<HostTensor> {
 fn rope_apply_probe(dt: DType, seed: u64) -> Option<ProbeInputs> {
     let (outer, seq, head_dim) = (PROBE_OUTER_COUNT, PROBE_SEQ, PROBE_HEAD_DIM);
     let half = head_dim / 2;
-    let x = ht(dt, vec![outer * seq * head_dim], &fill_deterministic(outer * seq * head_dim, seed))?;
-    let cos = ht(DType::F32, vec![seq * half], &fill_deterministic(seq * half, seed ^ 0x1111))?;
-    let sin = ht(DType::F32, vec![seq * half], &fill_deterministic(seq * half, seed ^ 0x2222))?;
+    let x = ht(
+        dt,
+        vec![outer * seq * head_dim],
+        &fill_deterministic(outer * seq * head_dim, seed),
+    )?;
+    let cos = ht(
+        DType::F32,
+        vec![seq * half],
+        &fill_deterministic(seq * half, seed ^ 0x1111),
+    )?;
+    let sin = ht(
+        DType::F32,
+        vec![seq * half],
+        &fill_deterministic(seq * half, seed ^ 0x2222),
+    )?;
     Some(vec![x, cos, sin])
 }
 
@@ -226,7 +270,10 @@ fn rope_apply_kernel_name(dt: DType) -> Option<&'static str> {
 /// house convention; mirrors `seed_cpu_ledger.rs`'s `verified_at_string`).
 fn verified_at_string() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     format!("epoch:{secs}")
 }
 
@@ -251,7 +298,10 @@ fn verified_at_string() -> String {
 /// Requires a live CUDA device (`CudaDevice::new(0)`) — this is why the
 /// whole module, and every caller, is `#[cfg(feature = "cuda")]` and the
 /// acceptance test is `#[ignore]`'d.
-pub fn run_fkc_verify_harness(kernels: &[&str], force: bool) -> std::result::Result<VerificationLedger, VerifyError> {
+pub fn run_fkc_verify_harness(
+    kernels: &[&str],
+    force: bool,
+) -> std::result::Result<VerificationLedger, VerifyError> {
     let provider = crate::fkc::import_bundle_str(ROPE_APPLY_CONTRACT, &RopeApplyLinkRegistry)
         .map_err(|e| VerifyError::Backend(format!("rope-apply contract import failed: {e}")))?;
     let mut table = crate::kernel::KernelBindingTable::new();
@@ -260,21 +310,32 @@ pub fn run_fkc_verify_harness(kernels: &[&str], force: bool) -> std::result::Res
         .register_into(&mut table, &mut fused)
         .map_err(|e| VerifyError::Backend(format!("rope-apply contract register failed: {e}")))?;
 
-    let mut ledger = VerificationLedger::from_records(VerificationLedger::embedded().records().to_vec());
+    let mut ledger =
+        VerificationLedger::from_records(VerificationLedger::embedded().records().to_vec());
 
-    let device = CudaDevice::new(0).map_err(|e| VerifyError::Backend(format!("no CUDA device: {e}")))?;
+    let device =
+        CudaDevice::new(0).map_err(|e| VerifyError::Backend(format!("no CUDA device: {e}")))?;
 
     for (op, dtypes, backend, entry) in table.iter_entries() {
         if op != OpKind::Rope || backend != BackendId::Cuda {
             continue;
         }
-        let Some(dt) = dtypes.first().copied() else { continue };
-        let Some(name) = rope_apply_kernel_name(dt) else { continue };
+        let Some(dt) = dtypes.first().copied() else {
+            continue;
+        };
+        let Some(name) = rope_apply_kernel_name(dt) else {
+            continue;
+        };
         if !kernels.contains(&name) {
             continue;
         }
         if !force
-            && ledger.has_pass(BackendId::Cuda, dtypes, entry.kernel_revision_hash, "bit_stable_on_same_hardware")
+            && ledger.has_pass(
+                BackendId::Cuda,
+                dtypes,
+                entry.kernel_revision_hash,
+                "bit_stable_on_same_hardware",
+            )
         {
             continue;
         }
@@ -287,11 +348,16 @@ pub fn run_fkc_verify_harness(kernels: &[&str], force: bool) -> std::result::Res
             _ => 0x0,
         };
         let seed = 0x2545_F491_4F6C_DD1D_u64 ^ dt_salt.wrapping_mul(0x9E37_79B9_7F4A_7C15);
-        let Some(probe) = rope_apply_probe(dt, seed) else { continue };
+        let Some(probe) = rope_apply_probe(dt, seed) else {
+            continue;
+        };
 
         let out_shape = vec![PROBE_OUTER_COUNT * PROBE_SEQ * PROBE_HEAD_DIM];
-        let inv = CudaInvoker::new(device.clone(), dt, out_shape)
-            .with_params(OpParams::Rope { outer_count: PROBE_OUTER_COUNT, seq: PROBE_SEQ, head_dim: PROBE_HEAD_DIM });
+        let inv = CudaInvoker::new(device.clone(), dt, out_shape).with_params(OpParams::Rope {
+            outer_count: PROBE_OUTER_COUNT,
+            seq: PROBE_SEQ,
+            head_dim: PROBE_HEAD_DIM,
+        });
 
         let attempt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             verify_bit_stability(&inv, entry, std::slice::from_ref(&probe), 16)
@@ -302,9 +368,14 @@ pub fn run_fkc_verify_harness(kernels: &[&str], force: bool) -> std::result::Res
                 "pass",
                 serde_json::json!({ "repeat_calls": 16, "harness": "task-4.6/rope_apply_harness" }),
             ),
-            Ok(Ok(VerifyOutcome::Fail { detail })) => ("fail", serde_json::json!({ "detail": detail })),
+            Ok(Ok(VerifyOutcome::Fail { detail })) => {
+                ("fail", serde_json::json!({ "detail": detail }))
+            }
             Ok(Ok(VerifyOutcome::NoReference)) => ("no_reference", serde_json::Value::Null),
-            Ok(Err(e)) => ("fail", serde_json::json!({ "invoke_error": format!("{e:?}") })),
+            Ok(Err(e)) => (
+                "fail",
+                serde_json::json!({ "invoke_error": format!("{e:?}") }),
+            ),
             Err(_) => ("fail", serde_json::json!({ "panic": true })),
         };
 

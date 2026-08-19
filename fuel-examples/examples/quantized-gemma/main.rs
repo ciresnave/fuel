@@ -247,9 +247,7 @@ fn apply_repeat_penalty(logits: &mut [f32], penalty: f32, ctx: &[u32]) {
     }
 }
 
-fn sample(
-    logits: &[f32], temp: f32, top_k: Option<usize>, top_p: Option<f32>, seed: u64,
-) -> u32 {
+fn sample(logits: &[f32], temp: f32, top_k: Option<usize>, top_p: Option<f32>, seed: u64) -> u32 {
     if temp <= 0.0 {
         let mut bi = 0usize;
         let mut b = logits[0];
@@ -459,7 +457,13 @@ fn main() -> anyhow::Result<()> {
                     .map_err(|e| E::msg(format!("forward: {e}")))?;
                 let logits_v = logits.realize_f32();
                 let last = last_logits(logits_v, 1);
-                next_token = sample(&last, temp, top_k, top_p, args.seed.wrapping_add(pos as u64));
+                next_token = sample(
+                    &last,
+                    temp,
+                    top_k,
+                    top_p,
+                    args.seed.wrapping_add(pos as u64),
+                );
             }
             next_token
         };

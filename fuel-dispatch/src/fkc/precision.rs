@@ -251,7 +251,10 @@ mod tests {
             notes: None,
         };
         let err = lower_precision(Some(&block), "k").expect_err("placeholder errors");
-        assert!(matches!(err, FkcError::PlaceholderPrecision { .. }), "got {err:?}");
+        assert!(
+            matches!(err, FkcError::PlaceholderPrecision { .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]

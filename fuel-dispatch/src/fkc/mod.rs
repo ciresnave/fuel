@@ -67,80 +67,55 @@ pub(crate) mod verify;
 mod vulkan_link;
 mod warn;
 
-pub use caps_map::{is_generic_contract, ResolvedLayout, Tri};
+pub use caps_map::{ResolvedLayout, Tri, is_generic_contract};
 pub use cost_expr::{
-    bind_cost_symbols, cost_estimate, eval as eval_cost, CompiledCostExpr, CostEvalError, CostNode,
+    CompiledCostExpr, CostEvalError, CostNode, bind_cost_symbols, cost_estimate, eval as eval_cost,
 };
 pub use cpu_link::{
-    CpuLinkRegistry, CPU_AFFINE_CLAMP_POWI_ENTRY_POINTS, CPU_ATTENTION_ENTRY_POINTS,
-    CPU_BINARY_ENTRY_POINTS, CPU_COMPARE_ENTRY_POINTS, CPU_CONV_ENTRY_POINTS,
-    CPU_FUSED_CONV_ROPE_ENTRY_POINTS, CPU_FUSED_LINEAR_QUANT_ENTRY_POINTS, CPU_FUSED_NORM_ENTRY_POINTS,
-    CPU_INPLACE_ENTRY_POINTS, CPU_MATMUL_ENTRY_POINTS,
-    CPU_NORM_BACKWARD_ENTRY_POINTS, CPU_NORM_ENTRY_POINTS,
+    CPU_AFFINE_CLAMP_POWI_ENTRY_POINTS, CPU_ATTENTION_ENTRY_POINTS, CPU_BINARY_ENTRY_POINTS,
+    CPU_COMPARE_ENTRY_POINTS, CPU_CONV_ENTRY_POINTS, CPU_FUSED_CONV_ROPE_ENTRY_POINTS,
+    CPU_FUSED_LINEAR_QUANT_ENTRY_POINTS, CPU_FUSED_NORM_ENTRY_POINTS, CPU_INPLACE_ENTRY_POINTS,
+    CPU_MATMUL_ENTRY_POINTS, CPU_NORM_BACKWARD_ENTRY_POINTS, CPU_NORM_ENTRY_POINTS,
     CPU_PADDING_ENTRY_POINTS, CPU_REDUCE_ENTRY_POINTS, CPU_REDUCE_TO_ENTRY_POINTS,
     CPU_ROPE_ENTRY_POINTS, CPU_SHAPE_OPS_ENTRY_POINTS, CPU_SSM_ENTRY_POINTS,
-    CPU_UNARY_ENTRY_POINTS, CPU_WHERE_ENTRY_POINTS,
+    CPU_UNARY_ENTRY_POINTS, CPU_WHERE_ENTRY_POINTS, CpuLinkRegistry,
+};
+#[cfg(feature = "cuda")]
+pub use cuda_link::{
+    CUDA_AFFINE_ENTRY_POINTS, CUDA_ARG_REDUCE_ENTRY_POINTS, CUDA_BINARY_ENTRY_POINTS,
+    CUDA_CAST_ENTRY_POINTS, CUDA_CAUSAL_CONV1D_ENTRY_POINTS, CUDA_CLAMP_ENTRY_POINTS,
+    CUDA_CLAMP_INPLACE_ENTRY_POINTS, CUDA_CONCAT_ENTRY_POINTS, CUDA_COST_FNS,
+    CUDA_CUMSUM_ENTRY_POINTS, CUDA_FLASH_DECODING_ENTRY_POINTS, CUDA_FLIP_ENTRY_POINTS,
+    CUDA_GEMM_DENSE_ENTRY_POINTS, CUDA_GEMM_INT_ENTRY_POINTS, CUDA_INDEXING_ENTRY_POINTS,
+    CUDA_INPLACE_AFFINE_ENTRY_POINTS, CUDA_INPLACE_UNARY_ENTRY_POINTS, CUDA_NORM_ENTRY_POINTS,
+    CUDA_PAD_BACKWARD_ENTRY_POINTS, CUDA_PAD_ENTRY_POINTS, CUDA_POWI_BACKWARD_ENTRY_POINTS,
+    CUDA_POWI_ENTRY_POINTS, CUDA_POWI_INPLACE_ENTRY_POINTS, CUDA_REDUCE_ENTRY_POINTS,
+    CUDA_REDUCE_TO_ENTRY_POINTS, CUDA_ROLL_ENTRY_POINTS, CUDA_ROPE_ENTRY_POINTS,
+    CUDA_SOFTMAX_ENTRY_POINTS, CUDA_TRIANGULAR_ENTRY_POINTS, CUDA_UNARY_ENTRY_POINTS,
+    CUDA_WRITE_SLICE_ENTRY_POINTS, CUDA_WRITE_SLICE_ROTATING_ENTRY_POINTS, CudaLinkRegistry,
 };
 pub use error::FkcError;
-pub use lower::{
-    lower_file, LinkRegistry, Resolved, ResolvedFused, ResolvedPrimitive,
-};
+pub use lower::{LinkRegistry, Resolved, ResolvedFused, ResolvedPrimitive, lower_file};
 pub use parse::{parse_file, parse_path};
 pub use register::{
-    fused_unknown_cost, import_bundle, import_bundle_str, import_glob, ImportedProvider,
+    ImportedProvider, fused_unknown_cost, import_bundle, import_bundle_str, import_glob,
 };
 pub use revhash::compute_revision;
-pub use shape_constraint::{
-    parse_rank_spec, parse_shape_constraint, solve_probe_shapes, AxisIndex, ProbeCombo, RankSpec,
-    ShapeAtom, ShapeConstraint,
-};
 pub use schema::{
     AcceptBlock, CapsBlock, CostBlock, CostMemory, FdxSpec, FkcFile, FkcFrontMatter, FkcKernel,
     FkcProvider, GatherSpec, LayoutSpec, OpParamFieldSpec, OpParamsSchema, OutputDesc,
     PrecisionBlock, QuantSpec, ReturnBlock, TensorDesc,
 };
-pub use validate::{validate_file, validate_kernel, FKC_VERSION_MAX};
-pub use warn::ImportWarning;
-#[cfg(feature = "cuda")]
-pub use cuda_link::{
-    CudaLinkRegistry,
-    CUDA_CAST_ENTRY_POINTS,
-    CUDA_BINARY_ENTRY_POINTS,
-    CUDA_REDUCE_ENTRY_POINTS,
-    CUDA_NORM_ENTRY_POINTS,
-    CUDA_SOFTMAX_ENTRY_POINTS,
-    CUDA_POWI_ENTRY_POINTS,
-    CUDA_POWI_BACKWARD_ENTRY_POINTS,
-    CUDA_CLAMP_ENTRY_POINTS,
-    CUDA_FLIP_ENTRY_POINTS,
-    CUDA_ROLL_ENTRY_POINTS,
-    CUDA_CUMSUM_ENTRY_POINTS,
-    CUDA_TRIANGULAR_ENTRY_POINTS,
-    CUDA_ARG_REDUCE_ENTRY_POINTS,
-    CUDA_REDUCE_TO_ENTRY_POINTS,
-    CUDA_ROPE_ENTRY_POINTS,
-    CUDA_UNARY_ENTRY_POINTS,
-    CUDA_CLAMP_INPLACE_ENTRY_POINTS,
-    CUDA_POWI_INPLACE_ENTRY_POINTS,
-    CUDA_INPLACE_UNARY_ENTRY_POINTS,
-    CUDA_WRITE_SLICE_ENTRY_POINTS,
-    CUDA_WRITE_SLICE_ROTATING_ENTRY_POINTS,
-    CUDA_CONCAT_ENTRY_POINTS,
-    CUDA_AFFINE_ENTRY_POINTS,
-    CUDA_INPLACE_AFFINE_ENTRY_POINTS,
-    CUDA_PAD_ENTRY_POINTS,
-    CUDA_PAD_BACKWARD_ENTRY_POINTS,
-    CUDA_CAUSAL_CONV1D_ENTRY_POINTS,
-    CUDA_GEMM_DENSE_ENTRY_POINTS,
-    CUDA_GEMM_INT_ENTRY_POINTS,
-    CUDA_INDEXING_ENTRY_POINTS,
-    CUDA_FLASH_DECODING_ENTRY_POINTS,
-    CUDA_COST_FNS,
+pub use shape_constraint::{
+    AxisIndex, ProbeCombo, RankSpec, ShapeAtom, ShapeConstraint, parse_rank_spec,
+    parse_shape_constraint, solve_probe_shapes,
 };
+pub use validate::{FKC_VERSION_MAX, validate_file, validate_kernel};
 #[cfg(feature = "vulkan")]
 pub use vulkan_link::{
-    VulkanLinkRegistry, VULKAN_CAST_ENTRY_POINTS, VULKAN_ELEMENTWISE_ENTRY_POINTS,
+    VULKAN_CAST_ENTRY_POINTS, VULKAN_ELEMENTWISE_ENTRY_POINTS, VulkanLinkRegistry,
 };
+pub use warn::ImportWarning;
 
 #[cfg(test)]
 mod tests {
@@ -149,9 +124,8 @@ mod tests {
     // ----- Real-contract corpus paths (load-bearing schema-match test) -----
 
     /// `elementwise-binary.fkc.md` — the simplest authored CPU contract.
-    const ELEMENTWISE_BINARY: &str = include_str!(
-        "../../../docs/kernel-contracts/cpu/elementwise-binary.fkc.md"
-    );
+    const ELEMENTWISE_BINARY: &str =
+        include_str!("../../../docs/kernel-contracts/cpu/elementwise-binary.fkc.md");
     /// `quant-matmul.fkc.md` — a more complex authored CPU contract (GGML quant
     /// weight matmuls + NF4 with a separate scale operand, gemm cost class,
     /// fdx.quant blocks).
@@ -168,8 +142,7 @@ mod tests {
     /// symbols — proof the contract is structurally well-formed (dtype-fan,
     /// entry_point suffixing, per-operand fixed-vs-varying dtypes) without
     /// touching any real CUDA code.
-    const ROPE_APPLY: &str =
-        include_str!("../../../docs/kernel-contracts/cuda/rope-apply.fkc.md");
+    const ROPE_APPLY: &str = include_str!("../../../docs/kernel-contracts/cuda/rope-apply.fkc.md");
 
     // =====================================================================
     // PARSE A REAL CONTRACT — the key correctness test (§3.1/§3.3 schema match)
@@ -177,8 +150,8 @@ mod tests {
 
     #[test]
     fn parses_real_elementwise_binary_contract() {
-        let file = parse_file(ELEMENTWISE_BINARY)
-            .expect("authored elementwise-binary.fkc.md must parse");
+        let file =
+            parse_file(ELEMENTWISE_BINARY).expect("authored elementwise-binary.fkc.md must parse");
 
         // Front-matter.
         assert_eq!(file.front_matter.fkc_version, 1);
@@ -198,8 +171,14 @@ mod tests {
 
         // The umbrella `binary` chassis section + per-(op, dtype) thunks.
         let names: Vec<&str> = file.kernels.iter().map(|k| k.kernel.as_str()).collect();
-        assert!(names.contains(&"binary"), "expected the `binary` chassis section; got {names:?}");
-        assert!(names.contains(&"add_f32"), "expected `add_f32`; got {names:?}");
+        assert!(
+            names.contains(&"binary"),
+            "expected the `binary` chassis section; got {names:?}"
+        );
+        assert!(
+            names.contains(&"add_f32"),
+            "expected `add_f32`; got {names:?}"
+        );
 
         // op_kind round-trips as a string; fused_op absent for these primitives.
         let add_f32 = file
@@ -223,7 +202,10 @@ mod tests {
         // Return block: one output with rules carried as strings.
         let ret = add_f32.return_.as_ref().expect("add_f32 has return");
         assert_eq!(ret.outputs.len(), 1);
-        assert_eq!(ret.outputs[0].dtype_rule.as_deref(), Some("passthrough(lhs)"));
+        assert_eq!(
+            ret.outputs[0].dtype_rule.as_deref(),
+            Some("passthrough(lhs)")
+        );
 
         // Cost: provenance + expression strings carried verbatim.
         let cost = add_f32.cost.as_ref().expect("add_f32 has cost");
@@ -232,13 +214,15 @@ mod tests {
         assert_eq!(cost.bytes_moved.as_deref(), Some("3 * n * 4"));
 
         // Determinism token.
-        assert_eq!(add_f32.determinism.as_deref(), Some("same_hardware_bitwise"));
+        assert_eq!(
+            add_f32.determinism.as_deref(),
+            Some("same_hardware_bitwise")
+        );
     }
 
     #[test]
     fn parses_real_quant_matmul_contract() {
-        let file =
-            parse_file(QUANT_MATMUL).expect("authored quant-matmul.fkc.md must parse");
+        let file = parse_file(QUANT_MATMUL).expect("authored quant-matmul.fkc.md must parse");
 
         assert_eq!(file.front_matter.provider.name, "fuel-cpu-backend");
         assert!(!file.kernels.is_empty());
@@ -279,7 +263,10 @@ mod tests {
         assert_eq!(quant.family.as_deref(), Some("GGML_BLOCK"));
         assert_eq!(quant.ggml_dtype.as_deref(), Some("Q4_0"));
         assert_eq!(quant.role.as_deref(), Some("weight"));
-        assert!(quant.scale_operand.is_none(), "INLINE scale: no separate operand");
+        assert!(
+            quant.scale_operand.is_none(),
+            "INLINE scale: no separate operand"
+        );
 
         // op_params variant + a field with a constraint string.
         let op_params = q40.accept.as_ref().unwrap().op_params.as_ref().unwrap();
@@ -294,7 +281,9 @@ mod tests {
             .unwrap();
         let nf4_inputs = &nf4.accept.as_ref().unwrap().inputs;
         assert!(
-            nf4_inputs.iter().any(|d| d.name.as_deref() == Some("absmax")),
+            nf4_inputs
+                .iter()
+                .any(|d| d.name.as_deref() == Some("absmax")),
             "NF4 has a separate absmax operand"
         );
         let w_packed = nf4_inputs
@@ -314,9 +303,9 @@ mod tests {
     /// brief explicitly permits in lieu of a real `--features cuda` import.
     #[test]
     fn parses_and_lowers_real_rope_apply_contract() {
+        use fuel_ir::DType;
         use fuel_ir::dispatch::OpKind;
         use fuel_ir::probe::BackendId;
-        use fuel_ir::DType;
 
         let file = parse_file(ROPE_APPLY).expect("rope-apply.fkc.md must parse");
         validate_file(&file).expect("rope-apply.fkc.md must pass the V-FKC-* validators");
@@ -326,11 +315,21 @@ mod tests {
         assert_eq!(file.front_matter.provider.kernel_source, "baracuda");
 
         let names: Vec<&str> = file.kernels.iter().map(|k| k.kernel.as_str()).collect();
-        assert!(names.contains(&"rope_apply"), "expected a `rope_apply` section; got {names:?}");
+        assert!(
+            names.contains(&"rope_apply"),
+            "expected a `rope_apply` section; got {names:?}"
+        );
 
-        let kernel = file.kernels.iter().find(|k| k.kernel == "rope_apply").unwrap();
+        let kernel = file
+            .kernels
+            .iter()
+            .find(|k| k.kernel == "rope_apply")
+            .unwrap();
         assert_eq!(kernel.op_kind.as_deref(), Some("Rope"));
-        assert!(kernel.fused_op.is_none(), "rope_apply is a primitive op_kind contract, not fused");
+        assert!(
+            kernel.fused_op.is_none(),
+            "rope_apply is a primitive op_kind contract, not fused"
+        );
 
         // Three inputs: x (fans over the 4 dtypes), cos + sin (fixed F32 each,
         // per baracuda's ABI — see the contract's front-matter note).
@@ -339,7 +338,12 @@ mod tests {
         assert_eq!(accept.inputs[0].name.as_deref(), Some("x"));
         assert_eq!(
             accept.inputs[0].dtypes,
-            vec!["F32".to_string(), "F16".to_string(), "BF16".to_string(), "F64".to_string()],
+            vec![
+                "F32".to_string(),
+                "F16".to_string(),
+                "BF16".to_string(),
+                "F64".to_string()
+            ],
         );
         assert_eq!(accept.inputs[1].name.as_deref(), Some("cos"));
         assert_eq!(accept.inputs[1].dtypes, vec!["F32".to_string()]);
@@ -366,7 +370,11 @@ mod tests {
                     "baracuda_kernels_rope_apply_bf16",
                     "baracuda_kernels_rope_apply_f64",
                 ];
-                if KNOWN.contains(&symbol) { Some(dummy_kernel) } else { None }
+                if KNOWN.contains(&symbol) {
+                    Some(dummy_kernel)
+                } else {
+                    None
+                }
             }
             fn resolve_fused(&self, _symbol: &str) -> Option<crate::kernel::KernelRef> {
                 None
@@ -384,22 +392,35 @@ mod tests {
             })
             .collect();
         assert_eq!(
-            primitives.len(), 4,
-            "expected 4 dtype variants (F32/F16/BF16/F64); got {}", primitives.len(),
+            primitives.len(),
+            4,
+            "expected 4 dtype variants (F32/F16/BF16/F64); got {}",
+            primitives.len(),
         );
         for p in &primitives {
             assert_eq!(p.op, OpKind::Rope);
             assert_eq!(p.backend, BackendId::Cuda);
             // Per-variant key: [x_dt, F32(cos), F32(sin), x_dt(out, passthrough)].
-            assert_eq!(p.dtypes.len(), 4, "expected [x, cos, sin, out] key; got {:?}", p.dtypes);
+            assert_eq!(
+                p.dtypes.len(),
+                4,
+                "expected [x, cos, sin, out] key; got {:?}",
+                p.dtypes
+            );
             assert_eq!(p.dtypes[1], DType::F32, "cos is always F32");
             assert_eq!(p.dtypes[2], DType::F32, "sin is always F32");
-            assert_eq!(p.dtypes[0], p.dtypes[3], "output passthrough(x) must match x's dtype");
+            assert_eq!(
+                p.dtypes[0], p.dtypes[3],
+                "output passthrough(x) must match x's dtype"
+            );
         }
-        let x_dtypes: std::collections::HashSet<DType> = primitives.iter().map(|p| p.dtypes[0]).collect();
+        let x_dtypes: std::collections::HashSet<DType> =
+            primitives.iter().map(|p| p.dtypes[0]).collect();
         assert_eq!(
             x_dtypes,
-            [DType::F32, DType::F16, DType::BF16, DType::F64].into_iter().collect(),
+            [DType::F32, DType::F16, DType::BF16, DType::F64]
+                .into_iter()
+                .collect(),
             "expected exactly the F32/F16/BF16/F64 fan",
         );
     }
@@ -488,7 +509,10 @@ op_kind: AddElementwise
 ```
 ";
         let err = parse_file(src).expect_err("anchor must be rejected");
-        assert!(matches!(err, FkcError::AnchorDisallowed { .. }), "got {err:?}");
+        assert!(
+            matches!(err, FkcError::AnchorDisallowed { .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]
@@ -512,7 +536,10 @@ blurb: *base
 ```
 ";
         let err = parse_file(src).expect_err("alias must be rejected");
-        assert!(matches!(err, FkcError::AliasDisallowed { .. }), "got {err:?}");
+        assert!(
+            matches!(err, FkcError::AliasDisallowed { .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]
@@ -692,14 +719,22 @@ kernel: demo2
     fn orphan_fkc_block_outside_a_section_is_rejected() {
         // A fkc block under only an H1, no `## ` heading — today silently dropped.
         let src = "---\nfkc_version: 1\nprovider:\n  name: p\n  backend: Cpu\n  kernel_source: \"ks\"\n---\n\n# Title\n\n```fkc\nkernel: add_f32\nop_kind: AddElementwise\n```\n";
-        let err = parse_file(src).expect_err("an fkc block outside any `## ` section must be rejected, not silently dropped");
-        assert!(matches!(err, FkcError::OrphanFkcBlock { .. }), "got {err:?}");
+        let err = parse_file(src).expect_err(
+            "an fkc block outside any `## ` section must be rejected, not silently dropped",
+        );
+        assert!(
+            matches!(err, FkcError::OrphanFkcBlock { .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]
     fn fkc_block_with_no_sections_at_all_is_rejected() {
         let src = "---\nfkc_version: 1\nprovider:\n  name: p\n  backend: Cpu\n  kernel_source: \"ks\"\n---\n\n```fkc\nkernel: add_f32\nop_kind: AddElementwise\n```\n";
-        assert!(matches!(parse_file(src).unwrap_err(), FkcError::OrphanFkcBlock { .. }));
+        assert!(matches!(
+            parse_file(src).unwrap_err(),
+            FkcError::OrphanFkcBlock { .. }
+        ));
     }
 
     #[test]
@@ -715,7 +750,11 @@ kernel: demo2
         // only), so a ```fkc block after it is still an orphan and must be rejected —
         // the detector must not treat the indented line as "a section started".
         let src = "---\nfkc_version: 1\nprovider:\n  name: p\n  backend: Cpu\n  kernel_source: \"ks\"\n---\n\n# Title\n\n  ## not-a-real-heading (indented)\n\n```fkc\nkernel: add_f32\nop_kind: AddElementwise\n```\n";
-        let err = parse_file(src).expect_err("an indented pseudo-heading must not hide a following orphan fkc block");
-        assert!(matches!(err, FkcError::OrphanFkcBlock { .. }), "got {err:?}");
+        let err = parse_file(src)
+            .expect_err("an indented pseudo-heading must not hide a following orphan fkc block");
+        assert!(
+            matches!(err, FkcError::OrphanFkcBlock { .. }),
+            "got {err:?}"
+        );
     }
 }

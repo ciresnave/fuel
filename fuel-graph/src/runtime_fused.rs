@@ -211,7 +211,11 @@ pub fn runtime_region(id: FusedOpId) -> Option<PatternNode> {
         return None;
     }
     let idx = (id.0 - FusedOpId::RUNTIME_FUSED_BASE) as usize;
-    RUNTIME_FUSED_OPS.read().unwrap().get(idx).map(|e| e.region.clone())
+    RUNTIME_FUSED_OPS
+        .read()
+        .unwrap()
+        .get(idx)
+        .map(|e| e.region.clone())
 }
 
 /// A runtime op's name (telemetry / `op_short_name` routing).
@@ -220,7 +224,11 @@ pub fn runtime_name(id: FusedOpId) -> Option<String> {
         return None;
     }
     let idx = (id.0 - FusedOpId::RUNTIME_FUSED_BASE) as usize;
-    RUNTIME_FUSED_OPS.read().unwrap().get(idx).map(|e| e.name.clone())
+    RUNTIME_FUSED_OPS
+        .read()
+        .unwrap()
+        .get(idx)
+        .map(|e| e.name.clone())
 }
 
 /// All registered runtime ops — the optimizer iterates this to build a fusion
@@ -349,7 +357,8 @@ fn tag_to_op(tag: OpTag, attrs: &OpAttrs) -> Option<Op> {
             if attrs.lhs_roles.is_empty() && attrs.rhs_roles.is_empty() {
                 Op::MatMul
             } else {
-                let (canon_lhs, canon_rhs) = matmul_roles(attrs.lhs_roles.len(), attrs.rhs_roles.len());
+                let (canon_lhs, canon_rhs) =
+                    matmul_roles(attrs.lhs_roles.len(), attrs.rhs_roles.len());
                 if attrs.lhs_roles.len() == attrs.rhs_roles.len()
                     && attrs.lhs_roles.len() >= 2
                     && attrs.lhs_roles == canon_lhs
@@ -369,18 +378,33 @@ fn tag_to_op(tag: OpTag, attrs: &OpAttrs) -> Option<Op> {
         T::BroadcastTo => Op::BroadcastTo(shape_from_attr(attrs)?),
         T::ReduceSumTo => Op::ReduceSumTo(shape_from_attr(attrs)?),
         T::ReduceMaxTo => Op::ReduceMaxTo(shape_from_attr(attrs)?),
-        T::Unsqueeze => Op::Unsqueeze { dim: *attrs.dims.first()? as usize },
-        T::Squeeze => Op::Squeeze { dim: *attrs.dims.first()? as usize },
+        T::Unsqueeze => Op::Unsqueeze {
+            dim: *attrs.dims.first()? as usize,
+        },
+        T::Squeeze => Op::Squeeze {
+            dim: *attrs.dims.first()? as usize,
+        },
         T::Slice => Op::Slice {
             dim: attrs.axis? as usize,
             start: attrs.slice_start? as usize,
             len: attrs.slice_len? as usize,
         },
-        T::Concat => Op::Concat { dim: attrs.axis? as usize },
-        T::Flip => Op::Flip { dim: attrs.axis? as usize },
-        T::Roll => Op::Roll { dim: attrs.axis? as usize, shift: attrs.roll_shift? },
+        T::Concat => Op::Concat {
+            dim: attrs.axis? as usize,
+        },
+        T::Flip => Op::Flip {
+            dim: attrs.axis? as usize,
+        },
+        T::Roll => Op::Roll {
+            dim: attrs.axis? as usize,
+            shift: attrs.roll_shift?,
+        },
         T::Pad => Op::Pad {
-            padding: attrs.pad_amounts.iter().map(|&(b, e)| (b as usize, e as usize)).collect(),
+            padding: attrs
+                .pad_amounts
+                .iter()
+                .map(|&(b, e)| (b as usize, e as usize))
+                .collect(),
             mode: match attrs.pad_mode? {
                 0 => crate::PadMode::Constant,
                 1 => crate::PadMode::Reflect,
@@ -389,8 +413,12 @@ fn tag_to_op(tag: OpTag, attrs: &OpAttrs) -> Option<Op> {
             },
             value: attrs.pad_value.unwrap_or(0.0),
         },
-        T::Triu => Op::Triu { diagonal: attrs.axis? },
-        T::Tril => Op::Tril { diagonal: attrs.axis? },
+        T::Triu => Op::Triu {
+            diagonal: attrs.axis?,
+        },
+        T::Tril => Op::Tril {
+            diagonal: attrs.axis?,
+        },
         // Reductions (dim rides `axis`; keepdim reductions ride `target_shape`).
         T::SumDim => Op::SumDim(attrs.axis? as usize),
         T::MaxDim => Op::MaxDim(attrs.axis? as usize),
@@ -399,14 +427,26 @@ fn tag_to_op(tag: OpTag, attrs: &OpAttrs) -> Option<Op> {
         T::MaxAll => Op::MaxAll,
         T::MinAll => Op::MinAll,
         T::MeanAll => Op::MeanAll,
-        T::CumSum => Op::CumSum { dim: attrs.axis? as usize },
+        T::CumSum => Op::CumSum {
+            dim: attrs.axis? as usize,
+        },
         // Value source leaf (len rides `target_shape` as a 1-element shape).
-        T::Iota => Op::Iota { len: *attrs.target_shape.first()? as usize },
+        T::Iota => Op::Iota {
+            len: *attrs.target_shape.first()? as usize,
+        },
         // Indexing (dim rides `axis`).
-        T::IndexSelect => Op::IndexSelect { dim: attrs.axis? as usize },
-        T::Gather => Op::Gather { dim: attrs.axis? as usize },
-        T::IndexAdd => Op::IndexAdd { dim: attrs.axis? as usize },
-        T::ScatterAdd => Op::ScatterAdd { dim: attrs.axis? as usize },
+        T::IndexSelect => Op::IndexSelect {
+            dim: attrs.axis? as usize,
+        },
+        T::Gather => Op::Gather {
+            dim: attrs.axis? as usize,
+        },
+        T::IndexAdd => Op::IndexAdd {
+            dim: attrs.axis? as usize,
+        },
+        T::ScatterAdd => Op::ScatterAdd {
+            dim: attrs.axis? as usize,
+        },
 
         // --- Op::Scan structural re-emit (Increment C, B1) ---
         // A scan's body sub-graph rides the node's operands (the trailing
@@ -443,7 +483,9 @@ fn tag_to_op(tag: OpTag, attrs: &OpAttrs) -> Option<Op> {
         // Multi-output slot projection. The slot's shape/dtype are NOT decoded
         // here (they come from the producer's `output_views` bundle at emit
         // time, mirroring `Graph::view`); this arm reconstructs only the op.
-        T::View => Op::View { slot: attrs.view_slot? },
+        T::View => Op::View {
+            slot: attrs.view_slot?,
+        },
 
         // Nested fused op carried AS-IS (Increment C, C-T2, mechanism 2a). The
         // `fused_op` selector names the registry entry (mirroring `cast_dtype`'s
@@ -456,7 +498,8 @@ fn tag_to_op(tag: OpTag, attrs: &OpAttrs) -> Option<Op> {
         // rules (`primitive_shape` honest-misses `Fused`); this arm reconstructs
         // only the op. Fuel-INTERNAL — a `Fused` node never reaches the §6.19 wire.
         T::Fused => {
-            let fid = crate::registry::default_registry().id_for_name(attrs.fused_op.as_deref()?)?;
+            let fid =
+                crate::registry::default_registry().id_for_name(attrs.fused_op.as_deref()?)?;
             Op::Fused(fid, fused_params_for(fid)?)
         }
 
@@ -473,7 +516,9 @@ fn tag_to_op(tag: OpTag, attrs: &OpAttrs) -> Option<Op> {
                 Some(name) => DType::from_str(name).ok()?,
                 None => DType::F32,
             };
-            Op::MaskedFill { value: masked_fill_scalar(v, dtype)? }
+            Op::MaskedFill {
+                value: masked_fill_scalar(v, dtype)?,
+            }
         }
 
         // Honest misses (rejected at registration): Clamp (no two-scalar
@@ -576,7 +621,11 @@ pub enum RelAttrError {
     /// ([`fuel_kernel_seam_types::shape_expr::TAG_DIMS`] = `0x0B`, a §6.20-0002
     /// extension-registry entrant — proposal filed KISS #80). `frame` is the
     /// computed per-axis-max frame, for telemetry.
-    FrameNotExpressible { field: &'static str, frame: Vec<i64>, missing_ctor: u8 },
+    FrameNotExpressible {
+        field: &'static str,
+        frame: Vec<i64>,
+        missing_ctor: u8,
+    },
 }
 
 /// Whether `attrs` carries any shape-RELATIVE field (D2) — the emit fast-path
@@ -730,9 +779,7 @@ pub fn resolve_rel_attrs(
     bind_shapes: &[Vec<i64>],
     child_shapes: &[Vec<i64>],
 ) -> Result<OpAttrs, RelAttrError> {
-    use fuel_kernel_seam_types::shape_expr::{
-        self, Dim, DimValue, LAST, ShapeValue, resolve_axis,
-    };
+    use fuel_kernel_seam_types::shape_expr::{self, Dim, DimValue, LAST, ShapeValue, resolve_axis};
     // Mutual exclusion FIRST, for every field, before any evaluation — so a
     // value-dependent decline in an earlier field can't mask a rel+abs
     // authoring conflict in a later one (the registration probe relies on
@@ -747,7 +794,10 @@ pub fn resolve_rel_attrs(
         match shape_expr::eval_shape(se, bind_shapes, &[]).map_err(RelAttrError::Expr)? {
             ShapeValue::Concrete(s) => {
                 if let Some(&bad) = s.iter().find(|&&e| e < 0) {
-                    return Err(RelAttrError::Negative { field: "target_shape", value: bad });
+                    return Err(RelAttrError::Negative {
+                        field: "target_shape",
+                        value: bad,
+                    });
                 }
                 // I1: refuse a `SameAs` target whose region frame no operand
                 // carries — a silent PARTIAL frame otherwise (see
@@ -758,7 +808,9 @@ pub fn resolve_rel_attrs(
                 out.target_shape = s;
             }
             ShapeValue::Gap => {
-                return Err(RelAttrError::SymbolicGap { field: "target_shape" });
+                return Err(RelAttrError::SymbolicGap {
+                    field: "target_shape",
+                });
             }
         }
         out.target_shape_rel = None;
@@ -798,13 +850,26 @@ pub fn resolve_rel_attrs(
 
     // axis_last → the per-tag axis carrier, resolved against operand[0]'s rank.
     if attrs.axis_last {
-        let rank = child_shapes.first().ok_or(RelAttrError::NoChildOperand)?.len();
+        let rank = child_shapes
+            .first()
+            .ok_or(RelAttrError::NoChildOperand)?
+            .len();
         use OpTag as T;
         match tag {
             // `axis`-carrier tags: this op's LAST = rank − 1 via the shared
             // §6.20 resolver (typed AxisOutOfRange on a rank-0 operand).
-            T::SumDim | T::MaxDim | T::MeanDim | T::CumSum | T::Concat | T::Flip | T::Slice
-            | T::Roll | T::IndexSelect | T::Gather | T::IndexAdd | T::ScatterAdd => {
+            T::SumDim
+            | T::MaxDim
+            | T::MeanDim
+            | T::CumSum
+            | T::Concat
+            | T::Flip
+            | T::Slice
+            | T::Roll
+            | T::IndexSelect
+            | T::Gather
+            | T::IndexAdd
+            | T::ScatterAdd => {
                 let a = resolve_axis(LAST, rank).map_err(RelAttrError::Expr)?;
                 out.axis = Some(a as i64);
             }
@@ -833,7 +898,11 @@ pub fn resolve_rel_attrs(
 /// fused node must carry for [`decompose_region`] to fill the re-emit.
 pub fn count_scalar_slots(node: &PatternNode) -> usize {
     match node {
-        PatternNode::Op { op, operands, attrs } => {
+        PatternNode::Op {
+            op,
+            operands,
+            attrs,
+        } => {
             // A `scalar_rel` node is filled from an input SHAPE at emit time, NOT
             // from the params cursor — so it is never an open slot (mirrors a
             // baked-value node). Only an empty-`scalars`, no-`scalar_rel`
@@ -873,7 +942,11 @@ fn validate_representable(region: &PatternNode) -> Result<(), RuntimeFusedError>
 
 fn validate_node(node: &PatternNode, n_binds: usize) -> Result<(), RuntimeFusedError> {
     match node {
-        PatternNode::Op { op, operands, attrs } => {
+        PatternNode::Op {
+            op,
+            operands,
+            attrs,
+        } => {
             // A rel-attr op is a SHAPE-POLYMORPHIC template — probe-resolve it
             // (T3, mirror of the scalar slot dummy-fill below) so the
             // `tag_to_op` representability check can run on concrete attrs.
@@ -1005,7 +1078,15 @@ pub fn decompose_region(graph: &mut Graph, node_id: NodeId) -> NodeId {
     // no-op fixpoint (G2) — same posture as the slot-count mismatch above,
     // never a panic. Any child nodes emitted before the decline stay in the
     // push-only graph as unreferenced dead nodes (inert).
-    emit(graph, &region, &inputs, &bind_shapes, &mut cursor, &mut Vec::new()).unwrap_or(node_id)
+    emit(
+        graph,
+        &region,
+        &inputs,
+        &bind_shapes,
+        &mut cursor,
+        &mut Vec::new(),
+    )
+    .unwrap_or(node_id)
 }
 
 /// Re-emit a validated region on the given external input nodes (public entry
@@ -1054,7 +1135,14 @@ pub fn try_emit_region(
 ) -> Result<NodeId, RelAttrError> {
     let bind_shapes = bind_operand_shapes(graph, inputs);
     let mut cursor = scalars;
-    emit(graph, region, inputs, &bind_shapes, &mut cursor, &mut Vec::new())
+    emit(
+        graph,
+        region,
+        inputs,
+        &bind_shapes,
+        &mut cursor,
+        &mut Vec::new(),
+    )
 }
 
 /// A graph [`fuel_ir::Shape`] as a §6.20 evaluator operand: per-axis extents
@@ -1065,14 +1153,23 @@ pub fn try_emit_region(
 fn shape_expr_operand(shape: &fuel_ir::Shape) -> Vec<i64> {
     use fuel_kernel_seam_types::shape_expr::SYMBOLIC;
     (0..shape.rank())
-        .map(|a| if shape.extent(a).is_dynamic() { SYMBOLIC } else { shape.dims()[a] as i64 })
+        .map(|a| {
+            if shape.extent(a).is_dynamic() {
+                SYMBOLIC
+            } else {
+                shape.dims()[a] as i64
+            }
+        })
         .collect()
 }
 
 /// The region's **Bind-space** shapes (`bind_shapes[i]` = `inputs[i]`'s shape)
 /// in §6.20 operand form — what `ShapeExpr::SameAs`/`Dim::Extent` index.
 fn bind_operand_shapes(graph: &Graph, inputs: &[NodeId]) -> Vec<Vec<i64>> {
-    inputs.iter().map(|&id| shape_expr_operand(&graph.node(id).shape)).collect()
+    inputs
+        .iter()
+        .map(|&id| shape_expr_operand(&graph.node(id).shape))
+        .collect()
 }
 
 /// The recursive re-emit core. `memo` is the per-emit-call identity-share
@@ -1096,7 +1193,11 @@ fn emit<'r>(
 ) -> Result<NodeId, RelAttrError> {
     match node {
         PatternNode::Bind { index } => Ok(inputs[*index as usize]),
-        PatternNode::Op { op, operands, attrs } => {
+        PatternNode::Op {
+            op,
+            operands,
+            attrs,
+        } => {
             // Identity-share: a slot-free subtree already emitted in THIS call
             // re-uses its node (see the fn doc). Checked before the cursor
             // fill — a slot-free subtree never moves the cursor, so a hit
@@ -1122,7 +1223,10 @@ fn emit<'r>(
             let attrs = if attrs.scalars.is_empty() && arity > 0 && attrs.scalar_rel.is_none() {
                 let (take, rest) = scalars.split_at(arity);
                 *scalars = rest;
-                filled = OpAttrs { scalars: take.to_vec(), ..attrs.clone() };
+                filled = OpAttrs {
+                    scalars: take.to_vec(),
+                    ..attrs.clone()
+                };
                 &filled
             } else {
                 attrs
@@ -1133,8 +1237,10 @@ fn emit<'r>(
             for o in operands {
                 child_ids.push(emit(graph, o, inputs, bind_shapes, scalars, memo)?);
             }
-            let mut child_shapes: Vec<fuel_ir::Shape> =
-                child_ids.iter().map(|&c| graph.node(c).shape.clone()).collect();
+            let mut child_shapes: Vec<fuel_ir::Shape> = child_ids
+                .iter()
+                .map(|&c| graph.node(c).shape.clone())
+                .collect();
             let child_dtypes: Vec<fuel_ir::DType> =
                 child_ids.iter().map(|&c| graph.node(c).dtype).collect();
             // Shape-RELATIVE attrs (D2) resolve to fully-concrete siblings
@@ -1154,7 +1260,8 @@ fn emit<'r>(
             } else {
                 attrs
             };
-            let mut prim = tag_to_op(*op, attrs).expect("region validated re-emittable at registration");
+            let mut prim =
+                tag_to_op(*op, attrs).expect("region validated re-emittable at registration");
             // A `MaskedFill` fill Scalar must carry the FILLED tensor's
             // (operand[0]) dtype — the byte executor derives `fill_bytes` at
             // that width. A recipe authors the value dtype-polymorphically (no
@@ -1217,13 +1324,20 @@ fn emit<'r>(
                 cd: &[fuel_ir::DType],
             ) -> (fuel_ir::Shape, fuel_ir::DType) {
                 (
-                    cs.first().cloned().unwrap_or_else(|| fuel_ir::Shape::from_dims(&[])),
+                    cs.first()
+                        .cloned()
+                        .unwrap_or_else(|| fuel_ir::Shape::from_dims(&[])),
                     cd.first().copied().unwrap_or(fuel_ir::DType::F32),
                 )
             }
             let mut scan_bundle: Option<Vec<fuel_ir::storage::OutputViewSpec>> = None;
             let (s, d) = match &prim {
-                Op::Scan { n_xs, bound, early_exit, .. } => {
+                Op::Scan {
+                    n_xs,
+                    bound,
+                    early_exit,
+                    ..
+                } => {
                     // inputs = [init_carry, xs(n_xs), consts.., body_new_carry,
                     // body_y, [pred_exit]] — the Phase-1 lax.scan encoding.
                     let n_trailing = if early_exit.is_some() { 3 } else { 2 };
@@ -1263,15 +1377,13 @@ fn emit<'r>(
                 // `dtype_rule` (e.g. softmax passes both through). Falls back to
                 // operand[0] on an unregistered id (never a panic), the same
                 // posture as the primitive_shape fallback.
-                Op::Fused(fid, params) => {
-                    match crate::registry::default_registry().entry(*fid) {
-                        Some(e) => (
-                            (e.shape_rule)(&child_shapes, params),
-                            (e.dtype_rule)(&child_dtypes, params),
-                        ),
-                        None => fallback_sd(&child_shapes, &child_dtypes),
-                    }
-                }
+                Op::Fused(fid, params) => match crate::registry::default_registry().entry(*fid) {
+                    Some(e) => (
+                        (e.shape_rule)(&child_shapes, params),
+                        (e.dtype_rule)(&child_dtypes, params),
+                    ),
+                    None => fallback_sd(&child_shapes, &child_dtypes),
+                },
                 // A childless scan-body hole (`Op::ScanPlaceholder`). Its shape
                 // is DECLARED on the recipe node (`target_shape` /
                 // `target_shape_rel`, resolved above) rather than inferred from
@@ -1295,13 +1407,19 @@ fn emit<'r>(
                 _ => crate::shape::primitive_shape(&prim, &child_shapes, &child_dtypes)
                     .unwrap_or_else(|_| fallback_sd(&child_shapes, &child_dtypes)),
             };
-            let out = graph.push(Node { op: prim, inputs: child_ids, shape: s, dtype: d });
+            let out = graph.push(Node {
+                op: prim,
+                inputs: child_ids,
+                shape: s,
+                dtype: d,
+            });
             // Attach the scan's 2-slot bundle (mirrors `Tensor::scan`). A
             // malformed spec (compose/validate failure) leaves the producer
             // bundle-less — a later `View` then falls back — never a panic.
             if let Some(specs) = scan_bundle {
                 if let Ok((_bytes, views)) = fuel_ir::storage::compose_bundle(&specs) {
-                    let _ = graph.set_output_views(out, std::sync::Arc::from(views.into_boxed_slice()));
+                    let _ =
+                        graph.set_output_views(out, std::sync::Arc::from(views.into_boxed_slice()));
                 }
             }
             if sharable {
@@ -1339,7 +1457,10 @@ mod tests {
             operands: vec![PatternNode::Op {
                 op: OpTag::Add,
                 attrs: OpAttrs::default(),
-                operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+                operands: vec![
+                    PatternNode::Bind { index: 0 },
+                    PatternNode::Bind { index: 1 },
+                ],
             }],
         }
     }
@@ -1368,7 +1489,10 @@ mod tests {
             operands: vec![PatternNode::Op {
                 op: OpTag::Mul,
                 attrs: OpAttrs::default(),
-                operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+                operands: vec![
+                    PatternNode::Bind { index: 0 },
+                    PatternNode::Bind { index: 1 },
+                ],
             }],
         }
     }
@@ -1385,7 +1509,10 @@ mod tests {
     fn register_runtime_fused_dedups_structurally_identical_regions() {
         let id1 = register_runtime_fused("dedup::a", relu_add_region()).unwrap();
         let id2 = register_runtime_fused("dedup::b", relu_add_region()).unwrap(); // same region, different name
-        assert_eq!(id1, id2, "an identical region must resolve to the same FusedOpId, not a duplicate");
+        assert_eq!(
+            id1, id2,
+            "an identical region must resolve to the same FusedOpId, not a duplicate"
+        );
     }
 
     #[test]
@@ -1394,7 +1521,10 @@ mod tests {
         let region = PatternNode::Op {
             op: OpTag::Add,
             attrs: OpAttrs::default(),
-            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 2 }],
+            operands: vec![
+                PatternNode::Bind { index: 0 },
+                PatternNode::Bind { index: 2 },
+            ],
         };
         assert_eq!(
             register_runtime_fused("bad", region),
@@ -1423,20 +1553,56 @@ mod tests {
     fn tag_to_op_reconstructs_shape_changing_ops() {
         use fuel_ir::Shape;
         // Slice{dim:1,start:2,len:3}
-        let attrs = OpAttrs { axis: Some(1), slice_start: Some(2), slice_len: Some(3), ..OpAttrs::default() };
-        assert!(matches!(super::tag_to_op(OpTag::Slice, &attrs), Some(Op::Slice { dim: 1, start: 2, len: 3 })));
+        let attrs = OpAttrs {
+            axis: Some(1),
+            slice_start: Some(2),
+            slice_len: Some(3),
+            ..OpAttrs::default()
+        };
+        assert!(matches!(
+            super::tag_to_op(OpTag::Slice, &attrs),
+            Some(Op::Slice {
+                dim: 1,
+                start: 2,
+                len: 3
+            })
+        ));
         // Concat{dim:0}
-        let attrs = OpAttrs { axis: Some(0), ..OpAttrs::default() };
-        assert!(matches!(super::tag_to_op(OpTag::Concat, &attrs), Some(Op::Concat { dim: 0 })));
+        let attrs = OpAttrs {
+            axis: Some(0),
+            ..OpAttrs::default()
+        };
+        assert!(matches!(
+            super::tag_to_op(OpTag::Concat, &attrs),
+            Some(Op::Concat { dim: 0 })
+        ));
         // Reshape([6])
-        let attrs = OpAttrs { target_shape: vec![6], ..OpAttrs::default() };
-        assert_eq!(super::tag_to_op(OpTag::Reshape, &attrs), Some(Op::Reshape(Shape::from_dims(&[6]))));
+        let attrs = OpAttrs {
+            target_shape: vec![6],
+            ..OpAttrs::default()
+        };
+        assert_eq!(
+            super::tag_to_op(OpTag::Reshape, &attrs),
+            Some(Op::Reshape(Shape::from_dims(&[6])))
+        );
         // BroadcastTo([2,3])
-        let attrs = OpAttrs { target_shape: vec![2, 3], ..OpAttrs::default() };
-        assert_eq!(super::tag_to_op(OpTag::BroadcastTo, &attrs), Some(Op::BroadcastTo(Shape::from_dims(&[2, 3]))));
+        let attrs = OpAttrs {
+            target_shape: vec![2, 3],
+            ..OpAttrs::default()
+        };
+        assert_eq!(
+            super::tag_to_op(OpTag::BroadcastTo, &attrs),
+            Some(Op::BroadcastTo(Shape::from_dims(&[2, 3])))
+        );
         // ReduceMaxTo([2,1])
-        let attrs = OpAttrs { target_shape: vec![2, 1], ..OpAttrs::default() };
-        assert_eq!(super::tag_to_op(OpTag::ReduceMaxTo, &attrs), Some(Op::ReduceMaxTo(Shape::from_dims(&[2, 1]))));
+        let attrs = OpAttrs {
+            target_shape: vec![2, 1],
+            ..OpAttrs::default()
+        };
+        assert_eq!(
+            super::tag_to_op(OpTag::ReduceMaxTo, &attrs),
+            Some(Op::ReduceMaxTo(Shape::from_dims(&[2, 1])))
+        );
     }
 
     #[test]
@@ -1448,27 +1614,66 @@ mod tests {
         let empty = Shape::from_dims(&[]);
         // Marker SET → the concrete rank-0 shape (RED before the shape_from_attr
         // rank0 arm: an empty `target_shape` honest-missed to `None`).
-        let rank0 = OpAttrs { rank0_target: true, ..OpAttrs::default() };
+        let rank0 = OpAttrs {
+            rank0_target: true,
+            ..OpAttrs::default()
+        };
         assert_eq!(super::shape_from_attr(&rank0), Some(empty.clone()));
-        assert_eq!(super::tag_to_op(OpTag::ReduceSumTo, &rank0), Some(Op::ReduceSumTo(empty.clone())));
-        assert_eq!(super::tag_to_op(OpTag::ReduceMaxTo, &rank0), Some(Op::ReduceMaxTo(empty.clone())));
-        assert_eq!(super::tag_to_op(OpTag::Reshape, &rank0), Some(Op::Reshape(empty.clone())));
-        assert_eq!(super::tag_to_op(OpTag::BroadcastTo, &rank0), Some(Op::BroadcastTo(empty)));
+        assert_eq!(
+            super::tag_to_op(OpTag::ReduceSumTo, &rank0),
+            Some(Op::ReduceSumTo(empty.clone()))
+        );
+        assert_eq!(
+            super::tag_to_op(OpTag::ReduceMaxTo, &rank0),
+            Some(Op::ReduceMaxTo(empty.clone()))
+        );
+        assert_eq!(
+            super::tag_to_op(OpTag::Reshape, &rank0),
+            Some(Op::Reshape(empty.clone()))
+        );
+        assert_eq!(
+            super::tag_to_op(OpTag::BroadcastTo, &rank0),
+            Some(Op::BroadcastTo(empty))
+        );
         // Marker UNSET + empty target_shape stays an honest miss (wildcard).
         assert_eq!(super::shape_from_attr(&OpAttrs::default()), None);
-        assert_eq!(super::tag_to_op(OpTag::ReduceSumTo, &OpAttrs::default()), None);
+        assert_eq!(
+            super::tag_to_op(OpTag::ReduceSumTo, &OpAttrs::default()),
+            None
+        );
     }
 
     #[test]
     fn tag_to_op_reconstructs_reductions_dtype_and_matmul() {
         use fuel_ir::DType;
-        assert!(matches!(super::tag_to_op(OpTag::MeanDim, &OpAttrs { axis: Some(1), ..OpAttrs::default() }), Some(Op::MeanDim(1))));
-        assert!(matches!(super::tag_to_op(OpTag::MatMul, &OpAttrs::default()), Some(Op::MatMul)));
+        assert!(matches!(
+            super::tag_to_op(
+                OpTag::MeanDim,
+                &OpAttrs {
+                    axis: Some(1),
+                    ..OpAttrs::default()
+                }
+            ),
+            Some(Op::MeanDim(1))
+        ));
+        assert!(matches!(
+            super::tag_to_op(OpTag::MatMul, &OpAttrs::default()),
+            Some(Op::MatMul)
+        ));
         // Cast target dtype via name.
-        let attrs = OpAttrs { cast_dtype: Some("f16".into()), ..OpAttrs::default() };
-        assert_eq!(super::tag_to_op(OpTag::Cast, &attrs), Some(Op::Cast(DType::F16)));
+        let attrs = OpAttrs {
+            cast_dtype: Some("f16".into()),
+            ..OpAttrs::default()
+        };
+        assert_eq!(
+            super::tag_to_op(OpTag::Cast, &attrs),
+            Some(Op::Cast(DType::F16))
+        );
         // Comparison.
-        assert!(matches!(super::tag_to_op(OpTag::Lt, &OpAttrs::default()), Some(Op::Lt)));
+        assert!(matches!(
+            super::tag_to_op(OpTag::Lt, &OpAttrs::default()),
+            Some(Op::Lt)
+        ));
     }
 
     #[test]
@@ -1477,23 +1682,44 @@ mod tests {
         // `scalars[0]`, dtype on `cast_dtype` (the `op_to_attrs` projection) —
         // RED before A2 (MaskedFill was the `_ => return None` honest miss).
         use fuel_ir::Scalar;
-        let attrs = OpAttrs { scalars: vec![-1.0], cast_dtype: Some("f16".into()), ..OpAttrs::default() };
+        let attrs = OpAttrs {
+            scalars: vec![-1.0],
+            cast_dtype: Some("f16".into()),
+            ..OpAttrs::default()
+        };
         match super::tag_to_op(OpTag::MaskedFill, &attrs) {
             Some(Op::MaskedFill { value }) => {
                 assert_eq!(value.dtype(), DType::F16, "dtype rides cast_dtype");
-                assert_eq!(value, Scalar::from_f64(-1.0, DType::F16).unwrap(), "value rides scalars[0]");
+                assert_eq!(
+                    value,
+                    Scalar::from_f64(-1.0, DType::F16).unwrap(),
+                    "value rides scalars[0]"
+                );
             }
             other => panic!("expected MaskedFill, got {other:?}"),
         }
         // No fill value ⇒ honest miss (None), never a defaulted 0.
-        assert_eq!(super::tag_to_op(OpTag::MaskedFill, &OpAttrs::default()), None);
+        assert_eq!(
+            super::tag_to_op(OpTag::MaskedFill, &OpAttrs::default()),
+            None
+        );
         // A dtype `Scalar` cannot represent (sub-byte dummy) ⇒ honest miss.
-        let dummy = OpAttrs { scalars: vec![1.0], cast_dtype: Some("f4".into()), ..OpAttrs::default() };
+        let dummy = OpAttrs {
+            scalars: vec![1.0],
+            cast_dtype: Some("f4".into()),
+            ..OpAttrs::default()
+        };
         assert_eq!(super::tag_to_op(OpTag::MaskedFill, &dummy), None);
         // dtype-polymorphic authoring (no cast_dtype) reconstructs a provisional
         // F32 that `emit` later re-resolves to operand[0]'s dtype.
-        let poly = OpAttrs { scalars: vec![1.0], ..OpAttrs::default() };
-        assert!(matches!(super::tag_to_op(OpTag::MaskedFill, &poly), Some(Op::MaskedFill { .. })));
+        let poly = OpAttrs {
+            scalars: vec![1.0],
+            ..OpAttrs::default()
+        };
+        assert!(matches!(
+            super::tag_to_op(OpTag::MaskedFill, &poly),
+            Some(Op::MaskedFill { .. })
+        ));
         // The fill value is a BAKED pattern constant, not a cursor slot.
         assert_eq!(super::scalar_slot_arity(OpTag::MaskedFill), 0);
     }
@@ -1505,12 +1731,24 @@ mod tests {
         // i32 — |n| < 2^53), reconstructed via `as i32`. RED before A3 (PowI was
         // in the `_ => return None` honest-miss set).
         assert!(matches!(
-            super::tag_to_op(OpTag::PowI, &OpAttrs { scalars: vec![3.0], ..OpAttrs::default() }),
+            super::tag_to_op(
+                OpTag::PowI,
+                &OpAttrs {
+                    scalars: vec![3.0],
+                    ..OpAttrs::default()
+                }
+            ),
             Some(Op::PowI(3))
         ));
         // Negative exponent (e.g. PowI(-1) = reciprocal — the exp==0 backward arm).
         assert!(matches!(
-            super::tag_to_op(OpTag::PowI, &OpAttrs { scalars: vec![-1.0], ..OpAttrs::default() }),
+            super::tag_to_op(
+                OpTag::PowI,
+                &OpAttrs {
+                    scalars: vec![-1.0],
+                    ..OpAttrs::default()
+                }
+            ),
             Some(Op::PowI(-1))
         ));
         // No exponent ⇒ honest miss (None), never a defaulted PowI(0).
@@ -1528,20 +1766,44 @@ mod tests {
         clear_runtime_fused_for_tests();
         let region = PatternNode::Op {
             op: OpTag::MaskedFill,
-            attrs: OpAttrs { scalars: vec![1.0], ..OpAttrs::default() },
-            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+            attrs: OpAttrs {
+                scalars: vec![1.0],
+                ..OpAttrs::default()
+            },
+            operands: vec![
+                PatternNode::Bind { index: 0 },
+                PatternNode::Bind { index: 1 },
+            ],
         };
         register_runtime_fused("mf::poly", region.clone())
             .expect("MaskedFill region registers (was UnRepresentable before A2)");
         // Emit over an F16 tensor + U8 mask ⇒ MaskedFill with an F16 fill Scalar.
         let mut g = Graph::new();
-        let x = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[2, 3]), dtype: DType::F16 });
-        let mask = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[2, 3]), dtype: DType::U8 });
+        let x = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[2, 3]),
+            dtype: DType::F16,
+        });
+        let mask = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[2, 3]),
+            dtype: DType::U8,
+        });
         let root = emit_region(&mut g, &region, &[x, mask], &[]);
         match &g.node(root).op {
             Op::MaskedFill { value } => {
-                assert_eq!(value.dtype(), DType::F16, "fill Scalar re-resolved to operand[0] dtype");
-                assert_eq!(value.to_f64(), 1.0, "fill VALUE preserved through the re-resolution");
+                assert_eq!(
+                    value.dtype(),
+                    DType::F16,
+                    "fill Scalar re-resolved to operand[0] dtype"
+                );
+                assert_eq!(
+                    value.to_f64(),
+                    1.0,
+                    "fill VALUE preserved through the re-resolution"
+                );
             }
             other => panic!("expected MaskedFill, got {other:?}"),
         }
@@ -1555,19 +1817,31 @@ mod tests {
         clear_runtime_fused_for_tests();
         let region = PatternNode::Op {
             op: OpTag::PowI,
-            attrs: OpAttrs { scalars: vec![3.0], ..OpAttrs::default() },
+            attrs: OpAttrs {
+                scalars: vec![3.0],
+                ..OpAttrs::default()
+            },
             operands: vec![PatternNode::Bind { index: 0 }],
         };
         register_runtime_fused("powi::cube", region.clone())
             .expect("PowI region registers (was UnRepresentable before A3)");
         let mut g = Graph::new();
-        let x = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[2, 3]), dtype: DType::F32 });
+        let x = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[2, 3]),
+            dtype: DType::F32,
+        });
         let root = emit_region(&mut g, &region, &[x], &[]);
         assert!(
             matches!(g.node(root).op, Op::PowI(3)),
             "emit reconstructs Op::PowI(3) from scalars[0]",
         );
-        assert_eq!(g.node(root).shape, Shape::from_dims(&[2, 3]), "PowI is shape-preserving");
+        assert_eq!(
+            g.node(root).shape,
+            Shape::from_dims(&[2, 3]),
+            "PowI is shape-preserving"
+        );
         assert_eq!(g.node(root).dtype, DType::F32);
     }
 
@@ -1575,19 +1849,36 @@ mod tests {
     fn tag_to_op_matmul_resolves_canonical_roles() {
         // T9 (D5): explicit CANONICAL role vectors resolve to Op::MatMul. The
         // resolver checks role POSITIONS against the locked cell, not extents.
-        let attrs = OpAttrs { lhs_roles: vec![1, 3], rhs_roles: vec![3, 2], ..OpAttrs::default() };
-        assert!(matches!(super::tag_to_op(OpTag::MatMul, &attrs), Some(Op::MatMul)));
+        let attrs = OpAttrs {
+            lhs_roles: vec![1, 3],
+            rhs_roles: vec![3, 2],
+            ..OpAttrs::default()
+        };
+        assert!(matches!(
+            super::tag_to_op(OpTag::MatMul, &attrs),
+            Some(Op::MatMul)
+        ));
         // Rank-4 canonical (leading Batch dims) also resolves — GQA-divisible
         // batch extents stay all-Batch (positions, not extents).
-        let attrs4 = OpAttrs { lhs_roles: vec![0, 0, 1, 3], rhs_roles: vec![0, 0, 3, 2], ..OpAttrs::default() };
-        assert!(matches!(super::tag_to_op(OpTag::MatMul, &attrs4), Some(Op::MatMul)));
+        let attrs4 = OpAttrs {
+            lhs_roles: vec![0, 0, 1, 3],
+            rhs_roles: vec![0, 0, 3, 2],
+            ..OpAttrs::default()
+        };
+        assert!(matches!(
+            super::tag_to_op(OpTag::MatMul, &attrs4),
+            Some(Op::MatMul)
+        ));
     }
 
     #[test]
     fn tag_to_op_matmul_empty_roles_implicit_accept() {
         // Empty roles = the rank-polymorphic recipe form → implicit-accept
         // (unchanged from today; recipes keep matmul implicit).
-        assert!(matches!(super::tag_to_op(OpTag::MatMul, &OpAttrs::default()), Some(Op::MatMul)));
+        assert!(matches!(
+            super::tag_to_op(OpTag::MatMul, &OpAttrs::default()),
+            Some(Op::MatMul)
+        ));
     }
 
     #[test]
@@ -1595,13 +1886,25 @@ mod tests {
         // Non-canonical role configs are a SURFACED honest miss (typed decline at
         // registration), never a crash.
         // (1) transposed lhs = [ContractedK, FreeM] = [3,1] instead of [1,3].
-        let transposed = OpAttrs { lhs_roles: vec![3, 1], rhs_roles: vec![3, 2], ..OpAttrs::default() };
+        let transposed = OpAttrs {
+            lhs_roles: vec![3, 1],
+            rhs_roles: vec![3, 2],
+            ..OpAttrs::default()
+        };
         assert_eq!(super::tag_to_op(OpTag::MatMul, &transposed), None);
         // (2) multi-ContractedK on lhs = [3,3].
-        let multi_k = OpAttrs { lhs_roles: vec![3, 3], rhs_roles: vec![3, 2], ..OpAttrs::default() };
+        let multi_k = OpAttrs {
+            lhs_roles: vec![3, 3],
+            rhs_roles: vec![3, 2],
+            ..OpAttrs::default()
+        };
         assert_eq!(super::tag_to_op(OpTag::MatMul, &multi_k), None);
         // (3) FreeN-before-K on rhs = [FreeN, ContractedK] = [2,3] instead of [3,2].
-        let freen_before_k = OpAttrs { lhs_roles: vec![1, 3], rhs_roles: vec![2, 3], ..OpAttrs::default() };
+        let freen_before_k = OpAttrs {
+            lhs_roles: vec![1, 3],
+            rhs_roles: vec![2, 3],
+            ..OpAttrs::default()
+        };
         assert_eq!(super::tag_to_op(OpTag::MatMul, &freen_before_k), None);
     }
 
@@ -1610,7 +1913,13 @@ mod tests {
         // T4 (Increment C slice 1): OpTag::MaxDim → Op::MaxDim(axis), the
         // axis riding `attrs.axis` exactly like SumDim/MeanDim.
         assert!(matches!(
-            super::tag_to_op(OpTag::MaxDim, &OpAttrs { axis: Some(1), ..OpAttrs::default() }),
+            super::tag_to_op(
+                OpTag::MaxDim,
+                &OpAttrs {
+                    axis: Some(1),
+                    ..OpAttrs::default()
+                }
+            ),
             Some(Op::MaxDim(1))
         ));
         // An unset axis is an honest miss (typed decline at registration),
@@ -1625,22 +1934,28 @@ mod tests {
         // D3 consumer: migrated recipes spell keepdim as MaxDim(axis_last) +
         // Unsqueeze(append), so MaxDim must be an `axis`-carrier tag for the
         // rel-attr resolver (rank − 1 via the shared §6.20 LAST resolver).
-        let attrs = OpAttrs { axis_last: true, ..OpAttrs::default() };
-        let resolved = super::resolve_rel_attrs(
-            OpTag::MaxDim,
-            &attrs,
-            &[vec![2, 3, 4]],
-            &[vec![2, 3, 4]],
-        )
-        .expect("axis_last must resolve on MaxDim, not AxisLastUnsupported");
+        let attrs = OpAttrs {
+            axis_last: true,
+            ..OpAttrs::default()
+        };
+        let resolved =
+            super::resolve_rel_attrs(OpTag::MaxDim, &attrs, &[vec![2, 3, 4]], &[vec![2, 3, 4]])
+                .expect("axis_last must resolve on MaxDim, not AxisLastUnsupported");
         assert_eq!(resolved.axis, Some(2), "rank-3 operand → LAST = axis 2");
-        assert!(!resolved.axis_last, "rel carrier must be cleared post-resolve");
+        assert!(
+            !resolved.axis_last,
+            "rel carrier must be cleared post-resolve"
+        );
     }
 
     #[test]
     fn tag_to_op_still_rejects_basis_gap_and_scan() {
         // qmatmul/conv flow through Op::Fused (no OpTag); Scan is higher-order.
-        assert_eq!(super::tag_to_op(OpTag::Iota, &OpAttrs::default()), None, "Iota needs a len (target_shape) — empty attrs is a miss");
+        assert_eq!(
+            super::tag_to_op(OpTag::Iota, &OpAttrs::default()),
+            None,
+            "Iota needs a len (target_shape) — empty attrs is a miss"
+        );
     }
 
     // ---- C-T2 (Increment C): the nested-fused re-emit carrier (mechanism 2a) --
@@ -1652,13 +1967,22 @@ mod tests {
     #[test]
     fn tag_to_op_reconstructs_nested_fused() {
         use crate::registry::{FusedOpParams, FusedOps};
-        let sm = OpAttrs { fused_op: Some("SoftmaxLastDim".into()), ..OpAttrs::default() };
+        let sm = OpAttrs {
+            fused_op: Some("SoftmaxLastDim".into()),
+            ..OpAttrs::default()
+        };
         assert_eq!(
             super::tag_to_op(OpTag::Fused, &sm),
-            Some(Op::Fused(FusedOps::SOFTMAX_LAST_DIM, FusedOpParams::SoftmaxLastDim)),
+            Some(Op::Fused(
+                FusedOps::SOFTMAX_LAST_DIM,
+                FusedOpParams::SoftmaxLastDim
+            )),
             "SoftmaxLastDim selector reconstructs the param-less nested fused op",
         );
-        let smb = OpAttrs { fused_op: Some("SoftmaxLastDimBackward".into()), ..OpAttrs::default() };
+        let smb = OpAttrs {
+            fused_op: Some("SoftmaxLastDimBackward".into()),
+            ..OpAttrs::default()
+        };
         assert_eq!(
             super::tag_to_op(OpTag::Fused, &smb),
             Some(Op::Fused(
@@ -1675,9 +1999,19 @@ mod tests {
             None,
             "an unset fused_op selector is an honest miss",
         );
-        let bogus = OpAttrs { fused_op: Some("NotARealFusedOp".into()), ..OpAttrs::default() };
-        assert_eq!(super::tag_to_op(OpTag::Fused, &bogus), None, "an unknown name is an honest miss");
-        let paged = OpAttrs { fused_op: Some("PagedAttn".into()), ..OpAttrs::default() };
+        let bogus = OpAttrs {
+            fused_op: Some("NotARealFusedOp".into()),
+            ..OpAttrs::default()
+        };
+        assert_eq!(
+            super::tag_to_op(OpTag::Fused, &bogus),
+            None,
+            "an unknown name is an honest miss"
+        );
+        let paged = OpAttrs {
+            fused_op: Some("PagedAttn".into()),
+            ..OpAttrs::default()
+        };
         assert_eq!(
             super::tag_to_op(OpTag::Fused, &paged),
             None,
@@ -1697,7 +2031,10 @@ mod tests {
         use fuel_ir::{DType, Shape};
         let region = PatternNode::Op {
             op: OpTag::Fused,
-            attrs: OpAttrs { fused_op: Some("SoftmaxLastDim".into()), ..OpAttrs::default() },
+            attrs: OpAttrs {
+                fused_op: Some("SoftmaxLastDim".into()),
+                ..OpAttrs::default()
+            },
             operands: vec![PatternNode::Bind { index: 0 }],
         };
         assert!(
@@ -1722,8 +2059,16 @@ mod tests {
             Shape::from_dims(&[2, 3, 4]),
             "shape from softmax shape_rule (passthrough), NOT primitive_shape (which misses Fused)",
         );
-        assert_eq!(g.node(root).dtype, DType::F32, "dtype from softmax dtype_rule (passthrough)");
-        assert_eq!(g.node(root).inputs, vec![x], "the fused node's single operand is the bound input");
+        assert_eq!(
+            g.node(root).dtype,
+            DType::F32,
+            "dtype from softmax dtype_rule (passthrough)"
+        );
+        assert_eq!(
+            g.node(root).inputs,
+            vec![x],
+            "the fused node's single operand is the bound input"
+        );
     }
 
     #[test]
@@ -1731,21 +2076,32 @@ mod tests {
         // Region: Concat{0}(Neg(Slice{...}(bind0)), bind0) — the rope rotate-half shape.
         let region = PatternNode::Op {
             op: OpTag::Concat,
-            attrs: OpAttrs { axis: Some(0), ..OpAttrs::default() },
+            attrs: OpAttrs {
+                axis: Some(0),
+                ..OpAttrs::default()
+            },
             operands: vec![
                 PatternNode::Op {
                     op: OpTag::Neg,
                     attrs: OpAttrs::default(),
                     operands: vec![PatternNode::Op {
                         op: OpTag::Slice,
-                        attrs: OpAttrs { axis: Some(0), slice_start: Some(0), slice_len: Some(1), ..OpAttrs::default() },
+                        attrs: OpAttrs {
+                            axis: Some(0),
+                            slice_start: Some(0),
+                            slice_len: Some(1),
+                            ..OpAttrs::default()
+                        },
                         operands: vec![PatternNode::Bind { index: 0 }],
                     }],
                 },
                 PatternNode::Bind { index: 0 },
             ],
         };
-        assert!(super::validate_representable(&region).is_ok(), "slice/concat region must now validate");
+        assert!(
+            super::validate_representable(&region).is_ok(),
+            "slice/concat region must now validate"
+        );
     }
 
     #[test]
@@ -1754,14 +2110,26 @@ mod tests {
         // Region: ReduceSumTo([2,1])(bind0). Input [2,5] → output [2,1].
         let region = PatternNode::Op {
             op: OpTag::ReduceSumTo,
-            attrs: OpAttrs { target_shape: vec![2, 1], ..OpAttrs::default() },
+            attrs: OpAttrs {
+                target_shape: vec![2, 1],
+                ..OpAttrs::default()
+            },
             operands: vec![PatternNode::Bind { index: 0 }],
         };
         let mut g = Graph::new();
-        let x = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[2, 5]), dtype: DType::F32 });
+        let x = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[2, 5]),
+            dtype: DType::F32,
+        });
         let root = emit_region(&mut g, &region, &[x], &[]);
         assert!(matches!(g.node(root).op, Op::ReduceSumTo(_)));
-        assert_eq!(g.node(root).shape, Shape::from_dims(&[2, 1]), "emit must use the reduced shape, not operand[0]");
+        assert_eq!(
+            g.node(root).shape,
+            Shape::from_dims(&[2, 1]),
+            "emit must use the reduced shape, not operand[0]"
+        );
         assert_eq!(g.node(root).dtype, DType::F32);
     }
 
@@ -1771,14 +2139,26 @@ mod tests {
         // Region: Cast(F16)(bind0). Input F32 → output F16, same shape.
         let region = PatternNode::Op {
             op: OpTag::Cast,
-            attrs: OpAttrs { cast_dtype: Some("f16".into()), ..OpAttrs::default() },
+            attrs: OpAttrs {
+                cast_dtype: Some("f16".into()),
+                ..OpAttrs::default()
+            },
             operands: vec![PatternNode::Bind { index: 0 }],
         };
         let mut g = Graph::new();
-        let x = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[3, 3]), dtype: DType::F32 });
+        let x = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[3, 3]),
+            dtype: DType::F32,
+        });
         let root = emit_region(&mut g, &region, &[x], &[]);
         assert!(matches!(g.node(root).op, Op::Cast(DType::F16)));
-        assert_eq!(g.node(root).dtype, DType::F16, "emit must take Cast's target dtype, not operand[0]'s");
+        assert_eq!(
+            g.node(root).dtype,
+            DType::F16,
+            "emit must take Cast's target dtype, not operand[0]'s"
+        );
         assert_eq!(g.node(root).shape, Shape::from_dims(&[3, 3]));
     }
 
@@ -1798,7 +2178,10 @@ mod tests {
         };
         let mut g = Graph::new();
         let root = emit_region(&mut g, &region, &[], &[]);
-        assert!(matches!(g.node(root).op, Op::Add), "emit returns a node, not a panic");
+        assert!(
+            matches!(g.node(root).op, Op::Add),
+            "emit returns a node, not a panic"
+        );
     }
 
     #[test]
@@ -1806,8 +2189,18 @@ mod tests {
         let id = register_runtime_fused("test::relu_add::decompose", relu_add_region()).unwrap();
         let mut g = Graph::new();
         let s = Shape::from_dims(&[4]);
-        let a = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
-        let b = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+        let a = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: s.clone(),
+            dtype: DType::F32,
+        });
+        let b = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: s.clone(),
+            dtype: DType::F32,
+        });
         let fused = g.push(Node {
             op: Op::Fused(id, FusedOpParams::Runtime { scalars: vec![] }),
             inputs: vec![a, b],
@@ -1846,25 +2239,26 @@ mod tests {
     fn slot_template_registers_and_counts() {
         // Born-red before slot support: validation rejected an AddScalar/
         // MulScalar pattern node with no baked value.
-        let id = register_runtime_fused(
-            "test::tanh_mul_scalar::slot",
-            tanh_mul_scalar_slot_region(),
-        )
-        .expect("a slot template is registrable");
+        let id =
+            register_runtime_fused("test::tanh_mul_scalar::slot", tanh_mul_scalar_slot_region())
+                .expect("a slot template is registrable");
         let region = runtime_region(id).unwrap();
         assert_eq!(count_scalar_slots(&region), 1, "one open slot");
     }
 
     #[test]
     fn decompose_fills_slots_from_the_node_scalars() {
-        let id = register_runtime_fused(
-            "test::tanh_mul_scalar::fill",
-            tanh_mul_scalar_slot_region(),
-        )
-        .unwrap();
+        let id =
+            register_runtime_fused("test::tanh_mul_scalar::fill", tanh_mul_scalar_slot_region())
+                .unwrap();
         let mut g = Graph::new();
         let s = Shape::from_dims(&[4]);
-        let a = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+        let a = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: s.clone(),
+            dtype: DType::F32,
+        });
         let fused = g.push(Node {
             op: Op::Fused(id, FusedOpParams::Runtime { scalars: vec![2.5] }),
             inputs: vec![a],
@@ -1894,7 +2288,12 @@ mod tests {
         .unwrap();
         let mut g = Graph::new();
         let s = Shape::from_dims(&[4]);
-        let a = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+        let a = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: s.clone(),
+            dtype: DType::F32,
+        });
         // One slot, but the node carries NO scalars — malformed; must be a
         // no-op fixpoint (G2), never a panic.
         let fused = g.push(Node {
@@ -1903,7 +2302,11 @@ mod tests {
             shape: s.clone(),
             dtype: DType::F32,
         });
-        assert_eq!(decompose_region(&mut g, fused), fused, "mismatch ⇒ fixpoint");
+        assert_eq!(
+            decompose_region(&mut g, fused),
+            fused,
+            "mismatch ⇒ fixpoint"
+        );
     }
 
     // ---- shape-derived scalar slot (A1: the reduced_count live-emission) -----
@@ -1917,7 +2320,10 @@ mod tests {
         PatternNode::Op {
             op: OpTag::MulScalar,
             attrs: OpAttrs {
-                scalar_rel: Some(Dim::Extent { operand: 0, axis: LAST }),
+                scalar_rel: Some(Dim::Extent {
+                    operand: 0,
+                    axis: LAST,
+                }),
                 ..OpAttrs::default()
             },
             operands: vec![PatternNode::Bind { index: 0 }],
@@ -1978,7 +2384,10 @@ mod tests {
             op: OpTag::MulScalar,
             attrs: OpAttrs {
                 scalars: vec![2.0],
-                scalar_rel: Some(Dim::Extent { operand: 0, axis: LAST }),
+                scalar_rel: Some(Dim::Extent {
+                    operand: 0,
+                    axis: LAST,
+                }),
                 ..OpAttrs::default()
             },
             operands: vec![PatternNode::Bind { index: 0 }],
@@ -2010,7 +2419,11 @@ mod tests {
     // operand-swap the hash would mask.
 
     fn op_node(op: OpTag, attrs: OpAttrs, operands: Vec<PatternNode>) -> PatternNode {
-        PatternNode::Op { op, attrs, operands }
+        PatternNode::Op {
+            op,
+            attrs,
+            operands,
+        }
     }
     fn bind(i: u8) -> PatternNode {
         PatternNode::Bind { index: i }
@@ -2026,9 +2439,18 @@ mod tests {
         let na = g.node(a);
         let nb = g.node(b);
         assert_eq!(na.op, nb.op, "op mismatch: {:?} vs {:?}", na.op, nb.op);
-        assert_eq!(na.shape, nb.shape, "shape mismatch at {:?} vs {:?}", na.op, nb.op);
+        assert_eq!(
+            na.shape, nb.shape,
+            "shape mismatch at {:?} vs {:?}",
+            na.op, nb.op
+        );
         assert_eq!(na.dtype, nb.dtype, "dtype mismatch at {:?}", na.op);
-        assert_eq!(na.inputs.len(), nb.inputs.len(), "arity mismatch at {:?}", na.op);
+        assert_eq!(
+            na.inputs.len(),
+            nb.inputs.len(),
+            "arity mismatch at {:?}",
+            na.op
+        );
         for (&ia, &ib) in na.inputs.iter().zip(nb.inputs.iter()) {
             assert_structural_eq(g, ia, ib);
         }
@@ -2060,45 +2482,45 @@ mod tests {
         let keepdim_shape = Shape::from_dims(&keepdim_dims);
 
         let m_id = graph.push(Node {
-            op:     Op::ReduceMaxTo(keepdim_shape.clone()),
+            op: Op::ReduceMaxTo(keepdim_shape.clone()),
             inputs: vec![x_id],
-            shape:  keepdim_shape.clone(),
+            shape: keepdim_shape.clone(),
             dtype,
         });
         let mb_id = graph.push(Node {
-            op:     Op::BroadcastTo(x_shape.clone()),
+            op: Op::BroadcastTo(x_shape.clone()),
             inputs: vec![m_id],
-            shape:  x_shape.clone(),
+            shape: x_shape.clone(),
             dtype,
         });
         let s_id = graph.push(Node {
-            op:     Op::Sub,
+            op: Op::Sub,
             inputs: vec![x_id, mb_id],
-            shape:  x_shape.clone(),
+            shape: x_shape.clone(),
             dtype,
         });
         let e_id = graph.push(Node {
-            op:     Op::Exp,
+            op: Op::Exp,
             inputs: vec![s_id],
-            shape:  x_shape.clone(),
+            shape: x_shape.clone(),
             dtype,
         });
         let d_id = graph.push(Node {
-            op:     Op::ReduceSumTo(keepdim_shape.clone()),
+            op: Op::ReduceSumTo(keepdim_shape.clone()),
             inputs: vec![e_id],
-            shape:  keepdim_shape,
+            shape: keepdim_shape,
             dtype,
         });
         let db_id = graph.push(Node {
-            op:     Op::BroadcastTo(x_shape.clone()),
+            op: Op::BroadcastTo(x_shape.clone()),
             inputs: vec![d_id],
-            shape:  x_shape.clone(),
+            shape: x_shape.clone(),
             dtype,
         });
         let out_id = graph.push(Node {
-            op:     Op::Div,
+            op: Op::Div,
             inputs: vec![e_id, db_id],
-            shape:  x_shape,
+            shape: x_shape,
             dtype,
         });
         out_id
@@ -2119,7 +2541,13 @@ mod tests {
     ) -> NodeId {
         let (x_id, cos_id, sin_id, x_shape, dtype) = {
             let n = graph.node(id);
-            (n.inputs[0], n.inputs[1], n.inputs[2], n.shape.clone(), n.dtype)
+            (
+                n.inputs[0],
+                n.inputs[1],
+                n.inputs[2],
+                n.shape.clone(),
+                n.dtype,
+            )
         };
         let dims = x_shape.dims().to_vec();
         let rank = dims.len();
@@ -2134,27 +2562,27 @@ mod tests {
         let broadcast_shape = Shape::from_dims(&broadcast_shape_dims);
 
         let cos_reshaped_id = graph.push(Node {
-            op:     Op::Reshape(broadcast_shape.clone()),
+            op: Op::Reshape(broadcast_shape.clone()),
             inputs: vec![cos_id],
-            shape:  broadcast_shape.clone(),
+            shape: broadcast_shape.clone(),
             dtype,
         });
         let sin_reshaped_id = graph.push(Node {
-            op:     Op::Reshape(broadcast_shape.clone()),
+            op: Op::Reshape(broadcast_shape.clone()),
             inputs: vec![sin_id],
-            shape:  broadcast_shape,
+            shape: broadcast_shape,
             dtype,
         });
         let cos_bcast_id = graph.push(Node {
-            op:     Op::BroadcastTo(x_shape.clone()),
+            op: Op::BroadcastTo(x_shape.clone()),
             inputs: vec![cos_reshaped_id],
-            shape:  x_shape.clone(),
+            shape: x_shape.clone(),
             dtype,
         });
         let sin_bcast_id = graph.push(Node {
-            op:     Op::BroadcastTo(x_shape.clone()),
+            op: Op::BroadcastTo(x_shape.clone()),
             inputs: vec![sin_reshaped_id],
-            shape:  x_shape.clone(),
+            shape: x_shape.clone(),
             dtype,
         });
 
@@ -2163,46 +2591,54 @@ mod tests {
         let half_shape = Shape::from_dims(&half_dims);
 
         let first_half_id = graph.push(Node {
-            op:     Op::Slice { dim: last, start: 0, len: half },
+            op: Op::Slice {
+                dim: last,
+                start: 0,
+                len: half,
+            },
             inputs: vec![x_id],
-            shape:  half_shape.clone(),
+            shape: half_shape.clone(),
             dtype,
         });
         let second_half_id = graph.push(Node {
-            op:     Op::Slice { dim: last, start: half, len: half },
+            op: Op::Slice {
+                dim: last,
+                start: half,
+                len: half,
+            },
             inputs: vec![x_id],
-            shape:  half_shape.clone(),
+            shape: half_shape.clone(),
             dtype,
         });
         let neg_second_id = graph.push(Node {
-            op:     Op::Neg,
+            op: Op::Neg,
             inputs: vec![second_half_id],
-            shape:  half_shape,
+            shape: half_shape,
             dtype,
         });
         let rotated_half_id = graph.push(Node {
-            op:     Op::Concat { dim: last },
+            op: Op::Concat { dim: last },
             inputs: vec![neg_second_id, first_half_id],
-            shape:  x_shape.clone(),
+            shape: x_shape.clone(),
             dtype,
         });
 
         let left_id = graph.push(Node {
-            op:     Op::Mul,
+            op: Op::Mul,
             inputs: vec![x_id, cos_bcast_id],
-            shape:  x_shape.clone(),
+            shape: x_shape.clone(),
             dtype,
         });
         let right_id = graph.push(Node {
-            op:     Op::Mul,
+            op: Op::Mul,
             inputs: vec![rotated_half_id, sin_bcast_id],
-            shape:  x_shape.clone(),
+            shape: x_shape.clone(),
             dtype,
         });
         let out_id = graph.push(Node {
-            op:     Op::Add,
+            op: Op::Add,
             inputs: vec![left_id, right_id],
-            shape:  x_shape,
+            shape: x_shape,
             dtype,
         });
         out_id
@@ -2242,45 +2678,45 @@ mod tests {
         let reduced_shape = Shape::from_dims(&reduced_dims);
 
         let sq_id = graph.push(Node {
-            op:     Op::Sqr,
+            op: Op::Sqr,
             inputs: vec![x_id],
-            shape:  x_shape.clone(),
+            shape: x_shape.clone(),
             dtype,
         });
         let mean_id = graph.push(Node {
-            op:     Op::MeanDim(last),
+            op: Op::MeanDim(last),
             inputs: vec![sq_id],
-            shape:  reduced_shape,
+            shape: reduced_shape,
             dtype,
         });
         let mean_kd_id = graph.push(Node {
-            op:     Op::Reshape(keepdim_shape.clone()),
+            op: Op::Reshape(keepdim_shape.clone()),
             inputs: vec![mean_id],
-            shape:  keepdim_shape.clone(),
+            shape: keepdim_shape.clone(),
             dtype,
         });
         let denom_sq_id = graph.push(Node {
-            op:     Op::AddScalar(eps),
+            op: Op::AddScalar(eps),
             inputs: vec![mean_kd_id],
-            shape:  keepdim_shape.clone(),
+            shape: keepdim_shape.clone(),
             dtype,
         });
         let denom_id = graph.push(Node {
-            op:     Op::Sqrt,
+            op: Op::Sqrt,
             inputs: vec![denom_sq_id],
-            shape:  keepdim_shape,
+            shape: keepdim_shape,
             dtype,
         });
         let denom_bcast_id = graph.push(Node {
-            op:     Op::BroadcastTo(x_shape.clone()),
+            op: Op::BroadcastTo(x_shape.clone()),
             inputs: vec![denom_id],
-            shape:  x_shape.clone(),
+            shape: x_shape.clone(),
             dtype,
         });
         graph.push(Node {
-            op:     Op::Div,
+            op: Op::Div,
             inputs: vec![x_id, denom_bcast_id],
-            shape:  x_shape,
+            shape: x_shape,
             dtype,
         })
     }
@@ -2318,69 +2754,69 @@ mod tests {
         let reduced_shape = Shape::from_dims(&reduced_dims);
 
         let mean_id = graph.push(Node {
-            op:     Op::MeanDim(last),
+            op: Op::MeanDim(last),
             inputs: vec![x_id],
-            shape:  reduced_shape.clone(),
+            shape: reduced_shape.clone(),
             dtype,
         });
         let mean_kd_id = graph.push(Node {
-            op:     Op::Reshape(keepdim_shape.clone()),
+            op: Op::Reshape(keepdim_shape.clone()),
             inputs: vec![mean_id],
-            shape:  keepdim_shape.clone(),
+            shape: keepdim_shape.clone(),
             dtype,
         });
         let mean_bcast_id = graph.push(Node {
-            op:     Op::BroadcastTo(x_shape.clone()),
+            op: Op::BroadcastTo(x_shape.clone()),
             inputs: vec![mean_kd_id],
-            shape:  x_shape.clone(),
+            shape: x_shape.clone(),
             dtype,
         });
         let centered_id = graph.push(Node {
-            op:     Op::Sub,
+            op: Op::Sub,
             inputs: vec![x_id, mean_bcast_id],
-            shape:  x_shape.clone(),
+            shape: x_shape.clone(),
             dtype,
         });
         let centered_sq_id = graph.push(Node {
-            op:     Op::Sqr,
+            op: Op::Sqr,
             inputs: vec![centered_id],
-            shape:  x_shape.clone(),
+            shape: x_shape.clone(),
             dtype,
         });
         let var_id = graph.push(Node {
-            op:     Op::MeanDim(last),
+            op: Op::MeanDim(last),
             inputs: vec![centered_sq_id],
-            shape:  reduced_shape,
+            shape: reduced_shape,
             dtype,
         });
         let var_kd_id = graph.push(Node {
-            op:     Op::Reshape(keepdim_shape.clone()),
+            op: Op::Reshape(keepdim_shape.clone()),
             inputs: vec![var_id],
-            shape:  keepdim_shape.clone(),
+            shape: keepdim_shape.clone(),
             dtype,
         });
         let var_eps_id = graph.push(Node {
-            op:     Op::AddScalar(eps),
+            op: Op::AddScalar(eps),
             inputs: vec![var_kd_id],
-            shape:  keepdim_shape.clone(),
+            shape: keepdim_shape.clone(),
             dtype,
         });
         let denom_id = graph.push(Node {
-            op:     Op::Sqrt,
+            op: Op::Sqrt,
             inputs: vec![var_eps_id],
-            shape:  keepdim_shape,
+            shape: keepdim_shape,
             dtype,
         });
         let denom_bcast_id = graph.push(Node {
-            op:     Op::BroadcastTo(x_shape.clone()),
+            op: Op::BroadcastTo(x_shape.clone()),
             inputs: vec![denom_id],
-            shape:  x_shape.clone(),
+            shape: x_shape.clone(),
             dtype,
         });
         graph.push(Node {
-            op:     Op::Div,
+            op: Op::Div,
             inputs: vec![centered_id, denom_bcast_id],
-            shape:  x_shape,
+            shape: x_shape,
             dtype,
         })
     }
@@ -2789,24 +3225,30 @@ mod tests {
     ) -> NodeId {
         let (a_id, b_id, bias_id, out_shape, dtype) = {
             let n = graph.node(id);
-            (n.inputs[0], n.inputs[1], n.inputs[2], n.shape.clone(), n.dtype)
+            (
+                n.inputs[0],
+                n.inputs[1],
+                n.inputs[2],
+                n.shape.clone(),
+                n.dtype,
+            )
         };
         let mm_id = graph.push(Node {
-            op:     Op::MatMul,
+            op: Op::MatMul,
             inputs: vec![a_id, b_id],
-            shape:  out_shape.clone(),
+            shape: out_shape.clone(),
             dtype,
         });
         let bias_bcst_id = graph.push(Node {
-            op:     Op::BroadcastTo(out_shape.clone()),
+            op: Op::BroadcastTo(out_shape.clone()),
             inputs: vec![bias_id],
-            shape:  out_shape.clone(),
+            shape: out_shape.clone(),
             dtype,
         });
         graph.push(Node {
-            op:     Op::Add,
+            op: Op::Add,
             inputs: vec![mm_id, bias_bcst_id],
-            shape:  out_shape,
+            shape: out_shape,
             dtype,
         })
     }
@@ -2836,33 +3278,33 @@ mod tests {
         let keepdim = Shape::from_dims(&kd);
 
         let gs = graph.push(Node {
-            op:     Op::Mul,
+            op: Op::Mul,
             inputs: vec![g_id, s_id],
-            shape:  x_shape.clone(),
+            shape: x_shape.clone(),
             dtype,
         });
         let summed = graph.push(Node {
-            op:     Op::ReduceSumTo(keepdim.clone()),
+            op: Op::ReduceSumTo(keepdim.clone()),
             inputs: vec![gs],
-            shape:  keepdim,
+            shape: keepdim,
             dtype,
         });
         let summed_b = graph.push(Node {
-            op:     Op::BroadcastTo(x_shape.clone()),
+            op: Op::BroadcastTo(x_shape.clone()),
             inputs: vec![summed],
-            shape:  x_shape.clone(),
+            shape: x_shape.clone(),
             dtype,
         });
         let sub = graph.push(Node {
-            op:     Op::Sub,
+            op: Op::Sub,
             inputs: vec![g_id, summed_b],
-            shape:  x_shape.clone(),
+            shape: x_shape.clone(),
             dtype,
         });
         graph.push(Node {
-            op:     Op::Mul,
+            op: Op::Mul,
             inputs: vec![s_id, sub],
-            shape:  x_shape,
+            shape: x_shape,
             dtype,
         })
     }
@@ -2872,39 +3314,73 @@ mod tests {
         use fuel_ir::{DType, Shape};
         let mut g = Graph::new();
         let sh = Shape::from_dims(&[2, 4]);
-        let x = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+        let x = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: sh.clone(),
+            dtype: DType::F32,
+        });
         // Oracle: the FROZEN legacy builder (reads inputs[0] + shape + dtype
         // off the node). T5 repointed this from the live registry decompose —
         // which now emits the 9-node recipe spelling — so this test keeps
         // pinning the Increment-A guarantee it always pinned: the grown
         // `emit` reconstructs the LEGACY imperative structure from the legacy
         // region datum.
-        let fused = g.push(Node { op: Op::Const, inputs: vec![x], shape: sh.clone(), dtype: DType::F32 });
+        let fused = g.push(Node {
+            op: Op::Const,
+            inputs: vec![x],
+            shape: sh.clone(),
+            dtype: DType::F32,
+        });
         let oracle = frozen_legacy_softmax_decompose(&mut g, fused, &FusedOpParams::SoftmaxLastDim);
 
         // keepdim shape [2,1]; full shape [2,4].
-        let kd = OpAttrs { target_shape: vec![2, 1], ..OpAttrs::default() };
-        let full = OpAttrs { target_shape: vec![2, 4], ..OpAttrs::default() };
+        let kd = OpAttrs {
+            target_shape: vec![2, 1],
+            ..OpAttrs::default()
+        };
+        let full = OpAttrs {
+            target_shape: vec![2, 4],
+            ..OpAttrs::default()
+        };
         // e = Exp(Sub(x, BroadcastTo(ReduceMaxTo(x)))) — mirrors decompose order
         // `Sub{[x, mb]}` exactly; built fresh each call so numerator and the
         // denominator's ReduceSumTo input are identical subtrees.
         let softmax_e = |kd: &OpAttrs, full: &OpAttrs| {
-            op_node(OpTag::Exp, OpAttrs::default(), vec![
-                op_node(OpTag::Sub, OpAttrs::default(), vec![
-                    bind(0),
-                    op_node(OpTag::BroadcastTo, full.clone(), vec![
-                        op_node(OpTag::ReduceMaxTo, kd.clone(), vec![bind(0)]),
-                    ]),
-                ]),
-            ])
+            op_node(
+                OpTag::Exp,
+                OpAttrs::default(),
+                vec![op_node(
+                    OpTag::Sub,
+                    OpAttrs::default(),
+                    vec![
+                        bind(0),
+                        op_node(
+                            OpTag::BroadcastTo,
+                            full.clone(),
+                            vec![op_node(OpTag::ReduceMaxTo, kd.clone(), vec![bind(0)])],
+                        ),
+                    ],
+                )],
+            )
         };
         // out = Div(e, BroadcastTo(ReduceSumTo(e))) — mirrors `Div{[e, db]}`.
-        let region = op_node(OpTag::Div, OpAttrs::default(), vec![
-            softmax_e(&kd, &full),
-            op_node(OpTag::BroadcastTo, full.clone(), vec![
-                op_node(OpTag::ReduceSumTo, kd.clone(), vec![softmax_e(&kd, &full)]),
-            ]),
-        ]);
+        let region = op_node(
+            OpTag::Div,
+            OpAttrs::default(),
+            vec![
+                softmax_e(&kd, &full),
+                op_node(
+                    OpTag::BroadcastTo,
+                    full.clone(),
+                    vec![op_node(
+                        OpTag::ReduceSumTo,
+                        kd.clone(),
+                        vec![softmax_e(&kd, &full)],
+                    )],
+                ),
+            ],
+        );
         let emitted = emit_region(&mut g, &region, &[x], &[]);
         assert_structural_eq(&g, oracle, emitted);
     }
@@ -2914,10 +3390,30 @@ mod tests {
         use fuel_ir::{DType, Shape};
         let mut g = Graph::new();
         let sh = Shape::from_dims(&[2, 4]); // seq=2, d=4, half=2
-        let x = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
-        let cos = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
-        let sin = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
-        let fused = g.push(Node { op: Op::Const, inputs: vec![x, cos, sin], shape: sh.clone(), dtype: DType::F32 });
+        let x = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: sh.clone(),
+            dtype: DType::F32,
+        });
+        let cos = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: sh.clone(),
+            dtype: DType::F32,
+        });
+        let sin = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: sh.clone(),
+            dtype: DType::F32,
+        });
+        let fused = g.push(Node {
+            op: Op::Const,
+            inputs: vec![x, cos, sin],
+            shape: sh.clone(),
+            dtype: DType::F32,
+        });
         // Oracle: the FROZEN legacy builder. T6 repointed this from the live
         // registry decompose — which now emits the data recipe (byte-identical
         // to legacy where a rank-raise occurs, but at EQUAL rank the recipe
@@ -2928,23 +3424,57 @@ mod tests {
         let oracle = frozen_legacy_rope_decompose(&mut g, fused, &FusedOpParams::Rope);
 
         // decompose's broadcast_shape for rank-2 [2,4] is [seq,d] = [2,4]; half slices along last dim.
-        let full = OpAttrs { target_shape: vec![2, 4], ..OpAttrs::default() };
-        let sl_first = OpAttrs { axis: Some(1), slice_start: Some(0), slice_len: Some(2), ..OpAttrs::default() };
-        let sl_second = OpAttrs { axis: Some(1), slice_start: Some(2), slice_len: Some(2), ..OpAttrs::default() };
-        let cat = OpAttrs { axis: Some(1), ..OpAttrs::default() };
+        let full = OpAttrs {
+            target_shape: vec![2, 4],
+            ..OpAttrs::default()
+        };
+        let sl_first = OpAttrs {
+            axis: Some(1),
+            slice_start: Some(0),
+            slice_len: Some(2),
+            ..OpAttrs::default()
+        };
+        let sl_second = OpAttrs {
+            axis: Some(1),
+            slice_start: Some(2),
+            slice_len: Some(2),
+            ..OpAttrs::default()
+        };
+        let cat = OpAttrs {
+            axis: Some(1),
+            ..OpAttrs::default()
+        };
         let bcast_reshape = |full: &OpAttrs, i: u8| {
-            op_node(OpTag::BroadcastTo, full.clone(), vec![
-                op_node(OpTag::Reshape, full.clone(), vec![bind(i)]),
-            ])
+            op_node(
+                OpTag::BroadcastTo,
+                full.clone(),
+                vec![op_node(OpTag::Reshape, full.clone(), vec![bind(i)])],
+            )
         };
         // left = Mul(x, cos_bcast); right = Mul(rotated_half, sin_bcast); out = Add(left, right).
         // rotated_half = Concat{dim:1}(Neg(second_half), first_half).
-        let rotated = op_node(OpTag::Concat, cat, vec![
-            op_node(OpTag::Neg, OpAttrs::default(), vec![op_node(OpTag::Slice, sl_second, vec![bind(0)])]),
-            op_node(OpTag::Slice, sl_first, vec![bind(0)]),
-        ]);
-        let left = op_node(OpTag::Mul, OpAttrs::default(), vec![bind(0), bcast_reshape(&full, 1)]);
-        let right = op_node(OpTag::Mul, OpAttrs::default(), vec![rotated, bcast_reshape(&full, 2)]);
+        let rotated = op_node(
+            OpTag::Concat,
+            cat,
+            vec![
+                op_node(
+                    OpTag::Neg,
+                    OpAttrs::default(),
+                    vec![op_node(OpTag::Slice, sl_second, vec![bind(0)])],
+                ),
+                op_node(OpTag::Slice, sl_first, vec![bind(0)]),
+            ],
+        );
+        let left = op_node(
+            OpTag::Mul,
+            OpAttrs::default(),
+            vec![bind(0), bcast_reshape(&full, 1)],
+        );
+        let right = op_node(
+            OpTag::Mul,
+            OpAttrs::default(),
+            vec![rotated, bcast_reshape(&full, 2)],
+        );
         let region = op_node(OpTag::Add, OpAttrs::default(), vec![left, right]);
 
         let emitted = emit_region(&mut g, &region, &[x, cos, sin], &[]);
@@ -2956,42 +3486,88 @@ mod tests {
         use fuel_ir::{DType, Shape};
         let mut g = Graph::new();
         let sh = Shape::from_dims(&[2, 4]); // last=1, reduced [2], keepdim [2,1]
-        let x = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
-        let fused = g.push(Node { op: Op::Const, inputs: vec![x], shape: sh.clone(), dtype: DType::F32 });
+        let x = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: sh.clone(),
+            dtype: DType::F32,
+        });
+        let fused = g.push(Node {
+            op: Op::Const,
+            inputs: vec![x],
+            shape: sh.clone(),
+            dtype: DType::F32,
+        });
         // Oracle: the FROZEN legacy builder (the `Reshape(keepdim)` spelling).
         // T7 repointed this from the live registry decompose — which now emits
         // the D3 `Unsqueeze` swap — so this test keeps pinning the Increment-A
         // guarantee it always pinned: the grown `emit` reconstructs the LEGACY
         // imperative structure from a legacy-spelled (Reshape) region datum.
         let oracle = frozen_legacy_layer_norm_decompose(
-            &mut g, fused, &FusedOpParams::LayerNormLastDim { eps: 1e-5 },
+            &mut g,
+            fused,
+            &FusedOpParams::LayerNormLastDim { eps: 1e-5 },
         );
 
-        let kd = OpAttrs { target_shape: vec![2, 1], ..OpAttrs::default() };
-        let full = OpAttrs { target_shape: vec![2, 4], ..OpAttrs::default() };
-        let md = OpAttrs { axis: Some(1), ..OpAttrs::default() };
-        let eps_attrs = OpAttrs { scalars: vec![1e-5], ..OpAttrs::default() }; // BAKED constant, not a slot
+        let kd = OpAttrs {
+            target_shape: vec![2, 1],
+            ..OpAttrs::default()
+        };
+        let full = OpAttrs {
+            target_shape: vec![2, 4],
+            ..OpAttrs::default()
+        };
+        let md = OpAttrs {
+            axis: Some(1),
+            ..OpAttrs::default()
+        };
+        let eps_attrs = OpAttrs {
+            scalars: vec![1e-5],
+            ..OpAttrs::default()
+        }; // BAKED constant, not a slot
         // centered = Sub(x, BroadcastTo(Reshape(MeanDim(x)))) — shared subterm.
-        let centered = op_node(OpTag::Sub, OpAttrs::default(), vec![
-            bind(0),
-            op_node(OpTag::BroadcastTo, full.clone(), vec![
-                op_node(OpTag::Reshape, kd.clone(), vec![
-                    op_node(OpTag::MeanDim, md.clone(), vec![bind(0)]),
-                ]),
-            ]),
-        ]);
+        let centered = op_node(
+            OpTag::Sub,
+            OpAttrs::default(),
+            vec![
+                bind(0),
+                op_node(
+                    OpTag::BroadcastTo,
+                    full.clone(),
+                    vec![op_node(
+                        OpTag::Reshape,
+                        kd.clone(),
+                        vec![op_node(OpTag::MeanDim, md.clone(), vec![bind(0)])],
+                    )],
+                ),
+            ],
+        );
         // denom_bcast = BroadcastTo(Sqrt(AddScalar(eps)(Reshape(MeanDim(Sqr(centered)))))).
-        let denom_bcast = op_node(OpTag::BroadcastTo, full.clone(), vec![
-            op_node(OpTag::Sqrt, OpAttrs::default(), vec![
-                op_node(OpTag::AddScalar, eps_attrs, vec![
-                    op_node(OpTag::Reshape, kd.clone(), vec![
-                        op_node(OpTag::MeanDim, md.clone(), vec![
-                            op_node(OpTag::Sqr, OpAttrs::default(), vec![centered.clone()]),
-                        ]),
-                    ]),
-                ]),
-            ]),
-        ]);
+        let denom_bcast = op_node(
+            OpTag::BroadcastTo,
+            full.clone(),
+            vec![op_node(
+                OpTag::Sqrt,
+                OpAttrs::default(),
+                vec![op_node(
+                    OpTag::AddScalar,
+                    eps_attrs,
+                    vec![op_node(
+                        OpTag::Reshape,
+                        kd.clone(),
+                        vec![op_node(
+                            OpTag::MeanDim,
+                            md.clone(),
+                            vec![op_node(
+                                OpTag::Sqr,
+                                OpAttrs::default(),
+                                vec![centered.clone()],
+                            )],
+                        )],
+                    )],
+                )],
+            )],
+        );
         // out = Div(centered, denom_bcast).
         let region = op_node(OpTag::Div, OpAttrs::default(), vec![centered, denom_bcast]);
 
@@ -3017,7 +3593,10 @@ mod tests {
 
         fn half_of_bind0_last() -> Dim {
             Dim::Div(
-                Box::new(Dim::Extent { operand: 0, axis: LAST }),
+                Box::new(Dim::Extent {
+                    operand: 0,
+                    axis: LAST,
+                }),
                 Box::new(Dim::Const(2)),
             )
         }
@@ -3032,7 +3611,10 @@ mod tests {
             let r = resolve_rel_attrs(OpTag::BroadcastTo, &attrs, &[vec![2, 3]], &[vec![2, 1]])
                 .expect("resolves");
             assert_eq!(r.target_shape, vec![2, 3]);
-            assert!(r.target_shape_rel.is_none(), "resolved attrs are fully concrete");
+            assert!(
+                r.target_shape_rel.is_none(),
+                "resolved attrs are fully concrete"
+            );
             let r = resolve_rel_attrs(OpTag::BroadcastTo, &attrs, &[vec![4, 5]], &[vec![4, 1]])
                 .expect("resolves");
             assert_eq!(r.target_shape, vec![4, 5]);
@@ -3060,23 +3642,30 @@ mod tests {
 
         #[test]
         fn axis_last_resolves_per_tag() {
-            let attrs = OpAttrs { axis_last: true, ..OpAttrs::default() };
+            let attrs = OpAttrs {
+                axis_last: true,
+                ..OpAttrs::default()
+            };
             // Reduce family (axis carrier): LAST = rank − 1.
             let r = resolve_rel_attrs(OpTag::SumDim, &attrs, &[], &[vec![2, 4]]).expect("rank 2");
             assert_eq!(r.axis, Some(1));
             assert!(!r.axis_last, "resolved attrs are fully concrete");
-            let r = resolve_rel_attrs(OpTag::SumDim, &attrs, &[], &[vec![2, 3, 4]]).expect("rank 3");
+            let r =
+                resolve_rel_attrs(OpTag::SumDim, &attrs, &[], &[vec![2, 3, 4]]).expect("rank 3");
             assert_eq!(r.axis, Some(2));
             // Concat rides the same axis carrier.
-            let r = resolve_rel_attrs(OpTag::Concat, &attrs, &[], &[vec![2, 3, 4]]).expect("concat");
+            let r =
+                resolve_rel_attrs(OpTag::Concat, &attrs, &[], &[vec![2, 3, 4]]).expect("concat");
             assert_eq!(r.axis, Some(2));
             // Unsqueeze (dims carrier): APPEND — dim == rank (`primitive_shape`
             // permits `dim == rank`).
-            let r = resolve_rel_attrs(OpTag::Unsqueeze, &attrs, &[], &[vec![2, 4]]).expect("unsqueeze");
+            let r =
+                resolve_rel_attrs(OpTag::Unsqueeze, &attrs, &[], &[vec![2, 4]]).expect("unsqueeze");
             assert_eq!(r.dims, vec![2]);
             assert!(!r.axis_last);
             // Squeeze (dims carrier): LAST = rank − 1.
-            let r = resolve_rel_attrs(OpTag::Squeeze, &attrs, &[], &[vec![2, 4, 1]]).expect("squeeze");
+            let r =
+                resolve_rel_attrs(OpTag::Squeeze, &attrs, &[], &[vec![2, 4, 1]]).expect("squeeze");
             assert_eq!(r.dims, vec![2]);
         }
 
@@ -3088,16 +3677,25 @@ mod tests {
             };
             assert_eq!(
                 resolve_rel_attrs(OpTag::BroadcastTo, &attrs, &[vec![2, 3]], &[vec![2, 3]]),
-                Err(RelAttrError::Expr(ShapeExprError::OperandOutOfRange { operand: 3, operands: 1 })),
+                Err(RelAttrError::Expr(ShapeExprError::OperandOutOfRange {
+                    operand: 3,
+                    operands: 1
+                })),
             );
             let attrs = OpAttrs {
                 axis: Some(1),
-                slice_start_rel: Some(Dim::Extent { operand: 7, axis: LAST }),
+                slice_start_rel: Some(Dim::Extent {
+                    operand: 7,
+                    axis: LAST,
+                }),
                 ..OpAttrs::default()
             };
             assert_eq!(
                 resolve_rel_attrs(OpTag::Slice, &attrs, &[vec![2, 4]], &[vec![2, 4]]),
-                Err(RelAttrError::Expr(ShapeExprError::OperandOutOfRange { operand: 7, operands: 1 })),
+                Err(RelAttrError::Expr(ShapeExprError::OperandOutOfRange {
+                    operand: 7,
+                    operands: 1
+                })),
             );
         }
 
@@ -3111,7 +3709,9 @@ mod tests {
             };
             assert_eq!(
                 resolve_rel_attrs(OpTag::BroadcastTo, &attrs, &[vec![2, 3]], &[vec![2, 3]]),
-                Err(RelAttrError::RelAbsConflict { field: "target_shape" }),
+                Err(RelAttrError::RelAbsConflict {
+                    field: "target_shape"
+                }),
             );
             // slice_start XOR slice_start_rel.
             let attrs = OpAttrs {
@@ -3122,7 +3722,9 @@ mod tests {
             };
             assert_eq!(
                 resolve_rel_attrs(OpTag::Slice, &attrs, &[vec![2, 4]], &[vec![2, 4]]),
-                Err(RelAttrError::RelAbsConflict { field: "slice_start" }),
+                Err(RelAttrError::RelAbsConflict {
+                    field: "slice_start"
+                }),
             );
             // slice_len XOR slice_len_rel.
             let attrs = OpAttrs {
@@ -3136,13 +3738,21 @@ mod tests {
                 Err(RelAttrError::RelAbsConflict { field: "slice_len" }),
             );
             // axis XOR axis_last.
-            let attrs = OpAttrs { axis: Some(0), axis_last: true, ..OpAttrs::default() };
+            let attrs = OpAttrs {
+                axis: Some(0),
+                axis_last: true,
+                ..OpAttrs::default()
+            };
             assert_eq!(
                 resolve_rel_attrs(OpTag::SumDim, &attrs, &[], &[vec![2, 4]]),
                 Err(RelAttrError::RelAbsConflict { field: "axis" }),
             );
             // dims XOR axis_last (Unsqueeze's carrier is `dims`).
-            let attrs = OpAttrs { dims: vec![0], axis_last: true, ..OpAttrs::default() };
+            let attrs = OpAttrs {
+                dims: vec![0],
+                axis_last: true,
+                ..OpAttrs::default()
+            };
             assert_eq!(
                 resolve_rel_attrs(OpTag::Unsqueeze, &attrs, &[], &[vec![2, 4]]),
                 Err(RelAttrError::RelAbsConflict { field: "dims" }),
@@ -3153,10 +3763,17 @@ mod tests {
         fn negative_result_is_a_typed_decline() {
             // 0 − 2 = −2: a negative slice offset is malformed, not a wrap.
             let neg = Dim::Sub(Box::new(Dim::Const(0)), Box::new(Dim::Const(2)));
-            let attrs = OpAttrs { axis: Some(1), slice_start_rel: Some(neg), ..OpAttrs::default() };
+            let attrs = OpAttrs {
+                axis: Some(1),
+                slice_start_rel: Some(neg),
+                ..OpAttrs::default()
+            };
             assert_eq!(
                 resolve_rel_attrs(OpTag::Slice, &attrs, &[vec![2, 4]], &[vec![2, 4]]),
-                Err(RelAttrError::Negative { field: "slice_start", value: -2 }),
+                Err(RelAttrError::Negative {
+                    field: "slice_start",
+                    value: -2
+                }),
             );
         }
 
@@ -3178,8 +3795,15 @@ mod tests {
                 ..OpAttrs::default()
             };
             assert_eq!(
-                resolve_rel_attrs(OpTag::BroadcastTo, &attrs, &[vec![2, SYMBOLIC]], &[vec![2, 4]]),
-                Err(RelAttrError::SymbolicGap { field: "target_shape" }),
+                resolve_rel_attrs(
+                    OpTag::BroadcastTo,
+                    &attrs,
+                    &[vec![2, SYMBOLIC]],
+                    &[vec![2, 4]]
+                ),
+                Err(RelAttrError::SymbolicGap {
+                    field: "target_shape"
+                }),
             );
         }
 
@@ -3251,7 +3875,10 @@ mod tests {
 
         #[test]
         fn axis_last_on_an_axisless_tag_or_without_a_child_declines() {
-            let attrs = OpAttrs { axis_last: true, ..OpAttrs::default() };
+            let attrs = OpAttrs {
+                axis_last: true,
+                ..OpAttrs::default()
+            };
             // Add has no axis carrier — axis_last is meaningless, a typed decline
             // (build-time validation posture: never silently ignore).
             assert_eq!(
@@ -3266,15 +3893,24 @@ mod tests {
             // Rank-0 child: LAST has no axis → the shared resolve_axis decline.
             assert_eq!(
                 resolve_rel_attrs(OpTag::SumDim, &attrs, &[], &[vec![]]),
-                Err(RelAttrError::Expr(ShapeExprError::AxisOutOfRange { axis: LAST, rank: 0 })),
+                Err(RelAttrError::Expr(ShapeExprError::AxisOutOfRange {
+                    axis: LAST,
+                    rank: 0
+                })),
             );
         }
 
         #[test]
         fn rel_free_attrs_pass_through_unchanged() {
             // The no-rel fast path: absolute attrs resolve to themselves.
-            let attrs = OpAttrs { axis: Some(1), slice_start: Some(2), slice_len: Some(3), ..OpAttrs::default() };
-            let r = resolve_rel_attrs(OpTag::Slice, &attrs, &[vec![2, 4]], &[vec![2, 4]]).expect("no-op");
+            let attrs = OpAttrs {
+                axis: Some(1),
+                slice_start: Some(2),
+                slice_len: Some(3),
+                ..OpAttrs::default()
+            };
+            let r = resolve_rel_attrs(OpTag::Slice, &attrs, &[vec![2, 4]], &[vec![2, 4]])
+                .expect("no-op");
             assert_eq!(r, attrs);
         }
     }
@@ -3306,7 +3942,10 @@ mod tests {
         }
 
         fn bcast_same_as_0() -> OpAttrs {
-            OpAttrs { target_shape_rel: Some(ShapeExpr::SameAs { operand: 0 }), ..OpAttrs::default() }
+            OpAttrs {
+                target_shape_rel: Some(ShapeExpr::SameAs { operand: 0 }),
+                ..OpAttrs::default()
+            }
         }
 
         #[test]
@@ -3316,10 +3955,14 @@ mod tests {
             // different shapes produces the correct target BOTH times
             // (impossible with absolute attrs: a baked target matches exactly
             // one shape).
-            let region = op_node(OpTag::Add, OpAttrs::default(), vec![
-                bind(0),
-                op_node(OpTag::BroadcastTo, bcast_same_as_0(), vec![bind(1)]),
-            ]);
+            let region = op_node(
+                OpTag::Add,
+                OpAttrs::default(),
+                vec![
+                    bind(0),
+                    op_node(OpTag::BroadcastTo, bcast_same_as_0(), vec![bind(1)]),
+                ],
+            );
             let mut g = Graph::new();
             let x1 = cst(&mut g, &[2, 3]);
             let t1 = cst(&mut g, &[1, 3]);
@@ -3347,10 +3990,14 @@ mod tests {
             // takes in[0]'s shape, it does not broadcast). `SameAs` cannot name
             // [2,3], so the resolving emit surfaces the typed Dims-class gap
             // instead of emitting a partial-frame BroadcastTo.
-            let region = op_node(OpTag::Mul, OpAttrs::default(), vec![
-                op_node(OpTag::BroadcastTo, bcast_same_as_0(), vec![bind(0)]),
-                op_node(OpTag::BroadcastTo, bcast_same_as_0(), vec![bind(1)]),
-            ]);
+            let region = op_node(
+                OpTag::Mul,
+                OpAttrs::default(),
+                vec![
+                    op_node(OpTag::BroadcastTo, bcast_same_as_0(), vec![bind(0)]),
+                    op_node(OpTag::BroadcastTo, bcast_same_as_0(), vec![bind(1)]),
+                ],
+            );
             let mut g = Graph::new();
             let a = cst(&mut g, &[2, 1]);
             let b = cst(&mut g, &[1, 3]);
@@ -3369,10 +4016,14 @@ mod tests {
             // D4: a rank-1 bind1 broadcast to rank-3 bind0's shape — the
             // resolver must first push the legacy `Reshape` (1-padded left,
             // right-aligned; `registry::rope`'s hand-built broadcast prep).
-            let region = op_node(OpTag::Mul, OpAttrs::default(), vec![
-                bind(0),
-                op_node(OpTag::BroadcastTo, bcast_same_as_0(), vec![bind(1)]),
-            ]);
+            let region = op_node(
+                OpTag::Mul,
+                OpAttrs::default(),
+                vec![
+                    bind(0),
+                    op_node(OpTag::BroadcastTo, bcast_same_as_0(), vec![bind(1)]),
+                ],
+            );
             let mut g = Graph::new();
             let x = cst(&mut g, &[2, 3, 4]);
             let t = cst(&mut g, &[4]);
@@ -3411,13 +4062,19 @@ mod tests {
             // broadcasts stay pad-free (pinned by the softmax parity oracle).
             let region = op_node(
                 OpTag::BroadcastTo,
-                OpAttrs { target_shape: vec![2, 3, 4], ..OpAttrs::default() },
+                OpAttrs {
+                    target_shape: vec![2, 3, 4],
+                    ..OpAttrs::default()
+                },
                 vec![bind(0)],
             );
             let mut g = Graph::new();
             let t = cst(&mut g, &[3, 4]);
             let emitted = emit_region(&mut g, &region, &[t], &[]);
-            assert_eq!(g.node(emitted).op, Op::BroadcastTo(Shape::from_dims(&[2, 3, 4])));
+            assert_eq!(
+                g.node(emitted).op,
+                Op::BroadcastTo(Shape::from_dims(&[2, 3, 4]))
+            );
             let pad = g.node(emitted).inputs[0];
             assert_eq!(
                 g.node(pad).op,
@@ -3432,9 +4089,11 @@ mod tests {
             // Risk-2 guard: children are now EMITTED first, but the scalar
             // cursor fill stays PRE-order (parent before descent) — the
             // canonical authoring order `match_region_extract` records.
-            let region = op_node(OpTag::AddScalar, OpAttrs::default(), vec![
-                op_node(OpTag::MulScalar, OpAttrs::default(), vec![bind(0)]),
-            ]);
+            let region = op_node(
+                OpTag::AddScalar,
+                OpAttrs::default(),
+                vec![op_node(OpTag::MulScalar, OpAttrs::default(), vec![bind(0)])],
+            );
             let mut g = Graph::new();
             let x = cst(&mut g, &[4]);
             let root = emit_region(&mut g, &region, &[x], &[10.0, 20.0]);
@@ -3455,10 +4114,14 @@ mod tests {
         fn validate_accepts_a_rel_attr_region() {
             // Born-red: today tag_to_op(BroadcastTo, {empty target_shape}) →
             // None → UnRepresentable. The rel-probe must accept the template.
-            let region = op_node(OpTag::Add, OpAttrs::default(), vec![
-                bind(0),
-                op_node(OpTag::BroadcastTo, bcast_same_as_0(), vec![bind(1)]),
-            ]);
+            let region = op_node(
+                OpTag::Add,
+                OpAttrs::default(),
+                vec![
+                    bind(0),
+                    op_node(OpTag::BroadcastTo, bcast_same_as_0(), vec![bind(1)]),
+                ],
+            );
             register_runtime_fused("t3::rel_bcast", region)
                 .expect("a rel-attr region is registrable");
         }
@@ -3480,7 +4143,9 @@ mod tests {
                 register_runtime_fused("t3::conflict", conflicted),
                 Err(RuntimeFusedError::InvalidRelAttrs {
                     tag: OpTag::BroadcastTo,
-                    error: RelAttrError::RelAbsConflict { field: "target_shape" },
+                    error: RelAttrError::RelAbsConflict {
+                        field: "target_shape"
+                    },
                 }),
             );
             // A bind reference outside the region's bind space can never
@@ -3534,7 +4199,11 @@ mod tests {
                 shape: Shape::from_dims(&[2, 4]),
                 dtype: DType::F32,
             });
-            assert_eq!(decompose_region(&mut g, fused), fused, "resolution decline ⇒ fixpoint");
+            assert_eq!(
+                decompose_region(&mut g, fused),
+                fused,
+                "resolution decline ⇒ fixpoint"
+            );
         }
 
         #[test]
@@ -3555,13 +4224,15 @@ mod tests {
             let x = cst(&mut g, &[2, 4]);
             assert_eq!(
                 try_emit_region(&mut g, &region, &[x], &[]),
-                Err(RelAttrError::Negative { field: "slice_start", value: -2 }),
+                Err(RelAttrError::Negative {
+                    field: "slice_start",
+                    value: -2
+                }),
             );
             // A graph-side SYMBOLIC bind extent maps to the §6.20 SYMBOLIC
             // sentinel → SymbolicGap (the surfaced-gap posture, §6.20-0004).
             let region = op_node(OpTag::BroadcastTo, bcast_same_as_0(), vec![bind(0)]);
-            let dyn_shape =
-                Shape::from_dims(&[2, 8]).with_dynamic_axis(1, 0, fuel_ir::SymId(0));
+            let dyn_shape = Shape::from_dims(&[2, 8]).with_dynamic_axis(1, 0, fuel_ir::SymId(0));
             let d = g.push(Node {
                 op: Op::Const,
                 inputs: vec![],
@@ -3570,7 +4241,9 @@ mod tests {
             });
             assert_eq!(
                 try_emit_region(&mut g, &region, &[d], &[]),
-                Err(RelAttrError::SymbolicGap { field: "target_shape" }),
+                Err(RelAttrError::SymbolicGap {
+                    field: "target_shape"
+                }),
             );
         }
     }
@@ -3587,10 +4260,14 @@ mod tests {
 
     #[test]
     fn emit_shares_repeated_slot_free_subtrees() {
-        let region = op_node(OpTag::Add, OpAttrs::default(), vec![
-            op_node(OpTag::Exp, OpAttrs::default(), vec![bind(0)]),
-            op_node(OpTag::Exp, OpAttrs::default(), vec![bind(0)]),
-        ]);
+        let region = op_node(
+            OpTag::Add,
+            OpAttrs::default(),
+            vec![
+                op_node(OpTag::Exp, OpAttrs::default(), vec![bind(0)]),
+                op_node(OpTag::Exp, OpAttrs::default(), vec![bind(0)]),
+            ],
+        );
         let mut g = Graph::new();
         let x = g.push(Node {
             op: Op::Const,
@@ -3611,10 +4288,14 @@ mod tests {
     fn emit_does_not_share_subtrees_with_open_scalar_slots() {
         // Two open MulScalar slots take DIFFERENT cursor values (pre-order
         // fill) — sharing them would silently drop the second live value.
-        let region = op_node(OpTag::Add, OpAttrs::default(), vec![
-            op_node(OpTag::MulScalar, OpAttrs::default(), vec![bind(0)]),
-            op_node(OpTag::MulScalar, OpAttrs::default(), vec![bind(0)]),
-        ]);
+        let region = op_node(
+            OpTag::Add,
+            OpAttrs::default(),
+            vec![
+                op_node(OpTag::MulScalar, OpAttrs::default(), vec![bind(0)]),
+                op_node(OpTag::MulScalar, OpAttrs::default(), vec![bind(0)]),
+            ],
+        );
         let mut g = Graph::new();
         let x = g.push(Node {
             op: Op::Const,
@@ -3637,15 +4318,44 @@ mod tests {
         use fuel_ir::{DType, Shape};
         let mut g = Graph::new();
         let sh = Shape::from_dims(&[4]);
-        let a = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
-        let b = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+        let a = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: sh.clone(),
+            dtype: DType::F32,
+        });
+        let b = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: sh.clone(),
+            dtype: DType::F32,
+        });
         // Reference graph.
-        let add = g.push(Node { op: Op::Add, inputs: vec![a, b], shape: sh.clone(), dtype: DType::F32 });
-        let reference = g.push(Node { op: Op::Cast(DType::F16), inputs: vec![add], shape: sh.clone(), dtype: DType::F16 });
+        let add = g.push(Node {
+            op: Op::Add,
+            inputs: vec![a, b],
+            shape: sh.clone(),
+            dtype: DType::F32,
+        });
+        let reference = g.push(Node {
+            op: Op::Cast(DType::F16),
+            inputs: vec![add],
+            shape: sh.clone(),
+            dtype: DType::F16,
+        });
 
-        let region = op_node(OpTag::Cast, OpAttrs { cast_dtype: Some("f16".into()), ..OpAttrs::default() }, vec![
-            op_node(OpTag::Add, OpAttrs::default(), vec![bind(0), bind(1)]),
-        ]);
+        let region = op_node(
+            OpTag::Cast,
+            OpAttrs {
+                cast_dtype: Some("f16".into()),
+                ..OpAttrs::default()
+            },
+            vec![op_node(
+                OpTag::Add,
+                OpAttrs::default(),
+                vec![bind(0), bind(1)],
+            )],
+        );
         let emitted = emit_region(&mut g, &region, &[a, b], &[]);
         assert_structural_eq(&g, reference, emitted);
     }
@@ -3681,7 +4391,10 @@ mod tests {
             let node = g.node(id);
             match &node.op {
                 Op::Const => leaves.get(&id).expect("leaf data provided").clone(),
-                Op::Exp => eval(g, node.inputs[0], leaves).iter().map(|v| v.exp()).collect(),
+                Op::Exp => eval(g, node.inputs[0], leaves)
+                    .iter()
+                    .map(|v| v.exp())
+                    .collect(),
                 Op::Sub => {
                     let a = eval(g, node.inputs[0], leaves);
                     let b = eval(g, node.inputs[1], leaves);
@@ -3730,7 +4443,12 @@ mod tests {
 
         fn softmax_fused_node(g: &mut Graph, dims: &[usize]) -> (NodeId, NodeId) {
             let sh = Shape::from_dims(dims);
-            let x = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+            let x = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: sh.clone(),
+                dtype: DType::F32,
+            });
             let fused = g.push(Node {
                 op: Op::Fused(FusedOps::SOFTMAX_LAST_DIM, FusedOpParams::SoftmaxLastDim),
                 inputs: vec![x],
@@ -3763,8 +4481,9 @@ mod tests {
                     frozen_legacy_softmax_decompose(&mut g, fused, &FusedOpParams::SoftmaxLastDim);
 
                 let n: usize = dims.iter().product();
-                let data: Vec<f64> =
-                    (0..n).map(|i| ((i as f64) * 0.37).sin() * 3.0 - 0.5).collect();
+                let data: Vec<f64> = (0..n)
+                    .map(|i| ((i as f64) * 0.37).sin() * 3.0 - 0.5)
+                    .collect();
                 let mut leaves = HashMap::new();
                 leaves.insert(x, data);
                 let got = eval(&g, new_root, &leaves);
@@ -3808,7 +4527,8 @@ mod tests {
             assert!(matches!(g.node(d).op, Op::SumDim(1)));
             assert_eq!(g.node(d).shape, Shape::from_dims(&[2]));
             assert_eq!(
-                g.node(d).inputs[0], e,
+                g.node(d).inputs[0],
+                e,
                 "the denominator reduces the SHARED Exp node — identity-share, not a duplicate",
             );
             // e = Exp(Sub(x, mb)); mb = BroadcastTo(Unsqueeze(MaxDim(x))).
@@ -3838,11 +4558,8 @@ mod tests {
             let mut g = Graph::new();
             let (_x, fused) = softmax_fused_node(&mut g, &[2, 4]);
             let before = g.len();
-            let out = crate::registry::softmax_last_dim::decompose(
-                &mut g,
-                fused,
-                &FusedOpParams::Rope,
-            );
+            let out =
+                crate::registry::softmax_last_dim::decompose(&mut g, fused, &FusedOpParams::Rope);
             assert_eq!(out, fused, "wrong params ⇒ typed decline ⇒ fixpoint");
             assert_eq!(g.len(), before, "declined before any emission");
         }
@@ -3864,7 +4581,10 @@ mod tests {
         fn decompose_via_recipe_declines_an_unknown_token_recipe() {
             let fabricated = op_node(
                 OpTag::Clamp,
-                OpAttrs { scalars: vec![0.0, 1.0], ..OpAttrs::default() },
+                OpAttrs {
+                    scalars: vec![0.0, 1.0],
+                    ..OpAttrs::default()
+                },
                 vec![bind(0)],
             );
             let mut g = Graph::new();
@@ -3872,7 +4592,11 @@ mod tests {
             let before = g.len();
             let out = decompose_via_recipe(&mut g, fused, &fabricated, Some(Vec::new()));
             assert_eq!(out, fused, "semantics-absent token ⇒ honest-miss fixpoint");
-            assert_eq!(g.len(), before, "declined BEFORE any emission — no partial nodes");
+            assert_eq!(
+                g.len(),
+                before,
+                "declined BEFORE any emission — no partial nodes"
+            );
         }
 
         /// The bridge's bind/input arity guard: a recipe over 2 binds cannot
@@ -3924,7 +4648,10 @@ mod tests {
             let node = g.node(id);
             match &node.op {
                 Op::Const => leaves.get(&id).expect("leaf data provided").clone(),
-                Op::Neg => eval_rope(g, node.inputs[0], leaves).iter().map(|v| -v).collect(),
+                Op::Neg => eval_rope(g, node.inputs[0], leaves)
+                    .iter()
+                    .map(|v| -v)
+                    .collect(),
                 Op::Mul => {
                     let a = eval_rope(g, node.inputs[0], leaves);
                     let b = eval_rope(g, node.inputs[1], leaves);
@@ -3984,17 +4711,29 @@ mod tests {
 
         /// Build a fused Rope node over `x [..,seq,d]`, `cos [seq,d]`,
         /// `sin [seq,d]`. Returns `(x, cos, sin, fused)`.
-        fn rope_fused_node(
-            g: &mut Graph,
-            x_dims: &[usize],
-        ) -> (NodeId, NodeId, NodeId, NodeId) {
+        fn rope_fused_node(g: &mut Graph, x_dims: &[usize]) -> (NodeId, NodeId, NodeId, NodeId) {
             let rank = x_dims.len();
             let table_dims = [x_dims[rank - 2], x_dims[rank - 1]];
             let x_sh = Shape::from_dims(x_dims);
             let t_sh = Shape::from_dims(&table_dims);
-            let x = g.push(Node { op: Op::Const, inputs: vec![], shape: x_sh.clone(), dtype: DType::F32 });
-            let cos = g.push(Node { op: Op::Const, inputs: vec![], shape: t_sh.clone(), dtype: DType::F32 });
-            let sin = g.push(Node { op: Op::Const, inputs: vec![], shape: t_sh, dtype: DType::F32 });
+            let x = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: x_sh.clone(),
+                dtype: DType::F32,
+            });
+            let cos = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: t_sh.clone(),
+                dtype: DType::F32,
+            });
+            let sin = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: t_sh,
+                dtype: DType::F32,
+            });
             let fused = g.push(Node {
                 op: Op::Fused(FusedOps::ROPE, FusedOpParams::Rope),
                 inputs: vec![x, cos, sin],
@@ -4023,15 +4762,18 @@ mod tests {
                 assert_eq!(g.node(new_root).shape, x_sh, "rope is shape-preserving");
                 assert_eq!(g.node(new_root).dtype, DType::F32);
 
-                let legacy_root =
-                    frozen_legacy_rope_decompose(&mut g, fused, &FusedOpParams::Rope);
+                let legacy_root = frozen_legacy_rope_decompose(&mut g, fused, &FusedOpParams::Rope);
 
                 // Distinct, deterministic leaf data for x / cos / sin.
                 let x_n: usize = x_dims.iter().product();
                 let t_n = seq * d;
-                let x_data: Vec<f64> = (0..x_n).map(|i| ((i as f64) * 0.31).sin() * 2.0 - 0.4).collect();
-                let cos_data: Vec<f64> = (0..t_n).map(|i| ((i as f64) * 0.17 + 0.5).cos()).collect();
-                let sin_data: Vec<f64> = (0..t_n).map(|i| ((i as f64) * 0.23 - 0.2).sin()).collect();
+                let x_data: Vec<f64> = (0..x_n)
+                    .map(|i| ((i as f64) * 0.31).sin() * 2.0 - 0.4)
+                    .collect();
+                let cos_data: Vec<f64> =
+                    (0..t_n).map(|i| ((i as f64) * 0.17 + 0.5).cos()).collect();
+                let sin_data: Vec<f64> =
+                    (0..t_n).map(|i| ((i as f64) * 0.23 - 0.2).sin()).collect();
                 let mut leaves = HashMap::new();
                 leaves.insert(x, x_data);
                 leaves.insert(cos, cos_data);
@@ -4069,7 +4811,10 @@ mod tests {
                 .iter()
                 .filter(|&&n| matches!(g.node(n).op, Op::Reshape(_)))
                 .count();
-            assert_eq!(reshapes, 2, "rank-raise materializes both legacy prep Reshapes (D4)");
+            assert_eq!(
+                reshapes, 2,
+                "rank-raise materializes both legacy prep Reshapes (D4)"
+            );
         }
 
         /// T6 red (c): at EQUAL rank (x itself `[seq,d]`) the recipe emits the
@@ -4088,12 +4833,18 @@ mod tests {
                 .iter()
                 .filter(|&&n| matches!(g.node(n).op, Op::Reshape(_)))
                 .count();
-            assert_eq!(reshapes, 0, "equal-rank broadcast needs no prep Reshape (D4)");
+            assert_eq!(
+                reshapes, 0,
+                "equal-rank broadcast needs no prep Reshape (D4)"
+            );
             let op_nodes = reachable
                 .iter()
                 .filter(|&&n| !matches!(g.node(n).op, Op::Const))
                 .count();
-            assert_eq!(op_nodes, 9, "the 9-node rope recipe (2×Bcast/2×Slice/Neg/Concat/2×Mul/Add)");
+            assert_eq!(
+                op_nodes, 9,
+                "the 9-node rope recipe (2×Bcast/2×Slice/Neg/Concat/2×Mul/Add)"
+            );
         }
 
         /// T6 red (d): totality (G2) — a wrong params payload is a typed
@@ -4153,11 +4904,18 @@ mod tests {
             let node = g.node(id);
             match &node.op {
                 Op::Const => leaves.get(&id).expect("leaf data provided").clone(),
-                Op::Sqr => eval_norm(g, node.inputs[0], leaves).iter().map(|v| v * v).collect(),
-                Op::Sqrt => eval_norm(g, node.inputs[0], leaves).iter().map(|v| v.sqrt()).collect(),
-                Op::AddScalar(e) => {
-                    eval_norm(g, node.inputs[0], leaves).iter().map(|v| v + e).collect()
-                }
+                Op::Sqr => eval_norm(g, node.inputs[0], leaves)
+                    .iter()
+                    .map(|v| v * v)
+                    .collect(),
+                Op::Sqrt => eval_norm(g, node.inputs[0], leaves)
+                    .iter()
+                    .map(|v| v.sqrt())
+                    .collect(),
+                Op::AddScalar(e) => eval_norm(g, node.inputs[0], leaves)
+                    .iter()
+                    .map(|v| v + e)
+                    .collect(),
                 Op::Sub => {
                     let a = eval_norm(g, node.inputs[0], leaves);
                     let b = eval_norm(g, node.inputs[1], leaves);
@@ -4203,7 +4961,12 @@ mod tests {
         /// Returns `(x, fused)`.
         fn rms_norm_fused_node(g: &mut Graph, dims: &[usize], eps: f64) -> (NodeId, NodeId) {
             let sh = Shape::from_dims(dims);
-            let x = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+            let x = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: sh.clone(),
+                dtype: DType::F32,
+            });
             let fused = g.push(Node {
                 op: Op::Fused(
                     FusedOps::RMS_NORM_LAST_DIM,
@@ -4220,7 +4983,12 @@ mod tests {
         /// Returns `(x, fused)`.
         fn layer_norm_fused_node(g: &mut Graph, dims: &[usize], eps: f64) -> (NodeId, NodeId) {
             let sh = Shape::from_dims(dims);
-            let x = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+            let x = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: sh.clone(),
+                dtype: DType::F32,
+            });
             let fused = g.push(Node {
                 op: Op::Fused(
                     FusedOps::LAYER_NORM_LAST_DIM,
@@ -4258,8 +5026,9 @@ mod tests {
                 );
 
                 let n: usize = dims.iter().product();
-                let data: Vec<f64> =
-                    (0..n).map(|i| ((i as f64) * 0.37).sin() * 3.0 - 0.5).collect();
+                let data: Vec<f64> = (0..n)
+                    .map(|i| ((i as f64) * 0.37).sin() * 3.0 - 0.5)
+                    .collect();
                 let mut leaves = HashMap::new();
                 leaves.insert(x, data);
                 let got = eval_norm(&g, new_root, &leaves);
@@ -4300,8 +5069,9 @@ mod tests {
                 );
 
                 let n: usize = dims.iter().product();
-                let data: Vec<f64> =
-                    (0..n).map(|i| ((i as f64) * 0.29).cos() * 2.0 + 0.3).collect();
+                let data: Vec<f64> = (0..n)
+                    .map(|i| ((i as f64) * 0.29).cos() * 2.0 + 0.3)
+                    .collect();
                 let mut leaves = HashMap::new();
                 leaves.insert(x, data);
                 let got = eval_norm(&g, new_root, &leaves);
@@ -4339,7 +5109,10 @@ mod tests {
                 .iter()
                 .filter(|&&n| matches!(g.node(n).op, Op::Reshape(_)))
                 .count();
-            assert_eq!(unsqueezes, 1, "keepdim restored via Unsqueeze append (D3 swap)");
+            assert_eq!(
+                unsqueezes, 1,
+                "keepdim restored via Unsqueeze append (D3 swap)"
+            );
             assert_eq!(reshapes, 0, "no baked keepdim Reshape after the D3 swap");
         }
 
@@ -4364,8 +5137,14 @@ mod tests {
                 .iter()
                 .filter(|&&n| matches!(g.node(n).op, Op::Reshape(_)))
                 .count();
-            assert_eq!(unsqueezes, 2, "both keepdim restores via Unsqueeze append (D3 swap)");
-            assert_eq!(reshapes, 0, "no baked keepdim Reshape / no D4 pad after the swap");
+            assert_eq!(
+                unsqueezes, 2,
+                "both keepdim restores via Unsqueeze append (D3 swap)"
+            );
+            assert_eq!(
+                reshapes, 0,
+                "no baked keepdim Reshape / no D4 pad after the swap"
+            );
             // The `centered` Sub is SHARED (Sqr input == final Div numerator):
             // 11 op nodes + 1 leaf = 12 reachable, not the 12-op unshared tree.
             let op_nodes = reachable
@@ -4384,8 +5163,9 @@ mod tests {
         fn rms_norm_recipe_eps_flows_through_the_open_slot() {
             let dims = [2usize, 4];
             let n: usize = dims.iter().product();
-            let data: Vec<f64> =
-                (0..n).map(|i| 0.001 * (((i as f64) * 0.37).sin() + 1.2)).collect();
+            let data: Vec<f64> = (0..n)
+                .map(|i| 0.001 * (((i as f64) * 0.37).sin() + 1.2))
+                .collect();
 
             let realize = |eps: f64| -> Vec<f64> {
                 let mut g = Graph::new();
@@ -4415,8 +5195,9 @@ mod tests {
             let n: usize = dims.iter().product();
             // Near-constant rows so the variance ≈ eps and the eps choice moves
             // the output materially.
-            let data: Vec<f64> =
-                (0..n).map(|i| 1.0 + 0.001 * ((i as f64) * 0.37).sin()).collect();
+            let data: Vec<f64> = (0..n)
+                .map(|i| 1.0 + 0.001 * ((i as f64) * 0.37).sin())
+                .collect();
 
             let realize = |eps: f64| -> Vec<f64> {
                 let mut g = Graph::new();
@@ -4542,13 +5323,20 @@ mod tests {
         /// Build a fused SoftmaxLastDimBackward node over `s [dims]` (input 0,
         /// the forward output) and `g [dims]` (input 1, the upstream gradient).
         /// Returns `(s, g, fused)`.
-        fn softmax_backward_fused_node(
-            g: &mut Graph,
-            dims: &[usize],
-        ) -> (NodeId, NodeId, NodeId) {
+        fn softmax_backward_fused_node(g: &mut Graph, dims: &[usize]) -> (NodeId, NodeId, NodeId) {
             let sh = Shape::from_dims(dims);
-            let s = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
-            let up = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+            let s = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: sh.clone(),
+                dtype: DType::F32,
+            });
+            let up = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: sh.clone(),
+                dtype: DType::F32,
+            });
             let fused = g.push(Node {
                 op: Op::Fused(
                     FusedOps::SOFTMAX_LAST_DIM_BACKWARD,
@@ -4577,7 +5365,11 @@ mod tests {
                     &FusedOpParams::SoftmaxLastDimBackward,
                 );
                 assert_ne!(new_root, fused, "recipe decompose must fire at {dims:?}");
-                assert_eq!(g.node(new_root).shape, sh, "softmax backward is shape-preserving");
+                assert_eq!(
+                    g.node(new_root).shape,
+                    sh,
+                    "softmax backward is shape-preserving"
+                );
                 assert_eq!(g.node(new_root).dtype, DType::F32);
 
                 let legacy_root = frozen_legacy_softmax_backward_decompose(
@@ -4587,10 +5379,12 @@ mod tests {
                 );
 
                 let n: usize = dims.iter().product();
-                let s_data: Vec<f64> =
-                    (0..n).map(|i| ((i as f64) * 0.29).sin() * 0.5 + 0.5).collect();
-                let g_data: Vec<f64> =
-                    (0..n).map(|i| ((i as f64) * 0.53).cos() * 2.0 - 0.3).collect();
+                let s_data: Vec<f64> = (0..n)
+                    .map(|i| ((i as f64) * 0.29).sin() * 0.5 + 0.5)
+                    .collect();
+                let g_data: Vec<f64> = (0..n)
+                    .map(|i| ((i as f64) * 0.53).cos() * 2.0 - 0.3)
+                    .collect();
                 let mut leaves = HashMap::new();
                 leaves.insert(s, s_data);
                 leaves.insert(up, g_data);
@@ -4621,7 +5415,10 @@ mod tests {
                 &FusedOpParams::SoftmaxLastDimBackward,
             );
             assert_ne!(root, fused, "recipe decompose fires");
-            assert!(matches!(g.node(root).op, Op::Mul), "backward root is the outer Mul");
+            assert!(
+                matches!(g.node(root).op, Op::Mul),
+                "backward root is the outer Mul"
+            );
             let reachable = crate::topo_order_multi(&g, &[root]);
             let sumdims = reachable
                 .iter()
@@ -4637,7 +5434,10 @@ mod tests {
                 .count();
             assert_eq!(sumdims, 1, "the reduce is SumDim(last) — the D3 swap");
             assert_eq!(unsqueezes, 1, "keepdim restored via Unsqueeze append");
-            assert_eq!(reduce_sum_tos, 0, "no baked keepdim ReduceSumTo after the swap");
+            assert_eq!(
+                reduce_sum_tos, 0,
+                "no baked keepdim ReduceSumTo after the swap"
+            );
         }
 
         /// T8 red (totality): a wrong params payload is a typed decline
@@ -4694,7 +5494,10 @@ mod tests {
                     }
                     other => panic!("expected the backward fused op, got {other:?}"),
                 }
-                assert_eq!(node.inputs[0], y_id, "backward input 0 = the forward softmax output");
+                assert_eq!(
+                    node.inputs[0], y_id,
+                    "backward input 0 = the forward softmax output"
+                );
                 node.inputs[1]
             };
 
@@ -4717,20 +5520,25 @@ mod tests {
             };
 
             let gr = handle.read().unwrap();
-            assert_ne!(new_root, bwd_id, "the autograd backward node decomposes via the recipe");
+            assert_ne!(
+                new_root, bwd_id,
+                "the autograd backward node decomposes via the recipe"
+            );
             assert_eq!(gr.node(new_root).shape, sh, "shape-preserving");
             let reachable = crate::topo_order_multi(&gr, &[new_root]);
             assert!(
-                reachable.iter().any(|&n| matches!(gr.node(n).op, Op::SumDim(_))),
+                reachable
+                    .iter()
+                    .any(|&n| matches!(gr.node(n).op, Op::SumDim(_))),
                 "the autograd path reaches the D3 SumDim spelling",
             );
 
             // Numeric parity (leaf-first interpreter over `[y = s, up = g]`).
             let n: usize = sh.dims().iter().product();
-            let s_data: Vec<f64> =
-                (0..n).map(|i| ((i as f64) * 0.31).sin() * 0.5 + 0.5).collect();
-            let g_data: Vec<f64> =
-                (0..n).map(|i| ((i as f64) * 0.47).cos() - 0.1).collect();
+            let s_data: Vec<f64> = (0..n)
+                .map(|i| ((i as f64) * 0.31).sin() * 0.5 + 0.5)
+                .collect();
+            let g_data: Vec<f64> = (0..n).map(|i| ((i as f64) * 0.47).cos() - 0.1).collect();
             let mut leaves = HashMap::new();
             leaves.insert(y_id, s_data);
             leaves.insert(up_id, g_data);
@@ -4794,13 +5602,18 @@ mod tests {
                     let b = eval_lnb(g, node.inputs[1], leaves);
                     a.iter().zip(&b).map(|(x, y)| x - y).collect()
                 }
-                Op::Sqr => eval_lnb(g, node.inputs[0], leaves).iter().map(|v| v * v).collect(),
-                Op::Rsqrt => {
-                    eval_lnb(g, node.inputs[0], leaves).iter().map(|v| 1.0 / v.sqrt()).collect()
-                }
-                Op::AddScalar(e) => {
-                    eval_lnb(g, node.inputs[0], leaves).iter().map(|v| v + e).collect()
-                }
+                Op::Sqr => eval_lnb(g, node.inputs[0], leaves)
+                    .iter()
+                    .map(|v| v * v)
+                    .collect(),
+                Op::Rsqrt => eval_lnb(g, node.inputs[0], leaves)
+                    .iter()
+                    .map(|v| 1.0 / v.sqrt())
+                    .collect(),
+                Op::AddScalar(e) => eval_lnb(g, node.inputs[0], leaves)
+                    .iter()
+                    .map(|v| v + e)
+                    .collect(),
                 // Last-axis mean — rank-reducing; identical fold both spellings.
                 Op::MeanDim(_) => {
                     let input = eval_lnb(g, node.inputs[0], leaves);
@@ -4841,8 +5654,18 @@ mod tests {
             eps: f64,
         ) -> (NodeId, NodeId, NodeId) {
             let sh = Shape::from_dims(dims);
-            let x = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
-            let up = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+            let x = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: sh.clone(),
+                dtype: DType::F32,
+            });
+            let up = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: sh.clone(),
+                dtype: DType::F32,
+            });
             let fused = g.push(Node {
                 op: Op::Fused(
                     FusedOps::LAYER_NORM_LAST_DIM_BACKWARD,
@@ -4871,7 +5694,11 @@ mod tests {
                     &FusedOpParams::LayerNormLastDimBackward { eps: 1e-5 },
                 );
                 assert_ne!(new_root, fused, "recipe decompose must fire at {dims:?}");
-                assert_eq!(g.node(new_root).shape, sh, "layer_norm backward is shape-preserving");
+                assert_eq!(
+                    g.node(new_root).shape,
+                    sh,
+                    "layer_norm backward is shape-preserving"
+                );
                 assert_eq!(g.node(new_root).dtype, DType::F32);
 
                 let legacy_root = frozen_legacy_layer_norm_backward_decompose(
@@ -4881,10 +5708,12 @@ mod tests {
                 );
 
                 let n: usize = dims.iter().product();
-                let x_data: Vec<f64> =
-                    (0..n).map(|i| ((i as f64) * 0.29).sin() * 2.0 + 0.3).collect();
-                let g_data: Vec<f64> =
-                    (0..n).map(|i| ((i as f64) * 0.53).cos() * 1.5 - 0.2).collect();
+                let x_data: Vec<f64> = (0..n)
+                    .map(|i| ((i as f64) * 0.29).sin() * 2.0 + 0.3)
+                    .collect();
+                let g_data: Vec<f64> = (0..n)
+                    .map(|i| ((i as f64) * 0.53).cos() * 1.5 - 0.2)
+                    .collect();
                 let mut leaves = HashMap::new();
                 leaves.insert(x, x_data);
                 leaves.insert(up, g_data);
@@ -4917,7 +5746,10 @@ mod tests {
                 &FusedOpParams::LayerNormLastDimBackward { eps: 1e-5 },
             );
             assert_ne!(root, fused, "recipe decompose fires");
-            assert!(matches!(g.node(root).op, Op::Mul), "backward root is the outer Mul(istd, inner)");
+            assert!(
+                matches!(g.node(root).op, Op::Mul),
+                "backward root is the outer Mul(istd, inner)"
+            );
             let reachable = crate::topo_order_multi(&g, &[root]);
             let unsqueezes = reachable
                 .iter()
@@ -4927,8 +5759,14 @@ mod tests {
                 .iter()
                 .filter(|&&n| matches!(g.node(n).op, Op::Reshape(_)))
                 .count();
-            assert!(unsqueezes >= 1, "keepdim restored via Unsqueeze append (D3 swap)");
-            assert_eq!(reshapes, 0, "no baked keepdim Reshape / no D4 pad after the D3 swap");
+            assert!(
+                unsqueezes >= 1,
+                "keepdim restored via Unsqueeze append (D3 swap)"
+            );
+            assert_eq!(
+                reshapes, 0,
+                "no baked keepdim Reshape / no D4 pad after the D3 swap"
+            );
         }
 
         /// S2-1 (RISK-A): `xhat = Mul(xc, istd)` and `istd = Rsqrt(AddScalar[
@@ -4976,8 +5814,7 @@ mod tests {
             );
 
             // Downstream full-optimizer CSE re-collapses the redundant recompute.
-            let shared: crate::SharedGraph =
-                std::sync::Arc::new(std::sync::RwLock::new(gr));
+            let shared: crate::SharedGraph = std::sync::Arc::new(std::sync::RwLock::new(gr));
             let cse_roots = crate::opt::optimize(&shared, &[recipe_root]);
             let gr = shared.read().unwrap();
             let cse_n = count_ops(&gr, cse_roots[0]);
@@ -5057,27 +5894,39 @@ mod tests {
                     let b = eval_rnb(g, node.inputs[1], leaves);
                     a.iter().zip(&b).map(|(x, y)| x / y).collect()
                 }
-                Op::Sqr => eval_rnb(g, node.inputs[0], leaves).iter().map(|v| v * v).collect(),
-                Op::Rsqrt => {
-                    eval_rnb(g, node.inputs[0], leaves).iter().map(|v| 1.0 / v.sqrt()).collect()
-                }
-                Op::AddScalar(e) => {
-                    eval_rnb(g, node.inputs[0], leaves).iter().map(|v| v + e).collect()
-                }
-                Op::MulScalar(m) => {
-                    eval_rnb(g, node.inputs[0], leaves).iter().map(|v| v * m).collect()
-                }
+                Op::Sqr => eval_rnb(g, node.inputs[0], leaves)
+                    .iter()
+                    .map(|v| v * v)
+                    .collect(),
+                Op::Rsqrt => eval_rnb(g, node.inputs[0], leaves)
+                    .iter()
+                    .map(|v| 1.0 / v.sqrt())
+                    .collect(),
+                Op::AddScalar(e) => eval_rnb(g, node.inputs[0], leaves)
+                    .iter()
+                    .map(|v| v + e)
+                    .collect(),
+                Op::MulScalar(m) => eval_rnb(g, node.inputs[0], leaves)
+                    .iter()
+                    .map(|v| v * m)
+                    .collect(),
                 // Last-axis reductions — rank-reducing; identical fold both
                 // spellings.
                 Op::MeanDim(_) => {
                     let input = eval_rnb(g, node.inputs[0], leaves);
                     let last = *g.node(node.inputs[0]).shape.dims().last().unwrap();
-                    input.chunks(last).map(|row| row.iter().sum::<f64>() / last as f64).collect()
+                    input
+                        .chunks(last)
+                        .map(|row| row.iter().sum::<f64>() / last as f64)
+                        .collect()
                 }
                 Op::SumDim(_) => {
                     let input = eval_rnb(g, node.inputs[0], leaves);
                     let last = *g.node(node.inputs[0]).shape.dims().last().unwrap();
-                    input.chunks(last).map(|row| row.iter().sum::<f64>()).collect()
+                    input
+                        .chunks(last)
+                        .map(|row| row.iter().sum::<f64>())
+                        .collect()
                 }
                 // Metadata-only keepdim restores (the D3 swap and its legacy twin
                 // evaluate identically here).
@@ -5092,7 +5941,10 @@ mod tests {
                         out_n,
                         "broadcast is a last-dim repeat in these graphs",
                     );
-                    input.iter().flat_map(|&v| std::iter::repeat(v).take(last)).collect()
+                    input
+                        .iter()
+                        .flat_map(|&v| std::iter::repeat(v).take(last))
+                        .collect()
                 }
                 other => panic!("eval_rnb: unhandled op {other:?}"),
             }
@@ -5107,8 +5959,18 @@ mod tests {
             eps: f64,
         ) -> (NodeId, NodeId, NodeId) {
             let sh = Shape::from_dims(dims);
-            let x = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
-            let up = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+            let x = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: sh.clone(),
+                dtype: DType::F32,
+            });
+            let up = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: sh.clone(),
+                dtype: DType::F32,
+            });
             let fused = g.push(Node {
                 op: Op::Fused(
                     FusedOps::RMS_NORM_LAST_DIM_BACKWARD,
@@ -5137,7 +5999,11 @@ mod tests {
                     &FusedOpParams::RmsNormLastDimBackward { eps: 1e-5 },
                 );
                 assert_ne!(new_root, fused, "recipe decompose must fire at {dims:?}");
-                assert_eq!(g.node(new_root).shape, sh, "rms_norm backward is shape-preserving");
+                assert_eq!(
+                    g.node(new_root).shape,
+                    sh,
+                    "rms_norm backward is shape-preserving"
+                );
                 assert_eq!(g.node(new_root).dtype, DType::F32);
 
                 let legacy_root = frozen_legacy_rms_norm_backward_decompose(
@@ -5147,10 +6013,12 @@ mod tests {
                 );
 
                 let n: usize = dims.iter().product();
-                let x_data: Vec<f64> =
-                    (0..n).map(|i| ((i as f64) * 0.41).sin() * 2.0 + 0.7).collect();
-                let g_data: Vec<f64> =
-                    (0..n).map(|i| ((i as f64) * 0.61).cos() * 1.3 - 0.15).collect();
+                let x_data: Vec<f64> = (0..n)
+                    .map(|i| ((i as f64) * 0.41).sin() * 2.0 + 0.7)
+                    .collect();
+                let g_data: Vec<f64> = (0..n)
+                    .map(|i| ((i as f64) * 0.61).cos() * 1.3 - 0.15)
+                    .collect();
                 let mut leaves = HashMap::new();
                 leaves.insert(x, x_data);
                 leaves.insert(up, g_data);
@@ -5185,7 +6053,10 @@ mod tests {
                     &FusedOpParams::RmsNormLastDimBackward { eps: 1e-5 },
                 );
                 assert_ne!(root, fused, "recipe decompose fires at {dims:?}");
-                assert!(matches!(g.node(root).op, Op::Mul), "backward root is the outer Mul(rrms, inner)");
+                assert!(
+                    matches!(g.node(root).op, Op::Mul),
+                    "backward root is the outer Mul(rrms, inner)"
+                );
                 let reachable = crate::topo_order_multi(&g, &[root]);
                 let unsqueezes = reachable
                     .iter()
@@ -5195,8 +6066,14 @@ mod tests {
                     .iter()
                     .filter(|&&n| matches!(g.node(n).op, Op::Reshape(_)))
                     .count();
-                assert!(unsqueezes >= 1, "keepdim restored via Unsqueeze append (D3 swap) at {dims:?}");
-                assert_eq!(reshapes, 0, "no baked keepdim Reshape / no D4 pad after the D3 swap at {dims:?}");
+                assert!(
+                    unsqueezes >= 1,
+                    "keepdim restored via Unsqueeze append (D3 swap) at {dims:?}"
+                );
+                assert_eq!(
+                    reshapes, 0,
+                    "no baked keepdim Reshape / no D4 pad after the D3 swap at {dims:?}"
+                );
                 // The reduced-count divisor resolved to n = dims[last] from x's
                 // shape (the scalar_rel carrier), at whatever rank.
                 let n = *dims.last().unwrap() as f64;
@@ -5255,7 +6132,11 @@ mod tests {
             for (i, stride) in in_strides.iter_mut().enumerate() {
                 if i >= pad {
                     let id = i - pad;
-                    *stride = if in_shape[id] == 1 { 0 } else { real_strides[id] };
+                    *stride = if in_shape[id] == 1 {
+                        0
+                    } else {
+                        real_strides[id]
+                    };
                 }
             }
             let out_n: usize = target.iter().product();
@@ -5346,9 +6227,24 @@ mod tests {
             let mut out_dims = a_dims[..ar - 2].to_vec();
             out_dims.push(a_dims[ar - 2]);
             out_dims.push(n);
-            let a = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(a_dims), dtype: DType::F32 });
-            let b = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(b_dims), dtype: DType::F32 });
-            let bias = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[n]), dtype: DType::F32 });
+            let a = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(a_dims),
+                dtype: DType::F32,
+            });
+            let b = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(b_dims),
+                dtype: DType::F32,
+            });
+            let bias = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[n]),
+                dtype: DType::F32,
+            });
             let fused = g.push(Node {
                 op: Op::Fused(FusedOps::FUSED_LINEAR, FusedOpParams::FusedLinear),
                 inputs: vec![a, b, bias],
@@ -5373,21 +6269,31 @@ mod tests {
                 let out_sh = g.node(fused).shape.clone();
                 let new_root = fused_linear::decompose(&mut g, fused, &FusedOpParams::FusedLinear);
                 assert_ne!(new_root, fused, "recipe decompose fires at a={a_dims:?}");
-                assert_eq!(g.node(new_root).shape, out_sh, "output = matmul output shape");
+                assert_eq!(
+                    g.node(new_root).shape,
+                    out_sh,
+                    "output = matmul output shape"
+                );
                 assert_eq!(g.node(new_root).dtype, DType::F32);
 
-                let legacy_root =
-                    frozen_legacy_fused_linear_decompose(&mut g, fused, &FusedOpParams::FusedLinear);
+                let legacy_root = frozen_legacy_fused_linear_decompose(
+                    &mut g,
+                    fused,
+                    &FusedOpParams::FusedLinear,
+                );
 
                 let an: usize = a_dims.iter().product();
                 let bn: usize = b_dims.iter().product();
                 let bias_n = b_dims[b_dims.len() - 1];
-                let a_data: Vec<f64> =
-                    (0..an).map(|i| ((i as f64) * 0.31).sin() * 1.5 - 0.2).collect();
-                let b_data: Vec<f64> =
-                    (0..bn).map(|i| ((i as f64) * 0.47).cos() * 0.8 + 0.1).collect();
-                let bias_data: Vec<f64> =
-                    (0..bias_n).map(|i| ((i as f64) * 0.7).sin() * 2.0).collect();
+                let a_data: Vec<f64> = (0..an)
+                    .map(|i| ((i as f64) * 0.31).sin() * 1.5 - 0.2)
+                    .collect();
+                let b_data: Vec<f64> = (0..bn)
+                    .map(|i| ((i as f64) * 0.47).cos() * 0.8 + 0.1)
+                    .collect();
+                let bias_data: Vec<f64> = (0..bias_n)
+                    .map(|i| ((i as f64) * 0.7).sin() * 2.0)
+                    .collect();
                 let mut leaves = HashMap::new();
                 leaves.insert(a, a_data);
                 leaves.insert(b, b_data);
@@ -5417,7 +6323,10 @@ mod tests {
             let (_a, _b, _bias, fused) = fused_linear_fused_node(&mut g, &[2, 3], &[3, 4]);
             let root = fused_linear::decompose(&mut g, fused, &FusedOpParams::FusedLinear);
             assert_ne!(root, fused, "recipe decompose fires");
-            assert!(matches!(g.node(root).op, Op::Add), "root is Add(mm, bias_bcst)");
+            assert!(
+                matches!(g.node(root).op, Op::Add),
+                "root is Add(mm, bias_bcst)"
+            );
             let reachable = crate::topo_order_multi(&g, &[root]);
             let reshapes = reachable
                 .iter()
@@ -5470,9 +6379,9 @@ mod tests {
     mod scan_recipe_roundtrip {
         use super::super::*;
         use super::{bind, op_node};
-        use crate::{ScanEmit, ScanPredicate, ScanRole};
         use crate::opt::base_map_hash;
-        use fuel_ir::storage::{compose_bundle, OutputViewSpec};
+        use crate::{ScanEmit, ScanPredicate, ScanRole};
+        use fuel_ir::storage::{OutputViewSpec, compose_bundle};
         use fuel_ir::{DType, Shape};
         use fuel_kernel_seam_types::{SCAN_ROLE_CARRY, SCAN_ROLE_ELEM};
         use std::sync::Arc;
@@ -5480,7 +6389,11 @@ mod tests {
         fn placeholder(role: u8, index: u32) -> PatternNode {
             PatternNode::Op {
                 op: OpTag::ScanPlaceholder,
-                attrs: OpAttrs { scan_role: Some(role), scan_index: Some(index), ..OpAttrs::default() },
+                attrs: OpAttrs {
+                    scan_role: Some(role),
+                    scan_index: Some(index),
+                    ..OpAttrs::default()
+                },
                 operands: vec![],
             }
         }
@@ -5492,11 +6405,16 @@ mod tests {
         /// appears in BOTH body exits — emit's slot-free identity-share collapses
         /// them to one node, matching the imperative `sum` referenced twice.
         fn scan_recipe() -> PatternNode {
-            let sum = || op_node(
-                OpTag::Add,
-                OpAttrs::default(),
-                vec![placeholder(SCAN_ROLE_CARRY, 0), placeholder(SCAN_ROLE_ELEM, 0)],
-            );
+            let sum = || {
+                op_node(
+                    OpTag::Add,
+                    OpAttrs::default(),
+                    vec![
+                        placeholder(SCAN_ROLE_CARRY, 0),
+                        placeholder(SCAN_ROLE_ELEM, 0),
+                    ],
+                )
+            };
             PatternNode::Op {
                 op: OpTag::Scan,
                 attrs: OpAttrs {
@@ -5507,10 +6425,10 @@ mod tests {
                     ..OpAttrs::default()
                 },
                 operands: vec![
-                    bind(0), // init_carry
-                    bind(1), // xs0
-                    bind(2), // const
-                    sum(),   // body_new_carry
+                    bind(0),                                                       // init_carry
+                    bind(1),                                                       // xs0
+                    bind(2),                                                       // const
+                    sum(),                                                         // body_new_carry
                     op_node(OpTag::Mul, OpAttrs::default(), vec![sum(), bind(2)]), // body_y
                 ],
             }
@@ -5523,15 +6441,61 @@ mod tests {
         fn reference_scan(g: &mut Graph) -> NodeId {
             let cs = Shape::from_dims(&[1]);
             let xs = Shape::from_dims(&[3, 1]);
-            let init = g.push(Node { op: Op::Const, inputs: vec![], shape: cs.clone(), dtype: DType::F32 });
-            let xs0 = g.push(Node { op: Op::Const, inputs: vec![], shape: xs, dtype: DType::F32 });
-            let konst = g.push(Node { op: Op::Const, inputs: vec![], shape: cs.clone(), dtype: DType::F32 });
-            let carry = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: cs.clone(), dtype: DType::F32 });
-            let elem = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Elem, index: 0 }, inputs: vec![], shape: cs.clone(), dtype: DType::F32 });
-            let sum = g.push(Node { op: Op::Add, inputs: vec![carry, elem], shape: cs.clone(), dtype: DType::F32 });
-            let y = g.push(Node { op: Op::Mul, inputs: vec![sum, konst], shape: cs.clone(), dtype: DType::F32 });
+            let init = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: cs.clone(),
+                dtype: DType::F32,
+            });
+            let xs0 = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: xs,
+                dtype: DType::F32,
+            });
+            let konst = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: cs.clone(),
+                dtype: DType::F32,
+            });
+            let carry = g.push(Node {
+                op: Op::ScanPlaceholder {
+                    role: ScanRole::Carry,
+                    index: 0,
+                },
+                inputs: vec![],
+                shape: cs.clone(),
+                dtype: DType::F32,
+            });
+            let elem = g.push(Node {
+                op: Op::ScanPlaceholder {
+                    role: ScanRole::Elem,
+                    index: 0,
+                },
+                inputs: vec![],
+                shape: cs.clone(),
+                dtype: DType::F32,
+            });
+            let sum = g.push(Node {
+                op: Op::Add,
+                inputs: vec![carry, elem],
+                shape: cs.clone(),
+                dtype: DType::F32,
+            });
+            let y = g.push(Node {
+                op: Op::Mul,
+                inputs: vec![sum, konst],
+                shape: cs.clone(),
+                dtype: DType::F32,
+            });
             g.push(Node {
-                op: Op::Scan { n_xs: 1, bound: 3, emit: ScanEmit::All, early_exit: None },
+                op: Op::Scan {
+                    n_xs: 1,
+                    bound: 3,
+                    emit: ScanEmit::All,
+                    early_exit: None,
+                },
                 inputs: vec![init, xs0, konst, sum, y],
                 shape: Shape::from_dims(&[3, 1]),
                 dtype: DType::F32,
@@ -5543,29 +6507,59 @@ mod tests {
         #[test]
         fn tag_to_op_reconstructs_scan_and_placeholder() {
             let scan_attrs = OpAttrs {
-                scan_n_xs: Some(1), scan_bound: Some(3), scan_emit: Some(0), scan_early_exit: None,
+                scan_n_xs: Some(1),
+                scan_bound: Some(3),
+                scan_emit: Some(0),
+                scan_early_exit: None,
                 ..OpAttrs::default()
             };
             assert!(matches!(
                 tag_to_op(OpTag::Scan, &scan_attrs),
-                Some(Op::Scan { n_xs: 1, bound: 3, emit: ScanEmit::All, early_exit: None }),
+                Some(Op::Scan {
+                    n_xs: 1,
+                    bound: 3,
+                    emit: ScanEmit::All,
+                    early_exit: None
+                }),
             ));
-            let fin = OpAttrs { scan_emit: Some(1), scan_early_exit: Some(true), ..scan_attrs.clone() };
+            let fin = OpAttrs {
+                scan_emit: Some(1),
+                scan_early_exit: Some(true),
+                ..scan_attrs.clone()
+            };
             assert!(matches!(
                 tag_to_op(OpTag::Scan, &fin),
-                Some(Op::Scan { emit: ScanEmit::Final, early_exit: Some(ScanPredicate), .. }),
+                Some(Op::Scan {
+                    emit: ScanEmit::Final,
+                    early_exit: Some(ScanPredicate),
+                    ..
+                }),
             ));
             // A scan node with no bound is an honest miss (unset required attr).
             assert!(tag_to_op(OpTag::Scan, &OpAttrs::default()).is_none());
-            let carry = OpAttrs { scan_role: Some(SCAN_ROLE_CARRY), scan_index: Some(0), ..OpAttrs::default() };
+            let carry = OpAttrs {
+                scan_role: Some(SCAN_ROLE_CARRY),
+                scan_index: Some(0),
+                ..OpAttrs::default()
+            };
             assert!(matches!(
                 tag_to_op(OpTag::ScanPlaceholder, &carry),
-                Some(Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }),
+                Some(Op::ScanPlaceholder {
+                    role: ScanRole::Carry,
+                    index: 0
+                }),
             ));
-            let elem = OpAttrs { scan_role: Some(SCAN_ROLE_ELEM), scan_index: Some(2), ..OpAttrs::default() };
+            let elem = OpAttrs {
+                scan_role: Some(SCAN_ROLE_ELEM),
+                scan_index: Some(2),
+                ..OpAttrs::default()
+            };
             assert!(matches!(
                 tag_to_op(OpTag::ScanPlaceholder, &elem),
-                Some(Op::ScanPlaceholder { role: ScanRole::Elem, index: 2 }),
+                Some(Op::ScanPlaceholder {
+                    role: ScanRole::Elem,
+                    index: 2
+                }),
             ));
             assert!(tag_to_op(OpTag::ScanPlaceholder, &OpAttrs::default()).is_none());
         }
@@ -5575,7 +6569,10 @@ mod tests {
         #[test]
         fn scan_recipe_validates_as_representable() {
             assert_eq!(scan_recipe().bind_indices(), vec![0, 1, 2]);
-            assert!(validate_recipe(&scan_recipe()).is_ok(), "scan recipe is a total, representable region");
+            assert!(
+                validate_recipe(&scan_recipe()).is_ok(),
+                "scan recipe is a total, representable region"
+            );
         }
 
         /// THE round-trip: emit the recipe onto fresh input leaves and assert its
@@ -5590,15 +6587,43 @@ mod tests {
             // Emitted from the recipe onto identical leaves.
             let mut ge = Graph::new();
             let cs = Shape::from_dims(&[1]);
-            let init = ge.push(Node { op: Op::Const, inputs: vec![], shape: cs.clone(), dtype: DType::F32 });
-            let xs0 = ge.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[3, 1]), dtype: DType::F32 });
-            let konst = ge.push(Node { op: Op::Const, inputs: vec![], shape: cs, dtype: DType::F32 });
+            let init = ge.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: cs.clone(),
+                dtype: DType::F32,
+            });
+            let xs0 = ge.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3, 1]),
+                dtype: DType::F32,
+            });
+            let konst = ge.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: cs,
+                dtype: DType::F32,
+            });
             let root = emit_region(&mut ge, &scan_recipe(), &[init, xs0, konst], &[]);
-            assert!(matches!(ge.node(root).op, Op::Scan { n_xs: 1, bound: 3, emit: ScanEmit::All, early_exit: None }),
-                "recipe re-emits an Op::Scan terminal");
+            assert!(
+                matches!(
+                    ge.node(root).op,
+                    Op::Scan {
+                        n_xs: 1,
+                        bound: 3,
+                        emit: ScanEmit::All,
+                        early_exit: None
+                    }
+                ),
+                "recipe re-emits an Op::Scan terminal"
+            );
             let got = base_map_hash(&ge, root);
 
-            assert_eq!(got, want, "scan recipe re-emit base map == imperative scan base map");
+            assert_eq!(
+                got, want,
+                "scan recipe re-emit base map == imperative scan base map"
+            );
         }
 
         // ---- The View / output_views bundle half (B1) ----------------------
@@ -5616,42 +6641,103 @@ mod tests {
         /// re-emitted shape is `[2]` (the const's), making slot 0 = `[3,2]` and
         /// slot 1 = `[2]`.
         fn view_scan_recipe(slot: u32) -> PatternNode {
-            let sum = || op_node(
-                OpTag::Add,
-                OpAttrs::default(),
-                vec![placeholder(SCAN_ROLE_CARRY, 0), placeholder(SCAN_ROLE_ELEM, 0)],
-            );
+            let sum = || {
+                op_node(
+                    OpTag::Add,
+                    OpAttrs::default(),
+                    vec![
+                        placeholder(SCAN_ROLE_CARRY, 0),
+                        placeholder(SCAN_ROLE_ELEM, 0),
+                    ],
+                )
+            };
             let scan = PatternNode::Op {
                 op: OpTag::Scan,
                 attrs: OpAttrs {
-                    scan_n_xs: Some(1), scan_bound: Some(3), scan_emit: Some(0), scan_early_exit: None,
+                    scan_n_xs: Some(1),
+                    scan_bound: Some(3),
+                    scan_emit: Some(0),
+                    scan_early_exit: None,
                     ..OpAttrs::default()
                 },
                 operands: vec![
-                    bind(0), // init_carry [2]
-                    bind(1), // xs0 [3,2]
-                    bind(2), // const [2]
-                    sum(),   // body_new_carry
+                    bind(0),                                                       // init_carry [2]
+                    bind(1),                                                       // xs0 [3,2]
+                    bind(2),                                                       // const [2]
+                    sum(),                                                         // body_new_carry
                     op_node(OpTag::Mul, OpAttrs::default(), vec![bind(2), sum()]), // body_y = Mul(const, sum)
                 ],
             };
-            op_node(OpTag::View, OpAttrs { view_slot: Some(slot), ..OpAttrs::default() }, vec![scan])
+            op_node(
+                OpTag::View,
+                OpAttrs {
+                    view_slot: Some(slot),
+                    ..OpAttrs::default()
+                },
+                vec![scan],
+            )
         }
 
         /// The imperative reference: the scan + its composed 2-slot bundle + the
         /// slot projection (mirrors `Tensor::scan` + `Graph::view`).
         fn reference_view(g: &mut Graph, slot: u32) -> NodeId {
             let two = Shape::from_dims(&[2]);
-            let init = g.push(Node { op: Op::Const, inputs: vec![], shape: two.clone(), dtype: DType::F32 });
-            let xs0 = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[3, 2]), dtype: DType::F32 });
-            let konst = g.push(Node { op: Op::Const, inputs: vec![], shape: two.clone(), dtype: DType::F32 });
-            let carry = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: two.clone(), dtype: DType::F32 });
-            let elem = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Elem, index: 0 }, inputs: vec![], shape: two.clone(), dtype: DType::F32 });
-            let sum = g.push(Node { op: Op::Add, inputs: vec![carry, elem], shape: two.clone(), dtype: DType::F32 });
-            let body_y = g.push(Node { op: Op::Mul, inputs: vec![konst, sum], shape: two.clone(), dtype: DType::F32 });
+            let init = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: two.clone(),
+                dtype: DType::F32,
+            });
+            let xs0 = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3, 2]),
+                dtype: DType::F32,
+            });
+            let konst = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: two.clone(),
+                dtype: DType::F32,
+            });
+            let carry = g.push(Node {
+                op: Op::ScanPlaceholder {
+                    role: ScanRole::Carry,
+                    index: 0,
+                },
+                inputs: vec![],
+                shape: two.clone(),
+                dtype: DType::F32,
+            });
+            let elem = g.push(Node {
+                op: Op::ScanPlaceholder {
+                    role: ScanRole::Elem,
+                    index: 0,
+                },
+                inputs: vec![],
+                shape: two.clone(),
+                dtype: DType::F32,
+            });
+            let sum = g.push(Node {
+                op: Op::Add,
+                inputs: vec![carry, elem],
+                shape: two.clone(),
+                dtype: DType::F32,
+            });
+            let body_y = g.push(Node {
+                op: Op::Mul,
+                inputs: vec![konst, sum],
+                shape: two.clone(),
+                dtype: DType::F32,
+            });
             let ys = Shape::from_dims(&[3, 2]);
             let scan = g.push(Node {
-                op: Op::Scan { n_xs: 1, bound: 3, emit: ScanEmit::All, early_exit: None },
+                op: Op::Scan {
+                    n_xs: 1,
+                    bound: 3,
+                    emit: ScanEmit::All,
+                    early_exit: None,
+                },
                 inputs: vec![init, xs0, konst, sum, body_y],
                 shape: ys.clone(),
                 dtype: DType::F32,
@@ -5661,13 +6747,19 @@ mod tests {
                 OutputViewSpec::contiguous(DType::F32, two),
             ];
             let (_bytes, views) = compose_bundle(&specs).expect("compose_bundle");
-            g.set_output_views(scan, Arc::from(views.into_boxed_slice())).expect("set_output_views");
+            g.set_output_views(scan, Arc::from(views.into_boxed_slice()))
+                .expect("set_output_views");
             let (sh, dt) = {
                 let v = g.output_views(scan).expect("bundle set");
                 let s = &v[slot as usize];
                 (s.shape.clone(), s.dtype)
             };
-            g.push(Node { op: Op::View { slot }, inputs: vec![scan], shape: sh, dtype: dt })
+            g.push(Node {
+                op: Op::View { slot },
+                inputs: vec![scan],
+                shape: sh,
+                dtype: dt,
+            })
         }
 
         fn roundtrip_view(slot: u32, want_shape: &[usize]) {
@@ -5679,24 +6771,53 @@ mod tests {
             // Emitted from the recipe onto identical leaves.
             let mut ge = Graph::new();
             let two = Shape::from_dims(&[2]);
-            let init = ge.push(Node { op: Op::Const, inputs: vec![], shape: two.clone(), dtype: DType::F32 });
-            let xs0 = ge.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[3, 2]), dtype: DType::F32 });
-            let konst = ge.push(Node { op: Op::Const, inputs: vec![], shape: two, dtype: DType::F32 });
+            let init = ge.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: two.clone(),
+                dtype: DType::F32,
+            });
+            let xs0 = ge.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3, 2]),
+                dtype: DType::F32,
+            });
+            let konst = ge.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: two,
+                dtype: DType::F32,
+            });
             let root = emit_region(&mut ge, &view_scan_recipe(slot), &[init, xs0, konst], &[]);
 
             // The View projects the requested slot with the bundle-derived shape.
-            assert!(matches!(ge.node(root).op, Op::View { slot: s } if s == slot),
-                "recipe root re-emits Op::View{{slot={slot}}}");
-            assert_eq!(ge.node(root).shape.dims(), want_shape,
-                "view slot {slot} shape comes from the re-attached output_views bundle");
+            assert!(
+                matches!(ge.node(root).op, Op::View { slot: s } if s == slot),
+                "recipe root re-emits Op::View{{slot={slot}}}"
+            );
+            assert_eq!(
+                ge.node(root).shape.dims(),
+                want_shape,
+                "view slot {slot} shape comes from the re-attached output_views bundle"
+            );
             // The producing scan carries the faithful 2-slot bundle.
             let producer = ge.node(root).inputs[0];
-            assert!(matches!(ge.node(producer).op, Op::Scan { .. }), "producer is the scan");
-            assert_eq!(ge.output_views(producer).map(|v| v.len()), Some(2),
-                "emit re-attaches the 2-slot bundle so slot>=1 views resolve");
+            assert!(
+                matches!(ge.node(producer).op, Op::Scan { .. }),
+                "producer is the scan"
+            );
+            assert_eq!(
+                ge.output_views(producer).map(|v| v.len()),
+                Some(2),
+                "emit re-attaches the 2-slot bundle so slot>=1 views resolve"
+            );
 
             let got = base_map_hash(&ge, root);
-            assert_eq!(got, want, "view+scan recipe re-emit base map == imperative scan+view base map");
+            assert_eq!(
+                got, want,
+                "view+scan recipe re-emit base map == imperative scan+view base map"
+            );
         }
 
         /// Slot 0 (stacked ys): its shape equals the scan node's primary shape,
@@ -5725,7 +6846,13 @@ mod tests {
             assert!(validate_recipe(&view_scan_recipe(1)).is_ok());
             // tag_to_op reconstructs the View op from `view_slot`.
             assert!(matches!(
-                tag_to_op(OpTag::View, &OpAttrs { view_slot: Some(1), ..OpAttrs::default() }),
+                tag_to_op(
+                    OpTag::View,
+                    &OpAttrs {
+                        view_slot: Some(1),
+                        ..OpAttrs::default()
+                    }
+                ),
                 Some(Op::View { slot: 1 }),
             ));
             assert!(tag_to_op(OpTag::View, &OpAttrs::default()).is_none());
@@ -5741,10 +6868,18 @@ mod tests {
         #[test]
         fn scan_placeholder_recipe_emits_its_declared_shape() {
             use fuel_kernel_seam_types::shape_expr::{Dim, ShapeExpr};
-            let dims2 = || ShapeExpr::Dims(vec![
-                Dim::Extent { operand: 0, axis: 0 },
-                Dim::Extent { operand: 0, axis: 1 },
-            ]);
+            let dims2 = || {
+                ShapeExpr::Dims(vec![
+                    Dim::Extent {
+                        operand: 0,
+                        axis: 0,
+                    },
+                    Dim::Extent {
+                        operand: 0,
+                        axis: 1,
+                    },
+                ])
+            };
             let ph = |index: u32| PatternNode::Op {
                 op: OpTag::ScanPlaceholder,
                 attrs: OpAttrs {
@@ -5761,16 +6896,36 @@ mod tests {
             let recipe = op_node(OpTag::Mul, OpAttrs::default(), vec![ph(0), bind(0)]);
             assert!(validate_recipe(&recipe).is_ok());
             let mut g = Graph::new();
-            let bind0 = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[2, 3]), dtype: DType::F32 });
+            let bind0 = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]),
+                dtype: DType::F32,
+            });
             let root = emit_region(&mut g, &recipe, &[bind0], &[]);
             let ph_id = g.node(root).inputs[0];
-            assert!(matches!(g.node(ph_id).op, Op::ScanPlaceholder { role: ScanRole::Elem, index: 0 }));
+            assert!(matches!(
+                g.node(ph_id).op,
+                Op::ScanPlaceholder {
+                    role: ScanRole::Elem,
+                    index: 0
+                }
+            ));
             assert_eq!(
-                g.node(ph_id).shape.dims(), &[2, 3],
+                g.node(ph_id).shape.dims(),
+                &[2, 3],
                 "placeholder emits its declared target_shape_rel shape, not rank-0",
             );
-            assert_eq!(g.node(ph_id).dtype, DType::F32, "placeholder dtype = bind 0's");
-            assert_eq!(g.node(root).shape.dims(), &[2, 3], "Mul(placeholder,..) inherits the declared shape");
+            assert_eq!(
+                g.node(ph_id).dtype,
+                DType::F32,
+                "placeholder dtype = bind 0's"
+            );
+            assert_eq!(
+                g.node(root).shape.dims(),
+                &[2, 3],
+                "Mul(placeholder,..) inherits the declared shape"
+            );
         }
     }
 
@@ -5811,7 +6966,11 @@ mod tests {
             for (i, stride) in in_strides.iter_mut().enumerate() {
                 if i >= pad {
                     let id = i - pad;
-                    *stride = if in_shape[id] == 1 { 0 } else { real_strides[id] };
+                    *stride = if in_shape[id] == 1 {
+                        0
+                    } else {
+                        real_strides[id]
+                    };
                 }
             }
             let out_n: usize = target.iter().product();
@@ -5855,31 +7014,45 @@ mod tests {
                     let b = eval_rmb(g, node.inputs[1], leaves);
                     a.iter().zip(&b).map(|(x, y)| x / y).collect()
                 }
-                Op::MulScalar(m) => {
-                    eval_rmb(g, node.inputs[0], leaves).iter().map(|v| v * m).collect()
-                }
+                Op::MulScalar(m) => eval_rmb(g, node.inputs[0], leaves)
+                    .iter()
+                    .map(|v| v * m)
+                    .collect(),
                 Op::Equal => {
                     let a = eval_rmb(g, node.inputs[0], leaves);
                     let b = eval_rmb(g, node.inputs[1], leaves);
-                    a.iter().zip(&b).map(|(x, y)| if x == y { 1.0 } else { 0.0 }).collect()
+                    a.iter()
+                        .zip(&b)
+                        .map(|(x, y)| if x == y { 1.0 } else { 0.0 })
+                        .collect()
                 }
                 Op::MaskedFill { value } => {
                     let input = eval_rmb(g, node.inputs[0], leaves);
                     let mask = eval_rmb(g, node.inputs[1], leaves);
                     let fill = value.to_f64();
-                    input.iter().zip(&mask).map(|(x, m)| if *m != 0.0 { fill } else { *x }).collect()
+                    input
+                        .iter()
+                        .zip(&mask)
+                        .map(|(x, m)| if *m != 0.0 { fill } else { *x })
+                        .collect()
                 }
                 // Last-axis reduce-to-shape (up = [.., 1]); identical fold both
                 // parity sides.
                 Op::ReduceMaxTo(_) => {
                     let input = eval_rmb(g, node.inputs[0], leaves);
                     let last = *g.node(node.inputs[0]).shape.dims().last().unwrap();
-                    input.chunks(last).map(|row| row.iter().cloned().fold(f64::NEG_INFINITY, f64::max)).collect()
+                    input
+                        .chunks(last)
+                        .map(|row| row.iter().cloned().fold(f64::NEG_INFINITY, f64::max))
+                        .collect()
                 }
                 Op::ReduceSumTo(_) => {
                     let input = eval_rmb(g, node.inputs[0], leaves);
                     let last = *g.node(node.inputs[0]).shape.dims().last().unwrap();
-                    input.chunks(last).map(|row| row.iter().sum::<f64>()).collect()
+                    input
+                        .chunks(last)
+                        .map(|row| row.iter().sum::<f64>())
+                        .collect()
                 }
                 Op::BroadcastTo(target) => {
                     let input = eval_rmb(g, node.inputs[0], leaves);
@@ -5899,10 +7072,23 @@ mod tests {
             up_dims: &[usize],
         ) -> (NodeId, NodeId, NodeId) {
             let xsh = Shape::from_dims(x_dims);
-            let x = g.push(Node { op: Op::Const, inputs: vec![], shape: xsh.clone(), dtype: DType::F32 });
-            let up = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(up_dims), dtype: DType::F32 });
+            let x = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: xsh.clone(),
+                dtype: DType::F32,
+            });
+            let up = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(up_dims),
+                dtype: DType::F32,
+            });
             let fused = g.push(Node {
-                op: Op::Fused(FusedOps::REDUCE_MAX_TO_BACKWARD, FusedOpParams::ReduceMaxToBackward),
+                op: Op::Fused(
+                    FusedOps::REDUCE_MAX_TO_BACKWARD,
+                    FusedOpParams::ReduceMaxToBackward,
+                ),
                 inputs: vec![x, up],
                 shape: xsh,
                 dtype: DType::F32,
@@ -5929,7 +7115,11 @@ mod tests {
                     &FusedOpParams::ReduceMaxToBackward,
                 );
                 assert_ne!(new_root, fused, "recipe decompose must fire at {x_dims:?}");
-                assert_eq!(g.node(new_root).shape, xsh, "reduce_max backward is x-shaped");
+                assert_eq!(
+                    g.node(new_root).shape,
+                    xsh,
+                    "reduce_max backward is x-shaped"
+                );
                 assert_eq!(g.node(new_root).dtype, DType::F32);
 
                 let legacy_root = frozen_legacy_reduce_max_to_backward_decompose(
@@ -5940,10 +7130,12 @@ mod tests {
 
                 let xn: usize = x_dims.iter().product();
                 let upn: usize = up_dims.iter().product();
-                let x_data: Vec<f64> =
-                    (0..xn).map(|i| ((i as f64) * 0.37).sin() * 2.0 + 0.3).collect();
-                let up_data: Vec<f64> =
-                    (0..upn).map(|i| ((i as f64) * 0.53).cos() * 1.1 - 0.2).collect();
+                let x_data: Vec<f64> = (0..xn)
+                    .map(|i| ((i as f64) * 0.37).sin() * 2.0 + 0.3)
+                    .collect();
+                let up_data: Vec<f64> = (0..upn)
+                    .map(|i| ((i as f64) * 0.53).cos() * 1.1 - 0.2)
+                    .collect();
                 let mut leaves = HashMap::new();
                 leaves.insert(x, x_data);
                 leaves.insert(up, up_data);
@@ -5980,7 +7172,10 @@ mod tests {
                     &FusedOpParams::ReduceMaxToBackward,
                 );
                 assert_ne!(root, fused, "recipe decompose fires at {x_dims:?}");
-                assert!(matches!(g.node(root).op, Op::Mul), "root is Mul(mask_f, share_b)");
+                assert!(
+                    matches!(g.node(root).op, Op::Mul),
+                    "root is Mul(mask_f, share_b)"
+                );
                 let reachable = crate::topo_order_multi(&g, &[root]);
                 let masked = reachable
                     .iter()
@@ -5994,7 +7189,10 @@ mod tests {
                     .iter()
                     .filter(|&&n| matches!(g.node(n).op, Op::Reshape(_)))
                     .count();
-                assert_eq!(reshapes, 0, "direct structural mirror — no D3/D4 Reshape at {x_dims:?}");
+                assert_eq!(
+                    reshapes, 0,
+                    "direct structural mirror — no D3/D4 Reshape at {x_dims:?}"
+                );
                 let fill_dtype = reachable
                     .iter()
                     .find_map(|&n| match &g.node(n).op {
@@ -6003,7 +7201,8 @@ mod tests {
                     })
                     .expect("a MaskedFill is present");
                 assert_eq!(
-                    fill_dtype, DType::F32,
+                    fill_dtype,
+                    DType::F32,
                     "the A2 carrier re-resolved the fill Scalar to x's dtype at {x_dims:?}",
                 );
             }
@@ -6059,12 +7258,14 @@ mod tests {
                     let b = eval_pb(g, node.inputs[1], leaves);
                     a.iter().zip(&b).map(|(x, y)| x * y).collect()
                 }
-                Op::MulScalar(m) => {
-                    eval_pb(g, node.inputs[0], leaves).iter().map(|v| v * m).collect()
-                }
-                Op::PowI(n) => {
-                    eval_pb(g, node.inputs[0], leaves).iter().map(|v| v.powi(*n)).collect()
-                }
+                Op::MulScalar(m) => eval_pb(g, node.inputs[0], leaves)
+                    .iter()
+                    .map(|v| v * m)
+                    .collect(),
+                Op::PowI(n) => eval_pb(g, node.inputs[0], leaves)
+                    .iter()
+                    .map(|v| v.powi(*n))
+                    .collect(),
                 other => panic!("eval_pb: unhandled op {other:?}"),
             }
         }
@@ -6072,14 +7273,20 @@ mod tests {
         /// Build a fused PowIBackward node over `x [dims]` (input 0) and `up
         /// [dims]` (input 1, the upstream gradient — same shape as x), carrying
         /// `exp`. Returns `(x, up, fused)`.
-        fn pb_fused_node(
-            g: &mut Graph,
-            dims: &[usize],
-            exp: i32,
-        ) -> (NodeId, NodeId, NodeId) {
+        fn pb_fused_node(g: &mut Graph, dims: &[usize], exp: i32) -> (NodeId, NodeId, NodeId) {
             let sh = Shape::from_dims(dims);
-            let x = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
-            let up = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+            let x = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: sh.clone(),
+                dtype: DType::F32,
+            });
+            let up = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: sh.clone(),
+                dtype: DType::F32,
+            });
             let fused = g.push(Node {
                 op: Op::Fused(FusedOps::POWI_BACKWARD, FusedOpParams::PowIBackward { exp }),
                 inputs: vec![x, up],
@@ -6108,8 +7315,15 @@ mod tests {
                         fused,
                         &FusedOpParams::PowIBackward { exp },
                     );
-                    assert_ne!(new_root, fused, "recipe decompose must fire at {dims:?} exp={exp}");
-                    assert_eq!(g.node(new_root).shape, sh, "powi backward is shape-preserving");
+                    assert_ne!(
+                        new_root, fused,
+                        "recipe decompose must fire at {dims:?} exp={exp}"
+                    );
+                    assert_eq!(
+                        g.node(new_root).shape,
+                        sh,
+                        "powi backward is shape-preserving"
+                    );
                     assert_eq!(g.node(new_root).dtype, DType::F32);
 
                     let legacy_root = frozen_legacy_powi_backward_decompose(
@@ -6119,10 +7333,12 @@ mod tests {
                     );
 
                     let n: usize = dims.iter().product();
-                    let x_data: Vec<f64> =
-                        (0..n).map(|i| ((i as f64) * 0.41).sin() * 0.5 + 1.5).collect();
-                    let up_data: Vec<f64> =
-                        (0..n).map(|i| ((i as f64) * 0.61).cos() * 1.3 - 0.15).collect();
+                    let x_data: Vec<f64> = (0..n)
+                        .map(|i| ((i as f64) * 0.41).sin() * 0.5 + 1.5)
+                        .collect();
+                    let up_data: Vec<f64> = (0..n)
+                        .map(|i| ((i as f64) * 0.61).cos() * 1.3 - 0.15)
+                        .collect();
                     let mut leaves = HashMap::new();
                     leaves.insert(x, x_data);
                     leaves.insert(up, up_data);
@@ -6150,13 +7366,13 @@ mod tests {
             for exp in [3i32, 0, -2] {
                 let mut g = Graph::new();
                 let (_x, _up, fused) = pb_fused_node(&mut g, &[2, 4], exp);
-                let root = powi_backward::decompose(
-                    &mut g,
-                    fused,
-                    &FusedOpParams::PowIBackward { exp },
-                );
+                let root =
+                    powi_backward::decompose(&mut g, fused, &FusedOpParams::PowIBackward { exp });
                 assert_ne!(root, fused, "recipe decompose fires at exp={exp}");
-                assert!(matches!(g.node(root).op, Op::Mul), "root is Mul(scaled, up)");
+                assert!(
+                    matches!(g.node(root).op, Op::Mul),
+                    "root is Mul(scaled, up)"
+                );
                 let reachable = crate::topo_order_multi(&g, &[root]);
                 // The A3 carrier reconstructed exactly one Op::PowI(exp-1).
                 let powis: Vec<i32> = reachable
@@ -6166,7 +7382,11 @@ mod tests {
                         _ => None,
                     })
                     .collect();
-                assert_eq!(powis, vec![exp - 1], "the A3 carrier resolved Op::PowI(exp-1) at exp={exp}");
+                assert_eq!(
+                    powis,
+                    vec![exp - 1],
+                    "the A3 carrier resolved Op::PowI(exp-1) at exp={exp}"
+                );
                 // The scale is a single baked MulScalar(exp as f64).
                 let mul_scalars: Vec<f64> = reachable
                     .iter()
@@ -6175,13 +7395,20 @@ mod tests {
                         _ => None,
                     })
                     .collect();
-                assert_eq!(mul_scalars, vec![exp as f64], "baked MulScalar(exp) at exp={exp}");
+                assert_eq!(
+                    mul_scalars,
+                    vec![exp as f64],
+                    "baked MulScalar(exp) at exp={exp}"
+                );
                 // Direct mirror — no keepdim/pad Reshape.
                 let reshapes = reachable
                     .iter()
                     .filter(|&&n| matches!(g.node(n).op, Op::Reshape(_)))
                     .count();
-                assert_eq!(reshapes, 0, "direct structural mirror — no D3/D4 Reshape at exp={exp}");
+                assert_eq!(
+                    reshapes, 0,
+                    "direct structural mirror — no D3/D4 Reshape at exp={exp}"
+                );
             }
         }
 

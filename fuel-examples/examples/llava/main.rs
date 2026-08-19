@@ -32,13 +32,11 @@ use std::io::Write;
 use std::sync::Arc;
 
 use fuel::lazy::LazyTensor;
-use fuel::lazy_llava::{
-    select_best_resolution, HFLlavaConfig, LlavaModel, LlavaWeights,
-};
+use fuel::lazy_llava::{HFLlavaConfig, LlavaModel, LlavaWeights, select_best_resolution};
 use fuel::safetensors::MmapedSafetensors;
 use fuel::{Device, Shape};
 
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use hf_hub::{Repo, RepoType, api::sync::Api};
 use tokenizers::Tokenizer;
 
 #[derive(Parser, Debug)]
@@ -112,10 +110,7 @@ fn parse_pinpoints(s: &str) -> Result<Vec<(u32, u32)>> {
 /// Load `path` and produce a CHW f32 vector of length
 /// `3 * image_size * image_size` using the OpenAI CLIP
 /// normalization the LLaVA / LLaVA-NeXT preprocessor uses.
-fn load_image_chw<P: AsRef<std::path::Path>>(
-    path: P,
-    image_size: usize,
-) -> Result<Vec<f32>> {
+fn load_image_chw<P: AsRef<std::path::Path>>(path: P, image_size: usize) -> Result<Vec<f32>> {
     let img = image::ImageReader::open(path)?.decode()?;
     let img = img.resize_to_fill(
         image_size as u32,

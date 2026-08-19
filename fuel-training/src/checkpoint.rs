@@ -128,12 +128,10 @@ impl Checkpoint {
     /// Load metadata only (no weights) from `dir`.
     pub fn load_metadata<P: AsRef<Path>>(dir: P) -> Result<Self> {
         let dir = dir.as_ref();
-        let meta_bytes = std::fs::read(dir.join("metadata.json")).map_err(|e| {
-            fuel::Error::Msg(format!("Checkpoint::load_metadata: read: {e}")).bt()
-        })?;
-        let ckpt: Self = serde_json::from_slice(&meta_bytes).map_err(|e| {
-            fuel::Error::Msg(format!("Checkpoint::load_metadata: parse: {e}")).bt()
-        })?;
+        let meta_bytes = std::fs::read(dir.join("metadata.json"))
+            .map_err(|e| fuel::Error::Msg(format!("Checkpoint::load_metadata: read: {e}")).bt())?;
+        let ckpt: Self = serde_json::from_slice(&meta_bytes)
+            .map_err(|e| fuel::Error::Msg(format!("Checkpoint::load_metadata: parse: {e}")).bt())?;
         Ok(ckpt)
     }
 
@@ -164,11 +162,7 @@ impl Checkpoint {
             }
         }
         best.ok_or_else(|| {
-            fuel::Error::Msg(format!(
-                "no checkpoint found in {}",
-                base_dir.display()
-            ))
-            .bt()
+            fuel::Error::Msg(format!("no checkpoint found in {}", base_dir.display())).bt()
         })
     }
 }

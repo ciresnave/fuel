@@ -11,7 +11,7 @@ use clap::{Parser, ValueEnum};
 
 use fuel::lazy::{LlamaConfig, LlamaWeights};
 use fuel::lazy_granite::{GraniteConfig, GraniteModel, GraniteWeights};
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use hf_hub::{Repo, RepoType, api::sync::Api};
 use std::io::Write;
 
 const EOS_TOKEN: &str = "</s>";
@@ -119,19 +119,18 @@ fn main() -> Result<()> {
     let granite_cfg: GraniteConfig = granite_config_from_hf_json_str(&config_json)?;
     let eos_token_id_from_cfg: Option<u32> = parse_eos_token_id(&config_json);
 
-    let filenames =
-        fuel_examples::hub_load_safetensors(&api, "model.safetensors.index.json")?;
+    let filenames = fuel_examples::hub_load_safetensors(&api, "model.safetensors.index.json")?;
 
     let llama_cfg = LlamaConfig {
         vocab_size: granite_cfg.vocab_size,
-        dim:        granite_cfg.hidden_size,
-        n_layers:   granite_cfg.num_hidden_layers,
-        n_heads:    granite_cfg.num_attention_heads,
+        dim: granite_cfg.hidden_size,
+        n_layers: granite_cfg.num_hidden_layers,
+        n_heads: granite_cfg.num_attention_heads,
         n_kv_heads: granite_cfg.num_key_value_heads,
-        head_dim:   granite_cfg.head_dim(),
-        ffn_dim:    granite_cfg.intermediate_size,
-        norm_eps:   granite_cfg.rms_norm_eps,
-        rope_base:  granite_cfg.rope_theta,
+        head_dim: granite_cfg.head_dim(),
+        ffn_dim: granite_cfg.intermediate_size,
+        norm_eps: granite_cfg.rms_norm_eps,
+        rope_base: granite_cfg.rope_theta,
     };
 
     let st = unsafe { fuel::safetensors::MmapedSafetensors::multi(&filenames) }
@@ -144,7 +143,10 @@ fn main() -> Result<()> {
         final_norm_gain: llama_weights.final_norm_gain,
         output: llama_weights.output,
     };
-    let model = GraniteModel { config: granite_cfg.clone(), weights };
+    let model = GraniteModel {
+        config: granite_cfg.clone(),
+        weights,
+    };
 
     let tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(E::msg)?;
     let eos_token_id = eos_token_id_from_cfg.or_else(|| tokenizer.token_to_id(EOS_TOKEN));
@@ -217,8 +219,8 @@ fn main() -> Result<()> {
 }
 
 fn granite_config_from_hf_json_str(json: &str) -> Result<GraniteConfig> {
-    let v: serde_json::Value = serde_json::from_str(json)
-        .map_err(|e| E::msg(format!("parsing config.json: {e}")))?;
+    let v: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| E::msg(format!("parsing config.json: {e}")))?;
     let get_usize = |key: &str| -> Result<usize> {
         v.get(key)
             .and_then(|x| x.as_u64())
@@ -258,7 +260,9 @@ fn granite_config_from_hf_json_str(json: &str) -> Result<GraniteConfig> {
 
 fn parse_eos_token_id(json: &str) -> Option<u32> {
     let v: serde_json::Value = serde_json::from_str(json).ok()?;
-    v.get("eos_token_id").and_then(|x| x.as_u64()).map(|x| x as u32)
+    v.get("eos_token_id")
+        .and_then(|x| x.as_u64())
+        .map(|x| x as u32)
 }
 
 fn apply_repeat_penalty(logits: &mut [f32], penalty: f32, context: &[u32]) {
@@ -295,7 +299,10 @@ fn sample(
     }
     let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let inv_t = 1.0 / temperature.max(1e-6);
-    let mut probs: Vec<f32> = logits.iter().map(|&x| ((x - max_l) * inv_t).exp()).collect();
+    let mut probs: Vec<f32> = logits
+        .iter()
+        .map(|&x| ((x - max_l) * inv_t).exp())
+        .collect();
     let sum: f32 = probs.iter().sum();
     for p in &mut probs {
         *p /= sum.max(1e-30);
@@ -338,7 +345,9 @@ fn sample(
     } else {
         return 0;
     }
-    let mut state = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    let mut state = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
     state ^= state >> 33;
     state = state.wrapping_mul(0xff51_afd7_ed55_8ccd);
     state ^= state >> 33;

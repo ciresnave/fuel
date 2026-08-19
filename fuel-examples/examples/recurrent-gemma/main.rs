@@ -12,7 +12,7 @@ use fuel::lazy_recurrent_gemma::{
     GemmaActivation, RecurrentGemmaConfig, RecurrentGemmaModel, RecurrentGemmaWeights,
     TemporalBlockType,
 };
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use hf_hub::{Repo, RepoType, api::sync::Api};
 use tokenizers::Tokenizer;
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -154,11 +154,13 @@ fn main() -> Result<()> {
         .map_err(|e| E::msg(format!("mmap safetensors: {e}")))?;
     let weights = RecurrentGemmaWeights::load_from_mmapped(&st, &config)
         .map_err(|e| E::msg(format!("load recurrent-gemma weights: {e}")))?;
-    let model = RecurrentGemmaModel { config: config.clone(), weights };
+    let model = RecurrentGemmaModel {
+        config: config.clone(),
+        weights,
+    };
     println!("loaded the model in {:?}", start.elapsed());
 
-    let eos_token_id = parse_eos_token_id(&config_json)
-        .or_else(|| tokenizer.token_to_id("<eos>"));
+    let eos_token_id = parse_eos_token_id(&config_json).or_else(|| tokenizer.token_to_id("<eos>"));
 
     let mut tok_stream = fuel_examples::token_output_stream::TokenOutputStream::new(tokenizer);
 
@@ -220,8 +222,8 @@ fn main() -> Result<()> {
 }
 
 fn recurrent_gemma_config_from_hf_json_str(json: &str) -> Result<RecurrentGemmaConfig> {
-    let v: serde_json::Value = serde_json::from_str(json)
-        .map_err(|e| E::msg(format!("parsing config.json: {e}")))?;
+    let v: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| E::msg(format!("parsing config.json: {e}")))?;
     let get_usize = |key: &str| -> Result<usize> {
         v.get(key)
             .and_then(|x| x.as_u64())
@@ -234,12 +236,10 @@ fn recurrent_gemma_config_from_hf_json_str(json: &str) -> Result<RecurrentGemmaC
             .map(|x| x as usize)
             .unwrap_or(default)
     };
-    let get_usize_opt = |key: &str| -> Option<usize> {
-        v.get(key).and_then(|x| x.as_u64()).map(|x| x as usize)
-    };
-    let get_f64_or = |key: &str, default: f64| -> f64 {
-        v.get(key).and_then(|x| x.as_f64()).unwrap_or(default)
-    };
+    let get_usize_opt =
+        |key: &str| -> Option<usize> { v.get(key).and_then(|x| x.as_u64()).map(|x| x as usize) };
+    let get_f64_or =
+        |key: &str, default: f64| -> f64 { v.get(key).and_then(|x| x.as_f64()).unwrap_or(default) };
     let get_bool_or = |key: &str, default: bool| -> bool {
         v.get(key).and_then(|x| x.as_bool()).unwrap_or(default)
     };
@@ -305,16 +305,14 @@ fn parse_block_types(v: &serde_json::Value) -> Result<Vec<TemporalBlockType>> {
         .ok_or_else(|| E::msg("config.json: missing field 'block_types'"))?;
     let mut out = Vec::with_capacity(arr.len());
     for entry in arr {
-        let s = entry.as_str().ok_or_else(|| {
-            E::msg("config.json: block_types entries must be strings")
-        })?;
+        let s = entry
+            .as_str()
+            .ok_or_else(|| E::msg("config.json: block_types entries must be strings"))?;
         let bt = match s {
             "attention" => TemporalBlockType::Attention,
             "recurrent" => TemporalBlockType::Recurrent,
             other => {
-                return Err(E::msg(format!(
-                    "config.json: unknown block type {other:?}"
-                )));
+                return Err(E::msg(format!("config.json: unknown block type {other:?}")));
             }
         };
         out.push(bt);
@@ -327,7 +325,9 @@ fn parse_block_types(v: &serde_json::Value) -> Result<Vec<TemporalBlockType>> {
 
 fn parse_eos_token_id(json: &str) -> Option<u32> {
     let v: serde_json::Value = serde_json::from_str(json).ok()?;
-    v.get("eos_token_id").and_then(|x| x.as_u64()).map(|x| x as u32)
+    v.get("eos_token_id")
+        .and_then(|x| x.as_u64())
+        .map(|x| x as u32)
 }
 
 fn apply_repeat_penalty(logits: &mut [f32], penalty: f32, context: &[u32]) {
@@ -364,7 +364,10 @@ fn sample(
     }
     let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let inv_t = 1.0 / temperature.max(1e-6);
-    let mut probs: Vec<f32> = logits.iter().map(|&x| ((x - max_l) * inv_t).exp()).collect();
+    let mut probs: Vec<f32> = logits
+        .iter()
+        .map(|&x| ((x - max_l) * inv_t).exp())
+        .collect();
     let sum: f32 = probs.iter().sum();
     for p in &mut probs {
         *p /= sum.max(1e-30);
@@ -407,7 +410,9 @@ fn sample(
     } else {
         return 0;
     }
-    let mut state = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    let mut state = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
     state ^= state >> 33;
     state = state.wrapping_mul(0xff51_afd7_ed55_8ccd);
     state ^= state >> 33;

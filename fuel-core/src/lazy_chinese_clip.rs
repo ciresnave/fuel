@@ -14,10 +14,10 @@
 //!
 //! v1 scope: F32, batch == 1, prefill only.
 
+use crate::Result;
 use crate::lazy::{LazyTensor, WeightStorage};
 use crate::lazy_bert::{BertConfig, BertModel, BertWeights};
 use crate::lazy_clip::{ClipVisionConfig, ClipVisionModel, ClipVisionWeights};
-use crate::Result;
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -54,7 +54,8 @@ impl ChineseClipConfig {
             patch_size: 16,
         };
         Self {
-            text, vision,
+            text,
+            vision,
             projection_dim: 512,
             logit_scale_init_value: 2.6592,
             image_size: 224,
@@ -97,7 +98,9 @@ impl ChineseClipModel {
         let pooled = self.vision_model().forward(image)?;
         // (1, vision_embed_dim) → (1, projection_dim)
         Ok(self.weights.visual_projection.apply_linear(
-            &pooled, self.config.vision.embed_dim, self.config.projection_dim,
+            &pooled,
+            self.config.vision.embed_dim,
+            self.config.projection_dim,
         )?)
     }
 
@@ -111,9 +114,10 @@ impl ChineseClipModel {
         let cls = hidden
             .narrow(1_usize, 0, 1)?
             .reshape(Shape::from_dims(&[1, h]))?;
-        Ok(self.weights.text_projection.apply_linear(
-            &cls, h, self.config.projection_dim,
-        )?)
+        Ok(self
+            .weights
+            .text_projection
+            .apply_linear(&cls, h, self.config.projection_dim)?)
     }
 
     /// Build contrastive logits from already-extracted features.
@@ -121,7 +125,9 @@ impl ChineseClipModel {
     /// for the rationale (the BERT text path anchors on its own
     /// U32 ids tensor, distinct from the vision graph).
     pub fn contrastive_logits(
-        &self, image_features: &LazyTensor, text_features: &LazyTensor,
+        &self,
+        image_features: &LazyTensor,
+        text_features: &LazyTensor,
     ) -> Result<(LazyTensor, LazyTensor)> {
         let image_normed = l2_normalize_last(image_features)?;
         let text_normed = l2_normalize_last(text_features)?;
@@ -150,32 +156,41 @@ impl ChineseClipWeights {
     ) -> Result<Self> {
         use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
         let text = BertWeights::load_from_mmapped(st, &cfg.text)?;
-        let vision = ClipVisionWeights::load_from_mmapped(
-            st, &cfg.vision, "vision_model.",
-        )?;
+        let vision = ClipVisionWeights::load_from_mmapped(st, &cfg.vision, "vision_model.")?;
         let text_projection = load_transposed_matrix_preserve_dtype(
-            st, "text_projection.weight",
-            cfg.projection_dim, cfg.text.hidden_size,
+            st,
+            "text_projection.weight",
+            cfg.projection_dim,
+            cfg.text.hidden_size,
         )?;
         let visual_projection = load_transposed_matrix_preserve_dtype(
-            st, "visual_projection.weight",
-            cfg.projection_dim, cfg.vision.embed_dim,
+            st,
+            "visual_projection.weight",
+            cfg.projection_dim,
+            cfg.vision.embed_dim,
         )?;
         let logit_scale = load_tensor_as_f32(st, "logit_scale")?
-            .first().copied().unwrap_or(0.0);
-        Ok(Self { text, vision, visual_projection, text_projection, logit_scale })
+            .first()
+            .copied()
+            .unwrap_or(0.0);
+        Ok(Self {
+            text,
+            vision,
+            visual_projection,
+            text_projection,
+            logit_scale,
+        })
     }
 }
-
 
 // ---- Tests -----------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Device;
     use crate::lazy_bert::BertLayerWeights;
     use crate::lazy_clip::ClipEncoderLayerWeights;
-    use crate::Device;
 
     fn rng_seed(seed: u32) -> impl FnMut() -> f32 {
         let mut s = seed;
@@ -193,51 +208,73 @@ mod tests {
 
     fn tiny_text_cfg() -> BertConfig {
         BertConfig {
-            vocab_size: 32, hidden_size: 8,
-            num_hidden_layers: 1, num_attention_heads: 2,
-            intermediate_size: 16, max_position_embeddings: 16,
-            type_vocab_size: 2, layer_norm_eps: 1e-12,
+            vocab_size: 32,
+            hidden_size: 8,
+            num_hidden_layers: 1,
+            num_attention_heads: 2,
+            intermediate_size: 16,
+            max_position_embeddings: 16,
+            type_vocab_size: 2,
+            layer_norm_eps: 1e-12,
         }
     }
 
     fn tiny_vision_cfg() -> ClipVisionConfig {
         ClipVisionConfig {
-            embed_dim: 8, intermediate_size: 16,
-            num_hidden_layers: 1, num_attention_heads: 2,
-            projection_dim: 4, num_channels: 3,
-            image_size: 16, patch_size: 8,
+            embed_dim: 8,
+            intermediate_size: 16,
+            num_hidden_layers: 1,
+            num_attention_heads: 2,
+            projection_dim: 4,
+            num_channels: 3,
+            image_size: 16,
+            patch_size: 8,
         }
     }
 
     fn build_tiny_bert_layer(h: usize, ff: usize, nb: &mut dyn FnMut() -> f32) -> BertLayerWeights {
         BertLayerWeights {
-            attn_q_w: vec_of(h * h, nb), attn_q_b: vec_of(h, nb),
-            attn_k_w: vec_of(h * h, nb), attn_k_b: vec_of(h, nb),
-            attn_v_w: vec_of(h * h, nb), attn_v_b: vec_of(h, nb),
-            attn_out_w: vec_of(h * h, nb), attn_out_b: vec_of(h, nb),
+            attn_q_w: vec_of(h * h, nb),
+            attn_q_b: vec_of(h, nb),
+            attn_k_w: vec_of(h * h, nb),
+            attn_k_b: vec_of(h, nb),
+            attn_v_w: vec_of(h * h, nb),
+            attn_v_b: vec_of(h, nb),
+            attn_out_w: vec_of(h * h, nb),
+            attn_out_b: vec_of(h, nb),
             attn_ln_gamma: Arc::from(vec![1.0_f32; h]),
             attn_ln_beta: Arc::from(vec![0.0_f32; h]),
-            ffn_in_w: vec_of(h * ff, nb), ffn_in_b: vec_of(ff, nb),
-            ffn_out_w: vec_of(ff * h, nb), ffn_out_b: vec_of(h, nb),
+            ffn_in_w: vec_of(h * ff, nb),
+            ffn_in_b: vec_of(ff, nb),
+            ffn_out_w: vec_of(ff * h, nb),
+            ffn_out_b: vec_of(h, nb),
             ffn_ln_gamma: Arc::from(vec![1.0_f32; h]),
             ffn_ln_beta: Arc::from(vec![0.0_f32; h]),
         }
     }
 
     fn build_tiny_clip_vision_layer(
-        e: usize, ff: usize, nb: &mut dyn FnMut() -> f32,
+        e: usize,
+        ff: usize,
+        nb: &mut dyn FnMut() -> f32,
     ) -> ClipEncoderLayerWeights {
         ClipEncoderLayerWeights {
             ln1_gain: Arc::from(vec![1.0_f32; e]),
             ln1_bias: Arc::from(vec![0.0_f32; e]),
-            q_proj: ws(e * e, nb), q_proj_bias: vec_of(e, nb),
-            k_proj: ws(e * e, nb), k_proj_bias: vec_of(e, nb),
-            v_proj: ws(e * e, nb), v_proj_bias: vec_of(e, nb),
-            out_proj: ws(e * e, nb), out_proj_bias: vec_of(e, nb),
+            q_proj: ws(e * e, nb),
+            q_proj_bias: vec_of(e, nb),
+            k_proj: ws(e * e, nb),
+            k_proj_bias: vec_of(e, nb),
+            v_proj: ws(e * e, nb),
+            v_proj_bias: vec_of(e, nb),
+            out_proj: ws(e * e, nb),
+            out_proj_bias: vec_of(e, nb),
             ln2_gain: Arc::from(vec![1.0_f32; e]),
             ln2_bias: Arc::from(vec![0.0_f32; e]),
-            fc1: ws(e * ff, nb), fc1_bias: vec_of(ff, nb),
-            fc2: ws(ff * e, nb), fc2_bias: vec_of(e, nb),
+            fc1: ws(e * ff, nb),
+            fc1_bias: vec_of(ff, nb),
+            fc2: ws(ff * e, nb),
+            fc2_bias: vec_of(e, nb),
         }
     }
 
@@ -268,7 +305,10 @@ mod tests {
         let e = vision_cfg.embed_dim;
         let vff = vision_cfg.intermediate_size;
         let vision = ClipVisionWeights {
-            patch_proj: vec_of(e * vision_cfg.num_channels * vision_cfg.patch_size * vision_cfg.patch_size, &mut nb),
+            patch_proj: vec_of(
+                e * vision_cfg.num_channels * vision_cfg.patch_size * vision_cfg.patch_size,
+                &mut nb,
+            ),
             class_embedding: vec_of(e, &mut nb),
             position_embedding: vec_of((vision_cfg.num_patches() + 1) * e, &mut nb),
             pre_ln_gain: Arc::from(vec![1.0_f32; e]),
@@ -280,12 +320,16 @@ mod tests {
             post_ln_bias: Arc::from(vec![0.0_f32; e]),
         };
         let weights = ChineseClipWeights {
-            text, vision,
+            text,
+            vision,
             visual_projection: ws(e * projection_dim, &mut nb),
             text_projection: ws(h * projection_dim, &mut nb),
             logit_scale: 2.6592_f32.ln().max(0.0_f32),
         };
-        ChineseClipModel { config: cfg, weights }
+        ChineseClipModel {
+            config: cfg,
+            weights,
+        }
     }
 
     #[test]
@@ -300,12 +344,17 @@ mod tests {
     fn image_features_shape_and_finite() {
         let model = tiny_model();
         let image = LazyTensor::from_f32(
-            (0..(3 * 16 * 16)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, 3, 16, 16]), &Device::cpu(),
+            (0..(3 * 16 * 16))
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 3, 16, 16]),
+            &Device::cpu(),
         );
         let f = model.get_image_features(&image).unwrap();
         assert_eq!(f.shape().dims(), &[1, 4]);
-        for &v in &f.realize_f32() { assert!(v.is_finite()); }
+        for &v in &f.realize_f32() {
+            assert!(v.is_finite());
+        }
     }
 
     #[test]
@@ -313,7 +362,9 @@ mod tests {
         let model = tiny_model();
         let f = model.get_text_features(&[1_u32, 2, 3, 4]).unwrap();
         assert_eq!(f.shape().dims(), &[1, 4]);
-        for &v in &f.realize_f32() { assert!(v.is_finite()); }
+        for &v in &f.realize_f32() {
+            assert!(v.is_finite());
+        }
     }
 
     #[test]
@@ -333,6 +384,8 @@ mod tests {
         let (lpt, lpi) = model.contrastive_logits(&img_feats, &txt_feats).unwrap();
         assert_eq!(lpt.shape().dims(), &[1, 1]);
         assert_eq!(lpi.shape().dims(), &[1, 1]);
-        for &v in &lpt.realize_f32() { assert!(v.is_finite()); }
+        for &v in &lpt.realize_f32() {
+            assert!(v.is_finite());
+        }
     }
 }

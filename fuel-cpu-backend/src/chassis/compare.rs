@@ -60,25 +60,41 @@ pub trait CompareOpCore {
 
 impl<O: CompareOpCore> CompareOp<f32> for O {
     fn apply(a: f32, b: f32) -> u8 {
-        if <O as CompareOpCore>::f32(a, b) { 1 } else { 0 }
+        if <O as CompareOpCore>::f32(a, b) {
+            1
+        } else {
+            0
+        }
     }
 }
 
 impl<O: CompareOpCore> CompareOp<f64> for O {
     fn apply(a: f64, b: f64) -> u8 {
-        if <O as CompareOpCore>::f64(a, b) { 1 } else { 0 }
+        if <O as CompareOpCore>::f64(a, b) {
+            1
+        } else {
+            0
+        }
     }
 }
 
 impl<O: CompareOpCore> CompareOp<half::bf16> for O {
     fn apply(a: half::bf16, b: half::bf16) -> u8 {
-        if <O as CompareOpCore>::f32(a.to_f32(), b.to_f32()) { 1 } else { 0 }
+        if <O as CompareOpCore>::f32(a.to_f32(), b.to_f32()) {
+            1
+        } else {
+            0
+        }
     }
 }
 
 impl<O: CompareOpCore> CompareOp<half::f16> for O {
     fn apply(a: half::f16, b: half::f16) -> u8 {
-        if <O as CompareOpCore>::f32(a.to_f32(), b.to_f32()) { 1 } else { 0 }
+        if <O as CompareOpCore>::f32(a.to_f32(), b.to_f32()) {
+            1
+        } else {
+            0
+        }
     }
 }
 
@@ -129,45 +145,69 @@ where
 /// Elementwise equality. NaN follows IEEE-754: `NaN != NaN`.
 pub struct Eq;
 impl CompareOpCore for Eq {
-    fn f32(a: f32, b: f32) -> bool { a == b }
-    fn f64(a: f64, b: f64) -> bool { a == b }
+    fn f32(a: f32, b: f32) -> bool {
+        a == b
+    }
+    fn f64(a: f64, b: f64) -> bool {
+        a == b
+    }
 }
 
 /// Elementwise inequality. NaN follows IEEE-754: `NaN != NaN`
 /// yields `true` (→ `1`).
 pub struct Ne;
 impl CompareOpCore for Ne {
-    fn f32(a: f32, b: f32) -> bool { a != b }
-    fn f64(a: f64, b: f64) -> bool { a != b }
+    fn f32(a: f32, b: f32) -> bool {
+        a != b
+    }
+    fn f64(a: f64, b: f64) -> bool {
+        a != b
+    }
 }
 
 /// Elementwise `<`. NaN-unordered: any comparison involving NaN
 /// is `false`.
 pub struct Lt;
 impl CompareOpCore for Lt {
-    fn f32(a: f32, b: f32) -> bool { a < b }
-    fn f64(a: f64, b: f64) -> bool { a < b }
+    fn f32(a: f32, b: f32) -> bool {
+        a < b
+    }
+    fn f64(a: f64, b: f64) -> bool {
+        a < b
+    }
 }
 
 /// Elementwise `<=`. NaN-unordered.
 pub struct Le;
 impl CompareOpCore for Le {
-    fn f32(a: f32, b: f32) -> bool { a <= b }
-    fn f64(a: f64, b: f64) -> bool { a <= b }
+    fn f32(a: f32, b: f32) -> bool {
+        a <= b
+    }
+    fn f64(a: f64, b: f64) -> bool {
+        a <= b
+    }
 }
 
 /// Elementwise `>`. NaN-unordered.
 pub struct Gt;
 impl CompareOpCore for Gt {
-    fn f32(a: f32, b: f32) -> bool { a > b }
-    fn f64(a: f64, b: f64) -> bool { a > b }
+    fn f32(a: f32, b: f32) -> bool {
+        a > b
+    }
+    fn f64(a: f64, b: f64) -> bool {
+        a > b
+    }
 }
 
 /// Elementwise `>=`. NaN-unordered.
 pub struct Ge;
 impl CompareOpCore for Ge {
-    fn f32(a: f32, b: f32) -> bool { a >= b }
-    fn f64(a: f64, b: f64) -> bool { a >= b }
+    fn f32(a: f32, b: f32) -> bool {
+        a >= b
+    }
+    fn f64(a: f64, b: f64) -> bool {
+        a >= b
+    }
 }
 
 // =============================================================================

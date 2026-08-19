@@ -146,24 +146,21 @@ impl ModernBertModel {
             Shape::from_dims(&[cfg.vocab_size, h]),
             &Device::cpu(),
         );
-        let token_ids = word_emb_t.const_u32_like(
-            tokens.to_vec(),
-            Shape::from_dims(&[seq]),
-        );
+        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         let embeds = word_emb_t
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, h]))?;
         // ModernBERT's embedding LayerNorm has no bias.
-        let mut x = embeds.layer_norm_affine(std::sync::Arc::clone(&weights.embed_ln_gain), Arc::<[f32]>::from(vec![0.0_f32; h]), cfg.layer_norm_eps)?;
+        let mut x = embeds.layer_norm_affine(
+            std::sync::Arc::clone(&weights.embed_ln_gain),
+            Arc::<[f32]>::from(vec![0.0_f32; h]),
+            cfg.layer_norm_eps,
+        )?;
 
         // ---- RoPE tables (global + local, shared across layers) ------------
         let head_dim = cfg.head_dim();
-        let (global_cos, global_sin) = x.rope_tables_const(
-            cfg.global_rope_theta, 0, seq, head_dim,
-        );
-        let (local_cos, local_sin) = x.rope_tables_const(
-            cfg.local_rope_theta, 0, seq, head_dim,
-        );
+        let (global_cos, global_sin) = x.rope_tables_const(cfg.global_rope_theta, 0, seq, head_dim);
+        let (local_cos, local_sin) = x.rope_tables_const(cfg.local_rope_theta, 0, seq, head_dim);
 
         // ---- Local sliding-window additive mask `(seq, seq)` ---------------
         // Tokens `i, j` with `|i - j| > local_attention / 2` are masked
@@ -178,7 +175,10 @@ impl ModernBertModel {
             }
         }
         let local_mask_t = x
-            .const_f32_like(Arc::<[f32]>::from(local_mask), Shape::from_dims(&[seq, seq]))
+            .const_f32_like(
+                Arc::<[f32]>::from(local_mask),
+                Shape::from_dims(&[seq, seq]),
+            )
             .reshape(Shape::from_dims(&[1, 1, seq, seq]))?;
 
         // ---- Encoder blocks ------------------------------------------------
@@ -201,7 +201,11 @@ impl ModernBertModel {
         }
 
         // Final LN (no bias).
-        Ok(x.layer_norm_affine(std::sync::Arc::clone(&weights.final_norm_gain), Arc::<[f32]>::from(vec![0.0_f32; h]), cfg.layer_norm_eps)?)
+        Ok(x.layer_norm_affine(
+            std::sync::Arc::clone(&weights.final_norm_gain),
+            Arc::<[f32]>::from(vec![0.0_f32; h]),
+            cfg.layer_norm_eps,
+        )?)
     }
 
     /// Extract per-token features at the requested layer
@@ -257,22 +261,19 @@ impl ModernBertModel {
             Shape::from_dims(&[cfg.vocab_size, h]),
             &Device::cpu(),
         );
-        let token_ids = word_emb_t.const_u32_like(
-            tokens.to_vec(),
-            Shape::from_dims(&[seq]),
-        );
+        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         let embeds = word_emb_t
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, h]))?;
-        let mut x = embeds.layer_norm_affine(std::sync::Arc::clone(&weights.embed_ln_gain), Arc::<[f32]>::from(vec![0.0_f32; h]), cfg.layer_norm_eps)?;
+        let mut x = embeds.layer_norm_affine(
+            std::sync::Arc::clone(&weights.embed_ln_gain),
+            Arc::<[f32]>::from(vec![0.0_f32; h]),
+            cfg.layer_norm_eps,
+        )?;
 
         let head_dim = cfg.head_dim();
-        let (global_cos, global_sin) = x.rope_tables_const(
-            cfg.global_rope_theta, 0, seq, head_dim,
-        );
-        let (local_cos, local_sin) = x.rope_tables_const(
-            cfg.local_rope_theta, 0, seq, head_dim,
-        );
+        let (global_cos, global_sin) = x.rope_tables_const(cfg.global_rope_theta, 0, seq, head_dim);
+        let (local_cos, local_sin) = x.rope_tables_const(cfg.local_rope_theta, 0, seq, head_dim);
 
         let half_window = cfg.local_attention / 2;
         let mut local_mask = vec![0.0_f32; seq * seq];
@@ -284,7 +285,10 @@ impl ModernBertModel {
             }
         }
         let local_mask_t = x
-            .const_f32_like(Arc::<[f32]>::from(local_mask), Shape::from_dims(&[seq, seq]))
+            .const_f32_like(
+                Arc::<[f32]>::from(local_mask),
+                Shape::from_dims(&[seq, seq]),
+            )
             .reshape(Shape::from_dims(&[1, 1, seq, seq]))?;
 
         let mut out = Vec::with_capacity(layer_ids.len());
@@ -328,13 +332,21 @@ impl ModernBertModel {
         // Pre-LN attention sublayer (skipped on layer 0 if attn_norm is None).
         let x_normed = match &layer.attn_norm_gain {
             None => x.clone(),
-            Some(gain) => x.layer_norm_affine(std::sync::Arc::clone(&gain), std::sync::Arc::clone(&zero_bias), cfg.layer_norm_eps)?,
+            Some(gain) => x.layer_norm_affine(
+                std::sync::Arc::clone(&gain),
+                std::sync::Arc::clone(&zero_bias),
+                cfg.layer_norm_eps,
+            )?,
         };
         let attn_out = self.attention(&x_normed, layer, rope_cos, rope_sin, attention_mask)?;
         let y = x.add(&attn_out)?;
 
         // Pre-LN MLP sublayer.
-        let y_normed = y.layer_norm_affine(std::sync::Arc::clone(&layer.mlp_norm_gain), std::sync::Arc::clone(&zero_bias), cfg.layer_norm_eps)?;
+        let y_normed = y.layer_norm_affine(
+            std::sync::Arc::clone(&layer.mlp_norm_gain),
+            std::sync::Arc::clone(&zero_bias),
+            cfg.layer_norm_eps,
+        )?;
         let mlp_out = self.geglu(&y_normed, layer)?;
         y.add(&mlp_out)
     }
@@ -411,11 +423,10 @@ impl ModernBertWeights {
         let inter = cfg.intermediate_size;
 
         let word_embedding = Arc::from(load_tensor_as_f32(
-            st, "model.embeddings.tok_embeddings.weight",
+            st,
+            "model.embeddings.tok_embeddings.weight",
         )?);
-        let embed_ln_gain = Arc::from(load_tensor_as_f32(
-            st, "model.embeddings.norm.weight",
-        )?);
+        let embed_ln_gain = Arc::from(load_tensor_as_f32(st, "model.embeddings.norm.weight")?);
 
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         for i in 0..cfg.num_hidden_layers {
@@ -424,26 +435,33 @@ impl ModernBertWeights {
                 None
             } else {
                 Some(Arc::from(load_tensor_as_f32(
-                    st, &format!("{p}.attn_norm.weight"),
+                    st,
+                    &format!("{p}.attn_norm.weight"),
                 )?))
             };
             let wqkv = ltm(st, &format!("{p}.attn.Wqkv.weight"), 3 * h, h)?;
             let wo = ltm(st, &format!("{p}.attn.Wo.weight"), h, h)?;
-            let mlp_norm_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.mlp_norm.weight"),
-            )?);
+            let mlp_norm_gain = Arc::from(load_tensor_as_f32(st, &format!("{p}.mlp_norm.weight"))?);
             let mlp_wi = ltm(st, &format!("{p}.mlp.Wi.weight"), 2 * inter, h)?;
             let mlp_wo = ltm(st, &format!("{p}.mlp.Wo.weight"), h, inter)?;
             layers.push(ModernBertLayerWeights {
-                attn_norm_gain, wqkv, wo, mlp_norm_gain, mlp_wi, mlp_wo,
+                attn_norm_gain,
+                wqkv,
+                wo,
+                mlp_norm_gain,
+                mlp_wi,
+                mlp_wo,
             });
         }
 
-        let final_norm_gain = Arc::from(load_tensor_as_f32(
-            st, "model.final_norm.weight",
-        )?);
+        let final_norm_gain = Arc::from(load_tensor_as_f32(st, "model.final_norm.weight")?);
 
-        Ok(Self { word_embedding, embed_ln_gain, layers, final_norm_gain })
+        Ok(Self {
+            word_embedding,
+            embed_ln_gain,
+            layers,
+            final_norm_gain,
+        })
     }
 }
 
@@ -486,7 +504,11 @@ mod tests {
 
         let layers: Vec<ModernBertLayerWeights> = (0..cfg.num_hidden_layers)
             .map(|li| ModernBertLayerWeights {
-                attn_norm_gain: if li == 0 { None } else { Some(Arc::from(vec![1.0_f32; h])) },
+                attn_norm_gain: if li == 0 {
+                    None
+                } else {
+                    Some(Arc::from(vec![1.0_f32; h]))
+                },
                 wqkv: WeightStorage::F32(vec_of(h * 3 * h, &mut *nb)),
                 wo: WeightStorage::F32(vec_of(h * h, &mut *nb)),
                 mlp_norm_gain: Arc::from(vec![1.0_f32; h]),
@@ -507,7 +529,10 @@ mod tests {
     #[test]
     fn forward_shape_and_finite() {
         let cfg = tiny_cfg();
-        let model = ModernBertModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = ModernBertModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens = [1_u32, 2, 3, 4, 5, 6, 7, 8];
         let out = model.forward(&tokens, None).unwrap();
         assert_eq!(out.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
@@ -524,7 +549,10 @@ mod tests {
     #[test]
     fn bidirectional_attention_through_global_layers() {
         let cfg = tiny_cfg();
-        let model = ModernBertModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = ModernBertModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let toks_a = [1_u32, 2, 3, 4, 5, 6, 7, 8];
         let toks_b = [1_u32, 2, 3, 4, 5, 6, 7, 30];
         let a = model.forward(&toks_a, None).unwrap().realize_f32();
@@ -534,8 +562,10 @@ mod tests {
         for i in 0..h {
             max_diff = max_diff.max((a[i] - b[i]).abs());
         }
-        assert!(max_diff > 1e-7,
-            "last-token change must affect position 0 via global layers, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-7,
+            "last-token change must affect position 0 via global layers, max_diff = {max_diff}"
+        );
     }
 
     /// GeGLU gate is wired — zeroing the gate half of mlp_wi
@@ -564,8 +594,14 @@ mod tests {
         }
         modified.layers[0].mlp_wi = WeightStorage::F32(Arc::from(zeroed));
 
-        let m_a = ModernBertModel { config: cfg.clone(), weights: base };
-        let m_b = ModernBertModel { config: cfg, weights: modified };
+        let m_a = ModernBertModel {
+            config: cfg.clone(),
+            weights: base,
+        };
+        let m_b = ModernBertModel {
+            config: cfg,
+            weights: modified,
+        };
         let toks = [1_u32, 2, 3, 4, 5, 6, 7, 8];
         let a = m_a.forward(&toks, None).unwrap().realize_f32();
         let b = m_b.forward(&toks, None).unwrap().realize_f32();
@@ -573,8 +609,10 @@ mod tests {
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-7,
-            "zeroing GeGLU gate columns must alter output, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-7,
+            "zeroing GeGLU gate columns must alter output, max_diff = {max_diff}"
+        );
     }
 
     /// Local sliding-window mask is wired: when the global RoPE
@@ -606,10 +644,16 @@ mod tests {
         // we make layer 0 global as designed, but check that the
         // local window changes the *magnitude* of propagation
         // by comparing window=2 vs window=large.
-        let model_small = ModernBertModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model_small = ModernBertModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let mut cfg_large = cfg.clone();
         cfg_large.local_attention = 32;
-        let model_large = ModernBertModel { config: cfg_large, weights: tiny_weights(&cfg) };
+        let model_large = ModernBertModel {
+            config: cfg_large,
+            weights: tiny_weights(&cfg),
+        };
 
         let toks = [1_u32, 2, 3, 4, 5, 6, 7, 8];
         let s = model_small.forward(&toks, None).unwrap().realize_f32();
@@ -618,8 +662,10 @@ mod tests {
         for (x, y) in s.iter().zip(l.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-7,
-            "local_attention window size must affect output (small vs large window), max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-7,
+            "local_attention window size must affect output (small vs large window), max_diff = {max_diff}"
+        );
     }
 
     /// `forward_intermediate_layers` on ModernBERT returns
@@ -629,9 +675,14 @@ mod tests {
     #[test]
     fn forward_intermediate_layers_shape() {
         let cfg = tiny_cfg();
-        let model = ModernBertModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = ModernBertModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens = [1_u32, 2, 3, 4, 5, 6, 7, 8];
-        let outs = model.forward_intermediate_layers(&tokens, &[0_usize, 1, 3], None).unwrap();
+        let outs = model
+            .forward_intermediate_layers(&tokens, &[0_usize, 1, 3], None)
+            .unwrap();
         assert_eq!(outs.len(), 3);
         for out in &outs {
             assert_eq!(out.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
@@ -646,7 +697,9 @@ mod tests {
         for (x, y) in a.iter().zip(c.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-7,
-            "layer 0 and layer 3 intermediates must differ, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-7,
+            "layer 0 and layer 3 intermediates must differ, max_diff = {max_diff}"
+        );
     }
 }

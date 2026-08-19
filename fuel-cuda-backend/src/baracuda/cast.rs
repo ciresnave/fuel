@@ -234,12 +234,24 @@ cast_kernel!(cast_i8_to_i8, 1, 1, i8_i8, "cast_i8_to_i8");
 //
 // F8E5M2 isn't in Fuel's DType enum yet, so its 6 pairs are
 // available in baracuda but not registered here.
-cast_kernel!(cast_f8e4m3_to_f32,  1, 4, fp8e4m3_f32,  "cast_f8e4m3_to_f32");
-cast_kernel!(cast_f8e4m3_to_f16,  1, 2, fp8e4m3_f16,  "cast_f8e4m3_to_f16");
-cast_kernel!(cast_f8e4m3_to_bf16, 1, 2, fp8e4m3_bf16, "cast_f8e4m3_to_bf16");
-cast_kernel!(cast_f32_to_f8e4m3,  4, 1, f32_fp8e4m3,  "cast_f32_to_f8e4m3");
-cast_kernel!(cast_f16_to_f8e4m3,  2, 1, f16_fp8e4m3,  "cast_f16_to_f8e4m3");
-cast_kernel!(cast_bf16_to_f8e4m3, 2, 1, bf16_fp8e4m3, "cast_bf16_to_f8e4m3");
+cast_kernel!(cast_f8e4m3_to_f32, 1, 4, fp8e4m3_f32, "cast_f8e4m3_to_f32");
+cast_kernel!(cast_f8e4m3_to_f16, 1, 2, fp8e4m3_f16, "cast_f8e4m3_to_f16");
+cast_kernel!(
+    cast_f8e4m3_to_bf16,
+    1,
+    2,
+    fp8e4m3_bf16,
+    "cast_f8e4m3_to_bf16"
+);
+cast_kernel!(cast_f32_to_f8e4m3, 4, 1, f32_fp8e4m3, "cast_f32_to_f8e4m3");
+cast_kernel!(cast_f16_to_f8e4m3, 2, 1, f16_fp8e4m3, "cast_f16_to_f8e4m3");
+cast_kernel!(
+    cast_bf16_to_f8e4m3,
+    2,
+    1,
+    bf16_fp8e4m3,
+    "cast_bf16_to_f8e4m3"
+);
 
 /// Fuel `DType` → baracuda dtype tag. Returns `None` for dtypes
 /// baracuda's cast surface doesn't expose. `U32` collapses to `i32` —
@@ -276,11 +288,7 @@ enum BaracudaCastDt {
 ///
 /// This is what `fuel-storage`'s `cast_cuda_baracuda_wrapper` calls
 /// after reading the input/output Storage dtypes.
-pub fn dispatch(
-    src: &CudaStorageBytes,
-    src_dt: DType,
-    dst_dt: DType,
-) -> Result<CudaStorageBytes> {
+pub fn dispatch(src: &CudaStorageBytes, src_dt: DType, dst_dt: DType) -> Result<CudaStorageBytes> {
     let src_tag = baracuda_dtype_tag(src_dt).ok_or_else(|| {
         Error::Msg(format!("baracuda cast: src dtype {src_dt:?} not supported")).bt()
     })?;
@@ -349,12 +357,12 @@ pub fn dispatch(
         // family. Pairs outside this set (F8E4M3 ↔ {I32, I64, U8, F64,
         // F8E4M3-to-F8E4M3}) aren't shipped — they'd require f32-detour
         // chaining if Fuel ever needs them.
-        (F8E4M3, F32)    => cast_f8e4m3_to_f32(src),
-        (F8E4M3, F16)    => cast_f8e4m3_to_f16(src),
-        (F8E4M3, Bf16)   => cast_f8e4m3_to_bf16(src),
-        (F32,    F8E4M3) => cast_f32_to_f8e4m3(src),
-        (F16,    F8E4M3) => cast_f16_to_f8e4m3(src),
-        (Bf16,   F8E4M3) => cast_bf16_to_f8e4m3(src),
+        (F8E4M3, F32) => cast_f8e4m3_to_f32(src),
+        (F8E4M3, F16) => cast_f8e4m3_to_f16(src),
+        (F8E4M3, Bf16) => cast_f8e4m3_to_bf16(src),
+        (F32, F8E4M3) => cast_f32_to_f8e4m3(src),
+        (F16, F8E4M3) => cast_f16_to_f8e4m3(src),
+        (Bf16, F8E4M3) => cast_bf16_to_f8e4m3(src),
 
         // Unsupported pairs through baracuda's CastSubByte family.
         (F8E4M3, _) | (_, F8E4M3) => Err(Error::Msg(format!(
@@ -362,6 +370,7 @@ pub fn dispatch(
              CastSubBytePlan surface (supported: F8E4M3 ↔ {{F32, F16, BF16}}). \
              Compose via an intermediate f32 cast if needed.",
             src_dt, dst_dt,
-        )).bt()),
+        ))
+        .bt()),
     }
 }

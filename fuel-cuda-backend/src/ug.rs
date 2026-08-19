@@ -50,10 +50,7 @@ impl InplaceOp1 for CudaUgIOp1 {
             .as_any_mut()
             .downcast_mut::<CudaStorage>()
             .ok_or_else(|| {
-                fuel_ir::Error::Msg(
-                    "CudaUgIOp1: storage is not a CudaStorage".to_string(),
-                )
-                .bt()
+                fuel_ir::Error::Msg("CudaUgIOp1: storage is not a CudaStorage".to_string()).bt()
             })?;
 
         let elem_count = layout.shape().elem_count();

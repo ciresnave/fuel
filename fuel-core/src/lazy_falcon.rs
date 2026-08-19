@@ -138,34 +138,37 @@ impl FalconModel {
 
     /// Multimodal entry point. Skips token embedding; runs the decoder
     /// over pre-embedded inputs. Falcon does NOT scale embeddings.
-    pub fn forward_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
         let h_norm = self.run_backbone_embeds(embeds, start_pos)?;
         self.apply_lm_head(&h_norm)
     }
 
     /// Hidden-state variant of [`Self::forward_embeds`].
     pub fn forward_hidden_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
+        &self,
+        embeds: &LazyTensor,
+        start_pos: usize,
     ) -> Result<LazyTensor> {
         self.run_backbone_embeds(embeds, start_pos)
     }
 
     /// Build per-token embeddings without running the decoder.
-    pub fn embed_tokens_anchored(
-        &self, anchor: &LazyTensor, tokens: &[u32],
-    ) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
-            cfg.vocab_size, cfg.hidden_size, tokens,
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
         )
     }
 
     fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
-        Ok(self.weights.output.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
+        Ok(self
+            .weights
+            .output
+            .apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 
     /// Shared backbone: embed → RoPE → per-layer parallel
@@ -178,14 +181,16 @@ impl FalconModel {
         assert!(seq > 0, "FalconModel: tokens must be non-empty");
 
         let h = LazyTensor::embed_tokens(
-            weights.token_embedding.clone(), cfg.vocab_size, cfg.hidden_size, tokens, &Device::cpu(),
+            weights.token_embedding.clone(),
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
+            &Device::cpu(),
         )?;
         self.run_backbone_embeds(&h, start_pos)
     }
 
-    fn run_backbone_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
-    ) -> Result<LazyTensor> {
+    fn run_backbone_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -198,26 +203,26 @@ impl FalconModel {
         }
         let seq = dims[1];
         if seq == 0 {
-            return Err(crate::Error::Msg(
-                "FalconModel::forward_embeds: seq must be > 0".into(),
-            ).bt());
+            return Err(
+                crate::Error::Msg("FalconModel::forward_embeds: seq must be > 0".into()).bt(),
+            );
         }
         let head_dim = cfg.head_dim();
         if cfg.num_attention_heads * head_dim != cfg.hidden_size {
             return Err(crate::Error::Msg(
                 "FalconConfig: num_attention_heads * head_dim must equal hidden_size".into(),
-            ).bt());
+            )
+            .bt());
         }
         if cfg.n_head_kv == 0 || cfg.num_attention_heads % cfg.n_head_kv != 0 {
             return Err(crate::Error::Msg(
                 "FalconConfig: num_attention_heads must be a positive multiple of n_head_kv".into(),
-            ).bt());
+            )
+            .bt());
         }
         let mut h = embeds.clone();
 
-        let (rope_cos, rope_sin) = h.rope_tables_const(
-            cfg.rope_theta, start_pos, seq, head_dim,
-        );
+        let (rope_cos, rope_sin) = h.rope_tables_const(cfg.rope_theta, start_pos, seq, head_dim);
 
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin)?;
@@ -245,9 +250,15 @@ impl FalconModel {
         let kv_dim = cfg.n_head_kv * head_dim;
 
         // Shared input LayerNorm for attention (and FFN in parallel mode).
-        let x_ln = x.layer_norm_affine(std::sync::Arc::clone(&layer.input_ln_gain), std::sync::Arc::clone(&layer.input_ln_bias), cfg.layer_norm_epsilon)?;
+        let x_ln = x.layer_norm_affine(
+            std::sync::Arc::clone(&layer.input_ln_gain),
+            std::sync::Arc::clone(&layer.input_ln_bias),
+            cfg.layer_norm_epsilon,
+        )?;
 
-        let attn_output = self.attention(&x_ln, layer, rope_cos, rope_sin, batch, seq, head_dim, kv_dim)?;
+        let attn_output = self.attention(
+            &x_ln, layer, rope_cos, rope_sin, batch, seq, head_dim, kv_dim,
+        )?;
 
         if cfg.parallel_attn {
             // `out = attn(ln(x)) + mlp(ln(x)) + x` — both branches use
@@ -259,7 +270,11 @@ impl FalconModel {
             // Serial: `h1 = attn(ln(x)) + x; out = mlp(ln'(h1)) + h1`.
             let h1 = x.add(&attn_output)?;
             let h1_ln = match &layer.post_attn_ln {
-                Some((g, b)) => h1.layer_norm_affine(std::sync::Arc::clone(&g), std::sync::Arc::clone(&b), cfg.layer_norm_epsilon)?,
+                Some((g, b)) => h1.layer_norm_affine(
+                    std::sync::Arc::clone(&g),
+                    std::sync::Arc::clone(&b),
+                    cfg.layer_norm_epsilon,
+                )?,
                 None => h1.clone(),
             };
             let mlp_output = self.mlp(&h1_ln, layer, batch, seq)?;
@@ -279,9 +294,18 @@ impl FalconModel {
         kv_dim: usize,
     ) -> Result<LazyTensor> {
         let cfg = &self.config;
-        let q = layer.attn_q.apply_linear(x_ln, cfg.hidden_size, cfg.hidden_size)?.add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
-        let k = layer.attn_k.apply_linear(x_ln, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
-        let v = layer.attn_v.apply_linear(x_ln, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
+        let q = layer
+            .attn_q
+            .apply_linear(x_ln, cfg.hidden_size, cfg.hidden_size)?
+            .add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
+        let k = layer
+            .attn_k
+            .apply_linear(x_ln, cfg.hidden_size, kv_dim)?
+            .add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
+        let v = layer
+            .attn_v
+            .apply_linear(x_ln, cfg.hidden_size, kv_dim)?
+            .add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
 
         let _ = (batch, seq);
         let q = q.split_heads(cfg.num_attention_heads, head_dim)?;
@@ -307,7 +331,10 @@ impl FalconModel {
         let attn_v = attn.matmul(&v_full)?;
 
         let merged = attn_v.merge_heads()?;
-        layer.attn_dense.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?.add_optional_trailing_bias(layer.attn_dense_bias.as_ref())
+        layer
+            .attn_dense
+            .apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?
+            .add_optional_trailing_bias(layer.attn_dense_bias.as_ref())
     }
 
     fn mlp(
@@ -319,9 +346,15 @@ impl FalconModel {
     ) -> Result<LazyTensor> {
         let cfg = &self.config;
         let inter = 4 * cfg.hidden_size;
-        let up = layer.mlp_up.apply_linear(x_ln, cfg.hidden_size, inter)?.add_optional_trailing_bias(layer.mlp_up_bias.as_ref())?;
+        let up = layer
+            .mlp_up
+            .apply_linear(x_ln, cfg.hidden_size, inter)?
+            .add_optional_trailing_bias(layer.mlp_up_bias.as_ref())?;
         let up_act = up.gelu();
-        layer.mlp_down.apply_linear(&up_act, inter, cfg.hidden_size)?.add_optional_trailing_bias(layer.mlp_down_bias.as_ref())
+        layer
+            .mlp_down
+            .apply_linear(&up_act, inter, cfg.hidden_size)?
+            .add_optional_trailing_bias(layer.mlp_down_bias.as_ref())
     }
 }
 
@@ -367,27 +400,36 @@ impl FalconWeights {
         let q_dim = cfg.num_attention_heads * head_dim;
 
         let token_embedding = Arc::from(load_tensor_as_f32(
-            st, "transformer.word_embeddings.weight",
+            st,
+            "transformer.word_embeddings.weight",
         )?);
 
         let multi_query = cfg.n_head_kv == 1;
-        let qkv_out_dim = if multi_query {
-            h + 2 * head_dim
-        } else {
-            3 * h
-        };
+        let qkv_out_dim = if multi_query { h + 2 * head_dim } else { 3 * h };
 
         let mut layers: Vec<FalconLayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
         for i in 0..cfg.num_hidden_layers {
             let p = format!("transformer.h.{i}");
 
-            let input_ln_gain = Arc::from(load_tensor_as_f32(st, &format!("{p}.input_layernorm.weight"))?);
-            let input_ln_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.input_layernorm.bias"))?);
+            let input_ln_gain = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.input_layernorm.weight"),
+            )?);
+            let input_ln_bias = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.input_layernorm.bias"),
+            )?);
             // post_attn_ln only exists in the non-parallel variant.
             let post_attn_ln = if !cfg.parallel_attn {
                 Some((
-                    Arc::from(load_tensor_as_f32(st, &format!("{p}.post_attention_layernorm.weight"))?),
-                    Arc::from(load_tensor_as_f32(st, &format!("{p}.post_attention_layernorm.bias"))?),
+                    Arc::from(load_tensor_as_f32(
+                        st,
+                        &format!("{p}.post_attention_layernorm.weight"),
+                    )?),
+                    Arc::from(load_tensor_as_f32(
+                        st,
+                        &format!("{p}.post_attention_layernorm.bias"),
+                    )?),
                 ))
             } else {
                 None
@@ -395,64 +437,90 @@ impl FalconWeights {
 
             // Fused QKV: shape (qkv_out_dim, hidden_size) on disk.
             let qkv = load_transposed_matrix(
-                st, &format!("{p}.self_attention.query_key_value.weight"),
-                qkv_out_dim, h,
+                st,
+                &format!("{p}.self_attention.query_key_value.weight"),
+                qkv_out_dim,
+                h,
             )?;
-            let (attn_q_flat, attn_k_flat, attn_v_flat) = split_fused_qkv(
-                &qkv, h, cfg.num_attention_heads, head_dim, multi_query,
-            );
+            let (attn_q_flat, attn_k_flat, attn_v_flat) =
+                split_fused_qkv(&qkv, h, cfg.num_attention_heads, head_dim, multi_query);
 
             // Optional QKV bias.
             let (attn_q_bias, attn_k_bias, attn_v_bias) = if cfg.bias {
-                let qkv_bias = load_tensor_as_f32(
-                    st, &format!("{p}.self_attention.query_key_value.bias"),
-                )?;
-                let (qb, kb, vb) = split_fused_qkv_bias(
-                    &qkv_bias, cfg.num_attention_heads, head_dim, multi_query,
-                );
-                (Some(Arc::from(qb)), Some(Arc::from(kb)), Some(Arc::from(vb)))
+                let qkv_bias =
+                    load_tensor_as_f32(st, &format!("{p}.self_attention.query_key_value.bias"))?;
+                let (qb, kb, vb) =
+                    split_fused_qkv_bias(&qkv_bias, cfg.num_attention_heads, head_dim, multi_query);
+                (
+                    Some(Arc::from(qb)),
+                    Some(Arc::from(kb)),
+                    Some(Arc::from(vb)),
+                )
             } else {
                 (None, None, None)
             };
 
             let attn_dense = crate::lazy::load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attention.dense.weight"), h, q_dim,
+                st,
+                &format!("{p}.self_attention.dense.weight"),
+                h,
+                q_dim,
             )?;
             let attn_dense_bias = if cfg.bias {
-                Some(Arc::from(load_tensor_as_f32(st, &format!("{p}.self_attention.dense.bias"))?))
+                Some(Arc::from(load_tensor_as_f32(
+                    st,
+                    &format!("{p}.self_attention.dense.bias"),
+                )?))
             } else {
                 None
             };
 
             let inter = 4 * h;
             let mlp_up = crate::lazy::load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.mlp.dense_h_to_4h.weight"), inter, h,
+                st,
+                &format!("{p}.mlp.dense_h_to_4h.weight"),
+                inter,
+                h,
             )?;
             let mlp_up_bias = if cfg.bias {
-                Some(Arc::from(load_tensor_as_f32(st, &format!("{p}.mlp.dense_h_to_4h.bias"))?))
+                Some(Arc::from(load_tensor_as_f32(
+                    st,
+                    &format!("{p}.mlp.dense_h_to_4h.bias"),
+                )?))
             } else {
                 None
             };
             let mlp_down = crate::lazy::load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.mlp.dense_4h_to_h.weight"), h, inter,
+                st,
+                &format!("{p}.mlp.dense_4h_to_h.weight"),
+                h,
+                inter,
             )?;
             let mlp_down_bias = if cfg.bias {
-                Some(Arc::from(load_tensor_as_f32(st, &format!("{p}.mlp.dense_4h_to_h.bias"))?))
+                Some(Arc::from(load_tensor_as_f32(
+                    st,
+                    &format!("{p}.mlp.dense_4h_to_h.bias"),
+                )?))
             } else {
                 None
             };
 
             layers.push(FalconLayerWeights {
-                input_ln_gain, input_ln_bias, post_attn_ln,
+                input_ln_gain,
+                input_ln_bias,
+                post_attn_ln,
                 attn_q: WeightStorage::F32(Arc::from(attn_q_flat)),
                 attn_q_bias,
                 attn_k: WeightStorage::F32(Arc::from(attn_k_flat)),
                 attn_k_bias,
                 attn_v: WeightStorage::F32(Arc::from(attn_v_flat)),
                 attn_v_bias,
-                attn_dense, attn_dense_bias,
-                mlp_up, mlp_up_bias,
-                mlp_down, mlp_down_bias,
+                attn_dense,
+                attn_dense_bias,
+                mlp_up,
+                mlp_up_bias,
+                mlp_down,
+                mlp_down_bias,
             });
         }
 
@@ -460,13 +528,18 @@ impl FalconWeights {
         let final_ln_bias = Arc::from(load_tensor_as_f32(st, "transformer.ln_f.bias")?);
         // lm_head: tied if no lm_head.weight present, else load.
         let output = match crate::lazy::load_transposed_matrix_preserve_dtype(
-            st, "lm_head.weight", cfg.vocab_size, h,
+            st,
+            "lm_head.weight",
+            cfg.vocab_size,
+            h,
         ) {
             Ok(w) => w,
             Err(_) => {
                 // Tied: transpose token_embedding (vocab, h) -> (h, vocab).
                 crate::lazy_llama_full::tied_lm_head_from_embeddings(
-                    &token_embedding, cfg.vocab_size, h,
+                    &token_embedding,
+                    cfg.vocab_size,
+                    h,
                 )
             }
         };
@@ -499,7 +572,11 @@ fn split_fused_qkv(
 ) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
     let q_dim = num_heads * head_dim;
     let kv_dim = if multi_query { head_dim } else { q_dim };
-    let qkv_out = if multi_query { q_dim + 2 * head_dim } else { 3 * q_dim };
+    let qkv_out = if multi_query {
+        q_dim + 2 * head_dim
+    } else {
+        3 * q_dim
+    };
 
     let mut q = vec![0.0_f32; hidden_size * q_dim];
     let mut k = vec![0.0_f32; hidden_size * kv_dim];
@@ -551,13 +628,14 @@ fn split_fused_qkv_bias(
         for h_i in 0..num_heads {
             let base = h_i * 3 * head_dim;
             q[h_i * head_dim..(h_i + 1) * head_dim].copy_from_slice(&bias[base..base + head_dim]);
-            k[h_i * head_dim..(h_i + 1) * head_dim].copy_from_slice(&bias[base + head_dim..base + 2 * head_dim]);
-            v[h_i * head_dim..(h_i + 1) * head_dim].copy_from_slice(&bias[base + 2 * head_dim..base + 3 * head_dim]);
+            k[h_i * head_dim..(h_i + 1) * head_dim]
+                .copy_from_slice(&bias[base + head_dim..base + 2 * head_dim]);
+            v[h_i * head_dim..(h_i + 1) * head_dim]
+                .copy_from_slice(&bias[base + 2 * head_dim..base + 3 * head_dim]);
         }
         (q, k, v)
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -577,31 +655,63 @@ mod tests {
         let inter = 4 * h;
         let mut next_box: Box<dyn FnMut() -> f32> = Box::new(next);
         let token_embedding = vec_of(cfg.vocab_size * h, &mut *next_box);
-        let layers: Vec<FalconLayerWeights> = (0..cfg.num_hidden_layers).map(|_| FalconLayerWeights {
-            input_ln_gain: Arc::from(vec![1.0_f32; h]),
-            input_ln_bias: Arc::from(vec![0.0_f32; h]),
-            post_attn_ln: if cfg.parallel_attn {
-                None
-            } else {
-                Some((Arc::from(vec![1.0_f32; h]), Arc::from(vec![0.0_f32; h])))
-            },
-            attn_q: WeightStorage::F32(vec_of(h * h, &mut *next_box)),
-            attn_q_bias: if cfg.bias { Some(vec_of(h, &mut *next_box)) } else { None },
-            attn_k: WeightStorage::F32(vec_of(h * kv, &mut *next_box)),
-            attn_k_bias: if cfg.bias { Some(vec_of(kv, &mut *next_box)) } else { None },
-            attn_v: WeightStorage::F32(vec_of(h * kv, &mut *next_box)),
-            attn_v_bias: if cfg.bias { Some(vec_of(kv, &mut *next_box)) } else { None },
-            attn_dense: WeightStorage::F32(vec_of(h * h, &mut *next_box)),
-            attn_dense_bias: if cfg.bias { Some(vec_of(h, &mut *next_box)) } else { None },
-            mlp_up: WeightStorage::F32(vec_of(h * inter, &mut *next_box)),
-            mlp_up_bias: if cfg.bias { Some(vec_of(inter, &mut *next_box)) } else { None },
-            mlp_down: WeightStorage::F32(vec_of(inter * h, &mut *next_box)),
-            mlp_down_bias: if cfg.bias { Some(vec_of(h, &mut *next_box)) } else { None },
-        }).collect();
+        let layers: Vec<FalconLayerWeights> = (0..cfg.num_hidden_layers)
+            .map(|_| FalconLayerWeights {
+                input_ln_gain: Arc::from(vec![1.0_f32; h]),
+                input_ln_bias: Arc::from(vec![0.0_f32; h]),
+                post_attn_ln: if cfg.parallel_attn {
+                    None
+                } else {
+                    Some((Arc::from(vec![1.0_f32; h]), Arc::from(vec![0.0_f32; h])))
+                },
+                attn_q: WeightStorage::F32(vec_of(h * h, &mut *next_box)),
+                attn_q_bias: if cfg.bias {
+                    Some(vec_of(h, &mut *next_box))
+                } else {
+                    None
+                },
+                attn_k: WeightStorage::F32(vec_of(h * kv, &mut *next_box)),
+                attn_k_bias: if cfg.bias {
+                    Some(vec_of(kv, &mut *next_box))
+                } else {
+                    None
+                },
+                attn_v: WeightStorage::F32(vec_of(h * kv, &mut *next_box)),
+                attn_v_bias: if cfg.bias {
+                    Some(vec_of(kv, &mut *next_box))
+                } else {
+                    None
+                },
+                attn_dense: WeightStorage::F32(vec_of(h * h, &mut *next_box)),
+                attn_dense_bias: if cfg.bias {
+                    Some(vec_of(h, &mut *next_box))
+                } else {
+                    None
+                },
+                mlp_up: WeightStorage::F32(vec_of(h * inter, &mut *next_box)),
+                mlp_up_bias: if cfg.bias {
+                    Some(vec_of(inter, &mut *next_box))
+                } else {
+                    None
+                },
+                mlp_down: WeightStorage::F32(vec_of(inter * h, &mut *next_box)),
+                mlp_down_bias: if cfg.bias {
+                    Some(vec_of(h, &mut *next_box))
+                } else {
+                    None
+                },
+            })
+            .collect();
         let final_ln_gain = Arc::from(vec![1.0_f32; h]);
         let final_ln_bias = Arc::from(vec![0.0_f32; h]);
         let output = WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *next_box));
-        FalconWeights { token_embedding, layers, final_ln_gain, final_ln_bias, output }
+        FalconWeights {
+            token_embedding,
+            layers,
+            final_ln_gain,
+            final_ln_bias,
+            output,
+        }
     }
 
     #[test]
@@ -618,7 +728,10 @@ mod tests {
             bias: false,
             rope_theta: 10_000.0,
         };
-        let model = FalconModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = FalconModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4, 5];
         let logits = model.forward(&tokens, 0).unwrap();
         assert_eq!(logits.shape().dims(), &[1, tokens.len(), cfg.vocab_size]);
@@ -644,7 +757,10 @@ mod tests {
             bias: true,
             rope_theta: 10_000.0,
         };
-        let model = FalconModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = FalconModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![3, 1, 4, 1, 5];
         let logits = model.forward(&tokens, 0).unwrap();
         assert_eq!(logits.shape().dims(), &[1, tokens.len(), cfg.vocab_size]);
@@ -686,11 +802,23 @@ mod tests {
             }
             w
         };
-        let out_p = FalconModel { config: cfg_p, weights }
-            .forward(&[1, 2, 3, 4], 0).unwrap().realize_f32();
-        let out_s = FalconModel { config: cfg_s, weights: weights_s }
-            .forward(&[1, 2, 3, 4], 0).unwrap().realize_f32();
-        let any_diff = out_p.iter().zip(out_s.iter())
+        let out_p = FalconModel {
+            config: cfg_p,
+            weights,
+        }
+        .forward(&[1, 2, 3, 4], 0)
+        .unwrap()
+        .realize_f32();
+        let out_s = FalconModel {
+            config: cfg_s,
+            weights: weights_s,
+        }
+        .forward(&[1, 2, 3, 4], 0)
+        .unwrap()
+        .realize_f32();
+        let any_diff = out_p
+            .iter()
+            .zip(out_s.iter())
             .any(|(&a, &b)| (a - b).abs() > 1e-5);
         assert!(any_diff, "parallel vs serial attention must diverge");
     }
@@ -711,7 +839,10 @@ mod tests {
             bias: false,
             rope_theta: 10_000.0,
         };
-        let model = FalconModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = FalconModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
         let hidden = model.forward_hidden(&tokens, 0).unwrap();
         assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
@@ -722,37 +853,53 @@ mod tests {
 
     fn forward_embeds_test_cfg() -> FalconConfig {
         FalconConfig {
-            vocab_size: 32, hidden_size: 16,
-            num_hidden_layers: 2, num_attention_heads: 4, n_head_kv: 1,
-            layer_norm_epsilon: 1e-5, max_position_embeddings: 64,
-            parallel_attn: true, bias: false, rope_theta: 10_000.0,
+            vocab_size: 32,
+            hidden_size: 16,
+            num_hidden_layers: 2,
+            num_attention_heads: 4,
+            n_head_kv: 1,
+            layer_norm_epsilon: 1e-5,
+            max_position_embeddings: 64,
+            parallel_attn: true,
+            bias: false,
+            rope_theta: 10_000.0,
         }
     }
 
     #[test]
     fn forward_embeds_matches_forward_after_token_lookup() {
         let cfg = forward_embeds_test_cfg();
-        let model = FalconModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = FalconModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
-        let max_diff = logits_ref.iter().zip(logits_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "Falcon forward vs forward_embeds must agree (max diff {max_diff})");
+        let max_diff = logits_ref
+            .iter()
+            .zip(logits_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "Falcon forward vs forward_embeds must agree (max diff {max_diff})"
+        );
     }
 
     #[test]
     fn forward_embeds_rejects_bad_shape() {
         let cfg = forward_embeds_test_cfg();
-        let model = FalconModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = FalconModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let bad = LazyTensor::from_f32(
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
-            Shape::from_dims(&[1, 3, cfg.hidden_size + 1]), &Device::cpu(),
+            Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
+            &Device::cpu(),
         );
         assert!(model.forward_embeds(&bad, 0).is_err());
     }
@@ -760,17 +907,26 @@ mod tests {
     #[test]
     fn forward_hidden_embeds_matches_forward_hidden() {
         let cfg = forward_embeds_test_cfg();
-        let model = FalconModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = FalconModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
-        let h_via_embeds = model.forward_hidden_embeds(&embeds, 0).unwrap().realize_f32();
-        let max_diff = h_ref.iter().zip(h_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "Falcon forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})");
+        let h_via_embeds = model
+            .forward_hidden_embeds(&embeds, 0)
+            .unwrap()
+            .realize_f32();
+        let max_diff = h_ref
+            .iter()
+            .zip(h_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "Falcon forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})"
+        );
     }
 }

@@ -49,7 +49,11 @@ impl MetalStorageBytes {
     /// for the buffer being correctly sized (`len_bytes` matching
     /// the buffer's actual byte capacity).
     pub fn from_parts(buffer: Arc<Buffer>, device: MetalDevice, len_bytes: usize) -> Self {
-        Self { buffer, device, len_bytes }
+        Self {
+            buffer,
+            device,
+            len_bytes,
+        }
     }
 
     /// Borrow the underlying Metal buffer.

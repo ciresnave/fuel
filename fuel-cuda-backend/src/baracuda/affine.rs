@@ -70,18 +70,16 @@ fn build_strided_args(
     let dims = layout.shape().dims();
     let rank = dims.len();
     if rank == 0 {
-        return Err(fuel_ir::Error::Msg(
-            format!("{op_label}: rank-0 input not supported"),
-        ).bt());
+        return Err(fuel_ir::Error::Msg(format!("{op_label}: rank-0 input not supported")).bt());
     }
     let mut shape_i32: Vec<i32> = Vec::with_capacity(rank);
     for (i, &d) in dims.iter().enumerate() {
         shape_i32.push(i32::try_from(d).map_err(|_| {
-            fuel_ir::Error::cuda(
-                crate::error::CudaError::BaracudaShapeOverflow {
-                    op: op_label, dim_index: i, dim_value: d,
-                },
-            )
+            fuel_ir::Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
+                op: op_label,
+                dim_index: i,
+                dim_value: d,
+            })
         })?);
     }
     let stride_x: Vec<i64> = layout.stride().iter().map(|&s| s as i64).collect();
@@ -185,46 +183,60 @@ macro_rules! affine_kernel {
 }
 
 affine_kernel!(
-    affine_f32, f32,
+    affine_f32,
+    f32,
     baracuda_kernels_affine_f32_run,
     baracuda_kernels_affine_f32_strided_run,
-    4, "affine_f32"
+    4,
+    "affine_f32"
 );
 affine_kernel!(
-    affine_f64, f64,
+    affine_f64,
+    f64,
     baracuda_kernels_affine_f64_run,
     baracuda_kernels_affine_f64_strided_run,
-    8, "affine_f64"
+    8,
+    "affine_f64"
 );
 affine_kernel!(
-    affine_f16, f32,
+    affine_f16,
+    f32,
     baracuda_kernels_affine_f16_run,
     baracuda_kernels_affine_f16_strided_run,
-    2, "affine_f16"
+    2,
+    "affine_f16"
 );
 affine_kernel!(
-    affine_bf16, f32,
+    affine_bf16,
+    f32,
     baracuda_kernels_affine_bf16_run,
     baracuda_kernels_affine_bf16_strided_run,
-    2, "affine_bf16"
+    2,
+    "affine_bf16"
 );
 affine_kernel!(
-    affine_i32, i32,
+    affine_i32,
+    i32,
     baracuda_kernels_affine_i32_run,
     baracuda_kernels_affine_i32_strided_run,
-    4, "affine_i32"
+    4,
+    "affine_i32"
 );
 affine_kernel!(
-    affine_i64, i64,
+    affine_i64,
+    i64,
     baracuda_kernels_affine_i64_run,
     baracuda_kernels_affine_i64_strided_run,
-    8, "affine_i64"
+    8,
+    "affine_i64"
 );
 affine_kernel!(
-    affine_u8, u8,
+    affine_u8,
+    u8,
     baracuda_kernels_affine_u8_run,
     baracuda_kernels_affine_u8_strided_run,
-    1, "affine_u8"
+    1,
+    "affine_u8"
 );
 
 /// In-place affine on CUDA via baracuda's
@@ -240,11 +252,7 @@ affine_kernel!(
 /// than a kernel mismatch.
 macro_rules! affine_inplace_kernel {
     ($name:ident, $scalar:ty, $sym:ident, $dtype_size:expr, $op_label:expr) => {
-        pub fn $name(
-            target: &mut CudaStorageBytes,
-            mul: $scalar,
-            add: $scalar,
-        ) -> Result<()> {
+        pub fn $name(target: &mut CudaStorageBytes, mul: $scalar, add: $scalar) -> Result<()> {
             let op_label = $op_label;
             let device = target.device().clone();
             let numel = (target.len_bytes() / $dtype_size) as i64;
@@ -274,25 +282,33 @@ macro_rules! affine_inplace_kernel {
 }
 
 affine_inplace_kernel!(
-    affine_inplace_f32, f32,
+    affine_inplace_f32,
+    f32,
     baracuda_kernels_affine_inplace_f32_run,
-    4, "affine_inplace_f32"
+    4,
+    "affine_inplace_f32"
 );
 affine_inplace_kernel!(
-    affine_inplace_f64, f64,
+    affine_inplace_f64,
+    f64,
     baracuda_kernels_affine_inplace_f64_run,
-    8, "affine_inplace_f64"
+    8,
+    "affine_inplace_f64"
 );
 // alpha.61 added bf16 + f16 in response to Fuel's ask
 // (docs/baracuda-ask-inplace-ops-2026-05-30.md Item 1). Scalars
 // pivot through f32; storage stays at the half-precision dtype.
 affine_inplace_kernel!(
-    affine_inplace_bf16, f32,
+    affine_inplace_bf16,
+    f32,
     baracuda_kernels_affine_inplace_bf16_run,
-    2, "affine_inplace_bf16"
+    2,
+    "affine_inplace_bf16"
 );
 affine_inplace_kernel!(
-    affine_inplace_f16, f32,
+    affine_inplace_f16,
+    f32,
     baracuda_kernels_affine_inplace_f16_run,
-    2, "affine_inplace_f16"
+    2,
+    "affine_inplace_f16"
 );

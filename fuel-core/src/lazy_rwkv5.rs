@@ -112,11 +112,11 @@ pub struct Rwkv5LayerWeights {
     pub attn_time_decay: Arc<[f32]>,
     /// `[n_heads, head_size]` per-head bonus factor.
     pub attn_time_faaaa: Arc<[f32]>,
-    pub attn_key: WeightStorage,        // hidden_size → attention_hidden_size
-    pub attn_value: WeightStorage,      // hidden_size → attention_hidden_size
+    pub attn_key: WeightStorage,   // hidden_size → attention_hidden_size
+    pub attn_value: WeightStorage, // hidden_size → attention_hidden_size
     pub attn_receptance: WeightStorage, // hidden_size → attention_hidden_size
-    pub attn_gate: WeightStorage,       // hidden_size → attention_hidden_size
-    pub attn_output: WeightStorage,     // attention_hidden_size → hidden_size
+    pub attn_gate: WeightStorage,  // hidden_size → attention_hidden_size
+    pub attn_output: WeightStorage, // attention_hidden_size → hidden_size
     /// GroupNorm gain `[hidden_size]`.
     pub attn_ln_x_gain: Arc<[f32]>,
     pub attn_ln_x_bias: Arc<[f32]>,
@@ -173,19 +173,22 @@ impl Rwkv5Model {
     }
 
     /// Build per-token embeddings without running the decoder.
-    pub fn embed_tokens_anchored(
-        &self, anchor: &LazyTensor, tokens: &[u32],
-    ) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
-            cfg.vocab_size, cfg.hidden_size, tokens,
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
         )
     }
 
     fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
-        Ok(self.weights.head.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
+        Ok(self
+            .weights
+            .head
+            .apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 
     fn run_backbone(&self, tokens: &[u32]) -> Result<LazyTensor> {
@@ -195,7 +198,11 @@ impl Rwkv5Model {
         assert!(seq > 0, "Rwkv5Model::forward: tokens must be non-empty");
 
         let h = LazyTensor::embed_tokens(
-            weights.token_embedding.clone(), cfg.vocab_size, cfg.hidden_size, tokens, &Device::cpu(),
+            weights.token_embedding.clone(),
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
+            &Device::cpu(),
         )?;
         self.run_backbone_embeds(&h)
     }
@@ -214,16 +221,17 @@ impl Rwkv5Model {
         let seq = dims[1];
         let batch = dims[0];
         if seq == 0 {
-            return Err(crate::Error::Msg(
-                "Rwkv5Model::forward_embeds: seq must be > 0".into(),
-            ).bt());
+            return Err(
+                crate::Error::Msg("Rwkv5Model::forward_embeds: seq must be > 0".into()).bt(),
+            );
         }
         let n_heads = cfg.n_heads();
         let head_size = cfg.head_size;
         if n_heads * head_size != cfg.hidden_size {
             return Err(crate::Error::Msg(format!(
                 "Rwkv5Config: n_heads({n_heads}) * head_size({head_size}) must equal hidden_size",
-            )).bt());
+            ))
+            .bt());
         }
         let mut h = embeds.clone();
 
@@ -258,12 +266,20 @@ impl Rwkv5Model {
         };
 
         // Attention sublayer.
-        let xs_ln1 = xs.layer_norm_affine(std::sync::Arc::clone(&layer.ln1_gain), std::sync::Arc::clone(&layer.ln1_bias), cfg.layer_norm_epsilon)?;
+        let xs_ln1 = xs.layer_norm_affine(
+            std::sync::Arc::clone(&layer.ln1_gain),
+            std::sync::Arc::clone(&layer.ln1_bias),
+            cfg.layer_norm_epsilon,
+        )?;
         let attn = self.time_mix(&xs_ln1, layer, batch, seq, n_heads, head_size)?;
         let xs = xs.add(&attn)?;
 
         // FFN sublayer.
-        let xs_ln2 = xs.layer_norm_affine(std::sync::Arc::clone(&layer.ln2_gain), std::sync::Arc::clone(&layer.ln2_bias), cfg.layer_norm_epsilon)?;
+        let xs_ln2 = xs.layer_norm_affine(
+            std::sync::Arc::clone(&layer.ln2_gain),
+            std::sync::Arc::clone(&layer.ln2_bias),
+            cfg.layer_norm_epsilon,
+        )?;
         let ff = self.channel_mix(&xs_ln2, layer, batch, seq)?;
         xs.add(&ff)
     }
@@ -316,10 +332,18 @@ impl Rwkv5Model {
         let mr_inv = one_minus(&mix_rec)?;
         let mg_inv = one_minus(&mix_gate)?;
 
-        let key_in = x.broadcast_mul(&mix_key)?.add(&shifted.broadcast_mul(&mk_inv)?)?;
-        let val_in = x.broadcast_mul(&mix_val)?.add(&shifted.broadcast_mul(&mv_inv)?)?;
-        let rec_in = x.broadcast_mul(&mix_rec)?.add(&shifted.broadcast_mul(&mr_inv)?)?;
-        let gat_in = x.broadcast_mul(&mix_gate)?.add(&shifted.broadcast_mul(&mg_inv)?)?;
+        let key_in = x
+            .broadcast_mul(&mix_key)?
+            .add(&shifted.broadcast_mul(&mk_inv)?)?;
+        let val_in = x
+            .broadcast_mul(&mix_val)?
+            .add(&shifted.broadcast_mul(&mv_inv)?)?;
+        let rec_in = x
+            .broadcast_mul(&mix_rec)?
+            .add(&shifted.broadcast_mul(&mr_inv)?)?;
+        let gat_in = x
+            .broadcast_mul(&mix_gate)?
+            .add(&shifted.broadcast_mul(&mg_inv)?)?;
 
         // Project to attention space.
         let k = layer.attn_key.apply_linear(&key_in, h, h)?;
@@ -389,8 +413,14 @@ impl Rwkv5Model {
         // Per-head GroupNorm with num_groups = n_heads, num_channels = h.
         // Normalize over each (head_size,) group, then per-channel affine.
         let out = group_norm(
-            &stacked, &layer.attn_ln_x_gain, &layer.attn_ln_x_bias,
-            batch, seq, n_heads, head_size, 1e-5,
+            &stacked,
+            &layer.attn_ln_x_gain,
+            &layer.attn_ln_x_bias,
+            batch,
+            seq,
+            n_heads,
+            head_size,
+            1e-5,
         )?;
 
         // Output projection: (b, seq, h) * g → out_proj.
@@ -418,15 +448,16 @@ impl Rwkv5Model {
             Arc::clone(&layer.ffn_time_mix_receptance),
             Shape::from_dims(&[1, 1, h]),
         );
-        let ones_t = x.const_f32_like(
-            Arc::from(vec![1.0_f32; h]),
-            Shape::from_dims(&[1, 1, h]),
-        );
+        let ones_t = x.const_f32_like(Arc::from(vec![1.0_f32; h]), Shape::from_dims(&[1, 1, h]));
         let mk_inv = ones_t.sub(&mix_key)?;
         let mr_inv = ones_t.sub(&mix_rec)?;
 
-        let k_in = x.broadcast_mul(&mix_key)?.add(&shifted.broadcast_mul(&mk_inv)?)?;
-        let r_in = x.broadcast_mul(&mix_rec)?.add(&shifted.broadcast_mul(&mr_inv)?)?;
+        let k_in = x
+            .broadcast_mul(&mix_key)?
+            .add(&shifted.broadcast_mul(&mk_inv)?)?;
+        let r_in = x
+            .broadcast_mul(&mix_rec)?
+            .add(&shifted.broadcast_mul(&mr_inv)?)?;
 
         // key = relu(K_proj(k_in)).square()
         let k = layer.ffn_key.apply_linear(&k_in, h, inter)?.relu().sqr();
@@ -509,9 +540,7 @@ impl Rwkv5Weights {
         let att_h = cfg.attention_hidden_size;
         let ffn_inter = cfg.ffn_intermediate();
 
-        let token_embedding = Arc::from(load_tensor_as_f32(
-            st, "rwkv.embeddings.weight",
-        )?);
+        let token_embedding = Arc::from(load_tensor_as_f32(st, "rwkv.embeddings.weight")?);
 
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         for i in 0..cfg.num_hidden_layers {
@@ -522,29 +551,42 @@ impl Rwkv5Weights {
             let ln2_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.ln2.bias"))?);
             let pre_ln = if i == 0 {
                 let g = load_tensor_as_f32(st, &format!("{p}.pre_ln.weight"))
-                    .ok().map(Arc::from);
+                    .ok()
+                    .map(Arc::from);
                 let b = load_tensor_as_f32(st, &format!("{p}.pre_ln.bias"))
-                    .ok().map(Arc::from);
-                match (g, b) { (Some(g), Some(b)) => Some((g, b)), _ => None }
-            } else { None };
+                    .ok()
+                    .map(Arc::from);
+                match (g, b) {
+                    (Some(g), Some(b)) => Some((g, b)),
+                    _ => None,
+                }
+            } else {
+                None
+            };
 
             let attn_time_mix_key = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.attention.time_mix_key"),
+                st,
+                &format!("{p}.attention.time_mix_key"),
             )?);
             let attn_time_mix_value = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.attention.time_mix_value"),
+                st,
+                &format!("{p}.attention.time_mix_value"),
             )?);
             let attn_time_mix_receptance = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.attention.time_mix_receptance"),
+                st,
+                &format!("{p}.attention.time_mix_receptance"),
             )?);
             let attn_time_mix_gate = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.attention.time_mix_gate"),
+                st,
+                &format!("{p}.attention.time_mix_gate"),
             )?);
             let attn_time_decay = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.attention.time_decay"),
+                st,
+                &format!("{p}.attention.time_decay"),
             )?);
             let attn_time_faaaa = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.attention.time_faaaa"),
+                st,
+                &format!("{p}.attention.time_faaaa"),
             )?);
             let attn_key = ltm(st, &format!("{p}.attention.key.weight"), att_h, h)?;
             let attn_value = ltm(st, &format!("{p}.attention.value.weight"), att_h, h)?;
@@ -552,30 +594,48 @@ impl Rwkv5Weights {
             let attn_gate = ltm(st, &format!("{p}.attention.gate.weight"), att_h, h)?;
             let attn_output = ltm(st, &format!("{p}.attention.output.weight"), h, att_h)?;
             let attn_ln_x_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.attention.ln_x.weight"),
+                st,
+                &format!("{p}.attention.ln_x.weight"),
             )?);
-            let attn_ln_x_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.attention.ln_x.bias"),
-            )?);
+            let attn_ln_x_bias =
+                Arc::from(load_tensor_as_f32(st, &format!("{p}.attention.ln_x.bias"))?);
 
             let ffn_time_mix_key = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.feed_forward.time_mix_key"),
+                st,
+                &format!("{p}.feed_forward.time_mix_key"),
             )?);
             let ffn_time_mix_receptance = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.feed_forward.time_mix_receptance"),
+                st,
+                &format!("{p}.feed_forward.time_mix_receptance"),
             )?);
             let ffn_key = ltm(st, &format!("{p}.feed_forward.key.weight"), ffn_inter, h)?;
             let ffn_value = ltm(st, &format!("{p}.feed_forward.value.weight"), h, ffn_inter)?;
             let ffn_receptance = ltm(st, &format!("{p}.feed_forward.receptance.weight"), h, h)?;
 
             layers.push(Rwkv5LayerWeights {
-                ln1_gain, ln1_bias, ln2_gain, ln2_bias, pre_ln,
-                attn_time_mix_key, attn_time_mix_value, attn_time_mix_receptance,
-                attn_time_mix_gate, attn_time_decay, attn_time_faaaa,
-                attn_key, attn_value, attn_receptance, attn_gate, attn_output,
-                attn_ln_x_gain, attn_ln_x_bias,
-                ffn_time_mix_key, ffn_time_mix_receptance,
-                ffn_key, ffn_value, ffn_receptance,
+                ln1_gain,
+                ln1_bias,
+                ln2_gain,
+                ln2_bias,
+                pre_ln,
+                attn_time_mix_key,
+                attn_time_mix_value,
+                attn_time_mix_receptance,
+                attn_time_mix_gate,
+                attn_time_decay,
+                attn_time_faaaa,
+                attn_key,
+                attn_value,
+                attn_receptance,
+                attn_gate,
+                attn_output,
+                attn_ln_x_gain,
+                attn_ln_x_bias,
+                ffn_time_mix_key,
+                ffn_time_mix_receptance,
+                ffn_key,
+                ffn_value,
+                ffn_receptance,
             });
         }
 
@@ -584,7 +644,11 @@ impl Rwkv5Weights {
         let head = ltm(st, "head.weight", cfg.vocab_size, h)?;
 
         Ok(Self {
-            token_embedding, layers, final_ln_gain, final_ln_bias, head,
+            token_embedding,
+            layers,
+            final_ln_gain,
+            final_ln_bias,
+            head,
         })
     }
 }
@@ -646,23 +710,36 @@ mod tests {
         let final_ln_gain = Arc::from(vec![1.0_f32; h]);
         let final_ln_bias = Arc::from(vec![0.0_f32; h]);
         let head = WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *nb));
-        Rwkv5Weights { token_embedding, layers, final_ln_gain, final_ln_bias, head }
+        Rwkv5Weights {
+            token_embedding,
+            layers,
+            final_ln_gain,
+            final_ln_bias,
+            head,
+        }
     }
 
     fn tiny_config() -> Rwkv5Config {
         Rwkv5Config {
-            vocab_size: 16, hidden_size: 8,
-            num_hidden_layers: 2, attention_hidden_size: 8,
-            head_size: 4, num_attention_heads: 0,
+            vocab_size: 16,
+            hidden_size: 8,
+            num_hidden_layers: 2,
+            attention_hidden_size: 8,
+            head_size: 4,
+            num_attention_heads: 0,
             intermediate_size: Some(16),
-            layer_norm_epsilon: 1e-5, rescale_every: 6,
+            layer_norm_epsilon: 1e-5,
+            rescale_every: 6,
         }
     }
 
     #[test]
     fn forward_shape_and_finite() {
         let cfg = tiny_config();
-        let model = Rwkv5Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Rwkv5Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4, 5];
         let logits = model.forward(&tokens).unwrap();
         assert_eq!(logits.shape().dims(), &[1, tokens.len(), cfg.vocab_size]);
@@ -677,7 +754,10 @@ mod tests {
     #[test]
     fn single_token_runs() {
         let cfg = tiny_config();
-        let model = Rwkv5Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Rwkv5Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let logits = model.forward(&[7]).unwrap().realize_f32();
         assert_eq!(logits.len(), cfg.vocab_size);
         for &v in &logits {
@@ -691,10 +771,16 @@ mod tests {
     /// last position must differ.
     #[test]
     fn state_carries_across_time() {
-        let cfg = Rwkv5Config { num_hidden_layers: 1, ..tiny_config() };
+        let cfg = Rwkv5Config {
+            num_hidden_layers: 1,
+            ..tiny_config()
+        };
         let base = tiny_weights(&cfg);
         // Run identical sequences but with different first tokens.
-        let model = Rwkv5Model { config: cfg.clone(), weights: base };
+        let model = Rwkv5Model {
+            config: cfg.clone(),
+            weights: base,
+        };
         let a = model.forward(&[0, 5, 5, 5]).unwrap().realize_f32();
         let b = model.forward(&[1, 5, 5, 5]).unwrap().realize_f32();
         let last_a = &a[a.len() - cfg.vocab_size..];
@@ -703,8 +789,10 @@ mod tests {
         for (x, y) in last_a.iter().zip(last_b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-6,
-            "state must propagate: first-token change should affect last-token output, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-6,
+            "state must propagate: first-token change should affect last-token output, max_diff = {max_diff}"
+        );
     }
 
     /// The channel-mix (FFN) path is a pure function of the
@@ -713,13 +801,23 @@ mod tests {
     /// should drop, changing the output.
     #[test]
     fn ffn_value_zero_changes_output() {
-        let cfg = Rwkv5Config { num_hidden_layers: 1, ..tiny_config() };
+        let cfg = Rwkv5Config {
+            num_hidden_layers: 1,
+            ..tiny_config()
+        };
         let base = tiny_weights(&cfg);
         let mut zero_ffn_v = base.clone();
         let inter = cfg.ffn_intermediate();
-        zero_ffn_v.layers[0].ffn_value = WeightStorage::F32(Arc::from(vec![0.0_f32; inter * cfg.hidden_size]));
-        let m_a = Rwkv5Model { config: cfg.clone(), weights: base };
-        let m_b = Rwkv5Model { config: cfg, weights: zero_ffn_v };
+        zero_ffn_v.layers[0].ffn_value =
+            WeightStorage::F32(Arc::from(vec![0.0_f32; inter * cfg.hidden_size]));
+        let m_a = Rwkv5Model {
+            config: cfg.clone(),
+            weights: base,
+        };
+        let m_b = Rwkv5Model {
+            config: cfg,
+            weights: zero_ffn_v,
+        };
         let toks = [1_u32, 2, 3];
         let a = m_a.forward(&toks).unwrap().realize_f32();
         let b = m_b.forward(&toks).unwrap().realize_f32();
@@ -727,13 +825,19 @@ mod tests {
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-6, "zeroing ffn_value must change output, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-6,
+            "zeroing ffn_value must change output, max_diff = {max_diff}"
+        );
     }
 
     #[test]
     fn forward_hidden_shape_and_finite() {
         let cfg = tiny_config();
-        let model = Rwkv5Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Rwkv5Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
         let hidden = model.forward_hidden(&tokens).unwrap();
         assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
@@ -745,27 +849,37 @@ mod tests {
     #[test]
     fn forward_embeds_matches_forward_after_token_lookup() {
         let cfg = tiny_config();
-        let model = Rwkv5Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Rwkv5Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds).unwrap().realize_f32();
-        let max_diff = logits_ref.iter().zip(logits_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "Rwkv5 forward vs forward_embeds must agree (max diff {max_diff})");
+        let max_diff = logits_ref
+            .iter()
+            .zip(logits_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "Rwkv5 forward vs forward_embeds must agree (max diff {max_diff})"
+        );
     }
 
     #[test]
     fn forward_embeds_rejects_bad_shape() {
         let cfg = tiny_config();
-        let model = Rwkv5Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Rwkv5Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let bad = LazyTensor::from_f32(
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
-            Shape::from_dims(&[1, 3, cfg.hidden_size + 1]), &Device::cpu(),
+            Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
+            &Device::cpu(),
         );
         assert!(model.forward_embeds(&bad).is_err());
     }
@@ -773,17 +887,23 @@ mod tests {
     #[test]
     fn forward_hidden_embeds_matches_forward_hidden() {
         let cfg = tiny_config();
-        let model = Rwkv5Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Rwkv5Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let h_via_embeds = model.forward_hidden_embeds(&embeds).unwrap().realize_f32();
-        let max_diff = h_ref.iter().zip(h_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "Rwkv5 forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})");
+        let max_diff = h_ref
+            .iter()
+            .zip(h_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "Rwkv5 forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})"
+        );
     }
 }

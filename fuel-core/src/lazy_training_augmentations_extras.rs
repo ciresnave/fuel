@@ -25,8 +25,8 @@
 //!   an in-place SGD step from the caller's point of view, but graph-
 //!   allocates a new node. The gap is documented inline.
 
-use crate::lazy::LazyTensor;
 use crate::Result;
+use crate::lazy::LazyTensor;
 use fuel_ir::DType;
 use std::collections::HashMap;
 
@@ -141,10 +141,7 @@ pub struct MixedPrecisionConfig {
 
 /// Cast a master-precision parameter to forward precision for the forward
 /// pass. A no-op when `param` already has `cfg.forward_dtype`.
-pub fn cast_for_forward(
-    param: &LazyTensor,
-    cfg: &MixedPrecisionConfig,
-) -> Result<LazyTensor> {
+pub fn cast_for_forward(param: &LazyTensor, cfg: &MixedPrecisionConfig) -> Result<LazyTensor> {
     if param.dtype() == cfg.forward_dtype {
         return Ok(param.clone());
     }
@@ -196,15 +193,11 @@ pub fn cast_grads_back(
 ///
 /// When an in-place add primitive lands, swap the body for a single
 /// in-place add of `grad.mul_scalar(-lr)` and remove this doc-noted gap.
-pub fn apply_inplace_sgd_step(
-    param: &mut LazyTensor,
-    grad: &LazyTensor,
-    lr: f64,
-) -> Result<()> {
+pub fn apply_inplace_sgd_step(param: &mut LazyTensor, grad: &LazyTensor, lr: f64) -> Result<()> {
     let scaled = grad.mul_scalar(lr);
-    let updated = param.sub(&scaled).map_err(|e| {
-        crate::Error::Msg(format!("apply_inplace_sgd_step: sub failed: {e}")).bt()
-    })?;
+    let updated = param
+        .sub(&scaled)
+        .map_err(|e| crate::Error::Msg(format!("apply_inplace_sgd_step: sub failed: {e}")).bt())?;
     *param = updated;
     Ok(())
 }
@@ -226,12 +219,18 @@ mod tests {
         let mut acc = GradAccumulator::new(2).unwrap();
         let seed = cpu_f32(vec![1.0], &[1]);
         let mut g1 = HashMap::new();
-        g1.insert("w".to_string(), seed.const_f32_like(vec![1.0_f32], Shape::from_dims(&[1])));
+        g1.insert(
+            "w".to_string(),
+            seed.const_f32_like(vec![1.0_f32], Shape::from_dims(&[1])),
+        );
         acc.accumulate(g1).unwrap();
         assert_eq!(acc.count(), 1);
 
         let mut g2 = HashMap::new();
-        g2.insert("w".to_string(), seed.const_f32_like(vec![3.0_f32], Shape::from_dims(&[1])));
+        g2.insert(
+            "w".to_string(),
+            seed.const_f32_like(vec![3.0_f32], Shape::from_dims(&[1])),
+        );
         acc.accumulate(g2).unwrap();
         assert_eq!(acc.count(), 2);
 
@@ -250,7 +249,11 @@ mod tests {
         assert_eq!(acc.count(), 0);
 
         let again = acc.take_and_scale().unwrap();
-        assert!(again.is_empty(), "second take returned {} entries", again.len());
+        assert!(
+            again.is_empty(),
+            "second take returned {} entries",
+            again.len()
+        );
     }
 
     #[test]
@@ -312,10 +315,7 @@ mod tests {
             master_dtype: DType::F32,
         };
         let grad_bf16 = LazyTensor::from_bf16(
-            vec![
-                half::bf16::from_f32(1.0),
-                half::bf16::from_f32(-2.0),
-            ],
+            vec![half::bf16::from_f32(1.0), half::bf16::from_f32(-2.0)],
             Shape::from_dims(&[2]),
             &Device::cpu(),
         );

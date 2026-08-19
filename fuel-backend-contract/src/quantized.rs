@@ -88,10 +88,7 @@ pub trait DynQuantizedStorage: Send + Sync + std::fmt::Debug {
         _ids: &dyn DynBackendStorage,
         _ids_layout: &Layout,
     ) -> Result<(Box<dyn DynBackendStorage>, Shape)> {
-        Err(Error::Msg(
-            "indexed_moe_forward not supported on this backend".into(),
-        )
-        .bt())
+        Err(Error::Msg("indexed_moe_forward not supported on this backend".into()).bt())
     }
 
     /// Identity returns the host device tag this storage is on.

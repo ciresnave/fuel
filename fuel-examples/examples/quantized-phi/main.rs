@@ -162,7 +162,7 @@ fn format_size(size_in_bytes: usize) -> String {
 /// holds a `QuantizedXModel` whose `forward(tokens, start_pos)` returns
 /// a `LazyTensor` of shape `(1, seq, vocab_size)`.
 enum Model {
-    Phi3(QuantizedPhi3Model, usize),  // (model, vocab_size)
+    Phi3(QuantizedPhi3Model, usize), // (model, vocab_size)
     Phi3b(QuantizedLlama3Model, usize),
 }
 
@@ -181,8 +181,14 @@ impl Model {
     /// `Vec<f32>` suitable for `LogitsProcessor::sample`.
     fn forward_last_logits(&self, tokens: &[u32], start_pos: usize) -> anyhow::Result<Vec<f32>> {
         let (logits_flat, vocab) = match self {
-            Self::Phi3(m, v) => (m.forward(tokens, start_pos).map_err(E::msg)?.realize_f32(), *v),
-            Self::Phi3b(m, v) => (m.forward(tokens, start_pos).map_err(E::msg)?.realize_f32(), *v),
+            Self::Phi3(m, v) => (
+                m.forward(tokens, start_pos).map_err(E::msg)?.realize_f32(),
+                *v,
+            ),
+            Self::Phi3b(m, v) => (
+                m.forward(tokens, start_pos).map_err(E::msg)?.realize_f32(),
+                *v,
+            ),
         };
         let seq = tokens.len();
         if seq == 0 {

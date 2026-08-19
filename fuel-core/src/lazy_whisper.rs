@@ -70,22 +70,22 @@ use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct WhisperConfig {
-    pub vocab_size:             usize,
-    pub num_mel_bins:           usize,
-    pub d_model:                usize,
-    pub encoder_layers:         usize,
+    pub vocab_size: usize,
+    pub num_mel_bins: usize,
+    pub d_model: usize,
+    pub encoder_layers: usize,
     pub encoder_attention_heads: usize,
-    pub encoder_ffn_dim:        usize,
-    pub decoder_layers:         usize,
+    pub encoder_ffn_dim: usize,
+    pub decoder_layers: usize,
     pub decoder_attention_heads: usize,
-    pub decoder_ffn_dim:        usize,
-    pub max_source_positions:   usize,
-    pub max_target_positions:   usize,
+    pub decoder_ffn_dim: usize,
+    pub max_source_positions: usize,
+    pub max_target_positions: usize,
     #[serde(default = "default_scale_embedding")]
-    pub scale_embedding:        bool,
-    pub bos_token_id:           u32,
-    pub eos_token_id:           u32,
-    pub pad_token_id:           u32,
+    pub scale_embedding: bool,
+    pub bos_token_id: u32,
+    pub eos_token_id: u32,
+    pub pad_token_id: u32,
     pub decoder_start_token_id: u32,
 }
 
@@ -179,7 +179,7 @@ pub struct WhisperEncoderWeights {
     pub conv2_b: Arc<[f32]>,
     /// Fixed sinusoidal embedding. Shape `[max_source_positions, d_model]`.
     pub positional: Arc<[f32]>,
-    pub layers:    Vec<WhisperEncoderLayerWeights>,
+    pub layers: Vec<WhisperEncoderLayerWeights>,
     pub final_ln_g: Arc<[f32]>,
     pub final_ln_b: Arc<[f32]>,
 }
@@ -206,7 +206,7 @@ pub struct WhisperWeights {
 
 #[derive(Debug, Clone)]
 pub struct WhisperModel {
-    pub config:  WhisperConfig,
+    pub config: WhisperConfig,
     pub weights: WhisperWeights,
 }
 
@@ -225,9 +225,15 @@ impl WhisperModel {
             mel.len(),
             n_mel * mel_time,
             "forward_encoder: mel has {} elements, expected {}×{}",
-            mel.len(), n_mel, mel_time
+            mel.len(),
+            n_mel,
+            mel_time
         );
-        let mel_t = LazyTensor::from_f32(mel.to_vec(), Shape::from_dims(&[1, n_mel, mel_time]), &crate::Device::cpu());
+        let mel_t = LazyTensor::from_f32(
+            mel.to_vec(),
+            Shape::from_dims(&[1, n_mel, mel_time]),
+            &crate::Device::cpu(),
+        );
 
         // --- conv stem (pre-attention downsample) ------------------------
         // conv1: kernel=3, stride=1, padding=1 → [1, d, T]
@@ -241,7 +247,10 @@ impl WhisperModel {
         )?
         .gelu();
         // conv2: kernel=3, stride=2, padding=1 → [1, d, T/2]
-        assert!(mel_time.is_multiple_of(2), "mel_time must be even for stride-2 conv");
+        assert!(
+            mel_time.is_multiple_of(2),
+            "mel_time must be even for stride-2 conv"
+        );
         let t_half = mel_time / 2;
         let x = conv1d_k3_s2_p1(
             &x,
@@ -254,7 +263,7 @@ impl WhisperModel {
         .gelu();
 
         // --- transpose to [1, T/2, d] and add positional ------------------
-        let x = x.permute([0, 2, 1_usize])?;  // [1, T/2, d]
+        let x = x.permute([0, 2, 1_usize])?; // [1, T/2, d]
         let pos = x
             .const_f32_like(
                 self.weights.encoder.positional.clone(),
@@ -285,7 +294,11 @@ impl WhisperModel {
     /// precomputed encoder context. Returns logits of shape
     /// `[1, seq, vocab_size]` — the caller slices the last row to pick
     /// the next token.
-    pub fn forward_decoder(&self, tokens: &[u32], encoder_out: &LazyTensor) -> crate::Result<LazyTensor> {
+    pub fn forward_decoder(
+        &self,
+        tokens: &[u32],
+        encoder_out: &LazyTensor,
+    ) -> crate::Result<LazyTensor> {
         let cfg = &self.config;
         let d = cfg.d_model;
         let seq = tokens.len();
@@ -298,18 +311,19 @@ impl WhisperModel {
 
         // Bootstrap the graph from encoder_out (keeps everything on one graph).
         let input_ids = encoder_out.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
-        let embed = encoder_out
-            .const_f32_like(self.weights.decoder.embed_tokens.clone(), Shape::from_dims(&[cfg.vocab_size, d]));
+        let embed = encoder_out.const_f32_like(
+            self.weights.decoder.embed_tokens.clone(),
+            Shape::from_dims(&[cfg.vocab_size, d]),
+        );
         let position_ids_vec: Vec<u32> = (0..seq as u32).collect();
-        let position_ids = encoder_out
-            .const_u32_like(position_ids_vec, Shape::from_dims(&[seq]));
+        let position_ids = encoder_out.const_u32_like(position_ids_vec, Shape::from_dims(&[seq]));
         let pos_emb = encoder_out.const_f32_like(
             self.weights.decoder.embed_positions.clone(),
             Shape::from_dims(&[cfg.max_target_positions, d]),
         );
 
-        let tok = embed.index_select(0, &input_ids)?;  // [seq, d]
-        let pos = pos_emb.index_select(0, &position_ids)?;  // [seq, d]
+        let tok = embed.index_select(0, &input_ids)?; // [seq, d]
+        let pos = pos_emb.index_select(0, &position_ids)?; // [seq, d]
         let mut x = tok.add(&pos)?.reshape(Shape::from_dims(&[1, seq, d]))?;
 
         for lw in &self.weights.decoder.layers {
@@ -327,7 +341,7 @@ impl WhisperModel {
 
         // Tied output projection: logits = x @ embed^T → [1, seq, vocab].
         // embed is [vocab, d] row-major; transpose to [d, vocab] and matmul.
-        let embed_t = embed.transpose()?;  // [d, vocab]
+        let embed_t = embed.transpose()?; // [d, vocab]
         Ok(x.matmul(&embed_t)?)
     }
 
@@ -357,19 +371,23 @@ impl WhisperModel {
 
         let mut tokens: Vec<u32> = prompt_tokens.to_vec();
         for _ in 0..max_new_tokens {
-            let encoder_t = LazyTensor::from_f32(encoder_out.clone(), enc_shape.clone(), &crate::Device::cpu());
+            let encoder_t = LazyTensor::from_f32(
+                encoder_out.clone(),
+                enc_shape.clone(),
+                &crate::Device::cpu(),
+            );
             let logits = self.forward_decoder(&tokens, &encoder_t)?;
             let flat = logits.realize_f32();
             // logits shape is [1, seq, vocab]. Pick the last row.
             let vocab = self.config.vocab_size;
             let last_row_start = (tokens.len() - 1) * vocab;
             let row = &flat[last_row_start..last_row_start + vocab];
-            let (argmax, _) = row
-                .iter()
-                .enumerate()
-                .fold((0usize, f32::NEG_INFINITY), |(bi, bv), (i, &v)| {
-                    if v > bv { (i, v) } else { (bi, bv) }
-                });
+            let (argmax, _) =
+                row.iter()
+                    .enumerate()
+                    .fold((0usize, f32::NEG_INFINITY), |(bi, bv), (i, &v)| {
+                        if v > bv { (i, v) } else { (bi, bv) }
+                    });
             let next_tok = argmax as u32;
             tokens.push(next_tok);
             if next_tok == eos {
@@ -433,7 +451,7 @@ fn linear(
 /// native `Pad` op is needed since we only use this one padding.
 fn pad_t_axis_one_each_side(x: &LazyTensor, c: usize, t: usize) -> crate::Result<LazyTensor> {
     let zeros = x.const_f32_like(vec![0.0_f32; c], Shape::from_dims(&[1, c, 1]));
-    zeros.concat(x, 2)?.concat(&zeros, 2)  // [1, c, t+2]
+    zeros.concat(x, 2)?.concat(&zeros, 2) // [1, c, t+2]
 }
 
 /// Conv1d with kernel_size=3, stride=1, padding=1, on `x: [1, in_c, T]`
@@ -478,13 +496,13 @@ pub(crate) fn conv1d_k3_s1_p1(
         }
     }
     let w_t = x.const_f32_like(w_out, Shape::from_dims(&[3 * in_c, out_c]));
-    let y = stacked_tlast.matmul(&w_t)?;  // [1, T, out_c]
+    let y = stacked_tlast.matmul(&w_t)?; // [1, T, out_c]
     // Add bias (broadcast [out_c] across [1, T, out_c]).
     let bias = x
         .const_f32_like(b.clone(), Shape::from_dims(&[out_c]))
         .reshape(Shape::from_dims(&[1, 1, out_c]))?
         .broadcast_to(Shape::from_dims(&[1, t, out_c]))?;
-    y.add(&bias)?.permute([0, 2, 1_usize])  // back to [1, out_c, T]
+    y.add(&bias)?.permute([0, 2, 1_usize]) // back to [1, out_c, T]
 }
 
 /// Conv1d with kernel_size=3, stride=2, padding=1, on `x: [1, in_c, T]`
@@ -503,7 +521,10 @@ pub(crate) fn conv1d_k3_s2_p1(
     out_c: usize,
     t_in: usize,
 ) -> crate::Result<LazyTensor> {
-    assert!(t_in.is_multiple_of(2), "conv1d_k3_s2_p1 needs even T, got {t_in}");
+    assert!(
+        t_in.is_multiple_of(2),
+        "conv1d_k3_s2_p1 needs even T, got {t_in}"
+    );
     let t_out = t_in / 2;
     // Pad to T_in + 2. Effective T = T_in + 2.
     let padded = pad_t_axis_one_each_side(x, in_c, t_in)?;
@@ -533,8 +554,8 @@ pub(crate) fn conv1d_k3_s2_p1(
     let s2 = head_tail
         .slice(3, 0, 1)?
         .reshape(Shape::from_dims(&[1, in_c, t_out]))?;
-    let stacked = s0.concat(&s1, 1)?.concat(&s2, 1)?;  // [1, 3*in_c, T_out]
-    let stacked_tlast = stacked.permute([0, 2, 1_usize])?;  // [1, T_out, 3*in_c]
+    let stacked = s0.concat(&s1, 1)?.concat(&s2, 1)?; // [1, 3*in_c, T_out]
+    let stacked_tlast = stacked.permute([0, 2, 1_usize])?; // [1, T_out, 3*in_c]
     // Same kernel reshuffle as the stride-1 case.
     let mut w_out = vec![0.0_f32; 3 * in_c * out_c];
     for o in 0..out_c {
@@ -550,7 +571,7 @@ pub(crate) fn conv1d_k3_s2_p1(
         .const_f32_like(b.clone(), Shape::from_dims(&[out_c]))
         .reshape(Shape::from_dims(&[1, 1, out_c]))?
         .broadcast_to(Shape::from_dims(&[1, t_out, out_c]))?;
-    y.add(&bias)?.permute([0, 2, 1_usize])  // [1, out_c, T_out]
+    y.add(&bias)?.permute([0, 2, 1_usize]) // [1, out_c, T_out]
 }
 
 /// Multi-head self-attention + output projection. Shared between the
@@ -577,7 +598,7 @@ fn multi_head_attn(
     causal: bool,
 ) -> crate::Result<LazyTensor> {
     let q = linear(q_src, q_w, Some(q_b), d, d, q_seq)?;
-    let k = linear(k_src, k_w, None, d, d, kv_seq)?;  // no K bias
+    let k = linear(k_src, k_w, None, d, d, kv_seq)?; // no K bias
     let v = linear(v_src, v_w, Some(v_b), d, d, kv_seq)?;
 
     // (1, seq, n_heads * d_head) → (1, n_heads, seq, d_head)
@@ -586,9 +607,9 @@ fn multi_head_attn(
     let k = k.split_heads(n_heads, d_head)?;
     let v = v.split_heads(n_heads, d_head)?;
 
-    let k_t = k.permute([0, 1, 3, 2_usize])?;  // [1, n_heads, d_head, kv_seq]
+    let k_t = k.permute([0, 1, 3, 2_usize])?; // [1, n_heads, d_head, kv_seq]
     let scale = 1.0_f64 / (d_head as f64).sqrt();
-    let mut scores = q.matmul(&k_t)?.mul_scalar(scale);  // [1, n_heads, q_seq, kv_seq]
+    let mut scores = q.matmul(&k_t)?.mul_scalar(scale); // [1, n_heads, q_seq, kv_seq]
 
     if causal {
         // Additive lower-triangular mask: -inf above diagonal.
@@ -608,9 +629,7 @@ fn multi_head_attn(
     }
 
     let probs = scores.softmax_last_dim()?;
-    let ctx = probs
-        .matmul(&v)?
-        .merge_heads()?;
+    let ctx = probs.matmul(&v)?.merge_heads()?;
     linear(&ctx, out_w, Some(out_b), d, d, q_seq)
 }
 
@@ -628,9 +647,8 @@ fn encoder_layer(
 
     let x_ln = layer_norm_affine(x, &lw.self_attn_ln_g, &lw.self_attn_ln_b, 1e-5, d, seq)?;
     let attn = multi_head_attn(
-        &x_ln, &x_ln, &x_ln,
-        &lw.q_w, &lw.q_b, &lw.k_w, &lw.v_w, &lw.v_b, &lw.out_w, &lw.out_b,
-        d, n_heads, d_head, seq, seq, false,
+        &x_ln, &x_ln, &x_ln, &lw.q_w, &lw.q_b, &lw.k_w, &lw.v_w, &lw.v_b, &lw.out_w, &lw.out_b, d,
+        n_heads, d_head, seq, seq, false,
     )?;
     let x = x.add(&attn)?;
 
@@ -657,10 +675,22 @@ fn decoder_layer(
     // --- self-attn (causal) -------
     let x_ln = layer_norm_affine(x, &lw.self_ln_g, &lw.self_ln_b, 1e-5, d, q_seq)?;
     let self_attn = multi_head_attn(
-        &x_ln, &x_ln, &x_ln,
-        &lw.self_q_w, &lw.self_q_b, &lw.self_k_w, &lw.self_v_w, &lw.self_v_b,
-        &lw.self_out_w, &lw.self_out_b,
-        d, n_heads, d_head, q_seq, kv_seq_self, true,
+        &x_ln,
+        &x_ln,
+        &x_ln,
+        &lw.self_q_w,
+        &lw.self_q_b,
+        &lw.self_k_w,
+        &lw.self_v_w,
+        &lw.self_v_b,
+        &lw.self_out_w,
+        &lw.self_out_b,
+        d,
+        n_heads,
+        d_head,
+        q_seq,
+        kv_seq_self,
+        true,
     )?;
     let x = x.add(&self_attn)?;
 
@@ -670,15 +700,28 @@ fn decoder_layer(
     let enc_shape = encoder_out.shape();
     let enc_dims = enc_shape.dims();
     assert_eq!(
-        enc_dims.len(), 3,
+        enc_dims.len(),
+        3,
         "encoder_out must be [1, T, d]; got {enc_dims:?}"
     );
     let kv_seq_cross = enc_dims[1];
     let cross = multi_head_attn(
-        &x_ln, encoder_out, encoder_out,
-        &lw.cross_q_w, &lw.cross_q_b, &lw.cross_k_w, &lw.cross_v_w, &lw.cross_v_b,
-        &lw.cross_out_w, &lw.cross_out_b,
-        d, n_heads, d_head, q_seq, kv_seq_cross, false,
+        &x_ln,
+        encoder_out,
+        encoder_out,
+        &lw.cross_q_w,
+        &lw.cross_q_b,
+        &lw.cross_k_w,
+        &lw.cross_v_w,
+        &lw.cross_v_b,
+        &lw.cross_out_w,
+        &lw.cross_out_b,
+        d,
+        n_heads,
+        d_head,
+        q_seq,
+        kv_seq_cross,
+        false,
     )?;
     let x = x.add(&cross)?;
 
@@ -717,48 +760,57 @@ impl WhisperWeights {
 
         let d = cfg.d_model;
         // --- encoder ------------------------------------------------
-        let conv1_w = load_tensor_as_f32(st, "model.encoder.conv1.weight")?;  // [d, n_mel, 3]
+        let conv1_w = load_tensor_as_f32(st, "model.encoder.conv1.weight")?; // [d, n_mel, 3]
         let conv1_b = load_tensor_as_f32(st, "model.encoder.conv1.bias")?;
-        let conv2_w = load_tensor_as_f32(st, "model.encoder.conv2.weight")?;  // [d, d, 3]
+        let conv2_w = load_tensor_as_f32(st, "model.encoder.conv2.weight")?; // [d, d, 3]
         let conv2_b = load_tensor_as_f32(st, "model.encoder.conv2.bias")?;
-        let positional = load_tensor_as_f32(st, "model.encoder.embed_positions.weight")?;  // [max_src, d]
+        let positional = load_tensor_as_f32(st, "model.encoder.embed_positions.weight")?; // [max_src, d]
 
         let mut enc_layers = Vec::with_capacity(cfg.encoder_layers);
         for i in 0..cfg.encoder_layers {
             let p = format!("model.encoder.layers.{i}");
-            let self_attn_ln_g = load_tensor_as_f32(st, &format!("{p}.self_attn_layer_norm.weight"))?;
+            let self_attn_ln_g =
+                load_tensor_as_f32(st, &format!("{p}.self_attn_layer_norm.weight"))?;
             let self_attn_ln_b = load_tensor_as_f32(st, &format!("{p}.self_attn_layer_norm.bias"))?;
             let q_w = load_transposed_matrix(st, &format!("{p}.self_attn.q_proj.weight"), d, d)?;
             let q_b = load_tensor_as_f32(st, &format!("{p}.self_attn.q_proj.bias"))?;
             let k_w = load_transposed_matrix(st, &format!("{p}.self_attn.k_proj.weight"), d, d)?;
             let v_w = load_transposed_matrix(st, &format!("{p}.self_attn.v_proj.weight"), d, d)?;
             let v_b = load_tensor_as_f32(st, &format!("{p}.self_attn.v_proj.bias"))?;
-            let out_w = load_transposed_matrix(st, &format!("{p}.self_attn.out_proj.weight"), d, d)?;
+            let out_w =
+                load_transposed_matrix(st, &format!("{p}.self_attn.out_proj.weight"), d, d)?;
             let out_b = load_tensor_as_f32(st, &format!("{p}.self_attn.out_proj.bias"))?;
             let final_ln_g = load_tensor_as_f32(st, &format!("{p}.final_layer_norm.weight"))?;
             let final_ln_b = load_tensor_as_f32(st, &format!("{p}.final_layer_norm.bias"))?;
-            let fc1_w = load_transposed_matrix(st, &format!("{p}.fc1.weight"), cfg.encoder_ffn_dim, d)?;
+            let fc1_w =
+                load_transposed_matrix(st, &format!("{p}.fc1.weight"), cfg.encoder_ffn_dim, d)?;
             let fc1_b = load_tensor_as_f32(st, &format!("{p}.fc1.bias"))?;
-            let fc2_w = load_transposed_matrix(st, &format!("{p}.fc2.weight"), d, cfg.encoder_ffn_dim)?;
+            let fc2_w =
+                load_transposed_matrix(st, &format!("{p}.fc2.weight"), d, cfg.encoder_ffn_dim)?;
             let fc2_b = load_tensor_as_f32(st, &format!("{p}.fc2.bias"))?;
             enc_layers.push(WhisperEncoderLayerWeights {
                 self_attn_ln_g: Arc::from(self_attn_ln_g),
                 self_attn_ln_b: Arc::from(self_attn_ln_b),
-                q_w: Arc::from(q_w), q_b: Arc::from(q_b),
+                q_w: Arc::from(q_w),
+                q_b: Arc::from(q_b),
                 k_w: Arc::from(k_w),
-                v_w: Arc::from(v_w), v_b: Arc::from(v_b),
-                out_w: Arc::from(out_w), out_b: Arc::from(out_b),
+                v_w: Arc::from(v_w),
+                v_b: Arc::from(v_b),
+                out_w: Arc::from(out_w),
+                out_b: Arc::from(out_b),
                 final_ln_g: Arc::from(final_ln_g),
                 final_ln_b: Arc::from(final_ln_b),
-                fc1_w: Arc::from(fc1_w), fc1_b: Arc::from(fc1_b),
-                fc2_w: Arc::from(fc2_w), fc2_b: Arc::from(fc2_b),
+                fc1_w: Arc::from(fc1_w),
+                fc1_b: Arc::from(fc1_b),
+                fc2_w: Arc::from(fc2_w),
+                fc2_b: Arc::from(fc2_b),
             });
         }
         let enc_final_ln_g = load_tensor_as_f32(st, "model.encoder.layer_norm.weight")?;
         let enc_final_ln_b = load_tensor_as_f32(st, "model.encoder.layer_norm.bias")?;
 
         // --- decoder ------------------------------------------------
-        let dec_embed_tokens = load_tensor_as_f32(st, "model.decoder.embed_tokens.weight")?;  // [V, d]
+        let dec_embed_tokens = load_tensor_as_f32(st, "model.decoder.embed_tokens.weight")?; // [V, d]
         let dec_embed_positions = load_tensor_as_f32(st, "model.decoder.embed_positions.weight")?;
 
         let mut dec_layers = Vec::with_capacity(cfg.decoder_layers);
@@ -766,48 +818,67 @@ impl WhisperWeights {
             let p = format!("model.decoder.layers.{i}");
             let self_ln_g = load_tensor_as_f32(st, &format!("{p}.self_attn_layer_norm.weight"))?;
             let self_ln_b = load_tensor_as_f32(st, &format!("{p}.self_attn_layer_norm.bias"))?;
-            let self_q_w = load_transposed_matrix(st, &format!("{p}.self_attn.q_proj.weight"), d, d)?;
+            let self_q_w =
+                load_transposed_matrix(st, &format!("{p}.self_attn.q_proj.weight"), d, d)?;
             let self_q_b = load_tensor_as_f32(st, &format!("{p}.self_attn.q_proj.bias"))?;
-            let self_k_w = load_transposed_matrix(st, &format!("{p}.self_attn.k_proj.weight"), d, d)?;
-            let self_v_w = load_transposed_matrix(st, &format!("{p}.self_attn.v_proj.weight"), d, d)?;
+            let self_k_w =
+                load_transposed_matrix(st, &format!("{p}.self_attn.k_proj.weight"), d, d)?;
+            let self_v_w =
+                load_transposed_matrix(st, &format!("{p}.self_attn.v_proj.weight"), d, d)?;
             let self_v_b = load_tensor_as_f32(st, &format!("{p}.self_attn.v_proj.bias"))?;
-            let self_out_w = load_transposed_matrix(st, &format!("{p}.self_attn.out_proj.weight"), d, d)?;
+            let self_out_w =
+                load_transposed_matrix(st, &format!("{p}.self_attn.out_proj.weight"), d, d)?;
             let self_out_b = load_tensor_as_f32(st, &format!("{p}.self_attn.out_proj.bias"))?;
 
-            let cross_ln_g = load_tensor_as_f32(st, &format!("{p}.encoder_attn_layer_norm.weight"))?;
+            let cross_ln_g =
+                load_tensor_as_f32(st, &format!("{p}.encoder_attn_layer_norm.weight"))?;
             let cross_ln_b = load_tensor_as_f32(st, &format!("{p}.encoder_attn_layer_norm.bias"))?;
-            let cross_q_w = load_transposed_matrix(st, &format!("{p}.encoder_attn.q_proj.weight"), d, d)?;
+            let cross_q_w =
+                load_transposed_matrix(st, &format!("{p}.encoder_attn.q_proj.weight"), d, d)?;
             let cross_q_b = load_tensor_as_f32(st, &format!("{p}.encoder_attn.q_proj.bias"))?;
-            let cross_k_w = load_transposed_matrix(st, &format!("{p}.encoder_attn.k_proj.weight"), d, d)?;
-            let cross_v_w = load_transposed_matrix(st, &format!("{p}.encoder_attn.v_proj.weight"), d, d)?;
+            let cross_k_w =
+                load_transposed_matrix(st, &format!("{p}.encoder_attn.k_proj.weight"), d, d)?;
+            let cross_v_w =
+                load_transposed_matrix(st, &format!("{p}.encoder_attn.v_proj.weight"), d, d)?;
             let cross_v_b = load_tensor_as_f32(st, &format!("{p}.encoder_attn.v_proj.bias"))?;
-            let cross_out_w = load_transposed_matrix(st, &format!("{p}.encoder_attn.out_proj.weight"), d, d)?;
+            let cross_out_w =
+                load_transposed_matrix(st, &format!("{p}.encoder_attn.out_proj.weight"), d, d)?;
             let cross_out_b = load_tensor_as_f32(st, &format!("{p}.encoder_attn.out_proj.bias"))?;
 
             let final_ln_g = load_tensor_as_f32(st, &format!("{p}.final_layer_norm.weight"))?;
             let final_ln_b = load_tensor_as_f32(st, &format!("{p}.final_layer_norm.bias"))?;
-            let fc1_w = load_transposed_matrix(st, &format!("{p}.fc1.weight"), cfg.decoder_ffn_dim, d)?;
+            let fc1_w =
+                load_transposed_matrix(st, &format!("{p}.fc1.weight"), cfg.decoder_ffn_dim, d)?;
             let fc1_b = load_tensor_as_f32(st, &format!("{p}.fc1.bias"))?;
-            let fc2_w = load_transposed_matrix(st, &format!("{p}.fc2.weight"), d, cfg.decoder_ffn_dim)?;
+            let fc2_w =
+                load_transposed_matrix(st, &format!("{p}.fc2.weight"), d, cfg.decoder_ffn_dim)?;
             let fc2_b = load_tensor_as_f32(st, &format!("{p}.fc2.bias"))?;
 
             dec_layers.push(WhisperDecoderLayerWeights {
                 self_ln_g: Arc::from(self_ln_g),
                 self_ln_b: Arc::from(self_ln_b),
-                self_q_w: Arc::from(self_q_w), self_q_b: Arc::from(self_q_b),
+                self_q_w: Arc::from(self_q_w),
+                self_q_b: Arc::from(self_q_b),
                 self_k_w: Arc::from(self_k_w),
-                self_v_w: Arc::from(self_v_w), self_v_b: Arc::from(self_v_b),
-                self_out_w: Arc::from(self_out_w), self_out_b: Arc::from(self_out_b),
+                self_v_w: Arc::from(self_v_w),
+                self_v_b: Arc::from(self_v_b),
+                self_out_w: Arc::from(self_out_w),
+                self_out_b: Arc::from(self_out_b),
                 cross_ln_g: Arc::from(cross_ln_g),
                 cross_ln_b: Arc::from(cross_ln_b),
-                cross_q_w: Arc::from(cross_q_w), cross_q_b: Arc::from(cross_q_b),
+                cross_q_w: Arc::from(cross_q_w),
+                cross_q_b: Arc::from(cross_q_b),
                 cross_k_w: Arc::from(cross_k_w),
-                cross_v_w: Arc::from(cross_v_w), cross_v_b: Arc::from(cross_v_b),
-                cross_out_w: Arc::from(cross_out_w), cross_out_b: Arc::from(cross_out_b),
+                cross_v_w: Arc::from(cross_v_w),
+                cross_v_b: Arc::from(cross_v_b),
+                cross_out_w: Arc::from(cross_out_w),
+                cross_out_b: Arc::from(cross_out_b),
                 final_ln_g: Arc::from(final_ln_g),
                 final_ln_b: Arc::from(final_ln_b),
-                fc1_w: Arc::from(fc1_w), fc1_b: Arc::from(fc1_b),
-                fc2_w: Arc::from(fc2_w), fc2_b: Arc::from(fc2_b),
+                fc1_w: Arc::from(fc1_w),
+                fc1_b: Arc::from(fc1_b),
+                fc2_w: Arc::from(fc2_w),
+                fc2_b: Arc::from(fc2_b),
             });
         }
         let dec_final_ln_g = load_tensor_as_f32(st, "model.decoder.layer_norm.weight")?;
@@ -899,22 +970,22 @@ impl WhisperTokenizer {
 /// real Whisper-tiny shape (encoder + decoder + cross-attention).
 pub fn tiny_cfg() -> WhisperConfig {
     WhisperConfig {
-        vocab_size:              128,
-        num_mel_bins:             8,
-        d_model:                  16,
-        encoder_layers:            2,
-        encoder_attention_heads:   4,
-        encoder_ffn_dim:          32,
-        decoder_layers:            2,
-        decoder_attention_heads:   4,
-        decoder_ffn_dim:          32,
-        max_source_positions:     16,  // mel_time/2
-        max_target_positions:     32,
-        scale_embedding:       false,
-        bos_token_id:             1,
-        eos_token_id:             2,
-        pad_token_id:             0,
-        decoder_start_token_id:   1,
+        vocab_size: 128,
+        num_mel_bins: 8,
+        d_model: 16,
+        encoder_layers: 2,
+        encoder_attention_heads: 4,
+        encoder_ffn_dim: 32,
+        decoder_layers: 2,
+        decoder_attention_heads: 4,
+        decoder_ffn_dim: 32,
+        max_source_positions: 16, // mel_time/2
+        max_target_positions: 32,
+        scale_embedding: false,
+        bos_token_id: 1,
+        eos_token_id: 2,
+        pad_token_id: 0,
+        decoder_start_token_id: 1,
     }
 }
 
@@ -927,60 +998,74 @@ fn arc(v: Vec<f32>) -> Arc<[f32]> {
 /// workspace can reuse the same shape-validated weight constructor
 /// the in-module tests use.
 pub fn zero_weights(cfg: &WhisperConfig) -> WhisperWeights {
-        let d = cfg.d_model;
-        let z = |n: usize| arc(vec![0.0_f32; n]);
-        let o = |n: usize| arc(vec![1.0_f32; n]);
-        WhisperWeights {
-            encoder: WhisperEncoderWeights {
-                conv1_w: z(d * cfg.num_mel_bins * 3),
-                conv1_b: z(d),
-                conv2_w: z(d * d * 3),
-                conv2_b: z(d),
-                positional: z(cfg.max_source_positions * d),
-                layers: (0..cfg.encoder_layers)
-                    .map(|_| WhisperEncoderLayerWeights {
-                        self_attn_ln_g: o(d),
-                        self_attn_ln_b: z(d),
-                        q_w: z(d * d), q_b: z(d),
-                        k_w: z(d * d),
-                        v_w: z(d * d), v_b: z(d),
-                        out_w: z(d * d), out_b: z(d),
-                        final_ln_g: o(d),
-                        final_ln_b: z(d),
-                        fc1_w: z(d * cfg.encoder_ffn_dim),
-                        fc1_b: z(cfg.encoder_ffn_dim),
-                        fc2_w: z(cfg.encoder_ffn_dim * d),
-                        fc2_b: z(d),
-                    }).collect(),
-                final_ln_g: o(d),
-                final_ln_b: z(d),
-            },
-            decoder: WhisperDecoderWeights {
-                embed_tokens: z(cfg.vocab_size * d),
-                embed_positions: z(cfg.max_target_positions * d),
-                layers: (0..cfg.decoder_layers)
-                    .map(|_| WhisperDecoderLayerWeights {
-                        self_ln_g: o(d), self_ln_b: z(d),
-                        self_q_w: z(d * d), self_q_b: z(d),
-                        self_k_w: z(d * d),
-                        self_v_w: z(d * d), self_v_b: z(d),
-                        self_out_w: z(d * d), self_out_b: z(d),
-                        cross_ln_g: o(d), cross_ln_b: z(d),
-                        cross_q_w: z(d * d), cross_q_b: z(d),
-                        cross_k_w: z(d * d),
-                        cross_v_w: z(d * d), cross_v_b: z(d),
-                        cross_out_w: z(d * d), cross_out_b: z(d),
-                        final_ln_g: o(d), final_ln_b: z(d),
-                        fc1_w: z(d * cfg.decoder_ffn_dim),
-                        fc1_b: z(cfg.decoder_ffn_dim),
-                        fc2_w: z(cfg.decoder_ffn_dim * d),
-                        fc2_b: z(d),
-                    }).collect(),
-                final_ln_g: o(d),
-                final_ln_b: z(d),
-            },
-        }
+    let d = cfg.d_model;
+    let z = |n: usize| arc(vec![0.0_f32; n]);
+    let o = |n: usize| arc(vec![1.0_f32; n]);
+    WhisperWeights {
+        encoder: WhisperEncoderWeights {
+            conv1_w: z(d * cfg.num_mel_bins * 3),
+            conv1_b: z(d),
+            conv2_w: z(d * d * 3),
+            conv2_b: z(d),
+            positional: z(cfg.max_source_positions * d),
+            layers: (0..cfg.encoder_layers)
+                .map(|_| WhisperEncoderLayerWeights {
+                    self_attn_ln_g: o(d),
+                    self_attn_ln_b: z(d),
+                    q_w: z(d * d),
+                    q_b: z(d),
+                    k_w: z(d * d),
+                    v_w: z(d * d),
+                    v_b: z(d),
+                    out_w: z(d * d),
+                    out_b: z(d),
+                    final_ln_g: o(d),
+                    final_ln_b: z(d),
+                    fc1_w: z(d * cfg.encoder_ffn_dim),
+                    fc1_b: z(cfg.encoder_ffn_dim),
+                    fc2_w: z(cfg.encoder_ffn_dim * d),
+                    fc2_b: z(d),
+                })
+                .collect(),
+            final_ln_g: o(d),
+            final_ln_b: z(d),
+        },
+        decoder: WhisperDecoderWeights {
+            embed_tokens: z(cfg.vocab_size * d),
+            embed_positions: z(cfg.max_target_positions * d),
+            layers: (0..cfg.decoder_layers)
+                .map(|_| WhisperDecoderLayerWeights {
+                    self_ln_g: o(d),
+                    self_ln_b: z(d),
+                    self_q_w: z(d * d),
+                    self_q_b: z(d),
+                    self_k_w: z(d * d),
+                    self_v_w: z(d * d),
+                    self_v_b: z(d),
+                    self_out_w: z(d * d),
+                    self_out_b: z(d),
+                    cross_ln_g: o(d),
+                    cross_ln_b: z(d),
+                    cross_q_w: z(d * d),
+                    cross_q_b: z(d),
+                    cross_k_w: z(d * d),
+                    cross_v_w: z(d * d),
+                    cross_v_b: z(d),
+                    cross_out_w: z(d * d),
+                    cross_out_b: z(d),
+                    final_ln_g: o(d),
+                    final_ln_b: z(d),
+                    fc1_w: z(d * cfg.decoder_ffn_dim),
+                    fc1_b: z(cfg.decoder_ffn_dim),
+                    fc2_w: z(cfg.decoder_ffn_dim * d),
+                    fc2_b: z(d),
+                })
+                .collect(),
+            final_ln_g: o(d),
+            final_ln_b: z(d),
+        },
     }
+}
 
 #[cfg(test)]
 mod tests {
@@ -1017,7 +1102,10 @@ mod tests {
     fn encoder_forward_shape() {
         let cfg = tiny_cfg();
         let weights = zero_weights(&cfg);
-        let model = WhisperModel { config: cfg.clone(), weights };
+        let model = WhisperModel {
+            config: cfg.clone(),
+            weights,
+        };
         // mel_time = 32 → T/2 = 16 = max_source_positions.
         let mel = vec![0.0_f32; cfg.num_mel_bins * 32];
         let enc = model.forward_encoder(&mel, 32).unwrap();
@@ -1034,7 +1122,10 @@ mod tests {
     fn decoder_forward_shape_and_finite() {
         let cfg = tiny_cfg();
         let weights = zero_weights(&cfg);
-        let model = WhisperModel { config: cfg.clone(), weights };
+        let model = WhisperModel {
+            config: cfg.clone(),
+            weights,
+        };
         let mel = vec![0.0_f32; cfg.num_mel_bins * 32];
         let enc = model.forward_encoder(&mel, 32).unwrap();
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
@@ -1052,7 +1143,10 @@ mod tests {
     fn generate_greedy_runs() {
         let cfg = tiny_cfg();
         let weights = zero_weights(&cfg);
-        let model = WhisperModel { config: cfg.clone(), weights };
+        let model = WhisperModel {
+            config: cfg.clone(),
+            weights,
+        };
         let mel = vec![0.0_f32; cfg.num_mel_bins * 32];
         let tokens = model.generate_greedy(&mel, &[1], 4).unwrap();
         // With zero-init weights the logits are zero across the vocab,
