@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Training augmentations: gradient accumulation, mixed-precision casts,
 //! and in-place parameter updates.
 //!

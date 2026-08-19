@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Live-Vulkan tests for the pipelined-executor binding-table
 //! dispatch on Vulkan. Phase 7.6 step 9c Vulkan catch-up V.1.C —
 //! the proof-of-life that one op (Add f32) flows end-to-end through

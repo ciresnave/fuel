@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Live-CUDA tests for baracuda-kernels-sys-backed Clamp registered
 //! as sibling alternatives at `(OpKind::ClampElementwise, [dt, dt],
 //! BackendId::Cuda)` decision points.

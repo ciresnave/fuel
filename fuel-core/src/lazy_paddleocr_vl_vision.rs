@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! PaddleOCR-VL vision tower ported to the lazy-graph API.
 //!
 //! OCR-specialized vision encoder built around a fixed-tile-grid

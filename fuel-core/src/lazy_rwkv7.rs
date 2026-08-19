@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! RWKV v7 "Goose" decoder ported to the lazy-graph API.
 //!
 //! Phase D specialized port. v7 is the third (and most complex)

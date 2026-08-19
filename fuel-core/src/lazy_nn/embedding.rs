@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Lazy `Embedding` layer — row lookup against a `[vocab_size, hidden]`
 //! weight table.
 //!

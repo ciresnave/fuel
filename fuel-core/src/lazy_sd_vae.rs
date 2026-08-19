@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Stable Diffusion 1.5 VAE decoder ported to the lazy-graph API.
 //!
 //! Second component of Phase 6a anchor #6 (SD 1.5). SD 1.5 uses

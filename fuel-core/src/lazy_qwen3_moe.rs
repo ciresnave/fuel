@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Qwen3-MoE decoder ported to the lazy-graph API.
 //!
 //! Phase D LLM port. Qwen3-MoE = Qwen3 attention (per-head QK-norm

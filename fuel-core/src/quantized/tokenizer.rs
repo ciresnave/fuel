@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 use crate::quantized::gguf_file;
 use crate::{Context, Error, Result};
 use std::collections::HashSet;

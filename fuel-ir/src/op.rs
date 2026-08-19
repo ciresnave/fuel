@@ -1,4 +1,5 @@
-﻿//! Enums and traits representing tensor operations.
+﻿// SPDX-License-Identifier: MIT OR Apache-2.0
+//! Enums and traits representing tensor operations.
 //!
 //! This module defines the core operation enums and traits needed by backend implementations.
 //! The `Op` enum (computation graph) remains in `fuel-core`.

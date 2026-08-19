@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! TinyViT (MobileSAM image encoder) ported to the lazy-graph API.
 //!
 //! TinyViT is the lightweight image backbone used by MobileSAM

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Byte-pair tokenizer for RWKV models.
 //!
 //! Self-contained helper (no tensor math) ported from the retired eager

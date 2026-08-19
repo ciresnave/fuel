@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // End-to-end Whisper encoder-decoder runner. Phase 6a anchor #4.
 //
 // USAGE

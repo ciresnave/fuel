@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `primitive_shape` — the single source of truth for primitive-Op shape+dtype
 //! inference (Convergence Increment A). Called by BOTH the `Tensor` builders
 //! (lib.rs) and the runtime `emit` re-emitter (runtime_fused.rs) so there is

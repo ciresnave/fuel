@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `JudgeAwareSelector` — Phase 5.2 runtime selector that re-queries
 //! the [`JudgeOracle`] at dispatch time and re-ranks candidates by
 //! fresh empirical measurements.

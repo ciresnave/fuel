@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Stable Diffusion text-to-image — lazy port migration.
 //!
 //! The eager binary built three sub-models (CLIP text encoder, UNet,

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Activation modules wrapping the corresponding `LazyTensor` ops.
 
 use super::LazyModule;

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Backend capabilities.
 //!
 //! Each concrete backend (CPU, Vulkan, CUDA, Metal, ...) declares

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Op conformance tests for the LAZY ONNX evaluator.
 //!
 //! Replaces the eager `tests/ops.rs`, which drove the `simple_eval` evaluator

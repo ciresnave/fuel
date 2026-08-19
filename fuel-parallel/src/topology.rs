@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Device topology modelling.
 //!
 //! Describes the physical layout of compute devices and their interconnects so

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! SmolLM3 decoder ported to the lazy-graph API.
 //!
 //! Phase D LLM port. SmolLM3 (HuggingFace small-model line) is a

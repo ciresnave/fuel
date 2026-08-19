@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Stable Diffusion 1.5 UNet (denoising network) ported to the
 //! lazy-graph API.
 //!

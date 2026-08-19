@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Empirical verification of FKC precision claims (`V-FKC-9`).
 //!
 //! A kernel contract's `precision` block *asserts* claims (bit-stability,

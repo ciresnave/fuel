@@ -1,4 +1,5 @@
-﻿//! # fuel-parallel
+﻿// SPDX-License-Identifier: MIT OR Apache-2.0
+//! # fuel-parallel
 //!
 //! **Layer**: Use-Case Orchestration  |  **Stability**: experimental
 //!

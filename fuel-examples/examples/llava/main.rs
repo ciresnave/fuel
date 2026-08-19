@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! LLaVA (Large Language-and-Vision Assistant) — lazy-graph port.
 //!
 //! v1 of this binary is intentionally minimal:

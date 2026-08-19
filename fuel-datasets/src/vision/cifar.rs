@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The CIFAR-10 dataset.
 //!
 //! The files can be downloaded from the following page:

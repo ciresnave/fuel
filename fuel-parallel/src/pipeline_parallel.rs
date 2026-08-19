@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Pipeline parallelism: stage assignment and micro-batch scheduling.
 //!
 //! Pipeline parallelism (PP) partitions a model into consecutive *stages*,

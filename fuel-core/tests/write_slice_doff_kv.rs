@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Phase 1 (CapturedRun) — Op::WriteSliceDoff end-to-end through
 //! PipelinedExecutor on CPU.
 //!

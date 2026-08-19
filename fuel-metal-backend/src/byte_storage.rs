@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Byte-shaped Metal storage — Phase 7.5 storage-unification target.
 //!
 //! `MetalStorageBytes` is the new Metal storage type that replaces

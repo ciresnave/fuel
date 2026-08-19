@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Shapes describe the dimensionality of tensors.
 //!
 //! This module re-exports shape types from `fuel-core-types` and adds

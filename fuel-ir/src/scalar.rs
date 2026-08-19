@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Scalar values matching one of the supported [`DType`] variants.
 use crate::DType;
 use float8::F8E4M3 as f8e4m3;

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Dispatch wrappers + registration for baracuda-kernels-sys-backed
 //! kernels. Sibling to `dispatch::register_cuda_kernels` (PTX path) —
 //! each kernel here registers as an alternative at the same

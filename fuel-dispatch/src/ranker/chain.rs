@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Filter-chain pipeline: applies an ordered list of
 //! [`AlternativeFilter`]s to an [`AlternativeSet`], respecting each
 //! filter's [`FilterClass`].

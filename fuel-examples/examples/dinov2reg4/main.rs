@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! DINOv2 reg4 finetuned on PlantCLEF 2024
 //! https://arxiv.org/abs/2309.16588
 //! https://huggingface.co/spaces/BVRA/PlantCLEF2024

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Hard filter: drop candidates whose `PrecisionGuarantee` doesn't
 //! meet the user's `PrecisionRequirement`.
 //!

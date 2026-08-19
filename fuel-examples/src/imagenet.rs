@@ -1,4 +1,5 @@
-﻿use fuel::Result;
+﻿// SPDX-License-Identifier: MIT OR Apache-2.0
+use fuel::Result;
 
 pub const IMAGENET_MEAN: [f32; 3] = [0.485f32, 0.456, 0.406];
 pub const IMAGENET_STD: [f32; 3] = [0.229f32, 0.224, 0.225];

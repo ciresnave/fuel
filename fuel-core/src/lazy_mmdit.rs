@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! MMDiT (Multimodal Diffusion Transformer) ported to the lazy-graph API.
 //!
 //! Substrate for Stable Diffusion 3 / SD 3.5 / Flux. A transformer that

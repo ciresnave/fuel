@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! SAM: Segment Anything Model
 //! https://github.com/facebookresearch/segment-anything
 

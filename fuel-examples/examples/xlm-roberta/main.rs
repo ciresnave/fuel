@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! XLM-RoBERTa example wired against the lazy-graph encoder.
 //!
 //! Supports three task heads:

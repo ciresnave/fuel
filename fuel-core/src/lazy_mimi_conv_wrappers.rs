@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Mimi learnable down-/up-sampling wrappers (sub-port 3 of
 //! port-mimi-conv.md).
 //!

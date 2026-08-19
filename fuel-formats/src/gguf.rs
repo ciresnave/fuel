@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! GGUF (GGML Universal File) format parser — llama.cpp's quantized
 //! tensor container.
 //!

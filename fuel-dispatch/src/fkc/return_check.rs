@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! §5 return-contract validation: cross-check a fused contract's declared
 //! shape/dtype rules against the real registered FusedOpEntry fns.
 use crate::fkc::ImportWarning;

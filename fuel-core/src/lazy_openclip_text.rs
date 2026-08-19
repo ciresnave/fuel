@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! OpenCLIP text transformer — lazy port.
 //!
 //! Pre-LN transformer that encodes a text token sequence into

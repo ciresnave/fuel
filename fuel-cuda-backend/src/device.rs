@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 use baracuda_curand::RngKind;
 use baracuda_driver::{DeviceBuffer, Dim3, Function, LaunchBuilder};
 use float8::F8E4M3;

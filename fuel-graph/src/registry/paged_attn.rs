@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! PagedAttn — paged-cache scaled-dot-product attention. Phase 7.6
 //! step 4 (continued — ninth op migrated).
 //!

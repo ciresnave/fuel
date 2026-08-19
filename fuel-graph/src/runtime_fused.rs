@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Runtime fused-op registration — the Tier-2 sidecar
 //! (`docs/specs/runtime-fused-op-registration.md`).
 //!

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Gemma 2 (Google DeepMind 2024) ported to the lazy-graph API.
 //!
 //! Gemma 2 extends Gemma 1 with three architectural changes:

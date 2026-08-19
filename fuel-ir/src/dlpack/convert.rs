@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! FDX code-conversion functions — the **binding** that makes FDX the normative
 //! owner of the shared dtype/quant/granularity/substrate/backend codes
 //! (spec `docs/specs/dlpack-extension.md` §6.0, §6.1, §6.2, §6.6, Appendix B).

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Top-level multi-backend probe collector for Phase 6b.
 //!
 //! Calls every enabled backend's `enumerate_devices()` and assembles

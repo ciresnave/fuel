@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 use fuel::Result;
 use fuel_transformers::generation::LogitsProcessor;
 

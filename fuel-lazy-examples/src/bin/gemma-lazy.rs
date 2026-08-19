@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // End-to-end Gemma 2 runner. Exercises all the Gemma 2-specific
 // graph-layer features: GeGLU activation, embedding scaling,
 // attention + final logit softcapping, 4 norms per layer,

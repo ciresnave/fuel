@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Lazy `Conv1d` / `Conv2d` Module wrappers over `LazyTensor`.
 //!
 //! Mirrors the eager `fuel-nn::{Conv1d, Conv2d}` surface: each layer

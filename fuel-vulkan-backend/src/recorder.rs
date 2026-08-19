@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Batched command buffer recorder for VulkanBackend.
 //!
 //! Records ALL dispatches for a realize() pass into a SINGLE command

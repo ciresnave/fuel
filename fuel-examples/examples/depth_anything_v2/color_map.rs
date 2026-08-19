@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 use enterpolation::Generator;
 use enterpolation::linear::ConstEquidistantLinear;
 use palette::LinSrgb;

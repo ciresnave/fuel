@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! UniPC scheduler ported to the lazy-graph API.
 //!
 //! UniPC is a training-free predictor-corrector framework for fast sampling

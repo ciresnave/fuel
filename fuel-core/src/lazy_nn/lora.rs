@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Lazy LoRA-adapted linear layer.
 //!
 //! Wraps a frozen base [`WeightStorage`] (F32, BF16, or Q4_0) with a

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! SystemTopology — single source of truth for what backends exist,
 //! what devices they target, which backends share Storage substrate,
 //! and what transfer paths connect devices.

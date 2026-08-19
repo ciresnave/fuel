@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Compile-time smoke test for the GGUF dequant + MMVQ kernel
 //! wrappers. Doesn't execute any kernel — just proves the public
 //! function signatures resolve and the FFI symbols link.

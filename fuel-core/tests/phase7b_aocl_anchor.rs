@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Phase 7b → backend-extensions-Phase-2 (2026-06-08): AOCL is now
 //! a kernel-source extension of `BackendId::Cpu`, not a separate
 //! backend. These tests validate that AOCL's loadability check still

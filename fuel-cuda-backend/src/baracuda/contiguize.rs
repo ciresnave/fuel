@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Contiguize kernels from `baracuda-kernels-sys` — strided-source
 //! to contiguous-dest copy. Byte-width-dispatched (b1/b2/b4/b8/b16)
 //! covering all aligned-element dtypes; the nibble variant (S4/U4)

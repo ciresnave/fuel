@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Philox-4x32-10 counter-based RNG, and Fuel's `RandomBits` counter derivation.
 //!
 //! Design: `docs/superpowers/specs/2026-07-31-rng-generator-seam-design.md`.

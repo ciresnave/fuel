@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Runnable binaries that exercise fuel's Phase 6a lazy graph layer.
 //!
 //! This crate exists as a sibling of `fuel-examples` specifically to

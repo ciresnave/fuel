@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Python pickle parser — minimum subset needed to read PyTorch
 //! `.pth` checkpoint files.
 //!

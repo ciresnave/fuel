@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The shared persistent-decode rebind driver (GAP-029 increment 2b).
 //!
 //! # Why this module exists

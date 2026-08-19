@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Kernel-seam JIT — the Fuel-side projection + structural matcher
 //! (kernel-seam-interop §5; fkc-fusion-patterns §3/§3a). The frozen grammar
 //! types ([`OpTag`], [`OpAttrs`], [`PatternNode`]) live in

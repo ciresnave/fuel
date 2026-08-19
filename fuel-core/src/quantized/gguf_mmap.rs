@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Zero-copy GGUF loading via memory-mapped files.
 //!
 //! `MmapedContent` opens a GGUF file once, mmaps it, parses the header

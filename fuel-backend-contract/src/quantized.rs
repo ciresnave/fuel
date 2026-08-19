@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Backend-agnostic quantized kernel registration traits.
 //!
 //! Per-backend quantized fast paths (CUDA, Metal, future Vulkan/CPU-SIMD)

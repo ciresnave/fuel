@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! FusedSoftmaxCrossEntropy — fused softmax + negative log-likelihood
 //! with integer (class-index) targets. The standard PyTorch /
 //! Liger-Kernel training-time loss. Phase 7.6 step 4 (continued —

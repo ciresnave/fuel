@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! DINOv2: Learning Robust Visual Features without Supervision
 //! https://github.com/facebookresearch/dinov2
 

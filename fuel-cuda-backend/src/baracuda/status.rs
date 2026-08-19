@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Status-code → `CudaError` mapping for baracuda-kernels-sys.
 //!
 //! Per `baracuda-kernels-sys/README.md`:

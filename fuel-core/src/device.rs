@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Device abstraction for CPU, CUDA, and Metal backends.
 //!
 //! ```rust

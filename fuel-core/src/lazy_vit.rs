@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Vision Transformer (ViT) ported to the lazy-graph API.
 //!
 //! The canonical Vision Transformer architecture from "An Image

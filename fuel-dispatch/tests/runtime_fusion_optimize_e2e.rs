@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! End-to-end integration test for the **production runtime-fusion pipeline**
 //! (`optimize_graph_with_runtime_fusion` → `RuntimeFusedArmPathfinder` →
 //! `offer_runtime_fused_arm`): adopt a runtime op, optimize a graph containing

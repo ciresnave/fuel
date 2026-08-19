@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The real CPU [`KernelInvoker`] (Task 4.5) — runs an actual registered
 //! CPU kernel (`BindingEntry::kernel`) against host-resident probe inputs
 //! and reads the result back to host bytes. Hardware-free (CPU always

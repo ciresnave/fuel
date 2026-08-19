@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Wuerstchen v2 cascaded latent diffusion model — lazy port.
 //!
 //! Wuerstchen (Stability AI) is a three-stage cascaded LDM:

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // https://github.com/openai/whisper/blob/main/whisper/model.py/rgs
 // Migrated to the lazy-graph API.
 // TODO:

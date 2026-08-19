@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! LayerNormLastDim — `(x - mean) / sqrt(variance + eps)` along the
 //! last dim, no affine params. Increment C slice 1, T7 — migrated (with
 //! RmsNormLastDim) to a portable `PatternNode` DATA recipe with an OPEN

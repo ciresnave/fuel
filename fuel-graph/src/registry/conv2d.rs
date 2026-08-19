@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Conv2D — 2-D cross-correlation with stride / padding / groups.
 //! Phase 7.6 step 4 (continued — sixth op migrated).
 //!

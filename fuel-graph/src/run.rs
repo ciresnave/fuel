@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Run extraction + the transient `lower_run` view + the fewness gate.
 //!
 //! Phase A PR-A2 of the "plan IS the graph" rebuild.

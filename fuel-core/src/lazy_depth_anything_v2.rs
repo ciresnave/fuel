@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Depth Anything V2 — lazy port.
 //!
 //! Image → DINOv2 backbone → 4 selected intermediate features →

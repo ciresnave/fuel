@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Normalization kernels from `baracuda-kernels-sys`.
 //!
 //! Coverage today: `rms_norm` + `layer_norm` for the LastDim case

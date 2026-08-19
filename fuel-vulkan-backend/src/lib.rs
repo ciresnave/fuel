@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Vulkan GPU backend for fuel-graph computation graphs.
 //!
 //! Uses Vulkane for Vulkan device management and dispatches compute

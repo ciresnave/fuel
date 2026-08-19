@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Bounding Boxes and Intersection
 //!
 //! This module provides functionality for handling bounding boxes and their manipulation,

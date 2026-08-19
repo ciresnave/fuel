@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! YOLOv8 object detector ported to the lazy-graph API.
 //!
 //! Phase 6a anchor #7 — the seventh and last anchor. YOLOv8

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Increment C (qmatmul-Q4_0): real-backend numerical parity for the migrated
 //! `QMatMul` Q4_0 `dequant → matmul` recipe.
 //!

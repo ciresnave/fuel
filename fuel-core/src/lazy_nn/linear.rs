@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Lazy `Linear` layer — `y = x @ W + b` over `LazyTensor`.
 //!
 //! Weight is held as a [`WeightStorage`] in `[in_features, out_features]`

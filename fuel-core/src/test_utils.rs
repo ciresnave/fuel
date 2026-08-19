@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Test helpers. The eager-`Tensor` helpers (`test_device!`, `assert_tensor_eq`,
 //! `to_vec{0,1,2,3}_round`) were removed in B6; what remains is host-slice and
 //! lazy infrastructure that the lazy_* port tests use.

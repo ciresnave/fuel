@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The ggml block-format dtype tag (`GgmlDType`).
 //!
 //! As of B0.3 the backend-agnostic quantized *traits* (`DynQuantizedStorage`,

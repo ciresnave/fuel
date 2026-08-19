@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Philox-4x32-10 known-answer vectors — **MACHINE-GENERATED, DO NOT EDIT BY HAND.**
 //!
 //! Source of truth (fetched as raw bytes, never recited or retyped):

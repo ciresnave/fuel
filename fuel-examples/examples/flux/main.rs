@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! FLUX — lazy port.
 //!
 //! Migrated from `fuel_transformers::models::{clip,flux,t5}` to the

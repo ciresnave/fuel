@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Hardware discovery for fuel — device enumeration, probe reports, and
 //! transfer (bandwidth) calibration. (The topology discovery-half follows in
 //! a later B0.2 sub-step of the fuel-core retirement.)

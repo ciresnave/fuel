@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Orchestrator for the Phase 6b probe → judge → dispatch pipeline.
 //!
 //! Wraps the three pieces so callers get a ready-to-query

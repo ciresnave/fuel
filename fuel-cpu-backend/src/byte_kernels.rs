@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Typed byte-shaped kernels — Phase 7.5 B5.
 //!
 //! These kernels operate on [`CpuStorageBytes`] (bytes-based CPU

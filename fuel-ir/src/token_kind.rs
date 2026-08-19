@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Where a dtype token sits in the KISS-CLASSIFY §6.1 closed vocabulary.
 //!
 //! This is the **KIND** axis. It is a fact about the *standard* and about

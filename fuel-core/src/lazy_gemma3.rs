@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Gemma 3 decoder ported to the lazy-graph API.
 //!
 //! Phase D specialized port. Gemma 3 keeps Gemma's family flavor

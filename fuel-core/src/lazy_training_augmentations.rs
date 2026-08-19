@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Training augmentations: LR schedulers and gradient clipping.
 //!
 //! Sub-ports 1 + 2 of `docs/session-prompts/port-training-augmentations.md`.

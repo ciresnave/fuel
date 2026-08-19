@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! RWKV v6 ("Finch") decoder ported to the lazy-graph API.
 //!
 //! Phase D specialized port. RWKV v6 extends [`crate::lazy_rwkv5`]

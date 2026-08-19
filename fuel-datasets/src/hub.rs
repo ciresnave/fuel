@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 use hf_hub::{
     Repo, RepoType,
     api::sync::{Api, ApiRepo},

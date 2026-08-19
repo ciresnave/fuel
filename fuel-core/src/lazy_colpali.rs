@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! ColPali — lazy port.
 //!
 //! ColPali is a retrieval model that wraps a PaliGemma backbone

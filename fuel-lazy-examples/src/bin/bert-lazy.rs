@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // End-to-end BERT encoder runner built on the LazyTensor path. Proves
 // Fuel's Phase 6a lazy frontend handles encoder-only models with
 // absolute position embeddings, bidirectional attention, and GELU

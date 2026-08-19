@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Pad / PadBackward kernels from `baracuda-kernels-sys`.
 //!
 //! Forward: 4 modes (Constant/Reflect/Replicate/Circular) × 4 dtypes

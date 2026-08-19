@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Transfer-cost model for the multi-backend DAG planner.
 //!
 //! When dispatch decisions span multiple backends, every cross-backend edge

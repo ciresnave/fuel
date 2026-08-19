@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Graph-level, backend-agnostic optimization passes.
 //!
 //! Transforms a `fuel-graph` computation graph before execution. Every

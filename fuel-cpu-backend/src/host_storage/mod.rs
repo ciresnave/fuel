@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Alternative [`HostStorage`](fuel_backend_contract::backend::HostStorage) impls
 //! beyond the default owned [`CpuBackendStorage`](crate::dyn_impl::
 //! CpuBackendStorage).

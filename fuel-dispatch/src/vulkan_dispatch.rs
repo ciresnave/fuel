@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Dispatch wrappers + registration for Vulkan-backed kernels.
 //! Sibling to `baracuda_dispatch` (CUDA) and the CPU dispatch in
 //! `dispatch.rs`. Each kernel registers as an alternative at the

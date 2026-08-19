@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Step E A4b-5 — the CONCURRENCY PROOF benchmark.
 //!
 //! A4b-4 made an independent Vulkan sub-DAG START on the iGPU (via eager

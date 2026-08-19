@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Capability-driven dispatch tables. Phase 7.5 A5.
 //!
 //! `CapabilityRegistry` collects [`BackendCapabilities`] from each

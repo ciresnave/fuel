@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! DINOv2 vision transformer (Meta AI) ported to the lazy-graph
 //! API.
 //!

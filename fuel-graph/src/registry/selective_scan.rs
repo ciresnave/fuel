@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! SelectiveScan — Mamba-1's selective state-space-model scan. Third
 //! FusedOpRegistry entry added by the re-framed CPU OpKind coverage
 //! plan (after FusedSoftmaxCrossEntropy + CausalConv1d).

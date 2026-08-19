@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The plan-time telemetry carrier — what `compile_plan` needs in hand to
 //! emit a structural miss at the dispatch pick site.
 //!

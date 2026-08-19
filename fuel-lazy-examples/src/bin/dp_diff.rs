@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Phase 6c validation: DP planner vs recommend_placement on real
 //! anchor forward graphs.
 //!

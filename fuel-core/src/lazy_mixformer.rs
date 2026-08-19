@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! MixFormer (Phi-1 / Phi-1.5 / Phi-2-preview) decoder ported to
 //! the lazy-graph API.
 //!

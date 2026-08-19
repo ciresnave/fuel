@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! FKC markdown + restricted-YAML parser (§3.1 file anatomy, §3.8 YAML subset).
 //!
 //! Pipeline:

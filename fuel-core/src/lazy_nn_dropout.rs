@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Lazy port of `fuel-nn`'s [`Dropout`](crate::lazy_nn_dropout::Dropout)
 //! module.
 //!

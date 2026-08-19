@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Bisect the CUDA composed-graph divergence:
 //!
 //!     matmul → rms_norm → matmul   (~77% rel error)

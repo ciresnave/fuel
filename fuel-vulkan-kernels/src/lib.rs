@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! # fuel-vulkan-kernels
 //!
 //! Precompiled SPIR-V kernels for the Fuel Vulkan backend.

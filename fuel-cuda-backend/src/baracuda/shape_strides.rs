@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Layout → baracuda `(rank, shape, stride)` triples.
 //!
 //! Baracuda's strided kernels take `rank: i32` + `*const i32` shape +

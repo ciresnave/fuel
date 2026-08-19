@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! GGUF-quantized LLaMA (LLaMA-2 / LLaMA-3 / LLaMA-3.1) ported to the
 //! lazy-graph API.
 //!

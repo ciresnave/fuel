@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Trait-chassis surface for CPU kernels.
 //!
 //! Each submodule centralizes the shape / stride / loop logic for one

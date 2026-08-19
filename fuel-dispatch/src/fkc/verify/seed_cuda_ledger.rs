@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! CapturedRun 4b-resume Step 3 — empirical seeding of the CUDA verification
 //! ledger.
 //!

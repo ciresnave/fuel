@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Accept-coverage smoke verification (`V-FKC-9`, Task 4.4 — Phase-1 stub).
 //!
 //! A kernel contract's `accept` block declares which `(dtypes, layout,

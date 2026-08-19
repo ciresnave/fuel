@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Lowering: parsed FKC schema (strings) → typed dispatch records
 //! (adoption plan §2, §2.1 / §2.2 mapping tables, §2.3 cost AST, §6 caps).
 //!

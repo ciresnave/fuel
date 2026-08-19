@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! End-to-end Phase 6b demo: probe → load-or-judge → dispatch table →
 //! recommend per-node placement on a small graph.
 //!

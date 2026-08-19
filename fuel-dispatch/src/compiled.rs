@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Compiled-node representation. Phase 7.5 B4 (interface only).
 //!
 //! A [`CompiledNode`] is the output of dispatch resolution: a Node

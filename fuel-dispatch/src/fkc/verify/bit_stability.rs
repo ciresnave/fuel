@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Empirical bit-stability verification (`V-FKC-9`, Task 4.4).
 //!
 //! [`verify_bit_stability`] generalizes the worktree `gemm_dense.rs`

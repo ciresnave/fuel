@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! RmsNormLastDimBackward — fused backward helper for the
 //! `RmsNormLastDim` forward. Phase 7.6 step 4; migrated to a portable
 //! `PatternNode` DATA recipe in Increment C carriers (A1 — the first recipe

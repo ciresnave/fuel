@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! MetaVoice main TTS LM — lazy port.
 //!
 //! Decoder-only transformer (RMSNorm + RoPE + SwiGLU FFN) that

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 use fuel_cpu_kernels::VecOps;
 /// Helper functions to write CPU kernels.
 use fuel_ir::{Error, HostBuffer, Layout, Result, WithDType};

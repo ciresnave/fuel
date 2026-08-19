@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! TDD for the FDX validators (V1..V21). For EVERY validator there is a test
 //! that PASSES on a valid input and a test that FAILS with the EXPECTED
 //! `FdxValidationError` variant on a crafted invalid input. Structs are built

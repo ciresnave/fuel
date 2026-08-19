@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! EfficientViT-MSRA — lazy port.
 //!
 //! Pipeline: image → stem (4 strided conv-BN-ReLU) → 3 stages

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 use crate::metal::{Buffer, CommandBuffer, ComputeCommandEncoder, ComputePipeline};
 use crate::MTLSize;
 use std::ffi::OsStr;

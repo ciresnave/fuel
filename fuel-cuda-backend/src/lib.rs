@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! CUDA GPU executor for `fuel-graph` computation graphs + low-level
 //! CUDA primitives (storage, device, kernel dispatch, cuBLAS / cuDNN
 //! wrappers). The parallel Vulkan stack (`vulkane` → `fuel-vulkan-backend`)

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Device-backed KV block pool — the thin integration layer that binds the pure
 //! [`KvBlockPool`] host-side allocator to real device `Storage` (multi-session
 //! serving, Increment 2, Part 2).

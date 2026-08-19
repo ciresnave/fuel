@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 pub mod audio;
 pub mod bs1770;
 pub mod chat_template;

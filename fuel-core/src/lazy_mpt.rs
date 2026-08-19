@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! MPT (Mosaic Pretrained Transformer) decoder ported to the
 //! lazy-graph API.
 //!

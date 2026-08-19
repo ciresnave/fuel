@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Run the Judge: profile every op × dtype × size cell on every
 //! (backend, device) the probe discovered. Prints a table and, if
 //! given a path, writes the JSON profile report.

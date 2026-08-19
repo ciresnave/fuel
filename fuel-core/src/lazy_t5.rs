@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! T5 (Text-To-Text Transfer Transformer) ported to the lazy-graph API.
 //!
 //! Phase D specialized port. Second encoder-decoder port after

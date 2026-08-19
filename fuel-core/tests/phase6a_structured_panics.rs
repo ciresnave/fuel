@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Phase 6a structured-error gate: realize-time panics get prefixed
 //! with the failing node's graph location, not just the original
 //! `assert!` message.

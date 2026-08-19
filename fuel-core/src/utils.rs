@@ -1,4 +1,5 @@
-﻿//! Useful functions for checking features.
+﻿// SPDX-License-Identifier: MIT OR Apache-2.0
+//! Useful functions for checking features.
 use std::str::FromStr;
 
 /// Returns the number of threads to use for parallel CPU operations.

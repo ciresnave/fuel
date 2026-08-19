@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! FusedLinear — first multi-input fused op migrated through the
 //! FusedOpRegistry. Phase 7.6 step 4; migrated to a portable `PatternNode`
 //! DATA recipe in Increment C slice 2 (S2-2) — the FIRST recipe to drive

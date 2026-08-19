@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Fuel-specific Error and Result
 //!
 //! The canonical definitions live in [`fuel_ir::error`].

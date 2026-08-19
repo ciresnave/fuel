@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Live-CUDA tests for baracuda-kernels-sys-backed unary elementwise
 //! operations registered as sibling alternatives at
 //! `(OpKind::*Elementwise, [dt, dt], BackendId::Cuda)` decision points.

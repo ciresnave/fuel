@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // Granite 4.0 Micro text generation example (GraniteMoeHybrid).
 
 #[cfg(feature = "accelerate")]

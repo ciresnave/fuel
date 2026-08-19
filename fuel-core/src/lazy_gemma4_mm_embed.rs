@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Gemma4 multimodal embedder — lazy port.
 //!
 //! Projects encoder features (from the vision tower or audio tower)

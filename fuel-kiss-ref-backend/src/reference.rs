@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! kiss-ref reference / differential over the mapped floor.
 //!
 //! kiss-ref's `reference_*`/`diff_*` are ROW-oriented — one row per element,

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! CumSum (inclusive prefix sum along one axis) kernels from
 //! `baracuda-kernels-sys`. Per-dtype symbols cover f32/f16/bf16/f64
 //! under the `scan_cumsum_*` family.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! ReduceMaxToBackward — fused backward helper for the `Op::ReduceMaxTo`
 //! primitive. Phase 7.6 step 4; migrated to a portable `PatternNode` DATA
 //! recipe in Increment C carriers (A2 — the first recipe to carry a

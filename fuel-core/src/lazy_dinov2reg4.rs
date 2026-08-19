@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! DINOv2-reg4 (Darcet et al. 2023, "Vision Transformers
 //! Need Registers") ported to the lazy-graph API.
 //!

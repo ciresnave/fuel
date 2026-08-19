@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Standard DLPack v1.x ABI — reproduced verbatim from `dlpack.h` (v1.3).
 //!
 //! FDX (the Fuel DLPack eXtension) *consumes these unchanged*; it never

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Backend-contract traits for the fuel ML framework.
 //!
 //! This crate holds the object-safe trait surface that **every backend

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Recurrent Gemma decoder ported to the lazy-graph API.
 //!
 //! Phase D specialized port. Recurrent Gemma alternates between

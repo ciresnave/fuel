@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Lazy-graph ONNX evaluator — sub-port 5: elementwise, comparison,
 //! logical, and shape-manipulation ops.
 //!

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Stable-Diffusion noise schedulers ported to the lazy-graph API.
 //!
 //! Schedulers are pure host-side scalar control: given a noisy sample

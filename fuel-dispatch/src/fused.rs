@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! FusedOpRegistry — kernel-side payload. Phase 7.6 step 1 (skeleton).
 //!
 //! Architecture v1.0 splits the fused-op registry across two crates:

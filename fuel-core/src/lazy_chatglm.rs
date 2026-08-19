@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! ChatGLM2 / ChatGLM3 (THUDM) decoder ported to the lazy-graph API.
 //!
 //! Phase D specialized port. The older GLM family (GLM2/3, before

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Concrete [`AlternativeFilter`] implementations shipped in
 //! Phase 1.3 of the picker-work arc.
 //!

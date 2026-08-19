@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! # fuel-storage
 //!
 //! Unified storage abstraction for fuel. Phase 7.5 foundation work item

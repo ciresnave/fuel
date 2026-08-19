@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Stable Diffusion 3 VAE decoder ported to the lazy-graph API.
 //!
 //! SD3 (and SD 3.5) ships an AutoencoderKL whose latent space is

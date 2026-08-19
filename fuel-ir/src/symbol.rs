@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Symbolic runtime values — the [`SymId`] identity, the per-pass [`SymEnv`]
 //! binding registry, and the [`DynScalar`] op-param carrier.
 //!

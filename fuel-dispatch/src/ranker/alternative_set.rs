@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `AlternativeSet` — bounded collection of [`Candidate`]s at one
 //! graph decision point.
 //!

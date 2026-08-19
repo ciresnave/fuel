@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Phase 6d Track 4 integration test: `MemoryPressureRule` from the
 //! fuel-inference / planner bridge correctly biases placement under
 //! pressure and is a no-op otherwise.

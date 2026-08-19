@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! GAP-049 — marker-integrity guard for the `EXHAUSTIVE-BY-DESIGN` convention.
 //!
 //! # What this enforces

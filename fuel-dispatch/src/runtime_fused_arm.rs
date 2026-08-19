@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Runtime-fused-op arm emission — the gated `Op::Branch` that makes an adopted
 //! (JIT-synthesized / imported) fused op reachable, mirroring [`crate::decode_flash`].
 //!

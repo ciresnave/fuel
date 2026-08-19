@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Jina-BERT (jinaai/jina-embeddings-v2-base-en) ported to
 //! the lazy-graph API.
 //!

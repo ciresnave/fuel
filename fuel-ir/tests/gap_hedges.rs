@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! GAP-141 Increment 2 — CI guard: no *new* prose-hedge admission of unfinished
 //! work in a COMMENT on a production path. Increment 1 (`gap_refs.rs`) covers the
 //! macro class (`todo!`/`unimplemented!`); this is the INVERSE on comments — the

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 pub(super) fn nearest_int(v: f32) -> i32 {
     v.round() as i32
 }

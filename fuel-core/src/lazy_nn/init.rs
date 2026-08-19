@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Host-side weight initializers.
 //!
 //! Pure functions returning `Vec<f32>` so the caller can wrap the

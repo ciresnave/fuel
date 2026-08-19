@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `optimize_graph` — the new "plan IS the graph" entry point.
 //!
 //! Phase A PR-A3a/A4 of the "plan IS the graph" rebuild

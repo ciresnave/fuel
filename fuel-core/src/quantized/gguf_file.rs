@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! GGUF file format — fuel-core's metadata view.
 //!
 //! Wire-format parsing (magic, KV metadata, tensor-info table, value

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Lazy-graph ONNX evaluator — sub-port 3 of `port-onnx-eval.md`.
 //!
 //! Adds norm + activation + softmax op coverage on top of the

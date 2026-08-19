@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Cost composition + ranking for the picker. Phase 1.4 of the
 //! picker-work arc.
 //!

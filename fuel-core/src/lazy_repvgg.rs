@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! RepVGG (Ding et al. 2021, "RepVGG: Making VGG-style
 //! ConvNets Great Again") ported to the lazy-graph API.
 //!

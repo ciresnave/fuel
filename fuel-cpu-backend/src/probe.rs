@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Device enumeration for the default CPU backend.
 //!
 //! Reports one descriptor per physical CPU in scope. Today that's

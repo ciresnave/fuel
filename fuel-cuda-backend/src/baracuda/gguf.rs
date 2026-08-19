@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! GGUF dequant + MMVQ kernels from `baracuda-kernels-sys`.
 //!
 //! ## Coverage today (alpha.27 + alpha.31 MMVQ actstrided)

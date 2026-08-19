@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Five-flag layout set → today's [`KernelCaps`] projection (adoption
 //! plan §6 / FKC §4.1, §12.2).
 //!

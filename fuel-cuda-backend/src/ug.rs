@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! CUDA bridge for fuel-ug compiled kernels.
 //!
 //! `CudaUgIOp1` wraps a compiled `CudaFunc` produced by

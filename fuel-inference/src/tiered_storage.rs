@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Tiered KV cache storage: GPU → CPU → Disk.
 //!
 //! When KV cache memory on the GPU is scarce, cold segments can be *demoted*

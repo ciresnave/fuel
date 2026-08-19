@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Persistent inference state for the pipelined executor (Phase 7.6
 //! step 9c, sub-phase E.3.0).
 //!

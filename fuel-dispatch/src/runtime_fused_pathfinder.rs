@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Runtime-fused-op arm **pathfinder** — the match-finder
 //! [`crate::runtime_fused_arm`]'s module doc names as its remaining half:
 //! "the pathfinder that finds matches + splices reconverge points registers

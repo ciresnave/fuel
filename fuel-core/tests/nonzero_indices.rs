@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Increment 1 (born-red) for the data-dependent dynamic-shapes keystone:
 //! `Op::NonZeroIndices` produces, over a fixed-capacity buffer, the flat
 //! indices of an input's nonzero elements plus the runtime count — the

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Yi decoder ported to the lazy-graph API.
 //!
 //! Phase D LLM port. Yi (01-AI / 6B / 34B) is architecturally a

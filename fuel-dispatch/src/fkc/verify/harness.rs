@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Task 4.6 — the `rope_apply` CUDA acceptance harness (`run_fkc_verify_harness`).
 //!
 //! This is the FIRST harness that actually EARNS a ledger entry for a live

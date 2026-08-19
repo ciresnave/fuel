@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Shapes describe the dimensionality of tensors.
 //!
 //! A [`Shape`] holds an ordered list of dimension sizes. It is used to create tensors,

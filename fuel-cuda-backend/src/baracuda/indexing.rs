@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Indexing kernels from `baracuda-kernels-sys` — `index_select` so
 //! far. `gather` / `scatter_add` / `masked_fill` / `one_hot` /
 //! `nonzero` follow this pattern and wire up incrementally.

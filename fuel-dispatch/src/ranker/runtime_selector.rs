@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `RuntimeSelector` — Picker 2 substrate.
 //!
 //! Phase 5.1 of the picker-work arc. The optimizer ranker (Picker

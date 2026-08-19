@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! GGUF-quantized Phi-3 ported to the lazy-graph API.
 //!
 //! Phi-3 (Phi-3-mini-4k-instruct etc.) with Q4_0 block-quantized Linear

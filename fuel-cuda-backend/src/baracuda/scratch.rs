@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Per-call workspace allocation for baracuda kernels.
 //!
 //! Each baracuda kernel has a `_workspace_size(...)` query that

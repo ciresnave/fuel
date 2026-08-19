@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Qwen3-VL text language model ported to the lazy-graph API.
 //!
 //! Qwen3-VL extends the Qwen3 decoder (see [`crate::lazy_qwen3`]) with

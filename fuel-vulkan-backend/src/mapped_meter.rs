@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Host-visible *mapped* byte accounting — a process-wide peak counter over the
 //! aperture-relevant quantity.
 //!

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Aligned byte buffer used as the storage backing for `CpuStorage`.
 //!
 //! Standard `Vec<u8>` doesn't guarantee alignment beyond what the

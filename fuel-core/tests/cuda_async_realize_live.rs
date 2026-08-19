@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Live-CUDA realize under Step E A3 (CUDA async dispatch).
 //!
 //! A3 removed the per-op `device.synchronize()` from every baracuda compute op

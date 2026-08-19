@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! This crate is used to re-export the `ug` crate together with `ug-cuda` & `ug-metal` gated
 //! behind the `cuda` and `metal` features respectively.
 

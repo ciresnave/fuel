@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Mamba (v1) decoder ported to the lazy-graph API.
 //!
 //! Phase D LLM port. Mamba is a state-space model (SSM), not an

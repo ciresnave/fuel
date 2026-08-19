@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! GGUF-quantized T5 ported to the lazy-graph API.
 //!
 //! T5 (and Flan-T5 / UL2 / MADLAD-400) with Q4_0 block-quantized

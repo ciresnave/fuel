@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! CUDA-graph capture of a "run" — Phase C PR-C2a.
 //!
 //! A *run* (see `fuel-graph`'s `extract_runs`) is a single-device,

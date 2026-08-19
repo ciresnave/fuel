@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Type-erased tensor storage wrapper (Phase 7.5 work item G fix-up).
 //!
 //! `Storage` was originally `fuel-core::Storage` and lived alongside the

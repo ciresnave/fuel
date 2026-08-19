@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Nf4Matmul — bitsandbytes-style 4-bit NormalFloat quantized matrix
 //! multiply. Fifth FusedOpRegistry entry from the re-framed CPU
 //! OpKind coverage plan; the only one whose mechanical shape diverges

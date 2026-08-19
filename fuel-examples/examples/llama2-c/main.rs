@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // https://github.com/karpathy/llama2.c
 
 #[cfg(feature = "accelerate")]

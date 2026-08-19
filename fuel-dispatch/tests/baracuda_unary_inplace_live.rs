@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Live-CUDA tests for the in-place unary activations registered at
 //! `(OpKind::{Relu,Silu,Gelu,Tanh,Sigmoid}Inplace, [T, T], Cuda)` for
 //! T ∈ {F32, F64, BF16, F16}. Phase 3e of the in-place ops

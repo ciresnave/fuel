@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Gemma 4 vision tower (ViT-style image encoder) ported to the
 //! lazy-graph API.
 //!

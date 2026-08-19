@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! SoftmaxLastDim — first fused op migrated through the FusedOpRegistry.
 //! Phase 7.6 step 3.
 //!

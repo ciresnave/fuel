@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Best-effort Windows DLL search path extension for AOCL.
 //!
 //! The AMD AOCL installer drops `AOCL-LibBlis-Win-dll.dll` at

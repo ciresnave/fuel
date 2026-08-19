@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Kernel reference + op parameters + binding table. Phase 7.5 B1+B5.
 //!
 //! [`KernelRef`] is the uniform function-pointer type that every

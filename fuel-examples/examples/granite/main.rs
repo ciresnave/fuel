@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // An implementation of different Granite models https://www.ibm.com/granite
 
 #[cfg(feature = "accelerate")]

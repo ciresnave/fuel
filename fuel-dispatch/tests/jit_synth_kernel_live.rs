@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! On-device integration test for the live CUDA JIT `load_kernel`
 //! (`fuel_dispatch::jit_cuda_load::load_synth_kernel`) — the device-specific
 //! step `jit_adopt::adopt_from_response` needs, per kernel-seam-interop §5.2.

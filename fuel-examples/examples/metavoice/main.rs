@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // MetaVoice — lazy-port revival.
 //
 // This binary is a fresh write that wires the newly ported

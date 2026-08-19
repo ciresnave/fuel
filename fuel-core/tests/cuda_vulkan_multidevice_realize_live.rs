@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Step E A4c-prerequisite — multi-VENDOR (CUDA + Vulkan) realize on a SINGLE
 //! pass.
 //!

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! FKC importer error type.
 //!
 //! Every parse / §3.8-enforcement / structural failure surfaces as a typed

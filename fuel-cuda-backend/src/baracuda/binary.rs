@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Binary elementwise kernels from `baracuda-kernels-sys`.
 //!
 //! Each kernel has signature

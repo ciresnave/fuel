@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The **runtime route picker** ("Picker 2") — selects an arm at each
 //! `Op::Branch` decision point by **live telemetry**.
 //!

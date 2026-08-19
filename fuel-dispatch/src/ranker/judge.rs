@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `JudgeOracle` — abstraction over the Phase 6b empirical
 //! profiler for the cost composer's Layer-2 refinement.
 //!

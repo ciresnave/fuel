@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Backend capability **data** types.
 //!
 //! After step 8 of the backend-agnostic refactor (2026-04-30), the static

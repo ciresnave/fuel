@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `Storage` re-export + `StorageApplyOps` trait extension.
 //!
 //! Phase 7.5 work item G fix-up: the `Storage` struct and almost all of

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! ConvNeXt image classifier ported to the lazy-graph API.
 //!
 //! Fuel's Phase 6a anchor #5 — the first conv-heavy anchor. ConvNeXt

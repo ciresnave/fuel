@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! YOLOv3 object detector ported to the lazy-graph API.
 //!
 //! YOLOv3 (Redmon & Farhadi, 2018) is a one-stage, anchor-based object

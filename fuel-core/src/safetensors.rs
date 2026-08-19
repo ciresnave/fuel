@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Safetensors file reading — the mmap/view surface.
 //!
 //! - [`MmapedSafetensors`] — memory-maps one or more files and hands out

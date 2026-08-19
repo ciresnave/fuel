@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The canonical stable `ImplId` — the dispatch-telemetry / specialization basis.
 //!
 //! The basis tuple IS Fuel's kernel identity (FKC §4.11): `(BackendId, op,

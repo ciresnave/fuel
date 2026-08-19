@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Cross-backend device enumeration — the foundation for Phase 6b's
 //! `probe → judge → dispatch` lifecycle.
 //!

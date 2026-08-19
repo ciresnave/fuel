@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 use anyhow::{Error as E, Result};
 use clap::Parser;
 use image::DynamicImage;

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Cast-fusion capability predicate — builds the
 //! [`fuel_graph::opt::CapabilityPredicate`] consumed by
 //! `CastFusionRule` from the live `KernelBindingTable`.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 use crate::kernels::macros::ops;
 use crate::utils::{BufferOffset, EncoderProvider};
 use crate::{get_block_dims, get_tile_size, linear_split};

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The REGISTRATION slice: a parsed+lowered provider bundle →
 //! live kernel registrations on the two dispatch registries
 //! (adoption plan §1.2, §1.3, §2.1, §2.2).

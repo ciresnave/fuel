@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Transport-independent parsers for tensor wire formats.
 //!
 //! `fuel-formats` provides pure-Rust parsers for the serialization formats

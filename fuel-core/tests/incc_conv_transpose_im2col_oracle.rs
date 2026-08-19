@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! CV3 (Increment C, im2col-3): real-backend numerical parity for the migrated
 //! `ConvTranspose2D` col2im (overlap-add) scatter-add recipe.
 //!

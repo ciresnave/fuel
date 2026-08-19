@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! # fuel-onnx
 //!
 //! **Layer**: IO — provides bidirectional ONNX interchange for the Fuel stack.

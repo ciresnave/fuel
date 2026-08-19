@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! PowI (integer-exponent power) kernels from `baracuda-kernels-sys`.
 //! Forward `y = x^n` and backward `dx = n * x^(n-1) * dy` (alpha.31).
 //!

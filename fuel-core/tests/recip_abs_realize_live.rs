@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Live-device tests for element-wise `Op::Recip` and `Op::Abs`
 //! realized on CUDA.
 //!

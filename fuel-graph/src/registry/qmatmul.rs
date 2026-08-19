@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! QMatMul — quantized matrix multiply `C = A @ dequant(W_Q)`.
 //! Phase 7.6 step 4 (continued — tenth op migrated; final step-4 op).
 //!

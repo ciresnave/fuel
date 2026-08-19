@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // Parler-TTS lazy-graph migration.
 //
 // This binary now uses the lazy_* modules for the three subnets that

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Granite-MoE Hybrid (IBM Granite long-context) ported to the
 //! lazy-graph API.
 //!

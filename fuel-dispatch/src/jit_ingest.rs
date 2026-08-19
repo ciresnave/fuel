@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Candidate-kernel ingestion (Spec B) — the seam types this module starts
 //! from. Task 2 defined the types a provider's rejection/adoption feedback
 //! flows through: [`RejectionReport`], [`ProviderFeedback`], and

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Proves that every parser in `fuel-formats` works against an
 //! in-memory byte buffer without touching the filesystem.
 //!

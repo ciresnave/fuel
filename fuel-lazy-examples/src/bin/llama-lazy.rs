@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // End-to-end LLaMA-family model runner that uses fuel's Phase 6a
 // lazy graph layer and the gemm-backed fast CPU executor.
 //

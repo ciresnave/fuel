@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Device enumeration for the Vulkan backend.
 //!
 //! Creates a throwaway `Instance`, walks `enumerate_physical_devices`,

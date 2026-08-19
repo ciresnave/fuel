@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Fuel ↔ kiss-ref vocabulary mapping for the scalar/elementwise floor.
 //!
 //! Maps Fuel's [`OpTag`] and [`DType`] onto kiss-ref's `Op` / `Dtype`. Only the

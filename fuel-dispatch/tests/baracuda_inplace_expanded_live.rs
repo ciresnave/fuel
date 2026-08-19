@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Live-CUDA tests for the in-place op family expansion (2026-05-30):
 //!
 //! - **A — 16 new unary in-place activations** (`Neg`, `Abs`, `Sqr`,

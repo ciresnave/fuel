@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Gemma (v1) decoder ported to the lazy-graph API.
 //!
 //! Phase D LLM port. Gemma1 is the closest non-LLaMA architectural

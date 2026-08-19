@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Ranked dispatch tables — Phase 6b's O(1) runtime lookup.
 //!
 //! The [`Judge`](crate::judge) produces a [`ProfileReport`]

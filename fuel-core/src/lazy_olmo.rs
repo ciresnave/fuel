@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! OLMo decoder ported to the lazy-graph API.
 //!
 //! Phase D LLM port. OLMo is "LLaMA with LayerNorm-no-bias":

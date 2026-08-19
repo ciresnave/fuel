@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Step E A2.1 — live-Vulkan DEFERRED-DELETION of an evicted data buffer.
 //!
 //! End-to-end proof that the executor's destructive-eviction path

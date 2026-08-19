@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! CUDA [`KernelInvoker`] scaffold (Task 4.5). Mirrors [`super::invoker_cpu::CpuInvoker`]
 //! but stages `HostTensor` bytes through a CUDA device: H2D via
 //! `CudaStorageBytes::from_cpu_bytes`, D2H readback via `to_cpu_bytes` (the

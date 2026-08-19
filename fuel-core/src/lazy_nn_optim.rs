@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Lazy-graph port of `fuel-nn::optim`: the [`LazyOptimizer`] trait
 //! with [`LazySgd`] and [`LazyAdamW`] implementations.
 //!

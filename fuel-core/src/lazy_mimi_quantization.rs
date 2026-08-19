@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Mimi residual vector quantizer — lazy port.
 //!
 //! Mimi (Moshi's audio codec) uses a **split** RVQ where one

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 use crate::{D, DType, MetalDevice, MetalStorage, Result, Shape};
 use fuel_backend_contract::dyn_backend::DynBackendStorage;
 use fuel_backend_contract::quantized::{DynQuantizedStorage, QuantizedDeviceKernels};

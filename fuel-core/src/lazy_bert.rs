@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! BERT encoder ported to the lazy-graph API.
 //!
 //! This is Fuel's anchor-model #3 under Phase 6a — after the LLaMA family

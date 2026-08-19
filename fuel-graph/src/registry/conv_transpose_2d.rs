@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! ConvTranspose2D — 2-D transposed (fractionally-strided)
 //! convolution. Phase 7.6 step 4 (continued — seventh op migrated).
 //!

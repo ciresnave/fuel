@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! FDX-owned stable code tables, magic, version, flags, and sentinels — the
 //! **normative source** for every shared dtype/quant/granularity/substrate/
 //! gather/extent code (spec §5.2, §6.0, Appendix A). The sibling FKC kernel-

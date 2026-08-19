@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Persimmon decoder ported to the lazy-graph API.
 //!
 //! Phase D LLM port. Persimmon (Adept AI) combines several quirks:

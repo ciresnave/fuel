@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Live-CUDA integration test for the Phase 7.5 first CUDA op
 //! through the unified binding table.
 //!

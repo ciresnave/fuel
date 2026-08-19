@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `kernel_revision_hash` computation (adoption plan §8 / FKC §4.7).
 //!
 //! A stable, endianness-stable, **non-SipHash** hash (FNV-1a, fixed) over

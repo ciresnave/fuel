@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Helium decoder ported to the lazy-graph API.
 //!
 //! Phase D LLM port. Helium (Kyutai / 2B) is a clean Qwen2-shape

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Whisper speech recognition model ported to the lazy-graph API.
 //!
 //! Fuel's anchor-model #4 under Phase 6a. Whisper is an encoder-decoder

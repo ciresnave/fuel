@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Binding-table integration: register MKL kernels as sibling
 //! alternatives on the unified byte-storage CPU dispatch path.
 //!

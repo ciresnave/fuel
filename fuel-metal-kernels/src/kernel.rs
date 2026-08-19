@@ -1,4 +1,5 @@
-﻿use crate::source::{
+﻿// SPDX-License-Identifier: MIT OR Apache-2.0
+use crate::source::{
     AFFINE, BINARY, CAST, CONV, FILL, INDEXING, MLX_GEMM, MLX_SORT, QUANTIZED, RANDOM, REDUCE,
     SDPA, SORT, TERNARY, UNARY,
 };

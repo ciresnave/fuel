@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! BLIP vision encoder — lazy port.
 //!
 //! Standard ViT-shape Pre-LN transformer that encodes an image

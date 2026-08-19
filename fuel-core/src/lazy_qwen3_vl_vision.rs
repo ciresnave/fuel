@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Qwen3-VL vision tower (lazy-graph port).
 //!
 //! Sub-port 1 of `docs/session-prompts/port-qwen3-vl.md` — covers the

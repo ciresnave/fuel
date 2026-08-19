@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The built-in CUDA (baracuda) backend's FKC `link_registry`
 //! (kernel-seam-interop §3.5, §4.3; FKC §12.6). The CUDA analogue of
 //! [`crate::fkc::CpuLinkRegistry`] / [`crate::fkc::VulkanLinkRegistry`]: maps

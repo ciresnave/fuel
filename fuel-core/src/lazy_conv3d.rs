@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Conv3D for Qwen3-VL temporal patch embedding, decomposed into
 //! two parallel Conv2Ds.
 //!

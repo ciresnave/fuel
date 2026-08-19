@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Qwen2-MoE decoder ported to the lazy-graph API.
 //!
 //! Phase 6a anchor #7 — the seventh and final anchor for the Phase 6a

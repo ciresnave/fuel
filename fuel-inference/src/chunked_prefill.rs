@@ -1,4 +1,5 @@
-﻿//! Chunked prefill for bounded time-to-first-token.
+﻿// SPDX-License-Identifier: MIT OR Apache-2.0
+//! Chunked prefill for bounded time-to-first-token.
 //!
 //! When a prompt is very long (thousands of tokens), processing it in a single forward
 //! pass creates a latency spike — both for the prefill request itself and for any

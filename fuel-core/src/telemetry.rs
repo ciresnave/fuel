@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Baracuda dispatch-telemetry / miss-reporting — the **production consumer**.
 //!
 //! `fuel-dispatch` owns the record types + the plan-time emission (behind its

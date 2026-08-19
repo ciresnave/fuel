@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Granite decoder ported to the lazy-graph API.
 //!
 //! Phase D LLM port. Granite (IBM) is a pure LLaMA-clone: bias-free

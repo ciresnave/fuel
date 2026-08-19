@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Inter-process shared [`HostStorage`] — a file-backed, shared
 //! memory-mapped tensor view.
 //!

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Baracuda kernel integration — alpha.27 ML op surface as alternative
 //! implementations in Fuel's binding table.
 //!

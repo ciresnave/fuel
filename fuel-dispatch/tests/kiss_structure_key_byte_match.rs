@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Fuel × KISS `structure_key` **byte-match** — the GAP-168 *token-tier* leg.
 //!
 //! Binds KISS's published, codec-generated reference vectors and asserts that

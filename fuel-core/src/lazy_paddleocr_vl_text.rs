@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! PaddleOCR-VL text language model ported to the lazy-graph API.
 //!
 //! Sub-port 1 of three for PaddleOCR-VL. The text stack is an

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The FKC verification ledger (`V-FKC-9`, empirical precision verification).
 //!
 //! A git-checked-in JSON ledger of empirical verification results: which

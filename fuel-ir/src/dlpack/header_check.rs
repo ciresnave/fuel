@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Header↔Rust drift gate (no C compiler required).
 //!
 //! `include_str!`s the co-maintained C header `include/fuel_dlpack_ext.h`,

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `fuel-capture-fixtures` — produce distributable correctness
 //! fixtures by running the Judge's op×dtype×size matrix across
 //! every available backend, applying pairwise consensus clustering,

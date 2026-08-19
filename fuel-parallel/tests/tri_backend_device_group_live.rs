@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 #![cfg(all(feature = "cuda", feature = "vulkan"))]
 //! Live tri-backend collective — **CPU + CUDA + Vulkan reducing together**.
 //!

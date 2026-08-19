@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Thin wrapper preserving the historical `load_imatrix` entry point.
 //!
 //! Format-parsing logic lives in [`fuel_formats::imatrix`]. This file

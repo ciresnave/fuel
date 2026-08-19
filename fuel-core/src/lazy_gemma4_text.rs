@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Gemma 4 text decoder ported to the lazy-graph API.
 //!
 //! Phase D specialized port. Gemma 4 is a **multimodal** model

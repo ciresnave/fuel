@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The `optimize_graph` lock-step pass driver — Phase B PR-B3 of the
 //! "plan IS the graph" rebuild
 //! ([`../../docs/session-prompts/plan-is-graph-rebuild.md`](

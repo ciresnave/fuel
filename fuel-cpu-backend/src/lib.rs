@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! CPU backend computation kernels for fuel.
 //!
 //! This crate contains the core CPU computation helpers (MatMul, pooling,

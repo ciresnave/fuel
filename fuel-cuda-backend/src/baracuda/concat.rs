@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Concat kernels from `baracuda-kernels-sys` — `concat2` (binary
 //! concatenate along one dim) over `{F32, F64, F16, BF16}`. Baracuda
 //! only ships the binary form; N-ary concat (Fuel's `OpKind::Concat`)

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! **Optimize-time kernel-variant baking** — the same-device arm selector.
 //!
 //! ## The gap this closes

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Baracuda dispatch-telemetry / miss-reporting **emission** layer.
 //!
 //! This is the emission half of the Fuel↔Baracuda boundary (the tensor-

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! LFM2 (Liquid Foundation Model 2) decoder ported to the lazy-graph API.
 //!
 //! LFM2 is a *hybrid* architecture: layers alternate between standard

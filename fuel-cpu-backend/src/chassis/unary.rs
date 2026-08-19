@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Unary-elementwise chassis — one shape/loop pass shared by every
 //! per-(op, dtype) unary kernel (Relu / Neg / Sqr / … / GeluTanh,
 //! across f32 / f64 / bf16 / f16).

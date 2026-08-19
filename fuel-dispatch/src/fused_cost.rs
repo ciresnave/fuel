@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Fused-op Layer-1 cost **composed from its decomposition**
 //! (`docs/session-prompts/fused-op-cost-from-decompose.md`).
 //!

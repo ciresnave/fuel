@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Parler-TTS audio token decoder — lazy port.
 //!
 //! Multi-codebook transformer decoder that generates per-codebook

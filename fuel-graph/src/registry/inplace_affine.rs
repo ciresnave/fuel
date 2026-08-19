@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! InplaceAffine — `x = mul·x + add`, mutating input 0.
 //!
 //! Phase 1 of the in-place ops infrastructure

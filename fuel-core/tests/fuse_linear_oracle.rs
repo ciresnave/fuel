@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Phase 6d Track 3 oracle: `Op::FusedLinear` produces the same output
 //! as the unfused `MatMul + BroadcastTo + Add` sequence it replaces,
 //! both via reference and via the CPU executor.

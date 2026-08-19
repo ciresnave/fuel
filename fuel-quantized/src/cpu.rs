@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Format-agnostic CPU helpers for quantized storage.
 //!
 //! Holds the dyn-boxable `QuantizedType` trait (per-block-format scalar

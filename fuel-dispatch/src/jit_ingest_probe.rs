@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Candidate-kernel ingestion (Spec B), Task 3 — probe-input synthesis.
 //!
 //! [`probe_from_operands`] builds deterministic, sized float-fill inputs for

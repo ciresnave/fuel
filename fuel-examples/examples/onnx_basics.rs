@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 use anyhow::Result;
 use fuel::lazy::LazyTensor;
 use fuel::{Device, Shape};

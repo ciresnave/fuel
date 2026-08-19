@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Byte-shaped CUDA storage — Phase 7.5 storage-unification target.
 //!
 //! `CudaStorageBytes` is the new CUDA storage type that replaces the

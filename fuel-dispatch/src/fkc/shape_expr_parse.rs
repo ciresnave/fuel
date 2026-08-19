@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Parse the FKC authoring DSL (`extent(role, axis)`, `const(N)`, `param(N)`,
 //! `add|sub|mul|div(a, b)`) into the positional `shape_expr::Dim` AST. Role names are
 //! resolved to positional operand indices via the probe combo's canonical order

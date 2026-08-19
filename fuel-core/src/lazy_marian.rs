@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Marian NMT (Helsinki-NLP / Opus MT) ported to the lazy-graph API.
 //!
 //! Phase D specialized port. Marian is the **first encoder-decoder

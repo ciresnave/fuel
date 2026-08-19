@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Sort-free sampling kernels from baracuda alpha.58 (Phase 46,
 //! FlashInfer cherry-pick, Apache-2.0). Take a per-batch
 //! `probs: [batch, vocab]` F32 distribution (already softmax-

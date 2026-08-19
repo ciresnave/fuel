@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! FDX validators (V1..V21) — the correctness core of the Fuel DLPack
 //! eXtension (spec `docs/specs/dlpack-extension.md` §8 "Validation", consolidated
 //! in the §16 conformance checklist).

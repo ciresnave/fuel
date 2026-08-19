@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! SNAC — lazy port (decoder + per-stride RVQ).
 //!
 //! Multi-scale codes (one stream per stride level) → waveform via:

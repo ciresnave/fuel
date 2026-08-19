@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // SD 1.5 UNet runner. Third + final component of Phase 6a anchor #6.
 //
 // USAGE

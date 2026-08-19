@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Self-describing storage encoding (`SType` / `Encoding` / `ScaleSpec`).
 //!
 //! `DType` (see [`crate::dtype`]) is the LOGICAL element type — "what is a

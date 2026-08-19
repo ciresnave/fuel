@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Live-GPU residency eviction roundtrip (executor-unification
 //! Session 6): the `fuel_dispatch::residency` pass spills a CUDA-
 //! resident tensor to host via `Op::Move { target: Cpu }` and faults

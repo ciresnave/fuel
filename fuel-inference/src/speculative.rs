@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Speculative decoding for accelerated autoregressive generation.
 //!
 //! Speculative decoding (Leviathan et al., 2023; Chen et al., 2023) uses a small, fast
