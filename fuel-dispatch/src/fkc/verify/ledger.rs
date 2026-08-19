@@ -157,6 +157,99 @@ impl VerificationLedger {
     }
 }
 
+/// Where the checked-in ledger lives, relative to this crate's manifest.
+///
+/// **Deliberately private to this module, not `pub(crate)`.** The scan below
+/// is a textual backstop and will drift; narrowing visibility is the
+/// structural half. A would-be fifth writer can no longer ASK for the path —
+/// it has to retype the relative path itself, which is a conspicuous act
+/// rather than an innocent-looking call. Callers that want to report where
+/// the ledger went read [`LedgerWriteSummary::path`].
+#[cfg(test)]
+fn checked_in_ledger_path() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../docs/kernel-contracts/.fkc-verified-ledger.json")
+}
+
+/// Merge `fresh` into the CHECKED-IN ledger, WITHOUT writing anything.
+///
+/// Every record already in the file survives; a `fresh` record whose
+/// verification key `(backend, dtypes, kernel_revision_hash, claim)` matches
+/// an existing one REPLACES it in place (see [`VerificationLedger::upsert`]),
+/// so re-running a seeder updates its own verdicts and touches nobody else's.
+///
+/// Split out from [`write_merged_ledger`] purely so the merge can be tested:
+/// the writer targets the real repo file, so a guard test cannot call it
+/// without destroying the thing it is guarding.
+#[cfg(test)]
+fn merge_into_checked_in(fresh: &[LedgerRecord]) -> VerificationLedger {
+    let mut ledger =
+        VerificationLedger::from_records(VerificationLedger::embedded().records().to_vec());
+    for r in fresh {
+        ledger.upsert(r.clone());
+    }
+    ledger
+}
+
+/// Summary of a ledger write, for the seeder's `--nocapture` report.
+#[cfg(test)]
+pub(crate) struct LedgerWriteSummary {
+    /// Records in the checked-in ledger BEFORE this run.
+    pub(crate) before: usize,
+    /// Records in the file after the merge.
+    pub(crate) after: usize,
+    /// Records this run contributed (some of which may have replaced
+    /// same-key entries rather than adding new ones).
+    pub(crate) fresh: usize,
+    /// Where it was written. Returned rather than exposing the path helper,
+    /// so reporting where the file is does not hand out the ability to open
+    /// it.
+    pub(crate) path: std::path::PathBuf,
+}
+
+/// Merge `fresh` into the checked-in ledger and write the union back.
+///
+/// **This is the ONE writer, and it merges, because the alternative was in
+/// the tree and it silently destroys other backends' work.** FOUR call sites
+/// write this single file — the CPU / CUDA / Vulkan seeders and the
+/// rope-apply acceptance test in `harness.rs` — and each earns records the
+/// others cannot: CUDA's 142 need a forge slot and a live GPU, Vulkan's 530
+/// need a live device, and there is no GPU runner in CI — so a truncating
+/// write is not a regeneratable inconvenience, it is unrecoverable outside
+/// this machine. `seed_cpu_verified_ledger` did exactly that
+/// (`serde_json::to_string_pretty(&records)` over a FRESH `Vec` into a
+/// `File::create`), and would have dropped 672 of 749 records on its next
+/// manual run (GAP-210).
+///
+/// The fix is deliberately structural rather than a note in three places:
+/// the merge is not a discipline the caller has to remember, it is the only
+/// path to the file — and `no_seeder_writes_the_ledger_behind_this_writer`
+/// is what keeps that sentence true, since nothing in the language stops a
+/// future seeder from reaching for `File::create` itself.
+///
+/// `#[cfg(test)]` is the right scope, not an accident: every one of those
+/// four call sites is an `#[ignore]`d manual tool, so this file is only ever
+/// written from a test binary.
+///
+/// The count is FOUR and not three on purpose: `harness.rs` was a writer
+/// nobody had counted, and it is the reason the backstop scan checks a
+/// family of spellings rather than `File::create` alone.
+#[cfg(test)]
+pub(crate) fn write_merged_ledger(fresh: &[LedgerRecord]) -> LedgerWriteSummary {
+    use std::io::Write as _;
+
+    let before = VerificationLedger::embedded().len();
+    let ledger = merge_into_checked_in(fresh);
+    let path = checked_in_ledger_path();
+    let json = serde_json::to_string_pretty(ledger.records()).expect("serialize ledger records");
+    // (`path` is moved into the summary below; open by reference.)
+    let mut f = std::fs::File::create(&path)
+        .unwrap_or_else(|e| panic!("failed to open ledger at {path:?} for writing: {e}"));
+    f.write_all(json.as_bytes()).expect("write ledger json");
+    f.write_all(b"\n").expect("write trailing newline");
+    LedgerWriteSummary { before, after: ledger.len(), fresh: fresh.len(), path }
+}
+
 fn backend_label(b: BackendId) -> &'static str {
     match b {
         BackendId::Cpu => "Cpu",
@@ -330,5 +423,163 @@ mod gate_tests {
         let g = gate_precision(declared, &q(), &VerificationLedger::default(), &mut w);
         assert_eq!(g.notes, declared.notes);
         assert!(w.is_empty());
+    }
+
+    /// A seeding run must ADD to the checked-in ledger, never REPLACE it.
+    ///
+    /// Born-red against the exact code that was in the tree: the CPU seeder
+    /// wrote `serde_json::to_string_pretty(&records)` — a FRESH `Vec` — into a
+    /// `File::create`, so one manual re-seed would have left the file holding
+    /// only what that run earned. Both assertions below fail under that
+    /// behaviour (`after` collapses to `fresh.len()`, and the survivor lookup
+    /// finds nothing).
+    ///
+    /// This guards the MERGE, not the write: `write_merged_ledger` targets the
+    /// real repo file, so a test that exercised the writer end-to-end would
+    /// destroy the artifact it exists to protect.
+    #[test]
+    fn a_seeding_run_merges_into_the_checked_in_ledger_rather_than_replacing_it() {
+        let embedded = VerificationLedger::embedded();
+        // Non-triviality: with a near-empty checked-in ledger the assertions
+        // below would hold for a truncating implementation too.
+        assert!(
+            embedded.len() > 100,
+            "checked-in ledger holds only {} records — this guard cannot distinguish a merge from a truncation against a population that small. If the ledger really did shrink that far, that is the finding.",
+            embedded.len()
+        );
+        let witness = embedded.records()[0].clone();
+
+        // A record whose key collides with nothing in the file.
+        let fresh = LedgerRecord {
+            kernel_ref: "guard-test-synthetic".to_string(),
+            backend: "Cpu".to_string(),
+            dtypes: vec!["F32".to_string()],
+            kernel_revision_hash: 0xDEAD_BEEF_DEAD_BEEF,
+            claim: "bit_stable_on_same_hardware".to_string(),
+            result: "pass".to_string(),
+            verified_at: "epoch:0".to_string(),
+            protocol_version: 1,
+            evidence: serde_json::Value::Null,
+        };
+
+        let merged = merge_into_checked_in(std::slice::from_ref(&fresh));
+        assert_eq!(
+            merged.len(),
+            embedded.len() + 1,
+            "a fresh record with a new key must ADD one row, leaving the other {} untouched — a seeder that rewrites the file from its own results destroys the two backends' records it cannot re-earn (GAP-210)",
+            embedded.len()
+        );
+        assert!(
+            merged.records().iter().any(|r| *r == witness),
+            "record {:?}/{:?} present before the merge is missing after it",
+            witness.backend,
+            witness.kernel_ref
+        );
+
+        // ...and a COLLIDING key updates in place rather than duplicating,
+        // so a re-run of the same seeder is idempotent.
+        let mut again = witness.clone();
+        again.verified_at = "epoch:1".to_string();
+        let remerged = merge_into_checked_in(std::slice::from_ref(&again));
+        assert_eq!(
+            remerged.len(),
+            embedded.len(),
+            "re-verifying an existing key must replace its row, not append a second one"
+        );
+        assert!(
+            remerged.records().iter().any(|r| r.verified_at == "epoch:1"),
+            "the replacement row did not take effect"
+        );
+    }
+
+    /// The merging writer is only "the one writer" for as long as nobody
+    /// opens the ledger behind it. Nothing in the language enforces that, so
+    /// this does: no file-opening call may appear in `verify/` outside
+    /// `ledger.rs`.
+    ///
+    /// Deliberately a source scan and not a type-system trick — the thing
+    /// being prevented is a future author writing five ordinary lines of
+    /// `std::fs`, which no API design can make unspellable.
+    ///
+    /// **The predicate scans for a FAMILY of spellings, and that is not
+    /// belt-and-braces.** The first version of this test looked for
+    /// `File::create` alone and would have passed while
+    /// `harness.rs` wrote the same file through `std::fs::write` — a fourth
+    /// writer, invisible to the gate, found by reading the tree rather than
+    /// by the gate that existed to find it. Counting one spelling of a
+    /// construct is not counting the construct.
+    ///
+    /// **What this scan CANNOT see, stated so nobody reads its green as more
+    /// than it is:** a write reached through a helper defined elsewhere; a
+    /// write through an alias or re-export (`use std::fs::write as emit;`);
+    /// and any writer in a file outside `verify/*.rs` — which is precisely
+    /// how the fourth writer was missed, since widening the predicate does
+    /// nothing about a scope that is a glob somebody chose. The primary
+    /// control is therefore STRUCTURAL — `checked_in_ledger_path` is private
+    /// to this module, so a fifth writer must retype the path rather than ask
+    /// for it — and this scan is the backstop, not the guarantee.
+    #[test]
+    fn no_seeder_writes_the_ledger_behind_this_writer() {
+        // Every way this crate could open the ledger for writing. A new
+        // spelling here is cheaper than the fourth writer it would catch.
+        const WRITE_SPELLINGS: &[&str] =
+            &["File::create", "fs::write", "OpenOptions", "File::options"];
+
+        // Drop whole-line comments, so a doc comment that NAMES a forbidden
+        // spelling does not trip the scan. Deliberately only whole-line: a
+        // trailing comment on a code line stays in, because the error
+        // direction that matters here is loud-and-wrong over silent-and-wrong,
+        // and truncating code lines at `//` would also swallow a real call
+        // sitting after a `https://` inside a string.
+        fn strip_line_comments(src: &str) -> String {
+            src.lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/fkc/verify");
+        let mut scanned = 0usize;
+        let mut offenders: Vec<String> = Vec::new();
+        let entries = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("cannot read {dir:?}: {e}"));
+        for entry in entries {
+            let path = entry.expect("dir entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+            let src = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("cannot read {path:?}: {e}"));
+            let src = strip_line_comments(&src);
+            scanned += 1;
+            if name != "ledger.rs" {
+                for spelling in WRITE_SPELLINGS {
+                    if src.contains(spelling) {
+                        offenders.push(format!("{name} ({spelling})"));
+                    }
+                }
+            }
+        }
+        // Positive control: a wrong directory would make the scan above pass
+        // by finding nothing at all. These are the files that must be in it.
+        assert!(
+            scanned >= 8,
+            "only scanned {scanned} .rs files under {dir:?} — this scan is looking in the wrong place and would pass vacuously"
+        );
+        // Positive control on the PREDICATE, not just the path: `ledger.rs`
+        // is the one file that must trip it, so if it doesn't, the predicate
+        // is broken and every `offenders.is_empty()` below is meaningless.
+        let ledger_src = strip_line_comments(
+            &std::fs::read_to_string(dir.join("ledger.rs")).expect("ledger.rs must be readable"),
+        );
+        assert!(
+            WRITE_SPELLINGS.iter().any(|s| ledger_src.contains(s)),
+            "the scan cannot see a file-opening call even in ledger.rs, where one certainly is — the predicate is broken, not the tree"
+        );
+        assert!(
+            offenders.is_empty(),
+            "{offenders:?} open the verification ledger directly instead of going through `write_merged_ledger`. A seeder that writes its own results over this file destroys the CUDA and Vulkan records it cannot re-earn — that is GAP-210, and it is the reason there is exactly one writer."
+        );
     }
 }

@@ -22,8 +22,79 @@ use fuel_ir::dispatch::OpKind;
 use fuel_ir::DType;
 
 use super::bit_stability::{fill_deterministic, HostTensor, ProbeInputs};
-use super::seed_cpu_ledger::to_bytes;
 use crate::kernel::OpParams;
+
+/// Encode `vals` into `dt`'s byte representation, covering every dtype any
+/// backend's probe recipes need — the float set PLUS the integer / fp8 / bool
+/// dtypes the byte-level movers fan over. For `bit_stable` / byte-exact
+/// verification the values only need to be DETERMINISTIC (the kernel produces
+/// identical bytes for identical input bytes on the same hardware), so the
+/// integer/fp8 encodings are lossy-but-stable projections of the float probe
+/// values. That reasoning is what lets ONE encoder serve all backends.
+///
+/// **Do not narrow this domain.** It is the single encoder behind every probe
+/// in this module, so a dtype dropped here silently stops the corresponding
+/// ledger records from being re-earnable — they keep passing the gate off
+/// their checked-in copy while nothing can reproduce them. That is not
+/// hypothetical: commit `23785514` repointed [`ht`] at the float-only
+/// `seed_cpu_ledger::to_bytes`, a **same-signature helper with a strictly
+/// smaller domain**, and orphaned 228 of 530 Vulkan records with a green
+/// build — the compiler cannot see a refactor that only makes `None` more
+/// common. `every_earned_ledger_record_can_still_be_probed` below is the guard
+/// that now makes that failure loud.
+///
+/// Deliberately NOT shared with `seed_cpu_ledger::to_bytes`, which is the
+/// narrower JIT-ingest encoder whose narrowness is itself load-bearing and
+/// asserted by a test — see the note there.
+fn to_bytes(dt: DType, vals: &[f32]) -> Option<Vec<u8>> {
+    Some(match dt {
+        DType::F32 => bytemuck::cast_slice(vals).to_vec(),
+        DType::F64 => {
+            bytemuck::cast_slice(&vals.iter().map(|&x| x as f64).collect::<Vec<_>>()).to_vec()
+        }
+        DType::BF16 => bytemuck::cast_slice(
+            &vals.iter().map(|&x| half::bf16::from_f32(x)).collect::<Vec<_>>(),
+        )
+        .to_vec(),
+        DType::F16 => bytemuck::cast_slice(
+            &vals.iter().map(|&x| half::f16::from_f32(x)).collect::<Vec<_>>(),
+        )
+        .to_vec(),
+        DType::U8 => vals.iter().map(|&x| (x.abs() as u32 % 251) as u8).collect(),
+        DType::I8 => bytemuck::cast_slice(
+            &vals.iter().map(|&x| (x as i32).clamp(-120, 120) as i8).collect::<Vec<_>>(),
+        )
+        .to_vec(),
+        DType::I16 => {
+            bytemuck::cast_slice(&vals.iter().map(|&x| x as i16).collect::<Vec<_>>()).to_vec()
+        }
+        DType::U32 => {
+            bytemuck::cast_slice(&vals.iter().map(|&x| x.abs() as u32).collect::<Vec<_>>()).to_vec()
+        }
+        DType::I32 => {
+            bytemuck::cast_slice(&vals.iter().map(|&x| x as i32).collect::<Vec<_>>()).to_vec()
+        }
+        DType::I64 => {
+            bytemuck::cast_slice(&vals.iter().map(|&x| x as i64).collect::<Vec<_>>()).to_vec()
+        }
+        // NOTE — there is deliberately NO `DType::Bool` arm, and it must stay
+        // that way. This function's contract is "project float probe values
+        // into `dt`'s bytes"; for Bool there is no correct projection to
+        // write. `x != 0.0`? `x > 0.5`? Every choice invents a convention
+        // nothing consumes. Worse, the one real Bool consumer (`MaskedFill`'s
+        // mask) needs the byte pattern `[0,1,0,1]` — chosen to exercise BOTH
+        // select branches — which is not a function of the float inputs at
+        // all. So the mask is built as a direct `HostTensor` literal below,
+        // and that is the right shape: a legitimate bypass, not a gap. Adding
+        // an arm here to satisfy a coverage gate would be fabricating data to
+        // please an instrument.
+        // F8E4M3: one byte per element. Produce a deterministic VALID normal
+        // value (exponent field kept out of the 0b1111 inf/nan range) — the
+        // exact value is irrelevant, only that it round-trips stably.
+        DType::F8E4M3 => vals.iter().enumerate().map(|(i, _)| 0x30u8 | ((i as u8) & 0x07)).collect(),
+        _ => return None,
+    })
+}
 
 pub(crate) fn ht(dt: DType, shape: Vec<usize>, vals: &[f32]) -> Option<HostTensor> {
     Some(HostTensor { dtype: dt, shape, bytes: to_bytes(dt, vals)? })
@@ -269,5 +340,189 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
         }
 
         _ => None,
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::ledger::VerificationLedger;
+    use crate::kernel::KernelBindingTable;
+
+    /// Parse a ledger dtype token back into a `DType`. The ledger stores
+    /// `DType`'s `Debug` name (see `ledger::dtypes_match`, which compares the
+    /// same way), so `DType::ALL` is the authoritative inverse — and it is a
+    /// hand-written const kept complete by a wildcard-free witness match, so a
+    /// new dtype cannot silently fall out of this lookup.
+    fn dtype_from_token(tok: &str) -> Option<DType> {
+        DType::ALL.iter().copied().find(|d| format!("{d:?}") == tok)
+    }
+
+    /// Every `pass` already banked in the checked-in ledger must still be
+    /// RE-EARNABLE: there must exist at least one registered op for which
+    /// [`build_primitive_probe`] can still synthesize a probe from that
+    /// record's dtype tuple.
+    ///
+    /// **The failure this exists to catch is silent by construction.** A
+    /// ledger record is consulted by `gate_precision` off its checked-in copy,
+    /// so it keeps satisfying the gate forever regardless of whether anything
+    /// can still reproduce it. Narrowing the probe path therefore costs
+    /// nothing at build time and nothing at test time — it only shows up the
+    /// day someone re-runs a seeder and watches records they never touched
+    /// fail to come back. Commit `23785514` did exactly this: it repointed
+    /// [`ht`] at a same-signature encoder with a strictly smaller domain and
+    /// orphaned 228 of 530 Vulkan records with a green build and a green
+    /// `--lib` suite.
+    ///
+    /// **What this gate does and does not establish.** It asserts a NECESSARY
+    /// condition (the tuple is still encodable at all), not a sufficient one:
+    /// because most recipes key on `dtypes.first()`, a record whose first
+    /// dtype is float but whose LATER operands are not is not covered here.
+    /// The records whose first dtype is non-float ARE covered, which is what
+    /// makes it born-red on the defect above. MEASURED, not predicted, by
+    /// repointing `ht` at the narrower encoder exactly as `23785514` did:
+    /// **152 of 749 records / 13 of 54 distinct tuples / 117 registered ops**.
+    /// Against the 228 records that commit actually orphaned, this gate sees
+    /// 152 — the residue is the first-dtype-float cases named above, and the
+    /// two numbers must not be conflated. The stronger per-record
+    /// form — join the ledger against `iter_entries()` and demand a probe for
+    /// that record's actual op — needs the backend feature that registered
+    /// the record, so it cannot be this unconditional gate. Stated as a split
+    /// rather than implied to be total.
+    ///
+    /// The three numbers reconcile exactly, and are written down together so
+    /// they cannot drift apart or be quoted for each other — each counts a
+    /// different construct over the SAME 530 Vulkan records:
+    /// **244** carry any non-float dtype *including* `Bool`; **228** carry one
+    /// *excluding* `Bool` (the 16-record difference is `masked_fill`, whose
+    /// mask is a direct `HostTensor` literal and never goes through `ht`, so
+    /// those records are unaffected); **152** have a non-float dtype in FIRST
+    /// position. 228 is the orphan count; 152 is what this gate sees; 244 was
+    /// a first, loose measurement and is wrong for this purpose.
+    ///
+    /// Note also that **all 152 are Vulkan** — every CPU and CUDA record has a
+    /// float first dtype. So this gate's teeth come entirely from Vulkan-earned
+    /// records, which is exactly what the non-float non-triviality assertion in
+    /// the body is protecting: lose those records and the gate goes quiet
+    /// rather than green.
+    ///
+    /// Populations are deliberately BOTH external to the code under test: ops
+    /// come from the live production binding table, dtype tuples from the
+    /// checked-in ledger. Deriving either from `build_primitive_probe`'s own
+    /// match arms would let a future narrowing shrink the requirement in
+    /// lockstep, and the assertion could never go red.
+    #[test]
+    fn every_earned_ledger_record_can_still_be_probed() {
+        // ---- op population: the LIVE production binding table ------------
+        let mut table = KernelBindingTable::new();
+        crate::dispatch::register_cpu_kernels(&mut table);
+        let mut ops: Vec<OpKind> = Vec::new();
+        for (op, _dtypes, _backend, _precision) in table.iter_precision() {
+            if !ops.contains(&op) {
+                ops.push(op);
+            }
+        }
+        assert!(
+            ops.len() >= 20,
+            "op population collapsed to {} ops — the assertion below would be \
+             vacuous. `register_cpu_kernels` is the production registration \
+             path; if it stopped populating the table, fix that, not this bound.",
+            ops.len()
+        );
+
+        // ---- record population: the CHECKED-IN ledger ---------------------
+        let ledger = VerificationLedger::embedded();
+        assert!(
+            !ledger.is_empty(),
+            "embedded ledger is empty — either the checked-in file was \
+             truncated (see the CPU seeder's merge discipline) or it failed to \
+             parse, and `embedded()` swallows a parse error into an empty \
+             ledger by design. Every assertion below would pass vacuously."
+        );
+
+        // Probeability is a property of the dtype TUPLE, not of the record, so
+        // evaluate once per distinct tuple (54, vs 749 records) and let the
+        // failure report be deduplicated for free.
+        const SEED: u64 = 0x5EED_0000_0000_0001;
+        let mut verdicts: Vec<(Vec<String>, bool)> = Vec::new();
+        let mut counts: Vec<(Vec<String>, usize)> = Vec::new();
+        let mut non_float_first_tuples = 0usize;
+
+        for rec in ledger.records() {
+            match counts.iter_mut().find(|(t, _)| *t == rec.dtypes) {
+                Some((_, n)) => *n += 1,
+                None => counts.push((rec.dtypes.clone(), 1)),
+            }
+            if verdicts.iter().any(|(t, _)| *t == rec.dtypes) {
+                continue;
+            }
+            let parsed: Option<Vec<DType>> =
+                rec.dtypes.iter().map(|t| dtype_from_token(t)).collect();
+            let ok = match &parsed {
+                // An unparseable token is a hard failure, not a skip: it means
+                // the ledger names a dtype this build does not have.
+                None => false,
+                Some(dts) => ops
+                    .iter()
+                    .any(|&op| build_primitive_probe(op, dts, SEED).is_some()),
+            };
+            if let Some(dts) = &parsed {
+                if !matches!(
+                    dts.first(),
+                    Some(DType::F32 | DType::F64 | DType::BF16 | DType::F16)
+                ) {
+                    non_float_first_tuples += 1;
+                }
+            }
+            verdicts.push((rec.dtypes.clone(), ok));
+        }
+
+        // ---- non-triviality: the gate must still be POINTED at the defect --
+        // Every recipe encodes floats, so a ledger of float-only tuples would
+        // pass this test no matter how far the encoder were narrowed. The
+        // records that give it teeth are the ones whose FIRST dtype is not a
+        // float — if they ever leave the ledger, this gate has gone vacuous
+        // and should say so rather than keep reporting green.
+        //
+        // The counter ranges over DISTINCT TUPLES, not records — it is
+        // incremented past the dedup `continue` above. At time of writing that
+        // is 13 tuples covering 152 records; only the `> 0` matters here, but
+        // the name says which construct it counts so the two never get quoted
+        // for each other.
+        assert!(
+            non_float_first_tuples > 0,
+            "no ledger record has a non-float first dtype, so this gate can no \
+             longer detect an encoder narrowing — it would pass against a \
+             float-only `to_bytes`. Re-point it or delete it; do not leave it \
+             passing."
+        );
+
+        let failed: Vec<_> = verdicts.iter().filter(|(_, ok)| !ok).collect();
+        if !failed.is_empty() {
+            let orphaned: usize = failed
+                .iter()
+                .map(|(t, _)| counts.iter().find(|(c, _)| c == t).map_or(0, |(_, n)| *n))
+                .sum();
+            let mut lines = String::new();
+            for (t, _) in &failed {
+                let n = counts.iter().find(|(c, _)| *c == **t).map_or(0, |(_, n)| *n);
+                lines.push_str(&format!("\n    {t:?} x{n}"));
+            }
+            panic!(
+                "{} of {} checked-in ledger records ({} of {} distinct dtype \
+                 tuples) can no longer be probed by ANY of the {} registered \
+                 ops — they are earned passes that nothing can re-earn. This \
+                 almost always means `to_bytes` in this module lost a dtype \
+                 arm, or `ht` was repointed at a narrower encoder. Do not fix \
+                 it by deleting the records.{}",
+                orphaned,
+                ledger.len(),
+                failed.len(),
+                verdicts.len(),
+                ops.len(),
+                lines
+            );
+        }
     }
 }

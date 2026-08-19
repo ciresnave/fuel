@@ -521,12 +521,17 @@ mod tests {
             .count();
         println!("[step3] ledger now holds {cuda_passes} CUDA bit-stable pass records");
 
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../docs/kernel-contracts/.fkc-verified-ledger.json");
-        let json = serde_json::to_string_pretty(ledger.records()).expect("serialize ledger");
-        let mut f = std::fs::File::create(&path).unwrap_or_else(|e| panic!("open {path:?}: {e}"));
-        f.write_all(json.as_bytes()).expect("write ledger");
-        f.write_all(b"\n").expect("write newline");
-        println!("[step3] wrote {} records to {}", ledger.records().len(), path.display());
+        // Route through the ONE merging writer (GAP-210): three seeders
+        // share this file and no backend may truncate another's records.
+        // `ledger` already carries the embedded set, so the merge is a
+        // no-op here — routing through it is what keeps that true.
+        let summary = super::super::ledger::write_merged_ledger(ledger.records());
+        println!(
+            "[step3] merged {} record(s) into {} existing -> {} total, written to {}",
+            summary.fresh,
+            summary.before,
+            summary.after,
+            summary.path.display(),
+        );
     }
 }

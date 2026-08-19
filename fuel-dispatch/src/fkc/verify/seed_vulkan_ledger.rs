@@ -38,15 +38,12 @@ use fuel_ir::probe::BackendId;
 use fuel_ir::DType;
 use fuel_vulkan_backend::VulkanBackend;
 
-use super::bit_stability::{
-    fill_deterministic, verify_bit_stability, HostTensor, KernelInvoker, ProbeInputs, VerifyError,
-    VerifyOutcome,
-};
+use super::bit_stability::{verify_bit_stability, KernelInvoker, VerifyError, VerifyOutcome};
 use super::invoker_cpu::CpuInvoker;
 use super::invoker_vulkan::VulkanInvoker;
 use super::ledger::{LedgerRecord, VerificationLedger};
-use super::probe_recipes::{build_primitive_probe, Probe};
-use crate::kernel::{KernelBindingTable, OpParams};
+use super::probe_recipes::build_primitive_probe;
+use crate::kernel::KernelBindingTable;
 
 /// Repeat-call count per probe for `bit_stable_on_same_hardware` (≥16 floor,
 /// same as the CPU/CUDA seeders).
@@ -78,59 +75,6 @@ const BYTE_EXACT_OPS: &[OpKind] = &[
     OpKind::ArgMaxDim,
     OpKind::ArgMinDim,
 ];
-
-/// Encode `vals` into `dt`'s byte representation. Unlike the CUDA seeder's
-/// float-only encoder, this also covers the integer + fp8 dtypes the Vulkan
-/// byte-level movers fan over. For `bit_stable` / byte-exact verification the
-/// values only need to be DETERMINISTIC (the kernel produces identical bytes
-/// for identical input bytes on the same hardware), so integer/fp8 encodings
-/// are lossy-but-stable projections of the float probe values.
-fn to_bytes(dt: DType, vals: &[f32]) -> Option<Vec<u8>> {
-    Some(match dt {
-        DType::F32 => bytemuck::cast_slice(vals).to_vec(),
-        DType::F64 => {
-            bytemuck::cast_slice(&vals.iter().map(|&x| x as f64).collect::<Vec<_>>()).to_vec()
-        }
-        DType::BF16 => bytemuck::cast_slice(
-            &vals.iter().map(|&x| half::bf16::from_f32(x)).collect::<Vec<_>>(),
-        )
-        .to_vec(),
-        DType::F16 => bytemuck::cast_slice(
-            &vals.iter().map(|&x| half::f16::from_f32(x)).collect::<Vec<_>>(),
-        )
-        .to_vec(),
-        DType::U8 => vals.iter().map(|&x| (x.abs() as u32 % 251) as u8).collect(),
-        DType::I8 => bytemuck::cast_slice(
-            &vals.iter().map(|&x| (x as i32).clamp(-120, 120) as i8).collect::<Vec<_>>(),
-        )
-        .to_vec(),
-        DType::I16 => bytemuck::cast_slice(
-            &vals.iter().map(|&x| x as i16).collect::<Vec<_>>(),
-        )
-        .to_vec(),
-        DType::U32 => bytemuck::cast_slice(
-            &vals.iter().map(|&x| x.abs() as u32).collect::<Vec<_>>(),
-        )
-        .to_vec(),
-        DType::I32 => bytemuck::cast_slice(
-            &vals.iter().map(|&x| x as i32).collect::<Vec<_>>(),
-        )
-        .to_vec(),
-        DType::I64 => bytemuck::cast_slice(
-            &vals.iter().map(|&x| x as i64).collect::<Vec<_>>(),
-        )
-        .to_vec(),
-        // F8E4M3: one byte per element. Produce a deterministic VALID normal
-        // value (exponent field kept out of the 0b1111 inf/nan range) — the
-        // exact value is irrelevant, only that it round-trips stably.
-        DType::F8E4M3 => vals
-            .iter()
-            .enumerate()
-            .map(|(i, _)| 0x30u8 | ((i as u8) & 0x07))
-            .collect(),
-        _ => return None,
-    })
-}
 
 
 /// One attempt outcome, kept even for skips/failures so the report shows
@@ -349,7 +293,6 @@ pub fn run_vulkan_verification_on(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     /// **Cross-vendor comparison for the `masked_fill` byte-select claim —
     /// VERIFY ONLY, writes nothing.**
@@ -499,12 +442,17 @@ mod tests {
             .count();
         println!("[v-fkc-9] ledger now holds {vk_passes} Vulkan pass records");
 
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../docs/kernel-contracts/.fkc-verified-ledger.json");
-        let json = serde_json::to_string_pretty(ledger.records()).expect("serialize ledger");
-        let mut f = std::fs::File::create(&path).unwrap_or_else(|e| panic!("open {path:?}: {e}"));
-        f.write_all(json.as_bytes()).expect("write ledger");
-        f.write_all(b"\n").expect("write newline");
-        println!("[v-fkc-9] wrote {} records to {}", ledger.records().len(), path.display());
+        // Route through the ONE merging writer (GAP-210): three seeders
+        // share this file and no backend may truncate another's records.
+        // `ledger` already carries the embedded set, so the merge is a
+        // no-op here — routing through it is what keeps that true.
+        let summary = super::super::ledger::write_merged_ledger(ledger.records());
+        println!(
+            "[v-fkc-9] merged {} record(s) into {} existing -> {} total, written to {}",
+            summary.fresh,
+            summary.before,
+            summary.after,
+            summary.path.display(),
+        );
     }
 }

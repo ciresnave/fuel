@@ -125,6 +125,24 @@ const TARGETS: &[(FusedOpId, Family, &str)] = &[
 /// `probe_from_operands` can reuse the exact same encode logic instead of
 /// duplicating it (this module is unconditional, not `cuda`-gated, so it's
 /// reachable from a `jit`-only build).
+///
+/// **The float-only domain is LOAD-BEARING — do not widen it, and do not
+/// unify it with `probe_recipes::to_bytes`.** They have the same signature
+/// and deliberately different domains, because they answer different
+/// questions. This one is the JIT-ingest encoder: `probe_from_operands`
+/// returning `None` is how an unencodable operand becomes NO PROBE rather
+/// than a probe over invented bytes, and
+/// `jit_ingest_probe::probe_from_operands_rejects_an_unencodable_integer_operand`
+/// asserts exactly that for `I32`. Widening this to cover integers would
+/// silently turn that rejection into an acceptance.
+///
+/// The sibling in `probe_recipes` is the ledger-verification encoder, where
+/// the requirement is the opposite: it must cover every dtype any backend's
+/// probes fan over, or earned ledger records stop being re-earnable. Commit
+/// `23785514` collapsed the two by repointing that module's `ht` here, and
+/// orphaned 228 of 530 Vulkan records behind a green build. **Two encoders
+/// whose narrowness and whose breadth are each independently asserted is the
+/// correct shape; one shared encoder cannot satisfy both tests.**
 pub(crate) fn to_bytes(dt: DType, vals: &[f32]) -> Option<Vec<u8>> {
     Some(match dt {
         DType::F32 => bytemuck::cast_slice(vals).to_vec(),
@@ -566,7 +584,6 @@ fn verified_at_string() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     /// Task 4.5b: empirically verify the CPU fused-op family and WRITE
     /// the resulting `"pass"` records to the git-checked-in verification
@@ -596,13 +613,16 @@ mod tests {
             "expected at least one CPU fused op to empirically verify bit-stable; got 0 — see log above",
         );
 
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../docs/kernel-contracts/.fkc-verified-ledger.json");
-        let json = serde_json::to_string_pretty(&records).expect("serialize ledger records");
-        let mut f = std::fs::File::create(&path)
-            .unwrap_or_else(|e| panic!("failed to open ledger at {path:?} for writing: {e}"));
-        f.write_all(json.as_bytes()).expect("write ledger json");
-        f.write_all(b"\n").expect("write trailing newline");
-        println!("[task-4.5b] wrote {passed} pass record(s) to {}", path.display());
+        // MERGE, never replace: this file also holds Vulkan and CUDA records
+        // that need live devices to re-earn and that CI cannot regenerate.
+        // The merge lives inside the writer, not here (GAP-210).
+        let summary = super::super::ledger::write_merged_ledger(&records);
+        println!(
+            "[task-4.5b] merged {} fresh CPU record(s) into {} existing -> {} total, written to {}",
+            summary.fresh,
+            summary.before,
+            summary.after,
+            summary.path.display(),
+        );
     }
 }
