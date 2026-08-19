@@ -485,6 +485,33 @@ fn live_baracuda_synthesizer_full_loop_scalar() {
     // (2) The full adopt path: (re-)synthesize -> take_kernel -> load_synth_kernel.
     let id = adopt_from_response(&synth, &req, BackendId::Cuda, |art| {
         eprintln!("synth emitted symbol: {}  (kind {:?})", art.link.symbol, art.kind);
+        // GAP-001's "First diagnostic" (docs/gaps.md), made runnable: dump what the
+        // synthesizer DECLARES, so it can be compared against what Fuel COMPUTES.
+        // The row records that diagnostic as "cuda-build-blocked"; it is closer to
+        // NOT RUNNABLE AS WRITTEN, because the seam carries no launch-geometry
+        // field at all. `SynthArtifact` is {artifact, kind, link{entry_point,
+        // symbol, structure_key, revision_hash}, contract} — so if a count/launch
+        // declaration exists anywhere it can only be inside `contract`, and no
+        // checked-in `.fkc.md` in this tree declares a `count_unit:`. Whether
+        // Baracuda EMITS one at runtime is the open half, and printing settles it.
+        //
+        // Observation only, deliberately: no assertion, and it does not touch the
+        // launch path, so the experiment stays single-variable. If nothing prints,
+        // the founding hedge at jit_cuda_load.rs:53 is still exactly true — Fuel
+        // sniffs the symbol suffix because there is nothing declared to read.
+        eprintln!("  structure_key: {}", art.link.structure_key);
+        eprintln!("  revision_hash: {:#x}", art.link.revision_hash);
+        let mut declared = 0usize;
+        for line in art.contract.lines() {
+            let l = line.to_ascii_lowercase();
+            if l.contains("count") || l.contains("launch") || l.contains("grid")
+                || l.contains("block") || l.contains("schedule") || l.contains("elem")
+            {
+                declared += 1;
+                eprintln!("  contract| {}", line.trim_end());
+            }
+        }
+        eprintln!("  contract lines declaring count/launch geometry: {declared}");
         load_synth_kernel(art, &device)
     })
     .expect("adopt_from_response: the full loop reached adopt")
