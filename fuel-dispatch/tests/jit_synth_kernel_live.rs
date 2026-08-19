@@ -154,6 +154,92 @@ fn download_f32(s: &Storage) -> Vec<f32> {
     }
 }
 
+/// Output buffer pre-filled with `NaN` — **NOT** `CudaStorageBytes::alloc`,
+/// and the difference is the whole point.
+///
+/// `CudaStorageBytes::alloc` is zero-initialized (`byte_storage.rs:122`,
+/// "`byte_count` zero-initialized bytes ... via `device.alloc_zeros::<u8>`").
+/// With a zero-filled destination, **"the kernel wrote zeros" and "the kernel
+/// never wrote at all" are byte-identical observations** — the instrument
+/// cannot separate a body defect from a launch defect, and GAP-001's entire
+/// recorded symptom is *"all-zero output, no error"*.
+///
+/// It is worse than the generic case here, because `relu(a + b)` on these
+/// fixtures **legitimately produces mostly zeros**: 4 of 7 expected outputs in
+/// [`live_baracuda_synthesizer_full_loop_scalar`] and 3 of 4 in
+/// [`jit_adopt_loads_and_launches_a_synthesized_cuda_kernel`] are exactly
+/// `0.0`. A zero-filled buffer agrees with a never-launched kernel on the
+/// majority of the oracle.
+///
+/// `NaN` is the right sentinel rather than some improbable magic number: no
+/// arithmetic in `relu(a + b)` or `x * p0` can *produce* `NaN` from finite
+/// inputs, so a surviving `NaN` means "nothing was written to this element",
+/// unambiguously. (`NaN != NaN` also makes it invisible to `assert_eq!`, which
+/// is exactly why the survivor check below is a SEPARATE assertion — see
+/// `assert_fully_written`.)
+fn alloc_out_nan_filled(dev: &CudaDevice, n: usize) -> Arc<RwLock<Storage>> {
+    Arc::new(RwLock::new(upload_f32(dev, &vec![f32::NAN; n])))
+}
+
+/// Separates *"never wrote"* from *"wrote the wrong values"*, and must be
+/// called BEFORE the value comparison.
+///
+/// Order matters: `assert_eq!(got, want)` on a NaN-survivor reports a value
+/// mismatch, which reads as a numerical/body defect and points the reader at
+/// the generator. The survivor check names the real condition — the element
+/// was never written — which is a launch/marshaling question and lands on a
+/// different owner.
+///
+/// The *pattern* of survivors carries more than their count, so this reports it:
+///
+/// - **none** — every element was written; any failure after this point is a
+///   VALUE defect, and the emitted body is a fair place to look.
+/// - **all** — this buffer never received a write.
+/// - **a suffix** — the kernel ran with too small an element count: a
+///   count-unit/marshaling defect, not a body defect.
+/// - **scattered** — a partial write, pointing at indexing/stride handling
+///   inside the body.
+///
+/// The suffix case is the one a bare *"is anything still NaN?"* check gets
+/// wrong, and it is worth spelling out because it is the obvious way to misuse
+/// this sentinel: a kernel launched with the wrong `n` faithfully writes the
+/// range it was told to, so the untouched tail reads as *never wrote*.
+/// Separating the two needs the PATTERN, not the boolean. A zero-initialized
+/// buffer cannot show either one.
+///
+/// **Bound on the "all" verdict — stated because it is easy to over-read.**
+/// All-survivors means *this buffer was never written*, which is not the same
+/// claim as *the kernel never launched*. A kernel that launched and wrote to a
+/// different allocation — a freed or rebound output binding — produces the
+/// byte-identical observation. Both candidate mechanisms sit on Fuel's side of
+/// the seam, so the ownership verdict survives the ambiguity; the mechanism
+/// does not follow from this assertion alone and must not be reported as if it
+/// did.
+fn assert_fully_written(got: &[f32], label: &str) {
+    let unwritten: Vec<usize> =
+        got.iter().enumerate().filter(|(_, v)| v.is_nan()).map(|(i, _)| i).collect();
+    if unwritten.is_empty() {
+        return;
+    }
+    let n = got.len();
+    // Indices arrive ascending, so "starts at n - len" is sufficient for a suffix.
+    let is_suffix = unwritten.first() == Some(&(n - unwritten.len()));
+    let verdict = if unwritten.len() == n {
+        "NOTHING was written to this buffer. The kernel either never launched, or          launched and wrote somewhere else (a freed/rebound output binding). Both          mechanisms are on the launch/marshaling side rather than in the emitted          body — but this assertion does not distinguish them, so do not report          that it does."
+    } else if is_suffix {
+        "the written region is a PREFIX — the kernel ran with too small an element          count. That is a count-unit/marshaling defect (elements vs bytes, or a grid          sized off the wrong extent), NOT a defect in the emitted body."
+    } else {
+        "the survivors are SCATTERED — some elements were written and others          skipped, which points at indexing/stride handling inside the body."
+    };
+    panic!(
+        "{label}: {} of {n} output elements still hold the pre-fill NaN —          {verdict}
+With the zero-initialized alloc this test used before, every one          of these would have read as 0.0 and been indistinguishable from a correct          relu output.
+Unwritten indices: {unwritten:?}
+got: {got:?}",
+        unwritten.len(),
+    );
+}
+
 #[test]
 #[ignore]
 fn jit_adopt_loads_and_launches_a_synthesized_cuda_kernel() {
@@ -205,8 +291,8 @@ fn jit_adopt_loads_and_launches_a_synthesized_cuda_kernel() {
     let b = [2.0_f32, 3.0, -10.0, 0.5];
     let lhs = Arc::new(RwLock::new(upload_f32(&device, &a)));
     let rhs = Arc::new(RwLock::new(upload_f32(&device, &b)));
-    let out_bytes = CudaStorageBytes::alloc(&device, a.len() * 4).expect("alloc out");
-    let out = Arc::new(RwLock::new(Storage::new(BackendStorage::Cuda(out_bytes), DType::F32)));
+    // NaN-prefilled, not zero-alloc'd: 3 of these 4 expected outputs are 0.0.
+    let out = alloc_out_nan_filled(&device, a.len());
 
     let layout = Layout::contiguous(Shape::from_dims(&[a.len()]));
     kernel(
@@ -219,6 +305,13 @@ fn jit_adopt_loads_and_launches_a_synthesized_cuda_kernel() {
 
     let got = download_f32(&out.read().unwrap());
     let want: Vec<f32> = a.iter().zip(b.iter()).map(|(x, y)| (x + y).max(0.0)).collect();
+    // CONTROL for the NaN prefill: this kernel is a hand-written PTX mock that
+    // is known to work on the current pin. If the prefill itself were broken
+    // (e.g. the upload didn't land, or `download_f32` re-read a stale buffer),
+    // THIS test would report unwritten elements — so a clean run here is what
+    // licenses reading a NaN survivor in the real-synthesizer test as a fact
+    // about that kernel rather than about the instrument.
+    assert_fully_written(&got, "mock relu(add) scalar kernel");
     assert_eq!(got, want, "relu(a + b) via the JIT-loaded CUDA kernel");
 }
 
@@ -317,8 +410,11 @@ fn jit_scalar_param_kernel_launches_with_live_value() {
         .kernel;
     let x = [1.0_f32, -5.0, 2.0, -0.5];
     let inp = Arc::new(RwLock::new(upload_f32(&device, &x)));
-    let out_bytes = CudaStorageBytes::alloc(&device, x.len() * 4).expect("alloc out");
-    let out = Arc::new(RwLock::new(Storage::new(BackendStorage::Cuda(out_bytes), DType::F32)));
+    // NaN-prefilled. This test's oracle happens to contain no zeros, so it is
+    // the ONE case where the old zero-alloc was not ambiguous — kept uniform
+    // anyway, because "which fixtures happen to avoid 0.0" is not a property
+    // anyone should have to re-derive when editing the fixture.
+    let out = alloc_out_nan_filled(&device, x.len());
 
     let layout = Layout::contiguous(Shape::from_dims(&[x.len()]));
     kernel(
@@ -333,6 +429,7 @@ fn jit_scalar_param_kernel_launches_with_live_value() {
 
     let got = download_f32(&out.read().unwrap());
     let want: Vec<f32> = x.iter().map(|v| v * 2.5).collect();
+    assert_fully_written(&got, "mock mul_param scalar-Param kernel");
     assert_eq!(got, want, "x * p0 via the JIT-loaded scalar-Param CUDA kernel");
 }
 
@@ -407,8 +504,16 @@ fn live_baracuda_synthesizer_full_loop_scalar() {
     let b = [2.0_f32, 3.0, -10.0, 0.5, -1.0, 7.0, 4.0];
     let lhs = Arc::new(RwLock::new(upload_f32(&device, &a)));
     let rhs = Arc::new(RwLock::new(upload_f32(&device, &b)));
-    let out_bytes = CudaStorageBytes::alloc(&device, a.len() * 4).expect("alloc out");
-    let out = Arc::new(RwLock::new(Storage::new(BackendStorage::Cuda(out_bytes), DType::F32)));
+    // ⚠️ THE GAP-001 DISCRIMINATOR. Expected output here is
+    // [3, 0, 0, 0, 2, 0, 4] — FOUR of seven elements are legitimately 0.0.
+    // Against the zero-filled alloc this line used to use, a kernel that never
+    // executed produced [0, 0, 0, 0, 0, 0, 0], agreeing with the correct answer
+    // on the majority of the oracle and differing only where relu happened to
+    // be positive. That is the instrument that recorded GAP-001's symptom as
+    // "all-zero output, no error" — a description that fits BOTH a .78 body
+    // defect (theirs) and a launch/marshaling failure (ours), which is why the
+    // 77→78 bisect could never settle the root cause.
+    let out = alloc_out_nan_filled(&device, a.len());
     let layout = Layout::contiguous(Shape::from_dims(&[a.len()]));
     kernel(
         &[lhs, rhs],
@@ -420,6 +525,22 @@ fn live_baracuda_synthesizer_full_loop_scalar() {
 
     let got = download_f32(&out.read().unwrap());
     let want: Vec<f32> = a.iter().zip(b.iter()).map(|(x, y)| (x + y).max(0.0)).collect();
+    // ⚠️ THE DISCRIMINATOR, and it must be read BEFORE the value comparison.
+    //
+    //   surviving NaN  ⇒ the kernel NEVER WROTE these elements. A launch /
+    //                    marshaling failure — OURS. The 77→78 bisect would then
+    //                    be pinned to the wrong side entirely, and root
+    //                    `Cargo.toml`'s exact `baracuda-kernelgen = "=0.0.1-
+    //                    alpha.77"` would be holding back a generator that was
+    //                    never at fault.
+    //   genuine zeros  ⇒ the kernel RAN and produced zeros. A body/contract
+    //                    defect on the generator side — THEIRS, and the bisect
+    //                    stands as recorded.
+    //
+    // Reporting either answer closes the "root-cause sub-form UNRESOLVED" note
+    // on the GAP-001 row; the point of this line is that they are now
+    // DISTINGUISHABLE, which under the previous zero-filled alloc they were not.
+    assert_fully_written(&got, "REAL BaracudaSynthesizer scalar kernel (GAP-001)");
     assert_eq!(
         got, want,
         "relu(a + b) via Baracuda's OWN alpha.76-synthesized CUDA kernel — the LIVE LOOP",
