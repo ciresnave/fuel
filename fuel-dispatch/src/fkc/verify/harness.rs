@@ -346,7 +346,11 @@ mod tests {
                 && r.claim == "bit_stable_on_same_hardware"
                 && r.result == "pass"
         }));
-        let ledger_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../docs/kernel-contracts/.fkc-verified-ledger.json");
-        std::fs::write(ledger_path, serde_json::to_string_pretty(ledger.records()).unwrap()).unwrap();
+        // Route through the ONE merging writer (GAP-210) rather than opening
+        // the file here — this was a fourth writer, and it is the one that
+        // used `fs::write` instead of `File::create`, which is why
+        // `no_seeder_writes_the_ledger_behind_this_writer` checks for the
+        // whole family of ways to open a file and not one spelling of it.
+        super::super::ledger::write_merged_ledger(ledger.records());
     }
 }
