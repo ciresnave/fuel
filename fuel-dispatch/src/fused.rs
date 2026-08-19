@@ -24,8 +24,8 @@
 //!   hot path.
 
 use crate::kernel::{KernelCaps, KernelRef};
-use fuel_ir::{DType, Shape, backend::BackendCapabilities, probe::BackendId};
 use fuel_graph::registry::{FusedOpId, FusedOpParams};
+use fuel_ir::{DType, Shape, backend::BackendCapabilities, probe::BackendId};
 use smallvec::SmallVec;
 use std::collections::HashMap;
 
@@ -555,7 +555,11 @@ pub fn cost_fused_linear_cpu(
     let m = a_dims[rank - 2] as u64;
     let k = a_dims[rank - 1] as u64;
     let n = b_dims[b_dims.len() - 1] as u64;
-    let batch: u64 = a_dims[..rank - 2].iter().map(|d| *d as u64).product::<u64>().max(1);
+    let batch: u64 = a_dims[..rank - 2]
+        .iter()
+        .map(|d| *d as u64)
+        .product::<u64>()
+        .max(1);
     // FMA counts as 2 FLOPs. Matmul: 2·M·N·K per batch. Bias-add: M·N per batch.
     let mm_flops = 2u64 * m * n * k * batch;
     let bias_flops = m * n * batch;
@@ -601,7 +605,8 @@ pub fn cost_fused_softmax_cross_entropy_cpu(
     _caps: &BackendCapabilities,
 ) -> CostEstimate {
     debug_assert_eq!(
-        shapes.len(), 2,
+        shapes.len(),
+        2,
         "FusedSoftmaxCrossEntropy cost: expected 2 input shapes (logits, targets)",
     );
     let logits_dims = shapes[0].dims();
@@ -660,7 +665,8 @@ pub fn cost_causal_conv1d_cpu(
     _caps: &BackendCapabilities,
 ) -> CostEstimate {
     debug_assert_eq!(
-        shapes.len(), 3,
+        shapes.len(),
+        3,
         "CausalConv1d cost: expected 3 input shapes (x, weight, bias)",
     );
     let use_silu = match params {
@@ -722,7 +728,8 @@ pub fn cost_selective_scan_cpu(
     _caps: &BackendCapabilities,
 ) -> CostEstimate {
     debug_assert_eq!(
-        shapes.len(), 5,
+        shapes.len(),
+        5,
         "SelectiveScan cost: expected 5 input shapes (u, delta, a, b, c)",
     );
     let u_dims = shapes[0].dims();
@@ -779,7 +786,8 @@ pub fn cost_ssd_chunk_scan_cpu(
     _caps: &BackendCapabilities,
 ) -> CostEstimate {
     debug_assert_eq!(
-        shapes.len(), 5,
+        shapes.len(),
+        5,
         "SsdChunkScan cost: expected 5 input shapes (x, dt, a, b, c)",
     );
     let x_dims = shapes[0].dims();
@@ -834,7 +842,8 @@ pub fn cost_nf4_matmul_cpu(
     _caps: &BackendCapabilities,
 ) -> CostEstimate {
     debug_assert_eq!(
-        shapes.len(), 3,
+        shapes.len(),
+        3,
         "Nf4Matmul cost: expected 3 input shapes (activations, w_packed, absmax)",
     );
     let block_size = match params {
@@ -908,7 +917,11 @@ pub fn cost_conv2d_cpu(
         "Conv2D cost: expected 2 or 3 input shapes",
     );
     let (stride, padding, groups) = match params {
-        FusedOpParams::Conv2D { stride, padding, groups } => (*stride, *padding, *groups),
+        FusedOpParams::Conv2D {
+            stride,
+            padding,
+            groups,
+        } => (*stride, *padding, *groups),
         _ => return CostEstimate::default(),
     };
     let x_dims = shapes[0].dims();
@@ -917,12 +930,16 @@ pub fn cost_conv2d_cpu(
         return CostEstimate::default();
     }
     let (n, cin, h_in, w_in) = (
-        x_dims[0] as u64, x_dims[1] as u64,
-        x_dims[2] as u64, x_dims[3] as u64,
+        x_dims[0] as u64,
+        x_dims[1] as u64,
+        x_dims[2] as u64,
+        x_dims[3] as u64,
     );
     let (cout, cin_per_g, kh, kw) = (
-        w_dims[0] as u64, w_dims[1] as u64,
-        w_dims[2] as u64, w_dims[3] as u64,
+        w_dims[0] as u64,
+        w_dims[1] as u64,
+        w_dims[2] as u64,
+        w_dims[3] as u64,
     );
     let (sh, sw) = (stride.0 as u64, stride.1 as u64);
     let (ph, pw) = (padding.0 as u64, padding.1 as u64);
@@ -935,10 +952,14 @@ pub fn cost_conv2d_cpu(
     // summed across N · Cout · Hout · Wout output positions. Bias-add
     // contributes one FLOP per output element.
     let conv_flops = 2u64 * n * cout * h_out * w_out * cin_per_g * kh * kw;
-    let bias_flops = if shapes.len() == 3 { n * cout * h_out * w_out } else { 0 };
-    let elems_in   = n * cin * h_in * w_in;
-    let elems_w    = cout * cin_per_g * kh * kw;
-    let elems_out  = n * cout * h_out * w_out;
+    let bias_flops = if shapes.len() == 3 {
+        n * cout * h_out * w_out
+    } else {
+        0
+    };
+    let elems_in = n * cin * h_in * w_in;
+    let elems_w = cout * cin_per_g * kh * kw;
+    let elems_out = n * cout * h_out * w_out;
     let elems_bias = if shapes.len() == 3 { cout } else { 0 };
     let bytes_moved = (elems_in + elems_w + elems_out + elems_bias) * 4;
     CostEstimate {
@@ -1025,16 +1046,12 @@ pub fn cost_norm_family_cpu(
     }
     let elems: u64 = dims.iter().map(|&d| d as u64).product();
     let flops_per_elem: u64 = match params {
-        FusedOpParams::SoftmaxLastDim
-        | FusedOpParams::SoftmaxLastDimBackward
-            => 5, // max-sub + exp + sum + divide
-        FusedOpParams::RmsNormLastDim { .. }
-        | FusedOpParams::RmsNormLastDimBackward { .. }
-            => 4, // sqr + sum + sqrt + divide
-        FusedOpParams::LayerNormLastDim { .. }
-        | FusedOpParams::LayerNormLastDimBackward { .. }
-            => 7, // mean-sub + sqr + sum + sqrt + divide + center
-        _ => 5,   // fallback if a future caller mis-dispatches
+        FusedOpParams::SoftmaxLastDim | FusedOpParams::SoftmaxLastDimBackward => 5, // max-sub + exp + sum + divide
+        FusedOpParams::RmsNormLastDim { .. } | FusedOpParams::RmsNormLastDimBackward { .. } => 4, // sqr + sum + sqrt + divide
+        FusedOpParams::LayerNormLastDim { .. } | FusedOpParams::LayerNormLastDimBackward { .. } => {
+            7
+        } // mean-sub + sqr + sum + sqrt + divide + center
+        _ => 5, // fallback if a future caller mis-dispatches
     };
     // Backwards have 2 inputs + 1 output (3 element-count touches);
     // forwards have 1 input + 1 output (2 element-count touches).
@@ -1071,7 +1088,11 @@ pub fn cost_rope_cpu(
     _params: &FusedOpParams,
     _caps: &BackendCapabilities,
 ) -> CostEstimate {
-    debug_assert_eq!(shapes.len(), 3, "Rope cost: expected 3 input shapes (x, cos, sin)");
+    debug_assert_eq!(
+        shapes.len(),
+        3,
+        "Rope cost: expected 3 input shapes (x, cos, sin)"
+    );
     let dims = shapes[0].dims();
     if dims.is_empty() {
         return CostEstimate::default();
@@ -1115,10 +1136,18 @@ pub fn cost_conv_transpose2d_cpu(
     params: &FusedOpParams,
     _caps: &BackendCapabilities,
 ) -> CostEstimate {
-    debug_assert_eq!(shapes.len(), 2, "ConvTranspose2D cost: expected 2 input shapes");
+    debug_assert_eq!(
+        shapes.len(),
+        2,
+        "ConvTranspose2D cost: expected 2 input shapes"
+    );
     let (stride, padding, output_padding, dilation, groups) = match params {
         FusedOpParams::ConvTranspose2D {
-            stride, padding, output_padding, dilation, groups,
+            stride,
+            padding,
+            output_padding,
+            dilation,
+            groups,
         } => (*stride, *padding, *output_padding, *dilation, *groups),
         _ => return CostEstimate::default(),
     };
@@ -1128,12 +1157,16 @@ pub fn cost_conv_transpose2d_cpu(
         return CostEstimate::default();
     }
     let (n, cin, h_in, w_in) = (
-        x_dims[0] as u64, x_dims[1] as u64,
-        x_dims[2] as u64, x_dims[3] as u64,
+        x_dims[0] as u64,
+        x_dims[1] as u64,
+        x_dims[2] as u64,
+        x_dims[3] as u64,
     );
     let (_, cout_per_g, kh, kw) = (
-        w_dims[0] as u64, w_dims[1] as u64,
-        w_dims[2] as u64, w_dims[3] as u64,
+        w_dims[0] as u64,
+        w_dims[1] as u64,
+        w_dims[2] as u64,
+        w_dims[3] as u64,
     );
     let cout = cout_per_g * groups as u64;
     // Output spatial dims: `(H-1)·stride - 2·pad + dilation·(K-1) + out_pad + 1`.
@@ -1149,9 +1182,9 @@ pub fn cost_conv_transpose2d_cpu(
     let w_out = w_out.saturating_sub(2 * padding.1 as u64);
     let cin_per_g = cin / groups as u64;
     let flops = 2u64 * n * cout * h_out * w_out * cin_per_g * kh * kw;
-    let elems_in   = n * cin * h_in * w_in;
-    let elems_w    = cin * cout_per_g * kh * kw;
-    let elems_out  = n * cout * h_out * w_out;
+    let elems_in = n * cin * h_in * w_in;
+    let elems_w = cin * cout_per_g * kh * kw;
+    let elems_out = n * cout * h_out * w_out;
     let bytes_moved = (elems_in + elems_w + elems_out) * 4;
     CostEstimate {
         flops,
@@ -1202,8 +1235,10 @@ pub fn cost_attn_cpu(
         return CostEstimate::default();
     }
     let (b, hq, sq, d) = (
-        q_dims[0] as u64, q_dims[1] as u64,
-        q_dims[2] as u64, q_dims[3] as u64,
+        q_dims[0] as u64,
+        q_dims[1] as u64,
+        q_dims[2] as u64,
+        q_dims[3] as u64,
     );
     // Approximate K-len from input[1] (k or k_cache). For FlashAttn
     // k.shape[-2] is Sk; for PagedAttn k_cache.shape is `[num_blocks,
@@ -1283,12 +1318,18 @@ pub fn cost_attn_backward_cpu(
         return CostEstimate::default();
     }
     let (b, hq, sq, d) = (
-        q_dims[0] as u64, q_dims[1] as u64,
-        q_dims[2] as u64, q_dims[3] as u64,
+        q_dims[0] as u64,
+        q_dims[1] as u64,
+        q_dims[2] as u64,
+        q_dims[3] as u64,
     );
     let sk: u64 = if shapes.len() >= 2 {
         let k_dims = shapes[1].dims();
-        if k_dims.len() == 4 { k_dims[2] as u64 } else { sq }
+        if k_dims.len() == 4 {
+            k_dims[2] as u64
+        } else {
+            sq
+        }
     } else {
         sq
     };
@@ -1371,7 +1412,11 @@ pub fn cost_inplace_affine_cpu(
     _params: &FusedOpParams,
     _caps: &BackendCapabilities,
 ) -> CostEstimate {
-    debug_assert_eq!(shapes.len(), 1, "InplaceAffine cost: expected 1 input shape");
+    debug_assert_eq!(
+        shapes.len(),
+        1,
+        "InplaceAffine cost: expected 1 input shape"
+    );
     let n: u64 = shapes[0].dims().iter().map(|&d| d as u64).product();
     // mul + add per element = 1 FMA. Treat as 1 FLOP for simplicity
     // (matches Affine's accounting; the fused mul-add is one tier-2
@@ -1412,7 +1457,11 @@ pub fn cost_powi_backward_cpu(
     params: &FusedOpParams,
     _caps: &BackendCapabilities,
 ) -> CostEstimate {
-    debug_assert_eq!(shapes.len(), 2, "PowIBackward cost: expected 2 input shapes");
+    debug_assert_eq!(
+        shapes.len(),
+        2,
+        "PowIBackward cost: expected 2 input shapes"
+    );
     let in_count: u64 = shapes[0].dims().iter().map(|&d| d as u64).product();
     let exp_abs = match params {
         FusedOpParams::PowIBackward { exp } => (*exp).unsigned_abs().max(1) as u64,
@@ -1439,7 +1488,11 @@ pub fn cost_reduce_max_to_backward_cpu(
     _params: &FusedOpParams,
     _caps: &BackendCapabilities,
 ) -> CostEstimate {
-    debug_assert_eq!(shapes.len(), 2, "ReduceMaxToBackward cost: expected 2 input shapes");
+    debug_assert_eq!(
+        shapes.len(),
+        2,
+        "ReduceMaxToBackward cost: expected 2 input shapes"
+    );
     let in_count: u64 = shapes[0].dims().iter().map(|&d| d as u64).product();
     let out_count: u64 = shapes[1].dims().iter().map(|&d| d as u64).product();
     let flops = 5 * in_count + 2 * out_count;
@@ -1473,7 +1526,11 @@ pub fn cost_qmatmul_cpu(
         return CostEstimate::default();
     }
     let m = a_dims[rank - 2] as u64;
-    let batch: u64 = a_dims[..rank - 2].iter().map(|&d| d as u64).product::<u64>().max(1);
+    let batch: u64 = a_dims[..rank - 2]
+        .iter()
+        .map(|&d| d as u64)
+        .product::<u64>()
+        .max(1);
     // 2·M·N·K FLOPs per batch (FMA).
     let flops = 2 * batch * m * n * k;
     // Bandwidth: read A + W_Q (counted as bytes via shapes[1]
@@ -1795,9 +1852,7 @@ mod tests {
         // Per-dtype lookup hits each registration.
         for dtype in [DType::F32, DType::F64, DType::BF16, DType::F16] {
             let want = [dtype; 4];
-            let got = r.lookup_by_dtypes(
-                FusedOps::FUSED_LINEAR, BackendId::Cpu, &want,
-            );
+            let got = r.lookup_by_dtypes(FusedOps::FUSED_LINEAR, BackendId::Cpu, &want);
             assert!(
                 got.is_some(),
                 "lookup_by_dtypes missed FusedLinear × Cpu × {dtype:?}",
@@ -1835,12 +1890,11 @@ mod tests {
             let no_bias = [dtype; 3];
             let with_bias = [dtype; 4];
             assert!(
-                r.lookup_by_dtypes(FusedOps::CONV2D, BackendId::Cpu, &no_bias).is_some(),
+                r.lookup_by_dtypes(FusedOps::CONV2D, BackendId::Cpu, &no_bias)
+                    .is_some(),
                 "lookup_by_dtypes missed Conv2D × Cpu × {dtype:?} (no-bias)",
             );
-            let with_bias_impl = r.lookup_by_dtypes(
-                FusedOps::CONV2D, BackendId::Cpu, &with_bias,
-            );
+            let with_bias_impl = r.lookup_by_dtypes(FusedOps::CONV2D, BackendId::Cpu, &with_bias);
             assert!(
                 with_bias_impl.is_some(),
                 "lookup_by_dtypes missed Conv2D × Cpu × {dtype:?} (with-bias)",
@@ -1887,7 +1941,7 @@ mod tests {
     /// OpKind.
     #[test]
     fn precision_guarantee_lint_bit_stable_cpu_coverage() {
-        use fuel_graph::registry::{default_registry, FusedOpId};
+        use fuel_graph::registry::{FusedOpId, default_registry};
 
         // The allowlist is empty now that every registered fused op
         // has bit-stable CPU coverage. If a future commit introduces
@@ -1912,7 +1966,10 @@ mod tests {
                 // Sanity: a gap entry should have no CPU coverage.
                 // If a CPU registration shows up for an
                 // allowlisted id, the gap entry should be removed.
-                let has_cpu = kernels.impls_for(id).iter().any(|(b, _)| *b == BackendId::Cpu);
+                let has_cpu = kernels
+                    .impls_for(id)
+                    .iter()
+                    .any(|(b, _)| *b == BackendId::Cpu);
                 if has_cpu {
                     failures.push(format!(
                         "FusedOpId {id:?} ({name}) is on the KNOWN_GAPS allowlist \
@@ -1996,8 +2053,10 @@ mod tests {
         let has_bit_stable_cpu = empty.impls_for(id).iter().any(|(backend, impl_)| {
             *backend == BackendId::Cpu && impl_.precision.bit_stable_on_same_hardware
         });
-        assert!(!has_bit_stable_cpu,
-            "empty registry must not report bit-stable CPU coverage");
+        assert!(
+            !has_bit_stable_cpu,
+            "empty registry must not report bit-stable CPU coverage"
+        );
     }
 
     /// Negative-path check: a CPU registration without
@@ -2024,8 +2083,10 @@ mod tests {
         let has_bit_stable_cpu = r.impls_for(id).iter().any(|(backend, impl_)| {
             *backend == BackendId::Cpu && impl_.precision.bit_stable_on_same_hardware
         });
-        assert!(!has_bit_stable_cpu,
-            "an UNAUDITED-precision CPU impl must not satisfy the bit-stable lint");
+        assert!(
+            !has_bit_stable_cpu,
+            "an UNAUDITED-precision CPU impl must not satisfy the bit-stable lint"
+        );
     }
 
     /// Step 6 + backward-helper follow-up — coverage assertion for
@@ -2047,25 +2108,26 @@ mod tests {
         // QMatMul = 1 (F32 only). The 4 backward helpers = 4 dtypes
         // each.
         for (id, want) in [
-            (FusedOps::SOFTMAX_LAST_DIM,             4usize),
-            (FusedOps::RMS_NORM_LAST_DIM,            4),
-            (FusedOps::LAYER_NORM_LAST_DIM,          4),
-            (FusedOps::ROPE,                         4),
-            (FusedOps::CONV_TRANSPOSE2D,             8),
-            (FusedOps::FLASH_ATTN,                   8),
-            (FusedOps::FLASH_ATTN_BACKWARD_Q,        8),
-            (FusedOps::FLASH_ATTN_BACKWARD_K,        8),
-            (FusedOps::FLASH_ATTN_BACKWARD_V,        8),
-            (FusedOps::PAGED_ATTN,                   8),
-            (FusedOps::QMATMUL,                      1),
-            (FusedOps::SOFTMAX_LAST_DIM_BACKWARD,    4),
+            (FusedOps::SOFTMAX_LAST_DIM, 4usize),
+            (FusedOps::RMS_NORM_LAST_DIM, 4),
+            (FusedOps::LAYER_NORM_LAST_DIM, 4),
+            (FusedOps::ROPE, 4),
+            (FusedOps::CONV_TRANSPOSE2D, 8),
+            (FusedOps::FLASH_ATTN, 8),
+            (FusedOps::FLASH_ATTN_BACKWARD_Q, 8),
+            (FusedOps::FLASH_ATTN_BACKWARD_K, 8),
+            (FusedOps::FLASH_ATTN_BACKWARD_V, 8),
+            (FusedOps::PAGED_ATTN, 8),
+            (FusedOps::QMATMUL, 1),
+            (FusedOps::SOFTMAX_LAST_DIM_BACKWARD, 4),
             (FusedOps::LAYER_NORM_LAST_DIM_BACKWARD, 4),
-            (FusedOps::RMS_NORM_LAST_DIM_BACKWARD,   4),
-            (FusedOps::REDUCE_MAX_TO_BACKWARD,       4),
+            (FusedOps::RMS_NORM_LAST_DIM_BACKWARD, 4),
+            (FusedOps::REDUCE_MAX_TO_BACKWARD, 4),
         ] {
             let impls = r.impls_for(id);
             assert_eq!(
-                impls.len(), want,
+                impls.len(),
+                want,
                 "expected {want} CPU impls for FusedOpId {id:?}, got {}",
                 impls.len(),
             );
@@ -2108,9 +2170,9 @@ mod tests {
             mem_bandwidth_bytes_per_ns: 4.0,
         };
         let params = FusedOpParams::Conv2D {
-            stride:  (1, 1),
+            stride: (1, 1),
             padding: (1, 1),
-            groups:  1,
+            groups: 1,
         };
         let c = cost_conv2d_cpu(&[x, w, bias], &params, &caps);
         assert_eq!(c.flops, 55296 + 768);
@@ -2123,7 +2185,7 @@ mod tests {
         use fuel_ir::DeviceLocation;
         use std::collections::HashSet;
 
-        let a = Shape::from_dims(&[2, 4, 8]);  // batch=2, M=4, K=8
+        let a = Shape::from_dims(&[2, 4, 8]); // batch=2, M=4, K=8
         let b = Shape::from_dims(&[2, 8, 16]); // batch=2, K=8, N=16
         let bias = Shape::from_dims(&[16]);
         let caps = BackendCapabilities {
@@ -2137,11 +2199,7 @@ mod tests {
             compute_throughput_flops_per_ns: 1.0,
             mem_bandwidth_bytes_per_ns: 4.0,
         };
-        let c = cost_fused_linear_cpu(
-            &[a, b, bias],
-            &FusedOpParams::FusedLinear,
-            &caps,
-        );
+        let c = cost_fused_linear_cpu(&[a, b, bias], &FusedOpParams::FusedLinear, &caps);
         // 2 · 2 · 4 · 16 · 8 = 2048 matmul FLOPs + 2 · 4 · 16 = 128 bias FLOPs
         assert_eq!(c.flops, 2048 + 128);
         assert!(c.bytes_moved > 0);
@@ -2156,14 +2214,23 @@ mod tests {
     /// dtype key must miss (`None`), never fall back to an unrelated entry.
     #[test]
     fn bundle_slot_names_round_trip_through_the_fused_registry() {
-        use fuel_ir::{DType, probe::BackendId};
         use fuel_graph::registry::FusedOps;
+        use fuel_ir::{DType, probe::BackendId};
         let mut reg = FusedKernelRegistry::new();
         let dtypes = &[DType::F32, DType::F32][..];
-        reg.record_bundle_slot_names(FusedOps::SELECTIVE_SCAN, BackendId::Cpu, dtypes,
-            &["y".to_string(), "last_state".to_string()]);
-        assert_eq!(reg.bundle_slot_names(FusedOps::SELECTIVE_SCAN, BackendId::Cpu, dtypes),
-            Some(&["y".to_string(), "last_state".to_string()][..]));
-        assert_eq!(reg.bundle_slot_names(FusedOps::SELECTIVE_SCAN, BackendId::Cpu, &[DType::F16][..]), None);
+        reg.record_bundle_slot_names(
+            FusedOps::SELECTIVE_SCAN,
+            BackendId::Cpu,
+            dtypes,
+            &["y".to_string(), "last_state".to_string()],
+        );
+        assert_eq!(
+            reg.bundle_slot_names(FusedOps::SELECTIVE_SCAN, BackendId::Cpu, dtypes),
+            Some(&["y".to_string(), "last_state".to_string()][..])
+        );
+        assert_eq!(
+            reg.bundle_slot_names(FusedOps::SELECTIVE_SCAN, BackendId::Cpu, &[DType::F16][..]),
+            None
+        );
     }
 }

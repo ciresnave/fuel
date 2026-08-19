@@ -33,9 +33,14 @@ impl LazyEmbedding {
                 vocab_size,
                 hidden,
                 vocab_size * hidden,
-            )).bt());
+            ))
+            .bt());
         }
-        Ok(Self { table, vocab_size, hidden })
+        Ok(Self {
+            table,
+            vocab_size,
+            hidden,
+        })
     }
 
     /// Vocabulary size (first axis of the embedding table).
@@ -62,7 +67,8 @@ impl LazyEmbedding {
             return Err(crate::Error::Msg(format!(
                 "LazyEmbedding::forward: token_ids must be U32, got {:?}",
                 token_ids.dtype(),
-            )).bt());
+            ))
+            .bt());
         }
         let input_shape = token_ids.shape();
         let input_dims = input_shape.dims().to_vec();
@@ -106,13 +112,9 @@ mod tests {
         let hidden = 4;
         let seq = 5;
         let table = make_table(vocab, hidden);
-        let emb = LazyEmbedding::new(
-            Arc::from(table), vocab, hidden,
-        ).unwrap();
+        let emb = LazyEmbedding::new(Arc::from(table), vocab, hidden).unwrap();
         let tokens: Vec<u32> = vec![0, 3, 1, 6, 2];
-        let token_ids = LazyTensor::from_u32(
-            tokens, Shape::from_dims(&[seq]), &Device::cpu(),
-        );
+        let token_ids = LazyTensor::from_u32(tokens, Shape::from_dims(&[seq]), &Device::cpu());
         let out = emb.forward(&token_ids).unwrap();
         assert_eq!(out.shape().dims(), &[seq, hidden]);
         let got = out.realize_f32();
@@ -136,9 +138,7 @@ mod tests {
             expected.extend_from_slice(&table[base..base + hidden]);
         }
 
-        let emb = LazyEmbedding::new(
-            Arc::from(table), vocab, hidden,
-        ).unwrap();
+        let emb = LazyEmbedding::new(Arc::from(table), vocab, hidden).unwrap();
         let token_ids = LazyTensor::from_u32(
             tokens.clone(),
             Shape::from_dims(&[tokens.len()]),
@@ -149,10 +149,7 @@ mod tests {
         let got = out.realize_f32();
         assert_eq!(got.len(), expected.len());
         for (i, (a, e)) in got.iter().zip(expected.iter()).enumerate() {
-            assert!(
-                (a - e).abs() < 1e-6,
-                "embedding[{i}] expected {e}, got {a}",
-            );
+            assert!((a - e).abs() < 1e-6, "embedding[{i}] expected {e}, got {a}",);
         }
     }
 }

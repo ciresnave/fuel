@@ -18,11 +18,11 @@
 
 use std::sync::{Arc, RwLock};
 
-use fuel_ir::{probe::BackendId, DType, DeviceLocation, Shape};
 use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
 use fuel_dispatch::pipelined::{PipelinedExecutor, StorageCache};
 use fuel_dispatch::residency::insert_residency_evictions;
 use fuel_graph::{Graph, Node, NodeId, Op, SharedGraph};
+use fuel_ir::{DType, DeviceLocation, Shape, probe::BackendId};
 use fuel_memory::{BackendStorage, Storage};
 
 fn dev_or_skip() -> Option<CudaDevice> {
@@ -89,7 +89,10 @@ fn cuda_evict_fault_back_roundtrip_preserves_output() {
         let mut cache = StorageCache::new();
         cache.insert(
             a,
-            Arc::new(RwLock::new(Storage::new(BackendStorage::Cuda(cuda), DType::F32))),
+            Arc::new(RwLock::new(Storage::new(
+                BackendStorage::Cuda(cuda),
+                DType::F32,
+            ))),
         );
         cache
     };
@@ -124,13 +127,20 @@ fn cuda_evict_fault_back_roundtrip_preserves_output() {
         let g = graph2.read().unwrap();
         let chain = chains.iter().find(|c| c.candidate == a2).unwrap();
         assert!(
-            matches!(g.node(chain.move_node).op, Op::Move { target: DeviceLocation::Cpu }),
+            matches!(
+                g.node(chain.move_node).op,
+                Op::Move {
+                    target: DeviceLocation::Cpu
+                }
+            ),
             "evict half must be a destructive D2H Op::Move",
         );
         assert!(
             matches!(
                 g.node(chain.reload).op,
-                Op::Copy { target: DeviceLocation::Cuda { gpu_id: 0 } },
+                Op::Copy {
+                    target: DeviceLocation::Cuda { gpu_id: 0 }
+                },
             ),
             "fault-back half must be an H2D Op::Copy reload",
         );

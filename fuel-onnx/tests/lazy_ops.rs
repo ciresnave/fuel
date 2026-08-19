@@ -21,10 +21,8 @@
 
 use fuel::lazy::LazyTensor;
 use fuel::{Device, Result, Shape};
+use fuel_onnx::onnx::{AttributeProto, GraphProto, ModelProto, NodeProto, ValueInfoProto};
 use fuel_onnx::LazyOnnxEval;
-use fuel_onnx::onnx::{
-    AttributeProto, GraphProto, ModelProto, NodeProto, ValueInfoProto,
-};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -57,17 +55,29 @@ fn attr(name: &str) -> AttributeProto {
 
 /// INT attribute (`r#type` 2 = INT in the ONNX AttributeType enum).
 fn attr_i(name: &str, v: i64) -> AttributeProto {
-    AttributeProto { i: v, r#type: 2, ..attr(name) }
+    AttributeProto {
+        i: v,
+        r#type: 2,
+        ..attr(name)
+    }
 }
 
 /// FLOAT attribute (`r#type` 1 = FLOAT).
 fn attr_f(name: &str, v: f32) -> AttributeProto {
-    AttributeProto { f: v, r#type: 1, ..attr(name) }
+    AttributeProto {
+        f: v,
+        r#type: 1,
+        ..attr(name)
+    }
 }
 
 /// INTS attribute (`r#type` 7 = INTS).
 fn attr_is(name: &str, v: Vec<i64>) -> AttributeProto {
-    AttributeProto { ints: v, r#type: 7, ..attr(name) }
+    AttributeProto {
+        ints: v,
+        r#type: 7,
+        ..attr(name)
+    }
 }
 
 /// A model containing exactly one node.
@@ -158,7 +168,13 @@ fn run_named(model: &ModelProto, inputs: &[In], want: &str) -> Result<Vec<f32>> 
 }
 
 fn assert_close(got: &[f32], want: &[f32], what: &str) {
-    assert_eq!(got.len(), want.len(), "{what}: length {} != {}", got.len(), want.len());
+    assert_eq!(
+        got.len(),
+        want.len(),
+        "{what}: length {} != {}",
+        got.len(),
+        want.len()
+    );
     for (i, (g, w)) in got.iter().zip(want).enumerate() {
         assert!(
             (g - w).abs() < 1e-5,
@@ -193,7 +209,11 @@ fn transcendental_unary_ops() -> Result<()> {
     let x = vec![0.25f32, 1.0, 4.0];
     let shape = vec![3usize];
     let m = single_node("Sqrt", &["x"], vec![]);
-    assert_close(&run(&m, &[("x", x.clone(), shape.clone())])?, &[0.5, 1.0, 2.0], "Sqrt");
+    assert_close(
+        &run(&m, &[("x", x.clone(), shape.clone())])?,
+        &[0.5, 1.0, 2.0],
+        "Sqrt",
+    );
 
     let m = single_node("Log", &["x"], vec![]);
     let got = run(&m, &[("x", x.clone(), shape.clone())])?;
@@ -204,7 +224,10 @@ fn transcendental_unary_ops() -> Result<()> {
     assert_close(&got, &[1.0, std::f32::consts::E], "Exp");
 
     let m = single_node("Sin", &["x"], vec![]);
-    let got = run(&m, &[("x", vec![0.0, std::f32::consts::FRAC_PI_2], vec![2])])?;
+    let got = run(
+        &m,
+        &[("x", vec![0.0, std::f32::consts::FRAC_PI_2], vec![2])],
+    )?;
     assert_close(&got, &[0.0, 1.0], "Sin");
 
     let m = single_node("Cos", &["x"], vec![]);
@@ -298,7 +321,10 @@ fn pow_broadcasts() -> Result<()> {
     let m = single_node("Pow", &["a", "b"], vec![]);
     let got = run(
         &m,
-        &[("a", vec![2.0, 3.0, 4.0], vec![3]), ("b", vec![2.0], vec![1])],
+        &[
+            ("a", vec![2.0, 3.0, 4.0], vec![3]),
+            ("b", vec![2.0], vec![1]),
+        ],
     )?;
     assert_close(&got, &[4.0, 9.0, 16.0], "Pow");
     Ok(())
@@ -362,14 +388,22 @@ fn where_selects_elementwise() -> Result<()> {
 fn clip_from_attributes_and_from_inputs() -> Result<()> {
     let x = ("x", vec![-5.0f32, 0.0, 5.0], vec![3usize]);
     // opset < 11: min/max as attributes
-    let m = single_node("Clip", &["x"], vec![attr_f("min", -1.0), attr_f("max", 1.0)]);
+    let m = single_node(
+        "Clip",
+        &["x"],
+        vec![attr_f("min", -1.0), attr_f("max", 1.0)],
+    );
     assert_close(&run(&m, &[x.clone()])?, &[-1.0, 0.0, 1.0], "Clip attrs");
 
     // opset 11+: min/max as inputs
     let m = single_node("Clip", &["x", "lo", "hi"], vec![]);
     let got = run(
         &m,
-        &[x.clone(), ("lo", vec![-2.0], vec![1]), ("hi", vec![2.0], vec![1])],
+        &[
+            x.clone(),
+            ("lo", vec![-2.0], vec![1]),
+            ("hi", vec![2.0], vec![1]),
+        ],
     )?;
     assert_close(&got, &[-2.0, 0.0, 2.0], "Clip inputs");
     Ok(())
@@ -382,7 +416,10 @@ fn clip_treats_an_empty_input_name_as_absent() -> Result<()> {
     let m = single_node("Clip", &["x", "", "hi"], vec![]);
     let got = run(
         &m,
-        &[("x", vec![-5.0, 0.0, 5.0], vec![3]), ("hi", vec![1.0], vec![1])],
+        &[
+            ("x", vec![-5.0, 0.0, 5.0], vec![3]),
+            ("hi", vec![1.0], vec![1]),
+        ],
     )?;
     assert_close(&got, &[-5.0, 0.0, 1.0], "Clip empty-name min");
     Ok(())
@@ -440,14 +477,22 @@ fn slice_from_inputs_with_negative_and_clamped_bounds() -> Result<()> {
     let m = single_node("Slice", &["x", "s", "e"], vec![]);
     let got = run(
         &m,
-        &[x.clone(), ("s", vec![1.0], vec![1]), ("e", vec![4.0], vec![1])],
+        &[
+            x.clone(),
+            ("s", vec![1.0], vec![1]),
+            ("e", vec![4.0], vec![1]),
+        ],
     )?;
     assert_close(&got, &[1.0, 2.0, 3.0], "Slice 1..4");
 
     // [-2:] — negative start folds, end clamps past the extent
     let got = run(
         &m,
-        &[x.clone(), ("s", vec![-2.0], vec![1]), ("e", vec![99.0], vec![1])],
+        &[
+            x.clone(),
+            ("s", vec![-2.0], vec![1]),
+            ("e", vec![99.0], vec![1]),
+        ],
     )?;
     assert_close(&got, &[3.0, 4.0], "Slice -2..end");
     Ok(())
@@ -470,7 +515,11 @@ fn range_honours_a_non_unit_delta() -> Result<()> {
 
 #[test]
 fn trilu_upper_default_and_lower() -> Result<()> {
-    let x = ("x", vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0], vec![3usize, 3]);
+    let x = (
+        "x",
+        vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+        vec![3usize, 3],
+    );
     // upper defaults to 1
     let m = single_node("Trilu", &["x"], vec![]);
     assert_close(
@@ -556,7 +605,10 @@ fn hard_swish_matches_the_reference_formula() -> Result<()> {
     let m = single_node("HardSwish", &["x"], vec![]);
     let xs = vec![-4.0f32, 0.0, 4.0];
     let got = run(&m, &[("x", xs.clone(), vec![3])])?;
-    let want: Vec<f32> = xs.iter().map(|x| x * ((x / 6.0 + 0.5).clamp(0.0, 1.0))).collect();
+    let want: Vec<f32> = xs
+        .iter()
+        .map(|x| x * ((x / 6.0 + 0.5).clamp(0.0, 1.0)))
+        .collect();
     assert_close(&got, &want, "HardSwish");
     Ok(())
 }
@@ -580,7 +632,13 @@ fn selu_matches_the_reference_formula() -> Result<()> {
     let (alpha, gamma) = (1.673_263_2f32, 1.050_701f32);
     let want: Vec<f32> = xs
         .iter()
-        .map(|&x| if x > 0.0 { gamma * x } else { gamma * (alpha * (x.exp() - 1.0)) })
+        .map(|&x| {
+            if x > 0.0 {
+                gamma * x
+            } else {
+                gamma * (alpha * (x.exp() - 1.0))
+            }
+        })
         .collect();
     assert_close(&got, &want, "Selu");
     Ok(())

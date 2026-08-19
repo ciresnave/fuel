@@ -28,8 +28,8 @@
 //! conservatism as the SoftmaxLastDim matcher).
 
 use crate::registry::{
-    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps,
-    PatternMatch, SubgraphPattern, decompose_via_recipe,
+    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps, PatternMatch,
+    SubgraphPattern, decompose_via_recipe,
 };
 use crate::{Graph, NodeId, Op};
 use fuel_ir::{DType, Shape};
@@ -42,17 +42,17 @@ use std::sync::OnceLock;
 pub fn entry() -> FusedOpEntry {
     FusedOpEntry {
         destructive_input: None,
-        id:         FusedOps::RMS_NORM_LAST_DIM,
-        name:       "RmsNormLastDim",
-        family:     FusedOpFamily::Norm,
-        pattern:    SubgraphPattern::Callable(canonical_pattern),
+        id: FusedOps::RMS_NORM_LAST_DIM,
+        name: "RmsNormLastDim",
+        family: FusedOpFamily::Norm,
+        pattern: SubgraphPattern::Callable(canonical_pattern),
         decompose,
         // Phase 7.6 step 4 (backward-helper batch): the
         // architecturally-correct BackwardKind::Fused edge is now
         // live. `Tensor::backward`'s Op::Fused arm reads this and
         // emits Op::Fused(RMS_NORM_LAST_DIM_BACKWARD, _) instead of
         // the legacy variant.
-        backward:   BackwardKind::Fused(FusedOps::RMS_NORM_LAST_DIM_BACKWARD),
+        backward: BackwardKind::Fused(FusedOps::RMS_NORM_LAST_DIM_BACKWARD),
         shape_rule: shape_passthrough,
         dtype_rule: dtype_passthrough,
         output_views: None,
@@ -93,28 +93,51 @@ fn dtype_passthrough(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
 fn recipe() -> &'static PatternNode {
     static RECIPE: OnceLock<PatternNode> = OnceLock::new();
     RECIPE.get_or_init(|| {
-        let axis_last = || OpAttrs { axis_last: true, ..OpAttrs::default() };
+        let axis_last = || OpAttrs {
+            axis_last: true,
+            ..OpAttrs::default()
+        };
         let same_as_x = || OpAttrs {
             target_shape_rel: Some(ShapeExpr::SameAs { operand: 0 }),
             ..OpAttrs::default()
         };
-        let op = |op, attrs, operands| PatternNode::Op { op, attrs, operands };
+        let op = |op, attrs, operands| PatternNode::Op {
+            op,
+            attrs,
+            operands,
+        };
         let x = || PatternNode::Bind { index: 0 };
-        op(OpTag::Div, OpAttrs::default(), vec![
-            x(),
-            op(OpTag::BroadcastTo, same_as_x(), vec![
-                op(OpTag::Sqrt, OpAttrs::default(), vec![
-                    // AddScalar with EMPTY scalars = the eps OPEN slot.
-                    op(OpTag::AddScalar, OpAttrs::default(), vec![
-                        op(OpTag::Unsqueeze, axis_last(), vec![
-                            op(OpTag::MeanDim, axis_last(), vec![
-                                op(OpTag::Sqr, OpAttrs::default(), vec![x()]),
-                            ]),
-                        ]),
-                    ]),
-                ]),
-            ]),
-        ])
+        op(
+            OpTag::Div,
+            OpAttrs::default(),
+            vec![
+                x(),
+                op(
+                    OpTag::BroadcastTo,
+                    same_as_x(),
+                    vec![op(
+                        OpTag::Sqrt,
+                        OpAttrs::default(),
+                        vec![
+                            // AddScalar with EMPTY scalars = the eps OPEN slot.
+                            op(
+                                OpTag::AddScalar,
+                                OpAttrs::default(),
+                                vec![op(
+                                    OpTag::Unsqueeze,
+                                    axis_last(),
+                                    vec![op(
+                                        OpTag::MeanDim,
+                                        axis_last(),
+                                        vec![op(OpTag::Sqr, OpAttrs::default(), vec![x()])],
+                                    )],
+                                )],
+                            ),
+                        ],
+                    )],
+                ),
+            ],
+        )
     })
 }
 
@@ -192,19 +215,31 @@ fn match_common(
     keepdim_ok: impl Fn(&Op) -> bool,
 ) -> Option<PatternMatch> {
     let div = graph.node(div_id);
-    if !matches!(div.op, Op::Div) { return None; }
-    if div.inputs.len() != 2 { return None; }
+    if !matches!(div.op, Op::Div) {
+        return None;
+    }
+    if div.inputs.len() != 2 {
+        return None;
+    }
     let x_id = div.inputs[0];
     let denom_bcast_id = div.inputs[1];
 
     let denom_bcast = graph.node(denom_bcast_id);
-    if !matches!(denom_bcast.op, Op::BroadcastTo(_)) { return None; }
-    if denom_bcast.inputs.len() != 1 { return None; }
+    if !matches!(denom_bcast.op, Op::BroadcastTo(_)) {
+        return None;
+    }
+    if denom_bcast.inputs.len() != 1 {
+        return None;
+    }
     let denom_id = denom_bcast.inputs[0];
 
     let denom = graph.node(denom_id);
-    if !matches!(denom.op, Op::Sqrt) { return None; }
-    if denom.inputs.len() != 1 { return None; }
+    if !matches!(denom.op, Op::Sqrt) {
+        return None;
+    }
+    if denom.inputs.len() != 1 {
+        return None;
+    }
     let denom_sq_id = denom.inputs[0];
 
     let denom_sq = graph.node(denom_sq_id);
@@ -212,12 +247,18 @@ fn match_common(
         Op::AddScalar(e) => e,
         _ => return None,
     };
-    if denom_sq.inputs.len() != 1 { return None; }
+    if denom_sq.inputs.len() != 1 {
+        return None;
+    }
     let mean_kd_id = denom_sq.inputs[0];
 
     let mean_kd = graph.node(mean_kd_id);
-    if !keepdim_ok(&mean_kd.op) { return None; }
-    if mean_kd.inputs.len() != 1 { return None; }
+    if !keepdim_ok(&mean_kd.op) {
+        return None;
+    }
+    if mean_kd.inputs.len() != 1 {
+        return None;
+    }
     let mean_id = mean_kd.inputs[0];
 
     let mean = graph.node(mean_id);
@@ -225,29 +266,49 @@ fn match_common(
         Op::MeanDim(d) => d,
         _ => return None,
     };
-    if mean.inputs.len() != 1 { return None; }
+    if mean.inputs.len() != 1 {
+        return None;
+    }
     let sq_id = mean.inputs[0];
 
     let sq = graph.node(sq_id);
-    if !matches!(sq.op, Op::Sqr) { return None; }
-    if sq.inputs.len() != 1 { return None; }
+    if !matches!(sq.op, Op::Sqr) {
+        return None;
+    }
+    if sq.inputs.len() != 1 {
+        return None;
+    }
     // Sqr's input must be the same x that Div consumes — otherwise it
     // isn't the rms-norm pattern (it's an unrelated `x / sqrt(... + eps)`
     // expression).
-    if sq.inputs[0] != x_id { return None; }
+    if sq.inputs[0] != x_id {
+        return None;
+    }
 
     // Shape sanity checks: the MeanDim must be along the last axis,
     // and the keepdim node's target must be the x shape with last-dim=1
     // (identical for the Reshape and Unsqueeze-append spellings).
     let x_shape = &graph.node(x_id).shape;
-    if x_shape.rank() == 0 { return None; }
+    if x_shape.rank() == 0 {
+        return None;
+    }
     let last = x_shape.rank() - 1;
-    if last_axis_via_mean != last { return None; }
+    if last_axis_via_mean != last {
+        return None;
+    }
     let kd_shape = &graph.node(mean_kd_id).shape;
-    if kd_shape.rank() != x_shape.rank() { return None; }
+    if kd_shape.rank() != x_shape.rank() {
+        return None;
+    }
     for axis in 0..x_shape.rank() {
-        let expected = if axis == last { 1 } else { x_shape.dims()[axis] };
-        if kd_shape.dims()[axis] != expected { return None; }
+        let expected = if axis == last {
+            1
+        } else {
+            x_shape.dims()[axis]
+        };
+        if kd_shape.dims()[axis] != expected {
+            return None;
+        }
     }
 
     // Conservativeness: every intermediate consumed only within this
@@ -269,7 +330,7 @@ fn match_common(
 
     Some(PatternMatch {
         bindings: vec![(0, x_id)],
-        params:   FusedOpParams::RmsNormLastDim { eps },
+        params: FusedOpParams::RmsNormLastDim { eps },
     })
 }
 
@@ -302,7 +363,12 @@ mod tests {
     fn canonical_pattern_matches_the_recipe_spelling() {
         let mut g = Graph::new();
         let sh = Shape::from_dims(&[2, 4]);
-        let x = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+        let x = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: sh.clone(),
+            dtype: DType::F32,
+        });
         let params = FusedOpParams::RmsNormLastDim { eps: 1e-5 };
         let fused = g.push(Node {
             op: Op::Fused(FusedOps::RMS_NORM_LAST_DIM, params.clone()),
@@ -329,14 +395,23 @@ mod tests {
         let mut g = Graph::new();
         let sh = Shape::from_dims(&[2, 4]);
         let kd = Shape::from_dims(&[2, 1]);
-        let f32_node = |op, inputs, shape| Node { op, inputs, shape, dtype: DType::F32 };
+        let f32_node = |op, inputs, shape| Node {
+            op,
+            inputs,
+            shape,
+            dtype: DType::F32,
+        };
         let x = g.push(f32_node(Op::Const, vec![], sh.clone()));
         let sq = g.push(f32_node(Op::Sqr, vec![x], sh.clone()));
         let mean = g.push(f32_node(Op::MeanDim(1), vec![sq], kd.clone()));
         let mean_kd = g.push(f32_node(Op::Reshape(kd.clone()), vec![mean], kd.clone()));
         let denom_sq = g.push(f32_node(Op::AddScalar(1e-5), vec![mean_kd], kd.clone()));
         let denom = g.push(f32_node(Op::Sqrt, vec![denom_sq], kd));
-        let denom_b = g.push(f32_node(Op::BroadcastTo(sh.clone()), vec![denom], sh.clone()));
+        let denom_b = g.push(f32_node(
+            Op::BroadcastTo(sh.clone()),
+            vec![denom],
+            sh.clone(),
+        ));
         let div = g.push(f32_node(Op::Div, vec![x, denom_b], sh));
         let m = canonical_pattern(&g, div).expect("legacy spelling must still match");
         assert_eq!(m.bindings, vec![(0, x)]);

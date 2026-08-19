@@ -69,7 +69,8 @@ impl DeviceGroup {
     pub fn new(devices: Vec<Device>) -> Result<Self> {
         if devices.is_empty() {
             return Err(Error::Msg(
-                "DeviceGroup::new: at least one device is required (the first is the leader)".into(),
+                "DeviceGroup::new: at least one device is required (the first is the leader)"
+                    .into(),
             ));
         }
         Ok(Self { devices })
@@ -124,9 +125,11 @@ impl DeviceGroup {
         let mut acc = self.bring_to_leader(&shards[0], 0);
         for (i, shard) in shards.iter().enumerate().skip(1) {
             let here = self.bring_to_leader(shard, i);
-            acc = acc
-                .concat(&here, dim)
-                .map_err(|e| Error::Msg(format!("DeviceGroup::all_gather: concat on dim {dim} failed: {e}")))?;
+            acc = acc.concat(&here, dim).map_err(|e| {
+                Error::Msg(format!(
+                    "DeviceGroup::all_gather: concat on dim {dim} failed: {e}"
+                ))
+            })?;
         }
         Ok(acc)
     }
@@ -188,9 +191,7 @@ impl DeviceGroup {
         }
 
         // Cross-vendor: author both hops.
-        shard
-            .copy_to_device(&Device::cpu())
-            .copy_to_device(leader)
+        shard.copy_to_device(&Device::cpu()).copy_to_device(leader)
     }
 
     /// Shared precondition check for the collectives.
@@ -287,7 +288,9 @@ mod tests {
         let dev = Device::cpu();
         let g = DeviceGroup::new(vec![dev.clone()]).unwrap();
         let a = shard(None, vec![3.0, 4.0], &dev);
-        let out = g.all_reduce(std::slice::from_ref(&a), ReduceOp::Sum).unwrap();
+        let out = g
+            .all_reduce(std::slice::from_ref(&a), ReduceOp::Sum)
+            .unwrap();
         assert_eq!(out.realize_f32(), vec![3.0, 4.0]);
     }
 
@@ -307,9 +310,15 @@ mod tests {
         // the Op-level affinity assert; the group must catch it first.
         let a = shard(None, vec![1.0, 2.0], &dev);
         let b = shard(None, vec![3.0, 4.0], &dev);
-        let err = g.all_reduce(&[a, b], ReduceOp::Sum).unwrap_err().to_string();
+        let err = g
+            .all_reduce(&[a, b], ReduceOp::Sum)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("same graph"), "got: {err}");
-        assert!(err.contains("const_*_like") || err.contains("from_*_on"), "must name the fix; got: {err}");
+        assert!(
+            err.contains("const_*_like") || err.contains("from_*_on"),
+            "must name the fix; got: {err}"
+        );
     }
 
     #[test]
@@ -320,7 +329,10 @@ mod tests {
         let g = DeviceGroup::new(vec![dev.clone()]).unwrap();
         let a = shard(None, vec![1.0], &dev);
         let b = shard(Some(&a), vec![2.0], &dev);
-        let err = g.all_reduce(&[a, b], ReduceOp::Sum).unwrap_err().to_string();
+        let err = g
+            .all_reduce(&[a, b], ReduceOp::Sum)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("2 shards"), "got: {err}");
         assert!(err.contains("1 devices"), "got: {err}");
     }

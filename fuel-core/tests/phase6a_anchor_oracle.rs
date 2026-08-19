@@ -18,8 +18,8 @@
 //! gate that must run on every PR.
 
 use fuel_core::lazy::{LayerWeights, LazyTensor, LlamaWeights};
-use fuel_core::lazy_llama2c::{Llama2cConfig, Llama2cModel};
 use fuel_core::lazy_convnext::ConvNextModel;
+use fuel_core::lazy_llama2c::{Llama2cConfig, Llama2cModel};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -59,10 +59,16 @@ fn dense_conv2d_cpu_matches_reference() {
     let (n, cin, h, w_sz) = (1usize, 3, 8, 8);
     let (cout, k, pad) = (4usize, 3, 1);
     let x_data: Vec<f32> = (0..(n * cin * h * w_sz))
-        .map(|i| ((i as f32) * 1.3e-3).sin()).collect();
+        .map(|i| ((i as f32) * 1.3e-3).sin())
+        .collect();
     let w_data: Vec<f32> = (0..(cout * cin * k * k))
-        .map(|i| ((i as f32) * 1.7e-3).cos()).collect();
-    let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[n, cin, h, w_sz]), &fuel_core::Device::cpu());
+        .map(|i| ((i as f32) * 1.7e-3).cos())
+        .collect();
+    let x = LazyTensor::from_f32(
+        x_data,
+        Shape::from_dims(&[n, cin, h, w_sz]),
+        &fuel_core::Device::cpu(),
+    );
     let weight = x.const_f32_like(w_data, Shape::from_dims(&[cout, cin, k, k]));
     let y = x.conv2d(&weight, None, (1, 1), (pad, pad), 1).unwrap();
     assert_cpu_oracle(&y, 1e-4, 1e-4);
@@ -74,10 +80,16 @@ fn depthwise_conv2d_cpu_matches_reference() {
     let (n, c, h, w_sz) = (1usize, 4, 6, 6);
     let (k, pad) = (3, 1);
     let x_data: Vec<f32> = (0..(n * c * h * w_sz))
-        .map(|i| ((i as f32) * 1.3e-3).sin()).collect();
+        .map(|i| ((i as f32) * 1.3e-3).sin())
+        .collect();
     let w_data: Vec<f32> = (0..(c * 1 * k * k))
-        .map(|i| ((i as f32) * 1.7e-3).cos()).collect();
-    let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[n, c, h, w_sz]), &fuel_core::Device::cpu());
+        .map(|i| ((i as f32) * 1.7e-3).cos())
+        .collect();
+    let x = LazyTensor::from_f32(
+        x_data,
+        Shape::from_dims(&[n, c, h, w_sz]),
+        &fuel_core::Device::cpu(),
+    );
     let weight = x.const_f32_like(w_data, Shape::from_dims(&[c, 1, k, k]));
     let y = x.conv2d(&weight, None, (1, 1), (pad, pad), c).unwrap();
     assert_cpu_oracle(&y, 1e-4, 1e-4);
@@ -90,12 +102,20 @@ fn conv_transpose2d_cpu_matches_reference() {
     let (n, cin, h, w_sz) = (1usize, 3, 4, 4);
     let (cout, k) = (2usize, 3);
     let x_data: Vec<f32> = (0..(n * cin * h * w_sz))
-        .map(|i| ((i as f32) * 1.3e-3).sin()).collect();
+        .map(|i| ((i as f32) * 1.3e-3).sin())
+        .collect();
     let w_data: Vec<f32> = (0..(cin * cout * k * k))
-        .map(|i| ((i as f32) * 1.7e-3).cos()).collect();
-    let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[n, cin, h, w_sz]), &fuel_core::Device::cpu());
+        .map(|i| ((i as f32) * 1.7e-3).cos())
+        .collect();
+    let x = LazyTensor::from_f32(
+        x_data,
+        Shape::from_dims(&[n, cin, h, w_sz]),
+        &fuel_core::Device::cpu(),
+    );
     let weight = x.const_f32_like(w_data, Shape::from_dims(&[cin, cout, k, k]));
-    let y = x.conv_transpose2d(&weight, (2, 2), (1, 1), (1, 1), (1, 1), 1).unwrap();
+    let y = x
+        .conv_transpose2d(&weight, (2, 2), (1, 1), (1, 1), (1, 1), 1)
+        .unwrap();
     assert_cpu_oracle(&y, 1e-4, 1e-4);
 }
 
@@ -107,47 +127,51 @@ fn tiny_llama_weights(cfg: &Llama2cConfig) -> LlamaWeights {
         s = s.wrapping_mul(1103515245).wrapping_add(12345);
         ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.1
     };
-    let mut vec_of = |n: usize| -> Arc<[f32]> {
-        Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
-    };
+    let mut vec_of =
+        |n: usize| -> Arc<[f32]> { Arc::from((0..n).map(|_| next()).collect::<Vec<_>>()) };
     let kv_dim = cfg.n_kv_heads * cfg.head_dim;
     LlamaWeights {
         instance: fuel_core::decode_shape::ModelInstanceId::next(),
         token_embedding: vec_of(cfg.vocab_size * cfg.dim),
-        layers: (0..cfg.n_layers).map(|_| LayerWeights {
-            attn_q:         vec_of(cfg.dim * cfg.dim).into(),
-            attn_q_bias:    None,
-            attn_k:         vec_of(cfg.dim * kv_dim).into(),
-            attn_k_bias:    None,
-            attn_v:         vec_of(cfg.dim * kv_dim).into(),
-            attn_v_bias:    None,
-            attn_o:         vec_of(cfg.dim * cfg.dim).into(),
-            ffn_gate:       vec_of(cfg.dim * cfg.hidden_dim).into(),
-            ffn_up:         vec_of(cfg.dim * cfg.hidden_dim).into(),
-            ffn_down:       vec_of(cfg.hidden_dim * cfg.dim).into(),
-            attn_norm_gain: Arc::from(vec![1.0; cfg.dim]),
-            ffn_norm_gain:  Arc::from(vec![1.0; cfg.dim]),
-        }).collect(),
+        layers: (0..cfg.n_layers)
+            .map(|_| LayerWeights {
+                attn_q: vec_of(cfg.dim * cfg.dim).into(),
+                attn_q_bias: None,
+                attn_k: vec_of(cfg.dim * kv_dim).into(),
+                attn_k_bias: None,
+                attn_v: vec_of(cfg.dim * kv_dim).into(),
+                attn_v_bias: None,
+                attn_o: vec_of(cfg.dim * cfg.dim).into(),
+                ffn_gate: vec_of(cfg.dim * cfg.hidden_dim).into(),
+                ffn_up: vec_of(cfg.dim * cfg.hidden_dim).into(),
+                ffn_down: vec_of(cfg.hidden_dim * cfg.dim).into(),
+                attn_norm_gain: Arc::from(vec![1.0; cfg.dim]),
+                ffn_norm_gain: Arc::from(vec![1.0; cfg.dim]),
+            })
+            .collect(),
         final_norm_gain: Arc::from(vec![1.0; cfg.dim]),
-        output:          vec_of(cfg.dim * cfg.vocab_size).into(),
+        output: vec_of(cfg.dim * cfg.vocab_size).into(),
     }
 }
 
 #[test]
 fn llama_2layer_cpu_matches_reference() {
     let cfg = Llama2cConfig {
-        vocab_size:     32,
-        dim:            16,
-        hidden_dim:     32,
-        n_layers:       2,
-        n_heads:        4,
-        n_kv_heads:     2,
-        head_dim:       4,
-        norm_eps:       1e-5,
-        rope_theta:     10_000.0,
+        vocab_size: 32,
+        dim: 16,
+        hidden_dim: 32,
+        n_layers: 2,
+        n_heads: 4,
+        n_kv_heads: 2,
+        head_dim: 4,
+        norm_eps: 1e-5,
+        rope_theta: 10_000.0,
     };
     let weights = tiny_llama_weights(&cfg);
-    let model = Llama2cModel { config: cfg.clone(), weights };
+    let model = Llama2cModel {
+        config: cfg.clone(),
+        weights,
+    };
     let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6, 7, 8];
     let logits: LazyTensor = model.forward(&tokens, 0).unwrap();
     // Tighter tolerance than the CUDA equivalent (5e-3) since both
@@ -159,7 +183,10 @@ fn llama_2layer_cpu_matches_reference() {
 fn convnext_cpu_matches_reference() {
     let cfg = fuel_core::lazy_convnext::tiny_cfg();
     let weights = fuel_core::lazy_convnext::zero_weights(&cfg);
-    let model = ConvNextModel { weights, config: cfg.clone() };
+    let model = ConvNextModel {
+        weights,
+        config: cfg.clone(),
+    };
     let image = vec![0.0_f32; cfg.in_channels * cfg.image_size * cfg.image_size];
     let logits = model.forward(&image).unwrap();
     assert_cpu_oracle(&logits, 1e-4, 1e-4);

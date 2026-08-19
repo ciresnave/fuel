@@ -55,9 +55,7 @@ use core::marker::PhantomData;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-use fuel_ir::dlpack::abi::{
-    device_type, DLDataType, DLDevice, DLTensor,
-};
+use fuel_ir::dlpack::abi::{DLDataType, DLDevice, DLTensor, device_type};
 use fuel_ir::dlpack::codes::*;
 use fuel_ir::dlpack::convert::{dl_dtype, extent_to_fdx};
 use fuel_ir::dlpack::sidecar::{
@@ -175,10 +173,7 @@ impl<'a> DlpackView<'a> {
     /// view carries symbolic extents — the resolved value is checked
     /// `min <= value <= capacity` but is **never baked into the sidecar** (the
     /// symbol stays, P4).
-    pub fn validate_realize(
-        &self,
-        env: &FDXSymEnv,
-    ) -> std::result::Result<(), FdxValidationError> {
+    pub fn validate_realize(&self, env: &FDXSymEnv) -> std::result::Result<(), FdxValidationError> {
         match &self.sidecar {
             Some(sc) => validate::validate_realize(sc, &self.dl_tensor(), &self._buffers, env),
             None => Ok(()),
@@ -196,7 +191,10 @@ fn dl_device(loc: DeviceLocation) -> DLDevice {
         DeviceLocation::Vulkan { gpu_id } => (device_type::K_DL_VULKAN, gpu_id as i32),
         DeviceLocation::Metal { gpu_id } => (device_type::K_DL_METAL, gpu_id as i32),
     };
-    DLDevice { device_type, device_id }
+    DLDevice {
+        device_type,
+        device_id,
+    }
 }
 
 /// The base raw data pointer + device location for a [`Storage`], per backend
@@ -434,7 +432,11 @@ const fn zero_extent() -> FDXExtent {
             c0: 0,
             term_count: 0,
             _pad: [0; 7],
-            terms: [FDXAffineTerm { coeff: 0, sym_id: FDX_SYM_NONE, _pad: 0 }; FDX_AFFINE_MAX_TERMS],
+            terms: [FDXAffineTerm {
+                coeff: 0,
+                sym_id: FDX_SYM_NONE,
+                _pad: 0,
+            }; FDX_AFFINE_MAX_TERMS],
         },
         reserved: [0; 2],
     }
@@ -624,8 +626,8 @@ pub fn view<'a>(
         };
         // start_offset (elements) → physical bytes (§3.3); sub-byte sizes off
         // the packed physical byte width (§11 watch-item).
-        byte_offset = (layout.start_offset() as u64)
-            .saturating_mul(physical_elem_bytes(dtype) as u64);
+        byte_offset =
+            (layout.start_offset() as u64).saturating_mul(physical_elem_bytes(dtype) as u64);
     } else {
         // Faithful typed base: capacity shape + signed strides (§2.2).
         base_ndim = ndim;
@@ -635,8 +637,7 @@ pub fn view<'a>(
             strides[i] = st[i] as i64;
         }
         dl_dt = dl_dtype(dtype)?;
-        byte_offset = (layout.start_offset() as u64)
-            .saturating_mul(dtype.size_in_bytes() as u64);
+        byte_offset = (layout.start_offset() as u64).saturating_mul(dtype.size_in_bytes() as u64);
     }
 
     let dl = DLTensor {
@@ -727,7 +728,11 @@ pub fn view<'a>(
     let buffers = vec![FDXBufferRef {
         role: FDX_BUFFER_ROLE_DATA,
         _pad: [0; 1],
-        dtype: if physical_byte_base { FDX_DTYPE_U8 } else { dtype_to_fdx_code(dtype)? },
+        dtype: if physical_byte_base {
+            FDX_DTYPE_U8
+        } else {
+            dtype_to_fdx_code(dtype)?
+        },
         _pad2: 0,
         data,
         device,
@@ -788,9 +793,21 @@ pub fn view<'a>(
     // NOT move when the view moves; only the inline shape/strides are
     // move-sensitive, hence those stay NULL until `dl_tensor()`).
     if let Some(sc) = v.sidecar.as_mut() {
-        sc.extents = if v._extents.is_empty() { core::ptr::null() } else { v._extents.as_ptr() };
-        sc.buffers = if v._buffers.is_empty() { core::ptr::null() } else { v._buffers.as_ptr() };
-        sc.views = if v._views.is_empty() { core::ptr::null() } else { v._views.as_ptr() };
+        sc.extents = if v._extents.is_empty() {
+            core::ptr::null()
+        } else {
+            v._extents.as_ptr()
+        };
+        sc.buffers = if v._buffers.is_empty() {
+            core::ptr::null()
+        } else {
+            v._buffers.as_ptr()
+        };
+        sc.views = if v._views.is_empty() {
+            core::ptr::null()
+        } else {
+            v._views.as_ptr()
+        };
     }
 
     // When `env` is provided AND the view is symbolic, run the realize-time V14
@@ -812,7 +829,10 @@ pub fn view<'a>(
             // `bindings` must outlive the validate call — it does (it lives to
             // the end of this scope, and validate_realize does not retain it).
             v.validate_realize(&fdx_env).map_err(|e| {
-                Error::Msg(format!("DlpackView: FDX realize-time validation failed: {e}")).bt()
+                Error::Msg(format!(
+                    "DlpackView: FDX realize-time validation failed: {e}"
+                ))
+                .bt()
             })?;
         }
     }
@@ -914,7 +934,11 @@ fn collect_bindings(layout: &Layout, env: &SymEnv) -> Vec<FDXSymBinding> {
         if let Extent::Range { sym, .. } = e {
             if let Some(v) = env.get(sym) {
                 if !out.iter().any(|b| b.sym_id == sym.0) {
-                    out.push(FDXSymBinding { sym_id: sym.0, _pad: 0, value: v as u64 });
+                    out.push(FDXSymBinding {
+                        sym_id: sym.0,
+                        _pad: 0,
+                        value: v as u64,
+                    });
                 }
             }
         }

@@ -236,13 +236,11 @@ fn decoder_config_from_hf(c: &HfTrocrDecoderConfig) -> Result<TrocrDecoderConfig
 /// laid out as (C, H, W). Mirrors the eager `ViTImageProcessor`
 /// defaults (do_resize=true, do_rescale=true, do_normalize=true).
 fn load_image_as_vec<P: AsRef<std::path::Path>>(p: P, image_size: usize) -> Result<Vec<f32>> {
-    let img = image::ImageReader::open(p)?
-        .decode()?
-        .resize_exact(
-            image_size as u32,
-            image_size as u32,
-            image::imageops::FilterType::Triangle,
-        );
+    let img = image::ImageReader::open(p)?.decode()?.resize_exact(
+        image_size as u32,
+        image_size as u32,
+        image::imageops::FilterType::Triangle,
+    );
     let img = img.to_rgb8();
     let raw = img.into_raw(); // (H, W, C) row-major, u8
 
@@ -321,8 +319,7 @@ pub fn main() -> Result<()> {
         ));
         repo.get("config.json")?
     };
-    let hf_config: HfConfig =
-        serde_json::from_reader(std::fs::File::open(&config_file)?)?;
+    let hf_config: HfConfig = serde_json::from_reader(std::fs::File::open(&config_file)?)?;
     let decoder_start_token_id = hf_config.decoder.decoder_start_token_id;
     let eos_token_id = hf_config.decoder.eos_token_id;
 
@@ -332,12 +329,8 @@ pub fn main() -> Result<()> {
     println!("loading model weights");
     let st = unsafe { MmapedSafetensors::multi(&[&model_file]) }
         .map_err(|e| E::msg(format!("mmap safetensors: {e}")))?;
-    let model = TrocrModel::load_from_mmapped(
-        &st,
-        encoder_config.clone(),
-        decoder_config.clone(),
-    )
-    .map_err(|e| E::msg(format!("load TrOCR weights: {e}")))?;
+    let model = TrocrModel::load_from_mmapped(&st, encoder_config.clone(), decoder_config.clone())
+        .map_err(|e| E::msg(format!("load TrOCR weights: {e}")))?;
     println!("model built");
 
     // ---- Image ----

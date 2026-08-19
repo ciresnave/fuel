@@ -114,26 +114,20 @@ impl DynQuantizedStorage for CpuQStorage {
         let out = match storage.dtype() {
             DType::F32 => {
                 let slice = storage.as_slice::<f32>()?;
-                let slice = &slice
-                    [layout.start_offset()..layout.start_offset() + src_shape.elem_count()];
+                let slice =
+                    &slice[layout.start_offset()..layout.start_offset() + src_shape.elem_count()];
                 let mut dst_storage = vec![0f32; dst_shape.elem_count()];
-                self.0.matmul_t(
-                    (dst_shape.elem_count() / n, k, n),
-                    slice,
-                    &mut dst_storage,
-                )?;
+                self.0
+                    .matmul_t((dst_shape.elem_count() / n, k, n), slice, &mut dst_storage)?;
                 HostBuffer::F32(dst_storage)
             }
             DType::F16 => {
                 let slice = storage.as_slice::<f16>()?;
-                let slice = &slice
-                    [layout.start_offset()..layout.start_offset() + src_shape.elem_count()];
+                let slice =
+                    &slice[layout.start_offset()..layout.start_offset() + src_shape.elem_count()];
                 let mut dst_storage = vec![f16::ZERO; dst_shape.elem_count()];
-                self.0.matmul_t_f16(
-                    (dst_shape.elem_count() / n, k, n),
-                    slice,
-                    &mut dst_storage,
-                )?;
+                self.0
+                    .matmul_t_f16((dst_shape.elem_count() / n, k, n), slice, &mut dst_storage)?;
                 HostBuffer::F16(dst_storage)
             }
             _ => return Err(Error::Msg("Expected f32/f16".into()).bt()),
@@ -143,7 +137,9 @@ impl DynQuantizedStorage for CpuQStorage {
     fn as_any(&self) -> &dyn Any {
         self
     }
-    fn device_arc_dyn(&self) -> std::sync::Arc<dyn fuel_backend_contract::dyn_backend::DynBackendDevice> {
+    fn device_arc_dyn(
+        &self,
+    ) -> std::sync::Arc<dyn fuel_backend_contract::dyn_backend::DynBackendDevice> {
         std::sync::Arc::new(CpuBackendDevice)
     }
 }

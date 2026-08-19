@@ -14,13 +14,13 @@ extern crate accelerate_src;
 
 use std::sync::Arc;
 
-use anyhow::{anyhow, Error as E, Result};
+use anyhow::{Error as E, Result, anyhow};
 use clap::Parser;
 use fuel::lazy::{
-    load_tensor_as_f32, load_transposed_matrix_preserve_dtype, LayerWeights, WeightStorage,
+    LayerWeights, WeightStorage, load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
 };
 use fuel::lazy_qwen2::{Qwen2Config, Qwen2Model, Qwen2Weights};
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use hf_hub::{Repo, RepoType, api::sync::Api};
 use tokenizers::Tokenizer;
 
 // gte-Qwen1.5-7B-instruct uses EOS token as padding token (kept for
@@ -73,10 +73,18 @@ struct HfConfig {
     use_sliding_window: bool,
 }
 
-fn default_sliding_window() -> usize { 32_768 }
-fn default_max_window_layers() -> usize { 28 }
-fn default_rope_theta() -> f64 { 1_000_000.0 }
-fn default_rms_norm_eps() -> f64 { 1e-6 }
+fn default_sliding_window() -> usize {
+    32_768
+}
+fn default_max_window_layers() -> usize {
+    28
+}
+fn default_rope_theta() -> f64 {
+    1_000_000.0
+}
+fn default_rms_norm_eps() -> f64 {
+    1e-6
+}
 
 impl From<HfConfig> for Qwen2Config {
     fn from(c: HfConfig) -> Self {
@@ -224,24 +232,18 @@ fn load_qwen2_weights(
         )
         .map_err(|e| anyhow!("{e}"))?;
         // Qwen2 has Q/K/V biases.
-        let attn_q_bias = load_tensor_as_f32(
-            st,
-            &format!("model.layers.{i}.self_attn.q_proj.bias"),
-        )
-        .ok()
-        .map(Arc::from);
-        let attn_k_bias = load_tensor_as_f32(
-            st,
-            &format!("model.layers.{i}.self_attn.k_proj.bias"),
-        )
-        .ok()
-        .map(Arc::from);
-        let attn_v_bias = load_tensor_as_f32(
-            st,
-            &format!("model.layers.{i}.self_attn.v_proj.bias"),
-        )
-        .ok()
-        .map(Arc::from);
+        let attn_q_bias =
+            load_tensor_as_f32(st, &format!("model.layers.{i}.self_attn.q_proj.bias"))
+                .ok()
+                .map(Arc::from);
+        let attn_k_bias =
+            load_tensor_as_f32(st, &format!("model.layers.{i}.self_attn.k_proj.bias"))
+                .ok()
+                .map(Arc::from);
+        let attn_v_bias =
+            load_tensor_as_f32(st, &format!("model.layers.{i}.self_attn.v_proj.bias"))
+                .ok()
+                .map(Arc::from);
         layers.push(LayerWeights {
             attn_q,
             attn_q_bias,
@@ -275,8 +277,7 @@ fn load_qwen2_weights(
             let mut transposed = vec![0.0_f32; cfg.hidden_size * cfg.vocab_size];
             for i in 0..cfg.vocab_size {
                 for j in 0..cfg.hidden_size {
-                    transposed[j * cfg.vocab_size + i] =
-                        token_embedding[i * cfg.hidden_size + j];
+                    transposed[j * cfg.vocab_size + i] = token_embedding[i * cfg.hidden_size + j];
                 }
             }
             WeightStorage::F32(Arc::from(transposed))
@@ -333,7 +334,10 @@ fn main() -> Result<()> {
     let st = unsafe { fuel::safetensors::MmapedSafetensors::multi(&config_files.weights) }
         .map_err(|e| anyhow!("mmap safetensors: {e}"))?;
     let weights = load_qwen2_weights(&st, &cfg)?;
-    let model = Qwen2Model { config: cfg.clone(), weights };
+    let model = Qwen2Model {
+        config: cfg.clone(),
+        weights,
+    };
     println!("Model loaded in {:?}", start.elapsed());
 
     // Encode the queries and the targets
@@ -341,8 +345,12 @@ fn main() -> Result<()> {
     let documents = vec![
         format!("{instruct}how much protein should a female eat{EOS_TOKEN}"),
         format!("{instruct}summit define{EOS_TOKEN}"),
-        format!("As a general guideline, the CDC's average requirement of protein for women ages 19 to 70 is 46 grams per day. But, as you can see from this chart, you'll need to increase that if you're expecting or training for a marathon. Check out the chart below to see how much protein you should be eating each day.{EOS_TOKEN}"),
-        format!("Definition of summit for English Language Learners. : 1  the highest point of a mountain : the top of a mountain. : 2  the highest level. : 3  a meeting or series of meetings between the leaders of two or more governments.{EOS_TOKEN}"),
+        format!(
+            "As a general guideline, the CDC's average requirement of protein for women ages 19 to 70 is 46 grams per day. But, as you can see from this chart, you'll need to increase that if you're expecting or training for a marathon. Check out the chart below to see how much protein you should be eating each day.{EOS_TOKEN}"
+        ),
+        format!(
+            "Definition of summit for English Language Learners. : 1  the highest point of a mountain : the top of a mountain. : 2  the highest level. : 3  a meeting or series of meetings between the leaders of two or more governments.{EOS_TOKEN}"
+        ),
     ];
 
     let start_gen = std::time::Instant::now();

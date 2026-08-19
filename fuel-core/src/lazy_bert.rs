@@ -53,16 +53,16 @@ use std::sync::Arc;
 /// reconstruct the forward pass. Extra fields in the file are ignored.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct BertConfig {
-    pub vocab_size:              usize,
-    pub hidden_size:             usize,
-    pub num_hidden_layers:       usize,
-    pub num_attention_heads:     usize,
-    pub intermediate_size:       usize,
+    pub vocab_size: usize,
+    pub hidden_size: usize,
+    pub num_hidden_layers: usize,
+    pub num_attention_heads: usize,
+    pub intermediate_size: usize,
     pub max_position_embeddings: usize,
     #[serde(default = "default_type_vocab_size")]
-    pub type_vocab_size:         usize,
+    pub type_vocab_size: usize,
     #[serde(default = "default_layer_norm_eps")]
-    pub layer_norm_eps:          f64,
+    pub layer_norm_eps: f64,
 }
 
 fn default_type_vocab_size() -> usize {
@@ -104,43 +104,43 @@ impl BertConfig {
 pub struct BertLayerWeights {
     // Self-attention (Q/K/V/output).
     /// Shape `[hidden, hidden]` — stored as [in, out] ready for `x @ w`.
-    pub attn_q_w:       Arc<[f32]>,
-    pub attn_q_b:       Arc<[f32]>,
-    pub attn_k_w:       Arc<[f32]>,
-    pub attn_k_b:       Arc<[f32]>,
-    pub attn_v_w:       Arc<[f32]>,
-    pub attn_v_b:       Arc<[f32]>,
-    pub attn_out_w:     Arc<[f32]>,
-    pub attn_out_b:     Arc<[f32]>,
+    pub attn_q_w: Arc<[f32]>,
+    pub attn_q_b: Arc<[f32]>,
+    pub attn_k_w: Arc<[f32]>,
+    pub attn_k_b: Arc<[f32]>,
+    pub attn_v_w: Arc<[f32]>,
+    pub attn_v_b: Arc<[f32]>,
+    pub attn_out_w: Arc<[f32]>,
+    pub attn_out_b: Arc<[f32]>,
     // Post-attention LayerNorm (gain + bias).
-    pub attn_ln_gamma:  Arc<[f32]>,
-    pub attn_ln_beta:   Arc<[f32]>,
+    pub attn_ln_gamma: Arc<[f32]>,
+    pub attn_ln_beta: Arc<[f32]>,
     // FFN (intermediate + output).
     /// Shape `[hidden, intermediate]`.
-    pub ffn_in_w:       Arc<[f32]>,
-    pub ffn_in_b:       Arc<[f32]>,
+    pub ffn_in_w: Arc<[f32]>,
+    pub ffn_in_b: Arc<[f32]>,
     /// Shape `[intermediate, hidden]`.
-    pub ffn_out_w:      Arc<[f32]>,
-    pub ffn_out_b:      Arc<[f32]>,
+    pub ffn_out_w: Arc<[f32]>,
+    pub ffn_out_b: Arc<[f32]>,
     // Post-FFN LayerNorm.
-    pub ffn_ln_gamma:   Arc<[f32]>,
-    pub ffn_ln_beta:    Arc<[f32]>,
+    pub ffn_ln_gamma: Arc<[f32]>,
+    pub ffn_ln_beta: Arc<[f32]>,
 }
 
 /// All the weights needed for a BERT forward pass.
 #[derive(Debug, Clone)]
 pub struct BertWeights {
     /// Shape `[vocab_size, hidden_size]`.
-    pub word_embeddings:       Arc<[f32]>,
+    pub word_embeddings: Arc<[f32]>,
     /// Shape `[max_position_embeddings, hidden_size]`.
-    pub position_embeddings:   Arc<[f32]>,
+    pub position_embeddings: Arc<[f32]>,
     /// Shape `[type_vocab_size, hidden_size]`.
     pub token_type_embeddings: Arc<[f32]>,
     /// Pre-encoder LayerNorm (applied to the summed embeddings).
-    pub emb_ln_gamma:          Arc<[f32]>,
-    pub emb_ln_beta:           Arc<[f32]>,
+    pub emb_ln_gamma: Arc<[f32]>,
+    pub emb_ln_beta: Arc<[f32]>,
     /// Per-layer transformer-block weights.
-    pub layers:                Vec<BertLayerWeights>,
+    pub layers: Vec<BertLayerWeights>,
 }
 
 // ---- Model -----------------------------------------------------------------
@@ -148,7 +148,7 @@ pub struct BertWeights {
 /// A BERT encoder, config + weights bundled.
 #[derive(Debug, Clone)]
 pub struct BertModel {
-    pub config:  BertConfig,
+    pub config: BertConfig,
     pub weights: BertWeights,
 }
 
@@ -192,8 +192,7 @@ impl BertModel {
         let position_ids_vec: Vec<u32> = (0..seq as u32).collect();
         let position_ids = word_emb.const_u32_like(position_ids_vec, Shape::from_dims(&[seq]));
         // Segment IDs all zero — single-sequence input.
-        let token_type_ids =
-            word_emb.const_u32_like(vec![0u32; seq], Shape::from_dims(&[seq]));
+        let token_type_ids = word_emb.const_u32_like(vec![0u32; seq], Shape::from_dims(&[seq]));
 
         // -- embeddings ------------------------------------------------------
         let pos_emb = word_emb.const_f32_like(
@@ -209,7 +208,10 @@ impl BertModel {
         let p = pos_emb.index_select(0, &position_ids)?;
         let t = type_emb.index_select(0, &token_type_ids)?;
         // Add the three embeddings, then prepend a batch dim: `[1, seq, h]`.
-        let embeds = w.add(&p)?.add(&t)?.reshape(Shape::from_dims(&[1, seq, h]))?;
+        let embeds = w
+            .add(&p)?
+            .add(&t)?
+            .reshape(Shape::from_dims(&[1, seq, h]))?;
         let embeds = layer_norm_affine(
             &embeds,
             &self.weights.emb_ln_gamma,
@@ -253,7 +255,10 @@ impl BertModel {
         token_ids: &[u32],
         layer_ids: &[usize],
     ) -> crate::Result<Vec<LazyTensor>> {
-        assert!(!token_ids.is_empty(), "BertModel::forward_intermediate_layers: empty input");
+        assert!(
+            !token_ids.is_empty(),
+            "BertModel::forward_intermediate_layers: empty input"
+        );
         assert!(!layer_ids.is_empty(), "layer_ids must not be empty");
         for w in layer_ids.windows(2) {
             assert!(w[0] < w[1], "layer_ids must be strictly increasing");
@@ -281,8 +286,7 @@ impl BertModel {
         let input_ids = word_emb.const_u32_like(token_ids.to_vec(), Shape::from_dims(&[seq]));
         let position_ids_vec: Vec<u32> = (0..seq as u32).collect();
         let position_ids = word_emb.const_u32_like(position_ids_vec, Shape::from_dims(&[seq]));
-        let token_type_ids =
-            word_emb.const_u32_like(vec![0u32; seq], Shape::from_dims(&[seq]));
+        let token_type_ids = word_emb.const_u32_like(vec![0u32; seq], Shape::from_dims(&[seq]));
         let pos_emb = word_emb.const_f32_like(
             self.weights.position_embeddings.clone(),
             Shape::from_dims(&[cfg.max_position_embeddings, h]),
@@ -294,11 +298,17 @@ impl BertModel {
         let w = word_emb.index_select(0, &input_ids)?;
         let p = pos_emb.index_select(0, &position_ids)?;
         let t = type_emb.index_select(0, &token_type_ids)?;
-        let embeds = w.add(&p)?.add(&t)?
+        let embeds = w
+            .add(&p)?
+            .add(&t)?
             .reshape(Shape::from_dims(&[1, seq, h]))?;
         let embeds = layer_norm_affine(
-            &embeds, &self.weights.emb_ln_gamma, &self.weights.emb_ln_beta,
-            cfg.layer_norm_eps, h, seq,
+            &embeds,
+            &self.weights.emb_ln_gamma,
+            &self.weights.emb_ln_beta,
+            cfg.layer_norm_eps,
+            h,
+            seq,
         )?;
 
         // Walk layers and capture at the requested indices.
@@ -339,13 +349,11 @@ fn layer_norm_affine(
     let g = x
         .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))
         .reshape(Shape::from_dims(&[1, 1, hidden]))?
-        .broadcast_to(Shape::from_dims(&[1, seq, hidden]))
-        ?;
+        .broadcast_to(Shape::from_dims(&[1, seq, hidden]))?;
     let b = x
         .const_f32_like(beta.clone(), Shape::from_dims(&[hidden]))
         .reshape(Shape::from_dims(&[1, 1, hidden]))?
-        .broadcast_to(Shape::from_dims(&[1, seq, hidden]))
-        ?;
+        .broadcast_to(Shape::from_dims(&[1, seq, hidden]))?;
     normed.mul(&g)?.add(&b)
 }
 
@@ -364,14 +372,18 @@ fn linear(
     let bias = x
         .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))
         .reshape(Shape::from_dims(&[1, 1, out_f]))?
-        .broadcast_to(Shape::from_dims(&[1, seq, out_f]))
-        ?;
+        .broadcast_to(Shape::from_dims(&[1, seq, out_f]))?;
     x.matmul(&w_t)?.add(&bias)
 }
 
 /// One full BERT transformer block: multi-head self-attention → add+norm →
 /// FFN(GELU) → add+norm.
-fn encoder_layer(x: &LazyTensor, lw: &BertLayerWeights, cfg: &BertConfig, seq: usize) -> crate::Result<LazyTensor> {
+fn encoder_layer(
+    x: &LazyTensor,
+    lw: &BertLayerWeights,
+    cfg: &BertConfig,
+    seq: usize,
+) -> crate::Result<LazyTensor> {
     let h = cfg.hidden_size;
     let n_heads = cfg.num_attention_heads;
     let d_head = cfg.head_dim();
@@ -398,14 +410,19 @@ fn encoder_layer(x: &LazyTensor, lw: &BertLayerWeights, cfg: &BertConfig, seq: u
 
     // Attention output: `[1, n_heads, seq, d_head]`, permute + reshape back
     // to `[1, seq, h]`.
-    let ctx = probs
-        .matmul(&v)?
-        .merge_heads()?;
+    let ctx = probs.matmul(&v)?.merge_heads()?;
     let attn_out = linear(&ctx, &lw.attn_out_w, &lw.attn_out_b, h, h, seq)?;
 
     // Residual + LayerNorm (post-norm, BERT style).
     let x = x.add(&attn_out)?;
-    let x = layer_norm_affine(&x, &lw.attn_ln_gamma, &lw.attn_ln_beta, cfg.layer_norm_eps, h, seq)?;
+    let x = layer_norm_affine(
+        &x,
+        &lw.attn_ln_gamma,
+        &lw.attn_ln_beta,
+        cfg.layer_norm_eps,
+        h,
+        seq,
+    )?;
 
     // --- FFN ---------------------------------------------------------------
     let h_ff = cfg.intermediate_size;
@@ -414,7 +431,14 @@ fn encoder_layer(x: &LazyTensor, lw: &BertLayerWeights, cfg: &BertConfig, seq: u
 
     // Residual + LayerNorm.
     let x = x.add(&ffn_out)?;
-    layer_norm_affine(&x, &lw.ffn_ln_gamma, &lw.ffn_ln_beta, cfg.layer_norm_eps, h, seq)
+    layer_norm_affine(
+        &x,
+        &lw.ffn_ln_gamma,
+        &lw.ffn_ln_beta,
+        cfg.layer_norm_eps,
+        h,
+        seq,
+    )
 }
 
 // ---- Safetensors weight loading --------------------------------------------
@@ -452,18 +476,24 @@ impl BertWeights {
         // without the outer module wrapper.
         let prefix = detect_prefix(st);
 
-        let word_embeddings =
-            load_f32(st, &format!("{prefix}embeddings.word_embeddings.weight"))?;
+        let word_embeddings = load_f32(st, &format!("{prefix}embeddings.word_embeddings.weight"))?;
         if word_embeddings.len() != cfg.vocab_size * h {
             crate::bail!(
                 "word_embeddings: {} elements, expected {} ({}×{})",
-                word_embeddings.len(), cfg.vocab_size * h, cfg.vocab_size, h,
+                word_embeddings.len(),
+                cfg.vocab_size * h,
+                cfg.vocab_size,
+                h,
             );
         }
-        let position_embeddings =
-            load_f32(st, &format!("{prefix}embeddings.position_embeddings.weight"))?;
-        let token_type_embeddings =
-            load_f32(st, &format!("{prefix}embeddings.token_type_embeddings.weight"))?;
+        let position_embeddings = load_f32(
+            st,
+            &format!("{prefix}embeddings.position_embeddings.weight"),
+        )?;
+        let token_type_embeddings = load_f32(
+            st,
+            &format!("{prefix}embeddings.token_type_embeddings.weight"),
+        )?;
         let emb_ln_stem = format!("{prefix}embeddings.LayerNorm");
         let emb_ln_gamma = load_layer_norm_param(st, &emb_ln_stem, true)?;
         let emb_ln_beta = load_layer_norm_param(st, &emb_ln_stem, false)?;
@@ -483,41 +513,39 @@ impl BertWeights {
             let attn_ln_stem = format!("{p}.attention.output.LayerNorm");
             let attn_ln_gamma = load_layer_norm_param(st, &attn_ln_stem, true)?;
             let attn_ln_beta = load_layer_norm_param(st, &attn_ln_stem, false)?;
-            let ffn_in_w =
-                load_transposed(st, &format!("{p}.intermediate.dense.weight"), h_ff, h)?;
+            let ffn_in_w = load_transposed(st, &format!("{p}.intermediate.dense.weight"), h_ff, h)?;
             let ffn_in_b = load_f32(st, &format!("{p}.intermediate.dense.bias"))?;
-            let ffn_out_w =
-                load_transposed(st, &format!("{p}.output.dense.weight"), h, h_ff)?;
+            let ffn_out_w = load_transposed(st, &format!("{p}.output.dense.weight"), h, h_ff)?;
             let ffn_out_b = load_f32(st, &format!("{p}.output.dense.bias"))?;
             let ffn_ln_stem = format!("{p}.output.LayerNorm");
             let ffn_ln_gamma = load_layer_norm_param(st, &ffn_ln_stem, true)?;
             let ffn_ln_beta = load_layer_norm_param(st, &ffn_ln_stem, false)?;
             layers.push(BertLayerWeights {
-                attn_q_w:      Arc::from(attn_q_w),
-                attn_q_b:      Arc::from(attn_q_b),
-                attn_k_w:      Arc::from(attn_k_w),
-                attn_k_b:      Arc::from(attn_k_b),
-                attn_v_w:      Arc::from(attn_v_w),
-                attn_v_b:      Arc::from(attn_v_b),
-                attn_out_w:    Arc::from(attn_out_w),
-                attn_out_b:    Arc::from(attn_out_b),
+                attn_q_w: Arc::from(attn_q_w),
+                attn_q_b: Arc::from(attn_q_b),
+                attn_k_w: Arc::from(attn_k_w),
+                attn_k_b: Arc::from(attn_k_b),
+                attn_v_w: Arc::from(attn_v_w),
+                attn_v_b: Arc::from(attn_v_b),
+                attn_out_w: Arc::from(attn_out_w),
+                attn_out_b: Arc::from(attn_out_b),
                 attn_ln_gamma: Arc::from(attn_ln_gamma),
-                attn_ln_beta:  Arc::from(attn_ln_beta),
-                ffn_in_w:      Arc::from(ffn_in_w),
-                ffn_in_b:      Arc::from(ffn_in_b),
-                ffn_out_w:     Arc::from(ffn_out_w),
-                ffn_out_b:     Arc::from(ffn_out_b),
-                ffn_ln_gamma:  Arc::from(ffn_ln_gamma),
-                ffn_ln_beta:   Arc::from(ffn_ln_beta),
+                attn_ln_beta: Arc::from(attn_ln_beta),
+                ffn_in_w: Arc::from(ffn_in_w),
+                ffn_in_b: Arc::from(ffn_in_b),
+                ffn_out_w: Arc::from(ffn_out_w),
+                ffn_out_b: Arc::from(ffn_out_b),
+                ffn_ln_gamma: Arc::from(ffn_ln_gamma),
+                ffn_ln_beta: Arc::from(ffn_ln_beta),
             });
         }
 
         Ok(Self {
-            word_embeddings:       Arc::from(word_embeddings),
-            position_embeddings:   Arc::from(position_embeddings),
+            word_embeddings: Arc::from(word_embeddings),
+            position_embeddings: Arc::from(position_embeddings),
             token_type_embeddings: Arc::from(token_type_embeddings),
-            emb_ln_gamma:          Arc::from(emb_ln_gamma),
-            emb_ln_beta:           Arc::from(emb_ln_beta),
+            emb_ln_gamma: Arc::from(emb_ln_gamma),
+            emb_ln_beta: Arc::from(emb_ln_beta),
             layers,
         })
     }
@@ -549,7 +577,11 @@ fn load_layer_norm_param(
     stem: &str,
     is_weight: bool,
 ) -> crate::Result<Vec<f32>> {
-    let (modern, legacy) = if is_weight { (".weight", ".gamma") } else { (".bias", ".beta") };
+    let (modern, legacy) = if is_weight {
+        (".weight", ".gamma")
+    } else {
+        (".bias", ".beta")
+    };
     let m = format!("{stem}{modern}");
     if st.get(&m).is_ok() {
         return load_f32(st, &m);
@@ -558,15 +590,10 @@ fn load_layer_norm_param(
     if st.get(&l).is_ok() {
         return load_f32(st, &l);
     }
-    crate::bail!(
-        "LayerNorm param not found under {stem:?}: tried {m:?} and {l:?}"
-    )
+    crate::bail!("LayerNorm param not found under {stem:?}: tried {m:?} and {l:?}")
 }
 
-fn load_f32(
-    st: &crate::safetensors::MmapedSafetensors,
-    name: &str,
-) -> crate::Result<Vec<f32>> {
+fn load_f32(st: &crate::safetensors::MmapedSafetensors, name: &str) -> crate::Result<Vec<f32>> {
     use safetensors::Dtype;
     let view = st
         .get(name)
@@ -583,7 +610,9 @@ fn load_f32(
         Dtype::F64 => {
             let mut out = Vec::with_capacity(bytes.len() / 8);
             for chunk in bytes.chunks_exact(8) {
-                let arr: [u8; 8] = chunk.try_into().expect("chunks_exact(8) always yields 8 bytes");
+                let arr: [u8; 8] = chunk
+                    .try_into()
+                    .expect("chunks_exact(8) always yields 8 bytes");
                 out.push(f64::from_le_bytes(arr) as f32);
             }
             Ok(out)
@@ -621,7 +650,10 @@ fn load_transposed(
     if flat.len() != out_features * in_features {
         crate::bail!(
             "load_transposed: tensor {name:?} has {} elements, expected {} ({}×{})",
-            flat.len(), out_features * in_features, out_features, in_features,
+            flat.len(),
+            out_features * in_features,
+            out_features,
+            in_features,
         );
     }
     let mut out = vec![0.0_f32; out_features * in_features];
@@ -672,17 +704,17 @@ impl BertModel {
                 }
                 let mut paths = Vec::new();
                 for shard_name in unique {
-                    let p = repo.get(&shard_name).map_err(|e| {
-                        crate::Error::Msg(format!("hf-hub {shard_name}: {e}"))
-                    })?;
+                    let p = repo
+                        .get(&shard_name)
+                        .map_err(|e| crate::Error::Msg(format!("hf-hub {shard_name}: {e}")))?;
                     paths.push(p);
                 }
                 paths
             }
             Err(_) => {
-                let p = repo
-                    .get("model.safetensors")
-                    .map_err(|e| crate::Error::Msg(format!("hf-hub bert model.safetensors: {e}")))?;
+                let p = repo.get("model.safetensors").map_err(|e| {
+                    crate::Error::Msg(format!("hf-hub bert model.safetensors: {e}"))
+                })?;
                 vec![p]
             }
         };
@@ -702,10 +734,10 @@ impl BertModel {
 /// `[CLS]` / `[SEP]` / `[PAD]` as special tokens when
 /// `add_special_tokens=true`.
 pub struct BertTokenizer {
-    inner:    tokenizers::Tokenizer,
-    cls_id:   Option<u32>,
-    sep_id:   Option<u32>,
-    pad_id:   Option<u32>,
+    inner: tokenizers::Tokenizer,
+    cls_id: Option<u32>,
+    sep_id: Option<u32>,
+    pad_id: Option<u32>,
 }
 
 impl BertTokenizer {
@@ -716,7 +748,12 @@ impl BertTokenizer {
         let cls_id = inner.token_to_id("[CLS]");
         let sep_id = inner.token_to_id("[SEP]");
         let pad_id = inner.token_to_id("[PAD]");
-        Ok(Self { inner, cls_id, sep_id, pad_id })
+        Ok(Self {
+            inner,
+            cls_id,
+            sep_id,
+            pad_id,
+        })
     }
 
     /// Download `tokenizer.json` from a HuggingFace repo and load it.
@@ -810,46 +847,49 @@ mod tests {
     #[test]
     fn forward_shape_with_zero_weights() {
         let cfg = BertConfig {
-            vocab_size:              100,
-            hidden_size:             32,
-            num_hidden_layers:       2,
-            num_attention_heads:     4,
-            intermediate_size:       64,
+            vocab_size: 100,
+            hidden_size: 32,
+            num_hidden_layers: 2,
+            num_attention_heads: 4,
+            intermediate_size: 64,
             max_position_embeddings: 16,
-            type_vocab_size:         2,
-            layer_norm_eps:          1e-12,
+            type_vocab_size: 2,
+            layer_norm_eps: 1e-12,
         };
         let h = cfg.hidden_size;
         let zeros = |n: usize| Arc::from(vec![0.0_f32; n]);
         let ones = |n: usize| Arc::from(vec![1.0_f32; n]);
         let weights = BertWeights {
-            word_embeddings:       zeros(cfg.vocab_size * h),
-            position_embeddings:   zeros(cfg.max_position_embeddings * h),
+            word_embeddings: zeros(cfg.vocab_size * h),
+            position_embeddings: zeros(cfg.max_position_embeddings * h),
             token_type_embeddings: zeros(cfg.type_vocab_size * h),
-            emb_ln_gamma:          ones(h),
-            emb_ln_beta:           zeros(h),
+            emb_ln_gamma: ones(h),
+            emb_ln_beta: zeros(h),
             layers: (0..cfg.num_hidden_layers)
                 .map(|_| BertLayerWeights {
-                    attn_q_w:      zeros(h * h),
-                    attn_q_b:      zeros(h),
-                    attn_k_w:      zeros(h * h),
-                    attn_k_b:      zeros(h),
-                    attn_v_w:      zeros(h * h),
-                    attn_v_b:      zeros(h),
-                    attn_out_w:    zeros(h * h),
-                    attn_out_b:    zeros(h),
+                    attn_q_w: zeros(h * h),
+                    attn_q_b: zeros(h),
+                    attn_k_w: zeros(h * h),
+                    attn_k_b: zeros(h),
+                    attn_v_w: zeros(h * h),
+                    attn_v_b: zeros(h),
+                    attn_out_w: zeros(h * h),
+                    attn_out_b: zeros(h),
                     attn_ln_gamma: ones(h),
-                    attn_ln_beta:  zeros(h),
-                    ffn_in_w:      zeros(h * cfg.intermediate_size),
-                    ffn_in_b:      zeros(cfg.intermediate_size),
-                    ffn_out_w:     zeros(cfg.intermediate_size * h),
-                    ffn_out_b:     zeros(h),
-                    ffn_ln_gamma:  ones(h),
-                    ffn_ln_beta:   zeros(h),
+                    attn_ln_beta: zeros(h),
+                    ffn_in_w: zeros(h * cfg.intermediate_size),
+                    ffn_in_b: zeros(cfg.intermediate_size),
+                    ffn_out_w: zeros(cfg.intermediate_size * h),
+                    ffn_out_b: zeros(h),
+                    ffn_ln_gamma: ones(h),
+                    ffn_ln_beta: zeros(h),
                 })
                 .collect(),
         };
-        let model = BertModel { config: cfg.clone(), weights };
+        let model = BertModel {
+            config: cfg.clone(),
+            weights,
+        };
         let ids: Vec<u32> = (0..8).collect();
         let hidden = model.forward(&ids).unwrap();
         let out = hidden.realize_f32();
@@ -875,14 +915,14 @@ mod tests {
     #[test]
     fn forward_intermediate_layers_shape() {
         let cfg = BertConfig {
-            vocab_size:              50,
-            hidden_size:             16,
-            num_hidden_layers:       3,
-            num_attention_heads:     4,
-            intermediate_size:       32,
+            vocab_size: 50,
+            hidden_size: 16,
+            num_hidden_layers: 3,
+            num_attention_heads: 4,
+            intermediate_size: 32,
             max_position_embeddings: 16,
-            type_vocab_size:         2,
-            layer_norm_eps:          1e-12,
+            type_vocab_size: 2,
+            layer_norm_eps: 1e-12,
         };
         let h = cfg.hidden_size;
         let zeros = |n: usize| Arc::from(vec![0.0_f32; n]);
@@ -892,31 +932,43 @@ mod tests {
             s = s.wrapping_mul(1103515245).wrapping_add(12345);
             ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
         };
-        let mut vec_of = |n: usize| -> Arc<[f32]> {
-            Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
-        };
+        let mut vec_of =
+            |n: usize| -> Arc<[f32]> { Arc::from((0..n).map(|_| next()).collect::<Vec<_>>()) };
         let weights = BertWeights {
-            word_embeddings:       vec_of(cfg.vocab_size * h),
-            position_embeddings:   vec_of(cfg.max_position_embeddings * h),
+            word_embeddings: vec_of(cfg.vocab_size * h),
+            position_embeddings: vec_of(cfg.max_position_embeddings * h),
             token_type_embeddings: vec_of(cfg.type_vocab_size * h),
-            emb_ln_gamma:          ones(h),
-            emb_ln_beta:           zeros(h),
-            layers: (0..cfg.num_hidden_layers).map(|_| BertLayerWeights {
-                attn_q_w: vec_of(h * h), attn_q_b: vec_of(h),
-                attn_k_w: vec_of(h * h), attn_k_b: vec_of(h),
-                attn_v_w: vec_of(h * h), attn_v_b: vec_of(h),
-                attn_out_w: vec_of(h * h), attn_out_b: vec_of(h),
-                attn_ln_gamma: ones(h), attn_ln_beta: zeros(h),
-                ffn_in_w: vec_of(h * cfg.intermediate_size),
-                ffn_in_b: vec_of(cfg.intermediate_size),
-                ffn_out_w: vec_of(cfg.intermediate_size * h),
-                ffn_out_b: vec_of(h),
-                ffn_ln_gamma: ones(h), ffn_ln_beta: zeros(h),
-            }).collect(),
+            emb_ln_gamma: ones(h),
+            emb_ln_beta: zeros(h),
+            layers: (0..cfg.num_hidden_layers)
+                .map(|_| BertLayerWeights {
+                    attn_q_w: vec_of(h * h),
+                    attn_q_b: vec_of(h),
+                    attn_k_w: vec_of(h * h),
+                    attn_k_b: vec_of(h),
+                    attn_v_w: vec_of(h * h),
+                    attn_v_b: vec_of(h),
+                    attn_out_w: vec_of(h * h),
+                    attn_out_b: vec_of(h),
+                    attn_ln_gamma: ones(h),
+                    attn_ln_beta: zeros(h),
+                    ffn_in_w: vec_of(h * cfg.intermediate_size),
+                    ffn_in_b: vec_of(cfg.intermediate_size),
+                    ffn_out_w: vec_of(cfg.intermediate_size * h),
+                    ffn_out_b: vec_of(h),
+                    ffn_ln_gamma: ones(h),
+                    ffn_ln_beta: zeros(h),
+                })
+                .collect(),
         };
-        let model = BertModel { config: cfg, weights };
+        let model = BertModel {
+            config: cfg,
+            weights,
+        };
         let ids: Vec<u32> = (0..8).collect();
-        let outs = model.forward_intermediate_layers(&ids, &[0_usize, 2]).unwrap();
+        let outs = model
+            .forward_intermediate_layers(&ids, &[0_usize, 2])
+            .unwrap();
         assert_eq!(outs.len(), 2);
         for out in &outs {
             assert_eq!(out.shape().dims(), &[1, ids.len(), h]);
@@ -931,7 +983,9 @@ mod tests {
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-7,
-            "layer 0 and layer 2 intermediates must differ, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-7,
+            "layer 0 and layer 2 intermediates must differ, max_diff = {max_diff}"
+        );
     }
 }

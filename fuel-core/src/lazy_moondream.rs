@@ -165,11 +165,7 @@ pub struct MoondreamModel {
 
 impl MoondreamModel {
     /// Run the full multimodal forward pass.
-    pub fn forward(
-        &self,
-        pixel_values: &LazyTensor,
-        text_tokens: &[u32],
-    ) -> Result<LazyTensor> {
+    pub fn forward(&self, pixel_values: &LazyTensor, text_tokens: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         assert_eq!(
             cfg.projection.out_dim, cfg.text.hidden_size,
@@ -191,10 +187,8 @@ impl MoondreamModel {
             Arc::clone(&self.weights.text.token_embedding),
             Shape::from_dims(&[cfg.text.vocab_size, cfg.text.hidden_size]),
         );
-        let token_ids = pixel_values.const_u32_like(
-            text_tokens.to_vec(),
-            Shape::from_dims(&[text_len]),
-        );
+        let token_ids =
+            pixel_values.const_u32_like(text_tokens.to_vec(), Shape::from_dims(&[text_len]));
         let text_embeds = mf_embed_lt
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[1, text_len, cfg.text.hidden_size]))?;
@@ -220,28 +214,36 @@ impl MoondreamModel {
         assert_eq!(dims[2], cfg.image_size);
         assert_eq!(dims[3], cfg.image_size);
         let np_side = cfg.image_size / cfg.patch_size;
-        assert_eq!(np_side * np_side, cfg.num_patches,
-            "num_patches must equal (image_size / patch_size)^2");
+        assert_eq!(
+            np_side * np_side,
+            cfg.num_patches,
+            "num_patches must equal (image_size / patch_size)^2"
+        );
 
         // ---- Patchify into (b, num_patches, c*p*p) -----------------------
         // Eager: reshape (b, c, h/p, p, w/p, p) → permute (0, 2, 4, 1, 3, 5)
         //        → reshape (b, num_patches, c*p*p).
         let patches = pixel_values
             .reshape(Shape::from_dims(&[
-                batch, cfg.num_channels,
-                np_side, cfg.patch_size,
-                np_side, cfg.patch_size,
+                batch,
+                cfg.num_channels,
+                np_side,
+                cfg.patch_size,
+                np_side,
+                cfg.patch_size,
             ]))?
             .permute([0, 2, 4, 1, 3, 5_usize])?
             .reshape(Shape::from_dims(&[
-                batch, cfg.num_patches,
+                batch,
+                cfg.num_patches,
                 cfg.patch_input_dim(),
             ]))?;
 
         // ---- Linear patch embedding -------------------------------------
-        let patch_proj = weights.patch_embed.apply_linear(
-            &patches, cfg.patch_input_dim(), cfg.embed_dim,
-        )?;
+        let patch_proj =
+            weights
+                .patch_embed
+                .apply_linear(&patches, cfg.patch_input_dim(), cfg.embed_dim)?;
         let patch_bias_t = pixel_values.const_f32_like(
             Arc::clone(&weights.patch_embed_bias),
             Shape::from_dims(&[cfg.embed_dim]),
@@ -264,7 +266,11 @@ impl MoondreamModel {
         }
 
         // ---- Final LayerNorm ---------------------------------------------
-        Ok(h.layer_norm_affine(std::sync::Arc::clone(&weights.norm_gain), std::sync::Arc::clone(&weights.norm_bias), cfg.layer_norm_eps)?)
+        Ok(h.layer_norm_affine(
+            std::sync::Arc::clone(&weights.norm_gain),
+            std::sync::Arc::clone(&weights.norm_bias),
+            cfg.layer_norm_eps,
+        )?)
     }
 
     fn apply_block(
@@ -282,14 +288,15 @@ impl MoondreamModel {
         let head_dim = cfg.embed_dim / cfg.num_heads;
 
         // Pre-LN before attention.
-        let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&block.norm1_gain), std::sync::Arc::clone(&block.norm1_bias), cfg.layer_norm_eps)?;
+        let x_norm = x.layer_norm_affine(
+            std::sync::Arc::clone(&block.norm1_gain),
+            std::sync::Arc::clone(&block.norm1_bias),
+            cfg.layer_norm_eps,
+        )?;
 
         // Fused Wqkv: hidden → 3 * hidden.
         let qkv_lin = block.qkv.apply_linear(&x_norm, h, 3 * h)?;
-        let qkv_b_t = x.const_f32_like(
-            Arc::clone(&block.qkv_bias),
-            Shape::from_dims(&[3 * h]),
-        );
+        let qkv_b_t = x.const_f32_like(Arc::clone(&block.qkv_bias), Shape::from_dims(&[3 * h]));
         let qkv = qkv_lin.broadcast_add(&qkv_b_t)?;
         let q = qkv.slice(2_usize, 0, h)?;
         let k = qkv.slice(2_usize, h, h)?;
@@ -307,28 +314,23 @@ impl MoondreamModel {
         let ctx = probs.matmul(&v)?;
         let merged = ctx.merge_heads()?;
         let proj = block.proj.apply_linear(&merged, h, h)?;
-        let proj_b_t = x.const_f32_like(
-            Arc::clone(&block.proj_bias),
-            Shape::from_dims(&[h]),
-        );
+        let proj_b_t = x.const_f32_like(Arc::clone(&block.proj_bias), Shape::from_dims(&[h]));
         let attn_out = proj.broadcast_add(&proj_b_t)?;
         let h1 = x.add(&attn_out)?;
 
         // Pre-LN before MLP.
-        let h1_norm = h1.layer_norm_affine(std::sync::Arc::clone(&block.norm2_gain), std::sync::Arc::clone(&block.norm2_bias), cfg.layer_norm_eps)?;
+        let h1_norm = h1.layer_norm_affine(
+            std::sync::Arc::clone(&block.norm2_gain),
+            std::sync::Arc::clone(&block.norm2_bias),
+            cfg.layer_norm_eps,
+        )?;
         let mlp_h = cfg.mlp_hidden;
         let fc1 = block.fc1.apply_linear(&h1_norm, h, mlp_h)?;
-        let fc1_b_t = x.const_f32_like(
-            Arc::clone(&block.fc1_bias),
-            Shape::from_dims(&[mlp_h]),
-        );
+        let fc1_b_t = x.const_f32_like(Arc::clone(&block.fc1_bias), Shape::from_dims(&[mlp_h]));
         let fc1 = fc1.broadcast_add(&fc1_b_t)?;
         let act = activate(&fc1, cfg.activation);
         let fc2 = block.fc2.apply_linear(&act, mlp_h, h)?;
-        let fc2_b_t = x.const_f32_like(
-            Arc::clone(&block.fc2_bias),
-            Shape::from_dims(&[h]),
-        );
+        let fc2_b_t = x.const_f32_like(Arc::clone(&block.fc2_bias), Shape::from_dims(&[h]));
         let mlp_out = fc2.broadcast_add(&fc2_b_t)?;
         h1.add(&mlp_out)
     }
@@ -336,14 +338,18 @@ impl MoondreamModel {
     fn apply_projection(&self, vision_out: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config.projection;
         let weights = &self.weights.projection;
-        let fc1 = weights.fc1.apply_linear(vision_out, cfg.in_dim, cfg.hidden_dim)?;
+        let fc1 = weights
+            .fc1
+            .apply_linear(vision_out, cfg.in_dim, cfg.hidden_dim)?;
         let fc1_b_t = vision_out.const_f32_like(
             Arc::clone(&weights.fc1_bias),
             Shape::from_dims(&[cfg.hidden_dim]),
         );
         let fc1 = fc1.broadcast_add(&fc1_b_t)?;
         let act = activate(&fc1, cfg.activation);
-        let fc2 = weights.fc2.apply_linear(&act, cfg.hidden_dim, cfg.out_dim)?;
+        let fc2 = weights
+            .fc2
+            .apply_linear(&act, cfg.hidden_dim, cfg.out_dim)?;
         let fc2_b_t = vision_out.const_f32_like(
             Arc::clone(&weights.fc2_bias),
             Shape::from_dims(&[cfg.out_dim]),
@@ -373,8 +379,9 @@ impl MoondreamWeights {
             "MoondreamWeights::load_from_mmapped: vision+projector+text \
              composition pending; construct MoondreamWeights via explicit \
              struct literal or contribute the loader."
-            .to_string()
-        ).bt())
+                .to_string(),
+        )
+        .bt())
     }
 }
 
@@ -440,22 +447,27 @@ mod tests {
         let patch_embed = WeightStorage::F32(vec_of(pid * h, &mut *nb));
         let patch_embed_bias = vec_of(h, &mut *nb);
         let pos_embed = vec_of(cfg.num_patches * h, &mut *nb);
-        let blocks: Vec<MoondreamVisionBlockWeights> = (0..cfg.num_blocks).map(|_| MoondreamVisionBlockWeights {
-            norm1_gain: Arc::from(vec![1.0_f32; h]),
-            norm1_bias: Arc::from(vec![0.0_f32; h]),
-            qkv: WeightStorage::F32(vec_of(h * (3 * h), &mut *nb)),
-            qkv_bias: vec_of(3 * h, &mut *nb),
-            proj: WeightStorage::F32(vec_of(h * h, &mut *nb)),
-            proj_bias: vec_of(h, &mut *nb),
-            norm2_gain: Arc::from(vec![1.0_f32; h]),
-            norm2_bias: Arc::from(vec![0.0_f32; h]),
-            fc1: WeightStorage::F32(vec_of(h * mlp_h, &mut *nb)),
-            fc1_bias: vec_of(mlp_h, &mut *nb),
-            fc2: WeightStorage::F32(vec_of(mlp_h * h, &mut *nb)),
-            fc2_bias: vec_of(h, &mut *nb),
-        }).collect();
+        let blocks: Vec<MoondreamVisionBlockWeights> = (0..cfg.num_blocks)
+            .map(|_| MoondreamVisionBlockWeights {
+                norm1_gain: Arc::from(vec![1.0_f32; h]),
+                norm1_bias: Arc::from(vec![0.0_f32; h]),
+                qkv: WeightStorage::F32(vec_of(h * (3 * h), &mut *nb)),
+                qkv_bias: vec_of(3 * h, &mut *nb),
+                proj: WeightStorage::F32(vec_of(h * h, &mut *nb)),
+                proj_bias: vec_of(h, &mut *nb),
+                norm2_gain: Arc::from(vec![1.0_f32; h]),
+                norm2_bias: Arc::from(vec![0.0_f32; h]),
+                fc1: WeightStorage::F32(vec_of(h * mlp_h, &mut *nb)),
+                fc1_bias: vec_of(mlp_h, &mut *nb),
+                fc2: WeightStorage::F32(vec_of(mlp_h * h, &mut *nb)),
+                fc2_bias: vec_of(h, &mut *nb),
+            })
+            .collect();
         MoondreamVisionWeights {
-            patch_embed, patch_embed_bias, pos_embed, blocks,
+            patch_embed,
+            patch_embed_bias,
+            pos_embed,
+            blocks,
             norm_gain: Arc::from(vec![1.0_f32; h]),
             norm_bias: Arc::from(vec![0.0_f32; h]),
         }
@@ -486,26 +498,31 @@ mod tests {
         let h = cfg.hidden_size;
         let inner = cfg.inner_dim();
         let token_embedding = vec_of(cfg.vocab_size * h, &mut *nb);
-        let layers: Vec<MixFormerLayerWeights> = (0..cfg.num_hidden_layers).map(|_| MixFormerLayerWeights {
-            ln_gain: Arc::from(vec![1.0_f32; h]),
-            ln_bias: Arc::from(vec![0.0_f32; h]),
-            wqkv: WeightStorage::F32(vec_of(h * (3 * h), &mut *nb)),
-            wqkv_bias: vec_of(3 * h, &mut *nb),
-            out_proj: WeightStorage::F32(vec_of(h * h, &mut *nb)),
-            out_proj_bias: vec_of(h, &mut *nb),
-            fc1: WeightStorage::F32(vec_of(h * inner, &mut *nb)),
-            fc1_bias: vec_of(inner, &mut *nb),
-            fc2: WeightStorage::F32(vec_of(inner * h, &mut *nb)),
-            fc2_bias: vec_of(h, &mut *nb),
-        }).collect();
+        let layers: Vec<MixFormerLayerWeights> = (0..cfg.num_hidden_layers)
+            .map(|_| MixFormerLayerWeights {
+                ln_gain: Arc::from(vec![1.0_f32; h]),
+                ln_bias: Arc::from(vec![0.0_f32; h]),
+                wqkv: WeightStorage::F32(vec_of(h * (3 * h), &mut *nb)),
+                wqkv_bias: vec_of(3 * h, &mut *nb),
+                out_proj: WeightStorage::F32(vec_of(h * h, &mut *nb)),
+                out_proj_bias: vec_of(h, &mut *nb),
+                fc1: WeightStorage::F32(vec_of(h * inner, &mut *nb)),
+                fc1_bias: vec_of(inner, &mut *nb),
+                fc2: WeightStorage::F32(vec_of(inner * h, &mut *nb)),
+                fc2_bias: vec_of(h, &mut *nb),
+            })
+            .collect();
         let final_ln_gain = Arc::from(vec![1.0_f32; h]);
         let final_ln_bias = Arc::from(vec![0.0_f32; h]);
         let lm_head = Some(WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *nb)));
         let lm_head_bias = vec_of(cfg.vocab_size, &mut *nb);
         MixFormerWeights {
-            token_embedding, layers,
-            final_ln_gain, final_ln_bias,
-            lm_head, lm_head_bias,
+            token_embedding,
+            layers,
+            final_ln_gain,
+            final_ln_bias,
+            lm_head,
+            lm_head_bias,
         }
     }
 
@@ -534,7 +551,10 @@ mod tests {
             projection: tiny_projection_weights(&p_cfg),
             text: tiny_text_weights(&t_cfg),
         };
-        let model = MoondreamModel { config: cfg, weights };
+        let model = MoondreamModel {
+            config: cfg,
+            weights,
+        };
         let img = tiny_image(&v_cfg);
         let toks = [1_u32, 2, 3];
         let logits = model.forward(&img, &toks).unwrap();
@@ -564,12 +584,17 @@ mod tests {
         };
         let mut weights_b = weights_a.clone();
         let pid = v_cfg.patch_input_dim();
-        weights_b.vision.patch_embed = WeightStorage::F32(
-            Arc::from(vec![0.0_f32; pid * v_cfg.embed_dim])
-        );
+        weights_b.vision.patch_embed =
+            WeightStorage::F32(Arc::from(vec![0.0_f32; pid * v_cfg.embed_dim]));
         weights_b.vision.patch_embed_bias = Arc::from(vec![0.0_f32; v_cfg.embed_dim]);
-        let m_a = MoondreamModel { config: cfg.clone(), weights: weights_a };
-        let m_b = MoondreamModel { config: cfg, weights: weights_b };
+        let m_a = MoondreamModel {
+            config: cfg.clone(),
+            weights: weights_a,
+        };
+        let m_b = MoondreamModel {
+            config: cfg,
+            weights: weights_b,
+        };
         let img_a = tiny_image(&v_cfg);
         let img_b = tiny_image(&v_cfg);
         let toks = [1_u32, 2, 3];
@@ -582,7 +607,9 @@ mod tests {
         for (x, y) in a[start..].iter().zip(b[start..].iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-6,
-            "patch-embed change must alter text-position logits, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-6,
+            "patch-embed change must alter text-position logits, max_diff = {max_diff}"
+        );
     }
 }

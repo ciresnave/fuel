@@ -37,28 +37,88 @@ pub mod shape_expr;
 #[non_exhaustive]
 pub enum OpTag {
     // binary arithmetic / extremum
-    Add, Sub, Mul, Div, Maximum, Minimum, Pow, Rem,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Maximum,
+    Minimum,
+    Pow,
+    Rem,
     // unary math
-    Neg, Abs, Sqr, Sqrt, Rsqrt, Recip, Exp, Log, Sin, Cos,
+    Neg,
+    Abs,
+    Sqr,
+    Sqrt,
+    Rsqrt,
+    Recip,
+    Exp,
+    Log,
+    Sin,
+    Cos,
     // activations (Gelu = tanh-approx; GeluErf = exact erf — distinct, §3 note)
-    Tanh, Sigmoid, Silu, Gelu, GeluErf, Relu, Erf, Step,
+    Tanh,
+    Sigmoid,
+    Silu,
+    Gelu,
+    GeluErf,
+    Relu,
+    Erf,
+    Step,
     // rounding / sign
-    Floor, Ceil, Round, Sign,
+    Floor,
+    Ceil,
+    Round,
+    Sign,
     // scalar-param (value param-ized; attrs carries the slot)
-    AddScalar, MulScalar, PowI, Clamp,
+    AddScalar,
+    MulScalar,
+    PowI,
+    Clamp,
     // comparison (-> U8 mask)
-    Equal, Ne, Lt, Le, Gt, Ge,
+    Equal,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
     // select / mask
-    Where, MaskedFill,
+    Where,
+    MaskedFill,
     // reductions (MaxDim: additive, Increment C slice 1 T4 — the D3 keepdim
     // swap spells keepdim reduces as {Max,Sum,Mean}Dim + Unsqueeze)
-    SumAll, MaxAll, MinAll, MeanAll, SumDim, MaxDim, MeanDim, ReduceSumTo, ReduceMaxTo, CumSum,
+    SumAll,
+    MaxAll,
+    MinAll,
+    MeanAll,
+    SumDim,
+    MaxDim,
+    MeanDim,
+    ReduceSumTo,
+    ReduceMaxTo,
+    CumSum,
     // matmul
     MatMul,
     // shape / layout (metadata or copy)
-    Transpose, Permute, Reshape, BroadcastTo, Unsqueeze, Squeeze, Cast, Slice, Concat, Flip, Roll, Pad, Triu, Tril,
+    Transpose,
+    Permute,
+    Reshape,
+    BroadcastTo,
+    Unsqueeze,
+    Squeeze,
+    Cast,
+    Slice,
+    Concat,
+    Flip,
+    Roll,
+    Pad,
+    Triu,
+    Tril,
     // indexing / gather-scatter
-    IndexSelect, Gather, IndexAdd, ScatterAdd,
+    IndexSelect,
+    Gather,
+    IndexAdd,
+    ScatterAdd,
     // fused-primitive helpers
     LogSoftmaxLastDim,
     // value source
@@ -424,15 +484,44 @@ pub struct OpAttrs {
 //     operand node; `oob_policy` is a DEFERRED unwired slot (no carrier yet).
 // See kernel-seam-interop.md §7.3.2 for the per-op field-order table + this scope.
 
-fn put_u32(b: &mut Vec<u8>, x: u32) { b.extend_from_slice(&x.to_le_bytes()); }
-fn put_u64(b: &mut Vec<u8>, x: u64) { b.extend_from_slice(&x.to_le_bytes()); }
-fn put_i64(b: &mut Vec<u8>, x: i64) { b.extend_from_slice(&x.to_le_bytes()); }
-fn put_f64(b: &mut Vec<u8>, x: f64) { b.extend_from_slice(&x.to_le_bytes()); }
-fn put_str(b: &mut Vec<u8>, s: &str) { put_u32(b, s.len() as u32); b.extend_from_slice(s.as_bytes()); }
-fn put_i64_list(b: &mut Vec<u8>, xs: &[i64]) { put_u32(b, xs.len() as u32); for &x in xs { put_i64(b, x); } }
-fn put_u32_list(b: &mut Vec<u8>, xs: &[u32]) { put_u32(b, xs.len() as u32); for &x in xs { put_u32(b, x); } }
-fn put_f64_list(b: &mut Vec<u8>, xs: &[f64]) { put_u32(b, xs.len() as u32); for &x in xs { put_f64(b, x); } }
-fn put_u8_list(b: &mut Vec<u8>, xs: &[u8]) { put_u32(b, xs.len() as u32); b.extend_from_slice(xs); }
+fn put_u32(b: &mut Vec<u8>, x: u32) {
+    b.extend_from_slice(&x.to_le_bytes());
+}
+fn put_u64(b: &mut Vec<u8>, x: u64) {
+    b.extend_from_slice(&x.to_le_bytes());
+}
+fn put_i64(b: &mut Vec<u8>, x: i64) {
+    b.extend_from_slice(&x.to_le_bytes());
+}
+fn put_f64(b: &mut Vec<u8>, x: f64) {
+    b.extend_from_slice(&x.to_le_bytes());
+}
+fn put_str(b: &mut Vec<u8>, s: &str) {
+    put_u32(b, s.len() as u32);
+    b.extend_from_slice(s.as_bytes());
+}
+fn put_i64_list(b: &mut Vec<u8>, xs: &[i64]) {
+    put_u32(b, xs.len() as u32);
+    for &x in xs {
+        put_i64(b, x);
+    }
+}
+fn put_u32_list(b: &mut Vec<u8>, xs: &[u32]) {
+    put_u32(b, xs.len() as u32);
+    for &x in xs {
+        put_u32(b, x);
+    }
+}
+fn put_f64_list(b: &mut Vec<u8>, xs: &[f64]) {
+    put_u32(b, xs.len() as u32);
+    for &x in xs {
+        put_f64(b, x);
+    }
+}
+fn put_u8_list(b: &mut Vec<u8>, xs: &[u8]) {
+    put_u32(b, xs.len() as u32);
+    b.extend_from_slice(xs);
+}
 
 /// Derive the canonical matmul role vectors for a same-rank ≥ 2 contraction
 /// (the LOCKED reply-3 cell, §5): `lhs = [Batch×(r−2), FreeM, ContractedK]`,
@@ -506,8 +595,14 @@ impl OpAttrs {
                 put_u64(&mut body, self.slice_len.unwrap_or(0));
             }
             // Single-axis ops (dim rides `axis`).
-            T::Concat | T::Flip | T::Triu | T::Tril
-            | T::IndexSelect | T::Gather | T::IndexAdd | T::ScatterAdd => {
+            T::Concat
+            | T::Flip
+            | T::Triu
+            | T::Tril
+            | T::IndexSelect
+            | T::Gather
+            | T::IndexAdd
+            | T::ScatterAdd => {
                 put_i64(&mut body, self.axis.unwrap_or(0));
             }
             // Roll: axis(i64) + shift(i64).
@@ -686,7 +781,11 @@ pub fn advisory_band_reference_cases() -> Vec<(PatternNode, Option<u64>)> {
         PatternNode::Bind { index: i }
     }
     fn op(op: OpTag, operands: Vec<PatternNode>) -> PatternNode {
-        PatternNode::Op { op, operands, attrs: OpAttrs::default() }
+        PatternNode::Op {
+            op,
+            operands,
+            attrs: OpAttrs::default(),
+        }
     }
     vec![
         // Op-free region: nothing to band -> exact comparison.
@@ -694,21 +793,33 @@ pub fn advisory_band_reference_cases() -> Vec<(PatternNode, Option<u64>)> {
         // Single exact op -> exact comparison.
         (op(OpTag::Add, vec![bind(0), bind(1)]), None),
         // Multi-node exact-only region -> Ulp(n_ops - 1).
-        (op(OpTag::Relu, vec![op(OpTag::Add, vec![bind(0), bind(1)])]), Some(1)),
+        (
+            op(OpTag::Relu, vec![op(OpTag::Add, vec![bind(0), bind(1)])]),
+            Some(1),
+        ),
         // Deeper exact-only region (3 ops) -> Ulp(3 - 1).
         (
             op(
                 OpTag::Relu,
-                vec![op(OpTag::Relu, vec![op(OpTag::Add, vec![bind(0), bind(1)])])],
+                vec![op(
+                    OpTag::Relu,
+                    vec![op(OpTag::Add, vec![bind(0), bind(1)])],
+                )],
             ),
             Some(2),
         ),
         // Sqrt is IEEE-correctly-rounded -> exact class; sqrt(a+b) = 2 exact ops.
-        (op(OpTag::Sqrt, vec![op(OpTag::Add, vec![bind(0), bind(1)])]), Some(1)),
+        (
+            op(OpTag::Sqrt, vec![op(OpTag::Add, vec![bind(0), bind(1)])]),
+            Some(1),
+        ),
         // Lone transcendental keeps exactly its own ceiling (Exp declares 4).
         (op(OpTag::Exp, vec![bind(0)]), Some(4)),
         // Transcendental + one exact: 4 + (1 - 1) = 4.
-        (op(OpTag::Exp, vec![op(OpTag::Add, vec![bind(0), bind(1)])]), Some(4)),
+        (
+            op(OpTag::Exp, vec![op(OpTag::Add, vec![bind(0), bind(1)])]),
+            Some(4),
+        ),
         // Two transcendentals (Exp 4, Tanh fallback 4) + one exact: 8 + 0 = 8.
         (
             op(
@@ -718,7 +829,10 @@ pub fn advisory_band_reference_cases() -> Vec<(PatternNode, Option<u64>)> {
             Some(8),
         ),
         // All-transcendental exp(tanh(x)): 4 + 4, exact term saturates at 0.
-        (op(OpTag::Exp, vec![op(OpTag::Tanh, vec![bind(0)])]), Some(8)),
+        (
+            op(OpTag::Exp, vec![op(OpTag::Tanh, vec![bind(0)])]),
+            Some(8),
+        ),
         // Silu (kiss non-primitive fallback 4) over add(a, exp(b)): 4 + 4 + 0.
         (
             op(
@@ -758,7 +872,10 @@ mod tests {
         let region = PatternNode::Op {
             op: OpTag::Mul,
             attrs: OpAttrs::default(),
-            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 0 }],
+            operands: vec![
+                PatternNode::Bind { index: 0 },
+                PatternNode::Bind { index: 0 },
+            ],
         };
         assert_eq!(region.bind_indices(), vec![0]);
     }
@@ -768,14 +885,25 @@ mod tests {
     #[test]
     fn empty_schema_op_serializes_zero_length() {
         // Add carries no attrs → one canonical byte form: u32 LE length 0.
-        assert_eq!(OpAttrs::default().to_canonical_bytes(OpTag::Add), vec![0, 0, 0, 0]);
-        assert_eq!(OpAttrs::default().to_canonical_bytes(OpTag::MatMul), vec![0, 0, 0, 0]);
+        assert_eq!(
+            OpAttrs::default().to_canonical_bytes(OpTag::Add),
+            vec![0, 0, 0, 0]
+        );
+        assert_eq!(
+            OpAttrs::default().to_canonical_bytes(OpTag::MatMul),
+            vec![0, 0, 0, 0]
+        );
     }
 
     #[test]
     fn slice_serializes_positionally() {
         // Slice schema (positional): axis(u32), start(u64), len(u64) — see kernel-seam-interop.md.
-        let a = OpAttrs { axis: Some(1), slice_start: Some(2), slice_len: Some(3), ..OpAttrs::default() };
+        let a = OpAttrs {
+            axis: Some(1),
+            slice_start: Some(2),
+            slice_len: Some(3),
+            ..OpAttrs::default()
+        };
         let mut expect = Vec::new();
         let body = {
             let mut b = Vec::new();
@@ -791,7 +919,10 @@ mod tests {
 
     #[test]
     fn cast_serializes_dtype_name_length_prefixed() {
-        let a = OpAttrs { cast_dtype: Some("f16".into()), ..OpAttrs::default() };
+        let a = OpAttrs {
+            cast_dtype: Some("f16".into()),
+            ..OpAttrs::default()
+        };
         let mut body = Vec::new();
         body.extend_from_slice(&(3u32.to_le_bytes())); // name length
         body.extend_from_slice(b"f16");
@@ -802,8 +933,14 @@ mod tests {
 
     #[test]
     fn canonical_bytes_are_deterministic() {
-        let a = OpAttrs { target_shape: vec![2, 3], ..OpAttrs::default() };
-        assert_eq!(a.to_canonical_bytes(OpTag::Reshape), a.to_canonical_bytes(OpTag::Reshape));
+        let a = OpAttrs {
+            target_shape: vec![2, 3],
+            ..OpAttrs::default()
+        };
+        assert_eq!(
+            a.to_canonical_bytes(OpTag::Reshape),
+            a.to_canonical_bytes(OpTag::Reshape)
+        );
     }
 
     // ---- Per-carrier width conformance (KISS coordinator pin, vs KISS main c9153b2) --
@@ -827,11 +964,24 @@ mod tests {
         // Carrier (a): node-envelope op_attrs — outer prefix is EXACTLY 4 bytes
         // (u32-LE); an empty schema is the 4-byte zero form.
         let empty = OpAttrs::default().to_canonical_bytes(OpTag::Add);
-        assert_eq!(empty, vec![0u8, 0, 0, 0], "carrier (a): empty node-envelope op_attrs = u32-LE zero (4 bytes)");
-        let sliced = OpAttrs { axis: Some(1), slice_start: Some(2), slice_len: Some(3), ..OpAttrs::default() };
+        assert_eq!(
+            empty,
+            vec![0u8, 0, 0, 0],
+            "carrier (a): empty node-envelope op_attrs = u32-LE zero (4 bytes)"
+        );
+        let sliced = OpAttrs {
+            axis: Some(1),
+            slice_start: Some(2),
+            slice_len: Some(3),
+            ..OpAttrs::default()
+        };
         let blob = sliced.to_canonical_bytes(OpTag::Slice);
         let a_body_len = u32::from_le_bytes([blob[0], blob[1], blob[2], blob[3]]) as usize;
-        assert_eq!(blob.len(), 4 + a_body_len, "carrier (a): outer length prefix is u32-LE (4 bytes), body verbatim");
+        assert_eq!(
+            blob.len(),
+            4 + a_body_len,
+            "carrier (a): outer length prefix is u32-LE (4 bytes), body verbatim"
+        );
 
         // Carrier (b): region-node-table op_attrs sub-block — u16-LE length +
         // verbatim payload; empty = 0x0000. Modeled here (no Fuel producer yet) so
@@ -856,7 +1006,10 @@ mod tests {
         // inside Dim::{Add,Sub,Mul,Div}. The rope-half golden's child prefixes:
         // tag(0x08) ++ u16-LE(3) ++ Extent(3B) ++ u16-LE(9) ++ Const(9B).
         let half = Dim::Div(
-            Box::new(Dim::Extent { operand: 0, axis: LAST }),
+            Box::new(Dim::Extent {
+                operand: 0,
+                axis: LAST,
+            }),
             Box::new(Dim::Const(2)),
         );
         let bytes = half.encode();
@@ -870,7 +1023,11 @@ mod tests {
             9u16.to_le_bytes(),
             "carrier (c): second child length prefix is u16-LE (2 bytes)"
         );
-        assert_eq!(bytes.len(), 1 + 2 + 3 + 2 + 9, "carrier (c): whole rope-half blob accounted for");
+        assert_eq!(
+            bytes.len(),
+            1 + 2 + 3 + 2 + 9,
+            "carrier (c): whole rope-half blob accounted for"
+        );
 
         // Pinned widths, side by side — (a)=4 (u32-LE) vs (b)=2 (u16-LE) vs
         // (c)=2 (u16-LE). (b) and (c) sharing a width is coincidence, not unity:
@@ -894,7 +1051,10 @@ mod tests {
     fn rel_attr_fields_are_absent_from_the_6_19_wire() {
         use crate::shape_expr::{Dim, LAST, ShapeExpr};
         let half = Dim::Div(
-            Box::new(Dim::Extent { operand: 0, axis: LAST }),
+            Box::new(Dim::Extent {
+                operand: 0,
+                axis: LAST,
+            }),
             Box::new(Dim::Const(2)),
         );
         let rel_only = OpAttrs {
@@ -902,7 +1062,10 @@ mod tests {
             slice_start_rel: Some(half.clone()),
             slice_len_rel: Some(half),
             axis_last: true,
-            scalar_rel: Some(Dim::Extent { operand: 0, axis: LAST }),
+            scalar_rel: Some(Dim::Extent {
+                operand: 0,
+                axis: LAST,
+            }),
             ..OpAttrs::default()
         };
         // Shape-target arm (BroadcastTo/Reshape): rel-only attrs serialize
@@ -914,16 +1077,32 @@ mod tests {
         );
         // Slice arm: the ABSOLUTE fields serialize; adding every rel field on
         // top changes NOTHING.
-        let abs = OpAttrs { axis: Some(1), slice_start: Some(2), slice_len: Some(3), ..OpAttrs::default() };
-        let abs_plus_rel = OpAttrs { axis: Some(1), slice_start: Some(2), slice_len: Some(3), ..rel_only.clone() };
+        let abs = OpAttrs {
+            axis: Some(1),
+            slice_start: Some(2),
+            slice_len: Some(3),
+            ..OpAttrs::default()
+        };
+        let abs_plus_rel = OpAttrs {
+            axis: Some(1),
+            slice_start: Some(2),
+            slice_len: Some(3),
+            ..rel_only.clone()
+        };
         assert_eq!(
             abs_plus_rel.to_canonical_bytes(OpTag::Slice),
             abs.to_canonical_bytes(OpTag::Slice),
             "slice_{{start,len}}_rel must not reach the slice wire arm"
         );
         // Reduce row (axis ++ keepdim): axis_last must not leak.
-        let sd = OpAttrs { axis: Some(1), ..OpAttrs::default() };
-        let sd_plus_rel = OpAttrs { axis: Some(1), ..rel_only.clone() };
+        let sd = OpAttrs {
+            axis: Some(1),
+            ..OpAttrs::default()
+        };
+        let sd_plus_rel = OpAttrs {
+            axis: Some(1),
+            ..rel_only.clone()
+        };
         assert_eq!(
             sd_plus_rel.to_canonical_bytes(OpTag::SumDim),
             sd.to_canonical_bytes(OpTag::SumDim),
@@ -988,7 +1167,10 @@ mod tests {
         // MinDim tags — see the module comment's reduce-schema note), so the
         // blob is IDENTICAL in shape to SumDim's. Golden for axis=1, keepdim
         // unset (=0): u32-LE(9) ++ i64-LE(1) ++ 0x00.
-        let a = OpAttrs { axis: Some(1), ..OpAttrs::default() };
+        let a = OpAttrs {
+            axis: Some(1),
+            ..OpAttrs::default()
+        };
         let mut expect = 9u32.to_le_bytes().to_vec();
         expect.extend_from_slice(&1i64.to_le_bytes());
         expect.push(0u8);
@@ -1022,7 +1204,11 @@ mod tests {
         // INJECTED (B9): this golden is ALSO the shared CROSS-PRODUCER contract —
         // Baracuda (#68) confirmed the exact bytes and has NO near-term binary
         // arm, so Fuel's serializer is first and this golden IS the contract.
-        let a = OpAttrs { lhs_roles: vec![1, 3], rhs_roles: vec![3, 2], ..OpAttrs::default() };
+        let a = OpAttrs {
+            lhs_roles: vec![1, 3],
+            rhs_roles: vec![3, 2],
+            ..OpAttrs::default()
+        };
         let golden: Vec<u8> = vec![
             0x0C, 0x00, 0x00, 0x00, // outer u32-LE body length = 12
             0x02, 0x00, 0x00, 0x00, // u32-LE len lhs_roles = 2
@@ -1042,7 +1228,10 @@ mod tests {
         // Empty roles = the rank-polymorphic recipe form: the body is empty → the
         // single canonical 4-byte zero form. This preserves today's golden
         // (`empty_schema_op_serializes_zero_length`) untouched.
-        assert_eq!(OpAttrs::default().to_canonical_bytes(OpTag::MatMul), vec![0, 0, 0, 0]);
+        assert_eq!(
+            OpAttrs::default().to_canonical_bytes(OpTag::MatMul),
+            vec![0, 0, 0, 0]
+        );
     }
 
     #[test]
@@ -1064,7 +1253,10 @@ mod tests {
         // we only guard the fixture's own structure so a malformed region can
         // never silently weaken both sides at once.
         let cases = advisory_band_reference_cases();
-        assert!(cases.len() >= 8, "fixture should cover the formula's branches");
+        assert!(
+            cases.len() >= 8,
+            "fixture should cover the formula's branches"
+        );
         for (region, _expected) in &cases {
             let binds = region.bind_indices();
             if let PatternNode::Op { .. } = region {
@@ -1077,7 +1269,11 @@ mod tests {
         }
         // Branch coverage: at least one op-free (expected None), one exact
         // multi-op (Some), and one transcendental band value present.
-        assert!(cases.iter().any(|(r, e)| matches!(r, PatternNode::Bind { .. }) && e.is_none()));
+        assert!(
+            cases
+                .iter()
+                .any(|(r, e)| matches!(r, PatternNode::Bind { .. }) && e.is_none())
+        );
         assert!(cases.iter().any(|(_, e)| *e == Some(1)));
         assert!(cases.iter().any(|(_, e)| *e == Some(4)));
         assert!(cases.iter().any(|(_, e)| *e == Some(8)));
@@ -1103,7 +1299,10 @@ mod tests {
         // DISTINCT leaf from a baked `const` (an unfilled slot and a baked value
         // are not interchangeable) — hence a separate tag, not a `const` with a
         // sentinel. Golden for slot 7: u32-LE(4) ++ u32-LE(7).
-        let a = OpAttrs { slot_index: Some(7), ..OpAttrs::default() };
+        let a = OpAttrs {
+            slot_index: Some(7),
+            ..OpAttrs::default()
+        };
         let golden: Vec<u8> = vec![
             0x04, 0x00, 0x00, 0x00, // outer u32-LE body length = 4
             0x07, 0x00, 0x00, 0x00, // u32-LE slot_index = 7
@@ -1111,7 +1310,11 @@ mod tests {
         assert_eq!(a.to_canonical_bytes(OpTag::RuntimeScalar), golden);
         // Slot 0 is a real slot, not "unset": still the 4-byte body.
         assert_eq!(
-            OpAttrs { slot_index: Some(0), ..OpAttrs::default() }.to_canonical_bytes(OpTag::RuntimeScalar),
+            OpAttrs {
+                slot_index: Some(0),
+                ..OpAttrs::default()
+            }
+            .to_canonical_bytes(OpTag::RuntimeScalar),
             vec![0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
         );
     }
@@ -1122,7 +1325,10 @@ mod tests {
         // fold node's axis field MINUS keepdim, so the resolver reuses the fold's
         // axis-resolution codepath verbatim. Growth to a `reduce_axes` LIST
         // happens ONLY in lockstep with the fold (§6.12-0001).
-        let a = OpAttrs { axis: Some(1), ..OpAttrs::default() };
+        let a = OpAttrs {
+            axis: Some(1),
+            ..OpAttrs::default()
+        };
         let mut golden = 8u32.to_le_bytes().to_vec();
         golden.extend_from_slice(&1i64.to_le_bytes());
         assert_eq!(a.to_canonical_bytes(OpTag::ReducedCount), golden);
@@ -1131,12 +1337,23 @@ mod tests {
         // i64(axis), with the reduce row's trailing u8(keepdim) absent.
         let fold = a.to_canonical_bytes(OpTag::SumDim);
         let rc = a.to_canonical_bytes(OpTag::ReducedCount);
-        assert_eq!(rc[4..], fold[4..12], "reduced_count body = the fold's i64(axis) verbatim");
-        assert_eq!(fold.len(), rc.len() + 1, "the fold row carries exactly one extra byte (keepdim)");
+        assert_eq!(
+            rc[4..],
+            fold[4..12],
+            "reduced_count body = the fold's i64(axis) verbatim"
+        );
+        assert_eq!(
+            fold.len(),
+            rc.len() + 1,
+            "the fold row carries exactly one extra byte (keepdim)"
+        );
 
         // A negative axis (the i64 carrier is signed, like the fold's) round-trips
         // its two's-complement bytes.
-        let neg = OpAttrs { axis: Some(-1), ..OpAttrs::default() };
+        let neg = OpAttrs {
+            axis: Some(-1),
+            ..OpAttrs::default()
+        };
         let mut expect = 8u32.to_le_bytes().to_vec();
         expect.extend_from_slice(&(-1i64).to_le_bytes());
         assert_eq!(neg.to_canonical_bytes(OpTag::ReducedCount), expect);
@@ -1150,39 +1367,69 @@ mod tests {
         // upper bits ZERO (must-be-zero on read).
 
         // f64 — the full-width case, every bit load-bearing.
-        let f64_15 = OpAttrs { const_bits: Some(1.5f64.to_bits()), ..OpAttrs::default() };
+        let f64_15 = OpAttrs {
+            const_bits: Some(1.5f64.to_bits()),
+            ..OpAttrs::default()
+        };
         let mut golden = 8u32.to_le_bytes().to_vec();
         golden.extend_from_slice(&0x3FF8_0000_0000_0000u64.to_le_bytes());
         assert_eq!(f64_15.to_canonical_bytes(OpTag::Const), golden);
 
         // f32 — 32 storage bits low-order, upper 32 ZERO.
-        let f32_15 = OpAttrs { const_bits: Some(const_bits_narrow(1.5f32.to_bits() as u64, 32)), ..OpAttrs::default() };
+        let f32_15 = OpAttrs {
+            const_bits: Some(const_bits_narrow(1.5f32.to_bits() as u64, 32)),
+            ..OpAttrs::default()
+        };
         let blob = f32_15.to_canonical_bytes(OpTag::Const);
         assert_eq!(
             blob,
-            vec![0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x3F, 0x00, 0x00, 0x00, 0x00],
+            vec![
+                0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x3F, 0x00, 0x00, 0x00, 0x00
+            ],
             "f32 1.5 = 0x3FC00000 in the LOW-order bits; upper 4 bytes MBZ"
         );
 
         // f16 (1.5 = 0x3E00) and bf16 (1.5 = 0x3FC0) — 16 storage bits low-order,
         // upper 48 ZERO.
-        let f16_15 = OpAttrs { const_bits: Some(const_bits_narrow(0x3E00, 16)), ..OpAttrs::default() };
+        let f16_15 = OpAttrs {
+            const_bits: Some(const_bits_narrow(0x3E00, 16)),
+            ..OpAttrs::default()
+        };
         assert_eq!(
             f16_15.to_canonical_bytes(OpTag::Const),
-            vec![0x08, 0x00, 0x00, 0x00, 0x00, 0x3E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            vec![
+                0x08, 0x00, 0x00, 0x00, 0x00, 0x3E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+            ],
         );
-        let bf16_15 = OpAttrs { const_bits: Some(const_bits_narrow(0x3FC0, 16)), ..OpAttrs::default() };
+        let bf16_15 = OpAttrs {
+            const_bits: Some(const_bits_narrow(0x3FC0, 16)),
+            ..OpAttrs::default()
+        };
         assert_eq!(
             bf16_15.to_canonical_bytes(OpTag::Const),
-            vec![0x08, 0x00, 0x00, 0x00, 0xC0, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            vec![
+                0x08, 0x00, 0x00, 0x00, 0xC0, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+            ],
         );
 
         // The MBZ widener is the producer-side guarantee: it MASKS, never panics
         // (a width of 0 or ≥ 64 is well-defined, no shift overflow).
-        assert_eq!(const_bits_narrow(0xFFFF_FFFF_FFFF_FFFF, 16), 0x0000_0000_0000_FFFF);
-        assert_eq!(const_bits_narrow(0xFFFF_FFFF_FFFF_FFFF, 32), 0x0000_0000_FFFF_FFFF);
-        assert_eq!(const_bits_narrow(0xFFFF_FFFF_FFFF_FFFF, 64), 0xFFFF_FFFF_FFFF_FFFF);
-        assert_eq!(const_bits_narrow(0xFFFF_FFFF_FFFF_FFFF, 200), 0xFFFF_FFFF_FFFF_FFFF);
+        assert_eq!(
+            const_bits_narrow(0xFFFF_FFFF_FFFF_FFFF, 16),
+            0x0000_0000_0000_FFFF
+        );
+        assert_eq!(
+            const_bits_narrow(0xFFFF_FFFF_FFFF_FFFF, 32),
+            0x0000_0000_FFFF_FFFF
+        );
+        assert_eq!(
+            const_bits_narrow(0xFFFF_FFFF_FFFF_FFFF, 64),
+            0xFFFF_FFFF_FFFF_FFFF
+        );
+        assert_eq!(
+            const_bits_narrow(0xFFFF_FFFF_FFFF_FFFF, 200),
+            0xFFFF_FFFF_FFFF_FFFF
+        );
         assert_eq!(const_bits_narrow(0xFFFF_FFFF_FFFF_FFFF, 0), 0);
         // Every narrow width leaves the upper bits zero — the MBZ invariant.
         for w in [1u32, 8, 16, 32, 63] {
@@ -1199,16 +1446,27 @@ mod tests {
         // `to_canonical_bytes`), so the read-back below is an in-test byte read,
         // not a claim that a decoder exists.
         const F32_NAN_PAYLOAD: u32 = 0x7FC0_DEAD;
-        assert!(f32::from_bits(F32_NAN_PAYLOAD).is_nan(), "fixture must be a NaN");
-        let a = OpAttrs { const_bits: Some(const_bits_narrow(F32_NAN_PAYLOAD as u64, 32)), ..OpAttrs::default() };
+        assert!(
+            f32::from_bits(F32_NAN_PAYLOAD).is_nan(),
+            "fixture must be a NaN"
+        );
+        let a = OpAttrs {
+            const_bits: Some(const_bits_narrow(F32_NAN_PAYLOAD as u64, 32)),
+            ..OpAttrs::default()
+        };
         let blob = a.to_canonical_bytes(OpTag::Const);
         assert_eq!(
             blob,
-            vec![0x08, 0x00, 0x00, 0x00, 0xAD, 0xDE, 0xC0, 0x7F, 0x00, 0x00, 0x00, 0x00],
+            vec![
+                0x08, 0x00, 0x00, 0x00, 0xAD, 0xDE, 0xC0, 0x7F, 0x00, 0x00, 0x00, 0x00
+            ],
             "the f32 NaN payload rides the low-order bits verbatim; upper 4 bytes MBZ"
         );
         let read_back = u64::from_le_bytes(blob[4..12].try_into().unwrap());
-        assert_eq!(read_back, F32_NAN_PAYLOAD as u64, "payload bits round-trip verbatim");
+        assert_eq!(
+            read_back, F32_NAN_PAYLOAD as u64,
+            "payload bits round-trip verbatim"
+        );
         assert_eq!(
             f32::from_bits(read_back as u32).to_bits(),
             F32_NAN_PAYLOAD,
@@ -1217,8 +1475,14 @@ mod tests {
 
         // f64 signalling-NaN payload: full width, nothing masked or quieted.
         const F64_SNAN_PAYLOAD: u64 = 0x7FF0_0000_0000_DEAD;
-        assert!(f64::from_bits(F64_SNAN_PAYLOAD).is_nan(), "fixture must be a NaN");
-        let d = OpAttrs { const_bits: Some(F64_SNAN_PAYLOAD), ..OpAttrs::default() };
+        assert!(
+            f64::from_bits(F64_SNAN_PAYLOAD).is_nan(),
+            "fixture must be a NaN"
+        );
+        let d = OpAttrs {
+            const_bits: Some(F64_SNAN_PAYLOAD),
+            ..OpAttrs::default()
+        };
         let dblob = d.to_canonical_bytes(OpTag::Const);
         assert_eq!(
             u64::from_le_bytes(dblob[4..12].try_into().unwrap()),
@@ -1234,21 +1498,33 @@ mod tests {
         assert_eq!((SCAN_ROLE_CARRY, SCAN_ROLE_ELEM), (0u8, 1u8));
 
         // Carry hole (always index 0 in the v1 single-carry model).
-        let carry = OpAttrs { scan_role: Some(SCAN_ROLE_CARRY), scan_index: Some(0), ..OpAttrs::default() };
+        let carry = OpAttrs {
+            scan_role: Some(SCAN_ROLE_CARRY),
+            scan_index: Some(0),
+            ..OpAttrs::default()
+        };
         assert_eq!(
             carry.to_canonical_bytes(OpTag::ScanPlaceholder),
             vec![0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
             "carry hole: u32-LE(5) ++ u8(0) ++ u32-LE(0)"
         );
         // Elem hole for xs[2].
-        let elem = OpAttrs { scan_role: Some(SCAN_ROLE_ELEM), scan_index: Some(2), ..OpAttrs::default() };
+        let elem = OpAttrs {
+            scan_role: Some(SCAN_ROLE_ELEM),
+            scan_index: Some(2),
+            ..OpAttrs::default()
+        };
         assert_eq!(
             elem.to_canonical_bytes(OpTag::ScanPlaceholder),
             vec![0x05, 0x00, 0x00, 0x00, 0x01, 0x02, 0x00, 0x00, 0x00],
             "elem hole: u32-LE(5) ++ u8(1) ++ u32-LE(2)"
         );
         // The role byte is NOT part of the index: carry{0} and elem{0} differ.
-        let elem0 = OpAttrs { scan_role: Some(SCAN_ROLE_ELEM), scan_index: Some(0), ..OpAttrs::default() };
+        let elem0 = OpAttrs {
+            scan_role: Some(SCAN_ROLE_ELEM),
+            scan_index: Some(0),
+            ..OpAttrs::default()
+        };
         assert_ne!(
             carry.to_canonical_bytes(OpTag::ScanPlaceholder),
             elem0.to_canonical_bytes(OpTag::ScanPlaceholder),
@@ -1276,8 +1552,15 @@ mod tests {
         ] {
             let blob = a.to_canonical_bytes(tag);
             let declared = u32::from_le_bytes(blob[..4].try_into().unwrap()) as usize;
-            assert_eq!(declared, body_len, "{tag:?}: outer u32-LE length = body length");
-            assert_eq!(blob.len(), 4 + body_len, "{tag:?}: 4-byte u32-LE prefix + verbatim body");
+            assert_eq!(
+                declared, body_len,
+                "{tag:?}: outer u32-LE length = body length"
+            );
+            assert_eq!(
+                blob.len(),
+                4 + body_len,
+                "{tag:?}: 4-byte u32-LE prefix + verbatim body"
+            );
         }
     }
 

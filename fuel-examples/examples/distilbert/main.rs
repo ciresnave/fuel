@@ -9,7 +9,7 @@ use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
 
 use fuel::lazy_distilbert::{DistilBertConfig, DistilBertModel, DistilBertWeights};
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use hf_hub::{Repo, RepoType, api::sync::Api};
 use tokenizers::Tokenizer;
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq, ValueEnum)]
@@ -110,7 +110,10 @@ fn main() -> Result<()> {
         .map_err(|e| E::msg(format!("mmap safetensors: {e}")))?;
     let weights = DistilBertWeights::load_from_mmapped(&st, &config)
         .map_err(|e| E::msg(format!("load weights: {e}")))?;
-    let model = DistilBertModel { config: config.clone(), weights };
+    let model = DistilBertModel {
+        config: config.clone(),
+        weights,
+    };
 
     let (token_ids, _mask) = prepare_inputs(&args, &tokenizer)?;
     println!("token_ids: {token_ids:?}");

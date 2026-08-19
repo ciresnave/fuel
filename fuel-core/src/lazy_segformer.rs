@@ -23,9 +23,9 @@
 //!
 //! v1 scope: F32, batch == 1, fused-affine BN at the decode head.
 
+use crate::Result;
 use crate::lazy::{LazyTensor, WeightStorage};
 use crate::lazy_convmixer::BatchNormParams;
-use crate::Result;
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -242,16 +242,16 @@ impl ImageClassificationModel {
         let last = hidden_states.last().expect("encoder produced no states");
         let dims = last.shape();
         let dims = dims.dims();
-        let c = dims[1]; let h = dims[2]; let w = dims[3];
+        let c = dims[1];
+        let h = dims[2];
+        let w = dims[3];
         let flat = last
             .reshape(Shape::from_dims(&[1, c, h * w]))?
             .permute([0, 2, 1_usize])?;
         let pooled = flat.mean_dim(1_usize)?;
         let n = self.classifier.b.len();
         let logits = self.classifier.w.apply_linear(&pooled, c, n)?;
-        let bias = image.const_f32_like(
-            Arc::clone(&self.classifier.b), Shape::from_dims(&[n]),
-        );
+        let bias = image.const_f32_like(Arc::clone(&self.classifier.b), Shape::from_dims(&[n]));
         logits.broadcast_add(&bias)
     }
 }
@@ -284,14 +284,13 @@ fn encoder_forward(
 /// LayerNorm applied along the channel axis of a (B, C, H, W)
 /// tensor: permute to (B, H*W, C), normalize last dim, scale +
 /// shift, then permute back.
-fn layer_norm_chw(
-    x: &LazyTensor,
-    ln: &LayerNormWeights,
-    eps: f64,
-) -> Result<LazyTensor> {
+fn layer_norm_chw(x: &LazyTensor, ln: &LayerNormWeights, eps: f64) -> Result<LazyTensor> {
     let dims = x.shape();
     let dims = dims.dims();
-    let b = dims[0]; let c = dims[1]; let h = dims[2]; let w = dims[3];
+    let b = dims[0];
+    let c = dims[1];
+    let h = dims[2];
+    let w = dims[3];
     let seq = x
         .reshape(Shape::from_dims(&[b, c, h * w]))?
         .permute([0, 2, 1_usize])?;
@@ -309,7 +308,10 @@ fn apply_segformer_layer(
 ) -> Result<LazyTensor> {
     let dims = x.shape();
     let dims = dims.dims();
-    let b = dims[0]; let c = dims[1]; let h = dims[2]; let w_sp = dims[3];
+    let b = dims[0];
+    let c = dims[1];
+    let h = dims[2];
+    let w_sp = dims[3];
 
     // (B, C, H, W) → (B, H*W, C) for the residual + LN1 path.
     let seq_orig = x
@@ -317,19 +319,32 @@ fn apply_segformer_layer(
         .permute([0, 2, 1_usize])?;
 
     // LN1 on the [B, H*W, C] form.
-    let normed = seq_orig.layer_norm_affine(Arc::clone(&w.layer_norm_1.gain), Arc::clone(&w.layer_norm_1.bias), cfg.layer_norm_eps)?;
+    let normed = seq_orig.layer_norm_affine(
+        Arc::clone(&w.layer_norm_1.gain),
+        Arc::clone(&w.layer_norm_1.bias),
+        cfg.layer_norm_eps,
+    )?;
     let norm_chw = normed
         .permute([0, 2, 1_usize])?
         .reshape(Shape::from_dims(&[b, c, h, w_sp]))?;
     let attn_out = apply_efficient_attention(
-        &norm_chw, &w.attention, &w.attention_output,
-        w.hidden_size, w.num_heads, cfg.layer_norm_eps, anchor,
+        &norm_chw,
+        &w.attention,
+        &w.attention_output,
+        w.hidden_size,
+        w.num_heads,
+        cfg.layer_norm_eps,
+        anchor,
     )?;
     // Residual on (B, H*W, C).
     let hidden = attn_out.add(&seq_orig)?;
 
     // LN2 on (B, H*W, C).
-    let normed = hidden.layer_norm_affine(Arc::clone(&w.layer_norm_2.gain), Arc::clone(&w.layer_norm_2.bias), cfg.layer_norm_eps)?;
+    let normed = hidden.layer_norm_affine(
+        Arc::clone(&w.layer_norm_2.gain),
+        Arc::clone(&w.layer_norm_2.bias),
+        cfg.layer_norm_eps,
+    )?;
     let norm_chw = normed
         .permute([0, 2, 1_usize])?
         .reshape(Shape::from_dims(&[b, c, h, w_sp]))?;
@@ -358,7 +373,9 @@ fn apply_efficient_attention(
 ) -> Result<LazyTensor> {
     let dims = x.shape();
     let dims = dims.dims();
-    let b = dims[0]; let h = dims[2]; let w_sp = dims[3];
+    let b = dims[0];
+    let h = dims[2];
+    let w_sp = dims[3];
     let head_dim = hidden_size / num_heads;
     let scale = 1.0_f64 / (head_dim as f64).sqrt();
 
@@ -367,13 +384,19 @@ fn apply_efficient_attention(
         .permute([0, 2, 1_usize])?;
     let q_len = h * w_sp;
 
-    let q = attn.query.apply_linear_with_bias(&x_seq, hidden_size, hidden_size, std::sync::Arc::clone(&attn.query_bias))?;
+    let q = attn.query.apply_linear_with_bias(
+        &x_seq,
+        hidden_size,
+        hidden_size,
+        std::sync::Arc::clone(&attn.query_bias),
+    )?;
 
     let kv_seq = if let (Some(sr), Some(sr_norm)) = (&attn.sr, &attn.sr_norm) {
         let sr_out = apply_conv2d(x, sr, anchor)?;
         let sr_dims = sr_out.shape();
         let sr_dims = sr_dims.dims();
-        let h2 = sr_dims[2]; let w2 = sr_dims[3];
+        let h2 = sr_dims[2];
+        let w2 = sr_dims[3];
         let flat = sr_out
             .reshape(Shape::from_dims(&[b, hidden_size, h2 * w2]))?
             .permute([0, 2, 1_usize])?;
@@ -384,8 +407,18 @@ fn apply_efficient_attention(
 
     let kv_dims = kv_seq.shape();
     let kv_len = kv_dims.dims()[1];
-    let k = attn.key.apply_linear_with_bias(&kv_seq, hidden_size, hidden_size, std::sync::Arc::clone(&attn.key_bias))?;
-    let v = attn.value.apply_linear_with_bias(&kv_seq, hidden_size, hidden_size, std::sync::Arc::clone(&attn.value_bias))?;
+    let k = attn.key.apply_linear_with_bias(
+        &kv_seq,
+        hidden_size,
+        hidden_size,
+        std::sync::Arc::clone(&attn.key_bias),
+    )?;
+    let v = attn.value.apply_linear_with_bias(
+        &kv_seq,
+        hidden_size,
+        hidden_size,
+        std::sync::Arc::clone(&attn.value_bias),
+    )?;
 
     let _ = (q_len, kv_len);
     let q = q.split_heads(num_heads, head_dim)?;
@@ -397,7 +430,12 @@ fn apply_efficient_attention(
     let probs = scores.softmax_last_dim()?;
     let ctx = probs.matmul(&v)?.merge_heads()?;
     let _ = (b, hidden_size);
-    out.dense.apply_linear_with_bias(&ctx, hidden_size, hidden_size, std::sync::Arc::clone(&out.dense_bias))
+    out.dense.apply_linear_with_bias(
+        &ctx,
+        hidden_size,
+        hidden_size,
+        std::sync::Arc::clone(&out.dense_bias),
+    )
 }
 
 fn apply_mix_ffn(
@@ -409,16 +447,23 @@ fn apply_mix_ffn(
 ) -> Result<LazyTensor> {
     let dims = x.shape();
     let dims = dims.dims();
-    let b = dims[0]; let h = dims[2]; let w_sp = dims[3];
+    let b = dims[0];
+    let h = dims[2];
+    let w_sp = dims[3];
     let hidden_features = m.dense1_bias.len();
 
     let seq = x
         .reshape(Shape::from_dims(&[b, hidden_size, h * w_sp]))?
         .permute([0, 2, 1_usize])?;
-    let h1 = m.dense1.apply_linear_with_bias(&seq, hidden_size, hidden_features, std::sync::Arc::clone(&m.dense1_bias))?;
-    let chw = h1
-        .permute([0, 2, 1_usize])?
-        .reshape(Shape::from_dims(&[b, hidden_features, h, w_sp]))?;
+    let h1 = m.dense1.apply_linear_with_bias(
+        &seq,
+        hidden_size,
+        hidden_features,
+        std::sync::Arc::clone(&m.dense1_bias),
+    )?;
+    let chw =
+        h1.permute([0, 2, 1_usize])?
+            .reshape(Shape::from_dims(&[b, hidden_features, h, w_sp]))?;
     let h2 = apply_conv2d(&chw, &m.dw_conv, anchor)?;
     let h2 = match cfg.hidden_act {
         SegformerActivation::Gelu => h2.gelu(),
@@ -427,7 +472,12 @@ fn apply_mix_ffn(
     let seq = h2
         .reshape(Shape::from_dims(&[b, hidden_features, h * w_sp]))?
         .permute([0, 2, 1_usize])?;
-    let h3 = m.dense2.apply_linear_with_bias(&seq, hidden_features, hidden_size, std::sync::Arc::clone(&m.dense2_bias))?;
+    let h3 = m.dense2.apply_linear_with_bias(
+        &seq,
+        hidden_features,
+        hidden_size,
+        std::sync::Arc::clone(&m.dense2_bias),
+    )?;
     Ok(h3
         .permute([0, 2, 1_usize])?
         .reshape(Shape::from_dims(&[b, hidden_size, h, w_sp]))?)
@@ -450,11 +500,19 @@ fn decode_head_forward(
         let (w, bias) = &head.linear_c[i];
         let dims = hs.shape();
         let dims = dims.dims();
-        let b = dims[0]; let c = dims[1]; let h = dims[2]; let w_sp = dims[3];
+        let b = dims[0];
+        let c = dims[1];
+        let h = dims[2];
+        let w_sp = dims[3];
         let seq = hs
             .reshape(Shape::from_dims(&[b, c, h * w_sp]))?
             .permute([0, 2, 1_usize])?;
-        let projected = w.apply_linear_with_bias(&seq, c, cfg.decoder_hidden_size, std::sync::Arc::clone(&bias))?;
+        let projected = w.apply_linear_with_bias(
+            &seq,
+            c,
+            cfg.decoder_hidden_size,
+            std::sync::Arc::clone(&bias),
+        )?;
         let chw = projected
             .permute([0, 2, 1_usize])?
             .reshape(Shape::from_dims(&[b, cfg.decoder_hidden_size, h, w_sp]))?;
@@ -474,31 +532,24 @@ fn decode_head_forward(
 
 // ---- Primitives ------------------------------------------------------------
 
-
-
-fn apply_conv2d(
-    x: &LazyTensor,
-    c: &Conv2dWeights,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+fn apply_conv2d(x: &LazyTensor, c: &Conv2dWeights, anchor: &LazyTensor) -> Result<LazyTensor> {
     let w = anchor.const_f32_like(
         Arc::clone(&c.w),
         Shape::from_dims(&[c.c_out, c.c_in / c.groups, c.k, c.k]),
     );
-    let bias = c.b.as_ref().map(|b| {
-        anchor.const_f32_like(Arc::clone(b), Shape::from_dims(&[c.c_out]))
-    });
+    let bias =
+        c.b.as_ref()
+            .map(|b| anchor.const_f32_like(Arc::clone(b), Shape::from_dims(&[c.c_out])));
     x.conv2d(
-        &w, bias.as_ref(),
+        &w,
+        bias.as_ref(),
         (c.stride, c.stride),
         (c.pad, c.pad),
         c.groups,
     )
 }
 
-fn apply_bn(
-    x: &LazyTensor, bn: &BatchNormParams, channels: usize,
-) -> Result<LazyTensor> {
+fn apply_bn(x: &LazyTensor, bn: &BatchNormParams, channels: usize) -> Result<LazyTensor> {
     let _ = channels;
     x.channel_affine_4d(Arc::clone(&bn.w), Arc::clone(&bn.b))
 }
@@ -506,18 +557,12 @@ fn apply_bn(
 // ---- Safetensors loaders ---------------------------------------------------
 
 /// Load a 1-D F32 tensor as `Arc<[f32]>`.
-fn load_arc_f32(
-    st: &crate::safetensors::MmapedSafetensors,
-    name: &str,
-) -> Result<Arc<[f32]>> {
+fn load_arc_f32(st: &crate::safetensors::MmapedSafetensors, name: &str) -> Result<Arc<[f32]>> {
     Ok(Arc::from(crate::lazy::load_tensor_as_f32(st, name)?))
 }
 
 /// Load a HuggingFace LayerNorm (`<prefix>.weight`, `<prefix>.bias`).
-fn load_ln(
-    st: &crate::safetensors::MmapedSafetensors,
-    prefix: &str,
-) -> Result<LayerNormWeights> {
+fn load_ln(st: &crate::safetensors::MmapedSafetensors, prefix: &str) -> Result<LayerNormWeights> {
     Ok(LayerNormWeights {
         gain: load_arc_f32(st, &format!("{prefix}.weight"))?,
         bias: load_arc_f32(st, &format!("{prefix}.bias"))?,
@@ -544,8 +589,10 @@ fn load_conv2d(
         return Err(crate::Error::Msg(format!(
             "load_conv2d {prefix:?}: weight has {} elements, expected {expected} \
              ([{c_out}, {} = {c_in}/{groups}, {k}, {k}])",
-            w.len(), c_in / groups,
-        )).bt());
+            w.len(),
+            c_in / groups,
+        ))
+        .bt());
     }
     let b = if has_bias {
         let bias = load_arc_f32(st, &format!("{prefix}.bias"))?;
@@ -553,13 +600,23 @@ fn load_conv2d(
             return Err(crate::Error::Msg(format!(
                 "load_conv2d {prefix:?}: bias has {} elements, expected {c_out}",
                 bias.len(),
-            )).bt());
+            ))
+            .bt());
         }
         Some(bias)
     } else {
         None
     };
-    Ok(Conv2dWeights { w, b, c_in, c_out, k, stride, pad, groups })
+    Ok(Conv2dWeights {
+        w,
+        b,
+        c_in,
+        c_out,
+        k,
+        stride,
+        pad,
+        groups,
+    })
 }
 
 /// Load a HuggingFace Linear into a `WeightStorage` (+ bias). HF stores
@@ -572,14 +629,18 @@ fn load_linear(
     out_features: usize,
 ) -> Result<(WeightStorage, Arc<[f32]>)> {
     let w = crate::lazy::load_transposed_matrix_preserve_dtype(
-        st, &format!("{prefix}.weight"), out_features, in_features,
+        st,
+        &format!("{prefix}.weight"),
+        out_features,
+        in_features,
     )?;
     let bias = load_arc_f32(st, &format!("{prefix}.bias"))?;
     if bias.len() != out_features {
         return Err(crate::Error::Msg(format!(
             "load_linear {prefix:?}: bias has {} elements, expected {out_features}",
             bias.len(),
-        )).bt());
+        ))
+        .bt());
     }
     Ok((w, bias))
 }
@@ -595,14 +656,21 @@ fn load_bn(
     let gain = crate::lazy::load_tensor_as_f32(st, &format!("{prefix}.weight"))?;
     let bias = crate::lazy::load_tensor_as_f32(st, &format!("{prefix}.bias"))?;
     let mean = crate::lazy::load_tensor_as_f32(st, &format!("{prefix}.running_mean"))?;
-    let var  = crate::lazy::load_tensor_as_f32(st, &format!("{prefix}.running_var"))?;
-    if gain.len() != channels || bias.len() != channels
-        || mean.len() != channels || var.len() != channels {
+    let var = crate::lazy::load_tensor_as_f32(st, &format!("{prefix}.running_var"))?;
+    if gain.len() != channels
+        || bias.len() != channels
+        || mean.len() != channels
+        || var.len() != channels
+    {
         return Err(crate::Error::Msg(format!(
             "load_bn {prefix:?}: expected {channels} elements per stat, \
              got gain={} bias={} mean={} var={}",
-            gain.len(), bias.len(), mean.len(), var.len(),
-        )).bt());
+            gain.len(),
+            bias.len(),
+            mean.len(),
+            var.len(),
+        ))
+        .bt());
     }
     Ok(BatchNormParams::from_raw(&gain, &bias, &mean, &var, eps))
 }
@@ -618,8 +686,15 @@ impl OverlapPatchEmbeddingWeights {
     ) -> Result<Self> {
         Ok(Self {
             projection: load_conv2d(
-                st, &format!("{prefix}.proj"),
-                c_in, c_out, patch_size, stride, patch_size / 2, 1, true,
+                st,
+                &format!("{prefix}.proj"),
+                c_in,
+                c_out,
+                patch_size,
+                stride,
+                patch_size / 2,
+                1,
+                true,
             )?,
             layer_norm: load_ln(st, &format!("{prefix}.layer_norm"))?,
         })
@@ -634,13 +709,20 @@ impl EfficientSelfAttentionWeights {
         sr_ratio: usize,
     ) -> Result<Self> {
         let (q, qb) = load_linear(st, &format!("{prefix}.query"), hidden_size, hidden_size)?;
-        let (k, kb) = load_linear(st, &format!("{prefix}.key"),   hidden_size, hidden_size)?;
+        let (k, kb) = load_linear(st, &format!("{prefix}.key"), hidden_size, hidden_size)?;
         let (v, vb) = load_linear(st, &format!("{prefix}.value"), hidden_size, hidden_size)?;
         let (sr, sr_norm) = if sr_ratio > 1 {
             (
                 Some(load_conv2d(
-                    st, &format!("{prefix}.sr"),
-                    hidden_size, hidden_size, sr_ratio, sr_ratio, 0, 1, true,
+                    st,
+                    &format!("{prefix}.sr"),
+                    hidden_size,
+                    hidden_size,
+                    sr_ratio,
+                    sr_ratio,
+                    0,
+                    1,
+                    true,
                 )?),
                 Some(load_ln(st, &format!("{prefix}.layer_norm"))?),
             )
@@ -648,10 +730,14 @@ impl EfficientSelfAttentionWeights {
             (None, None)
         };
         Ok(Self {
-            query: q, query_bias: qb,
-            key: k, key_bias: kb,
-            value: v, value_bias: vb,
-            sr, sr_norm,
+            query: q,
+            query_bias: qb,
+            key: k,
+            key_bias: kb,
+            value: v,
+            value_bias: vb,
+            sr,
+            sr_norm,
         })
     }
 }
@@ -663,7 +749,10 @@ impl AttentionOutputWeights {
         hidden_size: usize,
     ) -> Result<Self> {
         let (w, b) = load_linear(st, &format!("{prefix}.dense"), hidden_size, hidden_size)?;
-        Ok(Self { dense: w, dense_bias: b })
+        Ok(Self {
+            dense: w,
+            dense_bias: b,
+        })
     }
 }
 
@@ -676,22 +765,37 @@ impl MixFfnWeights {
     ) -> Result<Self> {
         let hidden_features = hidden_size * mlp_ratio;
         let (d1, d1b) = load_linear(
-            st, &format!("{prefix}.dense1"), hidden_size, hidden_features,
+            st,
+            &format!("{prefix}.dense1"),
+            hidden_size,
+            hidden_features,
         )?;
         // HF nests Conv2d twice: SegformerDWConv wraps Conv2d at `.dwconv`,
         // and MixFFN places SegformerDWConv at `.dwconv` → final key is
         // `<prefix>.dwconv.dwconv.{weight,bias}`.
         let dw = load_conv2d(
-            st, &format!("{prefix}.dwconv.dwconv"),
-            hidden_features, hidden_features, 3, 1, 1, hidden_features, true,
+            st,
+            &format!("{prefix}.dwconv.dwconv"),
+            hidden_features,
+            hidden_features,
+            3,
+            1,
+            1,
+            hidden_features,
+            true,
         )?;
         let (d2, d2b) = load_linear(
-            st, &format!("{prefix}.dense2"), hidden_features, hidden_size,
+            st,
+            &format!("{prefix}.dense2"),
+            hidden_features,
+            hidden_size,
         )?;
         Ok(Self {
-            dense1: d1, dense1_bias: d1b,
+            dense1: d1,
+            dense1_bias: d1b,
             dw_conv: dw,
-            dense2: d2, dense2_bias: d2b,
+            dense2: d2,
+            dense2_bias: d2b,
         })
     }
 }
@@ -708,14 +812,22 @@ impl SegformerLayerWeights {
         Ok(Self {
             layer_norm_1: load_ln(st, &format!("{prefix}.layer_norm_1"))?,
             attention: EfficientSelfAttentionWeights::load_from_mmapped(
-                st, &format!("{prefix}.attention.self"), hidden_size, sr_ratio,
+                st,
+                &format!("{prefix}.attention.self"),
+                hidden_size,
+                sr_ratio,
             )?,
             attention_output: AttentionOutputWeights::load_from_mmapped(
-                st, &format!("{prefix}.attention.output"), hidden_size,
+                st,
+                &format!("{prefix}.attention.output"),
+                hidden_size,
             )?,
             layer_norm_2: load_ln(st, &format!("{prefix}.layer_norm_2"))?,
             mlp: MixFfnWeights::load_from_mmapped(
-                st, &format!("{prefix}.mlp"), hidden_size, mlp_ratio,
+                st,
+                &format!("{prefix}.mlp"),
+                hidden_size,
+                mlp_ratio,
             )?,
             hidden_size,
             num_heads,
@@ -740,16 +852,25 @@ impl SegformerEncoderWeights {
     ) -> Result<Self> {
         let mut stages = Vec::with_capacity(cfg.num_encoder_blocks);
         for i in 0..cfg.num_encoder_blocks {
-            let c_in = if i == 0 { cfg.num_channels } else { cfg.hidden_sizes[i - 1] };
+            let c_in = if i == 0 {
+                cfg.num_channels
+            } else {
+                cfg.hidden_sizes[i - 1]
+            };
             let c_out = cfg.hidden_sizes[i];
             let patch_embedding = OverlapPatchEmbeddingWeights::load_from_mmapped(
-                st, &format!("{prefix}patch_embeddings.{i}"),
-                c_in, c_out, cfg.patch_sizes[i], cfg.strides[i],
+                st,
+                &format!("{prefix}patch_embeddings.{i}"),
+                c_in,
+                c_out,
+                cfg.patch_sizes[i],
+                cfg.strides[i],
             )?;
             let mut layers = Vec::with_capacity(cfg.depths[i]);
             for j in 0..cfg.depths[i] {
                 layers.push(SegformerLayerWeights::load_from_mmapped(
-                    st, &format!("{prefix}block.{i}.{j}"),
+                    st,
+                    &format!("{prefix}block.{i}.{j}"),
                     c_out,
                     cfg.num_attention_heads[i],
                     cfg.sr_ratios[i],
@@ -783,25 +904,48 @@ impl SegformerDecodeHeadWeights {
         let mut linear_c = Vec::with_capacity(cfg.num_encoder_blocks);
         for i in 0..cfg.num_encoder_blocks {
             let (w, b) = load_linear(
-                st, &format!("{prefix}linear_c.{i}.proj"),
-                cfg.hidden_sizes[i], cfg.decoder_hidden_size,
+                st,
+                &format!("{prefix}linear_c.{i}.proj"),
+                cfg.hidden_sizes[i],
+                cfg.decoder_hidden_size,
             )?;
             linear_c.push((w, b));
         }
         let linear_fuse = load_conv2d(
-            st, &format!("{prefix}linear_fuse"),
+            st,
+            &format!("{prefix}linear_fuse"),
             cfg.decoder_hidden_size * cfg.num_encoder_blocks,
-            cfg.decoder_hidden_size, 1, 1, 0, 1, false,
+            cfg.decoder_hidden_size,
+            1,
+            1,
+            0,
+            1,
+            false,
         )?;
         let batch_norm = load_bn(
-            st, &format!("{prefix}batch_norm"), cfg.decoder_hidden_size, BN_EPS,
+            st,
+            &format!("{prefix}batch_norm"),
+            cfg.decoder_hidden_size,
+            BN_EPS,
         )?;
         // HF's `classifier` is `nn.Conv2d(..., kernel_size=1)`; bias=True by default.
         let classifier = load_conv2d(
-            st, &format!("{prefix}classifier"),
-            cfg.decoder_hidden_size, num_labels, 1, 1, 0, 1, true,
+            st,
+            &format!("{prefix}classifier"),
+            cfg.decoder_hidden_size,
+            num_labels,
+            1,
+            1,
+            0,
+            1,
+            true,
         )?;
-        Ok(Self { linear_c, linear_fuse, batch_norm, classifier })
+        Ok(Self {
+            linear_c,
+            linear_fuse,
+            batch_norm,
+            classifier,
+        })
     }
 }
 
@@ -817,10 +961,7 @@ impl SegformerClassifierWeights {
         num_labels: usize,
     ) -> Result<Self> {
         let in_features = *cfg.hidden_sizes.last().expect("hidden_sizes is non-empty");
-        let (w, b) = load_linear(
-            st, &format!("{prefix}classifier"),
-            in_features, num_labels,
-        )?;
+        let (w, b) = load_linear(st, &format!("{prefix}classifier"), in_features, num_labels)?;
         Ok(Self { w, b })
     }
 }
@@ -834,13 +975,13 @@ impl ImageClassificationModel {
         cfg: SegformerConfig,
         num_labels: usize,
     ) -> Result<Self> {
-        let encoder = SegformerEncoderWeights::load_from_mmapped(
-            st, &cfg, "segformer.encoder.",
-        )?;
-        let classifier = SegformerClassifierWeights::load_from_mmapped(
-            st, &cfg, "", num_labels,
-        )?;
-        Ok(Self { config: cfg, encoder, classifier })
+        let encoder = SegformerEncoderWeights::load_from_mmapped(st, &cfg, "segformer.encoder.")?;
+        let classifier = SegformerClassifierWeights::load_from_mmapped(st, &cfg, "", num_labels)?;
+        Ok(Self {
+            config: cfg,
+            encoder,
+            classifier,
+        })
     }
 }
 
@@ -852,12 +993,9 @@ impl SemanticSegmentationModel {
         cfg: SegformerConfig,
         num_labels: usize,
     ) -> Result<Self> {
-        let encoder = SegformerEncoderWeights::load_from_mmapped(
-            st, &cfg, "segformer.encoder.",
-        )?;
-        let decode_head = SegformerDecodeHeadWeights::load_from_mmapped(
-            st, &cfg, "decode_head.", num_labels,
-        )?;
+        let encoder = SegformerEncoderWeights::load_from_mmapped(st, &cfg, "segformer.encoder.")?;
+        let decode_head =
+            SegformerDecodeHeadWeights::load_from_mmapped(st, &cfg, "decode_head.", num_labels)?;
         Ok(Self {
             config: cfg,
             encoder,
@@ -895,46 +1033,69 @@ mod tests {
     }
 
     fn conv2d_w(
-        c_in: usize, c_out: usize, k: usize, stride: usize, pad: usize, groups: usize,
-        bias: bool, nb: &mut dyn FnMut() -> f32,
+        c_in: usize,
+        c_out: usize,
+        k: usize,
+        stride: usize,
+        pad: usize,
+        groups: usize,
+        bias: bool,
+        nb: &mut dyn FnMut() -> f32,
     ) -> Conv2dWeights {
         Conv2dWeights {
             w: vec_of(c_out * (c_in / groups) * k * k, nb),
             b: if bias { Some(vec_of(c_out, nb)) } else { None },
-            c_in, c_out, k, stride, pad, groups,
+            c_in,
+            c_out,
+            k,
+            stride,
+            pad,
+            groups,
         }
     }
 
     fn attn_w(
-        hidden: usize, sr_ratio: usize, layer_norm_eps_present: bool,
+        hidden: usize,
+        sr_ratio: usize,
+        layer_norm_eps_present: bool,
         nb: &mut dyn FnMut() -> f32,
     ) -> EfficientSelfAttentionWeights {
         EfficientSelfAttentionWeights {
-            query: ws(hidden * hidden, nb), query_bias: vec_of(hidden, nb),
-            key: ws(hidden * hidden, nb), key_bias: vec_of(hidden, nb),
-            value: ws(hidden * hidden, nb), value_bias: vec_of(hidden, nb),
+            query: ws(hidden * hidden, nb),
+            query_bias: vec_of(hidden, nb),
+            key: ws(hidden * hidden, nb),
+            key_bias: vec_of(hidden, nb),
+            value: ws(hidden * hidden, nb),
+            value_bias: vec_of(hidden, nb),
             sr: if sr_ratio > 1 {
                 Some(conv2d_w(hidden, hidden, sr_ratio, sr_ratio, 0, 1, true, nb))
-            } else { None },
+            } else {
+                None
+            },
             sr_norm: if sr_ratio > 1 && layer_norm_eps_present {
                 Some(ln_w(hidden))
-            } else { None },
+            } else {
+                None
+            },
         }
     }
 
-    fn mix_ffn_w(
-        hidden: usize, mlp_ratio: usize, nb: &mut dyn FnMut() -> f32,
-    ) -> MixFfnWeights {
+    fn mix_ffn_w(hidden: usize, mlp_ratio: usize, nb: &mut dyn FnMut() -> f32) -> MixFfnWeights {
         let hf = hidden * mlp_ratio;
         MixFfnWeights {
-            dense1: ws(hidden * hf, nb), dense1_bias: vec_of(hf, nb),
+            dense1: ws(hidden * hf, nb),
+            dense1_bias: vec_of(hf, nb),
             dw_conv: conv2d_w(hf, hf, 3, 1, 1, hf, true, nb),
-            dense2: ws(hf * hidden, nb), dense2_bias: vec_of(hidden, nb),
+            dense2: ws(hf * hidden, nb),
+            dense2_bias: vec_of(hidden, nb),
         }
     }
 
     fn layer_w(
-        hidden: usize, num_heads: usize, sr_ratio: usize, mlp_ratio: usize,
+        hidden: usize,
+        num_heads: usize,
+        sr_ratio: usize,
+        mlp_ratio: usize,
         nb: &mut dyn FnMut() -> f32,
     ) -> SegformerLayerWeights {
         SegformerLayerWeights {
@@ -953,7 +1114,8 @@ mod tests {
 
     fn tiny_config() -> SegformerConfig {
         SegformerConfig {
-            num_channels: 3, num_encoder_blocks: 4,
+            num_channels: 3,
+            num_encoder_blocks: 4,
             depths: vec![1, 1, 1, 1],
             sr_ratios: vec![4, 2, 1, 1],
             hidden_sizes: vec![8, 16, 32, 64],
@@ -971,18 +1133,36 @@ mod tests {
         let mut nb = rng_seed(31337);
         let mut stages = Vec::with_capacity(cfg.num_encoder_blocks);
         for i in 0..cfg.num_encoder_blocks {
-            let c_in = if i == 0 { cfg.num_channels } else { cfg.hidden_sizes[i - 1] };
+            let c_in = if i == 0 {
+                cfg.num_channels
+            } else {
+                cfg.hidden_sizes[i - 1]
+            };
             let c_out = cfg.hidden_sizes[i];
             let patch_size = cfg.patch_sizes[i];
             let stride = cfg.strides[i];
             let pe = OverlapPatchEmbeddingWeights {
-                projection: conv2d_w(c_in, c_out, patch_size, stride, patch_size / 2, 1, true, &mut nb),
+                projection: conv2d_w(
+                    c_in,
+                    c_out,
+                    patch_size,
+                    stride,
+                    patch_size / 2,
+                    1,
+                    true,
+                    &mut nb,
+                ),
                 layer_norm: ln_w(c_out),
             };
             let mut layers = Vec::with_capacity(cfg.depths[i]);
             for _ in 0..cfg.depths[i] {
-                layers.push(layer_w(c_out, cfg.num_attention_heads[i],
-                    cfg.sr_ratios[i], cfg.mlp_ratios[i], &mut nb));
+                layers.push(layer_w(
+                    c_out,
+                    cfg.num_attention_heads[i],
+                    cfg.sr_ratios[i],
+                    cfg.mlp_ratios[i],
+                    &mut nb,
+                ));
             }
             stages.push(SegformerStageWeights {
                 patch_embedding: pe,
@@ -993,7 +1173,10 @@ mod tests {
         SegformerEncoderWeights { stages }
     }
 
-    fn tiny_classifier_weights(cfg: &SegformerConfig, num_labels: usize) -> SegformerClassifierWeights {
+    fn tiny_classifier_weights(
+        cfg: &SegformerConfig,
+        num_labels: usize,
+    ) -> SegformerClassifierWeights {
         let mut nb = rng_seed(99);
         let c = *cfg.hidden_sizes.last().unwrap();
         SegformerClassifierWeights {
@@ -1006,21 +1189,36 @@ mod tests {
         let mut nb = rng_seed(55);
         let mut linear_c = Vec::with_capacity(cfg.num_encoder_blocks);
         for i in 0..cfg.num_encoder_blocks {
-            linear_c.push((ws(cfg.hidden_sizes[i] * cfg.decoder_hidden_size, &mut nb),
-                           vec_of(cfg.decoder_hidden_size, &mut nb)));
+            linear_c.push((
+                ws(cfg.hidden_sizes[i] * cfg.decoder_hidden_size, &mut nb),
+                vec_of(cfg.decoder_hidden_size, &mut nb),
+            ));
         }
         SegformerDecodeHeadWeights {
             linear_c,
             linear_fuse: conv2d_w(
-                cfg.decoder_hidden_size * cfg.num_encoder_blocks, cfg.decoder_hidden_size,
-                1, 1, 0, 1, false, &mut nb,
+                cfg.decoder_hidden_size * cfg.num_encoder_blocks,
+                cfg.decoder_hidden_size,
+                1,
+                1,
+                0,
+                1,
+                false,
+                &mut nb,
             ),
             batch_norm: BatchNormParams {
                 w: Arc::from(vec![1.0_f32; cfg.decoder_hidden_size]),
                 b: Arc::from(vec![0.0_f32; cfg.decoder_hidden_size]),
             },
             classifier: conv2d_w(
-                cfg.decoder_hidden_size, num_labels, 1, 1, 0, 1, false, &mut nb,
+                cfg.decoder_hidden_size,
+                num_labels,
+                1,
+                1,
+                0,
+                1,
+                false,
+                &mut nb,
             ),
         }
     }
@@ -1032,14 +1230,19 @@ mod tests {
         let n_labels = 5;
         let cls = tiny_classifier_weights(&cfg, n_labels);
         let model = ImageClassificationModel {
-            config: cfg, encoder: enc, classifier: cls,
+            config: cfg,
+            encoder: enc,
+            classifier: cls,
         };
         // Image 32x32. Stride pipeline 2*2*2*2 = 16 → stage 0: 16,
         // stage 1: 8, stage 2: 4, stage 3: 2. Patch padding lifts
         // slightly but the shape is fine for the test.
         let img = LazyTensor::from_f32(
-            (0..(3 * 32 * 32)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, 3, 32, 32]), &Device::cpu(),
+            (0..(3 * 32 * 32))
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 3, 32, 32]),
+            &Device::cpu(),
         );
         let logits = model.forward(&img).unwrap();
         assert_eq!(logits.shape().dims(), &[1, n_labels]);
@@ -1055,12 +1258,17 @@ mod tests {
         let n_labels = 4;
         let dec = tiny_decode_weights(&cfg, n_labels);
         let model = SemanticSegmentationModel {
-            config: cfg, encoder: enc, decode_head: dec,
+            config: cfg,
+            encoder: enc,
+            decode_head: dec,
             num_labels: n_labels,
         };
         let img = LazyTensor::from_f32(
-            (0..(3 * 32 * 32)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, 3, 32, 32]), &Device::cpu(),
+            (0..(3 * 32 * 32))
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 3, 32, 32]),
+            &Device::cpu(),
         );
         let logits = model.forward(&img).unwrap();
         let shape = logits.shape();
@@ -1081,15 +1289,23 @@ mod tests {
         let enc = tiny_encoder_weights(&cfg);
         let cls = tiny_classifier_weights(&cfg, 4);
         let model = ImageClassificationModel {
-            config: cfg, encoder: enc, classifier: cls,
+            config: cfg,
+            encoder: enc,
+            classifier: cls,
         };
         let a = LazyTensor::from_f32(
-            (0..(3 * 32 * 32)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, 3, 32, 32]), &Device::cpu(),
+            (0..(3 * 32 * 32))
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 3, 32, 32]),
+            &Device::cpu(),
         );
         let b = LazyTensor::from_f32(
-            (0..(3 * 32 * 32)).map(|i| (i as f32) * 0.01 + 0.7).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, 3, 32, 32]), &Device::cpu(),
+            (0..(3 * 32 * 32))
+                .map(|i| (i as f32) * 0.01 + 0.7)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 3, 32, 32]),
+            &Device::cpu(),
         );
         let la = model.forward(&a).unwrap().realize_f32();
         let lb = model.forward(&b).unwrap().realize_f32();
@@ -1097,8 +1313,10 @@ mod tests {
         for (x, y) in la.iter().zip(lb.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-7,
-            "classifier must respond to input, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-7,
+            "classifier must respond to input, max_diff = {max_diff}"
+        );
     }
 
     #[test]
@@ -1112,11 +1330,36 @@ mod tests {
     #[test]
     fn mit_b1_through_b5_presets_construct() {
         let presets = [
-            (SegformerConfig::mit_b1(), [64usize, 128, 320, 512], vec![2usize, 2, 2, 2], 256),
-            (SegformerConfig::mit_b2(), [64, 128, 320, 512], vec![3, 4, 6, 3], 768),
-            (SegformerConfig::mit_b3(), [64, 128, 320, 512], vec![3, 4, 18, 3], 768),
-            (SegformerConfig::mit_b4(), [64, 128, 320, 512], vec![3, 8, 27, 3], 768),
-            (SegformerConfig::mit_b5(), [64, 128, 320, 512], vec![3, 6, 40, 3], 768),
+            (
+                SegformerConfig::mit_b1(),
+                [64usize, 128, 320, 512],
+                vec![2usize, 2, 2, 2],
+                256,
+            ),
+            (
+                SegformerConfig::mit_b2(),
+                [64, 128, 320, 512],
+                vec![3, 4, 6, 3],
+                768,
+            ),
+            (
+                SegformerConfig::mit_b3(),
+                [64, 128, 320, 512],
+                vec![3, 4, 18, 3],
+                768,
+            ),
+            (
+                SegformerConfig::mit_b4(),
+                [64, 128, 320, 512],
+                vec![3, 8, 27, 3],
+                768,
+            ),
+            (
+                SegformerConfig::mit_b5(),
+                [64, 128, 320, 512],
+                vec![3, 6, 40, 3],
+                768,
+            ),
         ];
         for (cfg, hs, depths, dh) in presets {
             assert_eq!(cfg.hidden_sizes, hs.to_vec());
@@ -1134,13 +1377,11 @@ mod tests {
     // ---- Safetensors round-trip ------------------------------------------
 
     /// Append `n` f32 values to `owned` under `name` as a 1-D shape.
-    fn push_f32_1d(
-        owned: &mut Vec<(String, Vec<usize>, Vec<u8>)>,
-        name: &str,
-        values: &[f32],
-    ) {
+    fn push_f32_1d(owned: &mut Vec<(String, Vec<usize>, Vec<u8>)>, name: &str, values: &[f32]) {
         let mut bytes = Vec::with_capacity(values.len() * 4);
-        for v in values { bytes.extend_from_slice(&v.to_le_bytes()); }
+        for v in values {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
         owned.push((name.to_string(), vec![values.len()], bytes));
     }
 
@@ -1153,7 +1394,9 @@ mod tests {
     ) {
         let n: usize = shape.iter().product();
         let mut bytes = Vec::with_capacity(n * 4);
-        for _ in 0..n { bytes.extend_from_slice(&nb().to_le_bytes()); }
+        for _ in 0..n {
+            bytes.extend_from_slice(&nb().to_le_bytes());
+        }
         owned.push((name.to_string(), shape, bytes));
     }
 
@@ -1165,7 +1408,7 @@ mod tests {
         nb: &mut dyn FnMut() -> f32,
     ) {
         push_f32(owned, &format!("{prefix}.weight"), vec![c], nb);
-        push_f32(owned, &format!("{prefix}.bias"),   vec![c], nb);
+        push_f32(owned, &format!("{prefix}.bias"), vec![c], nb);
     }
 
     /// Push a HuggingFace BatchNorm prefix (4 stats).
@@ -1176,15 +1419,27 @@ mod tests {
         nb: &mut dyn FnMut() -> f32,
     ) {
         // weight (gain), bias, running_mean, running_var.
-        push_f32_1d(owned, &format!("{prefix}.weight"),
-            &(0..c).map(|_| nb()).collect::<Vec<_>>());
-        push_f32_1d(owned, &format!("{prefix}.bias"),
-            &(0..c).map(|_| nb()).collect::<Vec<_>>());
-        push_f32_1d(owned, &format!("{prefix}.running_mean"),
-            &(0..c).map(|_| nb()).collect::<Vec<_>>());
+        push_f32_1d(
+            owned,
+            &format!("{prefix}.weight"),
+            &(0..c).map(|_| nb()).collect::<Vec<_>>(),
+        );
+        push_f32_1d(
+            owned,
+            &format!("{prefix}.bias"),
+            &(0..c).map(|_| nb()).collect::<Vec<_>>(),
+        );
+        push_f32_1d(
+            owned,
+            &format!("{prefix}.running_mean"),
+            &(0..c).map(|_| nb()).collect::<Vec<_>>(),
+        );
         // running_var must be strictly positive for inv-sqrt to be finite.
-        push_f32_1d(owned, &format!("{prefix}.running_var"),
-            &(0..c).map(|_| nb().abs() + 0.1).collect::<Vec<_>>());
+        push_f32_1d(
+            owned,
+            &format!("{prefix}.running_var"),
+            &(0..c).map(|_| nb().abs() + 0.1).collect::<Vec<_>>(),
+        );
     }
 
     fn push_conv2d(
@@ -1198,8 +1453,10 @@ mod tests {
         nb: &mut dyn FnMut() -> f32,
     ) {
         push_f32(
-            owned, &format!("{prefix}.weight"),
-            vec![c_out, c_in / groups, k, k], nb,
+            owned,
+            &format!("{prefix}.weight"),
+            vec![c_out, c_in / groups, k, k],
+            nb,
         );
         if has_bias {
             push_f32(owned, &format!("{prefix}.bias"), vec![c_out], nb);
@@ -1215,8 +1472,10 @@ mod tests {
     ) {
         // HF stores weight as [out, in].
         push_f32(
-            owned, &format!("{prefix}.weight"),
-            vec![out_features, in_features], nb,
+            owned,
+            &format!("{prefix}.weight"),
+            vec![out_features, in_features],
+            nb,
         );
         push_f32(owned, &format!("{prefix}.bias"), vec![out_features], nb);
     }
@@ -1230,12 +1489,18 @@ mod tests {
     ) {
         // attention.self.{query,key,value}
         push_linear(owned, &format!("{prefix}.self.query"), hidden, hidden, nb);
-        push_linear(owned, &format!("{prefix}.self.key"),   hidden, hidden, nb);
+        push_linear(owned, &format!("{prefix}.self.key"), hidden, hidden, nb);
         push_linear(owned, &format!("{prefix}.self.value"), hidden, hidden, nb);
         if sr_ratio > 1 {
             push_conv2d(
-                owned, &format!("{prefix}.self.sr"),
-                hidden, hidden, sr_ratio, 1, true, nb,
+                owned,
+                &format!("{prefix}.self.sr"),
+                hidden,
+                hidden,
+                sr_ratio,
+                1,
+                true,
+                nb,
             );
             push_ln(owned, &format!("{prefix}.self.layer_norm"), hidden, nb);
         }
@@ -1254,8 +1519,14 @@ mod tests {
         push_linear(owned, &format!("{prefix}.dense1"), hidden, hf, nb);
         // SegformerDWConv → conv2d at `<prefix>.dwconv.dwconv`.
         push_conv2d(
-            owned, &format!("{prefix}.dwconv.dwconv"),
-            hf, hf, 3, hf, true, nb,
+            owned,
+            &format!("{prefix}.dwconv.dwconv"),
+            hf,
+            hf,
+            3,
+            hf,
+            true,
+            nb,
         );
         push_linear(owned, &format!("{prefix}.dense2"), hf, hidden, nb);
     }
@@ -1281,17 +1552,36 @@ mod tests {
         nb: &mut dyn FnMut() -> f32,
     ) {
         for i in 0..cfg.num_encoder_blocks {
-            let c_in = if i == 0 { cfg.num_channels } else { cfg.hidden_sizes[i - 1] };
+            let c_in = if i == 0 {
+                cfg.num_channels
+            } else {
+                cfg.hidden_sizes[i - 1]
+            };
             let c_out = cfg.hidden_sizes[i];
             push_conv2d(
-                owned, &format!("{prefix}patch_embeddings.{i}.proj"),
-                c_in, c_out, cfg.patch_sizes[i], 1, true, nb,
+                owned,
+                &format!("{prefix}patch_embeddings.{i}.proj"),
+                c_in,
+                c_out,
+                cfg.patch_sizes[i],
+                1,
+                true,
+                nb,
             );
-            push_ln(owned, &format!("{prefix}patch_embeddings.{i}.layer_norm"), c_out, nb);
+            push_ln(
+                owned,
+                &format!("{prefix}patch_embeddings.{i}.layer_norm"),
+                c_out,
+                nb,
+            );
             for j in 0..cfg.depths[i] {
                 push_layer(
-                    owned, &format!("{prefix}block.{i}.{j}"),
-                    c_out, cfg.sr_ratios[i], cfg.mlp_ratios[i], nb,
+                    owned,
+                    &format!("{prefix}block.{i}.{j}"),
+                    c_out,
+                    cfg.sr_ratios[i],
+                    cfg.mlp_ratios[i],
+                    nb,
                 );
             }
             push_ln(owned, &format!("{prefix}layer_norm.{i}"), c_out, nb);
@@ -1310,8 +1600,7 @@ mod tests {
                 .expect("TensorView::new");
             tensors.insert(name.clone(), view);
         }
-        let serialized = safetensors::serialize(&tensors, None)
-            .expect("safetensors::serialize");
+        let serialized = safetensors::serialize(&tensors, None).expect("safetensors::serialize");
         let tmp = std::env::temp_dir().join(format!(
             "fuel_segformer_load_test_{}_{tag}.safetensors",
             std::process::id(),
@@ -1341,8 +1630,11 @@ mod tests {
 
         // Sanity: shape + finiteness on a tiny image.
         let img = LazyTensor::from_f32(
-            (0..(3 * 32 * 32)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, 3, 32, 32]), &Device::cpu(),
+            (0..(3 * 32 * 32))
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 3, 32, 32]),
+            &Device::cpu(),
         );
         let logits = model.forward(&img).unwrap();
         assert_eq!(logits.shape().dims(), &[1, n_labels]);
@@ -1365,19 +1657,38 @@ mod tests {
         // classifier (Conv2d w/ bias).
         for i in 0..cfg.num_encoder_blocks {
             push_linear(
-                &mut owned, &format!("decode_head.linear_c.{i}.proj"),
-                cfg.hidden_sizes[i], cfg.decoder_hidden_size, &mut nb,
+                &mut owned,
+                &format!("decode_head.linear_c.{i}.proj"),
+                cfg.hidden_sizes[i],
+                cfg.decoder_hidden_size,
+                &mut nb,
             );
         }
         push_conv2d(
-            &mut owned, "decode_head.linear_fuse",
+            &mut owned,
+            "decode_head.linear_fuse",
             cfg.decoder_hidden_size * cfg.num_encoder_blocks,
-            cfg.decoder_hidden_size, 1, 1, false, &mut nb,
+            cfg.decoder_hidden_size,
+            1,
+            1,
+            false,
+            &mut nb,
         );
-        push_bn(&mut owned, "decode_head.batch_norm", cfg.decoder_hidden_size, &mut nb);
+        push_bn(
+            &mut owned,
+            "decode_head.batch_norm",
+            cfg.decoder_hidden_size,
+            &mut nb,
+        );
         push_conv2d(
-            &mut owned, "decode_head.classifier",
-            cfg.decoder_hidden_size, n_labels, 1, 1, true, &mut nb,
+            &mut owned,
+            "decode_head.classifier",
+            cfg.decoder_hidden_size,
+            n_labels,
+            1,
+            1,
+            true,
+            &mut nb,
         );
 
         let tmp = build_safetensors_file(owned, "seg");
@@ -1389,8 +1700,11 @@ mod tests {
         assert_eq!(model.num_labels, n_labels);
 
         let img = LazyTensor::from_f32(
-            (0..(3 * 32 * 32)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, 3, 32, 32]), &Device::cpu(),
+            (0..(3 * 32 * 32))
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 3, 32, 32]),
+            &Device::cpu(),
         );
         let logits = model.forward(&img).unwrap();
         let dims = logits.shape();

@@ -12,8 +12,8 @@
 //! Phase 1.1 ships the shape with `coupling` as an empty `Vec`.
 //! Phase 2 populates it when transfer-op insertion lands.
 
-use fuel_ir::probe::BackendId;
 use fuel_ir::DeviceLocation;
+use fuel_ir::probe::BackendId;
 
 use crate::fused::{CostEstimate, PrecisionGuarantee};
 use crate::kernel::{KernelCaps, KernelRef, OpParams};

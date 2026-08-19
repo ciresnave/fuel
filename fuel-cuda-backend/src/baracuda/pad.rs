@@ -24,10 +24,10 @@ use crate::byte_storage::CudaStorageBytes;
 use super::status::check;
 
 /// Mode tags shared with Fuel's IR.
-pub const PAD_MODE_CONSTANT:  u8 = 0;
-pub const PAD_MODE_REFLECT:   u8 = 1;
+pub const PAD_MODE_CONSTANT: u8 = 0;
+pub const PAD_MODE_REFLECT: u8 = 1;
 pub const PAD_MODE_REPLICATE: u8 = 2;
-pub const PAD_MODE_CIRCULAR:  u8 = 3;
+pub const PAD_MODE_CIRCULAR: u8 = 3;
 
 /// Helper: validate ranks, convert shape/stride arrays, produce
 /// `(input_shape_i32, output_shape_i32, pad_low_i32, stride_x_i64,
@@ -52,15 +52,14 @@ fn build_pad_shapes(
     if out_shape.len() != rank || padding.len() != rank {
         return Err(Error::Msg(format!(
             "{op_label}: rank mismatch in_shape={} out_shape={} padding={}",
-            rank, out_shape.len(), padding.len(),
+            rank,
+            out_shape.len(),
+            padding.len(),
         ))
         .bt());
     }
     if rank == 0 || rank > 8 {
-        return Err(Error::Msg(format!(
-            "{op_label}: rank {rank} out of range (1..=8)",
-        ))
-        .bt());
+        return Err(Error::Msg(format!("{op_label}: rank {rank} out of range (1..=8)",)).bt());
     }
     let i32_or = |dim_index: usize, dim_value: usize| -> Result<i32> {
         i32::try_from(dim_value).map_err(|_| {
@@ -173,7 +172,10 @@ type PadModeRun = unsafe extern "C" fn(
     stream: *mut std::ffi::c_void,
 ) -> i32;
 
-fn alloc_dest(input: &CudaStorageBytes, out_bytes: usize) -> Result<(crate::CudaDevice, baracuda_driver::DeviceBuffer<u8>)> {
+fn alloc_dest(
+    input: &CudaStorageBytes,
+    out_bytes: usize,
+) -> Result<(crate::CudaDevice, baracuda_driver::DeviceBuffer<u8>)> {
     let device = input.device().clone();
     let dest = device.alloc_zeros::<u8>(out_bytes)?;
     Ok((device, dest))
@@ -213,7 +215,11 @@ fn run_pad_mode(
         )
     };
     check(status, op_label)?;
-    Ok(CudaStorageBytes::from_parts(Arc::new(dest), device, out_bytes))
+    Ok(CudaStorageBytes::from_parts(
+        Arc::new(dest),
+        device,
+        out_bytes,
+    ))
 }
 
 // ----- Per-dtype constant runners ----------------------------------------
@@ -235,16 +241,27 @@ fn run_pad_constant_f32(
     let out_ptr = dest.as_raw().0 as *mut std::ffi::c_void;
     let status = unsafe {
         kernel(
-            shapes.output_numel, shapes.rank,
-            shapes.input_shape.as_ptr(), shapes.output_shape.as_ptr(),
+            shapes.output_numel,
+            shapes.rank,
+            shapes.input_shape.as_ptr(),
+            shapes.output_shape.as_ptr(),
             shapes.pad_low.as_ptr(),
-            shapes.stride_x.as_ptr(), shapes.stride_y.as_ptr(),
-            in_ptr, out_ptr, value,
-            std::ptr::null_mut(), 0, stream,
+            shapes.stride_x.as_ptr(),
+            shapes.stride_y.as_ptr(),
+            in_ptr,
+            out_ptr,
+            value,
+            std::ptr::null_mut(),
+            0,
+            stream,
         )
     };
     check(status, op_label)?;
-    Ok(CudaStorageBytes::from_parts(Arc::new(dest), device, out_bytes))
+    Ok(CudaStorageBytes::from_parts(
+        Arc::new(dest),
+        device,
+        out_bytes,
+    ))
 }
 
 fn run_pad_constant_f64(
@@ -264,16 +281,27 @@ fn run_pad_constant_f64(
     let out_ptr = dest.as_raw().0 as *mut std::ffi::c_void;
     let status = unsafe {
         kernel(
-            shapes.output_numel, shapes.rank,
-            shapes.input_shape.as_ptr(), shapes.output_shape.as_ptr(),
+            shapes.output_numel,
+            shapes.rank,
+            shapes.input_shape.as_ptr(),
+            shapes.output_shape.as_ptr(),
             shapes.pad_low.as_ptr(),
-            shapes.stride_x.as_ptr(), shapes.stride_y.as_ptr(),
-            in_ptr, out_ptr, value,
-            std::ptr::null_mut(), 0, stream,
+            shapes.stride_x.as_ptr(),
+            shapes.stride_y.as_ptr(),
+            in_ptr,
+            out_ptr,
+            value,
+            std::ptr::null_mut(),
+            0,
+            stream,
         )
     };
     check(status, op_label)?;
-    Ok(CudaStorageBytes::from_parts(Arc::new(dest), device, out_bytes))
+    Ok(CudaStorageBytes::from_parts(
+        Arc::new(dest),
+        device,
+        out_bytes,
+    ))
 }
 
 fn run_pad_constant_u16(
@@ -293,16 +321,27 @@ fn run_pad_constant_u16(
     let out_ptr = dest.as_raw().0 as *mut std::ffi::c_void;
     let status = unsafe {
         kernel(
-            shapes.output_numel, shapes.rank,
-            shapes.input_shape.as_ptr(), shapes.output_shape.as_ptr(),
+            shapes.output_numel,
+            shapes.rank,
+            shapes.input_shape.as_ptr(),
+            shapes.output_shape.as_ptr(),
             shapes.pad_low.as_ptr(),
-            shapes.stride_x.as_ptr(), shapes.stride_y.as_ptr(),
-            in_ptr, out_ptr, value,
-            std::ptr::null_mut(), 0, stream,
+            shapes.stride_x.as_ptr(),
+            shapes.stride_y.as_ptr(),
+            in_ptr,
+            out_ptr,
+            value,
+            std::ptr::null_mut(),
+            0,
+            stream,
         )
     };
     check(status, op_label)?;
-    Ok(CudaStorageBytes::from_parts(Arc::new(dest), device, out_bytes))
+    Ok(CudaStorageBytes::from_parts(
+        Arc::new(dest),
+        device,
+        out_bytes,
+    ))
 }
 
 // ===========================================================================
@@ -324,9 +363,11 @@ pub fn pad_constant_f32(
 ) -> Result<CudaStorageBytes> {
     let shapes = build_pad_shapes(in_shape, out_shape, padding, "pad_constant_f32")?;
     run_pad_constant_f32(
-        input, &shapes,
+        input,
+        &shapes,
         sys::baracuda_kernels_pad_constant_f32_run,
-        value, "pad_constant_f32",
+        value,
+        "pad_constant_f32",
     )
 }
 
@@ -339,9 +380,11 @@ pub fn pad_constant_f64(
 ) -> Result<CudaStorageBytes> {
     let shapes = build_pad_shapes(in_shape, out_shape, padding, "pad_constant_f64")?;
     run_pad_constant_f64(
-        input, &shapes,
+        input,
+        &shapes,
         sys::baracuda_kernels_pad_constant_f64_run,
-        value, "pad_constant_f64",
+        value,
+        "pad_constant_f64",
     )
 }
 
@@ -354,9 +397,11 @@ pub fn pad_constant_f16(
 ) -> Result<CudaStorageBytes> {
     let shapes = build_pad_shapes(in_shape, out_shape, padding, "pad_constant_f16")?;
     run_pad_constant_u16(
-        input, &shapes,
+        input,
+        &shapes,
         sys::baracuda_kernels_pad_constant_f16_run,
-        value.to_bits(), "pad_constant_f16",
+        value.to_bits(),
+        "pad_constant_f16",
     )
 }
 
@@ -369,9 +414,11 @@ pub fn pad_constant_bf16(
 ) -> Result<CudaStorageBytes> {
     let shapes = build_pad_shapes(in_shape, out_shape, padding, "pad_constant_bf16")?;
     run_pad_constant_u16(
-        input, &shapes,
+        input,
+        &shapes,
         sys::baracuda_kernels_pad_constant_bf16_run,
-        value.to_bits(), "pad_constant_bf16",
+        value.to_bits(),
+        "pad_constant_bf16",
     )
 }
 
@@ -389,15 +436,55 @@ macro_rules! pad_mode_kernel {
     };
 }
 
-pad_mode_kernel!(pad_reflect_f32,  baracuda_kernels_pad_reflect_f32_run,  4, "pad_reflect_f32");
-pad_mode_kernel!(pad_reflect_f64,  baracuda_kernels_pad_reflect_f64_run,  8, "pad_reflect_f64");
-pad_mode_kernel!(pad_reflect_f16,  baracuda_kernels_pad_reflect_f16_run,  2, "pad_reflect_f16");
-pad_mode_kernel!(pad_reflect_bf16, baracuda_kernels_pad_reflect_bf16_run, 2, "pad_reflect_bf16");
+pad_mode_kernel!(
+    pad_reflect_f32,
+    baracuda_kernels_pad_reflect_f32_run,
+    4,
+    "pad_reflect_f32"
+);
+pad_mode_kernel!(
+    pad_reflect_f64,
+    baracuda_kernels_pad_reflect_f64_run,
+    8,
+    "pad_reflect_f64"
+);
+pad_mode_kernel!(
+    pad_reflect_f16,
+    baracuda_kernels_pad_reflect_f16_run,
+    2,
+    "pad_reflect_f16"
+);
+pad_mode_kernel!(
+    pad_reflect_bf16,
+    baracuda_kernels_pad_reflect_bf16_run,
+    2,
+    "pad_reflect_bf16"
+);
 
-pad_mode_kernel!(pad_replicate_f32,  baracuda_kernels_pad_replicate_f32_run,  4, "pad_replicate_f32");
-pad_mode_kernel!(pad_replicate_f64,  baracuda_kernels_pad_replicate_f64_run,  8, "pad_replicate_f64");
-pad_mode_kernel!(pad_replicate_f16,  baracuda_kernels_pad_replicate_f16_run,  2, "pad_replicate_f16");
-pad_mode_kernel!(pad_replicate_bf16, baracuda_kernels_pad_replicate_bf16_run, 2, "pad_replicate_bf16");
+pad_mode_kernel!(
+    pad_replicate_f32,
+    baracuda_kernels_pad_replicate_f32_run,
+    4,
+    "pad_replicate_f32"
+);
+pad_mode_kernel!(
+    pad_replicate_f64,
+    baracuda_kernels_pad_replicate_f64_run,
+    8,
+    "pad_replicate_f64"
+);
+pad_mode_kernel!(
+    pad_replicate_f16,
+    baracuda_kernels_pad_replicate_f16_run,
+    2,
+    "pad_replicate_f16"
+);
+pad_mode_kernel!(
+    pad_replicate_bf16,
+    baracuda_kernels_pad_replicate_bf16_run,
+    2,
+    "pad_replicate_bf16"
+);
 
 // ===========================================================================
 // Backward — pad-constant slice (only Constant mode is differentiable
@@ -471,14 +558,39 @@ macro_rules! pad_backward_kernel {
             padding: &[(usize, usize)],
         ) -> Result<CudaStorageBytes> {
             run_pad_backward(
-                dy, dx_shape, dy_shape, padding,
-                sys::$sys_fn, $op_label, $dtype_size,
+                dy,
+                dx_shape,
+                dy_shape,
+                padding,
+                sys::$sys_fn,
+                $op_label,
+                $dtype_size,
             )
         }
     };
 }
 
-pad_backward_kernel!(pad_backward_f32,  baracuda_kernels_pad_constant_backward_f32_run,  4, "pad_backward_f32");
-pad_backward_kernel!(pad_backward_f64,  baracuda_kernels_pad_constant_backward_f64_run,  8, "pad_backward_f64");
-pad_backward_kernel!(pad_backward_f16,  baracuda_kernels_pad_constant_backward_f16_run,  2, "pad_backward_f16");
-pad_backward_kernel!(pad_backward_bf16, baracuda_kernels_pad_constant_backward_bf16_run, 2, "pad_backward_bf16");
+pad_backward_kernel!(
+    pad_backward_f32,
+    baracuda_kernels_pad_constant_backward_f32_run,
+    4,
+    "pad_backward_f32"
+);
+pad_backward_kernel!(
+    pad_backward_f64,
+    baracuda_kernels_pad_constant_backward_f64_run,
+    8,
+    "pad_backward_f64"
+);
+pad_backward_kernel!(
+    pad_backward_f16,
+    baracuda_kernels_pad_constant_backward_f16_run,
+    2,
+    "pad_backward_f16"
+);
+pad_backward_kernel!(
+    pad_backward_bf16,
+    baracuda_kernels_pad_constant_backward_bf16_run,
+    2,
+    "pad_backward_bf16"
+);

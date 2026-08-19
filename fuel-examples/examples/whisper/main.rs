@@ -12,16 +12,16 @@ extern crate intel_mkl_src;
 
 use anyhow::{Error as E, Result};
 use clap::{Parser, ValueEnum};
-use hf_hub::{api::sync::Api, Repo, RepoType};
-use rand::distr::weighted::WeightedIndex;
-use rand::distr::Distribution;
+use hf_hub::{Repo, RepoType, api::sync::Api};
 use rand::SeedableRng;
+use rand::distr::Distribution;
+use rand::distr::weighted::WeightedIndex;
 use tokenizers::Tokenizer;
 
 mod multilingual;
 
-use fuel::lazy_whisper::{WhisperConfig, WhisperModel, WhisperWeights};
 use fuel::lazy_quantized_whisper::QuantizedWhisperModel;
+use fuel::lazy_whisper::{WhisperConfig, WhisperModel, WhisperWeights};
 
 // Audio / decoding constants — formerly re-exported via
 // `fuel_transformers::models::whisper::*`.
@@ -81,12 +81,14 @@ impl Model {
     pub fn encoder_forward(&self, mel_flat: &[f32], mel_time: usize) -> Result<Vec<f32>> {
         match self {
             Self::Normal(m) => {
-                let enc = m.forward_encoder(mel_flat, mel_time)
+                let enc = m
+                    .forward_encoder(mel_flat, mel_time)
                     .map_err(|e| E::msg(format!("encoder: {e}")))?;
                 Ok(enc.realize_f32())
             }
             Self::Quantized(m) => {
-                let enc = m.forward_encoder(mel_flat, mel_time)
+                let enc = m
+                    .forward_encoder(mel_flat, mel_time)
                     .map_err(|e| E::msg(format!("encoder: {e}")))?;
                 Ok(enc.realize_f32())
             }
@@ -252,8 +254,9 @@ impl Decoder {
         for i in 0..sample_len {
             // Run the decoder over all current tokens. Returns flat
             // `[1, seq, vocab]` logits.
-            let logits_flat =
-                self.model.decoder_logits(&tokens, &audio_features, mel_time)?;
+            let logits_flat = self
+                .model
+                .decoder_logits(&tokens, &audio_features, mel_time)?;
             let seq = tokens.len();
             assert_eq!(logits_flat.len(), seq * vocab);
 
@@ -486,17 +489,13 @@ impl Decoder {
                     }
                     // The no_timestamp_token is the last before the timestamp ones.
                     if token > self.no_timestamps_token {
-                        let timestamp_s =
-                            (token - self.no_timestamps_token + 1) as f32 / 50.;
+                        let timestamp_s = (token - self.no_timestamps_token + 1) as f32 / 50.;
                         if !tokens_to_decode.is_empty() {
                             let text = self
                                 .tokenizer
                                 .decode(&tokens_to_decode, true)
                                 .map_err(E::msg)?;
-                            println!(
-                                "  {:.1}s-{:.1}s: {}",
-                                prev_timestamp_s, timestamp_s, text
-                            );
+                            println!("  {:.1}s-{:.1}s: {}", prev_timestamp_s, timestamp_s, text);
                             tokens_to_decode.clear()
                         }
                         prev_timestamp_s = timestamp_s;
@@ -751,7 +750,9 @@ fn main() -> Result<()> {
                 std::path::PathBuf::from(input)
             }
         } else {
-            println!("No audio file submitted: Downloading https://huggingface.co/datasets/Narsil/fuel_demo/blob/main/samples_jfk.wav");
+            println!(
+                "No audio file submitted: Downloading https://huggingface.co/datasets/Narsil/fuel_demo/blob/main/samples_jfk.wav"
+            );
             dataset.get("samples_jfk.wav")?
         };
         let (config, tokenizer, model) = if args.quantized {
@@ -810,7 +811,10 @@ fn main() -> Result<()> {
             .map_err(|e| E::msg(format!("mmap: {e}")))?;
         let weights = WhisperWeights::load_from_mmapped(&st, &config)
             .map_err(|e| E::msg(format!("weights: {e}")))?;
-        Model::Normal(WhisperModel { config: config.clone(), weights })
+        Model::Normal(WhisperModel {
+            config: config.clone(),
+            weights,
+        })
     };
 
     let language_token = match (args.model.is_multilingual(), args.language) {

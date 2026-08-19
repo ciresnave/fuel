@@ -15,8 +15,7 @@
 //! to the token embedding.
 
 use crate::lazy::{
-    load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
-    LazyTensor, WeightStorage,
+    LazyTensor, WeightStorage, load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
 };
 use crate::{Device, Result};
 use fuel_ir::Shape;
@@ -42,8 +41,11 @@ impl BigCodeConfig {
     }
 
     pub fn kv_dim(&self) -> usize {
-        if self.multi_query { self.head_dim() }
-        else { self.hidden_size }
+        if self.multi_query {
+            self.head_dim()
+        } else {
+            self.hidden_size
+        }
     }
 
     /// StarCoder-1 ~1B preset (HuggingFace `bigcode/starcoder`).
@@ -123,16 +125,16 @@ impl BigCodeModel {
     /// wpe table) is still applied internally based on `start_pos` +
     /// seq from the embeds — multimodal hosts pass the token-level
     /// embeds (post token-table lookup, pre-positional-add).
-    pub fn forward_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
         let h_norm = self.run_backbone_embeds(embeds, start_pos)?;
         self.apply_lm_head(&h_norm)
     }
 
     /// Hidden-state variant of [`Self::forward_embeds`].
     pub fn forward_hidden_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
+        &self,
+        embeds: &LazyTensor,
+        start_pos: usize,
     ) -> Result<LazyTensor> {
         self.run_backbone_embeds(embeds, start_pos)
     }
@@ -141,19 +143,22 @@ impl BigCodeModel {
     /// the positional embedding is NOT added — callers must pass the
     /// raw embeds to [`Self::forward_embeds`] which adds positional
     /// encoding internally.
-    pub fn embed_tokens_anchored(
-        &self, anchor: &LazyTensor, tokens: &[u32],
-    ) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
-            cfg.vocab_size, cfg.hidden_size, tokens,
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
         )
     }
 
     fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
-        Ok(self.weights.output.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
+        Ok(self
+            .weights
+            .output
+            .apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 
     fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
@@ -163,14 +168,16 @@ impl BigCodeModel {
         assert!(seq > 0);
 
         let h = LazyTensor::embed_tokens(
-            weights.token_embedding.clone(), cfg.vocab_size, cfg.hidden_size, tokens, &Device::cpu(),
+            weights.token_embedding.clone(),
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
+            &Device::cpu(),
         )?;
         self.run_backbone_embeds(&h, start_pos)
     }
 
-    fn run_backbone_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
-    ) -> Result<LazyTensor> {
+    fn run_backbone_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -184,20 +191,23 @@ impl BigCodeModel {
         let seq = dims[1];
         let batch = dims[0];
         if seq == 0 {
-            return Err(crate::Error::Msg(
-                "BigCodeModel::forward_embeds: seq must be > 0".into(),
-            ).bt());
+            return Err(
+                crate::Error::Msg("BigCodeModel::forward_embeds: seq must be > 0".into()).bt(),
+            );
         }
         if cfg.num_attention_heads * cfg.head_dim() != cfg.hidden_size {
             return Err(crate::Error::Msg(
                 "BigCodeConfig: num_attention_heads * head_dim must equal hidden_size".into(),
-            ).bt());
+            )
+            .bt());
         }
         if start_pos + seq > cfg.max_position_embeddings {
             return Err(crate::Error::Msg(format!(
                 "BigCodeModel: start_pos + seq ({}) exceeds max_position_embeddings ({})",
-                start_pos + seq, cfg.max_position_embeddings,
-            )).bt());
+                start_pos + seq,
+                cfg.max_position_embeddings,
+            ))
+            .bt());
         }
 
         let wpe = embeds.const_f32_like(
@@ -221,11 +231,7 @@ impl BigCodeModel {
         )
     }
 
-    fn apply_layer(
-        &self,
-        x: &LazyTensor,
-        layer: &BigCodeLayerWeights,
-    ) -> Result<LazyTensor> {
+    fn apply_layer(&self, x: &LazyTensor, layer: &BigCodeLayerWeights) -> Result<LazyTensor> {
         let cfg = &self.config;
         let head_dim = cfg.head_dim();
         let kv_dim = cfg.kv_dim();
@@ -234,13 +240,36 @@ impl BigCodeModel {
         let batch = dims[0];
         let seq = dims[1];
 
-        let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&layer.input_ln_gain), std::sync::Arc::clone(&layer.input_ln_bias), cfg.layer_norm_epsilon)?;
+        let x_norm = x.layer_norm_affine(
+            std::sync::Arc::clone(&layer.input_ln_gain),
+            std::sync::Arc::clone(&layer.input_ln_bias),
+            cfg.layer_norm_epsilon,
+        )?;
 
-        let q = layer.attn_q.apply_linear_with_bias(&x_norm, cfg.hidden_size, cfg.hidden_size, std::sync::Arc::clone(&layer.attn_q_bias))?;
-        let k = layer.attn_k.apply_linear_with_bias(&x_norm, cfg.hidden_size, kv_dim, std::sync::Arc::clone(&layer.attn_k_bias))?;
-        let v = layer.attn_v.apply_linear_with_bias(&x_norm, cfg.hidden_size, kv_dim, std::sync::Arc::clone(&layer.attn_v_bias))?;
+        let q = layer.attn_q.apply_linear_with_bias(
+            &x_norm,
+            cfg.hidden_size,
+            cfg.hidden_size,
+            std::sync::Arc::clone(&layer.attn_q_bias),
+        )?;
+        let k = layer.attn_k.apply_linear_with_bias(
+            &x_norm,
+            cfg.hidden_size,
+            kv_dim,
+            std::sync::Arc::clone(&layer.attn_k_bias),
+        )?;
+        let v = layer.attn_v.apply_linear_with_bias(
+            &x_norm,
+            cfg.hidden_size,
+            kv_dim,
+            std::sync::Arc::clone(&layer.attn_v_bias),
+        )?;
 
-        let n_kv_heads = if cfg.multi_query { 1 } else { cfg.num_attention_heads };
+        let n_kv_heads = if cfg.multi_query {
+            1
+        } else {
+            cfg.num_attention_heads
+        };
         let _ = (batch, seq);
         let q = q.split_heads(cfg.num_attention_heads, head_dim)?;
         let k = k.split_heads(n_kv_heads, head_dim)?;
@@ -262,20 +291,38 @@ impl BigCodeModel {
         let attn_v = attn.matmul(&v_full)?;
 
         let merged = attn_v.merge_heads()?;
-        let attn_out = layer.attn_o.apply_linear_with_bias(&merged, cfg.hidden_size, cfg.hidden_size, std::sync::Arc::clone(&layer.attn_o_bias))?;
+        let attn_out = layer.attn_o.apply_linear_with_bias(
+            &merged,
+            cfg.hidden_size,
+            cfg.hidden_size,
+            std::sync::Arc::clone(&layer.attn_o_bias),
+        )?;
 
         let h1 = x.add(&attn_out)?;
-        let h1_norm = h1.layer_norm_affine(std::sync::Arc::clone(&layer.post_attn_ln_gain), std::sync::Arc::clone(&layer.post_attn_ln_bias), cfg.layer_norm_epsilon)?;
+        let h1_norm = h1.layer_norm_affine(
+            std::sync::Arc::clone(&layer.post_attn_ln_gain),
+            std::sync::Arc::clone(&layer.post_attn_ln_bias),
+            cfg.layer_norm_epsilon,
+        )?;
 
         // GELU MLP.
-        let mid = layer.mlp_fc.apply_linear_with_bias(&h1_norm, cfg.hidden_size, cfg.intermediate_size, std::sync::Arc::clone(&layer.mlp_fc_bias))?;
+        let mid = layer.mlp_fc.apply_linear_with_bias(
+            &h1_norm,
+            cfg.hidden_size,
+            cfg.intermediate_size,
+            std::sync::Arc::clone(&layer.mlp_fc_bias),
+        )?;
         let mid_act = mid.gelu_erf();
-        let ffn_out = layer.mlp_proj.apply_linear_with_bias(&mid_act, cfg.intermediate_size, cfg.hidden_size, std::sync::Arc::clone(&layer.mlp_proj_bias))?;
+        let ffn_out = layer.mlp_proj.apply_linear_with_bias(
+            &mid_act,
+            cfg.intermediate_size,
+            cfg.hidden_size,
+            std::sync::Arc::clone(&layer.mlp_proj_bias),
+        )?;
 
         h1.add(&ffn_out)
     }
 }
-
 
 // ---- Safetensors loader ----------------------------------------------------
 
@@ -323,7 +370,10 @@ impl BigCodeWeights {
         if token_embedding.len() != cfg.vocab_size * h {
             crate::bail!(
                 "transformer.wte.weight: {} elts, expected {} ({}×{})",
-                token_embedding.len(), cfg.vocab_size * h, cfg.vocab_size, h,
+                token_embedding.len(),
+                cfg.vocab_size * h,
+                cfg.vocab_size,
+                h,
             );
         }
 
@@ -333,56 +383,47 @@ impl BigCodeWeights {
                 "transformer.wpe.weight: {} elts, expected {} ({}×{})",
                 position_embedding.len(),
                 cfg.max_position_embeddings * h,
-                cfg.max_position_embeddings, h,
+                cfg.max_position_embeddings,
+                h,
             );
         }
 
-        let mut layers: Vec<BigCodeLayerWeights> =
-            Vec::with_capacity(cfg.num_hidden_layers);
+        let mut layers: Vec<BigCodeLayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
         for li in 0..cfg.num_hidden_layers {
             let p = format!("transformer.h.{li}");
 
             // Input + post-attention LayerNorm gain + bias.
-            let input_ln_gain = load_tensor_as_f32(
-                st, &format!("{p}.ln_1.weight"),
-            )?;
-            let input_ln_bias = load_tensor_as_f32(
-                st, &format!("{p}.ln_1.bias"),
-            )?;
-            let post_attn_ln_gain = load_tensor_as_f32(
-                st, &format!("{p}.ln_2.weight"),
-            )?;
-            let post_attn_ln_bias = load_tensor_as_f32(
-                st, &format!("{p}.ln_2.bias"),
-            )?;
+            let input_ln_gain = load_tensor_as_f32(st, &format!("{p}.ln_1.weight"))?;
+            let input_ln_bias = load_tensor_as_f32(st, &format!("{p}.ln_1.bias"))?;
+            let post_attn_ln_gain = load_tensor_as_f32(st, &format!("{p}.ln_2.weight"))?;
+            let post_attn_ln_bias = load_tensor_as_f32(st, &format!("{p}.ln_2.bias"))?;
 
             // Fused QKV weight: HF stores `[hidden + 2*kv_dim, hidden]`
             // (out, in). Read as f32, split into three sub-matrices
             // along the output axis, and physically transpose each to
             // fuel's `[in, out]` layout before storing.
-            let fused = load_tensor_as_f32(
-                st, &format!("{p}.attn.c_attn.weight"),
-            )?;
+            let fused = load_tensor_as_f32(st, &format!("{p}.attn.c_attn.weight"))?;
             if fused.len() != qkv_out * h {
                 crate::bail!(
                     "{p}.attn.c_attn.weight: {} elts, expected {} ({}×{})",
-                    fused.len(), qkv_out * h, qkv_out, h,
+                    fused.len(),
+                    qkv_out * h,
+                    qkv_out,
+                    h,
                 );
             }
-            let (q_buf, k_buf, v_buf) =
-                split_fused_qkv_weight(&fused, h, kv, h);
+            let (q_buf, k_buf, v_buf) = split_fused_qkv_weight(&fused, h, kv, h);
             let attn_q = WeightStorage::F32(Arc::from(q_buf));
             let attn_k = WeightStorage::F32(Arc::from(k_buf));
             let attn_v = WeightStorage::F32(Arc::from(v_buf));
 
             // Fused QKV bias: `[hidden + 2*kv_dim]`. Split into Q / K / V.
-            let fused_bias = load_tensor_as_f32(
-                st, &format!("{p}.attn.c_attn.bias"),
-            )?;
+            let fused_bias = load_tensor_as_f32(st, &format!("{p}.attn.c_attn.bias"))?;
             if fused_bias.len() != qkv_out {
                 crate::bail!(
                     "{p}.attn.c_attn.bias: {} elts, expected {}",
-                    fused_bias.len(), qkv_out,
+                    fused_bias.len(),
+                    qkv_out,
                 );
             }
             let attn_q_bias: Arc<[f32]> = Arc::from(&fused_bias[..h]);
@@ -392,44 +433,50 @@ impl BigCodeWeights {
             // Attention output projection — standard `[out, in]` HF
             // layout, dtype preserved.
             let attn_o = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.attn.c_proj.weight"), h, h,
+                st,
+                &format!("{p}.attn.c_proj.weight"),
+                h,
+                h,
             )?;
-            let attn_o_bias_v = load_tensor_as_f32(
-                st, &format!("{p}.attn.c_proj.bias"),
-            )?;
+            let attn_o_bias_v = load_tensor_as_f32(st, &format!("{p}.attn.c_proj.bias"))?;
             if attn_o_bias_v.len() != h {
                 crate::bail!(
                     "{p}.attn.c_proj.bias: {} elts, expected {}",
-                    attn_o_bias_v.len(), h,
+                    attn_o_bias_v.len(),
+                    h,
                 );
             }
             let attn_o_bias: Arc<[f32]> = Arc::from(attn_o_bias_v);
 
             // MLP fc + projection.
             let mlp_fc = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.mlp.c_fc.weight"), i_dim, h,
+                st,
+                &format!("{p}.mlp.c_fc.weight"),
+                i_dim,
+                h,
             )?;
-            let mlp_fc_bias_v = load_tensor_as_f32(
-                st, &format!("{p}.mlp.c_fc.bias"),
-            )?;
+            let mlp_fc_bias_v = load_tensor_as_f32(st, &format!("{p}.mlp.c_fc.bias"))?;
             if mlp_fc_bias_v.len() != i_dim {
                 crate::bail!(
                     "{p}.mlp.c_fc.bias: {} elts, expected {}",
-                    mlp_fc_bias_v.len(), i_dim,
+                    mlp_fc_bias_v.len(),
+                    i_dim,
                 );
             }
             let mlp_fc_bias: Arc<[f32]> = Arc::from(mlp_fc_bias_v);
 
             let mlp_proj = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.mlp.c_proj.weight"), h, i_dim,
+                st,
+                &format!("{p}.mlp.c_proj.weight"),
+                h,
+                i_dim,
             )?;
-            let mlp_proj_bias_v = load_tensor_as_f32(
-                st, &format!("{p}.mlp.c_proj.bias"),
-            )?;
+            let mlp_proj_bias_v = load_tensor_as_f32(st, &format!("{p}.mlp.c_proj.bias"))?;
             if mlp_proj_bias_v.len() != h {
                 crate::bail!(
                     "{p}.mlp.c_proj.bias: {} elts, expected {}",
-                    mlp_proj_bias_v.len(), h,
+                    mlp_proj_bias_v.len(),
+                    h,
                 );
             }
             let mlp_proj_bias: Arc<[f32]> = Arc::from(mlp_proj_bias_v);
@@ -439,12 +486,18 @@ impl BigCodeWeights {
                 input_ln_bias: Arc::from(input_ln_bias),
                 post_attn_ln_gain: Arc::from(post_attn_ln_gain),
                 post_attn_ln_bias: Arc::from(post_attn_ln_bias),
-                attn_q, attn_q_bias,
-                attn_k, attn_k_bias,
-                attn_v, attn_v_bias,
-                attn_o, attn_o_bias,
-                mlp_fc, mlp_fc_bias,
-                mlp_proj, mlp_proj_bias,
+                attn_q,
+                attn_q_bias,
+                attn_k,
+                attn_k_bias,
+                attn_v,
+                attn_v_bias,
+                attn_o,
+                attn_o_bias,
+                mlp_fc,
+                mlp_fc_bias,
+                mlp_proj,
+                mlp_proj_bias,
             });
         }
 
@@ -455,21 +508,19 @@ impl BigCodeWeights {
         // (see `fuel_transformers::models::llm::bigcode`). Try to
         // load an explicit `lm_head.weight` first; if absent, fall
         // back to a transposed copy of the token embedding.
-        let output: WeightStorage = match load_transposed_matrix_preserve_dtype(
-            st, "lm_head.weight", cfg.vocab_size, h,
-        ) {
-            Ok(w) => w,
-            Err(_) => {
-                let mut transposed = vec![0.0_f32; h * cfg.vocab_size];
-                for i in 0..cfg.vocab_size {
-                    for j in 0..h {
-                        transposed[j * cfg.vocab_size + i] =
-                            token_embedding[i * h + j];
+        let output: WeightStorage =
+            match load_transposed_matrix_preserve_dtype(st, "lm_head.weight", cfg.vocab_size, h) {
+                Ok(w) => w,
+                Err(_) => {
+                    let mut transposed = vec![0.0_f32; h * cfg.vocab_size];
+                    for i in 0..cfg.vocab_size {
+                        for j in 0..h {
+                            transposed[j * cfg.vocab_size + i] = token_embedding[i * h + j];
+                        }
                     }
+                    WeightStorage::F32(Arc::from(transposed))
                 }
-                WeightStorage::F32(Arc::from(transposed))
-            }
-        };
+            };
 
         Ok(BigCodeWeights {
             token_embedding: Arc::from(token_embedding),
@@ -528,40 +579,66 @@ mod tests {
         let vec_of = |n: usize, next: &mut dyn FnMut() -> f32| -> Arc<[f32]> {
             Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
         };
-        let h = cfg.hidden_size; let i = cfg.intermediate_size;
+        let h = cfg.hidden_size;
+        let i = cfg.intermediate_size;
         let kv = cfg.kv_dim();
         let mut nb: Box<dyn FnMut() -> f32> = Box::new(next);
         let token_embedding = vec_of(cfg.vocab_size * h, &mut *nb);
         let position_embedding = vec_of(cfg.max_position_embeddings * h, &mut *nb);
-        let layers: Vec<BigCodeLayerWeights> = (0..cfg.num_hidden_layers).map(|_| BigCodeLayerWeights {
-            input_ln_gain:     Arc::from(vec![1.0_f32; h]),
-            input_ln_bias:     Arc::from(vec![0.0_f32; h]),
-            post_attn_ln_gain: Arc::from(vec![1.0_f32; h]),
-            post_attn_ln_bias: Arc::from(vec![0.0_f32; h]),
-            attn_q: WeightStorage::F32(vec_of(h * h, &mut *nb)), attn_q_bias: vec_of(h, &mut *nb),
-            attn_k: WeightStorage::F32(vec_of(h * kv, &mut *nb)), attn_k_bias: vec_of(kv, &mut *nb),
-            attn_v: WeightStorage::F32(vec_of(h * kv, &mut *nb)), attn_v_bias: vec_of(kv, &mut *nb),
-            attn_o: WeightStorage::F32(vec_of(h * h, &mut *nb)), attn_o_bias: vec_of(h, &mut *nb),
-            mlp_fc: WeightStorage::F32(vec_of(h * i, &mut *nb)), mlp_fc_bias: vec_of(i, &mut *nb),
-            mlp_proj: WeightStorage::F32(vec_of(i * h, &mut *nb)), mlp_proj_bias: vec_of(h, &mut *nb),
-        }).collect();
+        let layers: Vec<BigCodeLayerWeights> = (0..cfg.num_hidden_layers)
+            .map(|_| BigCodeLayerWeights {
+                input_ln_gain: Arc::from(vec![1.0_f32; h]),
+                input_ln_bias: Arc::from(vec![0.0_f32; h]),
+                post_attn_ln_gain: Arc::from(vec![1.0_f32; h]),
+                post_attn_ln_bias: Arc::from(vec![0.0_f32; h]),
+                attn_q: WeightStorage::F32(vec_of(h * h, &mut *nb)),
+                attn_q_bias: vec_of(h, &mut *nb),
+                attn_k: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
+                attn_k_bias: vec_of(kv, &mut *nb),
+                attn_v: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
+                attn_v_bias: vec_of(kv, &mut *nb),
+                attn_o: WeightStorage::F32(vec_of(h * h, &mut *nb)),
+                attn_o_bias: vec_of(h, &mut *nb),
+                mlp_fc: WeightStorage::F32(vec_of(h * i, &mut *nb)),
+                mlp_fc_bias: vec_of(i, &mut *nb),
+                mlp_proj: WeightStorage::F32(vec_of(i * h, &mut *nb)),
+                mlp_proj_bias: vec_of(h, &mut *nb),
+            })
+            .collect();
         let final_ln_gain = Arc::from(vec![1.0_f32; h]);
         let final_ln_bias = Arc::from(vec![0.0_f32; h]);
         let output = WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *nb));
-        BigCodeWeights { token_embedding, position_embedding, layers, final_ln_gain, final_ln_bias, output }
+        BigCodeWeights {
+            token_embedding,
+            position_embedding,
+            layers,
+            final_ln_gain,
+            final_ln_bias,
+            output,
+        }
     }
 
     #[test]
     fn forward_shape_and_finite_mqa() {
         let cfg = BigCodeConfig {
-            vocab_size: 32, max_position_embeddings: 64, num_hidden_layers: 2,
-            hidden_size: 16, num_attention_heads: 4, layer_norm_epsilon: 1e-5,
-            intermediate_size: 32, multi_query: true,
+            vocab_size: 32,
+            max_position_embeddings: 64,
+            num_hidden_layers: 2,
+            hidden_size: 16,
+            num_attention_heads: 4,
+            layer_norm_epsilon: 1e-5,
+            intermediate_size: 32,
+            multi_query: true,
         };
-        let model = BigCodeModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = BigCodeModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let logits = model.forward(&[1, 2, 3], 0).unwrap();
         assert_eq!(logits.shape().dims(), &[1, 3, cfg.vocab_size]);
-        for &v in &logits.realize_f32() { assert!(v.is_finite()); }
+        for &v in &logits.realize_f32() {
+            assert!(v.is_finite());
+        }
     }
 
     /// Different start_pos must produce different output (the
@@ -569,29 +646,57 @@ mod tests {
     #[test]
     fn different_start_pos_changes_output() {
         let cfg = BigCodeConfig {
-            vocab_size: 16, max_position_embeddings: 32, num_hidden_layers: 1,
-            hidden_size: 8, num_attention_heads: 2, layer_norm_epsilon: 1e-5,
-            intermediate_size: 16, multi_query: true,
+            vocab_size: 16,
+            max_position_embeddings: 32,
+            num_hidden_layers: 1,
+            hidden_size: 8,
+            num_attention_heads: 2,
+            layer_norm_epsilon: 1e-5,
+            intermediate_size: 16,
+            multi_query: true,
         };
         let weights = tiny_weights(&cfg);
-        let out_0 = BigCodeModel { config: cfg.clone(), weights: weights.clone() }
-            .forward(&[1, 2, 3], 0).unwrap().realize_f32();
-        let out_5 = BigCodeModel { config: cfg, weights }
-            .forward(&[1, 2, 3], 5).unwrap().realize_f32();
-        let any_diff = out_0.iter().zip(out_5.iter())
+        let out_0 = BigCodeModel {
+            config: cfg.clone(),
+            weights: weights.clone(),
+        }
+        .forward(&[1, 2, 3], 0)
+        .unwrap()
+        .realize_f32();
+        let out_5 = BigCodeModel {
+            config: cfg,
+            weights,
+        }
+        .forward(&[1, 2, 3], 5)
+        .unwrap()
+        .realize_f32();
+        let any_diff = out_0
+            .iter()
+            .zip(out_5.iter())
             .any(|(&a, &b)| (a - b).abs() > 1e-7);
-        assert!(any_diff, "different start_pos must change the learned-position output");
+        assert!(
+            any_diff,
+            "different start_pos must change the learned-position output"
+        );
     }
 
     /// `forward_hidden` returns post-LayerNorm hidden states.
     #[test]
     fn forward_hidden_shape_and_finite() {
         let cfg = BigCodeConfig {
-            vocab_size: 32, max_position_embeddings: 64, num_hidden_layers: 2,
-            hidden_size: 16, num_attention_heads: 4, layer_norm_epsilon: 1e-5,
-            intermediate_size: 32, multi_query: true,
+            vocab_size: 32,
+            max_position_embeddings: 64,
+            num_hidden_layers: 2,
+            hidden_size: 16,
+            num_attention_heads: 4,
+            layer_norm_epsilon: 1e-5,
+            intermediate_size: 32,
+            multi_query: true,
         };
-        let model = BigCodeModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = BigCodeModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
         let hidden = model.forward_hidden(&tokens, 0).unwrap();
         assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
@@ -602,36 +707,51 @@ mod tests {
 
     fn forward_embeds_test_cfg() -> BigCodeConfig {
         BigCodeConfig {
-            vocab_size: 32, max_position_embeddings: 64, num_hidden_layers: 2,
-            hidden_size: 16, num_attention_heads: 4, layer_norm_epsilon: 1e-5,
-            intermediate_size: 32, multi_query: true,
+            vocab_size: 32,
+            max_position_embeddings: 64,
+            num_hidden_layers: 2,
+            hidden_size: 16,
+            num_attention_heads: 4,
+            layer_norm_epsilon: 1e-5,
+            intermediate_size: 32,
+            multi_query: true,
         }
     }
 
     #[test]
     fn forward_embeds_matches_forward_after_token_lookup() {
         let cfg = forward_embeds_test_cfg();
-        let model = BigCodeModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = BigCodeModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
-        let max_diff = logits_ref.iter().zip(logits_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "BigCode forward vs forward_embeds must agree (max diff {max_diff})");
+        let max_diff = logits_ref
+            .iter()
+            .zip(logits_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "BigCode forward vs forward_embeds must agree (max diff {max_diff})"
+        );
     }
 
     #[test]
     fn forward_embeds_rejects_bad_shape() {
         let cfg = forward_embeds_test_cfg();
-        let model = BigCodeModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = BigCodeModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let bad = LazyTensor::from_f32(
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
-            Shape::from_dims(&[1, 3, cfg.hidden_size + 1]), &Device::cpu(),
+            Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
+            &Device::cpu(),
         );
         assert!(model.forward_embeds(&bad, 0).is_err());
     }
@@ -639,17 +759,26 @@ mod tests {
     #[test]
     fn forward_hidden_embeds_matches_forward_hidden() {
         let cfg = forward_embeds_test_cfg();
-        let model = BigCodeModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = BigCodeModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
-        let h_via_embeds = model.forward_hidden_embeds(&embeds, 0).unwrap().realize_f32();
-        let max_diff = h_ref.iter().zip(h_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "BigCode forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})");
+        let h_via_embeds = model
+            .forward_hidden_embeds(&embeds, 0)
+            .unwrap()
+            .realize_f32();
+        let max_diff = h_ref
+            .iter()
+            .zip(h_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "BigCode forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})"
+        );
     }
 }

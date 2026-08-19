@@ -9,7 +9,7 @@ extern crate intel_mkl_src;
 use clap::{Parser, Subcommand};
 
 use anyhow::{Error as E, Result};
-use fuel::lazy_llama2c::{load_llama2c_bin_path, Llama2cModel};
+use fuel::lazy_llama2c::{Llama2cModel, load_llama2c_bin_path};
 use std::io::Write;
 use tokenizers::Tokenizer;
 
@@ -221,7 +221,11 @@ fn run_inference(args: &InferenceCmd, common_args: &Args) -> Result<()> {
         let mut last_logits: Vec<f32> = logits_data[last_off..last_off + vocab_size].to_vec();
         if common_args.repeat_penalty != 1.0 {
             let start_at = tokens.len().saturating_sub(common_args.repeat_last_n);
-            apply_repeat_penalty(&mut last_logits, common_args.repeat_penalty, &tokens[start_at..]);
+            apply_repeat_penalty(
+                &mut last_logits,
+                common_args.repeat_penalty,
+                &tokens[start_at..],
+            );
         }
         let next_token = sample(
             &last_logits,
@@ -282,7 +286,10 @@ fn sample(
     }
     let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let inv_t = 1.0 / temperature.max(1e-6);
-    let mut probs: Vec<f32> = logits.iter().map(|&x| ((x - max_l) * inv_t).exp()).collect();
+    let mut probs: Vec<f32> = logits
+        .iter()
+        .map(|&x| ((x - max_l) * inv_t).exp())
+        .collect();
     let sum: f32 = probs.iter().sum();
     for p in &mut probs {
         *p /= sum.max(1e-30);
@@ -325,7 +332,9 @@ fn sample(
     } else {
         return 0;
     }
-    let mut state = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    let mut state = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
     state ^= state >> 33;
     state = state.wrapping_mul(0xff51_afd7_ed55_8ccd);
     state ^= state >> 33;

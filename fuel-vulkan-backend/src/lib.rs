@@ -16,12 +16,12 @@ mod recorder;
 pub mod residency;
 
 pub use byte_storage::VulkanStorageBytes;
-pub use mapped_meter::{
-    mapped_host_visible_bytes, mapped_host_visible_peak_bytes, reset_host_mapped_peak,
-    MappedByteMeter, MappedGuard,
-};
 pub use capture::CapturedRun;
 pub use dyn_impl::VulkanBackendDevice;
+pub use mapped_meter::{
+    MappedByteMeter, MappedGuard, mapped_host_visible_bytes, mapped_host_visible_peak_bytes,
+    reset_host_mapped_peak,
+};
 /// Step E A4b-2: an in-flight (submitted, not-yet-waited) Vulkan batch. Produced
 /// by [`VulkanBackend::submit_pending`]; the executor wraps it in its
 /// `Completion` handle and waits it (via [`VulkanBackend::wait_submitted`]) at a
@@ -30,7 +30,7 @@ pub use recorder::SubmittedBatch;
 
 use fuel_ir::{DType, Layout, Shape};
 use pipelines::Pipelines;
-use recorder::{OpStats, OpStatEntry, Recorder};
+use recorder::{OpStatEntry, OpStats, Recorder};
 use std::sync::Mutex;
 use std::time::Instant;
 use tracing::{debug_span, info_span};
@@ -40,7 +40,11 @@ use vulkane::safe::*;
 /// the output-buffer size and workgroup count in
 /// [`VulkanBackend::flash_attn_backward_bytes_impl`].
 #[derive(Copy, Clone)]
-enum FaBackwardDispatch { Q, K, V }
+enum FaBackwardDispatch {
+    Q,
+    K,
+    V,
+}
 
 /// The Arc-shared GPU buffer + its backing allocation. Separating this
 /// from `VulkanStorage` lets us cheaply clone a storage handle (just
@@ -66,11 +70,17 @@ pub struct VulkanBuffer {
     /// Keyed by byte_size → stack of buffers of that exact size. The
     /// BTreeMap enables O(log n) best-fit lookup (smallest size ≥
     /// requested) without a linear scan.
-    recycle_pool: Option<std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<u64, Vec<(Buffer, Allocation)>>>>>,
+    recycle_pool: Option<
+        std::sync::Arc<
+            std::sync::Mutex<std::collections::BTreeMap<u64, Vec<(Buffer, Allocation)>>>,
+        >,
+    >,
 }
 
 impl VulkanBuffer {
-    pub fn buffer(&self) -> &Buffer { self.buffer.as_ref().unwrap() }
+    pub fn buffer(&self) -> &Buffer {
+        self.buffer.as_ref().unwrap()
+    }
 }
 
 impl Drop for VulkanBuffer {
@@ -161,7 +171,9 @@ impl VulkanStorage {
     /// Access the backing for code that needs to distinguish tiers
     /// (the eviction path, future LRU tracker). External callers
     /// generally should use [`Self::tier`] + [`Self::buffer_opt`].
-    pub fn backing(&self) -> &StorageBacking { &self.backing }
+    pub fn backing(&self) -> &StorageBacking {
+        &self.backing
+    }
 
     /// Arc clone of the device buffer, for refcount-sharing zero-copy
     /// views. Returns None for host-backed storages (zero-copy doesn't
@@ -257,19 +269,13 @@ impl DownloadStaging {
         match self {
             DownloadStaging::Pooled(_, alloc) => {
                 let mapped = alloc.mapped_ptr().ok_or_else(|| {
-                    fuel_ir::Error::Msg(
-                        "download staging: pooled alloc not mapped".into(),
-                    )
+                    fuel_ir::Error::Msg("download staging: pooled alloc not mapped".into())
                 })?;
                 // Safety: the staging buffer (and its sub-allocation)
                 // was created with size >= out.len(), and the mapping
                 // stays valid while `alloc` lives.
                 unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        mapped as *const u8,
-                        out.as_mut_ptr(),
-                        out.len(),
-                    );
+                    std::ptr::copy_nonoverlapping(mapped as *const u8, out.as_mut_ptr(), out.len());
                 }
             }
             DownloadStaging::Dedicated(_, mem) => {
@@ -324,7 +330,9 @@ pub struct VulkanBackend {
     /// are reused by alloc_device before allocating fresh from VMA.
     /// BTreeMap<byte_size, stack-of-free-buffers-of-that-size>. Enables
     /// O(log n) best-fit lookup via `range(size..).next()`.
-    buffer_pool: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<u64, Vec<(Buffer, Allocation)>>>>,
+    buffer_pool: std::sync::Arc<
+        std::sync::Mutex<std::collections::BTreeMap<u64, Vec<(Buffer, Allocation)>>>,
+    >,
     /// Memory-type index used for D2H download staging: the first
     /// `HOST_VISIBLE | HOST_COHERENT | HOST_CACHED` type compatible
     /// with `TRANSFER_DST` staging buffers, probed at init. CPU reads
@@ -409,14 +417,16 @@ impl VulkanBackend {
         // `vkCreateInstance` HARD-FAILS (`VK_ERROR_INCOMPATIBLE_DRIVER`) on a
         // loader that tops out below the requested version — it does not
         // silently degrade — hence the one-step fallback helper.
-        let instance = crate::probe::new_instance_preferring_v1_3(|api_version| InstanceCreateInfo {
-            application_name: Some("fuel"),
-            application_version: ApiVersion::V1_0,
-            engine_name: Some("fuel-vulkan-backend"),
-            engine_version: ApiVersion::V1_0,
-            api_version,
-            ..Default::default()
-        }).map_err(|e| fuel_ir::Error::Msg(format!("{e}")))?;
+        let instance =
+            crate::probe::new_instance_preferring_v1_3(|api_version| InstanceCreateInfo {
+                application_name: Some("fuel"),
+                application_version: ApiVersion::V1_0,
+                engine_name: Some("fuel-vulkan-backend"),
+                engine_version: ApiVersion::V1_0,
+                api_version,
+                ..Default::default()
+            })
+            .map_err(|e| fuel_ir::Error::Msg(format!("{e}")))?;
 
         let physicals = instance.enumerate_physical_devices().map_err(vk_err)?;
         if physicals.is_empty() {
@@ -425,10 +435,9 @@ impl VulkanBackend {
 
         let (gpu_id, physical) = match selection {
             DeviceSelection::Index(idx) => {
-                let p = physicals.into_iter().nth(idx)
-                    .ok_or_else(|| fuel_ir::Error::Msg(
-                        format!("Vulkan device index {idx} out of range"),
-                    ))?;
+                let p = physicals.into_iter().nth(idx).ok_or_else(|| {
+                    fuel_ir::Error::Msg(format!("Vulkan device index {idx} out of range"))
+                })?;
                 (idx, p)
             }
             DeviceSelection::PreferDiscrete => {
@@ -455,13 +464,18 @@ impl VulkanBackend {
             }
             DeviceSelection::ByName(ref needle) => {
                 let needle_lower = needle.to_lowercase();
-                physicals.into_iter().enumerate()
+                physicals
+                    .into_iter()
+                    .enumerate()
                     .find(|(_, p)| {
-                        p.properties().device_name().to_lowercase().contains(&needle_lower)
+                        p.properties()
+                            .device_name()
+                            .to_lowercase()
+                            .contains(&needle_lower)
                     })
-                    .ok_or_else(|| fuel_ir::Error::Msg(
-                        format!("no Vulkan device matching {needle:?}"),
-                    ))?
+                    .ok_or_else(|| {
+                        fuel_ir::Error::Msg(format!("no Vulkan device matching {needle:?}"))
+                    })?
             }
         };
 
@@ -482,7 +496,8 @@ impl VulkanBackend {
         // tensor-core-class matmul on hardware that supports it
         // (NVIDIA Volta+, AMD RDNA 3+).
         let ext_props = physical.enumerate_extension_properties().map_err(vk_err)?;
-        let has_coop_matrix = ext_props.iter()
+        let has_coop_matrix = ext_props
+            .iter()
             .any(|e| e.name() == "VK_KHR_cooperative_matrix");
 
         // Enable the optional float-precision features we use in our
@@ -514,12 +529,14 @@ impl VulkanBackend {
             None
         };
 
-        let device = physical.create_device(DeviceCreateInfo {
-            queue_create_infos: &[QueueCreateInfo::single(queue_family)],
-            enabled_features: features.as_ref(),
-            enabled_extensions: extensions.as_ref(),
-            ..Default::default()
-        }).map_err(vk_err)?;
+        let device = physical
+            .create_device(DeviceCreateInfo {
+                queue_create_infos: &[QueueCreateInfo::single(queue_family)],
+                enabled_features: features.as_ref(),
+                enabled_extensions: extensions.as_ref(),
+                ..Default::default()
+            })
+            .map_err(vk_err)?;
 
         // Query supported cooperative-matrix tile shapes. If the
         // extension isn't enabled, the query returns empty.
@@ -561,8 +578,13 @@ impl VulkanBackend {
                 );
                 eprintln!(
                     "  coop[{i}] M={} N={} K={} A={:?} B={:?} C={:?} R={:?} sat={}",
-                    s.m_size, s.n_size, s.k_size,
-                    s.a_type, s.b_type, s.c_type, s.result_type,
+                    s.m_size,
+                    s.n_size,
+                    s.k_size,
+                    s.a_type,
+                    s.b_type,
+                    s.c_type,
+                    s.result_type,
                     s.saturating_accumulation,
                 );
             }
@@ -581,7 +603,9 @@ impl VulkanBackend {
             Allocator::new_with_options(
                 &device,
                 &physical,
-                AllocatorOptions { buffer_device_address: true },
+                AllocatorOptions {
+                    buffer_device_address: true,
+                },
             )
             .map_err(vk_err)?,
         );
@@ -600,7 +624,10 @@ impl VulkanBackend {
         // selection, which is the right choice for H2D writes.
         let download_mem_type = Buffer::new(
             &device,
-            BufferCreateInfo { size: 4, usage: BufferUsage::TRANSFER_DST },
+            BufferCreateInfo {
+                size: 4,
+                usage: BufferUsage::TRANSFER_DST,
+            },
         )
         .ok()
         .and_then(|probe| {
@@ -629,7 +656,8 @@ impl VulkanBackend {
             );
         }
 
-        let buffer_pool = std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
+        let buffer_pool =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
         Ok(Self {
             device,
             physical,
@@ -660,25 +688,37 @@ impl VulkanBackend {
     /// List all available Vulkan physical devices.
     pub fn list_devices() -> fuel_ir::Result<Vec<(usize, String, String)>> {
         // V1_3 — see `with_selection` for why, and why the fallback exists.
-        let instance = crate::probe::new_instance_preferring_v1_3(|api_version| InstanceCreateInfo {
-            application_name: Some("fuel"),
-            application_version: ApiVersion::V1_0,
-            engine_name: Some("fuel-vulkan-backend"),
-            engine_version: ApiVersion::V1_0,
-            api_version,
-            ..Default::default()
-        }).map_err(|e| fuel_ir::Error::Msg(format!("{e}")))?;
+        let instance =
+            crate::probe::new_instance_preferring_v1_3(|api_version| InstanceCreateInfo {
+                application_name: Some("fuel"),
+                application_version: ApiVersion::V1_0,
+                engine_name: Some("fuel-vulkan-backend"),
+                engine_version: ApiVersion::V1_0,
+                api_version,
+                ..Default::default()
+            })
+            .map_err(|e| fuel_ir::Error::Msg(format!("{e}")))?;
         let physicals = instance.enumerate_physical_devices().map_err(vk_err)?;
-        Ok(physicals.iter().enumerate().map(|(i, p)| {
-            let props = p.properties();
-            let dt = props.device_type();
-            let type_str = if dt == PhysicalDeviceType::DISCRETE_GPU { "discrete" }
-                else if dt == PhysicalDeviceType::INTEGRATED_GPU { "integrated" }
-                else if dt == PhysicalDeviceType::VIRTUAL_GPU { "virtual" }
-                else if dt == PhysicalDeviceType::CPU { "cpu" }
-                else { "other" };
-            (i, props.device_name(), type_str.to_string())
-        }).collect())
+        Ok(physicals
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let props = p.properties();
+                let dt = props.device_type();
+                let type_str = if dt == PhysicalDeviceType::DISCRETE_GPU {
+                    "discrete"
+                } else if dt == PhysicalDeviceType::INTEGRATED_GPU {
+                    "integrated"
+                } else if dt == PhysicalDeviceType::VIRTUAL_GPU {
+                    "virtual"
+                } else if dt == PhysicalDeviceType::CPU {
+                    "cpu"
+                } else {
+                    "other"
+                };
+                (i, props.device_name(), type_str.to_string())
+            })
+            .collect())
     }
 
     // -- helpers --
@@ -724,22 +764,24 @@ impl VulkanBackend {
     /// `byte_offset + len_bytes` must be ≤ `src.len_bytes()`.
     pub fn slot_copy_to_new_handle(
         self: &std::sync::Arc<Self>,
-        src:          &VulkanStorageBytes,
-        byte_offset:  usize,
-        len_bytes:    usize,
+        src: &VulkanStorageBytes,
+        byte_offset: usize,
+        len_bytes: usize,
     ) -> fuel_ir::Result<VulkanStorageBytes> {
         let end = byte_offset.checked_add(len_bytes).ok_or_else(|| {
             fuel_ir::Error::Msg(format!(
                 "slot_copy_to_new_handle: byte_offset {byte_offset} \
                  + len_bytes {len_bytes} overflows",
-            )).bt()
+            ))
+            .bt()
         })?;
         if end > src.len_bytes() {
             return Err(fuel_ir::Error::Msg(format!(
                 "slot_copy_to_new_handle: slot byte range \
                  [{byte_offset}..{end}) exceeds source byte length {}",
                 src.len_bytes(),
-            )).bt());
+            ))
+            .bt());
         }
         // Fast path for empty slots — no command-buffer round-trip.
         if len_bytes == 0 {
@@ -750,8 +792,10 @@ impl VulkanBackend {
         let src_buf = src.buffer_opt().ok_or_else(|| {
             fuel_ir::Error::Msg(
                 "slot_copy_to_new_handle: source storage is host-evicted; \
-                 fault back before extracting a slot".into(),
-            ).bt()
+                 fault back before extracting a slot"
+                    .into(),
+            )
+            .bt()
         })?;
         let size = len_bytes as u64;
         let (dst_buf, dst_alloc) = self.take_or_alloc_device_buffer(size)?;
@@ -771,9 +815,9 @@ impl VulkanBackend {
             .map_err(vk_err)?;
         Ok(VulkanStorageBytes::from_device_with_backend(
             std::sync::Arc::new(VulkanBuffer {
-                buffer:       Some(dst_buf),
-                allocation:   Some(dst_alloc),
-                byte_size:    size,
+                buffer: Some(dst_buf),
+                allocation: Some(dst_alloc),
+                byte_size: size,
                 recycle_pool: Some(self.buffer_pool.clone()),
             }),
             len_bytes,
@@ -796,19 +840,18 @@ impl VulkanBackend {
     /// [`Self::slot_copy_to_new_handle`] is enough.
     pub fn extract_strided_to_new_handle(
         self: &std::sync::Arc<Self>,
-        src:             &VulkanStorageBytes,
-        outer_count:     usize,
-        stride_bytes:    usize,
+        src: &VulkanStorageBytes,
+        outer_count: usize,
+        stride_bytes: usize,
         offset_in_outer: usize,
         chunk_row_bytes: usize,
     ) -> fuel_ir::Result<VulkanStorageBytes> {
-        let dest_total = outer_count
-            .checked_mul(chunk_row_bytes)
-            .ok_or_else(|| {
-                fuel_ir::Error::Msg(
-                    "extract_strided_to_new_handle: outer_count * chunk_row_bytes overflows".into(),
-                ).bt()
-            })?;
+        let dest_total = outer_count.checked_mul(chunk_row_bytes).ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "extract_strided_to_new_handle: outer_count * chunk_row_bytes overflows".into(),
+            )
+            .bt()
+        })?;
         if dest_total == 0 {
             let mut s = self.alloc_bytes(0)?;
             s.backend = Some(std::sync::Arc::clone(self));
@@ -820,22 +863,24 @@ impl VulkanBackend {
                 .and_then(|x| x.checked_add(offset_in_outer))
                 .and_then(|x| x.checked_add(chunk_row_bytes))
                 .ok_or_else(|| {
-                    fuel_ir::Error::Msg(
-                        "extract_strided_to_new_handle: tile span overflow".into(),
-                    ).bt()
+                    fuel_ir::Error::Msg("extract_strided_to_new_handle: tile span overflow".into())
+                        .bt()
                 })?;
             if last_tile_end > src.len_bytes() {
                 return Err(fuel_ir::Error::Msg(format!(
                     "extract_strided_to_new_handle: last tile end {last_tile_end} > src bytes {}",
                     src.len_bytes(),
-                )).bt());
+                ))
+                .bt());
             }
         }
         let src_buf = src.buffer_opt().ok_or_else(|| {
             fuel_ir::Error::Msg(
                 "extract_strided_to_new_handle: source storage is host-evicted; \
-                 fault back before extracting".into(),
-            ).bt()
+                 fault back before extracting"
+                    .into(),
+            )
+            .bt()
         })?;
         let size = dest_total as u64;
         let (dst_buf, dst_alloc) = self.take_or_alloc_device_buffer(size)?;
@@ -843,7 +888,7 @@ impl VulkanBackend {
             .map(|t| BufferCopy {
                 src_offset: (t * stride_bytes + offset_in_outer) as u64,
                 dst_offset: (t * chunk_row_bytes) as u64,
-                size:       chunk_row_bytes as u64,
+                size: chunk_row_bytes as u64,
             })
             .collect();
         self.queue
@@ -854,9 +899,9 @@ impl VulkanBackend {
             .map_err(vk_err)?;
         Ok(VulkanStorageBytes::from_device_with_backend(
             std::sync::Arc::new(VulkanBuffer {
-                buffer:       Some(dst_buf),
-                allocation:   Some(dst_alloc),
-                byte_size:    size,
+                buffer: Some(dst_buf),
+                allocation: Some(dst_alloc),
+                byte_size: size,
                 recycle_pool: Some(self.buffer_pool.clone()),
             }),
             dest_total,
@@ -921,16 +966,11 @@ impl VulkanBackend {
         // upload cannot ratchet the counter (the post-mortem's leak mode).
         let _staging_map = MappedGuard::new(byte_size.max(1));
         if !src.is_empty() {
-            let mapped = staging_alloc
-                .mapped_ptr()
-                .ok_or_else(|| fuel_ir::Error::Msg(
-                    "upload_bytes: staging alloc not mapped".into()))?;
+            let mapped = staging_alloc.mapped_ptr().ok_or_else(|| {
+                fuel_ir::Error::Msg("upload_bytes: staging alloc not mapped".into())
+            })?;
             unsafe {
-                std::ptr::copy_nonoverlapping(
-                    src.as_ptr(),
-                    mapped as *mut u8,
-                    src.len(),
-                );
+                std::ptr::copy_nonoverlapping(src.as_ptr(), mapped as *mut u8, src.len());
             }
         }
         // Destination device buffer via the shared recycler choke point
@@ -942,7 +982,11 @@ impl VulkanBackend {
                 cmd.copy_buffer(
                     &staging_buf,
                     &gpu_buf,
-                    &[BufferCopy { src_offset: 0, dst_offset: 0, size: byte_size.max(1) }],
+                    &[BufferCopy {
+                        src_offset: 0,
+                        dst_offset: 0,
+                        size: byte_size.max(1),
+                    }],
                 );
                 Ok(())
             })
@@ -974,11 +1018,7 @@ impl VulkanBackend {
     /// `src.len()` must equal `storage.len_bytes()` — sized by the
     /// executor's Op::Copy arm to the destination's byte count.
     /// Empty buffers short-circuit.
-    pub fn write_bytes(
-        &self,
-        storage: &VulkanStorageBytes,
-        src: &[u8],
-    ) -> fuel_ir::Result<()> {
+    pub fn write_bytes(&self, storage: &VulkanStorageBytes, src: &[u8]) -> fuel_ir::Result<()> {
         let byte_size = storage.len_bytes() as u64;
         if byte_size == 0 {
             return Ok(());
@@ -987,14 +1027,17 @@ impl VulkanBackend {
             return Err(fuel_ir::Error::Msg(format!(
                 "VulkanBackend::write_bytes: src.len() ({}) != \
                  storage.len_bytes ({})",
-                src.len(), byte_size,
-            )).bt());
+                src.len(),
+                byte_size,
+            ))
+            .bt());
         }
         let _span = debug_span!("vk_write_bytes", bytes = byte_size).entered();
         let buffer = storage.buffer_opt().ok_or_else(|| {
             fuel_ir::Error::Msg(
                 "write_bytes: storage is host-evicted; fault back via \
-                 residency machinery before writing".into(),
+                 residency machinery before writing"
+                    .into(),
             )
         })?;
         let (staging_buf, staging_alloc) = self
@@ -1016,21 +1059,20 @@ impl VulkanBackend {
         let _staging_map = MappedGuard::new(byte_size);
         let mapped = staging_alloc
             .mapped_ptr()
-            .ok_or_else(|| fuel_ir::Error::Msg(
-                "write_bytes: staging alloc not mapped".into()))?;
+            .ok_or_else(|| fuel_ir::Error::Msg("write_bytes: staging alloc not mapped".into()))?;
         unsafe {
-            std::ptr::copy_nonoverlapping(
-                src.as_ptr(),
-                mapped as *mut u8,
-                src.len(),
-            );
+            std::ptr::copy_nonoverlapping(src.as_ptr(), mapped as *mut u8, src.len());
         }
         self.queue
             .one_shot(&self.device, self.queue_family, |cmd| {
                 cmd.copy_buffer(
                     &staging_buf,
                     buffer,
-                    &[BufferCopy { src_offset: 0, dst_offset: 0, size: byte_size }],
+                    &[BufferCopy {
+                        src_offset: 0,
+                        dst_offset: 0,
+                        size: byte_size,
+                    }],
                 );
                 Ok(())
             })
@@ -1054,10 +1096,7 @@ impl VulkanBackend {
     ///
     /// `vkCmdFillBuffer` takes a 32-bit data word; we pass `0` so
     /// every byte ends up zero regardless of dtype.
-    pub fn fill_bytes_zero(
-        &self,
-        storage: &VulkanStorageBytes,
-    ) -> fuel_ir::Result<()> {
+    pub fn fill_bytes_zero(&self, storage: &VulkanStorageBytes) -> fuel_ir::Result<()> {
         let byte_size = storage.len_bytes() as u64;
         if byte_size == 0 {
             return Ok(());
@@ -1066,7 +1105,8 @@ impl VulkanBackend {
         let buffer = storage.buffer_opt().ok_or_else(|| {
             fuel_ir::Error::Msg(
                 "fill_bytes_zero: storage is host-evicted; \
-                 fault back via residency machinery before filling".into(),
+                 fault back via residency machinery before filling"
+                    .into(),
             )
         })?;
         self.flush_pending()?;
@@ -1094,45 +1134,58 @@ impl VulkanBackend {
     /// that is freed at end of call. When the device exposes no
     /// coherent+cached host type, falls back to the allocator's
     /// default `HostVisible` selection (correct, just slow).
-    fn create_download_staging(
-        &self,
-        byte_size: u64,
-    ) -> fuel_ir::Result<DownloadStaging> {
+    fn create_download_staging(&self, byte_size: u64) -> fuel_ir::Result<DownloadStaging> {
         let size = byte_size.max(1);
         if self.download_mem_type.is_some() {
             if size > DOWNLOAD_POOL_MAX_BYTES {
                 let (buf, mem) = Buffer::new_bound(
                     &self.device,
                     &self.physical,
-                    BufferCreateInfo { size, usage: BufferUsage::TRANSFER_DST },
+                    BufferCreateInfo {
+                        size,
+                        usage: BufferUsage::TRANSFER_DST,
+                    },
                     MemoryPropertyFlags::HOST_VISIBLE
                         | MemoryPropertyFlags::HOST_COHERENT
                         | MemoryPropertyFlags::HOST_CACHED,
-                ).map_err(vk_err)?;
+                )
+                .map_err(vk_err)?;
                 return Ok(DownloadStaging::Dedicated(buf, mem));
             }
             if let Some(pool) = self.download_pool {
-                let (buf, alloc) = self.allocator.create_buffer(
-                    BufferCreateInfo { size, usage: BufferUsage::TRANSFER_DST },
-                    AllocationCreateInfo {
-                        // usage is ignored when a pool is given — the
-                        // pool's memory type already decided it.
-                        mapped: true,
-                        pool: Some(pool),
-                        ..Default::default()
-                    },
-                ).map_err(vk_err)?;
+                let (buf, alloc) = self
+                    .allocator
+                    .create_buffer(
+                        BufferCreateInfo {
+                            size,
+                            usage: BufferUsage::TRANSFER_DST,
+                        },
+                        AllocationCreateInfo {
+                            // usage is ignored when a pool is given — the
+                            // pool's memory type already decided it.
+                            mapped: true,
+                            pool: Some(pool),
+                            ..Default::default()
+                        },
+                    )
+                    .map_err(vk_err)?;
                 return Ok(DownloadStaging::Pooled(buf, alloc));
             }
         }
-        let (buf, alloc) = self.allocator.create_buffer(
-            BufferCreateInfo { size, usage: BufferUsage::TRANSFER_DST },
-            AllocationCreateInfo {
-                usage: AllocationUsage::HostVisible,
-                mapped: true,
-                ..Default::default()
-            },
-        ).map_err(vk_err)?;
+        let (buf, alloc) = self
+            .allocator
+            .create_buffer(
+                BufferCreateInfo {
+                    size,
+                    usage: BufferUsage::TRANSFER_DST,
+                },
+                AllocationCreateInfo {
+                    usage: AllocationUsage::HostVisible,
+                    mapped: true,
+                    ..Default::default()
+                },
+            )
+            .map_err(vk_err)?;
         Ok(DownloadStaging::Pooled(buf, alloc))
     }
 
@@ -1142,16 +1195,14 @@ impl VulkanBackend {
     /// and reads through the staging buffer's mapped pointer.
     /// Returns an error if the storage is currently host-evicted
     /// (caller must fault-back first via the residency machinery).
-    pub fn download_bytes(
-        &self,
-        storage: &VulkanStorageBytes,
-    ) -> fuel_ir::Result<Vec<u8>> {
+    pub fn download_bytes(&self, storage: &VulkanStorageBytes) -> fuel_ir::Result<Vec<u8>> {
         let byte_size = storage.len_bytes() as u64;
         let _span = info_span!("vk_download_bytes", bytes = byte_size).entered();
         let buffer = storage.buffer_opt().ok_or_else(|| {
             fuel_ir::Error::Msg(
                 "download_bytes: storage is host-evicted; \
-                 fault back via residency machinery before reading".into(),
+                 fault back via residency machinery before reading"
+                    .into(),
             )
         })?;
         self.force_flush()?;
@@ -1165,7 +1216,11 @@ impl VulkanBackend {
                 cmd.copy_buffer(
                     buffer,
                     staging.buffer(),
-                    &[BufferCopy { src_offset: 0, dst_offset: 0, size: byte_size.max(1) }],
+                    &[BufferCopy {
+                        src_offset: 0,
+                        dst_offset: 0,
+                        size: byte_size.max(1),
+                    }],
                 );
                 Ok(())
             })
@@ -1177,7 +1232,9 @@ impl VulkanBackend {
     }
 
     pub fn upload_slice<T: Copy + 'static>(
-        &self, data: &[T], dtype: DType,
+        &self,
+        data: &[T],
+        dtype: DType,
     ) -> fuel_ir::Result<VulkanStorage> {
         let byte_size = (data.len() * std::mem::size_of::<T>()) as u64;
         let _span = debug_span!("vk_upload_slice", bytes = byte_size).entered();
@@ -1203,8 +1260,7 @@ impl VulkanBackend {
         // Write the bytes into the staging buffer via its mapped pointer.
         let mapped = staging_alloc
             .mapped_ptr()
-            .ok_or_else(|| fuel_ir::Error::Msg(
-                "upload_slice: staging alloc not mapped".into()))?;
+            .ok_or_else(|| fuel_ir::Error::Msg("upload_slice: staging alloc not mapped".into()))?;
         unsafe {
             std::ptr::copy_nonoverlapping(
                 data.as_ptr() as *const u8,
@@ -1223,7 +1279,11 @@ impl VulkanBackend {
                 cmd.copy_buffer(
                     &staging_buf,
                     &gpu_buf,
-                    &[BufferCopy { src_offset: 0, dst_offset: 0, size: byte_size.max(1) }],
+                    &[BufferCopy {
+                        src_offset: 0,
+                        dst_offset: 0,
+                        size: byte_size.max(1),
+                    }],
                 );
                 Ok(())
             })
@@ -1247,7 +1307,8 @@ impl VulkanBackend {
     }
 
     fn download_slice<T: Copy + Default + 'static>(
-        &self, storage: &VulkanStorage,
+        &self,
+        storage: &VulkanStorage,
     ) -> fuel_ir::Result<Vec<T>> {
         let byte_size = storage.byte_size();
         let n = storage.elem_count;
@@ -1265,21 +1326,28 @@ impl VulkanBackend {
         };
         {
             let _s = info_span!("vk_download_copy").entered();
-            self.queue.one_shot(&self.device, self.queue_family, |cmd| {
-                cmd.copy_buffer(storage.buffer(), staging.buffer(), &[BufferCopy {
-                    src_offset: 0, dst_offset: 0, size: byte_size,
-                }]);
-                Ok(())
-            }).map_err(vk_err)?;
+            self.queue
+                .one_shot(&self.device, self.queue_family, |cmd| {
+                    cmd.copy_buffer(
+                        storage.buffer(),
+                        staging.buffer(),
+                        &[BufferCopy {
+                            src_offset: 0,
+                            dst_offset: 0,
+                            size: byte_size,
+                        }],
+                    );
+                    Ok(())
+                })
+                .map_err(vk_err)?;
         }
         let _s = debug_span!("vk_download_memcpy").entered();
         let mut out = vec![T::default(); n];
         let out_byte_len = n * std::mem::size_of::<T>();
         // Safety: viewing the freshly-initialized Vec<T> as bytes for
         // the staging read; T is Copy and the byte length matches.
-        let out_bytes = unsafe {
-            std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, out_byte_len)
-        };
+        let out_bytes =
+            unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, out_byte_len) };
         staging.read_into(out_bytes)?;
         drop(staging);
         Ok(out)
@@ -1331,7 +1399,9 @@ impl VulkanBackend {
             let picked = found_size.and_then(|k| {
                 let vec = pool.get_mut(&k).unwrap();
                 let item = vec.pop();
-                if vec.is_empty() { pool.remove(&k); }
+                if vec.is_empty() {
+                    pool.remove(&k);
+                }
                 item
             });
             // 1. Bucket-count cap: drop smallest sizes until ≤ MAX_BUCKETS.
@@ -1351,8 +1421,7 @@ impl VulkanBackend {
             }
             // 3. Total-bytes backstop: if pool > MAX_POOL_BYTES, evict
             //    smallest-size buckets first (they're typically stale).
-            let mut total_bytes: u64 = pool.iter()
-                .map(|(&sz, v)| sz * v.len() as u64).sum();
+            let mut total_bytes: u64 = pool.iter().map(|(&sz, v)| sz * v.len() as u64).sum();
             while total_bytes > MAX_POOL_BYTES {
                 let smallest = match pool.keys().next() {
                     Some(&k) => k,
@@ -1366,19 +1435,21 @@ impl VulkanBackend {
         if let Some((b, a)) = recycled {
             Ok((b, a))
         } else {
-            self.allocator.create_buffer(
-                BufferCreateInfo {
-                    size,
-                    usage: BufferUsage::STORAGE_BUFFER
-                        | BufferUsage::TRANSFER_SRC
-                        | BufferUsage::TRANSFER_DST
-                        | BufferUsage::SHADER_DEVICE_ADDRESS,
-                },
-                AllocationCreateInfo {
-                    usage: AllocationUsage::DeviceLocal,
-                    ..Default::default()
-                },
-            ).map_err(vk_err)
+            self.allocator
+                .create_buffer(
+                    BufferCreateInfo {
+                        size,
+                        usage: BufferUsage::STORAGE_BUFFER
+                            | BufferUsage::TRANSFER_SRC
+                            | BufferUsage::TRANSFER_DST
+                            | BufferUsage::SHADER_DEVICE_ADDRESS,
+                    },
+                    AllocationCreateInfo {
+                        usage: AllocationUsage::DeviceLocal,
+                        ..Default::default()
+                    },
+                )
+                .map_err(vk_err)
         }
     }
 
@@ -1396,7 +1467,12 @@ impl VulkanBackend {
             .sum()
     }
 
-    fn alloc_device(&self, byte_size: u64, n: usize, dtype: DType) -> fuel_ir::Result<VulkanStorage> {
+    fn alloc_device(
+        &self,
+        byte_size: u64,
+        n: usize,
+        dtype: DType,
+    ) -> fuel_ir::Result<VulkanStorage> {
         let size = byte_size.max(1);
         let (buffer, allocation) = self.take_or_alloc_device_buffer(size)?;
         Ok(VulkanStorage {
@@ -1417,21 +1493,30 @@ impl VulkanBackend {
     /// tables). Sub-allocates from the shared allocator's host-visible
     /// pool so we don't hit `maxMemoryAllocationCount` even when
     /// issuing thousands of these per forward.
-    fn upload_slice_raw<T: Copy + 'static>(&self, data: &[T]) -> fuel_ir::Result<(Buffer, Allocation)> {
+    fn upload_slice_raw<T: Copy + 'static>(
+        &self,
+        data: &[T],
+    ) -> fuel_ir::Result<(Buffer, Allocation)> {
         let byte_size = (data.len() * std::mem::size_of::<T>()) as u64;
         let _span = debug_span!("vk_upload_slice_raw", bytes = byte_size).entered();
         let size = byte_size.max(16);
-        let (buf, alloc) = self.allocator.create_buffer(
-            BufferCreateInfo { size, usage: BufferUsage::STORAGE_BUFFER },
-            AllocationCreateInfo {
-                usage: AllocationUsage::HostVisible,
-                mapped: true,
-                ..Default::default()
-            },
-        ).map_err(vk_err)?;
-        let mapped = alloc.mapped_ptr()
-            .ok_or_else(|| fuel_ir::Error::Msg(
-                "upload_slice_raw: alloc not mapped".into()))?;
+        let (buf, alloc) = self
+            .allocator
+            .create_buffer(
+                BufferCreateInfo {
+                    size,
+                    usage: BufferUsage::STORAGE_BUFFER,
+                },
+                AllocationCreateInfo {
+                    usage: AllocationUsage::HostVisible,
+                    mapped: true,
+                    ..Default::default()
+                },
+            )
+            .map_err(vk_err)?;
+        let mapped = alloc
+            .mapped_ptr()
+            .ok_or_else(|| fuel_ir::Error::Msg("upload_slice_raw: alloc not mapped".into()))?;
         unsafe {
             std::ptr::copy_nonoverlapping(
                 data.as_ptr() as *const u8,
@@ -1444,27 +1529,32 @@ impl VulkanBackend {
 
     /// Upload a small params struct as a uniform buffer. Sub-allocated
     /// from the shared allocator's host-visible pool.
-    fn upload_params<T: Copy + 'static>(&self, params: &T) -> fuel_ir::Result<(Buffer, Allocation)> {
+    fn upload_params<T: Copy + 'static>(
+        &self,
+        params: &T,
+    ) -> fuel_ir::Result<(Buffer, Allocation)> {
         let _span = debug_span!("vk_upload_params", bytes = std::mem::size_of::<T>()).entered();
         let bytes = unsafe { as_bytes(params) };
         let size = (bytes.len().max(16)) as u64;
-        let (buf, alloc) = self.allocator.create_buffer(
-            BufferCreateInfo { size, usage: BufferUsage::UNIFORM_BUFFER },
-            AllocationCreateInfo {
-                usage: AllocationUsage::HostVisible,
-                mapped: true,
-                ..Default::default()
-            },
-        ).map_err(vk_err)?;
-        let mapped = alloc.mapped_ptr()
-            .ok_or_else(|| fuel_ir::Error::Msg(
-                "upload_params: alloc not mapped".into()))?;
+        let (buf, alloc) = self
+            .allocator
+            .create_buffer(
+                BufferCreateInfo {
+                    size,
+                    usage: BufferUsage::UNIFORM_BUFFER,
+                },
+                AllocationCreateInfo {
+                    usage: AllocationUsage::HostVisible,
+                    mapped: true,
+                    ..Default::default()
+                },
+            )
+            .map_err(vk_err)?;
+        let mapped = alloc
+            .mapped_ptr()
+            .ok_or_else(|| fuel_ir::Error::Msg("upload_params: alloc not mapped".into()))?;
         unsafe {
-            std::ptr::copy_nonoverlapping(
-                bytes.as_ptr(),
-                mapped as *mut u8,
-                bytes.len(),
-            );
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), mapped as *mut u8, bytes.len());
         }
         Ok((buf, alloc))
     }
@@ -1510,7 +1600,12 @@ impl VulkanBackend {
         let t0 = Instant::now();
 
         // Auto-flush if the batch is getting large (TDR safety).
-        if self.recorder.lock().expect("recorder poisoned").should_flush() {
+        if self
+            .recorder
+            .lock()
+            .expect("recorder poisoned")
+            .should_flush()
+        {
             self.force_flush()?;
         }
 
@@ -1545,7 +1640,9 @@ impl VulkanBackend {
     /// handle it pulls from cache (`find_vulkan_backend_in_cache`).
     pub fn force_flush(&self) -> fuel_ir::Result<()> {
         let batch_count = self.recorder.lock().expect("recorder poisoned").batch_count;
-        if batch_count == 0 { return Ok(()); }
+        if batch_count == 0 {
+            return Ok(());
+        }
         let _span = info_span!("vk_flush_batch", batch_count).entered();
         self.recorder
             .lock()
@@ -1622,7 +1719,12 @@ impl VulkanBackend {
     ///
     /// [`force_flush`]: VulkanBackend::force_flush
     fn flush_pending(&self) -> fuel_ir::Result<()> {
-        if self.recorder.lock().expect("recorder poisoned").should_flush() {
+        if self
+            .recorder
+            .lock()
+            .expect("recorder poisoned")
+            .should_flush()
+        {
             self.force_flush()?;
         }
         Ok(())
@@ -1645,17 +1747,42 @@ impl VulkanBackend {
         groups_y: u32,
         groups_z: u32,
     ) -> fuel_ir::Result<()> {
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, input.buffer(), 0, input.byte_size());
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, output.buffer(), 0, output.byte_size());
-        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &params_buf, 0, params_size);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_2s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            input.buffer(),
+            0,
+            input.byte_size(),
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            output.buffer(),
+            0,
+            output.byte_size(),
+        );
+        desc.write_buffer(
+            2,
+            DescriptorType::UNIFORM_BUFFER,
+            &params_buf,
+            0,
+            params_size,
+        );
         let rb = [input.buffer().raw() as u64];
         let wb = [output.buffer().raw() as u64];
         self.record_dispatch_batched(
-            op_name, pipeline, pipe_layout, desc,
+            op_name,
+            pipeline,
+            pipe_layout,
+            desc,
             (groups_x, groups_y, groups_z),
             vec![(params_buf, params_alloc)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )
     }
 
@@ -1675,18 +1802,49 @@ impl VulkanBackend {
         groups_y: u32,
         groups_z: u32,
     ) -> fuel_ir::Result<()> {
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, a.buffer(), 0, a.byte_size());
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, b.buffer(), 0, b.byte_size());
-        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, output.buffer(), 0, output.byte_size());
-        desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &params_buf, 0, params_size);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_3s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            a.buffer(),
+            0,
+            a.byte_size(),
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            b.buffer(),
+            0,
+            b.byte_size(),
+        );
+        desc.write_buffer(
+            2,
+            DescriptorType::STORAGE_BUFFER,
+            output.buffer(),
+            0,
+            output.byte_size(),
+        );
+        desc.write_buffer(
+            3,
+            DescriptorType::UNIFORM_BUFFER,
+            &params_buf,
+            0,
+            params_size,
+        );
         let rb = [a.buffer().raw() as u64, b.buffer().raw() as u64];
         let wb = [output.buffer().raw() as u64];
         self.record_dispatch_batched(
-            op_name, pipeline, pipe_layout, desc,
+            op_name,
+            pipeline,
+            pipe_layout,
+            desc,
             (groups_x, groups_y, groups_z),
             vec![(params_buf, params_alloc)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )
     }
 
@@ -1726,7 +1884,14 @@ impl VulkanBackend {
         lb: &Layout,
     ) -> fuel_ir::Result<()> {
         self.binary_typed_bytes(
-            2, op_id, op_name, a, b, out, la, lb,
+            2,
+            op_id,
+            op_name,
+            a,
+            b,
+            out,
+            la,
+            lb,
             &self.pipelines.binary_f16_pipeline,
             &self.pipelines.binary_f16_layout,
         )
@@ -1744,7 +1909,14 @@ impl VulkanBackend {
         lb: &Layout,
     ) -> fuel_ir::Result<()> {
         self.binary_typed_bytes(
-            8, op_id, op_name, a, b, out, la, lb,
+            8,
+            op_id,
+            op_name,
+            a,
+            b,
+            out,
+            la,
+            lb,
             &self.pipelines.binary_f64_pipeline,
             &self.pipelines.binary_f64_layout,
         )
@@ -1770,7 +1942,8 @@ impl VulkanBackend {
         if out_elem != lb.shape().elem_count() {
             fuel_ir::bail!(
                 "VulkanBackend::{op_name}: shape mismatch a={:?} b={:?}",
-                la.shape(), lb.shape()
+                la.shape(),
+                lb.shape()
             );
         }
         let rank = out_dims.len();
@@ -1781,7 +1954,8 @@ impl VulkanBackend {
         if out.len_bytes() < need_bytes {
             fuel_ir::bail!(
                 "VulkanBackend::{op_name}: output buffer {} bytes < required {}",
-                out.len_bytes(), need_bytes,
+                out.len_bytes(),
+                need_bytes,
             );
         }
 
@@ -1802,45 +1976,100 @@ impl VulkanBackend {
             && lb.stride().iter().all(|&s| s != 0);
         let flags = (a_contig as u32) | ((b_contig as u32) << 1);
 
-        #[repr(C)] #[derive(Clone, Copy)]
+        #[repr(C)]
+        #[derive(Clone, Copy)]
         struct BParams {
-            out_size: u32, op_id: u32, rank: u32, flags: u32,
-            shape0: u32, shape1: u32, shape2: u32, shape3: u32,
-            a_s0: u32, a_s1: u32, a_s2: u32, a_s3: u32,
-            b_s0: u32, b_s1: u32, b_s2: u32, b_s3: u32,
+            out_size: u32,
+            op_id: u32,
+            rank: u32,
+            flags: u32,
+            shape0: u32,
+            shape1: u32,
+            shape2: u32,
+            shape3: u32,
+            a_s0: u32,
+            a_s1: u32,
+            a_s2: u32,
+            a_s3: u32,
+            b_s0: u32,
+            b_s1: u32,
+            b_s2: u32,
+            b_s3: u32,
         }
         let p = BParams {
-            out_size: out_elem as u32, op_id, rank: rank as u32, flags,
-            shape0: shape[0], shape1: shape[1], shape2: shape[2], shape3: shape[3],
-            a_s0: a_s[0], a_s1: a_s[1], a_s2: a_s[2], a_s3: a_s[3],
-            b_s0: b_s[0], b_s1: b_s[1], b_s2: b_s[2], b_s3: b_s[3],
+            out_size: out_elem as u32,
+            op_id,
+            rank: rank as u32,
+            flags,
+            shape0: shape[0],
+            shape1: shape[1],
+            shape2: shape[2],
+            shape3: shape[3],
+            a_s0: a_s[0],
+            a_s1: a_s[1],
+            a_s2: a_s[2],
+            a_s3: a_s[3],
+            b_s0: b_s[0],
+            b_s1: b_s[1],
+            b_s2: b_s[2],
+            b_s3: b_s[3],
         };
 
-        let a_buf = a.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: input a is host-evicted; fault back first"),
-        ))?;
-        let b_buf = b.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: input b is host-evicted; fault back first"),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: output is host-evicted; fault back first"),
-        ))?;
+        let a_buf = a.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!(
+                "{op_name}: input a is host-evicted; fault back first"
+            ))
+        })?;
+        let b_buf = b.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!(
+                "{op_name}: input b is host-evicted; fault back first"
+            ))
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!(
+                "{op_name}: output is host-evicted; fault back first"
+            ))
+        })?;
         let (pbuf, pmem) = self.upload_params(&p)?;
         let params_size = std::mem::size_of::<BParams>() as u64;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u)
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_3s1u)
             .map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, a_buf, 0, a.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, b_buf, 0, b.len_bytes() as u64);
-        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            a_buf,
+            0,
+            a.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            b_buf,
+            0,
+            b.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            2,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
         let rb = [a_buf.raw() as u64, b_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
         self.record_dispatch_batched(
-            op_name, pipeline, pipe_layout, desc,
+            op_name,
+            pipeline,
+            pipe_layout,
+            desc,
             (Self::workgroups(out_elem), 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -1861,21 +2090,21 @@ impl VulkanBackend {
         if out_elem != lb.shape().elem_count() {
             fuel_ir::bail!(
                 "VulkanBackend::{op_name}: shape mismatch a={:?} b={:?}",
-                la.shape(), lb.shape()
+                la.shape(),
+                lb.shape()
             );
         }
         let rank = out_dims.len();
         if rank > 4 {
-            fuel_ir::bail!(
-                "VulkanBackend::{op_name}: rank {rank} > 4"
-            );
+            fuel_ir::bail!("VulkanBackend::{op_name}: rank {rank} > 4");
         }
         let need_bytes = out_elem * std::mem::size_of::<f32>();
         if out.len_bytes() < need_bytes {
             fuel_ir::bail!(
                 "VulkanBackend::{op_name}: output buffer {} bytes \
                  < required {} bytes",
-                out.len_bytes(), need_bytes,
+                out.len_bytes(),
+                need_bytes,
             );
         }
 
@@ -1899,37 +2128,88 @@ impl VulkanBackend {
             && lb.stride().iter().all(|&s| s != 0);
         let flags = (a_contig as u32) | ((b_contig as u32) << 1);
 
-        #[repr(C)] #[derive(Clone, Copy)]
+        #[repr(C)]
+        #[derive(Clone, Copy)]
         struct BParams {
-            out_size: u32, op_id: u32, rank: u32, flags: u32,
-            shape0: u32, shape1: u32, shape2: u32, shape3: u32,
-            a_s0: u32, a_s1: u32, a_s2: u32, a_s3: u32,
-            b_s0: u32, b_s1: u32, b_s2: u32, b_s3: u32,
+            out_size: u32,
+            op_id: u32,
+            rank: u32,
+            flags: u32,
+            shape0: u32,
+            shape1: u32,
+            shape2: u32,
+            shape3: u32,
+            a_s0: u32,
+            a_s1: u32,
+            a_s2: u32,
+            a_s3: u32,
+            b_s0: u32,
+            b_s1: u32,
+            b_s2: u32,
+            b_s3: u32,
         }
         let p = BParams {
-            out_size: out_elem as u32, op_id, rank: rank as u32, flags,
-            shape0: shape[0], shape1: shape[1], shape2: shape[2], shape3: shape[3],
-            a_s0: a_s[0], a_s1: a_s[1], a_s2: a_s[2], a_s3: a_s[3],
-            b_s0: b_s[0], b_s1: b_s[1], b_s2: b_s[2], b_s3: b_s[3],
+            out_size: out_elem as u32,
+            op_id,
+            rank: rank as u32,
+            flags,
+            shape0: shape[0],
+            shape1: shape[1],
+            shape2: shape[2],
+            shape3: shape[3],
+            a_s0: a_s[0],
+            a_s1: a_s[1],
+            a_s2: a_s[2],
+            a_s3: a_s[3],
+            b_s0: b_s[0],
+            b_s1: b_s[1],
+            b_s2: b_s[2],
+            b_s3: b_s[3],
         };
 
-        let a_buf = a.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: input a is host-evicted; fault back first"),
-        ))?;
-        let b_buf = b.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: input b is host-evicted; fault back first"),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: output is host-evicted; fault back first"),
-        ))?;
+        let a_buf = a.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!(
+                "{op_name}: input a is host-evicted; fault back first"
+            ))
+        })?;
+        let b_buf = b.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!(
+                "{op_name}: input b is host-evicted; fault back first"
+            ))
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!(
+                "{op_name}: output is host-evicted; fault back first"
+            ))
+        })?;
         let (pbuf, pmem) = self.upload_params(&p)?;
         let params_size = std::mem::size_of::<BParams>() as u64;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u)
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_3s1u)
             .map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, a_buf, 0, a.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, b_buf, 0, b.len_bytes() as u64);
-        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            a_buf,
+            0,
+            a.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            b_buf,
+            0,
+            b.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            2,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
         let rb = [a_buf.raw() as u64, b_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
@@ -1940,7 +2220,8 @@ impl VulkanBackend {
             desc,
             (Self::workgroups(out_elem), 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         // V.1.C/V.2 contract: flush so the result is observable to
         // a follow-up download_bytes call. Once V.4+ batches multiple
@@ -1982,25 +2263,51 @@ impl VulkanBackend {
             fuel_ir::bail!(
                 "VulkanBackend::softmax_last_dim_f32_bytes: buffer too small \
                  (need {need_bytes} bytes; in={}, out={})",
-                input.len_bytes(), out.len_bytes(),
+                input.len_bytes(),
+                out.len_bytes(),
             );
         }
-        #[repr(C)] #[derive(Clone, Copy)]
-        struct SoftParams { n_rows: u32, n_cols: u32 }
-        let p = SoftParams { n_rows: outer_count as u32, n_cols: last_dim as u32 };
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct SoftParams {
+            n_rows: u32,
+            n_cols: u32,
+        }
+        let p = SoftParams {
+            n_rows: outer_count as u32,
+            n_cols: last_dim as u32,
+        };
 
-        let in_buf = input.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "softmax_last_dim_f32_bytes: input is host-evicted; fault back first".into(),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "softmax_last_dim_f32_bytes: output is host-evicted; fault back first".into(),
-        ))?;
+        let in_buf = input.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "softmax_last_dim_f32_bytes: input is host-evicted; fault back first".into(),
+            )
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "softmax_last_dim_f32_bytes: output is host-evicted; fault back first".into(),
+            )
+        })?;
         let (pbuf, pmem) = self.upload_params(&p)?;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u)
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_2s1u)
             .map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            in_buf,
+            0,
+            input.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
         let rb = [in_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
@@ -2011,7 +2318,8 @@ impl VulkanBackend {
             desc,
             (outer_count as u32, 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -2036,25 +2344,51 @@ impl VulkanBackend {
             fuel_ir::bail!(
                 "VulkanBackend::softmax_last_dim_f16_bytes: buffer too small \
                  (need {need_bytes} bytes; in={}, out={})",
-                input.len_bytes(), out.len_bytes(),
+                input.len_bytes(),
+                out.len_bytes(),
             );
         }
-        #[repr(C)] #[derive(Clone, Copy)]
-        struct SoftParams { n_rows: u32, n_cols: u32 }
-        let p = SoftParams { n_rows: outer_count as u32, n_cols: last_dim as u32 };
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct SoftParams {
+            n_rows: u32,
+            n_cols: u32,
+        }
+        let p = SoftParams {
+            n_rows: outer_count as u32,
+            n_cols: last_dim as u32,
+        };
 
-        let in_buf = input.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "softmax_last_dim_f16_bytes: input is host-evicted; fault back first".into(),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "softmax_last_dim_f16_bytes: output is host-evicted; fault back first".into(),
-        ))?;
+        let in_buf = input.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "softmax_last_dim_f16_bytes: input is host-evicted; fault back first".into(),
+            )
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "softmax_last_dim_f16_bytes: output is host-evicted; fault back first".into(),
+            )
+        })?;
         let (pbuf, pmem) = self.upload_params(&p)?;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u)
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_2s1u)
             .map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            in_buf,
+            0,
+            input.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
         let rb = [in_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
@@ -2065,7 +2399,8 @@ impl VulkanBackend {
             desc,
             (outer_count as u32, 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -2093,25 +2428,51 @@ impl VulkanBackend {
             fuel_ir::bail!(
                 "VulkanBackend::softmax_last_dim_bf16_bytes: buffer too small \
                  (need {need_bytes} bytes; in={}, out={})",
-                input.len_bytes(), out.len_bytes(),
+                input.len_bytes(),
+                out.len_bytes(),
             );
         }
-        #[repr(C)] #[derive(Clone, Copy)]
-        struct SoftParams { n_rows: u32, n_cols: u32 }
-        let p = SoftParams { n_rows: outer_count as u32, n_cols: last_dim as u32 };
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct SoftParams {
+            n_rows: u32,
+            n_cols: u32,
+        }
+        let p = SoftParams {
+            n_rows: outer_count as u32,
+            n_cols: last_dim as u32,
+        };
 
-        let in_buf = input.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "softmax_last_dim_bf16_bytes: input is host-evicted; fault back first".into(),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "softmax_last_dim_bf16_bytes: output is host-evicted; fault back first".into(),
-        ))?;
+        let in_buf = input.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "softmax_last_dim_bf16_bytes: input is host-evicted; fault back first".into(),
+            )
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "softmax_last_dim_bf16_bytes: output is host-evicted; fault back first".into(),
+            )
+        })?;
         let (pbuf, pmem) = self.upload_params(&p)?;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u)
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_2s1u)
             .map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            in_buf,
+            0,
+            input.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
         let rb = [in_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
@@ -2122,7 +2483,8 @@ impl VulkanBackend {
             desc,
             (outer_count as u32, 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -2143,25 +2505,51 @@ impl VulkanBackend {
             fuel_ir::bail!(
                 "VulkanBackend::softmax_last_dim_f64_bytes: buffer too small \
                  (need {need_bytes} bytes; in={}, out={})",
-                input.len_bytes(), out.len_bytes(),
+                input.len_bytes(),
+                out.len_bytes(),
             );
         }
-        #[repr(C)] #[derive(Clone, Copy)]
-        struct SoftParams { n_rows: u32, n_cols: u32 }
-        let p = SoftParams { n_rows: outer_count as u32, n_cols: last_dim as u32 };
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct SoftParams {
+            n_rows: u32,
+            n_cols: u32,
+        }
+        let p = SoftParams {
+            n_rows: outer_count as u32,
+            n_cols: last_dim as u32,
+        };
 
-        let in_buf = input.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "softmax_last_dim_f64_bytes: input is host-evicted; fault back first".into(),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "softmax_last_dim_f64_bytes: output is host-evicted; fault back first".into(),
-        ))?;
+        let in_buf = input.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "softmax_last_dim_f64_bytes: input is host-evicted; fault back first".into(),
+            )
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "softmax_last_dim_f64_bytes: output is host-evicted; fault back first".into(),
+            )
+        })?;
         let (pbuf, pmem) = self.upload_params(&p)?;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u)
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_2s1u)
             .map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            in_buf,
+            0,
+            input.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
         let rb = [in_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
@@ -2172,7 +2560,8 @@ impl VulkanBackend {
             desc,
             (outer_count as u32, 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -2196,11 +2585,18 @@ impl VulkanBackend {
             fuel_ir::bail!(
                 "VulkanBackend::rms_norm_last_dim_f32_bytes: buffer too small \
                  (need {need_bytes} bytes; in={}, out={})",
-                input.len_bytes(), out.len_bytes(),
+                input.len_bytes(),
+                out.len_bytes(),
             );
         }
-        #[repr(C)] #[derive(Clone, Copy)]
-        struct RmsParams { n_rows: u32, n_cols: u32, eps: f32, _pad: u32 }
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct RmsParams {
+            n_rows: u32,
+            n_cols: u32,
+            eps: f32,
+            _pad: u32,
+        }
         let p = RmsParams {
             n_rows: outer_count as u32,
             n_cols: last_dim as u32,
@@ -2208,18 +2604,36 @@ impl VulkanBackend {
             _pad: 0,
         };
 
-        let in_buf = input.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "rms_norm_last_dim_f32_bytes: input is host-evicted; fault back first".into(),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "rms_norm_last_dim_f32_bytes: output is host-evicted; fault back first".into(),
-        ))?;
+        let in_buf = input.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "rms_norm_last_dim_f32_bytes: input is host-evicted; fault back first".into(),
+            )
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "rms_norm_last_dim_f32_bytes: output is host-evicted; fault back first".into(),
+            )
+        })?;
         let (pbuf, pmem) = self.upload_params(&p)?;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u)
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_2s1u)
             .map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            in_buf,
+            0,
+            input.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
         let rb = [in_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
@@ -2230,7 +2644,8 @@ impl VulkanBackend {
             desc,
             (outer_count as u32, 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -2254,11 +2669,18 @@ impl VulkanBackend {
             fuel_ir::bail!(
                 "VulkanBackend::rms_norm_last_dim_f16_bytes: buffer too small \
                  (need {need_bytes} bytes; in={}, out={})",
-                input.len_bytes(), out.len_bytes(),
+                input.len_bytes(),
+                out.len_bytes(),
             );
         }
-        #[repr(C)] #[derive(Clone, Copy)]
-        struct RmsParams { n_rows: u32, n_cols: u32, eps: f32, _pad: u32 }
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct RmsParams {
+            n_rows: u32,
+            n_cols: u32,
+            eps: f32,
+            _pad: u32,
+        }
         let p = RmsParams {
             n_rows: outer_count as u32,
             n_cols: last_dim as u32,
@@ -2266,18 +2688,36 @@ impl VulkanBackend {
             _pad: 0,
         };
 
-        let in_buf = input.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "rms_norm_last_dim_f16_bytes: input is host-evicted; fault back first".into(),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "rms_norm_last_dim_f16_bytes: output is host-evicted; fault back first".into(),
-        ))?;
+        let in_buf = input.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "rms_norm_last_dim_f16_bytes: input is host-evicted; fault back first".into(),
+            )
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "rms_norm_last_dim_f16_bytes: output is host-evicted; fault back first".into(),
+            )
+        })?;
         let (pbuf, pmem) = self.upload_params(&p)?;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u)
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_2s1u)
             .map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            in_buf,
+            0,
+            input.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
         let rb = [in_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
@@ -2288,7 +2728,8 @@ impl VulkanBackend {
             desc,
             (outer_count as u32, 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -2319,11 +2760,18 @@ impl VulkanBackend {
             fuel_ir::bail!(
                 "VulkanBackend::rms_norm_last_dim_bf16_bytes: buffer too small \
                  (need {need_bytes} bytes; in={}, out={})",
-                input.len_bytes(), out.len_bytes(),
+                input.len_bytes(),
+                out.len_bytes(),
             );
         }
-        #[repr(C)] #[derive(Clone, Copy)]
-        struct RmsParams { n_rows: u32, n_cols: u32, eps: f32, _pad: u32 }
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct RmsParams {
+            n_rows: u32,
+            n_cols: u32,
+            eps: f32,
+            _pad: u32,
+        }
         let p = RmsParams {
             n_rows: outer_count as u32,
             n_cols: last_dim as u32,
@@ -2331,18 +2779,36 @@ impl VulkanBackend {
             _pad: 0,
         };
 
-        let in_buf = input.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "rms_norm_last_dim_bf16_bytes: input is host-evicted; fault back first".into(),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "rms_norm_last_dim_bf16_bytes: output is host-evicted; fault back first".into(),
-        ))?;
+        let in_buf = input.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "rms_norm_last_dim_bf16_bytes: input is host-evicted; fault back first".into(),
+            )
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "rms_norm_last_dim_bf16_bytes: output is host-evicted; fault back first".into(),
+            )
+        })?;
         let (pbuf, pmem) = self.upload_params(&p)?;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u)
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_2s1u)
             .map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            in_buf,
+            0,
+            input.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
         let rb = [in_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
@@ -2353,7 +2819,8 @@ impl VulkanBackend {
             desc,
             (outer_count as u32, 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -2377,29 +2844,53 @@ impl VulkanBackend {
             fuel_ir::bail!(
                 "VulkanBackend::rms_norm_last_dim_f64_bytes: buffer too small \
                  (need {need_bytes} bytes; in={}, out={})",
-                input.len_bytes(), out.len_bytes(),
+                input.len_bytes(),
+                out.len_bytes(),
             );
         }
-        #[repr(C)] #[derive(Clone, Copy)]
-        struct RmsParamsF64 { n_rows: u32, n_cols: u32, eps: f64 }
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct RmsParamsF64 {
+            n_rows: u32,
+            n_cols: u32,
+            eps: f64,
+        }
         let p = RmsParamsF64 {
             n_rows: outer_count as u32,
             n_cols: last_dim as u32,
             eps,
         };
 
-        let in_buf = input.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "rms_norm_last_dim_f64_bytes: input is host-evicted; fault back first".into(),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "rms_norm_last_dim_f64_bytes: output is host-evicted; fault back first".into(),
-        ))?;
+        let in_buf = input.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "rms_norm_last_dim_f64_bytes: input is host-evicted; fault back first".into(),
+            )
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "rms_norm_last_dim_f64_bytes: output is host-evicted; fault back first".into(),
+            )
+        })?;
         let (pbuf, pmem) = self.upload_params(&p)?;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u)
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_2s1u)
             .map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            in_buf,
+            0,
+            input.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
         let rb = [in_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
@@ -2410,7 +2901,8 @@ impl VulkanBackend {
             desc,
             (outer_count as u32, 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -2442,29 +2934,35 @@ impl VulkanBackend {
         if src_shape.len() != rank || range_start.len() != rank {
             fuel_ir::bail!(
                 "write_slice_bytes: rank mismatch (dst={}, src={}, range_start={})",
-                rank, src_shape.len(), range_start.len(),
+                rank,
+                src_shape.len(),
+                range_start.len(),
             );
         }
         if rank == 0 {
             fuel_ir::bail!("write_slice_bytes: rank-0 unsupported");
         }
         if rank > 8 {
-            fuel_ir::bail!(
-                "write_slice_bytes: rank {rank} > 8 (kernel limit; bump if needed)",
-            );
+            fuel_ir::bail!("write_slice_bytes: rank {rank} > 8 (kernel limit; bump if needed)",);
         }
         for i in 0..rank {
             if range_start[i] + src_shape[i] > dst_shape[i] {
                 fuel_ir::bail!(
                     "write_slice_bytes: axis {i} out of range \
                      (start={}, src_dim={}, dst_dim={})",
-                    range_start[i], src_shape[i], dst_shape[i],
+                    range_start[i],
+                    src_shape[i],
+                    dst_shape[i],
                 );
             }
         }
         let n_src: usize = src_shape.iter().product::<usize>().max(1);
         let need_src = n_src.saturating_mul(byte_width);
-        let need_dst = dst_shape.iter().product::<usize>().max(1).saturating_mul(byte_width);
+        let need_dst = dst_shape
+            .iter()
+            .product::<usize>()
+            .max(1)
+            .saturating_mul(byte_width);
         if src.len_bytes() < need_src {
             fuel_ir::bail!(
                 "write_slice_bytes: src {} bytes < required {need_src} (byte_width={byte_width})",
@@ -2489,7 +2987,8 @@ impl VulkanBackend {
                 fuel_ir::bail!(
                     "write_slice_bytes b2: last-dim range_start ({}) and src_shape ({}) \
                      must both be even (half-precision writes pack 2/u32)",
-                    range_start[last], src_shape[last],
+                    range_start[last],
+                    src_shape[last],
                 );
             }
         }
@@ -2499,16 +2998,23 @@ impl VulkanBackend {
                 fuel_ir::bail!(
                     "write_slice_bytes b1: last-dim range_start ({}) and src_shape ({}) \
                      must both be multiples of 4 (byte writes pack 4/u32)",
-                    range_start[last], src_shape[last],
+                    range_start[last],
+                    src_shape[last],
                 );
             }
         }
 
         // Pack: src_shape + dst_shape + range_start (3 * rank u32s).
         let mut sd: Vec<u32> = Vec::with_capacity(3 * rank);
-        for &d in src_shape { sd.push(d as u32); }
-        for &d in dst_shape { sd.push(d as u32); }
-        for &s in range_start { sd.push(s as u32); }
+        for &d in src_shape {
+            sd.push(d as u32);
+        }
+        for &d in dst_shape {
+            sd.push(d as u32);
+        }
+        for &s in range_start {
+            sd.push(s as u32);
+        }
         let (sd_buf, sd_mem) = self.upload_slice_raw(&sd)?;
         let sd_byte_size = (sd.len() * 4) as u64;
 
@@ -2518,17 +3024,24 @@ impl VulkanBackend {
             2 => n_src / 2,
             _ => n_src,
         };
-        #[repr(C)] #[derive(Clone, Copy)]
-        struct WsParams { n: u32, rank: u32 }
-        let p = WsParams { n: n_dispatch as u32, rank: rank as u32 };
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct WsParams {
+            n: u32,
+            rank: u32,
+        }
+        let p = WsParams {
+            n: n_dispatch as u32,
+            rank: rank as u32,
+        };
         let (pbuf, pmem) = self.upload_params(&p)?;
 
-        let src_buf = src.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "write_slice_bytes: src is host-evicted; fault back first".into(),
-        ))?;
-        let dst_buf = dst.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "write_slice_bytes: dst is host-evicted; fault back first".into(),
-        ))?;
+        let src_buf = src.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("write_slice_bytes: src is host-evicted; fault back first".into())
+        })?;
+        let dst_buf = dst.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("write_slice_bytes: dst is host-evicted; fault back first".into())
+        })?;
 
         let (pipeline, pipe_layout, op_name) = match byte_width {
             1 => (
@@ -2556,9 +3069,24 @@ impl VulkanBackend {
             ),
         };
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, src_buf, 0, src.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, dst_buf, 0, dst.len_bytes() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_3s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            src_buf,
+            0,
+            src.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            dst_buf,
+            0,
+            dst.len_bytes() as u64,
+        );
         desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, &sd_buf, 0, sd_byte_size);
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
 
@@ -2572,7 +3100,8 @@ impl VulkanBackend {
             desc,
             (groups, 1, 1),
             vec![(sd_buf, sd_mem), (pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -2619,22 +3148,22 @@ impl VulkanBackend {
         }
 
         let (pipeline, pipe_layout, op_name) = match (src_dtype, dst_dtype) {
-            (DType::F32,  DType::F16)  => (
+            (DType::F32, DType::F16) => (
                 &self.pipelines.cast_f32_to_f16_pipeline,
                 &self.pipelines.cast_f32_to_f16_layout,
                 "cast_f32_to_f16",
             ),
-            (DType::F16,  DType::F32)  => (
+            (DType::F16, DType::F32) => (
                 &self.pipelines.cast_f16_to_f32_pipeline,
                 &self.pipelines.cast_f16_to_f32_layout,
                 "cast_f16_to_f32",
             ),
-            (DType::F32,  DType::BF16) => (
+            (DType::F32, DType::BF16) => (
                 &self.pipelines.cast_f32_to_bf16_pipeline,
                 &self.pipelines.cast_f32_to_bf16_layout,
                 "cast_f32_to_bf16",
             ),
-            (DType::BF16, DType::F32)  => (
+            (DType::BF16, DType::F32) => (
                 &self.pipelines.cast_bf16_to_f32_pipeline,
                 &self.pipelines.cast_bf16_to_f32_layout,
                 "cast_bf16_to_f32",
@@ -2645,21 +3174,45 @@ impl VulkanBackend {
             ),
         };
 
-        #[repr(C)] #[derive(Clone, Copy)]
-        struct CastParams { n: u32, _pad: u32 }
-        let p = CastParams { n: n as u32, _pad: 0 };
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct CastParams {
+            n: u32,
+            _pad: u32,
+        }
+        let p = CastParams {
+            n: n as u32,
+            _pad: 0,
+        };
 
-        let in_buf = input.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: input is host-evicted; fault back first"),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: out is host-evicted; fault back first"),
-        ))?;
+        let in_buf = input.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!(
+                "{op_name}: input is host-evicted; fault back first"
+            ))
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!("{op_name}: out is host-evicted; fault back first"))
+        })?;
         let (pbuf, pmem) = self.upload_params(&p)?;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_2s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            in_buf,
+            0,
+            input.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
         let rb = [in_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
@@ -2673,7 +3226,8 @@ impl VulkanBackend {
             desc,
             (groups.max(1), 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -2725,21 +3279,45 @@ impl VulkanBackend {
             ),
         };
 
-        #[repr(C)] #[derive(Clone, Copy)]
-        struct CastParams { n: u32, _pad: u32 }
-        let p = CastParams { n: n as u32, _pad: 0 };
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct CastParams {
+            n: u32,
+            _pad: u32,
+        }
+        let p = CastParams {
+            n: n as u32,
+            _pad: 0,
+        };
 
-        let in_buf = input.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: input is host-evicted; fault back first"),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: out is host-evicted; fault back first"),
-        ))?;
+        let in_buf = input.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!(
+                "{op_name}: input is host-evicted; fault back first"
+            ))
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!("{op_name}: out is host-evicted; fault back first"))
+        })?;
         let (pbuf, pmem) = self.upload_params(&p)?;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_2s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            in_buf,
+            0,
+            input.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
         let rb = [in_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
@@ -2751,7 +3329,8 @@ impl VulkanBackend {
             desc,
             (groups.max(1), 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -2770,9 +3349,9 @@ impl VulkanBackend {
     /// contiguous; strides derived from m,n,k + batch counts.
     pub fn matmul_f32_bf16_b_bytes(
         &self,
-        lhs: &VulkanStorageBytes,       // f32
-        rhs: &VulkanStorageBytes,       // bf16 (2 bytes per elem)
-        out: &mut VulkanStorageBytes,   // f32
+        lhs: &VulkanStorageBytes,     // f32
+        rhs: &VulkanStorageBytes,     // bf16 (2 bytes per elem)
+        out: &mut VulkanStorageBytes, // f32
         lhs_batch_dims: &[usize],
         rhs_batch_dims: &[usize],
         m: usize,
@@ -2782,7 +3361,8 @@ impl VulkanBackend {
         if lhs_batch_dims.len() != rhs_batch_dims.len() {
             fuel_ir::bail!(
                 "matmul_f32_bf16_b_bytes: batch ranks must match (lhs={}, rhs={})",
-                lhs_batch_dims.len(), rhs_batch_dims.len(),
+                lhs_batch_dims.len(),
+                rhs_batch_dims.len(),
             );
         }
         let lhs_batch: usize = lhs_batch_dims.iter().product::<usize>().max(1);
@@ -2797,44 +3377,75 @@ impl VulkanBackend {
             );
         };
 
-        let need_lhs = lhs_batch.saturating_mul(m).saturating_mul(k).saturating_mul(4);
-        let need_rhs = rhs_batch.saturating_mul(k).saturating_mul(n).saturating_mul(2);
-        let need_out = lhs_batch.saturating_mul(m).saturating_mul(n).saturating_mul(4);
+        let need_lhs = lhs_batch
+            .saturating_mul(m)
+            .saturating_mul(k)
+            .saturating_mul(4);
+        let need_rhs = rhs_batch
+            .saturating_mul(k)
+            .saturating_mul(n)
+            .saturating_mul(2);
+        let need_out = lhs_batch
+            .saturating_mul(m)
+            .saturating_mul(n)
+            .saturating_mul(4);
         if lhs.len_bytes() < need_lhs || rhs.len_bytes() < need_rhs || out.len_bytes() < need_out {
             fuel_ir::bail!(
                 "matmul_f32_bf16_b_bytes: buffer too small (lhs need {need_lhs} have {}; \
                  rhs need {need_rhs} have {}; out need {need_out} have {})",
-                lhs.len_bytes(), rhs.len_bytes(), out.len_bytes(),
+                lhs.len_bytes(),
+                rhs.len_bytes(),
+                out.len_bytes(),
             );
         }
 
-        #[repr(C)] #[derive(Clone, Copy)]
+        #[repr(C)]
+        #[derive(Clone, Copy)]
         struct MatmulParams {
-            m: u32, n: u32, k: u32,
-            sa_batch: u32, sa_row: u32, sa_col: u32,
-            sb_batch: u32, sb_row: u32, sb_col: u32,
+            m: u32,
+            n: u32,
+            k: u32,
+            sa_batch: u32,
+            sa_row: u32,
+            sa_col: u32,
+            sb_batch: u32,
+            sb_row: u32,
+            sb_col: u32,
             sc_batch: u32,
             n_rep: u32,
             _pad: u32,
         }
         let params = MatmulParams {
-            m: m as u32, n: n as u32, k: k as u32,
-            sa_batch: (m * k) as u32, sa_row: k as u32, sa_col: 1,
-            sb_batch: (k * n) as u32, sb_row: n as u32, sb_col: 1,
+            m: m as u32,
+            n: n as u32,
+            k: k as u32,
+            sa_batch: (m * k) as u32,
+            sa_row: k as u32,
+            sa_col: 1,
+            sb_batch: (k * n) as u32,
+            sb_row: n as u32,
+            sb_col: 1,
             sc_batch: (m * n) as u32,
-            n_rep: n_rep as u32, _pad: 0,
+            n_rep: n_rep as u32,
+            _pad: 0,
         };
         let params_size = std::mem::size_of::<MatmulParams>() as u64;
 
-        let lhs_buf = lhs.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "matmul_f32_bf16_b_bytes: lhs is host-evicted; fault back first".into(),
-        ))?;
-        let rhs_buf = rhs.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "matmul_f32_bf16_b_bytes: rhs is host-evicted; fault back first".into(),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "matmul_f32_bf16_b_bytes: out is host-evicted; fault back first".into(),
-        ))?;
+        let lhs_buf = lhs.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "matmul_f32_bf16_b_bytes: lhs is host-evicted; fault back first".into(),
+            )
+        })?;
+        let rhs_buf = rhs.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "matmul_f32_bf16_b_bytes: rhs is host-evicted; fault back first".into(),
+            )
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "matmul_f32_bf16_b_bytes: out is host-evicted; fault back first".into(),
+            )
+        })?;
         let (pbuf, pmem) = self.upload_params(&params)?;
 
         // Pipeline selection:
@@ -2844,10 +3455,31 @@ impl VulkanBackend {
         if m == 1 {
             let gx = n as u32;
             let gz = batch as u32;
-            let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
-            desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, lhs_buf, 0, lhs.len_bytes() as u64);
-            desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, rhs_buf, 0, rhs.len_bytes() as u64);
-            desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+            let desc = self
+                .pipelines
+                .allocate_desc(&self.pipelines.layout_3s1u)
+                .map_err(vk_err)?;
+            desc.write_buffer(
+                0,
+                DescriptorType::STORAGE_BUFFER,
+                lhs_buf,
+                0,
+                lhs.len_bytes() as u64,
+            );
+            desc.write_buffer(
+                1,
+                DescriptorType::STORAGE_BUFFER,
+                rhs_buf,
+                0,
+                rhs.len_bytes() as u64,
+            );
+            desc.write_buffer(
+                2,
+                DescriptorType::STORAGE_BUFFER,
+                out_buf,
+                0,
+                out.len_bytes() as u64,
+            );
             desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
             let rb = [lhs_buf.raw() as u64, rhs_buf.raw() as u64];
             let wb = [out_buf.raw() as u64];
@@ -2855,7 +3487,11 @@ impl VulkanBackend {
                 "matvec_bf16_b",
                 &self.pipelines.matvec_bf16_b_pipeline,
                 &self.pipelines.matvec_bf16_b_layout,
-                desc, (gx, 1, gz), vec![(pbuf, pmem)], &rb, &wb,
+                desc,
+                (gx, 1, gz),
+                vec![(pbuf, pmem)],
+                &rb,
+                &wb,
             )?;
             self.flush_pending()?;
             return Ok(());
@@ -2867,7 +3503,9 @@ impl VulkanBackend {
         // a multiple of 16. (Padding would require allocating a scratch
         // buffer + copying back — V.3 cost-tax; the tiled fallback is
         // not catastrophically slower.)
-        let coop_ok = m >= 16 && n >= 16 && k >= 16
+        let coop_ok = m >= 16
+            && n >= 16
+            && k >= 16
             && m % 16 == 0
             && n % 16 == 0
             && self.pipelines.matmul_coop_pipeline.is_some();
@@ -2892,10 +3530,31 @@ impl VulkanBackend {
             (((n + 63) / 64) as u32, ((m + 63) / 64) as u32)
         };
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, lhs_buf, 0, lhs.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, rhs_buf, 0, rhs.len_bytes() as u64);
-        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_3s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            lhs_buf,
+            0,
+            lhs.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            rhs_buf,
+            0,
+            rhs.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            2,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
         let rb = [lhs_buf.raw() as u64, rhs_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
@@ -2903,7 +3562,11 @@ impl VulkanBackend {
             op_name,
             pipeline,
             pipe_layout,
-            desc, (gx, gy, batch as u32), vec![(pbuf, pmem)], &rb, &wb,
+            desc,
+            (gx, gy, batch as u32),
+            vec![(pbuf, pmem)],
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -2925,13 +3588,21 @@ impl VulkanBackend {
         n: usize,
         k: usize,
     ) -> fuel_ir::Result<()> {
-        if Self::matmul_coop_ok(m, n, k) && self.pipelines.matmul_coop_bf16_bf16_pipeline.is_some() {
+        if Self::matmul_coop_ok(m, n, k) && self.pipelines.matmul_coop_bf16_bf16_pipeline.is_some()
+        {
             self.matmul_half_half_f32_coop_bytes(
                 "matmul_bf16_bf16_f32_bytes",
                 self.pipelines.matmul_coop_bf16_bf16_pipeline.as_ref(),
                 self.pipelines.matmul_coop_bf16_bf16_layout.as_ref(),
                 "matmul_coop_bf16_bf16",
-                lhs, rhs, out, lhs_batch_dims, rhs_batch_dims, m, n, k,
+                lhs,
+                rhs,
+                out,
+                lhs_batch_dims,
+                rhs_batch_dims,
+                m,
+                n,
+                k,
             )
         } else {
             self.matmul_small_half_inner(
@@ -2939,7 +3610,14 @@ impl VulkanBackend {
                 &self.pipelines.matmul_small_bf16_bf16_f32_pipeline,
                 &self.pipelines.matmul_small_bf16_bf16_f32_layout,
                 "matmul_small_bf16_bf16_f32",
-                lhs, rhs, out, lhs_batch_dims, rhs_batch_dims, m, n, k,
+                lhs,
+                rhs,
+                out,
+                lhs_batch_dims,
+                rhs_batch_dims,
+                m,
+                n,
+                k,
                 4, // f32 output
             )
         }
@@ -2949,7 +3627,7 @@ impl VulkanBackend {
     /// is satisfied. Same predicate for all half-precision matmul
     /// variants; small shapes fall through to the scalar fallback.
     fn matmul_coop_ok(m: usize, n: usize, k: usize) -> bool {
-        let _ = k;     // K is unconstrained at the kernel level
+        let _ = k; // K is unconstrained at the kernel level
         m >= 16 && n >= 16 && m % 16 == 0 && n % 16 == 0
     }
 
@@ -2977,7 +3655,8 @@ impl VulkanBackend {
         if lhs_batch_dims.len() != rhs_batch_dims.len() {
             fuel_ir::bail!(
                 "{debug_name}: batch ranks must match (lhs={}, rhs={})",
-                lhs_batch_dims.len(), rhs_batch_dims.len(),
+                lhs_batch_dims.len(),
+                rhs_batch_dims.len(),
             );
         }
         let lhs_batch: usize = lhs_batch_dims.iter().product::<usize>().max(1);
@@ -2992,51 +3671,79 @@ impl VulkanBackend {
             );
         };
 
-        let need_lhs = lhs_batch.saturating_mul(m).saturating_mul(k).saturating_mul(2);
-        let need_rhs = rhs_batch.saturating_mul(k).saturating_mul(n).saturating_mul(2);
-        let need_out = lhs_batch.saturating_mul(m).saturating_mul(n).saturating_mul(out_elem_bytes);
+        let need_lhs = lhs_batch
+            .saturating_mul(m)
+            .saturating_mul(k)
+            .saturating_mul(2);
+        let need_rhs = rhs_batch
+            .saturating_mul(k)
+            .saturating_mul(n)
+            .saturating_mul(2);
+        let need_out = lhs_batch
+            .saturating_mul(m)
+            .saturating_mul(n)
+            .saturating_mul(out_elem_bytes);
         if lhs.len_bytes() < need_lhs || rhs.len_bytes() < need_rhs || out.len_bytes() < need_out {
             fuel_ir::bail!(
                 "{debug_name}: buffer too small (lhs need {need_lhs} have {}; \
                  rhs need {need_rhs} have {}; out need {need_out} have {})",
-                lhs.len_bytes(), rhs.len_bytes(), out.len_bytes(),
+                lhs.len_bytes(),
+                rhs.len_bytes(),
+                out.len_bytes(),
             );
         }
 
-        #[repr(C)] #[derive(Clone, Copy)]
+        #[repr(C)]
+        #[derive(Clone, Copy)]
         struct MatmulParams {
-            m: u32, n: u32, k: u32,
-            sa_batch: u32, sa_row: u32, sa_col: u32,
-            sb_batch: u32, sb_row: u32, sb_col: u32,
+            m: u32,
+            n: u32,
+            k: u32,
+            sa_batch: u32,
+            sa_row: u32,
+            sa_col: u32,
+            sb_batch: u32,
+            sb_row: u32,
+            sb_col: u32,
             sc_batch: u32,
             n_rep: u32,
             _pad: u32,
         }
         let params = MatmulParams {
-            m: m as u32, n: n as u32, k: k as u32,
-            sa_batch: (m * k) as u32, sa_row: k as u32, sa_col: 1,
-            sb_batch: (k * n) as u32, sb_row: n as u32, sb_col: 1,
+            m: m as u32,
+            n: n as u32,
+            k: k as u32,
+            sa_batch: (m * k) as u32,
+            sa_row: k as u32,
+            sa_col: 1,
+            sb_batch: (k * n) as u32,
+            sb_row: n as u32,
+            sb_col: 1,
             sc_batch: (m * n) as u32,
-            n_rep: n_rep as u32, _pad: 0,
+            n_rep: n_rep as u32,
+            _pad: 0,
         };
         let params_size = std::mem::size_of::<MatmulParams>() as u64;
 
-        let lhs_buf = lhs.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{debug_name}: lhs is host-evicted"),
-        ))?;
-        let rhs_buf = rhs.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{debug_name}: rhs is host-evicted"),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{debug_name}: out is host-evicted"),
-        ))?;
+        let lhs_buf = lhs
+            .buffer_opt()
+            .ok_or_else(|| fuel_ir::Error::Msg(format!("{debug_name}: lhs is host-evicted")))?;
+        let rhs_buf = rhs
+            .buffer_opt()
+            .ok_or_else(|| fuel_ir::Error::Msg(format!("{debug_name}: rhs is host-evicted")))?;
+        let out_buf = out
+            .buffer_opt()
+            .ok_or_else(|| fuel_ir::Error::Msg(format!("{debug_name}: out is host-evicted")))?;
         let (pbuf, pmem) = self.upload_params(&params)?;
 
         let lhs_bind_len = ((lhs.len_bytes() + 3) & !3) as u64;
         let rhs_bind_len = ((rhs.len_bytes() + 3) & !3) as u64;
         let out_bind_len = ((out.len_bytes() + 3) & !3) as u64;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_3s1u)
+            .map_err(vk_err)?;
         desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, lhs_buf, 0, lhs_bind_len);
         desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, rhs_buf, 0, rhs_bind_len);
         desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, out_bind_len);
@@ -3051,7 +3758,11 @@ impl VulkanBackend {
             op_name,
             pipeline,
             pipe_layout,
-            desc, (gx, gy, batch as u32), vec![(pbuf, pmem)], &rb, &wb,
+            desc,
+            (gx, gy, batch as u32),
+            vec![(pbuf, pmem)],
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -3071,13 +3782,22 @@ impl VulkanBackend {
         n: usize,
         k: usize,
     ) -> fuel_ir::Result<()> {
-        if Self::matmul_coop_ok(m, n, k) && self.pipelines.matmul_coop_bf16_bf16_bf16_pipeline.is_some() {
+        if Self::matmul_coop_ok(m, n, k)
+            && self.pipelines.matmul_coop_bf16_bf16_bf16_pipeline.is_some()
+        {
             self.matmul_half_half_half_coop_bytes(
                 "matmul_bf16_bf16_bf16_bytes",
                 self.pipelines.matmul_coop_bf16_bf16_bf16_pipeline.as_ref(),
                 self.pipelines.matmul_coop_bf16_bf16_bf16_layout.as_ref(),
                 "matmul_coop_bf16_bf16_bf16",
-                lhs, rhs, out, lhs_batch_dims, rhs_batch_dims, m, n, k,
+                lhs,
+                rhs,
+                out,
+                lhs_batch_dims,
+                rhs_batch_dims,
+                m,
+                n,
+                k,
             )
         } else {
             self.matmul_small_half_inner(
@@ -3085,7 +3805,14 @@ impl VulkanBackend {
                 &self.pipelines.matmul_small_bf16_bf16_bf16_pipeline,
                 &self.pipelines.matmul_small_bf16_bf16_bf16_layout,
                 "matmul_small_bf16_bf16_bf16",
-                lhs, rhs, out, lhs_batch_dims, rhs_batch_dims, m, n, k,
+                lhs,
+                rhs,
+                out,
+                lhs_batch_dims,
+                rhs_batch_dims,
+                m,
+                n,
+                k,
                 2, // bf16 output
             )
         }
@@ -3102,9 +3829,9 @@ impl VulkanBackend {
         pipeline_opt: Option<&vulkane::safe::ComputePipeline>,
         pipe_layout_opt: Option<&vulkane::safe::PipelineLayout>,
         op_name: &'static str,
-        lhs: &VulkanStorageBytes,       // half (2 B/elem)
-        rhs: &VulkanStorageBytes,       // half (2 B/elem)
-        out: &mut VulkanStorageBytes,   // half (2 B/elem)
+        lhs: &VulkanStorageBytes,     // half (2 B/elem)
+        rhs: &VulkanStorageBytes,     // half (2 B/elem)
+        out: &mut VulkanStorageBytes, // half (2 B/elem)
         lhs_batch_dims: &[usize],
         rhs_batch_dims: &[usize],
         m: usize,
@@ -3114,7 +3841,8 @@ impl VulkanBackend {
         if lhs_batch_dims.len() != rhs_batch_dims.len() {
             fuel_ir::bail!(
                 "{debug_name}: batch ranks must match (lhs={}, rhs={})",
-                lhs_batch_dims.len(), rhs_batch_dims.len(),
+                lhs_batch_dims.len(),
+                rhs_batch_dims.len(),
             );
         }
         let lhs_batch: usize = lhs_batch_dims.iter().product::<usize>().max(1);
@@ -3142,51 +3870,79 @@ impl VulkanBackend {
             ),
         };
 
-        let need_lhs = lhs_batch.saturating_mul(m).saturating_mul(k).saturating_mul(2);
-        let need_rhs = rhs_batch.saturating_mul(k).saturating_mul(n).saturating_mul(2);
-        let need_out = lhs_batch.saturating_mul(m).saturating_mul(n).saturating_mul(2);
+        let need_lhs = lhs_batch
+            .saturating_mul(m)
+            .saturating_mul(k)
+            .saturating_mul(2);
+        let need_rhs = rhs_batch
+            .saturating_mul(k)
+            .saturating_mul(n)
+            .saturating_mul(2);
+        let need_out = lhs_batch
+            .saturating_mul(m)
+            .saturating_mul(n)
+            .saturating_mul(2);
         if lhs.len_bytes() < need_lhs || rhs.len_bytes() < need_rhs || out.len_bytes() < need_out {
             fuel_ir::bail!(
                 "{debug_name}: buffer too small (lhs need {need_lhs} have {}; \
                  rhs need {need_rhs} have {}; out need {need_out} have {})",
-                lhs.len_bytes(), rhs.len_bytes(), out.len_bytes(),
+                lhs.len_bytes(),
+                rhs.len_bytes(),
+                out.len_bytes(),
             );
         }
 
-        #[repr(C)] #[derive(Clone, Copy)]
+        #[repr(C)]
+        #[derive(Clone, Copy)]
         struct MatmulParams {
-            m: u32, n: u32, k: u32,
-            sa_batch: u32, sa_row: u32, sa_col: u32,
-            sb_batch: u32, sb_row: u32, sb_col: u32,
+            m: u32,
+            n: u32,
+            k: u32,
+            sa_batch: u32,
+            sa_row: u32,
+            sa_col: u32,
+            sb_batch: u32,
+            sb_row: u32,
+            sb_col: u32,
             sc_batch: u32,
             n_rep: u32,
             _pad: u32,
         }
         let params = MatmulParams {
-            m: m as u32, n: n as u32, k: k as u32,
-            sa_batch: (m * k) as u32, sa_row: k as u32, sa_col: 1,
-            sb_batch: (k * n) as u32, sb_row: n as u32, sb_col: 1,
-            sc_batch: (m * n) as u32,   // in HALF ELEMENTS (kernel divides by 2 for u32 indexing)
-            n_rep: n_rep as u32, _pad: 0,
+            m: m as u32,
+            n: n as u32,
+            k: k as u32,
+            sa_batch: (m * k) as u32,
+            sa_row: k as u32,
+            sa_col: 1,
+            sb_batch: (k * n) as u32,
+            sb_row: n as u32,
+            sb_col: 1,
+            sc_batch: (m * n) as u32, // in HALF ELEMENTS (kernel divides by 2 for u32 indexing)
+            n_rep: n_rep as u32,
+            _pad: 0,
         };
         let params_size = std::mem::size_of::<MatmulParams>() as u64;
 
-        let lhs_buf = lhs.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{debug_name}: lhs is host-evicted"),
-        ))?;
-        let rhs_buf = rhs.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{debug_name}: rhs is host-evicted"),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{debug_name}: out is host-evicted"),
-        ))?;
+        let lhs_buf = lhs
+            .buffer_opt()
+            .ok_or_else(|| fuel_ir::Error::Msg(format!("{debug_name}: lhs is host-evicted")))?;
+        let rhs_buf = rhs
+            .buffer_opt()
+            .ok_or_else(|| fuel_ir::Error::Msg(format!("{debug_name}: rhs is host-evicted")))?;
+        let out_buf = out
+            .buffer_opt()
+            .ok_or_else(|| fuel_ir::Error::Msg(format!("{debug_name}: out is host-evicted")))?;
         let (pbuf, pmem) = self.upload_params(&params)?;
 
         let lhs_bind_len = ((lhs.len_bytes() + 3) & !3) as u64;
         let rhs_bind_len = ((rhs.len_bytes() + 3) & !3) as u64;
         let out_bind_len = ((out.len_bytes() + 3) & !3) as u64;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_3s1u)
+            .map_err(vk_err)?;
         desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, lhs_buf, 0, lhs_bind_len);
         desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, rhs_buf, 0, rhs_bind_len);
         desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, out_bind_len);
@@ -3200,7 +3956,11 @@ impl VulkanBackend {
             op_name,
             pipeline,
             pipe_layout,
-            desc, (gx, gy, batch as u32), vec![(pbuf, pmem)], &rb, &wb,
+            desc,
+            (gx, gy, batch as u32),
+            vec![(pbuf, pmem)],
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -3220,13 +3980,22 @@ impl VulkanBackend {
         n: usize,
         k: usize,
     ) -> fuel_ir::Result<()> {
-        if Self::matmul_coop_ok(m, n, k) && self.pipelines.matmul_coop_f16_f16_f16_pipeline.is_some() {
+        if Self::matmul_coop_ok(m, n, k)
+            && self.pipelines.matmul_coop_f16_f16_f16_pipeline.is_some()
+        {
             self.matmul_half_half_half_coop_bytes(
                 "matmul_f16_f16_f16_bytes",
                 self.pipelines.matmul_coop_f16_f16_f16_pipeline.as_ref(),
                 self.pipelines.matmul_coop_f16_f16_f16_layout.as_ref(),
                 "matmul_coop_f16_f16_f16",
-                lhs, rhs, out, lhs_batch_dims, rhs_batch_dims, m, n, k,
+                lhs,
+                rhs,
+                out,
+                lhs_batch_dims,
+                rhs_batch_dims,
+                m,
+                n,
+                k,
             )
         } else {
             self.matmul_small_half_inner(
@@ -3234,7 +4003,14 @@ impl VulkanBackend {
                 &self.pipelines.matmul_small_f16_f16_f16_pipeline,
                 &self.pipelines.matmul_small_f16_f16_f16_layout,
                 "matmul_small_f16_f16_f16",
-                lhs, rhs, out, lhs_batch_dims, rhs_batch_dims, m, n, k,
+                lhs,
+                rhs,
+                out,
+                lhs_batch_dims,
+                rhs_batch_dims,
+                m,
+                n,
+                k,
                 2,
             )
         }
@@ -3259,7 +4035,14 @@ impl VulkanBackend {
                 self.pipelines.matmul_coop_f16_f16_pipeline.as_ref(),
                 self.pipelines.matmul_coop_f16_f16_layout.as_ref(),
                 "matmul_coop_f16_f16",
-                lhs, rhs, out, lhs_batch_dims, rhs_batch_dims, m, n, k,
+                lhs,
+                rhs,
+                out,
+                lhs_batch_dims,
+                rhs_batch_dims,
+                m,
+                n,
+                k,
             )
         } else {
             self.matmul_small_half_inner(
@@ -3267,7 +4050,14 @@ impl VulkanBackend {
                 &self.pipelines.matmul_small_f16_f16_f32_pipeline,
                 &self.pipelines.matmul_small_f16_f16_f32_layout,
                 "matmul_small_f16_f16_f32",
-                lhs, rhs, out, lhs_batch_dims, rhs_batch_dims, m, n, k,
+                lhs,
+                rhs,
+                out,
+                lhs_batch_dims,
+                rhs_batch_dims,
+                m,
+                n,
+                k,
                 4,
             )
         }
@@ -3284,9 +4074,9 @@ impl VulkanBackend {
         pipeline_opt: Option<&vulkane::safe::ComputePipeline>,
         pipe_layout_opt: Option<&vulkane::safe::PipelineLayout>,
         op_name: &'static str,
-        lhs: &VulkanStorageBytes,       // half (2 B/elem)
-        rhs: &VulkanStorageBytes,       // half (2 B/elem)
-        out: &mut VulkanStorageBytes,   // f32  (4 B/elem)
+        lhs: &VulkanStorageBytes,     // half (2 B/elem)
+        rhs: &VulkanStorageBytes,     // half (2 B/elem)
+        out: &mut VulkanStorageBytes, // f32  (4 B/elem)
         lhs_batch_dims: &[usize],
         rhs_batch_dims: &[usize],
         m: usize,
@@ -3296,7 +4086,8 @@ impl VulkanBackend {
         if lhs_batch_dims.len() != rhs_batch_dims.len() {
             fuel_ir::bail!(
                 "{debug_name}: batch ranks must match (lhs={}, rhs={})",
-                lhs_batch_dims.len(), rhs_batch_dims.len(),
+                lhs_batch_dims.len(),
+                rhs_batch_dims.len(),
             );
         }
         let lhs_batch: usize = lhs_batch_dims.iter().product::<usize>().max(1);
@@ -3324,53 +4115,87 @@ impl VulkanBackend {
             ),
         };
 
-        let need_lhs = lhs_batch.saturating_mul(m).saturating_mul(k).saturating_mul(2);
-        let need_rhs = rhs_batch.saturating_mul(k).saturating_mul(n).saturating_mul(2);
-        let need_out = lhs_batch.saturating_mul(m).saturating_mul(n).saturating_mul(4);
+        let need_lhs = lhs_batch
+            .saturating_mul(m)
+            .saturating_mul(k)
+            .saturating_mul(2);
+        let need_rhs = rhs_batch
+            .saturating_mul(k)
+            .saturating_mul(n)
+            .saturating_mul(2);
+        let need_out = lhs_batch
+            .saturating_mul(m)
+            .saturating_mul(n)
+            .saturating_mul(4);
         if lhs.len_bytes() < need_lhs || rhs.len_bytes() < need_rhs || out.len_bytes() < need_out {
             fuel_ir::bail!(
                 "{debug_name}: buffer too small (lhs need {need_lhs} have {}; \
                  rhs need {need_rhs} have {}; out need {need_out} have {})",
-                lhs.len_bytes(), rhs.len_bytes(), out.len_bytes(),
+                lhs.len_bytes(),
+                rhs.len_bytes(),
+                out.len_bytes(),
             );
         }
 
-        #[repr(C)] #[derive(Clone, Copy)]
+        #[repr(C)]
+        #[derive(Clone, Copy)]
         struct MatmulParams {
-            m: u32, n: u32, k: u32,
-            sa_batch: u32, sa_row: u32, sa_col: u32,
-            sb_batch: u32, sb_row: u32, sb_col: u32,
+            m: u32,
+            n: u32,
+            k: u32,
+            sa_batch: u32,
+            sa_row: u32,
+            sa_col: u32,
+            sb_batch: u32,
+            sb_row: u32,
+            sb_col: u32,
             sc_batch: u32,
             n_rep: u32,
             _pad: u32,
         }
         let params = MatmulParams {
-            m: m as u32, n: n as u32, k: k as u32,
-            sa_batch: (m * k) as u32, sa_row: k as u32, sa_col: 1,
-            sb_batch: (k * n) as u32, sb_row: n as u32, sb_col: 1,
+            m: m as u32,
+            n: n as u32,
+            k: k as u32,
+            sa_batch: (m * k) as u32,
+            sa_row: k as u32,
+            sa_col: 1,
+            sb_batch: (k * n) as u32,
+            sb_row: n as u32,
+            sb_col: 1,
             sc_batch: (m * n) as u32,
-            n_rep: n_rep as u32, _pad: 0,
+            n_rep: n_rep as u32,
+            _pad: 0,
         };
         let params_size = std::mem::size_of::<MatmulParams>() as u64;
 
-        let lhs_buf = lhs.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{debug_name}: lhs is host-evicted"),
-        ))?;
-        let rhs_buf = rhs.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{debug_name}: rhs is host-evicted"),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{debug_name}: out is host-evicted"),
-        ))?;
+        let lhs_buf = lhs
+            .buffer_opt()
+            .ok_or_else(|| fuel_ir::Error::Msg(format!("{debug_name}: lhs is host-evicted")))?;
+        let rhs_buf = rhs
+            .buffer_opt()
+            .ok_or_else(|| fuel_ir::Error::Msg(format!("{debug_name}: rhs is host-evicted")))?;
+        let out_buf = out
+            .buffer_opt()
+            .ok_or_else(|| fuel_ir::Error::Msg(format!("{debug_name}: out is host-evicted")))?;
         let (pbuf, pmem) = self.upload_params(&params)?;
 
         let lhs_bind_len = ((lhs.len_bytes() + 3) & !3) as u64;
         let rhs_bind_len = ((rhs.len_bytes() + 3) & !3) as u64;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_3s1u)
+            .map_err(vk_err)?;
         desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, lhs_buf, 0, lhs_bind_len);
         desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, rhs_buf, 0, rhs_bind_len);
-        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(
+            2,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
         let rb = [lhs_buf.raw() as u64, rhs_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
@@ -3381,7 +4206,11 @@ impl VulkanBackend {
             op_name,
             pipeline,
             pipe_layout,
-            desc, (gx, gy, batch as u32), vec![(pbuf, pmem)], &rb, &wb,
+            desc,
+            (gx, gy, batch as u32),
+            vec![(pbuf, pmem)],
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -3407,7 +4236,8 @@ impl VulkanBackend {
         if out.len_bytes() < need_bytes {
             fuel_ir::bail!(
                 "powi_f32_bytes: out {} bytes < required {}",
-                out.len_bytes(), need_bytes,
+                out.len_bytes(),
+                need_bytes,
             );
         }
 
@@ -3423,30 +4253,64 @@ impl VulkanBackend {
             && layout.stride().iter().all(|&s| s != 0);
         let flags = in_contig as u32;
 
-        #[repr(C)] #[derive(Clone, Copy)]
+        #[repr(C)]
+        #[derive(Clone, Copy)]
         struct PowiParams {
-            out_size: u32, flags: u32, exp: i32, _pad: u32,
-            shape0: u32, shape1: u32, shape2: u32, shape3: u32,
-            in_s0: u32, in_s1: u32, in_s2: u32, in_s3: u32,
+            out_size: u32,
+            flags: u32,
+            exp: i32,
+            _pad: u32,
+            shape0: u32,
+            shape1: u32,
+            shape2: u32,
+            shape3: u32,
+            in_s0: u32,
+            in_s1: u32,
+            in_s2: u32,
+            in_s3: u32,
         }
         let p = PowiParams {
-            out_size: out_elem as u32, flags, exp, _pad: 0,
-            shape0: shape[0], shape1: shape[1], shape2: shape[2], shape3: shape[3],
-            in_s0: in_s[0], in_s1: in_s[1], in_s2: in_s[2], in_s3: in_s[3],
+            out_size: out_elem as u32,
+            flags,
+            exp,
+            _pad: 0,
+            shape0: shape[0],
+            shape1: shape[1],
+            shape2: shape[2],
+            shape3: shape[3],
+            in_s0: in_s[0],
+            in_s1: in_s[1],
+            in_s2: in_s[2],
+            in_s3: in_s[3],
         };
 
-        let in_buf = input.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "powi_f32_bytes: input is host-evicted; fault back first".into(),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "powi_f32_bytes: out is host-evicted; fault back first".into(),
-        ))?;
+        let in_buf = input.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("powi_f32_bytes: input is host-evicted; fault back first".into())
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("powi_f32_bytes: out is host-evicted; fault back first".into())
+        })?;
         let (pbuf, pmem) = self.upload_params(&p)?;
         let params_size = std::mem::size_of::<PowiParams>() as u64;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_2s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            in_buf,
+            0,
+            input.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
         let rb = [in_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
@@ -3457,7 +4321,8 @@ impl VulkanBackend {
             desc,
             (Self::workgroups(out_elem), 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -3484,7 +4349,8 @@ impl VulkanBackend {
         if out.len_bytes() < need_bytes {
             fuel_ir::bail!(
                 "clamp_f32_bytes: out {} bytes < required {}",
-                out.len_bytes(), need_bytes,
+                out.len_bytes(),
+                need_bytes,
             );
         }
 
@@ -3500,31 +4366,64 @@ impl VulkanBackend {
             && layout.stride().iter().all(|&s| s != 0);
         let flags = in_contig as u32;
 
-        #[repr(C)] #[derive(Clone, Copy)]
+        #[repr(C)]
+        #[derive(Clone, Copy)]
         struct ClampParams {
-            out_size: u32, flags: u32, lo: f32, hi: f32,
-            shape0: u32, shape1: u32, shape2: u32, shape3: u32,
-            in_s0: u32, in_s1: u32, in_s2: u32, in_s3: u32,
+            out_size: u32,
+            flags: u32,
+            lo: f32,
+            hi: f32,
+            shape0: u32,
+            shape1: u32,
+            shape2: u32,
+            shape3: u32,
+            in_s0: u32,
+            in_s1: u32,
+            in_s2: u32,
+            in_s3: u32,
         }
         let p = ClampParams {
-            out_size: out_elem as u32, flags,
-            lo: lo as f32, hi: hi as f32,
-            shape0: shape[0], shape1: shape[1], shape2: shape[2], shape3: shape[3],
-            in_s0: in_s[0], in_s1: in_s[1], in_s2: in_s[2], in_s3: in_s[3],
+            out_size: out_elem as u32,
+            flags,
+            lo: lo as f32,
+            hi: hi as f32,
+            shape0: shape[0],
+            shape1: shape[1],
+            shape2: shape[2],
+            shape3: shape[3],
+            in_s0: in_s[0],
+            in_s1: in_s[1],
+            in_s2: in_s[2],
+            in_s3: in_s[3],
         };
 
-        let in_buf = input.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "clamp_f32_bytes: input is host-evicted; fault back first".into(),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "clamp_f32_bytes: out is host-evicted; fault back first".into(),
-        ))?;
+        let in_buf = input.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("clamp_f32_bytes: input is host-evicted; fault back first".into())
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("clamp_f32_bytes: out is host-evicted; fault back first".into())
+        })?;
         let (pbuf, pmem) = self.upload_params(&p)?;
         let params_size = std::mem::size_of::<ClampParams>() as u64;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_2s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            in_buf,
+            0,
+            input.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
         let rb = [in_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
@@ -3535,7 +4434,8 @@ impl VulkanBackend {
             desc,
             (Self::workgroups(out_elem), 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -3563,7 +4463,8 @@ impl VulkanBackend {
         if out.len_bytes() < need_bytes {
             fuel_ir::bail!(
                 "affine_f64_bytes: out {} bytes < required {}",
-                out.len_bytes(), need_bytes,
+                out.len_bytes(),
+                need_bytes,
             );
         }
 
@@ -3579,34 +4480,66 @@ impl VulkanBackend {
             && layout.stride().iter().all(|&s| s != 0);
         let flags = in_contig as u32;
 
-        #[repr(C)] #[derive(Clone, Copy)]
+        #[repr(C)]
+        #[derive(Clone, Copy)]
         struct AffParams {
-            out_size: u32, flags: u32,
+            out_size: u32,
+            flags: u32,
             // f64 alignment: place doubles on 8-byte boundary; pad is the
             // {out_size, flags} pair already two u32 = 8 bytes.
-            mul: f64, add: f64,
-            shape0: u32, shape1: u32, shape2: u32, shape3: u32,
-            in_s0: u32, in_s1: u32, in_s2: u32, in_s3: u32,
+            mul: f64,
+            add: f64,
+            shape0: u32,
+            shape1: u32,
+            shape2: u32,
+            shape3: u32,
+            in_s0: u32,
+            in_s1: u32,
+            in_s2: u32,
+            in_s3: u32,
         }
         let p = AffParams {
-            out_size: out_elem as u32, flags,
-            mul, add,
-            shape0: shape[0], shape1: shape[1], shape2: shape[2], shape3: shape[3],
-            in_s0: in_s[0], in_s1: in_s[1], in_s2: in_s[2], in_s3: in_s[3],
+            out_size: out_elem as u32,
+            flags,
+            mul,
+            add,
+            shape0: shape[0],
+            shape1: shape[1],
+            shape2: shape[2],
+            shape3: shape[3],
+            in_s0: in_s[0],
+            in_s1: in_s[1],
+            in_s2: in_s[2],
+            in_s3: in_s[3],
         };
 
-        let in_buf = input.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "affine_f64_bytes: input is host-evicted; fault back first".into(),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "affine_f64_bytes: out is host-evicted; fault back first".into(),
-        ))?;
+        let in_buf = input.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("affine_f64_bytes: input is host-evicted; fault back first".into())
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("affine_f64_bytes: out is host-evicted; fault back first".into())
+        })?;
         let (pbuf, pmem) = self.upload_params(&p)?;
         let params_size = std::mem::size_of::<AffParams>() as u64;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_2s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            in_buf,
+            0,
+            input.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
         let rb = [in_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
@@ -3617,7 +4550,8 @@ impl VulkanBackend {
             desc,
             (Self::workgroups(out_elem), 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -3643,7 +4577,8 @@ impl VulkanBackend {
         if out.len_bytes() < need_bytes {
             fuel_ir::bail!(
                 "affine_f16_bytes: out {} bytes < required {}",
-                out.len_bytes(), need_bytes,
+                out.len_bytes(),
+                need_bytes,
             );
         }
 
@@ -3659,25 +4594,43 @@ impl VulkanBackend {
             && layout.stride().iter().all(|&s| s != 0);
         let flags = in_contig as u32;
 
-        #[repr(C)] #[derive(Clone, Copy)]
+        #[repr(C)]
+        #[derive(Clone, Copy)]
         struct AffParams {
-            out_size: u32, flags: u32, mul: f32, add: f32,
-            shape0: u32, shape1: u32, shape2: u32, shape3: u32,
-            in_s0: u32, in_s1: u32, in_s2: u32, in_s3: u32,
+            out_size: u32,
+            flags: u32,
+            mul: f32,
+            add: f32,
+            shape0: u32,
+            shape1: u32,
+            shape2: u32,
+            shape3: u32,
+            in_s0: u32,
+            in_s1: u32,
+            in_s2: u32,
+            in_s3: u32,
         }
         let p = AffParams {
-            out_size: out_elem as u32, flags,
-            mul: mul as f32, add: add as f32,
-            shape0: shape[0], shape1: shape[1], shape2: shape[2], shape3: shape[3],
-            in_s0: in_s[0], in_s1: in_s[1], in_s2: in_s[2], in_s3: in_s[3],
+            out_size: out_elem as u32,
+            flags,
+            mul: mul as f32,
+            add: add as f32,
+            shape0: shape[0],
+            shape1: shape[1],
+            shape2: shape[2],
+            shape3: shape[3],
+            in_s0: in_s[0],
+            in_s1: in_s[1],
+            in_s2: in_s[2],
+            in_s3: in_s[3],
         };
 
-        let in_buf = input.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "affine_f16_bytes: input is host-evicted; fault back first".into(),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "affine_f16_bytes: out is host-evicted; fault back first".into(),
-        ))?;
+        let in_buf = input.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("affine_f16_bytes: input is host-evicted; fault back first".into())
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("affine_f16_bytes: out is host-evicted; fault back first".into())
+        })?;
         let (pbuf, pmem) = self.upload_params(&p)?;
         let params_size = std::mem::size_of::<AffParams>() as u64;
 
@@ -3686,7 +4639,10 @@ impl VulkanBackend {
         let in_bind_len = ((input.len_bytes() + 3) & !3) as u64;
         let out_bind_len = ((out.len_bytes() + 3) & !3) as u64;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_2s1u)
+            .map_err(vk_err)?;
         desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, in_bind_len);
         desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out_bind_len);
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
@@ -3699,7 +4655,8 @@ impl VulkanBackend {
             desc,
             (Self::workgroups(out_elem), 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -3723,27 +4680,54 @@ impl VulkanBackend {
         if out.len_bytes() < need_bytes {
             fuel_ir::bail!(
                 "affine_bf16_bytes: out {} bytes < required {}",
-                out.len_bytes(), need_bytes,
+                out.len_bytes(),
+                need_bytes,
             );
         }
         let n_pairs = out_elem / 2;
 
-        #[repr(C)] #[derive(Clone, Copy)]
-        struct AffParams { n_pairs: u32, _pad0: u32, mul: f32, add: f32 }
-        let p = AffParams { n_pairs: n_pairs as u32, _pad0: 0, mul: mul as f32, add: add as f32 };
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct AffParams {
+            n_pairs: u32,
+            _pad0: u32,
+            mul: f32,
+            add: f32,
+        }
+        let p = AffParams {
+            n_pairs: n_pairs as u32,
+            _pad0: 0,
+            mul: mul as f32,
+            add: add as f32,
+        };
 
-        let in_buf = input.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "affine_bf16_bytes: input is host-evicted".into(),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "affine_bf16_bytes: out is host-evicted".into(),
-        ))?;
+        let in_buf = input.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("affine_bf16_bytes: input is host-evicted".into())
+        })?;
+        let out_buf = out
+            .buffer_opt()
+            .ok_or_else(|| fuel_ir::Error::Msg("affine_bf16_bytes: out is host-evicted".into()))?;
         let (pbuf, pmem) = self.upload_params(&p)?;
         let params_size = std::mem::size_of::<AffParams>() as u64;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_2s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            in_buf,
+            0,
+            input.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
         let rb = [in_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
@@ -3754,7 +4738,8 @@ impl VulkanBackend {
             desc,
             (Self::workgroups(n_pairs), 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -3790,7 +4775,8 @@ impl VulkanBackend {
         if out.len_bytes() < need_bytes {
             fuel_ir::bail!(
                 "affine_f32_bytes: out {} bytes < required {}",
-                out.len_bytes(), need_bytes,
+                out.len_bytes(),
+                need_bytes,
             );
         }
 
@@ -3806,31 +4792,64 @@ impl VulkanBackend {
             && layout.stride().iter().all(|&s| s != 0);
         let flags = in_contig as u32;
 
-        #[repr(C)] #[derive(Clone, Copy)]
+        #[repr(C)]
+        #[derive(Clone, Copy)]
         struct AffParams {
-            out_size: u32, flags: u32, mul: f32, add: f32,
-            shape0: u32, shape1: u32, shape2: u32, shape3: u32,
-            in_s0: u32, in_s1: u32, in_s2: u32, in_s3: u32,
+            out_size: u32,
+            flags: u32,
+            mul: f32,
+            add: f32,
+            shape0: u32,
+            shape1: u32,
+            shape2: u32,
+            shape3: u32,
+            in_s0: u32,
+            in_s1: u32,
+            in_s2: u32,
+            in_s3: u32,
         }
         let p = AffParams {
-            out_size: out_elem as u32, flags,
-            mul: mul as f32, add: add as f32,
-            shape0: shape[0], shape1: shape[1], shape2: shape[2], shape3: shape[3],
-            in_s0: in_s[0], in_s1: in_s[1], in_s2: in_s[2], in_s3: in_s[3],
+            out_size: out_elem as u32,
+            flags,
+            mul: mul as f32,
+            add: add as f32,
+            shape0: shape[0],
+            shape1: shape[1],
+            shape2: shape[2],
+            shape3: shape[3],
+            in_s0: in_s[0],
+            in_s1: in_s[1],
+            in_s2: in_s[2],
+            in_s3: in_s[3],
         };
 
-        let in_buf = input.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "affine_f32_bytes: input is host-evicted; fault back first".into(),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "affine_f32_bytes: out is host-evicted; fault back first".into(),
-        ))?;
+        let in_buf = input.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("affine_f32_bytes: input is host-evicted; fault back first".into())
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("affine_f32_bytes: out is host-evicted; fault back first".into())
+        })?;
         let (pbuf, pmem) = self.upload_params(&p)?;
         let params_size = std::mem::size_of::<AffParams>() as u64;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_2s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            in_buf,
+            0,
+            input.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
         Ok((desc, pbuf, pmem, Self::workgroups(out_elem)))
     }
@@ -3847,12 +4866,12 @@ impl VulkanBackend {
             self.build_affine_f32_dispatch(input, out, mul, add, layout)?;
         // Re-fetch the raw buffer handles for the recorder's read/write
         // dependency tracking (the helper just validated they are resident).
-        let in_buf = input.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "affine_f32_bytes: input is host-evicted; fault back first".into(),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "affine_f32_bytes: out is host-evicted; fault back first".into(),
-        ))?;
+        let in_buf = input.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("affine_f32_bytes: input is host-evicted; fault back first".into())
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("affine_f32_bytes: out is host-evicted; fault back first".into())
+        })?;
         let rb = [in_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
         self.record_dispatch_batched(
@@ -3862,7 +4881,8 @@ impl VulkanBackend {
             desc,
             (wg, 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -3897,7 +4917,8 @@ impl VulkanBackend {
         if lhs_batch_dims.len() != rhs_batch_dims.len() {
             fuel_ir::bail!(
                 "matmul_f32_bytes: batch ranks must match (lhs={}, rhs={})",
-                lhs_batch_dims.len(), rhs_batch_dims.len(),
+                lhs_batch_dims.len(),
+                rhs_batch_dims.len(),
             );
         }
         let lhs_batch: usize = lhs_batch_dims.iter().product::<usize>().max(1);
@@ -3914,43 +4935,68 @@ impl VulkanBackend {
         };
 
         let elem = std::mem::size_of::<f32>();
-        let need_lhs = lhs_batch.saturating_mul(m).saturating_mul(k).saturating_mul(elem);
-        let need_rhs = rhs_batch.saturating_mul(k).saturating_mul(n).saturating_mul(elem);
-        let need_out = lhs_batch.saturating_mul(m).saturating_mul(n).saturating_mul(elem);
+        let need_lhs = lhs_batch
+            .saturating_mul(m)
+            .saturating_mul(k)
+            .saturating_mul(elem);
+        let need_rhs = rhs_batch
+            .saturating_mul(k)
+            .saturating_mul(n)
+            .saturating_mul(elem);
+        let need_out = lhs_batch
+            .saturating_mul(m)
+            .saturating_mul(n)
+            .saturating_mul(elem);
         if lhs.len_bytes() < need_lhs || rhs.len_bytes() < need_rhs || out.len_bytes() < need_out {
             fuel_ir::bail!(
                 "matmul_f32_bytes: buffer too small (lhs need {need_lhs} have {}; \
                  rhs need {need_rhs} have {}; out need {need_out} have {})",
-                lhs.len_bytes(), rhs.len_bytes(), out.len_bytes(),
+                lhs.len_bytes(),
+                rhs.len_bytes(),
+                out.len_bytes(),
             );
         }
 
-        #[repr(C)] #[derive(Clone, Copy)]
+        #[repr(C)]
+        #[derive(Clone, Copy)]
         struct MatmulParams {
-            m: u32, n: u32, k: u32,
-            sa_batch: u32, sa_row: u32, sa_col: u32,
-            sb_batch: u32, sb_row: u32, sb_col: u32,
+            m: u32,
+            n: u32,
+            k: u32,
+            sa_batch: u32,
+            sa_row: u32,
+            sa_col: u32,
+            sb_batch: u32,
+            sb_row: u32,
+            sb_col: u32,
             sc_batch: u32,
             n_rep: u32,
             _pad: u32,
         }
         let params = MatmulParams {
-            m: m as u32, n: n as u32, k: k as u32,
-            sa_batch: (m * k) as u32, sa_row: k as u32, sa_col: 1,
-            sb_batch: (k * n) as u32, sb_row: n as u32, sb_col: 1,
+            m: m as u32,
+            n: n as u32,
+            k: k as u32,
+            sa_batch: (m * k) as u32,
+            sa_row: k as u32,
+            sa_col: 1,
+            sb_batch: (k * n) as u32,
+            sb_row: n as u32,
+            sb_col: 1,
             sc_batch: (m * n) as u32,
-            n_rep: n_rep as u32, _pad: 0,
+            n_rep: n_rep as u32,
+            _pad: 0,
         };
 
-        let lhs_buf = lhs.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "matmul_f32_bytes: lhs is host-evicted; fault back first".into(),
-        ))?;
-        let rhs_buf = rhs.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "matmul_f32_bytes: rhs is host-evicted; fault back first".into(),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "matmul_f32_bytes: out is host-evicted; fault back first".into(),
-        ))?;
+        let lhs_buf = lhs.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("matmul_f32_bytes: lhs is host-evicted; fault back first".into())
+        })?;
+        let rhs_buf = rhs.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("matmul_f32_bytes: rhs is host-evicted; fault back first".into())
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("matmul_f32_bytes: out is host-evicted; fault back first".into())
+        })?;
         let (pbuf, pmem) = self.upload_params(&params)?;
         let params_size = std::mem::size_of::<MatmulParams>() as u64;
 
@@ -3959,28 +5005,55 @@ impl VulkanBackend {
                 &self.pipelines.matvec_pipeline,
                 &self.pipelines.matvec_layout,
                 "matvec",
-                n as u32, 1u32, batch as u32,
+                n as u32,
+                1u32,
+                batch as u32,
             )
         } else if m < 32 {
             (
                 &self.pipelines.matmul_pipeline,
                 &self.pipelines.matmul_layout,
                 "matmul",
-                ((n + 63) / 64) as u32, ((m + 63) / 64) as u32, batch as u32,
+                ((n + 63) / 64) as u32,
+                ((m + 63) / 64) as u32,
+                batch as u32,
             )
         } else {
             (
                 &self.pipelines.matmul_tiled_pipeline,
                 &self.pipelines.matmul_tiled_layout,
                 "matmul_tiled",
-                ((n + 63) / 64) as u32, ((m + 63) / 64) as u32, batch as u32,
+                ((n + 63) / 64) as u32,
+                ((m + 63) / 64) as u32,
+                batch as u32,
             )
         };
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, lhs_buf, 0, lhs.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, rhs_buf, 0, rhs.len_bytes() as u64);
-        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_3s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            lhs_buf,
+            0,
+            lhs.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            rhs_buf,
+            0,
+            rhs.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            2,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
 
         let rb = [lhs_buf.raw() as u64, rhs_buf.raw() as u64];
@@ -3992,7 +5065,8 @@ impl VulkanBackend {
             desc,
             (gx, gy, gz),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -4007,7 +5081,7 @@ impl VulkanBackend {
     pub fn matmul_f32_bt_bytes(
         &self,
         lhs: &VulkanStorageBytes,
-        rhs: &VulkanStorageBytes,    // [N, K] row-major
+        rhs: &VulkanStorageBytes, // [N, K] row-major
         out: &mut VulkanStorageBytes,
         lhs_batch_dims: &[usize],
         rhs_batch_dims: &[usize],
@@ -4018,7 +5092,8 @@ impl VulkanBackend {
         if lhs_batch_dims.len() != rhs_batch_dims.len() {
             fuel_ir::bail!(
                 "matmul_f32_bt_bytes: batch ranks must match (lhs={}, rhs={})",
-                lhs_batch_dims.len(), rhs_batch_dims.len(),
+                lhs_batch_dims.len(),
+                rhs_batch_dims.len(),
             );
         }
         let lhs_batch: usize = lhs_batch_dims.iter().product::<usize>().max(1);
@@ -4034,22 +5109,40 @@ impl VulkanBackend {
         };
 
         let elem = std::mem::size_of::<f32>();
-        let need_lhs = lhs_batch.saturating_mul(m).saturating_mul(k).saturating_mul(elem);
-        let need_rhs = rhs_batch.saturating_mul(n).saturating_mul(k).saturating_mul(elem);
-        let need_out = lhs_batch.saturating_mul(m).saturating_mul(n).saturating_mul(elem);
+        let need_lhs = lhs_batch
+            .saturating_mul(m)
+            .saturating_mul(k)
+            .saturating_mul(elem);
+        let need_rhs = rhs_batch
+            .saturating_mul(n)
+            .saturating_mul(k)
+            .saturating_mul(elem);
+        let need_out = lhs_batch
+            .saturating_mul(m)
+            .saturating_mul(n)
+            .saturating_mul(elem);
         if lhs.len_bytes() < need_lhs || rhs.len_bytes() < need_rhs || out.len_bytes() < need_out {
             fuel_ir::bail!(
                 "matmul_f32_bt_bytes: buffer too small (lhs need {need_lhs} have {}; \
                  rhs need {need_rhs} have {}; out need {need_out} have {})",
-                lhs.len_bytes(), rhs.len_bytes(), out.len_bytes(),
+                lhs.len_bytes(),
+                rhs.len_bytes(),
+                out.len_bytes(),
             );
         }
 
-        #[repr(C)] #[derive(Clone, Copy)]
+        #[repr(C)]
+        #[derive(Clone, Copy)]
         struct MatmulParams {
-            m: u32, n: u32, k: u32,
-            sa_batch: u32, sa_row: u32, sa_col: u32,
-            sb_batch: u32, sb_row: u32, sb_col: u32,
+            m: u32,
+            n: u32,
+            k: u32,
+            sa_batch: u32,
+            sa_row: u32,
+            sa_col: u32,
+            sb_batch: u32,
+            sb_row: u32,
+            sb_col: u32,
             sc_batch: u32,
             n_rep: u32,
             _pad: u32,
@@ -4058,22 +5151,29 @@ impl VulkanBackend {
         // reads B[b_off + gk * sb_row + gc * sb_col], so we need
         // sb_row = 1 (one step along K) and sb_col = K (one row jumps K).
         let params = MatmulParams {
-            m: m as u32, n: n as u32, k: k as u32,
-            sa_batch: (m * k) as u32, sa_row: k as u32, sa_col: 1,
-            sb_batch: (n * k) as u32, sb_row: 1,         sb_col: k as u32,
+            m: m as u32,
+            n: n as u32,
+            k: k as u32,
+            sa_batch: (m * k) as u32,
+            sa_row: k as u32,
+            sa_col: 1,
+            sb_batch: (n * k) as u32,
+            sb_row: 1,
+            sb_col: k as u32,
             sc_batch: (m * n) as u32,
-            n_rep: n_rep as u32, _pad: 0,
+            n_rep: n_rep as u32,
+            _pad: 0,
         };
 
-        let lhs_buf = lhs.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "matmul_f32_bt_bytes: lhs is host-evicted; fault back first".into(),
-        ))?;
-        let rhs_buf = rhs.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "matmul_f32_bt_bytes: rhs is host-evicted; fault back first".into(),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "matmul_f32_bt_bytes: out is host-evicted; fault back first".into(),
-        ))?;
+        let lhs_buf = lhs.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("matmul_f32_bt_bytes: lhs is host-evicted; fault back first".into())
+        })?;
+        let rhs_buf = rhs.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("matmul_f32_bt_bytes: rhs is host-evicted; fault back first".into())
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("matmul_f32_bt_bytes: out is host-evicted; fault back first".into())
+        })?;
         let (pbuf, pmem) = self.upload_params(&params)?;
         let params_size = std::mem::size_of::<MatmulParams>() as u64;
 
@@ -4082,37 +5182,68 @@ impl VulkanBackend {
                 &self.pipelines.matvec_pipeline,
                 &self.pipelines.matvec_layout,
                 "matvec",
-                n as u32, 1u32, batch as u32,
+                n as u32,
+                1u32,
+                batch as u32,
             )
         } else if m < 32 {
             (
                 &self.pipelines.matmul_pipeline,
                 &self.pipelines.matmul_layout,
                 "matmul",
-                ((n + 63) / 64) as u32, ((m + 63) / 64) as u32, batch as u32,
+                ((n + 63) / 64) as u32,
+                ((m + 63) / 64) as u32,
+                batch as u32,
             )
         } else {
             (
                 &self.pipelines.matmul_tiled_pipeline,
                 &self.pipelines.matmul_tiled_layout,
                 "matmul_tiled",
-                ((n + 63) / 64) as u32, ((m + 63) / 64) as u32, batch as u32,
+                ((n + 63) / 64) as u32,
+                ((m + 63) / 64) as u32,
+                batch as u32,
             )
         };
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, lhs_buf, 0, lhs.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, rhs_buf, 0, rhs.len_bytes() as u64);
-        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_3s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            lhs_buf,
+            0,
+            lhs.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            rhs_buf,
+            0,
+            rhs.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            2,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
 
         let rb = [lhs_buf.raw() as u64, rhs_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
         self.record_dispatch_batched(
-            op_name, pipeline, pipe_layout, desc,
+            op_name,
+            pipeline,
+            pipe_layout,
+            desc,
             (gx, gy, gz),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -4131,45 +5262,83 @@ impl VulkanBackend {
         w_q4_0: &VulkanStorageBytes,
         out: &mut VulkanStorageBytes,
         batch: usize,
-        m: usize, k: usize, n: usize,
+        m: usize,
+        k: usize,
+        n: usize,
     ) -> fuel_ir::Result<()> {
         if k % 32 != 0 {
-            fuel_ir::bail!(
-                "matmul_q4_0_bytes: k ({k}) must be a multiple of 32 (Q4_0 block size)",
-            );
+            fuel_ir::bail!("matmul_q4_0_bytes: k ({k}) must be a multiple of 32 (Q4_0 block size)",);
         }
         let batch = batch.max(1);
-        let need_a   = batch * m * k * 4;
-        let need_w   = n * (k / 32) * 18;  // 18 bytes per Q4_0 block
+        let need_a = batch * m * k * 4;
+        let need_w = n * (k / 32) * 18; // 18 bytes per Q4_0 block
         let need_out = batch * m * n * 4;
-        if a_f32.len_bytes()  < need_a   { fuel_ir::bail!("matmul_q4_0_bytes: A {} < {need_a}",  a_f32.len_bytes()); }
-        if w_q4_0.len_bytes() < need_w   { fuel_ir::bail!("matmul_q4_0_bytes: W {} < {need_w}",  w_q4_0.len_bytes()); }
-        if out.len_bytes()    < need_out { fuel_ir::bail!("matmul_q4_0_bytes: O {} < {need_out}", out.len_bytes()); }
+        if a_f32.len_bytes() < need_a {
+            fuel_ir::bail!("matmul_q4_0_bytes: A {} < {need_a}", a_f32.len_bytes());
+        }
+        if w_q4_0.len_bytes() < need_w {
+            fuel_ir::bail!("matmul_q4_0_bytes: W {} < {need_w}", w_q4_0.len_bytes());
+        }
+        if out.len_bytes() < need_out {
+            fuel_ir::bail!("matmul_q4_0_bytes: O {} < {need_out}", out.len_bytes());
+        }
 
-        let a_buf  = a_f32.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "matmul_q4_0_bytes: A is host-evicted; fault back first".into()))?;
-        let w_buf  = w_q4_0.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "matmul_q4_0_bytes: W is host-evicted; fault back first".into()))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "matmul_q4_0_bytes: O is host-evicted; fault back first".into()))?;
+        let a_buf = a_f32.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("matmul_q4_0_bytes: A is host-evicted; fault back first".into())
+        })?;
+        let w_buf = w_q4_0.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("matmul_q4_0_bytes: W is host-evicted; fault back first".into())
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("matmul_q4_0_bytes: O is host-evicted; fault back first".into())
+        })?;
 
         if m == 1 {
             // qmatvec path: one dispatch per batch row.
-            #[repr(C)] #[derive(Clone, Copy)]
-            struct QmvParams { n: u32, k: u32, blocks_per_row: u32, _pad: u32 }
+            #[repr(C)]
+            #[derive(Clone, Copy)]
+            struct QmvParams {
+                n: u32,
+                k: u32,
+                blocks_per_row: u32,
+                _pad: u32,
+            }
             let p = QmvParams {
-                n: n as u32, k: k as u32,
-                blocks_per_row: (k / 32) as u32, _pad: 0,
+                n: n as u32,
+                k: k as u32,
+                blocks_per_row: (k / 32) as u32,
+                _pad: 0,
             };
             for b in 0..batch {
                 let (pbuf, pmem) = self.upload_params(&p)?;
                 let a_byte_off = (b * k * 4) as u64;
                 let out_byte_off = (b * n * 4) as u64;
-                let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
-                desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, a_buf,   a_byte_off,   (k * 4) as u64);
-                desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, w_buf,   0,            need_w as u64);
-                desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, out_byte_off, (n * 4) as u64);
-                desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, std::mem::size_of::<QmvParams>() as u64);
+                let desc = self
+                    .pipelines
+                    .allocate_desc(&self.pipelines.layout_3s1u)
+                    .map_err(vk_err)?;
+                desc.write_buffer(
+                    0,
+                    DescriptorType::STORAGE_BUFFER,
+                    a_buf,
+                    a_byte_off,
+                    (k * 4) as u64,
+                );
+                desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, w_buf, 0, need_w as u64);
+                desc.write_buffer(
+                    2,
+                    DescriptorType::STORAGE_BUFFER,
+                    out_buf,
+                    out_byte_off,
+                    (n * 4) as u64,
+                );
+                desc.write_buffer(
+                    3,
+                    DescriptorType::UNIFORM_BUFFER,
+                    &pbuf,
+                    0,
+                    std::mem::size_of::<QmvParams>() as u64,
+                );
                 let rb = [a_buf.raw() as u64, w_buf.raw() as u64];
                 let wb = [out_buf.raw() as u64];
                 self.record_dispatch_batched(
@@ -4179,16 +5348,25 @@ impl VulkanBackend {
                     desc,
                     (n as u32, 1, 1),
                     vec![(pbuf, pmem)],
-                    &rb, &wb,
+                    &rb,
+                    &wb,
                 )?;
             }
         } else {
             // tiled path: one dispatch per batch, grid (n, n_tiles_m).
             const TM: usize = 8;
-            #[repr(C)] #[derive(Clone, Copy)]
-            struct TiledParams { m: u32, n: u32, k: u32, blocks_per_row: u32 }
+            #[repr(C)]
+            #[derive(Clone, Copy)]
+            struct TiledParams {
+                m: u32,
+                n: u32,
+                k: u32,
+                blocks_per_row: u32,
+            }
             let p = TiledParams {
-                m: m as u32, n: n as u32, k: k as u32,
+                m: m as u32,
+                n: n as u32,
+                k: k as u32,
                 blocks_per_row: (k / 32) as u32,
             };
             let n_tiles_m = ((m + TM - 1) / TM) as u32;
@@ -4196,11 +5374,32 @@ impl VulkanBackend {
                 let (pbuf, pmem) = self.upload_params(&p)?;
                 let a_byte_off = (b * m * k * 4) as u64;
                 let out_byte_off = (b * m * n * 4) as u64;
-                let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
-                desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, a_buf,   a_byte_off,   (m * k * 4) as u64);
-                desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, w_buf,   0,            need_w as u64);
-                desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, out_byte_off, (m * n * 4) as u64);
-                desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, std::mem::size_of::<TiledParams>() as u64);
+                let desc = self
+                    .pipelines
+                    .allocate_desc(&self.pipelines.layout_3s1u)
+                    .map_err(vk_err)?;
+                desc.write_buffer(
+                    0,
+                    DescriptorType::STORAGE_BUFFER,
+                    a_buf,
+                    a_byte_off,
+                    (m * k * 4) as u64,
+                );
+                desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, w_buf, 0, need_w as u64);
+                desc.write_buffer(
+                    2,
+                    DescriptorType::STORAGE_BUFFER,
+                    out_buf,
+                    out_byte_off,
+                    (m * n * 4) as u64,
+                );
+                desc.write_buffer(
+                    3,
+                    DescriptorType::UNIFORM_BUFFER,
+                    &pbuf,
+                    0,
+                    std::mem::size_of::<TiledParams>() as u64,
+                );
                 let rb = [a_buf.raw() as u64, w_buf.raw() as u64];
                 let wb = [out_buf.raw() as u64];
                 self.record_dispatch_batched(
@@ -4210,7 +5409,8 @@ impl VulkanBackend {
                     desc,
                     (n as u32, n_tiles_m, 1),
                     vec![(pbuf, pmem)],
-                    &rb, &wb,
+                    &rb,
+                    &wb,
                 )?;
             }
         }
@@ -4228,7 +5428,9 @@ impl VulkanBackend {
         w_q4_km: &VulkanStorageBytes,
         out: &mut VulkanStorageBytes,
         batch: usize,
-        m: usize, k: usize, n: usize,
+        m: usize,
+        k: usize,
+        n: usize,
     ) -> fuel_ir::Result<()> {
         const QK_K: usize = 256;
         if k % QK_K != 0 {
@@ -4241,22 +5443,52 @@ impl VulkanBackend {
         let mut w_f32 = self.alloc_bytes(w_f32_bytes)?;
 
         // Dequantize: 2-buffer dispatch (input W bytes, output f32 bytes).
-        #[repr(C)] #[derive(Clone, Copy)]
-        struct Q4KMParams { n_blocks: u32, out_elements: u32, _p0: u32, _p1: u32 }
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct Q4KMParams {
+            n_blocks: u32,
+            out_elements: u32,
+            _p0: u32,
+            _p1: u32,
+        }
         let dp = Q4KMParams {
             n_blocks: n_blocks as u32,
             out_elements: (n * k) as u32,
-            _p0: 0, _p1: 0,
+            _p0: 0,
+            _p1: 0,
         };
         let (pbuf, pmem) = self.upload_params(&dp)?;
-        let w_q_buf = w_q4_km.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "matmul_q4_km_bytes: W is host-evicted; fault back first".into()))?;
-        let w_f32_buf = w_f32.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "matmul_q4_km_bytes: scratch alloc failed to expose buffer".into()))?;
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, w_q_buf,   0, w_q4_km.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, w_f32_buf, 0, w_f32_bytes as u64);
-        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, std::mem::size_of::<Q4KMParams>() as u64);
+        let w_q_buf = w_q4_km.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("matmul_q4_km_bytes: W is host-evicted; fault back first".into())
+        })?;
+        let w_f32_buf = w_f32.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("matmul_q4_km_bytes: scratch alloc failed to expose buffer".into())
+        })?;
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_2s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            w_q_buf,
+            0,
+            w_q4_km.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            w_f32_buf,
+            0,
+            w_f32_bytes as u64,
+        );
+        desc.write_buffer(
+            2,
+            DescriptorType::UNIFORM_BUFFER,
+            &pbuf,
+            0,
+            std::mem::size_of::<Q4KMParams>() as u64,
+        );
         let rb = [w_q_buf.raw() as u64];
         let wb = [w_f32_buf.raw() as u64];
         self.record_dispatch_batched(
@@ -4266,7 +5498,8 @@ impl VulkanBackend {
             desc,
             (n_blocks as u32, 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
 
@@ -4277,8 +5510,14 @@ impl VulkanBackend {
         let lhs_batch_dims: Vec<usize> = if batch <= 1 { vec![] } else { vec![batch] };
         let rhs_batch_dims: Vec<usize> = vec![];
         self.matmul_f32_bt_bytes(
-            a_f32, &w_f32, out,
-            &lhs_batch_dims, &rhs_batch_dims, m, n, k,
+            a_f32,
+            &w_f32,
+            out,
+            &lhs_batch_dims,
+            &rhs_batch_dims,
+            m,
+            n,
+            k,
         )
     }
 
@@ -4290,7 +5529,9 @@ impl VulkanBackend {
         w_q8_0: &VulkanStorageBytes,
         out: &mut VulkanStorageBytes,
         batch: usize,
-        m: usize, k: usize, n: usize,
+        m: usize,
+        k: usize,
+        n: usize,
     ) -> fuel_ir::Result<()> {
         const BLCK_SIZE: usize = 32;
         if k % BLCK_SIZE != 0 {
@@ -4303,22 +5544,52 @@ impl VulkanBackend {
         let w_f32_bytes = n_elements * 4;
         let mut w_f32 = self.alloc_bytes(w_f32_bytes)?;
 
-        #[repr(C)] #[derive(Clone, Copy)]
-        struct Q8Params { n_blocks: u32, out_elements: u32, _pad0: u32, _pad1: u32 }
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct Q8Params {
+            n_blocks: u32,
+            out_elements: u32,
+            _pad0: u32,
+            _pad1: u32,
+        }
         let dp = Q8Params {
             n_blocks: n_blocks as u32,
             out_elements: n_elements as u32,
-            _pad0: 0, _pad1: 0,
+            _pad0: 0,
+            _pad1: 0,
         };
         let (pbuf, pmem) = self.upload_params(&dp)?;
-        let w_q_buf = w_q8_0.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "matmul_q8_0_bytes: W is host-evicted; fault back first".into()))?;
-        let w_f32_buf = w_f32.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "matmul_q8_0_bytes: scratch alloc failed to expose buffer".into()))?;
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, w_q_buf,   0, w_q8_0.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, w_f32_buf, 0, w_f32_bytes as u64);
-        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, std::mem::size_of::<Q8Params>() as u64);
+        let w_q_buf = w_q8_0.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("matmul_q8_0_bytes: W is host-evicted; fault back first".into())
+        })?;
+        let w_f32_buf = w_f32.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("matmul_q8_0_bytes: scratch alloc failed to expose buffer".into())
+        })?;
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_2s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            w_q_buf,
+            0,
+            w_q8_0.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            w_f32_buf,
+            0,
+            w_f32_bytes as u64,
+        );
+        desc.write_buffer(
+            2,
+            DescriptorType::UNIFORM_BUFFER,
+            &pbuf,
+            0,
+            std::mem::size_of::<Q8Params>() as u64,
+        );
         let rb = [w_q_buf.raw() as u64];
         let wb = [w_f32_buf.raw() as u64];
         self.record_dispatch_batched(
@@ -4328,15 +5599,22 @@ impl VulkanBackend {
             desc,
             (Self::workgroups(n_elements), 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
 
         let lhs_batch_dims: Vec<usize> = if batch <= 1 { vec![] } else { vec![batch] };
         let rhs_batch_dims: Vec<usize> = vec![];
         self.matmul_f32_bt_bytes(
-            a_f32, &w_f32, out,
-            &lhs_batch_dims, &rhs_batch_dims, m, n, k,
+            a_f32,
+            &w_f32,
+            out,
+            &lhs_batch_dims,
+            &rhs_batch_dims,
+            m,
+            n,
+            k,
         )
     }
 
@@ -4352,28 +5630,32 @@ impl VulkanBackend {
     #[allow(clippy::too_many_arguments)]
     pub fn conv2d_f32_bytes(
         &self,
-        input:  &VulkanStorageBytes,
+        input: &VulkanStorageBytes,
         weight: &VulkanStorageBytes,
-        out:    &mut VulkanStorageBytes,
-        x_shape: [usize; 4],      // [N, Cin, H, W]
-        w_shape: [usize; 4],      // [Cout, Cin, k_h, k_w]
-        stride:  (usize, usize),
+        out: &mut VulkanStorageBytes,
+        x_shape: [usize; 4], // [N, Cin, H, W]
+        w_shape: [usize; 4], // [Cout, Cin, k_h, k_w]
+        stride: (usize, usize),
         padding: (usize, usize),
-        groups:  usize,
+        groups: usize,
     ) -> fuel_ir::Result<()> {
         if groups != 1 {
-            fuel_ir::bail!(
-                "conv2d_f32_bytes: groups != 1 not yet supported (got groups={groups})"
-            );
+            fuel_ir::bail!("conv2d_f32_bytes: groups != 1 not yet supported (got groups={groups})");
         }
         let s = fuel_conv::ConvShape {
-            batch: x_shape[0], c_in: x_shape[1], h: x_shape[2], w: x_shape[3],
-            c_out: w_shape[0], k_h: w_shape[2], k_w: w_shape[3],
-            stride, padding, groups,
+            batch: x_shape[0],
+            c_in: x_shape[1],
+            h: x_shape[2],
+            w: x_shape[3],
+            c_out: w_shape[0],
+            k_h: w_shape[2],
+            k_w: w_shape[3],
+            stride,
+            padding,
+            groups,
         };
-        s.validate().map_err(|e| fuel_ir::Error::Msg(
-            format!("conv2d_f32_bytes: shape validation: {e}")
-        ))?;
+        s.validate()
+            .map_err(|e| fuel_ir::Error::Msg(format!("conv2d_f32_bytes: shape validation: {e}")))?;
         let h_out = s.h_out();
         let w_out = s.w_out();
         let m = s.c_out;
@@ -4397,42 +5679,85 @@ impl VulkanBackend {
         let patches_bytes = patches_n * 4;
         let mut patches = self.alloc_bytes(patches_bytes)?;
 
-        let in_buf = input.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "conv2d_f32_bytes: input is host-evicted; fault back first".into()))?;
-        let w_buf = weight.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "conv2d_f32_bytes: weight is host-evicted; fault back first".into()))?;
-        let patches_buf = patches.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "conv2d_f32_bytes: scratch alloc failed to expose buffer".into()))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "conv2d_f32_bytes: out is host-evicted; fault back first".into()))?;
+        let in_buf = input.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("conv2d_f32_bytes: input is host-evicted; fault back first".into())
+        })?;
+        let w_buf = weight.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("conv2d_f32_bytes: weight is host-evicted; fault back first".into())
+        })?;
+        let patches_buf = patches.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("conv2d_f32_bytes: scratch alloc failed to expose buffer".into())
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("conv2d_f32_bytes: out is host-evicted; fault back first".into())
+        })?;
 
         // -------- im2col dispatch --------
-        #[repr(C)] #[derive(Clone, Copy)]
+        #[repr(C)]
+        #[derive(Clone, Copy)]
         struct Im2ColParams {
-            batch: u32, c_in: u32, h: u32, w: u32,
-            h_out: u32, w_out: u32,
-            k_h: u32, k_w: u32,
-            stride_h: u32, stride_w: u32,
-            pad_h: u32, pad_w: u32,
-            groups: u32, cin_per_g: u32,
-            total_elements: u32, _pad: u32,
+            batch: u32,
+            c_in: u32,
+            h: u32,
+            w: u32,
+            h_out: u32,
+            w_out: u32,
+            k_h: u32,
+            k_w: u32,
+            stride_h: u32,
+            stride_w: u32,
+            pad_h: u32,
+            pad_w: u32,
+            groups: u32,
+            cin_per_g: u32,
+            total_elements: u32,
+            _pad: u32,
         }
         let total = patches_n as u32;
         let im2col_params = Im2ColParams {
-            batch: s.batch as u32, c_in: s.c_in as u32,
-            h: s.h as u32, w: s.w as u32,
-            h_out: h_out as u32, w_out: w_out as u32,
-            k_h: s.k_h as u32, k_w: s.k_w as u32,
-            stride_h: s.stride.0 as u32, stride_w: s.stride.1 as u32,
-            pad_h: s.padding.0 as u32, pad_w: s.padding.1 as u32,
-            groups: s.groups as u32, cin_per_g: s.c_in_per_group() as u32,
-            total_elements: total, _pad: 0,
+            batch: s.batch as u32,
+            c_in: s.c_in as u32,
+            h: s.h as u32,
+            w: s.w as u32,
+            h_out: h_out as u32,
+            w_out: w_out as u32,
+            k_h: s.k_h as u32,
+            k_w: s.k_w as u32,
+            stride_h: s.stride.0 as u32,
+            stride_w: s.stride.1 as u32,
+            pad_h: s.padding.0 as u32,
+            pad_w: s.padding.1 as u32,
+            groups: s.groups as u32,
+            cin_per_g: s.c_in_per_group() as u32,
+            total_elements: total,
+            _pad: 0,
         };
         let (i_pbuf, i_pmem) = self.upload_params(&im2col_params)?;
-        let im2col_desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
-        im2col_desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf,      0, input.len_bytes()   as u64);
-        im2col_desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, patches_buf, 0, patches_bytes        as u64);
-        im2col_desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &i_pbuf, 0, std::mem::size_of::<Im2ColParams>() as u64);
+        let im2col_desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_2s1u)
+            .map_err(vk_err)?;
+        im2col_desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            in_buf,
+            0,
+            input.len_bytes() as u64,
+        );
+        im2col_desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            patches_buf,
+            0,
+            patches_bytes as u64,
+        );
+        im2col_desc.write_buffer(
+            2,
+            DescriptorType::UNIFORM_BUFFER,
+            &i_pbuf,
+            0,
+            std::mem::size_of::<Im2ColParams>() as u64,
+        );
         let i_rb = [in_buf.raw() as u64];
         let i_wb = [patches_buf.raw() as u64];
         let im2col_wg = (total + 255) / 256;
@@ -4443,28 +5768,41 @@ impl VulkanBackend {
             im2col_desc,
             (im2col_wg, 1, 1),
             vec![(i_pbuf, i_pmem)],
-            &i_rb, &i_wb,
+            &i_rb,
+            &i_wb,
         )?;
         self.flush_pending()?;
 
         // -------- matmul dispatch --------
-        #[repr(C)] #[derive(Clone, Copy)]
+        #[repr(C)]
+        #[derive(Clone, Copy)]
         struct MatmulParams {
-            m: u32, n: u32, k: u32,
-            sa_batch: u32, sa_row: u32, sa_col: u32,
-            sb_batch: u32, sb_row: u32, sb_col: u32,
+            m: u32,
+            n: u32,
+            k: u32,
+            sa_batch: u32,
+            sa_row: u32,
+            sa_col: u32,
+            sb_batch: u32,
+            sb_row: u32,
+            sb_col: u32,
             sc_batch: u32,
             n_rep: u32,
             _pad: u32,
         }
         let matmul_params = MatmulParams {
-            m: m as u32, n: n as u32, k: k_dim as u32,
-            sa_batch: 0,                       // weight shared across batches
-            sa_row:   k_dim as u32, sa_col: 1,
-            sb_batch: (k_dim * n) as u32,      // patches walks per batch
-            sb_row:   n as u32,     sb_col: 1,
+            m: m as u32,
+            n: n as u32,
+            k: k_dim as u32,
+            sa_batch: 0, // weight shared across batches
+            sa_row: k_dim as u32,
+            sa_col: 1,
+            sb_batch: (k_dim * n) as u32, // patches walks per batch
+            sb_row: n as u32,
+            sb_col: 1,
             sc_batch: (m * n) as u32,
-            n_rep: 1, _pad: 0,
+            n_rep: 1,
+            _pad: 0,
         };
         let (mm_pbuf, mm_pmem) = self.upload_params(&matmul_params)?;
         let mm_params_size = std::mem::size_of::<MatmulParams>() as u64;
@@ -4475,29 +5813,62 @@ impl VulkanBackend {
                 &self.pipelines.matvec_pipeline,
                 &self.pipelines.matvec_layout,
                 "conv2d.matvec",
-                n as u32, 1u32,
+                n as u32,
+                1u32,
             )
         } else {
             (
                 &self.pipelines.matmul_pipeline,
                 &self.pipelines.matmul_layout,
                 "conv2d.matmul",
-                ((n + 63) / 64) as u32, ((m + 63) / 64) as u32,
+                ((n + 63) / 64) as u32,
+                ((m + 63) / 64) as u32,
             )
         };
 
-        let mm_desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
-        mm_desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, w_buf,        0, weight.len_bytes() as u64);
-        mm_desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, patches_buf,  0, patches_bytes      as u64);
-        mm_desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf,      0, out.len_bytes()    as u64);
-        mm_desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &mm_pbuf, 0, mm_params_size);
+        let mm_desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_3s1u)
+            .map_err(vk_err)?;
+        mm_desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            w_buf,
+            0,
+            weight.len_bytes() as u64,
+        );
+        mm_desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            patches_buf,
+            0,
+            patches_bytes as u64,
+        );
+        mm_desc.write_buffer(
+            2,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
+        mm_desc.write_buffer(
+            3,
+            DescriptorType::UNIFORM_BUFFER,
+            &mm_pbuf,
+            0,
+            mm_params_size,
+        );
         let mm_rb = [w_buf.raw() as u64, patches_buf.raw() as u64];
         let mm_wb = [out_buf.raw() as u64];
         self.record_dispatch_batched(
-            op_name, pipeline, pipe_layout, mm_desc,
+            op_name,
+            pipeline,
+            pipe_layout,
+            mm_desc,
             (gx, gy, gz),
             vec![(mm_pbuf, mm_pmem)],
-            &mm_rb, &mm_wb,
+            &mm_rb,
+            &mm_wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -4516,8 +5887,12 @@ impl VulkanBackend {
         do_grad: &VulkanStorageBytes,
         alibi: Option<&VulkanStorageBytes>,
         d_out: &mut VulkanStorageBytes,
-        b: usize, hq: usize, hkv: usize,
-        sq: usize, sk: usize, d: usize,
+        b: usize,
+        hq: usize,
+        hkv: usize,
+        sq: usize,
+        sk: usize,
+        d: usize,
         softmax_scale: f32,
         causal: bool,
     ) -> fuel_ir::Result<()> {
@@ -4527,9 +5902,20 @@ impl VulkanBackend {
             &self.pipelines.flash_attn_backward_q_f32_layout,
             "flash_attn_backward_q_f32",
             FaBackwardDispatch::Q,
-            q, k, v, do_grad, alibi, d_out,
-            b, hq, hkv, sq, sk, d,
-            softmax_scale, causal,
+            q,
+            k,
+            v,
+            do_grad,
+            alibi,
+            d_out,
+            b,
+            hq,
+            hkv,
+            sq,
+            sk,
+            d,
+            softmax_scale,
+            causal,
         )
     }
 
@@ -4544,8 +5930,12 @@ impl VulkanBackend {
         do_grad: &VulkanStorageBytes,
         alibi: Option<&VulkanStorageBytes>,
         d_out: &mut VulkanStorageBytes,
-        b: usize, hq: usize, hkv: usize,
-        sq: usize, sk: usize, d: usize,
+        b: usize,
+        hq: usize,
+        hkv: usize,
+        sq: usize,
+        sk: usize,
+        d: usize,
         softmax_scale: f32,
         causal: bool,
     ) -> fuel_ir::Result<()> {
@@ -4555,9 +5945,20 @@ impl VulkanBackend {
             &self.pipelines.flash_attn_backward_k_f32_layout,
             "flash_attn_backward_k_f32",
             FaBackwardDispatch::K,
-            q, k, v, do_grad, alibi, d_out,
-            b, hq, hkv, sq, sk, d,
-            softmax_scale, causal,
+            q,
+            k,
+            v,
+            do_grad,
+            alibi,
+            d_out,
+            b,
+            hq,
+            hkv,
+            sq,
+            sk,
+            d,
+            softmax_scale,
+            causal,
         )
     }
 
@@ -4572,8 +5973,12 @@ impl VulkanBackend {
         do_grad: &VulkanStorageBytes,
         alibi: Option<&VulkanStorageBytes>,
         d_out: &mut VulkanStorageBytes,
-        b: usize, hq: usize, hkv: usize,
-        sq: usize, sk: usize, d: usize,
+        b: usize,
+        hq: usize,
+        hkv: usize,
+        sq: usize,
+        sk: usize,
+        d: usize,
         softmax_scale: f32,
         causal: bool,
     ) -> fuel_ir::Result<()> {
@@ -4583,9 +5988,20 @@ impl VulkanBackend {
             &self.pipelines.flash_attn_backward_v_f32_layout,
             "flash_attn_backward_v_f32",
             FaBackwardDispatch::V,
-            q, k, v, do_grad, alibi, d_out,
-            b, hq, hkv, sq, sk, d,
-            softmax_scale, causal,
+            q,
+            k,
+            v,
+            do_grad,
+            alibi,
+            d_out,
+            b,
+            hq,
+            hkv,
+            sq,
+            sk,
+            d,
+            softmax_scale,
+            causal,
         )
     }
 
@@ -4607,15 +6023,17 @@ impl VulkanBackend {
         do_grad: &VulkanStorageBytes,
         alibi: Option<&VulkanStorageBytes>,
         d_out: &mut VulkanStorageBytes,
-        b: usize, hq: usize, hkv: usize,
-        sq: usize, sk: usize, d: usize,
+        b: usize,
+        hq: usize,
+        hkv: usize,
+        sq: usize,
+        sk: usize,
+        d: usize,
         softmax_scale: f32,
         causal: bool,
     ) -> fuel_ir::Result<()> {
         if hkv == 0 || hq % hkv != 0 {
-            fuel_ir::bail!(
-                "{debug_name}: hq={hq} must be a positive multiple of hkv={hkv}",
-            );
+            fuel_ir::bail!("{debug_name}: hq={hq} must be a positive multiple of hkv={hkv}",);
         }
         if sk > 4096 {
             fuel_ir::bail!(
@@ -4629,19 +6047,29 @@ impl VulkanBackend {
             fuel_ir::bail!("{debug_name}: d={d} > 256");
         }
         let elem = 4usize;
-        let need_q   = b * hq  * sq * d * elem;
-        let need_k   = b * hkv * sk * d * elem;
-        let need_v   = need_k;
-        let need_do  = need_q;
+        let need_q = b * hq * sq * d * elem;
+        let need_k = b * hkv * sk * d * elem;
+        let need_v = need_k;
+        let need_do = need_q;
         let need_out = match which {
             FaBackwardDispatch::Q => need_q,
             FaBackwardDispatch::K | FaBackwardDispatch::V => need_k,
         };
-        if q.len_bytes()       < need_q   { fuel_ir::bail!("{debug_name}: q {} < {need_q}",   q.len_bytes()); }
-        if k.len_bytes()       < need_k   { fuel_ir::bail!("{debug_name}: k {} < {need_k}",   k.len_bytes()); }
-        if v.len_bytes()       < need_v   { fuel_ir::bail!("{debug_name}: v {} < {need_v}",   v.len_bytes()); }
-        if do_grad.len_bytes() < need_do  { fuel_ir::bail!("{debug_name}: do {} < {need_do}", do_grad.len_bytes()); }
-        if d_out.len_bytes()   < need_out { fuel_ir::bail!("{debug_name}: d_out {} < {need_out}", d_out.len_bytes()); }
+        if q.len_bytes() < need_q {
+            fuel_ir::bail!("{debug_name}: q {} < {need_q}", q.len_bytes());
+        }
+        if k.len_bytes() < need_k {
+            fuel_ir::bail!("{debug_name}: k {} < {need_k}", k.len_bytes());
+        }
+        if v.len_bytes() < need_v {
+            fuel_ir::bail!("{debug_name}: v {} < {need_v}", v.len_bytes());
+        }
+        if do_grad.len_bytes() < need_do {
+            fuel_ir::bail!("{debug_name}: do {} < {need_do}", do_grad.len_bytes());
+        }
+        if d_out.len_bytes() < need_out {
+            fuel_ir::bail!("{debug_name}: d_out {} < {need_out}", d_out.len_bytes());
+        }
         if let Some(a) = alibi {
             let need_a = hq * elem;
             if a.len_bytes() < need_a {
@@ -4649,25 +6077,31 @@ impl VulkanBackend {
             }
         }
 
-        let q_buf  = q.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{debug_name}: q host-evicted")))?;
-        let k_buf  = k.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{debug_name}: k host-evicted")))?;
-        let v_buf  = v.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{debug_name}: v host-evicted")))?;
-        let do_buf = do_grad.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{debug_name}: do host-evicted")))?;
-        let dout_buf = d_out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{debug_name}: d_out host-evicted")))?;
+        let q_buf = q
+            .buffer_opt()
+            .ok_or_else(|| fuel_ir::Error::Msg(format!("{debug_name}: q host-evicted")))?;
+        let k_buf = k
+            .buffer_opt()
+            .ok_or_else(|| fuel_ir::Error::Msg(format!("{debug_name}: k host-evicted")))?;
+        let v_buf = v
+            .buffer_opt()
+            .ok_or_else(|| fuel_ir::Error::Msg(format!("{debug_name}: v host-evicted")))?;
+        let do_buf = do_grad
+            .buffer_opt()
+            .ok_or_else(|| fuel_ir::Error::Msg(format!("{debug_name}: do host-evicted")))?;
+        let dout_buf = d_out
+            .buffer_opt()
+            .ok_or_else(|| fuel_ir::Error::Msg(format!("{debug_name}: d_out host-evicted")))?;
 
         let mut dummy_alibi: Option<VulkanStorageBytes> = None;
         let alibi_buf = if let Some(a) = alibi {
-            a.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-                format!("{debug_name}: alibi host-evicted")))?
+            a.buffer_opt()
+                .ok_or_else(|| fuel_ir::Error::Msg(format!("{debug_name}: alibi host-evicted")))?
         } else {
             dummy_alibi = Some(self.alloc_bytes(16)?);
-            dummy_alibi.as_ref().unwrap().buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-                format!("{debug_name}: dummy alibi alloc failed")))?
+            dummy_alibi.as_ref().unwrap().buffer_opt().ok_or_else(|| {
+                fuel_ir::Error::Msg(format!("{debug_name}: dummy alibi alloc failed"))
+            })?
         };
         let alibi_bind_len = match alibi {
             Some(a) => a.len_bytes() as u64,
@@ -4675,38 +6109,102 @@ impl VulkanBackend {
         };
         let alibi_bind_len = ((alibi_bind_len as usize + 3) & !3) as u64;
 
-        #[repr(C)] #[derive(Clone, Copy)]
+        #[repr(C)]
+        #[derive(Clone, Copy)]
         struct FaParams {
-            b: u32, hq: u32, hkv: u32,
-            sq: u32, sk: u32, d: u32,
+            b: u32,
+            hq: u32,
+            hkv: u32,
+            sq: u32,
+            sk: u32,
+            d: u32,
             softmax_scale: f32,
             causal: u32,
             use_alibi: u32,
-            _pad0: u32, _pad1: u32, _pad2: u32,
+            _pad0: u32,
+            _pad1: u32,
+            _pad2: u32,
         }
         let params = FaParams {
-            b: b as u32, hq: hq as u32, hkv: hkv as u32,
-            sq: sq as u32, sk: sk as u32, d: d as u32,
+            b: b as u32,
+            hq: hq as u32,
+            hkv: hkv as u32,
+            sq: sq as u32,
+            sk: sk as u32,
+            d: d as u32,
             softmax_scale,
             causal: causal as u32,
             use_alibi: alibi.is_some() as u32,
-            _pad0: 0, _pad1: 0, _pad2: 0,
+            _pad0: 0,
+            _pad1: 0,
+            _pad2: 0,
         };
         let (pbuf, pmem) = self.upload_params(&params)?;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_6s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, q_buf,    0, q.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, k_buf,    0, k.len_bytes() as u64);
-        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, v_buf,    0, v.len_bytes() as u64);
-        desc.write_buffer(3, DescriptorType::STORAGE_BUFFER, do_buf,   0, do_grad.len_bytes() as u64);
-        desc.write_buffer(4, DescriptorType::STORAGE_BUFFER, alibi_buf, 0, alibi_bind_len);
-        desc.write_buffer(5, DescriptorType::STORAGE_BUFFER, dout_buf, 0, d_out.len_bytes() as u64);
-        desc.write_buffer(6, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, std::mem::size_of::<FaParams>() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_6s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            q_buf,
+            0,
+            q.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            k_buf,
+            0,
+            k.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            2,
+            DescriptorType::STORAGE_BUFFER,
+            v_buf,
+            0,
+            v.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            3,
+            DescriptorType::STORAGE_BUFFER,
+            do_buf,
+            0,
+            do_grad.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            4,
+            DescriptorType::STORAGE_BUFFER,
+            alibi_buf,
+            0,
+            alibi_bind_len,
+        );
+        desc.write_buffer(
+            5,
+            DescriptorType::STORAGE_BUFFER,
+            dout_buf,
+            0,
+            d_out.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            6,
+            DescriptorType::UNIFORM_BUFFER,
+            &pbuf,
+            0,
+            std::mem::size_of::<FaParams>() as u64,
+        );
 
-        let rb = [q_buf.raw() as u64, k_buf.raw() as u64, v_buf.raw() as u64, do_buf.raw() as u64, alibi_buf.raw() as u64];
+        let rb = [
+            q_buf.raw() as u64,
+            k_buf.raw() as u64,
+            v_buf.raw() as u64,
+            do_buf.raw() as u64,
+            alibi_buf.raw() as u64,
+        ];
         let wb = [dout_buf.raw() as u64];
         let total_z = match which {
-            FaBackwardDispatch::Q => (b * hq  * sq) as u32,
+            FaBackwardDispatch::Q => (b * hq * sq) as u32,
             FaBackwardDispatch::K | FaBackwardDispatch::V => (b * hkv * sk) as u32,
         };
         self.record_dispatch_batched(
@@ -4716,7 +6214,8 @@ impl VulkanBackend {
             desc,
             (1, 1, total_z),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         drop(dummy_alibi);
@@ -4732,8 +6231,12 @@ impl VulkanBackend {
         v: &VulkanStorageBytes,
         alibi: Option<&VulkanStorageBytes>,
         out: &mut VulkanStorageBytes,
-        b: usize, hq: usize, hkv: usize,
-        sq: usize, sk: usize, d: usize,
+        b: usize,
+        hq: usize,
+        hkv: usize,
+        sq: usize,
+        sk: usize,
+        d: usize,
         softmax_scale: f32,
         causal: bool,
     ) -> fuel_ir::Result<()> {
@@ -4742,9 +6245,19 @@ impl VulkanBackend {
             &self.pipelines.flash_attn_f32_pipeline,
             &self.pipelines.flash_attn_f32_layout,
             "flash_attn_f32",
-            q, k, v, alibi, out,
-            b, hq, hkv, sq, sk, d,
-            softmax_scale, causal,
+            q,
+            k,
+            v,
+            alibi,
+            out,
+            b,
+            hq,
+            hkv,
+            sq,
+            sk,
+            d,
+            softmax_scale,
+            causal,
             4,
         )
     }
@@ -4758,8 +6271,12 @@ impl VulkanBackend {
         v: &VulkanStorageBytes,
         alibi: Option<&VulkanStorageBytes>,
         out: &mut VulkanStorageBytes,
-        b: usize, hq: usize, hkv: usize,
-        sq: usize, sk: usize, d: usize,
+        b: usize,
+        hq: usize,
+        hkv: usize,
+        sq: usize,
+        sk: usize,
+        d: usize,
         softmax_scale: f32,
         causal: bool,
     ) -> fuel_ir::Result<()> {
@@ -4768,9 +6285,19 @@ impl VulkanBackend {
             &self.pipelines.flash_attn_bf16_pipeline,
             &self.pipelines.flash_attn_bf16_layout,
             "flash_attn_bf16",
-            q, k, v, alibi, out,
-            b, hq, hkv, sq, sk, d,
-            softmax_scale, causal,
+            q,
+            k,
+            v,
+            alibi,
+            out,
+            b,
+            hq,
+            hkv,
+            sq,
+            sk,
+            d,
+            softmax_scale,
+            causal,
             2,
         )
     }
@@ -4784,8 +6311,12 @@ impl VulkanBackend {
         v: &VulkanStorageBytes,
         alibi: Option<&VulkanStorageBytes>,
         out: &mut VulkanStorageBytes,
-        b: usize, hq: usize, hkv: usize,
-        sq: usize, sk: usize, d: usize,
+        b: usize,
+        hq: usize,
+        hkv: usize,
+        sq: usize,
+        sk: usize,
+        d: usize,
         softmax_scale: f32,
         causal: bool,
     ) -> fuel_ir::Result<()> {
@@ -4794,9 +6325,19 @@ impl VulkanBackend {
             &self.pipelines.flash_attn_f16_pipeline,
             &self.pipelines.flash_attn_f16_layout,
             "flash_attn_f16",
-            q, k, v, alibi, out,
-            b, hq, hkv, sq, sk, d,
-            softmax_scale, causal,
+            q,
+            k,
+            v,
+            alibi,
+            out,
+            b,
+            hq,
+            hkv,
+            sq,
+            sk,
+            d,
+            softmax_scale,
+            causal,
             2,
         )
     }
@@ -4817,16 +6358,18 @@ impl VulkanBackend {
         v: &VulkanStorageBytes,
         alibi: Option<&VulkanStorageBytes>,
         out: &mut VulkanStorageBytes,
-        b: usize, hq: usize, hkv: usize,
-        sq: usize, sk: usize, d: usize,
+        b: usize,
+        hq: usize,
+        hkv: usize,
+        sq: usize,
+        sk: usize,
+        d: usize,
         softmax_scale: f32,
         causal: bool,
         elem_bytes: usize,
     ) -> fuel_ir::Result<()> {
         if hkv == 0 || hq % hkv != 0 {
-            fuel_ir::bail!(
-                "{debug_name}: hq={hq} must be a positive multiple of hkv={hkv}",
-            );
+            fuel_ir::bail!("{debug_name}: hq={hq} must be a positive multiple of hkv={hkv}",);
         }
         if sk > 4096 {
             fuel_ir::bail!(
@@ -4836,14 +6379,22 @@ impl VulkanBackend {
         if d > 256 {
             fuel_ir::bail!("{debug_name}: d={d} > 256");
         }
-        let need_q   = b * hq  * sq * d * elem_bytes;
-        let need_k   = b * hkv * sk * d * elem_bytes;
-        let need_v   = need_k;
+        let need_q = b * hq * sq * d * elem_bytes;
+        let need_k = b * hkv * sk * d * elem_bytes;
+        let need_v = need_k;
         let need_out = need_q;
-        if q.len_bytes()   < need_q   { fuel_ir::bail!("{debug_name}: q {} < {need_q}",   q.len_bytes()); }
-        if k.len_bytes()   < need_k   { fuel_ir::bail!("{debug_name}: k {} < {need_k}",   k.len_bytes()); }
-        if v.len_bytes()   < need_v   { fuel_ir::bail!("{debug_name}: v {} < {need_v}",   v.len_bytes()); }
-        if out.len_bytes() < need_out { fuel_ir::bail!("{debug_name}: out {} < {need_out}", out.len_bytes()); }
+        if q.len_bytes() < need_q {
+            fuel_ir::bail!("{debug_name}: q {} < {need_q}", q.len_bytes());
+        }
+        if k.len_bytes() < need_k {
+            fuel_ir::bail!("{debug_name}: k {} < {need_k}", k.len_bytes());
+        }
+        if v.len_bytes() < need_v {
+            fuel_ir::bail!("{debug_name}: v {} < {need_v}", v.len_bytes());
+        }
+        if out.len_bytes() < need_out {
+            fuel_ir::bail!("{debug_name}: out {} < {need_out}", out.len_bytes());
+        }
         if let Some(a) = alibi {
             let need_a = hq * elem_bytes;
             if a.len_bytes() < need_a {
@@ -4851,24 +6402,30 @@ impl VulkanBackend {
             }
         }
 
-        let q_buf = q.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{debug_name}: q is host-evicted")))?;
-        let k_buf = k.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{debug_name}: k is host-evicted")))?;
-        let v_buf = v.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{debug_name}: v is host-evicted")))?;
-        let o_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{debug_name}: out is host-evicted")))?;
+        let q_buf = q
+            .buffer_opt()
+            .ok_or_else(|| fuel_ir::Error::Msg(format!("{debug_name}: q is host-evicted")))?;
+        let k_buf = k
+            .buffer_opt()
+            .ok_or_else(|| fuel_ir::Error::Msg(format!("{debug_name}: k is host-evicted")))?;
+        let v_buf = v
+            .buffer_opt()
+            .ok_or_else(|| fuel_ir::Error::Msg(format!("{debug_name}: v is host-evicted")))?;
+        let o_buf = out
+            .buffer_opt()
+            .ok_or_else(|| fuel_ir::Error::Msg(format!("{debug_name}: out is host-evicted")))?;
 
         let use_alibi = alibi.is_some();
         let mut dummy_alibi: Option<VulkanStorageBytes> = None;
         let alibi_buf = if let Some(a) = alibi {
-            a.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-                format!("{debug_name}: alibi is host-evicted")))?
+            a.buffer_opt().ok_or_else(|| {
+                fuel_ir::Error::Msg(format!("{debug_name}: alibi is host-evicted"))
+            })?
         } else {
             dummy_alibi = Some(self.alloc_bytes(16)?);
-            dummy_alibi.as_ref().unwrap().buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-                format!("{debug_name}: dummy alibi alloc failed")))?
+            dummy_alibi.as_ref().unwrap().buffer_opt().ok_or_else(|| {
+                fuel_ir::Error::Msg(format!("{debug_name}: dummy alibi alloc failed"))
+            })?
         };
 
         let alibi_bind_len = match alibi {
@@ -4878,40 +6435,73 @@ impl VulkanBackend {
 
         // Round half-precision buffer ranges to u32 multiples for
         // robust-access safety on odd sizes.
-        let q_bind_len   = ((q.len_bytes() + 3) & !3) as u64;
-        let k_bind_len   = ((k.len_bytes() + 3) & !3) as u64;
-        let v_bind_len   = ((v.len_bytes() + 3) & !3) as u64;
+        let q_bind_len = ((q.len_bytes() + 3) & !3) as u64;
+        let k_bind_len = ((k.len_bytes() + 3) & !3) as u64;
+        let v_bind_len = ((v.len_bytes() + 3) & !3) as u64;
         let out_bind_len = ((out.len_bytes() + 3) & !3) as u64;
         let alibi_bind_len = ((alibi_bind_len as usize + 3) & !3) as u64;
 
-        #[repr(C)] #[derive(Clone, Copy)]
+        #[repr(C)]
+        #[derive(Clone, Copy)]
         struct FaParams {
-            b: u32, hq: u32, hkv: u32,
-            sq: u32, sk: u32, d: u32,
+            b: u32,
+            hq: u32,
+            hkv: u32,
+            sq: u32,
+            sk: u32,
+            d: u32,
             softmax_scale: f32,
             causal: u32,
             use_alibi: u32,
-            _pad0: u32, _pad1: u32, _pad2: u32,
+            _pad0: u32,
+            _pad1: u32,
+            _pad2: u32,
         }
         let params = FaParams {
-            b: b as u32, hq: hq as u32, hkv: hkv as u32,
-            sq: sq as u32, sk: sk as u32, d: d as u32,
+            b: b as u32,
+            hq: hq as u32,
+            hkv: hkv as u32,
+            sq: sq as u32,
+            sk: sk as u32,
+            d: d as u32,
             softmax_scale,
             causal: causal as u32,
             use_alibi: use_alibi as u32,
-            _pad0: 0, _pad1: 0, _pad2: 0,
+            _pad0: 0,
+            _pad1: 0,
+            _pad2: 0,
         };
         let (pbuf, pmem) = self.upload_params(&params)?;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_5s1u).map_err(vk_err)?;
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_5s1u)
+            .map_err(vk_err)?;
         desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, q_buf, 0, q_bind_len);
         desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, k_buf, 0, k_bind_len);
         desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, v_buf, 0, v_bind_len);
         desc.write_buffer(3, DescriptorType::STORAGE_BUFFER, o_buf, 0, out_bind_len);
-        desc.write_buffer(4, DescriptorType::STORAGE_BUFFER, alibi_buf, 0, alibi_bind_len);
-        desc.write_buffer(5, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, std::mem::size_of::<FaParams>() as u64);
+        desc.write_buffer(
+            4,
+            DescriptorType::STORAGE_BUFFER,
+            alibi_buf,
+            0,
+            alibi_bind_len,
+        );
+        desc.write_buffer(
+            5,
+            DescriptorType::UNIFORM_BUFFER,
+            &pbuf,
+            0,
+            std::mem::size_of::<FaParams>() as u64,
+        );
 
-        let rb = [q_buf.raw() as u64, k_buf.raw() as u64, v_buf.raw() as u64, alibi_buf.raw() as u64];
+        let rb = [
+            q_buf.raw() as u64,
+            k_buf.raw() as u64,
+            v_buf.raw() as u64,
+            alibi_buf.raw() as u64,
+        ];
         let wb = [o_buf.raw() as u64];
         let total_z = (b * hq * sq) as u32;
         self.record_dispatch_batched(
@@ -4921,7 +6511,8 @@ impl VulkanBackend {
             desc,
             (1, 1, total_z),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         drop(dummy_alibi);
@@ -4945,14 +6536,14 @@ impl VulkanBackend {
     #[allow(clippy::too_many_arguments)]
     pub fn conv2d_bf16_bytes(
         &self,
-        input:  &VulkanStorageBytes,
+        input: &VulkanStorageBytes,
         weight: &VulkanStorageBytes,
-        out:    &mut VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
         x_shape: [usize; 4],
         w_shape: [usize; 4],
-        stride:  (usize, usize),
+        stride: (usize, usize),
         padding: (usize, usize),
-        groups:  usize,
+        groups: usize,
     ) -> fuel_ir::Result<()> {
         if groups != 1 {
             fuel_ir::bail!(
@@ -4960,13 +6551,20 @@ impl VulkanBackend {
             );
         }
         let s = fuel_conv::ConvShape {
-            batch: x_shape[0], c_in: x_shape[1], h: x_shape[2], w: x_shape[3],
-            c_out: w_shape[0], k_h: w_shape[2], k_w: w_shape[3],
-            stride, padding, groups,
+            batch: x_shape[0],
+            c_in: x_shape[1],
+            h: x_shape[2],
+            w: x_shape[3],
+            c_out: w_shape[0],
+            k_h: w_shape[2],
+            k_w: w_shape[3],
+            stride,
+            padding,
+            groups,
         };
-        s.validate().map_err(|e| fuel_ir::Error::Msg(
-            format!("conv2d_bf16_bytes: shape validation: {e}")
-        ))?;
+        s.validate().map_err(|e| {
+            fuel_ir::Error::Msg(format!("conv2d_bf16_bytes: shape validation: {e}"))
+        })?;
         let h_out = s.h_out();
         let w_out = s.w_out();
         let m = s.c_out;
@@ -4994,46 +6592,73 @@ impl VulkanBackend {
             fuel_ir::bail!("conv2d_bf16_bytes: input {} < {need_x}", input.len_bytes());
         }
         if weight.len_bytes() < need_w {
-            fuel_ir::bail!("conv2d_bf16_bytes: weight {} < {need_w}", weight.len_bytes());
+            fuel_ir::bail!(
+                "conv2d_bf16_bytes: weight {} < {need_w}",
+                weight.len_bytes()
+            );
         }
         if out.len_bytes() < need_out {
             fuel_ir::bail!("conv2d_bf16_bytes: out {} < {need_out}", out.len_bytes());
         }
 
         let patches_n = s.im2col_len();
-        let patches_bytes = patches_n * 2;       // bf16
+        let patches_bytes = patches_n * 2; // bf16
         let mut patches = self.alloc_bytes(patches_bytes)?;
 
-        let in_buf = input.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "conv2d_bf16_bytes: input is host-evicted; fault back first".into()))?;
-        let w_buf = weight.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "conv2d_bf16_bytes: weight is host-evicted; fault back first".into()))?;
-        let patches_buf = patches.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "conv2d_bf16_bytes: scratch alloc failed to expose buffer".into()))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "conv2d_bf16_bytes: out is host-evicted; fault back first".into()))?;
+        let in_buf = input.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("conv2d_bf16_bytes: input is host-evicted; fault back first".into())
+        })?;
+        let w_buf = weight.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "conv2d_bf16_bytes: weight is host-evicted; fault back first".into(),
+            )
+        })?;
+        let patches_buf = patches.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("conv2d_bf16_bytes: scratch alloc failed to expose buffer".into())
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("conv2d_bf16_bytes: out is host-evicted; fault back first".into())
+        })?;
 
         // -------- im2col_bf16 dispatch --------
-        #[repr(C)] #[derive(Clone, Copy)]
+        #[repr(C)]
+        #[derive(Clone, Copy)]
         struct Im2ColParams {
-            batch: u32, c_in: u32, h: u32, w: u32,
-            h_out: u32, w_out: u32,
-            k_h: u32, k_w: u32,
-            stride_h: u32, stride_w: u32,
-            pad_h: u32, pad_w: u32,
-            groups: u32, cin_per_g: u32,
-            total_elements: u32, _pad: u32,
+            batch: u32,
+            c_in: u32,
+            h: u32,
+            w: u32,
+            h_out: u32,
+            w_out: u32,
+            k_h: u32,
+            k_w: u32,
+            stride_h: u32,
+            stride_w: u32,
+            pad_h: u32,
+            pad_w: u32,
+            groups: u32,
+            cin_per_g: u32,
+            total_elements: u32,
+            _pad: u32,
         }
         let total = patches_n as u32;
         let im2col_params = Im2ColParams {
-            batch: s.batch as u32, c_in: s.c_in as u32,
-            h: s.h as u32, w: s.w as u32,
-            h_out: h_out as u32, w_out: w_out as u32,
-            k_h: s.k_h as u32, k_w: s.k_w as u32,
-            stride_h: s.stride.0 as u32, stride_w: s.stride.1 as u32,
-            pad_h: s.padding.0 as u32, pad_w: s.padding.1 as u32,
-            groups: s.groups as u32, cin_per_g: s.c_in_per_group() as u32,
-            total_elements: total, _pad: 0,
+            batch: s.batch as u32,
+            c_in: s.c_in as u32,
+            h: s.h as u32,
+            w: s.w as u32,
+            h_out: h_out as u32,
+            w_out: w_out as u32,
+            k_h: s.k_h as u32,
+            k_w: s.k_w as u32,
+            stride_h: s.stride.0 as u32,
+            stride_w: s.stride.1 as u32,
+            pad_h: s.padding.0 as u32,
+            pad_w: s.padding.1 as u32,
+            groups: s.groups as u32,
+            cin_per_g: s.c_in_per_group() as u32,
+            total_elements: total,
+            _pad: 0,
         };
         let (i_pbuf, i_pmem) = self.upload_params(&im2col_params)?;
 
@@ -5041,10 +6666,25 @@ impl VulkanBackend {
         let in_bind_len = ((input.len_bytes() + 3) & !3) as u64;
         let patches_bind_len = ((patches_bytes + 3) & !3) as u64;
 
-        let im2col_desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
-        im2col_desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf,      0, in_bind_len);
-        im2col_desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, patches_buf, 0, patches_bind_len);
-        im2col_desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &i_pbuf, 0, std::mem::size_of::<Im2ColParams>() as u64);
+        let im2col_desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_2s1u)
+            .map_err(vk_err)?;
+        im2col_desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, in_bind_len);
+        im2col_desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            patches_buf,
+            0,
+            patches_bind_len,
+        );
+        im2col_desc.write_buffer(
+            2,
+            DescriptorType::UNIFORM_BUFFER,
+            &i_pbuf,
+            0,
+            std::mem::size_of::<Im2ColParams>() as u64,
+        );
         let i_rb = [in_buf.raw() as u64];
         let i_wb = [patches_buf.raw() as u64];
         let im2col_wg = (total + 255) / 256;
@@ -5055,30 +6695,43 @@ impl VulkanBackend {
             im2col_desc,
             (im2col_wg, 1, 1),
             vec![(i_pbuf, i_pmem)],
-            &i_rb, &i_wb,
+            &i_rb,
+            &i_wb,
         )?;
         self.flush_pending()?;
 
         // -------- matmul_coop_bf16_bf16_bf16 dispatch --------
-        #[repr(C)] #[derive(Clone, Copy)]
+        #[repr(C)]
+        #[derive(Clone, Copy)]
         struct MatmulParams {
-            m: u32, n: u32, k: u32,
-            sa_batch: u32, sa_row: u32, sa_col: u32,
-            sb_batch: u32, sb_row: u32, sb_col: u32,
+            m: u32,
+            n: u32,
+            k: u32,
+            sa_batch: u32,
+            sa_row: u32,
+            sa_col: u32,
+            sb_batch: u32,
+            sb_row: u32,
+            sb_col: u32,
             sc_batch: u32,
             n_rep: u32,
             _pad: u32,
         }
         let matmul_params = MatmulParams {
-            m: m as u32, n: n as u32, k: k_dim as u32,
+            m: m as u32,
+            n: n as u32,
+            k: k_dim as u32,
             // weight is [c_out, k_dim] in bf16 elements, shared across batches
             sa_batch: 0,
-            sa_row:   k_dim as u32, sa_col: 1,
+            sa_row: k_dim as u32,
+            sa_col: 1,
             // patches walks per batch: [batch, k_dim, n]
             sb_batch: (k_dim * n) as u32,
-            sb_row:   n as u32, sb_col: 1,
+            sb_row: n as u32,
+            sb_col: 1,
             sc_batch: (m * n) as u32,
-            n_rep: 1, _pad: 0,
+            n_rep: 1,
+            _pad: 0,
         };
         let (mm_pbuf, mm_pmem) = self.upload_params(&matmul_params)?;
         let mm_params_size = std::mem::size_of::<MatmulParams>() as u64;
@@ -5086,14 +6739,37 @@ impl VulkanBackend {
         let w_bind_len = ((weight.len_bytes() + 3) & !3) as u64;
         let out_bind_len = ((out.len_bytes() + 3) & !3) as u64;
 
-        let pipeline = self.pipelines.matmul_coop_bf16_bf16_bf16_pipeline.as_ref().unwrap();
-        let pipe_layout = self.pipelines.matmul_coop_bf16_bf16_bf16_layout.as_ref().unwrap();
+        let pipeline = self
+            .pipelines
+            .matmul_coop_bf16_bf16_bf16_pipeline
+            .as_ref()
+            .unwrap();
+        let pipe_layout = self
+            .pipelines
+            .matmul_coop_bf16_bf16_bf16_layout
+            .as_ref()
+            .unwrap();
 
-        let mm_desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
-        mm_desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, w_buf,        0, w_bind_len);
-        mm_desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, patches_buf,  0, patches_bind_len);
-        mm_desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf,      0, out_bind_len);
-        mm_desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &mm_pbuf, 0, mm_params_size);
+        let mm_desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_3s1u)
+            .map_err(vk_err)?;
+        mm_desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, w_buf, 0, w_bind_len);
+        mm_desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            patches_buf,
+            0,
+            patches_bind_len,
+        );
+        mm_desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, out_bind_len);
+        mm_desc.write_buffer(
+            3,
+            DescriptorType::UNIFORM_BUFFER,
+            &mm_pbuf,
+            0,
+            mm_params_size,
+        );
         let mm_rb = [w_buf.raw() as u64, patches_buf.raw() as u64];
         let mm_wb = [out_buf.raw() as u64];
 
@@ -5102,10 +6778,13 @@ impl VulkanBackend {
         let gz = s.batch as u32;
         self.record_dispatch_batched(
             "conv2d.matmul_coop_bf16",
-            pipeline, pipe_layout, mm_desc,
+            pipeline,
+            pipe_layout,
+            mm_desc,
             (gx, gy, gz),
             vec![(mm_pbuf, mm_pmem)],
-            &mm_rb, &mm_wb,
+            &mm_rb,
+            &mm_wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -5118,28 +6797,32 @@ impl VulkanBackend {
     #[allow(clippy::too_many_arguments)]
     pub fn conv2d_f16_bytes(
         &self,
-        input:  &VulkanStorageBytes,
+        input: &VulkanStorageBytes,
         weight: &VulkanStorageBytes,
-        out:    &mut VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
         x_shape: [usize; 4],
         w_shape: [usize; 4],
-        stride:  (usize, usize),
+        stride: (usize, usize),
         padding: (usize, usize),
-        groups:  usize,
+        groups: usize,
     ) -> fuel_ir::Result<()> {
         if groups != 1 {
-            fuel_ir::bail!(
-                "conv2d_f16_bytes: groups != 1 not yet supported (got groups={groups})"
-            );
+            fuel_ir::bail!("conv2d_f16_bytes: groups != 1 not yet supported (got groups={groups})");
         }
         let s = fuel_conv::ConvShape {
-            batch: x_shape[0], c_in: x_shape[1], h: x_shape[2], w: x_shape[3],
-            c_out: w_shape[0], k_h: w_shape[2], k_w: w_shape[3],
-            stride, padding, groups,
+            batch: x_shape[0],
+            c_in: x_shape[1],
+            h: x_shape[2],
+            w: x_shape[3],
+            c_out: w_shape[0],
+            k_h: w_shape[2],
+            k_w: w_shape[3],
+            stride,
+            padding,
+            groups,
         };
-        s.validate().map_err(|e| fuel_ir::Error::Msg(
-            format!("conv2d_f16_bytes: shape validation: {e}")
-        ))?;
+        s.validate()
+            .map_err(|e| fuel_ir::Error::Msg(format!("conv2d_f16_bytes: shape validation: {e}")))?;
         let h_out = s.h_out();
         let w_out = s.w_out();
         let m = s.c_out;
@@ -5175,46 +6858,83 @@ impl VulkanBackend {
         let patches_bytes = patches_n * 2;
         let mut patches = self.alloc_bytes(patches_bytes)?;
 
-        let in_buf = input.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "conv2d_f16_bytes: input is host-evicted; fault back first".into()))?;
-        let w_buf = weight.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "conv2d_f16_bytes: weight is host-evicted; fault back first".into()))?;
-        let patches_buf = patches.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "conv2d_f16_bytes: scratch alloc failed to expose buffer".into()))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "conv2d_f16_bytes: out is host-evicted; fault back first".into()))?;
+        let in_buf = input.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("conv2d_f16_bytes: input is host-evicted; fault back first".into())
+        })?;
+        let w_buf = weight.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("conv2d_f16_bytes: weight is host-evicted; fault back first".into())
+        })?;
+        let patches_buf = patches.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("conv2d_f16_bytes: scratch alloc failed to expose buffer".into())
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("conv2d_f16_bytes: out is host-evicted; fault back first".into())
+        })?;
 
         // -------- im2col dispatch (shared bf16/f16 2-byte shuffle) --------
-        #[repr(C)] #[derive(Clone, Copy)]
+        #[repr(C)]
+        #[derive(Clone, Copy)]
         struct Im2ColParams {
-            batch: u32, c_in: u32, h: u32, w: u32,
-            h_out: u32, w_out: u32,
-            k_h: u32, k_w: u32,
-            stride_h: u32, stride_w: u32,
-            pad_h: u32, pad_w: u32,
-            groups: u32, cin_per_g: u32,
-            total_elements: u32, _pad: u32,
+            batch: u32,
+            c_in: u32,
+            h: u32,
+            w: u32,
+            h_out: u32,
+            w_out: u32,
+            k_h: u32,
+            k_w: u32,
+            stride_h: u32,
+            stride_w: u32,
+            pad_h: u32,
+            pad_w: u32,
+            groups: u32,
+            cin_per_g: u32,
+            total_elements: u32,
+            _pad: u32,
         }
         let total = patches_n as u32;
         let im2col_params = Im2ColParams {
-            batch: s.batch as u32, c_in: s.c_in as u32,
-            h: s.h as u32, w: s.w as u32,
-            h_out: h_out as u32, w_out: w_out as u32,
-            k_h: s.k_h as u32, k_w: s.k_w as u32,
-            stride_h: s.stride.0 as u32, stride_w: s.stride.1 as u32,
-            pad_h: s.padding.0 as u32, pad_w: s.padding.1 as u32,
-            groups: s.groups as u32, cin_per_g: s.c_in_per_group() as u32,
-            total_elements: total, _pad: 0,
+            batch: s.batch as u32,
+            c_in: s.c_in as u32,
+            h: s.h as u32,
+            w: s.w as u32,
+            h_out: h_out as u32,
+            w_out: w_out as u32,
+            k_h: s.k_h as u32,
+            k_w: s.k_w as u32,
+            stride_h: s.stride.0 as u32,
+            stride_w: s.stride.1 as u32,
+            pad_h: s.padding.0 as u32,
+            pad_w: s.padding.1 as u32,
+            groups: s.groups as u32,
+            cin_per_g: s.c_in_per_group() as u32,
+            total_elements: total,
+            _pad: 0,
         };
         let (i_pbuf, i_pmem) = self.upload_params(&im2col_params)?;
 
         let in_bind_len = ((input.len_bytes() + 3) & !3) as u64;
         let patches_bind_len = ((patches_bytes + 3) & !3) as u64;
 
-        let im2col_desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
-        im2col_desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf,      0, in_bind_len);
-        im2col_desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, patches_buf, 0, patches_bind_len);
-        im2col_desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &i_pbuf, 0, std::mem::size_of::<Im2ColParams>() as u64);
+        let im2col_desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_2s1u)
+            .map_err(vk_err)?;
+        im2col_desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, in_bind_len);
+        im2col_desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            patches_buf,
+            0,
+            patches_bind_len,
+        );
+        im2col_desc.write_buffer(
+            2,
+            DescriptorType::UNIFORM_BUFFER,
+            &i_pbuf,
+            0,
+            std::mem::size_of::<Im2ColParams>() as u64,
+        );
         let i_rb = [in_buf.raw() as u64];
         let i_wb = [patches_buf.raw() as u64];
         let im2col_wg = (total + 255) / 256;
@@ -5225,28 +6945,41 @@ impl VulkanBackend {
             im2col_desc,
             (im2col_wg, 1, 1),
             vec![(i_pbuf, i_pmem)],
-            &i_rb, &i_wb,
+            &i_rb,
+            &i_wb,
         )?;
         self.flush_pending()?;
 
         // -------- matmul_coop_f16_f16_f16 dispatch --------
-        #[repr(C)] #[derive(Clone, Copy)]
+        #[repr(C)]
+        #[derive(Clone, Copy)]
         struct MatmulParams {
-            m: u32, n: u32, k: u32,
-            sa_batch: u32, sa_row: u32, sa_col: u32,
-            sb_batch: u32, sb_row: u32, sb_col: u32,
+            m: u32,
+            n: u32,
+            k: u32,
+            sa_batch: u32,
+            sa_row: u32,
+            sa_col: u32,
+            sb_batch: u32,
+            sb_row: u32,
+            sb_col: u32,
             sc_batch: u32,
             n_rep: u32,
             _pad: u32,
         }
         let matmul_params = MatmulParams {
-            m: m as u32, n: n as u32, k: k_dim as u32,
+            m: m as u32,
+            n: n as u32,
+            k: k_dim as u32,
             sa_batch: 0,
-            sa_row:   k_dim as u32, sa_col: 1,
+            sa_row: k_dim as u32,
+            sa_col: 1,
             sb_batch: (k_dim * n) as u32,
-            sb_row:   n as u32, sb_col: 1,
+            sb_row: n as u32,
+            sb_col: 1,
             sc_batch: (m * n) as u32,
-            n_rep: 1, _pad: 0,
+            n_rep: 1,
+            _pad: 0,
         };
         let (mm_pbuf, mm_pmem) = self.upload_params(&matmul_params)?;
         let mm_params_size = std::mem::size_of::<MatmulParams>() as u64;
@@ -5254,14 +6987,37 @@ impl VulkanBackend {
         let w_bind_len = ((weight.len_bytes() + 3) & !3) as u64;
         let out_bind_len = ((out.len_bytes() + 3) & !3) as u64;
 
-        let pipeline = self.pipelines.matmul_coop_f16_f16_f16_pipeline.as_ref().unwrap();
-        let pipe_layout = self.pipelines.matmul_coop_f16_f16_f16_layout.as_ref().unwrap();
+        let pipeline = self
+            .pipelines
+            .matmul_coop_f16_f16_f16_pipeline
+            .as_ref()
+            .unwrap();
+        let pipe_layout = self
+            .pipelines
+            .matmul_coop_f16_f16_f16_layout
+            .as_ref()
+            .unwrap();
 
-        let mm_desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
-        mm_desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, w_buf,        0, w_bind_len);
-        mm_desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, patches_buf,  0, patches_bind_len);
-        mm_desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf,      0, out_bind_len);
-        mm_desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &mm_pbuf, 0, mm_params_size);
+        let mm_desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_3s1u)
+            .map_err(vk_err)?;
+        mm_desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, w_buf, 0, w_bind_len);
+        mm_desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            patches_buf,
+            0,
+            patches_bind_len,
+        );
+        mm_desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, out_bind_len);
+        mm_desc.write_buffer(
+            3,
+            DescriptorType::UNIFORM_BUFFER,
+            &mm_pbuf,
+            0,
+            mm_params_size,
+        );
         let mm_rb = [w_buf.raw() as u64, patches_buf.raw() as u64];
         let mm_wb = [out_buf.raw() as u64];
 
@@ -5270,10 +7026,13 @@ impl VulkanBackend {
         let gz = s.batch as u32;
         self.record_dispatch_batched(
             "conv2d.matmul_coop_f16",
-            pipeline, pipe_layout, mm_desc,
+            pipeline,
+            pipe_layout,
+            mm_desc,
             (gx, gy, gz),
             vec![(mm_pbuf, mm_pmem)],
-            &mm_rb, &mm_wb,
+            &mm_rb,
+            &mm_wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -5308,9 +7067,7 @@ impl VulkanBackend {
         }
         let rank = a_dims.len();
         if rank > 4 {
-            fuel_ir::bail!(
-                "concat_along_dim_f32_bytes: rank ≤ 4 required, got {rank}",
-            );
+            fuel_ir::bail!("concat_along_dim_f32_bytes: rank ≤ 4 required, got {rank}",);
         }
         let a_dim = a_dims[dim];
         let b_dim = b_dims[dim];
@@ -5321,7 +7078,8 @@ impl VulkanBackend {
         if out.len_bytes() < need_out_bytes {
             fuel_ir::bail!(
                 "concat_along_dim_f32_bytes: out {} bytes < required {}",
-                out.len_bytes(), need_out_bytes,
+                out.len_bytes(),
+                need_out_bytes,
             );
         }
 
@@ -5336,39 +7094,94 @@ impl VulkanBackend {
         }
         let concat_dim_padded = (pad + dim) as u32;
 
-        #[repr(C)] #[derive(Clone, Copy)]
+        #[repr(C)]
+        #[derive(Clone, Copy)]
         struct CParams {
-            out_d0: u32, out_d1: u32, out_d2: u32, out_d3: u32,
-            concat_dim: u32, a_dim: u32, b_dim: u32, total: u32,
-            a_s0: u32, a_s1: u32, a_s2: u32, a_s3: u32,
-            b_s0: u32, b_s1: u32, b_s2: u32, b_s3: u32,
+            out_d0: u32,
+            out_d1: u32,
+            out_d2: u32,
+            out_d3: u32,
+            concat_dim: u32,
+            a_dim: u32,
+            b_dim: u32,
+            total: u32,
+            a_s0: u32,
+            a_s1: u32,
+            a_s2: u32,
+            a_s3: u32,
+            b_s0: u32,
+            b_s1: u32,
+            b_s2: u32,
+            b_s3: u32,
         }
         let p = CParams {
-            out_d0: out_d[0], out_d1: out_d[1], out_d2: out_d[2], out_d3: out_d[3],
+            out_d0: out_d[0],
+            out_d1: out_d[1],
+            out_d2: out_d[2],
+            out_d3: out_d[3],
             concat_dim: concat_dim_padded,
             a_dim: a_dim as u32,
             b_dim: b_dim as u32,
             total: out_elems as u32,
-            a_s0: a_s[0], a_s1: a_s[1], a_s2: a_s[2], a_s3: a_s[3],
-            b_s0: b_s[0], b_s1: b_s[1], b_s2: b_s[2], b_s3: b_s[3],
+            a_s0: a_s[0],
+            a_s1: a_s[1],
+            a_s2: a_s[2],
+            a_s3: a_s[3],
+            b_s0: b_s[0],
+            b_s1: b_s[1],
+            b_s2: b_s[2],
+            b_s3: b_s[3],
         };
 
-        let a_buf = a.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "concat_along_dim_f32_bytes: a is host-evicted; fault back first".into(),
-        ))?;
-        let b_buf = b.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "concat_along_dim_f32_bytes: b is host-evicted; fault back first".into(),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "concat_along_dim_f32_bytes: out is host-evicted; fault back first".into(),
-        ))?;
+        let a_buf = a.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "concat_along_dim_f32_bytes: a is host-evicted; fault back first".into(),
+            )
+        })?;
+        let b_buf = b.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "concat_along_dim_f32_bytes: b is host-evicted; fault back first".into(),
+            )
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "concat_along_dim_f32_bytes: out is host-evicted; fault back first".into(),
+            )
+        })?;
         let (pbuf, pmem) = self.upload_params(&p)?;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, a_buf, 0, a.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, b_buf, 0, b.len_bytes() as u64);
-        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
-        desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, std::mem::size_of::<CParams>() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_3s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            a_buf,
+            0,
+            a.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            b_buf,
+            0,
+            b.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            2,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            3,
+            DescriptorType::UNIFORM_BUFFER,
+            &pbuf,
+            0,
+            std::mem::size_of::<CParams>() as u64,
+        );
 
         let groups = ((out_elems as u32 + 63) / 64).max(1);
         let rb = [a_buf.raw() as u64, b_buf.raw() as u64];
@@ -5380,7 +7193,8 @@ impl VulkanBackend {
             desc,
             (groups, 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -5400,8 +7214,15 @@ impl VulkanBackend {
         eps: f64,
     ) -> fuel_ir::Result<()> {
         self.layer_norm_backward_typed_bytes(
-            "layer_norm_last_dim_backward_f32_bytes", 4, false,
-            x, g, dx, outer_count, last_dim, eps,
+            "layer_norm_last_dim_backward_f32_bytes",
+            4,
+            false,
+            x,
+            g,
+            dx,
+            outer_count,
+            last_dim,
+            eps,
             &self.pipelines.layer_norm_last_dim_backward_pipeline,
             &self.pipelines.layer_norm_last_dim_backward_layout,
         )
@@ -5417,8 +7238,15 @@ impl VulkanBackend {
         eps: f64,
     ) -> fuel_ir::Result<()> {
         self.layer_norm_backward_typed_bytes(
-            "layer_norm_last_dim_backward_f16_bytes", 2, false,
-            x, g, dx, outer_count, last_dim, eps,
+            "layer_norm_last_dim_backward_f16_bytes",
+            2,
+            false,
+            x,
+            g,
+            dx,
+            outer_count,
+            last_dim,
+            eps,
             &self.pipelines.layer_norm_last_dim_backward_f16_pipeline,
             &self.pipelines.layer_norm_last_dim_backward_f16_layout,
         )
@@ -5439,8 +7267,15 @@ impl VulkanBackend {
             );
         }
         self.layer_norm_backward_typed_bytes(
-            "layer_norm_last_dim_backward_bf16_bytes", 2, false,
-            x, g, dx, outer_count, last_dim, eps,
+            "layer_norm_last_dim_backward_bf16_bytes",
+            2,
+            false,
+            x,
+            g,
+            dx,
+            outer_count,
+            last_dim,
+            eps,
             &self.pipelines.layer_norm_last_dim_backward_bf16_pipeline,
             &self.pipelines.layer_norm_last_dim_backward_bf16_layout,
         )
@@ -5456,8 +7291,15 @@ impl VulkanBackend {
         eps: f64,
     ) -> fuel_ir::Result<()> {
         self.layer_norm_backward_typed_bytes(
-            "layer_norm_last_dim_backward_f64_bytes", 8, true,
-            x, g, dx, outer_count, last_dim, eps,
+            "layer_norm_last_dim_backward_f64_bytes",
+            8,
+            true,
+            x,
+            g,
+            dx,
+            outer_count,
+            last_dim,
+            eps,
             &self.pipelines.layer_norm_last_dim_backward_f64_pipeline,
             &self.pipelines.layer_norm_last_dim_backward_f64_layout,
         )
@@ -5482,38 +7324,78 @@ impl VulkanBackend {
         if x.len_bytes() < need_bytes || g.len_bytes() < need_bytes || dx.len_bytes() < need_bytes {
             fuel_ir::bail!(
                 "{op_name}: buffer too small (need {need_bytes}; x={}, g={}, dx={})",
-                x.len_bytes(), g.len_bytes(), dx.len_bytes(),
+                x.len_bytes(),
+                g.len_bytes(),
+                dx.len_bytes(),
             );
         }
-        let x_buf = x.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: x is host-evicted; fault back first"),
-        ))?;
-        let g_buf = g.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: g is host-evicted; fault back first"),
-        ))?;
-        let dx_buf = dx.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: dx is host-evicted; fault back first"),
-        ))?;
+        let x_buf = x.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!("{op_name}: x is host-evicted; fault back first"))
+        })?;
+        let g_buf = g.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!("{op_name}: g is host-evicted; fault back first"))
+        })?;
+        let dx_buf = dx.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!("{op_name}: dx is host-evicted; fault back first"))
+        })?;
 
         let (pbuf, pmem) = if eps_is_f64 {
-            #[repr(C)] #[derive(Clone, Copy)]
-            struct LnBwdParamsF64 { n_rows: u32, n_cols: u32, eps: f64 }
-            let p = LnBwdParamsF64 { n_rows: outer_count as u32, n_cols: last_dim as u32, eps };
+            #[repr(C)]
+            #[derive(Clone, Copy)]
+            struct LnBwdParamsF64 {
+                n_rows: u32,
+                n_cols: u32,
+                eps: f64,
+            }
+            let p = LnBwdParamsF64 {
+                n_rows: outer_count as u32,
+                n_cols: last_dim as u32,
+                eps,
+            };
             self.upload_params(&p)?
         } else {
-            #[repr(C)] #[derive(Clone, Copy)]
-            struct LnBwdParams { n_rows: u32, n_cols: u32, eps: f32, _pad: u32 }
+            #[repr(C)]
+            #[derive(Clone, Copy)]
+            struct LnBwdParams {
+                n_rows: u32,
+                n_cols: u32,
+                eps: f32,
+                _pad: u32,
+            }
             let p = LnBwdParams {
-                n_rows: outer_count as u32, n_cols: last_dim as u32,
-                eps: eps as f32, _pad: 0,
+                n_rows: outer_count as u32,
+                n_cols: last_dim as u32,
+                eps: eps as f32,
+                _pad: 0,
             };
             self.upload_params(&p)?
         };
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, x_buf, 0, x.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, g_buf, 0, g.len_bytes() as u64);
-        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, dx_buf, 0, dx.len_bytes() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_3s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            x_buf,
+            0,
+            x.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            g_buf,
+            0,
+            g.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            2,
+            DescriptorType::STORAGE_BUFFER,
+            dx_buf,
+            0,
+            dx.len_bytes() as u64,
+        );
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
         let rb = [x_buf.raw() as u64, g_buf.raw() as u64];
         let wb = [dx_buf.raw() as u64];
@@ -5524,7 +7406,8 @@ impl VulkanBackend {
             desc,
             (outer_count as u32, 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -5541,8 +7424,14 @@ impl VulkanBackend {
         eps: f64,
     ) -> fuel_ir::Result<()> {
         self.layer_norm_typed_bytes(
-            "layer_norm_last_dim_f32_bytes", 4, false,
-            input, out, outer_count, last_dim, eps,
+            "layer_norm_last_dim_f32_bytes",
+            4,
+            false,
+            input,
+            out,
+            outer_count,
+            last_dim,
+            eps,
             &self.pipelines.layer_norm_last_dim_pipeline,
             &self.pipelines.layer_norm_last_dim_layout,
         )
@@ -5557,8 +7446,14 @@ impl VulkanBackend {
         eps: f64,
     ) -> fuel_ir::Result<()> {
         self.layer_norm_typed_bytes(
-            "layer_norm_last_dim_f16_bytes", 2, false,
-            input, out, outer_count, last_dim, eps,
+            "layer_norm_last_dim_f16_bytes",
+            2,
+            false,
+            input,
+            out,
+            outer_count,
+            last_dim,
+            eps,
             &self.pipelines.layer_norm_last_dim_f16_pipeline,
             &self.pipelines.layer_norm_last_dim_f16_layout,
         )
@@ -5578,8 +7473,14 @@ impl VulkanBackend {
             );
         }
         self.layer_norm_typed_bytes(
-            "layer_norm_last_dim_bf16_bytes", 2, false,
-            input, out, outer_count, last_dim, eps,
+            "layer_norm_last_dim_bf16_bytes",
+            2,
+            false,
+            input,
+            out,
+            outer_count,
+            last_dim,
+            eps,
             &self.pipelines.layer_norm_last_dim_bf16_pipeline,
             &self.pipelines.layer_norm_last_dim_bf16_layout,
         )
@@ -5594,8 +7495,14 @@ impl VulkanBackend {
         eps: f64,
     ) -> fuel_ir::Result<()> {
         self.layer_norm_typed_bytes(
-            "layer_norm_last_dim_f64_bytes", 8, true,
-            input, out, outer_count, last_dim, eps,
+            "layer_norm_last_dim_f64_bytes",
+            8,
+            true,
+            input,
+            out,
+            outer_count,
+            last_dim,
+            eps,
             &self.pipelines.layer_norm_last_dim_f64_pipeline,
             &self.pipelines.layer_norm_last_dim_f64_layout,
         )
@@ -5622,34 +7529,69 @@ impl VulkanBackend {
         if input.len_bytes() < need_bytes || out.len_bytes() < need_bytes {
             fuel_ir::bail!(
                 "{op_name}: buffer too small (need {need_bytes}; in={}, out={})",
-                input.len_bytes(), out.len_bytes(),
+                input.len_bytes(),
+                out.len_bytes(),
             );
         }
-        let in_buf = input.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: input is host-evicted; fault back first"),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: out is host-evicted; fault back first"),
-        ))?;
+        let in_buf = input.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!(
+                "{op_name}: input is host-evicted; fault back first"
+            ))
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!("{op_name}: out is host-evicted; fault back first"))
+        })?;
 
         let (pbuf, pmem) = if eps_is_f64 {
-            #[repr(C)] #[derive(Clone, Copy)]
-            struct LnParamsF64 { n_rows: u32, n_cols: u32, eps: f64 }
-            let p = LnParamsF64 { n_rows: outer_count as u32, n_cols: last_dim as u32, eps };
+            #[repr(C)]
+            #[derive(Clone, Copy)]
+            struct LnParamsF64 {
+                n_rows: u32,
+                n_cols: u32,
+                eps: f64,
+            }
+            let p = LnParamsF64 {
+                n_rows: outer_count as u32,
+                n_cols: last_dim as u32,
+                eps,
+            };
             self.upload_params(&p)?
         } else {
-            #[repr(C)] #[derive(Clone, Copy)]
-            struct LnParams { n_rows: u32, n_cols: u32, eps: f32, _pad: u32 }
+            #[repr(C)]
+            #[derive(Clone, Copy)]
+            struct LnParams {
+                n_rows: u32,
+                n_cols: u32,
+                eps: f32,
+                _pad: u32,
+            }
             let p = LnParams {
-                n_rows: outer_count as u32, n_cols: last_dim as u32,
-                eps: eps as f32, _pad: 0,
+                n_rows: outer_count as u32,
+                n_cols: last_dim as u32,
+                eps: eps as f32,
+                _pad: 0,
             };
             self.upload_params(&p)?
         };
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_2s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            in_buf,
+            0,
+            input.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
         let rb = [in_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
@@ -5660,7 +7602,8 @@ impl VulkanBackend {
             desc,
             (outer_count as u32, 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -5684,7 +7627,8 @@ impl VulkanBackend {
         if output_shape.len() != rank {
             fuel_ir::bail!(
                 "gather_bytes: rank mismatch (src={}, out={})",
-                source_shape.len(), output_shape.len(),
+                source_shape.len(),
+                output_shape.len(),
             );
         }
         if rank > 8 {
@@ -5697,7 +7641,7 @@ impl VulkanBackend {
         let n_out: usize = output_shape.iter().product();
         let need_src = n_src * elem_bytes;
         let need_out = n_out * elem_bytes;
-        let need_idx = n_out * 4;   // U32 indices
+        let need_idx = n_out * 4; // U32 indices
         if src.len_bytes() < need_src {
             fuel_ir::bail!(
                 "gather_bytes: src {} bytes < required {need_src}",
@@ -5717,68 +7661,102 @@ impl VulkanBackend {
             );
         }
         if elem_bytes == 2 && n_out % 2 != 0 {
-            fuel_ir::bail!(
-                "gather_bytes b2: n_out ({n_out}) must be even (pair-thread)",
-            );
+            fuel_ir::bail!("gather_bytes b2: n_out ({n_out}) must be even (pair-thread)",);
         }
         if elem_bytes == 1 && n_out % 4 != 0 {
-            fuel_ir::bail!(
-                "gather_bytes b1: n_out ({n_out}) must be a multiple of 4",
-            );
+            fuel_ir::bail!("gather_bytes b1: n_out ({n_out}) must be a multiple of 4",);
         }
 
         // Pack shape_buf: source_shape + output_shape.
         let mut sd: Vec<u32> = Vec::with_capacity(2 * rank);
-        for &d in source_shape { sd.push(d as u32); }
-        for &d in output_shape { sd.push(d as u32); }
+        for &d in source_shape {
+            sd.push(d as u32);
+        }
+        for &d in output_shape {
+            sd.push(d as u32);
+        }
         let (sd_buf, sd_mem) = self.upload_slice_raw(&sd)?;
         let sd_byte_size = (sd.len() * 4) as u64;
 
-        #[repr(C)] #[derive(Clone, Copy)]
-        struct GParams { n_out: u32, rank: u32, dim: u32, _pad: u32 }
-        let p = GParams { n_out: n_out as u32, rank: rank as u32, dim: dim as u32, _pad: 0 };
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct GParams {
+            n_out: u32,
+            rank: u32,
+            dim: u32,
+            _pad: u32,
+        }
+        let p = GParams {
+            n_out: n_out as u32,
+            rank: rank as u32,
+            dim: dim as u32,
+            _pad: 0,
+        };
         let (pbuf, pmem) = self.upload_params(&p)?;
 
-        let src_buf = src.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "gather_bytes: src is host-evicted; fault back first".into(),
-        ))?;
-        let idx_buf = indices.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "gather_bytes: indices is host-evicted; fault back first".into(),
-        ))?;
-        let out_buf = output.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "gather_bytes: output is host-evicted; fault back first".into(),
-        ))?;
+        let src_buf = src.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("gather_bytes: src is host-evicted; fault back first".into())
+        })?;
+        let idx_buf = indices.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("gather_bytes: indices is host-evicted; fault back first".into())
+        })?;
+        let out_buf = output.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("gather_bytes: output is host-evicted; fault back first".into())
+        })?;
 
         let (pipeline, pipe_layout, op_name, n_dispatch) = match elem_bytes {
             1 => (
                 &self.pipelines.gather_b1_pipeline,
                 &self.pipelines.gather_b1_layout,
-                "gather_b1", n_out / 4,
+                "gather_b1",
+                n_out / 4,
             ),
             2 => (
                 &self.pipelines.gather_b2_pipeline,
                 &self.pipelines.gather_b2_layout,
-                "gather_b2", n_out / 2,
+                "gather_b2",
+                n_out / 2,
             ),
             4 => (
                 &self.pipelines.gather_b4_pipeline,
                 &self.pipelines.gather_b4_layout,
-                "gather_b4", n_out,
+                "gather_b4",
+                n_out,
             ),
             8 => (
                 &self.pipelines.gather_b8_pipeline,
                 &self.pipelines.gather_b8_layout,
-                "gather_b8", n_out,
+                "gather_b8",
+                n_out,
             ),
-            other => fuel_ir::bail!(
-                "gather_bytes: unsupported elem_bytes {other} (have 1/2/4/8)",
-            ),
+            other => fuel_ir::bail!("gather_bytes: unsupported elem_bytes {other} (have 1/2/4/8)",),
         };
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_4s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, src_buf, 0, src.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, idx_buf, 0, indices.len_bytes() as u64);
-        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, output.len_bytes() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_4s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            src_buf,
+            0,
+            src.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            idx_buf,
+            0,
+            indices.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            2,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            output.len_bytes() as u64,
+        );
         desc.write_buffer(3, DescriptorType::STORAGE_BUFFER, &sd_buf, 0, sd_byte_size);
         desc.write_buffer(4, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
 
@@ -5792,7 +7770,8 @@ impl VulkanBackend {
             desc,
             (groups, 1, 1),
             vec![(sd_buf, sd_mem), (pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -5814,7 +7793,8 @@ impl VulkanBackend {
         if src_shape.len() != rank {
             fuel_ir::bail!(
                 "scatter_add_f64_bytes: base rank ({}) != src rank ({})",
-                base_shape.len(), src_shape.len(),
+                base_shape.len(),
+                src_shape.len(),
             );
         }
         if rank > 8 {
@@ -5827,7 +7807,8 @@ impl VulkanBackend {
             if d != dim && base_shape[d] != src_shape[d] {
                 fuel_ir::bail!(
                     "scatter_add_f64_bytes: shapes differ at dim {d} (base={}, src={})",
-                    base_shape[d], src_shape[d],
+                    base_shape[d],
+                    src_shape[d],
                 );
             }
         }
@@ -5862,51 +7843,99 @@ impl VulkanBackend {
         }
 
         // Copy base → out.
-        let base_buf = base.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "scatter_add_f64_bytes: base host-evicted".into(),
-        ))?;
-        let out_buf_for_copy = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "scatter_add_f64_bytes: out host-evicted".into(),
-        ))?;
+        let base_buf = base.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("scatter_add_f64_bytes: base host-evicted".into())
+        })?;
+        let out_buf_for_copy = out
+            .buffer_opt()
+            .ok_or_else(|| fuel_ir::Error::Msg("scatter_add_f64_bytes: out host-evicted".into()))?;
         self.flush_pending()?;
         let copy_size = need_base as u64;
-        self.queue.one_shot(&self.device, self.queue_family, |cmd| {
-            cmd.copy_buffer(base_buf, out_buf_for_copy, &[BufferCopy {
-                src_offset: 0, dst_offset: 0, size: copy_size,
-            }]);
-            Ok(())
-        }).map_err(vk_err)?;
+        self.queue
+            .one_shot(&self.device, self.queue_family, |cmd| {
+                cmd.copy_buffer(
+                    base_buf,
+                    out_buf_for_copy,
+                    &[BufferCopy {
+                        src_offset: 0,
+                        dst_offset: 0,
+                        size: copy_size,
+                    }],
+                );
+                Ok(())
+            })
+            .map_err(vk_err)?;
 
         let mut sd: Vec<u32> = Vec::with_capacity(2 * rank);
-        for &d in src_shape { sd.push(d as u32); }
-        for &d in base_shape { sd.push(d as u32); }
+        for &d in src_shape {
+            sd.push(d as u32);
+        }
+        for &d in base_shape {
+            sd.push(d as u32);
+        }
         let (sd_buf, sd_mem) = self.upload_slice_raw(&sd)?;
         let sd_byte_size = (sd.len() * 4) as u64;
 
-        #[repr(C)] #[derive(Clone, Copy)]
-        struct SAParams { n_src: u32, rank: u32, dim: u32, _pad: u32 }
-        let p = SAParams { n_src: n_src as u32, rank: rank as u32, dim: dim as u32, _pad: 0 };
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct SAParams {
+            n_src: u32,
+            rank: u32,
+            dim: u32,
+            _pad: u32,
+        }
+        let p = SAParams {
+            n_src: n_src as u32,
+            rank: rank as u32,
+            dim: dim as u32,
+            _pad: 0,
+        };
         let (pbuf, pmem) = self.upload_params(&p)?;
 
-        let idx_buf = indices.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "scatter_add_f64_bytes: indices host-evicted".into(),
-        ))?;
-        let src_buf = src.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "scatter_add_f64_bytes: src host-evicted".into(),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "scatter_add_f64_bytes: out host-evicted after copy?".into(),
-        ))?;
+        let idx_buf = indices.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("scatter_add_f64_bytes: indices host-evicted".into())
+        })?;
+        let src_buf = src
+            .buffer_opt()
+            .ok_or_else(|| fuel_ir::Error::Msg("scatter_add_f64_bytes: src host-evicted".into()))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("scatter_add_f64_bytes: out host-evicted after copy?".into())
+        })?;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_4s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, idx_buf, 0, indices.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, src_buf, 0, src.len_bytes() as u64);
-        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_4s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            idx_buf,
+            0,
+            indices.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            src_buf,
+            0,
+            src.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            2,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         desc.write_buffer(3, DescriptorType::STORAGE_BUFFER, &sd_buf, 0, sd_byte_size);
         desc.write_buffer(4, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
 
         let groups = Self::workgroups(n_src);
-        let rb = [idx_buf.raw() as u64, src_buf.raw() as u64, out_buf.raw() as u64];
+        let rb = [
+            idx_buf.raw() as u64,
+            src_buf.raw() as u64,
+            out_buf.raw() as u64,
+        ];
         let wb = [out_buf.raw() as u64];
         self.record_dispatch_batched(
             "scatter_add_f64_bytes",
@@ -5915,7 +7944,8 @@ impl VulkanBackend {
             desc,
             (groups, 1, 1),
             vec![(sd_buf, sd_mem), (pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -5934,7 +7964,13 @@ impl VulkanBackend {
         dim: usize,
     ) -> fuel_ir::Result<()> {
         self.scatter_add_subword_bytes(
-            base, indices, src, out, base_shape, src_shape, dim,
+            base,
+            indices,
+            src,
+            out,
+            base_shape,
+            src_shape,
+            dim,
             "scatter_add_bf16_bytes",
             &self.pipelines.scatter_add_bf16_pipeline,
             &self.pipelines.scatter_add_bf16_layout,
@@ -5954,7 +7990,13 @@ impl VulkanBackend {
         dim: usize,
     ) -> fuel_ir::Result<()> {
         self.scatter_add_subword_bytes(
-            base, indices, src, out, base_shape, src_shape, dim,
+            base,
+            indices,
+            src,
+            out,
+            base_shape,
+            src_shape,
+            dim,
             "scatter_add_f16_bytes",
             &self.pipelines.scatter_add_f16_pipeline,
             &self.pipelines.scatter_add_f16_layout,
@@ -5984,7 +8026,8 @@ impl VulkanBackend {
         if src_shape.len() != rank {
             fuel_ir::bail!(
                 "{debug_name}: base rank ({}) != src rank ({})",
-                base_shape.len(), src_shape.len(),
+                base_shape.len(),
+                src_shape.len(),
             );
         }
         if rank > 8 {
@@ -5997,7 +8040,8 @@ impl VulkanBackend {
             if d != dim && base_shape[d] != src_shape[d] {
                 fuel_ir::bail!(
                     "{debug_name}: shapes differ at dim {d} (base={}, src={})",
-                    base_shape[d], src_shape[d],
+                    base_shape[d],
+                    src_shape[d],
                 );
             }
         }
@@ -6007,68 +8051,116 @@ impl VulkanBackend {
         let need_src = n_src * 2;
         let need_idx = n_src * 4;
         if base.len_bytes() < need_base {
-            fuel_ir::bail!("{debug_name}: base {} bytes < required {need_base}", base.len_bytes());
+            fuel_ir::bail!(
+                "{debug_name}: base {} bytes < required {need_base}",
+                base.len_bytes()
+            );
         }
         if out.len_bytes() < need_base {
-            fuel_ir::bail!("{debug_name}: out {} bytes < required {need_base}", out.len_bytes());
+            fuel_ir::bail!(
+                "{debug_name}: out {} bytes < required {need_base}",
+                out.len_bytes()
+            );
         }
         if src.len_bytes() < need_src {
-            fuel_ir::bail!("{debug_name}: src {} bytes < required {need_src}", src.len_bytes());
+            fuel_ir::bail!(
+                "{debug_name}: src {} bytes < required {need_src}",
+                src.len_bytes()
+            );
         }
         if indices.len_bytes() < need_idx {
-            fuel_ir::bail!("{debug_name}: indices {} bytes < required {need_idx}", indices.len_bytes());
+            fuel_ir::bail!(
+                "{debug_name}: indices {} bytes < required {need_idx}",
+                indices.len_bytes()
+            );
         }
 
-        let base_buf = base.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{debug_name}: base host-evicted").into(),
-        ))?;
-        let out_buf_for_copy = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{debug_name}: out host-evicted").into(),
-        ))?;
+        let base_buf = base.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!("{debug_name}: base host-evicted").into())
+        })?;
+        let out_buf_for_copy = out
+            .buffer_opt()
+            .ok_or_else(|| fuel_ir::Error::Msg(format!("{debug_name}: out host-evicted").into()))?;
         self.flush_pending()?;
         let copy_size = need_base as u64;
-        self.queue.one_shot(&self.device, self.queue_family, |cmd| {
-            cmd.copy_buffer(base_buf, out_buf_for_copy, &[BufferCopy {
-                src_offset: 0, dst_offset: 0, size: copy_size,
-            }]);
-            Ok(())
-        }).map_err(vk_err)?;
+        self.queue
+            .one_shot(&self.device, self.queue_family, |cmd| {
+                cmd.copy_buffer(
+                    base_buf,
+                    out_buf_for_copy,
+                    &[BufferCopy {
+                        src_offset: 0,
+                        dst_offset: 0,
+                        size: copy_size,
+                    }],
+                );
+                Ok(())
+            })
+            .map_err(vk_err)?;
 
         let mut sd: Vec<u32> = Vec::with_capacity(2 * rank);
-        for &d in src_shape { sd.push(d as u32); }
-        for &d in base_shape { sd.push(d as u32); }
+        for &d in src_shape {
+            sd.push(d as u32);
+        }
+        for &d in base_shape {
+            sd.push(d as u32);
+        }
         let (sd_buf, sd_mem) = self.upload_slice_raw(&sd)?;
         let sd_byte_size = (sd.len() * 4) as u64;
 
-        #[repr(C)] #[derive(Clone, Copy)]
-        struct SAParams { n_src: u32, rank: u32, dim: u32, _pad: u32 }
-        let p = SAParams { n_src: n_src as u32, rank: rank as u32, dim: dim as u32, _pad: 0 };
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct SAParams {
+            n_src: u32,
+            rank: u32,
+            dim: u32,
+            _pad: u32,
+        }
+        let p = SAParams {
+            n_src: n_src as u32,
+            rank: rank as u32,
+            dim: dim as u32,
+            _pad: 0,
+        };
         let (pbuf, pmem) = self.upload_params(&p)?;
 
-        let idx_buf = indices.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{debug_name}: indices host-evicted").into(),
-        ))?;
-        let src_buf = src.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{debug_name}: src host-evicted").into(),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{debug_name}: out host-evicted after copy?").into(),
-        ))?;
+        let idx_buf = indices.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!("{debug_name}: indices host-evicted").into())
+        })?;
+        let src_buf = src
+            .buffer_opt()
+            .ok_or_else(|| fuel_ir::Error::Msg(format!("{debug_name}: src host-evicted").into()))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!("{debug_name}: out host-evicted after copy?").into())
+        })?;
 
         // Round descriptor ranges to u32 multiples so robust-access
         // does not discard the final half-word atomic write.
         let src_bind_len = ((src.len_bytes() + 3) & !3) as u64;
         let out_bind_len = ((out.len_bytes() + 3) & !3) as u64;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_4s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, idx_buf, 0, indices.len_bytes() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_4s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            idx_buf,
+            0,
+            indices.len_bytes() as u64,
+        );
         desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, src_buf, 0, src_bind_len);
         desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, out_bind_len);
         desc.write_buffer(3, DescriptorType::STORAGE_BUFFER, &sd_buf, 0, sd_byte_size);
         desc.write_buffer(4, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
 
         let groups = Self::workgroups(n_src);
-        let rb = [idx_buf.raw() as u64, src_buf.raw() as u64, out_buf.raw() as u64];
+        let rb = [
+            idx_buf.raw() as u64,
+            src_buf.raw() as u64,
+            out_buf.raw() as u64,
+        ];
         let wb = [out_buf.raw() as u64];
         self.record_dispatch_batched(
             debug_name,
@@ -6077,7 +8169,8 @@ impl VulkanBackend {
             desc,
             (groups, 1, 1),
             vec![(sd_buf, sd_mem), (pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -6103,7 +8196,8 @@ impl VulkanBackend {
         if src_shape.len() != rank {
             fuel_ir::bail!(
                 "scatter_add_f32_bytes: base rank ({}) != src rank ({})",
-                base_shape.len(), src_shape.len(),
+                base_shape.len(),
+                src_shape.len(),
             );
         }
         if rank > 8 {
@@ -6116,7 +8210,8 @@ impl VulkanBackend {
             if d != dim && base_shape[d] != src_shape[d] {
                 fuel_ir::bail!(
                     "scatter_add_f32_bytes: shapes differ at dim {d} (base={}, src={}) — only dim={dim} may differ",
-                    base_shape[d], src_shape[d],
+                    base_shape[d],
+                    src_shape[d],
                 );
             }
         }
@@ -6153,55 +8248,105 @@ impl VulkanBackend {
         // Step 1: copy base → out via a transfer one_shot. Flush any
         // pending compute first so the copy starts from a clean queue
         // state.
-        let base_buf = base.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "scatter_add_f32_bytes: base host-evicted; fault back first".into(),
-        ))?;
-        let out_buf_for_copy = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "scatter_add_f32_bytes: out host-evicted; fault back first".into(),
-        ))?;
+        let base_buf = base.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("scatter_add_f32_bytes: base host-evicted; fault back first".into())
+        })?;
+        let out_buf_for_copy = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("scatter_add_f32_bytes: out host-evicted; fault back first".into())
+        })?;
         self.flush_pending()?;
         let copy_size = need_base as u64;
-        self.queue.one_shot(&self.device, self.queue_family, |cmd| {
-            cmd.copy_buffer(base_buf, out_buf_for_copy, &[BufferCopy {
-                src_offset: 0, dst_offset: 0, size: copy_size,
-            }]);
-            Ok(())
-        }).map_err(vk_err)?;
+        self.queue
+            .one_shot(&self.device, self.queue_family, |cmd| {
+                cmd.copy_buffer(
+                    base_buf,
+                    out_buf_for_copy,
+                    &[BufferCopy {
+                        src_offset: 0,
+                        dst_offset: 0,
+                        size: copy_size,
+                    }],
+                );
+                Ok(())
+            })
+            .map_err(vk_err)?;
 
         // Step 2: pack shape_buf (src_shape + base_shape) and dispatch
         // the scatter-add kernel.
         let mut sd: Vec<u32> = Vec::with_capacity(2 * rank);
-        for &d in src_shape { sd.push(d as u32); }
-        for &d in base_shape { sd.push(d as u32); }
+        for &d in src_shape {
+            sd.push(d as u32);
+        }
+        for &d in base_shape {
+            sd.push(d as u32);
+        }
         let (sd_buf, sd_mem) = self.upload_slice_raw(&sd)?;
         let sd_byte_size = (sd.len() * 4) as u64;
 
-        #[repr(C)] #[derive(Clone, Copy)]
-        struct SAParams { n_src: u32, rank: u32, dim: u32, _pad: u32 }
-        let p = SAParams { n_src: n_src as u32, rank: rank as u32, dim: dim as u32, _pad: 0 };
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct SAParams {
+            n_src: u32,
+            rank: u32,
+            dim: u32,
+            _pad: u32,
+        }
+        let p = SAParams {
+            n_src: n_src as u32,
+            rank: rank as u32,
+            dim: dim as u32,
+            _pad: 0,
+        };
         let (pbuf, pmem) = self.upload_params(&p)?;
 
-        let idx_buf = indices.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "scatter_add_f32_bytes: indices host-evicted; fault back first".into(),
-        ))?;
-        let src_buf = src.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "scatter_add_f32_bytes: src host-evicted; fault back first".into(),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "scatter_add_f32_bytes: out host-evicted after copy?".into(),
-        ))?;
+        let idx_buf = indices.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "scatter_add_f32_bytes: indices host-evicted; fault back first".into(),
+            )
+        })?;
+        let src_buf = src.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("scatter_add_f32_bytes: src host-evicted; fault back first".into())
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("scatter_add_f32_bytes: out host-evicted after copy?".into())
+        })?;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_4s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, idx_buf, 0, indices.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, src_buf, 0, src.len_bytes() as u64);
-        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_4s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            idx_buf,
+            0,
+            indices.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            src_buf,
+            0,
+            src.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            2,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         desc.write_buffer(3, DescriptorType::STORAGE_BUFFER, &sd_buf, 0, sd_byte_size);
         desc.write_buffer(4, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
 
         let groups = Self::workgroups(n_src);
         // `out` is both read and written (atomic-add), so list it in BOTH
         // rb (read barrier source) and wb (write barrier target).
-        let rb = [idx_buf.raw() as u64, src_buf.raw() as u64, out_buf.raw() as u64];
+        let rb = [
+            idx_buf.raw() as u64,
+            src_buf.raw() as u64,
+            out_buf.raw() as u64,
+        ];
         let wb = [out_buf.raw() as u64];
         self.record_dispatch_batched(
             "scatter_add_f32_bytes",
@@ -6210,7 +8355,8 @@ impl VulkanBackend {
             desc,
             (groups, 1, 1),
             vec![(sd_buf, sd_mem), (pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -6231,12 +8377,13 @@ impl VulkanBackend {
         last_dim: usize,
     ) -> fuel_ir::Result<()> {
         if input_dtype == DType::BF16 && last_dim % 2 != 0 {
-            fuel_ir::bail!(
-                "{op_name}: last_dim must be even on bf16 (lane-pair); got {last_dim}",
-            );
+            fuel_ir::bail!("{op_name}: last_dim must be even on bf16 (lane-pair); got {last_dim}",);
         }
         let elem_bytes = match input_dtype {
-            DType::F32 => 4, DType::F16 => 2, DType::BF16 => 2, DType::F64 => 8,
+            DType::F32 => 4,
+            DType::F16 => 2,
+            DType::BF16 => 2,
+            DType::F64 => 8,
             other => fuel_ir::bail!("{op_name}: unsupported input dtype {other:?}"),
         };
         let need_in = outer_count * last_dim * elem_bytes;
@@ -6254,32 +8401,66 @@ impl VulkanBackend {
             );
         }
         let (pipeline, pipe_layout) = match input_dtype {
-            DType::F32  => (&self.pipelines.arg_reduce_last_dim_f32_pipeline,
-                            &self.pipelines.arg_reduce_last_dim_f32_layout),
-            DType::F16  => (&self.pipelines.arg_reduce_last_dim_f16_pipeline,
-                            &self.pipelines.arg_reduce_last_dim_f16_layout),
-            DType::BF16 => (&self.pipelines.arg_reduce_last_dim_bf16_pipeline,
-                            &self.pipelines.arg_reduce_last_dim_bf16_layout),
-            DType::F64  => (&self.pipelines.arg_reduce_last_dim_f64_pipeline,
-                            &self.pipelines.arg_reduce_last_dim_f64_layout),
+            DType::F32 => (
+                &self.pipelines.arg_reduce_last_dim_f32_pipeline,
+                &self.pipelines.arg_reduce_last_dim_f32_layout,
+            ),
+            DType::F16 => (
+                &self.pipelines.arg_reduce_last_dim_f16_pipeline,
+                &self.pipelines.arg_reduce_last_dim_f16_layout,
+            ),
+            DType::BF16 => (
+                &self.pipelines.arg_reduce_last_dim_bf16_pipeline,
+                &self.pipelines.arg_reduce_last_dim_bf16_layout,
+            ),
+            DType::F64 => (
+                &self.pipelines.arg_reduce_last_dim_f64_pipeline,
+                &self.pipelines.arg_reduce_last_dim_f64_layout,
+            ),
             _ => unreachable!(),
         };
 
-        #[repr(C)] #[derive(Clone, Copy)]
-        struct ARParams { n_rows: u32, n_cols: u32, op_id: u32, _pad: u32 }
-        let p = ARParams { n_rows: outer_count as u32, n_cols: last_dim as u32, op_id, _pad: 0 };
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct ARParams {
+            n_rows: u32,
+            n_cols: u32,
+            op_id: u32,
+            _pad: u32,
+        }
+        let p = ARParams {
+            n_rows: outer_count as u32,
+            n_cols: last_dim as u32,
+            op_id,
+            _pad: 0,
+        };
         let (pbuf, pmem) = self.upload_params(&p)?;
 
-        let in_buf = input.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: input host-evicted; fault back first"),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: out host-evicted; fault back first"),
-        ))?;
+        let in_buf = input.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!("{op_name}: input host-evicted; fault back first"))
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!("{op_name}: out host-evicted; fault back first"))
+        })?;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_2s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            in_buf,
+            0,
+            input.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
         let rb = [in_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
@@ -6290,7 +8471,8 @@ impl VulkanBackend {
             desc,
             (outer_count as u32, 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -6312,8 +8494,15 @@ impl VulkanBackend {
         inner_count: usize,
     ) -> fuel_ir::Result<()> {
         self.index_add_bytes_impl(
-            DType::F32, base, indices, src, out,
-            outer_count, base_dim_size, n_indices, inner_count,
+            DType::F32,
+            base,
+            indices,
+            src,
+            out,
+            outer_count,
+            base_dim_size,
+            n_indices,
+            inner_count,
             "index_add_f32_bytes",
             &self.pipelines.index_add_f32_pipeline,
             &self.pipelines.index_add_f32_layout,
@@ -6334,8 +8523,15 @@ impl VulkanBackend {
         inner_count: usize,
     ) -> fuel_ir::Result<()> {
         self.index_add_bytes_impl(
-            DType::F64, base, indices, src, out,
-            outer_count, base_dim_size, n_indices, inner_count,
+            DType::F64,
+            base,
+            indices,
+            src,
+            out,
+            outer_count,
+            base_dim_size,
+            n_indices,
+            inner_count,
             "index_add_f64_bytes",
             &self.pipelines.index_add_f64_pipeline,
             &self.pipelines.index_add_f64_layout,
@@ -6356,8 +8552,15 @@ impl VulkanBackend {
         inner_count: usize,
     ) -> fuel_ir::Result<()> {
         self.index_add_bytes_impl(
-            DType::BF16, base, indices, src, out,
-            outer_count, base_dim_size, n_indices, inner_count,
+            DType::BF16,
+            base,
+            indices,
+            src,
+            out,
+            outer_count,
+            base_dim_size,
+            n_indices,
+            inner_count,
             "index_add_bf16_bytes",
             &self.pipelines.index_add_bf16_pipeline,
             &self.pipelines.index_add_bf16_layout,
@@ -6378,8 +8581,15 @@ impl VulkanBackend {
         inner_count: usize,
     ) -> fuel_ir::Result<()> {
         self.index_add_bytes_impl(
-            DType::F16, base, indices, src, out,
-            outer_count, base_dim_size, n_indices, inner_count,
+            DType::F16,
+            base,
+            indices,
+            src,
+            out,
+            outer_count,
+            base_dim_size,
+            n_indices,
+            inner_count,
             "index_add_f16_bytes",
             &self.pipelines.index_add_f16_pipeline,
             &self.pipelines.index_add_f16_layout,
@@ -6404,8 +8614,8 @@ impl VulkanBackend {
         round_buffers: bool,
     ) -> fuel_ir::Result<()> {
         let elem_bytes = match dtype {
-            DType::F32  => 4,
-            DType::F64  => 8,
+            DType::F32 => 4,
+            DType::F64 => 8,
             DType::F16 | DType::BF16 => 2,
             other => fuel_ir::bail!("{debug_name}: unsupported dtype {other:?}"),
         };
@@ -6415,69 +8625,111 @@ impl VulkanBackend {
         let need_src = n_src * elem_bytes;
         let need_idx = n_indices * 4;
         if base.len_bytes() < need_base {
-            fuel_ir::bail!("{debug_name}: base {} bytes < required {need_base}", base.len_bytes());
+            fuel_ir::bail!(
+                "{debug_name}: base {} bytes < required {need_base}",
+                base.len_bytes()
+            );
         }
         if out.len_bytes() < need_base {
-            fuel_ir::bail!("{debug_name}: out {} bytes < required {need_base}", out.len_bytes());
+            fuel_ir::bail!(
+                "{debug_name}: out {} bytes < required {need_base}",
+                out.len_bytes()
+            );
         }
         if src.len_bytes() < need_src {
-            fuel_ir::bail!("{debug_name}: src {} bytes < required {need_src}", src.len_bytes());
+            fuel_ir::bail!(
+                "{debug_name}: src {} bytes < required {need_src}",
+                src.len_bytes()
+            );
         }
         if indices.len_bytes() < need_idx {
-            fuel_ir::bail!("{debug_name}: indices {} bytes < required {need_idx}", indices.len_bytes());
+            fuel_ir::bail!(
+                "{debug_name}: indices {} bytes < required {need_idx}",
+                indices.len_bytes()
+            );
         }
 
         // Copy base → out.
-        let base_buf = base.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{debug_name}: base host-evicted").into(),
-        ))?;
-        let out_buf_for_copy = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{debug_name}: out host-evicted").into(),
-        ))?;
+        let base_buf = base.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!("{debug_name}: base host-evicted").into())
+        })?;
+        let out_buf_for_copy = out
+            .buffer_opt()
+            .ok_or_else(|| fuel_ir::Error::Msg(format!("{debug_name}: out host-evicted").into()))?;
         self.flush_pending()?;
         let copy_size = need_base as u64;
-        self.queue.one_shot(&self.device, self.queue_family, |cmd| {
-            cmd.copy_buffer(base_buf, out_buf_for_copy, &[BufferCopy {
-                src_offset: 0, dst_offset: 0, size: copy_size,
-            }]);
-            Ok(())
-        }).map_err(vk_err)?;
+        self.queue
+            .one_shot(&self.device, self.queue_family, |cmd| {
+                cmd.copy_buffer(
+                    base_buf,
+                    out_buf_for_copy,
+                    &[BufferCopy {
+                        src_offset: 0,
+                        dst_offset: 0,
+                        size: copy_size,
+                    }],
+                );
+                Ok(())
+            })
+            .map_err(vk_err)?;
 
-        #[repr(C)] #[derive(Clone, Copy)]
-        struct IAParams { outer_count: u32, base_dim_size: u32, n_indices: u32, inner_count: u32 }
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct IAParams {
+            outer_count: u32,
+            base_dim_size: u32,
+            n_indices: u32,
+            inner_count: u32,
+        }
         let p = IAParams {
-            outer_count:   outer_count as u32,
+            outer_count: outer_count as u32,
             base_dim_size: base_dim_size as u32,
-            n_indices:     n_indices as u32,
-            inner_count:   inner_count as u32,
+            n_indices: n_indices as u32,
+            inner_count: inner_count as u32,
         };
         let (pbuf, pmem) = self.upload_params(&p)?;
 
-        let idx_buf = indices.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{debug_name}: indices host-evicted").into(),
-        ))?;
-        let src_buf = src.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{debug_name}: src host-evicted").into(),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{debug_name}: out host-evicted after copy?").into(),
-        ))?;
+        let idx_buf = indices.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!("{debug_name}: indices host-evicted").into())
+        })?;
+        let src_buf = src
+            .buffer_opt()
+            .ok_or_else(|| fuel_ir::Error::Msg(format!("{debug_name}: src host-evicted").into()))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!("{debug_name}: out host-evicted after copy?").into())
+        })?;
 
         let (src_bind_len, out_bind_len) = if round_buffers {
-            (((src.len_bytes() + 3) & !3) as u64, ((out.len_bytes() + 3) & !3) as u64)
+            (
+                ((src.len_bytes() + 3) & !3) as u64,
+                ((out.len_bytes() + 3) & !3) as u64,
+            )
         } else {
             (src.len_bytes() as u64, out.len_bytes() as u64)
         };
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, idx_buf, 0, indices.len_bytes() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_3s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            idx_buf,
+            0,
+            indices.len_bytes() as u64,
+        );
         desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, src_buf, 0, src_bind_len);
         desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, out_bind_len);
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
 
         let total = n_src;
         let groups = Self::workgroups(total);
-        let rb = [idx_buf.raw() as u64, src_buf.raw() as u64, out_buf.raw() as u64];
+        let rb = [
+            idx_buf.raw() as u64,
+            src_buf.raw() as u64,
+            out_buf.raw() as u64,
+        ];
         let wb = [out_buf.raw() as u64];
         self.record_dispatch_batched(
             debug_name,
@@ -6486,7 +8738,8 @@ impl VulkanBackend {
             desc,
             (groups, 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -6508,7 +8761,10 @@ impl VulkanBackend {
         n_inner: usize,
     ) -> fuel_ir::Result<()> {
         let elem_bytes = match input_dtype {
-            DType::F32 => 4, DType::F16 => 2, DType::BF16 => 2, DType::F64 => 8,
+            DType::F32 => 4,
+            DType::F16 => 2,
+            DType::BF16 => 2,
+            DType::F64 => 8,
             other => fuel_ir::bail!("{op_name}: unsupported input dtype {other:?}"),
         };
         let total_out = n_outer * n_inner;
@@ -6528,42 +8784,65 @@ impl VulkanBackend {
             );
         }
         let (pipeline, pipe_layout) = match input_dtype {
-            DType::F32  => (&self.pipelines.arg_reduce_any_dim_f32_pipeline,
-                            &self.pipelines.arg_reduce_any_dim_f32_layout),
-            DType::F16  => (&self.pipelines.arg_reduce_any_dim_f16_pipeline,
-                            &self.pipelines.arg_reduce_any_dim_f16_layout),
-            DType::BF16 => (&self.pipelines.arg_reduce_any_dim_bf16_pipeline,
-                            &self.pipelines.arg_reduce_any_dim_bf16_layout),
-            DType::F64  => (&self.pipelines.arg_reduce_any_dim_f64_pipeline,
-                            &self.pipelines.arg_reduce_any_dim_f64_layout),
+            DType::F32 => (
+                &self.pipelines.arg_reduce_any_dim_f32_pipeline,
+                &self.pipelines.arg_reduce_any_dim_f32_layout,
+            ),
+            DType::F16 => (
+                &self.pipelines.arg_reduce_any_dim_f16_pipeline,
+                &self.pipelines.arg_reduce_any_dim_f16_layout,
+            ),
+            DType::BF16 => (
+                &self.pipelines.arg_reduce_any_dim_bf16_pipeline,
+                &self.pipelines.arg_reduce_any_dim_bf16_layout,
+            ),
+            DType::F64 => (
+                &self.pipelines.arg_reduce_any_dim_f64_pipeline,
+                &self.pipelines.arg_reduce_any_dim_f64_layout,
+            ),
             _ => unreachable!(),
         };
 
-        #[repr(C)] #[derive(Clone, Copy)]
-        struct ARParams { n_outer: u32, n_inner: u32, d_dim: u32, op_id: u32 }
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct ARParams {
+            n_outer: u32,
+            n_inner: u32,
+            d_dim: u32,
+            op_id: u32,
+        }
         let p = ARParams {
             n_outer: n_outer as u32,
             n_inner: n_inner as u32,
-            d_dim:   d_dim as u32,
+            d_dim: d_dim as u32,
             op_id,
         };
         let (pbuf, pmem) = self.upload_params(&p)?;
 
-        let in_buf = input.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: input host-evicted; fault back first"),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: out host-evicted; fault back first"),
-        ))?;
+        let in_buf = input.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!("{op_name}: input host-evicted; fault back first"))
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!("{op_name}: out host-evicted; fault back first"))
+        })?;
 
         // Round descriptor ranges to u32 multiples — bf16/f16 inputs
         // may total an odd byte count for odd shapes; robust-access
         // would otherwise discard the final half-word read.
         let in_bind_len = ((input.len_bytes() + 3) & !3) as u64;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_2s1u)
+            .map_err(vk_err)?;
         desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, in_bind_len);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
         let rb = [in_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
@@ -6575,7 +8854,8 @@ impl VulkanBackend {
             desc,
             (groups, 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -6597,18 +8877,18 @@ impl VulkanBackend {
         mode_tag: u8,
     ) -> fuel_ir::Result<()> {
         let elem_bytes = match dtype {
-            DType::F32  => 4,
-            DType::F64  => 8,
+            DType::F32 => 4,
+            DType::F64 => 8,
             DType::F16 | DType::BF16 => 2,
-            other => fuel_ir::bail!(
-                "pad_backward_atomic_bytes: unsupported dtype {other:?}",
-            ),
+            other => fuel_ir::bail!("pad_backward_atomic_bytes: unsupported dtype {other:?}",),
         };
         let rank = in_shape.len();
         if out_shape.len() != rank || left_pad.len() != rank {
             fuel_ir::bail!(
                 "pad_backward_atomic_bytes: rank mismatch (in={}, out={}, left_pad={})",
-                in_shape.len(), out_shape.len(), left_pad.len(),
+                in_shape.len(),
+                out_shape.len(),
+                left_pad.len(),
             );
         }
         if rank > 8 {
@@ -6640,49 +8920,86 @@ impl VulkanBackend {
         self.fill_bytes_zero(grad_in)?;
 
         let mut sd: Vec<u32> = Vec::with_capacity(3 * rank);
-        for &d in in_shape { sd.push(d as u32); }
-        for &d in out_shape { sd.push(d as u32); }
-        for &p in left_pad { sd.push(p as u32); }
+        for &d in in_shape {
+            sd.push(d as u32);
+        }
+        for &d in out_shape {
+            sd.push(d as u32);
+        }
+        for &p in left_pad {
+            sd.push(p as u32);
+        }
         let (sd_buf, sd_mem) = self.upload_slice_raw(&sd)?;
         let sd_byte_size = (sd.len() * 4) as u64;
 
-        let go_buf = grad_out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "pad_backward_atomic_bytes: grad_out is host-evicted".into(),
-        ))?;
-        let gi_buf = grad_in.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "pad_backward_atomic_bytes: grad_in is host-evicted".into(),
-        ))?;
+        let go_buf = grad_out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("pad_backward_atomic_bytes: grad_out is host-evicted".into())
+        })?;
+        let gi_buf = grad_in.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("pad_backward_atomic_bytes: grad_in is host-evicted".into())
+        })?;
 
-        #[repr(C)] #[derive(Clone, Copy)]
-        struct PBRParams { n_out: u32, rank: u32, _pad0: u32, _pad1: u32 }
-        let p = PBRParams { n_out: n_out as u32, rank: rank as u32, _pad0: 0, _pad1: 0 };
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct PBRParams {
+            n_out: u32,
+            rank: u32,
+            _pad0: u32,
+            _pad1: u32,
+        }
+        let p = PBRParams {
+            n_out: n_out as u32,
+            rank: rank as u32,
+            _pad0: 0,
+            _pad1: 0,
+        };
         let (pbuf, pmem) = self.upload_params(&p)?;
 
-        let (pipeline, pipe_layout, op_name): (&vulkane::safe::ComputePipeline, &vulkane::safe::PipelineLayout, &'static str) = match (dtype, mode_tag) {
-            (DType::F32,  1) => (&self.pipelines.pad_backward_reflect_f32_pipeline,
-                                 &self.pipelines.pad_backward_reflect_f32_layout,
-                                 "pad_backward_reflect_f32"),
-            (DType::F32,  2) => (&self.pipelines.pad_backward_replicate_f32_pipeline,
-                                 &self.pipelines.pad_backward_replicate_f32_layout,
-                                 "pad_backward_replicate_f32"),
-            (DType::F64,  1) => (&self.pipelines.pad_backward_reflect_f64_pipeline,
-                                 &self.pipelines.pad_backward_reflect_f64_layout,
-                                 "pad_backward_reflect_f64"),
-            (DType::F64,  2) => (&self.pipelines.pad_backward_replicate_f64_pipeline,
-                                 &self.pipelines.pad_backward_replicate_f64_layout,
-                                 "pad_backward_replicate_f64"),
-            (DType::BF16, 1) => (&self.pipelines.pad_backward_reflect_bf16_pipeline,
-                                 &self.pipelines.pad_backward_reflect_bf16_layout,
-                                 "pad_backward_reflect_bf16"),
-            (DType::BF16, 2) => (&self.pipelines.pad_backward_replicate_bf16_pipeline,
-                                 &self.pipelines.pad_backward_replicate_bf16_layout,
-                                 "pad_backward_replicate_bf16"),
-            (DType::F16,  1) => (&self.pipelines.pad_backward_reflect_f16_pipeline,
-                                 &self.pipelines.pad_backward_reflect_f16_layout,
-                                 "pad_backward_reflect_f16"),
-            (DType::F16,  2) => (&self.pipelines.pad_backward_replicate_f16_pipeline,
-                                 &self.pipelines.pad_backward_replicate_f16_layout,
-                                 "pad_backward_replicate_f16"),
+        let (pipeline, pipe_layout, op_name): (
+            &vulkane::safe::ComputePipeline,
+            &vulkane::safe::PipelineLayout,
+            &'static str,
+        ) = match (dtype, mode_tag) {
+            (DType::F32, 1) => (
+                &self.pipelines.pad_backward_reflect_f32_pipeline,
+                &self.pipelines.pad_backward_reflect_f32_layout,
+                "pad_backward_reflect_f32",
+            ),
+            (DType::F32, 2) => (
+                &self.pipelines.pad_backward_replicate_f32_pipeline,
+                &self.pipelines.pad_backward_replicate_f32_layout,
+                "pad_backward_replicate_f32",
+            ),
+            (DType::F64, 1) => (
+                &self.pipelines.pad_backward_reflect_f64_pipeline,
+                &self.pipelines.pad_backward_reflect_f64_layout,
+                "pad_backward_reflect_f64",
+            ),
+            (DType::F64, 2) => (
+                &self.pipelines.pad_backward_replicate_f64_pipeline,
+                &self.pipelines.pad_backward_replicate_f64_layout,
+                "pad_backward_replicate_f64",
+            ),
+            (DType::BF16, 1) => (
+                &self.pipelines.pad_backward_reflect_bf16_pipeline,
+                &self.pipelines.pad_backward_reflect_bf16_layout,
+                "pad_backward_reflect_bf16",
+            ),
+            (DType::BF16, 2) => (
+                &self.pipelines.pad_backward_replicate_bf16_pipeline,
+                &self.pipelines.pad_backward_replicate_bf16_layout,
+                "pad_backward_replicate_bf16",
+            ),
+            (DType::F16, 1) => (
+                &self.pipelines.pad_backward_reflect_f16_pipeline,
+                &self.pipelines.pad_backward_reflect_f16_layout,
+                "pad_backward_reflect_f16",
+            ),
+            (DType::F16, 2) => (
+                &self.pipelines.pad_backward_replicate_f16_pipeline,
+                &self.pipelines.pad_backward_replicate_f16_layout,
+                "pad_backward_replicate_f16",
+            ),
             _ => unreachable!(),
         };
 
@@ -6692,7 +9009,10 @@ impl VulkanBackend {
         let go_bind_len = ((grad_out.len_bytes() + 3) & !3) as u64;
         let gi_bind_len = ((grad_in.len_bytes() + 3) & !3) as u64;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_3s1u)
+            .map_err(vk_err)?;
         desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, go_buf, 0, go_bind_len);
         desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, gi_buf, 0, gi_bind_len);
         desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, &sd_buf, 0, sd_byte_size);
@@ -6708,7 +9028,8 @@ impl VulkanBackend {
             desc,
             (groups, 1, 1),
             vec![(sd_buf, sd_mem), (pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -6731,7 +9052,9 @@ impl VulkanBackend {
         if out_shape.len() != rank || left_pad.len() != rank {
             fuel_ir::bail!(
                 "pad_backward_const_bytes: rank mismatch (in={}, out={}, left_pad={})",
-                in_shape.len(), out_shape.len(), left_pad.len(),
+                in_shape.len(),
+                out_shape.len(),
+                left_pad.len(),
             );
         }
         if rank > 8 {
@@ -6754,64 +9077,98 @@ impl VulkanBackend {
             );
         }
         if elem_bytes == 2 && n_in % 2 != 0 {
-            fuel_ir::bail!(
-                "pad_backward_const_bytes b2: n_in ({n_in}) must be even (pair-thread)",
-            );
+            fuel_ir::bail!("pad_backward_const_bytes b2: n_in ({n_in}) must be even (pair-thread)",);
         }
         if elem_bytes == 1 && n_in % 4 != 0 {
-            fuel_ir::bail!(
-                "pad_backward_const_bytes b1: n_in ({n_in}) must be a multiple of 4",
-            );
+            fuel_ir::bail!("pad_backward_const_bytes b1: n_in ({n_in}) must be a multiple of 4",);
         }
 
         let mut sd: Vec<u32> = Vec::with_capacity(3 * rank);
-        for &d in in_shape { sd.push(d as u32); }
-        for &d in out_shape { sd.push(d as u32); }
-        for &p in left_pad { sd.push(p as u32); }
+        for &d in in_shape {
+            sd.push(d as u32);
+        }
+        for &d in out_shape {
+            sd.push(d as u32);
+        }
+        for &p in left_pad {
+            sd.push(p as u32);
+        }
         let (sd_buf, sd_mem) = self.upload_slice_raw(&sd)?;
         let sd_byte_size = (sd.len() * 4) as u64;
 
-        let go_buf = grad_out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "pad_backward_const_bytes: grad_out is host-evicted; fault back first".into(),
-        ))?;
-        let gi_buf = grad_in.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "pad_backward_const_bytes: grad_in is host-evicted; fault back first".into(),
-        ))?;
+        let go_buf = grad_out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "pad_backward_const_bytes: grad_out is host-evicted; fault back first".into(),
+            )
+        })?;
+        let gi_buf = grad_in.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "pad_backward_const_bytes: grad_in is host-evicted; fault back first".into(),
+            )
+        })?;
 
-        #[repr(C)] #[derive(Clone, Copy)]
-        struct PBParams { n_in: u32, rank: u32, _pad0: u32, _pad1: u32 }
-        let p = PBParams { n_in: n_in as u32, rank: rank as u32, _pad0: 0, _pad1: 0 };
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct PBParams {
+            n_in: u32,
+            rank: u32,
+            _pad0: u32,
+            _pad1: u32,
+        }
+        let p = PBParams {
+            n_in: n_in as u32,
+            rank: rank as u32,
+            _pad0: 0,
+            _pad1: 0,
+        };
         let (pbuf, pmem) = self.upload_params(&p)?;
 
         let (pipeline, pipe_layout, op_name, n_dispatch) = match elem_bytes {
             1 => (
                 &self.pipelines.pad_backward_const_b1_pipeline,
                 &self.pipelines.pad_backward_const_b1_layout,
-                "pad_backward_const_b1", n_in / 4,
+                "pad_backward_const_b1",
+                n_in / 4,
             ),
             2 => (
                 &self.pipelines.pad_backward_const_b2_pipeline,
                 &self.pipelines.pad_backward_const_b2_layout,
-                "pad_backward_const_b2", n_in / 2,
+                "pad_backward_const_b2",
+                n_in / 2,
             ),
             4 => (
                 &self.pipelines.pad_backward_const_b4_pipeline,
                 &self.pipelines.pad_backward_const_b4_layout,
-                "pad_backward_const_b4", n_in,
+                "pad_backward_const_b4",
+                n_in,
             ),
             8 => (
                 &self.pipelines.pad_backward_const_b8_pipeline,
                 &self.pipelines.pad_backward_const_b8_layout,
-                "pad_backward_const_b8", n_in,
+                "pad_backward_const_b8",
+                n_in,
             ),
-            other => fuel_ir::bail!(
-                "pad_backward_const_bytes: unsupported elem_bytes {other}",
-            ),
+            other => fuel_ir::bail!("pad_backward_const_bytes: unsupported elem_bytes {other}",),
         };
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, go_buf, 0, grad_out.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, gi_buf, 0, grad_in.len_bytes() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_3s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            go_buf,
+            0,
+            grad_out.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            gi_buf,
+            0,
+            grad_in.len_bytes() as u64,
+        );
         desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, &sd_buf, 0, sd_byte_size);
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
 
@@ -6825,7 +9182,8 @@ impl VulkanBackend {
             desc,
             (groups, 1, 1),
             vec![(sd_buf, sd_mem), (pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -6847,7 +9205,9 @@ impl VulkanBackend {
         if out_shape.len() != rank || left_pad.len() != rank {
             fuel_ir::bail!(
                 "pad_replicate_bytes: rank mismatch (in={}, out={}, left_pad={})",
-                in_shape.len(), out_shape.len(), left_pad.len(),
+                in_shape.len(),
+                out_shape.len(),
+                left_pad.len(),
             );
         }
         if rank > 8 {
@@ -6855,9 +9215,7 @@ impl VulkanBackend {
         }
         for d in 0..rank {
             if in_shape[d] == 0 && (left_pad[d] != 0 || out_shape[d] != 0) {
-                fuel_ir::bail!(
-                    "pad_replicate_bytes: axis {d}: in_dim is 0; cannot replicate-pad",
-                );
+                fuel_ir::bail!("pad_replicate_bytes: axis {d}: in_dim is 0; cannot replicate-pad",);
             }
         }
         let n_in: usize = in_shape.iter().product();
@@ -6877,64 +9235,96 @@ impl VulkanBackend {
             );
         }
         if elem_bytes == 2 && n_out % 2 != 0 {
-            fuel_ir::bail!(
-                "pad_replicate_bytes b2: n_out ({n_out}) must be even",
-            );
+            fuel_ir::bail!("pad_replicate_bytes b2: n_out ({n_out}) must be even",);
         }
         if elem_bytes == 1 && n_out % 4 != 0 {
-            fuel_ir::bail!(
-                "pad_replicate_bytes b1: n_out ({n_out}) must be a multiple of 4",
-            );
+            fuel_ir::bail!("pad_replicate_bytes b1: n_out ({n_out}) must be a multiple of 4",);
         }
 
         let mut sd: Vec<u32> = Vec::with_capacity(3 * rank);
-        for &d in in_shape { sd.push(d as u32); }
-        for &d in out_shape { sd.push(d as u32); }
-        for &p in left_pad { sd.push(p as u32); }
+        for &d in in_shape {
+            sd.push(d as u32);
+        }
+        for &d in out_shape {
+            sd.push(d as u32);
+        }
+        for &p in left_pad {
+            sd.push(p as u32);
+        }
         let (sd_buf, sd_mem) = self.upload_slice_raw(&sd)?;
         let sd_byte_size = (sd.len() * 4) as u64;
 
-        let src_buf = src.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "pad_replicate_bytes: src is host-evicted; fault back first".into(),
-        ))?;
-        let dst_buf = dst.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "pad_replicate_bytes: dst is host-evicted; fault back first".into(),
-        ))?;
+        let src_buf = src.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("pad_replicate_bytes: src is host-evicted; fault back first".into())
+        })?;
+        let dst_buf = dst.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("pad_replicate_bytes: dst is host-evicted; fault back first".into())
+        })?;
 
-        #[repr(C)] #[derive(Clone, Copy)]
-        struct PParams { n_out: u32, rank: u32, _pad0: u32, _pad1: u32 }
-        let p = PParams { n_out: n_out as u32, rank: rank as u32, _pad0: 0, _pad1: 0 };
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct PParams {
+            n_out: u32,
+            rank: u32,
+            _pad0: u32,
+            _pad1: u32,
+        }
+        let p = PParams {
+            n_out: n_out as u32,
+            rank: rank as u32,
+            _pad0: 0,
+            _pad1: 0,
+        };
         let (pbuf, pmem) = self.upload_params(&p)?;
 
         let (pipeline, pipe_layout, op_name, n_dispatch) = match elem_bytes {
             1 => (
                 &self.pipelines.pad_replicate_b1_pipeline,
                 &self.pipelines.pad_replicate_b1_layout,
-                "pad_replicate_b1", n_out / 4,
+                "pad_replicate_b1",
+                n_out / 4,
             ),
             2 => (
                 &self.pipelines.pad_replicate_b2_pipeline,
                 &self.pipelines.pad_replicate_b2_layout,
-                "pad_replicate_b2", n_out / 2,
+                "pad_replicate_b2",
+                n_out / 2,
             ),
             4 => (
                 &self.pipelines.pad_replicate_b4_pipeline,
                 &self.pipelines.pad_replicate_b4_layout,
-                "pad_replicate_b4", n_out,
+                "pad_replicate_b4",
+                n_out,
             ),
             8 => (
                 &self.pipelines.pad_replicate_b8_pipeline,
                 &self.pipelines.pad_replicate_b8_layout,
-                "pad_replicate_b8", n_out,
+                "pad_replicate_b8",
+                n_out,
             ),
-            other => fuel_ir::bail!(
-                "pad_replicate_bytes: unsupported elem_bytes {other} (have 1/2/4/8)",
-            ),
+            other => {
+                fuel_ir::bail!("pad_replicate_bytes: unsupported elem_bytes {other} (have 1/2/4/8)",)
+            }
         };
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, src_buf, 0, src.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, dst_buf, 0, dst.len_bytes() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_3s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            src_buf,
+            0,
+            src.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            dst_buf,
+            0,
+            dst.len_bytes() as u64,
+        );
         desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, &sd_buf, 0, sd_byte_size);
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
 
@@ -6948,7 +9338,8 @@ impl VulkanBackend {
             desc,
             (groups, 1, 1),
             vec![(sd_buf, sd_mem), (pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -6972,7 +9363,9 @@ impl VulkanBackend {
         if out_shape.len() != rank || left_pad.len() != rank {
             fuel_ir::bail!(
                 "pad_reflect_bytes: rank mismatch (in={}, out={}, left_pad={})",
-                in_shape.len(), out_shape.len(), left_pad.len(),
+                in_shape.len(),
+                out_shape.len(),
+                left_pad.len(),
             );
         }
         if rank > 8 {
@@ -6992,9 +9385,7 @@ impl VulkanBackend {
             let r = out_d - in_d - l;
             if in_d == 0 {
                 if l != 0 || r != 0 {
-                    fuel_ir::bail!(
-                        "pad_reflect_bytes: axis {d}: in_dim is 0; cannot reflect-pad",
-                    );
+                    fuel_ir::bail!("pad_reflect_bytes: axis {d}: in_dim is 0; cannot reflect-pad",);
                 }
             } else if l > in_d - 1 || r > in_d - 1 {
                 fuel_ir::bail!(
@@ -7021,64 +9412,96 @@ impl VulkanBackend {
             );
         }
         if elem_bytes == 2 && n_out % 2 != 0 {
-            fuel_ir::bail!(
-                "pad_reflect_bytes b2: n_out ({n_out}) must be even",
-            );
+            fuel_ir::bail!("pad_reflect_bytes b2: n_out ({n_out}) must be even",);
         }
         if elem_bytes == 1 && n_out % 4 != 0 {
-            fuel_ir::bail!(
-                "pad_reflect_bytes b1: n_out ({n_out}) must be a multiple of 4",
-            );
+            fuel_ir::bail!("pad_reflect_bytes b1: n_out ({n_out}) must be a multiple of 4",);
         }
 
         let mut sd: Vec<u32> = Vec::with_capacity(3 * rank);
-        for &d in in_shape { sd.push(d as u32); }
-        for &d in out_shape { sd.push(d as u32); }
-        for &p in left_pad { sd.push(p as u32); }
+        for &d in in_shape {
+            sd.push(d as u32);
+        }
+        for &d in out_shape {
+            sd.push(d as u32);
+        }
+        for &p in left_pad {
+            sd.push(p as u32);
+        }
         let (sd_buf, sd_mem) = self.upload_slice_raw(&sd)?;
         let sd_byte_size = (sd.len() * 4) as u64;
 
-        let src_buf = src.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "pad_reflect_bytes: src is host-evicted; fault back first".into(),
-        ))?;
-        let dst_buf = dst.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "pad_reflect_bytes: dst is host-evicted; fault back first".into(),
-        ))?;
+        let src_buf = src.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("pad_reflect_bytes: src is host-evicted; fault back first".into())
+        })?;
+        let dst_buf = dst.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("pad_reflect_bytes: dst is host-evicted; fault back first".into())
+        })?;
 
-        #[repr(C)] #[derive(Clone, Copy)]
-        struct PRParams { n_out: u32, rank: u32, _pad0: u32, _pad1: u32 }
-        let p = PRParams { n_out: n_out as u32, rank: rank as u32, _pad0: 0, _pad1: 0 };
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct PRParams {
+            n_out: u32,
+            rank: u32,
+            _pad0: u32,
+            _pad1: u32,
+        }
+        let p = PRParams {
+            n_out: n_out as u32,
+            rank: rank as u32,
+            _pad0: 0,
+            _pad1: 0,
+        };
         let (pbuf, pmem) = self.upload_params(&p)?;
 
         let (pipeline, pipe_layout, op_name, n_dispatch) = match elem_bytes {
             1 => (
                 &self.pipelines.pad_reflect_b1_pipeline,
                 &self.pipelines.pad_reflect_b1_layout,
-                "pad_reflect_b1", n_out / 4,
+                "pad_reflect_b1",
+                n_out / 4,
             ),
             2 => (
                 &self.pipelines.pad_reflect_b2_pipeline,
                 &self.pipelines.pad_reflect_b2_layout,
-                "pad_reflect_b2", n_out / 2,
+                "pad_reflect_b2",
+                n_out / 2,
             ),
             4 => (
                 &self.pipelines.pad_reflect_b4_pipeline,
                 &self.pipelines.pad_reflect_b4_layout,
-                "pad_reflect_b4", n_out,
+                "pad_reflect_b4",
+                n_out,
             ),
             8 => (
                 &self.pipelines.pad_reflect_b8_pipeline,
                 &self.pipelines.pad_reflect_b8_layout,
-                "pad_reflect_b8", n_out,
+                "pad_reflect_b8",
+                n_out,
             ),
-            other => fuel_ir::bail!(
-                "pad_reflect_bytes: unsupported elem_bytes {other} (have 1/2/4/8)",
-            ),
+            other => {
+                fuel_ir::bail!("pad_reflect_bytes: unsupported elem_bytes {other} (have 1/2/4/8)",)
+            }
         };
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, src_buf, 0, src.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, dst_buf, 0, dst.len_bytes() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_3s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            src_buf,
+            0,
+            src.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            dst_buf,
+            0,
+            dst.len_bytes() as u64,
+        );
         desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, &sd_buf, 0, sd_byte_size);
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
 
@@ -7092,7 +9515,8 @@ impl VulkanBackend {
             desc,
             (groups, 1, 1),
             vec![(sd_buf, sd_mem), (pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -7125,7 +9549,8 @@ impl VulkanBackend {
         if input.len_bytes() < need_data || output.len_bytes() < need_data {
             fuel_ir::bail!(
                 "masked_fill_bytes: data buffer too small (need {need_data}; in={}, out={})",
-                input.len_bytes(), output.len_bytes(),
+                input.len_bytes(),
+                output.len_bytes(),
             );
         }
         if mask.len_bytes() < n_elem {
@@ -7135,84 +9560,151 @@ impl VulkanBackend {
             );
         }
         if elem_bytes == 2 && n_elem % 2 != 0 {
-            fuel_ir::bail!(
-                "masked_fill_bytes b2: n_elem ({n_elem}) must be even",
-            );
+            fuel_ir::bail!("masked_fill_bytes b2: n_elem ({n_elem}) must be even",);
         }
         if elem_bytes == 1 && n_elem % 4 != 0 {
-            fuel_ir::bail!(
-                "masked_fill_bytes b1: n_elem ({n_elem}) must be a multiple of 4",
-            );
+            fuel_ir::bail!("masked_fill_bytes b1: n_elem ({n_elem}) must be a multiple of 4",);
         }
 
-        let in_buf = input.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "masked_fill_bytes: input is host-evicted; fault back first".into(),
-        ))?;
-        let mask_buf = mask.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "masked_fill_bytes: mask is host-evicted; fault back first".into(),
-        ))?;
-        let out_buf = output.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "masked_fill_bytes: output is host-evicted; fault back first".into(),
-        ))?;
+        let in_buf = input.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("masked_fill_bytes: input is host-evicted; fault back first".into())
+        })?;
+        let mask_buf = mask.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("masked_fill_bytes: mask is host-evicted; fault back first".into())
+        })?;
+        let out_buf = output.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "masked_fill_bytes: output is host-evicted; fault back first".into(),
+            )
+        })?;
 
         let mask_bind_len = ((mask.len_bytes() + 3) & !3) as u64;
 
         let (pbuf, pmem, pipeline, pipe_layout, op_name, n_dispatch) = match elem_bytes {
             1 => {
                 let fill_u32 = fill_bytes[0] as u32;
-                #[repr(C)] #[derive(Clone, Copy)]
-                struct MFParams { n: u32, fill_value: u32 }
-                let p = MFParams { n: n_elem as u32, fill_value: fill_u32 };
+                #[repr(C)]
+                #[derive(Clone, Copy)]
+                struct MFParams {
+                    n: u32,
+                    fill_value: u32,
+                }
+                let p = MFParams {
+                    n: n_elem as u32,
+                    fill_value: fill_u32,
+                };
                 let (b, m) = self.upload_params(&p)?;
-                (b, m,
-                 &self.pipelines.masked_fill_b1_pipeline,
-                 &self.pipelines.masked_fill_b1_layout,
-                 "masked_fill_b1", n_elem / 4)
+                (
+                    b,
+                    m,
+                    &self.pipelines.masked_fill_b1_pipeline,
+                    &self.pipelines.masked_fill_b1_layout,
+                    "masked_fill_b1",
+                    n_elem / 4,
+                )
             }
             2 => {
                 let fill_u32 = u16::from_le_bytes([fill_bytes[0], fill_bytes[1]]) as u32;
-                #[repr(C)] #[derive(Clone, Copy)]
-                struct MFParams { n: u32, fill_value: u32 }
-                let p = MFParams { n: n_elem as u32, fill_value: fill_u32 };
+                #[repr(C)]
+                #[derive(Clone, Copy)]
+                struct MFParams {
+                    n: u32,
+                    fill_value: u32,
+                }
+                let p = MFParams {
+                    n: n_elem as u32,
+                    fill_value: fill_u32,
+                };
                 let (b, m) = self.upload_params(&p)?;
-                (b, m,
-                 &self.pipelines.masked_fill_b2_pipeline,
-                 &self.pipelines.masked_fill_b2_layout,
-                 "masked_fill_b2", n_elem / 2)
+                (
+                    b,
+                    m,
+                    &self.pipelines.masked_fill_b2_pipeline,
+                    &self.pipelines.masked_fill_b2_layout,
+                    "masked_fill_b2",
+                    n_elem / 2,
+                )
             }
             4 => {
-                let mut a = [0u8; 4]; a.copy_from_slice(&fill_bytes[..4]);
+                let mut a = [0u8; 4];
+                a.copy_from_slice(&fill_bytes[..4]);
                 let fill_u32 = u32::from_le_bytes(a);
-                #[repr(C)] #[derive(Clone, Copy)]
-                struct MFParams { n: u32, fill_value: u32 }
-                let p = MFParams { n: n_elem as u32, fill_value: fill_u32 };
+                #[repr(C)]
+                #[derive(Clone, Copy)]
+                struct MFParams {
+                    n: u32,
+                    fill_value: u32,
+                }
+                let p = MFParams {
+                    n: n_elem as u32,
+                    fill_value: fill_u32,
+                };
                 let (b, m) = self.upload_params(&p)?;
-                (b, m,
-                 &self.pipelines.masked_fill_b4_pipeline,
-                 &self.pipelines.masked_fill_b4_layout,
-                 "masked_fill_b4", n_elem)
+                (
+                    b,
+                    m,
+                    &self.pipelines.masked_fill_b4_pipeline,
+                    &self.pipelines.masked_fill_b4_layout,
+                    "masked_fill_b4",
+                    n_elem,
+                )
             }
             8 => {
-                let mut a = [0u8; 8]; a.copy_from_slice(&fill_bytes[..8]);
+                let mut a = [0u8; 8];
+                a.copy_from_slice(&fill_bytes[..8]);
                 let fill_u64 = u64::from_le_bytes(a);
-                #[repr(C)] #[derive(Clone, Copy)]
-                struct MFParams { n: u32, _pad: u32, fill_value: u64 }
-                let p = MFParams { n: n_elem as u32, _pad: 0, fill_value: fill_u64 };
+                #[repr(C)]
+                #[derive(Clone, Copy)]
+                struct MFParams {
+                    n: u32,
+                    _pad: u32,
+                    fill_value: u64,
+                }
+                let p = MFParams {
+                    n: n_elem as u32,
+                    _pad: 0,
+                    fill_value: fill_u64,
+                };
                 let (b, m) = self.upload_params(&p)?;
-                (b, m,
-                 &self.pipelines.masked_fill_b8_pipeline,
-                 &self.pipelines.masked_fill_b8_layout,
-                 "masked_fill_b8", n_elem)
+                (
+                    b,
+                    m,
+                    &self.pipelines.masked_fill_b8_pipeline,
+                    &self.pipelines.masked_fill_b8_layout,
+                    "masked_fill_b8",
+                    n_elem,
+                )
             }
-            other => fuel_ir::bail!(
-                "masked_fill_bytes: unsupported elem_bytes {other} (have 1/2/4/8)",
-            ),
+            other => {
+                fuel_ir::bail!("masked_fill_bytes: unsupported elem_bytes {other} (have 1/2/4/8)",)
+            }
         };
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, mask_buf, 0, mask_bind_len);
-        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, output.len_bytes() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_3s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            in_buf,
+            0,
+            input.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            mask_buf,
+            0,
+            mask_bind_len,
+        );
+        desc.write_buffer(
+            2,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            output.len_bytes() as u64,
+        );
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
 
         let groups = Self::workgroups(n_dispatch);
@@ -7225,7 +9717,8 @@ impl VulkanBackend {
             desc,
             (groups, 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -7254,7 +9747,9 @@ impl VulkanBackend {
         if out_shape.len() != rank || left_pad.len() != rank {
             fuel_ir::bail!(
                 "pad_const_bytes: rank mismatch (in={}, out={}, left_pad={})",
-                in_shape.len(), out_shape.len(), left_pad.len(),
+                in_shape.len(),
+                out_shape.len(),
+                left_pad.len(),
             );
         }
         if rank > 8 {
@@ -7263,7 +9758,8 @@ impl VulkanBackend {
         if fill_bytes.len() != elem_bytes {
             fuel_ir::bail!(
                 "pad_const_bytes: fill_bytes.len() ({}) != elem_bytes ({})",
-                fill_bytes.len(), elem_bytes,
+                fill_bytes.len(),
+                elem_bytes,
             );
         }
         let n_in: usize = in_shape.iter().product();
@@ -7284,9 +9780,7 @@ impl VulkanBackend {
         }
 
         if elem_bytes == 2 && n_out % 2 != 0 {
-            fuel_ir::bail!(
-                "pad_const_bytes b2: n_out ({n_out}) must be even (pair-thread)",
-            );
+            fuel_ir::bail!("pad_const_bytes b2: n_out ({n_out}) must be even (pair-thread)",);
         }
         if elem_bytes == 1 && n_out % 4 != 0 {
             fuel_ir::bail!(
@@ -7296,18 +9790,24 @@ impl VulkanBackend {
 
         // Pack shape_buf: in_shape + out_shape + left_pad.
         let mut sd: Vec<u32> = Vec::with_capacity(3 * rank);
-        for &d in in_shape { sd.push(d as u32); }
-        for &d in out_shape { sd.push(d as u32); }
-        for &p in left_pad { sd.push(p as u32); }
+        for &d in in_shape {
+            sd.push(d as u32);
+        }
+        for &d in out_shape {
+            sd.push(d as u32);
+        }
+        for &p in left_pad {
+            sd.push(p as u32);
+        }
         let (sd_buf, sd_mem) = self.upload_slice_raw(&sd)?;
         let sd_byte_size = (sd.len() * 4) as u64;
 
-        let src_buf = src.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "pad_const_bytes: src is host-evicted; fault back first".into(),
-        ))?;
-        let dst_buf = dst.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "pad_const_bytes: dst is host-evicted; fault back first".into(),
-        ))?;
+        let src_buf = src.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("pad_const_bytes: src is host-evicted; fault back first".into())
+        })?;
+        let dst_buf = dst.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("pad_const_bytes: dst is host-evicted; fault back first".into())
+        })?;
 
         // Build Params and pick pipeline.
         // For b1/b2/b4: { u32 n_out, u32 rank, u32 fill_value, u32 _pad } = 16 bytes
@@ -7315,58 +9815,133 @@ impl VulkanBackend {
         let (pbuf, pmem, pipeline, pipe_layout, op_name, n_dispatch) = match elem_bytes {
             1 => {
                 let fill_u32 = fill_bytes[0] as u32;
-                #[repr(C)] #[derive(Clone, Copy)]
-                struct PParams { n_out: u32, rank: u32, fill_value: u32, _pad: u32 }
-                let p = PParams { n_out: n_out as u32, rank: rank as u32, fill_value: fill_u32, _pad: 0 };
+                #[repr(C)]
+                #[derive(Clone, Copy)]
+                struct PParams {
+                    n_out: u32,
+                    rank: u32,
+                    fill_value: u32,
+                    _pad: u32,
+                }
+                let p = PParams {
+                    n_out: n_out as u32,
+                    rank: rank as u32,
+                    fill_value: fill_u32,
+                    _pad: 0,
+                };
                 let (b, m) = self.upload_params(&p)?;
-                (b, m,
-                 &self.pipelines.pad_const_b1_pipeline,
-                 &self.pipelines.pad_const_b1_layout,
-                 "pad_const_b1", n_out / 4)
+                (
+                    b,
+                    m,
+                    &self.pipelines.pad_const_b1_pipeline,
+                    &self.pipelines.pad_const_b1_layout,
+                    "pad_const_b1",
+                    n_out / 4,
+                )
             }
             2 => {
                 let fill_u32 = u16::from_le_bytes([fill_bytes[0], fill_bytes[1]]) as u32;
-                #[repr(C)] #[derive(Clone, Copy)]
-                struct PParams { n_out: u32, rank: u32, fill_value: u32, _pad: u32 }
-                let p = PParams { n_out: n_out as u32, rank: rank as u32, fill_value: fill_u32, _pad: 0 };
+                #[repr(C)]
+                #[derive(Clone, Copy)]
+                struct PParams {
+                    n_out: u32,
+                    rank: u32,
+                    fill_value: u32,
+                    _pad: u32,
+                }
+                let p = PParams {
+                    n_out: n_out as u32,
+                    rank: rank as u32,
+                    fill_value: fill_u32,
+                    _pad: 0,
+                };
                 let (b, m) = self.upload_params(&p)?;
-                (b, m,
-                 &self.pipelines.pad_const_b2_pipeline,
-                 &self.pipelines.pad_const_b2_layout,
-                 "pad_const_b2", n_out / 2)
+                (
+                    b,
+                    m,
+                    &self.pipelines.pad_const_b2_pipeline,
+                    &self.pipelines.pad_const_b2_layout,
+                    "pad_const_b2",
+                    n_out / 2,
+                )
             }
             4 => {
-                let mut a = [0u8; 4]; a.copy_from_slice(&fill_bytes[..4]);
+                let mut a = [0u8; 4];
+                a.copy_from_slice(&fill_bytes[..4]);
                 let fill_u32 = u32::from_le_bytes(a);
-                #[repr(C)] #[derive(Clone, Copy)]
-                struct PParams { n_out: u32, rank: u32, fill_value: u32, _pad: u32 }
-                let p = PParams { n_out: n_out as u32, rank: rank as u32, fill_value: fill_u32, _pad: 0 };
+                #[repr(C)]
+                #[derive(Clone, Copy)]
+                struct PParams {
+                    n_out: u32,
+                    rank: u32,
+                    fill_value: u32,
+                    _pad: u32,
+                }
+                let p = PParams {
+                    n_out: n_out as u32,
+                    rank: rank as u32,
+                    fill_value: fill_u32,
+                    _pad: 0,
+                };
                 let (b, m) = self.upload_params(&p)?;
-                (b, m,
-                 &self.pipelines.pad_const_b4_pipeline,
-                 &self.pipelines.pad_const_b4_layout,
-                 "pad_const_b4", n_out)
+                (
+                    b,
+                    m,
+                    &self.pipelines.pad_const_b4_pipeline,
+                    &self.pipelines.pad_const_b4_layout,
+                    "pad_const_b4",
+                    n_out,
+                )
             }
             8 => {
-                let mut a = [0u8; 8]; a.copy_from_slice(&fill_bytes[..8]);
+                let mut a = [0u8; 8];
+                a.copy_from_slice(&fill_bytes[..8]);
                 let fill_u64 = u64::from_le_bytes(a);
-                #[repr(C)] #[derive(Clone, Copy)]
-                struct PParams { n_out: u32, rank: u32, fill_value: u64 }
-                let p = PParams { n_out: n_out as u32, rank: rank as u32, fill_value: fill_u64 };
+                #[repr(C)]
+                #[derive(Clone, Copy)]
+                struct PParams {
+                    n_out: u32,
+                    rank: u32,
+                    fill_value: u64,
+                }
+                let p = PParams {
+                    n_out: n_out as u32,
+                    rank: rank as u32,
+                    fill_value: fill_u64,
+                };
                 let (b, m) = self.upload_params(&p)?;
-                (b, m,
-                 &self.pipelines.pad_const_b8_pipeline,
-                 &self.pipelines.pad_const_b8_layout,
-                 "pad_const_b8", n_out)
+                (
+                    b,
+                    m,
+                    &self.pipelines.pad_const_b8_pipeline,
+                    &self.pipelines.pad_const_b8_layout,
+                    "pad_const_b8",
+                    n_out,
+                )
             }
-            other => fuel_ir::bail!(
-                "pad_const_bytes: unsupported elem_bytes {other} (have 1/2/4/8)",
-            ),
+            other => {
+                fuel_ir::bail!("pad_const_bytes: unsupported elem_bytes {other} (have 1/2/4/8)",)
+            }
         };
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, src_buf, 0, src.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, dst_buf, 0, dst.len_bytes() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_3s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            src_buf,
+            0,
+            src.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            dst_buf,
+            0,
+            dst.len_bytes() as u64,
+        );
         desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, &sd_buf, 0, sd_byte_size);
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
 
@@ -7380,7 +9955,8 @@ impl VulkanBackend {
             desc,
             (groups, 1, 1),
             vec![(sd_buf, sd_mem), (pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -7400,7 +9976,11 @@ impl VulkanBackend {
         self.softmax_last_dim_backward_typed_bytes(
             "softmax_last_dim_backward_f32_bytes",
             4,
-            y, g, dx, outer_count, last_dim,
+            y,
+            g,
+            dx,
+            outer_count,
+            last_dim,
             &self.pipelines.softmax_last_dim_backward_pipeline,
             &self.pipelines.softmax_last_dim_backward_layout,
         )
@@ -7419,7 +9999,11 @@ impl VulkanBackend {
         self.softmax_last_dim_backward_typed_bytes(
             "softmax_last_dim_backward_f16_bytes",
             2,
-            y, g, dx, outer_count, last_dim,
+            y,
+            g,
+            dx,
+            outer_count,
+            last_dim,
             &self.pipelines.softmax_last_dim_backward_f16_pipeline,
             &self.pipelines.softmax_last_dim_backward_f16_layout,
         )
@@ -7445,7 +10029,11 @@ impl VulkanBackend {
         self.softmax_last_dim_backward_typed_bytes(
             "softmax_last_dim_backward_bf16_bytes",
             2,
-            y, g, dx, outer_count, last_dim,
+            y,
+            g,
+            dx,
+            outer_count,
+            last_dim,
             &self.pipelines.softmax_last_dim_backward_bf16_pipeline,
             &self.pipelines.softmax_last_dim_backward_bf16_layout,
         )
@@ -7463,7 +10051,11 @@ impl VulkanBackend {
         self.softmax_last_dim_backward_typed_bytes(
             "softmax_last_dim_backward_f64_bytes",
             8,
-            y, g, dx, outer_count, last_dim,
+            y,
+            g,
+            dx,
+            outer_count,
+            last_dim,
             &self.pipelines.softmax_last_dim_backward_f64_pipeline,
             &self.pipelines.softmax_last_dim_backward_f64_layout,
         )
@@ -7488,28 +10080,58 @@ impl VulkanBackend {
         if y.len_bytes() < need_bytes || g.len_bytes() < need_bytes || dx.len_bytes() < need_bytes {
             fuel_ir::bail!(
                 "{op_name}: buffer too small (need {need_bytes}; y={}, g={}, dx={})",
-                y.len_bytes(), g.len_bytes(), dx.len_bytes(),
+                y.len_bytes(),
+                g.len_bytes(),
+                dx.len_bytes(),
             );
         }
-        #[repr(C)] #[derive(Clone, Copy)]
-        struct SBwdParams { n_rows: u32, n_cols: u32 }
-        let p = SBwdParams { n_rows: outer_count as u32, n_cols: last_dim as u32 };
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct SBwdParams {
+            n_rows: u32,
+            n_cols: u32,
+        }
+        let p = SBwdParams {
+            n_rows: outer_count as u32,
+            n_cols: last_dim as u32,
+        };
 
-        let y_buf = y.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: y is host-evicted; fault back first"),
-        ))?;
-        let g_buf = g.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: g is host-evicted; fault back first"),
-        ))?;
-        let dx_buf = dx.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: dx is host-evicted; fault back first"),
-        ))?;
+        let y_buf = y.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!("{op_name}: y is host-evicted; fault back first"))
+        })?;
+        let g_buf = g.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!("{op_name}: g is host-evicted; fault back first"))
+        })?;
+        let dx_buf = dx.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!("{op_name}: dx is host-evicted; fault back first"))
+        })?;
         let (pbuf, pmem) = self.upload_params(&p)?;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, y_buf, 0, y.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, g_buf, 0, g.len_bytes() as u64);
-        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, dx_buf, 0, dx.len_bytes() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_3s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            y_buf,
+            0,
+            y.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            g_buf,
+            0,
+            g.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            2,
+            DescriptorType::STORAGE_BUFFER,
+            dx_buf,
+            0,
+            dx.len_bytes() as u64,
+        );
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
         let rb = [y_buf.raw() as u64, g_buf.raw() as u64];
         let wb = [dx_buf.raw() as u64];
@@ -7520,7 +10142,8 @@ impl VulkanBackend {
             desc,
             (outer_count as u32, 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -7539,7 +10162,12 @@ impl VulkanBackend {
         self.concat_along_dim_typed_bytes(
             "concat_along_dim_f16_bytes",
             2,
-            a, b, out, dim, a_layout, b_layout,
+            a,
+            b,
+            out,
+            dim,
+            a_layout,
+            b_layout,
             &self.pipelines.concat_along_dim_f16_pipeline,
             &self.pipelines.concat_along_dim_f16_layout,
         )
@@ -7566,7 +10194,12 @@ impl VulkanBackend {
             "concat_along_dim_bf16_bytes",
             2,
             /* round_out_bind */ true,
-            a, b, out, dim, a_layout, b_layout,
+            a,
+            b,
+            out,
+            dim,
+            a_layout,
+            b_layout,
             &self.pipelines.concat_along_dim_bf16_pipeline,
             &self.pipelines.concat_along_dim_bf16_layout,
         )
@@ -7585,7 +10218,12 @@ impl VulkanBackend {
         self.concat_along_dim_typed_bytes(
             "concat_along_dim_f64_bytes",
             8,
-            a, b, out, dim, a_layout, b_layout,
+            a,
+            b,
+            out,
+            dim,
+            a_layout,
+            b_layout,
             &self.pipelines.concat_along_dim_f64_pipeline,
             &self.pipelines.concat_along_dim_f64_layout,
         )
@@ -7608,8 +10246,17 @@ impl VulkanBackend {
         pipe_layout: &PipelineLayout,
     ) -> fuel_ir::Result<()> {
         self.concat_along_dim_typed_bytes_with_bind(
-            op_name, elem_bytes, /* round_out_bind */ false,
-            a, b, out, dim, a_layout, b_layout, pipeline, pipe_layout,
+            op_name,
+            elem_bytes,
+            /* round_out_bind */ false,
+            a,
+            b,
+            out,
+            dim,
+            a_layout,
+            b_layout,
+            pipeline,
+            pipe_layout,
         )
     }
 
@@ -7630,15 +10277,11 @@ impl VulkanBackend {
         let a_dims = a_layout.shape().dims();
         let b_dims = b_layout.shape().dims();
         if a_dims.len() != b_dims.len() || dim >= a_dims.len() {
-            fuel_ir::bail!(
-                "{op_name}: rank/dim mismatch (a={a_dims:?}, b={b_dims:?}, dim={dim})",
-            );
+            fuel_ir::bail!("{op_name}: rank/dim mismatch (a={a_dims:?}, b={b_dims:?}, dim={dim})",);
         }
         for (i, (&da, &db)) in a_dims.iter().zip(b_dims.iter()).enumerate() {
             if i != dim && da != db {
-                fuel_ir::bail!(
-                    "{op_name}: non-concat dims disagree at {i} (a={da}, b={db})",
-                );
+                fuel_ir::bail!("{op_name}: non-concat dims disagree at {i} (a={da}, b={db})",);
             }
         }
         let rank = a_dims.len();
@@ -7654,7 +10297,8 @@ impl VulkanBackend {
         if out.len_bytes() < need_out_bytes {
             fuel_ir::bail!(
                 "{op_name}: out {} bytes < required {}",
-                out.len_bytes(), need_out_bytes,
+                out.len_bytes(),
+                need_out_bytes,
             );
         }
 
@@ -7669,44 +10313,87 @@ impl VulkanBackend {
         }
         let concat_dim_padded = (pad + dim) as u32;
 
-        #[repr(C)] #[derive(Clone, Copy)]
+        #[repr(C)]
+        #[derive(Clone, Copy)]
         struct CParams {
-            out_d0: u32, out_d1: u32, out_d2: u32, out_d3: u32,
-            concat_dim: u32, a_dim: u32, b_dim: u32, total: u32,
-            a_s0: u32, a_s1: u32, a_s2: u32, a_s3: u32,
-            b_s0: u32, b_s1: u32, b_s2: u32, b_s3: u32,
+            out_d0: u32,
+            out_d1: u32,
+            out_d2: u32,
+            out_d3: u32,
+            concat_dim: u32,
+            a_dim: u32,
+            b_dim: u32,
+            total: u32,
+            a_s0: u32,
+            a_s1: u32,
+            a_s2: u32,
+            a_s3: u32,
+            b_s0: u32,
+            b_s1: u32,
+            b_s2: u32,
+            b_s3: u32,
         }
         let p = CParams {
-            out_d0: out_d[0], out_d1: out_d[1], out_d2: out_d[2], out_d3: out_d[3],
+            out_d0: out_d[0],
+            out_d1: out_d[1],
+            out_d2: out_d[2],
+            out_d3: out_d[3],
             concat_dim: concat_dim_padded,
             a_dim: a_dim as u32,
             b_dim: b_dim as u32,
             total: out_elems as u32,
-            a_s0: a_s[0], a_s1: a_s[1], a_s2: a_s[2], a_s3: a_s[3],
-            b_s0: b_s[0], b_s1: b_s[1], b_s2: b_s[2], b_s3: b_s[3],
+            a_s0: a_s[0],
+            a_s1: a_s[1],
+            a_s2: a_s[2],
+            a_s3: a_s[3],
+            b_s0: b_s[0],
+            b_s1: b_s[1],
+            b_s2: b_s[2],
+            b_s3: b_s[3],
         };
 
-        let a_buf = a.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: a is host-evicted; fault back first"),
-        ))?;
-        let b_buf = b.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: b is host-evicted; fault back first"),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: out is host-evicted; fault back first"),
-        ))?;
+        let a_buf = a.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!("{op_name}: a is host-evicted; fault back first"))
+        })?;
+        let b_buf = b.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!("{op_name}: b is host-evicted; fault back first"))
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!("{op_name}: out is host-evicted; fault back first"))
+        })?;
         let (pbuf, pmem) = self.upload_params(&p)?;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_3s1u)
+            .map_err(vk_err)?;
         let out_bind_len = if round_out_bind {
             ((out.len_bytes() + 3) & !3) as u64
         } else {
             out.len_bytes() as u64
         };
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, a_buf, 0, a.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, b_buf, 0, b.len_bytes() as u64);
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            a_buf,
+            0,
+            a.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            b_buf,
+            0,
+            b.len_bytes() as u64,
+        );
         desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, out_bind_len);
-        desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, std::mem::size_of::<CParams>() as u64);
+        desc.write_buffer(
+            3,
+            DescriptorType::UNIFORM_BUFFER,
+            &pbuf,
+            0,
+            std::mem::size_of::<CParams>() as u64,
+        );
 
         let groups = ((out_elems as u32 + 63) / 64).max(1);
         let rb = [a_buf.raw() as u64, b_buf.raw() as u64];
@@ -7718,7 +10405,8 @@ impl VulkanBackend {
             desc,
             (groups, 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -7746,12 +10434,16 @@ impl VulkanBackend {
         layout: &Layout,
         dims: &[usize],
     ) -> fuel_ir::Result<()> {
-        let in_buf = input.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: input is host-evicted; fault back first"),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: output is host-evicted; fault back first"),
-        ))?;
+        let in_buf = input.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!(
+                "{op_name}: input is host-evicted; fault back first"
+            ))
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!(
+                "{op_name}: output is host-evicted; fault back first"
+            ))
+        })?;
         let shape = layout.shape();
         let rank = shape.dims().len();
         let elem_count = shape.dims().iter().product::<usize>();
@@ -7764,15 +10456,36 @@ impl VulkanBackend {
                     out.len_bytes(),
                 );
             }
-            #[repr(C)] #[derive(Clone, Copy)]
-            struct RParams { n: u32, op_id: u32 }
-            let p = RParams { n: elem_count as u32, op_id };
+            #[repr(C)]
+            #[derive(Clone, Copy)]
+            struct RParams {
+                n: u32,
+                op_id: u32,
+            }
+            let p = RParams {
+                n: elem_count as u32,
+                op_id,
+            };
             let (pbuf, pmem) = self.upload_params(&p)?;
 
-            let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u)
+            let desc = self
+                .pipelines
+                .allocate_desc(&self.pipelines.layout_2s1u)
                 .map_err(vk_err)?;
-            desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
-            desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+            desc.write_buffer(
+                0,
+                DescriptorType::STORAGE_BUFFER,
+                in_buf,
+                0,
+                input.len_bytes() as u64,
+            );
+            desc.write_buffer(
+                1,
+                DescriptorType::STORAGE_BUFFER,
+                out_buf,
+                0,
+                out.len_bytes() as u64,
+            );
             desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
             let rb = [in_buf.raw() as u64];
             let wb = [out_buf.raw() as u64];
@@ -7780,7 +10493,11 @@ impl VulkanBackend {
                 op_name,
                 &self.pipelines.reduce_pipeline,
                 &self.pipelines.reduce_layout,
-                desc, (1, 1, 1), vec![(pbuf, pmem)], &rb, &wb,
+                desc,
+                (1, 1, 1),
+                vec![(pbuf, pmem)],
+                &rb,
+                &wb,
             )?;
             self.flush_pending()?;
             return Ok(());
@@ -7792,28 +10509,50 @@ impl VulkanBackend {
             let n_cols = dims_slice[rank - 1];
             let n_rows: usize = dims_slice[..rank - 1].iter().product::<usize>().max(1);
             if n_rows == 0 || n_cols == 0 {
-                fuel_ir::bail!(
-                    "{op_name}: degenerate shape (n_rows={n_rows}, n_cols={n_cols})",
-                );
+                fuel_ir::bail!("{op_name}: degenerate shape (n_rows={n_rows}, n_cols={n_cols})",);
             }
             let need_out_bytes = n_rows * std::mem::size_of::<f32>();
             if out.len_bytes() < need_out_bytes {
                 fuel_ir::bail!(
                     "{op_name}: last-dim out {} bytes < required {}",
-                    out.len_bytes(), need_out_bytes,
+                    out.len_bytes(),
+                    need_out_bytes,
                 );
             }
-            #[repr(C)] #[derive(Clone, Copy)]
-            struct RLParams { n_rows: u32, n_cols: u32, op_id: u32, _pad: u32 }
+            #[repr(C)]
+            #[derive(Clone, Copy)]
+            struct RLParams {
+                n_rows: u32,
+                n_cols: u32,
+                op_id: u32,
+                _pad: u32,
+            }
             let p = RLParams {
-                n_rows: n_rows as u32, n_cols: n_cols as u32, op_id, _pad: 0,
+                n_rows: n_rows as u32,
+                n_cols: n_cols as u32,
+                op_id,
+                _pad: 0,
             };
             let (pbuf, pmem) = self.upload_params(&p)?;
 
-            let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u)
+            let desc = self
+                .pipelines
+                .allocate_desc(&self.pipelines.layout_2s1u)
                 .map_err(vk_err)?;
-            desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
-            desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+            desc.write_buffer(
+                0,
+                DescriptorType::STORAGE_BUFFER,
+                in_buf,
+                0,
+                input.len_bytes() as u64,
+            );
+            desc.write_buffer(
+                1,
+                DescriptorType::STORAGE_BUFFER,
+                out_buf,
+                0,
+                out.len_bytes() as u64,
+            );
             desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
             let rb = [in_buf.raw() as u64];
             let wb = [out_buf.raw() as u64];
@@ -7821,7 +10560,11 @@ impl VulkanBackend {
                 op_name,
                 &self.pipelines.reduce_last_dim_pipeline,
                 &self.pipelines.reduce_last_dim_layout,
-                desc, (n_rows as u32, 1, 1), vec![(pbuf, pmem)], &rb, &wb,
+                desc,
+                (n_rows as u32, 1, 1),
+                vec![(pbuf, pmem)],
+                &rb,
+                &wb,
             )?;
             self.flush_pending()?;
             return Ok(());
@@ -7857,12 +10600,12 @@ impl VulkanBackend {
         layout: &Layout,
         dims: &[usize],
     ) -> fuel_ir::Result<()> {
-        let in_buf = input.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: input host-evicted; fault back first"),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: output host-evicted; fault back first"),
-        ))?;
+        let in_buf = input.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!("{op_name}: input host-evicted; fault back first"))
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!("{op_name}: output host-evicted; fault back first"))
+        })?;
         let shape = layout.shape();
         let rank = shape.dims().len();
         let elem_count = shape.dims().iter().product::<usize>();
@@ -7870,16 +10613,40 @@ impl VulkanBackend {
         // Fast path 1: full reduction.
         if dims.is_empty() || dims.len() == rank {
             if out.len_bytes() < 2 {
-                fuel_ir::bail!("{op_name}: full-reduce f16 out {} bytes < 2", out.len_bytes());
+                fuel_ir::bail!(
+                    "{op_name}: full-reduce f16 out {} bytes < 2",
+                    out.len_bytes()
+                );
             }
-            #[repr(C)] #[derive(Clone, Copy)]
-            struct RParams { n: u32, op_id: u32 }
-            let p = RParams { n: elem_count as u32, op_id };
+            #[repr(C)]
+            #[derive(Clone, Copy)]
+            struct RParams {
+                n: u32,
+                op_id: u32,
+            }
+            let p = RParams {
+                n: elem_count as u32,
+                op_id,
+            };
             let (pbuf, pmem) = self.upload_params(&p)?;
-            let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u)
+            let desc = self
+                .pipelines
+                .allocate_desc(&self.pipelines.layout_2s1u)
                 .map_err(vk_err)?;
-            desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
-            desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+            desc.write_buffer(
+                0,
+                DescriptorType::STORAGE_BUFFER,
+                in_buf,
+                0,
+                input.len_bytes() as u64,
+            );
+            desc.write_buffer(
+                1,
+                DescriptorType::STORAGE_BUFFER,
+                out_buf,
+                0,
+                out.len_bytes() as u64,
+            );
             desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
             let rb = [in_buf.raw() as u64];
             let wb = [out_buf.raw() as u64];
@@ -7887,7 +10654,11 @@ impl VulkanBackend {
                 op_name,
                 &self.pipelines.reduce_f16_pipeline,
                 &self.pipelines.reduce_f16_layout,
-                desc, (1, 1, 1), vec![(pbuf, pmem)], &rb, &wb,
+                desc,
+                (1, 1, 1),
+                vec![(pbuf, pmem)],
+                &rb,
+                &wb,
             )?;
             self.flush_pending()?;
             return Ok(());
@@ -7899,25 +10670,49 @@ impl VulkanBackend {
             let n_cols = dims_slice[rank - 1];
             let n_rows: usize = dims_slice[..rank - 1].iter().product::<usize>().max(1);
             if n_rows == 0 || n_cols == 0 {
-                fuel_ir::bail!(
-                    "{op_name}: degenerate shape (n_rows={n_rows}, n_cols={n_cols})",
-                );
+                fuel_ir::bail!("{op_name}: degenerate shape (n_rows={n_rows}, n_cols={n_cols})",);
             }
             let need_out_bytes = n_rows * 2;
             if out.len_bytes() < need_out_bytes {
                 fuel_ir::bail!(
                     "{op_name}: f16 out {} bytes < required {}",
-                    out.len_bytes(), need_out_bytes,
+                    out.len_bytes(),
+                    need_out_bytes,
                 );
             }
-            #[repr(C)] #[derive(Clone, Copy)]
-            struct RLParams { n_rows: u32, n_cols: u32, op_id: u32, _pad: u32 }
-            let p = RLParams { n_rows: n_rows as u32, n_cols: n_cols as u32, op_id, _pad: 0 };
+            #[repr(C)]
+            #[derive(Clone, Copy)]
+            struct RLParams {
+                n_rows: u32,
+                n_cols: u32,
+                op_id: u32,
+                _pad: u32,
+            }
+            let p = RLParams {
+                n_rows: n_rows as u32,
+                n_cols: n_cols as u32,
+                op_id,
+                _pad: 0,
+            };
             let (pbuf, pmem) = self.upload_params(&p)?;
-            let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u)
+            let desc = self
+                .pipelines
+                .allocate_desc(&self.pipelines.layout_2s1u)
                 .map_err(vk_err)?;
-            desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
-            desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+            desc.write_buffer(
+                0,
+                DescriptorType::STORAGE_BUFFER,
+                in_buf,
+                0,
+                input.len_bytes() as u64,
+            );
+            desc.write_buffer(
+                1,
+                DescriptorType::STORAGE_BUFFER,
+                out_buf,
+                0,
+                out.len_bytes() as u64,
+            );
             desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
             let rb = [in_buf.raw() as u64];
             let wb = [out_buf.raw() as u64];
@@ -7925,7 +10720,11 @@ impl VulkanBackend {
                 op_name,
                 &self.pipelines.reduce_last_dim_f16_pipeline,
                 &self.pipelines.reduce_last_dim_f16_layout,
-                desc, (n_rows as u32, 1, 1), vec![(pbuf, pmem)], &rb, &wb,
+                desc,
+                (n_rows as u32, 1, 1),
+                vec![(pbuf, pmem)],
+                &rb,
+                &wb,
             )?;
             self.flush_pending()?;
             return Ok(());
@@ -7954,12 +10753,12 @@ impl VulkanBackend {
         layout: &Layout,
         dims: &[usize],
     ) -> fuel_ir::Result<()> {
-        let in_buf = input.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: input host-evicted; fault back first"),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: output host-evicted; fault back first"),
-        ))?;
+        let in_buf = input.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!("{op_name}: input host-evicted; fault back first"))
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!("{op_name}: output host-evicted; fault back first"))
+        })?;
         let shape = layout.shape();
         let rank = shape.dims().len();
         let elem_count = shape.dims().iter().product::<usize>();
@@ -7973,15 +10772,33 @@ impl VulkanBackend {
                 );
             }
             if out.len_bytes() < 2 {
-                fuel_ir::bail!("{op_name}: full-reduce bf16 out {} bytes < 2", out.len_bytes());
+                fuel_ir::bail!(
+                    "{op_name}: full-reduce bf16 out {} bytes < 2",
+                    out.len_bytes()
+                );
             }
-            #[repr(C)] #[derive(Clone, Copy)]
-            struct RParams { n: u32, op_id: u32 }
-            let p = RParams { n: elem_count as u32, op_id };
+            #[repr(C)]
+            #[derive(Clone, Copy)]
+            struct RParams {
+                n: u32,
+                op_id: u32,
+            }
+            let p = RParams {
+                n: elem_count as u32,
+                op_id,
+            };
             let (pbuf, pmem) = self.upload_params(&p)?;
-            let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u)
+            let desc = self
+                .pipelines
+                .allocate_desc(&self.pipelines.layout_2s1u)
                 .map_err(vk_err)?;
-            desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
+            desc.write_buffer(
+                0,
+                DescriptorType::STORAGE_BUFFER,
+                in_buf,
+                0,
+                input.len_bytes() as u64,
+            );
             desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out_bind_len);
             desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
             let rb = [in_buf.raw() as u64];
@@ -7990,7 +10807,11 @@ impl VulkanBackend {
                 op_name,
                 &self.pipelines.reduce_bf16_pipeline,
                 &self.pipelines.reduce_bf16_layout,
-                desc, (1, 1, 1), vec![(pbuf, pmem)], &rb, &wb,
+                desc,
+                (1, 1, 1),
+                vec![(pbuf, pmem)],
+                &rb,
+                &wb,
             )?;
             self.flush_pending()?;
             return Ok(());
@@ -8002,9 +10823,7 @@ impl VulkanBackend {
             let n_cols = dims_slice[rank - 1];
             let n_rows: usize = dims_slice[..rank - 1].iter().product::<usize>().max(1);
             if n_rows == 0 || n_cols == 0 {
-                fuel_ir::bail!(
-                    "{op_name}: degenerate shape (n_rows={n_rows}, n_cols={n_cols})",
-                );
+                fuel_ir::bail!("{op_name}: degenerate shape (n_rows={n_rows}, n_cols={n_cols})",);
             }
             if n_cols % 2 != 0 {
                 fuel_ir::bail!(
@@ -8015,20 +10834,40 @@ impl VulkanBackend {
             if out.len_bytes() < need_out_bytes {
                 fuel_ir::bail!(
                     "{op_name}: bf16 out {} bytes < required {}",
-                    out.len_bytes(), need_out_bytes,
+                    out.len_bytes(),
+                    need_out_bytes,
                 );
             }
             // InterlockedOr per-row half-word writes — zero-init the
             // output so the OR acts as a clean half-word write.
             self.fill_bytes_zero(out)?;
 
-            #[repr(C)] #[derive(Clone, Copy)]
-            struct RLParams { n_rows: u32, n_cols: u32, op_id: u32, _pad: u32 }
-            let p = RLParams { n_rows: n_rows as u32, n_cols: n_cols as u32, op_id, _pad: 0 };
+            #[repr(C)]
+            #[derive(Clone, Copy)]
+            struct RLParams {
+                n_rows: u32,
+                n_cols: u32,
+                op_id: u32,
+                _pad: u32,
+            }
+            let p = RLParams {
+                n_rows: n_rows as u32,
+                n_cols: n_cols as u32,
+                op_id,
+                _pad: 0,
+            };
             let (pbuf, pmem) = self.upload_params(&p)?;
-            let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u)
+            let desc = self
+                .pipelines
+                .allocate_desc(&self.pipelines.layout_2s1u)
                 .map_err(vk_err)?;
-            desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
+            desc.write_buffer(
+                0,
+                DescriptorType::STORAGE_BUFFER,
+                in_buf,
+                0,
+                input.len_bytes() as u64,
+            );
             desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out_bind_len);
             desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
             let rb = [in_buf.raw() as u64];
@@ -8037,7 +10876,11 @@ impl VulkanBackend {
                 op_name,
                 &self.pipelines.reduce_last_dim_bf16_pipeline,
                 &self.pipelines.reduce_last_dim_bf16_layout,
-                desc, (n_rows as u32, 1, 1), vec![(pbuf, pmem)], &rb, &wb,
+                desc,
+                (n_rows as u32, 1, 1),
+                vec![(pbuf, pmem)],
+                &rb,
+                &wb,
             )?;
             self.flush_pending()?;
             return Ok(());
@@ -8059,12 +10902,12 @@ impl VulkanBackend {
         layout: &Layout,
         dims: &[usize],
     ) -> fuel_ir::Result<()> {
-        let in_buf = input.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: input host-evicted; fault back first"),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: output host-evicted; fault back first"),
-        ))?;
+        let in_buf = input.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!("{op_name}: input host-evicted; fault back first"))
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!("{op_name}: output host-evicted; fault back first"))
+        })?;
         let shape = layout.shape();
         let rank = shape.dims().len();
         let elem_count = shape.dims().iter().product::<usize>();
@@ -8072,16 +10915,40 @@ impl VulkanBackend {
         // Fast path 1: full reduction.
         if dims.is_empty() || dims.len() == rank {
             if out.len_bytes() < 8 {
-                fuel_ir::bail!("{op_name}: full-reduce f64 out {} bytes < 8", out.len_bytes());
+                fuel_ir::bail!(
+                    "{op_name}: full-reduce f64 out {} bytes < 8",
+                    out.len_bytes()
+                );
             }
-            #[repr(C)] #[derive(Clone, Copy)]
-            struct RParams { n: u32, op_id: u32 }
-            let p = RParams { n: elem_count as u32, op_id };
+            #[repr(C)]
+            #[derive(Clone, Copy)]
+            struct RParams {
+                n: u32,
+                op_id: u32,
+            }
+            let p = RParams {
+                n: elem_count as u32,
+                op_id,
+            };
             let (pbuf, pmem) = self.upload_params(&p)?;
-            let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u)
+            let desc = self
+                .pipelines
+                .allocate_desc(&self.pipelines.layout_2s1u)
                 .map_err(vk_err)?;
-            desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
-            desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+            desc.write_buffer(
+                0,
+                DescriptorType::STORAGE_BUFFER,
+                in_buf,
+                0,
+                input.len_bytes() as u64,
+            );
+            desc.write_buffer(
+                1,
+                DescriptorType::STORAGE_BUFFER,
+                out_buf,
+                0,
+                out.len_bytes() as u64,
+            );
             desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
             let rb = [in_buf.raw() as u64];
             let wb = [out_buf.raw() as u64];
@@ -8089,7 +10956,11 @@ impl VulkanBackend {
                 op_name,
                 &self.pipelines.reduce_f64_pipeline,
                 &self.pipelines.reduce_f64_layout,
-                desc, (1, 1, 1), vec![(pbuf, pmem)], &rb, &wb,
+                desc,
+                (1, 1, 1),
+                vec![(pbuf, pmem)],
+                &rb,
+                &wb,
             )?;
             self.flush_pending()?;
             return Ok(());
@@ -8101,25 +10972,49 @@ impl VulkanBackend {
             let n_cols = dims_slice[rank - 1];
             let n_rows: usize = dims_slice[..rank - 1].iter().product::<usize>().max(1);
             if n_rows == 0 || n_cols == 0 {
-                fuel_ir::bail!(
-                    "{op_name}: degenerate shape (n_rows={n_rows}, n_cols={n_cols})",
-                );
+                fuel_ir::bail!("{op_name}: degenerate shape (n_rows={n_rows}, n_cols={n_cols})",);
             }
             let need_out_bytes = n_rows * 8;
             if out.len_bytes() < need_out_bytes {
                 fuel_ir::bail!(
                     "{op_name}: f64 out {} bytes < required {}",
-                    out.len_bytes(), need_out_bytes,
+                    out.len_bytes(),
+                    need_out_bytes,
                 );
             }
-            #[repr(C)] #[derive(Clone, Copy)]
-            struct RLParams { n_rows: u32, n_cols: u32, op_id: u32, _pad: u32 }
-            let p = RLParams { n_rows: n_rows as u32, n_cols: n_cols as u32, op_id, _pad: 0 };
+            #[repr(C)]
+            #[derive(Clone, Copy)]
+            struct RLParams {
+                n_rows: u32,
+                n_cols: u32,
+                op_id: u32,
+                _pad: u32,
+            }
+            let p = RLParams {
+                n_rows: n_rows as u32,
+                n_cols: n_cols as u32,
+                op_id,
+                _pad: 0,
+            };
             let (pbuf, pmem) = self.upload_params(&p)?;
-            let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u)
+            let desc = self
+                .pipelines
+                .allocate_desc(&self.pipelines.layout_2s1u)
                 .map_err(vk_err)?;
-            desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
-            desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+            desc.write_buffer(
+                0,
+                DescriptorType::STORAGE_BUFFER,
+                in_buf,
+                0,
+                input.len_bytes() as u64,
+            );
+            desc.write_buffer(
+                1,
+                DescriptorType::STORAGE_BUFFER,
+                out_buf,
+                0,
+                out.len_bytes() as u64,
+            );
             desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
             let rb = [in_buf.raw() as u64];
             let wb = [out_buf.raw() as u64];
@@ -8127,7 +11022,11 @@ impl VulkanBackend {
                 op_name,
                 &self.pipelines.reduce_last_dim_f64_pipeline,
                 &self.pipelines.reduce_last_dim_f64_layout,
-                desc, (n_rows as u32, 1, 1), vec![(pbuf, pmem)], &rb, &wb,
+                desc,
+                (n_rows as u32, 1, 1),
+                vec![(pbuf, pmem)],
+                &rb,
+                &wb,
             )?;
             self.flush_pending()?;
             return Ok(());
@@ -8168,14 +11067,22 @@ impl VulkanBackend {
         if out.len_bytes() < need_bytes {
             fuel_ir::bail!(
                 "index_select_f32_bytes: out buffer {} bytes < required {}",
-                out.len_bytes(), need_bytes,
+                out.len_bytes(),
+                need_bytes,
             );
         }
 
-        #[repr(C)] #[derive(Clone, Copy)]
+        #[repr(C)]
+        #[derive(Clone, Copy)]
         struct IParams {
-            out_size: u32, outer: u32, axis_out: u32, inner: u32,
-            axis_in: u32, _pad0: u32, _pad1: u32, _pad2: u32,
+            out_size: u32,
+            outer: u32,
+            axis_out: u32,
+            inner: u32,
+            axis_in: u32,
+            _pad0: u32,
+            _pad1: u32,
+            _pad2: u32,
         }
         let p = IParams {
             out_size: out_size as u32,
@@ -8183,25 +11090,60 @@ impl VulkanBackend {
             axis_out: axis_out as u32,
             inner: inner as u32,
             axis_in: axis_in as u32,
-            _pad0: 0, _pad1: 0, _pad2: 0,
+            _pad0: 0,
+            _pad1: 0,
+            _pad2: 0,
         };
 
-        let src_buf = src.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "index_select_f32_bytes: src is host-evicted; fault back first".into(),
-        ))?;
-        let ids_buf = ids.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "index_select_f32_bytes: ids is host-evicted; fault back first".into(),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "index_select_f32_bytes: out is host-evicted; fault back first".into(),
-        ))?;
+        let src_buf = src.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "index_select_f32_bytes: src is host-evicted; fault back first".into(),
+            )
+        })?;
+        let ids_buf = ids.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "index_select_f32_bytes: ids is host-evicted; fault back first".into(),
+            )
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "index_select_f32_bytes: out is host-evicted; fault back first".into(),
+            )
+        })?;
         let (pbuf, pmem) = self.upload_params(&p)?;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, src_buf, 0, src.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, ids_buf, 0, ids.len_bytes() as u64);
-        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
-        desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, std::mem::size_of::<IParams>() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_3s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            src_buf,
+            0,
+            src.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            ids_buf,
+            0,
+            ids.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            2,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            3,
+            DescriptorType::UNIFORM_BUFFER,
+            &pbuf,
+            0,
+            std::mem::size_of::<IParams>() as u64,
+        );
 
         let groups = Self::workgroups(out_size);
         let rb = [src_buf.raw() as u64, ids_buf.raw() as u64];
@@ -8213,7 +11155,8 @@ impl VulkanBackend {
             desc,
             (groups, 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -8234,8 +11177,13 @@ impl VulkanBackend {
         self.index_select_typed_bytes(
             "index_select_f16_bytes",
             2,
-            src, ids, out,
-            outer_count, source_dim_size, n_indices, inner_count,
+            src,
+            ids,
+            out,
+            outer_count,
+            source_dim_size,
+            n_indices,
+            inner_count,
             &self.pipelines.index_select_f16_pipeline,
             &self.pipelines.index_select_f16_layout,
             /* pair_thread */ false,
@@ -8264,8 +11212,13 @@ impl VulkanBackend {
         self.index_select_typed_bytes(
             "index_select_bf16_bytes",
             2,
-            src, ids, out,
-            outer_count, source_dim_size, n_indices, inner_count,
+            src,
+            ids,
+            out,
+            outer_count,
+            source_dim_size,
+            n_indices,
+            inner_count,
             &self.pipelines.index_select_bf16_pipeline,
             &self.pipelines.index_select_bf16_layout,
             /* pair_thread */ true,
@@ -8286,8 +11239,13 @@ impl VulkanBackend {
         self.index_select_typed_bytes(
             "index_select_f64_bytes",
             8,
-            src, ids, out,
-            outer_count, source_dim_size, n_indices, inner_count,
+            src,
+            ids,
+            out,
+            outer_count,
+            source_dim_size,
+            n_indices,
+            inner_count,
             &self.pipelines.index_select_f64_pipeline,
             &self.pipelines.index_select_f64_layout,
             /* pair_thread */ false,
@@ -8316,14 +11274,22 @@ impl VulkanBackend {
         if out.len_bytes() < need_bytes {
             fuel_ir::bail!(
                 "{op_name}: out buffer {} bytes < required {}",
-                out.len_bytes(), need_bytes,
+                out.len_bytes(),
+                need_bytes,
             );
         }
 
-        #[repr(C)] #[derive(Clone, Copy)]
+        #[repr(C)]
+        #[derive(Clone, Copy)]
         struct IParams {
-            out_size: u32, outer: u32, axis_out: u32, inner: u32,
-            axis_in: u32, _pad0: u32, _pad1: u32, _pad2: u32,
+            out_size: u32,
+            outer: u32,
+            axis_out: u32,
+            inner: u32,
+            axis_in: u32,
+            _pad0: u32,
+            _pad1: u32,
+            _pad2: u32,
         }
         let p = IParams {
             out_size: out_size as u32,
@@ -8331,25 +11297,54 @@ impl VulkanBackend {
             axis_out: n_indices as u32,
             inner: inner_count as u32,
             axis_in: source_dim_size as u32,
-            _pad0: 0, _pad1: 0, _pad2: 0,
+            _pad0: 0,
+            _pad1: 0,
+            _pad2: 0,
         };
 
-        let src_buf = src.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: src is host-evicted; fault back first"),
-        ))?;
-        let ids_buf = ids.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: ids is host-evicted; fault back first"),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: out is host-evicted; fault back first"),
-        ))?;
+        let src_buf = src.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!("{op_name}: src is host-evicted; fault back first"))
+        })?;
+        let ids_buf = ids.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!("{op_name}: ids is host-evicted; fault back first"))
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!("{op_name}: out is host-evicted; fault back first"))
+        })?;
         let (pbuf, pmem) = self.upload_params(&p)?;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, src_buf, 0, src.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, ids_buf, 0, ids.len_bytes() as u64);
-        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
-        desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, std::mem::size_of::<IParams>() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_3s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            src_buf,
+            0,
+            src.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            ids_buf,
+            0,
+            ids.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            2,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            3,
+            DescriptorType::UNIFORM_BUFFER,
+            &pbuf,
+            0,
+            std::mem::size_of::<IParams>() as u64,
+        );
 
         // Pair-thread dispatch halves the count because each thread
         // processes 2 bf16 lanes per iteration.
@@ -8364,7 +11359,8 @@ impl VulkanBackend {
             desc,
             (groups, 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -8393,28 +11389,25 @@ impl VulkanBackend {
         let dims = x_layout.shape().dims();
         let rank = dims.len();
         if rank < 2 {
-            fuel_ir::bail!(
-                "VulkanBackend::rope_f32_bytes: rank >= 2 required, got {dims:?}",
-            );
+            fuel_ir::bail!("VulkanBackend::rope_f32_bytes: rank >= 2 required, got {dims:?}",);
         }
         let seq = dims[rank - 2] as u32;
         let head_dim = dims[rank - 1] as u32;
         if head_dim % 2 != 0 {
-            fuel_ir::bail!(
-                "VulkanBackend::rope_f32_bytes: head_dim must be even, got {head_dim}",
-            );
+            fuel_ir::bail!("VulkanBackend::rope_f32_bytes: head_dim must be even, got {head_dim}",);
         }
         let outer: u32 = dims[..rank - 2].iter().product::<usize>().max(1) as u32;
         let half = head_dim / 2;
         let total = outer * seq * half;
 
-        let need_bytes = (outer as usize) * (seq as usize) * (head_dim as usize)
-            * std::mem::size_of::<f32>();
+        let need_bytes =
+            (outer as usize) * (seq as usize) * (head_dim as usize) * std::mem::size_of::<f32>();
         if x.len_bytes() < need_bytes || out.len_bytes() < need_bytes {
             fuel_ir::bail!(
                 "VulkanBackend::rope_f32_bytes: buffer too small \
                  (need {need_bytes}; x={}, out={})",
-                x.len_bytes(), out.len_bytes(),
+                x.len_bytes(),
+                out.len_bytes(),
             );
         }
 
@@ -8451,42 +11444,92 @@ impl VulkanBackend {
             }
         };
 
-        #[repr(C)] #[derive(Clone, Copy)]
+        #[repr(C)]
+        #[derive(Clone, Copy)]
         struct RopeParams {
-            outer: u32, seq: u32, head_dim: u32, total: u32,
-            x_s0: u32, x_s1: u32, x_s_seq: u32, x_s_hd: u32,
-            x_outer1: u32, x_contiguous: u32, _pad0: u32, _pad1: u32,
+            outer: u32,
+            seq: u32,
+            head_dim: u32,
+            total: u32,
+            x_s0: u32,
+            x_s1: u32,
+            x_s_seq: u32,
+            x_s_hd: u32,
+            x_outer1: u32,
+            x_contiguous: u32,
+            _pad0: u32,
+            _pad1: u32,
         }
         let p = RopeParams {
-            outer, seq, head_dim, total,
-            x_s0, x_s1, x_s_seq, x_s_hd,
-            x_outer1, x_contiguous: contiguous as u32, _pad0: 0, _pad1: 0,
+            outer,
+            seq,
+            head_dim,
+            total,
+            x_s0,
+            x_s1,
+            x_s_seq,
+            x_s_hd,
+            x_outer1,
+            x_contiguous: contiguous as u32,
+            _pad0: 0,
+            _pad1: 0,
         };
 
-        let x_buf = x.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "rope_f32_bytes: x is host-evicted; fault back first".into(),
-        ))?;
-        let cos_buf = cos.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "rope_f32_bytes: cos is host-evicted; fault back first".into(),
-        ))?;
-        let sin_buf = sin.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "rope_f32_bytes: sin is host-evicted; fault back first".into(),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "rope_f32_bytes: out is host-evicted; fault back first".into(),
-        ))?;
+        let x_buf = x.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("rope_f32_bytes: x is host-evicted; fault back first".into())
+        })?;
+        let cos_buf = cos.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("rope_f32_bytes: cos is host-evicted; fault back first".into())
+        })?;
+        let sin_buf = sin.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("rope_f32_bytes: sin is host-evicted; fault back first".into())
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("rope_f32_bytes: out is host-evicted; fault back first".into())
+        })?;
         let (pbuf, pmem) = self.upload_params(&p)?;
         let params_size = std::mem::size_of::<RopeParams>() as u64;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_4s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, x_buf, 0, x.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, cos_buf, 0, cos.len_bytes() as u64);
-        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, sin_buf, 0, sin.len_bytes() as u64);
-        desc.write_buffer(3, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_4s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            x_buf,
+            0,
+            x.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            cos_buf,
+            0,
+            cos.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            2,
+            DescriptorType::STORAGE_BUFFER,
+            sin_buf,
+            0,
+            sin.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            3,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         desc.write_buffer(4, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
 
         let groups = ((total + 63) / 64).max(1);
-        let rb = [x_buf.raw() as u64, cos_buf.raw() as u64, sin_buf.raw() as u64];
+        let rb = [
+            x_buf.raw() as u64,
+            cos_buf.raw() as u64,
+            sin_buf.raw() as u64,
+        ];
         let wb = [out_buf.raw() as u64];
         self.record_dispatch_batched(
             "rope_f32_bytes",
@@ -8495,7 +11538,8 @@ impl VulkanBackend {
             desc,
             (groups, 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -8515,7 +11559,11 @@ impl VulkanBackend {
         self.rope_typed_bytes(
             "rope_f16_bytes",
             2,
-            x, cos, sin, out, x_layout,
+            x,
+            cos,
+            sin,
+            out,
+            x_layout,
             &self.pipelines.rope_f16_pipeline,
             &self.pipelines.rope_f16_layout,
         )
@@ -8537,9 +11585,7 @@ impl VulkanBackend {
         let dims = x_layout.shape().dims();
         let rank = dims.len();
         if rank < 2 {
-            fuel_ir::bail!(
-                "VulkanBackend::rope_bf16_bytes: rank >= 2 required, got {dims:?}",
-            );
+            fuel_ir::bail!("VulkanBackend::rope_bf16_bytes: rank >= 2 required, got {dims:?}",);
         }
         let seq = dims[rank - 2] as u32;
         let head_dim = dims[rank - 1] as u32;
@@ -8557,7 +11603,8 @@ impl VulkanBackend {
             fuel_ir::bail!(
                 "VulkanBackend::rope_bf16_bytes: buffer too small \
                  (need {need_bytes}; x={}, out={})",
-                x.len_bytes(), out.len_bytes(),
+                x.len_bytes(),
+                out.len_bytes(),
             );
         }
 
@@ -8594,42 +11641,92 @@ impl VulkanBackend {
             }
         };
 
-        #[repr(C)] #[derive(Clone, Copy)]
+        #[repr(C)]
+        #[derive(Clone, Copy)]
         struct RopeBf16Params {
-            outer: u32, seq: u32, head_dim: u32, pairs_total: u32,
-            x_s0: u32, x_s1: u32, x_s_seq: u32, x_s_hd: u32,
-            x_outer1: u32, x_contiguous: u32, _pad0: u32, _pad1: u32,
+            outer: u32,
+            seq: u32,
+            head_dim: u32,
+            pairs_total: u32,
+            x_s0: u32,
+            x_s1: u32,
+            x_s_seq: u32,
+            x_s_hd: u32,
+            x_outer1: u32,
+            x_contiguous: u32,
+            _pad0: u32,
+            _pad1: u32,
         }
         let p = RopeBf16Params {
-            outer, seq, head_dim, pairs_total,
-            x_s0, x_s1, x_s_seq, x_s_hd,
-            x_outer1, x_contiguous: contiguous as u32, _pad0: 0, _pad1: 0,
+            outer,
+            seq,
+            head_dim,
+            pairs_total,
+            x_s0,
+            x_s1,
+            x_s_seq,
+            x_s_hd,
+            x_outer1,
+            x_contiguous: contiguous as u32,
+            _pad0: 0,
+            _pad1: 0,
         };
 
-        let x_buf = x.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "rope_bf16_bytes: x is host-evicted; fault back first".into(),
-        ))?;
-        let cos_buf = cos.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "rope_bf16_bytes: cos is host-evicted; fault back first".into(),
-        ))?;
-        let sin_buf = sin.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "rope_bf16_bytes: sin is host-evicted; fault back first".into(),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "rope_bf16_bytes: out is host-evicted; fault back first".into(),
-        ))?;
+        let x_buf = x.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("rope_bf16_bytes: x is host-evicted; fault back first".into())
+        })?;
+        let cos_buf = cos.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("rope_bf16_bytes: cos is host-evicted; fault back first".into())
+        })?;
+        let sin_buf = sin.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("rope_bf16_bytes: sin is host-evicted; fault back first".into())
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("rope_bf16_bytes: out is host-evicted; fault back first".into())
+        })?;
         let (pbuf, pmem) = self.upload_params(&p)?;
         let params_size = std::mem::size_of::<RopeBf16Params>() as u64;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_4s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, x_buf, 0, x.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, cos_buf, 0, cos.len_bytes() as u64);
-        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, sin_buf, 0, sin.len_bytes() as u64);
-        desc.write_buffer(3, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_4s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            x_buf,
+            0,
+            x.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            cos_buf,
+            0,
+            cos.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            2,
+            DescriptorType::STORAGE_BUFFER,
+            sin_buf,
+            0,
+            sin.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            3,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         desc.write_buffer(4, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
 
         let groups = ((pairs_total + 63) / 64).max(1);
-        let rb = [x_buf.raw() as u64, cos_buf.raw() as u64, sin_buf.raw() as u64];
+        let rb = [
+            x_buf.raw() as u64,
+            cos_buf.raw() as u64,
+            sin_buf.raw() as u64,
+        ];
         let wb = [out_buf.raw() as u64];
         self.record_dispatch_batched(
             "rope_bf16_bytes",
@@ -8638,7 +11735,8 @@ impl VulkanBackend {
             desc,
             (groups, 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -8656,7 +11754,11 @@ impl VulkanBackend {
         self.rope_typed_bytes(
             "rope_f64_bytes",
             8,
-            x, cos, sin, out, x_layout,
+            x,
+            cos,
+            sin,
+            out,
+            x_layout,
             &self.pipelines.rope_f64_pipeline,
             &self.pipelines.rope_f64_layout,
         )
@@ -8697,7 +11799,8 @@ impl VulkanBackend {
         if x.len_bytes() < need_bytes || out.len_bytes() < need_bytes {
             fuel_ir::bail!(
                 "{op_name}: buffer too small (need {need_bytes}; x={}, out={})",
-                x.len_bytes(), out.len_bytes(),
+                x.len_bytes(),
+                out.len_bytes(),
             );
         }
 
@@ -8728,48 +11831,96 @@ impl VulkanBackend {
                     x_strides[3] as u32,
                     dims[1] as u32,
                 ),
-                _ => fuel_ir::bail!(
-                    "{op_name}: stride-aware path supports rank 2-4, got {rank}",
-                ),
+                _ => fuel_ir::bail!("{op_name}: stride-aware path supports rank 2-4, got {rank}",),
             }
         };
 
-        #[repr(C)] #[derive(Clone, Copy)]
+        #[repr(C)]
+        #[derive(Clone, Copy)]
         struct RopeParams {
-            outer: u32, seq: u32, head_dim: u32, total: u32,
-            x_s0: u32, x_s1: u32, x_s_seq: u32, x_s_hd: u32,
-            x_outer1: u32, x_contiguous: u32, _pad0: u32, _pad1: u32,
+            outer: u32,
+            seq: u32,
+            head_dim: u32,
+            total: u32,
+            x_s0: u32,
+            x_s1: u32,
+            x_s_seq: u32,
+            x_s_hd: u32,
+            x_outer1: u32,
+            x_contiguous: u32,
+            _pad0: u32,
+            _pad1: u32,
         }
         let p = RopeParams {
-            outer, seq, head_dim, total,
-            x_s0, x_s1, x_s_seq, x_s_hd,
-            x_outer1, x_contiguous: contiguous as u32, _pad0: 0, _pad1: 0,
+            outer,
+            seq,
+            head_dim,
+            total,
+            x_s0,
+            x_s1,
+            x_s_seq,
+            x_s_hd,
+            x_outer1,
+            x_contiguous: contiguous as u32,
+            _pad0: 0,
+            _pad1: 0,
         };
 
-        let x_buf = x.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: x is host-evicted; fault back first"),
-        ))?;
-        let cos_buf = cos.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: cos is host-evicted; fault back first"),
-        ))?;
-        let sin_buf = sin.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: sin is host-evicted; fault back first"),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: out is host-evicted; fault back first"),
-        ))?;
+        let x_buf = x.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!("{op_name}: x is host-evicted; fault back first"))
+        })?;
+        let cos_buf = cos.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!("{op_name}: cos is host-evicted; fault back first"))
+        })?;
+        let sin_buf = sin.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!("{op_name}: sin is host-evicted; fault back first"))
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!("{op_name}: out is host-evicted; fault back first"))
+        })?;
         let (pbuf, pmem) = self.upload_params(&p)?;
         let params_size = std::mem::size_of::<RopeParams>() as u64;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_4s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, x_buf, 0, x.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, cos_buf, 0, cos.len_bytes() as u64);
-        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, sin_buf, 0, sin.len_bytes() as u64);
-        desc.write_buffer(3, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_4s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            x_buf,
+            0,
+            x.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            cos_buf,
+            0,
+            cos.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            2,
+            DescriptorType::STORAGE_BUFFER,
+            sin_buf,
+            0,
+            sin.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            3,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         desc.write_buffer(4, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
 
         let groups = ((total + 63) / 64).max(1);
-        let rb = [x_buf.raw() as u64, cos_buf.raw() as u64, sin_buf.raw() as u64];
+        let rb = [
+            x_buf.raw() as u64,
+            cos_buf.raw() as u64,
+            sin_buf.raw() as u64,
+        ];
         let wb = [out_buf.raw() as u64];
         self.record_dispatch_batched(
             op_name,
@@ -8778,7 +11929,8 @@ impl VulkanBackend {
             desc,
             (groups, 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -8797,7 +11949,12 @@ impl VulkanBackend {
         layout: &Layout,
     ) -> fuel_ir::Result<()> {
         self.unary_typed_bytes(
-            2, op_id, op_name, input, out, layout,
+            2,
+            op_id,
+            op_name,
+            input,
+            out,
+            layout,
             &self.pipelines.unary_f16_pipeline,
             &self.pipelines.unary_f16_layout,
         )
@@ -8813,7 +11970,12 @@ impl VulkanBackend {
         layout: &Layout,
     ) -> fuel_ir::Result<()> {
         self.unary_typed_bytes(
-            8, op_id, op_name, input, out, layout,
+            8,
+            op_id,
+            op_name,
+            input,
+            out,
+            layout,
             &self.pipelines.unary_f64_pipeline,
             &self.pipelines.unary_f64_layout,
         )
@@ -8837,15 +11999,14 @@ impl VulkanBackend {
         let out_elem = layout.shape().elem_count();
         let rank = out_dims.len();
         if rank > 4 {
-            fuel_ir::bail!(
-                "VulkanBackend::{op_name}: rank {rank} > 4"
-            );
+            fuel_ir::bail!("VulkanBackend::{op_name}: rank {rank} > 4");
         }
         let need_bytes = out_elem * elem_size;
         if out.len_bytes() < need_bytes {
             fuel_ir::bail!(
                 "VulkanBackend::{op_name}: output buffer {} bytes < required {}",
-                out.len_bytes(), need_bytes,
+                out.len_bytes(),
+                need_bytes,
             );
         }
 
@@ -8862,38 +12023,80 @@ impl VulkanBackend {
             && layout.stride().iter().all(|&s| s != 0);
         let flags = in_contig as u32;
 
-        #[repr(C)] #[derive(Clone, Copy)]
+        #[repr(C)]
+        #[derive(Clone, Copy)]
         struct UParams {
-            out_size: u32, op_id: u32, rank: u32, flags: u32,
-            shape0: u32, shape1: u32, shape2: u32, shape3: u32,
-            in_s0: u32, in_s1: u32, in_s2: u32, in_s3: u32,
+            out_size: u32,
+            op_id: u32,
+            rank: u32,
+            flags: u32,
+            shape0: u32,
+            shape1: u32,
+            shape2: u32,
+            shape3: u32,
+            in_s0: u32,
+            in_s1: u32,
+            in_s2: u32,
+            in_s3: u32,
         }
         let p = UParams {
-            out_size: out_elem as u32, op_id, rank: rank as u32, flags,
-            shape0: shape[0], shape1: shape[1], shape2: shape[2], shape3: shape[3],
-            in_s0: in_s[0], in_s1: in_s[1], in_s2: in_s[2], in_s3: in_s[3],
+            out_size: out_elem as u32,
+            op_id,
+            rank: rank as u32,
+            flags,
+            shape0: shape[0],
+            shape1: shape[1],
+            shape2: shape[2],
+            shape3: shape[3],
+            in_s0: in_s[0],
+            in_s1: in_s[1],
+            in_s2: in_s[2],
+            in_s3: in_s[3],
         };
 
-        let in_buf = input.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: input is host-evicted; fault back first"),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: output is host-evicted; fault back first"),
-        ))?;
+        let in_buf = input.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!(
+                "{op_name}: input is host-evicted; fault back first"
+            ))
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!(
+                "{op_name}: output is host-evicted; fault back first"
+            ))
+        })?;
         let (pbuf, pmem) = self.upload_params(&p)?;
         let params_size = std::mem::size_of::<UParams>() as u64;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_2s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            in_buf,
+            0,
+            input.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
         let rb = [in_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
         self.record_dispatch_batched(
-            op_name, pipeline, pipe_layout, desc,
+            op_name,
+            pipeline,
+            pipe_layout,
+            desc,
             (Self::workgroups(out_elem), 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -8925,23 +12128,50 @@ impl VulkanBackend {
         if out.len_bytes() < need_bytes {
             fuel_ir::bail!(
                 "VulkanBackend::{op_name}: output buffer {} bytes < required {}",
-                out.len_bytes(), need_bytes,
+                out.len_bytes(),
+                need_bytes,
             );
         }
         let n_pairs = n / 2;
-        #[repr(C)] #[derive(Clone, Copy)]
-        struct UParams { n_pairs: u32, op_id: u32 }
-        let p = UParams { n_pairs: n_pairs as u32, op_id };
-        let in_buf = input.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: input is host-evicted; fault back first"),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: output is host-evicted; fault back first"),
-        ))?;
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct UParams {
+            n_pairs: u32,
+            op_id: u32,
+        }
+        let p = UParams {
+            n_pairs: n_pairs as u32,
+            op_id,
+        };
+        let in_buf = input.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!(
+                "{op_name}: input is host-evicted; fault back first"
+            ))
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!(
+                "{op_name}: output is host-evicted; fault back first"
+            ))
+        })?;
         let (pbuf, pmem) = self.upload_params(&p)?;
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_2s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            in_buf,
+            0,
+            input.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
         let rb = [in_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
@@ -8952,7 +12182,8 @@ impl VulkanBackend {
             desc,
             (Self::workgroups(n_pairs), 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -8975,13 +12206,12 @@ impl VulkanBackend {
         if out_elem != lb.shape().elem_count() {
             fuel_ir::bail!(
                 "VulkanBackend::{op_name}: shape mismatch a={:?} b={:?}",
-                la.shape(), lb.shape()
+                la.shape(),
+                lb.shape()
             );
         }
         if out_elem % 2 != 0 {
-            fuel_ir::bail!(
-                "VulkanBackend::{op_name}: bf16 element count {out_elem} must be even"
-            );
+            fuel_ir::bail!("VulkanBackend::{op_name}: bf16 element count {out_elem} must be even");
         }
         let rank = out_dims.len();
         if rank > 4 {
@@ -8992,7 +12222,8 @@ impl VulkanBackend {
         if out.len_bytes() < need_bytes {
             fuel_ir::bail!(
                 "VulkanBackend::{op_name}: output buffer {} bytes < required {}",
-                out.len_bytes(), need_bytes,
+                out.len_bytes(),
+                need_bytes,
             );
         }
 
@@ -9013,36 +12244,88 @@ impl VulkanBackend {
             && lb.stride().iter().all(|&s| s != 0);
         let flags = (a_contig as u32) | ((b_contig as u32) << 1);
 
-        #[repr(C)] #[derive(Clone, Copy)]
+        #[repr(C)]
+        #[derive(Clone, Copy)]
         struct BParams {
-            out_size: u32, op_id: u32, rank: u32, flags: u32,
-            shape0: u32, shape1: u32, shape2: u32, shape3: u32,
-            a_s0: u32, a_s1: u32, a_s2: u32, a_s3: u32,
-            b_s0: u32, b_s1: u32, b_s2: u32, b_s3: u32,
+            out_size: u32,
+            op_id: u32,
+            rank: u32,
+            flags: u32,
+            shape0: u32,
+            shape1: u32,
+            shape2: u32,
+            shape3: u32,
+            a_s0: u32,
+            a_s1: u32,
+            a_s2: u32,
+            a_s3: u32,
+            b_s0: u32,
+            b_s1: u32,
+            b_s2: u32,
+            b_s3: u32,
         }
         let p = BParams {
-            out_size: out_elem as u32, op_id, rank: rank as u32, flags,
-            shape0: shape[0], shape1: shape[1], shape2: shape[2], shape3: shape[3],
-            a_s0: a_s[0], a_s1: a_s[1], a_s2: a_s[2], a_s3: a_s[3],
-            b_s0: b_s[0], b_s1: b_s[1], b_s2: b_s[2], b_s3: b_s[3],
+            out_size: out_elem as u32,
+            op_id,
+            rank: rank as u32,
+            flags,
+            shape0: shape[0],
+            shape1: shape[1],
+            shape2: shape[2],
+            shape3: shape[3],
+            a_s0: a_s[0],
+            a_s1: a_s[1],
+            a_s2: a_s[2],
+            a_s3: a_s[3],
+            b_s0: b_s[0],
+            b_s1: b_s[1],
+            b_s2: b_s[2],
+            b_s3: b_s[3],
         };
 
-        let a_buf = a.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: input a is host-evicted; fault back first"),
-        ))?;
-        let b_buf = b.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: input b is host-evicted; fault back first"),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: output is host-evicted; fault back first"),
-        ))?;
+        let a_buf = a.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!(
+                "{op_name}: input a is host-evicted; fault back first"
+            ))
+        })?;
+        let b_buf = b.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!(
+                "{op_name}: input b is host-evicted; fault back first"
+            ))
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!(
+                "{op_name}: output is host-evicted; fault back first"
+            ))
+        })?;
         let (pbuf, pmem) = self.upload_params(&p)?;
         let params_size = std::mem::size_of::<BParams>() as u64;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, a_buf, 0, a.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, b_buf, 0, b.len_bytes() as u64);
-        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_3s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            a_buf,
+            0,
+            a.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            b_buf,
+            0,
+            b.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            2,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
         let rb = [a_buf.raw() as u64, b_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
@@ -9053,7 +12336,8 @@ impl VulkanBackend {
             desc,
             (Self::workgroups(out_elem / 2), 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -9078,64 +12362,117 @@ impl VulkanBackend {
         // b2 alignment: even cols (kernel processes pairs on the last
         // axis, so each pair must fit in one u32).
         if byte_width == 2 && cols % 2 != 0 {
-            fuel_ir::bail!(
-                "triangular_bytes b2: cols ({cols}) must be even (pair-packed kernel)",
-            );
+            fuel_ir::bail!("triangular_bytes b2: cols ({cols}) must be even (pair-packed kernel)",);
         }
-        let total = batch_count.checked_mul(rows).and_then(|x| x.checked_mul(cols))
-            .ok_or_else(|| fuel_ir::Error::Msg(format!(
-                "{op_name}: element count overflow"
-            )))?;
+        let total = batch_count
+            .checked_mul(rows)
+            .and_then(|x| x.checked_mul(cols))
+            .ok_or_else(|| fuel_ir::Error::Msg(format!("{op_name}: element count overflow")))?;
         let need_bytes = total * byte_width;
         if input.len_bytes() < need_bytes {
             fuel_ir::bail!(
-                "{op_name}: input {} bytes < required {need_bytes}", input.len_bytes(),
+                "{op_name}: input {} bytes < required {need_bytes}",
+                input.len_bytes(),
             );
         }
         if out.len_bytes() < need_bytes {
             fuel_ir::bail!(
-                "{op_name}: output {} bytes < required {need_bytes}", out.len_bytes(),
+                "{op_name}: output {} bytes < required {need_bytes}",
+                out.len_bytes(),
             );
         }
-        #[repr(C)] #[derive(Clone, Copy)]
-        struct TParams { batch_count: u32, rows: u32, cols: u32, diagonal: i32 }
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct TParams {
+            batch_count: u32,
+            rows: u32,
+            cols: u32,
+            diagonal: i32,
+        }
         let p = TParams {
             batch_count: batch_count as u32,
             rows: rows as u32,
             cols: cols as u32,
             diagonal: diagonal as i32,
         };
-        let in_buf = input.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: input is host-evicted; fault back first"),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: output is host-evicted; fault back first"),
-        ))?;
+        let in_buf = input.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!(
+                "{op_name}: input is host-evicted; fault back first"
+            ))
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!(
+                "{op_name}: output is host-evicted; fault back first"
+            ))
+        })?;
         let (pbuf, pmem) = self.upload_params(&p)?;
 
         let (pipeline, pipe_layout, n_dispatch) = match (keep_upper, byte_width) {
-            (true,  2) => (&self.pipelines.triu_b2_pipeline, &self.pipelines.triu_b2_layout, batch_count * rows * (cols / 2)),
-            (true,  4) => (&self.pipelines.triu_b4_pipeline, &self.pipelines.triu_b4_layout, total),
-            (true,  8) => (&self.pipelines.triu_b8_pipeline, &self.pipelines.triu_b8_layout, total),
-            (false, 2) => (&self.pipelines.tril_b2_pipeline, &self.pipelines.tril_b2_layout, batch_count * rows * (cols / 2)),
-            (false, 4) => (&self.pipelines.tril_b4_pipeline, &self.pipelines.tril_b4_layout, total),
-            (false, 8) => (&self.pipelines.tril_b8_pipeline, &self.pipelines.tril_b8_layout, total),
-            (_, other) => fuel_ir::bail!(
-                "triangular_bytes: byte_width {other} unsupported (have b2/b4/b8)",
+            (true, 2) => (
+                &self.pipelines.triu_b2_pipeline,
+                &self.pipelines.triu_b2_layout,
+                batch_count * rows * (cols / 2),
             ),
+            (true, 4) => (
+                &self.pipelines.triu_b4_pipeline,
+                &self.pipelines.triu_b4_layout,
+                total,
+            ),
+            (true, 8) => (
+                &self.pipelines.triu_b8_pipeline,
+                &self.pipelines.triu_b8_layout,
+                total,
+            ),
+            (false, 2) => (
+                &self.pipelines.tril_b2_pipeline,
+                &self.pipelines.tril_b2_layout,
+                batch_count * rows * (cols / 2),
+            ),
+            (false, 4) => (
+                &self.pipelines.tril_b4_pipeline,
+                &self.pipelines.tril_b4_layout,
+                total,
+            ),
+            (false, 8) => (
+                &self.pipelines.tril_b8_pipeline,
+                &self.pipelines.tril_b8_layout,
+                total,
+            ),
+            (_, other) => {
+                fuel_ir::bail!("triangular_bytes: byte_width {other} unsupported (have b2/b4/b8)",)
+            }
         };
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_2s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            in_buf,
+            0,
+            input.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
         let rb = [in_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
         self.record_dispatch_batched(
-            op_name, pipeline, pipe_layout, desc,
+            op_name,
+            pipeline,
+            pipe_layout,
+            desc,
             (Self::workgroups(n_dispatch), 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -9161,15 +12498,14 @@ impl VulkanBackend {
             fuel_ir::bail!("flip_bytes: rank {rank} > 4");
         }
         if axis >= rank {
-            fuel_ir::bail!(
-                "flip_bytes: axis {axis} out of range for rank {rank}",
-            );
+            fuel_ir::bail!("flip_bytes: axis {axis} out of range for rank {rank}",);
         }
         let total: usize = layout.shape().elem_count();
         let need_bytes = total * byte_width;
         if out.len_bytes() < need_bytes {
             fuel_ir::bail!(
-                "flip_bytes: output {} bytes < required {need_bytes}", out.len_bytes(),
+                "flip_bytes: output {} bytes < required {need_bytes}",
+                out.len_bytes(),
             );
         }
 
@@ -9184,47 +12520,92 @@ impl VulkanBackend {
         // axis is indexed in the rank-N layout; remap to the rank-4 slot.
         let axis_padded = (axis + pad) as u32;
 
-        #[repr(C)] #[derive(Clone, Copy)]
+        #[repr(C)]
+        #[derive(Clone, Copy)]
         struct FParams {
-            out_size: u32, axis: u32, _pad0: u32, _pad1: u32,
-            shape0: u32, shape1: u32, shape2: u32, shape3: u32,
-            in_s0: u32, in_s1: u32, in_s2: u32, in_s3: u32,
+            out_size: u32,
+            axis: u32,
+            _pad0: u32,
+            _pad1: u32,
+            shape0: u32,
+            shape1: u32,
+            shape2: u32,
+            shape3: u32,
+            in_s0: u32,
+            in_s1: u32,
+            in_s2: u32,
+            in_s3: u32,
         }
         let p = FParams {
-            out_size: total as u32, axis: axis_padded, _pad0: 0, _pad1: 0,
-            shape0: shape[0], shape1: shape[1], shape2: shape[2], shape3: shape[3],
-            in_s0: in_s[0], in_s1: in_s[1], in_s2: in_s[2], in_s3: in_s[3],
+            out_size: total as u32,
+            axis: axis_padded,
+            _pad0: 0,
+            _pad1: 0,
+            shape0: shape[0],
+            shape1: shape[1],
+            shape2: shape[2],
+            shape3: shape[3],
+            in_s0: in_s[0],
+            in_s1: in_s[1],
+            in_s2: in_s[2],
+            in_s3: in_s[3],
         };
 
-        let in_buf = input.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "flip_bytes: input is host-evicted; fault back first".into(),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "flip_bytes: output is host-evicted; fault back first".into(),
-        ))?;
+        let in_buf = input.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("flip_bytes: input is host-evicted; fault back first".into())
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("flip_bytes: output is host-evicted; fault back first".into())
+        })?;
         let (pbuf, pmem) = self.upload_params(&p)?;
         let params_size = std::mem::size_of::<FParams>() as u64;
 
         let (pipeline, pipe_layout) = match byte_width {
-            2 => (&self.pipelines.flip_b2_pipeline, &self.pipelines.flip_b2_layout),
-            4 => (&self.pipelines.flip_b4_pipeline, &self.pipelines.flip_b4_layout),
-            8 => (&self.pipelines.flip_b8_pipeline, &self.pipelines.flip_b8_layout),
-            other => fuel_ir::bail!(
-                "flip_bytes: byte_width {other} unsupported (have b2/b4/b8)",
+            2 => (
+                &self.pipelines.flip_b2_pipeline,
+                &self.pipelines.flip_b2_layout,
             ),
+            4 => (
+                &self.pipelines.flip_b4_pipeline,
+                &self.pipelines.flip_b4_layout,
+            ),
+            8 => (
+                &self.pipelines.flip_b8_pipeline,
+                &self.pipelines.flip_b8_layout,
+            ),
+            other => fuel_ir::bail!("flip_bytes: byte_width {other} unsupported (have b2/b4/b8)",),
         };
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_2s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            in_buf,
+            0,
+            input.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
         let rb = [in_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
         self.record_dispatch_batched(
-            "flip", pipeline, pipe_layout, desc,
+            "flip",
+            pipeline,
+            pipe_layout,
+            desc,
             (Self::workgroups(total), 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -9253,9 +12634,7 @@ impl VulkanBackend {
             fuel_ir::bail!("roll_bytes: rank {rank} > 4");
         }
         if axis >= rank {
-            fuel_ir::bail!(
-                "roll_bytes: axis {axis} out of range for rank {rank}",
-            );
+            fuel_ir::bail!("roll_bytes: axis {axis} out of range for rank {rank}",);
         }
         let dim_size = dims[axis];
         if dim_size == 0 {
@@ -9265,7 +12644,8 @@ impl VulkanBackend {
         let need_bytes = total * byte_width;
         if out.len_bytes() < need_bytes {
             fuel_ir::bail!(
-                "roll_bytes: output {} bytes < required {need_bytes}", out.len_bytes(),
+                "roll_bytes: output {} bytes < required {need_bytes}",
+                out.len_bytes(),
             );
         }
 
@@ -9273,7 +12653,7 @@ impl VulkanBackend {
         // the kernel's `%` unsigned (avoids OpSRem-on-negative driver
         // folding hazards; matches CPU reference exactly).
         let d = dim_size as i64;
-        let shift_norm = ((shift % d) + d) % d;  // ∈ [0, dim_size)
+        let shift_norm = ((shift % d) + d) % d; // ∈ [0, dim_size)
         let offset = ((d - shift_norm) % d) as u32;
 
         // Pad shape + strides to rank 4.
@@ -9286,47 +12666,92 @@ impl VulkanBackend {
         }
         let axis_padded = (axis + pad) as u32;
 
-        #[repr(C)] #[derive(Clone, Copy)]
+        #[repr(C)]
+        #[derive(Clone, Copy)]
         struct RParams {
-            out_size: u32, axis: u32, offset: u32, _pad: u32,
-            shape0: u32, shape1: u32, shape2: u32, shape3: u32,
-            in_s0: u32, in_s1: u32, in_s2: u32, in_s3: u32,
+            out_size: u32,
+            axis: u32,
+            offset: u32,
+            _pad: u32,
+            shape0: u32,
+            shape1: u32,
+            shape2: u32,
+            shape3: u32,
+            in_s0: u32,
+            in_s1: u32,
+            in_s2: u32,
+            in_s3: u32,
         }
         let p = RParams {
-            out_size: total as u32, axis: axis_padded, offset, _pad: 0,
-            shape0: shape[0], shape1: shape[1], shape2: shape[2], shape3: shape[3],
-            in_s0: in_s[0], in_s1: in_s[1], in_s2: in_s[2], in_s3: in_s[3],
+            out_size: total as u32,
+            axis: axis_padded,
+            offset,
+            _pad: 0,
+            shape0: shape[0],
+            shape1: shape[1],
+            shape2: shape[2],
+            shape3: shape[3],
+            in_s0: in_s[0],
+            in_s1: in_s[1],
+            in_s2: in_s[2],
+            in_s3: in_s[3],
         };
 
-        let in_buf = input.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "roll_bytes: input is host-evicted; fault back first".into(),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "roll_bytes: output is host-evicted; fault back first".into(),
-        ))?;
+        let in_buf = input.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("roll_bytes: input is host-evicted; fault back first".into())
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("roll_bytes: output is host-evicted; fault back first".into())
+        })?;
         let (pbuf, pmem) = self.upload_params(&p)?;
         let params_size = std::mem::size_of::<RParams>() as u64;
 
         let (pipeline, pipe_layout) = match byte_width {
-            2 => (&self.pipelines.roll_b2_pipeline, &self.pipelines.roll_b2_layout),
-            4 => (&self.pipelines.roll_b4_pipeline, &self.pipelines.roll_b4_layout),
-            8 => (&self.pipelines.roll_b8_pipeline, &self.pipelines.roll_b8_layout),
-            other => fuel_ir::bail!(
-                "roll_bytes: byte_width {other} unsupported (have b2/b4/b8)",
+            2 => (
+                &self.pipelines.roll_b2_pipeline,
+                &self.pipelines.roll_b2_layout,
             ),
+            4 => (
+                &self.pipelines.roll_b4_pipeline,
+                &self.pipelines.roll_b4_layout,
+            ),
+            8 => (
+                &self.pipelines.roll_b8_pipeline,
+                &self.pipelines.roll_b8_layout,
+            ),
+            other => fuel_ir::bail!("roll_bytes: byte_width {other} unsupported (have b2/b4/b8)",),
         };
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_2s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            in_buf,
+            0,
+            input.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
         let rb = [in_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
         self.record_dispatch_batched(
-            "roll", pipeline, pipe_layout, desc,
+            "roll",
+            pipeline,
+            pipe_layout,
+            desc,
             (Self::workgroups(total), 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -9345,7 +12770,11 @@ impl VulkanBackend {
         axis: usize,
     ) -> fuel_ir::Result<()> {
         self.cumsum_typed_bytes(
-            4, input, out, layout, axis,
+            4,
+            input,
+            out,
+            layout,
+            axis,
             "cumsum_f32",
             &self.pipelines.cumsum_f32_pipeline,
             &self.pipelines.cumsum_f32_layout,
@@ -9360,7 +12789,11 @@ impl VulkanBackend {
         axis: usize,
     ) -> fuel_ir::Result<()> {
         self.cumsum_typed_bytes(
-            8, input, out, layout, axis,
+            8,
+            input,
+            out,
+            layout,
+            axis,
             "cumsum_f64",
             &self.pipelines.cumsum_f64_pipeline,
             &self.pipelines.cumsum_f64_layout,
@@ -9375,7 +12808,11 @@ impl VulkanBackend {
         axis: usize,
     ) -> fuel_ir::Result<()> {
         self.cumsum_typed_bytes(
-            2, input, out, layout, axis,
+            2,
+            input,
+            out,
+            layout,
+            axis,
             "cumsum_f16",
             &self.pipelines.cumsum_f16_pipeline,
             &self.pipelines.cumsum_f16_layout,
@@ -9390,7 +12827,11 @@ impl VulkanBackend {
         axis: usize,
     ) -> fuel_ir::Result<()> {
         self.cumsum_typed_bytes(
-            2, input, out, layout, axis,
+            2,
+            input,
+            out,
+            layout,
+            axis,
             "cumsum_bf16",
             &self.pipelines.cumsum_bf16_pipeline,
             &self.pipelines.cumsum_bf16_layout,
@@ -9421,9 +12862,7 @@ impl VulkanBackend {
             fuel_ir::bail!("{op_label}: rank {rank} > 4");
         }
         if axis >= rank {
-            fuel_ir::bail!(
-                "{op_label}: axis {axis} out of range for rank {rank}",
-            );
+            fuel_ir::bail!("{op_label}: axis {axis} out of range for rank {rank}",);
         }
         let dim_size = dims[axis];
         let total: usize = layout.shape().elem_count();
@@ -9446,42 +12885,84 @@ impl VulkanBackend {
         }
         let axis_padded = (axis + pad) as u32;
 
-        #[repr(C)] #[derive(Clone, Copy)]
+        #[repr(C)]
+        #[derive(Clone, Copy)]
         struct CParams {
-            slice_count: u32, axis: u32, dim_size: u32, _pad: u32,
-            shape0: u32, shape1: u32, shape2: u32, shape3: u32,
-            in_s0: u32, in_s1: u32, in_s2: u32, in_s3: u32,
+            slice_count: u32,
+            axis: u32,
+            dim_size: u32,
+            _pad: u32,
+            shape0: u32,
+            shape1: u32,
+            shape2: u32,
+            shape3: u32,
+            in_s0: u32,
+            in_s1: u32,
+            in_s2: u32,
+            in_s3: u32,
         }
         let p = CParams {
-            slice_count: slice_count as u32, axis: axis_padded, dim_size: dim_size as u32, _pad: 0,
-            shape0: shape[0], shape1: shape[1], shape2: shape[2], shape3: shape[3],
-            in_s0: in_s[0], in_s1: in_s[1], in_s2: in_s[2], in_s3: in_s[3],
+            slice_count: slice_count as u32,
+            axis: axis_padded,
+            dim_size: dim_size as u32,
+            _pad: 0,
+            shape0: shape[0],
+            shape1: shape[1],
+            shape2: shape[2],
+            shape3: shape[3],
+            in_s0: in_s[0],
+            in_s1: in_s[1],
+            in_s2: in_s[2],
+            in_s3: in_s[3],
         };
 
         if slice_count == 0 {
             return Ok(());
         }
 
-        let in_buf = input.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_label}: input is host-evicted; fault back first"),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_label}: output is host-evicted; fault back first"),
-        ))?;
+        let in_buf = input.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!(
+                "{op_label}: input is host-evicted; fault back first"
+            ))
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!(
+                "{op_label}: output is host-evicted; fault back first"
+            ))
+        })?;
         let (pbuf, pmem) = self.upload_params(&p)?;
         let params_size = std::mem::size_of::<CParams>() as u64;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_2s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            in_buf,
+            0,
+            input.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
         let rb = [in_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
         self.record_dispatch_batched(
-            op_label, pipeline, pipe_layout, desc,
+            op_label,
+            pipeline,
+            pipe_layout,
+            desc,
             (Self::workgroups(slice_count), 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -9512,23 +12993,35 @@ impl VulkanBackend {
         // Pack shape + strides into a u32 buffer; strides reinterpreted
         // via `asint` in the kernel.
         let mut sd: Vec<u32> = Vec::with_capacity(rank * 2);
-        for &d in shape { sd.push(d as u32); }
+        for &d in shape {
+            sd.push(d as u32);
+        }
         for &s in strides_signed {
             // i64 → i32 → u32 (bit-cast). Strides past ±2^31 would be a
             // wild view; ergonomic to fail loudly here.
-            let s32: i32 = s.try_into().map_err(|_| fuel_ir::Error::Msg(
-                format!("strided_copy_signed_bytes: stride {s} exceeds i32 range"),
-            ))?;
+            let s32: i32 = s.try_into().map_err(|_| {
+                fuel_ir::Error::Msg(format!(
+                    "strided_copy_signed_bytes: stride {s} exceeds i32 range"
+                ))
+            })?;
             sd.push(s32 as u32);
         }
         let (sd_buf, sd_mem) = self.upload_slice_raw(&sd)?;
 
-        let src_offset_i32: i32 = src_offset.try_into().map_err(|_| fuel_ir::Error::Msg(
-            format!("strided_copy_signed_bytes: src_offset {src_offset} exceeds i32 range"),
-        ))?;
+        let src_offset_i32: i32 = src_offset.try_into().map_err(|_| {
+            fuel_ir::Error::Msg(format!(
+                "strided_copy_signed_bytes: src_offset {src_offset} exceeds i32 range"
+            ))
+        })?;
 
-        #[repr(C)] #[derive(Clone, Copy)]
-        struct SParams { out_size: u32, rank: u32, src_offset: i32, dst_offset: u32 }
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct SParams {
+            out_size: u32,
+            rank: u32,
+            src_offset: i32,
+            dst_offset: u32,
+        }
         let p = SParams {
             out_size: out_size as u32,
             rank: rank as u32,
@@ -9537,35 +13030,67 @@ impl VulkanBackend {
         };
         let (pbuf, pmem) = self.upload_params(&p)?;
 
-        let in_buf = input.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "strided_copy_signed_bytes: input is host-evicted; fault back first".into(),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "strided_copy_signed_bytes: output is host-evicted; fault back first".into(),
-        ))?;
+        let in_buf = input.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "strided_copy_signed_bytes: input is host-evicted; fault back first".into(),
+            )
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "strided_copy_signed_bytes: output is host-evicted; fault back first".into(),
+            )
+        })?;
 
         let (pipeline, pipe_layout) = match byte_width {
-            2 => (&self.pipelines.strided_copy_signed_b2_pipeline, &self.pipelines.strided_copy_signed_b2_layout),
-            4 => (&self.pipelines.strided_copy_signed_b4_pipeline, &self.pipelines.strided_copy_signed_b4_layout),
-            8 => (&self.pipelines.strided_copy_signed_b8_pipeline, &self.pipelines.strided_copy_signed_b8_layout),
+            2 => (
+                &self.pipelines.strided_copy_signed_b2_pipeline,
+                &self.pipelines.strided_copy_signed_b2_layout,
+            ),
+            4 => (
+                &self.pipelines.strided_copy_signed_b4_pipeline,
+                &self.pipelines.strided_copy_signed_b4_layout,
+            ),
+            8 => (
+                &self.pipelines.strided_copy_signed_b8_pipeline,
+                &self.pipelines.strided_copy_signed_b8_layout,
+            ),
             other => fuel_ir::bail!(
                 "strided_copy_signed_bytes: byte_width {other} unsupported (have b2/b4/b8)",
             ),
         };
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_3s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            in_buf,
+            0,
+            input.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         let sd_byte_size = (sd.len() * 4) as u64;
         desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, &sd_buf, 0, sd_byte_size);
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
         let rb = [in_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
         self.record_dispatch_batched(
-            "strided_copy_signed", pipeline, pipe_layout, desc,
+            "strided_copy_signed",
+            pipeline,
+            pipe_layout,
+            desc,
             (Self::workgroups(out_size), 1, 1),
             vec![(sd_buf, sd_mem), (pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -9593,50 +13118,104 @@ impl VulkanBackend {
         let dst_size = dtype_size(dst_dtype);
         if input.len_bytes() < n * src_size {
             fuel_ir::bail!(
-                "cast_f8e4m3_bytes: input {} bytes < required {}", input.len_bytes(), n * src_size,
+                "cast_f8e4m3_bytes: input {} bytes < required {}",
+                input.len_bytes(),
+                n * src_size,
             );
         }
         if out.len_bytes() < n * dst_size {
             fuel_ir::bail!(
-                "cast_f8e4m3_bytes: output {} bytes < required {}", out.len_bytes(), n * dst_size,
+                "cast_f8e4m3_bytes: output {} bytes < required {}",
+                out.len_bytes(),
+                n * dst_size,
             );
         }
-        #[repr(C)] #[derive(Clone, Copy)]
-        struct CParams { n: u32, _pad: u32 }
-        let p = CParams { n: n as u32, _pad: 0 };
-        let in_buf = input.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "cast_f8e4m3_bytes: input is host-evicted; fault back first".into(),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            "cast_f8e4m3_bytes: output is host-evicted; fault back first".into(),
-        ))?;
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct CParams {
+            n: u32,
+            _pad: u32,
+        }
+        let p = CParams {
+            n: n as u32,
+            _pad: 0,
+        };
+        let in_buf = input.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("cast_f8e4m3_bytes: input is host-evicted; fault back first".into())
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "cast_f8e4m3_bytes: output is host-evicted; fault back first".into(),
+            )
+        })?;
         let (pbuf, pmem) = self.upload_params(&p)?;
 
         let (pipeline, pipe_layout, op_name) = match (src_dtype, dst_dtype) {
-            (DType::F32,    DType::F8E4M3) => (&self.pipelines.cast_f32_to_f8e4m3_pipeline, &self.pipelines.cast_f32_to_f8e4m3_layout, "cast_f32_to_f8e4m3"),
-            (DType::F8E4M3, DType::F32)    => (&self.pipelines.cast_f8e4m3_to_f32_pipeline, &self.pipelines.cast_f8e4m3_to_f32_layout, "cast_f8e4m3_to_f32"),
-            (DType::F16,    DType::F8E4M3) => (&self.pipelines.cast_f16_to_f8e4m3_pipeline, &self.pipelines.cast_f16_to_f8e4m3_layout, "cast_f16_to_f8e4m3"),
-            (DType::F8E4M3, DType::F16)    => (&self.pipelines.cast_f8e4m3_to_f16_pipeline, &self.pipelines.cast_f8e4m3_to_f16_layout, "cast_f8e4m3_to_f16"),
-            (DType::BF16,   DType::F8E4M3) => (&self.pipelines.cast_bf16_to_f8e4m3_pipeline, &self.pipelines.cast_bf16_to_f8e4m3_layout, "cast_bf16_to_f8e4m3"),
-            (DType::F8E4M3, DType::BF16)   => (&self.pipelines.cast_f8e4m3_to_bf16_pipeline, &self.pipelines.cast_f8e4m3_to_bf16_layout, "cast_f8e4m3_to_bf16"),
-            (a, b) => fuel_ir::bail!(
-                "cast_f8e4m3_bytes: unsupported dtype pair ({a:?} → {b:?})",
+            (DType::F32, DType::F8E4M3) => (
+                &self.pipelines.cast_f32_to_f8e4m3_pipeline,
+                &self.pipelines.cast_f32_to_f8e4m3_layout,
+                "cast_f32_to_f8e4m3",
             ),
+            (DType::F8E4M3, DType::F32) => (
+                &self.pipelines.cast_f8e4m3_to_f32_pipeline,
+                &self.pipelines.cast_f8e4m3_to_f32_layout,
+                "cast_f8e4m3_to_f32",
+            ),
+            (DType::F16, DType::F8E4M3) => (
+                &self.pipelines.cast_f16_to_f8e4m3_pipeline,
+                &self.pipelines.cast_f16_to_f8e4m3_layout,
+                "cast_f16_to_f8e4m3",
+            ),
+            (DType::F8E4M3, DType::F16) => (
+                &self.pipelines.cast_f8e4m3_to_f16_pipeline,
+                &self.pipelines.cast_f8e4m3_to_f16_layout,
+                "cast_f8e4m3_to_f16",
+            ),
+            (DType::BF16, DType::F8E4M3) => (
+                &self.pipelines.cast_bf16_to_f8e4m3_pipeline,
+                &self.pipelines.cast_bf16_to_f8e4m3_layout,
+                "cast_bf16_to_f8e4m3",
+            ),
+            (DType::F8E4M3, DType::BF16) => (
+                &self.pipelines.cast_f8e4m3_to_bf16_pipeline,
+                &self.pipelines.cast_f8e4m3_to_bf16_layout,
+                "cast_f8e4m3_to_bf16",
+            ),
+            (a, b) => fuel_ir::bail!("cast_f8e4m3_bytes: unsupported dtype pair ({a:?} → {b:?})",),
         };
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_2s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            in_buf,
+            0,
+            input.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
         let rb = [in_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
         // Each thread does 4 elements.
         let groups = Self::workgroups(n / 4);
         self.record_dispatch_batched(
-            op_name, pipeline, pipe_layout, desc,
+            op_name,
+            pipeline,
+            pipe_layout,
+            desc,
             (groups, 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -9671,7 +13250,8 @@ impl VulkanBackend {
         if out.len_bytes() < need_bytes {
             fuel_ir::bail!(
                 "VulkanBackend::{op_name}: output buffer {} bytes < required {} bytes",
-                out.len_bytes(), need_bytes,
+                out.len_bytes(),
+                need_bytes,
             );
         }
 
@@ -9691,31 +13271,68 @@ impl VulkanBackend {
             && layout.stride().iter().all(|&s| s != 0);
         let flags = in_contig as u32;
 
-        #[repr(C)] #[derive(Clone, Copy)]
+        #[repr(C)]
+        #[derive(Clone, Copy)]
         struct UParams {
-            out_size: u32, op_id: u32, rank: u32, flags: u32,
-            shape0: u32, shape1: u32, shape2: u32, shape3: u32,
-            in_s0: u32, in_s1: u32, in_s2: u32, in_s3: u32,
+            out_size: u32,
+            op_id: u32,
+            rank: u32,
+            flags: u32,
+            shape0: u32,
+            shape1: u32,
+            shape2: u32,
+            shape3: u32,
+            in_s0: u32,
+            in_s1: u32,
+            in_s2: u32,
+            in_s3: u32,
         }
         let p = UParams {
-            out_size: out_elem as u32, op_id, rank: rank as u32, flags,
-            shape0: shape[0], shape1: shape[1], shape2: shape[2], shape3: shape[3],
-            in_s0: in_s[0], in_s1: in_s[1], in_s2: in_s[2], in_s3: in_s[3],
+            out_size: out_elem as u32,
+            op_id,
+            rank: rank as u32,
+            flags,
+            shape0: shape[0],
+            shape1: shape[1],
+            shape2: shape[2],
+            shape3: shape[3],
+            in_s0: in_s[0],
+            in_s1: in_s[1],
+            in_s2: in_s[2],
+            in_s3: in_s[3],
         };
 
-        let in_buf = input.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: input is host-evicted; fault back first"),
-        ))?;
-        let out_buf = out.buffer_opt().ok_or_else(|| fuel_ir::Error::Msg(
-            format!("{op_name}: output is host-evicted; fault back first"),
-        ))?;
+        let in_buf = input.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!(
+                "{op_name}: input is host-evicted; fault back first"
+            ))
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!(
+                "{op_name}: output is host-evicted; fault back first"
+            ))
+        })?;
         let (pbuf, pmem) = self.upload_params(&p)?;
         let params_size = std::mem::size_of::<UParams>() as u64;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u)
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_2s1u)
             .map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            in_buf,
+            0,
+            input.len_bytes() as u64,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            out_buf,
+            0,
+            out.len_bytes() as u64,
+        );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
         let rb = [in_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
@@ -9726,7 +13343,8 @@ impl VulkanBackend {
             desc,
             (Self::workgroups(out_elem), 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         self.flush_pending()?;
         Ok(())
@@ -9750,7 +13368,8 @@ impl VulkanBackend {
         if blocks.len() != n_blocks * BYTES_PER_BLOCK {
             fuel_ir::bail!(
                 "dequantize_q4_0: expected {} bytes for {n_blocks} blocks, got {}",
-                n_blocks * BYTES_PER_BLOCK, blocks.len(),
+                n_blocks * BYTES_PER_BLOCK,
+                blocks.len(),
             );
         }
         let n_elements = n_blocks * BLCK_SIZE;
@@ -9758,12 +13377,19 @@ impl VulkanBackend {
         // Upload Q4_0 bytes as-is to a device storage buffer.
         let input = self.upload_slice(blocks, DType::U32)?;
 
-        #[repr(C)] #[derive(Clone, Copy)]
-        struct Q4Params { n_blocks: u32, out_elements: u32, _pad0: u32, _pad1: u32 }
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct Q4Params {
+            n_blocks: u32,
+            out_elements: u32,
+            _pad0: u32,
+            _pad1: u32,
+        }
         let p = Q4Params {
             n_blocks: n_blocks as u32,
             out_elements: n_elements as u32,
-            _pad0: 0, _pad1: 0,
+            _pad0: 0,
+            _pad1: 0,
         };
         let (pbuf, pmem) = self.upload_params(&p)?;
         let total_pairs = n_blocks * (BLCK_SIZE / 2);
@@ -9771,9 +13397,14 @@ impl VulkanBackend {
             "dequant_q4_0",
             &self.pipelines.dequant_q4_0_pipeline,
             &self.pipelines.dequant_q4_0_layout,
-            &input, &out, pbuf, pmem,
+            &input,
+            &out,
+            pbuf,
+            pmem,
             std::mem::size_of::<Q4Params>() as u64,
-            Self::workgroups(total_pairs), 1, 1,
+            Self::workgroups(total_pairs),
+            1,
+            1,
         )?;
         Ok(out)
     }
@@ -9789,7 +13420,8 @@ impl VulkanBackend {
         if blocks.len() != n_blocks * BYTES_PER_BLOCK {
             fuel_ir::bail!(
                 "dequantize_q8_0: expected {} bytes for {n_blocks} blocks, got {}",
-                n_blocks * BYTES_PER_BLOCK, blocks.len(),
+                n_blocks * BYTES_PER_BLOCK,
+                blocks.len(),
             );
         }
         let input = self.upload_slice(blocks, DType::U32)?;
@@ -9867,7 +13499,8 @@ impl VulkanBackend {
     where
         F: Fn(vulkane::safe::PressureEvent) + Send + Sync + 'static,
     {
-        self.allocator.register_pressure_callback(threshold, hysteresis, callback)
+        self.allocator
+            .register_pressure_callback(threshold, hysteresis, callback)
     }
 
     /// Unregister a previously-registered pressure callback. Returns
@@ -9882,10 +13515,19 @@ impl VulkanBackend {
     /// to on this physical device. Callers (defrag pool, pressure-callback
     /// setup) generally invoke this once at init time and cache the index.
     pub fn device_local_memory_type_index(&self) -> fuel_ir::Result<u32> {
-        let (buf, alloc) = self.allocator.create_buffer(
-            BufferCreateInfo { size: 1, usage: BufferUsage::STORAGE_BUFFER },
-            AllocationCreateInfo { usage: AllocationUsage::DeviceLocal, ..Default::default() },
-        ).map_err(vk_err)?;
+        let (buf, alloc) = self
+            .allocator
+            .create_buffer(
+                BufferCreateInfo {
+                    size: 1,
+                    usage: BufferUsage::STORAGE_BUFFER,
+                },
+                AllocationCreateInfo {
+                    usage: AllocationUsage::DeviceLocal,
+                    ..Default::default()
+                },
+            )
+            .map_err(vk_err)?;
         let idx = alloc.memory_type_index();
         drop(buf);
         drop(alloc);
@@ -9919,12 +13561,14 @@ impl VulkanBackend {
         max_blocks: u32,
     ) -> fuel_ir::Result<vulkane::safe::PoolHandle> {
         let mt = self.device_local_memory_type_index()?;
-        self.allocator.create_pool(vulkane::safe::PoolCreateInfo {
-            memory_type_index: mt,
-            strategy: vulkane::safe::AllocationStrategy::FreeList,
-            block_size,
-            max_block_count: max_blocks,
-        }).map_err(vk_err)
+        self.allocator
+            .create_pool(vulkane::safe::PoolCreateInfo {
+                memory_type_index: mt,
+                strategy: vulkane::safe::AllocationStrategy::FreeList,
+                block_size,
+                max_block_count: max_blocks,
+            })
+            .map_err(vk_err)
     }
 
     /// Destroy a pool previously created with [`Self::create_weight_pool`].
@@ -10001,21 +13645,24 @@ impl VulkanBackend {
         file: &std::sync::Arc<residency::ResidencyFile>,
     ) -> fuel_ir::Result<VulkanStorage> {
         if !matches!(storage.backing, StorageBacking::Device(_)) {
-            fuel_ir::bail!(
-                "VulkanBackend::evict: storage is already Host-backed"
-            );
+            fuel_ir::bail!("VulkanBackend::evict: storage is already Host-backed");
         }
         let bytes = self.download_raw_bytes(storage)?;
         let slot = file.alloc(bytes.len() as u64).ok_or_else(|| {
             fuel_ir::Error::Msg(format!(
                 "evict: ResidencyFile has no contiguous slot for {} bytes \
                  (file capacity={}, free={})",
-                bytes.len(), file.capacity(), file.bytes_free()
+                bytes.len(),
+                file.capacity(),
+                file.bytes_free()
             ))
         })?;
         file.write(slot, &bytes);
         Ok(VulkanStorage {
-            backing: StorageBacking::Host { file: std::sync::Arc::clone(file), slot },
+            backing: StorageBacking::Host {
+                file: std::sync::Arc::clone(file),
+                slot,
+            },
             elem_count: storage.elem_count,
             dtype: storage.dtype,
             tier: Tier::OnHost,
@@ -10031,16 +13678,11 @@ impl VulkanBackend {
     /// old one's Arc<ResidencyFile> refcount drops and the slot is
     /// returned to the freelist via `file.free(slot)` inside this
     /// method.
-    pub fn fault_back(
-        &self,
-        storage: &VulkanStorage,
-    ) -> fuel_ir::Result<VulkanStorage> {
+    pub fn fault_back(&self, storage: &VulkanStorage) -> fuel_ir::Result<VulkanStorage> {
         let (file, slot) = match &storage.backing {
             StorageBacking::Host { file, slot } => (file.clone(), *slot),
             StorageBacking::Device(_) => {
-                fuel_ir::bail!(
-                    "VulkanBackend::fault_back: storage is already Device-backed"
-                );
+                fuel_ir::bail!("VulkanBackend::fault_back: storage is already Device-backed");
             }
         };
         let bytes = file.read(slot);
@@ -10122,9 +13764,7 @@ impl VulkanBackend {
         match storage.backing {
             StorageBacking::Device(_) => {}
             StorageBacking::Host { .. } => {
-                fuel_ir::bail!(
-                    "download_raw_bytes: storage is on host, not device"
-                );
+                fuel_ir::bail!("download_raw_bytes: storage is on host, not device");
             }
         }
         // Typed device->host download, converted to a little-endian byte
@@ -10132,20 +13772,33 @@ impl VulkanBackend {
         // method, executor-unification Session 7.)
         use half::{bf16, f16};
         Ok(match storage.dtype {
-            DType::F32 => self.download_slice::<f32>(storage)?
-                .iter().flat_map(|x| x.to_le_bytes()).collect(),
-            DType::F64 => self.download_slice::<f64>(storage)?
-                .iter().flat_map(|x| x.to_le_bytes()).collect(),
-            DType::U32 => self.download_slice::<u32>(storage)?
-                .iter().flat_map(|x| x.to_le_bytes()).collect(),
-            DType::BF16 => self.download_slice::<bf16>(storage)?
-                .iter().flat_map(|x| x.to_le_bytes()).collect(),
-            DType::F16 => self.download_slice::<f16>(storage)?
-                .iter().flat_map(|x| x.to_le_bytes()).collect(),
+            DType::F32 => self
+                .download_slice::<f32>(storage)?
+                .iter()
+                .flat_map(|x| x.to_le_bytes())
+                .collect(),
+            DType::F64 => self
+                .download_slice::<f64>(storage)?
+                .iter()
+                .flat_map(|x| x.to_le_bytes())
+                .collect(),
+            DType::U32 => self
+                .download_slice::<u32>(storage)?
+                .iter()
+                .flat_map(|x| x.to_le_bytes())
+                .collect(),
+            DType::BF16 => self
+                .download_slice::<bf16>(storage)?
+                .iter()
+                .flat_map(|x| x.to_le_bytes())
+                .collect(),
+            DType::F16 => self
+                .download_slice::<f16>(storage)?
+                .iter()
+                .flat_map(|x| x.to_le_bytes())
+                .collect(),
             DType::U8 => self.download_slice::<u8>(storage)?,
-            other => fuel_ir::bail!(
-                "download_raw_bytes: unsupported dtype {other:?}"
-            ),
+            other => fuel_ir::bail!("download_raw_bytes: unsupported dtype {other:?}"),
         })
     }
 
@@ -10158,21 +13811,33 @@ impl VulkanBackend {
         let n_elements = n_blocks * BLCK_SIZE;
         let out = self.alloc_device((n_elements * 4) as u64, n_elements, DType::F32)?;
 
-        #[repr(C)] #[derive(Clone, Copy)]
-        struct Q8Params { n_blocks: u32, out_elements: u32, _pad0: u32, _pad1: u32 }
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct Q8Params {
+            n_blocks: u32,
+            out_elements: u32,
+            _pad0: u32,
+            _pad1: u32,
+        }
         let p = Q8Params {
             n_blocks: n_blocks as u32,
             out_elements: n_elements as u32,
-            _pad0: 0, _pad1: 0,
+            _pad0: 0,
+            _pad1: 0,
         };
         let (pbuf, pmem) = self.upload_params(&p)?;
         self.dispatch_2buf(
             "dequant_q8_0",
             &self.pipelines.dequant_q8_0_pipeline,
             &self.pipelines.dequant_q8_0_layout,
-            input, &out, pbuf, pmem,
+            input,
+            &out,
+            pbuf,
+            pmem,
             std::mem::size_of::<Q8Params>() as u64,
-            Self::workgroups(n_elements), 1, 1,
+            Self::workgroups(n_elements),
+            1,
+            1,
         )?;
         Ok(out)
     }
@@ -10203,8 +13868,14 @@ impl VulkanBackend {
         }
         let out = self.alloc_device((n * 4) as u64, n, DType::F32)?;
 
-        #[repr(C)] #[derive(Clone, Copy)]
-        struct QmvParams { n: u32, k: u32, blocks_per_row: u32, _pad: u32 }
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct QmvParams {
+            n: u32,
+            k: u32,
+            blocks_per_row: u32,
+            _pad: u32,
+        }
         let p = QmvParams {
             n: n as u32,
             k: k as u32,
@@ -10217,9 +13888,15 @@ impl VulkanBackend {
             "qmatvec_q4_0",
             &self.pipelines.qmatvec_q4_0_pipeline,
             &self.pipelines.qmatvec_q4_0_layout,
-            a_f32, w_q4_0_storage, &out, pbuf, pmem,
+            a_f32,
+            w_q4_0_storage,
+            &out,
+            pbuf,
+            pmem,
             std::mem::size_of::<QmvParams>() as u64,
-            n as u32, 1, 1,
+            n as u32,
+            1,
+            1,
         )?;
         Ok(out)
     }
@@ -10239,8 +13916,14 @@ impl VulkanBackend {
         k: usize,
         n: usize,
     ) -> fuel_ir::Result<()> {
-        #[repr(C)] #[derive(Clone, Copy)]
-        struct QmvParams { n: u32, k: u32, blocks_per_row: u32, _pad: u32 }
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct QmvParams {
+            n: u32,
+            k: u32,
+            blocks_per_row: u32,
+            _pad: u32,
+        }
         let p = QmvParams {
             n: n as u32,
             k: k as u32,
@@ -10249,17 +13932,47 @@ impl VulkanBackend {
         };
         let (pbuf, pmem) = self.upload_params(&p)?;
 
-        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_3s1u)
+            .map_err(vk_err)?;
         let a_byte_off = row_a_offset_elems * 4;
         let a_byte_len = (k * 4) as u64;
         let out_byte_off = row_out_offset_elems * 4;
         let out_byte_len = (n * 4) as u64;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, a_f32.buffer(), a_byte_off, a_byte_len);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, w_q4_0_storage.buffer(), 0, w_q4_0_storage.byte_size());
-        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out.buffer(), out_byte_off, out_byte_len);
-        desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, std::mem::size_of::<QmvParams>() as u64);
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            a_f32.buffer(),
+            a_byte_off,
+            a_byte_len,
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            w_q4_0_storage.buffer(),
+            0,
+            w_q4_0_storage.byte_size(),
+        );
+        desc.write_buffer(
+            2,
+            DescriptorType::STORAGE_BUFFER,
+            out.buffer(),
+            out_byte_off,
+            out_byte_len,
+        );
+        desc.write_buffer(
+            3,
+            DescriptorType::UNIFORM_BUFFER,
+            &pbuf,
+            0,
+            std::mem::size_of::<QmvParams>() as u64,
+        );
 
-        let rb = [a_f32.buffer().raw() as u64, w_q4_0_storage.buffer().raw() as u64];
+        let rb = [
+            a_f32.buffer().raw() as u64,
+            w_q4_0_storage.buffer().raw() as u64,
+        ];
         let wb = [out.buffer().raw() as u64];
         self.record_dispatch_batched(
             "qmatvec_q4_0",
@@ -10268,7 +13981,8 @@ impl VulkanBackend {
             desc,
             (n as u32, 1, 1),
             vec![(pbuf, pmem)],
-            &rb, &wb,
+            &rb,
+            &wb,
         )?;
         Ok(())
     }
@@ -10293,12 +14007,19 @@ impl VulkanBackend {
         let n_elements = n_blocks * QK_K;
         let out = self.alloc_device((n_elements * 4) as u64, n_elements, DType::F32)?;
 
-        #[repr(C)] #[derive(Clone, Copy)]
-        struct Q4KMParams { n_blocks: u32, out_elements: u32, _p0: u32, _p1: u32 }
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct Q4KMParams {
+            n_blocks: u32,
+            out_elements: u32,
+            _p0: u32,
+            _p1: u32,
+        }
         let p = Q4KMParams {
             n_blocks: n_blocks as u32,
             out_elements: n_elements as u32,
-            _p0: 0, _p1: 0,
+            _p0: 0,
+            _p1: 0,
         };
         let (pbuf, pmem) = self.upload_params(&p)?;
 
@@ -10307,9 +14028,14 @@ impl VulkanBackend {
             "dequant_q4_km",
             &self.pipelines.dequant_q4_km_pipeline,
             &self.pipelines.dequant_q4_km_layout,
-            blocks, &out, pbuf, pmem,
+            blocks,
+            &out,
+            pbuf,
+            pmem,
             std::mem::size_of::<Q4KMParams>() as u64,
-            n_blocks as u32, 1, 1,
+            n_blocks as u32,
+            1,
+            1,
         )?;
         Ok(out)
     }
@@ -10327,7 +14053,9 @@ impl VulkanBackend {
         &self,
         a_f32: &VulkanStorage,
         w_q4_0_storage: &VulkanStorage,
-        m: usize, k: usize, n: usize,
+        m: usize,
+        k: usize,
+        n: usize,
     ) -> fuel_ir::Result<VulkanStorage> {
         if a_f32.dtype != DType::F32 {
             fuel_ir::bail!("matmul_q4_0_tiled: A must be F32, got {:?}", a_f32.dtype);
@@ -10339,10 +14067,18 @@ impl VulkanBackend {
         let out_elems = m * n;
         let out = self.alloc_device((out_elems * 4) as u64, out_elems, DType::F32)?;
 
-        #[repr(C)] #[derive(Clone, Copy)]
-        struct TiledParams { m: u32, n: u32, k: u32, blocks_per_row: u32 }
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct TiledParams {
+            m: u32,
+            n: u32,
+            k: u32,
+            blocks_per_row: u32,
+        }
         let p = TiledParams {
-            m: m as u32, n: n as u32, k: k as u32,
+            m: m as u32,
+            n: n as u32,
+            k: k as u32,
             blocks_per_row: (k / 32) as u32,
         };
         let (pbuf, pmem) = self.upload_params(&p)?;
@@ -10353,9 +14089,15 @@ impl VulkanBackend {
             "matmul_q4_0_tiled",
             &self.pipelines.matmul_q4_0_tiled_pipeline,
             &self.pipelines.matmul_q4_0_tiled_layout,
-            a_f32, w_q4_0_storage, &out, pbuf, pmem,
+            a_f32,
+            w_q4_0_storage,
+            &out,
+            pbuf,
+            pmem,
             std::mem::size_of::<TiledParams>() as u64,
-            n as u32, n_tiles_m, 1,
+            n as u32,
+            n_tiles_m,
+            1,
         )?;
         Ok(out)
     }
@@ -10389,16 +14131,21 @@ impl VulkanBackend {
         let out_bytes = n_blocks * BYTES_PER_BLOCK;
         // Round up to u32 multiple (4 bytes per u32).
         let out_u32_len = (out_bytes + 3) / 4;
-        let out = self.alloc_device(
-            (out_u32_len * 4) as u64, out_u32_len, DType::U32
-        )?;
+        let out = self.alloc_device((out_u32_len * 4) as u64, out_u32_len, DType::U32)?;
 
-        #[repr(C)] #[derive(Clone, Copy)]
-        struct QQParams { n_elements: u32, n_blocks: u32, _p0: u32, _p1: u32 }
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct QQParams {
+            n_elements: u32,
+            n_blocks: u32,
+            _p0: u32,
+            _p1: u32,
+        }
         let p = QQParams {
             n_elements: n_elements as u32,
             n_blocks: n_blocks as u32,
-            _p0: 0, _p1: 0,
+            _p0: 0,
+            _p1: 0,
         };
         let (pbuf, pmem) = self.upload_params(&p)?;
 
@@ -10408,9 +14155,14 @@ impl VulkanBackend {
             "quantize_q8_0",
             &self.pipelines.quantize_q8_0_pipeline,
             &self.pipelines.quantize_q8_0_layout,
-            src_f32, &out, pbuf, pmem,
+            src_f32,
+            &out,
+            pbuf,
+            pmem,
             std::mem::size_of::<QQParams>() as u64,
-            groups, 1, 1,
+            groups,
+            1,
+            1,
         )?;
         Ok(out)
     }
@@ -10438,9 +14190,9 @@ fn vk_err(e: impl std::fmt::Debug) -> fuel_ir::Error {
 }
 
 /// Reinterpret a #[repr(C)] struct as a byte slice for push constants.
-unsafe fn as_bytes<T: Sized>(p: &T) -> &[u8] { unsafe {
-    std::slice::from_raw_parts(p as *const T as *const u8, std::mem::size_of::<T>())
-}}
+unsafe fn as_bytes<T: Sized>(p: &T) -> &[u8] {
+    unsafe { std::slice::from_raw_parts(p as *const T as *const u8, std::mem::size_of::<T>()) }
+}
 
 #[cfg(test)]
 mod gap075_dtype_size_tests {
@@ -10459,12 +14211,23 @@ mod gap075_dtype_size_tests {
     #[test]
     fn dtype_size_pins_every_dtype_width_no_fabrication() {
         let cases = [
-            (DType::U8, 1usize), (DType::I8, 1), (DType::U32, 4), (DType::I16, 2),
-            (DType::I32, 4), (DType::I64, 8), (DType::BF16, 2), (DType::F16, 2),
-            (DType::F32, 4), (DType::F64, 8), (DType::F8E4M3, 1),
+            (DType::U8, 1usize),
+            (DType::I8, 1),
+            (DType::U32, 4),
+            (DType::I16, 2),
+            (DType::I32, 4),
+            (DType::I64, 8),
+            (DType::BF16, 2),
+            (DType::F16, 2),
+            (DType::F32, 4),
+            (DType::F64, 8),
+            (DType::F8E4M3, 1),
             // Previously fabricated as 4 by `_ => 4`:
-            (DType::F8E8M0, 1), (DType::F8E6M2, 1),          // 1-byte, not 4
-            (DType::F4, 0), (DType::F6E2M3, 0), (DType::F6E3M2, 0), // sub-byte sentinel, not 4
+            (DType::F8E8M0, 1),
+            (DType::F8E6M2, 1), // 1-byte, not 4
+            (DType::F4, 0),
+            (DType::F6E2M3, 0),
+            (DType::F6E3M2, 0), // sub-byte sentinel, not 4
         ];
         for (dt, want) in cases {
             assert_eq!(dtype_size(dt), want, "dtype_size({dt:?}) wrong");

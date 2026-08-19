@@ -29,9 +29,9 @@
 use crate::dyn_backend::{DynBackendDevice, DynBackendStorage};
 use crate::inplace_op::{InplaceOp1, InplaceOp2, InplaceOp3};
 use fuel_ir::op::{self, BinaryOp, CmpOp, ReduceOp};
-use fuel_ir::storage::{compose_bundle, OutputView, OutputViewSpec};
+use fuel_ir::storage::{OutputView, OutputViewSpec, compose_bundle};
 use fuel_ir::stype::SType;
-use fuel_ir::{conv, DType, Error, HostBuffer, Layout, Result, Scalar, Shape};
+use fuel_ir::{DType, Error, HostBuffer, Layout, Result, Scalar, Shape, conv};
 use std::sync::Arc;
 
 /// Allocate a bundled [`Storage`] on `device` covering all of `specs`.
@@ -54,8 +54,7 @@ pub fn allocate_bundled_storage(
     // the bundle's total isn't a clean multiple of the primary dtype's
     // size (e.g. F32 primary + F64 secondary at an odd boundary).
     let flat_elems = total_bytes.div_ceil(primary_size).max(1);
-    let inner = device
-        .zeros_impl_dyn(&Shape::from_dims(&[flat_elems]), primary_dtype)?;
+    let inner = device.zeros_impl_dyn(&Shape::from_dims(&[flat_elems]), primary_dtype)?;
     Storage::from_dyn_bundled(inner, Arc::from(views.into_boxed_slice()))
 }
 
@@ -73,7 +72,7 @@ pub fn allocate_bundled_storage(
 /// out-of-memory; use [`Self::try_clone`] for the fallible version.
 #[derive(Debug)]
 pub struct Storage {
-    pub(crate) inner:  Box<dyn DynBackendStorage>,
+    pub(crate) inner: Box<dyn DynBackendStorage>,
     /// `None` for single-output storage (today's default). `Some(_)`
     /// for multi-output bundles: a shared Arc'd slice of per-slot
     /// [`OutputView`] entries, one per logical output. `Op::View`
@@ -96,7 +95,11 @@ impl Storage {
     /// Single-output (no bundle metadata); use
     /// [`Storage::from_dyn_bundled`] for the multi-output case.
     pub fn new<B: DynBackendStorage + 'static>(b: B) -> Self {
-        Storage { inner: Box::new(b), bundle: None, stype: SType::default() }
+        Storage {
+            inner: Box::new(b),
+            bundle: None,
+            stype: SType::default(),
+        }
     }
 
     /// Wrap an already-boxed `dyn DynBackendStorage`. Used by callers
@@ -104,7 +107,11 @@ impl Storage {
     /// directly from trait dispatch. Single-output; use
     /// [`Storage::from_dyn_bundled`] for the multi-output case.
     pub fn from_dyn(b: Box<dyn DynBackendStorage>) -> Self {
-        Storage { inner: b, bundle: None, stype: SType::default() }
+        Storage {
+            inner: b,
+            bundle: None,
+            stype: SType::default(),
+        }
     }
 
     /// Wrap an already-boxed `dyn DynBackendStorage` together with a
@@ -118,13 +125,12 @@ impl Storage {
     /// `Storage::dtype()` ≡ `Storage::primary_dtype()` ≡
     /// `Storage::slot_dtype(0)` on a bundled storage.
     pub fn from_dyn_bundled(
-        b:      Box<dyn DynBackendStorage>,
+        b: Box<dyn DynBackendStorage>,
         bundle: Arc<[OutputView]>,
     ) -> Result<Self> {
         if bundle.is_empty() {
             return Err(Error::Msg(
-                "Storage::from_dyn_bundled: bundle slice must be non-empty"
-                    .into(),
+                "Storage::from_dyn_bundled: bundle slice must be non-empty".into(),
             )
             .bt());
         }
@@ -137,7 +143,11 @@ impl Storage {
             ))
             .bt());
         }
-        Ok(Storage { inner: b, bundle: Some(bundle), stype: SType::default() })
+        Ok(Storage {
+            inner: b,
+            bundle: Some(bundle),
+            stype: SType::default(),
+        })
     }
 
     /// Attach a bundle side-table to an existing single-output
@@ -150,11 +160,9 @@ impl Storage {
             "Storage::with_bundle: bundle already attached",
         );
         if bundle.is_empty() {
-            return Err(Error::Msg(
-                "Storage::with_bundle: bundle slice must be non-empty"
-                    .into(),
-            )
-            .bt());
+            return Err(
+                Error::Msg("Storage::with_bundle: bundle slice must be non-empty".into()).bt(),
+            );
         }
         let primary = bundle[0].dtype;
         let inner_dtype = self.inner.dtype_dyn();
@@ -293,7 +301,12 @@ impl Storage {
             lhs_loc == rhs_loc
         };
         if !same {
-            Err(Error::DeviceMismatchBinaryOp { lhs: lhs_loc, rhs: rhs_loc, op }.bt())
+            Err(Error::DeviceMismatchBinaryOp {
+                lhs: lhs_loc,
+                rhs: rhs_loc,
+                op,
+            }
+            .bt())
         } else {
             Ok(())
         }
@@ -332,16 +345,20 @@ impl Storage {
         lhs_layout: &Layout,
         rhs_layout: &Layout,
     ) -> Result<Self> {
-        Ok(Storage::from_dyn(self.inner.cmp_dyn(op, &*rhs.inner, lhs_layout, rhs_layout)?))
+        Ok(Storage::from_dyn(self.inner.cmp_dyn(
+            op,
+            &*rhs.inner,
+            lhs_layout,
+            rhs_layout,
+        )?))
     }
 
-    pub fn reduce_op(
-        &self,
-        op: ReduceOp,
-        layout: &Layout,
-        reduce_dims: &[usize],
-    ) -> Result<Self> {
-        Ok(Storage::from_dyn(self.inner.reduce_op_dyn(op, layout, reduce_dims)?))
+    pub fn reduce_op(&self, op: ReduceOp, layout: &Layout, reduce_dims: &[usize]) -> Result<Self> {
+        Ok(Storage::from_dyn(self.inner.reduce_op_dyn(
+            op,
+            layout,
+            reduce_dims,
+        )?))
     }
 
     pub fn to_dtype(&self, layout: &Layout, dtype: DType) -> Result<Self> {
@@ -386,9 +403,8 @@ impl Storage {
     // -----------------------------------------------------------------------
 
     pub fn unary_impl<B: op::UnaryOpT>(&self, layout: &Layout) -> Result<Self> {
-        let op = op::UnaryOp::from_name(B::NAME).ok_or_else(|| {
-            Error::Msg(format!("unknown unary op '{}'", B::NAME))
-        })?;
+        let op = op::UnaryOp::from_name(B::NAME)
+            .ok_or_else(|| Error::Msg(format!("unknown unary op '{}'", B::NAME)))?;
         Ok(Storage::from_dyn(self.inner.unary_op_dyn(layout, op)?))
     }
 
@@ -400,10 +416,14 @@ impl Storage {
     ) -> Result<Self> {
         self.same_device(rhs, B::NAME)?;
         self.same_dtype(rhs, B::NAME)?;
-        let op = BinaryOp::from_name(B::NAME).ok_or_else(|| {
-            Error::Msg(format!("unknown binary op '{}'", B::NAME))
-        })?;
-        Ok(Storage::from_dyn(self.inner.binary_op_dyn(&*rhs.inner, lhs_layout, rhs_layout, op)?))
+        let op = BinaryOp::from_name(B::NAME)
+            .ok_or_else(|| Error::Msg(format!("unknown binary op '{}'", B::NAME)))?;
+        Ok(Storage::from_dyn(self.inner.binary_op_dyn(
+            &*rhs.inner,
+            lhs_layout,
+            rhs_layout,
+            op,
+        )?))
     }
 
     // -----------------------------------------------------------------------
@@ -419,7 +439,12 @@ impl Storage {
     ) -> Result<Self> {
         self.same_device(kernel, "conv1d")?;
         self.same_dtype(kernel, "conv1d")?;
-        Ok(Storage::from_dyn(self.inner.conv1d_dyn(l, &*kernel.inner, kernel_l, params)?))
+        Ok(Storage::from_dyn(self.inner.conv1d_dyn(
+            l,
+            &*kernel.inner,
+            kernel_l,
+            params,
+        )?))
     }
 
     pub fn conv_transpose1d(
@@ -431,7 +456,12 @@ impl Storage {
     ) -> Result<Self> {
         self.same_device(kernel, "conv-transpose1d")?;
         self.same_dtype(kernel, "conv-transpose1d")?;
-        Ok(Storage::from_dyn(self.inner.conv_transpose1d_dyn(l, &*kernel.inner, kernel_l, params)?))
+        Ok(Storage::from_dyn(self.inner.conv_transpose1d_dyn(
+            l,
+            &*kernel.inner,
+            kernel_l,
+            params,
+        )?))
     }
 
     pub fn conv2d(
@@ -443,7 +473,12 @@ impl Storage {
     ) -> Result<Self> {
         self.same_device(kernel, "conv2d")?;
         self.same_dtype(kernel, "conv2d")?;
-        Ok(Storage::from_dyn(self.inner.conv2d_dyn(l, &*kernel.inner, kernel_l, params)?))
+        Ok(Storage::from_dyn(self.inner.conv2d_dyn(
+            l,
+            &*kernel.inner,
+            kernel_l,
+            params,
+        )?))
     }
 
     pub fn conv_transpose2d(
@@ -455,7 +490,12 @@ impl Storage {
     ) -> Result<Self> {
         self.same_device(kernel, "conv_transpose2d")?;
         self.same_dtype(kernel, "conv_transpose2d")?;
-        Ok(Storage::from_dyn(self.inner.conv_transpose2d_dyn(l, &*kernel.inner, kernel_l, params)?))
+        Ok(Storage::from_dyn(self.inner.conv_transpose2d_dyn(
+            l,
+            &*kernel.inner,
+            kernel_l,
+            params,
+        )?))
     }
 
     pub fn avg_pool2d(
@@ -464,7 +504,11 @@ impl Storage {
         kernel_size: (usize, usize),
         stride: (usize, usize),
     ) -> Result<Self> {
-        Ok(Storage::from_dyn(self.inner.avg_pool2d_dyn(layout, kernel_size, stride)?))
+        Ok(Storage::from_dyn(self.inner.avg_pool2d_dyn(
+            layout,
+            kernel_size,
+            stride,
+        )?))
     }
 
     pub fn max_pool2d(
@@ -473,15 +517,23 @@ impl Storage {
         kernel_size: (usize, usize),
         stride: (usize, usize),
     ) -> Result<Self> {
-        Ok(Storage::from_dyn(self.inner.max_pool2d_dyn(layout, kernel_size, stride)?))
+        Ok(Storage::from_dyn(self.inner.max_pool2d_dyn(
+            layout,
+            kernel_size,
+            stride,
+        )?))
     }
 
     pub fn upsample_nearest1d(&self, layout: &Layout, sz: usize) -> Result<Self> {
-        Ok(Storage::from_dyn(self.inner.upsample_nearest1d_dyn(layout, sz)?))
+        Ok(Storage::from_dyn(
+            self.inner.upsample_nearest1d_dyn(layout, sz)?,
+        ))
     }
 
     pub fn upsample_nearest2d(&self, layout: &Layout, h: usize, w: usize) -> Result<Self> {
-        Ok(Storage::from_dyn(self.inner.upsample_nearest2d_dyn(layout, h, w)?))
+        Ok(Storage::from_dyn(
+            self.inner.upsample_nearest2d_dyn(layout, h, w)?,
+        ))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -494,7 +546,14 @@ impl Storage {
         scale_h: Option<f64>,
         scale_w: Option<f64>,
     ) -> Result<Self> {
-        Ok(Storage::from_dyn(self.inner.upsample_bilinear2d_dyn(layout, h, w, align_corners, scale_h, scale_w)?))
+        Ok(Storage::from_dyn(self.inner.upsample_bilinear2d_dyn(
+            layout,
+            h,
+            w,
+            align_corners,
+            scale_h,
+            scale_w,
+        )?))
     }
 
     // -----------------------------------------------------------------------
@@ -512,18 +571,19 @@ impl Storage {
         self.same_device(t, "where")?;
         self.same_device(f, "where")?;
         t.same_dtype(f, "where")?;
-        Ok(Storage::from_dyn(self.inner.where_cond_dyn(layout, &*t.inner, layout_t, &*f.inner, layout_f)?))
+        Ok(Storage::from_dyn(self.inner.where_cond_dyn(
+            layout, &*t.inner, layout_t, &*f.inner, layout_f,
+        )?))
     }
 
-    pub fn gather(
-        &self,
-        l: &Layout,
-        indexes: &Self,
-        indexes_l: &Layout,
-        d: usize,
-    ) -> Result<Self> {
+    pub fn gather(&self, l: &Layout, indexes: &Self, indexes_l: &Layout, d: usize) -> Result<Self> {
         self.same_device(indexes, "index-add")?;
-        Ok(Storage::from_dyn(self.inner.gather_dyn(l, &*indexes.inner, indexes_l, d)?))
+        Ok(Storage::from_dyn(self.inner.gather_dyn(
+            l,
+            &*indexes.inner,
+            indexes_l,
+            d,
+        )?))
     }
 
     pub fn scatter_set(
@@ -537,7 +597,8 @@ impl Storage {
     ) -> Result<()> {
         self.same_device(indexes, "scatter-set")?;
         self.same_device(source, "scatter-set")?;
-        self.inner.scatter_set_dyn(l, &*source.inner, source_l, &*indexes.inner, indexes_l, d)
+        self.inner
+            .scatter_set_dyn(l, &*source.inner, source_l, &*indexes.inner, indexes_l, d)
     }
 
     pub fn scatter_add(
@@ -551,7 +612,8 @@ impl Storage {
     ) -> Result<()> {
         self.same_device(indexes, "scatter-add")?;
         self.same_device(source, "scatter-add")?;
-        self.inner.scatter_add_set_dyn(l, &*source.inner, source_l, &*indexes.inner, indexes_l, d)
+        self.inner
+            .scatter_add_set_dyn(l, &*source.inner, source_l, &*indexes.inner, indexes_l, d)
     }
 
     pub fn index_add(
@@ -565,7 +627,14 @@ impl Storage {
     ) -> Result<Self> {
         self.same_device(indexes, "index-add")?;
         self.same_device(source, "index-add")?;
-        Ok(Storage::from_dyn(self.inner.index_add_dyn(l, &*indexes.inner, indexes_l, &*source.inner, source_l, d)?))
+        Ok(Storage::from_dyn(self.inner.index_add_dyn(
+            l,
+            &*indexes.inner,
+            indexes_l,
+            &*source.inner,
+            source_l,
+            d,
+        )?))
     }
 
     pub fn index_select(
@@ -576,7 +645,12 @@ impl Storage {
         d: usize,
     ) -> Result<Self> {
         self.same_device(rhs, "index-select")?;
-        Ok(Storage::from_dyn(self.inner.index_select_dyn(&*rhs.inner, lhs_l, rhs_l, d)?))
+        Ok(Storage::from_dyn(self.inner.index_select_dyn(
+            &*rhs.inner,
+            lhs_l,
+            rhs_l,
+            d,
+        )?))
     }
 
     // -----------------------------------------------------------------------
@@ -592,7 +666,12 @@ impl Storage {
     ) -> Result<Self> {
         self.same_device(rhs, "matmul")?;
         self.same_dtype(rhs, "matmul")?;
-        Ok(Storage::from_dyn(self.inner.matmul_dyn(&*rhs.inner, bmnk, lhs_layout, rhs_layout)?))
+        Ok(Storage::from_dyn(self.inner.matmul_dyn(
+            &*rhs.inner,
+            bmnk,
+            lhs_layout,
+            rhs_layout,
+        )?))
     }
 
     /// `self`, the source, can be strided whereas `dst` is contiguous.
@@ -602,7 +681,8 @@ impl Storage {
         dst_offset: usize,
         src_l: &Layout,
     ) -> Result<()> {
-        self.inner.copy_strided_src_dyn(&mut *dst.inner, dst_offset, src_l)
+        self.inner
+            .copy_strided_src_dyn(&mut *dst.inner, dst_offset, src_l)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -616,7 +696,8 @@ impl Storage {
         src_o: usize,
         dst_o: usize,
     ) -> Result<()> {
-        self.inner.copy2d_dyn(&mut *dst.inner, d1, d2, src_s, dst_s, src_o, dst_o)
+        self.inner
+            .copy2d_dyn(&mut *dst.inner, d1, d2, src_s, dst_s, src_o, dst_o)
     }
 }
 
@@ -680,7 +761,8 @@ mod multi_output_specs {
     /// compose_bundle rejects an empty spec list.
     #[test]
     fn compose_bundle_rejects_empty() {
-        let err = compose_bundle(&[]).err()
+        let err = compose_bundle(&[])
+            .err()
             .expect("empty spec list must error");
         assert!(format!("{err}").contains("non-empty"));
     }
@@ -692,12 +774,13 @@ mod multi_output_specs {
         let s = Shape::from_dims(&[2, 3]);
         let bogus_layout = Layout::contiguous(Shape::from_dims(&[3, 2]));
         let bad = OutputViewSpec {
-            dtype:  DType::F32,
-            shape:  s,
+            dtype: DType::F32,
+            shape: s,
             layout: bogus_layout,
-            name:   None,
+            name: None,
         };
-        let err = compose_bundle(&[bad]).err()
+        let err = compose_bundle(&[bad])
+            .err()
             .expect("shape/layout mismatch must error");
         assert!(format!("{err}").contains("disagrees"));
     }
@@ -736,40 +819,237 @@ mod stype_attach {
         fn try_clone_dyn(&self, _layout: &Layout) -> Result<Box<dyn DynBackendStorage>> {
             Ok(Box::new(MockStorage))
         }
-        fn dtype_dyn(&self) -> DType { DType::F32 }
-        fn as_any(&self) -> &dyn Any { self }
-        fn as_any_mut(&mut self) -> &mut dyn Any { self }
+        fn dtype_dyn(&self) -> DType {
+            DType::F32
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+        fn as_any_mut(&mut self) -> &mut dyn Any {
+            self
+        }
 
-        fn device_dyn(&self) -> &dyn DynBackendDevice { unimplemented!() }
-        fn device_arc_dyn(&self) -> Arc<dyn DynBackendDevice> { unimplemented!() }
-        fn to_host_buffer_dyn(&self) -> Result<HostBuffer> { unimplemented!() }
-        fn affine_dyn(&self, l: &Layout, mul: f64, add: f64) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
-        fn powf_dyn(&self, l: &Layout, e: f64) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
-        fn elu_dyn(&self, l: &Layout, alpha: f64) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
-        fn reduce_op_dyn(&self, op: ReduceOp, l: &Layout, axes: &[usize]) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
-        fn cmp_dyn(&self, op: CmpOp, rhs: &dyn DynBackendStorage, ll: &Layout, rl: &Layout) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
-        fn to_dtype_dyn(&self, l: &Layout, dtype: DType) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
-        fn unary_op_dyn(&self, l: &Layout, op: UnaryOp) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
-        fn binary_op_dyn(&self, rhs: &dyn DynBackendStorage, ll: &Layout, rl: &Layout, op: BinaryOp) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
-        fn where_cond_dyn(&self, cl: &Layout, t: &dyn DynBackendStorage, tl: &Layout, f: &dyn DynBackendStorage, fl: &Layout) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
-        fn conv1d_dyn(&self, l: &Layout, k: &dyn DynBackendStorage, kl: &Layout, p: &conv::ParamsConv1D) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
-        fn conv_transpose1d_dyn(&self, l: &Layout, k: &dyn DynBackendStorage, kl: &Layout, p: &conv::ParamsConvTranspose1D) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
-        fn conv2d_dyn(&self, l: &Layout, k: &dyn DynBackendStorage, kl: &Layout, p: &conv::ParamsConv2D) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
-        fn conv_transpose2d_dyn(&self, l: &Layout, k: &dyn DynBackendStorage, kl: &Layout, p: &conv::ParamsConvTranspose2D) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
-        fn avg_pool2d_dyn(&self, l: &Layout, k: (usize, usize), s: (usize, usize)) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
-        fn max_pool2d_dyn(&self, l: &Layout, k: (usize, usize), s: (usize, usize)) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
-        fn upsample_nearest1d_dyn(&self, l: &Layout, t: usize) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
-        fn upsample_nearest2d_dyn(&self, l: &Layout, h: usize, w: usize) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
-        fn upsample_bilinear2d_dyn(&self, l: &Layout, h: usize, w: usize, ac: bool, sh: Option<f64>, sw: Option<f64>) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
-        fn gather_dyn(&self, sl: &Layout, ids: &dyn DynBackendStorage, il: &Layout, dim: usize) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
-        fn scatter_set_dyn(&mut self, sl: &Layout, src: &dyn DynBackendStorage, srl: &Layout, ids: &dyn DynBackendStorage, il: &Layout, dim: usize) -> Result<()> { unimplemented!() }
-        fn scatter_add_set_dyn(&mut self, sl: &Layout, src: &dyn DynBackendStorage, srl: &Layout, ids: &dyn DynBackendStorage, il: &Layout, dim: usize) -> Result<()> { unimplemented!() }
-        fn index_select_dyn(&self, ids: &dyn DynBackendStorage, sl: &Layout, il: &Layout, dim: usize) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
-        fn index_add_dyn(&self, sl: &Layout, ids: &dyn DynBackendStorage, il: &Layout, src: &dyn DynBackendStorage, srl: &Layout, dim: usize) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
-        fn matmul_dyn(&self, rhs: &dyn DynBackendStorage, bmnk: (usize, usize, usize, usize), ll: &Layout, rl: &Layout) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
-        fn copy_strided_src_dyn(&self, dst: &mut dyn DynBackendStorage, off: usize, sl: &Layout) -> Result<()> { unimplemented!() }
-        fn copy2d_dyn(&self, dst: &mut dyn DynBackendStorage, d1: usize, d2: usize, ss1: usize, ds1: usize, so: usize, dofs: usize) -> Result<()> { unimplemented!() }
-        fn const_set_dyn(&mut self, value: Scalar, l: &Layout) -> Result<()> { unimplemented!() }
+        fn device_dyn(&self) -> &dyn DynBackendDevice {
+            unimplemented!()
+        }
+        fn device_arc_dyn(&self) -> Arc<dyn DynBackendDevice> {
+            unimplemented!()
+        }
+        fn to_host_buffer_dyn(&self) -> Result<HostBuffer> {
+            unimplemented!()
+        }
+        fn affine_dyn(&self, l: &Layout, mul: f64, add: f64) -> Result<Box<dyn DynBackendStorage>> {
+            unimplemented!()
+        }
+        fn powf_dyn(&self, l: &Layout, e: f64) -> Result<Box<dyn DynBackendStorage>> {
+            unimplemented!()
+        }
+        fn elu_dyn(&self, l: &Layout, alpha: f64) -> Result<Box<dyn DynBackendStorage>> {
+            unimplemented!()
+        }
+        fn reduce_op_dyn(
+            &self,
+            op: ReduceOp,
+            l: &Layout,
+            axes: &[usize],
+        ) -> Result<Box<dyn DynBackendStorage>> {
+            unimplemented!()
+        }
+        fn cmp_dyn(
+            &self,
+            op: CmpOp,
+            rhs: &dyn DynBackendStorage,
+            ll: &Layout,
+            rl: &Layout,
+        ) -> Result<Box<dyn DynBackendStorage>> {
+            unimplemented!()
+        }
+        fn to_dtype_dyn(&self, l: &Layout, dtype: DType) -> Result<Box<dyn DynBackendStorage>> {
+            unimplemented!()
+        }
+        fn unary_op_dyn(&self, l: &Layout, op: UnaryOp) -> Result<Box<dyn DynBackendStorage>> {
+            unimplemented!()
+        }
+        fn binary_op_dyn(
+            &self,
+            rhs: &dyn DynBackendStorage,
+            ll: &Layout,
+            rl: &Layout,
+            op: BinaryOp,
+        ) -> Result<Box<dyn DynBackendStorage>> {
+            unimplemented!()
+        }
+        fn where_cond_dyn(
+            &self,
+            cl: &Layout,
+            t: &dyn DynBackendStorage,
+            tl: &Layout,
+            f: &dyn DynBackendStorage,
+            fl: &Layout,
+        ) -> Result<Box<dyn DynBackendStorage>> {
+            unimplemented!()
+        }
+        fn conv1d_dyn(
+            &self,
+            l: &Layout,
+            k: &dyn DynBackendStorage,
+            kl: &Layout,
+            p: &conv::ParamsConv1D,
+        ) -> Result<Box<dyn DynBackendStorage>> {
+            unimplemented!()
+        }
+        fn conv_transpose1d_dyn(
+            &self,
+            l: &Layout,
+            k: &dyn DynBackendStorage,
+            kl: &Layout,
+            p: &conv::ParamsConvTranspose1D,
+        ) -> Result<Box<dyn DynBackendStorage>> {
+            unimplemented!()
+        }
+        fn conv2d_dyn(
+            &self,
+            l: &Layout,
+            k: &dyn DynBackendStorage,
+            kl: &Layout,
+            p: &conv::ParamsConv2D,
+        ) -> Result<Box<dyn DynBackendStorage>> {
+            unimplemented!()
+        }
+        fn conv_transpose2d_dyn(
+            &self,
+            l: &Layout,
+            k: &dyn DynBackendStorage,
+            kl: &Layout,
+            p: &conv::ParamsConvTranspose2D,
+        ) -> Result<Box<dyn DynBackendStorage>> {
+            unimplemented!()
+        }
+        fn avg_pool2d_dyn(
+            &self,
+            l: &Layout,
+            k: (usize, usize),
+            s: (usize, usize),
+        ) -> Result<Box<dyn DynBackendStorage>> {
+            unimplemented!()
+        }
+        fn max_pool2d_dyn(
+            &self,
+            l: &Layout,
+            k: (usize, usize),
+            s: (usize, usize),
+        ) -> Result<Box<dyn DynBackendStorage>> {
+            unimplemented!()
+        }
+        fn upsample_nearest1d_dyn(
+            &self,
+            l: &Layout,
+            t: usize,
+        ) -> Result<Box<dyn DynBackendStorage>> {
+            unimplemented!()
+        }
+        fn upsample_nearest2d_dyn(
+            &self,
+            l: &Layout,
+            h: usize,
+            w: usize,
+        ) -> Result<Box<dyn DynBackendStorage>> {
+            unimplemented!()
+        }
+        fn upsample_bilinear2d_dyn(
+            &self,
+            l: &Layout,
+            h: usize,
+            w: usize,
+            ac: bool,
+            sh: Option<f64>,
+            sw: Option<f64>,
+        ) -> Result<Box<dyn DynBackendStorage>> {
+            unimplemented!()
+        }
+        fn gather_dyn(
+            &self,
+            sl: &Layout,
+            ids: &dyn DynBackendStorage,
+            il: &Layout,
+            dim: usize,
+        ) -> Result<Box<dyn DynBackendStorage>> {
+            unimplemented!()
+        }
+        fn scatter_set_dyn(
+            &mut self,
+            sl: &Layout,
+            src: &dyn DynBackendStorage,
+            srl: &Layout,
+            ids: &dyn DynBackendStorage,
+            il: &Layout,
+            dim: usize,
+        ) -> Result<()> {
+            unimplemented!()
+        }
+        fn scatter_add_set_dyn(
+            &mut self,
+            sl: &Layout,
+            src: &dyn DynBackendStorage,
+            srl: &Layout,
+            ids: &dyn DynBackendStorage,
+            il: &Layout,
+            dim: usize,
+        ) -> Result<()> {
+            unimplemented!()
+        }
+        fn index_select_dyn(
+            &self,
+            ids: &dyn DynBackendStorage,
+            sl: &Layout,
+            il: &Layout,
+            dim: usize,
+        ) -> Result<Box<dyn DynBackendStorage>> {
+            unimplemented!()
+        }
+        fn index_add_dyn(
+            &self,
+            sl: &Layout,
+            ids: &dyn DynBackendStorage,
+            il: &Layout,
+            src: &dyn DynBackendStorage,
+            srl: &Layout,
+            dim: usize,
+        ) -> Result<Box<dyn DynBackendStorage>> {
+            unimplemented!()
+        }
+        fn matmul_dyn(
+            &self,
+            rhs: &dyn DynBackendStorage,
+            bmnk: (usize, usize, usize, usize),
+            ll: &Layout,
+            rl: &Layout,
+        ) -> Result<Box<dyn DynBackendStorage>> {
+            unimplemented!()
+        }
+        fn copy_strided_src_dyn(
+            &self,
+            dst: &mut dyn DynBackendStorage,
+            off: usize,
+            sl: &Layout,
+        ) -> Result<()> {
+            unimplemented!()
+        }
+        fn copy2d_dyn(
+            &self,
+            dst: &mut dyn DynBackendStorage,
+            d1: usize,
+            d2: usize,
+            ss1: usize,
+            ds1: usize,
+            so: usize,
+            dofs: usize,
+        ) -> Result<()> {
+            unimplemented!()
+        }
+        fn const_set_dyn(&mut self, value: Scalar, l: &Layout) -> Result<()> {
+            unimplemented!()
+        }
     }
 
     /// Born-red: a freshly constructed trait-object Storage carries a plain
@@ -777,7 +1057,10 @@ mod stype_attach {
     #[test]
     fn trait_object_storage_defaults_plain() {
         let s = Storage::new(MockStorage);
-        assert!(s.stype().is_plain(), "default Storage must carry a plain SType");
+        assert!(
+            s.stype().is_plain(),
+            "default Storage must carry a plain SType"
+        );
         assert_eq!(s.stype().layers().len(), 0);
     }
 
@@ -785,10 +1068,11 @@ mod stype_attach {
     /// correct v1 choice — cloning an encoded storage preserves its scheme).
     #[test]
     fn try_clone_preserves_stype() {
-        use fuel_ir::stype::Encoding;
         use fuel_ir::GgmlDType;
-        let s = Storage::new(MockStorage)
-            .with_stype(SType::from_layer(Encoding::GgmlBlock { ggml_dtype: GgmlDType::Q4_0 }));
+        use fuel_ir::stype::Encoding;
+        let s = Storage::new(MockStorage).with_stype(SType::from_layer(Encoding::GgmlBlock {
+            ggml_dtype: GgmlDType::Q4_0,
+        }));
         let layout = Layout::contiguous(Shape::from_dims(&[4]));
         let cloned = s.try_clone(&layout).expect("clone");
         assert_eq!(cloned.stype(), s.stype(), "try_clone must preserve stype");

@@ -165,11 +165,13 @@ impl MarianModel {
             "v1 only supports shared encoder+decoder embeddings",
         );
         assert_eq!(
-            cfg.d_model % cfg.encoder_attention_heads, 0,
+            cfg.d_model % cfg.encoder_attention_heads,
+            0,
             "d_model must be divisible by encoder_attention_heads",
         );
         assert_eq!(
-            cfg.d_model % cfg.decoder_attention_heads, 0,
+            cfg.d_model % cfg.decoder_attention_heads,
+            0,
             "d_model must be divisible by decoder_attention_heads",
         );
 
@@ -212,7 +214,8 @@ impl MarianModel {
             "v1 only supports shared encoder+decoder embeddings",
         );
         assert_eq!(
-            cfg.d_model % cfg.encoder_attention_heads, 0,
+            cfg.d_model % cfg.encoder_attention_heads,
+            0,
             "d_model must be divisible by encoder_attention_heads",
         );
         let embed = LazyTensor::from_f32(
@@ -290,13 +293,13 @@ impl MarianModel {
     /// Build per-token embeddings without running encoder or decoder.
     /// Returns `(1, seq, d_model)`. Marian shares the embedding
     /// matrix between encoder and decoder (v1 only supports this).
-    pub fn embed_tokens_anchored(
-        &self, anchor: &LazyTensor, tokens: &[u32],
-    ) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.shared_embedding.clone(),
-            cfg.vocab_size, cfg.d_model, tokens,
+            cfg.vocab_size,
+            cfg.d_model,
+            tokens,
         )
     }
 
@@ -309,11 +312,7 @@ impl MarianModel {
     /// Use this for autoregressive NMT generation where the
     /// encoder output is cached once and the decoder is invoked
     /// per generated token.
-    pub fn forward_decoder(
-        &self,
-        tgt_tokens: &[u32],
-        enc_out: &LazyTensor,
-    ) -> Result<LazyTensor> {
+    pub fn forward_decoder(&self, tgt_tokens: &[u32], enc_out: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
         assert!(!tgt_tokens.is_empty(), "tgt_tokens must be non-empty");
         assert!(
@@ -321,7 +320,8 @@ impl MarianModel {
             "v1 only supports shared encoder+decoder embeddings",
         );
         assert_eq!(
-            cfg.d_model % cfg.decoder_attention_heads, 0,
+            cfg.d_model % cfg.decoder_attention_heads,
+            0,
             "d_model must be divisible by decoder_attention_heads",
         );
 
@@ -383,7 +383,8 @@ impl MarianModel {
         if src_len == 0 {
             return Err(crate::Error::Msg(
                 "MarianModel::forward_encoder_embeds: src_len must be > 0".into(),
-            ).bt());
+            )
+            .bt());
         }
         let mut x = src_embeds.clone();
         if cfg.scale_embedding {
@@ -438,7 +439,8 @@ impl MarianModel {
         if tgt_len == 0 {
             return Err(crate::Error::Msg(
                 "MarianModel::forward_decoder_embeds: tgt_len must be > 0".into(),
-            ).bt());
+            )
+            .bt());
         }
         let mut x = tgt_embeds.clone();
         if cfg.scale_embedding {
@@ -455,10 +457,7 @@ impl MarianModel {
                 mask_data[i * tgt_len + j] = f32::NEG_INFINITY;
             }
         }
-        let causal_mask = x.const_f32_like(
-            mask_data,
-            Shape::from_dims(&[1, 1, tgt_len, tgt_len]),
-        );
+        let causal_mask = x.const_f32_like(mask_data, Shape::from_dims(&[1, 1, tgt_len, tgt_len]));
 
         for layer in &self.weights.decoder_layers {
             x = self.apply_decoder_layer(&x, layer, enc_out, &causal_mask)?;
@@ -473,16 +472,31 @@ impl MarianModel {
     ) -> Result<LazyTensor> {
         let cfg = &self.config;
         let attn = self.attention(
-            x, x, &layer.self_attn,
-            cfg.encoder_attention_heads, cfg.encoder_head_dim(),
+            x,
+            x,
+            &layer.self_attn,
+            cfg.encoder_attention_heads,
+            cfg.encoder_head_dim(),
             None,
         )?;
-        let h1 = x.add(&attn)?.layer_norm_affine(std::sync::Arc::clone(&layer.self_attn_ln_gain), std::sync::Arc::clone(&layer.self_attn_ln_bias), 1e-5)?;
+        let h1 = x.add(&attn)?.layer_norm_affine(
+            std::sync::Arc::clone(&layer.self_attn_ln_gain),
+            std::sync::Arc::clone(&layer.self_attn_ln_bias),
+            1e-5,
+        )?;
         let ffn = self.feed_forward(
-            &h1, &layer.fc1, &layer.fc1_bias, &layer.fc2, &layer.fc2_bias,
+            &h1,
+            &layer.fc1,
+            &layer.fc1_bias,
+            &layer.fc2,
+            &layer.fc2_bias,
             cfg.encoder_ffn_dim,
         )?;
-        Ok(h1.add(&ffn)?.layer_norm_affine(std::sync::Arc::clone(&layer.final_ln_gain), std::sync::Arc::clone(&layer.final_ln_bias), 1e-5)?)
+        Ok(h1.add(&ffn)?.layer_norm_affine(
+            std::sync::Arc::clone(&layer.final_ln_gain),
+            std::sync::Arc::clone(&layer.final_ln_bias),
+            1e-5,
+        )?)
     }
 
     fn apply_decoder_layer(
@@ -495,23 +509,45 @@ impl MarianModel {
         let cfg = &self.config;
         // Self-attention with causal mask.
         let self_attn = self.attention(
-            x, x, &layer.self_attn,
-            cfg.decoder_attention_heads, cfg.decoder_head_dim(),
+            x,
+            x,
+            &layer.self_attn,
+            cfg.decoder_attention_heads,
+            cfg.decoder_head_dim(),
             Some(causal_mask),
         )?;
-        let h1 = x.add(&self_attn)?.layer_norm_affine(std::sync::Arc::clone(&layer.self_attn_ln_gain), std::sync::Arc::clone(&layer.self_attn_ln_bias), 1e-5)?;
+        let h1 = x.add(&self_attn)?.layer_norm_affine(
+            std::sync::Arc::clone(&layer.self_attn_ln_gain),
+            std::sync::Arc::clone(&layer.self_attn_ln_bias),
+            1e-5,
+        )?;
         // Cross-attention: Q from decoder state, K/V from encoder output.
         let cross_attn = self.attention(
-            &h1, enc_out, &layer.encoder_attn,
-            cfg.decoder_attention_heads, cfg.decoder_head_dim(),
+            &h1,
+            enc_out,
+            &layer.encoder_attn,
+            cfg.decoder_attention_heads,
+            cfg.decoder_head_dim(),
             None,
         )?;
-        let h2 = h1.add(&cross_attn)?.layer_norm_affine(std::sync::Arc::clone(&layer.encoder_attn_ln_gain), std::sync::Arc::clone(&layer.encoder_attn_ln_bias), 1e-5)?;
+        let h2 = h1.add(&cross_attn)?.layer_norm_affine(
+            std::sync::Arc::clone(&layer.encoder_attn_ln_gain),
+            std::sync::Arc::clone(&layer.encoder_attn_ln_bias),
+            1e-5,
+        )?;
         let ffn = self.feed_forward(
-            &h2, &layer.fc1, &layer.fc1_bias, &layer.fc2, &layer.fc2_bias,
+            &h2,
+            &layer.fc1,
+            &layer.fc1_bias,
+            &layer.fc2,
+            &layer.fc2_bias,
             cfg.decoder_ffn_dim,
         )?;
-        Ok(h2.add(&ffn)?.layer_norm_affine(std::sync::Arc::clone(&layer.final_ln_gain), std::sync::Arc::clone(&layer.final_ln_bias), 1e-5)?)
+        Ok(h2.add(&ffn)?.layer_norm_affine(
+            std::sync::Arc::clone(&layer.final_ln_gain),
+            std::sync::Arc::clone(&layer.final_ln_bias),
+            1e-5,
+        )?)
     }
 
     /// Generic multi-head attention. `q_src` provides Q; `kv_src`
@@ -538,15 +574,19 @@ impl MarianModel {
         let scaling = (head_dim as f64).powf(-0.5);
         let q = add_bias_3d(
             w.q_proj.apply_linear(q_src, d_model, d_model)?,
-            &w.q_proj_bias, d_model,
-        )?.mul_scalar(scaling);
+            &w.q_proj_bias,
+            d_model,
+        )?
+        .mul_scalar(scaling);
         let k = add_bias_3d(
             w.k_proj.apply_linear(kv_src, d_model, d_model)?,
-            &w.k_proj_bias, d_model,
+            &w.k_proj_bias,
+            d_model,
         )?;
         let v = add_bias_3d(
             w.v_proj.apply_linear(kv_src, d_model, d_model)?,
-            &w.v_proj_bias, d_model,
+            &w.v_proj_bias,
+            d_model,
         )?;
 
         let _ = (batch, q_len, kv_len);
@@ -570,15 +610,14 @@ impl MarianModel {
     fn feed_forward(
         &self,
         x: &LazyTensor,
-        fc1_w: &WeightStorage, fc1_b: &Arc<[f32]>,
-        fc2_w: &WeightStorage, fc2_b: &Arc<[f32]>,
+        fc1_w: &WeightStorage,
+        fc1_b: &Arc<[f32]>,
+        fc2_w: &WeightStorage,
+        fc2_b: &Arc<[f32]>,
         ffn_dim: usize,
     ) -> Result<LazyTensor> {
         let cfg = &self.config;
-        let fc1 = add_bias_3d(
-            fc1_w.apply_linear(x, cfg.d_model, ffn_dim)?,
-            fc1_b, ffn_dim,
-        )?;
+        let fc1 = add_bias_3d(fc1_w.apply_linear(x, cfg.d_model, ffn_dim)?, fc1_b, ffn_dim)?;
         let activated = match cfg.activation_function {
             MarianActivation::Relu => fc1.relu(),
             MarianActivation::Silu => fc1.silu(),
@@ -587,7 +626,8 @@ impl MarianModel {
         };
         let fc2 = add_bias_3d(
             fc2_w.apply_linear(&activated, ffn_dim, cfg.d_model)?,
-            fc2_b, cfg.d_model,
+            fc2_b,
+            cfg.d_model,
         )?;
         Ok(fc2)
     }
@@ -638,8 +678,14 @@ impl MarianAttentionWeights {
         let out_proj = ltm(st, &format!("{prefix}.out_proj.weight"), d_model, d_model)?;
         let out_proj_bias = Arc::from(load_tensor_as_f32(st, &format!("{prefix}.out_proj.bias"))?);
         Ok(Self {
-            q_proj, q_proj_bias, k_proj, k_proj_bias,
-            v_proj, v_proj_bias, out_proj, out_proj_bias,
+            q_proj,
+            q_proj_bias,
+            k_proj,
+            k_proj_bias,
+            v_proj,
+            v_proj_bias,
+            out_proj,
+            out_proj_bias,
         })
     }
 }
@@ -662,25 +708,35 @@ impl MarianWeights {
             let p = format!("model.encoder.layers.{i}");
             let self_attn = MarianAttentionWeights::load(st, &format!("{p}.self_attn"), d)?;
             let self_attn_ln_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.self_attn_layer_norm.weight"),
+                st,
+                &format!("{p}.self_attn_layer_norm.weight"),
             )?);
             let self_attn_ln_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.self_attn_layer_norm.bias"),
+                st,
+                &format!("{p}.self_attn_layer_norm.bias"),
             )?);
             let fc1 = ltm(st, &format!("{p}.fc1.weight"), enc_ffn, d)?;
             let fc1_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.fc1.bias"))?);
             let fc2 = ltm(st, &format!("{p}.fc2.weight"), d, enc_ffn)?;
             let fc2_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.fc2.bias"))?);
             let final_ln_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.final_layer_norm.weight"),
+                st,
+                &format!("{p}.final_layer_norm.weight"),
             )?);
             let final_ln_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.final_layer_norm.bias"),
+                st,
+                &format!("{p}.final_layer_norm.bias"),
             )?);
             encoder_layers.push(MarianEncoderLayerWeights {
-                self_attn, self_attn_ln_gain, self_attn_ln_bias,
-                fc1, fc1_bias, fc2, fc2_bias,
-                final_ln_gain, final_ln_bias,
+                self_attn,
+                self_attn_ln_gain,
+                self_attn_ln_bias,
+                fc1,
+                fc1_bias,
+                fc2,
+                fc2_bias,
+                final_ln_gain,
+                final_ln_bias,
             });
         }
 
@@ -689,33 +745,47 @@ impl MarianWeights {
             let p = format!("model.decoder.layers.{i}");
             let self_attn = MarianAttentionWeights::load(st, &format!("{p}.self_attn"), d)?;
             let self_attn_ln_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.self_attn_layer_norm.weight"),
+                st,
+                &format!("{p}.self_attn_layer_norm.weight"),
             )?);
             let self_attn_ln_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.self_attn_layer_norm.bias"),
+                st,
+                &format!("{p}.self_attn_layer_norm.bias"),
             )?);
             let encoder_attn = MarianAttentionWeights::load(st, &format!("{p}.encoder_attn"), d)?;
             let encoder_attn_ln_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.encoder_attn_layer_norm.weight"),
+                st,
+                &format!("{p}.encoder_attn_layer_norm.weight"),
             )?);
             let encoder_attn_ln_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.encoder_attn_layer_norm.bias"),
+                st,
+                &format!("{p}.encoder_attn_layer_norm.bias"),
             )?);
             let fc1 = ltm(st, &format!("{p}.fc1.weight"), dec_ffn, d)?;
             let fc1_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.fc1.bias"))?);
             let fc2 = ltm(st, &format!("{p}.fc2.weight"), d, dec_ffn)?;
             let fc2_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.fc2.bias"))?);
             let final_ln_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.final_layer_norm.weight"),
+                st,
+                &format!("{p}.final_layer_norm.weight"),
             )?);
             let final_ln_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.final_layer_norm.bias"),
+                st,
+                &format!("{p}.final_layer_norm.bias"),
             )?);
             decoder_layers.push(MarianDecoderLayerWeights {
-                self_attn, self_attn_ln_gain, self_attn_ln_bias,
-                encoder_attn, encoder_attn_ln_gain, encoder_attn_ln_bias,
-                fc1, fc1_bias, fc2, fc2_bias,
-                final_ln_gain, final_ln_bias,
+                self_attn,
+                self_attn_ln_gain,
+                self_attn_ln_bias,
+                encoder_attn,
+                encoder_attn_ln_gain,
+                encoder_attn_ln_bias,
+                fc1,
+                fc1_bias,
+                fc2,
+                fc2_bias,
+                final_ln_gain,
+                final_ln_bias,
             });
         }
 
@@ -739,7 +809,10 @@ impl MarianWeights {
 mod tests {
     use super::*;
 
-    fn tiny_attention_weights(d_model: usize, next_box: &mut Box<dyn FnMut() -> f32>) -> MarianAttentionWeights {
+    fn tiny_attention_weights(
+        d_model: usize,
+        next_box: &mut Box<dyn FnMut() -> f32>,
+    ) -> MarianAttentionWeights {
         let vec_of = |n: usize, next: &mut dyn FnMut() -> f32| -> Arc<[f32]> {
             Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
         };
@@ -813,11 +886,16 @@ mod tests {
 
     fn tiny_config() -> MarianConfig {
         MarianConfig {
-            vocab_size: 16, decoder_vocab_size: None,
+            vocab_size: 16,
+            decoder_vocab_size: None,
             max_position_embeddings: 16,
             d_model: 8,
-            encoder_layers: 2, encoder_ffn_dim: 16, encoder_attention_heads: 2,
-            decoder_layers: 2, decoder_ffn_dim: 16, decoder_attention_heads: 2,
+            encoder_layers: 2,
+            encoder_ffn_dim: 16,
+            encoder_attention_heads: 2,
+            decoder_layers: 2,
+            decoder_ffn_dim: 16,
+            decoder_attention_heads: 2,
             scale_embedding: true,
             share_encoder_decoder_embeddings: true,
             activation_function: MarianActivation::Relu,
@@ -827,11 +905,17 @@ mod tests {
     #[test]
     fn forward_shape_and_finite() {
         let cfg = tiny_config();
-        let model = MarianModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = MarianModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let src = [1_u32, 2, 3, 4];
         let tgt = [5_u32, 6, 7];
         let logits = model.forward(&src, &tgt).unwrap();
-        assert_eq!(logits.shape().dims(), &[1, tgt.len(), cfg.target_vocab_size()]);
+        assert_eq!(
+            logits.shape().dims(),
+            &[1, tgt.len(), cfg.target_vocab_size()]
+        );
         for &v in &logits.realize_f32() {
             assert!(v.is_finite(), "got non-finite logit {v}");
         }
@@ -842,7 +926,10 @@ mod tests {
     #[test]
     fn cross_attention_is_wired() {
         let cfg = tiny_config();
-        let model = MarianModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = MarianModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tgt = [5_u32, 6, 7];
         let a = model.forward(&[1, 2, 3, 4], &tgt).unwrap().realize_f32();
         let b = model.forward(&[8, 9, 10, 11], &tgt).unwrap().realize_f32();
@@ -850,8 +937,10 @@ mod tests {
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-6,
-            "cross-attention must condition on encoder output: changing src must change tgt logits, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-6,
+            "cross-attention must condition on encoder output: changing src must change tgt logits, max_diff = {max_diff}"
+        );
     }
 
     /// Decoder causal mask is enforced: changing target token at
@@ -859,7 +948,10 @@ mod tests {
     #[test]
     fn decoder_causal_mask_is_enforced() {
         let cfg = tiny_config();
-        let model = MarianModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = MarianModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let src = [1_u32, 2, 3];
         let tgt_a = [5_u32, 6, 7, 8];
         let tgt_b = [5_u32, 6, 7, 15]; // last token changed
@@ -872,7 +964,9 @@ mod tests {
                 let i = t * v + col;
                 assert!(
                     (a[i] - b[i]).abs() < 1e-5,
-                    "causal mask violated at t={t}, col={col}: {} vs {}", a[i], b[i],
+                    "causal mask violated at t={t}, col={col}: {} vs {}",
+                    a[i],
+                    b[i],
                 );
             }
         }
@@ -886,7 +980,11 @@ mod tests {
         let half = 4;
         for i in 0..half {
             assert!((t[i]).abs() < 1e-6, "sin[0, {i}] = {} != 0", t[i]);
-            assert!((t[half + i] - 1.0).abs() < 1e-6, "cos[0, {i}] = {} != 1", t[half + i]);
+            assert!(
+                (t[half + i] - 1.0).abs() < 1e-6,
+                "cos[0, {i}] = {} != 1",
+                t[half + i]
+            );
         }
     }
 
@@ -901,7 +999,10 @@ mod tests {
     #[test]
     fn forward_encoder_shape_and_finite() {
         let cfg = tiny_config();
-        let model = MarianModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = MarianModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let src = [1_u32, 2, 3, 4, 5];
         let enc = model.forward_encoder(&src).unwrap();
         assert_eq!(enc.shape().dims(), &[1, src.len(), cfg.d_model]);
@@ -921,24 +1022,36 @@ mod tests {
     #[test]
     fn forward_encoder_deterministic() {
         let cfg = tiny_config();
-        let model = MarianModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = MarianModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let src = [1_u32, 2, 3, 4];
         let a = model.forward_encoder(&src).unwrap().realize_f32();
         let b = model.forward_encoder(&src).unwrap().realize_f32();
         assert_eq!(a.len(), b.len());
         for (x, y) in a.iter().zip(b.iter()) {
-            assert!((x - y).abs() < 1e-7, "non-deterministic encoder: {x} vs {y}");
+            assert!(
+                (x - y).abs() < 1e-7,
+                "non-deterministic encoder: {x} vs {y}"
+            );
         }
     }
 
     #[test]
     fn forward_decoder_shape_and_finite() {
         let cfg = tiny_config();
-        let model = MarianModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = MarianModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let enc = model.forward_encoder(&[1_u32, 2, 3, 4]).unwrap();
         let tgt = [5_u32, 6, 7];
         let logits = model.forward_decoder(&tgt, &enc).unwrap();
-        assert_eq!(logits.shape().dims(), &[1, tgt.len(), cfg.target_vocab_size()]);
+        assert_eq!(
+            logits.shape().dims(),
+            &[1, tgt.len(), cfg.target_vocab_size()]
+        );
         for &v in &logits.realize_f32() {
             assert!(v.is_finite(), "non-finite decoder logit: {v}");
         }
@@ -950,7 +1063,10 @@ mod tests {
     #[test]
     fn forward_decoder_matches_full_forward() {
         let cfg = tiny_config();
-        let model = MarianModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = MarianModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let src = [1_u32, 2, 3];
         let tgt = [5_u32, 6, 7];
         let full = model.forward(&src, &tgt).unwrap().realize_f32();
@@ -958,51 +1074,77 @@ mod tests {
         let split = model.forward_decoder(&tgt, &enc).unwrap().realize_f32();
         assert_eq!(full.len(), split.len());
         for (a, b) in full.iter().zip(split.iter()) {
-            assert!((a - b).abs() < 1e-5,
-                "forward_decoder must match forward: {a} vs {b}");
+            assert!(
+                (a - b).abs() < 1e-5,
+                "forward_decoder must match forward: {a} vs {b}"
+            );
         }
     }
 
     #[test]
     fn forward_encoder_embeds_matches_forward_encoder() {
         let cfg = tiny_config();
-        let model = MarianModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = MarianModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let src = [1_u32, 2, 3];
         let enc_ref = model.forward_encoder(&src).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let src_embeds = model.embed_tokens_anchored(&anchor, &src).unwrap();
-        let enc_via_embeds = model.forward_encoder_embeds(&src_embeds).unwrap().realize_f32();
-        let max_diff = enc_ref.iter().zip(enc_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "Marian forward_encoder vs forward_encoder_embeds must agree (max diff {max_diff})");
+        let enc_via_embeds = model
+            .forward_encoder_embeds(&src_embeds)
+            .unwrap()
+            .realize_f32();
+        let max_diff = enc_ref
+            .iter()
+            .zip(enc_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "Marian forward_encoder vs forward_encoder_embeds must agree (max diff {max_diff})"
+        );
     }
 
     #[test]
     fn forward_decoder_embeds_matches_forward_decoder() {
         let cfg = tiny_config();
-        let model = MarianModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = MarianModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let src = [1_u32, 2, 3];
         let tgt = [5_u32, 6, 7];
         let enc = model.forward_encoder(&src).unwrap();
         let dec_ref = model.forward_decoder(&tgt, &enc).unwrap().realize_f32();
         let tgt_embeds = model.embed_tokens_anchored(&enc, &tgt).unwrap();
-        let dec_via_embeds = model.forward_decoder_embeds(&tgt_embeds, &enc).unwrap().realize_f32();
-        let max_diff = dec_ref.iter().zip(dec_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "Marian forward_decoder vs forward_decoder_embeds must agree (max diff {max_diff})");
+        let dec_via_embeds = model
+            .forward_decoder_embeds(&tgt_embeds, &enc)
+            .unwrap()
+            .realize_f32();
+        let max_diff = dec_ref
+            .iter()
+            .zip(dec_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "Marian forward_decoder vs forward_decoder_embeds must agree (max diff {max_diff})"
+        );
     }
 
     #[test]
     fn forward_encoder_embeds_rejects_bad_shape() {
         let cfg = tiny_config();
-        let model = MarianModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = MarianModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let bad = LazyTensor::from_f32(
             vec![0.0_f32; 3 * (cfg.d_model + 1)],
-            Shape::from_dims(&[1, 3, cfg.d_model + 1]), &Device::cpu(),
+            Shape::from_dims(&[1, 3, cfg.d_model + 1]),
+            &Device::cpu(),
         );
         assert!(model.forward_encoder_embeds(&bad).is_err());
     }
@@ -1010,12 +1152,17 @@ mod tests {
     #[test]
     fn forward_decoder_hidden_embeds_skips_lm_head() {
         let cfg = tiny_config();
-        let model = MarianModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = MarianModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let src = [1_u32, 2, 3];
         let tgt = [5_u32, 6, 7];
         let enc = model.forward_encoder(&src).unwrap();
         let tgt_embeds = model.embed_tokens_anchored(&enc, &tgt).unwrap();
-        let hidden = model.forward_decoder_hidden_embeds(&tgt_embeds, &enc).unwrap();
+        let hidden = model
+            .forward_decoder_hidden_embeds(&tgt_embeds, &enc)
+            .unwrap();
         assert_eq!(hidden.shape().dims(), &[1, tgt.len(), cfg.d_model]);
         for &v in &hidden.realize_f32() {
             assert!(v.is_finite(), "non-finite hidden: {v}");

@@ -79,8 +79,8 @@
 //! to begin with). Mirrors QMATMUL's same decision.
 
 use crate::registry::{
-    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps,
-    PatternMatch, SubgraphPattern, decompose_via_recipe,
+    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps, PatternMatch,
+    SubgraphPattern, decompose_via_recipe,
 };
 use crate::{Graph, NodeId};
 use fuel_ir::{DType, Shape};
@@ -117,12 +117,12 @@ const NF4_LUT: [f32; 16] = [
 pub fn entry() -> FusedOpEntry {
     FusedOpEntry {
         destructive_input: None,
-        id:         FusedOps::NF4_MATMUL,
-        name:       "Nf4Matmul",
-        family:     FusedOpFamily::Quantized,
-        pattern:    SubgraphPattern::Callable(canonical_pattern),
+        id: FusedOps::NF4_MATMUL,
+        name: "Nf4Matmul",
+        family: FusedOpFamily::Quantized,
+        pattern: SubgraphPattern::Callable(canonical_pattern),
         decompose,
-        backward:   BackwardKind::NotDifferentiable,
+        backward: BackwardKind::NotDifferentiable,
         shape_rule,
         dtype_rule,
         output_views: None,
@@ -134,7 +134,8 @@ pub fn entry() -> FusedOpEntry {
 /// `w_packed: [N, K/2]`).
 fn shape_rule(input_shapes: &[Shape], _params: &FusedOpParams) -> Shape {
     debug_assert_eq!(
-        input_shapes.len(), 3,
+        input_shapes.len(),
+        3,
         "Nf4Matmul takes 3 inputs (activations, w_packed, absmax)",
     );
     let a_dims = input_shapes[0].dims();
@@ -144,7 +145,8 @@ fn shape_rule(input_shapes: &[Shape], _params: &FusedOpParams) -> Shape {
         "Nf4Matmul: activations must be rank ≥ 2, got {a_dims:?}"
     );
     debug_assert_eq!(
-        w_dims.len(), 2,
+        w_dims.len(),
+        2,
         "Nf4Matmul: w_packed must be rank 2 [N, K/2], got {w_dims:?}"
     );
     let n = w_dims[0];
@@ -157,7 +159,8 @@ fn shape_rule(input_shapes: &[Shape], _params: &FusedOpParams) -> Shape {
 /// U8 w_packed and F32 absmax don't influence the output dtype.
 fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
     debug_assert_eq!(
-        input_dtypes.len(), 3,
+        input_dtypes.len(),
+        3,
         "Nf4Matmul takes 3 inputs (activations, w_packed, absmax)",
     );
     input_dtypes[0]
@@ -219,12 +222,7 @@ fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
 ///   a2          = Reshape([M', K])(bind0)                # product-collapse
 ///   out         = Reshape([.., N])(MatMul(a2, dequant_t))
 /// ```
-fn recipe(
-    a_shape: &Shape,
-    w_shape: &Shape,
-    dtype: DType,
-    block_size: usize,
-) -> PatternNode {
+fn recipe(a_shape: &Shape, w_shape: &Shape, dtype: DType, block_size: usize) -> PatternNode {
     use OpTag as T;
     let w_dims = w_shape.dims();
     let n_out = w_dims[0];
@@ -237,14 +235,32 @@ fn recipe(
     let m_prime: usize = a_dims[..a_dims.len() - 1].iter().product();
     let n_blocks = k / block_size;
 
-    let op = |op, attrs, operands| PatternNode::Op { op, attrs, operands };
+    let op = |op, attrs, operands| PatternNode::Op {
+        op,
+        attrs,
+        operands,
+    };
     let bind = |i: u8| PatternNode::Bind { index: i };
-    let shape_attr =
-        |dims: &[usize]| OpAttrs { target_shape: dims.iter().map(|&d| d as i64).collect(), ..OpAttrs::default() };
-    let cast_attr = |dt: DType| OpAttrs { cast_dtype: Some(dt.as_str().to_string()), ..OpAttrs::default() };
-    let scalar_attr = |v: f64| OpAttrs { scalars: vec![v], ..OpAttrs::default() };
-    let unsqueeze2 = || OpAttrs { dims: vec![2], ..OpAttrs::default() };
-    let concat2 = || OpAttrs { axis: Some(2), ..OpAttrs::default() };
+    let shape_attr = |dims: &[usize]| OpAttrs {
+        target_shape: dims.iter().map(|&d| d as i64).collect(),
+        ..OpAttrs::default()
+    };
+    let cast_attr = |dt: DType| OpAttrs {
+        cast_dtype: Some(dt.as_str().to_string()),
+        ..OpAttrs::default()
+    };
+    let scalar_attr = |v: f64| OpAttrs {
+        scalars: vec![v],
+        ..OpAttrs::default()
+    };
+    let unsqueeze2 = || OpAttrs {
+        dims: vec![2],
+        ..OpAttrs::default()
+    };
+    let concat2 = || OpAttrs {
+        axis: Some(2),
+        ..OpAttrs::default()
+    };
 
     // --- 1. nibble unpack: w_packed U8 → F32, split each byte into two codes.
     // `wf` is shared (the /16 chain AND the low-nibble Sub) — identity-share dedups.
@@ -287,7 +303,11 @@ fn recipe(
     // --- 4. per-block absmax scale: broadcast [N, K/bs] across the block → [N, K].
     // abs3 is rank 3 and the target is rank 3, so no D4 rank-pad fires.
     let abs3 = op(T::Unsqueeze, unsqueeze2(), vec![bind(2)]);
-    let abs_b = op(T::BroadcastTo, shape_attr(&[n_out, n_blocks, block_size]), vec![abs3]);
+    let abs_b = op(
+        T::BroadcastTo,
+        shape_attr(&[n_out, n_blocks, block_size]),
+        vec![abs3],
+    );
     let scale_full = op(T::Reshape, shape_attr(&[n_out, k]), vec![abs_b]);
     let dequant = op(T::Mul, OpAttrs::default(), vec![nf4val, scale_full]);
 
@@ -387,7 +407,14 @@ mod tests {
             let n = graph.node(id);
             let a_shape = graph.node(n.inputs[0]).shape.clone();
             let w_shape = graph.node(n.inputs[1]).shape.clone();
-            (n.inputs[0], n.inputs[1], n.inputs[2], a_shape, w_shape, n.dtype)
+            (
+                n.inputs[0],
+                n.inputs[1],
+                n.inputs[2],
+                a_shape,
+                w_shape,
+                n.dtype,
+            )
         };
         let f32 = DType::F32;
 
@@ -402,35 +429,60 @@ mod tests {
         let code_shape = Shape::from_dims(&[n_out, k]);
 
         let wf = graph.push(Node {
-            op: Op::Cast(f32), inputs: vec![w_id], shape: half_shape.clone(), dtype: f32,
+            op: Op::Cast(f32),
+            inputs: vec![w_id],
+            shape: half_shape.clone(),
+            dtype: f32,
         });
         let wf_div16 = graph.push(Node {
-            op: Op::MulScalar(1.0 / 16.0), inputs: vec![wf], shape: half_shape.clone(), dtype: f32,
+            op: Op::MulScalar(1.0 / 16.0),
+            inputs: vec![wf],
+            shape: half_shape.clone(),
+            dtype: f32,
         });
         let upper = graph.push(Node {
-            op: Op::Floor, inputs: vec![wf_div16], shape: half_shape.clone(), dtype: f32,
+            op: Op::Floor,
+            inputs: vec![wf_div16],
+            shape: half_shape.clone(),
+            dtype: f32,
         });
         let up16 = graph.push(Node {
-            op: Op::MulScalar(16.0), inputs: vec![upper], shape: half_shape.clone(), dtype: f32,
+            op: Op::MulScalar(16.0),
+            inputs: vec![upper],
+            shape: half_shape.clone(),
+            dtype: f32,
         });
         let lower = graph.push(Node {
-            op: Op::Sub, inputs: vec![wf, up16], shape: half_shape.clone(), dtype: f32,
+            op: Op::Sub,
+            inputs: vec![wf, up16],
+            shape: half_shape.clone(),
+            dtype: f32,
         });
 
         let three_shape = Shape::from_dims(&[n_out, k_half, 1]);
         let lower3 = graph.push(Node {
-            op: Op::Unsqueeze { dim: 2 }, inputs: vec![lower], shape: three_shape.clone(), dtype: f32,
+            op: Op::Unsqueeze { dim: 2 },
+            inputs: vec![lower],
+            shape: three_shape.clone(),
+            dtype: f32,
         });
         let upper3 = graph.push(Node {
-            op: Op::Unsqueeze { dim: 2 }, inputs: vec![upper], shape: three_shape, dtype: f32,
+            op: Op::Unsqueeze { dim: 2 },
+            inputs: vec![upper],
+            shape: three_shape,
+            dtype: f32,
         });
         let stacked = graph.push(Node {
-            op: Op::Concat { dim: 2 }, inputs: vec![lower3, upper3],
-            shape: Shape::from_dims(&[n_out, k_half, 2]), dtype: f32,
+            op: Op::Concat { dim: 2 },
+            inputs: vec![lower3, upper3],
+            shape: Shape::from_dims(&[n_out, k_half, 2]),
+            dtype: f32,
         });
         let codes = graph.push(Node {
-            op: Op::Reshape(code_shape.clone()), inputs: vec![stacked],
-            shape: code_shape.clone(), dtype: f32,
+            op: Op::Reshape(code_shape.clone()),
+            inputs: vec![stacked],
+            shape: code_shape.clone(),
+            dtype: f32,
         });
 
         let mut nf4val: Option<NodeId> = None;
@@ -439,27 +491,48 @@ mod tests {
                 continue;
             }
             let diff = graph.push(Node {
-                op: Op::AddScalar(-(i as f64)), inputs: vec![codes], shape: code_shape.clone(), dtype: f32,
+                op: Op::AddScalar(-(i as f64)),
+                inputs: vec![codes],
+                shape: code_shape.clone(),
+                dtype: f32,
             });
             let ad = graph.push(Node {
-                op: Op::Abs, inputs: vec![diff], shape: code_shape.clone(), dtype: f32,
+                op: Op::Abs,
+                inputs: vec![diff],
+                shape: code_shape.clone(),
+                dtype: f32,
             });
             let neg = graph.push(Node {
-                op: Op::Neg, inputs: vec![ad], shape: code_shape.clone(), dtype: f32,
+                op: Op::Neg,
+                inputs: vec![ad],
+                shape: code_shape.clone(),
+                dtype: f32,
             });
             let one_minus = graph.push(Node {
-                op: Op::AddScalar(1.0), inputs: vec![neg], shape: code_shape.clone(), dtype: f32,
+                op: Op::AddScalar(1.0),
+                inputs: vec![neg],
+                shape: code_shape.clone(),
+                dtype: f32,
             });
             let ind = graph.push(Node {
-                op: Op::Relu, inputs: vec![one_minus], shape: code_shape.clone(), dtype: f32,
+                op: Op::Relu,
+                inputs: vec![one_minus],
+                shape: code_shape.clone(),
+                dtype: f32,
             });
             let term = graph.push(Node {
-                op: Op::MulScalar(v as f64), inputs: vec![ind], shape: code_shape.clone(), dtype: f32,
+                op: Op::MulScalar(v as f64),
+                inputs: vec![ind],
+                shape: code_shape.clone(),
+                dtype: f32,
             });
             nf4val = Some(match nf4val {
                 None => term,
                 Some(prev) => graph.push(Node {
-                    op: Op::Add, inputs: vec![prev, term], shape: code_shape.clone(), dtype: f32,
+                    op: Op::Add,
+                    inputs: vec![prev, term],
+                    shape: code_shape.clone(),
+                    dtype: f32,
                 }),
             });
         }
@@ -467,43 +540,65 @@ mod tests {
 
         let n_blocks = k / block_size;
         let abs3 = graph.push(Node {
-            op: Op::Unsqueeze { dim: 2 }, inputs: vec![abs_id],
-            shape: Shape::from_dims(&[n_out, n_blocks, 1]), dtype: f32,
+            op: Op::Unsqueeze { dim: 2 },
+            inputs: vec![abs_id],
+            shape: Shape::from_dims(&[n_out, n_blocks, 1]),
+            dtype: f32,
         });
         let abs_b = graph.push(Node {
-            op: Op::BroadcastTo(Shape::from_dims(&[n_out, n_blocks, block_size])), inputs: vec![abs3],
-            shape: Shape::from_dims(&[n_out, n_blocks, block_size]), dtype: f32,
+            op: Op::BroadcastTo(Shape::from_dims(&[n_out, n_blocks, block_size])),
+            inputs: vec![abs3],
+            shape: Shape::from_dims(&[n_out, n_blocks, block_size]),
+            dtype: f32,
         });
         let scale_full = graph.push(Node {
-            op: Op::Reshape(code_shape.clone()), inputs: vec![abs_b], shape: code_shape.clone(), dtype: f32,
+            op: Op::Reshape(code_shape.clone()),
+            inputs: vec![abs_b],
+            shape: code_shape.clone(),
+            dtype: f32,
         });
         let dequant = graph.push(Node {
-            op: Op::Mul, inputs: vec![nf4val, scale_full], shape: code_shape, dtype: f32,
+            op: Op::Mul,
+            inputs: vec![nf4val, scale_full],
+            shape: code_shape,
+            dtype: f32,
         });
 
         let dequant_typed = if dtype == f32 {
             dequant
         } else {
             graph.push(Node {
-                op: Op::Cast(dtype), inputs: vec![dequant], shape: Shape::from_dims(&[n_out, k]), dtype,
+                op: Op::Cast(dtype),
+                inputs: vec![dequant],
+                shape: Shape::from_dims(&[n_out, k]),
+                dtype,
             })
         };
         let dequant_t = graph.push(Node {
-            op: Op::Transpose, inputs: vec![dequant_typed], shape: Shape::from_dims(&[k, n_out]), dtype,
+            op: Op::Transpose,
+            inputs: vec![dequant_typed],
+            shape: Shape::from_dims(&[k, n_out]),
+            dtype,
         });
         let a2 = graph.push(Node {
-            op: Op::Reshape(Shape::from_dims(&[m_prime, k])), inputs: vec![a_id],
-            shape: Shape::from_dims(&[m_prime, k]), dtype,
+            op: Op::Reshape(Shape::from_dims(&[m_prime, k])),
+            inputs: vec![a_id],
+            shape: Shape::from_dims(&[m_prime, k]),
+            dtype,
         });
         let out2 = graph.push(Node {
-            op: Op::MatMul, inputs: vec![a2, dequant_t],
-            shape: Shape::from_dims(&[m_prime, n_out]), dtype,
+            op: Op::MatMul,
+            inputs: vec![a2, dequant_t],
+            shape: Shape::from_dims(&[m_prime, n_out]),
+            dtype,
         });
         let mut out_dims: Vec<usize> = a_dims[..a_dims.len() - 1].to_vec();
         out_dims.push(n_out);
         graph.push(Node {
-            op: Op::Reshape(Shape::from_dims(&out_dims)), inputs: vec![out2],
-            shape: Shape::from_dims(&out_dims), dtype,
+            op: Op::Reshape(Shape::from_dims(&out_dims)),
+            inputs: vec![out2],
+            shape: Shape::from_dims(&out_dims),
+            dtype,
         })
     }
 
@@ -519,9 +614,18 @@ mod tests {
         let na = g.node(a);
         let nb = g.node(b);
         assert_eq!(na.op, nb.op, "op mismatch: {:?} vs {:?}", na.op, nb.op);
-        assert_eq!(na.shape, nb.shape, "shape mismatch at {:?}: {:?} vs {:?}", na.op, na.shape, nb.shape);
+        assert_eq!(
+            na.shape, nb.shape,
+            "shape mismatch at {:?}: {:?} vs {:?}",
+            na.op, na.shape, nb.shape
+        );
         assert_eq!(na.dtype, nb.dtype, "dtype mismatch at {:?}", na.op);
-        assert_eq!(na.inputs.len(), nb.inputs.len(), "arity mismatch at {:?}", na.op);
+        assert_eq!(
+            na.inputs.len(),
+            nb.inputs.len(),
+            "arity mismatch at {:?}",
+            na.op
+        );
         for (&ia, &ib) in na.inputs.iter().zip(nb.inputs.iter()) {
             assert_structural_eq(g, ia, ib);
         }
@@ -541,13 +645,22 @@ mod tests {
         let mut a_dims = leading.to_vec();
         a_dims.push(k);
         let act = g.push(Node {
-            op: Op::Const, inputs: vec![], shape: Shape::from_dims(&a_dims), dtype: work,
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&a_dims),
+            dtype: work,
         });
         let w = g.push(Node {
-            op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[n, k / 2]), dtype: DType::U8,
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[n, k / 2]),
+            dtype: DType::U8,
         });
         let abs = g.push(Node {
-            op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[n, k / block_size]), dtype: DType::F32,
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[n, k / block_size]),
+            dtype: DType::F32,
         });
         let mut out_dims = leading.to_vec();
         out_dims.push(n);
@@ -590,11 +703,13 @@ mod tests {
                         "recipe decompose fires (block_size={block_size}, work={work:?}, leading={leading:?})"
                     );
                     assert_eq!(
-                        g.node(new_root).shape, out_sh,
+                        g.node(new_root).shape,
+                        out_sh,
                         "output shape matches shape_rule (block_size={block_size}, leading={leading:?})"
                     );
                     assert_eq!(
-                        g.node(new_root).dtype, work,
+                        g.node(new_root).dtype,
+                        work,
                         "output dtype matches activations (work={work:?})"
                     );
 

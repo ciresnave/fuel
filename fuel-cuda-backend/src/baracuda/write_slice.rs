@@ -71,7 +71,9 @@ pub fn write_slice_run(
     if source_shape.len() != rank || range_start.len() != rank {
         return Err(Error::Msg(format!(
             "{op_label}: dest_shape rank {} != source_shape rank {} or range_start rank {}",
-            rank, source_shape.len(), range_start.len(),
+            rank,
+            source_shape.len(),
+            range_start.len(),
         ))
         .bt());
     }
@@ -93,7 +95,8 @@ pub fn write_slice_run(
         return Err(Error::Msg(format!(
             "{op_label}: dest buffer {} bytes < required {dest_bytes_needed} bytes \
              (dest_shape {:?} * dtype_size {dtype_size_bytes})",
-            dest.len_bytes(), dest_shape,
+            dest.len_bytes(),
+            dest_shape,
         ))
         .bt());
     }
@@ -102,7 +105,8 @@ pub fn write_slice_run(
         return Err(Error::Msg(format!(
             "{op_label}: source buffer {} bytes < required {source_bytes_needed} bytes \
              (source_shape {:?} * dtype_size {dtype_size_bytes})",
-            source.len_bytes(), source_shape,
+            source.len_bytes(),
+            source_shape,
         ))
         .bt());
     }
@@ -196,10 +200,10 @@ macro_rules! write_slice_kernel {
     };
 }
 
-write_slice_kernel!(write_slice_b1,  b1,  1,  "write_slice_b1");
-write_slice_kernel!(write_slice_b2,  b2,  2,  "write_slice_b2");
-write_slice_kernel!(write_slice_b4,  b4,  4,  "write_slice_b4");
-write_slice_kernel!(write_slice_b8,  b8,  8,  "write_slice_b8");
+write_slice_kernel!(write_slice_b1, b1, 1, "write_slice_b1");
+write_slice_kernel!(write_slice_b2, b2, 2, "write_slice_b2");
+write_slice_kernel!(write_slice_b4, b4, 4, "write_slice_b4");
+write_slice_kernel!(write_slice_b8, b8, 8, "write_slice_b8");
 write_slice_kernel!(write_slice_b16, b16, 16, "write_slice_b16");
 
 // ===========================================================================
@@ -266,7 +270,9 @@ pub fn write_slice_doff_run(
     if source_shape.len() != rank || range_start.len() != rank {
         return Err(Error::Msg(format!(
             "{op_label}: dest_shape rank {} != source_shape rank {} or range_start rank {}",
-            rank, source_shape.len(), range_start.len(),
+            rank,
+            source_shape.len(),
+            range_start.len(),
         ))
         .bt());
     }
@@ -298,7 +304,8 @@ pub fn write_slice_doff_run(
         return Err(Error::Msg(format!(
             "{op_label}: dest buffer {} bytes < required {dest_bytes_needed} bytes \
              (dest_shape {:?} * dtype_size {dtype_size_bytes})",
-            dest.len_bytes(), dest_shape,
+            dest.len_bytes(),
+            dest_shape,
         ))
         .bt());
     }
@@ -307,7 +314,8 @@ pub fn write_slice_doff_run(
         return Err(Error::Msg(format!(
             "{op_label}: source buffer {} bytes < required {source_bytes_needed} bytes \
              (source_shape {:?} * dtype_size {dtype_size_bytes})",
-            source.len_bytes(), source_shape,
+            source.len_bytes(),
+            source_shape,
         ))
         .bt());
     }
@@ -343,7 +351,11 @@ pub fn write_slice_doff_run(
         source_shape_i32[i] = i32_or(i, source_shape[i])?;
         // The dyn_axis slot is a placeholder (kernel ignores it); host
         // it as 0 to keep the value in-range.
-        range_start_i32[i] = if i == dyn_axis { 0 } else { i32_or(i, range_start[i])? };
+        range_start_i32[i] = if i == dyn_axis {
+            0
+        } else {
+            i32_or(i, range_start[i])?
+        };
     }
 
     let device = dest.device().clone();

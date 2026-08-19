@@ -16,4 +16,3 @@
 //! is now just the `Storage` re-export.
 
 pub use fuel_backend_contract::Storage;
-

@@ -23,8 +23,8 @@
 //! and so cross-checks against the primitive path remain available).
 
 use crate::registry::{
-    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps,
-    PatternMatch, SubgraphPattern, decompose_via_recipe,
+    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps, PatternMatch,
+    SubgraphPattern, decompose_via_recipe,
 };
 use crate::{Graph, NodeId};
 use fuel_ir::{DType, Shape};
@@ -36,10 +36,10 @@ use std::sync::OnceLock;
 pub fn entry() -> FusedOpEntry {
     FusedOpEntry {
         destructive_input: None,
-        id:         FusedOps::ROPE,
-        name:       "Rope",
-        family:     FusedOpFamily::Forward,
-        pattern:    SubgraphPattern::Callable(canonical_pattern),
+        id: FusedOps::ROPE,
+        name: "Rope",
+        family: FusedOpFamily::Forward,
+        pattern: SubgraphPattern::Callable(canonical_pattern),
         decompose,
         // Rope's backward is another Rope (with negated sin). It is
         // expressed in `Tensor::backward`'s Op::Fused arm directly
@@ -47,7 +47,7 @@ pub fn entry() -> FusedOpEntry {
         // backward IS the same fused op — the registry's `Fused(id)`
         // variant is intended for backward helpers that have a
         // distinct id (SoftmaxLastDimBackward etc.).
-        backward:   BackwardKind::NotDifferentiable,
+        backward: BackwardKind::NotDifferentiable,
         shape_rule: shape_passthrough,
         dtype_rule: dtype_passthrough,
         output_views: None,
@@ -56,13 +56,21 @@ pub fn entry() -> FusedOpEntry {
 
 /// Shape rule: Rope preserves the x input's shape (input 0).
 fn shape_passthrough(input_shapes: &[Shape], _params: &FusedOpParams) -> Shape {
-    debug_assert_eq!(input_shapes.len(), 3, "Rope takes three inputs (x, cos, sin)");
+    debug_assert_eq!(
+        input_shapes.len(),
+        3,
+        "Rope takes three inputs (x, cos, sin)"
+    );
     input_shapes[0].clone()
 }
 
 /// Dtype rule: Rope preserves the x input's dtype (input 0).
 fn dtype_passthrough(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
-    debug_assert_eq!(input_dtypes.len(), 3, "Rope takes three inputs (x, cos, sin)");
+    debug_assert_eq!(
+        input_dtypes.len(),
+        3,
+        "Rope takes three inputs (x, cos, sin)"
+    );
     input_dtypes[0]
 }
 
@@ -103,7 +111,11 @@ fn dtype_passthrough(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
 fn recipe() -> &'static PatternNode {
     static RECIPE: OnceLock<PatternNode> = OnceLock::new();
     RECIPE.get_or_init(|| {
-        let op = |op, attrs, operands| PatternNode::Op { op, attrs, operands };
+        let op = |op, attrs, operands| PatternNode::Op {
+            op,
+            attrs,
+            operands,
+        };
         let x = || PatternNode::Bind { index: 0 };
         let cos = || PatternNode::Bind { index: 1 };
         let sin = || PatternNode::Bind { index: 2 };
@@ -112,9 +124,15 @@ fn recipe() -> &'static PatternNode {
             ..OpAttrs::default()
         };
         // E = x's last extent; half = E / 2 (floor).
-        let e = || Dim::Extent { operand: 0, axis: LAST };
+        let e = || Dim::Extent {
+            operand: 0,
+            axis: LAST,
+        };
         let half = || Dim::Div(Box::new(e()), Box::new(Dim::Const(2)));
-        let axis_last = || OpAttrs { axis_last: true, ..OpAttrs::default() };
+        let axis_last = || OpAttrs {
+            axis_last: true,
+            ..OpAttrs::default()
+        };
         // first_half = Slice(axis_last, start=0, len=E/2)(x).
         let first_half = op(
             OpTag::Slice,
@@ -136,21 +154,31 @@ fn recipe() -> &'static PatternNode {
             vec![x()],
         );
         // rotated = Concat(axis_last)(Neg(second_half), first_half).
-        let rotated = op(OpTag::Concat, axis_last(), vec![
-            op(OpTag::Neg, OpAttrs::default(), vec![second_half]),
-            first_half,
-        ]);
+        let rotated = op(
+            OpTag::Concat,
+            axis_last(),
+            vec![
+                op(OpTag::Neg, OpAttrs::default(), vec![second_half]),
+                first_half,
+            ],
+        );
         // out = Add(Mul(x, cos_bcast), Mul(rotated, sin_bcast)).
-        op(OpTag::Add, OpAttrs::default(), vec![
-            op(OpTag::Mul, OpAttrs::default(), vec![
-                x(),
-                op(OpTag::BroadcastTo, same_as_x(), vec![cos()]),
-            ]),
-            op(OpTag::Mul, OpAttrs::default(), vec![
-                rotated,
-                op(OpTag::BroadcastTo, same_as_x(), vec![sin()]),
-            ]),
-        ])
+        op(
+            OpTag::Add,
+            OpAttrs::default(),
+            vec![
+                op(
+                    OpTag::Mul,
+                    OpAttrs::default(),
+                    vec![x(), op(OpTag::BroadcastTo, same_as_x(), vec![cos()])],
+                ),
+                op(
+                    OpTag::Mul,
+                    OpAttrs::default(),
+                    vec![rotated, op(OpTag::BroadcastTo, same_as_x(), vec![sin()])],
+                ),
+            ],
+        )
     })
 }
 

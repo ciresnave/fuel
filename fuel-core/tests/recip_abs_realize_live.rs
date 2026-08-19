@@ -19,8 +19,8 @@
 #![cfg(feature = "cuda")]
 
 use fuel_core::lazy::LazyTensor;
-use fuel_ir::{DType, Shape};
 use fuel_cuda_backend::CudaDevice;
+use fuel_ir::{DType, Shape};
 
 fn dev_or_skip() -> Option<CudaDevice> {
     match CudaDevice::new(0) {
@@ -54,7 +54,10 @@ fn recip_realize_on_cuda_matches_reference() {
     let expected = [0.5_f32, 0.25, 0.125, 0.0625];
     for (i, (&got, &want)) in out.iter().zip(expected.iter()).enumerate() {
         let diff = (got - want).abs();
-        assert!(diff < 1e-7, "index {i}: got={got}, want={want} (diff={diff})");
+        assert!(
+            diff < 1e-7,
+            "index {i}: got={got}, want={want} (diff={diff})"
+        );
     }
 }
 

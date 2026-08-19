@@ -168,7 +168,12 @@ impl VitModel {
         // ---- Patch embeddings via Conv2d -----------------------------------
         let conv_w = pixel_values.const_f32_like(
             Arc::clone(&weights.patch_proj),
-            Shape::from_dims(&[cfg.hidden_size, cfg.num_channels, cfg.patch_size, cfg.patch_size]),
+            Shape::from_dims(&[
+                cfg.hidden_size,
+                cfg.num_channels,
+                cfg.patch_size,
+                cfg.patch_size,
+            ]),
         );
         let conv_b = pixel_values.const_f32_like(
             Arc::clone(&weights.patch_proj_bias),
@@ -200,7 +205,8 @@ impl VitModel {
             Arc::clone(&weights.position_embeddings),
             Shape::from_dims(&[1, num_patches + 1, cfg.hidden_size]),
         );
-        let pos_bc = pos.broadcast_to(Shape::from_dims(&[batch, num_patches + 1, cfg.hidden_size]))?;
+        let pos_bc =
+            pos.broadcast_to(Shape::from_dims(&[batch, num_patches + 1, cfg.hidden_size]))?;
         let mut h_states = with_cls.add(&pos_bc)?;
 
         // ---- Encoder layers -------------------------------------------------
@@ -209,7 +215,11 @@ impl VitModel {
         }
 
         // ---- Final LayerNorm ------------------------------------------------
-        let h_norm = h_states.layer_norm_affine(std::sync::Arc::clone(&weights.final_ln_gain), std::sync::Arc::clone(&weights.final_ln_bias), cfg.layer_norm_eps)?;
+        let h_norm = h_states.layer_norm_affine(
+            std::sync::Arc::clone(&weights.final_ln_gain),
+            std::sync::Arc::clone(&weights.final_ln_bias),
+            cfg.layer_norm_eps,
+        )?;
 
         // ---- Optional classifier on CLS -------------------------------------
         match &weights.classifier {
@@ -221,10 +231,8 @@ impl VitModel {
                     .reshape(Shape::from_dims(&[batch, cfg.hidden_size]))?;
                 let num_labels = cls_b.len();
                 let logits = cls_w.apply_linear(&cls, cfg.hidden_size, num_labels)?;
-                let bias_t = h_norm.const_f32_like(
-                    Arc::clone(cls_b),
-                    Shape::from_dims(&[num_labels]),
-                );
+                let bias_t =
+                    h_norm.const_f32_like(Arc::clone(cls_b), Shape::from_dims(&[num_labels]));
                 logits.broadcast_add(&bias_t)
             }
         }
@@ -270,15 +278,23 @@ impl VitModel {
 
         let conv_w = pixel_values.const_f32_like(
             Arc::clone(&weights.patch_proj),
-            Shape::from_dims(&[cfg.hidden_size, cfg.num_channels, cfg.patch_size, cfg.patch_size]),
+            Shape::from_dims(&[
+                cfg.hidden_size,
+                cfg.num_channels,
+                cfg.patch_size,
+                cfg.patch_size,
+            ]),
         );
         let conv_b = pixel_values.const_f32_like(
             Arc::clone(&weights.patch_proj_bias),
             Shape::from_dims(&[cfg.hidden_size]),
         );
         let conv_out = pixel_values.conv2d(
-            &conv_w, Some(&conv_b),
-            (cfg.patch_size, cfg.patch_size), (0, 0), 1,
+            &conv_w,
+            Some(&conv_b),
+            (cfg.patch_size, cfg.patch_size),
+            (0, 0),
+            1,
         )?;
         let num_patches = cfg.num_patches();
         let patches = conv_out
@@ -296,7 +312,8 @@ impl VitModel {
             Arc::clone(&weights.position_embeddings),
             Shape::from_dims(&[1, num_patches + 1, cfg.hidden_size]),
         );
-        let pos_bc = pos.broadcast_to(Shape::from_dims(&[batch, num_patches + 1, cfg.hidden_size]))?;
+        let pos_bc =
+            pos.broadcast_to(Shape::from_dims(&[batch, num_patches + 1, cfg.hidden_size]))?;
         let mut h = with_cls.add(&pos_bc)?;
 
         let mut out = Vec::with_capacity(layer_ids.len());
@@ -311,11 +328,7 @@ impl VitModel {
         Ok(out)
     }
 
-    fn apply_layer(
-        &self,
-        x: &LazyTensor,
-        layer: &VitLayerWeights,
-    ) -> Result<LazyTensor> {
+    fn apply_layer(&self, x: &LazyTensor, layer: &VitLayerWeights) -> Result<LazyTensor> {
         let cfg = &self.config;
         let dims = x.shape();
         let dims = dims.dims();
@@ -326,12 +339,25 @@ impl VitModel {
         let head_dim = cfg.head_dim();
 
         // Pre-LN before attention.
-        let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&layer.ln_before_gain), std::sync::Arc::clone(&layer.ln_before_bias), cfg.layer_norm_eps)?;
+        let x_norm = x.layer_norm_affine(
+            std::sync::Arc::clone(&layer.ln_before_gain),
+            std::sync::Arc::clone(&layer.ln_before_bias),
+            cfg.layer_norm_eps,
+        )?;
 
         // Q/K/V projections with optional biases.
-        let q = layer.q_proj.apply_linear(&x_norm, h, h)?.add_optional_trailing_bias(layer.q_proj_bias.as_ref())?;
-        let k = layer.k_proj.apply_linear(&x_norm, h, h)?.add_optional_trailing_bias(layer.k_proj_bias.as_ref())?;
-        let v = layer.v_proj.apply_linear(&x_norm, h, h)?.add_optional_trailing_bias(layer.v_proj_bias.as_ref())?;
+        let q = layer
+            .q_proj
+            .apply_linear(&x_norm, h, h)?
+            .add_optional_trailing_bias(layer.q_proj_bias.as_ref())?;
+        let k = layer
+            .k_proj
+            .apply_linear(&x_norm, h, h)?
+            .add_optional_trailing_bias(layer.k_proj_bias.as_ref())?;
+        let v = layer
+            .v_proj
+            .apply_linear(&x_norm, h, h)?
+            .add_optional_trailing_bias(layer.v_proj_bias.as_ref())?;
 
         let _ = (batch, seq);
         let q = q.split_heads(n_heads, head_dim)?;
@@ -357,10 +383,17 @@ impl VitModel {
         let h1 = x.add(&attn_out)?;
 
         // Pre-LN before MLP.
-        let h1_norm = h1.layer_norm_affine(std::sync::Arc::clone(&layer.ln_after_gain), std::sync::Arc::clone(&layer.ln_after_bias), cfg.layer_norm_eps)?;
+        let h1_norm = h1.layer_norm_affine(
+            std::sync::Arc::clone(&layer.ln_after_gain),
+            std::sync::Arc::clone(&layer.ln_after_bias),
+            cfg.layer_norm_eps,
+        )?;
 
         // Intermediate: linear + activation.
-        let inter_proj = layer.intermediate_proj.apply_linear(&h1_norm, h, cfg.intermediate_size)?;
+        let inter_proj =
+            layer
+                .intermediate_proj
+                .apply_linear(&h1_norm, h, cfg.intermediate_size)?;
         let inter_bias_t = x.const_f32_like(
             Arc::clone(&layer.intermediate_proj_bias),
             Shape::from_dims(&[cfg.intermediate_size]),
@@ -374,7 +407,9 @@ impl VitModel {
         };
 
         // Output: linear + residual.
-        let mlp_out = layer.mlp_output_proj.apply_linear(&activated, cfg.intermediate_size, h)?;
+        let mlp_out = layer
+            .mlp_output_proj
+            .apply_linear(&activated, cfg.intermediate_size, h)?;
         let mlp_bias_t = x.const_f32_like(
             Arc::clone(&layer.mlp_output_proj_bias),
             Shape::from_dims(&[h]),
@@ -408,56 +443,113 @@ impl VitWeights {
         let inter = cfg.intermediate_size;
 
         let patch_proj = Arc::from(load_tensor_as_f32(
-            st, "vit.embeddings.patch_embeddings.projection.weight",
+            st,
+            "vit.embeddings.patch_embeddings.projection.weight",
         )?);
         let patch_proj_bias = Arc::from(load_tensor_as_f32(
-            st, "vit.embeddings.patch_embeddings.projection.bias",
+            st,
+            "vit.embeddings.patch_embeddings.projection.bias",
         )?);
         let cls_token = Arc::from(load_tensor_as_f32(st, "vit.embeddings.cls_token")?);
         let position_embeddings = Arc::from(load_tensor_as_f32(
-            st, "vit.embeddings.position_embeddings",
+            st,
+            "vit.embeddings.position_embeddings",
         )?);
 
         let mut layers: Vec<VitLayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
         for i in 0..cfg.num_hidden_layers {
             let p = format!("vit.encoder.layer.{i}");
-            let ln_before_gain = Arc::from(load_tensor_as_f32(st, &format!("{p}.layernorm_before.weight"))?);
-            let ln_before_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.layernorm_before.bias"))?);
+            let ln_before_gain = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.layernorm_before.weight"),
+            )?);
+            let ln_before_bias = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.layernorm_before.bias"),
+            )?);
             let q_proj = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.attention.attention.query.weight"), h, h,
+                st,
+                &format!("{p}.attention.attention.query.weight"),
+                h,
+                h,
             )?;
-            let q_proj_bias = Some(Arc::from(load_tensor_as_f32(st, &format!("{p}.attention.attention.query.bias"))?));
+            let q_proj_bias = Some(Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.attention.attention.query.bias"),
+            )?));
             let k_proj = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.attention.attention.key.weight"), h, h,
+                st,
+                &format!("{p}.attention.attention.key.weight"),
+                h,
+                h,
             )?;
-            let k_proj_bias = Some(Arc::from(load_tensor_as_f32(st, &format!("{p}.attention.attention.key.bias"))?));
+            let k_proj_bias = Some(Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.attention.attention.key.bias"),
+            )?));
             let v_proj = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.attention.attention.value.weight"), h, h,
+                st,
+                &format!("{p}.attention.attention.value.weight"),
+                h,
+                h,
             )?;
-            let v_proj_bias = Some(Arc::from(load_tensor_as_f32(st, &format!("{p}.attention.attention.value.bias"))?));
+            let v_proj_bias = Some(Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.attention.attention.value.bias"),
+            )?));
             let attn_output_proj = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.attention.output.dense.weight"), h, h,
+                st,
+                &format!("{p}.attention.output.dense.weight"),
+                h,
+                h,
             )?;
-            let attn_output_proj_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.attention.output.dense.bias"))?);
-            let ln_after_gain = Arc::from(load_tensor_as_f32(st, &format!("{p}.layernorm_after.weight"))?);
-            let ln_after_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.layernorm_after.bias"))?);
+            let attn_output_proj_bias = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.attention.output.dense.bias"),
+            )?);
+            let ln_after_gain = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.layernorm_after.weight"),
+            )?);
+            let ln_after_bias = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.layernorm_after.bias"),
+            )?);
             let intermediate_proj = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.intermediate.dense.weight"), inter, h,
+                st,
+                &format!("{p}.intermediate.dense.weight"),
+                inter,
+                h,
             )?;
-            let intermediate_proj_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.intermediate.dense.bias"))?);
+            let intermediate_proj_bias = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.intermediate.dense.bias"),
+            )?);
             let mlp_output_proj = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.output.dense.weight"), h, inter,
+                st,
+                &format!("{p}.output.dense.weight"),
+                h,
+                inter,
             )?;
-            let mlp_output_proj_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.output.dense.bias"))?);
+            let mlp_output_proj_bias =
+                Arc::from(load_tensor_as_f32(st, &format!("{p}.output.dense.bias"))?);
             layers.push(VitLayerWeights {
-                ln_before_gain, ln_before_bias,
-                q_proj, q_proj_bias,
-                k_proj, k_proj_bias,
-                v_proj, v_proj_bias,
-                attn_output_proj, attn_output_proj_bias,
-                ln_after_gain, ln_after_bias,
-                intermediate_proj, intermediate_proj_bias,
-                mlp_output_proj, mlp_output_proj_bias,
+                ln_before_gain,
+                ln_before_bias,
+                q_proj,
+                q_proj_bias,
+                k_proj,
+                k_proj_bias,
+                v_proj,
+                v_proj_bias,
+                attn_output_proj,
+                attn_output_proj_bias,
+                ln_after_gain,
+                ln_after_bias,
+                intermediate_proj,
+                intermediate_proj_bias,
+                mlp_output_proj,
+                mlp_output_proj_bias,
             });
         }
 
@@ -465,9 +557,7 @@ impl VitWeights {
         let final_ln_bias = Arc::from(load_tensor_as_f32(st, "vit.layernorm.bias")?);
 
         let classifier = if let Some(num_labels) = num_classes {
-            let w = load_transposed_matrix_preserve_dtype(
-                st, "classifier.weight", num_labels, h,
-            )?;
+            let w = load_transposed_matrix_preserve_dtype(st, "classifier.weight", num_labels, h)?;
             let b = Arc::from(load_tensor_as_f32(st, "classifier.bias")?);
             Some((w, b))
         } else {
@@ -475,12 +565,17 @@ impl VitWeights {
         };
 
         Ok(Self {
-            patch_proj, patch_proj_bias, cls_token, position_embeddings,
-            layers, final_ln_gain, final_ln_bias, classifier,
+            patch_proj,
+            patch_proj_bias,
+            cls_token,
+            position_embeddings,
+            layers,
+            final_ln_gain,
+            final_ln_bias,
+            classifier,
         })
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -513,11 +608,23 @@ mod tests {
                 ln_before_gain: Arc::from(vec![1.0_f32; h]),
                 ln_before_bias: Arc::from(vec![0.0_f32; h]),
                 q_proj: WeightStorage::F32(vec_of(h * h, &mut *nb)),
-                q_proj_bias: if cfg.qkv_bias { Some(vec_of(h, &mut *nb)) } else { None },
+                q_proj_bias: if cfg.qkv_bias {
+                    Some(vec_of(h, &mut *nb))
+                } else {
+                    None
+                },
                 k_proj: WeightStorage::F32(vec_of(h * h, &mut *nb)),
-                k_proj_bias: if cfg.qkv_bias { Some(vec_of(h, &mut *nb)) } else { None },
+                k_proj_bias: if cfg.qkv_bias {
+                    Some(vec_of(h, &mut *nb))
+                } else {
+                    None
+                },
                 v_proj: WeightStorage::F32(vec_of(h * h, &mut *nb)),
-                v_proj_bias: if cfg.qkv_bias { Some(vec_of(h, &mut *nb)) } else { None },
+                v_proj_bias: if cfg.qkv_bias {
+                    Some(vec_of(h, &mut *nb))
+                } else {
+                    None
+                },
                 attn_output_proj: WeightStorage::F32(vec_of(h * h, &mut *nb)),
                 attn_output_proj_bias: vec_of(h, &mut *nb),
                 ln_after_gain: Arc::from(vec![1.0_f32; h]),
@@ -537,10 +644,13 @@ mod tests {
             (w, b)
         });
         VitWeights {
-            patch_proj, patch_proj_bias,
-            cls_token, position_embeddings,
+            patch_proj,
+            patch_proj_bias,
+            cls_token,
+            position_embeddings,
             layers,
-            final_ln_gain, final_ln_bias,
+            final_ln_gain,
+            final_ln_bias,
             classifier,
         }
     }
@@ -573,10 +683,16 @@ mod tests {
     #[test]
     fn forward_no_classifier_shape() {
         let cfg = tiny_config();
-        let model = VitModel { config: cfg.clone(), weights: tiny_weights(&cfg, None) };
+        let model = VitModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg, None),
+        };
         let img = tiny_image(&cfg);
         let out = model.forward(&img).unwrap();
-        assert_eq!(out.shape().dims(), &[1, cfg.num_patches() + 1, cfg.hidden_size]);
+        assert_eq!(
+            out.shape().dims(),
+            &[1, cfg.num_patches() + 1, cfg.hidden_size]
+        );
         for &v in &out.realize_f32() {
             assert!(v.is_finite());
         }
@@ -586,7 +702,10 @@ mod tests {
     fn forward_with_classifier() {
         let cfg = tiny_config();
         let num_labels = 5;
-        let model = VitModel { config: cfg.clone(), weights: tiny_weights(&cfg, Some(num_labels)) };
+        let model = VitModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg, Some(num_labels)),
+        };
         let img = tiny_image(&cfg);
         let logits = model.forward(&img).unwrap();
         assert_eq!(logits.shape().dims(), &[1, num_labels]);
@@ -604,8 +723,14 @@ mod tests {
         let base = tiny_weights(&cfg, None);
         let mut zeroed = base.clone();
         zeroed.cls_token = Arc::from(vec![0.0_f32; cfg.hidden_size]);
-        let m_base = VitModel { config: cfg.clone(), weights: base };
-        let m_zero = VitModel { config: cfg.clone(), weights: zeroed };
+        let m_base = VitModel {
+            config: cfg.clone(),
+            weights: base,
+        };
+        let m_zero = VitModel {
+            config: cfg.clone(),
+            weights: zeroed,
+        };
         let img_a = tiny_image(&cfg);
         let img_b = tiny_image(&cfg);
         let out_a = m_base.forward(&img_a).unwrap().realize_f32();
@@ -617,19 +742,30 @@ mod tests {
         for (x, y) in cls_a.iter().zip(cls_b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-6,
-            "CLS token weight change must alter CLS output, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-6,
+            "CLS token weight change must alter CLS output, max_diff = {max_diff}"
+        );
     }
 
     /// QKV-biases-off path runs and produces different output
     /// than the bias-on baseline.
     #[test]
     fn qkv_bias_off_runs() {
-        let cfg_off = VitConfig { qkv_bias: false, ..tiny_config() };
-        let model = VitModel { config: cfg_off.clone(), weights: tiny_weights(&cfg_off, None) };
+        let cfg_off = VitConfig {
+            qkv_bias: false,
+            ..tiny_config()
+        };
+        let model = VitModel {
+            config: cfg_off.clone(),
+            weights: tiny_weights(&cfg_off, None),
+        };
         let img = tiny_image(&cfg_off);
         let out = model.forward(&img).unwrap();
-        assert_eq!(out.shape().dims(), &[1, cfg_off.num_patches() + 1, cfg_off.hidden_size]);
+        assert_eq!(
+            out.shape().dims(),
+            &[1, cfg_off.num_patches() + 1, cfg_off.hidden_size]
+        );
     }
 
     #[test]
@@ -649,9 +785,14 @@ mod tests {
     #[test]
     fn forward_intermediate_layers_shape() {
         let cfg = tiny_config();
-        let model = VitModel { config: cfg.clone(), weights: tiny_weights(&cfg, None) };
+        let model = VitModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg, None),
+        };
         let img = tiny_image(&cfg);
-        let outs = model.forward_intermediate_layers(&img, &[0_usize, 1]).unwrap();
+        let outs = model
+            .forward_intermediate_layers(&img, &[0_usize, 1])
+            .unwrap();
         assert_eq!(outs.len(), 2);
         let np = cfg.num_patches();
         for out in &outs {
@@ -666,16 +807,23 @@ mod tests {
     #[test]
     fn intermediate_layers_differ_across_depth() {
         let cfg = tiny_config();
-        let model = VitModel { config: cfg.clone(), weights: tiny_weights(&cfg, None) };
+        let model = VitModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg, None),
+        };
         let img = tiny_image(&cfg);
-        let outs = model.forward_intermediate_layers(&img, &[0_usize, 1]).unwrap();
+        let outs = model
+            .forward_intermediate_layers(&img, &[0_usize, 1])
+            .unwrap();
         let a = outs[0].realize_f32();
         let b = outs[1].realize_f32();
         let mut max_diff = 0.0_f32;
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-7,
-            "layer 0 and layer 1 intermediates must differ, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-7,
+            "layer 0 and layer 1 intermediates must differ, max_diff = {max_diff}"
+        );
     }
 }

@@ -4,8 +4,8 @@
 //! machine with an NVIDIA GPU + CUDA Runtime SDK installed.
 
 use fuel_backend_contract::backend::HostStorage;
-use fuel_ir::{DType, HostBufferRef};
 use fuel_cuda_backend::{CudaDevice, PinnedHostStorage};
+use fuel_ir::{DType, HostBufferRef};
 
 fn dev_or_skip() -> Option<CudaDevice> {
     match CudaDevice::new(0) {

@@ -18,10 +18,10 @@
 //! `None` from [`build_primitive_probe`] means NO RECIPE for that op/dtype —
 //! the caller logs a skip and writes no record. Never a fabricated entry.
 
-use fuel_ir::dispatch::OpKind;
 use fuel_ir::DType;
+use fuel_ir::dispatch::OpKind;
 
-use super::bit_stability::{fill_deterministic, HostTensor, ProbeInputs};
+use super::bit_stability::{HostTensor, ProbeInputs, fill_deterministic};
 use crate::kernel::OpParams;
 
 /// Encode `vals` into `dt`'s byte representation, covering every dtype any
@@ -53,16 +53,25 @@ fn to_bytes(dt: DType, vals: &[f32]) -> Option<Vec<u8>> {
             bytemuck::cast_slice(&vals.iter().map(|&x| x as f64).collect::<Vec<_>>()).to_vec()
         }
         DType::BF16 => bytemuck::cast_slice(
-            &vals.iter().map(|&x| half::bf16::from_f32(x)).collect::<Vec<_>>(),
+            &vals
+                .iter()
+                .map(|&x| half::bf16::from_f32(x))
+                .collect::<Vec<_>>(),
         )
         .to_vec(),
         DType::F16 => bytemuck::cast_slice(
-            &vals.iter().map(|&x| half::f16::from_f32(x)).collect::<Vec<_>>(),
+            &vals
+                .iter()
+                .map(|&x| half::f16::from_f32(x))
+                .collect::<Vec<_>>(),
         )
         .to_vec(),
         DType::U8 => vals.iter().map(|&x| (x.abs() as u32 % 251) as u8).collect(),
         DType::I8 => bytemuck::cast_slice(
-            &vals.iter().map(|&x| (x as i32).clamp(-120, 120) as i8).collect::<Vec<_>>(),
+            &vals
+                .iter()
+                .map(|&x| (x as i32).clamp(-120, 120) as i8)
+                .collect::<Vec<_>>(),
         )
         .to_vec(),
         DType::I16 => {
@@ -91,13 +100,21 @@ fn to_bytes(dt: DType, vals: &[f32]) -> Option<Vec<u8>> {
         // F8E4M3: one byte per element. Produce a deterministic VALID normal
         // value (exponent field kept out of the 0b1111 inf/nan range) — the
         // exact value is irrelevant, only that it round-trips stably.
-        DType::F8E4M3 => vals.iter().enumerate().map(|(i, _)| 0x30u8 | ((i as u8) & 0x07)).collect(),
+        DType::F8E4M3 => vals
+            .iter()
+            .enumerate()
+            .map(|(i, _)| 0x30u8 | ((i as u8) & 0x07))
+            .collect(),
         _ => return None,
     })
 }
 
 pub(crate) fn ht(dt: DType, shape: Vec<usize>, vals: &[f32]) -> Option<HostTensor> {
-    Some(HostTensor { dtype: dt, shape, bytes: to_bytes(dt, vals)? })
+    Some(HostTensor {
+        dtype: dt,
+        shape,
+        bytes: to_bytes(dt, vals)?,
+    })
 }
 
 /// A synthesized, safe, valid probe for one `(OpKind, dtypes)` registration.
@@ -124,7 +141,12 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
         | OpKind::MinimumElementwise => {
             let a = ht(dt, vec![4], &fill_deterministic(4, seed))?;
             let b = ht(dt, vec![4], &fill_deterministic(4, seed ^ 0x9E37_79B9))?;
-            Some(Probe { inputs: vec![a, b], params: OpParams::None, out_dtype: dt, out_shape: vec![4] })
+            Some(Probe {
+                inputs: vec![a, b],
+                params: OpParams::None,
+                out_dtype: dt,
+                out_shape: vec![4],
+            })
         }
 
         // --- Unary elementwise (1 input) -----------------------------------
@@ -151,52 +173,126 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
         | OpKind::CeilElementwise
         | OpKind::RoundElementwise => {
             let x = ht(dt, vec![4], &fill_deterministic(4, seed))?;
-            Some(Probe { inputs: vec![x], params: OpParams::None, out_dtype: dt, out_shape: vec![4] })
+            Some(Probe {
+                inputs: vec![x],
+                params: OpParams::None,
+                out_dtype: dt,
+                out_shape: vec![4],
+            })
         }
 
         // --- Affine / Clamp / PowI (1 input + scalar params) ---------------
         OpKind::Affine => {
             let x = ht(dt, vec![4], &fill_deterministic(4, seed))?;
-            Some(Probe { inputs: vec![x], params: OpParams::Affine { mul: 2.0, add: 1.0 }, out_dtype: dt, out_shape: vec![4] })
+            Some(Probe {
+                inputs: vec![x],
+                params: OpParams::Affine { mul: 2.0, add: 1.0 },
+                out_dtype: dt,
+                out_shape: vec![4],
+            })
         }
         OpKind::ClampElementwise => {
             let x = ht(dt, vec![4], &fill_deterministic(4, seed))?;
-            Some(Probe { inputs: vec![x], params: OpParams::Clamp { min: -1.0, max: 1.0 }, out_dtype: dt, out_shape: vec![4] })
+            Some(Probe {
+                inputs: vec![x],
+                params: OpParams::Clamp {
+                    min: -1.0,
+                    max: 1.0,
+                },
+                out_dtype: dt,
+                out_shape: vec![4],
+            })
         }
         OpKind::PowIElementwise => {
             let x = ht(dt, vec![4], &fill_deterministic(4, seed))?;
-            Some(Probe { inputs: vec![x], params: OpParams::PowI { exp: 2 }, out_dtype: dt, out_shape: vec![4] })
+            Some(Probe {
+                inputs: vec![x],
+                params: OpParams::PowI { exp: 2 },
+                out_dtype: dt,
+                out_shape: vec![4],
+            })
         }
 
         // --- Copy / Cast (1 input, dtype may change) -----------------------
         OpKind::Copy => {
             let x = ht(dt, vec![4], &fill_deterministic(4, seed))?;
-            Some(Probe { inputs: vec![x], params: OpParams::None, out_dtype: dt, out_shape: vec![4] })
+            Some(Probe {
+                inputs: vec![x],
+                params: OpParams::None,
+                out_dtype: dt,
+                out_shape: vec![4],
+            })
         }
         OpKind::Cast => {
             let out_dt = *dtypes.get(1)?;
             let x = ht(dt, vec![4], &fill_deterministic(4, seed))?;
-            Some(Probe { inputs: vec![x], params: OpParams::None, out_dtype: out_dt, out_shape: vec![4] })
+            Some(Probe {
+                inputs: vec![x],
+                params: OpParams::None,
+                out_dtype: out_dt,
+                out_shape: vec![4],
+            })
         }
 
         // --- Flip / Roll / CumSum (1 input, 3-axis flat params) ------------
         OpKind::Flip => {
             let x = ht(dt, vec![4], &fill_deterministic(4, seed))?;
-            Some(Probe { inputs: vec![x], params: OpParams::Flip { outer_count: 1, dim_size: 4, inner_count: 1, axis: 0 }, out_dtype: dt, out_shape: vec![4] })
+            Some(Probe {
+                inputs: vec![x],
+                params: OpParams::Flip {
+                    outer_count: 1,
+                    dim_size: 4,
+                    inner_count: 1,
+                    axis: 0,
+                },
+                out_dtype: dt,
+                out_shape: vec![4],
+            })
         }
         OpKind::Roll => {
             let x = ht(dt, vec![4], &fill_deterministic(4, seed))?;
-            Some(Probe { inputs: vec![x], params: OpParams::Roll { outer_count: 1, dim_size: 4, inner_count: 1, shift: 1, axis: 0 }, out_dtype: dt, out_shape: vec![4] })
+            Some(Probe {
+                inputs: vec![x],
+                params: OpParams::Roll {
+                    outer_count: 1,
+                    dim_size: 4,
+                    inner_count: 1,
+                    shift: 1,
+                    axis: 0,
+                },
+                out_dtype: dt,
+                out_shape: vec![4],
+            })
         }
         OpKind::CumSum => {
             let x = ht(dt, vec![4], &fill_deterministic(4, seed))?;
-            Some(Probe { inputs: vec![x], params: OpParams::CumSum { outer_count: 1, dim_size: 4, inner_count: 1, axis: 0 }, out_dtype: dt, out_shape: vec![4] })
+            Some(Probe {
+                inputs: vec![x],
+                params: OpParams::CumSum {
+                    outer_count: 1,
+                    dim_size: 4,
+                    inner_count: 1,
+                    axis: 0,
+                },
+                out_dtype: dt,
+                out_shape: vec![4],
+            })
         }
 
         // --- Triu / Tril (1 input, [rows, cols]) ---------------------------
         OpKind::Triu | OpKind::Tril => {
             let x = ht(dt, vec![2, 2], &fill_deterministic(4, seed))?;
-            Some(Probe { inputs: vec![x], params: OpParams::Triangular { batch_count: 1, rows: 2, cols: 2, diagonal: 0 }, out_dtype: dt, out_shape: vec![2, 2] })
+            Some(Probe {
+                inputs: vec![x],
+                params: OpParams::Triangular {
+                    batch_count: 1,
+                    rows: 2,
+                    cols: 2,
+                    diagonal: 0,
+                },
+                out_dtype: dt,
+                out_shape: vec![2, 2],
+            })
         }
 
         // --- Concat (2 inputs along axis 0) --------------------------------
@@ -205,7 +301,12 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
             let b = ht(dt, vec![2], &fill_deterministic(2, seed ^ 0x5555))?;
             Some(Probe {
                 inputs: vec![a, b],
-                params: OpParams::Concat { outer_count: 1, input_dim_sizes: vec![2, 2], inner_count: 1, axis: 0 },
+                params: OpParams::Concat {
+                    outer_count: 1,
+                    input_dim_sizes: vec![2, 2],
+                    inner_count: 1,
+                    axis: 0,
+                },
                 out_dtype: dt,
                 out_shape: vec![4],
             })
@@ -215,11 +316,24 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
         OpKind::IndexSelect => {
             // inner_count MUST be even — the bf16 kernel pair-thread-packs.
             let (outer, source_dim, n_idx, inner) = (1usize, 4usize, 2usize, 2usize);
-            let src = ht(dt, vec![outer * source_dim * inner], &fill_deterministic(outer * source_dim * inner, seed))?;
-            let indices = HostTensor { dtype: DType::U32, shape: vec![n_idx], bytes: bytemuck::cast_slice(&[0u32, 1u32]).to_vec() };
+            let src = ht(
+                dt,
+                vec![outer * source_dim * inner],
+                &fill_deterministic(outer * source_dim * inner, seed),
+            )?;
+            let indices = HostTensor {
+                dtype: DType::U32,
+                shape: vec![n_idx],
+                bytes: bytemuck::cast_slice(&[0u32, 1u32]).to_vec(),
+            };
             Some(Probe {
                 inputs: vec![src, indices],
-                params: OpParams::IndexSelect { outer_count: outer, source_dim_size: source_dim, n_indices: n_idx, inner_count: inner },
+                params: OpParams::IndexSelect {
+                    outer_count: outer,
+                    source_dim_size: source_dim,
+                    n_indices: n_idx,
+                    inner_count: inner,
+                },
                 out_dtype: dt,
                 out_shape: vec![outer * n_idx * inner],
             })
@@ -229,10 +343,18 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
         OpKind::Gather => {
             // source [2,2], gather along dim 1, output [2,2]; indices pick col.
             let src = ht(dt, vec![2, 2], &fill_deterministic(4, seed))?;
-            let indices = HostTensor { dtype: DType::U32, shape: vec![2, 2], bytes: bytemuck::cast_slice(&[0u32, 1, 1, 0]).to_vec() };
+            let indices = HostTensor {
+                dtype: DType::U32,
+                shape: vec![2, 2],
+                bytes: bytemuck::cast_slice(&[0u32, 1, 1, 0]).to_vec(),
+            };
             Some(Probe {
                 inputs: vec![src, indices],
-                params: OpParams::Gather { source_shape: vec![2, 2], output_shape: vec![2, 2], dim: 1 },
+                params: OpParams::Gather {
+                    source_shape: vec![2, 2],
+                    output_shape: vec![2, 2],
+                    dim: 1,
+                },
                 out_dtype: dt,
                 out_shape: vec![2, 2],
             })
@@ -254,10 +376,19 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
         // probe just reproduces the hole one run later.
         OpKind::MaskedFill => {
             let x = ht(dt, vec![4], &fill_deterministic(4, seed))?;
-            let mask = HostTensor { dtype: DType::Bool, shape: vec![4], bytes: vec![0u8, 1, 0, 1] };
+            let mask = HostTensor {
+                dtype: DType::Bool,
+                shape: vec![4],
+                bytes: vec![0u8, 1, 0, 1],
+            };
             // fill_bytes is one element's worth in the output dtype.
             let fill = to_bytes(dt, &[0.0])?;
-            Some(Probe { inputs: vec![x, mask], params: OpParams::MaskedFill { fill_bytes: fill }, out_dtype: dt, out_shape: vec![4] })
+            Some(Probe {
+                inputs: vec![x, mask],
+                params: OpParams::MaskedFill { fill_bytes: fill },
+                out_dtype: dt,
+                out_shape: vec![4],
+            })
         }
 
         // --- Pad (1 input → padded output) ---------------------------------
@@ -266,7 +397,13 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
             let fill = to_bytes(dt, &[0.0])?;
             Some(Probe {
                 inputs: vec![x],
-                params: OpParams::Pad { in_shape: vec![3], out_shape: vec![8], padding: vec![(2, 3)], mode_tag: 2, fill_bytes: fill },
+                params: OpParams::Pad {
+                    in_shape: vec![3],
+                    out_shape: vec![8],
+                    padding: vec![(2, 3)],
+                    mode_tag: 2,
+                    fill_bytes: fill,
+                },
                 out_dtype: dt,
                 out_shape: vec![8],
             })
@@ -282,7 +419,12 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
             let go = ht(dt, vec![8], &fill_deterministic(8, seed))?;
             Some(Probe {
                 inputs: vec![go],
-                params: OpParams::PadBackward { in_shape: vec![4], out_shape: vec![8], padding: vec![(2, 2)], mode_tag: 0 },
+                params: OpParams::PadBackward {
+                    in_shape: vec![4],
+                    out_shape: vec![8],
+                    padding: vec![(2, 2)],
+                    mode_tag: 0,
+                },
                 out_dtype: dt,
                 out_shape: vec![4],
             })
@@ -295,7 +437,11 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
             let src = ht(dt, vec![1, 4], &fill_deterministic(4, seed))?;
             Some(Probe {
                 inputs: vec![src],
-                params: OpParams::WriteSlice { dest_shape: vec![2, 4], ranges: vec![(0, 1), (0, 4)], deferred_dyn_offset: None },
+                params: OpParams::WriteSlice {
+                    dest_shape: vec![2, 4],
+                    ranges: vec![(0, 1), (0, 4)],
+                    deferred_dyn_offset: None,
+                },
                 out_dtype: dt,
                 out_shape: vec![2, 4],
             })
@@ -304,10 +450,19 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
         // --- WriteSliceRotating (src + U32 rank-0 position → dest) ----------
         OpKind::WriteSliceRotating => {
             let src = ht(dt, vec![1, 4], &fill_deterministic(4, seed))?;
-            let pos = HostTensor { dtype: DType::U32, shape: vec![], bytes: bytemuck::cast_slice(&[1u32]).to_vec() };
+            let pos = HostTensor {
+                dtype: DType::U32,
+                shape: vec![],
+                bytes: bytemuck::cast_slice(&[1u32]).to_vec(),
+            };
             Some(Probe {
                 inputs: vec![src, pos],
-                params: OpParams::WriteSliceRotating { dest_shape: vec![2, 4], axis: 0, modulus: 2, ranges: vec![(0, 1), (0, 4)] },
+                params: OpParams::WriteSliceRotating {
+                    dest_shape: vec![2, 4],
+                    axis: 0,
+                    modulus: 2,
+                    ranges: vec![(0, 1), (0, 4)],
+                },
                 out_dtype: dt,
                 out_shape: vec![2, 4],
             })
@@ -316,10 +471,17 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
         // --- ArgMaxDim / ArgMinDim (reduce a dim → U32 indices) ------------
         OpKind::ArgMaxDim | OpKind::ArgMinDim => {
             let (outer, last) = (2usize, 4usize);
-            let x = ht(dt, vec![outer, last], &fill_deterministic(outer * last, seed))?;
+            let x = ht(
+                dt,
+                vec![outer, last],
+                &fill_deterministic(outer * last, seed),
+            )?;
             Some(Probe {
                 inputs: vec![x],
-                params: OpParams::Reduce { dims: vec![1], keepdim: false },
+                params: OpParams::Reduce {
+                    dims: vec![1],
+                    keepdim: false,
+                },
                 out_dtype: DType::U32,
                 out_shape: vec![outer],
             })
@@ -328,12 +490,28 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
         // --- Rope (x, cos, sin → rotated x) --------------------------------
         OpKind::Rope => {
             let (outer, seq_n, hd) = (1usize, 2usize, 4usize);
-            let x = ht(dt, vec![outer, seq_n, hd], &fill_deterministic(outer * seq_n * hd, seed))?;
-            let cos = ht(dt, vec![seq_n, hd], &fill_deterministic(seq_n * hd, seed ^ 0xC05))?;
-            let sin = ht(dt, vec![seq_n, hd], &fill_deterministic(seq_n * hd, seed ^ 0x51))?;
+            let x = ht(
+                dt,
+                vec![outer, seq_n, hd],
+                &fill_deterministic(outer * seq_n * hd, seed),
+            )?;
+            let cos = ht(
+                dt,
+                vec![seq_n, hd],
+                &fill_deterministic(seq_n * hd, seed ^ 0xC05),
+            )?;
+            let sin = ht(
+                dt,
+                vec![seq_n, hd],
+                &fill_deterministic(seq_n * hd, seed ^ 0x51),
+            )?;
             Some(Probe {
                 inputs: vec![x, cos, sin],
-                params: OpParams::Rope { outer_count: outer, seq: seq_n, head_dim: hd },
+                params: OpParams::Rope {
+                    outer_count: outer,
+                    seq: seq_n,
+                    head_dim: hd,
+                },
                 out_dtype: dt,
                 out_shape: vec![outer, seq_n, hd],
             })
@@ -343,11 +521,10 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
     }
 }
 
-
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::ledger::VerificationLedger;
+    use super::*;
     use crate::kernel::KernelBindingTable;
 
     /// Parse a ledger dtype token back into a `DType`. The ledger stores
@@ -506,7 +683,10 @@ mod tests {
                 .sum();
             let mut lines = String::new();
             for (t, _) in &failed {
-                let n = counts.iter().find(|(c, _)| *c == **t).map_or(0, |(_, n)| *n);
+                let n = counts
+                    .iter()
+                    .find(|(c, _)| *c == **t)
+                    .map_or(0, |(_, n)| *n);
                 lines.push_str(&format!("\n    {t:?} x{n}"));
             }
             panic!(

@@ -63,7 +63,7 @@
 use std::collections::HashSet;
 
 use fuel_graph::registry::{FusedOpParams, FusedOps};
-use fuel_graph::{branches_in_topo_order, Graph, NodeId, Op};
+use fuel_graph::{Graph, NodeId, Op, branches_in_topo_order};
 use fuel_ir::backend::{BackendCapabilities, SubstrateClass, TransferPath};
 use fuel_ir::dispatch::SizeClass;
 use fuel_ir::probe::BackendId;
@@ -85,8 +85,7 @@ use crate::runtime_fused_kernels::fused_kernel_available;
 /// Arguments: `(graph, branch, arm_index, arm_interior)` where `arm_interior`
 /// is the arm's interior node set (the nodes on paths `diverge → exit`, arm 0's
 /// being the decomposed region and a fused arm's being the single fused node).
-pub type ArmCostFn<'a> =
-    dyn Fn(&Graph, NodeId, usize, &[NodeId]) -> Option<u64> + 'a;
+pub type ArmCostFn<'a> = dyn Fn(&Graph, NodeId, usize, &[NodeId]) -> Option<u64> + 'a;
 
 std::thread_local! {
     /// Per-thread cumulative count of same-device variant branches baked to a
@@ -140,7 +139,10 @@ pub fn bake_variant_branches(
         let Some(backend0) = graph.target_backend(arms[0]) else {
             continue;
         };
-        if !arms.iter().all(|&a| graph.target_backend(a) == Some(backend0)) {
+        if !arms
+            .iter()
+            .all(|&a| graph.target_backend(a) == Some(backend0))
+        {
             continue; // placement branch → runtime picker owns it
         }
 
@@ -206,8 +208,7 @@ pub fn bake_variant_branches(
 /// region.
 fn arm_interiors(graph: &Graph, branch: NodeId) -> Vec<Vec<NodeId>> {
     let arm_exits = graph.node(branch).inputs.clone();
-    let cones: Vec<HashSet<NodeId>> =
-        arm_exits.iter().map(|&e| backward_cone(graph, e)).collect();
+    let cones: Vec<HashSet<NodeId>> = arm_exits.iter().map(|&e| backward_cone(graph, e)).collect();
     if cones.is_empty() {
         return Vec::new();
     }
@@ -217,7 +218,12 @@ fn arm_interiors(graph: &Graph, branch: NodeId) -> Vec<Vec<NodeId>> {
     }
     cones
         .iter()
-        .map(|cone| cone.iter().copied().filter(|n| !shared.contains(n)).collect())
+        .map(|cone| {
+            cone.iter()
+                .copied()
+                .filter(|n| !shared.contains(n))
+                .collect()
+        })
         .collect()
 }
 
@@ -395,8 +401,11 @@ fn node_measured_ns(
         Some(&i) => graph.node(i).dtype,
         None => node.dtype, // nullary — has no OpKind mapping anyway
     };
-    let input_shapes: Vec<Shape> =
-        node.inputs.iter().map(|&i| graph.node(i).shape.clone()).collect();
+    let input_shapes: Vec<Shape> = node
+        .inputs
+        .iter()
+        .map(|&i| graph.node(i).shape.clone())
+        .collect();
     let size_class = SizeClass::for_op(kind, &input_shapes);
     judge.measured_latency_ns(kind, principal_dtype, size_class, backend, "")
 }
@@ -433,13 +442,20 @@ fn node_layer1_cost(
         // precedent. Shapes follow `[input1, .., inputN, output]`.
         other => {
             let kind = op_to_op_kind(other)?;
-            let mut shapes: Vec<Shape> =
-                node.inputs.iter().map(|&i| graph.node(i).shape.clone()).collect();
+            let mut shapes: Vec<Shape> = node
+                .inputs
+                .iter()
+                .map(|&i| graph.node(i).shape.clone())
+                .collect();
             shapes.push(node.shape.clone());
-            let mut dtypes: Vec<DType> =
-                node.inputs.iter().map(|&i| graph.node(i).dtype).collect();
+            let mut dtypes: Vec<DType> = node.inputs.iter().map(|&i| graph.node(i).dtype).collect();
             dtypes.push(node.dtype);
-            Some(default_cost_for_op_kind(kind)(&shapes, &dtypes, &OpParams::None, caps))
+            Some(default_cost_for_op_kind(kind)(
+                &shapes,
+                &dtypes,
+                &OpParams::None,
+                caps,
+            ))
         }
     }
 }
@@ -544,21 +560,24 @@ fn neutral_caps(backend: BackendId, compute: f64, mem_bw: f64) -> BackendCapabil
 mod tests {
     use super::*;
     use crate::ranker::judge::HashMapJudge;
-    use fuel_graph::{lower_runs_arm0, Node};
-    use fuel_ir::dispatch::OpKind;
+    use fuel_graph::{Node, lower_runs_arm0};
     use fuel_ir::Shape;
+    use fuel_ir::dispatch::OpKind;
 
     fn node(g: &mut Graph, op: Op, inputs: Vec<NodeId>, dims: &[usize], dt: DType) -> NodeId {
-        g.push(Node { op, inputs, shape: Shape::from_dims(dims), dtype: dt })
+        g.push(Node {
+            op,
+            inputs,
+            shape: Shape::from_dims(dims),
+            dtype: dt,
+        })
     }
 
     /// Build a same-device 2-arm variant branch mirroring the decode flash
     /// shape: arm 0 is a 2-node "decomposed region" (Relu→Silu over the
     /// diverge), arm 1 is a single "fused variant" node (Gelu). Both arms are
     /// stamped `backend`. Returns `(graph, branch, arm0_exit, arm1, reconverge, post)`.
-    fn variant_diamond(
-        backend: BackendId,
-    ) -> (Graph, NodeId, NodeId, NodeId, NodeId, NodeId) {
+    fn variant_diamond(backend: BackendId) -> (Graph, NodeId, NodeId, NodeId, NodeId, NodeId) {
         let dt = DType::F32;
         let mut g = Graph::new();
         let pre = node(&mut g, Op::Const, vec![], &[4], dt);
@@ -584,7 +603,9 @@ mod tests {
     }
 
     /// A cost closure that returns fixed per-arm costs by arm index.
-    fn fixed_costs(costs: Vec<Option<u64>>) -> impl Fn(&Graph, NodeId, usize, &[NodeId]) -> Option<u64> {
+    fn fixed_costs(
+        costs: Vec<Option<u64>>,
+    ) -> impl Fn(&Graph, NodeId, usize, &[NodeId]) -> Option<u64> {
         move |_g, _b, arm, _interior| costs.get(arm).copied().flatten()
     }
 
@@ -595,8 +616,7 @@ mod tests {
     // ===================================================================
     #[test]
     fn cheaper_variant_is_baked_and_becomes_the_route() {
-        let (mut g, branch, arm0, arm1, reconverge, post) =
-            variant_diamond(BackendId::Cuda);
+        let (mut g, branch, arm0, arm1, reconverge, post) = variant_diamond(BackendId::Cuda);
 
         // (RED anchor) Before the bake, the default lowering realizes arm 0 —
         // the same-device variant (arm 1) is offered but never selected.
@@ -613,14 +633,27 @@ mod tests {
         assert_eq!(baked, 1, "one variant branch baked to its winner");
 
         // The merge now reads the winner; the branch is collapsed.
-        assert!(g.node(reconverge).inputs.contains(&arm1), "merge rewired to the variant");
-        assert_eq!(g.node(branch).inputs, vec![arm1], "branch collapsed to the winner");
+        assert!(
+            g.node(reconverge).inputs.contains(&arm1),
+            "merge rewired to the variant"
+        );
+        assert_eq!(
+            g.node(branch).inputs,
+            vec![arm1],
+            "branch collapsed to the winner"
+        );
 
         // The default lowering now follows the baked variant (arm 1) and prunes
         // arm 0's region — selectable with NO runtime pick.
         let after = lower_runs_arm0(&g, &[post]);
-        assert!(after.contains(&arm1), "after the bake the variant is realized; order={after:?}");
-        assert!(!after.contains(&arm0), "arm 0's region is pruned; order={after:?}");
+        assert!(
+            after.contains(&arm1),
+            "after the bake the variant is realized; order={after:?}"
+        );
+        assert!(
+            !after.contains(&arm0),
+            "arm 0's region is pruned; order={after:?}"
+        );
     }
 
     /// The `variant_bakes_thread_local` telemetry tracks the return value: a
@@ -637,7 +670,8 @@ mod tests {
         let baked = bake_variant_branches(&mut g1, &[post1], &win);
         assert_eq!(baked, 1);
         assert_eq!(
-            variant_bakes_thread_local() - before, 1,
+            variant_bakes_thread_local() - before,
+            1,
             "a winning-variant bake bumps the thread-local by its return count",
         );
 
@@ -648,7 +682,8 @@ mod tests {
         let baked2 = bake_variant_branches(&mut g2, &[post2], &lose);
         assert_eq!(baked2, 0);
         assert_eq!(
-            variant_bakes_thread_local(), mid,
+            variant_bakes_thread_local(),
+            mid,
             "an oracle-wins bake leaves the thread-local unchanged",
         );
     }
@@ -661,9 +696,16 @@ mod tests {
         let cost = fixed_costs(vec![Some(400), Some(1000)]); // arm1 costlier
         let baked = bake_variant_branches(&mut g, &[post], &cost);
         assert_eq!(baked, 0, "no variant wins ⇒ nothing baked to a variant");
-        assert_eq!(g.node(branch).inputs, vec![arm0], "branch collapsed to arm 0");
+        assert_eq!(
+            g.node(branch).inputs,
+            vec![arm0],
+            "branch collapsed to arm 0"
+        );
         let after = lower_runs_arm0(&g, &[post]);
-        assert!(after.contains(&arm0) && !after.contains(&arm1), "arm 0 realized (oracle)");
+        assert!(
+            after.contains(&arm0) && !after.contains(&arm1),
+            "arm 0 realized (oracle)"
+        );
     }
 
     /// GUARD: an unknown / sentinel variant cost ⇒ arm 0. `None` cannot win.
@@ -674,7 +716,10 @@ mod tests {
         let baked = bake_variant_branches(&mut g, &[post], &cost);
         assert_eq!(baked, 0, "unknown variant cost ⇒ arm 0 (conservative)");
         let after = lower_runs_arm0(&g, &[post]);
-        assert!(after.contains(&arm0) && !after.contains(&arm1), "arm 0 realized");
+        assert!(
+            after.contains(&arm0) && !after.contains(&arm1),
+            "arm 0 realized"
+        );
     }
 
     /// GUARD: a tie between the oracle and the variant ⇒ arm 0.
@@ -685,7 +730,10 @@ mod tests {
         let baked = bake_variant_branches(&mut g, &[post], &cost);
         assert_eq!(baked, 0, "tie ⇒ arm 0 (variant not strictly cheaper)");
         let after = lower_runs_arm0(&g, &[post]);
-        assert!(after.contains(&arm0) && !after.contains(&arm1), "arm 0 realized");
+        assert!(
+            after.contains(&arm0) && !after.contains(&arm1),
+            "arm 0 realized"
+        );
     }
 
     /// GUARD: capability-missing (modelled as a `None` variant cost, the way
@@ -701,7 +749,10 @@ mod tests {
         let baked = bake_variant_branches(&mut g, &[post], &cost);
         assert_eq!(baked, 0, "capability-missing variant ⇒ arm 0");
         let after = lower_runs_arm0(&g, &[post]);
-        assert!(after.contains(&arm0) && !after.contains(&arm1), "arm 0 realized");
+        assert!(
+            after.contains(&arm0) && !after.contains(&arm1),
+            "arm 0 realized"
+        );
     }
 
     /// GUARD: a **placement** branch (arms on DIFFERENT backends) is UNTOUCHED
@@ -774,7 +825,13 @@ mod tests {
         let v = node(&mut g, Op::Const, vec![], &[b, hq, sk, d], dt);
 
         // Decomposed region interior (two matmuls dominate).
-        let kt = node(&mut g, Op::Permute(vec![0, 1, 3, 2]), vec![k], &[b, hq, d, sk], dt);
+        let kt = node(
+            &mut g,
+            Op::Permute(vec![0, 1, 3, 2]),
+            vec![k],
+            &[b, hq, d, sk],
+            dt,
+        );
         let scores = node(&mut g, Op::MatMul, vec![q, kt], &[b, hq, 1, sk], dt);
         let attn = node(&mut g, Op::MatMul, vec![scores, v], &[b, hq, 1, d], dt);
         let region: Vec<NodeId> = vec![kt, scores, attn];
@@ -808,7 +865,10 @@ mod tests {
         let caps = neutral_caps(BackendId::Cuda, cr, bw);
         let fp_full = decode_flash_cost_at(&g, &flash_node, sk, &caps, cr, bw);
         let fp_small = decode_flash_cost_at(&g, &flash_node, 32, &caps, cr, bw);
-        assert!(fp_full > 0 && fp_small > 0, "flash decode cost is real + nonzero");
+        assert!(
+            fp_full > 0 && fp_small > 0,
+            "flash decode cost is real + nonzero"
+        );
         assert!(
             fp_full > fp_small,
             "the flash decode cost scales with the live prefix k_len \
@@ -839,7 +899,10 @@ mod tests {
         if fused_kernel_available(FusedOps::FLASH_ATTN, BackendId::Cuda) {
             assert!(gated.is_some(), "bound flash kernel ⇒ arm priced");
         } else {
-            assert!(gated.is_none(), "unbound flash kernel ⇒ arm inadmissible (oracle stands)");
+            assert!(
+                gated.is_none(),
+                "unbound flash kernel ⇒ arm inadmissible (oracle stands)"
+            );
         }
     }
 
@@ -903,7 +966,12 @@ mod tests {
         };
         let params = flash_op_params(&g, &flash_node, &params_in).expect("derivable");
         match params {
-            OpParams::FlashAttn { k_len, sk: sk_out, sq, .. } => {
+            OpParams::FlashAttn {
+                k_len,
+                sk: sk_out,
+                sq,
+                ..
+            } => {
                 assert_eq!(k_len, sk, "symbolic k_len prices at the capacity");
                 assert_eq!(sk_out, sk);
                 assert_eq!(sq, 1, "decode sq == 1");
@@ -938,7 +1006,13 @@ mod tests {
         // The single DIVERGE point both arms read as their `q` operand.
         let q = node(&mut g, Op::Relu, vec![qc], &[b, hq, 1, d], dt);
         // arm 0 — the decomposed attention region (two matmuls dominate).
-        let kt = node(&mut g, Op::Permute(vec![0, 1, 3, 2]), vec![k], &[b, hq, d, sk], dt);
+        let kt = node(
+            &mut g,
+            Op::Permute(vec![0, 1, 3, 2]),
+            vec![k],
+            &[b, hq, d, sk],
+            dt,
+        );
         let scores = node(&mut g, Op::MatMul, vec![q, kt], &[b, hq, 1, sk], dt);
         let attn = node(&mut g, Op::MatMul, vec![scores, v], &[b, hq, 1, d], dt);
         // arm 1 — the fused flash node (same exit shape & dtype as the region).
@@ -1019,13 +1093,29 @@ mod tests {
         };
         let baked = bake_variant_branches(&mut g, &[post], &cost);
 
-        assert_eq!(baked, 1, "measured flash is strictly cheaper ⇒ the branch bakes to it");
-        assert_eq!(g.node(branch).inputs, vec![flash], "branch collapsed to the flash arm");
-        assert!(g.node(reconverge).inputs.contains(&flash), "merge rewired to flash");
+        assert_eq!(
+            baked, 1,
+            "measured flash is strictly cheaper ⇒ the branch bakes to it"
+        );
+        assert_eq!(
+            g.node(branch).inputs,
+            vec![flash],
+            "branch collapsed to the flash arm"
+        );
+        assert!(
+            g.node(reconverge).inputs.contains(&flash),
+            "merge rewired to flash"
+        );
 
         let after = lower_runs_arm0(&g, &[post]);
-        assert!(after.contains(&flash), "flash realized after the bake; order={after:?}");
-        assert!(!after.contains(&attn), "the decomposed region is pruned; order={after:?}");
+        assert!(
+            after.contains(&flash),
+            "flash realized after the bake; order={after:?}"
+        );
+        assert!(
+            !after.contains(&attn),
+            "the decomposed region is pruned; order={after:?}"
+        );
     }
 
     /// GUARD: the Judge says flash is SLOWER than the region ⇒ arm 0 (the
@@ -1044,10 +1134,20 @@ mod tests {
             decode_arm_composite_ns_judged(g, b, arm, i, BackendId::Cuda, Some(&judge))
         };
         let baked = bake_variant_branches(&mut g, &[post], &cost);
-        assert_eq!(baked, 0, "measured flash is slower ⇒ arm 0 (the region) stands");
-        assert_eq!(g.node(branch).inputs, vec![attn], "branch collapsed to arm 0");
+        assert_eq!(
+            baked, 0,
+            "measured flash is slower ⇒ arm 0 (the region) stands"
+        );
+        assert_eq!(
+            g.node(branch).inputs,
+            vec![attn],
+            "branch collapsed to arm 0"
+        );
         let after = lower_runs_arm0(&g, &[post]);
-        assert!(after.contains(&attn) && !after.contains(&flash), "region realized (oracle)");
+        assert!(
+            after.contains(&attn) && !after.contains(&flash),
+            "region realized (oracle)"
+        );
     }
 
     /// GUARD: with `judge == None` the judged provider is **byte-identical** to
@@ -1069,7 +1169,10 @@ mod tests {
             decode_arm_composite_ns_judged(g, b, arm, i, BackendId::Cuda, None)
         };
         let baked = bake_variant_branches(&mut g, &[post], &cost);
-        assert_eq!(baked, 0, "no oracle ⇒ Layer-1 path ⇒ arm 0 (flash unbound on a CPU build)");
+        assert_eq!(
+            baked, 0,
+            "no oracle ⇒ Layer-1 path ⇒ arm 0 (flash unbound on a CPU build)"
+        );
         assert_eq!(g.node(branch).inputs, vec![attn]);
         let _ = flash;
     }
@@ -1114,10 +1217,9 @@ mod tests {
 
         // The region arm's hybrid cost == measured scores (500) + Layer-1 attn.
         let region = arm_interiors(&g, branch)[0].clone();
-        let hybrid = decode_arm_composite_ns_judged(
-            &g, branch, 0, &region, BackendId::Cuda, Some(&judge),
-        )
-        .expect("region prices");
+        let hybrid =
+            decode_arm_composite_ns_judged(&g, branch, 0, &region, BackendId::Cuda, Some(&judge))
+                .expect("region prices");
         let layer1_attn = decode_arm_composite_ns(&g, branch, 0, &[attn], BackendId::Cuda)
             .expect("attn prices on Layer-1");
         assert_eq!(
@@ -1131,7 +1233,10 @@ mod tests {
             decode_arm_composite_ns_judged(g, b, arm, i, BackendId::Cuda, Some(&judge))
         };
         let baked = bake_variant_branches(&mut g, &[post], &cost);
-        assert_eq!(baked, 1, "measured flash beats the hybrid region ⇒ bakes to flash");
+        assert_eq!(
+            baked, 1,
+            "measured flash beats the hybrid region ⇒ bakes to flash"
+        );
         assert_eq!(g.node(branch).inputs, vec![flash]);
     }
 
@@ -1154,7 +1259,10 @@ mod tests {
             decode_arm_composite_ns_judged(g, b, arm, i, backend, Some(&judge))
         };
         let baked = bake_variant_branches(&mut g, &[post], &cost);
-        assert_eq!(baked, 0, "a placement branch is never baked, even with a flash-loving judge");
+        assert_eq!(
+            baked, 0,
+            "a placement branch is never baked, even with a flash-loving judge"
+        );
         assert_eq!(
             g.node(branch).inputs,
             vec![attn, flash],

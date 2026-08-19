@@ -181,28 +181,28 @@ impl BasedModel {
     /// Multimodal entry point. Skips token embedding; runs the decoder
     /// over pre-embedded inputs. Based does NOT scale embeddings.
     /// v1 prefill only — `start_pos` must be 0.
-    pub fn forward_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
         let h_norm = self.run_backbone_embeds(embeds, start_pos)?;
         self.apply_lm_head(&h_norm)
     }
 
     /// Hidden-state variant of [`Self::forward_embeds`].
     pub fn forward_hidden_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
+        &self,
+        embeds: &LazyTensor,
+        start_pos: usize,
     ) -> Result<LazyTensor> {
         self.run_backbone_embeds(embeds, start_pos)
     }
 
     /// Build per-token embeddings without running the decoder.
-    pub fn embed_tokens_anchored(
-        &self, anchor: &LazyTensor, tokens: &[u32],
-    ) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
-            cfg.vocab_size, cfg.hidden_size, tokens,
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
         )
     }
 
@@ -219,14 +219,16 @@ impl BasedModel {
         assert!(seq > 0);
 
         let h = LazyTensor::embed_tokens(
-            weights.token_embedding.clone(), cfg.vocab_size, cfg.hidden_size, tokens, &Device::cpu(),
+            weights.token_embedding.clone(),
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
+            &Device::cpu(),
         )?;
         self.run_backbone_embeds(&h, start_pos)
     }
 
-    fn run_backbone_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
-    ) -> Result<LazyTensor> {
+    fn run_backbone_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -239,32 +241,37 @@ impl BasedModel {
         }
         let seq = dims[1];
         if seq == 0 {
-            return Err(crate::Error::Msg(
-                "BasedModel::forward_embeds: seq must be > 0".into(),
-            ).bt());
+            return Err(
+                crate::Error::Msg("BasedModel::forward_embeds: seq must be > 0".into()).bt(),
+            );
         }
         if weights.layers.len() != cfg.num_hidden_layers {
             return Err(crate::Error::Msg(format!(
                 "BasedWeights: layers length ({}) must match num_hidden_layers ({})",
-                weights.layers.len(), cfg.num_hidden_layers,
-            )).bt());
+                weights.layers.len(),
+                cfg.num_hidden_layers,
+            ))
+            .bt());
         }
         if start_pos != 0 {
             return Err(crate::Error::Msg(format!(
                 "BasedModel v1: prefill only (start_pos must be 0, got {start_pos})",
-            )).bt());
+            ))
+            .bt());
         }
         let mut h = embeds.clone();
 
         let sliding_head_dim = cfg.hidden_size / cfg.swa.num_heads;
-        let (rope_cos, rope_sin) = h.rope_tables_const(
-            cfg.rope_theta, start_pos, seq, sliding_head_dim,
-        );
+        let (rope_cos, rope_sin) =
+            h.rope_tables_const(cfg.rope_theta, start_pos, seq, sliding_head_dim);
 
         for (idx, layer) in weights.layers.iter().enumerate() {
             h = self.apply_block(&h, layer, idx, &rope_cos, &rope_sin)?;
         }
-        h.rms_norm_affine(std::sync::Arc::clone(&weights.final_norm_gain), cfg.layer_norm_epsilon)
+        h.rms_norm_affine(
+            std::sync::Arc::clone(&weights.final_norm_gain),
+            cfg.layer_norm_epsilon,
+        )
     }
 
     fn apply_block(
@@ -277,10 +284,16 @@ impl BasedModel {
     ) -> Result<LazyTensor> {
         let cfg = &self.config;
         let h = cfg.hidden_size;
-        let x_norm = x.rms_norm_affine(std::sync::Arc::clone(&layer.norm1_gain), cfg.layer_norm_epsilon)?;
+        let x_norm = x.rms_norm_affine(
+            std::sync::Arc::clone(&layer.norm1_gain),
+            cfg.layer_norm_epsilon,
+        )?;
         let mixed = self.apply_mixer(&x_norm, &layer.mixer, layer_idx, rope_cos, rope_sin)?;
         let h1 = x.add(&mixed)?;
-        let h1_norm = h1.rms_norm_affine(std::sync::Arc::clone(&layer.norm2_gain), cfg.layer_norm_epsilon)?;
+        let h1_norm = h1.rms_norm_affine(
+            std::sync::Arc::clone(&layer.norm2_gain),
+            cfg.layer_norm_epsilon,
+        )?;
         let mlp_out = self.apply_mlp(&h1_norm, &layer.fc1, &layer.fc2)?;
         h1.add(&mlp_out)
     }
@@ -304,7 +317,8 @@ impl BasedModel {
             _ => Err(crate::Error::Msg(format!(
                 "Based layer {layer_idx}: mixer weight kind does not match \
                  config-derived kind {expected:?} — config + weights are inconsistent",
-            )).bt()),
+            ))
+            .bt()),
         }
     }
 
@@ -320,10 +334,7 @@ impl BasedModel {
 
         // in_proj: hidden → 4 * hidden, then chunk into (u_conv, gate).
         let proj = w.in_proj_w.apply_linear(x, h, 4 * h)?;
-        let proj_bias_t = x.const_f32_like(
-            Arc::clone(&w.in_proj_b),
-            Shape::from_dims(&[4 * h]),
-        );
+        let proj_bias_t = x.const_f32_like(Arc::clone(&w.in_proj_b), Shape::from_dims(&[4 * h]));
         let proj = proj.broadcast_add(&proj_bias_t)?;
         let u_conv_in = proj.slice(2_usize, 0, dim2)?;
         let gate = proj.slice(2_usize, dim2, dim2)?;
@@ -336,14 +347,8 @@ impl BasedModel {
             Shape::from_dims(&[batch, dim2, kernel - 1]),
         );
         let u_padded = pad_zeros.concat(&u_perm, 2_usize)?;
-        let conv_w = x.const_f32_like(
-            Arc::clone(&w.conv_w),
-            Shape::from_dims(&[dim2, 1, kernel]),
-        );
-        let conv_b = x.const_f32_like(
-            Arc::clone(&w.conv_b),
-            Shape::from_dims(&[dim2]),
-        );
+        let conv_w = x.const_f32_like(Arc::clone(&w.conv_w), Shape::from_dims(&[dim2, 1, kernel]));
+        let conv_b = x.const_f32_like(Arc::clone(&w.conv_b), Shape::from_dims(&[dim2]));
         // Note: causal_conv1d's optional fused-SiLU is off — we want
         // the conv output to be then multiplied by silu(...) elsewhere?
         // Looking again, the eager applies silu AFTER conv:
@@ -354,18 +359,11 @@ impl BasedModel {
         let u_conv = u_conv_raw.permute([0, 2, 1_usize])?.silu();
         let v = u_conv.mul(&gate)?;
         let out = w.out_proj_w.apply_linear(&v, dim2, h)?;
-        let out_bias_t = x.const_f32_like(
-            Arc::clone(&w.out_proj_b),
-            Shape::from_dims(&[h]),
-        );
+        let out_bias_t = x.const_f32_like(Arc::clone(&w.out_proj_b), Shape::from_dims(&[h]));
         out.broadcast_add(&out_bias_t)
     }
 
-    fn apply_linear(
-        &self,
-        x: &LazyTensor,
-        w: &BasedLinearAttentionWeights,
-    ) -> Result<LazyTensor> {
+    fn apply_linear(&self, x: &LazyTensor, w: &BasedLinearAttentionWeights) -> Result<LazyTensor> {
         let cfg = &self.config;
         let x_shape = x.shape();
         let dims = x_shape.dims();
@@ -376,7 +374,8 @@ impl BasedModel {
         let d_feat = cfg.la.feature_dim;
         // Eager v_dim: v_proj outputs hidden, reshaped to (b, l, num_heads, hidden/num_heads).
         assert_eq!(
-            h % n_heads, 0,
+            h % n_heads,
+            0,
             "BasedConfig: hidden_size must be divisible by la.num_heads",
         );
         let d_h_v = h / n_heads;
@@ -414,10 +413,7 @@ impl BasedModel {
                 tril_data[i * seq + j] = 1.0;
             }
         }
-        let tril = x.const_f32_like(
-            Arc::from(tril_data),
-            Shape::from_dims(&[1, 1, seq, seq]),
-        );
+        let tril = x.const_f32_like(Arc::from(tril_data), Shape::from_dims(&[1, 1, seq, seq]));
         let tril_bc = tril.broadcast_to(Shape::from_dims(&[batch, n_heads, seq, seq]))?;
         let aqk_masked = aqk.mul(&tril_bc)?;
         let aqk_v = aqk_masked.matmul(&v_h)?; // (b, h, seq, d_h_v)
@@ -425,7 +421,7 @@ impl BasedModel {
         let phi_k_cumsum = phi_k.cumsum(2_usize)?; // along seq axis
         let prod = phi_q.mul(&phi_k_cumsum)?;
         let z_inv = prod
-            .sum_dim(3_usize)?            // (b, h, seq)
+            .sum_dim(3_usize)? // (b, h, seq)
             .add_scalar(1e-12);
         // z = 1 / z_inv. Use mul(-1) negate, exp, etc. — easier: just
         // divide.  We don't have direct scalar-divide on LazyTensor's
@@ -538,10 +534,8 @@ fn taylor_feature_map(
     let x_scaled = x.mul_scalar(1.0 / rrd); // x / d^(1/4)
 
     // Outer product: (b, h, seq, d, 1) * (b, h, seq, 1, d) = (b, h, seq, d, d)
-    let x_col = x
-        .reshape(Shape::from_dims(&[batch, n_heads, seq, d, 1]))?;
-    let x_row = x
-        .reshape(Shape::from_dims(&[batch, n_heads, seq, 1, d]))?;
+    let x_col = x.reshape(Shape::from_dims(&[batch, n_heads, seq, d, 1]))?;
+    let x_row = x.reshape(Shape::from_dims(&[batch, n_heads, seq, 1, d]))?;
     let x_col_bc = x_col.broadcast_to(Shape::from_dims(&[batch, n_heads, seq, d, d]))?;
     let x_row_bc = x_row.broadcast_to(Shape::from_dims(&[batch, n_heads, seq, d, d]))?;
     let outer = x_col_bc.mul(&x_row_bc)?;
@@ -611,10 +605,16 @@ impl BasedWeights {
             // MLP: fc1 is `[4*hidden, hidden]` HF → `[hidden, 4*hidden]` fuel;
             // fc2 is `[hidden, intermediate]` HF → `[intermediate, hidden]`.
             let fc1 = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.mlp.fc1.weight"), 4 * h, h,
+                st,
+                &format!("{p}.mlp.fc1.weight"),
+                4 * h,
+                h,
             )?;
             let fc2 = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.mlp.fc2.weight"), h, cfg.intermediate_size,
+                st,
+                &format!("{p}.mlp.fc2.weight"),
+                h,
+                cfg.intermediate_size,
             )?;
 
             let mixer = match cfg.mixer_kind(i) {
@@ -622,46 +622,53 @@ impl BasedWeights {
                     let mp = format!("{p}.mixer");
                     // in_proj: [4*hidden, hidden] HF → [hidden, 4*hidden]
                     let in_proj_w = load_transposed_matrix_preserve_dtype(
-                        st, &format!("{mp}.in_proj.weight"), 4 * h, h,
+                        st,
+                        &format!("{mp}.in_proj.weight"),
+                        4 * h,
+                        h,
                     )?;
-                    let in_proj_b: Arc<[f32]> = load_tensor_as_f32(
-                        st, &format!("{mp}.in_proj.bias"),
-                    )
-                    .ok()
-                    .map(Arc::from)
-                    .unwrap_or_else(|| Arc::from(vec![0.0_f32; 4 * h]));
+                    let in_proj_b: Arc<[f32]> =
+                        load_tensor_as_f32(st, &format!("{mp}.in_proj.bias"))
+                            .ok()
+                            .map(Arc::from)
+                            .unwrap_or_else(|| Arc::from(vec![0.0_f32; 4 * h]));
 
                     // Depthwise conv kernel: HF shape `[2*hidden, 1, 3]`
                     // (out_channels = in_channels = groups = 2*hidden,
                     // kernel = 3). The data layout matches what
                     // `causal_conv1d` consumes directly.
-                    let conv_w: Arc<[f32]> = Arc::from(load_tensor_as_f32(
-                        st, &format!("{mp}.conv.conv.weight"),
-                    )?);
+                    let conv_w: Arc<[f32]> =
+                        Arc::from(load_tensor_as_f32(st, &format!("{mp}.conv.conv.weight"))?);
                     // Eager runs `conv1d_no_bias`, so the bias is
                     // optional in the checkpoint; synthesise zeros if
                     // the tensor is absent. Length = 2*hidden.
-                    let conv_b: Arc<[f32]> = load_tensor_as_f32(
-                        st, &format!("{mp}.conv.conv.bias"),
-                    )
-                    .ok()
-                    .map(Arc::from)
-                    .unwrap_or_else(|| Arc::from(vec![0.0_f32; dim2]));
+                    let conv_b: Arc<[f32]> =
+                        load_tensor_as_f32(st, &format!("{mp}.conv.conv.bias"))
+                            .ok()
+                            .map(Arc::from)
+                            .unwrap_or_else(|| Arc::from(vec![0.0_f32; dim2]));
 
                     // out_proj: [hidden, 2*hidden] HF → [2*hidden, hidden]
                     let out_proj_w = load_transposed_matrix_preserve_dtype(
-                        st, &format!("{mp}.out_proj.weight"), h, dim2,
+                        st,
+                        &format!("{mp}.out_proj.weight"),
+                        h,
+                        dim2,
                     )?;
-                    let out_proj_b: Arc<[f32]> = load_tensor_as_f32(
-                        st, &format!("{mp}.out_proj.bias"),
-                    )
-                    .ok()
-                    .map(Arc::from)
-                    .unwrap_or_else(|| Arc::from(vec![0.0_f32; h]));
+                    let out_proj_b: Arc<[f32]> =
+                        load_tensor_as_f32(st, &format!("{mp}.out_proj.bias"))
+                            .ok()
+                            .map(Arc::from)
+                            .unwrap_or_else(|| Arc::from(vec![0.0_f32; h]));
 
                     let _ = (conv_w.len(), kernel); // silence unused if k changes
                     BasedMixerWeights::Conv(BasedConvWeights {
-                        in_proj_w, in_proj_b, conv_w, conv_b, out_proj_w, out_proj_b,
+                        in_proj_w,
+                        in_proj_b,
+                        conv_w,
+                        conv_b,
+                        out_proj_w,
+                        out_proj_b,
                     })
                 }
                 BasedMixerKind::Linear => {
@@ -669,43 +676,74 @@ impl BasedWeights {
                     // proj_q / proj_k: [n_heads*feature_dim, hidden] HF
                     //   → [hidden, n_heads*feature_dim]
                     let q_proj = load_transposed_matrix_preserve_dtype(
-                        st, &format!("{mp}.proj_q.weight"), n_heads_la * d_feat, h,
+                        st,
+                        &format!("{mp}.proj_q.weight"),
+                        n_heads_la * d_feat,
+                        h,
                     )?;
                     let k_proj = load_transposed_matrix_preserve_dtype(
-                        st, &format!("{mp}.proj_k.weight"), n_heads_la * d_feat, h,
+                        st,
+                        &format!("{mp}.proj_k.weight"),
+                        n_heads_la * d_feat,
+                        h,
                     )?;
                     // proj_v: [hidden, hidden]
                     let v_proj = load_transposed_matrix_preserve_dtype(
-                        st, &format!("{mp}.proj_v.weight"), h, h,
+                        st,
+                        &format!("{mp}.proj_v.weight"),
+                        h,
+                        h,
                     )?;
                     // out_proj: [hidden, hidden]
                     let out_proj = load_transposed_matrix_preserve_dtype(
-                        st, &format!("{mp}.out_proj.weight"), h, h,
+                        st,
+                        &format!("{mp}.out_proj.weight"),
+                        h,
+                        h,
                     )?;
                     BasedMixerWeights::Linear(BasedLinearAttentionWeights {
-                        q_proj, k_proj, v_proj, out_proj,
+                        q_proj,
+                        k_proj,
+                        v_proj,
+                        out_proj,
                     })
                 }
                 BasedMixerKind::Sliding => {
                     let mp = format!("{p}.mixer");
                     // Wqkv: fused [3*hidden, hidden] HF → [hidden, 3*hidden]
                     let wqkv = load_transposed_matrix_preserve_dtype(
-                        st, &format!("{mp}.Wqkv.weight"), 3 * h, h,
+                        st,
+                        &format!("{mp}.Wqkv.weight"),
+                        3 * h,
+                        h,
                     )?;
                     let out_proj = load_transposed_matrix_preserve_dtype(
-                        st, &format!("{mp}.out_proj.weight"), h, h,
+                        st,
+                        &format!("{mp}.out_proj.weight"),
+                        h,
+                        h,
                     )?;
                     BasedMixerWeights::Sliding(BasedSlidingWeights { wqkv, out_proj })
                 }
             };
 
-            layers.push(BasedLayerWeights { norm1_gain, norm2_gain, mixer, fc1, fc2 });
+            layers.push(BasedLayerWeights {
+                norm1_gain,
+                norm2_gain,
+                mixer,
+                fc1,
+                fc2,
+            });
         }
 
         let final_norm_gain: Arc<[f32]> =
             Arc::from(load_tensor_as_f32(st, "transformer.ln_f.weight")?);
 
-        Ok(Self { token_embedding, layers, final_norm_gain })
+        Ok(Self {
+            token_embedding,
+            layers,
+            final_norm_gain,
+        })
     }
 }
 
@@ -740,12 +778,20 @@ mod tests {
                         out_proj_w: WeightStorage::F32(vec_of(dim2 * h, &mut *nb)),
                         out_proj_b: vec_of(h, &mut *nb),
                     }),
-                    BasedMixerKind::Linear => BasedMixerWeights::Linear(BasedLinearAttentionWeights {
-                        q_proj: WeightStorage::F32(vec_of(h * cfg.la.num_heads * cfg.la.feature_dim, &mut *nb)),
-                        k_proj: WeightStorage::F32(vec_of(h * cfg.la.num_heads * cfg.la.feature_dim, &mut *nb)),
-                        v_proj: WeightStorage::F32(vec_of(h * h, &mut *nb)),
-                        out_proj: WeightStorage::F32(vec_of(h * h, &mut *nb)),
-                    }),
+                    BasedMixerKind::Linear => {
+                        BasedMixerWeights::Linear(BasedLinearAttentionWeights {
+                            q_proj: WeightStorage::F32(vec_of(
+                                h * cfg.la.num_heads * cfg.la.feature_dim,
+                                &mut *nb,
+                            )),
+                            k_proj: WeightStorage::F32(vec_of(
+                                h * cfg.la.num_heads * cfg.la.feature_dim,
+                                &mut *nb,
+                            )),
+                            v_proj: WeightStorage::F32(vec_of(h * h, &mut *nb)),
+                            out_proj: WeightStorage::F32(vec_of(h * h, &mut *nb)),
+                        })
+                    }
                     BasedMixerKind::Sliding => BasedMixerWeights::Sliding(BasedSlidingWeights {
                         wqkv: WeightStorage::F32(vec_of(h * (3 * h), &mut *nb)),
                         out_proj: WeightStorage::F32(vec_of(h * h, &mut *nb)),
@@ -761,7 +807,11 @@ mod tests {
             })
             .collect();
         let final_norm_gain = Arc::from(vec![1.0_f32; h]);
-        BasedWeights { token_embedding, layers, final_norm_gain }
+        BasedWeights {
+            token_embedding,
+            layers,
+            final_norm_gain,
+        }
     }
 
     fn tiny_config() -> BasedConfig {
@@ -773,18 +823,28 @@ mod tests {
             num_attention_heads: 2,
             layer_norm_epsilon: 1e-5,
             rope_theta: 10_000.0,
-            alt_mixer_layers: vec![1],     // layer 1 = LinearAttention
-            alt_mixer_2_layers: vec![2],   // layer 2 = SlidingWindowAttention
-                                            // layer 0 = BasedConv (default)
-            la: BasedLinearAttentionParams { num_heads: 2, feature_dim: 4, input_dim: 4 },
-            swa: BasedSlidingWindowParams { num_heads: 2, window_size: 4 },
+            alt_mixer_layers: vec![1],   // layer 1 = LinearAttention
+            alt_mixer_2_layers: vec![2], // layer 2 = SlidingWindowAttention
+            // layer 0 = BasedConv (default)
+            la: BasedLinearAttentionParams {
+                num_heads: 2,
+                feature_dim: 4,
+                input_dim: 4,
+            },
+            swa: BasedSlidingWindowParams {
+                num_heads: 2,
+                window_size: 4,
+            },
         }
     }
 
     #[test]
     fn forward_shape_and_finite() {
         let cfg = tiny_config();
-        let model = BasedModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = BasedModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits = model.forward(&tokens, 0).unwrap();
         assert_eq!(logits.shape().dims(), &[1, tokens.len(), cfg.vocab_size]);
@@ -800,8 +860,13 @@ mod tests {
     fn all_three_mixers_active() {
         let cfg = tiny_config();
         let base = tiny_weights(&cfg);
-        let baseline = BasedModel { config: cfg.clone(), weights: base.clone() }
-            .forward(&[1, 2, 3], 0).unwrap().realize_f32();
+        let baseline = BasedModel {
+            config: cfg.clone(),
+            weights: base.clone(),
+        }
+        .forward(&[1, 2, 3], 0)
+        .unwrap()
+        .realize_f32();
 
         // Zero out the Conv mixer's output projection at layer 0.
         {
@@ -811,8 +876,13 @@ mod tests {
                 c.out_proj_w = WeightStorage::F32(Arc::from(vec![0.0_f32; (2 * h) * h]));
                 c.out_proj_b = Arc::from(vec![0.0_f32; h]);
             }
-            let out = BasedModel { config: cfg.clone(), weights: w }
-                .forward(&[1, 2, 3], 0).unwrap().realize_f32();
+            let out = BasedModel {
+                config: cfg.clone(),
+                weights: w,
+            }
+            .forward(&[1, 2, 3], 0)
+            .unwrap()
+            .realize_f32();
             let mut max_diff = 0.0_f32;
             for (a, b) in baseline.iter().zip(out.iter()) {
                 max_diff = max_diff.max((a - b).abs());
@@ -827,8 +897,13 @@ mod tests {
                 let h = cfg.hidden_size;
                 la.out_proj = WeightStorage::F32(Arc::from(vec![0.0_f32; h * h]));
             }
-            let out = BasedModel { config: cfg.clone(), weights: w }
-                .forward(&[1, 2, 3], 0).unwrap().realize_f32();
+            let out = BasedModel {
+                config: cfg.clone(),
+                weights: w,
+            }
+            .forward(&[1, 2, 3], 0)
+            .unwrap()
+            .realize_f32();
             let mut max_diff = 0.0_f32;
             for (a, b) in baseline.iter().zip(out.iter()) {
                 max_diff = max_diff.max((a - b).abs());
@@ -843,13 +918,21 @@ mod tests {
                 let h = cfg.hidden_size;
                 sw.out_proj = WeightStorage::F32(Arc::from(vec![0.0_f32; h * h]));
             }
-            let out = BasedModel { config: cfg.clone(), weights: w }
-                .forward(&[1, 2, 3], 0).unwrap().realize_f32();
+            let out = BasedModel {
+                config: cfg.clone(),
+                weights: w,
+            }
+            .forward(&[1, 2, 3], 0)
+            .unwrap()
+            .realize_f32();
             let mut max_diff = 0.0_f32;
             for (a, b) in baseline.iter().zip(out.iter()) {
                 max_diff = max_diff.max((a - b).abs());
             }
-            assert!(max_diff > 1e-6, "SlidingWindowAttention mixer must affect output");
+            assert!(
+                max_diff > 1e-6,
+                "SlidingWindowAttention mixer must affect output"
+            );
         }
     }
 
@@ -864,7 +947,10 @@ mod tests {
     #[test]
     fn forward_hidden_shape_and_finite() {
         let cfg = tiny_config();
-        let model = BasedModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = BasedModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
         let hidden = model.forward_hidden(&tokens, 0).unwrap();
         assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
@@ -876,27 +962,37 @@ mod tests {
     #[test]
     fn forward_embeds_matches_forward_after_token_lookup() {
         let cfg = tiny_config();
-        let model = BasedModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = BasedModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
-        let max_diff = logits_ref.iter().zip(logits_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "Based forward vs forward_embeds must agree (max diff {max_diff})");
+        let max_diff = logits_ref
+            .iter()
+            .zip(logits_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "Based forward vs forward_embeds must agree (max diff {max_diff})"
+        );
     }
 
     #[test]
     fn forward_embeds_rejects_bad_shape() {
         let cfg = tiny_config();
-        let model = BasedModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = BasedModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let bad = LazyTensor::from_f32(
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
-            Shape::from_dims(&[1, 3, cfg.hidden_size + 1]), &Device::cpu(),
+            Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
+            &Device::cpu(),
         );
         assert!(model.forward_embeds(&bad, 0).is_err());
     }
@@ -904,29 +1000,41 @@ mod tests {
     #[test]
     fn forward_hidden_embeds_matches_forward_hidden() {
         let cfg = tiny_config();
-        let model = BasedModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = BasedModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
-        let h_via_embeds = model.forward_hidden_embeds(&embeds, 0).unwrap().realize_f32();
-        let max_diff = h_ref.iter().zip(h_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "Based forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})");
+        let h_via_embeds = model
+            .forward_hidden_embeds(&embeds, 0)
+            .unwrap()
+            .realize_f32();
+        let max_diff = h_ref
+            .iter()
+            .zip(h_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "Based forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})"
+        );
     }
 
     #[test]
     fn forward_embeds_rejects_nonzero_start_pos() {
         // v1 prefill only — start_pos != 0 must Err.
         let cfg = tiny_config();
-        let model = BasedModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
-        let embeds = model.embed_tokens_anchored(&anchor, &[1_u32, 2, 3]).unwrap();
+        let model = BasedModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let embeds = model
+            .embed_tokens_anchored(&anchor, &[1_u32, 2, 3])
+            .unwrap();
         assert!(model.forward_embeds(&embeds, 1).is_err());
     }
 }

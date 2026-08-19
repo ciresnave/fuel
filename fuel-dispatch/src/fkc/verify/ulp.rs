@@ -7,7 +7,9 @@
 //! [`KernelInvoker`]s, so unit tests here use fake in-process invokers; the
 //! real CPU-reference-vs-CUDA-candidate wiring is Task 4.5.
 
-use crate::fkc::verify::bit_stability::{HostTensor, KernelInvoker, ProbeInputs, VerifyError, VerifyOutcome};
+use crate::fkc::verify::bit_stability::{
+    HostTensor, KernelInvoker, ProbeInputs, VerifyError, VerifyOutcome,
+};
 use crate::kernel::BindingEntry;
 use fuel_graph::jit::{OpTag, PatternNode};
 
@@ -114,7 +116,10 @@ pub fn verify_precision_bound(
 /// classification so the two never drift.
 pub(crate) fn is_transcendental(tag: OpTag) -> bool {
     use OpTag::*;
-    matches!(tag, Exp | Log | Sin | Cos | Tanh | Sigmoid | Silu | Gelu | GeluErf | Erf | Rsqrt)
+    matches!(
+        tag,
+        Exp | Log | Sin | Cos | Tanh | Sigmoid | Silu | Gelu | GeluErf | Erf | Rsqrt
+    )
 }
 
 /// Whether a recipe region contains any transcendental atom. A
@@ -151,14 +156,17 @@ pub fn widen_bound_for_transcendental(bound: Bound) -> Bound {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_transcendental, region_contains_transcendental, ulp_distance,
-        widen_bound_for_transcendental, Bound,
+        Bound, is_transcendental, region_contains_transcendental, ulp_distance,
+        widen_bound_for_transcendental,
     };
     use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
 
     #[test]
     fn widen_doubles_each_bound() {
-        assert!(matches!(widen_bound_for_transcendental(Bound::MaxUlp(4)), Bound::MaxUlp(8)));
+        assert!(matches!(
+            widen_bound_for_transcendental(Bound::MaxUlp(4)),
+            Bound::MaxUlp(8)
+        ));
         match widen_bound_for_transcendental(Bound::MaxRelative(1e-6)) {
             Bound::MaxRelative(m) => assert!((m - 2e-6).abs() < 1e-18),
             other => panic!("expected MaxRelative, got {other:?}"),
@@ -177,13 +185,29 @@ mod tests {
     #[test]
     fn is_transcendental_classifies_exactly() {
         for t in [
-            OpTag::Exp, OpTag::Log, OpTag::Sin, OpTag::Cos, OpTag::Tanh, OpTag::Sigmoid,
-            OpTag::Silu, OpTag::Gelu, OpTag::GeluErf, OpTag::Erf, OpTag::Rsqrt,
+            OpTag::Exp,
+            OpTag::Log,
+            OpTag::Sin,
+            OpTag::Cos,
+            OpTag::Tanh,
+            OpTag::Sigmoid,
+            OpTag::Silu,
+            OpTag::Gelu,
+            OpTag::GeluErf,
+            OpTag::Erf,
+            OpTag::Rsqrt,
         ] {
             assert!(is_transcendental(t), "{t:?} should be transcendental");
         }
         // Sqrt/Recip are IEEE correctly-rounded — NOT band-widened.
-        for t in [OpTag::Sqrt, OpTag::Recip, OpTag::Relu, OpTag::Neg, OpTag::Abs, OpTag::Sqr] {
+        for t in [
+            OpTag::Sqrt,
+            OpTag::Recip,
+            OpTag::Relu,
+            OpTag::Neg,
+            OpTag::Abs,
+            OpTag::Sqr,
+        ] {
             assert!(!is_transcendental(t), "{t:?} should NOT be transcendental");
         }
     }
@@ -201,7 +225,10 @@ mod tests {
             operands: vec![inner],
             attrs: OpAttrs::default(),
         };
-        assert!(region_contains_transcendental(&outer), "nested Exp must be found");
+        assert!(
+            region_contains_transcendental(&outer),
+            "nested Exp must be found"
+        );
 
         // Op{Neg, [Op{Sqr, [Bind0]}]} — no transcendental atom.
         let inner2 = PatternNode::Op {
@@ -214,7 +241,10 @@ mod tests {
             operands: vec![inner2],
             attrs: OpAttrs::default(),
         };
-        assert!(!region_contains_transcendental(&outer2), "no transcendental atom present");
+        assert!(
+            !region_contains_transcendental(&outer2),
+            "no transcendental atom present"
+        );
     }
 
     #[test]

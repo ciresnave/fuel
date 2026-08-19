@@ -43,7 +43,7 @@ use fuel::inference_context::{
 };
 use fuel::kv_block_pool::{KvBlockPool, KvGeometry, PoolCapacity, PrefixId, SessionHandle};
 use fuel::kv_block_pool_device::{DeviceEvicted, DeviceKvPool};
-use fuel::lazy::{sample_logits, LlamaModel, SamplingStrategy};
+use fuel::lazy::{LlamaModel, SamplingStrategy, sample_logits};
 
 /// The KV memory budget a [`SessionScheduler`] admits sessions against — the
 /// C-1 capacity mechanism (from [15-consumer-contract]). `num_blocks` physical
@@ -327,13 +327,7 @@ impl DecodeModel for fuel::lazy_quantized_llama::QuantizedLlama3Model {
         ctx: &mut InferenceContext,
         session: &mut Option<DecodeSession>,
     ) -> fuel::Result<Vec<f32>> {
-        DecodeModel::forward_with_kv_context_persistent(
-            self.inner(),
-            tokens,
-            cache,
-            ctx,
-            session,
-        )
+        DecodeModel::forward_with_kv_context_persistent(self.inner(), tokens, cache, ctx, session)
     }
     fn supports_batched_decode(&self) -> bool {
         DecodeModel::supports_batched_decode(self.inner())
@@ -345,13 +339,7 @@ impl DecodeModel for fuel::lazy_quantized_llama::QuantizedLlama3Model {
         device: &Device,
         dtype: DType,
     ) -> fuel::Result<Vec<Vec<f32>>> {
-        DecodeModel::build_batched_decode_logits(
-            self.inner(),
-            caches,
-            last_tokens,
-            device,
-            dtype,
-        )
+        DecodeModel::build_batched_decode_logits(self.inner(), caches, last_tokens, device, dtype)
     }
 }
 
@@ -382,7 +370,13 @@ impl PagedDecodeModel for LlamaModel {
         decode_session: &mut Option<PagedDecodeSession>,
     ) -> fuel::Result<Vec<f32>> {
         LlamaModel::forward_paged_step_persistent(
-            self, token, pool, session, max_blocks_cap, plan, decode_session,
+            self,
+            token,
+            pool,
+            session,
+            max_blocks_cap,
+            plan,
+            decode_session,
         )
     }
 }
@@ -433,9 +427,12 @@ impl ModelDims {
     /// collapsed pair through a fallible boundary. See GAP-166 / GAP-170 and
     /// [`LayerStateSpec::collapse_uniform`].
     pub fn from_model<M: DecodeModel + ?Sized>(model: &M) -> fuel::Result<Self> {
-        let (n_kv_heads, head_dim) =
-            LayerStateSpec::collapse_uniform(&model.layer_state_specs())?;
-        Ok(Self { n_layers: model.n_layers(), n_kv_heads, head_dim })
+        let (n_kv_heads, head_dim) = LayerStateSpec::collapse_uniform(&model.layer_state_specs())?;
+        Ok(Self {
+            n_layers: model.n_layers(),
+            n_kv_heads,
+            head_dim,
+        })
     }
 }
 
@@ -487,9 +484,7 @@ impl SessionState {
             return Err(Error::Msg("SessionState::new: prompt is empty".to_string()).bt());
         }
         if max_new == 0 {
-            return Err(
-                Error::Msg("SessionState::new: max_new must be > 0".to_string()).bt(),
-            );
+            return Err(Error::Msg("SessionState::new: max_new must be > 0".to_string()).bt());
         }
         // Per-session RNG seed — the contamination firewall. A Temperature
         // strategy seeds from its `seed`; Greedy is deterministic (0).
@@ -659,7 +654,7 @@ impl BatchedDecode {
                 return Err(Error::Msg(
                     "BatchedDecode::try_batched_step: a session has no last token".to_string(),
                 )
-                .bt())
+                .bt());
             }
         };
         // Borrow each session's own KvCache. `build_batched_decode_logits`
@@ -827,7 +822,8 @@ impl<'m, M: DecodeModel> SessionScheduler<'m, M> {
                 "SessionScheduler::add_session: KV capacity — session needs {needed} blocks, \
                  {free} free (shed load, or reap_finished to reclaim). Pre-check with \
                  kv_blocks_required + kv_free_blocks.",
-            )).bt());
+            ))
+            .bt());
         }
 
         let id = SessionId(self.next_id);
@@ -848,7 +844,12 @@ impl<'m, M: DecodeModel> SessionScheduler<'m, M> {
         let handle = self.kv_pool.open();
         self.kv_pool
             .append(handle, prompt.len() + max_new)
-            .map_err(|e| Error::Msg(format!("SessionScheduler::add_session: reserve failed: {e:?}")).bt())?;
+            .map_err(|e| {
+                Error::Msg(format!(
+                    "SessionScheduler::add_session: reserve failed: {e:?}"
+                ))
+                .bt()
+            })?;
         self.kv_handles.insert(id, handle);
         self.next_id += 1;
         self.sessions.push(state);
@@ -1034,11 +1035,7 @@ impl<'m, M: DecodeModel> SessionScheduler<'m, M> {
 
     /// Run one forward and store its logits on the session. Shared by the
     /// prefill (full prompt) and decode (last token) advances.
-    fn forward_and_store(
-        model: &M,
-        s: &mut SessionState,
-        input: &[u32],
-    ) -> fuel::Result<()> {
+    fn forward_and_store(model: &M, s: &mut SessionState, input: &[u32]) -> fuel::Result<()> {
         let logits = model.forward_with_kv_context_persistent(
             input,
             &mut s.cache,
@@ -1052,12 +1049,7 @@ impl<'m, M: DecodeModel> SessionScheduler<'m, M> {
     /// Given the result of a single advance, sample the token (per-session
     /// RNG) and record it in the report; on advance error, finish the session
     /// with a recorded error. Never panics, never propagates.
-    fn finalize_advance(
-        &mut self,
-        idx: usize,
-        advance: fuel::Result<()>,
-        report: &mut StepReport,
-    ) {
+    fn finalize_advance(&mut self, idx: usize, advance: fuel::Result<()>, report: &mut StepReport) {
         match advance {
             Ok(()) => match self.sessions[idx].sample_and_append() {
                 Ok(Some(_)) => {
@@ -1105,7 +1097,9 @@ impl<'m, M: DecodeModel> SessionScheduler<'m, M> {
 
     /// Whether every session has finished (vacuously true when empty).
     pub fn is_all_finished(&self) -> bool {
-        self.sessions.iter().all(|s| s.phase == SessionPhase::Finished)
+        self.sessions
+            .iter()
+            .all(|s| s.phase == SessionPhase::Finished)
     }
 
     /// (test-support) Add a session whose FIRST advance is forced to error, for
@@ -1338,7 +1332,9 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
 
     /// Whether session `id` is currently suspended (evicted).
     pub fn is_suspended(&self, id: SessionId) -> bool {
-        self.sessions.iter().any(|s| s.id == id && s.suspended.is_some())
+        self.sessions
+            .iter()
+            .any(|s| s.id == id && s.suspended.is_some())
     }
 
     // --- C-3 on the live path: evict / restore a decoding session --------
@@ -1388,7 +1384,10 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
         let need = match &self.sessions[idx].suspended {
             Some(ev) => ev.saved_block_count(),
             None => {
-                return Err(Error::Msg(format!("restore_session: session {id:?} is not suspended")).bt())
+                return Err(Error::Msg(format!(
+                    "restore_session: session {id:?} is not suspended"
+                ))
+                .bt());
             }
         };
         let free = self.pool.core().free_blocks();
@@ -1396,10 +1395,14 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
             return Err(Error::Msg(format!(
                 "restore_session: needs {need} blocks, {free} free — session {id:?} stays \
                  suspended (free room and retry)",
-            )).bt());
+            ))
+            .bt());
         }
         // Pre-checked, so `restore` cannot OutOfBlocks — only now consume the handle.
-        let evicted = self.sessions[idx].suspended.take().expect("checked Some above");
+        let evicted = self.sessions[idx]
+            .suspended
+            .take()
+            .expect("checked Some above");
         let handle = self.sessions[idx].handle;
         self.pool.restore(handle, evicted)
     }
@@ -1415,10 +1418,15 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
         max_new: usize,
     ) -> fuel::Result<SessionId> {
         if prompt.is_empty() {
-            return Err(Error::Msg("PagedSessionScheduler::add_session: prompt is empty".into()).bt());
+            return Err(
+                Error::Msg("PagedSessionScheduler::add_session: prompt is empty".into()).bt(),
+            );
         }
         if max_new == 0 {
-            return Err(Error::Msg("PagedSessionScheduler::add_session: max_new must be > 0".into()).bt());
+            return Err(Error::Msg(
+                "PagedSessionScheduler::add_session: max_new must be > 0".into(),
+            )
+            .bt());
         }
         let id = SessionId(self.next_id);
         let handle = self.pool.core_mut().open();
@@ -1479,9 +1487,7 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
         self.pool
             .core_mut()
             .register_prefix(handle, prefix_blocks)
-            .map_err(|e| {
-                Error::Msg(format!("PagedSessionScheduler::register_prefix: {e:?}")).bt()
-            })
+            .map_err(|e| Error::Msg(format!("PagedSessionScheduler::register_prefix: {e:?}")).bt())
     }
 
     /// Release a registered prefix ([`KvBlockPool::release_prefix`]): drop the
@@ -1492,9 +1498,7 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
         self.pool
             .core_mut()
             .release_prefix(prefix)
-            .map_err(|e| {
-                Error::Msg(format!("PagedSessionScheduler::release_prefix: {e:?}")).bt()
-            })
+            .map_err(|e| Error::Msg(format!("PagedSessionScheduler::release_prefix: {e:?}")).bt())
     }
 
     /// Admit a session that REUSES a registered KV prefix (rung-1 prefix sharing) —
@@ -1682,7 +1686,8 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
     fn collect_decode_ready(&self) -> Vec<usize> {
         (0..self.sessions.len())
             .filter(|&i| {
-                self.sessions[i].phase == SessionPhase::Decode && self.sessions[i].suspended.is_none()
+                self.sessions[i].phase == SessionPhase::Decode
+                    && self.sessions[i].suspended.is_none()
             })
             .collect()
     }
@@ -1755,7 +1760,11 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
                 report.used_batched_arm = true;
             }
             Ok(rows) => {
-                let msg = format!("decode_batch: {} rows for {} sessions", rows.len(), idxs.len());
+                let msg = format!(
+                    "decode_batch: {} rows for {} sessions",
+                    rows.len(),
+                    idxs.len()
+                );
                 for &idx in idxs {
                     self.finish_error(idx, msg.clone(), report);
                 }
@@ -1823,7 +1832,10 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
         {
             self.step();
         }
-        self.sessions.iter().map(|s| (s.id, s.tokens.clone())).collect()
+        self.sessions
+            .iter()
+            .map(|s| (s.id, s.tokens.clone()))
+            .collect()
     }
 
     /// Reap every `Finished` session: discard its pool session (freeing its
@@ -1848,7 +1860,9 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel::lazy::{LlamaConfig, LlamaModel, LlamaWeights, LayerWeights, WeightStorage, SamplingStrategy};
+    use fuel::lazy::{
+        LayerWeights, LlamaConfig, LlamaModel, LlamaWeights, SamplingStrategy, WeightStorage,
+    };
     // NOTE: `fuel_ir::Device` does not exist — the device type is `fuel::Device`
     // (fuel_core::Device), which is what `KvCache::with_capacity` takes. `DType`
     // is `fuel_ir::DType`. This mirrors the `use` lines at the top of
@@ -1858,32 +1872,49 @@ mod tests {
     use std::sync::Arc;
 
     fn tiny_cfg() -> LlamaConfig {
-        LlamaConfig { vocab_size: 16, dim: 8, n_layers: 2, n_heads: 2,
-            n_kv_heads: 2, head_dim: 4, ffn_dim: 16, norm_eps: 1e-5, rope_base: 10000.0 }
+        LlamaConfig {
+            vocab_size: 16,
+            dim: 8,
+            n_layers: 2,
+            n_heads: 2,
+            n_kv_heads: 2,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
+        }
     }
     // Mirror lazy.rs generate_tests::make_tiny_weights_seeded.
     fn tiny_weights(cfg: &LlamaConfig, seed: u32) -> LlamaWeights {
         let mut s = seed;
-        let mut next = || { s = s.wrapping_mul(1103515245).wrapping_add(12345);
-            ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.1 };
-        let mut vec_of = |n: usize| -> Arc<[f32]> { Arc::from((0..n).map(|_| next()).collect::<Vec<_>>()) };
+        let mut next = || {
+            s = s.wrapping_mul(1103515245).wrapping_add(12345);
+            ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.1
+        };
+        let mut vec_of =
+            |n: usize| -> Arc<[f32]> { Arc::from((0..n).map(|_| next()).collect::<Vec<_>>()) };
         let kv = cfg.n_kv_heads * cfg.head_dim;
         LlamaWeights {
             instance: fuel::decode_shape::ModelInstanceId::next(),
             token_embedding: vec_of(cfg.vocab_size * cfg.dim),
-            layers: (0..cfg.n_layers).map(|_| LayerWeights {
-                attn_q: vec_of(cfg.dim*cfg.dim).into(), attn_q_bias: None,
-                attn_k: vec_of(cfg.dim*kv).into(), attn_k_bias: None,
-                attn_v: vec_of(cfg.dim*kv).into(), attn_v_bias: None,
-                attn_o: vec_of(cfg.dim*cfg.dim).into(),
-                ffn_gate: vec_of(cfg.dim*cfg.ffn_dim).into(),
-                ffn_up: vec_of(cfg.dim*cfg.ffn_dim).into(),
-                ffn_down: vec_of(cfg.ffn_dim*cfg.dim).into(),
-                attn_norm_gain: Arc::from(vec![1.0; cfg.dim]),
-                ffn_norm_gain: Arc::from(vec![1.0; cfg.dim]),
-            }).collect(),
+            layers: (0..cfg.n_layers)
+                .map(|_| LayerWeights {
+                    attn_q: vec_of(cfg.dim * cfg.dim).into(),
+                    attn_q_bias: None,
+                    attn_k: vec_of(cfg.dim * kv).into(),
+                    attn_k_bias: None,
+                    attn_v: vec_of(cfg.dim * kv).into(),
+                    attn_v_bias: None,
+                    attn_o: vec_of(cfg.dim * cfg.dim).into(),
+                    ffn_gate: vec_of(cfg.dim * cfg.ffn_dim).into(),
+                    ffn_up: vec_of(cfg.dim * cfg.ffn_dim).into(),
+                    ffn_down: vec_of(cfg.ffn_dim * cfg.dim).into(),
+                    attn_norm_gain: Arc::from(vec![1.0; cfg.dim]),
+                    ffn_norm_gain: Arc::from(vec![1.0; cfg.dim]),
+                })
+                .collect(),
             final_norm_gain: Arc::from(vec![1.0; cfg.dim]),
-            output: vec_of(cfg.dim*cfg.vocab_size).into(),
+            output: vec_of(cfg.dim * cfg.vocab_size).into(),
         }
     }
     // CAUTION: this tiny random model's GREEDY output is a fixed point — its
@@ -1898,16 +1929,26 @@ mod tests {
     // get them from a structural guard (e.g. `session_realize_count`), not the tokens.
     fn tiny_model(seed: u32) -> LlamaModel {
         let cfg = tiny_cfg();
-        LlamaModel { config: cfg.clone(), weights: tiny_weights(&cfg, seed) }
+        LlamaModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg, seed),
+        }
     }
     /// A generous KV budget for tests that don't exercise the capacity gate —
     /// large enough that no admission is ever rejected. Capacity-gate tests
     /// build their own tight budget.
     fn test_budget() -> KvBudget {
-        KvBudget { block_size: 16, num_blocks: 4096 }
+        KvBudget {
+            block_size: 16,
+            num_blocks: 4096,
+        }
     }
     fn dims(cfg: &LlamaConfig) -> ModelDims {
-        ModelDims { n_layers: cfg.n_layers, n_kv_heads: cfg.n_kv_heads, head_dim: cfg.head_dim }
+        ModelDims {
+            n_layers: cfg.n_layers,
+            n_kv_heads: cfg.n_kv_heads,
+            head_dim: cfg.head_dim,
+        }
     }
 
     // ---------------- GAP-029: quantized LLaMA decode surface ----------------
@@ -1964,10 +2005,18 @@ mod tests {
         n_decode: usize,
         dev: &Device,
     ) -> Vec<f32> {
-        assert!(n_decode > 1, "must cover the rebind half, not just the build half");
+        assert!(
+            n_decode > 1,
+            "must cover the rebind half, not just the build half"
+        );
         let dims = ModelDims::from_model(m).expect("uniform per-head KV geometry");
         let mut cache = KvCache::with_capacity(
-            dims.n_layers, dims.n_kv_heads, dims.head_dim, 128, DType::F32, dev,
+            dims.n_layers,
+            dims.n_kv_heads,
+            dims.head_dim,
+            128,
+            DType::F32,
+            dev,
         )
         .expect("kv cache");
         let mut ctx = InferenceContext::new(dev.clone());
@@ -1992,7 +2041,10 @@ mod tests {
 
     fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
         assert_eq!(a.len(), b.len(), "logit rows must be the same width");
-        a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max)
+        a.iter()
+            .zip(b.iter())
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0f32, f32::max)
     }
 
     /// GAP-029 — the quantized LLaMA decode surface must delegate to the
@@ -2054,13 +2106,11 @@ mod tests {
         let cfg = scaled_q4_0_cfg();
         let lazy_cfg = cfg.to_lazy_config();
         let src = tiny_weights(&lazy_cfg, 909);
-        let qmodel = QuantizedLlama3Model::from_f32_bake(cfg.clone(), src)
-            .expect("Q4_0 bake");
+        let qmodel = QuantizedLlama3Model::from_f32_bake(cfg.clone(), src).expect("Q4_0 bake");
 
         // Position 40 for the decode step — high enough that scaled/unscaled
         // separate (see the arithmetic above), well inside max_position 128.
-        let prompt: Vec<u32> =
-            (0..40u32).map(|i| i % lazy_cfg.vocab_size as u32).collect();
+        let prompt: Vec<u32> = (0..40u32).map(|i| i % lazy_cfg.vocab_size as u32).collect();
         let next = 7u32;
 
         // Four decode steps: the first BUILDS the held graph, the rest REBIND
@@ -2134,9 +2184,18 @@ mod tests {
     #[test]
     fn session_new_seeds_prefill_state() {
         let cfg = tiny_cfg();
-        let s = SessionState::new(SessionId(0), dims(&cfg), &[1,2,3],
-            SamplingStrategy::Greedy, None, 5, &Device::cpu(), DType::F32).unwrap();
-        assert_eq!(s.tokens(), &[1,2,3]);
+        let s = SessionState::new(
+            SessionId(0),
+            dims(&cfg),
+            &[1, 2, 3],
+            SamplingStrategy::Greedy,
+            None,
+            5,
+            &Device::cpu(),
+            DType::F32,
+        )
+        .unwrap();
+        assert_eq!(s.tokens(), &[1, 2, 3]);
         assert_eq!(s.phase, SessionPhase::Prefill);
         assert!(s.is_ready());
     }
@@ -2144,22 +2203,53 @@ mod tests {
     #[test]
     fn session_new_rejects_empty_prompt_and_zero_budget() {
         let cfg = tiny_cfg();
-        assert!(SessionState::new(SessionId(0), dims(&cfg), &[],
-            SamplingStrategy::Greedy, None, 5, &Device::cpu(), DType::F32).is_err());
-        assert!(SessionState::new(SessionId(0), dims(&cfg), &[1,2],
-            SamplingStrategy::Greedy, None, 0, &Device::cpu(), DType::F32).is_err());
+        assert!(
+            SessionState::new(
+                SessionId(0),
+                dims(&cfg),
+                &[],
+                SamplingStrategy::Greedy,
+                None,
+                5,
+                &Device::cpu(),
+                DType::F32
+            )
+            .is_err()
+        );
+        assert!(
+            SessionState::new(
+                SessionId(0),
+                dims(&cfg),
+                &[1, 2],
+                SamplingStrategy::Greedy,
+                None,
+                0,
+                &Device::cpu(),
+                DType::F32
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn sample_and_append_greedy_appends_argmax_and_counts_budget() {
         let cfg = tiny_cfg();
-        let mut s = SessionState::new(SessionId(0), dims(&cfg), &[1,2],
-            SamplingStrategy::Greedy, None, 2, &Device::cpu(), DType::F32).unwrap();
+        let mut s = SessionState::new(
+            SessionId(0),
+            dims(&cfg),
+            &[1, 2],
+            SamplingStrategy::Greedy,
+            None,
+            2,
+            &Device::cpu(),
+            DType::F32,
+        )
+        .unwrap();
         // argmax at index 3
         s.last_logits = Some(vec![0.0, 0.1, 0.2, 0.9, 0.3]);
         let t = s.sample_and_append().unwrap();
         assert_eq!(t, Some(3));
-        assert_eq!(s.tokens(), &[1,2,3]);
+        assert_eq!(s.tokens(), &[1, 2, 3]);
         assert_eq!(s.remaining, 1);
         assert_eq!(s.phase, SessionPhase::Decode);
         // exhaust the budget → Finished
@@ -2172,9 +2262,18 @@ mod tests {
     #[test]
     fn sample_and_append_stops_on_eos() {
         let cfg = tiny_cfg();
-        let mut s = SessionState::new(SessionId(0), dims(&cfg), &[1],
-            SamplingStrategy::Greedy, Some(3), 10, &Device::cpu(), DType::F32).unwrap();
-        s.last_logits = Some(vec![0.0,0.0,0.0,0.9,0.0]); // argmax 3 == eos
+        let mut s = SessionState::new(
+            SessionId(0),
+            dims(&cfg),
+            &[1],
+            SamplingStrategy::Greedy,
+            Some(3),
+            10,
+            &Device::cpu(),
+            DType::F32,
+        )
+        .unwrap();
+        s.last_logits = Some(vec![0.0, 0.0, 0.0, 0.9, 0.0]); // argmax 3 == eos
         assert_eq!(s.sample_and_append().unwrap(), Some(3));
         assert_eq!(s.phase, SessionPhase::Finished);
     }
@@ -2182,8 +2281,17 @@ mod tests {
     #[test]
     fn sample_and_append_noop_without_logits() {
         let cfg = tiny_cfg();
-        let mut s = SessionState::new(SessionId(0), dims(&cfg), &[1],
-            SamplingStrategy::Greedy, None, 3, &Device::cpu(), DType::F32).unwrap();
+        let mut s = SessionState::new(
+            SessionId(0),
+            dims(&cfg),
+            &[1],
+            SamplingStrategy::Greedy,
+            None,
+            3,
+            &Device::cpu(),
+            DType::F32,
+        )
+        .unwrap();
         assert_eq!(s.sample_and_append().unwrap(), None);
     }
 
@@ -2192,16 +2300,32 @@ mod tests {
         let model = tiny_model(9999);
         let prompt = [1u32, 2, 3];
         let max_new = 5;
-        let standalone = model.generate_with_kv_context(
-            &prompt, max_new, SamplingStrategy::Greedy, None, &Device::cpu(), DType::F32).unwrap();
+        let standalone = model
+            .generate_with_kv_context(
+                &prompt,
+                max_new,
+                SamplingStrategy::Greedy,
+                None,
+                &Device::cpu(),
+                DType::F32,
+            )
+            .unwrap();
 
         let mut sched = SessionScheduler::new(
-            &model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, test_budget()).unwrap();
-        let id = sched.add_session(&prompt, SamplingStrategy::Greedy, None, max_new).unwrap();
+            &model,
+            Device::cpu(),
+            DType::F32,
+            SchedulePolicy::RoundRobin,
+            test_budget(),
+        )
+        .unwrap();
+        let id = sched
+            .add_session(&prompt, SamplingStrategy::Greedy, None, max_new)
+            .unwrap();
         let out = sched.run_to_completion().unwrap();
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].0, id);
-        assert_eq!(out[0].1, standalone);   // byte-identical token stream
+        assert_eq!(out[0].1, standalone); // byte-identical token stream
     }
 
     /// C-1: admission is gated on the KV block pool. A tight budget admits until
@@ -2213,24 +2337,51 @@ mod tests {
     fn admission_is_capacity_gated_c1_and_reap_reclaims() {
         let model = tiny_model(31);
         // block_size 8; a (prompt 3 + max_new 5 = 8)-token session = exactly 1 block.
-        let budget = KvBudget { block_size: 8, num_blocks: 2 };
-        let mut sched =
-            SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, budget).unwrap();
+        let budget = KvBudget {
+            block_size: 8,
+            num_blocks: 2,
+        };
+        let mut sched = SessionScheduler::new(
+            &model,
+            Device::cpu(),
+            DType::F32,
+            SchedulePolicy::RoundRobin,
+            budget,
+        )
+        .unwrap();
         let prompt = [1u32, 2, 3];
 
-        assert_eq!(sched.kv_blocks_required(prompt.len(), 5), 1, "8 tokens / block_size 8 = 1 block");
+        assert_eq!(
+            sched.kv_blocks_required(prompt.len(), 5),
+            1,
+            "8 tokens / block_size 8 = 1 block"
+        );
         assert_eq!(sched.kv_free_blocks(), 2);
         assert_eq!(sched.kv_bytes_resident(), 0, "C-4: nothing reserved yet");
 
-        sched.add_session(&prompt, SamplingStrategy::Greedy, None, 5).unwrap();
-        sched.add_session(&prompt, SamplingStrategy::Greedy, None, 5).unwrap();
+        sched
+            .add_session(&prompt, SamplingStrategy::Greedy, None, 5)
+            .unwrap();
+        sched
+            .add_session(&prompt, SamplingStrategy::Greedy, None, 5)
+            .unwrap();
         assert_eq!(sched.kv_free_blocks(), 0, "both blocks reserved");
-        assert!(sched.kv_bytes_resident() > 0, "C-4: resident bytes reflect the 2 reserved blocks");
+        assert!(
+            sched.kv_bytes_resident() > 0,
+            "C-4: resident bytes reflect the 2 reserved blocks"
+        );
 
         // Third admission is rejected on capacity — total, nothing half-built.
         let rejected = sched.add_session(&prompt, SamplingStrategy::Greedy, None, 5);
-        assert!(rejected.is_err(), "no room → typed capacity rejection (C-1)");
-        assert_eq!(sched.kv_free_blocks(), 0, "a rejected admit consumes no blocks");
+        assert!(
+            rejected.is_err(),
+            "no room → typed capacity rejection (C-1)"
+        );
+        assert_eq!(
+            sched.kv_free_blocks(),
+            0,
+            "a rejected admit consumes no blocks"
+        );
 
         // Complete the two sessions, reap them, and the reservations return.
         let _ = sched.run_to_completion().unwrap();
@@ -2240,7 +2391,9 @@ mod tests {
         assert_eq!(sched.kv_bytes_resident(), 0, "C-4: back to zero after reap");
 
         // A fresh session admits again into the reclaimed headroom.
-        sched.add_session(&prompt, SamplingStrategy::Greedy, None, 5).unwrap();
+        sched
+            .add_session(&prompt, SamplingStrategy::Greedy, None, 5)
+            .unwrap();
         assert_eq!(sched.kv_free_blocks(), 1);
     }
 
@@ -2249,20 +2402,38 @@ mod tests {
     #[test]
     fn kv_blocks_required_matches_multi_block_reservation() {
         let model = tiny_model(7);
-        let budget = KvBudget { block_size: 4, num_blocks: 16 };
-        let mut sched =
-            SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, budget).unwrap();
+        let budget = KvBudget {
+            block_size: 4,
+            num_blocks: 16,
+        };
+        let mut sched = SessionScheduler::new(
+            &model,
+            Device::cpu(),
+            DType::F32,
+            SchedulePolicy::RoundRobin,
+            budget,
+        )
+        .unwrap();
         let prompt = [1u32, 2, 3, 4, 5]; // 5 + max_new 6 = 11 tokens → ceil(11/4) = 3 blocks
         assert_eq!(sched.kv_blocks_required(prompt.len(), 6), 3);
         let free_before = sched.kv_free_blocks();
-        sched.add_session(&prompt, SamplingStrategy::Greedy, None, 6).unwrap();
-        assert_eq!(sched.kv_free_blocks(), free_before - 3, "admission reserved exactly the queried 3 blocks");
+        sched
+            .add_session(&prompt, SamplingStrategy::Greedy, None, 6)
+            .unwrap();
+        assert_eq!(
+            sched.kv_free_blocks(),
+            free_before - 3,
+            "admission reserved exactly the queried 3 blocks"
+        );
     }
 
     // --- PagedSessionScheduler (PS3) -------------------------------------
 
     fn paged_budget() -> KvBudget {
-        KvBudget { block_size: 4, num_blocks: 64 }
+        KvBudget {
+            block_size: 4,
+            num_blocks: 64,
+        }
     }
 
     /// A single paged session runs to its `max_new` budget: prefill (feed the
@@ -2273,11 +2444,17 @@ mod tests {
         let mut s =
             PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
         let prompt = [1u32, 2, 3];
-        let id = s.add_session(&prompt, SamplingStrategy::Greedy, None, 5).unwrap();
+        let id = s
+            .add_session(&prompt, SamplingStrategy::Greedy, None, 5)
+            .unwrap();
         let out = s.run_to_completion();
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].0, id);
-        assert_eq!(out[0].1.len(), prompt.len() + 5, "prompt + 5 generated tokens");
+        assert_eq!(
+            out[0].1.len(),
+            prompt.len() + 5,
+            "prompt + 5 generated tokens"
+        );
     }
 
     /// eos stops a paged session right after it is emitted (budget not exhausted).
@@ -2288,15 +2465,21 @@ mod tests {
         // Learn the first greedy token, then use it as eos.
         let mut s0 =
             PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
-        s0.add_session(&prompt, SamplingStrategy::Greedy, None, 5).unwrap();
+        s0.add_session(&prompt, SamplingStrategy::Greedy, None, 5)
+            .unwrap();
         let full = s0.run_to_completion()[0].1.clone();
         let first_gen = full[prompt.len()];
 
         let mut s =
             PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
-        s.add_session(&prompt, SamplingStrategy::Greedy, Some(first_gen), 5).unwrap();
+        s.add_session(&prompt, SamplingStrategy::Greedy, Some(first_gen), 5)
+            .unwrap();
         let out = s.run_to_completion()[0].1.clone();
-        assert_eq!(out.len(), prompt.len() + 1, "stops right after emitting eos");
+        assert_eq!(
+            out.len(),
+            prompt.len() + 1,
+            "stops right after emitting eos"
+        );
         assert_eq!(*out.last().unwrap(), first_gen);
     }
 
@@ -2314,18 +2497,24 @@ mod tests {
         // Each ALONE (own scheduler, own pool).
         let mut sa =
             PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
-        sa.add_session(&a, SamplingStrategy::Greedy, None, max_new).unwrap();
+        sa.add_session(&a, SamplingStrategy::Greedy, None, max_new)
+            .unwrap();
         let a_alone = sa.run_to_completion()[0].1.clone();
         let mut sb =
             PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
-        sb.add_session(&b, SamplingStrategy::Greedy, None, max_new).unwrap();
+        sb.add_session(&b, SamplingStrategy::Greedy, None, max_new)
+            .unwrap();
         let b_alone = sb.run_to_completion()[0].1.clone();
 
         // TOGETHER (one scheduler, SHARED pool).
         let mut both =
             PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
-        let ida = both.add_session(&a, SamplingStrategy::Greedy, None, max_new).unwrap();
-        let idb = both.add_session(&b, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let ida = both
+            .add_session(&a, SamplingStrategy::Greedy, None, max_new)
+            .unwrap();
+        let idb = both
+            .add_session(&b, SamplingStrategy::Greedy, None, max_new)
+            .unwrap();
         let out = both.run_to_completion();
         let a_shared = out.iter().find(|(id, _)| *id == ida).unwrap().1.clone();
         let b_shared = out.iter().find(|(id, _)| *id == idb).unwrap().1.clone();
@@ -2341,9 +2530,13 @@ mod tests {
         let mut s =
             PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
         let free0 = s.kv_free_blocks();
-        s.add_session(&[1u32, 2, 3], SamplingStrategy::Greedy, None, 5).unwrap();
+        s.add_session(&[1u32, 2, 3], SamplingStrategy::Greedy, None, 5)
+            .unwrap();
         s.run_to_completion();
-        assert!(s.kv_free_blocks() < free0, "a decoded session holds pool blocks");
+        assert!(
+            s.kv_free_blocks() < free0,
+            "a decoded session holds pool blocks"
+        );
         let reaped = s.reap_finished();
         assert_eq!(reaped.len(), 1);
         assert_eq!(s.kv_free_blocks(), free0, "reap returns every block");
@@ -2360,14 +2553,23 @@ mod tests {
         let max_new = 5;
         let contig = model
             .generate_with_kv_context(
-                &prompt, max_new, SamplingStrategy::Greedy, None, &Device::cpu(), DType::F32,
+                &prompt,
+                max_new,
+                SamplingStrategy::Greedy,
+                None,
+                &Device::cpu(),
+                DType::F32,
             )
             .unwrap();
         let mut s =
             PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
-        s.add_session(&prompt, SamplingStrategy::Greedy, None, max_new).unwrap();
+        s.add_session(&prompt, SamplingStrategy::Greedy, None, max_new)
+            .unwrap();
         let paged = s.run_to_completion()[0].1.clone();
-        assert_eq!(paged, contig, "paged scheduler greedy == contiguous generate oracle");
+        assert_eq!(
+            paged, contig,
+            "paged scheduler greedy == contiguous generate oracle"
+        );
     }
 
     /// **Plan reuse is the DEFAULT.** A consumer that never calls
@@ -2401,12 +2603,17 @@ mod tests {
         );
 
         // ...and the default is ROUTED: decode through it and the held plan rebinds.
-        let id = s.add_session(&prompt, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let id = s
+            .add_session(&prompt, SamplingStrategy::Greedy, None, max_new)
+            .unwrap();
         let _ = s.run_to_completion();
         let rc = s
             .session_realize_count(id)
             .expect("default-configured session holds a decode plan after decoding");
-        assert!(rc >= 1, "default path rebound the held decode plan per token (got {rc})");
+        assert!(
+            rc >= 1,
+            "default path rebound the held decode plan per token (got {rc})"
+        );
     }
 
     /// Max absolute per-element difference between two captured logit streams
@@ -2434,9 +2641,10 @@ mod tests {
         prompt: &[u32],
         max_new: usize,
     ) -> Vec<Vec<f32>> {
-        let mut s =
-            PagedSessionScheduler::new(model, budget, DType::F32, &Device::cpu()).unwrap();
-        let id = s.add_session(prompt, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let mut s = PagedSessionScheduler::new(model, budget, DType::F32, &Device::cpu()).unwrap();
+        let id = s
+            .add_session(prompt, SamplingStrategy::Greedy, None, max_new)
+            .unwrap();
         s.capture_logits(id).unwrap();
         s.run_to_completion();
         s.take_captured_logits(id).unwrap()
@@ -2463,7 +2671,10 @@ mod tests {
     fn paged_scheduler_prefix_shared_matches_from_scratch() {
         let model = tiny_model(9999);
         // block_size 4: a 2-whole-block shared prefix, then a unique suffix.
-        let budget = KvBudget { block_size: 4, num_blocks: 64 };
+        let budget = KvBudget {
+            block_size: 4,
+            num_blocks: 64,
+        };
         let prefix = [1u32, 2, 3, 4, 5, 6, 7, 8]; // 2 full blocks at bs=4
         let suffix = [9u32, 10, 11];
         let full: Vec<u32> = prefix.iter().chain(suffix.iter()).copied().collect();
@@ -2493,7 +2704,9 @@ mod tests {
         // Donor prompt = the prefix, max_new = 1: one `step()` prefills the two
         // full blocks (filled == 8, block-aligned) and finishes — it never feeds
         // the sampled token back, so no partial third block is written.
-        let donor = sched.add_session(&prefix, SamplingStrategy::Greedy, None, 1).unwrap();
+        let donor = sched
+            .add_session(&prefix, SamplingStrategy::Greedy, None, 1)
+            .unwrap();
         sched.step();
         let pid = sched.register_prefix(donor, 2).unwrap();
         sched.reap_finished(); // donor gone; owner still pins the 2 blocks
@@ -2542,17 +2755,30 @@ mod tests {
     #[test]
     fn two_sharers_of_one_prefix_decode_independently() {
         let model = tiny_model(9999);
-        let budget = KvBudget { block_size: 4, num_blocks: 64 };
+        let budget = KvBudget {
+            block_size: 4,
+            num_blocks: 64,
+        };
         let prefix = [1u32, 2, 3, 4, 5, 6, 7, 8];
-        let full_a: Vec<u32> = prefix.iter().chain([9u32, 10, 11].iter()).copied().collect();
-        let full_b: Vec<u32> = prefix.iter().chain([12u32, 13, 14, 15].iter()).copied().collect();
+        let full_a: Vec<u32> = prefix
+            .iter()
+            .chain([9u32, 10, 11].iter())
+            .copied()
+            .collect();
+        let full_b: Vec<u32> = prefix
+            .iter()
+            .chain([12u32, 13, 14, 15].iter())
+            .copied()
+            .collect();
         let max_new = 5;
         let ref_a = from_scratch_logits(&model, budget, &full_a, max_new);
         let ref_b = from_scratch_logits(&model, budget, &full_b, max_new);
 
         let mut sched =
             PagedSessionScheduler::new(&model, budget, DType::F32, &Device::cpu()).unwrap();
-        let donor = sched.add_session(&prefix, SamplingStrategy::Greedy, None, 1).unwrap();
+        let donor = sched
+            .add_session(&prefix, SamplingStrategy::Greedy, None, 1)
+            .unwrap();
         sched.step();
         let pid = sched.register_prefix(donor, 2).unwrap();
         sched.reap_finished();
@@ -2589,15 +2815,24 @@ mod tests {
     #[test]
     fn prefix_owner_release_while_sharer_live_keeps_it_correct() {
         let model = tiny_model(9999);
-        let budget = KvBudget { block_size: 4, num_blocks: 64 };
+        let budget = KvBudget {
+            block_size: 4,
+            num_blocks: 64,
+        };
         let prefix = [1u32, 2, 3, 4, 5, 6, 7, 8];
-        let full: Vec<u32> = prefix.iter().chain([9u32, 10, 11].iter()).copied().collect();
+        let full: Vec<u32> = prefix
+            .iter()
+            .chain([9u32, 10, 11].iter())
+            .copied()
+            .collect();
         let max_new = 5;
         let reference = from_scratch_logits(&model, budget, &full, max_new);
 
         let mut sched =
             PagedSessionScheduler::new(&model, budget, DType::F32, &Device::cpu()).unwrap();
-        let donor = sched.add_session(&prefix, SamplingStrategy::Greedy, None, 1).unwrap();
+        let donor = sched
+            .add_session(&prefix, SamplingStrategy::Greedy, None, 1)
+            .unwrap();
         sched.step();
         let pid = sched.register_prefix(donor, 2).unwrap();
         sched.reap_finished();
@@ -2626,13 +2861,22 @@ mod tests {
     #[test]
     fn add_session_sharing_prefix_refusal_leaks_nothing() {
         let model = tiny_model(9999);
-        let budget = KvBudget { block_size: 4, num_blocks: 64 };
+        let budget = KvBudget {
+            block_size: 4,
+            num_blocks: 64,
+        };
         let prefix = [1u32, 2, 3, 4, 5, 6, 7, 8];
-        let full: Vec<u32> = prefix.iter().chain([9u32, 10, 11].iter()).copied().collect();
+        let full: Vec<u32> = prefix
+            .iter()
+            .chain([9u32, 10, 11].iter())
+            .copied()
+            .collect();
 
         let mut sched =
             PagedSessionScheduler::new(&model, budget, DType::F32, &Device::cpu()).unwrap();
-        let donor = sched.add_session(&prefix, SamplingStrategy::Greedy, None, 1).unwrap();
+        let donor = sched
+            .add_session(&prefix, SamplingStrategy::Greedy, None, 1)
+            .unwrap();
         sched.step();
         let pid = sched.register_prefix(donor, 2).unwrap();
         sched.reap_finished();
@@ -2648,8 +2892,16 @@ mod tests {
                 .is_err(),
             "a prompt that does not extend past the prefix is refused",
         );
-        assert_eq!(sched.session_count(), sessions_before, "refusal admits no session");
-        assert_eq!(sched.kv_free_blocks(), free_with_prefix, "refusal consumes no blocks");
+        assert_eq!(
+            sched.session_count(),
+            sessions_before,
+            "refusal admits no session"
+        );
+        assert_eq!(
+            sched.kv_free_blocks(),
+            free_with_prefix,
+            "refusal consumes no blocks"
+        );
 
         // A legitimate sharer still works after the refusal, and the whole thing
         // unwinds to an entirely free pool — impossible if the refusal leaked its
@@ -2659,7 +2911,10 @@ mod tests {
             .unwrap();
         sched.run_to_completion();
         let reaped = sched.reap_finished();
-        assert!(reaped.iter().any(|(id, _)| *id == ok), "the legit sharer ran and reaped");
+        assert!(
+            reaped.iter().any(|(id, _)| *id == ok),
+            "the legit sharer ran and reaped"
+        );
         sched.release_prefix(pid).unwrap();
         assert_eq!(
             sched.kv_free_blocks(),
@@ -2709,18 +2964,29 @@ mod tests {
         let mut s_replan =
             PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
         s_replan.set_plan(PagedDecodePlan::Replan);
-        assert_eq!(s_replan.plan(), PagedDecodePlan::Replan, "reference arm is Replan");
-        s_replan.add_session(&prompt, SamplingStrategy::Greedy, None, max_new).unwrap();
+        assert_eq!(
+            s_replan.plan(),
+            PagedDecodePlan::Replan,
+            "reference arm is Replan"
+        );
+        s_replan
+            .add_session(&prompt, SamplingStrategy::Greedy, None, max_new)
+            .unwrap();
         let replan_out = s_replan.run_to_completion()[0].1.clone();
 
         // Plan-once arm: build + optimize the decode graph once, rebind per token.
         let mut s_plan =
             PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
         s_plan.set_plan(PagedDecodePlan::PlanOnce);
-        let id = s_plan.add_session(&prompt, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let id = s_plan
+            .add_session(&prompt, SamplingStrategy::Greedy, None, max_new)
+            .unwrap();
         let plan_out = s_plan.run_to_completion()[0].1.clone();
 
-        assert_eq!(plan_out, replan_out, "plan-once output == replan output (byte-exact)");
+        assert_eq!(
+            plan_out, replan_out,
+            "plan-once output == replan output (byte-exact)"
+        );
 
         // The held plan was REUSED: the first decode token builds the plan
         // (realize 0), each subsequent decode token rebinds it. With prompt 3 +
@@ -2732,7 +2998,10 @@ mod tests {
         let rc = s_plan
             .session_realize_count(id)
             .expect("plan-once session holds a decode plan after decoding");
-        assert!(rc >= 1, "plan-once path rebound the held decode plan per token (got {rc})");
+        assert!(
+            rc >= 1,
+            "plan-once path rebound the held decode plan per token (got {rc})"
+        );
     }
 
     /// C-3 ON THE LIVE PATH (PS4). Evicting a decoding paged session frees its
@@ -2750,13 +3019,16 @@ mod tests {
         // Reference: uninterrupted run.
         let mut s0 =
             PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
-        s0.add_session(&prompt, SamplingStrategy::Greedy, None, max_new).unwrap();
+        s0.add_session(&prompt, SamplingStrategy::Greedy, None, max_new)
+            .unwrap();
         let reference = s0.run_to_completion()[0].1.clone();
 
         // Evict mid-decode, restore, finish — final tokens must match.
         let mut s =
             PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
-        let id = s.add_session(&prompt, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let id = s
+            .add_session(&prompt, SamplingStrategy::Greedy, None, max_new)
+            .unwrap();
         s.step(); // prefill + 1st decode token
         s.step(); // 2nd decode token
         let free_decoding = s.kv_free_blocks();
@@ -2774,12 +3046,16 @@ mod tests {
         s.restore_session(id).unwrap();
         assert!(!s.is_suspended(id), "resumed after restore");
         assert_eq!(
-            s.kv_free_blocks(), free_decoding,
+            s.kv_free_blocks(),
+            free_decoding,
             "restore re-took exactly the freed blocks",
         );
 
         let out = s.run_to_completion()[0].1.clone();
-        assert_eq!(out, reference, "evict→restore resumes byte-exact (same tokens as uninterrupted)");
+        assert_eq!(
+            out, reference,
+            "evict→restore resumes byte-exact (same tokens as uninterrupted)"
+        );
     }
 
     /// The pressure-valve flow end to end: evict a session to free the pool, let
@@ -2790,9 +3066,18 @@ mod tests {
     fn paged_scheduler_evict_lets_another_run_then_restore_finishes() {
         let model = tiny_model(9999);
         let mut s = PagedSessionScheduler::new(
-            &model, KvBudget { block_size: 4, num_blocks: 16 }, DType::F32, &Device::cpu(),
-        ).unwrap();
-        let a = s.add_session(&[1u32, 2, 3], SamplingStrategy::Greedy, None, 4).unwrap();
+            &model,
+            KvBudget {
+                block_size: 4,
+                num_blocks: 16,
+            },
+            DType::F32,
+            &Device::cpu(),
+        )
+        .unwrap();
+        let a = s
+            .add_session(&[1u32, 2, 3], SamplingStrategy::Greedy, None, 4)
+            .unwrap();
         s.step();
         let free_with_a = s.kv_free_blocks();
         s.evict_session(a).unwrap();
@@ -2800,17 +3085,27 @@ mod tests {
 
         // B runs to completion in the pool while A is suspended; run_to_completion
         // returns (does not spin) with A still suspended.
-        let b = s.add_session(&[5u32, 6], SamplingStrategy::Greedy, None, 3).unwrap();
+        let b = s
+            .add_session(&[5u32, 6], SamplingStrategy::Greedy, None, 3)
+            .unwrap();
         let out1 = s.run_to_completion();
         let b_len = out1.iter().find(|(id, _)| *id == b).map(|(_, t)| t.len());
-        assert_eq!(b_len, Some(2 + 3), "B (prompt 2 + 3 generated) finished in the freed pool");
+        assert_eq!(
+            b_len,
+            Some(2 + 3),
+            "B (prompt 2 + 3 generated) finished in the freed pool"
+        );
         assert!(s.is_suspended(a), "A stayed suspended while B ran");
 
         // Restore A and finish it.
         s.restore_session(a).unwrap();
         let out2 = s.run_to_completion();
         let a_len = out2.iter().find(|(id, _)| *id == a).map(|(_, t)| t.len());
-        assert_eq!(a_len, Some(3 + 4), "A resumed and finished (prompt 3 + 4 generated)");
+        assert_eq!(
+            a_len,
+            Some(3 + 4),
+            "A resumed and finished (prompt 3 + 4 generated)"
+        );
     }
 
     /// PS4a scheduler arm: `step_batched` (batches same-position ready sessions
@@ -2826,8 +3121,12 @@ mod tests {
         // Serial reference.
         let mut ss =
             PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
-        let ida = ss.add_session(&a, SamplingStrategy::Greedy, None, max_new).unwrap();
-        let idb = ss.add_session(&b, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let ida = ss
+            .add_session(&a, SamplingStrategy::Greedy, None, max_new)
+            .unwrap();
+        let idb = ss
+            .add_session(&b, SamplingStrategy::Greedy, None, max_new)
+            .unwrap();
         let serial = ss.run_to_completion();
         let sa = serial.iter().find(|(id, _)| *id == ida).unwrap().1.clone();
         let sb = serial.iter().find(|(id, _)| *id == idb).unwrap().1.clone();
@@ -2835,15 +3134,30 @@ mod tests {
         // Batched: loop step_batched to completion.
         let mut bs =
             PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
-        let ida2 = bs.add_session(&a, SamplingStrategy::Greedy, None, max_new).unwrap();
-        let idb2 = bs.add_session(&b, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let ida2 = bs
+            .add_session(&a, SamplingStrategy::Greedy, None, max_new)
+            .unwrap();
+        let idb2 = bs
+            .add_session(&b, SamplingStrategy::Greedy, None, max_new)
+            .unwrap();
         let mut fired = false;
-        while bs.sessions.iter().any(|s| s.phase != SessionPhase::Finished) {
+        while bs
+            .sessions
+            .iter()
+            .any(|s| s.phase != SessionPhase::Finished)
+        {
             let r = bs.step_batched(8);
             fired |= r.used_batched_arm;
         }
-        assert!(fired, "the batched arm actually ran (two same-position sessions)");
-        let out: Vec<_> = bs.sessions.iter().map(|s| (s.id, s.tokens.clone())).collect();
+        assert!(
+            fired,
+            "the batched arm actually ran (two same-position sessions)"
+        );
+        let out: Vec<_> = bs
+            .sessions
+            .iter()
+            .map(|s| (s.id, s.tokens.clone()))
+            .collect();
         let ba = out.iter().find(|(id, _)| *id == ida2).unwrap().1.clone();
         let bb = out.iter().find(|(id, _)| *id == idb2).unwrap().1.clone();
         assert_eq!(ba, sa, "batched arm A == serial A (token-identical)");
@@ -2858,19 +3172,50 @@ mod tests {
         let max_new = 6;
 
         // Standalone oracles.
-        let solo_a = model.generate_with_kv_context(
-            &prompt_a, max_new, SamplingStrategy::Greedy, None, &Device::cpu(), DType::F32).unwrap();
-        let solo_b = model.generate_with_kv_context(
-            &prompt_b, max_new, SamplingStrategy::Greedy, None, &Device::cpu(), DType::F32).unwrap();
+        let solo_a = model
+            .generate_with_kv_context(
+                &prompt_a,
+                max_new,
+                SamplingStrategy::Greedy,
+                None,
+                &Device::cpu(),
+                DType::F32,
+            )
+            .unwrap();
+        let solo_b = model
+            .generate_with_kv_context(
+                &prompt_b,
+                max_new,
+                SamplingStrategy::Greedy,
+                None,
+                &Device::cpu(),
+                DType::F32,
+            )
+            .unwrap();
 
         // K=2 scheduled together.
         let mut sched = SessionScheduler::new(
-            &model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, test_budget()).unwrap();
-        let ida = sched.add_session(&prompt_a, SamplingStrategy::Greedy, None, max_new).unwrap();
-        let idb = sched.add_session(&prompt_b, SamplingStrategy::Greedy, None, max_new).unwrap();
+            &model,
+            Device::cpu(),
+            DType::F32,
+            SchedulePolicy::RoundRobin,
+            test_budget(),
+        )
+        .unwrap();
+        let ida = sched
+            .add_session(&prompt_a, SamplingStrategy::Greedy, None, max_new)
+            .unwrap();
+        let idb = sched
+            .add_session(&prompt_b, SamplingStrategy::Greedy, None, max_new)
+            .unwrap();
         let out = sched.run_to_completion().unwrap();
 
-        let get = |id: SessionId| out.iter().find(|(i,_)| *i==id).map(|(_,t)| t.clone()).unwrap();
+        let get = |id: SessionId| {
+            out.iter()
+                .find(|(i, _)| *i == id)
+                .map(|(_, t)| t.clone())
+                .unwrap()
+        };
         assert_eq!(get(ida), solo_a, "session A contaminated by B");
         assert_eq!(get(idb), solo_b, "session B contaminated by A");
     }
@@ -2878,23 +3223,52 @@ mod tests {
     #[test]
     fn t2_interleave_order_invariance() {
         let model = tiny_model(9999);
-        let (pa, pb, max_new) = ([1u32,2,3], [5u32,6], 6);
+        let (pa, pb, max_new) = ([1u32, 2, 3], [5u32, 6], 6);
 
         // Round-robin (both added, then run together).
-        let mut rr = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, test_budget()).unwrap();
-        let a1 = rr.add_session(&pa, SamplingStrategy::Greedy, None, max_new).unwrap();
-        let b1 = rr.add_session(&pb, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let mut rr = SessionScheduler::new(
+            &model,
+            Device::cpu(),
+            DType::F32,
+            SchedulePolicy::RoundRobin,
+            test_budget(),
+        )
+        .unwrap();
+        let a1 = rr
+            .add_session(&pa, SamplingStrategy::Greedy, None, max_new)
+            .unwrap();
+        let b1 = rr
+            .add_session(&pb, SamplingStrategy::Greedy, None, max_new)
+            .unwrap();
         let out_rr = rr.run_to_completion().unwrap();
 
         // One-then-the-other: A alone to completion, then B alone.
-        let mut s_a = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, test_budget()).unwrap();
-        s_a.add_session(&pa, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let mut s_a = SessionScheduler::new(
+            &model,
+            Device::cpu(),
+            DType::F32,
+            SchedulePolicy::RoundRobin,
+            test_budget(),
+        )
+        .unwrap();
+        s_a.add_session(&pa, SamplingStrategy::Greedy, None, max_new)
+            .unwrap();
         let just_a = s_a.run_to_completion().unwrap();
-        let mut s_b = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, test_budget()).unwrap();
-        s_b.add_session(&pb, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let mut s_b = SessionScheduler::new(
+            &model,
+            Device::cpu(),
+            DType::F32,
+            SchedulePolicy::RoundRobin,
+            test_budget(),
+        )
+        .unwrap();
+        s_b.add_session(&pb, SamplingStrategy::Greedy, None, max_new)
+            .unwrap();
         let just_b = s_b.run_to_completion().unwrap();
 
-        let get = |o: &Vec<(SessionId,Vec<u32>)>, id: SessionId| o.iter().find(|(i,_)| *i==id).unwrap().1.clone();
+        let get = |o: &Vec<(SessionId, Vec<u32>)>, id: SessionId| {
+            o.iter().find(|(i, _)| *i == id).unwrap().1.clone()
+        };
         assert_eq!(get(&out_rr, a1), just_a[0].1);
         assert_eq!(get(&out_rr, b1), just_b[0].1);
     }
@@ -2906,68 +3280,150 @@ mod tests {
         let max_new = 8;
 
         // Same prompt, DIFFERENT seeds → different streams.
-        let mut sched = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, test_budget()).unwrap();
-        let id1 = sched.add_session(&prompt, SamplingStrategy::Temperature{temp:1.0, seed:1}, None, max_new).unwrap();
-        let id2 = sched.add_session(&prompt, SamplingStrategy::Temperature{temp:1.0, seed:2}, None, max_new).unwrap();
+        let mut sched = SessionScheduler::new(
+            &model,
+            Device::cpu(),
+            DType::F32,
+            SchedulePolicy::RoundRobin,
+            test_budget(),
+        )
+        .unwrap();
+        let id1 = sched
+            .add_session(
+                &prompt,
+                SamplingStrategy::Temperature { temp: 1.0, seed: 1 },
+                None,
+                max_new,
+            )
+            .unwrap();
+        let id2 = sched
+            .add_session(
+                &prompt,
+                SamplingStrategy::Temperature { temp: 1.0, seed: 2 },
+                None,
+                max_new,
+            )
+            .unwrap();
         let out = sched.run_to_completion().unwrap();
-        let g = |id: SessionId| out.iter().find(|(i,_)| *i==id).unwrap().1.clone();
+        let g = |id: SessionId| out.iter().find(|(i, _)| *i == id).unwrap().1.clone();
         assert_ne!(g(id1), g(id2), "different seeds must diverge");
 
         // Same seed as a standalone Temperature run → identical.
-        let solo = model.generate_with_kv_context(
-            &prompt, max_new, SamplingStrategy::Temperature{temp:1.0, seed:1}, None,
-            &Device::cpu(), DType::F32).unwrap();
+        let solo = model
+            .generate_with_kv_context(
+                &prompt,
+                max_new,
+                SamplingStrategy::Temperature { temp: 1.0, seed: 1 },
+                None,
+                &Device::cpu(),
+                DType::F32,
+            )
+            .unwrap();
         assert_eq!(g(id1), solo, "seed 1 must match its standalone run");
     }
 
     #[test]
     fn t4_session_isolation_on_error() {
         let model = tiny_model(9999);
-        let good = [1u32,2,3];
-        let mut sched = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, test_budget()).unwrap();
-        let bad_id  = sched.add_poisoned_session_for_test(&[4u32,5], 5).unwrap();
-        let good_id = sched.add_session(&good, SamplingStrategy::Greedy, None, 5).unwrap();
+        let good = [1u32, 2, 3];
+        let mut sched = SessionScheduler::new(
+            &model,
+            Device::cpu(),
+            DType::F32,
+            SchedulePolicy::RoundRobin,
+            test_budget(),
+        )
+        .unwrap();
+        let bad_id = sched.add_poisoned_session_for_test(&[4u32, 5], 5).unwrap();
+        let good_id = sched
+            .add_session(&good, SamplingStrategy::Greedy, None, 5)
+            .unwrap();
 
         // First step: the poisoned session errors, the good one advances. No panic.
         let r0 = sched.step().unwrap();
-        assert!(r0.errored.iter().any(|(id,_)| *id==bad_id), "poisoned session must be reported errored");
+        assert!(
+            r0.errored.iter().any(|(id, _)| *id == bad_id),
+            "poisoned session must be reported errored"
+        );
 
         let out = sched.run_to_completion().unwrap();
-        let solo_good = model.generate_with_kv_context(
-            &good, 5, SamplingStrategy::Greedy, None, &Device::cpu(), DType::F32).unwrap();
-        let g = out.iter().find(|(i,_)| *i==good_id).unwrap().1.clone();
+        let solo_good = model
+            .generate_with_kv_context(
+                &good,
+                5,
+                SamplingStrategy::Greedy,
+                None,
+                &Device::cpu(),
+                DType::F32,
+            )
+            .unwrap();
+        let g = out.iter().find(|(i, _)| *i == good_id).unwrap().1.clone();
         assert_eq!(g, solo_good, "the healthy session must complete unaffected");
     }
 
     #[test]
     fn t7_mid_run_add_prefills_and_joins() {
         let model = tiny_model(9999);
-        let pa = [1u32,2,3];
-        let pb = [8u32,1];
+        let pa = [1u32, 2, 3];
+        let pb = [8u32, 1];
         let max_new = 6;
 
-        let mut sched = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin, test_budget()).unwrap();
-        let ida = sched.add_session(&pa, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let mut sched = SessionScheduler::new(
+            &model,
+            Device::cpu(),
+            DType::F32,
+            SchedulePolicy::RoundRobin,
+            test_budget(),
+        )
+        .unwrap();
+        let ida = sched
+            .add_session(&pa, SamplingStrategy::Greedy, None, max_new)
+            .unwrap();
         // Advance A alone for two steps.
         sched.step().unwrap();
         sched.step().unwrap();
         // Now add B mid-run.
-        let idb = sched.add_session(&pb, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let idb = sched
+            .add_session(&pb, SamplingStrategy::Greedy, None, max_new)
+            .unwrap();
         let out = sched.run_to_completion().unwrap();
 
-        let solo_a = model.generate_with_kv_context(&pa, max_new, SamplingStrategy::Greedy, None, &Device::cpu(), DType::F32).unwrap();
-        let solo_b = model.generate_with_kv_context(&pb, max_new, SamplingStrategy::Greedy, None, &Device::cpu(), DType::F32).unwrap();
-        let g = |id: SessionId| out.iter().find(|(i,_)| *i==id).unwrap().1.clone();
+        let solo_a = model
+            .generate_with_kv_context(
+                &pa,
+                max_new,
+                SamplingStrategy::Greedy,
+                None,
+                &Device::cpu(),
+                DType::F32,
+            )
+            .unwrap();
+        let solo_b = model
+            .generate_with_kv_context(
+                &pb,
+                max_new,
+                SamplingStrategy::Greedy,
+                None,
+                &Device::cpu(),
+                DType::F32,
+            )
+            .unwrap();
+        let g = |id: SessionId| out.iter().find(|(i, _)| *i == id).unwrap().1.clone();
         assert_eq!(g(ida), solo_a, "A unaffected by mid-run B");
         assert_eq!(g(idb), solo_b, "B prefills correctly mid-run");
     }
 
     #[test]
     fn t6_uniformity_gate_rejects_ragged_cached_len() {
-        let d = |cl: usize| BatchDescriptor { cached_len: cl, max_seq_len: 64, n_layers: 2, cache_dtype: DType::F32 };
-        assert!(batch_uniform(&[d(3), d(3)]));           // equal → batchable
-        assert!(!batch_uniform(&[d(3), d(4)]));          // ragged → not
-        assert!(!batch_uniform(&[d(3)]));                // <2 sessions → not
+        let d = |cl: usize| BatchDescriptor {
+            cached_len: cl,
+            max_seq_len: 64,
+            n_layers: 2,
+            cache_dtype: DType::F32,
+        };
+        assert!(batch_uniform(&[d(3), d(3)])); // equal → batchable
+        assert!(!batch_uniform(&[d(3), d(4)])); // ragged → not
+        assert!(!batch_uniform(&[d(3)])); // <2 sessions → not
     }
 
     #[test]
@@ -2975,18 +3431,26 @@ mod tests {
         // With Task 7's stub always returning NotBatchable, a Batched policy
         // must produce byte-identical output to RoundRobin (pure serial).
         let model = tiny_model(9999);
-        let (pa, pb, max_new) = ([1u32,2,3], [5u32,6,7], 6);
+        let (pa, pb, max_new) = ([1u32, 2, 3], [5u32, 6, 7], 6);
         let run = |policy| {
-            let mut s = SessionScheduler::new(&model, Device::cpu(), DType::F32, policy, test_budget()).unwrap();
-            let a = s.add_session(&pa, SamplingStrategy::Greedy, None, max_new).unwrap();
-            let b = s.add_session(&pb, SamplingStrategy::Greedy, None, max_new).unwrap();
+            let mut s =
+                SessionScheduler::new(&model, Device::cpu(), DType::F32, policy, test_budget())
+                    .unwrap();
+            let a = s
+                .add_session(&pa, SamplingStrategy::Greedy, None, max_new)
+                .unwrap();
+            let b = s
+                .add_session(&pb, SamplingStrategy::Greedy, None, max_new)
+                .unwrap();
             (a, b, s.run_to_completion().unwrap())
         };
-        let (a1,b1,rr) = run(SchedulePolicy::RoundRobin);
-        let (a2,b2,ba) = run(SchedulePolicy::Batched { max_batch: 4 });
-        let g = |o: &Vec<(SessionId,Vec<u32>)>, id: SessionId| o.iter().find(|(i,_)| *i==id).unwrap().1.clone();
-        assert_eq!(g(&rr,a1), g(&ba,a2));
-        assert_eq!(g(&rr,b1), g(&ba,b2));
+        let (a1, b1, rr) = run(SchedulePolicy::RoundRobin);
+        let (a2, b2, ba) = run(SchedulePolicy::Batched { max_batch: 4 });
+        let g = |o: &Vec<(SessionId, Vec<u32>)>, id: SessionId| {
+            o.iter().find(|(i, _)| *i == id).unwrap().1.clone()
+        };
+        assert_eq!(g(&rr, a1), g(&ba, a2));
+        assert_eq!(g(&rr, b1), g(&ba, b2));
     }
 
     #[test]
@@ -2999,15 +3463,27 @@ mod tests {
 
         // Serial oracle: prefill each, take one decode step, record logits.
         let serial_logits = |prompt: &[u32]| -> Vec<f32> {
-            use fuel::inference_context::{KvCache, InferenceContext};
+            use fuel::inference_context::{InferenceContext, KvCache};
             let cfg = &model.config;
             let msl = prompt.len() + 2;
-            let mut cache = KvCache::with_capacity(cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, msl, DType::F32, &Device::cpu()).unwrap();
+            let mut cache = KvCache::with_capacity(
+                cfg.n_layers,
+                cfg.n_kv_heads,
+                cfg.head_dim,
+                msl,
+                DType::F32,
+                &Device::cpu(),
+            )
+            .unwrap();
             let mut ctx = InferenceContext::new(Device::cpu());
             let mut sess = None;
-            let pre = model.forward_with_kv_context_persistent(prompt, &mut cache, &mut ctx, &mut sess).unwrap();
+            let pre = model
+                .forward_with_kv_context_persistent(prompt, &mut cache, &mut ctx, &mut sess)
+                .unwrap();
             let next = fuel::lazy::sample_logits(&pre, SamplingStrategy::Greedy, &mut 0u64);
-            model.forward_with_kv_context_persistent(&[next], &mut cache, &mut ctx, &mut sess).unwrap()
+            model
+                .forward_with_kv_context_persistent(&[next], &mut cache, &mut ctx, &mut sess)
+                .unwrap()
         };
         let sa = serial_logits(&pa);
         let sb = serial_logits(&pb);
@@ -3016,23 +3492,50 @@ mod tests {
         // at equal cached_len, then one try_batched_step.
         let mut states: Vec<SessionState> = Vec::new();
         for (id, p) in [(0u64, &pa[..]), (1u64, &pb[..])] {
-            let mut s = SessionState::new(SessionId(id),
-                ModelDims { n_layers: model.config.n_layers, n_kv_heads: model.config.n_kv_heads, head_dim: model.config.head_dim },
-                p, SamplingStrategy::Greedy, None, 2, &Device::cpu(), DType::F32).unwrap();
+            let mut s = SessionState::new(
+                SessionId(id),
+                ModelDims {
+                    n_layers: model.config.n_layers,
+                    n_kv_heads: model.config.n_kv_heads,
+                    head_dim: model.config.head_dim,
+                },
+                p,
+                SamplingStrategy::Greedy,
+                None,
+                2,
+                &Device::cpu(),
+                DType::F32,
+            )
+            .unwrap();
             // Prefill + sample first token so cached_len == prompt.len() and
             // last token is set (mirrors scheduler.step prefill pass).
-            s.last_logits = Some(model.forward_with_kv_context_persistent(&s.tokens.clone(), &mut s.cache, &mut s.ctx, &mut s.session).unwrap());
+            s.last_logits = Some(
+                model
+                    .forward_with_kv_context_persistent(
+                        &s.tokens.clone(),
+                        &mut s.cache,
+                        &mut s.ctx,
+                        &mut s.session,
+                    )
+                    .unwrap(),
+            );
             s.sample_and_append().unwrap();
             states.push(s);
         }
-        assert_eq!(states[0].cache.cached_len, states[1].cache.cached_len, "equal cached_len (uniform)");
+        assert_eq!(
+            states[0].cache.cached_len, states[1].cache.cached_len,
+            "equal cached_len (uniform)"
+        );
         let mut refs: Vec<&mut SessionState> = states.iter_mut().collect();
-        let outcome = BatchedDecode::try_batched_step(&model, &Device::cpu(), DType::F32, &mut refs).unwrap();
+        let outcome =
+            BatchedDecode::try_batched_step(&model, &Device::cpu(), DType::F32, &mut refs).unwrap();
         match outcome {
             BatchOutcome::Advanced(rows) => {
                 assert_eq!(rows.len(), 2);
                 // Batched decode step logits == serial decode step logits (f32, ε-tol).
-                let close = |a: &[f32], b: &[f32]| a.len()==b.len() && a.iter().zip(b).all(|(x,y)| (x-y).abs() < 1e-4);
+                let close = |a: &[f32], b: &[f32]| {
+                    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-4)
+                };
                 assert!(close(&rows[0], &sa), "batched row 0 != serial A");
                 assert!(close(&rows[1], &sb), "batched row 1 != serial B");
             }
@@ -3054,78 +3557,131 @@ mod tests {
         // actually PICKED (temporary eprintln of the chosen arm) and that a
         // KV-perturbation sabotage makes the test FAIL (a passing sabotage run
         // is invalid without confirmed recompilation).
-        use fuel::lazy::{LlamaConfig, LlamaModel, LayerWeights, LlamaWeights, WeightStorage};
+        use fuel::lazy::{LayerWeights, LlamaConfig, LlamaModel, LlamaWeights, WeightStorage};
 
         fn bf16_weights(cfg: &LlamaConfig) -> LlamaWeights {
             // f32 tiny weights → BF16 for every WeightStorage matrix (embedding
             // + norm gains stay f32, per make_tiny_weights_bf16's frozen seams).
             let mut s: u32 = 9999;
-            let mut next = || { s = s.wrapping_mul(1103515245).wrapping_add(12345);
-                ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.1 };
+            let mut next = || {
+                s = s.wrapping_mul(1103515245).wrapping_add(12345);
+                ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.1
+            };
             let mut vec_of = |n: usize| -> std::sync::Arc<[f32]> {
-                std::sync::Arc::from((0..n).map(|_| next()).collect::<Vec<_>>()) };
+                std::sync::Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
+            };
             let to_bf16 = |a: std::sync::Arc<[f32]>| -> WeightStorage {
                 WeightStorage::BF16(std::sync::Arc::from(
-                    a.iter().map(|&v| half::bf16::from_f32(v)).collect::<Vec<_>>())) };
+                    a.iter()
+                        .map(|&v| half::bf16::from_f32(v))
+                        .collect::<Vec<_>>(),
+                ))
+            };
             let kv = cfg.n_kv_heads * cfg.head_dim;
             LlamaWeights {
                 instance: fuel::decode_shape::ModelInstanceId::next(),
                 token_embedding: vec_of(cfg.vocab_size * cfg.dim),
-                layers: (0..cfg.n_layers).map(|_| LayerWeights {
-                    attn_q: to_bf16(vec_of(cfg.dim*cfg.dim)), attn_q_bias: None,
-                    attn_k: to_bf16(vec_of(cfg.dim*kv)), attn_k_bias: None,
-                    attn_v: to_bf16(vec_of(cfg.dim*kv)), attn_v_bias: None,
-                    attn_o: to_bf16(vec_of(cfg.dim*cfg.dim)),
-                    ffn_gate: to_bf16(vec_of(cfg.dim*cfg.ffn_dim)),
-                    ffn_up: to_bf16(vec_of(cfg.dim*cfg.ffn_dim)),
-                    ffn_down: to_bf16(vec_of(cfg.ffn_dim*cfg.dim)),
-                    attn_norm_gain: std::sync::Arc::from(vec![1.0f32; cfg.dim]),
-                    ffn_norm_gain: std::sync::Arc::from(vec![1.0f32; cfg.dim]),
-                }).collect(),
+                layers: (0..cfg.n_layers)
+                    .map(|_| LayerWeights {
+                        attn_q: to_bf16(vec_of(cfg.dim * cfg.dim)),
+                        attn_q_bias: None,
+                        attn_k: to_bf16(vec_of(cfg.dim * kv)),
+                        attn_k_bias: None,
+                        attn_v: to_bf16(vec_of(cfg.dim * kv)),
+                        attn_v_bias: None,
+                        attn_o: to_bf16(vec_of(cfg.dim * cfg.dim)),
+                        ffn_gate: to_bf16(vec_of(cfg.dim * cfg.ffn_dim)),
+                        ffn_up: to_bf16(vec_of(cfg.dim * cfg.ffn_dim)),
+                        ffn_down: to_bf16(vec_of(cfg.ffn_dim * cfg.dim)),
+                        attn_norm_gain: std::sync::Arc::from(vec![1.0f32; cfg.dim]),
+                        ffn_norm_gain: std::sync::Arc::from(vec![1.0f32; cfg.dim]),
+                    })
+                    .collect(),
                 final_norm_gain: std::sync::Arc::from(vec![1.0f32; cfg.dim]),
-                output: to_bf16(vec_of(cfg.dim*cfg.vocab_size)),
+                output: to_bf16(vec_of(cfg.dim * cfg.vocab_size)),
             }
         }
 
         let cfg = tiny_cfg();
-        let model = LlamaModel { config: cfg.clone(), weights: bf16_weights(&cfg) };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights: bf16_weights(&cfg),
+        };
         let dev = fuel::cuda_backend::new_device(0).expect("cuda device 0");
         let dt = DType::BF16;
         let pa = [1u32, 2, 3];
         let pb = [4u32, 5, 6];
 
         let serial_logits = |prompt: &[u32]| -> Vec<f32> {
-            use fuel::inference_context::{KvCache, InferenceContext};
+            use fuel::inference_context::{InferenceContext, KvCache};
             let msl = prompt.len() + 2;
-            let mut cache = KvCache::with_capacity(cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, msl, dt, &dev).unwrap();
+            let mut cache =
+                KvCache::with_capacity(cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, msl, dt, &dev)
+                    .unwrap();
             let mut ctx = InferenceContext::new(dev.clone());
             let mut sess = None;
-            let pre = model.forward_with_kv_context_persistent(prompt, &mut cache, &mut ctx, &mut sess).unwrap();
+            let pre = model
+                .forward_with_kv_context_persistent(prompt, &mut cache, &mut ctx, &mut sess)
+                .unwrap();
             let next = fuel::lazy::sample_logits(&pre, SamplingStrategy::Greedy, &mut 0u64);
-            model.forward_with_kv_context_persistent(&[next], &mut cache, &mut ctx, &mut sess).unwrap()
+            model
+                .forward_with_kv_context_persistent(&[next], &mut cache, &mut ctx, &mut sess)
+                .unwrap()
         };
         let sa = serial_logits(&pa);
         let sb = serial_logits(&pb);
 
         let mut states: Vec<SessionState> = Vec::new();
         for (id, p) in [(0u64, &pa[..]), (1u64, &pb[..])] {
-            let mut s = SessionState::new(SessionId(id),
-                ModelDims { n_layers: cfg.n_layers, n_kv_heads: cfg.n_kv_heads, head_dim: cfg.head_dim },
-                p, SamplingStrategy::Greedy, None, 2, &dev, dt).unwrap();
-            s.last_logits = Some(model.forward_with_kv_context_persistent(&s.tokens.clone(), &mut s.cache, &mut s.ctx, &mut s.session).unwrap());
+            let mut s = SessionState::new(
+                SessionId(id),
+                ModelDims {
+                    n_layers: cfg.n_layers,
+                    n_kv_heads: cfg.n_kv_heads,
+                    head_dim: cfg.head_dim,
+                },
+                p,
+                SamplingStrategy::Greedy,
+                None,
+                2,
+                &dev,
+                dt,
+            )
+            .unwrap();
+            s.last_logits = Some(
+                model
+                    .forward_with_kv_context_persistent(
+                        &s.tokens.clone(),
+                        &mut s.cache,
+                        &mut s.ctx,
+                        &mut s.session,
+                    )
+                    .unwrap(),
+            );
             s.sample_and_append().unwrap();
             states.push(s);
         }
-        assert_eq!(states[0].cache.cached_len, states[1].cache.cached_len, "equal cached_len (uniform)");
+        assert_eq!(
+            states[0].cache.cached_len, states[1].cache.cached_len,
+            "equal cached_len (uniform)"
+        );
         let mut refs: Vec<&mut SessionState> = states.iter_mut().collect();
         let outcome = BatchedDecode::try_batched_step(&model, &dev, dt, &mut refs).unwrap();
         match outcome {
             BatchOutcome::Advanced(rows) => {
                 assert_eq!(rows.len(), 2);
                 let eps = 5e-3_f32;
-                let close = |a: &[f32], b: &[f32]| a.len()==b.len() && a.iter().zip(b).all(|(x,y)| (x-y).abs() < eps);
-                assert!(close(&rows[0], &sa), "batched row 0 != serial A (bf16 ε={eps})");
-                assert!(close(&rows[1], &sb), "batched row 1 != serial B (bf16 ε={eps})");
+                let close = |a: &[f32], b: &[f32]| {
+                    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| (x - y).abs() < eps)
+                };
+                assert!(
+                    close(&rows[0], &sa),
+                    "batched row 0 != serial A (bf16 ε={eps})"
+                );
+                assert!(
+                    close(&rows[1], &sb),
+                    "batched row 1 != serial B (bf16 ε={eps})"
+                );
             }
             BatchOutcome::NotBatchable => panic!("uniform bf16 sessions must batch"),
         }
@@ -3142,8 +3698,24 @@ mod tests {
         let msl = 4;
         // Both caches BF16 (uniform among themselves in cached_len/msl/n_layers)
         // but the requested dtype is F32 → a byte-reinterpretation hazard.
-        let mut c0 = KvCache::with_capacity(cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, msl, DType::BF16, &Device::cpu()).unwrap();
-        let mut c1 = KvCache::with_capacity(cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, msl, DType::BF16, &Device::cpu()).unwrap();
+        let mut c0 = KvCache::with_capacity(
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            msl,
+            DType::BF16,
+            &Device::cpu(),
+        )
+        .unwrap();
+        let mut c1 = KvCache::with_capacity(
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            msl,
+            DType::BF16,
+            &Device::cpu(),
+        )
+        .unwrap();
         let mut caches: Vec<&mut KvCache> = vec![&mut c0, &mut c1];
         let last_tokens = [1u32, 2];
         let err = model
@@ -3178,21 +3750,42 @@ mod tests {
             .iter()
             .map(|(p, eos, mn)| {
                 model
-                    .generate_with_kv_context(p, *mn, SamplingStrategy::Greedy, *eos, &Device::cpu(), DType::F32)
+                    .generate_with_kv_context(
+                        p,
+                        *mn,
+                        SamplingStrategy::Greedy,
+                        *eos,
+                        &Device::cpu(),
+                        DType::F32,
+                    )
                     .unwrap()
             })
             .collect();
 
-        let mut sched = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::Batched { max_batch: 2 }, test_budget()).unwrap();
+        let mut sched = SessionScheduler::new(
+            &model,
+            Device::cpu(),
+            DType::F32,
+            SchedulePolicy::Batched { max_batch: 2 },
+            test_budget(),
+        )
+        .unwrap();
         let ids: Vec<SessionId> = cases
             .iter()
-            .map(|(p, eos, mn)| sched.add_session(p, SamplingStrategy::Greedy, *eos, *mn).unwrap())
+            .map(|(p, eos, mn)| {
+                sched
+                    .add_session(p, SamplingStrategy::Greedy, *eos, *mn)
+                    .unwrap()
+            })
             .collect();
         let out = sched.run_to_completion().unwrap();
 
         for (i, id) in ids.iter().enumerate() {
             let got = out.iter().find(|(x, _)| x == id).unwrap().1.clone();
-            assert_eq!(got, solo[i], "session {i} (K=3, max_batch=2 transition) != standalone");
+            assert_eq!(
+                got, solo[i],
+                "session {i} (K=3, max_batch=2 transition) != standalone"
+            );
         }
     }
 
@@ -3202,11 +3795,21 @@ mod tests {
     fn batched_parity_k3_gqa() {
         // GQA: 4 query heads, 2 kv heads (head_dim 4 → dim 16).
         let cfg = LlamaConfig {
-            vocab_size: 16, dim: 16, n_layers: 2, n_heads: 4,
-            n_kv_heads: 2, head_dim: 4, ffn_dim: 32, norm_eps: 1e-5, rope_base: 10000.0,
+            vocab_size: 16,
+            dim: 16,
+            n_layers: 2,
+            n_heads: 4,
+            n_kv_heads: 2,
+            head_dim: 4,
+            ffn_dim: 32,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
         assert!(cfg.n_kv_heads < cfg.n_heads, "must be a GQA config");
-        let model = LlamaModel { config: cfg.clone(), weights: tiny_weights(&cfg, 4242) };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg, 4242),
+        };
         // Same prompt LENGTH across the 3 sessions so they stay lockstep
         // (equal cached_len) and the batched arm is used every step.
         let prompts: [[u32; 3]; 3] = [[1, 2, 3], [4, 5, 6], [7, 8, 9]];
@@ -3214,13 +3817,35 @@ mod tests {
 
         let solo: Vec<Vec<u32>> = prompts
             .iter()
-            .map(|p| model.generate_with_kv_context(p, max_new, SamplingStrategy::Greedy, None, &Device::cpu(), DType::F32).unwrap())
+            .map(|p| {
+                model
+                    .generate_with_kv_context(
+                        p,
+                        max_new,
+                        SamplingStrategy::Greedy,
+                        None,
+                        &Device::cpu(),
+                        DType::F32,
+                    )
+                    .unwrap()
+            })
             .collect();
 
-        let mut sched = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::Batched { max_batch: 4 }, test_budget()).unwrap();
+        let mut sched = SessionScheduler::new(
+            &model,
+            Device::cpu(),
+            DType::F32,
+            SchedulePolicy::Batched { max_batch: 4 },
+            test_budget(),
+        )
+        .unwrap();
         let ids: Vec<SessionId> = prompts
             .iter()
-            .map(|p| sched.add_session(p, SamplingStrategy::Greedy, None, max_new).unwrap())
+            .map(|p| {
+                sched
+                    .add_session(p, SamplingStrategy::Greedy, None, max_new)
+                    .unwrap()
+            })
             .collect();
         let out = sched.run_to_completion().unwrap();
 
@@ -3253,7 +3878,13 @@ mod tests {
             2
         }
         fn layer_state_specs(&self) -> Vec<LayerStateSpec> {
-            vec![LayerStateSpec::KeyValue { n_kv_heads: 2, head_dim: 4 }; 2]
+            vec![
+                LayerStateSpec::KeyValue {
+                    n_kv_heads: 2,
+                    head_dim: 4
+                };
+                2
+            ]
         }
 
         /// Deterministic and **cache-dependent**: the argmax walks with
@@ -3284,7 +3915,8 @@ mod tests {
             DType::F32,
             SchedulePolicy::RoundRobin,
             test_budget(),
-        ).unwrap();
+        )
+        .unwrap();
         let id = sched
             .add_session(&[1u32, 2, 3], SamplingStrategy::Greedy, None, 4)
             .expect("a core-only model must be admissible");
@@ -3292,7 +3924,11 @@ mod tests {
 
         // `run_to_completion` returns prompt ++ generated.
         let toks = out.iter().find(|(i, _)| *i == id).unwrap().1.clone();
-        assert_eq!(toks.len(), 3 + 4, "expected prompt + 4 sampled, got {toks:?}");
+        assert_eq!(
+            toks.len(),
+            3 + 4,
+            "expected prompt + 4 sampled, got {toks:?}"
+        );
 
         // The stub's argmax is `cached_len % vocab`. Prefill consumes the 3
         // prompt tokens (cached_len 3 → token 3), then each decode step consumes
@@ -3422,8 +4058,12 @@ mod tests {
         let mut ctx1 = InferenceContext::new(Device::cpu());
         let mut s0 = None;
         let mut s1 = None;
-        llama.forward_with_kv_context_persistent(&[1, 2], &mut c0, &mut ctx0, &mut s0).unwrap();
-        llama.forward_with_kv_context_persistent(&[1, 2], &mut c1, &mut ctx1, &mut s1).unwrap();
+        llama
+            .forward_with_kv_context_persistent(&[1, 2], &mut c0, &mut ctx0, &mut s0)
+            .unwrap();
+        llama
+            .forward_with_kv_context_persistent(&[1, 2], &mut c1, &mut ctx1, &mut s1)
+            .unwrap();
         let mut both = [&mut c0, &mut c1];
         let rows = DecodeModel::build_batched_decode_logits(
             &llama,
@@ -3448,13 +4088,20 @@ mod tests {
             DType::F32,
             SchedulePolicy::Batched { max_batch: 4 },
             test_budget(),
-        ).unwrap();
+        )
+        .unwrap();
         let ids: Vec<SessionId> = [&[1u32, 2, 3][..], &[4u32, 5, 6][..]]
             .iter()
-            .map(|p| sched.add_session(p, SamplingStrategy::Greedy, None, 3).unwrap())
+            .map(|p| {
+                sched
+                    .add_session(p, SamplingStrategy::Greedy, None, 3)
+                    .unwrap()
+            })
             .collect();
 
-        let report = sched.step().expect("step must not fail on a core-only model");
+        let report = sched
+            .step()
+            .expect("step must not fail on a core-only model");
         assert!(
             !report.used_batched_arm,
             "a core-only model has no batched arm — the report must not claim one"
@@ -3463,7 +4110,11 @@ mod tests {
         let out = sched.run_to_completion().unwrap();
         for id in &ids {
             let toks = out.iter().find(|(i, _)| i == id).unwrap().1.clone();
-            assert_eq!(toks.len(), 3 + 3, "session {id:?} did not advance under Batched");
+            assert_eq!(
+                toks.len(),
+                3 + 3,
+                "session {id:?} did not advance under Batched"
+            );
         }
     }
 
@@ -3481,7 +4132,8 @@ mod tests {
             DType::F32,
             SchedulePolicy::RoundRobin,
             test_budget(),
-        ).unwrap();
+        )
+        .unwrap();
         let id = sched
             .add_session(&[1u32, 2, 3], SamplingStrategy::Greedy, None, 4)
             .expect("Llama3Model must be admissible");
@@ -3495,9 +4147,17 @@ mod tests {
         // graph rather than merely decoding *something*.
         let inner_out = tiny_model(11)
             .generate_with_kv_context(
-                &[1u32, 2, 3], 4, SamplingStrategy::Greedy, None, &Device::cpu(), DType::F32,
+                &[1u32, 2, 3],
+                4,
+                SamplingStrategy::Greedy,
+                None,
+                &Device::cpu(),
+                DType::F32,
             )
             .unwrap();
-        assert_eq!(toks, inner_out, "unscaled wrapper diverged from its inner model");
+        assert_eq!(
+            toks, inner_out,
+            "unscaled wrapper diverged from its inner model"
+        );
     }
 }

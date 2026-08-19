@@ -31,7 +31,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use fuel::lazy::LazyTensor;
-use fuel::train::{loss, OptimizerConfig, Parameter, TrainState};
+use fuel::train::{OptimizerConfig, Parameter, TrainState, loss};
 use fuel::{Device, Result, Shape};
 
 /// A 2-layer MLP: `in_dim → hidden → (ReLU) → out_dim`.
@@ -53,7 +53,10 @@ fn lcg(state: &mut u32) -> f32 {
 }
 
 fn vec_of(n: usize, state: &mut u32, scale: f32) -> Arc<[f32]> {
-    (0..n).map(|_| lcg(state) * scale).collect::<Vec<_>>().into()
+    (0..n)
+        .map(|_| lcg(state) * scale)
+        .collect::<Vec<_>>()
+        .into()
 }
 
 /// The four trainable parameters, seeded deterministically. Weights get a small
@@ -63,17 +66,39 @@ fn init_params(cfg: &MlpConfig) -> Vec<Parameter> {
     let w1_scale = 1.0 / (cfg.in_dim as f32).sqrt();
     let w2_scale = 1.0 / (cfg.hidden as f32).sqrt();
     vec![
-        Parameter::new_f32("w1", Shape::from_dims(&[cfg.in_dim, cfg.hidden]), vec_of(cfg.in_dim * cfg.hidden, &mut s, w1_scale)),
-        Parameter::new_f32("b1", Shape::from_dims(&[cfg.hidden]), vec![0.0f32; cfg.hidden]),
-        Parameter::new_f32("w2", Shape::from_dims(&[cfg.hidden, cfg.out_dim]), vec_of(cfg.hidden * cfg.out_dim, &mut s, w2_scale)),
-        Parameter::new_f32("b2", Shape::from_dims(&[cfg.out_dim]), vec![0.0f32; cfg.out_dim]),
+        Parameter::new_f32(
+            "w1",
+            Shape::from_dims(&[cfg.in_dim, cfg.hidden]),
+            vec_of(cfg.in_dim * cfg.hidden, &mut s, w1_scale),
+        ),
+        Parameter::new_f32(
+            "b1",
+            Shape::from_dims(&[cfg.hidden]),
+            vec![0.0f32; cfg.hidden],
+        ),
+        Parameter::new_f32(
+            "w2",
+            Shape::from_dims(&[cfg.hidden, cfg.out_dim]),
+            vec_of(cfg.hidden * cfg.out_dim, &mut s, w2_scale),
+        ),
+        Parameter::new_f32(
+            "b2",
+            Shape::from_dims(&[cfg.out_dim]),
+            vec![0.0f32; cfg.out_dim],
+        ),
     ]
 }
 
 /// The MLP forward: `[n, in] → (ReLU) hidden → logits [n, out]`. Shared by the
 /// training step (params from the graph) and the inference eval (params rebuilt
 /// from trained host values) so the two can never diverge.
-fn mlp_logits(x: &LazyTensor, w1: &LazyTensor, b1: &LazyTensor, w2: &LazyTensor, b2: &LazyTensor) -> Result<LazyTensor> {
+fn mlp_logits(
+    x: &LazyTensor,
+    w1: &LazyTensor,
+    b1: &LazyTensor,
+    w2: &LazyTensor,
+    b2: &LazyTensor,
+) -> Result<LazyTensor> {
     let h = x.matmul(w1)?.broadcast_add(b1)?.relu();
     h.matmul(w2)?.broadcast_add(b2)
 }
@@ -107,14 +132,15 @@ impl MnistTrainer {
         let x_data: Arc<[f32]> = images.to_vec().into();
         let t_data = one_hot(labels, self.cfg.out_dim);
         let (in_dim, out_dim) = (self.cfg.in_dim, self.cfg.out_dim);
-        self.state.step(move |_graph, params: &HashMap<String, LazyTensor>| {
-            let (w1, b1, w2, b2) = (&params["w1"], &params["b1"], &params["w2"], &params["b2"]);
-            // Input as a Const on the parameters' graph (the finetune anchor trick).
-            let x = w1.const_f32_like(x_data, Shape::from_dims(&[n_samples, in_dim]));
-            let logits = mlp_logits(&x, w1, b1, w2, b2)?;
-            let target = w1.const_f32_like(t_data, Shape::from_dims(&[n_samples, out_dim]));
-            loss::cross_entropy_with_logits(&logits, &target)
-        })
+        self.state
+            .step(move |_graph, params: &HashMap<String, LazyTensor>| {
+                let (w1, b1, w2, b2) = (&params["w1"], &params["b1"], &params["w2"], &params["b2"]);
+                // Input as a Const on the parameters' graph (the finetune anchor trick).
+                let x = w1.const_f32_like(x_data, Shape::from_dims(&[n_samples, in_dim]));
+                let logits = mlp_logits(&x, w1, b1, w2, b2)?;
+                let target = w1.const_f32_like(t_data, Shape::from_dims(&[n_samples, out_dim]));
+                loss::cross_entropy_with_logits(&logits, &target)
+            })
     }
 
     /// Forward-only pass over `[n_samples, in_dim]` images; returns the fraction
@@ -131,13 +157,22 @@ impl MnistTrainer {
         let b1 = mk("b1", &[cfg.hidden])?;
         let w2 = mk("w2", &[cfg.hidden, cfg.out_dim])?;
         let b2 = mk("b2", &[cfg.out_dim])?;
-        let x = LazyTensor::from_f32(images.to_vec(), Shape::from_dims(&[n_samples, cfg.in_dim]), &dev);
+        let x = LazyTensor::from_f32(
+            images.to_vec(),
+            Shape::from_dims(&[n_samples, cfg.in_dim]),
+            &dev,
+        );
         let logits = mlp_logits(&x, &w1, &b1, &w2, &b2)?.realize_f32();
 
         let mut correct = 0usize;
         for i in 0..n_samples {
             let row = &logits[i * cfg.out_dim..(i + 1) * cfg.out_dim];
-            let pred = row.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).map(|(j, _)| j as u32).unwrap_or(0);
+            let pred = row
+                .iter()
+                .enumerate()
+                .max_by(|a, b| a.1.total_cmp(b.1))
+                .map(|(j, _)| j as u32)
+                .unwrap_or(0);
             if pred == labels[i] {
                 correct += 1;
             }
@@ -149,9 +184,17 @@ impl MnistTrainer {
 /// Convenience for the convergence gate: train `n_steps` on a single fixed
 /// batch, returning the per-step loss (the model memorises the batch, isolating
 /// "is training moving?" from the data pipeline).
-pub fn train_steps(images: &[f32], labels: &[u32], n_samples: usize, cfg: &MlpConfig, n_steps: usize) -> Result<Vec<f32>> {
+pub fn train_steps(
+    images: &[f32],
+    labels: &[u32],
+    n_samples: usize,
+    cfg: &MlpConfig,
+    n_steps: usize,
+) -> Result<Vec<f32>> {
     let mut trainer = MnistTrainer::new(*cfg)?;
-    (0..n_steps).map(|_| trainer.train_batch(images, labels, n_samples)).collect::<Result<Vec<f32>>>()
+    (0..n_steps)
+        .map(|_| trainer.train_batch(images, labels, n_samples))
+        .collect::<Result<Vec<f32>>>()
 }
 
 #[cfg(test)]
@@ -162,12 +205,20 @@ mod tests {
     fn synthetic_batch(n: usize, in_dim: usize, out_dim: usize, seed: u32) -> (Vec<f32>, Vec<u32>) {
         let mut s = seed;
         let images: Vec<f32> = (0..n * in_dim).map(|_| lcg(&mut s)).collect();
-        let labels: Vec<u32> = (0..n).map(|_| ((lcg(&mut s) + 0.5) * out_dim as f32) as u32 % out_dim as u32).collect();
+        let labels: Vec<u32> = (0..n)
+            .map(|_| ((lcg(&mut s) + 0.5) * out_dim as f32) as u32 % out_dim as u32)
+            .collect();
         (images, labels)
     }
 
     fn tiny_cfg(lr: f32) -> MlpConfig {
-        MlpConfig { in_dim: 16, hidden: 8, out_dim: 3, lr, seed: 7 }
+        MlpConfig {
+            in_dim: 16,
+            hidden: 8,
+            out_dim: 3,
+            lr,
+            seed: 7,
+        }
     }
 
     /// THE CONVERGENCE GATE. Loss must be finite throughout and end below where
@@ -181,7 +232,10 @@ mod tests {
         // Measured trajectory: 1.0918 -> 0.4162 (monotone, ~62% drop). Under the
         // lr=0 sabotage (sibling test) it is flat at 1.0918 and this assertion
         // FAILS — the gate is not vacuously green.
-        assert!(losses.iter().all(|l| l.is_finite()), "all losses finite, got {losses:?}");
+        assert!(
+            losses.iter().all(|l| l.is_finite()),
+            "all losses finite, got {losses:?}"
+        );
         assert!(
             *losses.last().unwrap() < losses[0],
             "training loss must decrease (wired up + gradients flowing): {losses:?}",

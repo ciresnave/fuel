@@ -124,7 +124,10 @@ impl core::fmt::Display for SeamError {
                 write!(f, "seam: advertised profiles must be strictly ascending")
             }
             SeamError::ReservedNonZero => {
-                write!(f, "seam: a reserved field carried a nonzero byte (must be zero)")
+                write!(
+                    f,
+                    "seam: a reserved field carried a nonzero byte (must be zero)"
+                )
             }
             SeamError::VersionMismatch { local, remote } => write!(
                 f,
@@ -234,8 +237,16 @@ mod tests {
     fn seamhello_layout_is_frozen() {
         // The envelope must outlive every profile it negotiates, so its size +
         // field offsets are frozen forever and cross-checked on both sides.
-        assert_eq!(size_of::<SeamHello>(), 56, "SeamHello is frozen at 56 bytes");
-        assert_eq!(align_of::<SeamHello>(), 8, "u64 capabilities forces 8-byte align");
+        assert_eq!(
+            size_of::<SeamHello>(),
+            56,
+            "SeamHello is frozen at 56 bytes"
+        );
+        assert_eq!(
+            align_of::<SeamHello>(),
+            8,
+            "u64 capabilities forces 8-byte align"
+        );
         assert_eq!(offset_of!(SeamHello, magic), 0);
         assert_eq!(offset_of!(SeamHello, envelope_version), 4);
         assert_eq!(offset_of!(SeamHello, reserved), 5);
@@ -333,7 +344,11 @@ mod tests {
         let fuel = SeamHello::fuel(SEAM_CAP_FDX_V1 | SEAM_CAP_JIT_ON_REQUEST);
         let provider = SeamHello::fuel(SEAM_CAP_FDX_V1);
         let n = negotiate(&fuel, &provider).unwrap();
-        assert_eq!(n.capabilities & SEAM_CAP_JIT_ON_REQUEST, 0, "JIT not on this connection");
+        assert_eq!(
+            n.capabilities & SEAM_CAP_JIT_ON_REQUEST,
+            0,
+            "JIT not on this connection"
+        );
         assert_eq!(n.capabilities & SEAM_CAP_FDX_V1, SEAM_CAP_FDX_V1);
     }
 
@@ -341,7 +356,10 @@ mod tests {
     fn validate_rejects_bad_magic_and_unsorted() {
         let mut bad = SeamHello::fuel(0);
         bad.magic = 0xDEAD_BEEF;
-        assert!(matches!(bad.validate(), Err(SeamError::BadMagic(0xDEAD_BEEF))));
+        assert!(matches!(
+            bad.validate(),
+            Err(SeamError::BadMagic(0xDEAD_BEEF))
+        ));
 
         let mut unsorted = SeamHello::advertise(&[1, 2], 0);
         unsorted.profiles[0] = 2;
@@ -350,6 +368,9 @@ mod tests {
 
         let mut toomany = SeamHello::fuel(0);
         toomany.profiles_len = (SEAM_MAX_PROFILES + 1) as u16;
-        assert!(matches!(toomany.validate(), Err(SeamError::TooManyProfiles(_))));
+        assert!(matches!(
+            toomany.validate(),
+            Err(SeamError::TooManyProfiles(_))
+        ));
     }
 }

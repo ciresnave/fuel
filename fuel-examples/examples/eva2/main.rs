@@ -19,9 +19,11 @@ use std::sync::Arc;
 /// Loads an image from disk and applies OpenAI/CLIP normalization, returning
 /// a flat row-major Vec<f32> laid out as CHW for a single 448x448 RGB image.
 pub fn load_image448_openai_norm<P: AsRef<std::path::Path>>(p: P) -> anyhow::Result<Vec<f32>> {
-    let img = image::ImageReader::open(p)?
-        .decode()?
-        .resize_to_fill(448, 448, image::imageops::FilterType::Triangle);
+    let img = image::ImageReader::open(p)?.decode()?.resize_to_fill(
+        448,
+        448,
+        image::imageops::FilterType::Triangle,
+    );
     let img = img.to_rgb8();
     let raw = img.into_raw();
     // raw is HWC u8 — convert to CHW f32 normalized with OpenAI mean/std.
@@ -82,9 +84,12 @@ pub fn main() -> anyhow::Result<()> {
     let cfg = EvaConfig::vit_base();
     let st = unsafe { MmapedSafetensors::multi(&[&model_file]) }
         .map_err(|e| E::msg(format!("mmap: {e}")))?;
-    let weights = EvaWeights::load_from_mmapped(&st, &cfg)
-        .map_err(|e| E::msg(format!("weights: {e}")))?;
-    let model = EvaModel { config: cfg, weights };
+    let weights =
+        EvaWeights::load_from_mmapped(&st, &cfg).map_err(|e| E::msg(format!("weights: {e}")))?;
+    let model = EvaModel {
+        config: cfg,
+        weights,
+    };
     println!("model built");
 
     let logits_t = model.forward(&image)?;

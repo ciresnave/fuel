@@ -1,5 +1,5 @@
 use crate::utils::{BufferOffset, EncoderProvider};
-use crate::{set_params, MetalDType, Kernels, MetalKernelError, Source};
+use crate::{set_params, Kernels, MetalDType, MetalKernelError, Source};
 use crate::{Buffer, ComputeCommandEncoder, Device, MTLSize, RESOURCE_OPTIONS};
 use objc2_metal::MTLResourceUsage;
 

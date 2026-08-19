@@ -66,7 +66,11 @@ pub struct KarrasSigmaSchedule {
 
 impl Default for KarrasSigmaSchedule {
     fn default() -> Self {
-        Self { sigma_max: 10.0, sigma_min: 0.1, rho: 4.0 }
+        Self {
+            sigma_max: 10.0,
+            sigma_min: 0.1,
+            rho: 4.0,
+        }
     }
 }
 
@@ -87,7 +91,10 @@ pub struct ExponentialSigmaSchedule {
 
 impl Default for ExponentialSigmaSchedule {
     fn default() -> Self {
-        Self { sigma_max: 80.0, sigma_min: 0.1 }
+        Self {
+            sigma_max: 80.0,
+            sigma_min: 0.1,
+        }
     }
 }
 
@@ -131,14 +138,18 @@ pub enum CorrectorConfiguration {
 
 impl Default for CorrectorConfiguration {
     fn default() -> Self {
-        Self::Enabled { skip_steps: [0, 1, 2].into_iter().collect() }
+        Self::Enabled {
+            skip_steps: [0, 1, 2].into_iter().collect(),
+        }
     }
 }
 
 impl CorrectorConfiguration {
     /// Enables the corrector and skips the listed step indices.
     pub fn new(skip_steps: impl IntoIterator<Item = usize>) -> Self {
-        Self::Enabled { skip_steps: skip_steps.into_iter().collect() }
+        Self::Enabled {
+            skip_steps: skip_steps.into_iter().collect(),
+        }
     }
 }
 
@@ -194,7 +205,11 @@ impl Schedule {
             num_inference_steps,
             num_training_timesteps,
         )?;
-        Ok(Self { timesteps, num_training_timesteps, sigma_schedule })
+        Ok(Self {
+            timesteps,
+            num_training_timesteps,
+            sigma_schedule,
+        })
     }
 
     fn timesteps(&self) -> &[usize] {
@@ -247,7 +262,11 @@ fn interp(x: &[f64], xp: &[f64], fp: &[f64]) -> Vec<f64> {
             let (xl, xh) = (xp[idx], xp[idx + 1]);
             let (yl, yh) = (fp[idx], fp[idx + 1]);
             let dx = xh - xl;
-            if dx > 0.0 { yl + (xv - xl) / dx * (yh - yl) } else { f64::NAN }
+            if dx > 0.0 {
+                yl + (xv - xl) / dx * (yh - yl)
+            } else {
+                f64::NAN
+            }
         })
         .collect()
 }
@@ -259,16 +278,10 @@ fn build_timesteps(
     num_training_timesteps: usize,
 ) -> Result<Vec<usize>> {
     if num_inference_steps == 0 {
-        return Err(Error::Msg(
-            "UniPcScheduler: num_inference_steps must be > 0".into(),
-        )
-        .bt());
+        return Err(Error::Msg("UniPcScheduler: num_inference_steps must be > 0".into()).bt());
     }
     if num_training_timesteps == 0 {
-        return Err(Error::Msg(
-            "UniPcScheduler: num_training_timesteps must be > 0".into(),
-        )
-        .bt());
+        return Err(Error::Msg("UniPcScheduler: num_training_timesteps must be > 0".into()).bt());
     }
     match schedule {
         TimestepSchedule::FromSigmas => {
@@ -277,18 +290,13 @@ fn build_timesteps(
                 .map(|t| sigma_schedule.sigma_t(t))
                 .collect();
             let log_sigmas: Vec<f64> = sigmas.iter().map(|s| s.ln()).collect();
-            let rev_log_sigmas: Vec<f64> =
-                log_sigmas.iter().copied().rev().collect();
+            let rev_log_sigmas: Vec<f64> = log_sigmas.iter().copied().rev().collect();
             let query = linspace_f64(
                 log_sigmas[log_sigmas.len() - 1] - 0.001,
                 log_sigmas[0] + 0.001,
                 num_inference_steps,
             );
-            let grid = linspace_f64(
-                0.0,
-                num_training_timesteps as f64,
-                num_inference_steps,
-            );
+            let grid = linspace_f64(0.0, num_training_timesteps as f64, num_inference_steps);
             let interped = interp(&rev_log_sigmas, &query, &grid);
             Ok(interped
                 .into_iter()
@@ -409,7 +417,11 @@ impl UniPcScheduler {
             config.num_training_timesteps,
         )?;
         let state = UniPcState::new(config.solver_order);
-        Ok(Self { schedule, state, config })
+        Ok(Self {
+            schedule,
+            state,
+            config,
+        })
     }
 
     fn step_index(&self, timestep: usize) -> usize {
@@ -428,7 +440,11 @@ impl UniPcScheduler {
     }
 
     fn timestep_at(&self, step_idx: usize) -> usize {
-        self.schedule.timesteps().get(step_idx).copied().unwrap_or(0)
+        self.schedule
+            .timesteps()
+            .get(step_idx)
+            .copied()
+            .unwrap_or(0)
     }
 
     fn convert_model_output(
@@ -467,9 +483,7 @@ impl UniPcScheduler {
         let m0 = model_outputs
             .last()
             .and_then(|o| o.as_ref())
-            .ok_or_else(|| {
-                Error::Msg("UniP: missing latest model output".into()).bt()
-            })?;
+            .ok_or_else(|| Error::Msg("UniP: missing latest model output".into()).bt())?;
         let order = self.state.order;
         if order == 0 {
             return Err(Error::Msg("UniP: order must be >= 1".into()).bt());
@@ -574,9 +588,7 @@ impl UniPcScheduler {
         let m0 = model_outputs
             .last()
             .and_then(|o| o.as_ref())
-            .ok_or_else(|| {
-                Error::Msg("UniC: missing latest model output".into()).bt()
-            })?;
+            .ok_or_else(|| Error::Msg("UniC: missing latest model output".into()).bt())?;
         let ns = &self.schedule;
         let order = self.state.order;
         if order == 0 {
@@ -718,26 +730,23 @@ impl SdScheduler for UniPcScheduler {
         sample: &LazyTensor,
     ) -> Result<LazyTensor> {
         let step_index = self.step_index(timestep);
-        let model_output_converted =
-            self.convert_model_output(model_output, sample, timestep)?;
+        let model_output_converted = self.convert_model_output(model_output, sample, timestep)?;
 
-        let corrected_sample: LazyTensor = match (
-            &self.config.corrector,
-            self.state.last_sample.clone(),
-        ) {
-            (CorrectorConfiguration::Enabled { skip_steps }, Some(last_sample))
-                if !skip_steps.contains(&step_index) && step_index > 0 =>
-            {
-                self.unic_bh_update(
-                    &model_output_converted,
-                    &self.state.model_outputs.clone(),
-                    &last_sample,
-                    sample,
-                    timestep,
-                )?
-            }
-            _ => sample.clone(),
-        };
+        let corrected_sample: LazyTensor =
+            match (&self.config.corrector, self.state.last_sample.clone()) {
+                (CorrectorConfiguration::Enabled { skip_steps }, Some(last_sample))
+                    if !skip_steps.contains(&step_index) && step_index > 0 =>
+                {
+                    self.unic_bh_update(
+                        &model_output_converted,
+                        &self.state.model_outputs.clone(),
+                        &last_sample,
+                        sample,
+                        timestep,
+                    )?
+                }
+                _ => sample.clone(),
+            };
 
         let solver_order = self.config.solver_order;
         for i in 0..solver_order.saturating_sub(1) {
@@ -781,9 +790,7 @@ impl SdScheduler for UniPcScheduler {
         let t = timesteps[0];
         let alpha_t = self.schedule.alpha_t(t);
         let sigma_t = self.schedule.sigma_t(t);
-        original
-            .mul_scalar(alpha_t)
-            .add(&noise.mul_scalar(sigma_t))
+        original.mul_scalar(alpha_t).add(&noise.mul_scalar(sigma_t))
     }
 }
 
@@ -969,7 +976,10 @@ mod tests {
         let t = sched.timesteps()[0];
         let alpha = sched.schedule.alpha_t(t) as f32;
         let sigma = sched.schedule.sigma_t(t) as f32;
-        let blended = sched.add_noise(&anchor, &noise, &[t]).unwrap().realize_f32();
+        let blended = sched
+            .add_noise(&anchor, &noise, &[t])
+            .unwrap()
+            .realize_f32();
         for (i, (&o, &n)) in orig_vals.iter().zip(noise_vals.iter()).enumerate() {
             let expected = alpha * o + sigma * n;
             assert!(

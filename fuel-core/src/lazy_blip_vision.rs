@@ -19,8 +19,8 @@
 //!
 //! v1 scope: F32, batch == 1, prefill only.
 
-use crate::lazy::{LazyTensor, WeightStorage};
 use crate::Result;
+use crate::lazy::{LazyTensor, WeightStorage};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -47,9 +47,12 @@ impl BlipVisionConfig {
     /// `Salesforce/blip-image-captioning-base` (ViT-Base).
     pub fn image_captioning_base() -> Self {
         Self {
-            hidden_size: 768, intermediate_size: 3072,
-            num_hidden_layers: 12, num_attention_heads: 12,
-            image_size: 384, patch_size: 16,
+            hidden_size: 768,
+            intermediate_size: 3072,
+            num_hidden_layers: 12,
+            num_attention_heads: 12,
+            image_size: 384,
+            patch_size: 16,
             hidden_activation: BlipVisionActivation::Gelu,
             layer_norm_eps: 1e-5,
         }
@@ -58,9 +61,12 @@ impl BlipVisionConfig {
     /// `Salesforce/blip-image-captioning-large` (ViT-Large).
     pub fn image_captioning_large() -> Self {
         Self {
-            hidden_size: 1024, intermediate_size: 4096,
-            num_hidden_layers: 24, num_attention_heads: 16,
-            image_size: 384, patch_size: 16,
+            hidden_size: 1024,
+            intermediate_size: 4096,
+            num_hidden_layers: 24,
+            num_attention_heads: 16,
+            image_size: 384,
+            patch_size: 16,
             hidden_activation: BlipVisionActivation::Gelu,
             layer_norm_eps: 1e-5,
         }
@@ -160,7 +166,8 @@ impl BlipVisionModel {
             Shape::from_dims(&[cfg.hidden_size]),
         );
         let conv_out = pixel_values.conv2d(
-            &conv_w, Some(&conv_b),
+            &conv_w,
+            Some(&conv_b),
             (cfg.patch_size, cfg.patch_size),
             (0, 0),
             1,
@@ -171,11 +178,10 @@ impl BlipVisionModel {
             .permute([0, 2, 1_usize])?;
 
         // CLS token + positional embedding.
-        let cls = pixel_values
-            .const_f32_like(
-                Arc::clone(&weights.class_token),
-                Shape::from_dims(&[1, 1, cfg.hidden_size]),
-            );
+        let cls = pixel_values.const_f32_like(
+            Arc::clone(&weights.class_token),
+            Shape::from_dims(&[1, 1, cfg.hidden_size]),
+        );
         let with_cls = cls.concat(&patches, 1_usize)?;
         let pos = pixel_values.const_f32_like(
             Arc::clone(&weights.position_embedding),
@@ -189,7 +195,11 @@ impl BlipVisionModel {
         }
 
         // Post-encoder LN.
-        x.layer_norm_affine(Arc::clone(&weights.post_layernorm.gain), Arc::clone(&weights.post_layernorm.bias), cfg.layer_norm_eps)
+        x.layer_norm_affine(
+            Arc::clone(&weights.post_layernorm.gain),
+            Arc::clone(&weights.post_layernorm.bias),
+            cfg.layer_norm_eps,
+        )
     }
 }
 
@@ -200,12 +210,20 @@ fn apply_layer(
     anchor: &LazyTensor,
 ) -> Result<LazyTensor> {
     let residual = x.clone();
-    let normed = x.layer_norm_affine(Arc::clone(&w.ln1.gain), Arc::clone(&w.ln1.bias), cfg.layer_norm_eps)?;
+    let normed = x.layer_norm_affine(
+        Arc::clone(&w.ln1.gain),
+        Arc::clone(&w.ln1.bias),
+        cfg.layer_norm_eps,
+    )?;
     let attn_out = apply_attention(&normed, &w.attn, cfg, anchor)?;
     let x = residual.add(&attn_out)?;
 
     let residual = x.clone();
-    let normed = x.layer_norm_affine(Arc::clone(&w.ln2.gain), Arc::clone(&w.ln2.bias), cfg.layer_norm_eps)?;
+    let normed = x.layer_norm_affine(
+        Arc::clone(&w.ln2.gain),
+        Arc::clone(&w.ln2.bias),
+        cfg.layer_norm_eps,
+    )?;
     let mlp_out = apply_mlp(&normed, &w.mlp, cfg, anchor)?;
     residual.add(&mlp_out)
 }
@@ -218,14 +236,17 @@ fn apply_attention(
 ) -> Result<LazyTensor> {
     let dims = x.shape();
     let dims = dims.dims();
-    let b = dims[0]; let seq = dims[1];
+    let b = dims[0];
+    let seq = dims[1];
     let embed = cfg.hidden_size;
     let n_heads = cfg.num_attention_heads;
     let head_dim = cfg.head_dim();
     let scale = 1.0_f64 / (head_dim as f64).sqrt();
 
     // Fused QKV: project to 3·hidden then split.
-    let qkv = w.qkv.apply_linear_with_bias(x, embed, 3 * embed, std::sync::Arc::clone(&w.qkv_bias))?;
+    let qkv =
+        w.qkv
+            .apply_linear_with_bias(x, embed, 3 * embed, std::sync::Arc::clone(&w.qkv_bias))?;
     let q = qkv.narrow(2_usize, 0, embed)?;
     let k = qkv.narrow(2_usize, embed, embed)?;
     let v = qkv.narrow(2_usize, 2 * embed, embed)?;
@@ -240,7 +261,12 @@ fn apply_attention(
     let scores = q.matmul(&kt)?.mul_scalar(scale);
     let probs = scores.softmax_last_dim()?;
     let ctx = probs.matmul(&v)?.merge_heads()?;
-    w.projection.apply_linear_with_bias(&ctx, embed, embed, std::sync::Arc::clone(&w.projection_bias))
+    w.projection.apply_linear_with_bias(
+        &ctx,
+        embed,
+        embed,
+        std::sync::Arc::clone(&w.projection_bias),
+    )
 }
 
 fn apply_mlp(
@@ -249,23 +275,28 @@ fn apply_mlp(
     cfg: &BlipVisionConfig,
     anchor: &LazyTensor,
 ) -> Result<LazyTensor> {
-    let h1 = m.fc1.apply_linear_with_bias(x, cfg.hidden_size, cfg.intermediate_size, std::sync::Arc::clone(&m.fc1_bias))?;
+    let h1 = m.fc1.apply_linear_with_bias(
+        x,
+        cfg.hidden_size,
+        cfg.intermediate_size,
+        std::sync::Arc::clone(&m.fc1_bias),
+    )?;
     let h1 = match cfg.hidden_activation {
         BlipVisionActivation::Gelu => h1.gelu(),
         BlipVisionActivation::GeluPytorchTanh => h1.gelu_erf(),
         BlipVisionActivation::Relu => h1.relu(),
     };
-    m.fc2.apply_linear_with_bias(&h1, cfg.intermediate_size, cfg.hidden_size, std::sync::Arc::clone(&m.fc2_bias))
+    m.fc2.apply_linear_with_bias(
+        &h1,
+        cfg.intermediate_size,
+        cfg.hidden_size,
+        std::sync::Arc::clone(&m.fc2_bias),
+    )
 }
-
-
 
 // ---- HuggingFace safetensors loader ----------------------------------------
 
-fn load_ln(
-    st: &crate::safetensors::MmapedSafetensors,
-    prefix: &str,
-) -> Result<LayerNormWeights> {
+fn load_ln(st: &crate::safetensors::MmapedSafetensors, prefix: &str) -> Result<LayerNormWeights> {
     use crate::lazy::load_tensor_as_f32;
     Ok(LayerNormWeights {
         gain: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.weight"))?),
@@ -293,16 +324,20 @@ impl BlipVisionWeights {
         let inter = cfg.intermediate_size;
 
         let patch_proj = Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}embeddings.patch_embedding.weight"),
+            st,
+            &format!("{prefix}embeddings.patch_embedding.weight"),
         )?);
         let patch_proj_bias = Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}embeddings.patch_embedding.bias"),
+            st,
+            &format!("{prefix}embeddings.patch_embedding.bias"),
         )?);
         let class_token = Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}embeddings.class_embedding"),
+            st,
+            &format!("{prefix}embeddings.class_embedding"),
         )?);
         let position_embedding = Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}embeddings.position_embedding"),
+            st,
+            &format!("{prefix}embeddings.position_embedding"),
         )?);
 
         let mut layers: Vec<BlipVisionLayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
@@ -310,41 +345,65 @@ impl BlipVisionWeights {
             let lp = format!("{prefix}encoder.layers.{i}");
             let ln1 = load_ln(st, &format!("{lp}.layer_norm1"))?;
             let qkv = load_transposed_matrix_preserve_dtype(
-                st, &format!("{lp}.self_attn.qkv.weight"), 3 * h, h,
+                st,
+                &format!("{lp}.self_attn.qkv.weight"),
+                3 * h,
+                h,
             )?;
             let qkv_bias = Arc::from(load_tensor_as_f32(st, &format!("{lp}.self_attn.qkv.bias"))?);
             let projection = load_transposed_matrix_preserve_dtype(
-                st, &format!("{lp}.self_attn.projection.weight"), h, h,
+                st,
+                &format!("{lp}.self_attn.projection.weight"),
+                h,
+                h,
             )?;
             let projection_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{lp}.self_attn.projection.bias"),
+                st,
+                &format!("{lp}.self_attn.projection.bias"),
             )?);
             let attn = BlipVisionAttentionWeights {
-                qkv, qkv_bias, projection, projection_bias,
+                qkv,
+                qkv_bias,
+                projection,
+                projection_bias,
             };
             let ln2 = load_ln(st, &format!("{lp}.layer_norm2"))?;
             let mlp = BlipMlpWeights {
                 fc1: load_transposed_matrix_preserve_dtype(
-                    st, &format!("{lp}.mlp.fc1.weight"), inter, h,
+                    st,
+                    &format!("{lp}.mlp.fc1.weight"),
+                    inter,
+                    h,
                 )?,
                 fc1_bias: Arc::from(load_tensor_as_f32(st, &format!("{lp}.mlp.fc1.bias"))?),
                 fc2: load_transposed_matrix_preserve_dtype(
-                    st, &format!("{lp}.mlp.fc2.weight"), h, inter,
+                    st,
+                    &format!("{lp}.mlp.fc2.weight"),
+                    h,
+                    inter,
                 )?,
                 fc2_bias: Arc::from(load_tensor_as_f32(st, &format!("{lp}.mlp.fc2.bias"))?),
             };
-            layers.push(BlipVisionLayerWeights { ln1, attn, ln2, mlp });
+            layers.push(BlipVisionLayerWeights {
+                ln1,
+                attn,
+                ln2,
+                mlp,
+            });
         }
 
         let post_layernorm = load_ln(st, &format!("{prefix}post_layernorm"))?;
 
         Ok(Self {
-            patch_proj, patch_proj_bias, class_token, position_embedding,
-            layers, post_layernorm,
+            patch_proj,
+            patch_proj_bias,
+            class_token,
+            position_embedding,
+            layers,
+            post_layernorm,
         })
     }
 }
-
 
 // ---- Tests -----------------------------------------------------------------
 
@@ -375,9 +434,12 @@ mod tests {
 
     fn tiny_config() -> BlipVisionConfig {
         BlipVisionConfig {
-            hidden_size: 8, intermediate_size: 16,
-            num_hidden_layers: 2, num_attention_heads: 2,
-            image_size: 8, patch_size: 4,
+            hidden_size: 8,
+            intermediate_size: 16,
+            num_hidden_layers: 2,
+            num_attention_heads: 2,
+            image_size: 8,
+            patch_size: 4,
             hidden_activation: BlipVisionActivation::Gelu,
             layer_norm_eps: 1e-5,
         }
@@ -387,8 +449,8 @@ mod tests {
         let mut nb = rng_seed(2026);
         let h = cfg.hidden_size;
         let np = cfg.num_patches();
-        let layers: Vec<BlipVisionLayerWeights> = (0..cfg.num_hidden_layers).map(|_| {
-            BlipVisionLayerWeights {
+        let layers: Vec<BlipVisionLayerWeights> = (0..cfg.num_hidden_layers)
+            .map(|_| BlipVisionLayerWeights {
                 ln1: ln_w(h),
                 attn: BlipVisionAttentionWeights {
                     qkv: ws(h * 3 * h, &mut nb),
@@ -403,8 +465,8 @@ mod tests {
                     fc2: ws(cfg.intermediate_size * h, &mut nb),
                     fc2_bias: vec_of(h, &mut nb),
                 },
-            }
-        }).collect();
+            })
+            .collect();
         BlipVisionWeights {
             patch_proj: vec_of(h * 3 * cfg.patch_size * cfg.patch_size, &mut nb),
             patch_proj_bias: vec_of(h, &mut nb),
@@ -419,10 +481,14 @@ mod tests {
     fn forward_shape_and_finite() {
         let cfg = tiny_config();
         let weights = tiny_weights(&cfg);
-        let model = BlipVisionModel { config: cfg.clone(), weights };
+        let model = BlipVisionModel {
+            config: cfg.clone(),
+            weights,
+        };
         let img = LazyTensor::from_f32(
             (0..(3 * cfg.image_size * cfg.image_size))
-                .map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, cfg.image_size, cfg.image_size]),
             &Device::cpu(),
         );
@@ -438,16 +504,21 @@ mod tests {
     fn forward_responds_to_image() {
         let cfg = tiny_config();
         let weights = tiny_weights(&cfg);
-        let model = BlipVisionModel { config: cfg.clone(), weights };
+        let model = BlipVisionModel {
+            config: cfg.clone(),
+            weights,
+        };
         let img_a = LazyTensor::from_f32(
             (0..(3 * cfg.image_size * cfg.image_size))
-                .map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, cfg.image_size, cfg.image_size]),
             &Device::cpu(),
         );
         let img_b = LazyTensor::from_f32(
             (0..(3 * cfg.image_size * cfg.image_size))
-                .map(|i| (i as f32) * 0.01 + 0.5).collect::<Vec<_>>(),
+                .map(|i| (i as f32) * 0.01 + 0.5)
+                .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, cfg.image_size, cfg.image_size]),
             &Device::cpu(),
         );
@@ -457,8 +528,10 @@ mod tests {
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-7,
-            "BLIP vision must respond to input changes, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-7,
+            "BLIP vision must respond to input changes, max_diff = {max_diff}"
+        );
     }
 
     #[test]

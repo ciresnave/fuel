@@ -26,9 +26,14 @@
 
 use std::sync::{Arc, RwLock};
 
-use fuel_ir::{dispatch::OpKind, probe::BackendId, DType, Error, Layout, Result};
-use fuel_dispatch::{dispatch::{cpu_input, cpu_output, read_storage, write_storage}, fused::PrecisionGuarantee, kernel::OpParams, KernelBindingTable};
-use fuel_memory::{Storage};
+use fuel_dispatch::{
+    KernelBindingTable,
+    dispatch::{cpu_input, cpu_output, read_storage, write_storage},
+    fused::PrecisionGuarantee,
+    kernel::OpParams,
+};
+use fuel_ir::{DType, Error, Layout, Result, dispatch::OpKind, probe::BackendId};
+use fuel_memory::Storage;
 
 /// Register AOCL's CPU-side wrappers as sibling alternatives on the
 /// unified binding table. Trust the caller has already probed AOCL
@@ -165,7 +170,7 @@ fn matmul_f32_aocl_cpu_wrapper(
             return Err(Error::Msg(format!(
                 "matmul_f32_aocl wrapper expects OpParams::Matmul, got {other:?}",
             ))
-            .bt())
+            .bt());
         }
     };
 
@@ -235,9 +240,15 @@ fn matmul_f32_aocl_bytes(
     let out_per_batch = m.saturating_mul(n);
     let lhs_batch_count: usize = lhs_batch_dims.iter().product::<usize>().max(1);
     let rhs_batch_count: usize = rhs_batch_dims.iter().product::<usize>().max(1);
-    let need_lhs = lhs_batch_count.saturating_mul(lhs_per_batch).saturating_mul(elem);
-    let need_rhs = rhs_batch_count.saturating_mul(rhs_per_batch).saturating_mul(elem);
-    let need_out = lhs_batch_count.saturating_mul(out_per_batch).saturating_mul(elem);
+    let need_lhs = lhs_batch_count
+        .saturating_mul(lhs_per_batch)
+        .saturating_mul(elem);
+    let need_rhs = rhs_batch_count
+        .saturating_mul(rhs_per_batch)
+        .saturating_mul(elem);
+    let need_out = lhs_batch_count
+        .saturating_mul(out_per_batch)
+        .saturating_mul(elem);
     if lhs.len_bytes() != need_lhs {
         return Err(Error::Msg(format!(
             "matmul_f32_aocl: lhs bytes={} doesn't match shape {:?} + [{m}, {k}] (f32)",
@@ -345,12 +356,14 @@ fn conv2d_f32_aocl_cpu_wrapper(
             padding,
             dilation,
             groups,
-        } => (*x_shape, *w_shape, *out_shape, *stride, *padding, *dilation, *groups),
+        } => (
+            *x_shape, *w_shape, *out_shape, *stride, *padding, *dilation, *groups,
+        ),
         other => {
             return Err(Error::Msg(format!(
                 "conv2d_f32_aocl wrapper expects OpParams::Conv2D, got {other:?}",
             ))
-            .bt())
+            .bt());
         }
     };
 
@@ -374,8 +387,8 @@ fn conv2d_f32_aocl_cpu_wrapper(
     // fails validation. The scalar kernel already handles all of these.
     if dilation != (1, 1) {
         return fuel_cpu_backend::byte_kernels::conv2d_f32(
-            x_cpu, w_cpu, bias_cpu, out_cpu,
-            x_shape, w_shape, out_shape, stride, padding, dilation, groups,
+            x_cpu, w_cpu, bias_cpu, out_cpu, x_shape, w_shape, out_shape, stride, padding,
+            dilation, groups,
         );
     }
     let s = fuel_conv::ConvShape {
@@ -392,8 +405,8 @@ fn conv2d_f32_aocl_cpu_wrapper(
     };
     if s.validate().is_err() {
         return fuel_cpu_backend::byte_kernels::conv2d_f32(
-            x_cpu, w_cpu, bias_cpu, out_cpu,
-            x_shape, w_shape, out_shape, stride, padding, dilation, groups,
+            x_cpu, w_cpu, bias_cpu, out_cpu, x_shape, w_shape, out_shape, stride, padding,
+            dilation, groups,
         );
     }
 
@@ -407,16 +420,16 @@ fn conv2d_f32_aocl_cpu_wrapper(
     let mut patches = vec![0.0_f32; s.im2col_len()];
 
     fuel_conv::conv2d_via_gemm(
-        x_view, w_view, bias_view, &s, out_view, &mut patches,
+        x_view,
+        w_view,
+        bias_view,
+        &s,
+        out_view,
+        &mut patches,
         |m, n, k, a, b, c| {
             use aocl_types::Trans;
-            aocl_blas::gemm(
-                Trans::No, Trans::No,
-                m, n, k,
-                1.0_f32, a, b,
-                0.0_f32, c,
-            )
-            .expect("aocl_blas::gemm in conv2d_via_gemm");
+            aocl_blas::gemm(Trans::No, Trans::No, m, n, k, 1.0_f32, a, b, 0.0_f32, c)
+                .expect("aocl_blas::gemm in conv2d_via_gemm");
         },
     );
     Ok(())
@@ -435,11 +448,19 @@ mod tests {
         let mut table = KernelBindingTable::new();
         register_cpu_kernels(&mut table);
         let before = table
-            .lookup_alternatives(OpKind::MatMul, &[DType::F32, DType::F32, DType::F32], BackendId::Cpu)
+            .lookup_alternatives(
+                OpKind::MatMul,
+                &[DType::F32, DType::F32, DType::F32],
+                BackendId::Cpu,
+            )
             .len();
         register_aocl_cpu_kernels(&mut table);
         let after = table
-            .lookup_alternatives(OpKind::MatMul, &[DType::F32, DType::F32, DType::F32], BackendId::Cpu)
+            .lookup_alternatives(
+                OpKind::MatMul,
+                &[DType::F32, DType::F32, DType::F32],
+                BackendId::Cpu,
+            )
             .len();
         assert_eq!(
             after,
@@ -459,14 +480,22 @@ mod tests {
             .lookup_alternatives(OpKind::Conv2D, &[f32_dt, f32_dt, f32_dt], BackendId::Cpu)
             .len();
         let with_bias_before = table
-            .lookup_alternatives(OpKind::Conv2D, &[f32_dt, f32_dt, f32_dt, f32_dt], BackendId::Cpu)
+            .lookup_alternatives(
+                OpKind::Conv2D,
+                &[f32_dt, f32_dt, f32_dt, f32_dt],
+                BackendId::Cpu,
+            )
             .len();
         register_aocl_cpu_kernels(&mut table);
         let no_bias_after = table
             .lookup_alternatives(OpKind::Conv2D, &[f32_dt, f32_dt, f32_dt], BackendId::Cpu)
             .len();
         let with_bias_after = table
-            .lookup_alternatives(OpKind::Conv2D, &[f32_dt, f32_dt, f32_dt, f32_dt], BackendId::Cpu)
+            .lookup_alternatives(
+                OpKind::Conv2D,
+                &[f32_dt, f32_dt, f32_dt, f32_dt],
+                BackendId::Cpu,
+            )
             .len();
         assert_eq!(no_bias_after, no_bias_before + 1, "no-bias Conv2D");
         assert_eq!(with_bias_after, with_bias_before + 1, "with-bias Conv2D");
@@ -545,7 +574,10 @@ mod tests {
             for (j, (&a, &r)) in alt_out.iter().zip(ref_out.iter()).enumerate() {
                 let denom = a.abs().max(r.abs()).max(f32::MIN_POSITIVE);
                 let rel = (a - r).abs() / denom;
-                assert!(rel < 1e-4, "alt {i}, idx {j}: aocl-ish={a}, scalar-ish={r} (rel {rel})");
+                assert!(
+                    rel < 1e-4,
+                    "alt {i}, idx {j}: aocl-ish={a}, scalar-ish={r} (rel {rel})"
+                );
             }
         }
     }
@@ -611,12 +643,12 @@ mod tests {
         };
 
         let f32_dt = DType::F32;
-        let alternatives = table.lookup_alternatives(
-            OpKind::Conv2D,
-            &[f32_dt, f32_dt, f32_dt],
-            BackendId::Cpu,
+        let alternatives =
+            table.lookup_alternatives(OpKind::Conv2D, &[f32_dt, f32_dt, f32_dt], BackendId::Cpu);
+        assert!(
+            alternatives.len() >= 2,
+            "need both CPU + AOCL conv2d alternatives"
         );
-        assert!(alternatives.len() >= 2, "need both CPU + AOCL conv2d alternatives");
 
         let mut outputs: Vec<Vec<f32>> = Vec::with_capacity(alternatives.len());
         for alt in alternatives {
@@ -639,7 +671,10 @@ mod tests {
             for (j, (&a, &r)) in alt_out.iter().zip(ref_out.iter()).enumerate() {
                 let denom = a.abs().max(r.abs()).max(f32::MIN_POSITIVE);
                 let rel = (a - r).abs() / denom;
-                assert!(rel < 1e-4, "alt {i}, idx {j}: aocl={a}, scalar={r} (rel {rel})");
+                assert!(
+                    rel < 1e-4,
+                    "alt {i}, idx {j}: aocl={a}, scalar={r} (rel {rel})"
+                );
             }
         }
     }

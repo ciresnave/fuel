@@ -43,7 +43,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     eprintln!("=== fuel sd-vae-lazy ===");
     eprintln!("Repo:        {repo_id}");
-    eprintln!("Latent size: {lat_size}×{lat_size}  (output {} × {})", lat_size * 8, lat_size * 8);
+    eprintln!(
+        "Latent size: {lat_size}×{lat_size}  (output {} × {})",
+        lat_size * 8,
+        lat_size * 8
+    );
     eprintln!();
 
     eprint!("Downloading + loading VAE weights... ");
@@ -53,9 +57,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("done in {:.2?}", t0.elapsed());
     eprintln!(
         "  dims={:?}  norm_groups={}  layers_per_block={}",
-        decoder.config.dims,
-        decoder.config.norm_num_groups,
-        decoder.config.layers_per_block,
+        decoder.config.dims, decoder.config.norm_num_groups, decoder.config.layers_per_block,
     );
     eprintln!();
 
@@ -84,7 +86,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let var: f32 = ch.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / ch.len() as f32;
         println!(
             "channel {c}:  min={:+.4}  mean={:+.4}  max={:+.4}  std={:.4}",
-            min, mean, max, var.sqrt()
+            min,
+            mean,
+            max,
+            var.sqrt()
         );
     }
     let finite = out.iter().all(|v| v.is_finite());

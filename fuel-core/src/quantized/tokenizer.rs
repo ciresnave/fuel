@@ -2,19 +2,19 @@ use crate::quantized::gguf_file;
 use crate::{Context, Error, Result};
 use std::collections::HashSet;
 use tokenizers::{
-    decoders::{byte_level::ByteLevel as ByteLevelDecoder, DecoderWrapper},
-    models::bpe::{Vocab, BPE},
-    normalizers::{unicode::NFC, NormalizerWrapper},
+    AddedToken, Tokenizer,
+    decoders::{DecoderWrapper, byte_level::ByteLevel as ByteLevelDecoder},
+    models::bpe::{BPE, Vocab},
+    normalizers::{NormalizerWrapper, unicode::NFC},
     pre_tokenizers::{
+        PreTokenizerWrapper,
         byte_level::ByteLevel as ByteLevelPre,
         sequence::Sequence,
         split::{Split, SplitPattern},
-        PreTokenizerWrapper,
     },
     processors::sequence::Sequence as ProcessorSequence,
-    processors::{byte_level::ByteLevel as ByteLevelProcessor, PostProcessorWrapper},
+    processors::{PostProcessorWrapper, byte_level::ByteLevel as ByteLevelProcessor},
     tokenizer::SplitDelimiterBehavior,
-    AddedToken, Tokenizer,
 };
 
 pub trait TokenizerFromGguf: Sized {

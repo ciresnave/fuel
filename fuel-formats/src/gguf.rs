@@ -552,10 +552,12 @@ mod tests {
         buf.write_u32::<LittleEndian>(0x4655_4747).unwrap(); // "GGUF" magic
         buf.write_u32::<LittleEndian>(3).unwrap(); // version 3
         buf.write_u64::<LittleEndian>(0).unwrap(); // tensor_count = 0
-        buf.write_u64::<LittleEndian>(align.is_some() as u64).unwrap(); // metadata_kv_count
+        buf.write_u64::<LittleEndian>(align.is_some() as u64)
+            .unwrap(); // metadata_kv_count
         if let Some(a) = align {
             write_string(&mut buf, "general.alignment").unwrap();
-            buf.write_u32::<LittleEndian>(ValueType::U32.to_u32()).unwrap();
+            buf.write_u32::<LittleEndian>(ValueType::U32.to_u32())
+                .unwrap();
             buf.write_u32::<LittleEndian>(a).unwrap();
         }
         buf
@@ -600,7 +602,11 @@ mod tests {
         let header_len = buf.len() as u64;
         let content =
             Content::read(&mut Cursor::new(buf)).expect("valid power-of-two alignment parses");
-        assert_eq!(content.tensor_data_offset % 64, 0, "offset must be 64-aligned");
+        assert_eq!(
+            content.tensor_data_offset % 64,
+            0,
+            "offset must be 64-aligned"
+        );
         assert!(content.tensor_data_offset >= header_len);
     }
 
@@ -645,7 +651,10 @@ mod tests {
         let err = Content::read(&mut Cursor::new(buf))
             .expect_err("an over-long declared string length must be a typed error");
         let msg = format!("{err}").to_lowercase();
-        assert!(msg.contains("string") || msg.contains("length"), "names the problem: {msg}");
+        assert!(
+            msg.contains("string") || msg.contains("length"),
+            "names the problem: {msg}"
+        );
     }
 
     /// An array declaring `u64::MAX` elements with none present must be a typed
@@ -654,7 +663,8 @@ mod tests {
     #[test]
     fn array_declared_length_beyond_data_is_rejected() {
         let mut val = Vec::new();
-        val.write_u32::<LittleEndian>(ValueType::U8.to_u32()).unwrap(); // element type
+        val.write_u32::<LittleEndian>(ValueType::U8.to_u32())
+            .unwrap(); // element type
         val.extend_from_slice(&u64le(u64::MAX)); // element count
         let buf = gguf_with_kv("k", ValueType::Array, &val);
         Content::read(&mut Cursor::new(buf))
@@ -676,7 +686,10 @@ mod tests {
         buf.write_u32::<LittleEndian>(1_000_000).unwrap(); // n_dimensions, far beyond the file
         let err = Content::read(&mut Cursor::new(buf))
             .expect_err("a huge n_dimensions must be a typed error before allocating");
-        assert!(format!("{err}").to_lowercase().contains("dimension"), "names the field");
+        assert!(
+            format!("{err}").to_lowercase().contains("dimension"),
+            "names the field"
+        );
     }
 
     /// Deeply-nested arrays must be bounded — unbounded recursion is a stack
@@ -686,11 +699,14 @@ mod tests {
     fn deeply_nested_array_is_rejected() {
         // innermost: an empty U8 array; then wrap it 200 times in single-element arrays.
         let mut val = Vec::new();
-        val.write_u32::<LittleEndian>(ValueType::U8.to_u32()).unwrap();
+        val.write_u32::<LittleEndian>(ValueType::U8.to_u32())
+            .unwrap();
         val.extend_from_slice(&u64le(0)); // empty innermost
         for _ in 0..200 {
             let mut outer = Vec::new();
-            outer.write_u32::<LittleEndian>(ValueType::Array.to_u32()).unwrap();
+            outer
+                .write_u32::<LittleEndian>(ValueType::Array.to_u32())
+                .unwrap();
             outer.extend_from_slice(&u64le(1)); // one element: the previous level
             outer.extend_from_slice(&val);
             val = outer;
@@ -698,6 +714,9 @@ mod tests {
         let buf = gguf_with_kv("k", ValueType::Array, &val);
         let err = Content::read(&mut Cursor::new(buf))
             .expect_err("excessive array nesting must be a typed error");
-        assert!(format!("{err}").to_lowercase().contains("nest"), "names the problem");
+        assert!(
+            format!("{err}").to_lowercase().contains("nest"),
+            "names the problem"
+        );
     }
 }

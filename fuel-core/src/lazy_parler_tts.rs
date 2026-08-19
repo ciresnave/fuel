@@ -30,8 +30,8 @@
 //!   - Configurable activation (Gelu / GeluPytorchTanh / Relu /
 //!     Silu — matches the eager `Activation` enum subset).
 
-use crate::lazy::{LazyTensor, WeightStorage};
 use crate::Result;
+use crate::lazy::{LazyTensor, WeightStorage};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -72,7 +72,8 @@ impl ParlerDecoderConfig {
         self.num_kv_heads.unwrap_or(self.num_attention_heads)
     }
     pub fn num_cross_kv_heads_resolved(&self) -> usize {
-        self.num_cross_kv_heads.unwrap_or(self.num_kv_heads_resolved())
+        self.num_cross_kv_heads
+            .unwrap_or(self.num_kv_heads_resolved())
     }
     pub fn head_dim(&self) -> usize {
         self.hidden_size / self.num_attention_heads
@@ -162,7 +163,11 @@ impl ParlerDecoderModel {
 
         let dims = input_ids.shape();
         let dims = dims.dims();
-        assert_eq!(dims.len(), 3, "input_ids must be rank 3 [B, num_codebooks, T]");
+        assert_eq!(
+            dims.len(),
+            3,
+            "input_ids must be rank 3 [B, num_codebooks, T]"
+        );
         assert_eq!(dims[0], 1, "v1 supports batch == 1");
         assert_eq!(dims[1], cfg.num_codebooks);
         let t = dims[2];
@@ -209,9 +214,7 @@ impl ParlerDecoderModel {
             Shape::from_dims(&[cfg.max_position_embeddings, h_dim]),
         );
         let pos_ids: Vec<u32> = (0..total_len).map(|i| (i + start_pos) as u32).collect();
-        let pos_idx = anchor.const_u32_like(
-            pos_ids, Shape::from_dims(&[total_len]),
-        );
+        let pos_idx = anchor.const_u32_like(pos_ids, Shape::from_dims(&[total_len]));
         let pos = pos_table
             .index_select(0_usize, &pos_idx)?
             .reshape(Shape::from_dims(&[1, total_len, h_dim]))?;
@@ -231,15 +234,18 @@ impl ParlerDecoderModel {
                 mask_data[i * total_len + j] = f32::NEG_INFINITY;
             }
         }
-        let causal_mask = anchor.const_f32_like(
-            mask_data, Shape::from_dims(&[1, 1, total_len, total_len]),
-        );
+        let causal_mask =
+            anchor.const_f32_like(mask_data, Shape::from_dims(&[1, 1, total_len, total_len]));
 
         for layer in &w.layers {
             x = apply_decoder_layer(&x, layer, &enc_proj, &causal_mask, cfg, anchor)?;
         }
         // Final LN.
-        let x = x.layer_norm_affine(Arc::clone(&w.final_ln.gain), Arc::clone(&w.final_ln.bias), 1e-5)?;
+        let x = x.layer_norm_affine(
+            Arc::clone(&w.final_ln.gain),
+            Arc::clone(&w.final_ln.bias),
+            1e-5,
+        )?;
 
         // Per-codebook LM heads.
         let mut logits = Vec::with_capacity(cfg.num_codebooks);
@@ -262,27 +268,53 @@ fn apply_decoder_layer(
 
     // Self-attention with causal mask.
     let residual = x.clone();
-    let normed = x.layer_norm_affine(Arc::clone(&w.self_attn_ln.gain), Arc::clone(&w.self_attn_ln.bias), 1e-5)?;
+    let normed = x.layer_norm_affine(
+        Arc::clone(&w.self_attn_ln.gain),
+        Arc::clone(&w.self_attn_ln.bias),
+        1e-5,
+    )?;
     let attn_out = apply_attention(
-        &normed, None, &w.self_attn,
-        cfg.num_attention_heads, cfg.num_kv_heads_resolved(), cfg.head_dim(),
-        h_dim, h_dim, Some(causal_mask), anchor,
+        &normed,
+        None,
+        &w.self_attn,
+        cfg.num_attention_heads,
+        cfg.num_kv_heads_resolved(),
+        cfg.head_dim(),
+        h_dim,
+        h_dim,
+        Some(causal_mask),
+        anchor,
     )?;
     let x = residual.add(&attn_out)?;
 
     // Cross-attention to encoder states.
     let residual = x.clone();
-    let normed = x.layer_norm_affine(Arc::clone(&w.cross_attn_ln.gain), Arc::clone(&w.cross_attn_ln.bias), 1e-5)?;
+    let normed = x.layer_norm_affine(
+        Arc::clone(&w.cross_attn_ln.gain),
+        Arc::clone(&w.cross_attn_ln.bias),
+        1e-5,
+    )?;
     let cross_out = apply_attention(
-        &normed, Some(enc_states), &w.cross_attn,
-        cfg.num_attention_heads, cfg.num_cross_kv_heads_resolved(), cfg.head_dim(),
-        h_dim, h_dim, None, anchor,
+        &normed,
+        Some(enc_states),
+        &w.cross_attn,
+        cfg.num_attention_heads,
+        cfg.num_cross_kv_heads_resolved(),
+        cfg.head_dim(),
+        h_dim,
+        h_dim,
+        None,
+        anchor,
     )?;
     let x = residual.add(&cross_out)?;
 
     // FFN.
     let residual = x.clone();
-    let normed = x.layer_norm_affine(Arc::clone(&w.final_ln.gain), Arc::clone(&w.final_ln.bias), 1e-5)?;
+    let normed = x.layer_norm_affine(
+        Arc::clone(&w.final_ln.gain),
+        Arc::clone(&w.final_ln.bias),
+        1e-5,
+    )?;
     let h = w.fc1.apply_linear(&normed, h_dim, cfg.ffn_dim)?;
     let h = match cfg.activation_function {
         ParlerActivation::Gelu => h.gelu(),
@@ -359,7 +391,12 @@ fn apply_attention(
 /// Repeat K/V along the head dim: `(B, n_kv, L, D) → (B, n_kv * n_rep, L, D)`
 /// via unsqueeze + broadcast_to + reshape.
 fn repeat_along_head_dim(
-    x: &LazyTensor, b: usize, n_kv: usize, n_rep: usize, l: usize, d: usize,
+    x: &LazyTensor,
+    b: usize,
+    n_kv: usize,
+    n_rep: usize,
+    l: usize,
+    d: usize,
 ) -> Result<LazyTensor> {
     if n_rep == 1 {
         return Ok(x.clone());
@@ -369,7 +406,6 @@ fn repeat_along_head_dim(
     bc.reshape(Shape::from_dims(&[b, n_kv * n_rep, l, d]))
 }
 
-
 fn apply_linear_with_bias(
     x: &LazyTensor,
     w: &LinearWeights,
@@ -377,9 +413,9 @@ fn apply_linear_with_bias(
 ) -> Result<LazyTensor> {
     let _ = anchor;
     match &w.b {
-        Some(b) => w.w.apply_linear_with_bias(
-            x, w.in_features, w.out_features, Arc::clone(b),
-        ),
+        Some(b) => {
+            w.w.apply_linear_with_bias(x, w.in_features, w.out_features, Arc::clone(b))
+        }
         None => Ok(w.w.apply_linear(x, w.in_features, w.out_features)?),
     }
 }
@@ -454,22 +490,22 @@ impl ParlerDecoderWeights {
             if v.len() != expected {
                 crate::bail!(
                     "embed_tokens.{cb}.weight: {} elements, expected {expected} ({}×{h})",
-                    v.len(), cfg.vocab_size + 1,
+                    v.len(),
+                    cfg.vocab_size + 1,
                 );
             }
             embed_tokens.push(Arc::from(v));
         }
 
         // --- learned absolute positional embedding ---------------------
-        let embed_positions = load_tensor_as_f32(
-            st,
-            "decoder.model.decoder.embed_positions.weights",
-        )?;
+        let embed_positions =
+            load_tensor_as_f32(st, "decoder.model.decoder.embed_positions.weights")?;
         let expected_pos = cfg.max_position_embeddings * h;
         if embed_positions.len() != expected_pos {
             crate::bail!(
                 "embed_positions.weights: {} elements, expected {expected_pos} ({}×{h})",
-                embed_positions.len(), cfg.max_position_embeddings,
+                embed_positions.len(),
+                cfg.max_position_embeddings,
             );
         }
         let embed_positions: Arc<[f32]> = Arc::from(embed_positions);
@@ -481,42 +517,73 @@ impl ParlerDecoderWeights {
 
             // self-attention projections
             let self_q = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.q_proj.weight"), h, h,
+                st,
+                &format!("{p}.self_attn.q_proj.weight"),
+                h,
+                h,
             )?;
             let self_k = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.k_proj.weight"), kv_out, h,
+                st,
+                &format!("{p}.self_attn.k_proj.weight"),
+                kv_out,
+                h,
             )?;
             let self_v = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.v_proj.weight"), kv_out, h,
+                st,
+                &format!("{p}.self_attn.v_proj.weight"),
+                kv_out,
+                h,
             )?;
             let self_out = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.out_proj.weight"), h, h,
+                st,
+                &format!("{p}.self_attn.out_proj.weight"),
+                h,
+                h,
             )?;
             let self_ln_g = load_tensor_as_f32(st, &format!("{p}.self_attn_layer_norm.weight"))?;
             let self_ln_b = load_tensor_as_f32(st, &format!("{p}.self_attn_layer_norm.bias"))?;
 
             // cross-attention projections
             let cross_q = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.encoder_attn.q_proj.weight"), h, h,
+                st,
+                &format!("{p}.encoder_attn.q_proj.weight"),
+                h,
+                h,
             )?;
             let cross_k = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.encoder_attn.k_proj.weight"), xkv_out, h,
+                st,
+                &format!("{p}.encoder_attn.k_proj.weight"),
+                xkv_out,
+                h,
             )?;
             let cross_v = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.encoder_attn.v_proj.weight"), xkv_out, h,
+                st,
+                &format!("{p}.encoder_attn.v_proj.weight"),
+                xkv_out,
+                h,
             )?;
             let cross_out = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.encoder_attn.out_proj.weight"), h, h,
+                st,
+                &format!("{p}.encoder_attn.out_proj.weight"),
+                h,
+                h,
             )?;
-            let cross_ln_g = load_tensor_as_f32(st, &format!("{p}.encoder_attn_layer_norm.weight"))?;
+            let cross_ln_g =
+                load_tensor_as_f32(st, &format!("{p}.encoder_attn_layer_norm.weight"))?;
             let cross_ln_b = load_tensor_as_f32(st, &format!("{p}.encoder_attn_layer_norm.bias"))?;
 
             // FFN
             let fc1 = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.fc1.weight"), cfg.ffn_dim, h,
+                st,
+                &format!("{p}.fc1.weight"),
+                cfg.ffn_dim,
+                h,
             )?;
             let fc2 = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.fc2.weight"), h, cfg.ffn_dim,
+                st,
+                &format!("{p}.fc2.weight"),
+                h,
+                cfg.ffn_dim,
             )?;
             let final_ln_g = load_tensor_as_f32(st, &format!("{p}.final_layer_norm.weight"))?;
             let final_ln_b = load_tensor_as_f32(st, &format!("{p}.final_layer_norm.bias"))?;
@@ -574,14 +641,14 @@ impl ParlerDecoderWeights {
         // --- optional encoder → decoder projection ---------------------
         let enc_to_dec_proj = if cfg.has_enc_proj {
             let w = load_transposed_matrix_preserve_dtype(
-                st, "enc_to_dec_proj.weight", h, text_d_model,
+                st,
+                "enc_to_dec_proj.weight",
+                h,
+                text_d_model,
             )?;
             let b = load_tensor_as_f32(st, "enc_to_dec_proj.bias")?;
             if b.len() != h {
-                crate::bail!(
-                    "enc_to_dec_proj.bias: {} elements, expected {h}",
-                    b.len(),
-                );
+                crate::bail!("enc_to_dec_proj.bias: {} elements, expected {h}", b.len(),);
             }
             Some(LinearWeights {
                 w,
@@ -631,7 +698,11 @@ mod tests {
         }
     }
     fn attn_w(
-        q_in: usize, kv_in: usize, q_out: usize, kv_out: usize, nb: &mut dyn FnMut() -> f32,
+        q_in: usize,
+        kv_in: usize,
+        q_out: usize,
+        kv_out: usize,
+        nb: &mut dyn FnMut() -> f32,
     ) -> AttnProjections {
         AttnProjections {
             q_proj: ws(q_in * q_out, nb),
@@ -640,7 +711,10 @@ mod tests {
             out_proj: ws(q_out * q_out, nb),
         }
     }
-    fn layer_w(cfg: &ParlerDecoderConfig, nb: &mut dyn FnMut() -> f32) -> ParlerDecoderLayerWeights {
+    fn layer_w(
+        cfg: &ParlerDecoderConfig,
+        nb: &mut dyn FnMut() -> f32,
+    ) -> ParlerDecoderLayerWeights {
         let h = cfg.hidden_size;
         let n_kv = cfg.num_kv_heads_resolved();
         let n_xkv = cfg.num_cross_kv_heads_resolved();
@@ -688,7 +762,11 @@ mod tests {
             .map(|_| ws(h * cfg.vocab_size, &mut nb))
             .collect();
         ParlerDecoderWeights {
-            embed_tokens, embed_positions, layers, final_ln, lm_heads,
+            embed_tokens,
+            embed_positions,
+            layers,
+            final_ln,
+            lm_heads,
             enc_to_dec_proj: None,
         }
     }
@@ -697,19 +775,23 @@ mod tests {
     fn forward_shape_and_finite() {
         let cfg = tiny_config();
         let weights = tiny_weights(&cfg);
-        let model = ParlerDecoderModel { config: cfg.clone(), weights };
+        let model = ParlerDecoderModel {
+            config: cfg.clone(),
+            weights,
+        };
         let dev = Device::cpu();
         // (1, num_codebooks, T) U32.
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev,
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev);
         let input_ids = anchor.const_u32_like(
             vec![1_u32, 2, 3, 4, 5, 6],
             Shape::from_dims(&[1, cfg.num_codebooks, 3]),
         );
         let encoder_states = anchor.const_f32_like(
-            Arc::<[f32]>::from((0..(1 * 5 * cfg.hidden_size))
-                .map(|i| (i as f32) * 0.01).collect::<Vec<_>>()),
+            Arc::<[f32]>::from(
+                (0..(1 * 5 * cfg.hidden_size))
+                    .map(|i| (i as f32) * 0.01)
+                    .collect::<Vec<_>>(),
+            ),
             Shape::from_dims(&[1, 5, cfg.hidden_size]),
         );
         let logits = model.forward(&input_ids, None, &encoder_states, 0).unwrap();
@@ -728,11 +810,12 @@ mod tests {
     fn causal_mask_enforced() {
         let cfg = tiny_config();
         let weights = tiny_weights(&cfg);
-        let model = ParlerDecoderModel { config: cfg.clone(), weights };
+        let model = ParlerDecoderModel {
+            config: cfg.clone(),
+            weights,
+        };
         let dev = Device::cpu();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev,
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev);
         let encoder_states = anchor.const_f32_like(
             Arc::<[f32]>::from(vec![0.05_f32; 1 * 4 * cfg.hidden_size]),
             Shape::from_dims(&[1, 4, cfg.hidden_size]),
@@ -757,9 +840,12 @@ mod tests {
             for t in 0..3 {
                 for c in 0..cfg.vocab_size {
                     let i = t * cfg.vocab_size + c;
-                    assert!((av[i] - bv[i]).abs() < 1e-5,
+                    assert!(
+                        (av[i] - bv[i]).abs() < 1e-5,
                         "causal mask violated cb={cb} t={t} c={c}: {} vs {}",
-                        av[i], bv[i]);
+                        av[i],
+                        bv[i]
+                    );
                 }
             }
         }
@@ -771,23 +857,30 @@ mod tests {
     fn cross_attention_is_wired() {
         let cfg = tiny_config();
         let weights = tiny_weights(&cfg);
-        let model = ParlerDecoderModel { config: cfg.clone(), weights };
+        let model = ParlerDecoderModel {
+            config: cfg.clone(),
+            weights,
+        };
         let dev = Device::cpu();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev,
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev);
         let ids = anchor.const_u32_like(
             vec![1_u32, 2, 3, 4],
             Shape::from_dims(&[1, cfg.num_codebooks, 2]),
         );
         let enc_a = anchor.const_f32_like(
-            Arc::<[f32]>::from((0..(1 * 4 * cfg.hidden_size))
-                .map(|i| (i as f32) * 0.01).collect::<Vec<_>>()),
+            Arc::<[f32]>::from(
+                (0..(1 * 4 * cfg.hidden_size))
+                    .map(|i| (i as f32) * 0.01)
+                    .collect::<Vec<_>>(),
+            ),
             Shape::from_dims(&[1, 4, cfg.hidden_size]),
         );
         let enc_b = anchor.const_f32_like(
-            Arc::<[f32]>::from((0..(1 * 4 * cfg.hidden_size))
-                .map(|i| (i as f32) * 0.01 + 0.5).collect::<Vec<_>>()),
+            Arc::<[f32]>::from(
+                (0..(1 * 4 * cfg.hidden_size))
+                    .map(|i| (i as f32) * 0.01 + 0.5)
+                    .collect::<Vec<_>>(),
+            ),
             Shape::from_dims(&[1, 4, cfg.hidden_size]),
         );
         let a = model.forward(&ids, None, &enc_a, 0).unwrap();
@@ -798,8 +891,10 @@ mod tests {
         for (x, y) in av.iter().zip(bv.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-6,
-            "cross-attention must condition decoder on encoder, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-6,
+            "cross-attention must condition decoder on encoder, max_diff = {max_diff}"
+        );
     }
 
     /// With prompt_embeds, output length is P + T.
@@ -807,11 +902,12 @@ mod tests {
     fn prompt_prepend_lengthens_output() {
         let cfg = tiny_config();
         let weights = tiny_weights(&cfg);
-        let model = ParlerDecoderModel { config: cfg.clone(), weights };
+        let model = ParlerDecoderModel {
+            config: cfg.clone(),
+            weights,
+        };
         let dev = Device::cpu();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev,
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev);
         let ids = anchor.const_u32_like(
             vec![1_u32, 2, 3, 4],
             Shape::from_dims(&[1, cfg.num_codebooks, 2]),

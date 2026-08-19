@@ -55,9 +55,9 @@
 use std::sync::Arc;
 
 use fuel_backend_contract::backend::BackendRuntime;
+use fuel_ir::DeviceLocation;
 use fuel_ir::backend::FitStatus;
 use fuel_ir::probe::BackendId;
-use fuel_ir::DeviceLocation;
 
 use super::{AlternativeSet, Candidate, RuntimeSelector};
 
@@ -249,11 +249,7 @@ mod tests {
         Ok(())
     }
 
-    fn make_candidate(
-        backend: BackendId,
-        device: DeviceLocation,
-        bytes_moved: u64,
-    ) -> Candidate {
+    fn make_candidate(backend: BackendId, device: DeviceLocation, bytes_moved: u64) -> Candidate {
         Candidate {
             kernel: noop_kernel,
             caps: KernelCaps::empty(),
@@ -330,7 +326,11 @@ mod tests {
     #[test]
     fn all_comfortable_picks_winner() {
         let mut set = AlternativeSet::empty();
-        set.push(make_candidate(BackendId::Cuda, DeviceLocation::Cuda { gpu_id: 0 }, 100));
+        set.push(make_candidate(
+            BackendId::Cuda,
+            DeviceLocation::Cuda { gpu_id: 0 },
+            100,
+        ));
         set.push(make_candidate(BackendId::Cpu, DeviceLocation::Cpu, 200));
 
         // Both backends report 1MB free of 2MB total → comfortable.
@@ -340,7 +340,11 @@ mod tests {
         );
         let sel = make_selector(lookup);
         let pick = sel.select(&set).expect("non-empty");
-        assert_eq!(pick.backend, BackendId::Cuda, "winner is the cost-ranked first");
+        assert_eq!(
+            pick.backend,
+            BackendId::Cuda,
+            "winner is the cost-ranked first"
+        );
     }
 
     /// WontFit candidate gets skipped — picker falls through to the
@@ -348,15 +352,16 @@ mod tests {
     #[test]
     fn wont_fit_skips_candidate() {
         let mut set = AlternativeSet::empty();
-        set.push(make_candidate(BackendId::Cuda, DeviceLocation::Cuda { gpu_id: 0 }, 1_000));
+        set.push(make_candidate(
+            BackendId::Cuda,
+            DeviceLocation::Cuda { gpu_id: 0 },
+            1_000,
+        ));
         set.push(make_candidate(BackendId::Cpu, DeviceLocation::Cpu, 1_000));
 
         // CUDA has only 500 bytes free (won't fit 1_000 estimate).
         // CPU has plenty of room.
-        let lookup = per_backend_lookup(
-            (Some(500), Some(10_000)),
-            (Some(8_000), Some(10_000)),
-        );
+        let lookup = per_backend_lookup((Some(500), Some(10_000)), (Some(8_000), Some(10_000)));
         let sel = make_selector(lookup);
         let pick = sel.select(&set).expect("non-empty");
         assert_eq!(
@@ -372,7 +377,11 @@ mod tests {
     fn tight_demoted_below_comfortable() {
         let mut set = AlternativeSet::empty();
         // CUDA winner by cost (smaller bytes_moved).
-        set.push(make_candidate(BackendId::Cuda, DeviceLocation::Cuda { gpu_id: 0 }, 100));
+        set.push(make_candidate(
+            BackendId::Cuda,
+            DeviceLocation::Cuda { gpu_id: 0 },
+            100,
+        ));
         set.push(make_candidate(BackendId::Cpu, DeviceLocation::Cpu, 100));
 
         // To trigger Tight: total > 0, size <= available, but
@@ -381,10 +390,7 @@ mod tests {
         // CUDA: available=100, total=100 → alloc 100 → 100% used
         // → 1.0 > 0.85 → Tight (and size <= available so not WontFit).
         // CPU: ample room → Comfortable.
-        let lookup = per_backend_lookup(
-            (Some(100), Some(100)),
-            (Some(10_000), Some(10_000)),
-        );
+        let lookup = per_backend_lookup((Some(100), Some(100)), (Some(10_000), Some(10_000)));
         let sel = make_selector(lookup);
         let pick = sel.select(&set).expect("non-empty");
         assert_eq!(
@@ -400,15 +406,16 @@ mod tests {
     #[test]
     fn all_wont_fit_falls_back_to_winner() {
         let mut set = AlternativeSet::empty();
-        set.push(make_candidate(BackendId::Cuda, DeviceLocation::Cuda { gpu_id: 0 }, 1_000));
+        set.push(make_candidate(
+            BackendId::Cuda,
+            DeviceLocation::Cuda { gpu_id: 0 },
+            1_000,
+        ));
         set.push(make_candidate(BackendId::Cpu, DeviceLocation::Cpu, 1_000));
 
         // Both backends report 1 byte free → both WontFit for the
         // 1_000-byte estimate.
-        let lookup = per_backend_lookup(
-            (Some(1), Some(10_000)),
-            (Some(1), Some(10_000)),
-        );
+        let lookup = per_backend_lookup((Some(1), Some(10_000)), (Some(1), Some(10_000)));
         let sel = make_selector(lookup);
         let pick = sel.select(&set).expect("non-empty (falls back to winner)");
         assert_eq!(
@@ -426,7 +433,11 @@ mod tests {
     fn unknown_ties_with_comfortable_preserves_winner() {
         let mut set = AlternativeSet::empty();
         // Cost winner is Cuda (cheaper). CPU is the runner-up.
-        set.push(make_candidate(BackendId::Cuda, DeviceLocation::Cuda { gpu_id: 0 }, 100));
+        set.push(make_candidate(
+            BackendId::Cuda,
+            DeviceLocation::Cuda { gpu_id: 0 },
+            100,
+        ));
         set.push(make_candidate(BackendId::Cpu, DeviceLocation::Cpu, 100));
 
         // Lookup returns a runtime ONLY for CPU; CUDA is Unknown.
@@ -456,15 +467,16 @@ mod tests {
     fn custom_estimator_changes_fit_outcome() {
         let mut set = AlternativeSet::empty();
         // bytes_moved=100; backend has 50 free.
-        set.push(make_candidate(BackendId::Cuda, DeviceLocation::Cuda { gpu_id: 0 }, 100));
+        set.push(make_candidate(
+            BackendId::Cuda,
+            DeviceLocation::Cuda { gpu_id: 0 },
+            100,
+        ));
         set.push(make_candidate(BackendId::Cpu, DeviceLocation::Cpu, 100));
 
         // With default estimator (uses bytes_moved=100): CUDA WontFit.
         // With custom estimator returning 10: CUDA Comfortable.
-        let lookup = per_backend_lookup(
-            (Some(50), Some(1_000)),
-            (Some(50), Some(1_000)),
-        );
+        let lookup = per_backend_lookup((Some(50), Some(1_000)), (Some(50), Some(1_000)));
 
         // Custom estimator returns 10 — well within 50.
         let custom: OutputBytesEstimator = Arc::new(|_c: &Candidate| 10u64);

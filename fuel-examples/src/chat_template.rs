@@ -1,4 +1,4 @@
-﻿//! Chat template support for LLM examples
+//! Chat template support for LLM examples
 //!
 //! This module provides Jinja-based chat template rendering compatible with
 //! HuggingFace's `tokenizer.apply_chat_template()` functionality.
@@ -32,7 +32,7 @@
 //! # }
 //! ```
 
-use minijinja::{context, Environment};
+use minijinja::{Environment, context};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 

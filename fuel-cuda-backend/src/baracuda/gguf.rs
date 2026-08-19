@@ -144,20 +144,18 @@ fn dequant_run(
 /// the layout is rank-1 contig (or absent), `Some(stride)` for a
 /// rank-1 strided view, or `Err` for ranks outside `[1]`. MMVQ is
 /// matrix-vector; the activation is a single vector.
-fn activation_stride(
-    act_layout: Option<&Layout>,
-    op_label: &'static str,
-) -> Result<i64> {
-    let Some(layout) = act_layout else { return Ok(1); };
+fn activation_stride(act_layout: Option<&Layout>, op_label: &'static str) -> Result<i64> {
+    let Some(layout) = act_layout else {
+        return Ok(1);
+    };
     let strides = layout.stride();
     match strides.len() {
-        0 => Err(Error::Msg(
-            format!("{op_label}: rank-0 activation not supported"),
-        ).bt()),
+        0 => Err(Error::Msg(format!("{op_label}: rank-0 activation not supported")).bt()),
         1 => Ok(strides[0] as i64),
         n => Err(Error::Msg(format!(
             "{op_label}: MMVQ activation must be rank-1 (got rank {n})",
-        )).bt()),
+        ))
+        .bt()),
     }
 }
 
@@ -189,28 +187,36 @@ fn mmvq_run(
     if activations.device().id() != device.id() {
         return Err(Error::Msg(format!(
             "{op_label}: weights and activations on different CUDA devices",
-        )).bt());
+        ))
+        .bt());
     }
     if w_start_byte_offset < 0 {
         return Err(Error::Msg(format!(
             "{op_label}: negative w_start_byte_offset {w_start_byte_offset}",
-        )).bt());
+        ))
+        .bt());
     }
     // Alignment guard (debug-only — release builds trust the caller).
     debug_assert!(
         w_align_bytes <= 1 || w_start_byte_offset % w_align_bytes == 0,
         "{}: w_start_byte_offset ({}) must be a multiple of {} bytes for this block format",
-        op_label, w_start_byte_offset, w_align_bytes,
+        op_label,
+        w_start_byte_offset,
+        w_align_bytes,
     );
 
     let ncols_i32 = i32::try_from(ncols).map_err(|_| {
         Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
-            op: op_label, dim_index: 0, dim_value: ncols,
+            op: op_label,
+            dim_index: 0,
+            dim_value: ncols,
         })
     })?;
     let nrows_i32 = i32::try_from(nrows).map_err(|_| {
         Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
-            op: op_label, dim_index: 1, dim_value: nrows,
+            op: op_label,
+            dim_index: 1,
+            dim_value: nrows,
         })
     })?;
     let out_bytes = nrows * std::mem::size_of::<f32>();
@@ -231,19 +237,30 @@ fn mmvq_run(
         // SAFETY: pointers validated; FFI accepts byte offset + stride.
         unsafe {
             strided(
-                ncols_i32, nrows_i32,
-                x_ptr, w_start_byte_offset, stride_y,
-                y_ptr, dst_ptr,
-                scratch.as_raw(), scratch.bytes(), stream,
+                ncols_i32,
+                nrows_i32,
+                x_ptr,
+                w_start_byte_offset,
+                stride_y,
+                y_ptr,
+                dst_ptr,
+                scratch.as_raw(),
+                scratch.bytes(),
+                stream,
             )
         }
     } else {
         // SAFETY: pointers validated; contig fast path.
         unsafe {
             contig(
-                ncols_i32, nrows_i32,
-                x_ptr, y_ptr, dst_ptr,
-                scratch.as_raw(), scratch.bytes(), stream,
+                ncols_i32,
+                nrows_i32,
+                x_ptr,
+                y_ptr,
+                dst_ptr,
+                scratch.as_raw(),
+                scratch.bytes(),
+                stream,
             )
         }
     };
@@ -320,14 +337,14 @@ gguf_dequant!(dequant_q8_k, q8_K, "dequant_q8_K");
 // MMVQ — all 11 formats. Alignment defaults to 1 except Q4_K which
 // the baracuda alpha.31 actstrided kernel requires to be 16-byte
 // aligned at the W slab offset.
-gguf_mmvq!(mmvq_q4_0, q4_0, 1,  "mmvq_q4_0");
-gguf_mmvq!(mmvq_q4_1, q4_1, 1,  "mmvq_q4_1");
-gguf_mmvq!(mmvq_q5_0, q5_0, 1,  "mmvq_q5_0");
-gguf_mmvq!(mmvq_q5_1, q5_1, 1,  "mmvq_q5_1");
-gguf_mmvq!(mmvq_q8_0, q8_0, 1,  "mmvq_q8_0");
-gguf_mmvq!(mmvq_q2_k, q2_K, 1,  "mmvq_q2_K");
-gguf_mmvq!(mmvq_q3_k, q3_K, 1,  "mmvq_q3_K");
+gguf_mmvq!(mmvq_q4_0, q4_0, 1, "mmvq_q4_0");
+gguf_mmvq!(mmvq_q4_1, q4_1, 1, "mmvq_q4_1");
+gguf_mmvq!(mmvq_q5_0, q5_0, 1, "mmvq_q5_0");
+gguf_mmvq!(mmvq_q5_1, q5_1, 1, "mmvq_q5_1");
+gguf_mmvq!(mmvq_q8_0, q8_0, 1, "mmvq_q8_0");
+gguf_mmvq!(mmvq_q2_k, q2_K, 1, "mmvq_q2_K");
+gguf_mmvq!(mmvq_q3_k, q3_K, 1, "mmvq_q3_K");
 gguf_mmvq!(mmvq_q4_k, q4_K, 16, "mmvq_q4_K");
-gguf_mmvq!(mmvq_q5_k, q5_K, 1,  "mmvq_q5_K");
-gguf_mmvq!(mmvq_q6_k, q6_K, 1,  "mmvq_q6_K");
-gguf_mmvq!(mmvq_q8_k, q8_K, 1,  "mmvq_q8_K");
+gguf_mmvq!(mmvq_q5_k, q5_K, 1, "mmvq_q5_K");
+gguf_mmvq!(mmvq_q6_k, q6_K, 1, "mmvq_q6_K");
+gguf_mmvq!(mmvq_q8_k, q8_K, 1, "mmvq_q8_K");

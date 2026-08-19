@@ -76,12 +76,14 @@ pub fn register_runtime_kernel_into(
 /// The first runtime-fused binding for `(id, backend)`, any dtype tuple.
 pub fn lookup_runtime_kernel(id: FusedOpId, backend: BackendId) -> Option<RuntimeKernelBinding> {
     let table = global_bindings();
-    table.first_runtime_fused(id, backend).map(|(dtypes, e)| RuntimeKernelBinding {
-        kernel: e.kernel,
-        caps: e.caps,
-        precision: e.precision,
-        dtypes: dtypes.to_vec(),
-    })
+    table
+        .first_runtime_fused(id, backend)
+        .map(|(dtypes, e)| RuntimeKernelBinding {
+            kernel: e.kernel,
+            caps: e.caps,
+            precision: e.precision,
+            dtypes: dtypes.to_vec(),
+        })
 }
 
 /// The capability predicate the optimizer's gate consults: is there an
@@ -149,7 +151,11 @@ pub fn fused_kernel_available(id: FusedOpId, backend: BackendId) -> bool {
 /// adopt's `global_bindings()` WRITE can never queue between two reads this
 /// function takes, because it takes none — `table` is a plain reference the
 /// caller already resolved.
-pub fn fused_kernel_available_in(table: &KernelBindingTable, id: FusedOpId, backend: BackendId) -> bool {
+pub fn fused_kernel_available_in(
+    table: &KernelBindingTable,
+    id: FusedOpId,
+    backend: BackendId,
+) -> bool {
     fused_kernel_available_core(
         id,
         backend,
@@ -186,7 +192,11 @@ fn static_binding_table_bridge(id: FusedOpId, backend: BackendId) -> bool {
 /// Table-passing sibling of [`static_binding_table_bridge`] — scans the
 /// caller's `table` instead of `global_bindings()`. See
 /// [`fused_kernel_available_in`].
-fn static_binding_table_bridge_in(table: &KernelBindingTable, id: FusedOpId, backend: BackendId) -> bool {
+fn static_binding_table_bridge_in(
+    table: &KernelBindingTable,
+    id: FusedOpId,
+    backend: BackendId,
+) -> bool {
     static_binding_table_bridge_over(table, id, backend)
 }
 
@@ -206,7 +216,9 @@ fn static_binding_table_bridge_over(
     };
     // `iter_keys` is the static-entry view (RuntimeFused rows filtered), which
     // is exactly the population this bridge should scan.
-    table.iter_keys().any(|(op, _dtypes, b)| op == op_kind && b == backend)
+    table
+        .iter_keys()
+        .any(|(op, _dtypes, b)| op == op_kind && b == backend)
 }
 
 /// The (deliberately small) set of *static* [`FusedOpId`]s whose kernel is
@@ -215,7 +227,11 @@ fn static_binding_table_bridge_over(
 /// See [`fused_kernel_available`]'s doc comment — widen this one id at a
 /// time as each is verified, not speculatively.
 pub(crate) fn static_fused_id_to_binding_table_op_kind(id: FusedOpId) -> Option<OpKind> {
-    if id == FusedOps::FLASH_ATTN { Some(OpKind::FlashAttn) } else { None }
+    if id == FusedOps::FLASH_ATTN {
+        Some(OpKind::FlashAttn)
+    } else {
+        None
+    }
 }
 
 /// **TEST-ONLY.** Reset the runtime-fused world: drop every
@@ -315,7 +331,10 @@ mod tests {
             operands: vec![PatternNode::Op {
                 op: OpTag::Add,
                 attrs: OpAttrs::default(),
-                operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+                operands: vec![
+                    PatternNode::Bind { index: 0 },
+                    PatternNode::Bind { index: 1 },
+                ],
             }],
         }
     }
@@ -338,7 +357,10 @@ mod tests {
             operands: vec![PatternNode::Op {
                 op: OpTag::Div,
                 attrs: OpAttrs::default(),
-                operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+                operands: vec![
+                    PatternNode::Bind { index: 0 },
+                    PatternNode::Bind { index: 1 },
+                ],
             }],
         }
     }
@@ -444,7 +466,10 @@ mod tests {
         )
         .expect("re-adopting the same region is still Some");
 
-        assert_eq!(id1, id2, "structurally-identical regions dedup to the same FusedOpId");
+        assert_eq!(
+            id1, id2,
+            "structurally-identical regions dedup to the same FusedOpId"
+        );
         assert!(
             fused_kernel_available(id1, BackendId::Cpu),
             "the kernel is still available after the idempotent re-adopt",

@@ -24,8 +24,8 @@
 //!
 //! v1 scope: F32, batch == 1, prefill only.
 
-use crate::lazy::{LazyTensor, WeightStorage};
 use crate::Result;
+use crate::lazy::{LazyTensor, WeightStorage};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -58,7 +58,9 @@ impl MimiTransformerConfig {
         }
     }
 
-    pub fn head_dim(&self) -> usize { self.d_model / self.num_heads }
+    pub fn head_dim(&self) -> usize {
+        self.d_model / self.num_heads
+    }
 }
 
 // ---- Weight structures ------------------------------------------------------
@@ -134,7 +136,9 @@ impl ProjectedTransformerModel {
         // Optional (B, C, T) → (B, T, C) transpose.
         let xs = if cfg.conv_layout {
             xs.permute([0, 2, 1_usize])?
-        } else { xs.clone() };
+        } else {
+            xs.clone()
+        };
         // Optional input projection.
         let h = match &self.weights.input_proj {
             None => xs,
@@ -144,7 +148,8 @@ impl ProjectedTransformerModel {
         // Build RoPE cos/sin tables for the input sequence length.
         let in_dims = h.shape();
         let in_dims = in_dims.dims();
-        let b = in_dims[0]; let t = in_dims[1];
+        let b = in_dims[0];
+        let t = in_dims[1];
         let head_dim = cfg.head_dim();
         let (cos, sin) = build_rope_tables(&h, t, head_dim, cfg.max_period);
         // Build the strict causal mask `(t, t)`.
@@ -162,7 +167,11 @@ impl ProjectedTransformerModel {
                 None => hidden.clone(),
                 Some(w) => w.apply_linear(&hidden, cfg.d_model, *out_dim)?,
             };
-            let y = if cfg.conv_layout { y.permute([0, 2, 1_usize])? } else { y };
+            let y = if cfg.conv_layout {
+                y.permute([0, 2, 1_usize])?
+            } else {
+                y
+            };
             outs.push(y);
         }
         Ok(outs)
@@ -172,18 +181,29 @@ impl ProjectedTransformerModel {
 fn apply_layer(
     x: &LazyTensor,
     w: &MimiTransformerLayerWeights,
-    cos: &LazyTensor, sin: &LazyTensor, causal_mask: &LazyTensor,
+    cos: &LazyTensor,
+    sin: &LazyTensor,
+    causal_mask: &LazyTensor,
     cfg: &MimiTransformerConfig,
-    b: usize, t: usize,
+    b: usize,
+    t: usize,
 ) -> Result<LazyTensor> {
     // Pre-LN self-attention.
-    let n1 = x.layer_norm_affine(Arc::clone(&w.norm1.gain), Arc::clone(&w.norm1.bias), cfg.layer_norm_eps)?;
+    let n1 = x.layer_norm_affine(
+        Arc::clone(&w.norm1.gain),
+        Arc::clone(&w.norm1.bias),
+        cfg.layer_norm_eps,
+    )?;
     let attn = apply_attention(&n1, &w.attn, cos, sin, causal_mask, cfg, b, t)?;
     let scaled = apply_per_channel_scale(&attn, &w.layer_scale_1, cfg.d_model)?;
     let after_attn = x.add(&scaled)?;
 
     // Pre-LN MLP.
-    let n2 = after_attn.layer_norm_affine(Arc::clone(&w.norm2.gain), Arc::clone(&w.norm2.bias), cfg.layer_norm_eps)?;
+    let n2 = after_attn.layer_norm_affine(
+        Arc::clone(&w.norm2.gain),
+        Arc::clone(&w.norm2.bias),
+        cfg.layer_norm_eps,
+    )?;
     let mlp = apply_mlp(&n2, &w.mlp, cfg)?;
     let scaled_mlp = apply_per_channel_scale(&mlp, &w.layer_scale_2, cfg.d_model)?;
     after_attn.add(&scaled_mlp)
@@ -192,9 +212,12 @@ fn apply_layer(
 fn apply_attention(
     x: &LazyTensor,
     w: &MimiAttentionWeights,
-    cos: &LazyTensor, sin: &LazyTensor, causal_mask: &LazyTensor,
+    cos: &LazyTensor,
+    sin: &LazyTensor,
+    causal_mask: &LazyTensor,
     cfg: &MimiTransformerConfig,
-    b: usize, t: usize,
+    b: usize,
+    t: usize,
 ) -> Result<LazyTensor> {
     let d = cfg.d_model;
     let heads = cfg.num_heads;
@@ -202,9 +225,18 @@ fn apply_attention(
     let scale = 1.0_f64 / (head_dim as f64).sqrt();
 
     // (B, T, D) → (B, heads, T, head_dim)
-    let q = w.q_proj.apply_linear(x, d, d)?.split_heads(heads, head_dim)?;
-    let k = w.k_proj.apply_linear(x, d, d)?.split_heads(heads, head_dim)?;
-    let v = w.v_proj.apply_linear(x, d, d)?.split_heads(heads, head_dim)?;
+    let q = w
+        .q_proj
+        .apply_linear(x, d, d)?
+        .split_heads(heads, head_dim)?;
+    let k = w
+        .k_proj
+        .apply_linear(x, d, d)?
+        .split_heads(heads, head_dim)?;
+    let v = w
+        .v_proj
+        .apply_linear(x, d, d)?
+        .split_heads(heads, head_dim)?;
 
     // Apply RoPE-interleaved to q and k.
     let q = apply_rope_interleaved(&q, cos, sin, b, heads, t, head_dim)?;
@@ -223,7 +255,8 @@ fn apply_attention(
         .broadcast_to(Shape::from_dims(&[batch, t, t]))?;
     let scores = scores.add(&mask)?;
     let probs = scores.softmax_last_dim()?;
-    let ctx = probs.matmul(&v3)?
+    let ctx = probs
+        .matmul(&v3)?
         .reshape(Shape::from_dims(&[b, heads, t, head_dim]))?
         .merge_heads()?;
     let _ = d;
@@ -231,7 +264,9 @@ fn apply_attention(
 }
 
 fn apply_mlp(
-    x: &LazyTensor, w: &MimiMlpWeights, cfg: &MimiTransformerConfig,
+    x: &LazyTensor,
+    w: &MimiMlpWeights,
+    cfg: &MimiTransformerConfig,
 ) -> Result<LazyTensor> {
     let hidden = cfg.dim_feedforward;
     let d = cfg.d_model;
@@ -239,9 +274,10 @@ fn apply_mlp(
     Ok(w.fc2.apply_linear(&h, hidden, d)?)
 }
 
-
 fn apply_per_channel_scale(
-    x: &LazyTensor, scale: &Arc<[f32]>, hidden: usize,
+    x: &LazyTensor,
+    scale: &Arc<[f32]>,
+    hidden: usize,
 ) -> Result<LazyTensor> {
     let dims_v = x.shape().dims().to_vec();
     let mut shape = vec![1_usize; dims_v.len()];
@@ -258,7 +294,10 @@ fn apply_per_channel_scale(
 /// Build cos/sin tables shaped `(T, head_dim / 2)` for the
 /// interleaved-RoPE convention used by Mimi (`rope_i`).
 fn build_rope_tables(
-    anchor: &LazyTensor, t: usize, head_dim: usize, max_period: f32,
+    anchor: &LazyTensor,
+    t: usize,
+    head_dim: usize,
+    max_period: f32,
 ) -> (LazyTensor, LazyTensor) {
     let half = head_dim / 2;
     let mut cos_v = Vec::with_capacity(t * half);
@@ -271,12 +310,8 @@ fn build_rope_tables(
             sin_v.push(theta.sin());
         }
     }
-    let cos = anchor.const_f32_like(
-        Arc::from(cos_v), Shape::from_dims(&[t, half]),
-    );
-    let sin = anchor.const_f32_like(
-        Arc::from(sin_v), Shape::from_dims(&[t, half]),
-    );
+    let cos = anchor.const_f32_like(Arc::from(cos_v), Shape::from_dims(&[t, half]));
+    let sin = anchor.const_f32_like(Arc::from(sin_v), Shape::from_dims(&[t, half]));
     (cos, sin)
 }
 
@@ -285,16 +320,23 @@ fn build_rope_tables(
 ///   `x'[2i+1] = x[2i]*sin + x[2i+1]*cos`
 /// Input `(B, heads, T, head_dim)`, cos/sin `(T, head_dim/2)`.
 fn apply_rope_interleaved(
-    x: &LazyTensor, cos: &LazyTensor, sin: &LazyTensor,
-    b: usize, heads: usize, t: usize, head_dim: usize,
+    x: &LazyTensor,
+    cos: &LazyTensor,
+    sin: &LazyTensor,
+    b: usize,
+    heads: usize,
+    t: usize,
+    head_dim: usize,
 ) -> Result<LazyTensor> {
     let half = head_dim / 2;
     // Reshape (B, H, T, D) → (B, H, T, half, 2) and split into the
     // (even, odd) pair via `narrow` on the last dim.
     let x_pairs = x.reshape(Shape::from_dims(&[b, heads, t, half, 2]))?;
-    let x_even = x_pairs.narrow(4_usize, 0, 1)?
+    let x_even = x_pairs
+        .narrow(4_usize, 0, 1)?
         .reshape(Shape::from_dims(&[b, heads, t, half]))?;
-    let x_odd = x_pairs.narrow(4_usize, 1, 1)?
+    let x_odd = x_pairs
+        .narrow(4_usize, 1, 1)?
         .reshape(Shape::from_dims(&[b, heads, t, half]))?;
     // Broadcast cos/sin (T, half) → (B, H, T, half).
     let cos_b = cos
@@ -341,72 +383,77 @@ impl ProjectedTransformerWeights {
         input_dim: usize,
         output_dims: &[usize],
     ) -> Result<Self> {
-        use crate::lazy::{
-            load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
-        };
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
         let d = cfg.d_model;
 
         // ---- transformer layers --------------------------------------------
-        let mut layers: Vec<MimiTransformerLayerWeights> =
-            Vec::with_capacity(cfg.num_layers);
+        let mut layers: Vec<MimiTransformerLayerWeights> = Vec::with_capacity(cfg.num_layers);
         for i in 0..cfg.num_layers {
             let p = format!("{prefix}.layers.{i}");
 
             // LayerNorm (input + post-attn).
-            let n1_g = load_tensor_as_f32(
-                st, &format!("{p}.input_layernorm.weight"),
-            )?;
-            let n1_b = load_tensor_as_f32(
-                st, &format!("{p}.input_layernorm.bias"),
-            )?;
-            let n2_g = load_tensor_as_f32(
-                st, &format!("{p}.post_attention_layernorm.weight"),
-            )?;
-            let n2_b = load_tensor_as_f32(
-                st, &format!("{p}.post_attention_layernorm.bias"),
-            )?;
-            if n1_g.len() != d || n1_b.len() != d
-                || n2_g.len() != d || n2_b.len() != d
-            {
+            let n1_g = load_tensor_as_f32(st, &format!("{p}.input_layernorm.weight"))?;
+            let n1_b = load_tensor_as_f32(st, &format!("{p}.input_layernorm.bias"))?;
+            let n2_g = load_tensor_as_f32(st, &format!("{p}.post_attention_layernorm.weight"))?;
+            let n2_b = load_tensor_as_f32(st, &format!("{p}.post_attention_layernorm.bias"))?;
+            if n1_g.len() != d || n1_b.len() != d || n2_g.len() != d || n2_b.len() != d {
                 crate::bail!(
                     "{p} LN sizes: input_g {} input_b {} post_g {} post_b {} expected {d}",
-                    n1_g.len(), n1_b.len(), n2_g.len(), n2_b.len(),
+                    n1_g.len(),
+                    n1_b.len(),
+                    n2_g.len(),
+                    n2_b.len(),
                 );
             }
 
             // Self-attention projections (no bias in Mimi v0.1).
             let q_proj = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.q_proj.weight"), d, d,
+                st,
+                &format!("{p}.self_attn.q_proj.weight"),
+                d,
+                d,
             )?;
             let k_proj = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.k_proj.weight"), d, d,
+                st,
+                &format!("{p}.self_attn.k_proj.weight"),
+                d,
+                d,
             )?;
             let v_proj = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.v_proj.weight"), d, d,
+                st,
+                &format!("{p}.self_attn.v_proj.weight"),
+                d,
+                d,
             )?;
             let o_proj = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.o_proj.weight"), d, d,
+                st,
+                &format!("{p}.self_attn.o_proj.weight"),
+                d,
+                d,
             )?;
 
             // MLP.
             let fc1 = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.mlp.fc1.weight"), cfg.dim_feedforward, d,
+                st,
+                &format!("{p}.mlp.fc1.weight"),
+                cfg.dim_feedforward,
+                d,
             )?;
             let fc2 = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.mlp.fc2.weight"), d, cfg.dim_feedforward,
+                st,
+                &format!("{p}.mlp.fc2.weight"),
+                d,
+                cfg.dim_feedforward,
             )?;
 
             // Per-channel layer-scale.
-            let ls1 = load_tensor_as_f32(
-                st, &format!("{p}.self_attn_layer_scale.scale"),
-            )?;
-            let ls2 = load_tensor_as_f32(
-                st, &format!("{p}.mlp_layer_scale.scale"),
-            )?;
+            let ls1 = load_tensor_as_f32(st, &format!("{p}.self_attn_layer_scale.scale"))?;
+            let ls2 = load_tensor_as_f32(st, &format!("{p}.mlp_layer_scale.scale"))?;
             if ls1.len() != d || ls2.len() != d {
                 crate::bail!(
                     "{p} layer_scale sizes: ls1 {} ls2 {} expected {d}",
-                    ls1.len(), ls2.len(),
+                    ls1.len(),
+                    ls2.len(),
                 );
             }
 
@@ -419,7 +466,12 @@ impl ProjectedTransformerWeights {
                     gain: Arc::from(n2_g),
                     bias: Arc::from(n2_b),
                 },
-                attn: MimiAttentionWeights { q_proj, k_proj, v_proj, o_proj },
+                attn: MimiAttentionWeights {
+                    q_proj,
+                    k_proj,
+                    v_proj,
+                    o_proj,
+                },
                 mlp: MimiMlpWeights { fc1, fc2 },
                 layer_scale_1: Arc::from(ls1),
                 layer_scale_2: Arc::from(ls2),
@@ -431,7 +483,10 @@ impl ProjectedTransformerWeights {
             None
         } else {
             let w = load_transposed_matrix_preserve_dtype(
-                st, &format!("{prefix}.input_proj.weight"), d, input_dim,
+                st,
+                &format!("{prefix}.input_proj.weight"),
+                d,
+                input_dim,
             )?;
             Some(w)
         };
@@ -444,7 +499,10 @@ impl ProjectedTransformerWeights {
                 None
             } else {
                 let w = load_transposed_matrix_preserve_dtype(
-                    st, &format!("{prefix}.output_projs.{i}.weight"), od, d,
+                    st,
+                    &format!("{prefix}.output_projs.{i}.weight"),
+                    od,
+                    d,
                 )?;
                 Some(w)
             };
@@ -488,7 +546,9 @@ mod tests {
 
     fn tiny_cfg() -> MimiTransformerConfig {
         MimiTransformerConfig {
-            d_model: 8, num_heads: 2, num_layers: 2,
+            d_model: 8,
+            num_heads: 2,
+            num_layers: 2,
             dim_feedforward: 16,
             max_period: 10_000.0,
             conv_layout: true,
@@ -496,7 +556,11 @@ mod tests {
         }
     }
 
-    fn build_layer(d: usize, ff: usize, nb: &mut dyn FnMut() -> f32) -> MimiTransformerLayerWeights {
+    fn build_layer(
+        d: usize,
+        ff: usize,
+        nb: &mut dyn FnMut() -> f32,
+    ) -> MimiTransformerLayerWeights {
         MimiTransformerLayerWeights {
             norm1: ln_w(d),
             norm2: ln_w(d),
@@ -521,21 +585,34 @@ mod tests {
         let d = cfg.d_model;
         let ff = cfg.dim_feedforward;
         let transformer = MimiTransformerWeights {
-            layers: (0..cfg.num_layers).map(|_| build_layer(d, ff, &mut nb)).collect(),
+            layers: (0..cfg.num_layers)
+                .map(|_| build_layer(d, ff, &mut nb))
+                .collect(),
         };
         let input_proj = if input_dim == d {
             None
         } else {
             Some(ws(input_dim * d, &mut nb))
         };
-        let output_projs: Vec<_> = output_dims.iter().map(|&od| {
-            let proj = if od == d { None } else { Some(ws(d * od, &mut nb)) };
-            (proj, od)
-        }).collect();
+        let output_projs: Vec<_> = output_dims
+            .iter()
+            .map(|&od| {
+                let proj = if od == d {
+                    None
+                } else {
+                    Some(ws(d * od, &mut nb))
+                };
+                (proj, od)
+            })
+            .collect();
         ProjectedTransformerModel {
             config: cfg,
             input_dim,
-            weights: ProjectedTransformerWeights { transformer, input_proj, output_projs },
+            weights: ProjectedTransformerWeights {
+                transformer,
+                input_proj,
+                output_projs,
+            },
         }
     }
 
@@ -544,23 +621,32 @@ mod tests {
         let d = 8;
         let model = tiny_model(d, vec![d]);
         let xs = LazyTensor::from_f32(
-            (0..(1 * d * 5)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, d, 5]), &Device::cpu(),
+            (0..(1 * d * 5))
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, d, 5]),
+            &Device::cpu(),
         );
         let outs = model.forward(&xs).unwrap();
         assert_eq!(outs.len(), 1);
         // conv_layout = true → (B, C, T) preserved.
         assert_eq!(outs[0].shape().dims(), &[1, d, 5]);
-        for &v in &outs[0].realize_f32() { assert!(v.is_finite()); }
+        for &v in &outs[0].realize_f32() {
+            assert!(v.is_finite());
+        }
     }
 
     #[test]
     fn forward_with_different_input_dim_uses_input_proj() {
-        let input_dim = 4; let d = 8;
+        let input_dim = 4;
+        let d = 8;
         let model = tiny_model(input_dim, vec![d]);
         let xs = LazyTensor::from_f32(
-            (0..(1 * input_dim * 5)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, input_dim, 5]), &Device::cpu(),
+            (0..(1 * input_dim * 5))
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, input_dim, 5]),
+            &Device::cpu(),
         );
         let outs = model.forward(&xs).unwrap();
         assert_eq!(outs[0].shape().dims(), &[1, d, 5]);
@@ -571,8 +657,11 @@ mod tests {
         let d = 8;
         let model = tiny_model(d, vec![d, 4]);
         let xs = LazyTensor::from_f32(
-            (0..(1 * d * 5)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, d, 5]), &Device::cpu(),
+            (0..(1 * d * 5))
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, d, 5]),
+            &Device::cpu(),
         );
         let outs = model.forward(&xs).unwrap();
         assert_eq!(outs.len(), 2);
@@ -583,16 +672,26 @@ mod tests {
     #[test]
     fn rope_zero_position_is_identity() {
         // At pos=0, cos=1, sin=0 → RoPE is identity.
-        let b = 1; let h = 2; let t = 1; let d = 4;
-        let x_data: Vec<f32> = (0..(b * h * t * d)).map(|i| (i as f32 + 1.0) * 0.1).collect();
+        let b = 1;
+        let h = 2;
+        let t = 1;
+        let d = 4;
+        let x_data: Vec<f32> = (0..(b * h * t * d))
+            .map(|i| (i as f32 + 1.0) * 0.1)
+            .collect();
         let x = LazyTensor::from_f32(
-            x_data.clone(), Shape::from_dims(&[b, h, t, d]), &Device::cpu(),
+            x_data.clone(),
+            Shape::from_dims(&[b, h, t, d]),
+            &Device::cpu(),
         );
         let (cos, sin) = build_rope_tables(&x, t, d, 10_000.0);
         let out = apply_rope_interleaved(&x, &cos, &sin, b, h, t, d).unwrap();
         let out_data = out.realize_f32();
         for (a, b) in x_data.iter().zip(out_data.iter()) {
-            assert!((a - b).abs() < 1e-6, "RoPE at pos=0 should be identity: {a} vs {b}");
+            assert!(
+                (a - b).abs() < 1e-6,
+                "RoPE at pos=0 should be identity: {a} vs {b}"
+            );
         }
     }
 
@@ -604,17 +703,18 @@ mod tests {
         let model = tiny_model(d, vec![d]);
         let t = 4;
         let xs_a = LazyTensor::from_f32(
-            (0..(1 * d * t)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, d, t]), &Device::cpu(),
+            (0..(1 * d * t))
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, d, t]),
+            &Device::cpu(),
         );
         // Build xs_b with last (T-1) column replaced.
         let mut data_b: Vec<f32> = (0..(1 * d * t)).map(|i| (i as f32) * 0.01).collect();
         for c in 0..d {
             data_b[c * t + (t - 1)] = 9.0; // bump last token in every channel
         }
-        let xs_b = LazyTensor::from_f32(
-            data_b, Shape::from_dims(&[1, d, t]), &Device::cpu(),
-        );
+        let xs_b = LazyTensor::from_f32(data_b, Shape::from_dims(&[1, d, t]), &Device::cpu());
         let oa = model.forward(&xs_a).unwrap();
         let ob = model.forward(&xs_b).unwrap();
         let da = oa[0].realize_f32();
@@ -625,15 +725,22 @@ mod tests {
             for pos in 0..t {
                 let i = c * t + pos;
                 let d_pos = (da[i] - db[i]).abs();
-                if d_pos > max_pos_diff[pos] { max_pos_diff[pos] = d_pos; }
+                if d_pos > max_pos_diff[pos] {
+                    max_pos_diff[pos] = d_pos;
+                }
             }
         }
         for pos in 0..(t - 1) {
-            assert!(max_pos_diff[pos] < 1e-5,
-                "causal mask violated at pos {pos}: max_diff = {}", max_pos_diff[pos]);
+            assert!(
+                max_pos_diff[pos] < 1e-5,
+                "causal mask violated at pos {pos}: max_diff = {}",
+                max_pos_diff[pos]
+            );
         }
-        assert!(max_pos_diff[t - 1] > 1e-6,
-            "last-pos output should respond to last-token input change");
+        assert!(
+            max_pos_diff[t - 1] > 1e-6,
+            "last-pos output should respond to last-token input change"
+        );
     }
 
     #[test]

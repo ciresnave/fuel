@@ -29,10 +29,10 @@
 
 use std::collections::HashSet;
 
-use fuel_ir::backend::BackendCapabilities;
-use fuel_ir::{DType, Shape};
 use fuel_graph::registry::{FusedOpId, FusedOpParams};
 use fuel_graph::{Graph, Node, NodeId, Op};
+use fuel_ir::backend::BackendCapabilities;
+use fuel_ir::{DType, Shape};
 
 use crate::fused::{BackendImpl, CostEstimate};
 use crate::kernel::OpParams;
@@ -55,8 +55,7 @@ fn elem_count(shape: &Shape) -> u64 {
 pub fn is_fused_cost_sentinel(
     cost: fn(&[Shape], &FusedOpParams, &BackendCapabilities) -> CostEstimate,
 ) -> bool {
-    cost as *const () as usize
-        == crate::fkc::fused_unknown_cost as *const () as usize
+    cost as *const () as usize == crate::fkc::fused_unknown_cost as *const () as usize
 }
 
 /// The fused-op Layer-1 cost accessor (spec §4 shape A — the sentinel
@@ -88,7 +87,9 @@ pub fn fused_layer1_cost(
     // the contract's own priced formula, layered above "composed" and below
     // "measured" (spec §5: measured › declared › composed › never zero).
     if let Some(expr) = impl_.cost_expr {
-        if let Ok(est) = crate::fkc::cost_compile::fused_cost_estimate(expr, input_shapes, input_dtypes, params) {
+        if let Ok(est) =
+            crate::fkc::cost_compile::fused_cost_estimate(expr, input_shapes, input_dtypes, params)
+        {
             return est;
         }
     }
@@ -188,7 +189,15 @@ fn cost_from_decompose_inner(
     // overhead = max of the component primitives' per-launch overheads.
     let mut visited: HashSet<NodeId> = HashSet::new();
     let mut max_overhead: u32 = 0;
-    let flops = fold_subgraph(&g, root, &leaves, &mut visited, caps, &mut max_overhead, depth);
+    let flops = fold_subgraph(
+        &g,
+        root,
+        &leaves,
+        &mut visited,
+        caps,
+        &mut max_overhead,
+        depth,
+    );
 
     // bytes_moved = the FUSED op's own boundary I/O (inputs + final output),
     // NOT Σ intermediate bytes — fusion elides the intermediates (spec §2).
@@ -236,8 +245,11 @@ fn fold_subgraph(
         Op::Fused(nested_id, nested_params) => {
             let mut flops = 0u64;
             if depth < MAX_DECOMPOSE_DEPTH {
-                let in_shapes: Vec<Shape> =
-                    node.inputs.iter().map(|&i| graph.node(i).shape.clone()).collect();
+                let in_shapes: Vec<Shape> = node
+                    .inputs
+                    .iter()
+                    .map(|&i| graph.node(i).shape.clone())
+                    .collect();
                 let in_dtypes: Vec<DType> =
                     node.inputs.iter().map(|&i| graph.node(i).dtype).collect();
                 let sub = cost_from_decompose_inner(
@@ -253,7 +265,13 @@ fn fold_subgraph(
             }
             for &inp in &node.inputs {
                 flops = flops.saturating_add(fold_subgraph(
-                    graph, inp, leaves, visited, caps, max_overhead, depth,
+                    graph,
+                    inp,
+                    leaves,
+                    visited,
+                    caps,
+                    max_overhead,
+                    depth,
                 ));
             }
             flops
@@ -268,8 +286,11 @@ fn fold_subgraph(
         _ => {
             let mut flops = 0u64;
             if let Some(kind) = crate::pipelined::op_to_op_kind(&node.op) {
-                let mut shapes: Vec<Shape> =
-                    node.inputs.iter().map(|&i| graph.node(i).shape.clone()).collect();
+                let mut shapes: Vec<Shape> = node
+                    .inputs
+                    .iter()
+                    .map(|&i| graph.node(i).shape.clone())
+                    .collect();
                 shapes.push(node.shape.clone());
                 let mut dtypes: Vec<DType> =
                     node.inputs.iter().map(|&i| graph.node(i).dtype).collect();
@@ -285,7 +306,13 @@ fn fold_subgraph(
             }
             for &inp in &node.inputs {
                 flops = flops.saturating_add(fold_subgraph(
-                    graph, inp, leaves, visited, caps, max_overhead, depth,
+                    graph,
+                    inp,
+                    leaves,
+                    visited,
+                    caps,
+                    max_overhead,
+                    depth,
                 ));
             }
             flops
@@ -349,12 +376,12 @@ mod tests {
 
     /// A non-sentinel declared cost fn — a FIXED nonzero cost, distinct
     /// from anything the decompose fold would produce.
-    fn declared_cost(
-        _s: &[Shape],
-        _p: &FusedOpParams,
-        _c: &BackendCapabilities,
-    ) -> CostEstimate {
-        CostEstimate { flops: 777, bytes_moved: 42, kernel_overhead_ns: 9 }
+    fn declared_cost(_s: &[Shape], _p: &FusedOpParams, _c: &BackendCapabilities) -> CostEstimate {
+        CostEstimate {
+            flops: 777,
+            bytes_moved: 42,
+            kernel_overhead_ns: 9,
+        }
     }
 
     fn sentinel_impl() -> BackendImpl {
@@ -381,12 +408,28 @@ mod tests {
         // `fuel-ir/src/backend.rs`) — using the module's existing
         // `cpu_caps()` fixture in its place; the caps value doesn't matter
         // here since the declared-AST path never reads `caps`.
-        use fuel_graph::registry::{FusedOps, FusedOpParams};
-        let expr = crate::fkc::cost_compile::intern_cost_expr(&crate::fkc::cost_expr::compile_field(Some("n")).unwrap()).unwrap();
-        let impl_ = BackendImpl { cost_expr: Some(expr), ..sentinel_impl() };
+        use fuel_graph::registry::{FusedOpParams, FusedOps};
+        let expr = crate::fkc::cost_compile::intern_cost_expr(
+            &crate::fkc::cost_expr::compile_field(Some("n")).unwrap(),
+        )
+        .unwrap();
+        let impl_ = BackendImpl {
+            cost_expr: Some(expr),
+            ..sentinel_impl()
+        };
         let caps = cpu_caps();
-        let est = fused_layer1_cost(&impl_, FusedOps::SOFTMAX_LAST_DIM, &[Shape::from_dims(&[8])], &[DType::F32], &FusedOpParams::SoftmaxLastDim, &caps);
-        assert_eq!(est.flops, 8, "declared fused flops = n = 8; not the sentinel/decompose fallback");
+        let est = fused_layer1_cost(
+            &impl_,
+            FusedOps::SOFTMAX_LAST_DIM,
+            &[Shape::from_dims(&[8])],
+            &[DType::F32],
+            &FusedOpParams::SoftmaxLastDim,
+            &caps,
+        );
+        assert_eq!(
+            est.flops, 8,
+            "declared fused flops = n = 8; not the sentinel/decompose fallback"
+        );
     }
 
     // =====================================================================
@@ -406,7 +449,11 @@ mod tests {
         let caps = cpu_caps();
 
         // (RED anchor) The sentinel cost fn itself prices at ZERO — the bug.
-        let raw = (impl_.cost)(&input_shapes, &FusedOpParams::Runtime { scalars: vec![] }, &caps);
+        let raw = (impl_.cost)(
+            &input_shapes,
+            &FusedOpParams::Runtime { scalars: vec![] },
+            &caps,
+        );
         assert_eq!(
             raw,
             CostEstimate::default(),
@@ -429,7 +476,8 @@ mod tests {
             composed,
         );
         assert_eq!(
-            composed.flops, 2 * n,
+            composed.flops,
+            2 * n,
             "flops = Σ decompose primitives = add(n) + relu(n) = 2n",
         );
         // Boundary I/O bytes: 2 F32 inputs of n elems + 1 F32 output of n
@@ -441,7 +489,10 @@ mod tests {
         );
         // One launch overhead (max of the elementwise components' 50 ns),
         // not Σ.
-        assert_eq!(composed.kernel_overhead_ns, 50, "one launch overhead, not Σ");
+        assert_eq!(
+            composed.kernel_overhead_ns, 50,
+            "one launch overhead, not Σ"
+        );
     }
 
     // =====================================================================
@@ -459,7 +510,10 @@ mod tests {
         let mut impl_ = sentinel_impl();
         impl_.cost = declared_cost; // a real declared cost, NOT the sentinel
 
-        assert!(!is_fused_cost_sentinel(impl_.cost), "declared cost is not the sentinel");
+        assert!(
+            !is_fused_cost_sentinel(impl_.cost),
+            "declared cost is not the sentinel"
+        );
 
         let got = fused_layer1_cost(
             &impl_,
@@ -471,7 +525,11 @@ mod tests {
         );
         assert_eq!(
             got,
-            CostEstimate { flops: 777, bytes_moved: 42, kernel_overhead_ns: 9 },
+            CostEstimate {
+                flops: 777,
+                bytes_moved: 42,
+                kernel_overhead_ns: 9
+            },
             "a declared cost fn is priced by that fn, unchanged — not composed",
         );
     }

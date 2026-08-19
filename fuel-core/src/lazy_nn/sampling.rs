@@ -30,12 +30,12 @@ use rand::rngs::StdRng;
 /// directly (the same path `train.rs::param_to_host` already relies on).
 fn realize_logits(logits: &LazyTensor) -> Result<Vec<f32>> {
     let device = crate::Device::cpu();
-    let v = crate::pipelined_bridge::realize_one_as::<f32>(logits.graph(), logits.node_id(), &device)?;
+    let v =
+        crate::pipelined_bridge::realize_one_as::<f32>(logits.graph(), logits.node_id(), &device)?;
     if v.is_empty() {
-        return Err(crate::Error::Msg(
-            "sampling: realized logits vector is empty".to_string(),
-        )
-        .bt());
+        return Err(
+            crate::Error::Msg("sampling: realized logits vector is empty".to_string()).bt(),
+        );
     }
     Ok(v)
 }
@@ -92,8 +92,7 @@ fn softmax_with_temp(mut logits: Vec<f32>, temp: f32) -> Result<Vec<f32>> {
 /// Multinomial sample from a probability vector. Returns the sampled
 /// index.
 fn sample_multinomial(prs: &[f32], rng: &mut StdRng) -> Result<usize> {
-    let distr = rand::distr::weighted::WeightedIndex::new(prs)
-        .map_err(crate::Error::wrap)?;
+    let distr = rand::distr::weighted::WeightedIndex::new(prs).map_err(crate::Error::wrap)?;
     Ok(distr.sample(rng))
 }
 
@@ -108,11 +107,7 @@ pub fn greedy(logits: &LazyTensor) -> Result<u32> {
 /// Temperature-only multinomial sample. Divides the logits by `temp`,
 /// applies a numerically stable softmax, and draws one index from the
 /// resulting categorical distribution.
-pub fn temperature_sample(
-    logits: &LazyTensor,
-    temp: f32,
-    rng: &mut StdRng,
-) -> Result<u32> {
+pub fn temperature_sample(logits: &LazyTensor, temp: f32, rng: &mut StdRng) -> Result<u32> {
     let values = realize_logits(logits)?;
     let prs = softmax_with_temp(values, temp)?;
     let idx = sample_multinomial(&prs, rng)?;
@@ -122,19 +117,11 @@ pub fn temperature_sample(
 /// Top-K restricted multinomial sample. Selects the `k` highest-logit
 /// indices, renormalizes their softmax mass to sum to 1, and samples
 /// from the restricted set. `k` is clamped to `[1, vocab]`.
-pub fn top_k_sample(
-    logits: &LazyTensor,
-    k: usize,
-    temp: f32,
-    rng: &mut StdRng,
-) -> Result<u32> {
+pub fn top_k_sample(logits: &LazyTensor, k: usize, temp: f32, rng: &mut StdRng) -> Result<u32> {
     let values = realize_logits(logits)?;
     let prs = softmax_with_temp(values, temp)?;
     if k == 0 {
-        return Err(crate::Error::Msg(
-            "sampling: top_k_sample requires k >= 1".to_string(),
-        )
-        .bt());
+        return Err(crate::Error::Msg("sampling: top_k_sample requires k >= 1".to_string()).bt());
     }
     let k = k.min(prs.len());
     let mut idxs: Vec<usize> = (0..prs.len()).collect();
@@ -157,19 +144,11 @@ pub fn top_k_sample(
 /// reaches `p`, zeros the rest, and samples. With `p >= 1.0` this is
 /// equivalent to a plain temperature sample; with `p <= 0.0` it falls
 /// back to greedy.
-pub fn top_p_sample(
-    logits: &LazyTensor,
-    p: f32,
-    temp: f32,
-    rng: &mut StdRng,
-) -> Result<u32> {
+pub fn top_p_sample(logits: &LazyTensor, p: f32, temp: f32, rng: &mut StdRng) -> Result<u32> {
     let values = realize_logits(logits)?;
     let mut prs = softmax_with_temp(values, temp)?;
     if !p.is_finite() {
-        return Err(crate::Error::Msg(format!(
-            "sampling: top_p must be finite, got {p}",
-        ))
-        .bt());
+        return Err(crate::Error::Msg(format!("sampling: top_p must be finite, got {p}",)).bt());
     }
     if p <= 0.0 {
         let idx = argmax(&prs);
@@ -227,9 +206,7 @@ mod tests {
     fn top_k_sample_only_picks_from_top_k_indices() {
         // Logits sized so the top-3 indices are deterministically
         // {1, 3, 5}. Run many samples and confirm zero outliers.
-        let logits = lazy_logits(vec![
-            -2.0, 3.0, -1.5, 2.5, -1.0, 2.0, -0.5, -3.0,
-        ]);
+        let logits = lazy_logits(vec![-2.0, 3.0, -1.5, 2.5, -1.0, 2.0, -0.5, -3.0]);
         let mut rng = StdRng::seed_from_u64(7);
         let allowed: [u32; 3] = [1, 3, 5];
         for _ in 0..200 {

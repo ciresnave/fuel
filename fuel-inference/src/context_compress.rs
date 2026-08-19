@@ -1,4 +1,4 @@
-﻿//! Context compression for long conversations.
+//! Context compression for long conversations.
 //!
 //! When a conversation grows beyond the model's context window the oldest
 //! turns must be *compressed* — reduced to a shorter representation — so that
@@ -191,7 +191,11 @@ impl ContextCompressor {
             .filter(|(_, t)| !t.pinned && !t.compressed)
             .map(|(i, t)| {
                 // Recency: newer turns (higher index) get higher score
-                let recency = if n <= 1 { 1.0 } else { i as f64 / (n - 1) as f64 };
+                let recency = if n <= 1 {
+                    1.0
+                } else {
+                    i as f64 / (n - 1) as f64
+                };
                 let score = recency * (1.0 + t.importance);
                 (i, score)
             })

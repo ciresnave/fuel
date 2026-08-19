@@ -85,11 +85,7 @@ impl Qwen3VlTextModel {
     /// one `(t, h, w)` triple per token; for pure-text inputs all three
     /// axes share the same scalar position (so MROPE collapses to
     /// 1D RoPE).
-    pub fn forward(
-        &self,
-        tokens: &[u32],
-        mrope_positions: &[MropePos],
-    ) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32], mrope_positions: &[MropePos]) -> Result<LazyTensor> {
         let h_norm = self.run_backbone(tokens, mrope_positions)?;
         self.apply_lm_head(&h_norm)
     }
@@ -141,11 +137,7 @@ impl Qwen3VlTextModel {
     /// Token-embedding lookup anchored on `anchor`'s graph. Lets the
     /// composition host concatenate vision features with the resulting
     /// text embeddings before calling [`Self::forward_embeds`].
-    pub fn embed_tokens_anchored(
-        &self,
-        anchor: &LazyTensor,
-        tokens: &[u32],
-    ) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
@@ -163,11 +155,7 @@ impl Qwen3VlTextModel {
             .apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 
-    fn run_backbone(
-        &self,
-        tokens: &[u32],
-        mrope_positions: &[MropePos],
-    ) -> Result<LazyTensor> {
+    fn run_backbone(&self, tokens: &[u32], mrope_positions: &[MropePos]) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
@@ -231,8 +219,7 @@ impl Qwen3VlTextModel {
         }
         if cfg.num_attention_heads * cfg.head_dim != cfg.hidden_size {
             return Err(crate::Error::Msg(
-                "Qwen3VlTextConfig: num_attention_heads * head_dim must equal hidden_size"
-                    .into(),
+                "Qwen3VlTextConfig: num_attention_heads * head_dim must equal hidden_size".into(),
             )
             .bt());
         }
@@ -275,12 +262,7 @@ impl Qwen3VlTextModel {
         )
     }
 
-    fn build_layer_mask(
-        &self,
-        anchor: &LazyTensor,
-        seq: usize,
-        uses_window: bool,
-    ) -> LazyTensor {
+    fn build_layer_mask(&self, anchor: &LazyTensor, seq: usize, uses_window: bool) -> LazyTensor {
         let cfg = &self.config;
         let window = if uses_window {
             cfg.sliding_window.unwrap_or(seq + 1)
@@ -335,14 +317,8 @@ impl Qwen3VlTextModel {
         let k = k.split_heads(cfg.num_key_value_heads, cfg.head_dim)?;
         let v = v.split_heads(cfg.num_key_value_heads, cfg.head_dim)?;
 
-        let q = q.rms_norm_affine(
-            std::sync::Arc::clone(&extras.q_norm_gain),
-            cfg.rms_norm_eps,
-        )?;
-        let k = k.rms_norm_affine(
-            std::sync::Arc::clone(&extras.k_norm_gain),
-            cfg.rms_norm_eps,
-        )?;
+        let q = q.rms_norm_affine(std::sync::Arc::clone(&extras.q_norm_gain), cfg.rms_norm_eps)?;
+        let k = k.rms_norm_affine(std::sync::Arc::clone(&extras.k_norm_gain), cfg.rms_norm_eps)?;
 
         let q_r = q.rope_with_tables(rope_cos, rope_sin)?;
         let k_r = k.rope_with_tables(rope_cos, rope_sin)?;
@@ -361,10 +337,9 @@ impl Qwen3VlTextModel {
         let attn_v = attn.matmul(&v_full)?;
 
         let merged = attn_v.merge_heads()?;
-        let attn_out =
-            layer
-                .attn_o
-                .apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?;
+        let attn_out = layer
+            .attn_o
+            .apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?;
 
         let h1 = x.add(&attn_out)?;
         let h1_norm = h1.rms_norm_affine(
@@ -487,10 +462,7 @@ impl Qwen3VlTextWeights {
 
         // Try the standard composition prefix first; fall back to the
         // bare `language_model.*` form if the safetensors shard uses it.
-        let prefix = if st
-            .get("model.language_model.embed_tokens.weight")
-            .is_ok()
-        {
+        let prefix = if st.get("model.language_model.embed_tokens.weight").is_ok() {
             "model.language_model"
         } else if st.get("language_model.embed_tokens.weight").is_ok() {
             "language_model"
@@ -723,10 +695,7 @@ mod tests {
         let tokens = vec![1_u32, 2, 3];
         let positions = scalar_positions(tokens.len());
         let logits = model.forward(&tokens, &positions).unwrap();
-        assert_eq!(
-            logits.shape().dims(),
-            &[1, tokens.len(), cfg.vocab_size]
-        );
+        assert_eq!(logits.shape().dims(), &[1, tokens.len(), cfg.vocab_size]);
         for &v in &logits.realize_f32() {
             assert!(v.is_finite(), "non-finite logit: {v}");
         }
@@ -780,11 +749,7 @@ mod tests {
         let positions = scalar_positions(tokens.len());
         let logits_ref = model.forward(&tokens, &positions).unwrap().realize_f32();
 
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32],
-            Shape::from_dims(&[1]),
-            &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model
             .forward_embeds(&embeds, &positions)
@@ -809,11 +774,7 @@ mod tests {
             config: cfg.clone(),
             weights: tiny_weights(&cfg),
         };
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32],
-            Shape::from_dims(&[1]),
-            &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model
             .embed_tokens_anchored(&anchor, &[1_u32, 2, 3])
             .unwrap();

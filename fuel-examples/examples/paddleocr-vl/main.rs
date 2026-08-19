@@ -31,14 +31,14 @@ use std::sync::Arc;
 use fuel::lazy::LazyTensor;
 use fuel::lazy_paddleocr_vl::bilinear_resize_to_grid;
 use fuel::lazy_paddleocr_vl_text::{
-    load_paddleocr_vl_text_weights_with_prefix, PaddleOcrVlTextConfig, PaddleOcrVlTextModel,
+    PaddleOcrVlTextConfig, PaddleOcrVlTextModel, load_paddleocr_vl_text_weights_with_prefix,
 };
 use fuel::lazy_paddleocr_vl_vision::{
     PaddleOcrVlNaVitConfig, PaddleOcrVlNaVitModel, PaddleOcrVlNaVitWeights,
 };
 use fuel::safetensors::MmapedSafetensors;
 
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use hf_hub::{Repo, RepoType, api::sync::Api};
 use tokenizers::Tokenizer;
 
 #[derive(Parser, Debug)]
@@ -193,12 +193,7 @@ fn main() -> Result<()> {
     let img = image::ImageReader::open(&args.image)?
         .decode()
         .map_err(E::msg)?;
-    println!(
-        "loaded {} ({}×{})",
-        args.image,
-        img.width(),
-        img.height()
-    );
+    println!("loaded {} ({}×{})", args.image, img.width(), img.height());
     let (pixel_values, h_grid, w_grid) =
         bilinear_resize_to_grid(&img, &supported_grids).map_err(|e| E::msg(format!("{e}")))?;
     println!(
@@ -239,7 +234,10 @@ fn main() -> Result<()> {
         )));
     }
     let num_vision_tokens = v_dims[0];
-    println!("vision features: {num_vision_tokens} tokens × {} hidden", v_dims[1]);
+    println!(
+        "vision features: {num_vision_tokens} tokens × {} hidden",
+        v_dims[1]
+    );
 
     // Reshape vision features to (1, N, hidden) so they can be
     // concatenated along the sequence axis with the text embeddings.

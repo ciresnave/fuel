@@ -80,13 +80,27 @@ pub struct ConvNextConfig {
     pub layer_norm_eps: f64,
 }
 
-fn default_dims() -> Vec<usize> { vec![96, 192, 384, 768] }
-fn default_depths() -> Vec<usize> { vec![3, 3, 9, 3] }
-fn default_image_size() -> usize { 224 }
-fn default_in_channels() -> usize { 3 }
-fn default_stem_patch() -> usize { 4 }
-fn default_num_classes() -> usize { 1000 }
-fn default_layer_norm_eps() -> f64 { 1e-6 }
+fn default_dims() -> Vec<usize> {
+    vec![96, 192, 384, 768]
+}
+fn default_depths() -> Vec<usize> {
+    vec![3, 3, 9, 3]
+}
+fn default_image_size() -> usize {
+    224
+}
+fn default_in_channels() -> usize {
+    3
+}
+fn default_stem_patch() -> usize {
+    4
+}
+fn default_num_classes() -> usize {
+    1000
+}
+fn default_layer_norm_eps() -> f64 {
+    1e-6
+}
 
 impl ConvNextConfig {
     pub fn tiny() -> Self {
@@ -248,7 +262,7 @@ pub struct ConvNextWeights {
 
 #[derive(Debug, Clone)]
 pub struct ConvNextModel {
-    pub config:  ConvNextConfig,
+    pub config: ConvNextConfig,
     pub weights: ConvNextWeights,
 }
 
@@ -263,11 +277,22 @@ impl ConvNextModel {
         let pooled = global_avg_pool_2d(&x, c, h, h)?;
         let pooled3 = pooled.reshape(Shape::from_dims(&[1, 1, c]))?;
         let normed = layer_norm_affine(
-            &pooled3, &self.weights.head_ln_g, &self.weights.head_ln_b,
-            cfg.layer_norm_eps, c, 1,
+            &pooled3,
+            &self.weights.head_ln_g,
+            &self.weights.head_ln_b,
+            cfg.layer_norm_eps,
+            c,
+            1,
         )?;
-        Ok(linear(&normed, &self.weights.head_fc_w, Some(&self.weights.head_fc_b), c, cfg.num_classes, 1)?
-            .reshape(Shape::from_dims(&[1, cfg.num_classes]))?)
+        Ok(linear(
+            &normed,
+            &self.weights.head_fc_w,
+            Some(&self.weights.head_fc_b),
+            c,
+            cfg.num_classes,
+            1,
+        )?
+        .reshape(Shape::from_dims(&[1, cfg.num_classes]))?)
     }
 
     /// Run the backbone (stem + stages) and return the final
@@ -287,23 +312,43 @@ impl ConvNextModel {
         let cin = cfg.in_channels;
         let s = cfg.image_size;
         assert_eq!(
-            image.len(), cin * s * s,
-            "forward: image has {} elements, expected {cin}×{s}×{s}", image.len()
+            image.len(),
+            cin * s * s,
+            "forward: image has {} elements, expected {cin}×{s}×{s}",
+            image.len()
         );
-        let x = LazyTensor::from_f32(image.to_vec(), Shape::from_dims(&[1, cin, s, s]), &crate::Device::cpu());
+        let x = LazyTensor::from_f32(
+            image.to_vec(),
+            Shape::from_dims(&[1, cin, s, s]),
+            &crate::Device::cpu(),
+        );
 
         let p = cfg.stem_patch;
-        assert!(s.is_multiple_of(p), "image_size {s} must be divisible by stem_patch {p}");
+        assert!(
+            s.is_multiple_of(p),
+            "image_size {s} must be divisible by stem_patch {p}"
+        );
         let h1 = s / p;
         let d0 = cfg.dims[0];
         let x = conv2d_stride_eq_kernel(
             &x,
             &self.weights.stem_conv_w,
             &self.weights.stem_conv_b,
-            cin, d0, p,
-            s, s,
+            cin,
+            d0,
+            p,
+            s,
+            s,
         )?;
-        let x = layer_norm_channel_dim(&x, &self.weights.stem_ln_g, &self.weights.stem_ln_b, cfg.layer_norm_eps, d0, h1, h1)?;
+        let x = layer_norm_channel_dim(
+            &x,
+            &self.weights.stem_ln_g,
+            &self.weights.stem_ln_b,
+            cfg.layer_norm_eps,
+            d0,
+            h1,
+            h1,
+        )?;
 
         let mut x = x;
         let mut h = h1;
@@ -311,7 +356,8 @@ impl ConvNextModel {
         for (si, stage) in self.weights.stages.iter().enumerate() {
             if let Some(ds) = &stage.downsample {
                 let cout = cfg.dims[si];
-                let x_ln = layer_norm_channel_dim(&x, &ds.ln_g, &ds.ln_b, cfg.layer_norm_eps, c, h, h)?;
+                let x_ln =
+                    layer_norm_channel_dim(&x, &ds.ln_g, &ds.ln_b, cfg.layer_norm_eps, c, h, h)?;
                 x = conv2d_stride_eq_kernel(&x_ln, &ds.conv_w, &ds.conv_b, c, cout, 2, h, h)?;
                 h /= 2;
                 c = cout;
@@ -339,7 +385,7 @@ fn convnext_block(
     // DWConv: [1, C, H, W] → [1, C, H, W], still channels-first.
     let dw = conv2d_depthwise_k7_s1_p3(x, &bw.dw_w, &bw.dw_b, c, h, w)?;
     // Move channels to the last dim so LayerNorm + MLP work on [1, H, W, C].
-    let dw_nhwc = dw.permute([0, 2, 3, 1_usize])?;  // [1, H, W, C]
+    let dw_nhwc = dw.permute([0, 2, 3, 1_usize])?; // [1, H, W, C]
     // Flatten spatial for the LN + linear ops we already have: [1, H*W, C].
     let flat = dw_nhwc.reshape(Shape::from_dims(&[1, h * w, c]))?;
     let normed = layer_norm_affine(&flat, &bw.ln_g, &bw.ln_b, eps, c, h * w)?;
@@ -474,7 +520,12 @@ fn linear(
 }
 
 /// Global average pool 2D. Input `[1, C, H, W]` → output `[1, C]`.
-fn global_avg_pool_2d(x: &LazyTensor, _c: usize, _h: usize, _w: usize) -> crate::Result<LazyTensor> {
+fn global_avg_pool_2d(
+    x: &LazyTensor,
+    _c: usize,
+    _h: usize,
+    _w: usize,
+) -> crate::Result<LazyTensor> {
     x.global_avg_pool_2d()
 }
 
@@ -498,8 +549,14 @@ fn conv2d_stride_eq_kernel(
     h: usize,
     w_sz: usize,
 ) -> crate::Result<LazyTensor> {
-    assert!(h.is_multiple_of(k), "conv2d_stride_eq_kernel: H={h} % k={k} != 0");
-    assert!(w_sz.is_multiple_of(k), "conv2d_stride_eq_kernel: W={w_sz} % k={k} != 0");
+    assert!(
+        h.is_multiple_of(k),
+        "conv2d_stride_eq_kernel: H={h} % k={k} != 0"
+    );
+    assert!(
+        w_sz.is_multiple_of(k),
+        "conv2d_stride_eq_kernel: W={w_sz} % k={k} != 0"
+    );
     let h_out = h / k;
     let w_out = w_sz / k;
     // Reshape [1, Cin, H, W] → [1, Cin, H/k, k, W/k, k]. Logical-only;
@@ -515,8 +572,8 @@ fn conv2d_stride_eq_kernel(
     // k_row, then k_col) — matches what we just produced. Transpose
     // to [Cin*k*k, Cout] for matmul.
     let w_2d = x.const_f32_like(w.clone(), Shape::from_dims(&[cout, cin * k * k]));
-    let w_t = w_2d.transpose()?;  // [Cin*k*k, Cout]
-    let y = x_flat.matmul(&w_t)?;  // [1, H_out*W_out, Cout]
+    let w_t = w_2d.transpose()?; // [Cin*k*k, Cout]
+    let y = x_flat.matmul(&w_t)?; // [1, H_out*W_out, Cout]
     // Add bias.
     let bias = x
         .const_f32_like(b.clone(), Shape::from_dims(&[cout]))
@@ -555,12 +612,16 @@ impl ConvNextWeights {
         st: &crate::safetensors::MmapedSafetensors,
         cfg: &ConvNextConfig,
     ) -> crate::Result<Self> {
-        assert_eq!(cfg.dims.len(), cfg.depths.len(), "dims and depths must match length");
+        assert_eq!(
+            cfg.dims.len(),
+            cfg.depths.len(),
+            "dims and depths must match length"
+        );
         let n_stages = cfg.dims.len();
 
         // Stem: Conv2d keeps kernel layout as-is for the reshape-based
         // composition.
-        let stem_conv_w = load_f32(st, "stem.0.weight")?;  // [d0, cin, p, p]
+        let stem_conv_w = load_f32(st, "stem.0.weight")?; // [d0, cin, p, p]
         let stem_conv_b = load_f32(st, "stem.0.bias")?;
         let stem_ln_g = load_f32(st, "stem.1.weight")?;
         let stem_ln_b = load_f32(st, "stem.1.bias")?;
@@ -579,23 +640,30 @@ impl ConvNextWeights {
                 let conv_w = load_f32(st, &format!("stages.{si}.downsample.1.weight"))?;
                 let conv_b = load_f32(st, &format!("stages.{si}.downsample.1.bias"))?;
                 if ln_g.len() != cin {
-                    crate::bail!("downsample LN gamma has {} elements, expected {cin}", ln_g.len());
+                    crate::bail!(
+                        "downsample LN gamma has {} elements, expected {cin}",
+                        ln_g.len()
+                    );
                 }
                 if conv_w.len() != c * cin * 4 {
                     crate::bail!(
-                        "downsample conv has {} elements, expected {}", conv_w.len(), c * cin * 4
+                        "downsample conv has {} elements, expected {}",
+                        conv_w.len(),
+                        c * cin * 4
                     );
                 }
                 Some(ConvNextDownsample {
-                    ln_g: Arc::from(ln_g), ln_b: Arc::from(ln_b),
-                    conv_w: Arc::from(conv_w), conv_b: Arc::from(conv_b),
+                    ln_g: Arc::from(ln_g),
+                    ln_b: Arc::from(ln_b),
+                    conv_w: Arc::from(conv_w),
+                    conv_b: Arc::from(conv_b),
                 })
             };
 
             let mut blocks = Vec::with_capacity(cfg.depths[si]);
             for b in 0..cfg.depths[si] {
                 let p = format!("stages.{si}.blocks.{b}");
-                let dw_w = load_f32(st, &format!("{p}.conv_dw.weight"))?;  // [C, 1, 7, 7]
+                let dw_w = load_f32(st, &format!("{p}.conv_dw.weight"))?; // [C, 1, 7, 7]
                 let dw_b = load_f32(st, &format!("{p}.conv_dw.bias"))?;
                 let ln_g = load_f32(st, &format!("{p}.norm.weight"))?;
                 let ln_b = load_f32(st, &format!("{p}.norm.bias"))?;
@@ -604,24 +672,31 @@ impl ConvNextWeights {
                 let fc2_w = load_transposed(st, &format!("{p}.mlp.fc2.weight"), c, 4 * c)?;
                 let fc2_b = load_f32(st, &format!("{p}.mlp.fc2.bias"))?;
                 // V1: `gamma` present. V2: missing; GRN present instead.
-                let layer_scale_gamma = load_f32(st, &format!("{p}.gamma")).ok()
+                let layer_scale_gamma = load_f32(st, &format!("{p}.gamma"))
+                    .ok()
                     .map(Arc::<[f32]>::from);
                 let grn = {
                     let g = load_f32(st, &format!("{p}.mlp.grn.weight")).ok();
                     let b = load_f32(st, &format!("{p}.mlp.grn.bias")).ok();
                     match (g, b) {
                         (Some(g), Some(b)) => Some(ConvNext2GrnWeights {
-                            gamma: Arc::from(g), beta: Arc::from(b),
+                            gamma: Arc::from(g),
+                            beta: Arc::from(b),
                         }),
                         _ => None,
                     }
                 };
                 blocks.push(ConvNextBlockWeights {
-                    dw_w: Arc::from(dw_w), dw_b: Arc::from(dw_b),
-                    ln_g: Arc::from(ln_g), ln_b: Arc::from(ln_b),
-                    fc1_w: Arc::from(fc1_w), fc1_b: Arc::from(fc1_b),
-                    fc2_w: Arc::from(fc2_w), fc2_b: Arc::from(fc2_b),
-                    layer_scale_gamma, grn,
+                    dw_w: Arc::from(dw_w),
+                    dw_b: Arc::from(dw_b),
+                    ln_g: Arc::from(ln_g),
+                    ln_b: Arc::from(ln_b),
+                    fc1_w: Arc::from(fc1_w),
+                    fc1_b: Arc::from(fc1_b),
+                    fc2_w: Arc::from(fc2_w),
+                    fc2_b: Arc::from(fc2_b),
+                    layer_scale_gamma,
+                    grn,
                 });
             }
             stages.push(ConvNextStageWeights { downsample, blocks });
@@ -629,7 +704,10 @@ impl ConvNextWeights {
 
         let head_ln_g = load_f32(st, "head.norm.weight")?;
         let head_ln_b = load_f32(st, "head.norm.bias")?;
-        let last_dim = *cfg.dims.last().ok_or_else(|| fuel_ir::Error::Msg("convnext: dims must not be empty".to_string()))?;
+        let last_dim = *cfg
+            .dims
+            .last()
+            .ok_or_else(|| fuel_ir::Error::Msg("convnext: dims must not be empty".to_string()))?;
         let head_fc_w = load_transposed(st, "head.fc.weight", cfg.num_classes, last_dim)?;
         let head_fc_b = load_f32(st, "head.fc.bias")?;
 
@@ -647,10 +725,7 @@ impl ConvNextWeights {
     }
 }
 
-fn load_f32(
-    st: &crate::safetensors::MmapedSafetensors,
-    name: &str,
-) -> crate::Result<Vec<f32>> {
+fn load_f32(st: &crate::safetensors::MmapedSafetensors, name: &str) -> crate::Result<Vec<f32>> {
     use safetensors::Dtype;
     let view = st
         .get(name)
@@ -694,7 +769,8 @@ fn load_transposed(
     if flat.len() != out_features * in_features {
         crate::bail!(
             "convnext load_transposed: {name:?} has {} elements, expected {}",
-            flat.len(), out_features * in_features,
+            flat.len(),
+            out_features * in_features,
         );
     }
     let mut out = vec![0.0_f32; out_features * in_features];
@@ -732,7 +808,9 @@ impl ConvNextModel {
 
 // ---- Test helpers (public so integration tests can reuse) ------------------
 
-fn arc(v: Vec<f32>) -> Arc<[f32]> { Arc::from(v) }
+fn arc(v: Vec<f32>) -> Arc<[f32]> {
+    Arc::from(v)
+}
 
 /// Hyperparameters for a tiny synthetic ConvNeXt variant — small
 /// enough to forward in milliseconds while exercising every block
@@ -769,7 +847,8 @@ pub fn zero_weights(cfg: &ConvNextConfig) -> ConvNextWeights {
         } else {
             let cin_prev = cfg.dims[si - 1];
             Some(ConvNextDownsample {
-                ln_g: o(cin_prev), ln_b: z(cin_prev),
+                ln_g: o(cin_prev),
+                ln_b: z(cin_prev),
                 conv_w: z(c * cin_prev * 4),
                 conv_b: z(c),
             })
@@ -779,9 +858,12 @@ pub fn zero_weights(cfg: &ConvNextConfig) -> ConvNextWeights {
             blocks.push(ConvNextBlockWeights {
                 dw_w: z(c * 49),
                 dw_b: z(c),
-                ln_g: o(c), ln_b: z(c),
-                fc1_w: z(c * 4 * c), fc1_b: z(4 * c),
-                fc2_w: z(4 * c * c), fc2_b: z(c),
+                ln_g: o(c),
+                ln_b: z(c),
+                fc1_w: z(c * 4 * c),
+                fc1_b: z(4 * c),
+                fc2_w: z(4 * c * c),
+                fc2_b: z(c),
                 layer_scale_gamma: Some(eps_init(c)),
                 grn: None,
             });
@@ -846,7 +928,10 @@ mod tests {
     #[test]
     fn forward_shape_and_finite_tiny() {
         let cfg = tiny_cfg();
-        let model = ConvNextModel { weights: zero_weights(&cfg), config: cfg.clone() };
+        let model = ConvNextModel {
+            weights: zero_weights(&cfg),
+            config: cfg.clone(),
+        };
         let image = vec![0.0_f32; cfg.in_channels * cfg.image_size * cfg.image_size];
         let logits = model.forward(&image).unwrap();
         let flat = logits.realize_f32();
@@ -861,7 +946,10 @@ mod tests {
     #[test]
     fn forward_features_shape_and_finite_tiny() {
         let cfg = tiny_cfg();
-        let model = ConvNextModel { weights: zero_weights(&cfg), config: cfg.clone() };
+        let model = ConvNextModel {
+            weights: zero_weights(&cfg),
+            config: cfg.clone(),
+        };
         let image = vec![0.0_f32; cfg.in_channels * cfg.image_size * cfg.image_size];
         let feats = model.forward_features(&image).unwrap();
         // tiny_cfg: image_size 16, stem_patch 4, 2 stages → h = 16 / 4 / 2 = 2;
@@ -878,7 +966,10 @@ mod tests {
     #[test]
     fn forward_v2_shape_and_finite_tiny() {
         let cfg = tiny_cfg();
-        let model = ConvNextModel { weights: zero_weights_v2(&cfg), config: cfg.clone() };
+        let model = ConvNextModel {
+            weights: zero_weights_v2(&cfg),
+            config: cfg.clone(),
+        };
         let image = vec![0.0_f32; cfg.in_channels * cfg.image_size * cfg.image_size];
         let logits = model.forward(&image).unwrap();
         let flat = logits.realize_f32();
@@ -900,22 +991,22 @@ mod tests {
         let x_data = vec![1.0_f32, 1.0, 2.0, 2.0, 3.0];
         let c4 = 5;
         let seq = 1;
-        let x = LazyTensor::from_f32(
-            x_data.clone(), Shape::from_dims(&[1, seq, c4]), &dev,
-        );
+        let x = LazyTensor::from_f32(x_data.clone(), Shape::from_dims(&[1, seq, c4]), &dev);
         let gamma = arc(vec![1.0_f32; c4]);
         let beta = arc(vec![0.0_f32; c4]);
         let out = apply_grn(&x, &gamma, &beta, c4, seq).unwrap().realize_f32();
         let gxmean = (1.0 + 1.0 + 2.0 + 2.0 + 3.0) / c4 as f32;
         let denom = gxmean + 1e-6;
-        let expected: Vec<f32> = x_data.iter().map(|&xv| {
-            let gx = xv.abs();
-            let nx = gx / denom;
-            xv * nx * 1.0_f32 + 0.0 + xv  // residual
-        }).collect();
+        let expected: Vec<f32> = x_data
+            .iter()
+            .map(|&xv| {
+                let gx = xv.abs();
+                let nx = gx / denom;
+                xv * nx * 1.0_f32 + 0.0 + xv // residual
+            })
+            .collect();
         for (i, (a, e)) in out.iter().zip(expected.iter()).enumerate() {
-            assert!((a - e).abs() < 1e-5,
-                "GRN[{i}] expected {e}, got {a}");
+            assert!((a - e).abs() < 1e-5, "GRN[{i}] expected {e}, got {a}");
         }
     }
 
@@ -928,15 +1019,15 @@ mod tests {
         let x_data = vec![0.5_f32, -0.25, 0.75, 1.0];
         let c4 = 4;
         let seq = 1;
-        let x = LazyTensor::from_f32(
-            x_data.clone(), Shape::from_dims(&[1, seq, c4]), &dev,
-        );
+        let x = LazyTensor::from_f32(x_data.clone(), Shape::from_dims(&[1, seq, c4]), &dev);
         let gamma = arc(vec![0.0_f32; c4]);
         let beta = arc(vec![0.0_f32; c4]);
         let out = apply_grn(&x, &gamma, &beta, c4, seq).unwrap().realize_f32();
         for (i, (a, b)) in out.iter().zip(x_data.iter()).enumerate() {
-            assert!((a - b).abs() < 1e-6,
-                "γ=0, β=0 should be identity: [{i}] expected {b}, got {a}");
+            assert!(
+                (a - b).abs() < 1e-6,
+                "γ=0, β=0 should be identity: [{i}] expected {b}, got {a}"
+            );
         }
     }
 

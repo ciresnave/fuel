@@ -28,9 +28,7 @@
 //!   the LLaMA port uses; see `lazy::LlamaWeights::load_from_gguf`.)*
 
 use crate::lazy::{LazyTensor, WeightStorage};
-use crate::lazy_whisper::{
-    WhisperConfig, WhisperModel, conv1d_k3_s1_p1, conv1d_k3_s2_p1,
-};
+use crate::lazy_whisper::{WhisperConfig, WhisperModel, conv1d_k3_s1_p1, conv1d_k3_s2_p1};
 use fuel_ir::Shape;
 use fuel_quantized::{BlockQ4_0, GgmlType, QK4_0};
 use std::sync::Arc;
@@ -143,8 +141,12 @@ fn quantize_in_out_to_q4_0(
     if w_in_out.len() != in_features * out_features {
         return Err(crate::Error::Msg(format!(
             "quantize_in_out_to_q4_0: weight has {} elements, expected {} × {} = {}",
-            w_in_out.len(), in_features, out_features, in_features * out_features,
-        )).bt());
+            w_in_out.len(),
+            in_features,
+            out_features,
+            in_features * out_features,
+        ))
+        .bt());
     }
     if !in_features.is_multiple_of(QK4_0) {
         return Err(crate::Error::Msg(format!(
@@ -167,9 +169,8 @@ fn quantize_in_out_to_q4_0(
     // SAFETY: BlockQ4_0 is #[repr(C)] with size_of == 18; reinterpreting
     // a contiguous slice as a packed byte stream gives the exact byte
     // representation a GGUF file would store on disk.
-    let bytes_view: &[u8] = unsafe {
-        std::slice::from_raw_parts(blocks.as_ptr() as *const u8, total_bytes)
-    };
+    let bytes_view: &[u8] =
+        unsafe { std::slice::from_raw_parts(blocks.as_ptr() as *const u8, total_bytes) };
     // The Q4_0 byte stream has 18-byte blocks; for the u32 reinterpretation
     // to be exact, the total byte length must be a multiple of 4. That
     // requires `n_blocks` to be even (since 18 mod 4 == 2). Pad with one
@@ -221,7 +222,10 @@ impl QuantizedWhisperModel {
     ) -> crate::Result<Self> {
         use crate::lazy_whisper::{WhisperModel, WhisperWeights};
         let weights = WhisperWeights::load_from_mmapped(st, &cfg)?;
-        let plain = WhisperModel { config: cfg, weights };
+        let plain = WhisperModel {
+            config: cfg,
+            weights,
+        };
         Self::from_f32_bake(&plain)
     }
 
@@ -316,7 +320,8 @@ impl QuantizedWhisperModel {
             "QuantizedWhisperModel::from_gguf: GGUF loader not yet wired in this crate. \
              Use QuantizedWhisperModel::from_f32_bake on a loaded WhisperModel as the bridge."
                 .into(),
-        ).bt())
+        )
+        .bt())
     }
 
     /// Run the encoder. Same forward path as `WhisperModel::forward_encoder`
@@ -331,31 +336,43 @@ impl QuantizedWhisperModel {
         if mel.len() != n_mel * mel_time {
             return Err(crate::Error::Msg(format!(
                 "forward_encoder: mel has {} elements, expected {}×{}",
-                mel.len(), n_mel, mel_time,
-            )).bt());
+                mel.len(),
+                n_mel,
+                mel_time,
+            ))
+            .bt());
         }
         let mel_t = LazyTensor::from_f32(
-            mel.to_vec(), Shape::from_dims(&[1, n_mel, mel_time]), &crate::Device::cpu(),
+            mel.to_vec(),
+            Shape::from_dims(&[1, n_mel, mel_time]),
+            &crate::Device::cpu(),
         );
 
         let x = conv1d_k3_s1_p1(
             &mel_t,
             &self.weights.encoder.conv1_w,
             &self.weights.encoder.conv1_b,
-            n_mel, d, mel_time,
-        )?.gelu();
+            n_mel,
+            d,
+            mel_time,
+        )?
+        .gelu();
         if !mel_time.is_multiple_of(2) {
             return Err(crate::Error::Msg(
                 "forward_encoder: mel_time must be even for stride-2 conv".into(),
-            ).bt());
+            )
+            .bt());
         }
         let t_half = mel_time / 2;
         let x = conv1d_k3_s2_p1(
             &x,
             &self.weights.encoder.conv2_w,
             &self.weights.encoder.conv2_b,
-            d, d, mel_time,
-        )?.gelu();
+            d,
+            d,
+            mel_time,
+        )?
+        .gelu();
 
         let x = x.permute([0, 2, 1_usize])?;
         let pos = x
@@ -376,13 +393,19 @@ impl QuantizedWhisperModel {
             &x,
             &self.weights.encoder.final_ln_g,
             &self.weights.encoder.final_ln_b,
-            1e-5, d, t_half,
+            1e-5,
+            d,
+            t_half,
         )
     }
 
     /// Run the decoder against a precomputed encoder context, returning
     /// `[1, seq, vocab_size]` logits via tied output projection.
-    pub fn forward_decoder(&self, tokens: &[u32], encoder_out: &LazyTensor) -> crate::Result<LazyTensor> {
+    pub fn forward_decoder(
+        &self,
+        tokens: &[u32],
+        encoder_out: &LazyTensor,
+    ) -> crate::Result<LazyTensor> {
         let cfg = &self.config;
         let d = cfg.d_model;
         let seq = tokens.len();
@@ -393,7 +416,8 @@ impl QuantizedWhisperModel {
             return Err(crate::Error::Msg(format!(
                 "forward_decoder: seq {seq} > max_target_positions {}",
                 cfg.max_target_positions,
-            )).bt());
+            ))
+            .bt());
         }
 
         let input_ids = encoder_out.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
@@ -420,7 +444,9 @@ impl QuantizedWhisperModel {
             &x,
             &self.weights.decoder.final_ln_g,
             &self.weights.decoder.final_ln_b,
-            1e-5, d, seq,
+            1e-5,
+            d,
+            seq,
         )?;
         let embed_t = embed.transpose()?;
         Ok(x.matmul(&embed_t)?)
@@ -444,20 +470,26 @@ impl QuantizedWhisperModel {
         let mut tokens: Vec<u32> = prompt_tokens.to_vec();
         for _ in 0..max_new_tokens {
             let encoder_t = LazyTensor::from_f32(
-                encoder_out.clone(), enc_shape.clone(), &crate::Device::cpu(),
+                encoder_out.clone(),
+                enc_shape.clone(),
+                &crate::Device::cpu(),
             );
             let logits = self.forward_decoder(&tokens, &encoder_t)?;
             let flat = logits.realize_f32();
             let vocab = self.config.vocab_size;
             let last_row_start = (tokens.len() - 1) * vocab;
             let row = &flat[last_row_start..last_row_start + vocab];
-            let (argmax, _) = row.iter().enumerate().fold(
-                (0usize, f32::NEG_INFINITY),
-                |(bi, bv), (i, &v)| if v > bv { (i, v) } else { (bi, bv) },
-            );
+            let (argmax, _) =
+                row.iter()
+                    .enumerate()
+                    .fold((0usize, f32::NEG_INFINITY), |(bi, bv), (i, &v)| {
+                        if v > bv { (i, v) } else { (bi, bv) }
+                    });
             let next_tok = argmax as u32;
             tokens.push(next_tok);
-            if next_tok == eos { break; }
+            if next_tok == eos {
+                break;
+            }
         }
         Ok(tokens)
     }
@@ -515,12 +547,19 @@ fn multi_head_attn(
     q_src: &LazyTensor,
     k_src: &LazyTensor,
     v_src: &LazyTensor,
-    q_w: &WeightStorage, q_b: &Arc<[f32]>,
+    q_w: &WeightStorage,
+    q_b: &Arc<[f32]>,
     k_w: &WeightStorage,
-    v_w: &WeightStorage, v_b: &Arc<[f32]>,
-    out_w: &WeightStorage, out_b: &Arc<[f32]>,
-    d: usize, n_heads: usize, d_head: usize,
-    q_seq: usize, kv_seq: usize, causal: bool,
+    v_w: &WeightStorage,
+    v_b: &Arc<[f32]>,
+    out_w: &WeightStorage,
+    out_b: &Arc<[f32]>,
+    d: usize,
+    n_heads: usize,
+    d_head: usize,
+    q_seq: usize,
+    kv_seq: usize,
+    causal: bool,
 ) -> crate::Result<LazyTensor> {
     let q = q_linear(q_src, q_w, Some(q_b), d, d, q_seq)?;
     let k = q_linear(k_src, k_w, None, d, d, kv_seq)?;
@@ -538,7 +577,9 @@ fn multi_head_attn(
         let mut mask = vec![0.0_f32; q_seq * kv_seq];
         for i in 0..q_seq {
             for j in 0..kv_seq {
-                if j > i { mask[i * kv_seq + j] = f32::NEG_INFINITY; }
+                if j > i {
+                    mask[i * kv_seq + j] = f32::NEG_INFINITY;
+                }
             }
         }
         let mask_t = scores
@@ -565,9 +606,8 @@ fn encoder_layer(
 
     let x_ln = layer_norm_affine(x, &lw.self_attn_ln_g, &lw.self_attn_ln_b, 1e-5, d, seq)?;
     let attn = multi_head_attn(
-        &x_ln, &x_ln, &x_ln,
-        &lw.q_w, &lw.q_b, &lw.k_w, &lw.v_w, &lw.v_b, &lw.out_w, &lw.out_b,
-        d, n_heads, d_head, seq, seq, false,
+        &x_ln, &x_ln, &x_ln, &lw.q_w, &lw.q_b, &lw.k_w, &lw.v_w, &lw.v_b, &lw.out_w, &lw.out_b, d,
+        n_heads, d_head, seq, seq, false,
     )?;
     let x = x.add(&attn)?;
 
@@ -592,10 +632,22 @@ fn decoder_layer(
 
     let x_ln = layer_norm_affine(x, &lw.self_ln_g, &lw.self_ln_b, 1e-5, d, q_seq)?;
     let self_attn = multi_head_attn(
-        &x_ln, &x_ln, &x_ln,
-        &lw.self_q_w, &lw.self_q_b, &lw.self_k_w, &lw.self_v_w, &lw.self_v_b,
-        &lw.self_out_w, &lw.self_out_b,
-        d, n_heads, d_head, q_seq, kv_seq_self, true,
+        &x_ln,
+        &x_ln,
+        &x_ln,
+        &lw.self_q_w,
+        &lw.self_q_b,
+        &lw.self_k_w,
+        &lw.self_v_w,
+        &lw.self_v_b,
+        &lw.self_out_w,
+        &lw.self_out_b,
+        d,
+        n_heads,
+        d_head,
+        q_seq,
+        kv_seq_self,
+        true,
     )?;
     let x = x.add(&self_attn)?;
 
@@ -603,16 +655,28 @@ fn decoder_layer(
     let enc_shape = encoder_out.shape();
     let enc_dims = enc_shape.dims();
     if enc_dims.len() != 3 {
-        return Err(crate::Error::Msg(format!(
-            "encoder_out must be [1, T, d]; got {enc_dims:?}",
-        )).bt());
+        return Err(
+            crate::Error::Msg(format!("encoder_out must be [1, T, d]; got {enc_dims:?}",)).bt(),
+        );
     }
     let kv_seq_cross = enc_dims[1];
     let cross = multi_head_attn(
-        &x_ln, encoder_out, encoder_out,
-        &lw.cross_q_w, &lw.cross_q_b, &lw.cross_k_w, &lw.cross_v_w, &lw.cross_v_b,
-        &lw.cross_out_w, &lw.cross_out_b,
-        d, n_heads, d_head, q_seq, kv_seq_cross, false,
+        &x_ln,
+        encoder_out,
+        encoder_out,
+        &lw.cross_q_w,
+        &lw.cross_q_b,
+        &lw.cross_k_w,
+        &lw.cross_v_w,
+        &lw.cross_v_b,
+        &lw.cross_out_w,
+        &lw.cross_out_b,
+        d,
+        n_heads,
+        d_head,
+        q_seq,
+        kv_seq_cross,
+        false,
     )?;
     let x = x.add(&cross)?;
 
@@ -638,22 +702,22 @@ mod tests {
     /// power-of-two that satisfies the Q4_0 block size.
     fn tiny_q4_cfg() -> WhisperConfig {
         WhisperConfig {
-            vocab_size:              64,
-            num_mel_bins:             8,
-            d_model:                 32,
-            encoder_layers:           2,
-            encoder_attention_heads:  4,
-            encoder_ffn_dim:         32,
-            decoder_layers:           2,
-            decoder_attention_heads:  4,
-            decoder_ffn_dim:         32,
-            max_source_positions:    16,
-            max_target_positions:    16,
-            scale_embedding:      false,
-            bos_token_id:             1,
-            eos_token_id:             2,
-            pad_token_id:             0,
-            decoder_start_token_id:   1,
+            vocab_size: 64,
+            num_mel_bins: 8,
+            d_model: 32,
+            encoder_layers: 2,
+            encoder_attention_heads: 4,
+            encoder_ffn_dim: 32,
+            decoder_layers: 2,
+            decoder_attention_heads: 4,
+            decoder_ffn_dim: 32,
+            max_source_positions: 16,
+            max_target_positions: 16,
+            scale_embedding: false,
+            bos_token_id: 1,
+            eos_token_id: 2,
+            pad_token_id: 0,
+            decoder_start_token_id: 1,
         }
     }
 
@@ -679,55 +743,59 @@ mod tests {
             conv2_w: vec_of(d * d * 3, &mut *nb),
             conv2_b: vec_of(d, &mut *nb),
             positional: vec_of(cfg.max_source_positions * d, &mut *nb),
-            layers: (0..cfg.encoder_layers).map(|_| WhisperEncoderLayerWeights {
-                self_attn_ln_g: Arc::from(vec![1.0_f32; d]),
-                self_attn_ln_b: vec_of(d, &mut *nb),
-                q_w: vec_of(d * d, &mut *nb),
-                q_b: vec_of(d, &mut *nb),
-                k_w: vec_of(d * d, &mut *nb),
-                v_w: vec_of(d * d, &mut *nb),
-                v_b: vec_of(d, &mut *nb),
-                out_w: vec_of(d * d, &mut *nb),
-                out_b: vec_of(d, &mut *nb),
-                final_ln_g: Arc::from(vec![1.0_f32; d]),
-                final_ln_b: vec_of(d, &mut *nb),
-                fc1_w: vec_of(d * cfg.encoder_ffn_dim, &mut *nb),
-                fc1_b: vec_of(cfg.encoder_ffn_dim, &mut *nb),
-                fc2_w: vec_of(cfg.encoder_ffn_dim * d, &mut *nb),
-                fc2_b: vec_of(d, &mut *nb),
-            }).collect(),
+            layers: (0..cfg.encoder_layers)
+                .map(|_| WhisperEncoderLayerWeights {
+                    self_attn_ln_g: Arc::from(vec![1.0_f32; d]),
+                    self_attn_ln_b: vec_of(d, &mut *nb),
+                    q_w: vec_of(d * d, &mut *nb),
+                    q_b: vec_of(d, &mut *nb),
+                    k_w: vec_of(d * d, &mut *nb),
+                    v_w: vec_of(d * d, &mut *nb),
+                    v_b: vec_of(d, &mut *nb),
+                    out_w: vec_of(d * d, &mut *nb),
+                    out_b: vec_of(d, &mut *nb),
+                    final_ln_g: Arc::from(vec![1.0_f32; d]),
+                    final_ln_b: vec_of(d, &mut *nb),
+                    fc1_w: vec_of(d * cfg.encoder_ffn_dim, &mut *nb),
+                    fc1_b: vec_of(cfg.encoder_ffn_dim, &mut *nb),
+                    fc2_w: vec_of(cfg.encoder_ffn_dim * d, &mut *nb),
+                    fc2_b: vec_of(d, &mut *nb),
+                })
+                .collect(),
             final_ln_g: Arc::from(vec![1.0_f32; d]),
             final_ln_b: vec_of(d, &mut *nb),
         };
         let decoder = WhisperDecoderWeights {
             embed_tokens: vec_of(cfg.vocab_size * d, &mut *nb),
             embed_positions: vec_of(cfg.max_target_positions * d, &mut *nb),
-            layers: (0..cfg.decoder_layers).map(|_| WhisperDecoderLayerWeights {
-                self_ln_g: Arc::from(vec![1.0_f32; d]),
-                self_ln_b: vec_of(d, &mut *nb),
-                self_q_w: vec_of(d * d, &mut *nb),
-                self_q_b: vec_of(d, &mut *nb),
-                self_k_w: vec_of(d * d, &mut *nb),
-                self_v_w: vec_of(d * d, &mut *nb),
-                self_v_b: vec_of(d, &mut *nb),
-                self_out_w: vec_of(d * d, &mut *nb),
-                self_out_b: vec_of(d, &mut *nb),
-                cross_ln_g: Arc::from(vec![1.0_f32; d]),
-                cross_ln_b: vec_of(d, &mut *nb),
-                cross_q_w: vec_of(d * d, &mut *nb),
-                cross_q_b: vec_of(d, &mut *nb),
-                cross_k_w: vec_of(d * d, &mut *nb),
-                cross_v_w: vec_of(d * d, &mut *nb),
-                cross_v_b: vec_of(d, &mut *nb),
-                cross_out_w: vec_of(d * d, &mut *nb),
-                cross_out_b: vec_of(d, &mut *nb),
-                final_ln_g: Arc::from(vec![1.0_f32; d]),
-                final_ln_b: vec_of(d, &mut *nb),
-                fc1_w: vec_of(d * cfg.decoder_ffn_dim, &mut *nb),
-                fc1_b: vec_of(cfg.decoder_ffn_dim, &mut *nb),
-                fc2_w: vec_of(cfg.decoder_ffn_dim * d, &mut *nb),
-                fc2_b: vec_of(d, &mut *nb),
-            }).collect(),
+            layers: (0..cfg.decoder_layers)
+                .map(|_| WhisperDecoderLayerWeights {
+                    self_ln_g: Arc::from(vec![1.0_f32; d]),
+                    self_ln_b: vec_of(d, &mut *nb),
+                    self_q_w: vec_of(d * d, &mut *nb),
+                    self_q_b: vec_of(d, &mut *nb),
+                    self_k_w: vec_of(d * d, &mut *nb),
+                    self_v_w: vec_of(d * d, &mut *nb),
+                    self_v_b: vec_of(d, &mut *nb),
+                    self_out_w: vec_of(d * d, &mut *nb),
+                    self_out_b: vec_of(d, &mut *nb),
+                    cross_ln_g: Arc::from(vec![1.0_f32; d]),
+                    cross_ln_b: vec_of(d, &mut *nb),
+                    cross_q_w: vec_of(d * d, &mut *nb),
+                    cross_q_b: vec_of(d, &mut *nb),
+                    cross_k_w: vec_of(d * d, &mut *nb),
+                    cross_v_w: vec_of(d * d, &mut *nb),
+                    cross_v_b: vec_of(d, &mut *nb),
+                    cross_out_w: vec_of(d * d, &mut *nb),
+                    cross_out_b: vec_of(d, &mut *nb),
+                    final_ln_g: Arc::from(vec![1.0_f32; d]),
+                    final_ln_b: vec_of(d, &mut *nb),
+                    fc1_w: vec_of(d * cfg.decoder_ffn_dim, &mut *nb),
+                    fc1_b: vec_of(cfg.decoder_ffn_dim, &mut *nb),
+                    fc2_w: vec_of(cfg.decoder_ffn_dim * d, &mut *nb),
+                    fc2_b: vec_of(d, &mut *nb),
+                })
+                .collect(),
             final_ln_g: Arc::from(vec![1.0_f32; d]),
             final_ln_b: vec_of(d, &mut *nb),
         };
@@ -736,7 +804,10 @@ mod tests {
 
     fn make_quantized_model() -> QuantizedWhisperModel {
         let cfg = tiny_q4_cfg();
-        let plain = WhisperModel { config: cfg.clone(), weights: deterministic_weights(&cfg) };
+        let plain = WhisperModel {
+            config: cfg.clone(),
+            weights: deterministic_weights(&cfg),
+        };
         QuantizedWhisperModel::from_f32_bake(&plain).unwrap()
     }
 
@@ -792,9 +863,16 @@ mod tests {
         }
         for lw in &model.weights.decoder.layers {
             for w in [
-                &lw.self_q_w, &lw.self_k_w, &lw.self_v_w, &lw.self_out_w,
-                &lw.cross_q_w, &lw.cross_k_w, &lw.cross_v_w, &lw.cross_out_w,
-                &lw.fc1_w, &lw.fc2_w,
+                &lw.self_q_w,
+                &lw.self_k_w,
+                &lw.self_v_w,
+                &lw.self_out_w,
+                &lw.cross_q_w,
+                &lw.cross_k_w,
+                &lw.cross_v_w,
+                &lw.cross_out_w,
+                &lw.fc1_w,
+                &lw.fc2_w,
             ] {
                 assert!(
                     matches!(w, WeightStorage::Q4_0 { .. }),

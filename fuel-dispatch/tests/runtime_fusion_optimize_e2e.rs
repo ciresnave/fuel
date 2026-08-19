@@ -39,7 +39,10 @@ fn relu_add_region() -> PatternNode {
         operands: vec![PatternNode::Op {
             op: OpTag::Add,
             attrs: OpAttrs::default(),
-            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+            operands: vec![
+                PatternNode::Bind { index: 0 },
+                PatternNode::Bind { index: 1 },
+            ],
         }],
     }
 }
@@ -49,14 +52,33 @@ fn graph_with_region() -> (Graph, NodeId) {
     let mut g = Graph::new();
     let s = Shape::from_dims(&[4]);
     let leaf = |g: &mut Graph| {
-        g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 })
+        g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: s.clone(),
+            dtype: DType::F32,
+        })
     };
     let a = leaf(&mut g);
     let b = leaf(&mut g);
-    let add = g.push(Node { op: Op::Add, inputs: vec![a, b], shape: s.clone(), dtype: DType::F32 });
-    let relu =
-        g.push(Node { op: Op::Relu, inputs: vec![add], shape: s.clone(), dtype: DType::F32 });
-    let neg = g.push(Node { op: Op::Neg, inputs: vec![relu], shape: s.clone(), dtype: DType::F32 });
+    let add = g.push(Node {
+        op: Op::Add,
+        inputs: vec![a, b],
+        shape: s.clone(),
+        dtype: DType::F32,
+    });
+    let relu = g.push(Node {
+        op: Op::Relu,
+        inputs: vec![add],
+        shape: s.clone(),
+        dtype: DType::F32,
+    });
+    let neg = g.push(Node {
+        op: Op::Neg,
+        inputs: vec![relu],
+        shape: s.clone(),
+        dtype: DType::F32,
+    });
     (g, neg)
 }
 
@@ -67,9 +89,7 @@ fn arm_census(g: &Graph) -> (usize, usize) {
     for i in 0..g.len() {
         match &g.node(NodeId(i)).op {
             Op::Branch { .. } => branches += 1,
-            Op::Fused(fid, FusedOpParams::Runtime { .. }) if fid.is_runtime() => {
-                runtime_fused += 1
-            }
+            Op::Fused(fid, FusedOpParams::Runtime { .. }) if fid.is_runtime() => runtime_fused += 1,
             _ => {}
         }
     }
@@ -77,7 +97,9 @@ fn arm_census(g: &Graph) -> (usize, usize) {
 }
 
 fn cpu_opts() -> PlanOptions<'static> {
-    PlanOptions::new().without_cost_population().with_pinned_device(DeviceLocation::Cpu)
+    PlanOptions::new()
+        .without_cost_population()
+        .with_pinned_device(DeviceLocation::Cpu)
 }
 
 #[test]
@@ -141,7 +163,11 @@ fn production_pipeline_emits_the_fused_arm_and_reset_disarms_it() {
         let bindings = fuel_dispatch::dispatch::global_bindings();
         optimize_graph(&mut g2, &[root2], &bindings, &cpu_opts()).expect("bare optimize");
     }
-    assert_eq!(arm_census(&g2), (0, 0), "bare optimize_graph emits no runtime arms");
+    assert_eq!(
+        arm_census(&g2),
+        (0, 0),
+        "bare optimize_graph emits no runtime arms"
+    );
 
     // (4) The reset hook disarms the production entry too (both the binding-table
     // RuntimeFused rows and the fuel-graph metadata sidecar cleared together; the
@@ -153,7 +179,11 @@ fn production_pipeline_emits_the_fused_arm_and_reset_disarms_it() {
         optimize_graph_with_runtime_fusion(&mut g3, &[root3], &bindings, &cpu_opts())
             .expect("optimize after reset");
     }
-    assert_eq!(arm_census(&g3), (0, 0), "after reset there is nothing to adopt-match");
+    assert_eq!(
+        arm_census(&g3),
+        (0, 0),
+        "after reset there is nothing to adopt-match"
+    );
 
     // (5) Guard: the compile-side lookup census stayed coherent — re-adopting
     // after a reset allocates from BASE again without stale-kernel aliasing.
@@ -170,5 +200,8 @@ fn production_pipeline_emits_the_fused_arm_and_reset_disarms_it() {
     for e in fuel_graph::runtime_fused::runtime_entries() {
         *census.entry(e.id.0).or_insert(0) += 1;
     }
-    assert!(census.values().all(|&c| c == 1), "no duplicate runtime ids after reset");
+    assert!(
+        census.values().all(|&c| c == 1),
+        "no duplicate runtime ids after reset"
+    );
 }

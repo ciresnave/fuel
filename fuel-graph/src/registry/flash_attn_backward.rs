@@ -38,8 +38,8 @@
 //! `flash_attn`'s symbolic-`k_len` gap.
 
 use crate::registry::{
-    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpId, FusedOpParams, FusedOps,
-    PatternMatch, SubgraphPattern, decompose_via_recipe,
+    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpId, FusedOpParams, FusedOps, PatternMatch,
+    SubgraphPattern, decompose_via_recipe,
 };
 use crate::{Graph, Node, NodeId, Op};
 use fuel_ir::{DType, Shape};
@@ -49,12 +49,12 @@ use fuel_kernel_seam_types::{OpAttrs, OpTag, PatternNode};
 pub fn entry_q() -> FusedOpEntry {
     FusedOpEntry {
         destructive_input: None,
-        id:         FusedOps::FLASH_ATTN_BACKWARD_Q,
-        name:       "FlashAttnBackwardQ",
-        family:     FusedOpFamily::Attention,
-        pattern:    SubgraphPattern::Callable(no_pattern),
-        decompose:  decompose,
-        backward:   BackwardKind::NotDifferentiable,
+        id: FusedOps::FLASH_ATTN_BACKWARD_Q,
+        name: "FlashAttnBackwardQ",
+        family: FusedOpFamily::Attention,
+        pattern: SubgraphPattern::Callable(no_pattern),
+        decompose: decompose,
+        backward: BackwardKind::NotDifferentiable,
         shape_rule: shape_rule_q,
         dtype_rule,
         output_views: None,
@@ -65,12 +65,12 @@ pub fn entry_q() -> FusedOpEntry {
 pub fn entry_k() -> FusedOpEntry {
     FusedOpEntry {
         destructive_input: None,
-        id:         FusedOps::FLASH_ATTN_BACKWARD_K,
-        name:       "FlashAttnBackwardK",
-        family:     FusedOpFamily::Attention,
-        pattern:    SubgraphPattern::Callable(no_pattern),
-        decompose:  decompose,
-        backward:   BackwardKind::NotDifferentiable,
+        id: FusedOps::FLASH_ATTN_BACKWARD_K,
+        name: "FlashAttnBackwardK",
+        family: FusedOpFamily::Attention,
+        pattern: SubgraphPattern::Callable(no_pattern),
+        decompose: decompose,
+        backward: BackwardKind::NotDifferentiable,
         shape_rule: shape_rule_k,
         dtype_rule,
         output_views: None,
@@ -81,12 +81,12 @@ pub fn entry_k() -> FusedOpEntry {
 pub fn entry_v() -> FusedOpEntry {
     FusedOpEntry {
         destructive_input: None,
-        id:         FusedOps::FLASH_ATTN_BACKWARD_V,
-        name:       "FlashAttnBackwardV",
-        family:     FusedOpFamily::Attention,
-        pattern:    SubgraphPattern::Callable(no_pattern),
-        decompose:  decompose,
-        backward:   BackwardKind::NotDifferentiable,
+        id: FusedOps::FLASH_ATTN_BACKWARD_V,
+        name: "FlashAttnBackwardV",
+        family: FusedOpFamily::Attention,
+        pattern: SubgraphPattern::Callable(no_pattern),
+        decompose: decompose,
+        backward: BackwardKind::NotDifferentiable,
         shape_rule: shape_rule_v,
         dtype_rule,
         output_views: None,
@@ -144,32 +144,51 @@ fn no_pattern(_g: &Graph, _root: NodeId) -> Option<PatternMatch> {
 // softmax backward (mechanism 2a).
 
 fn r_op(op: OpTag, attrs: OpAttrs, operands: Vec<PatternNode>) -> PatternNode {
-    PatternNode::Op { op, attrs, operands }
+    PatternNode::Op {
+        op,
+        attrs,
+        operands,
+    }
 }
 fn r_bind(i: u8) -> PatternNode {
     PatternNode::Bind { index: i }
 }
 /// A baked absolute `target_shape` attr for a shape-changer (Reshape).
 fn r_shape(dims: &[usize]) -> OpAttrs {
-    OpAttrs { target_shape: dims.iter().map(|&d| d as i64).collect(), ..OpAttrs::default() }
+    OpAttrs {
+        target_shape: dims.iter().map(|&d| d as i64).collect(),
+        ..OpAttrs::default()
+    }
 }
 /// A baked scalar for a scalar-param op (MulScalar/AddScalar) — NOT an open slot.
 fn r_scalar(v: f64) -> OpAttrs {
-    OpAttrs { scalars: vec![v], ..OpAttrs::default() }
+    OpAttrs {
+        scalars: vec![v],
+        ..OpAttrs::default()
+    }
 }
 /// An absolute permutation attr.
 fn r_perm(p: Vec<u8>) -> OpAttrs {
-    OpAttrs { perm: p, ..OpAttrs::default() }
+    OpAttrs {
+        perm: p,
+        ..OpAttrs::default()
+    }
 }
 /// A single-axis attr (SumDim reduces `attrs.axis`).
 fn r_axis(a: i64) -> OpAttrs {
-    OpAttrs { axis: Some(a), ..OpAttrs::default() }
+    OpAttrs {
+        axis: Some(a),
+        ..OpAttrs::default()
+    }
 }
 /// The nested-softmax-**backward** selector attr (mechanism 2a): names the
 /// `SoftmaxLastDimBackward` registry entry the C-T2 carrier reconstructs to
 /// (the param-less `fid -> params` map already covers it).
 fn fused_softmax_backward_attr() -> OpAttrs {
-    OpAttrs { fused_op: Some("SoftmaxLastDimBackward".to_string()), ..OpAttrs::default() }
+    OpAttrs {
+        fused_op: Some("SoftmaxLastDimBackward".to_string()),
+        ..OpAttrs::default()
+    }
 }
 
 /// GQA fold as recipe DATA (mirrors the imperative `fold` closure — the inverse
@@ -234,14 +253,33 @@ fn recipe_qk(
     // always attends the full K bottom-left-aligned (`q_pos_offset = 0`).
     let alibi = if has_alibi { Some(r_bind(4)) } else { None };
     let rc = super::flash_attn::recompute_probs_recipe(
-        r_bind(0), r_bind(1), r_bind(2), alibi, b, hq, sq, sk, d, hkv, scale, causal, window_l,
-        window_r, softcap, /* q_pos_offset */ 0, dtype,
+        r_bind(0),
+        r_bind(1),
+        r_bind(2),
+        alibi,
+        b,
+        hq,
+        sq,
+        sk,
+        d,
+        hkv,
+        scale,
+        causal,
+        window_l,
+        window_r,
+        softcap,
+        /* q_pos_offset */ 0,
+        dtype,
     );
 
     // dP = dO · V_repᵀ ; dScaled = softmax_bwd(P, dP).
     let vt = r_op(OpTag::Permute, r_perm(vec![0, 1, 3, 2]), vec![rc.v_rep]);
     let dp = r_op(OpTag::MatMul, OpAttrs::default(), vec![r_bind(3), vt]);
-    let mut dscaled = r_op(OpTag::Fused, fused_softmax_backward_attr(), vec![rc.probs, dp]);
+    let mut dscaled = r_op(
+        OpTag::Fused,
+        fused_softmax_backward_attr(),
+        vec![rc.probs, dp],
+    );
 
     // softcap backprop: d/ds[cap·tanh(s/cap)] = 1 − tanh²(s/cap). The saved
     // `tanh` (`t`) is the SAME node emit derives inside `probs` (identity-share).
@@ -359,7 +397,11 @@ fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeId {
     let g = hq / hkv;
     let (q_id, k_id, v_id, do_id, alibi_id) = {
         let n = graph.node(id);
-        let alibi = if n.inputs.len() == 5 { Some(n.inputs[4]) } else { None };
+        let alibi = if n.inputs.len() == 5 {
+            Some(n.inputs[4])
+        } else {
+            None
+        };
         (n.inputs[0], n.inputs[1], n.inputs[2], n.inputs[3], alibi)
     };
     let rc = super::flash_attn::recompute_probs(
@@ -424,9 +466,20 @@ mod tests {
             let n = graph.node(id);
             let q_shape = graph.node(n.inputs[0]).shape.clone();
             let k_shape = graph.node(n.inputs[1]).shape.clone();
-            let alibi = if n.inputs.len() == 5 { Some(n.inputs[4]) } else { None };
+            let alibi = if n.inputs.len() == 5 {
+                Some(n.inputs[4])
+            } else {
+                None
+            };
             (
-                n.inputs[0], n.inputs[1], n.inputs[2], n.inputs[3], alibi, q_shape, k_shape, n.dtype,
+                n.inputs[0],
+                n.inputs[1],
+                n.inputs[2],
+                n.inputs[3],
+                alibi,
+                q_shape,
+                k_shape,
+                n.dtype,
             )
         };
         let (scale, causal, window_l, window_r, softcap) = match params {
@@ -585,10 +638,16 @@ mod tests {
         assert_eq!(na.op, nb.op, "op mismatch: {:?} vs {:?}", na.op, nb.op);
         assert_eq!(
             na.shape, nb.shape,
-            "shape mismatch at {:?}: {:?} vs {:?}", na.op, na.shape, nb.shape
+            "shape mismatch at {:?}: {:?} vs {:?}",
+            na.op, na.shape, nb.shape
         );
         assert_eq!(na.dtype, nb.dtype, "dtype mismatch at {:?}", na.op);
-        assert_eq!(na.inputs.len(), nb.inputs.len(), "arity mismatch at {:?}", na.op);
+        assert_eq!(
+            na.inputs.len(),
+            nb.inputs.len(),
+            "arity mismatch at {:?}",
+            na.op
+        );
         for (&ia, &ib) in na.inputs.iter().zip(nb.inputs.iter()) {
             assert_structural_eq(g, ia, ib);
         }
@@ -620,17 +679,46 @@ mod tests {
     ) -> NodeId {
         let q_shape = Shape::from_dims(&[b, cfg.hq, sq, d]);
         let kv_shape = Shape::from_dims(&[b, cfg.hkv, sk, d]);
-        let q = g.push(Node { op: Op::Const, inputs: vec![], shape: q_shape.clone(), dtype: DType::F32 });
-        let k = g.push(Node { op: Op::Const, inputs: vec![], shape: kv_shape.clone(), dtype: DType::F32 });
-        let v = g.push(Node { op: Op::Const, inputs: vec![], shape: kv_shape.clone(), dtype: DType::F32 });
+        let q = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: q_shape.clone(),
+            dtype: DType::F32,
+        });
+        let k = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: kv_shape.clone(),
+            dtype: DType::F32,
+        });
+        let v = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: kv_shape.clone(),
+            dtype: DType::F32,
+        });
         // dO has the forward-output shape (= q's shape).
-        let do_ = g.push(Node { op: Op::Const, inputs: vec![], shape: q_shape.clone(), dtype: DType::F32 });
+        let do_ = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: q_shape.clone(),
+            dtype: DType::F32,
+        });
         let mut inputs = vec![q, k, v, do_];
         if cfg.alibi {
-            let al = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[cfg.hq]), dtype: DType::F32 });
+            let al = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[cfg.hq]),
+                dtype: DType::F32,
+            });
             inputs.push(al);
         }
-        let out_shape = if variant == FusedOps::FLASH_ATTN_BACKWARD_Q { q_shape } else { kv_shape };
+        let out_shape = if variant == FusedOps::FLASH_ATTN_BACKWARD_Q {
+            q_shape
+        } else {
+            kv_shape
+        };
         g.push(Node {
             op: Op::Fused(
                 variant,
@@ -677,7 +765,15 @@ mod tests {
                 for softcap in [None, Some(30.0f32)] {
                     for alibi in [false, true] {
                         for (hq, hkv) in [(2usize, 2usize), (4usize, 2usize)] {
-                            let cfg = Cfg { hq, hkv, causal, window_l, window_r, softcap, alibi };
+                            let cfg = Cfg {
+                                hq,
+                                hkv,
+                                causal,
+                                window_l,
+                                window_r,
+                                softcap,
+                                alibi,
+                            };
                             let mut g = Graph::new();
                             let fused = backward_node(&mut g, variant, b, sq, sk, d, cfg);
                             let out_shape = g.node(fused).shape.clone();
@@ -694,7 +790,8 @@ mod tests {
                                  alibi={alibi}, hq={hq}, hkv={hkv})"
                             );
                             assert_eq!(
-                                g.node(new_root).shape, out_shape,
+                                g.node(new_root).shape,
+                                out_shape,
                                 "gradient output = shape_rule (variant={variant:?})"
                             );
                             assert_eq!(g.node(new_root).dtype, DType::F32);
@@ -707,7 +804,11 @@ mod tests {
                 }
             }
         }
-        assert_eq!(fired, 3 * 5 * 2 * 2 * 2, "every (variant × config) was checked");
+        assert_eq!(
+            fired,
+            3 * 5 * 2 * 2 * 2,
+            "every (variant × config) was checked"
+        );
     }
 
     /// The V-variant bind-gap, made explicit: `dV = Pᵀ·dO` does not reference V,
@@ -718,8 +819,13 @@ mod tests {
     #[test]
     fn flash_attn_backward_v_stays_imperative_bind_gap() {
         let cfg = Cfg {
-            hq: 4, hkv: 2, causal: true, window_l: None, window_r: None,
-            softcap: Some(30.0), alibi: true,
+            hq: 4,
+            hkv: 2,
+            causal: true,
+            window_l: None,
+            window_r: None,
+            softcap: Some(30.0),
+            alibi: true,
         };
         let mut g = Graph::new();
         let fused = backward_node(&mut g, FusedOps::FLASH_ATTN_BACKWARD_V, 1, 3, 3, 2, cfg);
@@ -728,7 +834,10 @@ mod tests {
             _ => unreachable!(),
         };
         let new_root = decompose(&mut g, fused, &params);
-        assert_ne!(new_root, fused, "V decompose fires (imperative primitive form, not a self-return)");
+        assert_ne!(
+            new_root, fused,
+            "V decompose fires (imperative primitive form, not a self-return)"
+        );
         // dV has V's shape [b, hkv, sk, d].
         assert_eq!(g.node(new_root).shape, Shape::from_dims(&[1, 2, 3, 2]));
         let legacy_root = frozen_legacy_decompose(&mut g, fused, &params);
@@ -745,15 +854,27 @@ mod tests {
             FusedOps::FLASH_ATTN_BACKWARD_V,
         ] {
             let cfg = Cfg {
-                hq: 2, hkv: 2, causal: false, window_l: None, window_r: None,
-                softcap: None, alibi: false,
+                hq: 2,
+                hkv: 2,
+                causal: false,
+                window_l: None,
+                window_r: None,
+                softcap: None,
+                alibi: false,
             };
             let mut g = Graph::new();
             let fused = backward_node(&mut g, variant, 1, 3, 3, 2, cfg);
             let before = g.len();
             let out = decompose(&mut g, fused, &FusedOpParams::Rope);
-            assert_eq!(out, fused, "wrong params => typed decline => fixpoint ({variant:?})");
-            assert_eq!(g.len(), before, "declined before any emission ({variant:?})");
+            assert_eq!(
+                out, fused,
+                "wrong params => typed decline => fixpoint ({variant:?})"
+            );
+            assert_eq!(
+                g.len(),
+                before,
+                "declined before any emission ({variant:?})"
+            );
         }
     }
 }

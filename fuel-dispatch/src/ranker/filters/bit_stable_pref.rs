@@ -111,10 +111,7 @@ mod tests {
     #[test]
     fn classification_is_soft_with_min_remaining() {
         let f = BitStablePreferenceFilter { min_remaining: 2 };
-        assert_eq!(
-            f.classification(),
-            FilterClass::Soft { min_remaining: 2 },
-        );
+        assert_eq!(f.classification(), FilterClass::Soft { min_remaining: 2 },);
     }
 
     #[test]
@@ -125,12 +122,9 @@ mod tests {
         // skips.
         use crate::ranker::alternative_set::AlternativeSet;
         use crate::ranker::chain::apply_filter_chain;
-        let mut set = AlternativeSet::from_candidates(
-            vec![candidate(false), candidate(true)],
-        );
-        let filters: Vec<Box<dyn AlternativeFilter>> = vec![Box::new(
-            BitStablePreferenceFilter { min_remaining: 2 },
-        )];
+        let mut set = AlternativeSet::from_candidates(vec![candidate(false), candidate(true)]);
+        let filters: Vec<Box<dyn AlternativeFilter>> =
+            vec![Box::new(BitStablePreferenceFilter { min_remaining: 2 })];
         apply_filter_chain(&mut set, &filters, &ctx()).expect("soft skip succeeds");
         assert_eq!(set.len(), 2, "below min_remaining → filter skipped");
     }
@@ -139,13 +133,19 @@ mod tests {
     fn applies_when_at_or_above_min_remaining() {
         use crate::ranker::alternative_set::AlternativeSet;
         use crate::ranker::chain::apply_filter_chain;
-        let mut set = AlternativeSet::from_candidates(
-            vec![candidate(true), candidate(false), candidate(true)],
-        );
+        let mut set = AlternativeSet::from_candidates(vec![
+            candidate(true),
+            candidate(false),
+            candidate(true),
+        ]);
         let filters: Vec<Box<dyn AlternativeFilter>> =
             vec![Box::new(BitStablePreferenceFilter { min_remaining: 2 })];
         apply_filter_chain(&mut set, &filters, &ctx()).expect("applies");
         assert_eq!(set.len(), 2, "two bit-stable survive; filter applied");
-        assert!(set.alternatives().iter().all(|c| c.precision.bit_stable_on_same_hardware));
+        assert!(
+            set.alternatives()
+                .iter()
+                .all(|c| c.precision.bit_stable_on_same_hardware)
+        );
     }
 }

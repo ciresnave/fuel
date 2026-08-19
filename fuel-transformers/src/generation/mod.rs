@@ -18,7 +18,7 @@
 //! # let _ = next;
 //! ```
 use fuel::{Error, Result};
-use rand::{distr::Distribution, SeedableRng};
+use rand::{SeedableRng, distr::Distribution};
 
 /// Token-sampling strategy used during autoregressive text generation.
 ///

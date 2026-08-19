@@ -69,22 +69,19 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use fuel_ir::{
-    probe::BackendId, DeviceLocation, Error, HostBuffer, Layout, Result, SymEnv,
-};
 use fuel_backend_contract::backend::{BackendRuntime, BackendStreams};
-use fuel_ir::backend::FitStatus;
 use fuel_backend_contract::dyn_backend::DynBackendDevice;
-use fuel_graph::{Graph, Node, NodeId, Op, topo_order_multi};
 use fuel_dispatch::dispatch::global_bindings;
 use fuel_dispatch::dispatched_kernel_source;
-use fuel_dispatch::optimize::{optimize_graph_with_runtime_fusion, OptimizedGraph};
-use fuel_dispatch::plan::PlanOptions;
+use fuel_dispatch::optimize::{OptimizedGraph, optimize_graph_with_runtime_fusion};
 use fuel_dispatch::pipelined::{PipelinedExecutor, StorageCache};
+use fuel_dispatch::plan::PlanOptions;
 use fuel_dispatch::ranker::{
-    BackendRuntimeHandle, BackendRuntimeLookup, ChainedSelector, JudgeOracle,
-    RuntimeSelector,
+    BackendRuntimeHandle, BackendRuntimeLookup, ChainedSelector, JudgeOracle, RuntimeSelector,
 };
+use fuel_graph::{Graph, Node, NodeId, Op, topo_order_multi};
+use fuel_ir::backend::FitStatus;
+use fuel_ir::{DeviceLocation, Error, HostBuffer, Layout, Result, SymEnv, probe::BackendId};
 use fuel_memory::{BackendStorage, Storage};
 
 use crate::Device;
@@ -104,8 +101,7 @@ use crate::topology::SystemTopology;
 /// path (`realize_one_prebuilt_env`) does NOT re-run the optimizer on a
 /// held, already-optimized graph. `TopologyChanged` retries legitimately
 /// bump it (each retry re-optimizes against the fresh topology).
-static OPTIMIZE_CALLS: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+static OPTIMIZE_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 std::thread_local! {
     /// Per-thread mirror of [`OPTIMIZE_CALLS`], bumped in the SAME spot.
@@ -243,9 +239,9 @@ fn seed_extra_device_handles(
             continue;
         };
         let anchor_id = {
-            let mut g = graph
-                .write()
-                .map_err(|_| Error::Msg("graph lock poisoned during device-handle seed".into()).bt())?;
+            let mut g = graph.write().map_err(|_| {
+                Error::Msg("graph lock poisoned during device-handle seed".into()).bt()
+            })?;
             g.push(Node {
                 op: Op::Const,
                 inputs: vec![],
@@ -343,7 +339,12 @@ pub fn realize_one_reference_as<T: bytemuck::Pod>(
     device: &Device,
 ) -> Result<Vec<T>> {
     realize_one_as_reporting_impl::<T>(
-        graph, target, device, StorageCache::new(), &SymEnv::default(), false,
+        graph,
+        target,
+        device,
+        StorageCache::new(),
+        &SymEnv::default(),
+        false,
     )
     .map(|(bytes, _root_kernel_source)| bytes)
 }
@@ -356,8 +357,7 @@ fn realize_one_as_reporting_impl<T: bytemuck::Pod>(
     sym_env: &SymEnv,
     allow_cost_placement: bool,
 ) -> Result<(Vec<T>, Option<&'static str>)> {
-    let (cache, _backend_id, mut effective_targets) =
-        prepare(graph, &[target], device, initial)?;
+    let (cache, _backend_id, mut effective_targets) = prepare(graph, &[target], device, initial)?;
     let Some(cpu_target) = effective_targets.pop() else {
         return Err(Error::Msg(
             "pipelined_bridge: prepare returned no effective target for a \
@@ -380,7 +380,13 @@ fn realize_one_as_reporting_impl<T: bytemuck::Pod>(
     // `MAX_PLAN_REBUILDS` to prevent infinite spin under genuinely
     // persistent churn.
     let (storage, root_kernel_source) = dispatch_with_plan_retry(
-        graph, cpu_target, cache, device, target, sym_env, allow_cost_placement,
+        graph,
+        cpu_target,
+        cache,
+        device,
+        target,
+        sym_env,
+        allow_cost_placement,
     )?;
     Ok((extract_cpu_bytes_typed::<T>(&storage)?, root_kernel_source))
 }
@@ -420,8 +426,7 @@ pub fn prebuild_optimized_env<T: bytemuck::Pod>(
     initial: StorageCache,
     sym_env: &SymEnv,
 ) -> Result<(NodeId, OptimizedGraph, Vec<T>)> {
-    let (cache, _backend_id, mut effective_targets) =
-        prepare(graph, &[target], device, initial)?;
+    let (cache, _backend_id, mut effective_targets) = prepare(graph, &[target], device, initial)?;
     let Some(cpu_target) = effective_targets.pop() else {
         return Err(Error::Msg(
             "pipelined_bridge: prepare returned no effective target for a \
@@ -430,9 +435,8 @@ pub fn prebuild_optimized_env<T: bytemuck::Pod>(
         )
         .bt());
     };
-    let (storage, optimized, _full_cache) = dispatch_with_plan_retry_capturing(
-        graph, cpu_target, cache, device, sym_env,
-    )?;
+    let (storage, optimized, _full_cache) =
+        dispatch_with_plan_retry_capturing(graph, cpu_target, cache, device, sym_env)?;
     let bytes = extract_cpu_bytes_typed::<T>(&storage)?;
     Ok((cpu_target, optimized, bytes))
 }
@@ -452,8 +456,7 @@ pub fn prebuild_optimized_env_capturing_cache<T: bytemuck::Pod>(
     initial: StorageCache,
     sym_env: &SymEnv,
 ) -> Result<(NodeId, OptimizedGraph, StorageCache, Vec<T>)> {
-    let (cache, _backend_id, mut effective_targets) =
-        prepare(graph, &[target], device, initial)?;
+    let (cache, _backend_id, mut effective_targets) = prepare(graph, &[target], device, initial)?;
     let Some(cpu_target) = effective_targets.pop() else {
         return Err(Error::Msg(
             "pipelined_bridge: prepare returned no effective target for a \
@@ -462,9 +465,8 @@ pub fn prebuild_optimized_env_capturing_cache<T: bytemuck::Pod>(
         )
         .bt());
     };
-    let (storage, optimized, full_cache) = dispatch_with_plan_retry_capturing(
-        graph, cpu_target, cache, device, sym_env,
-    )?;
+    let (storage, optimized, full_cache) =
+        dispatch_with_plan_retry_capturing(graph, cpu_target, cache, device, sym_env)?;
     let bytes = extract_cpu_bytes_typed::<T>(&storage)?;
     Ok((cpu_target, optimized, full_cache, bytes))
 }
@@ -536,22 +538,24 @@ fn dispatch_with_plan_retry_capturing(
     let pinned_loc = device.location();
     let mut retry = TopologyRetryState::new();
     loop {
-        let optimized =
-            build_optimized_graph(graph, &[cpu_target], pinned_loc, &cache, true)?;
+        let optimized = build_optimized_graph(graph, &[cpu_target], pinned_loc, &cache, true)?;
         let (selector, lookup) = match production_selector_for(device) {
             Some((s, l)) => (Some(s), Some(l)),
             None => (None, None),
         };
         let cache_for_attempt = cache.clone();
         let result = PipelinedExecutor::realize_with_optimized_picking_env(
-            graph.clone(), cpu_target, cache_for_attempt, &optimized,
-            selector, lookup, sym_env.clone(),
+            graph.clone(),
+            cpu_target,
+            cache_for_attempt,
+            &optimized,
+            selector,
+            lookup,
+            sym_env.clone(),
         );
         match result {
             Ok((storage, _layout)) => return Ok((storage, optimized, cache)),
-            Err(e) if matches!(e, Error::TopologyChanged { .. })
-                && retry.permit_retry() =>
-            {
+            Err(e) if matches!(e, Error::TopologyChanged { .. }) && retry.permit_retry() => {
                 continue;
             }
             Err(e) => return Err(e),
@@ -590,8 +594,7 @@ fn dispatch_with_plan_retry_capturing(
 /// sleeps stretch to ~15ms each under Windows timer resolution,
 /// and a fixed-from-start 2s cap could still expire while attempts
 /// were burning real plan-build/dispatch time inside the storm.)
-const TOPOLOGY_SETTLE_BUDGET: std::time::Duration =
-    std::time::Duration::from_secs(2);
+const TOPOLOGY_SETTLE_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Belt-and-braces ceiling on rebuild iterations, bounding the
 /// perpetual-churn case (a device flapping indefinitely keeps
@@ -684,9 +687,7 @@ fn feasible_fallback_devices(
         // offered only when resident (the CUDA mask-spill fix). Excluding CPU here
         // was an over-narrowing that broke CUDA-resident realizes needing a CPU
         // fallback op.
-        .filter(|&d| {
-            d != node_dev && (matches!(d, DeviceLocation::Cpu) || resident.contains(&d))
-        })
+        .filter(|&d| d != node_dev && (matches!(d, DeviceLocation::Cpu) || resident.contains(&d)))
         .collect()
 }
 
@@ -718,12 +719,11 @@ fn build_optimized_graph(
     OPTIMIZE_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     OPTIMIZE_CALLS_TL.with(|c| c.set(c.get() + 1));
     let topology = SystemTopology::current();
-    let placements_for = |dev: DeviceLocation| -> Vec<BackendId> {
-        topology.backends_for(dev).to_vec()
+    let placements_for =
+        |dev: DeviceLocation| -> Vec<BackendId> { topology.backends_for(dev).to_vec() };
+    let capabilities_for = |b: BackendId| -> Option<&fuel_ir::backend::BackendCapabilities> {
+        topology.capabilities(b)
     };
-    let capabilities_for = |b: BackendId|
-        -> Option<&fuel_ir::backend::BackendCapabilities>
-    { topology.capabilities(b) };
     // Devices with storage RESIDENT in this realize's cache — the feasibility
     // scope for off-device migration (see `feasible_fallback_devices`). A pure-CPU
     // realize yields only `Cpu`, so no GPU fallback is offered and CPU-built graphs
@@ -741,9 +741,7 @@ fn build_optimized_graph(
         }
         v
     };
-    let fallback_for = |dev: DeviceLocation|
-        -> Vec<(BackendId, DeviceLocation)>
-    {
+    let fallback_for = |dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> {
         feasible_fallback_devices(topology.devices(), &resident_devices, dev)
             .into_iter()
             .flat_map(|d| topology.backends_for(d).iter().map(move |&b| (b, d)))
@@ -826,8 +824,13 @@ fn dispatch_with_plan_retry(
         // the residency + layout passes — all consuming its internal
         // `ExecutionPlan`, which is not returned (Step D). Build-time
         // validation (missing binding / no device) fires inside `optimize_graph`.
-        let optimized =
-            build_optimized_graph(graph, &[cpu_target], pinned_loc, &cache, allow_cost_placement)?;
+        let optimized = build_optimized_graph(
+            graph,
+            &[cpu_target],
+            pinned_loc,
+            &cache,
+            allow_cost_placement,
+        )?;
         // Residency (cross-device `Op::Copy`) and layout-fixup
         // (`Op::Contiguize`) are now optimizer passes inside `optimize_graph`
         // (cleanup Step B) — driven by the graph stamps + the `input_residency`
@@ -861,8 +864,13 @@ fn dispatch_with_plan_retry(
         // resolves each branch's arm at the frontier (streaming), then
         // resolves each node's kernel via the binding-table lookup.
         let result = PipelinedExecutor::realize_with_optimized_picking_env(
-            graph.clone(), cpu_target, cache_for_attempt, &optimized,
-            selector, lookup, sym_env.clone(),
+            graph.clone(),
+            cpu_target,
+            cache_for_attempt,
+            &optimized,
+            selector,
+            lookup,
+            sym_env.clone(),
         );
         match result {
             Ok((storage, _layout)) => {
@@ -877,9 +885,7 @@ fn dispatch_with_plan_retry(
                     .and_then(|g| dispatched_kernel_source(&g, report_node, &global_bindings()));
                 return Ok((storage, dispatched));
             }
-            Err(e) if matches!(e, Error::TopologyChanged { .. })
-                && retry.permit_retry() =>
-            {
+            Err(e) if matches!(e, Error::TopologyChanged { .. }) && retry.permit_retry() => {
                 continue;
             }
             Err(e) => return Err(e),
@@ -912,9 +918,7 @@ pub fn realize_many_as_with_initial_env<T: bytemuck::Pod>(
         return Ok(Vec::new());
     }
     let (cache, _, effective_targets) = prepare(graph, targets, device, initial)?;
-    let results = dispatch_many_with_plan_retry(
-        graph, &effective_targets, cache, device, sym_env,
-    )?;
+    let results = dispatch_many_with_plan_retry(graph, &effective_targets, cache, device, sym_env)?;
     let mut out = Vec::with_capacity(results.len());
     for (storage, _layout) in results {
         out.push(extract_cpu_bytes_typed::<T>(&storage)?);
@@ -955,10 +959,13 @@ pub fn realize_split_as_with_initial<T: bytemuck::Pod>(
     if targets.is_empty() {
         return Ok((Vec::new(), Vec::new()));
     }
-    let (cache, _, effective_targets) =
-        prepare_split(graph, targets, n_host, device, initial)?;
+    let (cache, _, effective_targets) = prepare_split(graph, targets, n_host, device, initial)?;
     let results = dispatch_many_with_plan_retry(
-        graph, &effective_targets, cache, device, &SymEnv::default(),
+        graph,
+        &effective_targets,
+        cache,
+        device,
+        &SymEnv::default(),
     )?;
     let mut host_out = Vec::with_capacity(n_host);
     let mut resident_out = Vec::with_capacity(results.len().saturating_sub(n_host));
@@ -993,8 +1000,7 @@ fn dispatch_many_with_plan_retry(
         // (cleanup A1), AND runs the residency + layout-fixup passes (cleanup
         // Step B); the executor recomputes its run/`lower_run` order from the
         // stamped, copy-stitched graph.
-        let optimized =
-            build_optimized_graph(graph, effective_targets, pinned_loc, &cache, true)?;
+        let optimized = build_optimized_graph(graph, effective_targets, pinned_loc, &cache, true)?;
         // Cleanup Step C: the executor resolves each branch's arm at dispatch
         // (was the bridge's `resolve_runtime_route`); the bridge just builds +
         // hands over the Device/Judge-derived selector + live lookup. PR C1:
@@ -1006,14 +1012,17 @@ fn dispatch_many_with_plan_retry(
         };
         let cache_for_attempt = cache.clone();
         let result = PipelinedExecutor::realize_many_with_optimized_picking_env(
-            graph.clone(), effective_targets, cache_for_attempt, &optimized,
-            selector, lookup, sym_env.clone(),
+            graph.clone(),
+            effective_targets,
+            cache_for_attempt,
+            &optimized,
+            selector,
+            lookup,
+            sym_env.clone(),
         );
         match result {
             Ok(r) => break Ok(r),
-            Err(e) if matches!(e, Error::TopologyChanged { .. })
-                && retry.permit_retry() =>
-            {
+            Err(e) if matches!(e, Error::TopologyChanged { .. }) && retry.permit_retry() => {
                 continue;
             }
             Err(e) => break Err(e),
@@ -1028,9 +1037,7 @@ fn dispatch_many_with_plan_retry(
 /// devices) or directly on CPU (for CPU realizes). Either way, this
 /// is a `BackendStorage::Cpu` — extract its bytes via the
 /// CPU-variant pattern.
-fn extract_cpu_bytes_typed<T: bytemuck::Pod>(
-    storage: &Arc<RwLock<Storage>>,
-) -> Result<Vec<T>> {
+fn extract_cpu_bytes_typed<T: bytemuck::Pod>(storage: &Arc<RwLock<Storage>>) -> Result<Vec<T>> {
     let guard = storage
         .read()
         .map_err(|_| Error::Msg("storage lock poisoned".into()).bt())?;
@@ -1146,7 +1153,9 @@ fn prepare_split(
                     (n.shape.clone(), n.dtype)
                 };
                 g.push(Node {
-                    op: Op::Copy { target: DeviceLocation::Cpu },
+                    op: Op::Copy {
+                        target: DeviceLocation::Cpu,
+                    },
                     inputs: vec![src_id],
                     shape,
                     dtype,
@@ -1226,8 +1235,7 @@ pub(crate) fn build_const_cache(
         let g = graph
             .read()
             .map_err(|_| Error::Msg("graph lock poisoned".into()).bt())?;
-        let mut out: Vec<(NodeId, Vec<u8>, fuel_ir::DType)> =
-            Vec::with_capacity(order.len() / 4);
+        let mut out: Vec<(NodeId, Vec<u8>, fuel_ir::DType)> = Vec::with_capacity(order.len() / 4);
         for &id in order {
             if cache.contains_key(&id) {
                 continue;
@@ -1327,8 +1335,7 @@ pub(crate) fn build_const_cache(
     // registered at `(OpKind::Copy, [dt, dt], Cpu)`). The
     // executor's WorkItemKind::Copy arm reads target_location from
     // the op's variant to know where to allocate the output.
-    let mut user_to_copy: Vec<(NodeId, NodeId)> =
-        Vec::with_capacity(consts_to_upload.len());
+    let mut user_to_copy: Vec<(NodeId, NodeId)> = Vec::with_capacity(consts_to_upload.len());
     {
         let mut g = transient
             .write()
@@ -1365,15 +1372,16 @@ pub(crate) fn build_const_cache(
     }
 
     let copy_targets: Vec<NodeId> = user_to_copy.iter().map(|(_, c)| *c).collect();
-    let realized = PipelinedExecutor::realize_many(
-        Arc::clone(&transient), &copy_targets, transient_cache,
-    )?;
+    let realized =
+        PipelinedExecutor::realize_many(Arc::clone(&transient), &copy_targets, transient_cache)?;
     if realized.len() != user_to_copy.len() {
         return Err(Error::Msg(format!(
             "build_const_cache: realize_many returned {} storages for {} \
              Op::Copy targets — internal bug",
-            realized.len(), user_to_copy.len(),
-        )).bt());
+            realized.len(),
+            user_to_copy.len(),
+        ))
+        .bt());
     }
     for ((user_id, _), (arc, _layout)) in user_to_copy.into_iter().zip(realized) {
         cache.insert(user_id, arc);
@@ -1408,9 +1416,9 @@ pub fn upload_host_buffer_to_device(
 
     if target_loc == DeviceLocation::Cpu {
         let storage = Storage::new(
-            BackendStorage::Cpu(
-                fuel_cpu_backend::byte_storage::CpuStorageBytes::from_bytes(&bytes),
-            ),
+            BackendStorage::Cpu(fuel_cpu_backend::byte_storage::CpuStorageBytes::from_bytes(
+                &bytes,
+            )),
             dtype,
         );
         return Ok(Arc::new(RwLock::new(storage)));
@@ -1450,9 +1458,9 @@ pub fn upload_host_buffer_to_device(
             dtype,
         });
         let cpu_storage = Storage::new(
-            BackendStorage::Cpu(
-                fuel_cpu_backend::byte_storage::CpuStorageBytes::from_bytes(&bytes),
-            ),
+            BackendStorage::Cpu(fuel_cpu_backend::byte_storage::CpuStorageBytes::from_bytes(
+                &bytes,
+            )),
             dtype,
         );
         transient_cache.insert(trans_const_id, Arc::new(RwLock::new(cpu_storage)));
@@ -1465,9 +1473,8 @@ pub fn upload_host_buffer_to_device(
         g.set_target_backend(copy_id, BackendId::Cpu);
         copy_id
     };
-    let realized = PipelinedExecutor::realize_many(
-        Arc::clone(&transient), &[copy_id], transient_cache,
-    )?;
+    let realized =
+        PipelinedExecutor::realize_many(Arc::clone(&transient), &[copy_id], transient_cache)?;
     let (arc, _layout) = realized.into_iter().next().ok_or_else(|| {
         Error::Msg(
             "upload_host_buffer_to_device: realize_many returned no storage \
@@ -1582,7 +1589,10 @@ fn location_to_backend_id(loc: DeviceLocation) -> BackendId {
 /// `FUEL_DISABLE_RUNTIME_SELECTOR=1` to fall back to the static arm-0
 /// lowering (no live-telemetry route picking). Default: picker ON.
 fn runtime_selector_disabled() -> bool {
-    std::env::var("FUEL_DISABLE_RUNTIME_SELECTOR").ok().as_deref() == Some("1")
+    std::env::var("FUEL_DISABLE_RUNTIME_SELECTOR")
+        .ok()
+        .as_deref()
+        == Some("1")
 }
 
 /// Build the production Picker 2 for one realize call: a
@@ -1609,12 +1619,13 @@ fn production_selector_for(
     if runtime_selector_disabled() {
         return None;
     }
-    let judge: Option<Arc<dyn JudgeOracle>> = crate::judge::cached_oracle()
-        .map(|oracle| oracle as Arc<dyn JudgeOracle>);
+    let judge: Option<Arc<dyn JudgeOracle>> =
+        crate::judge::cached_oracle().map(|oracle| oracle as Arc<dyn JudgeOracle>);
     let lookup = backend_runtime_lookup_for(device);
-    let selector: Arc<dyn RuntimeSelector> = Arc::new(
-        ChainedSelector::with_default_estimator(judge, Some(lookup.clone())),
-    );
+    let selector: Arc<dyn RuntimeSelector> = Arc::new(ChainedSelector::with_default_estimator(
+        judge,
+        Some(lookup.clone()),
+    ));
     Some((selector, lookup))
 }
 
@@ -1628,7 +1639,9 @@ struct DeviceRuntimeHandle(Arc<dyn DynBackendDevice>);
 
 impl BackendRuntime for DeviceRuntimeHandle {
     fn available_bytes(&self) -> Option<u64> {
-        self.0.as_backend_runtime().and_then(|r| r.available_bytes())
+        self.0
+            .as_backend_runtime()
+            .and_then(|r| r.available_bytes())
     }
 
     fn total_bytes(&self) -> Option<u64> {
@@ -1731,12 +1744,12 @@ fn backend_runtime_lookup_for(device: &Device) -> BackendRuntimeLookup {
     let inner: Arc<dyn DynBackendDevice> = device.inner.clone();
     Arc::new(move |backend, loc| {
         if backend == realize_backend && loc == realize_loc {
-            return Some(Box::new(DeviceRuntimeHandle(Arc::clone(&inner)))
-                as BackendRuntimeHandle);
+            return Some(Box::new(DeviceRuntimeHandle(Arc::clone(&inner))) as BackendRuntimeHandle);
         }
         if backend == BackendId::Cpu && loc == DeviceLocation::Cpu {
-            return Some(Box::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice)
-                as BackendRuntimeHandle);
+            return Some(
+                Box::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice) as BackendRuntimeHandle
+            );
         }
         None
     })
@@ -1918,14 +1931,17 @@ pub fn device_seed_storage(device: &Device) -> Result<Option<Storage>> {
         #[cfg(feature = "cuda")]
         DeviceLocation::Cuda { .. } => {
             let cuda_dev = crate::cuda_backend::as_device(device)?;
-            let cuda_bytes =
-                fuel_cuda_backend::CudaStorageBytes::alloc(cuda_dev, SEED_BYTES)?;
-            Ok(Some(Storage::new(BackendStorage::Cuda(cuda_bytes), fuel_ir::DType::U8)))
+            let cuda_bytes = fuel_cuda_backend::CudaStorageBytes::alloc(cuda_dev, SEED_BYTES)?;
+            Ok(Some(Storage::new(
+                BackendStorage::Cuda(cuda_bytes),
+                fuel_ir::DType::U8,
+            )))
         }
         #[cfg(not(feature = "cuda"))]
         DeviceLocation::Cuda { .. } => Err(Error::Msg(
             "device_seed_storage: CUDA device requested but fuel-core wasn't built \
-             with --features cuda".into(),
+             with --features cuda"
+                .into(),
         )
         .bt()),
         #[cfg(feature = "vulkan")]
@@ -1933,12 +1949,16 @@ pub fn device_seed_storage(device: &Device) -> Result<Option<Storage>> {
             let backend = crate::vulkan_backend::as_device(device)?;
             let zeros = vec![0_u8; SEED_BYTES];
             let vk_bytes = backend.upload_bytes_handle(&zeros)?;
-            Ok(Some(Storage::new(BackendStorage::Vulkan(vk_bytes), fuel_ir::DType::U8)))
+            Ok(Some(Storage::new(
+                BackendStorage::Vulkan(vk_bytes),
+                fuel_ir::DType::U8,
+            )))
         }
         #[cfg(not(feature = "vulkan"))]
         DeviceLocation::Vulkan { .. } => Err(Error::Msg(
             "device_seed_storage: Vulkan device requested but fuel-core wasn't built \
-             with --features vulkan".into(),
+             with --features vulkan"
+                .into(),
         )
         .bt()),
         other => Err(Error::Msg(format!(
@@ -1952,8 +1972,8 @@ pub fn device_seed_storage(device: &Device) -> Result<Option<Storage>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_ir::{DType, Shape};
     use fuel_dispatch::plan::compile_plan;
+    use fuel_ir::{DType, Shape};
 
     #[test]
     fn feasible_fallback_devices_scopes_to_resident() {
@@ -1985,7 +2005,10 @@ mod tests {
         );
 
         // Symmetric: a CUDA node in a mixed realize can fall back to CPU.
-        assert_eq!(feasible_fallback_devices(&all, &[cpu, cuda], cuda), vec![cpu]);
+        assert_eq!(
+            feasible_fallback_devices(&all, &[cpu, cuda], cuda),
+            vec![cpu]
+        );
 
         // CPU-IS-ALWAYS-FEASIBLE (the regression guard): a CUDA-ONLY realize
         // (only Cuda resident, CPU not) must STILL offer CPU as a fallback for a
@@ -2012,9 +2035,9 @@ mod tests {
     fn cpu_storage_f32(vals: &[f32]) -> Arc<RwLock<Storage>> {
         let bytes: &[u8] = bytemuck::cast_slice(vals);
         Arc::new(RwLock::new(Storage::new(
-            BackendStorage::Cpu(
-                fuel_cpu_backend::byte_storage::CpuStorageBytes::from_bytes(bytes),
-            ),
+            BackendStorage::Cpu(fuel_cpu_backend::byte_storage::CpuStorageBytes::from_bytes(
+                bytes,
+            )),
             DType::F32,
         )))
     }
@@ -2065,7 +2088,13 @@ mod tests {
         // Pure CPU graph: no cross-device node → no seed.
         let mut g2 = Graph::new();
         let a = push_node(&mut g2, Op::Const, vec![]);
-        let cpu_copy = push_node(&mut g2, Op::Copy { target: DeviceLocation::Cpu }, vec![a]);
+        let cpu_copy = push_node(
+            &mut g2,
+            Op::Copy {
+                target: DeviceLocation::Cpu,
+            },
+            vec![a],
+        );
         let graph2 = Arc::new(RwLock::new(g2));
         assert!(
             placed_device_locations_needing_seed(&graph2, cpu_copy, DeviceLocation::Cpu, &empty)
@@ -2084,7 +2113,7 @@ mod tests {
     #[test]
     fn cpu_runtime_handle_is_not_backend_streams() {
         let handle = DeviceRuntimeHandle(
-            Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice) as Arc<dyn DynBackendDevice>,
+            Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice) as Arc<dyn DynBackendDevice>
         );
         // The upcast a C2 selector performs over a `&dyn BackendRuntime`.
         let as_runtime: &dyn BackendRuntime = &handle;
@@ -2121,9 +2150,8 @@ mod tests {
         initial.insert(c2, cpu_storage_f32(&[10.0, 20.0, 30.0, 40.0]));
 
         let device = crate::Device::cpu();
-        let out =
-            realize_one_as_with_initial::<f32>(&graph, add, &device, initial)
-                .expect("CPU realize despite stale CUDA stamp");
+        let out = realize_one_as_with_initial::<f32>(&graph, add, &device, initial)
+            .expect("CPU realize despite stale CUDA stamp");
         assert_eq!(out, vec![11.0, 22.0, 33.0, 44.0]);
         assert_eq!(
             graph.read().unwrap().target_backend(add),
@@ -2145,8 +2173,8 @@ mod tests {
     /// keeps every candidate and residency on CPU anyway.)
     #[test]
     fn stage2_cpu_only_estimator_leaves_plan_unchanged() {
+        use fuel_dispatch::kernel::{KernelBindingTable, KernelCaps, unknown_cost};
         use fuel_ir::dispatch::OpKind;
-        use fuel_dispatch::kernel::{unknown_cost, KernelBindingTable, KernelCaps};
 
         let mut table = KernelBindingTable::new();
         table.register_full(
@@ -2170,12 +2198,11 @@ mod tests {
         cache.insert(c1, cpu_storage_f32(&[1.0; 4]));
 
         let topology = SystemTopology::current();
-        let placements_for = |dev: DeviceLocation| -> Vec<BackendId> {
-            topology.backends_for(dev).to_vec()
+        let placements_for =
+            |dev: DeviceLocation| -> Vec<BackendId> { topology.backends_for(dev).to_vec() };
+        let capabilities_for = |b: BackendId| -> Option<&fuel_ir::backend::BackendCapabilities> {
+            topology.capabilities(b)
         };
-        let capabilities_for = |b: BackendId|
-            -> Option<&fuel_ir::backend::BackendCapabilities>
-        { topology.capabilities(b) };
         // Same closure shape build_optimized_graph wires.
         let input_residency = |id: NodeId| -> Option<DeviceLocation> {
             let slot = cache.get(&id)?;
@@ -2345,9 +2372,8 @@ mod tests {
         let mut initial3 = StorageCache::new();
         initial3.insert(c1, Arc::clone(&c1_arc));
         initial3.insert(c2, Arc::clone(&c2_arc));
-        let third =
-            realize_one_as_with_initial::<f32>(&graph, add, &device, initial3)
-                .expect("full-path (third) realize");
+        let third = realize_one_as_with_initial::<f32>(&graph, add, &device, initial3)
+            .expect("full-path (third) realize");
         assert_eq!(third, first, "full path still computes the same value");
         assert!(
             optimize_calls_thread_local() > calls_after_second,
@@ -2387,8 +2413,8 @@ mod tests {
         let device = crate::Device::cpu();
         let lookup = backend_runtime_lookup_for(&device);
 
-        let cpu = lookup(BackendId::Cpu, DeviceLocation::Cpu)
-            .expect("CPU handle always resolvable");
+        let cpu =
+            lookup(BackendId::Cpu, DeviceLocation::Cpu).expect("CPU handle always resolvable");
         let _ = cpu.would_fit(1); // platform-dependent; must not panic.
 
         assert!(
@@ -2423,9 +2449,14 @@ mod tests {
         initial.insert(c2, cpu_storage_f32(&[10.0, 20.0, 30.0, 40.0]));
 
         let device = crate::Device::cpu();
-        let (out, root_kernel_source) =
-            realize_one_as_with_initial_reporting::<f32>(&graph, add, &device, initial, &SymEnv::default())
-                .expect("reporting realize");
+        let (out, root_kernel_source) = realize_one_as_with_initial_reporting::<f32>(
+            &graph,
+            add,
+            &device,
+            initial,
+            &SymEnv::default(),
+        )
+        .expect("reporting realize");
         assert_eq!(out, vec![11.0, 22.0, 33.0, 44.0]);
 
         let src = root_kernel_source
@@ -2463,7 +2494,11 @@ mod tests {
         cache.insert(c2, cpu_storage_f32(&[10.0, 20.0, 30.0, 40.0]));
 
         let (host, resident) = realize_split_as_with_initial::<f32>(
-            &graph, &[add, mul], 1, &crate::Device::cpu(), cache,
+            &graph,
+            &[add, mul],
+            1,
+            &crate::Device::cpu(),
+            cache,
         )
         .expect("realize_split");
 
@@ -2500,10 +2535,9 @@ mod tests {
         };
         let mut cache1 = StorageCache::new();
         cache1.insert(c1, cpu_storage_f32(&[1.0, 2.0, 3.0, 4.0]));
-        let (host1, resident1) = realize_split_as_with_initial::<f32>(
-            &g1, &[dbl], 0, &crate::Device::cpu(), cache1,
-        )
-        .expect("step 1");
+        let (host1, resident1) =
+            realize_split_as_with_initial::<f32>(&g1, &[dbl], 0, &crate::Device::cpu(), cache1)
+                .expect("step 1");
         assert!(host1.is_empty());
         let (carried, _) = resident1.into_iter().next().expect("one resident");
 
@@ -2518,10 +2552,9 @@ mod tests {
         };
         let mut cache2 = StorageCache::new();
         cache2.insert(ph, carried);
-        let (host2, resident2) = realize_split_as_with_initial::<f32>(
-            &g2, &[sq], 1, &crate::Device::cpu(), cache2,
-        )
-        .expect("step 2");
+        let (host2, resident2) =
+            realize_split_as_with_initial::<f32>(&g2, &[sq], 1, &crate::Device::cpu(), cache2)
+                .expect("step 2");
         assert_eq!(host2[0], vec![4.0, 16.0, 36.0, 64.0]);
         assert!(resident2.is_empty());
     }
@@ -2573,14 +2606,12 @@ mod tests {
         // `optimize_graph`: it stamps the winning backends AND runs the
         // residency + layout-fixup passes (cleanup A1 + Step B). The bridge
         // just dispatches the stamped, copy-stitched graph.
-        let optimized =
-            build_optimized_graph(&graph, &[cpu_target], pinned, &cache, true)
-                .expect("optimize_graph");
+        let optimized = build_optimized_graph(&graph, &[cpu_target], pinned, &cache, true)
+            .expect("optimize_graph");
 
-        let (storage, _layout) = PipelinedExecutor::realize_with_optimized(
-            graph.clone(), cpu_target, cache, &optimized,
-        )
-        .expect("optimized realize");
+        let (storage, _layout) =
+            PipelinedExecutor::realize_with_optimized(graph.clone(), cpu_target, cache, &optimized)
+                .expect("optimized realize");
         let out_vals = extract_cpu_bytes_typed::<f32>(&storage).expect("host bytes");
 
         assert_eq!(out_vals, expected, "optimized path: (a+b)*a");
@@ -2606,10 +2637,9 @@ mod tests {
         initial.insert(a, cpu_storage_f32(&[1.0, 2.0, 3.0, 4.0]));
         initial.insert(b, cpu_storage_f32(&[10.0, 20.0, 30.0, 40.0]));
 
-        let out_vals = realize_one_as_with_initial::<f32>(
-            &graph, out, &crate::Device::cpu(), initial,
-        )
-        .expect("default realize of (a+b)*a");
+        let out_vals =
+            realize_one_as_with_initial::<f32>(&graph, out, &crate::Device::cpu(), initial)
+                .expect("default realize of (a+b)*a");
         assert_eq!(out_vals, vec![11.0, 44.0, 99.0, 176.0]);
     }
 
@@ -2622,7 +2652,11 @@ mod tests {
             push_node(&mut g, Op::Const, vec![])
         };
         let err = realize_split_as_with_initial::<f32>(
-            &graph, &[c1], 2, &crate::Device::cpu(), StorageCache::new(),
+            &graph,
+            &[c1],
+            2,
+            &crate::Device::cpu(),
+            StorageCache::new(),
         );
         assert!(err.is_err(), "n_host > targets.len() must be a typed Err");
     }

@@ -125,11 +125,11 @@ fn bneck_confs(width_mult: f64, depth_mult: f64) -> Vec<MBConvStageConfig> {
         num_layers: (n as f64 * depth_mult).ceil() as usize,
     };
     vec![
-        conf(1.0, 3, 1, 32,  16,  1),
-        conf(6.0, 3, 2, 16,  24,  2),
-        conf(6.0, 5, 2, 24,  40,  2),
-        conf(6.0, 3, 2, 40,  80,  3),
-        conf(6.0, 5, 1, 80,  112, 3),
+        conf(1.0, 3, 1, 32, 16, 1),
+        conf(6.0, 3, 2, 16, 24, 2),
+        conf(6.0, 5, 2, 24, 40, 2),
+        conf(6.0, 3, 2, 40, 80, 3),
+        conf(6.0, 5, 1, 80, 112, 3),
         conf(6.0, 5, 2, 112, 192, 4),
         conf(6.0, 3, 1, 192, 320, 1),
     ]
@@ -139,16 +139,37 @@ impl EfficientNetConfig {
     fn from_mults(nclasses: usize, w: f64, d: f64) -> Self {
         let stages = bneck_confs(w, d);
         let last_out = stages.last().expect("at least one stage").out_channels;
-        Self { stages, nclasses, bn_eps: 1e-3, final_channels: 4 * last_out }
+        Self {
+            stages,
+            nclasses,
+            bn_eps: 1e-3,
+            final_channels: 4 * last_out,
+        }
     }
-    pub fn b0(nclasses: usize) -> Self { Self::from_mults(nclasses, 1.0, 1.0) }
-    pub fn b1(nclasses: usize) -> Self { Self::from_mults(nclasses, 1.0, 1.1) }
-    pub fn b2(nclasses: usize) -> Self { Self::from_mults(nclasses, 1.1, 1.2) }
-    pub fn b3(nclasses: usize) -> Self { Self::from_mults(nclasses, 1.2, 1.4) }
-    pub fn b4(nclasses: usize) -> Self { Self::from_mults(nclasses, 1.4, 1.8) }
-    pub fn b5(nclasses: usize) -> Self { Self::from_mults(nclasses, 1.6, 2.2) }
-    pub fn b6(nclasses: usize) -> Self { Self::from_mults(nclasses, 1.8, 2.6) }
-    pub fn b7(nclasses: usize) -> Self { Self::from_mults(nclasses, 2.0, 3.1) }
+    pub fn b0(nclasses: usize) -> Self {
+        Self::from_mults(nclasses, 1.0, 1.0)
+    }
+    pub fn b1(nclasses: usize) -> Self {
+        Self::from_mults(nclasses, 1.0, 1.1)
+    }
+    pub fn b2(nclasses: usize) -> Self {
+        Self::from_mults(nclasses, 1.1, 1.2)
+    }
+    pub fn b3(nclasses: usize) -> Self {
+        Self::from_mults(nclasses, 1.2, 1.4)
+    }
+    pub fn b4(nclasses: usize) -> Self {
+        Self::from_mults(nclasses, 1.4, 1.8)
+    }
+    pub fn b5(nclasses: usize) -> Self {
+        Self::from_mults(nclasses, 1.6, 2.2)
+    }
+    pub fn b6(nclasses: usize) -> Self {
+        Self::from_mults(nclasses, 1.8, 2.6)
+    }
+    pub fn b7(nclasses: usize) -> Self {
+        Self::from_mults(nclasses, 2.0, 3.1)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -212,9 +233,10 @@ impl EfficientNetModel {
         let x = self.run_backbone(image)?;
         let pooled = x.global_avg_pool_2d()?;
 
-        let logits = self.weights.classifier_w.apply_linear(
-            &pooled, cfg.final_channels, cfg.nclasses,
-        )?;
+        let logits =
+            self.weights
+                .classifier_w
+                .apply_linear(&pooled, cfg.final_channels, cfg.nclasses)?;
         let bias_t = pooled.const_f32_like(
             Arc::clone(&self.weights.classifier_b),
             Shape::from_dims(&[cfg.nclasses]),
@@ -248,7 +270,8 @@ impl EfficientNetModel {
     fn apply_conv_bn(&self, x: &LazyTensor, cb: &ConvBN) -> Result<LazyTensor> {
         let x_padded = pad_same(x, cb.kernel, cb.stride)?;
         let w = cb.w.const_like(
-            x, Shape::from_dims(&[cb.c_out, cb.c_in / cb.groups, cb.kernel, cb.kernel]),
+            x,
+            Shape::from_dims(&[cb.c_out, cb.c_in / cb.groups, cb.kernel, cb.kernel]),
         )?;
         let conv = x_padded.conv2d(&w, None, (cb.stride, cb.stride), (0, 0), cb.groups)?;
         apply_bn(&conv, &cb.bn, cb.c_out)
@@ -256,9 +279,8 @@ impl EfficientNetModel {
 
     fn apply_conv_bias(&self, x: &LazyTensor, cb: &ConvBias) -> Result<LazyTensor> {
         // 1×1 conv → broadcast-add bias on channel dim.
-        let w = cb.w.const_like(
-            x, Shape::from_dims(&[cb.c_out, cb.c_in, 1, 1]),
-        )?;
+        let w =
+            cb.w.const_like(x, Shape::from_dims(&[cb.c_out, cb.c_in, 1, 1]))?;
         let conv = x.conv2d(&w, None, (1, 1), (0, 0), 1)?;
         let b_t = x
             .const_f32_like(Arc::clone(&cb.b), Shape::from_dims(&[cb.c_out]))
@@ -278,11 +300,7 @@ impl EfficientNetModel {
         y = swish(&y)?;
         y = self.apply_se(&y, &block.se)?;
         y = self.apply_conv_bn(&y, &block.project)?;
-        if use_residual {
-            x.add(&y)
-        } else {
-            Ok(y)
-        }
+        if use_residual { x.add(&y) } else { Ok(y) }
     }
 
     fn apply_se(&self, x: &LazyTensor, se: &SqueezeExciteWeights) -> Result<LazyTensor> {
@@ -335,29 +353,45 @@ fn swish(x: &LazyTensor) -> Result<LazyTensor> {
 fn load_conv_bn(
     st: &crate::safetensors::MmapedSafetensors,
     prefix: &str,
-    c_in: usize, c_out: usize, kernel: usize, stride: usize, groups: usize,
+    c_in: usize,
+    c_out: usize,
+    kernel: usize,
+    stride: usize,
+    groups: usize,
     bn_eps: f64,
 ) -> Result<ConvBN> {
     use crate::lazy::load_tensor_as_f32;
-    let w = WeightStorage::F32(Arc::from(
-        load_tensor_as_f32(st, &format!("{prefix}.0.weight"))?,
-    ));
+    let w = WeightStorage::F32(Arc::from(load_tensor_as_f32(
+        st,
+        &format!("{prefix}.0.weight"),
+    )?));
     let gain = load_tensor_as_f32(st, &format!("{prefix}.1.weight"))?;
     let bias = load_tensor_as_f32(st, &format!("{prefix}.1.bias"))?;
     let mean = load_tensor_as_f32(st, &format!("{prefix}.1.running_mean"))?;
     let var = load_tensor_as_f32(st, &format!("{prefix}.1.running_var"))?;
     let bn = BatchNormParams::from_raw(&gain, &bias, &mean, &var, bn_eps);
-    Ok(ConvBN { w, bn, c_in, c_out, kernel, stride, groups })
+    Ok(ConvBN {
+        w,
+        bn,
+        c_in,
+        c_out,
+        kernel,
+        stride,
+        groups,
+    })
 }
 
 fn load_conv_bias(
     st: &crate::safetensors::MmapedSafetensors,
-    prefix: &str, c_in: usize, c_out: usize,
+    prefix: &str,
+    c_in: usize,
+    c_out: usize,
 ) -> Result<ConvBias> {
     use crate::lazy::load_tensor_as_f32;
-    let w = WeightStorage::F32(Arc::from(
-        load_tensor_as_f32(st, &format!("{prefix}.weight"))?,
-    ));
+    let w = WeightStorage::F32(Arc::from(load_tensor_as_f32(
+        st,
+        &format!("{prefix}.weight"),
+    )?));
     let b = Arc::from(load_tensor_as_f32(st, &format!("{prefix}.bias"))?);
     Ok(ConvBias { w, b, c_in, c_out })
 }
@@ -388,31 +422,58 @@ impl EfficientNetWeights {
                 let exp_c = (in_c as f64 * stage.expand_ratio).round() as usize;
                 let p = format!("features.{stage_idx}.{li}.block");
                 let expand = if (stage.expand_ratio - 1.0).abs() > 1e-6 {
-                    Some(load_conv_bn(st, &format!("{p}.0"), in_c, exp_c, 1, 1, 1, bn_eps)?)
-                } else { None };
+                    Some(load_conv_bn(
+                        st,
+                        &format!("{p}.0"),
+                        in_c,
+                        exp_c,
+                        1,
+                        1,
+                        1,
+                        bn_eps,
+                    )?)
+                } else {
+                    None
+                };
                 // depthwise index: 0 if no expand, 1 if expand
                 let dw_idx = if expand.is_some() { 1 } else { 0 };
                 let depthwise = load_conv_bn(
-                    st, &format!("{p}.{dw_idx}"),
-                    exp_c, exp_c, stage.kernel, stride, exp_c, bn_eps,
+                    st,
+                    &format!("{p}.{dw_idx}"),
+                    exp_c,
+                    exp_c,
+                    stage.kernel,
+                    stride,
+                    exp_c,
+                    bn_eps,
                 )?;
                 // SE module after depthwise.
                 let se_idx = dw_idx + 1;
                 let se_c = (in_c / 4).max(1);
-                let se_fc1 = load_conv_bias(
-                    st, &format!("{p}.{se_idx}.fc1"), exp_c, se_c,
-                )?;
-                let se_fc2 = load_conv_bias(
-                    st, &format!("{p}.{se_idx}.fc2"), se_c, exp_c,
-                )?;
-                let se = SqueezeExciteWeights { fc1: se_fc1, fc2: se_fc2 };
+                let se_fc1 = load_conv_bias(st, &format!("{p}.{se_idx}.fc1"), exp_c, se_c)?;
+                let se_fc2 = load_conv_bias(st, &format!("{p}.{se_idx}.fc2"), se_c, exp_c)?;
+                let se = SqueezeExciteWeights {
+                    fc1: se_fc1,
+                    fc2: se_fc2,
+                };
                 // Project ConvBN at last index.
                 let proj_idx = se_idx + 1;
                 let project = load_conv_bn(
-                    st, &format!("{p}.{proj_idx}"), exp_c, out_c, 1, 1, 1, bn_eps,
+                    st,
+                    &format!("{p}.{proj_idx}"),
+                    exp_c,
+                    out_c,
+                    1,
+                    1,
+                    1,
+                    bn_eps,
                 )?;
                 blocks.push(MBConvWeights {
-                    expand, depthwise, se, project, config: *stage,
+                    expand,
+                    depthwise,
+                    se,
+                    project,
+                    config: *stage,
                 });
                 in_c = out_c;
             }
@@ -421,14 +482,29 @@ impl EfficientNetWeights {
         // features.8 = final ConvBNActivation(last_out, final_channels)
         let last_stage_out = cfg.stages.last().unwrap().out_channels;
         let final_cna = load_conv_bn(
-            st, "features.8", last_stage_out, cfg.final_channels, 1, 1, 1, bn_eps,
+            st,
+            "features.8",
+            last_stage_out,
+            cfg.final_channels,
+            1,
+            1,
+            1,
+            bn_eps,
         )?;
 
         let classifier_w = ltm(st, "classifier.1.weight", cfg.nclasses, cfg.final_channels)?;
-        let classifier_b = Arc::from(load_tensor_as_f32(st, "classifier.1.bias")
-            .unwrap_or_else(|_| vec![0.0_f32; cfg.nclasses]));
+        let classifier_b = Arc::from(
+            load_tensor_as_f32(st, "classifier.1.bias")
+                .unwrap_or_else(|_| vec![0.0_f32; cfg.nclasses]),
+        );
 
-        Ok(Self { init_cna, blocks, final_cna, classifier_w, classifier_b })
+        Ok(Self {
+            init_cna,
+            blocks,
+            final_cna,
+            classifier_w,
+            classifier_b,
+        })
     }
 }
 
@@ -457,14 +533,22 @@ mod tests {
     }
 
     fn build_conv_bn(
-        c_in: usize, c_out: usize, kernel: usize, stride: usize, groups: usize,
+        c_in: usize,
+        c_out: usize,
+        kernel: usize,
+        stride: usize,
+        groups: usize,
         nb: &mut dyn FnMut() -> f32,
     ) -> ConvBN {
         let w_len = c_out * (c_in / groups) * kernel * kernel;
         ConvBN {
             w: WeightStorage::F32(vec_of(w_len, nb)),
             bn: tiny_bn(c_out, nb),
-            c_in, c_out, kernel, stride, groups,
+            c_in,
+            c_out,
+            kernel,
+            stride,
+            groups,
         }
     }
 
@@ -472,15 +556,21 @@ mod tests {
         ConvBias {
             w: WeightStorage::F32(vec_of(c_out * c_in, nb)),
             b: vec_of(c_out, nb),
-            c_in, c_out,
+            c_in,
+            c_out,
         }
     }
 
-    fn build_mbconv(stage: &MBConvStageConfig, c_in_override: Option<usize>, nb: &mut dyn FnMut() -> f32)
-        -> MBConvWeights
-    {
+    fn build_mbconv(
+        stage: &MBConvStageConfig,
+        c_in_override: Option<usize>,
+        nb: &mut dyn FnMut() -> f32,
+    ) -> MBConvWeights {
         let mut cfg = *stage;
-        if let Some(c) = c_in_override { cfg.input_channels = c; cfg.stride = 1; }
+        if let Some(c) = c_in_override {
+            cfg.input_channels = c;
+            cfg.stride = 1;
+        }
         let exp = make_divisible(cfg.input_channels as f64 * cfg.expand_ratio, 8);
         let expand = if exp != cfg.input_channels {
             Some(build_conv_bn(cfg.input_channels, exp, 1, 1, 1, nb))
@@ -494,7 +584,13 @@ mod tests {
             fc2: build_conv_bias(squeeze, exp, nb),
         };
         let project = build_conv_bn(exp, cfg.out_channels, 1, 1, 1, nb);
-        MBConvWeights { expand, depthwise, se, project, config: cfg }
+        MBConvWeights {
+            expand,
+            depthwise,
+            se,
+            project,
+            config: cfg,
+        }
     }
 
     fn build_weights(cfg: &EfficientNetConfig, seed: u32) -> EfficientNetWeights {
@@ -504,7 +600,11 @@ mod tests {
         let mut blocks = Vec::new();
         for stage in &cfg.stages {
             for r in 0..stage.num_layers {
-                let c_in_override = if r == 0 { None } else { Some(stage.out_channels) };
+                let c_in_override = if r == 0 {
+                    None
+                } else {
+                    Some(stage.out_channels)
+                };
                 blocks.push(build_mbconv(stage, c_in_override, &mut nb));
             }
         }
@@ -513,15 +613,17 @@ mod tests {
         let classifier_w = WeightStorage::F32(vec_of(cfg.final_channels * cfg.nclasses, &mut nb));
         let classifier_b = vec_of(cfg.nclasses, &mut nb);
         EfficientNetWeights {
-            init_cna, blocks, final_cna, classifier_w, classifier_b,
+            init_cna,
+            blocks,
+            final_cna,
+            classifier_w,
+            classifier_b,
         }
     }
 
     fn tiny_image(h: usize) -> LazyTensor {
         let mut nb = rng_seed(1234);
-        let data: Arc<[f32]> = Arc::from(
-            (0..3 * h * h).map(|_| nb()).collect::<Vec<_>>()
-        );
+        let data: Arc<[f32]> = Arc::from((0..3 * h * h).map(|_| nb()).collect::<Vec<_>>());
         LazyTensor::from_f32(data, Shape::from_dims(&[1, 3, h, h]), &Device::cpu())
     }
 
@@ -544,8 +646,11 @@ mod tests {
             let pad_total = (oh.saturating_sub(1) * s + k).saturating_sub(h);
             let left = pad_total / 2;
             let right = pad_total - left;
-            assert_eq!((left, right), expected,
-                "h={h}, k={k}, s={s}: expected {expected:?}, got ({left}, {right})");
+            assert_eq!(
+                (left, right),
+                expected,
+                "h={h}, k={k}, s={s}: expected {expected:?}, got ({left}, {right})"
+            );
         }
     }
 
@@ -557,7 +662,10 @@ mod tests {
     fn efficientnet_b0_forward_shape() {
         let cfg = EfficientNetConfig::b0(10);
         let weights = build_weights(&cfg, 999);
-        let model = EfficientNetModel { config: cfg, weights };
+        let model = EfficientNetModel {
+            config: cfg,
+            weights,
+        };
         let img = tiny_image(32);
         let logits = model.forward(&img).unwrap();
         assert_eq!(logits.shape().dims(), &[1, 10]);
@@ -585,13 +693,20 @@ mod tests {
             fc2: build_conv_bias(8, 32, &mut nb),
         };
         let img = LazyTensor::from_f32(
-            Arc::from((0..1 * 32 * 4 * 4).map(|i| (i as f32) * 0.001).collect::<Vec<_>>()),
+            Arc::from(
+                (0..1 * 32 * 4 * 4)
+                    .map(|i| (i as f32) * 0.001)
+                    .collect::<Vec<_>>(),
+            ),
             Shape::from_dims(&[1, 32, 4, 4]),
             &Device::cpu(),
         );
         let cfg = EfficientNetConfig::b0(1);
         let weights = build_weights(&cfg, 1);
-        let model = EfficientNetModel { config: cfg, weights };
+        let model = EfficientNetModel {
+            config: cfg,
+            weights,
+        };
         let out = model.apply_se(&img, &se).unwrap();
         assert_eq!(out.shape().dims(), &[1, 32, 4, 4]);
         for &v in &out.realize_f32() {
@@ -603,7 +718,10 @@ mod tests {
     fn forward_features_shape_and_finite() {
         let cfg = EfficientNetConfig::b0(10);
         let weights = build_weights(&cfg, 1234);
-        let model = EfficientNetModel { config: cfg.clone(), weights };
+        let model = EfficientNetModel {
+            config: cfg.clone(),
+            weights,
+        };
         let img = tiny_image(32);
         let feats = model.forward_features(&img).unwrap();
         let shape = feats.shape();

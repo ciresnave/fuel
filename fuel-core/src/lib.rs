@@ -62,9 +62,10 @@ pub mod backend;
 pub mod cpu_backend;
 pub mod cuda_backend;
 mod device;
-pub mod dyn_backend;
 mod dtype;
+pub mod dyn_backend;
 pub mod error;
+pub mod layout;
 pub mod lazy;
 pub mod lazy_based;
 pub mod lazy_beit;
@@ -76,22 +77,13 @@ pub mod lazy_blip_vision;
 pub mod lazy_chatglm;
 pub mod lazy_chinese_clip;
 pub mod lazy_clip;
-pub mod lazy_conv3d;
 pub mod lazy_colpali;
-pub mod lazy_kv_cache;
-pub mod lazy_latent_cache;
-pub mod lazy_lfm2;
-pub mod lazy_llama2c;
-pub mod lazy_llama_full;
-pub mod lazy_lstm;
-pub mod lazy_llava;
+pub mod lazy_conv3d;
 pub mod lazy_convmixer;
 pub mod lazy_convnext;
 pub mod lazy_csm;
 pub mod lazy_dac;
 pub mod lazy_debertav2;
-pub mod lazy_encodec;
-pub mod lazy_eva2;
 pub mod lazy_deepseek2;
 pub mod lazy_depth_anything_v2;
 pub mod lazy_dinov2;
@@ -99,6 +91,8 @@ pub mod lazy_dinov2reg4;
 pub mod lazy_distilbert;
 pub mod lazy_efficientnet;
 pub mod lazy_efficientvit;
+pub mod lazy_encodec;
+pub mod lazy_eva2;
 pub mod lazy_falcon;
 pub mod lazy_fastvit;
 pub mod lazy_flux;
@@ -116,8 +110,16 @@ pub mod lazy_granitemoehybrid;
 pub mod lazy_helium;
 pub mod lazy_hiera;
 pub mod lazy_jina_bert;
+pub mod lazy_kv_cache;
+pub mod lazy_latent_cache;
+pub mod lazy_lfm2;
+pub mod lazy_llama2c;
+pub mod lazy_llama_full;
+pub mod lazy_llava;
+pub mod lazy_lstm;
 pub mod lazy_mamba;
 pub mod lazy_mamba2;
+pub mod lazy_marian;
 pub mod lazy_metavoice;
 pub mod lazy_metavoice_speaker_encoder;
 pub mod lazy_mimi;
@@ -129,15 +131,14 @@ pub mod lazy_mimi_quantization;
 pub mod lazy_mimi_resampler;
 pub mod lazy_mimi_seanet;
 pub mod lazy_mimi_transformer;
-pub mod lazy_marian;
 pub mod lazy_mistral;
 pub mod lazy_mixformer;
-pub mod lazy_mmdit;
-pub mod lazy_modernbert;
 pub mod lazy_mixtral;
+pub mod lazy_mmdit;
 pub mod lazy_mobileclip;
 pub mod lazy_mobilenetv4;
 pub mod lazy_mobileone;
+pub mod lazy_modernbert;
 pub mod lazy_moondream;
 pub mod lazy_mpt;
 pub mod lazy_musicgen;
@@ -154,13 +155,13 @@ pub mod lazy_nn_varmap;
 pub mod lazy_nomic_bert;
 pub mod lazy_nvembed_v2;
 pub mod lazy_olmo;
-pub mod lazy_openclip_text;
 pub mod lazy_olmo2;
+pub mod lazy_openclip_text;
 pub mod lazy_paddleocr_vl;
 pub mod lazy_paddleocr_vl_text;
 pub mod lazy_paddleocr_vl_vision;
-pub mod lazy_parler_tts;
 pub mod lazy_paligemma;
+pub mod lazy_parler_tts;
 pub mod lazy_persimmon;
 pub mod lazy_phi;
 pub mod lazy_phi3;
@@ -186,29 +187,11 @@ pub mod lazy_qwen3_vl_vision;
 pub mod lazy_recurrent_gemma;
 pub mod lazy_repvgg;
 pub mod lazy_resnet;
-pub mod lazy_segformer;
-pub mod lazy_vgg;
-pub mod lazy_sam;
-pub mod lazy_tiny_vit;
 pub mod lazy_rwkv5;
 pub mod lazy_rwkv6;
 pub mod lazy_rwkv7;
 pub mod lazy_rwkv_tokenizer;
-pub mod lazy_siglip;
-pub mod lazy_smollm3;
-pub mod lazy_snac;
-pub mod lazy_stablelm;
-pub mod lazy_stella_v5;
-pub mod lazy_starcoder2;
-pub mod lazy_t5;
-pub mod lazy_training_augmentations;
-pub mod lazy_training_augmentations_extras;
-pub mod lazy_trocr;
-pub mod lazy_vit;
-pub mod lazy_voxtral;
-pub mod lazy_xlm_roberta;
-pub mod lazy_yi;
-pub mod lazy_z_image;
+pub mod lazy_sam;
 pub mod lazy_sd3_text_encoder;
 pub mod lazy_sd3_vae;
 pub mod lazy_sd_samplers;
@@ -218,28 +201,44 @@ pub mod lazy_sd_samplers_unipc;
 pub mod lazy_sd_text_encoder;
 pub mod lazy_sd_unet;
 pub mod lazy_sd_vae;
+pub mod lazy_segformer;
+pub mod lazy_siglip;
+pub mod lazy_smollm3;
+pub mod lazy_snac;
+pub mod lazy_stablelm;
+pub mod lazy_starcoder2;
+pub mod lazy_stella_v5;
+pub mod lazy_t5;
+pub mod lazy_tiny_vit;
+pub mod lazy_training_augmentations;
+pub mod lazy_training_augmentations_extras;
+pub mod lazy_trocr;
+pub mod lazy_vgg;
+pub mod lazy_vit;
+pub mod lazy_voxtral;
 pub mod lazy_whisper;
 pub mod lazy_whisper_audio;
 pub mod lazy_wuerstchen;
+pub mod lazy_xlm_roberta;
+pub mod lazy_yi;
 pub mod lazy_yolov3;
 pub mod lazy_yolov8;
-pub mod layout;
+pub mod lazy_z_image;
 // `seq_bucketing` removed in Phase 6d: paged attention via
 // `Op::PagedAttn` (and `LazyTensor::paged_attn`) supersedes the
 // bucket-and-pad approach. Variable-length decode is now expressed
 // directly via per-sequence `context_lens`.
 pub mod metal_backend;
+#[cfg(feature = "mkl")]
+mod mkl;
 pub mod model_progress;
 #[cfg(feature = "vulkan")]
 pub mod vulkan_backend;
-#[cfg(feature = "mkl")]
-mod mkl;
 // dispatch.rs (Judge cache) moved into judge::cache 2026-05-31 — the
 // `fuel_core::dispatch` name was a misnomer for what was just the
 // cached output of the Judge. Callers now reach the cache via
 // `fuel_core::judge::cached()` / `populate_dispatch_table()` /
 // `invalidate()` (re-exported at the judge module's top level).
-pub mod factories;
 /// The identity a held decode plan is baked against — what makes reusing a
 /// [`inference_context::DecodeSession`] safe across models. Read its module
 /// docs before adding anything to the key: over-keying is a silent performance
@@ -250,21 +249,22 @@ pub mod decode_shape;
 /// holds per-head K/V. Read its module docs before collapsing a spec to a
 /// `(n_kv_heads, head_dim)` pair; the collapse is deliberately fallible.
 pub mod decode_state_spec;
+pub mod factories;
 pub mod inference_context;
 pub mod kv_block_pool;
+pub mod kv_block_pool_device;
 /// The shared persistent-decode rebind driver (GAP-029 2b). Collapses what were
 /// two hand-copied 48-line per-model bodies. Read its module docs before adding
 /// a model: the Llama/Phi decode-path divergence is preserved deliberately, not
 /// an accident to be tidied.
 pub mod persistent_decode;
-pub mod kv_block_pool_device;
 // `multi_session` (the K-way decode scheduler) moved to `fuel-inference` (Q2,
 // 2026-07-29): it is consumer-side orchestration, not a Foundation primitive.
 // It reaches the model through the `DecodeModel` trait, so it no longer belongs
 // in `fuel-core`. See `fuel-inference/src/multi_session.rs`.
+pub mod judge;
 pub mod pipelined_bridge;
 pub mod planner;
-pub mod judge;
 /// Baracuda dispatch-telemetry / miss-reporting production consumer — the
 /// process-wide opt-in switch, sink, hardware stamp, and explicit-flush API
 /// that installs the plan-time [`fuel_dispatch::telemetry`] hooks on the
@@ -282,14 +282,14 @@ pub use fuel_dispatch::topology;
 /// Transfer (bandwidth) calibration moved to `fuel-hardware` (retirement B0.2b);
 /// re-exported so `crate::transfer_cost` / `fuel_core::transfer_cost` is unchanged.
 pub use fuel_hardware::transfer_cost;
-pub mod quantized;
 pub mod nf4;
+pub mod quantized;
 pub mod safetensors;
-pub mod train;
 pub mod shape;
 mod storage;
 mod strided_index;
 pub mod test_utils;
+pub mod train;
 pub mod utils;
 
 #[cfg(feature = "cudnn")]
@@ -300,7 +300,7 @@ pub use device::{Device, DeviceLocation, NdArray};
 pub use dtype::{DType, DTypeParseError, FloatDType, IntDType, WithDType};
 pub use error::{Context, Error, Result};
 pub use layout::Layout;
-pub use shape::{Shape, D};
+pub use shape::{D, Shape};
 pub use storage::Storage;
 pub use strided_index::{StridedBlocks, StridedIndex};
 
@@ -313,7 +313,6 @@ pub use strided_index::{StridedBlocks, StridedIndex};
 // does not appear in generated rustdoc; the canonical path
 // `fuel_core::tensor::Tensor` remains accessible for the same callers.
 #[doc(hidden)]
-
 #[cfg(feature = "cuda")]
 pub use cuda_backend as cuda;
 

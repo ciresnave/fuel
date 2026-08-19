@@ -34,14 +34,13 @@
 
 use fuel_core::judge::{Judge, OpKind, OpSize, SizeClass};
 use fuel_core::probe::ProbeReport;
-use fuel_ir::probe::BackendId;
-use fuel_ir::DType;
-use fuel_correctness_fixtures::capture::{
-    derive_seed, deterministic_f32_input, fixture_from_consensus,
-    group_fixtures_for_emission, write_fixture_file, ConsensusDecision,
-    MeasuredOutput,
-};
 use fuel_correctness_fixtures::ToleranceBand;
+use fuel_correctness_fixtures::capture::{
+    ConsensusDecision, MeasuredOutput, derive_seed, deterministic_f32_input,
+    fixture_from_consensus, group_fixtures_for_emission, write_fixture_file,
+};
+use fuel_ir::DType;
+use fuel_ir::probe::BackendId;
 
 /// Per-element output of the CPU AddElementwise kernel for the
 /// capture pipeline's deterministic input. Mirrors
@@ -146,8 +145,7 @@ fn capture_fixture_judge_roundtrip_matches_cleanly() {
 
     // ---- 6. Load the on-disk fixture tree via the public Judge
     //         loader (`with_fixtures_from`).
-    let loaded_judge = Judge::with_fixtures_from(&tmp_root)
-        .expect("load fixtures from tmp root");
+    let loaded_judge = Judge::with_fixtures_from(&tmp_root).expect("load fixtures from tmp root");
     let fixtures_map = loaded_judge
         .fixtures
         .as_ref()

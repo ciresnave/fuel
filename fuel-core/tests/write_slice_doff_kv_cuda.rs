@@ -14,7 +14,7 @@
 #![cfg(feature = "cuda")]
 
 use fuel_core::lazy::LazyTensor;
-use fuel_ir::{probe::BackendId, Shape};
+use fuel_ir::{Shape, probe::BackendId};
 
 /// A live CUDA device is **required** here, not optional.
 ///
@@ -33,8 +33,7 @@ fn require_cuda() {
 }
 
 fn cuda_device() -> fuel_cuda_backend::CudaDevice {
-    fuel_cuda_backend::CudaDevice::new(0)
-        .expect("cuda device 0 should be available")
+    fuel_cuda_backend::CudaDevice::new(0).expect("cuda device 0 should be available")
 }
 
 /// Basic append at device offset 1 on CUDA — matches the CPU
@@ -110,10 +109,7 @@ fn doff_writes_on_non_leading_axis_cuda() {
     require_cuda();
     let device = fuel_core::Device::cpu();
     let dest = LazyTensor::from_f32(vec![0.0_f32; 10], Shape::from_dims(&[2, 5]), &device);
-    let src = dest.const_f32_like(
-        vec![1.0_f32, 2.0, 3.0, 4.0],
-        Shape::from_dims(&[2, 2]),
-    );
+    let src = dest.const_f32_like(vec![1.0_f32, 2.0, 3.0, 4.0], Shape::from_dims(&[2, 2]));
     let offset = dest.const_i64_like(vec![2_i64], Shape::from_dims(&[]));
     let post_write = dest
         .write_slice_doff(&src, &offset, /* axis */ 1, vec![(0, 2), (0, 2)])
@@ -121,11 +117,5 @@ fn doff_writes_on_non_leading_axis_cuda() {
 
     let cuda_dev = cuda_device();
     let out = post_write.realize_f32_cuda(&cuda_dev);
-    assert_eq!(
-        out,
-        vec![
-            0.0, 0.0, 1.0, 2.0, 0.0,
-            0.0, 0.0, 3.0, 4.0, 0.0,
-        ]
-    );
+    assert_eq!(out, vec![0.0, 0.0, 1.0, 2.0, 0.0, 0.0, 0.0, 3.0, 4.0, 0.0,]);
 }

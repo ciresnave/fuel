@@ -56,15 +56,18 @@ pub fn probe_aocl_loadable() -> Result<()> {
     let b = [1.0_f32, 0.0, 0.0, 1.0];
     let mut c = [0.0_f32; 4];
     aocl_blas::gemm(
-        Trans::No, Trans::No,
-        2, 2, 2,
+        Trans::No,
+        Trans::No,
+        2,
+        2,
+        2,
         1.0_f32,
-        &a, &b,
+        &a,
+        &b,
         0.0_f32,
         &mut c,
-    ).map_err(|e| fuel_ir::Error::Msg(
-        format!("AOCL probe gemm failed: {e}")
-    ))?;
+    )
+    .map_err(|e| fuel_ir::Error::Msg(format!("AOCL probe gemm failed: {e}")))?;
     if c != [1.0, 2.0, 3.0, 4.0] {
         return Err(fuel_ir::Error::Msg(format!(
             "AOCL probe gemm produced wrong result: {c:?} != [1, 2, 3, 4]"

@@ -133,9 +133,7 @@ pub(crate) fn launch(
     let (b, hq, sq, d) = (q_dims[0], q_dims[1], q_dims[2], q_dims[3]);
     let (_, hkv, sk, _) = (k_dims[0], k_dims[1], k_dims[2], k_dims[3]);
     if hq % hkv != 0 {
-        fuel_ir::bail!(
-            "CudaBackend::flash_attn: Hq={hq} must be a multiple of Hkv={hkv}"
-        );
+        fuel_ir::bail!("CudaBackend::flash_attn: Hq={hq} must be a multiple of Hkv={hkv}");
     }
     // baracuda Phase 60 supports the full FA2 v2.8.3 head_dim set.
     // SD 1.5-style hd40/hd80 are NOT in the supported set — those

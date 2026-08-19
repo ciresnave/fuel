@@ -1,4 +1,4 @@
-﻿//! Pipeline parallelism: stage assignment and micro-batch scheduling.
+//! Pipeline parallelism: stage assignment and micro-batch scheduling.
 //!
 //! Pipeline parallelism (PP) partitions a model into consecutive *stages*,
 //! each assigned to a different device. Data flows through stages sequentially,
@@ -120,10 +120,7 @@ impl Schedule {
 
     /// All steps at a given time across all stages.
     pub fn at_time(&self, time: usize) -> Vec<&ScheduleStep> {
-        self.per_stage
-            .iter()
-            .filter_map(|s| s.get(time))
-            .collect()
+        self.per_stage.iter().filter_map(|s| s.get(time)).collect()
     }
 }
 
@@ -145,7 +142,10 @@ impl PipelineConfig {
     pub fn new(num_stages: usize, num_microbatches: usize) -> Self {
         assert!(num_stages > 0, "num_stages must be > 0");
         assert!(num_microbatches > 0, "num_microbatches must be > 0");
-        Self { num_stages, num_microbatches }
+        Self {
+            num_stages,
+            num_microbatches,
+        }
     }
 
     /// Number of stages.
@@ -184,9 +184,19 @@ impl PipelineConfig {
                     // Forward phase
                     let mb = t as isize - stage as isize;
                     if mb >= 0 && (mb as usize) < m {
-                        ScheduleStep { stage, time: t, op: StageOp::Forward, microbatch: mb as usize }
+                        ScheduleStep {
+                            stage,
+                            time: t,
+                            op: StageOp::Forward,
+                            microbatch: mb as usize,
+                        }
                     } else {
-                        ScheduleStep { stage, time: t, op: StageOp::Idle, microbatch: 0 }
+                        ScheduleStep {
+                            stage,
+                            time: t,
+                            op: StageOp::Idle,
+                            microbatch: 0,
+                        }
                     }
                 } else {
                     // Backward phase (reversed micro-batch order)
@@ -194,9 +204,19 @@ impl PipelineConfig {
                     let mb = bt as isize - (s - 1 - stage) as isize;
                     if mb >= 0 && (mb as usize) < m {
                         let actual_mb = m - 1 - mb as usize;
-                        ScheduleStep { stage, time: t, op: StageOp::Backward, microbatch: actual_mb }
+                        ScheduleStep {
+                            stage,
+                            time: t,
+                            op: StageOp::Backward,
+                            microbatch: actual_mb,
+                        }
                     } else {
-                        ScheduleStep { stage, time: t, op: StageOp::Idle, microbatch: 0 }
+                        ScheduleStep {
+                            stage,
+                            time: t,
+                            op: StageOp::Idle,
+                            microbatch: 0,
+                        }
                     }
                 };
                 steps.push(step);
@@ -204,7 +224,11 @@ impl PipelineConfig {
             per_stage.push(steps);
         }
 
-        Schedule { num_stages: s, num_microbatches: m, per_stage }
+        Schedule {
+            num_stages: s,
+            num_microbatches: m,
+            per_stage,
+        }
     }
 
     /// 1F1B schedule: warmup forwards, then strictly interleaved 1-forward-1-backward,
@@ -229,7 +253,12 @@ impl PipelineConfig {
             fn pad_idle(steps: &mut Vec<ScheduleStep>, stage: usize, time: usize) {
                 while steps.len() < time {
                     let t = steps.len();
-                    steps.push(ScheduleStep { stage, time: t, op: StageOp::Idle, microbatch: 0 });
+                    steps.push(ScheduleStep {
+                        stage,
+                        time: t,
+                        op: StageOp::Idle,
+                        microbatch: 0,
+                    });
                 }
             }
 
@@ -239,7 +268,10 @@ impl PipelineConfig {
             for _ in 0..warmup.min(m) {
                 pad_idle(steps, stage, time);
                 steps.push(ScheduleStep {
-                    stage, time, op: StageOp::Forward, microbatch: fwd_idx,
+                    stage,
+                    time,
+                    op: StageOp::Forward,
+                    microbatch: fwd_idx,
                 });
                 fwd_idx += 1;
                 time += 1;
@@ -250,7 +282,10 @@ impl PipelineConfig {
                 // Forward
                 pad_idle(steps, stage, time);
                 steps.push(ScheduleStep {
-                    stage, time, op: StageOp::Forward, microbatch: fwd_idx,
+                    stage,
+                    time,
+                    op: StageOp::Forward,
+                    microbatch: fwd_idx,
                 });
                 fwd_idx += 1;
                 time += 1;
@@ -259,7 +294,10 @@ impl PipelineConfig {
                 if bwd_idx < m {
                     pad_idle(steps, stage, time);
                     steps.push(ScheduleStep {
-                        stage, time, op: StageOp::Backward, microbatch: bwd_idx,
+                        stage,
+                        time,
+                        op: StageOp::Backward,
+                        microbatch: bwd_idx,
                     });
                     bwd_idx += 1;
                     time += 1;
@@ -270,7 +308,10 @@ impl PipelineConfig {
             while bwd_idx < m {
                 pad_idle(steps, stage, time);
                 steps.push(ScheduleStep {
-                    stage, time, op: StageOp::Backward, microbatch: bwd_idx,
+                    stage,
+                    time,
+                    op: StageOp::Backward,
+                    microbatch: bwd_idx,
                 });
                 bwd_idx += 1;
                 time += 1;
@@ -282,11 +323,20 @@ impl PipelineConfig {
         for (stage, steps) in per_stage.iter_mut().enumerate() {
             while steps.len() < max_len {
                 let t = steps.len();
-                steps.push(ScheduleStep { stage, time: t, op: StageOp::Idle, microbatch: 0 });
+                steps.push(ScheduleStep {
+                    stage,
+                    time: t,
+                    op: StageOp::Idle,
+                    microbatch: 0,
+                });
             }
         }
 
-        Schedule { num_stages: s, num_microbatches: m, per_stage }
+        Schedule {
+            num_stages: s,
+            num_microbatches: m,
+            per_stage,
+        }
     }
 }
 
@@ -302,8 +352,10 @@ pub struct StageAssignment {
 impl StageAssignment {
     /// Assign `num_layers` layers evenly across `num_stages` stages.
     pub fn uniform(num_layers: usize, num_stages: usize) -> Self {
-        assert!(num_stages > 0 && num_layers >= num_stages,
-                "need at least as many layers as stages");
+        assert!(
+            num_stages > 0 && num_layers >= num_stages,
+            "need at least as many layers as stages"
+        );
         let per_stage = num_layers / num_stages;
         let remainder = num_layers % num_stages;
         let mut assignments = Vec::with_capacity(num_layers);
@@ -316,7 +368,10 @@ impl StageAssignment {
             }
         }
         let _ = layer;
-        Self { assignments, num_stages }
+        Self {
+            assignments,
+            num_stages,
+        }
     }
 
     /// Which stage a layer belongs to.
@@ -368,11 +423,17 @@ mod tests {
         let sched = config.build_schedule(ScheduleKind::GPipe);
 
         for stage in 0..3 {
-            let fwd_mbs: Vec<usize> = sched.steps(stage).iter()
+            let fwd_mbs: Vec<usize> = sched
+                .steps(stage)
+                .iter()
                 .filter(|s| s.op == StageOp::Forward)
                 .map(|s| s.microbatch)
                 .collect();
-            assert_eq!(fwd_mbs.len(), 5, "stage {stage} should have 5 forward steps");
+            assert_eq!(
+                fwd_mbs.len(),
+                5,
+                "stage {stage} should have 5 forward steps"
+            );
             // Should process all microbatches 0..5
             let mut sorted = fwd_mbs.clone();
             sorted.sort();
@@ -389,7 +450,9 @@ mod tests {
         assert_eq!(sched.num_microbatches(), 8);
 
         // Stage 0 starts with forward
-        let first_non_idle = sched.steps(0).iter()
+        let first_non_idle = sched
+            .steps(0)
+            .iter()
             .find(|s| s.op != StageOp::Idle)
             .unwrap();
         assert_eq!(first_non_idle.op, StageOp::Forward);
@@ -402,11 +465,15 @@ mod tests {
         let sched = config.build_schedule(ScheduleKind::OneForwardOneBackward);
 
         for stage in 0..3 {
-            let fwd_mbs: Vec<usize> = sched.steps(stage).iter()
+            let fwd_mbs: Vec<usize> = sched
+                .steps(stage)
+                .iter()
                 .filter(|s| s.op == StageOp::Forward)
                 .map(|s| s.microbatch)
                 .collect();
-            let bwd_mbs: Vec<usize> = sched.steps(stage).iter()
+            let bwd_mbs: Vec<usize> = sched
+                .steps(stage)
+                .iter()
                 .filter(|s| s.op == StageOp::Backward)
                 .map(|s| s.microbatch)
                 .collect();
@@ -422,9 +489,12 @@ mod tests {
         let f1b = config.build_schedule(ScheduleKind::OneForwardOneBackward);
 
         // 1F1B should have fewer or equal bubble steps
-        assert!(f1b.bubble_ratio() <= gpipe.bubble_ratio(),
-                "1F1B bubble={:.2}% should be ≤ GPipe bubble={:.2}%",
-                f1b.bubble_ratio() * 100.0, gpipe.bubble_ratio() * 100.0);
+        assert!(
+            f1b.bubble_ratio() <= gpipe.bubble_ratio(),
+            "1F1B bubble={:.2}% should be ≤ GPipe bubble={:.2}%",
+            f1b.bubble_ratio() * 100.0,
+            gpipe.bubble_ratio() * 100.0
+        );
     }
 
     #[test]

@@ -332,7 +332,11 @@ pub fn derive_structure_key_token_with_acc_mp(
         })
         .max()
         .unwrap_or(0);
-    let index_width = if max_touched >= (1i128 << 31) { "ix64" } else { "ix32" };
+    let index_width = if max_touched >= (1i128 << 31) {
+        "ix64"
+    } else {
+        "ix32"
+    };
 
     // Field 5 — work class: total element count of the ITERATION FRAME
     // (§6.5-0010) — the per-axis maximum extents, not operand 0's.
@@ -554,7 +558,11 @@ fn operand_sub_key(o: &FdxOperandDesc, frame: &[i64], innermost_reduced: bool) -
             // uses (§6.5-0012): without it the `inner_extent % l == 0` test is
             // VACUOUSLY true at E=0 (every L divides 0), mis-deriving v4 for an
             // empty run — the §6.5-0009(c) zero-extent trap (KISS #82 F4 / #87).
-            if vbytes <= 16 && o.align_bytes % vbytes == 0 && inner_extent >= l && inner_extent % l == 0 {
+            if vbytes <= 16
+                && o.align_bytes % vbytes == 0
+                && inner_extent >= l
+                && inner_extent % l == 0
+            {
                 picked = match l {
                     8 => "v8",
                     4 => "v4",
@@ -667,11 +675,7 @@ mod tests {
 
             // The simplest cell that puts a dtype at operand 0.
             let ops = [co(&[4096], dt), co(&[4096], dt)];
-            match derive_structure_key_token(
-                FuelOpCategory::BinaryElementwise,
-                &ops,
-                "cuda:sm89",
-            ) {
+            match derive_structure_key_token(FuelOpCategory::BinaryElementwise, &ops, "cuda:sm89") {
                 None => not_derivable.push((dt, spelling)),
                 Some(token) => {
                     // Field 3 (0-indexed 2) is `<dtype>`: sk4|<op>|<dtype>|<target>|…
@@ -915,13 +919,13 @@ mod tests {
     #[test]
     fn sk4_gem_batched_cell_golden() {
         let ops = [f32c(&[256, 4096]), f32c(&[4096, 4096]), f32c(&[256, 4096])];
-        let batched = GemCell { batch: Some(256), ..gem_f32(256, 4096, 4096) };
-        let token = derive_structure_key_token(
-            FuelOpCategory::Contraction(batched),
-            &ops,
-            "cuda:sm90",
-        )
-        .expect("derives");
+        let batched = GemCell {
+            batch: Some(256),
+            ..gem_f32(256, 4096, 4096)
+        };
+        let token =
+            derive_structure_key_token(FuelOpCategory::Contraction(batched), &ops, "cuda:sm90")
+                .expect("derives");
         assert_eq!(
             token,
             "sk4|gem|f32|cuda:sm90|ix32|grid|r2|co/00/v4/d16/f;co/00/v4/d16/f;co/00/v4/d16/f|-|cmll/d16/bm/f32/f32/f32/st"
@@ -953,12 +957,9 @@ mod tests {
             math_precision: GemMathPrecision::ReducedMantissa,
             ..gem_f32(8, 4096, 4096)
         };
-        let tf32 = derive_structure_key_token(
-            FuelOpCategory::Contraction(tf32_cell),
-            &ops,
-            "cuda:sm90",
-        )
-        .expect("derives");
+        let tf32 =
+            derive_structure_key_token(FuelOpCategory::Contraction(tf32_cell), &ops, "cuda:sm90")
+                .expect("derives");
         assert_eq!(
             simt,
             "sk4|gem|f32|cuda:sm90|ix32|grid|r2|co/00/v4/d16/f;co/00/v4/d16/f;co/00/v4/d16/f|-|ctll/d16/f32/f32/f32/st"
@@ -986,7 +987,11 @@ mod tests {
             FdxOperandDesc::from_layout(
                 &Layout::new(
                     Shape::from_dims(dims),
-                    Layout::contiguous(Shape::from_dims(dims)).stride().iter().copied().collect::<StrideVec>(),
+                    Layout::contiguous(Shape::from_dims(dims))
+                        .stride()
+                        .iter()
+                        .copied()
+                        .collect::<StrideVec>(),
                     4,
                 ),
                 DType::F8E4M3,
@@ -999,26 +1004,26 @@ mod tests {
             out_dtype: DType::F16,
             ..gem_f32(8, 4096, 4096)
         };
-        let token = derive_structure_key_token(
-            FuelOpCategory::Contraction(cell),
-            &ops,
-            "cuda:sm90",
-        )
-        .expect("derives");
+        let token =
+            derive_structure_key_token(FuelOpCategory::Contraction(cell), &ops, "cuda:sm90")
+                .expect("derives");
         assert_eq!(
             token,
             "sk4|gem|f8e4m3fn|cuda:sm90|ix32|grid|r2|co/00/v4/d16/f;co/00/v4/d16/f;co/00/v4/d16/f|-|ctll/d16/f8e4m3fn/f32/f16/st"
         );
         // The f32-out twin is a DISTINCT token (the sk2 collision resolved
         // in-key by the precision coordinates, §6.6-0018).
-        let twin = GemCell { out_dtype: DType::F32, ..cell };
-        let twin_token = derive_structure_key_token(
-            FuelOpCategory::Contraction(twin),
-            &ops,
-            "cuda:sm90",
-        )
-        .expect("derives");
-        assert_ne!(token, twin_token, "mixed-precision FP8 cells must not collide under sk4");
+        let twin = GemCell {
+            out_dtype: DType::F32,
+            ..cell
+        };
+        let twin_token =
+            derive_structure_key_token(FuelOpCategory::Contraction(twin), &ops, "cuda:sm90")
+                .expect("derives");
+        assert_ne!(
+            token, twin_token,
+            "mixed-precision FP8 cells must not collide under sk4"
+        );
     }
 
     /// A gem cell declines (never guesses) on a precision coordinate outside
@@ -1026,7 +1031,10 @@ mod tests {
     #[test]
     fn gem_declines_unmappable_or_invalid() {
         let ops = [f32c(&[8, 4096]), f32c(&[4096, 4096]), f32c(&[8, 4096])];
-        let mx_weight = GemCell { weight_dtype: DType::F4, ..gem_f32(8, 4096, 4096) };
+        let mx_weight = GemCell {
+            weight_dtype: DType::F4,
+            ..gem_f32(8, 4096, 4096)
+        };
         assert_eq!(
             derive_structure_key_token(FuelOpCategory::Contraction(mx_weight), &ops, "cuda:sm89"),
             None
@@ -1036,7 +1044,10 @@ mod tests {
             derive_structure_key_token(FuelOpCategory::Contraction(negative_m), &ops, "cuda:sm89"),
             None
         );
-        let negative_batch = GemCell { batch: Some(-2), ..gem_f32(8, 4096, 4096) };
+        let negative_batch = GemCell {
+            batch: Some(-2),
+            ..gem_f32(8, 4096, 4096)
+        };
         assert_eq!(
             derive_structure_key_token(
                 FuelOpCategory::Contraction(negative_batch),
@@ -1053,9 +1064,9 @@ mod tests {
     fn gem_size_class_ladder() {
         let ops = [f32c(&[8, 4096]), f32c(&[4096, 4096]), f32c(&[8, 4096])];
         for (m, n, k, expect) in [
-            (8i64, 9, 129, "ctsm/da"),      // K=129 odd → da
-            (128, 2048, 2049, "csml/da"),   // K=2049 odd → da
-            (1, 129, 24, "ctms/d8"),        // K=24 → d8 (mod 16 = 8)
+            (8i64, 9, 129, "ctsm/da"),    // K=129 odd → da
+            (128, 2048, 2049, "csml/da"), // K=2049 odd → da
+            (1, 129, 24, "ctms/d8"),      // K=24 → d8 (mod 16 = 8)
             (3000, 8, 4096, "cltl/d16"),
         ] {
             let token = derive_structure_key_token(
@@ -1104,19 +1115,43 @@ mod tests {
         let assert_clean = |token: &str| {
             assert!(!token.contains("f32s"), "retired f32s spelling in {token}");
             assert!(!token.contains("fnuz"), "reserved fnuz spelling in {token}");
-            assert!(!token.contains("|e4m3|"), "retired bare e4m3 (primary) in {token}");
-            assert!(!token.contains("/e4m3/"), "retired bare e4m3 (gem group) in {token}");
+            assert!(
+                !token.contains("|e4m3|"),
+                "retired bare e4m3 (primary) in {token}"
+            );
+            assert!(
+                !token.contains("/e4m3/"),
+                "retired bare e4m3 (gem group) in {token}"
+            );
             // sk4 retires the UNPREFIXED fp8 spellings too. The delimiters are
             // load-bearing: `f8e4m3fn` CONTAINS `e4m3fn` as a substring, so a
             // bare `contains("e4m3fn")` would reject the CORRECT sk4 token.
             // `/f8e4m3fn/` does not match `/e4m3fn/`, so the delimited form
             // catches only the retired spelling.
-            assert!(!token.contains("|e4m3fn|"), "retired unprefixed e4m3fn (primary) in {token}");
-            assert!(!token.contains("/e4m3fn/"), "retired unprefixed e4m3fn (gem group) in {token}");
-            assert!(!token.contains("|e5m2|"), "retired unprefixed e5m2 (primary) in {token}");
-            assert!(!token.contains("/e5m2/"), "retired unprefixed e5m2 (gem group) in {token}");
-            assert!(!token.contains("|s8|") && !token.contains("/s8/"), "retired sk3 s8 spelling in {token}");
-            assert!(!token.contains("|s16|") && !token.contains("/s16/"), "retired sk3 s16 spelling in {token}");
+            assert!(
+                !token.contains("|e4m3fn|"),
+                "retired unprefixed e4m3fn (primary) in {token}"
+            );
+            assert!(
+                !token.contains("/e4m3fn/"),
+                "retired unprefixed e4m3fn (gem group) in {token}"
+            );
+            assert!(
+                !token.contains("|e5m2|"),
+                "retired unprefixed e5m2 (primary) in {token}"
+            );
+            assert!(
+                !token.contains("/e5m2/"),
+                "retired unprefixed e5m2 (gem group) in {token}"
+            );
+            assert!(
+                !token.contains("|s8|") && !token.contains("/s8/"),
+                "retired sk3 s8 spelling in {token}"
+            );
+            assert!(
+                !token.contains("|s16|") && !token.contains("/s16/"),
+                "retired sk3 s16 spelling in {token}"
+            );
         };
         for dt in ALL {
             // Primary position (non-gem).
@@ -1136,7 +1171,11 @@ mod tests {
             };
             if let Some(token) = derive_structure_key_token(
                 FuelOpCategory::Contraction(cell),
-                &[co(&[8, 4096], dt), co(&[4096, 4096], dt), co(&[8, 4096], dt)],
+                &[
+                    co(&[8, 4096], dt),
+                    co(&[4096, 4096], dt),
+                    co(&[8, 4096], dt),
+                ],
                 "cuda:sm89",
             ) {
                 assert_clean(&token);
@@ -1225,14 +1264,21 @@ mod tests {
     fn acc_mp_omitted_entirely_when_nothing_deviates() {
         let ops = [co(&[4096], DType::F32)];
         let plain = derive_structure_key_token(
-            FuelOpCategory::Reduction(ReduceAxes::All), &ops, "cuda:sm89",
+            FuelOpCategory::Reduction(ReduceAxes::All),
+            &ops,
+            "cuda:sm89",
         )
         .expect("plain reduction derives");
 
         // acc == compute dtype, mp == default ⇒ nothing to declare.
         let diagonal = derive_structure_key_token_with_acc_mp(
-            FuelOpCategory::Reduction(ReduceAxes::All), &ops, "cuda:sm89",
-            Some(AccMp { acc_dtype: DType::F32, math_precision: GemMathPrecision::BitStable }),
+            FuelOpCategory::Reduction(ReduceAxes::All),
+            &ops,
+            "cuda:sm89",
+            Some(AccMp {
+                acc_dtype: DType::F32,
+                math_precision: GemMathPrecision::BitStable,
+            }),
         )
         .expect("diagonal reduction derives");
 
@@ -1254,7 +1300,10 @@ mod tests {
         let ops = [co(&[4096], DType::F16)];
         let derive = |a: AccMp| {
             derive_structure_key_token_with_acc_mp(
-                FuelOpCategory::Reduction(ReduceAxes::All), &ops, "cuda:sm89", Some(a),
+                FuelOpCategory::Reduction(ReduceAxes::All),
+                &ops,
+                "cuda:sm89",
+                Some(a),
             )
             .expect("derives")
         };
@@ -1284,7 +1333,11 @@ mod tests {
         assert_ne!(acc_only, mp_only);
 
         // The field is the LAST `|`-part, i.e. the optional-trailing slot.
-        assert_eq!(acc_only.split('|').count(), 10, "9 base fields + 1: {acc_only}");
+        assert_eq!(
+            acc_only.split('|').count(),
+            10,
+            "9 base fields + 1: {acc_only}"
+        );
     }
 
     /// §6.7-0013: a cell carries **at most one** precision field, and the
@@ -1294,16 +1347,26 @@ mod tests {
     #[test]
     fn acc_mp_on_a_gem_cell_declines_rather_than_coexisting() {
         let cell = gem_f32(8, 4096, 4096);
-        let ops = [co(&[8, 4096], DType::F32), co(&[4096, 4096], DType::F32), co(&[8, 4096], DType::F32)];
+        let ops = [
+            co(&[8, 4096], DType::F32),
+            co(&[4096, 4096], DType::F32),
+            co(&[8, 4096], DType::F32),
+        ];
         // Control: the same gem cell derives fine with no (acc+mp).
         assert!(
-            derive_structure_key_token(FuelOpCategory::Contraction(cell), &ops, "cuda:sm89").is_some(),
+            derive_structure_key_token(FuelOpCategory::Contraction(cell), &ops, "cuda:sm89")
+                .is_some(),
             "control: the gem cell must derive without an (acc+mp), or the decline below proves nothing about coexistence",
         );
         assert_eq!(
             derive_structure_key_token_with_acc_mp(
-                FuelOpCategory::Contraction(cell), &ops, "cuda:sm89",
-                Some(AccMp { acc_dtype: DType::F32, math_precision: GemMathPrecision::ReducedMantissa }),
+                FuelOpCategory::Contraction(cell),
+                &ops,
+                "cuda:sm89",
+                Some(AccMp {
+                    acc_dtype: DType::F32,
+                    math_precision: GemMathPrecision::ReducedMantissa
+                }),
             ),
             None,
             "a gem cell carrying BOTH precision fields must decline",
@@ -1346,11 +1409,7 @@ mod tests {
         let mut broken = f32c(&[4096]);
         broken.strides = vec![1, 1];
         assert_eq!(
-            derive_structure_key_token(
-                FuelOpCategory::BinaryElementwise,
-                &[broken],
-                "cuda:sm89"
-            ),
+            derive_structure_key_token(FuelOpCategory::BinaryElementwise, &[broken], "cuda:sm89"),
             None
         );
     }
@@ -1367,7 +1426,10 @@ mod tests {
             "cuda:sm89",
         )
         .expect("reduction must derive");
-        assert_eq!(token, "sk4|red|f32|cuda:sm89|ix32|grid|r1|co/00/v1/d16/f|rall");
+        assert_eq!(
+            token,
+            "sk4|red|f32|cuda:sm89|ix32|grid|r1|co/00/v1/d16/f|rall"
+        );
     }
 
     /// A keepdim mask that does NOT cover the innermost axis keeps the
@@ -1397,9 +1459,11 @@ mod tests {
             "cuda:sm89",
         )
         .expect("derives");
-        assert_eq!(token, "sk4|red|f32|cuda:sm89|ix32|warp|r2|co/00/v1/d8/f;co/00/v1/da/f|rlast");
+        assert_eq!(
+            token,
+            "sk4|red|f32|cuda:sm89|ix32|warp|r2|co/00/v1/d8/f;co/00/v1/da/f|rlast"
+        );
     }
-
 
     /// KISS A.1: reduction keepdim `[4,8] → [1,1]` (all-axes ⇒ `rall`).
     #[test]
@@ -1410,7 +1474,10 @@ mod tests {
             "cuda:sm89",
         )
         .expect("derives");
-        assert_eq!(token, "sk4|red|f32|cuda:sm89|ix32|warp|r2|co/00/v1/d8/f;co/00/v1/da/f|rall");
+        assert_eq!(
+            token,
+            "sk4|red|f32|cuda:sm89|ix32|warp|r2|co/00/v1/d8/f;co/00/v1/da/f|rall"
+        );
     }
 
     /// KISS A.1: rank-1 reduction `[8] → [1]` — the §6.6-0009 tiebreak encodes
@@ -1423,7 +1490,10 @@ mod tests {
             "cuda:sm89",
         )
         .expect("derives");
-        assert_eq!(token, "sk4|red|f32|cuda:sm89|ix32|warp|r1|co/00/v1/d8/f;co/00/v1/da/f|rall");
+        assert_eq!(
+            token,
+            "sk4|red|f32|cuda:sm89|ix32|warp|r1|co/00/v1/d8/f;co/00/v1/da/f|rall"
+        );
     }
 
     /// KISS A.1: rank-4 reduction over axes 1 and 3 ⇒ explicit keepdim
@@ -1487,12 +1557,9 @@ mod tests {
             9,
         );
         let desc = FdxOperandDesc::from_layout(&layout, DType::F32);
-        let token = derive_structure_key_token(
-            FuelOpCategory::BinaryElementwise,
-            &[desc],
-            "cuda:sm89",
-        )
-        .expect("derives");
+        let token =
+            derive_structure_key_token(FuelOpCategory::BinaryElementwise, &[desc], "cuda:sm89")
+                .expect("derives");
         assert_eq!(token, "sk4|bin|f32|cuda:sm89|ix32|warp|r2|co/00/v1/da/r|-");
     }
 
@@ -1502,12 +1569,9 @@ mod tests {
     fn alignment_zero_derives_v1() {
         let mut desc = f32c(&[4096]);
         desc.align_bytes = 0;
-        let token = derive_structure_key_token(
-            FuelOpCategory::BinaryElementwise,
-            &[desc],
-            "cuda:sm89",
-        )
-        .expect("derives");
+        let token =
+            derive_structure_key_token(FuelOpCategory::BinaryElementwise, &[desc], "cuda:sm89")
+                .expect("derives");
         assert_eq!(token, "sk4|bin|f32|cuda:sm89|ix32|grid|r1|co/00/v1/d16/f|-");
     }
 

@@ -1,14 +1,14 @@
-﻿use std::{
+use std::{
     fs::File,
     io::BufReader,
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result};
+use clap::Parser;
 use fuel::quantized::gguf_file;
 use fuel::quantized::tokenizer::TokenizerFromGguf;
-use clap::Parser;
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use hf_hub::{Repo, RepoType, api::sync::Api};
 use tokenizers::Tokenizer;
 
 #[derive(Parser, Debug)]

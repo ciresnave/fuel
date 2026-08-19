@@ -41,8 +41,8 @@
 //!       `tie_word_embeddings`).
 
 use crate::lazy::{
-    load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
-    LayerWeights, LazyTensor, WeightStorage,
+    LayerWeights, LazyTensor, WeightStorage, load_tensor_as_f32,
+    load_transposed_matrix_preserve_dtype,
 };
 use crate::{Device, Result};
 use fuel_ir::Shape;
@@ -146,7 +146,9 @@ impl PaddleOcrVlTextModel {
     /// PaddleOCR-VL composition tests that need to inspect text-stack
     /// hidden states before the logit projection.
     pub fn forward_hidden_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
+        &self,
+        embeds: &LazyTensor,
+        start_pos: usize,
     ) -> Result<LazyTensor> {
         let cfg = &self.config;
         let seq = self.validate_embeds(embeds)?;
@@ -165,7 +167,9 @@ impl PaddleOcrVlTextModel {
     /// the lazy text-only path we expose the table directly so the
     /// composition layer can build it once and feed it in.
     pub fn forward_embeds_with_mrope(
-        &self, embeds: &LazyTensor, position_ids: &[[i64; 3]],
+        &self,
+        embeds: &LazyTensor,
+        position_ids: &[[i64; 3]],
     ) -> Result<LazyTensor> {
         let h_norm = self.forward_hidden_embeds_with_mrope(embeds, position_ids)?;
         self.apply_lm_head(&h_norm)
@@ -174,15 +178,19 @@ impl PaddleOcrVlTextModel {
     /// Like [`Self::forward_embeds_with_mrope`] but skips the
     /// lm_head and returns post-RmsNorm hidden states.
     pub fn forward_hidden_embeds_with_mrope(
-        &self, embeds: &LazyTensor, position_ids: &[[i64; 3]],
+        &self,
+        embeds: &LazyTensor,
+        position_ids: &[[i64; 3]],
     ) -> Result<LazyTensor> {
         let cfg = &self.config;
         let seq = self.validate_embeds(embeds)?;
         if position_ids.len() != seq {
             return Err(crate::Error::Msg(format!(
                 "PaddleOcrVlTextModel: position_ids length ({}) must match seq ({})",
-                position_ids.len(), seq,
-            )).bt());
+                position_ids.len(),
+                seq,
+            ))
+            .bt());
         }
         self.run_backbone(embeds, position_ids)?
             .rms_norm_affine(Arc::clone(&self.weights.final_norm_gain), cfg.rms_norm_eps)
@@ -196,17 +204,18 @@ impl PaddleOcrVlTextModel {
             return Err(crate::Error::Msg(format!(
                 "PaddleOcrVlTextModel: embeds shape must be (1, seq, {}), got {:?}",
                 cfg.hidden_size, dims,
-            )).bt());
+            ))
+            .bt());
         }
         if dims[1] == 0 {
-            return Err(crate::Error::Msg(
-                "PaddleOcrVlTextModel: seq must be > 0".into(),
-            ).bt());
+            return Err(crate::Error::Msg("PaddleOcrVlTextModel: seq must be > 0".into()).bt());
         }
         if cfg.num_attention_heads * cfg.head_dim != cfg.hidden_size {
             return Err(crate::Error::Msg(
-                "PaddleOcrVlTextConfig: num_attention_heads * head_dim must equal hidden_size".into(),
-            ).bt());
+                "PaddleOcrVlTextConfig: num_attention_heads * head_dim must equal hidden_size"
+                    .into(),
+            )
+            .bt());
         }
         if cfg.num_attention_heads % cfg.num_key_value_heads != 0 {
             return Err(crate::Error::Msg(format!(
@@ -218,21 +227,26 @@ impl PaddleOcrVlTextModel {
         if mrope_sum * 2 != cfg.head_dim {
             return Err(crate::Error::Msg(format!(
                 "PaddleOcrVlTextConfig: mrope_section {:?} sums to {}, expected head_dim/2 = {}",
-                cfg.mrope_section, mrope_sum, cfg.head_dim / 2,
-            )).bt());
+                cfg.mrope_section,
+                mrope_sum,
+                cfg.head_dim / 2,
+            ))
+            .bt());
         }
         Ok(dims[1])
     }
 
-    fn run_backbone(
-        &self, embeds: &LazyTensor, position_ids: &[[i64; 3]],
-    ) -> Result<LazyTensor> {
+    fn run_backbone(&self, embeds: &LazyTensor, position_ids: &[[i64; 3]]) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = position_ids.len();
 
-        let (rope_cos_data, rope_sin_data) =
-            build_mrope_tables(cfg.rope_theta, cfg.head_dim, &cfg.mrope_section, position_ids);
+        let (rope_cos_data, rope_sin_data) = build_mrope_tables(
+            cfg.rope_theta,
+            cfg.head_dim,
+            &cfg.mrope_section,
+            position_ids,
+        );
         let rope_shape = Shape::from_dims(&[seq, cfg.head_dim]);
         let rope_cos = embeds.const_f32_like(rope_cos_data, rope_shape.clone());
         let rope_sin = embeds.const_f32_like(rope_sin_data, rope_shape);
@@ -272,11 +286,17 @@ impl PaddleOcrVlTextModel {
 
         let x_norm = x.rms_norm_affine(Arc::clone(&layer.attn_norm_gain), cfg.rms_norm_eps)?;
 
-        let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size)?
+        let q = layer
+            .attn_q
+            .apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size)?
             .add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
-        let k = layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
+        let k = layer
+            .attn_k
+            .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
             .add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
-        let v = layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
+        let v = layer
+            .attn_v
+            .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
             .add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
 
         let q = q.split_heads(cfg.num_attention_heads, cfg.head_dim)?;
@@ -299,15 +319,24 @@ impl PaddleOcrVlTextModel {
         let attn_v = attn.matmul(&v_full)?;
 
         let merged = attn_v.merge_heads()?;
-        let attn_out = layer.attn_o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?;
+        let attn_out = layer
+            .attn_o
+            .apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?;
 
         let h1 = x.add(&attn_out)?;
         let h1_norm = h1.rms_norm_affine(Arc::clone(&layer.ffn_norm_gain), cfg.rms_norm_eps)?;
 
-        let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
-        let up = layer.ffn_up.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let gate = layer
+            .ffn_gate
+            .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let up = layer
+            .ffn_up
+            .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
         let swiglu = gate.silu().mul(&up)?;
-        let ffn_out = layer.ffn_down.apply_linear(&swiglu, cfg.intermediate_size, cfg.hidden_size)?;
+        let ffn_out =
+            layer
+                .ffn_down
+                .apply_linear(&swiglu, cfg.intermediate_size, cfg.hidden_size)?;
 
         h1.add(&ffn_out)
     }
@@ -352,7 +381,10 @@ pub fn build_mrope_tables(
     mrope_section: &[usize],
     positions: &[[i64; 3]],
 ) -> (Vec<f32>, Vec<f32>) {
-    assert!(head_dim.is_multiple_of(2), "build_mrope_tables: head_dim must be even");
+    assert!(
+        head_dim.is_multiple_of(2),
+        "build_mrope_tables: head_dim must be even"
+    );
     let half = head_dim / 2;
     let mrope_sum: usize = mrope_section.iter().sum();
     assert_eq!(
@@ -456,13 +488,12 @@ pub fn load_paddleocr_vl_text_weights_with_prefix(
 ) -> Result<PaddleOcrVlTextWeights> {
     let h = cfg.hidden_size;
     let kv = cfg.num_key_value_heads * cfg.head_dim;
-    let token_embedding = load_tensor_as_f32(
-        st, &format!("{prefix}model.embed_tokens.weight"),
-    )?;
+    let token_embedding = load_tensor_as_f32(st, &format!("{prefix}model.embed_tokens.weight"))?;
     if token_embedding.len() != cfg.vocab_size * h {
         crate::bail!(
             "{prefix}model.embed_tokens.weight: {} elts, expected {}",
-            token_embedding.len(), cfg.vocab_size * h,
+            token_embedding.len(),
+            cfg.vocab_size * h,
         );
     }
 
@@ -470,47 +501,76 @@ pub fn load_paddleocr_vl_text_weights_with_prefix(
     for i in 0..cfg.num_hidden_layers {
         let p = format!("{prefix}model.layers.{i}");
         let attn_q = load_transposed_matrix_preserve_dtype(
-            st, &format!("{p}.self_attn.q_proj.weight"), h, h,
+            st,
+            &format!("{p}.self_attn.q_proj.weight"),
+            h,
+            h,
         )?;
         let attn_k = load_transposed_matrix_preserve_dtype(
-            st, &format!("{p}.self_attn.k_proj.weight"), kv, h,
+            st,
+            &format!("{p}.self_attn.k_proj.weight"),
+            kv,
+            h,
         )?;
         let attn_v = load_transposed_matrix_preserve_dtype(
-            st, &format!("{p}.self_attn.v_proj.weight"), kv, h,
+            st,
+            &format!("{p}.self_attn.v_proj.weight"),
+            kv,
+            h,
         )?;
         let attn_o = load_transposed_matrix_preserve_dtype(
-            st, &format!("{p}.self_attn.o_proj.weight"), h, h,
+            st,
+            &format!("{p}.self_attn.o_proj.weight"),
+            h,
+            h,
         )?;
         let ffn_gate = load_transposed_matrix_preserve_dtype(
-            st, &format!("{p}.mlp.gate_proj.weight"), cfg.intermediate_size, h,
+            st,
+            &format!("{p}.mlp.gate_proj.weight"),
+            cfg.intermediate_size,
+            h,
         )?;
         let ffn_up = load_transposed_matrix_preserve_dtype(
-            st, &format!("{p}.mlp.up_proj.weight"), cfg.intermediate_size, h,
+            st,
+            &format!("{p}.mlp.up_proj.weight"),
+            cfg.intermediate_size,
+            h,
         )?;
         let ffn_down = load_transposed_matrix_preserve_dtype(
-            st, &format!("{p}.mlp.down_proj.weight"), h, cfg.intermediate_size,
+            st,
+            &format!("{p}.mlp.down_proj.weight"),
+            h,
+            cfg.intermediate_size,
         )?;
-        let attn_norm_gain = load_tensor_as_f32(
-            st, &format!("{p}.input_layernorm.weight"),
-        )?;
-        let ffn_norm_gain = load_tensor_as_f32(
-            st, &format!("{p}.post_attention_layernorm.weight"),
-        )?;
+        let attn_norm_gain = load_tensor_as_f32(st, &format!("{p}.input_layernorm.weight"))?;
+        let ffn_norm_gain =
+            load_tensor_as_f32(st, &format!("{p}.post_attention_layernorm.weight"))?;
         let (attn_q_bias, attn_k_bias, attn_v_bias) = if cfg.use_bias {
             (
-                load_tensor_as_f32(st, &format!("{p}.self_attn.q_proj.bias")).ok().map(Arc::from),
-                load_tensor_as_f32(st, &format!("{p}.self_attn.k_proj.bias")).ok().map(Arc::from),
-                load_tensor_as_f32(st, &format!("{p}.self_attn.v_proj.bias")).ok().map(Arc::from),
+                load_tensor_as_f32(st, &format!("{p}.self_attn.q_proj.bias"))
+                    .ok()
+                    .map(Arc::from),
+                load_tensor_as_f32(st, &format!("{p}.self_attn.k_proj.bias"))
+                    .ok()
+                    .map(Arc::from),
+                load_tensor_as_f32(st, &format!("{p}.self_attn.v_proj.bias"))
+                    .ok()
+                    .map(Arc::from),
             )
         } else {
             (None, None, None)
         };
         layers.push(LayerWeights {
-            attn_q, attn_q_bias,
-            attn_k, attn_k_bias,
-            attn_v, attn_v_bias,
+            attn_q,
+            attn_q_bias,
+            attn_k,
+            attn_k_bias,
+            attn_v,
+            attn_v_bias,
             attn_o,
-            ffn_gate, ffn_up, ffn_down,
+            ffn_gate,
+            ffn_up,
+            ffn_down,
             attn_norm_gain: Arc::from(attn_norm_gain),
             ffn_norm_gain: Arc::from(ffn_norm_gain),
         });
@@ -521,7 +581,10 @@ pub fn load_paddleocr_vl_text_weights_with_prefix(
         None
     } else {
         Some(load_transposed_matrix_preserve_dtype(
-            st, &format!("{prefix}lm_head.weight"), cfg.vocab_size, h,
+            st,
+            &format!("{prefix}lm_head.weight"),
+            cfg.vocab_size,
+            h,
         )?)
     };
 
@@ -651,7 +714,8 @@ mod tests {
             cfg.hidden_size,
             &tokens,
             &Device::cpu(),
-        ).unwrap();
+        )
+        .unwrap();
         let via_embeds = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
 
         assert_eq!(direct.len(), via_embeds.len());
@@ -681,9 +745,7 @@ mod tests {
         let head_dim = 8;
         let mrope_section = vec![2, 1, 1];
         let positions = vec![[3_i64, 7, 11], [1, 2, 4]];
-        let (cos, sin) = build_mrope_tables(
-            10_000.0, head_dim, &mrope_section, &positions,
-        );
+        let (cos, sin) = build_mrope_tables(10_000.0, head_dim, &mrope_section, &positions);
         let seq = positions.len();
         let half = head_dim / 2;
         for s in 0..seq {
@@ -704,13 +766,15 @@ mod tests {
         }
 
         // 2. Text-only positions (all 3 axes equal) → M-RoPE ≡ 1D RoPE.
-        let text_positions: Vec<[i64; 3]> =
-            (0..seq).map(|s| { let p = s as i64; [p, p, p] }).collect();
-        let (cos_mrope, sin_mrope) = build_mrope_tables(
-            10_000.0, head_dim, &mrope_section, &text_positions,
-        );
-        let (cos_std, sin_std) =
-            fuel_graph::build_rope_tables(10_000.0, 0, seq, head_dim);
+        let text_positions: Vec<[i64; 3]> = (0..seq)
+            .map(|s| {
+                let p = s as i64;
+                [p, p, p]
+            })
+            .collect();
+        let (cos_mrope, sin_mrope) =
+            build_mrope_tables(10_000.0, head_dim, &mrope_section, &text_positions);
+        let (cos_std, sin_std) = fuel_graph::build_rope_tables(10_000.0, 0, seq, head_dim);
         for (i, (a, b)) in cos_mrope.iter().zip(cos_std.iter()).enumerate() {
             assert!(
                 (a - b).abs() < 1e-6,
@@ -727,12 +791,14 @@ mod tests {
         // 3. Different M-RoPE 3D positions produce different cos/sin
         // tables (i.e. the multimodal axis selection actually matters).
         let mixed_positions = vec![[0_i64, 0, 0], [0, 1, 0], [0, 0, 1]];
-        let (cos_mixed, _) = build_mrope_tables(
-            10_000.0, head_dim, &mrope_section, &mixed_positions,
-        );
+        let (cos_mixed, _) =
+            build_mrope_tables(10_000.0, head_dim, &mrope_section, &mixed_positions);
         let row1 = &cos_mixed[head_dim..2 * head_dim];
         let row2 = &cos_mixed[2 * head_dim..3 * head_dim];
-        let any_diff = row1.iter().zip(row2.iter()).any(|(a, b)| (a - b).abs() > 1e-6);
+        let any_diff = row1
+            .iter()
+            .zip(row2.iter())
+            .any(|(a, b)| (a - b).abs() > 1e-6);
         assert!(
             any_diff,
             "M-RoPE rows for distinct 3D positions should differ — got identical",
@@ -753,7 +819,8 @@ mod tests {
             cfg.hidden_size,
             &tokens,
             &Device::cpu(),
-        ).unwrap();
+        )
+        .unwrap();
         let text_pos = host_text_position_ids(tokens.len(), 0);
         let via_mrope = model
             .forward_embeds_with_mrope(&embeds, &text_pos)
@@ -777,7 +844,10 @@ mod tests {
         cfg.tie_word_embeddings = true;
         let mut weights = tiny_weights(&cfg);
         weights.output = None;
-        let model = PaddleOcrVlTextModel { config: cfg.clone(), weights };
+        let model = PaddleOcrVlTextModel {
+            config: cfg.clone(),
+            weights,
+        };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits = model.forward(&tokens, 0).unwrap();
         assert_eq!(logits.shape().dims(), &[1, tokens.len(), cfg.vocab_size]);
@@ -802,7 +872,8 @@ mod tests {
             cfg.hidden_size,
             &tokens,
             &Device::cpu(),
-        ).unwrap();
+        )
+        .unwrap();
         let hidden = model.forward_hidden_embeds(&embeds, 0).unwrap();
         assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
         for &v in &hidden.realize_f32() {
@@ -812,8 +883,8 @@ mod tests {
 
     mod load {
         use super::*;
-        use safetensors::tensor::TensorView;
         use safetensors::Dtype;
+        use safetensors::tensor::TensorView;
         use std::collections::HashMap;
 
         fn put(
@@ -839,7 +910,9 @@ mod tests {
                 "lazy_paddleocr_vl_text_load_{}_{}.safetensors",
                 std::process::id(),
                 std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos(),
             ));
             std::fs::write(&path, bytes).expect("write tempfile");
             path
@@ -856,33 +929,77 @@ mod tests {
 
             let d = cfg.hidden_size;
             let kv = cfg.num_key_value_heads * cfg.head_dim;
-            put(&mut map, "model.embed_tokens.weight",
-                &[cfg.vocab_size, d], &vec_n(cfg.vocab_size * d));
+            put(
+                &mut map,
+                "model.embed_tokens.weight",
+                &[cfg.vocab_size, d],
+                &vec_n(cfg.vocab_size * d),
+            );
             for i in 0..cfg.num_hidden_layers {
                 let p = format!("model.layers.{i}");
-                put(&mut map, &format!("{p}.self_attn.q_proj.weight"),
-                    &[d, d], &vec_n(d * d));
-                put(&mut map, &format!("{p}.self_attn.k_proj.weight"),
-                    &[kv, d], &vec_n(kv * d));
-                put(&mut map, &format!("{p}.self_attn.v_proj.weight"),
-                    &[kv, d], &vec_n(kv * d));
-                put(&mut map, &format!("{p}.self_attn.o_proj.weight"),
-                    &[d, d], &vec_n(d * d));
-                put(&mut map, &format!("{p}.mlp.gate_proj.weight"),
-                    &[cfg.intermediate_size, d], &vec_n(cfg.intermediate_size * d));
-                put(&mut map, &format!("{p}.mlp.up_proj.weight"),
-                    &[cfg.intermediate_size, d], &vec_n(cfg.intermediate_size * d));
-                put(&mut map, &format!("{p}.mlp.down_proj.weight"),
-                    &[d, cfg.intermediate_size], &vec_n(d * cfg.intermediate_size));
-                put(&mut map, &format!("{p}.input_layernorm.weight"),
-                    &[d], &vec_n(d));
-                put(&mut map, &format!("{p}.post_attention_layernorm.weight"),
-                    &[d], &vec_n(d));
+                put(
+                    &mut map,
+                    &format!("{p}.self_attn.q_proj.weight"),
+                    &[d, d],
+                    &vec_n(d * d),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.self_attn.k_proj.weight"),
+                    &[kv, d],
+                    &vec_n(kv * d),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.self_attn.v_proj.weight"),
+                    &[kv, d],
+                    &vec_n(kv * d),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.self_attn.o_proj.weight"),
+                    &[d, d],
+                    &vec_n(d * d),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.mlp.gate_proj.weight"),
+                    &[cfg.intermediate_size, d],
+                    &vec_n(cfg.intermediate_size * d),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.mlp.up_proj.weight"),
+                    &[cfg.intermediate_size, d],
+                    &vec_n(cfg.intermediate_size * d),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.mlp.down_proj.weight"),
+                    &[d, cfg.intermediate_size],
+                    &vec_n(d * cfg.intermediate_size),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.input_layernorm.weight"),
+                    &[d],
+                    &vec_n(d),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.post_attention_layernorm.weight"),
+                    &[d],
+                    &vec_n(d),
+                );
             }
             put(&mut map, "model.norm.weight", &[d], &vec_n(d));
             if !cfg.tie_word_embeddings {
-                put(&mut map, "lm_head.weight",
-                    &[cfg.vocab_size, d], &vec_n(cfg.vocab_size * d));
+                put(
+                    &mut map,
+                    "lm_head.weight",
+                    &[cfg.vocab_size, d],
+                    &vec_n(cfg.vocab_size * d),
+                );
             }
             serialize_to_tempfile(&map)
         }
@@ -896,10 +1013,19 @@ mod tests {
             let weights = PaddleOcrVlTextWeights::load_from_mmapped(&st, &cfg)
                 .expect("PaddleOcrVlTextWeights::load_from_mmapped");
             assert_eq!(weights.layers.len(), cfg.num_hidden_layers);
-            assert_eq!(weights.token_embedding.len(), cfg.vocab_size * cfg.hidden_size);
-            assert!(weights.output.is_some(), "non-tied lm_head must materialize");
+            assert_eq!(
+                weights.token_embedding.len(),
+                cfg.vocab_size * cfg.hidden_size
+            );
+            assert!(
+                weights.output.is_some(),
+                "non-tied lm_head must materialize"
+            );
 
-            let model = PaddleOcrVlTextModel { config: cfg.clone(), weights };
+            let model = PaddleOcrVlTextModel {
+                config: cfg.clone(),
+                weights,
+            };
             let tokens: Vec<u32> = vec![1, 2, 3];
             let logits = model.forward(&tokens, 0).unwrap();
             assert_eq!(logits.shape().dims(), &[1, tokens.len(), cfg.vocab_size]);

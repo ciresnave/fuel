@@ -51,11 +51,11 @@
 //!   to the step's realize-split roots — the multi-target machinery
 //!   here already supports it (eager master-plan Phase G).
 
-use crate::lazy::LazyTensor;
 use crate::Device;
-use fuel_ir::{DType, Error, Result, Shape};
+use crate::lazy::LazyTensor;
 use fuel_dispatch::pipelined::StorageCache;
 use fuel_graph::{Graph, Node, NodeId, Op, SharedGraph};
+use fuel_ir::{DType, Error, Result, Shape};
 use fuel_memory::Storage;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -73,7 +73,11 @@ pub struct Parameter {
 }
 
 impl Parameter {
-    pub fn new_f32(name: impl Into<String>, shape: impl Into<Shape>, data: impl Into<Arc<[f32]>>) -> Self {
+    pub fn new_f32(
+        name: impl Into<String>,
+        shape: impl Into<Shape>,
+        data: impl Into<Arc<[f32]>>,
+    ) -> Self {
         let shape = shape.into();
         let data = data.into();
         assert_eq!(
@@ -109,7 +113,9 @@ pub enum OptimizerConfig {
 }
 
 impl OptimizerConfig {
-    pub fn sgd(lr: f32) -> Self { Self::Sgd { lr } }
+    pub fn sgd(lr: f32) -> Self {
+        Self::Sgd { lr }
+    }
 
     pub fn adam_w(lr: f32) -> Self {
         Self::AdamW {
@@ -133,8 +139,18 @@ impl OptimizerConfig {
     pub fn with_lr(&self, new_lr: f32) -> Self {
         match *self {
             Self::Sgd { .. } => Self::Sgd { lr: new_lr },
-            Self::AdamW { beta1, beta2, eps, weight_decay, .. } => Self::AdamW {
-                lr: new_lr, beta1, beta2, eps, weight_decay,
+            Self::AdamW {
+                beta1,
+                beta2,
+                eps,
+                weight_decay,
+                ..
+            } => Self::AdamW {
+                lr: new_lr,
+                beta1,
+                beta2,
+                eps,
+                weight_decay,
             },
         }
     }
@@ -152,7 +168,9 @@ pub trait LrSchedule {
 /// the optimizer config.
 pub struct ConstLr(pub f32);
 impl LrSchedule for ConstLr {
-    fn lr_at(&self, _step: u64) -> f32 { self.0 }
+    fn lr_at(&self, _step: u64) -> f32 {
+        self.0
+    }
 }
 
 /// Linear warmup for `warmup` steps (LR ramps 0 → `peak`), then
@@ -168,13 +186,14 @@ impl LrSchedule for WarmupCosine {
     fn lr_at(&self, step: u64) -> f32 {
         if step < self.warmup {
             // Linear ramp 0 → peak across warmup steps.
-            if self.warmup == 0 { return self.peak; }
+            if self.warmup == 0 {
+                return self.peak;
+            }
             self.peak * (step as f32 / self.warmup as f32)
         } else if step >= self.total {
             self.final_lr
         } else {
-            let progress = (step - self.warmup) as f32
-                / (self.total - self.warmup).max(1) as f32;
+            let progress = (step - self.warmup) as f32 / (self.total - self.warmup).max(1) as f32;
             // Cosine from peak to final_lr.
             let cos_scale = 0.5 * (1.0 + (std::f32::consts::PI * progress).cos());
             self.final_lr + (self.peak - self.final_lr) * cos_scale
@@ -193,13 +212,14 @@ pub struct WarmupLinear {
 impl LrSchedule for WarmupLinear {
     fn lr_at(&self, step: u64) -> f32 {
         if step < self.warmup {
-            if self.warmup == 0 { return self.peak; }
+            if self.warmup == 0 {
+                return self.peak;
+            }
             self.peak * (step as f32 / self.warmup as f32)
         } else if step >= self.total {
             self.final_lr
         } else {
-            let progress = (step - self.warmup) as f32
-                / (self.total - self.warmup).max(1) as f32;
+            let progress = (step - self.warmup) as f32 / (self.total - self.warmup).max(1) as f32;
             self.peak + (self.final_lr - self.peak) * progress
         }
     }
@@ -249,11 +269,7 @@ impl TrainState {
     /// Initial data is staged host-resident; the first step's
     /// cross-device-copy pass moves it to `device`, and every
     /// subsequent step's update outputs are produced there directly.
-    pub fn new(
-        parameters: &[Parameter],
-        device: &Device,
-        config: OptimizerConfig,
-    ) -> Result<Self> {
+    pub fn new(parameters: &[Parameter], device: &Device, config: OptimizerConfig) -> Result<Self> {
         let mut params = HashMap::new();
         let mut opt_state = HashMap::new();
         let mut param_order = Vec::with_capacity(parameters.len());
@@ -267,9 +283,9 @@ impl TrainState {
                 ))
                 .bt());
             }
-            let storage = Arc::new(RwLock::new(
-                fuel_memory::from_slice_cpu::<f32>(&p.initial_data),
-            ));
+            let storage = Arc::new(RwLock::new(fuel_memory::from_slice_cpu::<f32>(
+                &p.initial_data,
+            )));
             params.insert(p.name.clone(), (storage, p.shape.clone()));
             param_order.push(p.name.clone());
 
@@ -278,12 +294,8 @@ impl TrainState {
                 OptimizerConfig::AdamW { .. } => {
                     // m and v start at zero, same shape and dtype as the param.
                     let n = p.shape.elem_count();
-                    let m = Arc::new(RwLock::new(
-                        fuel_memory::alloc_cpu_zeroed(DType::F32, n)?,
-                    ));
-                    let v = Arc::new(RwLock::new(
-                        fuel_memory::alloc_cpu_zeroed(DType::F32, n)?,
-                    ));
+                    let m = Arc::new(RwLock::new(fuel_memory::alloc_cpu_zeroed(DType::F32, n)?));
+                    let v = Arc::new(RwLock::new(fuel_memory::alloc_cpu_zeroed(DType::F32, n)?));
                     OptState::AdamW { m, v }
                 }
             };
@@ -317,7 +329,9 @@ impl TrainState {
         self.grad_clip = clip;
     }
 
-    pub fn step_count(&self) -> u64 { self.step_count }
+    pub fn step_count(&self) -> u64 {
+        self.step_count
+    }
 
     /// Replace the current learning rate on the optimizer config.
     /// Takes effect on the next `step`. Useful for manual LR control
@@ -329,11 +343,7 @@ impl TrainState {
     /// Convenience: pull the next LR from `schedule` using the
     /// current step counter, set it, and invoke `step`. Equivalent
     /// to `state.set_lr(schedule.lr_at(state.step_count())); state.step(...)`.
-    pub fn step_with_schedule<S, F>(
-        &mut self,
-        schedule: &S,
-        build_loss: F,
-    ) -> Result<f32>
+    pub fn step_with_schedule<S, F>(&mut self, schedule: &S, build_loss: F) -> Result<f32>
     where
         S: LrSchedule,
         F: FnOnce(&SharedGraph, &HashMap<String, LazyTensor>) -> Result<LazyTensor>,
@@ -343,7 +353,9 @@ impl TrainState {
     }
 
     /// Read-only snapshot of the current optimizer config.
-    pub fn optimizer_config(&self) -> OptimizerConfig { self.config }
+    pub fn optimizer_config(&self) -> OptimizerConfig {
+        self.config
+    }
 
     /// Download a parameter's current value to host. For checkpoint /
     /// inspection; not a hot-path operation.
@@ -353,14 +365,15 @@ impl TrainState {
     /// spliced D2H `Op::Copy` handles CPU and device storage
     /// uniformly.
     pub fn param_to_host(&self, name: &str) -> Result<Vec<f32>> {
-        let (storage, shape) = self.params.get(name)
-            .ok_or_else(|| Error::Msg(
-                format!("unknown parameter '{name}'")).bt())?;
+        let (storage, shape) = self
+            .params
+            .get(name)
+            .ok_or_else(|| Error::Msg(format!("unknown parameter '{name}'")).bt())?;
         let graph = Arc::new(RwLock::new(Graph::new()));
         let id = {
-            let mut g = graph.write().map_err(|_| {
-                Error::Msg("param_to_host: graph lock poisoned".into()).bt()
-            })?;
+            let mut g = graph
+                .write()
+                .map_err(|_| Error::Msg("param_to_host: graph lock poisoned".into()).bt())?;
             g.push(Node {
                 op: Op::Const,
                 inputs: vec![],
@@ -370,9 +383,7 @@ impl TrainState {
         };
         let mut cache = StorageCache::new();
         cache.insert(id, Arc::clone(storage));
-        crate::pipelined_bridge::realize_one_as_with_initial::<f32>(
-            &graph, id, &self.device, cache,
-        )
+        crate::pipelined_bridge::realize_one_as_with_initial::<f32>(&graph, id, &self.device, cache)
     }
 
     /// Run one training step.
@@ -383,10 +394,7 @@ impl TrainState {
     /// call's `StorageCache`). It must return a scalar loss tensor.
     ///
     /// Returns the loss value (a single f32).
-    pub fn step<F>(
-        &mut self,
-        build_loss: F,
-    ) -> Result<f32>
+    pub fn step<F>(&mut self, build_loss: F) -> Result<f32>
     where
         F: FnOnce(&SharedGraph, &HashMap<String, LazyTensor>) -> Result<LazyTensor>,
     {
@@ -401,9 +409,7 @@ impl TrainState {
         //    panic in Tensor::from_*). Training's REAL device
         //    placement comes from `self.device` at the realize-split
         //    call below, not from the seed.
-        let seed = LazyTensor::from_f32(
-            vec![0.0f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let seed = LazyTensor::from_f32(vec![0.0f32], Shape::from_dims(&[1]), &Device::cpu());
         let graph = seed.graph_tensor().graph().clone();
 
         // The realize call's input cache: parameter (and optimizer-
@@ -429,9 +435,9 @@ impl TrainState {
         let mut raw_grads: HashMap<String, LazyTensor> = HashMap::new();
         for name in &self.param_order {
             let param = &param_tensors[name];
-            let grad = grad_map.get(param.graph_tensor())
-                .ok_or_else(|| fuel_ir::Error::Msg(
-                    format!("parameter '{name}' did not appear in loss graph")))?;
+            let grad = grad_map.get(param.graph_tensor()).ok_or_else(|| {
+                fuel_ir::Error::Msg(format!("parameter '{name}' did not appear in loss graph"))
+            })?;
             raw_grads.insert(name.clone(), LazyTensor::from_graph_tensor(grad));
         }
 
@@ -456,10 +462,9 @@ impl TrainState {
                         Some(acc) => acc.add(&g_sq_sum)?,
                     });
                 }
-                let total_sq = total_sq.ok_or_else(|| Error::Msg(
-                    "gradient clipping requires at least one parameter"
-                        .into(),
-                ).bt())?;
+                let total_sq = total_sq.ok_or_else(|| {
+                    Error::Msg("gradient clipping requires at least one parameter".into()).bt()
+                })?;
                 let norm = total_sq.sqrt();
                 // `max_norm / norm` is a rank-0 scalar. Protect
                 // against norm=0 by adding a tiny epsilon.
@@ -467,7 +472,8 @@ impl TrainState {
                 let ratio = norm_safe.mul_scalar(1.0 / max_norm as f64);
                 // ratio = norm/max_norm. We want scale = min(1, 1/ratio).
                 // Equivalently: scale = clamp(1/ratio, 0, 1).
-                let inv_ratio = ratio.const_f32_like(vec![1.0f32], Shape::from_dims(&[]))
+                let inv_ratio = ratio
+                    .const_f32_like(vec![1.0f32], Shape::from_dims(&[]))
                     .div(&ratio)?;
                 let scale = inv_ratio.clamp(0.0, 1.0);
                 Some(scale)
@@ -500,20 +506,21 @@ impl TrainState {
                     let new_param = param.sub(&scaled)?;
                     new_param_tensors.push(new_param);
                 }
-                OptimizerConfig::AdamW { lr, beta1, beta2, eps, weight_decay } => {
+                OptimizerConfig::AdamW {
+                    lr,
+                    beta1,
+                    beta2,
+                    eps,
+                    weight_decay,
+                } => {
                     // Build placeholders for m and v; their current
                     // storage Arcs bind through the realize cache.
                     let param_shape = param.graph_tensor().shape();
-                    let m_placeholder = seed.const_placeholder_like(
-                        param_shape.clone(), DType::F32,
-                    );
-                    let v_placeholder = seed.const_placeholder_like(
-                        param_shape, DType::F32,
-                    );
+                    let m_placeholder =
+                        seed.const_placeholder_like(param_shape.clone(), DType::F32);
+                    let v_placeholder = seed.const_placeholder_like(param_shape, DType::F32);
                     let (m_arc, v_arc) = match self.opt_state.get(name.as_str()) {
-                        Some(OptState::AdamW { m, v }) => {
-                            (Arc::clone(m), Arc::clone(v))
-                        }
+                        Some(OptState::AdamW { m, v }) => (Arc::clone(m), Arc::clone(v)),
                         _ => {
                             return Err(Error::Msg(format!(
                                 "TrainState::step: optimizer state for \
@@ -553,9 +560,8 @@ impl TrainState {
         }
 
         // 5. Build realize root list: [loss, new_params..., (new_m, new_v)...]
-        let mut roots: Vec<NodeId> = Vec::with_capacity(
-            1 + new_param_tensors.len() + 2 * new_opt_tensors.len(),
-        );
+        let mut roots: Vec<NodeId> =
+            Vec::with_capacity(1 + new_param_tensors.len() + 2 * new_opt_tensors.len());
         roots.push(loss.graph_tensor().id());
         for np in &new_param_tensors {
             roots.push(np.graph_tensor().id());
@@ -567,15 +573,21 @@ impl TrainState {
 
         // 6. One realize-split through the pipelined executor:
         //    loss → host, everything else stays device-resident.
-        let (host, resident) =
-            crate::pipelined_bridge::realize_split_as_with_initial::<f32>(
-                &graph, &roots, 1, &self.device, cache,
-            )?;
-        let loss_vec = host.into_iter().next().ok_or_else(|| Error::Msg(
-            "TrainState::step: realize returned no host result for the \
+        let (host, resident) = crate::pipelined_bridge::realize_split_as_with_initial::<f32>(
+            &graph,
+            &roots,
+            1,
+            &self.device,
+            cache,
+        )?;
+        let loss_vec = host.into_iter().next().ok_or_else(|| {
+            Error::Msg(
+                "TrainState::step: realize returned no host result for the \
              loss root — internal bug"
-                .into(),
-        ).bt())?;
+                    .into(),
+            )
+            .bt()
+        })?;
         let loss_scalar = if loss_vec.len() == 1 {
             loss_vec[0]
         } else {
@@ -594,24 +606,26 @@ impl TrainState {
                 ))
                 .bt()
             })?;
-            self.params.insert(
-                name.clone(),
-                (new_storage, new_layout.shape().clone()),
-            );
+            self.params
+                .insert(name.clone(), (new_storage, new_layout.shape().clone()));
         }
         for (name, _, _) in &new_opt_tensors {
-            let (new_m, _) = iter.next().ok_or_else(|| Error::Msg(format!(
-                "TrainState::step: missing resident result for '{name}' \
+            let (new_m, _) = iter.next().ok_or_else(|| {
+                Error::Msg(format!(
+                    "TrainState::step: missing resident result for '{name}' \
                  first moment — internal bug",
-            )).bt())?;
-            let (new_v, _) = iter.next().ok_or_else(|| Error::Msg(format!(
-                "TrainState::step: missing resident result for '{name}' \
+                ))
+                .bt()
+            })?;
+            let (new_v, _) = iter.next().ok_or_else(|| {
+                Error::Msg(format!(
+                    "TrainState::step: missing resident result for '{name}' \
                  second moment — internal bug",
-            )).bt())?;
-            self.opt_state.insert(
-                name.clone(),
-                OptState::AdamW { m: new_m, v: new_v },
-            );
+                ))
+                .bt()
+            })?;
+            self.opt_state
+                .insert(name.clone(), OptState::AdamW { m: new_m, v: new_v });
         }
 
         self.step_count += 1;
@@ -736,8 +750,8 @@ pub mod loss {
 mod tests {
     use super::*;
     use crate::lazy::LazyTensor;
-    use fuel_ir::DType;
     use fuel_graph::registry::Reduction;
+    use fuel_ir::DType;
 
     /// Helper: build an I64 LazyTensor on the same graph as `host`,
     /// using the fuel-graph `const_i64_like` builder. LazyTensor has
@@ -759,9 +773,7 @@ mod tests {
         // 3 rows, vocab 4. Targets chosen so each row exercises a
         // different argmax position.
         let logits_data: Vec<f32> = vec![
-            1.0, 2.0, 3.0, 4.0,
-            0.5, 0.0, -0.5, 1.0,
-            -1.0, -2.0, -3.0, 4.0,
+            1.0, 2.0, 3.0, 4.0, 0.5, 0.0, -0.5, 1.0, -1.0, -2.0, -3.0, 4.0,
         ];
         let targets_i64: Vec<i64> = vec![3, 0, 3];
         let mut targets_onehot = vec![0.0f32; 3 * 4];
@@ -770,27 +782,21 @@ mod tests {
         }
 
         // Path 1: fused op.
-        let logits_fused = LazyTensor::from_f32(
-            logits_data.clone(), Shape::from_dims(&[3, 4]), &device,
-        );
-        let targets_fused = lt_const_i64_like(
-            &logits_fused, targets_i64.clone(), Shape::from_dims(&[3]),
-        );
-        let fused_loss = loss::fused_softmax_cross_entropy(
-            &logits_fused, &targets_fused, Reduction::Mean, -100,
-        )
-        .realize_f32()[0];
+        let logits_fused =
+            LazyTensor::from_f32(logits_data.clone(), Shape::from_dims(&[3, 4]), &device);
+        let targets_fused =
+            lt_const_i64_like(&logits_fused, targets_i64.clone(), Shape::from_dims(&[3]));
+        let fused_loss =
+            loss::fused_softmax_cross_entropy(&logits_fused, &targets_fused, Reduction::Mean, -100)
+                .realize_f32()[0];
 
         // Path 2: primitive composition. The one-hot targets must
         // live on the same graph as logits — use `const_f32_like`
         // off `logits_prim` so the second leaf joins that graph.
-        let logits_prim = LazyTensor::from_f32(
-            logits_data, Shape::from_dims(&[3, 4]), &device,
-        );
-        let targets_prim = logits_prim.const_f32_like(
-            targets_onehot, Shape::from_dims(&[3, 4]),
-        );
-        let prim_loss = loss::cross_entropy_with_logits(&logits_prim, &targets_prim).unwrap()
+        let logits_prim = LazyTensor::from_f32(logits_data, Shape::from_dims(&[3, 4]), &device);
+        let targets_prim = logits_prim.const_f32_like(targets_onehot, Shape::from_dims(&[3, 4]));
+        let prim_loss = loss::cross_entropy_with_logits(&logits_prim, &targets_prim)
+            .unwrap()
             .realize_f32()[0];
 
         assert!(
@@ -803,20 +809,23 @@ mod tests {
     #[test]
     fn fused_softmax_cross_entropy_none_returns_per_row() {
         let device = crate::Device::cpu();
-        let logits_data: Vec<f32> = vec![
-            1.0, 2.0, 3.0, 4.0,
-            0.0, 0.0, 0.0, 0.0,
-        ];
+        let logits_data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0, 0.0, 0.0, 0.0, 0.0];
         let logits = LazyTensor::from_f32(logits_data, Shape::from_dims(&[2, 4]), &device);
         let targets = lt_const_i64_like(&logits, vec![1_i64, 3], Shape::from_dims(&[2]));
-        let per_row = loss::fused_softmax_cross_entropy(
-            &logits, &targets, Reduction::None, -100,
-        )
-        .realize_f32();
+        let per_row = loss::fused_softmax_cross_entropy(&logits, &targets, Reduction::None, -100)
+            .realize_f32();
         assert_eq!(per_row.len(), 2);
         // Hand-computed (see byte_kernels.rs unit test).
-        assert!((per_row[0] - 2.44018972).abs() < 1e-5, "row 0: {}", per_row[0]);
-        assert!((per_row[1] - 1.38629436).abs() < 1e-5, "row 1: {}", per_row[1]);
+        assert!(
+            (per_row[0] - 2.44018972).abs() < 1e-5,
+            "row 0: {}",
+            per_row[0]
+        );
+        assert!(
+            (per_row[1] - 1.38629436).abs() < 1e-5,
+            "row 1: {}",
+            per_row[1]
+        );
     }
 
     /// ignore_index drops a row from both the loss sum and the mean
@@ -825,16 +834,11 @@ mod tests {
     #[test]
     fn fused_softmax_cross_entropy_ignore_index_masks_row() {
         let device = crate::Device::cpu();
-        let logits_data: Vec<f32> = vec![
-            1.0, 2.0, 3.0, 4.0,
-            0.0, 0.0, 0.0, 0.0,
-        ];
+        let logits_data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0, 0.0, 0.0, 0.0, 0.0];
         let logits = LazyTensor::from_f32(logits_data, Shape::from_dims(&[2, 4]), &device);
         let targets = lt_const_i64_like(&logits, vec![1_i64, -100], Shape::from_dims(&[2]));
-        let loss_val = loss::fused_softmax_cross_entropy(
-            &logits, &targets, Reduction::Mean, -100,
-        )
-        .realize_f32()[0];
+        let loss_val = loss::fused_softmax_cross_entropy(&logits, &targets, Reduction::Mean, -100)
+            .realize_f32()[0];
         // Only row 0 contributes; mean of one value is itself.
         assert!(
             (loss_val - 2.44018972).abs() < 1e-5,
@@ -857,10 +861,7 @@ mod tests {
             &device,
         );
         // weight = [0.5, 1.0, 2.0] for one channel, kernel 3
-        let w = x.const_f32_like(
-            vec![0.5_f32, 1.0, 2.0],
-            Shape::from_dims(&[1, 1, 3]),
-        );
+        let w = x.const_f32_like(vec![0.5_f32, 1.0, 2.0], Shape::from_dims(&[1, 1, 3]));
         let bias = x.const_f32_like(vec![0.1_f32], Shape::from_dims(&[1]));
         let out = x.causal_conv1d(&w, &bias, false).realize_f32();
         assert_eq!(out.len(), 2);
@@ -877,10 +878,7 @@ mod tests {
             Shape::from_dims(&[1, 1, 4]),
             &device,
         );
-        let w = x.const_f32_like(
-            vec![0.5_f32, 1.0, 2.0],
-            Shape::from_dims(&[1, 1, 3]),
-        );
+        let w = x.const_f32_like(vec![0.5_f32, 1.0, 2.0], Shape::from_dims(&[1, 1, 3]));
         let bias = x.const_f32_like(vec![0.1_f32], Shape::from_dims(&[1]));
         let out = x.causal_conv1d(&w, &bias, true).realize_f32();
         let expected0 = 2.1_f32 / (1.0 + (-2.1_f32).exp());
@@ -905,9 +903,9 @@ mod tests {
         // Shape rule produces [batch, channels, seq_in - (kernel - 1)].
         let out_shape = (e.shape_rule)(
             &[
-                Shape::from_dims(&[2, 4, 8]),  // x: batch=2, channels=4, seq_in=8
-                Shape::from_dims(&[4, 1, 3]),  // weight: channels=4, 1, kernel=3
-                Shape::from_dims(&[4]),        // bias: channels=4
+                Shape::from_dims(&[2, 4, 8]), // x: batch=2, channels=4, seq_in=8
+                Shape::from_dims(&[4, 1, 3]), // weight: channels=4, 1, kernel=3
+                Shape::from_dims(&[4]),       // bias: channels=4
             ],
             &fuel_graph::registry::FusedOpParams::CausalConv1d { use_silu: false },
         );
@@ -943,7 +941,11 @@ mod tests {
         let c = u.const_f32_like(vec![1.0_f32], Shape::from_dims(&[1, 1, 1]));
         let y = u.selective_scan(&delta, &a, &b, &c, true).realize_f32();
         let expected = 2.0_f32.ln();
-        assert!((y[0] - expected).abs() < 1e-5, "got {} expected {expected}", y[0]);
+        assert!(
+            (y[0] - expected).abs() < 1e-5,
+            "got {} expected {expected}",
+            y[0]
+        );
     }
 
     /// Registry: the SelectiveScan entry is wired into the default
@@ -962,11 +964,11 @@ mod tests {
         // Shape rule: y matches u's shape.
         let out_shape = (e.shape_rule)(
             &[
-                Shape::from_dims(&[2, 8, 64]),   // u: [batch, seqlen, dim]
-                Shape::from_dims(&[2, 8, 64]),   // delta: same
-                Shape::from_dims(&[64, 16]),     // a: [dim, dstate]
-                Shape::from_dims(&[2, 8, 16]),   // b: [batch, seqlen, dstate]
-                Shape::from_dims(&[2, 8, 16]),   // c: [batch, seqlen, dstate]
+                Shape::from_dims(&[2, 8, 64]), // u: [batch, seqlen, dim]
+                Shape::from_dims(&[2, 8, 64]), // delta: same
+                Shape::from_dims(&[64, 16]),   // a: [dim, dstate]
+                Shape::from_dims(&[2, 8, 16]), // b: [batch, seqlen, dstate]
+                Shape::from_dims(&[2, 8, 16]), // c: [batch, seqlen, dstate]
             ],
             &fuel_graph::registry::FusedOpParams::SelectiveScan {
                 delta_softplus: false,
@@ -1007,15 +1009,13 @@ mod tests {
         // Shape rule: y matches x's shape.
         let out_shape = (e.shape_rule)(
             &[
-                Shape::from_dims(&[2, 16, 8, 64]),    // x: [batch, seqlen, heads, head_dim]
-                Shape::from_dims(&[2, 16, 8]),        // dt
-                Shape::from_dims(&[8]),               // a
-                Shape::from_dims(&[2, 16, 8, 128]),   // b: [batch, seqlen, heads, state_dim]
-                Shape::from_dims(&[2, 16, 8, 128]),   // c
+                Shape::from_dims(&[2, 16, 8, 64]), // x: [batch, seqlen, heads, head_dim]
+                Shape::from_dims(&[2, 16, 8]),     // dt
+                Shape::from_dims(&[8]),            // a
+                Shape::from_dims(&[2, 16, 8, 128]), // b: [batch, seqlen, heads, state_dim]
+                Shape::from_dims(&[2, 16, 8, 128]), // c
             ],
-            &fuel_graph::registry::FusedOpParams::SsdChunkScan {
-                chunk_size: 16,
-            },
+            &fuel_graph::registry::FusedOpParams::SsdChunkScan { chunk_size: 16 },
         );
         assert_eq!(out_shape.dims(), &[2, 16, 8, 64]);
     }
@@ -1033,15 +1033,12 @@ mod tests {
             Shape::from_dims(&[1, 4]),
             &device,
         );
-        let w_packed_t = activations.graph_tensor().const_u8_like(
-            vec![247_u8, 247, 127, 127],
-            Shape::from_dims(&[2, 2]),
-        );
+        let w_packed_t = activations
+            .graph_tensor()
+            .const_u8_like(vec![247_u8, 247, 127, 127], Shape::from_dims(&[2, 2]));
         let w_packed = LazyTensor::from_graph_tensor(w_packed_t);
-        let absmax = activations.const_f32_like(
-            vec![1.0_f32, 2.0, 10.0, 20.0],
-            Shape::from_dims(&[2, 2]),
-        );
+        let absmax =
+            activations.const_f32_like(vec![1.0_f32, 2.0, 10.0, 20.0], Shape::from_dims(&[2, 2]));
         let y = activations.nf4_matmul(&w_packed, &absmax, 2).realize_f32();
         assert_eq!(y.len(), 2);
         assert!((y[0] - 10.0).abs() < 1e-5, "out 0: {}", y[0]);
@@ -1063,20 +1060,16 @@ mod tests {
         // Shape rule: output last dim becomes w_packed's n.
         let out_shape = (e.shape_rule)(
             &[
-                Shape::from_dims(&[4, 32, 128]),    // activations [..., m, k]
-                Shape::from_dims(&[256, 64]),       // w_packed [n, k/2]
-                Shape::from_dims(&[256, 2]),        // absmax [n, k/block_size]
+                Shape::from_dims(&[4, 32, 128]), // activations [..., m, k]
+                Shape::from_dims(&[256, 64]),    // w_packed [n, k/2]
+                Shape::from_dims(&[256, 2]),     // absmax [n, k/block_size]
             ],
             &fuel_graph::registry::FusedOpParams::Nf4Matmul { block_size: 64 },
         );
         assert_eq!(out_shape.dims(), &[4, 32, 256]);
         // Dtype rule: F16 activations → F16 output.
         let out_dtype = (e.dtype_rule)(
-            &[
-                fuel_ir::DType::F16,
-                fuel_ir::DType::U8,
-                fuel_ir::DType::F32,
-            ],
+            &[fuel_ir::DType::F16, fuel_ir::DType::U8, fuel_ir::DType::F32],
             &fuel_graph::registry::FusedOpParams::Nf4Matmul { block_size: 64 },
         );
         assert_eq!(out_dtype, fuel_ir::DType::F16);
@@ -1099,7 +1092,7 @@ mod tests {
         let out_dtype = (e.dtype_rule)(
             &[DType::F32, DType::I64],
             &fuel_graph::registry::FusedOpParams::FusedSoftmaxCrossEntropy {
-                reduction:    Reduction::Mean,
+                reduction: Reduction::Mean,
                 ignore_index: -100,
             },
         );
@@ -1129,20 +1122,22 @@ mod tests {
             let x_arc_step = x_arc.clone();
             let y_arc_step = y_arc.clone();
             let len = xs.len();
-            let loss = state.step(move |_graph, params| {
-                let w = &params["w"];
-                let b = &params["b"];
-                // Build inputs on the SAME graph the parameters live in
-                // by using `const_f32_like` off an existing param.
-                let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[len]));
-                let y = w.const_f32_like(y_arc_step, Shape::from_dims(&[len]));
-                let w_b = w.broadcast_to(Shape::from_dims(&[len])).unwrap();
-                let b_b = b.broadcast_to(Shape::from_dims(&[len])).unwrap();
-                let y_hat = x.mul(&w_b).unwrap().add(&b_b).unwrap();
-                let diff = y_hat.sub(&y).unwrap();
-                let sq = diff.sqr();
-                Ok(sq.sum_all().mul_scalar(1.0 / len as f64))
-            }).unwrap();
+            let loss = state
+                .step(move |_graph, params| {
+                    let w = &params["w"];
+                    let b = &params["b"];
+                    // Build inputs on the SAME graph the parameters live in
+                    // by using `const_f32_like` off an existing param.
+                    let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[len]));
+                    let y = w.const_f32_like(y_arc_step, Shape::from_dims(&[len]));
+                    let w_b = w.broadcast_to(Shape::from_dims(&[len])).unwrap();
+                    let b_b = b.broadcast_to(Shape::from_dims(&[len])).unwrap();
+                    let y_hat = x.mul(&w_b).unwrap().add(&b_b).unwrap();
+                    let diff = y_hat.sub(&y).unwrap();
+                    let sq = diff.sqr();
+                    Ok(sq.sum_all().mul_scalar(1.0 / len as f64))
+                })
+                .unwrap();
             if step % 500 == 0 {
                 eprintln!("step {step}: loss = {loss}");
             }
@@ -1150,8 +1145,14 @@ mod tests {
         let w_final = state.param_to_host("w").unwrap()[0];
         let b_final = state.param_to_host("b").unwrap()[0];
         eprintln!("final: w = {w_final}, b = {b_final}");
-        assert!((w_final - 2.0).abs() < 0.05, "w converged to {w_final}, expected ~2.0");
-        assert!((b_final - 3.0).abs() < 0.3, "b converged to {b_final}, expected ~3.0");
+        assert!(
+            (w_final - 2.0).abs() < 0.05,
+            "w converged to {w_final}, expected ~2.0"
+        );
+        assert!(
+            (b_final - 3.0).abs() < 0.3,
+            "b converged to {b_final}, expected ~3.0"
+        );
     }
 
     /// AdamW fits the same regression. AdamW has per-param state
@@ -1169,7 +1170,11 @@ mod tests {
         ];
         // Weight decay 0 for this tiny problem so it converges cleanly.
         let cfg = OptimizerConfig::AdamW {
-            lr: 0.1, beta1: 0.9, beta2: 0.999, eps: 1e-8, weight_decay: 0.0,
+            lr: 0.1,
+            beta1: 0.9,
+            beta2: 0.999,
+            eps: 1e-8,
+            weight_decay: 0.0,
         };
         let mut state = TrainState::new(&params, &device, cfg).unwrap();
         let x_arc: Arc<[f32]> = xs.clone().into();
@@ -1179,17 +1184,19 @@ mod tests {
             let x_arc_step = x_arc.clone();
             let y_arc_step = y_arc.clone();
             let len = xs.len();
-            let loss = state.step(move |_graph, params| {
-                let w = &params["w"];
-                let b = &params["b"];
-                let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[len]));
-                let y = w.const_f32_like(y_arc_step, Shape::from_dims(&[len]));
-                let w_b = w.broadcast_to(Shape::from_dims(&[len])).unwrap();
-                let b_b = b.broadcast_to(Shape::from_dims(&[len])).unwrap();
-                let y_hat = x.mul(&w_b).unwrap().add(&b_b).unwrap();
-                let diff = y_hat.sub(&y).unwrap();
-                Ok(diff.sqr().sum_all().mul_scalar(1.0 / len as f64))
-            }).unwrap();
+            let loss = state
+                .step(move |_graph, params| {
+                    let w = &params["w"];
+                    let b = &params["b"];
+                    let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[len]));
+                    let y = w.const_f32_like(y_arc_step, Shape::from_dims(&[len]));
+                    let w_b = w.broadcast_to(Shape::from_dims(&[len])).unwrap();
+                    let b_b = b.broadcast_to(Shape::from_dims(&[len])).unwrap();
+                    let y_hat = x.mul(&w_b).unwrap().add(&b_b).unwrap();
+                    let diff = y_hat.sub(&y).unwrap();
+                    Ok(diff.sqr().sum_all().mul_scalar(1.0 / len as f64))
+                })
+                .unwrap();
             final_loss = loss;
             if step % 100 == 0 {
                 eprintln!("adamw step {step}: loss = {loss}");
@@ -1229,10 +1236,12 @@ mod tests {
 
         let device = crate::Device::cpu();
         let params = vec![
-            Parameter::new_f32("w", Shape::from_dims(&[n_feat, n_class]),
-                vec![0.01f32, -0.01, 0.02, -0.02]),
-            Parameter::new_f32("b", Shape::from_dims(&[n_class]),
-                vec![0.0f32, 0.0]),
+            Parameter::new_f32(
+                "w",
+                Shape::from_dims(&[n_feat, n_class]),
+                vec![0.01f32, -0.01, 0.02, -0.02],
+            ),
+            Parameter::new_f32("b", Shape::from_dims(&[n_class]), vec![0.0f32, 0.0]),
         ];
         let mut state = TrainState::new(&params, &device, OptimizerConfig::sgd(0.1)).unwrap();
 
@@ -1242,18 +1251,23 @@ mod tests {
         for step in 0..500 {
             let x_arc_step = x_arc.clone();
             let y_arc_step = y_arc.clone();
-            let loss = state.step(move |_graph, params| {
-                let w = &params["w"];
-                let b = &params["b"];
-                let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[n, n_feat]));
-                let y = w.const_f32_like(y_arc_step, Shape::from_dims(&[n, n_class]));
-                // logits = x @ W + b_broadcast
-                let logits_raw = x.matmul(w).unwrap();
-                let b_b = b.reshape(Shape::from_dims(&[1, n_class])).unwrap()
-                    .broadcast_to(Shape::from_dims(&[n, n_class])).unwrap();
-                let logits = logits_raw.add(&b_b).unwrap();
-                super::loss::cross_entropy_with_logits(&logits, &y)
-            }).unwrap();
+            let loss = state
+                .step(move |_graph, params| {
+                    let w = &params["w"];
+                    let b = &params["b"];
+                    let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[n, n_feat]));
+                    let y = w.const_f32_like(y_arc_step, Shape::from_dims(&[n, n_class]));
+                    // logits = x @ W + b_broadcast
+                    let logits_raw = x.matmul(w).unwrap();
+                    let b_b = b
+                        .reshape(Shape::from_dims(&[1, n_class]))
+                        .unwrap()
+                        .broadcast_to(Shape::from_dims(&[n, n_class]))
+                        .unwrap();
+                    let logits = logits_raw.add(&b_b).unwrap();
+                    super::loss::cross_entropy_with_logits(&logits, &y)
+                })
+                .unwrap();
             final_loss = loss;
             if step % 100 == 0 {
                 eprintln!("ce step {step}: loss = {loss}");
@@ -1262,7 +1276,10 @@ mod tests {
         eprintln!("ce final loss = {final_loss}");
         // For this well-separated 2-class problem, cross-entropy should
         // drop well below ln(2) ≈ 0.693 (random baseline) to near zero.
-        assert!(final_loss < 0.1, "CE didn't converge: final loss = {final_loss}");
+        assert!(
+            final_loss < 0.1,
+            "CE didn't converge: final loss = {final_loss}"
+        );
     }
 
     /// Sanity-check that the RmsNormLastDim backward path (synthesized
@@ -1299,24 +1316,33 @@ mod tests {
         for step in 0..300 {
             let x_arc_step = x_arc.clone();
             let y_arc_step = y_arc.clone();
-            let loss = state.step(move |_graph, params| {
-                let w = &params["w"];
-                let b = &params["b"];
-                let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[n, d]));
-                let y = w.const_f32_like(y_arc_step, Shape::from_dims(&[n, 1]));
-                let x_norm = x.rms_norm_last_dim(1e-6).unwrap();
-                let logits = x_norm.matmul(w).unwrap();
-                let b_b = b.reshape(Shape::from_dims(&[1, 1])).unwrap()
-                    .broadcast_to(Shape::from_dims(&[n, 1])).unwrap();
-                let pred = logits.add(&b_b).unwrap();
-                super::loss::mse(&pred, &y)
-            }).unwrap();
-            if step == 0 { initial_loss = loss; }
+            let loss = state
+                .step(move |_graph, params| {
+                    let w = &params["w"];
+                    let b = &params["b"];
+                    let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[n, d]));
+                    let y = w.const_f32_like(y_arc_step, Shape::from_dims(&[n, 1]));
+                    let x_norm = x.rms_norm_last_dim(1e-6).unwrap();
+                    let logits = x_norm.matmul(w).unwrap();
+                    let b_b = b
+                        .reshape(Shape::from_dims(&[1, 1]))
+                        .unwrap()
+                        .broadcast_to(Shape::from_dims(&[n, 1]))
+                        .unwrap();
+                    let pred = logits.add(&b_b).unwrap();
+                    super::loss::mse(&pred, &y)
+                })
+                .unwrap();
+            if step == 0 {
+                initial_loss = loss;
+            }
             final_loss = loss;
         }
         eprintln!("rms_norm training: initial={initial_loss} final={final_loss}");
-        assert!(final_loss < initial_loss * 0.5,
-            "loss didn't decrease enough: {initial_loss} -> {final_loss}");
+        assert!(
+            final_loss < initial_loss * 0.5,
+            "loss didn't decrease enough: {initial_loss} -> {final_loss}"
+        );
         assert!(final_loss.is_finite(), "got non-finite loss: {final_loss}");
     }
 
@@ -1330,16 +1356,23 @@ mod tests {
     ) -> f32 {
         let x_arc_step = x_arc.clone();
         let y_arc_step = y_arc.clone();
-        state.step(move |_g, p| {
-            let w = &p["w"];
-            let b = &p["b"];
-            let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[len]));
-            let y = w.const_f32_like(y_arc_step, Shape::from_dims(&[len]));
-            let w_b = w.broadcast_to(Shape::from_dims(&[len])).unwrap();
-            let b_b = b.broadcast_to(Shape::from_dims(&[len])).unwrap();
-            let y_hat = x.mul(&w_b).unwrap().add(&b_b).unwrap();
-            Ok(y_hat.sub(&y).unwrap().sqr().sum_all().mul_scalar(1.0 / len as f64))
-        }).unwrap()
+        state
+            .step(move |_g, p| {
+                let w = &p["w"];
+                let b = &p["b"];
+                let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[len]));
+                let y = w.const_f32_like(y_arc_step, Shape::from_dims(&[len]));
+                let w_b = w.broadcast_to(Shape::from_dims(&[len])).unwrap();
+                let b_b = b.broadcast_to(Shape::from_dims(&[len])).unwrap();
+                let y_hat = x.mul(&w_b).unwrap().add(&b_b).unwrap();
+                Ok(y_hat
+                    .sub(&y)
+                    .unwrap()
+                    .sqr()
+                    .sum_all()
+                    .mul_scalar(1.0 / len as f64))
+            })
+            .unwrap()
     }
 
     /// Honesty gate for the Unification Session 5 Trainer port: the
@@ -1360,8 +1393,7 @@ mod tests {
             Parameter::new_f32("w", Shape::from_dims(&[1]), vec![0.1f32]),
             Parameter::new_f32("b", Shape::from_dims(&[1]), vec![0.1f32]),
         ];
-        let mut state =
-            TrainState::new(&params, &device, OptimizerConfig::sgd(0.01)).unwrap();
+        let mut state = TrainState::new(&params, &device, OptimizerConfig::sgd(0.01)).unwrap();
         let mut losses = Vec::new();
         for _ in 0..50 {
             losses.push(parity_step(&mut state, &x_arc, &y_arc, xs.len()));
@@ -1410,7 +1442,11 @@ mod tests {
             Parameter::new_f32("b", Shape::from_dims(&[1]), vec![0.1f32]),
         ];
         let cfg = OptimizerConfig::AdamW {
-            lr: 0.1, beta1: 0.9, beta2: 0.999, eps: 1e-8, weight_decay: 0.0,
+            lr: 0.1,
+            beta1: 0.9,
+            beta2: 0.999,
+            eps: 1e-8,
+            weight_decay: 0.0,
         };
         let mut state = TrainState::new(&params, &device, cfg).unwrap();
         let mut losses = Vec::new();
@@ -1430,21 +1466,34 @@ mod tests {
 
     #[test]
     fn warmup_cosine_schedule_curve() {
-        let sch = super::WarmupCosine { warmup: 10, total: 100, peak: 1.0, final_lr: 0.1 };
-        assert_eq!(sch.lr_at(0), 0.0);                      // start of warmup
-        assert!((sch.lr_at(5) - 0.5).abs() < 1e-6);         // mid warmup
-        assert!((sch.lr_at(10) - 1.0).abs() < 1e-6);        // peak
-        assert!((sch.lr_at(100) - 0.1).abs() < 1e-6);       // end
+        let sch = super::WarmupCosine {
+            warmup: 10,
+            total: 100,
+            peak: 1.0,
+            final_lr: 0.1,
+        };
+        assert_eq!(sch.lr_at(0), 0.0); // start of warmup
+        assert!((sch.lr_at(5) - 0.5).abs() < 1e-6); // mid warmup
+        assert!((sch.lr_at(10) - 1.0).abs() < 1e-6); // peak
+        assert!((sch.lr_at(100) - 0.1).abs() < 1e-6); // end
         // Monotonic decay after warmup.
         let a = sch.lr_at(20);
         let b = sch.lr_at(40);
         let c = sch.lr_at(60);
-        assert!(a > b && b > c, "cosine decay not monotonic: {a} -> {b} -> {c}");
+        assert!(
+            a > b && b > c,
+            "cosine decay not monotonic: {a} -> {b} -> {c}"
+        );
     }
 
     #[test]
     fn warmup_linear_schedule_curve() {
-        let sch = super::WarmupLinear { warmup: 10, total: 30, peak: 1.0, final_lr: 0.2 };
+        let sch = super::WarmupLinear {
+            warmup: 10,
+            total: 30,
+            peak: 1.0,
+            final_lr: 0.2,
+        };
         assert_eq!(sch.lr_at(0), 0.0);
         assert!((sch.lr_at(10) - 1.0).abs() < 1e-6);
         // Halfway through decay: (10+30)/2 = 20 → lr = 0.5*(1.0+0.2) = 0.6
@@ -1461,7 +1510,7 @@ mod tests {
     /// or get wrong values.
     #[test]
     fn grad_clip_prevents_divergence() {
-        let xs: Vec<f32> = (0..10).map(|i| i as f32 * 100.0).collect();  // huge inputs
+        let xs: Vec<f32> = (0..10).map(|i| i as f32 * 100.0).collect(); // huge inputs
         let ys: Vec<f32> = xs.iter().map(|&x| 2.0 * x + 3.0).collect();
         let params = vec![
             Parameter::new_f32("w", Shape::from_dims(&[1]), vec![0.1f32]),
@@ -1479,18 +1528,29 @@ mod tests {
             for _ in 0..10 {
                 let x_arc_step = x_arc.clone();
                 let y_arc_step = y_arc.clone();
-                let _ = state.step(move |_g, p| {
-                    let w = &p["w"]; let b = &p["b"];
-                    let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[len]));
-                    let y = w.const_f32_like(y_arc_step, Shape::from_dims(&[len]));
-                    let w_b = w.broadcast_to(Shape::from_dims(&[len])).unwrap();
-                    let b_b = b.broadcast_to(Shape::from_dims(&[len])).unwrap();
-                    let y_hat = x.mul(&w_b).unwrap().add(&b_b).unwrap();
-                    Ok(y_hat.sub(&y).unwrap().sqr().sum_all().mul_scalar(1.0 / len as f64))
-                }).unwrap();
+                let _ = state
+                    .step(move |_g, p| {
+                        let w = &p["w"];
+                        let b = &p["b"];
+                        let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[len]));
+                        let y = w.const_f32_like(y_arc_step, Shape::from_dims(&[len]));
+                        let w_b = w.broadcast_to(Shape::from_dims(&[len])).unwrap();
+                        let b_b = b.broadcast_to(Shape::from_dims(&[len])).unwrap();
+                        let y_hat = x.mul(&w_b).unwrap().add(&b_b).unwrap();
+                        Ok(y_hat
+                            .sub(&y)
+                            .unwrap()
+                            .sqr()
+                            .sum_all()
+                            .mul_scalar(1.0 / len as f64))
+                    })
+                    .unwrap();
             }
             let w = state.param_to_host("w").unwrap()[0];
-            assert!(!w.is_finite(), "expected divergence without clipping, got w={w}");
+            assert!(
+                !w.is_finite(),
+                "expected divergence without clipping, got w={w}"
+            );
         }
 
         // Clipped: global-norm clip at 1.0 keeps every step bounded.
@@ -1502,20 +1562,30 @@ mod tests {
             for _ in 0..200 {
                 let x_arc_step = x_arc.clone();
                 let y_arc_step = y_arc.clone();
-                let _ = state.step(move |_g, p| {
-                    let w = &p["w"]; let b = &p["b"];
-                    let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[len]));
-                    let y = w.const_f32_like(y_arc_step, Shape::from_dims(&[len]));
-                    let w_b = w.broadcast_to(Shape::from_dims(&[len])).unwrap();
-                    let b_b = b.broadcast_to(Shape::from_dims(&[len])).unwrap();
-                    let y_hat = x.mul(&w_b).unwrap().add(&b_b).unwrap();
-                    Ok(y_hat.sub(&y).unwrap().sqr().sum_all().mul_scalar(1.0 / len as f64))
-                }).unwrap();
+                let _ = state
+                    .step(move |_g, p| {
+                        let w = &p["w"];
+                        let b = &p["b"];
+                        let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[len]));
+                        let y = w.const_f32_like(y_arc_step, Shape::from_dims(&[len]));
+                        let w_b = w.broadcast_to(Shape::from_dims(&[len])).unwrap();
+                        let b_b = b.broadcast_to(Shape::from_dims(&[len])).unwrap();
+                        let y_hat = x.mul(&w_b).unwrap().add(&b_b).unwrap();
+                        Ok(y_hat
+                            .sub(&y)
+                            .unwrap()
+                            .sqr()
+                            .sum_all()
+                            .mul_scalar(1.0 / len as f64))
+                    })
+                    .unwrap();
             }
             let w = state.param_to_host("w").unwrap()[0];
             let b = state.param_to_host("b").unwrap()[0];
-            assert!(w.is_finite() && b.is_finite(),
-                "clipped training should stay finite, got w={w} b={b}");
+            assert!(
+                w.is_finite() && b.is_finite(),
+                "clipped training should stay finite, got w={w} b={b}"
+            );
         }
     }
 
@@ -1530,7 +1600,12 @@ mod tests {
         ];
         // Start at 0 LR (pure warmup) and use the schedule to ramp up.
         let mut state = TrainState::new(&params, &device, OptimizerConfig::sgd(0.0)).unwrap();
-        let sch = super::WarmupCosine { warmup: 100, total: 2000, peak: 0.01, final_lr: 0.001 };
+        let sch = super::WarmupCosine {
+            warmup: 100,
+            total: 2000,
+            peak: 0.01,
+            final_lr: 0.001,
+        };
 
         let x_arc: Arc<[f32]> = xs.clone().into();
         let y_arc: Arc<[f32]> = ys.clone().into();
@@ -1538,17 +1613,19 @@ mod tests {
             let x_arc_step = x_arc.clone();
             let y_arc_step = y_arc.clone();
             let len = xs.len();
-            state.step_with_schedule(&sch, move |_graph, params| {
-                let w = &params["w"];
-                let b = &params["b"];
-                let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[len]));
-                let y = w.const_f32_like(y_arc_step, Shape::from_dims(&[len]));
-                let w_b = w.broadcast_to(Shape::from_dims(&[len])).unwrap();
-                let b_b = b.broadcast_to(Shape::from_dims(&[len])).unwrap();
-                let y_hat = x.mul(&w_b).unwrap().add(&b_b).unwrap();
-                let diff = y_hat.sub(&y).unwrap();
-                Ok(diff.sqr().sum_all().mul_scalar(1.0 / len as f64))
-            }).unwrap();
+            state
+                .step_with_schedule(&sch, move |_graph, params| {
+                    let w = &params["w"];
+                    let b = &params["b"];
+                    let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[len]));
+                    let y = w.const_f32_like(y_arc_step, Shape::from_dims(&[len]));
+                    let w_b = w.broadcast_to(Shape::from_dims(&[len])).unwrap();
+                    let b_b = b.broadcast_to(Shape::from_dims(&[len])).unwrap();
+                    let y_hat = x.mul(&w_b).unwrap().add(&b_b).unwrap();
+                    let diff = y_hat.sub(&y).unwrap();
+                    Ok(diff.sqr().sum_all().mul_scalar(1.0 / len as f64))
+                })
+                .unwrap();
         }
         let w_final = state.param_to_host("w").unwrap()[0];
         let b_final = state.param_to_host("b").unwrap()[0];

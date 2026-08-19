@@ -99,7 +99,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output_tokens = model.generate_streaming_with_kv_context(
         &prompt_tokens,
         max_new,
-        SamplingStrategy::Temperature { temp: 0.8, seed: 42 },
+        SamplingStrategy::Temperature {
+            temp: 0.8,
+            seed: 42,
+        },
         tokenizer.eos_id(),
         &device,
         DType::F32,

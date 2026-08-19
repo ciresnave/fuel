@@ -22,9 +22,9 @@ use std::sync::Arc;
 /// non-LoRA polymorphic surface.
 #[derive(Debug, Clone)]
 pub struct LazyQuantizableLinear {
-    weight:       WeightStorage,
-    bias:         Option<Arc<[f32]>>,
-    in_features:  usize,
+    weight: WeightStorage,
+    bias: Option<Arc<[f32]>>,
+    in_features: usize,
     out_features: usize,
 }
 
@@ -45,8 +45,9 @@ impl LazyQuantizableLinear {
             return Err(crate::Error::Msg(
                 "LazyQuantizableLinear::new: WithLoRA must be \
                  wrapped in LazyLoraLinear, not LazyQuantizableLinear"
-                .into(),
-            ).bt());
+                    .into(),
+            )
+            .bt());
         }
         if weight.elem_count() != in_features * out_features {
             return Err(crate::Error::Msg(format!(
@@ -56,18 +57,26 @@ impl LazyQuantizableLinear {
                 in_features,
                 out_features,
                 in_features * out_features,
-            )).bt());
+            ))
+            .bt());
         }
         if let Some(b) = bias.as_ref() {
             if b.len() != out_features {
                 return Err(crate::Error::Msg(format!(
                     "LazyQuantizableLinear::new: bias has length {} but \
                      out_features = {}",
-                    b.len(), out_features,
-                )).bt());
+                    b.len(),
+                    out_features,
+                ))
+                .bt());
             }
         }
-        Ok(Self { weight, bias, in_features, out_features })
+        Ok(Self {
+            weight,
+            bias,
+            in_features,
+            out_features,
+        })
     }
 
     /// Convenience constructor for a bias-less quantizable linear layer.
@@ -107,13 +116,13 @@ impl LazyQuantizableLinear {
 
 impl LazyModule for LazyQuantizableLinear {
     fn forward(&self, xs: &LazyTensor) -> Result<LazyTensor> {
-        let y = self.weight.apply_linear(xs, self.in_features, self.out_features)?;
+        let y = self
+            .weight
+            .apply_linear(xs, self.in_features, self.out_features)?;
         match &self.bias {
             Some(b) => {
-                let bias_t = y.const_f32_like(
-                    Arc::clone(b),
-                    Shape::from_dims(&[self.out_features]),
-                );
+                let bias_t =
+                    y.const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_features]));
                 y.broadcast_add(&bias_t)
             }
             None => Ok(y),
@@ -135,7 +144,9 @@ mod tests {
     /// same path the shipped ports use (transpose to `[out, in]`,
     /// per-row Q4_0 block-encode, reinterpret as u32 words).
     fn quantize_in_out_to_q4_0(
-        f32_in_out: &[f32], in_features: usize, out_features: usize,
+        f32_in_out: &[f32],
+        in_features: usize,
+        out_features: usize,
     ) -> WeightStorage {
         use fuel_quantized::{BlockQ4_0, GgmlType};
         const QK4_0: usize = 32;
@@ -150,13 +161,13 @@ mod tests {
         let mut blocks: Vec<BlockQ4_0> = vec![BlockQ4_0::zeros(); n_blocks];
         BlockQ4_0::from_float(&f32_out_in, &mut blocks);
         let bytes_len = n_blocks * std::mem::size_of::<BlockQ4_0>();
-        let byte_slice: &[u8] = unsafe {
-            std::slice::from_raw_parts(blocks.as_ptr() as *const u8, bytes_len)
-        };
+        let byte_slice: &[u8] =
+            unsafe { std::slice::from_raw_parts(blocks.as_ptr() as *const u8, bytes_len) };
         let padded_len = bytes_len.div_ceil(4) * 4;
         let mut padded = vec![0_u8; padded_len];
         padded[..bytes_len].copy_from_slice(byte_slice);
-        let words: Vec<u32> = padded.chunks_exact(4)
+        let words: Vec<u32> = padded
+            .chunks_exact(4)
             .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         WeightStorage::Q4_0 {
@@ -182,13 +193,15 @@ mod tests {
             Some(Arc::from(bias.clone())),
             in_features,
             out_features,
-        ).unwrap();
+        )
+        .unwrap();
         let plain = LazyLinear::new(
             WeightStorage::F32(Arc::from(w)),
             Some(Arc::from(bias)),
             in_features,
             out_features,
-        ).unwrap();
+        )
+        .unwrap();
 
         let x = LazyTensor::from_f32(
             x_data.clone(),
@@ -197,15 +210,14 @@ mod tests {
         );
         let got = qlin.forward(&x).unwrap().realize_f32();
         let x2 = LazyTensor::from_f32(
-            x_data, Shape::from_dims(&[seq, in_features]), &Device::cpu(),
+            x_data,
+            Shape::from_dims(&[seq, in_features]),
+            &Device::cpu(),
         );
         let expected = plain.forward(&x2).unwrap().realize_f32();
         assert_eq!(got.len(), expected.len());
         for (i, (a, e)) in got.iter().zip(expected.iter()).enumerate() {
-            assert!(
-                (a - e).abs() < 1e-6,
-                "qlin f32 [{i}] expected {e}, got {a}",
-            );
+            assert!((a - e).abs() < 1e-6, "qlin f32 [{i}] expected {e}, got {a}",);
         }
     }
 
@@ -221,16 +233,15 @@ mod tests {
         let x_data: Vec<f32> = ramp_f32(seq * in_features, 0.005, -0.1);
 
         let q_weight = quantize_in_out_to_q4_0(&w, in_features, out_features);
-        let qlin = LazyQuantizableLinear::new(
-            q_weight,
-            Some(Arc::from(bias)),
-            in_features,
-            out_features,
-        ).unwrap();
+        let qlin =
+            LazyQuantizableLinear::new(q_weight, Some(Arc::from(bias)), in_features, out_features)
+                .unwrap();
         assert!(qlin.is_quantized());
 
         let x = LazyTensor::from_f32(
-            x_data, Shape::from_dims(&[seq, in_features]), &Device::cpu(),
+            x_data,
+            Shape::from_dims(&[seq, in_features]),
+            &Device::cpu(),
         );
         let y = qlin.forward(&x).unwrap();
         assert_eq!(y.shape().dims(), &[seq, out_features]);

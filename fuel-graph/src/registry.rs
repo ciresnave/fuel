@@ -39,12 +39,10 @@ pub mod flash_attn;
 pub mod flash_attn_backward;
 pub mod fused_linear;
 pub mod fused_softmax_cross_entropy;
-pub mod nf4_matmul;
-pub mod selective_scan;
-pub mod ssd_chunk_scan;
 pub mod inplace_affine;
 pub mod layer_norm_last_dim;
 pub mod layer_norm_last_dim_backward;
+pub mod nf4_matmul;
 pub mod paged_attn;
 pub mod powi_backward;
 pub mod qmatmul;
@@ -52,8 +50,10 @@ pub mod reduce_max_to_backward;
 pub mod rms_norm_last_dim;
 pub mod rms_norm_last_dim_backward;
 pub mod rope;
+pub mod selective_scan;
 pub mod softmax_last_dim;
 pub mod softmax_last_dim_backward;
+pub mod ssd_chunk_scan;
 
 /// Stable identifier for a registered fused op. Indexes into
 /// [`FusedOpRegistry::entries`]. Newtype over `u16` (~65K capacity is
@@ -145,8 +145,7 @@ pub struct FusedOpEntry {
     /// Session 2 introduces) checks these at graph-build time. The
     /// raw `Graph::push` + `Graph::set_output_views` route preserves
     /// the same invariants via `set_output_views`'s validation pass.
-    pub output_views:
-        Option<fn(&[Shape], &[DType], &FusedOpParams) -> Vec<OutputViewSpec>>,
+    pub output_views: Option<fn(&[Shape], &[DType], &FusedOpParams) -> Vec<OutputViewSpec>>,
 
     /// Which input index this fused op DESTROYS (mutates in place) on execution,
     /// or `None` if it is non-destructive (produces a fresh output, every input
@@ -212,9 +211,9 @@ pub enum FusedOpParams {
     /// forces the primitive variant to grow one (per the comments
     /// in `Tensor::backward`'s `Op::Conv2D` arm).
     Conv2D {
-        stride:  (usize, usize),
+        stride: (usize, usize),
         padding: (usize, usize),
-        groups:  usize,
+        groups: usize,
     },
     /// SoftmaxLastDimBackward — `s * (g - sum(g * s, last, keepdim))`.
     /// Two inputs (forward_y, upstream); parameterless. Higher-order
@@ -238,11 +237,11 @@ pub enum FusedOpParams {
     /// Two inputs `[x, weight]` (no bias). Carries the full
     /// stride/padding/output_padding/dilation/groups bundle.
     ConvTranspose2D {
-        stride:         (usize, usize),
-        padding:        (usize, usize),
+        stride: (usize, usize),
+        padding: (usize, usize),
         output_padding: (usize, usize),
-        dilation:       (usize, usize),
-        groups:         usize,
+        dilation: (usize, usize),
+        groups: usize,
     },
     /// FlashAttn — multi-head scaled-dot-product attention with
     /// FlashAttention-shaped kernel hooks. 4-5 inputs (q, k, v,
@@ -259,19 +258,19 @@ pub enum FusedOpParams {
     /// decode over a persistent capacity KV-cache. Build via
     /// [`Tensor::flash_attn_dyn`].
     FlashAttn {
-        softmax_scale:     f32,
-        causal:            bool,
-        window_size_left:  Option<usize>,
+        softmax_scale: f32,
+        causal: bool,
+        window_size_left: Option<usize>,
         window_size_right: Option<usize>,
-        softcap:           Option<f32>,
-        k_len:             Option<DynScalar>,
+        softcap: Option<f32>,
+        k_len: Option<DynScalar>,
     },
     /// PagedAttn — paged-cache attention. 5-6 inputs (q, k_cache,
     /// v_cache, block_table, context_lens, optional alibi).
     PagedAttn {
         softmax_scale: f32,
-        block_size:    usize,
-        softcap:       Option<f32>,
+        block_size: usize,
+        softcap: Option<f32>,
     },
     /// QMatMul — quantized matrix multiply `C = A @ dequant(W_Q)`.
     /// Two inputs `[a, w_q_bytes]`. The U32-typed w_q_bytes carries
@@ -279,8 +278,8 @@ pub enum FusedOpParams {
     /// implementation; `k` / `n` are the logical weight dims.
     QMatMul {
         quant_type: crate::QuantType,
-        k:          usize,
-        n:          usize,
+        k: usize,
+        n: usize,
     },
     /// InplaceAffine — `x = mul·x + add`, mutating input 0. Single
     /// input. Destructive on index 0 (marked via
@@ -323,11 +322,11 @@ pub enum FusedOpParams {
     /// use this single variant; the FusedOpId distinguishes which
     /// gradient is being computed.
     FlashAttnBackward {
-        softmax_scale:     f32,
-        causal:            bool,
-        window_size_left:  Option<usize>,
+        softmax_scale: f32,
+        causal: bool,
+        window_size_left: Option<usize>,
         window_size_right: Option<usize>,
-        softcap:           Option<f32>,
+        softcap: Option<f32>,
     },
     /// SelectiveScan — Mamba-1's selective state-space scan
     /// (forward only). Five inputs:
@@ -383,7 +382,7 @@ pub enum FusedOpParams {
     /// `ignore_index` rows are dropped from the loss accumulator and
     /// from the Mean denominator. The conventional sentinel is `-100`.
     FusedSoftmaxCrossEntropy {
-        reduction:    Reduction,
+        reduction: Reduction,
         ignore_index: i64,
     },
     /// A **runtime-registered** fused op (JIT-synthesized or import-time). The
@@ -471,7 +470,11 @@ impl FusedOpParams {
                 bits: Vec::new(),
                 ints: Vec::new(),
             },
-            FusedOpParams::Conv2D { stride, padding, groups } => FusedOpParamsKey {
+            FusedOpParams::Conv2D {
+                stride,
+                padding,
+                groups,
+            } => FusedOpParamsKey {
                 tag: 6,
                 bits: Vec::new(),
                 // Stride.{0,1}, padding.{0,1}, groups. Five i64 slots
@@ -506,7 +509,11 @@ impl FusedOpParams {
                 ints: Vec::new(),
             },
             FusedOpParams::ConvTranspose2D {
-                stride, padding, output_padding, dilation, groups,
+                stride,
+                padding,
+                output_padding,
+                dilation,
+                groups,
             } => FusedOpParamsKey {
                 tag: 11,
                 bits: Vec::new(),
@@ -525,8 +532,12 @@ impl FusedOpParams {
                 ],
             },
             FusedOpParams::FlashAttn {
-                softmax_scale, causal, window_size_left,
-                window_size_right, softcap, k_len,
+                softmax_scale,
+                causal,
+                window_size_left,
+                window_size_right,
+                softcap,
+                k_len,
             } => {
                 // Encode the optional dynamic k_len as (tag, value) so
                 // two flash nodes whose attended-length symbol differs
@@ -559,7 +570,9 @@ impl FusedOpParams {
                 }
             }
             FusedOpParams::PagedAttn {
-                softmax_scale, block_size, softcap,
+                softmax_scale,
+                block_size,
+                softcap,
             } => FusedOpParamsKey {
                 tag: 13,
                 bits: vec![
@@ -585,7 +598,10 @@ impl FusedOpParams {
                 bits: vec![mul.to_bits(), add.to_bits()],
                 ints: Vec::new(),
             },
-            FusedOpParams::FusedSoftmaxCrossEntropy { reduction, ignore_index } => FusedOpParamsKey {
+            FusedOpParams::FusedSoftmaxCrossEntropy {
+                reduction,
+                ignore_index,
+            } => FusedOpParamsKey {
                 tag: 17,
                 bits: Vec::new(),
                 ints: vec![reduction.key(), *ignore_index],
@@ -611,8 +627,11 @@ impl FusedOpParams {
                 ints: vec![*block_size as i64],
             },
             FusedOpParams::FlashAttnBackward {
-                softmax_scale, causal, window_size_left,
-                window_size_right, softcap,
+                softmax_scale,
+                causal,
+                window_size_left,
+                window_size_right,
+                softcap,
             } => FusedOpParamsKey {
                 // Distinct tag from forward FlashAttn (12) so the
                 // forward and backward nodes can't collide in CSE.
@@ -645,17 +664,17 @@ impl FusedOpParams {
 fn quant_type_key(q: crate::QuantType) -> i64 {
     use crate::QuantType::*;
     match q {
-        Q4_0   => 1,
-        Q4_1   => 2,
-        Q5_0   => 3,
-        Q5_1   => 4,
-        Q8_0   => 5,
-        Q8_1   => 6,
-        Q2K    => 7,
-        Q3K    => 8,
+        Q4_0 => 1,
+        Q4_1 => 2,
+        Q5_0 => 3,
+        Q5_1 => 4,
+        Q8_0 => 5,
+        Q8_1 => 6,
+        Q2K => 7,
+        Q3K => 8,
         Q4_K_M => 9,
-        Q5K    => 10,
-        Q6K    => 11,
+        Q5K => 10,
+        Q6K => 11,
     }
 }
 
@@ -785,8 +804,7 @@ impl FusedOpRegistry {
             entry.name
         );
         debug_assert!(
-            entry.id.0 as usize == self.entries.len() + 1
-                || self.entry(entry.id).is_none(),
+            entry.id.0 as usize == self.entries.len() + 1 || self.entry(entry.id).is_none(),
             "FusedOpRegistry: id {:?} already populated",
             entry.id
         );

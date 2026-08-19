@@ -15,9 +15,13 @@
 
 use std::sync::{Arc, RwLock};
 
-use fuel_ir::{dispatch::OpKind, probe::BackendId, DType};
 use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
-use fuel_dispatch::{baracuda_dispatch::register_baracuda_cuda_kernels, dispatch::register_cuda_kernels, kernel::{KernelBindingTable, OpParams}};
+use fuel_dispatch::{
+    baracuda_dispatch::register_baracuda_cuda_kernels,
+    dispatch::register_cuda_kernels,
+    kernel::{KernelBindingTable, OpParams},
+};
+use fuel_ir::{DType, dispatch::OpKind, probe::BackendId};
 use fuel_memory::{BackendStorage, Storage};
 
 fn dev_or_skip() -> Option<CudaDevice> {
@@ -54,9 +58,7 @@ fn pick_alt(
     }
     panic!(
         "expected baracuda KernelRef not found among {} alternatives at ({op:?}, {dtypes:?})",
-        table
-            .lookup_alternatives(op, dtypes, BackendId::Cuda)
-            .len(),
+        table.lookup_alternatives(op, dtypes, BackendId::Cuda).len(),
     )
 }
 
@@ -240,7 +242,11 @@ fn baracuda_cast_f32_to_f8e4m3_round_trip() {
     let input: Vec<f32> = vec![0.0, 0.5, -0.5, 1.0, -1.0, 2.0, -2.0, 4.0];
     let src_bytes: &[u8] = bytemuck::cast_slice(&input);
     let mid = run_cast(&table, DType::F32, DType::F8E4M3, src_bytes, input.len());
-    assert_eq!(mid.len(), input.len(), "F32 → F8E4M3 should produce 1 byte per element");
+    assert_eq!(
+        mid.len(),
+        input.len(),
+        "F32 → F8E4M3 should produce 1 byte per element"
+    );
 
     let back = run_cast(&table, DType::F8E4M3, DType::F32, &mid, input.len());
     let got: &[f32] = bytemuck::cast_slice(&back);
@@ -268,7 +274,10 @@ fn baracuda_cast_f8e4m3_through_bf16_round_trip() {
     assert_eq!(bf.len(), input.len() * 2, "BF16 is 2 bytes/elem");
     // BF16 → F8E4M3.
     let fp8_back = run_cast(&table, DType::BF16, DType::F8E4M3, &bf, input.len());
-    assert_eq!(fp8, fp8_back, "F8E4M3 → BF16 → F8E4M3 should be bit-stable for representable inputs");
+    assert_eq!(
+        fp8, fp8_back,
+        "F8E4M3 → BF16 → F8E4M3 should be bit-stable for representable inputs"
+    );
 }
 
 #[test]
@@ -276,11 +285,7 @@ fn f8e4m3_cast_registered_for_3_target_dtypes() {
     let table = dual_table();
     for other in [DType::F32, DType::F16, DType::BF16] {
         for (src, dst) in [(DType::F8E4M3, other), (other, DType::F8E4M3)] {
-            let alts = table.lookup_alternatives(
-                OpKind::Cast,
-                &[src, dst],
-                BackendId::Cuda,
-            );
+            let alts = table.lookup_alternatives(OpKind::Cast, &[src, dst], BackendId::Cuda);
             assert!(
                 !alts.is_empty(),
                 "no Cast CUDA registration for ({src:?} → {dst:?})",

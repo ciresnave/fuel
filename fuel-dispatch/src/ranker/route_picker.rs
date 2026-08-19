@@ -55,18 +55,18 @@
 
 use std::sync::Arc;
 
+use fuel_graph::{Graph, NodeId, PickedRoute, branches_in_topo_order};
 use fuel_ir::dispatch::{OpKind, SizeClass};
 use fuel_ir::probe::BackendId;
 use fuel_ir::{DType, DeviceLocation, Shape};
-use fuel_graph::{branches_in_topo_order, Graph, NodeId, PickedRoute};
 
 use crate::fused::{CostEstimate, PrecisionGuarantee};
 use crate::kernel::{KernelBindingTable, KernelCaps, OpParams};
 use crate::pipelined::{build_lookup_dtypes, op_to_op_kind};
 use crate::plan::default_device_for;
 use crate::ranker::{
-    enumerate_candidates, AlternativeSet, BackendRuntimeLookup, Candidate,
-    DecisionContext, RuntimeSelector,
+    AlternativeSet, BackendRuntimeLookup, Candidate, DecisionContext, RuntimeSelector,
+    enumerate_candidates,
 };
 
 /// Bounded lookahead for adversarially-coupled branches (06-runtime
@@ -97,10 +97,7 @@ pub struct TelemetryFingerprint {
 impl TelemetryFingerprint {
     /// Fingerprint the backends in `backends` against the live lookup.
     /// Each backend's free bytes are bucketed via [`free_bytes_bucket`].
-    fn sample(
-        backends: &[BackendId],
-        lookup: Option<&BackendRuntimeLookup>,
-    ) -> Self {
+    fn sample(backends: &[BackendId], lookup: Option<&BackendRuntimeLookup>) -> Self {
         let mut buckets: Vec<(BackendId, u8)> = Vec::new();
         if let Some(lookup) = lookup {
             let mut seen: Vec<BackendId> = Vec::new();
@@ -362,8 +359,7 @@ fn enumerate_fork_set(
     // `op_params` is unread by the selector (it ranks on backend/device/cost/
     // kernel_source), so `None` suffices — the chosen arm is lowered to real
     // runs and dispatched through the normal binding-table path regardless.
-    let mut set =
-        enumerate_candidates(op_kind, &dtypes, &placements, &OpParams::None, bindings);
+    let mut set = enumerate_candidates(op_kind, &dtypes, &placements, &OpParams::None, bindings);
     if let Some(ctx) = fork_decision_context(graph, node, op_kind, &dtypes) {
         set.set_context(ctx);
     }
@@ -389,7 +385,11 @@ fn fork_decision_context(
         .map(|&input_id| graph.node(input_id).shape.clone())
         .collect();
     let size_class = SizeClass::for_op(op_kind, &input_shapes);
-    Some(DecisionContext { op: op_kind, principal_dtype, size_class })
+    Some(DecisionContext {
+        op: op_kind,
+        principal_dtype,
+        size_class,
+    })
 }
 
 /// Find a plan candidate matching `(backend, device)` (the arm's real
@@ -462,9 +462,7 @@ fn noop_kernel(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ranker::{
-        BackendRuntimeHandle, ChainedSelector, WinnerSelector,
-    };
+    use crate::ranker::{BackendRuntimeHandle, ChainedSelector, WinnerSelector};
     use fuel_backend_contract::backend::BackendRuntime;
     use fuel_graph::{Node, Op};
     use fuel_ir::{DType, Shape};
@@ -541,13 +539,17 @@ mod tests {
 
     /// Per-backend `(available, total)` lookup; backends not listed
     /// resolve to `None` (= Unknown / no signal).
-    fn lookup_for(
-        entries: Vec<(BackendId, Option<u64>, Option<u64>)>,
-    ) -> BackendRuntimeLookup {
+    fn lookup_for(entries: Vec<(BackendId, Option<u64>, Option<u64>)>) -> BackendRuntimeLookup {
         Arc::new(move |b, _d| {
-            entries.iter().find(|(eb, _, _)| *eb == b).map(|&(_, a, t)| {
-                Box::new(MockRuntime { available: a, total: t }) as BackendRuntimeHandle
-            })
+            entries
+                .iter()
+                .find(|(eb, _, _)| *eb == b)
+                .map(|&(_, a, t)| {
+                    Box::new(MockRuntime {
+                        available: a,
+                        total: t,
+                    }) as BackendRuntimeHandle
+                })
         })
     }
 
@@ -557,8 +559,7 @@ mod tests {
     /// production `ChainedSelector` with no signals.
     #[test]
     fn no_telemetry_picks_arm0_empty_route() {
-        let (g, _branch, _fork, _arm1, post) =
-            diamond(BackendId::Cuda, BackendId::Cpu);
+        let (g, _branch, _fork, _arm1, post) = diamond(BackendId::Cuda, BackendId::Cpu);
         let bindings = diamond_bindings();
 
         // Bare winner selector: always arm 0.
@@ -584,8 +585,7 @@ mod tests {
     /// the picker takes the host-RAM (CPU) arm instead — arm 1.
     #[test]
     fn vram_pressure_picks_host_ram_arm() {
-        let (g, branch, _fork, _arm1, post) =
-            diamond(BackendId::Cuda, BackendId::Cpu);
+        let (g, branch, _fork, _arm1, post) = diamond(BackendId::Cuda, BackendId::Cpu);
         // Both placements resolve to the same no-op kernel; the only signal is
         // memory pressure, so the guard alone must flip the pick.
         let bindings = diamond_bindings();
@@ -596,8 +596,7 @@ mod tests {
             (BackendId::Cuda, Some(1), Some(10_000)),
             (BackendId::Cpu, Some(8_000), Some(10_000)),
         ]);
-        let chained =
-            ChainedSelector::with_default_estimator(None, Some(lookup.clone()));
+        let chained = ChainedSelector::with_default_estimator(None, Some(lookup.clone()));
 
         let route = pick_route(&g, &[post], &bindings, &chained, Some(&lookup));
         assert_eq!(
@@ -664,8 +663,7 @@ mod tests {
             (BackendId::Cuda, Some(1), Some(10_000)),
             (BackendId::Cpu, Some(8_000), Some(10_000)),
         ]);
-        let chained =
-            ChainedSelector::with_default_estimator(None, Some(lookup.clone()));
+        let chained = ChainedSelector::with_default_estimator(None, Some(lookup.clone()));
         let route = pick_route(&g, &[post], &bindings, &chained, Some(&lookup));
 
         assert_eq!(route.get(&branch1).copied(), Some(1), "branch1 → CPU arm");
@@ -678,8 +676,7 @@ mod tests {
     /// route.
     #[test]
     fn route_cached_and_reresolved_on_telemetry_delta() {
-        let (g, branch, _fork, _arm1, post) =
-            diamond(BackendId::Cuda, BackendId::Cpu);
+        let (g, branch, _fork, _arm1, post) = diamond(BackendId::Cuda, BackendId::Cpu);
         let bindings = diamond_bindings();
 
         // Start comfortable: both backends have ample free memory.
@@ -687,8 +684,7 @@ mod tests {
             (BackendId::Cuda, Some(8_000), Some(10_000)),
             (BackendId::Cpu, Some(8_000), Some(10_000)),
         ]);
-        let chained_comfy =
-            ChainedSelector::with_default_estimator(None, Some(comfy.clone()));
+        let chained_comfy = ChainedSelector::with_default_estimator(None, Some(comfy.clone()));
 
         let mut cache = RouteCache::new();
         let r1 = cache.resolve(&g, &[post], &bindings, &chained_comfy, Some(&comfy));
@@ -708,18 +704,13 @@ mod tests {
             (BackendId::Cuda, Some(1), Some(10_000)),
             (BackendId::Cpu, Some(8_000), Some(10_000)),
         ]);
-        let chained_pressured = ChainedSelector::with_default_estimator(
-            None,
-            Some(pressured.clone()),
+        let chained_pressured =
+            ChainedSelector::with_default_estimator(None, Some(pressured.clone()));
+        let r3 = cache.resolve(&g, &[post], &bindings, &chained_pressured, Some(&pressured));
+        assert_eq!(
+            cache.resolves, 2,
+            "a meaningful telemetry delta re-resolves"
         );
-        let r3 = cache.resolve(
-            &g,
-            &[post],
-            &bindings,
-            &chained_pressured,
-            Some(&pressured),
-        );
-        assert_eq!(cache.resolves, 2, "a meaningful telemetry delta re-resolves");
         assert_eq!(cache.hits, 1, "the delta is not counted as a hit");
         assert_eq!(
             r3.get(&branch).copied(),
@@ -750,8 +741,7 @@ mod tests {
     /// used).
     #[test]
     fn enumerate_fork_set_pulls_registered_candidates() {
-        let (g, _branch, fork, arm1, _post) =
-            diamond(BackendId::Cuda, BackendId::Cpu);
+        let (g, _branch, fork, arm1, _post) = diamond(BackendId::Cuda, BackendId::Cpu);
         let bindings = diamond_bindings();
         let set = enumerate_fork_set(&g, fork, &[fork, arm1], &bindings);
 
@@ -760,8 +750,16 @@ mod tests {
             2,
             "Silu registered at both arm backends ⇒ one candidate per placement",
         );
-        assert!(set.alternatives().iter().any(|c| c.backend == BackendId::Cuda));
-        assert!(set.alternatives().iter().any(|c| c.backend == BackendId::Cpu));
+        assert!(
+            set.alternatives()
+                .iter()
+                .any(|c| c.backend == BackendId::Cuda)
+        );
+        assert!(
+            set.alternatives()
+                .iter()
+                .any(|c| c.backend == BackendId::Cpu)
+        );
         let ctx = set.context().expect("fork DecisionContext stamped");
         assert_eq!(ctx.op, OpKind::SiluElementwise);
         assert_eq!(ctx.principal_dtype, DType::F32);
@@ -773,15 +771,13 @@ mod tests {
     /// prior no-plan-entry behavior.
     #[test]
     fn synthetic_fallback_when_fork_op_unregistered() {
-        let (g, branch, _fork, _arm1, post) =
-            diamond(BackendId::Cuda, BackendId::Cpu);
+        let (g, branch, _fork, _arm1, post) = diamond(BackendId::Cuda, BackendId::Cpu);
         let empty = KernelBindingTable::new();
         let lookup = lookup_for(vec![
             (BackendId::Cuda, Some(1), Some(10_000)),
             (BackendId::Cpu, Some(8_000), Some(10_000)),
         ]);
-        let chained =
-            ChainedSelector::with_default_estimator(None, Some(lookup.clone()));
+        let chained = ChainedSelector::with_default_estimator(None, Some(lookup.clone()));
         let route = pick_route(&g, &[post], &empty, &chained, Some(&lookup));
         assert_eq!(
             route.get(&branch).copied(),
@@ -820,8 +816,7 @@ mod tests {
     /// with a fake signal (the real signal is B1, already verified).
     #[test]
     fn load_pressure_picks_unloaded_arm() {
-        let (g, branch, _arm0, arm1, post) =
-            diamond(BackendId::Cuda, BackendId::Vulkan);
+        let (g, branch, _arm0, arm1, post) = diamond(BackendId::Cuda, BackendId::Vulkan);
         let bindings = diamond_bindings_cuda_vulkan();
 
         // Both arms VRAM-fit (ample free / total). CUDA saturated (4 in
@@ -832,8 +827,7 @@ mod tests {
             (BackendId::Cuda, Some(10_000), Some(10_000), Some(4), 1),
             (BackendId::Vulkan, Some(10_000), Some(10_000), Some(0), 1),
         ]);
-        let chained =
-            ChainedSelector::with_default_estimator(None, Some(lookup.clone()));
+        let chained = ChainedSelector::with_default_estimator(None, Some(lookup.clone()));
 
         let route = pick_route(&g, &[post], &bindings, &chained, Some(&lookup));
         assert_eq!(
@@ -857,8 +851,7 @@ mod tests {
     /// changes nothing unless devices genuinely contend.
     #[test]
     fn no_load_picks_arm0_empty_route() {
-        let (g, _branch, _arm0, _arm1, post) =
-            diamond(BackendId::Cuda, BackendId::Vulkan);
+        let (g, _branch, _arm0, _arm1, post) = diamond(BackendId::Cuda, BackendId::Vulkan);
         let bindings = diamond_bindings_cuda_vulkan();
 
         // Both VRAM-fit, both idle (0 in flight) → no load signal anywhere.
@@ -866,8 +859,7 @@ mod tests {
             (BackendId::Cuda, Some(10_000), Some(10_000), Some(0), 1),
             (BackendId::Vulkan, Some(10_000), Some(10_000), Some(0), 1),
         ]);
-        let chained =
-            ChainedSelector::with_default_estimator(None, Some(lookup.clone()));
+        let chained = ChainedSelector::with_default_estimator(None, Some(lookup.clone()));
 
         let route = pick_route(&g, &[post], &bindings, &chained, Some(&lookup));
         assert!(

@@ -19,7 +19,7 @@
 //! first; if no rule is registered for an op, the existing match
 //! handles it (forward-compatible split).
 
-use crate::{node_dtype, node_shape, push_node, NodeId, Op, SharedGraph};
+use crate::{NodeId, Op, SharedGraph, node_dtype, node_shape, push_node};
 
 /// Result of a backward rule: one gradient `NodeId` per forward input
 /// slot, with `None` for inputs that aren't differentiable (e.g. the
@@ -71,7 +71,9 @@ pub fn dispatch_gradient(
         Op::Mul => Some(MulRule.backward(graph, op, inputs, output, upstream)),
         Op::Relu => Some(ReluRule.backward(graph, op, inputs, output, upstream)),
         // --- comparison family: non-differentiable, terminate cleanly ---
-        Op::Equal | Op::Ne | Op::Lt | Op::Le | Op::Gt | Op::Ge => Some(NoGradientBinaryRule.backward(graph, op, inputs, output, upstream)),
+        Op::Equal | Op::Ne | Op::Lt | Op::Le | Op::Gt | Op::Ge => {
+            Some(NoGradientBinaryRule.backward(graph, op, inputs, output, upstream))
+        }
         // --- ternary select: differentiable through `a` and `b` ---
         Op::Where => Some(WhereRule.backward(graph, op, inputs, output, upstream)),
         _ => None,
@@ -174,8 +176,7 @@ impl GradientRule for WhereRule {
         let m_a = push_node(graph, Op::Cast(dtype), vec![cond], shape.clone(), dtype);
         // m_b = -(m_a + (-1)) = 1 - m_a — the complementary mask.
         // AddScalar(-1.0) produces (m_a - 1); Neg flips the sign.
-        let m_a_minus_one =
-            push_node(graph, Op::AddScalar(-1.0), vec![m_a], shape.clone(), dtype);
+        let m_a_minus_one = push_node(graph, Op::AddScalar(-1.0), vec![m_a], shape.clone(), dtype);
         let m_b = push_node(graph, Op::Neg, vec![m_a_minus_one], shape.clone(), dtype);
         // grad_a = upstream * m_a; grad_b = upstream * m_b.
         let grad_a = push_node(graph, Op::Mul, vec![upstream, m_a], shape.clone(), dtype);
@@ -207,15 +208,15 @@ impl GradientRule for ReluRule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Tensor};
+    use crate::Tensor;
     use fuel_ir::Shape;
     use std::sync::Arc;
 
     /// Phase 7.5 G2: tests need a real device for slot-populating
     /// constructors. Singleton CpuBackendDevice via OnceLock.
     fn cpu_dev() -> &'static Arc<dyn fuel_backend_contract::DynBackendDevice> {
-        static D: std::sync::OnceLock<Arc<dyn fuel_backend_contract::DynBackendDevice>>
-            = std::sync::OnceLock::new();
+        static D: std::sync::OnceLock<Arc<dyn fuel_backend_contract::DynBackendDevice>> =
+            std::sync::OnceLock::new();
         D.get_or_init(|| Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice))
     }
 
@@ -235,8 +236,11 @@ mod tests {
         let gb = grads.get(&b).expect("gradient for b");
         // dispatch_gradient(Op::Add, ...) returns the upstream node twice
         // verbatim, so ga and gb should be the same NodeId (the same upstream).
-        assert_eq!(ga.id(), gb.id(),
-            "AddRule should funnel both gradients to the same upstream node");
+        assert_eq!(
+            ga.id(),
+            gb.id(),
+            "AddRule should funnel both gradients to the same upstream node"
+        );
     }
 
     /// Sanity: dispatch_gradient returns None for ops we haven't
@@ -251,7 +255,10 @@ mod tests {
         let g: SharedGraph = Arc::new(RwLock::new(crate::Graph::new()));
         let dummy = NodeId(0);
         let result = dispatch_gradient(&g, &Op::MatMul, &[dummy, dummy], dummy, dummy);
-        assert!(result.is_none(), "MatMul should not have a registered rule yet");
+        assert!(
+            result.is_none(),
+            "MatMul should not have a registered rule yet"
+        );
     }
 
     /// `WhereRule` returns 3 entries: `None` for cond (non-differentiable
@@ -262,8 +269,8 @@ mod tests {
     #[test]
     fn dispatch_where_returns_none_for_cond_some_for_a_and_b() {
         use crate::SharedGraph;
-        use std::sync::{Arc, RwLock};
         use fuel_ir::{DType, Shape};
+        use std::sync::{Arc, RwLock};
         // Build a real graph so push_node calls inside the rule have
         // somewhere to land. Three placeholder Const nodes for the
         // three inputs.
@@ -271,36 +278,58 @@ mod tests {
         let (cond, a, b, output, upstream) = {
             let mut gw = g.write().unwrap();
             let cond = gw.push(crate::Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3]), dtype: DType::U8,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::U8,
             });
             let a = gw.push(crate::Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             let b = gw.push(crate::Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             let output = gw.push(crate::Node {
-                op: Op::Where, inputs: vec![cond, a, b],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                op: Op::Where,
+                inputs: vec![cond, a, b],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             let upstream = gw.push(crate::Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
             });
             (cond, a, b, output, upstream)
         };
         let result = dispatch_gradient(&g, &Op::Where, &[cond, a, b], output, upstream)
             .expect("Op::Where must have a registered GradientRule");
         assert_eq!(result.len(), 3, "Where has 3 inputs");
-        assert!(result[0].is_none(), "cond gradient must be None (U8 non-differentiable)");
-        assert!(result[1].is_some(), "a gradient must be Some (differentiable through pick)");
-        assert!(result[2].is_some(), "b gradient must be Some (differentiable through fallback)");
+        assert!(
+            result[0].is_none(),
+            "cond gradient must be None (U8 non-differentiable)"
+        );
+        assert!(
+            result[1].is_some(),
+            "a gradient must be Some (differentiable through pick)"
+        );
+        assert!(
+            result[2].is_some(),
+            "b gradient must be Some (differentiable through fallback)"
+        );
         // Sanity: the two grads should reference different nodes.
-        assert_ne!(result[1].unwrap(), result[2].unwrap(),
-            "grad_a and grad_b should be distinct backward nodes");
+        assert_ne!(
+            result[1].unwrap(),
+            result[2].unwrap(),
+            "grad_a and grad_b should be distinct backward nodes"
+        );
     }
 
     /// Comparison family terminates the autograd traversal cleanly:
@@ -317,7 +346,13 @@ mod tests {
         let result = dispatch_gradient(&g, &Op::Equal, &[dummy, dummy], dummy, dummy)
             .expect("Op::Equal must have a registered GradientRule");
         assert_eq!(result.len(), 2, "Op::Equal has 2 inputs");
-        assert!(result[0].is_none(), "lhs gradient must be None (non-differentiable)");
-        assert!(result[1].is_none(), "rhs gradient must be None (non-differentiable)");
+        assert!(
+            result[0].is_none(),
+            "lhs gradient must be None (non-differentiable)"
+        );
+        assert!(
+            result[1].is_none(),
+            "rhs gradient must be None (non-differentiable)"
+        );
     }
 }

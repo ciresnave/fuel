@@ -1,4 +1,4 @@
-﻿//! Object-safe backend traits for dynamic dispatch.
+//! Object-safe backend traits for dynamic dispatch.
 //!
 //! [`DynBackendStorage`] and [`DynBackendDevice`] are the object-safe
 //! counterparts of [`BackendStorage`](crate::backend::BackendStorage) and
@@ -26,7 +26,7 @@
 //! ```
 use fuel_ir::conv::{ParamsConv1D, ParamsConv2D, ParamsConvTranspose1D, ParamsConvTranspose2D};
 use fuel_ir::op::{BinaryOp, CmpOp, ReduceOp, UnaryOp};
-use fuel_ir::{HostBuffer, DType, DeviceLocation, Layout, Result, Scalar, Shape};
+use fuel_ir::{DType, DeviceLocation, HostBuffer, Layout, Result, Scalar, Shape};
 use std::any::Any;
 use std::sync::Arc;
 
@@ -318,10 +318,7 @@ pub trait DynBackendDevice: Send + Sync + std::fmt::Debug {
     ) -> Result<Box<dyn DynBackendStorage>>;
 
     /// Create storage from a host buffer (borrowed).
-    fn storage_from_host_buffer_dyn(
-        &self,
-        buf: &HostBuffer,
-    ) -> Result<Box<dyn DynBackendStorage>>;
+    fn storage_from_host_buffer_dyn(&self, buf: &HostBuffer) -> Result<Box<dyn DynBackendStorage>>;
 
     /// Create storage from a host buffer (owned).
     fn storage_from_host_buffer_owned_dyn(
@@ -330,10 +327,7 @@ pub trait DynBackendDevice: Send + Sync + std::fmt::Debug {
     ) -> Result<Box<dyn DynBackendStorage>>;
 
     /// Deprecated alias for [`storage_from_host_buffer_dyn`].
-    fn storage_from_cpu_storage_dyn(
-        &self,
-        cpu: &HostBuffer,
-    ) -> Result<Box<dyn DynBackendStorage>> {
+    fn storage_from_cpu_storage_dyn(&self, cpu: &HostBuffer) -> Result<Box<dyn DynBackendStorage>> {
         self.storage_from_host_buffer_dyn(cpu)
     }
 

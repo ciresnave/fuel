@@ -40,7 +40,10 @@ fn mkl_matmul_realize_is_finite_and_sane() {
     assert_eq!(out.len(), m * n);
     for (i, &v) in out.iter().enumerate() {
         assert!(v.is_finite(), "matmul output non-finite at {i}: {v}");
-        assert!(v.abs() < 1e6, "matmul output magnitude unreasonable at {i}: {v}");
+        assert!(
+            v.abs() < 1e6,
+            "matmul output magnitude unreasonable at {i}: {v}"
+        );
     }
 }
 

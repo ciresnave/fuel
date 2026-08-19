@@ -86,9 +86,9 @@ fn softmax_last_dim_run_into(
     let device = src.device().clone();
     let dims = src_layout.shape().dims();
     let rank = dims.len();
-    let last_dim = *dims.last().ok_or_else(|| fuel_ir::Error::Msg(
-        format!("{op_label}: rank-0 input not supported"),
-    ).bt())?;
+    let last_dim = *dims.last().ok_or_else(|| {
+        fuel_ir::Error::Msg(format!("{op_label}: rank-0 input not supported")).bt()
+    })?;
     let numel: i64 = src_layout.shape().elem_count() as i64;
     let out_bytes = (numel as usize) * dtype_size_bytes;
     if out_bytes == 0 {
@@ -110,7 +110,9 @@ fn softmax_last_dim_run_into(
     for (i, &d) in dims.iter().enumerate() {
         shape_i32.push(i32::try_from(d).map_err(|_| {
             fuel_ir::Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
-                op: op_label, dim_index: i, dim_value: d,
+                op: op_label,
+                dim_index: i,
+                dim_value: d,
             })
         })?);
     }
@@ -125,7 +127,9 @@ fn softmax_last_dim_run_into(
     };
     let ld_i32 = i32::try_from(last_dim).map_err(|_| {
         fuel_ir::Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
-            op: op_label, dim_index: rank - 1, dim_value: last_dim,
+            op: op_label,
+            dim_index: rank - 1,
+            dim_value: last_dim,
         })
     })?;
     let softmax_axis = (rank - 1) as i32;
@@ -198,10 +202,35 @@ macro_rules! softmax_kernel {
 
 softmax_kernel!(softmax_last_dim_f32, softmax_f32, 4, "softmax_last_dim_f32");
 softmax_kernel!(softmax_last_dim_f16, softmax_f16, 2, "softmax_last_dim_f16");
-softmax_kernel!(softmax_last_dim_bf16, softmax_bf16, 2, "softmax_last_dim_bf16");
+softmax_kernel!(
+    softmax_last_dim_bf16,
+    softmax_bf16,
+    2,
+    "softmax_last_dim_bf16"
+);
 softmax_kernel!(softmax_last_dim_f64, softmax_f64, 8, "softmax_last_dim_f64");
 
-softmax_kernel!(log_softmax_last_dim_f32, log_softmax_f32, 4, "log_softmax_last_dim_f32");
-softmax_kernel!(log_softmax_last_dim_f16, log_softmax_f16, 2, "log_softmax_last_dim_f16");
-softmax_kernel!(log_softmax_last_dim_bf16, log_softmax_bf16, 2, "log_softmax_last_dim_bf16");
-softmax_kernel!(log_softmax_last_dim_f64, log_softmax_f64, 8, "log_softmax_last_dim_f64");
+softmax_kernel!(
+    log_softmax_last_dim_f32,
+    log_softmax_f32,
+    4,
+    "log_softmax_last_dim_f32"
+);
+softmax_kernel!(
+    log_softmax_last_dim_f16,
+    log_softmax_f16,
+    2,
+    "log_softmax_last_dim_f16"
+);
+softmax_kernel!(
+    log_softmax_last_dim_bf16,
+    log_softmax_bf16,
+    2,
+    "log_softmax_last_dim_bf16"
+);
+softmax_kernel!(
+    log_softmax_last_dim_f64,
+    log_softmax_f64,
+    8,
+    "log_softmax_last_dim_f64"
+);

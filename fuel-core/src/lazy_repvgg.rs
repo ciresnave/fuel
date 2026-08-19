@@ -56,7 +56,7 @@
 //! checkpoint distributed by the RepVGG authors) can plug in
 //! the same way without going through `fuse_repvgg_block`.
 
-use crate::lazy::{load_tensor_as_f32, LazyTensor, WeightStorage};
+use crate::lazy::{LazyTensor, WeightStorage, load_tensor_as_f32};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -75,34 +75,94 @@ pub struct RepVggConfig {
 
 impl RepVggConfig {
     pub fn a0(nclasses: Option<usize>) -> Self {
-        Self { a: 0.75, b: 2.5, groups: 1, stages: [2, 4, 14, 1], nclasses }
+        Self {
+            a: 0.75,
+            b: 2.5,
+            groups: 1,
+            stages: [2, 4, 14, 1],
+            nclasses,
+        }
     }
     pub fn a1(nclasses: Option<usize>) -> Self {
-        Self { a: 1.0, b: 2.5, groups: 1, stages: [2, 4, 14, 1], nclasses }
+        Self {
+            a: 1.0,
+            b: 2.5,
+            groups: 1,
+            stages: [2, 4, 14, 1],
+            nclasses,
+        }
     }
     pub fn a2(nclasses: Option<usize>) -> Self {
-        Self { a: 1.5, b: 2.75, groups: 1, stages: [2, 4, 14, 1], nclasses }
+        Self {
+            a: 1.5,
+            b: 2.75,
+            groups: 1,
+            stages: [2, 4, 14, 1],
+            nclasses,
+        }
     }
     pub fn b0(nclasses: Option<usize>) -> Self {
-        Self { a: 1.0, b: 2.5, groups: 1, stages: [4, 6, 16, 1], nclasses }
+        Self {
+            a: 1.0,
+            b: 2.5,
+            groups: 1,
+            stages: [4, 6, 16, 1],
+            nclasses,
+        }
     }
     pub fn b1(nclasses: Option<usize>) -> Self {
-        Self { a: 2.0, b: 4.0, groups: 1, stages: [4, 6, 16, 1], nclasses }
+        Self {
+            a: 2.0,
+            b: 4.0,
+            groups: 1,
+            stages: [4, 6, 16, 1],
+            nclasses,
+        }
     }
     pub fn b1g4(nclasses: Option<usize>) -> Self {
-        Self { a: 2.0, b: 4.0, groups: 4, stages: [4, 6, 16, 1], nclasses }
+        Self {
+            a: 2.0,
+            b: 4.0,
+            groups: 4,
+            stages: [4, 6, 16, 1],
+            nclasses,
+        }
     }
     pub fn b2(nclasses: Option<usize>) -> Self {
-        Self { a: 2.5, b: 5.0, groups: 1, stages: [4, 6, 16, 1], nclasses }
+        Self {
+            a: 2.5,
+            b: 5.0,
+            groups: 1,
+            stages: [4, 6, 16, 1],
+            nclasses,
+        }
     }
     pub fn b2g4(nclasses: Option<usize>) -> Self {
-        Self { a: 2.5, b: 5.0, groups: 4, stages: [4, 6, 16, 1], nclasses }
+        Self {
+            a: 2.5,
+            b: 5.0,
+            groups: 4,
+            stages: [4, 6, 16, 1],
+            nclasses,
+        }
     }
     pub fn b3(nclasses: Option<usize>) -> Self {
-        Self { a: 3.0, b: 5.0, groups: 1, stages: [4, 6, 16, 1], nclasses }
+        Self {
+            a: 3.0,
+            b: 5.0,
+            groups: 1,
+            stages: [4, 6, 16, 1],
+            nclasses,
+        }
     }
     pub fn b3g4(nclasses: Option<usize>) -> Self {
-        Self { a: 3.0, b: 5.0, groups: 4, stages: [4, 6, 16, 1], nclasses }
+        Self {
+            a: 3.0,
+            b: 5.0,
+            groups: 4,
+            stages: [4, 6, 16, 1],
+            nclasses,
+        }
     }
 
     /// Output channels at a given stage (0 = stem, 1-4 = stages).
@@ -154,9 +214,7 @@ impl RepVggModel {
                 let n = cfg.nclasses.expect("head present but cfg.nclasses == None");
                 let last_c = cfg.channels_at(4);
                 let logits = w.apply_linear(&pooled, last_c, n)?;
-                let bias_t = pooled.const_f32_like(
-                    Arc::clone(b), Shape::from_dims(&[n]),
-                );
+                let bias_t = pooled.const_f32_like(Arc::clone(b), Shape::from_dims(&[n]));
                 logits.broadcast_add(&bias_t)
             }
         }
@@ -188,12 +246,7 @@ impl RepVggModel {
     fn apply_layer(&self, x: &LazyTensor, layer: &RepVggLayerWeights) -> Result<LazyTensor> {
         let w_shape = Shape::from_dims(&[layer.c_out, layer.c_in / layer.groups, 3, 3]);
         let w = layer.conv_w.const_like(x, w_shape)?;
-        let conv_out = x.conv2d(
-            &w, None,
-            (layer.stride, layer.stride),
-            (1, 1),
-            layer.groups,
-        )?;
+        let conv_out = x.conv2d(&w, None, (layer.stride, layer.stride), (1, 1), layer.groups)?;
         let bias_t = x
             .const_f32_like(Arc::clone(&layer.conv_b), Shape::from_dims(&[layer.c_out]))
             .reshape(Shape::from_dims(&[1, layer.c_out, 1, 1]))?;
@@ -256,14 +309,28 @@ pub fn fuse_repvgg_block(b: &RepVggRawBlock) -> (Vec<f32>, Vec<f32>) {
 
     // Fuse 3×3 conv + BN.
     let (w3, b3) = fuse_conv_bn_kernel(
-        &b.conv_3x3_w, &b.bn_3x3_gain, &b.bn_3x3_bias,
-        &b.bn_3x3_mean, &b.bn_3x3_var, b.eps, c_out, c_in_per_group, kernel_3x3,
+        &b.conv_3x3_w,
+        &b.bn_3x3_gain,
+        &b.bn_3x3_bias,
+        &b.bn_3x3_mean,
+        &b.bn_3x3_var,
+        b.eps,
+        c_out,
+        c_in_per_group,
+        kernel_3x3,
     );
 
     // Fuse 1×1 conv + BN, then zero-pad to 3×3 (center holds value).
     let (w1, b1) = fuse_conv_bn_kernel(
-        &b.conv_1x1_w, &b.bn_1x1_gain, &b.bn_1x1_bias,
-        &b.bn_1x1_mean, &b.bn_1x1_var, b.eps, c_out, c_in_per_group, 1,
+        &b.conv_1x1_w,
+        &b.bn_1x1_gain,
+        &b.bn_1x1_bias,
+        &b.bn_1x1_mean,
+        &b.bn_1x1_var,
+        b.eps,
+        c_out,
+        c_in_per_group,
+        1,
     );
     let mut w1_3x3 = vec![0.0_f32; c_out * c_in_per_group * 9];
     for o in 0..c_out {
@@ -276,7 +343,10 @@ pub fn fuse_repvgg_block(b: &RepVggRawBlock) -> (Vec<f32>, Vec<f32>) {
 
     // Synthetic identity branch (when stride==1 and c_in==c_out).
     let (wid_3x3, bid) = match &b.identity_bn {
-        None => (vec![0.0_f32; c_out * c_in_per_group * 9], vec![0.0_f32; c_out]),
+        None => (
+            vec![0.0_f32; c_out * c_in_per_group * 9],
+            vec![0.0_f32; c_out],
+        ),
         Some(idbn) => {
             // Build a delta 3×3 kernel: for each output channel o,
             // the input channel `o mod c_in_per_group` has center = 1.0.
@@ -286,8 +356,15 @@ pub fn fuse_repvgg_block(b: &RepVggRawBlock) -> (Vec<f32>, Vec<f32>) {
                 delta[o * c_in_per_group * 9 + i * 9 + 4] = 1.0;
             }
             let (w, b) = fuse_conv_bn_kernel(
-                &delta, &idbn.gain, &idbn.bias, &idbn.mean, &idbn.var,
-                b.eps, c_out, c_in_per_group, kernel_3x3,
+                &delta,
+                &idbn.gain,
+                &idbn.bias,
+                &idbn.mean,
+                &idbn.var,
+                b.eps,
+                c_out,
+                c_in_per_group,
+                kernel_3x3,
             );
             (w, b)
         }
@@ -309,8 +386,15 @@ pub fn fuse_repvgg_block(b: &RepVggRawBlock) -> (Vec<f32>, Vec<f32>) {
 /// Common conv-BN fusion: `W' = W * (gamma / sqrt(var + eps))`
 /// per-output-channel and `b' = beta - mu * gamma / sqrt(var + eps)`.
 fn fuse_conv_bn_kernel(
-    w: &[f32], gain: &[f32], bias: &[f32], mean: &[f32], var: &[f32],
-    eps: f64, c_out: usize, c_in_per_group: usize, kernel_elems: usize,
+    w: &[f32],
+    gain: &[f32],
+    bias: &[f32],
+    mean: &[f32],
+    var: &[f32],
+    eps: f64,
+    c_out: usize,
+    c_in_per_group: usize,
+    kernel_elems: usize,
 ) -> (Vec<f32>, Vec<f32>) {
     assert_eq!(w.len(), c_out * c_in_per_group * kernel_elems);
     assert_eq!(gain.len(), c_out);
@@ -362,12 +446,7 @@ impl RepVggWeights {
     ) -> crate::Result<Self> {
         let stem_dim = cfg.channels_at(0);
         let stem = repvgg_load_layer(
-            st,
-            "stem",
-            /* has_identity = */ false,
-            3,
-            stem_dim,
-            /* stride = */ 2,
+            st, "stem", /* has_identity = */ false, 3, stem_dim, /* stride = */ 2,
             /* groups = */ 1,
         )?;
 
@@ -384,10 +463,20 @@ impl RepVggWeights {
                 } else {
                     (true, 1, c_cur)
                 };
-                let groups = if (prev_layers + li) % 2 == 1 { cfg.groups } else { 1 };
+                let groups = if (prev_layers + li) % 2 == 1 {
+                    cfg.groups
+                } else {
+                    1
+                };
                 let prefix = format!("stages.{}.{}", stage_idx - 1, li);
                 layers.push(repvgg_load_layer(
-                    st, &prefix, has_identity, in_c, c_cur, stride, groups,
+                    st,
+                    &prefix,
+                    has_identity,
+                    in_c,
+                    c_cur,
+                    stride,
+                    groups,
                 )?);
             }
             stages[stage_idx - 1] = layers;
@@ -429,41 +518,57 @@ fn repvgg_load_layer(
     let expected_3x3 = c_out * c_in_per_group * 3 * 3;
     let expected_1x1 = c_out * c_in_per_group;
 
-    let conv_3x3_w = repvgg_load_check(st, &format!("{prefix}.conv_kxk.conv.weight"), expected_3x3)?;
+    let conv_3x3_w =
+        repvgg_load_check(st, &format!("{prefix}.conv_kxk.conv.weight"), expected_3x3)?;
     let bn_3x3_gain = repvgg_load_check(st, &format!("{prefix}.conv_kxk.bn.weight"), c_out)?;
     let bn_3x3_bias = repvgg_load_check(st, &format!("{prefix}.conv_kxk.bn.bias"), c_out)?;
     let bn_3x3_mean = repvgg_load_check(st, &format!("{prefix}.conv_kxk.bn.running_mean"), c_out)?;
-    let bn_3x3_var  = repvgg_load_check(st, &format!("{prefix}.conv_kxk.bn.running_var"),  c_out)?;
+    let bn_3x3_var = repvgg_load_check(st, &format!("{prefix}.conv_kxk.bn.running_var"), c_out)?;
 
-    let conv_1x1_w = repvgg_load_check(st, &format!("{prefix}.conv_1x1.conv.weight"), expected_1x1)?;
+    let conv_1x1_w =
+        repvgg_load_check(st, &format!("{prefix}.conv_1x1.conv.weight"), expected_1x1)?;
     let bn_1x1_gain = repvgg_load_check(st, &format!("{prefix}.conv_1x1.bn.weight"), c_out)?;
     let bn_1x1_bias = repvgg_load_check(st, &format!("{prefix}.conv_1x1.bn.bias"), c_out)?;
     let bn_1x1_mean = repvgg_load_check(st, &format!("{prefix}.conv_1x1.bn.running_mean"), c_out)?;
-    let bn_1x1_var  = repvgg_load_check(st, &format!("{prefix}.conv_1x1.bn.running_var"),  c_out)?;
+    let bn_1x1_var = repvgg_load_check(st, &format!("{prefix}.conv_1x1.bn.running_var"), c_out)?;
 
     let identity_bn = if has_identity {
         Some(RepVggBn {
             gain: repvgg_load_check(st, &format!("{prefix}.identity.weight"), c_out)?,
             bias: repvgg_load_check(st, &format!("{prefix}.identity.bias"), c_out)?,
             mean: repvgg_load_check(st, &format!("{prefix}.identity.running_mean"), c_out)?,
-            var:  repvgg_load_check(st, &format!("{prefix}.identity.running_var"),  c_out)?,
+            var: repvgg_load_check(st, &format!("{prefix}.identity.running_var"), c_out)?,
         })
     } else {
         None
     };
 
     let raw = RepVggRawBlock {
-        conv_3x3_w, bn_3x3_gain, bn_3x3_bias, bn_3x3_mean, bn_3x3_var,
-        conv_1x1_w, bn_1x1_gain, bn_1x1_bias, bn_1x1_mean, bn_1x1_var,
+        conv_3x3_w,
+        bn_3x3_gain,
+        bn_3x3_bias,
+        bn_3x3_mean,
+        bn_3x3_var,
+        conv_1x1_w,
+        bn_1x1_gain,
+        bn_1x1_bias,
+        bn_1x1_mean,
+        bn_1x1_var,
         identity_bn,
         eps: REPVGG_BN_EPS,
-        c_in, c_out, stride, groups,
+        c_in,
+        c_out,
+        stride,
+        groups,
     };
     let (fused_w, fused_b) = fuse_repvgg_block(&raw);
     Ok(RepVggLayerWeights {
         conv_w: WeightStorage::F32(Arc::from(fused_w)),
         conv_b: Arc::from(fused_b),
-        c_in, c_out, stride, groups,
+        c_in,
+        c_out,
+        stride,
+        groups,
     })
 }
 
@@ -476,7 +581,8 @@ fn repvgg_load_check(
     if v.len() != expected_len {
         return Err(crate::Error::Msg(format!(
             "RepVGG load {name:?}: got {} elements, expected {}",
-            v.len(), expected_len,
+            v.len(),
+            expected_len,
         ))
         .bt());
     }
@@ -543,14 +649,20 @@ mod tests {
     }
 
     fn build_layer(
-        c_in: usize, c_out: usize, stride: usize, groups: usize,
+        c_in: usize,
+        c_out: usize,
+        stride: usize,
+        groups: usize,
         nb: &mut dyn FnMut() -> f32,
     ) -> RepVggLayerWeights {
         let n_w = c_out * (c_in / groups) * 3 * 3;
         RepVggLayerWeights {
             conv_w: WeightStorage::F32(Arc::from(vec_of(n_w, nb))),
             conv_b: Arc::from(vec_of(c_out, nb)),
-            c_in, c_out, stride, groups,
+            c_in,
+            c_out,
+            stride,
+            groups,
         }
     }
 
@@ -567,7 +679,11 @@ mod tests {
             let c_cur = cfg.channels_at(stage_idx);
             for li in 0..nlayers {
                 let (stride, in_c) = if li == 0 { (2, c_prev) } else { (1, c_cur) };
-                let groups = if (prev_layers + li) % 2 == 1 { cfg.groups } else { 1 };
+                let groups = if (prev_layers + li) % 2 == 1 {
+                    cfg.groups
+                } else {
+                    1
+                };
                 layers.push(build_layer(in_c, c_cur, stride, groups, &mut nb));
             }
             stages[stage_idx - 1] = layers;
@@ -592,7 +708,10 @@ mod tests {
     fn repvgg_a0_forward_shape() {
         let cfg = RepVggConfig::a0(Some(10));
         let weights = build_weights(&cfg, 11);
-        let model = RepVggModel { config: cfg, weights };
+        let model = RepVggModel {
+            config: cfg,
+            weights,
+        };
         let img = tiny_image(32);
         let logits = model.forward(&img).unwrap();
         assert_eq!(logits.shape().dims(), &[1, 10]);
@@ -605,12 +724,17 @@ mod tests {
     fn repvgg_b1g4_uses_groups() {
         let cfg = RepVggConfig::b1g4(None);
         let weights = build_weights(&cfg, 22);
-        let model = RepVggModel { config: cfg, weights };
+        let model = RepVggModel {
+            config: cfg,
+            weights,
+        };
         // Verify some layers use groups == 4.
         let mut group4_count = 0;
         for stage in &model.weights.stages {
             for layer in stage {
-                if layer.groups == 4 { group4_count += 1; }
+                if layer.groups == 4 {
+                    group4_count += 1;
+                }
             }
         }
         assert!(group4_count > 0, "b1g4 must place groups=4 on odd layers");
@@ -660,12 +784,24 @@ mod tests {
         let mean = vec![0.0_f32; c_out];
         let var = vec![1.0_f32; c_out];
         let (w, b) = fuse_conv_bn_kernel(
-            &delta, &gain, &bias, &mean, &var, 0.0, c_out, c_in_per_group, 9,
+            &delta,
+            &gain,
+            &bias,
+            &mean,
+            &var,
+            0.0,
+            c_out,
+            c_in_per_group,
+            9,
         );
         // Delta * (1/sqrt(1)) = delta unchanged; bias = 0 - 0 = 0.
         for i in 0..delta.len() {
-            assert!((w[i] - delta[i]).abs() < 1e-7,
-                "fused identity weight differs at {i}: expected {}, got {}", delta[i], w[i]);
+            assert!(
+                (w[i] - delta[i]).abs() < 1e-7,
+                "fused identity weight differs at {i}: expected {}, got {}",
+                delta[i],
+                w[i]
+            );
         }
         for c in 0..c_out {
             assert!(b[c].abs() < 1e-7);
@@ -697,7 +833,10 @@ mod tests {
                 var: vec![1.0; c_out],
             }),
             eps: 1e-5,
-            c_in, c_out, stride: 1, groups: 1,
+            c_in,
+            c_out,
+            stride: 1,
+            groups: 1,
         };
         let (w, b) = fuse_repvgg_block(&raw);
         // 3×3 contributes 0, 1×1 contributes 0; identity contributes
@@ -709,14 +848,19 @@ mod tests {
                 for k in 0..9 {
                     let v = w[o * c_in * 9 + i * 9 + k];
                     let expected = if o == i && k == 4 { bn_scale } else { 0.0 };
-                    assert!((v - expected).abs() < 1e-6,
-                        "fused (o={o},i={i},k={k}) expected {expected}, got {v}");
+                    assert!(
+                        (v - expected).abs() < 1e-6,
+                        "fused (o={o},i={i},k={k}) expected {expected}, got {v}"
+                    );
                 }
             }
         }
         for c in 0..c_out {
-            assert!(b[c].abs() < 1e-7,
-                "fused bias[{c}] expected 0, got {}", b[c]);
+            assert!(
+                b[c].abs() < 1e-7,
+                "fused bias[{c}] expected 0, got {}",
+                b[c]
+            );
         }
     }
 
@@ -724,7 +868,10 @@ mod tests {
     fn forward_features_shape_and_finite() {
         let cfg = RepVggConfig::a0(Some(10));
         let weights = build_weights(&cfg, 33);
-        let model = RepVggModel { config: cfg, weights };
+        let model = RepVggModel {
+            config: cfg,
+            weights,
+        };
         let img = tiny_image(32);
         let feats = model.forward_features(&img).unwrap();
         let shape = feats.shape();
@@ -776,12 +923,12 @@ mod tests {
         // Stem raw branch tensors. Conv 3x3: [c_out, c_in, 3, 3];
         // conv 1x1: [c_out, c_in, 1, 1]; BNs: [c_out] each.
         let conv_3x3_bytes = raw_f32(c_out * c_in * 3 * 3, 0xC0FFEE);
-        let conv_1x1_bytes = raw_f32(c_out * c_in,         0xBEEF00);
+        let conv_1x1_bytes = raw_f32(c_out * c_in, 0xBEEF00);
         // gain=1, bias=0, mean=0, var=1 → BN reduces to ~identity (1/√(1+eps)).
-        let bn_gain_bytes  = raw_f32_const(c_out, 1.0);
-        let bn_bias_bytes  = raw_f32_const(c_out, 0.0);
-        let bn_mean_bytes  = raw_f32_const(c_out, 0.0);
-        let bn_var_bytes   = raw_f32_const(c_out, 1.0);
+        let bn_gain_bytes = raw_f32_const(c_out, 1.0);
+        let bn_bias_bytes = raw_f32_const(c_out, 0.0);
+        let bn_mean_bytes = raw_f32_const(c_out, 0.0);
+        let bn_var_bytes = raw_f32_const(c_out, 1.0);
 
         // Helper: build identical BN-stat byte buffers per (slot) so we
         // don't borrow conflicts in the HashMap<&[u8]>.
@@ -797,14 +944,14 @@ mod tests {
             conv_1x1_bytes,
         ));
         for (suffix, raw) in [
-            ("conv_kxk.bn.weight",       bn_gain_bytes.clone()),
-            ("conv_kxk.bn.bias",         bn_bias_bytes.clone()),
+            ("conv_kxk.bn.weight", bn_gain_bytes.clone()),
+            ("conv_kxk.bn.bias", bn_bias_bytes.clone()),
             ("conv_kxk.bn.running_mean", bn_mean_bytes.clone()),
-            ("conv_kxk.bn.running_var",  bn_var_bytes.clone()),
-            ("conv_1x1.bn.weight",       bn_gain_bytes.clone()),
-            ("conv_1x1.bn.bias",         bn_bias_bytes.clone()),
+            ("conv_kxk.bn.running_var", bn_var_bytes.clone()),
+            ("conv_1x1.bn.weight", bn_gain_bytes.clone()),
+            ("conv_1x1.bn.bias", bn_bias_bytes.clone()),
             ("conv_1x1.bn.running_mean", bn_mean_bytes.clone()),
-            ("conv_1x1.bn.running_var",  bn_var_bytes.clone()),
+            ("conv_1x1.bn.running_var", bn_var_bytes.clone()),
         ] {
             owned_bytes.push((format!("stem.{suffix}"), vec![c_out], raw));
         }
@@ -815,14 +962,18 @@ mod tests {
             let nlayers = cfg.stages[stage_idx - 1];
             let prev_layers: usize = cfg.stages[..stage_idx - 1].iter().sum();
             let c_prev = cfg.channels_at(stage_idx - 1);
-            let c_cur  = cfg.channels_at(stage_idx);
+            let c_cur = cfg.channels_at(stage_idx);
             for li in 0..nlayers {
                 let (has_identity, in_c) = if li == 0 {
                     (false, c_prev)
                 } else {
                     (true, c_cur)
                 };
-                let groups = if (prev_layers + li) % 2 == 1 { cfg.groups } else { 1 };
+                let groups = if (prev_layers + li) % 2 == 1 {
+                    cfg.groups
+                } else {
+                    1
+                };
                 let c_in_per_group = in_c / groups;
                 let prefix = format!("stages.{}.{}", stage_idx - 1, li);
                 owned_bytes.push((
@@ -836,33 +987,25 @@ mod tests {
                     raw_f32(c_cur * c_in_per_group, (stage_idx * 100 + li + 5000) as u32),
                 ));
                 for (suffix, raw) in [
-                    ("conv_kxk.bn.weight",       raw_f32_const(c_cur, 1.0)),
-                    ("conv_kxk.bn.bias",         raw_f32_const(c_cur, 0.0)),
+                    ("conv_kxk.bn.weight", raw_f32_const(c_cur, 1.0)),
+                    ("conv_kxk.bn.bias", raw_f32_const(c_cur, 0.0)),
                     ("conv_kxk.bn.running_mean", raw_f32_const(c_cur, 0.0)),
-                    ("conv_kxk.bn.running_var",  raw_f32_const(c_cur, 1.0)),
-                    ("conv_1x1.bn.weight",       raw_f32_const(c_cur, 1.0)),
-                    ("conv_1x1.bn.bias",         raw_f32_const(c_cur, 0.0)),
+                    ("conv_kxk.bn.running_var", raw_f32_const(c_cur, 1.0)),
+                    ("conv_1x1.bn.weight", raw_f32_const(c_cur, 1.0)),
+                    ("conv_1x1.bn.bias", raw_f32_const(c_cur, 0.0)),
                     ("conv_1x1.bn.running_mean", raw_f32_const(c_cur, 0.0)),
-                    ("conv_1x1.bn.running_var",  raw_f32_const(c_cur, 1.0)),
+                    ("conv_1x1.bn.running_var", raw_f32_const(c_cur, 1.0)),
                 ] {
-                    owned_bytes.push((
-                        format!("{prefix}.{suffix}"),
-                        vec![c_cur],
-                        raw,
-                    ));
+                    owned_bytes.push((format!("{prefix}.{suffix}"), vec![c_cur], raw));
                 }
                 if has_identity {
                     for (suffix, raw) in [
-                        ("identity.weight",       raw_f32_const(c_cur, 1.0)),
-                        ("identity.bias",         raw_f32_const(c_cur, 0.0)),
+                        ("identity.weight", raw_f32_const(c_cur, 1.0)),
+                        ("identity.bias", raw_f32_const(c_cur, 0.0)),
                         ("identity.running_mean", raw_f32_const(c_cur, 0.0)),
-                        ("identity.running_var",  raw_f32_const(c_cur, 1.0)),
+                        ("identity.running_var", raw_f32_const(c_cur, 1.0)),
                     ] {
-                        owned_bytes.push((
-                            format!("{prefix}.{suffix}"),
-                            vec![c_cur],
-                            raw,
-                        ));
+                        owned_bytes.push((format!("{prefix}.{suffix}"), vec![c_cur], raw));
                     }
                 }
             }
@@ -876,8 +1019,8 @@ mod tests {
             tensors.insert(name.clone(), view);
         }
         let metadata: Option<HashMap<String, String>> = None;
-        let serialized = safetensors::serialize(&tensors, metadata)
-            .expect("safetensors::serialize");
+        let serialized =
+            safetensors::serialize(&tensors, metadata).expect("safetensors::serialize");
 
         // Write to a temp file (MmapedSafetensors requires a real file).
         let tmp = std::env::temp_dir().join(format!(
@@ -887,8 +1030,8 @@ mod tests {
         std::fs::write(&tmp, &serialized).expect("write tmp");
         let st = unsafe { crate::safetensors::MmapedSafetensors::new(&tmp) }
             .expect("MmapedSafetensors::new");
-        let loaded = RepVggWeights::load_from_mmapped(&st, &cfg)
-            .expect("RepVggWeights::load_from_mmapped");
+        let loaded =
+            RepVggWeights::load_from_mmapped(&st, &cfg).expect("RepVggWeights::load_from_mmapped");
 
         // Stem: with BN(gain=1, bias=0, mean=0, var=1), each branch's
         // fused conv is `W * (1/√(1+eps))` and fused bias is 0. The 1×1
@@ -902,11 +1045,13 @@ mod tests {
         let raw_3x3 = &owned_bytes
             .iter()
             .find(|(name, _, _)| name == "stem.conv_kxk.conv.weight")
-            .unwrap().2;
+            .unwrap()
+            .2;
         let raw_1x1 = &owned_bytes
             .iter()
             .find(|(name, _, _)| name == "stem.conv_1x1.conv.weight")
-            .unwrap().2;
+            .unwrap()
+            .2;
         // Decode f32 elements from raw bytes.
         let mut raw_3x3_f: Vec<f32> = Vec::with_capacity(c_out * c_in * 9);
         for chunk in raw_3x3.chunks_exact(4) {
@@ -925,8 +1070,10 @@ mod tests {
                     let w1 = raw_1x1_f[o * c_in + i];
                     let expected = bn_scale * (w3 + if k == 4 { w1 } else { 0.0 });
                     let got = conv_3x3[o * c_in * 9 + i * 9 + k];
-                    assert!((got - expected).abs() < 1e-6,
-                        "stem fused (o={o},i={i},k={k}) expected {expected}, got {got}");
+                    assert!(
+                        (got - expected).abs() < 1e-6,
+                        "stem fused (o={o},i={i},k={k}) expected {expected}, got {got}"
+                    );
                 }
             }
         }
@@ -943,7 +1090,10 @@ mod tests {
 
         // Forward through the loaded model — confirms shapes hooked up
         // through the fused conv path.
-        let model = RepVggModel { config: cfg.clone(), weights: loaded };
+        let model = RepVggModel {
+            config: cfg.clone(),
+            weights: loaded,
+        };
         let img = tiny_image(32);
         let feats = model.forward(&img).unwrap();
         assert_eq!(feats.shape().dims(), &[1, cfg.channels_at(4)]);
@@ -959,9 +1109,8 @@ mod tests {
     #[ignore]
     fn from_hub_smoke_repvgg_a0() {
         let cfg = RepVggConfig::a0(Some(1000));
-        let model = RepVggModel::from_hub_with_config(
-            "timm/repvgg_a0.rvgg_in1k", cfg,
-        ).expect("from_hub_with_config");
+        let model = RepVggModel::from_hub_with_config("timm/repvgg_a0.rvgg_in1k", cfg)
+            .expect("from_hub_with_config");
         assert!(model.weights.head.is_some());
     }
 }

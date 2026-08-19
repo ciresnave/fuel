@@ -105,30 +105,54 @@ pub struct Mean;
 
 impl ReduceOp<f32> for Sum {
     type Acc = f32;
-    fn init() -> f32 { 0.0 }
-    fn fold(acc: f32, x: f32) -> f32 { acc + x }
-    fn finalize(acc: f32, _: usize) -> f32 { acc }
+    fn init() -> f32 {
+        0.0
+    }
+    fn fold(acc: f32, x: f32) -> f32 {
+        acc + x
+    }
+    fn finalize(acc: f32, _: usize) -> f32 {
+        acc
+    }
 }
 
 impl ReduceOp<f64> for Sum {
     type Acc = f64;
-    fn init() -> f64 { 0.0 }
-    fn fold(acc: f64, x: f64) -> f64 { acc + x }
-    fn finalize(acc: f64, _: usize) -> f64 { acc }
+    fn init() -> f64 {
+        0.0
+    }
+    fn fold(acc: f64, x: f64) -> f64 {
+        acc + x
+    }
+    fn finalize(acc: f64, _: usize) -> f64 {
+        acc
+    }
 }
 
 impl ReduceOp<half::bf16> for Sum {
     type Acc = f32; // accumulator promotion — load-bearing invariant.
-    fn init() -> f32 { 0.0 }
-    fn fold(acc: f32, x: half::bf16) -> f32 { acc + x.to_f32() }
-    fn finalize(acc: f32, _: usize) -> half::bf16 { half::bf16::from_f32(acc) }
+    fn init() -> f32 {
+        0.0
+    }
+    fn fold(acc: f32, x: half::bf16) -> f32 {
+        acc + x.to_f32()
+    }
+    fn finalize(acc: f32, _: usize) -> half::bf16 {
+        half::bf16::from_f32(acc)
+    }
 }
 
 impl ReduceOp<half::f16> for Sum {
     type Acc = f32; // accumulator promotion — load-bearing invariant.
-    fn init() -> f32 { 0.0 }
-    fn fold(acc: f32, x: half::f16) -> f32 { acc + x.to_f32() }
-    fn finalize(acc: f32, _: usize) -> half::f16 { half::f16::from_f32(acc) }
+    fn init() -> f32 {
+        0.0
+    }
+    fn fold(acc: f32, x: half::f16) -> f32 {
+        acc + x.to_f32()
+    }
+    fn finalize(acc: f32, _: usize) -> half::f16 {
+        half::f16::from_f32(acc)
+    }
 }
 
 // =============================================================================
@@ -137,30 +161,54 @@ impl ReduceOp<half::f16> for Sum {
 
 impl ReduceOp<f32> for Max {
     type Acc = f32;
-    fn init() -> f32 { f32::NEG_INFINITY }
-    fn fold(acc: f32, x: f32) -> f32 { acc.max(x) }
-    fn finalize(acc: f32, _: usize) -> f32 { acc }
+    fn init() -> f32 {
+        f32::NEG_INFINITY
+    }
+    fn fold(acc: f32, x: f32) -> f32 {
+        acc.max(x)
+    }
+    fn finalize(acc: f32, _: usize) -> f32 {
+        acc
+    }
 }
 
 impl ReduceOp<f64> for Max {
     type Acc = f64;
-    fn init() -> f64 { f64::NEG_INFINITY }
-    fn fold(acc: f64, x: f64) -> f64 { acc.max(x) }
-    fn finalize(acc: f64, _: usize) -> f64 { acc }
+    fn init() -> f64 {
+        f64::NEG_INFINITY
+    }
+    fn fold(acc: f64, x: f64) -> f64 {
+        acc.max(x)
+    }
+    fn finalize(acc: f64, _: usize) -> f64 {
+        acc
+    }
 }
 
 impl ReduceOp<half::bf16> for Max {
     type Acc = f32; // extremum in f32 space for uniform NaN handling.
-    fn init() -> f32 { f32::NEG_INFINITY }
-    fn fold(acc: f32, x: half::bf16) -> f32 { acc.max(x.to_f32()) }
-    fn finalize(acc: f32, _: usize) -> half::bf16 { half::bf16::from_f32(acc) }
+    fn init() -> f32 {
+        f32::NEG_INFINITY
+    }
+    fn fold(acc: f32, x: half::bf16) -> f32 {
+        acc.max(x.to_f32())
+    }
+    fn finalize(acc: f32, _: usize) -> half::bf16 {
+        half::bf16::from_f32(acc)
+    }
 }
 
 impl ReduceOp<half::f16> for Max {
     type Acc = f32;
-    fn init() -> f32 { f32::NEG_INFINITY }
-    fn fold(acc: f32, x: half::f16) -> f32 { acc.max(x.to_f32()) }
-    fn finalize(acc: f32, _: usize) -> half::f16 { half::f16::from_f32(acc) }
+    fn init() -> f32 {
+        f32::NEG_INFINITY
+    }
+    fn fold(acc: f32, x: half::f16) -> f32 {
+        acc.max(x.to_f32())
+    }
+    fn finalize(acc: f32, _: usize) -> half::f16 {
+        half::f16::from_f32(acc)
+    }
 }
 
 // =============================================================================
@@ -169,30 +217,54 @@ impl ReduceOp<half::f16> for Max {
 
 impl ReduceOp<f32> for Min {
     type Acc = f32;
-    fn init() -> f32 { f32::INFINITY }
-    fn fold(acc: f32, x: f32) -> f32 { acc.min(x) }
-    fn finalize(acc: f32, _: usize) -> f32 { acc }
+    fn init() -> f32 {
+        f32::INFINITY
+    }
+    fn fold(acc: f32, x: f32) -> f32 {
+        acc.min(x)
+    }
+    fn finalize(acc: f32, _: usize) -> f32 {
+        acc
+    }
 }
 
 impl ReduceOp<f64> for Min {
     type Acc = f64;
-    fn init() -> f64 { f64::INFINITY }
-    fn fold(acc: f64, x: f64) -> f64 { acc.min(x) }
-    fn finalize(acc: f64, _: usize) -> f64 { acc }
+    fn init() -> f64 {
+        f64::INFINITY
+    }
+    fn fold(acc: f64, x: f64) -> f64 {
+        acc.min(x)
+    }
+    fn finalize(acc: f64, _: usize) -> f64 {
+        acc
+    }
 }
 
 impl ReduceOp<half::bf16> for Min {
     type Acc = f32;
-    fn init() -> f32 { f32::INFINITY }
-    fn fold(acc: f32, x: half::bf16) -> f32 { acc.min(x.to_f32()) }
-    fn finalize(acc: f32, _: usize) -> half::bf16 { half::bf16::from_f32(acc) }
+    fn init() -> f32 {
+        f32::INFINITY
+    }
+    fn fold(acc: f32, x: half::bf16) -> f32 {
+        acc.min(x.to_f32())
+    }
+    fn finalize(acc: f32, _: usize) -> half::bf16 {
+        half::bf16::from_f32(acc)
+    }
 }
 
 impl ReduceOp<half::f16> for Min {
     type Acc = f32;
-    fn init() -> f32 { f32::INFINITY }
-    fn fold(acc: f32, x: half::f16) -> f32 { acc.min(x.to_f32()) }
-    fn finalize(acc: f32, _: usize) -> half::f16 { half::f16::from_f32(acc) }
+    fn init() -> f32 {
+        f32::INFINITY
+    }
+    fn fold(acc: f32, x: half::f16) -> f32 {
+        acc.min(x.to_f32())
+    }
+    fn finalize(acc: f32, _: usize) -> half::f16 {
+        half::f16::from_f32(acc)
+    }
 }
 
 // =============================================================================
@@ -206,19 +278,22 @@ impl ReduceOp<half::f16> for Min {
 
 fn mean_divisor_check(name: &str, count: usize) -> Result<()> {
     if count == 0 {
-        return Err(Error::Msg(format!(
-            "{name}: divisor zero (reduced dim has size 0)",
-        ))
-        .bt());
+        return Err(Error::Msg(format!("{name}: divisor zero (reduced dim has size 0)",)).bt());
     }
     Ok(())
 }
 
 impl ReduceOp<f32> for Mean {
     type Acc = f32;
-    fn init() -> f32 { 0.0 }
-    fn fold(acc: f32, x: f32) -> f32 { acc + x }
-    fn finalize(acc: f32, count: usize) -> f32 { acc / count as f32 }
+    fn init() -> f32 {
+        0.0
+    }
+    fn fold(acc: f32, x: f32) -> f32 {
+        acc + x
+    }
+    fn finalize(acc: f32, count: usize) -> f32 {
+        acc / count as f32
+    }
     fn validate_count(name: &str, count: usize) -> Result<()> {
         mean_divisor_check(name, count)
     }
@@ -226,9 +301,15 @@ impl ReduceOp<f32> for Mean {
 
 impl ReduceOp<f64> for Mean {
     type Acc = f64;
-    fn init() -> f64 { 0.0 }
-    fn fold(acc: f64, x: f64) -> f64 { acc + x }
-    fn finalize(acc: f64, count: usize) -> f64 { acc / count as f64 }
+    fn init() -> f64 {
+        0.0
+    }
+    fn fold(acc: f64, x: f64) -> f64 {
+        acc + x
+    }
+    fn finalize(acc: f64, count: usize) -> f64 {
+        acc / count as f64
+    }
     fn validate_count(name: &str, count: usize) -> Result<()> {
         mean_divisor_check(name, count)
     }
@@ -236,8 +317,12 @@ impl ReduceOp<f64> for Mean {
 
 impl ReduceOp<half::bf16> for Mean {
     type Acc = f32;
-    fn init() -> f32 { 0.0 }
-    fn fold(acc: f32, x: half::bf16) -> f32 { acc + x.to_f32() }
+    fn init() -> f32 {
+        0.0
+    }
+    fn fold(acc: f32, x: half::bf16) -> f32 {
+        acc + x.to_f32()
+    }
     fn finalize(acc: f32, count: usize) -> half::bf16 {
         half::bf16::from_f32(acc / count as f32)
     }
@@ -248,8 +333,12 @@ impl ReduceOp<half::bf16> for Mean {
 
 impl ReduceOp<half::f16> for Mean {
     type Acc = f32;
-    fn init() -> f32 { 0.0 }
-    fn fold(acc: f32, x: half::f16) -> f32 { acc + x.to_f32() }
+    fn init() -> f32 {
+        0.0
+    }
+    fn fold(acc: f32, x: half::f16) -> f32 {
+        acc + x.to_f32()
+    }
     fn finalize(acc: f32, count: usize) -> half::f16 {
         half::f16::from_f32(acc / count as f32)
     }
@@ -290,8 +379,14 @@ where
     T: Copy + Pod,
     R: ReduceOp<T>,
 {
-    let (total_input, kept) =
-        check_reduce_shape(name, input, output, input_shape, reduce_dims, std::mem::size_of::<T>())?;
+    let (total_input, kept) = check_reduce_shape(
+        name,
+        input,
+        output,
+        input_shape,
+        reduce_dims,
+        std::mem::size_of::<T>(),
+    )?;
     let count: usize = reduce_dims.iter().map(|&d| input_shape[d]).product();
     R::validate_count(name, count)?;
     let in_view: &[T] = input.as_slice()?;
@@ -600,9 +695,7 @@ mod tests {
         // Architectural invariant: bf16 sum uses f32 accumulator.
         // Verify by summing many bf16 values whose bf16-truncated
         // result would diverge from the f32-accumulated result.
-        let xs: Vec<half::bf16> = (0..1000)
-            .map(|_| half::bf16::from_f32(0.1))
-            .collect();
+        let xs: Vec<half::bf16> = (0..1000).map(|_| half::bf16::from_f32(0.1)).collect();
         let mut acc = <Sum as ReduceOp<half::bf16>>::init();
         for &x in &xs {
             acc = <Sum as ReduceOp<half::bf16>>::fold(acc, x);

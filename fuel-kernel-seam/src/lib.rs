@@ -150,7 +150,10 @@ mod tests {
             operands: vec![PatternNode::Op {
                 op: OpTag::Add,
                 attrs: OpAttrs::default(),
-                operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+                operands: vec![
+                    PatternNode::Bind { index: 0 },
+                    PatternNode::Bind { index: 1 },
+                ],
             }],
         }
     }
@@ -165,7 +168,9 @@ mod tests {
     impl Synthesizer for EchoSynth {
         fn synthesize(&self, req: &JitRequest) -> JitResponse {
             if req.operands.is_empty() {
-                return JitResponse::Declined { reason: "no operands".into() };
+                return JitResponse::Declined {
+                    reason: "no operands".into(),
+                };
             }
             let entry_point = "jit::echo::relu_add".to_string();
             self.store.lock().unwrap().insert(
@@ -197,7 +202,9 @@ mod tests {
                 OperandDesc::new(1, &[4], &[1], ElementKind::F32, 256),
             ],
             arch: ArchSku::Sm89,
-            budget: JitBudget { max_compile_ms: 250 },
+            budget: JitBudget {
+                max_compile_ms: 250,
+            },
         }
     }
 
@@ -210,12 +217,20 @@ mod tests {
         };
         assert_eq!(entry_point, "jit::echo::relu_add");
         // The heavy artifact only crosses on adopt, via take_kernel.
-        let art = synth.take_kernel(&entry_point).expect("artifact retained for adopt");
+        let art = synth
+            .take_kernel(&entry_point)
+            .expect("artifact retained for adopt");
         assert_eq!(art.kind, ArtifactKind::Ptx);
         assert_eq!(art.link.entry_point, entry_point);
-        assert!(art.contract.contains("cost: n"), "carries the FKC contract markdown");
+        assert!(
+            art.contract.contains("cost: n"),
+            "carries the FKC contract markdown"
+        );
         // Single-adopt: a second take is None.
-        assert!(synth.take_kernel(&entry_point).is_none(), "take_kernel removes (single adopt)");
+        assert!(
+            synth.take_kernel(&entry_point).is_none(),
+            "take_kernel removes (single adopt)"
+        );
     }
 
     #[test]
@@ -223,7 +238,13 @@ mod tests {
         let synth = EchoSynth::default();
         let mut declined = req();
         declined.operands.clear();
-        assert!(matches!(synth.synthesize(&declined), JitResponse::Declined { .. }));
-        assert!(synth.take_kernel("jit::echo::relu_add").is_none(), "declined → nothing retained");
+        assert!(matches!(
+            synth.synthesize(&declined),
+            JitResponse::Declined { .. }
+        ));
+        assert!(
+            synth.take_kernel("jit::echo::relu_add").is_none(),
+            "declined → nothing retained"
+        );
     }
 }

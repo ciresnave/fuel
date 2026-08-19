@@ -67,8 +67,8 @@
 //! pre-C2 dispatch (design §3.2).
 
 use fuel_backend_contract::backend::BackendRuntime;
-use fuel_ir::probe::BackendId;
 use fuel_ir::DeviceLocation;
+use fuel_ir::probe::BackendId;
 
 use super::{AlternativeSet, BackendRuntimeLookup, Candidate, RuntimeSelector};
 
@@ -258,9 +258,7 @@ impl BackendRuntime for MockBackendStreams {
     fn total_bytes(&self) -> Option<u64> {
         None
     }
-    fn as_backend_streams(
-        &self,
-    ) -> Option<&dyn fuel_backend_contract::backend::BackendStreams> {
+    fn as_backend_streams(&self) -> Option<&dyn fuel_backend_contract::backend::BackendStreams> {
         Some(self)
     }
 }
@@ -291,8 +289,7 @@ pub fn mock_load_lookup(entries: Vec<(BackendId, Option<u32>, u32)>) -> LoadLook
             .iter()
             .find(|(eb, _, _)| *eb == b)
             .map(|&(_, pending, capacity)| {
-                Box::new(MockBackendStreams::new(pending, capacity))
-                    as super::BackendRuntimeHandle
+                Box::new(MockBackendStreams::new(pending, capacity)) as super::BackendRuntimeHandle
             })
     })
 }
@@ -322,9 +319,7 @@ impl BackendRuntime for MockCombinedRuntime {
     fn total_bytes(&self) -> Option<u64> {
         self.total
     }
-    fn as_backend_streams(
-        &self,
-    ) -> Option<&dyn fuel_backend_contract::backend::BackendStreams> {
+    fn as_backend_streams(&self) -> Option<&dyn fuel_backend_contract::backend::BackendStreams> {
         Some(self)
     }
 }
@@ -351,17 +346,16 @@ pub fn mock_combined_lookup(
 ) -> LoadLookup {
     use std::sync::Arc;
     Arc::new(move |b: BackendId, _d: DeviceLocation| {
-        entries
-            .iter()
-            .find(|(eb, _, _, _, _)| *eb == b)
-            .map(|&(_, available, total, pending, capacity)| {
+        entries.iter().find(|(eb, _, _, _, _)| *eb == b).map(
+            |&(_, available, total, pending, capacity)| {
                 Box::new(MockCombinedRuntime {
                     available,
                     total,
                     pending,
                     capacity,
                 }) as super::BackendRuntimeHandle
-            })
+            },
+        )
     })
 }
 
@@ -489,10 +483,19 @@ mod tests {
     #[test]
     fn selector_no_signal_picks_winner() {
         let mut set = AlternativeSet::empty();
-        set.push(make_candidate(BackendId::Cuda, DeviceLocation::Cuda { gpu_id: 0 }));
-        set.push(make_candidate(BackendId::Vulkan, DeviceLocation::Vulkan { gpu_id: 0 }));
+        set.push(make_candidate(
+            BackendId::Cuda,
+            DeviceLocation::Cuda { gpu_id: 0 },
+        ));
+        set.push(make_candidate(
+            BackendId::Vulkan,
+            DeviceLocation::Vulkan { gpu_id: 0 },
+        ));
         let sel = DeviceLoadSelector::new(None);
-        assert_eq!(sel.select(&set).expect("non-empty").backend, BackendId::Cuda);
+        assert_eq!(
+            sel.select(&set).expect("non-empty").backend,
+            BackendId::Cuda
+        );
     }
 
     /// The headline mechanic in isolation: arm-0 (CUDA) is SATURATED, arm-1
@@ -501,8 +504,14 @@ mod tests {
     #[test]
     fn selector_flips_to_unloaded_arm() {
         let mut set = AlternativeSet::empty();
-        set.push(make_candidate(BackendId::Cuda, DeviceLocation::Cuda { gpu_id: 0 }));
-        set.push(make_candidate(BackendId::Vulkan, DeviceLocation::Vulkan { gpu_id: 0 }));
+        set.push(make_candidate(
+            BackendId::Cuda,
+            DeviceLocation::Cuda { gpu_id: 0 },
+        ));
+        set.push(make_candidate(
+            BackendId::Vulkan,
+            DeviceLocation::Vulkan { gpu_id: 0 },
+        ));
 
         // CUDA saturated (4 in flight, 1 slot), Vulkan idle (0 in flight).
         let lookup = mock_load_lookup(vec![
@@ -521,8 +530,14 @@ mod tests {
     #[test]
     fn selector_equal_load_keeps_winner() {
         let mut set = AlternativeSet::empty();
-        set.push(make_candidate(BackendId::Cuda, DeviceLocation::Cuda { gpu_id: 0 }));
-        set.push(make_candidate(BackendId::Vulkan, DeviceLocation::Vulkan { gpu_id: 0 }));
+        set.push(make_candidate(
+            BackendId::Cuda,
+            DeviceLocation::Cuda { gpu_id: 0 },
+        ));
+        set.push(make_candidate(
+            BackendId::Vulkan,
+            DeviceLocation::Vulkan { gpu_id: 0 },
+        ));
 
         // Both saturated → same tier → lower index wins.
         let lookup = mock_load_lookup(vec![
@@ -530,7 +545,10 @@ mod tests {
             (BackendId::Vulkan, Some(4), 1),
         ]);
         let sel = DeviceLoadSelector::new(Some(lookup));
-        assert_eq!(sel.select(&set).expect("non-empty").backend, BackendId::Cuda);
+        assert_eq!(
+            sel.select(&set).expect("non-empty").backend,
+            BackendId::Cuda
+        );
     }
 
     /// Empty set ⇒ None (trait contract).

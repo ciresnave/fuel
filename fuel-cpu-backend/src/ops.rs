@@ -1,4 +1,4 @@
-﻿//! CPU backend operation helper structs and functions.
+//! CPU backend operation helper structs and functions.
 //!
 //! These are the core computation kernels used by the CPU backend's
 //! BackendStorage and BackendDevice implementations.
@@ -6,9 +6,9 @@
 use crate::utils::{
     Map1, Map1Any, Map2, Map2InPlace, Map2U8, binary_map, binary_map_vec, unary_map, unary_map_vec,
 };
-use fuel_ir::op::{BinaryOpT, CmpOp, UnaryOpT};
-use fuel_ir::{HostBuffer, DType, Error, IntDType, Layout, Result, Shape, WithDType};
 use fuel_cpu_kernels::VecOps;
+use fuel_ir::op::{BinaryOpT, CmpOp, UnaryOpT};
+use fuel_ir::{DType, Error, HostBuffer, IntDType, Layout, Result, Shape, WithDType};
 use rayon::prelude::*;
 
 /// Get the number of threads to use for parallelism.
@@ -998,7 +998,13 @@ pub struct Conv1D<'a>(pub &'a fuel_ir::conv::ParamsConv1D);
 
 impl Map2 for Conv1D<'_> {
     const OP: &'static str = "conv1d";
-    fn f<T: WithDType + VecOps>(&self, inp: &[T], inp_l: &Layout, k: &[T], k_l: &Layout) -> Result<Vec<T>> {
+    fn f<T: WithDType + VecOps>(
+        &self,
+        inp: &[T],
+        inp_l: &Layout,
+        k: &[T],
+        k_l: &Layout,
+    ) -> Result<Vec<T>> {
         let p = self.0;
         let inp = &inp[inp_l.start_offset()..];
         let k = &k[k_l.start_offset()..];
@@ -1222,7 +1228,13 @@ pub struct ConvTranspose1D<'a>(pub &'a fuel_ir::conv::ParamsConvTranspose1D);
 
 impl Map2 for ConvTranspose1D<'_> {
     const OP: &'static str = "conv_transpose1d";
-    fn f<T: WithDType + VecOps>(&self, inp: &[T], inp_l: &Layout, k: &[T], k_l: &Layout) -> Result<Vec<T>> {
+    fn f<T: WithDType + VecOps>(
+        &self,
+        inp: &[T],
+        inp_l: &Layout,
+        k: &[T],
+        k_l: &Layout,
+    ) -> Result<Vec<T>> {
         let p = self.0;
         let inp = &inp[inp_l.start_offset()..];
         let k = &k[k_l.start_offset()..];
@@ -1291,7 +1303,13 @@ pub struct ConvTranspose2D<'a>(pub &'a fuel_ir::conv::ParamsConvTranspose2D);
 
 impl Map2 for ConvTranspose2D<'_> {
     const OP: &'static str = "conv_transpose2d";
-    fn f<T: WithDType + VecOps>(&self, inp: &[T], inp_l: &Layout, k: &[T], k_l: &Layout) -> Result<Vec<T>> {
+    fn f<T: WithDType + VecOps>(
+        &self,
+        inp: &[T],
+        inp_l: &Layout,
+        k: &[T],
+        k_l: &Layout,
+    ) -> Result<Vec<T>> {
         let p = self.0;
         let inp = &inp[inp_l.start_offset()..];
         let (inp_s0, inp_s1, inp_s2, inp_s3) = fuel_ir::shape::stride_dims4(inp_l.stride())?;
@@ -1381,14 +1399,12 @@ pub struct MatMul(pub (usize, usize, usize, usize));
 
 impl MatMul {
     fn striding_error(&self, lhs_l: &Layout, rhs_l: &Layout, msg: &'static str) -> Error {
-        Error::MatMulUnexpectedStriding(Box::new(
-            fuel_ir::error::MatMulUnexpectedStriding {
-                lhs_l: lhs_l.clone(),
-                rhs_l: rhs_l.clone(),
-                bmnk: self.0,
-                msg,
-            },
-        ))
+        Error::MatMulUnexpectedStriding(Box::new(fuel_ir::error::MatMulUnexpectedStriding {
+            lhs_l: lhs_l.clone(),
+            rhs_l: rhs_l.clone(),
+            bmnk: self.0,
+            msg,
+        }))
         .bt()
     }
 

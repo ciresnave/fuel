@@ -88,10 +88,7 @@ fn doff_writes_on_non_leading_axis() {
     let device = fuel_core::Device::cpu();
     let dest = LazyTensor::from_f32(vec![0.0_f32; 10], Shape::from_dims(&[2, 5]), &device);
     // slab [2, 2] written at columns [2, 4) on axis 1.
-    let src = dest.const_f32_like(
-        vec![1.0_f32, 2.0, 3.0, 4.0],
-        Shape::from_dims(&[2, 2]),
-    );
+    let src = dest.const_f32_like(vec![1.0_f32, 2.0, 3.0, 4.0], Shape::from_dims(&[2, 2]));
     let offset = dest.const_i64_like(vec![2_i64], Shape::from_dims(&[]));
     let post_write = dest
         .write_slice_doff(&src, &offset, /* axis */ 1, vec![(0, 2), (0, 2)])

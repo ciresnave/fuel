@@ -67,7 +67,10 @@ fn assert_close(paged: &[f32], contig: &[f32], label: &str) {
 }
 
 fn parity_for(cfg: LlamaConfig) {
-    let model = LlamaModel { config: cfg.clone(), weights: tiny_weights(&cfg, 9999) };
+    let model = LlamaModel {
+        config: cfg.clone(),
+        weights: tiny_weights(&cfg, 9999),
+    };
     let prompt = [1u32, 2, 3];
     let decode = [4u32, 5, 6];
     let all: Vec<u32> = prompt.iter().chain(decode.iter()).copied().collect();
@@ -76,13 +79,27 @@ fn parity_for(cfg: LlamaConfig) {
 
     // --- Contiguous reference: batched prefill, then decode one token/step. ---
     let mut cache = KvCache::with_capacity(
-        cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &dev,
-    ).unwrap();
+        cfg.n_layers,
+        cfg.n_kv_heads,
+        cfg.head_dim,
+        max_seq_len,
+        DType::F32,
+        &dev,
+    )
+    .unwrap();
     let mut ctx = InferenceContext::new(dev.clone());
     let mut contig: Vec<Vec<f32>> = Vec::new();
-    contig.push(model.forward_with_kv_context(&prompt, &mut cache, &mut ctx).unwrap());
+    contig.push(
+        model
+            .forward_with_kv_context(&prompt, &mut cache, &mut ctx)
+            .unwrap(),
+    );
     for &t in &decode {
-        contig.push(model.forward_with_kv_context(&[t], &mut cache, &mut ctx).unwrap());
+        contig.push(
+            model
+                .forward_with_kv_context(&[t], &mut cache, &mut ctx)
+                .unwrap(),
+        );
     }
 
     // --- Paged: feed EVERY token one at a time into the pool. ---
@@ -145,7 +162,10 @@ fn paged_forward_matches_contiguous_gqa() {
 /// — proving `Op::PagedAttn` at B=K routes each session to only its own blocks
 /// (no cross-contamination) and the batched result is the B=1 result.
 fn batched_matches_serial_for(cfg: LlamaConfig) {
-    let model = LlamaModel { config: cfg.clone(), weights: tiny_weights(&cfg, 9999) };
+    let model = LlamaModel {
+        config: cfg.clone(),
+        weights: tiny_weights(&cfg, 9999),
+    };
     let dev = Device::cpu();
     let geom = || KvGeometry {
         n_layers: cfg.n_layers,
@@ -193,23 +213,44 @@ fn batched_matches_serial_for(cfg: LlamaConfig) {
 #[test]
 fn paged_batched_matches_serial_no_gqa() {
     batched_matches_serial_for(LlamaConfig {
-        vocab_size: 16, dim: 16, n_layers: 2, n_heads: 4, n_kv_heads: 4,
-        head_dim: 4, ffn_dim: 16, norm_eps: 1e-5, rope_base: 10000.0,
+        vocab_size: 16,
+        dim: 16,
+        n_layers: 2,
+        n_heads: 4,
+        n_kv_heads: 4,
+        head_dim: 4,
+        ffn_dim: 16,
+        norm_eps: 1e-5,
+        rope_base: 10000.0,
     });
 }
 
 #[test]
 fn paged_batched_matches_serial_gqa() {
     batched_matches_serial_for(LlamaConfig {
-        vocab_size: 16, dim: 16, n_layers: 2, n_heads: 4, n_kv_heads: 2,
-        head_dim: 4, ffn_dim: 16, norm_eps: 1e-5, rope_base: 10000.0,
+        vocab_size: 16,
+        dim: 16,
+        n_layers: 2,
+        n_heads: 4,
+        n_kv_heads: 2,
+        head_dim: 4,
+        ffn_dim: 16,
+        norm_eps: 1e-5,
+        rope_base: 10000.0,
     });
 }
 
 fn tiny_cfg() -> LlamaConfig {
     LlamaConfig {
-        vocab_size: 16, dim: 16, n_layers: 2, n_heads: 4, n_kv_heads: 4,
-        head_dim: 4, ffn_dim: 16, norm_eps: 1e-5, rope_base: 10000.0,
+        vocab_size: 16,
+        dim: 16,
+        n_layers: 2,
+        n_heads: 4,
+        n_kv_heads: 4,
+        head_dim: 4,
+        ffn_dim: 16,
+        norm_eps: 1e-5,
+        rope_base: 10000.0,
     }
 }
 
@@ -222,11 +263,18 @@ fn tiny_cfg() -> LlamaConfig {
 #[test]
 fn paged_decode_into_spliced_prefix_does_not_corrupt_donor() {
     let cfg = tiny_cfg();
-    let model = LlamaModel { config: cfg.clone(), weights: tiny_weights(&cfg, 9999) };
+    let model = LlamaModel {
+        config: cfg.clone(),
+        weights: tiny_weights(&cfg, 9999),
+    };
     let dev = Device::cpu();
     let geom = || KvGeometry {
-        n_layers: cfg.n_layers, num_blocks: 32, block_size: 4,
-        n_kv_heads: cfg.n_kv_heads, head_dim: cfg.head_dim, elem_size: 4,
+        n_layers: cfg.n_layers,
+        num_blocks: 32,
+        block_size: 4,
+        n_kv_heads: cfg.n_kv_heads,
+        head_dim: cfg.head_dim,
+        elem_size: 4,
     };
     let prompt = [1u32, 2, 3, 4, 5, 6]; // 6 tokens → block0 full, block1 partial (2/4)
     let (a_tok, b_tok) = (7u32, 8u32);
@@ -235,7 +283,9 @@ fn paged_decode_into_spliced_prefix_does_not_corrupt_donor() {
     let a_ref = {
         let mut pool = DeviceKvPool::new(geom(), DType::F32, &dev).unwrap();
         let a = pool.core_mut().open();
-        for &t in &prompt { model.forward_paged_step(t, &mut pool, a).unwrap(); }
+        for &t in &prompt {
+            model.forward_paged_step(t, &mut pool, a).unwrap();
+        }
         model.forward_paged_step(a_tok, &mut pool, a).unwrap(); // pos 6
         model.forward_paged_step(a_tok, &mut pool, a).unwrap() // pos 7 (compared)
     };
@@ -243,14 +293,19 @@ fn paged_decode_into_spliced_prefix_does_not_corrupt_donor() {
     // With B sharing A's prefix, interleaved so B writes A's shared slot AFTER A.
     let mut pool = DeviceKvPool::new(geom(), DType::F32, &dev).unwrap();
     let a = pool.core_mut().open();
-    for &t in &prompt { model.forward_paged_step(t, &mut pool, a).unwrap(); }
+    for &t in &prompt {
+        model.forward_paged_step(t, &mut pool, a).unwrap();
+    }
     let b = pool.core_mut().open();
     pool.core_mut().splice(a, b, 0, 2).unwrap(); // B shares A's 2 blocks (block1 partial + shared)
     model.forward_paged_step(a_tok, &mut pool, a).unwrap(); // A writes pos 6 into shared block1 slot 2
     model.forward_paged_step(b_tok, &mut pool, b).unwrap(); // B decodes pos 6 → CoW (must NOT clobber A)
     let a_with_b = model.forward_paged_step(a_tok, &mut pool, a).unwrap(); // A pos 7 reads its own pos-6 KV
 
-    assert_eq!(a_with_b, a_ref, "A's decode unaffected by B decoding into the shared prefix (CoW held)");
+    assert_eq!(
+        a_with_b, a_ref,
+        "A's decode unaffected by B decoding into the shared prefix (CoW held)"
+    );
 }
 
 /// REGRESSION (adversarial-verification finding): a batched step that can't fit
@@ -259,30 +314,49 @@ fn paged_decode_into_spliced_prefix_does_not_corrupt_donor() {
 #[test]
 fn batched_step_out_of_blocks_is_atomic() {
     let cfg = tiny_cfg();
-    let model = LlamaModel { config: cfg.clone(), weights: tiny_weights(&cfg, 9999) };
+    let model = LlamaModel {
+        config: cfg.clone(),
+        weights: tiny_weights(&cfg, 9999),
+    };
     let dev = Device::cpu();
     // num_blocks 3, block_size 4: two sessions prefilled to 4 tokens use 2 blocks
     // (1 each); a boundary batched step needs 2 more but only 1 is free.
     let geom = KvGeometry {
-        n_layers: cfg.n_layers, num_blocks: 3, block_size: 4,
-        n_kv_heads: cfg.n_kv_heads, head_dim: cfg.head_dim, elem_size: 4,
+        n_layers: cfg.n_layers,
+        num_blocks: 3,
+        block_size: 4,
+        n_kv_heads: cfg.n_kv_heads,
+        head_dim: cfg.head_dim,
+        elem_size: 4,
     };
     let mut pool = DeviceKvPool::new(geom, DType::F32, &dev).unwrap();
     let sa = pool.core_mut().open();
     let sb = pool.core_mut().open();
-    for &t in &[1u32, 2, 3, 4] { model.forward_paged_step(t, &mut pool, sa).unwrap(); }
-    for &t in &[5u32, 6, 7, 8] { model.forward_paged_step(t, &mut pool, sb).unwrap(); }
+    for &t in &[1u32, 2, 3, 4] {
+        model.forward_paged_step(t, &mut pool, sa).unwrap();
+    }
+    for &t in &[5u32, 6, 7, 8] {
+        model.forward_paged_step(t, &mut pool, sb).unwrap();
+    }
     assert_eq!(pool.core().free_blocks(), 1, "2 of 3 blocks used, 1 free");
     let filled_before = (pool.core().filled_tokens(sa), pool.core().filled_tokens(sb));
 
     // Boundary batched step (pos 4, slot 0) needs 2 blocks, 1 free → Err, atomic.
     let r = model.forward_paged_step_batched(&[9, 10], &mut pool, &[sa, sb]);
-    assert!(r.is_err(), "batch at a boundary needs 2 blocks, only 1 free");
+    assert!(
+        r.is_err(),
+        "batch at a boundary needs 2 blocks, only 1 free"
+    );
     assert_eq!(
-        (pool.core().filled_tokens(sa), pool.core().filled_tokens(sb)), filled_before,
+        (pool.core().filled_tokens(sa), pool.core().filled_tokens(sb)),
+        filled_before,
         "no session partially advanced (atomic)",
     );
-    assert_eq!(pool.core().free_blocks(), 1, "no block consumed on the rejected batch");
+    assert_eq!(
+        pool.core().free_blocks(),
+        1,
+        "no block consumed on the rejected batch"
+    );
 }
 
 /// REGRESSION for the adversarial-verification "highest-risk gap": batched decode
@@ -294,11 +368,18 @@ fn batched_step_out_of_blocks_is_atomic() {
 #[test]
 fn paged_batched_multiblock_matches_serial() {
     let cfg = tiny_cfg();
-    let model = LlamaModel { config: cfg.clone(), weights: tiny_weights(&cfg, 9999) };
+    let model = LlamaModel {
+        config: cfg.clone(),
+        weights: tiny_weights(&cfg, 9999),
+    };
     let dev = Device::cpu();
     let geom = || KvGeometry {
-        n_layers: cfg.n_layers, num_blocks: 32, block_size: 4,
-        n_kv_heads: cfg.n_kv_heads, head_dim: cfg.head_dim, elem_size: 4,
+        n_layers: cfg.n_layers,
+        num_blocks: 32,
+        block_size: 4,
+        n_kv_heads: cfg.n_kv_heads,
+        head_dim: cfg.head_dim,
+        elem_size: 4,
     };
     // 5-token prompts → 2 blocks each (block_size 4); equal length → uniform.
     let prompt_a = [1u32, 2, 3, 4, 5];
@@ -325,10 +406,24 @@ fn paged_batched_multiblock_matches_serial() {
     for &t in &prompt_b {
         model.forward_paged_step(t, &mut pool, sb).unwrap();
     }
-    assert_eq!(pool.core().session_blocks(sa), Some(2), "each session spans 2 blocks");
-    let batched = model.forward_paged_step_batched(&[da, db], &mut pool, &[sa, sb]).unwrap();
-    assert_close(&batched[0], &a_serial, "multi-block batched row A == serial A");
-    assert_close(&batched[1], &b_serial, "multi-block batched row B == serial B");
+    assert_eq!(
+        pool.core().session_blocks(sa),
+        Some(2),
+        "each session spans 2 blocks"
+    );
+    let batched = model
+        .forward_paged_step_batched(&[da, db], &mut pool, &[sa, sb])
+        .unwrap();
+    assert_close(
+        &batched[0],
+        &a_serial,
+        "multi-block batched row A == serial A",
+    );
+    assert_close(
+        &batched[1],
+        &b_serial,
+        "multi-block batched row B == serial B",
+    );
 }
 
 /// SERVING-VALUE CORRECTNESS ANCHOR (prefix-sharing Task 1): a session that
@@ -353,12 +448,19 @@ fn paged_batched_multiblock_matches_serial() {
 #[test]
 fn prefix_shared_session_decodes_like_from_scratch() {
     let cfg = tiny_cfg();
-    let model = LlamaModel { config: cfg.clone(), weights: tiny_weights(&cfg, 9999) };
+    let model = LlamaModel {
+        config: cfg.clone(),
+        weights: tiny_weights(&cfg, 9999),
+    };
     let dev = Device::cpu();
     let block_size = 4usize;
     let geom = || KvGeometry {
-        n_layers: cfg.n_layers, num_blocks: 32, block_size,
-        n_kv_heads: cfg.n_kv_heads, head_dim: cfg.head_dim, elem_size: 4,
+        n_layers: cfg.n_layers,
+        num_blocks: 32,
+        block_size,
+        n_kv_heads: cfg.n_kv_heads,
+        head_dim: cfg.head_dim,
+        elem_size: 4,
     };
 
     // A shared system prompt filling EXACTLY 2 whole blocks (8 tokens @ bs=4),
@@ -389,16 +491,24 @@ fn prefix_shared_session_decodes_like_from_scratch() {
     }
     // Mint a registry prefix from the donor's first N (whole, filled) blocks,
     // then DISCARD the donor — the owner keeps the prefix alive (registry lifetime).
-    let pid = pool.core_mut().register_prefix(donor, n_prefix_blocks).unwrap();
+    let pid = pool
+        .core_mut()
+        .register_prefix(donor, n_prefix_blocks)
+        .unwrap();
     pool.core_mut().discard(donor);
 
     // Sharer session: zero-copy splice the registered prefix, then prefill ONLY
     // the suffix. The splice returns the shared token count = the suffix offset.
     let sharer = pool.core_mut().open();
     let shared_tokens = pool.core_mut().splice_prefix_from(pid, sharer).unwrap();
-    assert_eq!(shared_tokens, prefix.len(), "splice returns the shared prefix token count");
     assert_eq!(
-        pool.core().filled_tokens(sharer), Some(prefix.len()),
+        shared_tokens,
+        prefix.len(),
+        "splice returns the shared prefix token count"
+    );
+    assert_eq!(
+        pool.core().filled_tokens(sharer),
+        Some(prefix.len()),
         "sharer starts at the shared-prefix position (suffix prefill continues from here)",
     );
 
@@ -406,7 +516,11 @@ fn prefix_shared_session_decodes_like_from_scratch() {
     // The sharer's block table points at the same physical blocks the owner keeps
     // alive, so reading them through the sharer reads the owner's KV.
     let shared_phys: Vec<_> = (0..n_prefix_blocks)
-        .map(|i| pool.core().resident_block(sharer, i).expect("shared block resident"))
+        .map(|i| {
+            pool.core()
+                .resident_block(sharer, i)
+                .expect("shared block resident")
+        })
         .collect();
     let read_shared = |pool: &DeviceKvPool, phys: &[_]| -> Vec<Vec<f32>> {
         let mut out = Vec::new();
@@ -438,7 +552,11 @@ fn prefix_shared_session_decodes_like_from_scratch() {
     // from-scratch logit at the SAME position (scratch index prefix.len()+k).
     assert_eq!(shared_logits.len(), suffix.len() + decode.len());
     for (k, sl) in shared_logits.iter().enumerate() {
-        assert_close(sl, &scratch[prefix.len() + k], &format!("prefix-shared-step-{k}"));
+        assert_close(
+            sl,
+            &scratch[prefix.len() + k],
+            &format!("prefix-shared-step-{k}"),
+        );
     }
 }
 
@@ -469,33 +587,61 @@ fn shifted_prefix_reuse_is_exact_at_depth_1_and_lossy_deeper() {
     let decode: [u32; 3] = [16, 17, 18];
     let m = preamble.len();
     let n_prefix_blocks = shared.len() / block_size;
-    let full: Vec<u32> = preamble.iter().chain(&shared).chain(&suffix).copied().collect();
+    let full: Vec<u32> = preamble
+        .iter()
+        .chain(&shared)
+        .chain(&suffix)
+        .copied()
+        .collect();
 
     let run = |n_layers: usize| -> f32 {
         let cfg = LlamaConfig {
-            vocab_size: 32, dim: 8, n_layers, n_heads: 2, n_kv_heads: 2,
-            head_dim: 4, ffn_dim: 16, norm_eps: 1e-5, rope_base: 10000.0,
+            vocab_size: 32,
+            dim: 8,
+            n_layers,
+            n_heads: 2,
+            n_kv_heads: 2,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
-        let model = LlamaModel { config: cfg.clone(), weights: tiny_weights(&cfg, 9999) };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg, 9999),
+        };
         let geom = || KvGeometry {
-            n_layers: cfg.n_layers, num_blocks: 32, block_size,
-            n_kv_heads: cfg.n_kv_heads, head_dim: cfg.head_dim, elem_size: 4,
+            n_layers: cfg.n_layers,
+            num_blocks: 32,
+            block_size,
+            n_kv_heads: cfg.n_kv_heads,
+            head_dim: cfg.head_dim,
+            elem_size: 4,
         };
         let scratch: Vec<Vec<f32>> = {
             let mut pool = DeviceKvPool::new(geom(), DType::F32, &dev).unwrap();
             let s = pool.core_mut().open();
-            full.iter().chain(decode.iter())
+            full.iter()
+                .chain(decode.iter())
                 .map(|&t| model.forward_paged_step(t, &mut pool, s).unwrap())
                 .collect()
         };
         let mut pool = DeviceKvPool::new(geom(), DType::F32, &dev).unwrap();
         let donor = pool.core_mut().open();
-        for &t in &shared { model.forward_paged_step(t, &mut pool, donor).unwrap(); }
-        let pid = pool.core_mut().register_prefix(donor, n_prefix_blocks).unwrap();
+        for &t in &shared {
+            model.forward_paged_step(t, &mut pool, donor).unwrap();
+        }
+        let pid = pool
+            .core_mut()
+            .register_prefix(donor, n_prefix_blocks)
+            .unwrap();
         pool.core_mut().discard(donor);
         let sharer = pool.core_mut().open();
-        for &t in &preamble { model.forward_paged_step(t, &mut pool, sharer).unwrap(); }
-        pool.splice_prefix_shifted(pid, sharer, cfg.rope_base).unwrap();
+        for &t in &preamble {
+            model.forward_paged_step(t, &mut pool, sharer).unwrap();
+        }
+        pool.splice_prefix_shifted(pid, sharer, cfg.rope_base)
+            .unwrap();
         let base = m + shared.len();
         let mut maxdiff = 0.0f32;
         for (k, &t) in suffix.iter().chain(decode.iter()).enumerate() {
@@ -567,5 +713,8 @@ fn shifted_prefix_reuse_is_exact_at_depth_1_and_lossy_deeper() {
         d2 > 1e-6,
         "n_layers>=2: mid-prompt reuse loses the preamble context — NOT exact; maxdiff {d2}",
     );
-    assert!(d2 < 0.1, "context divergence is bounded on this fixture; maxdiff {d2}");
+    assert!(
+        d2 < 0.1,
+        "context divergence is bounded on this fixture; maxdiff {d2}"
+    );
 }

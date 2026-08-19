@@ -47,24 +47,24 @@ pub mod grad;
 pub mod jit;
 pub mod opt;
 pub mod registry;
-pub mod runtime_fused;
 pub mod run;
+pub mod runtime_fused;
 pub mod scan;
 mod shape;
 
 #[doc(inline)]
 pub use run::{
-    branch_density, branch_density_multi, branches_in_topo_order, device_alternating_order,
-    effective_roots, extract_runs, extract_runs_multi, lower_picked_route,
-    lower_picked_route_streaming, lower_run, lower_runs_arm0, passes_fewness_gate,
-    walk_picked_route_streaming, PickedRoute, Run, FEWNESS_THRESHOLD,
+    FEWNESS_THRESHOLD, PickedRoute, Run, branch_density, branch_density_multi,
+    branches_in_topo_order, device_alternating_order, effective_roots, extract_runs,
+    extract_runs_multi, lower_picked_route, lower_picked_route_streaming, lower_run,
+    lower_runs_arm0, passes_fewness_gate, walk_picked_route_streaming,
 };
 
 pub use shape::primitive_shape;
 
 use crate::registry::{FusedOpId, FusedOpParams};
-use fuel_ir::{DeviceLocation, DType, DynScalar, Layout, Scalar, Shape, SymId, probe::BackendId};
 use fuel_backend_contract::Storage;
+use fuel_ir::{DType, DeviceLocation, DynScalar, Layout, Scalar, Shape, SymId, probe::BackendId};
 use half::{bf16, f16};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
@@ -549,7 +549,11 @@ pub enum Op {
     ///
     /// Backward (Constant): slice along each padded axis to drop
     /// the padded regions, restoring the input shape.
-    Pad { padding: Vec<(usize, usize)>, mode: PadMode, value: f64 },
+    Pad {
+        padding: Vec<(usize, usize)>,
+        mode: PadMode,
+        value: f64,
+    },
 
     // --- ternary select ---
     /// Ternary select: `out[i] = if cond[i] != 0 { a[i] } else { b[i] }`.
@@ -717,7 +721,11 @@ pub enum Op {
     Concat { dim: usize },
     /// Slice (narrow) a tensor along `dim`: take elements `[start, start+len)`.
     /// Output shape: same as input but with `dim` shrunk to `len`.
-    Slice { dim: usize, start: usize, len: usize },
+    Slice {
+        dim: usize,
+        start: usize,
+        len: usize,
+    },
 
     // --- scalar-by-tensor ops ---
     //
@@ -1167,10 +1175,7 @@ pub enum Op {
 
     /// Inert body-hole leaf for [`Op::Scan`] (no inputs). Substituted by
     /// `unroll_scan` per step. Never directly realized.
-    ScanPlaceholder {
-        role: ScanRole,
-        index: usize,
-    },
+    ScanPlaceholder { role: ScanRole, index: usize },
 }
 
 /// What a [`Op::Scan`] emits. `All` stacks the per-step `body_y` over the
@@ -1395,10 +1400,7 @@ impl Op {
 /// [`opt`] that emit view-op nodes and need to populate the side-table
 /// for them. The compiler reads the resulting layouts via
 /// [`Graph::layout`] without re-deriving.
-pub fn derive_view_output_layout(
-    op: &Op,
-    input_layout: &Layout,
-) -> Result<Layout, fuel_ir::Error> {
+pub fn derive_view_output_layout(op: &Op, input_layout: &Layout) -> Result<Layout, fuel_ir::Error> {
     match op {
         Op::Transpose => {
             let rank = input_layout.shape().rank();
@@ -1425,131 +1427,130 @@ pub fn derive_view_output_layout(
 
 fn op_short_name(op: &Op) -> &'static str {
     match op {
-        Op::Const             => "Const",
-        Op::Iota { .. }       => "Iota",
-        Op::Add                  => "Add",
-        Op::Sub                  => "Sub",
-        Op::Mul                  => "Mul",
-        Op::Div                  => "Div",
-        Op::Neg                  => "Neg",
-        Op::Sqr                  => "Sqr",
-        Op::Sqrt                 => "Sqrt",
-        Op::Exp                  => "Exp",
-        Op::Log                  => "Log",
-        Op::Sin                  => "Sin",
-        Op::Cos                  => "Cos",
-        Op::Tanh                 => "Tanh",
-        Op::Sigmoid              => "Sigmoid",
-        Op::Silu                 => "Silu",
-        Op::Gelu                 => "Gelu",
-        Op::Relu                 => "Relu",
-        Op::Step                 => "Step",
-        Op::Recip                => "Recip",
-        Op::Abs                  => "Abs",
-        Op::ReluInplace          => "ReluInplace",
-        Op::SiluInplace          => "SiluInplace",
-        Op::GeluInplace          => "GeluInplace",
-        Op::TanhInplace          => "TanhInplace",
-        Op::SigmoidInplace       => "SigmoidInplace",
-        Op::NegInplace           => "NegInplace",
-        Op::AbsInplace           => "AbsInplace",
-        Op::SqrInplace           => "SqrInplace",
-        Op::SqrtInplace          => "SqrtInplace",
-        Op::RsqrtInplace         => "RsqrtInplace",
-        Op::RecipInplace         => "RecipInplace",
-        Op::ExpInplace           => "ExpInplace",
-        Op::LogInplace           => "LogInplace",
-        Op::SinInplace           => "SinInplace",
-        Op::CosInplace           => "CosInplace",
-        Op::SignInplace          => "SignInplace",
-        Op::FloorInplace         => "FloorInplace",
-        Op::CeilInplace          => "CeilInplace",
-        Op::RoundInplace         => "RoundInplace",
-        Op::ErfInplace           => "ErfInplace",
-        Op::GeluErfInplace       => "GeluErfInplace",
-        Op::ClampInplace{..}     => "ClampInplace",
-        Op::PowIInplace(_)       => "PowIInplace",
-        Op::Equal                => "Equal",
-        Op::Ne                   => "Ne",
-        Op::Lt                   => "Lt",
-        Op::Le                   => "Le",
-        Op::Gt                   => "Gt",
-        Op::Ge                   => "Ge",
-        Op::Where                => "Where",
-        Op::Floor                => "Floor",
-        Op::Ceil                 => "Ceil",
-        Op::Round                => "Round",
-        Op::Sign                 => "Sign",
-        Op::Erf                  => "Erf",
-        Op::GeluErf              => "GeluErf",
-        Op::Pow                  => "Pow",
-        Op::Rsqrt                => "Rsqrt",
-        Op::Rem                  => "Rem",
-        Op::Flip{..}             => "Flip",
-        Op::Roll{..}             => "Roll",
-        Op::CumSum{..}           => "CumSum",
-        Op::Triu{..}             => "Triu",
-        Op::Tril{..}             => "Tril",
-        Op::LogSoftmaxLastDim    => "LogSoftmaxLastDim",
-        Op::MaskedFill{..}       => "MaskedFill",
-        Op::Pad{..}              => "Pad",
-        Op::PadBackward{..}      => "PadBackward",
-        Op::MatMul               => "MatMul",
-        Op::Transpose            => "Transpose",
-        Op::Permute(_)           => "Permute",
-        Op::Cast(_)              => "Cast",
-        Op::BroadcastTo(_)       => "BroadcastTo",
-        Op::Reshape(_)           => "Reshape",
-        Op::Contiguize           => "Contiguize",
-        Op::Unsqueeze{..}        => "Unsqueeze",
-        Op::Squeeze{..}          => "Squeeze",
-        Op::ReduceSumTo(_)       => "ReduceSumTo",
-        Op::ReduceMaxTo(_)       => "ReduceMaxTo",
-        Op::SumAll               => "SumAll",
-        Op::MaxAll               => "MaxAll",
-        Op::MinAll               => "MinAll",
-        Op::MeanAll              => "MeanAll",
-        Op::SumDim(_)            => "SumDim",
-        Op::MaxDim(_)            => "MaxDim",
-        Op::MinDim(_)            => "MinDim",
-        Op::MeanDim(_)           => "MeanDim",
-        Op::LogSoftmaxLastDimBackward
-                                 => "LogSoftmaxLastDimBackward",
-        Op::ArgMaxDim(_)         => "ArgMaxDim",
-        Op::ArgMinDim(_)         => "ArgMinDim",
-        Op::Concat{..}           => "Concat",
-        Op::Slice{..}            => "Slice",
-        Op::AddScalar(_)         => "AddScalar",
-        Op::MulScalar(_)         => "MulScalar",
-        Op::PowI(_)              => "PowI",
-        Op::Clamp{..}            => "Clamp",
-        Op::Maximum              => "Maximum",
-        Op::Minimum              => "Minimum",
-        Op::IndexSelect{..}      => "IndexSelect",
-        Op::Gather{..}           => "Gather",
-        Op::IndexAdd{..}         => "IndexAdd",
-        Op::ScatterAdd{..}       => "ScatterAdd",
-        Op::NonZeroIndices{..}   => "NonZeroIndices",
-        Op::Copy{..}             => "Copy",
-        Op::Release              => "Release",
-        Op::Move{..}             => "Move",
-        Op::WriteSlice{..}       => "WriteSlice",
-        Op::WriteSliceRotating{..} => "WriteSliceRotating",
-        Op::WriteSliceDoff{..}   => "WriteSliceDoff",
-        Op::Alloc{..}            => "Alloc",
-        Op::ZeroFill             => "ZeroFill",
+        Op::Const => "Const",
+        Op::Iota { .. } => "Iota",
+        Op::Add => "Add",
+        Op::Sub => "Sub",
+        Op::Mul => "Mul",
+        Op::Div => "Div",
+        Op::Neg => "Neg",
+        Op::Sqr => "Sqr",
+        Op::Sqrt => "Sqrt",
+        Op::Exp => "Exp",
+        Op::Log => "Log",
+        Op::Sin => "Sin",
+        Op::Cos => "Cos",
+        Op::Tanh => "Tanh",
+        Op::Sigmoid => "Sigmoid",
+        Op::Silu => "Silu",
+        Op::Gelu => "Gelu",
+        Op::Relu => "Relu",
+        Op::Step => "Step",
+        Op::Recip => "Recip",
+        Op::Abs => "Abs",
+        Op::ReluInplace => "ReluInplace",
+        Op::SiluInplace => "SiluInplace",
+        Op::GeluInplace => "GeluInplace",
+        Op::TanhInplace => "TanhInplace",
+        Op::SigmoidInplace => "SigmoidInplace",
+        Op::NegInplace => "NegInplace",
+        Op::AbsInplace => "AbsInplace",
+        Op::SqrInplace => "SqrInplace",
+        Op::SqrtInplace => "SqrtInplace",
+        Op::RsqrtInplace => "RsqrtInplace",
+        Op::RecipInplace => "RecipInplace",
+        Op::ExpInplace => "ExpInplace",
+        Op::LogInplace => "LogInplace",
+        Op::SinInplace => "SinInplace",
+        Op::CosInplace => "CosInplace",
+        Op::SignInplace => "SignInplace",
+        Op::FloorInplace => "FloorInplace",
+        Op::CeilInplace => "CeilInplace",
+        Op::RoundInplace => "RoundInplace",
+        Op::ErfInplace => "ErfInplace",
+        Op::GeluErfInplace => "GeluErfInplace",
+        Op::ClampInplace { .. } => "ClampInplace",
+        Op::PowIInplace(_) => "PowIInplace",
+        Op::Equal => "Equal",
+        Op::Ne => "Ne",
+        Op::Lt => "Lt",
+        Op::Le => "Le",
+        Op::Gt => "Gt",
+        Op::Ge => "Ge",
+        Op::Where => "Where",
+        Op::Floor => "Floor",
+        Op::Ceil => "Ceil",
+        Op::Round => "Round",
+        Op::Sign => "Sign",
+        Op::Erf => "Erf",
+        Op::GeluErf => "GeluErf",
+        Op::Pow => "Pow",
+        Op::Rsqrt => "Rsqrt",
+        Op::Rem => "Rem",
+        Op::Flip { .. } => "Flip",
+        Op::Roll { .. } => "Roll",
+        Op::CumSum { .. } => "CumSum",
+        Op::Triu { .. } => "Triu",
+        Op::Tril { .. } => "Tril",
+        Op::LogSoftmaxLastDim => "LogSoftmaxLastDim",
+        Op::MaskedFill { .. } => "MaskedFill",
+        Op::Pad { .. } => "Pad",
+        Op::PadBackward { .. } => "PadBackward",
+        Op::MatMul => "MatMul",
+        Op::Transpose => "Transpose",
+        Op::Permute(_) => "Permute",
+        Op::Cast(_) => "Cast",
+        Op::BroadcastTo(_) => "BroadcastTo",
+        Op::Reshape(_) => "Reshape",
+        Op::Contiguize => "Contiguize",
+        Op::Unsqueeze { .. } => "Unsqueeze",
+        Op::Squeeze { .. } => "Squeeze",
+        Op::ReduceSumTo(_) => "ReduceSumTo",
+        Op::ReduceMaxTo(_) => "ReduceMaxTo",
+        Op::SumAll => "SumAll",
+        Op::MaxAll => "MaxAll",
+        Op::MinAll => "MinAll",
+        Op::MeanAll => "MeanAll",
+        Op::SumDim(_) => "SumDim",
+        Op::MaxDim(_) => "MaxDim",
+        Op::MinDim(_) => "MinDim",
+        Op::MeanDim(_) => "MeanDim",
+        Op::LogSoftmaxLastDimBackward => "LogSoftmaxLastDimBackward",
+        Op::ArgMaxDim(_) => "ArgMaxDim",
+        Op::ArgMinDim(_) => "ArgMinDim",
+        Op::Concat { .. } => "Concat",
+        Op::Slice { .. } => "Slice",
+        Op::AddScalar(_) => "AddScalar",
+        Op::MulScalar(_) => "MulScalar",
+        Op::PowI(_) => "PowI",
+        Op::Clamp { .. } => "Clamp",
+        Op::Maximum => "Maximum",
+        Op::Minimum => "Minimum",
+        Op::IndexSelect { .. } => "IndexSelect",
+        Op::Gather { .. } => "Gather",
+        Op::IndexAdd { .. } => "IndexAdd",
+        Op::ScatterAdd { .. } => "ScatterAdd",
+        Op::NonZeroIndices { .. } => "NonZeroIndices",
+        Op::Copy { .. } => "Copy",
+        Op::Release => "Release",
+        Op::Move { .. } => "Move",
+        Op::WriteSlice { .. } => "WriteSlice",
+        Op::WriteSliceRotating { .. } => "WriteSliceRotating",
+        Op::WriteSliceDoff { .. } => "WriteSliceDoff",
+        Op::Alloc { .. } => "Alloc",
+        Op::ZeroFill => "ZeroFill",
         // Phase 7.6: registry-extended fused ops. Step 3 wires per-id
         // names through a static lookup; until then, all fused ops
         // share one short name. Distinguishing in error messages is
         // future work — `id` is in the Debug repr.
-        Op::Fused(_, _)          => "Fused",
-        Op::View{..}             => "View",
-        Op::ViewOwned{..}        => "ViewOwned",
-        Op::ScatterIntoSlot{..}  => "ScatterIntoSlot",
+        Op::Fused(_, _) => "Fused",
+        Op::View { .. } => "View",
+        Op::ViewOwned { .. } => "ViewOwned",
+        Op::ScatterIntoSlot { .. } => "ScatterIntoSlot",
         // PR-A0 inert scaffold (the multi-path phi/merge node).
-        Op::Branch{..}           => "Branch",
-        Op::Scan{..}             => "Scan",
-        Op::ScanPlaceholder{..}  => "ScanPlaceholder",
+        Op::Branch { .. } => "Branch",
+        Op::Scan { .. } => "Scan",
+        Op::ScanPlaceholder { .. } => "ScanPlaceholder",
     }
 }
 
@@ -1578,10 +1579,10 @@ fn host_buffer_elem_count(buf: &fuel_ir::HostBuffer) -> usize {
 /// can validate without walking back through the graph.
 #[derive(Debug, Clone)]
 pub struct Node {
-    pub op:     Op,
+    pub op: Op,
     pub inputs: Vec<NodeId>,
-    pub shape:  Shape,
-    pub dtype:  DType,
+    pub shape: Shape,
+    pub dtype: DType,
 }
 
 /// How a node's storage is shared and how long it lives — its **storage
@@ -1627,7 +1628,9 @@ pub enum StorageClass {
 pub fn infer_storage_class(op: &Op) -> StorageClass {
     match op {
         Op::Const => StorageClass::Shared,
-        Op::WriteSlice { .. } | Op::WriteSliceRotating { .. } | Op::WriteSliceDoff { .. } => StorageClass::SessionState,
+        Op::WriteSlice { .. } | Op::WriteSliceRotating { .. } | Op::WriteSliceDoff { .. } => {
+            StorageClass::SessionState
+        }
         _ => StorageClass::Transient,
     }
 }
@@ -1913,20 +1916,14 @@ impl Graph {
     ///
     /// `Op::View` and `Op::ViewOwned` builders read this to derive
     /// the slot's shape/dtype/layout at graph-build time.
-    pub fn output_views(
-        &self,
-        id: NodeId,
-    ) -> Option<&[fuel_ir::storage::OutputView]> {
+    pub fn output_views(&self, id: NodeId) -> Option<&[fuel_ir::storage::OutputView]> {
         self.node_output_views.get(&id).map(|a| a.as_ref())
     }
 
     /// Clone the `Arc` handle to `id`'s per-slot output-view specs.
     /// Used by the realization path to attach the same bundle metadata
     /// to the realized [`Storage`] without copying the slice.
-    pub fn output_views_arc(
-        &self,
-        id: NodeId,
-    ) -> Option<Arc<[fuel_ir::storage::OutputView]>> {
+    pub fn output_views_arc(&self, id: NodeId) -> Option<Arc<[fuel_ir::storage::OutputView]>> {
         self.node_output_views.get(&id).cloned()
     }
 
@@ -1950,20 +1947,22 @@ impl Graph {
     /// side-table pattern).
     pub fn set_output_views(
         &mut self,
-        id:    NodeId,
+        id: NodeId,
         views: Arc<[fuel_ir::storage::OutputView]>,
     ) -> Result<(), fuel_ir::Error> {
         if id.0 >= self.nodes.len() {
             return Err(fuel_ir::Error::Msg(format!(
                 "set_output_views: NodeId({}) out of bounds (len={})",
-                id.0, self.nodes.len(),
-            )).bt());
+                id.0,
+                self.nodes.len(),
+            ))
+            .bt());
         }
         if views.is_empty() {
             return Err(fuel_ir::Error::Msg(
-                "set_output_views: slot list must be non-empty"
-                    .into(),
-            ).bt());
+                "set_output_views: slot list must be non-empty".into(),
+            )
+            .bt());
         }
         let node = &self.nodes[id.0];
         let slot0 = &views[0];
@@ -1973,22 +1972,26 @@ impl Graph {
                  Node::dtype {:?} on Node#{} (slot 0 is the primary; \
                  dtypes must match)",
                 slot0.dtype, node.dtype, id.0,
-            )).bt());
+            ))
+            .bt());
         }
         if slot0.shape != node.shape {
             return Err(fuel_ir::Error::Msg(format!(
                 "set_output_views: slot 0 shape {:?} disagrees with \
                  Node::shape {:?} on Node#{} (slot 0 is the primary)",
                 slot0.shape, node.shape, id.0,
-            )).bt());
+            ))
+            .bt());
         }
         for (i, v) in views.iter().enumerate() {
             if v.layout.shape() != &v.shape {
                 return Err(fuel_ir::Error::Msg(format!(
                     "set_output_views: slot {i} layout.shape() = {:?} \
                      disagrees with declared slot shape {:?}",
-                    v.layout.shape(), v.shape,
-                )).bt());
+                    v.layout.shape(),
+                    v.shape,
+                ))
+                .bt());
             }
         }
         self.node_output_views.insert(id, views);
@@ -2038,10 +2041,14 @@ impl Graph {
     /// thread a shared `SymGen` instead — those live in a separate
     /// compile-time `SymEnv` this scan does not see.
     pub fn next_data_determined_sym(&self) -> SymId {
-        let max = self.nodes.iter().filter_map(|n| match &n.op {
-            Op::NonZeroIndices { count_sym } => Some(count_sym.0),
-            _ => None,
-        }).max();
+        let max = self
+            .nodes
+            .iter()
+            .filter_map(|n| match &n.op {
+                Op::NonZeroIndices { count_sym } => Some(count_sym.0),
+                _ => None,
+            })
+            .max();
         match max {
             Some(m) => SymId(m + 1),
             None => SymId(0),
@@ -2053,7 +2060,10 @@ impl Graph {
     /// the row-capacity output shape; `row_count` (a [`DynScalar`]) is how
     /// many rows to actually compute. See [`Tensor::matmul_dyn_m`].
     pub fn set_matmul_row_count(&mut self, id: NodeId, row_count: DynScalar) {
-        assert!(id.0 < self.nodes.len(), "set_matmul_row_count: id out of bounds");
+        assert!(
+            id.0 < self.nodes.len(),
+            "set_matmul_row_count: id out of bounds"
+        );
         self.node_matmul_row_count.insert(id, row_count);
     }
 
@@ -2112,7 +2122,10 @@ impl Graph {
     /// The executor's realize paths walk the user's roots AND these
     /// side-effect roots via a single combined `execution_plan` call.
     pub fn add_side_effect_root(&mut self, id: NodeId) {
-        assert!(id.0 < self.nodes.len(), "add_side_effect_root: id out of bounds");
+        assert!(
+            id.0 < self.nodes.len(),
+            "add_side_effect_root: id out of bounds"
+        );
         if !self.side_effect_roots.contains(&id) {
             self.side_effect_roots.push(id);
         }
@@ -2156,14 +2169,21 @@ impl Graph {
                 id.0, n.shape, n.dtype,
             );
         }
-        let inputs: Vec<String> = n.inputs.iter().map(|&inp| {
-            let ni = self.node(inp);
-            let ip = ni.op.short_name();
-            format!("Node#{}[{ip}, {:?}, {:?}]", inp.0, ni.shape, ni.dtype)
-        }).collect();
+        let inputs: Vec<String> = n
+            .inputs
+            .iter()
+            .map(|&inp| {
+                let ni = self.node(inp);
+                let ip = ni.op.short_name();
+                format!("Node#{}[{ip}, {:?}, {:?}]", inp.0, ni.shape, ni.dtype)
+            })
+            .collect();
         format!(
             "Node#{} ({op_short}, out shape={:?} dtype={:?}, inputs=[{}])",
-            id.0, n.shape, n.dtype, inputs.join(", "),
+            id.0,
+            n.shape,
+            n.dtype,
+            inputs.join(", "),
         )
     }
 
@@ -2189,7 +2209,11 @@ impl Graph {
     pub fn push(&mut self, node: Node) -> NodeId {
         let id = NodeId(self.nodes.len());
         let is_view = node.op.is_view_op();
-        let view_input = if is_view { node.inputs.first().copied() } else { None };
+        let view_input = if is_view {
+            node.inputs.first().copied()
+        } else {
+            None
+        };
         let op_for_derive = if is_view { Some(node.op.clone()) } else { None };
         self.nodes.push(node);
         if let (Some(input_id), Some(op)) = (view_input, op_for_derive) {
@@ -2212,13 +2236,11 @@ impl Graph {
     /// and produces data the consumer can read without error on the
     /// relevant device. Used by transform passes (residency eviction,
     /// fusion) that need to redirect a specific consumer's edge.
-    pub(crate) fn rewrite_input(
-        &mut self,
-        node: NodeId,
-        old_input: NodeId,
-        new_input: NodeId,
-    ) {
-        assert!(node.0 < self.nodes.len(), "rewrite_input: node out of bounds");
+    pub(crate) fn rewrite_input(&mut self, node: NodeId, old_input: NodeId, new_input: NodeId) {
+        assert!(
+            node.0 < self.nodes.len(),
+            "rewrite_input: node out of bounds"
+        );
         let inputs = &mut self.nodes[node.0].inputs;
         for inp in inputs.iter_mut() {
             if *inp == old_input {
@@ -2343,7 +2365,10 @@ impl Graph {
     /// [`BranchBuilder::finalize_branches`], which returns a typed
     /// [`Error::InvalidBranch`] rather than panicking.
     pub fn open_branch(&self, diverge: NodeId) -> BranchBuilder {
-        BranchBuilder { diverge, arms: Vec::new() }
+        BranchBuilder {
+            diverge,
+            arms: Vec::new(),
+        }
     }
 
     /// Forward-reachable set (the node and all its transitive *consumers*)
@@ -2590,8 +2615,7 @@ impl Graph {
         self.storage_map = remap.rekey(std::mem::take(&mut self.storage_map));
         self.node_output_views = remap.rekey(std::mem::take(&mut self.node_output_views));
         self.storage_class = remap.rekey(std::mem::take(&mut self.storage_class));
-        self.node_matmul_row_count =
-            remap.rekey(std::mem::take(&mut self.node_matmul_row_count));
+        self.node_matmul_row_count = remap.rekey(std::mem::take(&mut self.node_matmul_row_count));
 
         // Remap the side-effect-roots vector (every entry is live — they
         // were reachability seeds — so each maps).
@@ -2631,7 +2655,10 @@ impl Graph {
             }
             if let Op::Branch { reconverge_at } = node.op {
                 if reconverge_at.0 >= n {
-                    return bad(format!("Node#{idx} Branch.reconverge_at Node#{}", reconverge_at.0));
+                    return bad(format!(
+                        "Node#{idx} Branch.reconverge_at Node#{}",
+                        reconverge_at.0
+                    ));
                 }
             }
         }
@@ -2938,10 +2965,8 @@ impl BranchBuilder {
         let mut arm_interiors: Vec<HashSet<NodeId>> = Vec::with_capacity(self.arms.len());
         for &exit in &self.arms {
             let back = graph.backward_reachable(exit);
-            let mut interior: HashSet<NodeId> = back
-                .intersection(&fwd_from_diverge)
-                .copied()
-                .collect();
+            let mut interior: HashSet<NodeId> =
+                back.intersection(&fwd_from_diverge).copied().collect();
             interior.remove(&self.diverge);
             // The exit itself is always part of the arm even if (for a
             // degenerate arm) it equals the diverge point — but a
@@ -3022,7 +3047,7 @@ pub type SharedGraph = Arc<RwLock<Graph>>;
 #[derive(Debug, Clone)]
 pub struct Tensor {
     graph: SharedGraph,
-    id:    NodeId,
+    id: NodeId,
 }
 
 impl Tensor {
@@ -3108,12 +3133,15 @@ impl Tensor {
     pub fn release(&self) -> Self {
         let dtype = self.dtype();
         let id = self.graph.write().unwrap().push(Node {
-            op:     Op::Release,
+            op: Op::Release,
             inputs: vec![self.id],
-            shape:  Shape::from_dims(&[0]),
+            shape: Shape::from_dims(&[0]),
             dtype,
         });
-        Tensor { graph: Arc::clone(&self.graph), id }
+        Tensor {
+            graph: Arc::clone(&self.graph),
+            id,
+        }
     }
 
     /// Move this tensor's data to `target` device — destroying the
@@ -3141,12 +3169,15 @@ impl Tensor {
         let shape = self.shape();
         let dtype = self.dtype();
         let id = self.graph.write().unwrap().push(Node {
-            op:     Op::Move { target },
+            op: Op::Move { target },
             inputs: vec![self.id],
             shape,
             dtype,
         });
-        Tensor { graph: Arc::clone(&self.graph), id }
+        Tensor {
+            graph: Arc::clone(&self.graph),
+            id,
+        }
     }
 
     /// Copy this tensor's data to `target` device. Source stays
@@ -3163,12 +3194,15 @@ impl Tensor {
         let shape = self.shape();
         let dtype = self.dtype();
         let id = self.graph.write().unwrap().push(Node {
-            op:     Op::Copy { target },
+            op: Op::Copy { target },
             inputs: vec![self.id],
             shape,
             dtype,
         });
-        Tensor { graph: Arc::clone(&self.graph), id }
+        Tensor {
+            graph: Arc::clone(&self.graph),
+            id,
+        }
     }
 
     /// Project one logical output out of a multi-output producer node.
@@ -3185,10 +3219,7 @@ impl Tensor {
     /// specs; `slot` must be in range. Errors at graph-build time
     /// (per the `validate-at-graph-build-time` rule); the executor
     /// never sees a malformed View node.
-    pub fn view(
-        &self,
-        slot: u32,
-    ) -> std::result::Result<Tensor, fuel_ir::Error> {
+    pub fn view(&self, slot: u32) -> std::result::Result<Tensor, fuel_ir::Error> {
         let mut graph_w = self.graph.write().unwrap();
         let (slot_shape, slot_dtype, slot_byte_offset, slot_layout) = {
             let views = graph_w.output_views(self.id).ok_or_else(|| {
@@ -3196,7 +3227,8 @@ impl Tensor {
                     "Tensor::view: Node#{} is not a multi-output \
                      producer (no output_views registered)",
                     self.id.0,
-                )).bt()
+                ))
+                .bt()
             })?;
             let idx = slot as usize;
             let v = views.get(idx).ok_or_else(|| {
@@ -3204,15 +3236,16 @@ impl Tensor {
                     "Tensor::view: slot {idx} out of range \
                      (producer has {} slots)",
                     views.len(),
-                )).bt()
+                ))
+                .bt()
             })?;
             (v.shape.clone(), v.dtype, v.byte_offset, v.layout.clone())
         };
         let id = graph_w.push(Node {
-            op:     Op::View { slot },
+            op: Op::View { slot },
             inputs: vec![self.id],
-            shape:  slot_shape.clone(),
-            dtype:  slot_dtype,
+            shape: slot_shape.clone(),
+            dtype: slot_dtype,
         });
         // Compose the slot's intrinsic layout (which carries
         // slot-relative strides + start_offset) with the slot's
@@ -3242,7 +3275,10 @@ impl Tensor {
             graph_w.set_layout(id, effective_layout);
         }
         drop(graph_w);
-        Ok(Tensor { graph: Arc::clone(&self.graph), id })
+        Ok(Tensor {
+            graph: Arc::clone(&self.graph),
+            id,
+        })
     }
 
     /// Owned variant of [`Self::view`] — the slot's bytes are copied
@@ -3251,10 +3287,7 @@ impl Tensor {
     /// is always contiguous.
     ///
     /// Same validation as `view`; same error surface.
-    pub fn view_owned(
-        &self,
-        slot: u32,
-    ) -> std::result::Result<Tensor, fuel_ir::Error> {
+    pub fn view_owned(&self, slot: u32) -> std::result::Result<Tensor, fuel_ir::Error> {
         let mut graph_w = self.graph.write().unwrap();
         let (slot_shape, slot_dtype) = {
             let views = graph_w.output_views(self.id).ok_or_else(|| {
@@ -3262,7 +3295,8 @@ impl Tensor {
                     "Tensor::view_owned: Node#{} is not a multi-output \
                      producer (no output_views registered)",
                     self.id.0,
-                )).bt()
+                ))
+                .bt()
             })?;
             let idx = slot as usize;
             let v = views.get(idx).ok_or_else(|| {
@@ -3270,18 +3304,22 @@ impl Tensor {
                     "Tensor::view_owned: slot {idx} out of range \
                      (producer has {} slots)",
                     views.len(),
-                )).bt()
+                ))
+                .bt()
             })?;
             (v.shape.clone(), v.dtype)
         };
         let id = graph_w.push(Node {
-            op:     Op::ViewOwned { slot },
+            op: Op::ViewOwned { slot },
             inputs: vec![self.id],
-            shape:  slot_shape,
-            dtype:  slot_dtype,
+            shape: slot_shape,
+            dtype: slot_dtype,
         });
         drop(graph_w);
-        Ok(Tensor { graph: Arc::clone(&self.graph), id })
+        Ok(Tensor {
+            graph: Arc::clone(&self.graph),
+            id,
+        })
     }
 
     /// Append an `Op::WriteSlice` node — copies `source`'s bytes into
@@ -3316,25 +3354,29 @@ impl Tensor {
             return Err(fuel_ir::Error::Msg(format!(
                 "write_slice: ranges.len() ({}) must equal destination rank ({rank})",
                 ranges.len(),
-            )).bt());
+            ))
+            .bt());
         }
         if src_dims.len() != rank {
             return Err(fuel_ir::Error::Msg(format!(
                 "write_slice: source rank ({}) must equal destination rank ({rank})",
                 src_dims.len(),
-            )).bt());
+            ))
+            .bt());
         }
         for (i, &(start, end)) in ranges.iter().enumerate() {
             if end < start {
                 return Err(fuel_ir::Error::Msg(format!(
                     "write_slice: ranges[{i}] = ({start}, {end}) has end < start"
-                )).bt());
+                ))
+                .bt());
             }
             if end > dest_dims[i] {
                 return Err(fuel_ir::Error::Msg(format!(
                     "write_slice: ranges[{i}].end ({end}) > destination dim {i} ({})",
                     dest_dims[i],
-                )).bt());
+                ))
+                .bt());
             }
             let slab = end - start;
             if src_dims[i] != slab {
@@ -3342,23 +3384,32 @@ impl Tensor {
                     "write_slice: source dim {i} ({}) must equal slab width ({slab}) \
                      = ranges[{i}].end - ranges[{i}].start",
                     src_dims[i],
-                )).bt());
+                ))
+                .bt());
             }
         }
         if self.dtype() != source.dtype() {
             return Err(fuel_ir::Error::Msg(format!(
                 "write_slice: dtype mismatch — destination {:?} vs source {:?}",
-                self.dtype(), source.dtype(),
-            )).bt());
+                self.dtype(),
+                source.dtype(),
+            ))
+            .bt());
         }
         let dtype = self.dtype();
         let id = self.graph.write().unwrap().push(Node {
-            op:     Op::WriteSlice { ranges, dyn_offset: None },
+            op: Op::WriteSlice {
+                ranges,
+                dyn_offset: None,
+            },
             inputs: vec![self.id, source.id],
-            shape:  dest_shape,
+            shape: dest_shape,
             dtype,
         });
-        Ok(Tensor { graph: Arc::clone(&self.graph), id })
+        Ok(Tensor {
+            graph: Arc::clone(&self.graph),
+            id,
+        })
     }
 
     /// Append an `Op::WriteSlice` whose start on `dyn_axis` is a runtime
@@ -3401,24 +3452,28 @@ impl Tensor {
             return Err(fuel_ir::Error::Msg(format!(
                 "write_slice_dyn: ranges.len() ({}) must equal destination rank ({rank})",
                 ranges.len(),
-            )).bt());
+            ))
+            .bt());
         }
         if src_dims.len() != rank {
             return Err(fuel_ir::Error::Msg(format!(
                 "write_slice_dyn: source rank ({}) must equal destination rank ({rank})",
                 src_dims.len(),
-            )).bt());
+            ))
+            .bt());
         }
         if dyn_axis >= rank {
             return Err(fuel_ir::Error::Msg(format!(
                 "write_slice_dyn: dyn_axis ({dyn_axis}) out of bounds for rank {rank}",
-            )).bt());
+            ))
+            .bt());
         }
         for (i, &(start, end)) in ranges.iter().enumerate() {
             if end < start {
                 return Err(fuel_ir::Error::Msg(format!(
                     "write_slice_dyn: ranges[{i}] = ({start}, {end}) has end < start"
-                )).bt());
+                ))
+                .bt());
             }
             let slab = end - start;
             if src_dims[i] != slab {
@@ -3426,7 +3481,8 @@ impl Tensor {
                     "write_slice_dyn: source dim {i} ({}) must equal slab width ({slab}) \
                      = ranges[{i}].end - ranges[{i}].start",
                     src_dims[i],
-                )).bt());
+                ))
+                .bt());
             }
             if i == dyn_axis {
                 // The start on `dyn_axis` is dynamic, so `ranges[i].0`/`.1`
@@ -3438,29 +3494,39 @@ impl Tensor {
                         "write_slice_dyn: dynamic-axis slab width ({slab}) > destination capacity \
                          dim {i} ({})",
                         dest_dims[i],
-                    )).bt());
+                    ))
+                    .bt());
                 }
             } else if end > dest_dims[i] {
                 return Err(fuel_ir::Error::Msg(format!(
                     "write_slice_dyn: ranges[{i}].end ({end}) > destination dim {i} ({})",
                     dest_dims[i],
-                )).bt());
+                ))
+                .bt());
             }
         }
         if self.dtype() != source.dtype() {
             return Err(fuel_ir::Error::Msg(format!(
                 "write_slice_dyn: dtype mismatch — destination {:?} vs source {:?}",
-                self.dtype(), source.dtype(),
-            )).bt());
+                self.dtype(),
+                source.dtype(),
+            ))
+            .bt());
         }
         let dtype = self.dtype();
         let id = self.graph.write().unwrap().push(Node {
-            op:     Op::WriteSlice { ranges, dyn_offset: Some((dyn_axis, offset)) },
+            op: Op::WriteSlice {
+                ranges,
+                dyn_offset: Some((dyn_axis, offset)),
+            },
             inputs: vec![self.id, source.id],
-            shape:  dest_shape,
+            shape: dest_shape,
             dtype,
         });
-        Ok(Tensor { graph: Arc::clone(&self.graph), id })
+        Ok(Tensor {
+            graph: Arc::clone(&self.graph),
+            id,
+        })
     }
 
     /// Append an [`Op::WriteSliceRotating`] node — copies `source`'s
@@ -3500,23 +3566,26 @@ impl Tensor {
             return Err(fuel_ir::Error::Msg(format!(
                 "write_slice_rotating: ranges.len() ({}) must equal destination rank ({rank})",
                 ranges.len(),
-            )).bt());
+            ))
+            .bt());
         }
         if src_dims.len() != rank {
             return Err(fuel_ir::Error::Msg(format!(
                 "write_slice_rotating: source rank ({}) must equal destination rank ({rank})",
                 src_dims.len(),
-            )).bt());
+            ))
+            .bt());
         }
         if axis >= rank {
             return Err(fuel_ir::Error::Msg(format!(
                 "write_slice_rotating: axis {axis} out of bounds for rank {rank}",
-            )).bt());
+            ))
+            .bt());
         }
         if modulus == 0 {
-            return Err(fuel_ir::Error::Msg(
-                "write_slice_rotating: modulus must be >= 1".into(),
-            ).bt());
+            return Err(
+                fuel_ir::Error::Msg("write_slice_rotating: modulus must be >= 1".into()).bt(),
+            );
         }
         if modulus > dest_dims[axis] {
             return Err(fuel_ir::Error::Msg(format!(
@@ -3528,14 +3597,16 @@ impl Tensor {
             if end < start {
                 return Err(fuel_ir::Error::Msg(format!(
                     "write_slice_rotating: ranges[{i}] = ({start}, {end}) has end < start"
-                )).bt());
+                ))
+                .bt());
             }
             let slab = end - start;
             if i == axis {
                 if slab == 0 {
                     return Err(fuel_ir::Error::Msg(format!(
                         "write_slice_rotating: ranges[axis={axis}] slab is 0",
-                    )).bt());
+                    ))
+                    .bt());
                 }
                 if slab > modulus {
                     return Err(fuel_ir::Error::Msg(format!(
@@ -3546,7 +3617,8 @@ impl Tensor {
                     return Err(fuel_ir::Error::Msg(format!(
                         "write_slice_rotating: source dim {i} ({}) must equal slab width ({slab})",
                         src_dims[i],
-                    )).bt());
+                    ))
+                    .bt());
                 }
                 // ranges[axis].1 itself isn't bounded by dest_dims[axis] —
                 // the kernel wraps the start, so the logical end is meaningless.
@@ -3562,42 +3634,55 @@ impl Tensor {
                     return Err(fuel_ir::Error::Msg(format!(
                         "write_slice_rotating: ranges[{i}].end ({end}) > destination dim {i} ({})",
                         dest_dims[i],
-                    )).bt());
+                    ))
+                    .bt());
                 }
                 if src_dims[i] != slab {
                     return Err(fuel_ir::Error::Msg(format!(
                         "write_slice_rotating: source dim {i} ({}) must equal slab width ({slab})",
                         src_dims[i],
-                    )).bt());
+                    ))
+                    .bt());
                 }
             }
         }
         if self.dtype() != source.dtype() {
             return Err(fuel_ir::Error::Msg(format!(
                 "write_slice_rotating: dtype mismatch — destination {:?} vs source {:?}",
-                self.dtype(), source.dtype(),
-            )).bt());
+                self.dtype(),
+                source.dtype(),
+            ))
+            .bt());
         }
         if position.dtype() != DType::U32 {
             return Err(fuel_ir::Error::Msg(format!(
                 "write_slice_rotating: position must be U32, got {:?}",
                 position.dtype(),
-            )).bt());
+            ))
+            .bt());
         }
         if !position.shape().dims().is_empty() {
             return Err(fuel_ir::Error::Msg(format!(
                 "write_slice_rotating: position must be rank-0 scalar, got {:?}",
                 position.shape().dims(),
-            )).bt());
+            ))
+            .bt());
         }
         let dtype = self.dtype();
         let id = self.graph.write().unwrap().push(Node {
-            op:     Op::WriteSliceRotating { axis, modulus, ranges },
+            op: Op::WriteSliceRotating {
+                axis,
+                modulus,
+                ranges,
+            },
             inputs: vec![self.id, source.id, position.id],
-            shape:  dest_shape,
+            shape: dest_shape,
             dtype,
         });
-        Ok(Tensor { graph: Arc::clone(&self.graph), id })
+        Ok(Tensor {
+            graph: Arc::clone(&self.graph),
+            id,
+        })
     }
 
     /// Append an [`Op::WriteSliceDoff`] node — copies `source`'s bytes
@@ -3641,31 +3726,36 @@ impl Tensor {
             return Err(fuel_ir::Error::Msg(format!(
                 "write_slice_doff: ranges.len() ({}) must equal destination rank ({rank})",
                 ranges.len(),
-            )).bt());
+            ))
+            .bt());
         }
         if src_dims.len() != rank {
             return Err(fuel_ir::Error::Msg(format!(
                 "write_slice_doff: source rank ({}) must equal destination rank ({rank})",
                 src_dims.len(),
-            )).bt());
+            ))
+            .bt());
         }
         if axis >= rank {
             return Err(fuel_ir::Error::Msg(format!(
                 "write_slice_doff: axis {axis} out of bounds for rank {rank}",
-            )).bt());
+            ))
+            .bt());
         }
         for (i, &(start, end)) in ranges.iter().enumerate() {
             if end < start {
                 return Err(fuel_ir::Error::Msg(format!(
                     "write_slice_doff: ranges[{i}] = ({start}, {end}) has end < start"
-                )).bt());
+                ))
+                .bt());
             }
             let slab = end - start;
             if i == axis {
                 if slab == 0 {
                     return Err(fuel_ir::Error::Msg(format!(
                         "write_slice_doff: ranges[axis={axis}] slab is 0",
-                    )).bt());
+                    ))
+                    .bt());
                 }
                 // The write width can't exceed the buffer capacity on
                 // `axis` even at offset 0 (the offset itself is dynamic
@@ -3680,49 +3770,59 @@ impl Tensor {
                     return Err(fuel_ir::Error::Msg(format!(
                         "write_slice_doff: source dim {i} ({}) must equal slab width ({slab})",
                         src_dims[i],
-                    )).bt());
+                    ))
+                    .bt());
                 }
             } else {
                 if end > dest_dims[i] {
                     return Err(fuel_ir::Error::Msg(format!(
                         "write_slice_doff: ranges[{i}].end ({end}) > destination dim {i} ({})",
                         dest_dims[i],
-                    )).bt());
+                    ))
+                    .bt());
                 }
                 if src_dims[i] != slab {
                     return Err(fuel_ir::Error::Msg(format!(
                         "write_slice_doff: source dim {i} ({}) must equal slab width ({slab})",
                         src_dims[i],
-                    )).bt());
+                    ))
+                    .bt());
                 }
             }
         }
         if self.dtype() != source.dtype() {
             return Err(fuel_ir::Error::Msg(format!(
                 "write_slice_doff: dtype mismatch — destination {:?} vs source {:?}",
-                self.dtype(), source.dtype(),
-            )).bt());
+                self.dtype(),
+                source.dtype(),
+            ))
+            .bt());
         }
         if offset.dtype() != DType::I64 {
             return Err(fuel_ir::Error::Msg(format!(
                 "write_slice_doff: offset must be I64 (device-resident start), got {:?}",
                 offset.dtype(),
-            )).bt());
+            ))
+            .bt());
         }
         if !offset.shape().dims().is_empty() {
             return Err(fuel_ir::Error::Msg(format!(
                 "write_slice_doff: offset must be rank-0 scalar, got {:?}",
                 offset.shape().dims(),
-            )).bt());
+            ))
+            .bt());
         }
         let dtype = self.dtype();
         let id = self.graph.write().unwrap().push(Node {
-            op:     Op::WriteSliceDoff { axis, ranges },
+            op: Op::WriteSliceDoff { axis, ranges },
             inputs: vec![self.id, source.id, offset.id],
-            shape:  dest_shape,
+            shape: dest_shape,
             dtype,
         });
-        Ok(Tensor { graph: Arc::clone(&self.graph), id })
+        Ok(Tensor {
+            graph: Arc::clone(&self.graph),
+            id,
+        })
     }
 
     /// Build a `Const` tensor from an `f32` slice and shape on a fresh
@@ -3837,7 +3937,7 @@ impl Tensor {
         let id = {
             let mut g = graph.write().unwrap();
             let id = g.push(Node {
-                op:     Op::Const,
+                op: Op::Const,
                 inputs: vec![],
                 shape,
                 dtype,
@@ -3954,7 +4054,7 @@ impl Tensor {
         let id = {
             let mut g = graph.write().unwrap();
             let id = g.push(Node {
-                op:     Op::Const,
+                op: Op::Const,
                 inputs: vec![],
                 shape,
                 dtype,
@@ -3974,91 +4074,49 @@ impl Tensor {
     /// const_*_like is called). For cross-device const construction,
     /// build a fresh graph with [`Tensor::from_f32`] and link via
     /// [`Op::Move`] / [`Op::Copy`].
-    pub fn const_f32_like(
-        &self,
-        data: impl Into<Arc<[f32]>>,
-        shape: impl Into<Shape>,
-    ) -> Self {
+    pub fn const_f32_like(&self, data: impl Into<Arc<[f32]>>, shape: impl Into<Shape>) -> Self {
         let v: Arc<[f32]> = data.into();
-        self.const_like_host_buffer(
-            fuel_ir::HostBuffer::F32(v.to_vec()), DType::F32, shape,
-        )
+        self.const_like_host_buffer(fuel_ir::HostBuffer::F32(v.to_vec()), DType::F32, shape)
     }
 
     /// Build a second `Const f64` tensor on the same graph as `self`.
-    pub fn const_f64_like(
-        &self,
-        data: impl Into<Arc<[f64]>>,
-        shape: impl Into<Shape>,
-    ) -> Self {
+    pub fn const_f64_like(&self, data: impl Into<Arc<[f64]>>, shape: impl Into<Shape>) -> Self {
         let v: Arc<[f64]> = data.into();
-        self.const_like_host_buffer(
-            fuel_ir::HostBuffer::F64(v.to_vec()), DType::F64, shape,
-        )
+        self.const_like_host_buffer(fuel_ir::HostBuffer::F64(v.to_vec()), DType::F64, shape)
     }
 
     /// Build a second `Const bf16` tensor on the same graph as `self`.
-    pub fn const_bf16_like(
-        &self,
-        data: impl Into<Arc<[bf16]>>,
-        shape: impl Into<Shape>,
-    ) -> Self {
+    pub fn const_bf16_like(&self, data: impl Into<Arc<[bf16]>>, shape: impl Into<Shape>) -> Self {
         let v: Arc<[bf16]> = data.into();
-        self.const_like_host_buffer(
-            fuel_ir::HostBuffer::BF16(v.to_vec()), DType::BF16, shape,
-        )
+        self.const_like_host_buffer(fuel_ir::HostBuffer::BF16(v.to_vec()), DType::BF16, shape)
     }
 
     /// Build a second `Const f16` tensor on the same graph as `self`.
-    pub fn const_f16_like(
-        &self,
-        data: impl Into<Arc<[f16]>>,
-        shape: impl Into<Shape>,
-    ) -> Self {
+    pub fn const_f16_like(&self, data: impl Into<Arc<[f16]>>, shape: impl Into<Shape>) -> Self {
         let v: Arc<[f16]> = data.into();
-        self.const_like_host_buffer(
-            fuel_ir::HostBuffer::F16(v.to_vec()), DType::F16, shape,
-        )
+        self.const_like_host_buffer(fuel_ir::HostBuffer::F16(v.to_vec()), DType::F16, shape)
     }
 
     /// Build a second `Const u32` (index) tensor on the same graph as `self`.
-    pub fn const_u32_like(
-        &self,
-        data: impl Into<Arc<[u32]>>,
-        shape: impl Into<Shape>,
-    ) -> Self {
+    pub fn const_u32_like(&self, data: impl Into<Arc<[u32]>>, shape: impl Into<Shape>) -> Self {
         let v: Arc<[u32]> = data.into();
-        self.const_like_host_buffer(
-            fuel_ir::HostBuffer::U32(v.to_vec()), DType::U32, shape,
-        )
+        self.const_like_host_buffer(fuel_ir::HostBuffer::U32(v.to_vec()), DType::U32, shape)
     }
 
     /// Build a sibling U8 `Const` on the same graph. Used by
     /// byte-stream inputs (e.g. NF4 quantized weights packed two
     /// codes per byte).
-    pub fn const_u8_like(
-        &self,
-        data: impl Into<Arc<[u8]>>,
-        shape: impl Into<Shape>,
-    ) -> Self {
+    pub fn const_u8_like(&self, data: impl Into<Arc<[u8]>>, shape: impl Into<Shape>) -> Self {
         let v: Arc<[u8]> = data.into();
-        self.const_like_host_buffer(
-            fuel_ir::HostBuffer::U8(v.to_vec()), DType::U8, shape,
-        )
+        self.const_like_host_buffer(fuel_ir::HostBuffer::U8(v.to_vec()), DType::U8, shape)
     }
 
     /// Build a sibling I64 `Const` on the same graph. Used by
     /// integer-target ops (e.g. cross-entropy with class indices in
     /// PyTorch convention).
-    pub fn const_i64_like(
-        &self,
-        data: impl Into<Arc<[i64]>>,
-        shape: impl Into<Shape>,
-    ) -> Self {
+    pub fn const_i64_like(&self, data: impl Into<Arc<[i64]>>, shape: impl Into<Shape>) -> Self {
         let v: Arc<[i64]> = data.into();
-        self.const_like_host_buffer(
-            fuel_ir::HostBuffer::I64(v.to_vec()), DType::I64, shape,
-        )
+        self.const_like_host_buffer(fuel_ir::HostBuffer::I64(v.to_vec()), DType::I64, shape)
     }
 
     /// G2 internal funnel for the per-graph const_*_like family. The
@@ -4088,7 +4146,7 @@ impl Tensor {
         let id = {
             let mut g = self.graph.write().unwrap();
             let id = g.push(Node {
-                op:     Op::Const,
+                op: Op::Const,
                 inputs: vec![],
                 shape,
                 dtype,
@@ -4118,16 +4176,12 @@ impl Tensor {
     /// `initial` StorageCache passed to the realize call. If not, the
     /// executor surfaces a clean error pointing at the missing slot
     /// — there's no implicit fallback to `graph.storage_map`.
-    pub fn const_placeholder_like(
-        &self,
-        shape: impl Into<Shape>,
-        dtype: DType,
-    ) -> Self {
+    pub fn const_placeholder_like(&self, shape: impl Into<Shape>, dtype: DType) -> Self {
         let shape = shape.into();
         let id = {
             let mut g = self.graph.write().unwrap();
             g.push(Node {
-                op:     Op::Const,
+                op: Op::Const,
                 inputs: vec![],
                 shape,
                 dtype,
@@ -4159,7 +4213,7 @@ impl Tensor {
         let id = {
             let mut g = self.graph.write().unwrap();
             let id = g.push(Node {
-                op:     Op::Const,
+                op: Op::Const,
                 inputs: vec![],
                 shape,
                 dtype,
@@ -4240,12 +4294,18 @@ impl Tensor {
             let mut bc_shape: Vec<usize> = rd[..rd.len() - 2].to_vec();
             bc_shape.push(ld[0]);
             bc_shape.push(ld[1]);
-            (self.broadcast_to(Shape::from_dims(&bc_shape)), other.clone())
+            (
+                self.broadcast_to(Shape::from_dims(&bc_shape)),
+                other.clone(),
+            )
         } else if rd.len() == 2 && ld.len() > 2 {
             let mut bc_shape: Vec<usize> = ld[..ld.len() - 2].to_vec();
             bc_shape.push(rd[0]);
             bc_shape.push(rd[1]);
-            (self.clone(), other.broadcast_to(Shape::from_dims(&bc_shape)))
+            (
+                self.clone(),
+                other.broadcast_to(Shape::from_dims(&bc_shape)),
+            )
         } else {
             panic!(
                 "matmul: unsupported rank combination {} vs {} — only same-rank or (rank-2 × higher-rank) is supported; reshape first",
@@ -4276,10 +4336,7 @@ impl Tensor {
         }
         let k = l[rank - 1];
         let k2 = r[rank - 2];
-        assert_eq!(
-            k, k2,
-            "matmul: inner dim mismatch (lhs k={k}, rhs k={k2})",
-        );
+        assert_eq!(k, k2, "matmul: inner dim mismatch (lhs k={k}, rhs k={k2})",);
         // Output shape + dtype now flow from primitive_shape (the single source
         // of truth); the same-rank operands + validated batch prefix / inner
         // dim above guarantee it infers cleanly. (The GQA batch-prefix carry
@@ -4291,7 +4348,7 @@ impl Tensor {
         )
         .expect("matmul: operands validated (same-rank, inner dim) before primitive_shape");
         let id = self.graph.write().unwrap().push(Node {
-            op:     Op::MatMul,
+            op: Op::MatMul,
             inputs: vec![lhs.id, rhs.id],
             shape,
             dtype,
@@ -4370,7 +4427,8 @@ impl Tensor {
             "qmatmul: activations must be rank ≥ 2, got {a_dims:?}",
         );
         assert_eq!(
-            a_dims[a_dims.len() - 1], k,
+            a_dims[a_dims.len() - 1],
+            k,
             "qmatmul: last dim of activations ({}) must equal k ({k})",
             a_dims[a_dims.len() - 1],
         );
@@ -4381,10 +4439,12 @@ impl Tensor {
             quant_type.elements_per_block(),
         );
         // Validate the weight byte count matches [N, K/block_size] blocks.
-        let expected_bytes = n * (k / quant_type.elements_per_block()) * quant_type.bytes_per_block();
+        let expected_bytes =
+            n * (k / quant_type.elements_per_block()) * quant_type.bytes_per_block();
         let expected_u32_elems = expected_bytes / 4;
         assert_eq!(
-            weight_bytes.shape().elem_count(), expected_u32_elems,
+            weight_bytes.shape().elem_count(),
+            expected_u32_elems,
             "qmatmul: weight_bytes has {} u32 elements, expected {expected_u32_elems} for N={n}, K={k}, {quant_type:?}",
             weight_bytes.shape().elem_count(),
         );
@@ -4393,13 +4453,13 @@ impl Tensor {
         // Phase 7.6 step 4 (final): emits Op::Fused(QMATMUL, _) per
         // the registry split.
         let id = self.graph.write().unwrap().push(Node {
-            op:     Op::Fused(
+            op: Op::Fused(
                 crate::registry::FusedOps::QMATMUL,
                 crate::registry::FusedOpParams::QMatMul { quant_type, k, n },
             ),
             inputs: vec![self.id, weight_bytes.id],
-            shape:  Shape::from_dims(&out_dims),
-            dtype:  DType::F32,
+            shape: Shape::from_dims(&out_dims),
+            dtype: DType::F32,
         });
         Self {
             graph: self.graph.clone(),
@@ -4440,29 +4500,35 @@ impl Tensor {
         let w_dims = weight.shape();
         let w_dims = w_dims.dims();
         assert_eq!(
-            x_dims.len(), 4,
+            x_dims.len(),
+            4,
             "conv2d: x must be rank 4 [N, Cin, H, W], got {x_dims:?}",
         );
         assert_eq!(
-            w_dims.len(), 4,
+            w_dims.len(),
+            4,
             "conv2d: weight must be rank 4 [Cout, Cin/groups, Kh, Kw], got {w_dims:?}",
         );
         let (n, cin, h_in, w_in) = (x_dims[0], x_dims[1], x_dims[2], x_dims[3]);
         let (cout, cin_per_g, kh, kw) = (w_dims[0], w_dims[1], w_dims[2], w_dims[3]);
         assert_eq!(
-            cin, cin_per_g * groups,
+            cin,
+            cin_per_g * groups,
             "conv2d: x has {cin} in-channels but weight expects {} ({}·{groups})",
-            cin_per_g * groups, cin_per_g,
+            cin_per_g * groups,
+            cin_per_g,
         );
         assert_eq!(
-            cout % groups, 0,
+            cout % groups,
+            0,
             "conv2d: Cout={cout} must be divisible by groups={groups}",
         );
         if let Some(b) = bias {
             let b_dims = b.shape();
             let b_dims = b_dims.dims();
             assert_eq!(
-                b_dims, &[cout],
+                b_dims,
+                &[cout],
                 "conv2d: bias shape {b_dims:?} must match [Cout={cout}]",
             );
         }
@@ -4493,7 +4559,11 @@ impl Tensor {
         let id = self.graph.write().unwrap().push(Node {
             op: Op::Fused(
                 crate::registry::FusedOps::CONV2D,
-                crate::registry::FusedOpParams::Conv2D { stride, padding, groups },
+                crate::registry::FusedOpParams::Conv2D {
+                    stride,
+                    padding,
+                    groups,
+                },
             ),
             inputs,
             shape: Shape::from_dims(&[n, cout, h_out, w_out]),
@@ -4516,21 +4586,38 @@ impl Tensor {
     #[allow(clippy::too_many_arguments)]
     pub fn paged_attn(
         &self,
-        k_cache:      &Tensor,
-        v_cache:      &Tensor,
-        block_table:  &Tensor,
+        k_cache: &Tensor,
+        v_cache: &Tensor,
+        block_table: &Tensor,
         context_lens: &Tensor,
         alibi_slopes: Option<&Tensor>,
         softmax_scale: f32,
-        block_size:    usize,
-        softcap:       Option<f32>,
+        block_size: usize,
+        softcap: Option<f32>,
     ) -> Tensor {
         let g = &self.graph;
-        assert!(Arc::ptr_eq(g, &k_cache.graph), "paged_attn: q + k_cache must share graph");
-        assert!(Arc::ptr_eq(g, &v_cache.graph), "paged_attn: q + v_cache must share graph");
-        assert!(Arc::ptr_eq(g, &block_table.graph), "paged_attn: q + block_table must share graph");
-        assert!(Arc::ptr_eq(g, &context_lens.graph), "paged_attn: q + context_lens must share graph");
-        if let Some(a) = alibi_slopes { assert!(Arc::ptr_eq(g, &a.graph), "paged_attn: alibi_slopes must share graph"); }
+        assert!(
+            Arc::ptr_eq(g, &k_cache.graph),
+            "paged_attn: q + k_cache must share graph"
+        );
+        assert!(
+            Arc::ptr_eq(g, &v_cache.graph),
+            "paged_attn: q + v_cache must share graph"
+        );
+        assert!(
+            Arc::ptr_eq(g, &block_table.graph),
+            "paged_attn: q + block_table must share graph"
+        );
+        assert!(
+            Arc::ptr_eq(g, &context_lens.graph),
+            "paged_attn: q + context_lens must share graph"
+        );
+        if let Some(a) = alibi_slopes {
+            assert!(
+                Arc::ptr_eq(g, &a.graph),
+                "paged_attn: alibi_slopes must share graph"
+            );
+        }
         assert!(block_size >= 1, "paged_attn: block_size must be ≥ 1");
 
         let q_dims = self.shape();
@@ -4543,37 +4630,104 @@ impl Tensor {
         let bt_dims = bt_dims.dims();
         let cl_dims = context_lens.shape();
         let cl_dims = cl_dims.dims();
-        assert_eq!(q_dims.len(), 4, "paged_attn: q must be rank 4 [B, Hq, Sq, D], got {q_dims:?}");
-        assert_eq!(kc_dims.len(), 4, "paged_attn: k_cache must be rank 4 [num_blocks, block_size, Hkv, D], got {kc_dims:?}");
-        assert_eq!(vc_dims.len(), 4, "paged_attn: v_cache must be rank 4 [num_blocks, block_size, Hkv, D], got {vc_dims:?}");
-        assert_eq!(bt_dims.len(), 2, "paged_attn: block_table must be rank 2 [B, max_blocks], got {bt_dims:?}");
-        assert_eq!(cl_dims.len(), 1, "paged_attn: context_lens must be rank 1 [B], got {cl_dims:?}");
+        assert_eq!(
+            q_dims.len(),
+            4,
+            "paged_attn: q must be rank 4 [B, Hq, Sq, D], got {q_dims:?}"
+        );
+        assert_eq!(
+            kc_dims.len(),
+            4,
+            "paged_attn: k_cache must be rank 4 [num_blocks, block_size, Hkv, D], got {kc_dims:?}"
+        );
+        assert_eq!(
+            vc_dims.len(),
+            4,
+            "paged_attn: v_cache must be rank 4 [num_blocks, block_size, Hkv, D], got {vc_dims:?}"
+        );
+        assert_eq!(
+            bt_dims.len(),
+            2,
+            "paged_attn: block_table must be rank 2 [B, max_blocks], got {bt_dims:?}"
+        );
+        assert_eq!(
+            cl_dims.len(),
+            1,
+            "paged_attn: context_lens must be rank 1 [B], got {cl_dims:?}"
+        );
         let (b, hq, _sq, d) = (q_dims[0], q_dims[1], q_dims[2], q_dims[3]);
-        assert_eq!(kc_dims[1], block_size, "paged_attn: k_cache block dim {} != block_size {block_size}", kc_dims[1]);
-        assert_eq!(vc_dims[1], block_size, "paged_attn: v_cache block dim {} != block_size {block_size}", vc_dims[1]);
+        assert_eq!(
+            kc_dims[1], block_size,
+            "paged_attn: k_cache block dim {} != block_size {block_size}",
+            kc_dims[1]
+        );
+        assert_eq!(
+            vc_dims[1], block_size,
+            "paged_attn: v_cache block dim {} != block_size {block_size}",
+            vc_dims[1]
+        );
         let hkv = kc_dims[2];
-        assert_eq!(vc_dims[2], hkv, "paged_attn: Hkv mismatch k_cache vs v_cache");
+        assert_eq!(
+            vc_dims[2], hkv,
+            "paged_attn: Hkv mismatch k_cache vs v_cache"
+        );
         assert_eq!(kc_dims[3], d, "paged_attn: D mismatch q vs k_cache");
         assert_eq!(vc_dims[3], d, "paged_attn: D mismatch q vs v_cache");
-        assert_eq!(hq % hkv, 0, "paged_attn: Hq={hq} must be a multiple of Hkv={hkv}");
-        assert_eq!(bt_dims[0], b, "paged_attn: block_table batch dim {} != B={b}", bt_dims[0]);
-        assert_eq!(cl_dims[0], b, "paged_attn: context_lens len {} != B={b}", cl_dims[0]);
-        assert_eq!(block_table.dtype(), crate::DType::U32, "paged_attn: block_table must be U32");
-        assert_eq!(context_lens.dtype(), crate::DType::U32, "paged_attn: context_lens must be U32");
+        assert_eq!(
+            hq % hkv,
+            0,
+            "paged_attn: Hq={hq} must be a multiple of Hkv={hkv}"
+        );
+        assert_eq!(
+            bt_dims[0], b,
+            "paged_attn: block_table batch dim {} != B={b}",
+            bt_dims[0]
+        );
+        assert_eq!(
+            cl_dims[0], b,
+            "paged_attn: context_lens len {} != B={b}",
+            cl_dims[0]
+        );
+        assert_eq!(
+            block_table.dtype(),
+            crate::DType::U32,
+            "paged_attn: block_table must be U32"
+        );
+        assert_eq!(
+            context_lens.dtype(),
+            crate::DType::U32,
+            "paged_attn: context_lens must be U32"
+        );
         if let Some(a) = alibi_slopes {
             let ad = a.shape();
             let ad = ad.dims();
-            assert_eq!(ad, &[hq], "paged_attn: alibi_slopes must be [Hq={hq}], got {ad:?}");
+            assert_eq!(
+                ad,
+                &[hq],
+                "paged_attn: alibi_slopes must be [Hq={hq}], got {ad:?}"
+            );
         }
 
         let dtype = self.dtype();
-        let mut inputs = vec![self.id, k_cache.id, v_cache.id, block_table.id, context_lens.id];
-        if let Some(a) = alibi_slopes { inputs.push(a.id); }
+        let mut inputs = vec![
+            self.id,
+            k_cache.id,
+            v_cache.id,
+            block_table.id,
+            context_lens.id,
+        ];
+        if let Some(a) = alibi_slopes {
+            inputs.push(a.id);
+        }
         // Phase 7.6 step 4 (final): emits Op::Fused(PAGED_ATTN, _).
         let id = self.graph.write().unwrap().push(Node {
             op: Op::Fused(
                 crate::registry::FusedOps::PAGED_ATTN,
-                crate::registry::FusedOpParams::PagedAttn { softmax_scale, block_size, softcap },
+                crate::registry::FusedOpParams::PagedAttn {
+                    softmax_scale,
+                    block_size,
+                    softcap,
+                },
             ),
             inputs,
             shape: Shape::from_dims(q_dims),
@@ -4605,17 +4759,22 @@ impl Tensor {
             Arc::ptr_eq(&self.graph, &weight.graph),
             "conv_transpose2d: x and weight must live on the same graph; use `const_*_like` to build on an existing graph",
         );
-        assert!(groups >= 1, "conv_transpose2d: groups must be ≥ 1, got {groups}");
+        assert!(
+            groups >= 1,
+            "conv_transpose2d: groups must be ≥ 1, got {groups}"
+        );
         let x_dims = self.shape();
         let x_dims = x_dims.dims();
         let w_dims = weight.shape();
         let w_dims = w_dims.dims();
         assert_eq!(
-            x_dims.len(), 4,
+            x_dims.len(),
+            4,
             "conv_transpose2d: x must be rank 4 [N, Cin, H, W], got {x_dims:?}",
         );
         assert_eq!(
-            w_dims.len(), 4,
+            w_dims.len(),
+            4,
             "conv_transpose2d: weight must be rank 4 [Cin, Cout/groups, Kh, Kw], got {w_dims:?}",
         );
         let (n, cin, h_in, w_in) = (x_dims[0], x_dims[1], x_dims[2], x_dims[3]);
@@ -4625,7 +4784,8 @@ impl Tensor {
             "conv_transpose2d: x has {cin} in-channels but weight has {cin_w}",
         );
         assert_eq!(
-            cin % groups, 0,
+            cin % groups,
+            0,
             "conv_transpose2d: Cin={cin} must be divisible by groups={groups}",
         );
         let cout = cout_per_g * groups;
@@ -4633,13 +4793,17 @@ impl Tensor {
         let (pad_h, pad_w) = padding;
         let (out_pad_h, out_pad_w) = output_padding;
         let (dil_h, dil_w) = dilation;
-        assert!(stride_h >= 1 && stride_w >= 1, "conv_transpose2d: stride must be ≥ 1");
-        assert!(dil_h >= 1 && dil_w >= 1, "conv_transpose2d: dilation must be ≥ 1");
+        assert!(
+            stride_h >= 1 && stride_w >= 1,
+            "conv_transpose2d: stride must be ≥ 1"
+        );
+        assert!(
+            dil_h >= 1 && dil_w >= 1,
+            "conv_transpose2d: dilation must be ≥ 1"
+        );
         // Hout = (Hin − 1)·stride − 2·pad + dil·(K − 1) + out_pad + 1
-        let h_out = (h_in.saturating_sub(1)) * stride_h
-            + dil_h * (kh - 1) + out_pad_h + 1;
-        let w_out = (w_in.saturating_sub(1)) * stride_w
-            + dil_w * (kw - 1) + out_pad_w + 1;
+        let h_out = (h_in.saturating_sub(1)) * stride_h + dil_h * (kh - 1) + out_pad_h + 1;
+        let w_out = (w_in.saturating_sub(1)) * stride_w + dil_w * (kw - 1) + out_pad_w + 1;
         assert!(
             h_out > 2 * pad_h && w_out > 2 * pad_w,
             "conv_transpose2d: padding ({pad_h}×{pad_w}) is larger than the produced output dims",
@@ -4652,7 +4816,11 @@ impl Tensor {
             op: Op::Fused(
                 crate::registry::FusedOps::CONV_TRANSPOSE2D,
                 crate::registry::FusedOpParams::ConvTranspose2D {
-                    stride, padding, output_padding, dilation, groups,
+                    stride,
+                    padding,
+                    output_padding,
+                    dilation,
+                    groups,
                 },
             ),
             inputs: vec![self.id, weight.id],
@@ -4691,11 +4859,13 @@ impl Tensor {
         let w_dims = weight.shape();
         let w_dims = w_dims.dims();
         assert_eq!(
-            x_dims.len(), 3,
+            x_dims.len(),
+            3,
             "conv_transpose1d: x must be rank 3 [N, Cin, Lin], got {x_dims:?}",
         );
         assert_eq!(
-            w_dims.len(), 3,
+            w_dims.len(),
+            3,
             "conv_transpose1d: weight must be rank 3 [Cin, Cout/groups, K], got {w_dims:?}",
         );
         let (n, cin, l_in) = (x_dims[0], x_dims[1], x_dims[2]);
@@ -4731,10 +4901,19 @@ impl Tensor {
         window_size_right: Option<usize>,
         softcap: Option<f32>,
     ) -> Tensor {
-        assert!(Arc::ptr_eq(&self.graph, &k.graph), "flash_attn: q + k must live on the same graph; use `const_*_like` to build on an existing graph");
-        assert!(Arc::ptr_eq(&self.graph, &v.graph), "flash_attn: q + v must live on the same graph; use `const_*_like` to build on an existing graph");
+        assert!(
+            Arc::ptr_eq(&self.graph, &k.graph),
+            "flash_attn: q + k must live on the same graph; use `const_*_like` to build on an existing graph"
+        );
+        assert!(
+            Arc::ptr_eq(&self.graph, &v.graph),
+            "flash_attn: q + v must live on the same graph; use `const_*_like` to build on an existing graph"
+        );
         if let Some(a) = alibi_slopes {
-            assert!(Arc::ptr_eq(&self.graph, &a.graph), "flash_attn: alibi_slopes must live on the same graph; use `const_*_like` to build on an existing graph");
+            assert!(
+                Arc::ptr_eq(&self.graph, &a.graph),
+                "flash_attn: alibi_slopes must live on the same graph; use `const_*_like` to build on an existing graph"
+            );
         }
         let q_dims = self.shape();
         let q_dims = q_dims.dims();
@@ -4742,9 +4921,21 @@ impl Tensor {
         let k_dims = k_dims.dims();
         let v_dims = v.shape();
         let v_dims = v_dims.dims();
-        assert_eq!(q_dims.len(), 4, "flash_attn: q must be rank 4 [B, Hq, Sq, D], got {q_dims:?}");
-        assert_eq!(k_dims.len(), 4, "flash_attn: k must be rank 4 [B, Hkv, Sk, D], got {k_dims:?}");
-        assert_eq!(v_dims.len(), 4, "flash_attn: v must be rank 4 [B, Hkv, Sk, D], got {v_dims:?}");
+        assert_eq!(
+            q_dims.len(),
+            4,
+            "flash_attn: q must be rank 4 [B, Hq, Sq, D], got {q_dims:?}"
+        );
+        assert_eq!(
+            k_dims.len(),
+            4,
+            "flash_attn: k must be rank 4 [B, Hkv, Sk, D], got {k_dims:?}"
+        );
+        assert_eq!(
+            v_dims.len(),
+            4,
+            "flash_attn: v must be rank 4 [B, Hkv, Sk, D], got {v_dims:?}"
+        );
         let (b, hq, sq, d) = (q_dims[0], q_dims[1], q_dims[2], q_dims[3]);
         let (bk, hkv, sk, dk) = (k_dims[0], k_dims[1], k_dims[2], k_dims[3]);
         let (bv, hkv_v, sk_v, dv) = (v_dims[0], v_dims[1], v_dims[2], v_dims[3]);
@@ -4754,11 +4945,19 @@ impl Tensor {
         assert_eq!(sk, sk_v, "flash_attn: Sk mismatch k vs v");
         assert_eq!(d, dk, "flash_attn: head_dim mismatch q vs k");
         assert_eq!(d, dv, "flash_attn: head_dim mismatch q vs v");
-        assert_eq!(hq % hkv, 0, "flash_attn: Hq={hq} must be a multiple of Hkv={hkv}");
+        assert_eq!(
+            hq % hkv,
+            0,
+            "flash_attn: Hq={hq} must be a multiple of Hkv={hkv}"
+        );
         if let Some(a) = alibi_slopes {
             let ad = a.shape();
             let ad = ad.dims();
-            assert_eq!(ad, &[hq], "flash_attn: alibi_slopes must be [Hq={hq}], got {ad:?}");
+            assert_eq!(
+                ad,
+                &[hq],
+                "flash_attn: alibi_slopes must be [Hq={hq}], got {ad:?}"
+            );
         }
         let dtype = self.dtype();
         let mut inputs = vec![self.id, k.id, v.id];
@@ -4770,7 +4969,11 @@ impl Tensor {
             op: Op::Fused(
                 crate::registry::FusedOps::FLASH_ATTN,
                 crate::registry::FusedOpParams::FlashAttn {
-                    softmax_scale, causal, window_size_left, window_size_right, softcap,
+                    softmax_scale,
+                    causal,
+                    window_size_left,
+                    window_size_right,
+                    softcap,
                     k_len: None,
                 },
             ),
@@ -4814,10 +5017,19 @@ impl Tensor {
         softcap: Option<f32>,
         k_len: fuel_ir::DynScalar,
     ) -> Tensor {
-        assert!(Arc::ptr_eq(&self.graph, &k.graph), "flash_attn_dyn: q + k must live on the same graph; use `const_*_like` to build on an existing graph");
-        assert!(Arc::ptr_eq(&self.graph, &v.graph), "flash_attn_dyn: q + v must live on the same graph; use `const_*_like` to build on an existing graph");
+        assert!(
+            Arc::ptr_eq(&self.graph, &k.graph),
+            "flash_attn_dyn: q + k must live on the same graph; use `const_*_like` to build on an existing graph"
+        );
+        assert!(
+            Arc::ptr_eq(&self.graph, &v.graph),
+            "flash_attn_dyn: q + v must live on the same graph; use `const_*_like` to build on an existing graph"
+        );
         if let Some(a) = alibi_slopes {
-            assert!(Arc::ptr_eq(&self.graph, &a.graph), "flash_attn_dyn: alibi_slopes must live on the same graph; use `const_*_like` to build on an existing graph");
+            assert!(
+                Arc::ptr_eq(&self.graph, &a.graph),
+                "flash_attn_dyn: alibi_slopes must live on the same graph; use `const_*_like` to build on an existing graph"
+            );
         }
         let q_dims = self.shape();
         let q_dims = q_dims.dims();
@@ -4825,28 +5037,57 @@ impl Tensor {
         let k_dims = k_dims.dims();
         let v_dims = v.shape();
         let v_dims = v_dims.dims();
-        assert_eq!(q_dims.len(), 4, "flash_attn_dyn: q must be rank 4 [B, Hq, Sq, D], got {q_dims:?}");
-        assert_eq!(k_dims.len(), 4, "flash_attn_dyn: k must be rank 4 [B, Hkv, max_seq, D], got {k_dims:?}");
-        assert_eq!(v_dims.len(), 4, "flash_attn_dyn: v must be rank 4 [B, Hkv, max_seq, D], got {v_dims:?}");
+        assert_eq!(
+            q_dims.len(),
+            4,
+            "flash_attn_dyn: q must be rank 4 [B, Hq, Sq, D], got {q_dims:?}"
+        );
+        assert_eq!(
+            k_dims.len(),
+            4,
+            "flash_attn_dyn: k must be rank 4 [B, Hkv, max_seq, D], got {k_dims:?}"
+        );
+        assert_eq!(
+            v_dims.len(),
+            4,
+            "flash_attn_dyn: v must be rank 4 [B, Hkv, max_seq, D], got {v_dims:?}"
+        );
         let (b, hq, sq, d) = (q_dims[0], q_dims[1], q_dims[2], q_dims[3]);
         let (bk, hkv, sk, dk) = (k_dims[0], k_dims[1], k_dims[2], k_dims[3]);
         let (bv, hkv_v, sk_v, dv) = (v_dims[0], v_dims[1], v_dims[2], v_dims[3]);
         assert_eq!(b, bk, "flash_attn_dyn: B mismatch q vs k ({b} vs {bk})");
         assert_eq!(b, bv, "flash_attn_dyn: B mismatch q vs v");
         assert_eq!(hkv, hkv_v, "flash_attn_dyn: Hkv mismatch k vs v");
-        assert_eq!(sk, sk_v, "flash_attn_dyn: capacity (max_seq) mismatch k vs v ({sk} vs {sk_v})");
+        assert_eq!(
+            sk, sk_v,
+            "flash_attn_dyn: capacity (max_seq) mismatch k vs v ({sk} vs {sk_v})"
+        );
         assert_eq!(d, dk, "flash_attn_dyn: head_dim mismatch q vs k");
         assert_eq!(d, dv, "flash_attn_dyn: head_dim mismatch q vs v");
-        assert_eq!(hq % hkv, 0, "flash_attn_dyn: Hq={hq} must be a multiple of Hkv={hkv}");
+        assert_eq!(
+            hq % hkv,
+            0,
+            "flash_attn_dyn: Hq={hq} must be a multiple of Hkv={hkv}"
+        );
         // A build-time constant k_len must fit the capacity and cover Sq.
         if let fuel_ir::DynScalar::Concrete(kl) = k_len {
-            assert!(kl <= sk, "flash_attn_dyn: k_len ({kl}) exceeds K capacity ({sk})");
-            assert!(kl >= sq, "flash_attn_dyn: k_len ({kl}) must be >= Sq ({sq}) for a valid causal prefix");
+            assert!(
+                kl <= sk,
+                "flash_attn_dyn: k_len ({kl}) exceeds K capacity ({sk})"
+            );
+            assert!(
+                kl >= sq,
+                "flash_attn_dyn: k_len ({kl}) must be >= Sq ({sq}) for a valid causal prefix"
+            );
         }
         if let Some(a) = alibi_slopes {
             let ad = a.shape();
             let ad = ad.dims();
-            assert_eq!(ad, &[hq], "flash_attn_dyn: alibi_slopes must be [Hq={hq}], got {ad:?}");
+            assert_eq!(
+                ad,
+                &[hq],
+                "flash_attn_dyn: alibi_slopes must be [Hq={hq}], got {ad:?}"
+            );
         }
         let dtype = self.dtype();
         let mut inputs = vec![self.id, k.id, v.id];
@@ -4857,7 +5098,11 @@ impl Tensor {
             op: Op::Fused(
                 crate::registry::FusedOps::FLASH_ATTN,
                 crate::registry::FusedOpParams::FlashAttn {
-                    softmax_scale, causal, window_size_left, window_size_right, softcap,
+                    softmax_scale,
+                    causal,
+                    window_size_left,
+                    window_size_right,
+                    softcap,
                     k_len: Some(k_len),
                 },
             ),
@@ -4904,7 +5149,10 @@ impl Tensor {
         // Validate that axes is a permutation of 0..rank.
         let mut seen = vec![false; rank];
         for &ax in axes {
-            assert!(ax < rank, "permute: axis {ax} out of bounds for rank {rank}");
+            assert!(
+                ax < rank,
+                "permute: axis {ax} out of bounds for rank {rank}"
+            );
             assert!(!seen[ax], "permute: duplicate axis {ax} in axes");
             seen[ax] = true;
         }
@@ -4931,20 +5179,23 @@ impl Tensor {
         if axes.len() != rank {
             return Err(fuel_ir::Error::Msg(format!(
                 "permute: axes length {} must equal tensor rank {}",
-                axes.len(), rank,
-            )).bt());
+                axes.len(),
+                rank,
+            ))
+            .bt());
         }
         let mut seen = vec![false; rank];
         for &ax in axes {
             if ax >= rank {
                 return Err(fuel_ir::Error::Msg(format!(
                     "permute: axis {ax} out of bounds for rank {rank}",
-                )).bt());
+                ))
+                .bt());
             }
             if seen[ax] {
-                return Err(fuel_ir::Error::Msg(format!(
-                    "permute: duplicate axis {ax} in axes",
-                )).bt());
+                return Err(
+                    fuel_ir::Error::Msg(format!("permute: duplicate axis {ax} in axes",)).bt(),
+                );
             }
             seen[ax] = true;
         }
@@ -4956,7 +5207,10 @@ impl Tensor {
             shape,
             dtype,
         });
-        Ok(Self { graph: self.graph.clone(), id })
+        Ok(Self {
+            graph: self.graph.clone(),
+            id,
+        })
     }
 
     /// Append a `Transpose` node that swaps the last two dimensions of a
@@ -4993,7 +5247,8 @@ impl Tensor {
             return Err(fuel_ir::Error::Msg(format!(
                 "transpose: input must be rank ≥ 2, got shape {:?}",
                 in_shape.dims(),
-            )).bt());
+            ))
+            .bt());
         }
         let op = Op::Transpose;
         let (shape, dtype) = crate::shape::primitive_shape(&op, &[in_shape], &[self.dtype()])?;
@@ -5003,7 +5258,10 @@ impl Tensor {
             shape,
             dtype,
         });
-        Ok(Self { graph: self.graph.clone(), id })
+        Ok(Self {
+            graph: self.graph.clone(),
+            id,
+        })
     }
 
     // --- additional element-wise binary ops ---
@@ -5347,7 +5605,8 @@ impl Tensor {
         if dim >= rank {
             return Err(fuel_ir::Error::Msg(format!(
                 "flip: dim {dim} out of bounds for rank {rank}",
-            )).bt());
+            ))
+            .bt());
         }
         let op = Op::Flip { dim };
         let (shape, dtype) = crate::shape::primitive_shape(&op, &[in_shape], &[self.dtype()])?;
@@ -5375,7 +5634,8 @@ impl Tensor {
         if dim >= rank {
             return Err(fuel_ir::Error::Msg(format!(
                 "roll: dim {dim} out of bounds for rank {rank}",
-            )).bt());
+            ))
+            .bt());
         }
         let op = Op::Roll { dim, shift };
         let (shape, dtype) = crate::shape::primitive_shape(&op, &[in_shape], &[self.dtype()])?;
@@ -5402,13 +5662,14 @@ impl Tensor {
         if dim >= rank {
             return Err(fuel_ir::Error::Msg(format!(
                 "cumsum: dim {dim} out of bounds for rank {rank}",
-            )).bt());
+            ))
+            .bt());
         }
         let dtype = self.dtype();
         let id = self.graph.write().unwrap().push(Node {
-            op:     Op::CumSum { dim },
+            op: Op::CumSum { dim },
             inputs: vec![self.id],
-            shape:  in_shape,
+            shape: in_shape,
             dtype,
         });
         Ok(Self {
@@ -5429,13 +5690,14 @@ impl Tensor {
         if rank < 2 {
             return Err(fuel_ir::Error::Msg(format!(
                 "triu: input must have rank >= 2, got {rank}",
-            )).bt());
+            ))
+            .bt());
         }
         let dtype = self.dtype();
         let id = self.graph.write().unwrap().push(Node {
-            op:     Op::Triu { diagonal },
+            op: Op::Triu { diagonal },
             inputs: vec![self.id],
-            shape:  in_shape,
+            shape: in_shape,
             dtype,
         });
         Ok(Self {
@@ -5466,12 +5728,15 @@ impl Tensor {
         emit: ScanEmit,
     ) -> std::result::Result<Tensor, fuel_ir::Error> {
         let same_graph = |t: &Tensor| Arc::ptr_eq(&self.graph, &t.graph);
-        if !same_graph(body_new_carry) || !same_graph(body_y)
-            || !xs.iter().all(same_graph) || !consts.iter().all(same_graph)
+        if !same_graph(body_new_carry)
+            || !same_graph(body_y)
+            || !xs.iter().all(same_graph)
+            || !consts.iter().all(same_graph)
         {
             return Err(fuel_ir::Error::Msg(
                 "scan: init_carry, xs, consts, and body exits must live on one graph".into(),
-            ).bt());
+            )
+            .bt());
         }
         if bound == 0 {
             return Err(fuel_ir::Error::Msg("scan: bound must be >= 1".into()).bt());
@@ -5480,15 +5745,21 @@ impl Tensor {
         if body_new_carry.shape().dims() != carry_shape.dims() {
             return Err(fuel_ir::Error::Msg(format!(
                 "scan: body_new_carry shape {:?} must equal init_carry shape {:?}",
-                body_new_carry.shape().dims(), carry_shape.dims(),
-            )).bt());
+                body_new_carry.shape().dims(),
+                carry_shape.dims(),
+            ))
+            .bt());
         }
         // Validate body placeholders at graph-build time (single-carry; every
         // Elem index < n_xs) so a malformed body is a typed Err here, not a
         // later `elem[index]` panic on the unroll / forward-driver path.
         {
             let g = self.graph.read().unwrap();
-            crate::scan::validate_scan_body_placeholders(&g, &[body_new_carry.id, body_y.id], xs.len())?;
+            crate::scan::validate_scan_body_placeholders(
+                &g,
+                &[body_new_carry.id, body_y.id],
+                xs.len(),
+            )?;
         }
         let carry_dtype = self.dtype();
         let y_dtype = body_y.dtype();
@@ -5517,16 +5788,26 @@ impl Tensor {
             // Node.shape/dtype are the PRIMARY (slot-0) shape/dtype per the
             // multi-output authoring contract.
             let id = g.push(Node {
-                op: Op::Scan { n_xs: xs.len(), bound, emit, early_exit: None },
+                op: Op::Scan {
+                    n_xs: xs.len(),
+                    bound,
+                    emit,
+                    early_exit: None,
+                },
                 inputs,
                 shape: ys_shape,
                 dtype: y_dtype,
             });
             g.set_output_views(id, Arc::from(views.into_boxed_slice()))
-                .map_err(|e| fuel_ir::Error::Msg(format!("scan: set_output_views failed: {e}")).bt())?;
+                .map_err(|e| {
+                    fuel_ir::Error::Msg(format!("scan: set_output_views failed: {e}")).bt()
+                })?;
             id
         };
-        let producer = Self { graph: self.graph.clone(), id };
+        let producer = Self {
+            graph: self.graph.clone(),
+            id,
+        };
         match emit {
             ScanEmit::All => producer.view(0),
             ScanEmit::Final => producer.view(1),
@@ -5562,8 +5843,11 @@ impl Tensor {
         emit: ScanEmit,
     ) -> std::result::Result<Tensor, fuel_ir::Error> {
         let same_graph = |t: &Tensor| Arc::ptr_eq(&self.graph, &t.graph);
-        if !same_graph(body_new_carry) || !same_graph(body_y) || !same_graph(pred_exit)
-            || !xs.iter().all(same_graph) || !consts.iter().all(same_graph)
+        if !same_graph(body_new_carry)
+            || !same_graph(body_y)
+            || !same_graph(pred_exit)
+            || !xs.iter().all(same_graph)
+            || !consts.iter().all(same_graph)
         {
             return Err(fuel_ir::Error::Msg(
                 "scan_until: init_carry, xs, consts, body exits, and pred_exit must live on one graph".into(),
@@ -5576,15 +5860,21 @@ impl Tensor {
         if body_new_carry.shape().dims() != carry_shape.dims() {
             return Err(fuel_ir::Error::Msg(format!(
                 "scan_until: body_new_carry shape {:?} must equal init_carry shape {:?}",
-                body_new_carry.shape().dims(), carry_shape.dims(),
-            )).bt());
+                body_new_carry.shape().dims(),
+                carry_shape.dims(),
+            ))
+            .bt());
         }
         // Validate body placeholders at graph-build time (single-carry; every
         // Elem index < n_xs) so a malformed body is a typed Err here, not a
         // later `elem[index]` panic in the forward driver's build_scan_step.
         {
             let g = self.graph.read().unwrap();
-            crate::scan::validate_scan_body_placeholders(&g, &[body_new_carry.id, body_y.id], xs.len())?;
+            crate::scan::validate_scan_body_placeholders(
+                &g,
+                &[body_new_carry.id, body_y.id],
+                xs.len(),
+            )?;
         }
         // Predicate must be a scalar Bool (shape [] or product == 1) — a
         // convergence flag, not a per-element mask. Validate at build time.
@@ -5593,8 +5883,10 @@ impl Tensor {
         // the ordinary `carry.ge(&thr)` path unusable as a predicate.
         if pred_exit.dtype() != fuel_ir::DType::Bool {
             return Err(fuel_ir::Error::Msg(format!(
-                "scan_until: pred_exit must be Bool (a boolean flag), got {:?}", pred_exit.dtype(),
-            )).bt());
+                "scan_until: pred_exit must be Bool (a boolean flag), got {:?}",
+                pred_exit.dtype(),
+            ))
+            .bt());
         }
         let pred_dims = pred_exit.shape();
         let pred_numel: usize = pred_dims.dims().iter().product();
@@ -5602,7 +5894,8 @@ impl Tensor {
             return Err(fuel_ir::Error::Msg(format!(
                 "scan_until: pred_exit must be a scalar (shape [] or [1]/all-ones), got {:?}",
                 pred_dims.dims(),
-            )).bt());
+            ))
+            .bt());
         }
         // Every ScanPlaceholder reachable from pred_exit must be Carry{0} — the
         // predicate is over the carry, never a per-step Elem slice.
@@ -5632,8 +5925,9 @@ impl Tensor {
             fuel_ir::storage::OutputViewSpec::contiguous(y_dtype, ys_shape.clone()),
             fuel_ir::storage::OutputViewSpec::contiguous(carry_dtype, carry_shape.clone()),
         ];
-        let (_bytes, views) = fuel_ir::storage::compose_bundle(&specs)
-            .map_err(|e| fuel_ir::Error::Msg(format!("scan_until: compose_bundle failed: {e}")).bt())?;
+        let (_bytes, views) = fuel_ir::storage::compose_bundle(&specs).map_err(|e| {
+            fuel_ir::Error::Msg(format!("scan_until: compose_bundle failed: {e}")).bt()
+        })?;
 
         let mut inputs: Vec<NodeId> = Vec::with_capacity(3 + xs.len() + consts.len());
         inputs.push(self.id);
@@ -5641,21 +5935,31 @@ impl Tensor {
         inputs.extend(consts.iter().map(|t| t.id));
         inputs.push(body_new_carry.id);
         inputs.push(body_y.id);
-        inputs.push(pred_exit.id);            // <-- the C1 trailing predicate
+        inputs.push(pred_exit.id); // <-- the C1 trailing predicate
 
         let id = {
             let mut g = self.graph.write().unwrap();
             let id = g.push(Node {
-                op: Op::Scan { n_xs: xs.len(), bound, emit, early_exit: Some(ScanPredicate) },
+                op: Op::Scan {
+                    n_xs: xs.len(),
+                    bound,
+                    emit,
+                    early_exit: Some(ScanPredicate),
+                },
                 inputs,
                 shape: ys_shape,
                 dtype: y_dtype,
             });
             g.set_output_views(id, Arc::from(views.into_boxed_slice()))
-                .map_err(|e| fuel_ir::Error::Msg(format!("scan_until: set_output_views failed: {e}")).bt())?;
+                .map_err(|e| {
+                    fuel_ir::Error::Msg(format!("scan_until: set_output_views failed: {e}")).bt()
+                })?;
             id
         };
-        let producer = Self { graph: self.graph.clone(), id };
+        let producer = Self {
+            graph: self.graph.clone(),
+            id,
+        };
         match emit {
             ScanEmit::All => producer.view(0),
             ScanEmit::Final => producer.view(1),
@@ -5673,13 +5977,14 @@ impl Tensor {
         if rank < 2 {
             return Err(fuel_ir::Error::Msg(format!(
                 "tril: input must have rank >= 2, got {rank}",
-            )).bt());
+            ))
+            .bt());
         }
         let dtype = self.dtype();
         let id = self.graph.write().unwrap().push(Node {
-            op:     Op::Tril { diagonal },
+            op: Op::Tril { diagonal },
             inputs: vec![self.id],
-            shape:  in_shape,
+            shape: in_shape,
             dtype,
         });
         Ok(Self {
@@ -5698,13 +6003,14 @@ impl Tensor {
         if in_shape.dims().is_empty() {
             return Err(fuel_ir::Error::Msg(
                 "log_softmax_last_dim: input must have rank >= 1".to_string(),
-            ).bt());
+            )
+            .bt());
         }
         let dtype = self.dtype();
         let id = self.graph.write().unwrap().push(Node {
-            op:     Op::LogSoftmaxLastDim,
+            op: Op::LogSoftmaxLastDim,
             inputs: vec![self.id],
-            shape:  in_shape,
+            shape: in_shape,
             dtype,
         });
         Ok(Self {
@@ -5729,15 +6035,18 @@ impl Tensor {
         if self.shape().dims() != mask.shape().dims() {
             return Err(fuel_ir::Error::Msg(format!(
                 "masked_fill: x.shape={:?} != mask.shape={:?}",
-                self.shape().dims(), mask.shape().dims(),
-            )).bt());
+                self.shape().dims(),
+                mask.shape().dims(),
+            ))
+            .bt());
         }
         if mask.dtype() != DType::Bool {
             return Err(fuel_ir::Error::Msg(format!(
                 "masked_fill: mask dtype must be Bool, got {:?} — cast a numeric \
                  mask to Bool explicitly (GAP-168(c))",
                 mask.dtype(),
-            )).bt());
+            ))
+            .bt());
         }
         // GAP-002 (D5) / GAP-075 (fix B): classify EVERY dtype explicitly — no
         // wildcard default. The guard is SEMANTIC: masked_fill needs a
@@ -5813,8 +6122,10 @@ impl Tensor {
         if value.dtype() != self.dtype() {
             return Err(fuel_ir::Error::Msg(format!(
                 "masked_fill: value dtype {:?} != x dtype {:?}",
-                value.dtype(), self.dtype(),
-            )).bt());
+                value.dtype(),
+                self.dtype(),
+            ))
+            .bt());
         }
         let op = Op::MaskedFill { value };
         let (shape, dtype) = crate::shape::primitive_shape(
@@ -5859,9 +6170,14 @@ impl Tensor {
             return Err(fuel_ir::Error::Msg(format!(
                 "pad: padding.len() ({}) must equal tensor rank ({rank})",
                 padding.len(),
-            )).bt());
+            ))
+            .bt());
         }
-        let op = Op::Pad { padding, mode, value };
+        let op = Op::Pad {
+            padding,
+            mode,
+            value,
+        };
         let (shape, dtype) = crate::shape::primitive_shape(&op, &[in_shape], &[self.dtype()])?;
         let id = self.graph.write().unwrap().push(Node {
             op,
@@ -5943,19 +6259,25 @@ impl Tensor {
             self.dtype(),
         );
         assert_eq!(
-            a.dtype(), b.dtype(),
+            a.dtype(),
+            b.dtype(),
             "where_cond: a/b dtype mismatch: a={:?}, b={:?}",
-            a.dtype(), b.dtype(),
+            a.dtype(),
+            b.dtype(),
         );
         assert_eq!(
-            self.shape().dims(), a.shape().dims(),
+            self.shape().dims(),
+            a.shape().dims(),
             "where_cond: cond/a shape mismatch: cond={:?}, a={:?}",
-            self.shape().dims(), a.shape().dims(),
+            self.shape().dims(),
+            a.shape().dims(),
         );
         assert_eq!(
-            self.shape().dims(), b.shape().dims(),
+            self.shape().dims(),
+            b.shape().dims(),
             "where_cond: cond/b shape mismatch: cond={:?}, b={:?}",
-            self.shape().dims(), b.shape().dims(),
+            self.shape().dims(),
+            b.shape().dims(),
         );
         let (shape, dtype) = crate::shape::primitive_shape(
             &Op::Where,
@@ -6026,7 +6348,10 @@ impl Tensor {
 
     /// Result-returning sibling of [`Self::broadcast_to`]. Surfaces
     /// shape incompatibility as a typed error rather than panicking.
-    pub fn try_broadcast_to(&self, target: impl Into<Shape>) -> std::result::Result<Tensor, fuel_ir::Error> {
+    pub fn try_broadcast_to(
+        &self,
+        target: impl Into<Shape>,
+    ) -> std::result::Result<Tensor, fuel_ir::Error> {
         let target = target.into();
         let src_dims = self.shape();
         try_check_broadcast_compatible(src_dims.dims(), target.dims())?;
@@ -6038,7 +6363,10 @@ impl Tensor {
             shape,
             dtype,
         });
-        Ok(Self { graph: self.graph.clone(), id })
+        Ok(Self {
+            graph: self.graph.clone(),
+            id,
+        })
     }
 
     /// Append an `Unsqueeze` node that inserts a size-1 dimension at
@@ -6078,7 +6406,8 @@ impl Tensor {
         if dim > rank {
             return Err(fuel_ir::Error::Msg(format!(
                 "unsqueeze: dim {dim} out of bounds for rank {rank} (must be <= rank)",
-            )).bt());
+            ))
+            .bt());
         }
         let op = Op::Unsqueeze { dim };
         let (shape, dtype) = crate::shape::primitive_shape(&op, &[in_shape], &[self.dtype()])?;
@@ -6088,7 +6417,10 @@ impl Tensor {
             shape,
             dtype,
         });
-        Ok(Self { graph: self.graph.clone(), id })
+        Ok(Self {
+            graph: self.graph.clone(),
+            id,
+        })
     }
 
     /// Append a `Squeeze` node that drops the size-1 dimension at
@@ -6105,13 +6437,15 @@ impl Tensor {
         if dim >= rank {
             return Err(fuel_ir::Error::Msg(format!(
                 "squeeze: dim {dim} out of bounds for rank {rank} (must be < rank)",
-            )).bt());
+            ))
+            .bt());
         }
         if in_shape.dims()[dim] != 1 {
             return Err(fuel_ir::Error::Msg(format!(
                 "squeeze: dim {dim} has size {}, expected 1",
                 in_shape.dims()[dim],
-            )).bt());
+            ))
+            .bt());
         }
         let op = Op::Squeeze { dim };
         let (shape, dtype) = crate::shape::primitive_shape(&op, &[in_shape], &[self.dtype()])?;
@@ -6181,14 +6515,18 @@ impl Tensor {
 
     /// Result-returning sibling of [`Self::reshape`]. Surfaces
     /// element-count mismatch as a typed error rather than panicking.
-    pub fn try_reshape(&self, target: impl Into<Shape>) -> std::result::Result<Tensor, fuel_ir::Error> {
+    pub fn try_reshape(
+        &self,
+        target: impl Into<Shape>,
+    ) -> std::result::Result<Tensor, fuel_ir::Error> {
         let target = target.into();
         let from = self.shape().elem_count();
         let to = target.elem_count();
         if from != to {
             return Err(fuel_ir::Error::Msg(format!(
                 "reshape: element count mismatch: from {from} to {to}",
-            )).bt());
+            ))
+            .bt());
         }
         let op = Op::Reshape(target);
         let (shape, dtype) = crate::shape::primitive_shape(&op, &[self.shape()], &[self.dtype()])?;
@@ -6198,7 +6536,10 @@ impl Tensor {
             shape,
             dtype,
         });
-        Ok(Self { graph: self.graph.clone(), id })
+        Ok(Self {
+            graph: self.graph.clone(),
+            id,
+        })
     }
 
     /// Append a `ReduceSumTo` node that sum-reduces `self` to a smaller
@@ -6373,15 +6714,9 @@ impl Tensor {
     /// entry. No primitive decomposition exists (fuel-graph has no
     /// `Op::Conv1D`); backends without a native kernel fall through
     /// to the executor's cpu_fallback path.
-    pub fn causal_conv1d(
-        &self,
-        weight: &Tensor,
-        bias: &Tensor,
-        use_silu: bool,
-    ) -> Tensor {
+    pub fn causal_conv1d(&self, weight: &Tensor, bias: &Tensor, use_silu: bool) -> Tensor {
         assert!(
-            Arc::ptr_eq(&self.graph, &weight.graph)
-                && Arc::ptr_eq(&self.graph, &bias.graph),
+            Arc::ptr_eq(&self.graph, &weight.graph) && Arc::ptr_eq(&self.graph, &bias.graph),
             "causal_conv1d: tensors must live on the same graph; use `const_*_like` to build on an existing graph",
         );
         let dtype = self.dtype();
@@ -6390,12 +6725,14 @@ impl Tensor {
             "causal_conv1d: x must be F32/F64/BF16/F16, got {dtype:?}",
         );
         assert_eq!(
-            weight.dtype(), dtype,
+            weight.dtype(),
+            dtype,
             "causal_conv1d: weight dtype {:?} must match x dtype {dtype:?}",
             weight.dtype(),
         );
         assert_eq!(
-            bias.dtype(), dtype,
+            bias.dtype(),
+            dtype,
             "causal_conv1d: bias dtype {:?} must match x dtype {dtype:?}",
             bias.dtype(),
         );
@@ -6406,15 +6743,18 @@ impl Tensor {
         let b_dims = bias.shape();
         let b_dims = b_dims.dims();
         assert_eq!(
-            x_dims.len(), 3,
+            x_dims.len(),
+            3,
             "causal_conv1d: x must be rank 3 [batch, channels, seq+pad], got {x_dims:?}",
         );
         assert_eq!(
-            w_dims.len(), 3,
+            w_dims.len(),
+            3,
             "causal_conv1d: weight must be rank 3 [channels, 1, kernel], got {w_dims:?}",
         );
         assert_eq!(
-            b_dims.len(), 1,
+            b_dims.len(),
+            1,
             "causal_conv1d: bias must be rank 1 [channels], got {b_dims:?}",
         );
         let batch = x_dims[0];
@@ -6423,29 +6763,34 @@ impl Tensor {
         let kernel = w_dims[2];
         assert_eq!(
             w_dims[0], channels,
-            "causal_conv1d: weight's first dim {} must equal channels {channels}", w_dims[0],
+            "causal_conv1d: weight's first dim {} must equal channels {channels}",
+            w_dims[0],
         );
         assert_eq!(
             w_dims[1], 1,
-            "causal_conv1d: weight's middle dim must be 1 (depthwise), got {}", w_dims[1],
+            "causal_conv1d: weight's middle dim must be 1 (depthwise), got {}",
+            w_dims[1],
         );
         assert_eq!(
             b_dims[0], channels,
-            "causal_conv1d: bias length {} must equal channels {channels}", b_dims[0],
+            "causal_conv1d: bias length {} must equal channels {channels}",
+            b_dims[0],
         );
         assert!(
             x_seq >= kernel - 1,
             "causal_conv1d: x time dim {x_seq} must be ≥ kernel - 1 = {} \
-             (caller must pre-pad with {} zeros)", kernel - 1, kernel - 1,
+             (caller must pre-pad with {} zeros)",
+            kernel - 1,
+            kernel - 1,
         );
         let out_seq = x_seq - (kernel - 1);
         let id = self.graph.write().unwrap().push(Node {
-            op:     Op::Fused(
+            op: Op::Fused(
                 crate::registry::FusedOps::CAUSAL_CONV1D,
                 crate::registry::FusedOpParams::CausalConv1d { use_silu },
             ),
             inputs: vec![self.id, weight.id, bias.id],
-            shape:  Shape::from_dims(&[batch, channels, out_seq]),
+            shape: Shape::from_dims(&[batch, channels, out_seq]),
             dtype,
         });
         Self {
@@ -6471,21 +6816,16 @@ impl Tensor {
     /// matmul roundtrip is exactly what NF4's fused dequant-in-kernel
     /// design avoids); backends without a native kernel fall through
     /// to the executor's cpu_fallback path.
-    pub fn nf4_matmul(
-        &self,
-        w_packed: &Tensor,
-        absmax: &Tensor,
-        block_size: usize,
-    ) -> Tensor {
+    pub fn nf4_matmul(&self, w_packed: &Tensor, absmax: &Tensor, block_size: usize) -> Tensor {
         assert!(
-            Arc::ptr_eq(&self.graph, &w_packed.graph)
-                && Arc::ptr_eq(&self.graph, &absmax.graph),
+            Arc::ptr_eq(&self.graph, &w_packed.graph) && Arc::ptr_eq(&self.graph, &absmax.graph),
             "nf4_matmul: tensors must live on the same graph; use `const_*_like` to build on an existing graph",
         );
         let act_dtype = self.dtype();
         assert!(
             matches!(act_dtype, DType::F32 | DType::F16 | DType::BF16),
-            "nf4_matmul v1: activations must be F32/F16/BF16, got {:?}", act_dtype,
+            "nf4_matmul v1: activations must be F32/F16/BF16, got {:?}",
+            act_dtype,
         );
         assert_eq!(
             w_packed.dtype(),
@@ -6496,7 +6836,8 @@ impl Tensor {
         assert_eq!(
             absmax.dtype(),
             DType::F32,
-            "nf4_matmul: absmax must be F32, got {:?}", absmax.dtype(),
+            "nf4_matmul: absmax must be F32, got {:?}",
+            absmax.dtype(),
         );
         let a_dims = self.shape();
         let a_dims = a_dims.dims();
@@ -6509,11 +6850,13 @@ impl Tensor {
             "nf4_matmul: activations must be rank ≥ 2, got {a_dims:?}",
         );
         assert_eq!(
-            w_dims.len(), 2,
+            w_dims.len(),
+            2,
             "nf4_matmul: w_packed must be rank 2 [n, k/2], got {w_dims:?}",
         );
         assert_eq!(
-            abs_dims.len(), 2,
+            abs_dims.len(),
+            2,
             "nf4_matmul: absmax must be rank 2 [n, k/block_size], got {abs_dims:?}",
         );
         let m = a_dims[a_dims.len() - 2];
@@ -6528,24 +6871,28 @@ impl Tensor {
             "nf4_matmul: k={k} must be a positive multiple of block_size={block_size}",
         );
         assert_eq!(
-            w_dims[1], k / 2,
-            "nf4_matmul: w_packed second dim {} must equal k/2 = {}", w_dims[1], k / 2,
+            w_dims[1],
+            k / 2,
+            "nf4_matmul: w_packed second dim {} must equal k/2 = {}",
+            w_dims[1],
+            k / 2,
         );
         assert_eq!(
-            abs_dims, &[n, k / block_size][..],
+            abs_dims,
+            &[n, k / block_size][..],
             "nf4_matmul: absmax {abs_dims:?} must be [n={n}, k/block_size={}]",
             k / block_size,
         );
         let mut out_dims: Vec<usize> = a_dims[..a_dims.len() - 1].to_vec();
         out_dims.push(n);
         let id = self.graph.write().unwrap().push(Node {
-            op:     Op::Fused(
+            op: Op::Fused(
                 crate::registry::FusedOps::NF4_MATMUL,
                 crate::registry::FusedOpParams::Nf4Matmul { block_size },
             ),
             inputs: vec![self.id, w_packed.id, absmax.id],
-            shape:  Shape::from_dims(&out_dims),
-            dtype:  act_dtype,
+            shape: Shape::from_dims(&out_dims),
+            dtype: act_dtype,
         });
         Self {
             graph: self.graph.clone(),
@@ -6598,7 +6945,8 @@ impl Tensor {
         );
         for (name, t) in [("dt", dt), ("a", a), ("b", b), ("c", c)] {
             assert_eq!(
-                t.dtype(), dtype,
+                t.dtype(),
+                dtype,
                 "ssd_chunk_scan: {name} dtype {:?} must match x dtype {dtype:?}",
                 t.dtype(),
             );
@@ -6614,7 +6962,8 @@ impl Tensor {
         let c_dims = c.shape();
         let c_dims = c_dims.dims();
         assert_eq!(
-            x_dims.len(), 4,
+            x_dims.len(),
+            4,
             "ssd_chunk_scan: x must be rank 4 [batch, seqlen, heads, head_dim], got {x_dims:?}",
         );
         let batch = x_dims[0];
@@ -6622,24 +6971,29 @@ impl Tensor {
         let heads = x_dims[2];
         let head_dim = x_dims[3];
         assert_eq!(
-            dt_dims, &[batch, seqlen, heads][..],
+            dt_dims,
+            &[batch, seqlen, heads][..],
             "ssd_chunk_scan: dt {dt_dims:?} must be [batch={batch}, seqlen={seqlen}, heads={heads}]",
         );
         assert_eq!(
-            a_dims, &[heads][..],
+            a_dims,
+            &[heads][..],
             "ssd_chunk_scan: a {a_dims:?} must be [heads={heads}]",
         );
         assert_eq!(
-            b_dims.len(), 4,
+            b_dims.len(),
+            4,
             "ssd_chunk_scan: b must be rank 4 [batch, seqlen, heads, state_dim], got {b_dims:?}",
         );
         let state_dim = b_dims[3];
         assert_eq!(
-            b_dims, &[batch, seqlen, heads, state_dim][..],
+            b_dims,
+            &[batch, seqlen, heads, state_dim][..],
             "ssd_chunk_scan: b {b_dims:?} must be [batch={batch}, seqlen={seqlen}, heads={heads}, state_dim={state_dim}]",
         );
         assert_eq!(
-            c_dims, &[batch, seqlen, heads, state_dim][..],
+            c_dims,
+            &[batch, seqlen, heads, state_dim][..],
             "ssd_chunk_scan: c {c_dims:?} must match b shape",
         );
         let params = crate::registry::FusedOpParams::SsdChunkScan { chunk_size };
@@ -6654,19 +7008,15 @@ impl Tensor {
         let entry = crate::registry::default_registry()
             .entry(crate::registry::FusedOps::SSD_CHUNK_SCAN)
             .expect("SSD_CHUNK_SCAN registered");
-        let specs = (entry.output_views.expect("multi-output"))(
-            &input_shapes, &input_dtypes, &params,
-        );
-        let (_total_bytes, views) = fuel_ir::storage::compose_bundle(&specs)
-            .expect("SsdChunkScan compose_bundle");
+        let specs =
+            (entry.output_views.expect("multi-output"))(&input_shapes, &input_dtypes, &params);
+        let (_total_bytes, views) =
+            fuel_ir::storage::compose_bundle(&specs).expect("SsdChunkScan compose_bundle");
         let mut g = self.graph.write().unwrap();
         let id = g.push(Node {
-            op:     Op::Fused(
-                crate::registry::FusedOps::SSD_CHUNK_SCAN,
-                params,
-            ),
+            op: Op::Fused(crate::registry::FusedOps::SSD_CHUNK_SCAN, params),
             inputs: vec![self.id, dt.id, a.id, b.id, c.id],
-            shape:  Shape::from_dims(&[batch, seqlen, heads, head_dim]),
+            shape: Shape::from_dims(&[batch, seqlen, heads, head_dim]),
             dtype,
         });
         g.set_output_views(id, Arc::from(views.into_boxed_slice()))
@@ -6694,7 +7044,9 @@ impl Tensor {
         self.assert_same_graph(b, "ssd_chunk_scan", "b");
         self.assert_same_graph(c, "ssd_chunk_scan", "c");
         let producer = self.ssd_chunk_scan_producer(dt, a, b, c, chunk_size);
-        producer.view(0).expect("SsdChunkScan view(0) must succeed (just registered slots)")
+        producer
+            .view(0)
+            .expect("SsdChunkScan view(0) must succeed (just registered slots)")
     }
 
     /// Append a `SelectiveScan` node — Mamba-1's selective
@@ -6743,7 +7095,8 @@ impl Tensor {
         );
         for (name, t) in [("delta", delta), ("a", a), ("b", b), ("c", c)] {
             assert_eq!(
-                t.dtype(), dtype,
+                t.dtype(),
+                dtype,
                 "selective_scan: {name} dtype {:?} must match u dtype {dtype:?}",
                 t.dtype(),
             );
@@ -6759,7 +7112,8 @@ impl Tensor {
         let c_dims = c.shape();
         let c_dims = c_dims.dims();
         assert_eq!(
-            u_dims.len(), 3,
+            u_dims.len(),
+            3,
             "selective_scan: u must be rank 3 [batch, seqlen, dim], got {u_dims:?}",
         );
         assert_eq!(
@@ -6767,7 +7121,8 @@ impl Tensor {
             "selective_scan: delta {delta_dims:?} must match u {u_dims:?}",
         );
         assert_eq!(
-            a_dims.len(), 2,
+            a_dims.len(),
+            2,
             "selective_scan: a must be rank 2 [dim, dstate], got {a_dims:?}",
         );
         let batch = u_dims[0];
@@ -6776,19 +7131,20 @@ impl Tensor {
         let dstate = a_dims[1];
         assert_eq!(
             a_dims[0], dim,
-            "selective_scan: a's first dim {} must equal dim {dim}", a_dims[0],
+            "selective_scan: a's first dim {} must equal dim {dim}",
+            a_dims[0],
         );
         assert_eq!(
-            b_dims, &[batch, seqlen, dstate][..],
+            b_dims,
+            &[batch, seqlen, dstate][..],
             "selective_scan: b {b_dims:?} must be [batch={batch}, seqlen={seqlen}, dstate={dstate}]",
         );
         assert_eq!(
-            c_dims, &[batch, seqlen, dstate][..],
+            c_dims,
+            &[batch, seqlen, dstate][..],
             "selective_scan: c {c_dims:?} must be [batch={batch}, seqlen={seqlen}, dstate={dstate}]",
         );
-        let params = crate::registry::FusedOpParams::SelectiveScan {
-            delta_softplus,
-        };
+        let params = crate::registry::FusedOpParams::SelectiveScan { delta_softplus };
         let input_shapes = [
             Shape::from_dims(u_dims),
             Shape::from_dims(delta_dims),
@@ -6800,19 +7156,15 @@ impl Tensor {
         let entry = crate::registry::default_registry()
             .entry(crate::registry::FusedOps::SELECTIVE_SCAN)
             .expect("SELECTIVE_SCAN registered");
-        let specs = (entry.output_views.expect("multi-output"))(
-            &input_shapes, &input_dtypes, &params,
-        );
-        let (_total_bytes, views) = fuel_ir::storage::compose_bundle(&specs)
-            .expect("SelectiveScan compose_bundle");
+        let specs =
+            (entry.output_views.expect("multi-output"))(&input_shapes, &input_dtypes, &params);
+        let (_total_bytes, views) =
+            fuel_ir::storage::compose_bundle(&specs).expect("SelectiveScan compose_bundle");
         let mut g = self.graph.write().unwrap();
         let id = g.push(Node {
-            op:     Op::Fused(
-                crate::registry::FusedOps::SELECTIVE_SCAN,
-                params,
-            ),
+            op: Op::Fused(crate::registry::FusedOps::SELECTIVE_SCAN, params),
             inputs: vec![self.id, delta.id, a.id, b.id, c.id],
-            shape:  Shape::from_dims(&[batch, seqlen, dim]),
+            shape: Shape::from_dims(&[batch, seqlen, dim]),
             dtype,
         });
         g.set_output_views(id, Arc::from(views.into_boxed_slice()))
@@ -6843,7 +7195,9 @@ impl Tensor {
         self.assert_same_graph(b, "selective_scan", "b");
         self.assert_same_graph(c, "selective_scan", "c");
         let producer = self.selective_scan_producer(delta, a, b, c, delta_softplus);
-        producer.view(0).expect("SelectiveScan view(0) must succeed (just registered slots)")
+        producer
+            .view(0)
+            .expect("SelectiveScan view(0) must succeed (just registered slots)")
     }
 
     /// Multi-output variant of [`Self::selective_scan`]. Returns
@@ -6909,26 +7263,26 @@ impl Tensor {
         let count_shape = Shape::from_dims(&[1]);
         let specs = vec![
             fuel_ir::storage::OutputViewSpec {
-                dtype:  DType::U32,
-                shape:  indices_shape.clone(),
+                dtype: DType::U32,
+                shape: indices_shape.clone(),
                 layout: Layout::contiguous(indices_shape.clone()),
-                name:   Some("indices"),
+                name: Some("indices"),
             },
             fuel_ir::storage::OutputViewSpec {
-                dtype:  DType::U32,
-                shape:  count_shape.clone(),
+                dtype: DType::U32,
+                shape: count_shape.clone(),
                 layout: Layout::contiguous(count_shape),
-                name:   Some("count"),
+                name: Some("count"),
             },
         ];
-        let (_total_bytes, views) = fuel_ir::storage::compose_bundle(&specs)
-            .expect("NonZeroIndices compose_bundle");
+        let (_total_bytes, views) =
+            fuel_ir::storage::compose_bundle(&specs).expect("NonZeroIndices compose_bundle");
         let mut g = self.graph.write().unwrap();
         let id = g.push(Node {
-            op:     Op::NonZeroIndices { count_sym },
+            op: Op::NonZeroIndices { count_sym },
             inputs: vec![self.id],
-            shape:  indices_shape,
-            dtype:  DType::U32,
+            shape: indices_shape,
+            dtype: DType::U32,
         });
         g.set_output_views(id, Arc::from(views.into_boxed_slice()))
             .expect("NonZeroIndices set_output_views");
@@ -7007,7 +7361,8 @@ impl Tensor {
         let target_dims = targets.shape();
         let target_dims = target_dims.dims();
         assert_eq!(
-            target_dims, &logits_dims[..logits_dims.len() - 1],
+            target_dims,
+            &logits_dims[..logits_dims.len() - 1],
             "fused_softmax_cross_entropy: targets shape {target_dims:?} must equal \
              logits shape {logits_dims:?} minus the last dim",
         );
@@ -7018,7 +7373,7 @@ impl Tensor {
             crate::registry::Reduction::None => Shape::from_dims(target_dims),
         };
         let id = self.graph.write().unwrap().push(Node {
-            op:     Op::Fused(
+            op: Op::Fused(
                 crate::registry::FusedOps::FUSED_SOFTMAX_CROSS_ENTROPY,
                 crate::registry::FusedOpParams::FusedSoftmaxCrossEntropy {
                     reduction,
@@ -7026,8 +7381,8 @@ impl Tensor {
                 },
             ),
             inputs: vec![self.id, targets.id],
-            shape:  out_shape,
-            dtype:  DType::F32,
+            shape: out_shape,
+            dtype: DType::F32,
         });
         Self {
             graph: self.graph.clone(),
@@ -7115,13 +7470,13 @@ impl Tensor {
         let in_shape = self.shape();
         let dims_vec: Vec<usize> = in_shape.dims().to_vec();
         let rank = dims_vec.len();
-        assert!(rank >= 2, "rope: input must have rank ≥ 2, got {dims_vec:?}");
+        assert!(
+            rank >= 2,
+            "rope: input must have rank ≥ 2, got {dims_vec:?}"
+        );
         let seq = dims_vec[rank - 2];
         let d = dims_vec[rank - 1];
-        assert!(
-            d.is_multiple_of(2),
-            "rope: feature dim {d} must be even",
-        );
+        assert!(d.is_multiple_of(2), "rope: feature dim {d} must be even",);
         let cos_shape = cos.shape();
         let sin_shape = sin.shape();
         assert_eq!(
@@ -7373,12 +7728,9 @@ impl Tensor {
             }
         }
         let op = Op::Concat { dim };
-        let (shape, dtype) = crate::shape::primitive_shape(
-            &op,
-            &[a, b],
-            &[self.dtype(), other.dtype()],
-        )
-        .expect("concat: shapes/dtypes validated above");
+        let (shape, dtype) =
+            crate::shape::primitive_shape(&op, &[a, b], &[self.dtype(), other.dtype()])
+                .expect("concat: shapes/dtypes validated above");
         let id = self.graph.write().unwrap().push(Node {
             op,
             inputs: vec![self.id, other.id],
@@ -7436,10 +7788,7 @@ impl Tensor {
 
     /// Append a `Clamp` node restricting each element to `[min, max]`.
     pub fn clamp(&self, min: f64, max: f64) -> Tensor {
-        assert!(
-            min <= max,
-            "clamp: min ({min}) must be <= max ({max})",
-        );
+        assert!(min <= max, "clamp: min ({min}) must be <= max ({max})",);
         self.unary_op(Op::Clamp { min, max })
     }
 
@@ -7529,7 +7878,11 @@ impl Tensor {
             "index_add: all tensors must live on the same graph; use `const_*_like` to build on an existing graph",
         );
         assert_eq!(indices.dtype(), DType::U32, "index_add: index must be U32");
-        assert_eq!(self.dtype(), src.dtype(), "index_add: base and src dtypes must match");
+        assert_eq!(
+            self.dtype(),
+            src.dtype(),
+            "index_add: base and src dtypes must match"
+        );
         let base_dims = self.shape();
         let src_dims = src.shape();
         assert_eq!(
@@ -7571,8 +7924,16 @@ impl Tensor {
             Arc::ptr_eq(&self.graph, &indices.graph) && Arc::ptr_eq(&self.graph, &src.graph),
             "scatter_add: all tensors must live on the same graph; use `const_*_like` to build on an existing graph",
         );
-        assert_eq!(indices.dtype(), DType::U32, "scatter_add: index must be U32");
-        assert_eq!(self.dtype(), src.dtype(), "scatter_add: base and src dtypes must match");
+        assert_eq!(
+            indices.dtype(),
+            DType::U32,
+            "scatter_add: index must be U32"
+        );
+        assert_eq!(
+            self.dtype(),
+            src.dtype(),
+            "scatter_add: base and src dtypes must match"
+        );
         assert_eq!(
             indices.shape().dims(),
             src.shape().dims(),
@@ -7737,14 +8098,16 @@ impl Tensor {
                 "{name}: dtype mismatch: lhs={:?}, rhs={:?}",
                 self.dtype(),
                 other.dtype(),
-            )).bt());
+            ))
+            .bt());
         }
         if self.shape().dims() != other.shape().dims() {
             return Err(fuel_ir::Error::Msg(format!(
                 "{name}: shape mismatch: lhs={:?}, rhs={:?}",
                 self.shape().dims(),
                 other.shape().dims(),
-            )).bt());
+            ))
+            .bt());
         }
         let dtype = self.dtype();
         let id = self.graph.write().unwrap().push(Node {
@@ -7894,13 +8257,16 @@ impl Tensor {
             // `GradientRule` is registered for this op, use it. Ops
             // that haven't migrated yet fall through to the legacy
             // inline `match` below.
-            if let Some(grads) = crate::grad::dispatch_gradient(
-                &graph_handle, &op, &inputs, id, up_id,
-            ) {
+            if let Some(grads) =
+                crate::grad::dispatch_gradient(&graph_handle, &op, &inputs, id, up_id)
+            {
                 debug_assert_eq!(
-                    grads.len(), inputs.len(),
+                    grads.len(),
+                    inputs.len(),
                     "GradientRule for {:?} returned {} gradients but op has {} inputs",
-                    op.short_name(), grads.len(), inputs.len(),
+                    op.short_name(),
+                    grads.len(),
+                    inputs.len(),
                 );
                 for (input_id, grad) in inputs.iter().zip(grads.iter()) {
                     if let Some(g) = grad {
@@ -7940,20 +8306,8 @@ impl Tensor {
                     let a_shape = node_shape(&graph_handle, a);
                     let b_shape = node_shape(&graph_handle, b);
                     let dtype = node_dtype(&graph_handle, a);
-                    let grad_a = push_node(
-                        &graph_handle,
-                        Op::Mul,
-                        vec![up_id, b],
-                        a_shape,
-                        dtype,
-                    );
-                    let grad_b = push_node(
-                        &graph_handle,
-                        Op::Mul,
-                        vec![up_id, a],
-                        b_shape,
-                        dtype,
-                    );
+                    let grad_a = push_node(&graph_handle, Op::Mul, vec![up_id, b], a_shape, dtype);
+                    let grad_b = push_node(&graph_handle, Op::Mul, vec![up_id, a], b_shape, dtype);
                     accumulate_grad(&mut upstream, a, grad_a, &graph_handle);
                     accumulate_grad(&mut upstream, b, grad_b, &graph_handle);
                 }
@@ -7967,13 +8321,7 @@ impl Tensor {
                     let dtype = node_dtype(&graph_handle, a);
                     // B^T: shape [n, k]
                     let b_t_shape = transposed_shape(&b_shape);
-                    let b_t = push_node(
-                        &graph_handle,
-                        Op::Transpose,
-                        vec![b],
-                        b_t_shape,
-                        dtype,
-                    );
+                    let b_t = push_node(&graph_handle, Op::Transpose, vec![b], b_t_shape, dtype);
                     // dA = upstream @ B^T, shape [m, k] = a_shape
                     let grad_a = push_node(
                         &graph_handle,
@@ -7984,21 +8332,10 @@ impl Tensor {
                     );
                     // A^T: shape [k, m]
                     let a_t_shape = transposed_shape(&a_shape);
-                    let a_t = push_node(
-                        &graph_handle,
-                        Op::Transpose,
-                        vec![a],
-                        a_t_shape,
-                        dtype,
-                    );
+                    let a_t = push_node(&graph_handle, Op::Transpose, vec![a], a_t_shape, dtype);
                     // dB = A^T @ upstream, shape [k, n] = b_shape
-                    let grad_b = push_node(
-                        &graph_handle,
-                        Op::MatMul,
-                        vec![a_t, up_id],
-                        b_shape,
-                        dtype,
-                    );
+                    let grad_b =
+                        push_node(&graph_handle, Op::MatMul, vec![a_t, up_id], b_shape, dtype);
                     accumulate_grad(&mut upstream, a, grad_a, &graph_handle);
                     accumulate_grad(&mut upstream, b, grad_b, &graph_handle);
                 }
@@ -8007,13 +8344,8 @@ impl Tensor {
                     let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
-                    let grad_x = push_node(
-                        &graph_handle,
-                        Op::Transpose,
-                        vec![up_id],
-                        x_shape,
-                        dtype,
-                    );
+                    let grad_x =
+                        push_node(&graph_handle, Op::Transpose, vec![up_id], x_shape, dtype);
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::Permute(ref axes) => {
@@ -8027,13 +8359,8 @@ impl Tensor {
                     for (i, &ax) in axes.iter().enumerate() {
                         inv[ax] = i;
                     }
-                    let grad_x = push_node(
-                        &graph_handle,
-                        Op::Permute(inv),
-                        vec![up_id],
-                        x_shape,
-                        dtype,
-                    );
+                    let grad_x =
+                        push_node(&graph_handle, Op::Permute(inv), vec![up_id], x_shape, dtype);
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::Sqr => {
@@ -8044,20 +8371,10 @@ impl Tensor {
                     let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
-                    let two_x = push_node(
-                        &graph_handle,
-                        Op::Add,
-                        vec![x, x],
-                        x_shape.clone(),
-                        dtype,
-                    );
-                    let grad_x = push_node(
-                        &graph_handle,
-                        Op::Mul,
-                        vec![up_id, two_x],
-                        x_shape,
-                        dtype,
-                    );
+                    let two_x =
+                        push_node(&graph_handle, Op::Add, vec![x, x], x_shape.clone(), dtype);
+                    let grad_x =
+                        push_node(&graph_handle, Op::Mul, vec![up_id, two_x], x_shape, dtype);
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::Exp => {
@@ -8067,13 +8384,8 @@ impl Tensor {
                     let x = inputs[0];
                     let out_shape = node_shape(&graph_handle, id);
                     let dtype = node_dtype(&graph_handle, id);
-                    let grad_x = push_node(
-                        &graph_handle,
-                        Op::Mul,
-                        vec![up_id, id],
-                        out_shape,
-                        dtype,
-                    );
+                    let grad_x =
+                        push_node(&graph_handle, Op::Mul, vec![up_id, id], out_shape, dtype);
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::Sub => {
@@ -8083,13 +8395,7 @@ impl Tensor {
                     accumulate_grad(&mut upstream, a, up_id, &graph_handle);
                     let b_shape = node_shape(&graph_handle, b);
                     let dtype = node_dtype(&graph_handle, b);
-                    let neg_up = push_node(
-                        &graph_handle,
-                        Op::Neg,
-                        vec![up_id],
-                        b_shape,
-                        dtype,
-                    );
+                    let neg_up = push_node(&graph_handle, Op::Neg, vec![up_id], b_shape, dtype);
                     accumulate_grad(&mut upstream, b, neg_up, &graph_handle);
                 }
                 Op::Div => {
@@ -8111,20 +8417,9 @@ impl Tensor {
                     );
                     accumulate_grad(&mut upstream, a, grad_a, &graph_handle);
                     // grad_b: -(upstream * a / (b*b))
-                    let b_sq = push_node(
-                        &graph_handle,
-                        Op::Sqr,
-                        vec![b],
-                        b_shape.clone(),
-                        dtype,
-                    );
-                    let up_times_a = push_node(
-                        &graph_handle,
-                        Op::Mul,
-                        vec![up_id, a],
-                        a_shape,
-                        dtype,
-                    );
+                    let b_sq = push_node(&graph_handle, Op::Sqr, vec![b], b_shape.clone(), dtype);
+                    let up_times_a =
+                        push_node(&graph_handle, Op::Mul, vec![up_id, a], a_shape, dtype);
                     let quotient = push_node(
                         &graph_handle,
                         Op::Div,
@@ -8132,13 +8427,7 @@ impl Tensor {
                         b_shape.clone(),
                         dtype,
                     );
-                    let grad_b = push_node(
-                        &graph_handle,
-                        Op::Neg,
-                        vec![quotient],
-                        b_shape,
-                        dtype,
-                    );
+                    let grad_b = push_node(&graph_handle, Op::Neg, vec![quotient], b_shape, dtype);
                     accumulate_grad(&mut upstream, b, grad_b, &graph_handle);
                 }
                 Op::Neg => {
@@ -8146,13 +8435,7 @@ impl Tensor {
                     let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
-                    let grad_x = push_node(
-                        &graph_handle,
-                        Op::Neg,
-                        vec![up_id],
-                        x_shape,
-                        dtype,
-                    );
+                    let grad_x = push_node(&graph_handle, Op::Neg, vec![up_id], x_shape, dtype);
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::Sqrt => {
@@ -8161,20 +8444,10 @@ impl Tensor {
                     let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
-                    let two_y = push_node(
-                        &graph_handle,
-                        Op::Add,
-                        vec![id, id],
-                        x_shape.clone(),
-                        dtype,
-                    );
-                    let grad_x = push_node(
-                        &graph_handle,
-                        Op::Div,
-                        vec![up_id, two_y],
-                        x_shape,
-                        dtype,
-                    );
+                    let two_y =
+                        push_node(&graph_handle, Op::Add, vec![id, id], x_shape.clone(), dtype);
+                    let grad_x =
+                        push_node(&graph_handle, Op::Div, vec![up_id, two_y], x_shape, dtype);
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::Log => {
@@ -8182,13 +8455,7 @@ impl Tensor {
                     let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
-                    let grad_x = push_node(
-                        &graph_handle,
-                        Op::Div,
-                        vec![up_id, x],
-                        x_shape,
-                        dtype,
-                    );
+                    let grad_x = push_node(&graph_handle, Op::Div, vec![up_id, x], x_shape, dtype);
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::Sin => {
@@ -8196,20 +8463,9 @@ impl Tensor {
                     let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
-                    let cos_x = push_node(
-                        &graph_handle,
-                        Op::Cos,
-                        vec![x],
-                        x_shape.clone(),
-                        dtype,
-                    );
-                    let grad_x = push_node(
-                        &graph_handle,
-                        Op::Mul,
-                        vec![up_id, cos_x],
-                        x_shape,
-                        dtype,
-                    );
+                    let cos_x = push_node(&graph_handle, Op::Cos, vec![x], x_shape.clone(), dtype);
+                    let grad_x =
+                        push_node(&graph_handle, Op::Mul, vec![up_id, cos_x], x_shape, dtype);
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::Cos => {
@@ -8217,13 +8473,7 @@ impl Tensor {
                     let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
-                    let sin_x = push_node(
-                        &graph_handle,
-                        Op::Sin,
-                        vec![x],
-                        x_shape.clone(),
-                        dtype,
-                    );
+                    let sin_x = push_node(&graph_handle, Op::Sin, vec![x], x_shape.clone(), dtype);
                     let up_sin = push_node(
                         &graph_handle,
                         Op::Mul,
@@ -8231,13 +8481,7 @@ impl Tensor {
                         x_shape.clone(),
                         dtype,
                     );
-                    let grad_x = push_node(
-                        &graph_handle,
-                        Op::Neg,
-                        vec![up_sin],
-                        x_shape,
-                        dtype,
-                    );
+                    let grad_x = push_node(&graph_handle, Op::Neg, vec![up_sin], x_shape, dtype);
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::Tanh => {
@@ -8246,13 +8490,7 @@ impl Tensor {
                     let x = inputs[0];
                     let y_shape = node_shape(&graph_handle, id);
                     let dtype = node_dtype(&graph_handle, id);
-                    let y_sq = push_node(
-                        &graph_handle,
-                        Op::Sqr,
-                        vec![id],
-                        y_shape.clone(),
-                        dtype,
-                    );
+                    let y_sq = push_node(&graph_handle, Op::Sqr, vec![id], y_shape.clone(), dtype);
                     let ones = build_ones(&graph_handle, y_shape.clone(), dtype);
                     let one_minus_sq = push_node(
                         &graph_handle,
@@ -8311,13 +8549,7 @@ impl Tensor {
                     let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
-                    let s = push_node(
-                        &graph_handle,
-                        Op::Sigmoid,
-                        vec![x],
-                        x_shape.clone(),
-                        dtype,
-                    );
+                    let s = push_node(&graph_handle, Op::Sigmoid, vec![x], x_shape.clone(), dtype);
                     let ones = build_ones(&graph_handle, x_shape.clone(), dtype);
                     let one_minus_s = push_node(
                         &graph_handle,
@@ -8340,13 +8572,8 @@ impl Tensor {
                         x_shape.clone(),
                         dtype,
                     );
-                    let grad_x = push_node(
-                        &graph_handle,
-                        Op::Mul,
-                        vec![up_id, inner],
-                        x_shape,
-                        dtype,
-                    );
+                    let grad_x =
+                        push_node(&graph_handle, Op::Mul, vec![up_id, inner], x_shape, dtype);
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::Gelu => {
@@ -8380,20 +8607,10 @@ impl Tensor {
                     let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
-                    let step_x = push_node(
-                        &graph_handle,
-                        Op::Step,
-                        vec![x],
-                        x_shape.clone(),
-                        dtype,
-                    );
-                    let grad_x = push_node(
-                        &graph_handle,
-                        Op::Mul,
-                        vec![up_id, step_x],
-                        x_shape,
-                        dtype,
-                    );
+                    let step_x =
+                        push_node(&graph_handle, Op::Step, vec![x], x_shape.clone(), dtype);
+                    let grad_x =
+                        push_node(&graph_handle, Op::Mul, vec![up_id, step_x], x_shape, dtype);
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::Step => {
@@ -8411,13 +8628,7 @@ impl Tensor {
                     let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
-                    let y_sq = push_node(
-                        &graph_handle,
-                        Op::Sqr,
-                        vec![id],
-                        x_shape.clone(),
-                        dtype,
-                    );
+                    let y_sq = push_node(&graph_handle, Op::Sqr, vec![id], x_shape.clone(), dtype);
                     let up_y_sq = push_node(
                         &graph_handle,
                         Op::Mul,
@@ -8425,13 +8636,7 @@ impl Tensor {
                         x_shape.clone(),
                         dtype,
                     );
-                    let grad_x = push_node(
-                        &graph_handle,
-                        Op::Neg,
-                        vec![up_y_sq],
-                        x_shape,
-                        dtype,
-                    );
+                    let grad_x = push_node(&graph_handle, Op::Neg, vec![up_y_sq], x_shape, dtype);
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::Abs => {
@@ -8445,20 +8650,10 @@ impl Tensor {
                     let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
-                    let sign_x = push_node(
-                        &graph_handle,
-                        Op::Sign,
-                        vec![x],
-                        x_shape.clone(),
-                        dtype,
-                    );
-                    let grad_x = push_node(
-                        &graph_handle,
-                        Op::Mul,
-                        vec![up_id, sign_x],
-                        x_shape,
-                        dtype,
-                    );
+                    let sign_x =
+                        push_node(&graph_handle, Op::Sign, vec![x], x_shape.clone(), dtype);
+                    let grad_x =
+                        push_node(&graph_handle, Op::Mul, vec![up_id, sign_x], x_shape, dtype);
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::Where => {
@@ -8479,25 +8674,13 @@ impl Tensor {
                     // Decomposes to: Sqr(x) → Neg → Exp → MulScalar(2/√π)
                     //                → Mul(upstream, .).
                     // 2/√π = 1.1283791670955125738961589031...
-                    const TWO_OVER_SQRT_PI: f64 =
-                        1.128_379_167_095_512_6_f64;
+                    const TWO_OVER_SQRT_PI: f64 = 1.128_379_167_095_512_6_f64;
                     let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
-                    let x_sq = push_node(
-                        &graph_handle,
-                        Op::Sqr,
-                        vec![x],
-                        x_shape.clone(),
-                        dtype,
-                    );
-                    let neg_x_sq = push_node(
-                        &graph_handle,
-                        Op::Neg,
-                        vec![x_sq],
-                        x_shape.clone(),
-                        dtype,
-                    );
+                    let x_sq = push_node(&graph_handle, Op::Sqr, vec![x], x_shape.clone(), dtype);
+                    let neg_x_sq =
+                        push_node(&graph_handle, Op::Neg, vec![x_sq], x_shape.clone(), dtype);
                     let exp_neg_x_sq = push_node(
                         &graph_handle,
                         Op::Exp,
@@ -8512,13 +8695,8 @@ impl Tensor {
                         x_shape.clone(),
                         dtype,
                     );
-                    let grad_x = push_node(
-                        &graph_handle,
-                        Op::Mul,
-                        vec![up_id, scaled],
-                        x_shape,
-                        dtype,
-                    );
+                    let grad_x =
+                        push_node(&graph_handle, Op::Mul, vec![up_id, scaled], x_shape, dtype);
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::Flip { dim } => {
@@ -8529,13 +8707,15 @@ impl Tensor {
                     let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
-                    let grad_x = push_node(
-                        &graph_handle, Op::Flip { dim },
-                        vec![up_id], x_shape, dtype,
-                    );
+                    let grad_x =
+                        push_node(&graph_handle, Op::Flip { dim }, vec![up_id], x_shape, dtype);
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
-                Op::Pad { padding, mode, value: _ } => {
+                Op::Pad {
+                    padding,
+                    mode,
+                    value: _,
+                } => {
                     // Backward delegates to Op::PadBackward — a single
                     // node that handles all three modes uniformly via
                     // its kernel. Constant: slice the unpadded region.
@@ -8548,7 +8728,11 @@ impl Tensor {
                     let dtype = node_dtype(&graph_handle, x);
                     let grad_x = push_node(
                         &graph_handle,
-                        Op::PadBackward { in_shape: x_shape.clone(), padding, mode },
+                        Op::PadBackward {
+                            in_shape: x_shape.clone(),
+                            padding,
+                            mode,
+                        },
                         vec![up_id],
                         x_shape,
                         dtype,
@@ -8571,17 +8755,21 @@ impl Tensor {
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
                     let flip1 = push_node(
-                        &graph_handle, Op::Flip { dim },
-                        vec![up_id], x_shape.clone(), dtype,
+                        &graph_handle,
+                        Op::Flip { dim },
+                        vec![up_id],
+                        x_shape.clone(),
+                        dtype,
                     );
                     let cs = push_node(
-                        &graph_handle, Op::CumSum { dim },
-                        vec![flip1], x_shape.clone(), dtype,
+                        &graph_handle,
+                        Op::CumSum { dim },
+                        vec![flip1],
+                        x_shape.clone(),
+                        dtype,
                     );
-                    let grad_x = push_node(
-                        &graph_handle, Op::Flip { dim },
-                        vec![cs], x_shape, dtype,
-                    );
+                    let grad_x =
+                        push_node(&graph_handle, Op::Flip { dim }, vec![cs], x_shape, dtype);
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::Roll { dim, shift } => {
@@ -8593,8 +8781,11 @@ impl Tensor {
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
                     let grad_x = push_node(
-                        &graph_handle, Op::Roll { dim, shift: -shift },
-                        vec![up_id], x_shape, dtype,
+                        &graph_handle,
+                        Op::Roll { dim, shift: -shift },
+                        vec![up_id],
+                        x_shape,
+                        dtype,
                     );
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
@@ -8607,8 +8798,11 @@ impl Tensor {
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
                     let grad_x = push_node(
-                        &graph_handle, Op::Triu { diagonal },
-                        vec![up_id], x_shape, dtype,
+                        &graph_handle,
+                        Op::Triu { diagonal },
+                        vec![up_id],
+                        x_shape,
+                        dtype,
                     );
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
@@ -8619,8 +8813,11 @@ impl Tensor {
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
                     let grad_x = push_node(
-                        &graph_handle, Op::Tril { diagonal },
-                        vec![up_id], x_shape, dtype,
+                        &graph_handle,
+                        Op::Tril { diagonal },
+                        vec![up_id],
+                        x_shape,
+                        dtype,
                     );
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
@@ -8633,8 +8830,11 @@ impl Tensor {
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
                     let grad_x = push_node(
-                        &graph_handle, Op::LogSoftmaxLastDimBackward,
-                        vec![id, up_id], x_shape, dtype,
+                        &graph_handle,
+                        Op::LogSoftmaxLastDimBackward,
+                        vec![id, up_id],
+                        x_shape,
+                        dtype,
                     );
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
@@ -8663,8 +8863,11 @@ impl Tensor {
                         }
                     };
                     let grad_x = push_node(
-                        &graph_handle, Op::MaskedFill { value: zero },
-                        vec![up_id, mask], x_shape, dtype,
+                        &graph_handle,
+                        Op::MaskedFill { value: zero },
+                        vec![up_id, mask],
+                        x_shape,
+                        dtype,
                     );
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                     // No gradient to mask: it's discrete.
@@ -8684,21 +8887,28 @@ impl Tensor {
                     let a_shape = node_shape(&graph_handle, a);
                     let dtype = node_dtype(&graph_handle, a);
                     accumulate_grad(&mut upstream, a, up_id, &graph_handle);
-                    let div_ab = push_node(
-                        &graph_handle, Op::Div,
-                        vec![a, b], a_shape.clone(), dtype,
-                    );
+                    let div_ab =
+                        push_node(&graph_handle, Op::Div, vec![a, b], a_shape.clone(), dtype);
                     let floor_div = push_node(
-                        &graph_handle, Op::Floor,
-                        vec![div_ab], a_shape.clone(), dtype,
+                        &graph_handle,
+                        Op::Floor,
+                        vec![div_ab],
+                        a_shape.clone(),
+                        dtype,
                     );
                     let neg_floor = push_node(
-                        &graph_handle, Op::Neg,
-                        vec![floor_div], a_shape.clone(), dtype,
+                        &graph_handle,
+                        Op::Neg,
+                        vec![floor_div],
+                        a_shape.clone(),
+                        dtype,
                     );
                     let grad_b = push_node(
-                        &graph_handle, Op::Mul,
-                        vec![up_id, neg_floor], a_shape, dtype,
+                        &graph_handle,
+                        Op::Mul,
+                        vec![up_id, neg_floor],
+                        a_shape,
+                        dtype,
                     );
                     accumulate_grad(&mut upstream, b, grad_b, &graph_handle);
                 }
@@ -8713,22 +8923,23 @@ impl Tensor {
                     let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
-                    let y_sq = push_node(
-                        &graph_handle, Op::Sqr,
-                        vec![id], x_shape.clone(), dtype,
-                    );
+                    let y_sq = push_node(&graph_handle, Op::Sqr, vec![id], x_shape.clone(), dtype);
                     let y_cu = push_node(
-                        &graph_handle, Op::Mul,
-                        vec![id, y_sq], x_shape.clone(), dtype,
+                        &graph_handle,
+                        Op::Mul,
+                        vec![id, y_sq],
+                        x_shape.clone(),
+                        dtype,
                     );
                     let scaled = push_node(
-                        &graph_handle, Op::MulScalar(-0.5),
-                        vec![y_cu], x_shape.clone(), dtype,
+                        &graph_handle,
+                        Op::MulScalar(-0.5),
+                        vec![y_cu],
+                        x_shape.clone(),
+                        dtype,
                     );
-                    let grad_x = push_node(
-                        &graph_handle, Op::Mul,
-                        vec![up_id, scaled], x_shape, dtype,
-                    );
+                    let grad_x =
+                        push_node(&graph_handle, Op::Mul, vec![up_id, scaled], x_shape, dtype);
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::Pow => {
@@ -8744,35 +8955,45 @@ impl Tensor {
                     let dtype = node_dtype(&graph_handle, a);
                     // d/da branch: pow(a, b - 1)
                     let b_minus_one = push_node(
-                        &graph_handle, Op::AddScalar(-1.0),
-                        vec![b], a_shape.clone(), dtype,
+                        &graph_handle,
+                        Op::AddScalar(-1.0),
+                        vec![b],
+                        a_shape.clone(),
+                        dtype,
                     );
                     let pow_a_bm1 = push_node(
-                        &graph_handle, Op::Pow,
-                        vec![a, b_minus_one], a_shape.clone(), dtype,
+                        &graph_handle,
+                        Op::Pow,
+                        vec![a, b_minus_one],
+                        a_shape.clone(),
+                        dtype,
                     );
                     let b_times_pow = push_node(
-                        &graph_handle, Op::Mul,
-                        vec![b, pow_a_bm1], a_shape.clone(), dtype,
+                        &graph_handle,
+                        Op::Mul,
+                        vec![b, pow_a_bm1],
+                        a_shape.clone(),
+                        dtype,
                     );
                     let grad_a = push_node(
-                        &graph_handle, Op::Mul,
-                        vec![up_id, b_times_pow], a_shape.clone(), dtype,
+                        &graph_handle,
+                        Op::Mul,
+                        vec![up_id, b_times_pow],
+                        a_shape.clone(),
+                        dtype,
                     );
                     accumulate_grad(&mut upstream, a, grad_a, &graph_handle);
                     // d/db branch: y * ln(a)
-                    let log_a = push_node(
-                        &graph_handle, Op::Log,
-                        vec![a], a_shape.clone(), dtype,
-                    );
+                    let log_a = push_node(&graph_handle, Op::Log, vec![a], a_shape.clone(), dtype);
                     let y_log_a = push_node(
-                        &graph_handle, Op::Mul,
-                        vec![id, log_a], a_shape.clone(), dtype,
+                        &graph_handle,
+                        Op::Mul,
+                        vec![id, log_a],
+                        a_shape.clone(),
+                        dtype,
                     );
-                    let grad_b = push_node(
-                        &graph_handle, Op::Mul,
-                        vec![up_id, y_log_a], a_shape, dtype,
-                    );
+                    let grad_b =
+                        push_node(&graph_handle, Op::Mul, vec![up_id, y_log_a], a_shape, dtype);
                     accumulate_grad(&mut upstream, b, grad_b, &graph_handle);
                 }
                 Op::GeluErf => {
@@ -8805,55 +9026,75 @@ impl Tensor {
                     let dtype = node_dtype(&graph_handle, x);
                     // CDF half: 0.5 * (1 + erf(x/√2)).
                     let x_over_sqrt2 = push_node(
-                        &graph_handle, Op::MulScalar(INV_SQRT_2),
-                        vec![x], x_shape.clone(), dtype,
+                        &graph_handle,
+                        Op::MulScalar(INV_SQRT_2),
+                        vec![x],
+                        x_shape.clone(),
+                        dtype,
                     );
                     let erf_arg = push_node(
-                        &graph_handle, Op::Erf,
-                        vec![x_over_sqrt2], x_shape.clone(), dtype,
+                        &graph_handle,
+                        Op::Erf,
+                        vec![x_over_sqrt2],
+                        x_shape.clone(),
+                        dtype,
                     );
                     let plus_one = push_node(
-                        &graph_handle, Op::AddScalar(1.0),
-                        vec![erf_arg], x_shape.clone(), dtype,
+                        &graph_handle,
+                        Op::AddScalar(1.0),
+                        vec![erf_arg],
+                        x_shape.clone(),
+                        dtype,
                     );
                     let cdf_term = push_node(
-                        &graph_handle, Op::MulScalar(0.5),
-                        vec![plus_one], x_shape.clone(), dtype,
+                        &graph_handle,
+                        Op::MulScalar(0.5),
+                        vec![plus_one],
+                        x_shape.clone(),
+                        dtype,
                     );
                     // PDF half: x * (1/√(2π)) * exp(-x²/2).
-                    let x_sq = push_node(
-                        &graph_handle, Op::Sqr,
-                        vec![x], x_shape.clone(), dtype,
-                    );
+                    let x_sq = push_node(&graph_handle, Op::Sqr, vec![x], x_shape.clone(), dtype);
                     let half_x_sq = push_node(
-                        &graph_handle, Op::MulScalar(0.5),
-                        vec![x_sq], x_shape.clone(), dtype,
+                        &graph_handle,
+                        Op::MulScalar(0.5),
+                        vec![x_sq],
+                        x_shape.clone(),
+                        dtype,
                     );
                     let neg_half_x_sq = push_node(
-                        &graph_handle, Op::Neg,
-                        vec![half_x_sq], x_shape.clone(), dtype,
+                        &graph_handle,
+                        Op::Neg,
+                        vec![half_x_sq],
+                        x_shape.clone(),
+                        dtype,
                     );
                     let exp_term = push_node(
-                        &graph_handle, Op::Exp,
-                        vec![neg_half_x_sq], x_shape.clone(), dtype,
+                        &graph_handle,
+                        Op::Exp,
+                        vec![neg_half_x_sq],
+                        x_shape.clone(),
+                        dtype,
                     );
                     let phi = push_node(
-                        &graph_handle, Op::MulScalar(INV_SQRT_2PI),
-                        vec![exp_term], x_shape.clone(), dtype,
+                        &graph_handle,
+                        Op::MulScalar(INV_SQRT_2PI),
+                        vec![exp_term],
+                        x_shape.clone(),
+                        dtype,
                     );
-                    let pdf_term = push_node(
-                        &graph_handle, Op::Mul,
-                        vec![x, phi], x_shape.clone(), dtype,
-                    );
+                    let pdf_term =
+                        push_node(&graph_handle, Op::Mul, vec![x, phi], x_shape.clone(), dtype);
                     // Sum the two halves and apply upstream.
                     let d_gelu = push_node(
-                        &graph_handle, Op::Add,
-                        vec![cdf_term, pdf_term], x_shape.clone(), dtype,
+                        &graph_handle,
+                        Op::Add,
+                        vec![cdf_term, pdf_term],
+                        x_shape.clone(),
+                        dtype,
                     );
-                    let grad_x = push_node(
-                        &graph_handle, Op::Mul,
-                        vec![up_id, d_gelu], x_shape, dtype,
-                    );
+                    let grad_x =
+                        push_node(&graph_handle, Op::Mul, vec![up_id, d_gelu], x_shape, dtype);
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::Equal | Op::Ne | Op::Lt | Op::Le | Op::Gt | Op::Ge => {
@@ -9060,13 +9301,8 @@ impl Tensor {
                             dtype,
                         )
                     };
-                    let step_diff = push_node(
-                        &graph_handle,
-                        Op::Step,
-                        vec![diff],
-                        x_shape.clone(),
-                        dtype,
-                    );
+                    let step_diff =
+                        push_node(&graph_handle, Op::Step, vec![diff], x_shape.clone(), dtype);
                     let ones = build_ones(&graph_handle, x_shape.clone(), dtype);
                     let indicator = push_node(
                         &graph_handle,
@@ -9190,13 +9426,8 @@ impl Tensor {
                             dtype,
                         )
                     };
-                    let step_diff = push_node(
-                        &graph_handle,
-                        Op::Step,
-                        vec![diff],
-                        x_shape.clone(),
-                        dtype,
-                    );
+                    let step_diff =
+                        push_node(&graph_handle, Op::Step, vec![diff], x_shape.clone(), dtype);
                     let ones = build_ones(&graph_handle, x_shape.clone(), dtype);
                     let indicator = push_node(
                         &graph_handle,
@@ -9292,12 +9523,7 @@ impl Tensor {
                     let idx = inputs[1];
                     let data_shape = node_shape(&graph_handle, data);
                     let dtype = node_dtype(&graph_handle, data);
-                    let zeros = build_filled_const(
-                        &graph_handle,
-                        data_shape.clone(),
-                        dtype,
-                        0.0,
-                    );
+                    let zeros = build_filled_const(&graph_handle, data_shape.clone(), dtype, 0.0);
                     let grad_data = push_node(
                         &graph_handle,
                         Op::IndexAdd { dim },
@@ -9315,12 +9541,7 @@ impl Tensor {
                     let idx = inputs[1];
                     let data_shape = node_shape(&graph_handle, data);
                     let dtype = node_dtype(&graph_handle, data);
-                    let zeros = build_filled_const(
-                        &graph_handle,
-                        data_shape.clone(),
-                        dtype,
-                        0.0,
-                    );
+                    let zeros = build_filled_const(&graph_handle, data_shape.clone(), dtype, 0.0);
                     let grad_data = push_node(
                         &graph_handle,
                         Op::ScatterAdd { dim },
@@ -9391,8 +9612,7 @@ impl Tensor {
                     let dtype = node_dtype(&graph_handle, x);
                     let x_dims = x_shape.dims();
                     let dim_size = x_dims[dim];
-                    let up_len = x_dims[dim]
-                        .min(node_shape(&graph_handle, up_id).dims()[dim]);
+                    let up_len = x_dims[dim].min(node_shape(&graph_handle, up_id).dims()[dim]);
                     let left_len = start;
                     let right_len = dim_size - start - up_len;
                     // Build left zero pad if needed.
@@ -9401,24 +9621,14 @@ impl Tensor {
                         let mut left_dims: Vec<usize> = x_dims.to_vec();
                         left_dims[dim] = left_len;
                         let left_shape = Shape::from_dims(&left_dims);
-                        pieces.push(build_filled_const(
-                            &graph_handle,
-                            left_shape,
-                            dtype,
-                            0.0,
-                        ));
+                        pieces.push(build_filled_const(&graph_handle, left_shape, dtype, 0.0));
                     }
                     pieces.push(up_id);
                     if right_len > 0 {
                         let mut right_dims: Vec<usize> = x_dims.to_vec();
                         right_dims[dim] = right_len;
                         let right_shape = Shape::from_dims(&right_dims);
-                        pieces.push(build_filled_const(
-                            &graph_handle,
-                            right_shape,
-                            dtype,
-                            0.0,
-                        ));
+                        pieces.push(build_filled_const(&graph_handle, right_shape, dtype, 0.0));
                     }
                     // Fold concat-left-to-right.
                     let mut current = pieces[0];
@@ -9456,13 +9666,8 @@ impl Tensor {
                     let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
-                    let grad_x = push_node(
-                        &graph_handle,
-                        Op::MulScalar(c),
-                        vec![up_id],
-                        x_shape,
-                        dtype,
-                    );
+                    let grad_x =
+                        push_node(&graph_handle, Op::MulScalar(c), vec![up_id], x_shape, dtype);
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::PowI(n) => {
@@ -9572,20 +9777,9 @@ impl Tensor {
                     let b = inputs[1];
                     let shape = node_shape(&graph_handle, a);
                     let dtype = node_dtype(&graph_handle, a);
-                    let diff = push_node(
-                        &graph_handle,
-                        Op::Sub,
-                        vec![a, b],
-                        shape.clone(),
-                        dtype,
-                    );
-                    let mask_a = push_node(
-                        &graph_handle,
-                        Op::Step,
-                        vec![diff],
-                        shape.clone(),
-                        dtype,
-                    );
+                    let diff = push_node(&graph_handle, Op::Sub, vec![a, b], shape.clone(), dtype);
+                    let mask_a =
+                        push_node(&graph_handle, Op::Step, vec![diff], shape.clone(), dtype);
                     let ones = build_ones(&graph_handle, shape.clone(), dtype);
                     let mask_b = push_node(
                         &graph_handle,
@@ -9601,13 +9795,8 @@ impl Tensor {
                         shape.clone(),
                         dtype,
                     );
-                    let grad_b = push_node(
-                        &graph_handle,
-                        Op::Mul,
-                        vec![up_id, mask_b],
-                        shape,
-                        dtype,
-                    );
+                    let grad_b =
+                        push_node(&graph_handle, Op::Mul, vec![up_id, mask_b], shape, dtype);
                     accumulate_grad(&mut upstream, a, grad_a, &graph_handle);
                     accumulate_grad(&mut upstream, b, grad_b, &graph_handle);
                 }
@@ -9617,20 +9806,9 @@ impl Tensor {
                     let b = inputs[1];
                     let shape = node_shape(&graph_handle, a);
                     let dtype = node_dtype(&graph_handle, a);
-                    let diff = push_node(
-                        &graph_handle,
-                        Op::Sub,
-                        vec![b, a],
-                        shape.clone(),
-                        dtype,
-                    );
-                    let mask_a = push_node(
-                        &graph_handle,
-                        Op::Step,
-                        vec![diff],
-                        shape.clone(),
-                        dtype,
-                    );
+                    let diff = push_node(&graph_handle, Op::Sub, vec![b, a], shape.clone(), dtype);
+                    let mask_a =
+                        push_node(&graph_handle, Op::Step, vec![diff], shape.clone(), dtype);
                     let ones = build_ones(&graph_handle, shape.clone(), dtype);
                     let mask_b = push_node(
                         &graph_handle,
@@ -9646,13 +9824,8 @@ impl Tensor {
                         shape.clone(),
                         dtype,
                     );
-                    let grad_b = push_node(
-                        &graph_handle,
-                        Op::Mul,
-                        vec![up_id, mask_b],
-                        shape,
-                        dtype,
-                    );
+                    let grad_b =
+                        push_node(&graph_handle, Op::Mul, vec![up_id, mask_b], shape, dtype);
                     accumulate_grad(&mut upstream, a, grad_a, &graph_handle);
                     accumulate_grad(&mut upstream, b, grad_b, &graph_handle);
                 }
@@ -9846,8 +10019,8 @@ impl Tensor {
                         let x_shape = node_shape(&graph_handle, x);
                         let sin_shape = node_shape(&graph_handle, sin);
                         let dtype = node_dtype(&graph_handle, x);
-                        let neg_sin = push_node(
-                            &graph_handle, Op::Neg, vec![sin], sin_shape, dtype);
+                        let neg_sin =
+                            push_node(&graph_handle, Op::Neg, vec![sin], sin_shape, dtype);
                         let grad_x = push_node(
                             &graph_handle,
                             Op::Fused(
@@ -9873,11 +10046,20 @@ impl Tensor {
                         let bias_shape = node_shape(&graph_handle, bias);
                         let dtype = node_dtype(&graph_handle, a);
                         let b_t_shape = transposed_shape(&b_shape);
-                        let b_t = push_node(&graph_handle, Op::Transpose, vec![b], b_t_shape, dtype);
-                        let grad_a = push_node(&graph_handle, Op::MatMul, vec![up_id, b_t], a_shape.clone(), dtype);
+                        let b_t =
+                            push_node(&graph_handle, Op::Transpose, vec![b], b_t_shape, dtype);
+                        let grad_a = push_node(
+                            &graph_handle,
+                            Op::MatMul,
+                            vec![up_id, b_t],
+                            a_shape.clone(),
+                            dtype,
+                        );
                         let a_t_shape = transposed_shape(&a_shape);
-                        let a_t = push_node(&graph_handle, Op::Transpose, vec![a], a_t_shape, dtype);
-                        let grad_b = push_node(&graph_handle, Op::MatMul, vec![a_t, up_id], b_shape, dtype);
+                        let a_t =
+                            push_node(&graph_handle, Op::Transpose, vec![a], a_t_shape, dtype);
+                        let grad_b =
+                            push_node(&graph_handle, Op::MatMul, vec![a_t, up_id], b_shape, dtype);
                         let grad_bias = push_node(
                             &graph_handle,
                             Op::ReduceSumTo(bias_shape.clone()),
@@ -9898,15 +10080,17 @@ impl Tensor {
                         // variant until that op migrates in its own
                         // step-4 commit.
                         let (stride, padding, groups) = match params {
-                            crate::registry::FusedOpParams::Conv2D { stride, padding, groups } => {
-                                (stride, padding, groups)
-                            }
+                            crate::registry::FusedOpParams::Conv2D {
+                                stride,
+                                padding,
+                                groups,
+                            } => (stride, padding, groups),
                             _ => panic!(
                                 "Tensor::backward: Op::Fused(CONV2D, _) \
                                  expected FusedOpParams::Conv2D, got {params:?}",
                             ),
                         };
-                        let x      = inputs[0];
+                        let x = inputs[0];
                         let weight = inputs[1];
                         let x_shape = node_shape(&graph_handle, x);
                         let w_shape = node_shape(&graph_handle, weight);
@@ -9977,9 +10161,8 @@ impl Tensor {
                             x_swapped_shape,
                             dtype,
                         );
-                        let dy_swapped_shape = Shape::from_dims(&[
-                            dy_dims[1], dy_dims[0], dy_dims[2], dy_dims[3],
-                        ]);
+                        let dy_swapped_shape =
+                            Shape::from_dims(&[dy_dims[1], dy_dims[0], dy_dims[2], dy_dims[3]]);
                         let dy_swapped = push_node(
                             &graph_handle,
                             Op::Permute(perm_01.clone()),
@@ -9987,9 +10170,8 @@ impl Tensor {
                             dy_swapped_shape,
                             dtype,
                         );
-                        let conv_out_shape = Shape::from_dims(&[
-                            w_dims[1], w_dims[0], w_dims[2], w_dims[3],
-                        ]);
+                        let conv_out_shape =
+                            Shape::from_dims(&[w_dims[1], w_dims[0], w_dims[2], w_dims[3]]);
                         let grad_w_pre_transpose = push_node(
                             &graph_handle,
                             Op::Fused(
@@ -10078,16 +10260,22 @@ impl Tensor {
                         let dtype = node_dtype(&graph_handle, q);
                         let (scale, causal, wl, wr, sc) = match params {
                             crate::registry::FusedOpParams::FlashAttn {
-                                softmax_scale, causal,
-                                window_size_left, window_size_right, softcap,
+                                softmax_scale,
+                                causal,
+                                window_size_left,
+                                window_size_right,
+                                softcap,
                                 // Backward over the static (full-K) flash
                                 // only; the runtime-k_len capacity form is
                                 // forward-only (decode). k_len is ignored
                                 // here.
                                 k_len: _,
                             } => (
-                                softmax_scale, causal,
-                                window_size_left, window_size_right, softcap,
+                                softmax_scale,
+                                causal,
+                                window_size_left,
+                                window_size_right,
+                                softcap,
                             ),
                             other => panic!(
                                 "Tensor::backward: FlashAttn node carries \
@@ -10102,7 +10290,9 @@ impl Tensor {
                             softcap: sc,
                         };
                         let mut bw_inputs = vec![q, k, v, up_id];
-                        if let Some(a) = alibi { bw_inputs.push(a); }
+                        if let Some(a) = alibi {
+                            bw_inputs.push(a);
+                        }
                         let grad_q = push_node(
                             &graph_handle,
                             Op::Fused(
@@ -10125,10 +10315,7 @@ impl Tensor {
                         );
                         let grad_v = push_node(
                             &graph_handle,
-                            Op::Fused(
-                                crate::registry::FusedOps::FLASH_ATTN_BACKWARD_V,
-                                bw_params,
-                            ),
+                            Op::Fused(crate::registry::FusedOps::FLASH_ATTN_BACKWARD_V, bw_params),
                             bw_inputs,
                             v_shape,
                             dtype,
@@ -10215,8 +10402,10 @@ impl Tensor {
                     // always emit the View consumers the pre-pass's remap +
                     // never-hang guard lower away. Reaching here means the
                     // pre-pass did not run (an internal bug).
-                    panic!("Tensor::backward: Op::Scan reached the reverse walk un-lowered — \
-                            the C3 lower_scans_for_backward pre-pass did not run (internal bug).");
+                    panic!(
+                        "Tensor::backward: Op::Scan reached the reverse walk un-lowered — \
+                            the C3 lower_scans_for_backward pre-pass did not run (internal bug)."
+                    );
                 }
                 Op::ScanPlaceholder { .. } => {
                     // Inert body-hole leaf (no inputs) — never a real
@@ -10281,8 +10470,10 @@ impl Tensor {
                     let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
-                    let step_x = push_node(&graph_handle, Op::Step, vec![x], x_shape.clone(), dtype);
-                    let grad_x = push_node(&graph_handle, Op::Mul, vec![up_id, step_x], x_shape, dtype);
+                    let step_x =
+                        push_node(&graph_handle, Op::Step, vec![x], x_shape.clone(), dtype);
+                    let grad_x =
+                        push_node(&graph_handle, Op::Mul, vec![up_id, step_x], x_shape, dtype);
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::SiluInplace => {
@@ -10298,10 +10489,29 @@ impl Tensor {
                     let dtype = node_dtype(&graph_handle, x);
                     let s = push_node(&graph_handle, Op::Sigmoid, vec![x], x_shape.clone(), dtype);
                     let ones = build_ones(&graph_handle, x_shape.clone(), dtype);
-                    let one_minus_s = push_node(&graph_handle, Op::Sub, vec![ones, s], x_shape.clone(), dtype);
-                    let y_times_1ms = push_node(&graph_handle, Op::Mul, vec![id, one_minus_s], x_shape.clone(), dtype);
-                    let inner = push_node(&graph_handle, Op::Add, vec![s, y_times_1ms], x_shape.clone(), dtype);
-                    let grad_x = push_node(&graph_handle, Op::Mul, vec![up_id, inner], x_shape, dtype);
+                    let one_minus_s = push_node(
+                        &graph_handle,
+                        Op::Sub,
+                        vec![ones, s],
+                        x_shape.clone(),
+                        dtype,
+                    );
+                    let y_times_1ms = push_node(
+                        &graph_handle,
+                        Op::Mul,
+                        vec![id, one_minus_s],
+                        x_shape.clone(),
+                        dtype,
+                    );
+                    let inner = push_node(
+                        &graph_handle,
+                        Op::Add,
+                        vec![s, y_times_1ms],
+                        x_shape.clone(),
+                        dtype,
+                    );
+                    let grad_x =
+                        push_node(&graph_handle, Op::Mul, vec![up_id, inner], x_shape, dtype);
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::TanhInplace => {
@@ -10314,8 +10524,20 @@ impl Tensor {
                     let dtype = node_dtype(&graph_handle, id);
                     let y_sq = push_node(&graph_handle, Op::Sqr, vec![id], y_shape.clone(), dtype);
                     let ones = build_ones(&graph_handle, y_shape.clone(), dtype);
-                    let one_minus_sq = push_node(&graph_handle, Op::Sub, vec![ones, y_sq], y_shape.clone(), dtype);
-                    let grad_x = push_node(&graph_handle, Op::Mul, vec![up_id, one_minus_sq], y_shape, dtype);
+                    let one_minus_sq = push_node(
+                        &graph_handle,
+                        Op::Sub,
+                        vec![ones, y_sq],
+                        y_shape.clone(),
+                        dtype,
+                    );
+                    let grad_x = push_node(
+                        &graph_handle,
+                        Op::Mul,
+                        vec![up_id, one_minus_sq],
+                        y_shape,
+                        dtype,
+                    );
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::SigmoidInplace => {
@@ -10325,9 +10547,27 @@ impl Tensor {
                     let y_shape = node_shape(&graph_handle, id);
                     let dtype = node_dtype(&graph_handle, id);
                     let ones = build_ones(&graph_handle, y_shape.clone(), dtype);
-                    let one_minus_y = push_node(&graph_handle, Op::Sub, vec![ones, id], y_shape.clone(), dtype);
-                    let y_times_1my = push_node(&graph_handle, Op::Mul, vec![id, one_minus_y], y_shape.clone(), dtype);
-                    let grad_x = push_node(&graph_handle, Op::Mul, vec![up_id, y_times_1my], y_shape, dtype);
+                    let one_minus_y = push_node(
+                        &graph_handle,
+                        Op::Sub,
+                        vec![ones, id],
+                        y_shape.clone(),
+                        dtype,
+                    );
+                    let y_times_1my = push_node(
+                        &graph_handle,
+                        Op::Mul,
+                        vec![id, one_minus_y],
+                        y_shape.clone(),
+                        dtype,
+                    );
+                    let grad_x = push_node(
+                        &graph_handle,
+                        Op::Mul,
+                        vec![up_id, y_times_1my],
+                        y_shape,
+                        dtype,
+                    );
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::GeluInplace => {
@@ -10358,8 +10598,10 @@ impl Tensor {
                     let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
-                    let sign_x = push_node(&graph_handle, Op::Sign, vec![x], x_shape.clone(), dtype);
-                    let grad_x = push_node(&graph_handle, Op::Mul, vec![up_id, sign_x], x_shape, dtype);
+                    let sign_x =
+                        push_node(&graph_handle, Op::Sign, vec![x], x_shape.clone(), dtype);
+                    let grad_x =
+                        push_node(&graph_handle, Op::Mul, vec![up_id, sign_x], x_shape, dtype);
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::SqrInplace => {
@@ -10369,8 +10611,10 @@ impl Tensor {
                     let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
-                    let two_x = push_node(&graph_handle, Op::Add, vec![x, x], x_shape.clone(), dtype);
-                    let grad_x = push_node(&graph_handle, Op::Mul, vec![up_id, two_x], x_shape, dtype);
+                    let two_x =
+                        push_node(&graph_handle, Op::Add, vec![x, x], x_shape.clone(), dtype);
+                    let grad_x =
+                        push_node(&graph_handle, Op::Mul, vec![up_id, two_x], x_shape, dtype);
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::SqrtInplace => {
@@ -10380,8 +10624,10 @@ impl Tensor {
                     let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
-                    let two_y = push_node(&graph_handle, Op::Add, vec![id, id], x_shape.clone(), dtype);
-                    let grad_x = push_node(&graph_handle, Op::Div, vec![up_id, two_y], x_shape, dtype);
+                    let two_y =
+                        push_node(&graph_handle, Op::Add, vec![id, id], x_shape.clone(), dtype);
+                    let grad_x =
+                        push_node(&graph_handle, Op::Div, vec![up_id, two_y], x_shape, dtype);
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::RsqrtInplace => {
@@ -10392,9 +10638,22 @@ impl Tensor {
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
                     let y_sq = push_node(&graph_handle, Op::Sqr, vec![id], x_shape.clone(), dtype);
-                    let y_cu = push_node(&graph_handle, Op::Mul, vec![id, y_sq], x_shape.clone(), dtype);
-                    let scaled = push_node(&graph_handle, Op::MulScalar(-0.5), vec![y_cu], x_shape.clone(), dtype);
-                    let grad_x = push_node(&graph_handle, Op::Mul, vec![up_id, scaled], x_shape, dtype);
+                    let y_cu = push_node(
+                        &graph_handle,
+                        Op::Mul,
+                        vec![id, y_sq],
+                        x_shape.clone(),
+                        dtype,
+                    );
+                    let scaled = push_node(
+                        &graph_handle,
+                        Op::MulScalar(-0.5),
+                        vec![y_cu],
+                        x_shape.clone(),
+                        dtype,
+                    );
+                    let grad_x =
+                        push_node(&graph_handle, Op::Mul, vec![up_id, scaled], x_shape, dtype);
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::RecipInplace => {
@@ -10404,7 +10663,13 @@ impl Tensor {
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
                     let y_sq = push_node(&graph_handle, Op::Sqr, vec![id], x_shape.clone(), dtype);
-                    let up_y_sq = push_node(&graph_handle, Op::Mul, vec![up_id, y_sq], x_shape.clone(), dtype);
+                    let up_y_sq = push_node(
+                        &graph_handle,
+                        Op::Mul,
+                        vec![up_id, y_sq],
+                        x_shape.clone(),
+                        dtype,
+                    );
                     let grad_x = push_node(&graph_handle, Op::Neg, vec![up_y_sq], x_shape, dtype);
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
@@ -10414,7 +10679,8 @@ impl Tensor {
                     let x = inputs[0];
                     let out_shape = node_shape(&graph_handle, id);
                     let dtype = node_dtype(&graph_handle, id);
-                    let grad_x = push_node(&graph_handle, Op::Mul, vec![up_id, id], out_shape, dtype);
+                    let grad_x =
+                        push_node(&graph_handle, Op::Mul, vec![up_id, id], out_shape, dtype);
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::LogInplace => {
@@ -10433,7 +10699,8 @@ impl Tensor {
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
                     let cos_x = push_node(&graph_handle, Op::Cos, vec![x], x_shape.clone(), dtype);
-                    let grad_x = push_node(&graph_handle, Op::Mul, vec![up_id, cos_x], x_shape, dtype);
+                    let grad_x =
+                        push_node(&graph_handle, Op::Mul, vec![up_id, cos_x], x_shape, dtype);
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::CosInplace => {
@@ -10442,14 +10709,17 @@ impl Tensor {
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
                     let sin_x = push_node(&graph_handle, Op::Sin, vec![x], x_shape.clone(), dtype);
-                    let up_sin = push_node(&graph_handle, Op::Mul, vec![up_id, sin_x], x_shape.clone(), dtype);
+                    let up_sin = push_node(
+                        &graph_handle,
+                        Op::Mul,
+                        vec![up_id, sin_x],
+                        x_shape.clone(),
+                        dtype,
+                    );
                     let grad_x = push_node(&graph_handle, Op::Neg, vec![up_sin], x_shape, dtype);
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
-                Op::SignInplace
-                | Op::FloorInplace
-                | Op::CeilInplace
-                | Op::RoundInplace => {
+                Op::SignInplace | Op::FloorInplace | Op::CeilInplace | Op::RoundInplace => {
                     // Same backward as Op::{Sign, Floor, Ceil, Round} —
                     // derivative is 0 almost everywhere; drop gradient
                     // (no accumulation, mirroring Op::Step's pattern).
@@ -10462,10 +10732,24 @@ impl Tensor {
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
                     let x_sq = push_node(&graph_handle, Op::Sqr, vec![x], x_shape.clone(), dtype);
-                    let neg_x_sq = push_node(&graph_handle, Op::Neg, vec![x_sq], x_shape.clone(), dtype);
-                    let exp_neg = push_node(&graph_handle, Op::Exp, vec![neg_x_sq], x_shape.clone(), dtype);
-                    let scaled = push_node(&graph_handle, Op::MulScalar(TWO_OVER_SQRT_PI), vec![exp_neg], x_shape.clone(), dtype);
-                    let grad_x = push_node(&graph_handle, Op::Mul, vec![up_id, scaled], x_shape, dtype);
+                    let neg_x_sq =
+                        push_node(&graph_handle, Op::Neg, vec![x_sq], x_shape.clone(), dtype);
+                    let exp_neg = push_node(
+                        &graph_handle,
+                        Op::Exp,
+                        vec![neg_x_sq],
+                        x_shape.clone(),
+                        dtype,
+                    );
+                    let scaled = push_node(
+                        &graph_handle,
+                        Op::MulScalar(TWO_OVER_SQRT_PI),
+                        vec![exp_neg],
+                        x_shape.clone(),
+                        dtype,
+                    );
+                    let grad_x =
+                        push_node(&graph_handle, Op::Mul, vec![up_id, scaled], x_shape, dtype);
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::ClampInplace { min, max } => {
@@ -10475,13 +10759,55 @@ impl Tensor {
                     let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
-                    let min_shifted = push_node(&graph_handle, Op::AddScalar(-min), vec![x], x_shape.clone(), dtype);
-                    let lower_ok = push_node(&graph_handle, Op::Step, vec![min_shifted], x_shape.clone(), dtype);
-                    let neg_x = push_node(&graph_handle, Op::MulScalar(-1.0), vec![x], x_shape.clone(), dtype);
-                    let max_minus_x = push_node(&graph_handle, Op::AddScalar(max), vec![neg_x], x_shape.clone(), dtype);
-                    let upper_ok = push_node(&graph_handle, Op::Step, vec![max_minus_x], x_shape.clone(), dtype);
-                    let indicator = push_node(&graph_handle, Op::Mul, vec![lower_ok, upper_ok], x_shape.clone(), dtype);
-                    let grad_x = push_node(&graph_handle, Op::Mul, vec![up_id, indicator], x_shape, dtype);
+                    let min_shifted = push_node(
+                        &graph_handle,
+                        Op::AddScalar(-min),
+                        vec![x],
+                        x_shape.clone(),
+                        dtype,
+                    );
+                    let lower_ok = push_node(
+                        &graph_handle,
+                        Op::Step,
+                        vec![min_shifted],
+                        x_shape.clone(),
+                        dtype,
+                    );
+                    let neg_x = push_node(
+                        &graph_handle,
+                        Op::MulScalar(-1.0),
+                        vec![x],
+                        x_shape.clone(),
+                        dtype,
+                    );
+                    let max_minus_x = push_node(
+                        &graph_handle,
+                        Op::AddScalar(max),
+                        vec![neg_x],
+                        x_shape.clone(),
+                        dtype,
+                    );
+                    let upper_ok = push_node(
+                        &graph_handle,
+                        Op::Step,
+                        vec![max_minus_x],
+                        x_shape.clone(),
+                        dtype,
+                    );
+                    let indicator = push_node(
+                        &graph_handle,
+                        Op::Mul,
+                        vec![lower_ok, upper_ok],
+                        x_shape.clone(),
+                        dtype,
+                    );
+                    let grad_x = push_node(
+                        &graph_handle,
+                        Op::Mul,
+                        vec![up_id, indicator],
+                        x_shape,
+                        dtype,
+                    );
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::PowIInplace(n) => {
@@ -10512,25 +10838,81 @@ impl Tensor {
                     let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
-                    let x_over_sqrt2 = push_node(&graph_handle, Op::MulScalar(INV_SQRT_2), vec![x], x_shape.clone(), dtype);
-                    let erf_arg = push_node(&graph_handle, Op::Erf, vec![x_over_sqrt2], x_shape.clone(), dtype);
-                    let plus_one = push_node(&graph_handle, Op::AddScalar(1.0), vec![erf_arg], x_shape.clone(), dtype);
-                    let cdf_term = push_node(&graph_handle, Op::MulScalar(0.5), vec![plus_one], x_shape.clone(), dtype);
+                    let x_over_sqrt2 = push_node(
+                        &graph_handle,
+                        Op::MulScalar(INV_SQRT_2),
+                        vec![x],
+                        x_shape.clone(),
+                        dtype,
+                    );
+                    let erf_arg = push_node(
+                        &graph_handle,
+                        Op::Erf,
+                        vec![x_over_sqrt2],
+                        x_shape.clone(),
+                        dtype,
+                    );
+                    let plus_one = push_node(
+                        &graph_handle,
+                        Op::AddScalar(1.0),
+                        vec![erf_arg],
+                        x_shape.clone(),
+                        dtype,
+                    );
+                    let cdf_term = push_node(
+                        &graph_handle,
+                        Op::MulScalar(0.5),
+                        vec![plus_one],
+                        x_shape.clone(),
+                        dtype,
+                    );
                     let x_sq = push_node(&graph_handle, Op::Sqr, vec![x], x_shape.clone(), dtype);
-                    let half_x_sq = push_node(&graph_handle, Op::MulScalar(0.5), vec![x_sq], x_shape.clone(), dtype);
-                    let neg_half = push_node(&graph_handle, Op::Neg, vec![half_x_sq], x_shape.clone(), dtype);
-                    let exp_term = push_node(&graph_handle, Op::Exp, vec![neg_half], x_shape.clone(), dtype);
-                    let phi = push_node(&graph_handle, Op::MulScalar(INV_SQRT_2PI), vec![exp_term], x_shape.clone(), dtype);
-                    let pdf_term = push_node(&graph_handle, Op::Mul, vec![x, phi], x_shape.clone(), dtype);
-                    let d_gelu = push_node(&graph_handle, Op::Add, vec![cdf_term, pdf_term], x_shape.clone(), dtype);
-                    let grad_x = push_node(&graph_handle, Op::Mul, vec![up_id, d_gelu], x_shape, dtype);
+                    let half_x_sq = push_node(
+                        &graph_handle,
+                        Op::MulScalar(0.5),
+                        vec![x_sq],
+                        x_shape.clone(),
+                        dtype,
+                    );
+                    let neg_half = push_node(
+                        &graph_handle,
+                        Op::Neg,
+                        vec![half_x_sq],
+                        x_shape.clone(),
+                        dtype,
+                    );
+                    let exp_term = push_node(
+                        &graph_handle,
+                        Op::Exp,
+                        vec![neg_half],
+                        x_shape.clone(),
+                        dtype,
+                    );
+                    let phi = push_node(
+                        &graph_handle,
+                        Op::MulScalar(INV_SQRT_2PI),
+                        vec![exp_term],
+                        x_shape.clone(),
+                        dtype,
+                    );
+                    let pdf_term =
+                        push_node(&graph_handle, Op::Mul, vec![x, phi], x_shape.clone(), dtype);
+                    let d_gelu = push_node(
+                        &graph_handle,
+                        Op::Add,
+                        vec![cdf_term, pdf_term],
+                        x_shape.clone(),
+                        dtype,
+                    );
+                    let grad_x =
+                        push_node(&graph_handle, Op::Mul, vec![up_id, d_gelu], x_shape, dtype);
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
             }
         }
 
         GradMap {
-            graph:           graph_handle,
+            graph: graph_handle,
             forward_to_grad: upstream,
         }
     }
@@ -10544,7 +10926,7 @@ impl Tensor {
 /// pointing at the gradient node so callers can realize it, plug it into
 /// further computation, or back-propagate through it again.
 pub struct GradMap {
-    graph:           SharedGraph,
+    graph: SharedGraph,
     forward_to_grad: HashMap<NodeId, NodeId>,
 }
 
@@ -10562,7 +10944,7 @@ impl GradMap {
         let &grad_id = self.forward_to_grad.get(&forward.id)?;
         Some(Tensor {
             graph: self.graph.clone(),
-            id:    grad_id,
+            id: grad_id,
         })
     }
 
@@ -10593,33 +10975,52 @@ fn lower_scans_for_backward(graph: &SharedGraph, root: NodeId) -> NodeId {
     let mut root = root;
     // helper: apply a remap to every consumer's inputs + the root, in place.
     fn apply_remap(graph: &SharedGraph, remap: &HashMap<NodeId, NodeId>, root: &mut NodeId) {
-        if remap.is_empty() { return; }
+        if remap.is_empty() {
+            return;
+        }
         let mut g = graph.write().unwrap();
         let n = g.len();
         for nid in 0..n {
             let ilen = g.node(NodeId(nid)).inputs.len();
             for i in 0..ilen {
                 let cur = g.node(NodeId(nid)).inputs[i];
-                if let Some(&new) = remap.get(&cur) { g.rewrite_input(NodeId(nid), cur, new); }
+                if let Some(&new) = remap.get(&cur) {
+                    g.rewrite_input(NodeId(nid), cur, new);
+                }
             }
         }
-        if let Some(&new) = remap.get(root) { *root = new; }
+        if let Some(&new) = remap.get(root) {
+            *root = new;
+        }
     }
 
     // --- Pass 1: decompose SSM Op::Fused(SELECTIVE_SCAN|SSD_CHUNK_SCAN) into Op::Scan.
     {
-        let ssm = [crate::registry::FusedOps::SELECTIVE_SCAN, crate::registry::FusedOps::SSD_CHUNK_SCAN];
-        let targets: Vec<(NodeId, crate::registry::FusedOpId, crate::registry::FusedOpParams)> = {
+        let ssm = [
+            crate::registry::FusedOps::SELECTIVE_SCAN,
+            crate::registry::FusedOps::SSD_CHUNK_SCAN,
+        ];
+        let targets: Vec<(
+            NodeId,
+            crate::registry::FusedOpId,
+            crate::registry::FusedOpParams,
+        )> = {
             let g = graph.read().unwrap();
-            crate::topo_order(&g, root).into_iter().filter_map(|id| match &g.node(id).op {
-                Op::Fused(fid, params) if ssm.contains(fid) => Some((id, *fid, params.clone())),
-                _ => None,
-            }).collect()
+            crate::topo_order(&g, root)
+                .into_iter()
+                .filter_map(|id| match &g.node(id).op {
+                    Op::Fused(fid, params) if ssm.contains(fid) => Some((id, *fid, params.clone())),
+                    _ => None,
+                })
+                .collect()
         };
         let mut remap = HashMap::new();
         for (id, fid, params) in targets {
             if let Some(entry) = crate::registry::default_registry().entry(fid) {
-                let y = { let mut g = graph.write().unwrap(); (entry.decompose)(&mut g, id, &params) };
+                let y = {
+                    let mut g = graph.write().unwrap();
+                    (entry.decompose)(&mut g, id, &params)
+                };
                 if y != id {
                     remap.insert(id, y);
                     // Collapse the fused node's slot-0 View consumers DIRECTLY to
@@ -10652,22 +11053,31 @@ fn lower_scans_for_backward(graph: &SharedGraph, root: NodeId) -> NodeId {
     loop {
         let scans: Vec<(NodeId, usize, ScanEmit)> = {
             let g = graph.read().unwrap();
-            crate::topo_order(&g, root).into_iter().filter_map(|id| match &g.node(id).op {
-                Op::Scan { bound, emit, .. } => Some((id, *bound, *emit)),
-                _ => None,
-            }).collect()
+            crate::topo_order(&g, root)
+                .into_iter()
+                .filter_map(|id| match &g.node(id).op {
+                    Op::Scan { bound, emit, .. } => Some((id, *bound, *emit)),
+                    _ => None,
+                })
+                .collect()
         };
-        if scans.is_empty() { break; }
+        if scans.is_empty() {
+            break;
+        }
         let mut remap = HashMap::new();
         for (scan_id, bound, emit) in scans {
-            let (a, b) = { let mut g = graph.write().unwrap();
+            let (a, b) = {
+                let mut g = graph.write().unwrap();
                 match crate::scan::unroll_scan(&mut g, scan_id, bound) {
                     Ok(pair) => pair,
                     Err(_) => continue, // malformed scan: leave it; the C4 guard describes it.
                 }
             };
             // Normalize to (slot0 = stacked_ys, slot1 = final_carry).
-            let (slot0, slot1) = match emit { ScanEmit::All => (a, b), ScanEmit::Final => (b, a) };
+            let (slot0, slot1) = match emit {
+                ScanEmit::All => (a, b),
+                ScanEmit::Final => (b, a),
+            };
             // Remap the scan's View{slot}/ViewOwned{slot} consumers to the unroll outputs.
             let g = graph.read().unwrap();
             for nid in 0..g.len() {
@@ -10685,7 +11095,9 @@ fn lower_scans_for_backward(graph: &SharedGraph, root: NodeId) -> NodeId {
         // the same unchanged graph forever. Any residual Op::Scan then reaches
         // the C4 defensive `panic!` guard (backward is infallible, so it cannot
         // return an error) — an internal-bug signal, never an infinite loop.
-        if remap.is_empty() { break; }
+        if remap.is_empty() {
+            break;
+        }
         apply_remap(graph, &remap, &mut root);
         // Unrolled graphs contain no Op::Scan, so a well-formed graph terminates
         // in <= 2 iterations (the loop re-scans in case a decomposed body itself
@@ -10755,13 +11167,16 @@ fn check_broadcast_compatible(src: &[usize], dst: &[usize]) {
 
 /// Result-returning sibling of [`check_broadcast_compatible`].
 fn try_check_broadcast_compatible(
-    src: &[usize], dst: &[usize],
+    src: &[usize],
+    dst: &[usize],
 ) -> std::result::Result<(), fuel_ir::Error> {
     if src.len() > dst.len() {
         return Err(fuel_ir::Error::Msg(format!(
             "broadcast_to: source rank {} exceeds target rank {}",
-            src.len(), dst.len(),
-        )).bt());
+            src.len(),
+            dst.len(),
+        ))
+        .bt());
     }
     let pad = dst.len() - src.len();
     for (i, &s) in src.iter().enumerate() {
@@ -10770,7 +11185,8 @@ fn try_check_broadcast_compatible(
             return Err(fuel_ir::Error::Msg(format!(
                 "broadcast_to: dim {i} of source ({s}) is incompatible with dim {} of target ({d})",
                 pad + i,
-            )).bt());
+            ))
+            .bt());
         }
     }
     Ok(())
@@ -10982,13 +11398,7 @@ fn accumulate_grad(
         Some(existing_id) => {
             let shape = node_shape(graph, forward_id);
             let dtype = node_dtype(graph, forward_id);
-            let combined = push_node(
-                graph,
-                Op::Add,
-                vec![existing_id, new_grad_id],
-                shape,
-                dtype,
-            );
+            let combined = push_node(graph, Op::Add, vec![existing_id, new_grad_id], shape, dtype);
             upstream.insert(forward_id, combined);
         }
     }
@@ -11003,8 +11413,8 @@ mod tests {
     /// stable singleton CpuBackendDevice handle so every call site can
     /// just pass `cpu_dev()` without per-test boilerplate.
     fn cpu_dev() -> &'static Arc<dyn fuel_backend_contract::DynBackendDevice> {
-        static D: std::sync::OnceLock<Arc<dyn fuel_backend_contract::DynBackendDevice>>
-            = std::sync::OnceLock::new();
+        static D: std::sync::OnceLock<Arc<dyn fuel_backend_contract::DynBackendDevice>> =
+            std::sync::OnceLock::new();
         D.get_or_init(|| Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice))
     }
 
@@ -11013,11 +11423,25 @@ mod tests {
         // No-drift guard (Convergence A, Task 6): every routed builder's output
         // shape/dtype must equal primitive_shape's answer for the same Op. If a
         // builder's inline math ever diverged from primitive_shape, this fails.
-        let x = Tensor::from_f32(vec![0.0_f32; 2 * 3 * 4], Shape::from_dims(&[2, 3, 4]), cpu_dev());
+        let x = Tensor::from_f32(
+            vec![0.0_f32; 2 * 3 * 4],
+            Shape::from_dims(&[2, 3, 4]),
+            cpu_dev(),
+        );
         let checks: Vec<(Tensor, Op)> = vec![
-            (x.slice(1, 0, 2), Op::Slice { dim: 1, start: 0, len: 2 }),
+            (
+                x.slice(1, 0, 2),
+                Op::Slice {
+                    dim: 1,
+                    start: 0,
+                    len: 2,
+                },
+            ),
             (x.mean_dim(2), Op::MeanDim(2)),
-            (x.try_permute(&[2, 0, 1]).unwrap(), Op::Permute(vec![2, 0, 1])),
+            (
+                x.try_permute(&[2, 0, 1]).unwrap(),
+                Op::Permute(vec![2, 0, 1]),
+            ),
             (x.cast(DType::F16), Op::Cast(DType::F16)),
         ];
         for (t, op) in checks {
@@ -11162,8 +11586,15 @@ mod tests {
     #[test]
     fn conv2d_builder_emits_conv2d_node_with_right_shape() {
         // k=3 s=1 p=1 keeps H and W.
-        let x = Tensor::from_f32(vec![0.0_f32; 1 * 2 * 4 * 4], Shape::from_dims(&[1, 2, 4, 4]), cpu_dev());
-        let w = x.const_f32_like(vec![0.0_f32; 3 * 2 * 3 * 3], Shape::from_dims(&[3, 2, 3, 3]));
+        let x = Tensor::from_f32(
+            vec![0.0_f32; 1 * 2 * 4 * 4],
+            Shape::from_dims(&[1, 2, 4, 4]),
+            cpu_dev(),
+        );
+        let w = x.const_f32_like(
+            vec![0.0_f32; 3 * 2 * 3 * 3],
+            Shape::from_dims(&[3, 2, 3, 3]),
+        );
         let b = x.const_f32_like(vec![0.0_f32; 3], Shape::from_dims(&[3]));
         let y = x.conv2d(&w, Some(&b), (1, 1), (1, 1), 1);
         assert_eq!(y.shape().dims(), &[1, 3, 4, 4]);
@@ -11172,8 +11603,15 @@ mod tests {
     #[test]
     fn conv2d_builder_stride_and_no_padding() {
         // k=3 s=2 p=0 on H=W=8 gives (8-3)/2+1 = 3.
-        let x = Tensor::from_f32(vec![0.0_f32; 1 * 2 * 8 * 8], Shape::from_dims(&[1, 2, 8, 8]), cpu_dev());
-        let w = x.const_f32_like(vec![0.0_f32; 4 * 2 * 3 * 3], Shape::from_dims(&[4, 2, 3, 3]));
+        let x = Tensor::from_f32(
+            vec![0.0_f32; 1 * 2 * 8 * 8],
+            Shape::from_dims(&[1, 2, 8, 8]),
+            cpu_dev(),
+        );
+        let w = x.const_f32_like(
+            vec![0.0_f32; 4 * 2 * 3 * 3],
+            Shape::from_dims(&[4, 2, 3, 3]),
+        );
         let y = x.conv2d(&w, None, (2, 2), (0, 0), 1);
         assert_eq!(y.shape().dims(), &[1, 4, 3, 3]);
     }
@@ -11181,8 +11619,15 @@ mod tests {
     #[test]
     fn conv2d_builder_depthwise_groups() {
         // groups=Cin=Cout=4 is the depthwise case. Weight per channel is [Cin/groups=1, kH, kW].
-        let x = Tensor::from_f32(vec![0.0_f32; 1 * 4 * 4 * 4], Shape::from_dims(&[1, 4, 4, 4]), cpu_dev());
-        let w = x.const_f32_like(vec![0.0_f32; 4 * 1 * 3 * 3], Shape::from_dims(&[4, 1, 3, 3]));
+        let x = Tensor::from_f32(
+            vec![0.0_f32; 1 * 4 * 4 * 4],
+            Shape::from_dims(&[1, 4, 4, 4]),
+            cpu_dev(),
+        );
+        let w = x.const_f32_like(
+            vec![0.0_f32; 4 * 1 * 3 * 3],
+            Shape::from_dims(&[4, 1, 3, 3]),
+        );
         let y = x.conv2d(&w, None, (1, 1), (1, 1), 4);
         assert_eq!(y.shape().dims(), &[1, 4, 4, 4]);
     }
@@ -11190,8 +11635,15 @@ mod tests {
     #[test]
     fn conv_transpose2d_builder_emits_node_with_right_shape() {
         // Hin=4, Kh=3, s=2, pad=1, out_pad=1 → Hout = (4-1)*2 + (3-1) + 1 + 1 - 2 = 8.
-        let x = Tensor::from_f32(vec![0.0_f32; 1 * 2 * 4 * 4], Shape::from_dims(&[1, 2, 4, 4]), cpu_dev());
-        let w = x.const_f32_like(vec![0.0_f32; 2 * 3 * 3 * 3], Shape::from_dims(&[2, 3, 3, 3]));
+        let x = Tensor::from_f32(
+            vec![0.0_f32; 1 * 2 * 4 * 4],
+            Shape::from_dims(&[1, 2, 4, 4]),
+            cpu_dev(),
+        );
+        let w = x.const_f32_like(
+            vec![0.0_f32; 2 * 3 * 3 * 3],
+            Shape::from_dims(&[2, 3, 3, 3]),
+        );
         let y = x.conv_transpose2d(&w, (2, 2), (1, 1), (1, 1), (1, 1), 1);
         assert_eq!(y.shape().dims(), &[1, 3, 8, 8]);
     }
@@ -11201,11 +11653,11 @@ mod tests {
         // Lin=4, K=3, s=2, pad=1, out_pad=1, dil=1
         // Lout = (4-1)*2 + (3-1) + 1 + 1 - 2 = 8.
         let x = Tensor::from_f32(
-            vec![0.0_f32; 1 * 2 * 4], Shape::from_dims(&[1, 2, 4]), cpu_dev(),
+            vec![0.0_f32; 1 * 2 * 4],
+            Shape::from_dims(&[1, 2, 4]),
+            cpu_dev(),
         );
-        let w = x.const_f32_like(
-            vec![0.0_f32; 2 * 3 * 3], Shape::from_dims(&[2, 3, 3]),
-        );
+        let w = x.const_f32_like(vec![0.0_f32; 2 * 3 * 3], Shape::from_dims(&[2, 3, 3]));
         let y = x.conv_transpose1d(&w, 2, 1, 1, 1, 1);
         assert_eq!(y.shape().dims(), &[1, 3, 8]);
     }
@@ -11215,11 +11667,11 @@ mod tests {
         // Lin=2, K=4, s=4, pad=0, out_pad=0, dil=1
         // Lout = (2-1)*4 + (4-1) + 0 + 1 - 0 = 8.
         let x = Tensor::from_f32(
-            vec![0.0_f32; 1 * 1 * 2], Shape::from_dims(&[1, 1, 2]), cpu_dev(),
+            vec![0.0_f32; 1 * 1 * 2],
+            Shape::from_dims(&[1, 1, 2]),
+            cpu_dev(),
         );
-        let w = x.const_f32_like(
-            vec![0.0_f32; 1 * 1 * 4], Shape::from_dims(&[1, 1, 4]),
-        );
+        let w = x.const_f32_like(vec![0.0_f32; 1 * 1 * 4], Shape::from_dims(&[1, 1, 4]));
         let y = x.conv_transpose1d(&w, 4, 0, 0, 1, 1);
         assert_eq!(y.shape().dims(), &[1, 1, 8]);
     }
@@ -11230,11 +11682,11 @@ mod tests {
         // Cin=4 first dim matches input; Cout/group=3 → total Cout=6.
         // Lin=3, K=3, s=1, pad=0, out_pad=0, dil=1 → Lout = (3-1)*1 + 2 + 0 + 1 = 5.
         let x = Tensor::from_f32(
-            vec![0.0_f32; 1 * 4 * 3], Shape::from_dims(&[1, 4, 3]), cpu_dev(),
+            vec![0.0_f32; 1 * 4 * 3],
+            Shape::from_dims(&[1, 4, 3]),
+            cpu_dev(),
         );
-        let w = x.const_f32_like(
-            vec![0.0_f32; 4 * 3 * 3], Shape::from_dims(&[4, 3, 3]),
-        );
+        let w = x.const_f32_like(vec![0.0_f32; 4 * 3 * 3], Shape::from_dims(&[4, 3, 3]));
         let y = x.conv_transpose1d(&w, 1, 0, 0, 1, 2);
         assert_eq!(y.shape().dims(), &[1, 6, 5]);
     }
@@ -11244,13 +11696,18 @@ mod tests {
         // Forward Y = conv2d(X, W) with stride=1, pad=1, groups=1 keeps H,W.
         // Backward should produce dX with X's shape and dW with W's shape.
         let x = Tensor::from_f32(
-            (0..(1*2*4*4)).map(|i| (i as f32) * 0.05 - 0.5).collect::<Vec<f32>>(),
+            (0..(1 * 2 * 4 * 4))
+                .map(|i| (i as f32) * 0.05 - 0.5)
+                .collect::<Vec<f32>>(),
             Shape::from_dims(&[1, 2, 4, 4]),
             cpu_dev(),
         );
         let w = x.const_f32_like(
-            (0..(3*2*3*3)).map(|i| (i as f32) * 0.07 - 0.4).collect::<Vec<f32>>(),
-            Shape::from_dims(&[3, 2, 3, 3]));
+            (0..(3 * 2 * 3 * 3))
+                .map(|i| (i as f32) * 0.07 - 0.4)
+                .collect::<Vec<f32>>(),
+            Shape::from_dims(&[3, 2, 3, 3]),
+        );
         let y = x.conv2d(&w, None, (1, 1), (1, 1), 1);
         let scalar_out = y.sum_all();
         let grads = scalar_out.backward();
@@ -11262,12 +11719,24 @@ mod tests {
 
     #[test]
     fn destructive_input_move_is_some_zero() {
-        assert_eq!(Op::Move { target: DeviceLocation::Cpu }.destructive_input(), Some(0));
+        assert_eq!(
+            Op::Move {
+                target: DeviceLocation::Cpu
+            }
+            .destructive_input(),
+            Some(0)
+        );
     }
 
     #[test]
     fn destructive_input_non_destructive_ops_are_none() {
-        assert_eq!(Op::Copy { target: DeviceLocation::Cpu }.destructive_input(), None);
+        assert_eq!(
+            Op::Copy {
+                target: DeviceLocation::Cpu
+            }
+            .destructive_input(),
+            None
+        );
         assert_eq!(Op::Add.destructive_input(), None);
         assert_eq!(Op::Mul.destructive_input(), None);
         assert_eq!(Op::MatMul.destructive_input(), None);
@@ -11339,7 +11808,10 @@ mod tests {
         let a = Tensor::from_f32(vec![1.0], Shape::from_dims(&[1]), cpu_dev());
         let tagged = a.clone().on_device(DeviceLocation::Cpu);
         // Re-read from a fresh borrow — round-trips through the side-table.
-        assert_eq!(tagged.graph().read().unwrap().placement(tagged.id()), Some(DeviceLocation::Cpu));
+        assert_eq!(
+            tagged.graph().read().unwrap().placement(tagged.id()),
+            Some(DeviceLocation::Cpu)
+        );
     }
 
     #[test]
@@ -11486,7 +11958,11 @@ mod tests {
         let f16t = Tensor::from_f16_on(&g, vec![half::f16::from_f32(1.0)], s.clone(), cpu_dev());
         let u32t = Tensor::from_u32_on(&g, vec![1u32], s, cpu_dev());
         for t in [&f64t, &bf16t, &f16t, &u32t] {
-            assert_eq!(t.graph_id(), f32t.graph_id(), "all must share the given graph");
+            assert_eq!(
+                t.graph_id(),
+                f32t.graph_id(),
+                "all must share the given graph"
+            );
         }
         assert_eq!(f64t.dtype(), DType::F64);
         assert_eq!(bf16t.dtype(), DType::BF16);
@@ -11547,7 +12023,11 @@ mod tests {
 
     #[test]
     fn transpose_swaps_shape_dims() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], Shape::from_dims(&[2, 3]), cpu_dev());
+        let a = Tensor::from_f32(
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            Shape::from_dims(&[2, 3]),
+            cpu_dev(),
+        );
         let t = a.transpose();
         assert_eq!(t.shape().dims(), &[3, 2]);
         let node = t.graph().read().unwrap().node(t.id()).clone();
@@ -11746,8 +12226,11 @@ mod tests {
 
     #[test]
     fn unsqueeze_inserts_size_one_dim() {
-        let x = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
-                                 Shape::from_dims(&[2, 3]), cpu_dev());
+        let x = Tensor::from_f32(
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            Shape::from_dims(&[2, 3]),
+            cpu_dev(),
+        );
         // Insert at position 0: [2, 3] -> [1, 2, 3]
         let y0 = x.unsqueeze(0);
         assert_eq!(y0.shape().dims(), &[1, 2, 3]);
@@ -11777,12 +12260,17 @@ mod tests {
         // After Graph::push auto-derives the Layout side-table for view
         // ops, an unsqueeze node should have an explicit layout entry
         // with a stride-0 axis at the inserted position.
-        let x = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0],
-                                 Shape::from_dims(&[2, 2]), cpu_dev());
+        let x = Tensor::from_f32(
+            vec![1.0, 2.0, 3.0, 4.0],
+            Shape::from_dims(&[2, 2]),
+            cpu_dev(),
+        );
         let y = x.unsqueeze(1);
         let g = x.graph().read().unwrap();
-        assert!(g.has_explicit_layout(y.id()),
-            "Graph::push should auto-populate layout for view ops");
+        assert!(
+            g.has_explicit_layout(y.id()),
+            "Graph::push should auto-populate layout for view ops"
+        );
         let l = g.layout(y.id());
         assert_eq!(l.shape().dims(), &[2, 1, 2]);
         // Stride at the inserted axis should be 0 (per the convention
@@ -11796,7 +12284,10 @@ mod tests {
         let x = Tensor::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
         let r1 = x.reduce_max_to(Shape::from_dims(&[4]));
         assert_eq!(r1.shape().dims(), &[4]);
-        assert!(matches!(r1.graph().read().unwrap().node(r1.id()).op, Op::ReduceMaxTo(_)));
+        assert!(matches!(
+            r1.graph().read().unwrap().node(r1.id()).op,
+            Op::ReduceMaxTo(_)
+        ));
         let r2 = x.reduce_max_to(Shape::from_dims(&[3, 1]));
         assert_eq!(r2.shape().dims(), &[3, 1]);
     }
@@ -11903,10 +12394,7 @@ mod tests {
         let c = a.const_f32_like(vec![5.0, 6.0], Shape::from_dims(&[2]));
         let add1 = a.add(&b);
         let add2 = a.add(&c);
-        let order = topo_order_multi(
-            &add1.graph().read().unwrap(),
-            &[add1.id(), add2.id()],
-        );
+        let order = topo_order_multi(&add1.graph().read().unwrap(), &[add1.id(), add2.id()]);
         assert_eq!(order.len(), 5);
         let pos = |id: NodeId| order.iter().position(|&x| x == id).unwrap();
         assert!(pos(a.id()) < pos(add1.id()));
@@ -12071,7 +12559,11 @@ mod tests {
 
     #[test]
     fn softmax_and_layer_norm_preserve_shape() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[2, 2]), cpu_dev());
+        let a = Tensor::from_f32(
+            vec![1.0, 2.0, 3.0, 4.0],
+            Shape::from_dims(&[2, 2]),
+            cpu_dev(),
+        );
         assert_eq!(a.softmax_last_dim().shape().dims(), &[2, 2]);
         assert_eq!(a.layer_norm_last_dim(1e-5).shape().dims(), &[2, 2]);
     }
@@ -12167,12 +12659,10 @@ mod tests {
         let node = g_a.graph().read().unwrap().node(g_a.id()).clone();
         assert!(matches!(node.op, Op::Mul));
         // Find a Step node somewhere in the node's inputs.
-        let any_step = node.inputs.iter().any(|&id| {
-            matches!(
-                g_a.graph().read().unwrap().node(id).op,
-                Op::Step,
-            )
-        });
+        let any_step = node
+            .inputs
+            .iter()
+            .any(|&id| matches!(g_a.graph().read().unwrap().node(id).op, Op::Step,));
         assert!(any_step, "Relu backward must reference a Step node");
     }
 
@@ -12205,17 +12695,26 @@ mod tests {
         let g_a = grads.get(&a).unwrap();
         let g = g_a.graph().read().unwrap();
         let neg_node = g.node(g_a.id()).clone();
-        assert!(matches!(neg_node.op, Op::Neg), "outermost backward op must be Neg");
+        assert!(
+            matches!(neg_node.op, Op::Neg),
+            "outermost backward op must be Neg"
+        );
         let mul_id = neg_node.inputs[0];
         let mul_node = g.node(mul_id).clone();
         assert!(matches!(mul_node.op, Op::Mul));
         // One of the Mul's inputs is a Sqr node fed by the forward Recip.
-        let sqr_id = mul_node.inputs.iter().copied().find(|&id| {
-            matches!(g.node(id).op, Op::Sqr)
-        }).expect("backward chain must contain a Sqr node");
+        let sqr_id = mul_node
+            .inputs
+            .iter()
+            .copied()
+            .find(|&id| matches!(g.node(id).op, Op::Sqr))
+            .expect("backward chain must contain a Sqr node");
         let sqr_node = g.node(sqr_id).clone();
-        assert_eq!(sqr_node.inputs, vec![y_id],
-            "Sqr's input must be the forward Recip output, not a recompute");
+        assert_eq!(
+            sqr_node.inputs,
+            vec![y_id],
+            "Sqr's input must be the forward Recip output, not a recompute"
+        );
     }
 
     #[test]
@@ -12233,17 +12732,27 @@ mod tests {
         assert!(matches!(mul_node.op, Op::Mul));
         // Exactly one input of the Mul is a Sign node (the other is
         // the upstream gradient — a Const-rooted ones-tensor here).
-        let sign_count = mul_node.inputs.iter().filter(|&&id| {
-            matches!(g.node(id).op, Op::Sign)
-        }).count();
-        assert_eq!(sign_count, 1,
-            "Abs backward must reference exactly 1 Sign node, got {sign_count}");
+        let sign_count = mul_node
+            .inputs
+            .iter()
+            .filter(|&&id| matches!(g.node(id).op, Op::Sign))
+            .count();
+        assert_eq!(
+            sign_count, 1,
+            "Abs backward must reference exactly 1 Sign node, got {sign_count}"
+        );
         // The Sign node should feed off the original input `a`.
-        let sign_id = mul_node.inputs.iter().copied().find(|&id| {
-            matches!(g.node(id).op, Op::Sign)
-        }).unwrap();
-        assert_eq!(g.node(sign_id).inputs, vec![a.id()],
-            "Sign's input must be the forward input `a`");
+        let sign_id = mul_node
+            .inputs
+            .iter()
+            .copied()
+            .find(|&id| matches!(g.node(id).op, Op::Sign))
+            .unwrap();
+        assert_eq!(
+            g.node(sign_id).inputs,
+            vec![a.id()],
+            "Sign's input must be the forward input `a`"
+        );
     }
 
     #[test]
@@ -12287,8 +12796,10 @@ mod tests {
         // on the same input. Both share the validation message.
         let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let err = a.try_unsqueeze(5).expect_err("dim above rank must error");
-        assert!(format!("{err:?}").contains("out of bounds"),
-            "error must mention bounds, got: {err:?}");
+        assert!(
+            format!("{err:?}").contains("out of bounds"),
+            "error must mention bounds, got: {err:?}"
+        );
         // Happy path still works.
         let ok = a.try_unsqueeze(0).expect("dim=0 valid for any rank");
         assert_eq!(ok.shape().dims(), &[1, 3]);
@@ -12297,30 +12808,45 @@ mod tests {
     #[test]
     fn try_reshape_returns_err_on_count_mismatch() {
         let a = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[4]), cpu_dev());
-        let err = a.try_reshape(Shape::from_dims(&[3])).expect_err("count mismatch must error");
-        assert!(format!("{err:?}").contains("element count mismatch"),
-            "error must mention count mismatch, got: {err:?}");
-        let ok = a.try_reshape(Shape::from_dims(&[2, 2])).expect("matching count is ok");
+        let err = a
+            .try_reshape(Shape::from_dims(&[3]))
+            .expect_err("count mismatch must error");
+        assert!(
+            format!("{err:?}").contains("element count mismatch"),
+            "error must mention count mismatch, got: {err:?}"
+        );
+        let ok = a
+            .try_reshape(Shape::from_dims(&[2, 2]))
+            .expect("matching count is ok");
         assert_eq!(ok.shape().dims(), &[2, 2]);
     }
 
     #[test]
     fn try_broadcast_to_returns_err_on_incompatible_shape() {
         let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
-        let err = a.try_broadcast_to(Shape::from_dims(&[2, 4]))
+        let err = a
+            .try_broadcast_to(Shape::from_dims(&[2, 4]))
             .expect_err("source dim 3 cannot broadcast to dim 4");
-        assert!(format!("{err:?}").contains("incompatible"),
-            "error must mention incompatibility, got: {err:?}");
-        let ok = a.try_broadcast_to(Shape::from_dims(&[2, 3])).expect("dim 3 broadcasts to dim 3");
+        assert!(
+            format!("{err:?}").contains("incompatible"),
+            "error must mention incompatibility, got: {err:?}"
+        );
+        let ok = a
+            .try_broadcast_to(Shape::from_dims(&[2, 3]))
+            .expect("dim 3 broadcasts to dim 3");
         assert_eq!(ok.shape().dims(), &[2, 3]);
     }
 
     #[test]
     fn try_transpose_returns_err_on_rank_below_2() {
         let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
-        let err = a.try_transpose().expect_err("rank-1 input cannot transpose");
-        assert!(format!("{err:?}").contains("rank ≥ 2"),
-            "error must mention rank requirement, got: {err:?}");
+        let err = a
+            .try_transpose()
+            .expect_err("rank-1 input cannot transpose");
+        assert!(
+            format!("{err:?}").contains("rank ≥ 2"),
+            "error must mention rank requirement, got: {err:?}"
+        );
         let m = Tensor::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         let mt = m.try_transpose().expect("rank-2 transposes ok");
         assert_eq!(mt.shape().dims(), &[3, 2]);
@@ -12331,8 +12857,10 @@ mod tests {
         let a = Tensor::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         // Wrong axes length:
         let err = a.try_permute(&[0]).expect_err("axes length mismatch");
-        assert!(format!("{err:?}").contains("must equal tensor rank"),
-            "error must mention length, got: {err:?}");
+        assert!(
+            format!("{err:?}").contains("must equal tensor rank"),
+            "error must mention length, got: {err:?}"
+        );
         // Out-of-bounds axis:
         let err = a.try_permute(&[0, 5]).expect_err("axis 5 out of rank 2");
         assert!(format!("{err:?}").contains("out of bounds"));
@@ -12348,11 +12876,7 @@ mod tests {
     fn squeeze_drops_size_one_dim_metadata_only() {
         // Build [2, 1, 3] → squeeze(1) → [2, 3]. Op::Squeeze, view-op,
         // shape pruned, dtype preserved, single input slot.
-        let a = Tensor::from_f32(
-            vec![1.0; 6],
-            Shape::from_dims(&[2, 1, 3]),
-            cpu_dev(),
-        );
+        let a = Tensor::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 1, 3]), cpu_dev());
         let s = a.squeeze(1).expect("squeeze on size-1 dim");
         assert_eq!(s.shape().dims(), &[2, 3]);
         assert_eq!(s.dtype(), DType::F32);
@@ -12361,46 +12885,55 @@ mod tests {
         assert_eq!(node.inputs, vec![a.id()]);
         // Squeeze joins the view-op set so the Layout side-table is
         // populated automatically.
-        assert!(node.op.is_view_op(),
-            "Op::Squeeze must register as a view op");
+        assert!(
+            node.op.is_view_op(),
+            "Op::Squeeze must register as a view op"
+        );
     }
 
     #[test]
     fn squeeze_rejects_non_size_one_dim() {
         // Result-returning: bad dim surfaces as Err, not panic.
         let a = Tensor::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
-        let err = a.squeeze(1).expect_err("squeezing a non-size-1 dim must error");
-        assert!(format!("{err:?}").contains("expected 1"),
-            "error message should mention the size-1 expectation, got: {err:?}");
+        let err = a
+            .squeeze(1)
+            .expect_err("squeezing a non-size-1 dim must error");
+        assert!(
+            format!("{err:?}").contains("expected 1"),
+            "error message should mention the size-1 expectation, got: {err:?}"
+        );
     }
 
     #[test]
     fn squeeze_rejects_dim_above_rank() {
         let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let err = a.squeeze(5).expect_err("dim above rank must error");
-        assert!(format!("{err:?}").contains("out of bounds"),
-            "error message should mention bounds, got: {err:?}");
+        assert!(
+            format!("{err:?}").contains("out of bounds"),
+            "error message should mention bounds, got: {err:?}"
+        );
     }
 
     #[test]
     fn backward_through_squeeze_emits_unsqueeze() {
         // y = squeeze(x, 1). Backward: re-insert dim 1 via Unsqueeze.
         // Gradient shape must equal x.shape exactly.
-        let a = Tensor::from_f32(
-            vec![1.0; 6],
-            Shape::from_dims(&[2, 1, 3]),
-            cpu_dev(),
-        );
+        let a = Tensor::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 1, 3]), cpu_dev());
         let y = a.squeeze(1).expect("squeeze on size-1 dim");
         let grads = y.backward();
         let g_a = grads.get(&a).expect("gradient for a");
-        assert_eq!(g_a.shape().dims(), &[2, 1, 3],
-            "Squeeze backward gradient must restore the original shape");
+        assert_eq!(
+            g_a.shape().dims(),
+            &[2, 1, 3],
+            "Squeeze backward gradient must restore the original shape"
+        );
         // The chain is: ones-seed (post-squeeze, shape [2,3])
         //               → Unsqueeze(dim=1) → shape [2, 1, 3].
         let g_node = g_a.graph().read().unwrap().node(g_a.id()).clone();
-        assert!(matches!(g_node.op, Op::Unsqueeze { dim: 1 }),
-            "Squeeze backward must be Unsqueeze at the same dim");
+        assert!(
+            matches!(g_node.op, Op::Unsqueeze { dim: 1 }),
+            "Squeeze backward must be Unsqueeze at the same dim"
+        );
     }
 
     #[test]
@@ -12425,8 +12958,10 @@ mod tests {
         let y = a.floor();
         let grads = y.backward();
         // a's gradient is dropped — no entry in the GradMap.
-        assert!(grads.get(&a).is_none(),
-            "Floor must not propagate gradient to its input");
+        assert!(
+            grads.get(&a).is_none(),
+            "Floor must not propagate gradient to its input"
+        );
     }
 
     #[test]
@@ -12436,15 +12971,18 @@ mod tests {
         // Op::Where node carries 3 inputs in order (cond, a, b).
         let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let b = a.const_f32_like(vec![10.0, 20.0, 30.0], Shape::from_dims(&[3]));
-        let eq_a_b = a.eq(&b);  // Bool mask
+        let eq_a_b = a.eq(&b); // Bool mask
         let picked = eq_a_b.where_cond(&a, &b);
         assert_eq!(picked.shape().dims(), &[3]);
         assert_eq!(picked.dtype(), DType::F32, "Where output dtype = a/b dtype");
         let node = picked.graph().read().unwrap().node(picked.id()).clone();
         assert!(matches!(node.op, Op::Where));
         assert_eq!(node.inputs.len(), 3);
-        assert_eq!(node.inputs, vec![eq_a_b.id(), a.id(), b.id()],
-            "Where input order: (cond, a, b)");
+        assert_eq!(
+            node.inputs,
+            vec![eq_a_b.id(), a.id(), b.id()],
+            "Where input order: (cond, a, b)"
+        );
     }
 
     #[test]
@@ -12472,24 +13010,29 @@ mod tests {
 
     #[test]
     fn write_slice_destructive_input_is_zero() {
-        let op = Op::WriteSlice { ranges: vec![(0, 1), (0, 32), (0, 128)], dyn_offset: None };
+        let op = Op::WriteSlice {
+            ranges: vec![(0, 1), (0, 32), (0, 128)],
+            dyn_offset: None,
+        };
         assert_eq!(op.destructive_input(), Some(0));
     }
 
     #[test]
     fn write_slice_short_name() {
-        let op = Op::WriteSlice { ranges: vec![(0, 1)], dyn_offset: None };
+        let op = Op::WriteSlice {
+            ranges: vec![(0, 1)],
+            dyn_offset: None,
+        };
         assert_eq!(op.short_name(), "WriteSlice");
     }
 
     #[test]
     fn write_slice_emits_op_writeslice_node() {
         // dest shape [4, 3]; source shape [1, 3]; write at row 2.
-        let dest = Tensor::from_f32(
-            vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev(),
-        );
+        let dest = Tensor::from_f32(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev());
         let src = dest.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[1, 3]));
-        let out = dest.write_slice(&src, vec![(2, 3), (0, 3)])
+        let out = dest
+            .write_slice(&src, vec![(2, 3), (0, 3)])
             .expect("write_slice should accept matching shapes");
         let g = out.graph().read().unwrap();
         match &g.node(out.id()).op {
@@ -12508,9 +13051,7 @@ mod tests {
     fn write_slice_dyn_records_dynamic_offset() {
         use fuel_ir::{DynScalar, SymId};
         // dest capacity [8, 3]; source [1, 3]; dynamic start on axis 0.
-        let dest = Tensor::from_f32(
-            vec![0.0_f32; 24], Shape::from_dims(&[8, 3]), cpu_dev(),
-        );
+        let dest = Tensor::from_f32(vec![0.0_f32; 24], Shape::from_dims(&[8, 3]), cpu_dev());
         let src = dest.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[1, 3]));
         let sym = SymId(0);
         // ranges[0].0 is ignored (start is dynamic); width = 1 - 0 = 1
@@ -12535,20 +13076,19 @@ mod tests {
         use fuel_ir::{DynScalar, SymId};
         // dest capacity on axis 0 is 2, but the dynamic-axis slab is
         // width 4 — can never fit regardless of the runtime offset.
-        let dest = Tensor::from_f32(
-            vec![0.0_f32; 6], Shape::from_dims(&[2, 3]), cpu_dev(),
-        );
+        let dest = Tensor::from_f32(vec![0.0_f32; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         let src = dest.const_f32_like(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]));
         let err = dest.write_slice_dyn(&src, vec![(0, 4), (0, 3)], 0, DynScalar::Sym(SymId(0)));
-        assert!(err.is_err(), "dynamic-axis slab wider than capacity must error at build");
+        assert!(
+            err.is_err(),
+            "dynamic-axis slab wider than capacity must error at build"
+        );
     }
 
     #[test]
     fn write_slice_dyn_rejects_axis_out_of_bounds() {
         use fuel_ir::{DynScalar, SymId};
-        let dest = Tensor::from_f32(
-            vec![0.0_f32; 6], Shape::from_dims(&[2, 3]), cpu_dev(),
-        );
+        let dest = Tensor::from_f32(vec![0.0_f32; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         let src = dest.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[1, 3]));
         let err = dest.write_slice_dyn(&src, vec![(0, 1), (0, 3)], 5, DynScalar::Sym(SymId(0)));
         assert!(err.is_err(), "dyn_axis past rank must error");
@@ -12559,14 +13099,29 @@ mod tests {
         use fuel_ir::{DynScalar, SymId};
         // q [1, 2, 3, 4]; K/V capacity [1, 1, 8, 4] (GQA Hq=2, Hkv=1).
         let q = Tensor::from_f32(
-            vec![0.0_f32; 1 * 2 * 3 * 4], Shape::from_dims(&[1, 2, 3, 4]), cpu_dev(),
+            vec![0.0_f32; 1 * 2 * 3 * 4],
+            Shape::from_dims(&[1, 2, 3, 4]),
+            cpu_dev(),
         );
-        let k = q.const_f32_like(vec![0.0_f32; 1 * 1 * 8 * 4], Shape::from_dims(&[1, 1, 8, 4]));
-        let v = q.const_f32_like(vec![0.0_f32; 1 * 1 * 8 * 4], Shape::from_dims(&[1, 1, 8, 4]));
+        let k = q.const_f32_like(
+            vec![0.0_f32; 1 * 1 * 8 * 4],
+            Shape::from_dims(&[1, 1, 8, 4]),
+        );
+        let v = q.const_f32_like(
+            vec![0.0_f32; 1 * 1 * 8 * 4],
+            Shape::from_dims(&[1, 1, 8, 4]),
+        );
         let sym = SymId(0);
         let out = q.flash_attn_dyn(
-            &k, &v, None, /*scale*/ 0.5, /*causal*/ true,
-            None, None, None, DynScalar::Sym(sym),
+            &k,
+            &v,
+            None,
+            /*scale*/ 0.5,
+            /*causal*/ true,
+            None,
+            None,
+            None,
+            DynScalar::Sym(sym),
         );
         // Output adopts q's shape, not the capacity.
         assert_eq!(out.shape().dims(), &[1, 2, 3, 4]);
@@ -12588,19 +13143,35 @@ mod tests {
     fn flash_attn_dyn_concrete_k_len_exceeding_capacity_panics() {
         use fuel_ir::DynScalar;
         let q = Tensor::from_f32(
-            vec![0.0_f32; 1 * 1 * 2 * 4], Shape::from_dims(&[1, 1, 2, 4]), cpu_dev(),
+            vec![0.0_f32; 1 * 1 * 2 * 4],
+            Shape::from_dims(&[1, 1, 2, 4]),
+            cpu_dev(),
         );
-        let k = q.const_f32_like(vec![0.0_f32; 1 * 1 * 4 * 4], Shape::from_dims(&[1, 1, 4, 4]));
-        let v = q.const_f32_like(vec![0.0_f32; 1 * 1 * 4 * 4], Shape::from_dims(&[1, 1, 4, 4]));
+        let k = q.const_f32_like(
+            vec![0.0_f32; 1 * 1 * 4 * 4],
+            Shape::from_dims(&[1, 1, 4, 4]),
+        );
+        let v = q.const_f32_like(
+            vec![0.0_f32; 1 * 1 * 4 * 4],
+            Shape::from_dims(&[1, 1, 4, 4]),
+        );
         // Concrete k_len=5 > capacity 4 → build-time panic.
-        let _ = q.flash_attn_dyn(&k, &v, None, 1.0, true, None, None, None, DynScalar::Concrete(5));
+        let _ = q.flash_attn_dyn(
+            &k,
+            &v,
+            None,
+            1.0,
+            true,
+            None,
+            None,
+            None,
+            DynScalar::Concrete(5),
+        );
     }
 
     #[test]
     fn write_slice_rejects_rank_mismatch() {
-        let dest = Tensor::from_f32(
-            vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev(),
-        );
+        let dest = Tensor::from_f32(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev());
         let src = dest.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
         // ranges has rank 2 (matches dest) but source has rank 1.
         let err = dest.write_slice(&src, vec![(0, 1), (0, 3)]);
@@ -12626,15 +13197,15 @@ mod tests {
 
     #[test]
     fn write_slice_rejects_cross_graph_source() {
-        let dest = Tensor::from_f32(
-            vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev(),
-        );
+        let dest = Tensor::from_f32(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev());
         // A SECOND `from_*` mints a second graph — the easy mistake to make,
         // and currently the un-diagnosable one.
-        let foreign = Tensor::from_f32(
-            vec![1.0, 2.0, 3.0], Shape::from_dims(&[1, 3]), cpu_dev(),
+        let foreign = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[1, 3]), cpu_dev());
+        assert_ne!(
+            dest.graph_id(),
+            foreign.graph_id(),
+            "fixture must be cross-graph"
         );
-        assert_ne!(dest.graph_id(), foreign.graph_id(), "fixture must be cross-graph");
 
         let err = dest.write_slice(&foreign, vec![(2, 3), (0, 3)]);
         assert!(
@@ -12651,9 +13222,12 @@ mod tests {
     #[test]
     fn masked_fill_rejects_cross_graph_mask() {
         let x = Tensor::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
-        let foreign_mask =
-            Tensor::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
-        assert_ne!(x.graph_id(), foreign_mask.graph_id(), "fixture must be cross-graph");
+        let foreign_mask = Tensor::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        assert_ne!(
+            x.graph_id(),
+            foreign_mask.graph_id(),
+            "fixture must be cross-graph"
+        );
 
         let err = x.masked_fill(&foreign_mask, Scalar::F32(0.0));
         assert!(
@@ -12683,7 +13257,10 @@ mod tests {
         let value = Scalar::one(DType::F8E8M0).unwrap();
 
         let err = scale.masked_fill(&mask, value);
-        assert!(err.is_err(), "masked_fill on a scale dtype must be a build-time Err");
+        assert!(
+            err.is_err(),
+            "masked_fill on a scale dtype must be a build-time Err"
+        );
         let msg = format!("{}", err.unwrap_err());
         assert!(
             msg.contains("unsupported dtype") && msg.contains("masked_fill"),
@@ -12742,7 +13319,8 @@ mod tests {
         );
         let xi = x.cast(DType::I32);
         assert!(
-            xi.masked_fill(&mask, Scalar::one(DType::I32).unwrap()).is_ok(),
+            xi.masked_fill(&mask, Scalar::one(DType::I32).unwrap())
+                .is_ok(),
             "I32 masked_fill must build — permission preserved, not a correctness claim",
         );
     }
@@ -12761,22 +13339,16 @@ mod tests {
 
     #[test]
     fn write_slice_rejects_slab_width_mismatch() {
-        let dest = Tensor::from_f32(
-            vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev(),
-        );
+        let dest = Tensor::from_f32(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev());
         // Source has 2 elements along axis 0, but slab is width 1.
-        let src = dest.const_f32_like(
-            vec![1.0_f32; 6], Shape::from_dims(&[2, 3]),
-        );
+        let src = dest.const_f32_like(vec![1.0_f32; 6], Shape::from_dims(&[2, 3]));
         let err = dest.write_slice(&src, vec![(2, 3), (0, 3)]);
         assert!(err.is_err(), "slab-width mismatch must error");
     }
 
     #[test]
     fn write_slice_rejects_range_past_dest_extent() {
-        let dest = Tensor::from_f32(
-            vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev(),
-        );
+        let dest = Tensor::from_f32(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev());
         let src = dest.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[1, 3]));
         // axis 0: dest extent is 4; range [4, 5) is out of bounds.
         let err = dest.write_slice(&src, vec![(4, 5), (0, 3)]);
@@ -12790,19 +13362,22 @@ mod tests {
         //   ro = dest.relu()                          (non-destructive reader of dest)
         //   w  = dest.write_slice(&src, [(0,1),(0,3)])  (destructive on dest)
         // Expected ordering: w must run after ro.
-        let dest = Tensor::from_f32(
-            vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev(),
-        );
+        let dest = Tensor::from_f32(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev());
         let src = dest.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[1, 3]));
         let ro = dest.relu();
         let w = dest.write_slice(&src, vec![(0, 1), (0, 3)]).unwrap();
-        let ord = crate::opt::derive_ordering(
-            &dest.graph().read().unwrap(),
-            &[ro.id(), w.id()],
-        );
+        let ord = crate::opt::derive_ordering(&dest.graph().read().unwrap(), &[ro.id(), w.id()]);
         let deps = ord.deps_of(w.id());
-        assert_eq!(deps.len(), 1, "write_slice should have one ordering dep (the relu)");
-        assert_eq!(deps[0], ro.id(), "write_slice must run after the non-destructive reader");
+        assert_eq!(
+            deps.len(),
+            1,
+            "write_slice should have one ordering dep (the relu)"
+        );
+        assert_eq!(
+            deps[0],
+            ro.id(),
+            "write_slice must run after the non-destructive reader"
+        );
     }
 
     // ---- In-place ops Phase 1 -----------------------------------------------
@@ -12840,7 +13415,8 @@ mod tests {
             Op::GeluErfInplace,
         ] {
             assert_eq!(
-                op.destructive_input(), Some(0),
+                op.destructive_input(),
+                Some(0),
                 "in-place unary {op:?} must declare input 0 destructive",
             );
         }
@@ -12869,7 +13445,10 @@ mod tests {
         assert_eq!(Op::RoundInplace.short_name(), "RoundInplace");
         assert_eq!(Op::ErfInplace.short_name(), "ErfInplace");
         assert_eq!(Op::GeluErfInplace.short_name(), "GeluErfInplace");
-        assert_eq!(Op::ClampInplace { min: 0.0, max: 1.0 }.short_name(), "ClampInplace");
+        assert_eq!(
+            Op::ClampInplace { min: 0.0, max: 1.0 }.short_name(),
+            "ClampInplace"
+        );
         assert_eq!(Op::PowIInplace(3).short_name(), "PowIInplace");
     }
 
@@ -12894,7 +13473,7 @@ mod tests {
         // as an intermittent scheduler data race that points nowhere near this
         // code. The exhaustive match in `Op::destructive_input` and the
         // mandatory struct field are the compile-time seams; this is the belt.
-        use crate::registry::{default_registry, FusedOps};
+        use crate::registry::{FusedOps, default_registry};
         let reg = default_registry();
         assert_eq!(
             reg.entry(FusedOps::INPLACE_AFFINE)
@@ -12959,7 +13538,11 @@ mod tests {
         // Same structural form as Op::Relu's backward: gradient node
         // is an Op::Mul (upstream × step(x)).
         let g_node = g_x.graph().read().unwrap().node(g_x.id()).clone();
-        assert!(matches!(g_node.op, Op::Mul), "relu backward grad is Mul; got {:?}", g_node.op);
+        assert!(
+            matches!(g_node.op, Op::Mul),
+            "relu backward grad is Mul; got {:?}",
+            g_node.op
+        );
     }
 
     #[test]
@@ -13000,10 +13583,11 @@ mod tests {
         let x = Tensor::from_f32(vec![0.1], Shape::from_dims(&[1]), cpu_dev());
         let y = x.gelu_inplace();
         let loss = y.sum_all();
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            loss.backward()
-        }));
-        assert!(result.is_err(), "GeluInplace backward should panic (mirrors Op::Gelu)");
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| loss.backward()));
+        assert!(
+            result.is_err(),
+            "GeluInplace backward should panic (mirrors Op::Gelu)"
+        );
     }
 
     #[test]
@@ -13034,7 +13618,9 @@ mod tests {
     #[test]
     fn relu_inplace_builder_emits_op_reluinplace() {
         let x = Tensor::from_f32(
-            vec![1.0_f32, -1.0, 2.0, -2.0], Shape::from_dims(&[4]), cpu_dev(),
+            vec![1.0_f32, -1.0, 2.0, -2.0],
+            Shape::from_dims(&[4]),
+            cpu_dev(),
         );
         let y = x.relu_inplace();
         let g = y.graph().read().unwrap();
@@ -13048,7 +13634,9 @@ mod tests {
     #[test]
     fn affine_inplace_builder_emits_fused_inplace_affine() {
         let x = Tensor::from_f32(
-            vec![1.0_f32, 2.0, 3.0, 4.0], Shape::from_dims(&[4]), cpu_dev(),
+            vec![1.0_f32, 2.0, 3.0, 4.0],
+            Shape::from_dims(&[4]),
+            cpu_dev(),
         );
         let y = x.affine_inplace(2.0, 0.5);
         let g = y.graph().read().unwrap();
@@ -13070,9 +13658,7 @@ mod tests {
         // One smoke per variant — each builder emits exactly the
         // matching `Op::*Inplace` variant, single input, shape +
         // dtype unchanged.
-        let x = Tensor::from_f32(
-            vec![0.5_f32; 8], Shape::from_dims(&[8]), cpu_dev(),
-        );
+        let x = Tensor::from_f32(vec![0.5_f32; 8], Shape::from_dims(&[8]), cpu_dev());
         fn check(y: Tensor, x_id: NodeId, expect: fn(&Op) -> bool) {
             let g = y.graph().read().unwrap();
             let node = g.node(y.id());
@@ -13081,29 +13667,37 @@ mod tests {
             assert_eq!(node.shape.dims(), &[8]);
             assert_eq!(node.dtype, DType::F32);
         }
-        check(x.relu_inplace(),    x.id(), |o| matches!(o, Op::ReluInplace));
-        check(x.silu_inplace(),    x.id(), |o| matches!(o, Op::SiluInplace));
-        check(x.gelu_inplace(),    x.id(), |o| matches!(o, Op::GeluInplace));
-        check(x.tanh_inplace(),    x.id(), |o| matches!(o, Op::TanhInplace));
-        check(x.sigmoid_inplace(), x.id(), |o| matches!(o, Op::SigmoidInplace));
-        check(x.neg_inplace(),     x.id(), |o| matches!(o, Op::NegInplace));
-        check(x.abs_inplace(),     x.id(), |o| matches!(o, Op::AbsInplace));
-        check(x.sqr_inplace(),     x.id(), |o| matches!(o, Op::SqrInplace));
-        check(x.sqrt_inplace(),    x.id(), |o| matches!(o, Op::SqrtInplace));
-        check(x.rsqrt_inplace(),   x.id(), |o| matches!(o, Op::RsqrtInplace));
-        check(x.recip_inplace(),   x.id(), |o| matches!(o, Op::RecipInplace));
-        check(x.exp_inplace(),     x.id(), |o| matches!(o, Op::ExpInplace));
-        check(x.log_inplace(),     x.id(), |o| matches!(o, Op::LogInplace));
-        check(x.sin_inplace(),     x.id(), |o| matches!(o, Op::SinInplace));
-        check(x.cos_inplace(),     x.id(), |o| matches!(o, Op::CosInplace));
-        check(x.sign_inplace(),    x.id(), |o| matches!(o, Op::SignInplace));
-        check(x.floor_inplace(),   x.id(), |o| matches!(o, Op::FloorInplace));
-        check(x.ceil_inplace(),    x.id(), |o| matches!(o, Op::CeilInplace));
-        check(x.round_inplace(),   x.id(), |o| matches!(o, Op::RoundInplace));
-        check(x.erf_inplace(),     x.id(), |o| matches!(o, Op::ErfInplace));
-        check(x.gelu_erf_inplace(),x.id(), |o| matches!(o, Op::GeluErfInplace));
-        check(x.clamp_inplace(-1.0, 1.0), x.id(), |o| matches!(o, Op::ClampInplace { .. }));
-        check(x.powi_inplace(3),         x.id(), |o| matches!(o, Op::PowIInplace(3)));
+        check(x.relu_inplace(), x.id(), |o| matches!(o, Op::ReluInplace));
+        check(x.silu_inplace(), x.id(), |o| matches!(o, Op::SiluInplace));
+        check(x.gelu_inplace(), x.id(), |o| matches!(o, Op::GeluInplace));
+        check(x.tanh_inplace(), x.id(), |o| matches!(o, Op::TanhInplace));
+        check(x.sigmoid_inplace(), x.id(), |o| {
+            matches!(o, Op::SigmoidInplace)
+        });
+        check(x.neg_inplace(), x.id(), |o| matches!(o, Op::NegInplace));
+        check(x.abs_inplace(), x.id(), |o| matches!(o, Op::AbsInplace));
+        check(x.sqr_inplace(), x.id(), |o| matches!(o, Op::SqrInplace));
+        check(x.sqrt_inplace(), x.id(), |o| matches!(o, Op::SqrtInplace));
+        check(x.rsqrt_inplace(), x.id(), |o| matches!(o, Op::RsqrtInplace));
+        check(x.recip_inplace(), x.id(), |o| matches!(o, Op::RecipInplace));
+        check(x.exp_inplace(), x.id(), |o| matches!(o, Op::ExpInplace));
+        check(x.log_inplace(), x.id(), |o| matches!(o, Op::LogInplace));
+        check(x.sin_inplace(), x.id(), |o| matches!(o, Op::SinInplace));
+        check(x.cos_inplace(), x.id(), |o| matches!(o, Op::CosInplace));
+        check(x.sign_inplace(), x.id(), |o| matches!(o, Op::SignInplace));
+        check(x.floor_inplace(), x.id(), |o| matches!(o, Op::FloorInplace));
+        check(x.ceil_inplace(), x.id(), |o| matches!(o, Op::CeilInplace));
+        check(x.round_inplace(), x.id(), |o| matches!(o, Op::RoundInplace));
+        check(x.erf_inplace(), x.id(), |o| matches!(o, Op::ErfInplace));
+        check(x.gelu_erf_inplace(), x.id(), |o| {
+            matches!(o, Op::GeluErfInplace)
+        });
+        check(x.clamp_inplace(-1.0, 1.0), x.id(), |o| {
+            matches!(o, Op::ClampInplace { .. })
+        });
+        check(x.powi_inplace(3), x.id(), |o| {
+            matches!(o, Op::PowIInplace(3))
+        });
     }
 
     /// Backward smoke for the expanded in-place op family — each variant
@@ -13143,7 +13737,10 @@ mod tests {
             let y = make(&x);
             let loss = y.sum_all();
             let grads = loss.backward();
-            assert!(grads.get(&x).is_none(), "zero-grad in-place op must not emit gradient");
+            assert!(
+                grads.get(&x).is_none(),
+                "zero-grad in-place op must not emit gradient"
+            );
         }
         check_drops(|x| x.sign_inplace());
         check_drops(|x| x.floor_inplace());
@@ -13159,7 +13756,9 @@ mod tests {
         //   y_b = manually-pushed Op::ReluInplace on x  (destructive)
         // Expected: y_b must run after y_a.
         let x = Tensor::from_f32(
-            vec![1.0_f32, -1.0, 2.0, -2.0], Shape::from_dims(&[4]), cpu_dev(),
+            vec![1.0_f32, -1.0, 2.0, -2.0],
+            Shape::from_dims(&[4]),
+            cpu_dev(),
         );
         let y_a = x.relu();
         let y_b_id = x.graph().write().unwrap().push(Node {
@@ -13168,21 +13767,22 @@ mod tests {
             shape: Shape::from_dims(&[4]),
             dtype: DType::F32,
         });
-        let ord = crate::opt::derive_ordering(
-            &x.graph().read().unwrap(),
-            &[y_a.id(), y_b_id],
-        );
+        let ord = crate::opt::derive_ordering(&x.graph().read().unwrap(), &[y_a.id(), y_b_id]);
         let deps = ord.deps_of(y_b_id);
         assert_eq!(deps.len(), 1, "in-place unary should have one ordering dep");
-        assert_eq!(deps[0], y_a.id(), "in-place unary must run after the non-destructive reader");
+        assert_eq!(
+            deps[0],
+            y_a.id(),
+            "in-place unary must run after the non-destructive reader"
+        );
     }
 
     // ------------------------------------------------------------------
     // Multi-output nodes (Option C, Session 1)
     // ------------------------------------------------------------------
 
-    use fuel_ir::storage::OutputView;
     use fuel_backend_contract::storage::Storage as CoreStorage;
+    use fuel_ir::storage::OutputView;
 
     /// Build a real CPU `Storage` of `n` F32 zeros so `Storage`-level
     /// tests can attach + read bundle metadata against a live backend
@@ -13206,20 +13806,20 @@ mod tests {
         let s0 = Shape::from_dims(&[2, 3]);
         let s1 = Shape::from_dims(&[2, 4]);
         let v0 = OutputView {
-            byte_offset:  0,
+            byte_offset: 0,
             len_elements: s0.elem_count(),
-            dtype:        DType::F32,
-            shape:        s0.clone(),
-            layout:       Layout::contiguous(s0),
-            name:         Some("y"),
+            dtype: DType::F32,
+            shape: s0.clone(),
+            layout: Layout::contiguous(s0),
+            name: Some("y"),
         };
         let v1 = OutputView {
-            byte_offset:  v0.len_bytes(),
+            byte_offset: v0.len_bytes(),
             len_elements: s1.elem_count(),
-            dtype:        DType::F32,
-            shape:        s1.clone(),
-            layout:       Layout::contiguous(s1),
-            name:         Some("last_state"),
+            dtype: DType::F32,
+            shape: s1.clone(),
+            layout: Layout::contiguous(s1),
+            name: Some("last_state"),
         };
         let total = v0.len_elements + v1.len_elements;
         (vec![v0, v1], total)
@@ -13272,7 +13872,9 @@ mod tests {
     fn storage_with_bundle_rejects_empty() {
         let s = cpu_f32_storage(1);
         let empty: Arc<[OutputView]> = Arc::from(Vec::<OutputView>::new().into_boxed_slice());
-        let err = s.with_bundle(empty).err()
+        let err = s
+            .with_bundle(empty)
+            .err()
             .expect("empty bundle slice must error");
         let msg = format!("{err}");
         assert!(msg.contains("non-empty"), "error message: {msg}");
@@ -13285,14 +13887,16 @@ mod tests {
     fn storage_with_bundle_rejects_dtype_mismatch() {
         let s = cpu_f32_storage(8);
         let bad = OutputView {
-            byte_offset:  0,
+            byte_offset: 0,
             len_elements: 4,
-            dtype:        DType::F64,
-            shape:        Shape::from_dims(&[2, 2]),
-            layout:       Layout::contiguous(Shape::from_dims(&[2, 2])),
-            name:         None,
+            dtype: DType::F64,
+            shape: Shape::from_dims(&[2, 2]),
+            layout: Layout::contiguous(Shape::from_dims(&[2, 2])),
+            name: None,
         };
-        let err = s.with_bundle(Arc::from(vec![bad].into_boxed_slice())).err()
+        let err = s
+            .with_bundle(Arc::from(vec![bad].into_boxed_slice()))
+            .err()
             .expect("slot 0 dtype mismatch must error");
         let msg = format!("{err}");
         assert!(msg.contains("dtype"), "error message: {msg}");
@@ -13304,10 +13908,10 @@ mod tests {
     fn graph_output_views_defaults() {
         let mut g = Graph::new();
         let id = g.push(Node {
-            op:     Op::Const,
+            op: Op::Const,
             inputs: vec![],
-            shape:  Shape::from_dims(&[2, 3]),
-            dtype:  DType::F32,
+            shape: Shape::from_dims(&[2, 3]),
+            dtype: DType::F32,
         });
         assert!(g.output_views(id).is_none());
         assert!(!g.is_multi_output(id));
@@ -13320,10 +13924,10 @@ mod tests {
     fn graph_set_output_views_roundtrip() {
         let mut g = Graph::new();
         let id = g.push(Node {
-            op:     Op::Const,
+            op: Op::Const,
             inputs: vec![],
-            shape:  Shape::from_dims(&[2, 3]),
-            dtype:  DType::F32,
+            shape: Shape::from_dims(&[2, 3]),
+            dtype: DType::F32,
         });
         let (views, _) = two_slot_views();
         g.set_output_views(id, views.clone().into())
@@ -13341,34 +13945,38 @@ mod tests {
     fn graph_set_output_views_validates_primary() {
         let mut g = Graph::new();
         let id = g.push(Node {
-            op:     Op::Const,
+            op: Op::Const,
             inputs: vec![],
-            shape:  Shape::from_dims(&[2, 3]),
-            dtype:  DType::F32,
+            shape: Shape::from_dims(&[2, 3]),
+            dtype: DType::F32,
         });
         // dtype mismatch on slot 0
         let bad_dtype = OutputView {
-            byte_offset:  0,
+            byte_offset: 0,
             len_elements: 6,
-            dtype:        DType::F64,
-            shape:        Shape::from_dims(&[2, 3]),
-            layout:       Layout::contiguous(Shape::from_dims(&[2, 3])),
-            name:         None,
+            dtype: DType::F64,
+            shape: Shape::from_dims(&[2, 3]),
+            layout: Layout::contiguous(Shape::from_dims(&[2, 3])),
+            name: None,
         };
-        let err = g.set_output_views(id, vec![bad_dtype].into()).err()
+        let err = g
+            .set_output_views(id, vec![bad_dtype].into())
+            .err()
             .expect("primary dtype mismatch must error");
         let msg = format!("{err}");
         assert!(msg.contains("dtype"), "error message: {msg}");
         // shape mismatch on slot 0
         let bad_shape = OutputView {
-            byte_offset:  0,
+            byte_offset: 0,
             len_elements: 4,
-            dtype:        DType::F32,
-            shape:        Shape::from_dims(&[2, 2]),
-            layout:       Layout::contiguous(Shape::from_dims(&[2, 2])),
-            name:         None,
+            dtype: DType::F32,
+            shape: Shape::from_dims(&[2, 2]),
+            layout: Layout::contiguous(Shape::from_dims(&[2, 2])),
+            name: None,
         };
-        let err = g.set_output_views(id, vec![bad_shape].into()).err()
+        let err = g
+            .set_output_views(id, vec![bad_shape].into())
+            .err()
             .expect("primary shape mismatch must error");
         let msg = format!("{err}");
         assert!(msg.contains("shape"), "error message: {msg}");
@@ -13380,13 +13988,15 @@ mod tests {
     fn tensor_view_on_non_multi_output_errors() {
         let graph: SharedGraph = Arc::new(RwLock::new(Graph::new()));
         let id = graph.write().unwrap().push(Node {
-            op:     Op::Const,
+            op: Op::Const,
             inputs: vec![],
-            shape:  Shape::from_dims(&[2, 3]),
-            dtype:  DType::F32,
+            shape: Shape::from_dims(&[2, 3]),
+            dtype: DType::F32,
         });
         let producer = Tensor::from_existing(Arc::clone(&graph), id);
-        let err = producer.view(0).err()
+        let err = producer
+            .view(0)
+            .err()
             .expect("view on non-multi-output producer must error");
         let msg = format!("{err}");
         assert!(msg.contains("multi-output"), "error message: {msg}");
@@ -13399,10 +14009,10 @@ mod tests {
         let producer_id = {
             let mut g = graph.write().unwrap();
             let id = g.push(Node {
-                op:     Op::Const,
+                op: Op::Const,
                 inputs: vec![],
-                shape:  Shape::from_dims(&[2, 3]),
-                dtype:  DType::F32,
+                shape: Shape::from_dims(&[2, 3]),
+                dtype: DType::F32,
             });
             let (views, _) = two_slot_views();
             g.set_output_views(id, views.into())
@@ -13410,7 +14020,9 @@ mod tests {
             id
         };
         let producer = Tensor::from_existing(Arc::clone(&graph), producer_id);
-        let err = producer.view(2).err()
+        let err = producer
+            .view(2)
+            .err()
             .expect("slot 2 of a 2-slot producer must error");
         let msg = format!("{err}");
         assert!(msg.contains("out of range"), "error message: {msg}");
@@ -13425,10 +14037,10 @@ mod tests {
         let producer_id = {
             let mut g = graph.write().unwrap();
             let id = g.push(Node {
-                op:     Op::Const,
+                op: Op::Const,
                 inputs: vec![],
-                shape:  Shape::from_dims(&[2, 3]),
-                dtype:  DType::F32,
+                shape: Shape::from_dims(&[2, 3]),
+                dtype: DType::F32,
             });
             let (views, _) = two_slot_views();
             g.set_output_views(id, views.into())
@@ -13459,7 +14071,11 @@ mod tests {
         // table entry is mandatory.
         assert!(g.has_explicit_layout(v1.id()));
         let l1 = g.layout(v1.id());
-        assert_eq!(l1.start_offset(), 6, "slot 1 byte_offset 24 / 4 = 6 F32 elements");
+        assert_eq!(
+            l1.start_offset(),
+            6,
+            "slot 1 byte_offset 24 / 4 = 6 F32 elements"
+        );
         assert_eq!(l1.shape(), &Shape::from_dims(&[2, 4]));
     }
 
@@ -13475,31 +14091,31 @@ mod tests {
             .expect("transpose [2,3] -> [3,2]");
         // Slot 0 = primary (contiguous, matches producer's Node shape).
         let s0 = OutputView {
-            byte_offset:  0,
+            byte_offset: 0,
             len_elements: strided_shape.elem_count(),
-            dtype:        DType::F32,
-            shape:        strided_shape.clone(),
-            layout:       Layout::contiguous(strided_shape.clone()),
-            name:         Some("primary"),
+            dtype: DType::F32,
+            shape: strided_shape.clone(),
+            layout: Layout::contiguous(strided_shape.clone()),
+            name: Some("primary"),
         };
         // Slot 1 = strided projection. Same byte range as slot 0; the
         // shape after transpose is [3, 2]; layout's start offset stays
         // within the slot.
         let s1 = OutputView {
-            byte_offset:  0,
+            byte_offset: 0,
             len_elements: strided_shape.elem_count(),
-            dtype:        DType::F32,
-            shape:        Shape::from_dims(&[3, 2]),
-            layout:       strided_layout.clone(),
-            name:         Some("strided_view"),
+            dtype: DType::F32,
+            shape: Shape::from_dims(&[3, 2]),
+            layout: strided_layout.clone(),
+            name: Some("strided_view"),
         };
         let producer_id = {
             let mut g = graph.write().unwrap();
             let id = g.push(Node {
-                op:     Op::Const,
+                op: Op::Const,
                 inputs: vec![],
-                shape:  strided_shape.clone(),
-                dtype:  DType::F32,
+                shape: strided_shape.clone(),
+                dtype: DType::F32,
             });
             g.set_output_views(id, vec![s0, s1].into())
                 .expect("valid 2-slot strided spec");
@@ -13529,28 +14145,28 @@ mod tests {
             .transpose(0, 1)
             .expect("transpose [2,3] -> [3,2]");
         let s0 = OutputView {
-            byte_offset:  0,
+            byte_offset: 0,
             len_elements: strided_shape.elem_count(),
-            dtype:        DType::F32,
-            shape:        strided_shape.clone(),
-            layout:       Layout::contiguous(strided_shape.clone()),
-            name:         None,
+            dtype: DType::F32,
+            shape: strided_shape.clone(),
+            layout: Layout::contiguous(strided_shape.clone()),
+            name: None,
         };
         let s1 = OutputView {
-            byte_offset:  0,
+            byte_offset: 0,
             len_elements: strided_shape.elem_count(),
-            dtype:        DType::F32,
-            shape:        Shape::from_dims(&[3, 2]),
-            layout:       strided_layout,
-            name:         None,
+            dtype: DType::F32,
+            shape: Shape::from_dims(&[3, 2]),
+            layout: strided_layout,
+            name: None,
         };
         let producer_id = {
             let mut g = graph.write().unwrap();
             let id = g.push(Node {
-                op:     Op::Const,
+                op: Op::Const,
                 inputs: vec![],
-                shape:  strided_shape,
-                dtype:  DType::F32,
+                shape: strided_shape,
+                dtype: DType::F32,
             });
             g.set_output_views(id, vec![s0, s1].into())
                 .expect("valid 2-slot specs");
@@ -13590,8 +14206,8 @@ mod tests {
             OutputViewSpec::contiguous(DType::F32, Shape::from_dims(&[2, 3])),
             OutputViewSpec::contiguous(DType::F32, Shape::from_dims(&[2, 4])),
         ];
-        let s = allocate_bundled_storage(dev.as_ref(), &specs)
-            .expect("two-slot F32 alloc succeeds");
+        let s =
+            allocate_bundled_storage(dev.as_ref(), &specs).expect("two-slot F32 alloc succeeds");
         assert!(s.is_bundled());
         assert_eq!(s.slot_count(), 2);
         assert_eq!(s.primary_dtype(), DType::F32);
@@ -13614,8 +14230,7 @@ mod tests {
             OutputViewSpec::contiguous(DType::F32, Shape::from_dims(&[6])),
             OutputViewSpec::contiguous(DType::F64, Shape::from_dims(&[3])),
         ];
-        let s = allocate_bundled_storage(dev.as_ref(), &specs)
-            .expect("mixed-dtype alloc succeeds");
+        let s = allocate_bundled_storage(dev.as_ref(), &specs).expect("mixed-dtype alloc succeeds");
         assert_eq!(s.primary_dtype(), DType::F32);
         let v0 = s.slot_view(0).unwrap();
         let v1 = s.slot_view(1).unwrap();
@@ -13632,7 +14247,8 @@ mod tests {
     #[test]
     fn allocate_bundled_storage_rejects_empty() {
         let dev = cpu_dev();
-        let err = allocate_bundled_storage(dev.as_ref(), &[]).err()
+        let err = allocate_bundled_storage(dev.as_ref(), &[])
+            .err()
             .expect("empty specs error");
         assert!(format!("{err}").contains("non-empty"));
     }
@@ -13689,15 +14305,17 @@ mod tests {
                     Shape::from_dims(&[2, 4, 16]), // c: same
                 ],
                 dtypes: vec![DType::F32; 5],
-                params: FusedOpParams::SelectiveScan { delta_softplus: false },
+                params: FusedOpParams::SelectiveScan {
+                    delta_softplus: false,
+                },
             }
         }
         fn ssd_chunk_scan_fixture() -> Fixture {
             Fixture {
                 shapes: vec![
-                    Shape::from_dims(&[2, 4, 3, 8]),  // x: [batch, seqlen, heads, head_dim]
-                    Shape::from_dims(&[2, 4, 3]),     // dt: [batch, seqlen, heads]
-                    Shape::from_dims(&[3]),           // a: [heads]
+                    Shape::from_dims(&[2, 4, 3, 8]), // x: [batch, seqlen, heads, head_dim]
+                    Shape::from_dims(&[2, 4, 3]),    // dt: [batch, seqlen, heads]
+                    Shape::from_dims(&[3]),          // a: [heads]
                     Shape::from_dims(&[2, 4, 3, 16]), // b: [batch, seqlen, heads, state_dim]
                     Shape::from_dims(&[2, 4, 3, 16]), // c: same
                 ],
@@ -13709,7 +14327,7 @@ mod tests {
         for entry in reg.entries_iter().filter(|e| e.output_views.is_some()) {
             let fx = match entry.name {
                 "SelectiveScan" => selective_scan_fixture(),
-                "SsdChunkScan"  => ssd_chunk_scan_fixture(),
+                "SsdChunkScan" => ssd_chunk_scan_fixture(),
                 other => panic!(
                     "multi_output_entries_slot_0_matches_primary_rules: \
                      no fixture for new multi-output entry {other:?}. \
@@ -13718,9 +14336,7 @@ mod tests {
             };
             let primary_shape = (entry.shape_rule)(&fx.shapes, &fx.params);
             let primary_dtype = (entry.dtype_rule)(&fx.dtypes, &fx.params);
-            let specs = entry.output_views.unwrap()(
-                &fx.shapes, &fx.dtypes, &fx.params,
-            );
+            let specs = entry.output_views.unwrap()(&fx.shapes, &fx.dtypes, &fx.params);
             assert!(
                 !specs.is_empty(),
                 "{}: output_views returned empty Vec (multi-output ops \
@@ -13744,10 +14360,13 @@ mod tests {
             // set_output_views enforces at graph-build time).
             for (i, spec) in specs.iter().enumerate() {
                 assert_eq!(
-                    spec.layout.shape(), &spec.shape,
+                    spec.layout.shape(),
+                    &spec.shape,
                     "{}: slot {i} layout.shape() {:?} disagrees with \
                      declared spec.shape {:?}",
-                    entry.name, spec.layout.shape(), spec.shape,
+                    entry.name,
+                    spec.layout.shape(),
+                    spec.shape,
                 );
             }
         }
@@ -13776,14 +14395,14 @@ mod tests {
         }
         crate::registry::FusedOpEntry {
             destructive_input: None,
-            id:           crate::registry::FusedOps::SOFTMAX_LAST_DIM, // any id; not registered
-            name:         "<synthetic-2-output>",
-            family:       crate::registry::FusedOpFamily::Forward,
-            pattern:      crate::registry::SubgraphPattern::Callable(|_g, _id| None),
-            decompose:    |_g, id, _p| id,
-            backward:     crate::registry::BackwardKind::NotDifferentiable,
-            shape_rule:   shape,
-            dtype_rule:   dtype,
+            id: crate::registry::FusedOps::SOFTMAX_LAST_DIM, // any id; not registered
+            name: "<synthetic-2-output>",
+            family: crate::registry::FusedOpFamily::Forward,
+            pattern: crate::registry::SubgraphPattern::Callable(|_g, _id| None),
+            decompose: |_g, id, _p| id,
+            backward: crate::registry::BackwardKind::NotDifferentiable,
+            shape_rule: shape,
+            dtype_rule: dtype,
             output_views: Some(ovs),
         }
     }
@@ -13796,8 +14415,14 @@ mod tests {
         let ovs_fn = entry.output_views.expect("synthetic entry is multi-output");
         let specs = ovs_fn(&[], &[], &crate::registry::FusedOpParams::SoftmaxLastDim);
         assert_eq!(specs.len(), 2);
-        assert_eq!(specs[0].dtype, (entry.dtype_rule)(&[], &crate::registry::FusedOpParams::SoftmaxLastDim));
-        assert_eq!(specs[0].shape, (entry.shape_rule)(&[], &crate::registry::FusedOpParams::SoftmaxLastDim));
+        assert_eq!(
+            specs[0].dtype,
+            (entry.dtype_rule)(&[], &crate::registry::FusedOpParams::SoftmaxLastDim)
+        );
+        assert_eq!(
+            specs[0].shape,
+            (entry.shape_rule)(&[], &crate::registry::FusedOpParams::SoftmaxLastDim)
+        );
     }
 
     /// Build a producer Const node and declare it multi-output via
@@ -13808,12 +14433,13 @@ mod tests {
         let id = {
             let mut g = graph.write().unwrap();
             let id = g.push(Node {
-                op:     Op::Const,
+                op: Op::Const,
                 inputs: vec![],
-                shape:  slots[0].shape.clone(),
-                dtype:  slots[0].dtype,
+                shape: slots[0].shape.clone(),
+                dtype: slots[0].dtype,
             });
-            g.set_output_views(id, slots.into()).expect("valid synthetic specs");
+            g.set_output_views(id, slots.into())
+                .expect("valid synthetic specs");
             id
         };
         (graph, id)
@@ -13825,20 +14451,20 @@ mod tests {
     fn promote_views_symmetric_lifetimes_is_noop() {
         let slot_specs = vec![
             OutputView {
-                byte_offset:  0,
+                byte_offset: 0,
                 len_elements: 6,
-                dtype:        DType::F32,
-                shape:        Shape::from_dims(&[2, 3]),
-                layout:       Layout::contiguous(Shape::from_dims(&[2, 3])),
-                name:         Some("y"),
+                dtype: DType::F32,
+                shape: Shape::from_dims(&[2, 3]),
+                layout: Layout::contiguous(Shape::from_dims(&[2, 3])),
+                name: Some("y"),
             },
             OutputView {
-                byte_offset:  24,
+                byte_offset: 24,
                 len_elements: 8,
-                dtype:        DType::F32,
-                shape:        Shape::from_dims(&[2, 4]),
-                layout:       Layout::contiguous(Shape::from_dims(&[2, 4])),
-                name:         Some("state"),
+                dtype: DType::F32,
+                shape: Shape::from_dims(&[2, 4]),
+                layout: Layout::contiguous(Shape::from_dims(&[2, 4])),
+                name: Some("state"),
             },
         ];
         let (graph, producer_id) = multi_output_producer(slot_specs);
@@ -13852,16 +14478,16 @@ mod tests {
         let roots = {
             let mut g = graph.write().unwrap();
             let r0 = g.push(Node {
-                op:     Op::Relu,
+                op: Op::Relu,
                 inputs: vec![v0_id],
-                shape:  v0_shape,
-                dtype:  v0_dtype,
+                shape: v0_shape,
+                dtype: v0_dtype,
             });
             let r1 = g.push(Node {
-                op:     Op::Relu,
+                op: Op::Relu,
                 inputs: vec![v1_id],
-                shape:  v1_shape,
-                dtype:  v1_dtype,
+                shape: v1_shape,
+                dtype: v1_dtype,
             });
             vec![r0, r1]
         };
@@ -13869,7 +14495,10 @@ mod tests {
             let mut g = graph.write().unwrap();
             crate::opt::promote_views_for_liveness(&mut g, &roots)
         };
-        assert_eq!(promotions, 0, "symmetric lifetimes shouldn't promote anything");
+        assert_eq!(
+            promotions, 0,
+            "symmetric lifetimes shouldn't promote anything"
+        );
     }
 
     /// Asymmetric lifetimes: slot 0 consumed early, slot 1 consumed
@@ -13878,20 +14507,20 @@ mod tests {
     fn promote_views_asymmetric_promotes_long_lived_slot() {
         let slot_specs = vec![
             OutputView {
-                byte_offset:  0,
+                byte_offset: 0,
                 len_elements: 6,
-                dtype:        DType::F32,
-                shape:        Shape::from_dims(&[2, 3]),
-                layout:       Layout::contiguous(Shape::from_dims(&[2, 3])),
-                name:         Some("y"),
+                dtype: DType::F32,
+                shape: Shape::from_dims(&[2, 3]),
+                layout: Layout::contiguous(Shape::from_dims(&[2, 3])),
+                name: Some("y"),
             },
             OutputView {
-                byte_offset:  24,
+                byte_offset: 24,
                 len_elements: 6,
-                dtype:        DType::F32,
-                shape:        Shape::from_dims(&[2, 3]),
-                layout:       Layout::contiguous(Shape::from_dims(&[2, 3])),
-                name:         Some("state"),
+                dtype: DType::F32,
+                shape: Shape::from_dims(&[2, 3]),
+                layout: Layout::contiguous(Shape::from_dims(&[2, 3])),
+                name: Some("state"),
             },
         ];
         let (graph, producer_id) = multi_output_producer(slot_specs);
@@ -13903,32 +14532,33 @@ mod tests {
         // Relu → Relu. Topo positions push state's last-use later
         // than y's, triggering promotion of state's View.
         let (v_y_id, v_y_shape, v_y_dtype) = (v_y.id(), v_y.shape(), v_y.dtype());
-        let (v_state_id, v_state_shape, v_state_dtype) = (v_state.id(), v_state.shape(), v_state.dtype());
+        let (v_state_id, v_state_shape, v_state_dtype) =
+            (v_state.id(), v_state.shape(), v_state.dtype());
         let roots = {
             let mut g = graph.write().unwrap();
             let y_relu = g.push(Node {
-                op:     Op::Relu,
+                op: Op::Relu,
                 inputs: vec![v_y_id],
-                shape:  v_y_shape,
-                dtype:  v_y_dtype,
+                shape: v_y_shape,
+                dtype: v_y_dtype,
             });
             let s1 = g.push(Node {
-                op:     Op::Relu,
+                op: Op::Relu,
                 inputs: vec![v_state_id],
-                shape:  v_state_shape.clone(),
-                dtype:  v_state_dtype,
+                shape: v_state_shape.clone(),
+                dtype: v_state_dtype,
             });
             let s2 = g.push(Node {
-                op:     Op::Relu,
+                op: Op::Relu,
                 inputs: vec![s1],
-                shape:  v_state_shape.clone(),
-                dtype:  v_state_dtype,
+                shape: v_state_shape.clone(),
+                dtype: v_state_dtype,
             });
             let s3 = g.push(Node {
-                op:     Op::Relu,
+                op: Op::Relu,
                 inputs: vec![s2],
-                shape:  v_state_shape,
-                dtype:  v_state_dtype,
+                shape: v_state_shape,
+                dtype: v_state_dtype,
             });
             vec![y_relu, s3]
         };
@@ -13936,7 +14566,10 @@ mod tests {
             let mut g = graph.write().unwrap();
             crate::opt::promote_views_for_liveness(&mut g, &roots)
         };
-        assert_eq!(promotions, 1, "exactly the long-lived slot 1 View should promote");
+        assert_eq!(
+            promotions, 1,
+            "exactly the long-lived slot 1 View should promote"
+        );
         // Slot 1's consumer (the first Relu in the long chain) now
         // reads a fresh Op::ViewOwned node, not the old Op::View.
         let g = graph.read().unwrap();
@@ -13964,20 +14597,20 @@ mod tests {
     fn promote_views_idempotent() {
         let slot_specs = vec![
             OutputView {
-                byte_offset:  0,
+                byte_offset: 0,
                 len_elements: 4,
-                dtype:        DType::F32,
-                shape:        Shape::from_dims(&[2, 2]),
-                layout:       Layout::contiguous(Shape::from_dims(&[2, 2])),
-                name:         None,
+                dtype: DType::F32,
+                shape: Shape::from_dims(&[2, 2]),
+                layout: Layout::contiguous(Shape::from_dims(&[2, 2])),
+                name: None,
             },
             OutputView {
-                byte_offset:  16,
+                byte_offset: 16,
                 len_elements: 4,
-                dtype:        DType::F32,
-                shape:        Shape::from_dims(&[2, 2]),
-                layout:       Layout::contiguous(Shape::from_dims(&[2, 2])),
-                name:         None,
+                dtype: DType::F32,
+                shape: Shape::from_dims(&[2, 2]),
+                layout: Layout::contiguous(Shape::from_dims(&[2, 2])),
+                name: None,
             },
         ];
         let (graph, producer_id) = multi_output_producer(slot_specs);
@@ -13985,26 +14618,27 @@ mod tests {
         let v_y = producer.view(0).expect("slot 0 view");
         let v_state = producer.view(1).expect("slot 1 view");
         let (v_y_id, v_y_shape, v_y_dtype) = (v_y.id(), v_y.shape(), v_y.dtype());
-        let (v_state_id, v_state_shape, v_state_dtype) = (v_state.id(), v_state.shape(), v_state.dtype());
+        let (v_state_id, v_state_shape, v_state_dtype) =
+            (v_state.id(), v_state.shape(), v_state.dtype());
         let roots = {
             let mut g = graph.write().unwrap();
             let y_r = g.push(Node {
-                op:     Op::Relu,
+                op: Op::Relu,
                 inputs: vec![v_y_id],
-                shape:  v_y_shape,
-                dtype:  v_y_dtype,
+                shape: v_y_shape,
+                dtype: v_y_dtype,
             });
             let s1 = g.push(Node {
-                op:     Op::Relu,
+                op: Op::Relu,
                 inputs: vec![v_state_id],
-                shape:  v_state_shape.clone(),
-                dtype:  v_state_dtype,
+                shape: v_state_shape.clone(),
+                dtype: v_state_dtype,
             });
             let s2 = g.push(Node {
-                op:     Op::Relu,
+                op: Op::Relu,
                 inputs: vec![s1],
-                shape:  v_state_shape,
-                dtype:  v_state_dtype,
+                shape: v_state_shape,
+                dtype: v_state_dtype,
             });
             vec![y_r, s2]
         };
@@ -14017,7 +14651,10 @@ mod tests {
             crate::opt::promote_views_for_liveness(&mut g, &roots)
         };
         assert_eq!(first, 1, "first call promotes the long-lived slot");
-        assert_eq!(second, 0, "second call is idempotent — no further promotions");
+        assert_eq!(
+            second, 0,
+            "second call is idempotent — no further promotions"
+        );
     }
 
     /// Graph with no multi-output producers: pass returns 0 and
@@ -14026,16 +14663,16 @@ mod tests {
     fn promote_views_noop_on_graph_without_multi_output() {
         let mut g = Graph::new();
         let a = g.push(Node {
-            op:     Op::Const,
+            op: Op::Const,
             inputs: vec![],
-            shape:  Shape::from_dims(&[2, 3]),
-            dtype:  DType::F32,
+            shape: Shape::from_dims(&[2, 3]),
+            dtype: DType::F32,
         });
         let r = g.push(Node {
-            op:     Op::Relu,
+            op: Op::Relu,
             inputs: vec![a],
-            shape:  Shape::from_dims(&[2, 3]),
-            dtype:  DType::F32,
+            shape: Shape::from_dims(&[2, 3]),
+            dtype: DType::F32,
         });
         let n_before = g.len();
         let promotions = crate::opt::promote_views_for_liveness(&mut g, &[r]);
@@ -14060,20 +14697,20 @@ mod tests {
     fn two_slot_views_2x3_and_2x4() -> Vec<OutputView> {
         vec![
             OutputView {
-                byte_offset:  0,
+                byte_offset: 0,
                 len_elements: 6,
-                dtype:        DType::F32,
-                shape:        Shape::from_dims(&[2, 3]),
-                layout:       Layout::contiguous(Shape::from_dims(&[2, 3])),
-                name:         Some("y"),
+                dtype: DType::F32,
+                shape: Shape::from_dims(&[2, 3]),
+                layout: Layout::contiguous(Shape::from_dims(&[2, 3])),
+                name: Some("y"),
             },
             OutputView {
-                byte_offset:  24,
+                byte_offset: 24,
                 len_elements: 8,
-                dtype:        DType::F32,
-                shape:        Shape::from_dims(&[2, 4]),
-                layout:       Layout::contiguous(Shape::from_dims(&[2, 4])),
-                name:         Some("state"),
+                dtype: DType::F32,
+                shape: Shape::from_dims(&[2, 4]),
+                layout: Layout::contiguous(Shape::from_dims(&[2, 4])),
+                name: Some("state"),
             },
         ]
     }
@@ -14093,29 +14730,26 @@ mod tests {
         let (r0, r1, release_id) = {
             let mut g = graph.write().unwrap();
             let r0 = g.push(Node {
-                op:     Op::Relu,
+                op: Op::Relu,
                 inputs: vec![v0_id],
-                shape:  v0_shape,
-                dtype:  v0_dtype,
+                shape: v0_shape,
+                dtype: v0_dtype,
             });
             let r1 = g.push(Node {
-                op:     Op::Relu,
+                op: Op::Relu,
                 inputs: vec![v1_id],
-                shape:  v1_shape,
-                dtype:  v1_dtype,
+                shape: v1_shape,
+                dtype: v1_dtype,
             });
             let release = g.push(Node {
-                op:     Op::Release,
+                op: Op::Release,
                 inputs: vec![producer_id],
-                shape:  Shape::from_dims(&[0]),
-                dtype:  DType::F32,
+                shape: Shape::from_dims(&[0]),
+                dtype: DType::F32,
             });
             (r0, r1, release)
         };
-        let ord = crate::opt::derive_ordering(
-            &graph.read().unwrap(),
-            &[r0, r1, release_id],
-        );
+        let ord = crate::opt::derive_ordering(&graph.read().unwrap(), &[r0, r1, release_id]);
         let deps = ord.deps_of(release_id);
         let dep_set: std::collections::HashSet<NodeId> = deps.iter().copied().collect();
         assert!(
@@ -14147,23 +14781,20 @@ mod tests {
         let (r1, release_id) = {
             let mut g = graph.write().unwrap();
             let r1 = g.push(Node {
-                op:     Op::Relu,
+                op: Op::Relu,
                 inputs: vec![v1_id],
-                shape:  v1_shape,
-                dtype:  v1_dtype,
+                shape: v1_shape,
+                dtype: v1_dtype,
             });
             let release = g.push(Node {
-                op:     Op::Release,
+                op: Op::Release,
                 inputs: vec![v0_id],
-                shape:  Shape::from_dims(&[0]),
-                dtype:  DType::F32,
+                shape: Shape::from_dims(&[0]),
+                dtype: DType::F32,
             });
             (r1, release)
         };
-        let ord = crate::opt::derive_ordering(
-            &graph.read().unwrap(),
-            &[r1, release_id],
-        );
+        let ord = crate::opt::derive_ordering(&graph.read().unwrap(), &[r1, release_id]);
         let deps = ord.deps_of(release_id);
         let dep_set: std::collections::HashSet<NodeId> = deps.iter().copied().collect();
         assert!(
@@ -14188,28 +14819,26 @@ mod tests {
         let v_view = producer.view(0).expect("slot 0 view");
         let v_owned = producer.view_owned(1).expect("slot 1 viewowned");
         let (v_view_id, _, _) = (v_view.id(), v_view.shape(), v_view.dtype());
-        let (v_owned_id, v_owned_shape, v_owned_dtype)
-            = (v_owned.id(), v_owned.shape(), v_owned.dtype());
+        let (v_owned_id, v_owned_shape, v_owned_dtype) =
+            (v_owned.id(), v_owned.shape(), v_owned.dtype());
         let (consumer_of_owned, release_id) = {
             let mut g = graph.write().unwrap();
             let consumer = g.push(Node {
-                op:     Op::Relu,
+                op: Op::Relu,
                 inputs: vec![v_owned_id],
-                shape:  v_owned_shape,
-                dtype:  v_owned_dtype,
+                shape: v_owned_shape,
+                dtype: v_owned_dtype,
             });
             let release = g.push(Node {
-                op:     Op::Release,
+                op: Op::Release,
                 inputs: vec![producer_id],
-                shape:  Shape::from_dims(&[0]),
-                dtype:  DType::F32,
+                shape: Shape::from_dims(&[0]),
+                dtype: DType::F32,
             });
             (consumer, release)
         };
-        let ord = crate::opt::derive_ordering(
-            &graph.read().unwrap(),
-            &[consumer_of_owned, release_id],
-        );
+        let ord =
+            crate::opt::derive_ordering(&graph.read().unwrap(), &[consumer_of_owned, release_id]);
         let deps = ord.deps_of(release_id);
         let dep_set: std::collections::HashSet<NodeId> = deps.iter().copied().collect();
         // Release MUST wait for ViewOwned to run (ViewOwned reads
@@ -14247,28 +14876,28 @@ mod tests {
         // add sibling shapes.
         let slot_specs = vec![
             OutputView {
-                byte_offset:  0,
+                byte_offset: 0,
                 len_elements: 6,
-                dtype:        DType::F32,
-                shape:        Shape::from_dims(&[2, 3]),
-                layout:       Layout::contiguous(Shape::from_dims(&[2, 3])),
-                name:         Some("a"),
+                dtype: DType::F32,
+                shape: Shape::from_dims(&[2, 3]),
+                layout: Layout::contiguous(Shape::from_dims(&[2, 3])),
+                name: Some("a"),
             },
             OutputView {
-                byte_offset:  24,
+                byte_offset: 24,
                 len_elements: 4,
-                dtype:        DType::F32,
-                shape:        Shape::from_dims(&[2, 2]),
-                layout:       Layout::contiguous(Shape::from_dims(&[2, 2])),
-                name:         Some("b"),
+                dtype: DType::F32,
+                shape: Shape::from_dims(&[2, 2]),
+                layout: Layout::contiguous(Shape::from_dims(&[2, 2])),
+                name: Some("b"),
             },
             OutputView {
-                byte_offset:  40,
+                byte_offset: 40,
                 len_elements: 8,
-                dtype:        DType::F32,
-                shape:        Shape::from_dims(&[2, 4]),
-                layout:       Layout::contiguous(Shape::from_dims(&[2, 4])),
-                name:         Some("c"),
+                dtype: DType::F32,
+                shape: Shape::from_dims(&[2, 4]),
+                layout: Layout::contiguous(Shape::from_dims(&[2, 4])),
+                name: Some("c"),
             },
         ];
         let (graph, producer_id) = multi_output_producer(slot_specs);
@@ -14282,46 +14911,46 @@ mod tests {
         let (leaf_a, leaf_b, leaf_c, release_id) = {
             let mut g = graph.write().unwrap();
             let leaf_a = g.push(Node {
-                op:     Op::Relu,
+                op: Op::Relu,
                 inputs: vec![v0_id],
-                shape:  v0_shape,
-                dtype:  v0_dtype,
+                shape: v0_shape,
+                dtype: v0_dtype,
             });
             let b1 = g.push(Node {
-                op:     Op::Relu,
+                op: Op::Relu,
                 inputs: vec![v1_id],
-                shape:  v1_shape.clone(),
-                dtype:  v1_dtype,
+                shape: v1_shape.clone(),
+                dtype: v1_dtype,
             });
             let leaf_b = g.push(Node {
-                op:     Op::Relu,
+                op: Op::Relu,
                 inputs: vec![b1],
-                shape:  v1_shape,
-                dtype:  v1_dtype,
+                shape: v1_shape,
+                dtype: v1_dtype,
             });
             let c1 = g.push(Node {
-                op:     Op::Relu,
+                op: Op::Relu,
                 inputs: vec![v2_id],
-                shape:  v2_shape.clone(),
-                dtype:  v2_dtype,
+                shape: v2_shape.clone(),
+                dtype: v2_dtype,
             });
             let c2 = g.push(Node {
-                op:     Op::Relu,
+                op: Op::Relu,
                 inputs: vec![c1],
-                shape:  v2_shape.clone(),
-                dtype:  v2_dtype,
+                shape: v2_shape.clone(),
+                dtype: v2_dtype,
             });
             let leaf_c = g.push(Node {
-                op:     Op::Relu,
+                op: Op::Relu,
                 inputs: vec![c2],
-                shape:  v2_shape,
-                dtype:  v2_dtype,
+                shape: v2_shape,
+                dtype: v2_dtype,
             });
             let release = g.push(Node {
-                op:     Op::Release,
+                op: Op::Release,
                 inputs: vec![producer_id],
-                shape:  Shape::from_dims(&[0]),
-                dtype:  DType::F32,
+                shape: Shape::from_dims(&[0]),
+                dtype: DType::F32,
             });
             (leaf_a, leaf_b, leaf_c, release)
         };
@@ -14375,17 +15004,14 @@ mod tests {
     /// gradient graph and assert a ScatterIntoSlot was emitted.
     #[test]
     fn op_view_backward_emits_scatter_into_slot() {
-        let producer_t = Tensor::from_f32(
-            vec![0.0_f32; 6],
-            Shape::from_dims(&[2, 3]),
-            cpu_dev(),
-        );
+        let producer_t = Tensor::from_f32(vec![0.0_f32; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         let graph: SharedGraph = Arc::clone(producer_t.graph());
         let producer_id = producer_t.id();
         let view_id = {
             let mut g = graph.write().unwrap();
             let specs = two_slot_views_2x3_and_2x4();
-            g.set_output_views(producer_id, specs.into()).expect("output_views");
+            g.set_output_views(producer_id, specs.into())
+                .expect("output_views");
             drop(g);
             let v1 = producer_t.view(1).expect("slot 1 view");
             v1.id()
@@ -14406,15 +15032,14 @@ mod tests {
             .expect("producer has an accumulated gradient");
         let grad_id = grad_for_producer.id();
         let g = graph.read().unwrap();
-        let scatter_present = matches!(g.node(grad_id).op, Op::ScatterIntoSlot { slot: 1 })
-            || {
-                // Walk one hop back through `Op::Add` accumulations
-                // if any.
-                let n = g.node(grad_id);
-                n.inputs.iter().any(|inp| matches!(
-                    g.node(*inp).op, Op::ScatterIntoSlot { slot: 1 }
-                ))
-            };
+        let scatter_present = matches!(g.node(grad_id).op, Op::ScatterIntoSlot { slot: 1 }) || {
+            // Walk one hop back through `Op::Add` accumulations
+            // if any.
+            let n = g.node(grad_id);
+            n.inputs
+                .iter()
+                .any(|inp| matches!(g.node(*inp).op, Op::ScatterIntoSlot { slot: 1 }))
+        };
         assert!(
             scatter_present,
             "View(slot=1) backward must emit an Op::ScatterIntoSlot {{ slot: 1 }} \
@@ -14447,7 +15072,11 @@ mod tests {
 
         // Exactly four nodes (a, b, sum, c) — no implicit Branch
         // anywhere.
-        assert_eq!(guard.len(), 4, "zero-Branch graph must have the same node count as before");
+        assert_eq!(
+            guard.len(),
+            4,
+            "zero-Branch graph must have the same node count as before"
+        );
 
         // Topo order is unchanged and contains zero Branch nodes.
         let order = topo_order(&guard, c.id());
@@ -14477,7 +15106,9 @@ mod tests {
         // short_name / the Op::short_name() facade both return the
         // stable "Branch" constant.
         let reconverge = NodeId(7);
-        let branch_op = Op::Branch { reconverge_at: reconverge };
+        let branch_op = Op::Branch {
+            reconverge_at: reconverge,
+        };
         assert_eq!(branch_op.short_name(), "Branch");
         assert_eq!(op_short_name(&branch_op), "Branch");
 
@@ -14508,7 +15139,9 @@ mod tests {
             dtype: DType::F32,
         });
         let branch = g.push(Node {
-            op: Op::Branch { reconverge_at: merged },
+            op: Op::Branch {
+                reconverge_at: merged,
+            },
             inputs: vec![arm0, arm1],
             shape: Shape::from_dims(&[2]),
             dtype: DType::F32,
@@ -14694,9 +15327,16 @@ mod tests {
         let result = b
             .finalize_branches(&mut g, reconverge)
             .expect("a single-arm branch is valid — it just collapses");
-        assert!(result.is_none(), "single-arm branch must NOT emit an Op::Branch");
+        assert!(
+            result.is_none(),
+            "single-arm branch must NOT emit an Op::Branch"
+        );
         // No node appended: the lone arm is the graph, unchanged.
-        assert_eq!(g.len(), before, "dropping a single-arm branch leaves the arena untouched");
+        assert_eq!(
+            g.len(),
+            before,
+            "dropping a single-arm branch leaves the arena untouched"
+        );
         let branch_count = (0..g.len())
             .filter(|&i| matches!(g.node(NodeId(i)).op, Op::Branch { .. }))
             .count();
@@ -14743,7 +15383,12 @@ mod tests {
     /// is a non-empty run and `post` is a stable root.
     fn diamond_with_branch_b4() -> (Graph, NodeId, NodeId, NodeId, NodeId, NodeId, NodeId) {
         let mk = |g: &mut Graph, op: Op, inputs: Vec<NodeId>| {
-            g.push(Node { op, inputs, shape: Shape::from_dims(&[2]), dtype: DType::F32 })
+            g.push(Node {
+                op,
+                inputs,
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F32,
+            })
         };
         let mut g = Graph::new();
         let pre = mk(&mut g, Op::Const, vec![]);
@@ -14774,29 +15419,67 @@ mod tests {
         let mut g = Graph::new();
         // A shared weight Const, a session-state KV placeholder Const, a
         // transient activation, and an in-place cache-write target.
-        let weight = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[2]), dtype: DType::F32 });
-        let kv = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[2]), dtype: DType::F32 });
-        let act = g.push(Node { op: Op::Relu, inputs: vec![weight], shape: Shape::from_dims(&[2]), dtype: DType::F32 });
+        let weight = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[2]),
+            dtype: DType::F32,
+        });
+        let kv = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[2]),
+            dtype: DType::F32,
+        });
+        let act = g.push(Node {
+            op: Op::Relu,
+            inputs: vec![weight],
+            shape: Shape::from_dims(&[2]),
+            dtype: DType::F32,
+        });
         let write = g.push(Node {
-            op: Op::WriteSlice { ranges: vec![(0, 2)], dyn_offset: None },
+            op: Op::WriteSlice {
+                ranges: vec![(0, 2)],
+                dyn_offset: None,
+            },
             inputs: vec![kv, act],
             shape: Shape::from_dims(&[2]),
             dtype: DType::F32,
         });
 
         // Op-inferred defaults.
-        assert_eq!(g.storage_class(weight), StorageClass::Shared, "Const → Shared");
-        assert_eq!(g.storage_class(act), StorageClass::Transient, "activation → Transient");
-        assert_eq!(g.storage_class(write), StorageClass::SessionState, "WriteSlice → SessionState");
+        assert_eq!(
+            g.storage_class(weight),
+            StorageClass::Shared,
+            "Const → Shared"
+        );
+        assert_eq!(
+            g.storage_class(act),
+            StorageClass::Transient,
+            "activation → Transient"
+        );
+        assert_eq!(
+            g.storage_class(write),
+            StorageClass::SessionState,
+            "WriteSlice → SessionState"
+        );
         // No overrides set yet.
-        assert_eq!(g.storage_class(kv), StorageClass::Shared, "KV placeholder Const infers Shared before override");
+        assert_eq!(
+            g.storage_class(kv),
+            StorageClass::Shared,
+            "KV placeholder Const infers Shared before override"
+        );
         assert!(!g.has_storage_class_override(kv));
         assert_eq!(g.storage_class_override_count(), 0);
 
         // Explicit override: the KV placeholder is session state, not a
         // shared weight.
         g.set_storage_class(kv, StorageClass::SessionState);
-        assert_eq!(g.storage_class(kv), StorageClass::SessionState, "override beats inferred default");
+        assert_eq!(
+            g.storage_class(kv),
+            StorageClass::SessionState,
+            "override beats inferred default"
+        );
         assert!(g.has_storage_class_override(kv));
         assert_eq!(g.storage_class_override_count(), 1);
 
@@ -14804,13 +15487,31 @@ mod tests {
         // (no side-table entry) still resolve from the op.
         let remap = compact(&mut g, &[write]);
         let n_kv = remap.get(kv).expect("kv survives (input of write)");
-        let n_weight = remap.get(weight).expect("weight survives (transitively under act)");
+        let n_weight = remap
+            .get(weight)
+            .expect("weight survives (transitively under act)");
         let n_write = remap.get(write).expect("write is the root");
-        assert_eq!(g.storage_class(n_kv), StorageClass::SessionState, "override remapped by compact");
+        assert_eq!(
+            g.storage_class(n_kv),
+            StorageClass::SessionState,
+            "override remapped by compact"
+        );
         assert!(g.has_storage_class_override(n_kv));
-        assert_eq!(g.storage_class_override_count(), 1, "exactly the one override survives");
-        assert_eq!(g.storage_class(n_weight), StorageClass::Shared, "inferred Shared still holds post-compact");
-        assert_eq!(g.storage_class(n_write), StorageClass::SessionState, "inferred SessionState still holds post-compact");
+        assert_eq!(
+            g.storage_class_override_count(),
+            1,
+            "exactly the one override survives"
+        );
+        assert_eq!(
+            g.storage_class(n_weight),
+            StorageClass::Shared,
+            "inferred Shared still holds post-compact"
+        );
+        assert_eq!(
+            g.storage_class(n_write),
+            StorageClass::SessionState,
+            "inferred SessionState still holds post-compact"
+        );
         assert!(g.verify_no_dangling().is_ok());
     }
 
@@ -14820,13 +15521,38 @@ mod tests {
     #[test]
     fn compact_drops_orphan_debris() {
         let mut g = Graph::new();
-        let a = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[2]), dtype: DType::F32 });
-        let b = g.push(Node { op: Op::Relu, inputs: vec![a], shape: Shape::from_dims(&[2]), dtype: DType::F32 });
-        let c = g.push(Node { op: Op::Silu, inputs: vec![b], shape: Shape::from_dims(&[2]), dtype: DType::F32 });
+        let a = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[2]),
+            dtype: DType::F32,
+        });
+        let b = g.push(Node {
+            op: Op::Relu,
+            inputs: vec![a],
+            shape: Shape::from_dims(&[2]),
+            dtype: DType::F32,
+        });
+        let c = g.push(Node {
+            op: Op::Silu,
+            inputs: vec![b],
+            shape: Shape::from_dims(&[2]),
+            dtype: DType::F32,
+        });
         // Two pieces of exploration debris: reachable from nothing in the
         // live structure (no root, no side-effect, no branch references them).
-        let _orphan0 = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[2]), dtype: DType::F32 });
-        let _orphan1 = g.push(Node { op: Op::Tanh, inputs: vec![_orphan0], shape: Shape::from_dims(&[2]), dtype: DType::F32 });
+        let _orphan0 = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[2]),
+            dtype: DType::F32,
+        });
+        let _orphan1 = g.push(Node {
+            op: Op::Tanh,
+            inputs: vec![_orphan0],
+            shape: Shape::from_dims(&[2]),
+            dtype: DType::F32,
+        });
 
         let before = g.len();
         let remap = compact(&mut g, &[c]);
@@ -14844,7 +15570,11 @@ mod tests {
         assert!(remap.get(_orphan0).is_none());
         assert!(remap.get(_orphan1).is_none());
         // The surviving chain still resolves: c' reads b' reads a'.
-        let (na, nb, nc) = (remap.get(a).unwrap(), remap.get(b).unwrap(), remap.get(c).unwrap());
+        let (na, nb, nc) = (
+            remap.get(a).unwrap(),
+            remap.get(b).unwrap(),
+            remap.get(c).unwrap(),
+        );
         assert_eq!(g.node(nc).inputs, vec![nb]);
         assert_eq!(g.node(nb).inputs, vec![na]);
         assert_eq!(g.node(na).inputs, Vec::<NodeId>::new());
@@ -14860,7 +15590,12 @@ mod tests {
 
         // Inject orphan debris so compaction has something to drop and the
         // surviving-branch claim is non-trivial.
-        let _debris = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[2]), dtype: DType::F32 });
+        let _debris = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[2]),
+            dtype: DType::F32,
+        });
 
         // Baseline arm-0 route over old ids, mapped to the op sequence.
         let before_ops: Vec<&'static str> = lower_runs_arm0(&g, &[post])
@@ -14872,7 +15607,9 @@ mod tests {
 
         // Every branch participant survived.
         let narm0 = remap.get(arm0).expect("arm0 survives");
-        let narm1 = remap.get(arm1).expect("arm1 (the non-fallback arm) survives");
+        let narm1 = remap
+            .get(arm1)
+            .expect("arm1 (the non-fallback arm) survives");
         let nrecon = remap.get(reconverge).expect("reconverge survives");
         let nbranch = remap.get(branch).expect("the Branch node itself survives");
         let npost = remap.get(post).expect("post survives");
@@ -14881,7 +15618,11 @@ mod tests {
         // its reconverge_at is the remapped reconverge — it still resolves.
         let bn = g.node(nbranch);
         assert!(matches!(bn.op, Op::Branch { .. }));
-        assert_eq!(bn.inputs, vec![narm0, narm1], "arm exits remapped, arm0 first");
+        assert_eq!(
+            bn.inputs,
+            vec![narm0, narm1],
+            "arm exits remapped, arm0 first"
+        );
         match bn.op {
             Op::Branch { reconverge_at } => assert_eq!(reconverge_at, nrecon),
             ref other => panic!("expected Op::Branch, got {other:?}"),
@@ -14903,13 +15644,40 @@ mod tests {
     #[test]
     fn compact_branchless_reachable_is_identity_in_structure() {
         let mut g = Graph::new();
-        let a = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[2]), dtype: DType::F32 });
-        let b = g.push(Node { op: Op::Relu, inputs: vec![a], shape: Shape::from_dims(&[2]), dtype: DType::F32 });
-        let c = g.push(Node { op: Op::Silu, inputs: vec![b], shape: Shape::from_dims(&[2]), dtype: DType::F32 });
-        let d = g.push(Node { op: Op::Tanh, inputs: vec![c], shape: Shape::from_dims(&[2]), dtype: DType::F32 });
+        let a = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[2]),
+            dtype: DType::F32,
+        });
+        let b = g.push(Node {
+            op: Op::Relu,
+            inputs: vec![a],
+            shape: Shape::from_dims(&[2]),
+            dtype: DType::F32,
+        });
+        let c = g.push(Node {
+            op: Op::Silu,
+            inputs: vec![b],
+            shape: Shape::from_dims(&[2]),
+            dtype: DType::F32,
+        });
+        let d = g.push(Node {
+            op: Op::Tanh,
+            inputs: vec![c],
+            shape: Shape::from_dims(&[2]),
+            dtype: DType::F32,
+        });
 
-        let before_ops: Vec<&'static str> =
-            extract_runs(&g, d).iter().flat_map(|r| r.members.iter().map(|&id| g.node(id).op.short_name()).collect::<Vec<_>>()).collect();
+        let before_ops: Vec<&'static str> = extract_runs(&g, d)
+            .iter()
+            .flat_map(|r| {
+                r.members
+                    .iter()
+                    .map(|&id| g.node(id).op.short_name())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
         let before_len = g.len();
 
         let remap = compact(&mut g, &[d]);
@@ -14920,8 +15688,15 @@ mod tests {
         }
         // Structure identical: same op sequence over the compacted graph.
         let nd = remap.get(d).unwrap();
-        let after_ops: Vec<&'static str> =
-            extract_runs(&g, nd).iter().flat_map(|r| r.members.iter().map(|&id| g.node(id).op.short_name()).collect::<Vec<_>>()).collect();
+        let after_ops: Vec<&'static str> = extract_runs(&g, nd)
+            .iter()
+            .flat_map(|r| {
+                r.members
+                    .iter()
+                    .map(|&id| g.node(id).op.short_name())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
         assert_eq!(before_ops, after_ops);
         assert_no_dangling(&g);
     }
@@ -14943,11 +15718,21 @@ mod tests {
         g.set_placement(diverge, DeviceLocation::Cpu);
         // A side-effect root that is itself orphan-from-roots: a Release-like
         // op the executor must keep even though no output reads it.
-        let se = g.push(Node { op: Op::Const, inputs: vec![post], shape: Shape::from_dims(&[2]), dtype: DType::F32 });
+        let se = g.push(Node {
+            op: Op::Const,
+            inputs: vec![post],
+            shape: Shape::from_dims(&[2]),
+            dtype: DType::F32,
+        });
         g.add_side_effect_root(se);
 
         // Orphan debris (referenced by nothing live) to force a real drop.
-        let _debris = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[2]), dtype: DType::F32 });
+        let _debris = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[2]),
+            dtype: DType::F32,
+        });
 
         let before_run_ops: Vec<&'static str> = lower_runs_arm0(&g, &[post])
             .iter()
@@ -14967,9 +15752,18 @@ mod tests {
             "the remapped side-effect root is registered post-compaction",
         );
         // The surviving target_backend side-table is keyed by the new ids.
-        assert_eq!(g.target_backend(remap.get(arm0).unwrap()), Some(BackendId::Cpu));
-        assert_eq!(g.target_backend(remap.get(reconverge).unwrap()), Some(BackendId::Cpu));
-        assert_eq!(g.placement(remap.get(diverge).unwrap()), Some(DeviceLocation::Cpu));
+        assert_eq!(
+            g.target_backend(remap.get(arm0).unwrap()),
+            Some(BackendId::Cpu)
+        );
+        assert_eq!(
+            g.target_backend(remap.get(reconverge).unwrap()),
+            Some(BackendId::Cpu)
+        );
+        assert_eq!(
+            g.placement(remap.get(diverge).unwrap()),
+            Some(DeviceLocation::Cpu)
+        );
 
         // Round-trip: the arm-0 route is logically identical.
         let npost = remap.get(post).unwrap();
@@ -14996,7 +15790,11 @@ mod tests {
                 assert!(ok(inp), "Node#{i} input {:?} dangles (len={n})", inp);
             }
             if let Op::Branch { reconverge_at } = node.op {
-                assert!(ok(reconverge_at), "Node#{i} Branch.reconverge_at {:?} dangles (len={n})", reconverge_at);
+                assert!(
+                    ok(reconverge_at),
+                    "Node#{i} Branch.reconverge_at {:?} dangles (len={n})",
+                    reconverge_at
+                );
             }
         }
         for &r in g.side_effect_roots() {
@@ -15013,14 +15811,22 @@ mod tests {
 
     #[test]
     fn scan_variants_construct_and_name() {
-        use crate::{Graph, Node, Op, ScanEmit, ScanRole, ScanPredicate};
+        use crate::{Graph, Node, Op, ScanEmit, ScanPredicate, ScanRole};
         use fuel_ir::{DType, Shape};
         let mut g = Graph::new();
         let s = Shape::from_dims(&[1, 1, 1]);
-        let carry = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+        let carry = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: s.clone(),
+            dtype: DType::F32,
+        });
         // A ScanPlaceholder leaf (the per-step carry hole).
         let hole = g.push(Node {
-            op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 },
+            op: Op::ScanPlaceholder {
+                role: ScanRole::Carry,
+                index: 0,
+            },
             inputs: vec![],
             shape: s.clone(),
             dtype: DType::F32,
@@ -15028,7 +15834,12 @@ mod tests {
         // A trivial body: new_carry = hole (identity); body_y = hole.
         // Op::Scan node: inputs = [init_carry, <no xs>, <no consts>, body_new_carry, body_y].
         let scan = g.push(Node {
-            op: Op::Scan { n_xs: 0, bound: 1, emit: ScanEmit::All, early_exit: None },
+            op: Op::Scan {
+                n_xs: 0,
+                bound: 1,
+                emit: ScanEmit::All,
+                early_exit: None,
+            },
             inputs: vec![carry, hole, hole],
             shape: s.clone(),
             dtype: DType::F32,
@@ -15036,14 +15847,27 @@ mod tests {
         assert_eq!(g.node(scan).op.short_name(), "Scan");
         assert_eq!(g.node(hole).op.short_name(), "ScanPlaceholder");
         // early_exit is constructible (guarded elsewhere) but never Some on a live path.
-        let _guarded = Op::Scan { n_xs: 0, bound: 1, emit: ScanEmit::Final, early_exit: Some(ScanPredicate) };
+        let _guarded = Op::Scan {
+            n_xs: 0,
+            bound: 1,
+            emit: ScanEmit::Final,
+            early_exit: Some(ScanPredicate),
+        };
         // derive_view_output_layout: Scan is NOT a view op -> Err (handled by the catch-all).
         let lay = fuel_ir::Layout::contiguous(s.clone());
         let derived = crate::derive_view_output_layout(
-            &Op::Scan { n_xs: 0, bound: 1, emit: ScanEmit::All, early_exit: None },
+            &Op::Scan {
+                n_xs: 0,
+                bound: 1,
+                emit: ScanEmit::All,
+                early_exit: None,
+            },
             &lay,
         );
-        assert!(derived.is_err(), "Op::Scan must not be treated as a view op");
+        assert!(
+            derived.is_err(),
+            "Op::Scan must not be treated as a view op"
+        );
         let _ = scan;
     }
 
@@ -15053,23 +15877,55 @@ mod tests {
         use fuel_ir::{DType, Shape};
         use std::sync::{Arc, RwLock};
         let graph = Arc::new(RwLock::new(Graph::new()));
-        let cs = Shape::from_dims(&[2]);   // carry shape
-        let ys = Shape::from_dims(&[2]);   // per-step y shape
+        let cs = Shape::from_dims(&[2]); // carry shape
+        let ys = Shape::from_dims(&[2]); // per-step y shape
         let (carry, hole, new_carry, body_y) = {
             let mut g = graph.write().unwrap();
-            let carry = g.push(Node { op: Op::Const, inputs: vec![], shape: cs.clone(), dtype: DType::F32 });
-            let hole = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: cs.clone(), dtype: DType::F32 });
-            let new_carry = g.push(Node { op: Op::MulScalar(2.0), inputs: vec![hole], shape: cs.clone(), dtype: DType::F32 });
-            let body_y = g.push(Node { op: Op::AddScalar(1.0), inputs: vec![new_carry], shape: ys.clone(), dtype: DType::F32 });
+            let carry = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: cs.clone(),
+                dtype: DType::F32,
+            });
+            let hole = g.push(Node {
+                op: Op::ScanPlaceholder {
+                    role: ScanRole::Carry,
+                    index: 0,
+                },
+                inputs: vec![],
+                shape: cs.clone(),
+                dtype: DType::F32,
+            });
+            let new_carry = g.push(Node {
+                op: Op::MulScalar(2.0),
+                inputs: vec![hole],
+                shape: cs.clone(),
+                dtype: DType::F32,
+            });
+            let body_y = g.push(Node {
+                op: Op::AddScalar(1.0),
+                inputs: vec![new_carry],
+                shape: ys.clone(),
+                dtype: DType::F32,
+            });
             (carry, hole, new_carry, body_y)
         };
-        let t = |id| Tensor { graph: graph.clone(), id };  // same-crate access to private fields
+        let t = |id| Tensor {
+            graph: graph.clone(),
+            id,
+        }; // same-crate access to private fields
         let init = t(carry);
         let (nc, by) = (t(new_carry), t(body_y));
         let bound = 4usize;
 
-        let all = init.scan(&[], &[], &nc, &by, bound, ScanEmit::All).expect("scan All");
-        assert_eq!(all.shape().dims(), &[bound, 2], "emit=All -> [bound] ++ body_y");
+        let all = init
+            .scan(&[], &[], &nc, &by, bound, ScanEmit::All)
+            .expect("scan All");
+        assert_eq!(
+            all.shape().dims(),
+            &[bound, 2],
+            "emit=All -> [bound] ++ body_y"
+        );
 
         // Structural guard (Task-2 review finding): the Op::Scan node's
         // inputs MUST end with [.., body_new_carry, body_y] in that
@@ -15082,16 +15938,20 @@ mod tests {
             let producer_id = g.node(all.id()).inputs[0];
             let producer_inputs = &g.node(producer_id).inputs;
             assert_eq!(
-                producer_inputs[producer_inputs.len() - 2], nc.id(),
+                producer_inputs[producer_inputs.len() - 2],
+                nc.id(),
                 "Op::Scan inputs[len-2] must be body_new_carry",
             );
             assert_eq!(
-                producer_inputs[producer_inputs.len() - 1], by.id(),
+                producer_inputs[producer_inputs.len() - 1],
+                by.id(),
                 "Op::Scan inputs[len-1] must be body_y",
             );
         }
 
-        let fin = init.scan(&[], &[], &nc, &by, bound, ScanEmit::Final).expect("scan Final");
+        let fin = init
+            .scan(&[], &[], &nc, &by, bound, ScanEmit::Final)
+            .expect("scan Final");
         assert_eq!(fin.shape().dims(), &[2], "emit=Final -> carry shape");
         let _ = hole;
     }
@@ -15105,12 +15965,33 @@ mod tests {
         let cs = Shape::from_dims(&[1]);
         let (carry, new_carry, body_y) = {
             let mut g = graph.write().unwrap();
-            let carry = g.push(Node { op: Op::Const, inputs: vec![], shape: cs.clone(), dtype: DType::F32 });
-            let hole = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: cs.clone(), dtype: DType::F32 });
-            let nc = g.push(Node { op: Op::MulScalar(2.0), inputs: vec![hole], shape: cs.clone(), dtype: DType::F32 });
+            let carry = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: cs.clone(),
+                dtype: DType::F32,
+            });
+            let hole = g.push(Node {
+                op: Op::ScanPlaceholder {
+                    role: ScanRole::Carry,
+                    index: 0,
+                },
+                inputs: vec![],
+                shape: cs.clone(),
+                dtype: DType::F32,
+            });
+            let nc = g.push(Node {
+                op: Op::MulScalar(2.0),
+                inputs: vec![hole],
+                shape: cs.clone(),
+                dtype: DType::F32,
+            });
             (carry, nc, nc)
         };
-        let t = |id| Tensor { graph: graph.clone(), id };
+        let t = |id| Tensor {
+            graph: graph.clone(),
+            id,
+        };
         let r = t(carry).scan(&[], &[], &t(new_carry), &t(body_y), 0, ScanEmit::All);
         assert!(r.is_err(), "bound == 0 must be a typed Err, not a panic");
     }
@@ -15131,25 +16012,58 @@ mod tests {
     fn scan_opt_in_sites_are_safe_defaults() {
         use crate::{Graph, Node, Op, ScanEmit, ScanRole};
         use fuel_ir::{DType, Shape};
-        let scan = Op::Scan { n_xs: 0, bound: 2, emit: ScanEmit::All, early_exit: None };
-        let hole = Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 };
+        let scan = Op::Scan {
+            n_xs: 0,
+            bound: 2,
+            emit: ScanEmit::All,
+            early_exit: None,
+        };
+        let hole = Op::ScanPlaceholder {
+            role: ScanRole::Carry,
+            index: 0,
+        };
         // Classifier defaults.
         assert_eq!(scan.destructive_input(), None);
         assert_eq!(hole.destructive_input(), None);
         assert!(!scan.is_view_op());
         assert!(!hole.is_view_op());
-        assert_eq!(crate::infer_storage_class(&scan), crate::StorageClass::Transient);
+        assert_eq!(
+            crate::infer_storage_class(&scan),
+            crate::StorageClass::Transient
+        );
         assert_eq!(crate::jit::op_to_tag(&scan), None);
         // Reachability: build a graph with an Op::Scan whose body references a hole;
         // the hole (a body node) is reachable from the Scan via inputs, no seeding.
         let mut g = Graph::new();
         let s = Shape::from_dims(&[1]);
-        let carry = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
-        let h = g.push(Node { op: hole.clone(), inputs: vec![], shape: s.clone(), dtype: DType::F32 });
-        let nc = g.push(Node { op: Op::MulScalar(2.0), inputs: vec![h], shape: s.clone(), dtype: DType::F32 });
-        let sc = g.push(Node { op: scan.clone(), inputs: vec![carry, nc, nc], shape: Shape::from_dims(&[2,1]), dtype: DType::F32 });
+        let carry = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: s.clone(),
+            dtype: DType::F32,
+        });
+        let h = g.push(Node {
+            op: hole.clone(),
+            inputs: vec![],
+            shape: s.clone(),
+            dtype: DType::F32,
+        });
+        let nc = g.push(Node {
+            op: Op::MulScalar(2.0),
+            inputs: vec![h],
+            shape: s.clone(),
+            dtype: DType::F32,
+        });
+        let sc = g.push(Node {
+            op: scan.clone(),
+            inputs: vec![carry, nc, nc],
+            shape: Shape::from_dims(&[2, 1]),
+            dtype: DType::F32,
+        });
         let reachable = crate::topo_order_multi(&g, &[sc]);
-        assert!(reachable.contains(&nc) && reachable.contains(&h),
-            "body nodes must be reachable from Op::Scan via inputs (no effective_roots edit needed)");
+        assert!(
+            reachable.contains(&nc) && reachable.contains(&h),
+            "body nodes must be reachable from Op::Scan via inputs (no effective_roots edit needed)"
+        );
     }
 }

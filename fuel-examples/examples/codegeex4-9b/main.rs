@@ -8,7 +8,7 @@ use anyhow::{Error as E, Result};
 use clap::Parser;
 
 use fuel::lazy_chatglm::{ChatGlmConfig, ChatGlmModel, ChatGlmNorm, ChatGlmWeights};
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use hf_hub::{Repo, RepoType, api::sync::Api};
 use std::io::Write;
 use tokenizers::Tokenizer;
 
@@ -127,7 +127,10 @@ fn main() -> Result<()> {
         .map_err(|e| E::msg(format!("mmap: {e}")))?;
     let weights = ChatGlmWeights::load_from_mmapped(&st, &cfg)
         .map_err(|e| E::msg(format!("weights: {e}")))?;
-    let model = ChatGlmModel { config: cfg.clone(), weights };
+    let model = ChatGlmModel {
+        config: cfg.clone(),
+        weights,
+    };
 
     println!("loaded the model in {:?}", start.elapsed());
 
@@ -136,7 +139,9 @@ fn main() -> Result<()> {
         None => panic!("cannot find the endoftext token"),
     };
 
-    let encoded = tokenizer.encode(args.prompt.clone(), true).map_err(E::msg)?;
+    let encoded = tokenizer
+        .encode(args.prompt.clone(), true)
+        .map_err(E::msg)?;
     if encoded.is_empty() {
         panic!("Empty prompts are not supported in the chatglm model.")
     }
@@ -206,9 +211,8 @@ fn main() -> Result<()> {
 fn chatglm_config_from_hf_json_str(json: &str) -> Result<ChatGlmConfig> {
     let v: serde_json::Value =
         serde_json::from_str(json).map_err(|e| E::msg(format!("parse config: {e}")))?;
-    let get_usize = |k: &str| -> Option<usize> {
-        v.get(k).and_then(|x| x.as_u64()).map(|x| x as usize)
-    };
+    let get_usize =
+        |k: &str| -> Option<usize> { v.get(k).and_then(|x| x.as_u64()).map(|x| x as usize) };
     let get_f64 = |k: &str| -> Option<f64> { v.get(k).and_then(|x| x.as_f64()) };
     let get_bool = |k: &str| -> Option<bool> { v.get(k).and_then(|x| x.as_bool()) };
     let preset = ChatGlmConfig::codegeex4();
@@ -225,7 +229,11 @@ fn chatglm_config_from_hf_json_str(json: &str) -> Result<ChatGlmConfig> {
             .unwrap_or(preset.multi_query_group_num),
         seq_length: get_usize("seq_length").unwrap_or(preset.seq_length),
         layernorm_epsilon: get_f64("layernorm_epsilon").unwrap_or(preset.layernorm_epsilon),
-        norm_kind: if rmsnorm { ChatGlmNorm::Rms } else { ChatGlmNorm::Layer },
+        norm_kind: if rmsnorm {
+            ChatGlmNorm::Rms
+        } else {
+            ChatGlmNorm::Layer
+        },
         add_qkv_bias: get_bool("add_qkv_bias").unwrap_or(preset.add_qkv_bias),
         add_bias_linear: get_bool("add_bias_linear").unwrap_or(preset.add_bias_linear),
         apply_residual_connection_post_layernorm: get_bool(
@@ -251,13 +259,7 @@ fn apply_repeat_penalty(logits: &mut [f32], p: f32, ctx: &[u32]) {
     }
 }
 
-fn sample(
-    logits: &[f32],
-    temp: f32,
-    top_k: Option<usize>,
-    top_p: Option<f32>,
-    seed: u64,
-) -> u32 {
+fn sample(logits: &[f32], temp: f32, top_k: Option<usize>, top_p: Option<f32>, seed: u64) -> u32 {
     if temp <= 0.0 {
         let mut bi = 0usize;
         let mut b = logits[0];

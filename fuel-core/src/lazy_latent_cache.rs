@@ -79,19 +79,21 @@ impl LazyLatentCache {
         dtype: DType,
     ) -> std::result::Result<Self, fuel_ir::Error> {
         if n_layers == 0 {
-            return Err(fuel_ir::Error::Msg(
-                "LazyLatentCache::new: n_layers must be ≥ 1".into(),
-            ).bt());
+            return Err(
+                fuel_ir::Error::Msg("LazyLatentCache::new: n_layers must be ≥ 1".into()).bt(),
+            );
         }
         if max_seq_len == 0 {
             return Err(fuel_ir::Error::Msg(
                 "LazyLatentCache::new: max_seq_len must be ≥ 1".into(),
-            ).bt());
+            )
+            .bt());
         }
         if slot_trailing.is_empty() {
             return Err(fuel_ir::Error::Msg(
                 "LazyLatentCache::new: need at least one slot (slot_trailing empty)".into(),
-            ).bt());
+            )
+            .bt());
         }
         let mut layers = Vec::with_capacity(n_layers);
         for _ in 0..n_layers {
@@ -128,11 +130,7 @@ impl LazyLatentCache {
     /// Errors (typed, at build time): `layer` out of bounds, wrong slot
     /// count, a slot shape mismatch, mismatched `seqlen_new` across slots,
     /// or an append that would exceed `max_seq_len`.
-    pub fn append(
-        mut self,
-        layer: usize,
-        new_slots: &[&LazyTensor],
-    ) -> crate::Result<Self> {
+    pub fn append(mut self, layer: usize, new_slots: &[&LazyTensor]) -> crate::Result<Self> {
         if layer >= self.layers.len() {
             crate::bail!(
                 "LazyLatentCache::append: layer {layer} out of bounds (n_layers={})",
@@ -175,7 +173,8 @@ impl LazyLatentCache {
             crate::bail!(
                 "LazyLatentCache::append: appending {seqlen_new} tokens at position {} would \
                  exceed max_seq_len {}",
-                self.current_seq_len, self.max_seq_len,
+                self.current_seq_len,
+                self.max_seq_len,
             );
         }
         // Write each slot's slab at [current_seq_len, new_end) on dim 0,
@@ -217,31 +216,44 @@ impl LazyLatentCache {
     }
 
     /// Tokens written so far.
-    pub fn current_seq_len(&self) -> usize { self.current_seq_len }
+    pub fn current_seq_len(&self) -> usize {
+        self.current_seq_len
+    }
     /// Pre-allocated per-slot capacity along the sequence axis.
-    pub fn max_seq_len(&self) -> usize { self.max_seq_len }
+    pub fn max_seq_len(&self) -> usize {
+        self.max_seq_len
+    }
     /// Number of layers.
-    pub fn n_layers(&self) -> usize { self.layers.len() }
+    pub fn n_layers(&self) -> usize {
+        self.layers.len()
+    }
     /// Number of slots per layer.
-    pub fn n_slots(&self) -> usize { self.slot_trailing.len() }
+    pub fn n_slots(&self) -> usize {
+        self.slot_trailing.len()
+    }
     /// Trailing shape of slot `s` (past the seq axis).
-    pub fn slot_trailing(&self, slot: usize) -> &[usize] { &self.slot_trailing[slot] }
+    pub fn slot_trailing(&self, slot: usize) -> &[usize] {
+        &self.slot_trailing[slot]
+    }
 }
 
 /// Zero-initialized [`LazyTensor`] of the given shape/dtype on `anchor`'s
 /// graph. Same helper `LazyKvCache` uses (kept private per-module to avoid
 /// coupling the two caches while the K/V one still exists independently).
 fn zero_const_on(
-    anchor: &LazyTensor, dtype: DType, shape: Shape, elems: usize,
+    anchor: &LazyTensor,
+    dtype: DType,
+    shape: Shape,
+    elems: usize,
 ) -> std::result::Result<LazyTensor, fuel_ir::Error> {
     match dtype {
         DType::F32 => Ok(anchor.const_f32_like(vec![0.0_f32; elems], shape)),
         DType::F64 => Ok(anchor.const_f64_like(vec![0.0_f64; elems], shape)),
         DType::BF16 => Ok(anchor.const_bf16_like(vec![half::bf16::ZERO; elems], shape)),
         DType::F16 => Ok(anchor.const_f16_like(vec![half::f16::ZERO; elems], shape)),
-        other => Err(fuel_ir::Error::Msg(format!(
-            "LazyLatentCache: unsupported dtype {other:?}",
-        )).bt()),
+        other => {
+            Err(fuel_ir::Error::Msg(format!("LazyLatentCache: unsupported dtype {other:?}",)).bt())
+        }
     }
 }
 
@@ -258,9 +270,8 @@ mod tests {
         let anchor = cpu_f32(vec![0.0], &[1]);
         // MLA-shaped: slot 0 = compressed_kv trailing [kv_lora_rank=5],
         // slot 1 = k_pe trailing [qk_rope_head_dim=2].
-        let cache = LazyLatentCache::new(
-            &anchor, 3, 8, vec![vec![5], vec![2]], DType::F32,
-        ).unwrap();
+        let cache =
+            LazyLatentCache::new(&anchor, 3, 8, vec![vec![5], vec![2]], DType::F32).unwrap();
         assert_eq!(cache.n_layers(), 3);
         assert_eq!(cache.n_slots(), 2);
         assert_eq!(cache.max_seq_len(), 8);
@@ -280,15 +291,12 @@ mod tests {
     fn mla_two_unequal_slots_append_and_slice() {
         let anchor = cpu_f32(vec![0.0], &[1]);
         // slot 0 latent trailing [3], slot 1 rope-key trailing [2].
-        let mut cache = LazyLatentCache::new(
-            &anchor, 1, 4, vec![vec![3], vec![2]], DType::F32,
-        ).unwrap();
+        let mut cache =
+            LazyLatentCache::new(&anchor, 1, 4, vec![vec![3], vec![2]], DType::F32).unwrap();
 
         // Step 1: append 2 tokens.
-        let c1 = anchor.const_f32_like(
-            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3]);
-        let p1 = anchor.const_f32_like(
-            vec![10.0, 11.0, 12.0, 13.0], vec![2, 2]);
+        let c1 = anchor.const_f32_like(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3]);
+        let p1 = anchor.const_f32_like(vec![10.0, 11.0, 12.0, 13.0], vec![2, 2]);
         cache = cache.append(0, &[&c1, &p1]).unwrap().advance_by(2);
         assert_eq!(cache.current_seq_len(), 2);
 
@@ -308,10 +316,7 @@ mod tests {
         // slot 1 (rope key) = the three tokens' [2]-vectors.
         let kpe = cache.slot(0, 1);
         assert_eq!(kpe.shape().dims(), &[3, 2]);
-        assert_eq!(
-            kpe.realize_f32(),
-            vec![10.0, 11.0, 12.0, 13.0, 14.0, 15.0],
-        );
+        assert_eq!(kpe.realize_f32(), vec![10.0, 11.0, 12.0, 13.0, 14.0, 15.0],);
     }
 
     /// Two-projection / QKV-pruning shape: a single retained latent per
@@ -321,12 +326,9 @@ mod tests {
     fn single_slot_rank3_trailing() {
         let anchor = cpu_f32(vec![0.0], &[1]);
         // one slot, trailing [2, 2] → buffer [max_seq, 2, 2].
-        let cache = LazyLatentCache::new(
-            &anchor, 1, 4, vec![vec![2, 2]], DType::F32,
-        ).unwrap();
+        let cache = LazyLatentCache::new(&anchor, 1, 4, vec![vec![2, 2]], DType::F32).unwrap();
         assert_eq!(cache.n_slots(), 1);
-        let t = anchor.const_f32_like(
-            vec![1.0, 2.0, 3.0, 4.0], vec![1, 2, 2]);
+        let t = anchor.const_f32_like(vec![1.0, 2.0, 3.0, 4.0], vec![1, 2, 2]);
         let cache = cache.append(0, &[&t]).unwrap().advance_by(1);
         let got = cache.slot(0, 0);
         assert_eq!(got.shape().dims(), &[1, 2, 2]);
@@ -336,9 +338,8 @@ mod tests {
     #[test]
     fn multi_layer_isolates_slots() {
         let anchor = cpu_f32(vec![0.0], &[1]);
-        let cache = LazyLatentCache::new(
-            &anchor, 2, 4, vec![vec![2], vec![1]], DType::F32,
-        ).unwrap();
+        let cache =
+            LazyLatentCache::new(&anchor, 2, 4, vec![vec![2], vec![1]], DType::F32).unwrap();
         // Both layers appended within one step → same position → advance once.
         let a0 = anchor.const_f32_like(vec![1.0, 1.0], vec![1, 2]);
         let b0 = anchor.const_f32_like(vec![9.0], vec![1, 1]);
@@ -356,9 +357,7 @@ mod tests {
     #[test]
     fn append_rejects_oob_layer() {
         let anchor = cpu_f32(vec![0.0], &[1]);
-        let cache = LazyLatentCache::new(
-            &anchor, 1, 4, vec![vec![2]], DType::F32,
-        ).unwrap();
+        let cache = LazyLatentCache::new(&anchor, 1, 4, vec![vec![2]], DType::F32).unwrap();
         let t = anchor.const_f32_like(vec![0.0, 0.0], vec![1, 2]);
         assert!(cache.append(5, &[&t]).is_err());
     }
@@ -366,9 +365,8 @@ mod tests {
     #[test]
     fn append_rejects_wrong_slot_count() {
         let anchor = cpu_f32(vec![0.0], &[1]);
-        let cache = LazyLatentCache::new(
-            &anchor, 1, 4, vec![vec![2], vec![2]], DType::F32,
-        ).unwrap();
+        let cache =
+            LazyLatentCache::new(&anchor, 1, 4, vec![vec![2], vec![2]], DType::F32).unwrap();
         let t = anchor.const_f32_like(vec![0.0, 0.0], vec![1, 2]);
         // 2 slots declared, only 1 tensor supplied.
         assert!(cache.append(0, &[&t]).is_err());
@@ -377,9 +375,7 @@ mod tests {
     #[test]
     fn append_rejects_slot_shape_mismatch() {
         let anchor = cpu_f32(vec![0.0], &[1]);
-        let cache = LazyLatentCache::new(
-            &anchor, 1, 4, vec![vec![3]], DType::F32,
-        ).unwrap();
+        let cache = LazyLatentCache::new(&anchor, 1, 4, vec![vec![3]], DType::F32).unwrap();
         // trailing should be [3], supply [5].
         let t = anchor.const_f32_like(vec![0.0; 5], vec![1, 5]);
         assert!(cache.append(0, &[&t]).is_err());
@@ -388,9 +384,8 @@ mod tests {
     #[test]
     fn append_rejects_mismatched_seqlen_across_slots() {
         let anchor = cpu_f32(vec![0.0], &[1]);
-        let cache = LazyLatentCache::new(
-            &anchor, 1, 4, vec![vec![2], vec![2]], DType::F32,
-        ).unwrap();
+        let cache =
+            LazyLatentCache::new(&anchor, 1, 4, vec![vec![2], vec![2]], DType::F32).unwrap();
         // slot 0 has seqlen 2, slot 1 has seqlen 1 → inconsistent.
         let a = anchor.const_f32_like(vec![0.0; 4], vec![2, 2]);
         let b = anchor.const_f32_like(vec![0.0; 2], vec![1, 2]);
@@ -400,9 +395,7 @@ mod tests {
     #[test]
     fn append_rejects_capacity_overflow() {
         let anchor = cpu_f32(vec![0.0], &[1]);
-        let cache = LazyLatentCache::new(
-            &anchor, 1, 2, vec![vec![1]], DType::F32,
-        ).unwrap();
+        let cache = LazyLatentCache::new(&anchor, 1, 2, vec![vec![1]], DType::F32).unwrap();
         let t = anchor.const_f32_like(vec![0.0; 3], vec![3, 1]);
         assert!(cache.append(0, &[&t]).is_err()); // 3 tokens > max_seq_len 2
     }

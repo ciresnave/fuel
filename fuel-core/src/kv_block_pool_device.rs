@@ -27,17 +27,17 @@
 
 use std::sync::{Arc, RwLock};
 
-use fuel_ir::{DType, Error, Layout, Result, Shape};
-use fuel_graph::{Graph, Node, NodeId, Op};
 use fuel_dispatch::pipelined::{PipelinedExecutor, StorageCache};
+use fuel_graph::{Graph, Node, NodeId, Op};
+use fuel_ir::{DType, Error, Layout, Result, Shape};
 use fuel_memory::Storage;
 
 use crate::Device;
 use crate::decode_shape::KvAllocId;
-use crate::lazy::LazyTensor;
 use crate::kv_block_pool::{
     Externalized, KvAllocError, KvBlockPool, KvGeometry, PhysBlockId, SessionHandle,
 };
+use crate::lazy::LazyTensor;
 
 /// Which of a layer's two pool buffers a block operation targets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -164,12 +164,19 @@ impl DeviceKvPool {
             return Err(Error::Msg(format!(
                 "DeviceKvPool::new: geometry elem_size {} ≠ dtype {:?} size {} — the \
                  pool's byte accounting would disagree with its physical buffers",
-                geom.elem_size, dtype, dtype.size_in_bytes(),
-            )).bt());
+                geom.elem_size,
+                dtype,
+                dtype.size_in_bytes(),
+            ))
+            .bt());
         }
         let n_layers = geom.n_layers;
-        let pool_shape =
-            Shape::from_dims(&[geom.num_blocks, geom.block_size, geom.n_kv_heads, geom.head_dim]);
+        let pool_shape = Shape::from_dims(&[
+            geom.num_blocks,
+            geom.block_size,
+            geom.n_kv_heads,
+            geom.head_dim,
+        ]);
         let (k_pools, v_pools) = alloc_layer_buffers(&pool_shape, dtype, device, n_layers)?;
         Ok(Self {
             core: KvBlockPool::new(geom),
@@ -262,7 +269,10 @@ impl DeviceKvPool {
             BlockKind::V => &self.v_pools,
         };
         v.get(layer).ok_or_else(|| {
-            msg_err(format!("DeviceKvPool: no layer {layer} (n_layers={})", self.n_layers()))
+            msg_err(format!(
+                "DeviceKvPool: no layer {layer} (n_layers={})",
+                self.n_layers()
+            ))
         })
     }
 
@@ -280,7 +290,12 @@ impl DeviceKvPool {
     pub fn block_write_ranges(&self, phys: PhysBlockId) -> Vec<(usize, usize)> {
         let g = self.geometry();
         let p = phys as usize;
-        vec![(p, p + 1), (0, g.block_size), (0, g.n_kv_heads), (0, g.head_dim)]
+        vec![
+            (p, p + 1),
+            (0, g.block_size),
+            (0, g.n_kv_heads),
+            (0, g.head_dim),
+        ]
     }
 
     /// Write `data` (`block_size · Hkv · D` f32, row-major `[block_size, Hkv,
@@ -307,7 +322,8 @@ impl DeviceKvPool {
         if data.len() != self.block_elems() {
             return Err(msg_err(format!(
                 "DeviceKvPool::write_block: data len {} ≠ block elems {}",
-                data.len(), self.block_elems(),
+                data.len(),
+                self.block_elems(),
             )));
         }
         // f32 typed wrapper over the dtype-agnostic byte core.
@@ -365,7 +381,13 @@ impl DeviceKvPool {
                 // K: delta-rotate the cached (post-RoPE) block by θ·M into the fresh block.
                 let k = self.read_block(l, BlockKind::K, *src)?;
                 let rot = crate::lazy::LazyTensor::rope_delta_rotate_block_f32(
-                    self.device(), &k, rope_base, m, g.block_size, g.n_kv_heads, g.head_dim,
+                    self.device(),
+                    &k,
+                    rope_base,
+                    m,
+                    g.block_size,
+                    g.n_kv_heads,
+                    g.head_dim,
                 );
                 self.write_block(l, BlockKind::K, *fresh, &rot)?;
                 // V: position-independent, copied verbatim (dtype-agnostic bytes).
@@ -403,7 +425,12 @@ impl DeviceKvPool {
             return Err(msg_err(format!(
                 "DeviceKvPool::write_block_bytes: {} bytes ≠ block bytes {} \
                  ([block_size {}, Hkv {}, D {}] for {:?})",
-                bytes.len(), want, g.block_size, g.n_kv_heads, g.head_dim, self.dtype,
+                bytes.len(),
+                want,
+                g.block_size,
+                g.n_kv_heads,
+                g.head_dim,
+                self.dtype,
             )));
         }
         let buf = Arc::clone(self.buffer(layer, kind)?);
@@ -494,7 +521,12 @@ impl DeviceKvPool {
                 let v: &[half::bf16] = bytemuck::try_cast_slice(bytes)
                     .map_err(|e| msg_err(format!("const_from_bytes: bf16 cast: {e:?}")))?;
                 let anchor = LazyTensor::from_f32(vec![0.0f32], Shape::from_dims(&[1]), dev);
-                Ok(LazyTensor::from_bf16_on(anchor.graph(), v.to_vec(), shape, dev))
+                Ok(LazyTensor::from_bf16_on(
+                    anchor.graph(),
+                    v.to_vec(),
+                    shape,
+                    dev,
+                ))
             }
             other => Err(msg_err(format!(
                 "DeviceKvPool::const_from_bytes: unsupported dtype {other:?} (F32/BF16)",
@@ -522,7 +554,10 @@ impl DeviceKvPool {
         let mut context_lens: Vec<u32> = Vec::with_capacity(batch);
         for &s in sessions {
             rows.push(self.core.session_block_table(s)?);
-            let filled = self.core.filled_tokens(s).ok_or(KvAllocError::UnknownSession)?;
+            let filled = self
+                .core
+                .filled_tokens(s)
+                .ok_or(KvAllocError::UnknownSession)?;
             context_lens.push(filled as u32);
         }
         // At least 1 column so the tensor is a well-formed rank-2 [B, max_blocks].
@@ -533,7 +568,12 @@ impl DeviceKvPool {
                 block_table[bi * max_blocks + i] = p;
             }
         }
-        Ok(PageTableHost { block_table, context_lens, batch, max_blocks })
+        Ok(PageTableHost {
+            block_table,
+            context_lens,
+            batch,
+            max_blocks,
+        })
     }
 
     /// Capacity-padded sibling of [`Self::materialize_block_table`]: every row is
@@ -557,15 +597,26 @@ impl DeviceKvPool {
             if row.len() > cap {
                 // The fixed capacity can't hold this session's blocks — a caller
                 // bug (pass a cap >= ceil(max_seq_len / block_size)). Never truncate.
-                return Err(KvAllocError::OutOfBlocks { need: row.len(), have: cap });
+                return Err(KvAllocError::OutOfBlocks {
+                    need: row.len(),
+                    have: cap,
+                });
             }
             for (i, &p) in row.iter().enumerate() {
                 block_table[bi * cap + i] = p;
             }
-            let filled = self.core.filled_tokens(s).ok_or(KvAllocError::UnknownSession)?;
+            let filled = self
+                .core
+                .filled_tokens(s)
+                .ok_or(KvAllocError::UnknownSession)?;
             context_lens.push(filled as u32);
         }
-        Ok(PageTableHost { block_table, context_lens, batch, max_blocks: cap })
+        Ok(PageTableHost {
+            block_table,
+            context_lens,
+            batch,
+            max_blocks: cap,
+        })
     }
 
     // --- paged decode step (the storage integration building block) -------
@@ -621,7 +672,16 @@ impl DeviceKvPool {
         let v_slot = v_new.reshape(slot_shape)?;
         let post_k = k_pool_ph.write_slice(&k_slot, slot_ranges.clone())?;
         let post_v = v_pool_ph.write_slice(&v_slot, slot_ranges)?;
-        q.paged_attn(&post_k, &post_v, block_table, context_lens, None, scale, g.block_size, None)
+        q.paged_attn(
+            &post_k,
+            &post_v,
+            block_table,
+            context_lens,
+            None,
+            scale,
+            g.block_size,
+            None,
+        )
     }
 
     /// Batched (`B = K`) sibling of [`build_decode_attn`] — one decode step over
@@ -679,7 +739,16 @@ impl DeviceKvPool {
         let post_v = post_v.ok_or_else(|| {
             msg_err("build_decode_attn_batched: post_v unset while post_k is set".into())
         })?;
-        q.paged_attn(&post_k, &post_v, block_table, context_lens, None, scale, g.block_size, None)
+        q.paged_attn(
+            &post_k,
+            &post_v,
+            block_table,
+            context_lens,
+            None,
+            scale,
+            g.block_size,
+            None,
+        )
     }
 
     /// **Plan-once sibling of [`Self::build_decode_attn`]** — the new token's K/V
@@ -746,11 +815,19 @@ impl DeviceKvPool {
         // Reshape the post-write flat buffers back to the paged-cache shape for
         // Op::PagedAttn — a consumer-side view; the write already mutated the
         // persistent pool buffer in place.
-        let pool4 =
-            Shape::from_dims(&[g.num_blocks, g.block_size, g.n_kv_heads, g.head_dim]);
+        let pool4 = Shape::from_dims(&[g.num_blocks, g.block_size, g.n_kv_heads, g.head_dim]);
         let post_k = post_flat_k.reshape(pool4.clone())?;
         let post_v = post_flat_v.reshape(pool4)?;
-        q.paged_attn(&post_k, &post_v, block_table, context_lens, None, scale, g.block_size, None)
+        q.paged_attn(
+            &post_k,
+            &post_v,
+            block_table,
+            context_lens,
+            None,
+            scale,
+            g.block_size,
+            None,
+        )
     }
 
     /// **Copy-on-write guard** for the paged decode write path. Ensure the
@@ -768,15 +845,23 @@ impl DeviceKvPool {
         session: SessionHandle,
         logical_block: usize,
     ) -> crate::Result<PhysBlockId> {
-        let old = self.core.resident_block(session, logical_block).ok_or_else(|| {
-            msg_err(format!("ensure_writable_block: logical block {logical_block} not resident"))
-        })?;
+        let old = self
+            .core
+            .resident_block(session, logical_block)
+            .ok_or_else(|| {
+                msg_err(format!(
+                    "ensure_writable_block: logical block {logical_block} not resident"
+                ))
+            })?;
         if self.core.block_refcount(old) <= 1 {
             return Ok(old); // exclusive — writable in place, no copy needed
         }
         // Shared → copy-on-write: fresh private block, then copy old → new so the
         // session's prefix content survives (the donor's block is untouched).
-        let new = self.core.cow_break(session, logical_block).map_err(alloc_err)?;
+        let new = self
+            .core
+            .cow_break(session, logical_block)
+            .map_err(alloc_err)?;
         for l in 0..self.n_layers() {
             let k = self.read_block_bytes(l, BlockKind::K, old)?;
             self.write_block_bytes(l, BlockKind::K, new, &k)?;
@@ -839,10 +924,17 @@ impl DeviceKvPool {
                 k.push(self.read_block_bytes(l, BlockKind::K, p)?);
                 v.push(self.read_block_bytes(l, BlockKind::V, p)?);
             }
-            saved.push(SavedBlock { logical_slot: i, k, v });
+            saved.push(SavedBlock {
+                logical_slot: i,
+                k,
+                v,
+            });
         }
         let report = self.core.evict_blocks(s, indices).map_err(alloc_err)?;
-        Ok(DeviceEvicted { core_handle: report.handle, saved })
+        Ok(DeviceEvicted {
+            core_handle: report.handle,
+            saved,
+        })
     }
 
     /// Re-materialize an evicted session: the core allocates fresh physical
@@ -854,13 +946,16 @@ impl DeviceKvPool {
         let DeviceEvicted { core_handle, saved } = handle;
         self.core.restore(s, core_handle).map_err(alloc_err)?;
         for sb in &saved {
-            let p = self.core.resident_block(s, sb.logical_slot).ok_or_else(|| {
-                msg_err(format!(
-                    "DeviceKvPool::restore: slot {} not resident after core restore — \
+            let p = self
+                .core
+                .resident_block(s, sb.logical_slot)
+                .ok_or_else(|| {
+                    msg_err(format!(
+                        "DeviceKvPool::restore: slot {} not resident after core restore — \
                      the core and device handle disagree (internal bug)",
-                    sb.logical_slot,
-                ))
-            })?;
+                        sb.logical_slot,
+                    ))
+                })?;
             for l in 0..self.n_layers() {
                 self.write_block_bytes(l, BlockKind::K, p, &sb.k[l])?;
                 self.write_block_bytes(l, BlockKind::V, p, &sb.v[l])?;
@@ -891,7 +986,12 @@ fn alloc_layer_buffers(
         let anchor_id = graph
             .write()
             .map_err(|_| Error::Msg("graph lock poisoned during DeviceKvPool build".into()).bt())?
-            .push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[4]), dtype: DType::U8 });
+            .push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[4]),
+                dtype: DType::U8,
+            });
         cache.insert(anchor_id, Arc::new(RwLock::new(seed)));
     }
 
@@ -923,8 +1023,10 @@ fn alloc_layer_buffers(
         return Err(Error::Msg(format!(
             "DeviceKvPool::new: realize_many returned {} storages for {} Op::ZeroFill \
              targets — internal bug",
-            realized.len(), 2 * n_layers,
-        )).bt());
+            realized.len(),
+            2 * n_layers,
+        ))
+        .bt());
     }
 
     let mut it = realized.into_iter();
@@ -972,15 +1074,24 @@ mod tests {
     /// Hkv, D]` device buffer.
     #[test]
     fn allocates_two_pool_buffers_per_layer_with_the_paged_cache_shape() {
-        let g = geom(/*n_layers*/ 3, /*num_blocks*/ 8, /*block_size*/ 4);
+        let g = geom(
+            /*n_layers*/ 3, /*num_blocks*/ 8, /*block_size*/ 4,
+        );
         let pool = DeviceKvPool::new(g, DType::F32, &Device::cpu()).unwrap();
 
         assert_eq!(pool.n_layers(), 3, "one K + one V buffer per layer");
-        assert_eq!(pool.pool_shape().dims(), &[8, 4, 2, 8], "[num_blocks, block_size, Hkv, D]");
+        assert_eq!(
+            pool.pool_shape().dims(),
+            &[8, 4, 2, 8],
+            "[num_blocks, block_size, Hkv, D]"
+        );
         let want_elems = 8 * 4 * 2 * 8;
         for l in 0..3 {
             for (name, buf) in [("k", pool.k_pool(l)), ("v", pool.v_pool(l))] {
-                let s = buf.unwrap_or_else(|| panic!("{name}_pool({l}) exists")).read().unwrap();
+                let s = buf
+                    .unwrap_or_else(|| panic!("{name}_pool({l}) exists"))
+                    .read()
+                    .unwrap();
                 assert_eq!(s.dtype(), DType::F32, "{name}[{l}] dtype");
                 assert_eq!(s.elem_count(), want_elems, "{name}[{l}] element count");
             }
@@ -995,7 +1106,10 @@ mod tests {
         let mut g = geom(1, 4, 4);
         g.elem_size = 2; // claims bf16-sized elements…
         let err = DeviceKvPool::new(g, DType::F32, &Device::cpu()); // …but asks for f32 buffers
-        assert!(err.is_err(), "elem_size 2 vs f32 (4 bytes) must be rejected");
+        assert!(
+            err.is_err(),
+            "elem_size 2 vs f32 (4 bytes) must be rejected"
+        );
     }
 
     /// The page table projects the core's *actual* per-session physical block
@@ -1027,13 +1141,25 @@ mod tests {
         let pt = pool.materialize_block_table(&[sa, sb]).unwrap();
         assert_eq!(pt.batch, 2);
         assert_eq!(pt.max_blocks, 3, "widest session (sa) sets the row width");
-        assert_eq!(pt.context_lens, vec![12u32, 6u32], "context_len = filled_tokens per session");
+        assert_eq!(
+            pt.context_lens,
+            vec![12u32, 6u32],
+            "context_len = filled_tokens per session"
+        );
 
         // Row 0 = sa's three physical ids; row 1 = sb's two ids then zero pad.
         let row_a = &pt.block_table[0..3];
         let row_b = &pt.block_table[3..6];
-        assert_eq!(row_a, &[a_blocks[0], a_blocks[1], a_blocks[2]], "sa row = its real physical ids");
-        assert_eq!(row_b[0..2], [b_blocks[0], b_blocks[1]], "sb row = its real physical ids");
+        assert_eq!(
+            row_a,
+            &[a_blocks[0], a_blocks[1], a_blocks[2]],
+            "sa row = its real physical ids"
+        );
+        assert_eq!(
+            row_b[0..2],
+            [b_blocks[0], b_blocks[1]],
+            "sb row = its real physical ids"
+        );
         assert_eq!(row_b[2], 0, "sb's short row is zero-padded");
         assert_eq!(pt.block_table_shape().dims(), &[2, 3]);
         assert_eq!(pt.context_lens_shape().dims(), &[2]);
@@ -1052,7 +1178,10 @@ mod tests {
 
         pool.write_block(1, BlockKind::K, 5, &data).unwrap();
         let back = pool.read_block(1, BlockKind::K, 5).unwrap();
-        assert_eq!(back, data, "block content survives the device write→read round trip");
+        assert_eq!(
+            back, data,
+            "block content survives the device write→read round trip"
+        );
     }
 
     /// rung-2 product: `splice_prefix_shifted` materializes the shared prefix at a
@@ -1063,8 +1192,12 @@ mod tests {
     #[test]
     fn splice_prefix_shifted_rotates_k_copies_v() {
         let g = KvGeometry {
-            n_layers: 2, n_kv_heads: 2, head_dim: 4,
-            num_blocks: 64, block_size: 4, elem_size: DType::F32.size_in_bytes(),
+            n_layers: 2,
+            n_kv_heads: 2,
+            head_dim: 4,
+            num_blocks: 64,
+            block_size: 4,
+            elem_size: DType::F32.size_in_bytes(),
         };
         let mut pool = DeviceKvPool::new(g, DType::F32, &Device::cpu()).unwrap();
         let rope_base = 10000.0f64;
@@ -1079,7 +1212,9 @@ mod tests {
             for l in 0..2usize {
                 let base = (bi * 100 + l * 10) as f32;
                 let k: Vec<f32> = (0..block_elems).map(|i| (base + i as f32) * 0.01).collect();
-                let v: Vec<f32> = (0..block_elems).map(|i| (base + i as f32) * 0.02 + 1.0).collect();
+                let v: Vec<f32> = (0..block_elems)
+                    .map(|i| (base + i as f32) * 0.02 + 1.0)
+                    .collect();
                 pool.write_block(l, BlockKind::K, phys, &k).unwrap();
                 pool.write_block(l, BlockKind::V, phys, &v).unwrap();
             }
@@ -1098,11 +1233,24 @@ mod tests {
             for l in 0..2usize {
                 let src_k = pool.read_block(l, BlockKind::K, src_phys).unwrap();
                 let want = crate::lazy::LazyTensor::rope_delta_rotate_block_f32(
-                    &Device::cpu(), &src_k, rope_base, 8, 4, 2, 4,
+                    &Device::cpu(),
+                    &src_k,
+                    rope_base,
+                    8,
+                    4,
+                    2,
+                    4,
                 );
                 let got = pool.read_block(l, BlockKind::K, fresh).unwrap();
-                let md = want.iter().zip(&got).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
-                assert!(md < 1e-6, "K delta-rotated by θ·8 (layer {l}, slot {dst_slot}, maxdiff {md})");
+                let md = want
+                    .iter()
+                    .zip(&got)
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0.0f32, f32::max);
+                assert!(
+                    md < 1e-6,
+                    "K delta-rotated by θ·8 (layer {l}, slot {dst_slot}, maxdiff {md})"
+                );
                 assert_eq!(
                     pool.read_block(l, BlockKind::V, fresh).unwrap(),
                     pool.read_block(l, BlockKind::V, src_phys).unwrap(),
@@ -1124,11 +1272,31 @@ mod tests {
 
         pool.write_block(0, BlockKind::K, 3, &ones).unwrap();
 
-        assert_eq!(pool.read_block(0, BlockKind::K, 3).unwrap(), ones, "target block written");
-        assert_eq!(pool.read_block(0, BlockKind::K, 2).unwrap(), zeros, "neighbor block untouched");
-        assert_eq!(pool.read_block(0, BlockKind::K, 4).unwrap(), zeros, "neighbor block untouched");
-        assert_eq!(pool.read_block(0, BlockKind::V, 3).unwrap(), zeros, "same-layer V untouched");
-        assert_eq!(pool.read_block(1, BlockKind::K, 3).unwrap(), zeros, "other-layer K untouched");
+        assert_eq!(
+            pool.read_block(0, BlockKind::K, 3).unwrap(),
+            ones,
+            "target block written"
+        );
+        assert_eq!(
+            pool.read_block(0, BlockKind::K, 2).unwrap(),
+            zeros,
+            "neighbor block untouched"
+        );
+        assert_eq!(
+            pool.read_block(0, BlockKind::K, 4).unwrap(),
+            zeros,
+            "neighbor block untouched"
+        );
+        assert_eq!(
+            pool.read_block(0, BlockKind::V, 3).unwrap(),
+            zeros,
+            "same-layer V untouched"
+        );
+        assert_eq!(
+            pool.read_block(1, BlockKind::K, 3).unwrap(),
+            zeros,
+            "other-layer K untouched"
+        );
     }
 
     /// Out-of-range physical block / wrong data length are typed errors, never
@@ -1137,10 +1305,24 @@ mod tests {
     fn block_io_bounds_are_typed_errors() {
         let pool = DeviceKvPool::new(geom(1, 4, 4), DType::F32, &Device::cpu()).unwrap();
         let block_elems = 4 * 2 * 8;
-        assert!(pool.write_block(0, BlockKind::K, 4, &vec![0.0; block_elems]).is_err(), "phys 4 ≥ num_blocks 4");
-        assert!(pool.read_block(0, BlockKind::K, 9).is_err(), "read phys 9 out of range");
-        assert!(pool.write_block(0, BlockKind::K, 0, &[1.0, 2.0]).is_err(), "short data rejected");
-        assert!(pool.write_block(3, BlockKind::K, 0, &vec![0.0; block_elems]).is_err(), "no layer 3");
+        assert!(
+            pool.write_block(0, BlockKind::K, 4, &vec![0.0; block_elems])
+                .is_err(),
+            "phys 4 ≥ num_blocks 4"
+        );
+        assert!(
+            pool.read_block(0, BlockKind::K, 9).is_err(),
+            "read phys 9 out of range"
+        );
+        assert!(
+            pool.write_block(0, BlockKind::K, 0, &[1.0, 2.0]).is_err(),
+            "short data rejected"
+        );
+        assert!(
+            pool.write_block(3, BlockKind::K, 0, &vec![0.0; block_elems])
+                .is_err(),
+            "no layer 3"
+        );
     }
 
     /// PC-1: the dtype-agnostic byte movement core round-trips an f32 pool's
@@ -1155,7 +1337,10 @@ mod tests {
 
         pool.write_block_bytes(1, BlockKind::K, 5, &bytes).unwrap();
         let back = pool.read_block_bytes(1, BlockKind::K, 5).unwrap();
-        assert_eq!(back, bytes, "f32 block bytes survive the byte-level round trip");
+        assert_eq!(
+            back, bytes,
+            "f32 block bytes survive the byte-level round trip"
+        );
     }
 
     /// PC-1: the byte movement core is DTYPE-AGNOSTIC — a bf16 pool's 2-byte
@@ -1170,14 +1355,18 @@ mod tests {
         let pool = DeviceKvPool::new(g, DType::BF16, &Device::cpu()).unwrap();
         let block_elems = 4 * 2 * 8;
         // Valid bf16 content (avoid NaN-canonicalization ambiguity), as raw bytes.
-        let vals: Vec<half::bf16> =
-            (0..block_elems).map(|i| half::bf16::from_f32(i as f32 * 0.25 - 3.0)).collect();
+        let vals: Vec<half::bf16> = (0..block_elems)
+            .map(|i| half::bf16::from_f32(i as f32 * 0.25 - 3.0))
+            .collect();
         let bytes: Vec<u8> = bytemuck::cast_slice::<half::bf16, u8>(&vals).to_vec();
         assert_eq!(bytes.len(), block_elems * 2, "bf16 block = 2 bytes/elem");
 
         pool.write_block_bytes(1, BlockKind::K, 5, &bytes).unwrap();
         let back = pool.read_block_bytes(1, BlockKind::K, 5).unwrap();
-        assert_eq!(back, bytes, "bf16 block bytes survive the byte-level round trip");
+        assert_eq!(
+            back, bytes,
+            "bf16 block bytes survive the byte-level round trip"
+        );
     }
 
     /// PC-1: evict→restore is byte-exact on a BF16 pool — the dtype-agnostic
@@ -1190,16 +1379,19 @@ mod tests {
         g.elem_size = 2;
         let mut pool = DeviceKvPool::new(g, DType::BF16, &Device::cpu()).unwrap();
         let block_elems = 4 * 2 * 8;
-        let vals: Vec<half::bf16> =
-            (0..block_elems).map(|i| half::bf16::from_f32(i as f32 * 0.5 - 5.0)).collect();
+        let vals: Vec<half::bf16> = (0..block_elems)
+            .map(|i| half::bf16::from_f32(i as f32 * 0.5 - 5.0))
+            .collect();
         let bytes: Vec<u8> = bytemuck::cast_slice::<half::bf16, u8>(&vals).to_vec();
 
         let s = pool.core_mut().open();
         pool.core_mut().append(s, 1).unwrap(); // one exclusive block resident
         let phys = pool.core().resident_block(s, 0).unwrap();
         for l in 0..pool.n_layers() {
-            pool.write_block_bytes(l, BlockKind::K, phys, &bytes).unwrap();
-            pool.write_block_bytes(l, BlockKind::V, phys, &bytes).unwrap();
+            pool.write_block_bytes(l, BlockKind::K, phys, &bytes)
+                .unwrap();
+            pool.write_block_bytes(l, BlockKind::V, phys, &bytes)
+                .unwrap();
         }
 
         let handle = pool.evict(s).unwrap();
@@ -1208,11 +1400,13 @@ mod tests {
         let phys2 = pool.core().resident_block(s, 0).unwrap();
         for l in 0..pool.n_layers() {
             assert_eq!(
-                pool.read_block_bytes(l, BlockKind::K, phys2).unwrap(), bytes,
+                pool.read_block_bytes(l, BlockKind::K, phys2).unwrap(),
+                bytes,
                 "K byte-exact after bf16 evict/restore (layer {l})",
             );
             assert_eq!(
-                pool.read_block_bytes(l, BlockKind::V, phys2).unwrap(), bytes,
+                pool.read_block_bytes(l, BlockKind::V, phys2).unwrap(),
+                bytes,
                 "V byte-exact after bf16 evict/restore (layer {l})",
             );
         }
@@ -1245,7 +1439,12 @@ mod tests {
         let dev = Device::cpu();
 
         let g = KvGeometry {
-            n_layers: 1, num_blocks, block_size, n_kv_heads: hkv, head_dim: d, elem_size: 4,
+            n_layers: 1,
+            num_blocks,
+            block_size,
+            n_kv_heads: hkv,
+            head_dim: d,
+            elem_size: 4,
         };
         let mut pool = DeviceKvPool::new(g, DType::F32, &dev).unwrap();
         let s = pool.core_mut().open();
@@ -1257,15 +1456,38 @@ mod tests {
         let q_data = rand_f32(hq * d, 1);
         let per_block = block_size * hkv * d;
         for (b, &p) in phys.iter().enumerate() {
-            pool.write_block(0, BlockKind::K, p, &k_all[b * per_block..(b + 1) * per_block]).unwrap();
-            pool.write_block(0, BlockKind::V, p, &v_all[b * per_block..(b + 1) * per_block]).unwrap();
+            pool.write_block(
+                0,
+                BlockKind::K,
+                p,
+                &k_all[b * per_block..(b + 1) * per_block],
+            )
+            .unwrap();
+            pool.write_block(
+                0,
+                BlockKind::V,
+                p,
+                &v_all[b * per_block..(b + 1) * per_block],
+            )
+            .unwrap();
         }
 
         let pt_fit = pool.materialize_block_table(&[s]).unwrap();
         let pt_pad = pool.materialize_block_table_padded(&[s], cap).unwrap();
-        assert_eq!(pt_fit.block_table_shape().dims(), &[1, phys.len()], "L-fitted width");
-        assert_eq!(pt_pad.block_table_shape().dims(), &[1, cap], "padded width is the fixed capacity");
-        assert_eq!(pt_pad.context_lens, pt_fit.context_lens, "same context_lens");
+        assert_eq!(
+            pt_fit.block_table_shape().dims(),
+            &[1, phys.len()],
+            "L-fitted width"
+        );
+        assert_eq!(
+            pt_pad.block_table_shape().dims(),
+            &[1, cap],
+            "padded width is the fixed capacity"
+        );
+        assert_eq!(
+            pt_pad.context_lens, pt_fit.context_lens,
+            "same context_lens"
+        );
 
         let run = |pt: &PageTableHost| -> Vec<f32> {
             let q = LazyTensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, 1, d]), &dev);
@@ -1273,17 +1495,24 @@ mod tests {
             let vc = q.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
             let bt = q.const_u32_like(pt.block_table.clone(), pt.block_table_shape());
             let cl = q.const_u32_like(pt.context_lens.clone(), pt.context_lens_shape());
-            let out = q.paged_attn(&kc, &vc, &bt, &cl, None, scale, block_size, None).unwrap();
+            let out = q
+                .paged_attn(&kc, &vc, &bt, &cl, None, scale, block_size, None)
+                .unwrap();
             let mut cache = StorageCache::new();
             cache.insert(kc.node_id(), Arc::clone(pool.k_pool(0).unwrap()));
             cache.insert(vc.node_id(), Arc::clone(pool.v_pool(0).unwrap()));
             crate::pipelined_bridge::realize_one_as_with_initial::<f32>(
-                out.graph_handle(), out.node_id(), &dev, cache,
-            ).unwrap()
+                out.graph_handle(),
+                out.node_id(),
+                &dev,
+                cache,
+            )
+            .unwrap()
         };
 
         assert_eq!(
-            run(&pt_pad), run(&pt_fit),
+            run(&pt_pad),
+            run(&pt_fit),
             "capacity-padded block_table (mask-neutralized pad) == L-fitted, byte-identical",
         );
     }
@@ -1309,7 +1538,12 @@ mod tests {
         let scale = 1.0f32 / (d as f32).sqrt();
         let dev = Device::cpu();
         let g = KvGeometry {
-            n_layers: 1, num_blocks, block_size, n_kv_heads: hkv, head_dim: d, elem_size: 4,
+            n_layers: 1,
+            num_blocks,
+            block_size,
+            n_kv_heads: hkv,
+            head_dim: d,
+            elem_size: 4,
         };
 
         // Deterministic shared inputs (identical across all three pools).
@@ -1337,7 +1571,10 @@ mod tests {
 
         // ---- reference: the concrete two-axis write (build_decode_attn) ----
         let (pool_ref, phys, slot, pt) = setup();
-        assert_eq!(phys, 2, "permuted layout — new token's physical block is 2, not 0");
+        assert_eq!(
+            phys, 2,
+            "permuted layout — new token's physical block is 2, not 0"
+        );
         assert_eq!(slot, 2, "new token lands at slot 2");
         let linear = phys as usize * block_size + slot; // 10
         let attn_ref = {
@@ -1351,14 +1588,20 @@ mod tests {
             let bt = q.const_u32_like(pt.block_table.clone(), pt.block_table_shape());
             let cl = q.const_u32_like(pt.context_lens.clone(), pt.context_lens_shape());
             let out = pool_ref
-                .build_decode_attn(&k_ph, &v_ph, &q, &k_new, &v_new, &bt, &cl, phys, slot, scale)
+                .build_decode_attn(
+                    &k_ph, &v_ph, &q, &k_new, &v_new, &bt, &cl, phys, slot, scale,
+                )
                 .unwrap();
             let mut cache = StorageCache::new();
             cache.insert(k_ph.node_id(), Arc::clone(pool_ref.k_pool(0).unwrap()));
             cache.insert(v_ph.node_id(), Arc::clone(pool_ref.v_pool(0).unwrap()));
             crate::pipelined_bridge::realize_one_as_with_initial::<f32>(
-                out.graph_handle(), out.node_id(), &dev, cache,
-            ).unwrap()
+                out.graph_handle(),
+                out.node_id(),
+                &dev,
+                cache,
+            )
+            .unwrap()
         };
         let ref_k_bytes = pool_ref.read_block_bytes(0, BlockKind::K, phys).unwrap();
         let ref_v_bytes = pool_ref.read_block_bytes(0, BlockKind::V, phys).unwrap();
@@ -1385,18 +1628,28 @@ mod tests {
             let mut env = fuel_ir::SymEnv::new();
             env.bind(sym, linear).unwrap();
             crate::pipelined_bridge::realize_one_as_with_initial_env::<f32>(
-                out.graph_handle(), out.node_id(), &dev, cache, &env,
-            ).unwrap()
+                out.graph_handle(),
+                out.node_id(),
+                &dev,
+                cache,
+                &env,
+            )
+            .unwrap()
         };
         assert_eq!(
-            pool_dyn.read_block_bytes(0, BlockKind::K, phys).unwrap(), ref_k_bytes,
+            pool_dyn.read_block_bytes(0, BlockKind::K, phys).unwrap(),
+            ref_k_bytes,
             "dyn write: K block bytes match the concrete write",
         );
         assert_eq!(
-            pool_dyn.read_block_bytes(0, BlockKind::V, phys).unwrap(), ref_v_bytes,
+            pool_dyn.read_block_bytes(0, BlockKind::V, phys).unwrap(),
+            ref_v_bytes,
             "dyn write: V block bytes match the concrete write",
         );
-        assert_eq!(attn_dyn, attn_ref, "dyn arm paged_attn output is bit-identical to concrete");
+        assert_eq!(
+            attn_dyn, attn_ref,
+            "dyn arm paged_attn output is bit-identical to concrete"
+        );
 
         // ---- doff arm: device rank-0 I64 offset (write_slice_doff) ----
         let (pool_doff, _p, _s, pt_doff) = setup();
@@ -1412,24 +1665,44 @@ mod tests {
             let cl = q.const_u32_like(pt_doff.context_lens.clone(), pt_doff.context_lens_shape());
             let off = q.const_i64_like(vec![linear as i64], Shape::from_dims(&[]));
             let out = pool_doff
-                .build_decode_attn_off(&k_ph, &v_ph, &q, &k_new, &v_new, &bt, &cl, Some(&off), sym, scale)
+                .build_decode_attn_off(
+                    &k_ph,
+                    &v_ph,
+                    &q,
+                    &k_new,
+                    &v_new,
+                    &bt,
+                    &cl,
+                    Some(&off),
+                    sym,
+                    scale,
+                )
                 .unwrap();
             let mut cache = StorageCache::new();
             cache.insert(k_ph.node_id(), Arc::clone(pool_doff.k_pool(0).unwrap()));
             cache.insert(v_ph.node_id(), Arc::clone(pool_doff.v_pool(0).unwrap()));
             crate::pipelined_bridge::realize_one_as_with_initial::<f32>(
-                out.graph_handle(), out.node_id(), &dev, cache,
-            ).unwrap()
+                out.graph_handle(),
+                out.node_id(),
+                &dev,
+                cache,
+            )
+            .unwrap()
         };
         assert_eq!(
-            pool_doff.read_block_bytes(0, BlockKind::K, phys).unwrap(), ref_k_bytes,
+            pool_doff.read_block_bytes(0, BlockKind::K, phys).unwrap(),
+            ref_k_bytes,
             "doff write: K block bytes match the concrete write",
         );
         assert_eq!(
-            pool_doff.read_block_bytes(0, BlockKind::V, phys).unwrap(), ref_v_bytes,
+            pool_doff.read_block_bytes(0, BlockKind::V, phys).unwrap(),
+            ref_v_bytes,
             "doff write: V block bytes match the concrete write",
         );
-        assert_eq!(attn_doff, attn_ref, "doff arm paged_attn output is bit-identical to concrete");
+        assert_eq!(
+            attn_doff, attn_ref,
+            "doff arm paged_attn output is bit-identical to concrete"
+        );
     }
 
     /// THE INTEGRATION GATE. A session's K/V, written into the pool's physical
@@ -1491,7 +1764,9 @@ mod tests {
         let vc = q.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
         let bt = q.const_u32_like(pt.block_table.clone(), pt.block_table_shape());
         let cl = q.const_u32_like(pt.context_lens.clone(), pt.context_lens_shape());
-        let out = q.paged_attn(&kc, &vc, &bt, &cl, None, scale, block_size, None).unwrap();
+        let out = q
+            .paged_attn(&kc, &vc, &bt, &cl, None, scale, block_size, None)
+            .unwrap();
 
         let mut cache = StorageCache::new();
         cache.insert(kc.node_id(), Arc::clone(pool.k_pool(0).unwrap()));
@@ -1533,7 +1808,10 @@ mod tests {
         for (i, (&a, &b)) in got.iter().zip(want.iter()).enumerate() {
             let diff = (a - b).abs();
             let denom = a.abs().max(b.abs()).max(f32::MIN_POSITIVE);
-            assert!(diff < 1e-5 || diff / denom < 1e-5, "[{i}]: pool={a} dense={b} (abs={diff})");
+            assert!(
+                diff < 1e-5 || diff / denom < 1e-5,
+                "[{i}]: pool={a} dense={b} (abs={diff})"
+            );
         }
     }
 
@@ -1545,14 +1823,18 @@ mod tests {
     #[test]
     fn device_evict_then_restore_is_a_byte_exact_round_trip_across_block_reuse() {
         let (n_layers, num_blocks, block_size) = (2usize, 8usize, 4usize);
-        let mut pool =
-            DeviceKvPool::new(geom(n_layers, num_blocks, block_size), DType::F32, &Device::cpu())
-                .unwrap();
+        let mut pool = DeviceKvPool::new(
+            geom(n_layers, num_blocks, block_size),
+            DType::F32,
+            &Device::cpu(),
+        )
+        .unwrap();
         let block_elems = block_size * 2 * 8; // Hkv=2, D=8 from geom()
 
         // Distinct content per (logical slot, layer, kind).
         let content = |slot: usize, layer: usize, kind: BlockKind| -> Vec<f32> {
-            let base = (slot * 1000 + layer * 100 + if kind == BlockKind::K { 0 } else { 50 }) as f32;
+            let base =
+                (slot * 1000 + layer * 100 + if kind == BlockKind::K { 0 } else { 50 }) as f32;
             (0..block_elems).map(|e| base + e as f32 * 0.001).collect()
         };
 
@@ -1561,28 +1843,44 @@ mod tests {
         for slot in 0..2 {
             let p = pool.core().resident_block(s, slot).unwrap();
             for l in 0..n_layers {
-                pool.write_block(l, BlockKind::K, p, &content(slot, l, BlockKind::K)).unwrap();
-                pool.write_block(l, BlockKind::V, p, &content(slot, l, BlockKind::V)).unwrap();
+                pool.write_block(l, BlockKind::K, p, &content(slot, l, BlockKind::K))
+                    .unwrap();
+                pool.write_block(l, BlockKind::V, p, &content(slot, l, BlockKind::V))
+                    .unwrap();
             }
         }
 
         let free_before = pool.core().free_blocks();
         let handle = pool.evict(s).unwrap();
-        assert_eq!(handle.saved_block_count(), 2, "both exclusive blocks captured");
+        assert_eq!(
+            handle.saved_block_count(),
+            2,
+            "both exclusive blocks captured"
+        );
         assert_eq!(handle.fidelity(), crate::kv_block_pool::Fidelity::Lossy);
-        assert_eq!(pool.core().free_blocks(), free_before + 2, "2 blocks returned to the pool");
+        assert_eq!(
+            pool.core().free_blocks(),
+            free_before + 2,
+            "2 blocks returned to the pool"
+        );
 
         // Scribble EVERY physical block — the session's old blocks are free and
         // could be reused; restore must overwrite whatever it grabs.
         for p in 0..num_blocks as PhysBlockId {
             for l in 0..n_layers {
-                pool.write_block(l, BlockKind::K, p, &vec![-9.0; block_elems]).unwrap();
-                pool.write_block(l, BlockKind::V, p, &vec![-9.0; block_elems]).unwrap();
+                pool.write_block(l, BlockKind::K, p, &vec![-9.0; block_elems])
+                    .unwrap();
+                pool.write_block(l, BlockKind::V, p, &vec![-9.0; block_elems])
+                    .unwrap();
             }
         }
 
         pool.restore(s, handle).unwrap();
-        assert_eq!(pool.core().session_blocks(s), Some(2), "session resident again");
+        assert_eq!(
+            pool.core().session_blocks(s),
+            Some(2),
+            "session resident again"
+        );
 
         // Every (slot, layer, kind) reads back its original content.
         for slot in 0..2 {
@@ -1607,8 +1905,7 @@ mod tests {
     /// bytes in the handle (the sharer still references it).
     #[test]
     fn device_partial_evict_captures_only_exclusive_blocks() {
-        let mut pool =
-            DeviceKvPool::new(geom(1, 16, 4), DType::F32, &Device::cpu()).unwrap();
+        let mut pool = DeviceKvPool::new(geom(1, 16, 4), DType::F32, &Device::cpu()).unwrap();
         let a = pool.core_mut().open();
         pool.core_mut().append(a, 9).unwrap(); // 3 blocks
         let b = pool.core_mut().open();
@@ -1617,7 +1914,8 @@ mod tests {
         // Evict all of A: blocks 0,1 are shared (kept), block 2 is exclusive.
         let handle = pool.evict(a).unwrap();
         assert_eq!(
-            handle.saved_block_count(), 1,
+            handle.saved_block_count(),
+            1,
             "only the 1 exclusive block's bytes are captured; the 2 shared stay resident",
         );
         // B is untouched and still resident.
@@ -1666,7 +1964,11 @@ mod tests {
             let phys = pool.core().resident_block(session, t / block_size).unwrap();
             let slot = t % block_size;
             let pt = pool.materialize_block_table(&[session]).unwrap();
-            assert_eq!(pt.context_lens, vec![(t + 1) as u32], "context_len tracks tokens so far");
+            assert_eq!(
+                pt.context_lens,
+                vec![(t + 1) as u32],
+                "context_len tracks tokens so far"
+            );
 
             // Build the paged decode-step graph on q's graph, bind the pool.
             let q = LazyTensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, 1, d]), &dev);
@@ -1726,7 +2028,11 @@ mod tests {
                 );
             }
         }
-        assert_eq!(pool.core().session_blocks(session), Some(3), "10 tokens / block_size 4 = 3 blocks");
+        assert_eq!(
+            pool.core().session_blocks(session),
+            Some(3),
+            "10 tokens / block_size 4 = 3 blocks"
+        );
     }
 
     /// PS4c substrate — SPLICE on the paged path (prefix sharing / residual-
@@ -1759,32 +2065,62 @@ mod tests {
         let per_block = block_size * hkv * d;
         let a_blocks = pool.core().session_block_table(a).unwrap();
         for (bi, &p) in a_blocks.iter().enumerate() {
-            pool.write_block(0, BlockKind::K, p, &k_all[bi * per_block..(bi + 1) * per_block]).unwrap();
-            pool.write_block(0, BlockKind::V, p, &v_all[bi * per_block..(bi + 1) * per_block]).unwrap();
+            pool.write_block(
+                0,
+                BlockKind::K,
+                p,
+                &k_all[bi * per_block..(bi + 1) * per_block],
+            )
+            .unwrap();
+            pool.write_block(
+                0,
+                BlockKind::V,
+                p,
+                &v_all[bi * per_block..(bi + 1) * per_block],
+            )
+            .unwrap();
         }
 
         // B splices A's 2 blocks — shared, not copied.
         let b = pool.core_mut().open();
         pool.core_mut().splice(a, b, 0, 2).unwrap();
-        assert_eq!(pool.core().session_block_table(b).unwrap(), a_blocks, "B shares A's exact blocks");
-        assert_eq!(pool.core().block_refcount(a_blocks[0]), 2, "shared → refcount 2");
+        assert_eq!(
+            pool.core().session_block_table(b).unwrap(),
+            a_blocks,
+            "B shares A's exact blocks"
+        );
+        assert_eq!(
+            pool.core().block_refcount(a_blocks[0]),
+            2,
+            "shared → refcount 2"
+        );
 
         // A query for B attends over the shared prefix (context_len = B's filled = 8).
         let pt = pool.materialize_block_table(&[b]).unwrap();
-        assert_eq!(pt.context_lens, vec![sk as u32], "spliced prefix length carried to B");
+        assert_eq!(
+            pt.context_lens,
+            vec![sk as u32],
+            "spliced prefix length carried to B"
+        );
         let q_data = rand_f32(hq * d, 1);
         let q = LazyTensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, 1, d]), &dev);
         let kph = q.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
         let vph = q.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
         let bt = q.const_u32_like(pt.block_table.clone(), pt.block_table_shape());
         let cl = q.const_u32_like(pt.context_lens.clone(), pt.context_lens_shape());
-        let out = q.paged_attn(&kph, &vph, &bt, &cl, None, scale, block_size, None).unwrap();
+        let out = q
+            .paged_attn(&kph, &vph, &bt, &cl, None, scale, block_size, None)
+            .unwrap();
         let mut cache = StorageCache::new();
         cache.insert(kph.node_id(), Arc::clone(pool.k_pool(0).unwrap()));
         cache.insert(vph.node_id(), Arc::clone(pool.v_pool(0).unwrap()));
         let got = crate::pipelined_bridge::realize_one_as_with_initial::<f32>(
-            out.graph_handle(), out.node_id(), &dev, cache,
-        ).unwrap();
+            out.graph_handle(),
+            out.node_id(),
+            &dev,
+            cache,
+        )
+        .unwrap();
 
         // Dense reference: q attends to A's sk shared tokens.
         let mut want = vec![0.0f32; hq * d];
@@ -1813,7 +2149,10 @@ mod tests {
         for (i, (&x, &y)) in got.iter().zip(want.iter()).enumerate() {
             let diff = (x - y).abs();
             let den = x.abs().max(y.abs()).max(f32::MIN_POSITIVE);
-            assert!(diff < 1e-5 || diff / den < 1e-5, "[{i}]: spliced={x} dense={y} (abs={diff})");
+            assert!(
+                diff < 1e-5 || diff / den < 1e-5,
+                "[{i}]: spliced={x} dense={y} (abs={diff})"
+            );
         }
     }
 
@@ -1847,24 +2186,42 @@ mod tests {
         // B splices A's block (shared, refcount 2).
         let b = pool.core_mut().open();
         pool.core_mut().splice(a, b, 0, 1).unwrap();
-        assert_eq!(pool.core().resident_block(b, 0), Some(a_phys), "B shares A's block");
+        assert_eq!(
+            pool.core().resident_block(b, 0),
+            Some(a_phys),
+            "B shares A's block"
+        );
         assert_eq!(pool.core().block_refcount(a_phys), 2);
 
         // CoW: B gets a fresh private block holding a COPY of A's bytes.
         let b_phys = pool.ensure_writable_block(b, 0).unwrap();
         assert_ne!(b_phys, a_phys, "B got a fresh private block");
-        assert_eq!(pool.core().block_refcount(a_phys), 1, "A's block no longer shared");
-        assert_eq!(pool.read_block(0, BlockKind::K, b_phys).unwrap(), a_data, "B's block is a copy of A's");
+        assert_eq!(
+            pool.core().block_refcount(a_phys),
+            1,
+            "A's block no longer shared"
+        );
+        assert_eq!(
+            pool.read_block(0, BlockKind::K, b_phys).unwrap(),
+            a_data,
+            "B's block is a copy of A's"
+        );
 
         // Writing B's copy must not touch A's block.
-        pool.write_block(0, BlockKind::K, b_phys, &vec![-1.0; block_elems]).unwrap();
+        pool.write_block(0, BlockKind::K, b_phys, &vec![-1.0; block_elems])
+            .unwrap();
         assert_eq!(
-            pool.read_block(0, BlockKind::K, a_phys).unwrap(), a_data,
+            pool.read_block(0, BlockKind::K, a_phys).unwrap(),
+            a_data,
             "A's block intact after B writes its own copy",
         );
 
         // An exclusive block is returned unchanged (no needless copy).
-        assert_eq!(pool.ensure_writable_block(a, 0).unwrap(), a_phys, "exclusive block: no CoW");
+        assert_eq!(
+            pool.ensure_writable_block(a, 0).unwrap(),
+            a_phys,
+            "exclusive block: no CoW"
+        );
     }
 
     /// Materializing over an unknown or externalized session is a typed error

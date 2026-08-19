@@ -39,12 +39,15 @@
 //!   and transient cross-step state only.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, RwLock};
 
-use fuel_ir::{DType, DeviceLocation, Error, Layout, Result, SType, Shape, SymEnv, SymId};
+use fuel_dispatch::{
+    optimize::OptimizedGraph,
+    pipelined::{PipelinedExecutor, StorageCache},
+};
 use fuel_graph::{Graph, Node, NodeId, Op};
-use fuel_dispatch::{optimize::OptimizedGraph, pipelined::{PipelinedExecutor, StorageCache}};
+use fuel_ir::{DType, DeviceLocation, Error, Layout, Result, SType, Shape, SymEnv, SymId};
 use fuel_memory::{BackendStorage, Storage};
 
 use crate::Device;
@@ -241,9 +244,9 @@ impl KvCache {
         let mut cache = StorageCache::new();
         if let Some(seed) = crate::pipelined_bridge::device_seed_storage(device)? {
             let anchor_id = {
-                let mut g = graph
-                    .write()
-                    .map_err(|_| Error::Msg("graph lock poisoned during KvCache build".into()).bt())?;
+                let mut g = graph.write().map_err(|_| {
+                    Error::Msg("graph lock poisoned during KvCache build".into()).bt()
+                })?;
                 g.push(Node {
                     op: Op::Const,
                     inputs: vec![],
@@ -294,15 +297,15 @@ impl KvCache {
         // executor's destructive_input cleanup evicts the Op::Alloc
         // intermediate NodeIds while the ZeroFill targets adopt the
         // same Arcs (post-fill bytes).
-        let realized = PipelinedExecutor::realize_many(
-            Arc::clone(&graph), &zero_fill_ids, cache,
-        )?;
+        let realized = PipelinedExecutor::realize_many(Arc::clone(&graph), &zero_fill_ids, cache)?;
         if realized.len() != 2 * n_layers {
             return Err(Error::Msg(format!(
                 "KvCache::with_capacity: realize_many returned {} storages \
                  for {} Op::ZeroFill targets — internal bug",
-                realized.len(), 2 * n_layers,
-            )).bt());
+                realized.len(),
+                2 * n_layers,
+            ))
+            .bt());
         }
 
         // Never-panic: the length is checked above, but the production path
@@ -355,11 +358,7 @@ impl KvCache {
     /// via [`InferenceContext::insert`]. Returns `None` if the layer
     /// isn't populated (with_dims path before first
     /// [`Self::set_layer`]) or `layer_idx` is out of range.
-    pub fn slot_storage(
-        &self,
-        layer_idx: usize,
-        slot: KvSlot,
-    ) -> Option<Arc<RwLock<Storage>>> {
+    pub fn slot_storage(&self, layer_idx: usize, slot: KvSlot) -> Option<Arc<RwLock<Storage>>> {
         let layer = self.layer(layer_idx)?;
         Some(match slot {
             KvSlot::K => Arc::clone(&layer.k),
@@ -493,9 +492,9 @@ pub(crate) fn alloc_batched_kv(
     let mut cache = StorageCache::new();
     if let Some(seed) = crate::pipelined_bridge::device_seed_storage(device)? {
         let anchor_id = {
-            let mut g = graph
-                .write()
-                .map_err(|_| Error::Msg("graph lock poisoned during alloc_batched_kv".into()).bt())?;
+            let mut g = graph.write().map_err(|_| {
+                Error::Msg("graph lock poisoned during alloc_batched_kv".into()).bt()
+            })?;
             g.push(Node {
                 op: Op::Const,
                 inputs: vec![],
@@ -528,8 +527,7 @@ pub(crate) fn alloc_batched_kv(
             .collect()
     };
 
-    let realized =
-        PipelinedExecutor::realize_many(Arc::clone(&graph), &zero_fill_ids, cache)?;
+    let realized = PipelinedExecutor::realize_many(Arc::clone(&graph), &zero_fill_ids, cache)?;
     if realized.len() != 2 * n_layers {
         return Err(Error::Msg(format!(
             "alloc_batched_kv: realize_many returned {} storages for {} Op::ZeroFill targets",
@@ -656,28 +654,36 @@ impl LatentKvCache {
         device: &Device,
     ) -> Result<Self> {
         if n_layers == 0 {
-            return Err(Error::Msg(
-                "LatentKvCache::with_capacity: n_layers must be >= 1".into(),
-            ).bt());
+            return Err(
+                Error::Msg("LatentKvCache::with_capacity: n_layers must be >= 1".into()).bt(),
+            );
         }
         if max_seq_len == 0 {
             return Err(Error::Msg(
                 "LatentKvCache::with_capacity: max_seq_len must be >= 1".into(),
-            ).bt());
+            )
+            .bt());
         }
         if slot_trailing.is_empty() {
             return Err(Error::Msg(
                 "LatentKvCache::with_capacity: need at least one slot (slot_trailing empty)".into(),
-            ).bt());
+            )
+            .bt());
         }
         let n_slots = slot_trailing.len();
-        let shapes: Vec<Shape> = slot_trailing.iter().map(|trailing| {
-            let mut dims = Vec::with_capacity(1 + trailing.len());
-            dims.push(max_seq_len);
-            dims.extend_from_slice(trailing);
-            Shape::from_dims(&dims)
-        }).collect();
-        let layouts: Vec<Layout> = shapes.iter().map(|s| Layout::contiguous(s.clone())).collect();
+        let shapes: Vec<Shape> = slot_trailing
+            .iter()
+            .map(|trailing| {
+                let mut dims = Vec::with_capacity(1 + trailing.len());
+                dims.push(max_seq_len);
+                dims.extend_from_slice(trailing);
+                Shape::from_dims(&dims)
+            })
+            .collect();
+        let layouts: Vec<Layout> = shapes
+            .iter()
+            .map(|s| Layout::contiguous(s.clone()))
+            .collect();
         let target_loc = device.location();
 
         // Transient graph, same device-anchor trick + Alloc/ZeroFill
@@ -729,15 +735,15 @@ impl LatentKvCache {
         // Realize all n_layers * n_slots Op::ZeroFill targets in one pass
         // — see KvCache::with_capacity's doc for why a single realize_many
         // call is used instead of one realize per buffer.
-        let realized = PipelinedExecutor::realize_many(
-            Arc::clone(&graph), &zero_fill_ids, cache,
-        )?;
+        let realized = PipelinedExecutor::realize_many(Arc::clone(&graph), &zero_fill_ids, cache)?;
         if realized.len() != n_layers * n_slots {
             return Err(Error::Msg(format!(
                 "LatentKvCache::with_capacity: realize_many returned {} storages \
                  for {} Op::ZeroFill targets — internal bug",
-                realized.len(), n_layers * n_slots,
-            )).bt());
+                realized.len(),
+                n_layers * n_slots,
+            ))
+            .bt());
         }
 
         // Never-panic: length checked above; still surface a typed `Err`
@@ -913,7 +919,10 @@ pub enum RebindRefusal {
     ResidencyUnknown,
     /// The plan's placement stamps and residency copies were baked for a
     /// different device.
-    ResidencyDiffers { baked: DeviceLocation, incoming: DeviceLocation },
+    ResidencyDiffers {
+        baked: DeviceLocation,
+        incoming: DeviceLocation,
+    },
     /// The replacement has no storage for a slot the plan writes.
     MissingSlot { layer: usize, which: usize },
     /// A baked KV `Const` has no `base_cache` entry — an internal
@@ -1339,8 +1348,13 @@ impl DecodeSession {
     ///
     /// Structural validity is NOT rechecked here — call this only when
     /// [`Self::validity_for`] answered [`PlanValidity::AllocationChanged`].
-    pub fn rebind_kv(&mut self, kv: &dyn KvRebindSource) -> core::result::Result<(), RebindRefusal> {
-        let incoming_loc = kv.rebind_location().ok_or(RebindRefusal::ResidencyUnknown)?;
+    pub fn rebind_kv(
+        &mut self,
+        kv: &dyn KvRebindSource,
+    ) -> core::result::Result<(), RebindRefusal> {
+        let incoming_loc = kv
+            .rebind_location()
+            .ok_or(RebindRefusal::ResidencyUnknown)?;
         let baked_loc = self.kv_location.ok_or(RebindRefusal::ResidencyUnknown)?;
         if baked_loc != incoming_loc {
             return Err(RebindRefusal::ResidencyDiffers {
@@ -1403,20 +1417,40 @@ impl DecodeSession {
     /// [`Self::effective_target`] (the spliced D2H `Op::Copy` root).
     /// The D2H happens OUTSIDE the capture, after `replay_token` returns
     /// the device-resident output Arc.
-    pub fn logits_node(&self) -> NodeId { self.logits_node }
-    pub fn token_ids_node(&self) -> NodeId { self.token_ids_node }
-    pub fn rope_cos_node(&self) -> NodeId { self.rope_cos_node }
-    pub fn rope_sin_node(&self) -> NodeId { self.rope_sin_node }
-    pub fn mask_node(&self) -> NodeId { self.mask_node }
-    pub fn kv_nodes(&self) -> &[(NodeId, NodeId)] { &self.kv_nodes }
+    pub fn logits_node(&self) -> NodeId {
+        self.logits_node
+    }
+    pub fn token_ids_node(&self) -> NodeId {
+        self.token_ids_node
+    }
+    pub fn rope_cos_node(&self) -> NodeId {
+        self.rope_cos_node
+    }
+    pub fn rope_sin_node(&self) -> NodeId {
+        self.rope_sin_node
+    }
+    pub fn mask_node(&self) -> NodeId {
+        self.mask_node
+    }
+    pub fn kv_nodes(&self) -> &[(NodeId, NodeId)] {
+        &self.kv_nodes
+    }
     /// The device-resident KV-write offset Const NodeId, `Some` only on
     /// the device-offset decode path (CUDA/CPU); `None` on Vulkan's
     /// SymEnv path. Used by the CapturedRun replay wiring (Phase 3) and
     /// the per-token offset re-bind.
-    pub fn offset_node(&self) -> Option<NodeId> { self.offset_node }
-    pub fn cached_len_sym(&self) -> SymId { self.cached_len_sym }
-    pub fn attended_len_sym(&self) -> SymId { self.attended_len_sym }
-    pub fn max_seq_len(&self) -> usize { self.max_seq_len }
+    pub fn offset_node(&self) -> Option<NodeId> {
+        self.offset_node
+    }
+    pub fn cached_len_sym(&self) -> SymId {
+        self.cached_len_sym
+    }
+    pub fn attended_len_sym(&self) -> SymId {
+        self.attended_len_sym
+    }
+    pub fn max_seq_len(&self) -> usize {
+        self.max_seq_len
+    }
 
     /// Build the per-token [`SymEnv`] for one decode step: bind
     /// `cached_len_sym = cached_len` (the KV-write offset) AND
@@ -1779,16 +1813,36 @@ impl PagedDecodeSession {
     pub fn effective_target(&self) -> NodeId {
         self.effective_target
     }
-    pub fn logits_node(&self) -> NodeId { self.logits_node }
-    pub fn token_ids_node(&self) -> NodeId { self.token_ids_node }
-    pub fn rope_cos_node(&self) -> NodeId { self.rope_cos_node }
-    pub fn rope_sin_node(&self) -> NodeId { self.rope_sin_node }
-    pub fn block_table_node(&self) -> NodeId { self.block_table_node }
-    pub fn context_lens_node(&self) -> NodeId { self.context_lens_node }
-    pub fn kv_nodes(&self) -> &[(NodeId, NodeId)] { &self.kv_nodes }
-    pub fn offset_node(&self) -> Option<NodeId> { self.offset_node }
-    pub fn write_sym(&self) -> SymId { self.write_sym }
-    pub fn max_blocks_cap(&self) -> usize { self.max_blocks_cap }
+    pub fn logits_node(&self) -> NodeId {
+        self.logits_node
+    }
+    pub fn token_ids_node(&self) -> NodeId {
+        self.token_ids_node
+    }
+    pub fn rope_cos_node(&self) -> NodeId {
+        self.rope_cos_node
+    }
+    pub fn rope_sin_node(&self) -> NodeId {
+        self.rope_sin_node
+    }
+    pub fn block_table_node(&self) -> NodeId {
+        self.block_table_node
+    }
+    pub fn context_lens_node(&self) -> NodeId {
+        self.context_lens_node
+    }
+    pub fn kv_nodes(&self) -> &[(NodeId, NodeId)] {
+        &self.kv_nodes
+    }
+    pub fn offset_node(&self) -> Option<NodeId> {
+        self.offset_node
+    }
+    pub fn write_sym(&self) -> SymId {
+        self.write_sym
+    }
+    pub fn max_blocks_cap(&self) -> usize {
+        self.max_blocks_cap
+    }
 
     /// How many REBIND (plan-reuse) tokens this session has served — a
     /// device-independent plan-HIT signal (see [`Self::realize_count`]). Zero
@@ -2017,7 +2071,12 @@ impl InferenceContext {
         graph: &Arc<RwLock<Graph>>,
         target: NodeId,
         env: &SymEnv,
-    ) -> Result<(NodeId, fuel_dispatch::optimize::OptimizedGraph, StorageCache, Vec<T>)> {
+    ) -> Result<(
+        NodeId,
+        fuel_dispatch::optimize::OptimizedGraph,
+        StorageCache,
+        Vec<T>,
+    )> {
         crate::pipelined_bridge::prebuild_optimized_env_capturing_cache::<T>(
             graph,
             target,
@@ -2121,8 +2180,8 @@ impl InferenceContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_ir::{DType, Shape};
     use fuel_graph::{Node, Op};
+    use fuel_ir::{DType, Shape};
 
     /// `InferenceContext::insert` + immediate retrieval round-trips.
     #[test]
@@ -2151,8 +2210,12 @@ mod tests {
     /// still held by the context after each call.
     #[test]
     fn context_persistent_arc_survives_realize() {
-        let lhs_arc = Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0])));
-        let rhs_arc = Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[10.0_f32, 20.0, 30.0])));
+        let lhs_arc = Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[
+            1.0_f32, 2.0, 3.0,
+        ])));
+        let rhs_arc = Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[
+            10.0_f32, 20.0, 30.0,
+        ])));
 
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (lhs_id, rhs_id, add_id) = {
@@ -2226,12 +2289,16 @@ mod tests {
         let (dest_id, src_id, ws_id) = {
             let mut g = graph.write().unwrap();
             let dest = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[6]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[6]),
+                dtype: DType::F32,
             });
             let src = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2]),
+                dtype: DType::F32,
             });
             let ws = g.push(Node {
                 op: Op::WriteSlice {
@@ -2255,7 +2322,8 @@ mod tests {
             .realize_one_as_with_env::<f32>(&graph, ws_id, &env)
             .expect("realize_one_as_with_env");
         assert_eq!(
-            out, vec![0.0, 0.0, 0.0, 7.0, 8.0, 0.0],
+            out,
+            vec![0.0, 0.0, 0.0, 7.0, 8.0, 0.0],
             "KV slab must land at the SymEnv-bound cached_len=3, not the placeholder 0",
         );
 
@@ -2263,7 +2331,10 @@ mod tests {
         // typed error (never a panic) — the write-once contract's
         // "presence ⇒ produced" read at realize.
         let err = ctx.realize_one_as_with_env::<f32>(&graph, ws_id, &SymEnv::new());
-        assert!(err.is_err(), "unbound cached_len must surface a typed error");
+        assert!(
+            err.is_err(),
+            "unbound cached_len must surface a typed error"
+        );
     }
 
     /// `KvCache::with_dims` produces a fresh cache of the right
@@ -2395,7 +2466,8 @@ mod tests {
             /* max_seq_len  */ 32,
             DType::F32,
             &device,
-        ).expect("with_capacity");
+        )
+        .expect("with_capacity");
 
         assert_eq!(cache.n_layers(), 3);
         assert_eq!(cache.cached_len, 0);
@@ -2430,8 +2502,8 @@ mod tests {
     #[test]
     fn kv_cache_slot_storage_returns_layer_arc() {
         let device = Device::cpu();
-        let cache = KvCache::with_capacity(2, 4, 8, 16, DType::F32, &device)
-            .expect("with_capacity");
+        let cache =
+            KvCache::with_capacity(2, 4, 8, 16, DType::F32, &device).expect("with_capacity");
 
         let k_via_layer = Arc::clone(&cache.layer(0).unwrap().k);
         let k_via_slot = cache.slot_storage(0, KvSlot::K).expect("layer 0 K");
@@ -2462,8 +2534,8 @@ mod tests {
     #[test]
     fn kv_cache_bump_version_advances_per_slot() {
         let device = Device::cpu();
-        let mut cache = KvCache::with_capacity(1, 4, 8, 16, DType::F32, &device)
-            .expect("with_capacity");
+        let mut cache =
+            KvCache::with_capacity(1, 4, 8, 16, DType::F32, &device).expect("with_capacity");
         assert_eq!(cache.layer(0).unwrap().k_version, 0);
         assert_eq!(cache.layer(0).unwrap().v_version, 0);
 
@@ -2491,8 +2563,8 @@ mod tests {
     #[test]
     fn kv_cache_with_capacity_bf16_byte_count() {
         let device = Device::cpu();
-        let cache = KvCache::with_capacity(1, 2, 4, 8, DType::BF16, &device)
-            .expect("with_capacity bf16");
+        let cache =
+            KvCache::with_capacity(1, 2, 4, 8, DType::BF16, &device).expect("with_capacity bf16");
         let layer = cache.layer(0).unwrap();
         // 2 (n_kv) * 8 (seq) * 4 (head) * 2 (bf16) = 128 bytes per slot.
         assert_eq!(layer.k.read().unwrap().inner.len_bytes(), 128);
@@ -2514,7 +2586,8 @@ mod tests {
             vec![vec![5], vec![2]],
             DType::F32,
             &device,
-        ).expect("with_capacity");
+        )
+        .expect("with_capacity");
 
         assert_eq!(cache.n_layers(), 3);
         assert_eq!(cache.n_slots(), 2);
@@ -2557,9 +2630,9 @@ mod tests {
     #[test]
     fn latent_kv_cache_bump_version_advances_per_slot_and_oob_is_noop() {
         let device = Device::cpu();
-        let mut cache = LatentKvCache::with_capacity(
-            1, 4, vec![vec![2], vec![1]], DType::F32, &device,
-        ).expect("with_capacity");
+        let mut cache =
+            LatentKvCache::with_capacity(1, 4, vec![vec![2], vec![1]], DType::F32, &device)
+                .expect("with_capacity");
 
         cache.bump_version(0, 0);
         cache.bump_version(0, 0);

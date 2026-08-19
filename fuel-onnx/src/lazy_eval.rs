@@ -72,10 +72,7 @@ impl LazyOnnxEval {
     /// `LazyTensor` produced by the corresponding node. The returned
     /// tensors have not been realized yet — call e.g. `realize_f32` on
     /// any of them to materialize the result.
-    pub fn run(
-        &self,
-        inputs: &HashMap<String, LazyTensor>,
-    ) -> Result<HashMap<String, LazyTensor>> {
+    pub fn run(&self, inputs: &HashMap<String, LazyTensor>) -> Result<HashMap<String, LazyTensor>> {
         let graph = self
             .model
             .graph
@@ -129,10 +126,9 @@ fn dispatch_node(
     i64_cache: &mut HashMap<String, Vec<i64>>,
 ) -> Result<()> {
     let get = |values: &HashMap<String, LazyTensor>, name: &str| -> Result<LazyTensor> {
-        values
-            .get(name)
-            .cloned()
-            .ok_or_else(|| Error::Msg(format!("missing input '{}' for node '{}'", name, node.name)).bt())
+        values.get(name).cloned().ok_or_else(|| {
+            Error::Msg(format!("missing input '{}' for node '{}'", name, node.name)).bt()
+        })
     };
     let get_i64_vec = |values: &HashMap<String, LazyTensor>,
                        i64_cache: &HashMap<String, Vec<i64>>,
@@ -235,7 +231,9 @@ fn dispatch_node(
                     .map(|&i| normalize_axis(i, x.rank()))
                     .collect::<Result<Vec<_>>>()?
             } else if let Some(a) = get_attr_ints_opt(node, "axes") {
-                a.iter().map(|&i| normalize_axis(i, x.rank())).collect::<Result<Vec<_>>>()?
+                a.iter()
+                    .map(|&i| normalize_axis(i, x.rank()))
+                    .collect::<Result<Vec<_>>>()?
             } else {
                 x.shape()
                     .dims()
@@ -320,7 +318,8 @@ fn dispatch_node(
                 }
                 1 => {
                     let a = ensure_anchor(anchor, device);
-                    let idx = a.const_u32_like(normalized, Shape::from_dims(&[indices.elem_count()]));
+                    let idx =
+                        a.const_u32_like(normalized, Shape::from_dims(&[indices.elem_count()]));
                     let y = x.index_select(axis, &idx)?;
                     set_output(node, 0, y, values)?;
                 }
@@ -422,11 +421,9 @@ fn dispatch_node(
         // ---- multi-input shape glue ----
         "Concat" => {
             if node.input.is_empty() {
-                return Err(Error::Msg(format!(
-                    "Concat node '{}': empty input list",
-                    node.name
-                ))
-                .bt());
+                return Err(
+                    Error::Msg(format!("Concat node '{}': empty input list", node.name)).bt(),
+                );
             }
             let axis_raw = get_attr_int(node, "axis")?;
             let first = get(values, &node.input[0])?;
@@ -542,12 +539,9 @@ fn reduce_op(
     let x = values
         .get(&node.input[0])
         .cloned()
-        .ok_or_else(|| {
-            Error::Msg(format!("missing input for reduce node '{}'", node.name)).bt()
-        })?;
+        .ok_or_else(|| Error::Msg(format!("missing input for reduce node '{}'", node.name)).bt())?;
     let keepdims = get_attr_int_opt(node, "keepdims").unwrap_or(1) == 1;
-    let noop_with_empty_axes =
-        get_attr_int_opt(node, "noop_with_empty_axes").unwrap_or(0) == 1;
+    let noop_with_empty_axes = get_attr_int_opt(node, "noop_with_empty_axes").unwrap_or(0) == 1;
 
     // ONNX 13+: axes is an attribute. ONNX 18+: axes is an input.
     let raw_axes: Option<Vec<i64>> = if node.input.len() > 1 && !node.input[1].is_empty() {
@@ -556,8 +550,11 @@ fn reduce_op(
             Some(cached.clone())
         } else {
             let t = values.get(name).cloned().ok_or_else(|| {
-                Error::Msg(format!("missing axes input for reduce node '{}'", node.name))
-                    .bt()
+                Error::Msg(format!(
+                    "missing axes input for reduce node '{}'",
+                    node.name
+                ))
+                .bt()
             })?;
             Some(realize_i64_vec(&t)?)
         }
@@ -855,10 +852,7 @@ pub fn onnx_dtype_to_fuel(dt: i32) -> Result<DType> {
         DataType::Int64 => Ok(DType::I64),
         DataType::Uint32 => Ok(DType::U32),
         DataType::Uint8 | DataType::Bool => Ok(DType::U8),
-        other => Err(Error::Msg(format!(
-            "ONNX dtype {other:?} not supported in sub-port 1"
-        ))
-        .bt()),
+        other => Err(Error::Msg(format!("ONNX dtype {other:?} not supported in sub-port 1")).bt()),
     }
 }
 
@@ -929,8 +923,9 @@ pub(crate) fn get_attr_string_opt(node: &onnx::NodeProto, name: &str) -> Result<
     match node.attribute.iter().find(|a| a.name == name) {
         None => Ok(None),
         Some(a) => {
-            let s = std::str::from_utf8(&a.s)
-                .map_err(|e| Error::Msg(format!("attribute '{}': invalid UTF-8 ({e})", name)).bt())?;
+            let s = std::str::from_utf8(&a.s).map_err(|e| {
+                Error::Msg(format!("attribute '{}': invalid UTF-8 ({e})", name)).bt()
+            })?;
             Ok(Some(s.to_string()))
         }
     }
@@ -939,10 +934,7 @@ pub(crate) fn get_attr_string_opt(node: &onnx::NodeProto, name: &str) -> Result<
 pub(crate) fn normalize_axis(axis: i64, rank: usize) -> Result<usize> {
     let n = if axis < 0 { axis + rank as i64 } else { axis };
     if n < 0 || n >= rank as i64 {
-        return Err(Error::Msg(format!(
-            "axis {axis} out of range for rank {rank}"
-        ))
-        .bt());
+        return Err(Error::Msg(format!("axis {axis} out of range for rank {rank}")).bt());
     }
     Ok(n as usize)
 }
@@ -1130,10 +1122,7 @@ mod tests {
         reduce_node.attribute.push(attr_int("keepdims", 0));
 
         let graph = onnx::GraphProto {
-            node: vec![
-                node("Reshape", "rs", &["X", "shape"], &["R"]),
-                reduce_node,
-            ],
+            node: vec![node("Reshape", "rs", &["X", "shape"], &["R"]), reduce_node],
             initializer: vec![shape_t],
             input: vec![value_info("X")],
             output: vec![value_info("Y")],
@@ -1145,11 +1134,7 @@ mod tests {
         let evaluator = LazyOnnxEval::from_bytes(&buf).unwrap();
 
         let device = Device::cpu();
-        let x = LazyTensor::from_f32(
-            vec![1.0f32, 2.0, 3.0, 4.0],
-            Shape::from_dims(&[4]),
-            &device,
-        );
+        let x = LazyTensor::from_f32(vec![1.0f32, 2.0, 3.0, 4.0], Shape::from_dims(&[4]), &device);
         let mut inputs = HashMap::new();
         inputs.insert("X".to_string(), x);
         let outputs = evaluator.run(&inputs).unwrap();
@@ -1185,11 +1170,7 @@ mod tests {
         let evaluator = LazyOnnxEval::from_bytes(&buf).unwrap();
 
         let device = Device::cpu();
-        let x = LazyTensor::from_f32(
-            vec![1.0f32; 4],
-            Shape::from_dims(&[1, 4]),
-            &device,
-        );
+        let x = LazyTensor::from_f32(vec![1.0f32; 4], Shape::from_dims(&[1, 4]), &device);
         let mut inputs = HashMap::new();
         inputs.insert("X".to_string(), x);
 
@@ -1234,7 +1215,9 @@ mod tests {
     fn constant_node_loads_value_attribute() {
         let const_tensor = tp_float("c", &[2], vec![3.5, -2.0]);
         let mut const_node = node("Constant", "k", &[], &["C"]);
-        const_node.attribute.push(attr_tensor("value", const_tensor));
+        const_node
+            .attribute
+            .push(attr_tensor("value", const_tensor));
 
         let graph = onnx::GraphProto {
             node: vec![const_node, node("Identity", "id", &["C"], &["Y"])],

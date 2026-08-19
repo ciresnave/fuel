@@ -10,7 +10,7 @@ use clap::{Parser, ValueEnum};
 use fuel::lazy_based::{
     BasedConfig, BasedLinearAttentionParams, BasedModel, BasedSlidingWindowParams, BasedWeights,
 };
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use hf_hub::{Repo, RepoType, api::sync::Api};
 use std::io::Write;
 use tokenizers::Tokenizer;
 
@@ -223,8 +223,8 @@ fn main() -> Result<()> {
 /// `rotary_emb_base`) onto its struct fields; the lazy `BasedConfig` is a
 /// pure data struct with no serde derives, so we translate by hand.
 fn based_config_from_hf_json_str(json: &str) -> Result<BasedConfig> {
-    let v: serde_json::Value = serde_json::from_str(json)
-        .map_err(|e| E::msg(format!("parsing config.json: {e}")))?;
+    let v: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| E::msg(format!("parsing config.json: {e}")))?;
     let get_usize = |key: &str| -> Result<usize> {
         v.get(key)
             .and_then(|x| x.as_u64())
@@ -350,7 +350,10 @@ fn sample(
     }
     let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let inv_t = 1.0 / temperature.max(1e-6);
-    let mut probs: Vec<f32> = logits.iter().map(|&x| ((x - max_l) * inv_t).exp()).collect();
+    let mut probs: Vec<f32> = logits
+        .iter()
+        .map(|&x| ((x - max_l) * inv_t).exp())
+        .collect();
     let sum: f32 = probs.iter().sum();
     for p in &mut probs {
         *p /= sum.max(1e-30);
@@ -393,7 +396,9 @@ fn sample(
     } else {
         return 0;
     }
-    let mut state = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    let mut state = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
     state ^= state >> 33;
     state = state.wrapping_mul(0xff51_afd7_ed55_8ccd);
     state ^= state >> 33;

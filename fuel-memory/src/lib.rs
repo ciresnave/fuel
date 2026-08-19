@@ -47,9 +47,9 @@ pub use fuel_cuda_backend::CudaStorageBytes as CudaStorage;
 #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
 pub use fuel_metal_backend::MetalStorageBytes as MetalStorage;
 
-use fuel_ir::{DType, Result, SType};
-use fuel_ir::storage::OutputView;
 use fuel_cpu_backend::CpuStorageBytes;
+use fuel_ir::storage::OutputView;
+use fuel_ir::{DType, Result, SType};
 use std::sync::Arc;
 
 /// Borrowed, zero-copy DLPack + FDX-sidecar view over a `(Storage, Layout
@@ -145,7 +145,12 @@ impl Storage {
     /// [`Self::with_bundle`] / [`Self::new_bundled`] for the
     /// multi-output case.
     pub fn new(inner: BackendStorage, dtype: DType) -> Self {
-        Self { inner, dtype, bundle: None, stype: SType::default() }
+        Self {
+            inner,
+            dtype,
+            bundle: None,
+            stype: SType::default(),
+        }
     }
 
     /// Build a Storage from a backend variant + dtype tag + bundle
@@ -154,12 +159,17 @@ impl Storage {
     /// primary dtype (the bundled-storage invariant: slot 0 IS the
     /// primary).
     pub fn new_bundled(
-        inner:  BackendStorage,
-        dtype:  DType,
+        inner: BackendStorage,
+        dtype: DType,
         bundle: Arc<[OutputView]>,
     ) -> Result<Self> {
         Self::validate_bundle(dtype, &bundle)?;
-        Ok(Self { inner, dtype, bundle: Some(bundle), stype: SType::default() })
+        Ok(Self {
+            inner,
+            dtype,
+            bundle: Some(bundle),
+            stype: SType::default(),
+        })
     }
 
     /// Attach a bundle side-table to an existing single-output
@@ -176,14 +186,12 @@ impl Storage {
         Ok(self)
     }
 
-    fn validate_bundle(
-        primary_dtype: DType,
-        bundle:        &Arc<[OutputView]>,
-    ) -> Result<()> {
+    fn validate_bundle(primary_dtype: DType, bundle: &Arc<[OutputView]>) -> Result<()> {
         if bundle.is_empty() {
             return Err(fuel_ir::Error::Msg(
                 "Storage::with_bundle: bundle slice must be non-empty".into(),
-            ).bt());
+            )
+            .bt());
         }
         let slot0 = &bundle[0];
         if slot0.dtype != primary_dtype {
@@ -191,7 +199,8 @@ impl Storage {
                 "Storage::with_bundle: slot 0 dtype {:?} must match \
                  Storage's primary dtype {:?}",
                 slot0.dtype, primary_dtype,
-            )).bt());
+            ))
+            .bt());
         }
         Ok(())
     }
@@ -260,9 +269,7 @@ pub fn alloc_cpu_zeroed(dtype: DType, elem_count: usize) -> Result<Storage> {
 
 /// Build a CPU `Storage` from a typed slice, copying the bytes. The
 /// result has the dtype matching `T` and is 64-byte aligned.
-pub fn from_slice_cpu<T: bytemuck::Pod + fuel_ir::WithDType>(
-    data: &[T],
-) -> Storage {
+pub fn from_slice_cpu<T: bytemuck::Pod + fuel_ir::WithDType>(data: &[T]) -> Storage {
     Storage::new(
         BackendStorage::Cpu(CpuStorageBytes::from_slice(data)),
         T::DTYPE,
@@ -323,7 +330,10 @@ mod tests {
     #[test]
     fn plain_storage_has_empty_stype() {
         let s = alloc_cpu_zeroed(DType::F32, 4).expect("alloc");
-        assert!(s.stype().is_plain(), "default Storage must carry a plain SType");
+        assert!(
+            s.stype().is_plain(),
+            "default Storage must carry a plain SType"
+        );
         assert_eq!(s.stype().layers().len(), 0);
     }
 
@@ -331,12 +341,15 @@ mod tests {
     /// the logical dtype or the byte count.
     #[test]
     fn storage_with_stype_round_trips() {
-        use fuel_ir::{SType, Encoding, GgmlDType};
-        let s = alloc_cpu_zeroed(DType::F32, 8).expect("alloc")
-            .with_stype(SType::from_layer(Encoding::GgmlBlock { ggml_dtype: GgmlDType::Q4_0 }));
+        use fuel_ir::{Encoding, GgmlDType, SType};
+        let s = alloc_cpu_zeroed(DType::F32, 8)
+            .expect("alloc")
+            .with_stype(SType::from_layer(Encoding::GgmlBlock {
+                ggml_dtype: GgmlDType::Q4_0,
+            }));
         assert!(!s.stype().is_plain());
         assert_eq!(s.dtype(), DType::F32); // dtype unchanged
-        assert_eq!(s.len_bytes(), 32);     // bytes unchanged
+        assert_eq!(s.len_bytes(), 32); // bytes unchanged
     }
 
     /// A4: alloc symmetry — CpuStorageBytes::alloc and from_zero_bytes

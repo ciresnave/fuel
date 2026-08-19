@@ -32,15 +32,13 @@ use std::time::Instant;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
-    let image_size: usize = args
-        .get(1)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(64);
+    let image_size: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(64);
 
     if image_size % 32 != 0 {
         return Err(format!(
             "image size {image_size} must be divisible by 32 (YOLOv8 has 5 stride-2 downsamples)"
-        ).into());
+        )
+        .into());
     }
 
     eprintln!("=== fuel yolov8-lazy ===");
@@ -54,7 +52,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut cfg = YoloV8Config::v8n();
     cfg.image_size = image_size;
     let weights = YoloV8Weights::zeros(&cfg);
-    let model = YoloV8Model { config: cfg.clone(), weights };
+    let model = YoloV8Model {
+        config: cfg.clone(),
+        weights,
+    };
     eprintln!("done in {:.2?}", t0.elapsed());
     eprintln!(
         "  ch={:?}  nc={}  reg_max={}",
@@ -84,11 +85,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     eprintln!(
         "cls_logits: shape [1, {}, {}]  finite={}",
-        cfg.num_classes, n_anchors, cls_flat.iter().all(|v| v.is_finite()),
+        cfg.num_classes,
+        n_anchors,
+        cls_flat.iter().all(|v| v.is_finite()),
     );
     eprintln!(
         "reg_dists:  shape [1, 4, {}]   finite={}",
-        n_anchors, reg_flat.iter().all(|v| v.is_finite()),
+        n_anchors,
+        reg_flat.iter().all(|v| v.is_finite()),
     );
     eprintln!();
 
@@ -97,12 +101,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // (demonstrating the threshold works), while 0.4 would see every
     // anchor pass (demonstrating NMS can run at scale).
     for thr in [0.4_f32, 0.6] {
-        let nms = NmsConfig { score_threshold: thr, iou_threshold: 0.45, top_k: 300 };
+        let nms = NmsConfig {
+            score_threshold: thr,
+            iou_threshold: 0.45,
+            top_k: 300,
+        };
         let t0 = Instant::now();
         let dets = decode_and_nms(&raw, cfg.num_classes, &nms);
         eprintln!(
             "NMS @ score_thr={thr:.2}: {} detections in {:.2?}",
-            dets.len(), t0.elapsed(),
+            dets.len(),
+            t0.elapsed(),
         );
     }
 

@@ -14,8 +14,8 @@
 //! the Gemma4 text decoder's embedding space before concatenating
 //! them with text token embeddings.
 
-use crate::lazy::{LazyTensor, WeightStorage};
 use crate::Result;
+use crate::lazy::{LazyTensor, WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -50,7 +50,8 @@ impl Gemma4MmEmbedder {
         assert!(
             !dims.is_empty() && *dims.last().unwrap() == cfg.multimodal_hidden_size,
             "Gemma4MmEmbed: last dim must equal multimodal_hidden_size={}, got shape {:?}",
-            cfg.multimodal_hidden_size, dims,
+            cfg.multimodal_hidden_size,
+            dims,
         );
 
         // Step 1: RMS normalize over the last dim (no learnable gain).
@@ -78,7 +79,8 @@ impl Gemma4MmEmbedWeights {
         let projection = ltm(
             st,
             "model.embed_vision.embedding_projection.weight",
-            cfg.text_hidden_size, cfg.multimodal_hidden_size,
+            cfg.text_hidden_size,
+            cfg.multimodal_hidden_size,
         )?;
         Ok(Self { projection })
     }
@@ -109,7 +111,8 @@ mod tests {
         };
         let mut next = rng(42);
         let proj: Vec<f32> = (0..cfg.multimodal_hidden_size * cfg.text_hidden_size)
-            .map(|_| next()).collect();
+            .map(|_| next())
+            .collect();
         let model = Gemma4MmEmbedder {
             config: cfg.clone(),
             weights: Gemma4MmEmbedWeights {
@@ -119,7 +122,8 @@ mod tests {
         // (1, seq, multimodal_hidden) input.
         let seq = 5;
         let input_data: Vec<f32> = (0..1 * seq * cfg.multimodal_hidden_size)
-            .map(|i| ((i as f32) * 0.05) - 0.1).collect();
+            .map(|i| ((i as f32) * 0.05) - 0.1)
+            .collect();
         let input = LazyTensor::from_f32(
             input_data,
             Shape::from_dims(&[1, seq, cfg.multimodal_hidden_size]),
@@ -159,13 +163,15 @@ mod tests {
         let out = model.forward(&input).unwrap().realize_f32();
         let expected = [
             1.0_f32 / 7.5_f32.sqrt(),
-            2.0      / 7.5_f32.sqrt(),
-            3.0      / 7.5_f32.sqrt(),
-            4.0      / 7.5_f32.sqrt(),
+            2.0 / 7.5_f32.sqrt(),
+            3.0 / 7.5_f32.sqrt(),
+            4.0 / 7.5_f32.sqrt(),
         ];
         for (i, (&got, &want)) in out.iter().zip(expected.iter()).enumerate() {
-            assert!((got - want).abs() < 1e-5,
-                "row[{i}]: got {got} expected {want}");
+            assert!(
+                (got - want).abs() < 1e-5,
+                "row[{i}]: got {got} expected {want}"
+            );
         }
     }
 }

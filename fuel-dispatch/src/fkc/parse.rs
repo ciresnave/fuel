@@ -56,8 +56,8 @@ pub fn parse_file(text: &str) -> Result<FkcFile, FkcError> {
         let block = extract_fkc_block(&section)?;
         // §3.8 pre-pass on this kernel's fkc block, reporting absolute lines.
         enforce_restricted_yaml(&block.text, block.start_line)?;
-        let kernel: FkcKernel =
-            serde_yaml_ng::from_str(&block.text).map_err(|e| FkcError::yaml(Some(&section.title), e))?;
+        let kernel: FkcKernel = serde_yaml_ng::from_str(&block.text)
+            .map_err(|e| FkcError::yaml(Some(&section.title), e))?;
         kernels.push(kernel);
     }
 
@@ -282,7 +282,10 @@ fn enforce_restricted_yaml(chunk: &str, base_line: usize) -> Result<(), FkcError
         let line = base_line + i;
 
         // --- tab indentation (leading whitespace only) ---
-        let indent: String = raw.chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+        let indent: String = raw
+            .chars()
+            .take_while(|c| *c == ' ' || *c == '\t')
+            .collect();
         if indent.contains('\t') {
             return Err(FkcError::TabIndentation { line });
         }
@@ -348,7 +351,8 @@ fn enforce_restricted_yaml(chunk: &str, base_line: usize) -> Result<(), FkcError
 /// Is `s` a plausible YAML anchor/alias name (alnum / `-` / `_`)? Used to avoid
 /// false positives on `*` used as a glob or `&` inside odd text.
 fn is_anchor_name(s: &str) -> bool {
-    s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    s.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 /// Return a copy of `raw` with quoted spans (`"..."` / `'...'`) replaced by
@@ -426,7 +430,11 @@ fn scalar_key_value_of(content: &str) -> Option<(Option<String>, &str)> {
             return None;
         }
         // A `- name: y` sequence-item-with-key still yields key="name".
-        let key = if key.is_empty() { None } else { Some(key.to_string()) };
+        let key = if key.is_empty() {
+            None
+        } else {
+            Some(key.to_string())
+        };
         return Some((key, value));
     }
     // A bare `- scalar` sequence item carries no key.

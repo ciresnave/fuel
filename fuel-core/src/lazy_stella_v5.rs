@@ -40,9 +40,9 @@
 //! ships with seven canonical `embed_head` dimensions
 //! enumerated by [`StellaEmbedDim`].
 
+use crate::Result;
 use crate::lazy::{LazyTensor, WeightStorage};
 use crate::lazy_qwen2::{Qwen2Config, Qwen2Model, Qwen2Weights};
-use crate::Result;
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -101,7 +101,10 @@ impl StellaV5Config {
             max_window_layers: 28,
             tie_word_embeddings: false,
         };
-        Self { backbone, embed_dim }
+        Self {
+            backbone,
+            embed_dim,
+        }
     }
 }
 
@@ -139,7 +142,9 @@ impl StellaV5Model {
         // Project through embed_head: hidden → out_features.
         let out_features = cfg.embed_dim.out_features();
         let projected = self.weights.embed_head.apply_linear(
-            &pooled, cfg.backbone.hidden_size, out_features,
+            &pooled,
+            cfg.backbone.hidden_size,
+            out_features,
         )?;
 
         // L2-normalize on the last dim.
@@ -149,16 +154,16 @@ impl StellaV5Model {
     /// Run a forward pass with a caller-supplied attention mask
     /// of shape `(seq,)` (1 for keep, 0 for pad). Mean pools the
     /// hidden states weighted by the mask before projection.
-    pub fn forward_with_mask(
-        &self,
-        tokens: &[u32],
-        attention_mask: &[u32],
-    ) -> Result<LazyTensor> {
+    pub fn forward_with_mask(&self, tokens: &[u32], attention_mask: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         let seq = tokens.len();
-        assert!(seq > 0, "StellaV5Model::forward_with_mask: tokens must be non-empty");
+        assert!(
+            seq > 0,
+            "StellaV5Model::forward_with_mask: tokens must be non-empty"
+        );
         assert_eq!(
-            attention_mask.len(), seq,
+            attention_mask.len(),
+            seq,
             "attention_mask length must equal tokens length",
         );
 
@@ -182,7 +187,9 @@ impl StellaV5Model {
 
         let out_features = cfg.embed_dim.out_features();
         let projected = self.weights.embed_head.apply_linear(
-            &pooled, cfg.backbone.hidden_size, out_features,
+            &pooled,
+            cfg.backbone.hidden_size,
+            out_features,
         )?;
         l2_normalize(&projected)
     }
@@ -210,17 +217,27 @@ impl StellaV5Weights {
         // Sentence-Transformers convention: 2_Dense_{out_dim}/linear.weight.
         let head_name = format!("2_Dense_{out_dim}/linear.weight");
         let embed_head = ltm(st, &head_name, out_dim, in_dim)
-            .or_else(|_| ltm(st, &format!("2_Dense_{out_dim}.linear.weight"), out_dim, in_dim))
+            .or_else(|_| {
+                ltm(
+                    st,
+                    &format!("2_Dense_{out_dim}.linear.weight"),
+                    out_dim,
+                    in_dim,
+                )
+            })
             .or_else(|_| ltm(st, &format!("dense_{out_dim}.weight"), out_dim, in_dim))?;
-        Ok(Self { backbone, embed_head })
+        Ok(Self {
+            backbone,
+            embed_head,
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lazy::LayerWeights;
     use crate::Device;
+    use crate::lazy::LayerWeights;
 
     fn vec_of(n: usize, next: &mut dyn FnMut() -> f32) -> Arc<[f32]> {
         Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
@@ -237,11 +254,17 @@ mod tests {
     fn tiny_backbone_cfg() -> Qwen2Config {
         // head_dim derived from hidden_size / num_attention_heads = 16/4 = 4.
         Qwen2Config {
-            vocab_size: 32, hidden_size: 16, intermediate_size: 32,
-            num_hidden_layers: 2, num_attention_heads: 4,
-            num_key_value_heads: 2, max_position_embeddings: 32,
-            rms_norm_eps: 1e-6, rope_theta: 1_000_000.0,
-            sliding_window: 32, use_sliding_window: false,
+            vocab_size: 32,
+            hidden_size: 16,
+            intermediate_size: 32,
+            num_hidden_layers: 2,
+            num_attention_heads: 4,
+            num_key_value_heads: 2,
+            max_position_embeddings: 32,
+            rms_norm_eps: 1e-6,
+            rope_theta: 1_000_000.0,
+            sliding_window: 32,
+            use_sliding_window: false,
             max_window_layers: 2,
             tie_word_embeddings: false,
         }
@@ -283,10 +306,19 @@ mod tests {
         let mut nb = rng_seed(seed);
         let backbone_cfg = tiny_backbone_cfg();
         let backbone_weights = tiny_qwen2_weights(&backbone_cfg, &mut nb);
-        let embed_head = WeightStorage::F32(vec_of(backbone_cfg.hidden_size * out_dim.out_features(), &mut nb));
+        let embed_head = WeightStorage::F32(vec_of(
+            backbone_cfg.hidden_size * out_dim.out_features(),
+            &mut nb,
+        ));
         StellaV5Model {
-            config: StellaV5Config { backbone: backbone_cfg, embed_dim: out_dim },
-            weights: StellaV5Weights { backbone: backbone_weights, embed_head },
+            config: StellaV5Config {
+                backbone: backbone_cfg,
+                embed_dim: out_dim,
+            },
+            weights: StellaV5Weights {
+                backbone: backbone_weights,
+                embed_head,
+            },
         }
     }
 
@@ -299,8 +331,10 @@ mod tests {
         let realized = emb.realize_f32();
         // L2 norm should be ~1.
         let norm_sq: f32 = realized.iter().map(|v| v * v).sum();
-        assert!((norm_sq - 1.0).abs() < 1e-5,
-            "L2 norm² expected ~1.0, got {norm_sq}");
+        assert!(
+            (norm_sq - 1.0).abs() < 1e-5,
+            "L2 norm² expected ~1.0, got {norm_sq}"
+        );
     }
 
     /// All output dims produce the expected `(1, D)` shape with
@@ -331,13 +365,18 @@ mod tests {
         let tokens = [1_u32, 2, 3, 4];
         let mask = [1_u32, 1, 1, 1];
         let a = model.forward(&tokens).unwrap().realize_f32();
-        let b = model.forward_with_mask(&tokens, &mask).unwrap().realize_f32();
+        let b = model
+            .forward_with_mask(&tokens, &mask)
+            .unwrap()
+            .realize_f32();
         let mut max_diff = 0.0_f32;
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff < 1e-5,
-            "forward and forward_with_mask(all-ones) must agree, max_diff = {max_diff}");
+        assert!(
+            max_diff < 1e-5,
+            "forward and forward_with_mask(all-ones) must agree, max_diff = {max_diff}"
+        );
     }
 
     /// Masking out the last token must change the pooled embedding.
@@ -347,14 +386,22 @@ mod tests {
         let tokens = [1_u32, 2, 3, 4];
         let mask_all = [1_u32, 1, 1, 1];
         let mask_last = [1_u32, 1, 1, 0];
-        let a = model.forward_with_mask(&tokens, &mask_all).unwrap().realize_f32();
-        let b = model.forward_with_mask(&tokens, &mask_last).unwrap().realize_f32();
+        let a = model
+            .forward_with_mask(&tokens, &mask_all)
+            .unwrap()
+            .realize_f32();
+        let b = model
+            .forward_with_mask(&tokens, &mask_last)
+            .unwrap()
+            .realize_f32();
         let mut max_diff = 0.0_f32;
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-7,
-            "masking out the last token must change the embedding, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-7,
+            "masking out the last token must change the embedding, max_diff = {max_diff}"
+        );
     }
 
     /// EmbedDim mappings match the canonical Matryoshka schedule.

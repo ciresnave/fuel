@@ -1,5 +1,5 @@
-﻿use crate::WrapErr;
-use crate::{builder_arg as barg, CudaDevice, CudaStorage, Result};
+use crate::WrapErr;
+use crate::{CudaDevice, CudaStorage, Result, builder_arg as barg};
 use fuel_backend_contract::dyn_backend::DynBackendStorage;
 use fuel_backend_contract::quantized::{DynQuantizedStorage, QuantizedDeviceKernels};
 use fuel_ir::quantized::GgmlDType;
@@ -98,7 +98,16 @@ fn dequantize_f32(
     let y_ptr = dst.as_raw().0 as *mut std::ffi::c_void;
     // SAFETY: device-resident pointers + live stream; workspace null/0
     // (baracuda dequant kernels don't need scratch).
-    let status = unsafe { run(elem_count as i64, x_ptr, y_ptr, std::ptr::null_mut(), 0, stream) };
+    let status = unsafe {
+        run(
+            elem_count as i64,
+            x_ptr,
+            y_ptr,
+            std::ptr::null_mut(),
+            0,
+            stream,
+        )
+    };
     crate::baracuda::status::check(status, "dequantize_f32")?;
     dev.synchronize()?;
     Ok(CudaStorage::wrap_cuda_slice(dst, dev.clone()))
@@ -136,11 +145,19 @@ fn dequantize_f16(
 // `ncols ≥ 2 × GGML_CUDA_DMMV_X = 64` or risk silent garbage.
 // K-quants are unaffected. We assert this at the wrapper boundary.
 type MmvqBatchedRun = unsafe extern "C" fn(
-    n_experts: i32, n_rows_per_expert: i32, n_cols: i32,
-    weights: *const std::ffi::c_void, activations: *const std::ffi::c_void,
-    sorted_token_ids: *const i32, expert_offsets: *const i32,
-    topk_weights: *const f32, output: *mut std::ffi::c_void, top_k: i32,
-    workspace: *mut std::ffi::c_void, workspace_bytes: usize, stream: *mut std::ffi::c_void,
+    n_experts: i32,
+    n_rows_per_expert: i32,
+    n_cols: i32,
+    weights: *const std::ffi::c_void,
+    activations: *const std::ffi::c_void,
+    sorted_token_ids: *const i32,
+    expert_offsets: *const i32,
+    topk_weights: *const f32,
+    output: *mut std::ffi::c_void,
+    top_k: i32,
+    workspace: *mut std::ffi::c_void,
+    workspace_bytes: usize,
+    stream: *mut std::ffi::c_void,
 ) -> i32;
 
 fn pick_mmvq_batched(dtype: GgmlDType) -> Result<MmvqBatchedRun> {
@@ -286,7 +303,10 @@ fn mul_mat_via_q8_1(
     // case (`mul_mat_vec_via_q8_1`) and the matrix-matrix case here. The
     // contraction dim is x_cols; output shape is (y_cols × x_rows) row-
     // major matching the prior PTX kernel's contract.
-    baracuda_batched_mmvq(data, y, dtype, /* n_cols */ x_cols, /* n_rows */ x_rows, /* m_total */ y_cols, dev)
+    baracuda_batched_mmvq(
+        data, y, dtype, /* n_cols */ x_cols, /* n_rows */ x_rows,
+        /* m_total */ y_cols, dev,
+    )
 }
 
 // `indexed_moe_forward_fused_q8_1_input` and `QCudaStorage::indexed_moe_forward`
@@ -386,11 +406,7 @@ impl QCudaStorage {
 
     /// Quantize host-resident f32 src onto self by running the scalar CPU
     /// quantizer in fuel-quantized then htod-copying the resulting bytes.
-    fn quantize_from_f32(
-        &mut self,
-        src: &[f32],
-        imatrix: Option<(&[f32], usize)>,
-    ) -> Result<()> {
+    fn quantize_from_f32(&mut self, src: &[f32], imatrix: Option<(&[f32], usize)>) -> Result<()> {
         let mut qcpu = fuel_quantized::cpu_zeros(self.dtype, src.len());
         match imatrix {
             None => qcpu.from_float(src),
@@ -558,7 +574,9 @@ impl QCudaStorage {
 
         let out = if FORCE_DMMV.load(std::sync::atomic::Ordering::Relaxed) {
             let data_f32 = self.dequantize(n * k)?;
-            let rhs_l = crate::Layout::new((k, n).into(), smallvec::smallvec![1_isize, k as isize], 0).broadcast_as((b, k, n))?;
+            let rhs_l =
+                crate::Layout::new((k, n).into(), smallvec::smallvec![1_isize, k as isize], 0)
+                    .broadcast_as((b, k, n))?;
             storage.matmul(&data_f32, (b, m, n, k), layout, &rhs_l)?
         } else {
             let storage = storage.as_cuda_slice::<f32>()?;
@@ -653,9 +671,12 @@ impl DynQuantizedStorage for QCudaStorage {
         imatrix_weights: &[f32],
         n_per_row: usize,
     ) -> Result<()> {
-        let cpu = src.as_any().downcast_ref::<fuel_cpu_backend::CpuStorage>().ok_or_else(|| {
-            crate::Error::Msg("quantize_imatrix_onto: expected cpu storage".into()).bt()
-        })?;
+        let cpu = src
+            .as_any()
+            .downcast_ref::<fuel_cpu_backend::CpuStorage>()
+            .ok_or_else(|| {
+                crate::Error::Msg("quantize_imatrix_onto: expected cpu storage".into()).bt()
+            })?;
         QCudaStorage::quantize_imatrix_onto(self, &cpu.0, imatrix_weights, n_per_row)
     }
     fn dequantize(&self, elem_count: usize) -> Result<Box<dyn DynBackendStorage>> {
@@ -691,7 +712,9 @@ impl DynQuantizedStorage for QCudaStorage {
     fn as_any(&self) -> &dyn Any {
         self
     }
-    fn device_arc_dyn(&self) -> std::sync::Arc<dyn fuel_backend_contract::dyn_backend::DynBackendDevice> {
+    fn device_arc_dyn(
+        &self,
+    ) -> std::sync::Arc<dyn fuel_backend_contract::dyn_backend::DynBackendDevice> {
         std::sync::Arc::new(self.device.clone())
     }
 }
@@ -789,10 +812,22 @@ mod test {
         // 1e-4 relative tolerance.
         assert_eq!(vs.len(), 16);
         let qref = [
-            347_604.0, 888_153.06, 0.0 /* not asserted */, 0.0,
-            869_780.7, 2_483_145.0, 0.0, 0.0,
-            0.0, 0.0, 0.0, 9_407_368.0,
-            0.0, 0.0, 9_470_856.0, 13_138_824.0,
+            347_604.0,
+            888_153.06,
+            0.0, /* not asserted */
+            0.0,
+            869_780.7,
+            2_483_145.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            9_407_368.0,
+            0.0,
+            0.0,
+            9_470_856.0,
+            13_138_824.0,
         ];
         let asserted: &[usize] = &[0, 1, 4, 5, 11, 14, 15];
         for &i in asserted {

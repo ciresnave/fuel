@@ -58,84 +58,294 @@ macro_rules! cuda_ep {
 /// hand-written `table.register(OpKind::Cast, …)` regs.
 pub static CUDA_CAST_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     // ----- cast_to_f32: 9 sources (8-set + F8E4M3). -----
-    cuda_ep!("cast_to_f32_f32",    crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_f32_f64",    crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_f32_f16",    crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_f32_bf16",   crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_f32_i32",    crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_f32_u32",    crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_f32_i64",    crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_f32_u8",     crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_f32_f8e4m3", crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
+    cuda_ep!(
+        "cast_to_f32_f32",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_f32_f64",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_f32_f16",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_f32_bf16",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_f32_i32",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_f32_u32",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_f32_i64",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_f32_u8",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_f32_f8e4m3",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
     // ----- cast_to_f16: 9 sources (8-set + F8E4M3). -----
-    cuda_ep!("cast_to_f16_f32",    crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_f16_f64",    crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_f16_f16",    crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_f16_bf16",   crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_f16_i32",    crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_f16_u32",    crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_f16_i64",    crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_f16_u8",     crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_f16_f8e4m3", crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
+    cuda_ep!(
+        "cast_to_f16_f32",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_f16_f64",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_f16_f16",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_f16_bf16",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_f16_i32",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_f16_u32",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_f16_i64",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_f16_u8",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_f16_f8e4m3",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
     // ----- cast_to_bf16: 9 sources (8-set + F8E4M3). -----
-    cuda_ep!("cast_to_bf16_f32",    crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_bf16_f64",    crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_bf16_f16",    crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_bf16_bf16",   crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_bf16_i32",    crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_bf16_u32",    crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_bf16_i64",    crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_bf16_u8",     crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_bf16_f8e4m3", crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
+    cuda_ep!(
+        "cast_to_bf16_f32",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_bf16_f64",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_bf16_f16",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_bf16_bf16",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_bf16_i32",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_bf16_u32",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_bf16_i64",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_bf16_u8",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_bf16_f8e4m3",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
     // ----- cast_to_f64: 8 sources (8-set; no F8E4M3). -----
-    cuda_ep!("cast_to_f64_f32",  crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_f64_f64",  crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_f64_f16",  crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_f64_bf16", crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_f64_i32",  crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_f64_u32",  crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_f64_i64",  crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_f64_u8",   crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
+    cuda_ep!(
+        "cast_to_f64_f32",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_f64_f64",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_f64_f16",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_f64_bf16",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_f64_i32",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_f64_u32",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_f64_i64",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_f64_u8",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
     // ----- cast_to_i32: 8 sources (8-set; no F8E4M3). -----
-    cuda_ep!("cast_to_i32_f32",  crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_i32_f64",  crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_i32_f16",  crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_i32_bf16", crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_i32_i32",  crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_i32_u32",  crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_i32_i64",  crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_i32_u8",   crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
+    cuda_ep!(
+        "cast_to_i32_f32",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_i32_f64",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_i32_f16",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_i32_bf16",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_i32_i32",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_i32_u32",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_i32_i64",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_i32_u8",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
     // ----- cast_to_u32: 8 sources (8-set; no F8E4M3). -----
-    cuda_ep!("cast_to_u32_f32",  crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_u32_f64",  crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_u32_f16",  crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_u32_bf16", crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_u32_i32",  crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_u32_u32",  crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_u32_i64",  crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_u32_u8",   crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
+    cuda_ep!(
+        "cast_to_u32_f32",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_u32_f64",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_u32_f16",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_u32_bf16",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_u32_i32",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_u32_u32",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_u32_i64",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_u32_u8",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
     // ----- cast_to_i64: 8 sources (8-set; no F8E4M3). -----
-    cuda_ep!("cast_to_i64_f32",  crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_i64_f64",  crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_i64_f16",  crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_i64_bf16", crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_i64_i32",  crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_i64_u32",  crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_i64_i64",  crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_i64_u8",   crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
+    cuda_ep!(
+        "cast_to_i64_f32",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_i64_f64",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_i64_f16",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_i64_bf16",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_i64_i32",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_i64_u32",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_i64_i64",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_i64_u8",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
     // ----- cast_to_u8: 8 sources (8-set; no F8E4M3). -----
-    cuda_ep!("cast_to_u8_f32",  crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_u8_f64",  crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_u8_f16",  crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_u8_bf16", crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_u8_i32",  crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_u8_u32",  crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_u8_i64",  crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_u8_u8",   crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
+    cuda_ep!(
+        "cast_to_u8_f32",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_u8_f64",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_u8_f16",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_u8_bf16",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_u8_i32",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_u8_u32",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_u8_i64",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_u8_u8",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
     // ----- cast_to_f8e4m3: 3 sources ({F32, F16, BF16}). -----
-    cuda_ep!("cast_to_f8e4m3_f32",  crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_f8e4m3_f16",  crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
-    cuda_ep!("cast_to_f8e4m3_bf16", crate::baracuda_dispatch::cast::cast_baracuda_wrapper),
+    cuda_ep!(
+        "cast_to_f8e4m3_f32",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_f8e4m3_f16",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
+    cuda_ep!(
+        "cast_to_f8e4m3_bf16",
+        crate::baracuda_dispatch::cast::cast_baracuda_wrapper
+    ),
 ];
 
 /// CUDA `binary` family (elementwise binary (add / sub / mul / div / maximum / minimum / pow / rem)): fanned `<op>_<dtype>` symbol -> production wrapper.
@@ -159,11 +369,17 @@ pub static CUDA_BINARY_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     cuda_ep!("div_f64", crate::baracuda_dispatch::binary::div_f64),
     cuda_ep!("maximum_f32", crate::baracuda_dispatch::binary::maximum_f32),
     cuda_ep!("maximum_f16", crate::baracuda_dispatch::binary::maximum_f16),
-    cuda_ep!("maximum_bf16", crate::baracuda_dispatch::binary::maximum_bf16),
+    cuda_ep!(
+        "maximum_bf16",
+        crate::baracuda_dispatch::binary::maximum_bf16
+    ),
     cuda_ep!("maximum_f64", crate::baracuda_dispatch::binary::maximum_f64),
     cuda_ep!("minimum_f32", crate::baracuda_dispatch::binary::minimum_f32),
     cuda_ep!("minimum_f16", crate::baracuda_dispatch::binary::minimum_f16),
-    cuda_ep!("minimum_bf16", crate::baracuda_dispatch::binary::minimum_bf16),
+    cuda_ep!(
+        "minimum_bf16",
+        crate::baracuda_dispatch::binary::minimum_bf16
+    ),
     cuda_ep!("minimum_f64", crate::baracuda_dispatch::binary::minimum_f64),
     cuda_ep!("pow_f32", crate::baracuda_dispatch::binary::pow_f32),
     cuda_ep!("pow_f16", crate::baracuda_dispatch::binary::pow_f16),
@@ -253,14 +469,38 @@ pub static CUDA_NORM_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// CUDA `softmax` family (last-dim softmax / log-softmax): fanned `<op>_<dtype>` symbol -> production wrapper.
 /// Contract: `docs/kernel-contracts/cuda/softmax.fkc.md`.
 pub static CUDA_SOFTMAX_ENTRY_POINTS: &[(&str, KernelRef)] = &[
-    cuda_ep!("softmax_f32", crate::baracuda_dispatch::softmax::softmax_f32),
-    cuda_ep!("softmax_f16", crate::baracuda_dispatch::softmax::softmax_f16),
-    cuda_ep!("softmax_bf16", crate::baracuda_dispatch::softmax::softmax_bf16),
-    cuda_ep!("softmax_f64", crate::baracuda_dispatch::softmax::softmax_f64),
-    cuda_ep!("log_softmax_f32", crate::baracuda_dispatch::softmax::log_softmax_f32),
-    cuda_ep!("log_softmax_f16", crate::baracuda_dispatch::softmax::log_softmax_f16),
-    cuda_ep!("log_softmax_bf16", crate::baracuda_dispatch::softmax::log_softmax_bf16),
-    cuda_ep!("log_softmax_f64", crate::baracuda_dispatch::softmax::log_softmax_f64),
+    cuda_ep!(
+        "softmax_f32",
+        crate::baracuda_dispatch::softmax::softmax_f32
+    ),
+    cuda_ep!(
+        "softmax_f16",
+        crate::baracuda_dispatch::softmax::softmax_f16
+    ),
+    cuda_ep!(
+        "softmax_bf16",
+        crate::baracuda_dispatch::softmax::softmax_bf16
+    ),
+    cuda_ep!(
+        "softmax_f64",
+        crate::baracuda_dispatch::softmax::softmax_f64
+    ),
+    cuda_ep!(
+        "log_softmax_f32",
+        crate::baracuda_dispatch::softmax::log_softmax_f32
+    ),
+    cuda_ep!(
+        "log_softmax_f16",
+        crate::baracuda_dispatch::softmax::log_softmax_f16
+    ),
+    cuda_ep!(
+        "log_softmax_bf16",
+        crate::baracuda_dispatch::softmax::log_softmax_bf16
+    ),
+    cuda_ep!(
+        "log_softmax_f64",
+        crate::baracuda_dispatch::softmax::log_softmax_f64
+    ),
 ];
 
 /// CUDA `powi` family (integer-exponent power (x^n)): fanned `<op>_<dtype>` symbol -> production wrapper.
@@ -275,10 +515,22 @@ pub static CUDA_POWI_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// CUDA `powi_backward` family (integer-exponent power backward): fanned `<op>_<dtype>` symbol -> production wrapper.
 /// Contract: `docs/kernel-contracts/cuda/powi_backward.fkc.md`.
 pub static CUDA_POWI_BACKWARD_ENTRY_POINTS: &[(&str, KernelRef)] = &[
-    cuda_ep!("powi_backward_f32", crate::baracuda_dispatch::powi_backward::powi_backward_f32),
-    cuda_ep!("powi_backward_f64", crate::baracuda_dispatch::powi_backward::powi_backward_f64),
-    cuda_ep!("powi_backward_f16", crate::baracuda_dispatch::powi_backward::powi_backward_f16),
-    cuda_ep!("powi_backward_bf16", crate::baracuda_dispatch::powi_backward::powi_backward_bf16),
+    cuda_ep!(
+        "powi_backward_f32",
+        crate::baracuda_dispatch::powi_backward::powi_backward_f32
+    ),
+    cuda_ep!(
+        "powi_backward_f64",
+        crate::baracuda_dispatch::powi_backward::powi_backward_f64
+    ),
+    cuda_ep!(
+        "powi_backward_f16",
+        crate::baracuda_dispatch::powi_backward::powi_backward_f16
+    ),
+    cuda_ep!(
+        "powi_backward_bf16",
+        crate::baracuda_dispatch::powi_backward::powi_backward_bf16
+    ),
 ];
 
 /// CUDA `clamp` family (scalar-bounds clamp): fanned `<op>_<dtype>` symbol -> production wrapper.
@@ -337,27 +589,75 @@ pub static CUDA_TRIANGULAR_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// CUDA `arg_reduce` family (arg reductions (argmax / argmin over a dim -> U32)): fanned `<op>_<dtype>` symbol -> production wrapper.
 /// Contract: `docs/kernel-contracts/cuda/arg_reduce.fkc.md`.
 pub static CUDA_ARG_REDUCE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
-    cuda_ep!("argmax_dim_u32_f32", crate::baracuda_dispatch::arg_reduce::argmax_dim_u32_f32),
-    cuda_ep!("argmax_dim_u32_f64", crate::baracuda_dispatch::arg_reduce::argmax_dim_u32_f64),
-    cuda_ep!("argmax_dim_u32_f16", crate::baracuda_dispatch::arg_reduce::argmax_dim_u32_f16),
-    cuda_ep!("argmax_dim_u32_bf16", crate::baracuda_dispatch::arg_reduce::argmax_dim_u32_bf16),
-    cuda_ep!("argmin_dim_u32_f32", crate::baracuda_dispatch::arg_reduce::argmin_dim_u32_f32),
-    cuda_ep!("argmin_dim_u32_f64", crate::baracuda_dispatch::arg_reduce::argmin_dim_u32_f64),
-    cuda_ep!("argmin_dim_u32_f16", crate::baracuda_dispatch::arg_reduce::argmin_dim_u32_f16),
-    cuda_ep!("argmin_dim_u32_bf16", crate::baracuda_dispatch::arg_reduce::argmin_dim_u32_bf16),
+    cuda_ep!(
+        "argmax_dim_u32_f32",
+        crate::baracuda_dispatch::arg_reduce::argmax_dim_u32_f32
+    ),
+    cuda_ep!(
+        "argmax_dim_u32_f64",
+        crate::baracuda_dispatch::arg_reduce::argmax_dim_u32_f64
+    ),
+    cuda_ep!(
+        "argmax_dim_u32_f16",
+        crate::baracuda_dispatch::arg_reduce::argmax_dim_u32_f16
+    ),
+    cuda_ep!(
+        "argmax_dim_u32_bf16",
+        crate::baracuda_dispatch::arg_reduce::argmax_dim_u32_bf16
+    ),
+    cuda_ep!(
+        "argmin_dim_u32_f32",
+        crate::baracuda_dispatch::arg_reduce::argmin_dim_u32_f32
+    ),
+    cuda_ep!(
+        "argmin_dim_u32_f64",
+        crate::baracuda_dispatch::arg_reduce::argmin_dim_u32_f64
+    ),
+    cuda_ep!(
+        "argmin_dim_u32_f16",
+        crate::baracuda_dispatch::arg_reduce::argmin_dim_u32_f16
+    ),
+    cuda_ep!(
+        "argmin_dim_u32_bf16",
+        crate::baracuda_dispatch::arg_reduce::argmin_dim_u32_bf16
+    ),
 ];
 
 /// CUDA `reduce_to` family (broadcast-reverse reductions (sum_to / max_to)): fanned `<op>_<dtype>` symbol -> production wrapper.
 /// Contract: `docs/kernel-contracts/cuda/reduce_to.fkc.md`.
 pub static CUDA_REDUCE_TO_ENTRY_POINTS: &[(&str, KernelRef)] = &[
-    cuda_ep!("sum_to_f32", crate::baracuda_dispatch::reduce_to::sum_to_f32),
-    cuda_ep!("sum_to_f16", crate::baracuda_dispatch::reduce_to::sum_to_f16),
-    cuda_ep!("sum_to_bf16", crate::baracuda_dispatch::reduce_to::sum_to_bf16),
-    cuda_ep!("sum_to_f64", crate::baracuda_dispatch::reduce_to::sum_to_f64),
-    cuda_ep!("max_to_f32", crate::baracuda_dispatch::reduce_to::max_to_f32),
-    cuda_ep!("max_to_f16", crate::baracuda_dispatch::reduce_to::max_to_f16),
-    cuda_ep!("max_to_bf16", crate::baracuda_dispatch::reduce_to::max_to_bf16),
-    cuda_ep!("max_to_f64", crate::baracuda_dispatch::reduce_to::max_to_f64),
+    cuda_ep!(
+        "sum_to_f32",
+        crate::baracuda_dispatch::reduce_to::sum_to_f32
+    ),
+    cuda_ep!(
+        "sum_to_f16",
+        crate::baracuda_dispatch::reduce_to::sum_to_f16
+    ),
+    cuda_ep!(
+        "sum_to_bf16",
+        crate::baracuda_dispatch::reduce_to::sum_to_bf16
+    ),
+    cuda_ep!(
+        "sum_to_f64",
+        crate::baracuda_dispatch::reduce_to::sum_to_f64
+    ),
+    cuda_ep!(
+        "max_to_f32",
+        crate::baracuda_dispatch::reduce_to::max_to_f32
+    ),
+    cuda_ep!(
+        "max_to_f16",
+        crate::baracuda_dispatch::reduce_to::max_to_f16
+    ),
+    cuda_ep!(
+        "max_to_bf16",
+        crate::baracuda_dispatch::reduce_to::max_to_bf16
+    ),
+    cuda_ep!(
+        "max_to_f64",
+        crate::baracuda_dispatch::reduce_to::max_to_f64
+    ),
 ];
 
 /// CUDA `rope` family (rotary position embedding (RoPE)): fanned `<op>_<dtype>` symbol -> production wrapper.
@@ -416,10 +716,22 @@ pub static CUDA_UNARY_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     cuda_ep!("relu_f16", crate::baracuda_dispatch::unary::relu_f16),
     cuda_ep!("relu_bf16", crate::baracuda_dispatch::unary::relu_bf16),
     cuda_ep!("relu_f64", crate::baracuda_dispatch::unary::relu_f64),
-    cuda_ep!("gelu_tanh_f32", crate::baracuda_dispatch::unary::gelu_tanh_f32),
-    cuda_ep!("gelu_tanh_f16", crate::baracuda_dispatch::unary::gelu_tanh_f16),
-    cuda_ep!("gelu_tanh_bf16", crate::baracuda_dispatch::unary::gelu_tanh_bf16),
-    cuda_ep!("gelu_tanh_f64", crate::baracuda_dispatch::unary::gelu_tanh_f64),
+    cuda_ep!(
+        "gelu_tanh_f32",
+        crate::baracuda_dispatch::unary::gelu_tanh_f32
+    ),
+    cuda_ep!(
+        "gelu_tanh_f16",
+        crate::baracuda_dispatch::unary::gelu_tanh_f16
+    ),
+    cuda_ep!(
+        "gelu_tanh_bf16",
+        crate::baracuda_dispatch::unary::gelu_tanh_bf16
+    ),
+    cuda_ep!(
+        "gelu_tanh_f64",
+        crate::baracuda_dispatch::unary::gelu_tanh_f64
+    ),
     cuda_ep!("gelu_f32", crate::baracuda_dispatch::unary::gelu_f32),
     cuda_ep!("gelu_f16", crate::baracuda_dispatch::unary::gelu_f16),
     cuda_ep!("gelu_bf16", crate::baracuda_dispatch::unary::gelu_bf16),
@@ -434,7 +746,10 @@ pub static CUDA_UNARY_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     cuda_ep!("silu_f64", crate::baracuda_dispatch::unary::silu_f64),
     cuda_ep!("sigmoid_f32", crate::baracuda_dispatch::unary::sigmoid_f32),
     cuda_ep!("sigmoid_f16", crate::baracuda_dispatch::unary::sigmoid_f16),
-    cuda_ep!("sigmoid_bf16", crate::baracuda_dispatch::unary::sigmoid_bf16),
+    cuda_ep!(
+        "sigmoid_bf16",
+        crate::baracuda_dispatch::unary::sigmoid_bf16
+    ),
     cuda_ep!("sigmoid_f64", crate::baracuda_dispatch::unary::sigmoid_f64),
     cuda_ep!("rsqrt_f32", crate::baracuda_dispatch::unary::rsqrt_f32),
     cuda_ep!("rsqrt_f16", crate::baracuda_dispatch::unary::rsqrt_f16),
@@ -462,150 +777,507 @@ pub static CUDA_UNARY_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// CUDA `clamp_inplace` family (in-place scalar-bounds clamp): fanned `<op>_<dtype>` symbol -> production wrapper.
 /// Contract: `docs/kernel-contracts/cuda/clamp_inplace.fkc.md`.
 pub static CUDA_CLAMP_INPLACE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
-    cuda_ep!("clamp_inplace_f32", crate::baracuda_dispatch::clamp_inplace::clamp_inplace_f32),
-    cuda_ep!("clamp_inplace_f64", crate::baracuda_dispatch::clamp_inplace::clamp_inplace_f64),
-    cuda_ep!("clamp_inplace_bf16", crate::baracuda_dispatch::clamp_inplace::clamp_inplace_bf16),
-    cuda_ep!("clamp_inplace_f16", crate::baracuda_dispatch::clamp_inplace::clamp_inplace_f16),
+    cuda_ep!(
+        "clamp_inplace_f32",
+        crate::baracuda_dispatch::clamp_inplace::clamp_inplace_f32
+    ),
+    cuda_ep!(
+        "clamp_inplace_f64",
+        crate::baracuda_dispatch::clamp_inplace::clamp_inplace_f64
+    ),
+    cuda_ep!(
+        "clamp_inplace_bf16",
+        crate::baracuda_dispatch::clamp_inplace::clamp_inplace_bf16
+    ),
+    cuda_ep!(
+        "clamp_inplace_f16",
+        crate::baracuda_dispatch::clamp_inplace::clamp_inplace_f16
+    ),
 ];
 
 /// CUDA `powi_inplace` family (in-place integer-exponent power): fanned `<op>_<dtype>` symbol -> production wrapper.
 /// Contract: `docs/kernel-contracts/cuda/powi_inplace.fkc.md`.
 pub static CUDA_POWI_INPLACE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
-    cuda_ep!("powi_inplace_f32", crate::baracuda_dispatch::powi_inplace::powi_inplace_f32),
-    cuda_ep!("powi_inplace_f64", crate::baracuda_dispatch::powi_inplace::powi_inplace_f64),
-    cuda_ep!("powi_inplace_bf16", crate::baracuda_dispatch::powi_inplace::powi_inplace_bf16),
-    cuda_ep!("powi_inplace_f16", crate::baracuda_dispatch::powi_inplace::powi_inplace_f16),
+    cuda_ep!(
+        "powi_inplace_f32",
+        crate::baracuda_dispatch::powi_inplace::powi_inplace_f32
+    ),
+    cuda_ep!(
+        "powi_inplace_f64",
+        crate::baracuda_dispatch::powi_inplace::powi_inplace_f64
+    ),
+    cuda_ep!(
+        "powi_inplace_bf16",
+        crate::baracuda_dispatch::powi_inplace::powi_inplace_bf16
+    ),
+    cuda_ep!(
+        "powi_inplace_f16",
+        crate::baracuda_dispatch::powi_inplace::powi_inplace_f16
+    ),
 ];
 
 /// CUDA `inplace_unary` family (in-place unary activations + the 16-op unary expansion): fanned `<op>_<dtype>` symbol -> production wrapper.
 /// Contract: `docs/kernel-contracts/cuda/inplace_unary.fkc.md`.
 pub static CUDA_INPLACE_UNARY_ENTRY_POINTS: &[(&str, KernelRef)] = &[
-    cuda_ep!("relu_inplace_f32", crate::baracuda_dispatch::unary::relu_inplace_f32),
-    cuda_ep!("relu_inplace_f64", crate::baracuda_dispatch::unary::relu_inplace_f64),
-    cuda_ep!("relu_inplace_bf16", crate::baracuda_dispatch::unary::relu_inplace_bf16),
-    cuda_ep!("relu_inplace_f16", crate::baracuda_dispatch::unary::relu_inplace_f16),
-    cuda_ep!("silu_inplace_f32", crate::baracuda_dispatch::unary::silu_inplace_f32),
-    cuda_ep!("silu_inplace_f64", crate::baracuda_dispatch::unary::silu_inplace_f64),
-    cuda_ep!("silu_inplace_bf16", crate::baracuda_dispatch::unary::silu_inplace_bf16),
-    cuda_ep!("silu_inplace_f16", crate::baracuda_dispatch::unary::silu_inplace_f16),
-    cuda_ep!("gelu_inplace_f32", crate::baracuda_dispatch::unary::gelu_inplace_f32),
-    cuda_ep!("gelu_inplace_f64", crate::baracuda_dispatch::unary::gelu_inplace_f64),
-    cuda_ep!("gelu_inplace_bf16", crate::baracuda_dispatch::unary::gelu_inplace_bf16),
-    cuda_ep!("gelu_inplace_f16", crate::baracuda_dispatch::unary::gelu_inplace_f16),
-    cuda_ep!("tanh_inplace_f32", crate::baracuda_dispatch::unary::tanh_inplace_f32),
-    cuda_ep!("tanh_inplace_f64", crate::baracuda_dispatch::unary::tanh_inplace_f64),
-    cuda_ep!("tanh_inplace_bf16", crate::baracuda_dispatch::unary::tanh_inplace_bf16),
-    cuda_ep!("tanh_inplace_f16", crate::baracuda_dispatch::unary::tanh_inplace_f16),
-    cuda_ep!("sigmoid_inplace_f32", crate::baracuda_dispatch::unary::sigmoid_inplace_f32),
-    cuda_ep!("sigmoid_inplace_f64", crate::baracuda_dispatch::unary::sigmoid_inplace_f64),
-    cuda_ep!("sigmoid_inplace_bf16", crate::baracuda_dispatch::unary::sigmoid_inplace_bf16),
-    cuda_ep!("sigmoid_inplace_f16", crate::baracuda_dispatch::unary::sigmoid_inplace_f16),
-    cuda_ep!("neg_inplace_f32", crate::baracuda_dispatch::unary::neg_inplace_f32),
-    cuda_ep!("neg_inplace_f64", crate::baracuda_dispatch::unary::neg_inplace_f64),
-    cuda_ep!("neg_inplace_bf16", crate::baracuda_dispatch::unary::neg_inplace_bf16),
-    cuda_ep!("neg_inplace_f16", crate::baracuda_dispatch::unary::neg_inplace_f16),
-    cuda_ep!("abs_inplace_f32", crate::baracuda_dispatch::unary::abs_inplace_f32),
-    cuda_ep!("abs_inplace_f64", crate::baracuda_dispatch::unary::abs_inplace_f64),
-    cuda_ep!("abs_inplace_bf16", crate::baracuda_dispatch::unary::abs_inplace_bf16),
-    cuda_ep!("abs_inplace_f16", crate::baracuda_dispatch::unary::abs_inplace_f16),
-    cuda_ep!("sqr_inplace_f32", crate::baracuda_dispatch::unary::sqr_inplace_f32),
-    cuda_ep!("sqr_inplace_f64", crate::baracuda_dispatch::unary::sqr_inplace_f64),
-    cuda_ep!("sqr_inplace_bf16", crate::baracuda_dispatch::unary::sqr_inplace_bf16),
-    cuda_ep!("sqr_inplace_f16", crate::baracuda_dispatch::unary::sqr_inplace_f16),
-    cuda_ep!("sqrt_inplace_f32", crate::baracuda_dispatch::unary::sqrt_inplace_f32),
-    cuda_ep!("sqrt_inplace_f64", crate::baracuda_dispatch::unary::sqrt_inplace_f64),
-    cuda_ep!("sqrt_inplace_bf16", crate::baracuda_dispatch::unary::sqrt_inplace_bf16),
-    cuda_ep!("sqrt_inplace_f16", crate::baracuda_dispatch::unary::sqrt_inplace_f16),
-    cuda_ep!("rsqrt_inplace_f32", crate::baracuda_dispatch::unary::rsqrt_inplace_f32),
-    cuda_ep!("rsqrt_inplace_f64", crate::baracuda_dispatch::unary::rsqrt_inplace_f64),
-    cuda_ep!("rsqrt_inplace_bf16", crate::baracuda_dispatch::unary::rsqrt_inplace_bf16),
-    cuda_ep!("rsqrt_inplace_f16", crate::baracuda_dispatch::unary::rsqrt_inplace_f16),
-    cuda_ep!("recip_inplace_f32", crate::baracuda_dispatch::unary::recip_inplace_f32),
-    cuda_ep!("recip_inplace_f64", crate::baracuda_dispatch::unary::recip_inplace_f64),
-    cuda_ep!("recip_inplace_bf16", crate::baracuda_dispatch::unary::recip_inplace_bf16),
-    cuda_ep!("recip_inplace_f16", crate::baracuda_dispatch::unary::recip_inplace_f16),
-    cuda_ep!("exp_inplace_f32", crate::baracuda_dispatch::unary::exp_inplace_f32),
-    cuda_ep!("exp_inplace_f64", crate::baracuda_dispatch::unary::exp_inplace_f64),
-    cuda_ep!("exp_inplace_bf16", crate::baracuda_dispatch::unary::exp_inplace_bf16),
-    cuda_ep!("exp_inplace_f16", crate::baracuda_dispatch::unary::exp_inplace_f16),
-    cuda_ep!("log_inplace_f32", crate::baracuda_dispatch::unary::log_inplace_f32),
-    cuda_ep!("log_inplace_f64", crate::baracuda_dispatch::unary::log_inplace_f64),
-    cuda_ep!("log_inplace_bf16", crate::baracuda_dispatch::unary::log_inplace_bf16),
-    cuda_ep!("log_inplace_f16", crate::baracuda_dispatch::unary::log_inplace_f16),
-    cuda_ep!("sin_inplace_f32", crate::baracuda_dispatch::unary::sin_inplace_f32),
-    cuda_ep!("sin_inplace_f64", crate::baracuda_dispatch::unary::sin_inplace_f64),
-    cuda_ep!("sin_inplace_bf16", crate::baracuda_dispatch::unary::sin_inplace_bf16),
-    cuda_ep!("sin_inplace_f16", crate::baracuda_dispatch::unary::sin_inplace_f16),
-    cuda_ep!("cos_inplace_f32", crate::baracuda_dispatch::unary::cos_inplace_f32),
-    cuda_ep!("cos_inplace_f64", crate::baracuda_dispatch::unary::cos_inplace_f64),
-    cuda_ep!("cos_inplace_bf16", crate::baracuda_dispatch::unary::cos_inplace_bf16),
-    cuda_ep!("cos_inplace_f16", crate::baracuda_dispatch::unary::cos_inplace_f16),
-    cuda_ep!("sign_inplace_f32", crate::baracuda_dispatch::unary::sign_inplace_f32),
-    cuda_ep!("sign_inplace_f64", crate::baracuda_dispatch::unary::sign_inplace_f64),
-    cuda_ep!("sign_inplace_bf16", crate::baracuda_dispatch::unary::sign_inplace_bf16),
-    cuda_ep!("sign_inplace_f16", crate::baracuda_dispatch::unary::sign_inplace_f16),
-    cuda_ep!("floor_inplace_f32", crate::baracuda_dispatch::unary::floor_inplace_f32),
-    cuda_ep!("floor_inplace_f64", crate::baracuda_dispatch::unary::floor_inplace_f64),
-    cuda_ep!("floor_inplace_bf16", crate::baracuda_dispatch::unary::floor_inplace_bf16),
-    cuda_ep!("floor_inplace_f16", crate::baracuda_dispatch::unary::floor_inplace_f16),
-    cuda_ep!("ceil_inplace_f32", crate::baracuda_dispatch::unary::ceil_inplace_f32),
-    cuda_ep!("ceil_inplace_f64", crate::baracuda_dispatch::unary::ceil_inplace_f64),
-    cuda_ep!("ceil_inplace_bf16", crate::baracuda_dispatch::unary::ceil_inplace_bf16),
-    cuda_ep!("ceil_inplace_f16", crate::baracuda_dispatch::unary::ceil_inplace_f16),
-    cuda_ep!("round_inplace_f32", crate::baracuda_dispatch::unary::round_inplace_f32),
-    cuda_ep!("round_inplace_f64", crate::baracuda_dispatch::unary::round_inplace_f64),
-    cuda_ep!("round_inplace_bf16", crate::baracuda_dispatch::unary::round_inplace_bf16),
-    cuda_ep!("round_inplace_f16", crate::baracuda_dispatch::unary::round_inplace_f16),
-    cuda_ep!("erf_inplace_f32", crate::baracuda_dispatch::unary::erf_inplace_f32),
-    cuda_ep!("erf_inplace_f64", crate::baracuda_dispatch::unary::erf_inplace_f64),
-    cuda_ep!("erf_inplace_bf16", crate::baracuda_dispatch::unary::erf_inplace_bf16),
-    cuda_ep!("erf_inplace_f16", crate::baracuda_dispatch::unary::erf_inplace_f16),
-    cuda_ep!("gelu_erf_inplace_f32", crate::baracuda_dispatch::unary::gelu_erf_inplace_f32),
-    cuda_ep!("gelu_erf_inplace_f64", crate::baracuda_dispatch::unary::gelu_erf_inplace_f64),
-    cuda_ep!("gelu_erf_inplace_bf16", crate::baracuda_dispatch::unary::gelu_erf_inplace_bf16),
-    cuda_ep!("gelu_erf_inplace_f16", crate::baracuda_dispatch::unary::gelu_erf_inplace_f16),
+    cuda_ep!(
+        "relu_inplace_f32",
+        crate::baracuda_dispatch::unary::relu_inplace_f32
+    ),
+    cuda_ep!(
+        "relu_inplace_f64",
+        crate::baracuda_dispatch::unary::relu_inplace_f64
+    ),
+    cuda_ep!(
+        "relu_inplace_bf16",
+        crate::baracuda_dispatch::unary::relu_inplace_bf16
+    ),
+    cuda_ep!(
+        "relu_inplace_f16",
+        crate::baracuda_dispatch::unary::relu_inplace_f16
+    ),
+    cuda_ep!(
+        "silu_inplace_f32",
+        crate::baracuda_dispatch::unary::silu_inplace_f32
+    ),
+    cuda_ep!(
+        "silu_inplace_f64",
+        crate::baracuda_dispatch::unary::silu_inplace_f64
+    ),
+    cuda_ep!(
+        "silu_inplace_bf16",
+        crate::baracuda_dispatch::unary::silu_inplace_bf16
+    ),
+    cuda_ep!(
+        "silu_inplace_f16",
+        crate::baracuda_dispatch::unary::silu_inplace_f16
+    ),
+    cuda_ep!(
+        "gelu_inplace_f32",
+        crate::baracuda_dispatch::unary::gelu_inplace_f32
+    ),
+    cuda_ep!(
+        "gelu_inplace_f64",
+        crate::baracuda_dispatch::unary::gelu_inplace_f64
+    ),
+    cuda_ep!(
+        "gelu_inplace_bf16",
+        crate::baracuda_dispatch::unary::gelu_inplace_bf16
+    ),
+    cuda_ep!(
+        "gelu_inplace_f16",
+        crate::baracuda_dispatch::unary::gelu_inplace_f16
+    ),
+    cuda_ep!(
+        "tanh_inplace_f32",
+        crate::baracuda_dispatch::unary::tanh_inplace_f32
+    ),
+    cuda_ep!(
+        "tanh_inplace_f64",
+        crate::baracuda_dispatch::unary::tanh_inplace_f64
+    ),
+    cuda_ep!(
+        "tanh_inplace_bf16",
+        crate::baracuda_dispatch::unary::tanh_inplace_bf16
+    ),
+    cuda_ep!(
+        "tanh_inplace_f16",
+        crate::baracuda_dispatch::unary::tanh_inplace_f16
+    ),
+    cuda_ep!(
+        "sigmoid_inplace_f32",
+        crate::baracuda_dispatch::unary::sigmoid_inplace_f32
+    ),
+    cuda_ep!(
+        "sigmoid_inplace_f64",
+        crate::baracuda_dispatch::unary::sigmoid_inplace_f64
+    ),
+    cuda_ep!(
+        "sigmoid_inplace_bf16",
+        crate::baracuda_dispatch::unary::sigmoid_inplace_bf16
+    ),
+    cuda_ep!(
+        "sigmoid_inplace_f16",
+        crate::baracuda_dispatch::unary::sigmoid_inplace_f16
+    ),
+    cuda_ep!(
+        "neg_inplace_f32",
+        crate::baracuda_dispatch::unary::neg_inplace_f32
+    ),
+    cuda_ep!(
+        "neg_inplace_f64",
+        crate::baracuda_dispatch::unary::neg_inplace_f64
+    ),
+    cuda_ep!(
+        "neg_inplace_bf16",
+        crate::baracuda_dispatch::unary::neg_inplace_bf16
+    ),
+    cuda_ep!(
+        "neg_inplace_f16",
+        crate::baracuda_dispatch::unary::neg_inplace_f16
+    ),
+    cuda_ep!(
+        "abs_inplace_f32",
+        crate::baracuda_dispatch::unary::abs_inplace_f32
+    ),
+    cuda_ep!(
+        "abs_inplace_f64",
+        crate::baracuda_dispatch::unary::abs_inplace_f64
+    ),
+    cuda_ep!(
+        "abs_inplace_bf16",
+        crate::baracuda_dispatch::unary::abs_inplace_bf16
+    ),
+    cuda_ep!(
+        "abs_inplace_f16",
+        crate::baracuda_dispatch::unary::abs_inplace_f16
+    ),
+    cuda_ep!(
+        "sqr_inplace_f32",
+        crate::baracuda_dispatch::unary::sqr_inplace_f32
+    ),
+    cuda_ep!(
+        "sqr_inplace_f64",
+        crate::baracuda_dispatch::unary::sqr_inplace_f64
+    ),
+    cuda_ep!(
+        "sqr_inplace_bf16",
+        crate::baracuda_dispatch::unary::sqr_inplace_bf16
+    ),
+    cuda_ep!(
+        "sqr_inplace_f16",
+        crate::baracuda_dispatch::unary::sqr_inplace_f16
+    ),
+    cuda_ep!(
+        "sqrt_inplace_f32",
+        crate::baracuda_dispatch::unary::sqrt_inplace_f32
+    ),
+    cuda_ep!(
+        "sqrt_inplace_f64",
+        crate::baracuda_dispatch::unary::sqrt_inplace_f64
+    ),
+    cuda_ep!(
+        "sqrt_inplace_bf16",
+        crate::baracuda_dispatch::unary::sqrt_inplace_bf16
+    ),
+    cuda_ep!(
+        "sqrt_inplace_f16",
+        crate::baracuda_dispatch::unary::sqrt_inplace_f16
+    ),
+    cuda_ep!(
+        "rsqrt_inplace_f32",
+        crate::baracuda_dispatch::unary::rsqrt_inplace_f32
+    ),
+    cuda_ep!(
+        "rsqrt_inplace_f64",
+        crate::baracuda_dispatch::unary::rsqrt_inplace_f64
+    ),
+    cuda_ep!(
+        "rsqrt_inplace_bf16",
+        crate::baracuda_dispatch::unary::rsqrt_inplace_bf16
+    ),
+    cuda_ep!(
+        "rsqrt_inplace_f16",
+        crate::baracuda_dispatch::unary::rsqrt_inplace_f16
+    ),
+    cuda_ep!(
+        "recip_inplace_f32",
+        crate::baracuda_dispatch::unary::recip_inplace_f32
+    ),
+    cuda_ep!(
+        "recip_inplace_f64",
+        crate::baracuda_dispatch::unary::recip_inplace_f64
+    ),
+    cuda_ep!(
+        "recip_inplace_bf16",
+        crate::baracuda_dispatch::unary::recip_inplace_bf16
+    ),
+    cuda_ep!(
+        "recip_inplace_f16",
+        crate::baracuda_dispatch::unary::recip_inplace_f16
+    ),
+    cuda_ep!(
+        "exp_inplace_f32",
+        crate::baracuda_dispatch::unary::exp_inplace_f32
+    ),
+    cuda_ep!(
+        "exp_inplace_f64",
+        crate::baracuda_dispatch::unary::exp_inplace_f64
+    ),
+    cuda_ep!(
+        "exp_inplace_bf16",
+        crate::baracuda_dispatch::unary::exp_inplace_bf16
+    ),
+    cuda_ep!(
+        "exp_inplace_f16",
+        crate::baracuda_dispatch::unary::exp_inplace_f16
+    ),
+    cuda_ep!(
+        "log_inplace_f32",
+        crate::baracuda_dispatch::unary::log_inplace_f32
+    ),
+    cuda_ep!(
+        "log_inplace_f64",
+        crate::baracuda_dispatch::unary::log_inplace_f64
+    ),
+    cuda_ep!(
+        "log_inplace_bf16",
+        crate::baracuda_dispatch::unary::log_inplace_bf16
+    ),
+    cuda_ep!(
+        "log_inplace_f16",
+        crate::baracuda_dispatch::unary::log_inplace_f16
+    ),
+    cuda_ep!(
+        "sin_inplace_f32",
+        crate::baracuda_dispatch::unary::sin_inplace_f32
+    ),
+    cuda_ep!(
+        "sin_inplace_f64",
+        crate::baracuda_dispatch::unary::sin_inplace_f64
+    ),
+    cuda_ep!(
+        "sin_inplace_bf16",
+        crate::baracuda_dispatch::unary::sin_inplace_bf16
+    ),
+    cuda_ep!(
+        "sin_inplace_f16",
+        crate::baracuda_dispatch::unary::sin_inplace_f16
+    ),
+    cuda_ep!(
+        "cos_inplace_f32",
+        crate::baracuda_dispatch::unary::cos_inplace_f32
+    ),
+    cuda_ep!(
+        "cos_inplace_f64",
+        crate::baracuda_dispatch::unary::cos_inplace_f64
+    ),
+    cuda_ep!(
+        "cos_inplace_bf16",
+        crate::baracuda_dispatch::unary::cos_inplace_bf16
+    ),
+    cuda_ep!(
+        "cos_inplace_f16",
+        crate::baracuda_dispatch::unary::cos_inplace_f16
+    ),
+    cuda_ep!(
+        "sign_inplace_f32",
+        crate::baracuda_dispatch::unary::sign_inplace_f32
+    ),
+    cuda_ep!(
+        "sign_inplace_f64",
+        crate::baracuda_dispatch::unary::sign_inplace_f64
+    ),
+    cuda_ep!(
+        "sign_inplace_bf16",
+        crate::baracuda_dispatch::unary::sign_inplace_bf16
+    ),
+    cuda_ep!(
+        "sign_inplace_f16",
+        crate::baracuda_dispatch::unary::sign_inplace_f16
+    ),
+    cuda_ep!(
+        "floor_inplace_f32",
+        crate::baracuda_dispatch::unary::floor_inplace_f32
+    ),
+    cuda_ep!(
+        "floor_inplace_f64",
+        crate::baracuda_dispatch::unary::floor_inplace_f64
+    ),
+    cuda_ep!(
+        "floor_inplace_bf16",
+        crate::baracuda_dispatch::unary::floor_inplace_bf16
+    ),
+    cuda_ep!(
+        "floor_inplace_f16",
+        crate::baracuda_dispatch::unary::floor_inplace_f16
+    ),
+    cuda_ep!(
+        "ceil_inplace_f32",
+        crate::baracuda_dispatch::unary::ceil_inplace_f32
+    ),
+    cuda_ep!(
+        "ceil_inplace_f64",
+        crate::baracuda_dispatch::unary::ceil_inplace_f64
+    ),
+    cuda_ep!(
+        "ceil_inplace_bf16",
+        crate::baracuda_dispatch::unary::ceil_inplace_bf16
+    ),
+    cuda_ep!(
+        "ceil_inplace_f16",
+        crate::baracuda_dispatch::unary::ceil_inplace_f16
+    ),
+    cuda_ep!(
+        "round_inplace_f32",
+        crate::baracuda_dispatch::unary::round_inplace_f32
+    ),
+    cuda_ep!(
+        "round_inplace_f64",
+        crate::baracuda_dispatch::unary::round_inplace_f64
+    ),
+    cuda_ep!(
+        "round_inplace_bf16",
+        crate::baracuda_dispatch::unary::round_inplace_bf16
+    ),
+    cuda_ep!(
+        "round_inplace_f16",
+        crate::baracuda_dispatch::unary::round_inplace_f16
+    ),
+    cuda_ep!(
+        "erf_inplace_f32",
+        crate::baracuda_dispatch::unary::erf_inplace_f32
+    ),
+    cuda_ep!(
+        "erf_inplace_f64",
+        crate::baracuda_dispatch::unary::erf_inplace_f64
+    ),
+    cuda_ep!(
+        "erf_inplace_bf16",
+        crate::baracuda_dispatch::unary::erf_inplace_bf16
+    ),
+    cuda_ep!(
+        "erf_inplace_f16",
+        crate::baracuda_dispatch::unary::erf_inplace_f16
+    ),
+    cuda_ep!(
+        "gelu_erf_inplace_f32",
+        crate::baracuda_dispatch::unary::gelu_erf_inplace_f32
+    ),
+    cuda_ep!(
+        "gelu_erf_inplace_f64",
+        crate::baracuda_dispatch::unary::gelu_erf_inplace_f64
+    ),
+    cuda_ep!(
+        "gelu_erf_inplace_bf16",
+        crate::baracuda_dispatch::unary::gelu_erf_inplace_bf16
+    ),
+    cuda_ep!(
+        "gelu_erf_inplace_f16",
+        crate::baracuda_dispatch::unary::gelu_erf_inplace_f16
+    ),
 ];
 
 /// CUDA `write_slice` family (in-place rectangular slab assign (WriteSlice; byte-width umbrella)): fanned `<op>_<dtype>` symbol -> production wrapper.
 /// Contract: `docs/kernel-contracts/cuda/write_slice.fkc.md`.
 pub static CUDA_WRITE_SLICE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
-    cuda_ep!("write_slice_f32", crate::baracuda_dispatch::write_slice::write_slice_b4),
-    cuda_ep!("write_slice_f64", crate::baracuda_dispatch::write_slice::write_slice_b8),
-    cuda_ep!("write_slice_f16", crate::baracuda_dispatch::write_slice::write_slice_b2),
-    cuda_ep!("write_slice_bf16", crate::baracuda_dispatch::write_slice::write_slice_b2),
-    cuda_ep!("write_slice_i32", crate::baracuda_dispatch::write_slice::write_slice_b4),
-    cuda_ep!("write_slice_i64", crate::baracuda_dispatch::write_slice::write_slice_b8),
-    cuda_ep!("write_slice_u32", crate::baracuda_dispatch::write_slice::write_slice_b4),
-    cuda_ep!("write_slice_u8", crate::baracuda_dispatch::write_slice::write_slice_b1),
-    cuda_ep!("write_slice_i8", crate::baracuda_dispatch::write_slice::write_slice_b1),
+    cuda_ep!(
+        "write_slice_f32",
+        crate::baracuda_dispatch::write_slice::write_slice_b4
+    ),
+    cuda_ep!(
+        "write_slice_f64",
+        crate::baracuda_dispatch::write_slice::write_slice_b8
+    ),
+    cuda_ep!(
+        "write_slice_f16",
+        crate::baracuda_dispatch::write_slice::write_slice_b2
+    ),
+    cuda_ep!(
+        "write_slice_bf16",
+        crate::baracuda_dispatch::write_slice::write_slice_b2
+    ),
+    cuda_ep!(
+        "write_slice_i32",
+        crate::baracuda_dispatch::write_slice::write_slice_b4
+    ),
+    cuda_ep!(
+        "write_slice_i64",
+        crate::baracuda_dispatch::write_slice::write_slice_b8
+    ),
+    cuda_ep!(
+        "write_slice_u32",
+        crate::baracuda_dispatch::write_slice::write_slice_b4
+    ),
+    cuda_ep!(
+        "write_slice_u8",
+        crate::baracuda_dispatch::write_slice::write_slice_b1
+    ),
+    cuda_ep!(
+        "write_slice_i8",
+        crate::baracuda_dispatch::write_slice::write_slice_b1
+    ),
 ];
 
 /// CUDA `write_slice_rotating` family (sliding-window in-place slab assign (WriteSliceRotating; byte-width umbrella)): fanned `<op>_<dtype>` symbol -> production wrapper.
 /// Contract: `docs/kernel-contracts/cuda/write_slice_rotating.fkc.md`.
 pub static CUDA_WRITE_SLICE_ROTATING_ENTRY_POINTS: &[(&str, KernelRef)] = &[
-    cuda_ep!("write_slice_rotating_f32", crate::baracuda_dispatch::write_slice_rotating::write_slice_rotating_b4),
-    cuda_ep!("write_slice_rotating_f64", crate::baracuda_dispatch::write_slice_rotating::write_slice_rotating_b8),
-    cuda_ep!("write_slice_rotating_f16", crate::baracuda_dispatch::write_slice_rotating::write_slice_rotating_b2),
-    cuda_ep!("write_slice_rotating_bf16", crate::baracuda_dispatch::write_slice_rotating::write_slice_rotating_b2),
-    cuda_ep!("write_slice_rotating_i32", crate::baracuda_dispatch::write_slice_rotating::write_slice_rotating_b4),
-    cuda_ep!("write_slice_rotating_i64", crate::baracuda_dispatch::write_slice_rotating::write_slice_rotating_b8),
-    cuda_ep!("write_slice_rotating_u32", crate::baracuda_dispatch::write_slice_rotating::write_slice_rotating_b4),
-    cuda_ep!("write_slice_rotating_u8", crate::baracuda_dispatch::write_slice_rotating::write_slice_rotating_b1),
-    cuda_ep!("write_slice_rotating_i8", crate::baracuda_dispatch::write_slice_rotating::write_slice_rotating_b1),
+    cuda_ep!(
+        "write_slice_rotating_f32",
+        crate::baracuda_dispatch::write_slice_rotating::write_slice_rotating_b4
+    ),
+    cuda_ep!(
+        "write_slice_rotating_f64",
+        crate::baracuda_dispatch::write_slice_rotating::write_slice_rotating_b8
+    ),
+    cuda_ep!(
+        "write_slice_rotating_f16",
+        crate::baracuda_dispatch::write_slice_rotating::write_slice_rotating_b2
+    ),
+    cuda_ep!(
+        "write_slice_rotating_bf16",
+        crate::baracuda_dispatch::write_slice_rotating::write_slice_rotating_b2
+    ),
+    cuda_ep!(
+        "write_slice_rotating_i32",
+        crate::baracuda_dispatch::write_slice_rotating::write_slice_rotating_b4
+    ),
+    cuda_ep!(
+        "write_slice_rotating_i64",
+        crate::baracuda_dispatch::write_slice_rotating::write_slice_rotating_b8
+    ),
+    cuda_ep!(
+        "write_slice_rotating_u32",
+        crate::baracuda_dispatch::write_slice_rotating::write_slice_rotating_b4
+    ),
+    cuda_ep!(
+        "write_slice_rotating_u8",
+        crate::baracuda_dispatch::write_slice_rotating::write_slice_rotating_b1
+    ),
+    cuda_ep!(
+        "write_slice_rotating_i8",
+        crate::baracuda_dispatch::write_slice_rotating::write_slice_rotating_b1
+    ),
 ];
 
 /// CUDA `write_slice_doff` family (device-resident-offset in-place slab assign (WriteSliceDoff; byte-width umbrella)): fanned `<op>_<dtype>` symbol -> production wrapper.
 /// Contract: `docs/kernel-contracts/cuda/write_slice_doff.fkc.md`. b1/b2/b4/b8 only (no b16 — the KV-decode dtype set).
 pub static CUDA_WRITE_SLICE_DOFF_ENTRY_POINTS: &[(&str, KernelRef)] = &[
-    cuda_ep!("write_slice_doff_f32", crate::baracuda_dispatch::write_slice_doff::write_slice_doff_b4),
-    cuda_ep!("write_slice_doff_f64", crate::baracuda_dispatch::write_slice_doff::write_slice_doff_b8),
-    cuda_ep!("write_slice_doff_f16", crate::baracuda_dispatch::write_slice_doff::write_slice_doff_b2),
-    cuda_ep!("write_slice_doff_bf16", crate::baracuda_dispatch::write_slice_doff::write_slice_doff_b2),
-    cuda_ep!("write_slice_doff_i32", crate::baracuda_dispatch::write_slice_doff::write_slice_doff_b4),
-    cuda_ep!("write_slice_doff_i64", crate::baracuda_dispatch::write_slice_doff::write_slice_doff_b8),
-    cuda_ep!("write_slice_doff_u32", crate::baracuda_dispatch::write_slice_doff::write_slice_doff_b4),
-    cuda_ep!("write_slice_doff_u8", crate::baracuda_dispatch::write_slice_doff::write_slice_doff_b1),
-    cuda_ep!("write_slice_doff_i8", crate::baracuda_dispatch::write_slice_doff::write_slice_doff_b1),
+    cuda_ep!(
+        "write_slice_doff_f32",
+        crate::baracuda_dispatch::write_slice_doff::write_slice_doff_b4
+    ),
+    cuda_ep!(
+        "write_slice_doff_f64",
+        crate::baracuda_dispatch::write_slice_doff::write_slice_doff_b8
+    ),
+    cuda_ep!(
+        "write_slice_doff_f16",
+        crate::baracuda_dispatch::write_slice_doff::write_slice_doff_b2
+    ),
+    cuda_ep!(
+        "write_slice_doff_bf16",
+        crate::baracuda_dispatch::write_slice_doff::write_slice_doff_b2
+    ),
+    cuda_ep!(
+        "write_slice_doff_i32",
+        crate::baracuda_dispatch::write_slice_doff::write_slice_doff_b4
+    ),
+    cuda_ep!(
+        "write_slice_doff_i64",
+        crate::baracuda_dispatch::write_slice_doff::write_slice_doff_b8
+    ),
+    cuda_ep!(
+        "write_slice_doff_u32",
+        crate::baracuda_dispatch::write_slice_doff::write_slice_doff_b4
+    ),
+    cuda_ep!(
+        "write_slice_doff_u8",
+        crate::baracuda_dispatch::write_slice_doff::write_slice_doff_b1
+    ),
+    cuda_ep!(
+        "write_slice_doff_i8",
+        crate::baracuda_dispatch::write_slice_doff::write_slice_doff_b1
+    ),
 ];
 
 /// CUDA `concat` family (N-ary concatenation (Concat; binding [T,T])): fanned `<op>_<dtype>` symbol -> production wrapper.
@@ -632,10 +1304,22 @@ pub static CUDA_AFFINE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// CUDA `inplace_affine` family (in-place affine (InplaceAffine)): fanned `<op>_<dtype>` symbol -> production wrapper.
 /// Contract: `docs/kernel-contracts/cuda/inplace_affine.fkc.md`.
 pub static CUDA_INPLACE_AFFINE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
-    cuda_ep!("affine_inplace_f32", crate::baracuda_dispatch::affine::affine_inplace_f32),
-    cuda_ep!("affine_inplace_f64", crate::baracuda_dispatch::affine::affine_inplace_f64),
-    cuda_ep!("affine_inplace_bf16", crate::baracuda_dispatch::affine::affine_inplace_bf16),
-    cuda_ep!("affine_inplace_f16", crate::baracuda_dispatch::affine::affine_inplace_f16),
+    cuda_ep!(
+        "affine_inplace_f32",
+        crate::baracuda_dispatch::affine::affine_inplace_f32
+    ),
+    cuda_ep!(
+        "affine_inplace_f64",
+        crate::baracuda_dispatch::affine::affine_inplace_f64
+    ),
+    cuda_ep!(
+        "affine_inplace_bf16",
+        crate::baracuda_dispatch::affine::affine_inplace_bf16
+    ),
+    cuda_ep!(
+        "affine_inplace_f16",
+        crate::baracuda_dispatch::affine::affine_inplace_f16
+    ),
 ];
 
 /// CUDA `pad` family (multi-dim padding (Pad)): fanned `<op>_<dtype>` symbol -> production wrapper.
@@ -650,28 +1334,64 @@ pub static CUDA_PAD_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// CUDA `pad_backward` family (padding backward (PadBackward; Constant)): fanned `<op>_<dtype>` symbol -> production wrapper.
 /// Contract: `docs/kernel-contracts/cuda/pad_backward.fkc.md`.
 pub static CUDA_PAD_BACKWARD_ENTRY_POINTS: &[(&str, KernelRef)] = &[
-    cuda_ep!("pad_backward_f32", crate::baracuda_dispatch::pad::pad_backward_f32),
-    cuda_ep!("pad_backward_f16", crate::baracuda_dispatch::pad::pad_backward_f16),
-    cuda_ep!("pad_backward_bf16", crate::baracuda_dispatch::pad::pad_backward_bf16),
-    cuda_ep!("pad_backward_f64", crate::baracuda_dispatch::pad::pad_backward_f64),
+    cuda_ep!(
+        "pad_backward_f32",
+        crate::baracuda_dispatch::pad::pad_backward_f32
+    ),
+    cuda_ep!(
+        "pad_backward_f16",
+        crate::baracuda_dispatch::pad::pad_backward_f16
+    ),
+    cuda_ep!(
+        "pad_backward_bf16",
+        crate::baracuda_dispatch::pad::pad_backward_bf16
+    ),
+    cuda_ep!(
+        "pad_backward_f64",
+        crate::baracuda_dispatch::pad::pad_backward_f64
+    ),
 ];
 
 /// CUDA `causal_conv1d` family (causal depthwise conv1d (CausalConv1d; 4-input key)): fanned `<op>_<dtype>` symbol -> production wrapper.
 /// Contract: `docs/kernel-contracts/cuda/causal_conv1d.fkc.md`.
 pub static CUDA_CAUSAL_CONV1D_ENTRY_POINTS: &[(&str, KernelRef)] = &[
-    cuda_ep!("causal_conv1d_f32", crate::baracuda_dispatch::conv1d::causal_conv1d_f32),
-    cuda_ep!("causal_conv1d_f64", crate::baracuda_dispatch::conv1d::causal_conv1d_f64),
-    cuda_ep!("causal_conv1d_bf16", crate::baracuda_dispatch::conv1d::causal_conv1d_bf16),
-    cuda_ep!("causal_conv1d_f16", crate::baracuda_dispatch::conv1d::causal_conv1d_f16),
+    cuda_ep!(
+        "causal_conv1d_f32",
+        crate::baracuda_dispatch::conv1d::causal_conv1d_f32
+    ),
+    cuda_ep!(
+        "causal_conv1d_f64",
+        crate::baracuda_dispatch::conv1d::causal_conv1d_f64
+    ),
+    cuda_ep!(
+        "causal_conv1d_bf16",
+        crate::baracuda_dispatch::conv1d::causal_conv1d_bf16
+    ),
+    cuda_ep!(
+        "causal_conv1d_f16",
+        crate::baracuda_dispatch::conv1d::causal_conv1d_f16
+    ),
 ];
 
 /// CUDA `gemm_dense` family (dense FP matmul facade (gemm_dense at OpKind::MatMul)): fanned `<op>_<dtype>` symbol -> production wrapper.
 /// Contract: `docs/kernel-contracts/cuda/gemm_dense.fkc.md`.
 pub static CUDA_GEMM_DENSE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
-    cuda_ep!("matmul_f32", crate::baracuda_dispatch::gemm_dense::matmul_f32),
-    cuda_ep!("matmul_f16", crate::baracuda_dispatch::gemm_dense::matmul_f16),
-    cuda_ep!("matmul_bf16", crate::baracuda_dispatch::gemm_dense::matmul_bf16),
-    cuda_ep!("matmul_f64", crate::baracuda_dispatch::gemm_dense::matmul_f64),
+    cuda_ep!(
+        "matmul_f32",
+        crate::baracuda_dispatch::gemm_dense::matmul_f32
+    ),
+    cuda_ep!(
+        "matmul_f16",
+        crate::baracuda_dispatch::gemm_dense::matmul_f16
+    ),
+    cuda_ep!(
+        "matmul_bf16",
+        crate::baracuda_dispatch::gemm_dense::matmul_bf16
+    ),
+    cuda_ep!(
+        "matmul_f64",
+        crate::baracuda_dispatch::gemm_dense::matmul_f64
+    ),
 ];
 
 /// CUDA `gemm_int` family (int8 matmul facade (gemm_int s8/u8 RRR at OpKind::MatMul)): fanned `<op>_<dtype>` symbol -> production wrapper.
@@ -694,20 +1414,44 @@ pub static CUDA_GEMM_INT_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// `table.register(...)` regs.
 pub static CUDA_INDEXING_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     // IndexSelect — data-dtype fan {F32, F64, I32}; distinct per-dtype wrappers.
-    cuda_ep!("index_select_f32", crate::baracuda_dispatch::indexing::index_select_f32),
-    cuda_ep!("index_select_f64", crate::baracuda_dispatch::indexing::index_select_f64),
-    cuda_ep!("index_select_i32", crate::baracuda_dispatch::indexing::index_select_i32),
+    cuda_ep!(
+        "index_select_f32",
+        crate::baracuda_dispatch::indexing::index_select_f32
+    ),
+    cuda_ep!(
+        "index_select_f64",
+        crate::baracuda_dispatch::indexing::index_select_f64
+    ),
+    cuda_ep!(
+        "index_select_i32",
+        crate::baracuda_dispatch::indexing::index_select_i32
+    ),
     // Gather — data-dtype fan {F32, F64, I32}; distinct per-dtype wrappers.
     cuda_ep!("gather_f32", crate::baracuda_dispatch::indexing::gather_f32),
     cuda_ep!("gather_f64", crate::baracuda_dispatch::indexing::gather_f64),
     cuda_ep!("gather_i32", crate::baracuda_dispatch::indexing::gather_i32),
     // MaskedFill — data-dtype fan {F32, F64, I32}; fixed U8 mask slot.
-    cuda_ep!("masked_fill_f32", crate::baracuda_dispatch::indexing::masked_fill_f32),
-    cuda_ep!("masked_fill_f64", crate::baracuda_dispatch::indexing::masked_fill_f64),
-    cuda_ep!("masked_fill_i32", crate::baracuda_dispatch::indexing::masked_fill_i32),
+    cuda_ep!(
+        "masked_fill_f32",
+        crate::baracuda_dispatch::indexing::masked_fill_f32
+    ),
+    cuda_ep!(
+        "masked_fill_f64",
+        crate::baracuda_dispatch::indexing::masked_fill_f64
+    ),
+    cuda_ep!(
+        "masked_fill_i32",
+        crate::baracuda_dispatch::indexing::masked_fill_i32
+    ),
     // ScatterAdd — per-dtype {F32, F64}; single-dtype entry_point resolved AS-IS.
-    cuda_ep!("scatter_add_f32", crate::baracuda_dispatch::indexing::scatter_add_f32),
-    cuda_ep!("scatter_add_f64", crate::baracuda_dispatch::indexing::scatter_add_f64),
+    cuda_ep!(
+        "scatter_add_f32",
+        crate::baracuda_dispatch::indexing::scatter_add_f32
+    ),
+    cuda_ep!(
+        "scatter_add_f64",
+        crate::baracuda_dispatch::indexing::scatter_add_f64
+    ),
 ];
 
 /// CUDA `flash_decoding` family (FlashDecoding decode arm; `OpKind::FlashAttn`,
@@ -718,8 +1462,14 @@ pub static CUDA_INDEXING_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// Its cost is CONTRACT-PINNED via [`CUDA_COST_FNS`] (the §4.4 trampoline), NOT
 /// the `fill_unset` default — see the module doc + `cost_flash_decoding_cuda`.
 pub static CUDA_FLASH_DECODING_ENTRY_POINTS: &[(&str, KernelRef)] = &[
-    cuda_ep!("flash_decoding_f16",  crate::baracuda_dispatch::flash_decoding::flash_decoding_f16),
-    cuda_ep!("flash_decoding_bf16", crate::baracuda_dispatch::flash_decoding::flash_decoding_bf16),
+    cuda_ep!(
+        "flash_decoding_f16",
+        crate::baracuda_dispatch::flash_decoding::flash_decoding_f16
+    ),
+    cuda_ep!(
+        "flash_decoding_bf16",
+        crate::baracuda_dispatch::flash_decoding::flash_decoding_bf16
+    ),
 ];
 
 /// The built-in CUDA (baracuda) backend's NAMED cost-fn table (§4.4 cost-fn
@@ -735,9 +1485,10 @@ pub static CUDA_FLASH_DECODING_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// contract that names a cost fn ABSENT here fails import with
 /// [`crate::fkc::FkcError::UnknownCostFn`] (never a silent `unknown_cost`
 /// fallback, never a fabricated pointer — the cost-model P9 analogue).
-pub static CUDA_COST_FNS: &[(&str, CostFn)] = &[
-    ("cost_flash_decoding_cuda", crate::cost::cost_flash_decoding_cuda as CostFn),
-];
+pub static CUDA_COST_FNS: &[(&str, CostFn)] = &[(
+    "cost_flash_decoding_cuda",
+    crate::cost::cost_flash_decoding_cuda as CostFn,
+)];
 
 /// The built-in CUDA (baracuda) backend's [`LinkRegistry`] — resolves a
 /// contract's `entry_point` symbols against [`CUDA_CAST_ENTRY_POINTS`] (and the
@@ -804,6 +1555,9 @@ impl LinkRegistry for CudaLinkRegistry {
         // against the CUDA named cost-fn table (the cost-model analogue of the
         // entry_point resolution above). Unresolved → None → typed
         // `UnknownCostFn` at the importer.
-        CUDA_COST_FNS.iter().find(|(s, _)| *s == name).map(|(_, f)| *f)
+        CUDA_COST_FNS
+            .iter()
+            .find(|(s, _)| *s == name)
+            .map(|(_, f)| *f)
     }
 }

@@ -97,7 +97,10 @@ pub fn main() -> anyhow::Result<()> {
 
     let st = unsafe { MmapedSafetensors::new(&model_file) }?;
     let weights = EfficientNetWeights::load_from_mmapped(&st, &cfg)?;
-    let model = EfficientNetModel { config: cfg, weights };
+    let model = EfficientNetModel {
+        config: cfg,
+        weights,
+    };
     println!("model built");
 
     let logits = model.forward(&image)?;

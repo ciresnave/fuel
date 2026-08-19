@@ -45,10 +45,7 @@ fn vulkan_input(s: &Storage) -> Result<&fuel_vulkan_backend::VulkanStorageBytes>
     match &s.inner {
         fuel_memory::BackendStorage::Vulkan(v) => Ok(v),
         #[allow(unreachable_patterns)]
-        _ => Err(Error::Msg(
-            "vulkan kernel wrapper called with non-Vulkan input".to_string(),
-        )
-        .bt()),
+        _ => Err(Error::Msg("vulkan kernel wrapper called with non-Vulkan input".to_string()).bt()),
     }
 }
 
@@ -57,10 +54,9 @@ fn vulkan_output(s: &mut Storage) -> Result<&mut fuel_vulkan_backend::VulkanStor
     match &mut s.inner {
         fuel_memory::BackendStorage::Vulkan(v) => Ok(v),
         #[allow(unreachable_patterns)]
-        _ => Err(Error::Msg(
-            "vulkan kernel wrapper called with non-Vulkan output".to_string(),
-        )
-        .bt()),
+        _ => {
+            Err(Error::Msg("vulkan kernel wrapper called with non-Vulkan output".to_string()).bt())
+        }
     }
 }
 
@@ -87,14 +83,19 @@ macro_rules! vk_binary_f32_wrapper {
             if inputs.len() != 2 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::binary::{}: expected 2 inputs + 1 output, got {} + {}",
-                    $label, inputs.len(), outputs.len(),
-                )).bt());
+                    $label,
+                    inputs.len(),
+                    outputs.len(),
+                ))
+                .bt());
             }
             if layouts.len() < 2 {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::binary::{}: layouts.len() = {} < 2",
-                    $label, layouts.len(),
-                )).bt());
+                    $label,
+                    layouts.len(),
+                ))
+                .bt());
             }
             let in0_guard = read_storage(&inputs[0])?;
             let in1_guard = read_storage(&inputs[1])?;
@@ -107,7 +108,8 @@ macro_rules! vk_binary_f32_wrapper {
                      Storages flowing through the pipelined-executor binding-table \
                      dispatch must come from alloc_bytes_handle / upload_bytes_handle.",
                     $label,
-                )).bt()
+                ))
+                .bt()
             })?;
             let out = vulkan_output(&mut out_guard)?;
             backend.binary_f32_bytes($op_id, $label, a, b, out, &layouts[0], &layouts[1])
@@ -139,14 +141,19 @@ macro_rules! vk_binary_f16_wrapper {
             if inputs.len() != 2 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::binary_f16::{}: expected 2 inputs + 1 output, got {} + {}",
-                    $label, inputs.len(), outputs.len(),
-                )).bt());
+                    $label,
+                    inputs.len(),
+                    outputs.len(),
+                ))
+                .bt());
             }
             if layouts.len() < 2 {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::binary_f16::{}: layouts.len() = {} < 2",
-                    $label, layouts.len(),
-                )).bt());
+                    $label,
+                    layouts.len(),
+                ))
+                .bt());
             }
             let in0_guard = read_storage(&inputs[0])?;
             let in1_guard = read_storage(&inputs[1])?;
@@ -159,7 +166,8 @@ macro_rules! vk_binary_f16_wrapper {
                      Storages flowing through the pipelined-executor binding-table \
                      dispatch must come from alloc_bytes_handle / upload_bytes_handle.",
                     $label,
-                )).bt()
+                ))
+                .bt()
             })?;
             let out = vulkan_output(&mut out_guard)?;
             backend.binary_f16_bytes($op_id, $label, a, b, out, &layouts[0], &layouts[1])
@@ -170,10 +178,10 @@ macro_rules! vk_binary_f16_wrapper {
 pub mod binary_f16 {
     use super::*;
 
-    vk_binary_f16_wrapper!(add_f16,     0, "binary_add_f16");
-    vk_binary_f16_wrapper!(sub_f16,     1, "binary_sub_f16");
-    vk_binary_f16_wrapper!(mul_f16,     2, "binary_mul_f16");
-    vk_binary_f16_wrapper!(div_f16,     3, "binary_div_f16");
+    vk_binary_f16_wrapper!(add_f16, 0, "binary_add_f16");
+    vk_binary_f16_wrapper!(sub_f16, 1, "binary_sub_f16");
+    vk_binary_f16_wrapper!(mul_f16, 2, "binary_mul_f16");
+    vk_binary_f16_wrapper!(div_f16, 3, "binary_div_f16");
     vk_binary_f16_wrapper!(maximum_f16, 4, "binary_maximum_f16");
     vk_binary_f16_wrapper!(minimum_f16, 5, "binary_minimum_f16");
 }
@@ -191,14 +199,19 @@ macro_rules! vk_binary_f64_wrapper {
             if inputs.len() != 2 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::binary_f64::{}: expected 2 inputs + 1 output, got {} + {}",
-                    $label, inputs.len(), outputs.len(),
-                )).bt());
+                    $label,
+                    inputs.len(),
+                    outputs.len(),
+                ))
+                .bt());
             }
             if layouts.len() < 2 {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::binary_f64::{}: layouts.len() = {} < 2",
-                    $label, layouts.len(),
-                )).bt());
+                    $label,
+                    layouts.len(),
+                ))
+                .bt());
             }
             let in0_guard = read_storage(&inputs[0])?;
             let in1_guard = read_storage(&inputs[1])?;
@@ -209,7 +222,8 @@ macro_rules! vk_binary_f64_wrapper {
                 Error::Msg(format!(
                     "vulkan_dispatch::binary_f64::{}: input[0] has no VulkanBackend handle.",
                     $label,
-                )).bt()
+                ))
+                .bt()
             })?;
             let out = vulkan_output(&mut out_guard)?;
             backend.binary_f64_bytes($op_id, $label, a, b, out, &layouts[0], &layouts[1])
@@ -220,10 +234,10 @@ macro_rules! vk_binary_f64_wrapper {
 pub mod binary_f64 {
     use super::*;
 
-    vk_binary_f64_wrapper!(add_f64,     0, "binary_add_f64");
-    vk_binary_f64_wrapper!(sub_f64,     1, "binary_sub_f64");
-    vk_binary_f64_wrapper!(mul_f64,     2, "binary_mul_f64");
-    vk_binary_f64_wrapper!(div_f64,     3, "binary_div_f64");
+    vk_binary_f64_wrapper!(add_f64, 0, "binary_add_f64");
+    vk_binary_f64_wrapper!(sub_f64, 1, "binary_sub_f64");
+    vk_binary_f64_wrapper!(mul_f64, 2, "binary_mul_f64");
+    vk_binary_f64_wrapper!(div_f64, 3, "binary_div_f64");
     vk_binary_f64_wrapper!(maximum_f64, 4, "binary_maximum_f64");
     vk_binary_f64_wrapper!(minimum_f64, 5, "binary_minimum_f64");
 }
@@ -243,14 +257,18 @@ macro_rules! vk_unary_f32_wrapper {
             if inputs.len() != 1 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::unary::{}: expected 1 input + 1 output, got {} + {}",
-                    $label, inputs.len(), outputs.len(),
-                )).bt());
+                    $label,
+                    inputs.len(),
+                    outputs.len(),
+                ))
+                .bt());
             }
             if layouts.is_empty() {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::unary::{}: layouts.len() = 0, expected >= 1",
                     $label,
-                )).bt());
+                ))
+                .bt());
             }
             let in_guard = read_storage(&inputs[0])?;
             let mut out_guard = write_storage(&outputs[0])?;
@@ -261,7 +279,8 @@ macro_rules! vk_unary_f32_wrapper {
                      Storages flowing through the pipelined-executor binding-table \
                      dispatch must come from alloc_bytes_handle / upload_bytes_handle.",
                     $label,
-                )).bt()
+                ))
+                .bt()
             })?;
             let out = vulkan_output(&mut out_guard)?;
             backend.unary_f32_bytes($op_id, $label, a, out, &layouts[0])
@@ -272,22 +291,22 @@ macro_rules! vk_unary_f32_wrapper {
 pub mod unary {
     use super::*;
 
-    vk_unary_f32_wrapper!(neg_f32,     0,  "unary_neg_f32");
-    vk_unary_f32_wrapper!(sqr_f32,     1,  "unary_sqr_f32");
-    vk_unary_f32_wrapper!(sqrt_f32,    2,  "unary_sqrt_f32");
-    vk_unary_f32_wrapper!(exp_f32,     3,  "unary_exp_f32");
-    vk_unary_f32_wrapper!(log_f32,     4,  "unary_log_f32");
-    vk_unary_f32_wrapper!(sin_f32,     5,  "unary_sin_f32");
-    vk_unary_f32_wrapper!(cos_f32,     6,  "unary_cos_f32");
-    vk_unary_f32_wrapper!(tanh_f32,    7,  "unary_tanh_f32");
-    vk_unary_f32_wrapper!(sigmoid_f32, 8,  "unary_sigmoid_f32");
-    vk_unary_f32_wrapper!(silu_f32,    9,  "unary_silu_f32");
-    vk_unary_f32_wrapper!(gelu_f32,    10, "unary_gelu_f32");
-    vk_unary_f32_wrapper!(relu_f32,    11, "unary_relu_f32");
-    vk_unary_f32_wrapper!(step_f32,    12, "unary_step_f32");
-    vk_unary_f32_wrapper!(abs_f32,     13, "unary_abs_f32");
-    vk_unary_f32_wrapper!(sign_f32,    14, "unary_sign_f32");
-    vk_unary_f32_wrapper!(recip_f32,   15, "unary_recip_f32");
+    vk_unary_f32_wrapper!(neg_f32, 0, "unary_neg_f32");
+    vk_unary_f32_wrapper!(sqr_f32, 1, "unary_sqr_f32");
+    vk_unary_f32_wrapper!(sqrt_f32, 2, "unary_sqrt_f32");
+    vk_unary_f32_wrapper!(exp_f32, 3, "unary_exp_f32");
+    vk_unary_f32_wrapper!(log_f32, 4, "unary_log_f32");
+    vk_unary_f32_wrapper!(sin_f32, 5, "unary_sin_f32");
+    vk_unary_f32_wrapper!(cos_f32, 6, "unary_cos_f32");
+    vk_unary_f32_wrapper!(tanh_f32, 7, "unary_tanh_f32");
+    vk_unary_f32_wrapper!(sigmoid_f32, 8, "unary_sigmoid_f32");
+    vk_unary_f32_wrapper!(silu_f32, 9, "unary_silu_f32");
+    vk_unary_f32_wrapper!(gelu_f32, 10, "unary_gelu_f32");
+    vk_unary_f32_wrapper!(relu_f32, 11, "unary_relu_f32");
+    vk_unary_f32_wrapper!(step_f32, 12, "unary_step_f32");
+    vk_unary_f32_wrapper!(abs_f32, 13, "unary_abs_f32");
+    vk_unary_f32_wrapper!(sign_f32, 14, "unary_sign_f32");
+    vk_unary_f32_wrapper!(recip_f32, 15, "unary_recip_f32");
 }
 
 // V.3.E — f16 fan-out via native float16_t (shaderFloat16 + 16BitStorage).
@@ -303,14 +322,18 @@ macro_rules! vk_unary_f16_wrapper {
             if inputs.len() != 1 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::unary_f16::{}: expected 1 input + 1 output, got {} + {}",
-                    $label, inputs.len(), outputs.len(),
-                )).bt());
+                    $label,
+                    inputs.len(),
+                    outputs.len(),
+                ))
+                .bt());
             }
             if layouts.is_empty() {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::unary_f16::{}: layouts.len() = 0, expected >= 1",
                     $label,
-                )).bt());
+                ))
+                .bt());
             }
             let in_guard = read_storage(&inputs[0])?;
             let mut out_guard = write_storage(&outputs[0])?;
@@ -321,7 +344,8 @@ macro_rules! vk_unary_f16_wrapper {
                      Storages flowing through the pipelined-executor binding-table \
                      dispatch must come from alloc_bytes_handle / upload_bytes_handle.",
                     $label,
-                )).bt()
+                ))
+                .bt()
             })?;
             let out = vulkan_output(&mut out_guard)?;
             backend.unary_f16_bytes($op_id, $label, a, out, &layouts[0])
@@ -332,22 +356,22 @@ macro_rules! vk_unary_f16_wrapper {
 pub mod unary_f16 {
     use super::*;
 
-    vk_unary_f16_wrapper!(neg_f16,     0,  "unary_neg_f16");
-    vk_unary_f16_wrapper!(sqr_f16,     1,  "unary_sqr_f16");
-    vk_unary_f16_wrapper!(sqrt_f16,    2,  "unary_sqrt_f16");
-    vk_unary_f16_wrapper!(exp_f16,     3,  "unary_exp_f16");
-    vk_unary_f16_wrapper!(log_f16,     4,  "unary_log_f16");
-    vk_unary_f16_wrapper!(sin_f16,     5,  "unary_sin_f16");
-    vk_unary_f16_wrapper!(cos_f16,     6,  "unary_cos_f16");
-    vk_unary_f16_wrapper!(tanh_f16,    7,  "unary_tanh_f16");
-    vk_unary_f16_wrapper!(sigmoid_f16, 8,  "unary_sigmoid_f16");
-    vk_unary_f16_wrapper!(silu_f16,    9,  "unary_silu_f16");
-    vk_unary_f16_wrapper!(gelu_f16,    10, "unary_gelu_f16");
-    vk_unary_f16_wrapper!(relu_f16,    11, "unary_relu_f16");
-    vk_unary_f16_wrapper!(step_f16,    12, "unary_step_f16");
-    vk_unary_f16_wrapper!(abs_f16,     13, "unary_abs_f16");
-    vk_unary_f16_wrapper!(sign_f16,    14, "unary_sign_f16");
-    vk_unary_f16_wrapper!(recip_f16,   15, "unary_recip_f16");
+    vk_unary_f16_wrapper!(neg_f16, 0, "unary_neg_f16");
+    vk_unary_f16_wrapper!(sqr_f16, 1, "unary_sqr_f16");
+    vk_unary_f16_wrapper!(sqrt_f16, 2, "unary_sqrt_f16");
+    vk_unary_f16_wrapper!(exp_f16, 3, "unary_exp_f16");
+    vk_unary_f16_wrapper!(log_f16, 4, "unary_log_f16");
+    vk_unary_f16_wrapper!(sin_f16, 5, "unary_sin_f16");
+    vk_unary_f16_wrapper!(cos_f16, 6, "unary_cos_f16");
+    vk_unary_f16_wrapper!(tanh_f16, 7, "unary_tanh_f16");
+    vk_unary_f16_wrapper!(sigmoid_f16, 8, "unary_sigmoid_f16");
+    vk_unary_f16_wrapper!(silu_f16, 9, "unary_silu_f16");
+    vk_unary_f16_wrapper!(gelu_f16, 10, "unary_gelu_f16");
+    vk_unary_f16_wrapper!(relu_f16, 11, "unary_relu_f16");
+    vk_unary_f16_wrapper!(step_f16, 12, "unary_step_f16");
+    vk_unary_f16_wrapper!(abs_f16, 13, "unary_abs_f16");
+    vk_unary_f16_wrapper!(sign_f16, 14, "unary_sign_f16");
+    vk_unary_f16_wrapper!(recip_f16, 15, "unary_recip_f16");
 }
 
 // V.3.E.5 — f64 fan-out via native `double` (shaderFloat64).
@@ -363,14 +387,18 @@ macro_rules! vk_unary_f64_wrapper {
             if inputs.len() != 1 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::unary_f64::{}: expected 1 input + 1 output, got {} + {}",
-                    $label, inputs.len(), outputs.len(),
-                )).bt());
+                    $label,
+                    inputs.len(),
+                    outputs.len(),
+                ))
+                .bt());
             }
             if layouts.is_empty() {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::unary_f64::{}: layouts.len() = 0, expected >= 1",
                     $label,
-                )).bt());
+                ))
+                .bt());
             }
             let in_guard = read_storage(&inputs[0])?;
             let mut out_guard = write_storage(&outputs[0])?;
@@ -381,7 +409,8 @@ macro_rules! vk_unary_f64_wrapper {
                      Storages flowing through the pipelined-executor binding-table \
                      dispatch must come from alloc_bytes_handle / upload_bytes_handle.",
                     $label,
-                )).bt()
+                ))
+                .bt()
             })?;
             let out = vulkan_output(&mut out_guard)?;
             backend.unary_f64_bytes($op_id, $label, a, out, &layouts[0])
@@ -392,22 +421,22 @@ macro_rules! vk_unary_f64_wrapper {
 pub mod unary_f64 {
     use super::*;
 
-    vk_unary_f64_wrapper!(neg_f64,     0,  "unary_neg_f64");
-    vk_unary_f64_wrapper!(sqr_f64,     1,  "unary_sqr_f64");
-    vk_unary_f64_wrapper!(sqrt_f64,    2,  "unary_sqrt_f64");
-    vk_unary_f64_wrapper!(exp_f64,     3,  "unary_exp_f64");
-    vk_unary_f64_wrapper!(log_f64,     4,  "unary_log_f64");
-    vk_unary_f64_wrapper!(sin_f64,     5,  "unary_sin_f64");
-    vk_unary_f64_wrapper!(cos_f64,     6,  "unary_cos_f64");
-    vk_unary_f64_wrapper!(tanh_f64,    7,  "unary_tanh_f64");
-    vk_unary_f64_wrapper!(sigmoid_f64, 8,  "unary_sigmoid_f64");
-    vk_unary_f64_wrapper!(silu_f64,    9,  "unary_silu_f64");
-    vk_unary_f64_wrapper!(gelu_f64,    10, "unary_gelu_f64");
-    vk_unary_f64_wrapper!(relu_f64,    11, "unary_relu_f64");
-    vk_unary_f64_wrapper!(step_f64,    12, "unary_step_f64");
-    vk_unary_f64_wrapper!(abs_f64,     13, "unary_abs_f64");
-    vk_unary_f64_wrapper!(sign_f64,    14, "unary_sign_f64");
-    vk_unary_f64_wrapper!(recip_f64,   15, "unary_recip_f64");
+    vk_unary_f64_wrapper!(neg_f64, 0, "unary_neg_f64");
+    vk_unary_f64_wrapper!(sqr_f64, 1, "unary_sqr_f64");
+    vk_unary_f64_wrapper!(sqrt_f64, 2, "unary_sqrt_f64");
+    vk_unary_f64_wrapper!(exp_f64, 3, "unary_exp_f64");
+    vk_unary_f64_wrapper!(log_f64, 4, "unary_log_f64");
+    vk_unary_f64_wrapper!(sin_f64, 5, "unary_sin_f64");
+    vk_unary_f64_wrapper!(cos_f64, 6, "unary_cos_f64");
+    vk_unary_f64_wrapper!(tanh_f64, 7, "unary_tanh_f64");
+    vk_unary_f64_wrapper!(sigmoid_f64, 8, "unary_sigmoid_f64");
+    vk_unary_f64_wrapper!(silu_f64, 9, "unary_silu_f64");
+    vk_unary_f64_wrapper!(gelu_f64, 10, "unary_gelu_f64");
+    vk_unary_f64_wrapper!(relu_f64, 11, "unary_relu_f64");
+    vk_unary_f64_wrapper!(step_f64, 12, "unary_step_f64");
+    vk_unary_f64_wrapper!(abs_f64, 13, "unary_abs_f64");
+    vk_unary_f64_wrapper!(sign_f64, 14, "unary_sign_f64");
+    vk_unary_f64_wrapper!(recip_f64, 15, "unary_recip_f64");
 }
 
 // ===========================================================================
@@ -441,8 +470,10 @@ pub mod softmax {
         if inputs.len() != 1 || outputs.len() != 1 {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::softmax::softmax_f32: expected 1 input + 1 output, got {} + {}",
-                inputs.len(), outputs.len(),
-            )).bt());
+                inputs.len(),
+                outputs.len(),
+            ))
+            .bt());
         }
         let (outer_count, last_dim) = softmax_params("softmax_f32", params)?;
         let in_guard = read_storage(&inputs[0])?;
@@ -454,7 +485,8 @@ pub mod softmax {
                  Storages flowing through the pipelined-executor binding-table dispatch \
                  must come from alloc_bytes_handle / upload_bytes_handle."
                     .to_string(),
-            ).bt()
+            )
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
         backend.softmax_last_dim_f32_bytes(a, out, outer_count, last_dim)
@@ -469,8 +501,10 @@ pub mod softmax {
         if inputs.len() != 1 || outputs.len() != 1 {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::softmax::softmax_f16: expected 1 input + 1 output, got {} + {}",
-                inputs.len(), outputs.len(),
-            )).bt());
+                inputs.len(),
+                outputs.len(),
+            ))
+            .bt());
         }
         let (outer_count, last_dim) = softmax_params("softmax_f16", params)?;
         let in_guard = read_storage(&inputs[0])?;
@@ -478,8 +512,10 @@ pub mod softmax {
         let a = vulkan_input(&in_guard)?;
         let backend = a.backend().ok_or_else(|| {
             Error::Msg(
-                "vulkan_dispatch::softmax::softmax_f16: input has no VulkanBackend handle.".to_string(),
-            ).bt()
+                "vulkan_dispatch::softmax::softmax_f16: input has no VulkanBackend handle."
+                    .to_string(),
+            )
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
         backend.softmax_last_dim_f16_bytes(a, out, outer_count, last_dim)
@@ -494,8 +530,10 @@ pub mod softmax {
         if inputs.len() != 1 || outputs.len() != 1 {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::softmax::softmax_bf16: expected 1 input + 1 output, got {} + {}",
-                inputs.len(), outputs.len(),
-            )).bt());
+                inputs.len(),
+                outputs.len(),
+            ))
+            .bt());
         }
         let (outer_count, last_dim) = softmax_params("softmax_bf16", params)?;
         let in_guard = read_storage(&inputs[0])?;
@@ -503,8 +541,10 @@ pub mod softmax {
         let a = vulkan_input(&in_guard)?;
         let backend = a.backend().ok_or_else(|| {
             Error::Msg(
-                "vulkan_dispatch::softmax::softmax_bf16: input has no VulkanBackend handle.".to_string(),
-            ).bt()
+                "vulkan_dispatch::softmax::softmax_bf16: input has no VulkanBackend handle."
+                    .to_string(),
+            )
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
         backend.softmax_last_dim_bf16_bytes(a, out, outer_count, last_dim)
@@ -519,8 +559,10 @@ pub mod softmax {
         if inputs.len() != 1 || outputs.len() != 1 {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::softmax::softmax_f64: expected 1 input + 1 output, got {} + {}",
-                inputs.len(), outputs.len(),
-            )).bt());
+                inputs.len(),
+                outputs.len(),
+            ))
+            .bt());
         }
         let (outer_count, last_dim) = softmax_params("softmax_f64", params)?;
         let in_guard = read_storage(&inputs[0])?;
@@ -528,8 +570,10 @@ pub mod softmax {
         let a = vulkan_input(&in_guard)?;
         let backend = a.backend().ok_or_else(|| {
             Error::Msg(
-                "vulkan_dispatch::softmax::softmax_f64: input has no VulkanBackend handle.".to_string(),
-            ).bt()
+                "vulkan_dispatch::softmax::softmax_f64: input has no VulkanBackend handle."
+                    .to_string(),
+            )
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
         backend.softmax_last_dim_f64_bytes(a, out, outer_count, last_dim)
@@ -545,9 +589,14 @@ pub mod softmax {
         layouts: &[Layout],
         params: &OpParams,
     ) -> Result<()> {
-        softmax_backward_typed("softmax_last_dim_backward_f32", inputs, outputs, layouts, params, |b, y, g, dx, oc, ld| {
-            b.softmax_last_dim_backward_f32_bytes(y, g, dx, oc, ld)
-        })
+        softmax_backward_typed(
+            "softmax_last_dim_backward_f32",
+            inputs,
+            outputs,
+            layouts,
+            params,
+            |b, y, g, dx, oc, ld| b.softmax_last_dim_backward_f32_bytes(y, g, dx, oc, ld),
+        )
     }
 
     pub fn softmax_last_dim_backward_f16(
@@ -556,9 +605,14 @@ pub mod softmax {
         layouts: &[Layout],
         params: &OpParams,
     ) -> Result<()> {
-        softmax_backward_typed("softmax_last_dim_backward_f16", inputs, outputs, layouts, params, |b, y, g, dx, oc, ld| {
-            b.softmax_last_dim_backward_f16_bytes(y, g, dx, oc, ld)
-        })
+        softmax_backward_typed(
+            "softmax_last_dim_backward_f16",
+            inputs,
+            outputs,
+            layouts,
+            params,
+            |b, y, g, dx, oc, ld| b.softmax_last_dim_backward_f16_bytes(y, g, dx, oc, ld),
+        )
     }
 
     pub fn softmax_last_dim_backward_bf16(
@@ -567,9 +621,14 @@ pub mod softmax {
         layouts: &[Layout],
         params: &OpParams,
     ) -> Result<()> {
-        softmax_backward_typed("softmax_last_dim_backward_bf16", inputs, outputs, layouts, params, |b, y, g, dx, oc, ld| {
-            b.softmax_last_dim_backward_bf16_bytes(y, g, dx, oc, ld)
-        })
+        softmax_backward_typed(
+            "softmax_last_dim_backward_bf16",
+            inputs,
+            outputs,
+            layouts,
+            params,
+            |b, y, g, dx, oc, ld| b.softmax_last_dim_backward_bf16_bytes(y, g, dx, oc, ld),
+        )
     }
 
     pub fn softmax_last_dim_backward_f64(
@@ -578,9 +637,14 @@ pub mod softmax {
         layouts: &[Layout],
         params: &OpParams,
     ) -> Result<()> {
-        softmax_backward_typed("softmax_last_dim_backward_f64", inputs, outputs, layouts, params, |b, y, g, dx, oc, ld| {
-            b.softmax_last_dim_backward_f64_bytes(y, g, dx, oc, ld)
-        })
+        softmax_backward_typed(
+            "softmax_last_dim_backward_f64",
+            inputs,
+            outputs,
+            layouts,
+            params,
+            |b, y, g, dx, oc, ld| b.softmax_last_dim_backward_f64_bytes(y, g, dx, oc, ld),
+        )
     }
 
     fn softmax_backward_typed<F>(
@@ -597,7 +661,8 @@ pub mod softmax {
             &fuel_vulkan_backend::VulkanStorageBytes,
             &fuel_vulkan_backend::VulkanStorageBytes,
             &mut fuel_vulkan_backend::VulkanStorageBytes,
-            usize, usize,
+            usize,
+            usize,
         ) -> fuel_ir::Result<()>,
     {
         if inputs.len() != 2 || outputs.len() != 1 {
@@ -615,7 +680,8 @@ pub mod softmax {
         let backend = y.backend().ok_or_else(|| {
             Error::Msg(format!(
                 "vulkan_dispatch::softmax::{label}: y has no VulkanBackend handle.",
-            )).bt()
+            ))
+            .bt()
         })?;
         let dx = vulkan_output(&mut dx_guard)?;
         call(backend, y, g, dx, outer_count, last_dim)
@@ -637,12 +703,15 @@ pub mod norm {
     // executor passed the wrong params shape.
     fn norm_params(fn_name: &str, params: &OpParams) -> Result<(usize, usize, f64)> {
         match params {
-            OpParams::NormLastDim { outer_count, last_dim, eps } => {
-                Ok((*outer_count, *last_dim, *eps))
-            }
+            OpParams::NormLastDim {
+                outer_count,
+                last_dim,
+                eps,
+            } => Ok((*outer_count, *last_dim, *eps)),
             other => Err(Error::Msg(format!(
                 "vulkan_dispatch::norm::{fn_name}: expected OpParams::NormLastDim, got {other:?}",
-            )).bt()),
+            ))
+            .bt()),
         }
     }
 
@@ -655,8 +724,10 @@ pub mod norm {
         if inputs.len() != 1 || outputs.len() != 1 {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::norm::rms_f32: expected 1 input + 1 output, got {} + {}",
-                inputs.len(), outputs.len(),
-            )).bt());
+                inputs.len(),
+                outputs.len(),
+            ))
+            .bt());
         }
         let (outer_count, last_dim, eps) = norm_params("rms_f32", params)?;
         let in_guard = read_storage(&inputs[0])?;
@@ -668,7 +739,8 @@ pub mod norm {
                  Storages flowing through the pipelined-executor binding-table dispatch \
                  must come from alloc_bytes_handle / upload_bytes_handle."
                     .to_string(),
-            ).bt()
+            )
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
         backend.rms_norm_last_dim_f32_bytes(a, out, outer_count, last_dim, eps)
@@ -683,8 +755,10 @@ pub mod norm {
         if inputs.len() != 1 || outputs.len() != 1 {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::norm::rms_f16: expected 1 input + 1 output, got {} + {}",
-                inputs.len(), outputs.len(),
-            )).bt());
+                inputs.len(),
+                outputs.len(),
+            ))
+            .bt());
         }
         let (outer_count, last_dim, eps) = norm_params("rms_f16", params)?;
         let in_guard = read_storage(&inputs[0])?;
@@ -693,7 +767,8 @@ pub mod norm {
         let backend = a.backend().ok_or_else(|| {
             Error::Msg(
                 "vulkan_dispatch::norm::rms_f16: input has no VulkanBackend handle.".to_string(),
-            ).bt()
+            )
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
         backend.rms_norm_last_dim_f16_bytes(a, out, outer_count, last_dim, eps)
@@ -708,8 +783,10 @@ pub mod norm {
         if inputs.len() != 1 || outputs.len() != 1 {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::norm::rms_bf16: expected 1 input + 1 output, got {} + {}",
-                inputs.len(), outputs.len(),
-            )).bt());
+                inputs.len(),
+                outputs.len(),
+            ))
+            .bt());
         }
         let (outer_count, last_dim, eps) = norm_params("rms_bf16", params)?;
         let in_guard = read_storage(&inputs[0])?;
@@ -718,7 +795,8 @@ pub mod norm {
         let backend = a.backend().ok_or_else(|| {
             Error::Msg(
                 "vulkan_dispatch::norm::rms_bf16: input has no VulkanBackend handle.".to_string(),
-            ).bt()
+            )
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
         backend.rms_norm_last_dim_bf16_bytes(a, out, outer_count, last_dim, eps)
@@ -733,9 +811,15 @@ pub mod norm {
         _layouts: &[Layout],
         params: &OpParams,
     ) -> Result<()> {
-        layer_norm_bwd_typed("layer_norm_backward_f32", inputs, outputs, params, |b, x, g, dx, oc, ld, eps| {
-            b.layer_norm_last_dim_backward_f32_bytes(x, g, dx, oc, ld, eps)
-        })
+        layer_norm_bwd_typed(
+            "layer_norm_backward_f32",
+            inputs,
+            outputs,
+            params,
+            |b, x, g, dx, oc, ld, eps| {
+                b.layer_norm_last_dim_backward_f32_bytes(x, g, dx, oc, ld, eps)
+            },
+        )
     }
     pub fn layer_norm_backward_f16(
         inputs: &[Arc<RwLock<Storage>>],
@@ -743,9 +827,15 @@ pub mod norm {
         _layouts: &[Layout],
         params: &OpParams,
     ) -> Result<()> {
-        layer_norm_bwd_typed("layer_norm_backward_f16", inputs, outputs, params, |b, x, g, dx, oc, ld, eps| {
-            b.layer_norm_last_dim_backward_f16_bytes(x, g, dx, oc, ld, eps)
-        })
+        layer_norm_bwd_typed(
+            "layer_norm_backward_f16",
+            inputs,
+            outputs,
+            params,
+            |b, x, g, dx, oc, ld, eps| {
+                b.layer_norm_last_dim_backward_f16_bytes(x, g, dx, oc, ld, eps)
+            },
+        )
     }
     pub fn layer_norm_backward_bf16(
         inputs: &[Arc<RwLock<Storage>>],
@@ -753,9 +843,15 @@ pub mod norm {
         _layouts: &[Layout],
         params: &OpParams,
     ) -> Result<()> {
-        layer_norm_bwd_typed("layer_norm_backward_bf16", inputs, outputs, params, |b, x, g, dx, oc, ld, eps| {
-            b.layer_norm_last_dim_backward_bf16_bytes(x, g, dx, oc, ld, eps)
-        })
+        layer_norm_bwd_typed(
+            "layer_norm_backward_bf16",
+            inputs,
+            outputs,
+            params,
+            |b, x, g, dx, oc, ld, eps| {
+                b.layer_norm_last_dim_backward_bf16_bytes(x, g, dx, oc, ld, eps)
+            },
+        )
     }
     pub fn layer_norm_backward_f64(
         inputs: &[Arc<RwLock<Storage>>],
@@ -763,9 +859,15 @@ pub mod norm {
         _layouts: &[Layout],
         params: &OpParams,
     ) -> Result<()> {
-        layer_norm_bwd_typed("layer_norm_backward_f64", inputs, outputs, params, |b, x, g, dx, oc, ld, eps| {
-            b.layer_norm_last_dim_backward_f64_bytes(x, g, dx, oc, ld, eps)
-        })
+        layer_norm_bwd_typed(
+            "layer_norm_backward_f64",
+            inputs,
+            outputs,
+            params,
+            |b, x, g, dx, oc, ld, eps| {
+                b.layer_norm_last_dim_backward_f64_bytes(x, g, dx, oc, ld, eps)
+            },
+        )
     }
 
     fn layer_norm_bwd_typed<F>(
@@ -781,14 +883,18 @@ pub mod norm {
             &fuel_vulkan_backend::VulkanStorageBytes,
             &fuel_vulkan_backend::VulkanStorageBytes,
             &mut fuel_vulkan_backend::VulkanStorageBytes,
-            usize, usize, f64,
+            usize,
+            usize,
+            f64,
         ) -> fuel_ir::Result<()>,
     {
         if inputs.len() != 2 || outputs.len() != 1 {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::norm::{label}: expected 2 inputs (x, g) + 1 output, got {} + {}",
-                inputs.len(), outputs.len(),
-            )).bt());
+                inputs.len(),
+                outputs.len(),
+            ))
+            .bt());
         }
         let (outer_count, last_dim, eps) = norm_params(label, params)?;
         let x_guard = read_storage(&inputs[0])?;
@@ -799,7 +905,8 @@ pub mod norm {
         let backend = x.backend().ok_or_else(|| {
             Error::Msg(format!(
                 "vulkan_dispatch::norm::{label}: x has no VulkanBackend handle.",
-            )).bt()
+            ))
+            .bt()
         })?;
         let dx = vulkan_output(&mut dx_guard)?;
         call(backend, x, g, dx, outer_count, last_dim, eps)
@@ -813,9 +920,13 @@ pub mod norm {
         _layouts: &[Layout],
         params: &OpParams,
     ) -> Result<()> {
-        layer_norm_typed("layer_norm_f32", inputs, outputs, params, |b, i, o, oc, ld, eps| {
-            b.layer_norm_last_dim_f32_bytes(i, o, oc, ld, eps)
-        })
+        layer_norm_typed(
+            "layer_norm_f32",
+            inputs,
+            outputs,
+            params,
+            |b, i, o, oc, ld, eps| b.layer_norm_last_dim_f32_bytes(i, o, oc, ld, eps),
+        )
     }
     pub fn layer_norm_f16(
         inputs: &[Arc<RwLock<Storage>>],
@@ -823,9 +934,13 @@ pub mod norm {
         _layouts: &[Layout],
         params: &OpParams,
     ) -> Result<()> {
-        layer_norm_typed("layer_norm_f16", inputs, outputs, params, |b, i, o, oc, ld, eps| {
-            b.layer_norm_last_dim_f16_bytes(i, o, oc, ld, eps)
-        })
+        layer_norm_typed(
+            "layer_norm_f16",
+            inputs,
+            outputs,
+            params,
+            |b, i, o, oc, ld, eps| b.layer_norm_last_dim_f16_bytes(i, o, oc, ld, eps),
+        )
     }
     pub fn layer_norm_bf16(
         inputs: &[Arc<RwLock<Storage>>],
@@ -833,9 +948,13 @@ pub mod norm {
         _layouts: &[Layout],
         params: &OpParams,
     ) -> Result<()> {
-        layer_norm_typed("layer_norm_bf16", inputs, outputs, params, |b, i, o, oc, ld, eps| {
-            b.layer_norm_last_dim_bf16_bytes(i, o, oc, ld, eps)
-        })
+        layer_norm_typed(
+            "layer_norm_bf16",
+            inputs,
+            outputs,
+            params,
+            |b, i, o, oc, ld, eps| b.layer_norm_last_dim_bf16_bytes(i, o, oc, ld, eps),
+        )
     }
     pub fn layer_norm_f64(
         inputs: &[Arc<RwLock<Storage>>],
@@ -843,9 +962,13 @@ pub mod norm {
         _layouts: &[Layout],
         params: &OpParams,
     ) -> Result<()> {
-        layer_norm_typed("layer_norm_f64", inputs, outputs, params, |b, i, o, oc, ld, eps| {
-            b.layer_norm_last_dim_f64_bytes(i, o, oc, ld, eps)
-        })
+        layer_norm_typed(
+            "layer_norm_f64",
+            inputs,
+            outputs,
+            params,
+            |b, i, o, oc, ld, eps| b.layer_norm_last_dim_f64_bytes(i, o, oc, ld, eps),
+        )
     }
 
     fn layer_norm_typed<F>(
@@ -860,14 +983,18 @@ pub mod norm {
             &fuel_vulkan_backend::VulkanBackend,
             &fuel_vulkan_backend::VulkanStorageBytes,
             &mut fuel_vulkan_backend::VulkanStorageBytes,
-            usize, usize, f64,
+            usize,
+            usize,
+            f64,
         ) -> fuel_ir::Result<()>,
     {
         if inputs.len() != 1 || outputs.len() != 1 {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::norm::{label}: expected 1 input + 1 output, got {} + {}",
-                inputs.len(), outputs.len(),
-            )).bt());
+                inputs.len(),
+                outputs.len(),
+            ))
+            .bt());
         }
         let (outer_count, last_dim, eps) = norm_params(label, params)?;
         let in_guard = read_storage(&inputs[0])?;
@@ -876,7 +1003,8 @@ pub mod norm {
         let backend = a.backend().ok_or_else(|| {
             Error::Msg(format!(
                 "vulkan_dispatch::norm::{label}: input has no VulkanBackend handle.",
-            )).bt()
+            ))
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
         call(backend, a, out, outer_count, last_dim, eps)
@@ -891,8 +1019,10 @@ pub mod norm {
         if inputs.len() != 1 || outputs.len() != 1 {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::norm::rms_f64: expected 1 input + 1 output, got {} + {}",
-                inputs.len(), outputs.len(),
-            )).bt());
+                inputs.len(),
+                outputs.len(),
+            ))
+            .bt());
         }
         let (outer_count, last_dim, eps) = norm_params("rms_f64", params)?;
         let in_guard = read_storage(&inputs[0])?;
@@ -901,7 +1031,8 @@ pub mod norm {
         let backend = a.backend().ok_or_else(|| {
             Error::Msg(
                 "vulkan_dispatch::norm::rms_f64: input has no VulkanBackend handle.".to_string(),
-            ).bt()
+            )
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
         backend.rms_norm_last_dim_f64_bytes(a, out, outer_count, last_dim, eps)
@@ -940,13 +1071,15 @@ pub mod attention {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::attention::rope_f32: expected OpParams::Rope, got {:?}",
                     other,
-                )).bt());
+                ))
+                .bt());
             }
         }
         if layouts.is_empty() {
             return Err(Error::Msg(
                 "vulkan_dispatch::attention::rope_f32: layouts.len() = 0, need x-layout".into(),
-            ).bt());
+            )
+            .bt());
         }
         let x_guard = read_storage(&inputs[0])?;
         let cos_guard = read_storage(&inputs[1])?;
@@ -961,7 +1094,8 @@ pub mod attention {
                  Storages flowing through the pipelined-executor binding-table dispatch \
                  must come from alloc_bytes_handle / upload_bytes_handle."
                     .to_string(),
-            ).bt()
+            )
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
         backend.rope_f32_bytes(x, cos, sin, out, &layouts[0])
@@ -973,9 +1107,14 @@ pub mod attention {
         layouts: &[Layout],
         params: &OpParams,
     ) -> Result<()> {
-        rope_typed("rope_f16", inputs, outputs, layouts, params, |b, x, c, s, o, l| {
-            b.rope_f16_bytes(x, c, s, o, l)
-        })
+        rope_typed(
+            "rope_f16",
+            inputs,
+            outputs,
+            layouts,
+            params,
+            |b, x, c, s, o, l| b.rope_f16_bytes(x, c, s, o, l),
+        )
     }
 
     pub fn rope_bf16(
@@ -984,9 +1123,14 @@ pub mod attention {
         layouts: &[Layout],
         params: &OpParams,
     ) -> Result<()> {
-        rope_typed("rope_bf16", inputs, outputs, layouts, params, |b, x, c, s, o, l| {
-            b.rope_bf16_bytes(x, c, s, o, l)
-        })
+        rope_typed(
+            "rope_bf16",
+            inputs,
+            outputs,
+            layouts,
+            params,
+            |b, x, c, s, o, l| b.rope_bf16_bytes(x, c, s, o, l),
+        )
     }
 
     pub fn rope_f64(
@@ -995,9 +1139,14 @@ pub mod attention {
         layouts: &[Layout],
         params: &OpParams,
     ) -> Result<()> {
-        rope_typed("rope_f64", inputs, outputs, layouts, params, |b, x, c, s, o, l| {
-            b.rope_f64_bytes(x, c, s, o, l)
-        })
+        rope_typed(
+            "rope_f64",
+            inputs,
+            outputs,
+            layouts,
+            params,
+            |b, x, c, s, o, l| b.rope_f64_bytes(x, c, s, o, l),
+        )
     }
 
     fn rope_typed<F>(
@@ -1029,13 +1178,15 @@ pub mod attention {
             other => {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::attention::{label}: expected OpParams::Rope, got {other:?}",
-                )).bt());
+                ))
+                .bt());
             }
         }
         if layouts.is_empty() {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::attention::{label}: layouts.len() = 0, need x-layout",
-            )).bt());
+            ))
+            .bt());
         }
         let x_guard = read_storage(&inputs[0])?;
         let cos_guard = read_storage(&inputs[1])?;
@@ -1047,7 +1198,8 @@ pub mod attention {
         let backend = x.backend().ok_or_else(|| {
             Error::Msg(format!(
                 "vulkan_dispatch::attention::{label}: x has no VulkanBackend handle.",
-            )).bt()
+            ))
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
         call(backend, x, cos, sin, out, &layouts[0])
@@ -1070,13 +1222,16 @@ pub mod powi {
         if inputs.len() != 1 || outputs.len() != 1 {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::powi::powi_f32: expected 1 input + 1 output, got {} + {}",
-                inputs.len(), outputs.len(),
-            )).bt());
+                inputs.len(),
+                outputs.len(),
+            ))
+            .bt());
         }
         if layouts.is_empty() {
             return Err(Error::Msg(
                 "vulkan_dispatch::powi::powi_f32: layouts.len() = 0, expected >= 1".into(),
-            ).bt());
+            )
+            .bt());
         }
         let exp = match params {
             OpParams::PowI { exp } => *exp,
@@ -1084,7 +1239,8 @@ pub mod powi {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::powi::powi_f32: expected OpParams::PowI, got {:?}",
                     other,
-                )).bt());
+                ))
+                .bt());
             }
         };
         let in_guard = read_storage(&inputs[0])?;
@@ -1096,7 +1252,8 @@ pub mod powi {
                  Storages flowing through the pipelined-executor binding-table dispatch \
                  must come from alloc_bytes_handle / upload_bytes_handle."
                     .to_string(),
-            ).bt()
+            )
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
         backend.powi_f32_bytes(a, out, exp, &layouts[0])
@@ -1358,8 +1515,10 @@ pub mod cast {
         if inputs.len() != 1 || outputs.len() != 1 {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::cast::cast_f32_f64: expected 1 input + 1 output, got {} + {}",
-                inputs.len(), outputs.len(),
-            )).bt());
+                inputs.len(),
+                outputs.len(),
+            ))
+            .bt());
         }
         let in_guard = read_storage(&inputs[0])?;
         let mut out_guard = write_storage(&outputs[0])?;
@@ -1373,21 +1532,24 @@ pub mod cast {
             other => {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::cast::cast_f32_f64: unsupported src dtype {other:?}",
-                )).bt());
+                ))
+                .bt());
             }
         };
         if n_bytes % src_elem != 0 {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::cast::cast_f32_f64: input bytes {n_bytes} not a multiple of \
                  src elem size {src_elem} ({src_dtype:?})",
-            )).bt());
+            ))
+            .bt());
         }
         let n = n_bytes / src_elem;
         let backend = a.backend().ok_or_else(|| {
             Error::Msg(
                 "vulkan_dispatch::cast::cast_f32_f64: input has no VulkanBackend handle."
                     .to_string(),
-            ).bt()
+            )
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
         backend.cast_f32_f64_bytes(a, out, n, src_dtype, dst_dtype)
@@ -1402,8 +1564,10 @@ pub mod cast {
         if inputs.len() != 1 || outputs.len() != 1 {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::cast::cast_f32_half: expected 1 input + 1 output, got {} + {}",
-                inputs.len(), outputs.len(),
-            )).bt());
+                inputs.len(),
+                outputs.len(),
+            ))
+            .bt());
         }
         let in_guard = read_storage(&inputs[0])?;
         let mut out_guard = write_storage(&outputs[0])?;
@@ -1412,20 +1576,22 @@ pub mod cast {
         let a = vulkan_input(&in_guard)?;
         let n_bytes = a.len_bytes();
         let src_elem = match src_dtype {
-            DType::F32  => 4,
-            DType::F16  => 2,
+            DType::F32 => 4,
+            DType::F16 => 2,
             DType::BF16 => 2,
             other => {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::cast::cast_f32_half: unsupported src dtype {other:?}",
-                )).bt());
+                ))
+                .bt());
             }
         };
         if n_bytes % src_elem != 0 {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::cast::cast_f32_half: input bytes {n_bytes} not a multiple of \
                  src elem size {src_elem} ({src_dtype:?})",
-            )).bt());
+            ))
+            .bt());
         }
         let n = n_bytes / src_elem;
         let backend = a.backend().ok_or_else(|| {
@@ -1434,7 +1600,8 @@ pub mod cast {
                  Storages flowing through the pipelined-executor binding-table dispatch \
                  must come from alloc_bytes_handle / upload_bytes_handle."
                     .to_string(),
-            ).bt()
+            )
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
         backend.cast_f32_bytes(a, out, n, src_dtype, dst_dtype)
@@ -1457,13 +1624,16 @@ pub mod clamp {
         if inputs.len() != 1 || outputs.len() != 1 {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::clamp::clamp_f32: expected 1 input + 1 output, got {} + {}",
-                inputs.len(), outputs.len(),
-            )).bt());
+                inputs.len(),
+                outputs.len(),
+            ))
+            .bt());
         }
         if layouts.is_empty() {
             return Err(Error::Msg(
                 "vulkan_dispatch::clamp::clamp_f32: layouts.len() = 0, expected >= 1".into(),
-            ).bt());
+            )
+            .bt());
         }
         let (lo, hi) = match params {
             OpParams::Clamp { min, max } => (*min, *max),
@@ -1471,7 +1641,8 @@ pub mod clamp {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::clamp::clamp_f32: expected OpParams::Clamp, got {:?}",
                     other,
-                )).bt());
+                ))
+                .bt());
             }
         };
         let in_guard = read_storage(&inputs[0])?;
@@ -1483,7 +1654,8 @@ pub mod clamp {
                  Storages flowing through the pipelined-executor binding-table dispatch \
                  must come from alloc_bytes_handle / upload_bytes_handle."
                     .to_string(),
-            ).bt()
+            )
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
         backend.clamp_f32_bytes(a, out, lo, hi, &layouts[0])
@@ -1506,13 +1678,16 @@ pub mod affine {
         if inputs.len() != 1 || outputs.len() != 1 {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::affine::affine_f32: expected 1 input + 1 output, got {} + {}",
-                inputs.len(), outputs.len(),
-            )).bt());
+                inputs.len(),
+                outputs.len(),
+            ))
+            .bt());
         }
         if layouts.is_empty() {
             return Err(Error::Msg(
                 "vulkan_dispatch::affine::affine_f32: layouts.len() = 0, expected >= 1".into(),
-            ).bt());
+            )
+            .bt());
         }
         let (mul, add) = match params {
             OpParams::Affine { mul, add } => (*mul, *add),
@@ -1520,7 +1695,8 @@ pub mod affine {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::affine::affine_f32: expected OpParams::Affine, got {:?}",
                     other,
-                )).bt());
+                ))
+                .bt());
             }
         };
         let in_guard = read_storage(&inputs[0])?;
@@ -1532,7 +1708,8 @@ pub mod affine {
                  Storages flowing through the pipelined-executor binding-table dispatch \
                  must come from alloc_bytes_handle / upload_bytes_handle."
                     .to_string(),
-            ).bt()
+            )
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
         backend.affine_f32_bytes(a, out, mul, add, &layouts[0])
@@ -1544,8 +1721,14 @@ pub mod affine {
         layouts: &[Layout],
         params: &OpParams,
     ) -> Result<()> {
-        affine_typed("affine_f64", inputs, outputs, layouts, params,
-            |b, a, out, mul, add, layout| b.affine_f64_bytes(a, out, mul, add, layout))
+        affine_typed(
+            "affine_f64",
+            inputs,
+            outputs,
+            layouts,
+            params,
+            |b, a, out, mul, add, layout| b.affine_f64_bytes(a, out, mul, add, layout),
+        )
     }
 
     pub fn affine_f16(
@@ -1554,8 +1737,14 @@ pub mod affine {
         layouts: &[Layout],
         params: &OpParams,
     ) -> Result<()> {
-        affine_typed("affine_f16", inputs, outputs, layouts, params,
-            |b, a, out, mul, add, layout| b.affine_f16_bytes(a, out, mul, add, layout))
+        affine_typed(
+            "affine_f16",
+            inputs,
+            outputs,
+            layouts,
+            params,
+            |b, a, out, mul, add, layout| b.affine_f16_bytes(a, out, mul, add, layout),
+        )
     }
 
     pub fn affine_bf16(
@@ -1564,8 +1753,14 @@ pub mod affine {
         layouts: &[Layout],
         params: &OpParams,
     ) -> Result<()> {
-        affine_typed("affine_bf16", inputs, outputs, layouts, params,
-            |b, a, out, mul, add, layout| b.affine_bf16_bytes(a, out, mul, add, layout))
+        affine_typed(
+            "affine_bf16",
+            inputs,
+            outputs,
+            layouts,
+            params,
+            |b, a, out, mul, add, layout| b.affine_bf16_bytes(a, out, mul, add, layout),
+        )
     }
 
     fn affine_typed<F>(
@@ -1581,19 +1776,24 @@ pub mod affine {
             &fuel_vulkan_backend::VulkanBackend,
             &fuel_vulkan_backend::VulkanStorageBytes,
             &mut fuel_vulkan_backend::VulkanStorageBytes,
-            f64, f64, &Layout,
+            f64,
+            f64,
+            &Layout,
         ) -> Result<()>,
     {
         if inputs.len() != 1 || outputs.len() != 1 {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::affine::{debug_name}: expected 1 input + 1 output, got {} + {}",
-                inputs.len(), outputs.len(),
-            )).bt());
+                inputs.len(),
+                outputs.len(),
+            ))
+            .bt());
         }
         if layouts.is_empty() {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::affine::{debug_name}: layouts.len() = 0",
-            )).bt());
+            ))
+            .bt());
         }
         let (mul, add) = match params {
             OpParams::Affine { mul, add } => (*mul, *add),
@@ -1609,7 +1809,8 @@ pub mod affine {
         let backend = a.backend().ok_or_else(|| {
             Error::Msg(format!(
                 "vulkan_dispatch::affine::{debug_name}: input has no VulkanBackend handle.",
-            )).bt()
+            ))
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
         f(backend, a, out, mul, add, &layouts[0])
@@ -1637,18 +1838,26 @@ pub mod matmul {
         if inputs.len() != 2 || outputs.len() != 1 {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::matmul::matmul_f32: expected 2 inputs + 1 output, got {} + {}",
-                inputs.len(), outputs.len(),
-            )).bt());
+                inputs.len(),
+                outputs.len(),
+            ))
+            .bt());
         }
         let (lhs_batch_dims, rhs_batch_dims, m, n, k) = match params {
-            OpParams::Matmul { lhs_batch_dims, rhs_batch_dims, m, n, k, .. } => {
-                (lhs_batch_dims.clone(), rhs_batch_dims.clone(), *m, *n, *k)
-            }
+            OpParams::Matmul {
+                lhs_batch_dims,
+                rhs_batch_dims,
+                m,
+                n,
+                k,
+                ..
+            } => (lhs_batch_dims.clone(), rhs_batch_dims.clone(), *m, *n, *k),
             other => {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::matmul::matmul_f32: expected OpParams::Matmul, got {:?}",
                     other,
-                )).bt());
+                ))
+                .bt());
             }
         };
         let lhs_guard = read_storage(&inputs[0])?;
@@ -1662,7 +1871,8 @@ pub mod matmul {
                  Storages flowing through the pipelined-executor binding-table dispatch \
                  must come from alloc_bytes_handle / upload_bytes_handle."
                     .to_string(),
-            ).bt()
+            )
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
         backend.matmul_f32_bytes(lhs, rhs, out, &lhs_batch_dims, &rhs_batch_dims, m, n, k)
@@ -1686,9 +1896,14 @@ pub mod matmul {
             )).bt());
         }
         let (lhs_batch_dims, rhs_batch_dims, m, n, k) = match params {
-            OpParams::Matmul { lhs_batch_dims, rhs_batch_dims, m, n, k, .. } => {
-                (lhs_batch_dims.clone(), rhs_batch_dims.clone(), *m, *n, *k)
-            }
+            OpParams::Matmul {
+                lhs_batch_dims,
+                rhs_batch_dims,
+                m,
+                n,
+                k,
+                ..
+            } => (lhs_batch_dims.clone(), rhs_batch_dims.clone(), *m, *n, *k),
             other => {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::matmul::matmul_f32_bf16_b: expected OpParams::Matmul, got {:?}",
@@ -1703,13 +1918,15 @@ pub mod matmul {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::matmul::matmul_f32_bf16_b: lhs must be F32, got {:?}",
                 lhs_guard.dtype,
-            )).bt());
+            ))
+            .bt());
         }
         if rhs_guard.dtype != DType::BF16 {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::matmul::matmul_f32_bf16_b: rhs must be BF16, got {:?}",
                 rhs_guard.dtype,
-            )).bt());
+            ))
+            .bt());
         }
         let lhs = vulkan_input(&lhs_guard)?;
         let rhs = vulkan_input(&rhs_guard)?;
@@ -1719,12 +1936,11 @@ pub mod matmul {
                  Storages flowing through the pipelined-executor binding-table dispatch \
                  must come from alloc_bytes_handle / upload_bytes_handle."
                     .to_string(),
-            ).bt()
+            )
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
-        backend.matmul_f32_bf16_b_bytes(
-            lhs, rhs, out, &lhs_batch_dims, &rhs_batch_dims, m, n, k,
-        )
+        backend.matmul_f32_bf16_b_bytes(lhs, rhs, out, &lhs_batch_dims, &rhs_batch_dims, m, n, k)
     }
 
     /// MatMul bf16 × bf16 → f32 via cooperative-matrix tensor cores
@@ -1745,9 +1961,14 @@ pub mod matmul {
             )).bt());
         }
         let (lhs_batch_dims, rhs_batch_dims, m, n, k) = match params {
-            OpParams::Matmul { lhs_batch_dims, rhs_batch_dims, m, n, k, .. } => {
-                (lhs_batch_dims.clone(), rhs_batch_dims.clone(), *m, *n, *k)
-            }
+            OpParams::Matmul {
+                lhs_batch_dims,
+                rhs_batch_dims,
+                m,
+                n,
+                k,
+                ..
+            } => (lhs_batch_dims.clone(), rhs_batch_dims.clone(), *m, *n, *k),
             other => {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::matmul::matmul_bf16_bf16_f32: expected OpParams::Matmul, got {other:?}",
@@ -1761,25 +1982,27 @@ pub mod matmul {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::matmul::matmul_bf16_bf16_f32: lhs must be BF16, got {:?}",
                 lhs_guard.dtype,
-            )).bt());
+            ))
+            .bt());
         }
         if rhs_guard.dtype != DType::BF16 {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::matmul::matmul_bf16_bf16_f32: rhs must be BF16, got {:?}",
                 rhs_guard.dtype,
-            )).bt());
+            ))
+            .bt());
         }
         let lhs = vulkan_input(&lhs_guard)?;
         let rhs = vulkan_input(&rhs_guard)?;
         let backend = lhs.backend().ok_or_else(|| {
             Error::Msg(
-                "vulkan_dispatch::matmul::matmul_bf16_bf16_f32: lhs has no VulkanBackend handle.".to_string(),
-            ).bt()
+                "vulkan_dispatch::matmul::matmul_bf16_bf16_f32: lhs has no VulkanBackend handle."
+                    .to_string(),
+            )
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
-        backend.matmul_bf16_bf16_f32_bytes(
-            lhs, rhs, out, &lhs_batch_dims, &rhs_batch_dims, m, n, k,
-        )
+        backend.matmul_bf16_bf16_f32_bytes(lhs, rhs, out, &lhs_batch_dims, &rhs_batch_dims, m, n, k)
     }
 
     /// MatMul f16 × f16 → f32 via cooperative-matrix tensor cores.
@@ -1797,9 +2020,14 @@ pub mod matmul {
             )).bt());
         }
         let (lhs_batch_dims, rhs_batch_dims, m, n, k) = match params {
-            OpParams::Matmul { lhs_batch_dims, rhs_batch_dims, m, n, k, .. } => {
-                (lhs_batch_dims.clone(), rhs_batch_dims.clone(), *m, *n, *k)
-            }
+            OpParams::Matmul {
+                lhs_batch_dims,
+                rhs_batch_dims,
+                m,
+                n,
+                k,
+                ..
+            } => (lhs_batch_dims.clone(), rhs_batch_dims.clone(), *m, *n, *k),
             other => {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::matmul::matmul_f16_f16_f32: expected OpParams::Matmul, got {other:?}",
@@ -1813,25 +2041,27 @@ pub mod matmul {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::matmul::matmul_f16_f16_f32: lhs must be F16, got {:?}",
                 lhs_guard.dtype,
-            )).bt());
+            ))
+            .bt());
         }
         if rhs_guard.dtype != DType::F16 {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::matmul::matmul_f16_f16_f32: rhs must be F16, got {:?}",
                 rhs_guard.dtype,
-            )).bt());
+            ))
+            .bt());
         }
         let lhs = vulkan_input(&lhs_guard)?;
         let rhs = vulkan_input(&rhs_guard)?;
         let backend = lhs.backend().ok_or_else(|| {
             Error::Msg(
-                "vulkan_dispatch::matmul::matmul_f16_f16_f32: lhs has no VulkanBackend handle.".to_string(),
-            ).bt()
+                "vulkan_dispatch::matmul::matmul_f16_f16_f32: lhs has no VulkanBackend handle."
+                    .to_string(),
+            )
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
-        backend.matmul_f16_f16_f32_bytes(
-            lhs, rhs, out, &lhs_batch_dims, &rhs_batch_dims, m, n, k,
-        )
+        backend.matmul_f16_f16_f32_bytes(lhs, rhs, out, &lhs_batch_dims, &rhs_batch_dims, m, n, k)
     }
 
     /// MatMul bf16 × bf16 → bf16 (downcast store). Coop kernel with
@@ -1850,9 +2080,14 @@ pub mod matmul {
             )).bt());
         }
         let (lhs_batch_dims, rhs_batch_dims, m, n, k) = match params {
-            OpParams::Matmul { lhs_batch_dims, rhs_batch_dims, m, n, k, .. } => {
-                (lhs_batch_dims.clone(), rhs_batch_dims.clone(), *m, *n, *k)
-            }
+            OpParams::Matmul {
+                lhs_batch_dims,
+                rhs_batch_dims,
+                m,
+                n,
+                k,
+                ..
+            } => (lhs_batch_dims.clone(), rhs_batch_dims.clone(), *m, *n, *k),
             other => {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::matmul::matmul_bf16_bf16_bf16: expected OpParams::Matmul, got {other:?}",
@@ -1872,12 +2107,21 @@ pub mod matmul {
         let rhs = vulkan_input(&rhs_guard)?;
         let backend = lhs.backend().ok_or_else(|| {
             Error::Msg(
-                "vulkan_dispatch::matmul::matmul_bf16_bf16_bf16: lhs has no VulkanBackend handle.".to_string(),
-            ).bt()
+                "vulkan_dispatch::matmul::matmul_bf16_bf16_bf16: lhs has no VulkanBackend handle."
+                    .to_string(),
+            )
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
         backend.matmul_bf16_bf16_bf16_bytes(
-            lhs, rhs, out, &lhs_batch_dims, &rhs_batch_dims, m, n, k,
+            lhs,
+            rhs,
+            out,
+            &lhs_batch_dims,
+            &rhs_batch_dims,
+            m,
+            n,
+            k,
         )
     }
 
@@ -1897,9 +2141,14 @@ pub mod matmul {
             )).bt());
         }
         let (lhs_batch_dims, rhs_batch_dims, m, n, k) = match params {
-            OpParams::Matmul { lhs_batch_dims, rhs_batch_dims, m, n, k, .. } => {
-                (lhs_batch_dims.clone(), rhs_batch_dims.clone(), *m, *n, *k)
-            }
+            OpParams::Matmul {
+                lhs_batch_dims,
+                rhs_batch_dims,
+                m,
+                n,
+                k,
+                ..
+            } => (lhs_batch_dims.clone(), rhs_batch_dims.clone(), *m, *n, *k),
             other => {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::matmul::matmul_f16_f16_f16: expected OpParams::Matmul, got {other:?}",
@@ -1919,13 +2168,13 @@ pub mod matmul {
         let rhs = vulkan_input(&rhs_guard)?;
         let backend = lhs.backend().ok_or_else(|| {
             Error::Msg(
-                "vulkan_dispatch::matmul::matmul_f16_f16_f16: lhs has no VulkanBackend handle.".to_string(),
-            ).bt()
+                "vulkan_dispatch::matmul::matmul_f16_f16_f16: lhs has no VulkanBackend handle."
+                    .to_string(),
+            )
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
-        backend.matmul_f16_f16_f16_bytes(
-            lhs, rhs, out, &lhs_batch_dims, &rhs_batch_dims, m, n, k,
-        )
+        backend.matmul_f16_f16_f16_bytes(lhs, rhs, out, &lhs_batch_dims, &rhs_batch_dims, m, n, k)
     }
 }
 
@@ -1960,13 +2209,16 @@ pub mod gather {
             )).bt());
         }
         let (source_shape, output_shape, dim) = match params {
-            OpParams::Gather { source_shape, output_shape, dim } => {
-                (source_shape.clone(), output_shape.clone(), *dim)
-            }
+            OpParams::Gather {
+                source_shape,
+                output_shape,
+                dim,
+            } => (source_shape.clone(), output_shape.clone(), *dim),
             other => {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::gather::gather: expected OpParams::Gather, got {other:?}",
-                )).bt());
+                ))
+                .bt());
             }
         };
         let src_guard = read_storage(&inputs[0])?;
@@ -1975,7 +2227,8 @@ pub mod gather {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::gather::gather: indices must be U32, got {:?}",
                 idx_guard.dtype,
-            )).bt());
+            ))
+            .bt());
         }
         let mut out_guard = write_storage(&outputs[0])?;
         let elem_bytes = out_guard.dtype.size_in_bytes();
@@ -1984,10 +2237,19 @@ pub mod gather {
         let backend = src.backend().ok_or_else(|| {
             Error::Msg(
                 "vulkan_dispatch::gather::gather: src has no VulkanBackend handle.".to_string(),
-            ).bt()
+            )
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
-        backend.gather_bytes(src, indices, out, &source_shape, &output_shape, dim, elem_bytes)
+        backend.gather_bytes(
+            src,
+            indices,
+            out,
+            &source_shape,
+            &output_shape,
+            dim,
+            elem_bytes,
+        )
     }
 }
 
@@ -2035,8 +2297,10 @@ pub mod masked_fill {
         let mask = vulkan_input(&mask_guard)?;
         let backend = a.backend().ok_or_else(|| {
             Error::Msg(
-                "vulkan_dispatch::masked_fill::masked_fill: input has no VulkanBackend handle.".to_string(),
-            ).bt()
+                "vulkan_dispatch::masked_fill::masked_fill: input has no VulkanBackend handle."
+                    .to_string(),
+            )
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
         let n_elem = a.len_bytes() / elem_bytes;
@@ -2060,13 +2324,18 @@ pub mod pad {
         if inputs.len() != 1 || outputs.len() != 1 {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::pad::pad_backward: expected 1 input + 1 output, got {} + {}",
-                inputs.len(), outputs.len(),
-            )).bt());
+                inputs.len(),
+                outputs.len(),
+            ))
+            .bt());
         }
         let (in_shape, out_shape, padding, mode_tag) = match params {
-            OpParams::PadBackward { in_shape, out_shape, padding, mode_tag } => {
-                (in_shape, out_shape, padding, *mode_tag)
-            }
+            OpParams::PadBackward {
+                in_shape,
+                out_shape,
+                padding,
+                mode_tag,
+            } => (in_shape, out_shape, padding, *mode_tag),
             other => {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::pad::pad_backward: expected OpParams::PadBackward, got {other:?}",
@@ -2080,25 +2349,32 @@ pub mod pad {
         let go = vulkan_input(&in_guard)?;
         let backend = go.backend().ok_or_else(|| {
             Error::Msg(
-                "vulkan_dispatch::pad::pad_backward: grad_out has no VulkanBackend handle.".to_string(),
-            ).bt()
+                "vulkan_dispatch::pad::pad_backward: grad_out has no VulkanBackend handle."
+                    .to_string(),
+            )
+            .bt()
         })?;
         let gi = vulkan_output(&mut out_guard)?;
         let left_pad: Vec<usize> = padding.iter().map(|&(b, _)| b).collect();
         match mode_tag {
-            0 => backend.pad_backward_const_bytes(go, gi, in_shape, out_shape, &left_pad, elem_bytes),
+            0 => {
+                backend.pad_backward_const_bytes(go, gi, in_shape, out_shape, &left_pad, elem_bytes)
+            }
             1 | 2 => match dtype {
-                DType::F32 | DType::F64 | DType::BF16 | DType::F16 => {
-                    backend.pad_backward_atomic_bytes(dtype, go, gi, in_shape, out_shape, &left_pad, mode_tag)
-                }
+                DType::F32 | DType::F64 | DType::BF16 | DType::F16 => backend
+                    .pad_backward_atomic_bytes(
+                        dtype, go, gi, in_shape, out_shape, &left_pad, mode_tag,
+                    ),
                 _ => Err(Error::Msg(format!(
                     "vulkan_dispatch::pad::pad_backward: mode_tag {mode_tag} only \
                      supports F32/F64/BF16/F16 on Vulkan (atomic CAS path); got {dtype:?}",
-                )).bt()),
+                ))
+                .bt()),
             },
             other => Err(Error::Msg(format!(
                 "vulkan_dispatch::pad::pad_backward: unknown mode_tag {other}",
-            )).bt()),
+            ))
+            .bt()),
         }
     }
 
@@ -2115,17 +2391,24 @@ pub mod pad {
         if inputs.len() != 1 || outputs.len() != 1 {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::pad::pad_const: expected 1 input + 1 output, got {} + {}",
-                inputs.len(), outputs.len(),
-            )).bt());
+                inputs.len(),
+                outputs.len(),
+            ))
+            .bt());
         }
         let (in_shape, out_shape, padding, mode_tag, fill_bytes) = match params {
-            OpParams::Pad { in_shape, out_shape, padding, mode_tag, fill_bytes } => {
-                (in_shape, out_shape, padding, *mode_tag, fill_bytes)
-            }
+            OpParams::Pad {
+                in_shape,
+                out_shape,
+                padding,
+                mode_tag,
+                fill_bytes,
+            } => (in_shape, out_shape, padding, *mode_tag, fill_bytes),
             other => {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::pad::pad_const: expected OpParams::Pad, got {other:?}",
-                )).bt());
+                ))
+                .bt());
             }
         };
         let in_guard = read_storage(&inputs[0])?;
@@ -2135,25 +2418,29 @@ pub mod pad {
         let backend = a.backend().ok_or_else(|| {
             Error::Msg(
                 "vulkan_dispatch::pad::pad_const: input has no VulkanBackend handle.".to_string(),
-            ).bt()
+            )
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
         let left_pad: Vec<usize> = padding.iter().map(|&(b, _)| b).collect();
         match mode_tag {
-            0 => backend.pad_const_bytes(a, out, in_shape, out_shape, &left_pad, elem_bytes, fill_bytes),
+            0 => backend.pad_const_bytes(
+                a, out, in_shape, out_shape, &left_pad, elem_bytes, fill_bytes,
+            ),
             1 => backend.pad_reflect_bytes(a, out, in_shape, out_shape, &left_pad, elem_bytes),
             2 => backend.pad_replicate_bytes(a, out, in_shape, out_shape, &left_pad, elem_bytes),
             other => Err(Error::Msg(format!(
                 "vulkan_dispatch::pad::pad_const: unknown mode_tag {other}",
-            )).bt()),
+            ))
+            .bt()),
         }
     }
 }
 
 pub mod concat {
     use super::*;
-    use fuel_memory::BackendStorage;
     use fuel_ir::Shape;
+    use fuel_memory::BackendStorage;
 
     /// Generic concat dispatcher. Takes the per-pair concat call
     /// (which knows the source/destination dtype) plus the per-element
@@ -2184,21 +2471,24 @@ pub mod concat {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::concat::{label}: expected 1 output, got {}",
                 outputs.len(),
-            )).bt());
+            ))
+            .bt());
         }
         if inputs.is_empty() {
-            return Err(Error::Msg(format!(
-                "vulkan_dispatch::concat::{label}: 0 inputs",
-            )).bt());
+            return Err(Error::Msg(format!("vulkan_dispatch::concat::{label}: 0 inputs",)).bt());
         }
         let (outer_count, input_dim_sizes, inner_count, dim) = match params {
-            OpParams::Concat { outer_count, input_dim_sizes, inner_count, axis } => {
-                (*outer_count, input_dim_sizes.clone(), *inner_count, *axis)
-            }
+            OpParams::Concat {
+                outer_count,
+                input_dim_sizes,
+                inner_count,
+                axis,
+            } => (*outer_count, input_dim_sizes.clone(), *inner_count, *axis),
             other => {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::concat::{label}: expected OpParams::Concat, got {other:?}",
-                )).bt());
+                ))
+                .bt());
             }
         };
         if input_dim_sizes.len() != inputs.len() {
@@ -2210,8 +2500,10 @@ pub mod concat {
         if layouts.len() < inputs.len() {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::concat::{label}: layouts.len() = {} < inputs.len() = {}",
-                layouts.len(), inputs.len(),
-            )).bt());
+                layouts.len(),
+                inputs.len(),
+            ))
+            .bt());
         }
 
         let n_inputs = inputs.len();
@@ -2220,7 +2512,8 @@ pub mod concat {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::concat::{label}: N=1 concat unsupported \
                  (should be elided at graph level)",
-            )).bt());
+            ))
+            .bt());
         }
 
         if n_inputs == 2 {
@@ -2232,23 +2525,31 @@ pub mod concat {
             let backend = a.backend().ok_or_else(|| {
                 Error::Msg(format!(
                     "vulkan_dispatch::concat::{label}: a has no VulkanBackend handle.",
-                )).bt()
+                ))
+                .bt()
             })?;
             let out = vulkan_output(&mut out_guard)?;
             return pair_call(backend, a, b, out, dim, &layouts[0], &layouts[1]);
         }
 
         // N > 2: chain pair-wise.
-        let in_guards: Vec<_> = inputs.iter().map(read_storage).collect::<Result<Vec<_>>>()?;
+        let in_guards: Vec<_> = inputs
+            .iter()
+            .map(read_storage)
+            .collect::<Result<Vec<_>>>()?;
         let mut in_vk: Vec<&fuel_vulkan_backend::VulkanStorageBytes> = Vec::with_capacity(n_inputs);
         for g in &in_guards {
             in_vk.push(vulkan_input(g)?);
         }
-        let backend = in_vk[0].backend().ok_or_else(|| {
-            Error::Msg(format!(
-                "vulkan_dispatch::concat::{label}: inputs[0] has no VulkanBackend handle.",
-            )).bt()
-        })?.clone();
+        let backend = in_vk[0]
+            .backend()
+            .ok_or_else(|| {
+                Error::Msg(format!(
+                    "vulkan_dispatch::concat::{label}: inputs[0] has no VulkanBackend handle.",
+                ))
+                .bt()
+            })?
+            .clone();
 
         let template_dims: Vec<usize> = layouts[0].shape().dims().to_vec();
         let make_layout = |cum_dim: usize| -> Layout {
@@ -2259,28 +2560,42 @@ pub mod concat {
 
         let mut acc_dim = input_dim_sizes[0] + input_dim_sizes[1];
         let acc_elems = outer_count * acc_dim * inner_count;
-        let acc_bytes = backend.alloc_bytes_handle(acc_elems * elem_bytes).map_err(|e| {
-            Error::Msg(format!(
-                "vulkan_dispatch::concat::{label}: alloc intermediate failed: {e}",
-            )).bt()
-        })?;
+        let acc_bytes = backend
+            .alloc_bytes_handle(acc_elems * elem_bytes)
+            .map_err(|e| {
+                Error::Msg(format!(
+                    "vulkan_dispatch::concat::{label}: alloc intermediate failed: {e}",
+                ))
+                .bt()
+            })?;
         let mut acc_storage = Storage::new(BackendStorage::Vulkan(acc_bytes), dtype);
         {
             let acc_vk = match &mut acc_storage.inner {
                 BackendStorage::Vulkan(v) => v,
                 _ => unreachable!("just allocated as Vulkan"),
             };
-            pair_call(&backend, in_vk[0], in_vk[1], acc_vk, dim, &layouts[0], &layouts[1])?;
+            pair_call(
+                &backend,
+                in_vk[0],
+                in_vk[1],
+                acc_vk,
+                dim,
+                &layouts[0],
+                &layouts[1],
+            )?;
         }
 
         for i in 2..(n_inputs - 1) {
             let new_acc_dim = acc_dim + input_dim_sizes[i];
             let new_elems = outer_count * new_acc_dim * inner_count;
-            let new_bytes = backend.alloc_bytes_handle(new_elems * elem_bytes).map_err(|e| {
-                Error::Msg(format!(
-                    "vulkan_dispatch::concat::{label}: alloc intermediate {i} failed: {e}",
-                )).bt()
-            })?;
+            let new_bytes = backend
+                .alloc_bytes_handle(new_elems * elem_bytes)
+                .map_err(|e| {
+                    Error::Msg(format!(
+                        "vulkan_dispatch::concat::{label}: alloc intermediate {i} failed: {e}",
+                    ))
+                    .bt()
+                })?;
             let mut new_storage = Storage::new(BackendStorage::Vulkan(new_bytes), dtype);
 
             let acc_layout = make_layout(acc_dim);
@@ -2292,7 +2607,15 @@ pub mod concat {
                 BackendStorage::Vulkan(v) => v,
                 _ => unreachable!(),
             };
-            pair_call(&backend, acc_vk_ref, in_vk[i], new_vk, dim, &acc_layout, &layouts[i])?;
+            pair_call(
+                &backend,
+                acc_vk_ref,
+                in_vk[i],
+                new_vk,
+                dim,
+                &acc_layout,
+                &layouts[i],
+            )?;
 
             acc_storage = new_storage;
             acc_dim = new_acc_dim;
@@ -2305,8 +2628,15 @@ pub mod concat {
         };
         let mut out_guard = write_storage(&outputs[0])?;
         let out_vk = vulkan_output(&mut out_guard)?;
-        pair_call(&backend, acc_vk_ref, in_vk[n_inputs - 1], out_vk, dim,
-            &acc_layout, &layouts[n_inputs - 1])
+        pair_call(
+            &backend,
+            acc_vk_ref,
+            in_vk[n_inputs - 1],
+            out_vk,
+            dim,
+            &acc_layout,
+            &layouts[n_inputs - 1],
+        )
     }
 
     pub fn concat_f16(
@@ -2316,8 +2646,13 @@ pub mod concat {
         params: &OpParams,
     ) -> Result<()> {
         concat_typed(
-            "concat_f16", 2, DType::F16,
-            inputs, outputs, layouts, params,
+            "concat_f16",
+            2,
+            DType::F16,
+            inputs,
+            outputs,
+            layouts,
+            params,
             |b, a, bb, o, dim, la, lb| b.concat_along_dim_f16_bytes(a, bb, o, dim, la, lb),
         )
     }
@@ -2329,8 +2664,13 @@ pub mod concat {
         params: &OpParams,
     ) -> Result<()> {
         concat_typed(
-            "concat_bf16", 2, DType::BF16,
-            inputs, outputs, layouts, params,
+            "concat_bf16",
+            2,
+            DType::BF16,
+            inputs,
+            outputs,
+            layouts,
+            params,
             |b, a, bb, o, dim, la, lb| b.concat_along_dim_bf16_bytes(a, bb, o, dim, la, lb),
         )
     }
@@ -2342,8 +2682,13 @@ pub mod concat {
         params: &OpParams,
     ) -> Result<()> {
         concat_typed(
-            "concat_f64", 8, DType::F64,
-            inputs, outputs, layouts, params,
+            "concat_f64",
+            8,
+            DType::F64,
+            inputs,
+            outputs,
+            layouts,
+            params,
             |b, a, bb, o, dim, la, lb| b.concat_along_dim_f64_bytes(a, bb, o, dim, la, lb),
         )
     }
@@ -2358,22 +2703,27 @@ pub mod concat {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::concat::concat_f32: expected 1 output, got {}",
                 outputs.len(),
-            )).bt());
+            ))
+            .bt());
         }
         if inputs.is_empty() {
-            return Err(Error::Msg(
-                "vulkan_dispatch::concat::concat_f32: 0 inputs".to_string(),
-            ).bt());
+            return Err(
+                Error::Msg("vulkan_dispatch::concat::concat_f32: 0 inputs".to_string()).bt(),
+            );
         }
         let (outer_count, input_dim_sizes, inner_count, dim) = match params {
-            OpParams::Concat { outer_count, input_dim_sizes, inner_count, axis } => {
-                (*outer_count, input_dim_sizes.clone(), *inner_count, *axis)
-            }
+            OpParams::Concat {
+                outer_count,
+                input_dim_sizes,
+                inner_count,
+                axis,
+            } => (*outer_count, input_dim_sizes.clone(), *inner_count, *axis),
             other => {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::concat::concat_f32: expected OpParams::Concat, got {:?}",
                     other,
-                )).bt());
+                ))
+                .bt());
             }
         };
         if input_dim_sizes.len() != inputs.len() {
@@ -2385,8 +2735,10 @@ pub mod concat {
         if layouts.len() < inputs.len() {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::concat::concat_f32: layouts.len() = {} < inputs.len() = {}",
-                layouts.len(), inputs.len(),
-            )).bt());
+                layouts.len(),
+                inputs.len(),
+            ))
+            .bt());
         }
 
         let n_inputs = inputs.len();
@@ -2400,21 +2752,26 @@ pub mod concat {
                 Error::Msg(
                     "vulkan_dispatch::concat::concat_f32: input has no VulkanBackend handle."
                         .to_string(),
-                ).bt()
+                )
+                .bt()
             })?;
             let out = vulkan_output(&mut out_guard)?;
-            let a_bytes = a.buffer_opt().ok_or_else(|| Error::Msg(
-                "concat_f32 N=1: a is host-evicted".into()).bt())?;
-            let out_buf = out.buffer_opt().ok_or_else(|| Error::Msg(
-                "concat_f32 N=1: out is host-evicted".into()).bt())?;
+            let a_bytes = a
+                .buffer_opt()
+                .ok_or_else(|| Error::Msg("concat_f32 N=1: a is host-evicted".into()).bt())?;
+            let out_buf = out
+                .buffer_opt()
+                .ok_or_else(|| Error::Msg("concat_f32 N=1: out is host-evicted".into()).bt())?;
             // Equal sizes — direct memcpy via the legacy queue.one_shot.
             // For now, error: N=1 should be optimized at the graph level
             // (skip the concat entirely), not via dispatch.
             let _ = (a_bytes, out_buf);
             return Err(Error::Msg(
                 "vulkan_dispatch::concat::concat_f32: N=1 concat unsupported \
-                 (should be elided at graph level)".into(),
-            ).bt());
+                 (should be elided at graph level)"
+                    .into(),
+            )
+            .bt());
         }
 
         // Fast path: N == 2. Direct single-call.
@@ -2428,7 +2785,8 @@ pub mod concat {
                 Error::Msg(
                     "vulkan_dispatch::concat::concat_f32: a has no VulkanBackend handle."
                         .to_string(),
-                ).bt()
+                )
+                .bt()
             })?;
             let out = vulkan_output(&mut out_guard)?;
             return backend.concat_along_dim_f32_bytes(a, b, out, dim, &layouts[0], &layouts[1]);
@@ -2438,19 +2796,26 @@ pub mod concat {
         // accumulator grows by `input_dim_sizes[i]` at each step.
         // We acquire all input guards up front to satisfy the borrow
         // checker (concat reads inputs sequentially).
-        let in_guards: Vec<_> = inputs.iter().map(read_storage).collect::<Result<Vec<_>>>()?;
+        let in_guards: Vec<_> = inputs
+            .iter()
+            .map(read_storage)
+            .collect::<Result<Vec<_>>>()?;
         let mut in_vk: Vec<&fuel_vulkan_backend::VulkanStorageBytes> = Vec::with_capacity(n_inputs);
         for g in &in_guards {
             in_vk.push(vulkan_input(g)?);
         }
-        let backend = in_vk[0].backend().ok_or_else(|| {
-            Error::Msg(
-                "vulkan_dispatch::concat::concat_f32: inputs[0] has no VulkanBackend handle. \
+        let backend = in_vk[0]
+            .backend()
+            .ok_or_else(|| {
+                Error::Msg(
+                    "vulkan_dispatch::concat::concat_f32: inputs[0] has no VulkanBackend handle. \
                  Storages flowing through the pipelined-executor binding-table dispatch \
                  must come from alloc_bytes_handle / upload_bytes_handle."
-                    .to_string(),
-            ).bt()
-        })?.clone();
+                        .to_string(),
+                )
+                .bt()
+            })?
+            .clone();
 
         // Helper: construct the layout for an intermediate whose
         // concat-dim size is `cum_dim`. Uses the first input's shape
@@ -2473,7 +2838,8 @@ pub mod concat {
             let bytes = backend.alloc_bytes_handle(acc_elems * 4).map_err(|e| {
                 Error::Msg(format!(
                     "vulkan_dispatch::concat::concat_f32: alloc intermediate failed: {e}",
-                )).bt()
+                ))
+                .bt()
             })?;
             Storage::new(BackendStorage::Vulkan(bytes), DType::F32)
         };
@@ -2483,8 +2849,12 @@ pub mod concat {
                 _ => unreachable!("just allocated as Vulkan"),
             };
             backend.concat_along_dim_f32_bytes(
-                in_vk[0], in_vk[1], acc_vk, dim,
-                &layouts[0], &layouts[1],
+                in_vk[0],
+                in_vk[1],
+                acc_vk,
+                dim,
+                &layouts[0],
+                &layouts[1],
             )?;
         }
 
@@ -2495,7 +2865,8 @@ pub mod concat {
             let new_bytes = backend.alloc_bytes_handle(new_elems * 4).map_err(|e| {
                 Error::Msg(format!(
                     "vulkan_dispatch::concat::concat_f32: alloc intermediate {i} failed: {e}",
-                )).bt()
+                ))
+                .bt()
             })?;
             let mut new_storage = Storage::new(BackendStorage::Vulkan(new_bytes), DType::F32);
 
@@ -2509,8 +2880,12 @@ pub mod concat {
                 _ => unreachable!(),
             };
             backend.concat_along_dim_f32_bytes(
-                acc_vk_ref, in_vk[i], new_vk, dim,
-                &acc_layout, &layouts[i],
+                acc_vk_ref,
+                in_vk[i],
+                new_vk,
+                dim,
+                &acc_layout,
+                &layouts[i],
             )?;
 
             // Drop old acc (releases its buffer back to the VMA pool).
@@ -2528,8 +2903,12 @@ pub mod concat {
         let mut out_guard = write_storage(&outputs[0])?;
         let out_vk = vulkan_output(&mut out_guard)?;
         backend.concat_along_dim_f32_bytes(
-            acc_vk_ref, in_vk[n_inputs - 1], out_vk, dim,
-            &acc_layout, &layouts[n_inputs - 1],
+            acc_vk_ref,
+            in_vk[n_inputs - 1],
+            out_vk,
+            dim,
+            &acc_layout,
+            &layouts[n_inputs - 1],
         )
     }
 }
@@ -2558,8 +2937,11 @@ macro_rules! vk_reduce_f32_wrapper {
             if inputs.len() != 1 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::reduce::{}: expected 1 input + 1 output, got {} + {}",
-                    $label, inputs.len(), outputs.len(),
-                )).bt());
+                    $label,
+                    inputs.len(),
+                    outputs.len(),
+                ))
+                .bt());
             }
             let dims = match params {
                 OpParams::Reduce { dims, keepdim: _ } => dims.clone(),
@@ -2567,14 +2949,16 @@ macro_rules! vk_reduce_f32_wrapper {
                     return Err(Error::Msg(format!(
                         "vulkan_dispatch::reduce::{}: expected OpParams::Reduce, got {:?}",
                         $label, other,
-                    )).bt());
+                    ))
+                    .bt());
                 }
             };
             let layout = layouts.first().ok_or_else(|| {
                 Error::Msg(format!(
                     "vulkan_dispatch::reduce::{}: layouts[0] required",
                     $label,
-                )).bt()
+                ))
+                .bt()
             })?;
             let in_guard = read_storage(&inputs[0])?;
             let mut out_guard = write_storage(&outputs[0])?;
@@ -2585,7 +2969,8 @@ macro_rules! vk_reduce_f32_wrapper {
                      Storages flowing through the pipelined-executor binding-table \
                      dispatch must come from alloc_bytes_handle / upload_bytes_handle.",
                     $label,
-                )).bt()
+                ))
+                .bt()
             })?;
             let out = vulkan_output(&mut out_guard)?;
             backend.reduce_f32_bytes($op_id, $label, a, out, layout, &dims)
@@ -2681,10 +3066,15 @@ pub mod index_add {
         _layouts: &[Layout],
         params: &OpParams,
     ) -> Result<()> {
-        index_add_dispatch(inputs, outputs, params, "index_add_f32",
+        index_add_dispatch(
+            inputs,
+            outputs,
+            params,
+            "index_add_f32",
             |b, base, idx, src, out, oc, bds, ni, ic| {
                 b.index_add_f32_bytes(base, idx, src, out, oc, bds, ni, ic)
-            })
+            },
+        )
     }
 
     pub fn index_add_f64(
@@ -2693,10 +3083,15 @@ pub mod index_add {
         _layouts: &[Layout],
         params: &OpParams,
     ) -> Result<()> {
-        index_add_dispatch(inputs, outputs, params, "index_add_f64",
+        index_add_dispatch(
+            inputs,
+            outputs,
+            params,
+            "index_add_f64",
             |b, base, idx, src, out, oc, bds, ni, ic| {
                 b.index_add_f64_bytes(base, idx, src, out, oc, bds, ni, ic)
-            })
+            },
+        )
     }
 
     pub fn index_add_bf16(
@@ -2705,10 +3100,15 @@ pub mod index_add {
         _layouts: &[Layout],
         params: &OpParams,
     ) -> Result<()> {
-        index_add_dispatch(inputs, outputs, params, "index_add_bf16",
+        index_add_dispatch(
+            inputs,
+            outputs,
+            params,
+            "index_add_bf16",
             |b, base, idx, src, out, oc, bds, ni, ic| {
                 b.index_add_bf16_bytes(base, idx, src, out, oc, bds, ni, ic)
-            })
+            },
+        )
     }
 
     pub fn index_add_f16(
@@ -2717,10 +3117,15 @@ pub mod index_add {
         _layouts: &[Layout],
         params: &OpParams,
     ) -> Result<()> {
-        index_add_dispatch(inputs, outputs, params, "index_add_f16",
+        index_add_dispatch(
+            inputs,
+            outputs,
+            params,
+            "index_add_f16",
             |b, base, idx, src, out, oc, bds, ni, ic| {
                 b.index_add_f16_bytes(base, idx, src, out, oc, bds, ni, ic)
-            })
+            },
+        )
     }
 
     fn index_add_dispatch<F>(
@@ -2737,7 +3142,10 @@ pub mod index_add {
             &fuel_vulkan_backend::VulkanStorageBytes,
             &fuel_vulkan_backend::VulkanStorageBytes,
             &mut fuel_vulkan_backend::VulkanStorageBytes,
-            usize, usize, usize, usize,
+            usize,
+            usize,
+            usize,
+            usize,
         ) -> Result<()>,
     {
         if inputs.len() != 3 || outputs.len() != 1 {
@@ -2747,9 +3155,12 @@ pub mod index_add {
             )).bt());
         }
         let (outer_count, base_dim_size, n_indices, inner_count) = match params {
-            OpParams::IndexAdd { outer_count, base_dim_size, n_indices, inner_count } => {
-                (*outer_count, *base_dim_size, *n_indices, *inner_count)
-            }
+            OpParams::IndexAdd {
+                outer_count,
+                base_dim_size,
+                n_indices,
+                inner_count,
+            } => (*outer_count, *base_dim_size, *n_indices, *inner_count),
             other => {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::index_add::{debug_name}: expected OpParams::IndexAdd, got {other:?}",
@@ -2762,7 +3173,8 @@ pub mod index_add {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::index_add::{debug_name}: indices must be U32, got {:?}",
                 idx_guard.dtype,
-            )).bt());
+            ))
+            .bt());
         }
         let src_guard = read_storage(&inputs[2])?;
         let mut out_guard = write_storage(&outputs[0])?;
@@ -2772,10 +3184,21 @@ pub mod index_add {
         let backend = base.backend().ok_or_else(|| {
             Error::Msg(format!(
                 "vulkan_dispatch::index_add::{debug_name}: base has no VulkanBackend handle.",
-            )).bt()
+            ))
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
-        f(backend, base, indices, src, out, outer_count, base_dim_size, n_indices, inner_count)
+        f(
+            backend,
+            base,
+            indices,
+            src,
+            out,
+            outer_count,
+            base_dim_size,
+            n_indices,
+            inner_count,
+        )
     }
 }
 
@@ -2799,9 +3222,11 @@ pub mod scatter_add {
             )).bt());
         }
         let (base_shape, src_shape, dim) = match params {
-            OpParams::ScatterAdd { base_shape, src_shape, dim } => {
-                (base_shape.clone(), src_shape.clone(), *dim)
-            }
+            OpParams::ScatterAdd {
+                base_shape,
+                src_shape,
+                dim,
+            } => (base_shape.clone(), src_shape.clone(), *dim),
             other => {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::scatter_add::scatter_add_f32: expected OpParams::ScatterAdd, got {other:?}",
@@ -2814,7 +3239,8 @@ pub mod scatter_add {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::scatter_add::scatter_add_f32: indices must be U32, got {:?}",
                 idx_guard.dtype,
-            )).bt());
+            ))
+            .bt());
         }
         let src_guard = read_storage(&inputs[2])?;
         let mut out_guard = write_storage(&outputs[0])?;
@@ -2823,8 +3249,10 @@ pub mod scatter_add {
         let src = vulkan_input(&src_guard)?;
         let backend = base.backend().ok_or_else(|| {
             Error::Msg(
-                "vulkan_dispatch::scatter_add::scatter_add_f32: base has no VulkanBackend handle.".to_string(),
-            ).bt()
+                "vulkan_dispatch::scatter_add::scatter_add_f32: base has no VulkanBackend handle."
+                    .to_string(),
+            )
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
         backend.scatter_add_f32_bytes(base, indices, src, out, &base_shape, &src_shape, dim)
@@ -2846,9 +3274,11 @@ pub mod scatter_add {
             )).bt());
         }
         let (base_shape, src_shape, dim) = match params {
-            OpParams::ScatterAdd { base_shape, src_shape, dim } => {
-                (base_shape.clone(), src_shape.clone(), *dim)
-            }
+            OpParams::ScatterAdd {
+                base_shape,
+                src_shape,
+                dim,
+            } => (base_shape.clone(), src_shape.clone(), *dim),
             other => {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::scatter_add::scatter_add_f64: expected OpParams::ScatterAdd, got {other:?}",
@@ -2861,7 +3291,8 @@ pub mod scatter_add {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::scatter_add::scatter_add_f64: indices must be U32, got {:?}",
                 idx_guard.dtype,
-            )).bt());
+            ))
+            .bt());
         }
         let src_guard = read_storage(&inputs[2])?;
         let mut out_guard = write_storage(&outputs[0])?;
@@ -2870,8 +3301,10 @@ pub mod scatter_add {
         let src = vulkan_input(&src_guard)?;
         let backend = base.backend().ok_or_else(|| {
             Error::Msg(
-                "vulkan_dispatch::scatter_add::scatter_add_f64: base has no VulkanBackend handle.".to_string(),
-            ).bt()
+                "vulkan_dispatch::scatter_add::scatter_add_f64: base has no VulkanBackend handle."
+                    .to_string(),
+            )
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
         backend.scatter_add_f64_bytes(base, indices, src, out, &base_shape, &src_shape, dim)
@@ -2885,10 +3318,16 @@ pub mod scatter_add {
         _layouts: &[Layout],
         params: &OpParams,
     ) -> Result<()> {
-        scatter_add_subword(inputs, outputs, params, DType::BF16, "scatter_add_bf16",
+        scatter_add_subword(
+            inputs,
+            outputs,
+            params,
+            DType::BF16,
+            "scatter_add_bf16",
             |backend, base, indices, src, out, bs, ss, dim| {
                 backend.scatter_add_bf16_bytes(base, indices, src, out, bs, ss, dim)
-            })
+            },
+        )
     }
 
     /// ScatterAdd along `dim` — f16. Same shape as bf16 path.
@@ -2898,10 +3337,16 @@ pub mod scatter_add {
         _layouts: &[Layout],
         params: &OpParams,
     ) -> Result<()> {
-        scatter_add_subword(inputs, outputs, params, DType::F16, "scatter_add_f16",
+        scatter_add_subword(
+            inputs,
+            outputs,
+            params,
+            DType::F16,
+            "scatter_add_f16",
             |backend, base, indices, src, out, bs, ss, dim| {
                 backend.scatter_add_f16_bytes(base, indices, src, out, bs, ss, dim)
-            })
+            },
+        )
     }
 
     fn scatter_add_subword<F>(
@@ -2931,9 +3376,11 @@ pub mod scatter_add {
             )).bt());
         }
         let (base_shape, src_shape, dim) = match params {
-            OpParams::ScatterAdd { base_shape, src_shape, dim } => {
-                (base_shape.clone(), src_shape.clone(), *dim)
-            }
+            OpParams::ScatterAdd {
+                base_shape,
+                src_shape,
+                dim,
+            } => (base_shape.clone(), src_shape.clone(), *dim),
             other => {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::scatter_add::{debug_name}: expected OpParams::ScatterAdd, got {other:?}",
@@ -2947,7 +3394,8 @@ pub mod scatter_add {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::scatter_add::{debug_name}: indices must be U32, got {:?}",
                 idx_guard.dtype,
-            )).bt());
+            ))
+            .bt());
         }
         let src_guard = read_storage(&inputs[2])?;
         let mut out_guard = write_storage(&outputs[0])?;
@@ -2957,24 +3405,34 @@ pub mod scatter_add {
         let backend = base.backend().ok_or_else(|| {
             Error::Msg(format!(
                 "vulkan_dispatch::scatter_add::{debug_name}: base has no VulkanBackend handle.",
-            )).bt()
+            ))
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
-        f(backend, base, indices, src, out, &base_shape, &src_shape, dim)
+        f(
+            backend,
+            base,
+            indices,
+            src,
+            out,
+            &base_shape,
+            &src_shape,
+            dim,
+        )
     }
 }
 
 pub mod arg_reduce {
     use super::*;
 
-    vk_arg_reduce_wrapper!(argmax_f32,  0, "argmax_f32",  DType::F32);
-    vk_arg_reduce_wrapper!(argmin_f32,  1, "argmin_f32",  DType::F32);
-    vk_arg_reduce_wrapper!(argmax_f16,  0, "argmax_f16",  DType::F16);
-    vk_arg_reduce_wrapper!(argmin_f16,  1, "argmin_f16",  DType::F16);
+    vk_arg_reduce_wrapper!(argmax_f32, 0, "argmax_f32", DType::F32);
+    vk_arg_reduce_wrapper!(argmin_f32, 1, "argmin_f32", DType::F32);
+    vk_arg_reduce_wrapper!(argmax_f16, 0, "argmax_f16", DType::F16);
+    vk_arg_reduce_wrapper!(argmin_f16, 1, "argmin_f16", DType::F16);
     vk_arg_reduce_wrapper!(argmax_bf16, 0, "argmax_bf16", DType::BF16);
     vk_arg_reduce_wrapper!(argmin_bf16, 1, "argmin_bf16", DType::BF16);
-    vk_arg_reduce_wrapper!(argmax_f64,  0, "argmax_f64",  DType::F64);
-    vk_arg_reduce_wrapper!(argmin_f64,  1, "argmin_f64",  DType::F64);
+    vk_arg_reduce_wrapper!(argmax_f64, 0, "argmax_f64", DType::F64);
+    vk_arg_reduce_wrapper!(argmin_f64, 1, "argmin_f64", DType::F64);
 }
 
 macro_rules! vk_reduce_last_dim_wrapper {
@@ -2988,8 +3446,11 @@ macro_rules! vk_reduce_last_dim_wrapper {
             if inputs.len() != 1 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::reduce::{}: expected 1 input + 1 output, got {} + {}",
-                    $label, inputs.len(), outputs.len(),
-                )).bt());
+                    $label,
+                    inputs.len(),
+                    outputs.len(),
+                ))
+                .bt());
             }
             let dims = match params {
                 OpParams::Reduce { dims, keepdim: _ } => dims.clone(),
@@ -2997,14 +3458,16 @@ macro_rules! vk_reduce_last_dim_wrapper {
                     return Err(Error::Msg(format!(
                         "vulkan_dispatch::reduce::{}: expected OpParams::Reduce, got {:?}",
                         $label, other,
-                    )).bt());
+                    ))
+                    .bt());
                 }
             };
             let layout = layouts.first().ok_or_else(|| {
                 Error::Msg(format!(
                     "vulkan_dispatch::reduce::{}: layouts[0] required",
                     $label,
-                )).bt()
+                ))
+                .bt()
             })?;
             let in_guard = read_storage(&inputs[0])?;
             let mut out_guard = write_storage(&outputs[0])?;
@@ -3013,7 +3476,8 @@ macro_rules! vk_reduce_last_dim_wrapper {
                 Error::Msg(format!(
                     "vulkan_dispatch::reduce::{}: input has no VulkanBackend handle.",
                     $label,
-                )).bt()
+                ))
+                .bt()
             })?;
             let out = vulkan_output(&mut out_guard)?;
             backend.$method($op_id, $label, a, out, layout, &dims)
@@ -3024,27 +3488,27 @@ macro_rules! vk_reduce_last_dim_wrapper {
 pub mod reduce {
     use super::*;
 
-    vk_reduce_f32_wrapper!(sum_f32,  0, "reduce_sum_f32");
-    vk_reduce_f32_wrapper!(max_f32,  1, "reduce_max_f32");
-    vk_reduce_f32_wrapper!(min_f32,  2, "reduce_min_f32");
+    vk_reduce_f32_wrapper!(sum_f32, 0, "reduce_sum_f32");
+    vk_reduce_f32_wrapper!(max_f32, 1, "reduce_max_f32");
+    vk_reduce_f32_wrapper!(min_f32, 2, "reduce_min_f32");
     // V.3.A.2: Mean added to reduce.slang + reduce_last_dim.slang as
     // op_id=3 (sum then divide by element count).
     vk_reduce_f32_wrapper!(mean_f32, 3, "reduce_mean_f32");
 
     // ----- V.3.G (2026-05-30): f16/bf16/f64 per-row reductions.
-    vk_reduce_last_dim_wrapper!(sum_f16,  0, "reduce_sum_f16",  reduce_f16_bytes);
-    vk_reduce_last_dim_wrapper!(max_f16,  1, "reduce_max_f16",  reduce_f16_bytes);
-    vk_reduce_last_dim_wrapper!(min_f16,  2, "reduce_min_f16",  reduce_f16_bytes);
+    vk_reduce_last_dim_wrapper!(sum_f16, 0, "reduce_sum_f16", reduce_f16_bytes);
+    vk_reduce_last_dim_wrapper!(max_f16, 1, "reduce_max_f16", reduce_f16_bytes);
+    vk_reduce_last_dim_wrapper!(min_f16, 2, "reduce_min_f16", reduce_f16_bytes);
     vk_reduce_last_dim_wrapper!(mean_f16, 3, "reduce_mean_f16", reduce_f16_bytes);
 
-    vk_reduce_last_dim_wrapper!(sum_bf16,  0, "reduce_sum_bf16",  reduce_bf16_bytes);
-    vk_reduce_last_dim_wrapper!(max_bf16,  1, "reduce_max_bf16",  reduce_bf16_bytes);
-    vk_reduce_last_dim_wrapper!(min_bf16,  2, "reduce_min_bf16",  reduce_bf16_bytes);
+    vk_reduce_last_dim_wrapper!(sum_bf16, 0, "reduce_sum_bf16", reduce_bf16_bytes);
+    vk_reduce_last_dim_wrapper!(max_bf16, 1, "reduce_max_bf16", reduce_bf16_bytes);
+    vk_reduce_last_dim_wrapper!(min_bf16, 2, "reduce_min_bf16", reduce_bf16_bytes);
     vk_reduce_last_dim_wrapper!(mean_bf16, 3, "reduce_mean_bf16", reduce_bf16_bytes);
 
-    vk_reduce_last_dim_wrapper!(sum_f64,  0, "reduce_sum_f64",  reduce_f64_bytes);
-    vk_reduce_last_dim_wrapper!(max_f64,  1, "reduce_max_f64",  reduce_f64_bytes);
-    vk_reduce_last_dim_wrapper!(min_f64,  2, "reduce_min_f64",  reduce_f64_bytes);
+    vk_reduce_last_dim_wrapper!(sum_f64, 0, "reduce_sum_f64", reduce_f64_bytes);
+    vk_reduce_last_dim_wrapper!(max_f64, 1, "reduce_max_f64", reduce_f64_bytes);
+    vk_reduce_last_dim_wrapper!(min_f64, 2, "reduce_min_f64", reduce_f64_bytes);
     vk_reduce_last_dim_wrapper!(mean_f64, 3, "reduce_mean_f64", reduce_f64_bytes);
 }
 
@@ -3073,9 +3537,12 @@ pub mod indexing {
             )).bt());
         }
         let (outer_count, source_dim_size, n_indices, inner_count) = match params {
-            OpParams::IndexSelect { outer_count, source_dim_size, n_indices, inner_count } => {
-                (*outer_count, *source_dim_size, *n_indices, *inner_count)
-            }
+            OpParams::IndexSelect {
+                outer_count,
+                source_dim_size,
+                n_indices,
+                inner_count,
+            } => (*outer_count, *source_dim_size, *n_indices, *inner_count),
             other => {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::indexing::index_select_f32: expected OpParams::IndexSelect, got {:?}",
@@ -3089,7 +3556,8 @@ pub mod indexing {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::indexing::index_select_f32: ids must be U32, got {:?}",
                 ids_guard.dtype,
-            )).bt());
+            ))
+            .bt());
         }
         let mut out_guard = write_storage(&outputs[0])?;
         let src = vulkan_input(&src_guard)?;
@@ -3100,12 +3568,18 @@ pub mod indexing {
                  Storages flowing through the pipelined-executor binding-table dispatch \
                  must come from alloc_bytes_handle / upload_bytes_handle."
                     .to_string(),
-            ).bt()
+            )
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
         backend.index_select_f32_bytes(
-            src, ids, out,
-            outer_count, source_dim_size, n_indices, inner_count,
+            src,
+            ids,
+            out,
+            outer_count,
+            source_dim_size,
+            n_indices,
+            inner_count,
         )
     }
 
@@ -3115,9 +3589,14 @@ pub mod indexing {
         layouts: &[Layout],
         params: &OpParams,
     ) -> Result<()> {
-        index_select_typed("index_select_f16", inputs, outputs, layouts, params, |b, s, i, o, oc, sd, ni, ic| {
-            b.index_select_f16_bytes(s, i, o, oc, sd, ni, ic)
-        })
+        index_select_typed(
+            "index_select_f16",
+            inputs,
+            outputs,
+            layouts,
+            params,
+            |b, s, i, o, oc, sd, ni, ic| b.index_select_f16_bytes(s, i, o, oc, sd, ni, ic),
+        )
     }
 
     pub fn index_select_bf16(
@@ -3126,9 +3605,14 @@ pub mod indexing {
         layouts: &[Layout],
         params: &OpParams,
     ) -> Result<()> {
-        index_select_typed("index_select_bf16", inputs, outputs, layouts, params, |b, s, i, o, oc, sd, ni, ic| {
-            b.index_select_bf16_bytes(s, i, o, oc, sd, ni, ic)
-        })
+        index_select_typed(
+            "index_select_bf16",
+            inputs,
+            outputs,
+            layouts,
+            params,
+            |b, s, i, o, oc, sd, ni, ic| b.index_select_bf16_bytes(s, i, o, oc, sd, ni, ic),
+        )
     }
 
     pub fn index_select_f64(
@@ -3137,9 +3621,14 @@ pub mod indexing {
         layouts: &[Layout],
         params: &OpParams,
     ) -> Result<()> {
-        index_select_typed("index_select_f64", inputs, outputs, layouts, params, |b, s, i, o, oc, sd, ni, ic| {
-            b.index_select_f64_bytes(s, i, o, oc, sd, ni, ic)
-        })
+        index_select_typed(
+            "index_select_f64",
+            inputs,
+            outputs,
+            layouts,
+            params,
+            |b, s, i, o, oc, sd, ni, ic| b.index_select_f64_bytes(s, i, o, oc, sd, ni, ic),
+        )
     }
 
     fn index_select_typed<F>(
@@ -3156,19 +3645,27 @@ pub mod indexing {
             &fuel_vulkan_backend::VulkanStorageBytes,
             &fuel_vulkan_backend::VulkanStorageBytes,
             &mut fuel_vulkan_backend::VulkanStorageBytes,
-            usize, usize, usize, usize,
+            usize,
+            usize,
+            usize,
+            usize,
         ) -> fuel_ir::Result<()>,
     {
         if inputs.len() != 2 || outputs.len() != 1 {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::indexing::{label}: expected 2 inputs + 1 output, got {} + {}",
-                inputs.len(), outputs.len(),
-            )).bt());
+                inputs.len(),
+                outputs.len(),
+            ))
+            .bt());
         }
         let (outer_count, source_dim_size, n_indices, inner_count) = match params {
-            OpParams::IndexSelect { outer_count, source_dim_size, n_indices, inner_count } => {
-                (*outer_count, *source_dim_size, *n_indices, *inner_count)
-            }
+            OpParams::IndexSelect {
+                outer_count,
+                source_dim_size,
+                n_indices,
+                inner_count,
+            } => (*outer_count, *source_dim_size, *n_indices, *inner_count),
             other => {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::indexing::{label}: expected OpParams::IndexSelect, got {other:?}",
@@ -3181,7 +3678,8 @@ pub mod indexing {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::indexing::{label}: ids must be U32, got {:?}",
                 ids_guard.dtype,
-            )).bt());
+            ))
+            .bt());
         }
         let mut out_guard = write_storage(&outputs[0])?;
         let src = vulkan_input(&src_guard)?;
@@ -3189,10 +3687,20 @@ pub mod indexing {
         let backend = src.backend().ok_or_else(|| {
             Error::Msg(format!(
                 "vulkan_dispatch::indexing::{label}: src has no VulkanBackend handle.",
-            )).bt()
+            ))
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
-        call(backend, src, ids, out, outer_count, source_dim_size, n_indices, inner_count)
+        call(
+            backend,
+            src,
+            ids,
+            out,
+            outer_count,
+            source_dim_size,
+            n_indices,
+            inner_count,
+        )
     }
 }
 
@@ -3211,8 +3719,11 @@ macro_rules! vk_unary_bf16_wrapper {
             if inputs.len() != 1 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::unary_bf16::{}: expected 1 input + 1 output, got {} + {}",
-                    $label, inputs.len(), outputs.len(),
-                )).bt());
+                    $label,
+                    inputs.len(),
+                    outputs.len(),
+                ))
+                .bt());
             }
             let in_guard = read_storage(&inputs[0])?;
             let mut out_guard = write_storage(&outputs[0])?;
@@ -3221,7 +3732,8 @@ macro_rules! vk_unary_bf16_wrapper {
                 Error::Msg(format!(
                     "vulkan_dispatch::unary_bf16::{}: input has no VulkanBackend handle.",
                     $label,
-                )).bt()
+                ))
+                .bt()
             })?;
             let out = vulkan_output(&mut out_guard)?;
             backend.unary_bf16_bytes($op_id, $label, a, out)
@@ -3231,22 +3743,22 @@ macro_rules! vk_unary_bf16_wrapper {
 
 pub mod unary_bf16 {
     use super::*;
-    vk_unary_bf16_wrapper!(neg_bf16,     0,  "unary_neg_bf16");
-    vk_unary_bf16_wrapper!(sqr_bf16,     1,  "unary_sqr_bf16");
-    vk_unary_bf16_wrapper!(sqrt_bf16,    2,  "unary_sqrt_bf16");
-    vk_unary_bf16_wrapper!(exp_bf16,     3,  "unary_exp_bf16");
-    vk_unary_bf16_wrapper!(log_bf16,     4,  "unary_log_bf16");
-    vk_unary_bf16_wrapper!(sin_bf16,     5,  "unary_sin_bf16");
-    vk_unary_bf16_wrapper!(cos_bf16,     6,  "unary_cos_bf16");
-    vk_unary_bf16_wrapper!(tanh_bf16,    7,  "unary_tanh_bf16");
-    vk_unary_bf16_wrapper!(sigmoid_bf16, 8,  "unary_sigmoid_bf16");
-    vk_unary_bf16_wrapper!(silu_bf16,    9,  "unary_silu_bf16");
-    vk_unary_bf16_wrapper!(gelu_bf16,    10, "unary_gelu_bf16");
-    vk_unary_bf16_wrapper!(relu_bf16,    11, "unary_relu_bf16");
-    vk_unary_bf16_wrapper!(step_bf16,    12, "unary_step_bf16");
-    vk_unary_bf16_wrapper!(abs_bf16,     13, "unary_abs_bf16");
-    vk_unary_bf16_wrapper!(sign_bf16,    14, "unary_sign_bf16");
-    vk_unary_bf16_wrapper!(recip_bf16,   15, "unary_recip_bf16");
+    vk_unary_bf16_wrapper!(neg_bf16, 0, "unary_neg_bf16");
+    vk_unary_bf16_wrapper!(sqr_bf16, 1, "unary_sqr_bf16");
+    vk_unary_bf16_wrapper!(sqrt_bf16, 2, "unary_sqrt_bf16");
+    vk_unary_bf16_wrapper!(exp_bf16, 3, "unary_exp_bf16");
+    vk_unary_bf16_wrapper!(log_bf16, 4, "unary_log_bf16");
+    vk_unary_bf16_wrapper!(sin_bf16, 5, "unary_sin_bf16");
+    vk_unary_bf16_wrapper!(cos_bf16, 6, "unary_cos_bf16");
+    vk_unary_bf16_wrapper!(tanh_bf16, 7, "unary_tanh_bf16");
+    vk_unary_bf16_wrapper!(sigmoid_bf16, 8, "unary_sigmoid_bf16");
+    vk_unary_bf16_wrapper!(silu_bf16, 9, "unary_silu_bf16");
+    vk_unary_bf16_wrapper!(gelu_bf16, 10, "unary_gelu_bf16");
+    vk_unary_bf16_wrapper!(relu_bf16, 11, "unary_relu_bf16");
+    vk_unary_bf16_wrapper!(step_bf16, 12, "unary_step_bf16");
+    vk_unary_bf16_wrapper!(abs_bf16, 13, "unary_abs_bf16");
+    vk_unary_bf16_wrapper!(sign_bf16, 14, "unary_sign_bf16");
+    vk_unary_bf16_wrapper!(recip_bf16, 15, "unary_recip_bf16");
 }
 
 macro_rules! vk_binary_bf16_wrapper {
@@ -3260,14 +3772,19 @@ macro_rules! vk_binary_bf16_wrapper {
             if inputs.len() != 2 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::binary_bf16::{}: expected 2 inputs + 1 output, got {} + {}",
-                    $label, inputs.len(), outputs.len(),
-                )).bt());
+                    $label,
+                    inputs.len(),
+                    outputs.len(),
+                ))
+                .bt());
             }
             if layouts.len() < 2 {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::binary_bf16::{}: layouts.len() = {} < 2",
-                    $label, layouts.len(),
-                )).bt());
+                    $label,
+                    layouts.len(),
+                ))
+                .bt());
             }
             let in0_guard = read_storage(&inputs[0])?;
             let in1_guard = read_storage(&inputs[1])?;
@@ -3278,7 +3795,8 @@ macro_rules! vk_binary_bf16_wrapper {
                 Error::Msg(format!(
                     "vulkan_dispatch::binary_bf16::{}: input[0] has no VulkanBackend handle.",
                     $label,
-                )).bt()
+                ))
+                .bt()
             })?;
             let out = vulkan_output(&mut out_guard)?;
             backend.binary_bf16_bytes($op_id, $label, a, b, out, &layouts[0], &layouts[1])
@@ -3288,10 +3806,10 @@ macro_rules! vk_binary_bf16_wrapper {
 
 pub mod binary_bf16 {
     use super::*;
-    vk_binary_bf16_wrapper!(add_bf16,     0, "binary_add_bf16");
-    vk_binary_bf16_wrapper!(sub_bf16,     1, "binary_sub_bf16");
-    vk_binary_bf16_wrapper!(mul_bf16,     2, "binary_mul_bf16");
-    vk_binary_bf16_wrapper!(div_bf16,     3, "binary_div_bf16");
+    vk_binary_bf16_wrapper!(add_bf16, 0, "binary_add_bf16");
+    vk_binary_bf16_wrapper!(sub_bf16, 1, "binary_sub_bf16");
+    vk_binary_bf16_wrapper!(mul_bf16, 2, "binary_mul_bf16");
+    vk_binary_bf16_wrapper!(div_bf16, 3, "binary_div_bf16");
     vk_binary_bf16_wrapper!(maximum_bf16, 4, "binary_maximum_bf16");
     vk_binary_bf16_wrapper!(minimum_bf16, 5, "binary_minimum_bf16");
 }
@@ -3307,7 +3825,8 @@ fn byte_width_for_dtype(label: &str, dt: DType) -> Result<usize> {
         DType::F64 | DType::I64 => Ok(8),
         other => Err(Error::Msg(format!(
             "{label}: unsupported dtype {other:?} (need 2/4/8-byte elem)"
-        )).bt()),
+        ))
+        .bt()),
     }
 }
 
@@ -3322,18 +3841,25 @@ macro_rules! vk_triangular_wrapper {
             if inputs.len() != 1 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::triangular::{}: expected 1 input + 1 output, got {} + {}",
-                    $label, inputs.len(), outputs.len(),
-                )).bt());
+                    $label,
+                    inputs.len(),
+                    outputs.len(),
+                ))
+                .bt());
             }
             let (batch_count, rows, cols, diagonal) = match params {
-                OpParams::Triangular { batch_count, rows, cols, diagonal } => {
-                    (*batch_count, *rows, *cols, *diagonal)
-                }
+                OpParams::Triangular {
+                    batch_count,
+                    rows,
+                    cols,
+                    diagonal,
+                } => (*batch_count, *rows, *cols, *diagonal),
                 other => {
                     return Err(Error::Msg(format!(
                         "vulkan_dispatch::triangular::{}: expected OpParams::Triangular, got {:?}",
                         $label, other,
-                    )).bt());
+                    ))
+                    .bt());
                 }
             };
             let in_guard = read_storage(&inputs[0])?;
@@ -3345,12 +3871,19 @@ macro_rules! vk_triangular_wrapper {
                 Error::Msg(format!(
                     "vulkan_dispatch::triangular::{}: input has no VulkanBackend handle.",
                     $label,
-                )).bt()
+                ))
+                .bt()
             })?;
             let out = vulkan_output(&mut out_guard)?;
             backend.triangular_bytes(
-                byte_width, $keep_upper, a, out,
-                batch_count, rows, cols, diagonal,
+                byte_width,
+                $keep_upper,
+                a,
+                out,
+                batch_count,
+                rows,
+                cols,
+                diagonal,
             )
         }
     };
@@ -3358,7 +3891,7 @@ macro_rules! vk_triangular_wrapper {
 
 pub mod triangular {
     use super::*;
-    vk_triangular_wrapper!(triu, true,  "triu");
+    vk_triangular_wrapper!(triu, true, "triu");
     vk_triangular_wrapper!(tril, false, "tril");
 }
 
@@ -3374,8 +3907,10 @@ pub mod flip {
         if inputs.len() != 1 || outputs.len() != 1 {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::flip::flip: expected 1 input + 1 output, got {} + {}",
-                inputs.len(), outputs.len(),
-            )).bt());
+                inputs.len(),
+                outputs.len(),
+            ))
+            .bt());
         }
         let axis = match params {
             OpParams::Flip { axis, .. } => *axis,
@@ -3383,13 +3918,16 @@ pub mod flip {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::flip::flip: expected OpParams::Flip, got {:?}",
                     other,
-                )).bt());
+                ))
+                .bt());
             }
         };
         let layout = layouts.first().ok_or_else(|| {
             Error::Msg(
-                "vulkan_dispatch::flip::flip: Flip requires an input layout (layouts[0])".to_string(),
-            ).bt()
+                "vulkan_dispatch::flip::flip: Flip requires an input layout (layouts[0])"
+                    .to_string(),
+            )
+            .bt()
         })?;
         let in_guard = read_storage(&inputs[0])?;
         let mut out_guard = write_storage(&outputs[0])?;
@@ -3398,7 +3936,8 @@ pub mod flip {
         let backend = a.backend().ok_or_else(|| {
             Error::Msg(
                 "vulkan_dispatch::flip::flip: input has no VulkanBackend handle.".to_string(),
-            ).bt()
+            )
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
         backend.flip_bytes(byte_width, a, out, layout, axis)
@@ -3417,8 +3956,10 @@ pub mod roll {
         if inputs.len() != 1 || outputs.len() != 1 {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::roll::roll: expected 1 input + 1 output, got {} + {}",
-                inputs.len(), outputs.len(),
-            )).bt());
+                inputs.len(),
+                outputs.len(),
+            ))
+            .bt());
         }
         let (shift, axis) = match params {
             OpParams::Roll { shift, axis, .. } => (*shift, *axis),
@@ -3426,13 +3967,16 @@ pub mod roll {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::roll::roll: expected OpParams::Roll, got {:?}",
                     other,
-                )).bt());
+                ))
+                .bt());
             }
         };
         let layout = layouts.first().ok_or_else(|| {
             Error::Msg(
-                "vulkan_dispatch::roll::roll: Roll requires an input layout (layouts[0])".to_string(),
-            ).bt()
+                "vulkan_dispatch::roll::roll: Roll requires an input layout (layouts[0])"
+                    .to_string(),
+            )
+            .bt()
         })?;
         let in_guard = read_storage(&inputs[0])?;
         let mut out_guard = write_storage(&outputs[0])?;
@@ -3441,7 +3985,8 @@ pub mod roll {
         let backend = a.backend().ok_or_else(|| {
             Error::Msg(
                 "vulkan_dispatch::roll::roll: input has no VulkanBackend handle.".to_string(),
-            ).bt()
+            )
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
         backend.roll_bytes(byte_width, a, out, layout, axis, shift)
@@ -3462,8 +4007,11 @@ pub mod cumsum {
                 if inputs.len() != 1 || outputs.len() != 1 {
                     return Err(Error::Msg(format!(
                         "vulkan_dispatch::cumsum::{}: expected 1 input + 1 output, got {} + {}",
-                        $op_label, inputs.len(), outputs.len(),
-                    )).bt());
+                        $op_label,
+                        inputs.len(),
+                        outputs.len(),
+                    ))
+                    .bt());
                 }
                 let axis = match params {
                     OpParams::CumSum { axis, .. } => *axis,
@@ -3471,14 +4019,16 @@ pub mod cumsum {
                         return Err(Error::Msg(format!(
                             "vulkan_dispatch::cumsum::{}: expected OpParams::CumSum, got {:?}",
                             $op_label, other,
-                        )).bt());
+                        ))
+                        .bt());
                     }
                 };
                 let layout = layouts.first().ok_or_else(|| {
                     Error::Msg(format!(
                         "vulkan_dispatch::cumsum::{}: CumSum requires an input layout (layouts[0])",
                         $op_label,
-                    )).bt()
+                    ))
+                    .bt()
                 })?;
                 let in_guard = read_storage(&inputs[0])?;
                 let mut out_guard = write_storage(&outputs[0])?;
@@ -3486,14 +4036,16 @@ pub mod cumsum {
                     return Err(Error::Msg(format!(
                         "vulkan_dispatch::cumsum::{}: dtype mismatch (got {:?}, expected {:?})",
                         $op_label, in_guard.dtype, $dt,
-                    )).bt());
+                    ))
+                    .bt());
                 }
                 let a = vulkan_input(&in_guard)?;
                 let backend = a.backend().ok_or_else(|| {
                     Error::Msg(format!(
                         "vulkan_dispatch::cumsum::{}: input has no VulkanBackend handle.",
                         $op_label,
-                    )).bt()
+                    ))
+                    .bt()
                 })?;
                 let out = vulkan_output(&mut out_guard)?;
                 backend.$backend_fn(a, out, layout, axis)
@@ -3532,18 +4084,25 @@ pub mod qmatmul {
         if inputs.len() != 2 || outputs.len() != 1 {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::qmatmul: expected 2 inputs + 1 output, got {} + {}",
-                inputs.len(), outputs.len(),
-            )).bt());
+                inputs.len(),
+                outputs.len(),
+            ))
+            .bt());
         }
         let (quant_type, batch_count, m, n, k) = match params {
-            OpParams::QMatMul { quant_type, batch_count, m, n, k } => {
-                (*quant_type, *batch_count, *m, *n, *k)
-            }
+            OpParams::QMatMul {
+                quant_type,
+                batch_count,
+                m,
+                n,
+                k,
+            } => (*quant_type, *batch_count, *m, *n, *k),
             other => {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::qmatmul: expected OpParams::QMatMul, got {:?}",
                     other,
-                )).bt());
+                ))
+                .bt());
             }
         };
         let a_guard = read_storage(&inputs[0])?;
@@ -3552,19 +4111,19 @@ pub mod qmatmul {
         let a = vulkan_input(&a_guard)?;
         let w = vulkan_input(&w_guard)?;
         let backend = a.backend().ok_or_else(|| {
-            Error::Msg(
-                "vulkan_dispatch::qmatmul: input has no VulkanBackend handle.".to_string(),
-            ).bt()
+            Error::Msg("vulkan_dispatch::qmatmul: input has no VulkanBackend handle.".to_string())
+                .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
         match quant_type {
-            QuantType::Q4_0   => backend.matmul_q4_0_bytes(a, w, out, batch_count, m, k, n),
+            QuantType::Q4_0 => backend.matmul_q4_0_bytes(a, w, out, batch_count, m, k, n),
             QuantType::Q4_K_M => backend.matmul_q4_km_bytes(a, w, out, batch_count, m, k, n),
-            QuantType::Q8_0   => backend.matmul_q8_0_bytes(a, w, out, batch_count, m, k, n),
+            QuantType::Q8_0 => backend.matmul_q8_0_bytes(a, w, out, batch_count, m, k, n),
             other => Err(Error::Msg(format!(
                 "vulkan_dispatch::qmatmul: QuantType {other:?} not wired on Vulkan; \
                  add a dequant-then-matmul path or a fused kernel and retry"
-            )).bt()),
+            ))
+            .bt()),
         }
     }
 }
@@ -3594,9 +4153,18 @@ pub mod flash_attn {
         }
         let (b, hq, hkv, sq, sk, d, scale, causal, wl, wr, softcap) = match params {
             OpParams::FlashAttn {
-                b, hq, hkv, sq, sk, d, k_len,
-                softmax_scale, causal,
-                window_size_left, window_size_right, softcap,
+                b,
+                hq,
+                hkv,
+                sq,
+                sk,
+                d,
+                k_len,
+                softmax_scale,
+                causal,
+                window_size_left,
+                window_size_right,
+                softcap,
             } => {
                 // Vulkan flash v1 reads the full K extent; a runtime
                 // k_len (capacity-K, Phase D) isn't supported here. The
@@ -3606,14 +4174,23 @@ pub mod flash_attn {
                         "vulkan_dispatch::flash_attn: runtime k_len ({}) != K capacity ({}) \
                          not supported on Vulkan v1; route picker should fall back to CPU/CUDA",
                         *k_len, *sk,
-                    )).bt());
+                    ))
+                    .bt());
                 }
                 (
-                    *b, *hq, *hkv, *sq, *sk, *d,
-                    *softmax_scale, *causal,
-                    *window_size_left, *window_size_right, *softcap,
+                    *b,
+                    *hq,
+                    *hkv,
+                    *sq,
+                    *sk,
+                    *d,
+                    *softmax_scale,
+                    *causal,
+                    *window_size_left,
+                    *window_size_right,
+                    *softcap,
                 )
-            },
+            }
             other => {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::flash_attn::flash_attn_f32: expected OpParams::FlashAttn, got {other:?}",
@@ -3644,15 +4221,13 @@ pub mod flash_attn {
         };
         let backend = q.backend().ok_or_else(|| {
             Error::Msg(
-                "vulkan_dispatch::flash_attn::flash_attn_f32: q has no VulkanBackend handle.".to_string(),
-            ).bt()
+                "vulkan_dispatch::flash_attn::flash_attn_f32: q has no VulkanBackend handle."
+                    .to_string(),
+            )
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
-        backend.flash_attn_f32_bytes(
-            q, k, v, alibi, out,
-            b, hq, hkv, sq, sk, d,
-            scale, causal,
-        )
+        backend.flash_attn_f32_bytes(q, k, v, alibi, out, b, hq, hkv, sq, sk, d, scale, causal)
     }
 
     /// FlashAttention forward, bf16. Inputs / outputs / alibi all
@@ -3664,10 +4239,16 @@ pub mod flash_attn {
         _layouts: &[Layout],
         params: &OpParams,
     ) -> Result<()> {
-        flash_attn_half_typed(inputs, outputs, params, DType::BF16, "flash_attn_bf16",
+        flash_attn_half_typed(
+            inputs,
+            outputs,
+            params,
+            DType::BF16,
+            "flash_attn_bf16",
             |backend, q, k, v, a, out, b, hq, hkv, sq, sk, d, scale, causal| {
                 backend.flash_attn_bf16_bytes(q, k, v, a, out, b, hq, hkv, sq, sk, d, scale, causal)
-            })
+            },
+        )
     }
 
     /// FlashAttention forward, f16. Inputs / outputs / alibi all f16.
@@ -3677,10 +4258,16 @@ pub mod flash_attn {
         _layouts: &[Layout],
         params: &OpParams,
     ) -> Result<()> {
-        flash_attn_half_typed(inputs, outputs, params, DType::F16, "flash_attn_f16",
+        flash_attn_half_typed(
+            inputs,
+            outputs,
+            params,
+            DType::F16,
+            "flash_attn_f16",
             |backend, q, k, v, a, out, b, hq, hkv, sq, sk, d, scale, causal| {
                 backend.flash_attn_f16_bytes(q, k, v, a, out, b, hq, hkv, sq, sk, d, scale, causal)
-            })
+            },
+        )
     }
 
     fn flash_attn_half_typed<F>(
@@ -3699,8 +4286,14 @@ pub mod flash_attn {
             &fuel_vulkan_backend::VulkanStorageBytes,
             Option<&fuel_vulkan_backend::VulkanStorageBytes>,
             &mut fuel_vulkan_backend::VulkanStorageBytes,
-            usize, usize, usize, usize, usize, usize,
-            f32, bool,
+            usize,
+            usize,
+            usize,
+            usize,
+            usize,
+            usize,
+            f32,
+            bool,
         ) -> Result<()>,
     {
         if inputs.len() < 3 || inputs.len() > 4 || outputs.len() != 1 {
@@ -3711,9 +4304,18 @@ pub mod flash_attn {
         }
         let (b, hq, hkv, sq, sk, d, scale, causal, wl, wr, softcap) = match params {
             OpParams::FlashAttn {
-                b, hq, hkv, sq, sk, d, k_len,
-                softmax_scale, causal,
-                window_size_left, window_size_right, softcap,
+                b,
+                hq,
+                hkv,
+                sq,
+                sk,
+                d,
+                k_len,
+                softmax_scale,
+                causal,
+                window_size_left,
+                window_size_right,
+                softcap,
             } => {
                 // Vulkan flash v1 reads the full K extent; a runtime
                 // k_len (capacity-K, Phase D) isn't supported here. The
@@ -3723,14 +4325,23 @@ pub mod flash_attn {
                         "vulkan_dispatch::flash_attn: runtime k_len ({}) != K capacity ({}) \
                          not supported on Vulkan v1; route picker should fall back to CPU/CUDA",
                         *k_len, *sk,
-                    )).bt());
+                    ))
+                    .bt());
                 }
                 (
-                    *b, *hq, *hkv, *sq, *sk, *d,
-                    *softmax_scale, *causal,
-                    *window_size_left, *window_size_right, *softcap,
+                    *b,
+                    *hq,
+                    *hkv,
+                    *sq,
+                    *sk,
+                    *d,
+                    *softmax_scale,
+                    *causal,
+                    *window_size_left,
+                    *window_size_right,
+                    *softcap,
                 )
-            },
+            }
             other => {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::flash_attn::{debug_name}: expected OpParams::FlashAttn, got {other:?}",
@@ -3751,7 +4362,9 @@ pub mod flash_attn {
             None => None,
         };
         for (name, dt) in [
-            ("q", q_guard.dtype), ("k", k_guard.dtype), ("v", v_guard.dtype),
+            ("q", q_guard.dtype),
+            ("k", k_guard.dtype),
+            ("v", v_guard.dtype),
         ] {
             if dt != expected_dtype {
                 return Err(Error::Msg(format!(
@@ -3777,10 +4390,13 @@ pub mod flash_attn {
         let backend = q.backend().ok_or_else(|| {
             Error::Msg(format!(
                 "vulkan_dispatch::flash_attn::{debug_name}: q has no VulkanBackend handle.",
-            )).bt()
+            ))
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
-        f(backend, q, k, v, alibi, out, b, hq, hkv, sq, sk, d, scale, causal)
+        f(
+            backend, q, k, v, alibi, out, b, hq, hkv, sq, sk, d, scale, causal,
+        )
     }
 
     /// FlashAttention backward — dQ, f32. Inputs (q, k, v, dO, [alibi]);
@@ -3792,10 +4408,17 @@ pub mod flash_attn {
         _layouts: &[Layout],
         params: &OpParams,
     ) -> Result<()> {
-        flash_attn_backward_f32_typed(inputs, outputs, params, "flash_attn_backward_q_f32",
+        flash_attn_backward_f32_typed(
+            inputs,
+            outputs,
+            params,
+            "flash_attn_backward_q_f32",
             |backend, q, k, v, dgrad, a, out, b, hq, hkv, sq, sk, d, scale, causal| {
-                backend.flash_attn_backward_q_f32_bytes(q, k, v, dgrad, a, out, b, hq, hkv, sq, sk, d, scale, causal)
-            })
+                backend.flash_attn_backward_q_f32_bytes(
+                    q, k, v, dgrad, a, out, b, hq, hkv, sq, sk, d, scale, causal,
+                )
+            },
+        )
     }
 
     /// FlashAttention backward — dK, f32.
@@ -3805,10 +4428,17 @@ pub mod flash_attn {
         _layouts: &[Layout],
         params: &OpParams,
     ) -> Result<()> {
-        flash_attn_backward_f32_typed(inputs, outputs, params, "flash_attn_backward_k_f32",
+        flash_attn_backward_f32_typed(
+            inputs,
+            outputs,
+            params,
+            "flash_attn_backward_k_f32",
             |backend, q, k, v, dgrad, a, out, b, hq, hkv, sq, sk, d, scale, causal| {
-                backend.flash_attn_backward_k_f32_bytes(q, k, v, dgrad, a, out, b, hq, hkv, sq, sk, d, scale, causal)
-            })
+                backend.flash_attn_backward_k_f32_bytes(
+                    q, k, v, dgrad, a, out, b, hq, hkv, sq, sk, d, scale, causal,
+                )
+            },
+        )
     }
 
     /// FlashAttention backward — dV, f32.
@@ -3818,10 +4448,17 @@ pub mod flash_attn {
         _layouts: &[Layout],
         params: &OpParams,
     ) -> Result<()> {
-        flash_attn_backward_f32_typed(inputs, outputs, params, "flash_attn_backward_v_f32",
+        flash_attn_backward_f32_typed(
+            inputs,
+            outputs,
+            params,
+            "flash_attn_backward_v_f32",
             |backend, q, k, v, dgrad, a, out, b, hq, hkv, sq, sk, d, scale, causal| {
-                backend.flash_attn_backward_v_f32_bytes(q, k, v, dgrad, a, out, b, hq, hkv, sq, sk, d, scale, causal)
-            })
+                backend.flash_attn_backward_v_f32_bytes(
+                    q, k, v, dgrad, a, out, b, hq, hkv, sq, sk, d, scale, causal,
+                )
+            },
+        )
     }
 
     /// Shared dispatch shim body for the three FA backward variants.
@@ -3845,8 +4482,14 @@ pub mod flash_attn {
             &fuel_vulkan_backend::VulkanStorageBytes,
             Option<&fuel_vulkan_backend::VulkanStorageBytes>,
             &mut fuel_vulkan_backend::VulkanStorageBytes,
-            usize, usize, usize, usize, usize, usize,
-            f32, bool,
+            usize,
+            usize,
+            usize,
+            usize,
+            usize,
+            usize,
+            f32,
+            bool,
         ) -> Result<()>,
     {
         if inputs.len() < 4 || inputs.len() > 5 || outputs.len() != 1 {
@@ -3857,9 +4500,18 @@ pub mod flash_attn {
         }
         let (b, hq, hkv, sq, sk, d, scale, causal, wl, wr, softcap) = match params {
             OpParams::FlashAttn {
-                b, hq, hkv, sq, sk, d, k_len,
-                softmax_scale, causal,
-                window_size_left, window_size_right, softcap,
+                b,
+                hq,
+                hkv,
+                sq,
+                sk,
+                d,
+                k_len,
+                softmax_scale,
+                causal,
+                window_size_left,
+                window_size_right,
+                softcap,
             } => {
                 // Vulkan flash v1 reads the full K extent; a runtime
                 // k_len (capacity-K, Phase D) isn't supported here. The
@@ -3869,14 +4521,23 @@ pub mod flash_attn {
                         "vulkan_dispatch::flash_attn: runtime k_len ({}) != K capacity ({}) \
                          not supported on Vulkan v1; route picker should fall back to CPU/CUDA",
                         *k_len, *sk,
-                    )).bt());
+                    ))
+                    .bt());
                 }
                 (
-                    *b, *hq, *hkv, *sq, *sk, *d,
-                    *softmax_scale, *causal,
-                    *window_size_left, *window_size_right, *softcap,
+                    *b,
+                    *hq,
+                    *hkv,
+                    *sq,
+                    *sk,
+                    *d,
+                    *softmax_scale,
+                    *causal,
+                    *window_size_left,
+                    *window_size_right,
+                    *softcap,
                 )
-            },
+            }
             other => {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::flash_attn::{debug_name}: expected OpParams::FlashAttn, got {other:?}",
@@ -3898,20 +4559,25 @@ pub mod flash_attn {
             None => None,
         };
         for (name, dt) in [
-            ("q", q_guard.dtype), ("k", k_guard.dtype), ("v", v_guard.dtype),
+            ("q", q_guard.dtype),
+            ("k", k_guard.dtype),
+            ("v", v_guard.dtype),
             ("do", do_guard.dtype),
         ] {
             if dt != DType::F32 {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::flash_attn::{debug_name}: {name} must be F32, got {dt:?}",
-                )).bt());
+                ))
+                .bt());
             }
         }
         if let Some(g) = &alibi_guard {
             if g.dtype != DType::F32 {
                 return Err(Error::Msg(format!(
-                    "vulkan_dispatch::flash_attn::{debug_name}: alibi must be F32, got {:?}", g.dtype,
-                )).bt());
+                    "vulkan_dispatch::flash_attn::{debug_name}: alibi must be F32, got {:?}",
+                    g.dtype,
+                ))
+                .bt());
             }
         }
         let mut out_guard = write_storage(&outputs[0])?;
@@ -3926,10 +4592,13 @@ pub mod flash_attn {
         let backend = q.backend().ok_or_else(|| {
             Error::Msg(format!(
                 "vulkan_dispatch::flash_attn::{debug_name}: q has no VulkanBackend handle.",
-            )).bt()
+            ))
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
-        f(backend, q, k, v, do_storage, alibi, out, b, hq, hkv, sq, sk, d, scale, causal)
+        f(
+            backend, q, k, v, do_storage, alibi, out, b, hq, hkv, sq, sk, d, scale, causal,
+        )
     }
 }
 
@@ -3945,8 +4614,10 @@ pub mod conv2d {
         if inputs.len() < 2 || inputs.len() > 3 || outputs.len() != 1 {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::conv2d::conv2d_f32: expected 2-3 inputs + 1 output, got {} + {}",
-                inputs.len(), outputs.len(),
-            )).bt());
+                inputs.len(),
+                outputs.len(),
+            ))
+            .bt());
         }
         if inputs.len() == 3 {
             // Vulkan conv2d doesn't fuse bias yet; route picker should
@@ -3955,25 +4626,35 @@ pub mod conv2d {
             return Err(Error::Msg(
                 "vulkan_dispatch::conv2d::conv2d_f32: bias-fused conv2d not supported \
                  on Vulkan yet; bias is a follow-up. Route picker should choose a \
-                 fused-conv alternative (CPU/CUDA) when bias is present.".to_string(),
-            ).bt());
+                 fused-conv alternative (CPU/CUDA) when bias is present."
+                    .to_string(),
+            )
+            .bt());
         }
         let (x_shape, w_shape, stride, padding, dilation, groups) = match params {
-            OpParams::Conv2D { x_shape, w_shape, out_shape: _, stride, padding, dilation, groups } => {
-                (*x_shape, *w_shape, *stride, *padding, *dilation, *groups)
-            }
+            OpParams::Conv2D {
+                x_shape,
+                w_shape,
+                out_shape: _,
+                stride,
+                padding,
+                dilation,
+                groups,
+            } => (*x_shape, *w_shape, *stride, *padding, *dilation, *groups),
             other => {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::conv2d::conv2d_f32: expected OpParams::Conv2D, got {:?}",
                     other,
-                )).bt());
+                ))
+                .bt());
             }
         };
         if dilation != (1, 1) {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::conv2d::conv2d_f32: dilation {dilation:?} != (1,1) \
                  not yet supported on Vulkan; route picker should fall back to CPU/CUDA"
-            )).bt());
+            ))
+            .bt());
         }
         let in_guard = read_storage(&inputs[0])?;
         let w_guard = read_storage(&inputs[1])?;
@@ -3982,13 +4663,14 @@ pub mod conv2d {
         let weight = vulkan_input(&w_guard)?;
         let backend = input.backend().ok_or_else(|| {
             Error::Msg(
-                "vulkan_dispatch::conv2d::conv2d_f32: input has no VulkanBackend handle.".to_string(),
-            ).bt()
+                "vulkan_dispatch::conv2d::conv2d_f32: input has no VulkanBackend handle."
+                    .to_string(),
+            )
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
         backend.conv2d_f32_bytes(
-            input, weight, out,
-            x_shape, w_shape, stride, padding, groups,
+            input, weight, out, x_shape, w_shape, stride, padding, groups,
         )
     }
 
@@ -4006,20 +4688,30 @@ pub mod conv2d {
         if inputs.len() < 2 || inputs.len() > 3 || outputs.len() != 1 {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::conv2d::conv2d_bf16: expected 2-3 inputs + 1 output, got {} + {}",
-                inputs.len(), outputs.len(),
-            )).bt());
+                inputs.len(),
+                outputs.len(),
+            ))
+            .bt());
         }
         if inputs.len() == 3 {
             return Err(Error::Msg(
                 "vulkan_dispatch::conv2d::conv2d_bf16: bias-fused conv2d not supported \
                  on Vulkan yet; route picker should pick a fused-conv alternative when \
-                 bias is present.".to_string(),
-            ).bt());
+                 bias is present."
+                    .to_string(),
+            )
+            .bt());
         }
         let (x_shape, w_shape, stride, padding, dilation, groups) = match params {
-            OpParams::Conv2D { x_shape, w_shape, out_shape: _, stride, padding, dilation, groups } => {
-                (*x_shape, *w_shape, *stride, *padding, *dilation, *groups)
-            }
+            OpParams::Conv2D {
+                x_shape,
+                w_shape,
+                out_shape: _,
+                stride,
+                padding,
+                dilation,
+                groups,
+            } => (*x_shape, *w_shape, *stride, *padding, *dilation, *groups),
             other => {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::conv2d::conv2d_bf16: expected OpParams::Conv2D, got {other:?}",
@@ -4030,7 +4722,8 @@ pub mod conv2d {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::conv2d::conv2d_bf16: dilation {dilation:?} != (1,1) \
                  not yet supported on Vulkan; route picker should fall back to CPU/CUDA",
-            )).bt());
+            ))
+            .bt());
         }
         let in_guard = read_storage(&inputs[0])?;
         let w_guard = read_storage(&inputs[1])?;
@@ -4039,13 +4732,14 @@ pub mod conv2d {
         let weight = vulkan_input(&w_guard)?;
         let backend = input.backend().ok_or_else(|| {
             Error::Msg(
-                "vulkan_dispatch::conv2d::conv2d_bf16: input has no VulkanBackend handle.".to_string(),
-            ).bt()
+                "vulkan_dispatch::conv2d::conv2d_bf16: input has no VulkanBackend handle."
+                    .to_string(),
+            )
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
         backend.conv2d_bf16_bytes(
-            input, weight, out,
-            x_shape, w_shape, stride, padding, groups,
+            input, weight, out, x_shape, w_shape, stride, padding, groups,
         )
     }
 
@@ -4060,30 +4754,42 @@ pub mod conv2d {
         if inputs.len() < 2 || inputs.len() > 3 || outputs.len() != 1 {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::conv2d::conv2d_f16: expected 2-3 inputs + 1 output, got {} + {}",
-                inputs.len(), outputs.len(),
-            )).bt());
+                inputs.len(),
+                outputs.len(),
+            ))
+            .bt());
         }
         if inputs.len() == 3 {
             return Err(Error::Msg(
                 "vulkan_dispatch::conv2d::conv2d_f16: bias-fused conv2d not supported \
-                 on Vulkan yet".to_string(),
-            ).bt());
+                 on Vulkan yet"
+                    .to_string(),
+            )
+            .bt());
         }
         let (x_shape, w_shape, stride, padding, dilation, groups) = match params {
-            OpParams::Conv2D { x_shape, w_shape, out_shape: _, stride, padding, dilation, groups } => {
-                (*x_shape, *w_shape, *stride, *padding, *dilation, *groups)
-            }
+            OpParams::Conv2D {
+                x_shape,
+                w_shape,
+                out_shape: _,
+                stride,
+                padding,
+                dilation,
+                groups,
+            } => (*x_shape, *w_shape, *stride, *padding, *dilation, *groups),
             other => {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::conv2d::conv2d_f16: expected OpParams::Conv2D, got {other:?}",
-                )).bt());
+                ))
+                .bt());
             }
         };
         if dilation != (1, 1) {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::conv2d::conv2d_f16: dilation {dilation:?} != (1,1) \
                  not yet supported on Vulkan",
-            )).bt());
+            ))
+            .bt());
         }
         let in_guard = read_storage(&inputs[0])?;
         let w_guard = read_storage(&inputs[1])?;
@@ -4092,13 +4798,14 @@ pub mod conv2d {
         let weight = vulkan_input(&w_guard)?;
         let backend = input.backend().ok_or_else(|| {
             Error::Msg(
-                "vulkan_dispatch::conv2d::conv2d_f16: input has no VulkanBackend handle.".to_string(),
-            ).bt()
+                "vulkan_dispatch::conv2d::conv2d_f16: input has no VulkanBackend handle."
+                    .to_string(),
+            )
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
         backend.conv2d_f16_bytes(
-            input, weight, out,
-            x_shape, w_shape, stride, padding, groups,
+            input, weight, out, x_shape, w_shape, stride, padding, groups,
         )
     }
 }
@@ -4119,22 +4826,25 @@ pub mod cast_f8e4m3 {
         if inputs.len() != 1 || outputs.len() != 1 {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::cast_f8e4m3: expected 1 input + 1 output, got {} + {}",
-                inputs.len(), outputs.len(),
-            )).bt());
+                inputs.len(),
+                outputs.len(),
+            ))
+            .bt());
         }
         let in_guard = read_storage(&inputs[0])?;
         let mut out_guard = write_storage(&outputs[0])?;
         let src_dtype = in_guard.dtype;
         let dst_dtype = out_guard.dtype;
         let src_elem = match src_dtype {
-            DType::F32    => 4,
-            DType::F16    => 2,
-            DType::BF16   => 2,
+            DType::F32 => 4,
+            DType::F16 => 2,
+            DType::BF16 => 2,
             DType::F8E4M3 => 1,
             other => {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::cast_f8e4m3: unsupported src dtype {other:?}",
-                )).bt());
+                ))
+                .bt());
             }
         };
         let a = vulkan_input(&in_guard)?;
@@ -4143,13 +4853,15 @@ pub mod cast_f8e4m3 {
             return Err(Error::Msg(format!(
                 "vulkan_dispatch::cast_f8e4m3: input bytes {n_bytes} not a multiple of \
                  src elem size {src_elem} ({src_dtype:?})",
-            )).bt());
+            ))
+            .bt());
         }
         let n = n_bytes / src_elem;
         let backend = a.backend().ok_or_else(|| {
             Error::Msg(
                 "vulkan_dispatch::cast_f8e4m3: input has no VulkanBackend handle.".to_string(),
-            ).bt()
+            )
+            .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
         backend.cast_f8e4m3_bytes(src_dtype, dst_dtype, a, out, n)
@@ -4185,8 +4897,10 @@ pub fn copy_to_cpu_vulkan(
     if inputs.len() != 1 || outputs.len() != 1 {
         return Err(Error::Msg(format!(
             "copy_to_cpu_vulkan: expected 1 input + 1 output, got {} + {}",
-            inputs.len(), outputs.len(),
-        )).bt());
+            inputs.len(),
+            outputs.len(),
+        ))
+        .bt());
     }
     let in_guard = read_storage(&inputs[0])?;
     let vk_src = vulkan_input(&in_guard)?;
@@ -4195,8 +4909,10 @@ pub fn copy_to_cpu_vulkan(
             "copy_to_cpu_vulkan: Vulkan input has no backend handle. \
              Storages flowing through the pipelined-executor binding-table \
              Copy path must come from VulkanBackend::alloc_bytes_handle / \
-             upload_bytes_handle.".to_string()
-        ).bt()
+             upload_bytes_handle."
+                .to_string(),
+        )
+        .bt()
     })?;
     let mut out_guard = write_storage(&outputs[0])?;
     match &mut out_guard.inner {
@@ -4212,9 +4928,7 @@ pub fn copy_to_cpu_vulkan(
             // standalone buffer (safety copies on destructive ops /
             // residency machinery emit these; before this routing any
             // Vulkan→Vulkan Copy mis-dispatched into cpu_output).
-            let copied = backend.slot_copy_to_new_handle(
-                vk_src, 0, vk_src.len_bytes(),
-            )?;
+            let copied = backend.slot_copy_to_new_handle(vk_src, 0, vk_src.len_bytes())?;
             let dst = vulkan_output(&mut out_guard)?;
             *dst = copied;
             Ok(())
@@ -4226,7 +4940,8 @@ pub fn copy_to_cpu_vulkan(
              cross-vendor GPU transfer goes through host staging as \
              two Copy hops)",
             std::mem::discriminant(other),
-        )).bt()),
+        ))
+        .bt()),
     }
 }
 
@@ -4237,8 +4952,7 @@ pub fn copy_to_cpu_vulkan(
 /// The authored Vulkan cast (dtype-conversion) kernel contract, embedded into
 /// the binary via `include_str!` (the PRODUCTION contract). Parsed + lowered by
 /// [`register_vulkan_cast_from_contract`].
-const VULKAN_CAST_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/vulkan/cast.fkc.md");
+const VULKAN_CAST_CONTRACT: &str = include_str!("../../docs/kernel-contracts/vulkan/cast.fkc.md");
 
 /// Register the Vulkan cast family (12 (SRC, DST) pairs → 3 production wrappers:
 /// `cast::cast_f32_half` for f32↔f16 / f32↔bf16, `cast::cast_f32_f64` for
@@ -4330,14 +5044,12 @@ const VULKAN_ELEMENTWISE_CONTRACT: &str =
 /// fail-fast: a parse/lower/link failure of the embedded contract is a programmer
 /// error surfaced once here via `expect`.
 fn register_vulkan_elementwise_from_contract(table: &mut KernelBindingTable) {
-    let provider = crate::fkc::import_bundle_str(
-        VULKAN_ELEMENTWISE_CONTRACT,
-        &crate::fkc::VulkanLinkRegistry,
-    )
-    .expect(
-        "authored Vulkan elementwise contract must import \
+    let provider =
+        crate::fkc::import_bundle_str(VULKAN_ELEMENTWISE_CONTRACT, &crate::fkc::VulkanLinkRegistry)
+            .expect(
+                "authored Vulkan elementwise contract must import \
          (embedded via include_str!, resolved through VulkanLinkRegistry)",
-    );
+            );
     debug_assert!(
         provider.fused.is_empty(),
         "vulkan elementwise contract declares no fused ops",
@@ -4412,8 +5124,7 @@ fn register_vulkan_matmul_from_contract(table: &mut KernelBindingTable) {
 /// The authored Vulkan conv2d kernel contract (3 per-(op, dtype) Conv2D
 /// bindings), embedded via `include_str!` (the PRODUCTION contract). Parsed +
 /// lowered by [`register_vulkan_conv_from_contract`].
-const VULKAN_CONV_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/vulkan/conv.fkc.md");
+const VULKAN_CONV_CONTRACT: &str = include_str!("../../docs/kernel-contracts/vulkan/conv.fkc.md");
 
 /// Register the Vulkan conv2d family (3 `(Conv2D, [x, weight, out])` bindings —
 /// f32 / bf16 / f16) by IMPORTING its RE-AUTHORED FKC kernel contract — the
@@ -4684,8 +5395,7 @@ fn register_vulkan_movement_from_contract(table: &mut KernelBindingTable) {
 /// The authored Vulkan shape (Triu / Tril / Flip / Roll) kernel contract, embedded
 /// via `include_str!` (the PRODUCTION contract). Parsed + lowered by
 /// [`register_vulkan_shape_from_contract`].
-const VULKAN_SHAPE_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/vulkan/shape.fkc.md");
+const VULKAN_SHAPE_CONTRACT: &str = include_str!("../../docs/kernel-contracts/vulkan/shape.fkc.md");
 
 /// Register the Vulkan shape family (28 (op, dtype) bindings — Triu (7) + Tril (7)
 /// + Flip (7) + Roll (7)) by IMPORTING its FKC kernel contract — the EIGHTH
@@ -4811,8 +5521,7 @@ fn register_vulkan_write_slice_from_contract(table: &mut KernelBindingTable) {
 
 /// The authored Vulkan rope kernel contract, embedded via `include_str!` (the
 /// PRODUCTION contract). Parsed + lowered by [`register_vulkan_rope_from_contract`].
-const VULKAN_ROPE_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/vulkan/rope.fkc.md");
+const VULKAN_ROPE_CONTRACT: &str = include_str!("../../docs/kernel-contracts/vulkan/rope.fkc.md");
 
 /// Register the Vulkan rope family (4 (Rope, [x, cos, sin, out]) per-dtype
 /// bindings) by IMPORTING its FKC kernel contract — the ELEVENTH Vulkan-backend
@@ -4898,8 +5607,7 @@ fn register_vulkan_reduce_from_contract(table: &mut KernelBindingTable) {
 /// The authored Vulkan normalization / softmax primitives kernel contract,
 /// embedded via `include_str!`. Parsed + lowered by
 /// [`register_vulkan_norm_from_contract`].
-const VULKAN_NORM_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/vulkan/norm.fkc.md");
+const VULKAN_NORM_CONTRACT: &str = include_str!("../../docs/kernel-contracts/vulkan/norm.fkc.md");
 
 /// Register the Vulkan norm family (20 (op, dtype) bindings — SoftmaxLastDim (4) +
 /// SoftmaxLastDimBackward (4) + LayerNormLastDim (4) + LayerNormLastDimBackward (4)
@@ -5559,18 +6267,18 @@ mod cast_contract_tests {
         // (SRC, DST, expected production wrapper) for all 12 cast pairs — the
         // exact wrapper each deleted hand-written reg carried.
         let cases: &[(DType, DType, KernelRef)] = &[
-            (DType::F32,    DType::F16,    cast::cast_f32_half),
-            (DType::F16,    DType::F32,    cast::cast_f32_half),
-            (DType::F32,    DType::BF16,   cast::cast_f32_half),
-            (DType::BF16,   DType::F32,    cast::cast_f32_half),
-            (DType::F32,    DType::F64,    cast::cast_f32_f64),
-            (DType::F64,    DType::F32,    cast::cast_f32_f64),
-            (DType::F32,    DType::F8E4M3, cast_f8e4m3::cast_f8e4m3),
-            (DType::F8E4M3, DType::F32,    cast_f8e4m3::cast_f8e4m3),
-            (DType::F16,    DType::F8E4M3, cast_f8e4m3::cast_f8e4m3),
-            (DType::F8E4M3, DType::F16,    cast_f8e4m3::cast_f8e4m3),
-            (DType::BF16,   DType::F8E4M3, cast_f8e4m3::cast_f8e4m3),
-            (DType::F8E4M3, DType::BF16,   cast_f8e4m3::cast_f8e4m3),
+            (DType::F32, DType::F16, cast::cast_f32_half),
+            (DType::F16, DType::F32, cast::cast_f32_half),
+            (DType::F32, DType::BF16, cast::cast_f32_half),
+            (DType::BF16, DType::F32, cast::cast_f32_half),
+            (DType::F32, DType::F64, cast::cast_f32_f64),
+            (DType::F64, DType::F32, cast::cast_f32_f64),
+            (DType::F32, DType::F8E4M3, cast_f8e4m3::cast_f8e4m3),
+            (DType::F8E4M3, DType::F32, cast_f8e4m3::cast_f8e4m3),
+            (DType::F16, DType::F8E4M3, cast_f8e4m3::cast_f8e4m3),
+            (DType::F8E4M3, DType::F16, cast_f8e4m3::cast_f8e4m3),
+            (DType::BF16, DType::F8E4M3, cast_f8e4m3::cast_f8e4m3),
+            (DType::F8E4M3, DType::BF16, cast_f8e4m3::cast_f8e4m3),
         ];
 
         let mut checked = 0usize;
@@ -5644,110 +6352,582 @@ mod elementwise_contract_tests {
 
         // (OpKind, key dtypes, expected production wrapper, expected strided_input)
         let cases: &[(OpKind, &[DType], KernelRef, bool)] = &[
-        // ---- Unary: 16 ops x {f32,f16,f64 strided; bf16 contiguous} -- key [T, T]. ----
-        (OpKind::NegElementwise, &[DType::F32, DType::F32], unary::neg_f32 as KernelRef, true),
-        (OpKind::NegElementwise, &[DType::F16, DType::F16], unary_f16::neg_f16 as KernelRef, true),
-        (OpKind::NegElementwise, &[DType::F64, DType::F64], unary_f64::neg_f64 as KernelRef, true),
-        (OpKind::NegElementwise, &[DType::BF16, DType::BF16], unary_bf16::neg_bf16 as KernelRef, false),
-        (OpKind::SqrElementwise, &[DType::F32, DType::F32], unary::sqr_f32 as KernelRef, true),
-        (OpKind::SqrElementwise, &[DType::F16, DType::F16], unary_f16::sqr_f16 as KernelRef, true),
-        (OpKind::SqrElementwise, &[DType::F64, DType::F64], unary_f64::sqr_f64 as KernelRef, true),
-        (OpKind::SqrElementwise, &[DType::BF16, DType::BF16], unary_bf16::sqr_bf16 as KernelRef, false),
-        (OpKind::SqrtElementwise, &[DType::F32, DType::F32], unary::sqrt_f32 as KernelRef, true),
-        (OpKind::SqrtElementwise, &[DType::F16, DType::F16], unary_f16::sqrt_f16 as KernelRef, true),
-        (OpKind::SqrtElementwise, &[DType::F64, DType::F64], unary_f64::sqrt_f64 as KernelRef, true),
-        (OpKind::SqrtElementwise, &[DType::BF16, DType::BF16], unary_bf16::sqrt_bf16 as KernelRef, false),
-        (OpKind::ExpElementwise, &[DType::F32, DType::F32], unary::exp_f32 as KernelRef, true),
-        (OpKind::ExpElementwise, &[DType::F16, DType::F16], unary_f16::exp_f16 as KernelRef, true),
-        (OpKind::ExpElementwise, &[DType::F64, DType::F64], unary_f64::exp_f64 as KernelRef, true),
-        (OpKind::ExpElementwise, &[DType::BF16, DType::BF16], unary_bf16::exp_bf16 as KernelRef, false),
-        (OpKind::LogElementwise, &[DType::F32, DType::F32], unary::log_f32 as KernelRef, true),
-        (OpKind::LogElementwise, &[DType::F16, DType::F16], unary_f16::log_f16 as KernelRef, true),
-        (OpKind::LogElementwise, &[DType::F64, DType::F64], unary_f64::log_f64 as KernelRef, true),
-        (OpKind::LogElementwise, &[DType::BF16, DType::BF16], unary_bf16::log_bf16 as KernelRef, false),
-        (OpKind::SinElementwise, &[DType::F32, DType::F32], unary::sin_f32 as KernelRef, true),
-        (OpKind::SinElementwise, &[DType::F16, DType::F16], unary_f16::sin_f16 as KernelRef, true),
-        (OpKind::SinElementwise, &[DType::F64, DType::F64], unary_f64::sin_f64 as KernelRef, true),
-        (OpKind::SinElementwise, &[DType::BF16, DType::BF16], unary_bf16::sin_bf16 as KernelRef, false),
-        (OpKind::CosElementwise, &[DType::F32, DType::F32], unary::cos_f32 as KernelRef, true),
-        (OpKind::CosElementwise, &[DType::F16, DType::F16], unary_f16::cos_f16 as KernelRef, true),
-        (OpKind::CosElementwise, &[DType::F64, DType::F64], unary_f64::cos_f64 as KernelRef, true),
-        (OpKind::CosElementwise, &[DType::BF16, DType::BF16], unary_bf16::cos_bf16 as KernelRef, false),
-        (OpKind::TanhElementwise, &[DType::F32, DType::F32], unary::tanh_f32 as KernelRef, true),
-        (OpKind::TanhElementwise, &[DType::F16, DType::F16], unary_f16::tanh_f16 as KernelRef, true),
-        (OpKind::TanhElementwise, &[DType::F64, DType::F64], unary_f64::tanh_f64 as KernelRef, true),
-        (OpKind::TanhElementwise, &[DType::BF16, DType::BF16], unary_bf16::tanh_bf16 as KernelRef, false),
-        (OpKind::SigmoidElementwise, &[DType::F32, DType::F32], unary::sigmoid_f32 as KernelRef, true),
-        (OpKind::SigmoidElementwise, &[DType::F16, DType::F16], unary_f16::sigmoid_f16 as KernelRef, true),
-        (OpKind::SigmoidElementwise, &[DType::F64, DType::F64], unary_f64::sigmoid_f64 as KernelRef, true),
-        (OpKind::SigmoidElementwise, &[DType::BF16, DType::BF16], unary_bf16::sigmoid_bf16 as KernelRef, false),
-        (OpKind::SiluElementwise, &[DType::F32, DType::F32], unary::silu_f32 as KernelRef, true),
-        (OpKind::SiluElementwise, &[DType::F16, DType::F16], unary_f16::silu_f16 as KernelRef, true),
-        (OpKind::SiluElementwise, &[DType::F64, DType::F64], unary_f64::silu_f64 as KernelRef, true),
-        (OpKind::SiluElementwise, &[DType::BF16, DType::BF16], unary_bf16::silu_bf16 as KernelRef, false),
-        (OpKind::GeluElementwise, &[DType::F32, DType::F32], unary::gelu_f32 as KernelRef, true),
-        (OpKind::GeluElementwise, &[DType::F16, DType::F16], unary_f16::gelu_f16 as KernelRef, true),
-        (OpKind::GeluElementwise, &[DType::F64, DType::F64], unary_f64::gelu_f64 as KernelRef, true),
-        (OpKind::GeluElementwise, &[DType::BF16, DType::BF16], unary_bf16::gelu_bf16 as KernelRef, false),
-        (OpKind::ReluElementwise, &[DType::F32, DType::F32], unary::relu_f32 as KernelRef, true),
-        (OpKind::ReluElementwise, &[DType::F16, DType::F16], unary_f16::relu_f16 as KernelRef, true),
-        (OpKind::ReluElementwise, &[DType::F64, DType::F64], unary_f64::relu_f64 as KernelRef, true),
-        (OpKind::ReluElementwise, &[DType::BF16, DType::BF16], unary_bf16::relu_bf16 as KernelRef, false),
-        (OpKind::StepElementwise, &[DType::F32, DType::F32], unary::step_f32 as KernelRef, true),
-        (OpKind::StepElementwise, &[DType::F16, DType::F16], unary_f16::step_f16 as KernelRef, true),
-        (OpKind::StepElementwise, &[DType::F64, DType::F64], unary_f64::step_f64 as KernelRef, true),
-        (OpKind::StepElementwise, &[DType::BF16, DType::BF16], unary_bf16::step_bf16 as KernelRef, false),
-        (OpKind::AbsElementwise, &[DType::F32, DType::F32], unary::abs_f32 as KernelRef, true),
-        (OpKind::AbsElementwise, &[DType::F16, DType::F16], unary_f16::abs_f16 as KernelRef, true),
-        (OpKind::AbsElementwise, &[DType::F64, DType::F64], unary_f64::abs_f64 as KernelRef, true),
-        (OpKind::AbsElementwise, &[DType::BF16, DType::BF16], unary_bf16::abs_bf16 as KernelRef, false),
-        (OpKind::SignElementwise, &[DType::F32, DType::F32], unary::sign_f32 as KernelRef, true),
-        (OpKind::SignElementwise, &[DType::F16, DType::F16], unary_f16::sign_f16 as KernelRef, true),
-        (OpKind::SignElementwise, &[DType::F64, DType::F64], unary_f64::sign_f64 as KernelRef, true),
-        (OpKind::SignElementwise, &[DType::BF16, DType::BF16], unary_bf16::sign_bf16 as KernelRef, false),
-        (OpKind::RecipElementwise, &[DType::F32, DType::F32], unary::recip_f32 as KernelRef, true),
-        (OpKind::RecipElementwise, &[DType::F16, DType::F16], unary_f16::recip_f16 as KernelRef, true),
-        (OpKind::RecipElementwise, &[DType::F64, DType::F64], unary_f64::recip_f64 as KernelRef, true),
-        (OpKind::RecipElementwise, &[DType::BF16, DType::BF16], unary_bf16::recip_bf16 as KernelRef, false),
-        // ---- Binary: 6 ops x {f32,f16,f64,bf16} all strided -- key [T, T, T]. ----
-        (OpKind::AddElementwise, &[DType::F32, DType::F32, DType::F32], binary::add_f32 as KernelRef, true),
-        (OpKind::AddElementwise, &[DType::F16, DType::F16, DType::F16], binary_f16::add_f16 as KernelRef, true),
-        (OpKind::AddElementwise, &[DType::F64, DType::F64, DType::F64], binary_f64::add_f64 as KernelRef, true),
-        (OpKind::AddElementwise, &[DType::BF16, DType::BF16, DType::BF16], binary_bf16::add_bf16 as KernelRef, true),
-        (OpKind::SubElementwise, &[DType::F32, DType::F32, DType::F32], binary::sub_f32 as KernelRef, true),
-        (OpKind::SubElementwise, &[DType::F16, DType::F16, DType::F16], binary_f16::sub_f16 as KernelRef, true),
-        (OpKind::SubElementwise, &[DType::F64, DType::F64, DType::F64], binary_f64::sub_f64 as KernelRef, true),
-        (OpKind::SubElementwise, &[DType::BF16, DType::BF16, DType::BF16], binary_bf16::sub_bf16 as KernelRef, true),
-        (OpKind::MulElementwise, &[DType::F32, DType::F32, DType::F32], binary::mul_f32 as KernelRef, true),
-        (OpKind::MulElementwise, &[DType::F16, DType::F16, DType::F16], binary_f16::mul_f16 as KernelRef, true),
-        (OpKind::MulElementwise, &[DType::F64, DType::F64, DType::F64], binary_f64::mul_f64 as KernelRef, true),
-        (OpKind::MulElementwise, &[DType::BF16, DType::BF16, DType::BF16], binary_bf16::mul_bf16 as KernelRef, true),
-        (OpKind::DivElementwise, &[DType::F32, DType::F32, DType::F32], binary::div_f32 as KernelRef, true),
-        (OpKind::DivElementwise, &[DType::F16, DType::F16, DType::F16], binary_f16::div_f16 as KernelRef, true),
-        (OpKind::DivElementwise, &[DType::F64, DType::F64, DType::F64], binary_f64::div_f64 as KernelRef, true),
-        (OpKind::DivElementwise, &[DType::BF16, DType::BF16, DType::BF16], binary_bf16::div_bf16 as KernelRef, true),
-        (OpKind::MaximumElementwise, &[DType::F32, DType::F32, DType::F32], binary::maximum_f32 as KernelRef, true),
-        (OpKind::MaximumElementwise, &[DType::F16, DType::F16, DType::F16], binary_f16::maximum_f16 as KernelRef, true),
-        (OpKind::MaximumElementwise, &[DType::F64, DType::F64, DType::F64], binary_f64::maximum_f64 as KernelRef, true),
-        (OpKind::MaximumElementwise, &[DType::BF16, DType::BF16, DType::BF16], binary_bf16::maximum_bf16 as KernelRef, true),
-        (OpKind::MinimumElementwise, &[DType::F32, DType::F32, DType::F32], binary::minimum_f32 as KernelRef, true),
-        (OpKind::MinimumElementwise, &[DType::F16, DType::F16, DType::F16], binary_f16::minimum_f16 as KernelRef, true),
-        (OpKind::MinimumElementwise, &[DType::F64, DType::F64, DType::F64], binary_f64::minimum_f64 as KernelRef, true),
-        (OpKind::MinimumElementwise, &[DType::BF16, DType::BF16, DType::BF16], binary_bf16::minimum_bf16 as KernelRef, true),
-        // ---- Affine: f32/f16/f64 strided + bf16 contiguous -- key [T, T]. ----
-        (OpKind::Affine, &[DType::F32, DType::F32], affine::affine_f32 as KernelRef, true),
-        (OpKind::Affine, &[DType::F16, DType::F16], affine::affine_f16 as KernelRef, true),
-        (OpKind::Affine, &[DType::F64, DType::F64], affine::affine_f64 as KernelRef, true),
-        (OpKind::Affine, &[DType::BF16, DType::BF16], affine::affine_bf16 as KernelRef, false),
-        // ---- Clamp / PowI: single-dtype f32 strided -- key [T, T]. ----
-        (OpKind::ClampElementwise, &[DType::F32, DType::F32], clamp::clamp_f32 as KernelRef, true),
-        (OpKind::PowIElementwise, &[DType::F32, DType::F32], powi::powi_f32 as KernelRef, true),
+            // ---- Unary: 16 ops x {f32,f16,f64 strided; bf16 contiguous} -- key [T, T]. ----
+            (
+                OpKind::NegElementwise,
+                &[DType::F32, DType::F32],
+                unary::neg_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::NegElementwise,
+                &[DType::F16, DType::F16],
+                unary_f16::neg_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::NegElementwise,
+                &[DType::F64, DType::F64],
+                unary_f64::neg_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::NegElementwise,
+                &[DType::BF16, DType::BF16],
+                unary_bf16::neg_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::SqrElementwise,
+                &[DType::F32, DType::F32],
+                unary::sqr_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SqrElementwise,
+                &[DType::F16, DType::F16],
+                unary_f16::sqr_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SqrElementwise,
+                &[DType::F64, DType::F64],
+                unary_f64::sqr_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SqrElementwise,
+                &[DType::BF16, DType::BF16],
+                unary_bf16::sqr_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::SqrtElementwise,
+                &[DType::F32, DType::F32],
+                unary::sqrt_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SqrtElementwise,
+                &[DType::F16, DType::F16],
+                unary_f16::sqrt_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SqrtElementwise,
+                &[DType::F64, DType::F64],
+                unary_f64::sqrt_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SqrtElementwise,
+                &[DType::BF16, DType::BF16],
+                unary_bf16::sqrt_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::ExpElementwise,
+                &[DType::F32, DType::F32],
+                unary::exp_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::ExpElementwise,
+                &[DType::F16, DType::F16],
+                unary_f16::exp_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::ExpElementwise,
+                &[DType::F64, DType::F64],
+                unary_f64::exp_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::ExpElementwise,
+                &[DType::BF16, DType::BF16],
+                unary_bf16::exp_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::LogElementwise,
+                &[DType::F32, DType::F32],
+                unary::log_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::LogElementwise,
+                &[DType::F16, DType::F16],
+                unary_f16::log_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::LogElementwise,
+                &[DType::F64, DType::F64],
+                unary_f64::log_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::LogElementwise,
+                &[DType::BF16, DType::BF16],
+                unary_bf16::log_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::SinElementwise,
+                &[DType::F32, DType::F32],
+                unary::sin_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SinElementwise,
+                &[DType::F16, DType::F16],
+                unary_f16::sin_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SinElementwise,
+                &[DType::F64, DType::F64],
+                unary_f64::sin_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SinElementwise,
+                &[DType::BF16, DType::BF16],
+                unary_bf16::sin_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::CosElementwise,
+                &[DType::F32, DType::F32],
+                unary::cos_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::CosElementwise,
+                &[DType::F16, DType::F16],
+                unary_f16::cos_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::CosElementwise,
+                &[DType::F64, DType::F64],
+                unary_f64::cos_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::CosElementwise,
+                &[DType::BF16, DType::BF16],
+                unary_bf16::cos_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::TanhElementwise,
+                &[DType::F32, DType::F32],
+                unary::tanh_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::TanhElementwise,
+                &[DType::F16, DType::F16],
+                unary_f16::tanh_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::TanhElementwise,
+                &[DType::F64, DType::F64],
+                unary_f64::tanh_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::TanhElementwise,
+                &[DType::BF16, DType::BF16],
+                unary_bf16::tanh_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::SigmoidElementwise,
+                &[DType::F32, DType::F32],
+                unary::sigmoid_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SigmoidElementwise,
+                &[DType::F16, DType::F16],
+                unary_f16::sigmoid_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SigmoidElementwise,
+                &[DType::F64, DType::F64],
+                unary_f64::sigmoid_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SigmoidElementwise,
+                &[DType::BF16, DType::BF16],
+                unary_bf16::sigmoid_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::SiluElementwise,
+                &[DType::F32, DType::F32],
+                unary::silu_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SiluElementwise,
+                &[DType::F16, DType::F16],
+                unary_f16::silu_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SiluElementwise,
+                &[DType::F64, DType::F64],
+                unary_f64::silu_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SiluElementwise,
+                &[DType::BF16, DType::BF16],
+                unary_bf16::silu_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::GeluElementwise,
+                &[DType::F32, DType::F32],
+                unary::gelu_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::GeluElementwise,
+                &[DType::F16, DType::F16],
+                unary_f16::gelu_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::GeluElementwise,
+                &[DType::F64, DType::F64],
+                unary_f64::gelu_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::GeluElementwise,
+                &[DType::BF16, DType::BF16],
+                unary_bf16::gelu_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::ReluElementwise,
+                &[DType::F32, DType::F32],
+                unary::relu_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::ReluElementwise,
+                &[DType::F16, DType::F16],
+                unary_f16::relu_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::ReluElementwise,
+                &[DType::F64, DType::F64],
+                unary_f64::relu_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::ReluElementwise,
+                &[DType::BF16, DType::BF16],
+                unary_bf16::relu_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::StepElementwise,
+                &[DType::F32, DType::F32],
+                unary::step_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::StepElementwise,
+                &[DType::F16, DType::F16],
+                unary_f16::step_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::StepElementwise,
+                &[DType::F64, DType::F64],
+                unary_f64::step_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::StepElementwise,
+                &[DType::BF16, DType::BF16],
+                unary_bf16::step_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::AbsElementwise,
+                &[DType::F32, DType::F32],
+                unary::abs_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::AbsElementwise,
+                &[DType::F16, DType::F16],
+                unary_f16::abs_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::AbsElementwise,
+                &[DType::F64, DType::F64],
+                unary_f64::abs_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::AbsElementwise,
+                &[DType::BF16, DType::BF16],
+                unary_bf16::abs_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::SignElementwise,
+                &[DType::F32, DType::F32],
+                unary::sign_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SignElementwise,
+                &[DType::F16, DType::F16],
+                unary_f16::sign_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SignElementwise,
+                &[DType::F64, DType::F64],
+                unary_f64::sign_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SignElementwise,
+                &[DType::BF16, DType::BF16],
+                unary_bf16::sign_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::RecipElementwise,
+                &[DType::F32, DType::F32],
+                unary::recip_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::RecipElementwise,
+                &[DType::F16, DType::F16],
+                unary_f16::recip_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::RecipElementwise,
+                &[DType::F64, DType::F64],
+                unary_f64::recip_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::RecipElementwise,
+                &[DType::BF16, DType::BF16],
+                unary_bf16::recip_bf16 as KernelRef,
+                false,
+            ),
+            // ---- Binary: 6 ops x {f32,f16,f64,bf16} all strided -- key [T, T, T]. ----
+            (
+                OpKind::AddElementwise,
+                &[DType::F32, DType::F32, DType::F32],
+                binary::add_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::AddElementwise,
+                &[DType::F16, DType::F16, DType::F16],
+                binary_f16::add_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::AddElementwise,
+                &[DType::F64, DType::F64, DType::F64],
+                binary_f64::add_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::AddElementwise,
+                &[DType::BF16, DType::BF16, DType::BF16],
+                binary_bf16::add_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SubElementwise,
+                &[DType::F32, DType::F32, DType::F32],
+                binary::sub_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SubElementwise,
+                &[DType::F16, DType::F16, DType::F16],
+                binary_f16::sub_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SubElementwise,
+                &[DType::F64, DType::F64, DType::F64],
+                binary_f64::sub_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SubElementwise,
+                &[DType::BF16, DType::BF16, DType::BF16],
+                binary_bf16::sub_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::MulElementwise,
+                &[DType::F32, DType::F32, DType::F32],
+                binary::mul_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::MulElementwise,
+                &[DType::F16, DType::F16, DType::F16],
+                binary_f16::mul_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::MulElementwise,
+                &[DType::F64, DType::F64, DType::F64],
+                binary_f64::mul_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::MulElementwise,
+                &[DType::BF16, DType::BF16, DType::BF16],
+                binary_bf16::mul_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::DivElementwise,
+                &[DType::F32, DType::F32, DType::F32],
+                binary::div_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::DivElementwise,
+                &[DType::F16, DType::F16, DType::F16],
+                binary_f16::div_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::DivElementwise,
+                &[DType::F64, DType::F64, DType::F64],
+                binary_f64::div_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::DivElementwise,
+                &[DType::BF16, DType::BF16, DType::BF16],
+                binary_bf16::div_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::MaximumElementwise,
+                &[DType::F32, DType::F32, DType::F32],
+                binary::maximum_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::MaximumElementwise,
+                &[DType::F16, DType::F16, DType::F16],
+                binary_f16::maximum_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::MaximumElementwise,
+                &[DType::F64, DType::F64, DType::F64],
+                binary_f64::maximum_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::MaximumElementwise,
+                &[DType::BF16, DType::BF16, DType::BF16],
+                binary_bf16::maximum_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::MinimumElementwise,
+                &[DType::F32, DType::F32, DType::F32],
+                binary::minimum_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::MinimumElementwise,
+                &[DType::F16, DType::F16, DType::F16],
+                binary_f16::minimum_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::MinimumElementwise,
+                &[DType::F64, DType::F64, DType::F64],
+                binary_f64::minimum_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::MinimumElementwise,
+                &[DType::BF16, DType::BF16, DType::BF16],
+                binary_bf16::minimum_bf16 as KernelRef,
+                true,
+            ),
+            // ---- Affine: f32/f16/f64 strided + bf16 contiguous -- key [T, T]. ----
+            (
+                OpKind::Affine,
+                &[DType::F32, DType::F32],
+                affine::affine_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::Affine,
+                &[DType::F16, DType::F16],
+                affine::affine_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::Affine,
+                &[DType::F64, DType::F64],
+                affine::affine_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::Affine,
+                &[DType::BF16, DType::BF16],
+                affine::affine_bf16 as KernelRef,
+                false,
+            ),
+            // ---- Clamp / PowI: single-dtype f32 strided -- key [T, T]. ----
+            (
+                OpKind::ClampElementwise,
+                &[DType::F32, DType::F32],
+                clamp::clamp_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::PowIElementwise,
+                &[DType::F32, DType::F32],
+                powi::powi_f32 as KernelRef,
+                true,
+            ),
         ];
 
         let mut checked = 0usize;
         for (op, key, expected, expect_strided) in cases {
             let alts = table.lookup_alternatives(*op, key, vk);
-            let entry = alts.iter().find(|e| e.kernel as usize == *expected as usize);
+            let entry = alts
+                .iter()
+                .find(|e| e.kernel as usize == *expected as usize);
             let entry = match entry {
                 Some(e) => e,
                 None => panic!(
@@ -5767,7 +6947,10 @@ mod elementwise_contract_tests {
             );
             checked += 1;
         }
-        assert_eq!(checked, 94, "all 94 (op, dtype) elementwise bindings checked");
+        assert_eq!(
+            checked, 94,
+            "all 94 (op, dtype) elementwise bindings checked"
+        );
     }
 }
 
@@ -5818,18 +7001,38 @@ mod matmul_contract_tests {
         // binding is contiguous-only (strided_input == false), so that is checked
         // uniformly below rather than per-row.
         let cases: &[(&[DType], KernelRef)] = &[
-            (&[DType::F32,  DType::F32,  DType::F32],  matmul::matmul_f32 as KernelRef),
-            (&[DType::F32,  DType::BF16, DType::F32],  matmul::matmul_f32_bf16_b as KernelRef),
-            (&[DType::BF16, DType::BF16, DType::F32],  matmul::matmul_bf16_bf16_f32 as KernelRef),
-            (&[DType::BF16, DType::BF16, DType::BF16], matmul::matmul_bf16_bf16_bf16 as KernelRef),
-            (&[DType::F16,  DType::F16,  DType::F16],  matmul::matmul_f16_f16_f16 as KernelRef),
-            (&[DType::F16,  DType::F16,  DType::F32],  matmul::matmul_f16_f16_f32 as KernelRef),
+            (
+                &[DType::F32, DType::F32, DType::F32],
+                matmul::matmul_f32 as KernelRef,
+            ),
+            (
+                &[DType::F32, DType::BF16, DType::F32],
+                matmul::matmul_f32_bf16_b as KernelRef,
+            ),
+            (
+                &[DType::BF16, DType::BF16, DType::F32],
+                matmul::matmul_bf16_bf16_f32 as KernelRef,
+            ),
+            (
+                &[DType::BF16, DType::BF16, DType::BF16],
+                matmul::matmul_bf16_bf16_bf16 as KernelRef,
+            ),
+            (
+                &[DType::F16, DType::F16, DType::F16],
+                matmul::matmul_f16_f16_f16 as KernelRef,
+            ),
+            (
+                &[DType::F16, DType::F16, DType::F32],
+                matmul::matmul_f16_f16_f32 as KernelRef,
+            ),
         ];
 
         let mut checked = 0usize;
         for (key, expected) in cases {
             let alts = table.lookup_alternatives(OpKind::MatMul, key, vk);
-            let entry = alts.iter().find(|e| e.kernel as usize == *expected as usize);
+            let entry = alts
+                .iter()
+                .find(|e| e.kernel as usize == *expected as usize);
             let entry = match entry {
                 Some(e) => e,
                 None => panic!(
@@ -5851,7 +7054,10 @@ mod matmul_contract_tests {
             );
             checked += 1;
         }
-        assert_eq!(checked, 6, "all 6 (MatMul, [lhs,rhs,out]) Vulkan combos checked");
+        assert_eq!(
+            checked, 6,
+            "all 6 (MatMul, [lhs,rhs,out]) Vulkan combos checked"
+        );
     }
 }
 
@@ -5907,15 +7113,26 @@ mod conv_contract_tests {
         // binding is contiguous-only (strided_input == false), so that is checked
         // uniformly below rather than per-row.
         let cases: &[(&[DType], KernelRef)] = &[
-            (&[DType::F32,  DType::F32,  DType::F32],  conv2d::conv2d_f32 as KernelRef),
-            (&[DType::BF16, DType::BF16, DType::BF16], conv2d::conv2d_bf16 as KernelRef),
-            (&[DType::F16,  DType::F16,  DType::F16],  conv2d::conv2d_f16 as KernelRef),
+            (
+                &[DType::F32, DType::F32, DType::F32],
+                conv2d::conv2d_f32 as KernelRef,
+            ),
+            (
+                &[DType::BF16, DType::BF16, DType::BF16],
+                conv2d::conv2d_bf16 as KernelRef,
+            ),
+            (
+                &[DType::F16, DType::F16, DType::F16],
+                conv2d::conv2d_f16 as KernelRef,
+            ),
         ];
 
         let mut checked = 0usize;
         for (key, expected) in cases {
             let alts = table.lookup_alternatives(OpKind::Conv2D, key, vk);
-            let entry = alts.iter().find(|e| e.kernel as usize == *expected as usize);
+            let entry = alts
+                .iter()
+                .find(|e| e.kernel as usize == *expected as usize);
             let entry = match entry {
                 Some(e) => e,
                 None => panic!(
@@ -5937,7 +7154,10 @@ mod conv_contract_tests {
             );
             checked += 1;
         }
-        assert_eq!(checked, 3, "all 3 (Conv2D, [x, weight, out]) Vulkan combos checked");
+        assert_eq!(
+            checked, 3,
+            "all 3 (Conv2D, [x, weight, out]) Vulkan combos checked"
+        );
     }
 }
 
@@ -5979,25 +7199,65 @@ mod select_contract_tests {
         register_vulkan_kernels(&mut table);
         let vk = BackendId::Vulkan;
 
-        let f32 = DType::F32; let f16 = DType::F16; let bf16 = DType::BF16;
-        let f64 = DType::F64; let u8 = DType::U8; let u32 = DType::U32;
+        let f32 = DType::F32;
+        let f16 = DType::F16;
+        let bf16 = DType::BF16;
+        let f64 = DType::F64;
+        let u8 = DType::U8;
+        let u32 = DType::U32;
         let boolean = DType::Bool;
 
         // (OpKind, key dtypes, expected production wrapper). Every select binding
         // is contiguous-only (strided_input == false), checked uniformly below.
         let cases: &[(OpKind, &[DType], KernelRef)] = &[
             // IndexSelect: [source, U32, out]; 4 distinct per-dtype wrappers.
-            (OpKind::IndexSelect, &[f32,  u32, f32],  indexing::index_select_f32 as KernelRef),
-            (OpKind::IndexSelect, &[f16,  u32, f16],  indexing::index_select_f16 as KernelRef),
-            (OpKind::IndexSelect, &[bf16, u32, bf16], indexing::index_select_bf16 as KernelRef),
-            (OpKind::IndexSelect, &[f64,  u32, f64],  indexing::index_select_f64 as KernelRef),
+            (
+                OpKind::IndexSelect,
+                &[f32, u32, f32],
+                indexing::index_select_f32 as KernelRef,
+            ),
+            (
+                OpKind::IndexSelect,
+                &[f16, u32, f16],
+                indexing::index_select_f16 as KernelRef,
+            ),
+            (
+                OpKind::IndexSelect,
+                &[bf16, u32, bf16],
+                indexing::index_select_bf16 as KernelRef,
+            ),
+            (
+                OpKind::IndexSelect,
+                &[f64, u32, f64],
+                indexing::index_select_f64 as KernelRef,
+            ),
             // Gather: [source, U32, out]; ONE dtype-agnostic wrapper across 6 keys.
-            (OpKind::Gather, &[f32,  u32, f32],  gather::gather as KernelRef),
-            (OpKind::Gather, &[f16,  u32, f16],  gather::gather as KernelRef),
-            (OpKind::Gather, &[bf16, u32, bf16], gather::gather as KernelRef),
-            (OpKind::Gather, &[f64,  u32, f64],  gather::gather as KernelRef),
-            (OpKind::Gather, &[u8,   u32, u8],   gather::gather as KernelRef),
-            (OpKind::Gather, &[u32,  u32, u32],  gather::gather as KernelRef),
+            (
+                OpKind::Gather,
+                &[f32, u32, f32],
+                gather::gather as KernelRef,
+            ),
+            (
+                OpKind::Gather,
+                &[f16, u32, f16],
+                gather::gather as KernelRef,
+            ),
+            (
+                OpKind::Gather,
+                &[bf16, u32, bf16],
+                gather::gather as KernelRef,
+            ),
+            (
+                OpKind::Gather,
+                &[f64, u32, f64],
+                gather::gather as KernelRef,
+            ),
+            (OpKind::Gather, &[u8, u32, u8], gather::gather as KernelRef),
+            (
+                OpKind::Gather,
+                &[u32, u32, u32],
+                gather::gather as KernelRef,
+            ),
             // MaskedFill: [data, BOOL mask, out]; ONE wrapper across 6 keys.
             //
             // The mask slot is `Bool`, NOT `U8`. GAP-168(c) moved it;
@@ -6015,18 +7275,44 @@ mod select_contract_tests {
             // It survived the Bool cut because it needs `--features vulkan`:
             // that sweep was gated with `--lib`, and CI could not build the
             // workspace at all, so nothing executed this until today.
-            (OpKind::MaskedFill, &[f32,  boolean, f32],  masked_fill::masked_fill as KernelRef),
-            (OpKind::MaskedFill, &[f16,  boolean, f16],  masked_fill::masked_fill as KernelRef),
-            (OpKind::MaskedFill, &[bf16, boolean, bf16], masked_fill::masked_fill as KernelRef),
-            (OpKind::MaskedFill, &[f64,  boolean, f64],  masked_fill::masked_fill as KernelRef),
-            (OpKind::MaskedFill, &[u8,   boolean, u8],   masked_fill::masked_fill as KernelRef),
-            (OpKind::MaskedFill, &[u32,  boolean, u32],  masked_fill::masked_fill as KernelRef),
+            (
+                OpKind::MaskedFill,
+                &[f32, boolean, f32],
+                masked_fill::masked_fill as KernelRef,
+            ),
+            (
+                OpKind::MaskedFill,
+                &[f16, boolean, f16],
+                masked_fill::masked_fill as KernelRef,
+            ),
+            (
+                OpKind::MaskedFill,
+                &[bf16, boolean, bf16],
+                masked_fill::masked_fill as KernelRef,
+            ),
+            (
+                OpKind::MaskedFill,
+                &[f64, boolean, f64],
+                masked_fill::masked_fill as KernelRef,
+            ),
+            (
+                OpKind::MaskedFill,
+                &[u8, boolean, u8],
+                masked_fill::masked_fill as KernelRef,
+            ),
+            (
+                OpKind::MaskedFill,
+                &[u32, boolean, u32],
+                masked_fill::masked_fill as KernelRef,
+            ),
         ];
 
         let mut checked = 0usize;
         for (op, key, expected) in cases {
             let alts = table.lookup_alternatives(*op, key, vk);
-            let entry = alts.iter().find(|e| e.kernel as usize == *expected as usize);
+            let entry = alts
+                .iter()
+                .find(|e| e.kernel as usize == *expected as usize);
             let entry = match entry {
                 Some(e) => e,
                 None => panic!(
@@ -6048,7 +7334,10 @@ mod select_contract_tests {
             );
             checked += 1;
         }
-        assert_eq!(checked, 16, "all 16 (IndexSelect/Gather/MaskedFill) select keys checked");
+        assert_eq!(
+            checked, 16,
+            "all 16 (IndexSelect/Gather/MaskedFill) select keys checked"
+        );
     }
 }
 
@@ -6081,24 +7370,61 @@ mod scatter_contract_tests {
         register_vulkan_kernels(&mut table);
         let vk = BackendId::Vulkan;
 
-        let f32 = DType::F32; let f16 = DType::F16; let bf16 = DType::BF16;
-        let f64 = DType::F64; let u32 = DType::U32;
+        let f32 = DType::F32;
+        let f16 = DType::F16;
+        let bf16 = DType::BF16;
+        let f64 = DType::F64;
+        let u32 = DType::U32;
 
         let cases: &[(OpKind, &[DType], KernelRef)] = &[
-            (OpKind::IndexAdd, &[f32,  u32, f32,  f32],  index_add::index_add_f32 as KernelRef),
-            (OpKind::IndexAdd, &[f64,  u32, f64,  f64],  index_add::index_add_f64 as KernelRef),
-            (OpKind::IndexAdd, &[bf16, u32, bf16, bf16], index_add::index_add_bf16 as KernelRef),
-            (OpKind::IndexAdd, &[f16,  u32, f16,  f16],  index_add::index_add_f16 as KernelRef),
-            (OpKind::ScatterAdd, &[f32,  u32, f32,  f32],  scatter_add::scatter_add_f32 as KernelRef),
-            (OpKind::ScatterAdd, &[f64,  u32, f64,  f64],  scatter_add::scatter_add_f64 as KernelRef),
-            (OpKind::ScatterAdd, &[bf16, u32, bf16, bf16], scatter_add::scatter_add_bf16 as KernelRef),
-            (OpKind::ScatterAdd, &[f16,  u32, f16,  f16],  scatter_add::scatter_add_f16 as KernelRef),
+            (
+                OpKind::IndexAdd,
+                &[f32, u32, f32, f32],
+                index_add::index_add_f32 as KernelRef,
+            ),
+            (
+                OpKind::IndexAdd,
+                &[f64, u32, f64, f64],
+                index_add::index_add_f64 as KernelRef,
+            ),
+            (
+                OpKind::IndexAdd,
+                &[bf16, u32, bf16, bf16],
+                index_add::index_add_bf16 as KernelRef,
+            ),
+            (
+                OpKind::IndexAdd,
+                &[f16, u32, f16, f16],
+                index_add::index_add_f16 as KernelRef,
+            ),
+            (
+                OpKind::ScatterAdd,
+                &[f32, u32, f32, f32],
+                scatter_add::scatter_add_f32 as KernelRef,
+            ),
+            (
+                OpKind::ScatterAdd,
+                &[f64, u32, f64, f64],
+                scatter_add::scatter_add_f64 as KernelRef,
+            ),
+            (
+                OpKind::ScatterAdd,
+                &[bf16, u32, bf16, bf16],
+                scatter_add::scatter_add_bf16 as KernelRef,
+            ),
+            (
+                OpKind::ScatterAdd,
+                &[f16, u32, f16, f16],
+                scatter_add::scatter_add_f16 as KernelRef,
+            ),
         ];
 
         let mut checked = 0usize;
         for (op, key, expected) in cases {
             let alts = table.lookup_alternatives(*op, key, vk);
-            let entry = alts.iter().find(|e| e.kernel as usize == *expected as usize);
+            let entry = alts
+                .iter()
+                .find(|e| e.kernel as usize == *expected as usize);
             let entry = match entry {
                 Some(e) => e,
                 None => panic!(
@@ -6120,7 +7446,10 @@ mod scatter_contract_tests {
             );
             checked += 1;
         }
-        assert_eq!(checked, 8, "all 8 (IndexAdd/ScatterAdd) scatter keys checked");
+        assert_eq!(
+            checked, 8,
+            "all 8 (IndexAdd/ScatterAdd) scatter keys checked"
+        );
     }
 }
 
@@ -6152,24 +7481,37 @@ mod movement_contract_tests {
         register_vulkan_kernels(&mut table);
         let vk = BackendId::Vulkan;
 
-        let f32 = DType::F32; let f16 = DType::F16; let bf16 = DType::BF16; let f64 = DType::F64;
+        let f32 = DType::F32;
+        let f16 = DType::F16;
+        let bf16 = DType::BF16;
+        let f64 = DType::F64;
 
         // Every movement binding is stride-aware (strided_input == true).
         let cases: &[(OpKind, &[DType], KernelRef)] = &[
-            (OpKind::Concat, &[f32,  f32],  concat::concat_f32 as KernelRef),
-            (OpKind::Concat, &[f16,  f16],  concat::concat_f16 as KernelRef),
-            (OpKind::Concat, &[bf16, bf16], concat::concat_bf16 as KernelRef),
-            (OpKind::Concat, &[f64,  f64],  concat::concat_f64 as KernelRef),
-            (OpKind::CumSum, &[f32,  f32],  cumsum::cumsum_f32 as KernelRef),
-            (OpKind::CumSum, &[f64,  f64],  cumsum::cumsum_f64 as KernelRef),
-            (OpKind::CumSum, &[f16,  f16],  cumsum::cumsum_f16 as KernelRef),
-            (OpKind::CumSum, &[bf16, bf16], cumsum::cumsum_bf16 as KernelRef),
+            (OpKind::Concat, &[f32, f32], concat::concat_f32 as KernelRef),
+            (OpKind::Concat, &[f16, f16], concat::concat_f16 as KernelRef),
+            (
+                OpKind::Concat,
+                &[bf16, bf16],
+                concat::concat_bf16 as KernelRef,
+            ),
+            (OpKind::Concat, &[f64, f64], concat::concat_f64 as KernelRef),
+            (OpKind::CumSum, &[f32, f32], cumsum::cumsum_f32 as KernelRef),
+            (OpKind::CumSum, &[f64, f64], cumsum::cumsum_f64 as KernelRef),
+            (OpKind::CumSum, &[f16, f16], cumsum::cumsum_f16 as KernelRef),
+            (
+                OpKind::CumSum,
+                &[bf16, bf16],
+                cumsum::cumsum_bf16 as KernelRef,
+            ),
         ];
 
         let mut checked = 0usize;
         for (op, key, expected) in cases {
             let alts = table.lookup_alternatives(*op, key, vk);
-            let entry = alts.iter().find(|e| e.kernel as usize == *expected as usize);
+            let entry = alts
+                .iter()
+                .find(|e| e.kernel as usize == *expected as usize);
             let entry = match entry {
                 Some(e) => e,
                 None => panic!(
@@ -6225,8 +7567,15 @@ mod shape_contract_tests {
         register_vulkan_kernels(&mut table);
         let vk = BackendId::Vulkan;
 
-        let dts = [DType::F32, DType::F16, DType::BF16, DType::F64,
-                   DType::I32, DType::U32, DType::I64];
+        let dts = [
+            DType::F32,
+            DType::F16,
+            DType::BF16,
+            DType::F64,
+            DType::I32,
+            DType::U32,
+            DType::I64,
+        ];
         // (OpKind, wrapper, expected strided_input)
         let ops: &[(OpKind, KernelRef, bool)] = &[
             (OpKind::Triu, triangular::triu as KernelRef, false),
@@ -6240,7 +7589,9 @@ mod shape_contract_tests {
             for (op, expected, expect_strided) in ops {
                 let key = [dt, dt];
                 let alts = table.lookup_alternatives(*op, &key, vk);
-                let entry = alts.iter().find(|e| e.kernel as usize == *expected as usize);
+                let entry = alts
+                    .iter()
+                    .find(|e| e.kernel as usize == *expected as usize);
                 let entry = match entry {
                     Some(e) => e,
                     None => panic!(
@@ -6263,7 +7614,10 @@ mod shape_contract_tests {
                 checked += 1;
             }
         }
-        assert_eq!(checked, 28, "all 28 (Triu/Tril/Flip/Roll × 7 dtypes) shape keys checked");
+        assert_eq!(
+            checked, 28,
+            "all 28 (Triu/Tril/Flip/Roll × 7 dtypes) shape keys checked"
+        );
     }
 }
 
@@ -6292,9 +7646,25 @@ mod pad_copy_contract_tests {
         register_vulkan_kernels(&mut table);
         let vk = BackendId::Vulkan;
 
-        let pad_dts = [DType::F32, DType::F16, DType::BF16, DType::F64, DType::U8, DType::U32];
-        let copy_dts = [DType::F32, DType::F16, DType::BF16, DType::F64, DType::U32,
-                        DType::U8, DType::I16, DType::I32, DType::I64];
+        let pad_dts = [
+            DType::F32,
+            DType::F16,
+            DType::BF16,
+            DType::F64,
+            DType::U8,
+            DType::U32,
+        ];
+        let copy_dts = [
+            DType::F32,
+            DType::F16,
+            DType::BF16,
+            DType::F64,
+            DType::U32,
+            DType::U8,
+            DType::I16,
+            DType::I32,
+            DType::I64,
+        ];
 
         let mut checked = 0usize;
         let mut check = |op: OpKind, key: &[DType], expected: KernelRef| {
@@ -6324,12 +7694,19 @@ mod pad_copy_contract_tests {
 
         for &dt in &pad_dts {
             check(OpKind::Pad, &[dt, dt], pad::pad_const as KernelRef);
-            check(OpKind::PadBackward, &[dt, dt], pad::pad_backward as KernelRef);
+            check(
+                OpKind::PadBackward,
+                &[dt, dt],
+                pad::pad_backward as KernelRef,
+            );
         }
         for &dt in &copy_dts {
             check(OpKind::Copy, &[dt, dt], copy_to_cpu_vulkan as KernelRef);
         }
-        assert_eq!(checked, 21, "all 21 (Pad/PadBackward/Copy) pad-copy keys checked");
+        assert_eq!(
+            checked, 21,
+            "all 21 (Pad/PadBackward/Copy) pad-copy keys checked"
+        );
     }
 }
 
@@ -6361,15 +7738,51 @@ mod write_slice_contract_tests {
 
         // (dtype, WriteSlice wrapper, WriteSliceRotating wrapper) by byte width.
         let cases: &[(DType, KernelRef, KernelRef)] = &[
-            (DType::F32, write_slice::write_slice_b4 as KernelRef, write_slice_rotating::write_slice_rotating_b4 as KernelRef),
-            (DType::I32, write_slice::write_slice_b4 as KernelRef, write_slice_rotating::write_slice_rotating_b4 as KernelRef),
-            (DType::U32, write_slice::write_slice_b4 as KernelRef, write_slice_rotating::write_slice_rotating_b4 as KernelRef),
-            (DType::F16, write_slice::write_slice_b2 as KernelRef, write_slice_rotating::write_slice_rotating_b2 as KernelRef),
-            (DType::BF16, write_slice::write_slice_b2 as KernelRef, write_slice_rotating::write_slice_rotating_b2 as KernelRef),
-            (DType::F64, write_slice::write_slice_b8 as KernelRef, write_slice_rotating::write_slice_rotating_b8 as KernelRef),
-            (DType::I64, write_slice::write_slice_b8 as KernelRef, write_slice_rotating::write_slice_rotating_b8 as KernelRef),
-            (DType::U8, write_slice::write_slice_b1 as KernelRef, write_slice_rotating::write_slice_rotating_b1 as KernelRef),
-            (DType::I8, write_slice::write_slice_b1 as KernelRef, write_slice_rotating::write_slice_rotating_b1 as KernelRef),
+            (
+                DType::F32,
+                write_slice::write_slice_b4 as KernelRef,
+                write_slice_rotating::write_slice_rotating_b4 as KernelRef,
+            ),
+            (
+                DType::I32,
+                write_slice::write_slice_b4 as KernelRef,
+                write_slice_rotating::write_slice_rotating_b4 as KernelRef,
+            ),
+            (
+                DType::U32,
+                write_slice::write_slice_b4 as KernelRef,
+                write_slice_rotating::write_slice_rotating_b4 as KernelRef,
+            ),
+            (
+                DType::F16,
+                write_slice::write_slice_b2 as KernelRef,
+                write_slice_rotating::write_slice_rotating_b2 as KernelRef,
+            ),
+            (
+                DType::BF16,
+                write_slice::write_slice_b2 as KernelRef,
+                write_slice_rotating::write_slice_rotating_b2 as KernelRef,
+            ),
+            (
+                DType::F64,
+                write_slice::write_slice_b8 as KernelRef,
+                write_slice_rotating::write_slice_rotating_b8 as KernelRef,
+            ),
+            (
+                DType::I64,
+                write_slice::write_slice_b8 as KernelRef,
+                write_slice_rotating::write_slice_rotating_b8 as KernelRef,
+            ),
+            (
+                DType::U8,
+                write_slice::write_slice_b1 as KernelRef,
+                write_slice_rotating::write_slice_rotating_b1 as KernelRef,
+            ),
+            (
+                DType::I8,
+                write_slice::write_slice_b1 as KernelRef,
+                write_slice_rotating::write_slice_rotating_b1 as KernelRef,
+            ),
         ];
 
         let mut checked = 0usize;
@@ -6402,7 +7815,10 @@ mod write_slice_contract_tests {
             check(OpKind::WriteSlice, &[*dt, *dt], *ws);
             check(OpKind::WriteSliceRotating, &[*dt, *dt], *wsr);
         }
-        assert_eq!(checked, 18, "all 18 (WriteSlice/WriteSliceRotating × 9 dtypes) write-slice keys checked");
+        assert_eq!(
+            checked, 18,
+            "all 18 (WriteSlice/WriteSliceRotating × 9 dtypes) write-slice keys checked"
+        );
     }
 }
 
@@ -6434,18 +7850,23 @@ mod rope_contract_tests {
         register_vulkan_kernels(&mut table);
         let vk = BackendId::Vulkan;
 
-        let f32 = DType::F32; let f16 = DType::F16; let bf16 = DType::BF16; let f64 = DType::F64;
+        let f32 = DType::F32;
+        let f16 = DType::F16;
+        let bf16 = DType::BF16;
+        let f64 = DType::F64;
         let cases: &[(&[DType], KernelRef)] = &[
-            (&[f32,  f32,  f32,  f32],  attention::rope_f32 as KernelRef),
-            (&[f16,  f16,  f16,  f16],  attention::rope_f16 as KernelRef),
-            (&[f64,  f64,  f64,  f64],  attention::rope_f64 as KernelRef),
+            (&[f32, f32, f32, f32], attention::rope_f32 as KernelRef),
+            (&[f16, f16, f16, f16], attention::rope_f16 as KernelRef),
+            (&[f64, f64, f64, f64], attention::rope_f64 as KernelRef),
             (&[bf16, bf16, bf16, bf16], attention::rope_bf16 as KernelRef),
         ];
 
         let mut checked = 0usize;
         for (key, expected) in cases {
             let alts = table.lookup_alternatives(OpKind::Rope, key, vk);
-            let entry = alts.iter().find(|e| e.kernel as usize == *expected as usize);
+            let entry = alts
+                .iter()
+                .find(|e| e.kernel as usize == *expected as usize);
             let entry = match entry {
                 Some(e) => e,
                 None => panic!(
@@ -6517,16 +7938,51 @@ mod reduce_contract_tests {
                  (kernel_source=\"vulkan-slang\"); got {:?}",
                 entry.kernel_source,
             );
-            assert!(!entry.caps.strided_input, "{op:?} {key:?}: contiguous-only (strided_input=false)");
+            assert!(
+                !entry.caps.strided_input,
+                "{op:?} {key:?}: contiguous-only (strided_input=false)"
+            );
             checked += 1;
         };
 
         // Value reduces: 4 ops × 4 dtypes, key [T, T].
         let val: &[(OpKind, [KernelRef; 4])] = &[
-            (OpKind::SumReduce,  [reduce::sum_f32, reduce::sum_f16, reduce::sum_bf16, reduce::sum_f64]),
-            (OpKind::MaxReduce,  [reduce::max_f32, reduce::max_f16, reduce::max_bf16, reduce::max_f64]),
-            (OpKind::MinReduce,  [reduce::min_f32, reduce::min_f16, reduce::min_bf16, reduce::min_f64]),
-            (OpKind::MeanReduce, [reduce::mean_f32, reduce::mean_f16, reduce::mean_bf16, reduce::mean_f64]),
+            (
+                OpKind::SumReduce,
+                [
+                    reduce::sum_f32,
+                    reduce::sum_f16,
+                    reduce::sum_bf16,
+                    reduce::sum_f64,
+                ],
+            ),
+            (
+                OpKind::MaxReduce,
+                [
+                    reduce::max_f32,
+                    reduce::max_f16,
+                    reduce::max_bf16,
+                    reduce::max_f64,
+                ],
+            ),
+            (
+                OpKind::MinReduce,
+                [
+                    reduce::min_f32,
+                    reduce::min_f16,
+                    reduce::min_bf16,
+                    reduce::min_f64,
+                ],
+            ),
+            (
+                OpKind::MeanReduce,
+                [
+                    reduce::mean_f32,
+                    reduce::mean_f16,
+                    reduce::mean_bf16,
+                    reduce::mean_f64,
+                ],
+            ),
         ];
         let dts = [DType::F32, DType::F16, DType::BF16, DType::F64];
         for (op, wraps) in val {
@@ -6536,15 +7992,34 @@ mod reduce_contract_tests {
         }
         // Arg reduces: 2 ops × 4 dtypes, key [T, U32].
         let arg: &[(OpKind, [KernelRef; 4])] = &[
-            (OpKind::ArgMaxDim, [arg_reduce::argmax_f32, arg_reduce::argmax_f16, arg_reduce::argmax_bf16, arg_reduce::argmax_f64]),
-            (OpKind::ArgMinDim, [arg_reduce::argmin_f32, arg_reduce::argmin_f16, arg_reduce::argmin_bf16, arg_reduce::argmin_f64]),
+            (
+                OpKind::ArgMaxDim,
+                [
+                    arg_reduce::argmax_f32,
+                    arg_reduce::argmax_f16,
+                    arg_reduce::argmax_bf16,
+                    arg_reduce::argmax_f64,
+                ],
+            ),
+            (
+                OpKind::ArgMinDim,
+                [
+                    arg_reduce::argmin_f32,
+                    arg_reduce::argmin_f16,
+                    arg_reduce::argmin_bf16,
+                    arg_reduce::argmin_f64,
+                ],
+            ),
         ];
         for (op, wraps) in arg {
             for (i, &dt) in dts.iter().enumerate() {
                 check(*op, &[dt, u32], wraps[i]);
             }
         }
-        assert_eq!(checked, 24, "all 24 (Sum/Max/Min/Mean + ArgMax/ArgMin × 4 dtypes) reduce keys checked");
+        assert_eq!(
+            checked, 24,
+            "all 24 (Sum/Max/Min/Mean + ArgMax/ArgMin × 4 dtypes) reduce keys checked"
+        );
     }
 }
 
@@ -6593,29 +8068,74 @@ mod norm_contract_tests {
                  (kernel_source=\"vulkan-slang\"); got {:?}",
                 entry.kernel_source,
             );
-            assert!(!entry.caps.strided_input, "{op:?} {key:?}: contiguous-only (strided_input=false)");
+            assert!(
+                !entry.caps.strided_input,
+                "{op:?} {key:?}: contiguous-only (strided_input=false)"
+            );
             checked += 1;
         };
 
         let dts = [DType::F32, DType::F16, DType::BF16, DType::F64];
         // Unary [T, T] families.
         let un: &[(OpKind, [KernelRef; 4])] = &[
-            (OpKind::SoftmaxLastDim,  [softmax::softmax_f32, softmax::softmax_f16, softmax::softmax_bf16, softmax::softmax_f64]),
-            (OpKind::LayerNormLastDim,[norm::layer_norm_f32, norm::layer_norm_f16, norm::layer_norm_bf16, norm::layer_norm_f64]),
-            (OpKind::RmsNormLastDim,  [norm::rms_f32, norm::rms_f16, norm::rms_bf16, norm::rms_f64]),
+            (
+                OpKind::SoftmaxLastDim,
+                [
+                    softmax::softmax_f32,
+                    softmax::softmax_f16,
+                    softmax::softmax_bf16,
+                    softmax::softmax_f64,
+                ],
+            ),
+            (
+                OpKind::LayerNormLastDim,
+                [
+                    norm::layer_norm_f32,
+                    norm::layer_norm_f16,
+                    norm::layer_norm_bf16,
+                    norm::layer_norm_f64,
+                ],
+            ),
+            (
+                OpKind::RmsNormLastDim,
+                [norm::rms_f32, norm::rms_f16, norm::rms_bf16, norm::rms_f64],
+            ),
         ];
         for (op, wraps) in un {
-            for (i, &dt) in dts.iter().enumerate() { check(*op, &[dt, dt], wraps[i]); }
+            for (i, &dt) in dts.iter().enumerate() {
+                check(*op, &[dt, dt], wraps[i]);
+            }
         }
         // Backward [T, T, T] families.
         let bwd: &[(OpKind, [KernelRef; 4])] = &[
-            (OpKind::SoftmaxLastDimBackward, [softmax::softmax_last_dim_backward_f32, softmax::softmax_last_dim_backward_f16, softmax::softmax_last_dim_backward_bf16, softmax::softmax_last_dim_backward_f64]),
-            (OpKind::LayerNormLastDimBackward, [norm::layer_norm_backward_f32, norm::layer_norm_backward_f16, norm::layer_norm_backward_bf16, norm::layer_norm_backward_f64]),
+            (
+                OpKind::SoftmaxLastDimBackward,
+                [
+                    softmax::softmax_last_dim_backward_f32,
+                    softmax::softmax_last_dim_backward_f16,
+                    softmax::softmax_last_dim_backward_bf16,
+                    softmax::softmax_last_dim_backward_f64,
+                ],
+            ),
+            (
+                OpKind::LayerNormLastDimBackward,
+                [
+                    norm::layer_norm_backward_f32,
+                    norm::layer_norm_backward_f16,
+                    norm::layer_norm_backward_bf16,
+                    norm::layer_norm_backward_f64,
+                ],
+            ),
         ];
         for (op, wraps) in bwd {
-            for (i, &dt) in dts.iter().enumerate() { check(*op, &[dt, dt, dt], wraps[i]); }
+            for (i, &dt) in dts.iter().enumerate() {
+                check(*op, &[dt, dt, dt], wraps[i]);
+            }
         }
-        assert_eq!(checked, 20, "all 20 (Softmax/SoftmaxBwd/LayerNorm/LayerNormBwd/RmsNorm × 4 dtypes) norm keys checked");
+        assert_eq!(
+            checked, 20,
+            "all 20 (Softmax/SoftmaxBwd/LayerNorm/LayerNormBwd/RmsNorm × 4 dtypes) norm keys checked"
+        );
     }
 }
 
@@ -6756,25 +8276,102 @@ mod attention_contract_tests {
         // uniformly below.
         let cases: &[(OpKind, &[DType], KernelRef)] = &[
             // ---- Forward FlashAttn: f32 / bf16 / f16, no-alibi [q,k,v,out] + with-alibi [q,k,v,alibi,out]. ----
-            (OpKind::FlashAttn, &[DType::F32, DType::F32, DType::F32, DType::F32], flash_attn::flash_attn_f32 as KernelRef),
-            (OpKind::FlashAttn, &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32], flash_attn::flash_attn_f32 as KernelRef),
-            (OpKind::FlashAttn, &[DType::BF16, DType::BF16, DType::BF16, DType::BF16], flash_attn::flash_attn_bf16 as KernelRef),
-            (OpKind::FlashAttn, &[DType::BF16, DType::BF16, DType::BF16, DType::BF16, DType::BF16], flash_attn::flash_attn_bf16 as KernelRef),
-            (OpKind::FlashAttn, &[DType::F16, DType::F16, DType::F16, DType::F16], flash_attn::flash_attn_f16 as KernelRef),
-            (OpKind::FlashAttn, &[DType::F16, DType::F16, DType::F16, DType::F16, DType::F16], flash_attn::flash_attn_f16 as KernelRef),
+            (
+                OpKind::FlashAttn,
+                &[DType::F32, DType::F32, DType::F32, DType::F32],
+                flash_attn::flash_attn_f32 as KernelRef,
+            ),
+            (
+                OpKind::FlashAttn,
+                &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32],
+                flash_attn::flash_attn_f32 as KernelRef,
+            ),
+            (
+                OpKind::FlashAttn,
+                &[DType::BF16, DType::BF16, DType::BF16, DType::BF16],
+                flash_attn::flash_attn_bf16 as KernelRef,
+            ),
+            (
+                OpKind::FlashAttn,
+                &[
+                    DType::BF16,
+                    DType::BF16,
+                    DType::BF16,
+                    DType::BF16,
+                    DType::BF16,
+                ],
+                flash_attn::flash_attn_bf16 as KernelRef,
+            ),
+            (
+                OpKind::FlashAttn,
+                &[DType::F16, DType::F16, DType::F16, DType::F16],
+                flash_attn::flash_attn_f16 as KernelRef,
+            ),
+            (
+                OpKind::FlashAttn,
+                &[DType::F16, DType::F16, DType::F16, DType::F16, DType::F16],
+                flash_attn::flash_attn_f16 as KernelRef,
+            ),
             // ---- Backward Q/K/V f32: no-alibi [q,k,v,do,out] + with-alibi [q,k,v,do,alibi,out]. ----
-            (OpKind::FlashAttnBackwardQ, &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32], flash_attn::flash_attn_backward_q_f32 as KernelRef),
-            (OpKind::FlashAttnBackwardQ, &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32, DType::F32], flash_attn::flash_attn_backward_q_f32 as KernelRef),
-            (OpKind::FlashAttnBackwardK, &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32], flash_attn::flash_attn_backward_k_f32 as KernelRef),
-            (OpKind::FlashAttnBackwardK, &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32, DType::F32], flash_attn::flash_attn_backward_k_f32 as KernelRef),
-            (OpKind::FlashAttnBackwardV, &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32], flash_attn::flash_attn_backward_v_f32 as KernelRef),
-            (OpKind::FlashAttnBackwardV, &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32, DType::F32], flash_attn::flash_attn_backward_v_f32 as KernelRef),
+            (
+                OpKind::FlashAttnBackwardQ,
+                &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32],
+                flash_attn::flash_attn_backward_q_f32 as KernelRef,
+            ),
+            (
+                OpKind::FlashAttnBackwardQ,
+                &[
+                    DType::F32,
+                    DType::F32,
+                    DType::F32,
+                    DType::F32,
+                    DType::F32,
+                    DType::F32,
+                ],
+                flash_attn::flash_attn_backward_q_f32 as KernelRef,
+            ),
+            (
+                OpKind::FlashAttnBackwardK,
+                &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32],
+                flash_attn::flash_attn_backward_k_f32 as KernelRef,
+            ),
+            (
+                OpKind::FlashAttnBackwardK,
+                &[
+                    DType::F32,
+                    DType::F32,
+                    DType::F32,
+                    DType::F32,
+                    DType::F32,
+                    DType::F32,
+                ],
+                flash_attn::flash_attn_backward_k_f32 as KernelRef,
+            ),
+            (
+                OpKind::FlashAttnBackwardV,
+                &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32],
+                flash_attn::flash_attn_backward_v_f32 as KernelRef,
+            ),
+            (
+                OpKind::FlashAttnBackwardV,
+                &[
+                    DType::F32,
+                    DType::F32,
+                    DType::F32,
+                    DType::F32,
+                    DType::F32,
+                    DType::F32,
+                ],
+                flash_attn::flash_attn_backward_v_f32 as KernelRef,
+            ),
         ];
 
         let mut checked = 0usize;
         for (op, key, expected) in cases {
             let alts = table.lookup_alternatives(*op, key, vk);
-            let entry = alts.iter().find(|e| e.kernel as usize == *expected as usize);
+            let entry = alts
+                .iter()
+                .find(|e| e.kernel as usize == *expected as usize);
             let entry = match entry {
                 Some(e) => e,
                 None => panic!(
@@ -6796,6 +8393,9 @@ mod attention_contract_tests {
             );
             checked += 1;
         }
-        assert_eq!(checked, 12, "all 12 FlashAttn family bindings (6 forward + 6 backward) checked");
+        assert_eq!(
+            checked, 12,
+            "all 12 FlashAttn family bindings (6 forward + 6 backward) checked"
+        );
     }
 }

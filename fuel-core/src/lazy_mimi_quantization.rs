@@ -34,8 +34,8 @@
 //!
 //! v1 scope: F32, batch == 1, forward-only inference.
 
-use crate::lazy::LazyTensor;
 use crate::Result;
+use crate::lazy::LazyTensor;
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -91,9 +91,7 @@ pub struct SplitResidualVectorQuantizerWeights {
 
 /// `EuclideanCodebook::encode`: takes `(M, codebook_dim)` and returns
 /// `(M,)` U32 nearest-codebook indices using the matmul-distance trick.
-fn codebook_encode(
-    x: &LazyTensor, cb: &EuclideanCodebookWeights,
-) -> Result<LazyTensor> {
+fn codebook_encode(x: &LazyTensor, cb: &EuclideanCodebookWeights) -> Result<LazyTensor> {
     let dims = x.shape();
     let dims = dims.dims();
     let m = dims[0];
@@ -104,9 +102,7 @@ fn codebook_encode(
     );
     let e_t = embedding.permute([1, 0_usize])?;
     let dot_prod = x.matmul(&e_t)?;
-    let c2 = x.const_f32_like(
-        Arc::clone(&cb.c2), Shape::from_dims(&[cb.codebook_size]),
-    );
+    let c2 = x.const_f32_like(Arc::clone(&cb.c2), Shape::from_dims(&[cb.codebook_size]));
     let c2_b = c2
         .reshape(Shape::from_dims(&[1, cb.codebook_size]))?
         .broadcast_to(Shape::from_dims(&[m, cb.codebook_size]))?;
@@ -116,9 +112,7 @@ fn codebook_encode(
 
 /// `EuclideanCodebook::decode`: takes flat `(M,)` U32 indices and
 /// returns `(M, codebook_dim)` selected embeddings.
-fn codebook_decode(
-    codes: &LazyTensor, cb: &EuclideanCodebookWeights,
-) -> Result<LazyTensor> {
+fn codebook_decode(codes: &LazyTensor, cb: &EuclideanCodebookWeights) -> Result<LazyTensor> {
     let embedding = codes.const_f32_like(
         Arc::clone(&cb.embedding),
         Shape::from_dims(&[cb.codebook_size, cb.codebook_dim]),
@@ -138,17 +132,18 @@ fn apply_linear_opt(
         Some(w_arc) => {
             // Match the eager `linear(in, out)` weight layout: stored
             // (out, in), applied as `x @ w^T`.
-            let w_t = x.const_f32_like(
-                Arc::clone(w_arc),
-                Shape::from_dims(&[out_features, in_features]),
-            ).permute([1, 0_usize])?;
+            let w_t = x
+                .const_f32_like(
+                    Arc::clone(w_arc),
+                    Shape::from_dims(&[out_features, in_features]),
+                )
+                .permute([1, 0_usize])?;
             let y = x.matmul(&w_t)?;
             match b {
                 None => Ok(y),
                 Some(b_arc) => {
-                    let bias = x.const_f32_like(
-                        Arc::clone(b_arc), Shape::from_dims(&[out_features]),
-                    );
+                    let bias =
+                        x.const_f32_like(Arc::clone(b_arc), Shape::from_dims(&[out_features]));
                     y.broadcast_add(&bias)
                 }
             }
@@ -175,18 +170,21 @@ fn apply_conv1d_1x1_opt(
 }
 
 /// `VectorQuantization::encode` — input `(B, D, T)` → codes `(B, T)`.
-fn vq_encode(
-    xs: &LazyTensor, w: &VectorQuantizationWeights,
-) -> Result<LazyTensor> {
+fn vq_encode(xs: &LazyTensor, w: &VectorQuantizationWeights) -> Result<LazyTensor> {
     let dims = xs.shape();
     let dims = dims.dims();
-    let b = dims[0]; let d = dims[1]; let t = dims[2];
+    let b = dims[0];
+    let d = dims[1];
+    let t = dims[2];
     debug_assert_eq!(d, w.dim);
     // (B, D, T) → (B, T, D)
     let xs = xs.permute([0, 2, 1_usize])?;
     let projected = apply_linear_opt(
-        &xs, &w.project_in_w, &w.project_in_b,
-        w.dim, w.codebook.codebook_dim,
+        &xs,
+        &w.project_in_w,
+        &w.project_in_b,
+        w.dim,
+        w.codebook.codebook_dim,
     )?;
     // (B, T, codebook_dim) → (B*T, codebook_dim)
     let flat = projected.reshape(Shape::from_dims(&[b * t, w.codebook.codebook_dim]))?;
@@ -195,18 +193,20 @@ fn vq_encode(
 }
 
 /// `VectorQuantization::decode` — codes `(B, T)` → `(B, D, T)`.
-fn vq_decode(
-    codes: &LazyTensor, w: &VectorQuantizationWeights,
-) -> Result<LazyTensor> {
+fn vq_decode(codes: &LazyTensor, w: &VectorQuantizationWeights) -> Result<LazyTensor> {
     let dims = codes.shape();
     let dims = dims.dims();
-    let b = dims[0]; let t = dims[1];
+    let b = dims[0];
+    let t = dims[1];
     let codes_flat = codes.reshape(Shape::from_dims(&[b * t]))?;
     let quant_flat = codebook_decode(&codes_flat, &w.codebook)?;
     let quant = quant_flat.reshape(Shape::from_dims(&[b, t, w.codebook.codebook_dim]))?;
     let projected = apply_linear_opt(
-        &quant, &w.project_out_w, &w.project_out_b,
-        w.codebook.codebook_dim, w.dim,
+        &quant,
+        &w.project_out_w,
+        &w.project_out_b,
+        w.codebook.codebook_dim,
+        w.dim,
     )?;
     // (B, T, D) → (B, D, T)
     projected.permute([0, 2, 1_usize])
@@ -215,9 +215,7 @@ fn vq_decode(
 /// `ResidualVectorQuantization::encode` — input `(B, D, T)` →
 /// codes `(n_q, B, T)`. The encoder runs each VQ on the residual
 /// of the previous step.
-fn rvq_encode(
-    xs: &LazyTensor, w: &ResidualVectorQuantizationWeights,
-) -> Result<LazyTensor> {
+fn rvq_encode(xs: &LazyTensor, w: &ResidualVectorQuantizationWeights) -> Result<LazyTensor> {
     let mut residual = xs.clone();
     let mut codes_per_layer = Vec::with_capacity(w.layers.len());
     for layer in &w.layers {
@@ -243,14 +241,17 @@ fn rvq_encode(
 
 /// `ResidualVectorQuantization::decode` — input codes `(n_q, B, T)`
 /// → quantized features `(B, D, T)`. Sums per-layer reconstructions.
-fn rvq_decode(
-    codes: &LazyTensor, w: &ResidualVectorQuantizationWeights,
-) -> Result<LazyTensor> {
+fn rvq_decode(codes: &LazyTensor, w: &ResidualVectorQuantizationWeights) -> Result<LazyTensor> {
     assert!(!w.layers.is_empty(), "rvq_decode: empty layers");
     let dims = codes.shape();
     let dims = dims.dims();
-    assert_eq!(dims[0], w.layers.len(),
-        "rvq_decode: n_q dim mismatch {} vs {}", dims[0], w.layers.len());
+    assert_eq!(
+        dims[0],
+        w.layers.len(),
+        "rvq_decode: n_q dim mismatch {} vs {}",
+        dims[0],
+        w.layers.len()
+    );
     let mut accum: Option<LazyTensor> = None;
     for (i, layer) in w.layers.iter().enumerate() {
         // Slice (1, B, T) and drop the leading dim.
@@ -269,7 +270,8 @@ fn rvq_decode(
 /// `ResidualVectorQuantizer::encode` — input `(B, input_dim, T)` →
 /// codes `(B, n_q, T)`.
 pub fn rvq_quantizer_encode(
-    xs: &LazyTensor, w: &ResidualVectorQuantizerWeights,
+    xs: &LazyTensor,
+    w: &ResidualVectorQuantizerWeights,
 ) -> Result<LazyTensor> {
     let projected = apply_conv1d_1x1_opt(xs, &w.input_proj_w, w.input_dim, w.dim)?;
     let stacked = rvq_encode(&projected, &w.vq)?;
@@ -280,7 +282,8 @@ pub fn rvq_quantizer_encode(
 /// `ResidualVectorQuantizer::decode` — input codes `(B, n_q, T)` →
 /// reconstructed features `(B, output_dim, T)`.
 pub fn rvq_quantizer_decode(
-    codes: &LazyTensor, w: &ResidualVectorQuantizerWeights,
+    codes: &LazyTensor,
+    w: &ResidualVectorQuantizerWeights,
 ) -> Result<LazyTensor> {
     // (B, n_q, T) → (n_q, B, T)
     let codes = codes.permute([1, 0, 2_usize])?;
@@ -293,7 +296,8 @@ pub fn rvq_quantizer_decode(
 /// **independently**, concatenating along the n_q axis. Returns
 /// codes shape `(B, n_q, T)`.
 pub fn split_rvq_encode(
-    xs: &LazyTensor, w: &SplitResidualVectorQuantizerWeights,
+    xs: &LazyTensor,
+    w: &SplitResidualVectorQuantizerWeights,
 ) -> Result<LazyTensor> {
     let semantic = rvq_quantizer_encode(xs, &w.rvq_first)?;
     if w.n_q > 1 {
@@ -307,11 +311,14 @@ pub fn split_rvq_encode(
 /// `SplitResidualVectorQuantizer::decode` — sums semantic and
 /// acoustic reconstructions. Returns `(B, output_dim, T)`.
 pub fn split_rvq_decode(
-    codes: &LazyTensor, w: &SplitResidualVectorQuantizerWeights,
+    codes: &LazyTensor,
+    w: &SplitResidualVectorQuantizerWeights,
 ) -> Result<LazyTensor> {
     let dims = codes.shape();
     let dims = dims.dims();
-    let b = dims[0]; let total_nq = dims[1]; let t = dims[2];
+    let b = dims[0];
+    let total_nq = dims[1];
+    let t = dims[2];
     assert_eq!(total_nq, w.n_q, "split_rvq_decode: total n_q mismatch");
     let semantic_codes = codes.narrow(1_usize, 0, 1)?;
     let semantic_q = rvq_quantizer_decode(&semantic_codes, &w.rvq_first)?;
@@ -337,21 +344,18 @@ pub fn split_rvq_decode(
 fn load_euclidean_codebook(
     st: &crate::safetensors::MmapedSafetensors,
     prefix: &str,
-    codebook_size: usize, codebook_dim: usize,
+    codebook_size: usize,
+    codebook_dim: usize,
 ) -> Result<EuclideanCodebookWeights> {
     use crate::lazy::load_tensor_as_f32;
-    let cluster_usage = load_tensor_as_f32(
-        st, &format!("{prefix}.cluster_usage"),
-    )?;
+    let cluster_usage = load_tensor_as_f32(st, &format!("{prefix}.cluster_usage"))?;
     if cluster_usage.len() != codebook_size {
         crate::bail!(
             "{prefix}.cluster_usage: {} elements, expected {codebook_size}",
             cluster_usage.len(),
         );
     }
-    let embed_sum = load_tensor_as_f32(
-        st, &format!("{prefix}.embed_sum"),
-    )?;
+    let embed_sum = load_tensor_as_f32(st, &format!("{prefix}.embed_sum"))?;
     let expected = codebook_size * codebook_dim;
     if embed_sum.len() != expected {
         crate::bail!(
@@ -387,16 +391,16 @@ fn load_euclidean_codebook(
 fn load_vector_quantization(
     st: &crate::safetensors::MmapedSafetensors,
     prefix: &str,
-    dim: usize, codebook_size: usize,
+    dim: usize,
+    codebook_size: usize,
 ) -> Result<VectorQuantizationWeights> {
-    let codebook = load_euclidean_codebook(
-        st, &format!("{prefix}.codebook"),
-        codebook_size, dim,
-    )?;
+    let codebook = load_euclidean_codebook(st, &format!("{prefix}.codebook"), codebook_size, dim)?;
     Ok(VectorQuantizationWeights {
         codebook,
-        project_in_w: None, project_in_b: None,
-        project_out_w: None, project_out_b: None,
+        project_in_w: None,
+        project_in_b: None,
+        project_out_w: None,
+        project_out_b: None,
         dim,
     })
 }
@@ -408,14 +412,15 @@ fn load_vector_quantization(
 fn load_residual_vector_quantizer(
     st: &crate::safetensors::MmapedSafetensors,
     prefix: &str,
-    dim: usize, input_dim: usize, output_dim: usize,
-    n_q: usize, codebook_size: usize,
+    dim: usize,
+    input_dim: usize,
+    output_dim: usize,
+    n_q: usize,
+    codebook_size: usize,
 ) -> Result<ResidualVectorQuantizerWeights> {
     use crate::lazy::load_tensor_as_f32;
     // 1×1 conv1d_no_bias on input: `(out=dim, in=input_dim, k=1)`.
-    let in_w = load_tensor_as_f32(
-        st, &format!("{prefix}.input_proj.weight"),
-    )?;
+    let in_w = load_tensor_as_f32(st, &format!("{prefix}.input_proj.weight"))?;
     let expected_in = dim * input_dim;
     if in_w.len() != expected_in {
         crate::bail!(
@@ -423,9 +428,7 @@ fn load_residual_vector_quantizer(
             in_w.len(),
         );
     }
-    let out_w = load_tensor_as_f32(
-        st, &format!("{prefix}.output_proj.weight"),
-    )?;
+    let out_w = load_tensor_as_f32(st, &format!("{prefix}.output_proj.weight"))?;
     let expected_out = output_dim * dim;
     if out_w.len() != expected_out {
         crate::bail!(
@@ -436,17 +439,16 @@ fn load_residual_vector_quantizer(
     // RVQ stack at `{prefix}.layers.{i}`.
     let mut layers = Vec::with_capacity(n_q);
     for i in 0..n_q {
-        let vq = load_vector_quantization(
-            st, &format!("{prefix}.layers.{i}"),
-            dim, codebook_size,
-        )?;
+        let vq = load_vector_quantization(st, &format!("{prefix}.layers.{i}"), dim, codebook_size)?;
         layers.push(vq);
     }
     Ok(ResidualVectorQuantizerWeights {
         vq: ResidualVectorQuantizationWeights { layers },
         input_proj_w: Some(Arc::from(in_w)),
         output_proj_w: Some(Arc::from(out_w)),
-        dim, input_dim, output_dim,
+        dim,
+        input_dim,
+        output_dim,
     })
 }
 
@@ -469,17 +471,30 @@ impl SplitResidualVectorQuantizerWeights {
     pub fn load_from_mmapped(
         st: &crate::safetensors::MmapedSafetensors,
         prefix: &str,
-        dim: usize, input_dim: usize, output_dim: usize,
-        n_q: usize, quantizer_bins: usize,
+        dim: usize,
+        input_dim: usize,
+        output_dim: usize,
+        n_q: usize,
+        quantizer_bins: usize,
     ) -> Result<Self> {
         let rvq_first = load_residual_vector_quantizer(
-            st, &format!("{prefix}.semantic_residual_vector_quantizer"),
-            dim, input_dim, output_dim, 1, quantizer_bins,
+            st,
+            &format!("{prefix}.semantic_residual_vector_quantizer"),
+            dim,
+            input_dim,
+            output_dim,
+            1,
+            quantizer_bins,
         )?;
         let n_rest = n_q.saturating_sub(1).max(1);
         let rvq_rest = load_residual_vector_quantizer(
-            st, &format!("{prefix}.acoustic_residual_vector_quantizer"),
-            dim, input_dim, output_dim, n_rest, quantizer_bins,
+            st,
+            &format!("{prefix}.acoustic_residual_vector_quantizer"),
+            dim,
+            input_dim,
+            output_dim,
+            n_rest,
+            quantizer_bins,
         )?;
         Ok(SplitResidualVectorQuantizerWeights {
             rvq_first,
@@ -508,7 +523,9 @@ mod tests {
     }
 
     fn tiny_codebook(
-        codebook_size: usize, codebook_dim: usize, nb: &mut dyn FnMut() -> f32,
+        codebook_size: usize,
+        codebook_dim: usize,
+        nb: &mut dyn FnMut() -> f32,
     ) -> EuclideanCodebookWeights {
         let emb = vec_of(codebook_size * codebook_dim, nb);
         let mut c2_v = Vec::with_capacity(codebook_size);
@@ -528,18 +545,27 @@ mod tests {
         }
     }
 
-    fn tiny_vq(dim: usize, codebook_size: usize, nb: &mut dyn FnMut() -> f32) -> VectorQuantizationWeights {
+    fn tiny_vq(
+        dim: usize,
+        codebook_size: usize,
+        nb: &mut dyn FnMut() -> f32,
+    ) -> VectorQuantizationWeights {
         // dim == codebook_dim → no projection.
         VectorQuantizationWeights {
             codebook: tiny_codebook(codebook_size, dim, nb),
-            project_in_w: None, project_in_b: None,
-            project_out_w: None, project_out_b: None,
+            project_in_w: None,
+            project_in_b: None,
+            project_out_w: None,
+            project_out_b: None,
             dim,
         }
     }
 
     fn tiny_rvq(
-        n_q: usize, dim: usize, codebook_size: usize, nb: &mut dyn FnMut() -> f32,
+        n_q: usize,
+        dim: usize,
+        codebook_size: usize,
+        nb: &mut dyn FnMut() -> f32,
     ) -> ResidualVectorQuantizationWeights {
         ResidualVectorQuantizationWeights {
             layers: (0..n_q).map(|_| tiny_vq(dim, codebook_size, nb)).collect(),
@@ -547,13 +573,18 @@ mod tests {
     }
 
     fn tiny_quantizer(
-        n_q: usize, dim: usize, codebook_size: usize, nb: &mut dyn FnMut() -> f32,
+        n_q: usize,
+        dim: usize,
+        codebook_size: usize,
+        nb: &mut dyn FnMut() -> f32,
     ) -> ResidualVectorQuantizerWeights {
         ResidualVectorQuantizerWeights {
             vq: tiny_rvq(n_q, dim, codebook_size, nb),
             input_proj_w: None,
             output_proj_w: None,
-            dim, input_dim: dim, output_dim: dim,
+            dim,
+            input_dim: dim,
+            output_dim: dim,
         }
     }
 
@@ -563,14 +594,14 @@ mod tests {
         let cs = 3;
         // Hand-built codebook: row 0 = [1,0,0,0]; row 1 = [0,1,0,0]; row 2 = [0,0,1,0].
         let emb_v = vec![
-            1.0_f32, 0.0, 0.0, 0.0,
-            0.0, 1.0, 0.0, 0.0,
-            0.0, 0.0, 1.0, 0.0,
+            1.0_f32, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0,
         ];
-        let c2_v: Vec<f32> = (0..cs).map(|i| {
-            let row = &emb_v[i * dim..(i + 1) * dim];
-            row.iter().map(|v| v * v).sum::<f32>() / 2.0
-        }).collect();
+        let c2_v: Vec<f32> = (0..cs)
+            .map(|i| {
+                let row = &emb_v[i * dim..(i + 1) * dim];
+                row.iter().map(|v| v * v).sum::<f32>() / 2.0
+            })
+            .collect();
         let cb = EuclideanCodebookWeights {
             embedding: Arc::from(emb_v),
             c2: Arc::from(c2_v),
@@ -579,9 +610,7 @@ mod tests {
         };
         // Query rows close to centroids 1, 2, 0.
         let x_data = vec![
-            0.1_f32, 0.9, 0.1, 0.0,
-            0.0, 0.0, 1.1, 0.0,
-            1.2, 0.1, 0.0, 0.0,
+            0.1_f32, 0.9, 0.1, 0.0, 0.0, 0.0, 1.1, 0.0, 1.2, 0.1, 0.0, 0.0,
         ];
         let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[3, dim]), &Device::cpu());
         let codes = codebook_encode(&x, &cb).unwrap().realize_u32();
@@ -599,15 +628,9 @@ mod tests {
             codebook_size: cs,
             codebook_dim: dim,
         };
-        let idx = LazyTensor::from_u32(
-            vec![2_u32, 0, 3], Shape::from_dims(&[3]), &Device::cpu(),
-        );
+        let idx = LazyTensor::from_u32(vec![2_u32, 0, 3], Shape::from_dims(&[3]), &Device::cpu());
         let out = codebook_decode(&idx, &cb).unwrap().realize_f32();
-        let want = vec![
-            6.0_f32, 7.0, 8.0,
-            0.0, 1.0, 2.0,
-            9.0, 10.0, 11.0,
-        ];
+        let want = vec![6.0_f32, 7.0, 8.0, 0.0, 1.0, 2.0, 9.0, 10.0, 11.0];
         for (a, b) in out.iter().zip(want.iter()) {
             assert!((a - b).abs() < 1e-7);
         }
@@ -616,11 +639,17 @@ mod tests {
     #[test]
     fn vq_encode_decode_shapes() {
         let mut nb = rng_seed(2026);
-        let dim = 4; let cs = 6; let b = 1; let t = 5;
+        let dim = 4;
+        let cs = 6;
+        let b = 1;
+        let t = 5;
         let w = tiny_vq(dim, cs, &mut nb);
         let xs = LazyTensor::from_f32(
-            (0..(b * dim * t)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
-            Shape::from_dims(&[b, dim, t]), &Device::cpu(),
+            (0..(b * dim * t))
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[b, dim, t]),
+            &Device::cpu(),
         );
         let codes = vq_encode(&xs, &w).unwrap();
         assert_eq!(codes.shape().dims(), &[b, t]);
@@ -635,11 +664,18 @@ mod tests {
     #[test]
     fn rvq_encode_decode_shapes() {
         let mut nb = rng_seed(2026);
-        let dim = 4; let cs = 6; let n_q = 3; let b = 1; let t = 5;
+        let dim = 4;
+        let cs = 6;
+        let n_q = 3;
+        let b = 1;
+        let t = 5;
         let w = tiny_rvq(n_q, dim, cs, &mut nb);
         let xs = LazyTensor::from_f32(
-            (0..(b * dim * t)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
-            Shape::from_dims(&[b, dim, t]), &Device::cpu(),
+            (0..(b * dim * t))
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[b, dim, t]),
+            &Device::cpu(),
         );
         let codes = rvq_encode(&xs, &w).unwrap();
         assert_eq!(codes.shape().dims(), &[n_q, b, t]);
@@ -650,20 +686,29 @@ mod tests {
     #[test]
     fn split_rvq_encode_decode_shapes() {
         let mut nb = rng_seed(2026);
-        let dim = 4; let cs = 6; let n_q = 4; let b = 1; let t = 5;
+        let dim = 4;
+        let cs = 6;
+        let n_q = 4;
+        let b = 1;
+        let t = 5;
         let w_split = SplitResidualVectorQuantizerWeights {
             rvq_first: tiny_quantizer(1, dim, cs, &mut nb),
             rvq_rest: tiny_quantizer(n_q - 1, dim, cs, &mut nb),
             n_q,
         };
         let xs = LazyTensor::from_f32(
-            (0..(b * dim * t)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
-            Shape::from_dims(&[b, dim, t]), &Device::cpu(),
+            (0..(b * dim * t))
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[b, dim, t]),
+            &Device::cpu(),
         );
         let codes = split_rvq_encode(&xs, &w_split).unwrap();
         assert_eq!(codes.shape().dims(), &[b, n_q, t]);
         let recon = split_rvq_decode(&codes, &w_split).unwrap();
         assert_eq!(recon.shape().dims(), &[b, dim, t]);
-        for &v in &recon.realize_f32() { assert!(v.is_finite()); }
+        for &v in &recon.realize_f32() {
+            assert!(v.is_finite());
+        }
     }
 }

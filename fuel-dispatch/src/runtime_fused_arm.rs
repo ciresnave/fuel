@@ -67,7 +67,10 @@ pub fn offer_runtime_fused_arm(
     spec: &RuntimeFusedSpec,
     table: &KernelBindingTable,
 ) -> Result<Option<NodeId>> {
-    debug_assert!(spec.runtime_id.is_runtime(), "offer_runtime_fused_arm on a static id");
+    debug_assert!(
+        spec.runtime_id.is_runtime(),
+        "offer_runtime_fused_arm on a static id"
+    );
 
     // The capability gate: only offer the fused arm when a kernel is bound for
     // this backend. No kernel ⇒ no arm ⇒ the region stays on its primitives.
@@ -86,7 +89,9 @@ pub fn offer_runtime_fused_arm(
     let fused = graph.push(Node {
         op: Op::Fused(
             spec.runtime_id,
-            FusedOpParams::Runtime { scalars: spec.scalars.clone() },
+            FusedOpParams::Runtime {
+                scalars: spec.scalars.clone(),
+            },
         ),
         inputs: spec.inputs.clone(),
         shape,
@@ -127,7 +132,10 @@ mod tests {
             operands: vec![PatternNode::Op {
                 op: OpTag::Add,
                 attrs: OpAttrs::default(),
-                operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+                operands: vec![
+                    PatternNode::Bind { index: 0 },
+                    PatternNode::Bind { index: 1 },
+                ],
             }],
         }
     }
@@ -138,13 +146,33 @@ mod tests {
         let mut g = Graph::new();
         let s = Shape::from_dims(&[4]);
         let leaf = |g: &mut Graph| {
-            g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 })
+            g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: s.clone(),
+                dtype: DType::F32,
+            })
         };
         let a = leaf(&mut g);
         let b = leaf(&mut g);
-        let add = g.push(Node { op: Op::Add, inputs: vec![a, b], shape: s.clone(), dtype: DType::F32 });
-        let relu = g.push(Node { op: Op::Relu, inputs: vec![add], shape: s.clone(), dtype: DType::F32 });
-        let neg = g.push(Node { op: Op::Neg, inputs: vec![relu], shape: s.clone(), dtype: DType::F32 });
+        let add = g.push(Node {
+            op: Op::Add,
+            inputs: vec![a, b],
+            shape: s.clone(),
+            dtype: DType::F32,
+        });
+        let relu = g.push(Node {
+            op: Op::Relu,
+            inputs: vec![add],
+            shape: s.clone(),
+            dtype: DType::F32,
+        });
+        let neg = g.push(Node {
+            op: Op::Neg,
+            inputs: vec![relu],
+            shape: s.clone(),
+            dtype: DType::F32,
+        });
         (g, vec![a, b], relu, neg)
     }
 
@@ -173,7 +201,10 @@ mod tests {
         let branch = offer_runtime_fused_arm(&mut g, &spec, &crate::dispatch::global_bindings())
             .expect("valid branch")
             .expect("emitted");
-        assert!(matches!(g.node(branch).op, Op::Branch { .. }), "an Op::Branch decision point");
+        assert!(
+            matches!(g.node(branch).op, Op::Branch { .. }),
+            "an Op::Branch decision point"
+        );
     }
 
     #[test]

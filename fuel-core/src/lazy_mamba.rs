@@ -145,9 +145,9 @@ impl MambaModel {
         let cfg = &self.config;
         let weights = &self.weights;
         let h_norm = self.run_backbone(tokens)?;
-        Ok(weights.output.apply_linear(
-            &h_norm, cfg.d_model, cfg.vocab_size(),
-        )?)
+        Ok(weights
+            .output
+            .apply_linear(&h_norm, cfg.d_model, cfg.vocab_size())?)
     }
 
     /// Run the Mamba SSM stack forward up to the final RmsNorm
@@ -167,13 +167,20 @@ impl MambaModel {
         let vocab_padded = cfg.vocab_size();
 
         let mut h = LazyTensor::embed_tokens(
-            weights.token_embedding.clone(), vocab_padded, cfg.d_model, tokens, &Device::cpu(),
+            weights.token_embedding.clone(),
+            vocab_padded,
+            cfg.d_model,
+            tokens,
+            &Device::cpu(),
         )?;
 
         for layer in &weights.layers {
             h = self.apply_residual_block(&h, layer)?;
         }
-        Ok(h.rms_norm_affine(std::sync::Arc::clone(&weights.final_norm_gain), cfg.rms_norm_eps)?)
+        Ok(h.rms_norm_affine(
+            std::sync::Arc::clone(&weights.final_norm_gain),
+            cfg.rms_norm_eps,
+        )?)
     }
 
     fn apply_residual_block(
@@ -182,16 +189,13 @@ impl MambaModel {
         layer: &MambaLayerWeights,
     ) -> Result<LazyTensor> {
         let cfg = &self.config;
-        let x_norm = x.rms_norm_affine(std::sync::Arc::clone(&layer.norm_gain), cfg.rms_norm_eps)?;
+        let x_norm =
+            x.rms_norm_affine(std::sync::Arc::clone(&layer.norm_gain), cfg.rms_norm_eps)?;
         let mixer_out = self.apply_mixer(&x_norm, layer)?;
         x.add(&mixer_out)
     }
 
-    fn apply_mixer(
-        &self,
-        x: &LazyTensor,
-        layer: &MambaLayerWeights,
-    ) -> Result<LazyTensor> {
+    fn apply_mixer(&self, x: &LazyTensor, layer: &MambaLayerWeights) -> Result<LazyTensor> {
         let cfg = &self.config;
         let d_inner = cfg.d_inner();
         let dt_rank = cfg.dt_rank();
@@ -209,24 +213,23 @@ impl MambaModel {
         // `[batch, channels, seq + (kernel - 1)]` — caller left-pads.
         // For prefill we left-pad with `D_CONV - 1` zeros.
         let x_for_conv = x_path
-            .permute([0, 2, 1_usize])?  // [batch, d_inner, seq]
-            .pad_with_zeros(2_usize, D_CONV - 1, 0)?;  // pad LEFT with kernel-1 zeros
+            .permute([0, 2, 1_usize])? // [batch, d_inner, seq]
+            .pad_with_zeros(2_usize, D_CONV - 1, 0)?; // pad LEFT with kernel-1 zeros
 
         let conv_w = x.const_f32_like(
             layer.conv1d_weight.clone(),
             Shape::from_dims(&[d_inner, 1, D_CONV]),
         );
-        let conv_b = x.const_f32_like(
-            layer.conv1d_bias.clone(),
-            Shape::from_dims(&[d_inner]),
-        );
+        let conv_b = x.const_f32_like(layer.conv1d_bias.clone(), Shape::from_dims(&[d_inner]));
         // Fused SiLU activation.
         let x_conv = x_for_conv.causal_conv1d(&conv_w, &conv_b, /* use_silu */ true);
         // x_conv shape: [batch, d_inner, seq]. Transpose to [batch, seq, d_inner].
         let x_conv = x_conv.permute([0, 2, 1_usize])?;
 
         // x_proj: x_conv → [delta_low_rank, b, c].
-        let proj = layer.x_proj.apply_linear(&x_conv, d_inner, dt_rank + 2 * D_STATE)?;
+        let proj = layer
+            .x_proj
+            .apply_linear(&x_conv, d_inner, dt_rank + 2 * D_STATE)?;
         let delta_low = proj.slice(2_usize, 0, dt_rank)?;
         let b = proj.slice(2_usize, dt_rank, D_STATE)?;
         let c = proj.slice(2_usize, dt_rank + D_STATE, D_STATE)?;
@@ -234,25 +237,16 @@ impl MambaModel {
         // dt_proj: [batch, seq, dt_rank] → [batch, seq, d_inner].
         // dt_proj has a bias.
         let delta = layer.dt_proj.apply_linear(&delta_low, dt_rank, d_inner)?;
-        let dt_bias_t = x.const_f32_like(
-            layer.dt_proj_bias.clone(),
-            Shape::from_dims(&[d_inner]),
-        );
+        let dt_bias_t = x.const_f32_like(layer.dt_proj_bias.clone(), Shape::from_dims(&[d_inner]));
         let delta = delta.broadcast_add(&dt_bias_t)?;
 
         // a = -exp(a_log). a_log is `[d_inner, D_STATE]`.
-        let a_log = x.const_f32_like(
-            layer.a_log.clone(),
-            Shape::from_dims(&[d_inner, D_STATE]),
-        );
+        let a_log = x.const_f32_like(layer.a_log.clone(), Shape::from_dims(&[d_inner, D_STATE]));
         let a = a_log.exp().neg();
 
         // d is `[d_inner]` — broadcast across batch + seq for the
         // skip-path addition.
-        let d_t = x.const_f32_like(
-            layer.d.clone(),
-            Shape::from_dims(&[d_inner]),
-        );
+        let d_t = x.const_f32_like(layer.d.clone(), Shape::from_dims(&[d_inner]));
 
         // Selective scan: u = x_conv, returns y `[batch, seq, d_inner]`.
         // The `delta_softplus = true` flag tells the kernel to apply
@@ -302,46 +296,47 @@ impl MambaWeights {
         let mut layers = Vec::with_capacity(cfg.n_layer);
         for i in 0..cfg.n_layer {
             let p = format!("backbone.layers.{i}");
-            let norm_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.norm.weight"),
-            )?);
+            let norm_gain = Arc::from(load_tensor_as_f32(st, &format!("{p}.norm.weight"))?);
             let in_proj = ltm(st, &format!("{p}.mixer.in_proj.weight"), 2 * d_inner, d)?;
-            let conv1d_weight = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.mixer.conv1d.weight"),
-            )?);
-            let conv1d_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.mixer.conv1d.bias"),
-            )?);
+            let conv1d_weight =
+                Arc::from(load_tensor_as_f32(st, &format!("{p}.mixer.conv1d.weight"))?);
+            let conv1d_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.mixer.conv1d.bias"))?);
             let x_proj = ltm(st, &format!("{p}.mixer.x_proj.weight"), x_out, d_inner)?;
             let dt_proj = ltm(st, &format!("{p}.mixer.dt_proj.weight"), d_inner, dt)?;
-            let dt_proj_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.mixer.dt_proj.bias"),
-            )?);
-            let a_log = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.mixer.A_log"),
-            )?);
-            let d_skip = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.mixer.D"),
-            )?);
+            let dt_proj_bias =
+                Arc::from(load_tensor_as_f32(st, &format!("{p}.mixer.dt_proj.bias"))?);
+            let a_log = Arc::from(load_tensor_as_f32(st, &format!("{p}.mixer.A_log"))?);
+            let d_skip = Arc::from(load_tensor_as_f32(st, &format!("{p}.mixer.D"))?);
             let out_proj = ltm(st, &format!("{p}.mixer.out_proj.weight"), d, d_inner)?;
             layers.push(MambaLayerWeights {
-                norm_gain, in_proj, conv1d_weight, conv1d_bias,
-                x_proj, dt_proj, dt_proj_bias, a_log, d: d_skip, out_proj,
+                norm_gain,
+                in_proj,
+                conv1d_weight,
+                conv1d_bias,
+                x_proj,
+                dt_proj,
+                dt_proj_bias,
+                a_log,
+                d: d_skip,
+                out_proj,
             });
         }
 
-        let final_norm_gain = Arc::from(load_tensor_as_f32(
-            st, "backbone.norm_f.weight",
-        )?);
+        let final_norm_gain = Arc::from(load_tensor_as_f32(st, "backbone.norm_f.weight")?);
         // Mamba ties lm_head to token embeddings.
         let output = match ltm(st, "lm_head.weight", v_padded, d) {
             Ok(w) => w,
-            Err(_) => crate::lazy_llama_full::tied_lm_head_from_embeddings(
-                &token_embedding, v_padded, d,
-            ),
+            Err(_) => {
+                crate::lazy_llama_full::tied_lm_head_from_embeddings(&token_embedding, v_padded, d)
+            }
         };
 
-        Ok(Self { token_embedding, layers, final_norm_gain, output })
+        Ok(Self {
+            token_embedding,
+            layers,
+            final_norm_gain,
+            output,
+        })
     }
 }
 
@@ -364,22 +359,36 @@ mod tests {
         let vocab = cfg.vocab_size();
         let mut next_box: Box<dyn FnMut() -> f32> = Box::new(next);
         let token_embedding = vec_of(vocab * d_model, &mut *next_box);
-        let layers: Vec<MambaLayerWeights> = (0..cfg.n_layer).map(|_| MambaLayerWeights {
-            norm_gain: Arc::from(vec![1.0_f32; d_model]),
-            in_proj: WeightStorage::F32(vec_of(d_model * 2 * d_inner, &mut *next_box)),
-            conv1d_weight: vec_of(d_inner * 1 * D_CONV, &mut *next_box),
-            conv1d_bias:   vec_of(d_inner, &mut *next_box),
-            x_proj: WeightStorage::F32(vec_of(d_inner * (dt_rank + 2 * D_STATE), &mut *next_box)),
-            dt_proj: WeightStorage::F32(vec_of(dt_rank * d_inner, &mut *next_box)),
-            dt_proj_bias: vec_of(d_inner, &mut *next_box),
-            // a_log: small negatives so a = -exp(a_log) stays stable.
-            a_log: Arc::from((0..d_inner * D_STATE).map(|i| -1.0 - 0.01 * (i as f32)).collect::<Vec<_>>()),
-            d: vec_of(d_inner, &mut *next_box),
-            out_proj: WeightStorage::F32(vec_of(d_inner * d_model, &mut *next_box)),
-        }).collect();
+        let layers: Vec<MambaLayerWeights> = (0..cfg.n_layer)
+            .map(|_| MambaLayerWeights {
+                norm_gain: Arc::from(vec![1.0_f32; d_model]),
+                in_proj: WeightStorage::F32(vec_of(d_model * 2 * d_inner, &mut *next_box)),
+                conv1d_weight: vec_of(d_inner * 1 * D_CONV, &mut *next_box),
+                conv1d_bias: vec_of(d_inner, &mut *next_box),
+                x_proj: WeightStorage::F32(vec_of(
+                    d_inner * (dt_rank + 2 * D_STATE),
+                    &mut *next_box,
+                )),
+                dt_proj: WeightStorage::F32(vec_of(dt_rank * d_inner, &mut *next_box)),
+                dt_proj_bias: vec_of(d_inner, &mut *next_box),
+                // a_log: small negatives so a = -exp(a_log) stays stable.
+                a_log: Arc::from(
+                    (0..d_inner * D_STATE)
+                        .map(|i| -1.0 - 0.01 * (i as f32))
+                        .collect::<Vec<_>>(),
+                ),
+                d: vec_of(d_inner, &mut *next_box),
+                out_proj: WeightStorage::F32(vec_of(d_inner * d_model, &mut *next_box)),
+            })
+            .collect();
         let final_norm_gain = Arc::from(vec![1.0_f32; d_model]);
         let output = WeightStorage::F32(vec_of(d_model * vocab, &mut *next_box));
-        MambaWeights { token_embedding, layers, final_norm_gain, output }
+        MambaWeights {
+            token_embedding,
+            layers,
+            final_norm_gain,
+            output,
+        }
     }
 
     #[test]
@@ -392,7 +401,10 @@ mod tests {
             rms_norm_eps: 1e-5,
         };
         // After padding, vocab → 24 (already a multiple of 8).
-        let model = MambaModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = MambaModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6, 7];
         let logits = model.forward(&tokens).unwrap();
         assert_eq!(logits.shape().dims(), &[1, tokens.len(), cfg.vocab_size()]);
@@ -405,8 +417,11 @@ mod tests {
     #[test]
     fn vocab_padding_rounds_up() {
         let cfg = MambaConfig {
-            d_model: 16, n_layer: 1, vocab_size: 50_277,
-            pad_vocab_size_multiple: 8, rms_norm_eps: 1e-5,
+            d_model: 16,
+            n_layer: 1,
+            vocab_size: 50_277,
+            pad_vocab_size_multiple: 8,
+            rms_norm_eps: 1e-5,
         };
         // 50_277 → 50_280 (next multiple of 8).
         assert_eq!(cfg.vocab_size(), 50_280);
@@ -415,8 +430,11 @@ mod tests {
     #[test]
     fn dt_rank_is_d_model_div_ceil_16() {
         let cfg = MambaConfig {
-            d_model: 768, n_layer: 1, vocab_size: 256,
-            pad_vocab_size_multiple: 8, rms_norm_eps: 1e-5,
+            d_model: 768,
+            n_layer: 1,
+            vocab_size: 256,
+            pad_vocab_size_multiple: 8,
+            rms_norm_eps: 1e-5,
         };
         assert_eq!(cfg.dt_rank(), 48);
         assert_eq!(cfg.d_inner(), 1536);
@@ -425,10 +443,16 @@ mod tests {
     #[test]
     fn forward_hidden_shape_and_finite() {
         let cfg = MambaConfig {
-            d_model: 16, n_layer: 2, vocab_size: 24,
-            pad_vocab_size_multiple: 8, rms_norm_eps: 1e-5,
+            d_model: 16,
+            n_layer: 2,
+            vocab_size: 24,
+            pad_vocab_size_multiple: 8,
+            rms_norm_eps: 1e-5,
         };
-        let model = MambaModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = MambaModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
         let hidden = model.forward_hidden(&tokens).unwrap();
         assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.d_model]);

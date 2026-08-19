@@ -70,9 +70,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use fuel_ir::probe::BackendId;
-use fuel_ir::Result;
 use fuel_graph::{Graph, Node, NodeId, Op};
+use fuel_ir::Result;
+use fuel_ir::probe::BackendId;
 
 use crate::kernel::KernelBindingTable;
 use crate::plan::ExecutionPlan;
@@ -254,11 +254,7 @@ impl PassRegistry {
     ///
     /// Returns `Result`; the first failing pass aborts the drive
     /// (build-time validation, never a panic).
-    pub fn run_lockstep(
-        &self,
-        graph: &mut Graph,
-        ctx: &OptimizationContext<'_>,
-    ) -> Result<()> {
+    pub fn run_lockstep(&self, graph: &mut Graph, ctx: &OptimizationContext<'_>) -> Result<()> {
         for pf in &self.pathfinders {
             // (1) ADD.
             pf.propose(graph, ctx)?;

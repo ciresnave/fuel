@@ -45,8 +45,9 @@ pub struct ImplId {
 
 /// `kernel_source` tags that denote a third-party vendor library (not Baracuda,
 /// not a Fuel-native portable kernel). The discriminant for the `Vendor` arm.
-const VENDOR_SOURCES: &[&str] =
-    &["cublas", "cudnn", "cutlass", "rocblas", "mkl", "aocl", "onednn"];
+const VENDOR_SOURCES: &[&str] = &[
+    "cublas", "cudnn", "cutlass", "rocblas", "mkl", "aocl", "onednn",
+];
 
 /// Baracuda's wire form for an implementation id (FKC §4.11 mapping). The
 /// discriminant is `kernel_source` — no reconciliation table. Borrows from the
@@ -118,7 +119,9 @@ mod tests {
     fn portable_and_unknown_classify_as_fuel_native() {
         assert_eq!(
             id("portable-cpu", BackendId::Cpu).classify(),
-            ImplClass::FuelNative { which: "portable-cpu" },
+            ImplClass::FuelNative {
+                which: "portable-cpu"
+            },
         );
         assert_eq!(
             id("slang", BackendId::Vulkan).classify(),
@@ -134,8 +137,17 @@ mod tests {
     #[test]
     fn impl_id_serializes_five_separable_fields() {
         let json = serde_json::to_string(&id("baracuda", BackendId::Cuda)).expect("serialize");
-        for field in ["backend", "op", "dtypes", "kernel_source", "kernel_revision_hash"] {
-            assert!(json.contains(field), "ImplId wire form must carry `{field}` as its own field");
+        for field in [
+            "backend",
+            "op",
+            "dtypes",
+            "kernel_source",
+            "kernel_revision_hash",
+        ] {
+            assert!(
+                json.contains(field),
+                "ImplId wire form must carry `{field}` as its own field"
+            );
         }
         // Round-trips losslessly with every field preserved.
         let back: ImplId = serde_json::from_str(&json).expect("deserialize");

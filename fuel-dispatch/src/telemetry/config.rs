@@ -76,8 +76,14 @@ mod tests {
     #[test]
     fn coarse_vs_detailed_candidates_gate() {
         assert!(TelemetryMode::Coarse.is_enabled());
-        assert!(!TelemetryMode::Coarse.wants_candidates(), "coarse omits candidates");
+        assert!(
+            !TelemetryMode::Coarse.wants_candidates(),
+            "coarse omits candidates"
+        );
         assert!(TelemetryMode::Detailed.is_enabled());
-        assert!(TelemetryMode::Detailed.wants_candidates(), "detailed fills candidates");
+        assert!(
+            TelemetryMode::Detailed.wants_candidates(),
+            "detailed fills candidates"
+        );
     }
 }

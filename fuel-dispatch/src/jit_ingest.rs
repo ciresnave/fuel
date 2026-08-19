@@ -10,17 +10,17 @@
 //! (Task 5/6 wire ingest + verify around it) — `dead_code` is expected.
 
 use std::panic::AssertUnwindSafe;
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 use std::sync::Arc;
+use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::time::Duration;
 
-use crate::fkc::verify::{is_transcendental, LedgerRecord};
+use crate::fkc::verify::{LedgerRecord, is_transcendental};
 
 #[cfg(feature = "cuda")]
 use crate::fkc::verify::{
-    region_contains_transcendental, verify_bit_stability, verify_precision_bound,
-    widen_bound_for_transcendental, Bound, CudaInvoker, HostTensor, KernelInvoker, ProbeInputs,
-    VerificationLedger, VerifyError, VerifyOutcome,
+    Bound, CudaInvoker, HostTensor, KernelInvoker, ProbeInputs, VerificationLedger, VerifyError,
+    VerifyOutcome, region_contains_transcendental, verify_bit_stability, verify_precision_bound,
+    widen_bound_for_transcendental,
 };
 #[cfg(feature = "cuda")]
 use crate::kernel::BindingEntry;
@@ -165,7 +165,10 @@ pub fn classify_floor_verdict(
         return if c.adopt {
             VerifyVerdict::Pass
         } else {
-            VerifyVerdict::Fail { claim: c.claim, detail: c.detail.clone() }
+            VerifyVerdict::Fail {
+                claim: c.claim,
+                detail: c.detail.clone(),
+            }
         };
     }
     // (2) Recipe-realize is the interim verdict for every class. kiss-ref, if
@@ -174,7 +177,10 @@ pub fn classify_floor_verdict(
         return if r.pass {
             VerifyVerdict::Pass
         } else {
-            VerifyVerdict::Fail { claim: r.claim, detail: r.detail.clone() }
+            VerifyVerdict::Fail {
+                claim: r.claim,
+                detail: r.detail.clone(),
+            }
         };
     }
     // (3) No authoritative reference, but kiss-ref could compare ⇒ escalate:
@@ -185,7 +191,10 @@ pub fn classify_floor_verdict(
             if k.within { "agrees" } else { "disagrees" },
             k.detail
         );
-        return VerifyVerdict::Inconclusive { claim: "max_ulp", detail };
+        return VerifyVerdict::Inconclusive {
+            claim: "max_ulp",
+            detail,
+        };
     }
     // (4) Nothing to compare against.
     VerifyVerdict::Fail {
@@ -272,7 +281,12 @@ fn outcome_from_nonadopt_verdict(
 /// never panic. Pure + CPU-testable.
 #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 fn kiss_advisory_diff_summary(r: &LedgerRecord) -> String {
-    let field = |k: &str| r.evidence.get(k).map(|v| v.to_string()).unwrap_or_else(|| "?".to_string());
+    let field = |k: &str| {
+        r.evidence
+            .get(k)
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "?".to_string())
+    };
     format!(
         "kiss_ref_advisory={} max_ulp={} mismatches={} op_count={}",
         r.result,
@@ -334,7 +348,10 @@ fn bytes_to_f64(bytes: &[u8]) -> Vec<f64> {
 // See `bytes_to_f64`: consumed by `run_region_diff`, dead only CPU-only.
 #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 fn bytes_to_f16(bytes: &[u8]) -> Vec<half::f16> {
-    bytes.chunks_exact(2).map(|c| half::f16::from_le_bytes([c[0], c[1]])).collect()
+    bytes
+        .chunks_exact(2)
+        .map(|c| half::f16::from_le_bytes([c[0], c[1]]))
+        .collect()
 }
 
 /// Reinterpret little-endian `bf16` bytes as an owned `Vec<half::bf16>`.
@@ -342,7 +359,10 @@ fn bytes_to_f16(bytes: &[u8]) -> Vec<half::f16> {
 // See `bytes_to_f64`: consumed by `run_region_diff`, dead only CPU-only.
 #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 fn bytes_to_bf16(bytes: &[u8]) -> Vec<half::bf16> {
-    bytes.chunks_exact(2).map(|c| half::bf16::from_le_bytes([c[0], c[1]])).collect()
+    bytes
+        .chunks_exact(2)
+        .map(|c| half::bf16::from_le_bytes([c[0], c[1]]))
+        .collect()
 }
 
 /// Fallback per-op ULP ceiling for a transcendental whose kiss `Op` declares no
@@ -391,7 +411,11 @@ fn advisory_op_ulp_ceiling(op: fuel_graph::jit::OpTag) -> Option<u64> {
     let declared = kiss.and_then(|k| k.ulp_ceiling());
     // `ceil() as u64` saturates (never-panic); declared ceilings are small
     // integers (2/4/8) today.
-    Some(declared.map_or(ADVISORY_FALLBACK_TRANSCENDENTAL_ULP_CEILING, |c| c.ceil() as u64))
+    Some(
+        declared.map_or(ADVISORY_FALLBACK_TRANSCENDENTAL_ULP_CEILING, |c| {
+            c.ceil() as u64
+        }),
+    )
 }
 
 /// The advisory comparison band for a region, per the kiss-ref tolerance
@@ -469,7 +493,9 @@ fn advisory_region(
     decompose: Option<&fuel_graph::jit::PatternNode>,
     claimed: Option<fuel_graph::registry::FusedOpId>,
 ) -> Option<fuel_graph::jit::PatternNode> {
-    decompose.cloned().or_else(|| claimed.and_then(fuel_graph::runtime_fused::runtime_region))
+    decompose
+        .cloned()
+        .or_else(|| claimed.and_then(fuel_graph::runtime_fused::runtime_region))
 }
 
 /// Pre-invoke eligibility for the Plan-T5 non-f32 numeric-claim ESCALATE path:
@@ -510,15 +536,29 @@ mod flag_not_verdict_tests {
         };
         assert!(matches!(IngestOutcome::Flagged(flag),
             IngestOutcome::Flagged(ref r) if r.escalate && r.claim == "max_ulp"));
-        let v = VerifyVerdict::Inconclusive { claim: "max_ulp", detail: "x".into() };
+        let v = VerifyVerdict::Inconclusive {
+            claim: "max_ulp",
+            detail: "x".into(),
+        };
         assert!(matches!(v, VerifyVerdict::Inconclusive { claim, .. } if claim == "max_ulp"));
     }
 
     #[test]
     fn classify_corpus_wins_when_present() {
-        let c = CorpusOutcome { adopt: true, claim: "max_ulp", detail: "corpus".into() };
-        assert!(matches!(classify_floor_verdict(None, None, Some(&c)), VerifyVerdict::Pass));
-        let cr = CorpusOutcome { adopt: false, claim: "max_ulp", detail: "corpus".into() };
+        let c = CorpusOutcome {
+            adopt: true,
+            claim: "max_ulp",
+            detail: "corpus".into(),
+        };
+        assert!(matches!(
+            classify_floor_verdict(None, None, Some(&c)),
+            VerifyVerdict::Pass
+        ));
+        let cr = CorpusOutcome {
+            adopt: false,
+            claim: "max_ulp",
+            detail: "corpus".into(),
+        };
         assert!(matches!(classify_floor_verdict(None, None, Some(&cr)),
             VerifyVerdict::Fail { claim, .. } if claim == "max_ulp"));
     }
@@ -526,19 +566,48 @@ mod flag_not_verdict_tests {
     #[test]
     fn classify_recipe_is_interim_verdict_kiss_advisory() {
         // kiss-ref disagrees but recipe passes: recipe verdict stands, kiss never gates.
-        let kiss = DiffOutcome { within: false, max_ulp: Some(5), detail: "disagree".into() };
-        let recipe = RefOutcome { pass: true, claim: "max_ulp", detail: "recipe ok".into() };
-        assert!(matches!(classify_floor_verdict(Some(&kiss), Some(&recipe), None), VerifyVerdict::Pass));
+        let kiss = DiffOutcome {
+            within: false,
+            max_ulp: Some(5),
+            detail: "disagree".into(),
+        };
+        let recipe = RefOutcome {
+            pass: true,
+            claim: "max_ulp",
+            detail: "recipe ok".into(),
+        };
+        assert!(matches!(
+            classify_floor_verdict(Some(&kiss), Some(&recipe), None),
+            VerifyVerdict::Pass
+        ));
     }
 
     #[test]
     fn classify_no_reference_but_kiss_is_inconclusive() {
-        let agree = DiffOutcome { within: true, max_ulp: Some(0), detail: "agree".into() };
-        assert!(matches!(classify_floor_verdict(Some(&agree), None, None),
-            VerifyVerdict::Inconclusive { .. }), "kiss agreement != Adopt");
-        let off = DiffOutcome { within: false, max_ulp: Some(4), detail: "disagree".into() };
-        assert!(matches!(classify_floor_verdict(Some(&off), None, None),
-            VerifyVerdict::Inconclusive { .. }), "kiss discrepancy != Reject");
+        let agree = DiffOutcome {
+            within: true,
+            max_ulp: Some(0),
+            detail: "agree".into(),
+        };
+        assert!(
+            matches!(
+                classify_floor_verdict(Some(&agree), None, None),
+                VerifyVerdict::Inconclusive { .. }
+            ),
+            "kiss agreement != Adopt"
+        );
+        let off = DiffOutcome {
+            within: false,
+            max_ulp: Some(4),
+            detail: "disagree".into(),
+        };
+        assert!(
+            matches!(
+                classify_floor_verdict(Some(&off), None, None),
+                VerifyVerdict::Inconclusive { .. }
+            ),
+            "kiss discrepancy != Reject"
+        );
     }
 
     #[test]
@@ -555,10 +624,22 @@ mod flag_not_verdict_tests {
     #[test]
     fn map_fail_to_rejected_and_inconclusive_to_flagged() {
         let out = outcome_from_nonadopt_verdict(
-            VerifyVerdict::Fail { claim: "max_ulp", detail: "off".into() }, vec![], "k");
+            VerifyVerdict::Fail {
+                claim: "max_ulp",
+                detail: "off".into(),
+            },
+            vec![],
+            "k",
+        );
         assert!(matches!(out, IngestOutcome::Rejected(ref r) if r.failed_claim == "max_ulp"));
         let out = outcome_from_nonadopt_verdict(
-            VerifyVerdict::Inconclusive { claim: "max_ulp", detail: "esc".into() }, vec![], "k");
+            VerifyVerdict::Inconclusive {
+                claim: "max_ulp",
+                detail: "esc".into(),
+            },
+            vec![],
+            "k",
+        );
         assert!(matches!(out, IngestOutcome::Flagged(ref r) if r.escalate && r.claim == "max_ulp"));
     }
 
@@ -588,17 +669,30 @@ mod flag_not_verdict_tests {
             }),
         };
         let out = outcome_from_nonadopt_verdict(
-            VerifyVerdict::Inconclusive { claim: "max_ulp", detail: "esc".into() },
+            VerifyVerdict::Inconclusive {
+                claim: "max_ulp",
+                detail: "esc".into(),
+            },
             vec![advisory],
             "k",
         );
         match out {
             IngestOutcome::Flagged(r) => {
-                let summary =
-                    r.diff_summary.expect("diff_summary threaded from the advisory record");
-                assert!(summary.contains("max_ulp=3"), "names the max ULP: {summary}");
-                assert!(summary.contains("mismatches=2"), "and the mismatch count: {summary}");
-                assert!(summary.contains("flag"), "and the advisory result: {summary}");
+                let summary = r
+                    .diff_summary
+                    .expect("diff_summary threaded from the advisory record");
+                assert!(
+                    summary.contains("max_ulp=3"),
+                    "names the max ULP: {summary}"
+                );
+                assert!(
+                    summary.contains("mismatches=2"),
+                    "and the mismatch count: {summary}"
+                );
+                assert!(
+                    summary.contains("flag"),
+                    "and the advisory result: {summary}"
+                );
             }
             _ => panic!("expected Flagged"),
         }
@@ -606,7 +700,10 @@ mod flag_not_verdict_tests {
         // No advisory record present -> diff_summary stays None (non-regression
         // with the vec![] cases in map_fail_to_rejected_and_inconclusive_to_flagged).
         let out = outcome_from_nonadopt_verdict(
-            VerifyVerdict::Inconclusive { claim: "max_ulp", detail: "esc".into() },
+            VerifyVerdict::Inconclusive {
+                claim: "max_ulp",
+                detail: "esc".into(),
+            },
             vec![],
             "k",
         );
@@ -622,13 +719,22 @@ mod flag_not_verdict_tests {
         let add = PatternNode::Op {
             op: OpTag::Add,
             attrs: OpAttrs::default(),
-            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+            operands: vec![
+                PatternNode::Bind { index: 0 },
+                PatternNode::Bind { index: 1 },
+            ],
         };
-        assert!(matches!(single_primitive_optag(Some(&add)), Some(OpTag::Add)));
+        assert!(matches!(
+            single_primitive_optag(Some(&add)),
+            Some(OpTag::Add)
+        ));
         let reordered = PatternNode::Op {
             op: OpTag::Add,
             attrs: OpAttrs::default(),
-            operands: vec![PatternNode::Bind { index: 1 }, PatternNode::Bind { index: 0 }],
+            operands: vec![
+                PatternNode::Bind { index: 1 },
+                PatternNode::Bind { index: 0 },
+            ],
         };
         assert!(single_primitive_optag(Some(&reordered)).is_none());
         let nested = PatternNode::Op {
@@ -653,13 +759,17 @@ mod flag_not_verdict_tests {
         let bytes: Vec<u8> = v64.iter().flat_map(|x| x.to_le_bytes()).collect();
         assert_eq!(bytes_to_f64(&bytes), v64.to_vec());
 
-        let v16: Vec<half::f16> =
-            [1.0f32, -2.5, 0.5].iter().map(|&x| half::f16::from_f32(x)).collect();
+        let v16: Vec<half::f16> = [1.0f32, -2.5, 0.5]
+            .iter()
+            .map(|&x| half::f16::from_f32(x))
+            .collect();
         let bytes: Vec<u8> = v16.iter().flat_map(|x| x.to_le_bytes()).collect();
         assert_eq!(bytes_to_f16(&bytes), v16);
 
-        let vb: Vec<half::bf16> =
-            [1.0f32, -2.5, 0.5].iter().map(|&x| half::bf16::from_f32(x)).collect();
+        let vb: Vec<half::bf16> = [1.0f32, -2.5, 0.5]
+            .iter()
+            .map(|&x| half::bf16::from_f32(x))
+            .collect();
         let bytes: Vec<u8> = vb.iter().flat_map(|x| x.to_le_bytes()).collect();
         assert_eq!(bytes_to_bf16(&bytes), vb);
     }
@@ -696,7 +806,10 @@ mod flag_not_verdict_tests {
         // fallback 4) + one exact: 8 + (1 - 1) = 8.
         let tanh_exp_add = node(
             OpTag::Tanh,
-            vec![node(OpTag::Add, vec![node(OpTag::Exp, vec![bind(0)]), bind(1)])],
+            vec![node(
+                OpTag::Add,
+                vec![node(OpTag::Exp, vec![bind(0)]), bind(1)],
+            )],
         );
         assert_eq!(advisory_ulp_band(&tanh_exp_add), Some(8));
         // All-transcendental region: the exact term saturates at 0, never
@@ -813,8 +926,8 @@ mod flag_not_verdict_tests {
         use baracuda_kernels_types::{ElementKind, OperandDesc};
         use fuel_cuda_backend::CudaDevice;
         use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
-        use fuel_ir::probe::BackendId;
         use fuel_ir::DType;
+        use fuel_ir::probe::BackendId;
 
         let Ok(dev) = CudaDevice::new(0) else {
             eprintln!("no CUDA device; skipping");
@@ -823,7 +936,10 @@ mod flag_not_verdict_tests {
         let decompose = PatternNode::Op {
             op: OpTag::Add,
             attrs: OpAttrs::default(),
-            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+            operands: vec![
+                PatternNode::Bind { index: 0 },
+                PatternNode::Bind { index: 1 },
+            ],
         };
         let od = OperandDesc::new(1, &[4], &[1], ElementKind::F32, 16);
         let cand = CandidateKernel {
@@ -866,8 +982,8 @@ mod flag_not_verdict_tests {
         use baracuda_kernels_types::{ElementKind, OperandDesc};
         use fuel_cuda_backend::CudaDevice;
         use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
-        use fuel_ir::probe::BackendId;
         use fuel_ir::DType;
+        use fuel_ir::probe::BackendId;
 
         let Ok(dev) = CudaDevice::new(0) else {
             eprintln!("no CUDA device; skipping");
@@ -880,7 +996,10 @@ mod flag_not_verdict_tests {
             operands: vec![PatternNode::Op {
                 op: OpTag::Add,
                 attrs: OpAttrs::default(),
-                operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+                operands: vec![
+                    PatternNode::Bind { index: 0 },
+                    PatternNode::Bind { index: 1 },
+                ],
             }],
         };
         let od = OperandDesc::new(1, &[8], &[1], ElementKind::F32, 32);
@@ -928,8 +1047,8 @@ mod flag_not_verdict_tests {
         use baracuda_kernels_types::{ElementKind, OperandDesc};
         use fuel_cuda_backend::CudaDevice;
         use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
-        use fuel_ir::probe::BackendId;
         use fuel_ir::DType;
+        use fuel_ir::probe::BackendId;
 
         let Ok(dev) = CudaDevice::new(0) else {
             eprintln!("no CUDA device; skipping");
@@ -940,7 +1059,10 @@ mod flag_not_verdict_tests {
         let region = PatternNode::Op {
             op: OpTag::Add,
             attrs: OpAttrs::default(),
-            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+            operands: vec![
+                PatternNode::Bind { index: 0 },
+                PatternNode::Bind { index: 1 },
+            ],
         };
         let claimed = fuel_graph::runtime_fused::register_runtime_fused(
             "test::claimed_op_advisory::add",
@@ -994,7 +1116,12 @@ mod flag_not_verdict_tests {
 /// one past the largest bind index the region references (0 for a bind-free
 /// region).
 fn region_arity(region: &fuel_graph::jit::PatternNode) -> usize {
-    region.bind_indices().iter().max().map(|m| *m as usize + 1).unwrap_or(0)
+    region
+        .bind_indices()
+        .iter()
+        .max()
+        .map(|m| *m as usize + 1)
+        .unwrap_or(0)
 }
 
 /// Push `arity` uniform placeholder leaves (`Op::Const`, F32 `[1]`, NO storage)
@@ -1003,10 +1130,7 @@ fn region_arity(region: &fuel_graph::jit::PatternNode) -> usize {
 /// [`base_map_hash`](fuel_graph::opt::base_map_hash) (which folds a const's
 /// shape/dtype and silently no-ops on an unpopulated storage slot) for a
 /// cross-graph base-map comparison to be meaningful.
-fn push_placeholder_leaves(
-    g: &mut fuel_graph::Graph,
-    arity: usize,
-) -> Vec<fuel_graph::NodeId> {
+fn push_placeholder_leaves(g: &mut fuel_graph::Graph, arity: usize) -> Vec<fuel_graph::NodeId> {
     (0..arity)
         .map(|_| {
             g.push(fuel_graph::Node {
@@ -1122,9 +1246,7 @@ fn recipe_identity_matches(
 /// a match arm keyed on `id`. Anything unmapped falling through to `Rope` at
 /// worst yields a non-matching base map or a wrong realize that fails the
 /// numeric bound — a conservative reject, never a wrong adopt.
-fn fused_params_for(
-    id: fuel_graph::registry::FusedOpId,
-) -> fuel_graph::registry::FusedOpParams {
+fn fused_params_for(id: fuel_graph::registry::FusedOpId) -> fuel_graph::registry::FusedOpParams {
     // No per-id branch needed yet — see doc above. `id` is bound for the
     // future match arm and to document intent.
     let _ = id;
@@ -1236,7 +1358,10 @@ impl KernelInvoker for FixedOutput {
 #[cfg(feature = "cuda")]
 fn verified_at_now() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     format!("epoch:{secs}")
 }
 
@@ -1349,7 +1474,10 @@ fn resolve_reference_failure(
                              (flag, never verdict — §6.6-0007)",
                 }),
             ));
-            (VerifyVerdict::Inconclusive { claim, detail }, ledger.records().to_vec())
+            (
+                VerifyVerdict::Inconclusive { claim, detail },
+                ledger.records().to_vec(),
+            )
         }
         // kiss absent: classify returns the `no_reference` Fail; keep today's
         // exact realize-failed Fail (same claim + detail + ledger record as the
@@ -1361,7 +1489,10 @@ fn resolve_reference_failure(
                 serde_json::json!({ "detail": fail_detail.clone() }),
             ));
             (
-                VerifyVerdict::Fail { claim: fail_claim, detail: fail_detail },
+                VerifyVerdict::Fail {
+                    claim: fail_claim,
+                    detail: fail_detail,
+                },
                 ledger.records().to_vec(),
             )
         }
@@ -1435,7 +1566,10 @@ fn claimed_op_structural_gate(
                 serde_json::json!({ "detail": detail.clone() }),
             ));
             return Err((
-                VerifyVerdict::Fail { claim: "recipe_identity", detail },
+                VerifyVerdict::Fail {
+                    claim: "recipe_identity",
+                    detail,
+                },
                 ledger.records().to_vec(),
             ));
         }
@@ -1462,7 +1596,10 @@ fn claimed_op_structural_gate(
             serde_json::json!({ "detail": detail.clone() }),
         ));
         return Err((
-            VerifyVerdict::Fail { claim: "probe_arity", detail },
+            VerifyVerdict::Fail {
+                claim: "probe_arity",
+                detail,
+            },
             ledger.records().to_vec(),
         ));
     }
@@ -1512,7 +1649,13 @@ fn verify_candidate_impl(
             "fail",
             serde_json::json!({ "detail": detail.clone() }),
         ));
-        return (VerifyVerdict::Fail { claim: "no_guarantee", detail }, ledger.records().to_vec());
+        return (
+            VerifyVerdict::Fail {
+                claim: "no_guarantee",
+                detail,
+            },
+            ledger.records().to_vec(),
+        );
     }
 
     // (1) Probe synthesis. A candidate carrying an operand we can't faithfully
@@ -1529,19 +1672,17 @@ fn verify_candidate_impl(
                     detail: "candidate declares no operands to probe".to_string(),
                 },
                 Vec::new(),
-            )
+            );
         }
-        None => {
-            return (
-                VerifyVerdict::Fail {
-                    claim: "probe",
-                    detail:
-                        "candidate carries an operand whose dtype cannot be encoded as a probe input"
-                            .to_string(),
-                },
-                Vec::new(),
-            )
-        }
+        None => return (
+            VerifyVerdict::Fail {
+                claim: "probe",
+                detail:
+                    "candidate carries an operand whose dtype cannot be encoded as a probe input"
+                        .to_string(),
+            },
+            Vec::new(),
+        ),
     };
 
     // Output dtype/shape: derived from the first probe operand. This matches
@@ -1598,7 +1739,10 @@ fn verify_candidate_impl(
                 "fail",
                 serde_json::json!({ "detail": detail.clone(), "out_dtype": format!("{out_dtype:?}") }),
             ));
-            return (VerifyVerdict::Fail { claim, detail }, ledger.records().to_vec());
+            return (
+                VerifyVerdict::Fail { claim, detail },
+                ledger.records().to_vec(),
+            );
         }
         // Eligible: fall through to invoke + the advisory diff; the numeric
         // region escalates to Inconclusive rather than checking an f32 bound.
@@ -1628,7 +1772,7 @@ fn verify_candidate_impl(
                     detail: format!("candidate kernel invoke failed: {e:?}"),
                 },
                 Vec::new(),
-            )
+            );
         }
     };
 
@@ -1667,11 +1811,17 @@ fn verify_candidate_impl(
             return None;
         }
         let band = advisory_ulp_band(region);
-        let tol = band
-            .map_or(fuel_kiss_ref_backend::Tolerance::Exact, fuel_kiss_ref_backend::Tolerance::Ulp);
+        let tol = band.map_or(
+            fuel_kiss_ref_backend::Tolerance::Exact,
+            fuel_kiss_ref_backend::Tolerance::Ulp,
+        );
         let report = run_region_diff(region, out_dtype, &cand_out.bytes, &probe, tol).ok()?;
         let op_count = fuel_kiss_ref_backend::region_op_count(region);
-        let source = if cand.decompose.is_some() { "decompose" } else { "claimed_recipe" };
+        let source = if cand.decompose.is_some() {
+            "decompose"
+        } else {
+            "claimed_recipe"
+        };
         ledger.upsert(make_record(
             "kiss_ref_advisory",
             if report.conforms() { "pass" } else { "flag" },
@@ -1712,7 +1862,10 @@ fn verify_candidate_impl(
                     serde_json::json!({ "detail": detail.clone() }),
                 ));
                 return (
-                    VerifyVerdict::Fail { claim: "bit_stable_on_same_hardware", detail },
+                    VerifyVerdict::Fail {
+                        claim: "bit_stable_on_same_hardware",
+                        detail,
+                    },
                     ledger.records().to_vec(),
                 );
             }
@@ -1726,7 +1879,10 @@ fn verify_candidate_impl(
                     serde_json::json!({ "detail": detail.clone() }),
                 ));
                 return (
-                    VerifyVerdict::Fail { claim: "bit_stable_on_same_hardware", detail },
+                    VerifyVerdict::Fail {
+                        claim: "bit_stable_on_same_hardware",
+                        detail,
+                    },
                     ledger.records().to_vec(),
                 );
             }
@@ -1770,7 +1926,10 @@ fn verify_candidate_impl(
                 if c.adopt { "pass" } else { "fail" },
                 serde_json::json!({ "detail": c.detail.clone(), "source": "corpus" }),
             ));
-            return (classify_floor_verdict(None, None, Some(c)), ledger.records().to_vec());
+            return (
+                classify_floor_verdict(None, None, Some(c)),
+                ledger.records().to_vec(),
+            );
         }
 
         // (T5) Non-f32 numeric-claim ESCALATE. Reached only for a kiss-coverable
@@ -1790,8 +1949,7 @@ fn verify_candidate_impl(
         // else the honest f32-only Fail (the rare case the advisory declined
         // despite eligibility — e.g. a `run_region_diff` eval error).
         if out_dtype != fuel_ir::DType::F32 {
-            if let Err(early) =
-                claimed_op_structural_gate(cand, &probe, &mut ledger, &make_record)
+            if let Err(early) = claimed_op_structural_gate(cand, &probe, &mut ledger, &make_record)
             {
                 return early;
             }
@@ -1910,13 +2068,27 @@ fn verify_candidate_impl(
         // the wide-precision truth can differ from each other by up to twice
         // it. Tight transcendental truth lives in the frozen wide-precision
         // corpus, not here. Non-transcendental regions keep the tight bound.
-        let transcendental =
-            cand.decompose.as_ref().is_some_and(|r| region_contains_transcendental(r));
-        let widen = |b: Bound| if transcendental { widen_bound_for_transcendental(b) } else { b };
+        let transcendental = cand
+            .decompose
+            .as_ref()
+            .is_some_and(|r| region_contains_transcendental(r));
+        let widen = |b: Bound| {
+            if transcendental {
+                widen_bound_for_transcendental(b)
+            } else {
+                b
+            }
+        };
 
         // Check each declared numeric bound in order; FIRST failure returns.
         if let Some(b) = cand.declared.max_ulp {
-            match check_numeric_bound(&cand_out, &reference, &entry, &probe, widen(Bound::MaxUlp(b))) {
+            match check_numeric_bound(
+                &cand_out,
+                &reference,
+                &entry,
+                &probe,
+                widen(Bound::MaxUlp(b)),
+            ) {
                 Ok(()) => ledger.upsert(make_record(
                     "max_ulp",
                     "pass",
@@ -1928,12 +2100,24 @@ fn verify_candidate_impl(
                         "fail",
                         serde_json::json!({ "detail": detail.clone(), "bound": b, "transcendental_band": transcendental }),
                     ));
-                    return (VerifyVerdict::Fail { claim: "max_ulp", detail }, ledger.records().to_vec());
+                    return (
+                        VerifyVerdict::Fail {
+                            claim: "max_ulp",
+                            detail,
+                        },
+                        ledger.records().to_vec(),
+                    );
                 }
             }
         }
         if let Some(b) = cand.declared.max_relative {
-            match check_numeric_bound(&cand_out, &reference, &entry, &probe, widen(Bound::MaxRelative(b))) {
+            match check_numeric_bound(
+                &cand_out,
+                &reference,
+                &entry,
+                &probe,
+                widen(Bound::MaxRelative(b)),
+            ) {
                 Ok(()) => ledger.upsert(make_record(
                     "max_relative",
                     "pass",
@@ -1946,14 +2130,23 @@ fn verify_candidate_impl(
                         serde_json::json!({ "detail": detail.clone(), "bound": b, "transcendental_band": transcendental }),
                     ));
                     return (
-                        VerifyVerdict::Fail { claim: "max_relative", detail },
+                        VerifyVerdict::Fail {
+                            claim: "max_relative",
+                            detail,
+                        },
                         ledger.records().to_vec(),
                     );
                 }
             }
         }
         if let Some(b) = cand.declared.max_absolute {
-            match check_numeric_bound(&cand_out, &reference, &entry, &probe, widen(Bound::MaxAbsolute(b))) {
+            match check_numeric_bound(
+                &cand_out,
+                &reference,
+                &entry,
+                &probe,
+                widen(Bound::MaxAbsolute(b)),
+            ) {
                 Ok(()) => ledger.upsert(make_record(
                     "max_absolute",
                     "pass",
@@ -1966,7 +2159,10 @@ fn verify_candidate_impl(
                         serde_json::json!({ "detail": detail.clone(), "bound": b, "transcendental_band": transcendental }),
                     ));
                     return (
-                        VerifyVerdict::Fail { claim: "max_absolute", detail },
+                        VerifyVerdict::Fail {
+                            claim: "max_absolute",
+                            detail,
+                        },
                         ledger.records().to_vec(),
                     );
                 }
@@ -2076,7 +2272,11 @@ pub struct IngestionConfig {
 
 impl Default for IngestionConfig {
     fn default() -> Self {
-        Self { queue_bound: 32, max_concurrent: 1, idle_load_threshold: 1 }
+        Self {
+            queue_bound: 32,
+            max_concurrent: 1,
+            idle_load_threshold: 1,
+        }
     }
 }
 
@@ -2147,9 +2347,11 @@ impl IngestionService {
         // worker's idle-gate spin-sleep forever and never reach `verify` —
         // 0 is treated as 1 (wait for the device to be fully idle).
         let idle_load_threshold = cfg.idle_load_threshold.max(1);
-        let worker =
-            std::thread::spawn(move || worker_loop(receiver, verify, idle_load_threshold));
-        Self { sender: Some(sender), worker: Some(worker) }
+        let worker = std::thread::spawn(move || worker_loop(receiver, verify, idle_load_threshold));
+        Self {
+            sender: Some(sender),
+            worker: Some(worker),
+        }
     }
 
     /// Offer a candidate for background verification. `Ok(())` means it was
@@ -2349,15 +2551,24 @@ mod tests {
         // Any single numeric claim rescues it (nothing to bypass).
         assert!(!claimed_op_lacks_numeric_bound(
             Some(FusedOps::ROPE),
-            &crate::fused::PrecisionGuarantee { max_ulp: Some(1), ..empty }
+            &crate::fused::PrecisionGuarantee {
+                max_ulp: Some(1),
+                ..empty
+            }
         ));
         assert!(!claimed_op_lacks_numeric_bound(
             Some(FusedOps::ROPE),
-            &crate::fused::PrecisionGuarantee { max_relative: Some(1e-3), ..empty }
+            &crate::fused::PrecisionGuarantee {
+                max_relative: Some(1e-3),
+                ..empty
+            }
         ));
         assert!(!claimed_op_lacks_numeric_bound(
             Some(FusedOps::ROPE),
-            &crate::fused::PrecisionGuarantee { max_absolute: Some(1e-3), ..empty }
+            &crate::fused::PrecisionGuarantee {
+                max_absolute: Some(1e-3),
+                ..empty
+            }
         ));
 
         // No claimed op → not this guard's concern (the `claimed_op = None`
@@ -2382,19 +2593,24 @@ mod tests {
         let add_region = PatternNode::Op {
             op: OpTag::Add,
             attrs: OpAttrs::default(),
-            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+            operands: vec![
+                PatternNode::Bind { index: 0 },
+                PatternNode::Bind { index: 1 },
+            ],
         };
         let mul_region = PatternNode::Op {
             op: OpTag::Mul,
             attrs: OpAttrs::default(),
-            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+            operands: vec![
+                PatternNode::Bind { index: 0 },
+                PatternNode::Bind { index: 1 },
+            ],
         };
 
         // Register the Add region → a known claimed id whose registered recipe
         // is exactly `add_region`.
-        let claimed_id =
-            register_runtime_fused("test::recipe_identity::add", add_region.clone())
-                .expect("register add region");
+        let claimed_id = register_runtime_fused("test::recipe_identity::add", add_region.clone())
+            .expect("register add region");
 
         assert!(
             recipe_identity_matches(claimed_id, &add_region),
@@ -2425,8 +2641,8 @@ mod tests {
         use baracuda_kernels_types::{ElementKind, OperandDesc};
         use fuel_cuda_backend::CudaDevice;
         use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
-        use fuel_ir::probe::BackendId;
         use fuel_ir::DType;
+        use fuel_ir::probe::BackendId;
 
         let Ok(dev) = CudaDevice::new(0) else {
             eprintln!("no CUDA device; skipping");
@@ -2436,7 +2652,10 @@ mod tests {
         let decompose = PatternNode::Op {
             op: OpTag::Add,
             attrs: OpAttrs::default(),
-            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+            operands: vec![
+                PatternNode::Bind { index: 0 },
+                PatternNode::Bind { index: 1 },
+            ],
         };
         let od = OperandDesc::new(1, &[4], &[1], ElementKind::F32, 16);
         let cand = CandidateKernel {
@@ -2453,7 +2672,10 @@ mod tests {
         };
 
         let (verdict, records) = verify_candidate(&cand, &dev);
-        assert!(matches!(verdict, VerifyVerdict::Pass), "expected Pass, got {verdict:?}");
+        assert!(
+            matches!(verdict, VerifyVerdict::Pass),
+            "expected Pass, got {verdict:?}"
+        );
         // REFERENCE declares 4 machine-checkable claims → 4 pass records,
         // plus the kiss-ref advisory record (f32 floor Add) = 5.
         assert_eq!(
@@ -2461,11 +2683,22 @@ mod tests {
             5,
             "one pass record per declared claim + the kiss-ref advisory: {records:?}"
         );
-        assert!(records.iter().all(|r| r.result == "pass"), "all pass: {records:?}");
+        assert!(
+            records.iter().all(|r| r.result == "pass"),
+            "all pass: {records:?}"
+        );
         assert!(records.iter().all(|r| r.backend == "Cuda"));
-        assert!(records.iter().all(|r| r.kernel_revision_hash == 0x00AD_DF32));
+        assert!(
+            records
+                .iter()
+                .all(|r| r.kernel_revision_hash == 0x00AD_DF32)
+        );
         assert!(records.iter().any(|r| r.claim == "kiss_ref_advisory"));
-        assert!(records.iter().any(|r| r.claim == "bit_stable_on_same_hardware"));
+        assert!(
+            records
+                .iter()
+                .any(|r| r.claim == "bit_stable_on_same_hardware")
+        );
         assert!(records.iter().any(|r| r.claim == "max_ulp"));
         assert!(records.iter().any(|r| r.claim == "max_relative"));
         assert!(records.iter().any(|r| r.claim == "max_absolute"));
@@ -2493,8 +2726,8 @@ mod tests {
         use baracuda_kernels_types::{ElementKind, OperandDesc};
         use fuel_cuda_backend::CudaDevice;
         use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
-        use fuel_ir::probe::BackendId;
         use fuel_ir::DType;
+        use fuel_ir::probe::BackendId;
 
         let Ok(dev) = CudaDevice::new(0) else {
             eprintln!("no CUDA device; skipping");
@@ -2508,7 +2741,10 @@ mod tests {
         let decompose = PatternNode::Op {
             op: OpTag::MatMul,
             attrs: OpAttrs::default(),
-            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+            operands: vec![
+                PatternNode::Bind { index: 0 },
+                PatternNode::Bind { index: 1 },
+            ],
         };
         let od = OperandDesc::new(1, &[4], &[1], ElementKind::Bf16, 16);
         let cand = CandidateKernel {
@@ -2541,7 +2777,11 @@ mod tests {
             }
             other => panic!("expected Fail (f32-only guard, kiss-uncoverable), got {other:?}"),
         }
-        assert_eq!(records.len(), 1, "one fail record for the refused claim: {records:?}");
+        assert_eq!(
+            records.len(),
+            1,
+            "one fail record for the refused claim: {records:?}"
+        );
         assert_eq!(records[0].claim, "max_ulp");
         assert_eq!(records[0].result, "fail");
     }
@@ -2565,8 +2805,8 @@ mod tests {
         use baracuda_kernels_types::{ElementKind, OperandDesc};
         use fuel_cuda_backend::CudaDevice;
         use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
-        use fuel_ir::probe::BackendId;
         use fuel_ir::DType;
+        use fuel_ir::probe::BackendId;
 
         let Ok(dev) = CudaDevice::new(0) else {
             eprintln!("no CUDA device; skipping");
@@ -2576,7 +2816,10 @@ mod tests {
         let decompose = PatternNode::Op {
             op: OpTag::Add,
             attrs: OpAttrs::default(),
-            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+            operands: vec![
+                PatternNode::Bind { index: 0 },
+                PatternNode::Bind { index: 1 },
+            ],
         };
         let od = OperandDesc::new(1, &[4], &[1], ElementKind::F64, 32);
         let cand = CandidateKernel {
@@ -2609,10 +2852,15 @@ mod tests {
             .find(|r| r.claim == "kiss_ref_advisory")
             .expect("a kiss-coverable f64 Add must reach the advisory cross-check");
         assert_eq!(advisory.evidence["dtype"], serde_json::json!("F64"));
-        assert_eq!(advisory.result, "pass", "add_f64 matches kiss-ref add exactly: {advisory:?}");
+        assert_eq!(
+            advisory.result, "pass",
+            "add_f64 matches kiss-ref add exactly: {advisory:?}"
+        );
         // And the escalate is recorded as an inconclusive max_ulp entry.
         assert!(
-            records.iter().any(|r| r.claim == "max_ulp" && r.result == "inconclusive"),
+            records
+                .iter()
+                .any(|r| r.claim == "max_ulp" && r.result == "inconclusive"),
             "the escalate earns an inconclusive max_ulp record: {records:?}"
         );
     }
@@ -2643,8 +2891,8 @@ mod tests {
         use baracuda_kernels_types::{ElementKind, OperandDesc};
         use fuel_cuda_backend::CudaDevice;
         use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
-        use fuel_ir::probe::BackendId;
         use fuel_ir::DType;
+        use fuel_ir::probe::BackendId;
 
         let Ok(dev) = CudaDevice::new(0) else {
             eprintln!("no CUDA device; skipping");
@@ -2654,7 +2902,10 @@ mod tests {
         let decompose = PatternNode::Op {
             op: OpTag::Add,
             attrs: OpAttrs::default(),
-            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+            operands: vec![
+                PatternNode::Bind { index: 0 },
+                PatternNode::Bind { index: 1 },
+            ],
         };
         let od = OperandDesc::new(1, &[4], &[1], ElementKind::F32, 16);
         let cand = CandidateKernel {
@@ -2679,7 +2930,9 @@ mod tests {
                 );
             }
             IngestOutcome::Adopted(_) => {
-                panic!("mul_f32 must NOT be adopted for an Add region — it computes a different function")
+                panic!(
+                    "mul_f32 must NOT be adopted for an Add region — it computes a different function"
+                )
             }
             IngestOutcome::Flagged(r) => panic!("unexpected Flagged: {} / {}", r.claim, r.detail),
         }
@@ -2705,8 +2958,8 @@ mod tests {
         use baracuda_kernels_types::{ElementKind, OperandDesc};
         use fuel_cuda_backend::CudaDevice;
         use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
-        use fuel_ir::probe::BackendId;
         use fuel_ir::DType;
+        use fuel_ir::probe::BackendId;
 
         let Ok(dev) = CudaDevice::new(0) else {
             eprintln!("no CUDA device; skipping");
@@ -2716,7 +2969,10 @@ mod tests {
         let decompose = PatternNode::Op {
             op: OpTag::Add,
             attrs: OpAttrs::default(),
-            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+            operands: vec![
+                PatternNode::Bind { index: 0 },
+                PatternNode::Bind { index: 1 },
+            ],
         };
         let od = OperandDesc::new(1, &[4], &[1], ElementKind::F32, 16);
         let cand = CandidateKernel {
@@ -2796,11 +3052,15 @@ mod tests {
             )));
         }
         let (outer_count, seq, head_dim) = match params {
-            OpParams::Rope { outer_count, seq, head_dim } => (*outer_count, *seq, *head_dim),
+            OpParams::Rope {
+                outer_count,
+                seq,
+                head_dim,
+            } => (*outer_count, *seq, *head_dim),
             other => {
                 return Err(fuel_ir::Error::Msg(format!(
                     "interleaved_rope_apply_candidate_kernel: expected OpParams::Rope, got {other:?}"
-                )))
+                )));
             }
         };
         let x_guard = read_storage(&inputs[0])?;
@@ -2812,7 +3072,13 @@ mod tests {
         let sin_cuda = cuda_input(&sin_guard)?;
         let out_cuda = cuda_output(&mut out_guard)?;
         fuel_cuda_backend::baracuda::attention::rope_apply_fused_f32_into(
-            x_cuda, cos_cuda, sin_cuda, outer_count, seq, head_dim, out_cuda,
+            x_cuda,
+            cos_cuda,
+            sin_cuda,
+            outer_count,
+            seq,
+            head_dim,
+            out_cuda,
         )
     }
 
@@ -2844,8 +3110,8 @@ mod tests {
         use baracuda_kernels_types::{ElementKind, OperandDesc};
         use fuel_cuda_backend::CudaDevice;
         use fuel_graph::registry::FusedOps;
-        use fuel_ir::probe::BackendId;
         use fuel_ir::DType;
+        use fuel_ir::probe::BackendId;
 
         let Ok(dev) = CudaDevice::new(0) else {
             eprintln!("no CUDA device; skipping");
@@ -2872,7 +3138,11 @@ mod tests {
         let cand = CandidateKernel {
             entry_point: "test::rope_oracle::interleaved_rope_apply_claims_rope".to_string(),
             kernel: interleaved_rope_apply_candidate_kernel,
-            op_params: crate::kernel::OpParams::Rope { outer_count: 1, seq, head_dim },
+            op_params: crate::kernel::OpParams::Rope {
+                outer_count: 1,
+                seq,
+                head_dim,
+            },
             decompose: None,
             operands: vec![x_od, trig_od, trig_od],
             dtypes: vec![DType::F32, DType::F32, DType::F32],
@@ -2939,8 +3209,8 @@ mod tests {
         use fuel_cuda_backend::CudaDevice;
         use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
         use fuel_graph::runtime_fused::register_runtime_fused;
-        use fuel_ir::probe::BackendId;
         use fuel_ir::DType;
+        use fuel_ir::probe::BackendId;
 
         let Ok(dev) = CudaDevice::new(0) else {
             eprintln!("no CUDA device; skipping");
@@ -2952,7 +3222,10 @@ mod tests {
         let add_region = PatternNode::Op {
             op: OpTag::Add,
             attrs: OpAttrs::default(),
-            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+            operands: vec![
+                PatternNode::Bind { index: 0 },
+                PatternNode::Bind { index: 1 },
+            ],
         };
         let claimed_id = register_runtime_fused(
             "test::rope_oracle::adopt::claimed_add::run_r0pe_0004",
@@ -3011,8 +3284,8 @@ mod tests {
     #[cfg(feature = "cuda")]
     fn adopt_verified_rejects_a_candidate_without_a_decompose() {
         use baracuda_kernels_types::{ElementKind, OperandDesc};
-        use fuel_ir::probe::BackendId;
         use fuel_ir::DType;
+        use fuel_ir::probe::BackendId;
 
         let od = OperandDesc::new(1, &[4], &[1], ElementKind::F32, 16);
         let cand = CandidateKernel {
@@ -3054,15 +3327,18 @@ mod tests {
     fn adopt_verified_rejects_when_the_region_is_not_registrable() {
         use baracuda_kernels_types::{ElementKind, OperandDesc};
         use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
-        use fuel_ir::probe::BackendId;
         use fuel_ir::DType;
+        use fuel_ir::probe::BackendId;
 
         // Bind indices {0, 2} — missing 1 — register_runtime_fused rejects
         // this as NonContiguousBinds.
         let region = PatternNode::Op {
             op: OpTag::Add,
             attrs: OpAttrs::default(),
-            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 2 }],
+            operands: vec![
+                PatternNode::Bind { index: 0 },
+                PatternNode::Bind { index: 2 },
+            ],
         };
         let od = OperandDesc::new(1, &[4], &[1], ElementKind::F32, 16);
         let cand = CandidateKernel {
@@ -3114,8 +3390,8 @@ mod tests {
     /// reference from.
     fn test_candidate(entry_point: &str) -> CandidateKernel {
         use baracuda_kernels_types::{ElementKind, OperandDesc};
-        use fuel_ir::probe::BackendId;
         use fuel_ir::DType;
+        use fuel_ir::probe::BackendId;
 
         let od = OperandDesc::new(1, &[4], &[1], ElementKind::F32, 16);
         CandidateKernel {
@@ -3149,7 +3425,10 @@ mod tests {
 
     impl RecordingFeedback {
         fn with_notify(tx: std::sync::mpsc::Sender<()>) -> Self {
-            Self { notify: std::sync::Mutex::new(Some(tx)), ..Default::default() }
+            Self {
+                notify: std::sync::Mutex::new(Some(tx)),
+                ..Default::default()
+            }
         }
 
         fn fire_notify(&self) {
@@ -3161,12 +3440,18 @@ mod tests {
 
     impl ProviderFeedback for RecordingFeedback {
         fn on_rejected(&self, report: &RejectionReport) {
-            self.rejected.lock().unwrap().push(report.failed_claim.to_string());
+            self.rejected
+                .lock()
+                .unwrap()
+                .push(report.failed_claim.to_string());
             self.fire_notify();
         }
 
         fn on_adopted(&self, entry_point: &str, id: fuel_graph::registry::FusedOpId) {
-            self.adopted.lock().unwrap().push((entry_point.to_string(), id));
+            self.adopted
+                .lock()
+                .unwrap()
+                .push((entry_point.to_string(), id));
             self.fire_notify();
         }
 
@@ -3193,7 +3478,11 @@ mod tests {
         let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
 
-        let cfg = IngestionConfig { queue_bound: 1, max_concurrent: 1, idle_load_threshold: 1 };
+        let cfg = IngestionConfig {
+            queue_bound: 1,
+            max_concurrent: 1,
+            idle_load_threshold: 1,
+        };
         let svc = IngestionService::start_with_verify(
             move |_cand| {
                 started_tx.send(()).ok();
@@ -3213,21 +3502,28 @@ mod tests {
 
         // #1: taken by the worker's recv() (may buffer briefly, but the
         // worker will drain it as soon as it's scheduled).
-        svc.enqueue(test_candidate("c1"), None).expect("first enqueue is accepted");
+        svc.enqueue(test_candidate("c1"), None)
+            .expect("first enqueue is accepted");
         // Deterministic sync point: by the time this returns, the worker
         // has already called `recv()` (removing c1 from the buffer) and
         // entered the verify closure.
-        started_rx.recv().expect("worker started processing the first candidate");
+        started_rx
+            .recv()
+            .expect("worker started processing the first candidate");
 
         // #2: the buffer is now guaranteed empty (0/1) — this fills it.
-        svc.enqueue(test_candidate("c2"), None).expect("second enqueue fills the 1-slot buffer");
+        svc.enqueue(test_candidate("c2"), None)
+            .expect("second enqueue fills the 1-slot buffer");
 
         // #3: the buffer is guaranteed full (1/1) and the worker is
         // guaranteed still blocked in verify (it hasn't been released yet)
         // — this must backpressure.
         let fb = Arc::new(RecordingFeedback::default());
         let result = svc.enqueue(test_candidate("c3"), Some(fb.clone()));
-        assert!(matches!(result, Err(Backpressure)), "queue is full; expected Backpressure");
+        assert!(
+            matches!(result, Err(Backpressure)),
+            "queue is full; expected Backpressure"
+        );
         assert_eq!(
             fb.rejected.lock().unwrap().as_slice(),
             &["queue_full".to_string()],
@@ -3248,12 +3544,15 @@ mod tests {
     fn worker_fires_on_adopted_for_adopted_outcome() {
         let cfg = IngestionConfig::default();
         let adopted_id = fuel_graph::registry::FusedOpId(0x8001);
-        let svc =
-            IngestionService::start_with_verify(move |_cand| IngestOutcome::Adopted(adopted_id), cfg);
+        let svc = IngestionService::start_with_verify(
+            move |_cand| IngestOutcome::Adopted(adopted_id),
+            cfg,
+        );
 
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         let fb = Arc::new(RecordingFeedback::with_notify(tx));
-        svc.enqueue(test_candidate("adopted-one"), Some(fb.clone())).expect("enqueue accepted");
+        svc.enqueue(test_candidate("adopted-one"), Some(fb.clone()))
+            .expect("enqueue accepted");
 
         rx.recv_timeout(std::time::Duration::from_secs(10))
             .expect("worker should report the adopted outcome");
@@ -3278,14 +3577,20 @@ mod tests {
     /// config.
     #[test]
     fn worker_does_not_stall_when_idle_threshold_is_zero() {
-        let cfg = IngestionConfig { idle_load_threshold: 0, ..Default::default() };
+        let cfg = IngestionConfig {
+            idle_load_threshold: 0,
+            ..Default::default()
+        };
         let adopted_id = fuel_graph::registry::FusedOpId(0x8003);
-        let svc =
-            IngestionService::start_with_verify(move |_cand| IngestOutcome::Adopted(adopted_id), cfg);
+        let svc = IngestionService::start_with_verify(
+            move |_cand| IngestOutcome::Adopted(adopted_id),
+            cfg,
+        );
 
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         let fb = Arc::new(RecordingFeedback::with_notify(tx));
-        svc.enqueue(test_candidate("zero-threshold"), Some(fb.clone())).expect("enqueue accepted");
+        svc.enqueue(test_candidate("zero-threshold"), Some(fb.clone()))
+            .expect("enqueue accepted");
 
         rx.recv_timeout(std::time::Duration::from_secs(10))
             .expect("worker must not stall forever with idle_load_threshold == 0");
@@ -3330,14 +3635,16 @@ mod tests {
         // First candidate: its verify panics. No feedback attached — there
         // is nothing to observe from this call directly; its only job is to
         // try to kill the worker.
-        svc.enqueue(test_candidate("panics"), None).expect("enqueue accepted");
+        svc.enqueue(test_candidate("panics"), None)
+            .expect("enqueue accepted");
 
         // Second candidate: only processed if the worker survived the first
         // panic and looped back to `recv()`. Wait on ITS notification —
         // deterministic proof the worker is alive and serial-processing.
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         let fb = Arc::new(RecordingFeedback::with_notify(tx));
-        svc.enqueue(test_candidate("after-panic"), Some(fb.clone())).expect("enqueue accepted");
+        svc.enqueue(test_candidate("after-panic"), Some(fb.clone()))
+            .expect("enqueue accepted");
 
         rx.recv_timeout(std::time::Duration::from_secs(10))
             .expect("worker must survive the panic and process the next item");
@@ -3347,7 +3654,11 @@ mod tests {
             &["mock_after_panic".to_string()],
             "the post-panic item must be processed normally"
         );
-        assert_eq!(call_count.load(Ordering::SeqCst), 2, "both candidates reached verify");
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            2,
+            "both candidates reached verify"
+        );
 
         svc.shutdown();
     }
@@ -3411,7 +3722,11 @@ mod tests {
             &[("after-callback-panic".to_string(), adopted_id)],
             "the post-panic item must be processed normally"
         );
-        assert_eq!(call_count.load(Ordering::SeqCst), 2, "both candidates reached verify");
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            2,
+            "both candidates reached verify"
+        );
 
         svc.shutdown();
     }
@@ -3445,13 +3760,18 @@ mod tests {
 
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         let fb = Arc::new(RecordingFeedback::with_notify(tx));
-        svc.enqueue(test_candidate("flagged-one"), Some(fb.clone())).expect("enqueue accepted");
+        svc.enqueue(test_candidate("flagged-one"), Some(fb.clone()))
+            .expect("enqueue accepted");
 
         rx.recv_timeout(std::time::Duration::from_secs(10))
             .expect("worker should route the flagged outcome to on_flagged");
 
         let flagged = fb.flagged.lock().unwrap();
-        assert_eq!(flagged.len(), 1, "exactly one on_flagged callback: {flagged:?}");
+        assert_eq!(
+            flagged.len(),
+            1,
+            "exactly one on_flagged callback: {flagged:?}"
+        );
         let (claim, escalate, summary) = &flagged[0];
         assert_eq!(claim, "max_ulp", "the flag names the evidence claim");
         assert!(*escalate, "the flag escalates to mint a corpus vector");
@@ -3460,8 +3780,14 @@ mod tests {
             Some("result=flag max_ulp=3 mismatches=2"),
             "the threaded kiss-ref diff summary reaches the provider"
         );
-        assert!(fb.rejected.lock().unwrap().is_empty(), "a Flagged outcome must not route to on_rejected");
-        assert!(fb.adopted.lock().unwrap().is_empty(), "a Flagged outcome must not route to on_adopted");
+        assert!(
+            fb.rejected.lock().unwrap().is_empty(),
+            "a Flagged outcome must not route to on_rejected"
+        );
+        assert!(
+            fb.adopted.lock().unwrap().is_empty(),
+            "a Flagged outcome must not route to on_adopted"
+        );
 
         svc.shutdown();
     }
@@ -3516,7 +3842,10 @@ mod tests {
     #[cfg(feature = "cuda")]
     impl E2eFeedback {
         fn with_notify(tx: std::sync::mpsc::Sender<()>) -> Self {
-            Self { notify: std::sync::Mutex::new(Some(tx)), ..Default::default() }
+            Self {
+                notify: std::sync::Mutex::new(Some(tx)),
+                ..Default::default()
+            }
         }
 
         fn fire_notify(&self) {
@@ -3537,7 +3866,10 @@ mod tests {
         }
 
         fn on_adopted(&self, entry_point: &str, id: fuel_graph::registry::FusedOpId) {
-            self.adopted.lock().unwrap().push((entry_point.to_string(), id));
+            self.adopted
+                .lock()
+                .unwrap()
+                .push((entry_point.to_string(), id));
             self.fire_notify();
         }
 
@@ -3560,13 +3892,16 @@ mod tests {
     fn e2e_add_candidate() -> CandidateKernel {
         use baracuda_kernels_types::{ElementKind, OperandDesc};
         use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
-        use fuel_ir::probe::BackendId;
         use fuel_ir::DType;
+        use fuel_ir::probe::BackendId;
 
         let decompose = PatternNode::Op {
             op: OpTag::Add,
             attrs: OpAttrs::default(),
-            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+            operands: vec![
+                PatternNode::Bind { index: 0 },
+                PatternNode::Bind { index: 1 },
+            ],
         };
         let od = OperandDesc::new(1, &[4], &[1], ElementKind::F32, 16);
         CandidateKernel {
@@ -3595,13 +3930,16 @@ mod tests {
     fn e2e_mul_candidate() -> CandidateKernel {
         use baracuda_kernels_types::{ElementKind, OperandDesc};
         use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
-        use fuel_ir::probe::BackendId;
         use fuel_ir::DType;
+        use fuel_ir::probe::BackendId;
 
         let decompose = PatternNode::Op {
             op: OpTag::Add,
             attrs: OpAttrs::default(),
-            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+            operands: vec![
+                PatternNode::Bind { index: 0 },
+                PatternNode::Bind { index: 1 },
+            ],
         };
         let od = OperandDesc::new(1, &[4], &[1], ElementKind::F32, 16);
         CandidateKernel {
@@ -3631,13 +3969,16 @@ mod tests {
     fn e2e_add_f64_candidate() -> CandidateKernel {
         use baracuda_kernels_types::{ElementKind, OperandDesc};
         use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
-        use fuel_ir::probe::BackendId;
         use fuel_ir::DType;
+        use fuel_ir::probe::BackendId;
 
         let decompose = PatternNode::Op {
             op: OpTag::Add,
             attrs: OpAttrs::default(),
-            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+            operands: vec![
+                PatternNode::Bind { index: 0 },
+                PatternNode::Bind { index: 1 },
+            ],
         };
         let od = OperandDesc::new(1, &[4], &[1], ElementKind::F64, 32);
         CandidateKernel {
@@ -3686,7 +4027,11 @@ mod tests {
             .expect("worker should report the adopted outcome within 30s");
 
         let adopted = fb.adopted.lock().unwrap();
-        assert_eq!(adopted.len(), 1, "exactly one on_adopted callback: {adopted:?}");
+        assert_eq!(
+            adopted.len(),
+            1,
+            "exactly one on_adopted callback: {adopted:?}"
+        );
         let (entry_point, id) = &adopted[0];
         assert_eq!(entry_point, "test::e2e::add_for_add_region::run_e2e_8801");
         assert!(
@@ -3731,7 +4076,11 @@ mod tests {
             .expect("worker should report the rejected outcome within 30s");
 
         let rejected = fb.rejected.lock().unwrap();
-        assert_eq!(rejected.len(), 1, "exactly one on_rejected callback: {rejected:?}");
+        assert_eq!(
+            rejected.len(),
+            1,
+            "exactly one on_rejected callback: {rejected:?}"
+        );
         assert!(
             rejected[0].failed_claim.contains("max"),
             "expected a precision claim naming the mismatch, got: {} / {}",
@@ -3782,9 +4131,19 @@ mod tests {
             .expect("worker should report the flagged outcome within 30s");
 
         let flagged = fb.flagged.lock().unwrap();
-        assert_eq!(flagged.len(), 1, "exactly one on_flagged callback: {flagged:?}");
-        assert_eq!(flagged[0].claim, "max_ulp", "the escalate names the evidence claim");
-        assert!(flagged[0].escalate, "the flag escalates to mint a corpus vector");
+        assert_eq!(
+            flagged.len(),
+            1,
+            "exactly one on_flagged callback: {flagged:?}"
+        );
+        assert_eq!(
+            flagged[0].claim, "max_ulp",
+            "the escalate names the evidence claim"
+        );
+        assert!(
+            flagged[0].escalate,
+            "the flag escalates to mint a corpus vector"
+        );
         assert!(
             flagged[0].diff_summary.is_some(),
             "the escalate threads the kiss-ref advisory summary (D8): {:?}",

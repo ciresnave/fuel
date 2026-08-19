@@ -113,7 +113,12 @@ impl Linear {
                 b.len()
             )));
         }
-        Ok(Self { weight, in_features, out_features, bias })
+        Ok(Self {
+            weight,
+            in_features,
+            out_features,
+            bias,
+        })
     }
 
     /// Convenience constructor for a plain f32 weight, `[in_features, out_features]`.
@@ -123,7 +128,12 @@ impl Linear {
         out_features: usize,
         bias: Option<Arc<[f32]>>,
     ) -> Result<Self> {
-        Self::new(WeightStorage::F32(weight.into()), in_features, out_features, bias)
+        Self::new(
+            WeightStorage::F32(weight.into()),
+            in_features,
+            out_features,
+            bias,
+        )
     }
 
     /// `(in_features, out_features)`.
@@ -149,8 +159,7 @@ impl Linear {
         // ever protected this one caller; validating inside the builder
         // protects all ~620 of them. What is left here is naming the layer in
         // the error chain.
-        let labelled =
-            |e: Error| Error::Msg(format!("Linear({in_features}->{out_features}): {e}"));
+        let labelled = |e: Error| Error::Msg(format!("Linear({in_features}->{out_features}): {e}"));
         match &self.bias {
             None => self
                 .weight
@@ -264,7 +273,12 @@ impl TensorParallelConfig {
     }
 
     /// Create a [`TensorShard`] descriptor.
-    pub fn make_shard(&self, rank: usize, dim: ShardDim, original_shape: [usize; 2]) -> TensorShard {
+    pub fn make_shard(
+        &self,
+        rank: usize,
+        dim: ShardDim,
+        original_shape: [usize; 2],
+    ) -> TensorShard {
         TensorShard {
             rank,
             world_size: self.world_size,
@@ -327,7 +341,11 @@ pub struct RowParallel<C: Communicator> {
 impl<C: Communicator> RowParallel<C> {
     /// Wrap a pre-sharded linear layer with a communicator for all-reduce.
     pub fn new(linear: Linear, shard: TensorShard, comm: C) -> Self {
-        Self { linear, shard, comm }
+        Self {
+            linear,
+            shard,
+            comm,
+        }
     }
 
     /// Shard metadata.
@@ -379,8 +397,13 @@ mod tests {
     /// All-ones weight, `[in_features, out_features]`. Note the argument order
     /// follows the `WeightStorage` layout, not the eager `[out, in]` one.
     fn ones_linear(in_features: usize, out_features: usize) -> Linear {
-        Linear::from_f32(vec![1.0f32; in_features * out_features], in_features, out_features, None)
-            .unwrap()
+        Linear::from_f32(
+            vec![1.0f32; in_features * out_features],
+            in_features,
+            out_features,
+            None,
+        )
+        .unwrap()
     }
 
     fn ones_input(dims: &[usize]) -> LazyTensor {
@@ -417,11 +440,20 @@ mod tests {
                 let mut cursor = 0usize;
                 for rank in 0..world {
                     let (s, e) = config.shard_range(rank, full, ShardDim::Row);
-                    assert_eq!(s, cursor, "gap/overlap at rank {rank} (world={world}, full={full})");
-                    assert!(e >= s, "inverted range at rank {rank} (world={world}, full={full})");
+                    assert_eq!(
+                        s, cursor,
+                        "gap/overlap at rank {rank} (world={world}, full={full})"
+                    );
+                    assert!(
+                        e >= s,
+                        "inverted range at rank {rank} (world={world}, full={full})"
+                    );
                     cursor = e;
                 }
-                assert_eq!(cursor, full, "ranges do not cover full={full} (world={world})");
+                assert_eq!(
+                    cursor, full,
+                    "ranges do not cover full={full} (world={world})"
+                );
             }
         }
     }
@@ -441,7 +473,12 @@ mod tests {
         // 3×2 input, 2×2 weight shard → 3×2 output.
         let col = ColumnParallel::new(
             ones_linear(2, 2),
-            TensorShard { rank: 0, world_size: 2, dim: ShardDim::Column, original_shape: [2, 4] },
+            TensorShard {
+                rank: 0,
+                world_size: 2,
+                dim: ShardDim::Column,
+                original_shape: [2, 4],
+            },
         );
         let y = col.forward(&ones_input(&[3, 2])).unwrap();
         assert_eq!(y.shape().dims(), &[3, 2]);
@@ -453,7 +490,12 @@ mod tests {
     fn row_parallel_forward() {
         let row = RowParallel::new(
             ones_linear(2, 4),
-            TensorShard { rank: 0, world_size: 2, dim: ShardDim::Row, original_shape: [4, 4] },
+            TensorShard {
+                rank: 0,
+                world_size: 2,
+                dim: ShardDim::Row,
+                original_shape: [4, 4],
+            },
             IdentityComm,
         );
         let y = row.forward(&ones_input(&[3, 2])).unwrap();
@@ -470,7 +512,11 @@ mod tests {
         let lin = ones_linear(3, 2);
         let a = ones_input(&[1, 3]);
         let b = ones_input(&[2, 3]);
-        assert_ne!(a.graph_id(), b.graph_id(), "inputs must be on separate graphs");
+        assert_ne!(
+            a.graph_id(),
+            b.graph_id(),
+            "inputs must be on separate graphs"
+        );
 
         assert_eq!(lin.forward(&a).unwrap().realize_f32(), vec![3.0f32; 2]);
         assert_eq!(lin.forward(&b).unwrap().realize_f32(), vec![3.0f32; 4]);
@@ -486,7 +532,8 @@ mod tests {
 
     #[test]
     fn linear_adds_bias() {
-        let lin = Linear::from_f32(vec![1.0f32; 3 * 2], 3, 2, Some(vec![10.0f32, 20.0].into())).unwrap();
+        let lin =
+            Linear::from_f32(vec![1.0f32; 3 * 2], 3, 2, Some(vec![10.0f32, 20.0].into())).unwrap();
         let y = lin.forward(&ones_input(&[1, 3])).unwrap();
         // row of ones · ones(3) = 3, then + per-output bias
         assert_eq!(y.realize_f32(), vec![13.0, 23.0]);
@@ -515,7 +562,10 @@ mod tests {
             msg.contains("[1, 5]") && msg.contains("trailing dim 3"),
             "error should name the offending shape and the required in_features, got: {err}"
         );
-        assert!(msg.contains("Linear(3->2)"), "error should name the layer, got: {err}");
+        assert!(
+            msg.contains("Linear(3->2)"),
+            "error should name the layer, got: {err}"
+        );
     }
 
     #[test]
@@ -526,7 +576,8 @@ mod tests {
 
     #[test]
     fn linear_rejects_bias_length_mismatch() {
-        let err = Linear::from_f32(vec![1.0f32; 6], 3, 2, Some(vec![0.0f32; 3].into())).unwrap_err();
+        let err =
+            Linear::from_f32(vec![1.0f32; 6], 3, 2, Some(vec![0.0f32; 3].into())).unwrap_err();
         assert!(format!("{err}").contains("out_features is 2"), "got: {err}");
     }
 
@@ -552,8 +603,7 @@ mod tests {
 
     #[test]
     fn layer_parallel_plan() {
-        let plan = LayerParallelPlan::new("mlp.gate_proj", ShardDim::Column)
-            .with_group(1);
+        let plan = LayerParallelPlan::new("mlp.gate_proj", ShardDim::Column).with_group(1);
         assert_eq!(plan.name, "mlp.gate_proj");
         assert_eq!(plan.strategy, ShardDim::Column);
         assert_eq!(plan.group_id, 1);
@@ -564,7 +614,10 @@ mod tests {
         // Was `#[should_panic]`. Fuel's never-panic rule applies to config
         // construction too, so this now surfaces as a typed error.
         let err = TensorParallelConfig::new(0).unwrap_err();
-        assert!(format!("{err}").contains("world_size must be > 0"), "got: {err}");
+        assert!(
+            format!("{err}").contains("world_size must be > 0"),
+            "got: {err}"
+        );
     }
 
     #[test]

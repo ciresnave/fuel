@@ -18,8 +18,8 @@
 //! update are out of scope here — they ship in follow-up commits per
 //! the master plan.
 
-use crate::lazy::LazyTensor;
 use crate::Result;
+use crate::lazy::LazyTensor;
 use std::collections::HashMap;
 
 /// Host-side learning-rate schedule.
@@ -144,10 +144,7 @@ pub fn clip_grad_norm(
     norm_type: f64,
 ) -> Result<HashMap<String, LazyTensor>> {
     if grads.is_empty() {
-        return Err(crate::Error::Msg(
-            "clip_grad_norm: gradient bundle is empty".into(),
-        )
-        .bt());
+        return Err(crate::Error::Msg("clip_grad_norm: gradient bundle is empty".into()).bt());
     }
     if !(max_norm > 0.0) {
         return Err(crate::Error::Msg(format!(
@@ -167,7 +164,11 @@ pub fn clip_grad_norm(
     // `LazyTensor::realize_f32` (whose panic is a test convenience). Uses the
     // same fallible path as `train.rs::param_to_host`.
     fn host_f32(t: &LazyTensor) -> Result<Vec<f32>> {
-        crate::pipelined_bridge::realize_one_as::<f32>(t.graph(), t.node_id(), &crate::Device::cpu())
+        crate::pipelined_bridge::realize_one_as::<f32>(
+            t.graph(),
+            t.node_id(),
+            &crate::Device::cpu(),
+        )
     }
 
     // Host-side total-norm computation. We realize per-tensor reductions
@@ -223,10 +224,7 @@ pub fn clip_grad_norm(
 
     // No-op fast path when already within budget.
     if total_norm <= max_norm {
-        return Ok(grads
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect());
+        return Ok(grads.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
     }
 
     let scale = max_norm / total_norm;
@@ -375,7 +373,11 @@ mod tests {
         assert!((b_out[0] - 6.0).abs() < 1e-5, "b[0] = {}", b_out[0]);
 
         // And the new total L2 norm is now == max_norm.
-        let new_total_sq = a_out.iter().chain(b_out.iter()).map(|x| (x * x) as f64).sum::<f64>();
+        let new_total_sq = a_out
+            .iter()
+            .chain(b_out.iter())
+            .map(|x| (x * x) as f64)
+            .sum::<f64>();
         let new_total = new_total_sq.sqrt();
         assert!((new_total - 6.5).abs() < 1e-5, "clipped norm = {new_total}");
     }

@@ -1,4 +1,4 @@
-﻿pub mod audio;
+pub mod audio;
 pub mod bs1770;
 pub mod chat_template;
 pub mod coco_classes;
@@ -44,7 +44,11 @@ impl HostImage {
                 }
             }
         }
-        Ok(Self { data, height, width })
+        Ok(Self {
+            data,
+            height,
+            width,
+        })
     }
 
     /// Transpose back to interleaved RGB (HWC) — the layout the `image`
@@ -235,8 +239,7 @@ pub fn hub_load_safetensors(
 ) -> Result<Vec<std::path::PathBuf>> {
     let json_file = repo.get(json_file).map_err(fuel::Error::wrap)?;
     let json_file = std::fs::File::open(json_file)?;
-    let json: serde_json::Value =
-        serde_json::from_reader(&json_file).map_err(fuel::Error::wrap)?;
+    let json: serde_json::Value = serde_json::from_reader(&json_file).map_err(fuel::Error::wrap)?;
     let weight_map = match json.get("weight_map") {
         None => fuel::bail!("no weight map in {json_file:?}"),
         Some(serde_json::Value::Object(map)) => map,

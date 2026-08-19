@@ -3,8 +3,8 @@
 //! both via reference and via the CPU executor.
 
 use fuel_core::lazy::LazyTensor;
+use fuel_graph::{Op, opt};
 use fuel_ir::Shape;
-use fuel_graph::{opt, Op};
 
 fn rand_f32(shape: &[usize], seed: u32) -> Vec<f32> {
     let n: usize = shape.iter().product();
@@ -25,7 +25,11 @@ fn fused_linear_realizes_same_as_matmul_plus_bias() {
     let bias_data = rand_f32(&[7], 3);
 
     // Unfused reference graph.
-    let a = LazyTensor::from_f32(a_data.clone(), Shape::from_dims(&[2, 5]), &fuel_core::Device::cpu());
+    let a = LazyTensor::from_f32(
+        a_data.clone(),
+        Shape::from_dims(&[2, 5]),
+        &fuel_core::Device::cpu(),
+    );
     let b = a.const_f32_like(b_data.clone(), Shape::from_dims(&[5, 7]));
     let bias = a.const_f32_like(bias_data.clone(), Shape::from_dims(&[7]));
     let mm = a.matmul(&b).unwrap();
@@ -52,7 +56,9 @@ fn fused_linear_realizes_same_as_matmul_plus_bias() {
         let diff = (u - f).abs();
         let denom = u.abs().max(f.abs()).max(f32::MIN_POSITIVE);
         let rel = diff / denom;
-        assert!(diff < 1e-5 || rel < 1e-5,
-            "[{i}]: unfused={u} fused={f} (abs={diff} rel={rel})");
+        assert!(
+            diff < 1e-5 || rel < 1e-5,
+            "[{i}]: unfused={u} fused={f} (abs={diff} rel={rel})"
+        );
     }
 }

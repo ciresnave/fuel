@@ -78,16 +78,22 @@ where
         return CudaStorageBytes::alloc(&device, 0);
     }
     let m_i32: i32 = i32::try_from(m).map_err(|_| {
-        Error::Msg(format!("cutlass_matmul_rrr<{dtype_label}>: M={m} exceeds i32 range"))
-            .bt()
+        Error::Msg(format!(
+            "cutlass_matmul_rrr<{dtype_label}>: M={m} exceeds i32 range"
+        ))
+        .bt()
     })?;
     let n_i32: i32 = i32::try_from(n).map_err(|_| {
-        Error::Msg(format!("cutlass_matmul_rrr<{dtype_label}>: N={n} exceeds i32 range"))
-            .bt()
+        Error::Msg(format!(
+            "cutlass_matmul_rrr<{dtype_label}>: N={n} exceeds i32 range"
+        ))
+        .bt()
     })?;
     let k_i32: i32 = i32::try_from(k).map_err(|_| {
-        Error::Msg(format!("cutlass_matmul_rrr<{dtype_label}>: K={k} exceeds i32 range"))
-            .bt()
+        Error::Msg(format!(
+            "cutlass_matmul_rrr<{dtype_label}>: K={k} exceeds i32 range"
+        ))
+        .bt()
     })?;
 
     let mut out = device.alloc_zeros::<u8>(need_out_bytes)?;
@@ -142,9 +148,8 @@ where
         plan.can_implement(&args).map_err(|e| {
             Error::Msg(format!("cutlass can_implement ({dtype_label} Rrr): {e}")).bt()
         })?;
-        plan.run(stream, Workspace::None, args).map_err(|e| {
-            Error::Msg(format!("cutlass run ({dtype_label} Rrr): {e}")).bt()
-        })?;
+        plan.run(stream, Workspace::None, args)
+            .map_err(|e| Error::Msg(format!("cutlass run ({dtype_label} Rrr): {e}")).bt())?;
     }
     drop(out_view);
 

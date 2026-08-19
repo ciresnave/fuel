@@ -53,14 +53,15 @@ impl LazyMoeRouter {
         jitter_noise: f64,
     ) -> Result<Self> {
         if num_experts == 0 {
-            return Err(crate::Error::Msg(
-                "LazyMoeRouter::new: num_experts must be > 0".into(),
-            ).bt());
+            return Err(
+                crate::Error::Msg("LazyMoeRouter::new: num_experts must be > 0".into()).bt(),
+            );
         }
         if top_k == 0 || top_k > num_experts {
             return Err(crate::Error::Msg(format!(
                 "LazyMoeRouter::new: top_k must be in 1..={num_experts}, got {top_k}",
-            )).bt());
+            ))
+            .bt());
         }
         if weight.elem_count() != hidden_size * num_experts {
             return Err(crate::Error::Msg(format!(
@@ -70,16 +71,33 @@ impl LazyMoeRouter {
                 hidden_size,
                 num_experts,
                 hidden_size * num_experts,
-            )).bt());
+            ))
+            .bt());
         }
-        Ok(Self { weight, num_experts, top_k, hidden_size, jitter_noise })
+        Ok(Self {
+            weight,
+            num_experts,
+            top_k,
+            hidden_size,
+            jitter_noise,
+        })
     }
 
-    pub fn num_experts(&self) -> usize { self.num_experts }
-    pub fn top_k(&self) -> usize { self.top_k }
-    pub fn hidden_size(&self) -> usize { self.hidden_size }
-    pub fn jitter_noise(&self) -> f64 { self.jitter_noise }
-    pub fn weight(&self) -> &WeightStorage { &self.weight }
+    pub fn num_experts(&self) -> usize {
+        self.num_experts
+    }
+    pub fn top_k(&self) -> usize {
+        self.top_k
+    }
+    pub fn hidden_size(&self) -> usize {
+        self.hidden_size
+    }
+    pub fn jitter_noise(&self) -> f64 {
+        self.jitter_noise
+    }
+    pub fn weight(&self) -> &WeightStorage {
+        &self.weight
+    }
 
     /// Route `xs: [*, hidden_size]` to the top-K experts.
     ///
@@ -93,13 +111,14 @@ impl LazyMoeRouter {
             return Err(crate::Error::Msg(format!(
                 "LazyMoeRouter::route: input last dim must be {}, got shape {:?}",
                 self.hidden_size, dims,
-            )).bt());
+            ))
+            .bt());
         }
         let n: usize = dims[..dims.len() - 1].iter().product();
         let xs_flat = xs.reshape(Shape::from_dims(&[n, self.hidden_size]))?;
-        let logits = self.weight.apply_linear(
-            &xs_flat, self.hidden_size, self.num_experts,
-        )?;
+        let logits = self
+            .weight
+            .apply_linear(&xs_flat, self.hidden_size, self.num_experts)?;
 
         let mut work = logits;
         let mut idx_cols: Vec<LazyTensor> = Vec::with_capacity(self.top_k);
@@ -108,10 +127,8 @@ impl LazyMoeRouter {
             let idx = work.argmax_dim(1usize)?;
             let idx_col = idx.unsqueeze(1usize)?;
             let picked = work.gather(1usize, &idx_col)?;
-            let neg_inf = idx_col.const_f32_like(
-                Arc::from(vec![MASK_NEG; n]),
-                Shape::from_dims(&[n, 1]),
-            );
+            let neg_inf =
+                idx_col.const_f32_like(Arc::from(vec![MASK_NEG; n]), Shape::from_dims(&[n, 1]));
             work = work.scatter_add(1usize, &idx_col, &neg_inf)?;
             idx_cols.push(idx_col);
             logit_cols.push(picked);
@@ -148,38 +165,57 @@ impl LazyMoeExpert {
         hidden_size: usize,
         intermediate_size: usize,
     ) -> Result<Self> {
-        if gate.in_features() != hidden_size
-            || gate.out_features() != intermediate_size
-        {
+        if gate.in_features() != hidden_size || gate.out_features() != intermediate_size {
             return Err(crate::Error::Msg(format!(
                 "LazyMoeExpert::new: gate must be ({hidden_size}, {intermediate_size}), \
-                 got ({}, {})", gate.in_features(), gate.out_features(),
-            )).bt());
+                 got ({}, {})",
+                gate.in_features(),
+                gate.out_features(),
+            ))
+            .bt());
         }
-        if up.in_features() != hidden_size
-            || up.out_features() != intermediate_size
-        {
+        if up.in_features() != hidden_size || up.out_features() != intermediate_size {
             return Err(crate::Error::Msg(format!(
                 "LazyMoeExpert::new: up must be ({hidden_size}, {intermediate_size}), \
-                 got ({}, {})", up.in_features(), up.out_features(),
-            )).bt());
+                 got ({}, {})",
+                up.in_features(),
+                up.out_features(),
+            ))
+            .bt());
         }
-        if down.in_features() != intermediate_size
-            || down.out_features() != hidden_size
-        {
+        if down.in_features() != intermediate_size || down.out_features() != hidden_size {
             return Err(crate::Error::Msg(format!(
                 "LazyMoeExpert::new: down must be ({intermediate_size}, {hidden_size}), \
-                 got ({}, {})", down.in_features(), down.out_features(),
-            )).bt());
+                 got ({}, {})",
+                down.in_features(),
+                down.out_features(),
+            ))
+            .bt());
         }
-        Ok(Self { gate, up, down, hidden_size, intermediate_size })
+        Ok(Self {
+            gate,
+            up,
+            down,
+            hidden_size,
+            intermediate_size,
+        })
     }
 
-    pub fn hidden_size(&self) -> usize { self.hidden_size }
-    pub fn intermediate_size(&self) -> usize { self.intermediate_size }
-    pub fn gate(&self) -> &LazyLinear { &self.gate }
-    pub fn up(&self) -> &LazyLinear { &self.up }
-    pub fn down(&self) -> &LazyLinear { &self.down }
+    pub fn hidden_size(&self) -> usize {
+        self.hidden_size
+    }
+    pub fn intermediate_size(&self) -> usize {
+        self.intermediate_size
+    }
+    pub fn gate(&self) -> &LazyLinear {
+        &self.gate
+    }
+    pub fn up(&self) -> &LazyLinear {
+        &self.up
+    }
+    pub fn down(&self) -> &LazyLinear {
+        &self.down
+    }
 
     /// Forward `xs: [*, hidden]` through the SwiGLU FFN.
     pub fn forward(&self, xs: &LazyTensor) -> Result<LazyTensor> {
@@ -201,22 +237,15 @@ impl LazyMoeExpert {
     /// F32-only, and the expert must be **bias-free**: a bias would fill
     /// the un-computed tail and corrupt the scatter-back. Both surface as
     /// typed build-time errors.
-    pub fn forward_dyn_m(
-        &self,
-        xs: &LazyTensor,
-        count: fuel_ir::DynScalar,
-    ) -> Result<LazyTensor> {
-        for (name, lin) in [
-            ("gate", &self.gate),
-            ("up", &self.up),
-            ("down", &self.down),
-        ] {
+    pub fn forward_dyn_m(&self, xs: &LazyTensor, count: fuel_ir::DynScalar) -> Result<LazyTensor> {
+        for (name, lin) in [("gate", &self.gate), ("up", &self.up), ("down", &self.down)] {
             if lin.bias().is_some() {
                 return Err(crate::Error::Msg(format!(
                     "LazyMoeExpert::forward_dyn_m: sparse dispatch requires bias-free \
                      experts, but the {name} projection has a bias (it would \
                      contaminate the un-computed capacity tail)",
-                )).bt());
+                ))
+                .bt());
             }
         }
         let g = self
@@ -224,10 +253,12 @@ impl LazyMoeExpert {
             .weight()
             .apply_linear_dyn_m(xs, self.hidden_size, self.intermediate_size, count)?
             .silu();
-        let u = self
-            .up
-            .weight()
-            .apply_linear_dyn_m(xs, self.hidden_size, self.intermediate_size, count)?;
+        let u = self.up.weight().apply_linear_dyn_m(
+            xs,
+            self.hidden_size,
+            self.intermediate_size,
+            count,
+        )?;
         let h = g.mul(&u)?;
         self.down
             .weight()
@@ -255,22 +286,31 @@ impl LazyMoeLayer {
         if experts.len() != router.num_experts() {
             return Err(crate::Error::Msg(format!(
                 "LazyMoeLayer::new: experts.len() = {} but router.num_experts = {}",
-                experts.len(), router.num_experts(),
-            )).bt());
+                experts.len(),
+                router.num_experts(),
+            ))
+            .bt());
         }
         for (i, e) in experts.iter().enumerate() {
             if e.hidden_size() != router.hidden_size() {
                 return Err(crate::Error::Msg(format!(
                     "LazyMoeLayer::new: expert {i} hidden_size = {} but router \
-                     hidden_size = {}", e.hidden_size(), router.hidden_size(),
-                )).bt());
+                     hidden_size = {}",
+                    e.hidden_size(),
+                    router.hidden_size(),
+                ))
+                .bt());
             }
         }
         Ok(Self { router, experts })
     }
 
-    pub fn router(&self) -> &LazyMoeRouter { &self.router }
-    pub fn experts(&self) -> &[LazyMoeExpert] { &self.experts }
+    pub fn router(&self) -> &LazyMoeRouter {
+        &self.router
+    }
+    pub fn experts(&self) -> &[LazyMoeExpert] {
+        &self.experts
+    }
 
     /// Forward `xs: [*, hidden]` through the MoE layer; output has
     /// the same shape as the input.
@@ -299,7 +339,8 @@ impl LazyMoeLayer {
         if dims.is_empty() || *dims.last().unwrap() != hidden {
             return Err(crate::Error::Msg(format!(
                 "LazyMoeLayer::forward: input last dim must be {hidden}, got shape {dims:?}",
-            )).bt());
+            ))
+            .bt());
         }
         let n: usize = dims[..dims.len() - 1].iter().product();
         let num_experts = self.router.num_experts();
@@ -358,7 +399,8 @@ impl LazyMoeLayer {
         if dims.is_empty() || *dims.last().unwrap() != hidden {
             return Err(crate::Error::Msg(format!(
                 "LazyMoeLayer::forward_dense: input last dim must be {hidden}, got shape {dims:?}",
-            )).bt());
+            ))
+            .bt());
         }
         let n: usize = dims[..dims.len() - 1].iter().product();
         let num_experts = self.router.num_experts();
@@ -400,21 +442,14 @@ mod tests {
         (0..n).map(|i| (i as f32) * scale + offset).collect()
     }
 
-    fn make_linear(
-        in_f: usize, out_f: usize, scale: f32, offset: f32,
-    ) -> LazyLinear {
+    fn make_linear(in_f: usize, out_f: usize, scale: f32, offset: f32) -> LazyLinear {
         let w: Vec<f32> = ramp_f32(in_f * out_f, scale, offset);
-        LazyLinear::new(
-            WeightStorage::F32(Arc::from(w)),
-            None,
-            in_f,
-            out_f,
-        ).unwrap()
+        LazyLinear::new(WeightStorage::F32(Arc::from(w)), None, in_f, out_f).unwrap()
     }
 
     fn make_expert(hidden: usize, inter: usize, seed: f32) -> LazyMoeExpert {
         let gate = make_linear(hidden, inter, 0.03, seed);
-        let up   = make_linear(hidden, inter, 0.04, seed + 0.1);
+        let up = make_linear(hidden, inter, 0.04, seed + 0.1);
         let down = make_linear(inter, hidden, 0.02, seed + 0.2);
         LazyMoeExpert::new(gate, up, down, hidden, inter).unwrap()
     }
@@ -429,13 +464,15 @@ mod tests {
         let w: Vec<f32> = ramp_f32(hidden * num_experts, 0.05, -0.3);
         let router = LazyMoeRouter::new(
             WeightStorage::F32(Arc::from(w)),
-            num_experts, top_k, hidden, 0.0,
-        ).unwrap();
+            num_experts,
+            top_k,
+            hidden,
+            0.0,
+        )
+        .unwrap();
 
         let x_data: Vec<f32> = ramp_f32(n * hidden, 0.07, -0.4);
-        let xs = LazyTensor::from_f32(
-            x_data, Shape::from_dims(&[n, hidden]), &Device::cpu(),
-        );
+        let xs = LazyTensor::from_f32(x_data, Shape::from_dims(&[n, hidden]), &Device::cpu());
         let (idx, w_out) = router.route(&xs).unwrap();
         assert_eq!(idx.shape().dims(), &[n, top_k]);
         assert_eq!(w_out.shape().dims(), &[n, top_k]);
@@ -453,19 +490,23 @@ mod tests {
                 "row {t}: weights {row_w:?} should sum to 1, got {s}",
             );
             for v in row_w {
-                assert!(v.is_finite() && *v >= 0.0,
-                    "row {t}: weight {v} not finite or negative");
+                assert!(
+                    v.is_finite() && *v >= 0.0,
+                    "row {t}: weight {v} not finite or negative"
+                );
             }
             let row_idx = &idx_v[t * top_k..(t + 1) * top_k];
             for v in row_idx {
-                assert!((*v as usize) < num_experts,
-                    "row {t}: idx {v} out of range");
+                assert!((*v as usize) < num_experts, "row {t}: idx {v} out of range");
             }
             let mut sorted = row_idx.to_vec();
             sorted.sort();
             sorted.dedup();
-            assert_eq!(sorted.len(), top_k,
-                "row {t}: idx {row_idx:?} has duplicates");
+            assert_eq!(
+                sorted.len(),
+                top_k,
+                "row {t}: idx {row_idx:?} has duplicates"
+            );
         }
     }
 
@@ -480,17 +521,19 @@ mod tests {
         let w: Vec<f32> = ramp_f32(hidden * num_experts, 0.03, -0.1);
         let router = LazyMoeRouter::new(
             WeightStorage::F32(Arc::from(w)),
-            num_experts, top_k, hidden, 0.0,
-        ).unwrap();
+            num_experts,
+            top_k,
+            hidden,
+            0.0,
+        )
+        .unwrap();
         let experts: Vec<_> = (0..num_experts)
             .map(|i| make_expert(hidden, inter, i as f32 * 0.15))
             .collect();
         let layer = LazyMoeLayer::new(router, experts).unwrap();
 
         let x_data: Vec<f32> = ramp_f32(n * hidden, 0.05, -0.2);
-        let xs = LazyTensor::from_f32(
-            x_data, Shape::from_dims(&[n, hidden]), &Device::cpu(),
-        );
+        let xs = LazyTensor::from_f32(x_data, Shape::from_dims(&[n, hidden]), &Device::cpu());
         let y = layer.forward(&xs).unwrap();
         assert_eq!(y.shape().dims(), &[n, hidden]);
         let got = y.realize_f32();
@@ -519,8 +562,12 @@ mod tests {
         let w: Vec<f32> = ramp_f32(hidden * num_experts, 0.03, -0.1);
         let router = LazyMoeRouter::new(
             WeightStorage::F32(Arc::from(w)),
-            num_experts, top_k, hidden, 0.0,
-        ).unwrap();
+            num_experts,
+            top_k,
+            hidden,
+            0.0,
+        )
+        .unwrap();
         let experts: Vec<_> = (0..num_experts)
             .map(|i| make_expert(hidden, inter, i as f32 * 0.15))
             .collect();
@@ -528,11 +575,11 @@ mod tests {
 
         let x_data: Vec<f32> = ramp_f32(n * hidden, 0.05, -0.2);
         let xs_sparse = LazyTensor::from_f32(
-            x_data.clone(), Shape::from_dims(&[n, hidden]), &Device::cpu(),
+            x_data.clone(),
+            Shape::from_dims(&[n, hidden]),
+            &Device::cpu(),
         );
-        let xs_dense = LazyTensor::from_f32(
-            x_data, Shape::from_dims(&[n, hidden]), &Device::cpu(),
-        );
+        let xs_dense = LazyTensor::from_f32(x_data, Shape::from_dims(&[n, hidden]), &Device::cpu());
 
         let sparse = layer.forward(&xs_sparse).unwrap().realize_f32();
         let dense = layer.forward_dense(&xs_dense).unwrap().realize_f32();
@@ -540,7 +587,8 @@ mod tests {
         assert_eq!(sparse.len(), dense.len());
         for (i, (s, d)) in sparse.iter().zip(dense.iter()).enumerate() {
             assert_eq!(
-                s.to_bits(), d.to_bits(),
+                s.to_bits(),
+                d.to_bits(),
                 "out[{i}]: sparse {s} != dense {d} (bit-exact required)",
             );
         }
@@ -561,8 +609,12 @@ mod tests {
         let w: Vec<f32> = ramp_f32(hidden * num_experts, 0.04, -0.2);
         let router = LazyMoeRouter::new(
             WeightStorage::F32(Arc::from(w)),
-            num_experts, top_k, hidden, 0.0,
-        ).unwrap();
+            num_experts,
+            top_k,
+            hidden,
+            0.0,
+        )
+        .unwrap();
         let experts: Vec<_> = (0..num_experts)
             .map(|i| make_expert(hidden, inter, i as f32 * 0.11))
             .collect();
@@ -570,10 +622,14 @@ mod tests {
 
         let x_data: Vec<f32> = ramp_f32(n * hidden, 0.06, -0.3);
         let xs_s = LazyTensor::from_f32(
-            x_data.clone(), Shape::from_dims(&[batch, seq, hidden]), &Device::cpu(),
+            x_data.clone(),
+            Shape::from_dims(&[batch, seq, hidden]),
+            &Device::cpu(),
         );
         let xs_d = LazyTensor::from_f32(
-            x_data, Shape::from_dims(&[batch, seq, hidden]), &Device::cpu(),
+            x_data,
+            Shape::from_dims(&[batch, seq, hidden]),
+            &Device::cpu(),
         );
 
         let sparse = layer.forward(&xs_s).unwrap();
@@ -582,7 +638,8 @@ mod tests {
         let dense = layer.forward_dense(&xs_d).unwrap().realize_f32();
         for (i, (s, d)) in sparse.iter().zip(dense.iter()).enumerate() {
             assert_eq!(
-                s.to_bits(), d.to_bits(),
+                s.to_bits(),
+                d.to_bits(),
                 "out[{i}]: sparse {s} != dense {d} (bit-exact required)",
             );
         }
@@ -599,24 +656,30 @@ mod tests {
 
         let router = LazyMoeRouter::new(
             WeightStorage::F32(Arc::from(vec![0.1_f32; hidden * num_experts])),
-            num_experts, 1, hidden, 0.0,
-        ).unwrap();
+            num_experts,
+            1,
+            hidden,
+            0.0,
+        )
+        .unwrap();
         // A down projection WITH a bias.
         let biased_down = LazyLinear::new(
             WeightStorage::F32(Arc::from(ramp_f32(inter * hidden, 0.02, 0.1))),
             Some(Arc::from(vec![0.5_f32; hidden])),
-            inter, hidden,
-        ).unwrap();
+            inter,
+            hidden,
+        )
+        .unwrap();
         let gate = make_linear(hidden, inter, 0.03, 0.0);
         let up = make_linear(hidden, inter, 0.04, 0.1);
         let biased_expert = LazyMoeExpert::new(gate, up, biased_down, hidden, inter).unwrap();
         let plain_expert = make_expert(hidden, inter, 0.2);
-        let layer = LazyMoeLayer::new(
-            router, vec![biased_expert, plain_expert],
-        ).unwrap();
+        let layer = LazyMoeLayer::new(router, vec![biased_expert, plain_expert]).unwrap();
 
         let xs = LazyTensor::from_f32(
-            ramp_f32(2 * hidden, 0.05, -0.1), Shape::from_dims(&[2, hidden]), &Device::cpu(),
+            ramp_f32(2 * hidden, 0.05, -0.1),
+            Shape::from_dims(&[2, hidden]),
+            &Device::cpu(),
         );
         let err = layer.forward(&xs).unwrap_err();
         let msg = format!("{err}");
@@ -634,28 +697,29 @@ mod tests {
 
         let router = LazyMoeRouter::new(
             WeightStorage::F32(Arc::from(vec![0.5_f32; hidden])),
-            1, 1, hidden, 0.0,
-        ).unwrap();
+            1,
+            1,
+            hidden,
+            0.0,
+        )
+        .unwrap();
         let expert = make_expert(hidden, inter, 0.0);
         let layer = LazyMoeLayer::new(router, vec![expert.clone()]).unwrap();
 
         let x_data: Vec<f32> = ramp_f32(n * hidden, 0.06, -0.25);
         let xs1 = LazyTensor::from_f32(
-            x_data.clone(), Shape::from_dims(&[n, hidden]), &Device::cpu(),
+            x_data.clone(),
+            Shape::from_dims(&[n, hidden]),
+            &Device::cpu(),
         );
-        let xs2 = LazyTensor::from_f32(
-            x_data, Shape::from_dims(&[n, hidden]), &Device::cpu(),
-        );
+        let xs2 = LazyTensor::from_f32(x_data, Shape::from_dims(&[n, hidden]), &Device::cpu());
 
         let layer_out = layer.forward(&xs1).unwrap().realize_f32();
         let direct_out = expert.forward(&xs2).unwrap().realize_f32();
 
         assert_eq!(layer_out.len(), direct_out.len());
         for (i, (a, e)) in layer_out.iter().zip(direct_out.iter()).enumerate() {
-            assert!(
-                (a - e).abs() < 1e-5,
-                "out[{i}] expected {e}, got {a}",
-            );
+            assert!((a - e).abs() < 1e-5, "out[{i}] expected {e}, got {a}",);
         }
     }
 
@@ -669,8 +733,12 @@ mod tests {
 
         let router = LazyMoeRouter::new(
             WeightStorage::F32(Arc::from(vec![0.0_f32; hidden * num_experts])),
-            num_experts, top_k, hidden, 0.0,
-        ).unwrap();
+            num_experts,
+            top_k,
+            hidden,
+            0.0,
+        )
+        .unwrap();
         let experts: Vec<_> = (0..num_experts)
             .map(|i| make_expert(hidden, inter, i as f32 * 0.3))
             .collect();
@@ -678,7 +746,9 @@ mod tests {
 
         let x_data: Vec<f32> = ramp_f32(n * hidden, 0.08, -0.1);
         let xs_layer = LazyTensor::from_f32(
-            x_data.clone(), Shape::from_dims(&[n, hidden]), &Device::cpu(),
+            x_data.clone(),
+            Shape::from_dims(&[n, hidden]),
+            &Device::cpu(),
         );
         let layer_out = layer.forward(&xs_layer).unwrap().realize_f32();
 
@@ -695,14 +765,13 @@ mod tests {
             }
         }
         let inv_k = 1.0 / (num_experts as f32);
-        for v in expected.iter_mut() { *v *= inv_k; }
+        for v in expected.iter_mut() {
+            *v *= inv_k;
+        }
 
         assert_eq!(layer_out.len(), expected.len());
         for (i, (a, e)) in layer_out.iter().zip(expected.iter()).enumerate() {
-            assert!(
-                (a - e).abs() < 1e-4,
-                "out[{i}] expected {e}, got {a}",
-            );
+            assert!((a - e).abs() < 1e-4, "out[{i}] expected {e}, got {a}",);
         }
     }
 }

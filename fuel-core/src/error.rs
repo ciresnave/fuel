@@ -1,11 +1,9 @@
-﻿//! Fuel-specific Error and Result
+//! Fuel-specific Error and Result
 //!
 //! The canonical definitions live in [`fuel_ir::error`].
 //! This module re-exports them so that `crate::Error`, `crate::Result`,
 //! `crate::Context`, etc. continue to resolve within fuel-core.
-pub use fuel_ir::error::{
-    zip, Context, Error, MatMulUnexpectedStriding, Result,
-};
+pub use fuel_ir::error::{Context, Error, MatMulUnexpectedStriding, Result, zip};
 
 /// Returns early from a function with a formatted error message.
 ///

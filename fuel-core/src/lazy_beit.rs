@@ -81,10 +81,17 @@ impl BeitConfig {
     /// BEiT ViT-Base/16 at 384×384.
     pub fn vit_base() -> Self {
         Self {
-            embed_dim: 768, depth: 12, num_heads: 12,
-            num_channels: 3, image_size: 384, patch_size: 16,
-            mlp_ratio: 4, layer_norm_eps: 1e-6,
-            num_classes: 1000, qkv_bias: true, proj_bias: true,
+            embed_dim: 768,
+            depth: 12,
+            num_heads: 12,
+            num_channels: 3,
+            image_size: 384,
+            patch_size: 16,
+            mlp_ratio: 4,
+            layer_norm_eps: 1e-6,
+            num_classes: 1000,
+            qkv_bias: true,
+            proj_bias: true,
         }
     }
 }
@@ -135,10 +142,13 @@ pub struct BeitModel {
 
 impl BeitModel {
     pub fn new(config: BeitConfig, weights: BeitWeights) -> Self {
-        let relative_position_index = Arc::from(
-            build_relative_position_index(config.num_patches_per_side()),
-        );
-        Self { config, weights, relative_position_index }
+        let relative_position_index =
+            Arc::from(build_relative_position_index(config.num_patches_per_side()));
+        Self {
+            config,
+            weights,
+            relative_position_index,
+        }
     }
 
     /// Run image classification. Returns `(1, num_classes)`.
@@ -157,7 +167,12 @@ impl BeitModel {
         // Patch Conv2d.
         let conv_w = pixel_values.const_f32_like(
             Arc::clone(&weights.patch_proj),
-            Shape::from_dims(&[cfg.embed_dim, cfg.num_channels, cfg.patch_size, cfg.patch_size]),
+            Shape::from_dims(&[
+                cfg.embed_dim,
+                cfg.num_channels,
+                cfg.patch_size,
+                cfg.patch_size,
+            ]),
         );
         let conv_b = pixel_values.const_f32_like(
             Arc::clone(&weights.patch_proj_bias),
@@ -194,9 +209,15 @@ impl BeitModel {
             .mean_dim(1_usize)?
             .reshape(Shape::from_dims(&[batch, cfg.embed_dim]))?;
         // Final LayerNorm on the pooled vector.
-        let pooled_ln = patch_mean.layer_norm_affine(std::sync::Arc::clone(&weights.final_ln_gain), std::sync::Arc::clone(&weights.final_ln_bias), cfg.layer_norm_eps)?;
+        let pooled_ln = patch_mean.layer_norm_affine(
+            std::sync::Arc::clone(&weights.final_ln_gain),
+            std::sync::Arc::clone(&weights.final_ln_bias),
+            cfg.layer_norm_eps,
+        )?;
         // Classifier.
-        let logits = weights.head.apply_linear(&pooled_ln, cfg.embed_dim, cfg.num_classes)?;
+        let logits = weights
+            .head
+            .apply_linear(&pooled_ln, cfg.embed_dim, cfg.num_classes)?;
         let bias_t = pixel_values.const_f32_like(
             Arc::clone(&weights.head_bias),
             Shape::from_dims(&[cfg.num_classes]),
@@ -249,15 +270,23 @@ impl BeitModel {
 
         let conv_w = pixel_values.const_f32_like(
             Arc::clone(&weights.patch_proj),
-            Shape::from_dims(&[cfg.embed_dim, cfg.num_channels, cfg.patch_size, cfg.patch_size]),
+            Shape::from_dims(&[
+                cfg.embed_dim,
+                cfg.num_channels,
+                cfg.patch_size,
+                cfg.patch_size,
+            ]),
         );
         let conv_b = pixel_values.const_f32_like(
             Arc::clone(&weights.patch_proj_bias),
             Shape::from_dims(&[cfg.embed_dim]),
         );
         let conv_out = pixel_values.conv2d(
-            &conv_w, Some(&conv_b),
-            (cfg.patch_size, cfg.patch_size), (0, 0), 1,
+            &conv_w,
+            Some(&conv_b),
+            (cfg.patch_size, cfg.patch_size),
+            (0, 0),
+            1,
         )?;
         let np = cfg.num_patches();
         let patches = conv_out
@@ -298,17 +327,18 @@ impl BeitModel {
         let head_dim = cfg.head_dim();
 
         // Pre-LN.
-        let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&block.norm1_gain), std::sync::Arc::clone(&block.norm1_bias), cfg.layer_norm_eps)?;
+        let x_norm = x.layer_norm_affine(
+            std::sync::Arc::clone(&block.norm1_gain),
+            std::sync::Arc::clone(&block.norm1_bias),
+            cfg.layer_norm_eps,
+        )?;
 
         // Fused Wqkv.
         let qkv_lin = block.qkv.apply_linear(&x_norm, h, 3 * h)?;
         let qkv = match &block.qkv_bias {
             None => qkv_lin,
             Some(b) => {
-                let bt = anchor.const_f32_like(
-                    Arc::clone(b),
-                    Shape::from_dims(&[3 * h]),
-                );
+                let bt = anchor.const_f32_like(Arc::clone(b), Shape::from_dims(&[3 * h]));
                 qkv_lin.broadcast_add(&bt)?
             }
         };
@@ -325,8 +355,10 @@ impl BeitModel {
         // `[num_relative_distance, num_heads]` table, reshape
         // to `[1, num_heads, seq, seq]` to broadcast over batch.
         let rel_bias = self.build_relative_position_bias(
-            anchor, &block.relative_position_bias_table,
-            seq, n_heads,
+            anchor,
+            &block.relative_position_bias_table,
+            seq,
+            n_heads,
         )?;
 
         let k_t = k.transpose()?;
@@ -340,40 +372,30 @@ impl BeitModel {
         let attn_out = match &block.proj_bias {
             None => proj,
             Some(b) => {
-                let bt = anchor.const_f32_like(
-                    Arc::clone(b),
-                    Shape::from_dims(&[h]),
-                );
+                let bt = anchor.const_f32_like(Arc::clone(b), Shape::from_dims(&[h]));
                 proj.broadcast_add(&bt)?
             }
         };
 
         // LayerScale 1 + residual.
-        let ls1_t = anchor.const_f32_like(
-            Arc::clone(&block.ls1_gamma),
-            Shape::from_dims(&[h]),
-        );
+        let ls1_t = anchor.const_f32_like(Arc::clone(&block.ls1_gamma), Shape::from_dims(&[h]));
         let h1 = x.add(&attn_out.broadcast_mul(&ls1_t)?)?;
 
         // Pre-MLP norm + MLP + LayerScale 2 + residual.
-        let h1_norm = h1.layer_norm_affine(std::sync::Arc::clone(&block.norm2_gain), std::sync::Arc::clone(&block.norm2_bias), cfg.layer_norm_eps)?;
+        let h1_norm = h1.layer_norm_affine(
+            std::sync::Arc::clone(&block.norm2_gain),
+            std::sync::Arc::clone(&block.norm2_bias),
+            cfg.layer_norm_eps,
+        )?;
         let mlp_h = cfg.embed_dim * cfg.mlp_ratio;
         let fc1 = block.fc1.apply_linear(&h1_norm, h, mlp_h)?;
-        let fc1_bias_t = anchor.const_f32_like(
-            Arc::clone(&block.fc1_bias),
-            Shape::from_dims(&[mlp_h]),
-        );
+        let fc1_bias_t =
+            anchor.const_f32_like(Arc::clone(&block.fc1_bias), Shape::from_dims(&[mlp_h]));
         let fc1 = fc1.broadcast_add(&fc1_bias_t)?.gelu_erf();
         let fc2 = block.fc2.apply_linear(&fc1, mlp_h, h)?;
-        let fc2_bias_t = anchor.const_f32_like(
-            Arc::clone(&block.fc2_bias),
-            Shape::from_dims(&[h]),
-        );
+        let fc2_bias_t = anchor.const_f32_like(Arc::clone(&block.fc2_bias), Shape::from_dims(&[h]));
         let mlp_out = fc2.broadcast_add(&fc2_bias_t)?;
-        let ls2_t = anchor.const_f32_like(
-            Arc::clone(&block.ls2_gamma),
-            Shape::from_dims(&[h]),
-        );
+        let ls2_t = anchor.const_f32_like(Arc::clone(&block.ls2_gamma), Shape::from_dims(&[h]));
         h1.add(&mlp_out.broadcast_mul(&ls2_t)?)
     }
 
@@ -465,7 +487,10 @@ impl BeitWeights {
         st: &crate::safetensors::MmapedSafetensors,
         cfg: &BeitConfig,
     ) -> Result<Self> {
-        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix, load_transposed_matrix_preserve_dtype as ltm};
+        use crate::lazy::{
+            load_tensor_as_f32, load_transposed_matrix,
+            load_transposed_matrix_preserve_dtype as ltm,
+        };
         let h = cfg.embed_dim;
         let mlp = cfg.mlp_ratio * h;
 
@@ -476,38 +501,42 @@ impl BeitWeights {
         // BEiT conv kernel is [embed_dim, num_channels, patch, patch] —
         // stored as f32 row-major; load_tensor_as_f32 returns flat.
         let patch_proj = Arc::from(load_tensor_as_f32(
-            st, "beit.embeddings.patch_embeddings.projection.weight",
+            st,
+            "beit.embeddings.patch_embeddings.projection.weight",
         )?);
         let patch_proj_bias = Arc::from(load_tensor_as_f32(
-            st, "beit.embeddings.patch_embeddings.projection.bias",
+            st,
+            "beit.embeddings.patch_embeddings.projection.bias",
         )?);
-        let cls_token = Arc::from(load_tensor_as_f32(
-            st, "beit.embeddings.cls_token",
-        )?);
+        let cls_token = Arc::from(load_tensor_as_f32(st, "beit.embeddings.cls_token")?);
 
         let mut blocks = Vec::with_capacity(cfg.depth);
         for i in 0..cfg.depth {
             let p = format!("beit.encoder.layer.{i}");
             let norm1_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.layernorm_before.weight"),
+                st,
+                &format!("{p}.layernorm_before.weight"),
             )?);
             let norm1_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.layernorm_before.bias"),
+                st,
+                &format!("{p}.layernorm_before.bias"),
             )?);
             // BEiT stores Q/K/V as separate weights (no fused QKV in HF
             // weights); concat at load to match the fused storage layout.
-            let q = load_transposed_matrix(st, &format!("{p}.attention.attention.query.weight"), h, h)?;
-            let k = load_transposed_matrix(st, &format!("{p}.attention.attention.key.weight"), h, h)?;
-            let v = load_transposed_matrix(st, &format!("{p}.attention.attention.value.weight"), h, h)?;
+            let q =
+                load_transposed_matrix(st, &format!("{p}.attention.attention.query.weight"), h, h)?;
+            let k =
+                load_transposed_matrix(st, &format!("{p}.attention.attention.key.weight"), h, h)?;
+            let v =
+                load_transposed_matrix(st, &format!("{p}.attention.attention.value.weight"), h, h)?;
             // Concatenate into fused `[h, 3*h]`.
             let mut fused = vec![0.0_f32; h * 3 * h];
             for row in 0..h {
-                fused[row * 3 * h..row * 3 * h + h].copy_from_slice(
-                    &q[row * h..(row + 1) * h]);
-                fused[row * 3 * h + h..row * 3 * h + 2 * h].copy_from_slice(
-                    &k[row * h..(row + 1) * h]);
-                fused[row * 3 * h + 2 * h..row * 3 * h + 3 * h].copy_from_slice(
-                    &v[row * h..(row + 1) * h]);
+                fused[row * 3 * h..row * 3 * h + h].copy_from_slice(&q[row * h..(row + 1) * h]);
+                fused[row * 3 * h + h..row * 3 * h + 2 * h]
+                    .copy_from_slice(&k[row * h..(row + 1) * h]);
+                fused[row * 3 * h + 2 * h..row * 3 * h + 3 * h]
+                    .copy_from_slice(&v[row * h..(row + 1) * h]);
             }
             let qkv = WeightStorage::F32(Arc::from(fused));
             let qkv_bias = if cfg.qkv_bias {
@@ -522,52 +551,76 @@ impl BeitWeights {
                 // middle h zero (K)
                 fused[2 * h..].copy_from_slice(&v_b);
                 Some(Arc::from(fused))
-            } else { None };
+            } else {
+                None
+            };
 
             let proj = ltm(st, &format!("{p}.attention.output.dense.weight"), h, h)?;
             let proj_bias = if cfg.proj_bias {
                 opt_bias(format!("{p}.attention.output.dense.bias"))
-            } else { None };
-            let ls1_gamma = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.lambda_1"),
-            )?);
+            } else {
+                None
+            };
+            let ls1_gamma = Arc::from(load_tensor_as_f32(st, &format!("{p}.lambda_1"))?);
             let relative_position_bias_table = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.attention.attention.relative_position_bias.relative_position_bias_table"),
+                st,
+                &format!(
+                    "{p}.attention.attention.relative_position_bias.relative_position_bias_table"
+                ),
             )?);
             let norm2_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.layernorm_after.weight"),
+                st,
+                &format!("{p}.layernorm_after.weight"),
             )?);
             let norm2_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.layernorm_after.bias"),
+                st,
+                &format!("{p}.layernorm_after.bias"),
             )?);
             let fc1 = ltm(st, &format!("{p}.intermediate.dense.weight"), mlp, h)?;
             let fc1_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.intermediate.dense.bias"),
+                st,
+                &format!("{p}.intermediate.dense.bias"),
             )?);
             let fc2 = ltm(st, &format!("{p}.output.dense.weight"), h, mlp)?;
-            let fc2_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.output.dense.bias"),
-            )?);
-            let ls2_gamma = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.lambda_2"),
-            )?);
+            let fc2_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.output.dense.bias"))?);
+            let ls2_gamma = Arc::from(load_tensor_as_f32(st, &format!("{p}.lambda_2"))?);
 
             blocks.push(BeitBlockWeights {
-                norm1_gain, norm1_bias, qkv, qkv_bias, proj, proj_bias,
-                ls1_gamma, relative_position_bias_table,
-                norm2_gain, norm2_bias, fc1, fc1_bias, fc2, fc2_bias, ls2_gamma,
+                norm1_gain,
+                norm1_bias,
+                qkv,
+                qkv_bias,
+                proj,
+                proj_bias,
+                ls1_gamma,
+                relative_position_bias_table,
+                norm2_gain,
+                norm2_bias,
+                fc1,
+                fc1_bias,
+                fc2,
+                fc2_bias,
+                ls2_gamma,
             });
         }
 
         let final_ln_gain = Arc::from(load_tensor_as_f32(st, "beit.layernorm.weight")?);
         let final_ln_bias = Arc::from(load_tensor_as_f32(st, "beit.layernorm.bias")?);
         let head = ltm(st, "classifier.weight", cfg.num_classes, h)?;
-        let head_bias = Arc::from(load_tensor_as_f32(st, "classifier.bias")
-            .unwrap_or_else(|_| vec![0.0_f32; cfg.num_classes]));
+        let head_bias = Arc::from(
+            load_tensor_as_f32(st, "classifier.bias")
+                .unwrap_or_else(|_| vec![0.0_f32; cfg.num_classes]),
+        );
 
         Ok(Self {
-            patch_proj, patch_proj_bias, cls_token, blocks,
-            final_ln_gain, final_ln_bias, head, head_bias,
+            patch_proj,
+            patch_proj_bias,
+            cls_token,
+            blocks,
+            final_ln_gain,
+            final_ln_bias,
+            head,
+            head_bias,
         })
     }
 }
@@ -597,34 +650,47 @@ mod tests {
         let patch_proj_bias = vec_of(h, &mut *nb);
         let cls_token = vec_of(h, &mut *nb);
 
-        let blocks: Vec<BeitBlockWeights> = (0..cfg.depth).map(|_| BeitBlockWeights {
-            norm1_gain: Arc::from(vec![1.0_f32; h]),
-            norm1_bias: Arc::from(vec![0.0_f32; h]),
-            qkv: WeightStorage::F32(vec_of(h * (3 * h), &mut *nb)),
-            qkv_bias: if cfg.qkv_bias { Some(vec_of(3 * h, &mut *nb)) } else { None },
-            proj: WeightStorage::F32(vec_of(h * h, &mut *nb)),
-            proj_bias: if cfg.proj_bias { Some(vec_of(h, &mut *nb)) } else { None },
-            ls1_gamma: vec_of(h, &mut *nb),
-            relative_position_bias_table: vec_of(nrd * cfg.num_heads, &mut *nb),
-            norm2_gain: Arc::from(vec![1.0_f32; h]),
-            norm2_bias: Arc::from(vec![0.0_f32; h]),
-            fc1: WeightStorage::F32(vec_of(h * mlp_h, &mut *nb)),
-            fc1_bias: vec_of(mlp_h, &mut *nb),
-            fc2: WeightStorage::F32(vec_of(mlp_h * h, &mut *nb)),
-            fc2_bias: vec_of(h, &mut *nb),
-            ls2_gamma: vec_of(h, &mut *nb),
-        }).collect();
+        let blocks: Vec<BeitBlockWeights> = (0..cfg.depth)
+            .map(|_| BeitBlockWeights {
+                norm1_gain: Arc::from(vec![1.0_f32; h]),
+                norm1_bias: Arc::from(vec![0.0_f32; h]),
+                qkv: WeightStorage::F32(vec_of(h * (3 * h), &mut *nb)),
+                qkv_bias: if cfg.qkv_bias {
+                    Some(vec_of(3 * h, &mut *nb))
+                } else {
+                    None
+                },
+                proj: WeightStorage::F32(vec_of(h * h, &mut *nb)),
+                proj_bias: if cfg.proj_bias {
+                    Some(vec_of(h, &mut *nb))
+                } else {
+                    None
+                },
+                ls1_gamma: vec_of(h, &mut *nb),
+                relative_position_bias_table: vec_of(nrd * cfg.num_heads, &mut *nb),
+                norm2_gain: Arc::from(vec![1.0_f32; h]),
+                norm2_bias: Arc::from(vec![0.0_f32; h]),
+                fc1: WeightStorage::F32(vec_of(h * mlp_h, &mut *nb)),
+                fc1_bias: vec_of(mlp_h, &mut *nb),
+                fc2: WeightStorage::F32(vec_of(mlp_h * h, &mut *nb)),
+                fc2_bias: vec_of(h, &mut *nb),
+                ls2_gamma: vec_of(h, &mut *nb),
+            })
+            .collect();
 
         let final_ln_gain = Arc::from(vec![1.0_f32; h]);
         let final_ln_bias = Arc::from(vec![0.0_f32; h]);
         let head = WeightStorage::F32(vec_of(h * cfg.num_classes, &mut *nb));
         let head_bias = vec_of(cfg.num_classes, &mut *nb);
         BeitWeights {
-            patch_proj, patch_proj_bias,
+            patch_proj,
+            patch_proj_bias,
             cls_token,
             blocks,
-            final_ln_gain, final_ln_bias,
-            head, head_bias,
+            final_ln_gain,
+            final_ln_bias,
+            head,
+            head_bias,
         }
     }
 
@@ -688,8 +754,10 @@ mod tests {
         }
         // Tiny weights (∈ [-0.025, 0.025]) → bias contribution
         // is small. Just require it to be measurable.
-        assert!(max_diff > 1e-8,
-            "relative position bias must affect output, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-8,
+            "relative position bias must affect output, max_diff = {max_diff}"
+        );
     }
 
     /// The relative position index calculation is symmetric in
@@ -729,7 +797,9 @@ mod tests {
         let cfg = tiny_config();
         let model = BeitModel::new(cfg.clone(), tiny_weights(&cfg));
         let img = tiny_image(&cfg);
-        let outs = model.forward_intermediate_layers(&img, &[0_usize, 1]).unwrap();
+        let outs = model
+            .forward_intermediate_layers(&img, &[0_usize, 1])
+            .unwrap();
         assert_eq!(outs.len(), 2);
         let np = cfg.num_patches();
         for out in &outs {
@@ -744,7 +814,9 @@ mod tests {
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-7,
-            "layer 0 and layer 1 intermediates must differ, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-7,
+            "layer 0 and layer 1 intermediates must differ, max_diff = {max_diff}"
+        );
     }
 }

@@ -88,7 +88,8 @@ pub struct Gemma4TextConfig {
 
 impl Gemma4TextConfig {
     pub fn num_global_kv(&self) -> usize {
-        self.num_global_key_value_heads.unwrap_or(self.num_key_value_heads)
+        self.num_global_key_value_heads
+            .unwrap_or(self.num_key_value_heads)
     }
     pub fn layer_type(&self, layer_idx: usize) -> Gemma4LayerType {
         self.layer_types
@@ -167,7 +168,9 @@ impl Gemma4TextModel {
     /// Returns logits `(1, seq, vocab_size)` (with optional logit
     /// softcap applied if the config enables it).
     pub fn forward_embeds(
-        &self, scaled_embeds: &LazyTensor, start_pos: usize,
+        &self,
+        scaled_embeds: &LazyTensor,
+        start_pos: usize,
     ) -> Result<LazyTensor> {
         let h_norm = self.decode_from_scaled_embeds(scaled_embeds, start_pos)?;
         self.apply_lm_head(&h_norm)
@@ -178,7 +181,9 @@ impl Gemma4TextModel {
     /// retrieval / embedding consumers that project hidden states
     /// rather than predict tokens.
     pub fn forward_hidden_embeds(
-        &self, scaled_embeds: &LazyTensor, start_pos: usize,
+        &self,
+        scaled_embeds: &LazyTensor,
+        start_pos: usize,
     ) -> Result<LazyTensor> {
         self.decode_from_scaled_embeds(scaled_embeds, start_pos)
     }
@@ -195,13 +200,13 @@ impl Gemma4TextModel {
     /// `anchor` selects the graph the const-emitted embedding table
     /// lives on, so the result can be concatenated with image/audio
     /// embeddings on the same graph.
-    pub fn embed_tokens_anchored(
-        &self, anchor: &LazyTensor, tokens: &[u32],
-    ) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
-            cfg.vocab_size, cfg.hidden_size, tokens,
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
         )
     }
 
@@ -222,14 +227,20 @@ impl Gemma4TextModel {
         assert!(seq > 0);
 
         let h = LazyTensor::embed_tokens(
-            weights.token_embedding.clone(), cfg.vocab_size, cfg.hidden_size, tokens, &Device::cpu(),
+            weights.token_embedding.clone(),
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
+            &Device::cpu(),
         )?;
         let h = h.mul_scalar((cfg.hidden_size as f64).sqrt());
         self.decode_from_scaled_embeds(&h, start_pos)
     }
 
     fn decode_from_scaled_embeds(
-        &self, scaled_embeds: &LazyTensor, start_pos: usize,
+        &self,
+        scaled_embeds: &LazyTensor,
+        start_pos: usize,
     ) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
@@ -240,36 +251,39 @@ impl Gemma4TextModel {
                 "Gemma4TextModel::forward_embeds: expected scaled_embeds shape \
                  (1, seq, hidden_size={}), got {:?}",
                 cfg.hidden_size, dims,
-            )).bt());
+            ))
+            .bt());
         }
         let seq = dims[1];
         if seq == 0 {
             return Err(crate::Error::Msg(
                 "Gemma4TextModel::forward_embeds: seq must be > 0".into(),
-            ).bt());
+            )
+            .bt());
         }
         if cfg.num_hidden_layers == 0 {
             return Err(crate::Error::Msg(
                 "Gemma4TextModel::forward_embeds: num_hidden_layers must be > 0".into(),
-            ).bt());
+            )
+            .bt());
         }
         if cfg.layer_types.len() != cfg.num_hidden_layers {
             return Err(crate::Error::Msg(format!(
                 "Gemma4TextModel::forward_embeds: layer_types length ({}) \
                  must match num_hidden_layers ({})",
-                cfg.layer_types.len(), cfg.num_hidden_layers,
-            )).bt());
+                cfg.layer_types.len(),
+                cfg.num_hidden_layers,
+            ))
+            .bt());
         }
         let mut h = scaled_embeds.clone();
 
-        let (rope_cos_l, rope_sin_l) = h.rope_tables_const(
-            cfg.rope_local_base_freq, start_pos, seq, cfg.head_dim,
-        );
+        let (rope_cos_l, rope_sin_l) =
+            h.rope_tables_const(cfg.rope_local_base_freq, start_pos, seq, cfg.head_dim);
 
         let rope_dim_global = cfg.global_rope_dim();
-        let (rope_cos_g, rope_sin_g) = h.rope_tables_const(
-            cfg.rope_theta, start_pos, seq, rope_dim_global,
-        );
+        let (rope_cos_g, rope_sin_g) =
+            h.rope_tables_const(cfg.rope_theta, start_pos, seq, rope_dim_global);
 
         let full_mask = self.build_mask(&h, seq, None);
         let sliding_mask = self.build_mask(&h, seq, Some(cfg.sliding_window));
@@ -278,14 +292,22 @@ impl Gemma4TextModel {
             let kind = cfg.layer_type(idx);
             let (head_dim, num_kv, rope_cos, rope_sin, rope_dim, mask, is_global) = match kind {
                 Gemma4LayerType::SlidingAttention => (
-                    cfg.head_dim, cfg.num_key_value_heads,
-                    &rope_cos_l, &rope_sin_l, cfg.head_dim,
-                    &sliding_mask, false,
+                    cfg.head_dim,
+                    cfg.num_key_value_heads,
+                    &rope_cos_l,
+                    &rope_sin_l,
+                    cfg.head_dim,
+                    &sliding_mask,
+                    false,
                 ),
                 Gemma4LayerType::FullAttention => (
-                    cfg.global_head_dim, cfg.num_global_kv(),
-                    &rope_cos_g, &rope_sin_g, rope_dim_global,
-                    &full_mask, true,
+                    cfg.global_head_dim,
+                    cfg.num_global_kv(),
+                    &rope_cos_g,
+                    &rope_sin_g,
+                    rope_dim_global,
+                    &full_mask,
+                    true,
                 ),
             };
             h = self.apply_layer(
@@ -332,12 +354,22 @@ impl Gemma4TextModel {
 
         // Pre-attention norm.
         let residual = x.clone();
-        let x_norm = x.rms_norm_affine_with_offset(&layer.input_norm_gain, 1.0, cfg.rms_norm_eps)?;
+        let x_norm =
+            x.rms_norm_affine_with_offset(&layer.input_norm_gain, 1.0, cfg.rms_norm_eps)?;
 
         // Q / K / V projections.
-        let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, q_dim)?.add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
-        let k = layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
-        let v = layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
+        let q = layer
+            .attn_q
+            .apply_linear(&x_norm, cfg.hidden_size, q_dim)?
+            .add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
+        let k = layer
+            .attn_k
+            .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
+            .add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
+        let v = layer
+            .attn_v
+            .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
+            .add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
 
         let _ = (batch, seq);
         let q = q.split_heads(n_heads, head_dim)?;
@@ -368,26 +400,44 @@ impl Gemma4TextModel {
         let attn_v = attn.matmul(&v_full)?;
 
         let merged = attn_v.merge_heads()?;
-        let attn_out = layer.attn_o.apply_linear(&merged, q_dim, cfg.hidden_size)?.add_optional_trailing_bias(layer.attn_o_bias.as_ref())?;
-        let attn_out_norm = attn_out.rms_norm_affine_with_offset(&layer.post_attn_norm_gain, 1.0, cfg.rms_norm_eps)?;
+        let attn_out = layer
+            .attn_o
+            .apply_linear(&merged, q_dim, cfg.hidden_size)?
+            .add_optional_trailing_bias(layer.attn_o_bias.as_ref())?;
+        let attn_out_norm = attn_out.rms_norm_affine_with_offset(
+            &layer.post_attn_norm_gain,
+            1.0,
+            cfg.rms_norm_eps,
+        )?;
         let h1 = residual.add(&attn_out_norm)?;
 
         // FFN sublayer.
         let residual2 = h1.clone();
-        let h1_norm = h1.rms_norm_affine_with_offset(&layer.pre_ffn_norm_gain, 1.0, cfg.rms_norm_eps)?;
-        let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
-        let up = layer.ffn_up.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let h1_norm =
+            h1.rms_norm_affine_with_offset(&layer.pre_ffn_norm_gain, 1.0, cfg.rms_norm_eps)?;
+        let gate = layer
+            .ffn_gate
+            .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let up = layer
+            .ffn_up
+            .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
         let activated = match cfg.hidden_activation {
             Gemma4Activation::Gelu => gate.gelu_erf(),
             Gemma4Activation::GeluPytorchTanh => gate.gelu(),
         };
         let ffn_in = activated.mul(&up)?;
-        let ffn_out = layer.ffn_down.apply_linear(&ffn_in, cfg.intermediate_size, cfg.hidden_size)?;
-        let ffn_out_norm = ffn_out.rms_norm_affine_with_offset(&layer.post_ffn_norm_gain, 1.0, cfg.rms_norm_eps)?;
+        let ffn_out =
+            layer
+                .ffn_down
+                .apply_linear(&ffn_in, cfg.intermediate_size, cfg.hidden_size)?;
+        let ffn_out_norm = ffn_out.rms_norm_affine_with_offset(
+            &layer.post_ffn_norm_gain,
+            1.0,
+            cfg.rms_norm_eps,
+        )?;
         residual2.add(&ffn_out_norm)
     }
 }
-
 
 /// V RmsNorm: pure rsqrt(mean of squares + eps), no learned weight.
 fn v_rms_norm(v: &LazyTensor, eps: f64) -> Result<LazyTensor> {
@@ -433,7 +483,8 @@ impl Gemma4TextWeights {
             crate::bail!(
                 "Gemma4TextWeights::load_from_mmapped: layer_types length ({}) \
                  must match num_hidden_layers ({})",
-                cfg.layer_types.len(), cfg.num_hidden_layers,
+                cfg.layer_types.len(),
+                cfg.num_hidden_layers,
             );
         }
 
@@ -441,98 +492,140 @@ impl Gemma4TextWeights {
         if token_embedding.len() != cfg.vocab_size * h {
             crate::bail!(
                 "model.embed_tokens.weight: {} elts, expected {} ({}×{})",
-                token_embedding.len(), cfg.vocab_size * h, cfg.vocab_size, h,
+                token_embedding.len(),
+                cfg.vocab_size * h,
+                cfg.vocab_size,
+                h,
             );
         }
 
-        let mut layers: Vec<Gemma4LayerWeights> =
-            Vec::with_capacity(cfg.num_hidden_layers);
+        let mut layers: Vec<Gemma4LayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
         for li in 0..cfg.num_hidden_layers {
             let kind = cfg.layer_type(li);
             let (head_dim, num_kv) = match kind {
-                Gemma4LayerType::SlidingAttention => {
-                    (cfg.head_dim, cfg.num_key_value_heads)
-                }
-                Gemma4LayerType::FullAttention => {
-                    (cfg.global_head_dim, cfg.num_global_kv())
-                }
+                Gemma4LayerType::SlidingAttention => (cfg.head_dim, cfg.num_key_value_heads),
+                Gemma4LayerType::FullAttention => (cfg.global_head_dim, cfg.num_global_kv()),
             };
             let q_dim = n_heads * head_dim;
             let kv_dim = num_kv * head_dim;
 
             let p = format!("model.layers.{li}");
             let attn_q = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.q_proj.weight"), q_dim, h,
+                st,
+                &format!("{p}.self_attn.q_proj.weight"),
+                q_dim,
+                h,
             )?;
             let attn_k = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.k_proj.weight"), kv_dim, h,
+                st,
+                &format!("{p}.self_attn.k_proj.weight"),
+                kv_dim,
+                h,
             )?;
             let attn_v = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.v_proj.weight"), kv_dim, h,
+                st,
+                &format!("{p}.self_attn.v_proj.weight"),
+                kv_dim,
+                h,
             )?;
             let attn_o = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.o_proj.weight"), h, q_dim,
+                st,
+                &format!("{p}.self_attn.o_proj.weight"),
+                h,
+                q_dim,
             )?;
             let attn_q_bias = if cfg.attention_bias {
                 load_tensor_as_f32(st, &format!("{p}.self_attn.q_proj.bias"))
-                    .ok().map(Arc::from)
-            } else { None };
+                    .ok()
+                    .map(Arc::from)
+            } else {
+                None
+            };
             let attn_k_bias = if cfg.attention_bias {
                 load_tensor_as_f32(st, &format!("{p}.self_attn.k_proj.bias"))
-                    .ok().map(Arc::from)
-            } else { None };
+                    .ok()
+                    .map(Arc::from)
+            } else {
+                None
+            };
             let attn_v_bias = if cfg.attention_bias {
                 load_tensor_as_f32(st, &format!("{p}.self_attn.v_proj.bias"))
-                    .ok().map(Arc::from)
-            } else { None };
+                    .ok()
+                    .map(Arc::from)
+            } else {
+                None
+            };
             let attn_o_bias = if cfg.attention_bias {
                 load_tensor_as_f32(st, &format!("{p}.self_attn.o_proj.bias"))
-                    .ok().map(Arc::from)
-            } else { None };
-            let q_norm_gain = Arc::from(
-                load_tensor_as_f32(st, &format!("{p}.self_attn.q_norm.weight"))?,
-            );
-            let k_norm_gain = Arc::from(
-                load_tensor_as_f32(st, &format!("{p}.self_attn.k_norm.weight"))?,
-            );
-            let input_norm_gain = Arc::from(
-                load_tensor_as_f32(st, &format!("{p}.input_layernorm.weight"))?,
-            );
-            let post_attn_norm_gain = Arc::from(
-                load_tensor_as_f32(st, &format!("{p}.post_attention_layernorm.weight"))?,
-            );
-            let pre_ffn_norm_gain = Arc::from(
-                load_tensor_as_f32(st, &format!("{p}.pre_feedforward_layernorm.weight"))?,
-            );
-            let post_ffn_norm_gain = Arc::from(
-                load_tensor_as_f32(st, &format!("{p}.post_feedforward_layernorm.weight"))?,
-            );
+                    .ok()
+                    .map(Arc::from)
+            } else {
+                None
+            };
+            let q_norm_gain = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.self_attn.q_norm.weight"),
+            )?);
+            let k_norm_gain = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.self_attn.k_norm.weight"),
+            )?);
+            let input_norm_gain = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.input_layernorm.weight"),
+            )?);
+            let post_attn_norm_gain = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.post_attention_layernorm.weight"),
+            )?);
+            let pre_ffn_norm_gain = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.pre_feedforward_layernorm.weight"),
+            )?);
+            let post_ffn_norm_gain = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.post_feedforward_layernorm.weight"),
+            )?);
             let ffn_gate = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.mlp.gate_proj.weight"), i_dim, h,
+                st,
+                &format!("{p}.mlp.gate_proj.weight"),
+                i_dim,
+                h,
             )?;
             let ffn_up = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.mlp.up_proj.weight"), i_dim, h,
+                st,
+                &format!("{p}.mlp.up_proj.weight"),
+                i_dim,
+                h,
             )?;
             let ffn_down = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.mlp.down_proj.weight"), h, i_dim,
+                st,
+                &format!("{p}.mlp.down_proj.weight"),
+                h,
+                i_dim,
             )?;
             layers.push(Gemma4LayerWeights {
-                attn_q, attn_q_bias,
-                attn_k, attn_k_bias,
-                attn_v, attn_v_bias,
-                attn_o, attn_o_bias,
-                q_norm_gain, k_norm_gain,
+                attn_q,
+                attn_q_bias,
+                attn_k,
+                attn_k_bias,
+                attn_v,
+                attn_v_bias,
+                attn_o,
+                attn_o_bias,
+                q_norm_gain,
+                k_norm_gain,
                 input_norm_gain,
                 post_attn_norm_gain,
                 pre_ffn_norm_gain,
                 post_ffn_norm_gain,
-                ffn_gate, ffn_up, ffn_down,
+                ffn_gate,
+                ffn_up,
+                ffn_down,
             });
         }
 
-        let final_norm_gain = Arc::from(
-            load_tensor_as_f32(st, "model.norm.weight")?,
-        );
+        let final_norm_gain = Arc::from(load_tensor_as_f32(st, "model.norm.weight")?);
 
         Ok(Gemma4TextWeights {
             token_embedding: Arc::from(token_embedding),
@@ -541,7 +634,6 @@ impl Gemma4TextWeights {
         })
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -573,13 +665,29 @@ mod tests {
                 let kv_dim = num_kv * head_dim;
                 Gemma4LayerWeights {
                     attn_q: WeightStorage::F32(vec_of(h * q_dim, &mut *nb)),
-                    attn_q_bias: if cfg.attention_bias { Some(vec_of(q_dim, &mut *nb)) } else { None },
+                    attn_q_bias: if cfg.attention_bias {
+                        Some(vec_of(q_dim, &mut *nb))
+                    } else {
+                        None
+                    },
                     attn_k: WeightStorage::F32(vec_of(h * kv_dim, &mut *nb)),
-                    attn_k_bias: if cfg.attention_bias { Some(vec_of(kv_dim, &mut *nb)) } else { None },
+                    attn_k_bias: if cfg.attention_bias {
+                        Some(vec_of(kv_dim, &mut *nb))
+                    } else {
+                        None
+                    },
                     attn_v: WeightStorage::F32(vec_of(h * kv_dim, &mut *nb)),
-                    attn_v_bias: if cfg.attention_bias { Some(vec_of(kv_dim, &mut *nb)) } else { None },
+                    attn_v_bias: if cfg.attention_bias {
+                        Some(vec_of(kv_dim, &mut *nb))
+                    } else {
+                        None
+                    },
                     attn_o: WeightStorage::F32(vec_of(q_dim * h, &mut *nb)),
-                    attn_o_bias: if cfg.attention_bias { Some(vec_of(h, &mut *nb)) } else { None },
+                    attn_o_bias: if cfg.attention_bias {
+                        Some(vec_of(h, &mut *nb))
+                    } else {
+                        None
+                    },
                     q_norm_gain: Arc::from(vec![0.05_f32; head_dim]),
                     k_norm_gain: Arc::from(vec![0.05_f32; head_dim]),
                     input_norm_gain: Arc::from(vec![0.05_f32; h]),
@@ -593,18 +701,25 @@ mod tests {
             })
             .collect();
         let final_norm_gain = Arc::from(vec![0.05_f32; h]);
-        Gemma4TextWeights { token_embedding, layers, final_norm_gain }
+        Gemma4TextWeights {
+            token_embedding,
+            layers,
+            final_norm_gain,
+        }
     }
 
     fn tiny_config() -> Gemma4TextConfig {
         // 4 layers: pattern [sliding, sliding, sliding, full].
         Gemma4TextConfig {
-            vocab_size: 32, hidden_size: 24, intermediate_size: 32,
+            vocab_size: 32,
+            hidden_size: 24,
+            intermediate_size: 32,
             num_hidden_layers: 4,
             num_attention_heads: 4,
             num_key_value_heads: 2,
             num_global_key_value_heads: Some(2),
-            head_dim: 4, global_head_dim: 8,
+            head_dim: 4,
+            global_head_dim: 8,
             rms_norm_eps: 1e-6,
             rope_theta: 1_000_000.0,
             rope_local_base_freq: 10_000.0,
@@ -626,7 +741,10 @@ mod tests {
     #[test]
     fn forward_shape_and_finite() {
         let cfg = tiny_config();
-        let model = Gemma4TextModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Gemma4TextModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4, 5];
         let logits = model.forward(&tokens, 0).unwrap();
         assert_eq!(logits.shape().dims(), &[1, tokens.len(), cfg.vocab_size]);
@@ -654,8 +772,14 @@ mod tests {
         };
         let weights_a = tiny_weights(&cfg_a);
         let weights_b = tiny_weights(&cfg_b);
-        let m_a = Gemma4TextModel { config: cfg_a, weights: weights_a };
-        let m_b = Gemma4TextModel { config: cfg_b, weights: weights_b };
+        let m_a = Gemma4TextModel {
+            config: cfg_a,
+            weights: weights_a,
+        };
+        let m_b = Gemma4TextModel {
+            config: cfg_b,
+            weights: weights_b,
+        };
         let toks = [1_u32, 2, 3];
         let a = m_a.forward(&toks, 0).unwrap().realize_f32();
         let b = m_b.forward(&toks, 0).unwrap().realize_f32();
@@ -663,18 +787,32 @@ mod tests {
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-6,
-            "layer-type change must alter output, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-6,
+            "layer-type change must alter output, max_diff = {max_diff}"
+        );
     }
 
     /// Final logit soft-cap must measurably change output.
     #[test]
     fn final_softcap_changes_output() {
-        let cfg_no = Gemma4TextConfig { final_logit_softcapping: None, ..tiny_config() };
-        let cfg_yes = Gemma4TextConfig { final_logit_softcapping: Some(5.0), ..tiny_config() };
+        let cfg_no = Gemma4TextConfig {
+            final_logit_softcapping: None,
+            ..tiny_config()
+        };
+        let cfg_yes = Gemma4TextConfig {
+            final_logit_softcapping: Some(5.0),
+            ..tiny_config()
+        };
         let weights = tiny_weights(&cfg_no);
-        let m_no = Gemma4TextModel { config: cfg_no, weights: weights.clone() };
-        let m_yes = Gemma4TextModel { config: cfg_yes, weights };
+        let m_no = Gemma4TextModel {
+            config: cfg_no,
+            weights: weights.clone(),
+        };
+        let m_yes = Gemma4TextModel {
+            config: cfg_yes,
+            weights,
+        };
         let toks = [3_u32, 7, 11];
         let a = m_no.forward(&toks, 0).unwrap().realize_f32();
         let b = m_yes.forward(&toks, 0).unwrap().realize_f32();
@@ -682,8 +820,10 @@ mod tests {
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-6,
-            "final logit soft-cap must alter output, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-6,
+            "final logit soft-cap must alter output, max_diff = {max_diff}"
+        );
     }
 
     /// V normalization is wired: a different magnitude of input
@@ -702,15 +842,20 @@ mod tests {
         // mean-squared per last-dim group should be ~1 after RMS norm.
         for chunk in normed.chunks(4) {
             let mean_sq: f32 = chunk.iter().map(|v| v * v).sum::<f32>() / 4.0;
-            assert!((mean_sq - 1.0).abs() < 1e-3,
-                "v_rms_norm did not produce unit-RMS chunk: mean_sq = {mean_sq}");
+            assert!(
+                (mean_sq - 1.0).abs() < 1e-3,
+                "v_rms_norm did not produce unit-RMS chunk: mean_sq = {mean_sq}"
+            );
         }
     }
 
     #[test]
     fn forward_hidden_shape_and_finite() {
         let cfg = tiny_config();
-        let model = Gemma4TextModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Gemma4TextModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
         let hidden = model.forward_hidden(&tokens, 0).unwrap();
         assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
@@ -726,31 +871,40 @@ mod tests {
         // caller does the sqrt scaling externally — this is the contract
         // PaliGemma / LLaVA / Voxtral all rely on.
         let cfg = tiny_config();
-        let model = Gemma4TextModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Gemma4TextModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3];
 
         // Reference: forward(tokens).
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
 
         // Path 2: embed_tokens_anchored → scale → forward_embeds.
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let scaled = embeds.mul_scalar((cfg.hidden_size as f64).sqrt());
         let logits_via_embeds = model.forward_embeds(&scaled, 0).unwrap().realize_f32();
 
         assert_eq!(logits_ref.len(), logits_via_embeds.len());
-        let max_diff = logits_ref.iter().zip(logits_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "forward vs forward_embeds (post-scale) must agree (max diff {max_diff})");
+        let max_diff = logits_ref
+            .iter()
+            .zip(logits_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "forward vs forward_embeds (post-scale) must agree (max diff {max_diff})"
+        );
     }
 
     #[test]
     fn forward_embeds_rejects_bad_shape() {
         let cfg = tiny_config();
-        let model = Gemma4TextModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Gemma4TextModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         // Wrong hidden size.
         let bad_embeds = LazyTensor::from_f32(
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
@@ -760,7 +914,8 @@ mod tests {
         assert!(model.forward_embeds(&bad_embeds, 0).is_err());
         // Wrong rank.
         let rank2 = LazyTensor::from_f32(
-            vec![0.0_f32; cfg.hidden_size], Shape::from_dims(&[1, cfg.hidden_size]),
+            vec![0.0_f32; cfg.hidden_size],
+            Shape::from_dims(&[1, cfg.hidden_size]),
             &Device::cpu(),
         );
         assert!(model.forward_embeds(&rank2, 0).is_err());
@@ -771,21 +926,30 @@ mod tests {
         // forward_hidden_embeds should produce the same hidden states as
         // forward_hidden(tokens) when fed the post-scale embeddings.
         let cfg = tiny_config();
-        let model = Gemma4TextModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Gemma4TextModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
 
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let scaled = embeds.mul_scalar((cfg.hidden_size as f64).sqrt());
-        let h_via_embeds = model.forward_hidden_embeds(&scaled, 0).unwrap().realize_f32();
+        let h_via_embeds = model
+            .forward_hidden_embeds(&scaled, 0)
+            .unwrap()
+            .realize_f32();
 
         assert_eq!(h_ref.len(), h_via_embeds.len());
-        let max_diff = h_ref.iter().zip(h_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "forward_hidden vs forward_hidden_embeds (post-scale) must agree (max diff {max_diff})");
+        let max_diff = h_ref
+            .iter()
+            .zip(h_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "forward_hidden vs forward_hidden_embeds (post-scale) must agree (max diff {max_diff})"
+        );
     }
 }

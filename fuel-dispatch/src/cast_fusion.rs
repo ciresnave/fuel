@@ -23,10 +23,10 @@
 
 use std::sync::Arc;
 
-use fuel_ir::{probe::BackendId, DType};
-use fuel_ir::dispatch::OpKind;
-use fuel_graph::opt::CapabilityPredicate;
 use fuel_graph::Op;
+use fuel_graph::opt::CapabilityPredicate;
+use fuel_ir::dispatch::OpKind;
+use fuel_ir::{DType, probe::BackendId};
 
 use crate::dispatch::global_bindings;
 
@@ -47,7 +47,9 @@ use crate::dispatch::global_bindings;
 /// match arm to [`op_kind`].
 pub fn cast_fusion_predicate() -> CapabilityPredicate {
     Arc::new(|op: &Op, dtypes: &[DType]| -> bool {
-        let Some(kind) = op_kind(op) else { return false; };
+        let Some(kind) = op_kind(op) else {
+            return false;
+        };
         let bindings = global_bindings();
         // Try every registered backend. The route picker decides
         // which to use later; the rule only needs to know *some*
@@ -164,10 +166,10 @@ fn op_kind(op: &Op) -> Option<OpKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_ir::Shape;
-    use fuel_graph::opt::{CastFusionRule, RuleRegistry};
     use fuel_graph::Tensor;
+    use fuel_graph::opt::{CastFusionRule, RuleRegistry};
     use fuel_graph::topo_order_multi;
+    use fuel_ir::Shape;
     use std::sync::Arc as StdArc;
 
     fn cpu_dev() -> &'static StdArc<dyn fuel_backend_contract::DynBackendDevice> {
@@ -217,8 +219,8 @@ mod tests {
         let y = xc.neg();
         let graph = y.graph().clone();
 
-        let registry = RuleRegistry::new()
-            .with_rule(Box::new(CastFusionRule::new(cast_fusion_predicate())));
+        let registry =
+            RuleRegistry::new().with_rule(Box::new(CastFusionRule::new(cast_fusion_predicate())));
         let new_roots = registry.optimize_to_fixpoint(&graph, &[y.id()]);
         assert_eq!(new_roots.len(), 1);
         let new_root = new_roots[0];
@@ -226,11 +228,14 @@ mod tests {
         let g = graph.read().unwrap();
         // No Cast remains reachable from the new root.
         let reachable = topo_order_multi(&g, &[new_root]);
-        let cast_count = reachable.iter()
+        let cast_count = reachable
+            .iter()
             .filter(|&&n| matches!(g.node(n).op, Op::Cast(_)))
             .count();
-        assert_eq!(cast_count, 0,
-            "Cast should be eliminated when NegElementwise is registered for both [F32,F32] and [BF16,BF16]");
+        assert_eq!(
+            cast_count, 0,
+            "Cast should be eliminated when NegElementwise is registered for both [F32,F32] and [BF16,BF16]"
+        );
         // The rewritten Neg consumes the original F32 Const directly.
         assert!(matches!(g.node(new_root).op, Op::Neg));
         assert_eq!(g.node(new_root).inputs, vec![x.id()]);
@@ -249,10 +254,13 @@ mod tests {
     fn live_binding_table_contains_neg_for_both_dtypes() {
         let _bindings = global_bindings();
         let predicate = cast_fusion_predicate();
-        assert!(predicate(&Op::Neg, &[DType::F32, DType::F32]),
-            "fuel-cpu-backend's standard registration includes Neg[F32]");
-        assert!(predicate(&Op::Neg, &[DType::BF16, DType::BF16]),
-            "fuel-cpu-backend's standard registration includes Neg[BF16]");
+        assert!(
+            predicate(&Op::Neg, &[DType::F32, DType::F32]),
+            "fuel-cpu-backend's standard registration includes Neg[F32]"
+        );
+        assert!(
+            predicate(&Op::Neg, &[DType::BF16, DType::BF16]),
+            "fuel-cpu-backend's standard registration includes Neg[BF16]"
+        );
     }
-
 }

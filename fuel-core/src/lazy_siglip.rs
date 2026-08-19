@@ -227,7 +227,11 @@ impl SiglipTextModel {
         assert!(seq <= cfg.max_position_embeddings);
 
         let token_embeds = LazyTensor::embed_tokens(
-            weights.token_embedding.clone(), cfg.vocab_size, cfg.hidden_size, tokens, &Device::cpu(),
+            weights.token_embedding.clone(),
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
+            &Device::cpu(),
         )?;
         let pos_full = token_embeds.const_f32_like(
             Arc::clone(&weights.position_embedding),
@@ -242,19 +246,29 @@ impl SiglipTextModel {
         // Bidirectional encoder (no causal mask).
         for layer in &weights.layers {
             h = apply_encoder_layer(
-                &h, layer,
-                cfg.num_attention_heads, cfg.head_dim(),
-                None, cfg.layer_norm_eps, cfg.hidden_activation,
+                &h,
+                layer,
+                cfg.num_attention_heads,
+                cfg.head_dim(),
+                None,
+                cfg.layer_norm_eps,
+                cfg.hidden_activation,
             )?;
         }
 
-        let h_norm = h.layer_norm_affine(std::sync::Arc::clone(&weights.final_ln_gain), std::sync::Arc::clone(&weights.final_ln_bias), cfg.layer_norm_eps)?;
+        let h_norm = h.layer_norm_affine(
+            std::sync::Arc::clone(&weights.final_ln_gain),
+            std::sync::Arc::clone(&weights.final_ln_bias),
+            cfg.layer_norm_eps,
+        )?;
 
         // Pool last position.
         let last = h_norm
             .slice(1_usize, seq - 1, 1)?
             .reshape(Shape::from_dims(&[batch, cfg.hidden_size]))?;
-        let head_out = weights.head_w.apply_linear(&last, cfg.hidden_size, cfg.hidden_size)?;
+        let head_out = weights
+            .head_w
+            .apply_linear(&last, cfg.hidden_size, cfg.hidden_size)?;
         // Bias on head.
         let bias_t = head_out.const_f32_like(
             Arc::clone(&weights.head_bias),
@@ -284,7 +298,12 @@ impl SiglipVisionModel {
         // Patch Conv2d (with bias in SigLIP).
         let conv_w = pixel_values.const_f32_like(
             Arc::clone(&weights.patch_proj),
-            Shape::from_dims(&[cfg.hidden_size, cfg.num_channels, cfg.patch_size, cfg.patch_size]),
+            Shape::from_dims(&[
+                cfg.hidden_size,
+                cfg.num_channels,
+                cfg.patch_size,
+                cfg.patch_size,
+            ]),
         );
         let conv_b = pixel_values.const_f32_like(
             Arc::clone(&weights.patch_proj_bias),
@@ -315,13 +334,21 @@ impl SiglipVisionModel {
         // Encoder layers.
         for layer in &weights.layers {
             h = apply_encoder_layer(
-                &h, layer,
-                cfg.num_attention_heads, cfg.head_dim(),
-                None, cfg.layer_norm_eps, cfg.hidden_activation,
+                &h,
+                layer,
+                cfg.num_attention_heads,
+                cfg.head_dim(),
+                None,
+                cfg.layer_norm_eps,
+                cfg.hidden_activation,
             )?;
         }
         // Post-LayerNorm on all tokens.
-        let h_norm = h.layer_norm_affine(std::sync::Arc::clone(&weights.post_ln_gain), std::sync::Arc::clone(&weights.post_ln_bias), cfg.layer_norm_eps)?;
+        let h_norm = h.layer_norm_affine(
+            std::sync::Arc::clone(&weights.post_ln_gain),
+            std::sync::Arc::clone(&weights.post_ln_bias),
+            cfg.layer_norm_eps,
+        )?;
 
         match &weights.head {
             None => Ok(h_norm),
@@ -368,15 +395,23 @@ impl SiglipVisionModel {
 
         let conv_w = pixel_values.const_f32_like(
             Arc::clone(&weights.patch_proj),
-            Shape::from_dims(&[cfg.hidden_size, cfg.num_channels, cfg.patch_size, cfg.patch_size]),
+            Shape::from_dims(&[
+                cfg.hidden_size,
+                cfg.num_channels,
+                cfg.patch_size,
+                cfg.patch_size,
+            ]),
         );
         let conv_b = pixel_values.const_f32_like(
             Arc::clone(&weights.patch_proj_bias),
             Shape::from_dims(&[cfg.hidden_size]),
         );
         let conv_out = pixel_values.conv2d(
-            &conv_w, Some(&conv_b),
-            (cfg.patch_size, cfg.patch_size), (0, 0), 1,
+            &conv_w,
+            Some(&conv_b),
+            (cfg.patch_size, cfg.patch_size),
+            (0, 0),
+            1,
         )?;
         let np = cfg.num_patches();
         let patches = conv_out
@@ -395,9 +430,13 @@ impl SiglipVisionModel {
         let mut next_capture = 0;
         for (idx, layer) in weights.layers.iter().enumerate() {
             h = apply_encoder_layer(
-                &h, layer,
-                cfg.num_attention_heads, cfg.head_dim(),
-                None, cfg.layer_norm_eps, cfg.hidden_activation,
+                &h,
+                layer,
+                cfg.num_attention_heads,
+                cfg.head_dim(),
+                None,
+                cfg.layer_norm_eps,
+                cfg.hidden_activation,
             )?;
             if next_capture < layer_ids.len() && layer_ids[next_capture] == idx {
                 out.push(h.clone());
@@ -407,11 +446,7 @@ impl SiglipVisionModel {
         Ok(out)
     }
 
-    fn apply_pooling_head(
-        &self,
-        xs: &LazyTensor,
-        head: &SiglipPoolingHead,
-    ) -> Result<LazyTensor> {
+    fn apply_pooling_head(&self, xs: &LazyTensor, head: &SiglipPoolingHead) -> Result<LazyTensor> {
         let cfg = &self.config;
         let dims = xs.shape();
         let dims = dims.dims();
@@ -422,10 +457,7 @@ impl SiglipVisionModel {
         let head_dim = cfg.head_dim();
 
         // Probe broadcast across batch.
-        let probe = xs.const_f32_like(
-            Arc::clone(&head.probe),
-            Shape::from_dims(&[1, 1, h]),
-        );
+        let probe = xs.const_f32_like(Arc::clone(&head.probe), Shape::from_dims(&[1, 1, h]));
         let probe_bc = probe.broadcast_to(Shape::from_dims(&[batch, 1, h]))?;
 
         // Cross-attention: Q = probe, K = V = xs.
@@ -452,7 +484,11 @@ impl SiglipVisionModel {
 
         // MLP residual: residual + mlp(LN(attn_out)) → take token 0.
         let residual = attn_out.clone();
-        let attn_ln = attn_out.layer_norm_affine(std::sync::Arc::clone(&head.ln_gain), std::sync::Arc::clone(&head.ln_bias), cfg.layer_norm_eps)?;
+        let attn_ln = attn_out.layer_norm_affine(
+            std::sync::Arc::clone(&head.ln_gain),
+            std::sync::Arc::clone(&head.ln_bias),
+            cfg.layer_norm_eps,
+        )?;
         let inter_dim = head.mlp_fc1_bias.len();
         let fc1 = head.mlp_fc1.apply_linear(&attn_ln, h, inter_dim)?;
         let fc1 = fc1.add_trailing_bias(std::sync::Arc::clone(&head.mlp_fc1_bias))?;
@@ -502,7 +538,11 @@ fn apply_encoder_layer(
     let seq = dims[1];
     let h = dims[2];
 
-    let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&layer.ln1_gain), std::sync::Arc::clone(&layer.ln1_bias), layer_norm_eps)?;
+    let x_norm = x.layer_norm_affine(
+        std::sync::Arc::clone(&layer.ln1_gain),
+        std::sync::Arc::clone(&layer.ln1_bias),
+        layer_norm_eps,
+    )?;
 
     let q = layer.q_proj.apply_linear(&x_norm, h, h)?;
     let q = q.add_trailing_bias(std::sync::Arc::clone(&layer.q_proj_bias))?;
@@ -530,7 +570,11 @@ fn apply_encoder_layer(
     let attn_out = attn_out.add_trailing_bias(std::sync::Arc::clone(&layer.out_proj_bias))?;
     let h1 = x.add(&attn_out)?;
 
-    let h1_norm = h1.layer_norm_affine(std::sync::Arc::clone(&layer.ln2_gain), std::sync::Arc::clone(&layer.ln2_bias), layer_norm_eps)?;
+    let h1_norm = h1.layer_norm_affine(
+        std::sync::Arc::clone(&layer.ln2_gain),
+        std::sync::Arc::clone(&layer.ln2_bias),
+        layer_norm_eps,
+    )?;
     let inter_dim = layer.fc1_bias.len();
     let fc1 = layer.fc1.apply_linear(&h1_norm, h, inter_dim)?;
     let fc1 = fc1.add_trailing_bias(std::sync::Arc::clone(&layer.fc1_bias))?;
@@ -559,32 +603,74 @@ fn load_siglip_encoder_layer(
 ) -> Result<SiglipEncoderLayerWeights> {
     use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
     Ok(SiglipEncoderLayerWeights {
-        ln1_gain: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.layer_norm1.weight"))?),
-        ln1_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.layer_norm1.bias"))?),
+        ln1_gain: Arc::from(load_tensor_as_f32(
+            st,
+            &format!("{prefix}.layer_norm1.weight"),
+        )?),
+        ln1_bias: Arc::from(load_tensor_as_f32(
+            st,
+            &format!("{prefix}.layer_norm1.bias"),
+        )?),
         q_proj: load_transposed_matrix_preserve_dtype(
-            st, &format!("{prefix}.self_attn.q_proj.weight"), hidden, hidden,
+            st,
+            &format!("{prefix}.self_attn.q_proj.weight"),
+            hidden,
+            hidden,
         )?,
-        q_proj_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.self_attn.q_proj.bias"))?),
+        q_proj_bias: Arc::from(load_tensor_as_f32(
+            st,
+            &format!("{prefix}.self_attn.q_proj.bias"),
+        )?),
         k_proj: load_transposed_matrix_preserve_dtype(
-            st, &format!("{prefix}.self_attn.k_proj.weight"), hidden, hidden,
+            st,
+            &format!("{prefix}.self_attn.k_proj.weight"),
+            hidden,
+            hidden,
         )?,
-        k_proj_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.self_attn.k_proj.bias"))?),
+        k_proj_bias: Arc::from(load_tensor_as_f32(
+            st,
+            &format!("{prefix}.self_attn.k_proj.bias"),
+        )?),
         v_proj: load_transposed_matrix_preserve_dtype(
-            st, &format!("{prefix}.self_attn.v_proj.weight"), hidden, hidden,
+            st,
+            &format!("{prefix}.self_attn.v_proj.weight"),
+            hidden,
+            hidden,
         )?,
-        v_proj_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.self_attn.v_proj.bias"))?),
+        v_proj_bias: Arc::from(load_tensor_as_f32(
+            st,
+            &format!("{prefix}.self_attn.v_proj.bias"),
+        )?),
         out_proj: load_transposed_matrix_preserve_dtype(
-            st, &format!("{prefix}.self_attn.out_proj.weight"), hidden, hidden,
+            st,
+            &format!("{prefix}.self_attn.out_proj.weight"),
+            hidden,
+            hidden,
         )?,
-        out_proj_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.self_attn.out_proj.bias"))?),
-        ln2_gain: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.layer_norm2.weight"))?),
-        ln2_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.layer_norm2.bias"))?),
+        out_proj_bias: Arc::from(load_tensor_as_f32(
+            st,
+            &format!("{prefix}.self_attn.out_proj.bias"),
+        )?),
+        ln2_gain: Arc::from(load_tensor_as_f32(
+            st,
+            &format!("{prefix}.layer_norm2.weight"),
+        )?),
+        ln2_bias: Arc::from(load_tensor_as_f32(
+            st,
+            &format!("{prefix}.layer_norm2.bias"),
+        )?),
         fc1: load_transposed_matrix_preserve_dtype(
-            st, &format!("{prefix}.mlp.fc1.weight"), intermediate, hidden,
+            st,
+            &format!("{prefix}.mlp.fc1.weight"),
+            intermediate,
+            hidden,
         )?,
         fc1_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.mlp.fc1.bias"))?),
         fc2: load_transposed_matrix_preserve_dtype(
-            st, &format!("{prefix}.mlp.fc2.weight"), hidden, intermediate,
+            st,
+            &format!("{prefix}.mlp.fc2.weight"),
+            hidden,
+            intermediate,
         )?,
         fc2_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.mlp.fc2.bias"))?),
     })
@@ -605,50 +691,89 @@ impl SiglipVisionWeights {
         let inter = cfg.intermediate_size;
 
         let patch_proj = Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}embeddings.patch_embedding.weight"),
+            st,
+            &format!("{prefix}embeddings.patch_embedding.weight"),
         )?);
         let patch_proj_bias = Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}embeddings.patch_embedding.bias"),
+            st,
+            &format!("{prefix}embeddings.patch_embedding.bias"),
         )?);
         let position_embedding = Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}embeddings.position_embedding.weight"),
+            st,
+            &format!("{prefix}embeddings.position_embedding.weight"),
         )?);
         let layers: Result<Vec<_>> = (0..cfg.num_hidden_layers)
-            .map(|i| load_siglip_encoder_layer(
-                st, &format!("{prefix}encoder.layers.{i}"), h, inter,
-            ))
+            .map(|i| {
+                load_siglip_encoder_layer(st, &format!("{prefix}encoder.layers.{i}"), h, inter)
+            })
             .collect();
-        let post_ln_gain = Arc::from(load_tensor_as_f32(st, &format!("{prefix}post_layernorm.weight"))?);
-        let post_ln_bias = Arc::from(load_tensor_as_f32(st, &format!("{prefix}post_layernorm.bias"))?);
+        let post_ln_gain = Arc::from(load_tensor_as_f32(
+            st,
+            &format!("{prefix}post_layernorm.weight"),
+        )?);
+        let post_ln_bias = Arc::from(load_tensor_as_f32(
+            st,
+            &format!("{prefix}post_layernorm.bias"),
+        )?);
 
         let head = if include_head {
             let hp = format!("{prefix}head");
             Some(SiglipPoolingHead {
                 probe: Arc::from(load_tensor_as_f32(st, &format!("{hp}.probe"))?),
                 q_proj: load_transposed_matrix_preserve_dtype(
-                    st, &format!("{hp}.attention.in_proj_q.weight"), h, h,
+                    st,
+                    &format!("{hp}.attention.in_proj_q.weight"),
+                    h,
+                    h,
                 )?,
-                q_proj_bias: Arc::from(load_tensor_as_f32(st, &format!("{hp}.attention.in_proj_q.bias"))?),
+                q_proj_bias: Arc::from(load_tensor_as_f32(
+                    st,
+                    &format!("{hp}.attention.in_proj_q.bias"),
+                )?),
                 k_proj: load_transposed_matrix_preserve_dtype(
-                    st, &format!("{hp}.attention.in_proj_k.weight"), h, h,
+                    st,
+                    &format!("{hp}.attention.in_proj_k.weight"),
+                    h,
+                    h,
                 )?,
-                k_proj_bias: Arc::from(load_tensor_as_f32(st, &format!("{hp}.attention.in_proj_k.bias"))?),
+                k_proj_bias: Arc::from(load_tensor_as_f32(
+                    st,
+                    &format!("{hp}.attention.in_proj_k.bias"),
+                )?),
                 v_proj: load_transposed_matrix_preserve_dtype(
-                    st, &format!("{hp}.attention.in_proj_v.weight"), h, h,
+                    st,
+                    &format!("{hp}.attention.in_proj_v.weight"),
+                    h,
+                    h,
                 )?,
-                v_proj_bias: Arc::from(load_tensor_as_f32(st, &format!("{hp}.attention.in_proj_v.bias"))?),
+                v_proj_bias: Arc::from(load_tensor_as_f32(
+                    st,
+                    &format!("{hp}.attention.in_proj_v.bias"),
+                )?),
                 out_proj: load_transposed_matrix_preserve_dtype(
-                    st, &format!("{hp}.attention.out_proj.weight"), h, h,
+                    st,
+                    &format!("{hp}.attention.out_proj.weight"),
+                    h,
+                    h,
                 )?,
-                out_proj_bias: Arc::from(load_tensor_as_f32(st, &format!("{hp}.attention.out_proj.bias"))?),
+                out_proj_bias: Arc::from(load_tensor_as_f32(
+                    st,
+                    &format!("{hp}.attention.out_proj.bias"),
+                )?),
                 ln_gain: Arc::from(load_tensor_as_f32(st, &format!("{hp}.layernorm.weight"))?),
                 ln_bias: Arc::from(load_tensor_as_f32(st, &format!("{hp}.layernorm.bias"))?),
                 mlp_fc1: load_transposed_matrix_preserve_dtype(
-                    st, &format!("{hp}.mlp.fc1.weight"), inter, h,
+                    st,
+                    &format!("{hp}.mlp.fc1.weight"),
+                    inter,
+                    h,
                 )?,
                 mlp_fc1_bias: Arc::from(load_tensor_as_f32(st, &format!("{hp}.mlp.fc1.bias"))?),
                 mlp_fc2: load_transposed_matrix_preserve_dtype(
-                    st, &format!("{hp}.mlp.fc2.weight"), h, inter,
+                    st,
+                    &format!("{hp}.mlp.fc2.weight"),
+                    h,
+                    inter,
                 )?,
                 mlp_fc2_bias: Arc::from(load_tensor_as_f32(st, &format!("{hp}.mlp.fc2.bias"))?),
             })
@@ -657,9 +782,12 @@ impl SiglipVisionWeights {
         };
 
         Ok(Self {
-            patch_proj, patch_proj_bias, position_embedding,
+            patch_proj,
+            patch_proj_bias,
+            position_embedding,
             layers: layers?,
-            post_ln_gain, post_ln_bias,
+            post_ln_gain,
+            post_ln_bias,
             head,
         })
     }
@@ -678,27 +806,37 @@ impl SiglipTextWeights {
         let inter = cfg.intermediate_size;
 
         let token_embedding = Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}embeddings.token_embedding.weight"),
+            st,
+            &format!("{prefix}embeddings.token_embedding.weight"),
         )?);
         let position_embedding = Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}embeddings.position_embedding.weight"),
+            st,
+            &format!("{prefix}embeddings.position_embedding.weight"),
         )?);
         let layers: Result<Vec<_>> = (0..cfg.num_hidden_layers)
-            .map(|i| load_siglip_encoder_layer(
-                st, &format!("{prefix}encoder.layers.{i}"), h, inter,
-            ))
+            .map(|i| {
+                load_siglip_encoder_layer(st, &format!("{prefix}encoder.layers.{i}"), h, inter)
+            })
             .collect();
-        let final_ln_gain = Arc::from(load_tensor_as_f32(st, &format!("{prefix}final_layer_norm.weight"))?);
-        let final_ln_bias = Arc::from(load_tensor_as_f32(st, &format!("{prefix}final_layer_norm.bias"))?);
-        let head_w = load_transposed_matrix_preserve_dtype(
-            st, &format!("{prefix}head.weight"), h, h,
-        )?;
+        let final_ln_gain = Arc::from(load_tensor_as_f32(
+            st,
+            &format!("{prefix}final_layer_norm.weight"),
+        )?);
+        let final_ln_bias = Arc::from(load_tensor_as_f32(
+            st,
+            &format!("{prefix}final_layer_norm.bias"),
+        )?);
+        let head_w =
+            load_transposed_matrix_preserve_dtype(st, &format!("{prefix}head.weight"), h, h)?;
         let head_bias = Arc::from(load_tensor_as_f32(st, &format!("{prefix}head.bias"))?);
         Ok(Self {
-            token_embedding, position_embedding,
+            token_embedding,
+            position_embedding,
             layers: layers?,
-            final_ln_gain, final_ln_bias,
-            head_w, head_bias,
+            final_ln_gain,
+            final_ln_bias,
+            head_w,
+            head_bias,
         })
     }
 }
@@ -713,17 +851,24 @@ impl SiglipModelWeights {
     ) -> Result<Self> {
         use crate::lazy::load_tensor_as_f32;
         let text = SiglipTextWeights::load_from_mmapped(st, text_cfg, "text_model.")?;
-        let vision = SiglipVisionWeights::load_from_mmapped(
-            st, vision_cfg, "vision_model.", false,
-        )?;
+        let vision =
+            SiglipVisionWeights::load_from_mmapped(st, vision_cfg, "vision_model.", false)?;
         let logit_scale = load_tensor_as_f32(st, "logit_scale")?
-            .first().copied().unwrap_or(0.0);
+            .first()
+            .copied()
+            .unwrap_or(0.0);
         let logit_bias = load_tensor_as_f32(st, "logit_bias")?
-            .first().copied().unwrap_or(0.0);
-        Ok(Self { text, vision, logit_scale, logit_bias })
+            .first()
+            .copied()
+            .unwrap_or(0.0);
+        Ok(Self {
+            text,
+            vision,
+            logit_scale,
+            logit_bias,
+        })
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -739,29 +884,32 @@ mod tests {
         inter: usize,
         nb: &mut Box<dyn FnMut() -> f32>,
     ) -> Vec<SiglipEncoderLayerWeights> {
-        (0..n_layers).map(|_| SiglipEncoderLayerWeights {
-            ln1_gain: Arc::from(vec![1.0_f32; embed]),
-            ln1_bias: Arc::from(vec![0.0_f32; embed]),
-            q_proj: WeightStorage::F32(vec_of(embed * embed, &mut **nb)),
-            q_proj_bias: vec_of(embed, &mut **nb),
-            k_proj: WeightStorage::F32(vec_of(embed * embed, &mut **nb)),
-            k_proj_bias: vec_of(embed, &mut **nb),
-            v_proj: WeightStorage::F32(vec_of(embed * embed, &mut **nb)),
-            v_proj_bias: vec_of(embed, &mut **nb),
-            out_proj: WeightStorage::F32(vec_of(embed * embed, &mut **nb)),
-            out_proj_bias: vec_of(embed, &mut **nb),
-            ln2_gain: Arc::from(vec![1.0_f32; embed]),
-            ln2_bias: Arc::from(vec![0.0_f32; embed]),
-            fc1: WeightStorage::F32(vec_of(embed * inter, &mut **nb)),
-            fc1_bias: vec_of(inter, &mut **nb),
-            fc2: WeightStorage::F32(vec_of(inter * embed, &mut **nb)),
-            fc2_bias: vec_of(embed, &mut **nb),
-        }).collect()
+        (0..n_layers)
+            .map(|_| SiglipEncoderLayerWeights {
+                ln1_gain: Arc::from(vec![1.0_f32; embed]),
+                ln1_bias: Arc::from(vec![0.0_f32; embed]),
+                q_proj: WeightStorage::F32(vec_of(embed * embed, &mut **nb)),
+                q_proj_bias: vec_of(embed, &mut **nb),
+                k_proj: WeightStorage::F32(vec_of(embed * embed, &mut **nb)),
+                k_proj_bias: vec_of(embed, &mut **nb),
+                v_proj: WeightStorage::F32(vec_of(embed * embed, &mut **nb)),
+                v_proj_bias: vec_of(embed, &mut **nb),
+                out_proj: WeightStorage::F32(vec_of(embed * embed, &mut **nb)),
+                out_proj_bias: vec_of(embed, &mut **nb),
+                ln2_gain: Arc::from(vec![1.0_f32; embed]),
+                ln2_bias: Arc::from(vec![0.0_f32; embed]),
+                fc1: WeightStorage::F32(vec_of(embed * inter, &mut **nb)),
+                fc1_bias: vec_of(inter, &mut **nb),
+                fc2: WeightStorage::F32(vec_of(inter * embed, &mut **nb)),
+                fc2_bias: vec_of(embed, &mut **nb),
+            })
+            .collect()
     }
 
     fn tiny_text_cfg() -> SiglipTextConfig {
         SiglipTextConfig {
-            vocab_size: 32, hidden_size: 16,
+            vocab_size: 32,
+            hidden_size: 16,
             intermediate_size: 32,
             num_hidden_layers: 2,
             num_attention_heads: 4,
@@ -794,20 +942,32 @@ mod tests {
         let mut nb: Box<dyn FnMut() -> f32> = Box::new(next);
         let token_embedding = vec_of(cfg.vocab_size * cfg.hidden_size, &mut *nb);
         let position_embedding = vec_of(cfg.max_position_embeddings * cfg.hidden_size, &mut *nb);
-        let layers = tiny_encoder_layers(cfg.num_hidden_layers, cfg.hidden_size, cfg.intermediate_size, &mut nb);
+        let layers = tiny_encoder_layers(
+            cfg.num_hidden_layers,
+            cfg.hidden_size,
+            cfg.intermediate_size,
+            &mut nb,
+        );
         let final_ln_gain = Arc::from(vec![1.0_f32; cfg.hidden_size]);
         let final_ln_bias = Arc::from(vec![0.0_f32; cfg.hidden_size]);
         let head_w = WeightStorage::F32(vec_of(cfg.hidden_size * cfg.hidden_size, &mut *nb));
         let head_bias = vec_of(cfg.hidden_size, &mut *nb);
         SiglipTextWeights {
-            token_embedding, position_embedding,
+            token_embedding,
+            position_embedding,
             layers,
-            final_ln_gain, final_ln_bias,
-            head_w, head_bias,
+            final_ln_gain,
+            final_ln_bias,
+            head_w,
+            head_bias,
         }
     }
 
-    fn tiny_pooling_head(embed: usize, inter: usize, nb: &mut Box<dyn FnMut() -> f32>) -> SiglipPoolingHead {
+    fn tiny_pooling_head(
+        embed: usize,
+        inter: usize,
+        nb: &mut Box<dyn FnMut() -> f32>,
+    ) -> SiglipPoolingHead {
         SiglipPoolingHead {
             probe: vec_of(embed, &mut **nb),
             q_proj: WeightStorage::F32(vec_of(embed * embed, &mut **nb)),
@@ -840,19 +1000,30 @@ mod tests {
         );
         let patch_proj_bias = vec_of(cfg.hidden_size, &mut *nb);
         let position_embedding = vec_of(cfg.num_patches() * cfg.hidden_size, &mut *nb);
-        let layers = tiny_encoder_layers(cfg.num_hidden_layers, cfg.hidden_size, cfg.intermediate_size, &mut nb);
+        let layers = tiny_encoder_layers(
+            cfg.num_hidden_layers,
+            cfg.hidden_size,
+            cfg.intermediate_size,
+            &mut nb,
+        );
         let post_ln_gain = Arc::from(vec![1.0_f32; cfg.hidden_size]);
         let post_ln_bias = Arc::from(vec![0.0_f32; cfg.hidden_size]);
         let head = if with_head {
-            Some(tiny_pooling_head(cfg.hidden_size, cfg.intermediate_size, &mut nb))
+            Some(tiny_pooling_head(
+                cfg.hidden_size,
+                cfg.intermediate_size,
+                &mut nb,
+            ))
         } else {
             None
         };
         SiglipVisionWeights {
-            patch_proj, patch_proj_bias,
+            patch_proj,
+            patch_proj_bias,
             position_embedding,
             layers,
-            post_ln_gain, post_ln_bias,
+            post_ln_gain,
+            post_ln_bias,
             head,
         }
     }
@@ -870,7 +1041,10 @@ mod tests {
     #[test]
     fn text_forward_shape() {
         let cfg = tiny_text_cfg();
-        let model = SiglipTextModel { config: cfg.clone(), weights: tiny_text_weights(&cfg) };
+        let model = SiglipTextModel {
+            config: cfg.clone(),
+            weights: tiny_text_weights(&cfg),
+        };
         let tokens = [1_u32, 2, 3, 4, 5];
         let out = model.forward(&tokens).unwrap();
         // Last-position pooled + head projection → (1, hidden_size).
@@ -887,7 +1061,10 @@ mod tests {
     #[test]
     fn text_bidirectional_pooled_changes() {
         let cfg = tiny_text_cfg();
-        let model = SiglipTextModel { config: cfg.clone(), weights: tiny_text_weights(&cfg) };
+        let model = SiglipTextModel {
+            config: cfg.clone(),
+            weights: tiny_text_weights(&cfg),
+        };
         let toks_a = [1_u32, 2, 3, 4];
         let toks_b = [11_u32, 2, 3, 4]; // first token differs
         let a = model.forward(&toks_a).unwrap().realize_f32();
@@ -896,14 +1073,19 @@ mod tests {
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-6,
-            "first-position change must affect last-position pooled output (bidirectional), max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-6,
+            "first-position change must affect last-position pooled output (bidirectional), max_diff = {max_diff}"
+        );
     }
 
     #[test]
     fn vision_forward_no_head_shape() {
         let cfg = tiny_vision_cfg();
-        let model = SiglipVisionModel { config: cfg.clone(), weights: tiny_vision_weights(&cfg, false) };
+        let model = SiglipVisionModel {
+            config: cfg.clone(),
+            weights: tiny_vision_weights(&cfg, false),
+        };
         let img = tiny_image(&cfg);
         let out = model.forward(&img).unwrap();
         assert_eq!(out.shape().dims(), &[1, cfg.num_patches(), cfg.hidden_size]);
@@ -915,7 +1097,10 @@ mod tests {
     #[test]
     fn vision_forward_with_head_shape() {
         let cfg = tiny_vision_cfg();
-        let model = SiglipVisionModel { config: cfg.clone(), weights: tiny_vision_weights(&cfg, true) };
+        let model = SiglipVisionModel {
+            config: cfg.clone(),
+            weights: tiny_vision_weights(&cfg, true),
+        };
         let img = tiny_image(&cfg);
         let out = model.forward(&img).unwrap();
         assert_eq!(out.shape().dims(), &[1, cfg.hidden_size]);
@@ -934,8 +1119,14 @@ mod tests {
         if let Some(h) = &mut zeroed.head {
             h.probe = Arc::from(vec![0.0_f32; cfg.hidden_size]);
         }
-        let m_base = SiglipVisionModel { config: cfg.clone(), weights: base };
-        let m_zero = SiglipVisionModel { config: cfg.clone(), weights: zeroed };
+        let m_base = SiglipVisionModel {
+            config: cfg.clone(),
+            weights: base,
+        };
+        let m_zero = SiglipVisionModel {
+            config: cfg.clone(),
+            weights: zeroed,
+        };
         let img_a = tiny_image(&cfg);
         let img_b = tiny_image(&cfg);
         let a = m_base.forward(&img_a).unwrap().realize_f32();
@@ -946,8 +1137,10 @@ mod tests {
         }
         // With tiny weights the probe contribution is small;
         // require measurable but loose threshold (~1e-10).
-        assert!(max_diff > 1e-10,
-            "pooling-head probe must affect output, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-10,
+            "pooling-head probe must affect output, max_diff = {max_diff}"
+        );
     }
 
     #[test]
@@ -965,10 +1158,13 @@ mod tests {
     fn vision_forward_intermediate_layers_shape() {
         let cfg = tiny_vision_cfg();
         let model = SiglipVisionModel {
-            config: cfg.clone(), weights: tiny_vision_weights(&cfg, false),
+            config: cfg.clone(),
+            weights: tiny_vision_weights(&cfg, false),
         };
         let img = tiny_image(&cfg);
-        let outs = model.forward_intermediate_layers(&img, &[0_usize, 1]).unwrap();
+        let outs = model
+            .forward_intermediate_layers(&img, &[0_usize, 1])
+            .unwrap();
         assert_eq!(outs.len(), 2);
         let np = cfg.num_patches();
         for out in &outs {
@@ -984,17 +1180,22 @@ mod tests {
     fn vision_intermediate_layers_differ_across_depth() {
         let cfg = tiny_vision_cfg();
         let model = SiglipVisionModel {
-            config: cfg.clone(), weights: tiny_vision_weights(&cfg, false),
+            config: cfg.clone(),
+            weights: tiny_vision_weights(&cfg, false),
         };
         let img = tiny_image(&cfg);
-        let outs = model.forward_intermediate_layers(&img, &[0_usize, 1]).unwrap();
+        let outs = model
+            .forward_intermediate_layers(&img, &[0_usize, 1])
+            .unwrap();
         let a = outs[0].realize_f32();
         let b = outs[1].realize_f32();
         let mut max_diff = 0.0_f32;
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-7,
-            "layer 0 and layer 1 intermediates must differ, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-7,
+            "layer 0 and layer 1 intermediates must differ, max_diff = {max_diff}"
+        );
     }
 }

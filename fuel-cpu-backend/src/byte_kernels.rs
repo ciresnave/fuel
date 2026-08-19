@@ -1,4 +1,4 @@
-﻿//! Typed byte-shaped kernels — Phase 7.5 B5.
+//! Typed byte-shaped kernels — Phase 7.5 B5.
 //!
 //! These kernels operate on [`CpuStorageBytes`] (bytes-based CPU
 //! storage). They take typed slices via `bytemuck::cast_slice` /
@@ -19,7 +19,7 @@
 //!   `abs`, `tanh`
 
 use crate::byte_storage::CpuStorageBytes;
-use crate::chassis::reduction::{reduce, reduce_to, Max, Mean, Min, Sum};
+use crate::chassis::reduction::{Max, Mean, Min, Sum, reduce, reduce_to};
 use fuel_ir::{Error, Layout, Result};
 
 /// Verify two byte buffers have matching lengths (used by kernels
@@ -59,7 +59,10 @@ macro_rules! binary_thunk {
             out: &mut CpuStorageBytes,
         ) -> Result<()> {
             crate::chassis::binary::binary::<$T, crate::chassis::binary::$Op>(
-                stringify!($name), lhs, rhs, out,
+                stringify!($name),
+                lhs,
+                rhs,
+                out,
             )
         }
     };
@@ -92,12 +95,11 @@ binary_thunk!(div_f64, f64, Div);
 /// chassis module.
 macro_rules! unary_thunk {
     ($name:ident, $T:ty, $Op:ident) => {
-        pub fn $name(
-            input: &CpuStorageBytes,
-            output: &mut CpuStorageBytes,
-        ) -> Result<()> {
+        pub fn $name(input: &CpuStorageBytes, output: &mut CpuStorageBytes) -> Result<()> {
             crate::chassis::unary::unary::<$T, crate::chassis::unary::$Op>(
-                stringify!($name), input, output,
+                stringify!($name),
+                input,
+                output,
             )
         }
     };
@@ -238,7 +240,10 @@ macro_rules! compare_thunk {
             out: &mut CpuStorageBytes,
         ) -> Result<()> {
             crate::chassis::compare::compare::<$T, crate::chassis::compare::$Op>(
-                stringify!($name), lhs, rhs, out,
+                stringify!($name),
+                lhs,
+                rhs,
+                out,
             )
         }
     };
@@ -305,19 +310,30 @@ macro_rules! where_kernel {
                 return Err(Error::Msg(format!(
                     "{}: element count mismatch (cond={}, a={}, b={}, out={})",
                     stringify!($name),
-                    cond_view.len(), a_view.len(), b_view.len(), out_view.len(),
+                    cond_view.len(),
+                    a_view.len(),
+                    b_view.len(),
+                    out_view.len(),
                 ))
                 .bt());
             }
             for (i, slot) in out_view.iter_mut().enumerate() {
-                *slot = if cond_view[i] != 0 { a_view[i] } else { b_view[i] };
+                *slot = if cond_view[i] != 0 {
+                    a_view[i]
+                } else {
+                    b_view[i]
+                };
             }
             Ok(())
         }
     };
 }
 
-where_kernel!(where_f32, f32, "Ternary select on `f32`: `out[i] = if cond[i] != 0 { a[i] } else { b[i] }`. Cond is `U8`.");
+where_kernel!(
+    where_f32,
+    f32,
+    "Ternary select on `f32`: `out[i] = if cond[i] != 0 { a[i] } else { b[i] }`. Cond is `U8`."
+);
 where_kernel!(where_f64, f64, "Ternary select on `f64`.");
 where_kernel!(where_bf16, half::bf16, "Ternary select on `bf16`.");
 where_kernel!(where_f16, half::f16, "Ternary select on `f16`.");
@@ -419,7 +435,8 @@ pub fn flip_cpu(
     if in_b.len() != needed || out.len_bytes() != needed {
         return Err(Error::Msg(format!(
             "flip_cpu: byte length mismatch (in={}, out={}, expected={needed})",
-            in_b.len(), out.len_bytes(),
+            in_b.len(),
+            out.len_bytes(),
         ))
         .bt());
     }
@@ -456,7 +473,8 @@ pub fn roll_cpu(
     if in_b.len() != needed || out.len_bytes() != needed {
         return Err(Error::Msg(format!(
             "roll_cpu: byte length mismatch (in={}, out={}, expected={needed})",
-            in_b.len(), out.len_bytes(),
+            in_b.len(),
+            out.len_bytes(),
         ))
         .bt());
     }
@@ -465,7 +483,7 @@ pub fn roll_cpu(
     }
     let d = dim_size as i64;
     // Normalize `shift` into [0, dim_size) once.
-    let s = ((shift % d) + d) % d;  // Python-style modulo
+    let s = ((shift % d) + d) % d; // Python-style modulo
     let mut out_buf = vec![0u8; needed];
     for o in 0..outer {
         for j in 0..dim_size {
@@ -507,7 +525,8 @@ pub fn pad_const_cpu(
     if out_shape.len() != rank || padding.len() != rank {
         return Err(Error::Msg(format!(
             "pad_const_cpu: rank mismatch (in_shape={rank}, out_shape={}, padding={})",
-            out_shape.len(), padding.len(),
+            out_shape.len(),
+            padding.len(),
         ))
         .bt());
     }
@@ -524,8 +543,10 @@ pub fn pad_const_cpu(
     if in_b.len() != in_elem * dtype_size || out.len_bytes() != out_elem * dtype_size {
         return Err(Error::Msg(format!(
             "pad_const_cpu: byte length mismatch (in={}, expected={}; out={}, expected={})",
-            in_b.len(), in_elem * dtype_size,
-            out.len_bytes(), out_elem * dtype_size,
+            in_b.len(),
+            in_elem * dtype_size,
+            out.len_bytes(),
+            out_elem * dtype_size,
         ))
         .bt());
     }
@@ -543,16 +564,21 @@ pub fn pad_const_cpu(
     let mut idx = vec![0usize; rank];
     for _ in 0..in_elem {
         let in_flat: usize = idx.iter().zip(&in_strides).map(|(&i, &s)| i * s).sum();
-        let out_flat: usize = idx.iter().zip(&out_strides).zip(padding.iter())
-            .map(|((&i, &s), &(b, _))| (i + b) * s).sum();
+        let out_flat: usize = idx
+            .iter()
+            .zip(&out_strides)
+            .zip(padding.iter())
+            .map(|((&i, &s), &(b, _))| (i + b) * s)
+            .sum();
         let in_off = in_flat * dtype_size;
         let out_off = out_flat * dtype_size;
-        out_buf[out_off..out_off + dtype_size]
-            .copy_from_slice(&in_b[in_off..in_off + dtype_size]);
+        out_buf[out_off..out_off + dtype_size].copy_from_slice(&in_b[in_off..in_off + dtype_size]);
         // Advance multi-index (last axis varies fastest).
         for k in (0..rank).rev() {
             idx[k] += 1;
-            if idx[k] < in_shape[k] { break; }
+            if idx[k] < in_shape[k] {
+                break;
+            }
             idx[k] = 0;
         }
     }
@@ -585,7 +611,15 @@ pub fn pad_reflect_cpu(
     padding: &[(usize, usize)],
     dtype_size: usize,
 ) -> Result<()> {
-    pad_walk_cpu(input, out, in_shape, out_shape, padding, dtype_size, reflect_index)
+    pad_walk_cpu(
+        input,
+        out,
+        in_shape,
+        out_shape,
+        padding,
+        dtype_size,
+        reflect_index,
+    )
 }
 
 /// Replicate (edge-repeat) padding. Per-axis mapping:
@@ -600,7 +634,15 @@ pub fn pad_replicate_cpu(
     padding: &[(usize, usize)],
     dtype_size: usize,
 ) -> Result<()> {
-    pad_walk_cpu(input, out, in_shape, out_shape, padding, dtype_size, replicate_index)
+    pad_walk_cpu(
+        input,
+        out,
+        in_shape,
+        out_shape,
+        padding,
+        dtype_size,
+        replicate_index,
+    )
 }
 
 fn reflect_index(i: i64, n: usize) -> usize {
@@ -644,7 +686,8 @@ where
     if out_shape.len() != rank || padding.len() != rank {
         return Err(Error::Msg(format!(
             "pad_walk_cpu: rank mismatch (in_shape={rank}, out_shape={}, padding={})",
-            out_shape.len(), padding.len(),
+            out_shape.len(),
+            padding.len(),
         ))
         .bt());
     }
@@ -654,8 +697,10 @@ where
     if in_b.len() != in_elem * dtype_size || out.len_bytes() != out_elem * dtype_size {
         return Err(Error::Msg(format!(
             "pad_walk_cpu: byte length mismatch (in={}, expected={}; out={}, expected={})",
-            in_b.len(), in_elem * dtype_size,
-            out.len_bytes(), out_elem * dtype_size,
+            in_b.len(),
+            in_elem * dtype_size,
+            out.len_bytes(),
+            out_elem * dtype_size,
         ))
         .bt());
     }
@@ -678,7 +723,9 @@ where
             .copy_from_slice(&in_b[in_byte..in_byte + dtype_size]);
         for k in (0..rank).rev() {
             out_idx[k] += 1;
-            if out_idx[k] < out_shape[k] { break; }
+            if out_idx[k] < out_shape[k] {
+                break;
+            }
             out_idx[k] = 0;
         }
     }
@@ -712,10 +759,7 @@ macro_rules! pad_backward_kernel {
         ) -> Result<()> {
             let rank = in_shape.len();
             if out_shape.len() != rank || padding.len() != rank {
-                return Err(Error::Msg(format!(
-                    "{}: rank mismatch", stringify!($name),
-                ))
-                .bt());
+                return Err(Error::Msg(format!("{}: rank mismatch", stringify!($name),)).bt());
             }
             let go: &[$T] = grad_out.as_slice()?;
             let gi: &mut [$T] = grad_in.as_slice_mut()?;
@@ -725,7 +769,9 @@ macro_rules! pad_backward_kernel {
                 return Err(Error::Msg(format!(
                     "{}: element count mismatch (grad_out={}, expected={out_elem}; \
                      grad_in={}, expected={in_elem})",
-                    stringify!($name), go.len(), gi.len(),
+                    stringify!($name),
+                    go.len(),
+                    gi.len(),
                 ))
                 .bt());
             }
@@ -759,20 +805,26 @@ macro_rules! pad_backward_kernel {
                         }
                         1 => reflect_index(i, n),
                         2 => replicate_index(i, n),
-                        _ => return Err(Error::Msg(format!(
-                            "{}: unknown mode_tag {mode_tag}", stringify!($name),
-                        )).bt()),
+                        _ => {
+                            return Err(Error::Msg(format!(
+                                "{}: unknown mode_tag {mode_tag}",
+                                stringify!($name),
+                            ))
+                            .bt());
+                        }
                     };
                     in_off += m * in_strides[k];
                 }
                 if !skip {
-                    let out_flat: usize = out_idx.iter().zip(&out_strides)
-                        .map(|(&i, &s)| i * s).sum();
+                    let out_flat: usize =
+                        out_idx.iter().zip(&out_strides).map(|(&i, &s)| i * s).sum();
                     acc[in_off] += widen(go[out_flat]);
                 }
                 for k in (0..rank).rev() {
                     out_idx[k] += 1;
-                    if out_idx[k] < out_shape[k] { break; }
+                    if out_idx[k] < out_shape[k] {
+                        break;
+                    }
                     out_idx[k] = 0;
                 }
             }
@@ -784,10 +836,38 @@ macro_rules! pad_backward_kernel {
     };
 }
 
-pad_backward_kernel!(pad_backward_f32, f32, 0.0_f32, |x: f32| x as f64, |x: f64| x as f32, "Pad backward (Constant/Reflect/Replicate) on `f32`.");
-pad_backward_kernel!(pad_backward_f64, f64, 0.0_f64, |x: f64| x, |x: f64| x, "Pad backward on `f64`.");
-pad_backward_kernel!(pad_backward_bf16, half::bf16, half::bf16::ZERO, |x: half::bf16| x.to_f32() as f64, |x: f64| half::bf16::from_f32(x as f32), "Pad backward on `bf16` (acc widened to f64).");
-pad_backward_kernel!(pad_backward_f16, half::f16, half::f16::ZERO, |x: half::f16| x.to_f32() as f64, |x: f64| half::f16::from_f32(x as f32), "Pad backward on `f16` (acc widened to f64).");
+pad_backward_kernel!(
+    pad_backward_f32,
+    f32,
+    0.0_f32,
+    |x: f32| x as f64,
+    |x: f64| x as f32,
+    "Pad backward (Constant/Reflect/Replicate) on `f32`."
+);
+pad_backward_kernel!(
+    pad_backward_f64,
+    f64,
+    0.0_f64,
+    |x: f64| x,
+    |x: f64| x,
+    "Pad backward on `f64`."
+);
+pad_backward_kernel!(
+    pad_backward_bf16,
+    half::bf16,
+    half::bf16::ZERO,
+    |x: half::bf16| x.to_f32() as f64,
+    |x: f64| half::bf16::from_f32(x as f32),
+    "Pad backward on `bf16` (acc widened to f64)."
+);
+pad_backward_kernel!(
+    pad_backward_f16,
+    half::f16,
+    half::f16::ZERO,
+    |x: half::f16| x.to_f32() as f64,
+    |x: f64| half::f16::from_f32(x as f32),
+    "Pad backward on `f16` (acc widened to f64)."
+);
 
 // =============================================================================
 // CumSum — running prefix-sum along one dim, per-dtype
@@ -814,7 +894,9 @@ macro_rules! cumsum_kernel {
             if inv.len() != needed || outv.len() != needed {
                 return Err(Error::Msg(format!(
                     "{}: element count mismatch (in={}, out={}, expected={needed})",
-                    stringify!($name), inv.len(), outv.len(),
+                    stringify!($name),
+                    inv.len(),
+                    outv.len(),
                 ))
                 .bt());
             }
@@ -833,14 +915,26 @@ macro_rules! cumsum_kernel {
     };
 }
 
-cumsum_kernel!(cumsum_f32, f32, 0.0_f32, "Running prefix-sum on `f32` along one dim.");
-cumsum_kernel!(cumsum_f64, f64, 0.0_f64, "Running prefix-sum on `f64` along one dim.");
+cumsum_kernel!(
+    cumsum_f32,
+    f32,
+    0.0_f32,
+    "Running prefix-sum on `f32` along one dim."
+);
+cumsum_kernel!(
+    cumsum_f64,
+    f64,
+    0.0_f64,
+    "Running prefix-sum on `f64` along one dim."
+);
 
 // bf16/f16: widen accumulator to f32 to avoid precision loss across long axes.
 pub fn cumsum_bf16(
     input: &CpuStorageBytes,
     out: &mut CpuStorageBytes,
-    outer: usize, dim_size: usize, inner: usize,
+    outer: usize,
+    dim_size: usize,
+    inner: usize,
 ) -> Result<()> {
     let inv: &[half::bf16] = input.as_slice()?;
     let outv: &mut [half::bf16] = out.as_slice_mut()?;
@@ -848,7 +942,8 @@ pub fn cumsum_bf16(
     if inv.len() != needed || outv.len() != needed {
         return Err(Error::Msg(format!(
             "cumsum_bf16: element count mismatch (in={}, out={}, expected={needed})",
-            inv.len(), outv.len(),
+            inv.len(),
+            outv.len(),
         ))
         .bt());
     }
@@ -868,7 +963,9 @@ pub fn cumsum_bf16(
 pub fn cumsum_f16(
     input: &CpuStorageBytes,
     out: &mut CpuStorageBytes,
-    outer: usize, dim_size: usize, inner: usize,
+    outer: usize,
+    dim_size: usize,
+    inner: usize,
 ) -> Result<()> {
     let inv: &[half::f16] = input.as_slice()?;
     let outv: &mut [half::f16] = out.as_slice_mut()?;
@@ -876,7 +973,8 @@ pub fn cumsum_f16(
     if inv.len() != needed || outv.len() != needed {
         return Err(Error::Msg(format!(
             "cumsum_f16: element count mismatch (in={}, out={}, expected={needed})",
-            inv.len(), outv.len(),
+            inv.len(),
+            outv.len(),
         ))
         .bt());
     }
@@ -918,8 +1016,10 @@ pub fn triangular_cpu(
     if inv.len() != needed || outv.len() != needed {
         return Err(Error::Msg(format!(
             "triangular_cpu: byte length mismatch (in={}, out={}, expected={needed})",
-            inv.len(), outv.len(),
-        )).bt());
+            inv.len(),
+            outv.len(),
+        ))
+        .bt());
     }
     // Zero the output first; then selectively copy kept positions.
     // Dtype-agnostic zero == all-zero bytes for every IEEE-754 / integer
@@ -963,8 +1063,11 @@ macro_rules! log_softmax_last_dim_kernel {
             if inv.len() != needed || outv.len() != needed {
                 return Err(Error::Msg(format!(
                     "{}: element count mismatch (in={}, out={}, expected={needed})",
-                    stringify!($name), inv.len(), outv.len(),
-                )).bt());
+                    stringify!($name),
+                    inv.len(),
+                    outv.len(),
+                ))
+                .bt());
             }
             for r in 0..outer {
                 let start = r * last_dim;
@@ -972,7 +1075,9 @@ macro_rules! log_softmax_last_dim_kernel {
                 let mut row_max = f32::NEG_INFINITY;
                 for i in 0..last_dim {
                     let v: f32 = $to_f32(inv[start + i]);
-                    if v > row_max { row_max = v; }
+                    if v > row_max {
+                        row_max = v;
+                    }
                 }
                 // sum exp(x - max).
                 let mut sum = 0.0f32;
@@ -990,17 +1095,44 @@ macro_rules! log_softmax_last_dim_kernel {
     };
 }
 
-#[inline] fn id_f32(v: f32) -> f32 { v }
-#[inline] fn id_f32_back(v: f32) -> f32 { v }
-#[inline] fn f64_to_f32(v: f64) -> f32 { v as f32 }
-#[inline] fn f32_to_f64(v: f32) -> f64 { v as f64 }
-#[inline] fn bf16_to_f32(v: half::bf16) -> f32 { v.to_f32() }
-#[inline] fn f32_to_bf16(v: f32) -> half::bf16 { half::bf16::from_f32(v) }
-#[inline] fn f16_to_f32(v: half::f16) -> f32 { v.to_f32() }
-#[inline] fn f32_to_f16(v: f32) -> half::f16 { half::f16::from_f32(v) }
+#[inline]
+fn id_f32(v: f32) -> f32 {
+    v
+}
+#[inline]
+fn id_f32_back(v: f32) -> f32 {
+    v
+}
+#[inline]
+fn f64_to_f32(v: f64) -> f32 {
+    v as f32
+}
+#[inline]
+fn f32_to_f64(v: f32) -> f64 {
+    v as f64
+}
+#[inline]
+fn bf16_to_f32(v: half::bf16) -> f32 {
+    v.to_f32()
+}
+#[inline]
+fn f32_to_bf16(v: f32) -> half::bf16 {
+    half::bf16::from_f32(v)
+}
+#[inline]
+fn f16_to_f32(v: half::f16) -> f32 {
+    v.to_f32()
+}
+#[inline]
+fn f32_to_f16(v: f32) -> half::f16 {
+    half::f16::from_f32(v)
+}
 
 log_softmax_last_dim_kernel!(
-    log_softmax_last_dim_f32, f32, id_f32, id_f32_back,
+    log_softmax_last_dim_f32,
+    f32,
+    id_f32,
+    id_f32_back,
     "Numerically-stable log-softmax along the last dim — f32."
 );
 
@@ -1017,14 +1149,18 @@ pub fn log_softmax_last_dim_f64(
     if inv.len() != needed || outv.len() != needed {
         return Err(Error::Msg(format!(
             "log_softmax_last_dim_f64: element count mismatch (in={}, out={}, expected={needed})",
-            inv.len(), outv.len(),
-        )).bt());
+            inv.len(),
+            outv.len(),
+        ))
+        .bt());
     }
     for r in 0..outer {
         let start = r * last_dim;
         let mut row_max = f64::NEG_INFINITY;
         for i in 0..last_dim {
-            if inv[start + i] > row_max { row_max = inv[start + i]; }
+            if inv[start + i] > row_max {
+                row_max = inv[start + i];
+            }
         }
         let mut sum = 0.0f64;
         for i in 0..last_dim {
@@ -1039,11 +1175,17 @@ pub fn log_softmax_last_dim_f64(
 }
 
 log_softmax_last_dim_kernel!(
-    log_softmax_last_dim_bf16, half::bf16, bf16_to_f32, f32_to_bf16,
+    log_softmax_last_dim_bf16,
+    half::bf16,
+    bf16_to_f32,
+    f32_to_bf16,
     "Numerically-stable log-softmax along the last dim — bf16 (f32 accumulator)."
 );
 log_softmax_last_dim_kernel!(
-    log_softmax_last_dim_f16, half::f16, f16_to_f32, f32_to_f16,
+    log_softmax_last_dim_f16,
+    half::f16,
+    f16_to_f32,
+    f32_to_f16,
     "Numerically-stable log-softmax along the last dim — f16 (f32 accumulator)."
 );
 
@@ -1059,8 +1201,8 @@ macro_rules! log_softmax_last_dim_backward_kernel {
     ($name:ident, $T:ty, $to_f32:expr, $from_f32:expr, $doc:literal) => {
         #[doc = $doc]
         pub fn $name(
-            y: &CpuStorageBytes,           // forward output
-            g: &CpuStorageBytes,           // upstream gradient
+            y: &CpuStorageBytes, // forward output
+            g: &CpuStorageBytes, // upstream gradient
             out: &mut CpuStorageBytes,
             outer: usize,
             last_dim: usize,
@@ -1072,8 +1214,12 @@ macro_rules! log_softmax_last_dim_backward_kernel {
             if yv.len() != needed || gv.len() != needed || outv.len() != needed {
                 return Err(Error::Msg(format!(
                     "{}: element count mismatch (y={}, g={}, out={}, expected={needed})",
-                    stringify!($name), yv.len(), gv.len(), outv.len(),
-                )).bt());
+                    stringify!($name),
+                    yv.len(),
+                    gv.len(),
+                    outv.len(),
+                ))
+                .bt());
             }
             for r in 0..outer {
                 let start = r * last_dim;
@@ -1093,7 +1239,10 @@ macro_rules! log_softmax_last_dim_backward_kernel {
 }
 
 log_softmax_last_dim_backward_kernel!(
-    log_softmax_last_dim_backward_f32, f32, id_f32, id_f32_back,
+    log_softmax_last_dim_backward_f32,
+    f32,
+    id_f32,
+    id_f32_back,
     "LogSoftmax-last-dim backward — f32."
 );
 
@@ -1128,11 +1277,17 @@ pub fn log_softmax_last_dim_backward_f64(
 }
 
 log_softmax_last_dim_backward_kernel!(
-    log_softmax_last_dim_backward_bf16, half::bf16, bf16_to_f32, f32_to_bf16,
+    log_softmax_last_dim_backward_bf16,
+    half::bf16,
+    bf16_to_f32,
+    f32_to_bf16,
     "LogSoftmax-last-dim backward — bf16 (f32 accumulator)."
 );
 log_softmax_last_dim_backward_kernel!(
-    log_softmax_last_dim_backward_f16, half::f16, f16_to_f32, f32_to_f16,
+    log_softmax_last_dim_backward_f16,
+    half::f16,
+    f16_to_f32,
+    f32_to_f16,
     "LogSoftmax-last-dim backward — f16 (f32 accumulator)."
 );
 
@@ -1159,20 +1314,24 @@ pub fn masked_fill_cpu(
         return Err(Error::Msg(format!(
             "masked_fill_cpu: fill_bytes.len() ({}) != dtype_size ({dtype_size})",
             fill_bytes.len(),
-        )).bt());
+        ))
+        .bt());
     }
     if inv.len() != outv.len() {
         return Err(Error::Msg(format!(
             "masked_fill_cpu: byte length mismatch (in={}, out={})",
-            inv.len(), outv.len(),
-        )).bt());
+            inv.len(),
+            outv.len(),
+        ))
+        .bt());
     }
     let count = inv.len() / dtype_size;
     if mv.len() != count {
         return Err(Error::Msg(format!(
             "masked_fill_cpu: mask byte length ({}) != element count ({count})",
             mv.len(),
-        )).bt());
+        ))
+        .bt());
     }
     for i in 0..count {
         let off = i * dtype_size;
@@ -1209,9 +1368,9 @@ pub fn contiguize_cpu(
     dtype_size: usize,
 ) -> Result<CpuStorageBytes> {
     let elem_count = layout.shape().elem_count();
-    let total_bytes = elem_count
-        .checked_mul(dtype_size)
-        .ok_or_else(|| Error::Msg("contiguize_cpu: elem_count * dtype_size overflow".to_string()).bt())?;
+    let total_bytes = elem_count.checked_mul(dtype_size).ok_or_else(|| {
+        Error::Msg("contiguize_cpu: elem_count * dtype_size overflow".to_string()).bt()
+    })?;
     let mut out = CpuStorageBytes::from_zero_bytes(total_bytes);
     if elem_count == 0 {
         return Ok(out);
@@ -1219,9 +1378,9 @@ pub fn contiguize_cpu(
     let in_bytes = input.bytes();
     let out_bytes = out.bytes_mut();
     for (out_i, src_elem_off) in layout.strided_index().enumerate() {
-        let src_byte_off = src_elem_off
-            .checked_mul(dtype_size)
-            .ok_or_else(|| Error::Msg("contiguize_cpu: src byte offset overflow".to_string()).bt())?;
+        let src_byte_off = src_elem_off.checked_mul(dtype_size).ok_or_else(|| {
+            Error::Msg("contiguize_cpu: src byte offset overflow".to_string()).bt()
+        })?;
         let dst_byte_off = out_i * dtype_size;
         if src_byte_off + dtype_size > in_bytes.len() {
             return Err(Error::Msg(format!(
@@ -1428,16 +1587,12 @@ macro_rules! index_add_half_kernel {
                 .bt());
             }
             if indices.len_bytes() != need_idx {
-                return Err(Error::Msg(format!(
-                    "{}: indices bytes mismatch", stringify!($name),
-                ))
-                .bt());
+                return Err(
+                    Error::Msg(format!("{}: indices bytes mismatch", stringify!($name),)).bt(),
+                );
             }
             if src.len_bytes() != need_src {
-                return Err(Error::Msg(format!(
-                    "{}: src bytes mismatch", stringify!($name),
-                ))
-                .bt());
+                return Err(Error::Msg(format!("{}: src bytes mismatch", stringify!($name),)).bt());
             }
             out.bytes_mut().copy_from_slice(base.bytes());
             if n_indices == 0 {
@@ -1459,8 +1614,8 @@ macro_rules! index_add_half_kernel {
                     let src_off = (outer * n_indices + i) * inner_count;
                     let dst_off = (outer * base_dim_size + target) * inner_count;
                     for inner in 0..inner_count {
-                        let acc = out_view[dst_off + inner].to_f32()
-                            + src_view[src_off + inner].to_f32();
+                        let acc =
+                            out_view[dst_off + inner].to_f32() + src_view[src_off + inner].to_f32();
                         out_view[dst_off + inner] = <$T>::from_f32(acc);
                     }
                 }
@@ -1470,8 +1625,12 @@ macro_rules! index_add_half_kernel {
     };
 }
 
-index_add_half_kernel!(index_add_bf16, half::bf16, std::mem::size_of::<half::bf16>());
-index_add_half_kernel!(index_add_f16,  half::f16,  std::mem::size_of::<half::f16>());
+index_add_half_kernel!(
+    index_add_bf16,
+    half::bf16,
+    std::mem::size_of::<half::bf16>()
+);
+index_add_half_kernel!(index_add_f16, half::f16, std::mem::size_of::<half::f16>());
 
 /// Generate a ScatterAdd kernel parameterized over native arithmetic
 /// type `$T` (f32 / f64). Same shape as `scatter_add_f32`.
@@ -1489,7 +1648,9 @@ macro_rules! scatter_add_native_kernel {
             if base_shape.len() != src_shape.len() {
                 return Err(Error::Msg(format!(
                     "{}: base rank ({}) != src rank ({})",
-                    stringify!($name), base_shape.len(), src_shape.len(),
+                    stringify!($name),
+                    base_shape.len(),
+                    src_shape.len(),
                 ))
                 .bt());
             }
@@ -1516,22 +1677,17 @@ macro_rules! scatter_add_native_kernel {
             if base.len_bytes() != base_total.saturating_mul(elem)
                 || out.len_bytes() != base_total.saturating_mul(elem)
             {
-                return Err(Error::Msg(format!(
-                    "{}: base/out bytes mismatch", stringify!($name),
-                ))
-                .bt());
+                return Err(
+                    Error::Msg(format!("{}: base/out bytes mismatch", stringify!($name),)).bt(),
+                );
             }
             if indices.len_bytes() != src_total.saturating_mul(std::mem::size_of::<u32>()) {
-                return Err(Error::Msg(format!(
-                    "{}: indices bytes mismatch", stringify!($name),
-                ))
-                .bt());
+                return Err(
+                    Error::Msg(format!("{}: indices bytes mismatch", stringify!($name),)).bt(),
+                );
             }
             if src.len_bytes() != src_total.saturating_mul(elem) {
-                return Err(Error::Msg(format!(
-                    "{}: src bytes mismatch", stringify!($name),
-                ))
-                .bt());
+                return Err(Error::Msg(format!("{}: src bytes mismatch", stringify!($name),)).bt());
             }
             out.bytes_mut().copy_from_slice(base.bytes());
             if src_total == 0 {
@@ -1556,7 +1712,8 @@ macro_rules! scatter_add_native_kernel {
                 let dst_dim_idx = idx_view[f] as usize;
                 if dst_dim_idx >= base_shape[dim] {
                     return Err(Error::Msg(format!(
-                        "{}: index {dst_dim_idx} OOB", stringify!($name),
+                        "{}: index {dst_dim_idx} OOB",
+                        stringify!($name),
                     ))
                     .bt());
                 }
@@ -1587,22 +1744,17 @@ macro_rules! scatter_add_half_kernel {
             dim: usize,
         ) -> Result<()> {
             if base_shape.len() != src_shape.len() {
-                return Err(Error::Msg(format!(
-                    "{}: rank mismatch", stringify!($name),
-                ))
-                .bt());
+                return Err(Error::Msg(format!("{}: rank mismatch", stringify!($name),)).bt());
             }
             let rank = base_shape.len();
             if dim >= rank {
-                return Err(Error::Msg(format!(
-                    "{}: dim OOB", stringify!($name),
-                ))
-                .bt());
+                return Err(Error::Msg(format!("{}: dim OOB", stringify!($name),)).bt());
             }
             for d in 0..rank {
                 if d != dim && base_shape[d] != src_shape[d] {
                     return Err(Error::Msg(format!(
-                        "{}: shape mismatch at dim {d}", stringify!($name),
+                        "{}: shape mismatch at dim {d}",
+                        stringify!($name),
                     ))
                     .bt());
                 }
@@ -1613,22 +1765,17 @@ macro_rules! scatter_add_half_kernel {
             if base.len_bytes() != base_total.saturating_mul(elem)
                 || out.len_bytes() != base_total.saturating_mul(elem)
             {
-                return Err(Error::Msg(format!(
-                    "{}: base/out bytes mismatch", stringify!($name),
-                ))
-                .bt());
+                return Err(
+                    Error::Msg(format!("{}: base/out bytes mismatch", stringify!($name),)).bt(),
+                );
             }
             if indices.len_bytes() != src_total.saturating_mul(std::mem::size_of::<u32>()) {
-                return Err(Error::Msg(format!(
-                    "{}: indices bytes mismatch", stringify!($name),
-                ))
-                .bt());
+                return Err(
+                    Error::Msg(format!("{}: indices bytes mismatch", stringify!($name),)).bt(),
+                );
             }
             if src.len_bytes() != src_total.saturating_mul(elem) {
-                return Err(Error::Msg(format!(
-                    "{}: src bytes mismatch", stringify!($name),
-                ))
-                .bt());
+                return Err(Error::Msg(format!("{}: src bytes mismatch", stringify!($name),)).bt());
             }
             out.bytes_mut().copy_from_slice(base.bytes());
             if src_total == 0 {
@@ -1652,10 +1799,7 @@ macro_rules! scatter_add_half_kernel {
                 }
                 let dst_dim_idx = idx_view[f] as usize;
                 if dst_dim_idx >= base_shape[dim] {
-                    return Err(Error::Msg(format!(
-                        "{}: index OOB", stringify!($name),
-                    ))
-                    .bt());
+                    return Err(Error::Msg(format!("{}: index OOB", stringify!($name),)).bt());
                 }
                 let mut dst_flat = 0;
                 for d in 0..rank {
@@ -1670,8 +1814,12 @@ macro_rules! scatter_add_half_kernel {
     };
 }
 
-scatter_add_half_kernel!(scatter_add_bf16, half::bf16, std::mem::size_of::<half::bf16>());
-scatter_add_half_kernel!(scatter_add_f16,  half::f16,  std::mem::size_of::<half::f16>());
+scatter_add_half_kernel!(
+    scatter_add_bf16,
+    half::bf16,
+    std::mem::size_of::<half::bf16>()
+);
+scatter_add_half_kernel!(scatter_add_f16, half::f16, std::mem::size_of::<half::f16>());
 
 /// N-dimensional scatter-add — the functional inverse of
 /// [`gather_f32`]. `base_shape` and `src_shape` agree on every
@@ -1691,7 +1839,8 @@ pub fn scatter_add_f32(
     if base_shape.len() != src_shape.len() {
         return Err(Error::Msg(format!(
             "scatter_add_f32: base rank ({}) != src rank ({})",
-            base_shape.len(), src_shape.len(),
+            base_shape.len(),
+            src_shape.len(),
         ))
         .bt());
     }
@@ -1714,7 +1863,9 @@ pub fn scatter_add_f32(
     let elem = std::mem::size_of::<f32>();
     let base_total: usize = base_shape.iter().product();
     let src_total: usize = src_shape.iter().product();
-    if base.len_bytes() != base_total.saturating_mul(elem) || out.len_bytes() != base_total.saturating_mul(elem) {
+    if base.len_bytes() != base_total.saturating_mul(elem)
+        || out.len_bytes() != base_total.saturating_mul(elem)
+    {
         return Err(Error::Msg(format!(
             "scatter_add_f32: base/out bytes don't match shape {base_shape:?} (f32)",
         ))
@@ -1803,7 +1954,9 @@ pub fn index_select_cpu(
         .saturating_mul(source_dim_size)
         .saturating_mul(stride_bytes);
     let need_idx = n_indices.saturating_mul(std::mem::size_of::<u32>());
-    let need_out = outer_count.saturating_mul(n_indices).saturating_mul(stride_bytes);
+    let need_out = outer_count
+        .saturating_mul(n_indices)
+        .saturating_mul(stride_bytes);
     if source.len_bytes() != need_src {
         return Err(Error::Msg(format!(
             "index_select_cpu: source bytes={} doesn't match outer={outer_count} × dim={source_dim_size} × inner={inner_count} × dtype_size={dtype_size}",
@@ -1857,8 +2010,13 @@ pub fn index_select_f32(
     inner_count: usize,
 ) -> Result<()> {
     index_select_cpu(
-        source, indices, out,
-        outer_count, source_dim_size, n_indices, inner_count,
+        source,
+        indices,
+        out,
+        outer_count,
+        source_dim_size,
+        n_indices,
+        inner_count,
         std::mem::size_of::<f32>(),
     )
 }
@@ -1892,10 +2050,7 @@ pub fn rope_f32(
     head_dim: usize,
 ) -> Result<()> {
     if head_dim % 2 != 0 {
-        return Err(Error::Msg(format!(
-            "rope_f32: head_dim ({head_dim}) must be even",
-        ))
-        .bt());
+        return Err(Error::Msg(format!("rope_f32: head_dim ({head_dim}) must be even",)).bt());
     }
     let elem = std::mem::size_of::<f32>();
     let need_x = outer_count
@@ -2065,10 +2220,7 @@ pub fn rope_f64(
     head_dim: usize,
 ) -> Result<()> {
     if head_dim % 2 != 0 {
-        return Err(Error::Msg(format!(
-            "rope_f64: head_dim ({head_dim}) must be even",
-        ))
-        .bt());
+        return Err(Error::Msg(format!("rope_f64: head_dim ({head_dim}) must be even",)).bt());
     }
     let elem = std::mem::size_of::<f64>();
     let need_x = outer_count
@@ -2161,8 +2313,7 @@ pub fn gather_cpu(
             return Err(Error::Msg(format!(
                 "gather_cpu: source and output disagree at dim {d} \
                  (source={}, output={}); only `dim`={dim} may differ",
-                source_shape[d],
-                output_shape[d],
+                source_shape[d], output_shape[d],
             ))
             .bt());
         }
@@ -2239,9 +2390,16 @@ pub fn gather_f32(
     output_shape: &[usize],
     dim: usize,
 ) -> Result<()> {
-    gather_cpu(source, indices, out, source_shape, output_shape, dim, std::mem::size_of::<f32>())
+    gather_cpu(
+        source,
+        indices,
+        out,
+        source_shape,
+        output_shape,
+        dim,
+        std::mem::size_of::<f32>(),
+    )
 }
-
 
 // =============================================================================
 // Softmax (f32)
@@ -2264,9 +2422,7 @@ pub fn softmax_last_dim_f32(
 ) -> Result<()> {
     check_lens_2("softmax_last_dim_f32", input.len_bytes(), out.len_bytes())?;
     let elem = std::mem::size_of::<f32>();
-    let need = outer_count
-        .saturating_mul(last_dim)
-        .saturating_mul(elem);
+    let need = outer_count.saturating_mul(last_dim).saturating_mul(elem);
     if input.len_bytes() != need {
         return Err(Error::Msg(format!(
             "softmax_last_dim_f32: input bytes={} doesn't match outer={outer_count} × last={last_dim} × {elem}",
@@ -2319,9 +2475,7 @@ fn check_norm_lens(
     last_dim: usize,
 ) -> Result<()> {
     let elem = std::mem::size_of::<f32>();
-    let need = outer_count
-        .saturating_mul(last_dim)
-        .saturating_mul(elem);
+    let need = outer_count.saturating_mul(last_dim).saturating_mul(elem);
     if input.len_bytes() != need || out.len_bytes() != need {
         return Err(Error::Msg(format!(
             "{name}: bytes mismatch (input={}, out={}, expected outer={outer_count} × last={last_dim} × {elem} = {need})",
@@ -2542,8 +2696,7 @@ macro_rules! rms_norm_last_dim_half {
                 let mean_sq = sum_sq * inv_n;
                 let rms_inv = 1.0_f32 / (mean_sq + eps32).sqrt();
                 for j in 0..last_dim {
-                    out_view[off + j] =
-                        <$T>::from_f32(in_view[off + j].to_f32() * rms_inv);
+                    out_view[off + j] = <$T>::from_f32(in_view[off + j].to_f32() * rms_inv);
                 }
             }
             Ok(())
@@ -2732,7 +2885,9 @@ pub fn concat_cpu(
     }
     let total_dim: usize = input_dim_sizes.iter().sum();
     let stride_bytes = inner_count.saturating_mul(dtype_size);
-    let need_out = outer_count.saturating_mul(total_dim).saturating_mul(stride_bytes);
+    let need_out = outer_count
+        .saturating_mul(total_dim)
+        .saturating_mul(stride_bytes);
     if out.len_bytes() != need_out {
         return Err(Error::Msg(format!(
             "concat_cpu: out bytes={} doesn't match outer={outer_count} × total_dim={total_dim} × inner={inner_count} × dtype_size={dtype_size}",
@@ -2781,7 +2936,14 @@ pub fn concat_f32(
     input_dim_sizes: &[usize],
     inner_count: usize,
 ) -> Result<()> {
-    concat_cpu(inputs, out, outer_count, input_dim_sizes, inner_count, std::mem::size_of::<f32>())
+    concat_cpu(
+        inputs,
+        out,
+        outer_count,
+        input_dim_sizes,
+        inner_count,
+        std::mem::size_of::<f32>(),
+    )
 }
 
 // =============================================================================
@@ -2824,119 +2986,121 @@ macro_rules! unary_inplace_thunk {
         pub fn $name(out: &mut CpuStorageBytes) -> Result<()> {
             let view: &mut [$T] = out.as_slice_mut()?;
             for slot in view.iter_mut() {
-                *slot = <crate::chassis::unary::$Op as crate::chassis::unary::UnaryOp<$T>>::apply(*slot);
+                *slot = <crate::chassis::unary::$Op as crate::chassis::unary::UnaryOp<$T>>::apply(
+                    *slot,
+                );
             }
             Ok(())
         }
     };
 }
 
-unary_inplace_thunk!(relu_inplace_f32,    f32, Relu);
-unary_inplace_thunk!(silu_inplace_f32,    f32, Silu);
-unary_inplace_thunk!(gelu_inplace_f32,    f32, GeluTanh);
-unary_inplace_thunk!(tanh_inplace_f32,    f32, Tanh);
+unary_inplace_thunk!(relu_inplace_f32, f32, Relu);
+unary_inplace_thunk!(silu_inplace_f32, f32, Silu);
+unary_inplace_thunk!(gelu_inplace_f32, f32, GeluTanh);
+unary_inplace_thunk!(tanh_inplace_f32, f32, Tanh);
 unary_inplace_thunk!(sigmoid_inplace_f32, f32, Sigmoid);
 
-unary_inplace_thunk!(relu_inplace_f64,    f64, Relu);
-unary_inplace_thunk!(silu_inplace_f64,    f64, Silu);
-unary_inplace_thunk!(gelu_inplace_f64,    f64, GeluTanh);
-unary_inplace_thunk!(tanh_inplace_f64,    f64, Tanh);
+unary_inplace_thunk!(relu_inplace_f64, f64, Relu);
+unary_inplace_thunk!(silu_inplace_f64, f64, Silu);
+unary_inplace_thunk!(gelu_inplace_f64, f64, GeluTanh);
+unary_inplace_thunk!(tanh_inplace_f64, f64, Tanh);
 unary_inplace_thunk!(sigmoid_inplace_f64, f64, Sigmoid);
 
-unary_inplace_thunk!(relu_inplace_bf16,    half::bf16, Relu);
-unary_inplace_thunk!(silu_inplace_bf16,    half::bf16, Silu);
-unary_inplace_thunk!(gelu_inplace_bf16,    half::bf16, GeluTanh);
-unary_inplace_thunk!(tanh_inplace_bf16,    half::bf16, Tanh);
+unary_inplace_thunk!(relu_inplace_bf16, half::bf16, Relu);
+unary_inplace_thunk!(silu_inplace_bf16, half::bf16, Silu);
+unary_inplace_thunk!(gelu_inplace_bf16, half::bf16, GeluTanh);
+unary_inplace_thunk!(tanh_inplace_bf16, half::bf16, Tanh);
 unary_inplace_thunk!(sigmoid_inplace_bf16, half::bf16, Sigmoid);
 
-unary_inplace_thunk!(relu_inplace_f16,    half::f16, Relu);
-unary_inplace_thunk!(silu_inplace_f16,    half::f16, Silu);
-unary_inplace_thunk!(gelu_inplace_f16,    half::f16, GeluTanh);
-unary_inplace_thunk!(tanh_inplace_f16,    half::f16, Tanh);
+unary_inplace_thunk!(relu_inplace_f16, half::f16, Relu);
+unary_inplace_thunk!(silu_inplace_f16, half::f16, Silu);
+unary_inplace_thunk!(gelu_inplace_f16, half::f16, GeluTanh);
+unary_inplace_thunk!(tanh_inplace_f16, half::f16, Tanh);
 unary_inplace_thunk!(sigmoid_inplace_f16, half::f16, Sigmoid);
 
 // In-place unary op family expansion (2026-05-30). Each (op × dtype)
 // reuses the chassis's `UnaryOp<T>::apply` blanket impl, identical
 // numerics to the non-inplace cousin.
-unary_inplace_thunk!(neg_inplace_f32,      f32, Neg);
-unary_inplace_thunk!(neg_inplace_f64,      f64, Neg);
-unary_inplace_thunk!(neg_inplace_bf16,     half::bf16, Neg);
-unary_inplace_thunk!(neg_inplace_f16,      half::f16, Neg);
+unary_inplace_thunk!(neg_inplace_f32, f32, Neg);
+unary_inplace_thunk!(neg_inplace_f64, f64, Neg);
+unary_inplace_thunk!(neg_inplace_bf16, half::bf16, Neg);
+unary_inplace_thunk!(neg_inplace_f16, half::f16, Neg);
 
-unary_inplace_thunk!(abs_inplace_f32,      f32, Abs);
-unary_inplace_thunk!(abs_inplace_f64,      f64, Abs);
-unary_inplace_thunk!(abs_inplace_bf16,     half::bf16, Abs);
-unary_inplace_thunk!(abs_inplace_f16,      half::f16, Abs);
+unary_inplace_thunk!(abs_inplace_f32, f32, Abs);
+unary_inplace_thunk!(abs_inplace_f64, f64, Abs);
+unary_inplace_thunk!(abs_inplace_bf16, half::bf16, Abs);
+unary_inplace_thunk!(abs_inplace_f16, half::f16, Abs);
 
-unary_inplace_thunk!(sqr_inplace_f32,      f32, Sqr);
-unary_inplace_thunk!(sqr_inplace_f64,      f64, Sqr);
-unary_inplace_thunk!(sqr_inplace_bf16,     half::bf16, Sqr);
-unary_inplace_thunk!(sqr_inplace_f16,      half::f16, Sqr);
+unary_inplace_thunk!(sqr_inplace_f32, f32, Sqr);
+unary_inplace_thunk!(sqr_inplace_f64, f64, Sqr);
+unary_inplace_thunk!(sqr_inplace_bf16, half::bf16, Sqr);
+unary_inplace_thunk!(sqr_inplace_f16, half::f16, Sqr);
 
-unary_inplace_thunk!(sqrt_inplace_f32,     f32, Sqrt);
-unary_inplace_thunk!(sqrt_inplace_f64,     f64, Sqrt);
-unary_inplace_thunk!(sqrt_inplace_bf16,    half::bf16, Sqrt);
-unary_inplace_thunk!(sqrt_inplace_f16,     half::f16, Sqrt);
+unary_inplace_thunk!(sqrt_inplace_f32, f32, Sqrt);
+unary_inplace_thunk!(sqrt_inplace_f64, f64, Sqrt);
+unary_inplace_thunk!(sqrt_inplace_bf16, half::bf16, Sqrt);
+unary_inplace_thunk!(sqrt_inplace_f16, half::f16, Sqrt);
 
-unary_inplace_thunk!(rsqrt_inplace_f32,    f32, Rsqrt);
-unary_inplace_thunk!(rsqrt_inplace_f64,    f64, Rsqrt);
-unary_inplace_thunk!(rsqrt_inplace_bf16,   half::bf16, Rsqrt);
-unary_inplace_thunk!(rsqrt_inplace_f16,    half::f16, Rsqrt);
+unary_inplace_thunk!(rsqrt_inplace_f32, f32, Rsqrt);
+unary_inplace_thunk!(rsqrt_inplace_f64, f64, Rsqrt);
+unary_inplace_thunk!(rsqrt_inplace_bf16, half::bf16, Rsqrt);
+unary_inplace_thunk!(rsqrt_inplace_f16, half::f16, Rsqrt);
 
-unary_inplace_thunk!(recip_inplace_f32,    f32, Recip);
-unary_inplace_thunk!(recip_inplace_f64,    f64, Recip);
-unary_inplace_thunk!(recip_inplace_bf16,   half::bf16, Recip);
-unary_inplace_thunk!(recip_inplace_f16,    half::f16, Recip);
+unary_inplace_thunk!(recip_inplace_f32, f32, Recip);
+unary_inplace_thunk!(recip_inplace_f64, f64, Recip);
+unary_inplace_thunk!(recip_inplace_bf16, half::bf16, Recip);
+unary_inplace_thunk!(recip_inplace_f16, half::f16, Recip);
 
-unary_inplace_thunk!(exp_inplace_f32,      f32, Exp);
-unary_inplace_thunk!(exp_inplace_f64,      f64, Exp);
-unary_inplace_thunk!(exp_inplace_bf16,     half::bf16, Exp);
-unary_inplace_thunk!(exp_inplace_f16,      half::f16, Exp);
+unary_inplace_thunk!(exp_inplace_f32, f32, Exp);
+unary_inplace_thunk!(exp_inplace_f64, f64, Exp);
+unary_inplace_thunk!(exp_inplace_bf16, half::bf16, Exp);
+unary_inplace_thunk!(exp_inplace_f16, half::f16, Exp);
 
-unary_inplace_thunk!(log_inplace_f32,      f32, Log);
-unary_inplace_thunk!(log_inplace_f64,      f64, Log);
-unary_inplace_thunk!(log_inplace_bf16,     half::bf16, Log);
-unary_inplace_thunk!(log_inplace_f16,      half::f16, Log);
+unary_inplace_thunk!(log_inplace_f32, f32, Log);
+unary_inplace_thunk!(log_inplace_f64, f64, Log);
+unary_inplace_thunk!(log_inplace_bf16, half::bf16, Log);
+unary_inplace_thunk!(log_inplace_f16, half::f16, Log);
 
-unary_inplace_thunk!(sin_inplace_f32,      f32, Sin);
-unary_inplace_thunk!(sin_inplace_f64,      f64, Sin);
-unary_inplace_thunk!(sin_inplace_bf16,     half::bf16, Sin);
-unary_inplace_thunk!(sin_inplace_f16,      half::f16, Sin);
+unary_inplace_thunk!(sin_inplace_f32, f32, Sin);
+unary_inplace_thunk!(sin_inplace_f64, f64, Sin);
+unary_inplace_thunk!(sin_inplace_bf16, half::bf16, Sin);
+unary_inplace_thunk!(sin_inplace_f16, half::f16, Sin);
 
-unary_inplace_thunk!(cos_inplace_f32,      f32, Cos);
-unary_inplace_thunk!(cos_inplace_f64,      f64, Cos);
-unary_inplace_thunk!(cos_inplace_bf16,     half::bf16, Cos);
-unary_inplace_thunk!(cos_inplace_f16,      half::f16, Cos);
+unary_inplace_thunk!(cos_inplace_f32, f32, Cos);
+unary_inplace_thunk!(cos_inplace_f64, f64, Cos);
+unary_inplace_thunk!(cos_inplace_bf16, half::bf16, Cos);
+unary_inplace_thunk!(cos_inplace_f16, half::f16, Cos);
 
-unary_inplace_thunk!(sign_inplace_f32,     f32, Sign);
-unary_inplace_thunk!(sign_inplace_f64,     f64, Sign);
-unary_inplace_thunk!(sign_inplace_bf16,    half::bf16, Sign);
-unary_inplace_thunk!(sign_inplace_f16,     half::f16, Sign);
+unary_inplace_thunk!(sign_inplace_f32, f32, Sign);
+unary_inplace_thunk!(sign_inplace_f64, f64, Sign);
+unary_inplace_thunk!(sign_inplace_bf16, half::bf16, Sign);
+unary_inplace_thunk!(sign_inplace_f16, half::f16, Sign);
 
-unary_inplace_thunk!(floor_inplace_f32,    f32, Floor);
-unary_inplace_thunk!(floor_inplace_f64,    f64, Floor);
-unary_inplace_thunk!(floor_inplace_bf16,   half::bf16, Floor);
-unary_inplace_thunk!(floor_inplace_f16,    half::f16, Floor);
+unary_inplace_thunk!(floor_inplace_f32, f32, Floor);
+unary_inplace_thunk!(floor_inplace_f64, f64, Floor);
+unary_inplace_thunk!(floor_inplace_bf16, half::bf16, Floor);
+unary_inplace_thunk!(floor_inplace_f16, half::f16, Floor);
 
-unary_inplace_thunk!(ceil_inplace_f32,     f32, Ceil);
-unary_inplace_thunk!(ceil_inplace_f64,     f64, Ceil);
-unary_inplace_thunk!(ceil_inplace_bf16,    half::bf16, Ceil);
-unary_inplace_thunk!(ceil_inplace_f16,     half::f16, Ceil);
+unary_inplace_thunk!(ceil_inplace_f32, f32, Ceil);
+unary_inplace_thunk!(ceil_inplace_f64, f64, Ceil);
+unary_inplace_thunk!(ceil_inplace_bf16, half::bf16, Ceil);
+unary_inplace_thunk!(ceil_inplace_f16, half::f16, Ceil);
 
-unary_inplace_thunk!(round_inplace_f32,    f32, Round);
-unary_inplace_thunk!(round_inplace_f64,    f64, Round);
-unary_inplace_thunk!(round_inplace_bf16,   half::bf16, Round);
-unary_inplace_thunk!(round_inplace_f16,    half::f16, Round);
+unary_inplace_thunk!(round_inplace_f32, f32, Round);
+unary_inplace_thunk!(round_inplace_f64, f64, Round);
+unary_inplace_thunk!(round_inplace_bf16, half::bf16, Round);
+unary_inplace_thunk!(round_inplace_f16, half::f16, Round);
 
-unary_inplace_thunk!(erf_inplace_f32,      f32, Erf);
-unary_inplace_thunk!(erf_inplace_f64,      f64, Erf);
-unary_inplace_thunk!(erf_inplace_bf16,     half::bf16, Erf);
-unary_inplace_thunk!(erf_inplace_f16,      half::f16, Erf);
+unary_inplace_thunk!(erf_inplace_f32, f32, Erf);
+unary_inplace_thunk!(erf_inplace_f64, f64, Erf);
+unary_inplace_thunk!(erf_inplace_bf16, half::bf16, Erf);
+unary_inplace_thunk!(erf_inplace_f16, half::f16, Erf);
 
-unary_inplace_thunk!(gelu_erf_inplace_f32,  f32, GeluErf);
-unary_inplace_thunk!(gelu_erf_inplace_f64,  f64, GeluErf);
+unary_inplace_thunk!(gelu_erf_inplace_f32, f32, GeluErf);
+unary_inplace_thunk!(gelu_erf_inplace_f64, f64, GeluErf);
 unary_inplace_thunk!(gelu_erf_inplace_bf16, half::bf16, GeluErf);
-unary_inplace_thunk!(gelu_erf_inplace_f16,  half::f16, GeluErf);
+unary_inplace_thunk!(gelu_erf_inplace_f16, half::f16, GeluErf);
 
 /// In-place affine: mutates `out[i] = mul * out[i] + add`. The
 /// caller passes `out` as both the input + output through the
@@ -2994,7 +3158,9 @@ pub fn clamp_inplace_f32(out: &mut CpuStorageBytes, min: f32, max: f32) -> Resul
         return Err(Error::Msg(format!("clamp_inplace_f32: min ({min}) > max ({max})")).bt());
     }
     let view: &mut [f32] = out.as_slice_mut()?;
-    for slot in view.iter_mut() { *slot = slot.clamp(min, max); }
+    for slot in view.iter_mut() {
+        *slot = slot.clamp(min, max);
+    }
     Ok(())
 }
 
@@ -3003,7 +3169,9 @@ pub fn clamp_inplace_f64(out: &mut CpuStorageBytes, min: f64, max: f64) -> Resul
         return Err(Error::Msg(format!("clamp_inplace_f64: min ({min}) > max ({max})")).bt());
     }
     let view: &mut [f64] = out.as_slice_mut()?;
-    for slot in view.iter_mut() { *slot = slot.clamp(min, max); }
+    for slot in view.iter_mut() {
+        *slot = slot.clamp(min, max);
+    }
     Ok(())
 }
 
@@ -3035,13 +3203,17 @@ pub fn clamp_inplace_f16(out: &mut CpuStorageBytes, min: f64, max: f64) -> Resul
 
 pub fn powi_inplace_f32(out: &mut CpuStorageBytes, exp: i32) -> Result<()> {
     let view: &mut [f32] = out.as_slice_mut()?;
-    for slot in view.iter_mut() { *slot = slot.powi(exp); }
+    for slot in view.iter_mut() {
+        *slot = slot.powi(exp);
+    }
     Ok(())
 }
 
 pub fn powi_inplace_f64(out: &mut CpuStorageBytes, exp: i32) -> Result<()> {
     let view: &mut [f64] = out.as_slice_mut()?;
-    for slot in view.iter_mut() { *slot = slot.powi(exp); }
+    for slot in view.iter_mut() {
+        *slot = slot.powi(exp);
+    }
     Ok(())
 }
 
@@ -3070,10 +3242,7 @@ pub fn clamp_f32(
 ) -> Result<()> {
     check_lens_2("clamp_f32", input.len_bytes(), out.len_bytes())?;
     if min > max {
-        return Err(Error::Msg(format!(
-            "clamp_f32: min ({min}) > max ({max})"
-        ))
-        .bt());
+        return Err(Error::Msg(format!("clamp_f32: min ({min}) > max ({max})")).bt());
     }
     let in_view: &[f32] = input.as_slice()?;
     let out_view: &mut [f32] = out.as_slice_mut()?;
@@ -3084,11 +3253,7 @@ pub fn clamp_f32(
 }
 
 /// Element-wise integer power: `out[i] = input[i].powi(exp)`.
-pub fn powi_f32(
-    input: &CpuStorageBytes,
-    out: &mut CpuStorageBytes,
-    exp: i32,
-) -> Result<()> {
+pub fn powi_f32(input: &CpuStorageBytes, out: &mut CpuStorageBytes, exp: i32) -> Result<()> {
     check_lens_2("powi_f32", input.len_bytes(), out.len_bytes())?;
     let in_view: &[f32] = input.as_slice()?;
     let out_view: &mut [f32] = out.as_slice_mut()?;
@@ -3135,11 +3300,7 @@ pub fn clamp_f64(
     Ok(())
 }
 
-pub fn powi_f64(
-    input: &CpuStorageBytes,
-    out: &mut CpuStorageBytes,
-    exp: i32,
-) -> Result<()> {
+pub fn powi_f64(input: &CpuStorageBytes, out: &mut CpuStorageBytes, exp: i32) -> Result<()> {
     check_lens_2("powi_f64", input.len_bytes(), out.len_bytes())?;
     let in_view: &[f64] = input.as_slice()?;
     let out_view: &mut [f64] = out.as_slice_mut()?;
@@ -3183,7 +3344,8 @@ macro_rules! clamp_half_kernel {
             check_lens_2(stringify!($name), input.len_bytes(), out.len_bytes())?;
             if min > max {
                 return Err(Error::Msg(format!(
-                    "{}: min ({min}) > max ({max})", stringify!($name),
+                    "{}: min ({min}) > max ({max})",
+                    stringify!($name),
                 ))
                 .bt());
             }
@@ -3202,11 +3364,7 @@ clamp_half_kernel!(clamp_f16, half::f16);
 
 macro_rules! powi_half_kernel {
     ($name:ident, $T:ty) => {
-        pub fn $name(
-            input: &CpuStorageBytes,
-            out: &mut CpuStorageBytes,
-            exp: i32,
-        ) -> Result<()> {
+        pub fn $name(input: &CpuStorageBytes, out: &mut CpuStorageBytes, exp: i32) -> Result<()> {
             check_lens_2(stringify!($name), input.len_bytes(), out.len_bytes())?;
             let in_view: &[$T] = input.as_slice()?;
             let out_view: &mut [$T] = out.as_slice_mut()?;
@@ -3307,7 +3465,8 @@ macro_rules! argextremum_dim_via_f32 {
             if dim >= input_shape.len() {
                 return Err(Error::Msg(format!(
                     "{}: dim {dim} out of range for rank {}",
-                    stringify!($name), input_shape.len(),
+                    stringify!($name),
+                    input_shape.len(),
                 ))
                 .bt());
             }
@@ -3315,7 +3474,8 @@ macro_rules! argextremum_dim_via_f32 {
             if input.len_bytes() != total_input.saturating_mul($T_size) {
                 return Err(Error::Msg(format!(
                     "{}: input bytes={} doesn't match shape {input_shape:?}",
-                    stringify!($name), input.len_bytes(),
+                    stringify!($name),
+                    input.len_bytes(),
                 ))
                 .bt());
             }
@@ -3326,16 +3486,15 @@ macro_rules! argextremum_dim_via_f32 {
             if output.len_bytes() != output_count.saturating_mul(std::mem::size_of::<u32>()) {
                 return Err(Error::Msg(format!(
                     "{}: output bytes={} doesn't match",
-                    stringify!($name), output.len_bytes(),
+                    stringify!($name),
+                    output.len_bytes(),
                 ))
                 .bt());
             }
             if dim_size == 0 {
-                return Err(Error::Msg(format!(
-                    "{}: dim {dim} has size 0",
-                    stringify!($name),
-                ))
-                .bt());
+                return Err(
+                    Error::Msg(format!("{}: dim {dim} has size 0", stringify!($name),)).bt(),
+                );
             }
             let in_view: &[$T] = input.as_slice()?;
             let out_view: &mut [u32] = output.as_slice_mut()?;
@@ -3364,21 +3523,57 @@ macro_rules! argextremum_dim_via_f32 {
 }
 
 // f64 has a native to_f32 method via the `as` cast — wrap it.
-trait ToF32Ext { fn to_f32(self) -> f32; }
-impl ToF32Ext for f64 { fn to_f32(self) -> f32 { self as f32 } }
+trait ToF32Ext {
+    fn to_f32(self) -> f32;
+}
+impl ToF32Ext for f64 {
+    fn to_f32(self) -> f32 {
+        self as f32
+    }
+}
 
-argextremum_dim_via_f32!(argmax_dim_f64, f64, std::mem::size_of::<f64>(),
-    |new: f32, best: f32| new > best, f32::NEG_INFINITY);
-argextremum_dim_via_f32!(argmin_dim_f64, f64, std::mem::size_of::<f64>(),
-    |new: f32, best: f32| new < best, f32::INFINITY);
-argextremum_dim_via_f32!(argmax_dim_bf16, half::bf16, std::mem::size_of::<half::bf16>(),
-    |new: f32, best: f32| new > best, f32::NEG_INFINITY);
-argextremum_dim_via_f32!(argmin_dim_bf16, half::bf16, std::mem::size_of::<half::bf16>(),
-    |new: f32, best: f32| new < best, f32::INFINITY);
-argextremum_dim_via_f32!(argmax_dim_f16, half::f16, std::mem::size_of::<half::f16>(),
-    |new: f32, best: f32| new > best, f32::NEG_INFINITY);
-argextremum_dim_via_f32!(argmin_dim_f16, half::f16, std::mem::size_of::<half::f16>(),
-    |new: f32, best: f32| new < best, f32::INFINITY);
+argextremum_dim_via_f32!(
+    argmax_dim_f64,
+    f64,
+    std::mem::size_of::<f64>(),
+    |new: f32, best: f32| new > best,
+    f32::NEG_INFINITY
+);
+argextremum_dim_via_f32!(
+    argmin_dim_f64,
+    f64,
+    std::mem::size_of::<f64>(),
+    |new: f32, best: f32| new < best,
+    f32::INFINITY
+);
+argextremum_dim_via_f32!(
+    argmax_dim_bf16,
+    half::bf16,
+    std::mem::size_of::<half::bf16>(),
+    |new: f32, best: f32| new > best,
+    f32::NEG_INFINITY
+);
+argextremum_dim_via_f32!(
+    argmin_dim_bf16,
+    half::bf16,
+    std::mem::size_of::<half::bf16>(),
+    |new: f32, best: f32| new < best,
+    f32::INFINITY
+);
+argextremum_dim_via_f32!(
+    argmax_dim_f16,
+    half::f16,
+    std::mem::size_of::<half::f16>(),
+    |new: f32, best: f32| new > best,
+    f32::NEG_INFINITY
+);
+argextremum_dim_via_f32!(
+    argmin_dim_f16,
+    half::f16,
+    std::mem::size_of::<half::f16>(),
+    |new: f32, best: f32| new < best,
+    f32::INFINITY
+);
 
 // =============================================================================
 // Dtype conversion (Cast)
@@ -3433,37 +3628,43 @@ macro_rules! cast_kernel {
 
 cast_kernel!(
     cast_f32_to_f64,
-    f32, f64,
+    f32,
+    f64,
     |x: f32| x as f64,
     "Convert `f32` → `f64`. Lossless widening."
 );
 cast_kernel!(
     cast_f64_to_f32,
-    f64, f32,
+    f64,
+    f32,
     |x: f64| x as f32,
     "Convert `f64` → `f32`. Lossy narrowing per IEEE-754 rounding."
 );
 cast_kernel!(
     cast_f32_to_bf16,
-    f32, half::bf16,
+    f32,
+    half::bf16,
     half::bf16::from_f32,
     "Convert `f32` → `bf16`. Lossy narrowing — keeps the f32 exponent and the top mantissa bits."
 );
 cast_kernel!(
     cast_bf16_to_f32,
-    half::bf16, f32,
+    half::bf16,
+    f32,
     |x: half::bf16| x.to_f32(),
     "Convert `bf16` → `f32`. Lossless widening (bf16 is a strict subset of f32)."
 );
 cast_kernel!(
     cast_f32_to_f16,
-    f32, half::f16,
+    f32,
+    half::f16,
     half::f16::from_f32,
     "Convert `f32` → `f16`. Lossy narrowing — clips to f16 range with NaN/inf preserved."
 );
 cast_kernel!(
     cast_f16_to_f32,
-    half::f16, f32,
+    half::f16,
+    f32,
     |x: half::f16| x.to_f32(),
     "Convert `f16` → `f32`. Lossless widening within f16's representable range."
 );
@@ -3486,15 +3687,22 @@ macro_rules! cast_kernel_to_fp8 {
             if input.len_bytes() % in_size != 0 {
                 return Err(Error::Msg(format!(
                     "{}: input bytes {} not a multiple of {} size {}",
-                    stringify!($name), input.len_bytes(), stringify!($TIn), in_size,
-                )).bt());
+                    stringify!($name),
+                    input.len_bytes(),
+                    stringify!($TIn),
+                    in_size,
+                ))
+                .bt());
             }
             let elem_count = input.len_bytes() / in_size;
             if out.len_bytes() != elem_count {
                 return Err(Error::Msg(format!(
                     "{}: output bytes {} doesn't match input elem count {} (F8E4M3 is 1 byte/elem)",
-                    stringify!($name), out.len_bytes(), elem_count,
-                )).bt());
+                    stringify!($name),
+                    out.len_bytes(),
+                    elem_count,
+                ))
+                .bt());
             }
             let in_view: &[$TIn] = input.as_slice()?;
             let out_bytes: &mut [u8] = out.bytes_mut();
@@ -3517,9 +3725,14 @@ macro_rules! cast_kernel_from_fp8 {
             if out.len_bytes() != want_out {
                 return Err(Error::Msg(format!(
                     "{}: output bytes {} doesn't match input elem count {} × {} ({}) = {}",
-                    stringify!($name), out.len_bytes(), elem_count, out_size,
-                    stringify!($TOut), want_out,
-                )).bt());
+                    stringify!($name),
+                    out.len_bytes(),
+                    elem_count,
+                    out_size,
+                    stringify!($TOut),
+                    want_out,
+                ))
+                .bt());
             }
             let in_bytes: &[u8] = input.bytes();
             let out_view: &mut [$TOut] = out.as_slice_mut()?;
@@ -3577,49 +3790,57 @@ cast_kernel_from_fp8!(
 // half<->half and anything touching F8E4M3 pivot through f32.
 cast_kernel!(
     cast_f32_to_u8,
-    f32, u8,
+    f32,
+    u8,
     |x: f32| x as u8,
     "Convert `f32` -> `u8`."
 );
 cast_kernel!(
     cast_f32_to_i8,
-    f32, i8,
+    f32,
+    i8,
     |x: f32| x as i8,
     "Convert `f32` -> `i8`."
 );
 cast_kernel!(
     cast_f32_to_u32,
-    f32, u32,
+    f32,
+    u32,
     |x: f32| x as u32,
     "Convert `f32` -> `u32`."
 );
 cast_kernel!(
     cast_f32_to_i16,
-    f32, i16,
+    f32,
+    i16,
     |x: f32| x as i16,
     "Convert `f32` -> `i16`."
 );
 cast_kernel!(
     cast_f32_to_i32,
-    f32, i32,
+    f32,
+    i32,
     |x: f32| x as i32,
     "Convert `f32` -> `i32`."
 );
 cast_kernel!(
     cast_f32_to_i64,
-    f32, i64,
+    f32,
+    i64,
     |x: f32| x as i64,
     "Convert `f32` -> `i64`."
 );
 cast_kernel!(
     cast_f64_to_f16,
-    f64, half::f16,
+    f64,
+    half::f16,
     |x: f64| half::f16::from_f32(x as f32),
     "Convert `f64` -> `f16`."
 );
 cast_kernel!(
     cast_f64_to_bf16,
-    f64, half::bf16,
+    f64,
+    half::bf16,
     |x: f64| half::bf16::from_f32(x as f32),
     "Convert `f64` -> `bf16`."
 );
@@ -3631,133 +3852,155 @@ cast_kernel_to_fp8!(
 );
 cast_kernel!(
     cast_f64_to_u8,
-    f64, u8,
+    f64,
+    u8,
     |x: f64| x as u8,
     "Convert `f64` -> `u8`."
 );
 cast_kernel!(
     cast_f64_to_i8,
-    f64, i8,
+    f64,
+    i8,
     |x: f64| x as i8,
     "Convert `f64` -> `i8`."
 );
 cast_kernel!(
     cast_f64_to_u32,
-    f64, u32,
+    f64,
+    u32,
     |x: f64| x as u32,
     "Convert `f64` -> `u32`."
 );
 cast_kernel!(
     cast_f64_to_i16,
-    f64, i16,
+    f64,
+    i16,
     |x: f64| x as i16,
     "Convert `f64` -> `i16`."
 );
 cast_kernel!(
     cast_f64_to_i32,
-    f64, i32,
+    f64,
+    i32,
     |x: f64| x as i32,
     "Convert `f64` -> `i32`."
 );
 cast_kernel!(
     cast_f64_to_i64,
-    f64, i64,
+    f64,
+    i64,
     |x: f64| x as i64,
     "Convert `f64` -> `i64`."
 );
 cast_kernel!(
     cast_f16_to_f64,
-    half::f16, f64,
+    half::f16,
+    f64,
     |x: half::f16| x.to_f32() as f64,
     "Convert `f16` -> `f64`."
 );
 cast_kernel!(
     cast_f16_to_bf16,
-    half::f16, half::bf16,
+    half::f16,
+    half::bf16,
     |x: half::f16| half::bf16::from_f32(x.to_f32()),
     "Convert `f16` -> `bf16`."
 );
 cast_kernel!(
     cast_f16_to_u8,
-    half::f16, u8,
+    half::f16,
+    u8,
     |x: half::f16| x.to_f32() as u8,
     "Convert `f16` -> `u8`."
 );
 cast_kernel!(
     cast_f16_to_i8,
-    half::f16, i8,
+    half::f16,
+    i8,
     |x: half::f16| x.to_f32() as i8,
     "Convert `f16` -> `i8`."
 );
 cast_kernel!(
     cast_f16_to_u32,
-    half::f16, u32,
+    half::f16,
+    u32,
     |x: half::f16| x.to_f32() as u32,
     "Convert `f16` -> `u32`."
 );
 cast_kernel!(
     cast_f16_to_i16,
-    half::f16, i16,
+    half::f16,
+    i16,
     |x: half::f16| x.to_f32() as i16,
     "Convert `f16` -> `i16`."
 );
 cast_kernel!(
     cast_f16_to_i32,
-    half::f16, i32,
+    half::f16,
+    i32,
     |x: half::f16| x.to_f32() as i32,
     "Convert `f16` -> `i32`."
 );
 cast_kernel!(
     cast_f16_to_i64,
-    half::f16, i64,
+    half::f16,
+    i64,
     |x: half::f16| x.to_f32() as i64,
     "Convert `f16` -> `i64`."
 );
 cast_kernel!(
     cast_bf16_to_f64,
-    half::bf16, f64,
+    half::bf16,
+    f64,
     |x: half::bf16| x.to_f32() as f64,
     "Convert `bf16` -> `f64`."
 );
 cast_kernel!(
     cast_bf16_to_f16,
-    half::bf16, half::f16,
+    half::bf16,
+    half::f16,
     |x: half::bf16| half::f16::from_f32(x.to_f32()),
     "Convert `bf16` -> `f16`."
 );
 cast_kernel!(
     cast_bf16_to_u8,
-    half::bf16, u8,
+    half::bf16,
+    u8,
     |x: half::bf16| x.to_f32() as u8,
     "Convert `bf16` -> `u8`."
 );
 cast_kernel!(
     cast_bf16_to_i8,
-    half::bf16, i8,
+    half::bf16,
+    i8,
     |x: half::bf16| x.to_f32() as i8,
     "Convert `bf16` -> `i8`."
 );
 cast_kernel!(
     cast_bf16_to_u32,
-    half::bf16, u32,
+    half::bf16,
+    u32,
     |x: half::bf16| x.to_f32() as u32,
     "Convert `bf16` -> `u32`."
 );
 cast_kernel!(
     cast_bf16_to_i16,
-    half::bf16, i16,
+    half::bf16,
+    i16,
     |x: half::bf16| x.to_f32() as i16,
     "Convert `bf16` -> `i16`."
 );
 cast_kernel!(
     cast_bf16_to_i32,
-    half::bf16, i32,
+    half::bf16,
+    i32,
     |x: half::bf16| x.to_f32() as i32,
     "Convert `bf16` -> `i32`."
 );
 cast_kernel!(
     cast_bf16_to_i64,
-    half::bf16, i64,
+    half::bf16,
+    i64,
     |x: half::bf16| x.to_f32() as i64,
     "Convert `bf16` -> `i64`."
 );
@@ -3805,25 +4048,29 @@ cast_kernel_from_fp8!(
 );
 cast_kernel!(
     cast_u8_to_f32,
-    u8, f32,
+    u8,
+    f32,
     |x: u8| x as f32,
     "Convert `u8` -> `f32`."
 );
 cast_kernel!(
     cast_u8_to_f64,
-    u8, f64,
+    u8,
+    f64,
     |x: u8| x as f64,
     "Convert `u8` -> `f64`."
 );
 cast_kernel!(
     cast_u8_to_f16,
-    u8, half::f16,
+    u8,
+    half::f16,
     |x: u8| half::f16::from_f32(x as f32),
     "Convert `u8` -> `f16`."
 );
 cast_kernel!(
     cast_u8_to_bf16,
-    u8, half::bf16,
+    u8,
+    half::bf16,
     |x: u8| half::bf16::from_f32(x as f32),
     "Convert `u8` -> `bf16`."
 );
@@ -3835,55 +4082,64 @@ cast_kernel_to_fp8!(
 );
 cast_kernel!(
     cast_u8_to_i8,
-    u8, i8,
+    u8,
+    i8,
     |x: u8| x as i8,
     "Convert `u8` -> `i8`."
 );
 cast_kernel!(
     cast_u8_to_u32,
-    u8, u32,
+    u8,
+    u32,
     |x: u8| x as u32,
     "Convert `u8` -> `u32`."
 );
 cast_kernel!(
     cast_u8_to_i16,
-    u8, i16,
+    u8,
+    i16,
     |x: u8| x as i16,
     "Convert `u8` -> `i16`."
 );
 cast_kernel!(
     cast_u8_to_i32,
-    u8, i32,
+    u8,
+    i32,
     |x: u8| x as i32,
     "Convert `u8` -> `i32`."
 );
 cast_kernel!(
     cast_u8_to_i64,
-    u8, i64,
+    u8,
+    i64,
     |x: u8| x as i64,
     "Convert `u8` -> `i64`."
 );
 cast_kernel!(
     cast_i8_to_f32,
-    i8, f32,
+    i8,
+    f32,
     |x: i8| x as f32,
     "Convert `i8` -> `f32`."
 );
 cast_kernel!(
     cast_i8_to_f64,
-    i8, f64,
+    i8,
+    f64,
     |x: i8| x as f64,
     "Convert `i8` -> `f64`."
 );
 cast_kernel!(
     cast_i8_to_f16,
-    i8, half::f16,
+    i8,
+    half::f16,
     |x: i8| half::f16::from_f32(x as f32),
     "Convert `i8` -> `f16`."
 );
 cast_kernel!(
     cast_i8_to_bf16,
-    i8, half::bf16,
+    i8,
+    half::bf16,
     |x: i8| half::bf16::from_f32(x as f32),
     "Convert `i8` -> `bf16`."
 );
@@ -3895,55 +4151,64 @@ cast_kernel_to_fp8!(
 );
 cast_kernel!(
     cast_i8_to_u8,
-    i8, u8,
+    i8,
+    u8,
     |x: i8| x as u8,
     "Convert `i8` -> `u8`."
 );
 cast_kernel!(
     cast_i8_to_u32,
-    i8, u32,
+    i8,
+    u32,
     |x: i8| x as u32,
     "Convert `i8` -> `u32`."
 );
 cast_kernel!(
     cast_i8_to_i16,
-    i8, i16,
+    i8,
+    i16,
     |x: i8| x as i16,
     "Convert `i8` -> `i16`."
 );
 cast_kernel!(
     cast_i8_to_i32,
-    i8, i32,
+    i8,
+    i32,
     |x: i8| x as i32,
     "Convert `i8` -> `i32`."
 );
 cast_kernel!(
     cast_i8_to_i64,
-    i8, i64,
+    i8,
+    i64,
     |x: i8| x as i64,
     "Convert `i8` -> `i64`."
 );
 cast_kernel!(
     cast_u32_to_f32,
-    u32, f32,
+    u32,
+    f32,
     |x: u32| x as f32,
     "Convert `u32` -> `f32`."
 );
 cast_kernel!(
     cast_u32_to_f64,
-    u32, f64,
+    u32,
+    f64,
     |x: u32| x as f64,
     "Convert `u32` -> `f64`."
 );
 cast_kernel!(
     cast_u32_to_f16,
-    u32, half::f16,
+    u32,
+    half::f16,
     |x: u32| half::f16::from_f32(x as f32),
     "Convert `u32` -> `f16`."
 );
 cast_kernel!(
     cast_u32_to_bf16,
-    u32, half::bf16,
+    u32,
+    half::bf16,
     |x: u32| half::bf16::from_f32(x as f32),
     "Convert `u32` -> `bf16`."
 );
@@ -3955,55 +4220,64 @@ cast_kernel_to_fp8!(
 );
 cast_kernel!(
     cast_u32_to_u8,
-    u32, u8,
+    u32,
+    u8,
     |x: u32| x as u8,
     "Convert `u32` -> `u8`."
 );
 cast_kernel!(
     cast_u32_to_i8,
-    u32, i8,
+    u32,
+    i8,
     |x: u32| x as i8,
     "Convert `u32` -> `i8`."
 );
 cast_kernel!(
     cast_u32_to_i16,
-    u32, i16,
+    u32,
+    i16,
     |x: u32| x as i16,
     "Convert `u32` -> `i16`."
 );
 cast_kernel!(
     cast_u32_to_i32,
-    u32, i32,
+    u32,
+    i32,
     |x: u32| x as i32,
     "Convert `u32` -> `i32`."
 );
 cast_kernel!(
     cast_u32_to_i64,
-    u32, i64,
+    u32,
+    i64,
     |x: u32| x as i64,
     "Convert `u32` -> `i64`."
 );
 cast_kernel!(
     cast_i16_to_f32,
-    i16, f32,
+    i16,
+    f32,
     |x: i16| x as f32,
     "Convert `i16` -> `f32`."
 );
 cast_kernel!(
     cast_i16_to_f64,
-    i16, f64,
+    i16,
+    f64,
     |x: i16| x as f64,
     "Convert `i16` -> `f64`."
 );
 cast_kernel!(
     cast_i16_to_f16,
-    i16, half::f16,
+    i16,
+    half::f16,
     |x: i16| half::f16::from_f32(x as f32),
     "Convert `i16` -> `f16`."
 );
 cast_kernel!(
     cast_i16_to_bf16,
-    i16, half::bf16,
+    i16,
+    half::bf16,
     |x: i16| half::bf16::from_f32(x as f32),
     "Convert `i16` -> `bf16`."
 );
@@ -4015,55 +4289,64 @@ cast_kernel_to_fp8!(
 );
 cast_kernel!(
     cast_i16_to_u8,
-    i16, u8,
+    i16,
+    u8,
     |x: i16| x as u8,
     "Convert `i16` -> `u8`."
 );
 cast_kernel!(
     cast_i16_to_i8,
-    i16, i8,
+    i16,
+    i8,
     |x: i16| x as i8,
     "Convert `i16` -> `i8`."
 );
 cast_kernel!(
     cast_i16_to_u32,
-    i16, u32,
+    i16,
+    u32,
     |x: i16| x as u32,
     "Convert `i16` -> `u32`."
 );
 cast_kernel!(
     cast_i16_to_i32,
-    i16, i32,
+    i16,
+    i32,
     |x: i16| x as i32,
     "Convert `i16` -> `i32`."
 );
 cast_kernel!(
     cast_i16_to_i64,
-    i16, i64,
+    i16,
+    i64,
     |x: i16| x as i64,
     "Convert `i16` -> `i64`."
 );
 cast_kernel!(
     cast_i32_to_f32,
-    i32, f32,
+    i32,
+    f32,
     |x: i32| x as f32,
     "Convert `i32` -> `f32`."
 );
 cast_kernel!(
     cast_i32_to_f64,
-    i32, f64,
+    i32,
+    f64,
     |x: i32| x as f64,
     "Convert `i32` -> `f64`."
 );
 cast_kernel!(
     cast_i32_to_f16,
-    i32, half::f16,
+    i32,
+    half::f16,
     |x: i32| half::f16::from_f32(x as f32),
     "Convert `i32` -> `f16`."
 );
 cast_kernel!(
     cast_i32_to_bf16,
-    i32, half::bf16,
+    i32,
+    half::bf16,
     |x: i32| half::bf16::from_f32(x as f32),
     "Convert `i32` -> `bf16`."
 );
@@ -4075,55 +4358,64 @@ cast_kernel_to_fp8!(
 );
 cast_kernel!(
     cast_i32_to_u8,
-    i32, u8,
+    i32,
+    u8,
     |x: i32| x as u8,
     "Convert `i32` -> `u8`."
 );
 cast_kernel!(
     cast_i32_to_i8,
-    i32, i8,
+    i32,
+    i8,
     |x: i32| x as i8,
     "Convert `i32` -> `i8`."
 );
 cast_kernel!(
     cast_i32_to_u32,
-    i32, u32,
+    i32,
+    u32,
     |x: i32| x as u32,
     "Convert `i32` -> `u32`."
 );
 cast_kernel!(
     cast_i32_to_i16,
-    i32, i16,
+    i32,
+    i16,
     |x: i32| x as i16,
     "Convert `i32` -> `i16`."
 );
 cast_kernel!(
     cast_i32_to_i64,
-    i32, i64,
+    i32,
+    i64,
     |x: i32| x as i64,
     "Convert `i32` -> `i64`."
 );
 cast_kernel!(
     cast_i64_to_f32,
-    i64, f32,
+    i64,
+    f32,
     |x: i64| x as f32,
     "Convert `i64` -> `f32`."
 );
 cast_kernel!(
     cast_i64_to_f64,
-    i64, f64,
+    i64,
+    f64,
     |x: i64| x as f64,
     "Convert `i64` -> `f64`."
 );
 cast_kernel!(
     cast_i64_to_f16,
-    i64, half::f16,
+    i64,
+    half::f16,
     |x: i64| half::f16::from_f32(x as f32),
     "Convert `i64` -> `f16`."
 );
 cast_kernel!(
     cast_i64_to_bf16,
-    i64, half::bf16,
+    i64,
+    half::bf16,
     |x: i64| half::bf16::from_f32(x as f32),
     "Convert `i64` -> `bf16`."
 );
@@ -4135,31 +4427,36 @@ cast_kernel_to_fp8!(
 );
 cast_kernel!(
     cast_i64_to_u8,
-    i64, u8,
+    i64,
+    u8,
     |x: i64| x as u8,
     "Convert `i64` -> `u8`."
 );
 cast_kernel!(
     cast_i64_to_i8,
-    i64, i8,
+    i64,
+    i8,
     |x: i64| x as i8,
     "Convert `i64` -> `i8`."
 );
 cast_kernel!(
     cast_i64_to_u32,
-    i64, u32,
+    i64,
+    u32,
     |x: i64| x as u32,
     "Convert `i64` -> `u32`."
 );
 cast_kernel!(
     cast_i64_to_i16,
-    i64, i16,
+    i64,
+    i16,
     |x: i64| x as i16,
     "Convert `i64` -> `i16`."
 );
 cast_kernel!(
     cast_i64_to_i32,
-    i64, i32,
+    i64,
+    i32,
     |x: i64| x as i32,
     "Convert `i64` -> `i32`."
 );
@@ -4181,25 +4478,29 @@ cast_kernel!(
 
 cast_kernel!(
     cast_f32_to_bool,
-    f32, u8,
+    f32,
+    u8,
     |x: f32| (x != 0.0) as u8,
     "Convert `f32` -> `bool`. Nonzero (incl. NaN) is true."
 );
 cast_kernel!(
     cast_f64_to_bool,
-    f64, u8,
+    f64,
+    u8,
     |x: f64| (x != 0.0) as u8,
     "Convert `f64` -> `bool`. Nonzero (incl. NaN) is true."
 );
 cast_kernel!(
     cast_f16_to_bool,
-    half::f16, u8,
+    half::f16,
+    u8,
     |x: half::f16| (x.to_f32() != 0.0) as u8,
     "Convert `f16` -> `bool`. Nonzero (incl. NaN) is true."
 );
 cast_kernel!(
     cast_bf16_to_bool,
-    half::bf16, u8,
+    half::bf16,
+    u8,
     |x: half::bf16| (x.to_f32() != 0.0) as u8,
     "Convert `bf16` -> `bool`. Nonzero (incl. NaN) is true."
 );
@@ -4211,61 +4512,71 @@ cast_kernel_from_fp8!(
 );
 cast_kernel!(
     cast_u8_to_bool,
-    u8, u8,
+    u8,
+    u8,
     |x: u8| (x != 0) as u8,
     "Convert `u8` -> `bool`. Nonzero is true."
 );
 cast_kernel!(
     cast_i8_to_bool,
-    i8, u8,
+    i8,
+    u8,
     |x: i8| (x != 0) as u8,
     "Convert `i8` -> `bool`. Nonzero is true."
 );
 cast_kernel!(
     cast_u32_to_bool,
-    u32, u8,
+    u32,
+    u8,
     |x: u32| (x != 0) as u8,
     "Convert `u32` -> `bool`. Nonzero is true."
 );
 cast_kernel!(
     cast_i16_to_bool,
-    i16, u8,
+    i16,
+    u8,
     |x: i16| (x != 0) as u8,
     "Convert `i16` -> `bool`. Nonzero is true."
 );
 cast_kernel!(
     cast_i32_to_bool,
-    i32, u8,
+    i32,
+    u8,
     |x: i32| (x != 0) as u8,
     "Convert `i32` -> `bool`. Nonzero is true."
 );
 cast_kernel!(
     cast_i64_to_bool,
-    i64, u8,
+    i64,
+    u8,
     |x: i64| (x != 0) as u8,
     "Convert `i64` -> `bool`. Nonzero is true."
 );
 cast_kernel!(
     cast_bool_to_f32,
-    u8, f32,
+    u8,
+    f32,
     |b: u8| (b != 0) as u8 as f32,
     "Convert `bool` -> `f32`. false -> 0, true -> 1."
 );
 cast_kernel!(
     cast_bool_to_f64,
-    u8, f64,
+    u8,
+    f64,
     |b: u8| (b != 0) as u8 as f64,
     "Convert `bool` -> `f64`. false -> 0, true -> 1."
 );
 cast_kernel!(
     cast_bool_to_f16,
-    u8, half::f16,
+    u8,
+    half::f16,
     |b: u8| half::f16::from_f32((b != 0) as u8 as f32),
     "Convert `bool` -> `f16`. false -> 0, true -> 1."
 );
 cast_kernel!(
     cast_bool_to_bf16,
-    u8, half::bf16,
+    u8,
+    half::bf16,
     |b: u8| half::bf16::from_f32((b != 0) as u8 as f32),
     "Convert `bool` -> `bf16`. false -> 0, true -> 1."
 );
@@ -4277,37 +4588,43 @@ cast_kernel_to_fp8!(
 );
 cast_kernel!(
     cast_bool_to_u8,
-    u8, u8,
+    u8,
+    u8,
     |b: u8| (b != 0) as u8,
     "Convert `bool` -> `u8`. false -> 0, true -> 1."
 );
 cast_kernel!(
     cast_bool_to_i8,
-    u8, i8,
+    u8,
+    i8,
     |b: u8| (b != 0) as u8 as i8,
     "Convert `bool` -> `i8`. false -> 0, true -> 1."
 );
 cast_kernel!(
     cast_bool_to_u32,
-    u8, u32,
+    u8,
+    u32,
     |b: u8| (b != 0) as u8 as u32,
     "Convert `bool` -> `u32`. false -> 0, true -> 1."
 );
 cast_kernel!(
     cast_bool_to_i16,
-    u8, i16,
+    u8,
+    i16,
     |b: u8| (b != 0) as u8 as i16,
     "Convert `bool` -> `i16`. false -> 0, true -> 1."
 );
 cast_kernel!(
     cast_bool_to_i32,
-    u8, i32,
+    u8,
+    i32,
     |b: u8| (b != 0) as u8 as i32,
     "Convert `bool` -> `i32`. false -> 0, true -> 1."
 );
 cast_kernel!(
     cast_bool_to_i64,
-    u8, i64,
+    u8,
+    i64,
     |b: u8| (b != 0) as u8 as i64,
     "Convert `bool` -> `i64`. false -> 0, true -> 1."
 );
@@ -4412,9 +4729,15 @@ pub fn matmul_f32_capacity(
     let out_per_batch = m.saturating_mul(n);
     let lhs_batch_count: usize = lhs_batch_dims.iter().product::<usize>().max(1);
     let rhs_batch_count: usize = rhs_batch_dims.iter().product::<usize>().max(1);
-    let need_lhs = lhs_batch_count.saturating_mul(lhs_per_batch).saturating_mul(elem);
-    let need_rhs = rhs_batch_count.saturating_mul(rhs_per_batch).saturating_mul(elem);
-    let need_out = lhs_batch_count.saturating_mul(out_per_batch).saturating_mul(elem);
+    let need_lhs = lhs_batch_count
+        .saturating_mul(lhs_per_batch)
+        .saturating_mul(elem);
+    let need_rhs = rhs_batch_count
+        .saturating_mul(rhs_per_batch)
+        .saturating_mul(elem);
+    let need_out = lhs_batch_count
+        .saturating_mul(out_per_batch)
+        .saturating_mul(elem);
     if lhs.len_bytes() != need_lhs {
         return Err(Error::Msg(format!(
             "matmul_f32: lhs bytes={} doesn't match shape {:?} + [{m}, {k}] (f32)",
@@ -4537,27 +4860,39 @@ macro_rules! matmul_half_kernel {
             let out_per_batch = m.saturating_mul(n);
             let lhs_batch_count: usize = lhs_batch_dims.iter().product::<usize>().max(1);
             let rhs_batch_count: usize = rhs_batch_dims.iter().product::<usize>().max(1);
-            let need_lhs = lhs_batch_count.saturating_mul(lhs_per_batch).saturating_mul(elem);
-            let need_rhs = rhs_batch_count.saturating_mul(rhs_per_batch).saturating_mul(elem);
-            let need_out = lhs_batch_count.saturating_mul(out_per_batch).saturating_mul(elem);
+            let need_lhs = lhs_batch_count
+                .saturating_mul(lhs_per_batch)
+                .saturating_mul(elem);
+            let need_rhs = rhs_batch_count
+                .saturating_mul(rhs_per_batch)
+                .saturating_mul(elem);
+            let need_out = lhs_batch_count
+                .saturating_mul(out_per_batch)
+                .saturating_mul(elem);
             if lhs.len_bytes() != need_lhs {
                 return Err(Error::Msg(format!(
                     "{}: lhs bytes={} doesn't match shape {:?} + [{m}, {k}]",
-                    $type_name, lhs.len_bytes(), lhs_batch_dims,
+                    $type_name,
+                    lhs.len_bytes(),
+                    lhs_batch_dims,
                 ))
                 .bt());
             }
             if rhs.len_bytes() != need_rhs {
                 return Err(Error::Msg(format!(
                     "{}: rhs bytes={} doesn't match shape {:?} + [{k}, {n}]",
-                    $type_name, rhs.len_bytes(), rhs_batch_dims,
+                    $type_name,
+                    rhs.len_bytes(),
+                    rhs_batch_dims,
                 ))
                 .bt());
             }
             if out.len_bytes() != need_out {
                 return Err(Error::Msg(format!(
                     "{}: out bytes={} doesn't match shape {:?} + [{m}, {n}]",
-                    $type_name, out.len_bytes(), lhs_batch_dims,
+                    $type_name,
+                    out.len_bytes(),
+                    lhs_batch_dims,
                 ))
                 .bt());
             }
@@ -4594,8 +4929,7 @@ macro_rules! matmul_half_kernel {
                         let rhs_row_off = rhs_off + kk * n;
                         let acc_row_off = i * n;
                         for j in 0..n {
-                            acc[acc_row_off + j] +=
-                                a * rhs_view[rhs_row_off + j].to_f32();
+                            acc[acc_row_off + j] += a * rhs_view[rhs_row_off + j].to_f32();
                         }
                     }
                 }
@@ -4664,27 +4998,39 @@ macro_rules! matmul_int_kernel {
             let out_per_batch = m.saturating_mul(n);
             let lhs_batch_count: usize = lhs_batch_dims.iter().product::<usize>().max(1);
             let rhs_batch_count: usize = rhs_batch_dims.iter().product::<usize>().max(1);
-            let need_lhs = lhs_batch_count.saturating_mul(lhs_per_batch).saturating_mul(elem);
-            let need_rhs = rhs_batch_count.saturating_mul(rhs_per_batch).saturating_mul(elem);
-            let need_out = lhs_batch_count.saturating_mul(out_per_batch).saturating_mul(elem);
+            let need_lhs = lhs_batch_count
+                .saturating_mul(lhs_per_batch)
+                .saturating_mul(elem);
+            let need_rhs = rhs_batch_count
+                .saturating_mul(rhs_per_batch)
+                .saturating_mul(elem);
+            let need_out = lhs_batch_count
+                .saturating_mul(out_per_batch)
+                .saturating_mul(elem);
             if lhs.len_bytes() != need_lhs {
                 return Err(Error::Msg(format!(
                     "{}: lhs bytes={} doesn't match shape {:?} + [{m}, {k}]",
-                    $type_name, lhs.len_bytes(), lhs_batch_dims,
+                    $type_name,
+                    lhs.len_bytes(),
+                    lhs_batch_dims,
                 ))
                 .bt());
             }
             if rhs.len_bytes() != need_rhs {
                 return Err(Error::Msg(format!(
                     "{}: rhs bytes={} doesn't match shape {:?} + [{k}, {n}]",
-                    $type_name, rhs.len_bytes(), rhs_batch_dims,
+                    $type_name,
+                    rhs.len_bytes(),
+                    rhs_batch_dims,
                 ))
                 .bt());
             }
             if out.len_bytes() != need_out {
                 return Err(Error::Msg(format!(
                     "{}: out bytes={} doesn't match shape {:?} + [{m}, {n}]",
-                    $type_name, out.len_bytes(), lhs_batch_dims,
+                    $type_name,
+                    out.len_bytes(),
+                    lhs_batch_dims,
                 ))
                 .bt());
             }
@@ -4725,8 +5071,7 @@ macro_rules! matmul_int_kernel {
                         let rhs_row_off = rhs_off + kk * n;
                         let acc_row_off = i * n;
                         for j in 0..n {
-                            acc[acc_row_off + j] +=
-                                a * (rhs_view[rhs_row_off + j] as i32);
+                            acc[acc_row_off + j] += a * (rhs_view[rhs_row_off + j] as i32);
                         }
                     }
                 }
@@ -4790,9 +5135,15 @@ pub fn matmul_f64(
     let out_per_batch = m.saturating_mul(n);
     let lhs_batch_count: usize = lhs_batch_dims.iter().product::<usize>().max(1);
     let rhs_batch_count: usize = rhs_batch_dims.iter().product::<usize>().max(1);
-    let need_lhs = lhs_batch_count.saturating_mul(lhs_per_batch).saturating_mul(elem);
-    let need_rhs = rhs_batch_count.saturating_mul(rhs_per_batch).saturating_mul(elem);
-    let need_out = lhs_batch_count.saturating_mul(out_per_batch).saturating_mul(elem);
+    let need_lhs = lhs_batch_count
+        .saturating_mul(lhs_per_batch)
+        .saturating_mul(elem);
+    let need_rhs = rhs_batch_count
+        .saturating_mul(rhs_per_batch)
+        .saturating_mul(elem);
+    let need_out = lhs_batch_count
+        .saturating_mul(out_per_batch)
+        .saturating_mul(elem);
     if lhs.len_bytes() != need_lhs {
         return Err(Error::Msg(format!(
             "matmul_f64: lhs bytes={} doesn't match shape {:?} + [{m}, {k}] (f64)",
@@ -4990,8 +5341,13 @@ pub fn qmatmul_q4_0_f32(
 ) -> Result<()> {
     qmatmul_generic_f32::<fuel_quantized::BlockQ4_0>(
         "qmatmul_q4_0_f32",
-        activations, weight_bytes, out,
-        batch_count, m, n, k,
+        activations,
+        weight_bytes,
+        out,
+        batch_count,
+        m,
+        n,
+        k,
     )
 }
 
@@ -5007,8 +5363,13 @@ pub fn qmatmul_q8_0_f32(
 ) -> Result<()> {
     qmatmul_generic_f32::<fuel_quantized::BlockQ8_0>(
         "qmatmul_q8_0_f32",
-        activations, weight_bytes, out,
-        batch_count, m, n, k,
+        activations,
+        weight_bytes,
+        out,
+        batch_count,
+        m,
+        n,
+        k,
     )
 }
 
@@ -5024,8 +5385,13 @@ pub fn qmatmul_q4_k_m_f32(
 ) -> Result<()> {
     qmatmul_generic_f32::<fuel_quantized::BlockQ4K>(
         "qmatmul_q4_k_m_f32",
-        activations, weight_bytes, out,
-        batch_count, m, n, k,
+        activations,
+        weight_bytes,
+        out,
+        batch_count,
+        m,
+        n,
+        k,
     )
 }
 
@@ -5042,21 +5408,42 @@ macro_rules! qmatmul_thin_wrapper {
         ) -> Result<()> {
             qmatmul_generic_f32::<$blk>(
                 $kname,
-                activations, weight_bytes, out,
-                batch_count, m, n, k,
+                activations,
+                weight_bytes,
+                out,
+                batch_count,
+                m,
+                n,
+                k,
             )
         }
     };
 }
 
-qmatmul_thin_wrapper!(qmatmul_q4_1_f32, fuel_quantized::BlockQ4_1, "qmatmul_q4_1_f32");
-qmatmul_thin_wrapper!(qmatmul_q5_0_f32, fuel_quantized::BlockQ5_0, "qmatmul_q5_0_f32");
-qmatmul_thin_wrapper!(qmatmul_q5_1_f32, fuel_quantized::BlockQ5_1, "qmatmul_q5_1_f32");
-qmatmul_thin_wrapper!(qmatmul_q8_1_f32, fuel_quantized::BlockQ8_1, "qmatmul_q8_1_f32");
-qmatmul_thin_wrapper!(qmatmul_q2k_f32,  fuel_quantized::BlockQ2K,  "qmatmul_q2k_f32");
-qmatmul_thin_wrapper!(qmatmul_q3k_f32,  fuel_quantized::BlockQ3K,  "qmatmul_q3k_f32");
-qmatmul_thin_wrapper!(qmatmul_q5k_f32,  fuel_quantized::BlockQ5K,  "qmatmul_q5k_f32");
-qmatmul_thin_wrapper!(qmatmul_q6k_f32,  fuel_quantized::BlockQ6K,  "qmatmul_q6k_f32");
+qmatmul_thin_wrapper!(
+    qmatmul_q4_1_f32,
+    fuel_quantized::BlockQ4_1,
+    "qmatmul_q4_1_f32"
+);
+qmatmul_thin_wrapper!(
+    qmatmul_q5_0_f32,
+    fuel_quantized::BlockQ5_0,
+    "qmatmul_q5_0_f32"
+);
+qmatmul_thin_wrapper!(
+    qmatmul_q5_1_f32,
+    fuel_quantized::BlockQ5_1,
+    "qmatmul_q5_1_f32"
+);
+qmatmul_thin_wrapper!(
+    qmatmul_q8_1_f32,
+    fuel_quantized::BlockQ8_1,
+    "qmatmul_q8_1_f32"
+);
+qmatmul_thin_wrapper!(qmatmul_q2k_f32, fuel_quantized::BlockQ2K, "qmatmul_q2k_f32");
+qmatmul_thin_wrapper!(qmatmul_q3k_f32, fuel_quantized::BlockQ3K, "qmatmul_q3k_f32");
+qmatmul_thin_wrapper!(qmatmul_q5k_f32, fuel_quantized::BlockQ5K, "qmatmul_q5k_f32");
+qmatmul_thin_wrapper!(qmatmul_q6k_f32, fuel_quantized::BlockQ6K, "qmatmul_q6k_f32");
 
 // =============================================================================
 // 2D Convolution — multi-dtype (f64 native, bf16/f16 via f32 acc)
@@ -5180,14 +5567,16 @@ macro_rules! conv2d_half_kernel {
             let [n, cin, h_in, w_in] = x_shape;
             let [cout, cin_per_group, kh, kw] = w_shape;
             let [n_out, cout_out, h_out, w_out] = out_shape;
-            if n != n_out || cout != cout_out
-                || groups == 0 || cin % groups != 0 || cout % groups != 0
+            if n != n_out
+                || cout != cout_out
+                || groups == 0
+                || cin % groups != 0
+                || cout % groups != 0
                 || cin / groups != cin_per_group
             {
-                return Err(Error::Msg(format!(
-                    "{}: shape contract violation",
-                    stringify!($name),
-                ))
+                return Err(Error::Msg(
+                    format!("{}: shape contract violation", stringify!($name),),
+                )
                 .bt());
             }
             let cout_per_group = cout / groups;
@@ -5196,17 +5585,13 @@ macro_rules! conv2d_half_kernel {
                 || weight.len_bytes() != cout * cin_per_group * kh * kw * elem
                 || out.len_bytes() != n * cout * h_out * w_out * elem
             {
-                return Err(Error::Msg(format!(
-                    "{}: bytes mismatch", stringify!($name),
-                ))
-                .bt());
+                return Err(Error::Msg(format!("{}: bytes mismatch", stringify!($name),)).bt());
             }
             if let Some(b) = bias {
                 if b.len_bytes() != cout * elem {
-                    return Err(Error::Msg(format!(
-                        "{}: bias bytes mismatch", stringify!($name),
-                    ))
-                    .bt());
+                    return Err(
+                        Error::Msg(format!("{}: bias bytes mismatch", stringify!($name),)).bt(),
+                    );
                 }
             }
             let x_view: &[$T] = x.as_slice()?;
@@ -5230,14 +5615,21 @@ macro_rules! conv2d_half_kernel {
                             for ci in 0..cin_per_group {
                                 for kh_i in 0..kh {
                                     let in_h = (oh * sh + kh_i * dh) as isize - ph as isize;
-                                    if in_h < 0 || in_h as usize >= h_in { continue; }
+                                    if in_h < 0 || in_h as usize >= h_in {
+                                        continue;
+                                    }
                                     let in_h = in_h as usize;
                                     for kw_i in 0..kw {
                                         let in_w = (ow * sw + kw_i * dw) as isize - pw as isize;
-                                        if in_w < 0 || in_w as usize >= w_in { continue; }
+                                        if in_w < 0 || in_w as usize >= w_in {
+                                            continue;
+                                        }
                                         let in_w = in_w as usize;
-                                        let x_idx = ((b_idx * cin + (ci_offset + ci)) * h_in + in_h) * w_in + in_w;
-                                        let w_idx = ((co * cin_per_group + ci) * kh + kh_i) * kw + kw_i;
+                                        let x_idx =
+                                            ((b_idx * cin + (ci_offset + ci)) * h_in + in_h) * w_in
+                                                + in_w;
+                                        let w_idx =
+                                            ((co * cin_per_group + ci) * kh + kh_i) * kw + kw_i;
                                         acc += x_view[x_idx].to_f32() * w_view[w_idx].to_f32();
                                     }
                                 }
@@ -5383,8 +5775,18 @@ macro_rules! conv_transpose2d_native_kernel {
     };
 }
 
-conv_transpose2d_native_kernel!(conv_transpose2d_f32, f32, std::mem::size_of::<f32>(), 0.0_f32);
-conv_transpose2d_native_kernel!(conv_transpose2d_f64, f64, std::mem::size_of::<f64>(), 0.0_f64);
+conv_transpose2d_native_kernel!(
+    conv_transpose2d_f32,
+    f32,
+    std::mem::size_of::<f32>(),
+    0.0_f32
+);
+conv_transpose2d_native_kernel!(
+    conv_transpose2d_f64,
+    f64,
+    std::mem::size_of::<f64>(),
+    0.0_f64
+);
 
 /// ConvTranspose2D for half-floats — accumulates into a parallel
 /// `Vec<f32>` buffer, narrows back at the end. Same f32-accumulator
@@ -5415,10 +5817,9 @@ macro_rules! conv_transpose2d_half_kernel {
                 || cin != cin_w
                 || cout / groups != cout_per_group
             {
-                return Err(Error::Msg(format!(
-                    "{}: shape contract violation",
-                    stringify!($name),
-                ))
+                return Err(Error::Msg(
+                    format!("{}: shape contract violation", stringify!($name),),
+                )
                 .bt());
             }
             let elem = std::mem::size_of::<$T>();
@@ -5426,17 +5827,13 @@ macro_rules! conv_transpose2d_half_kernel {
                 || weight.len_bytes() != cin * cout_per_group * kh * kw * elem
                 || out.len_bytes() != n * cout * h_out * w_out * elem
             {
-                return Err(Error::Msg(format!(
-                    "{}: bytes mismatch", stringify!($name),
-                ))
-                .bt());
+                return Err(Error::Msg(format!("{}: bytes mismatch", stringify!($name),)).bt());
             }
             if let Some(b) = bias {
                 if b.len_bytes() != cout * elem {
-                    return Err(Error::Msg(format!(
-                        "{}: bias bytes mismatch", stringify!($name),
-                    ))
-                    .bt());
+                    return Err(
+                        Error::Msg(format!("{}: bias bytes mismatch", stringify!($name),)).bt(),
+                    );
                 }
             }
             let x_view: &[$T] = x.as_slice()?;
@@ -5470,20 +5867,33 @@ macro_rules! conv_transpose2d_half_kernel {
                         let ci = g * cin_per_group + ci_local;
                         for hi in 0..h_in {
                             for wi in 0..w_in {
-                                let val = x_view[((n_i * cin + ci) * h_in + hi) * w_in + wi].to_f32();
-                                if val == 0.0_f32 { continue; }
+                                let val =
+                                    x_view[((n_i * cin + ci) * h_in + hi) * w_in + wi].to_f32();
+                                if val == 0.0_f32 {
+                                    continue;
+                                }
                                 for co_local in 0..cout_per_group {
                                     let co = g * cout_per_group + co_local;
                                     for kh_i in 0..kh {
-                                        let oh_signed = (hi * sh) as isize + (kh_i * dh) as isize - ph as isize;
-                                        if oh_signed < 0 || oh_signed as usize >= h_out { continue; }
+                                        let oh_signed =
+                                            (hi * sh) as isize + (kh_i * dh) as isize - ph as isize;
+                                        if oh_signed < 0 || oh_signed as usize >= h_out {
+                                            continue;
+                                        }
                                         let oh = oh_signed as usize;
                                         for kw_i in 0..kw {
-                                            let ow_signed = (wi * sw) as isize + (kw_i * dw) as isize - pw as isize;
-                                            if ow_signed < 0 || ow_signed as usize >= w_out { continue; }
+                                            let ow_signed = (wi * sw) as isize
+                                                + (kw_i * dw) as isize
+                                                - pw as isize;
+                                            if ow_signed < 0 || ow_signed as usize >= w_out {
+                                                continue;
+                                            }
                                             let ow = ow_signed as usize;
-                                            let w_idx = ((ci * cout_per_group + co_local) * kh + kh_i) * kw + kw_i;
-                                            let out_idx = ((n_i * cout + co) * h_out + oh) * w_out + ow;
+                                            let w_idx =
+                                                ((ci * cout_per_group + co_local) * kh + kh_i) * kw
+                                                    + kw_i;
+                                            let out_idx =
+                                                ((n_i * cout + co) * h_out + oh) * w_out + ow;
                                             acc[out_idx] += val * w_view[w_idx].to_f32();
                                         }
                                     }
@@ -5526,7 +5936,11 @@ pub fn reduce_sum_to_f32(
     output_shape: &[usize],
 ) -> Result<()> {
     reduce_to::<f32, Sum>(
-        "reduce_sum_to_f32", input, output, input_shape, output_shape,
+        "reduce_sum_to_f32",
+        input,
+        output,
+        input_shape,
+        output_shape,
     )
 }
 
@@ -5538,7 +5952,11 @@ pub fn reduce_sum_to_f64(
     output_shape: &[usize],
 ) -> Result<()> {
     reduce_to::<f64, Sum>(
-        "reduce_sum_to_f64", input, output, input_shape, output_shape,
+        "reduce_sum_to_f64",
+        input,
+        output,
+        input_shape,
+        output_shape,
     )
 }
 
@@ -5551,7 +5969,11 @@ pub fn reduce_sum_to_bf16(
     output_shape: &[usize],
 ) -> Result<()> {
     reduce_to::<half::bf16, Sum>(
-        "reduce_sum_to_bf16", input, output, input_shape, output_shape,
+        "reduce_sum_to_bf16",
+        input,
+        output,
+        input_shape,
+        output_shape,
     )
 }
 
@@ -5564,7 +5986,11 @@ pub fn reduce_sum_to_f16(
     output_shape: &[usize],
 ) -> Result<()> {
     reduce_to::<half::f16, Sum>(
-        "reduce_sum_to_f16", input, output, input_shape, output_shape,
+        "reduce_sum_to_f16",
+        input,
+        output,
+        input_shape,
+        output_shape,
     )
 }
 
@@ -5576,7 +6002,11 @@ pub fn reduce_max_to_f32(
     output_shape: &[usize],
 ) -> Result<()> {
     reduce_to::<f32, Max>(
-        "reduce_max_to_f32", input, output, input_shape, output_shape,
+        "reduce_max_to_f32",
+        input,
+        output,
+        input_shape,
+        output_shape,
     )
 }
 
@@ -5588,7 +6018,11 @@ pub fn reduce_max_to_f64(
     output_shape: &[usize],
 ) -> Result<()> {
     reduce_to::<f64, Max>(
-        "reduce_max_to_f64", input, output, input_shape, output_shape,
+        "reduce_max_to_f64",
+        input,
+        output,
+        input_shape,
+        output_shape,
     )
 }
 
@@ -5601,7 +6035,11 @@ pub fn reduce_max_to_bf16(
     output_shape: &[usize],
 ) -> Result<()> {
     reduce_to::<half::bf16, Max>(
-        "reduce_max_to_bf16", input, output, input_shape, output_shape,
+        "reduce_max_to_bf16",
+        input,
+        output,
+        input_shape,
+        output_shape,
     )
 }
 
@@ -5613,7 +6051,11 @@ pub fn reduce_max_to_f16(
     output_shape: &[usize],
 ) -> Result<()> {
     reduce_to::<half::f16, Max>(
-        "reduce_max_to_f16", input, output, input_shape, output_shape,
+        "reduce_max_to_f16",
+        input,
+        output,
+        input_shape,
+        output_shape,
     )
 }
 
@@ -5678,10 +6120,7 @@ fn fused_linear_check<T>(
         || out.len_bytes() != lhs_count.saturating_mul(out_per).saturating_mul(elem)
         || bias.len_bytes() != n.saturating_mul(elem)
     {
-        return Err(Error::Msg(format!(
-            "{name}: bytes mismatch",
-        ))
-        .bt());
+        return Err(Error::Msg(format!("{name}: bytes mismatch",)).bt());
     }
     Ok(n_rep)
 }
@@ -5702,8 +6141,16 @@ macro_rules! fused_linear_native_kernel {
             k: usize,
         ) -> Result<()> {
             let n_rep = fused_linear_check::<$T>(
-                stringify!($name), lhs, rhs, bias, out,
-                lhs_batch_dims, rhs_batch_dims, m, n, k,
+                stringify!($name),
+                lhs,
+                rhs,
+                bias,
+                out,
+                lhs_batch_dims,
+                rhs_batch_dims,
+                m,
+                n,
+                k,
             )?;
             let lhs_view: &[$T] = lhs.as_slice()?;
             let rhs_view: &[$T] = rhs.as_slice()?;
@@ -5773,8 +6220,16 @@ macro_rules! fused_linear_half_kernel {
             k: usize,
         ) -> Result<()> {
             let n_rep = fused_linear_check::<$T>(
-                stringify!($name), lhs, rhs, bias, out,
-                lhs_batch_dims, rhs_batch_dims, m, n, k,
+                stringify!($name),
+                lhs,
+                rhs,
+                bias,
+                out,
+                lhs_batch_dims,
+                rhs_batch_dims,
+                m,
+                n,
+                k,
             )?;
             let lhs_view: &[$T] = lhs.as_slice()?;
             let rhs_view: &[$T] = rhs.as_slice()?;
@@ -5905,10 +6360,7 @@ fn fused_softmax_cross_entropy_check_shapes(
         REDUCTION_MEAN | REDUCTION_SUM => std::mem::size_of::<f32>(),
         REDUCTION_NONE => n_rows.saturating_mul(std::mem::size_of::<f32>()),
         other => {
-            return Err(Error::Msg(format!(
-                "{name}: unknown reduction tag {other}",
-            ))
-            .bt());
+            return Err(Error::Msg(format!("{name}: unknown reduction tag {other}",)).bt());
         }
     };
     if out_bytes != out_need {
@@ -5947,8 +6399,12 @@ macro_rules! fused_softmax_cross_entropy_kernel {
             fused_softmax_cross_entropy_check_shapes(
                 stringify!($name),
                 std::mem::size_of::<$T>(),
-                logits.len_bytes(), targets.len_bytes(), out.len_bytes(),
-                n_rows, vocab, reduction_tag,
+                logits.len_bytes(),
+                targets.len_bytes(),
+                out.len_bytes(),
+                n_rows,
+                vocab,
+                reduction_tag,
             )?;
             let out_view: &mut [f32] = out.as_slice_mut()?;
             if vocab == 0 {
@@ -6028,17 +6484,17 @@ macro_rules! fused_softmax_cross_entropy_kernel {
     };
 }
 
+fused_softmax_cross_entropy_kernel!(fused_softmax_cross_entropy_f32, f32, |v: f32| v as f64);
+fused_softmax_cross_entropy_kernel!(fused_softmax_cross_entropy_f64, f64, |v: f64| v);
 fused_softmax_cross_entropy_kernel!(
-    fused_softmax_cross_entropy_f32, f32, |v: f32| v as f64
+    fused_softmax_cross_entropy_bf16,
+    half::bf16,
+    |v: half::bf16| v.to_f64()
 );
 fused_softmax_cross_entropy_kernel!(
-    fused_softmax_cross_entropy_f64, f64, |v: f64| v
-);
-fused_softmax_cross_entropy_kernel!(
-    fused_softmax_cross_entropy_bf16, half::bf16, |v: half::bf16| v.to_f64()
-);
-fused_softmax_cross_entropy_kernel!(
-    fused_softmax_cross_entropy_f16, half::f16, |v: half::f16| v.to_f64()
+    fused_softmax_cross_entropy_f16,
+    half::f16,
+    |v: half::f16| v.to_f64()
 );
 
 // =============================================================================
@@ -6071,8 +6527,11 @@ fn causal_conv1d_check_shapes(
     weight_bytes: usize,
     bias_bytes: usize,
     out_bytes: usize,
-    batch: usize, channels: usize,
-    seq_in: usize, seq_out: usize, kernel: usize,
+    batch: usize,
+    channels: usize,
+    seq_in: usize,
+    seq_out: usize,
+    kernel: usize,
 ) -> Result<()> {
     if seq_in != seq_out + kernel - 1 {
         return Err(Error::Msg(format!(
@@ -6145,9 +6604,15 @@ macro_rules! causal_conv1d_native_kernel {
             causal_conv1d_check_shapes(
                 stringify!($name),
                 std::mem::size_of::<$T>(),
-                x.len_bytes(), weight.len_bytes(),
-                bias.len_bytes(), out.len_bytes(),
-                batch, channels, seq_in, seq_out, kernel,
+                x.len_bytes(),
+                weight.len_bytes(),
+                bias.len_bytes(),
+                out.len_bytes(),
+                batch,
+                channels,
+                seq_in,
+                seq_out,
+                kernel,
             )?;
             if seq_out == 0 || channels == 0 || batch == 0 {
                 return Ok(());
@@ -6213,9 +6678,15 @@ macro_rules! causal_conv1d_half_kernel {
             causal_conv1d_check_shapes(
                 stringify!($name),
                 std::mem::size_of::<$T>(),
-                x.len_bytes(), weight.len_bytes(),
-                bias.len_bytes(), out.len_bytes(),
-                batch, channels, seq_in, seq_out, kernel,
+                x.len_bytes(),
+                weight.len_bytes(),
+                bias.len_bytes(),
+                out.len_bytes(),
+                batch,
+                channels,
+                seq_in,
+                seq_out,
+                kernel,
             )?;
             if seq_out == 0 || channels == 0 || batch == 0 {
                 return Ok(());
@@ -6233,8 +6704,8 @@ macro_rules! causal_conv1d_half_kernel {
                     for t in 0..seq_out {
                         let mut acc: f32 = bias_c;
                         for k in 0..kernel {
-                            acc += w_view[w_row_off + k].to_f32()
-                                * x_view[x_row_off + t + k].to_f32();
+                            acc +=
+                                w_view[w_row_off + k].to_f32() * x_view[x_row_off + t + k].to_f32();
                         }
                         let stored = if use_silu {
                             acc / (1.0 + (-acc).exp())
@@ -6251,7 +6722,7 @@ macro_rules! causal_conv1d_half_kernel {
 }
 
 causal_conv1d_half_kernel!(causal_conv1d_bf16, half::bf16);
-causal_conv1d_half_kernel!(causal_conv1d_f16,  half::f16);
+causal_conv1d_half_kernel!(causal_conv1d_f16, half::f16);
 
 // =============================================================================
 // SelectiveScan — Mamba-1's selective state-space scan (forward)
@@ -6281,12 +6752,21 @@ fn selective_scan_check_shapes(
     b_bytes: usize,
     c_bytes: usize,
     out_bytes: usize,
-    batch: usize, seqlen: usize, dim: usize, dstate: usize,
+    batch: usize,
+    seqlen: usize,
+    dim: usize,
+    dstate: usize,
 ) -> Result<()> {
-    let u_need = batch.saturating_mul(seqlen).saturating_mul(dim).saturating_mul(elem_bytes);
+    let u_need = batch
+        .saturating_mul(seqlen)
+        .saturating_mul(dim)
+        .saturating_mul(elem_bytes);
     let delta_need = u_need;
     let a_need = dim.saturating_mul(dstate).saturating_mul(elem_bytes);
-    let b_need = batch.saturating_mul(seqlen).saturating_mul(dstate).saturating_mul(elem_bytes);
+    let b_need = batch
+        .saturating_mul(seqlen)
+        .saturating_mul(dstate)
+        .saturating_mul(elem_bytes);
     let c_need = b_need;
     let last_state_need = batch
         .saturating_mul(dim)
@@ -6295,20 +6775,17 @@ fn selective_scan_check_shapes(
     let out_need = u_need.saturating_add(last_state_need);
     let check = |name_arg: &str, got: usize, need: usize| -> Result<()> {
         if got != need {
-            Err(Error::Msg(format!(
-                "{name}: {name_arg} bytes={got}, expected {need}",
-            ))
-            .bt())
+            Err(Error::Msg(format!("{name}: {name_arg} bytes={got}, expected {need}",)).bt())
         } else {
             Ok(())
         }
     };
-    check("u",     u_bytes,     u_need)?;
+    check("u", u_bytes, u_need)?;
     check("delta", delta_bytes, delta_need)?;
-    check("a",     a_bytes,     a_need)?;
-    check("b",     b_bytes,     b_need)?;
-    check("c",     c_bytes,     c_need)?;
-    check("out",   out_bytes,   out_need)?;
+    check("a", a_bytes, a_need)?;
+    check("b", b_bytes, b_need)?;
+    check("c", c_bytes, c_need)?;
+    check("out", out_bytes, out_need)?;
     Ok(())
 }
 
@@ -6342,9 +6819,16 @@ macro_rules! selective_scan_kernel {
             selective_scan_check_shapes(
                 stringify!($name),
                 std::mem::size_of::<$T>(),
-                u.len_bytes(), delta.len_bytes(), a.len_bytes(),
-                b.len_bytes(), c.len_bytes(), out.len_bytes(),
-                batch, seqlen, dim, dstate,
+                u.len_bytes(),
+                delta.len_bytes(),
+                a.len_bytes(),
+                b.len_bytes(),
+                c.len_bytes(),
+                out.len_bytes(),
+                batch,
+                seqlen,
+                dim,
+                dstate,
             )?;
             if batch == 0 || seqlen == 0 || dim == 0 || dstate == 0 {
                 let out_view: &mut [$T] = out.as_slice_mut()?;
@@ -6411,14 +6895,21 @@ macro_rules! selective_scan_kernel {
     };
 }
 
-selective_scan_kernel!(selective_scan_f32, f32, |v: f32| v as f64, |v: f64| v as f32);
-selective_scan_kernel!(selective_scan_f64, f64, |v: f64| v,         |v: f64| v);
-selective_scan_kernel!(selective_scan_bf16, half::bf16,
+selective_scan_kernel!(selective_scan_f32, f32, |v: f32| v as f64, |v: f64| v
+    as f32);
+selective_scan_kernel!(selective_scan_f64, f64, |v: f64| v, |v: f64| v);
+selective_scan_kernel!(
+    selective_scan_bf16,
+    half::bf16,
     |v: half::bf16| v.to_f64(),
-    |v: f64| half::bf16::from_f32(v as f32));
-selective_scan_kernel!(selective_scan_f16, half::f16,
+    |v: f64| half::bf16::from_f32(v as f32)
+);
+selective_scan_kernel!(
+    selective_scan_f16,
+    half::f16,
     |v: half::f16| v.to_f64(),
-    |v: f64| half::f16::from_f32(v as f32));
+    |v: f64| half::f16::from_f32(v as f32)
+);
 
 // =============================================================================
 // NonZeroIndices — data-determined nonzero-index extraction (the keystone
@@ -6514,13 +7005,27 @@ fn ssd_chunk_scan_check_shapes(
     b_bytes: usize,
     c_bytes: usize,
     out_bytes: usize,
-    batch: usize, seqlen: usize, heads: usize,
-    head_dim: usize, state_dim: usize,
+    batch: usize,
+    seqlen: usize,
+    heads: usize,
+    head_dim: usize,
+    state_dim: usize,
 ) -> Result<()> {
-    let x_need = batch.saturating_mul(seqlen).saturating_mul(heads).saturating_mul(head_dim).saturating_mul(elem_bytes);
-    let dt_need = batch.saturating_mul(seqlen).saturating_mul(heads).saturating_mul(elem_bytes);
+    let x_need = batch
+        .saturating_mul(seqlen)
+        .saturating_mul(heads)
+        .saturating_mul(head_dim)
+        .saturating_mul(elem_bytes);
+    let dt_need = batch
+        .saturating_mul(seqlen)
+        .saturating_mul(heads)
+        .saturating_mul(elem_bytes);
     let a_need = heads.saturating_mul(elem_bytes);
-    let b_need = batch.saturating_mul(seqlen).saturating_mul(heads).saturating_mul(state_dim).saturating_mul(elem_bytes);
+    let b_need = batch
+        .saturating_mul(seqlen)
+        .saturating_mul(heads)
+        .saturating_mul(state_dim)
+        .saturating_mul(elem_bytes);
     let c_need = b_need;
     let last_state_need = batch
         .saturating_mul(heads)
@@ -6530,19 +7035,16 @@ fn ssd_chunk_scan_check_shapes(
     let out_need = x_need.saturating_add(last_state_need);
     let check = |name_arg: &str, got: usize, need: usize| -> Result<()> {
         if got != need {
-            Err(Error::Msg(format!(
-                "{name}: {name_arg} bytes={got}, expected {need}",
-            ))
-            .bt())
+            Err(Error::Msg(format!("{name}: {name_arg} bytes={got}, expected {need}",)).bt())
         } else {
             Ok(())
         }
     };
-    check("x",   x_bytes,   x_need)?;
-    check("dt",  dt_bytes,  dt_need)?;
-    check("a",   a_bytes,   a_need)?;
-    check("b",   b_bytes,   b_need)?;
-    check("c",   c_bytes,   c_need)?;
+    check("x", x_bytes, x_need)?;
+    check("dt", dt_bytes, dt_need)?;
+    check("a", a_bytes, a_need)?;
+    check("b", b_bytes, b_need)?;
+    check("c", c_bytes, c_need)?;
     check("out", out_bytes, out_need)?;
     Ok(())
 }
@@ -6607,9 +7109,17 @@ macro_rules! ssd_chunk_scan_kernel {
             ssd_chunk_scan_check_shapes(
                 stringify!($name),
                 std::mem::size_of::<$T>(),
-                x.len_bytes(), dt.len_bytes(), a.len_bytes(),
-                b.len_bytes(), c.len_bytes(), out.len_bytes(),
-                batch, seqlen, heads, head_dim, state_dim,
+                x.len_bytes(),
+                dt.len_bytes(),
+                a.len_bytes(),
+                b.len_bytes(),
+                c.len_bytes(),
+                out.len_bytes(),
+                batch,
+                seqlen,
+                heads,
+                head_dim,
+                state_dim,
             )?;
             if batch == 0 || seqlen == 0 || heads == 0 || head_dim == 0 || state_dim == 0 {
                 let out_view: &mut [$T] = out.as_slice_mut()?;
@@ -6666,14 +7176,21 @@ macro_rules! ssd_chunk_scan_kernel {
     };
 }
 
-ssd_chunk_scan_kernel!(ssd_chunk_scan_f32, f32, |v: f32| v as f64, |v: f64| v as f32);
-ssd_chunk_scan_kernel!(ssd_chunk_scan_f64, f64, |v: f64| v,         |v: f64| v);
-ssd_chunk_scan_kernel!(ssd_chunk_scan_bf16, half::bf16,
+ssd_chunk_scan_kernel!(ssd_chunk_scan_f32, f32, |v: f32| v as f64, |v: f64| v
+    as f32);
+ssd_chunk_scan_kernel!(ssd_chunk_scan_f64, f64, |v: f64| v, |v: f64| v);
+ssd_chunk_scan_kernel!(
+    ssd_chunk_scan_bf16,
+    half::bf16,
     |v: half::bf16| v.to_f64(),
-    |v: f64| half::bf16::from_f32(v as f32));
-ssd_chunk_scan_kernel!(ssd_chunk_scan_f16, half::f16,
+    |v: f64| half::bf16::from_f32(v as f32)
+);
+ssd_chunk_scan_kernel!(
+    ssd_chunk_scan_f16,
+    half::f16,
     |v: half::f16| v.to_f64(),
-    |v: f64| half::f16::from_f32(v as f32));
+    |v: f64| half::f16::from_f32(v as f32)
+);
 
 // =============================================================================
 // Nf4Matmul — bitsandbytes 4-bit NormalFloat quantized matmul
@@ -6733,32 +7250,46 @@ fn nf4_matmul_check_shapes(
     w_packed_bytes: usize,
     absmax_bytes: usize,
     out_bytes: usize,
-    batch: usize, m: usize, n: usize, k: usize, block_size: usize,
+    batch: usize,
+    m: usize,
+    n: usize,
+    k: usize,
+    block_size: usize,
 ) -> Result<()> {
     if k == 0 || k % 2 != 0 {
-        return Err(Error::Msg(format!(
-            "{name}: k={k} must be even and non-zero",
-        )).bt());
+        return Err(Error::Msg(format!("{name}: k={k} must be even and non-zero",)).bt());
     }
     if block_size == 0 || k % block_size != 0 {
         return Err(Error::Msg(format!(
             "{name}: k={k} must be a multiple of block_size={block_size}",
-        )).bt());
+        ))
+        .bt());
     }
     let n_blocks = k / block_size;
-    let a_need = batch.saturating_mul(m).saturating_mul(k).saturating_mul(elem_bytes);
+    let a_need = batch
+        .saturating_mul(m)
+        .saturating_mul(k)
+        .saturating_mul(elem_bytes);
     let w_need = n.saturating_mul(k / 2);
-    let abs_need = n.saturating_mul(n_blocks).saturating_mul(std::mem::size_of::<f32>());
-    let out_need = batch.saturating_mul(m).saturating_mul(n).saturating_mul(elem_bytes);
+    let abs_need = n
+        .saturating_mul(n_blocks)
+        .saturating_mul(std::mem::size_of::<f32>());
+    let out_need = batch
+        .saturating_mul(m)
+        .saturating_mul(n)
+        .saturating_mul(elem_bytes);
     if activations_bytes != a_need {
         return Err(Error::Msg(format!(
             "{name}: activations bytes={activations_bytes}, expected {a_need}",
-        )).bt());
+        ))
+        .bt());
     }
     if w_packed_bytes != w_need {
         return Err(Error::Msg(format!(
-            "{name}: w_packed bytes={w_packed_bytes}, expected {w_need} (n={n} × k/2={})", k / 2,
-        )).bt());
+            "{name}: w_packed bytes={w_packed_bytes}, expected {w_need} (n={n} × k/2={})",
+            k / 2,
+        ))
+        .bt());
     }
     if absmax_bytes != abs_need {
         return Err(Error::Msg(format!(
@@ -6768,7 +7299,8 @@ fn nf4_matmul_check_shapes(
     if out_bytes != out_need {
         return Err(Error::Msg(format!(
             "{name}: out bytes={out_bytes}, expected {out_need}",
-        )).bt());
+        ))
+        .bt());
     }
     Ok(())
 }
@@ -6786,14 +7318,24 @@ macro_rules! nf4_matmul_native {
             w_packed: &CpuStorageBytes,
             absmax: &CpuStorageBytes,
             out: &mut CpuStorageBytes,
-            batch: usize, m: usize, n: usize, k: usize, block_size: usize,
+            batch: usize,
+            m: usize,
+            n: usize,
+            k: usize,
+            block_size: usize,
         ) -> Result<()> {
             nf4_matmul_check_shapes(
                 stringify!($name),
                 std::mem::size_of::<$T>(),
-                activations.len_bytes(), w_packed.len_bytes(),
-                absmax.len_bytes(), out.len_bytes(),
-                batch, m, n, k, block_size,
+                activations.len_bytes(),
+                w_packed.len_bytes(),
+                absmax.len_bytes(),
+                out.len_bytes(),
+                batch,
+                m,
+                n,
+                k,
+                block_size,
             )?;
             if batch == 0 || m == 0 || n == 0 || k == 0 {
                 let out_view: &mut [$T] = out.as_slice_mut()?;
@@ -6833,8 +7375,18 @@ macro_rules! nf4_matmul_native {
 }
 
 nf4_matmul_native!(nf4_matmul_f32, f32, |v: f32| v, |v: f32| v);
-nf4_matmul_native!(nf4_matmul_f16, half::f16, |v: half::f16| v.to_f32(), |v: f32| half::f16::from_f32(v));
-nf4_matmul_native!(nf4_matmul_bf16, half::bf16, |v: half::bf16| v.to_f32(), |v: f32| half::bf16::from_f32(v));
+nf4_matmul_native!(
+    nf4_matmul_f16,
+    half::f16,
+    |v: half::f16| v.to_f32(),
+    |v: f32| half::f16::from_f32(v)
+);
+nf4_matmul_native!(
+    nf4_matmul_bf16,
+    half::bf16,
+    |v: half::bf16| v.to_f32(),
+    |v: f32| half::bf16::from_f32(v)
+);
 
 // =============================================================================
 // FlashAttn — naive multi-head SDPA (math definition)
@@ -6853,14 +7405,25 @@ nf4_matmul_native!(nf4_matmul_bf16, half::bf16, |v: half::bf16| v.to_f32(), |v: 
 
 #[inline]
 fn flash_attn_admissible(
-    qi: usize, kj: usize,
+    qi: usize,
+    kj: usize,
     causal: bool,
     window_left: Option<usize>,
     window_right: Option<usize>,
 ) -> bool {
-    if causal && kj > qi { return false; }
-    if let Some(w) = window_left { if kj + w < qi { return false; } }
-    if let Some(w) = window_right { if kj > qi + w { return false; } }
+    if causal && kj > qi {
+        return false;
+    }
+    if let Some(w) = window_left {
+        if kj + w < qi {
+            return false;
+        }
+    }
+    if let Some(w) = window_right {
+        if kj > qi + w {
+            return false;
+        }
+    }
     true
 }
 
@@ -6874,8 +7437,13 @@ macro_rules! flash_attn_native_kernel {
             v: &CpuStorageBytes,
             alibi_slopes: Option<&CpuStorageBytes>,
             out: &mut CpuStorageBytes,
-            b: usize, hq: usize, hkv: usize,
-            sq: usize, sk: usize, d: usize, k_len: usize,
+            b: usize,
+            hq: usize,
+            hkv: usize,
+            sq: usize,
+            sk: usize,
+            d: usize,
+            k_len: usize,
             softmax_scale: f32,
             causal: bool,
             window_left: Option<usize>,
@@ -6890,21 +7458,20 @@ macro_rules! flash_attn_native_kernel {
                 .bt());
             }
             let elem = std::mem::size_of::<$T>();
-            if q.len_bytes()   != b * hq  * sq * d * elem
-                || k.len_bytes()   != b * hkv * sk * d * elem
-                || v.len_bytes()   != b * hkv * sk * d * elem
-                || out.len_bytes() != b * hq  * sq * d * elem
+            if q.len_bytes() != b * hq * sq * d * elem
+                || k.len_bytes() != b * hkv * sk * d * elem
+                || v.len_bytes() != b * hkv * sk * d * elem
+                || out.len_bytes() != b * hq * sq * d * elem
             {
-                return Err(Error::Msg(format!(
-                    "{}: bytes mismatch", stringify!($name),
-                ))
-                .bt());
+                return Err(Error::Msg(format!("{}: bytes mismatch", stringify!($name),)).bt());
             }
             if let Some(a) = alibi_slopes {
                 if a.len_bytes() != hq * elem {
                     return Err(Error::Msg(format!(
                         "{}: alibi_slopes must be [{hq}] {} bytes, got {}",
-                        stringify!($name), hq * elem, a.len_bytes(),
+                        stringify!($name),
+                        hq * elem,
+                        a.len_bytes(),
                     ))
                     .bt());
                 }
@@ -6931,13 +7498,17 @@ macro_rules! flash_attn_native_kernel {
             // `qi + causal_offset` (= `qi + cached_len` in decode).
             if k_len > sk {
                 return Err(Error::Msg(format!(
-                    "{}: k_len ({k_len}) exceeds K extent sk ({sk})", stringify!($name),
-                )).bt());
+                    "{}: k_len ({k_len}) exceeds K extent sk ({sk})",
+                    stringify!($name),
+                ))
+                .bt());
             }
             let causal_offset = k_len.saturating_sub(sq);
             let scale = softmax_scale as $T;
             // Zero output up front so masked rows stay zero.
-            for slot in out_view.iter_mut() { *slot = $T_zero; }
+            for slot in out_view.iter_mut() {
+                *slot = $T_zero;
+            }
             for bi in 0..b {
                 for hi in 0..hq {
                     let kv_h = hi / groups;
@@ -6960,8 +7531,8 @@ macro_rules! flash_attn_native_kernel {
                             }
                             admissible[kj] = true;
                             let mut acc: $T = $T_zero;
-                            let q_row = &q_view[q_off + qi * d .. q_off + (qi + 1) * d];
-                            let k_row = &k_view[k_off + kj * d .. k_off + (kj + 1) * d];
+                            let q_row = &q_view[q_off + qi * d..q_off + (qi + 1) * d];
+                            let k_row = &k_view[k_off + kj * d..k_off + (kj + 1) * d];
                             for (qx, kx) in q_row.iter().zip(k_row.iter()) {
                                 acc += (*qx) * (*kx);
                             }
@@ -6975,9 +7546,13 @@ macro_rules! flash_attn_native_kernel {
                                 s += slope * delta;
                             }
                             scores[kj] = s;
-                            if s > max_score { max_score = s; }
+                            if s > max_score {
+                                max_score = s;
+                            }
                         }
-                        if !max_score.is_finite() { continue; }
+                        if !max_score.is_finite() {
+                            continue;
+                        }
                         let mut sum: $T = $T_zero;
                         for (s, ad) in scores.iter_mut().zip(admissible.iter()) {
                             if *ad {
@@ -6987,17 +7562,22 @@ macro_rules! flash_attn_native_kernel {
                                 *s = $T_zero;
                             }
                         }
-                        if sum == $T_zero { continue; }
+                        if sum == $T_zero {
+                            continue;
+                        }
                         let inv_sum = (1.0 as $T) / sum;
                         for kj in 0..k_len {
-                            if !admissible[kj] { continue; }
+                            if !admissible[kj] {
+                                continue;
+                            }
                             let p_ij = scores[kj] * inv_sum;
-                            if p_ij == $T_zero { continue; }
-                            let v_row = &v_view[v_off + kj * d .. v_off + (kj + 1) * d];
-                            for (od, vd) in
-                                out_view[o_off + qi * d .. o_off + (qi + 1) * d]
-                                    .iter_mut()
-                                    .zip(v_row.iter())
+                            if p_ij == $T_zero {
+                                continue;
+                            }
+                            let v_row = &v_view[v_off + kj * d..v_off + (kj + 1) * d];
+                            for (od, vd) in out_view[o_off + qi * d..o_off + (qi + 1) * d]
+                                .iter_mut()
+                                .zip(v_row.iter())
                             {
                                 *od += p_ij * (*vd);
                             }
@@ -7024,8 +7604,13 @@ macro_rules! flash_attn_half_kernel {
             v: &CpuStorageBytes,
             alibi_slopes: Option<&CpuStorageBytes>,
             out: &mut CpuStorageBytes,
-            b: usize, hq: usize, hkv: usize,
-            sq: usize, sk: usize, d: usize, k_len: usize,
+            b: usize,
+            hq: usize,
+            hkv: usize,
+            sq: usize,
+            sk: usize,
+            d: usize,
+            k_len: usize,
             softmax_scale: f32,
             causal: bool,
             window_left: Option<usize>,
@@ -7040,20 +7625,18 @@ macro_rules! flash_attn_half_kernel {
                 .bt());
             }
             let elem = std::mem::size_of::<$T>();
-            if q.len_bytes()   != b * hq  * sq * d * elem
-                || k.len_bytes()   != b * hkv * sk * d * elem
-                || v.len_bytes()   != b * hkv * sk * d * elem
-                || out.len_bytes() != b * hq  * sq * d * elem
+            if q.len_bytes() != b * hq * sq * d * elem
+                || k.len_bytes() != b * hkv * sk * d * elem
+                || v.len_bytes() != b * hkv * sk * d * elem
+                || out.len_bytes() != b * hq * sq * d * elem
             {
-                return Err(Error::Msg(format!(
-                    "{}: bytes mismatch", stringify!($name),
-                ))
-                .bt());
+                return Err(Error::Msg(format!("{}: bytes mismatch", stringify!($name),)).bt());
             }
             if let Some(a) = alibi_slopes {
                 if a.len_bytes() != hq * elem {
                     return Err(Error::Msg(format!(
-                        "{}: alibi_slopes bytes mismatch", stringify!($name),
+                        "{}: alibi_slopes bytes mismatch",
+                        stringify!($name),
                     ))
                     .bt());
                 }
@@ -7078,11 +7661,15 @@ macro_rules! flash_attn_half_kernel {
             // row `qi` sits at absolute position `qi + causal_offset`.
             if k_len > sk {
                 return Err(Error::Msg(format!(
-                    "{}: k_len ({k_len}) exceeds K extent sk ({sk})", stringify!($name),
-                )).bt());
+                    "{}: k_len ({k_len}) exceeds K extent sk ({sk})",
+                    stringify!($name),
+                ))
+                .bt());
             }
             let causal_offset = k_len.saturating_sub(sq);
-            for slot in out_view.iter_mut() { *slot = <$T>::from_f32(0.0); }
+            for slot in out_view.iter_mut() {
+                *slot = <$T>::from_f32(0.0);
+            }
             for bi in 0..b {
                 for hi in 0..hq {
                     let kv_h = hi / groups;
@@ -7102,8 +7689,8 @@ macro_rules! flash_attn_half_kernel {
                             }
                             admissible[kj] = true;
                             let mut acc = 0.0_f32;
-                            let q_row = &q_view[q_off + qi * d .. q_off + (qi + 1) * d];
-                            let k_row = &k_view[k_off + kj * d .. k_off + (kj + 1) * d];
+                            let q_row = &q_view[q_off + qi * d..q_off + (qi + 1) * d];
+                            let k_row = &k_view[k_off + kj * d..k_off + (kj + 1) * d];
                             for (qx, kx) in q_row.iter().zip(k_row.iter()) {
                                 acc += qx.to_f32() * kx.to_f32();
                             }
@@ -7116,9 +7703,13 @@ macro_rules! flash_attn_half_kernel {
                                 s += slope * delta;
                             }
                             scores[kj] = s;
-                            if s > max_score { max_score = s; }
+                            if s > max_score {
+                                max_score = s;
+                            }
                         }
-                        if !max_score.is_finite() { continue; }
+                        if !max_score.is_finite() {
+                            continue;
+                        }
                         let mut sum = 0.0_f32;
                         for (s, ad) in scores.iter_mut().zip(admissible.iter()) {
                             if *ad {
@@ -7128,22 +7719,27 @@ macro_rules! flash_attn_half_kernel {
                                 *s = 0.0;
                             }
                         }
-                        if sum == 0.0 { continue; }
+                        if sum == 0.0 {
+                            continue;
+                        }
                         let inv_sum = 1.0_f32 / sum;
                         let mut row_acc = vec![0.0_f32; d];
                         for kj in 0..k_len {
-                            if !admissible[kj] { continue; }
+                            if !admissible[kj] {
+                                continue;
+                            }
                             let p_ij = scores[kj] * inv_sum;
-                            if p_ij == 0.0 { continue; }
-                            let v_row = &v_view[v_off + kj * d .. v_off + (kj + 1) * d];
+                            if p_ij == 0.0 {
+                                continue;
+                            }
+                            let v_row = &v_view[v_off + kj * d..v_off + (kj + 1) * d];
                             for (od, vd) in row_acc.iter_mut().zip(v_row.iter()) {
                                 *od += p_ij * vd.to_f32();
                             }
                         }
-                        for (slot, val) in
-                            out_view[o_off + qi * d .. o_off + (qi + 1) * d]
-                                .iter_mut()
-                                .zip(row_acc.iter())
+                        for (slot, val) in out_view[o_off + qi * d..o_off + (qi + 1) * d]
+                            .iter_mut()
+                            .zip(row_acc.iter())
                         {
                             *slot = <$T>::from_f32(*val);
                         }
@@ -7176,11 +7772,20 @@ macro_rules! flash_attn_backward_native_inner {
     ($name:ident, $T:ty, $T_zero:expr) => {
         #[allow(clippy::too_many_arguments)]
         fn $name(
-            q_view: &[$T], k_view: &[$T], v_view: &[$T], do_view: &[$T],
+            q_view: &[$T],
+            k_view: &[$T],
+            v_view: &[$T],
+            do_view: &[$T],
             alibi_view: Option<&[$T]>,
-            dq: &mut [$T], dk: &mut [$T], dv: &mut [$T],
-            b: usize, hq: usize, hkv: usize,
-            sq: usize, sk: usize, d: usize,
+            dq: &mut [$T],
+            dk: &mut [$T],
+            dv: &mut [$T],
+            b: usize,
+            hq: usize,
+            hkv: usize,
+            sq: usize,
+            sk: usize,
+            d: usize,
             softmax_scale: f32,
             causal: bool,
             window_left: Option<usize>,
@@ -7198,9 +7803,15 @@ macro_rules! flash_attn_backward_native_inner {
                 (c_t, (1.0 as $T) / c_t)
             });
 
-            for slot in dq.iter_mut() { *slot = $T_zero; }
-            for slot in dk.iter_mut() { *slot = $T_zero; }
-            for slot in dv.iter_mut() { *slot = $T_zero; }
+            for slot in dq.iter_mut() {
+                *slot = $T_zero;
+            }
+            for slot in dk.iter_mut() {
+                *slot = $T_zero;
+            }
+            for slot in dv.iter_mut() {
+                *slot = $T_zero;
+            }
 
             for bi in 0..b {
                 for hi in 0..hq {
@@ -7220,9 +7831,16 @@ macro_rules! flash_attn_backward_native_inner {
                         let mut max_s = <$T>::NEG_INFINITY;
                         for kj in 0..sk {
                             if !crate::byte_kernels::flash_attn_admissible(
-                                qi, kj, causal, window_left, window_right) { continue; }
-                            let q_row = &q_view[q_off + qi * d .. q_off + (qi + 1) * d];
-                            let k_row = &k_view[k_off + kj * d .. k_off + (kj + 1) * d];
+                                qi,
+                                kj,
+                                causal,
+                                window_left,
+                                window_right,
+                            ) {
+                                continue;
+                            }
+                            let q_row = &q_view[q_off + qi * d..q_off + (qi + 1) * d];
+                            let k_row = &k_view[k_off + kj * d..k_off + (kj + 1) * d];
                             let mut acc: $T = $T_zero;
                             for (qx, kx) in q_row.iter().zip(k_row.iter()) {
                                 acc += (*qx) * (*kx);
@@ -7237,9 +7855,13 @@ macro_rules! flash_attn_backward_native_inner {
                                 s += slope * delta;
                             }
                             s_row[kj] = s;
-                            if s > max_s { max_s = s; }
+                            if s > max_s {
+                                max_s = s;
+                            }
                         }
-                        if !max_s.is_finite() { continue; }
+                        if !max_s.is_finite() {
+                            continue;
+                        }
                         let mut sum_exp: $T = $T_zero;
                         for kj in 0..sk {
                             if s_row[kj].is_finite() {
@@ -7248,23 +7870,31 @@ macro_rules! flash_attn_backward_native_inner {
                                 sum_exp += e;
                             }
                         }
-                        if sum_exp == $T_zero { continue; }
+                        if sum_exp == $T_zero {
+                            continue;
+                        }
                         let inv_sum = (1.0 as $T) / sum_exp;
-                        for kj in 0..sk { p_row[kj] *= inv_sum; }
+                        for kj in 0..sk {
+                            p_row[kj] *= inv_sum;
+                        }
 
-                        let do_row = &do_view[do_off + qi * d .. do_off + (qi + 1) * d];
+                        let do_row = &do_view[do_off + qi * d..do_off + (qi + 1) * d];
                         for kj in 0..sk {
                             let p_ij = p_row[kj];
-                            if p_ij == $T_zero { continue; }
+                            if p_ij == $T_zero {
+                                continue;
+                            }
                             let dst_off = dv_off + kj * d;
-                            for (dvd, &dod) in dv[dst_off .. dst_off + d].iter_mut().zip(do_row.iter()) {
+                            for (dvd, &dod) in
+                                dv[dst_off..dst_off + d].iter_mut().zip(do_row.iter())
+                            {
                                 *dvd += p_ij * dod;
                             }
                         }
 
                         let mut dp = vec![$T_zero; sk];
                         for kj in 0..sk {
-                            let v_row = &v_view[v_off + kj * d .. v_off + (kj + 1) * d];
+                            let v_row = &v_view[v_off + kj * d..v_off + (kj + 1) * d];
                             let mut acc: $T = $T_zero;
                             for (dod, &vd) in do_row.iter().zip(v_row.iter()) {
                                 acc += (*dod) * vd;
@@ -7273,7 +7903,9 @@ macro_rules! flash_attn_backward_native_inner {
                         }
 
                         let mut row_dot: $T = $T_zero;
-                        for kj in 0..sk { row_dot += p_row[kj] * dp[kj]; }
+                        for kj in 0..sk {
+                            row_dot += p_row[kj] * dp[kj];
+                        }
                         let mut ds = vec![$T_zero; sk];
                         for kj in 0..sk {
                             ds[kj] = (dp[kj] - row_dot) * p_row[kj];
@@ -7290,18 +7922,25 @@ macro_rules! flash_attn_backward_native_inner {
                         let dq_row_off = dq_off + qi * d;
                         for kj in 0..sk {
                             let ds_ij = ds[kj] * scale;
-                            if ds_ij == $T_zero { continue; }
-                            let k_row = &k_view[k_off + kj * d .. k_off + (kj + 1) * d];
-                            for (dqd, &kd) in dq[dq_row_off .. dq_row_off + d].iter_mut().zip(k_row.iter()) {
+                            if ds_ij == $T_zero {
+                                continue;
+                            }
+                            let k_row = &k_view[k_off + kj * d..k_off + (kj + 1) * d];
+                            for (dqd, &kd) in
+                                dq[dq_row_off..dq_row_off + d].iter_mut().zip(k_row.iter())
+                            {
                                 *dqd += ds_ij * kd;
                             }
                         }
-                        let q_row = &q_view[q_off + qi * d .. q_off + (qi + 1) * d];
+                        let q_row = &q_view[q_off + qi * d..q_off + (qi + 1) * d];
                         for kj in 0..sk {
                             let ds_ij = ds[kj] * scale;
-                            if ds_ij == $T_zero { continue; }
+                            if ds_ij == $T_zero {
+                                continue;
+                            }
                             let dst_off = dk_off + kj * d;
-                            for (dkd, &qd) in dk[dst_off .. dst_off + d].iter_mut().zip(q_row.iter()) {
+                            for (dkd, &qd) in dk[dst_off..dst_off + d].iter_mut().zip(q_row.iter())
+                            {
                                 *dkd += ds_ij * qd;
                             }
                         }
@@ -7321,11 +7960,20 @@ macro_rules! flash_attn_backward_half_inner {
     ($name:ident, $T:ty) => {
         #[allow(clippy::too_many_arguments)]
         fn $name(
-            q_view: &[$T], k_view: &[$T], v_view: &[$T], do_view: &[$T],
+            q_view: &[$T],
+            k_view: &[$T],
+            v_view: &[$T],
+            do_view: &[$T],
             alibi_view: Option<&[$T]>,
-            dq: &mut [$T], dk: &mut [$T], dv: &mut [$T],
-            b: usize, hq: usize, hkv: usize,
-            sq: usize, sk: usize, d: usize,
+            dq: &mut [$T],
+            dk: &mut [$T],
+            dv: &mut [$T],
+            b: usize,
+            hq: usize,
+            hkv: usize,
+            sq: usize,
+            sk: usize,
+            d: usize,
             softmax_scale: f32,
             causal: bool,
             window_left: Option<usize>,
@@ -7361,24 +8009,37 @@ macro_rules! flash_attn_backward_half_inner {
                         let mut max_s = f32::NEG_INFINITY;
                         for kj in 0..sk {
                             if !crate::byte_kernels::flash_attn_admissible(
-                                qi, kj, causal, window_left, window_right) { continue; }
-                            let q_row = &q_view[q_off + qi * d .. q_off + (qi + 1) * d];
-                            let k_row = &k_view[k_off + kj * d .. k_off + (kj + 1) * d];
+                                qi,
+                                kj,
+                                causal,
+                                window_left,
+                                window_right,
+                            ) {
+                                continue;
+                            }
+                            let q_row = &q_view[q_off + qi * d..q_off + (qi + 1) * d];
+                            let k_row = &k_view[k_off + kj * d..k_off + (kj + 1) * d];
                             let mut acc = 0.0_f32;
                             for (qx, kx) in q_row.iter().zip(k_row.iter()) {
                                 acc += qx.to_f32() * kx.to_f32();
                             }
                             let mut s = acc * softmax_scale;
                             s_pre_softcap[kj] = s;
-                            if let Some(c) = softcap { s = (s / c).tanh() * c; }
+                            if let Some(c) = softcap {
+                                s = (s / c).tanh() * c;
+                            }
                             if let Some(slope) = alibi_h {
                                 let delta = kj as f32 - qi as f32;
                                 s += slope * delta;
                             }
                             s_row[kj] = s;
-                            if s > max_s { max_s = s; }
+                            if s > max_s {
+                                max_s = s;
+                            }
                         }
-                        if !max_s.is_finite() { continue; }
+                        if !max_s.is_finite() {
+                            continue;
+                        }
                         let mut sum_exp = 0.0_f32;
                         for kj in 0..sk {
                             if s_row[kj].is_finite() {
@@ -7387,14 +8048,20 @@ macro_rules! flash_attn_backward_half_inner {
                                 sum_exp += e;
                             }
                         }
-                        if sum_exp == 0.0 { continue; }
+                        if sum_exp == 0.0 {
+                            continue;
+                        }
                         let inv_sum = 1.0_f32 / sum_exp;
-                        for kj in 0..sk { p_row[kj] *= inv_sum; }
+                        for kj in 0..sk {
+                            p_row[kj] *= inv_sum;
+                        }
 
-                        let do_row = &do_view[do_off + qi * d .. do_off + (qi + 1) * d];
+                        let do_row = &do_view[do_off + qi * d..do_off + (qi + 1) * d];
                         for kj in 0..sk {
                             let p_ij = p_row[kj];
-                            if p_ij == 0.0 { continue; }
+                            if p_ij == 0.0 {
+                                continue;
+                            }
                             let dst_off = dv_off + kj * d;
                             for (i, &dod) in do_row.iter().enumerate() {
                                 dv_f32[dst_off + i] += p_ij * dod.to_f32();
@@ -7403,7 +8070,7 @@ macro_rules! flash_attn_backward_half_inner {
 
                         let mut dp = vec![0.0_f32; sk];
                         for kj in 0..sk {
-                            let v_row = &v_view[v_off + kj * d .. v_off + (kj + 1) * d];
+                            let v_row = &v_view[v_off + kj * d..v_off + (kj + 1) * d];
                             let mut acc = 0.0_f32;
                             for (dod, &vd) in do_row.iter().zip(v_row.iter()) {
                                 acc += dod.to_f32() * vd.to_f32();
@@ -7412,7 +8079,9 @@ macro_rules! flash_attn_backward_half_inner {
                         }
 
                         let mut row_dot = 0.0_f32;
-                        for kj in 0..sk { row_dot += p_row[kj] * dp[kj]; }
+                        for kj in 0..sk {
+                            row_dot += p_row[kj] * dp[kj];
+                        }
                         let mut ds = vec![0.0_f32; sk];
                         for kj in 0..sk {
                             ds[kj] = (dp[kj] - row_dot) * p_row[kj];
@@ -7430,16 +8099,20 @@ macro_rules! flash_attn_backward_half_inner {
                         let dq_row_off = dq_off + qi * d;
                         for kj in 0..sk {
                             let ds_ij = ds[kj] * softmax_scale;
-                            if ds_ij == 0.0 { continue; }
-                            let k_row = &k_view[k_off + kj * d .. k_off + (kj + 1) * d];
+                            if ds_ij == 0.0 {
+                                continue;
+                            }
+                            let k_row = &k_view[k_off + kj * d..k_off + (kj + 1) * d];
                             for (i, &kd) in k_row.iter().enumerate() {
                                 dq_f32[dq_row_off + i] += ds_ij * kd.to_f32();
                             }
                         }
-                        let q_row = &q_view[q_off + qi * d .. q_off + (qi + 1) * d];
+                        let q_row = &q_view[q_off + qi * d..q_off + (qi + 1) * d];
                         for kj in 0..sk {
                             let ds_ij = ds[kj] * softmax_scale;
-                            if ds_ij == 0.0 { continue; }
+                            if ds_ij == 0.0 {
+                                continue;
+                            }
                             let dst_off = dk_off + kj * d;
                             for (i, &qd) in q_row.iter().enumerate() {
                                 dk_f32[dst_off + i] += ds_ij * qd.to_f32();
@@ -7449,9 +8122,15 @@ macro_rules! flash_attn_backward_half_inner {
                 }
             }
 
-            for (slot, &acc) in dq.iter_mut().zip(dq_f32.iter()) { *slot = <$T>::from_f32(acc); }
-            for (slot, &acc) in dk.iter_mut().zip(dk_f32.iter()) { *slot = <$T>::from_f32(acc); }
-            for (slot, &acc) in dv.iter_mut().zip(dv_f32.iter()) { *slot = <$T>::from_f32(acc); }
+            for (slot, &acc) in dq.iter_mut().zip(dq_f32.iter()) {
+                *slot = <$T>::from_f32(acc);
+            }
+            for (slot, &acc) in dk.iter_mut().zip(dk_f32.iter()) {
+                *slot = <$T>::from_f32(acc);
+            }
+            for (slot, &acc) in dv.iter_mut().zip(dv_f32.iter()) {
+                *slot = <$T>::from_f32(acc);
+            }
         }
     };
 }
@@ -7463,7 +8142,11 @@ flash_attn_backward_half_inner!(flash_attn_backward_f16_inner, half::f16);
 /// into its single output buffer. The inner function always computes
 /// all three; the wrapper picks one.
 #[derive(Copy, Clone)]
-pub enum FaBackwardWhich { Q, K, V }
+pub enum FaBackwardWhich {
+    Q,
+    K,
+    V,
+}
 
 /// FlashAttn backward byte wrapper for native arithmetic types
 /// (f32 / f64). Computes all three gradients then writes only the
@@ -7473,13 +8156,19 @@ macro_rules! flash_attn_backward_native_wrapper {
     ($name:ident, $T:ty, $T_zero:expr, $inner:ident) => {
         #[allow(clippy::too_many_arguments)]
         pub fn $name(
-            q: &CpuStorageBytes, k: &CpuStorageBytes, v: &CpuStorageBytes,
+            q: &CpuStorageBytes,
+            k: &CpuStorageBytes,
+            v: &CpuStorageBytes,
             do_grad: &CpuStorageBytes,
             alibi_slopes: Option<&CpuStorageBytes>,
             out: &mut CpuStorageBytes,
             which: FaBackwardWhich,
-            b: usize, hq: usize, hkv: usize,
-            sq: usize, sk: usize, d: usize,
+            b: usize,
+            hq: usize,
+            hkv: usize,
+            sq: usize,
+            sk: usize,
+            d: usize,
             softmax_scale: f32,
             causal: bool,
             window_left: Option<usize>,
@@ -7494,27 +8183,26 @@ macro_rules! flash_attn_backward_native_wrapper {
                 .bt());
             }
             let elem = std::mem::size_of::<$T>();
-            let q_n  = b * hq  * sq * d;
+            let q_n = b * hq * sq * d;
             let kv_n = b * hkv * sk * d;
-            if q.len_bytes()       != q_n  * elem
-                || k.len_bytes()   != kv_n * elem
-                || v.len_bytes()   != kv_n * elem
+            if q.len_bytes() != q_n * elem
+                || k.len_bytes() != kv_n * elem
+                || v.len_bytes() != kv_n * elem
                 || do_grad.len_bytes() != q_n * elem
             {
-                return Err(Error::Msg(format!(
-                    "{}: bytes mismatch", stringify!($name),
-                ))
-                .bt());
+                return Err(Error::Msg(format!("{}: bytes mismatch", stringify!($name),)).bt());
             }
             let need_out = match which {
-                FaBackwardWhich::Q => q_n  * elem,
+                FaBackwardWhich::Q => q_n * elem,
                 FaBackwardWhich::K => kv_n * elem,
                 FaBackwardWhich::V => kv_n * elem,
             };
             if out.len_bytes() != need_out {
                 return Err(Error::Msg(format!(
-                    "{}: out bytes {} != required {}", stringify!($name),
-                    out.len_bytes(), need_out,
+                    "{}: out bytes {} != required {}",
+                    stringify!($name),
+                    out.len_bytes(),
+                    need_out,
                 ))
                 .bt());
             }
@@ -7530,10 +8218,25 @@ macro_rules! flash_attn_backward_native_wrapper {
             let mut dk = vec![$T_zero; kv_n];
             let mut dv = vec![$T_zero; kv_n];
             $inner(
-                q_view, k_view, v_view, do_view, alibi_view,
-                &mut dq, &mut dk, &mut dv,
-                b, hq, hkv, sq, sk, d,
-                softmax_scale, causal, window_left, window_right, softcap,
+                q_view,
+                k_view,
+                v_view,
+                do_view,
+                alibi_view,
+                &mut dq,
+                &mut dk,
+                &mut dv,
+                b,
+                hq,
+                hkv,
+                sq,
+                sk,
+                d,
+                softmax_scale,
+                causal,
+                window_left,
+                window_right,
+                softcap,
             );
             let out_view: &mut [$T] = out.as_slice_mut()?;
             let src = match which {
@@ -7547,21 +8250,37 @@ macro_rules! flash_attn_backward_native_wrapper {
     };
 }
 
-flash_attn_backward_native_wrapper!(flash_attn_backward_f32, f32, 0.0_f32, flash_attn_backward_f32_inner);
-flash_attn_backward_native_wrapper!(flash_attn_backward_f64, f64, 0.0_f64, flash_attn_backward_f64_inner);
+flash_attn_backward_native_wrapper!(
+    flash_attn_backward_f32,
+    f32,
+    0.0_f32,
+    flash_attn_backward_f32_inner
+);
+flash_attn_backward_native_wrapper!(
+    flash_attn_backward_f64,
+    f64,
+    0.0_f64,
+    flash_attn_backward_f64_inner
+);
 
 /// FlashAttn backward byte wrapper for half-precision types.
 macro_rules! flash_attn_backward_half_wrapper {
     ($name:ident, $T:ty, $inner:ident) => {
         #[allow(clippy::too_many_arguments)]
         pub fn $name(
-            q: &CpuStorageBytes, k: &CpuStorageBytes, v: &CpuStorageBytes,
+            q: &CpuStorageBytes,
+            k: &CpuStorageBytes,
+            v: &CpuStorageBytes,
             do_grad: &CpuStorageBytes,
             alibi_slopes: Option<&CpuStorageBytes>,
             out: &mut CpuStorageBytes,
             which: FaBackwardWhich,
-            b: usize, hq: usize, hkv: usize,
-            sq: usize, sk: usize, d: usize,
+            b: usize,
+            hq: usize,
+            hkv: usize,
+            sq: usize,
+            sk: usize,
+            d: usize,
             softmax_scale: f32,
             causal: bool,
             window_left: Option<usize>,
@@ -7576,27 +8295,26 @@ macro_rules! flash_attn_backward_half_wrapper {
                 .bt());
             }
             let elem = std::mem::size_of::<$T>();
-            let q_n  = b * hq  * sq * d;
+            let q_n = b * hq * sq * d;
             let kv_n = b * hkv * sk * d;
-            if q.len_bytes()       != q_n  * elem
-                || k.len_bytes()   != kv_n * elem
-                || v.len_bytes()   != kv_n * elem
+            if q.len_bytes() != q_n * elem
+                || k.len_bytes() != kv_n * elem
+                || v.len_bytes() != kv_n * elem
                 || do_grad.len_bytes() != q_n * elem
             {
-                return Err(Error::Msg(format!(
-                    "{}: bytes mismatch", stringify!($name),
-                ))
-                .bt());
+                return Err(Error::Msg(format!("{}: bytes mismatch", stringify!($name),)).bt());
             }
             let need_out = match which {
-                FaBackwardWhich::Q => q_n  * elem,
+                FaBackwardWhich::Q => q_n * elem,
                 FaBackwardWhich::K => kv_n * elem,
                 FaBackwardWhich::V => kv_n * elem,
             };
             if out.len_bytes() != need_out {
                 return Err(Error::Msg(format!(
-                    "{}: out bytes {} != required {}", stringify!($name),
-                    out.len_bytes(), need_out,
+                    "{}: out bytes {} != required {}",
+                    stringify!($name),
+                    out.len_bytes(),
+                    need_out,
                 ))
                 .bt());
             }
@@ -7612,10 +8330,25 @@ macro_rules! flash_attn_backward_half_wrapper {
             let mut dk = vec![<$T>::from_f32(0.0); kv_n];
             let mut dv = vec![<$T>::from_f32(0.0); kv_n];
             $inner(
-                q_view, k_view, v_view, do_view, alibi_view,
-                &mut dq, &mut dk, &mut dv,
-                b, hq, hkv, sq, sk, d,
-                softmax_scale, causal, window_left, window_right, softcap,
+                q_view,
+                k_view,
+                v_view,
+                do_view,
+                alibi_view,
+                &mut dq,
+                &mut dk,
+                &mut dv,
+                b,
+                hq,
+                hkv,
+                sq,
+                sk,
+                d,
+                softmax_scale,
+                causal,
+                window_left,
+                window_right,
+                softcap,
             );
             let out_view: &mut [$T] = out.as_slice_mut()?;
             let src = match which {
@@ -7629,8 +8362,16 @@ macro_rules! flash_attn_backward_half_wrapper {
     };
 }
 
-flash_attn_backward_half_wrapper!(flash_attn_backward_bf16, half::bf16, flash_attn_backward_bf16_inner);
-flash_attn_backward_half_wrapper!(flash_attn_backward_f16, half::f16, flash_attn_backward_f16_inner);
+flash_attn_backward_half_wrapper!(
+    flash_attn_backward_bf16,
+    half::bf16,
+    flash_attn_backward_bf16_inner
+);
+flash_attn_backward_half_wrapper!(
+    flash_attn_backward_f16,
+    half::f16,
+    flash_attn_backward_f16_inner
+);
 
 // =============================================================================
 // PagedAttn — paged-KV-cache attention (naive)
@@ -7660,8 +8401,11 @@ macro_rules! paged_attn_native_kernel {
             context_lens: &CpuStorageBytes,
             alibi_slopes: Option<&CpuStorageBytes>,
             out: &mut CpuStorageBytes,
-            b: usize, hq: usize, hkv: usize,
-            sq: usize, d: usize,
+            b: usize,
+            hq: usize,
+            hkv: usize,
+            sq: usize,
+            d: usize,
             block_size: usize,
             max_blocks_per_seq: usize,
             num_blocks: usize,
@@ -7684,15 +8428,13 @@ macro_rules! paged_attn_native_kernel {
                 || context_lens.len_bytes() != b * u32_elem
                 || out.len_bytes() != b * hq * sq * d * elem
             {
-                return Err(Error::Msg(format!(
-                    "{}: bytes mismatch", stringify!($name),
-                ))
-                .bt());
+                return Err(Error::Msg(format!("{}: bytes mismatch", stringify!($name),)).bt());
             }
             if let Some(a) = alibi_slopes {
                 if a.len_bytes() != hq * elem {
                     return Err(Error::Msg(format!(
-                        "{}: alibi_slopes bytes mismatch", stringify!($name),
+                        "{}: alibi_slopes bytes mismatch",
+                        stringify!($name),
                     ))
                     .bt());
                 }
@@ -7717,14 +8459,19 @@ macro_rules! paged_attn_native_kernel {
             let kv_slot_stride = hkv * d;
             let kv_head_stride = d;
             let scale = softmax_scale as $T;
-            for slot in out_view.iter_mut() { *slot = $T_zero; }
+            for slot in out_view.iter_mut() {
+                *slot = $T_zero;
+            }
             for bi in 0..b {
                 let ctx_len = cl_view[bi] as usize;
-                if ctx_len == 0 { continue; }
+                if ctx_len == 0 {
+                    continue;
+                }
                 if ctx_len > max_blocks_per_seq * block_size {
                     return Err(Error::Msg(format!(
                         "{}: context_lens[{bi}]={ctx_len} > capacity {} block_size*max_blocks",
-                        stringify!($name), max_blocks_per_seq * block_size,
+                        stringify!($name),
+                        max_blocks_per_seq * block_size,
                     ))
                     .bt());
                 }
@@ -7742,7 +8489,9 @@ macro_rules! paged_attn_native_kernel {
                         let mut max_score: $T = <$T>::NEG_INFINITY;
                         for kj in 0..ctx_len {
                             // Implicit causal mask.
-                            if kj > q_pos_abs { continue; }
+                            if kj > q_pos_abs {
+                                continue;
+                            }
                             let logical_block = kj / block_size;
                             let block_off = kj % block_size;
                             let physical_block = bt_view[bt_off + logical_block] as usize;
@@ -7760,8 +8509,8 @@ macro_rules! paged_attn_native_kernel {
                                 + kv_h * kv_head_stride;
                             let v_off = k_off;
                             let mut acc: $T = $T_zero;
-                            let q_row = &q_view[q_off + qi * d .. q_off + (qi + 1) * d];
-                            let k_row = &k_view[k_off .. k_off + d];
+                            let q_row = &q_view[q_off + qi * d..q_off + (qi + 1) * d];
+                            let k_row = &k_view[k_off..k_off + d];
                             for (qx, kx) in q_row.iter().zip(k_row.iter()) {
                                 acc += (*qx) * (*kx);
                             }
@@ -7775,12 +8524,16 @@ macro_rules! paged_attn_native_kernel {
                                 s += slope * delta;
                             }
                             scores[kj] = s;
-                            if s > max_score { max_score = s; }
+                            if s > max_score {
+                                max_score = s;
+                            }
                             // The v_off variable is just a name alias for k_off in
                             // this naive impl since v_cache shares the block layout.
                             let _ = v_off;
                         }
-                        if !max_score.is_finite() { continue; }
+                        if !max_score.is_finite() {
+                            continue;
+                        }
                         let mut sum: $T = $T_zero;
                         for (s, ad) in scores.iter_mut().zip(admissible.iter()) {
                             if *ad {
@@ -7790,23 +8543,28 @@ macro_rules! paged_attn_native_kernel {
                                 *s = $T_zero;
                             }
                         }
-                        if sum == $T_zero { continue; }
+                        if sum == $T_zero {
+                            continue;
+                        }
                         let inv_sum = (1.0 as $T) / sum;
                         for kj in 0..ctx_len {
-                            if !admissible[kj] { continue; }
+                            if !admissible[kj] {
+                                continue;
+                            }
                             let p_ij = scores[kj] * inv_sum;
-                            if p_ij == $T_zero { continue; }
+                            if p_ij == $T_zero {
+                                continue;
+                            }
                             let logical_block = kj / block_size;
                             let block_off = kj % block_size;
                             let physical_block = bt_view[bt_off + logical_block] as usize;
                             let v_off = physical_block * kv_block_stride
                                 + block_off * kv_slot_stride
                                 + kv_h * kv_head_stride;
-                            let v_row = &v_view[v_off .. v_off + d];
-                            for (od, vd) in
-                                out_view[o_off + qi * d .. o_off + (qi + 1) * d]
-                                    .iter_mut()
-                                    .zip(v_row.iter())
+                            let v_row = &v_view[v_off..v_off + d];
+                            for (od, vd) in out_view[o_off + qi * d..o_off + (qi + 1) * d]
+                                .iter_mut()
+                                .zip(v_row.iter())
                             {
                                 *od += p_ij * (*vd);
                             }
@@ -7834,8 +8592,11 @@ macro_rules! paged_attn_half_kernel {
             context_lens: &CpuStorageBytes,
             alibi_slopes: Option<&CpuStorageBytes>,
             out: &mut CpuStorageBytes,
-            b: usize, hq: usize, hkv: usize,
-            sq: usize, d: usize,
+            b: usize,
+            hq: usize,
+            hkv: usize,
+            sq: usize,
+            d: usize,
             block_size: usize,
             max_blocks_per_seq: usize,
             num_blocks: usize,
@@ -7843,10 +8604,7 @@ macro_rules! paged_attn_half_kernel {
             softcap: Option<f32>,
         ) -> Result<()> {
             if hq % hkv != 0 || hkv == 0 || block_size == 0 {
-                return Err(Error::Msg(format!(
-                    "{}: contract violation", stringify!($name),
-                ))
-                .bt());
+                return Err(Error::Msg(format!("{}: contract violation", stringify!($name),)).bt());
             }
             let elem = std::mem::size_of::<$T>();
             let u32_elem = std::mem::size_of::<u32>();
@@ -7857,15 +8615,13 @@ macro_rules! paged_attn_half_kernel {
                 || context_lens.len_bytes() != b * u32_elem
                 || out.len_bytes() != b * hq * sq * d * elem
             {
-                return Err(Error::Msg(format!(
-                    "{}: bytes mismatch", stringify!($name),
-                ))
-                .bt());
+                return Err(Error::Msg(format!("{}: bytes mismatch", stringify!($name),)).bt());
             }
             if let Some(a) = alibi_slopes {
                 if a.len_bytes() != hq * elem {
                     return Err(Error::Msg(format!(
-                        "{}: alibi_slopes bytes mismatch", stringify!($name),
+                        "{}: alibi_slopes bytes mismatch",
+                        stringify!($name),
                     ))
                     .bt());
                 }
@@ -7888,13 +8644,18 @@ macro_rules! paged_attn_half_kernel {
             let kv_block_stride = block_size * hkv * d;
             let kv_slot_stride = hkv * d;
             let kv_head_stride = d;
-            for slot in out_view.iter_mut() { *slot = <$T>::from_f32(0.0); }
+            for slot in out_view.iter_mut() {
+                *slot = <$T>::from_f32(0.0);
+            }
             for bi in 0..b {
                 let ctx_len = cl_view[bi] as usize;
-                if ctx_len == 0 { continue; }
+                if ctx_len == 0 {
+                    continue;
+                }
                 if ctx_len > max_blocks_per_seq * block_size {
                     return Err(Error::Msg(format!(
-                        "{}: ctx_len out of capacity", stringify!($name),
+                        "{}: ctx_len out of capacity",
+                        stringify!($name),
                     ))
                     .bt());
                 }
@@ -7910,13 +8671,16 @@ macro_rules! paged_attn_half_kernel {
                         let mut admissible = vec![false; ctx_len];
                         let mut max_score = f32::NEG_INFINITY;
                         for kj in 0..ctx_len {
-                            if kj > q_pos_abs { continue; }
+                            if kj > q_pos_abs {
+                                continue;
+                            }
                             let logical_block = kj / block_size;
                             let block_off = kj % block_size;
                             let physical_block = bt_view[bt_off + logical_block] as usize;
                             if physical_block >= num_blocks {
                                 return Err(Error::Msg(format!(
-                                    "{}: block_table out of range", stringify!($name),
+                                    "{}: block_table out of range",
+                                    stringify!($name),
                                 ))
                                 .bt());
                             }
@@ -7925,8 +8689,8 @@ macro_rules! paged_attn_half_kernel {
                                 + block_off * kv_slot_stride
                                 + kv_h * kv_head_stride;
                             let mut acc = 0.0_f32;
-                            let q_row = &q_view[q_off + qi * d .. q_off + (qi + 1) * d];
-                            let k_row = &k_view[k_off .. k_off + d];
+                            let q_row = &q_view[q_off + qi * d..q_off + (qi + 1) * d];
+                            let k_row = &k_view[k_off..k_off + d];
                             for (qx, kx) in q_row.iter().zip(k_row.iter()) {
                                 acc += qx.to_f32() * kx.to_f32();
                             }
@@ -7939,9 +8703,13 @@ macro_rules! paged_attn_half_kernel {
                                 s += slope * delta;
                             }
                             scores[kj] = s;
-                            if s > max_score { max_score = s; }
+                            if s > max_score {
+                                max_score = s;
+                            }
                         }
-                        if !max_score.is_finite() { continue; }
+                        if !max_score.is_finite() {
+                            continue;
+                        }
                         let mut sum = 0.0_f32;
                         for (s, ad) in scores.iter_mut().zip(admissible.iter()) {
                             if *ad {
@@ -7951,28 +8719,33 @@ macro_rules! paged_attn_half_kernel {
                                 *s = 0.0;
                             }
                         }
-                        if sum == 0.0 { continue; }
+                        if sum == 0.0 {
+                            continue;
+                        }
                         let inv_sum = 1.0_f32 / sum;
                         let mut row_acc = vec![0.0_f32; d];
                         for kj in 0..ctx_len {
-                            if !admissible[kj] { continue; }
+                            if !admissible[kj] {
+                                continue;
+                            }
                             let p_ij = scores[kj] * inv_sum;
-                            if p_ij == 0.0 { continue; }
+                            if p_ij == 0.0 {
+                                continue;
+                            }
                             let logical_block = kj / block_size;
                             let block_off = kj % block_size;
                             let physical_block = bt_view[bt_off + logical_block] as usize;
                             let v_off = physical_block * kv_block_stride
                                 + block_off * kv_slot_stride
                                 + kv_h * kv_head_stride;
-                            let v_row = &v_view[v_off .. v_off + d];
+                            let v_row = &v_view[v_off..v_off + d];
                             for (od, vd) in row_acc.iter_mut().zip(v_row.iter()) {
                                 *od += p_ij * vd.to_f32();
                             }
                         }
-                        for (slot, val) in
-                            out_view[o_off + qi * d .. o_off + (qi + 1) * d]
-                                .iter_mut()
-                                .zip(row_acc.iter())
+                        for (slot, val) in out_view[o_off + qi * d..o_off + (qi + 1) * d]
+                            .iter_mut()
+                            .zip(row_acc.iter())
                         {
                             *slot = <$T>::from_f32(*val);
                         }
@@ -8050,30 +8823,42 @@ pub fn conv2d_f32(
     }
     let cout_per_group = cout / groups;
     let elem = std::mem::size_of::<f32>();
-    let need_x = n.saturating_mul(cin).saturating_mul(h_in).saturating_mul(w_in)
+    let need_x = n
+        .saturating_mul(cin)
+        .saturating_mul(h_in)
+        .saturating_mul(w_in)
         .saturating_mul(elem);
-    let need_w = cout.saturating_mul(cin_per_group).saturating_mul(kh).saturating_mul(kw)
+    let need_w = cout
+        .saturating_mul(cin_per_group)
+        .saturating_mul(kh)
+        .saturating_mul(kw)
         .saturating_mul(elem);
-    let need_out = n.saturating_mul(cout).saturating_mul(h_out).saturating_mul(w_out)
+    let need_out = n
+        .saturating_mul(cout)
+        .saturating_mul(h_out)
+        .saturating_mul(w_out)
         .saturating_mul(elem);
     if x.len_bytes() != need_x {
         return Err(Error::Msg(format!(
             "conv2d_f32: x bytes={} doesn't match shape {:?}",
-            x.len_bytes(), x_shape,
+            x.len_bytes(),
+            x_shape,
         ))
         .bt());
     }
     if weight.len_bytes() != need_w {
         return Err(Error::Msg(format!(
             "conv2d_f32: weight bytes={} doesn't match shape {:?}",
-            weight.len_bytes(), w_shape,
+            weight.len_bytes(),
+            w_shape,
         ))
         .bt());
     }
     if out.len_bytes() != need_out {
         return Err(Error::Msg(format!(
             "conv2d_f32: out bytes={} doesn't match shape {:?}",
-            out.len_bytes(), out_shape,
+            out.len_bytes(),
+            out_shape,
         ))
         .bt());
     }
@@ -8121,7 +8906,8 @@ pub fn conv2d_f32(
                                     continue;
                                 }
                                 let in_w = in_w as usize;
-                                let x_idx = ((b * cin + (ci_offset + ci)) * h_in + in_h) * w_in + in_w;
+                                let x_idx =
+                                    ((b * cin + (ci_offset + ci)) * h_in + in_h) * w_in + in_w;
                                 let w_idx = ((co * cin_per_group + ci) * kh + kh_i) * kw + kw_i;
                                 acc += x_view[x_idx] * w_view[w_idx];
                             }
@@ -8469,8 +9255,11 @@ pub fn softmax_last_dim_backward_f32(
         return Err(Error::Msg(format!(
             "softmax_last_dim_backward_f32: element count mismatch \
              (y={}, g={}, out={}, expected={needed})",
-            yv.len(), gv.len(), outv.len(),
-        )).bt());
+            yv.len(),
+            gv.len(),
+            outv.len(),
+        ))
+        .bt());
     }
     for r in 0..outer_count {
         let off = r * last_dim;
@@ -8501,8 +9290,11 @@ pub fn softmax_last_dim_backward_f64(
         return Err(Error::Msg(format!(
             "softmax_last_dim_backward_f64: element count mismatch \
              (y={}, g={}, out={}, expected={needed})",
-            yv.len(), gv.len(), outv.len(),
-        )).bt());
+            yv.len(),
+            gv.len(),
+            outv.len(),
+        ))
+        .bt());
     }
     for r in 0..outer_count {
         let off = r * last_dim;
@@ -8533,8 +9325,12 @@ macro_rules! softmax_last_dim_backward_half {
             if yv.len() != needed || gv.len() != needed || outv.len() != needed {
                 return Err(Error::Msg(format!(
                     "{}: element count mismatch (y={}, g={}, out={}, expected={needed})",
-                    stringify!($name), yv.len(), gv.len(), outv.len(),
-                )).bt());
+                    stringify!($name),
+                    yv.len(),
+                    gv.len(),
+                    outv.len(),
+                ))
+                .bt());
             }
             for r in 0..outer_count {
                 let off = r * last_dim;
@@ -8576,8 +9372,11 @@ pub fn layer_norm_last_dim_backward_f32(
         return Err(Error::Msg(format!(
             "layer_norm_last_dim_backward_f32: element count mismatch \
              (x={}, g={}, out={}, expected={needed})",
-            xv.len(), gv.len(), outv.len(),
-        )).bt());
+            xv.len(),
+            gv.len(),
+            outv.len(),
+        ))
+        .bt());
     }
     let n = last_dim as f32;
     let eps_t = eps as f32;
@@ -8629,14 +9428,19 @@ pub fn layer_norm_last_dim_backward_f64(
         return Err(Error::Msg(format!(
             "layer_norm_last_dim_backward_f64: element count mismatch \
              (x={}, g={}, out={}, expected={needed})",
-            xv.len(), gv.len(), outv.len(),
-        )).bt());
+            xv.len(),
+            gv.len(),
+            outv.len(),
+        ))
+        .bt());
     }
     let n = last_dim as f64;
     for r in 0..outer_count {
         let off = r * last_dim;
         let mut mean = 0.0_f64;
-        for i in 0..last_dim { mean += xv[off + i]; }
+        for i in 0..last_dim {
+            mean += xv[off + i];
+        }
         mean /= n;
         let mut var = 0.0_f64;
         for i in 0..last_dim {
@@ -8679,15 +9483,21 @@ macro_rules! layer_norm_last_dim_backward_half {
             if xv.len() != needed || gv.len() != needed || outv.len() != needed {
                 return Err(Error::Msg(format!(
                     "{}: element count mismatch (x={}, g={}, out={}, expected={needed})",
-                    stringify!($name), xv.len(), gv.len(), outv.len(),
-                )).bt());
+                    stringify!($name),
+                    xv.len(),
+                    gv.len(),
+                    outv.len(),
+                ))
+                .bt());
             }
             let n = last_dim as f32;
             let eps_t = eps as f32;
             for r in 0..outer_count {
                 let off = r * last_dim;
                 let mut mean = 0.0_f32;
-                for i in 0..last_dim { mean += xv[off + i].to_f32(); }
+                for i in 0..last_dim {
+                    mean += xv[off + i].to_f32();
+                }
                 mean /= n;
                 let mut var = 0.0_f32;
                 for i in 0..last_dim {
@@ -8739,8 +9549,11 @@ pub fn rms_norm_last_dim_backward_f32(
         return Err(Error::Msg(format!(
             "rms_norm_last_dim_backward_f32: element count mismatch \
              (x={}, g_y={}, out={}, expected={needed})",
-            xv.len(), gv.len(), outv.len(),
-        )).bt());
+            xv.len(),
+            gv.len(),
+            outv.len(),
+        ))
+        .bt());
     }
     let n = last_dim as f32;
     let eps_t = eps as f32;
@@ -8780,8 +9593,11 @@ pub fn rms_norm_last_dim_backward_f64(
         return Err(Error::Msg(format!(
             "rms_norm_last_dim_backward_f64: element count mismatch \
              (x={}, g_y={}, out={}, expected={needed})",
-            xv.len(), gv.len(), outv.len(),
-        )).bt());
+            xv.len(),
+            gv.len(),
+            outv.len(),
+        ))
+        .bt());
     }
     let n = last_dim as f64;
     for r in 0..outer_count {
@@ -8820,8 +9636,12 @@ macro_rules! rms_norm_last_dim_backward_half {
             if xv.len() != needed || gv.len() != needed || outv.len() != needed {
                 return Err(Error::Msg(format!(
                     "{}: element count mismatch (x={}, g_y={}, out={}, expected={needed})",
-                    stringify!($name), xv.len(), gv.len(), outv.len(),
-                )).bt());
+                    stringify!($name),
+                    xv.len(),
+                    gv.len(),
+                    outv.len(),
+                ))
+                .bt());
             }
             let n = last_dim as f32;
             let eps_t = eps as f32;
@@ -8886,8 +9706,11 @@ pub fn reduce_max_to_backward_f32(
         return Err(Error::Msg(format!(
             "reduce_max_to_backward_f32: shape mismatch (x={}, up={}, out={}, \
              expected x.out={in_count}, up={out_count})",
-            xv.len(), uv.len(), outv.len(),
-        )).bt());
+            xv.len(),
+            uv.len(),
+            outv.len(),
+        ))
+        .bt());
     }
     reduce_max_to_backward_impl(xv, uv, outv, input_shape, output_shape);
     Ok(())
@@ -8910,8 +9733,11 @@ pub fn reduce_max_to_backward_f64(
         return Err(Error::Msg(format!(
             "reduce_max_to_backward_f64: shape mismatch (x={}, up={}, out={}, \
              expected x.out={in_count}, up={out_count})",
-            xv.len(), uv.len(), outv.len(),
-        )).bt());
+            xv.len(),
+            uv.len(),
+            outv.len(),
+        ))
+        .bt());
     }
     reduce_max_to_backward_impl(xv, uv, outv, input_shape, output_shape);
     Ok(())
@@ -8964,9 +9790,14 @@ fn reduce_max_to_backward_impl<T>(
     input_shape: &[usize],
     output_shape: &[usize],
 ) where
-    T: Copy + PartialEq + PartialOrd + Default
-        + std::ops::Add<Output = T> + std::ops::Mul<Output = T>
-        + std::ops::Div<Output = T> + From<u8>,
+    T: Copy
+        + PartialEq
+        + PartialOrd
+        + Default
+        + std::ops::Add<Output = T>
+        + std::ops::Mul<Output = T>
+        + std::ops::Div<Output = T>
+        + From<u8>,
 {
     let in_count = x.len();
     let one = T::from(1u8);
@@ -8988,7 +9819,9 @@ fn reduce_max_to_backward_impl<T>(
     reduce_sum_to_impl(&mask, &mut count, input_shape, output_shape);
     // Step 4: clamp count to >= 1.
     for c in count.iter_mut() {
-        if *c < one { *c = one; }
+        if *c < one {
+            *c = one;
+        }
     }
     // Step 5: scaled = upstream / count.
     let mut scaled = vec![T::default(); upstream.len()];
@@ -9025,7 +9858,9 @@ where
     let mut acc = 1;
     for i in (0..in_rank).rev() {
         out_strides[i] = if padded_out[i] == 1 { 0 } else { acc };
-        if padded_out[i] != 1 { acc *= padded_out[i]; }
+        if padded_out[i] != 1 {
+            acc *= padded_out[i];
+        }
     }
     // Initialize: copy first contributing input to each output (or
     // mark as "not yet set"). Easiest: iterate in lex order and
@@ -9074,7 +9909,9 @@ where
     let mut acc = 1;
     for i in (0..dst_rank).rev() {
         src_strides[i] = if padded_src[i] == 1 { 0 } else { acc };
-        if padded_src[i] != 1 { acc *= padded_src[i]; }
+        if padded_src[i] != 1 {
+            acc *= padded_src[i];
+        }
     }
     let dst_count: usize = dst_shape.iter().product();
     let mut idx = vec![0_usize; dst_rank];
@@ -9110,7 +9947,9 @@ where
     let mut acc = 1;
     for i in (0..in_rank).rev() {
         out_strides[i] = if padded_out[i] == 1 { 0 } else { acc };
-        if padded_out[i] != 1 { acc *= padded_out[i]; }
+        if padded_out[i] != 1 {
+            acc *= padded_out[i];
+        }
     }
     for o in output.iter_mut() {
         *o = T::default();
@@ -9158,7 +9997,8 @@ pub fn write_slice_cpu(
     if rank == 0 {
         return Err(Error::Msg(
             "write_slice_cpu: dest rank must be >= 1 (scalar destinations have \
-             no slab to write into)".to_string(),
+             no slab to write into)"
+                .to_string(),
         )
         .bt());
     }
@@ -9192,7 +10032,8 @@ pub fn write_slice_cpu(
     if dest.len_bytes() != dest_bytes_needed {
         return Err(Error::Msg(format!(
             "write_slice_cpu: dest bytes ({}) != dest_shape {:?} * dtype_size {dtype_size}",
-            dest.len_bytes(), dest_shape,
+            dest.len_bytes(),
+            dest_shape,
         ))
         .bt());
     }
@@ -9200,7 +10041,8 @@ pub fn write_slice_cpu(
     if source.len_bytes() != source_bytes_needed {
         return Err(Error::Msg(format!(
             "write_slice_cpu: source bytes ({}) != slab {:?} * dtype_size {dtype_size}",
-            source.len_bytes(), slab_shape,
+            source.len_bytes(),
+            slab_shape,
         ))
         .bt());
     }
@@ -9232,8 +10074,7 @@ pub fn write_slice_cpu(
     if rank == 1 {
         // Special case — only the innermost axis exists; one span.
         let dst_off = inner_dest_start_bytes;
-        dest_buf[dst_off..dst_off + inner_slab_bytes]
-            .copy_from_slice(&src_buf[..inner_slab_bytes]);
+        dest_buf[dst_off..dst_off + inner_slab_bytes].copy_from_slice(&src_buf[..inner_slab_bytes]);
         return Ok(());
     }
     // outer_count = product of slab dims except the innermost.
@@ -9243,7 +10084,10 @@ pub fn write_slice_cpu(
         // Reconstruct outer coords from `outer_n` (row-major).
         let mut rem = outer_n;
         for i in 0..inner_axis {
-            let stride: usize = slab_shape[i + 1..inner_axis].iter().product::<usize>().max(1);
+            let stride: usize = slab_shape[i + 1..inner_axis]
+                .iter()
+                .product::<usize>()
+                .max(1);
             // Slab outer dims unroll left-to-right; compute coord
             // using slab shape from axis `i` outward (excluding
             // innermost, which is contiguous-copied).
@@ -9308,14 +10152,15 @@ pub fn write_slice_rotating_cpu(
     dtype_size: usize,
 ) -> Result<()> {
     if dtype_size == 0 {
-        return Err(Error::Msg("write_slice_rotating_cpu: dtype_size must be > 0".to_string()).bt());
+        return Err(
+            Error::Msg("write_slice_rotating_cpu: dtype_size must be > 0".to_string()).bt(),
+        );
     }
     let rank = dest_shape.len();
     if rank == 0 {
-        return Err(Error::Msg(
-            "write_slice_rotating_cpu: dest rank must be >= 1".to_string(),
-        )
-        .bt());
+        return Err(
+            Error::Msg("write_slice_rotating_cpu: dest rank must be >= 1".to_string()).bt(),
+        );
     }
     if ranges.len() != rank {
         return Err(Error::Msg(format!(
@@ -9390,7 +10235,8 @@ pub fn write_slice_rotating_cpu(
     if source.len_bytes() != source_bytes_needed {
         return Err(Error::Msg(format!(
             "write_slice_rotating_cpu: source bytes ({}) != slab {:?} * dtype_size {dtype_size}",
-            source.len_bytes(), slab_shape,
+            source.len_bytes(),
+            slab_shape,
         ))
         .bt());
     }
@@ -9433,7 +10279,11 @@ pub fn write_slice_rotating_cpu(
         // outer tuple.
         let chunk_offset_in_outer = first_len * row_bytes;
         let src_second = extract_strided_chunk(
-            src_buf, outer_count, stride_bytes, chunk_offset_in_outer, second_chunk_row_bytes,
+            src_buf,
+            outer_count,
+            stride_bytes,
+            chunk_offset_in_outer,
+            second_chunk_row_bytes,
         );
         write_slice_cpu(&src_second, dest, dest_shape, &sub_ranges, dtype_size)?;
     }
@@ -9469,10 +10319,7 @@ pub fn write_slice_doff_cpu(
     }
     let rank = dest_shape.len();
     if rank == 0 {
-        return Err(Error::Msg(
-            "write_slice_doff_cpu: dest rank must be >= 1".to_string(),
-        )
-        .bt());
+        return Err(Error::Msg("write_slice_doff_cpu: dest rank must be >= 1".to_string()).bt());
     }
     if ranges.len() != rank {
         return Err(Error::Msg(format!(
@@ -9496,8 +10343,8 @@ pub fn write_slice_doff_cpu(
     }
     let off_buf = offset_bytes.bytes();
     let offset_i64 = i64::from_ne_bytes([
-        off_buf[0], off_buf[1], off_buf[2], off_buf[3],
-        off_buf[4], off_buf[5], off_buf[6], off_buf[7],
+        off_buf[0], off_buf[1], off_buf[2], off_buf[3], off_buf[4], off_buf[5], off_buf[6],
+        off_buf[7],
     ]);
     if offset_i64 < 0 {
         return Err(Error::Msg(format!(
@@ -9628,10 +10475,26 @@ mod tests {
         let zero_do = CpuStorageBytes::from_zero_bytes(q_n * 4);
         let mut dq_out = CpuStorageBytes::from_zero_bytes(q_n * 4);
         flash_attn_backward_f32(
-            &q, &k, &v, &zero_do, None, &mut dq_out, FaBackwardWhich::Q,
-            b, hq, hkv, sq, sk, d,
-            scale, false, None, None, None,
-        ).expect("dq with zero do");
+            &q,
+            &k,
+            &v,
+            &zero_do,
+            None,
+            &mut dq_out,
+            FaBackwardWhich::Q,
+            b,
+            hq,
+            hkv,
+            sq,
+            sk,
+            d,
+            scale,
+            false,
+            None,
+            None,
+            None,
+        )
+        .expect("dq with zero do");
         let dq: &[f32] = dq_out.as_slice().unwrap();
         for (i, &g) in dq.iter().enumerate() {
             assert_eq!(g, 0.0, "zero dO → dQ[{i}] must be 0, got {g}");
@@ -9644,20 +10507,68 @@ mod tests {
         let mut dk_buf = CpuStorageBytes::from_zero_bytes(kv_n * 4);
         let mut dv_buf = CpuStorageBytes::from_zero_bytes(kv_n * 4);
         flash_attn_backward_f32(
-            &q, &k, &v, &do_grad, None, &mut dq_buf, FaBackwardWhich::Q,
-            b, hq, hkv, sq, sk, d,
-            scale, false, None, None, None,
-        ).expect("dq nonzero");
+            &q,
+            &k,
+            &v,
+            &do_grad,
+            None,
+            &mut dq_buf,
+            FaBackwardWhich::Q,
+            b,
+            hq,
+            hkv,
+            sq,
+            sk,
+            d,
+            scale,
+            false,
+            None,
+            None,
+            None,
+        )
+        .expect("dq nonzero");
         flash_attn_backward_f32(
-            &q, &k, &v, &do_grad, None, &mut dk_buf, FaBackwardWhich::K,
-            b, hq, hkv, sq, sk, d,
-            scale, false, None, None, None,
-        ).expect("dk nonzero");
+            &q,
+            &k,
+            &v,
+            &do_grad,
+            None,
+            &mut dk_buf,
+            FaBackwardWhich::K,
+            b,
+            hq,
+            hkv,
+            sq,
+            sk,
+            d,
+            scale,
+            false,
+            None,
+            None,
+            None,
+        )
+        .expect("dk nonzero");
         flash_attn_backward_f32(
-            &q, &k, &v, &do_grad, None, &mut dv_buf, FaBackwardWhich::V,
-            b, hq, hkv, sq, sk, d,
-            scale, false, None, None, None,
-        ).expect("dv nonzero");
+            &q,
+            &k,
+            &v,
+            &do_grad,
+            None,
+            &mut dv_buf,
+            FaBackwardWhich::V,
+            b,
+            hq,
+            hkv,
+            sq,
+            sk,
+            d,
+            scale,
+            false,
+            None,
+            None,
+            None,
+        )
+        .expect("dv nonzero");
         let dq: &[f32] = dq_buf.as_slice().unwrap();
         let dk: &[f32] = dk_buf.as_slice().unwrap();
         let dv: &[f32] = dv_buf.as_slice().unwrap();
@@ -9671,13 +10582,32 @@ mod tests {
         // Causal mask shouldn't blow anything up either.
         let mut dq_causal = CpuStorageBytes::from_zero_bytes(q_n * 4);
         flash_attn_backward_f32(
-            &q, &k, &v, &do_grad, None, &mut dq_causal, FaBackwardWhich::Q,
-            b, hq, hkv, sq, sk, d,
-            scale, true, None, None, None,
-        ).expect("dq causal");
+            &q,
+            &k,
+            &v,
+            &do_grad,
+            None,
+            &mut dq_causal,
+            FaBackwardWhich::Q,
+            b,
+            hq,
+            hkv,
+            sq,
+            sk,
+            d,
+            scale,
+            true,
+            None,
+            None,
+            None,
+        )
+        .expect("dq causal");
         let dq_c: &[f32] = dq_causal.as_slice().unwrap();
         let dq_c_norm: f32 = dq_c.iter().map(|x| x * x).sum::<f32>().sqrt();
-        assert!(dq_c_norm > 1e-6, "dQ causal should be non-zero, ||dQ||={dq_c_norm}");
+        assert!(
+            dq_c_norm > 1e-6,
+            "dQ causal should be non-zero, ||dQ||={dq_c_norm}"
+        );
         // Causal masks out keys → typically changes the gradient.
         assert!(
             (dq_c_norm - dq_norm).abs() > 1e-6 || (dq_c_norm == dq_norm),
@@ -9767,7 +10697,10 @@ mod tests {
         assert_eq!(sqrt_out.as_slice::<f32>().unwrap(), &[1.0, 2.0, 3.0, 4.0]);
 
         recip_f32(&pos, &mut sqrt_out).expect("recip");
-        assert_eq!(sqrt_out.as_slice::<f32>().unwrap(), &[1.0, 0.25, 1.0 / 9.0, 1.0 / 16.0]);
+        assert_eq!(
+            sqrt_out.as_slice::<f32>().unwrap(),
+            &[1.0, 0.25, 1.0 / 9.0, 1.0 / 16.0]
+        );
 
         abs_f32(&input, &mut out).expect("abs");
         assert_eq!(out.as_slice::<f32>().unwrap(), &[1.0, 2.0, 4.0, 0.5]);
@@ -9789,8 +10722,20 @@ mod tests {
         let input = CpuStorageBytes::from_slice(&[1.0_f32, 2.0]);
         let mut out = CpuStorageBytes::from_zero_bytes(4); // wrong size
         for f in [
-            relu_f32, neg_f32, sqr_f32, sqrt_f32, recip_f32, abs_f32, tanh_f32,
-            exp_f32, log_f32, sin_f32, cos_f32, sigmoid_f32, silu_f32, step_f32,
+            relu_f32,
+            neg_f32,
+            sqr_f32,
+            sqrt_f32,
+            recip_f32,
+            abs_f32,
+            tanh_f32,
+            exp_f32,
+            log_f32,
+            sin_f32,
+            cos_f32,
+            sigmoid_f32,
+            silu_f32,
+            step_f32,
             gelu_f32,
         ] {
             assert!(f(&input, &mut out).is_err(), "size mismatch must error");
@@ -9917,7 +10862,9 @@ mod tests {
     #[test]
     fn softmax_last_dim_bf16_uniform_row() {
         let v: Vec<half::bf16> = [1.0_f32, 1.0, 1.0, 1.0]
-            .iter().map(|&x| half::bf16::from_f32(x)).collect();
+            .iter()
+            .map(|&x| half::bf16::from_f32(x))
+            .collect();
         let input = CpuStorageBytes::from_slice(&v);
         let mut out = CpuStorageBytes::from_zero_bytes(4 * 2);
         softmax_last_dim_bf16(&input, &mut out, 1, 4).expect("softmax bf16");
@@ -9930,7 +10877,9 @@ mod tests {
     #[test]
     fn softmax_last_dim_f16_sums_to_one() {
         let v: Vec<half::f16> = [1.0_f32, 2.0, 3.0]
-            .iter().map(|&x| half::f16::from_f32(x)).collect();
+            .iter()
+            .map(|&x| half::f16::from_f32(x))
+            .collect();
         let input = CpuStorageBytes::from_slice(&v);
         let mut out = CpuStorageBytes::from_zero_bytes(3 * 2);
         softmax_last_dim_f16(&input, &mut out, 1, 3).expect("softmax f16");
@@ -9942,7 +10891,9 @@ mod tests {
     #[test]
     fn rms_norm_last_dim_bf16_basic() {
         let v: Vec<half::bf16> = [3.0_f32, 4.0]
-            .iter().map(|&x| half::bf16::from_f32(x)).collect();
+            .iter()
+            .map(|&x| half::bf16::from_f32(x))
+            .collect();
         let input = CpuStorageBytes::from_slice(&v);
         let mut out = CpuStorageBytes::from_zero_bytes(2 * 2);
         rms_norm_last_dim_bf16(&input, &mut out, 1, 2, 0.0).expect("rms_norm bf16");
@@ -9956,7 +10907,9 @@ mod tests {
     #[test]
     fn layer_norm_last_dim_f16_zero_mean() {
         let v: Vec<half::f16> = [1.0_f32, 2.0, 3.0]
-            .iter().map(|&x| half::f16::from_f32(x)).collect();
+            .iter()
+            .map(|&x| half::f16::from_f32(x))
+            .collect();
         let input = CpuStorageBytes::from_slice(&v);
         let mut out = CpuStorageBytes::from_zero_bytes(3 * 2);
         layer_norm_last_dim_f16(&input, &mut out, 1, 3, 0.0).expect("layer_norm f16");
@@ -9974,11 +10927,17 @@ mod tests {
         // x [1, 1, 4] = [1, 2, 3, 4]; cos=0, sin=1.
         // Expected: [-3, -4, 1, 2].
         let x_v: Vec<half::bf16> = [1.0_f32, 2.0, 3.0, 4.0]
-            .iter().map(|&x| half::bf16::from_f32(x)).collect();
+            .iter()
+            .map(|&x| half::bf16::from_f32(x))
+            .collect();
         let zero_v: Vec<half::bf16> = [0.0_f32; 4]
-            .iter().map(|&x| half::bf16::from_f32(x)).collect();
+            .iter()
+            .map(|&x| half::bf16::from_f32(x))
+            .collect();
         let one_v: Vec<half::bf16> = [1.0_f32; 4]
-            .iter().map(|&x| half::bf16::from_f32(x)).collect();
+            .iter()
+            .map(|&x| half::bf16::from_f32(x))
+            .collect();
         let x = CpuStorageBytes::from_slice(&x_v);
         let cos = CpuStorageBytes::from_slice(&zero_v);
         let sin = CpuStorageBytes::from_slice(&one_v);
@@ -9992,7 +10951,9 @@ mod tests {
     #[test]
     fn sum_reduce_bf16_along_one_dim() {
         let v: Vec<half::bf16> = [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]
-            .iter().map(|&x| half::bf16::from_f32(x)).collect();
+            .iter()
+            .map(|&x| half::bf16::from_f32(x))
+            .collect();
         let input = CpuStorageBytes::from_slice(&v);
         let mut out = CpuStorageBytes::from_zero_bytes(2 * 2);
         sum_reduce_bf16(&input, &mut out, &[2, 3], &[1]).expect("sum bf16");
@@ -10004,7 +10965,9 @@ mod tests {
     #[test]
     fn max_min_reduce_bf16() {
         let v: Vec<half::bf16> = [1.0_f32, -5.0, 3.0, 2.0, 0.0, -1.0]
-            .iter().map(|&x| half::bf16::from_f32(x)).collect();
+            .iter()
+            .map(|&x| half::bf16::from_f32(x))
+            .collect();
         let input = CpuStorageBytes::from_slice(&v);
         let mut out = CpuStorageBytes::from_zero_bytes(2 * 2);
         max_reduce_bf16(&input, &mut out, &[2, 3], &[1]).expect("max bf16");
@@ -10021,7 +10984,9 @@ mod tests {
     #[test]
     fn mean_reduce_f16_divides_by_count() {
         let v: Vec<half::f16> = [2.0_f32, 4.0, 6.0, 8.0]
-            .iter().map(|&x| half::f16::from_f32(x)).collect();
+            .iter()
+            .map(|&x| half::f16::from_f32(x))
+            .collect();
         let input = CpuStorageBytes::from_slice(&v);
         let mut out = CpuStorageBytes::from_zero_bytes(2 * 2);
         mean_reduce_f16(&input, &mut out, &[2, 2], &[1]).expect("mean f16");
@@ -10033,9 +10998,13 @@ mod tests {
     #[test]
     fn matmul_bf16_2x3_times_3x2() {
         let lhs_v: Vec<half::bf16> = [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]
-            .iter().map(|&x| half::bf16::from_f32(x)).collect();
+            .iter()
+            .map(|&x| half::bf16::from_f32(x))
+            .collect();
         let rhs_v: Vec<half::bf16> = [7.0_f32, 8.0, 9.0, 10.0, 11.0, 12.0]
-            .iter().map(|&x| half::bf16::from_f32(x)).collect();
+            .iter()
+            .map(|&x| half::bf16::from_f32(x))
+            .collect();
         let lhs = CpuStorageBytes::from_slice(&lhs_v);
         let rhs = CpuStorageBytes::from_slice(&rhs_v);
         let mut out = CpuStorageBytes::from_zero_bytes(2 * 2 * 2);
@@ -10047,8 +11016,7 @@ mod tests {
         // tolerance.
         let expected = [58.0_f32, 64.0, 139.0, 154.0];
         for (got, want) in f32_out.iter().zip(&expected) {
-            assert!((got - want).abs() / want < 0.01,
-                "got {got}, want {want}");
+            assert!((got - want).abs() / want < 0.01, "got {got}, want {want}");
         }
     }
 
@@ -10056,9 +11024,13 @@ mod tests {
     fn matmul_f16_identity() {
         // Identity matmul on f16 — bytes round-trip exactly.
         let lhs_v: Vec<half::f16> = [1.0_f32, 2.0, 3.0, 4.0]
-            .iter().map(|&x| half::f16::from_f32(x)).collect();
+            .iter()
+            .map(|&x| half::f16::from_f32(x))
+            .collect();
         let rhs_v: Vec<half::f16> = [1.0_f32, 0.0, 0.0, 1.0]
-            .iter().map(|&x| half::f16::from_f32(x)).collect();
+            .iter()
+            .map(|&x| half::f16::from_f32(x))
+            .collect();
         let lhs = CpuStorageBytes::from_slice(&lhs_v);
         let rhs = CpuStorageBytes::from_slice(&rhs_v);
         let mut out = CpuStorageBytes::from_zero_bytes(2 * 2 * 2);
@@ -10070,14 +11042,14 @@ mod tests {
 
     #[test]
     fn matmul_bf16_batched_2x_2x2_times_2x2() {
-        let lhs_v: Vec<half::bf16> = [
-            1.0_f32, 2.0, 3.0, 4.0,
-            1.0, 0.0, 0.0, 1.0,
-        ].iter().map(|&x| half::bf16::from_f32(x)).collect();
-        let rhs_v: Vec<half::bf16> = [
-            5.0_f32, 6.0, 7.0, 8.0,
-            10.0, 20.0, 30.0, 40.0,
-        ].iter().map(|&x| half::bf16::from_f32(x)).collect();
+        let lhs_v: Vec<half::bf16> = [1.0_f32, 2.0, 3.0, 4.0, 1.0, 0.0, 0.0, 1.0]
+            .iter()
+            .map(|&x| half::bf16::from_f32(x))
+            .collect();
+        let rhs_v: Vec<half::bf16> = [5.0_f32, 6.0, 7.0, 8.0, 10.0, 20.0, 30.0, 40.0]
+            .iter()
+            .map(|&x| half::bf16::from_f32(x))
+            .collect();
         let lhs = CpuStorageBytes::from_slice(&lhs_v);
         let rhs = CpuStorageBytes::from_slice(&rhs_v);
         let mut out = CpuStorageBytes::from_zero_bytes(2 * 4 * 2);
@@ -10133,7 +11105,11 @@ mod tests {
         let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
         relu_bf16(&input, &mut out).expect("relu bf16");
         let r: &[half::bf16] = out.as_slice().unwrap();
-        assert!(r[0].is_nan(), "relu(NaN) must propagate NaN, got {:?}", r[0]);
+        assert!(
+            r[0].is_nan(),
+            "relu(NaN) must propagate NaN, got {:?}",
+            r[0]
+        );
         assert_eq!(r[1].to_f32(), 0.0, "relu(-2) must clip to 0");
         assert_eq!(r[2].to_f32(), 3.0, "relu(3) must pass through");
     }
@@ -10155,7 +11131,9 @@ mod tests {
         for (got, want) in r.iter().zip(&[1.0_f32, 2.0, 3.0]) {
             assert!(
                 (got.to_f32() - want).abs() < 0.05,
-                "bf16 exp+log lost too much: {} vs {}", got.to_f32(), want,
+                "bf16 exp+log lost too much: {} vs {}",
+                got.to_f32(),
+                want,
             );
         }
     }
@@ -10239,19 +11217,16 @@ mod tests {
         let rhs = CpuStorageBytes::from_slice(&[7.0_f64, 8.0, 9.0, 10.0, 11.0, 12.0]);
         let mut out = CpuStorageBytes::from_zero_bytes(2 * 2 * 8);
         matmul_f64(&lhs, &rhs, &mut out, &[], &[], 2, 2, 3).expect("matmul");
-        assert_eq!(out.as_slice::<f64>().unwrap(), &[58.0_f64, 64.0, 139.0, 154.0]);
+        assert_eq!(
+            out.as_slice::<f64>().unwrap(),
+            &[58.0_f64, 64.0, 139.0, 154.0]
+        );
     }
 
     #[test]
     fn matmul_f64_batched_2x_2x2_times_2x2() {
-        let lhs = CpuStorageBytes::from_slice(&[
-            1.0_f64, 2.0, 3.0, 4.0,
-            1.0, 0.0, 0.0, 1.0,
-        ]);
-        let rhs = CpuStorageBytes::from_slice(&[
-            5.0_f64, 6.0, 7.0, 8.0,
-            10.0, 20.0, 30.0, 40.0,
-        ]);
+        let lhs = CpuStorageBytes::from_slice(&[1.0_f64, 2.0, 3.0, 4.0, 1.0, 0.0, 0.0, 1.0]);
+        let rhs = CpuStorageBytes::from_slice(&[5.0_f64, 6.0, 7.0, 8.0, 10.0, 20.0, 30.0, 40.0]);
         let mut out = CpuStorageBytes::from_zero_bytes(2 * 4 * 8);
         matmul_f64(&lhs, &rhs, &mut out, &[2], &[2], 2, 2, 2).expect("matmul");
         assert_eq!(
@@ -10385,15 +11360,10 @@ mod tests {
     fn index_add_f32_along_inner_dim() {
         // base [2, 4]; indices [3] = [1, 3, 1]; src [2, 3].
         // For each row, accumulate src cols at base cols indices.
-        let base = CpuStorageBytes::from_slice(&[
-            10.0_f32, 20.0, 30.0, 40.0,
-            50.0, 60.0, 70.0, 80.0,
-        ]);
+        let base =
+            CpuStorageBytes::from_slice(&[10.0_f32, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0]);
         let indices = CpuStorageBytes::from_slice(&[1u32, 3, 1]);
-        let src = CpuStorageBytes::from_slice(&[
-            1.0_f32, 2.0, 3.0,
-            4.0, 5.0, 6.0,
-        ]);
+        let src = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
         let mut out = CpuStorageBytes::from_zero_bytes(2 * 4 * 4);
         // outer=2, base_dim=4, n_indices=3, inner=1
         index_add_f32(&base, &indices, &src, &mut out, 2, 4, 3, 1).expect("index_add");
@@ -10439,8 +11409,7 @@ mod tests {
         let indices = CpuStorageBytes::from_slice(&[0u32, 1, 2, 0]);
         let src = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0]);
         let mut out = CpuStorageBytes::from_zero_bytes(3 * 2 * 4);
-        scatter_add_f32(&base, &indices, &src, &mut out, &[3, 2], &[2, 2], 0)
-            .expect("scatter_add");
+        scatter_add_f32(&base, &indices, &src, &mut out, &[3, 2], &[2, 2], 0).expect("scatter_add");
         assert_eq!(
             out.as_slice::<f32>().unwrap(),
             &[1.0, 4.0, 0.0, 2.0, 3.0, 0.0]
@@ -10534,10 +11503,8 @@ mod tests {
         // gather dim=1:
         //   out[0, j] = source[0, indices[0, j]]
         //   out[1, j] = source[1, indices[1, j]]
-        let source = CpuStorageBytes::from_slice(&[
-            10.0_f32, 20.0, 30.0, 40.0,
-            50.0, 60.0, 70.0, 80.0,
-        ]);
+        let source =
+            CpuStorageBytes::from_slice(&[10.0_f32, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0]);
         let indices = CpuStorageBytes::from_slice(&[0u32, 2, 1, 3, 0, 0]);
         let mut out = CpuStorageBytes::from_zero_bytes(2 * 3 * 4);
         gather_f32(&source, &indices, &mut out, &[2, 4], &[2, 3], 1).expect("gather");
@@ -10599,21 +11566,17 @@ mod tests {
         // Indices [u32; 3] = [2, 0, 2]; output [3, 3] picks
         // rows 2, 0, 2 in that order.
         let table = CpuStorageBytes::from_slice(&[
-            10.0_f32, 11.0, 12.0,    // row 0
-            20.0, 21.0, 22.0,        // row 1
-            30.0, 31.0, 32.0,        // row 2
-            40.0, 41.0, 42.0,        // row 3
+            10.0_f32, 11.0, 12.0, // row 0
+            20.0, 21.0, 22.0, // row 1
+            30.0, 31.0, 32.0, // row 2
+            40.0, 41.0, 42.0, // row 3
         ]);
         let indices = CpuStorageBytes::from_slice(&[2u32, 0, 2]);
         let mut out = CpuStorageBytes::from_zero_bytes(3 * 3 * 4);
         index_select_f32(&table, &indices, &mut out, 1, 4, 3, 3).expect("index_select");
         assert_eq!(
             out.as_slice::<f32>().unwrap(),
-            &[
-                30.0, 31.0, 32.0,
-                10.0, 11.0, 12.0,
-                30.0, 31.0, 32.0,
-            ]
+            &[30.0, 31.0, 32.0, 10.0, 11.0, 12.0, 30.0, 31.0, 32.0,]
         );
     }
 
@@ -10683,10 +11646,7 @@ mod tests {
     #[test]
     fn layer_norm_last_dim_f32_two_rows_independent() {
         // Two rows of 3; each row's output should have mean ≈ 0.
-        let input = CpuStorageBytes::from_slice(&[
-            1.0_f32, 2.0, 3.0,
-            10.0, 20.0, 30.0,
-        ]);
+        let input = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 10.0, 20.0, 30.0]);
         let mut out = CpuStorageBytes::from_zero_bytes(6 * 4);
         layer_norm_last_dim_f32(&input, &mut out, 2, 3, 0.0).expect("layer_norm");
         let result: &[f32] = out.as_slice().unwrap();
@@ -10711,10 +11671,7 @@ mod tests {
     #[test]
     fn softmax_last_dim_f32_sums_to_one_per_row() {
         // Two rows of 3; arbitrary values; each row should sum to 1.
-        let input = CpuStorageBytes::from_slice(&[
-            1.0_f32, 2.0, 3.0,
-            -1.0, 0.0, 1.0,
-        ]);
+        let input = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, -1.0, 0.0, 1.0]);
         let mut out = CpuStorageBytes::from_zero_bytes(6 * 4);
         softmax_last_dim_f32(&input, &mut out, 2, 3).expect("softmax");
         let result: &[f32] = out.as_slice().unwrap();
@@ -10776,7 +11733,9 @@ mod tests {
         concat_f32(&[&a, &b], &mut out, 2, &[3, 3], 1).expect("concat");
         assert_eq!(
             out.as_slice::<f32>().unwrap(),
-            &[1.0, 2.0, 3.0, 7.0, 8.0, 9.0, 4.0, 5.0, 6.0, 10.0, 11.0, 12.0]
+            &[
+                1.0, 2.0, 3.0, 7.0, 8.0, 9.0, 4.0, 5.0, 6.0, 10.0, 11.0, 12.0
+            ]
         );
     }
 
@@ -10793,7 +11752,9 @@ mod tests {
         concat_f32(&[&a, &b], &mut out, 1, &[2, 2], 3).expect("concat");
         assert_eq!(
             out.as_slice::<f32>().unwrap(),
-            &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]
+            &[
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0
+            ]
         );
     }
 
@@ -10805,7 +11766,10 @@ mod tests {
         let c = CpuStorageBytes::from_slice(&[5.0_f32, 6.0]);
         let mut out = CpuStorageBytes::from_zero_bytes(6 * 4);
         concat_f32(&[&a, &b, &c], &mut out, 1, &[2, 2, 2], 1).expect("concat");
-        assert_eq!(out.as_slice::<f32>().unwrap(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(
+            out.as_slice::<f32>().unwrap(),
+            &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+        );
     }
 
     #[test]
@@ -10944,22 +11908,24 @@ mod tests {
     fn conv2d_f32_identity_3x3_kernel() {
         // 1×1 input ch, 1×1 output ch, 3×3 kernel with center 1 and rest 0
         // → output equals input.
-        let x = CpuStorageBytes::from_slice(&[
-            1.0_f32, 2.0, 3.0,
-            4.0, 5.0, 6.0,
-            7.0, 8.0, 9.0,
-        ]);
-        let weight = CpuStorageBytes::from_slice(&[
-            0.0_f32, 0.0, 0.0,
-            0.0, 1.0, 0.0,
-            0.0, 0.0, 0.0,
-        ]);
+        let x = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
+        let weight =
+            CpuStorageBytes::from_slice(&[0.0_f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0]);
         let mut out = CpuStorageBytes::from_zero_bytes(9 * 4);
         conv2d_f32(
-            &x, &weight, None, &mut out,
-            [1, 1, 3, 3], [1, 1, 3, 3], [1, 1, 3, 3],
-            (1, 1), (1, 1), (1, 1), 1,
-        ).expect("conv");
+            &x,
+            &weight,
+            None,
+            &mut out,
+            [1, 1, 3, 3],
+            [1, 1, 3, 3],
+            [1, 1, 3, 3],
+            (1, 1),
+            (1, 1),
+            (1, 1),
+            1,
+        )
+        .expect("conv");
         assert_eq!(
             out.as_slice::<f32>().unwrap(),
             &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]
@@ -10970,18 +11936,23 @@ mod tests {
     fn conv2d_f32_2x2_sum_kernel_no_padding() {
         // Input 1×1×3×3; kernel 2×2 of all-ones; no padding; stride 1.
         // Output shape 1×1×2×2; each output is sum of a 2×2 window.
-        let x = CpuStorageBytes::from_slice(&[
-            1.0_f32, 2.0, 3.0,
-            4.0, 5.0, 6.0,
-            7.0, 8.0, 9.0,
-        ]);
+        let x = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
         let weight = CpuStorageBytes::from_slice(&[1.0_f32, 1.0, 1.0, 1.0]);
         let mut out = CpuStorageBytes::from_zero_bytes(4 * 4);
         conv2d_f32(
-            &x, &weight, None, &mut out,
-            [1, 1, 3, 3], [1, 1, 2, 2], [1, 1, 2, 2],
-            (1, 1), (0, 0), (1, 1), 1,
-        ).expect("conv");
+            &x,
+            &weight,
+            None,
+            &mut out,
+            [1, 1, 3, 3],
+            [1, 1, 2, 2],
+            [1, 1, 2, 2],
+            (1, 1),
+            (0, 0),
+            (1, 1),
+            1,
+        )
+        .expect("conv");
         // Window at (0,0): 1+2+4+5 = 12
         // Window at (0,1): 2+3+5+6 = 16
         // Window at (1,0): 4+5+7+8 = 24
@@ -10993,20 +11964,28 @@ mod tests {
     fn conv2d_f32_with_bias() {
         // Same as the 2×2 sum kernel test, plus a bias of 100 — every
         // output gets +100.
-        let x = CpuStorageBytes::from_slice(&[
-            1.0_f32, 2.0, 3.0,
-            4.0, 5.0, 6.0,
-            7.0, 8.0, 9.0,
-        ]);
+        let x = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
         let weight = CpuStorageBytes::from_slice(&[1.0_f32, 1.0, 1.0, 1.0]);
         let bias = CpuStorageBytes::from_slice(&[100.0_f32]);
         let mut out = CpuStorageBytes::from_zero_bytes(4 * 4);
         conv2d_f32(
-            &x, &weight, Some(&bias), &mut out,
-            [1, 1, 3, 3], [1, 1, 2, 2], [1, 1, 2, 2],
-            (1, 1), (0, 0), (1, 1), 1,
-        ).expect("conv");
-        assert_eq!(out.as_slice::<f32>().unwrap(), &[112.0, 116.0, 124.0, 128.0]);
+            &x,
+            &weight,
+            Some(&bias),
+            &mut out,
+            [1, 1, 3, 3],
+            [1, 1, 2, 2],
+            [1, 1, 2, 2],
+            (1, 1),
+            (0, 0),
+            (1, 1),
+            1,
+        )
+        .expect("conv");
+        assert_eq!(
+            out.as_slice::<f32>().unwrap(),
+            &[112.0, 116.0, 124.0, 128.0]
+        );
     }
 
     #[test]
@@ -11017,10 +11996,19 @@ mod tests {
         let weight = CpuStorageBytes::from_slice(&[1.0_f32, 1.0, 1.0, 1.0]);
         let mut out = CpuStorageBytes::from_zero_bytes(9 * 4);
         conv2d_f32(
-            &x, &weight, None, &mut out,
-            [1, 1, 2, 2], [1, 1, 2, 2], [1, 1, 3, 3],
-            (1, 1), (1, 1), (1, 1), 1,
-        ).expect("conv");
+            &x,
+            &weight,
+            None,
+            &mut out,
+            [1, 1, 2, 2],
+            [1, 1, 2, 2],
+            [1, 1, 3, 3],
+            (1, 1),
+            (1, 1),
+            (1, 1),
+            1,
+        )
+        .expect("conv");
         // Output positions:
         //   [0,0]: only x[0,0]=1
         //   [0,1]: x[0,0]+x[0,1]=1+2=3
@@ -11044,20 +12032,29 @@ mod tests {
         // x[0, ch=0] = [[1, 2], [3, 4]]; ch=1 = [[10, 20], [30, 40]]
         // weight: ch0 has all-ones 2x2; ch1 has identity
         let x = CpuStorageBytes::from_slice(&[
-            1.0_f32, 2.0, 3.0, 4.0,    // ch 0
-            10.0, 20.0, 30.0, 40.0,    // ch 1
+            1.0_f32, 2.0, 3.0, 4.0, // ch 0
+            10.0, 20.0, 30.0, 40.0, // ch 1
         ]);
         // weight shape [Cout, Cin/groups=1, 2, 2] = [2, 1, 2, 2]
         let weight = CpuStorageBytes::from_slice(&[
-            1.0_f32, 1.0, 1.0, 1.0,    // co 0 sees ci 0
-            1.0, 0.0, 0.0, 0.0,        // co 1 sees ci 1, but only top-left
+            1.0_f32, 1.0, 1.0, 1.0, // co 0 sees ci 0
+            1.0, 0.0, 0.0, 0.0, // co 1 sees ci 1, but only top-left
         ]);
         let mut out = CpuStorageBytes::from_zero_bytes(2 * 4); // [1, 2, 1, 1]
         conv2d_f32(
-            &x, &weight, None, &mut out,
-            [1, 2, 2, 2], [2, 1, 2, 2], [1, 2, 1, 1],
-            (1, 1), (0, 0), (1, 1), 2,
-        ).expect("conv");
+            &x,
+            &weight,
+            None,
+            &mut out,
+            [1, 2, 2, 2],
+            [2, 1, 2, 2],
+            [1, 2, 1, 1],
+            (1, 1),
+            (0, 0),
+            (1, 1),
+            2,
+        )
+        .expect("conv");
         // co 0: 1+2+3+4 = 10
         // co 1: 10 (only top-left of ch 1)
         assert_eq!(out.as_slice::<f32>().unwrap(), &[10.0, 10.0]);
@@ -11105,7 +12102,10 @@ mod tests {
         let result: &[f32] = back_f32.as_slice().unwrap();
         // f16 has ~3 decimal digits of precision in this range.
         for (got, want) in result.iter().zip(&[1.0_f32, 2.0, -3.0, 0.5]) {
-            assert!((got - want).abs() < 1e-3, "f16 round trip lost too much: {got} vs {want}");
+            assert!(
+                (got - want).abs() < 1e-3,
+                "f16 round trip lost too much: {got} vs {want}"
+            );
         }
     }
 
@@ -11158,14 +12158,8 @@ mod tests {
 
     #[test]
     fn matmul_f32_batched_2x_2x2_times_2x2() {
-        let lhs = CpuStorageBytes::from_slice(&[
-            1.0_f32, 2.0, 3.0, 4.0,
-            1.0, 0.0, 0.0, 1.0,
-        ]);
-        let rhs = CpuStorageBytes::from_slice(&[
-            5.0_f32, 6.0, 7.0, 8.0,
-            10.0, 20.0, 30.0, 40.0,
-        ]);
+        let lhs = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0, 1.0, 0.0, 0.0, 1.0]);
+        let rhs = CpuStorageBytes::from_slice(&[5.0_f32, 6.0, 7.0, 8.0, 10.0, 20.0, 30.0, 40.0]);
         let mut out = CpuStorageBytes::from_zero_bytes(2 * 4 * 4);
 
         matmul_f32(&lhs, &rhs, &mut out, &[2], &[2], 2, 2, 2).expect("matmul");
@@ -11180,17 +12174,9 @@ mod tests {
     #[test]
     fn matmul_f32_gqa_4x_vs_2x() {
         // lhs shape [4, 1, 2]: heads 0..3 are [[1,2]], [[3,4]], [[5,6]], [[7,8]]
-        let lhs = CpuStorageBytes::from_slice(&[
-            1.0_f32, 2.0,
-            3.0, 4.0,
-            5.0, 6.0,
-            7.0, 8.0,
-        ]);
+        let lhs = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
         // rhs shape [2, 2, 1]: heads 0,1 are [[1],[0]], [[0],[1]]
-        let rhs = CpuStorageBytes::from_slice(&[
-            1.0_f32, 0.0,
-            0.0, 1.0,
-        ]);
+        let rhs = CpuStorageBytes::from_slice(&[1.0_f32, 0.0, 0.0, 1.0]);
         // output shape [4, 1, 1]:
         //   head 0: [[1, 2]] @ [[1], [0]] = [[1]]
         //   head 1: [[3, 4]] @ [[1], [0]] = [[3]]   (still rhs 0)
@@ -11232,7 +12218,10 @@ mod tests {
         );
         let out = contiguize_cpu(&input, &layout, 4).expect("contiguize");
         // Transposed: column 0 of source (1, 4) becomes row 0; col 1 (2, 5) row 1; col 2 (3, 6) row 2
-        assert_eq!(out.as_slice::<f32>().unwrap(), &[1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
+        assert_eq!(
+            out.as_slice::<f32>().unwrap(),
+            &[1.0, 4.0, 2.0, 5.0, 3.0, 6.0]
+        );
     }
 
     #[test]
@@ -11377,23 +12366,21 @@ mod tests {
     fn write_slice_cpu_kv_cache_append_pattern() {
         // dest: 4 rows of 6 f32 each = 24 elements. Init to 0.0.
         let mut dest = CpuStorageBytes::from_slice(&[0.0_f32; 24]);
-        let source = CpuStorageBytes::from_slice(&[
-            1.0_f32, 2.0,
-            3.0,     4.0,
-            5.0,     6.0,
-        ]);
+        let source = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
         write_slice_cpu(
-            &source, &mut dest,
+            &source,
+            &mut dest,
             &[4, 3, 2],
             &[(2, 3), (0, 3), (0, 2)],
             std::mem::size_of::<f32>(),
-        ).expect("write_slice");
+        )
+        .expect("write_slice");
         let r: &[f32] = dest.as_slice().unwrap();
         let expected = [
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0,   // row 0 untouched
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0,   // row 1 untouched
-            1.0, 2.0, 3.0, 4.0, 5.0, 6.0,   // row 2 = source
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0,   // row 3 untouched
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, // row 0 untouched
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, // row 1 untouched
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, // row 2 = source
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, // row 3 untouched
         ];
         assert_eq!(r, &expected);
     }
@@ -11403,25 +12390,20 @@ mod tests {
     #[test]
     fn write_slice_cpu_interior_2d() {
         let mut dest = CpuStorageBytes::from_slice(&[
-            10.0_f32, 11.0, 12.0, 13.0,
-            14.0,     15.0, 16.0, 17.0,
-            18.0,     19.0, 20.0, 21.0,
+            10.0_f32, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0, 19.0, 20.0, 21.0,
         ]);
-        let source = CpuStorageBytes::from_slice(&[
-            100.0_f32, 101.0,
-            102.0,     103.0,
-        ]);
+        let source = CpuStorageBytes::from_slice(&[100.0_f32, 101.0, 102.0, 103.0]);
         write_slice_cpu(
-            &source, &mut dest,
+            &source,
+            &mut dest,
             &[3, 4],
             &[(0, 2), (1, 3)],
             std::mem::size_of::<f32>(),
-        ).expect("write_slice");
+        )
+        .expect("write_slice");
         let r: &[f32] = dest.as_slice().unwrap();
         let expected = [
-            10.0, 100.0, 101.0, 13.0,
-            14.0, 102.0, 103.0, 17.0,
-            18.0, 19.0,  20.0,  21.0,
+            10.0, 100.0, 101.0, 13.0, 14.0, 102.0, 103.0, 17.0, 18.0, 19.0, 20.0, 21.0,
         ];
         assert_eq!(r, &expected);
     }
@@ -11432,11 +12414,13 @@ mod tests {
         let mut dest = CpuStorageBytes::from_slice(&[0.0_f32, 1.0, 2.0, 3.0, 4.0]);
         let source = CpuStorageBytes::from_slice(&[100.0_f32, 200.0]);
         write_slice_cpu(
-            &source, &mut dest,
+            &source,
+            &mut dest,
             &[5],
             &[(2, 4)],
             std::mem::size_of::<f32>(),
-        ).expect("write_slice");
+        )
+        .expect("write_slice");
         let r: &[f32] = dest.as_slice().unwrap();
         assert_eq!(r, &[0.0, 1.0, 100.0, 200.0, 4.0]);
     }
@@ -11447,9 +12431,10 @@ mod tests {
         let mut dest = CpuStorageBytes::from_slice(&[0.0_f32; 12]);
         let source = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0]);
         let err = write_slice_cpu(
-            &source, &mut dest,
+            &source,
+            &mut dest,
             &[4, 3],
-            &[(4, 5), (0, 3)],  // axis 0 range past dest dim
+            &[(4, 5), (0, 3)], // axis 0 range past dest dim
             std::mem::size_of::<f32>(),
         );
         assert!(err.is_err());
@@ -11461,9 +12446,10 @@ mod tests {
         let mut dest = CpuStorageBytes::from_slice(&[0.0_f32; 12]);
         let source = CpuStorageBytes::from_slice(&[1.0_f32; 3]);
         let err = write_slice_cpu(
-            &source, &mut dest,
+            &source,
+            &mut dest,
             &[4, 3],
-            &[(0, 1)],  // rank 1 vs dest rank 2
+            &[(0, 1)], // rank 1 vs dest rank 2
             std::mem::size_of::<f32>(),
         );
         assert!(err.is_err());
@@ -11475,11 +12461,13 @@ mod tests {
         let mut dest = CpuStorageBytes::from_slice(&[0.0_f64; 6]);
         let source = CpuStorageBytes::from_slice(&[1.5_f64, 2.5]);
         write_slice_cpu(
-            &source, &mut dest,
+            &source,
+            &mut dest,
             &[3, 2],
             &[(1, 2), (0, 2)],
             std::mem::size_of::<f64>(),
-        ).expect("write_slice");
+        )
+        .expect("write_slice");
         let r: &[f64] = dest.as_slice().unwrap();
         assert_eq!(r, &[0.0, 0.0, 1.5, 2.5, 0.0, 0.0]);
     }
@@ -11496,11 +12484,16 @@ mod tests {
         let source = CpuStorageBytes::from_slice(&[7.0_f32, 8.0]);
         let position = CpuStorageBytes::from_slice(&[1_u32]);
         write_slice_rotating_cpu(
-            &source, &position, &mut dest,
-            &[4, 2], /* axis */ 0, /* modulus */ 4,
+            &source,
+            &position,
+            &mut dest,
+            &[4, 2],
+            /* axis */ 0,
+            /* modulus */ 4,
             &[(0, 1), (0, 2)],
             std::mem::size_of::<f32>(),
-        ).expect("write_slice_rotating");
+        )
+        .expect("write_slice_rotating");
         let r: &[f32] = dest.as_slice().unwrap();
         assert_eq!(r, &[0.0, 0.0, 7.0, 8.0, 0.0, 0.0, 0.0, 0.0]);
     }
@@ -11512,11 +12505,16 @@ mod tests {
         let source = CpuStorageBytes::from_slice(&[7.0_f32, 8.0]);
         let position = CpuStorageBytes::from_slice(&[4_u32]); // == modulus
         write_slice_rotating_cpu(
-            &source, &position, &mut dest,
-            &[4, 2], 0, 4,
+            &source,
+            &position,
+            &mut dest,
+            &[4, 2],
+            0,
+            4,
             &[(0, 1), (0, 2)],
             std::mem::size_of::<f32>(),
-        ).expect("write_slice_rotating");
+        )
+        .expect("write_slice_rotating");
         let r: &[f32] = dest.as_slice().unwrap();
         // position 4 % 4 = 0 → writes to row 0.
         assert_eq!(r, &[7.0, 8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
@@ -11530,11 +12528,16 @@ mod tests {
         let source = CpuStorageBytes::from_slice(&[10.0_f32, 11.0, 20.0, 21.0]);
         let position = CpuStorageBytes::from_slice(&[3_u32]);
         write_slice_rotating_cpu(
-            &source, &position, &mut dest,
-            &[4, 2], 0, 4,
+            &source,
+            &position,
+            &mut dest,
+            &[4, 2],
+            0,
+            4,
             &[(0, 2), (0, 2)],
             std::mem::size_of::<f32>(),
-        ).expect("write_slice_rotating");
+        )
+        .expect("write_slice_rotating");
         let r: &[f32] = dest.as_slice().unwrap();
         // row 3 = (10, 11), row 0 = (20, 21).
         assert_eq!(r, &[20.0, 21.0, 0.0, 0.0, 0.0, 0.0, 10.0, 11.0]);
@@ -11551,13 +12554,21 @@ mod tests {
         let source = CpuStorageBytes::from_slice(&[7.0_f32, 8.0]);
         let position = CpuStorageBytes::from_slice(&[5_u32]);
         write_slice_rotating_cpu(
-            &source, &position, &mut dest,
-            &[6, 2], 0, 4,
+            &source,
+            &position,
+            &mut dest,
+            &[6, 2],
+            0,
+            4,
             &[(0, 1), (0, 2)],
             std::mem::size_of::<f32>(),
-        ).expect("write_slice_rotating");
+        )
+        .expect("write_slice_rotating");
         let r: &[f32] = dest.as_slice().unwrap();
-        assert_eq!(r, &[0.0, 0.0, 7.0, 8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(
+            r,
+            &[0.0, 0.0, 7.0, 8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        );
     }
 
     /// Rotating axis == 1 (the inner-of-rank-2 dim). dest `[2, 4]`,
@@ -11570,11 +12581,16 @@ mod tests {
         let source = CpuStorageBytes::from_slice(&[7.0_f32, 8.0]); // 2 rows × 1 col
         let position = CpuStorageBytes::from_slice(&[1_u32]);
         write_slice_rotating_cpu(
-            &source, &position, &mut dest,
-            &[2, 4], /* axis */ 1, /* modulus */ 4,
+            &source,
+            &position,
+            &mut dest,
+            &[2, 4],
+            /* axis */ 1,
+            /* modulus */ 4,
             &[(0, 2), (0, 1)],
             std::mem::size_of::<f32>(),
-        ).expect("write_slice_rotating axis 1");
+        )
+        .expect("write_slice_rotating axis 1");
         let r: &[f32] = dest.as_slice().unwrap();
         // wrapped_start = 1 % 4 = 1 on axis 1 → writes column 1.
         assert_eq!(r, &[0.0, 7.0, 0.0, 0.0, 0.0, 8.0, 0.0, 0.0]);
@@ -11589,11 +12605,16 @@ mod tests {
         let source = CpuStorageBytes::from_slice(&[10.0_f32, 20.0, 30.0, 40.0]);
         let position = CpuStorageBytes::from_slice(&[3_u32]);
         write_slice_rotating_cpu(
-            &source, &position, &mut dest,
-            &[2, 4], 1, 4,
+            &source,
+            &position,
+            &mut dest,
+            &[2, 4],
+            1,
+            4,
             &[(0, 2), (0, 2)],
             std::mem::size_of::<f32>(),
-        ).expect("write_slice_rotating axis 1 boundary split");
+        )
+        .expect("write_slice_rotating axis 1 boundary split");
         let r: &[f32] = dest.as_slice().unwrap();
         // wrapped_start = 3 on axis 1. row0 col 3 = 10, row0 col 0 (wrap) = 20.
         // row1 col 3 = 30, row1 col 0 (wrap) = 40.
@@ -11609,18 +12630,23 @@ mod tests {
         let mut dest = CpuStorageBytes::from_slice(&[0.0_f32; 16]);
         // source shape [2, 2, 2] = 8 elems, distinguishable values
         let source = CpuStorageBytes::from_slice(&[
-            1.0_f32, 2.0,  // outer 0 axis 0
-            3.0, 4.0,      // outer 0 axis 1
-            10.0, 20.0,    // outer 1 axis 0
-            30.0, 40.0,    // outer 1 axis 1
+            1.0_f32, 2.0, // outer 0 axis 0
+            3.0, 4.0, // outer 0 axis 1
+            10.0, 20.0, // outer 1 axis 0
+            30.0, 40.0, // outer 1 axis 1
         ]);
         let position = CpuStorageBytes::from_slice(&[3_u32]);
         write_slice_rotating_cpu(
-            &source, &position, &mut dest,
-            &[2, 4, 2], /* axis */ 1, /* modulus */ 4,
+            &source,
+            &position,
+            &mut dest,
+            &[2, 4, 2],
+            /* axis */ 1,
+            /* modulus */ 4,
             &[(0, 2), (0, 2), (0, 2)],
             std::mem::size_of::<f32>(),
-        ).expect("write_slice_rotating middle-axis split");
+        )
+        .expect("write_slice_rotating middle-axis split");
         let r: &[f32] = dest.as_slice().unwrap();
         // wrapped_start = 3. On axis 1: chunk0 (rows in src axis-1 [0..1]) →
         // dest axis-1 [3..4]; chunk1 (rows in src axis-1 [1..2]) → dest axis-1 [0..1].
@@ -11630,14 +12656,14 @@ mod tests {
         assert_eq!(
             r,
             &[
-                3.0, 4.0,    // dest[0,0]
-                0.0, 0.0,    // dest[0,1]
-                0.0, 0.0,    // dest[0,2]
-                1.0, 2.0,    // dest[0,3]
-                30.0, 40.0,  // dest[1,0]
-                0.0, 0.0,    // dest[1,1]
-                0.0, 0.0,    // dest[1,2]
-                10.0, 20.0,  // dest[1,3]
+                3.0, 4.0, // dest[0,0]
+                0.0, 0.0, // dest[0,1]
+                0.0, 0.0, // dest[0,2]
+                1.0, 2.0, // dest[0,3]
+                30.0, 40.0, // dest[1,0]
+                0.0, 0.0, // dest[1,1]
+                0.0, 0.0, // dest[1,2]
+                10.0, 20.0, // dest[1,3]
             ],
         );
     }
@@ -11649,8 +12675,12 @@ mod tests {
         let source = CpuStorageBytes::from_slice(&[1.0_f32; 10]);
         let position = CpuStorageBytes::from_slice(&[0_u32]);
         let r = write_slice_rotating_cpu(
-            &source, &position, &mut dest,
-            &[4, 2], 0, /* modulus */ 4,
+            &source,
+            &position,
+            &mut dest,
+            &[4, 2],
+            0,
+            /* modulus */ 4,
             &[(0, 5), (0, 2)], // slab on axis 0 is 5, > modulus 4
             std::mem::size_of::<f32>(),
         );
@@ -11766,14 +12796,20 @@ mod tests {
             let src = CpuStorageBytes::from_slice(&[0_u8, 1, 128, 255]);
             let mut out = CpuStorageBytes::from_zero_bytes(4 * 4);
             cast_u8_to_f32(&src, &mut out).expect("u8 → f32");
-            assert_eq!(out.as_slice::<f32>().unwrap(), &[0.0_f32, 1.0, 128.0, 255.0]);
+            assert_eq!(
+                out.as_slice::<f32>().unwrap(),
+                &[0.0_f32, 1.0, 128.0, 255.0]
+            );
         }
         // I32 → I16: narrowing truncates the high bits (wrapping `as`).
         {
             let src = CpuStorageBytes::from_slice(&[1_i32, -1, 32767, 70000]);
             let mut out = CpuStorageBytes::from_zero_bytes(4 * 2);
             cast_i32_to_i16(&src, &mut out).expect("i32 → i16");
-            assert_eq!(out.as_slice::<i16>().unwrap(), &[1_i16, -1, 32767, 70000_i32 as i16]);
+            assert_eq!(
+                out.as_slice::<i16>().unwrap(),
+                &[1_i16, -1, 32767, 70000_i32 as i16]
+            );
         }
         // I16 → F8E4M3 → I16: 4 is exactly representable in F8E4M3 (mant=0).
         {
@@ -11866,8 +12902,8 @@ mod tests {
     /// Size-mismatch on any operand errors instead of panicking.
     #[test]
     fn matmul_i8_size_mismatch_errors() {
-        let a = CpuStorageBytes::from_slice(&[1_i8, 2, 3]);     // 1×3
-        let b = CpuStorageBytes::from_slice(&[1_i8, 2, 3, 4]);  // 4×1 — K mismatch
+        let a = CpuStorageBytes::from_slice(&[1_i8, 2, 3]); // 1×3
+        let b = CpuStorageBytes::from_slice(&[1_i8, 2, 3, 4]); // 4×1 — K mismatch
         let mut out = CpuStorageBytes::from_zero_bytes(1);
         assert!(matmul_i8(&a, &b, &mut out, &[], &[], 1, 1, 3).is_err());
     }
@@ -11882,17 +12918,11 @@ mod tests {
     /// mean = (2.44019 + 1.38629) / 2 ≈ 1.91324
     #[test]
     fn fused_softmax_cross_entropy_f32_mean() {
-        let logits = CpuStorageBytes::from_slice(&[
-            1.0_f32, 2.0, 3.0, 4.0,
-            0.0,     0.0, 0.0, 0.0,
-        ]);
+        let logits = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0, 0.0, 0.0, 0.0, 0.0]);
         let targets = CpuStorageBytes::from_slice(&[1_i64, 3]);
         let mut out = CpuStorageBytes::from_zero_bytes(4);
-        fused_softmax_cross_entropy_f32(
-            &logits, &targets, &mut out,
-            2, 4, REDUCTION_MEAN, -100,
-        )
-        .expect("fsce");
+        fused_softmax_cross_entropy_f32(&logits, &targets, &mut out, 2, 4, REDUCTION_MEAN, -100)
+            .expect("fsce");
         let loss = out.as_slice::<f32>().unwrap()[0];
         let expected = ((2.44018972f32) + (1.38629436f32)) / 2.0;
         assert!(
@@ -11904,17 +12934,11 @@ mod tests {
     /// Sum reduction: scalar = 2.44019 + 1.38629 ≈ 3.82648.
     #[test]
     fn fused_softmax_cross_entropy_f32_sum() {
-        let logits = CpuStorageBytes::from_slice(&[
-            1.0_f32, 2.0, 3.0, 4.0,
-            0.0,     0.0, 0.0, 0.0,
-        ]);
+        let logits = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0, 0.0, 0.0, 0.0, 0.0]);
         let targets = CpuStorageBytes::from_slice(&[1_i64, 3]);
         let mut out = CpuStorageBytes::from_zero_bytes(4);
-        fused_softmax_cross_entropy_f32(
-            &logits, &targets, &mut out,
-            2, 4, REDUCTION_SUM, -100,
-        )
-        .expect("fsce");
+        fused_softmax_cross_entropy_f32(&logits, &targets, &mut out, 2, 4, REDUCTION_SUM, -100)
+            .expect("fsce");
         let loss = out.as_slice::<f32>().unwrap()[0];
         let expected = 2.44018972f32 + 1.38629436f32;
         assert!(
@@ -11926,20 +12950,22 @@ mod tests {
     /// None reduction: per-row losses [2.44019, 1.38629].
     #[test]
     fn fused_softmax_cross_entropy_f32_none() {
-        let logits = CpuStorageBytes::from_slice(&[
-            1.0_f32, 2.0, 3.0, 4.0,
-            0.0,     0.0, 0.0, 0.0,
-        ]);
+        let logits = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0, 0.0, 0.0, 0.0, 0.0]);
         let targets = CpuStorageBytes::from_slice(&[1_i64, 3]);
         let mut out = CpuStorageBytes::from_zero_bytes(2 * 4);
-        fused_softmax_cross_entropy_f32(
-            &logits, &targets, &mut out,
-            2, 4, REDUCTION_NONE, -100,
-        )
-        .expect("fsce");
+        fused_softmax_cross_entropy_f32(&logits, &targets, &mut out, 2, 4, REDUCTION_NONE, -100)
+            .expect("fsce");
         let per_row = out.as_slice::<f32>().unwrap();
-        assert!((per_row[0] - 2.44018972).abs() < 1e-5, "row 0: got {}", per_row[0]);
-        assert!((per_row[1] - 1.38629436).abs() < 1e-5, "row 1: got {}", per_row[1]);
+        assert!(
+            (per_row[0] - 2.44018972).abs() < 1e-5,
+            "row 0: got {}",
+            per_row[0]
+        );
+        assert!(
+            (per_row[1] - 1.38629436).abs() < 1e-5,
+            "row 1: got {}",
+            per_row[1]
+        );
     }
 
     /// ignore_index drops a row from both numerator and denominator.
@@ -11947,17 +12973,11 @@ mod tests {
     /// Mean over 1 valid row = 2.44019.
     #[test]
     fn fused_softmax_cross_entropy_f32_ignore_index_mean() {
-        let logits = CpuStorageBytes::from_slice(&[
-            1.0_f32, 2.0, 3.0, 4.0,
-            0.0,     0.0, 0.0, 0.0,
-        ]);
+        let logits = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0, 0.0, 0.0, 0.0, 0.0]);
         let targets = CpuStorageBytes::from_slice(&[1_i64, -100]);
         let mut out = CpuStorageBytes::from_zero_bytes(4);
-        fused_softmax_cross_entropy_f32(
-            &logits, &targets, &mut out,
-            2, 4, REDUCTION_MEAN, -100,
-        )
-        .expect("fsce");
+        fused_softmax_cross_entropy_f32(&logits, &targets, &mut out, 2, 4, REDUCTION_MEAN, -100)
+            .expect("fsce");
         let loss = out.as_slice::<f32>().unwrap()[0];
         let expected = 2.44018972f32;
         assert!(
@@ -11972,11 +12992,8 @@ mod tests {
         let logits = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0]);
         let targets = CpuStorageBytes::from_slice(&[-100_i64]);
         let mut out = CpuStorageBytes::from_zero_bytes(4);
-        fused_softmax_cross_entropy_f32(
-            &logits, &targets, &mut out,
-            1, 4, REDUCTION_MEAN, -100,
-        )
-        .expect("fsce");
+        fused_softmax_cross_entropy_f32(&logits, &targets, &mut out, 1, 4, REDUCTION_MEAN, -100)
+            .expect("fsce");
         assert_eq!(out.as_slice::<f32>().unwrap()[0], 0.0);
     }
 
@@ -11984,11 +13001,16 @@ mod tests {
     #[test]
     fn fused_softmax_cross_entropy_f32_target_out_of_range_errors() {
         let logits = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0]);
-        let targets = CpuStorageBytes::from_slice(&[7_i64]);  // 7 ≥ vocab=4
+        let targets = CpuStorageBytes::from_slice(&[7_i64]); // 7 ≥ vocab=4
         let mut out = CpuStorageBytes::from_zero_bytes(4);
         let r = fused_softmax_cross_entropy_f32(
-            &logits, &targets, &mut out,
-            1, 4, REDUCTION_MEAN, -100,
+            &logits,
+            &targets,
+            &mut out,
+            1,
+            4,
+            REDUCTION_MEAN,
+            -100,
         );
         assert!(r.is_err());
     }
@@ -11998,17 +13020,11 @@ mod tests {
     /// up to the F32 output narrowing.
     #[test]
     fn fused_softmax_cross_entropy_f64_mean() {
-        let logits = CpuStorageBytes::from_slice(&[
-            1.0_f64, 2.0, 3.0, 4.0,
-            0.0,     0.0, 0.0, 0.0,
-        ]);
+        let logits = CpuStorageBytes::from_slice(&[1.0_f64, 2.0, 3.0, 4.0, 0.0, 0.0, 0.0, 0.0]);
         let targets = CpuStorageBytes::from_slice(&[1_i64, 3]);
         let mut out = CpuStorageBytes::from_zero_bytes(4);
-        fused_softmax_cross_entropy_f64(
-            &logits, &targets, &mut out,
-            2, 4, REDUCTION_MEAN, -100,
-        )
-        .expect("fsce f64");
+        fused_softmax_cross_entropy_f64(&logits, &targets, &mut out, 2, 4, REDUCTION_MEAN, -100)
+            .expect("fsce f64");
         let loss = out.as_slice::<f32>().unwrap()[0];
         let expected = (2.44018972_f32 + 1.38629436_f32) / 2.0;
         assert!(
@@ -12024,18 +13040,19 @@ mod tests {
     #[test]
     fn fused_softmax_cross_entropy_bf16_mean() {
         let logits = CpuStorageBytes::from_slice(&[
-            half::bf16::from_f32(1.0), half::bf16::from_f32(2.0),
-            half::bf16::from_f32(3.0), half::bf16::from_f32(4.0),
-            half::bf16::from_f32(0.0), half::bf16::from_f32(0.0),
-            half::bf16::from_f32(0.0), half::bf16::from_f32(0.0),
+            half::bf16::from_f32(1.0),
+            half::bf16::from_f32(2.0),
+            half::bf16::from_f32(3.0),
+            half::bf16::from_f32(4.0),
+            half::bf16::from_f32(0.0),
+            half::bf16::from_f32(0.0),
+            half::bf16::from_f32(0.0),
+            half::bf16::from_f32(0.0),
         ]);
         let targets = CpuStorageBytes::from_slice(&[1_i64, 3]);
         let mut out = CpuStorageBytes::from_zero_bytes(4);
-        fused_softmax_cross_entropy_bf16(
-            &logits, &targets, &mut out,
-            2, 4, REDUCTION_MEAN, -100,
-        )
-        .expect("fsce bf16");
+        fused_softmax_cross_entropy_bf16(&logits, &targets, &mut out, 2, 4, REDUCTION_MEAN, -100)
+            .expect("fsce bf16");
         let loss = out.as_slice::<f32>().unwrap()[0];
         let expected = (2.44018972_f32 + 1.38629436_f32) / 2.0;
         assert!(
@@ -12048,18 +13065,19 @@ mod tests {
     #[test]
     fn fused_softmax_cross_entropy_f16_mean() {
         let logits = CpuStorageBytes::from_slice(&[
-            half::f16::from_f32(1.0), half::f16::from_f32(2.0),
-            half::f16::from_f32(3.0), half::f16::from_f32(4.0),
-            half::f16::from_f32(0.0), half::f16::from_f32(0.0),
-            half::f16::from_f32(0.0), half::f16::from_f32(0.0),
+            half::f16::from_f32(1.0),
+            half::f16::from_f32(2.0),
+            half::f16::from_f32(3.0),
+            half::f16::from_f32(4.0),
+            half::f16::from_f32(0.0),
+            half::f16::from_f32(0.0),
+            half::f16::from_f32(0.0),
+            half::f16::from_f32(0.0),
         ]);
         let targets = CpuStorageBytes::from_slice(&[1_i64, 3]);
         let mut out = CpuStorageBytes::from_zero_bytes(4);
-        fused_softmax_cross_entropy_f16(
-            &logits, &targets, &mut out,
-            2, 4, REDUCTION_MEAN, -100,
-        )
-        .expect("fsce f16");
+        fused_softmax_cross_entropy_f16(&logits, &targets, &mut out, 2, 4, REDUCTION_MEAN, -100)
+            .expect("fsce f16");
         let loss = out.as_slice::<f32>().unwrap()[0];
         let expected = (2.44018972_f32 + 1.38629436_f32) / 2.0;
         assert!(
@@ -12082,8 +13100,7 @@ mod tests {
         let w = CpuStorageBytes::from_slice(&[0.5_f32, 1.0, 2.0]);
         let b = CpuStorageBytes::from_slice(&[0.1_f32]);
         let mut out = CpuStorageBytes::from_zero_bytes(2 * 4);
-        causal_conv1d_f32(&x, &w, &b, &mut out, 1, 1, 4, 2, 3, false)
-            .expect("causal_conv1d");
+        causal_conv1d_f32(&x, &w, &b, &mut out, 1, 1, 4, 2, 3, false).expect("causal_conv1d");
         let result: &[f32] = out.as_slice().unwrap();
         assert!((result[0] - 2.1).abs() < 1e-5, "out[0]={}", result[0]);
         assert!((result[1] - 5.1).abs() < 1e-5, "out[1]={}", result[1]);
@@ -12097,13 +13114,20 @@ mod tests {
         let w = CpuStorageBytes::from_slice(&[0.5_f32, 1.0, 2.0]);
         let b = CpuStorageBytes::from_slice(&[0.1_f32]);
         let mut out = CpuStorageBytes::from_zero_bytes(2 * 4);
-        causal_conv1d_f32(&x, &w, &b, &mut out, 1, 1, 4, 2, 3, true)
-            .expect("causal_conv1d");
+        causal_conv1d_f32(&x, &w, &b, &mut out, 1, 1, 4, 2, 3, true).expect("causal_conv1d");
         let result: &[f32] = out.as_slice().unwrap();
         let expected0 = 2.1_f32 / (1.0 + (-2.1_f32).exp());
         let expected1 = 5.1_f32 / (1.0 + (-5.1_f32).exp());
-        assert!((result[0] - expected0).abs() < 1e-5, "out[0]={}, expected {expected0}", result[0]);
-        assert!((result[1] - expected1).abs() < 1e-5, "out[1]={}, expected {expected1}", result[1]);
+        assert!(
+            (result[0] - expected0).abs() < 1e-5,
+            "out[0]={}, expected {expected0}",
+            result[0]
+        );
+        assert!(
+            (result[1] - expected1).abs() < 1e-5,
+            "out[1]={}, expected {expected1}",
+            result[1]
+        );
     }
 
     /// CausalConv1d: two channels share x layout but have different
@@ -12113,19 +13137,18 @@ mod tests {
         // batch=1, channels=2, kernel=2, seq_out=3, so seq_in=4.
         // x = [c0: [0, 1, 2, 3], c1: [0, 10, 20, 30]]
         let x = CpuStorageBytes::from_slice(&[
-            0.0_f32, 1.0, 2.0, 3.0,    // channel 0
-            0.0,    10.0, 20.0, 30.0,  // channel 1
+            0.0_f32, 1.0, 2.0, 3.0, // channel 0
+            0.0, 10.0, 20.0, 30.0, // channel 1
         ]);
         // weight c0 = [1.0, 1.0], c1 = [2.0, 3.0]
         let w = CpuStorageBytes::from_slice(&[
-            1.0_f32, 1.0,  // channel 0
-            2.0,     3.0,  // channel 1
+            1.0_f32, 1.0, // channel 0
+            2.0, 3.0, // channel 1
         ]);
         // bias: c0 = 0.0, c1 = 0.0
         let b = CpuStorageBytes::from_slice(&[0.0_f32, 0.0]);
         let mut out = CpuStorageBytes::from_zero_bytes(2 * 3 * 4);
-        causal_conv1d_f32(&x, &w, &b, &mut out, 1, 2, 4, 3, 2, false)
-            .expect("causal_conv1d");
+        causal_conv1d_f32(&x, &w, &b, &mut out, 1, 2, 4, 3, 2, false).expect("causal_conv1d");
         let result: &[f32] = out.as_slice().unwrap();
         // channel 0: out[t] = 1*x[t] + 1*x[t+1]
         //   t=0: 1*0 + 1*1 = 1
@@ -12146,8 +13169,7 @@ mod tests {
         let w = CpuStorageBytes::from_slice(&[2.0_f32]);
         let b = CpuStorageBytes::from_slice(&[1.0_f32]);
         let mut out = CpuStorageBytes::from_zero_bytes(3 * 4);
-        causal_conv1d_f32(&x, &w, &b, &mut out, 1, 1, 3, 3, 1, false)
-            .expect("causal_conv1d");
+        causal_conv1d_f32(&x, &w, &b, &mut out, 1, 1, 3, 3, 1, false).expect("causal_conv1d");
         let result: &[f32] = out.as_slice().unwrap();
         assert_eq!(result, &[3.0, 5.0, 7.0]);
     }
@@ -12160,8 +13182,7 @@ mod tests {
         let w = CpuStorageBytes::from_slice(&[0.5_f64, 1.0, 2.0]);
         let b = CpuStorageBytes::from_slice(&[0.1_f64]);
         let mut out = CpuStorageBytes::from_zero_bytes(2 * 8);
-        causal_conv1d_f64(&x, &w, &b, &mut out, 1, 1, 4, 2, 3, false)
-            .expect("causal_conv1d_f64");
+        causal_conv1d_f64(&x, &w, &b, &mut out, 1, 1, 4, 2, 3, false).expect("causal_conv1d_f64");
         let r: &[f64] = out.as_slice().unwrap();
         assert!((r[0] - 2.1).abs() < 1e-10);
         assert!((r[1] - 5.1).abs() < 1e-10);
@@ -12180,8 +13201,7 @@ mod tests {
         let w = CpuStorageBytes::from_slice(&wb);
         let b = CpuStorageBytes::from_slice(&bb);
         let mut out = CpuStorageBytes::from_zero_bytes(2 * 2);
-        causal_conv1d_bf16(&x, &w, &b, &mut out, 1, 1, 4, 2, 3, false)
-            .expect("causal_conv1d_bf16");
+        causal_conv1d_bf16(&x, &w, &b, &mut out, 1, 1, 4, 2, 3, false).expect("causal_conv1d_bf16");
         let r: &[half::bf16] = out.as_slice().unwrap();
         assert!((r[0].to_f32() - 2.1).abs() < 5e-2);
         assert!((r[1].to_f32() - 5.1).abs() < 5e-2);
@@ -12200,8 +13220,7 @@ mod tests {
         let w = CpuStorageBytes::from_slice(&wb);
         let b = CpuStorageBytes::from_slice(&bb);
         let mut out = CpuStorageBytes::from_zero_bytes(2 * 2);
-        causal_conv1d_f16(&x, &w, &b, &mut out, 1, 1, 4, 2, 3, true)
-            .expect("causal_conv1d_f16");
+        causal_conv1d_f16(&x, &w, &b, &mut out, 1, 1, 4, 2, 3, true).expect("causal_conv1d_f16");
         let r: &[half::f16] = out.as_slice().unwrap();
         let e0 = 2.1_f32 / (1.0 + (-2.1_f32).exp());
         let e1 = 5.1_f32 / (1.0 + (-5.1_f32).exp());
@@ -12231,11 +13250,11 @@ mod tests {
     /// (a, b, c, u all picked so the math is hand-verifiable)
     #[test]
     fn selective_scan_f32_single_step_seqlen_1() {
-        let u = CpuStorageBytes::from_slice(&[3.0_f32]);     // [1, 1, 1]
+        let u = CpuStorageBytes::from_slice(&[3.0_f32]); // [1, 1, 1]
         let delta = CpuStorageBytes::from_slice(&[1.0_f32]); // [1, 1, 1]
-        let a = CpuStorageBytes::from_slice(&[-1.0_f32]);    // [1, 1] — note: exp(-1) used below
-        let b = CpuStorageBytes::from_slice(&[2.0_f32]);     // [1, 1, 1]
-        let c = CpuStorageBytes::from_slice(&[0.5_f32]);     // [1, 1, 1]
+        let a = CpuStorageBytes::from_slice(&[-1.0_f32]); // [1, 1] — note: exp(-1) used below
+        let b = CpuStorageBytes::from_slice(&[2.0_f32]); // [1, 1, 1]
+        let c = CpuStorageBytes::from_slice(&[0.5_f32]); // [1, 1, 1]
         let mut out = CpuStorageBytes::from_zero_bytes(8);
         selective_scan_f32(&u, &delta, &a, &b, &c, &mut out, 1, 1, 1, 1, false)
             .expect("selective_scan");
@@ -12250,11 +13269,11 @@ mod tests {
     /// the second step picks up h=6.0 from the first.
     #[test]
     fn selective_scan_f32_two_steps_state_threading() {
-        let u = CpuStorageBytes::from_slice(&[3.0_f32, 3.0]);     // [1, 2, 1]
+        let u = CpuStorageBytes::from_slice(&[3.0_f32, 3.0]); // [1, 2, 1]
         let delta = CpuStorageBytes::from_slice(&[1.0_f32, 1.0]); // [1, 2, 1]
-        let a = CpuStorageBytes::from_slice(&[-1.0_f32]);          // [1, 1]
-        let b = CpuStorageBytes::from_slice(&[2.0_f32, 2.0]);     // [1, 2, 1]
-        let c = CpuStorageBytes::from_slice(&[0.5_f32, 0.5]);     // [1, 2, 1]
+        let a = CpuStorageBytes::from_slice(&[-1.0_f32]); // [1, 1]
+        let b = CpuStorageBytes::from_slice(&[2.0_f32, 2.0]); // [1, 2, 1]
+        let c = CpuStorageBytes::from_slice(&[0.5_f32, 0.5]); // [1, 2, 1]
         let mut out = CpuStorageBytes::from_zero_bytes(12);
         selective_scan_f32(&u, &delta, &a, &b, &c, &mut out, 1, 2, 1, 1, false)
             .expect("selective_scan");
@@ -12264,7 +13283,11 @@ mod tests {
         let h_step1 = (-1.0_f32).exp() * 6.0 + 6.0;
         let y_step1 = h_step1 * 0.5;
         assert!((result[0] - 3.0).abs() < 1e-5, "step 0: {}", result[0]);
-        assert!((result[1] - y_step1).abs() < 1e-5, "step 1: {} expected {y_step1}", result[1]);
+        assert!(
+            (result[1] - y_step1).abs() < 1e-5,
+            "step 1: {} expected {y_step1}",
+            result[1]
+        );
     }
 
     /// SelectiveScan: delta_softplus toggle applies softplus(delta).
@@ -12272,8 +13295,8 @@ mod tests {
     #[test]
     fn selective_scan_f32_delta_softplus() {
         let u = CpuStorageBytes::from_slice(&[1.0_f32]);
-        let delta = CpuStorageBytes::from_slice(&[0.0_f32]);  // softplus(0) ≈ 0.693
-        let a = CpuStorageBytes::from_slice(&[0.0_f32]);       // exp(0.693 * 0) = 1
+        let delta = CpuStorageBytes::from_slice(&[0.0_f32]); // softplus(0) ≈ 0.693
+        let a = CpuStorageBytes::from_slice(&[0.0_f32]); // exp(0.693 * 0) = 1
         let b = CpuStorageBytes::from_slice(&[1.0_f32]);
         let c = CpuStorageBytes::from_slice(&[1.0_f32]);
         let mut out = CpuStorageBytes::from_zero_bytes(8);
@@ -12284,7 +13307,11 @@ mod tests {
         // y = ln 2 * 1 = ln 2
         let result: &[f32] = out.as_slice().unwrap();
         let expected = 2.0_f32.ln();
-        assert!((result[0] - expected).abs() < 1e-5, "got {} expected {expected}", result[0]);
+        assert!(
+            (result[0] - expected).abs() < 1e-5,
+            "got {} expected {expected}",
+            result[0]
+        );
     }
 
     /// SelectiveScan F64 sanity — mirrors the F32 single-step test.
@@ -12387,7 +13414,11 @@ mod tests {
         let h_step1 = (-1.0_f32).exp() * 6.0 + 6.0;
         let y_step1 = h_step1 * 0.5;
         assert!((result[0] - 3.0).abs() < 1e-5, "step 0: {}", result[0]);
-        assert!((result[1] - y_step1).abs() < 1e-5, "step 1: {} expected {y_step1}", result[1]);
+        assert!(
+            (result[1] - y_step1).abs() < 1e-5,
+            "step 1: {} expected {y_step1}",
+            result[1]
+        );
     }
 
     /// SsdChunkScan: two heads with distinct per-head `a` values
@@ -12482,22 +13513,29 @@ mod tests {
     ///   y = 1.0 * 0.2387 + 2.0 * 3.0 ≈ 6.2387
     #[test]
     fn nf4_matmul_f32_hand_computed() {
-        let activations = CpuStorageBytes::from_slice(&[1.0_f32, 2.0]);  // [1,1,2]
-        let w_packed = CpuStorageBytes::from_slice(&[248_u8]);  // [1, 1]
-        let absmax = CpuStorageBytes::from_slice(&[3.0_f32]);  // [1, 1]
+        let activations = CpuStorageBytes::from_slice(&[1.0_f32, 2.0]); // [1,1,2]
+        let w_packed = CpuStorageBytes::from_slice(&[248_u8]); // [1, 1]
+        let absmax = CpuStorageBytes::from_slice(&[3.0_f32]); // [1, 1]
         let mut out = CpuStorageBytes::from_zero_bytes(4);
         nf4_matmul_f32(&activations, &w_packed, &absmax, &mut out, 1, 1, 1, 2, 2)
             .expect("nf4_matmul_f32");
         let result: &[f32] = out.as_slice().unwrap();
         let expected = 1.0 * NF4_LUT[8] * 3.0 + 2.0 * NF4_LUT[15] * 3.0;
-        assert!((result[0] - expected).abs() < 1e-5, "got {} expected {expected}", result[0]);
+        assert!(
+            (result[0] - expected).abs() < 1e-5,
+            "got {} expected {expected}",
+            result[0]
+        );
     }
 
     /// Nf4Matmul: same math as the F32 test, F16 activations/output.
     /// F32 accumulator path means precision matches modulo F16 rounding.
     #[test]
     fn nf4_matmul_f16_hand_computed() {
-        let a_f16: Vec<half::f16> = [1.0_f32, 2.0].iter().map(|&v| half::f16::from_f32(v)).collect();
+        let a_f16: Vec<half::f16> = [1.0_f32, 2.0]
+            .iter()
+            .map(|&v| half::f16::from_f32(v))
+            .collect();
         let activations = CpuStorageBytes::from_slice(&a_f16);
         let w_packed = CpuStorageBytes::from_slice(&[248_u8]);
         let absmax = CpuStorageBytes::from_slice(&[3.0_f32]);
@@ -12508,14 +13546,18 @@ mod tests {
         let expected = 1.0_f32 * NF4_LUT[8] * 3.0 + 2.0 * NF4_LUT[15] * 3.0;
         assert!(
             (result[0].to_f32() - expected).abs() < 1e-2,
-            "got {} expected {expected}", result[0].to_f32(),
+            "got {} expected {expected}",
+            result[0].to_f32(),
         );
     }
 
     /// Nf4Matmul: BF16 activations/output, same math.
     #[test]
     fn nf4_matmul_bf16_hand_computed() {
-        let a_bf16: Vec<half::bf16> = [1.0_f32, 2.0].iter().map(|&v| half::bf16::from_f32(v)).collect();
+        let a_bf16: Vec<half::bf16> = [1.0_f32, 2.0]
+            .iter()
+            .map(|&v| half::bf16::from_f32(v))
+            .collect();
         let activations = CpuStorageBytes::from_slice(&a_bf16);
         let w_packed = CpuStorageBytes::from_slice(&[248_u8]);
         let absmax = CpuStorageBytes::from_slice(&[3.0_f32]);
@@ -12525,8 +13567,9 @@ mod tests {
         let result: &[half::bf16] = out.as_slice().unwrap();
         let expected = 1.0_f32 * NF4_LUT[8] * 3.0 + 2.0 * NF4_LUT[15] * 3.0;
         assert!(
-            (result[0].to_f32() - expected).abs() < 5e-2,  // BF16 has only 7 mantissa bits
-            "got {} expected {expected}", result[0].to_f32(),
+            (result[0].to_f32() - expected).abs() < 5e-2, // BF16 has only 7 mantissa bits
+            "got {} expected {expected}",
+            result[0].to_f32(),
         );
     }
 
@@ -12556,14 +13599,22 @@ mod tests {
         //   k=2: code=7, scale=2.0, dequant=0.0  → contrib = 2.0 * 0.0 = 0
         //   k=3: code=15, scale=2.0, dequant=2.0 → contrib = 4.0 * 2.0 = 8
         //   y[0] = 10.0
-        assert!((result[0] - 10.0).abs() < 1e-5, "output 0: got {}", result[0]);
+        assert!(
+            (result[0] - 10.0).abs() < 1e-5,
+            "output 0: got {}",
+            result[0]
+        );
         // Output 1:
         //   k=0: code=15, scale=10.0, dequant=10.0 → 1.0 * 10.0 = 10
         //   k=1: code=7, scale=10.0, dequant=0.0   → 2.0 * 0.0 = 0
         //   k=2: code=15, scale=20.0, dequant=20.0 → 2.0 * 20.0 = 40
         //   k=3: code=7, scale=20.0, dequant=0.0   → 4.0 * 0.0 = 0
         //   y[1] = 50.0
-        assert!((result[1] - 50.0).abs() < 1e-5, "output 1: got {}", result[1]);
+        assert!(
+            (result[1] - 50.0).abs() < 1e-5,
+            "output 1: got {}",
+            result[1]
+        );
     }
 
     /// Nf4Matmul: validates the NF4 LUT contents — first 4 values
@@ -12576,7 +13627,10 @@ mod tests {
         assert!((NF4_LUT[15] - 1.0).abs() < 1e-6, "LUT[15] should be 1.0");
         // Values should be monotonically increasing.
         for i in 0..15 {
-            assert!(NF4_LUT[i] < NF4_LUT[i + 1], "LUT not monotonic at index {i}");
+            assert!(
+                NF4_LUT[i] < NF4_LUT[i + 1],
+                "LUT not monotonic at index {i}"
+            );
         }
     }
 
@@ -12688,8 +13742,10 @@ mod tests {
     fn relu_inplace_bf16_round_trip() {
         use half::bf16;
         let mut out = CpuStorageBytes::from_slice(&[
-            bf16::from_f32(-1.0), bf16::from_f32(0.0),
-            bf16::from_f32(1.0),  bf16::from_f32(2.0),
+            bf16::from_f32(-1.0),
+            bf16::from_f32(0.0),
+            bf16::from_f32(1.0),
+            bf16::from_f32(2.0),
         ]);
         relu_inplace_bf16(&mut out).expect("relu inplace bf16");
         let r = out.as_slice::<bf16>().unwrap();
@@ -12703,7 +13759,9 @@ mod tests {
     fn tanh_inplace_bf16_via_f32_pivot() {
         use half::bf16;
         let mut got = CpuStorageBytes::from_slice(&[
-            bf16::from_f32(0.0), bf16::from_f32(1.0), bf16::from_f32(-1.0),
+            bf16::from_f32(0.0),
+            bf16::from_f32(1.0),
+            bf16::from_f32(-1.0),
         ]);
         tanh_inplace_bf16(&mut got).expect("tanh inplace bf16");
         let r = got.as_slice::<bf16>().unwrap();
@@ -12718,7 +13776,9 @@ mod tests {
     fn sigmoid_inplace_f16_via_f32_pivot() {
         use half::f16;
         let mut got = CpuStorageBytes::from_slice(&[
-            f16::from_f32(0.0), f16::from_f32(2.0), f16::from_f32(-2.0),
+            f16::from_f32(0.0),
+            f16::from_f32(2.0),
+            f16::from_f32(-2.0),
         ]);
         sigmoid_inplace_f16(&mut got).expect("sigmoid inplace f16");
         let r = got.as_slice::<f16>().unwrap();
@@ -12771,8 +13831,10 @@ mod tests {
     #[test]
     fn clamp_inplace_f32_rejects_bad_bounds() {
         let mut out = CpuStorageBytes::from_slice(&[1.0_f32]);
-        assert!(clamp_inplace_f32(&mut out, 2.0, 1.0).is_err(),
-            "min > max must error");
+        assert!(
+            clamp_inplace_f32(&mut out, 2.0, 1.0).is_err(),
+            "min > max must error"
+        );
     }
 
     #[test]
@@ -12810,8 +13872,7 @@ mod tests {
             9.9e30, 9.9e30, // row 3 (garbage)
         ]);
         let mut out = CpuStorageBytes::from_slice(&[7.0_f32; 4 * 3]); // pre-dirtied
-        matmul_f32_capacity(&lhs, &rhs, &mut out, &[], &[], 4, 2, 3, 2)
-            .expect("capacity matmul");
+        matmul_f32_capacity(&lhs, &rhs, &mut out, &[], &[], 4, 2, 3, 2).expect("capacity matmul");
         let got = out.as_slice::<f32>().unwrap();
         // row 0 = rhs row 0 = [1,2,3]; row 1 = rhs row 1 = [4,5,6];
         // rows 2,3 = zero (not computed — the tail is zero-filled, NOT the

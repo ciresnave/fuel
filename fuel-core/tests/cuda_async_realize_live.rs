@@ -119,7 +119,11 @@ fn long_chain_pool_reuse_on_cuda_matches_reference() {
     const STEPS: usize = 32;
 
     let a_host: Vec<f32> = (0..N).map(|i| (i % 17) as f32).collect();
-    let a = LazyTensor::from_f32(a_host.clone(), Shape::from_dims(&[N]), &fuel_core::Device::cpu());
+    let a = LazyTensor::from_f32(
+        a_host.clone(),
+        Shape::from_dims(&[N]),
+        &fuel_core::Device::cpu(),
+    );
     let one = a.const_f32_like(vec![1.0_f32; N], Shape::from_dims(&[N]));
 
     let mut t = a.add(&one).expect("add 1");

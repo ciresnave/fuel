@@ -38,8 +38,8 @@
 //! Multi-image / anyres / `image_newline` injection deferred.
 
 use crate::lazy::{
-    load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
     LayerWeights, LazyTensor, LlamaConfig, LlamaModel, LlamaWeights, WeightStorage,
+    load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
 };
 use crate::lazy_clip::{ClipEncoderLayerWeights, ClipVisionConfig, ClipVisionWeights};
 use crate::{Device, Result};
@@ -97,8 +97,12 @@ pub struct HFLlavaTextConfig {
     pub rope_theta: f64,
 }
 
-fn default_rms_norm_eps() -> f64 { 1e-5 }
-fn default_rope_theta() -> f64 { 10_000.0 }
+fn default_rms_norm_eps() -> f64 {
+    1e-5
+}
+fn default_rope_theta() -> f64 {
+    10_000.0
+}
 
 /// Top-level HF LLaVA `config.json` deserialization target.
 /// Used by [`HFLlavaConfig::from_hf_json_str`] to convert a
@@ -244,11 +248,7 @@ impl LlavaModel {
     /// Run the full multimodal forward pass. Returns logits for
     /// the combined `[image_features; text_embeds]` sequence
     /// of shape `(1, num_patches + text_len, vocab_size)`.
-    pub fn forward(
-        &self,
-        pixel_values: &LazyTensor,
-        text_tokens: &[u32],
-    ) -> Result<LazyTensor> {
+    pub fn forward(&self, pixel_values: &LazyTensor, text_tokens: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         let v_cfg = &cfg.vision_config;
         let t_cfg = &cfg.text_config;
@@ -267,8 +267,11 @@ impl LlavaModel {
         let np = v_cfg.num_patches();
         let dims = image_features.shape();
         let dims = dims.dims();
-        assert_eq!(dims, &[1, np, v_cfg.embed_dim],
-            "CLIP per-patch features must be (1, num_patches, embed_dim); got {dims:?}");
+        assert_eq!(
+            dims,
+            &[1, np, v_cfg.embed_dim],
+            "CLIP per-patch features must be (1, num_patches, embed_dim); got {dims:?}"
+        );
 
         // ---- Multi-modal projection: vision_embed → text_dim ------------
         let projected = self.weights.mm_proj.apply_linear(
@@ -288,10 +291,8 @@ impl LlavaModel {
             Arc::clone(&self.weights.text.token_embedding),
             Shape::from_dims(&[t_cfg.vocab_size, t_cfg.dim]),
         );
-        let token_ids = pixel_values.const_u32_like(
-            text_tokens.to_vec(),
-            Shape::from_dims(&[text_len]),
-        );
+        let token_ids =
+            pixel_values.const_u32_like(text_tokens.to_vec(), Shape::from_dims(&[text_len]));
         let text_embeds = llama_embed_lt
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[1, text_len, t_cfg.dim]))?;
@@ -323,7 +324,12 @@ impl LlavaModel {
         // Patch Conv2d (no bias in CLIP).
         let conv_w = pixel_values.const_f32_like(
             Arc::clone(&weights.patch_proj),
-            Shape::from_dims(&[v_cfg.embed_dim, v_cfg.num_channels, v_cfg.patch_size, v_cfg.patch_size]),
+            Shape::from_dims(&[
+                v_cfg.embed_dim,
+                v_cfg.num_channels,
+                v_cfg.patch_size,
+                v_cfg.patch_size,
+            ]),
         );
         let conv_out = pixel_values.conv2d(
             &conv_w,
@@ -356,7 +362,11 @@ impl LlavaModel {
         let pre = with_cls.add(&pos_bc)?;
 
         // Pre-LayerNorm.
-        let pre_ln = pre.layer_norm_affine(std::sync::Arc::clone(&weights.pre_ln_gain), std::sync::Arc::clone(&weights.pre_ln_bias), 1e-5)?;
+        let pre_ln = pre.layer_norm_affine(
+            std::sync::Arc::clone(&weights.pre_ln_gain),
+            std::sync::Arc::clone(&weights.pre_ln_bias),
+            1e-5,
+        )?;
 
         // Encoder layers (call the CLIP shared apply via the
         // public ClipVisionModel forward — but we need to override
@@ -372,7 +382,11 @@ impl LlavaModel {
         let patches_only = h.slice(1_usize, 1, np)?;
 
         // Post-LayerNorm on the patch tokens.
-        Ok(patches_only.layer_norm_affine(std::sync::Arc::clone(&weights.post_ln_gain), std::sync::Arc::clone(&weights.post_ln_bias), 1e-5)?)
+        Ok(patches_only.layer_norm_affine(
+            std::sync::Arc::clone(&weights.post_ln_gain),
+            std::sync::Arc::clone(&weights.post_ln_bias),
+            1e-5,
+        )?)
     }
 }
 
@@ -392,7 +406,11 @@ fn clip_encoder_layer(
     let seq = dims[1];
     let h = dims[2];
 
-    let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&layer.ln1_gain), std::sync::Arc::clone(&layer.ln1_bias), 1e-5)?;
+    let x_norm = x.layer_norm_affine(
+        std::sync::Arc::clone(&layer.ln1_gain),
+        std::sync::Arc::clone(&layer.ln1_bias),
+        1e-5,
+    )?;
 
     let q = layer.q_proj.apply_linear(&x_norm, h, h)?;
     let q = q.add_trailing_bias(std::sync::Arc::clone(&layer.q_proj_bias))?;
@@ -420,7 +438,11 @@ fn clip_encoder_layer(
     let attn_out = attn_out.add_trailing_bias(std::sync::Arc::clone(&layer.out_proj_bias))?;
     let h1 = x.add(&attn_out)?;
 
-    let h1_norm = h1.layer_norm_affine(std::sync::Arc::clone(&layer.ln2_gain), std::sync::Arc::clone(&layer.ln2_bias), 1e-5)?;
+    let h1_norm = h1.layer_norm_affine(
+        std::sync::Arc::clone(&layer.ln2_gain),
+        std::sync::Arc::clone(&layer.ln2_bias),
+        1e-5,
+    )?;
 
     let inter_dim = layer.fc1_bias.len();
     let inter = layer.fc1.apply_linear(&h1_norm, h, inter_dim)?;
@@ -459,20 +481,15 @@ pub fn load_clip_vision_weights(
     let h = cfg.embed_dim;
     let np = cfg.num_patches();
 
-    let patch_proj = load_tensor_as_f32(
-        st,
-        &format!("{prefix}embeddings.patch_embedding.weight"),
-    )?;
-    let class_embedding = load_tensor_as_f32(
-        st, &format!("{prefix}embeddings.class_embedding"),
-    )?;
-    let position_embedding = load_tensor_as_f32(
-        st, &format!("{prefix}embeddings.position_embedding.weight"),
-    )?;
+    let patch_proj = load_tensor_as_f32(st, &format!("{prefix}embeddings.patch_embedding.weight"))?;
+    let class_embedding = load_tensor_as_f32(st, &format!("{prefix}embeddings.class_embedding"))?;
+    let position_embedding =
+        load_tensor_as_f32(st, &format!("{prefix}embeddings.position_embedding.weight"))?;
     if position_embedding.len() != (np + 1) * h {
         crate::bail!(
             "{prefix}embeddings.position_embedding.weight: {} elts, expected {}",
-            position_embedding.len(), (np + 1) * h,
+            position_embedding.len(),
+            (np + 1) * h,
         );
     }
     let pre_ln_gain = load_tensor_as_f32(st, &format!("{prefix}pre_layrnorm.weight"))?;
@@ -486,42 +503,66 @@ pub fn load_clip_vision_weights(
         let ln1_gain = load_tensor_as_f32(st, &format!("{p}.layer_norm1.weight"))?;
         let ln1_bias = load_tensor_as_f32(st, &format!("{p}.layer_norm1.bias"))?;
         let q_proj = load_transposed_matrix_preserve_dtype(
-            st, &format!("{p}.self_attn.q_proj.weight"), h, h,
+            st,
+            &format!("{p}.self_attn.q_proj.weight"),
+            h,
+            h,
         )?;
         let q_proj_bias = load_tensor_as_f32(st, &format!("{p}.self_attn.q_proj.bias"))?;
         let k_proj = load_transposed_matrix_preserve_dtype(
-            st, &format!("{p}.self_attn.k_proj.weight"), h, h,
+            st,
+            &format!("{p}.self_attn.k_proj.weight"),
+            h,
+            h,
         )?;
         let k_proj_bias = load_tensor_as_f32(st, &format!("{p}.self_attn.k_proj.bias"))?;
         let v_proj = load_transposed_matrix_preserve_dtype(
-            st, &format!("{p}.self_attn.v_proj.weight"), h, h,
+            st,
+            &format!("{p}.self_attn.v_proj.weight"),
+            h,
+            h,
         )?;
         let v_proj_bias = load_tensor_as_f32(st, &format!("{p}.self_attn.v_proj.bias"))?;
         let out_proj = load_transposed_matrix_preserve_dtype(
-            st, &format!("{p}.self_attn.out_proj.weight"), h, h,
+            st,
+            &format!("{p}.self_attn.out_proj.weight"),
+            h,
+            h,
         )?;
         let out_proj_bias = load_tensor_as_f32(st, &format!("{p}.self_attn.out_proj.bias"))?;
         let ln2_gain = load_tensor_as_f32(st, &format!("{p}.layer_norm2.weight"))?;
         let ln2_bias = load_tensor_as_f32(st, &format!("{p}.layer_norm2.bias"))?;
         let fc1 = load_transposed_matrix_preserve_dtype(
-            st, &format!("{p}.mlp.fc1.weight"), cfg.intermediate_size, h,
+            st,
+            &format!("{p}.mlp.fc1.weight"),
+            cfg.intermediate_size,
+            h,
         )?;
         let fc1_bias = load_tensor_as_f32(st, &format!("{p}.mlp.fc1.bias"))?;
         let fc2 = load_transposed_matrix_preserve_dtype(
-            st, &format!("{p}.mlp.fc2.weight"), h, cfg.intermediate_size,
+            st,
+            &format!("{p}.mlp.fc2.weight"),
+            h,
+            cfg.intermediate_size,
         )?;
         let fc2_bias = load_tensor_as_f32(st, &format!("{p}.mlp.fc2.bias"))?;
         layers.push(ClipEncoderLayerWeights {
             ln1_gain: Arc::from(ln1_gain),
             ln1_bias: Arc::from(ln1_bias),
-            q_proj, q_proj_bias: Arc::from(q_proj_bias),
-            k_proj, k_proj_bias: Arc::from(k_proj_bias),
-            v_proj, v_proj_bias: Arc::from(v_proj_bias),
-            out_proj, out_proj_bias: Arc::from(out_proj_bias),
+            q_proj,
+            q_proj_bias: Arc::from(q_proj_bias),
+            k_proj,
+            k_proj_bias: Arc::from(k_proj_bias),
+            v_proj,
+            v_proj_bias: Arc::from(v_proj_bias),
+            out_proj,
+            out_proj_bias: Arc::from(out_proj_bias),
             ln2_gain: Arc::from(ln2_gain),
             ln2_bias: Arc::from(ln2_bias),
-            fc1, fc1_bias: Arc::from(fc1_bias),
-            fc2, fc2_bias: Arc::from(fc2_bias),
+            fc1,
+            fc1_bias: Arc::from(fc1_bias),
+            fc2,
+            fc2_bias: Arc::from(fc2_bias),
         });
     }
 
@@ -548,13 +589,14 @@ pub fn load_llama_weights_with_prefix(
     prefix: &str,
 ) -> Result<LlamaWeights> {
     let kv_dim = cfg.n_kv_heads * cfg.head_dim;
-    let token_embedding = load_tensor_as_f32(
-        st, &format!("{prefix}model.embed_tokens.weight"),
-    )?;
+    let token_embedding = load_tensor_as_f32(st, &format!("{prefix}model.embed_tokens.weight"))?;
     if token_embedding.len() != cfg.vocab_size * cfg.dim {
         crate::bail!(
             "{prefix}model.embed_tokens.weight: {} elts, expected {} ({}*{})",
-            token_embedding.len(), cfg.vocab_size * cfg.dim, cfg.vocab_size, cfg.dim,
+            token_embedding.len(),
+            cfg.vocab_size * cfg.dim,
+            cfg.vocab_size,
+            cfg.dim,
         );
     }
 
@@ -563,37 +605,44 @@ pub fn load_llama_weights_with_prefix(
         let attn_q = load_transposed_matrix_preserve_dtype(
             st,
             &format!("{prefix}model.layers.{i}.self_attn.q_proj.weight"),
-            cfg.dim, cfg.dim,
+            cfg.dim,
+            cfg.dim,
         )?;
         let attn_k = load_transposed_matrix_preserve_dtype(
             st,
             &format!("{prefix}model.layers.{i}.self_attn.k_proj.weight"),
-            kv_dim, cfg.dim,
+            kv_dim,
+            cfg.dim,
         )?;
         let attn_v = load_transposed_matrix_preserve_dtype(
             st,
             &format!("{prefix}model.layers.{i}.self_attn.v_proj.weight"),
-            kv_dim, cfg.dim,
+            kv_dim,
+            cfg.dim,
         )?;
         let attn_o = load_transposed_matrix_preserve_dtype(
             st,
             &format!("{prefix}model.layers.{i}.self_attn.o_proj.weight"),
-            cfg.dim, cfg.dim,
+            cfg.dim,
+            cfg.dim,
         )?;
         let ffn_gate = load_transposed_matrix_preserve_dtype(
             st,
             &format!("{prefix}model.layers.{i}.mlp.gate_proj.weight"),
-            cfg.ffn_dim, cfg.dim,
+            cfg.ffn_dim,
+            cfg.dim,
         )?;
         let ffn_up = load_transposed_matrix_preserve_dtype(
             st,
             &format!("{prefix}model.layers.{i}.mlp.up_proj.weight"),
-            cfg.ffn_dim, cfg.dim,
+            cfg.ffn_dim,
+            cfg.dim,
         )?;
         let ffn_down = load_transposed_matrix_preserve_dtype(
             st,
             &format!("{prefix}model.layers.{i}.mlp.down_proj.weight"),
-            cfg.dim, cfg.ffn_dim,
+            cfg.dim,
+            cfg.ffn_dim,
         )?;
         let attn_norm_gain = load_tensor_as_f32(
             st,
@@ -604,20 +653,34 @@ pub fn load_llama_weights_with_prefix(
             &format!("{prefix}model.layers.{i}.post_attention_layernorm.weight"),
         )?;
         let attn_q_bias = load_tensor_as_f32(
-            st, &format!("{prefix}model.layers.{i}.self_attn.q_proj.bias"),
-        ).ok().map(Arc::from);
+            st,
+            &format!("{prefix}model.layers.{i}.self_attn.q_proj.bias"),
+        )
+        .ok()
+        .map(Arc::from);
         let attn_k_bias = load_tensor_as_f32(
-            st, &format!("{prefix}model.layers.{i}.self_attn.k_proj.bias"),
-        ).ok().map(Arc::from);
+            st,
+            &format!("{prefix}model.layers.{i}.self_attn.k_proj.bias"),
+        )
+        .ok()
+        .map(Arc::from);
         let attn_v_bias = load_tensor_as_f32(
-            st, &format!("{prefix}model.layers.{i}.self_attn.v_proj.bias"),
-        ).ok().map(Arc::from);
+            st,
+            &format!("{prefix}model.layers.{i}.self_attn.v_proj.bias"),
+        )
+        .ok()
+        .map(Arc::from);
         layers.push(LayerWeights {
-            attn_q, attn_q_bias,
-            attn_k, attn_k_bias,
-            attn_v, attn_v_bias,
+            attn_q,
+            attn_q_bias,
+            attn_k,
+            attn_k_bias,
+            attn_v,
+            attn_v_bias,
             attn_o,
-            ffn_gate, ffn_up, ffn_down,
+            ffn_gate,
+            ffn_up,
+            ffn_down,
             attn_norm_gain: Arc::from(attn_norm_gain),
             ffn_norm_gain: Arc::from(ffn_norm_gain),
         });
@@ -626,7 +689,10 @@ pub fn load_llama_weights_with_prefix(
     let final_norm_gain = load_tensor_as_f32(st, &format!("{prefix}model.norm.weight"))?;
     // lm_head: try untied, then fall back to tied embedding.
     let output: WeightStorage = match load_transposed_matrix_preserve_dtype(
-        st, &format!("{prefix}lm_head.weight"), cfg.vocab_size, cfg.dim,
+        st,
+        &format!("{prefix}lm_head.weight"),
+        cfg.vocab_size,
+        cfg.dim,
     ) {
         Ok(w) => w,
         Err(_) => {
@@ -670,13 +736,12 @@ impl LlavaWeights {
             cfg.projection_dim,
             v_cfg.embed_dim,
         )?;
-        let mm_proj_bias = load_tensor_as_f32(
-            st, "multi_modal_projector.linear_1.bias",
-        )?;
+        let mm_proj_bias = load_tensor_as_f32(st, "multi_modal_projector.linear_1.bias")?;
         if mm_proj_bias.len() != cfg.projection_dim {
             crate::bail!(
                 "multi_modal_projector.linear_1.bias: {} elts, expected {}",
-                mm_proj_bias.len(), cfg.projection_dim,
+                mm_proj_bias.len(),
+                cfg.projection_dim,
             );
         }
         let text = load_llama_weights_with_prefix(st, t_cfg, "language_model.")?;
@@ -688,7 +753,6 @@ impl LlavaWeights {
         })
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -726,7 +790,11 @@ mod tests {
         }
     }
 
-    fn tiny_clip_layers(embed: usize, inter: usize, nb: &mut Box<dyn FnMut() -> f32>) -> ClipEncoderLayerWeights {
+    fn tiny_clip_layers(
+        embed: usize,
+        inter: usize,
+        nb: &mut Box<dyn FnMut() -> f32>,
+    ) -> ClipEncoderLayerWeights {
         ClipEncoderLayerWeights {
             ln1_gain: Arc::from(vec![1.0_f32; embed]),
             ln1_bias: Arc::from(vec![0.0_f32; embed]),
@@ -760,11 +828,13 @@ mod tests {
         );
         let class_embedding = vec_of(cfg.embed_dim, &mut *nb);
         let position_embedding = vec_of((cfg.num_patches() + 1) * cfg.embed_dim, &mut *nb);
-        let layers: Vec<_> = (0..cfg.num_hidden_layers).map(|_|
-            tiny_clip_layers(cfg.embed_dim, cfg.intermediate_size, &mut nb)
-        ).collect();
+        let layers: Vec<_> = (0..cfg.num_hidden_layers)
+            .map(|_| tiny_clip_layers(cfg.embed_dim, cfg.intermediate_size, &mut nb))
+            .collect();
         ClipVisionWeights {
-            patch_proj, class_embedding, position_embedding,
+            patch_proj,
+            class_embedding,
+            position_embedding,
             pre_ln_gain: Arc::from(vec![1.0_f32; cfg.embed_dim]),
             pre_ln_bias: Arc::from(vec![0.0_f32; cfg.embed_dim]),
             layers,
@@ -784,25 +854,30 @@ mod tests {
         let i = cfg.ffn_dim;
         let kv = cfg.n_kv_heads * cfg.head_dim;
         let token_embedding = vec_of(cfg.vocab_size * h, &mut *nb);
-        let layers: Vec<LayerWeights> = (0..cfg.n_layers).map(|_| LayerWeights {
-            attn_q: WeightStorage::F32(vec_of(h * h, &mut *nb)),
-            attn_q_bias: None,
-            attn_k: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
-            attn_k_bias: None,
-            attn_v: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
-            attn_v_bias: None,
-            attn_o: WeightStorage::F32(vec_of(h * h, &mut *nb)),
-            ffn_gate: WeightStorage::F32(vec_of(h * i, &mut *nb)),
-            ffn_up: WeightStorage::F32(vec_of(h * i, &mut *nb)),
-            ffn_down: WeightStorage::F32(vec_of(i * h, &mut *nb)),
-            attn_norm_gain: Arc::from(vec![1.0_f32; h]),
-            ffn_norm_gain: Arc::from(vec![1.0_f32; h]),
-        }).collect();
+        let layers: Vec<LayerWeights> = (0..cfg.n_layers)
+            .map(|_| LayerWeights {
+                attn_q: WeightStorage::F32(vec_of(h * h, &mut *nb)),
+                attn_q_bias: None,
+                attn_k: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
+                attn_k_bias: None,
+                attn_v: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
+                attn_v_bias: None,
+                attn_o: WeightStorage::F32(vec_of(h * h, &mut *nb)),
+                ffn_gate: WeightStorage::F32(vec_of(h * i, &mut *nb)),
+                ffn_up: WeightStorage::F32(vec_of(h * i, &mut *nb)),
+                ffn_down: WeightStorage::F32(vec_of(i * h, &mut *nb)),
+                attn_norm_gain: Arc::from(vec![1.0_f32; h]),
+                ffn_norm_gain: Arc::from(vec![1.0_f32; h]),
+            })
+            .collect();
         let final_norm_gain = Arc::from(vec![1.0_f32; h]);
         let output = WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *nb));
         LlamaWeights {
             instance: crate::decode_shape::ModelInstanceId::next(),
-            token_embedding, layers, final_norm_gain, output,
+            token_embedding,
+            layers,
+            final_norm_gain,
+            output,
         }
     }
 
@@ -830,7 +905,8 @@ mod tests {
         let mm_proj_bias = vec_of(t_cfg.dim, &mut *nb);
         let weights = LlavaWeights {
             vision: tiny_vision_weights(&v_cfg),
-            mm_proj, mm_proj_bias,
+            mm_proj,
+            mm_proj_bias,
             text: tiny_llama_weights(&t_cfg),
         };
         let cfg = LlavaConfig {
@@ -838,7 +914,10 @@ mod tests {
             text_config: t_cfg.clone(),
             projection_dim: t_cfg.dim,
         };
-        let model = LlavaModel { config: cfg, weights };
+        let model = LlavaModel {
+            config: cfg,
+            weights,
+        };
 
         let img = tiny_image(&v_cfg);
         let text_tokens = [1_u32, 2, 3];
@@ -852,8 +931,8 @@ mod tests {
 
     mod load {
         use super::*;
-        use safetensors::tensor::TensorView;
         use safetensors::Dtype;
+        use safetensors::tensor::TensorView;
         use std::collections::HashMap;
 
         // Helpers ----------------------------------------------------------
@@ -872,12 +951,10 @@ mod tests {
         ) -> std::path::PathBuf {
             let mut views: HashMap<String, TensorView<'_>> = HashMap::new();
             for (k, (dt, shape, data)) in map {
-                let v = TensorView::new(*dt, shape.clone(), data)
-                    .expect("TensorView::new");
+                let v = TensorView::new(*dt, shape.clone(), data).expect("TensorView::new");
                 views.insert(k.clone(), v);
             }
-            let bytes = safetensors::serialize(&views, None)
-                .expect("safetensors::serialize");
+            let bytes = safetensors::serialize(&views, None).expect("safetensors::serialize");
             let dir = std::env::temp_dir();
             let unique = format!(
                 "lazy_llava_load_{}_{}.safetensors",
@@ -903,83 +980,188 @@ mod tests {
                 s = s.wrapping_mul(1103515245).wrapping_add(12345);
                 ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.01
             };
-            let mut vec_n = |n: usize| -> Vec<f32> {
-                (0..n).map(|_| nxt()).collect()
-            };
+            let mut vec_n = |n: usize| -> Vec<f32> { (0..n).map(|_| nxt()).collect() };
 
             // --- Vision tower (vision_tower.vision_model.*) ---
             let vp = "vision_tower.vision_model.";
             let h = v_cfg.embed_dim;
             let np = v_cfg.num_patches();
-            put(&mut map, &format!("{vp}embeddings.patch_embedding.weight"),
+            put(
+                &mut map,
+                &format!("{vp}embeddings.patch_embedding.weight"),
                 &[h, v_cfg.num_channels, v_cfg.patch_size, v_cfg.patch_size],
-                &vec_n(h * v_cfg.num_channels * v_cfg.patch_size * v_cfg.patch_size));
-            put(&mut map, &format!("{vp}embeddings.class_embedding"),
-                &[h], &vec_n(h));
-            put(&mut map, &format!("{vp}embeddings.position_embedding.weight"),
-                &[np + 1, h], &vec_n((np + 1) * h));
-            put(&mut map, &format!("{vp}pre_layrnorm.weight"), &[h], &vec_n(h));
-            put(&mut map, &format!("{vp}pre_layrnorm.bias"),   &[h], &vec_n(h));
-            put(&mut map, &format!("{vp}post_layernorm.weight"), &[h], &vec_n(h));
-            put(&mut map, &format!("{vp}post_layernorm.bias"),   &[h], &vec_n(h));
+                &vec_n(h * v_cfg.num_channels * v_cfg.patch_size * v_cfg.patch_size),
+            );
+            put(
+                &mut map,
+                &format!("{vp}embeddings.class_embedding"),
+                &[h],
+                &vec_n(h),
+            );
+            put(
+                &mut map,
+                &format!("{vp}embeddings.position_embedding.weight"),
+                &[np + 1, h],
+                &vec_n((np + 1) * h),
+            );
+            put(
+                &mut map,
+                &format!("{vp}pre_layrnorm.weight"),
+                &[h],
+                &vec_n(h),
+            );
+            put(&mut map, &format!("{vp}pre_layrnorm.bias"), &[h], &vec_n(h));
+            put(
+                &mut map,
+                &format!("{vp}post_layernorm.weight"),
+                &[h],
+                &vec_n(h),
+            );
+            put(
+                &mut map,
+                &format!("{vp}post_layernorm.bias"),
+                &[h],
+                &vec_n(h),
+            );
             for i in 0..v_cfg.num_hidden_layers {
                 let p = format!("{vp}encoder.layers.{i}");
-                put(&mut map, &format!("{p}.layer_norm1.weight"), &[h], &vec_n(h));
-                put(&mut map, &format!("{p}.layer_norm1.bias"),   &[h], &vec_n(h));
-                put(&mut map, &format!("{p}.layer_norm2.weight"), &[h], &vec_n(h));
-                put(&mut map, &format!("{p}.layer_norm2.bias"),   &[h], &vec_n(h));
+                put(
+                    &mut map,
+                    &format!("{p}.layer_norm1.weight"),
+                    &[h],
+                    &vec_n(h),
+                );
+                put(&mut map, &format!("{p}.layer_norm1.bias"), &[h], &vec_n(h));
+                put(
+                    &mut map,
+                    &format!("{p}.layer_norm2.weight"),
+                    &[h],
+                    &vec_n(h),
+                );
+                put(&mut map, &format!("{p}.layer_norm2.bias"), &[h], &vec_n(h));
                 for proj in &["q_proj", "k_proj", "v_proj", "out_proj"] {
-                    put(&mut map, &format!("{p}.self_attn.{proj}.weight"),
-                        &[h, h], &vec_n(h * h));
-                    put(&mut map, &format!("{p}.self_attn.{proj}.bias"),
-                        &[h], &vec_n(h));
+                    put(
+                        &mut map,
+                        &format!("{p}.self_attn.{proj}.weight"),
+                        &[h, h],
+                        &vec_n(h * h),
+                    );
+                    put(
+                        &mut map,
+                        &format!("{p}.self_attn.{proj}.bias"),
+                        &[h],
+                        &vec_n(h),
+                    );
                 }
-                put(&mut map, &format!("{p}.mlp.fc1.weight"),
-                    &[v_cfg.intermediate_size, h], &vec_n(v_cfg.intermediate_size * h));
-                put(&mut map, &format!("{p}.mlp.fc1.bias"),
-                    &[v_cfg.intermediate_size], &vec_n(v_cfg.intermediate_size));
-                put(&mut map, &format!("{p}.mlp.fc2.weight"),
-                    &[h, v_cfg.intermediate_size], &vec_n(h * v_cfg.intermediate_size));
-                put(&mut map, &format!("{p}.mlp.fc2.bias"),
-                    &[h], &vec_n(h));
+                put(
+                    &mut map,
+                    &format!("{p}.mlp.fc1.weight"),
+                    &[v_cfg.intermediate_size, h],
+                    &vec_n(v_cfg.intermediate_size * h),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.mlp.fc1.bias"),
+                    &[v_cfg.intermediate_size],
+                    &vec_n(v_cfg.intermediate_size),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.mlp.fc2.weight"),
+                    &[h, v_cfg.intermediate_size],
+                    &vec_n(h * v_cfg.intermediate_size),
+                );
+                put(&mut map, &format!("{p}.mlp.fc2.bias"), &[h], &vec_n(h));
             }
 
             // --- MM projector (linear variant) ---
-            put(&mut map, "multi_modal_projector.linear_1.weight",
-                &[proj_dim, v_cfg.embed_dim], &vec_n(proj_dim * v_cfg.embed_dim));
-            put(&mut map, "multi_modal_projector.linear_1.bias",
-                &[proj_dim], &vec_n(proj_dim));
+            put(
+                &mut map,
+                "multi_modal_projector.linear_1.weight",
+                &[proj_dim, v_cfg.embed_dim],
+                &vec_n(proj_dim * v_cfg.embed_dim),
+            );
+            put(
+                &mut map,
+                "multi_modal_projector.linear_1.bias",
+                &[proj_dim],
+                &vec_n(proj_dim),
+            );
 
             // --- Language model (language_model.model.*) ---
             let lp = "language_model.";
             let d = t_cfg.dim;
             let kv = t_cfg.n_kv_heads * t_cfg.head_dim;
-            put(&mut map, &format!("{lp}model.embed_tokens.weight"),
-                &[t_cfg.vocab_size, d], &vec_n(t_cfg.vocab_size * d));
+            put(
+                &mut map,
+                &format!("{lp}model.embed_tokens.weight"),
+                &[t_cfg.vocab_size, d],
+                &vec_n(t_cfg.vocab_size * d),
+            );
             for i in 0..t_cfg.n_layers {
                 let p = format!("{lp}model.layers.{i}");
-                put(&mut map, &format!("{p}.self_attn.q_proj.weight"),
-                    &[d, d], &vec_n(d * d));
-                put(&mut map, &format!("{p}.self_attn.k_proj.weight"),
-                    &[kv, d], &vec_n(kv * d));
-                put(&mut map, &format!("{p}.self_attn.v_proj.weight"),
-                    &[kv, d], &vec_n(kv * d));
-                put(&mut map, &format!("{p}.self_attn.o_proj.weight"),
-                    &[d, d], &vec_n(d * d));
-                put(&mut map, &format!("{p}.mlp.gate_proj.weight"),
-                    &[t_cfg.ffn_dim, d], &vec_n(t_cfg.ffn_dim * d));
-                put(&mut map, &format!("{p}.mlp.up_proj.weight"),
-                    &[t_cfg.ffn_dim, d], &vec_n(t_cfg.ffn_dim * d));
-                put(&mut map, &format!("{p}.mlp.down_proj.weight"),
-                    &[d, t_cfg.ffn_dim], &vec_n(d * t_cfg.ffn_dim));
-                put(&mut map, &format!("{p}.input_layernorm.weight"),
-                    &[d], &vec_n(d));
-                put(&mut map, &format!("{p}.post_attention_layernorm.weight"),
-                    &[d], &vec_n(d));
+                put(
+                    &mut map,
+                    &format!("{p}.self_attn.q_proj.weight"),
+                    &[d, d],
+                    &vec_n(d * d),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.self_attn.k_proj.weight"),
+                    &[kv, d],
+                    &vec_n(kv * d),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.self_attn.v_proj.weight"),
+                    &[kv, d],
+                    &vec_n(kv * d),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.self_attn.o_proj.weight"),
+                    &[d, d],
+                    &vec_n(d * d),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.mlp.gate_proj.weight"),
+                    &[t_cfg.ffn_dim, d],
+                    &vec_n(t_cfg.ffn_dim * d),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.mlp.up_proj.weight"),
+                    &[t_cfg.ffn_dim, d],
+                    &vec_n(t_cfg.ffn_dim * d),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.mlp.down_proj.weight"),
+                    &[d, t_cfg.ffn_dim],
+                    &vec_n(d * t_cfg.ffn_dim),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.input_layernorm.weight"),
+                    &[d],
+                    &vec_n(d),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.post_attention_layernorm.weight"),
+                    &[d],
+                    &vec_n(d),
+                );
             }
             put(&mut map, &format!("{lp}model.norm.weight"), &[d], &vec_n(d));
-            put(&mut map, &format!("{lp}lm_head.weight"),
-                &[t_cfg.vocab_size, d], &vec_n(t_cfg.vocab_size * d));
+            put(
+                &mut map,
+                &format!("{lp}lm_head.weight"),
+                &[t_cfg.vocab_size, d],
+                &vec_n(t_cfg.vocab_size * d),
+            );
 
             serialize_to_tempfile(&map)
         }
@@ -1003,16 +1185,23 @@ mod tests {
 
             // Shape spot-checks.
             assert_eq!(w.vision.layers.len(), v_cfg.num_hidden_layers);
-            assert_eq!(w.vision.patch_proj.len(),
-                v_cfg.embed_dim * v_cfg.num_channels * v_cfg.patch_size * v_cfg.patch_size);
-            assert_eq!(w.vision.position_embedding.len(),
-                (v_cfg.num_patches() + 1) * v_cfg.embed_dim);
+            assert_eq!(
+                w.vision.patch_proj.len(),
+                v_cfg.embed_dim * v_cfg.num_channels * v_cfg.patch_size * v_cfg.patch_size
+            );
+            assert_eq!(
+                w.vision.position_embedding.len(),
+                (v_cfg.num_patches() + 1) * v_cfg.embed_dim
+            );
             assert_eq!(w.mm_proj_bias.len(), proj_dim);
             assert_eq!(w.text.layers.len(), t_cfg.n_layers);
             assert_eq!(w.text.token_embedding.len(), t_cfg.vocab_size * t_cfg.dim);
 
             // Forward must produce finite logits with the loaded weights.
-            let model = LlavaModel { config: cfg.clone(), weights: w };
+            let model = LlavaModel {
+                config: cfg.clone(),
+                weights: w,
+            };
             let img = tiny_image(&v_cfg);
             let tokens = [1_u32, 2, 3];
             let logits = model.forward(&img, &tokens).unwrap().realize_f32();

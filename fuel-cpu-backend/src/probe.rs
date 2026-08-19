@@ -27,21 +27,21 @@ pub fn enumerate_devices() -> Result<Vec<DeviceDescriptor>> {
         .unwrap_or(1);
     let sku = format!("{} ({} logical cores)", std::env::consts::ARCH, cores);
     Ok(vec![DeviceDescriptor {
-        backend:            BackendId::Cpu,
-        device_index:       0,
-        hardware_sku:       sku,
-        vendor_id:          0,
-        device_id:          0,
+        backend: BackendId::Cpu,
+        device_index: 0,
+        hardware_sku: sku,
+        vendor_id: 0,
+        device_id: 0,
         compute_capability: None,
         // No subgroup/wave concept on the scalar CPU path. (SIMD lane count
         // is a different axis — it varies per instruction set, not per
         // device — so it deliberately does not map onto this field.)
-        subgroup_width:     None,
+        subgroup_width: None,
         // No direct driver concept for the CPU backend; use the crate
         // version so the Judge invalidates on fuel-cpu-backend updates.
-        driver_version:     env!("CARGO_PKG_VERSION").to_string(),
+        driver_version: env!("CARGO_PKG_VERSION").to_string(),
         total_memory_bytes: 0,
-        location:           DeviceLocation::Cpu,
+        location: DeviceLocation::Cpu,
     }])
 }
 

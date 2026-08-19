@@ -26,8 +26,8 @@ use baracuda_types::DeviceRepr;
 use fuel_backend_contract::backend::BackendStorage;
 use fuel_ir::Result;
 
-use crate::error::{CudaError, WrapErr};
 use crate::CudaDevice;
+use crate::error::{CudaError, WrapErr};
 
 /// Byte-shaped CUDA storage. Holds a raw `DeviceBuffer<u8>` (CUDA-
 /// allocated byte buffer), the owning device, and a byte count.
@@ -51,12 +51,12 @@ impl CudaStorageBytes {
     /// byte buffer plus the device that owns it. Caller is
     /// responsible for `len_bytes` matching the buffer's actual byte
     /// capacity.
-    pub fn from_parts(
-        buffer: Arc<DeviceBuffer<u8>>,
-        device: CudaDevice,
-        len_bytes: usize,
-    ) -> Self {
-        Self { buffer, device, len_bytes }
+    pub fn from_parts(buffer: Arc<DeviceBuffer<u8>>, device: CudaDevice, len_bytes: usize) -> Self {
+        Self {
+            buffer,
+            device,
+            len_bytes,
+        }
     }
 
     /// Borrow the underlying byte buffer.
@@ -161,11 +161,7 @@ impl CudaStorageBytes {
     /// bundled producers.
     ///
     /// `byte_offset + len_bytes` must be ≤ `self.len_bytes`.
-    pub fn slot_copy_to_new(
-        &self,
-        byte_offset: usize,
-        len_bytes:   usize,
-    ) -> Result<Self> {
+    pub fn slot_copy_to_new(&self, byte_offset: usize, len_bytes: usize) -> Result<Self> {
         let end = byte_offset.checked_add(len_bytes).ok_or_else(|| {
             fuel_ir::Error::Msg(format!(
                 "CudaStorageBytes::slot_copy_to_new: byte_offset {byte_offset} \
@@ -193,8 +189,7 @@ impl CudaStorageBytes {
         if len_bytes == 0 {
             return Self::alloc(&self.device, 0);
         }
-        let mut dst_buffer: DeviceBuffer<u8> =
-            unsafe { self.device.alloc::<u8>(len_bytes) }?;
+        let mut dst_buffer: DeviceBuffer<u8> = unsafe { self.device.alloc::<u8>(len_bytes) }?;
         {
             let src_view = self.buffer.view_as::<u8>();
             let src_slice = src_view.slice(byte_offset..byte_offset + len_bytes);
@@ -227,18 +222,17 @@ impl CudaStorageBytes {
     /// (outer_count ≤ ~4) the launch overhead is small.
     pub fn extract_strided_to_new(
         &self,
-        outer_count:     usize,
-        stride_bytes:    usize,
+        outer_count: usize,
+        stride_bytes: usize,
         offset_in_outer: usize,
         chunk_row_bytes: usize,
     ) -> Result<Self> {
-        let dest_total = outer_count
-            .checked_mul(chunk_row_bytes)
-            .ok_or_else(|| {
-                fuel_ir::Error::Msg(
-                    "extract_strided_to_new: outer_count * chunk_row_bytes overflows".into(),
-                ).bt()
-            })?;
+        let dest_total = outer_count.checked_mul(chunk_row_bytes).ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "extract_strided_to_new: outer_count * chunk_row_bytes overflows".into(),
+            )
+            .bt()
+        })?;
         if dest_total == 0 {
             return Self::alloc(&self.device, 0);
         }
@@ -249,19 +243,17 @@ impl CudaStorageBytes {
                 .and_then(|x| x.checked_add(offset_in_outer))
                 .and_then(|x| x.checked_add(chunk_row_bytes))
                 .ok_or_else(|| {
-                    fuel_ir::Error::Msg(
-                        "extract_strided_to_new: tile span overflow".into(),
-                    ).bt()
+                    fuel_ir::Error::Msg("extract_strided_to_new: tile span overflow".into()).bt()
                 })?;
             if last_tile_end > self.len_bytes {
                 return Err(fuel_ir::Error::Msg(format!(
                     "extract_strided_to_new: last tile end {last_tile_end} > src bytes {}",
                     self.len_bytes,
-                )).bt());
+                ))
+                .bt());
             }
         }
-        let mut dst_buffer: DeviceBuffer<u8> =
-            unsafe { self.device.alloc::<u8>(dest_total) }?;
+        let mut dst_buffer: DeviceBuffer<u8> = unsafe { self.device.alloc::<u8>(dest_total) }?;
         {
             let src_view = self.buffer.view_as::<u8>();
             let mut dst_view = dst_buffer.view_as_mut::<u8>();
@@ -299,8 +291,10 @@ impl CudaStorageBytes {
             return Err(fuel_ir::Error::Msg(format!(
                 "CudaStorageBytes::write_from_host: src.len() ({}) != \
                  storage.len_bytes ({})",
-                src.len(), self.len_bytes,
-            )).bt());
+                src.len(),
+                self.len_bytes,
+            ))
+            .bt());
         }
         self.buffer.copy_from_host(src).w()?;
         // copy_from_host is async on the default stream; sync so the
@@ -329,7 +323,8 @@ impl CudaStorageBytes {
                 "CudaStorageBytes::copy_from_device: src.len_bytes ({}) != \
                  self.len_bytes ({})",
                 src.len_bytes, self.len_bytes,
-            )).bt());
+            ))
+            .bt());
         }
         if self.len_bytes == 0 {
             return Ok(());

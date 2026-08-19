@@ -9,9 +9,13 @@
 
 use std::sync::{Arc, RwLock};
 
-use fuel_ir::{dispatch::OpKind, probe::BackendId, DType};
 use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
-use fuel_dispatch::{baracuda_dispatch::register_baracuda_cuda_kernels, dispatch::register_cuda_kernels, kernel::{KernelBindingTable, OpParams}};
+use fuel_dispatch::{
+    baracuda_dispatch::register_baracuda_cuda_kernels,
+    dispatch::register_cuda_kernels,
+    kernel::{KernelBindingTable, OpParams},
+};
+use fuel_ir::{DType, dispatch::OpKind, probe::BackendId};
 use fuel_memory::{BackendStorage, Storage};
 
 fn dev_or_skip() -> Option<CudaDevice> {
@@ -183,15 +187,14 @@ fn baracuda_powi_backward_f32_exp_3() {
         &[DType::F32, DType::F32, DType::F32],
         fuel_dispatch::baracuda_dispatch::powi_backward::powi_backward_f32,
     );
-    let layout = fuel_ir::Layout::contiguous(
-        fuel_ir::Shape::from_dims(&[x.len()]),
-    );
+    let layout = fuel_ir::Layout::contiguous(fuel_ir::Shape::from_dims(&[x.len()]));
     kernel(
         &[x_arc, up_arc],
         &mut [out_arc.clone()],
         &[layout.clone(), layout],
         &OpParams::PowI { exp: 3 },
-    ).expect("powi_backward dispatch");
+    )
+    .expect("powi_backward dispatch");
 
     let bytes = download_bytes(&out_arc.read().unwrap());
     let got: &[f32] = bytemuck::cast_slice(&bytes);

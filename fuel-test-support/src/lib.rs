@@ -187,8 +187,14 @@ mod tests {
     fn require_is_a_no_op_when_present_and_explains_when_not() {
         require("a live CUDA device", true); // must not panic
         let msg = panic_message(|| require("a live CUDA device", false));
-        assert!(msg.contains("a live CUDA device"), "must NAME it; got: {msg}");
-        assert!(msg.contains("not a skip"), "must say failure-not-skip; got: {msg}");
+        assert!(
+            msg.contains("a live CUDA device"),
+            "must NAME it; got: {msg}"
+        );
+        assert!(
+            msg.contains("not a skip"),
+            "must say failure-not-skip; got: {msg}"
+        );
         assert!(
             msg.contains("#[ignore]") && msg.contains("cfg(feature"),
             "must point at the declared-gate remedy; got: {msg}"

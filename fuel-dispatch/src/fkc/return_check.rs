@@ -1,12 +1,12 @@
 //! §5 return-contract validation: cross-check a fused contract's declared
 //! shape/dtype rules against the real registered FusedOpEntry fns.
-use fuel_graph::registry::{default_registry, FusedOpId, FusedOpParams};
-use fuel_ir::{DType, Shape};
+use crate::fkc::ImportWarning;
 use crate::fkc::error::FkcError;
 use crate::fkc::lower::lower_dtype;
 use crate::fkc::schema::FkcKernel;
 use crate::fkc::shape_constraint::solve_probe_shapes;
-use crate::fkc::ImportWarning;
+use fuel_graph::registry::{FusedOpId, FusedOpParams, default_registry};
+use fuel_ir::{DType, Shape};
 
 pub type ProbeComboRef<'a> = &'a [(String, Shape, DType)];
 
@@ -14,15 +14,26 @@ fn role<'a>(combo: ProbeComboRef<'a>, name: &str) -> Option<&'a (String, Shape, 
     combo.iter().find(|(r, _, _)| r == name)
 }
 fn inner<'a>(rule: &'a str, head: &str) -> Option<&'a str> {
-    rule.trim().strip_prefix(head)?.strip_suffix(')').map(str::trim)
+    rule.trim()
+        .strip_prefix(head)?
+        .strip_suffix(')')
+        .map(str::trim)
 }
 
 /// §5.1: `fixed(D)` and `passthrough(role)` are evaluable; every other token is
 /// `Ok(None)` = not-evaluable (skip, never a false reject). `fixed(<bad dtype>)`
 /// is a hard error (a real authoring bug).
-pub fn eval_dtype_rule(rule: &str, combo: ProbeComboRef, section: &str) -> Result<Option<DType>, FkcError> {
-    if let Some(tok) = inner(rule, "fixed(") { return Ok(Some(lower_dtype(tok, section, "return")?)); }
-    if let Some(r) = inner(rule, "passthrough(") { return Ok(role(combo, r).map(|(_, _, d)| *d)); }
+pub fn eval_dtype_rule(
+    rule: &str,
+    combo: ProbeComboRef,
+    section: &str,
+) -> Result<Option<DType>, FkcError> {
+    if let Some(tok) = inner(rule, "fixed(") {
+        return Ok(Some(lower_dtype(tok, section, "return")?));
+    }
+    if let Some(r) = inner(rule, "passthrough(") {
+        return Ok(role(combo, r).map(|(_, _, d)| *d));
+    }
     Ok(None)
 }
 /// §5.2: `same_as(role)` yields the operand's whole shape; a `DimExpr` string
@@ -34,7 +45,12 @@ pub fn eval_dtype_rule(rule: &str, combo: ProbeComboRef, section: &str) -> Resul
 /// pre-threading behavior for callers with no synthesized values. Every other
 /// token, a surfaced gap, or a decline on a recognized DimExpr → `Ok(None)`
 /// (not-evaluable; never a false reject).
-pub fn eval_shape_rule(rule: &str, combo: ProbeComboRef, params: &[i64], _section: &str) -> Result<Option<Shape>, FkcError> {
+pub fn eval_shape_rule(
+    rule: &str,
+    combo: ProbeComboRef,
+    params: &[i64],
+    _section: &str,
+) -> Result<Option<Shape>, FkcError> {
     let rule = rule.trim();
     if let Some(r) = inner(rule, "same_as(") {
         return Ok(role(combo, r).map(|(_, s, _)| s.clone()));
@@ -67,7 +83,9 @@ pub fn eval_shape_rule(rule: &str, combo: ProbeComboRef, params: &[i64], _sectio
     // A DimExpr form: parse (role names → positional AST), then evaluate over the
     // combo + the caller's flattened param values (C-4 T1 threading).
     if is_dimexpr_head(rule) {
-        let Some(dim) = crate::fkc::shape_expr_parse::parse_dim(rule, combo) else { return Ok(None) };
+        let Some(dim) = crate::fkc::shape_expr_parse::parse_dim(rule, combo) else {
+            return Ok(None);
+        };
         let operands: Vec<Vec<i64>> = combo.iter().map(|(_, s, _)| shape_to_i64(s)).collect();
         return match crate::fkc::shape_expr::eval_dim(&dim, &operands, params) {
             // A DimExpr denotes a single dimension → a rank-1 output shape (d ≥ 0).
@@ -189,13 +207,17 @@ fn distinct_role_probe(combo: ProbeComboRef) -> Vec<(String, Shape, DType)> {
 fn is_params_dependent_synth_variant(variant: Option<&str>) -> bool {
     matches!(
         variant,
-        Some("Conv2D" | "ConvTranspose2D" | "QMatMul" | "FusedSoftmaxCrossEntropy" | "CausalConv1d")
+        Some(
+            "Conv2D" | "ConvTranspose2D" | "QMatMul" | "FusedSoftmaxCrossEntropy" | "CausalConv1d"
+        )
     )
 }
 
 /// True iff `rule` starts with a recognized `DimExpr` constructor head.
 fn is_dimexpr_head(rule: &str) -> bool {
-    const HEADS: &[&str] = &["extent(", "const(", "param(", "add(", "sub(", "mul(", "div("];
+    const HEADS: &[&str] = &[
+        "extent(", "const(", "param(", "add(", "sub(", "mul(", "div(",
+    ];
     HEADS.iter().any(|h| rule.starts_with(h))
 }
 
@@ -225,7 +247,9 @@ pub fn synth_probe_params(variant: Option<&str>) -> Result<Option<FusedOpParams>
         Some("RmsNormLastDim") => Some(FusedOpParams::RmsNormLastDim { eps: EPS }),
         Some("LayerNormLastDim") => Some(FusedOpParams::LayerNormLastDim { eps: EPS }),
         Some("RmsNormLastDimBackward") => Some(FusedOpParams::RmsNormLastDimBackward { eps: EPS }),
-        Some("LayerNormLastDimBackward") => Some(FusedOpParams::LayerNormLastDimBackward { eps: EPS }),
+        Some("LayerNormLastDimBackward") => {
+            Some(FusedOpParams::LayerNormLastDimBackward { eps: EPS })
+        }
         Some("ReduceMaxToBackward") => Some(FusedOpParams::ReduceMaxToBackward),
         Some("PowIBackward") => Some(FusedOpParams::PowIBackward { exp: 2 }),
         Some("Rope") => Some(FusedOpParams::Rope),
@@ -261,7 +285,9 @@ pub fn synth_probe_params(variant: Option<&str>) -> Result<Option<FusedOpParams>
             window_size_right: None,
             softcap: None,
         }),
-        Some("SelectiveScan") => Some(FusedOpParams::SelectiveScan { delta_softplus: false }),
+        Some("SelectiveScan") => Some(FusedOpParams::SelectiveScan {
+            delta_softplus: false,
+        }),
         Some("SsdChunkScan") => Some(FusedOpParams::SsdChunkScan { chunk_size: 1 }),
         _ => None,
     })
@@ -347,7 +373,11 @@ pub fn synth_probe_param_points(
             // unread by the real shape/dtype fns (conv2d.rs), so 1-vs-2 is
             // purely an order-asymmetry probe.
             points(vec![
-                FusedOpParams::Conv2D { stride: (1, 2), padding: (kh / 2, kw / 2 + 3), groups: 1 },
+                FusedOpParams::Conv2D {
+                    stride: (1, 2),
+                    padding: (kh / 2, kw / 2 + 3),
+                    groups: 1,
+                },
                 FusedOpParams::Conv2D {
                     stride: (3, 4),
                     padding: (kh / 2 + 5, kw / 2 + 6),
@@ -393,7 +423,11 @@ pub fn synth_probe_param_points(
             let (Some(&k), Some(&n)) = (a.dims().last(), w.dims().first()) else {
                 return Vec::new();
             };
-            points(vec![FusedOpParams::QMatMul { quant_type: fuel_graph::QuantType::Q4_0, k, n }])
+            points(vec![FusedOpParams::QMatMul {
+                quant_type: fuel_graph::QuantType::Q4_0,
+                k,
+                n,
+            }])
         }
         Some("FusedSoftmaxCrossEntropy") => points(vec![
             // The reduction-CONDITIONAL shape rule (None → targets.shape,
@@ -453,9 +487,15 @@ pub fn cross_check_fused_section(
     warnings: &mut Vec<ImportWarning>,
 ) -> Result<(), FkcError> {
     let section = kernel.kernel.as_str();
-    let Some(entry) = default_registry().entry(id) else { return Ok(()); };
-    let Some(accept) = kernel.accept.as_ref() else { return Ok(()); };
-    let Some(ret) = kernel.return_.as_ref() else { return Ok(()); };
+    let Some(entry) = default_registry().entry(id) else {
+        return Ok(());
+    };
+    let Some(accept) = kernel.accept.as_ref() else {
+        return Ok(());
+    };
+    let Some(ret) = kernel.return_.as_ref() else {
+        return Ok(());
+    };
     let variant = accept.op_params.as_ref().and_then(|s| s.variant.as_deref());
 
     // Soft-catch solver errors (e.g. a malformed-vocabulary shape_constraint):
@@ -520,7 +560,9 @@ pub fn cross_check_fused_section(
         // output_views in Task 3.4 — do NOT compare non-primary outputs against these fns,
         // or a valid multi-output contract whose slot-N rule differs from slot-0 would be
         // spuriously rejected.
-        let Some(out) = ret.outputs.first() else { continue };
+        let Some(out) = ret.outputs.first() else {
+            continue;
+        };
         let role_name = out.name.as_deref().unwrap_or("out");
         // C-4 T3: the param POINTS for this combo. A params-independent
         // variant contributes its ONE synthesized params, paired with its
@@ -562,7 +604,11 @@ pub fn cross_check_fused_section(
                     // arity the probe combo doesn't satisfy → warn + skip this
                     // point (see `guard_rule`; the arity pre-check above already
                     // skips the known under-arity cases in BOTH build modes).
-                    let Some(real) = guard_rule(warnings, section, "dtype_rule", || (entry.dtype_rule)(&in_dtypes, p)) else { continue };
+                    let Some(real) = guard_rule(warnings, section, "dtype_rule", || {
+                        (entry.dtype_rule)(&in_dtypes, p)
+                    }) else {
+                        continue;
+                    };
                     if declared != real {
                         return Err(FkcError::ShapeRuleMismatch {
                             section: section.into(),
@@ -578,7 +624,11 @@ pub fn cross_check_fused_section(
                 // declared-rule evaluator (`param(N)` indexes it) and `p` to
                 // the real registry fn — consistency by construction.
                 if let Some(declared) = eval_shape_rule(rule, combo, ints, section)? {
-                    let Some(real) = guard_rule(warnings, section, "shape_rule", || (entry.shape_rule)(&in_shapes, p)) else { continue };
+                    let Some(real) = guard_rule(warnings, section, "shape_rule", || {
+                        (entry.shape_rule)(&in_shapes, p)
+                    }) else {
+                        continue;
+                    };
                     if declared != real {
                         return Err(FkcError::ShapeRuleMismatch {
                             section: section.into(),
@@ -623,54 +673,60 @@ pub fn cross_check_fused_section(
             let in_dtypes: Vec<DType> = distinct.iter().map(|(_, _, d)| *d).collect();
             // Never-panic guard (see `guard_rule`): an `output_views` fn that
             // asserts an arity the probe doesn't satisfy → warn + skip the bundle checks.
-            if let Some(views) = guard_rule(warnings, section, "output_views", || output_views(&in_shapes, &in_dtypes, p)) {
-            check_bundle_arity(section, views.len(), bundle)?;
-            // Rule 13 (Finding 5.3): rank-check every bundle slot whose
-            // `shape_rule` is EVALUABLE against this probe combo. The static
-            // `shape:`-literal branch is already rank-checked pre-registration
-            // in `validate.rs::check_bundle_ranks`; this covers the DERIVED
-            // case that check never could (no statically-knowable rank for a
-            // `shape_rule` string without evaluating it against a real probe).
-            if let serde_yaml_ng::Value::Sequence(slots) = bundle {
-                for (i, slot) in slots.iter().enumerate() {
-                    let serde_yaml_ng::Value::Mapping(map) = slot else { continue };
-                    let slot_name = map
-                        .get(serde_yaml_ng::Value::String("name".into()))
-                        .and_then(|v| v.as_str())
-                        .map(str::to_string)
-                        .unwrap_or_else(|| format!("slot{i}"));
-                    if let Some(rule) = map
-                        .get(serde_yaml_ng::Value::String("shape_rule".into()))
-                        .and_then(|v| v.as_str())
-                    {
-                        // C-4 T3: bundle slot rules see the same `key().ints`
-                        // flattening as the primary output (one `param(N)`
-                        // convention). Both bundle-bearing ops are
-                        // params-independent (single-synth), so `p` is the
-                        // one point for the whole bundle differential.
-                        if let Some(shape) = eval_shape_rule(rule, &distinct, &p.key().ints, section)? {
-                            check_slot_rank(section, &slot_name, &shape)?;
-                            // Finding 3: differentially compare the evaluated slot
-                            // shape to the `output_views` oracle for the SAME slot
-                            // (mirrors the primary-output differential above). A
-                            // slot whose `shape_rule` is not evaluable (e.g.
-                            // `from_params(last_state)`) yields `None` and stays a
-                            // documented skip; only an evaluable, mismatching slot
-                            // is rejected.
-                            if let Some(view) = views.get(i) {
-                                if shape != view.shape {
-                                    return Err(FkcError::ShapeRuleMismatch {
-                                        section: section.into(),
-                                        role: slot_name.clone(),
-                                        expected: format!("shape {:?}", view.shape),
-                                        actual: format!("shape {shape:?}"),
-                                    });
+            if let Some(views) = guard_rule(warnings, section, "output_views", || {
+                output_views(&in_shapes, &in_dtypes, p)
+            }) {
+                check_bundle_arity(section, views.len(), bundle)?;
+                // Rule 13 (Finding 5.3): rank-check every bundle slot whose
+                // `shape_rule` is EVALUABLE against this probe combo. The static
+                // `shape:`-literal branch is already rank-checked pre-registration
+                // in `validate.rs::check_bundle_ranks`; this covers the DERIVED
+                // case that check never could (no statically-knowable rank for a
+                // `shape_rule` string without evaluating it against a real probe).
+                if let serde_yaml_ng::Value::Sequence(slots) = bundle {
+                    for (i, slot) in slots.iter().enumerate() {
+                        let serde_yaml_ng::Value::Mapping(map) = slot else {
+                            continue;
+                        };
+                        let slot_name = map
+                            .get(serde_yaml_ng::Value::String("name".into()))
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string)
+                            .unwrap_or_else(|| format!("slot{i}"));
+                        if let Some(rule) = map
+                            .get(serde_yaml_ng::Value::String("shape_rule".into()))
+                            .and_then(|v| v.as_str())
+                        {
+                            // C-4 T3: bundle slot rules see the same `key().ints`
+                            // flattening as the primary output (one `param(N)`
+                            // convention). Both bundle-bearing ops are
+                            // params-independent (single-synth), so `p` is the
+                            // one point for the whole bundle differential.
+                            if let Some(shape) =
+                                eval_shape_rule(rule, &distinct, &p.key().ints, section)?
+                            {
+                                check_slot_rank(section, &slot_name, &shape)?;
+                                // Finding 3: differentially compare the evaluated slot
+                                // shape to the `output_views` oracle for the SAME slot
+                                // (mirrors the primary-output differential above). A
+                                // slot whose `shape_rule` is not evaluable (e.g.
+                                // `from_params(last_state)`) yields `None` and stays a
+                                // documented skip; only an evaluable, mismatching slot
+                                // is rejected.
+                                if let Some(view) = views.get(i) {
+                                    if shape != view.shape {
+                                        return Err(FkcError::ShapeRuleMismatch {
+                                            section: section.into(),
+                                            role: slot_name.clone(),
+                                            expected: format!("shape {:?}", view.shape),
+                                            actual: format!("shape {shape:?}"),
+                                        });
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            }
             }
         }
     }
@@ -702,9 +758,15 @@ pub fn check_slot_rank(section: &str, slot: &str, shape: &Shape) -> Result<(), F
 /// A slot with no `name:` key falls back to `slot{i}` (mirrors the same
 /// fallback in `cross_check_fused_section`'s rank-check loop, §5.5).
 pub fn bundle_slot_names(ret: &Option<crate::fkc::schema::ReturnBlock>) -> Vec<String> {
-    let Some(ret) = ret.as_ref() else { return Vec::new() };
-    let Some(bundle) = ret.bundle.as_ref() else { return Vec::new() };
-    let serde_yaml_ng::Value::Sequence(slots) = bundle else { return Vec::new() };
+    let Some(ret) = ret.as_ref() else {
+        return Vec::new();
+    };
+    let Some(bundle) = ret.bundle.as_ref() else {
+        return Vec::new();
+    };
+    let serde_yaml_ng::Value::Sequence(slots) = bundle else {
+        return Vec::new();
+    };
     slots
         .iter()
         .enumerate()
@@ -757,15 +819,39 @@ mod tests {
     #[test]
     fn synth_probe_params_builds_the_matching_variant_or_none() {
         use fuel_graph::registry::FusedOpParams;
-        assert!(matches!(synth_probe_params(Some("SoftmaxLastDim")).unwrap(), Some(FusedOpParams::SoftmaxLastDim)));
-        assert!(matches!(synth_probe_params(Some("RmsNormLastDim")).unwrap(), Some(FusedOpParams::RmsNormLastDim { .. })));
+        assert!(matches!(
+            synth_probe_params(Some("SoftmaxLastDim")).unwrap(),
+            Some(FusedOpParams::SoftmaxLastDim)
+        ));
+        assert!(matches!(
+            synth_probe_params(Some("RmsNormLastDim")).unwrap(),
+            Some(FusedOpParams::RmsNormLastDim { .. })
+        ));
         // Convergence-C C-3: the newly-widened arms return their matching variant.
-        assert!(matches!(synth_probe_params(Some("InplaceAffine")).unwrap(), Some(FusedOpParams::InplaceAffine { .. })));
-        assert!(matches!(synth_probe_params(Some("FlashAttn")).unwrap(), Some(FusedOpParams::FlashAttn { .. })));
-        assert!(matches!(synth_probe_params(Some("PagedAttn")).unwrap(), Some(FusedOpParams::PagedAttn { .. })));
-        assert!(matches!(synth_probe_params(Some("FlashAttnBackward")).unwrap(), Some(FusedOpParams::FlashAttnBackward { .. })));
-        assert!(matches!(synth_probe_params(Some("SelectiveScan")).unwrap(), Some(FusedOpParams::SelectiveScan { .. })));
-        assert!(matches!(synth_probe_params(Some("SsdChunkScan")).unwrap(), Some(FusedOpParams::SsdChunkScan { .. })));
+        assert!(matches!(
+            synth_probe_params(Some("InplaceAffine")).unwrap(),
+            Some(FusedOpParams::InplaceAffine { .. })
+        ));
+        assert!(matches!(
+            synth_probe_params(Some("FlashAttn")).unwrap(),
+            Some(FusedOpParams::FlashAttn { .. })
+        ));
+        assert!(matches!(
+            synth_probe_params(Some("PagedAttn")).unwrap(),
+            Some(FusedOpParams::PagedAttn { .. })
+        ));
+        assert!(matches!(
+            synth_probe_params(Some("FlashAttnBackward")).unwrap(),
+            Some(FusedOpParams::FlashAttnBackward { .. })
+        ));
+        assert!(matches!(
+            synth_probe_params(Some("SelectiveScan")).unwrap(),
+            Some(FusedOpParams::SelectiveScan { .. })
+        ));
+        assert!(matches!(
+            synth_probe_params(Some("SsdChunkScan")).unwrap(),
+            Some(FusedOpParams::SsdChunkScan { .. })
+        ));
         // C-4 T3 division-of-labor pin (the old ":534" flip): Conv2D is NO
         // LONGER an unsupported skip — it is params-DEPENDENT, so the single
         // path must stay None (a placeholder here would feed the real fn
@@ -796,7 +882,17 @@ mod tests {
         assert_eq!(bundle_slot_count(&two_slots), Some(2));
         let err = check_bundle_arity("selective_scan", 3, &two_slots)
             .expect_err("declared 2 vs 3 real output_views slots must be rejected");
-        assert!(matches!(err, FkcError::BundleArityMismatch { expected: 3, actual: 2, .. }), "got {err:?}");
+        assert!(
+            matches!(
+                err,
+                FkcError::BundleArityMismatch {
+                    expected: 3,
+                    actual: 2,
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
         assert!(check_bundle_arity("selective_scan", 2, &two_slots).is_ok());
     }
 
@@ -805,8 +901,11 @@ mod tests {
         use fuel_ir::Shape;
         let rank7 = Shape::from_dims(&[2, 2, 2, 2, 2, 2, 2]);
         let err = check_slot_rank("s", "big_slot", &rank7).expect_err("rank 7 must be rejected");
-        assert!(matches!(err, FkcError::BundleSlotRankExceeded { rank: 7, .. }), "got {err:?}");
-        assert!(check_slot_rank("s", "ok_slot", &Shape::from_dims(&[1,1,1,1,1,1])).is_ok());
+        assert!(
+            matches!(err, FkcError::BundleSlotRankExceeded { rank: 7, .. }),
+            "got {err:?}"
+        );
+        assert!(check_slot_rank("s", "ok_slot", &Shape::from_dims(&[1, 1, 1, 1, 1, 1])).is_ok());
     }
 
     #[test]
@@ -816,31 +915,67 @@ mod tests {
             ("upstream".into(), Shape::from_dims(&[4, 5]), DType::F16),
         ];
         let c: ProbeComboRef = &combo;
-        assert_eq!(eval_dtype_rule("fixed(F16)", c, "k").unwrap(), Some(DType::F16));
-        assert_eq!(eval_dtype_rule("passthrough(x)", c, "k").unwrap(), Some(DType::F32));
+        assert_eq!(
+            eval_dtype_rule("fixed(F16)", c, "k").unwrap(),
+            Some(DType::F16)
+        );
+        assert_eq!(
+            eval_dtype_rule("passthrough(x)", c, "k").unwrap(),
+            Some(DType::F32)
+        );
         assert_eq!(eval_dtype_rule("dequant(w)", c, "k").unwrap(), None);
-        assert_eq!(eval_shape_rule("same_as(upstream)", c, &[], "k").unwrap(), Some(Shape::from_dims(&[4, 5])));
-        assert_eq!(eval_shape_rule("from_params(q)", c, &[], "k").unwrap(), None);
+        assert_eq!(
+            eval_shape_rule("same_as(upstream)", c, &[], "k").unwrap(),
+            Some(Shape::from_dims(&[4, 5]))
+        );
+        assert_eq!(
+            eval_shape_rule("from_params(q)", c, &[], "k").unwrap(),
+            None
+        );
         // `matmul(a, b)` over a combo that has NO `a`/`b` roles → unknown-role skip.
         assert_eq!(eval_shape_rule("matmul(a, b)", c, &[], "k").unwrap(), None);
-        assert_eq!(eval_shape_rule("same_as(does_not_exist)", c, &[], "k").unwrap(), None);
+        assert_eq!(
+            eval_shape_rule("same_as(does_not_exist)", c, &[], "k").unwrap(),
+            None
+        );
 
         // Convergence-C: DimExpr rules evaluate to a single-dim shape via the §6.20 oracle.
         // combo "x" = [2, 3].
-        assert_eq!(eval_shape_rule("extent(x, 0)", c, &[], "k").unwrap(), Some(Shape::from_dims(&[2])));
-        assert_eq!(eval_shape_rule("const(9)", c, &[], "k").unwrap(), Some(Shape::from_dims(&[9])));
+        assert_eq!(
+            eval_shape_rule("extent(x, 0)", c, &[], "k").unwrap(),
+            Some(Shape::from_dims(&[2]))
+        );
+        assert_eq!(
+            eval_shape_rule("const(9)", c, &[], "k").unwrap(),
+            Some(Shape::from_dims(&[9]))
+        );
         // div(extent(x, last), const(2)) on x=[2,3]: floor(3/2) = 1.
-        assert_eq!(eval_shape_rule("div(extent(x, last), const(2))", c, &[], "k").unwrap(), Some(Shape::from_dims(&[1])));
+        assert_eq!(
+            eval_shape_rule("div(extent(x, last), const(2))", c, &[], "k").unwrap(),
+            Some(Shape::from_dims(&[1]))
+        );
         // mul(extent(x, 0)=2, const(3)=3) = 6.
-        assert_eq!(eval_shape_rule("mul(extent(x, 0), const(3))", c, &[], "k").unwrap(), Some(Shape::from_dims(&[6])));
+        assert_eq!(
+            eval_shape_rule("mul(extent(x, 0), const(3))", c, &[], "k").unwrap(),
+            Some(Shape::from_dims(&[6]))
+        );
         // Unknown role, a param rule with EMPTY params (`&[]` → ParamOutOfRange
         // decline; C-4 T1 pin — values thread via the params slice now, but no
         // values still means skip), a ÷0 decline, and a negative result all
         // surface as not-evaluable → None (never a false reject).
-        assert_eq!(eval_shape_rule("extent(nope, 0)", c, &[], "k").unwrap(), None);
+        assert_eq!(
+            eval_shape_rule("extent(nope, 0)", c, &[], "k").unwrap(),
+            None
+        );
         assert_eq!(eval_shape_rule("param(0)", c, &[], "k").unwrap(), None);
-        assert_eq!(eval_shape_rule("div(extent(x, last), const(0))", c, &[], "k").unwrap(), None);
-        assert_eq!(eval_shape_rule("sub(const(2), extent(x, 1))", c, &[], "k").unwrap(), None); // 2 − 3 = −1
+        assert_eq!(
+            eval_shape_rule("div(extent(x, last), const(0))", c, &[], "k").unwrap(),
+            None
+        );
+        assert_eq!(
+            eval_shape_rule("sub(const(2), extent(x, 1))", c, &[], "k").unwrap(),
+            None
+        ); // 2 − 3 = −1
     }
 
     /// C-4 T1: `eval_shape_rule` threads its params slice through to the §6.20
@@ -851,12 +986,14 @@ mod tests {
     /// skip) — the pre-threading pin stays the default for value-less callers.
     #[test]
     fn eval_shape_rule_threads_param_values_through_the_oracle() {
-        let combo: Vec<(String, Shape, DType)> = vec![
-            ("x".into(), Shape::from_dims(&[2, 3]), DType::F32),
-        ];
+        let combo: Vec<(String, Shape, DType)> =
+            vec![("x".into(), Shape::from_dims(&[2, 3]), DType::F32)];
         let c: ProbeComboRef = &combo;
         // param(0) with values [7] → single-dim Shape [7].
-        assert_eq!(eval_shape_rule("param(0)", c, &[7], "k").unwrap(), Some(Shape::from_dims(&[7])));
+        assert_eq!(
+            eval_shape_rule("param(0)", c, &[7], "k").unwrap(),
+            Some(Shape::from_dims(&[7]))
+        );
         // Composite: mul(extent(x,0)=2, param(1)=5) = 10 — params and extents mix.
         assert_eq!(
             eval_shape_rule("mul(extent(x, 0), param(1))", c, &[7, 5], "k").unwrap(),
@@ -883,9 +1020,15 @@ mod tests {
         ];
         let c: ProbeComboRef = &combo;
         // a=[8,4096] · b=[4096,1024] → [8,1024].
-        assert_eq!(eval_shape_rule("matmul(a, b)", c, &[], "k").unwrap(), Some(Shape::from_dims(&[8, 1024])));
+        assert_eq!(
+            eval_shape_rule("matmul(a, b)", c, &[], "k").unwrap(),
+            Some(Shape::from_dims(&[8, 1024]))
+        );
         // Whitespace-insensitive (mirrors parse_dim).
-        assert_eq!(eval_shape_rule("matmul(a,b)", c, &[], "k").unwrap(), Some(Shape::from_dims(&[8, 1024])));
+        assert_eq!(
+            eval_shape_rule("matmul(a,b)", c, &[], "k").unwrap(),
+            Some(Shape::from_dims(&[8, 1024]))
+        );
 
         // Batched: [4,8,16] · [4,16,32] → [4,8,32].
         let batched: Vec<(String, Shape, DType)> = vec![
@@ -899,17 +1042,26 @@ mod tests {
 
         // Guards → skip (Ok(None), never a false reject / never a panic):
         // unknown role, a rank-1 operand, and a rank-mismatch.
-        assert_eq!(eval_shape_rule("matmul(a, nope)", c, &[], "k").unwrap(), None);
+        assert_eq!(
+            eval_shape_rule("matmul(a, nope)", c, &[], "k").unwrap(),
+            None
+        );
         let rank1: Vec<(String, Shape, DType)> = vec![
             ("a".into(), Shape::from_dims(&[8]), DType::F32),
             ("b".into(), Shape::from_dims(&[8]), DType::F32),
         ];
-        assert_eq!(eval_shape_rule("matmul(a, b)", &rank1, &[], "k").unwrap(), None);
+        assert_eq!(
+            eval_shape_rule("matmul(a, b)", &rank1, &[], "k").unwrap(),
+            None
+        );
         let rank_mismatch: Vec<(String, Shape, DType)> = vec![
             ("a".into(), Shape::from_dims(&[4, 8, 16]), DType::F32),
             ("b".into(), Shape::from_dims(&[16, 32]), DType::F32),
         ];
-        assert_eq!(eval_shape_rule("matmul(a, b)", &rank_mismatch, &[], "k").unwrap(), None);
+        assert_eq!(
+            eval_shape_rule("matmul(a, b)", &rank_mismatch, &[], "k").unwrap(),
+            None
+        );
     }
 
     /// Finding 5.4 deliverable (Task 3.6 coverage gap): the extractor must
@@ -937,8 +1089,15 @@ mod tests {
             panic!("simulated debug_assert arity panic");
         });
         std::panic::set_hook(prev);
-        assert!(caught.is_none(), "a caught panic yields None (skip this differential)");
-        assert_eq!(warnings.len(), 1, "the caught panic must surface exactly one warning");
+        assert!(
+            caught.is_none(),
+            "a caught panic yields None (skip this differential)"
+        );
+        assert_eq!(
+            warnings.len(),
+            1,
+            "the caught panic must surface exactly one warning"
+        );
         assert_eq!(warnings[0].section, "sec");
         assert!(
             warnings[0].message.contains("shape_rule") && warnings[0].message.contains("panicked"),
@@ -1014,18 +1173,41 @@ mod tests {
         // pairwise DISTINCT (order-asymmetry, review fix): any slot reorder
         // of the flattening — stride<->padding included — changes the vector.
         let pts = synth_probe_param_points(Some("Conv2D"), &conv);
-        assert_eq!(pts.len(), 2, "Conv2D needs >= 2 points (no single-point false-green)");
+        assert_eq!(
+            pts.len(),
+            2,
+            "Conv2D needs >= 2 points (no single-point false-green)"
+        );
         assert!(
-            matches!(pts[0].0, FusedOpParams::Conv2D { stride: (1, 2), padding: (1, 4), groups: 1 }),
-            "got {:?}", pts[0].0,
+            matches!(
+                pts[0].0,
+                FusedOpParams::Conv2D {
+                    stride: (1, 2),
+                    padding: (1, 4),
+                    groups: 1
+                }
+            ),
+            "got {:?}",
+            pts[0].0,
         );
         assert_eq!(pts[0].1, vec![1, 2, 1, 4, 1]);
         assert!(
-            matches!(pts[1].0, FusedOpParams::Conv2D { stride: (3, 4), padding: (6, 7), groups: 2 }),
-            "got {:?}", pts[1].0,
+            matches!(
+                pts[1].0,
+                FusedOpParams::Conv2D {
+                    stride: (3, 4),
+                    padding: (6, 7),
+                    groups: 2
+                }
+            ),
+            "got {:?}",
+            pts[1].0,
         );
         assert_eq!(pts[1].1, vec![3, 4, 6, 7, 2]);
-        assert_ne!(pts[0].1, pts[1].1, "the two points must differ (param-dependence observable)");
+        assert_ne!(
+            pts[0].1, pts[1].1,
+            "the two points must differ (param-dependence observable)"
+        );
 
         // ConvTranspose2D — 2 points, ints = [sh,sw,ph,pw,oph,opw,dh,dw,groups]
         // (registry.rs tag-11 flattening). output_padding < stride at both
@@ -1036,9 +1218,17 @@ mod tests {
         // values — now change an asserted vector.
         let pts = synth_probe_param_points(Some("ConvTranspose2D"), &conv);
         assert_eq!(pts.len(), 2, "ConvTranspose2D needs >= 2 points");
-        assert!(matches!(pts[0].0, FusedOpParams::ConvTranspose2D { .. }), "got {:?}", pts[0].0);
+        assert!(
+            matches!(pts[0].0, FusedOpParams::ConvTranspose2D { .. }),
+            "got {:?}",
+            pts[0].0
+        );
         assert_eq!(pts[0].1, vec![2, 3, 0, 1, 1, 2, 4, 5, 1]);
-        assert!(matches!(pts[1].0, FusedOpParams::ConvTranspose2D { .. }), "got {:?}", pts[1].0);
+        assert!(
+            matches!(pts[1].0, FusedOpParams::ConvTranspose2D { .. }),
+            "got {:?}",
+            pts[1].0
+        );
         assert_eq!(pts[1].1, vec![5, 4, 3, 2, 4, 0, 2, 6, 3]);
 
         // QMatMul — 1 point, COMBO-DERIVED per the contract couplings
@@ -1047,13 +1237,25 @@ mod tests {
         // contract's declared ggml_dtype.
         let qm: Vec<(String, Shape, DType)> = vec![
             ("a".into(), Shape::from_dims(&[8, 4096]), DType::F32),
-            ("w_q_bytes".into(), Shape::from_dims(&[1024, 128]), DType::U32),
+            (
+                "w_q_bytes".into(),
+                Shape::from_dims(&[1024, 128]),
+                DType::U32,
+            ),
         ];
         let pts = synth_probe_param_points(Some("QMatMul"), &qm);
         assert_eq!(pts.len(), 1);
         assert!(
-            matches!(pts[0].0, FusedOpParams::QMatMul { k: 4096, n: 1024, .. }),
-            "k/n must derive from the combo; got {:?}", pts[0].0,
+            matches!(
+                pts[0].0,
+                FusedOpParams::QMatMul {
+                    k: 4096,
+                    n: 1024,
+                    ..
+                }
+            ),
+            "k/n must derive from the combo; got {:?}",
+            pts[0].0,
         );
         assert_eq!(pts[0].1, vec![1, 4096, 1024]);
 
@@ -1066,15 +1268,29 @@ mod tests {
         ];
         let pts = synth_probe_param_points(Some("FusedSoftmaxCrossEntropy"), &fsce);
         assert_eq!(pts.len(), 2, "FSCE needs both reduction branches covered");
-        assert!(matches!(
-            pts[0].0,
-            FusedOpParams::FusedSoftmaxCrossEntropy { reduction: Reduction::None, ignore_index: -100 }
-        ), "got {:?}", pts[0].0);
+        assert!(
+            matches!(
+                pts[0].0,
+                FusedOpParams::FusedSoftmaxCrossEntropy {
+                    reduction: Reduction::None,
+                    ignore_index: -100
+                }
+            ),
+            "got {:?}",
+            pts[0].0
+        );
         assert_eq!(pts[0].1, vec![2, -100], "Reduction::None.key() = 2");
-        assert!(matches!(
-            pts[1].0,
-            FusedOpParams::FusedSoftmaxCrossEntropy { reduction: Reduction::Mean, ignore_index: -100 }
-        ), "got {:?}", pts[1].0);
+        assert!(
+            matches!(
+                pts[1].0,
+                FusedOpParams::FusedSoftmaxCrossEntropy {
+                    reduction: Reduction::Mean,
+                    ignore_index: -100
+                }
+            ),
+            "got {:?}",
+            pts[1].0
+        );
         assert_eq!(pts[1].1, vec![0, -100], "Reduction::Mean.key() = 0");
 
         // CausalConv1d — 1 point (shape/dtype rules ignore use_silu).
@@ -1085,7 +1301,11 @@ mod tests {
         ];
         let pts = synth_probe_param_points(Some("CausalConv1d"), &cc);
         assert_eq!(pts.len(), 1);
-        assert!(matches!(pts[0].0, FusedOpParams::CausalConv1d { use_silu: false }), "got {:?}", pts[0].0);
+        assert!(
+            matches!(pts[0].0, FusedOpParams::CausalConv1d { use_silu: false }),
+            "got {:?}",
+            pts[0].0
+        );
         assert_eq!(pts[0].1, vec![0]);
     }
 
@@ -1142,11 +1362,21 @@ mod tests {
             ("x".into(), Shape::from_dims(&[2, 3, 8, 8]), DType::F32),
             ("weight".into(), Shape::from_dims(&[4, 3, 3, 3]), DType::F32),
         ];
-        for v in ["Conv2D", "ConvTranspose2D", "QMatMul", "FusedSoftmaxCrossEntropy", "CausalConv1d"] {
+        for v in [
+            "Conv2D",
+            "ConvTranspose2D",
+            "QMatMul",
+            "FusedSoftmaxCrossEntropy",
+            "CausalConv1d",
+        ] {
             let pts = synth_probe_param_points(Some(v), &combo);
             assert!(!pts.is_empty(), "{v} must synthesize at least one point");
             for (p, ints) in &pts {
-                assert_eq!(ints, &p.key().ints, "{v}: ints must be the key().ints flattening");
+                assert_eq!(
+                    ints,
+                    &p.key().ints,
+                    "{v}: ints must be the key().ints flattening"
+                );
             }
         }
     }
@@ -1181,12 +1411,20 @@ mod tests {
         // QMatMul guards: missing operand / scalar (rank-0) activations.
         let qm: Vec<(String, Shape, DType)> = vec![
             ("a".into(), Shape::from_dims(&[8, 4096]), DType::F32),
-            ("w_q_bytes".into(), Shape::from_dims(&[1024, 128]), DType::U32),
+            (
+                "w_q_bytes".into(),
+                Shape::from_dims(&[1024, 128]),
+                DType::U32,
+            ),
         ];
         assert!(synth_probe_param_points(Some("QMatMul"), &qm[..1]).is_empty());
         let scalar_a: Vec<(String, Shape, DType)> = vec![
             ("a".into(), Shape::from_dims(&[]), DType::F32),
-            ("w_q_bytes".into(), Shape::from_dims(&[1024, 128]), DType::U32),
+            (
+                "w_q_bytes".into(),
+                Shape::from_dims(&[1024, 128]),
+                DType::U32,
+            ),
         ];
         assert!(synth_probe_param_points(Some("QMatMul"), &scalar_a).is_empty());
     }
@@ -1201,12 +1439,23 @@ mod tests {
     #[test]
     fn synth_conv2d_points_are_valid_for_the_real_registry_shape_fn() {
         use fuel_graph::registry::FusedOps;
-        let entry = default_registry().entry(FusedOps::CONV2D).expect("CONV2D registered");
+        let entry = default_registry()
+            .entry(FusedOps::CONV2D)
+            .expect("CONV2D registered");
         let cases = [
             // (x, weight): kernel > input; odd kernel; even kernel.
-            (Shape::from_dims(&[1, 1, 1, 7]), Shape::from_dims(&[1, 1, 5, 5])),
-            (Shape::from_dims(&[2, 3, 8, 8]), Shape::from_dims(&[4, 3, 3, 3])),
-            (Shape::from_dims(&[2, 3, 8, 8]), Shape::from_dims(&[4, 3, 4, 4])),
+            (
+                Shape::from_dims(&[1, 1, 1, 7]),
+                Shape::from_dims(&[1, 1, 5, 5]),
+            ),
+            (
+                Shape::from_dims(&[2, 3, 8, 8]),
+                Shape::from_dims(&[4, 3, 3, 3]),
+            ),
+            (
+                Shape::from_dims(&[2, 3, 8, 8]),
+                Shape::from_dims(&[4, 3, 4, 4]),
+            ),
         ];
         for (x, w) in cases {
             let combo: Vec<(String, Shape, DType)> = vec![
@@ -1254,9 +1503,11 @@ mod tests {
 
         fn table_row<'a>(doc: &'a str, doc_name: &str, variant: &str) -> &'a str {
             let marker = format!("| `{variant}` |");
-            doc.lines().find(|l| l.contains(&marker)).unwrap_or_else(|| {
-                panic!("{doc_name} prose is missing the `{variant}` param-index table row")
-            })
+            doc.lines()
+                .find(|l| l.contains(&marker))
+                .unwrap_or_else(|| {
+                    panic!("{doc_name} prose is missing the `{variant}` param-index table row")
+                })
         }
         fn assert_row_pins(doc: &str, doc_name: &str, variant: &str, params: &FusedOpParams) {
             let ints = params.key().ints;
@@ -1281,7 +1532,11 @@ mod tests {
             CONV_ROPE,
             "conv-rope.fkc.md",
             "Conv2D",
-            &FusedOpParams::Conv2D { stride: (1, 1), padding: (0, 0), groups: 1 },
+            &FusedOpParams::Conv2D {
+                stride: (1, 1),
+                padding: (0, 0),
+                groups: 1,
+            },
         );
         assert_row_pins(
             CONV_ROPE,
@@ -1305,7 +1560,9 @@ mod tests {
             CONV_ROPE,
             "conv-rope.fkc.md",
             "SelectiveScan",
-            &FusedOpParams::SelectiveScan { delta_softplus: false },
+            &FusedOpParams::SelectiveScan {
+                delta_softplus: false,
+            },
         );
         assert_row_pins(
             CONV_ROPE,
@@ -1321,7 +1578,11 @@ mod tests {
             LINEAR_QUANT,
             "linear-quant.fkc.md",
             "QMatMul",
-            &FusedOpParams::QMatMul { quant_type: fuel_graph::QuantType::Q4_0, k: 32, n: 4 },
+            &FusedOpParams::QMatMul {
+                quant_type: fuel_graph::QuantType::Q4_0,
+                k: 32,
+                n: 4,
+            },
         );
         assert_row_pins(
             LINEAR_QUANT,
@@ -1341,9 +1602,10 @@ mod tests {
 
         // The threading note itself (the convention sentence) must be present
         // in BOTH files: `param(N)` indexes the key().ints flattening.
-        for (doc, doc_name) in
-            [(CONV_ROPE, "conv-rope.fkc.md"), (LINEAR_QUANT, "linear-quant.fkc.md")]
-        {
+        for (doc, doc_name) in [
+            (CONV_ROPE, "conv-rope.fkc.md"),
+            (LINEAR_QUANT, "linear-quant.fkc.md"),
+        ] {
             assert!(
                 doc.contains("`param(N)` indexes the `FusedOpParams::key().ints` flattening"),
                 "{doc_name} must carry the C-4 param-threading convention note",

@@ -70,7 +70,10 @@ use fuel::{Device, Shape};
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// Text to synthesize.
-    #[arg(long, default_value = "This is a demo of text to speech by MetaVoice-1B.")]
+    #[arg(
+        long,
+        default_value = "This is a demo of text to speech by MetaVoice-1B."
+    )]
     prompt: String,
 
     /// Path to the speaker encoder safetensors. Accepts either:
@@ -383,9 +386,7 @@ fn load_speaker_embed(args: &Args, cfg: &MetaVoiceConfig) -> Result<LazyTensor> 
 /// fuel-transformers tree and has not been lazy-ported.
 fn byte_level_encode(text: &str, vocab_size: usize) -> Vec<u32> {
     let cap = vocab_size as u32;
-    text.bytes()
-        .map(|b| (b as u32) % cap.max(1))
-        .collect()
+    text.bytes().map(|b| (b as u32) % cap.max(1)).collect()
 }
 
 /// Host-side BS.1770 loudness normalization, mirroring the encodec

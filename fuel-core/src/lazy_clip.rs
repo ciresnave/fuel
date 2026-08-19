@@ -199,7 +199,11 @@ impl ClipTextModel {
 
         // Anchor on a single embedding tensor.
         let token_embeds = LazyTensor::embed_tokens(
-            weights.token_embedding.clone(), cfg.vocab_size, cfg.embed_dim, tokens, &Device::cpu(),
+            weights.token_embedding.clone(),
+            cfg.vocab_size,
+            cfg.embed_dim,
+            tokens,
+            &Device::cpu(),
         )?;
 
         // Position embedding for [0..seq).
@@ -224,14 +228,20 @@ impl ClipTextModel {
 
         for layer in &weights.layers {
             h = apply_clip_layer(
-                &h, layer,
-                cfg.num_attention_heads, cfg.head_dim(),
+                &h,
+                layer,
+                cfg.num_attention_heads,
+                cfg.head_dim(),
                 Some(&mask),
             )?;
         }
 
         // Final LayerNorm.
-        Ok(h.layer_norm_affine(std::sync::Arc::clone(&weights.final_ln_gain), std::sync::Arc::clone(&weights.final_ln_bias), 1e-5)?)
+        Ok(h.layer_norm_affine(
+            std::sync::Arc::clone(&weights.final_ln_gain),
+            std::sync::Arc::clone(&weights.final_ln_bias),
+            1e-5,
+        )?)
     }
 
     /// Pool the last hidden state by selecting position `eos_pos`,
@@ -240,7 +250,8 @@ impl ClipTextModel {
     pub fn pool_eos(&self, tokens: &[u32], eos_pos: usize) -> Result<LazyTensor> {
         let cfg = &self.config;
         let h = self.forward(tokens)?;
-        let pooled = h.slice(1_usize, eos_pos, 1)?
+        let pooled = h
+            .slice(1_usize, eos_pos, 1)?
             .reshape(Shape::from_dims(&[1, cfg.embed_dim]))?;
         Ok(pooled)
     }
@@ -289,7 +300,11 @@ impl ClipTextModel {
         );
 
         let token_embeds = LazyTensor::embed_tokens(
-            weights.token_embedding.clone(), cfg.vocab_size, cfg.embed_dim, tokens, &Device::cpu(),
+            weights.token_embedding.clone(),
+            cfg.vocab_size,
+            cfg.embed_dim,
+            tokens,
+            &Device::cpu(),
         )?;
         let pos_full = token_embeds.const_f32_like(
             Arc::clone(&weights.position_embedding),
@@ -314,8 +329,10 @@ impl ClipTextModel {
         let mut next_capture = 0;
         for (idx, layer) in weights.layers.iter().enumerate() {
             h = apply_clip_layer(
-                &h, layer,
-                cfg.num_attention_heads, cfg.head_dim(),
+                &h,
+                layer,
+                cfg.num_attention_heads,
+                cfg.head_dim(),
                 Some(&mask),
             )?;
             if next_capture < layer_ids.len() && layer_ids[next_capture] == idx {
@@ -348,15 +365,15 @@ impl ClipVisionModel {
         // Patch Conv2d (no bias in CLIP).
         let conv_w = pixel_values.const_f32_like(
             Arc::clone(&weights.patch_proj),
-            Shape::from_dims(&[cfg.embed_dim, cfg.num_channels, cfg.patch_size, cfg.patch_size]),
+            Shape::from_dims(&[
+                cfg.embed_dim,
+                cfg.num_channels,
+                cfg.patch_size,
+                cfg.patch_size,
+            ]),
         );
-        let conv_out = pixel_values.conv2d(
-            &conv_w,
-            None,
-            (cfg.patch_size, cfg.patch_size),
-            (0, 0),
-            1,
-        )?;
+        let conv_out =
+            pixel_values.conv2d(&conv_w, None, (cfg.patch_size, cfg.patch_size), (0, 0), 1)?;
         let np = cfg.num_patches();
         let patches = conv_out
             .reshape(Shape::from_dims(&[batch, cfg.embed_dim, np]))?
@@ -381,23 +398,27 @@ impl ClipVisionModel {
         let pre = with_cls.add(&pos_bc)?;
 
         // Pre-LayerNorm (CLIP vision has a pre-encoder LN).
-        let pre_ln = pre.layer_norm_affine(std::sync::Arc::clone(&weights.pre_ln_gain), std::sync::Arc::clone(&weights.pre_ln_bias), 1e-5)?;
+        let pre_ln = pre.layer_norm_affine(
+            std::sync::Arc::clone(&weights.pre_ln_gain),
+            std::sync::Arc::clone(&weights.pre_ln_bias),
+            1e-5,
+        )?;
 
         // Encoder layers (no causal mask for vision).
         let mut h = pre_ln;
         for layer in &weights.layers {
-            h = apply_clip_layer(
-                &h, layer,
-                cfg.num_attention_heads, cfg.head_dim(),
-                None,
-            )?;
+            h = apply_clip_layer(&h, layer, cfg.num_attention_heads, cfg.head_dim(), None)?;
         }
 
         // Pool CLS token (position 0) and apply post-LN.
         let cls_pooled = h
             .slice(1_usize, 0, 1)?
             .reshape(Shape::from_dims(&[batch, cfg.embed_dim]))?;
-        Ok(cls_pooled.layer_norm_affine(std::sync::Arc::clone(&weights.post_ln_gain), std::sync::Arc::clone(&weights.post_ln_bias), 1e-5)?)
+        Ok(cls_pooled.layer_norm_affine(
+            std::sync::Arc::clone(&weights.post_ln_gain),
+            std::sync::Arc::clone(&weights.post_ln_bias),
+            1e-5,
+        )?)
     }
 
     /// Extract per-token features at the requested layer
@@ -450,12 +471,15 @@ impl ClipVisionModel {
         // Same prep as forward().
         let conv_w = pixel_values.const_f32_like(
             Arc::clone(&weights.patch_proj),
-            Shape::from_dims(&[cfg.embed_dim, cfg.num_channels, cfg.patch_size, cfg.patch_size]),
+            Shape::from_dims(&[
+                cfg.embed_dim,
+                cfg.num_channels,
+                cfg.patch_size,
+                cfg.patch_size,
+            ]),
         );
-        let conv_out = pixel_values.conv2d(
-            &conv_w, None,
-            (cfg.patch_size, cfg.patch_size), (0, 0), 1,
-        )?;
+        let conv_out =
+            pixel_values.conv2d(&conv_w, None, (cfg.patch_size, cfg.patch_size), (0, 0), 1)?;
         let np = cfg.num_patches();
         let patches = conv_out
             .reshape(Shape::from_dims(&[batch, cfg.embed_dim, np]))?
@@ -474,17 +498,17 @@ impl ClipVisionModel {
             .reshape(Shape::from_dims(&[1, np + 1, cfg.embed_dim]))?
             .broadcast_to(Shape::from_dims(&[batch, np + 1, cfg.embed_dim]))?;
         let pre = with_cls.add(&pos_bc)?;
-        let pre_ln = pre.layer_norm_affine(std::sync::Arc::clone(&weights.pre_ln_gain), std::sync::Arc::clone(&weights.pre_ln_bias), 1e-5)?;
+        let pre_ln = pre.layer_norm_affine(
+            std::sync::Arc::clone(&weights.pre_ln_gain),
+            std::sync::Arc::clone(&weights.pre_ln_bias),
+            1e-5,
+        )?;
 
         let mut h = pre_ln;
         let mut out = Vec::with_capacity(layer_ids.len());
         let mut next_capture = 0;
         for (idx, layer) in weights.layers.iter().enumerate() {
-            h = apply_clip_layer(
-                &h, layer,
-                cfg.num_attention_heads, cfg.head_dim(),
-                None,
-            )?;
+            h = apply_clip_layer(&h, layer, cfg.num_attention_heads, cfg.head_dim(), None)?;
             if next_capture < layer_ids.len() && layer_ids[next_capture] == idx {
                 out.push(h.clone());
                 next_capture += 1;
@@ -506,7 +530,9 @@ impl ClipModel {
         };
         let pooled = v_model.forward(pixel_values)?;
         Ok(self.weights.visual_projection.apply_linear(
-            &pooled, self.vision_config.embed_dim, self.vision_config.projection_dim,
+            &pooled,
+            self.vision_config.embed_dim,
+            self.vision_config.projection_dim,
         )?)
     }
 
@@ -519,7 +545,9 @@ impl ClipModel {
         };
         let pooled = t_model.pool_eos(tokens, eos_pos)?;
         Ok(self.weights.text_projection.apply_linear(
-            &pooled, self.text_config.embed_dim, self.text_config.projection_dim,
+            &pooled,
+            self.text_config.embed_dim,
+            self.text_config.projection_dim,
         )?)
     }
 }
@@ -541,7 +569,11 @@ fn apply_clip_layer(
     let h = dims[2];
 
     // Pre-LN before attention.
-    let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&layer.ln1_gain), std::sync::Arc::clone(&layer.ln1_bias), 1e-5)?;
+    let x_norm = x.layer_norm_affine(
+        std::sync::Arc::clone(&layer.ln1_gain),
+        std::sync::Arc::clone(&layer.ln1_bias),
+        1e-5,
+    )?;
 
     // Q, K, V projections with biases.
     let q = layer.q_proj.apply_linear(&x_norm, h, h)?;
@@ -572,12 +604,18 @@ fn apply_clip_layer(
     let h1 = x.add(&attn_out)?;
 
     // Pre-LN before MLP.
-    let h1_norm = h1.layer_norm_affine(std::sync::Arc::clone(&layer.ln2_gain), std::sync::Arc::clone(&layer.ln2_bias), 1e-5)?;
+    let h1_norm = h1.layer_norm_affine(
+        std::sync::Arc::clone(&layer.ln2_gain),
+        std::sync::Arc::clone(&layer.ln2_bias),
+        1e-5,
+    )?;
 
     let inter = layer.fc1.apply_linear(&h1_norm, h, layer.fc1_bias.len())?;
     let inter = inter.add_trailing_bias(std::sync::Arc::clone(&layer.fc1_bias))?;
     let activated = quick_gelu(&inter);
-    let mlp_out = layer.fc2.apply_linear(&activated, layer.fc1_bias.len(), h)?;
+    let mlp_out = layer
+        .fc2
+        .apply_linear(&activated, layer.fc1_bias.len(), h)?;
     let mlp_out = mlp_out.add_trailing_bias(std::sync::Arc::clone(&layer.fc2_bias))?;
     h1.add(&mlp_out)
 }
@@ -599,32 +637,74 @@ fn load_clip_encoder_layer(
 ) -> Result<ClipEncoderLayerWeights> {
     use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
     Ok(ClipEncoderLayerWeights {
-        ln1_gain: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.layer_norm1.weight"))?),
-        ln1_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.layer_norm1.bias"))?),
+        ln1_gain: Arc::from(load_tensor_as_f32(
+            st,
+            &format!("{prefix}.layer_norm1.weight"),
+        )?),
+        ln1_bias: Arc::from(load_tensor_as_f32(
+            st,
+            &format!("{prefix}.layer_norm1.bias"),
+        )?),
         q_proj: load_transposed_matrix_preserve_dtype(
-            st, &format!("{prefix}.self_attn.q_proj.weight"), embed_dim, embed_dim,
+            st,
+            &format!("{prefix}.self_attn.q_proj.weight"),
+            embed_dim,
+            embed_dim,
         )?,
-        q_proj_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.self_attn.q_proj.bias"))?),
+        q_proj_bias: Arc::from(load_tensor_as_f32(
+            st,
+            &format!("{prefix}.self_attn.q_proj.bias"),
+        )?),
         k_proj: load_transposed_matrix_preserve_dtype(
-            st, &format!("{prefix}.self_attn.k_proj.weight"), embed_dim, embed_dim,
+            st,
+            &format!("{prefix}.self_attn.k_proj.weight"),
+            embed_dim,
+            embed_dim,
         )?,
-        k_proj_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.self_attn.k_proj.bias"))?),
+        k_proj_bias: Arc::from(load_tensor_as_f32(
+            st,
+            &format!("{prefix}.self_attn.k_proj.bias"),
+        )?),
         v_proj: load_transposed_matrix_preserve_dtype(
-            st, &format!("{prefix}.self_attn.v_proj.weight"), embed_dim, embed_dim,
+            st,
+            &format!("{prefix}.self_attn.v_proj.weight"),
+            embed_dim,
+            embed_dim,
         )?,
-        v_proj_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.self_attn.v_proj.bias"))?),
+        v_proj_bias: Arc::from(load_tensor_as_f32(
+            st,
+            &format!("{prefix}.self_attn.v_proj.bias"),
+        )?),
         out_proj: load_transposed_matrix_preserve_dtype(
-            st, &format!("{prefix}.self_attn.out_proj.weight"), embed_dim, embed_dim,
+            st,
+            &format!("{prefix}.self_attn.out_proj.weight"),
+            embed_dim,
+            embed_dim,
         )?,
-        out_proj_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.self_attn.out_proj.bias"))?),
-        ln2_gain: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.layer_norm2.weight"))?),
-        ln2_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.layer_norm2.bias"))?),
+        out_proj_bias: Arc::from(load_tensor_as_f32(
+            st,
+            &format!("{prefix}.self_attn.out_proj.bias"),
+        )?),
+        ln2_gain: Arc::from(load_tensor_as_f32(
+            st,
+            &format!("{prefix}.layer_norm2.weight"),
+        )?),
+        ln2_bias: Arc::from(load_tensor_as_f32(
+            st,
+            &format!("{prefix}.layer_norm2.bias"),
+        )?),
         fc1: load_transposed_matrix_preserve_dtype(
-            st, &format!("{prefix}.mlp.fc1.weight"), intermediate_size, embed_dim,
+            st,
+            &format!("{prefix}.mlp.fc1.weight"),
+            intermediate_size,
+            embed_dim,
         )?,
         fc1_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.mlp.fc1.bias"))?),
         fc2: load_transposed_matrix_preserve_dtype(
-            st, &format!("{prefix}.mlp.fc2.weight"), embed_dim, intermediate_size,
+            st,
+            &format!("{prefix}.mlp.fc2.weight"),
+            embed_dim,
+            intermediate_size,
         )?,
         fc2_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.mlp.fc2.bias"))?),
     })
@@ -649,22 +729,35 @@ impl ClipTextWeights {
     ) -> Result<Self> {
         use crate::lazy::load_tensor_as_f32;
         let token_embedding = Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}embeddings.token_embedding.weight"),
+            st,
+            &format!("{prefix}embeddings.token_embedding.weight"),
         )?);
         let position_embedding = Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}embeddings.position_embedding.weight"),
+            st,
+            &format!("{prefix}embeddings.position_embedding.weight"),
         )?);
         let layers: Result<Vec<_>> = (0..cfg.num_hidden_layers)
-            .map(|i| load_clip_encoder_layer(
-                st, &format!("{prefix}encoder.layers.{i}"), cfg.embed_dim, cfg.intermediate_size,
-            ))
+            .map(|i| {
+                load_clip_encoder_layer(
+                    st,
+                    &format!("{prefix}encoder.layers.{i}"),
+                    cfg.embed_dim,
+                    cfg.intermediate_size,
+                )
+            })
             .collect();
         Ok(Self {
             token_embedding,
             position_embedding,
             layers: layers?,
-            final_ln_gain: Arc::from(load_tensor_as_f32(st, &format!("{prefix}final_layer_norm.weight"))?),
-            final_ln_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}final_layer_norm.bias"))?),
+            final_ln_gain: Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{prefix}final_layer_norm.weight"),
+            )?),
+            final_ln_bias: Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{prefix}final_layer_norm.bias"),
+            )?),
         })
     }
 }
@@ -686,28 +779,48 @@ impl ClipVisionWeights {
     ) -> Result<Self> {
         use crate::lazy::load_tensor_as_f32;
         let patch_proj = Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}embeddings.patch_embedding.weight"),
+            st,
+            &format!("{prefix}embeddings.patch_embedding.weight"),
         )?);
         let class_embedding = Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}embeddings.class_embedding"),
+            st,
+            &format!("{prefix}embeddings.class_embedding"),
         )?);
         let position_embedding = Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}embeddings.position_embedding.weight"),
+            st,
+            &format!("{prefix}embeddings.position_embedding.weight"),
         )?);
         let layers: Result<Vec<_>> = (0..cfg.num_hidden_layers)
-            .map(|i| load_clip_encoder_layer(
-                st, &format!("{prefix}encoder.layers.{i}"), cfg.embed_dim, cfg.intermediate_size,
-            ))
+            .map(|i| {
+                load_clip_encoder_layer(
+                    st,
+                    &format!("{prefix}encoder.layers.{i}"),
+                    cfg.embed_dim,
+                    cfg.intermediate_size,
+                )
+            })
             .collect();
         Ok(Self {
             patch_proj,
             class_embedding,
             position_embedding,
-            pre_ln_gain: Arc::from(load_tensor_as_f32(st, &format!("{prefix}pre_layrnorm.weight"))?),
-            pre_ln_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}pre_layrnorm.bias"))?),
+            pre_ln_gain: Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{prefix}pre_layrnorm.weight"),
+            )?),
+            pre_ln_bias: Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{prefix}pre_layrnorm.bias"),
+            )?),
             layers: layers?,
-            post_ln_gain: Arc::from(load_tensor_as_f32(st, &format!("{prefix}post_layernorm.weight"))?),
-            post_ln_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}post_layernorm.bias"))?),
+            post_ln_gain: Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{prefix}post_layernorm.weight"),
+            )?),
+            post_ln_bias: Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{prefix}post_layernorm.bias"),
+            )?),
         })
     }
 }
@@ -727,19 +840,30 @@ impl ClipModelWeights {
         let text = ClipTextWeights::load_from_mmapped(st, text_cfg, "text_model.")?;
         let vision = ClipVisionWeights::load_from_mmapped(st, vision_cfg, "vision_model.")?;
         let text_projection = load_transposed_matrix_preserve_dtype(
-            st, "text_projection.weight", text_cfg.projection_dim, text_cfg.embed_dim,
+            st,
+            "text_projection.weight",
+            text_cfg.projection_dim,
+            text_cfg.embed_dim,
         )?;
         let visual_projection = load_transposed_matrix_preserve_dtype(
-            st, "visual_projection.weight", vision_cfg.projection_dim, vision_cfg.embed_dim,
+            st,
+            "visual_projection.weight",
+            vision_cfg.projection_dim,
+            vision_cfg.embed_dim,
         )?;
         let logit_scale = load_tensor_as_f32(st, "logit_scale")?
-            .first().copied().unwrap_or(0.0);
+            .first()
+            .copied()
+            .unwrap_or(0.0);
         Ok(Self {
-            text, vision, text_projection, visual_projection, logit_scale,
+            text,
+            vision,
+            text_projection,
+            visual_projection,
+            logit_scale,
         })
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -755,29 +879,32 @@ mod tests {
         inter: usize,
         nb: &mut Box<dyn FnMut() -> f32>,
     ) -> Vec<ClipEncoderLayerWeights> {
-        (0..n_layers).map(|_| ClipEncoderLayerWeights {
-            ln1_gain: Arc::from(vec![1.0_f32; embed]),
-            ln1_bias: Arc::from(vec![0.0_f32; embed]),
-            q_proj: WeightStorage::F32(vec_of(embed * embed, &mut **nb)),
-            q_proj_bias: vec_of(embed, &mut **nb),
-            k_proj: WeightStorage::F32(vec_of(embed * embed, &mut **nb)),
-            k_proj_bias: vec_of(embed, &mut **nb),
-            v_proj: WeightStorage::F32(vec_of(embed * embed, &mut **nb)),
-            v_proj_bias: vec_of(embed, &mut **nb),
-            out_proj: WeightStorage::F32(vec_of(embed * embed, &mut **nb)),
-            out_proj_bias: vec_of(embed, &mut **nb),
-            ln2_gain: Arc::from(vec![1.0_f32; embed]),
-            ln2_bias: Arc::from(vec![0.0_f32; embed]),
-            fc1: WeightStorage::F32(vec_of(embed * inter, &mut **nb)),
-            fc1_bias: vec_of(inter, &mut **nb),
-            fc2: WeightStorage::F32(vec_of(inter * embed, &mut **nb)),
-            fc2_bias: vec_of(embed, &mut **nb),
-        }).collect()
+        (0..n_layers)
+            .map(|_| ClipEncoderLayerWeights {
+                ln1_gain: Arc::from(vec![1.0_f32; embed]),
+                ln1_bias: Arc::from(vec![0.0_f32; embed]),
+                q_proj: WeightStorage::F32(vec_of(embed * embed, &mut **nb)),
+                q_proj_bias: vec_of(embed, &mut **nb),
+                k_proj: WeightStorage::F32(vec_of(embed * embed, &mut **nb)),
+                k_proj_bias: vec_of(embed, &mut **nb),
+                v_proj: WeightStorage::F32(vec_of(embed * embed, &mut **nb)),
+                v_proj_bias: vec_of(embed, &mut **nb),
+                out_proj: WeightStorage::F32(vec_of(embed * embed, &mut **nb)),
+                out_proj_bias: vec_of(embed, &mut **nb),
+                ln2_gain: Arc::from(vec![1.0_f32; embed]),
+                ln2_bias: Arc::from(vec![0.0_f32; embed]),
+                fc1: WeightStorage::F32(vec_of(embed * inter, &mut **nb)),
+                fc1_bias: vec_of(inter, &mut **nb),
+                fc2: WeightStorage::F32(vec_of(inter * embed, &mut **nb)),
+                fc2_bias: vec_of(embed, &mut **nb),
+            })
+            .collect()
     }
 
     fn tiny_text_cfg() -> ClipTextConfig {
         ClipTextConfig {
-            vocab_size: 32, embed_dim: 16,
+            vocab_size: 32,
+            embed_dim: 16,
             intermediate_size: 32,
             max_position_embeddings: 8,
             num_hidden_layers: 2,
@@ -808,9 +935,15 @@ mod tests {
         let mut nb: Box<dyn FnMut() -> f32> = Box::new(next);
         let token_embedding = vec_of(cfg.vocab_size * cfg.embed_dim, &mut *nb);
         let position_embedding = vec_of(cfg.max_position_embeddings * cfg.embed_dim, &mut *nb);
-        let layers = tiny_encoder_layers(cfg.num_hidden_layers, cfg.embed_dim, cfg.intermediate_size, &mut nb);
+        let layers = tiny_encoder_layers(
+            cfg.num_hidden_layers,
+            cfg.embed_dim,
+            cfg.intermediate_size,
+            &mut nb,
+        );
         ClipTextWeights {
-            token_embedding, position_embedding,
+            token_embedding,
+            position_embedding,
             layers,
             final_ln_gain: Arc::from(vec![1.0_f32; cfg.embed_dim]),
             final_ln_bias: Arc::from(vec![0.0_f32; cfg.embed_dim]),
@@ -830,9 +963,16 @@ mod tests {
         );
         let class_embedding = vec_of(cfg.embed_dim, &mut *nb);
         let position_embedding = vec_of((cfg.num_patches() + 1) * cfg.embed_dim, &mut *nb);
-        let layers = tiny_encoder_layers(cfg.num_hidden_layers, cfg.embed_dim, cfg.intermediate_size, &mut nb);
+        let layers = tiny_encoder_layers(
+            cfg.num_hidden_layers,
+            cfg.embed_dim,
+            cfg.intermediate_size,
+            &mut nb,
+        );
         ClipVisionWeights {
-            patch_proj, class_embedding, position_embedding,
+            patch_proj,
+            class_embedding,
+            position_embedding,
             pre_ln_gain: Arc::from(vec![1.0_f32; cfg.embed_dim]),
             pre_ln_bias: Arc::from(vec![0.0_f32; cfg.embed_dim]),
             layers,
@@ -854,7 +994,10 @@ mod tests {
     #[test]
     fn text_forward_shape() {
         let cfg = tiny_text_cfg();
-        let model = ClipTextModel { config: cfg.clone(), weights: tiny_text_weights(&cfg) };
+        let model = ClipTextModel {
+            config: cfg.clone(),
+            weights: tiny_text_weights(&cfg),
+        };
         let tokens = [1_u32, 2, 3, 4, 5];
         let h = model.forward(&tokens).unwrap();
         assert_eq!(h.shape().dims(), &[1, tokens.len(), cfg.embed_dim]);
@@ -866,7 +1009,10 @@ mod tests {
     #[test]
     fn text_pool_eos_shape() {
         let cfg = tiny_text_cfg();
-        let model = ClipTextModel { config: cfg.clone(), weights: tiny_text_weights(&cfg) };
+        let model = ClipTextModel {
+            config: cfg.clone(),
+            weights: tiny_text_weights(&cfg),
+        };
         let tokens = [1_u32, 2, 3, 4, 5];
         let pooled = model.pool_eos(&tokens, tokens.len() - 1).unwrap();
         assert_eq!(pooled.shape().dims(), &[1, cfg.embed_dim]);
@@ -877,7 +1023,10 @@ mod tests {
     #[test]
     fn text_causal_mask_holds() {
         let cfg = tiny_text_cfg();
-        let model = ClipTextModel { config: cfg.clone(), weights: tiny_text_weights(&cfg) };
+        let model = ClipTextModel {
+            config: cfg.clone(),
+            weights: tiny_text_weights(&cfg),
+        };
         let toks_a = [1_u32, 2, 3, 4];
         let toks_b = [1_u32, 2, 3, 15]; // last token differs
         let h_a = model.forward(&toks_a).unwrap().realize_f32();
@@ -889,7 +1038,9 @@ mod tests {
                 let i = t * e + d;
                 assert!(
                     (h_a[i] - h_b[i]).abs() < 1e-5,
-                    "causal mask violated at t={t}: {} vs {}", h_a[i], h_b[i],
+                    "causal mask violated at t={t}: {} vs {}",
+                    h_a[i],
+                    h_b[i],
                 );
             }
         }
@@ -898,7 +1049,10 @@ mod tests {
     #[test]
     fn vision_forward_shape() {
         let cfg = tiny_vision_cfg();
-        let model = ClipVisionModel { config: cfg.clone(), weights: tiny_vision_weights(&cfg) };
+        let model = ClipVisionModel {
+            config: cfg.clone(),
+            weights: tiny_vision_weights(&cfg),
+        };
         let img = tiny_image(&cfg);
         let out = model.forward(&img).unwrap();
         assert_eq!(out.shape().dims(), &[1, cfg.embed_dim]);
@@ -921,14 +1075,19 @@ mod tests {
         let mut nb: Box<dyn FnMut() -> f32> = Box::new(next);
         let text = tiny_text_weights(&text_cfg);
         let vision = tiny_vision_weights(&vision_cfg);
-        let text_projection = WeightStorage::F32(
-            vec_of(text_cfg.embed_dim * text_cfg.projection_dim, &mut *nb)
-        );
-        let visual_projection = WeightStorage::F32(
-            vec_of(vision_cfg.embed_dim * vision_cfg.projection_dim, &mut *nb)
-        );
+        let text_projection = WeightStorage::F32(vec_of(
+            text_cfg.embed_dim * text_cfg.projection_dim,
+            &mut *nb,
+        ));
+        let visual_projection = WeightStorage::F32(vec_of(
+            vision_cfg.embed_dim * vision_cfg.projection_dim,
+            &mut *nb,
+        ));
         let weights = ClipModelWeights {
-            text, vision, text_projection, visual_projection,
+            text,
+            vision,
+            text_projection,
+            visual_projection,
             logit_scale: 2.6592,
         };
         let model = ClipModel {
@@ -942,8 +1101,12 @@ mod tests {
         let toks = [1_u32, 2, 3, 4, 5];
         let txt_feat = model.text_features(&toks, toks.len() - 1).unwrap();
         assert_eq!(txt_feat.shape().dims(), &[1, text_cfg.projection_dim]);
-        for &v in &img_feat.realize_f32() { assert!(v.is_finite()); }
-        for &v in &txt_feat.realize_f32() { assert!(v.is_finite()); }
+        for &v in &img_feat.realize_f32() {
+            assert!(v.is_finite());
+        }
+        for &v in &txt_feat.realize_f32() {
+            assert!(v.is_finite());
+        }
     }
 
     #[test]
@@ -961,9 +1124,14 @@ mod tests {
     #[test]
     fn vision_forward_intermediate_layers_shape() {
         let cfg = tiny_vision_cfg();
-        let model = ClipVisionModel { config: cfg.clone(), weights: tiny_vision_weights(&cfg) };
+        let model = ClipVisionModel {
+            config: cfg.clone(),
+            weights: tiny_vision_weights(&cfg),
+        };
         let img = tiny_image(&cfg);
-        let outs = model.forward_intermediate_layers(&img, &[0_usize, 1]).unwrap();
+        let outs = model
+            .forward_intermediate_layers(&img, &[0_usize, 1])
+            .unwrap();
         assert_eq!(outs.len(), 2);
         let np = cfg.num_patches();
         for out in &outs {
@@ -978,17 +1146,24 @@ mod tests {
     #[test]
     fn vision_intermediate_layers_differ_across_depth() {
         let cfg = tiny_vision_cfg();
-        let model = ClipVisionModel { config: cfg.clone(), weights: tiny_vision_weights(&cfg) };
+        let model = ClipVisionModel {
+            config: cfg.clone(),
+            weights: tiny_vision_weights(&cfg),
+        };
         let img = tiny_image(&cfg);
-        let outs = model.forward_intermediate_layers(&img, &[0_usize, 1]).unwrap();
+        let outs = model
+            .forward_intermediate_layers(&img, &[0_usize, 1])
+            .unwrap();
         let a = outs[0].realize_f32();
         let b = outs[1].realize_f32();
         let mut max_diff = 0.0_f32;
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-7,
-            "layer 0 and layer 1 intermediates must differ, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-7,
+            "layer 0 and layer 1 intermediates must differ, max_diff = {max_diff}"
+        );
     }
 
     /// `forward_intermediate_layers` on the CLIP **text** tower
@@ -998,9 +1173,14 @@ mod tests {
     #[test]
     fn text_forward_intermediate_layers_shape() {
         let cfg = tiny_text_cfg();
-        let model = ClipTextModel { config: cfg.clone(), weights: tiny_text_weights(&cfg) };
+        let model = ClipTextModel {
+            config: cfg.clone(),
+            weights: tiny_text_weights(&cfg),
+        };
         let tokens = [1_u32, 2, 3, 4, 5];
-        let outs = model.forward_intermediate_layers(&tokens, &[0_usize, 1]).unwrap();
+        let outs = model
+            .forward_intermediate_layers(&tokens, &[0_usize, 1])
+            .unwrap();
         assert_eq!(outs.len(), 2);
         for out in &outs {
             assert_eq!(out.shape().dims(), &[1, tokens.len(), cfg.embed_dim]);
@@ -1014,7 +1194,9 @@ mod tests {
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-7,
-            "layer 0 and layer 1 intermediates must differ, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-7,
+            "layer 0 and layer 1 intermediates must differ, max_diff = {max_diff}"
+        );
     }
 }

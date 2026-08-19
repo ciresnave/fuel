@@ -200,7 +200,10 @@ mod tests {
             operands: vec![PatternNode::Op {
                 op: OpTag::Mul,
                 attrs: OpAttrs::default(),
-                operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+                operands: vec![
+                    PatternNode::Bind { index: 0 },
+                    PatternNode::Bind { index: 1 },
+                ],
             }],
         }
     }
@@ -210,13 +213,33 @@ mod tests {
         let mut g = Graph::new();
         let s = Shape::from_dims(&[4]);
         let leaf = |g: &mut Graph| {
-            g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 })
+            g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: s.clone(),
+                dtype: DType::F32,
+            })
         };
         let a = leaf(&mut g);
         let b = leaf(&mut g);
-        let mul = g.push(Node { op: Op::Mul, inputs: vec![a, b], shape: s.clone(), dtype: DType::F32 });
-        let tanh = g.push(Node { op: Op::Tanh, inputs: vec![mul], shape: s.clone(), dtype: DType::F32 });
-        let _neg = g.push(Node { op: Op::Neg, inputs: vec![tanh], shape: s.clone(), dtype: DType::F32 });
+        let mul = g.push(Node {
+            op: Op::Mul,
+            inputs: vec![a, b],
+            shape: s.clone(),
+            dtype: DType::F32,
+        });
+        let tanh = g.push(Node {
+            op: Op::Tanh,
+            inputs: vec![mul],
+            shape: s.clone(),
+            dtype: DType::F32,
+        });
+        let _neg = g.push(Node {
+            op: Op::Neg,
+            inputs: vec![tanh],
+            shape: s.clone(),
+            dtype: DType::F32,
+        });
         (g, tanh)
     }
 
@@ -267,8 +290,18 @@ mod tests {
         // contain: a bare `neg(a)` has no relu/add/tanh/mul anywhere.
         let mut g = Graph::new();
         let s = Shape::from_dims(&[4]);
-        let a = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
-        let _n = g.push(Node { op: Op::Neg, inputs: vec![a], shape: s.clone(), dtype: DType::F32 });
+        let a = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: s.clone(),
+            dtype: DType::F32,
+        });
+        let _n = g.push(Node {
+            op: Op::Neg,
+            inputs: vec![a],
+            shape: s.clone(),
+            dtype: DType::F32,
+        });
         let before = g.len();
 
         // The production table (any op other tests adopted lives here too —
@@ -307,7 +340,12 @@ mod tests {
         // sigmoid(add_scalar(x, 7.25)) + a downstream consumer.
         let mut g = Graph::new();
         let s = Shape::from_dims(&[4]);
-        let x = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+        let x = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: s.clone(),
+            dtype: DType::F32,
+        });
         let asn = g.push(Node {
             op: Op::AddScalar(7.25),
             inputs: vec![x],
@@ -315,10 +353,16 @@ mod tests {
             dtype: DType::F32,
         });
         let sig = g.push(Node {
-            op: Op::Sigmoid, inputs: vec![asn], shape: s.clone(), dtype: DType::F32,
+            op: Op::Sigmoid,
+            inputs: vec![asn],
+            shape: s.clone(),
+            dtype: DType::F32,
         });
         let _neg = g.push(Node {
-            op: Op::Neg, inputs: vec![sig], shape: s.clone(), dtype: DType::F32,
+            op: Op::Neg,
+            inputs: vec![sig],
+            shape: s.clone(),
+            dtype: DType::F32,
         });
         let before = g.len();
 

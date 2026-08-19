@@ -97,34 +97,37 @@ impl OlmoModel {
 
     /// Multimodal entry point. Skips token embedding; runs the decoder
     /// over pre-embedded inputs. OLMo does NOT scale embeddings.
-    pub fn forward_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
         let h_norm = self.run_backbone_embeds(embeds, start_pos)?;
         self.apply_lm_head(&h_norm)
     }
 
     /// Hidden-state variant of [`Self::forward_embeds`].
     pub fn forward_hidden_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
+        &self,
+        embeds: &LazyTensor,
+        start_pos: usize,
     ) -> Result<LazyTensor> {
         self.run_backbone_embeds(embeds, start_pos)
     }
 
     /// Build per-token embeddings without running the decoder.
-    pub fn embed_tokens_anchored(
-        &self, anchor: &LazyTensor, tokens: &[u32],
-    ) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
-            cfg.vocab_size, cfg.hidden_size, tokens,
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
         )
     }
 
     fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
-        Ok(self.weights.output.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
+        Ok(self
+            .weights
+            .output
+            .apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 
     fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
@@ -134,14 +137,16 @@ impl OlmoModel {
         assert!(seq > 0);
 
         let h = LazyTensor::embed_tokens(
-            weights.token_embedding.clone(), cfg.vocab_size, cfg.hidden_size, tokens, &Device::cpu(),
+            weights.token_embedding.clone(),
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
+            &Device::cpu(),
         )?;
         self.run_backbone_embeds(&h, start_pos)
     }
 
-    fn run_backbone_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
-    ) -> Result<LazyTensor> {
+    fn run_backbone_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -154,26 +159,29 @@ impl OlmoModel {
         }
         let seq = dims[1];
         if seq == 0 {
-            return Err(crate::Error::Msg(
-                "OlmoModel::forward_embeds: seq must be > 0".into(),
-            ).bt());
+            return Err(
+                crate::Error::Msg("OlmoModel::forward_embeds: seq must be > 0".into()).bt(),
+            );
         }
         if cfg.num_attention_heads * cfg.head_dim != cfg.hidden_size {
             return Err(crate::Error::Msg(
                 "OlmoConfig: num_attention_heads * head_dim must equal hidden_size".into(),
-            ).bt());
+            )
+            .bt());
         }
         let mut h = embeds.clone();
 
-        let (rope_cos, rope_sin) = h.rope_tables_const(
-            cfg.rope_theta, start_pos, seq, cfg.head_dim,
-        );
+        let (rope_cos, rope_sin) =
+            h.rope_tables_const(cfg.rope_theta, start_pos, seq, cfg.head_dim);
 
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin)?;
         }
         apply_layer_norm_no_bias(
-            &h, &weights.final_norm_gain, cfg.hidden_size, cfg.layer_norm_eps,
+            &h,
+            &weights.final_norm_gain,
+            cfg.hidden_size,
+            cfg.layer_norm_eps,
         )
     }
 
@@ -192,11 +200,23 @@ impl OlmoModel {
         let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
 
         let x_norm = apply_layer_norm_no_bias(
-            x, &layer.attn_norm_gain, cfg.hidden_size, cfg.layer_norm_eps,
+            x,
+            &layer.attn_norm_gain,
+            cfg.hidden_size,
+            cfg.layer_norm_eps,
         )?;
-        let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size)?.add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
-        let k = layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
-        let v = layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
+        let q = layer
+            .attn_q
+            .apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size)?
+            .add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
+        let k = layer
+            .attn_k
+            .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
+            .add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
+        let v = layer
+            .attn_v
+            .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
+            .add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
 
         let _ = (batch, seq);
         let q = q.split_heads(cfg.num_attention_heads, cfg.head_dim)?;
@@ -221,16 +241,29 @@ impl OlmoModel {
         let attn_v = attn.matmul(&v_full)?;
 
         let merged = attn_v.merge_heads()?;
-        let attn_out = layer.attn_o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?.add_optional_trailing_bias(layer.attn_o_bias.as_ref())?;
+        let attn_out = layer
+            .attn_o
+            .apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?
+            .add_optional_trailing_bias(layer.attn_o_bias.as_ref())?;
 
         let h1 = x.add(&attn_out)?;
         let h1_norm = apply_layer_norm_no_bias(
-            &h1, &layer.ffn_norm_gain, cfg.hidden_size, cfg.layer_norm_eps,
+            &h1,
+            &layer.ffn_norm_gain,
+            cfg.hidden_size,
+            cfg.layer_norm_eps,
         )?;
-        let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
-        let up = layer.ffn_up.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let gate = layer
+            .ffn_gate
+            .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let up = layer
+            .ffn_up
+            .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
         let swiglu = gate.silu().mul(&up)?;
-        let ffn_out = layer.ffn_down.apply_linear(&swiglu, cfg.intermediate_size, cfg.hidden_size)?;
+        let ffn_out =
+            layer
+                .ffn_down
+                .apply_linear(&swiglu, cfg.intermediate_size, cfg.hidden_size)?;
         h1.add(&ffn_out)
     }
 }
@@ -270,56 +303,105 @@ impl OlmoWeights {
         let mut layers: Vec<OlmoLayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
         for i in 0..cfg.num_hidden_layers {
             let p = format!("model.layers.{i}");
-            let attn_norm_gain = Arc::from(load_tensor_as_f32(st, &format!("{p}.input_layernorm.weight"))?);
-            let ffn_norm_gain = Arc::from(load_tensor_as_f32(st, &format!("{p}.post_attention_layernorm.weight"))?);
+            let attn_norm_gain = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.input_layernorm.weight"),
+            )?);
+            let ffn_norm_gain = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.post_attention_layernorm.weight"),
+            )?);
             let attn_q = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.q_proj.weight"), q_dim, h,
+                st,
+                &format!("{p}.self_attn.q_proj.weight"),
+                q_dim,
+                h,
             )?;
             let attn_k = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.k_proj.weight"), kv_dim, h,
+                st,
+                &format!("{p}.self_attn.k_proj.weight"),
+                kv_dim,
+                h,
             )?;
             let attn_v = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.v_proj.weight"), kv_dim, h,
+                st,
+                &format!("{p}.self_attn.v_proj.weight"),
+                kv_dim,
+                h,
             )?;
             let attn_o = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.o_proj.weight"), h, q_dim,
+                st,
+                &format!("{p}.self_attn.o_proj.weight"),
+                h,
+                q_dim,
             )?;
             let (attn_q_bias, attn_k_bias, attn_v_bias, attn_o_bias) = if cfg.attention_bias {
                 (
-                    Some(Arc::from(load_tensor_as_f32(st, &format!("{p}.self_attn.q_proj.bias"))?)),
-                    Some(Arc::from(load_tensor_as_f32(st, &format!("{p}.self_attn.k_proj.bias"))?)),
-                    Some(Arc::from(load_tensor_as_f32(st, &format!("{p}.self_attn.v_proj.bias"))?)),
-                    Some(Arc::from(load_tensor_as_f32(st, &format!("{p}.self_attn.o_proj.bias"))?)),
+                    Some(Arc::from(load_tensor_as_f32(
+                        st,
+                        &format!("{p}.self_attn.q_proj.bias"),
+                    )?)),
+                    Some(Arc::from(load_tensor_as_f32(
+                        st,
+                        &format!("{p}.self_attn.k_proj.bias"),
+                    )?)),
+                    Some(Arc::from(load_tensor_as_f32(
+                        st,
+                        &format!("{p}.self_attn.v_proj.bias"),
+                    )?)),
+                    Some(Arc::from(load_tensor_as_f32(
+                        st,
+                        &format!("{p}.self_attn.o_proj.bias"),
+                    )?)),
                 )
             } else {
                 (None, None, None, None)
             };
             let ffn_gate = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.mlp.gate_proj.weight"), inter, h,
+                st,
+                &format!("{p}.mlp.gate_proj.weight"),
+                inter,
+                h,
             )?;
             let ffn_up = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.mlp.up_proj.weight"), inter, h,
+                st,
+                &format!("{p}.mlp.up_proj.weight"),
+                inter,
+                h,
             )?;
             let ffn_down = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.mlp.down_proj.weight"), h, inter,
+                st,
+                &format!("{p}.mlp.down_proj.weight"),
+                h,
+                inter,
             )?;
             layers.push(OlmoLayerWeights {
-                attn_norm_gain, ffn_norm_gain,
-                attn_q, attn_q_bias,
-                attn_k, attn_k_bias,
-                attn_v, attn_v_bias,
-                attn_o, attn_o_bias,
-                ffn_gate, ffn_up, ffn_down,
+                attn_norm_gain,
+                ffn_norm_gain,
+                attn_q,
+                attn_q_bias,
+                attn_k,
+                attn_k_bias,
+                attn_v,
+                attn_v_bias,
+                attn_o,
+                attn_o_bias,
+                ffn_gate,
+                ffn_up,
+                ffn_down,
             });
         }
         let final_norm_gain = Arc::from(load_tensor_as_f32(st, "model.norm.weight")?);
-        let output = load_transposed_matrix_preserve_dtype(
-            st, "lm_head.weight", cfg.vocab_size, h,
-        )?;
-        Ok(Self { token_embedding, layers, final_norm_gain, output })
+        let output =
+            load_transposed_matrix_preserve_dtype(st, "lm_head.weight", cfg.vocab_size, h)?;
+        Ok(Self {
+            token_embedding,
+            layers,
+            final_norm_gain,
+            output,
+        })
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -333,42 +415,78 @@ mod tests {
         let vec_of = |n: usize, next: &mut dyn FnMut() -> f32| -> Arc<[f32]> {
             Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
         };
-        let h = cfg.hidden_size; let i = cfg.intermediate_size;
+        let h = cfg.hidden_size;
+        let i = cfg.intermediate_size;
         let kv = cfg.num_key_value_heads * cfg.head_dim;
         let mut nb: Box<dyn FnMut() -> f32> = Box::new(next);
         let token_embedding = vec_of(cfg.vocab_size * h, &mut *nb);
-        let layers: Vec<OlmoLayerWeights> = (0..cfg.num_hidden_layers).map(|_| OlmoLayerWeights {
-            attn_norm_gain: Arc::from(vec![1.0_f32; h]),
-            ffn_norm_gain:  Arc::from(vec![1.0_f32; h]),
-            attn_q: WeightStorage::F32(vec_of(h * h, &mut *nb)),
-            attn_q_bias: if cfg.attention_bias { Some(vec_of(h, &mut *nb)) } else { None },
-            attn_k: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
-            attn_k_bias: if cfg.attention_bias { Some(vec_of(kv, &mut *nb)) } else { None },
-            attn_v: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
-            attn_v_bias: if cfg.attention_bias { Some(vec_of(kv, &mut *nb)) } else { None },
-            attn_o: WeightStorage::F32(vec_of(h * h, &mut *nb)),
-            attn_o_bias: if cfg.attention_bias { Some(vec_of(h, &mut *nb)) } else { None },
-            ffn_gate: WeightStorage::F32(vec_of(h * i, &mut *nb)),
-            ffn_up:   WeightStorage::F32(vec_of(h * i, &mut *nb)),
-            ffn_down: WeightStorage::F32(vec_of(i * h, &mut *nb)),
-        }).collect();
+        let layers: Vec<OlmoLayerWeights> = (0..cfg.num_hidden_layers)
+            .map(|_| OlmoLayerWeights {
+                attn_norm_gain: Arc::from(vec![1.0_f32; h]),
+                ffn_norm_gain: Arc::from(vec![1.0_f32; h]),
+                attn_q: WeightStorage::F32(vec_of(h * h, &mut *nb)),
+                attn_q_bias: if cfg.attention_bias {
+                    Some(vec_of(h, &mut *nb))
+                } else {
+                    None
+                },
+                attn_k: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
+                attn_k_bias: if cfg.attention_bias {
+                    Some(vec_of(kv, &mut *nb))
+                } else {
+                    None
+                },
+                attn_v: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
+                attn_v_bias: if cfg.attention_bias {
+                    Some(vec_of(kv, &mut *nb))
+                } else {
+                    None
+                },
+                attn_o: WeightStorage::F32(vec_of(h * h, &mut *nb)),
+                attn_o_bias: if cfg.attention_bias {
+                    Some(vec_of(h, &mut *nb))
+                } else {
+                    None
+                },
+                ffn_gate: WeightStorage::F32(vec_of(h * i, &mut *nb)),
+                ffn_up: WeightStorage::F32(vec_of(h * i, &mut *nb)),
+                ffn_down: WeightStorage::F32(vec_of(i * h, &mut *nb)),
+            })
+            .collect();
         let final_norm_gain = Arc::from(vec![1.0_f32; h]);
         let output = WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *nb));
-        OlmoWeights { token_embedding, layers, final_norm_gain, output }
+        OlmoWeights {
+            token_embedding,
+            layers,
+            final_norm_gain,
+            output,
+        }
     }
 
     #[test]
     fn forward_shape_and_finite_2_layer() {
         let cfg = OlmoConfig {
-            vocab_size: 32, hidden_size: 16, intermediate_size: 32,
-            num_hidden_layers: 2, num_attention_heads: 4, num_key_value_heads: 4,
-            head_dim: 4, layer_norm_eps: 1e-5, rope_theta: 10_000.0,
-            max_position_embeddings: 64, attention_bias: false,
+            vocab_size: 32,
+            hidden_size: 16,
+            intermediate_size: 32,
+            num_hidden_layers: 2,
+            num_attention_heads: 4,
+            num_key_value_heads: 4,
+            head_dim: 4,
+            layer_norm_eps: 1e-5,
+            rope_theta: 10_000.0,
+            max_position_embeddings: 64,
+            attention_bias: false,
         };
-        let model = OlmoModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = OlmoModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let logits = model.forward(&[1, 2, 3, 4], 0).unwrap();
         assert_eq!(logits.shape().dims(), &[1, 4, cfg.vocab_size]);
-        for &v in &logits.realize_f32() { assert!(v.is_finite()); }
+        for &v in &logits.realize_f32() {
+            assert!(v.is_finite());
+        }
     }
 
     /// `forward_hidden` returns post-LayerNorm-no-bias hidden
@@ -376,12 +494,22 @@ mod tests {
     #[test]
     fn forward_hidden_shape_and_finite() {
         let cfg = OlmoConfig {
-            vocab_size: 32, hidden_size: 16, intermediate_size: 32,
-            num_hidden_layers: 2, num_attention_heads: 4, num_key_value_heads: 4,
-            head_dim: 4, layer_norm_eps: 1e-5, rope_theta: 10_000.0,
-            max_position_embeddings: 64, attention_bias: false,
+            vocab_size: 32,
+            hidden_size: 16,
+            intermediate_size: 32,
+            num_hidden_layers: 2,
+            num_attention_heads: 4,
+            num_key_value_heads: 4,
+            head_dim: 4,
+            layer_norm_eps: 1e-5,
+            rope_theta: 10_000.0,
+            max_position_embeddings: 64,
+            attention_bias: false,
         };
-        let model = OlmoModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = OlmoModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
         let hidden = model.forward_hidden(&tokens, 0).unwrap();
         assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
@@ -392,37 +520,54 @@ mod tests {
 
     fn forward_embeds_test_cfg() -> OlmoConfig {
         OlmoConfig {
-            vocab_size: 32, hidden_size: 16, intermediate_size: 32,
-            num_hidden_layers: 2, num_attention_heads: 4, num_key_value_heads: 4,
-            head_dim: 4, layer_norm_eps: 1e-5, rope_theta: 10_000.0,
-            max_position_embeddings: 64, attention_bias: false,
+            vocab_size: 32,
+            hidden_size: 16,
+            intermediate_size: 32,
+            num_hidden_layers: 2,
+            num_attention_heads: 4,
+            num_key_value_heads: 4,
+            head_dim: 4,
+            layer_norm_eps: 1e-5,
+            rope_theta: 10_000.0,
+            max_position_embeddings: 64,
+            attention_bias: false,
         }
     }
 
     #[test]
     fn forward_embeds_matches_forward_after_token_lookup() {
         let cfg = forward_embeds_test_cfg();
-        let model = OlmoModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = OlmoModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
-        let max_diff = logits_ref.iter().zip(logits_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "OLMo forward vs forward_embeds must agree (max diff {max_diff})");
+        let max_diff = logits_ref
+            .iter()
+            .zip(logits_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "OLMo forward vs forward_embeds must agree (max diff {max_diff})"
+        );
     }
 
     #[test]
     fn forward_embeds_rejects_bad_shape() {
         let cfg = forward_embeds_test_cfg();
-        let model = OlmoModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = OlmoModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let bad = LazyTensor::from_f32(
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
-            Shape::from_dims(&[1, 3, cfg.hidden_size + 1]), &Device::cpu(),
+            Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
+            &Device::cpu(),
         );
         assert!(model.forward_embeds(&bad, 0).is_err());
     }
@@ -430,17 +575,26 @@ mod tests {
     #[test]
     fn forward_hidden_embeds_matches_forward_hidden() {
         let cfg = forward_embeds_test_cfg();
-        let model = OlmoModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = OlmoModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
-        let h_via_embeds = model.forward_hidden_embeds(&embeds, 0).unwrap().realize_f32();
-        let max_diff = h_ref.iter().zip(h_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "OLMo forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})");
+        let h_via_embeds = model
+            .forward_hidden_embeds(&embeds, 0)
+            .unwrap()
+            .realize_f32();
+        let max_diff = h_ref
+            .iter()
+            .zip(h_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "OLMo forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})"
+        );
     }
 }

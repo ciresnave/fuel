@@ -61,7 +61,10 @@ impl Workspace {
     /// null pointer — matches baracuda's "no scratch needed" contract.
     pub fn alloc(device: &CudaDevice, bytes: usize) -> Result<Self> {
         if bytes == 0 {
-            return Ok(Self { buf: None, bytes: 0 });
+            return Ok(Self {
+                buf: None,
+                bytes: 0,
+            });
         }
         let buf = device.alloc_zeros::<u8>(bytes)?;
         Ok(Self {
@@ -312,10 +315,19 @@ mod tests {
     #[test]
     fn shared_grow_only_decision_table() {
         use super::grow_only_should_reuse;
-        assert!(!grow_only_should_reuse(None, 128), "empty slot must allocate");
-        assert!(grow_only_should_reuse(Some(128), 128), "same size must reuse");
+        assert!(
+            !grow_only_should_reuse(None, 128),
+            "empty slot must allocate"
+        );
+        assert!(
+            grow_only_should_reuse(Some(128), 128),
+            "same size must reuse"
+        );
         assert!(!grow_only_should_reuse(Some(128), 256), "larger must grow");
-        assert!(grow_only_should_reuse(Some(256), 128), "smaller must reuse (never shrink)");
+        assert!(
+            grow_only_should_reuse(Some(256), 128),
+            "smaller must reuse (never shrink)"
+        );
     }
 
     /// GPU: the two-slot cache's zero-alloc reuse + non-aliasing invariants —
@@ -343,26 +355,54 @@ mod tests {
         let cache = RopeTableCache::new();
         const N: usize = 2 * 2 * 4; // seq=2, head_dim/2=2, F32 → 16 bytes
 
-        let cos1 = cache.ensure(&device, RopeTableSlot::Cos, N).expect("cos ensure 1");
+        let cos1 = cache
+            .ensure(&device, RopeTableSlot::Cos, N)
+            .expect("cos ensure 1");
         assert_eq!(cache.allocation_count(), 1, "first cos ensure allocates");
 
-        let cos2 = cache.ensure(&device, RopeTableSlot::Cos, N).expect("cos ensure 2");
-        assert_eq!(cache.allocation_count(), 1, "same-size cos ensure must REUSE (zero alloc)");
+        let cos2 = cache
+            .ensure(&device, RopeTableSlot::Cos, N)
+            .expect("cos ensure 2");
         assert_eq!(
-            cos1.as_raw().0, cos2.as_raw().0,
+            cache.allocation_count(),
+            1,
+            "same-size cos ensure must REUSE (zero alloc)"
+        );
+        assert_eq!(
+            cos1.as_raw().0,
+            cos2.as_raw().0,
             "reused cos slot must hand back the SAME device address",
         );
 
-        let sin1 = cache.ensure(&device, RopeTableSlot::Sin, N).expect("sin ensure 1");
-        assert_eq!(cache.allocation_count(), 2, "first sin ensure allocates a separate buffer");
+        let sin1 = cache
+            .ensure(&device, RopeTableSlot::Sin, N)
+            .expect("sin ensure 1");
+        assert_eq!(
+            cache.allocation_count(),
+            2,
+            "first sin ensure allocates a separate buffer"
+        );
         assert_ne!(
-            cos1.as_raw().0, sin1.as_raw().0,
+            cos1.as_raw().0,
+            sin1.as_raw().0,
             "cos and sin slots must NOT alias (the launch reads both at once)",
         );
 
-        let _cos_grown = cache.ensure(&device, RopeTableSlot::Cos, 2 * N).expect("cos grow");
-        assert_eq!(cache.allocation_count(), 3, "a larger cos ensure must grow (allocate)");
-        let _cos_smaller = cache.ensure(&device, RopeTableSlot::Cos, N).expect("cos reuse grown");
-        assert_eq!(cache.allocation_count(), 3, "a smaller cos ensure reuses the grown buffer");
+        let _cos_grown = cache
+            .ensure(&device, RopeTableSlot::Cos, 2 * N)
+            .expect("cos grow");
+        assert_eq!(
+            cache.allocation_count(),
+            3,
+            "a larger cos ensure must grow (allocate)"
+        );
+        let _cos_smaller = cache
+            .ensure(&device, RopeTableSlot::Cos, N)
+            .expect("cos reuse grown");
+        assert_eq!(
+            cache.allocation_count(),
+            3,
+            "a smaller cos ensure reuses the grown buffer"
+        );
     }
 }

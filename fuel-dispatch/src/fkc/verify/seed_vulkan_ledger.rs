@@ -30,15 +30,15 @@
 //! `#[cfg(feature = "vulkan")]` throughout — needs a live Vulkan device; its
 //! seeding test is `#[ignore]`'d.
 
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
+use fuel_ir::DType;
 use fuel_ir::dispatch::OpKind;
 use fuel_ir::probe::BackendId;
-use fuel_ir::DType;
 use fuel_vulkan_backend::VulkanBackend;
 
-use super::bit_stability::{verify_bit_stability, KernelInvoker, VerifyError, VerifyOutcome};
+use super::bit_stability::{KernelInvoker, VerifyError, VerifyOutcome, verify_bit_stability};
 use super::invoker_cpu::CpuInvoker;
 use super::invoker_vulkan::VulkanInvoker;
 use super::ledger::{LedgerRecord, VerificationLedger};
@@ -76,7 +76,6 @@ const BYTE_EXACT_OPS: &[OpKind] = &[
     OpKind::ArgMinDim,
 ];
 
-
 /// One attempt outcome, kept even for skips/failures so the report shows
 /// exactly what did and didn't verify.
 #[derive(Debug)]
@@ -90,7 +89,10 @@ pub struct VulkanSeedAttempt {
 /// `epoch:<unix seconds>` — dependency-free timestamp (house convention).
 fn verified_at_string() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     format!("epoch:{secs}")
 }
 
@@ -154,13 +156,23 @@ pub fn run_vulkan_verification_on(
         let dtypes_vec = dtypes.to_vec();
         let rev = entry.kernel_revision_hash;
         if !force && ledger.has_pass(BackendId::Vulkan, dtypes, rev, CLAIM) {
-            log.push(VulkanSeedAttempt { op: format!("{op:?}"), dtypes: dtypes_vec, kernel_revision_hash: rev, outcome: "skip: already has a pass".to_string() });
+            log.push(VulkanSeedAttempt {
+                op: format!("{op:?}"),
+                dtypes: dtypes_vec,
+                kernel_revision_hash: rev,
+                outcome: "skip: already has a pass".to_string(),
+            });
             continue;
         }
         let probe = match build_primitive_probe(op, dtypes, probe_seed(op, dtypes)) {
             Some(p) => p,
             None => {
-                log.push(VulkanSeedAttempt { op: format!("{op:?}"), dtypes: dtypes_vec, kernel_revision_hash: rev, outcome: "skip: no probe recipe".to_string() });
+                log.push(VulkanSeedAttempt {
+                    op: format!("{op:?}"),
+                    dtypes: dtypes_vec,
+                    kernel_revision_hash: rev,
+                    outcome: "skip: no probe recipe".to_string(),
+                });
                 continue;
             }
         };
@@ -190,7 +202,12 @@ pub fn run_vulkan_verification_on(
                 evidence: serde_json::json!({ "repeat_calls": ITERS, "harness": "v-fkc-9/seed_vulkan_ledger" }),
             });
         }
-        log.push(VulkanSeedAttempt { op: format!("{op:?}"), dtypes: dtypes_vec, kernel_revision_hash: rev, outcome });
+        log.push(VulkanSeedAttempt {
+            op: format!("{op:?}"),
+            dtypes: dtypes_vec,
+            kernel_revision_hash: rev,
+            outcome,
+        });
     }
 
     // ---- Pass 2: byte-exact max_ulp: 0 (Vulkan vs CPU reference) ----------
@@ -240,9 +257,19 @@ pub fn run_vulkan_verification_on(
                         }),
                     });
                 }
-                log.push(VulkanSeedAttempt { op: format!("{op:?}"), dtypes: dtypes_vec, kernel_revision_hash: rev, outcome: "max_ulp pass (byte-mover; no CPU ref, structural)".to_string() });
+                log.push(VulkanSeedAttempt {
+                    op: format!("{op:?}"),
+                    dtypes: dtypes_vec,
+                    kernel_revision_hash: rev,
+                    outcome: "max_ulp pass (byte-mover; no CPU ref, structural)".to_string(),
+                });
             } else {
-                log.push(VulkanSeedAttempt { op: format!("{op:?}"), dtypes: dtypes_vec, kernel_revision_hash: rev, outcome: "max_ulp skip: no CPU reference and no bit_stable pass".to_string() });
+                log.push(VulkanSeedAttempt {
+                    op: format!("{op:?}"),
+                    dtypes: dtypes_vec,
+                    kernel_revision_hash: rev,
+                    outcome: "max_ulp skip: no CPU reference and no bit_stable pass".to_string(),
+                });
             }
             continue;
         };
@@ -251,15 +278,20 @@ pub fn run_vulkan_verification_on(
         let refr = CpuInvoker::new(probe.out_dtype, probe.out_shape.clone())
             .with_params(probe.params.clone());
         let inputs = probe.inputs.clone();
-        let attempt = catch_unwind(AssertUnwindSafe(|| -> std::result::Result<bool, VerifyError> {
-            let a = cand.invoke(vk_entry, &inputs)?;
-            let b = refr.invoke(cpu_entry, &inputs)?;
-            // max_ulp: 0 == byte-identical, for ANY dtype (integers included).
-            Ok(a.bytes == b.bytes)
-        }));
+        let attempt = catch_unwind(AssertUnwindSafe(
+            || -> std::result::Result<bool, VerifyError> {
+                let a = cand.invoke(vk_entry, &inputs)?;
+                let b = refr.invoke(cpu_entry, &inputs)?;
+                // max_ulp: 0 == byte-identical, for ANY dtype (integers included).
+                Ok(a.bytes == b.bytes)
+            },
+        ));
         let (result, outcome) = match attempt {
             Ok(Ok(true)) => (Some("pass"), "max_ulp pass".to_string()),
-            Ok(Ok(false)) => (Some("fail"), "max_ulp fail: bytes differ from CPU reference".to_string()),
+            Ok(Ok(false)) => (
+                Some("fail"),
+                "max_ulp fail: bytes differ from CPU reference".to_string(),
+            ),
             Ok(Err(e)) => (Some("fail"), format!("max_ulp invoke error {e:?}")),
             Err(_) => (Some("fail"), "max_ulp panicked".to_string()),
         };
@@ -284,7 +316,12 @@ pub fn run_vulkan_verification_on(
                 });
             }
         }
-        log.push(VulkanSeedAttempt { op: format!("{op:?}"), dtypes: dtypes_vec, kernel_revision_hash: rev, outcome });
+        log.push(VulkanSeedAttempt {
+            op: format!("{op:?}"),
+            dtypes: dtypes_vec,
+            kernel_revision_hash: rev,
+            outcome,
+        });
     }
 
     Ok((device_name, gpu_id, ledger, log))
@@ -339,8 +376,8 @@ mod tests {
                     return None;
                 }
             };
-            let descs = fuel_vulkan_backend::probe::enumerate_devices()
-                .expect("vulkan probe enumerates");
+            let descs =
+                fuel_vulkan_backend::probe::enumerate_devices().expect("vulkan probe enumerates");
             let d = descs
                 .iter()
                 .find(|d| d.device_index as usize == gpu_id)
@@ -378,8 +415,10 @@ mod tests {
             return;
         };
 
-        assert!(!amd.is_empty() && !nv.is_empty(),
-            "a comparison over zero MaskedFill attempts is vacuous — `force` did not take effect");
+        assert!(
+            !amd.is_empty() && !nv.is_empty(),
+            "a comparison over zero MaskedFill attempts is vacuous — `force` did not take effect"
+        );
 
         // Same recipes, same flags: the ATTEMPT SETS must match, or the two
         // sides are not comparable and a "0 failing" summary would be counting
@@ -390,26 +429,35 @@ mod tests {
             k
         };
         assert_eq!(
-            key(&amd), key(&nv),
+            key(&amd),
+            key(&nv),
             "⚠️ the two adapters attempted DIFFERENT dtype sets, so their outcomes are not \
              comparable. AMD={:?} NVIDIA={:?}",
-            key(&amd), key(&nv),
+            key(&amd),
+            key(&nv),
         );
 
         let fails = |v: &Vec<(Vec<fuel_ir::DType>, String)>| -> Vec<_> {
-            v.iter().filter(|(_, o)| o.contains("fail")).cloned().collect()
+            v.iter()
+                .filter(|(_, o)| o.contains("fail"))
+                .cloned()
+                .collect()
         };
         println!(
             "[x-vendor] {} attempts each — {} ({} failing) vs {} ({} failing)",
-            amd.len(), amd_dev.hardware_sku, fails(&amd).len(),
-            nv_dev.hardware_sku, fails(&nv).len(),
+            amd.len(),
+            amd_dev.hardware_sku,
+            fails(&amd).len(),
+            nv_dev.hardware_sku,
+            fails(&nv).len(),
         );
         assert!(
             fails(&amd).is_empty() && fails(&nv).is_empty(),
             "⚠️ DIVERGENCE: masked_fill is contract-claimed 'bit-identical across any \
              hardware'. AMD failures={:?}; NVIDIA failures={:?}. The CONTRACT'S CLAIM is \
              then wrong, which outranks any ledger record — report, do not reconcile.",
-            fails(&amd), fails(&nv),
+            fails(&amd),
+            fails(&nv),
         );
     }
 
@@ -427,13 +475,31 @@ mod tests {
     fn seed_vulkan_verified_ledger() {
         let (ledger, log) = run_vulkan_verification(true).expect("vulkan seeding runs");
         for a in &log {
-            println!("[v-fkc-9] {} {:?} (rev={}): {}", a.op, a.dtypes, a.kernel_revision_hash, a.outcome);
+            println!(
+                "[v-fkc-9] {} {:?} (rev={}): {}",
+                a.op, a.dtypes, a.kernel_revision_hash, a.outcome
+            );
         }
-        let passed = log.iter().filter(|a| a.outcome == "pass" || a.outcome == "max_ulp pass").count();
-        let failed = log.iter().filter(|a| a.outcome.starts_with("fail") || a.outcome.contains("fail")).count();
-        let skipped = log.iter().filter(|a| a.outcome.starts_with("skip") || a.outcome.contains("skip")).count();
-        println!("[v-fkc-9] {passed} passed, {failed} failed, {skipped} skipped, {} attempts", log.len());
-        assert!(passed > 0, "expected at least one Vulkan kernel to verify; got 0 — see log");
+        let passed = log
+            .iter()
+            .filter(|a| a.outcome == "pass" || a.outcome == "max_ulp pass")
+            .count();
+        let failed = log
+            .iter()
+            .filter(|a| a.outcome.starts_with("fail") || a.outcome.contains("fail"))
+            .count();
+        let skipped = log
+            .iter()
+            .filter(|a| a.outcome.starts_with("skip") || a.outcome.contains("skip"))
+            .count();
+        println!(
+            "[v-fkc-9] {passed} passed, {failed} failed, {skipped} skipped, {} attempts",
+            log.len()
+        );
+        assert!(
+            passed > 0,
+            "expected at least one Vulkan kernel to verify; got 0 — see log"
+        );
 
         let vk_passes = ledger
             .records()

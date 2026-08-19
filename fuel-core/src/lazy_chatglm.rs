@@ -77,13 +77,18 @@ impl ChatGlmConfig {
     /// GLM3-6B preset (THUDM/chatglm3-6b).
     pub fn glm3_6b() -> Self {
         Self {
-            num_layers: 28, padded_vocab_size: 65024,
-            hidden_size: 4096, ffn_hidden_size: 13696,
-            kv_channels: 128, num_attention_heads: 32,
+            num_layers: 28,
+            padded_vocab_size: 65024,
+            hidden_size: 4096,
+            ffn_hidden_size: 13696,
+            kv_channels: 128,
+            num_attention_heads: 32,
             multi_query_group_num: 2,
-            seq_length: 8192, layernorm_epsilon: 1e-5,
+            seq_length: 8192,
+            layernorm_epsilon: 1e-5,
             norm_kind: ChatGlmNorm::Rms,
-            add_qkv_bias: true, add_bias_linear: false,
+            add_qkv_bias: true,
+            add_bias_linear: false,
             apply_residual_connection_post_layernorm: false,
             post_layer_norm: true,
             rope_base: 10_000.0,
@@ -96,13 +101,18 @@ impl ChatGlmConfig {
     /// pushes the RoPE base to `5_000_000`.
     pub fn codegeex4() -> Self {
         Self {
-            num_layers: 40, padded_vocab_size: 151552,
-            hidden_size: 4096, ffn_hidden_size: 13696,
-            kv_channels: 128, num_attention_heads: 32,
+            num_layers: 40,
+            padded_vocab_size: 151552,
+            hidden_size: 4096,
+            ffn_hidden_size: 13696,
+            kv_channels: 128,
+            num_attention_heads: 32,
             multi_query_group_num: 2,
-            seq_length: 131_072, layernorm_epsilon: 1e-5,
+            seq_length: 131_072,
+            layernorm_epsilon: 1e-5,
             norm_kind: ChatGlmNorm::Rms,
-            add_qkv_bias: true, add_bias_linear: false,
+            add_qkv_bias: true,
+            add_bias_linear: false,
             apply_residual_connection_post_layernorm: false,
             post_layer_norm: true,
             rope_base: 10_000.0 * 500.0,
@@ -178,35 +188,37 @@ impl ChatGlmModel {
 
     /// Multimodal entry point. Skips token embedding; runs the decoder
     /// over pre-embedded inputs. ChatGLM does NOT scale embeddings.
-    pub fn forward_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
         let h_post = self.run_backbone_embeds(embeds, start_pos)?;
         self.apply_lm_head(&h_post)
     }
 
     /// Hidden-state variant of [`Self::forward_embeds`].
     pub fn forward_hidden_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
+        &self,
+        embeds: &LazyTensor,
+        start_pos: usize,
     ) -> Result<LazyTensor> {
         self.run_backbone_embeds(embeds, start_pos)
     }
 
     /// Build per-token embeddings without running the decoder.
-    pub fn embed_tokens_anchored(
-        &self, anchor: &LazyTensor, tokens: &[u32],
-    ) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
-            cfg.padded_vocab_size, cfg.hidden_size, tokens,
+            cfg.padded_vocab_size,
+            cfg.hidden_size,
+            tokens,
         )
     }
 
     fn apply_lm_head(&self, h_post: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
         Ok(self.weights.output_layer.apply_linear(
-            h_post, cfg.hidden_size, cfg.padded_vocab_size,
+            h_post,
+            cfg.hidden_size,
+            cfg.padded_vocab_size,
         )?)
     }
 
@@ -217,14 +229,16 @@ impl ChatGlmModel {
         assert!(seq > 0, "ChatGlmModel: tokens must be non-empty");
 
         let h = LazyTensor::embed_tokens(
-            weights.token_embedding.clone(), cfg.padded_vocab_size, cfg.hidden_size, tokens, &Device::cpu(),
+            weights.token_embedding.clone(),
+            cfg.padded_vocab_size,
+            cfg.hidden_size,
+            tokens,
+            &Device::cpu(),
         )?;
         self.run_backbone_embeds(&h, start_pos)
     }
 
-    fn run_backbone_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
-    ) -> Result<LazyTensor> {
+    fn run_backbone_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -237,28 +251,28 @@ impl ChatGlmModel {
         }
         let seq = dims[1];
         if seq == 0 {
-            return Err(crate::Error::Msg(
-                "ChatGlmModel::forward_embeds: seq must be > 0".into(),
-            ).bt());
+            return Err(
+                crate::Error::Msg("ChatGlmModel::forward_embeds: seq must be > 0".into()).bt(),
+            );
         }
         let rope_dim = cfg.rope_dim();
         if rope_dim == 0 || rope_dim % 2 != 0 {
             return Err(crate::Error::Msg(format!(
                 "ChatGlmConfig: kv_channels ({}) must be even and >= 2 for halved-pair RoPE",
                 cfg.head_dim(),
-            )).bt());
+            ))
+            .bt());
         }
         if cfg.num_attention_heads % cfg.multi_query_group_num != 0 {
             return Err(crate::Error::Msg(format!(
                 "num_attention_heads ({}) must be a multiple of multi_query_group_num ({})",
                 cfg.num_attention_heads, cfg.multi_query_group_num,
-            )).bt());
+            ))
+            .bt());
         }
         let mut h = embeds.clone();
 
-        let (rope_cos, rope_sin) = h.rope_tables_const(
-            cfg.rope_base, start_pos, seq, rope_dim,
-        );
+        let (rope_cos, rope_sin) = h.rope_tables_const(cfg.rope_base, start_pos, seq, rope_dim);
 
         for layer in &weights.layers {
             h = self.apply_block(&h, layer, &rope_cos, &rope_sin)?;
@@ -267,10 +281,14 @@ impl ChatGlmModel {
         if cfg.post_layer_norm {
             apply_norm(
                 &h,
-                weights.final_norm_gain.as_ref()
+                weights
+                    .final_norm_gain
+                    .as_ref()
                     .expect("post_layer_norm: final_norm_gain required"),
                 weights.final_norm_bias.as_ref(),
-                cfg.hidden_size, cfg.layernorm_epsilon, cfg.norm_kind,
+                cfg.hidden_size,
+                cfg.layernorm_epsilon,
+                cfg.norm_kind,
             )
         } else {
             Ok(h)
@@ -287,8 +305,12 @@ impl ChatGlmModel {
         let cfg = &self.config;
         let h = cfg.hidden_size;
         let x_norm = apply_norm(
-            x, &layer.input_norm_gain, layer.input_norm_bias.as_ref(),
-            h, cfg.layernorm_epsilon, cfg.norm_kind,
+            x,
+            &layer.input_norm_gain,
+            layer.input_norm_bias.as_ref(),
+            h,
+            cfg.layernorm_epsilon,
+            cfg.norm_kind,
         )?;
         let attn = self.apply_attention(&x_norm, layer, rope_cos, rope_sin)?;
         let residual_attn = if cfg.apply_residual_connection_post_layernorm {
@@ -299,8 +321,12 @@ impl ChatGlmModel {
         let h1 = residual_attn.add(&attn)?;
 
         let h1_norm = apply_norm(
-            &h1, &layer.post_attn_norm_gain, layer.post_attn_norm_bias.as_ref(),
-            h, cfg.layernorm_epsilon, cfg.norm_kind,
+            &h1,
+            &layer.post_attn_norm_gain,
+            layer.post_attn_norm_bias.as_ref(),
+            h,
+            cfg.layernorm_epsilon,
+            cfg.norm_kind,
         )?;
         let mlp_out = self.apply_mlp(&h1_norm, layer)?;
         let residual_mlp = if cfg.apply_residual_connection_post_layernorm {
@@ -378,20 +404,13 @@ impl ChatGlmModel {
         match &layer.dense_bias {
             None => Ok(dense_out),
             Some(b) => {
-                let bt = x.const_f32_like(
-                    Arc::clone(b),
-                    Shape::from_dims(&[cfg.hidden_size]),
-                );
+                let bt = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[cfg.hidden_size]));
                 dense_out.broadcast_add(&bt)
             }
         }
     }
 
-    fn apply_mlp(
-        &self,
-        x: &LazyTensor,
-        layer: &ChatGlmLayerWeights,
-    ) -> Result<LazyTensor> {
+    fn apply_mlp(&self, x: &LazyTensor, layer: &ChatGlmLayerWeights) -> Result<LazyTensor> {
         let cfg = &self.config;
         let h = cfg.hidden_size;
         let ffn = cfg.ffn_hidden_size;
@@ -466,14 +485,15 @@ impl ChatGlmWeights {
         let q_dim = cfg.num_attention_heads * hpa;
         let qkv_dim = cfg.qkv_hidden_size();
 
-        let token_embedding = load_tensor_as_f32(
-            st, "transformer.embedding.word_embeddings.weight",
-        )?;
+        let token_embedding =
+            load_tensor_as_f32(st, "transformer.embedding.word_embeddings.weight")?;
         if token_embedding.len() != cfg.padded_vocab_size * h {
             crate::bail!(
                 "transformer.embedding.word_embeddings.weight: {} elts, expected {} ({}×{})",
-                token_embedding.len(), cfg.padded_vocab_size * h,
-                cfg.padded_vocab_size, h,
+                token_embedding.len(),
+                cfg.padded_vocab_size * h,
+                cfg.padded_vocab_size,
+                h,
             );
         }
 
@@ -485,70 +505,81 @@ impl ChatGlmWeights {
         for li in 0..cfg.num_layers {
             let p = format!("transformer.encoder.layers.{li}");
 
-            let input_norm_gain = load_tensor_as_f32(
-                st, &format!("{p}.input_layernorm.weight"),
-            )?;
+            let input_norm_gain = load_tensor_as_f32(st, &format!("{p}.input_layernorm.weight"))?;
             let input_norm_bias = if layer_norm {
                 Some(Arc::from(load_tensor_as_f32(
-                    st, &format!("{p}.input_layernorm.bias"),
+                    st,
+                    &format!("{p}.input_layernorm.bias"),
                 )?))
             } else {
                 None
             };
-            let post_attn_norm_gain = load_tensor_as_f32(
-                st, &format!("{p}.post_attention_layernorm.weight"),
-            )?;
+            let post_attn_norm_gain =
+                load_tensor_as_f32(st, &format!("{p}.post_attention_layernorm.weight"))?;
             let post_attn_norm_bias = if layer_norm {
                 Some(Arc::from(load_tensor_as_f32(
-                    st, &format!("{p}.post_attention_layernorm.bias"),
+                    st,
+                    &format!("{p}.post_attention_layernorm.bias"),
                 )?))
             } else {
                 None
             };
 
             let query_key_value = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attention.query_key_value.weight"),
-                qkv_dim, h,
+                st,
+                &format!("{p}.self_attention.query_key_value.weight"),
+                qkv_dim,
+                h,
             )?;
             let query_key_value_bias = if want_qkv_bias {
                 Some(Arc::from(load_tensor_as_f32(
-                    st, &format!("{p}.self_attention.query_key_value.bias"),
+                    st,
+                    &format!("{p}.self_attention.query_key_value.bias"),
                 )?))
             } else {
                 None
             };
 
             let dense = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attention.dense.weight"),
-                h, q_dim,
+                st,
+                &format!("{p}.self_attention.dense.weight"),
+                h,
+                q_dim,
             )?;
             let dense_bias = if want_dense_bias {
                 Some(Arc::from(load_tensor_as_f32(
-                    st, &format!("{p}.self_attention.dense.bias"),
+                    st,
+                    &format!("{p}.self_attention.dense.bias"),
                 )?))
             } else {
                 None
             };
 
             let dense_h_to_4h = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.mlp.dense_h_to_4h.weight"),
-                2 * ffn, h,
+                st,
+                &format!("{p}.mlp.dense_h_to_4h.weight"),
+                2 * ffn,
+                h,
             )?;
             let dense_h_to_4h_bias = if want_dense_bias {
                 Some(Arc::from(load_tensor_as_f32(
-                    st, &format!("{p}.mlp.dense_h_to_4h.bias"),
+                    st,
+                    &format!("{p}.mlp.dense_h_to_4h.bias"),
                 )?))
             } else {
                 None
             };
 
             let dense_4h_to_h = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.mlp.dense_4h_to_h.weight"),
-                h, ffn,
+                st,
+                &format!("{p}.mlp.dense_4h_to_h.weight"),
+                h,
+                ffn,
             )?;
             let dense_4h_to_h_bias = if want_dense_bias {
                 Some(Arc::from(load_tensor_as_f32(
-                    st, &format!("{p}.mlp.dense_4h_to_h.bias"),
+                    st,
+                    &format!("{p}.mlp.dense_4h_to_h.bias"),
                 )?))
             } else {
                 None
@@ -572,11 +603,13 @@ impl ChatGlmWeights {
 
         let (final_norm_gain, final_norm_bias) = if cfg.post_layer_norm {
             let gain = Arc::from(load_tensor_as_f32(
-                st, "transformer.encoder.final_layernorm.weight",
+                st,
+                "transformer.encoder.final_layernorm.weight",
             )?);
             let bias = if layer_norm {
                 Some(Arc::from(load_tensor_as_f32(
-                    st, "transformer.encoder.final_layernorm.bias",
+                    st,
+                    "transformer.encoder.final_layernorm.bias",
                 )?))
             } else {
                 None
@@ -587,8 +620,10 @@ impl ChatGlmWeights {
         };
 
         let output_layer = load_transposed_matrix_preserve_dtype(
-            st, "transformer.output_layer.weight",
-            cfg.padded_vocab_size, h,
+            st,
+            "transformer.output_layer.weight",
+            cfg.padded_vocab_size,
+            h,
         )?;
 
         Ok(ChatGlmWeights {
@@ -663,7 +698,11 @@ mod tests {
                     None
                 },
                 dense: WeightStorage::F32(vec_of(q_dim * h, &mut *nb)),
-                dense_bias: if cfg.add_bias_linear { Some(vec_of(h, &mut *nb)) } else { None },
+                dense_bias: if cfg.add_bias_linear {
+                    Some(vec_of(h, &mut *nb))
+                } else {
+                    None
+                },
                 dense_h_to_4h: WeightStorage::F32(vec_of(h * (2 * ffn), &mut *nb)),
                 dense_h_to_4h_bias: if cfg.add_bias_linear {
                     Some(vec_of(2 * ffn, &mut *nb))
@@ -671,7 +710,11 @@ mod tests {
                     None
                 },
                 dense_4h_to_h: WeightStorage::F32(vec_of(ffn * h, &mut *nb)),
-                dense_4h_to_h_bias: if cfg.add_bias_linear { Some(vec_of(h, &mut *nb)) } else { None },
+                dense_4h_to_h_bias: if cfg.add_bias_linear {
+                    Some(vec_of(h, &mut *nb))
+                } else {
+                    None
+                },
             })
             .collect();
         let final_norm_gain = if cfg.post_layer_norm {
@@ -686,8 +729,10 @@ mod tests {
         };
         let output_layer = WeightStorage::F32(vec_of(h * cfg.padded_vocab_size, &mut *nb));
         ChatGlmWeights {
-            token_embedding, layers,
-            final_norm_gain, final_norm_bias,
+            token_embedding,
+            layers,
+            final_norm_gain,
+            final_norm_bias,
             output_layer,
         }
     }
@@ -716,10 +761,16 @@ mod tests {
     #[test]
     fn forward_shape_and_finite() {
         let cfg = tiny_config();
-        let model = ChatGlmModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = ChatGlmModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4, 5];
         let logits = model.forward(&tokens, 0).unwrap();
-        assert_eq!(logits.shape().dims(), &[1, tokens.len(), cfg.padded_vocab_size]);
+        assert_eq!(
+            logits.shape().dims(),
+            &[1, tokens.len(), cfg.padded_vocab_size]
+        );
         for &v in &logits.realize_f32() {
             assert!(v.is_finite(), "got non-finite logit {v}");
         }
@@ -730,7 +781,10 @@ mod tests {
     /// fused QKV → output should change (proves V is sliced).
     #[test]
     fn fused_qkv_slicing_layout() {
-        let cfg = ChatGlmConfig { num_layers: 1, ..tiny_config() };
+        let cfg = ChatGlmConfig {
+            num_layers: 1,
+            ..tiny_config()
+        };
         let h = cfg.hidden_size;
         let q_dim = cfg.num_attention_heads * cfg.head_dim();
         let kv_dim = cfg.multi_query_group_num * cfg.head_dim();
@@ -757,8 +811,14 @@ mod tests {
             }
             *b = Arc::from(bv);
         }
-        let m_base = ChatGlmModel { config: cfg.clone(), weights: base };
-        let m_zero = ChatGlmModel { config: cfg, weights: zeroed };
+        let m_base = ChatGlmModel {
+            config: cfg.clone(),
+            weights: base,
+        };
+        let m_zero = ChatGlmModel {
+            config: cfg,
+            weights: zeroed,
+        };
         let toks = [1_u32, 2, 3];
         let a = m_base.forward(&toks, 0).unwrap().realize_f32();
         let b = m_zero.forward(&toks, 0).unwrap().realize_f32();
@@ -766,8 +826,10 @@ mod tests {
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-6,
-            "zeroing fused-QKV V columns must change output, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-6,
+            "zeroing fused-QKV V columns must change output, max_diff = {max_diff}"
+        );
     }
 
     /// LayerNorm variant runs without panic (sanity for the
@@ -778,7 +840,10 @@ mod tests {
             norm_kind: ChatGlmNorm::Layer,
             ..tiny_config()
         };
-        let model = ChatGlmModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = ChatGlmModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let logits = model.forward(&[1, 2, 3], 0).unwrap().realize_f32();
         assert_eq!(logits.len(), 3 * cfg.padded_vocab_size);
         for &v in &logits {
@@ -800,11 +865,23 @@ mod tests {
             hidden_size: 16, // 2 heads * 8
             ..tiny_config()
         };
-        let cfg_a = ChatGlmConfig { rope_base: 10_000.0, ..base_cfg.clone() };
-        let cfg_b = ChatGlmConfig { rope_base: 5_000_000.0, ..base_cfg };
+        let cfg_a = ChatGlmConfig {
+            rope_base: 10_000.0,
+            ..base_cfg.clone()
+        };
+        let cfg_b = ChatGlmConfig {
+            rope_base: 5_000_000.0,
+            ..base_cfg
+        };
         let weights = tiny_weights(&cfg_a);
-        let m_a = ChatGlmModel { config: cfg_a, weights: weights.clone() };
-        let m_b = ChatGlmModel { config: cfg_b, weights };
+        let m_a = ChatGlmModel {
+            config: cfg_a,
+            weights: weights.clone(),
+        };
+        let m_b = ChatGlmModel {
+            config: cfg_b,
+            weights,
+        };
         let toks = [1_u32, 2, 3, 4];
         let a = m_a.forward(&toks, 0).unwrap().realize_f32();
         let b = m_b.forward(&toks, 0).unwrap().realize_f32();
@@ -813,8 +890,10 @@ mod tests {
             max_diff = max_diff.max((x - y).abs());
         }
         // Tiny weights (∈ [-0.025, 0.025]) ⇒ diff is real but small.
-        assert!(max_diff > 1e-8,
-            "rope_base change must alter output, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-8,
+            "rope_base change must alter output, max_diff = {max_diff}"
+        );
     }
 
     /// Both presets construct without panic.
@@ -842,8 +921,14 @@ mod tests {
             ..tiny_config()
         };
         let weights = tiny_weights(&cfg_a);
-        let m_a = ChatGlmModel { config: cfg_a, weights: weights.clone() };
-        let m_b = ChatGlmModel { config: cfg_b, weights };
+        let m_a = ChatGlmModel {
+            config: cfg_a,
+            weights: weights.clone(),
+        };
+        let m_b = ChatGlmModel {
+            config: cfg_b,
+            weights,
+        };
         let toks = [3_u32, 5, 7];
         let a = m_a.forward(&toks, 0).unwrap().realize_f32();
         let b = m_b.forward(&toks, 0).unwrap().realize_f32();
@@ -851,14 +936,19 @@ mod tests {
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-6,
-            "residual-source flag must alter output, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-6,
+            "residual-source flag must alter output, max_diff = {max_diff}"
+        );
     }
 
     #[test]
     fn forward_hidden_shape_and_finite() {
         let cfg = tiny_config();
-        let model = ChatGlmModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = ChatGlmModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
         let hidden = model.forward_hidden(&tokens, 0).unwrap();
         assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
@@ -870,27 +960,37 @@ mod tests {
     #[test]
     fn forward_embeds_matches_forward_after_token_lookup() {
         let cfg = tiny_config();
-        let model = ChatGlmModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = ChatGlmModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
-        let max_diff = logits_ref.iter().zip(logits_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "ChatGLM forward vs forward_embeds must agree (max diff {max_diff})");
+        let max_diff = logits_ref
+            .iter()
+            .zip(logits_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "ChatGLM forward vs forward_embeds must agree (max diff {max_diff})"
+        );
     }
 
     #[test]
     fn forward_embeds_rejects_bad_shape() {
         let cfg = tiny_config();
-        let model = ChatGlmModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = ChatGlmModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let bad = LazyTensor::from_f32(
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
-            Shape::from_dims(&[1, 3, cfg.hidden_size + 1]), &Device::cpu(),
+            Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
+            &Device::cpu(),
         );
         assert!(model.forward_embeds(&bad, 0).is_err());
     }
@@ -898,17 +998,26 @@ mod tests {
     #[test]
     fn forward_hidden_embeds_matches_forward_hidden() {
         let cfg = tiny_config();
-        let model = ChatGlmModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = ChatGlmModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
-        let h_via_embeds = model.forward_hidden_embeds(&embeds, 0).unwrap().realize_f32();
-        let max_diff = h_ref.iter().zip(h_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "ChatGLM forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})");
+        let h_via_embeds = model
+            .forward_hidden_embeds(&embeds, 0)
+            .unwrap()
+            .realize_f32();
+        let max_diff = h_ref
+            .iter()
+            .zip(h_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "ChatGLM forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})"
+        );
     }
 }

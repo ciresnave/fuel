@@ -37,10 +37,10 @@
 //! their `Tensor` handles.
 
 use crate::registry::{
-    default_registry, FusedOpEntry, FusedOpId, FusedOpParams, FusedOps, SubgraphPattern,
+    FusedOpEntry, FusedOpId, FusedOpParams, FusedOps, SubgraphPattern, default_registry,
 };
-use crate::{topo_order_multi, Graph, Node, NodeId, Op, ScanEmit, ScanRole, SharedGraph};
-use fuel_ir::{DeviceLocation, DType, Shape};
+use crate::{Graph, Node, NodeId, Op, ScanEmit, ScanRole, SharedGraph, topo_order_multi};
+use fuel_ir::{DType, DeviceLocation, Shape};
 use std::collections::HashMap;
 
 // ---- Rule registry framework ----------------------------------------------
@@ -142,7 +142,9 @@ impl RuleRegistry {
     /// Empty registry. Use [`Self::with_rule`] to add rules, or
     /// [`Self::default_rules`] / [`Self::lowering_only`] for the
     /// shipped configurations.
-    pub fn new() -> Self { Self { rules: Vec::new() } }
+    pub fn new() -> Self {
+        Self { rules: Vec::new() }
+    }
 
     /// Append a rule. Returns self for builder-style chaining.
     pub fn with_rule(mut self, rule: Box<dyn Rule>) -> Self {
@@ -200,8 +202,10 @@ impl RuleRegistry {
                 r = r.with_rule(Box::new(FusionRule::declarative(
                     e.id,
                     crate::registry::PatternTree {
-                        root:   e.region,
-                        params: FusedOpParams::Runtime { scalars: Vec::new() },
+                        root: e.region,
+                        params: FusedOpParams::Runtime {
+                            scalars: Vec::new(),
+                        },
                     },
                 )));
             } else {
@@ -231,10 +235,14 @@ impl RuleRegistry {
     }
 
     /// Number of registered rules.
-    pub fn len(&self) -> usize { self.rules.len() }
+    pub fn len(&self) -> usize {
+        self.rules.len()
+    }
 
     /// Whether the registry has any rules.
-    pub fn is_empty(&self) -> bool { self.rules.is_empty() }
+    pub fn is_empty(&self) -> bool {
+        self.rules.is_empty()
+    }
 
     /// Run lowering rules to fixpoint, then fusion rules to fixpoint.
     /// Returns the (possibly-rewritten) roots — callers use these to
@@ -245,29 +253,33 @@ impl RuleRegistry {
     /// would oscillate in a single mixed-family fixpoint loop.
     /// Phase ordering breaks the oscillation and gives fusion the
     /// last word.
-    pub fn optimize_to_fixpoint(
-        &self,
-        graph: &SharedGraph,
-        roots: &[NodeId],
-    ) -> Vec<NodeId> {
+    pub fn optimize_to_fixpoint(&self, graph: &SharedGraph, roots: &[NodeId]) -> Vec<NodeId> {
         let mut roots = roots.to_vec();
-        if self.rules.is_empty() { return roots; }
+        if self.rules.is_empty() {
+            return roots;
+        }
         // Phase 1: lowering to fixpoint.
         loop {
             let any = self.run_pass(RuleFamily::Lowering, graph, &mut roots);
-            if !any { break; }
+            if !any {
+                break;
+            }
         }
         // Phase 2: fusion to fixpoint.
         loop {
             let any = self.run_pass(RuleFamily::Fusion, graph, &mut roots);
-            if !any { break; }
+            if !any {
+                break;
+            }
         }
         // Phase 3: algebraic identities to fixpoint. Runs last so it
         // can't disturb fusion patterns by eliminating casts that
         // fusion was about to match on.
         loop {
             let any = self.run_pass(RuleFamily::Algebraic, graph, &mut roots);
-            if !any { break; }
+            if !any {
+                break;
+            }
         }
         roots
     }
@@ -275,12 +287,7 @@ impl RuleRegistry {
     /// One pass over the graph for a single rule family. Returns
     /// `true` if any rule fired during the pass — caller loops until
     /// `false` for fixpoint.
-    fn run_pass(
-        &self,
-        family: RuleFamily,
-        graph: &SharedGraph,
-        roots: &mut Vec<NodeId>,
-    ) -> bool {
+    fn run_pass(&self, family: RuleFamily, graph: &SharedGraph, roots: &mut Vec<NodeId>) -> bool {
         let order = {
             let g = graph.read().unwrap();
             topo_order_multi(&g, roots)
@@ -288,12 +295,11 @@ impl RuleRegistry {
 
         // Iterate this pass's family-rules in the order they were
         // registered. First match wins per node.
-        let family_rules: Vec<&Box<dyn Rule>> = self
-            .rules
-            .iter()
-            .filter(|r| r.family() == family)
-            .collect();
-        if family_rules.is_empty() { return false; }
+        let family_rules: Vec<&Box<dyn Rule>> =
+            self.rules.iter().filter(|r| r.family() == family).collect();
+        if family_rules.is_empty() {
+            return false;
+        }
 
         let mut remap: HashMap<NodeId, NodeId> = HashMap::new();
         let mut any_fired = false;
@@ -304,7 +310,9 @@ impl RuleRegistry {
             // pass, so the original node's structure still looks
             // matchable mid-pass; we use `remap` as a "this pass
             // already handled it" marker.
-            if remap.contains_key(&id) { continue; }
+            if remap.contains_key(&id) {
+                continue;
+            }
 
             let firing_rule_idx = {
                 let g = graph.read().unwrap();
@@ -325,7 +333,9 @@ impl RuleRegistry {
             }
         }
 
-        if !any_fired { return false; }
+        if !any_fired {
+            return false;
+        }
 
         // Apply remap to every consumer's input list, in place. This
         // is the moment the rewritten nodes become the live ones —
@@ -348,7 +358,9 @@ impl RuleRegistry {
         // And update the user's roots so the next phase / the caller
         // sees the canonical post-rewrite ids.
         for r in roots.iter_mut() {
-            if let Some(&new) = remap.get(r) { *r = new; }
+            if let Some(&new) = remap.get(r) {
+                *r = new;
+            }
         }
 
         true
@@ -423,9 +435,13 @@ pub fn base_map_hash(graph: &Graph, root: NodeId) -> u64 {
     // decision — a numeric verify pass is the source of truth when bytes
     // aren't available at hash time.
     fn fold_const_bytes(graph: &Graph, id: NodeId, hasher: &mut DefaultHasher) {
-        let Some(slot) = graph.storage_for(id) else { return };
+        let Some(slot) = graph.storage_for(id) else {
+            return;
+        };
         let Ok(guard) = slot.try_read() else { return };
-        let Ok(host) = guard.to_cpu_storage() else { return };
+        let Ok(host) = guard.to_cpu_storage() else {
+            return;
+        };
         fold_host_buffer(&host, hasher);
     }
 
@@ -440,17 +456,39 @@ pub fn base_map_hash(graph: &Graph, root: NodeId) -> u64 {
     fn fold_host_buffer(buf: &fuel_ir::HostBuffer, hasher: &mut DefaultHasher) {
         use fuel_ir::HostBuffer as H;
         match buf {
-            H::U8(v) | H::F6E2M3(v) | H::F6E3M2(v) | H::F4(v) | H::F8E8M0(v) | H::Bool(v) => v.hash(hasher),
+            H::U8(v) | H::F6E2M3(v) | H::F6E3M2(v) | H::F4(v) | H::F8E8M0(v) | H::Bool(v) => {
+                v.hash(hasher)
+            }
             H::I8(v) => v.hash(hasher),
             H::U32(v) => v.hash(hasher),
             H::I16(v) => v.hash(hasher),
             H::I32(v) => v.hash(hasher),
             H::I64(v) => v.hash(hasher),
-            H::BF16(v) => for x in v { x.to_bits().hash(hasher); },
-            H::F16(v) => for x in v { x.to_bits().hash(hasher); },
-            H::F32(v) => for x in v { x.to_bits().hash(hasher); },
-            H::F64(v) => for x in v { x.to_bits().hash(hasher); },
-            H::F8E4M3(v) => for x in v { x.to_bits().hash(hasher); },
+            H::BF16(v) => {
+                for x in v {
+                    x.to_bits().hash(hasher);
+                }
+            }
+            H::F16(v) => {
+                for x in v {
+                    x.to_bits().hash(hasher);
+                }
+            }
+            H::F32(v) => {
+                for x in v {
+                    x.to_bits().hash(hasher);
+                }
+            }
+            H::F64(v) => {
+                for x in v {
+                    x.to_bits().hash(hasher);
+                }
+            }
+            H::F8E4M3(v) => {
+                for x in v {
+                    x.to_bits().hash(hasher);
+                }
+            }
         }
     }
 
@@ -471,8 +509,7 @@ pub fn base_map_hash(graph: &Graph, root: NodeId) -> u64 {
                 }
             }
         }
-        let mut child_hashes: Vec<u64> =
-            n.inputs.iter().map(|&c| go(graph, c, memo)).collect();
+        let mut child_hashes: Vec<u64> = n.inputs.iter().map(|&c| go(graph, c, memo)).collect();
         if is_commutative(&n.op) {
             child_hashes.sort_unstable();
         }
@@ -519,19 +556,25 @@ pub fn base_map_hash(graph: &Graph, root: NodeId) -> u64 {
 /// to `Op::Fused` continue to lower correctly. Step 5 deletes those
 /// variants and the legacy match arm with them.
 pub struct LoweringRule {
-    id:        FusedOpId,
+    id: FusedOpId,
     decompose: fn(&mut Graph, NodeId, &FusedOpParams) -> NodeId,
 }
 
 impl LoweringRule {
     pub fn from_entry(entry: &FusedOpEntry) -> Self {
-        Self { id: entry.id, decompose: entry.decompose }
+        Self {
+            id: entry.id,
+            decompose: entry.decompose,
+        }
     }
 
     /// Lowering rule for a runtime-registered fused op: decompose by re-emitting
     /// its `runtime_fused` sidecar region as primitives. One per runtime id.
     pub fn runtime(id: FusedOpId) -> Self {
-        Self { id, decompose: crate::runtime_fused::runtime_lowering_decompose }
+        Self {
+            id,
+            decompose: crate::runtime_fused::runtime_lowering_decompose,
+        }
     }
 }
 
@@ -543,7 +586,9 @@ impl Rule for LoweringRule {
         "FusedOpLowering"
     }
 
-    fn family(&self) -> RuleFamily { RuleFamily::Lowering }
+    fn family(&self) -> RuleFamily {
+        RuleFamily::Lowering
+    }
 
     fn matches(&self, graph: &Graph, id: NodeId) -> bool {
         let node = graph.node(id);
@@ -598,7 +643,7 @@ impl Rule for LoweringRule {
 /// param-bearing fused ops can recover their parameters from the
 /// matched subgraph.
 pub struct FusionRule {
-    id:      FusedOpId,
+    id: FusedOpId,
     pattern: PatternKind,
 }
 
@@ -619,19 +664,29 @@ impl FusionRule {
             SubgraphPattern::Callable(f) => PatternKind::Callable(*f),
             SubgraphPattern::Declarative(tree) => PatternKind::Declarative(tree.clone()),
         };
-        Self { id: entry.id, pattern }
+        Self {
+            id: entry.id,
+            pattern,
+        }
     }
 
     /// Fusion rule from a declarative pattern (the runtime path): match the
     /// region and stamp `tree.params` on the emitted `Op::Fused(id, _)`.
     pub fn declarative(id: FusedOpId, tree: crate::registry::PatternTree) -> Self {
-        Self { id, pattern: PatternKind::Declarative(tree) }
+        Self {
+            id,
+            pattern: PatternKind::Declarative(tree),
+        }
     }
 }
 
 impl Rule for FusionRule {
-    fn name(&self) -> &'static str { "FusedOpFusion" }
-    fn family(&self) -> RuleFamily { RuleFamily::Fusion }
+    fn name(&self) -> &'static str {
+        "FusedOpFusion"
+    }
+    fn family(&self) -> RuleFamily {
+        RuleFamily::Fusion
+    }
 
     fn matches(&self, graph: &Graph, id: NodeId) -> bool {
         match &self.pattern {
@@ -669,9 +724,7 @@ impl Rule for FusionRule {
                     crate::jit::match_region_extract(graph, id, &tree.root, &consumers)
                         .expect("rewrite called with non-matching declarative pattern");
                 let params = match &tree.params {
-                    FusedOpParams::Runtime { .. } => {
-                        FusedOpParams::Runtime { scalars: extracted }
-                    }
+                    FusedOpParams::Runtime { .. } => FusedOpParams::Runtime { scalars: extracted },
                     other => other.clone(),
                 };
                 crate::registry::PatternMatch {
@@ -702,7 +755,7 @@ impl Rule for FusionRule {
         let dtype = graph.node(id).dtype;
         let shape = graph.node(id).shape.clone();
         let new_id = graph.push(Node {
-            op:     Op::Fused(self.id, params),
+            op: Op::Fused(self.id, params),
             inputs,
             shape,
             dtype,
@@ -768,8 +821,7 @@ use std::sync::Arc;
 /// Returns `true` if at least one backend has a kernel registered
 /// for the proposed (op, dtypes) combination — the route picker
 /// later decides which backend to use.
-pub type CapabilityPredicate =
-    Arc<dyn Fn(&Op, &[DType]) -> bool + Send + Sync>;
+pub type CapabilityPredicate = Arc<dyn Fn(&Op, &[DType]) -> bool + Send + Sync>;
 
 /// `Cast(src→dst) → Op(dst) ≡ Op(src)` when the consumer has a
 /// kernel for `src`.
@@ -818,13 +870,17 @@ impl CastFusionRule {
     ) -> Option<(usize, NodeId, Vec<fuel_ir::DType>)> {
         let node = graph.node(id);
         // Don't fire on a Cast node itself — fire on the consumer.
-        if matches!(node.op, Op::Cast(_)) { return None; }
+        if matches!(node.op, Op::Cast(_)) {
+            return None;
+        }
         for (idx, &input_id) in node.inputs.iter().enumerate() {
             // Walk through chained casts. `current` is the cast (or
             // chain of casts) currently being examined; `prev` is
             // the consumer at this link of the chain (initially `id`,
             // then the outer-most cast as we descend).
-            if !matches!(graph.node(input_id).op, Op::Cast(_)) { continue; }
+            if !matches!(graph.node(input_id).op, Op::Cast(_)) {
+                continue;
+            }
             // Type-preserving filter: the consumer's output dtype
             // must equal the cast'd input slot's dtype. This is the
             // family of ops where rewriting the input dtype is
@@ -834,7 +890,9 @@ impl CastFusionRule {
             // already filtered above). For non-type-preserving
             // consumers, swapping the input dtype would produce an
             // output we can't predict without per-op knowledge.
-            if node.dtype != graph.node(input_id).dtype { continue; }
+            if node.dtype != graph.node(input_id).dtype {
+                continue;
+            }
             let mut prev = id;
             let mut current = input_id;
             let final_src_id = loop {
@@ -861,7 +919,9 @@ impl CastFusionRule {
             // If the walk didn't move past the first cast (e.g.
             // because the first cast has multiple consumers), there's
             // nothing to fuse for this input.
-            if final_src_id == input_id { continue; }
+            if final_src_id == input_id {
+                continue;
+            }
             let final_src_dtype = graph.node(final_src_id).dtype;
             // Build the proposed input-dtypes + output-dtype vector.
             // Type-preserving filter above guarantees output dtype
@@ -870,10 +930,12 @@ impl CastFusionRule {
             let mut dtypes: Vec<fuel_ir::DType> = node
                 .inputs
                 .iter()
-                .map(|&iid| if iid == input_id {
-                    final_src_dtype
-                } else {
-                    graph.node(iid).dtype
+                .map(|&iid| {
+                    if iid == input_id {
+                        final_src_dtype
+                    } else {
+                        graph.node(iid).dtype
+                    }
                 })
                 .collect();
             dtypes.push(final_src_dtype);
@@ -891,7 +953,9 @@ fn is_only_consumer(graph: &Graph, target: NodeId, expected_consumer: NodeId) ->
     let mut found_others = false;
     for i in 0..graph.len() {
         let nid = NodeId(i);
-        if nid == expected_consumer { continue; }
+        if nid == expected_consumer {
+            continue;
+        }
         if graph.node(nid).inputs.contains(&target) {
             found_others = true;
             break;
@@ -901,8 +965,12 @@ fn is_only_consumer(graph: &Graph, target: NodeId, expected_consumer: NodeId) ->
 }
 
 impl Rule for CastFusionRule {
-    fn name(&self) -> &'static str { "CastFusion" }
-    fn family(&self) -> RuleFamily { RuleFamily::Algebraic }
+    fn name(&self) -> &'static str {
+        "CastFusion"
+    }
+    fn family(&self) -> RuleFamily {
+        RuleFamily::Algebraic
+    }
 
     fn matches(&self, graph: &Graph, id: NodeId) -> bool {
         self.find_eligible_cast_input(graph, id).is_some()
@@ -917,15 +985,15 @@ impl Rule for CastFusionRule {
         let mut new_inputs = node.inputs.clone();
         new_inputs[idx] = final_src_id;
         let new_id = graph.push(Node {
-            op:     node.op.clone(),
+            op: node.op.clone(),
             inputs: new_inputs,
-            shape:  node.shape.clone(),
+            shape: node.shape.clone(),
             // Type-preserving op (matcher's invariant): the new
             // output dtype tracks the new input dtype. Downstream
             // consumers seeing this node may observe a different
             // dtype than before the rewrite — see the module
             // docstring on the aggressive-semantics caveat.
-            dtype:  final_src_dtype,
+            dtype: final_src_dtype,
         });
         remap.insert(id, new_id);
     }
@@ -1008,7 +1076,11 @@ fn op_key(op: &Op) -> Option<OpKey> {
         Op::Flip { dim } => (56, vec![*dim as i64], vec![], vec![], None, None),
         Op::Roll { dim, shift } => (57, vec![*dim as i64, *shift], vec![], vec![], None, None),
         Op::CumSum { dim } => (58, vec![*dim as i64], vec![], vec![], None, None),
-        Op::PadBackward { in_shape, padding, mode } => {
+        Op::PadBackward {
+            in_shape,
+            padding,
+            mode,
+        } => {
             let mode_tag = match mode {
                 crate::PadMode::Constant => 0_i64,
                 crate::PadMode::Reflect => 1,
@@ -1020,9 +1092,20 @@ fn op_key(op: &Op) -> Option<OpKey> {
                 ints.push(a as i64);
             }
             ints.push(mode_tag);
-            (60, ints, vec![], vec![], Some(in_shape.dims().to_vec()), None)
+            (
+                60,
+                ints,
+                vec![],
+                vec![],
+                Some(in_shape.dims().to_vec()),
+                None,
+            )
         }
-        Op::Pad { padding, mode, value } => {
+        Op::Pad {
+            padding,
+            mode,
+            value,
+        } => {
             let mode_tag = match mode {
                 crate::PadMode::Constant => 0_i64,
                 crate::PadMode::Reflect => 1,
@@ -1059,7 +1142,6 @@ fn op_key(op: &Op) -> Option<OpKey> {
         // with id + params encoded into the int/bit slots) and CSE
         // dedupes correctly because each entry produces a distinct
         // FusedOpId.
-
         Op::SumAll => (50, vec![], vec![], vec![], None, None),
         Op::MaxAll => (51, vec![], vec![], vec![], None, None),
         Op::MinAll => (52, vec![], vec![], vec![], None, None),
@@ -1085,7 +1167,14 @@ fn op_key(op: &Op) -> Option<OpKey> {
         Op::AddScalar(c) => (90, vec![], vec![c.to_bits()], vec![], None, None),
         Op::MulScalar(c) => (91, vec![], vec![c.to_bits()], vec![], None, None),
         Op::PowI(n) => (92, vec![*n as i64], vec![], vec![], None, None),
-        Op::Clamp { min, max } => (93, vec![], vec![min.to_bits(), max.to_bits()], vec![], None, None),
+        Op::Clamp { min, max } => (
+            93,
+            vec![],
+            vec![min.to_bits(), max.to_bits()],
+            vec![],
+            None,
+            None,
+        ),
 
         Op::Maximum => (100, vec![], vec![], vec![], None, None),
         Op::Minimum => (101, vec![], vec![], vec![], None, None),
@@ -1111,16 +1200,41 @@ fn op_key(op: &Op) -> Option<OpKey> {
         // the last two entries of the node's `inputs` (the lax.scan encoding).
         // Two scans with identical params but different bodies therefore get
         // different child-hashes and different base_map_hash. Tag 210.
-        Op::Scan { n_xs, bound, emit, early_exit } => {
-            let emit_tag: i64 = match emit { ScanEmit::All => 0, ScanEmit::Final => 1 };
+        Op::Scan {
+            n_xs,
+            bound,
+            emit,
+            early_exit,
+        } => {
+            let emit_tag: i64 = match emit {
+                ScanEmit::All => 0,
+                ScanEmit::Final => 1,
+            };
             let exit_flag: i64 = if early_exit.is_some() { 1 } else { 0 };
-            (210, vec![*n_xs as i64, *bound as i64, emit_tag, exit_flag], vec![], vec![], None, None)
+            (
+                210,
+                vec![*n_xs as i64, *bound as i64, emit_tag, exit_flag],
+                vec![],
+                vec![],
+                None,
+                None,
+            )
         }
         // Op::ScanPlaceholder folds role tag + index so Carry/0, Elem/0,
         // Carry/1 are all distinct in the body hash. Tag 211.
         Op::ScanPlaceholder { role, index } => {
-            let role_tag: i64 = match role { ScanRole::Carry => 0, ScanRole::Elem => 1 };
-            (211, vec![role_tag, *index as i64], vec![], vec![], None, None)
+            let role_tag: i64 = match role {
+                ScanRole::Carry => 0,
+                ScanRole::Elem => 1,
+            };
+            (
+                211,
+                vec![role_tag, *index as i64],
+                vec![],
+                vec![],
+                None,
+                None,
+            )
         }
 
         // Indexing and anything else we haven't explicitly listed:
@@ -1130,13 +1244,23 @@ fn op_key(op: &Op) -> Option<OpKey> {
         // returning None. Conservative; safe.
         _ => return None,
     };
-    Some(OpKey { tag, ints, bits, dims, shape, dtype })
+    Some(OpKey {
+        tag,
+        ints,
+        bits,
+        dims,
+        shape,
+        dtype,
+    })
 }
 
 fn dtype_key(dt: DType) -> u32 {
     // Cheap injection: the Debug form is stable.
     // For tiny enums this compiles to a jump table.
-    format!("{dt:?}").as_bytes().iter().fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(*b as u32))
+    format!("{dt:?}")
+        .as_bytes()
+        .iter()
+        .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(*b as u32))
 }
 
 fn is_commutative(op: &Op) -> bool {
@@ -1165,7 +1289,12 @@ pub fn optimize(graph: &SharedGraph, roots: &[NodeId]) -> Vec<NodeId> {
     for id in order {
         let (op, inputs, shape, dtype) = {
             let node = g.node(id);
-            (node.op.clone(), node.inputs.clone(), node.shape.clone(), node.dtype)
+            (
+                node.op.clone(),
+                node.inputs.clone(),
+                node.shape.clone(),
+                node.dtype,
+            )
         };
         let mapped_inputs: Vec<NodeId> = inputs
             .iter()
@@ -1360,7 +1489,12 @@ pub fn insert_copies(graph: &SharedGraph, roots: &[NodeId]) -> Vec<NodeId> {
         // metadata, not whatever we're about to rewrite.
         let (op, inputs, shape, dtype) = {
             let node = g.node(id);
-            (node.op.clone(), node.inputs.clone(), node.shape.clone(), node.dtype)
+            (
+                node.op.clone(),
+                node.inputs.clone(),
+                node.shape.clone(),
+                node.dtype,
+            )
         };
         let placement_hint = g.placement(id);
 
@@ -1368,11 +1502,10 @@ pub fn insert_copies(graph: &SharedGraph, roots: &[NodeId]) -> Vec<NodeId> {
         // inferred device > None (placeless).
         let target_device: Option<DeviceLocation> = match placement_hint {
             Some(d) => Some(d),
-            None => inputs.first()
-                .and_then(|i| {
-                    let mapped = *remap.get(i).unwrap_or(i);
-                    inferred.get(&mapped).copied().flatten()
-                }),
+            None => inputs.first().and_then(|i| {
+                let mapped = *remap.get(i).unwrap_or(i);
+                inferred.get(&mapped).copied().flatten()
+            }),
         };
 
         // Walk inputs, inserting Copy where needed.
@@ -1411,7 +1544,9 @@ pub fn insert_copies(graph: &SharedGraph, roots: &[NodeId]) -> Vec<NodeId> {
                 new_inputs.push(copy_id);
                 any_changed = true;
             } else {
-                if mapped_in != *input_id { any_changed = true; }
+                if mapped_in != *input_id {
+                    any_changed = true;
+                }
                 new_inputs.push(mapped_in);
             }
         }
@@ -1507,9 +1642,15 @@ pub fn lower_const_placement(graph: &SharedGraph, roots: &[NodeId]) -> usize {
                 Some(d) => match target {
                     None => target = Some(d),
                     Some(prev) if prev == d => {}
-                    Some(_) => { unanimous = false; break; }
+                    Some(_) => {
+                        unanimous = false;
+                        break;
+                    }
                 },
-                None => { unanimous = false; break; }
+                None => {
+                    unanimous = false;
+                    break;
+                }
             }
         }
         if unanimous {
@@ -1562,11 +1703,15 @@ fn try_simplify(op: &Op, inputs: &[NodeId]) -> Option<NodeId> {
 pub struct OrderingEdges(pub HashMap<NodeId, Vec<NodeId>>);
 
 impl OrderingEdges {
-    pub fn new() -> Self { Self(HashMap::new()) }
+    pub fn new() -> Self {
+        Self(HashMap::new())
+    }
 
     /// True if the map is empty — no destructive ops in the analyzed
     /// subgraph, so the execution plan is just the plain topo order.
-    pub fn is_empty(&self) -> bool { self.0.is_empty() }
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
 
     /// Get the set of must-run-before nodes for `nid`, if any.
     pub fn deps_of(&self, nid: NodeId) -> &[NodeId] {
@@ -1643,11 +1788,16 @@ pub fn fuse_linear(graph: &SharedGraph, roots: &[NodeId]) -> usize {
         //     bias[N].broadcast_to([..., M, N]).add(matmul_out)
         // Walk through that BroadcastTo to find the rank-1 source.
         let mm_dims = g.node(lhs).shape.dims().to_vec();
-        if mm_dims.is_empty() { continue; }
+        if mm_dims.is_empty() {
+            continue;
+        }
         let last_dim = mm_dims[mm_dims.len() - 1];
         let rhs_node = g.node(rhs);
-        let bias_src_id = if matches!(rhs_node.op, Op::BroadcastTo(_)) && rhs_node.inputs.len() == 1 {
-            *remap.get(&rhs_node.inputs[0]).unwrap_or(&rhs_node.inputs[0])
+        let bias_src_id = if matches!(rhs_node.op, Op::BroadcastTo(_)) && rhs_node.inputs.len() == 1
+        {
+            *remap
+                .get(&rhs_node.inputs[0])
+                .unwrap_or(&rhs_node.inputs[0])
         } else {
             // Bias broadcast may also have been pre-shaped; allow rank-1
             // direct (rare with build-time shape checks but cheap to
@@ -1744,8 +1894,12 @@ pub fn derive_ordering(graph: &crate::Graph, roots: &[NodeId]) -> OrderingEdges 
     let mut ordering: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
     for &nid in &order {
         let node = graph.node(nid);
-        let Some(d_idx) = node.op.destructive_input() else { continue };
-        if d_idx >= node.inputs.len() { continue }
+        let Some(d_idx) = node.op.destructive_input() else {
+            continue;
+        };
+        if d_idx >= node.inputs.len() {
+            continue;
+        }
         let destroyed = node.inputs[d_idx];
         // The alias set of `destroyed`: the destructive op writes
         // through `destroyed`'s Storage Arc, and every view-op node
@@ -1759,7 +1913,9 @@ pub fn derive_ordering(graph: &crate::Graph, roots: &[NodeId]) -> OrderingEdges 
         // though they share storage.
         let alias_set = collect_alias_set(graph, destroyed, &consumers, &order);
         for &alias in &alias_set {
-            let Some(readers) = consumers.get(&alias) else { continue };
+            let Some(readers) = consumers.get(&alias) else {
+                continue;
+            };
             for &reader in readers {
                 // Skip the destructive op itself + readers that are
                 // themselves alias members (those are view ops; their
@@ -1863,7 +2019,9 @@ fn collect_alias_set(
     }
 
     for &nid in order {
-        if alias.contains(&nid) { continue }
+        if alias.contains(&nid) {
+            continue;
+        }
         let node = graph.node(nid);
         // Op::View shares the producer's bundle Arc — it extends the
         // alias set even though it isn't an `is_view_op` in the
@@ -1874,7 +2032,9 @@ fn collect_alias_set(
         // always-safe direction (see the function doc).
         let extends_alias = node.op.is_view_op()
             || matches!(node.op, Op::View { .. } | Op::Reshape(_) | Op::Contiguize);
-        if !extends_alias { continue }
+        if !extends_alias {
+            continue;
+        }
         if let Some(&inp) = node.inputs.first() {
             if alias.contains(&inp) {
                 alias.insert(nid);
@@ -1978,7 +2138,6 @@ pub fn insert_safety_copies(graph: &mut crate::Graph, roots: &[NodeId]) -> usize
         }
     }
 
-
     let order = topo_order_multi(graph, roots);
 
     // Combined precedence graph: data edges (input → consumer) plus
@@ -2039,8 +2198,12 @@ pub fn insert_safety_copies(graph: &mut crate::Graph, roots: &[NodeId]) -> usize
 
     for &nid in &order {
         let node = graph.node(nid);
-        let Some(d_idx) = node.op.destructive_input() else { continue };
-        if d_idx >= node.inputs.len() { continue }
+        let Some(d_idx) = node.op.destructive_input() else {
+            continue;
+        };
+        if d_idx >= node.inputs.len() {
+            continue;
+        }
         let target = node.inputs[d_idx];
 
         // `forced_before`: nodes with a combined-graph path TO the
@@ -2057,15 +2220,21 @@ pub fn insert_safety_copies(graph: &mut crate::Graph, roots: &[NodeId]) -> usize
 
         let mut readers: Vec<NodeId> = Vec::new();
         for &maybe_reader in &order {
-            if maybe_reader == nid { continue }
-            if !graph.node(maybe_reader).inputs.contains(&target) { continue }
-            let provably_before = forced_before.contains(&maybe_reader)
-                && !forced_after.contains(&maybe_reader);
+            if maybe_reader == nid {
+                continue;
+            }
+            if !graph.node(maybe_reader).inputs.contains(&target) {
+                continue;
+            }
+            let provably_before =
+                forced_before.contains(&maybe_reader) && !forced_after.contains(&maybe_reader);
             if !provably_before {
                 readers.push(maybe_reader);
             }
         }
-        if readers.is_empty() { continue }
+        if readers.is_empty() {
+            continue;
+        }
 
         let target_node = graph.node(target);
         conflicts.push(Conflict {
@@ -2078,7 +2247,14 @@ pub fn insert_safety_copies(graph: &mut crate::Graph, roots: &[NodeId]) -> usize
     }
 
     let inserted = conflicts.len();
-    for Conflict { destructive_nid, target, target_shape, target_dtype, conflicting_readers } in conflicts {
+    for Conflict {
+        destructive_nid,
+        target,
+        target_shape,
+        target_dtype,
+        conflicting_readers,
+    } in conflicts
+    {
         // Pick the copy's target_location. Prefer the target's own
         // placement (if any) — that's the device the data lives on.
         // Fall back to the destructive op's placement. Most graphs
@@ -2100,16 +2276,20 @@ pub fn insert_safety_copies(graph: &mut crate::Graph, roots: &[NodeId]) -> usize
         // ever accepts `Op::Copy` when `target` is same-device Cuda).
         // Only truly unplaced AND unbackended nodes (neither hint
         // available anywhere) fall all the way through to `Cpu`.
-        let target_location = graph.placement(target)
+        let target_location = graph
+            .placement(target)
             .or_else(|| graph.placement(destructive_nid))
             .or_else(|| {
-                graph.target_backend(target)
+                graph
+                    .target_backend(target)
                     .or_else(|| graph.target_backend(destructive_nid))
                     .map(device_location_for_backend)
             })
             .unwrap_or(DeviceLocation::Cpu);
         let copy_id = graph.push(crate::Node {
-            op: crate::Op::Copy { target: target_location },
+            op: crate::Op::Copy {
+                target: target_location,
+            },
             inputs: vec![target],
             shape: target_shape,
             dtype: target_dtype,
@@ -2117,7 +2297,8 @@ pub fn insert_safety_copies(graph: &mut crate::Graph, roots: &[NodeId]) -> usize
         // Propagate target_backend so the executor can look up the
         // copy's wrapper. Inherit from the target (the source of the
         // copy), falling back to the destructive op's target_backend.
-        if let Some(backend) = graph.target_backend(target)
+        if let Some(backend) = graph
+            .target_backend(target)
             .or_else(|| graph.target_backend(destructive_nid))
         {
             graph.set_target_backend(copy_id, backend);
@@ -2166,10 +2347,7 @@ pub fn insert_safety_copies(graph: &mut crate::Graph, roots: &[NodeId]) -> usize
 /// multi-output producer — the common case until consumers migrate.
 /// Long-term it likely runs after the ranker/picker pass and before
 /// `compile_plan`; placement is the picker session's call.
-pub fn promote_views_for_liveness(
-    graph:  &mut crate::Graph,
-    roots:  &[NodeId],
-) -> usize {
+pub fn promote_views_for_liveness(graph: &mut crate::Graph, roots: &[NodeId]) -> usize {
     use crate::Op;
 
     let order = topo_order_multi(graph, roots);
@@ -2195,7 +2373,9 @@ pub fn promote_views_for_liveness(
         let mut d = 0usize;
         for &inp in &graph.node(nid).inputs {
             if let Some(&di) = depth.get(&inp) {
-                if di + 1 > d { d = di + 1; }
+                if di + 1 > d {
+                    d = di + 1;
+                }
             }
         }
         depth.insert(nid, d);
@@ -2210,7 +2390,9 @@ pub fn promote_views_for_liveness(
         if let Some(downstream) = consumers.get(&nid) {
             for &c in downstream {
                 if let Some(&cl) = last_use.get(&c) {
-                    if cl > lu { lu = cl; }
+                    if cl > lu {
+                        lu = cl;
+                    }
                 }
             }
         }
@@ -2222,35 +2404,40 @@ pub fn promote_views_for_liveness(
     // and compute the per-slot last-use position.
     struct ViewEntry {
         view_id: NodeId,
-        slot:    u32,
+        slot: u32,
         is_owned: bool,
     }
     let mut by_producer: HashMap<NodeId, Vec<ViewEntry>> = HashMap::new();
     for &nid in &order {
         let node = graph.node(nid);
         let (slot, is_owned) = match node.op {
-            Op::View      { slot } => (slot, false),
+            Op::View { slot } => (slot, false),
             Op::ViewOwned { slot } => (slot, true),
             _ => continue,
         };
         // View / ViewOwned have a single input (the producer).
-        let Some(&producer) = node.inputs.first() else { continue };
+        let Some(&producer) = node.inputs.first() else {
+            continue;
+        };
         // Only meaningful if producer was declared multi-output;
         // otherwise it's an authoring bug that the Tensor::view
         // builder already rejected. Defensive skip.
-        if !graph.is_multi_output(producer) { continue }
-        by_producer
-            .entry(producer)
-            .or_default()
-            .push(ViewEntry { view_id: nid, slot, is_owned });
+        if !graph.is_multi_output(producer) {
+            continue;
+        }
+        by_producer.entry(producer).or_default().push(ViewEntry {
+            view_id: nid,
+            slot,
+            is_owned,
+        });
     }
 
     // For each producer, decide which slots get promoted and collect
     // the per-View promotions. Defer the actual graph mutations to a
     // second pass so we can iterate the analysis with `&Graph`.
     struct Promotion {
-        view_id:    NodeId,
-        slot:       u32,
+        view_id: NodeId,
+        slot: u32,
         view_shape: crate::Shape,
         view_dtype: DType,
         // Consumers of `view_id` at analysis time — every edge gets
@@ -2265,14 +2452,18 @@ pub fn promote_views_for_liveness(
             let lu = last_use[&v.view_id];
             slot_last_use
                 .entry(v.slot)
-                .and_modify(|cur| { if lu > *cur { *cur = lu; } })
+                .and_modify(|cur| {
+                    if lu > *cur {
+                        *cur = lu;
+                    }
+                })
                 .or_insert(lu);
         }
         // If every slot in this producer has the same last_use, the
         // bundle's natural drop position is fine — no promotions.
         let min_lu = match slot_last_use.values().copied().min() {
             Some(v) => v,
-            None    => continue,
+            None => continue,
         };
         for v in views {
             if v.is_owned {
@@ -2286,10 +2477,10 @@ pub fn promote_views_for_liveness(
             }
             let v_node = graph.node(v.view_id);
             promotions.push(Promotion {
-                view_id:        v.view_id,
-                slot:           v.slot,
-                view_shape:     v_node.shape.clone(),
-                view_dtype:     v_node.dtype,
+                view_id: v.view_id,
+                slot: v.slot,
+                view_shape: v_node.shape.clone(),
+                view_dtype: v_node.dtype,
                 view_consumers: consumers.get(&v.view_id).cloned().unwrap_or_default(),
             });
         }
@@ -2306,10 +2497,10 @@ pub fn promote_views_for_liveness(
     for p in promotions {
         let producer = graph.node(p.view_id).inputs[0];
         let owned_id = graph.push(crate::Node {
-            op:     Op::ViewOwned { slot: p.slot },
+            op: Op::ViewOwned { slot: p.slot },
             inputs: vec![producer],
-            shape:  p.view_shape,
-            dtype:  p.view_dtype,
+            shape: p.view_shape,
+            dtype: p.view_dtype,
         });
         // Inherit target_backend from the original View when set, so
         // the executor can look up ViewOwned's wrapper without a
@@ -2351,10 +2542,12 @@ pub fn execution_plan(graph: &crate::Graph, roots: &[NodeId]) -> Vec<NodeId> {
     }
 
     // Position of each node in base_order — used as the stable tiebreaker.
-    let pos: HashMap<NodeId, usize> = base_order.iter().enumerate()
-        .map(|(i, &n)| (n, i)).collect();
-    let node_set: std::collections::HashSet<NodeId> =
-        base_order.iter().copied().collect();
+    let pos: HashMap<NodeId, usize> = base_order
+        .iter()
+        .enumerate()
+        .map(|(i, &n)| (n, i))
+        .collect();
+    let node_set: std::collections::HashSet<NodeId> = base_order.iter().copied().collect();
 
     // Build in-degree + reverse adjacency for Kahn's.
     let mut in_degree: HashMap<NodeId, usize> = HashMap::with_capacity(base_order.len());
@@ -2379,7 +2572,8 @@ pub fn execution_plan(graph: &crate::Graph, roots: &[NodeId]) -> Vec<NodeId> {
 
     // Stable ready-set keyed by base_order position. BTreeSet pops the
     // smallest → output matches topo order when ordering edges allow it.
-    let mut ready: std::collections::BTreeSet<(usize, NodeId)> = base_order.iter()
+    let mut ready: std::collections::BTreeSet<(usize, NodeId)> = base_order
+        .iter()
         .copied()
         .filter(|n| in_degree[n] == 0)
         .map(|n| (pos[&n], n))
@@ -2405,7 +2599,8 @@ pub fn execution_plan(graph: &crate::Graph, roots: &[NodeId]) -> Vec<NodeId> {
             "execution_plan: cycle in ordering edges (plan={}, base={}) — \
              a destructive op transitively depends on itself. This is a \
              bug in whatever rule emitted the destructive op.",
-            plan.len(), base_order.len(),
+            plan.len(),
+            base_order.len(),
         );
     }
     plan
@@ -2464,14 +2659,16 @@ pub fn insert_evict_reload(
     };
 
     let move_id = g.push(Node {
-        op:     Op::Move { target: DeviceLocation::Cpu },
+        op: Op::Move {
+            target: DeviceLocation::Cpu,
+        },
         inputs: vec![candidate],
-        shape:  shape.clone(),
+        shape: shape.clone(),
         dtype,
     });
 
     let reload_id = g.push(Node {
-        op:     Op::Copy { target: src_device },
+        op: Op::Copy { target: src_device },
         inputs: vec![move_id],
         shape,
         dtype,
@@ -2667,7 +2864,9 @@ where
                         let shape = producer.shape.clone();
                         let dtype = producer.dtype;
                         let cpu_id = graph.push(Node {
-                            op: Op::Copy { target: DeviceLocation::Cpu },
+                            op: Op::Copy {
+                                target: DeviceLocation::Cpu,
+                            },
                             inputs: vec![producer_id],
                             shape,
                             dtype,
@@ -2693,7 +2892,9 @@ where
                     let shape = src.shape.clone();
                     let dtype = src.dtype;
                     let id = graph.push(Node {
-                        op: Op::Copy { target: consumer_placement },
+                        op: Op::Copy {
+                            target: consumer_placement,
+                        },
                         inputs: vec![source_for_consumer_hop],
                         shape,
                         dtype,
@@ -2878,7 +3079,12 @@ pub fn insert_cast_fixups(graph: &mut Graph, casts: &[(NodeId, NodeId, DType)]) 
         }
         let cast_id = *cache.entry((input, target)).or_insert_with(|| {
             let shape = graph.node(input).shape.clone();
-            graph.push(Node { op: Op::Cast(target), inputs: vec![input], shape, dtype: target })
+            graph.push(Node {
+                op: Op::Cast(target),
+                inputs: vec![input],
+                shape,
+                dtype: target,
+            })
         });
         graph.rewrite_input(consumer, input, cast_id);
         applied += 1;
@@ -2896,8 +3102,8 @@ mod tests {
     /// Phase 7.5 G2: tests need a real device for slot-populating
     /// constructors. Singleton CpuBackendDevice via OnceLock.
     fn cpu_dev() -> &'static Arc<dyn fuel_backend_contract::DynBackendDevice> {
-        static D: std::sync::OnceLock<Arc<dyn fuel_backend_contract::DynBackendDevice>>
-            = std::sync::OnceLock::new();
+        static D: std::sync::OnceLock<Arc<dyn fuel_backend_contract::DynBackendDevice>> =
+            std::sync::OnceLock::new();
         D.get_or_init(|| Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice))
     }
 
@@ -2908,7 +3114,9 @@ mod tests {
 
     fn count_copy_nodes(graph: &SharedGraph) -> usize {
         let g = graph.read().unwrap();
-        (0..g.len()).filter(|i| matches!(g.node(NodeId(*i)).op, Op::Copy { .. })).count()
+        (0..g.len())
+            .filter(|i| matches!(g.node(NodeId(*i)).op, Op::Copy { .. }))
+            .count()
     }
 
     #[test]
@@ -2949,7 +3157,9 @@ mod tests {
             let node = g.node(*input);
             assert!(matches!(
                 node.op,
-                Op::Copy { target: DeviceLocation::Vulkan { gpu_id: 0 } }
+                Op::Copy {
+                    target: DeviceLocation::Vulkan { gpu_id: 0 }
+                }
             ));
         }
     }
@@ -2960,7 +3170,8 @@ mod tests {
         // Add, both want Vulkan — no Copy needed.
         let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev())
             .on_device(DeviceLocation::Vulkan { gpu_id: 0 });
-        let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]))
+        let b = a
+            .const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]))
             .on_device(DeviceLocation::Vulkan { gpu_id: 0 });
         let c = a.add(&b).on_device(DeviceLocation::Vulkan { gpu_id: 0 });
         let graph = c.graph().clone();
@@ -3040,8 +3251,14 @@ mod tests {
 
         let lowered = lower_const_placement(&graph, &[c.id()]);
         assert_eq!(lowered, 2); // both a and b tagged
-        assert_eq!(graph.read().unwrap().placement(a.id()), Some(DeviceLocation::Vulkan { gpu_id: 0 }));
-        assert_eq!(graph.read().unwrap().placement(b.id()), Some(DeviceLocation::Vulkan { gpu_id: 0 }));
+        assert_eq!(
+            graph.read().unwrap().placement(a.id()),
+            Some(DeviceLocation::Vulkan { gpu_id: 0 })
+        );
+        assert_eq!(
+            graph.read().unwrap().placement(b.id()),
+            Some(DeviceLocation::Vulkan { gpu_id: 0 })
+        );
 
         // After lowering, insert_copies should emit NO Copies (the
         // Consts are now on the target device).
@@ -3061,7 +3278,11 @@ mod tests {
         let graph = a.graph().clone();
 
         lower_const_placement(&graph, &[cpu_sum.id(), vulkan_sum.id()]);
-        assert_eq!(graph.read().unwrap().placement(a.id()), None, "const with disagreeing consumers stays unplaced");
+        assert_eq!(
+            graph.read().unwrap().placement(a.id()),
+            None,
+            "const with disagreeing consumers stays unplaced"
+        );
         assert_eq!(graph.read().unwrap().placement(b.id()), None);
     }
 
@@ -3076,9 +3297,15 @@ mod tests {
 
         lower_const_placement(&graph, &[c.id()]);
         // a keeps its explicit Cpu placement even though its consumer is Vulkan.
-        assert_eq!(graph.read().unwrap().placement(a.id()), Some(DeviceLocation::Cpu));
+        assert_eq!(
+            graph.read().unwrap().placement(a.id()),
+            Some(DeviceLocation::Cpu)
+        );
         // b had no hint; it gets lowered to Vulkan.
-        assert_eq!(graph.read().unwrap().placement(b.id()), Some(DeviceLocation::Vulkan { gpu_id: 0 }));
+        assert_eq!(
+            graph.read().unwrap().placement(b.id()),
+            Some(DeviceLocation::Vulkan { gpu_id: 0 })
+        );
     }
 
     #[test]
@@ -3092,7 +3319,8 @@ mod tests {
         let after_first = count_copy_nodes(&graph);
         let _roots2 = insert_copies(&graph, &roots1);
         assert_eq!(
-            count_copy_nodes(&graph), after_first,
+            count_copy_nodes(&graph),
+            after_first,
             "insert_copies should be idempotent on already-reconciled graphs"
         );
     }
@@ -3104,7 +3332,10 @@ mod tests {
         let c = a.add(&a);
         let pre_len = graph.read().unwrap().len();
         let new_roots = optimize(&graph, &[b.id(), c.id()]);
-        assert_eq!(new_roots[0], new_roots[1], "CSE should map both to same node");
+        assert_eq!(
+            new_roots[0], new_roots[1],
+            "CSE should map both to same node"
+        );
         assert!(graph.read().unwrap().len() >= pre_len);
     }
 
@@ -3176,7 +3407,11 @@ mod tests {
             "float -> Bool must lower to Op::Ne, got {:?}",
             root.op,
         );
-        assert_eq!(root.dtype, fuel_ir::DType::Bool, "the lowered root still yields Bool");
+        assert_eq!(
+            root.dtype,
+            fuel_ir::DType::Bool,
+            "the lowered root still yields Bool"
+        );
         // RHS is zeros from `MulScalar(0.0)` over the SAME input — not a
         // materialized const, so shape and dtype match by construction.
         let rhs = g.node(root.inputs[1]);
@@ -3215,7 +3450,11 @@ mod tests {
         // A genuine dtype change (F32→F64) is NOT elided.
         let cast = a.cast(fuel_ir::DType::F64);
         let new_roots = optimize(&graph, &[cast.id()]);
-        assert_ne!(new_roots[0], a.id(), "a real Cast must survive optimization");
+        assert_ne!(
+            new_roots[0],
+            a.id(),
+            "a real Cast must survive optimization"
+        );
     }
 
     #[test]
@@ -3267,10 +3506,30 @@ mod tests {
         let mut g = Graph::new();
         let s = Shape::from_dims(&[2]);
         let f32 = DType::F32;
-        let a = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: f32 });
-        let b = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: f32 });
-        let sum = g.push(Node { op: Op::Add, inputs: vec![a, b], shape: s.clone(), dtype: f32 });
-        let r = g.push(Node { op: Op::Relu, inputs: vec![sum], shape: s.clone(), dtype: f32 });
+        let a = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: s.clone(),
+            dtype: f32,
+        });
+        let b = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: s.clone(),
+            dtype: f32,
+        });
+        let sum = g.push(Node {
+            op: Op::Add,
+            inputs: vec![a, b],
+            shape: s.clone(),
+            dtype: f32,
+        });
+        let r = g.push(Node {
+            op: Op::Relu,
+            inputs: vec![sum],
+            shape: s.clone(),
+            dtype: f32,
+        });
 
         // The declarative rule fires at the relu sink and fuses to Op::Fused.
         assert!(rule.matches(&g, r), "declarative pattern matches relu(add)");
@@ -3302,13 +3561,20 @@ mod tests {
             operands: vec![PatternNode::Op {
                 op: OpTag::Sub,
                 attrs: OpAttrs::default(),
-                operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+                operands: vec![
+                    PatternNode::Bind { index: 0 },
+                    PatternNode::Bind { index: 1 },
+                ],
             }],
         };
         let rid = register_runtime_fused("test::tanh_sub", region).unwrap();
 
         // Build tanh(sub(a, b)) on primitives (b shares a's graph).
-        let a = Tensor::from_f32(vec![0.5, -0.5, 1.0, -1.0], Shape::from_dims(&[4]), cpu_dev());
+        let a = Tensor::from_f32(
+            vec![0.5, -0.5, 1.0, -1.0],
+            Shape::from_dims(&[4]),
+            cpu_dev(),
+        );
         let b = a.const_f32_like(vec![0.1, 0.2, 0.3, 0.4], Shape::from_dims(&[4]));
         let y = a.sub(&b).tanh();
         let graph = y.graph().clone();
@@ -3332,10 +3598,17 @@ mod tests {
         // to its region on primitives (tanh(sub(a, b))).
         let lowered = RuleRegistry::lowering_only().optimize_to_fixpoint(&graph, &fused);
         let g = graph.read().unwrap();
-        assert!(matches!(g.node(lowered[0]).op, Op::Tanh), "re-emitted sink is Tanh");
+        assert!(
+            matches!(g.node(lowered[0]).op, Op::Tanh),
+            "re-emitted sink is Tanh"
+        );
         let sub_id = g.node(lowered[0]).inputs[0];
         assert!(matches!(g.node(sub_id).op, Op::Sub), "Tanh's input is Sub");
-        assert_eq!(g.node(sub_id).inputs.len(), 2, "Sub over the two bound inputs");
+        assert_eq!(
+            g.node(sub_id).inputs.len(),
+            2,
+            "Sub over the two bound inputs"
+        );
     }
 
     #[test]
@@ -3349,7 +3622,10 @@ mod tests {
             operands: vec![PatternNode::Op {
                 op: OpTag::Div,
                 attrs: OpAttrs::default(),
-                operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+                operands: vec![
+                    PatternNode::Bind { index: 0 },
+                    PatternNode::Bind { index: 1 },
+                ],
             }],
         };
         let rid = register_runtime_fused("test::sigmoid_div", region).unwrap();
@@ -3362,7 +3638,10 @@ mod tests {
         // No kernel for our op → it is gated out of fusion (reported) and its
         // region stays primitive — the miss is caught at match time, not after.
         let (rules, gated_out) = RuleRegistry::capability_gated_rules(|id| id != rid);
-        assert!(gated_out.contains(&rid), "kernel-absent op is reported as a miss candidate");
+        assert!(
+            gated_out.contains(&rid),
+            "kernel-absent op is reported as a miss candidate"
+        );
         let roots = rules.optimize_to_fixpoint(&graph, &[y.id()]);
         {
             let g = graph.read().unwrap();
@@ -3398,7 +3677,10 @@ mod tests {
         let b = a.add_scalar(1.0);
         let c = a.add_scalar(2.0);
         let new_roots = optimize(&graph, &[b.id(), c.id()]);
-        assert_ne!(new_roots[0], new_roots[1], "AddScalar with different c must stay distinct");
+        assert_ne!(
+            new_roots[0], new_roots[1],
+            "AddScalar with different c must stay distinct"
+        );
     }
 
     #[test]
@@ -3421,7 +3703,10 @@ mod tests {
         let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
         let c = a.add(&b);
         let ord = derive_ordering(&c.graph().read().unwrap(), &[c.id()]);
-        assert!(ord.is_empty(), "graph without destructive ops → no ordering edges");
+        assert!(
+            ord.is_empty(),
+            "graph without destructive ops → no ordering edges"
+        );
     }
 
     #[test]
@@ -3436,7 +3721,11 @@ mod tests {
         let r = a.release();
         let ord = derive_ordering(&a.graph().read().unwrap(), &[b.id(), r.id()]);
         let deps = ord.deps_of(r.id());
-        assert_eq!(deps.len(), 1, "release should have one ordering dep (the relu)");
+        assert_eq!(
+            deps.len(),
+            1,
+            "release should have one ordering dep (the relu)"
+        );
         assert_eq!(deps[0], b.id(), "release must run after relu");
     }
 
@@ -3455,7 +3744,9 @@ mod tests {
         //   r       = x.release()      (destructive on x)
         // Expected: r must run after z (not just after v).
         let x = Tensor::from_f32(
-            vec![1.0_f32, 2.0, 3.0, 4.0], Shape::from_dims(&[2, 2]), cpu_dev(),
+            vec![1.0_f32, 2.0, 3.0, 4.0],
+            Shape::from_dims(&[2, 2]),
+            cpu_dev(),
         );
         let v = x.transpose();
         let z = v.relu();
@@ -3475,7 +3766,9 @@ mod tests {
         // ReluInplace must be pinned after the read through the
         // transpose view chain.
         let x = Tensor::from_f32(
-            vec![-1.0_f32, 2.0, -3.0, 4.0], Shape::from_dims(&[2, 2]), cpu_dev(),
+            vec![-1.0_f32, 2.0, -3.0, 4.0],
+            Shape::from_dims(&[2, 2]),
+            cpu_dev(),
         );
         let y = x.transpose();
         let z = y.relu();
@@ -3516,10 +3809,14 @@ mod tests {
         let dest = Tensor::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
         let src1 = dest.const_f32_like(vec![1.0_f32, 2.0], Shape::from_dims(&[2]));
         let src2 = dest.const_f32_like(vec![9.0_f32, 8.0], Shape::from_dims(&[2]));
-        let x = dest.write_slice(&src1, vec![(0, 2)]).expect("write_slice round 1");
+        let x = dest
+            .write_slice(&src1, vec![(0, 2)])
+            .expect("write_slice round 1");
         let s = x.slice(0, 0, 2);
         let k = s.relu();
-        let y = x.write_slice(&src2, vec![(0, 2)]).expect("write_slice round 2");
+        let y = x
+            .write_slice(&src2, vec![(0, 2)])
+            .expect("write_slice round 2");
         let ord = derive_ordering(&x.graph().read().unwrap(), &[k.id(), y.id()]);
         let deps = ord.deps_of(y.id());
         assert!(
@@ -3546,11 +3843,15 @@ mod tests {
         let dest = Tensor::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
         let src1 = dest.const_f32_like(vec![1.0_f32, 2.0], Shape::from_dims(&[2]));
         let src2 = dest.const_f32_like(vec![9.0_f32, 8.0], Shape::from_dims(&[2]));
-        let x = dest.write_slice(&src1, vec![(0, 2)]).expect("write_slice round 1");
+        let x = dest
+            .write_slice(&src1, vec![(0, 2)])
+            .expect("write_slice round 1");
         let s = x.slice(0, 0, 2);
         let r = s.reshape(Shape::from_dims(&[2]));
         let k = r.relu();
-        let y = x.write_slice(&src2, vec![(0, 2)]).expect("write_slice round 2");
+        let y = x
+            .write_slice(&src2, vec![(0, 2)])
+            .expect("write_slice round 2");
         let ord = derive_ordering(&x.graph().read().unwrap(), &[k.id(), y.id()]);
         let deps = ord.deps_of(y.id());
         assert!(
@@ -3572,7 +3873,9 @@ mod tests {
         // a Copy(x) → x_safe is inserted and Add's x input rewires to
         // x_safe.
         let x = Tensor::from_f32(
-            vec![1.0_f32, -2.0, 3.0, -4.0], Shape::from_dims(&[4]), cpu_dev(),
+            vec![1.0_f32, -2.0, 3.0, -4.0],
+            Shape::from_dims(&[4]),
+            cpu_dev(),
         );
         let x_shape = x.shape();
         let x_dtype = x.dtype();
@@ -3597,10 +3900,7 @@ mod tests {
         };
 
         // Before the pass: cycle would exist. Run insert_safety_copies.
-        let inserted = insert_safety_copies(
-            &mut x.graph().write().unwrap(),
-            &[z_id],
-        );
+        let inserted = insert_safety_copies(&mut x.graph().write().unwrap(), &[z_id]);
         assert_eq!(inserted, 1, "should insert exactly one safety copy");
 
         // Verify Add's inputs were rewired: still [y_id, <something>],
@@ -3614,8 +3914,11 @@ mod tests {
             assert_ne!(z_node.inputs[1], x_id, "Add's x input was rewired");
             let copy_node_id = z_node.inputs[1];
             let copy_node = g.node(copy_node_id);
-            assert!(matches!(copy_node.op, crate::Op::Copy { .. }),
-                "rewired input is Op::Copy; got {:?}", copy_node.op);
+            assert!(
+                matches!(copy_node.op, crate::Op::Copy { .. }),
+                "rewired input is Op::Copy; got {:?}",
+                copy_node.op
+            );
             assert_eq!(copy_node.inputs, vec![x_id], "Op::Copy reads x");
             copy_node_id
         };
@@ -3627,8 +3930,10 @@ mod tests {
         let pos: HashMap<NodeId, usize> = plan.iter().enumerate().map(|(i, n)| (*n, i)).collect();
         let copy_pos = pos[&copy_id];
         let inplace_pos = pos[&y_id];
-        assert!(copy_pos < inplace_pos,
-            "Copy must run before ReluInplace; copy={copy_pos} inplace={inplace_pos}");
+        assert!(
+            copy_pos < inplace_pos,
+            "Copy must run before ReluInplace; copy={copy_pos} inplace={inplace_pos}"
+        );
     }
 
     /// CapturedRun executor build-out (4b-ζ follow-up): when a graph has
@@ -3652,7 +3957,9 @@ mod tests {
         // single-device CUDA decode graph) and NO node has an explicit
         // `placement` — the realistic shape of a real Llama decode graph.
         let x = Tensor::from_f32(
-            vec![1.0_f32, -2.0, 3.0, -4.0], Shape::from_dims(&[4]), cpu_dev(),
+            vec![1.0_f32, -2.0, 3.0, -4.0],
+            Shape::from_dims(&[4]),
+            cpu_dev(),
         );
         let x_shape = x.shape();
         let x_dtype = x.dtype();
@@ -3690,7 +3997,9 @@ mod tests {
         let copy_node = g.node(copy_id);
         assert_eq!(
             copy_node.op,
-            crate::Op::Copy { target: DeviceLocation::Cuda { gpu_id: 0 } },
+            crate::Op::Copy {
+                target: DeviceLocation::Cuda { gpu_id: 0 }
+            },
             "same-device CUDA safety copy must target Cuda (derived from \
              target_backend), NOT fall back to Cpu when placement is unset",
         );
@@ -3703,10 +4012,7 @@ mod tests {
         let x = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
         let y = x.relu();
         let z = y.sum_all();
-        let inserted = insert_safety_copies(
-            &mut x.graph().write().unwrap(),
-            &[z.id()],
-        );
+        let inserted = insert_safety_copies(&mut x.graph().write().unwrap(), &[z.id()]);
         assert_eq!(inserted, 0);
     }
 
@@ -3728,10 +4034,7 @@ mod tests {
             dtype: x_dtype,
         });
         // Build a chain that only reads y (not x).
-        let inserted = insert_safety_copies(
-            &mut x.graph().write().unwrap(),
-            &[y_id],
-        );
+        let inserted = insert_safety_copies(&mut x.graph().write().unwrap(), &[y_id]);
         assert_eq!(inserted, 0);
     }
 
@@ -3750,27 +4053,28 @@ mod tests {
     #[test]
     fn insert_safety_copies_no_spurious_copy_for_independent_reader_of_move() {
         for flip_roots in [false, true] {
-            let a = Tensor::from_f32(
-                vec![1.0_f32, -2.0], Shape::from_dims(&[2]), cpu_dev(),
-            );
+            let a = Tensor::from_f32(vec![1.0_f32, -2.0], Shape::from_dims(&[2]), cpu_dev());
             let b = a.relu();
             let a_shape = a.shape();
             let a_dtype = a.dtype();
             let a_id = a.id();
             let m_id = a.graph().write().unwrap().push(crate::Node {
-                op: crate::Op::Move { target: DeviceLocation::Cpu },
+                op: crate::Op::Move {
+                    target: DeviceLocation::Cpu,
+                },
                 inputs: vec![a_id],
                 shape: a_shape,
                 dtype: a_dtype,
             });
-            let roots = if flip_roots { [m_id, b.id()] } else { [b.id(), m_id] };
+            let roots = if flip_roots {
+                [m_id, b.id()]
+            } else {
+                [b.id(), m_id]
+            };
             // Sanity: in the `[b, m]` roots order, DFS visits m's
             // subtree first, so b lands positionally AFTER the Move —
             // the exact shape the old predicate misclassified.
-            let inserted = insert_safety_copies(
-                &mut a.graph().write().unwrap(),
-                &roots,
-            );
+            let inserted = insert_safety_copies(&mut a.graph().write().unwrap(), &roots);
             assert_eq!(
                 inserted, 0,
                 "relu(a) is pinned before move(a) by derive_ordering; \
@@ -3778,7 +4082,8 @@ mod tests {
             );
             let g = a.graph().read().unwrap();
             assert_eq!(
-                g.node(b.id()).inputs, vec![a_id],
+                g.node(b.id()).inputs,
+                vec![a_id],
                 "reader must keep reading `a` directly",
             );
             drop(g);
@@ -3800,7 +4105,9 @@ mod tests {
     #[test]
     fn insert_safety_copies_transitive_descendant_reader_gets_copy() {
         let x = Tensor::from_f32(
-            vec![1.0_f32, -2.0, 3.0, -4.0], Shape::from_dims(&[4]), cpu_dev(),
+            vec![1.0_f32, -2.0, 3.0, -4.0],
+            Shape::from_dims(&[4]),
+            cpu_dev(),
         );
         let x_shape = x.shape();
         let x_dtype = x.dtype();
@@ -3827,15 +4134,15 @@ mod tests {
             });
             (y_id, z_id)
         };
-        let inserted = insert_safety_copies(
-            &mut x.graph().write().unwrap(),
-            &[z_id],
-        );
+        let inserted = insert_safety_copies(&mut x.graph().write().unwrap(), &[z_id]);
         assert_eq!(inserted, 1, "transitive residual cycle needs one copy");
         let g = x.graph().read().unwrap();
         let z_node = g.node(z_id);
         assert_ne!(z_node.inputs[1], x_id, "z's x input must be rewired");
-        assert!(matches!(g.node(z_node.inputs[1]).op, crate::Op::Copy { .. }));
+        assert!(matches!(
+            g.node(z_node.inputs[1]).op,
+            crate::Op::Copy { .. }
+        ));
         drop(g);
         let plan = execution_plan(&x.graph().read().unwrap(), &[z_id]);
         assert!(plan.contains(&y_id), "plan still contains the in-place op");
@@ -3855,14 +4162,18 @@ mod tests {
     #[test]
     fn insert_safety_copies_parallel_view_root_reader_keeps_copy() {
         let x = Tensor::from_f32(
-            vec![1.0_f32, 2.0, 3.0, 4.0], Shape::from_dims(&[2, 2]), cpu_dev(),
+            vec![1.0_f32, 2.0, 3.0, 4.0],
+            Shape::from_dims(&[2, 2]),
+            cpu_dev(),
         );
         let v = x.transpose();
         let x_shape = x.shape();
         let x_dtype = x.dtype();
         let x_id = x.id();
         let m_id = x.graph().write().unwrap().push(crate::Node {
-            op: crate::Op::Move { target: DeviceLocation::Cpu },
+            op: crate::Op::Move {
+                target: DeviceLocation::Cpu,
+            },
             inputs: vec![x_id],
             shape: x_shape,
             dtype: x_dtype,
@@ -3870,18 +4181,21 @@ mod tests {
         // Roots [m, v]: DFS visits v's subtree first, so v sits
         // positionally BEFORE the Move — the shape the positional
         // predicate silently skipped.
-        let inserted = insert_safety_copies(
-            &mut x.graph().write().unwrap(),
-            &[m_id, v.id()],
-        );
+        let inserted = insert_safety_copies(&mut x.graph().write().unwrap(), &[m_id, v.id()]);
         assert_eq!(
             inserted, 1,
             "unpinned view-root reader has no ordering guarantee → copy",
         );
         let g = x.graph().read().unwrap();
         let v_node = g.node(v.id());
-        assert_ne!(v_node.inputs[0], x_id, "view must be rewired to the snapshot");
-        assert!(matches!(g.node(v_node.inputs[0]).op, crate::Op::Copy { .. }));
+        assert_ne!(
+            v_node.inputs[0], x_id,
+            "view must be rewired to the snapshot"
+        );
+        assert!(matches!(
+            g.node(v_node.inputs[0]).op,
+            crate::Op::Copy { .. }
+        ));
     }
 
     /// Cycles through ANOTHER destructive op's ordering edge are
@@ -3906,31 +4220,36 @@ mod tests {
         let (x_id, r_id) = {
             let mut g = t1.graph().write().unwrap();
             let m1 = g.push(crate::Node {
-                op: crate::Op::Move { target: DeviceLocation::Cpu },
+                op: crate::Op::Move {
+                    target: DeviceLocation::Cpu,
+                },
                 inputs: vec![t1_id],
-                shape: shape.clone(), dtype,
+                shape: shape.clone(),
+                dtype,
             });
             let m2 = g.push(crate::Node {
-                op: crate::Op::Move { target: DeviceLocation::Cpu },
+                op: crate::Op::Move {
+                    target: DeviceLocation::Cpu,
+                },
                 inputs: vec![t2_id],
-                shape: shape.clone(), dtype,
+                shape: shape.clone(),
+                dtype,
             });
             let x = g.push(crate::Node {
                 op: crate::Op::Add,
                 inputs: vec![m1, t2_id],
-                shape: shape.clone(), dtype,
+                shape: shape.clone(),
+                dtype,
             });
             let r = g.push(crate::Node {
                 op: crate::Op::Add,
                 inputs: vec![m2, t1_id],
-                shape, dtype,
+                shape,
+                dtype,
             });
             (x, r)
         };
-        let inserted = insert_safety_copies(
-            &mut t1.graph().write().unwrap(),
-            &[x_id, r_id],
-        );
+        let inserted = insert_safety_copies(&mut t1.graph().write().unwrap(), &[x_id, r_id]);
         assert_eq!(inserted, 2, "both cross-readers sit on the combined cycle");
         // The rewritten graph must be plannable (no cycle panic).
         let plan = execution_plan(&t1.graph().read().unwrap(), &[x_id, r_id]);
@@ -3942,9 +4261,7 @@ mod tests {
     /// target and inserts nothing new.
     #[test]
     fn insert_safety_copies_idempotent_after_rewrite() {
-        let x = Tensor::from_f32(
-            vec![1.0_f32, -2.0], Shape::from_dims(&[2]), cpu_dev(),
-        );
+        let x = Tensor::from_f32(vec![1.0_f32, -2.0], Shape::from_dims(&[2]), cpu_dev());
         let x_shape = x.shape();
         let x_dtype = x.dtype();
         let x_id = x.id();
@@ -4004,7 +4321,10 @@ mod tests {
         let plan = execution_plan(&a.graph().read().unwrap(), &[b.id(), r.id()]);
         let b_pos = plan.iter().position(|&n| n == b.id()).unwrap();
         let r_pos = plan.iter().position(|&n| n == r.id()).unwrap();
-        assert!(b_pos < r_pos, "expected relu@{b_pos} to precede release@{r_pos}: {plan:?}");
+        assert!(
+            b_pos < r_pos,
+            "expected relu@{b_pos} to precede release@{r_pos}: {plan:?}"
+        );
     }
 
     #[test]
@@ -4021,8 +4341,14 @@ mod tests {
         let b_pos = plan.iter().position(|&n| n == b.id()).unwrap();
         let c_pos = plan.iter().position(|&n| n == c.id()).unwrap();
         let r_pos = plan.iter().position(|&n| n == r.id()).unwrap();
-        assert!(b_pos < r_pos, "relu@{b_pos} must precede release@{r_pos}: {plan:?}");
-        assert!(c_pos < r_pos, "neg@{c_pos} must precede release@{r_pos}: {plan:?}");
+        assert!(
+            b_pos < r_pos,
+            "relu@{b_pos} must precede release@{r_pos}: {plan:?}"
+        );
+        assert!(
+            c_pos < r_pos,
+            "neg@{c_pos} must precede release@{r_pos}: {plan:?}"
+        );
     }
 
     #[test]
@@ -4039,31 +4365,39 @@ mod tests {
         let b = a.relu();
         let c = a.neg();
 
-        let (move_id, reload_id) = insert_evict_reload(
-            a.graph(), a.id(), DeviceLocation::Cpu, &[c.id()],
-        );
+        let (move_id, reload_id) =
+            insert_evict_reload(a.graph(), a.id(), DeviceLocation::Cpu, &[c.id()]);
 
         let g = a.graph().read().unwrap();
         // mv is an Op::Move{Cpu} reading a — the fused stage-to-host +
         // destructive release of a's device storage.
         match &g.node(move_id).op {
-            Op::Move { target: DeviceLocation::Cpu } => {},
+            Op::Move {
+                target: DeviceLocation::Cpu,
+            } => {}
             other => panic!("expected Op::Move{{Cpu}}, got {other:?}"),
         }
         assert_eq!(g.node(move_id).inputs, vec![a.id()]);
         assert_eq!(
-            g.node(move_id).op.destructive_input(), Some(0),
+            g.node(move_id).op.destructive_input(),
+            Some(0),
             "Move must destroy its source so the device storage frees",
         );
         // reload is an Op::Copy{Cpu} (src_device passed in) reading mv
         assert!(matches!(g.node(reload_id).op, Op::Copy { .. }));
         assert_eq!(g.node(reload_id).inputs, vec![move_id]);
         // c's input was rewired
-        assert_eq!(g.node(c.id()).inputs, vec![reload_id],
-            "post-gap consumer should read from reload, not candidate directly");
+        assert_eq!(
+            g.node(c.id()).inputs,
+            vec![reload_id],
+            "post-gap consumer should read from reload, not candidate directly"
+        );
         // b's input stays
-        assert_eq!(g.node(b.id()).inputs, vec![a.id()],
-            "pre-gap consumer should still read candidate directly");
+        assert_eq!(
+            g.node(b.id()).inputs,
+            vec![a.id()],
+            "pre-gap consumer should still read candidate directly"
+        );
     }
 
     #[test]
@@ -4096,10 +4430,12 @@ mod tests {
         );
         let b = a.const_f32_like(
             (0..12).map(|i| (i as f32) * 0.1).collect::<Vec<f32>>(),
-            crate::Shape::from_dims(&[3, 4]));
+            crate::Shape::from_dims(&[3, 4]),
+        );
         let bias = a.const_f32_like(
             vec![0.5_f32, -0.5, 1.0, -1.0],
-            crate::Shape::from_dims(&[4]));
+            crate::Shape::from_dims(&[4]),
+        );
         let mm = a.matmul(&b);
         let bias_b = bias.broadcast_to(crate::Shape::from_dims(&[2, 4]));
         let out = mm.add(&bias_b);
@@ -4116,11 +4452,16 @@ mod tests {
         // Walk consumers of the original Add: any leftover Add should
         // be unreferenced; the new FusedLinear should be present.
         // Phase 7.6 step 4: emission is the registry-extended shape.
-        let any_fused = g.nodes.iter().any(|n| matches!(
-            n.op,
-            Op::Fused(fid, _) if fid == crate::registry::FusedOps::FUSED_LINEAR,
-        ));
-        assert!(any_fused, "graph should contain an Op::Fused(FUSED_LINEAR) node");
+        let any_fused = g.nodes.iter().any(|n| {
+            matches!(
+                n.op,
+                Op::Fused(fid, _) if fid == crate::registry::FusedOps::FUSED_LINEAR,
+            )
+        });
+        assert!(
+            any_fused,
+            "graph should contain an Op::Fused(FUSED_LINEAR) node"
+        );
     }
 
     #[test]
@@ -4132,19 +4473,18 @@ mod tests {
             crate::Shape::from_dims(&[2, 3]),
             cpu_dev(),
         );
-        let b = a.const_f32_like(
-            vec![1.0_f32; 12],
-            crate::Shape::from_dims(&[3, 4]));
-        let bias = a.const_f32_like(
-            vec![1.0_f32; 4],
-            crate::Shape::from_dims(&[4]));
+        let b = a.const_f32_like(vec![1.0_f32; 12], crate::Shape::from_dims(&[3, 4]));
+        let bias = a.const_f32_like(vec![1.0_f32; 4], crate::Shape::from_dims(&[4]));
         let mm = a.matmul(&b);
         let bias_b = bias.broadcast_to(crate::Shape::from_dims(&[2, 4]));
         let with_bias = mm.add(&bias_b);
-        let also_used = mm.relu();        // second consumer of mm
+        let also_used = mm.relu(); // second consumer of mm
         // Both with_bias and also_used are roots.
         let n_fused = fuse_linear(a.graph(), &[with_bias.id(), also_used.id()]);
-        assert_eq!(n_fused, 0, "MatMul has 2 consumers — fusion would duplicate work");
+        assert_eq!(
+            n_fused, 0,
+            "MatMul has 2 consumers — fusion would duplicate work"
+        );
     }
 
     // ---- Rule registry: SoftmaxLastDim lower / fuse / round-trip ------------
@@ -4174,11 +4514,7 @@ mod tests {
     /// `ReduceMaxTo`/`ReduceSumTo` form.
     #[test]
     fn softmax_last_dim_lower_rule_produces_canonical_subgraph() {
-        let x = Tensor::from_f32(
-            vec![1.0_f32; 12],
-            Shape::from_dims(&[2, 3, 2]),
-            cpu_dev(),
-        );
+        let x = Tensor::from_f32(vec![1.0_f32; 12], Shape::from_dims(&[2, 3, 2]), cpu_dev());
         let sm = x.softmax_last_dim();
         let graph = sm.graph().clone();
 
@@ -4193,37 +4529,68 @@ mod tests {
         // 1 Exp, 1 SumDim, 1 Div, 1 Const = 10 reachable.
         let g = graph.read().unwrap();
         let reachable = topo_order_multi(&g, &[new_root]);
-        assert_eq!(reachable.len(), 10, "lowered subgraph: 9 ops + 1 Const = 10 reachable nodes");
+        assert_eq!(
+            reachable.len(),
+            10,
+            "lowered subgraph: 9 ops + 1 Const = 10 reachable nodes"
+        );
         drop(g);
 
         // Op-shape sanity checks.
-        let n_reduce_max  = count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::ReduceMaxTo(_)));
-        let n_max_dim     = count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::MaxDim(_)));
-        let n_sum_dim     = count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::SumDim(_)));
-        let n_unsqueeze   = count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::Unsqueeze { .. }));
-        let n_reshape     = count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::Reshape(_)));
-        let n_broadcast   = count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::BroadcastTo(_)));
-        let n_sub         = count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::Sub));
-        let n_exp         = count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::Exp));
-        let n_reduce_sum  = count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::ReduceSumTo(_)));
-        let n_div         = count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::Div));
+        let n_reduce_max =
+            count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::ReduceMaxTo(_)));
+        let n_max_dim =
+            count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::MaxDim(_)));
+        let n_sum_dim =
+            count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::SumDim(_)));
+        let n_unsqueeze =
+            count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::Unsqueeze { .. }));
+        let n_reshape =
+            count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::Reshape(_)));
+        let n_broadcast =
+            count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::BroadcastTo(_)));
+        let n_sub = count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::Sub));
+        let n_exp = count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::Exp));
+        let n_reduce_sum =
+            count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::ReduceSumTo(_)));
+        let n_div = count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::Div));
         // Phase 7.6 step 5: post-migration the builder emits
         // `Op::Fused(SOFTMAX_LAST_DIM, _)` only — the legacy
         // `Op::SoftmaxLastDim` variant was retired.
-        let n_softmax     = count_op_in_reachable(&graph, &[new_root], |op| {
-            matches!(op, Op::Fused(fid, _) if *fid == FusedOps::SOFTMAX_LAST_DIM)
-        });
-        assert_eq!(n_max_dim, 1, "T5 max side = MaxDim(last) + Unsqueeze append");
-        assert_eq!(n_sum_dim, 1, "T5 sum side = SumDim(last) + Unsqueeze append");
+        let n_softmax = count_op_in_reachable(
+            &graph,
+            &[new_root],
+            |op| matches!(op, Op::Fused(fid, _) if *fid == FusedOps::SOFTMAX_LAST_DIM),
+        );
+        assert_eq!(
+            n_max_dim, 1,
+            "T5 max side = MaxDim(last) + Unsqueeze append"
+        );
+        assert_eq!(
+            n_sum_dim, 1,
+            "T5 sum side = SumDim(last) + Unsqueeze append"
+        );
         assert_eq!(n_unsqueeze, 2, "one keepdim-restore per reduce");
-        assert_eq!(n_reduce_max, 0, "the legacy ReduceMaxTo spelling is retired from the lowering");
-        assert_eq!(n_reduce_sum, 0, "the legacy ReduceSumTo spelling is retired from the lowering");
+        assert_eq!(
+            n_reduce_max, 0,
+            "the legacy ReduceMaxTo spelling is retired from the lowering"
+        );
+        assert_eq!(
+            n_reduce_sum, 0,
+            "the legacy ReduceSumTo spelling is retired from the lowering"
+        );
         assert_eq!(n_reshape, 0, "keepdim restores via Unsqueeze, not Reshape");
         assert_eq!(n_broadcast, 2);
         assert_eq!(n_sub, 1);
-        assert_eq!(n_exp, 1, "the shared `e` interior emits ONCE (identity-share), not per consumer");
+        assert_eq!(
+            n_exp, 1,
+            "the shared `e` interior emits ONCE (identity-share), not per consumer"
+        );
         assert_eq!(n_div, 1);
-        assert_eq!(n_softmax, 0, "no SoftmaxLastDim/Fused(SOFTMAX_LAST_DIM) should remain reachable post-lowering");
+        assert_eq!(
+            n_softmax, 0,
+            "no SoftmaxLastDim/Fused(SOFTMAX_LAST_DIM) should remain reachable post-lowering"
+        );
 
         // Layout side-table entries on the inserted BroadcastTo nodes
         // must be populated and have the expected broadcast strides.
@@ -4239,8 +4606,11 @@ mod tests {
                 // with last-dim stride 0.
                 let l = g.layout(id);
                 assert_eq!(l.shape().dims(), &[2, 3, 2]);
-                assert_eq!(l.stride().last().copied(), Some(0),
-                    "BroadcastTo from [2,3,1] to [2,3,2] should have stride 0 on last dim");
+                assert_eq!(
+                    l.stride().last().copied(),
+                    Some(0),
+                    "BroadcastTo from [2,3,1] to [2,3,2] should have stride 0 on last dim"
+                );
             }
         }
     }
@@ -4252,11 +4622,7 @@ mod tests {
     fn softmax_last_dim_fuse_rule_collapses_canonical_subgraph() {
         // Build the canonical subgraph by-hand — start from a Const
         // and apply the same op sequence the lower rule would emit.
-        let x = Tensor::from_f32(
-            vec![1.0_f32; 6],
-            Shape::from_dims(&[2, 3]),
-            cpu_dev(),
-        );
+        let x = Tensor::from_f32(vec![1.0_f32; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         let m = x.reduce_max_to(Shape::from_dims(&[2, 1]));
         let mb = m.broadcast_to(Shape::from_dims(&[2, 3]));
         let s = x.sub(&mb);
@@ -4267,10 +4633,9 @@ mod tests {
         let graph = out.graph().clone();
 
         // Phase 7.6 step 3: fuse rule comes from the registry entry.
-        let registry = RuleRegistry::new()
-            .with_rule(Box::new(FusionRule::from_entry(
-                &crate::registry::softmax_last_dim::entry(),
-            )));
+        let registry = RuleRegistry::new().with_rule(Box::new(FusionRule::from_entry(
+            &crate::registry::softmax_last_dim::entry(),
+        )));
         let new_roots = registry.optimize_to_fixpoint(&graph, &[out.id()]);
         assert_eq!(new_roots.len(), 1);
         let new_root = new_roots[0];
@@ -4278,8 +4643,11 @@ mod tests {
         // Reachable from the new root: 1 fused-softmax + 1 Const x = 2.
         let g = graph.read().unwrap();
         let reachable = topo_order_multi(&g, &[new_root]);
-        assert_eq!(reachable.len(), 2,
-            "fused subgraph: 1 Fused(SOFTMAX_LAST_DIM) + 1 Const = 2 reachable nodes");
+        assert_eq!(
+            reachable.len(),
+            2,
+            "fused subgraph: 1 Fused(SOFTMAX_LAST_DIM) + 1 Const = 2 reachable nodes"
+        );
         assert!(
             matches!(
                 g.node(new_root).op,
@@ -4298,11 +4666,7 @@ mod tests {
     /// from the rewritten root).
     #[test]
     fn softmax_last_dim_lower_then_fuse_round_trips() {
-        let x = Tensor::from_f32(
-            vec![1.0_f32; 6],
-            Shape::from_dims(&[2, 3]),
-            cpu_dev(),
-        );
+        let x = Tensor::from_f32(vec![1.0_f32; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         let sm = x.softmax_last_dim();
         let graph = sm.graph().clone();
         let original_root = sm.id();
@@ -4318,8 +4682,11 @@ mod tests {
         // `Op::Fused(SOFTMAX_LAST_DIM, _)`, not `Op::SoftmaxLastDim`.
         let g = graph.read().unwrap();
         let reachable = topo_order_multi(&g, &[new_root]);
-        assert_eq!(reachable.len(), 2,
-            "round-tripped graph: 1 Fused(SOFTMAX_LAST_DIM) + 1 Const = 2 reachable nodes");
+        assert_eq!(
+            reachable.len(),
+            2,
+            "round-tripped graph: 1 Fused(SOFTMAX_LAST_DIM) + 1 Const = 2 reachable nodes"
+        );
         assert!(
             matches!(
                 g.node(new_root).op,
@@ -4327,8 +4694,11 @@ mod tests {
             ),
             "round-tripped node should be Op::Fused(SOFTMAX_LAST_DIM, _)",
         );
-        assert_eq!(g.node(new_root).inputs, vec![x.id()],
-            "round-tripped Fused(SOFTMAX_LAST_DIM) should consume the original input");
+        assert_eq!(
+            g.node(new_root).inputs,
+            vec![x.id()],
+            "round-tripped Fused(SOFTMAX_LAST_DIM) should consume the original input"
+        );
         // Shape and dtype preserved.
         assert_eq!(g.node(new_root).shape, g.node(original_root).shape);
         assert_eq!(g.node(new_root).dtype, g.node(original_root).dtype);
@@ -4343,8 +4713,11 @@ mod tests {
         let pre_len = graph.read().unwrap().len();
         let new_roots = RuleRegistry::new().optimize_to_fixpoint(&graph, &[y.id()]);
         assert_eq!(new_roots, vec![y.id()]);
-        assert_eq!(graph.read().unwrap().len(), pre_len,
-            "empty registry should add no nodes");
+        assert_eq!(
+            graph.read().unwrap().len(),
+            pre_len,
+            "empty registry should add no nodes"
+        );
     }
 
     /// Lowering rule does not fire on a graph that has no
@@ -4373,10 +4746,25 @@ mod tests {
         let sink = {
             let mut g = graph.write().unwrap();
             let shape = Shape::from_dims(&[1, 4, 8]); // (batch, seq, head_dim=8, even)
-            let x = g.push(Node { op: Op::Const, inputs: vec![], shape: shape.clone(), dtype: DType::F32 });
+            let x = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: shape.clone(),
+                dtype: DType::F32,
+            });
             let cshape = Shape::from_dims(&[4, 8]);
-            let cos = g.push(Node { op: Op::Const, inputs: vec![], shape: cshape.clone(), dtype: DType::F32 });
-            let sin = g.push(Node { op: Op::Const, inputs: vec![], shape: cshape, dtype: DType::F32 });
+            let cos = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: cshape.clone(),
+                dtype: DType::F32,
+            });
+            let sin = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: cshape,
+                dtype: DType::F32,
+            });
             g.push(Node {
                 op: Op::Fused(FusedOps::ROPE, FusedOpParams::Rope),
                 inputs: vec![x, cos, sin],
@@ -4388,7 +4776,8 @@ mod tests {
         let g = graph.read().unwrap();
         // No Op::Fused(ROPE) remains reachable; the base map is primitives.
         let reachable = topo_order_multi(&g, &roots);
-        let has_rope = reachable.iter()
+        let has_rope = reachable
+            .iter()
             .any(|&n| matches!(g.node(n).op, Op::Fused(fid, _) if fid == FusedOps::ROPE));
         assert!(!has_rope, "ROPE must be lowered to its primitive base map");
     }
@@ -4401,10 +4790,25 @@ mod tests {
         let mk = |swap: bool| {
             let mut g = Graph::new();
             let s = Shape::from_dims(&[4]);
-            let a = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
-            let b = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let a = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: s.clone(),
+                dtype: DType::F32,
+            });
+            let b = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: s.clone(),
+                dtype: DType::F32,
+            });
             let ins = if swap { vec![b, a] } else { vec![a, b] };
-            let sink = g.push(Node { op: Op::Add, inputs: ins, shape: s, dtype: DType::F32 });
+            let sink = g.push(Node {
+                op: Op::Add,
+                inputs: ins,
+                shape: s,
+                dtype: DType::F32,
+            });
             (g, sink)
         };
         let (g0, r0) = mk(false);
@@ -4419,9 +4823,24 @@ mod tests {
         let mk = |op: Op| {
             let mut g = Graph::new();
             let s = Shape::from_dims(&[4]);
-            let a = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
-            let b = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
-            let sink = g.push(Node { op, inputs: vec![a, b], shape: s, dtype: DType::F32 });
+            let a = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: s.clone(),
+                dtype: DType::F32,
+            });
+            let b = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: s.clone(),
+                dtype: DType::F32,
+            });
+            let sink = g.push(Node {
+                op,
+                inputs: vec![a, b],
+                shape: s,
+                dtype: DType::F32,
+            });
             (g, sink)
         };
         let (ga, ra) = mk(Op::Add);
@@ -4441,15 +4860,28 @@ mod tests {
             let mut g = Graph::new();
             let s = Shape::from_dims(&[4, 8]);
             let half = Shape::from_dims(&[4, 4]);
-            let x = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let x = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: s.clone(),
+                dtype: DType::F32,
+            });
             let lo = g.push(Node {
-                op: Op::Slice { dim: 1, start: 0, len: 4 },
+                op: Op::Slice {
+                    dim: 1,
+                    start: 0,
+                    len: 4,
+                },
                 inputs: vec![x],
                 shape: half.clone(),
                 dtype: DType::F32,
             });
             let hi = g.push(Node {
-                op: Op::Slice { dim: 1, start: 4, len: 4 },
+                op: Op::Slice {
+                    dim: 1,
+                    start: 4,
+                    len: 4,
+                },
                 inputs: vec![x],
                 shape: half,
                 dtype: DType::F32,
@@ -4511,24 +4943,50 @@ mod tests {
         let mk = |mul: bool| {
             let mut g = Graph::new();
             let s = Shape::from_dims(&[1]);
-            let carry = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
-            let hole = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let carry = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: s.clone(),
+                dtype: DType::F32,
+            });
+            let hole = g.push(Node {
+                op: Op::ScanPlaceholder {
+                    role: ScanRole::Carry,
+                    index: 0,
+                },
+                inputs: vec![],
+                shape: s.clone(),
+                dtype: DType::F32,
+            });
             let new_carry = g.push(Node {
-                op: if mul { Op::MulScalar(2.0) } else { Op::AddScalar(1.0) },
-                inputs: vec![hole], shape: s.clone(), dtype: DType::F32,
+                op: if mul {
+                    Op::MulScalar(2.0)
+                } else {
+                    Op::AddScalar(1.0)
+                },
+                inputs: vec![hole],
+                shape: s.clone(),
+                dtype: DType::F32,
             });
             // inputs = [init_carry, body_new_carry, body_y]  (n_xs = 0, no consts)
             let scan = g.push(Node {
-                op: Op::Scan { n_xs: 0, bound: 3, emit: ScanEmit::All, early_exit: None },
+                op: Op::Scan {
+                    n_xs: 0,
+                    bound: 3,
+                    emit: ScanEmit::All,
+                    early_exit: None,
+                },
                 inputs: vec![carry, new_carry, new_carry],
-                shape: s, dtype: DType::F32,
+                shape: s,
+                dtype: DType::F32,
             });
             (g, scan)
         };
         let (ga, ra) = mk(true);
         let (gb, rb) = mk(false);
         assert_ne!(
-            base_map_hash(&ga, ra), base_map_hash(&gb, rb),
+            base_map_hash(&ga, ra),
+            base_map_hash(&gb, rb),
             "scans with structurally different bodies must hash differently",
         );
     }
@@ -4542,35 +5000,102 @@ mod tests {
         let mk = || {
             let mut g = Graph::new();
             let s = Shape::from_dims(&[1]);
-            let carry = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
-            let hole = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
-            let new_carry = g.push(Node { op: Op::MulScalar(2.0), inputs: vec![hole], shape: s.clone(), dtype: DType::F32 });
+            let carry = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: s.clone(),
+                dtype: DType::F32,
+            });
+            let hole = g.push(Node {
+                op: Op::ScanPlaceholder {
+                    role: ScanRole::Carry,
+                    index: 0,
+                },
+                inputs: vec![],
+                shape: s.clone(),
+                dtype: DType::F32,
+            });
+            let new_carry = g.push(Node {
+                op: Op::MulScalar(2.0),
+                inputs: vec![hole],
+                shape: s.clone(),
+                dtype: DType::F32,
+            });
             let scan = g.push(Node {
-                op: Op::Scan { n_xs: 0, bound: 3, emit: ScanEmit::All, early_exit: None },
-                inputs: vec![carry, new_carry, new_carry], shape: s, dtype: DType::F32,
+                op: Op::Scan {
+                    n_xs: 0,
+                    bound: 3,
+                    emit: ScanEmit::All,
+                    early_exit: None,
+                },
+                inputs: vec![carry, new_carry, new_carry],
+                shape: s,
+                dtype: DType::F32,
             });
             (g, scan)
         };
         let (g0, r0) = mk();
         let (g1, r1) = mk();
-        assert_eq!(base_map_hash(&g0, r0), base_map_hash(&g1, r1), "same body -> equal hash");
+        assert_eq!(
+            base_map_hash(&g0, r0),
+            base_map_hash(&g1, r1),
+            "same body -> equal hash"
+        );
     }
 
     #[test]
     fn scan_emit_and_placeholder_role_participate_in_op_key() {
         use crate::{Op, ScanEmit, ScanRole};
         // emit=All vs emit=Final differ.
-        let all = op_key(&Op::Scan { n_xs: 0, bound: 3, emit: ScanEmit::All, early_exit: None });
-        let fin = op_key(&Op::Scan { n_xs: 0, bound: 3, emit: ScanEmit::Final, early_exit: None });
-        assert!(all.is_some() && fin.is_some(), "Op::Scan must produce an op_key, not None");
+        let all = op_key(&Op::Scan {
+            n_xs: 0,
+            bound: 3,
+            emit: ScanEmit::All,
+            early_exit: None,
+        });
+        let fin = op_key(&Op::Scan {
+            n_xs: 0,
+            bound: 3,
+            emit: ScanEmit::Final,
+            early_exit: None,
+        });
+        assert!(
+            all.is_some() && fin.is_some(),
+            "Op::Scan must produce an op_key, not None"
+        );
         assert_ne!(all, fin, "emit=All vs emit=Final must differ in op_key");
         // n_xs / bound participate.
-        assert_ne!(op_key(&Op::Scan { n_xs: 1, bound: 3, emit: ScanEmit::All, early_exit: None }), all);
-        assert_ne!(op_key(&Op::Scan { n_xs: 0, bound: 4, emit: ScanEmit::All, early_exit: None }), all);
+        assert_ne!(
+            op_key(&Op::Scan {
+                n_xs: 1,
+                bound: 3,
+                emit: ScanEmit::All,
+                early_exit: None
+            }),
+            all
+        );
+        assert_ne!(
+            op_key(&Op::Scan {
+                n_xs: 0,
+                bound: 4,
+                emit: ScanEmit::All,
+                early_exit: None
+            }),
+            all
+        );
         // ScanPlaceholder Carry/0 vs Elem/0 vs Carry/1 all differ.
-        let c0 = op_key(&Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 });
-        let e0 = op_key(&Op::ScanPlaceholder { role: ScanRole::Elem, index: 0 });
-        let c1 = op_key(&Op::ScanPlaceholder { role: ScanRole::Carry, index: 1 });
+        let c0 = op_key(&Op::ScanPlaceholder {
+            role: ScanRole::Carry,
+            index: 0,
+        });
+        let e0 = op_key(&Op::ScanPlaceholder {
+            role: ScanRole::Elem,
+            index: 0,
+        });
+        let c1 = op_key(&Op::ScanPlaceholder {
+            role: ScanRole::Carry,
+            index: 1,
+        });
         assert!(c0.is_some());
         assert_ne!(c0, e0, "Carry vs Elem must differ");
         assert_ne!(c0, c1, "index must participate");
@@ -4589,8 +5114,7 @@ mod tests {
         let attn = q.flash_attn(&k, &v, None, 1.0_f32, false, None, None, None);
         let graph = attn.graph().clone();
 
-        let new_roots =
-            RuleRegistry::lowering_only().optimize_to_fixpoint(&graph, &[attn.id()]);
+        let new_roots = RuleRegistry::lowering_only().optimize_to_fixpoint(&graph, &[attn.id()]);
         assert_eq!(new_roots.len(), 1);
         let root = new_roots[0];
         let g = graph.read().unwrap();
@@ -4617,8 +5141,7 @@ mod tests {
         let attn = q.flash_attn(&k, &v, None, 1.0_f32, true, None, None, None); // causal
         let graph = attn.graph().clone();
 
-        let new_roots =
-            RuleRegistry::lowering_only().optimize_to_fixpoint(&graph, &[attn.id()]);
+        let new_roots = RuleRegistry::lowering_only().optimize_to_fixpoint(&graph, &[attn.id()]);
         assert_eq!(new_roots.len(), 1);
         let root = new_roots[0];
         let g = graph.read().unwrap();
@@ -4627,7 +5150,10 @@ mod tests {
             "causal FlashAttn must decompose (Triu mask), not stay fused",
         );
         let has_triu = (0..g.len()).any(|i| matches!(g.node(NodeId(i)).op, Op::Triu { .. }));
-        assert!(has_triu, "causal decomposition must contain a Triu mask band");
+        assert!(
+            has_triu,
+            "causal decomposition must contain a Triu mask band"
+        );
     }
 
     /// Fuse rule does not fire on a non-canonical Div pattern (e.g.,
@@ -4673,8 +5199,8 @@ mod tests {
         let graph = y.graph().clone();
         let pre_len = graph.read().unwrap().len();
 
-        let registry = RuleRegistry::new()
-            .with_rule(Box::new(CastFusionRule::new(allow_all_predicate())));
+        let registry =
+            RuleRegistry::new().with_rule(Box::new(CastFusionRule::new(allow_all_predicate())));
         let new_roots = registry.optimize_to_fixpoint(&graph, &[y.id()]);
         assert_eq!(new_roots.len(), 1);
         let new_root = new_roots[0];
@@ -4687,8 +5213,12 @@ mod tests {
         // Cast node remains in the arena but is no longer reachable
         // from the new root.
         let reachable = topo_order_multi(&g, &[new_root]);
-        assert!(!reachable.iter().any(|&n| matches!(g.node(n).op, Op::Cast(_))),
-            "no Cast node should be reachable post-fusion");
+        assert!(
+            !reachable
+                .iter()
+                .any(|&n| matches!(g.node(n).op, Op::Cast(_))),
+            "no Cast node should be reachable post-fusion"
+        );
         // One new Neg node was appended; the original Neg + Cast are
         // unreachable but still in the arena.
         assert!(g.len() > pre_len);
@@ -4704,12 +5234,15 @@ mod tests {
         let graph = y.graph().clone();
         let pre_len = graph.read().unwrap().len();
 
-        let registry = RuleRegistry::new()
-            .with_rule(Box::new(CastFusionRule::new(deny_all_predicate())));
+        let registry =
+            RuleRegistry::new().with_rule(Box::new(CastFusionRule::new(deny_all_predicate())));
         let new_roots = registry.optimize_to_fixpoint(&graph, &[y.id()]);
         assert_eq!(new_roots, vec![y.id()]);
-        assert_eq!(graph.read().unwrap().len(), pre_len,
-            "predicate-says-no should append no nodes");
+        assert_eq!(
+            graph.read().unwrap().len(),
+            pre_len,
+            "predicate-says-no should append no nodes"
+        );
         // The original Cast → Neg chain is intact.
         let g = graph.read().unwrap();
         assert!(matches!(g.node(y.id()).op, Op::Neg));
@@ -4730,8 +5263,8 @@ mod tests {
         let graph = y1.graph().clone();
         let pre_len = graph.read().unwrap().len();
 
-        let registry = RuleRegistry::new()
-            .with_rule(Box::new(CastFusionRule::new(allow_all_predicate())));
+        let registry =
+            RuleRegistry::new().with_rule(Box::new(CastFusionRule::new(allow_all_predicate())));
         let new_roots = registry.optimize_to_fixpoint(&graph, &[y1.id(), y2.id()]);
         // Roots unchanged; cast survives because rule didn't fire.
         assert_eq!(new_roots, vec![y1.id(), y2.id()]);
@@ -4755,8 +5288,8 @@ mod tests {
         assert_eq!(y.dtype(), fuel_ir::DType::BF16);
 
         let graph = y.graph().clone();
-        let registry = RuleRegistry::new()
-            .with_rule(Box::new(CastFusionRule::new(allow_all_predicate())));
+        let registry =
+            RuleRegistry::new().with_rule(Box::new(CastFusionRule::new(allow_all_predicate())));
         let new_roots = registry.optimize_to_fixpoint(&graph, &[y.id()]);
         let new_root = new_roots[0];
 
@@ -4774,10 +5307,7 @@ mod tests {
         let a = Tensor::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
         // a:f32 → Cast(BF16) → Add(bf16, b:bf16) where b is already bf16.
         let ac = a.cast(fuel_ir::DType::BF16);
-        let b = a.const_bf16_like(
-            vec![half::bf16::from_f32(2.0); 4],
-            Shape::from_dims(&[4]),
-        );
+        let b = a.const_bf16_like(vec![half::bf16::from_f32(2.0); 4], Shape::from_dims(&[4]));
         let sum = ac.add(&b);
         let graph = sum.graph().clone();
 
@@ -4786,12 +5316,10 @@ mod tests {
         // this isolates the matcher's per-input behavior. If the
         // predicate said no, the rule wouldn't fire and `b` would
         // stay paired with the Cast.)
-        let predicate: CapabilityPredicate = Arc::new(|op: &Op, _dtypes: &[fuel_ir::DType]| {
-            matches!(op, Op::Add)
-        });
+        let predicate: CapabilityPredicate =
+            Arc::new(|op: &Op, _dtypes: &[fuel_ir::DType]| matches!(op, Op::Add));
 
-        let registry = RuleRegistry::new()
-            .with_rule(Box::new(CastFusionRule::new(predicate)));
+        let registry = RuleRegistry::new().with_rule(Box::new(CastFusionRule::new(predicate)));
         let new_roots = registry.optimize_to_fixpoint(&graph, &[sum.id()]);
         let new_root = new_roots[0];
 
@@ -4813,8 +5341,8 @@ mod tests {
         let y = x_f32.neg();
         let graph = y.graph().clone();
 
-        let registry = RuleRegistry::new()
-            .with_rule(Box::new(CastFusionRule::new(allow_all_predicate())));
+        let registry =
+            RuleRegistry::new().with_rule(Box::new(CastFusionRule::new(allow_all_predicate())));
         let new_roots = registry.optimize_to_fixpoint(&graph, &[y.id()]);
         let new_root = new_roots[0];
 
@@ -4823,11 +5351,14 @@ mod tests {
         // x_bf16 directly), then the inner Cast is gone (Neg consumes
         // x directly). No Cast nodes are reachable.
         let reachable = topo_order_multi(&g, &[new_root]);
-        let cast_count = reachable.iter()
+        let cast_count = reachable
+            .iter()
             .filter(|&&n| matches!(g.node(n).op, Op::Cast(_)))
             .count();
-        assert_eq!(cast_count, 0,
-            "fixpoint should eliminate both casts in the chain");
+        assert_eq!(
+            cast_count, 0,
+            "fixpoint should eliminate both casts in the chain"
+        );
         assert!(matches!(g.node(new_root).op, Op::Neg));
         assert_eq!(g.node(new_root).inputs, vec![x.id()]);
     }
@@ -4841,8 +5372,8 @@ mod tests {
         let graph = xc.graph().clone();
         let pre_len = graph.read().unwrap().len();
 
-        let registry = RuleRegistry::new()
-            .with_rule(Box::new(CastFusionRule::new(allow_all_predicate())));
+        let registry =
+            RuleRegistry::new().with_rule(Box::new(CastFusionRule::new(allow_all_predicate())));
         // Root the optimizer at the Cast itself. The rule should look
         // at the Cast and decline (it's not the consumer's role).
         let new_roots = registry.optimize_to_fixpoint(&graph, &[xc.id()]);
@@ -4893,10 +5424,7 @@ mod tests {
         (g, n1, n2)
     }
 
-    fn shares_storage_cpu_devices_only(
-        a: DeviceLocation,
-        b: DeviceLocation,
-    ) -> bool {
+    fn shares_storage_cpu_devices_only(a: DeviceLocation, b: DeviceLocation) -> bool {
         // Test stub topology: CPU shares with CPU only (the AOCL/MKL/
         // portable-CPU substrate story). CUDA shares with same-gpu_id
         // CUDA. Vulkan shares with same-gpu_id Vulkan. Cross device
@@ -4940,14 +5468,13 @@ mod tests {
     /// No cross-device edges → no copies inserted.
     #[test]
     fn insert_copies_noop_when_all_same_device() {
-        let (mut g, _n1, n2) = build_two_node_graph_with_placements(
-            DeviceLocation::Cpu,
-            DeviceLocation::Cpu,
-        );
+        let (mut g, _n1, n2) =
+            build_two_node_graph_with_placements(DeviceLocation::Cpu, DeviceLocation::Cpu);
         let pre_len = g.len();
         let placements = snapshot_placements(&g);
         let inserted = insert_cross_device_copies(
-            &mut g, &[n2],
+            &mut g,
+            &[n2],
             |id| placements.get(&id).copied(),
             shares_storage_cpu_devices_only,
             no_host_staging,
@@ -4961,13 +5488,12 @@ mod tests {
     #[test]
     fn insert_copies_cuda_consumer_of_cpu_input() {
         let cuda = DeviceLocation::Cuda { gpu_id: 0 };
-        let (mut g, n1, n2) = build_two_node_graph_with_placements(
-            DeviceLocation::Cpu, cuda,
-        );
+        let (mut g, n1, n2) = build_two_node_graph_with_placements(DeviceLocation::Cpu, cuda);
         let pre_len = g.len();
         let placements = snapshot_placements(&g);
         let inserted = insert_cross_device_copies(
-            &mut g, &[n2],
+            &mut g,
+            &[n2],
             |id| placements.get(&id).copied(),
             shares_storage_cpu_devices_only,
             no_host_staging,
@@ -5005,12 +5531,17 @@ mod tests {
         let pre_len = g.len();
         let placements = snapshot_placements(&g);
         let inserted = insert_cross_device_copies(
-            &mut g, &[cuda_a, cuda_b],
+            &mut g,
+            &[cuda_a, cuda_b],
             |id| placements.get(&id).copied(),
             shares_storage_cpu_devices_only,
             no_host_staging,
         );
-        assert_eq!(inserted.len(), 1, "CSE — one Op::Copy serves both consumers");
+        assert_eq!(
+            inserted.len(),
+            1,
+            "CSE — one Op::Copy serves both consumers"
+        );
         assert_eq!(g.len(), pre_len + 1);
         // Both consumers point at the SAME Op::Copy node.
         let a_input = g.node(cuda_a).inputs[0];
@@ -5035,7 +5566,8 @@ mod tests {
         let placements = snapshot_placements(&g);
 
         let inserted = insert_cross_device_copies(
-            &mut g, &[cuda_c, vk_c],
+            &mut g,
+            &[cuda_c, vk_c],
             |id| placements.get(&id).copied(),
             shares_storage_cpu_devices_only,
             no_host_staging,
@@ -5058,7 +5590,8 @@ mod tests {
         g.set_placement(n2, DeviceLocation::Cuda { gpu_id: 0 });
         let placements = snapshot_placements(&g);
         let inserted = insert_cross_device_copies(
-            &mut g, &[n2],
+            &mut g,
+            &[n2],
             |id| placements.get(&id).copied(),
             shares_storage_cpu_devices_only,
             no_host_staging,
@@ -5088,7 +5621,8 @@ mod tests {
         let pre_len = g.len();
         let placements = snapshot_placements(&g);
         let inserted = insert_cross_device_copies(
-            &mut g, &[copy],
+            &mut g,
+            &[copy],
             |id| placements.get(&id).copied(),
             shares_storage_cpu_devices_only,
             no_host_staging,
@@ -5102,25 +5636,29 @@ mod tests {
     #[test]
     fn insert_cross_device_copies_idempotent() {
         let cuda = DeviceLocation::Cuda { gpu_id: 0 };
-        let (mut g, _n1, n2) = build_two_node_graph_with_placements(
-            DeviceLocation::Cpu, cuda,
-        );
+        let (mut g, _n1, n2) = build_two_node_graph_with_placements(DeviceLocation::Cpu, cuda);
         let placements_before = snapshot_placements(&g);
         let first = insert_cross_device_copies(
-            &mut g, &[n2],
+            &mut g,
+            &[n2],
             |id| placements_before.get(&id).copied(),
             shares_storage_cpu_devices_only,
             no_host_staging,
         );
         let placements_after = snapshot_placements(&g);
         let second = insert_cross_device_copies(
-            &mut g, &[n2],
+            &mut g,
+            &[n2],
             |id| placements_after.get(&id).copied(),
             shares_storage_cpu_devices_only,
             no_host_staging,
         );
         assert_eq!(first.len(), 1);
-        assert_eq!(second.len(), 0, "re-run sees inserted-Copy as on-target; no new copies");
+        assert_eq!(
+            second.len(),
+            0,
+            "re-run sees inserted-Copy as on-target; no new copies"
+        );
     }
 
     /// Cross-GPU edge (CUDA gpu_id 0 → CUDA gpu_id 1) → copy inserted
@@ -5132,7 +5670,8 @@ mod tests {
         let (mut g, _n1, n2) = build_two_node_graph_with_placements(cuda0, cuda1);
         let placements = snapshot_placements(&g);
         let inserted = insert_cross_device_copies(
-            &mut g, &[n2],
+            &mut g,
+            &[n2],
             |id| placements.get(&id).copied(),
             shares_storage_cpu_devices_only,
             no_host_staging,
@@ -5151,12 +5690,12 @@ mod tests {
     fn insert_copies_cross_vendor_gpu_inserts_two_hops_through_cpu() {
         let cuda = DeviceLocation::Cuda { gpu_id: 0 };
         let vulkan = DeviceLocation::Vulkan { gpu_id: 0 };
-        let (mut g, vk_src, cuda_consumer) =
-            build_two_node_graph_with_placements(vulkan, cuda);
+        let (mut g, vk_src, cuda_consumer) = build_two_node_graph_with_placements(vulkan, cuda);
         let pre_len = g.len();
         let placements = snapshot_placements(&g);
         let inserted = insert_cross_device_copies(
-            &mut g, &[cuda_consumer],
+            &mut g,
+            &[cuda_consumer],
             |id| placements.get(&id).copied(),
             shares_storage_cpu_devices_only,
             host_staging_cross_vendor_gpu,
@@ -5172,7 +5711,11 @@ mod tests {
             "consumer-side hop targets CUDA; got {:?}",
             hop2_node.op,
         );
-        assert_eq!(g.placement(hop2), Some(cuda), "consumer-side hop lands on CUDA");
+        assert_eq!(
+            g.placement(hop2),
+            Some(cuda),
+            "consumer-side hop lands on CUDA"
+        );
 
         // The consumer-side hop reads the CPU intermediate (Copy → Cpu).
         let hop1 = hop2_node.inputs[0];
@@ -5189,7 +5732,11 @@ mod tests {
         );
 
         // The CPU intermediate reads the original Vulkan producer.
-        assert_eq!(hop1_node.inputs, vec![vk_src], "CPU hop reads the Vulkan producer");
+        assert_eq!(
+            hop1_node.inputs,
+            vec![vk_src],
+            "CPU hop reads the Vulkan producer"
+        );
     }
 
     /// Two-hop edge is idempotent: re-running adds zero new copies. The
@@ -5199,18 +5746,19 @@ mod tests {
     fn insert_copies_cross_vendor_two_hop_idempotent() {
         let cuda = DeviceLocation::Cuda { gpu_id: 0 };
         let vulkan = DeviceLocation::Vulkan { gpu_id: 0 };
-        let (mut g, _vk_src, cuda_consumer) =
-            build_two_node_graph_with_placements(vulkan, cuda);
+        let (mut g, _vk_src, cuda_consumer) = build_two_node_graph_with_placements(vulkan, cuda);
         let p1 = snapshot_placements(&g);
         let first = insert_cross_device_copies(
-            &mut g, &[cuda_consumer],
+            &mut g,
+            &[cuda_consumer],
             |id| p1.get(&id).copied(),
             shares_storage_cpu_devices_only,
             host_staging_cross_vendor_gpu,
         );
         let p2 = snapshot_placements(&g);
         let second = insert_cross_device_copies(
-            &mut g, &[cuda_consumer],
+            &mut g,
+            &[cuda_consumer],
             |id| p2.get(&id).copied(),
             shares_storage_cpu_devices_only,
             host_staging_cross_vendor_gpu,
@@ -5237,21 +5785,31 @@ mod tests {
 
         let placements = snapshot_placements(&g);
         let inserted = insert_cross_device_copies(
-            &mut g, &[cuda_a, cuda_b],
+            &mut g,
+            &[cuda_a, cuda_b],
             |id| placements.get(&id).copied(),
             shares_storage_cpu_devices_only,
             host_staging_cross_vendor_gpu,
         );
         // One CPU intermediate + one shared CUDA hop = 2.
-        assert_eq!(inserted.len(), 2, "CSE — one CPU intermediate + one CUDA hop");
+        assert_eq!(
+            inserted.len(),
+            2,
+            "CSE — one CPU intermediate + one CUDA hop"
+        );
         let a_input = g.node(cuda_a).inputs[0];
         let b_input = g.node(cuda_b).inputs[0];
-        assert_eq!(a_input, b_input, "both CUDA consumers share the consumer-side hop");
+        assert_eq!(
+            a_input, b_input,
+            "both CUDA consumers share the consumer-side hop"
+        );
         // That shared hop reads the single CPU intermediate.
         let cpu_hop = g.node(a_input).inputs[0];
         assert!(matches!(
             g.node(cpu_hop).op,
-            Op::Copy { target: DeviceLocation::Cpu }
+            Op::Copy {
+                target: DeviceLocation::Cpu
+            }
         ));
         assert_eq!(g.node(cpu_hop).inputs, vec![vk_src]);
     }
@@ -5262,13 +5820,12 @@ mod tests {
     #[test]
     fn insert_copies_cpu_gpu_edge_stays_single_hop_under_cross_vendor_predicate() {
         let cuda = DeviceLocation::Cuda { gpu_id: 0 };
-        let (mut g, n1, n2) = build_two_node_graph_with_placements(
-            DeviceLocation::Cpu, cuda,
-        );
+        let (mut g, n1, n2) = build_two_node_graph_with_placements(DeviceLocation::Cpu, cuda);
         let pre_len = g.len();
         let placements = snapshot_placements(&g);
         let inserted = insert_cross_device_copies(
-            &mut g, &[n2],
+            &mut g,
+            &[n2],
             |id| placements.get(&id).copied(),
             shares_storage_cpu_devices_only,
             host_staging_cross_vendor_gpu,
@@ -5285,9 +5842,7 @@ mod tests {
     #[test]
     fn insert_copies_takes_external_placement_oracle() {
         let cuda = DeviceLocation::Cuda { gpu_id: 0 };
-        let (mut g, n1, n2) = build_two_node_graph_with_placements(
-            DeviceLocation::Cpu, cuda,
-        );
+        let (mut g, n1, n2) = build_two_node_graph_with_placements(DeviceLocation::Cpu, cuda);
         // Clear graph-side placements; back the oracle with an
         // external map instead.
         let mut external: StdHashMap<NodeId, DeviceLocation> = StdHashMap::new();
@@ -5299,7 +5854,8 @@ mod tests {
         // graph.placement untouched and using only the external map.)
         let placements = snapshot_placements(&g);
         let inserted = insert_cross_device_copies(
-            &mut g, &[n2],
+            &mut g,
+            &[n2],
             |id| external.get(&id).copied(),
             shares_storage_cpu_devices_only,
             no_host_staging,

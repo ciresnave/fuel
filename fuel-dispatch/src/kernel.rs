@@ -37,12 +37,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::RwLock;
 
-use fuel_ir::conv::{ParamsConv1D, ParamsConvTranspose1D};
+use fuel_graph::QuantType;
 use fuel_graph::registry::FusedOpId;
+use fuel_ir::conv::{ParamsConv1D, ParamsConvTranspose1D};
 use fuel_ir::dispatch::OpKind;
 use fuel_ir::probe::BackendId;
 use fuel_ir::{DType, Error, Layout, Result};
-use fuel_graph::QuantType;
 use smallvec::SmallVec;
 
 /// Inline capacity for the per-operand dtype list in the binding-table
@@ -93,13 +93,19 @@ impl KernelCaps {
     /// All flags off. Equivalent to `Default::default()`; provided as a
     /// const for use in const-context registration tables.
     pub const fn empty() -> Self {
-        Self { strided_input: false, requires_broadcast: false }
+        Self {
+            strided_input: false,
+            requires_broadcast: false,
+        }
     }
 
     /// Just `strided_input` on. Ergonomic for binary/unary registrations
     /// that opt in to the wrapper-side broadcast path.
     pub const fn strided_input() -> Self {
-        Self { strided_input: true, requires_broadcast: false }
+        Self {
+            strided_input: true,
+            requires_broadcast: false,
+        }
     }
 }
 
@@ -209,10 +215,7 @@ pub enum OpParams {
     /// controls whether reduced dims are retained as size-1 in
     /// the output (today fuel-graph never asks for keepdim, but
     /// the field is reserved for the future).
-    Reduce {
-        dims: Vec<usize>,
-        keepdim: bool,
-    },
+    Reduce { dims: Vec<usize>, keepdim: bool },
 
     /// Matrix multiplication. Carries the dimensions explicitly
     /// because [`Storage`](fuel_memory::Storage) only holds bytes + dtype;
@@ -378,12 +381,11 @@ pub enum OpParams {
         step: usize,
     },
 
-        // (Earlier `OpParams::Pad { padding: Vec<(usize, usize)>, fill_bytes: Vec<u8> }`
+    // (Earlier `OpParams::Pad { padding: Vec<(usize, usize)>, fill_bytes: Vec<u8> }`
     // was a speculative multi-dim shape with no consumers. The single-
     // dim shape that Op::Pad actually emits lives at the bottom of this
     // enum; if multi-dim padding lands later, it can extend either
     // shape additively.)
-
     /// Cast input dtype → target dtype. The target lives on the
     /// output Storage's `dtype` field; this variant signals the
     /// op family without requiring a re-read.
@@ -391,21 +393,13 @@ pub enum OpParams {
 
     /// Affine transformation `y = mul * x + add`. Used by
     /// `Tensor::affine` / `scale_and_shift`.
-    Affine {
-        mul: f64,
-        add: f64,
-    },
+    Affine { mul: f64, add: f64 },
 
     /// Element-wise clamp: `y = clamp(x, min, max)`.
-    Clamp {
-        min: f64,
-        max: f64,
-    },
+    Clamp { min: f64, max: f64 },
 
     /// Element-wise integer power: `y = x.powi(exp)`.
-    PowI {
-        exp: i32,
-    },
+    PowI { exp: i32 },
 
     /// Concatenate N inputs along one dim. The kernel needs the
     /// outer/inner element counts (product of dims before/after
@@ -430,10 +424,7 @@ pub enum OpParams {
 
     /// Softmax along the last dim. The kernel walks
     /// `outer_count` rows of `last_dim` elements each.
-    SoftmaxLastDim {
-        outer_count: usize,
-        last_dim: usize,
-    },
+    SoftmaxLastDim { outer_count: usize, last_dim: usize },
 
     /// Last-dim norm parameters shared by RMS-norm and LayerNorm
     /// (no affine flavor for both today). The OpKind selects which
@@ -556,17 +547,12 @@ pub enum OpParams {
 
     /// LogSoftmax along the last dim. Walks `outer_count` rows of
     /// `last_dim` elements each. Per-dtype kernel (uses log/exp).
-    LogSoftmaxLastDim {
-        outer_count: usize,
-        last_dim: usize,
-    },
+    LogSoftmaxLastDim { outer_count: usize, last_dim: usize },
 
     /// MaskedFill: per-element fill where mask is nonzero. The kernel
     /// reads the element count from the layout; `fill_bytes` is
     /// pre-encoded in the output's dtype (one element's worth).
-    MaskedFill {
-        fill_bytes: Vec<u8>,
-    },
+    MaskedFill { fill_bytes: Vec<u8> },
 
     /// Backward helper for Pad. Carries the input shape so the kernel
     /// can size its scatter-add buffer; the output shape is implicit
@@ -670,9 +656,9 @@ pub enum OpParams {
     /// logits layout; the kernel uses them to iterate without
     /// re-parsing shapes.
     FusedSoftmaxCrossEntropy {
-        n_rows:       usize,
-        vocab:        usize,
-        reduction:    fuel_graph::registry::Reduction,
+        n_rows: usize,
+        vocab: usize,
+        reduction: fuel_graph::registry::Reduction,
         ignore_index: i64,
     },
 
@@ -687,11 +673,11 @@ pub enum OpParams {
     /// the fused SiLU activation on the output store (matches
     /// baracuda's `causal_conv1d_*_run` signature flag).
     CausalConv1d {
-        batch:    usize,
+        batch: usize,
         channels: usize,
-        seq_in:   usize,
-        seq_out:  usize,
-        kernel:   usize,
+        seq_in: usize,
+        seq_out: usize,
+        kernel: usize,
         use_silu: bool,
     },
 
@@ -704,10 +690,10 @@ pub enum OpParams {
     /// `delta_softplus` toggles applying softplus(delta) before use
     /// (matches baracuda's `selective_scan_*_run` flag).
     SelectiveScan {
-        batch:          usize,
-        seqlen:         usize,
-        dim:            usize,
-        dstate:         usize,
+        batch: usize,
+        seqlen: usize,
+        dim: usize,
+        dstate: usize,
         delta_softplus: bool,
     },
 
@@ -723,11 +709,11 @@ pub enum OpParams {
     /// validation requires `chunk_size > 0` and
     /// `seqlen % chunk_size == 0`.
     SsdChunkScan {
-        batch:      usize,
-        seqlen:     usize,
-        heads:      usize,
-        head_dim:   usize,
-        state_dim:  usize,
+        batch: usize,
+        seqlen: usize,
+        heads: usize,
+        head_dim: usize,
+        state_dim: usize,
         chunk_size: usize,
     },
 
@@ -740,10 +726,10 @@ pub enum OpParams {
     /// (typically 64 in bitsandbytes). `k` must be even (w_packed
     /// layout requirement) and a multiple of `block_size`.
     Nf4Matmul {
-        batch:      usize,
-        m:          usize,
-        n:          usize,
-        k:          usize,
+        batch: usize,
+        m: usize,
+        n: usize,
+        k: usize,
         block_size: usize,
     },
 
@@ -771,7 +757,7 @@ pub enum OpParams {
     /// `count` in the per-pass `SymEnv` *after* this op runs — the
     /// data-determined dynamic-shape seam. The kernel itself ignores it.
     NonZeroIndices {
-        capacity:  usize,
+        capacity: usize,
         count_sym: fuel_ir::SymId,
     },
 }
@@ -948,7 +934,9 @@ pub struct KernelBindingTable {
 
 impl KernelBindingTable {
     pub fn new() -> Self {
-        Self { bindings: HashMap::new() }
+        Self {
+            bindings: HashMap::new(),
+        }
     }
 
     /// Register a dispatch wrapper for `(op, dtypes, backend)` with the
@@ -979,7 +967,10 @@ impl KernelBindingTable {
         kernel: KernelRef,
     ) {
         self.register_full(
-            op, dtypes, backend, kernel,
+            op,
+            dtypes,
+            backend,
+            kernel,
             KernelCaps::empty(),
             crate::fused::PrecisionGuarantee::UNAUDITED,
             unknown_cost,
@@ -999,7 +990,11 @@ impl KernelBindingTable {
         caps: KernelCaps,
     ) {
         self.register_full(
-            op, dtypes, backend, kernel, caps,
+            op,
+            dtypes,
+            backend,
+            kernel,
+            caps,
             crate::fused::PrecisionGuarantee::UNAUDITED,
             unknown_cost,
         );
@@ -1019,8 +1014,13 @@ impl KernelBindingTable {
         precision: crate::fused::PrecisionGuarantee,
     ) {
         self.register_full(
-            op, dtypes, backend, kernel, KernelCaps::empty(),
-            precision, unknown_cost,
+            op,
+            dtypes,
+            backend,
+            kernel,
+            KernelCaps::empty(),
+            precision,
+            unknown_cost,
         );
     }
 
@@ -1061,9 +1061,7 @@ impl KernelBindingTable {
         precision: crate::fused::PrecisionGuarantee,
         cost: CostFn,
     ) {
-        self.register_full_with_source(
-            op, dtypes, backend, kernel, caps, precision, cost, "",
-        );
+        self.register_full_with_source(op, dtypes, backend, kernel, caps, precision, cost, "");
     }
 
     /// Phase: backend-extensions refactor (2026-06-07). Same as
@@ -1290,7 +1288,9 @@ impl KernelBindingTable {
             }
             // Runtime-fused entries keep the sentinel: their cost derives from
             // the op's recipe (keyed by the runtime id), not an OpKind table.
-            let BindingKey::Static(op) = key else { continue };
+            let BindingKey::Static(op) = key else {
+                continue;
+            };
             for entry in alts.iter_mut() {
                 if (entry.cost as usize) == sentinel {
                     entry.cost = dispatcher(*op);
@@ -1347,16 +1347,25 @@ impl KernelBindingTable {
     /// grouping handles N-alternatives-per-key naturally.
     pub fn iter_precision(
         &self,
-    ) -> impl Iterator<Item = (OpKind, &[DType], BackendId, crate::fused::PrecisionGuarantee)>
-    {
-        self.bindings.iter().filter_map(|((key, dtypes, backend), alts)| {
-            // Static-kernel audit view: runtime-fused entries are outside the
-            // per-OpKind commitments these iterators exist to check.
-            key.static_op().map(|op| (op, dtypes, backend, alts))
-        }).flat_map(|(op, dtypes, backend, alts)| {
-            alts.iter()
-                .map(move |e| (op, dtypes.as_slice(), *backend, e.precision))
-        })
+    ) -> impl Iterator<
+        Item = (
+            OpKind,
+            &[DType],
+            BackendId,
+            crate::fused::PrecisionGuarantee,
+        ),
+    > {
+        self.bindings
+            .iter()
+            .filter_map(|((key, dtypes, backend), alts)| {
+                // Static-kernel audit view: runtime-fused entries are outside the
+                // per-OpKind commitments these iterators exist to check.
+                key.static_op().map(|op| (op, dtypes, backend, alts))
+            })
+            .flat_map(|(op, dtypes, backend, alts)| {
+                alts.iter()
+                    .map(move |e| (op, dtypes.as_slice(), *backend, e.precision))
+            })
     }
 
     /// Iterate `(op, dtypes, backend, &entry)` over every registered
@@ -1378,7 +1387,8 @@ impl KernelBindingTable {
                 key.static_op().map(|op| (op, dtypes, backend, alts))
             })
             .flat_map(|(op, dtypes, backend, alts)| {
-                alts.iter().map(move |e| (op, dtypes.as_slice(), *backend, e))
+                alts.iter()
+                    .map(move |e| (op, dtypes.as_slice(), *backend, e))
             })
     }
 
@@ -1386,16 +1396,16 @@ impl KernelBindingTable {
     /// alternative — one tuple per `BindingEntry`. Used by the step-8
     /// coverage lint to check the "every primitive op has a
     /// non-default cost function" commitment per OpKind.
-    pub fn iter_cost(
-        &self,
-    ) -> impl Iterator<Item = (OpKind, &[DType], BackendId, CostFn)>
-    {
-        self.bindings.iter().filter_map(|((key, dtypes, backend), alts)| {
-            key.static_op().map(|op| (op, dtypes, backend, alts))
-        }).flat_map(|(op, dtypes, backend, alts)| {
-            alts.iter()
-                .map(move |e| (op, dtypes.as_slice(), *backend, e.cost))
-        })
+    pub fn iter_cost(&self) -> impl Iterator<Item = (OpKind, &[DType], BackendId, CostFn)> {
+        self.bindings
+            .iter()
+            .filter_map(|((key, dtypes, backend), alts)| {
+                key.static_op().map(|op| (op, dtypes, backend, alts))
+            })
+            .flat_map(|(op, dtypes, backend, alts)| {
+                alts.iter()
+                    .map(move |e| (op, dtypes.as_slice(), *backend, e.cost))
+            })
     }
 
     /// Iterate every registered `(op, dtypes, backend)` decision-point
@@ -1403,14 +1413,10 @@ impl KernelBindingTable {
     /// share it. Consumed by `SystemTopology::build_at` to derive
     /// which backends have kernels registered + which (op, dtype)
     /// pairs each backend covers.
-    pub fn iter_keys(
-        &self,
-    ) -> impl Iterator<Item = (OpKind, &[DType], BackendId)> {
-        self.bindings
-            .keys()
-            .filter_map(|(key, dtypes, backend)| {
-                key.static_op().map(|op| (op, dtypes.as_slice(), *backend))
-            })
+    pub fn iter_keys(&self) -> impl Iterator<Item = (OpKind, &[DType], BackendId)> {
+        self.bindings.keys().filter_map(|(key, dtypes, backend)| {
+            key.static_op().map(|op| (op, dtypes.as_slice(), *backend))
+        })
     }
 
     /// Whether ANY runtime-fused entry is bound for `(fid, backend)`,
@@ -1418,9 +1424,9 @@ impl KernelBindingTable {
     /// optimizer's fuse/don't-fuse predicate is id-level; the dtype-precise
     /// check is the dispatch-time [`Self::lookup_with_caps`] itself).
     pub fn has_runtime_fused(&self, fid: FusedOpId, backend: BackendId) -> bool {
-        self.bindings.keys().any(|(k, _, b)| {
-            *b == backend && matches!(k, BindingKey::RuntimeFused(f) if *f == fid)
-        })
+        self.bindings
+            .keys()
+            .any(|(k, _, b)| *b == backend && matches!(k, BindingKey::RuntimeFused(f) if *f == fid))
     }
 
     /// The first runtime-fused entry for `(fid, backend)` with its dtype
@@ -1445,7 +1451,8 @@ impl KernelBindingTable {
     /// (`runtime_fused_kernels::clear_runtime_fused_for_tests` does both).
     #[doc(hidden)]
     pub fn remove_runtime_fused_for_tests(&mut self) {
-        self.bindings.retain(|(k, _, _), _| matches!(k, BindingKey::Static(_)));
+        self.bindings
+            .retain(|(k, _, _), _| matches!(k, BindingKey::Static(_)));
     }
 
     /// Look up the wrapper for `(op, dtypes, backend)`. Returns the
@@ -1638,7 +1645,12 @@ mod tests {
             k: 16,
             m_compute: MatmulM::All,
         };
-        let _ = OpParams::Slice { dim: 0, start: 0, end: 10, step: 1 };
+        let _ = OpParams::Slice {
+            dim: 0,
+            start: 0,
+            end: 10,
+            step: 1,
+        };
         let _ = OpParams::Cast;
         let _ = OpParams::Affine { mul: 2.0, add: 1.0 };
         // Debug format compiles.
@@ -1735,8 +1747,14 @@ mod tests {
         // Multi-impl lookup returns both in registration order.
         let alts = table.lookup_alternatives(OpKind::MatMul, &dts, BackendId::Cuda);
         assert_eq!(alts.len(), 2);
-        assert_eq!(alts[0].kernel as *const () as usize, ok_kernel as *const () as usize);
-        assert_eq!(alts[1].kernel as *const () as usize, ok_kernel_alt as *const () as usize);
+        assert_eq!(
+            alts[0].kernel as *const () as usize,
+            ok_kernel as *const () as usize
+        );
+        assert_eq!(
+            alts[1].kernel as *const () as usize,
+            ok_kernel_alt as *const () as usize
+        );
 
         // Step-9a accounting helpers stay consistent.
         assert_eq!(table.key_count(), 1, "one decision point");
@@ -1756,7 +1774,10 @@ mod tests {
         table.register(OpKind::AddElementwise, &dts, BackendId::Cpu, ok_kernel);
         let alts = table.lookup_alternatives(OpKind::AddElementwise, &dts, BackendId::Cpu);
         assert_eq!(alts.len(), 1);
-        assert!(alts[0].cost_expr.is_none(), "hand-written registrations carry no declared cost AST");
+        assert!(
+            alts[0].cost_expr.is_none(),
+            "hand-written registrations carry no declared cost AST"
+        );
     }
 
     /// Task 4.4: `iter_entries` mirrors `iter_precision`/`iter_cost` —
@@ -1780,7 +1801,11 @@ mod tests {
         );
 
         let entries: Vec<_> = table.iter_entries().collect();
-        assert_eq!(entries.len(), 2, "both AddElementwise alternatives, RuntimeFused excluded");
+        assert_eq!(
+            entries.len(),
+            2,
+            "both AddElementwise alternatives, RuntimeFused excluded"
+        );
         for (op, dtypes, backend, entry) in &entries {
             assert_eq!(*op, OpKind::AddElementwise);
             assert_eq!(*dtypes, dts.as_slice());
@@ -1789,7 +1814,10 @@ mod tests {
             let _ = entry.caps;
             let _ = entry.kernel_revision_hash;
         }
-        let fns: Vec<usize> = entries.iter().map(|(_, _, _, e)| e.kernel as *const () as usize).collect();
+        let fns: Vec<usize> = entries
+            .iter()
+            .map(|(_, _, _, e)| e.kernel as *const () as usize)
+            .collect();
         assert!(fns.contains(&(ok_kernel as *const () as usize)));
         assert!(fns.contains(&(ok_kernel_alt as *const () as usize)));
     }
@@ -1849,7 +1877,10 @@ mod tests {
             &dts,
             BackendId::Cpu,
             ok_kernel,
-            KernelCaps { strided_input: true, requires_broadcast: true },
+            KernelCaps {
+                strided_input: true,
+                requires_broadcast: true,
+            },
         );
         // Generic dense-safe sibling registered SECOND.
         table.register_with_caps(
@@ -1857,7 +1888,10 @@ mod tests {
             &dts,
             BackendId::Cpu,
             ok_kernel_alt,
-            KernelCaps { strided_input: true, requires_broadcast: false },
+            KernelCaps {
+                strided_input: true,
+                requires_broadcast: false,
+            },
         );
 
         let (picked, caps) = table
@@ -1868,15 +1902,18 @@ mod tests {
             "the realize pick must never be a broadcast-baked kernel",
         );
         assert_eq!(
-            picked as *const () as usize,
-            ok_kernel_alt as *const () as usize,
+            picked as *const () as usize, ok_kernel_alt as *const () as usize,
             "lookup_with_caps must skip the broadcast-baked sibling and return the generic \
              one regardless of registration order",
         );
         // Both siblings coexist — the exclusion is at the pick, not at
         // registration (the baked-broadcast contract is still PRESENT).
         let alts = table.lookup_alternatives(OpKind::AddElementwise, &dts, BackendId::Cpu);
-        assert_eq!(alts.len(), 2, "both siblings registered; neither is dropped");
+        assert_eq!(
+            alts.len(),
+            2,
+            "both siblings registered; neither is dropped"
+        );
     }
 
     /// The corner that keeps the exclusion honest: if EVERY sibling is
@@ -1892,7 +1929,10 @@ mod tests {
             &dts,
             BackendId::Cpu,
             ok_kernel,
-            KernelCaps { strided_input: true, requires_broadcast: true },
+            KernelCaps {
+                strided_input: true,
+                requires_broadcast: true,
+            },
         );
         assert!(
             table

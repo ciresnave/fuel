@@ -29,9 +29,15 @@ use fuel_ir::Shape;
 /// the direct-conv oracle. `bias` toggles the optional broadcast-`Add` tail.
 #[allow(clippy::too_many_arguments)]
 fn check_case(
-    n: usize, cin: usize, h: usize, w: usize,
-    cout: usize, kh: usize, kw: usize,
-    stride: (usize, usize), padding: (usize, usize),
+    n: usize,
+    cin: usize,
+    h: usize,
+    w: usize,
+    cout: usize,
+    kh: usize,
+    kw: usize,
+    stride: (usize, usize),
+    padding: (usize, usize),
     bias: bool,
 ) {
     let dev = Device::cpu();
@@ -40,9 +46,12 @@ fn check_case(
     );
 
     // Deterministic, well-scaled data (smooth sinusoids like phase7b).
-    let x_data: Vec<f32> = (0..n * cin * h * w).map(|i| ((i as f32) * 1.3e-3).sin()).collect();
-    let w_data: Vec<f32> =
-        (0..cout * cin * kh * kw).map(|i| ((i as f32) * 1.7e-3).cos()).collect();
+    let x_data: Vec<f32> = (0..n * cin * h * w)
+        .map(|i| ((i as f32) * 1.3e-3).sin())
+        .collect();
+    let w_data: Vec<f32> = (0..cout * cin * kh * kw)
+        .map(|i| ((i as f32) * 1.7e-3).cos())
+        .collect();
     let b_data: Vec<f32> = (0..cout).map(|i| (i as f32) * 0.05 - 0.1).collect();
 
     let x = LazyTensor::from_f32(x_data.clone(), Shape::from_dims(&[n, cin, h, w]), &dev);
@@ -100,7 +109,16 @@ fn check_case(
 
     // Direct-conv oracle over the SAME data.
     let s = ConvShape {
-        batch: n, c_in: cin, c_out: cout, h, w, k_h: kh, k_w: kw, stride, padding, groups: 1,
+        batch: n,
+        c_in: cin,
+        c_out: cout,
+        h,
+        w,
+        k_h: kh,
+        k_w: kw,
+        stride,
+        padding,
+        groups: 1,
     };
     let mut expected = vec![0.0f32; s.output_len()];
     conv2d_direct(
@@ -125,7 +143,10 @@ fn check_case(
     }
     // The correct recipe lands orders of magnitude below the bound; a sabotaged
     // index/matmul drives max_rel to O(1) (documented teeth).
-    assert!(max_rel < 1e-5, "{label}: max relative error {max_rel} exceeds 1e-5");
+    assert!(
+        max_rel < 1e-5,
+        "{label}: max relative error {max_rel} exceeds 1e-5"
+    );
 }
 
 /// Dense groups=1 conv, no bias — the plain im2col + GEMM path.

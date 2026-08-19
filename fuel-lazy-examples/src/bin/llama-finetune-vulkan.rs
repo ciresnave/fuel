@@ -35,8 +35,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     use fuel::lazy::{LlamaTokenizer, WeightStorage};
     use fuel::lazy_llama2c::Llama2cModel;
     use fuel::train::{self, OptimizerConfig, Parameter, TrainState};
-    use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
     use fuel::{Device, Shape};
+    use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
     use std::io::Write;
     use std::sync::Arc;
     use std::time::Instant;
@@ -51,7 +51,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let model = Llama2cModel::from_hub(model_id)?;
     eprintln!("done in {:.2?}", t0.elapsed());
     let cfg = &model.config;
-    eprintln!("  dim={} layers={} vocab={}", cfg.dim, cfg.n_layers, cfg.vocab_size);
+    eprintln!(
+        "  dim={} layers={} vocab={}",
+        cfg.dim, cfg.n_layers, cfg.vocab_size
+    );
 
     eprint!("Loading tokenizer... ");
     std::io::stderr().flush().ok();
@@ -80,16 +83,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         other => {
             return Err(format!(
                 "llama-finetune-vulkan demo expects an F32/BF16 lm_head, got {other:?}"
-            ).into());
+            )
+            .into());
         }
     };
-    let params = vec![
-        Parameter::new_f32(
-            "lm_head",
-            Shape::from_dims(&[cfg.dim, cfg.vocab_size]),
-            lm_head_data,
-        ),
-    ];
+    let params = vec![Parameter::new_f32(
+        "lm_head",
+        Shape::from_dims(&[cfg.dim, cfg.vocab_size]),
+        lm_head_data,
+    )];
     let mut state = TrainState::new(&params, &device, OptimizerConfig::adam_w(1e-4))?;
 
     // ---- Training data ----
@@ -132,10 +134,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Forward: all 22 frozen layers → hidden state.
             // Pass lm_head as the graph anchor so all nodes land on
             // the same graph the parameters live on.
-            let hidden = model_ref.forward_hidden_anchored(&ids, 0, lm_head)
+            let hidden = model_ref
+                .forward_hidden_anchored(&ids, 0, lm_head)
                 .expect("frozen forward");
             // [1, input_seq, dim] → [input_seq, dim]
-            let hidden = hidden.reshape(Shape::from_dims(&[iseq, dim]))
+            let hidden = hidden
+                .reshape(Shape::from_dims(&[iseq, dim]))
                 .expect("hidden reshape");
 
             // Trainable output head → logits [input_seq, vocab_size]
@@ -149,7 +153,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("  step {step:>2}: loss = {loss:.4}");
     }
     let elapsed = t0.elapsed();
-    eprintln!("\nDone in {elapsed:.2?} ({:.1} steps/sec)", n_steps as f64 / elapsed.as_secs_f64());
+    eprintln!(
+        "\nDone in {elapsed:.2?} ({:.1} steps/sec)",
+        n_steps as f64 / elapsed.as_secs_f64()
+    );
 
     // ---- Inspect result ----
     let final_lm_head = state.param_to_host("lm_head")?;
@@ -159,10 +166,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         other => {
             return Err(format!(
                 "llama-finetune-vulkan demo expects an F32/BF16 lm_head, got {other:?}"
-            ).into());
+            )
+            .into());
         }
     };
-    let max_delta = final_lm_head.iter().zip(&orig_lm_head)
+    let max_delta = final_lm_head
+        .iter()
+        .zip(&orig_lm_head)
         .map(|(a, b)| (a - b).abs())
         .fold(0.0f32, f32::max);
     eprintln!("Max weight delta from pretrained: {max_delta:.6}");

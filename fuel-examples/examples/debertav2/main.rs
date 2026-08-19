@@ -27,15 +27,14 @@ extern crate accelerate_src;
 use std::fmt::Display;
 use std::path::PathBuf;
 
-use anyhow::{bail, Error as E, Result};
+use anyhow::{Error as E, Result, bail};
 use clap::{ArgGroup, Parser, ValueEnum};
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use hf_hub::{Repo, RepoType, api::sync::Api};
 use tokenizers::Tokenizer;
 
 use fuel::lazy_debertav2::{
-    DebertaV2Config, DebertaV2NERModel, DebertaV2NERWeights,
-    DebertaV2SeqClassificationModel, DebertaV2SeqClassificationWeights,
-    Id2Label, NERItem, TextClassificationItem,
+    DebertaV2Config, DebertaV2NERModel, DebertaV2NERWeights, DebertaV2SeqClassificationModel,
+    DebertaV2SeqClassificationWeights, Id2Label, NERItem, TextClassificationItem,
 };
 
 #[derive(Parser, Debug, Clone, ValueEnum)]
@@ -144,9 +143,7 @@ fn tokenize(tokenizer: &Tokenizer, sentence: &str) -> Result<(Vec<u32>, Vec<Stri
 /// Argmax + softmax-max along the last dimension of a `(1, seq, num_labels)`
 /// f32 logits tensor returned by the NER head. Returns one `(label_id, prob)`
 /// per token in the sequence.
-fn ner_per_token_pred(
-    logits_flat: &[f32], seq: usize, num_labels: usize,
-) -> Vec<(usize, f32)> {
+fn ner_per_token_pred(logits_flat: &[f32], seq: usize, num_labels: usize) -> Vec<(usize, f32)> {
     let mut out = Vec::with_capacity(seq);
     for t in 0..seq {
         let row = &logits_flat[t * num_labels..(t + 1) * num_labels];
@@ -155,10 +152,15 @@ fn ner_per_token_pred(
         let mut max_logit = f32::NEG_INFINITY;
         let mut max_idx = 0_usize;
         for (i, &v) in row.iter().enumerate() {
-            if v > max_logit { max_logit = v; max_idx = i; }
+            if v > max_logit {
+                max_logit = v;
+                max_idx = i;
+            }
         }
         let mut denom = 0.0_f32;
-        for &v in row { denom += (v - max_logit).exp(); }
+        for &v in row {
+            denom += (v - max_logit).exp();
+        }
         let prob = 1.0_f32 / denom.max(1e-30);
         out.push((max_idx, prob));
     }
@@ -168,25 +170,28 @@ fn ner_per_token_pred(
 /// Softmax along axis 1 of a `(1, num_labels)` f32 tensor, returned flat.
 fn softmax_row(logits_flat: &[f32]) -> Vec<f32> {
     let mut max_logit = f32::NEG_INFINITY;
-    for &v in logits_flat { if v > max_logit { max_logit = v; } }
-    let mut exps: Vec<f32> = logits_flat
-        .iter()
-        .map(|&v| (v - max_logit).exp())
-        .collect();
+    for &v in logits_flat {
+        if v > max_logit {
+            max_logit = v;
+        }
+    }
+    let mut exps: Vec<f32> = logits_flat.iter().map(|&v| (v - max_logit).exp()).collect();
     let denom: f32 = exps.iter().sum::<f32>().max(1e-30);
-    for v in &mut exps { *v /= denom; }
+    for v in &mut exps {
+        *v /= denom;
+    }
     exps
 }
 
 fn resolve_id2label(args: &Args, cfg: &DebertaV2Config) -> Result<Id2Label> {
     if let Some(s) = &args.id2label {
-        let parsed: std::collections::HashMap<String, String> = serde_json::from_str(s)
-            .map_err(|e| E::msg(format!("parsing --id2label: {e}")))?;
+        let parsed: std::collections::HashMap<String, String> =
+            serde_json::from_str(s).map_err(|e| E::msg(format!("parsing --id2label: {e}")))?;
         let mut out: Id2Label = std::collections::HashMap::new();
         for (k, v) in parsed {
-            let id: u32 = k.parse().map_err(|e| {
-                E::msg(format!("--id2label key {k:?} is not a u32: {e}"))
-            })?;
+            let id: u32 = k
+                .parse()
+                .map_err(|e| E::msg(format!("--id2label key {k:?} is not a u32: {e}")))?;
             out.insert(id, v);
         }
         Ok(out)
@@ -253,9 +258,13 @@ fn run_ner(
             let mut word = tokens[t].clone();
             let mut end = t + 1;
             while end < seq {
-                if special_mask[end] == 1 { break; }
+                if special_mask[end] == 1 {
+                    break;
+                }
                 let (next_idx, _) = preds[end];
-                if next_idx != label_idx { break; }
+                if next_idx != label_idx {
+                    break;
+                }
                 word.push_str(&tokens[end]);
                 end += 1;
             }
@@ -282,10 +291,8 @@ fn run_text_classification(
     let num_labels = id2label.len();
     let st = unsafe { fuel::safetensors::MmapedSafetensors::multi(&[weights_path]) }
         .map_err(|e| E::msg(format!("mmap safetensors: {e}")))?;
-    let weights = DebertaV2SeqClassificationWeights::load_from_mmapped(
-        &st, cfg, num_labels,
-    )
-    .map_err(|e| E::msg(format!("load seq-classification weights: {e}")))?;
+    let weights = DebertaV2SeqClassificationWeights::load_from_mmapped(&st, cfg, num_labels)
+        .map_err(|e| E::msg(format!("load seq-classification weights: {e}")))?;
     let model = DebertaV2SeqClassificationModel::new(cfg.clone(), weights, num_labels);
 
     let mut results: Vec<TextClassificationItem> = Vec::with_capacity(sentences.len());
@@ -306,7 +313,10 @@ fn run_text_classification(
             .get(&(best_idx as u32))
             .cloned()
             .unwrap_or_else(|| format!("LABEL_{best_idx}"));
-        results.push(TextClassificationItem { label, score: best_prob });
+        results.push(TextClassificationItem {
+            label,
+            score: best_prob,
+        });
     }
     Ok(results)
 }
@@ -339,8 +349,7 @@ fn main() -> Result<()> {
         ArgsTask::Ner => {
             let id2label = resolve_id2label(&args, &cfg)?;
             let infer_t0 = std::time::Instant::now();
-            let results =
-                run_ner(&cfg, &weights_path, &tokenizer, &args.sentences, &id2label)?;
+            let results = run_ner(&cfg, &weights_path, &tokenizer, &args.sentences, &id2label)?;
             println!("Inferenced inputs in {:?}", infer_t0.elapsed());
             println!("\n{results:?}");
         }
@@ -348,7 +357,11 @@ fn main() -> Result<()> {
             let id2label = resolve_id2label(&args, &cfg)?;
             let infer_t0 = std::time::Instant::now();
             let results = run_text_classification(
-                &cfg, &weights_path, &tokenizer, &args.sentences, &id2label,
+                &cfg,
+                &weights_path,
+                &tokenizer,
+                &args.sentences,
+                &id2label,
             )?;
             println!("Inferenced inputs in {:?}", infer_t0.elapsed());
             println!("\n{results:?}");

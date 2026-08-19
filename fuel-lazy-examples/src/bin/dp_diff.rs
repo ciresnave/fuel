@@ -21,9 +21,9 @@
 
 use fuel::judge::{Criterion, DispatchTable};
 use fuel::lazy::LazyTensor;
-use fuel::scheduling::{dp_plan, prepare_dp_inputs, recommend_placement, ScheduleOptions};
-use fuel_ir::{probe::BackendId, DeviceLocation};
+use fuel::scheduling::{ScheduleOptions, dp_plan, prepare_dp_inputs, recommend_placement};
 use fuel_graph::{NodeId, Op};
+use fuel_ir::{DeviceLocation, probe::BackendId};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
@@ -50,7 +50,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let table = DispatchTable::build(&profile);
 
     eprintln!("Anchors:");
-    eprintln!("{:<20}  {:>8}  {:>10}  {:>14}", "anchor", "nodes", "disagreed", "agreement %");
+    eprintln!(
+        "{:<20}  {:>8}  {:>10}  {:>14}",
+        "anchor", "nodes", "disagreed", "agreement %"
+    );
     eprintln!("{}", "-".repeat(60));
 
     let mut all_reports = Vec::new();
@@ -80,7 +83,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if any_disagree {
         eprintln!("Disagreement breakdown (DP placement differs from recommend_placement):");
         for (label, report) in &all_reports {
-            if report.disagreements == 0 { continue; }
+            if report.disagreements == 0 {
+                continue;
+            }
             eprintln!("  [{label}]");
             for ((op, transition), count) in &report.breakdown {
                 eprintln!("    {op:<10} {transition}  ×{count}");
@@ -126,12 +131,16 @@ fn compare_planners(
 
     let roots: Vec<NodeId> = outputs.iter().map(|t| t.graph_tensor().id()).collect();
 
-    let placements_recommend = recommend_placement(
-        &g, table, Criterion::Fastest, DeviceLocation::Cpu,
-    );
+    let placements_recommend =
+        recommend_placement(&g, table, Criterion::Fastest, DeviceLocation::Cpu);
 
     let placements_dp = dp_plan(
-        &g, &roots, profile, bandwidth, available_backends, DeviceLocation::Cpu,
+        &g,
+        &roots,
+        profile,
+        bandwidth,
+        available_backends,
+        DeviceLocation::Cpu,
     );
 
     let mut breakdown: BTreeMap<(String, String), usize> = BTreeMap::new();
@@ -151,30 +160,34 @@ fn compare_planners(
             *breakdown.entry(key).or_default() += 1;
         }
     }
-    DiffReport { total_nodes: total, disagreements, breakdown }
+    DiffReport {
+        total_nodes: total,
+        disagreements,
+        breakdown,
+    }
 }
 
 fn op_short_name(op: &Op) -> &'static str {
     match op {
-        Op::Const        => "Const",
-        Op::Add             => "Add",
-        Op::Sub             => "Sub",
-        Op::Mul             => "Mul",
-        Op::Div             => "Div",
-        Op::MatMul          => "MatMul",
-        Op::Permute(_)      => "Permute",
-        Op::Reshape(_)      => "Reshape",
-        Op::BroadcastTo(_)  => "BroadcastTo",
-        Op::Concat{..}      => "Concat",
-        Op::Slice{..}       => "Slice",
-        Op::Silu            => "Silu",
-        Op::Gelu            => "Gelu",
-        Op::Relu            => "Relu",
-        Op::Sigmoid         => "Sigmoid",
+        Op::Const => "Const",
+        Op::Add => "Add",
+        Op::Sub => "Sub",
+        Op::Mul => "Mul",
+        Op::Div => "Div",
+        Op::MatMul => "MatMul",
+        Op::Permute(_) => "Permute",
+        Op::Reshape(_) => "Reshape",
+        Op::BroadcastTo(_) => "BroadcastTo",
+        Op::Concat { .. } => "Concat",
+        Op::Slice { .. } => "Slice",
+        Op::Silu => "Silu",
+        Op::Gelu => "Gelu",
+        Op::Relu => "Relu",
+        Op::Sigmoid => "Sigmoid",
         // Softmax / LayerNorm / RmsNorm / Rope / Conv2D all flow
         // through `Op::Fused(FusedOpId, …)` since the FusedOpRegistry
         // migration; the per-id breakdown isn't needed here.
-        Op::Fused(..)       => "Fused",
+        Op::Fused(..) => "Fused",
         _ => "Other",
     }
 }
@@ -208,9 +221,14 @@ fn build_bert_stress() -> AnchorBuild {
     // smaller dims every op stays in the CPU-wins regime and the
     // two planners agree by accident.
     let cfg = BertConfig {
-        vocab_size: 100, hidden_size: 2048, num_hidden_layers: 2,
-        num_attention_heads: 16, intermediate_size: 8192,
-        max_position_embeddings: 256, type_vocab_size: 2, layer_norm_eps: 1e-12,
+        vocab_size: 100,
+        hidden_size: 2048,
+        num_hidden_layers: 2,
+        num_attention_heads: 16,
+        intermediate_size: 8192,
+        max_position_embeddings: 256,
+        type_vocab_size: 2,
+        layer_norm_eps: 1e-12,
     };
     let h = cfg.hidden_size;
     let z = |n: usize| Arc::<[f32]>::from(vec![0.0_f32; n]);
@@ -219,29 +237,51 @@ fn build_bert_stress() -> AnchorBuild {
         word_embeddings: z(cfg.vocab_size * h),
         position_embeddings: z(cfg.max_position_embeddings * h),
         token_type_embeddings: z(cfg.type_vocab_size * h),
-        emb_ln_gamma: o(h), emb_ln_beta: z(h),
-        layers: (0..cfg.num_hidden_layers).map(|_| BertLayerWeights {
-            attn_q_w: z(h*h), attn_q_b: z(h),
-            attn_k_w: z(h*h), attn_k_b: z(h),
-            attn_v_w: z(h*h), attn_v_b: z(h),
-            attn_out_w: z(h*h), attn_out_b: z(h),
-            attn_ln_gamma: o(h), attn_ln_beta: z(h),
-            ffn_in_w: z(h*cfg.intermediate_size), ffn_in_b: z(cfg.intermediate_size),
-            ffn_out_w: z(cfg.intermediate_size*h), ffn_out_b: z(h),
-            ffn_ln_gamma: o(h), ffn_ln_beta: z(h),
-        }).collect(),
+        emb_ln_gamma: o(h),
+        emb_ln_beta: z(h),
+        layers: (0..cfg.num_hidden_layers)
+            .map(|_| BertLayerWeights {
+                attn_q_w: z(h * h),
+                attn_q_b: z(h),
+                attn_k_w: z(h * h),
+                attn_k_b: z(h),
+                attn_v_w: z(h * h),
+                attn_v_b: z(h),
+                attn_out_w: z(h * h),
+                attn_out_b: z(h),
+                attn_ln_gamma: o(h),
+                attn_ln_beta: z(h),
+                ffn_in_w: z(h * cfg.intermediate_size),
+                ffn_in_b: z(cfg.intermediate_size),
+                ffn_out_w: z(cfg.intermediate_size * h),
+                ffn_out_b: z(h),
+                ffn_ln_gamma: o(h),
+                ffn_ln_beta: z(h),
+            })
+            .collect(),
     };
-    let model = BertModel { config: cfg, weights };
+    let model = BertModel {
+        config: cfg,
+        weights,
+    };
     let ids: Vec<u32> = (0..256).collect();
-    AnchorBuild { label: "BERT (stress)".into(), outputs: vec![model.forward(&ids).expect("bert stress forward")] }
+    AnchorBuild {
+        label: "BERT (stress)".into(),
+        outputs: vec![model.forward(&ids).expect("bert stress forward")],
+    }
 }
 
 fn build_bert() -> AnchorBuild {
     use fuel::lazy_bert::{BertConfig, BertLayerWeights, BertModel, BertWeights};
     let cfg = BertConfig {
-        vocab_size: 100, hidden_size: 32, num_hidden_layers: 2,
-        num_attention_heads: 4, intermediate_size: 64,
-        max_position_embeddings: 16, type_vocab_size: 2, layer_norm_eps: 1e-12,
+        vocab_size: 100,
+        hidden_size: 32,
+        num_hidden_layers: 2,
+        num_attention_heads: 4,
+        intermediate_size: 64,
+        max_position_embeddings: 16,
+        type_vocab_size: 2,
+        layer_norm_eps: 1e-12,
     };
     let h = cfg.hidden_size;
     let z = |n: usize| Arc::<[f32]>::from(vec![0.0_f32; n]);
@@ -250,22 +290,39 @@ fn build_bert() -> AnchorBuild {
         word_embeddings: z(cfg.vocab_size * h),
         position_embeddings: z(cfg.max_position_embeddings * h),
         token_type_embeddings: z(cfg.type_vocab_size * h),
-        emb_ln_gamma: o(h), emb_ln_beta: z(h),
-        layers: (0..cfg.num_hidden_layers).map(|_| BertLayerWeights {
-            attn_q_w: z(h*h), attn_q_b: z(h),
-            attn_k_w: z(h*h), attn_k_b: z(h),
-            attn_v_w: z(h*h), attn_v_b: z(h),
-            attn_out_w: z(h*h), attn_out_b: z(h),
-            attn_ln_gamma: o(h), attn_ln_beta: z(h),
-            ffn_in_w: z(h*cfg.intermediate_size), ffn_in_b: z(cfg.intermediate_size),
-            ffn_out_w: z(cfg.intermediate_size*h), ffn_out_b: z(h),
-            ffn_ln_gamma: o(h), ffn_ln_beta: z(h),
-        }).collect(),
+        emb_ln_gamma: o(h),
+        emb_ln_beta: z(h),
+        layers: (0..cfg.num_hidden_layers)
+            .map(|_| BertLayerWeights {
+                attn_q_w: z(h * h),
+                attn_q_b: z(h),
+                attn_k_w: z(h * h),
+                attn_k_b: z(h),
+                attn_v_w: z(h * h),
+                attn_v_b: z(h),
+                attn_out_w: z(h * h),
+                attn_out_b: z(h),
+                attn_ln_gamma: o(h),
+                attn_ln_beta: z(h),
+                ffn_in_w: z(h * cfg.intermediate_size),
+                ffn_in_b: z(cfg.intermediate_size),
+                ffn_out_w: z(cfg.intermediate_size * h),
+                ffn_out_b: z(h),
+                ffn_ln_gamma: o(h),
+                ffn_ln_beta: z(h),
+            })
+            .collect(),
     };
-    let model = BertModel { config: cfg, weights };
+    let model = BertModel {
+        config: cfg,
+        weights,
+    };
     let ids: Vec<u32> = (0..8).collect();
     let out = model.forward(&ids).expect("bert forward");
-    AnchorBuild { label: "BERT".into(), outputs: vec![out] }
+    AnchorBuild {
+        label: "BERT".into(),
+        outputs: vec![out],
+    }
 }
 
 fn build_clip() -> AnchorBuild {
@@ -273,9 +330,16 @@ fn build_clip() -> AnchorBuild {
         ClipLayerWeights, ClipTextActivation, ClipTextConfig, ClipTextWeights, SdTextEncoder,
     };
     let cfg = ClipTextConfig {
-        vocab_size: 100, hidden_size: 16, num_hidden_layers: 2,
-        num_attention_heads: 4, intermediate_size: 32, max_position_embeddings: 8,
-        layer_norm_eps: 1e-5, bos_token_id: 0, eos_token_id: 2, pad_token_id: 1,
+        vocab_size: 100,
+        hidden_size: 16,
+        num_hidden_layers: 2,
+        num_attention_heads: 4,
+        intermediate_size: 32,
+        max_position_embeddings: 8,
+        layer_norm_eps: 1e-5,
+        bos_token_id: 0,
+        eos_token_id: 2,
+        pad_token_id: 1,
         activation: ClipTextActivation::QuickGelu,
     };
     let h = cfg.hidden_size;
@@ -284,32 +348,58 @@ fn build_clip() -> AnchorBuild {
     let weights = ClipTextWeights {
         token_embedding: z(cfg.vocab_size * h),
         position_embedding: z(cfg.max_position_embeddings * h),
-        layers: (0..cfg.num_hidden_layers).map(|_| ClipLayerWeights {
-            ln1_g: o(h), ln1_b: z(h),
-            q_w: z(h*h), q_b: z(h),
-            k_w: z(h*h), k_b: z(h),
-            v_w: z(h*h), v_b: z(h),
-            out_w: z(h*h), out_b: z(h),
-            ln2_g: o(h), ln2_b: z(h),
-            fc1_w: z(h*cfg.intermediate_size), fc1_b: z(cfg.intermediate_size),
-            fc2_w: z(cfg.intermediate_size*h), fc2_b: z(h),
-        }).collect(),
-        final_ln_g: o(h), final_ln_b: z(h),
+        layers: (0..cfg.num_hidden_layers)
+            .map(|_| ClipLayerWeights {
+                ln1_g: o(h),
+                ln1_b: z(h),
+                q_w: z(h * h),
+                q_b: z(h),
+                k_w: z(h * h),
+                k_b: z(h),
+                v_w: z(h * h),
+                v_b: z(h),
+                out_w: z(h * h),
+                out_b: z(h),
+                ln2_g: o(h),
+                ln2_b: z(h),
+                fc1_w: z(h * cfg.intermediate_size),
+                fc1_b: z(cfg.intermediate_size),
+                fc2_w: z(cfg.intermediate_size * h),
+                fc2_b: z(h),
+            })
+            .collect(),
+        final_ln_g: o(h),
+        final_ln_b: z(h),
     };
-    let model = SdTextEncoder { config: cfg.clone(), weights };
+    let model = SdTextEncoder {
+        config: cfg.clone(),
+        weights,
+    };
     let tokens: Vec<u32> = (0..cfg.max_position_embeddings as u32).collect();
-    AnchorBuild { label: "SD CLIP".into(), outputs: vec![model.forward(&tokens).expect("clip forward")] }
+    AnchorBuild {
+        label: "SD CLIP".into(),
+        outputs: vec![model.forward(&tokens).expect("clip forward")],
+    }
 }
 
 fn build_qwen2_moe() -> AnchorBuild {
-    use fuel::lazy_qwen2_moe::{ExpertWeights, Qwen2MoeConfig, Qwen2MoeLayerWeights, Qwen2MoeModel, Qwen2MoeWeights};
+    use fuel::lazy_qwen2_moe::{
+        ExpertWeights, Qwen2MoeConfig, Qwen2MoeLayerWeights, Qwen2MoeModel, Qwen2MoeWeights,
+    };
     let cfg = Qwen2MoeConfig {
-        vocab_size: 32, hidden_size: 8, num_hidden_layers: 1,
-        num_attention_heads: 2, num_key_value_heads: 2,
-        moe_intermediate_size: 12, shared_expert_intermediate_size: 16,
-        num_experts: 3, num_experts_per_tok: 2,
-        max_position_embeddings: 32, rope_theta: 10_000.0,
-        rms_norm_eps: 1e-6, norm_topk_prob: false,
+        vocab_size: 32,
+        hidden_size: 8,
+        num_hidden_layers: 1,
+        num_attention_heads: 2,
+        num_key_value_heads: 2,
+        moe_intermediate_size: 12,
+        shared_expert_intermediate_size: 16,
+        num_experts: 3,
+        num_experts_per_tok: 2,
+        max_position_embeddings: 32,
+        rope_theta: 10_000.0,
+        rms_norm_eps: 1e-6,
+        norm_topk_prob: false,
     };
     let h = cfg.hidden_size;
     let mi = cfg.moe_intermediate_size;
@@ -320,45 +410,74 @@ fn build_qwen2_moe() -> AnchorBuild {
         token_embedding: z(cfg.vocab_size * h),
         layers: vec![Qwen2MoeLayerWeights {
             input_ln: o(h),
-            q_w: z(h*h), q_b: z(h),
-            k_w: z(h*h), k_b: z(h),
-            v_w: z(h*h), v_b: z(h),
-            o_w: z(h*h),
+            q_w: z(h * h),
+            q_b: z(h),
+            k_w: z(h * h),
+            k_b: z(h),
+            v_w: z(h * h),
+            v_b: z(h),
+            o_w: z(h * h),
             post_attn_ln: o(h),
             gate_w: z(h * cfg.num_experts),
-            experts: (0..cfg.num_experts).map(|_| ExpertWeights {
-                gate_w: z(h*mi), up_w: z(h*mi), down_w: z(mi*h),
-            }).collect(),
-            shared_gate_w: z(h*si), shared_up_w: z(h*si), shared_down_w: z(si*h),
+            experts: (0..cfg.num_experts)
+                .map(|_| ExpertWeights {
+                    gate_w: z(h * mi),
+                    up_w: z(h * mi),
+                    down_w: z(mi * h),
+                })
+                .collect(),
+            shared_gate_w: z(h * si),
+            shared_up_w: z(h * si),
+            shared_down_w: z(si * h),
             shared_expert_gate_w: z(h),
         }],
         final_ln: o(h),
         lm_head: z(h * cfg.vocab_size),
     };
-    let model = Qwen2MoeModel { config: cfg, weights };
+    let model = Qwen2MoeModel {
+        config: cfg,
+        weights,
+    };
     let tokens: Vec<u32> = vec![1, 2, 3, 4];
-    AnchorBuild { label: "Qwen2-MoE".into(), outputs: vec![model.forward(&tokens).expect("qwen2-moe forward")] }
+    AnchorBuild {
+        label: "Qwen2-MoE".into(),
+        outputs: vec![model.forward(&tokens).expect("qwen2-moe forward")],
+    }
 }
 
 fn build_whisper_decoder() -> AnchorBuild {
-    use fuel::lazy_whisper::{tiny_cfg, zero_weights, WhisperModel};
+    use fuel::lazy_whisper::{WhisperModel, tiny_cfg, zero_weights};
     let cfg = tiny_cfg();
     let weights = zero_weights(&cfg);
-    let model = WhisperModel { config: cfg.clone(), weights };
+    let model = WhisperModel {
+        config: cfg.clone(),
+        weights,
+    };
     let mel = vec![0.0_f32; cfg.num_mel_bins * 32];
     let enc = model.forward_encoder(&mel, 32).expect("whisper encoder");
     let tokens: Vec<u32> = vec![1, 2, 3, 4];
-    let logits = model.forward_decoder(&tokens, &enc).expect("whisper decoder");
-    AnchorBuild { label: "Whisper decoder".into(), outputs: vec![logits] }
+    let logits = model
+        .forward_decoder(&tokens, &enc)
+        .expect("whisper decoder");
+    AnchorBuild {
+        label: "Whisper decoder".into(),
+        outputs: vec![logits],
+    }
 }
 
 fn build_convnext() -> AnchorBuild {
-    use fuel::lazy_convnext::{tiny_cfg, zero_weights, ConvNextModel};
+    use fuel::lazy_convnext::{ConvNextModel, tiny_cfg, zero_weights};
     let cfg = tiny_cfg();
     let weights = zero_weights(&cfg);
-    let model = ConvNextModel { weights, config: cfg.clone() };
+    let model = ConvNextModel {
+        weights,
+        config: cfg.clone(),
+    };
     let image = vec![0.0_f32; cfg.in_channels * cfg.image_size * cfg.image_size];
-    AnchorBuild { label: "ConvNeXt".into(), outputs: vec![model.forward(&image).expect("convnext forward")] }
+    AnchorBuild {
+        label: "ConvNeXt".into(),
+        outputs: vec![model.forward(&image).expect("convnext forward")],
+    }
 }
 
 fn build_yolov8() -> AnchorBuild {
@@ -366,17 +485,26 @@ fn build_yolov8() -> AnchorBuild {
     let mut cfg = YoloV8Config::v8n();
     cfg.image_size = 64;
     let weights = YoloV8Weights::zeros(&cfg);
-    let model = YoloV8Model { config: cfg.clone(), weights };
+    let model = YoloV8Model {
+        config: cfg.clone(),
+        weights,
+    };
     let image = vec![0.0_f32; 3 * cfg.image_size * cfg.image_size];
     let raw = model.forward(&image).expect("yolov8 forward");
-    AnchorBuild { label: "YOLOv8".into(), outputs: vec![raw.cls_logits, raw.reg_dists] }
+    AnchorBuild {
+        label: "YOLOv8".into(),
+        outputs: vec![raw.cls_logits, raw.reg_dists],
+    }
 }
 
-#[allow(dead_code)]  // placeholder for future per-op breakdown printing
+#[allow(dead_code)] // placeholder for future per-op breakdown printing
 fn print_breakdown(b: &BTreeMap<(String, String), usize>) {
     let mut by_op: HashMap<&str, Vec<(&str, usize)>> = HashMap::new();
     for ((op, transition), count) in b {
-        by_op.entry(op.as_str()).or_default().push((transition.as_str(), *count));
+        by_op
+            .entry(op.as_str())
+            .or_default()
+            .push((transition.as_str(), *count));
     }
     for (op, transitions) in &by_op {
         for (transition, count) in transitions {

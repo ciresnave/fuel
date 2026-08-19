@@ -1,4 +1,4 @@
-﻿//! Tool call infrastructure for function-calling models.
+//! Tool call infrastructure for function-calling models.
 //!
 //! Provides structured parsing, dispatch, and result injection for
 //! LLM-generated tool/function calls.  The module is model-agnostic:
@@ -54,7 +54,11 @@ pub struct ParamDef {
 
 impl ParamDef {
     /// Create a required parameter definition.
-    pub fn required(name: impl Into<String>, type_hint: impl Into<String>, description: impl Into<String>) -> Self {
+    pub fn required(
+        name: impl Into<String>,
+        type_hint: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self {
         Self {
             name: name.into(),
             type_hint: type_hint.into(),
@@ -64,7 +68,11 @@ impl ParamDef {
     }
 
     /// Create an optional parameter definition.
-    pub fn optional(name: impl Into<String>, type_hint: impl Into<String>, description: impl Into<String>) -> Self {
+    pub fn optional(
+        name: impl Into<String>,
+        type_hint: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self {
         Self {
             name: name.into(),
             type_hint: type_hint.into(),
@@ -332,8 +340,13 @@ impl ToolRegistry {
                 parts.push("Parameters:\n".to_string());
                 for p in &def.parameters {
                     let req = if p.required { "required" } else { "optional" };
-                    parts.push(format!("  - {} ({}{}): {}\n", p.name, p.type_hint, 
-                        if p.required { "" } else { ", optional" }, p.description));
+                    parts.push(format!(
+                        "  - {} ({}{}): {}\n",
+                        p.name,
+                        p.type_hint,
+                        if p.required { "" } else { ", optional" },
+                        p.description
+                    ));
                     let _ = req; // used in formatting above
                 }
             }
@@ -436,9 +449,7 @@ mod tests {
         reg.register(ToolDef {
             name: "search".into(),
             description: "Search the web".into(),
-            parameters: vec![
-                ParamDef::required("query", "string", "Search query"),
-            ],
+            parameters: vec![ParamDef::required("query", "string", "Search query")],
         });
         reg
     }
@@ -524,7 +535,8 @@ mod tests {
 
     #[test]
     fn extract_tool_calls_basic() {
-        let text = r#"I'll check the weather. {"name":"get_weather","arguments":{"city":"Paris"}} Done."#;
+        let text =
+            r#"I'll check the weather. {"name":"get_weather","arguments":{"city":"Paris"}} Done."#;
         let calls = extract_tool_calls(text);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "get_weather");

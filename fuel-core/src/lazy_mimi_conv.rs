@@ -47,8 +47,8 @@
 //! - WeightNorm via [`bake_weight_norm`]; Norm::Identity / None
 //!   accepted.
 
-use crate::lazy::LazyTensor;
 use crate::Result;
+use crate::lazy::LazyTensor;
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -290,9 +290,9 @@ impl StreamableConv1dWeights {
     }
 
     fn build_bias_tensor(&self, anchor: &LazyTensor) -> Option<LazyTensor> {
-        self.bias.as_ref().map(|b| {
-            anchor.const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_channels]))
-        })
+        self.bias
+            .as_ref()
+            .map(|b| anchor.const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_channels])))
     }
 
     /// Run the streaming conv in one-shot mode. Matches eager
@@ -451,7 +451,10 @@ mod tests {
         let y = pad_last_1d(&xs, 1, 2, LazyPadMode::Constant).unwrap();
         let got = y.realize_f32();
         // Channel 0: [0, 1, 2, 3, 0, 0]; channel 1: [0, 4, 5, 6, 0, 0].
-        assert_eq!(got, vec![0.0, 1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 4.0, 5.0, 6.0, 0.0, 0.0]);
+        assert_eq!(
+            got,
+            vec![0.0, 1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 4.0, 5.0, 6.0, 0.0, 0.0]
+        );
     }
 
     #[test]
@@ -472,7 +475,9 @@ mod tests {
         // c0: [10, 10, 20, 30, 30, 30]; c1: [40, 40, 50, 60, 60, 60].
         assert_eq!(
             got,
-            vec![10.0, 10.0, 20.0, 30.0, 30.0, 30.0, 40.0, 40.0, 50.0, 60.0, 60.0, 60.0],
+            vec![
+                10.0, 10.0, 20.0, 30.0, 30.0, 30.0, 40.0, 40.0, 50.0, 60.0, 60.0, 60.0
+            ],
         );
     }
 
@@ -482,9 +487,9 @@ mod tests {
         // weight, the conv is just per-pixel matmul. Lets us
         // hand-check the forward shape + numerics.
         let weight: Arc<[f32]> = Arc::from(vec![2.0_f32, -1.0]); // (out=1, in=2, k=1)
-        let cv = StreamableConv1dWeights::new(
-            weight, None, 2, 1, 1, 1, 1, true, LazyPadMode::Constant,
-        ).unwrap();
+        let cv =
+            StreamableConv1dWeights::new(weight, None, 2, 1, 1, 1, 1, true, LazyPadMode::Constant)
+                .unwrap();
         let xs = const_xs(1, 2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
         let y = cv.forward(&xs).unwrap();
         assert_eq!(y.shape().dims(), &[1, 1, 3]);
@@ -521,7 +526,13 @@ mod tests {
     }
 
     fn assert_close(a: &[f32], b: &[f32], tol: f32, label: &str) {
-        assert_eq!(a.len(), b.len(), "{label}: length mismatch {} vs {}", a.len(), b.len());
+        assert_eq!(
+            a.len(),
+            b.len(),
+            "{label}: length mismatch {} vs {}",
+            a.len(),
+            b.len()
+        );
         for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
             assert!(
                 (x - y).abs() < tol,
@@ -536,8 +547,17 @@ mod tests {
         // Kernel=3, stride=1, in=2, out=2, causal. T=8.
         let w: Vec<f32> = (0..2 * 2 * 3).map(|i| (i as f32) * 0.1 - 0.5).collect();
         let cv = StreamableConv1dWeights::new(
-            Arc::from(w), None, 2, 2, 3, 1, 1, true, LazyPadMode::Constant,
-        ).unwrap();
+            Arc::from(w),
+            None,
+            2,
+            2,
+            3,
+            1,
+            1,
+            true,
+            LazyPadMode::Constant,
+        )
+        .unwrap();
         let x_data: Vec<f32> = (0..2 * 8).map(|i| (i as f32) * 0.05).collect();
         let xs = const_xs(1, 2, 8, &x_data);
         let one_shot = cv.forward(&xs).unwrap().realize_f32();
@@ -549,8 +569,17 @@ mod tests {
     fn streaming_chunk_by_3_equals_one_shot_kernel_3_stride_2_causal() {
         let w: Vec<f32> = (0..2 * 2 * 3).map(|i| 0.01 + (i as f32) * 0.07).collect();
         let cv = StreamableConv1dWeights::new(
-            Arc::from(w), None, 2, 2, 3, 2, 1, true, LazyPadMode::Constant,
-        ).unwrap();
+            Arc::from(w),
+            None,
+            2,
+            2,
+            3,
+            2,
+            1,
+            true,
+            LazyPadMode::Constant,
+        )
+        .unwrap();
         let x_data: Vec<f32> = (0..2 * 9).map(|i| (i as f32) * 0.03 - 0.2).collect();
         let xs = const_xs(1, 2, 9, &x_data);
         let one_shot = cv.forward(&xs).unwrap().realize_f32();

@@ -115,9 +115,7 @@ impl HfSegformerConfig {
     }
 }
 
-fn fetch_model_and_config(
-    model_name: String,
-) -> anyhow::Result<(PathBuf, HfSegformerConfig)> {
+fn fetch_model_and_config(model_name: String) -> anyhow::Result<(PathBuf, HfSegformerConfig)> {
     println!("loading model {model_name} via huggingface hub");
     let api = hf_hub::api::sync::Api::new()?;
     let api = api.model(model_name.clone());

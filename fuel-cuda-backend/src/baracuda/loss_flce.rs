@@ -52,9 +52,9 @@ use super::status::check;
 /// `1.0` (None reduction) or `1.0 / count_non_ignore` (Mean).
 #[allow(clippy::too_many_arguments)]
 pub fn per_row_f32(
-    logits: &CudaStorageBytes,        // mutated in place
-    target: &CudaStorageBytes,        // i64
-    loss_1d: &CudaStorageBytes,       // f32, n_rows
+    logits: &CudaStorageBytes,  // mutated in place
+    target: &CudaStorageBytes,  // i64
+    loss_1d: &CudaStorageBytes, // f32, n_rows
     n_rows: i32,
     v: i32,
     row_stride: i64,
@@ -62,7 +62,14 @@ pub fn per_row_f32(
     scale_per_row: f32,
 ) -> Result<()> {
     per_row_inner(
-        logits, target, loss_1d, n_rows, v, row_stride, target_ignore, scale_per_row,
+        logits,
+        target,
+        loss_1d,
+        n_rows,
+        v,
+        row_stride,
+        target_ignore,
+        scale_per_row,
         sys::baracuda_kernels_loss_flce_per_row_f32_run,
         "loss_flce_per_row_f32",
     )
@@ -71,11 +78,24 @@ pub fn per_row_f32(
 /// FLCE per-row, F16 logits.
 #[allow(clippy::too_many_arguments)]
 pub fn per_row_f16(
-    logits: &CudaStorageBytes, target: &CudaStorageBytes, loss_1d: &CudaStorageBytes,
-    n_rows: i32, v: i32, row_stride: i64, target_ignore: i64, scale_per_row: f32,
+    logits: &CudaStorageBytes,
+    target: &CudaStorageBytes,
+    loss_1d: &CudaStorageBytes,
+    n_rows: i32,
+    v: i32,
+    row_stride: i64,
+    target_ignore: i64,
+    scale_per_row: f32,
 ) -> Result<()> {
     per_row_inner(
-        logits, target, loss_1d, n_rows, v, row_stride, target_ignore, scale_per_row,
+        logits,
+        target,
+        loss_1d,
+        n_rows,
+        v,
+        row_stride,
+        target_ignore,
+        scale_per_row,
         sys::baracuda_kernels_loss_flce_per_row_f16_run,
         "loss_flce_per_row_f16",
     )
@@ -84,11 +104,24 @@ pub fn per_row_f16(
 /// FLCE per-row, BF16 logits.
 #[allow(clippy::too_many_arguments)]
 pub fn per_row_bf16(
-    logits: &CudaStorageBytes, target: &CudaStorageBytes, loss_1d: &CudaStorageBytes,
-    n_rows: i32, v: i32, row_stride: i64, target_ignore: i64, scale_per_row: f32,
+    logits: &CudaStorageBytes,
+    target: &CudaStorageBytes,
+    loss_1d: &CudaStorageBytes,
+    n_rows: i32,
+    v: i32,
+    row_stride: i64,
+    target_ignore: i64,
+    scale_per_row: f32,
 ) -> Result<()> {
     per_row_inner(
-        logits, target, loss_1d, n_rows, v, row_stride, target_ignore, scale_per_row,
+        logits,
+        target,
+        loss_1d,
+        n_rows,
+        v,
+        row_stride,
+        target_ignore,
+        scale_per_row,
         sys::baracuda_kernels_loss_flce_per_row_bf16_run,
         "loss_flce_per_row_bf16",
     )
@@ -97,18 +130,34 @@ pub fn per_row_bf16(
 /// FLCE per-row, F64 logits.
 #[allow(clippy::too_many_arguments)]
 pub fn per_row_f64(
-    logits: &CudaStorageBytes, target: &CudaStorageBytes, loss_1d: &CudaStorageBytes,
-    n_rows: i32, v: i32, row_stride: i64, target_ignore: i64, scale_per_row: f32,
+    logits: &CudaStorageBytes,
+    target: &CudaStorageBytes,
+    loss_1d: &CudaStorageBytes,
+    n_rows: i32,
+    v: i32,
+    row_stride: i64,
+    target_ignore: i64,
+    scale_per_row: f32,
 ) -> Result<()> {
     per_row_inner(
-        logits, target, loss_1d, n_rows, v, row_stride, target_ignore, scale_per_row,
+        logits,
+        target,
+        loss_1d,
+        n_rows,
+        v,
+        row_stride,
+        target_ignore,
+        scale_per_row,
         sys::baracuda_kernels_loss_flce_per_row_f64_run,
         "loss_flce_per_row_f64",
     )
 }
 
 type PerRowRun = unsafe extern "C" fn(
-    n_rows: i32, v: i32, row_stride: i64, target_ignore: i64,
+    n_rows: i32,
+    v: i32,
+    row_stride: i64,
+    target_ignore: i64,
     scale_per_row: f32,
     logits: *mut std::ffi::c_void,
     target: *const std::ffi::c_void,
@@ -133,10 +182,13 @@ fn per_row_inner(
     let stream = device.stream().as_raw() as *mut std::ffi::c_void;
     let status = unsafe {
         kernel(
-            n_rows, v, row_stride, target_ignore,
+            n_rows,
+            v,
+            row_stride,
+            target_ignore,
             scale_per_row,
-            logits.buffer().as_raw().0  as *mut std::ffi::c_void,
-            target.buffer().as_raw().0  as *const std::ffi::c_void,
+            logits.buffer().as_raw().0 as *mut std::ffi::c_void,
+            target.buffer().as_raw().0 as *const std::ffi::c_void,
             loss_1d.buffer().as_raw().0 as *mut std::ffi::c_void,
             stream,
         )
@@ -164,7 +216,7 @@ macro_rules! per_row_cast {
                 sys::$sys(
                     n_rows,
                     loss_1d.buffer().as_raw().0 as *const std::ffi::c_void,
-                    out.buffer().as_raw().0     as *mut std::ffi::c_void,
+                    out.buffer().as_raw().0 as *mut std::ffi::c_void,
                     stream,
                 )
             };
@@ -174,10 +226,26 @@ macro_rules! per_row_cast {
     };
 }
 
-per_row_cast!(per_row_cast_f32,  baracuda_kernels_loss_flce_per_row_cast_f32_run,  "f32");
-per_row_cast!(per_row_cast_f16,  baracuda_kernels_loss_flce_per_row_cast_f16_run,  "f16");
-per_row_cast!(per_row_cast_bf16, baracuda_kernels_loss_flce_per_row_cast_bf16_run, "bf16");
-per_row_cast!(per_row_cast_f64,  baracuda_kernels_loss_flce_per_row_cast_f64_run,  "f64");
+per_row_cast!(
+    per_row_cast_f32,
+    baracuda_kernels_loss_flce_per_row_cast_f32_run,
+    "f32"
+);
+per_row_cast!(
+    per_row_cast_f16,
+    baracuda_kernels_loss_flce_per_row_cast_f16_run,
+    "f16"
+);
+per_row_cast!(
+    per_row_cast_bf16,
+    baracuda_kernels_loss_flce_per_row_cast_bf16_run,
+    "bf16"
+);
+per_row_cast!(
+    per_row_cast_f64,
+    baracuda_kernels_loss_flce_per_row_cast_f64_run,
+    "f64"
+);
 
 // ─────────────────────────── scalar finalize ───────────────────────────
 //
@@ -198,9 +266,10 @@ macro_rules! scalar_finalize {
             let stream = device.stream().as_raw() as *mut std::ffi::c_void;
             let status = unsafe {
                 sys::$sys(
-                    n_rows, denom_inv,
+                    n_rows,
+                    denom_inv,
                     loss_1d.buffer().as_raw().0 as *const std::ffi::c_void,
-                    out.buffer().as_raw().0     as *mut std::ffi::c_void,
+                    out.buffer().as_raw().0 as *mut std::ffi::c_void,
                     stream,
                 )
             };
@@ -210,10 +279,26 @@ macro_rules! scalar_finalize {
     };
 }
 
-scalar_finalize!(scalar_finalize_f32,  baracuda_kernels_loss_flce_scalar_finalize_f32_run,  "f32");
-scalar_finalize!(scalar_finalize_f16,  baracuda_kernels_loss_flce_scalar_finalize_f16_run,  "f16");
-scalar_finalize!(scalar_finalize_bf16, baracuda_kernels_loss_flce_scalar_finalize_bf16_run, "bf16");
-scalar_finalize!(scalar_finalize_f64,  baracuda_kernels_loss_flce_scalar_finalize_f64_run,  "f64");
+scalar_finalize!(
+    scalar_finalize_f32,
+    baracuda_kernels_loss_flce_scalar_finalize_f32_run,
+    "f32"
+);
+scalar_finalize!(
+    scalar_finalize_f16,
+    baracuda_kernels_loss_flce_scalar_finalize_f16_run,
+    "f16"
+);
+scalar_finalize!(
+    scalar_finalize_bf16,
+    baracuda_kernels_loss_flce_scalar_finalize_bf16_run,
+    "bf16"
+);
+scalar_finalize!(
+    scalar_finalize_f64,
+    baracuda_kernels_loss_flce_scalar_finalize_f64_run,
+    "f64"
+);
 
 // ─────────────────────────── inplace_scale ───────────────────────────
 //
@@ -223,16 +308,13 @@ scalar_finalize!(scalar_finalize_f64,  baracuda_kernels_loss_flce_scalar_finaliz
 macro_rules! inplace_scale {
     ($name:ident, $sys:ident, $label:expr) => {
         #[doc = concat!("FLCE in-place scale ", $label, ": `buf[i] *= scalar` over `numel` elements.")]
-        pub fn $name(
-            buf: &CudaStorageBytes,
-            numel: i64,
-            scalar: f32,
-        ) -> Result<()> {
+        pub fn $name(buf: &CudaStorageBytes, numel: i64, scalar: f32) -> Result<()> {
             let device = buf.device().clone();
             let stream = device.stream().as_raw() as *mut std::ffi::c_void;
             let status = unsafe {
                 sys::$sys(
-                    numel, scalar,
+                    numel,
+                    scalar,
                     buf.buffer().as_raw().0 as *mut std::ffi::c_void,
                     stream,
                 )
@@ -243,10 +325,26 @@ macro_rules! inplace_scale {
     };
 }
 
-inplace_scale!(inplace_scale_f32,  baracuda_kernels_loss_flce_inplace_scale_f32_run,  "f32");
-inplace_scale!(inplace_scale_f16,  baracuda_kernels_loss_flce_inplace_scale_f16_run,  "f16");
-inplace_scale!(inplace_scale_bf16, baracuda_kernels_loss_flce_inplace_scale_bf16_run, "bf16");
-inplace_scale!(inplace_scale_f64,  baracuda_kernels_loss_flce_inplace_scale_f64_run,  "f64");
+inplace_scale!(
+    inplace_scale_f32,
+    baracuda_kernels_loss_flce_inplace_scale_f32_run,
+    "f32"
+);
+inplace_scale!(
+    inplace_scale_f16,
+    baracuda_kernels_loss_flce_inplace_scale_f16_run,
+    "f16"
+);
+inplace_scale!(
+    inplace_scale_bf16,
+    baracuda_kernels_loss_flce_inplace_scale_bf16_run,
+    "bf16"
+);
+inplace_scale!(
+    inplace_scale_f64,
+    baracuda_kernels_loss_flce_inplace_scale_f64_run,
+    "f64"
+);
 
 // ─────────────────────────── count_non_ignore ───────────────────────────
 
@@ -264,8 +362,9 @@ pub fn count_non_ignore(
     let stream = device.stream().as_raw() as *mut std::ffi::c_void;
     let status = unsafe {
         sys::baracuda_kernels_loss_flce_count_non_ignore_run(
-            bt, ignore_index,
-            target.buffer().as_raw().0    as *const std::ffi::c_void,
+            bt,
+            ignore_index,
+            target.buffer().as_raw().0 as *const std::ffi::c_void,
             count_out.buffer().as_raw().0 as *mut std::ffi::c_void,
             stream,
         )

@@ -102,8 +102,8 @@
 //! the mechanism, not the mechanism itself.
 
 use crate::registry::{
-    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps,
-    PatternMatch, SubgraphPattern, decompose_via_recipe,
+    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps, PatternMatch,
+    SubgraphPattern, decompose_via_recipe,
 };
 use crate::{Graph, NodeId};
 use fuel_ir::storage::OutputViewSpec;
@@ -120,12 +120,12 @@ use std::sync::Arc;
 pub fn entry() -> FusedOpEntry {
     FusedOpEntry {
         destructive_input: None,
-        id:           FusedOps::SELECTIVE_SCAN,
-        name:         "SelectiveScan",
-        family:       FusedOpFamily::Forward,
-        pattern:      SubgraphPattern::Callable(canonical_pattern),
+        id: FusedOps::SELECTIVE_SCAN,
+        name: "SelectiveScan",
+        family: FusedOpFamily::Forward,
+        pattern: SubgraphPattern::Callable(canonical_pattern),
         decompose,
-        backward:     BackwardKind::Decompose,
+        backward: BackwardKind::Decompose,
         shape_rule,
         dtype_rule,
         output_views: Some(output_views),
@@ -138,7 +138,8 @@ pub fn entry() -> FusedOpEntry {
 /// `output_views` and reached through `Op::View { slot: 1 }`.
 fn shape_rule(input_shapes: &[Shape], _params: &FusedOpParams) -> Shape {
     debug_assert_eq!(
-        input_shapes.len(), 5,
+        input_shapes.len(),
+        5,
         "SelectiveScan takes 5 inputs (u, delta, a, b, c)",
     );
     input_shapes[0].clone()
@@ -160,14 +161,16 @@ fn shape_rule(input_shapes: &[Shape], _params: &FusedOpParams) -> Shape {
 fn output_views(
     input_shapes: &[Shape],
     input_dtypes: &[DType],
-    _params:      &FusedOpParams,
+    _params: &FusedOpParams,
 ) -> Vec<OutputViewSpec> {
     debug_assert_eq!(
-        input_shapes.len(), 5,
+        input_shapes.len(),
+        5,
         "SelectiveScan output_views: takes 5 inputs (u, delta, a, b, c)",
     );
     debug_assert_eq!(
-        input_dtypes.len(), 5,
+        input_dtypes.len(),
+        5,
         "SelectiveScan output_views: takes 5 input dtypes",
     );
     let u_dims = input_shapes[0].dims();
@@ -176,25 +179,25 @@ fn output_views(
         u_dims.len() == 3 && a_dims.len() == 2,
         "SelectiveScan output_views: u rank=3, a rank=2 expected",
     );
-    let batch  = u_dims[0];
+    let batch = u_dims[0];
     let seqlen = u_dims[1];
-    let dim    = u_dims[2];
+    let dim = u_dims[2];
     let dstate = a_dims[1];
-    let dtype  = input_dtypes[0];
+    let dtype = input_dtypes[0];
     let y_shape = Shape::from_dims(&[batch, seqlen, dim]);
     let last_state_shape = Shape::from_dims(&[batch, dim, dstate]);
     vec![
         OutputViewSpec {
             dtype,
-            shape:  y_shape.clone(),
+            shape: y_shape.clone(),
             layout: Layout::contiguous(y_shape),
-            name:   Some("y"),
+            name: Some("y"),
         },
         OutputViewSpec {
             dtype,
-            shape:  last_state_shape.clone(),
+            shape: last_state_shape.clone(),
             layout: Layout::contiguous(last_state_shape),
-            name:   Some("last_state"),
+            name: Some("last_state"),
         },
     ]
 }
@@ -202,10 +205,7 @@ fn output_views(
 /// Dtype rule: output matches `u`'s dtype (input 0). All 5 inputs
 /// must agree at construction time (the builder validates).
 fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
-    debug_assert_eq!(
-        input_dtypes.len(), 5,
-        "SelectiveScan takes 5 inputs",
-    );
+    debug_assert_eq!(input_dtypes.len(), 5, "SelectiveScan takes 5 inputs",);
     input_dtypes[0]
 }
 
@@ -243,15 +243,19 @@ fn recipe(seqlen: usize, delta_softplus: bool) -> PatternNode {
         target_shape_rel: Some(ShapeExpr::Dims(ds)),
         ..OpAttrs::default()
     };
-    let op = |op, attrs, operands| PatternNode::Op { op, attrs, operands };
+    let op = |op, attrs, operands| PatternNode::Op {
+        op,
+        attrs,
+        operands,
+    };
     let bind = |i| PatternNode::Bind { index: i };
     // Per-step + carry shapes and the reshape mids, as Dims over the bind space.
-    let carry = || vec![batch(), dim(), dstate()];      // [b,d,s]
-    let elem_ud = || vec![batch(), dim()];              // [b,d]
-    let elem_bc = || vec![batch(), dstate()];           // [b,s]
-    let bdi = || vec![batch(), dim(), one()];           // [b,d,1]
-    let bis = || vec![batch(), one(), dstate()];        // [b,1,s]
-    let ods = || vec![one(), dim(), dstate()];          // [1,d,s]
+    let carry = || vec![batch(), dim(), dstate()]; // [b,d,s]
+    let elem_ud = || vec![batch(), dim()]; // [b,d]
+    let elem_bc = || vec![batch(), dstate()]; // [b,s]
+    let bdi = || vec![batch(), dim(), one()]; // [b,d,1]
+    let bis = || vec![batch(), one(), dstate()]; // [b,1,s]
+    let ods = || vec![one(), dim(), dstate()]; // [1,d,s]
     let reshape = |src, ds: Vec<Dim>| op(T::Reshape, dims(ds), vec![src]);
     let bcast = |src, ds: Vec<Dim>| op(T::BroadcastTo, dims(ds), vec![src]);
     // bc([b,d]->[b,d,s]) and bc([b,s]->[b,d,s]) mirror the imperative bc_from_*.
@@ -261,7 +265,16 @@ fn recipe(seqlen: usize, delta_softplus: bool) -> PatternNode {
     // slot-free identity-share collapses the two occurrences to one node, as
     // the imperative body built two separate-but-identical copies).
     let a_to_carry = || bcast(reshape(bind(2), ods()), carry());
-    let permute = |src| op(T::Permute, OpAttrs { perm: vec![1, 0, 2], ..OpAttrs::default() }, vec![src]);
+    let permute = |src| {
+        op(
+            T::Permute,
+            OpAttrs {
+                perm: vec![1, 0, 2],
+                ..OpAttrs::default()
+            },
+            vec![src],
+        )
+    };
     // A body hole carrying its DECLARED per-step shape (B2 carrier).
     let ph = |role: u8, index: u32, shape: Vec<Dim>| PatternNode::Op {
         op: T::ScanPlaceholder,
@@ -282,7 +295,14 @@ fn recipe(seqlen: usize, delta_softplus: bool) -> PatternNode {
         let ax = op(T::Abs, OpAttrs::default(), vec![bind(1)]);
         let nax = op(T::Neg, OpAttrs::default(), vec![ax]);
         let e = op(T::Exp, OpAttrs::default(), vec![nax]);
-        let e1 = op(T::AddScalar, OpAttrs { scalars: vec![1.0], ..OpAttrs::default() }, vec![e]);
+        let e1 = op(
+            T::AddScalar,
+            OpAttrs {
+                scalars: vec![1.0],
+                ..OpAttrs::default()
+            },
+            vec![e],
+        );
         let l = op(T::Log, OpAttrs::default(), vec![e1]);
         let r = op(T::Relu, OpAttrs::default(), vec![bind(1)]);
         op(T::Add, OpAttrs::default(), vec![r, l])
@@ -296,7 +316,14 @@ fn recipe(seqlen: usize, delta_softplus: bool) -> PatternNode {
 
     // ---- 3. init_carry = MulScalar(0)(a-broadcast-to-carry) — zero carry
     // without a data-carrying Const (a recipe has no device handle).
-    let init_carry = op(T::MulScalar, OpAttrs { scalars: vec![0.0], ..OpAttrs::default() }, vec![a_to_carry()]);
+    let init_carry = op(
+        T::MulScalar,
+        OpAttrs {
+            scalars: vec![0.0],
+            ..OpAttrs::default()
+        },
+        vec![a_to_carry()],
+    );
 
     // ---- 4. the body. Placeholders carry declared shapes; `a` is the const.
     let h = ph(SCAN_ROLE_CARRY, 0, carry());
@@ -306,16 +333,28 @@ fn recipe(seqlen: usize, delta_softplus: bool) -> PatternNode {
     let c_t = ph(SCAN_ROLE_ELEM, 3, elem_bc());
 
     // gate = Exp( bc(d_t) * bc(a) )
-    let da = op(T::Mul, OpAttrs::default(), vec![bc_from_ud(d_t.clone()), a_to_carry()]);
+    let da = op(
+        T::Mul,
+        OpAttrs::default(),
+        vec![bc_from_ud(d_t.clone()), a_to_carry()],
+    );
     let gate = op(T::Exp, OpAttrs::default(), vec![da]);
     // bu = bc(d_t * u_t) * bc(b_t)
     let du = op(T::Mul, OpAttrs::default(), vec![d_t, u_t]);
-    let bu = op(T::Mul, OpAttrs::default(), vec![bc_from_ud(du), bc_from_bc(b_t)]);
+    let bu = op(
+        T::Mul,
+        OpAttrs::default(),
+        vec![bc_from_ud(du), bc_from_bc(b_t)],
+    );
     // h_new = gate * h + bu   (body_new_carry)
     let gh = op(T::Mul, OpAttrs::default(), vec![gate, h]);
     let h_new = op(T::Add, OpAttrs::default(), vec![gh, bu]);
     // y_t = Reshape([b,d])( ReduceSumTo([b,d,1])( h_new * bc(c_t) ) )   (body_y)
-    let hc = op(T::Mul, OpAttrs::default(), vec![h_new.clone(), bc_from_bc(c_t)]);
+    let hc = op(
+        T::Mul,
+        OpAttrs::default(),
+        vec![h_new.clone(), bc_from_bc(c_t)],
+    );
     let y_keep = op(T::ReduceSumTo, dims(bdi()), vec![hc]);
     let y_t = op(T::Reshape, dims(elem_ud()), vec![y_keep]);
 
@@ -336,8 +375,22 @@ fn recipe(seqlen: usize, delta_softplus: bool) -> PatternNode {
 
     // ---- 6. project slot 0 (stacked ys [seqlen,batch,dim]) + transpose the
     // seqlen/batch axes back to y [batch,seqlen,dim].
-    let ys_raw = op(T::View, OpAttrs { view_slot: Some(0), ..OpAttrs::default() }, vec![scan]);
-    op(T::Permute, OpAttrs { perm: vec![1, 0, 2], ..OpAttrs::default() }, vec![ys_raw])
+    let ys_raw = op(
+        T::View,
+        OpAttrs {
+            view_slot: Some(0),
+            ..OpAttrs::default()
+        },
+        vec![scan],
+    );
+    op(
+        T::Permute,
+        OpAttrs {
+            perm: vec![1, 0, 2],
+            ..OpAttrs::default()
+        },
+        vec![ys_raw],
+    )
 }
 
 /// Total decomposition of SelectiveScan to an [`crate::Op::Scan`] recipe —
@@ -446,8 +499,16 @@ mod tests {
             let b_shape = graph.node(n.inputs[3]).shape.clone();
             let c_shape = graph.node(n.inputs[4]).shape.clone();
             (
-                n.inputs[0], n.inputs[1], n.inputs[2], n.inputs[3], n.inputs[4],
-                u_shape, a_shape, b_shape, c_shape, n.dtype,
+                n.inputs[0],
+                n.inputs[1],
+                n.inputs[2],
+                n.inputs[3],
+                n.inputs[4],
+                u_shape,
+                a_shape,
+                b_shape,
+                c_shape,
+                n.dtype,
             )
         };
         let u_dims = u_shape.dims();
@@ -466,33 +527,93 @@ mod tests {
         let bc_from_ud = |graph: &mut Graph, src: NodeId| -> NodeId {
             let mid = Shape::from_dims(&[batch, dim, 1]);
             let full = Shape::from_dims(&[batch, dim, dstate]);
-            let re = graph.push(Node { op: Op::Reshape(mid.clone()), inputs: vec![src], shape: mid, dtype });
-            graph.push(Node { op: Op::BroadcastTo(full.clone()), inputs: vec![re], shape: full, dtype })
+            let re = graph.push(Node {
+                op: Op::Reshape(mid.clone()),
+                inputs: vec![src],
+                shape: mid,
+                dtype,
+            });
+            graph.push(Node {
+                op: Op::BroadcastTo(full.clone()),
+                inputs: vec![re],
+                shape: full,
+                dtype,
+            })
         };
         let bc_from_bc = |graph: &mut Graph, src: NodeId| -> NodeId {
             let mid = Shape::from_dims(&[batch, 1, dstate]);
             let full = Shape::from_dims(&[batch, dim, dstate]);
-            let re = graph.push(Node { op: Op::Reshape(mid.clone()), inputs: vec![src], shape: mid, dtype });
-            graph.push(Node { op: Op::BroadcastTo(full.clone()), inputs: vec![re], shape: full, dtype })
+            let re = graph.push(Node {
+                op: Op::Reshape(mid.clone()),
+                inputs: vec![src],
+                shape: mid,
+                dtype,
+            });
+            graph.push(Node {
+                op: Op::BroadcastTo(full.clone()),
+                inputs: vec![re],
+                shape: full,
+                dtype,
+            })
         };
 
         let delta_shape = Shape::from_dims(&[batch, seqlen, dim]);
         let d_full = if !delta_softplus {
             delta_id
         } else {
-            let ax = graph.push(Node { op: Op::Abs, inputs: vec![delta_id], shape: delta_shape.clone(), dtype });
-            let nax = graph.push(Node { op: Op::Neg, inputs: vec![ax], shape: delta_shape.clone(), dtype });
-            let e = graph.push(Node { op: Op::Exp, inputs: vec![nax], shape: delta_shape.clone(), dtype });
-            let e1 = graph.push(Node { op: Op::AddScalar(1.0), inputs: vec![e], shape: delta_shape.clone(), dtype });
-            let l = graph.push(Node { op: Op::Log, inputs: vec![e1], shape: delta_shape.clone(), dtype });
-            let r = graph.push(Node { op: Op::Relu, inputs: vec![delta_id], shape: delta_shape.clone(), dtype });
-            graph.push(Node { op: Op::Add, inputs: vec![r, l], shape: delta_shape.clone(), dtype })
+            let ax = graph.push(Node {
+                op: Op::Abs,
+                inputs: vec![delta_id],
+                shape: delta_shape.clone(),
+                dtype,
+            });
+            let nax = graph.push(Node {
+                op: Op::Neg,
+                inputs: vec![ax],
+                shape: delta_shape.clone(),
+                dtype,
+            });
+            let e = graph.push(Node {
+                op: Op::Exp,
+                inputs: vec![nax],
+                shape: delta_shape.clone(),
+                dtype,
+            });
+            let e1 = graph.push(Node {
+                op: Op::AddScalar(1.0),
+                inputs: vec![e],
+                shape: delta_shape.clone(),
+                dtype,
+            });
+            let l = graph.push(Node {
+                op: Op::Log,
+                inputs: vec![e1],
+                shape: delta_shape.clone(),
+                dtype,
+            });
+            let r = graph.push(Node {
+                op: Op::Relu,
+                inputs: vec![delta_id],
+                shape: delta_shape.clone(),
+                dtype,
+            });
+            graph.push(Node {
+                op: Op::Add,
+                inputs: vec![r, l],
+                shape: delta_shape.clone(),
+                dtype,
+            })
         };
 
         let ud_ser_shape = Shape::from_dims(&[seqlen, batch, dim]);
         let bc_ser_shape = Shape::from_dims(&[seqlen, batch, dstate]);
         let permute3 = |graph: &mut Graph, src: NodeId, out: Shape| -> NodeId {
-            graph.push(Node { op: Op::Permute(vec![1, 0, 2]), inputs: vec![src], shape: out, dtype })
+            graph.push(Node {
+                op: Op::Permute(vec![1, 0, 2]),
+                inputs: vec![src],
+                shape: out,
+                dtype,
+            })
         };
         let u_ser = permute3(graph, u_id, ud_ser_shape.clone());
         let d_ser = permute3(graph, d_full, ud_ser_shape.clone());
@@ -500,52 +621,156 @@ mod tests {
         let c_ser = permute3(graph, c_id, bc_ser_shape.clone());
 
         let a_re3 = graph.push(Node {
-            op: Op::Reshape(Shape::from_dims(&[1, dim, dstate])), inputs: vec![a_id],
-            shape: Shape::from_dims(&[1, dim, dstate]), dtype,
+            op: Op::Reshape(Shape::from_dims(&[1, dim, dstate])),
+            inputs: vec![a_id],
+            shape: Shape::from_dims(&[1, dim, dstate]),
+            dtype,
         });
         let a_bc = graph.push(Node {
-            op: Op::BroadcastTo(carry_shape.clone()), inputs: vec![a_re3], shape: carry_shape.clone(), dtype,
+            op: Op::BroadcastTo(carry_shape.clone()),
+            inputs: vec![a_re3],
+            shape: carry_shape.clone(),
+            dtype,
         });
         let init_carry = graph.push(Node {
-            op: Op::MulScalar(0.0), inputs: vec![a_bc], shape: carry_shape.clone(), dtype,
+            op: Op::MulScalar(0.0),
+            inputs: vec![a_bc],
+            shape: carry_shape.clone(),
+            dtype,
         });
 
-        let h = graph.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: carry_shape.clone(), dtype });
-        let u_t = graph.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Elem, index: 0 }, inputs: vec![], shape: elem_ud.clone(), dtype });
-        let d_t = graph.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Elem, index: 1 }, inputs: vec![], shape: elem_ud.clone(), dtype });
-        let b_t = graph.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Elem, index: 2 }, inputs: vec![], shape: Shape::from_dims(&[batch, dstate]), dtype });
-        let c_t = graph.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Elem, index: 3 }, inputs: vec![], shape: Shape::from_dims(&[batch, dstate]), dtype });
+        let h = graph.push(Node {
+            op: Op::ScanPlaceholder {
+                role: ScanRole::Carry,
+                index: 0,
+            },
+            inputs: vec![],
+            shape: carry_shape.clone(),
+            dtype,
+        });
+        let u_t = graph.push(Node {
+            op: Op::ScanPlaceholder {
+                role: ScanRole::Elem,
+                index: 0,
+            },
+            inputs: vec![],
+            shape: elem_ud.clone(),
+            dtype,
+        });
+        let d_t = graph.push(Node {
+            op: Op::ScanPlaceholder {
+                role: ScanRole::Elem,
+                index: 1,
+            },
+            inputs: vec![],
+            shape: elem_ud.clone(),
+            dtype,
+        });
+        let b_t = graph.push(Node {
+            op: Op::ScanPlaceholder {
+                role: ScanRole::Elem,
+                index: 2,
+            },
+            inputs: vec![],
+            shape: Shape::from_dims(&[batch, dstate]),
+            dtype,
+        });
+        let c_t = graph.push(Node {
+            op: Op::ScanPlaceholder {
+                role: ScanRole::Elem,
+                index: 3,
+            },
+            inputs: vec![],
+            shape: Shape::from_dims(&[batch, dstate]),
+            dtype,
+        });
 
         let d_bc = bc_from_ud(graph, d_t);
         let a_body = {
             let mid = Shape::from_dims(&[1, dim, dstate]);
-            let re = graph.push(Node { op: Op::Reshape(mid.clone()), inputs: vec![a_id], shape: mid, dtype });
-            graph.push(Node { op: Op::BroadcastTo(carry_shape.clone()), inputs: vec![re], shape: carry_shape.clone(), dtype })
+            let re = graph.push(Node {
+                op: Op::Reshape(mid.clone()),
+                inputs: vec![a_id],
+                shape: mid,
+                dtype,
+            });
+            graph.push(Node {
+                op: Op::BroadcastTo(carry_shape.clone()),
+                inputs: vec![re],
+                shape: carry_shape.clone(),
+                dtype,
+            })
         };
-        let da = graph.push(Node { op: Op::Mul, inputs: vec![d_bc, a_body], shape: carry_shape.clone(), dtype });
-        let gate = graph.push(Node { op: Op::Exp, inputs: vec![da], shape: carry_shape.clone(), dtype });
+        let da = graph.push(Node {
+            op: Op::Mul,
+            inputs: vec![d_bc, a_body],
+            shape: carry_shape.clone(),
+            dtype,
+        });
+        let gate = graph.push(Node {
+            op: Op::Exp,
+            inputs: vec![da],
+            shape: carry_shape.clone(),
+            dtype,
+        });
 
-        let du = graph.push(Node { op: Op::Mul, inputs: vec![d_t, u_t], shape: elem_ud.clone(), dtype });
+        let du = graph.push(Node {
+            op: Op::Mul,
+            inputs: vec![d_t, u_t],
+            shape: elem_ud.clone(),
+            dtype,
+        });
         let du_bc = bc_from_ud(graph, du);
         let b_body = bc_from_bc(graph, b_t);
-        let bu = graph.push(Node { op: Op::Mul, inputs: vec![du_bc, b_body], shape: carry_shape.clone(), dtype });
+        let bu = graph.push(Node {
+            op: Op::Mul,
+            inputs: vec![du_bc, b_body],
+            shape: carry_shape.clone(),
+            dtype,
+        });
 
-        let gh = graph.push(Node { op: Op::Mul, inputs: vec![gate, h], shape: carry_shape.clone(), dtype });
-        let h_new = graph.push(Node { op: Op::Add, inputs: vec![gh, bu], shape: carry_shape.clone(), dtype });
+        let gh = graph.push(Node {
+            op: Op::Mul,
+            inputs: vec![gate, h],
+            shape: carry_shape.clone(),
+            dtype,
+        });
+        let h_new = graph.push(Node {
+            op: Op::Add,
+            inputs: vec![gh, bu],
+            shape: carry_shape.clone(),
+            dtype,
+        });
 
         let c_body = bc_from_bc(graph, c_t);
-        let hc = graph.push(Node { op: Op::Mul, inputs: vec![h_new, c_body], shape: carry_shape.clone(), dtype });
+        let hc = graph.push(Node {
+            op: Op::Mul,
+            inputs: vec![h_new, c_body],
+            shape: carry_shape.clone(),
+            dtype,
+        });
         let y_keep_shape = Shape::from_dims(&[batch, dim, 1]);
         let y_keep = graph.push(Node {
-            op: Op::ReduceSumTo(y_keep_shape.clone()), inputs: vec![hc], shape: y_keep_shape, dtype,
+            op: Op::ReduceSumTo(y_keep_shape.clone()),
+            inputs: vec![hc],
+            shape: y_keep_shape,
+            dtype,
         });
         let y_t = graph.push(Node {
-            op: Op::Reshape(elem_ud.clone()), inputs: vec![y_keep], shape: elem_ud.clone(), dtype,
+            op: Op::Reshape(elem_ud.clone()),
+            inputs: vec![y_keep],
+            shape: elem_ud.clone(),
+            dtype,
         });
 
         let ys_stacked_shape = Shape::from_dims(&[seqlen, batch, dim]);
         let scan = graph.push(Node {
-            op: Op::Scan { n_xs: 4, bound: seqlen, emit: ScanEmit::All, early_exit: None },
+            op: Op::Scan {
+                n_xs: 4,
+                bound: seqlen,
+                emit: ScanEmit::All,
+                early_exit: None,
+            },
             inputs: vec![init_carry, u_ser, d_ser, b_ser, c_ser, a_id, h_new, y_t],
             shape: ys_stacked_shape.clone(),
             dtype,
@@ -559,11 +784,17 @@ mod tests {
         }
 
         let ys_raw = graph.push(Node {
-            op: Op::View { slot: 0 }, inputs: vec![scan], shape: ys_stacked_shape, dtype,
+            op: Op::View { slot: 0 },
+            inputs: vec![scan],
+            shape: ys_stacked_shape,
+            dtype,
         });
         let y_shape = Shape::from_dims(&[batch, seqlen, dim]);
         let y = graph.push(Node {
-            op: Op::Permute(vec![1, 0, 2]), inputs: vec![ys_raw], shape: y_shape, dtype,
+            op: Op::Permute(vec![1, 0, 2]),
+            inputs: vec![ys_raw],
+            shape: y_shape,
+            dtype,
         });
 
         let input_shapes = [u_shape, delta_shape, a_shape, b_shape, c_shape];
@@ -588,9 +819,18 @@ mod tests {
         let na = g.node(a);
         let nb = g.node(b);
         assert_eq!(na.op, nb.op, "op mismatch: {:?} vs {:?}", na.op, nb.op);
-        assert_eq!(na.shape, nb.shape, "shape mismatch at {:?}: {:?} vs {:?}", na.op, na.shape, nb.shape);
+        assert_eq!(
+            na.shape, nb.shape,
+            "shape mismatch at {:?}: {:?} vs {:?}",
+            na.op, na.shape, nb.shape
+        );
         assert_eq!(na.dtype, nb.dtype, "dtype mismatch at {:?}", na.op);
-        assert_eq!(na.inputs.len(), nb.inputs.len(), "arity mismatch at {:?}", na.op);
+        assert_eq!(
+            na.inputs.len(),
+            nb.inputs.len(),
+            "arity mismatch at {:?}",
+            na.op
+        );
         for (&ia, &ib) in na.inputs.iter().zip(nb.inputs.iter()) {
             assert_structural_eq(g, ia, ib);
         }
@@ -598,9 +838,21 @@ mod tests {
 
     /// Build a fused SELECTIVE_SCAN node over `u,delta [b,seq,dim]`,
     /// `a [dim,dstate]`, `b,c [b,seq,dstate]`. Returns the fused NodeId.
-    fn fused_node(g: &mut Graph, batch: usize, seqlen: usize, dim: usize, dstate: usize, softplus: bool) -> NodeId {
+    fn fused_node(
+        g: &mut Graph,
+        batch: usize,
+        seqlen: usize,
+        dim: usize,
+        dstate: usize,
+        softplus: bool,
+    ) -> NodeId {
         let mk = |g: &mut Graph, dims: &[usize]| {
-            g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(dims), dtype: DType::F32 })
+            g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(dims),
+                dtype: DType::F32,
+            })
         };
         let u = mk(g, &[batch, seqlen, dim]);
         let delta = mk(g, &[batch, seqlen, dim]);
@@ -608,7 +860,12 @@ mod tests {
         let b = mk(g, &[batch, seqlen, dstate]);
         let c = mk(g, &[batch, seqlen, dstate]);
         g.push(Node {
-            op: Op::Fused(FusedOps::SELECTIVE_SCAN, FusedOpParams::SelectiveScan { delta_softplus: softplus }),
+            op: Op::Fused(
+                FusedOps::SELECTIVE_SCAN,
+                FusedOpParams::SelectiveScan {
+                    delta_softplus: softplus,
+                },
+            ),
             inputs: vec![u, delta, a, b, c],
             shape: Shape::from_dims(&[batch, seqlen, dim]),
             dtype: DType::F32,
@@ -624,18 +881,28 @@ mod tests {
     fn selective_scan_recipe_decompose_is_polymorphic_and_matches_frozen_legacy() {
         for softplus in [false, true] {
             for (batch, seqlen, dim, dstate) in [(1usize, 3, 2, 4), (2, 4, 3, 2)] {
-                let params = FusedOpParams::SelectiveScan { delta_softplus: softplus };
+                let params = FusedOpParams::SelectiveScan {
+                    delta_softplus: softplus,
+                };
                 let mut g = Graph::new();
                 let fused = fused_node(&mut g, batch, seqlen, dim, dstate, softplus);
                 let out_sh = g.node(fused).shape.clone();
 
                 let new_root = decompose(&mut g, fused, &params);
-                assert_ne!(new_root, fused, "recipe decompose fires (softplus={softplus}, [{batch},{seqlen},{dim},{dstate}])");
-                assert_eq!(g.node(new_root).shape, out_sh, "output y = [batch,seqlen,dim]");
+                assert_ne!(
+                    new_root, fused,
+                    "recipe decompose fires (softplus={softplus}, [{batch},{seqlen},{dim},{dstate}])"
+                );
+                assert_eq!(
+                    g.node(new_root).shape,
+                    out_sh,
+                    "output y = [batch,seqlen,dim]"
+                );
                 assert_eq!(g.node(new_root).dtype, DType::F32);
                 // The re-attached 2-slot bundle carries slot 1 (last_state).
                 assert_eq!(
-                    g.output_views(new_root).map(|v| v.len()), Some(2),
+                    g.output_views(new_root).map(|v| v.len()),
+                    Some(2),
                     "SelectiveScan 2-slot output_views re-attached on the recipe root",
                 );
 

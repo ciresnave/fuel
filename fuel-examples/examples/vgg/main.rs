@@ -5,12 +5,8 @@ extern crate intel_mkl_src;
 extern crate accelerate_src;
 
 use clap::{Parser, ValueEnum};
-use fuel::lazy::{
-    load_tensor_as_f32, load_transposed_matrix, LazyTensor, WeightStorage,
-};
-use fuel::lazy_vgg::{
-    VggConfig, VggConvWeights, VggHeadFc, VggModel, VggVariant, VggWeights,
-};
+use fuel::lazy::{LazyTensor, WeightStorage, load_tensor_as_f32, load_transposed_matrix};
+use fuel::lazy_vgg::{VggConfig, VggConvWeights, VggHeadFc, VggModel, VggVariant, VggWeights};
 use fuel::safetensors::MmapedSafetensors;
 use fuel::{Device, Shape};
 use std::sync::Arc;
@@ -51,9 +47,7 @@ impl Which {
             // Vgg16: blocks [2,2,3,3,3]
             Self::Vgg16 => vec![0, 2, 5, 7, 10, 12, 14, 17, 19, 21, 24, 26, 28],
             // Vgg19: blocks [2,2,4,4,4]
-            Self::Vgg19 => vec![
-                0, 2, 5, 7, 10, 12, 14, 16, 19, 21, 23, 25, 28, 30, 32, 34,
-            ],
+            Self::Vgg19 => vec![0, 2, 5, 7, 10, 12, 14, 16, 19, 21, 23, 25, 28, 30, 32, 34],
         }
     }
 }
@@ -88,9 +82,12 @@ fn load_vgg_weights(
     let feature_ids = which.conv_feature_indices();
 
     let total_convs: usize = convs_per_block.iter().sum();
-    assert_eq!(feature_ids.len(), total_convs,
+    assert_eq!(
+        feature_ids.len(),
+        total_convs,
         "feature-index list ({}) doesn't match total conv count ({total_convs})",
-        feature_ids.len());
+        feature_ids.len()
+    );
 
     let mut blocks: Vec<Vec<VggConvWeights>> = Vec::with_capacity(5);
     let mut c_prev = 3_usize;

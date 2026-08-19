@@ -19,9 +19,9 @@
 //!
 //! v1 scope: F32, batch == 1, forward-only inference.
 
+use crate::Result;
 use crate::lazy::{LazyTensor, WeightStorage};
 use crate::lazy_lstm::{LstmCellWeights, LstmStack};
-use crate::Result;
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -74,8 +74,14 @@ impl SpeakerEncoderModel {
         let cfg = &self.config;
         let dims = mels.shape();
         let dims = dims.dims();
-        assert_eq!(dims.len(), 3, "speaker-encoder input must be rank 3 [1, T, D]");
-        let b = dims[0]; let t = dims[1]; let d = dims[2];
+        assert_eq!(
+            dims.len(),
+            3,
+            "speaker-encoder input must be rank 3 [1, T, D]"
+        );
+        let b = dims[0];
+        let t = dims[1];
+        let d = dims[2];
         assert_eq!(b, 1, "v1 supports batch == 1");
         assert_eq!(d, cfg.mel_n_channels);
 
@@ -87,7 +93,8 @@ impl SpeakerEncoderModel {
         let e = cfg.model_embedding_size;
         let proj = self.weights.linear.apply_linear(&lstm_out, h, e)?;
         let bias = mels.const_f32_like(
-            Arc::clone(&self.weights.linear_bias), Shape::from_dims(&[e]),
+            Arc::clone(&self.weights.linear_bias),
+            Shape::from_dims(&[e]),
         );
         let with_bias = proj.broadcast_add(&bias)?;
         let activated = with_bias.relu();
@@ -97,9 +104,7 @@ impl SpeakerEncoderModel {
     }
 }
 
-fn l2_normalize_last(
-    x: &LazyTensor, b: usize, t: usize, e: usize,
-) -> Result<LazyTensor> {
+fn l2_normalize_last(x: &LazyTensor, b: usize, t: usize, e: usize) -> Result<LazyTensor> {
     let _ = (b, t, e);
     x.l2_normalize(2_usize, 0.0)
 }
@@ -140,40 +145,36 @@ impl SpeakerEncoderWeights {
         let mut layers: Vec<LstmCellWeights> = Vec::with_capacity(cfg.model_num_layers);
         for li in 0..cfg.model_num_layers {
             let in_dim = if li == 0 { cfg.mel_n_channels } else { h };
-            let w_ih = load_tensor_as_f32(
-                st, &format!("lstm.{li}.weight_ih_l{li}"),
-            )?;
-            let w_hh = load_tensor_as_f32(
-                st, &format!("lstm.{li}.weight_hh_l{li}"),
-            )?;
-            let b_ih = load_tensor_as_f32(
-                st, &format!("lstm.{li}.bias_ih_l{li}"),
-            )?;
-            let b_hh = load_tensor_as_f32(
-                st, &format!("lstm.{li}.bias_hh_l{li}"),
-            )?;
+            let w_ih = load_tensor_as_f32(st, &format!("lstm.{li}.weight_ih_l{li}"))?;
+            let w_hh = load_tensor_as_f32(st, &format!("lstm.{li}.weight_hh_l{li}"))?;
+            let b_ih = load_tensor_as_f32(st, &format!("lstm.{li}.bias_ih_l{li}"))?;
+            let b_hh = load_tensor_as_f32(st, &format!("lstm.{li}.bias_hh_l{li}"))?;
             if w_ih.len() != four_h * in_dim {
                 crate::bail!(
                     "lstm.{li}.weight_ih_l{li}: {} elts, expected {}",
-                    w_ih.len(), four_h * in_dim,
+                    w_ih.len(),
+                    four_h * in_dim,
                 );
             }
             if w_hh.len() != four_h * h {
                 crate::bail!(
                     "lstm.{li}.weight_hh_l{li}: {} elts, expected {}",
-                    w_hh.len(), four_h * h,
+                    w_hh.len(),
+                    four_h * h,
                 );
             }
             if b_ih.len() != four_h {
                 crate::bail!(
                     "lstm.{li}.bias_ih_l{li}: {} elts, expected {}",
-                    b_ih.len(), four_h,
+                    b_ih.len(),
+                    four_h,
                 );
             }
             if b_hh.len() != four_h {
                 crate::bail!(
                     "lstm.{li}.bias_hh_l{li}: {} elts, expected {}",
-                    b_hh.len(), four_h,
+                    b_hh.len(),
+                    four_h,
                 );
             }
             layers.push(LstmCellWeights {
@@ -191,15 +192,17 @@ impl SpeakerEncoderWeights {
         // `[out=embedding, in=hidden]`; we want the `[in, out]`
         // contiguous layout that `apply_linear(_, hidden, embedding)`
         // consumes.
-        let linear = load_transposed_matrix_preserve_dtype(
-            st, "linear.weight", e, h,
-        )?;
+        let linear = load_transposed_matrix_preserve_dtype(st, "linear.weight", e, h)?;
         let linear_bias: Arc<[f32]> = load_tensor_as_f32(st, "linear.bias")
             .ok()
             .map(Arc::<[f32]>::from)
             .unwrap_or_else(|| Arc::<[f32]>::from(vec![0.0_f32; e]));
 
-        Ok(Self { lstm, linear, linear_bias })
+        Ok(Self {
+            lstm,
+            linear,
+            linear_bias,
+        })
     }
 }
 
@@ -253,16 +256,27 @@ mod tests {
         let mut nb = rng_seed(2026);
         let mut layers = Vec::with_capacity(cfg.model_num_layers);
         // First layer: mel_n_channels → hidden. Remaining: hidden → hidden.
-        layers.push(build_lstm_layer(cfg.mel_n_channels, cfg.model_hidden_size, &mut nb));
+        layers.push(build_lstm_layer(
+            cfg.mel_n_channels,
+            cfg.model_hidden_size,
+            &mut nb,
+        ));
         for _ in 1..cfg.model_num_layers {
-            layers.push(build_lstm_layer(cfg.model_hidden_size, cfg.model_hidden_size, &mut nb));
+            layers.push(build_lstm_layer(
+                cfg.model_hidden_size,
+                cfg.model_hidden_size,
+                &mut nb,
+            ));
         }
         let weights = SpeakerEncoderWeights {
             lstm: LstmStack { layers },
             linear: ws(cfg.model_hidden_size * cfg.model_embedding_size, &mut nb),
             linear_bias: vec_of(cfg.model_embedding_size, &mut nb),
         };
-        SpeakerEncoderModel { config: cfg, weights }
+        SpeakerEncoderModel {
+            config: cfg,
+            weights,
+        }
     }
 
     #[test]
@@ -271,13 +285,17 @@ mod tests {
         let cfg = &model.config;
         let t = 5;
         let mels = LazyTensor::from_f32(
-            (0..(1 * t * cfg.mel_n_channels)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
+            (0..(1 * t * cfg.mel_n_channels))
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
             Shape::from_dims(&[1, t, cfg.mel_n_channels]),
             &Device::cpu(),
         );
         let out = model.forward(&mels).unwrap();
         assert_eq!(out.shape().dims(), &[1, t, cfg.model_embedding_size]);
-        for &v in &out.realize_f32() { assert!(v.is_finite()); }
+        for &v in &out.realize_f32() {
+            assert!(v.is_finite());
+        }
     }
 
     #[test]
@@ -286,7 +304,9 @@ mod tests {
         let cfg = &model.config;
         let t = 4;
         let mels = LazyTensor::from_f32(
-            (0..(1 * t * cfg.mel_n_channels)).map(|i| (i as f32) * 0.01 + 0.1).collect::<Vec<_>>(),
+            (0..(1 * t * cfg.mel_n_channels))
+                .map(|i| (i as f32) * 0.01 + 0.1)
+                .collect::<Vec<_>>(),
             Shape::from_dims(&[1, t, cfg.mel_n_channels]),
             &Device::cpu(),
         );
@@ -303,8 +323,10 @@ mod tests {
             // hidden values clipped) — in that case the L2-norm is
             // also zero and we can't sensibly check. Skip those.
             if norm > 1e-7 {
-                assert!((norm - 1.0).abs() < 1e-5,
-                    "row {row} norm = {norm}, expected ~1.0");
+                assert!(
+                    (norm - 1.0).abs() < 1e-5,
+                    "row {row} norm = {norm}, expected ~1.0"
+                );
             }
         }
     }

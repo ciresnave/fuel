@@ -9,7 +9,7 @@ use clap::Parser;
 use image::{DynamicImage, ImageBuffer};
 
 use fuel::lazy_yolov3::{
-    decode_and_nms, YoloV3Config, YoloV3Detection, YoloV3Model, YoloV3NmsConfig, YoloV3Weights,
+    YoloV3Config, YoloV3Detection, YoloV3Model, YoloV3NmsConfig, YoloV3Weights, decode_and_nms,
 };
 use fuel::safetensors::MmapedSafetensors;
 

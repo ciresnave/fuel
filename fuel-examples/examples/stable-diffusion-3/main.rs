@@ -47,13 +47,11 @@ use tokenizers::Tokenizer;
 
 use fuel::lazy::LazyTensor;
 use fuel::lazy_mmdit::{MmDitFullConfig, MmDitFullModel, MmDitFullWeights};
+use fuel::lazy_sd_samplers_sd3::{Sd3Denoiser, Sd3SamplerConfig, flow_match_euler_sample};
 use fuel::lazy_sd3_text_encoder::{
-    Sd3TripleClip, Sd3TripleClipConfig, Sd3TripleClipWeights, SD3_MAX_POSITION_EMBEDDINGS,
+    SD3_MAX_POSITION_EMBEDDINGS, Sd3TripleClip, Sd3TripleClipConfig, Sd3TripleClipWeights,
 };
 use fuel::lazy_sd3_vae::{SdVae3Config, SdVae3Decoder, SdVae3DecoderWeights};
-use fuel::lazy_sd_samplers_sd3::{
-    flow_match_euler_sample, Sd3Denoiser, Sd3SamplerConfig,
-};
 use fuel::safetensors::MmapedSafetensors;
 use fuel::{Device, Shape};
 
@@ -132,7 +130,8 @@ impl<'a> Sd3Denoiser for MmDitFullDenoiser<'a> {
         context: &LazyTensor,
         skip_layers: Option<&[usize]>,
     ) -> fuel::Result<LazyTensor> {
-        self.model.forward(latent, timestep, y, context, skip_layers)
+        self.model
+            .forward(latent, timestep, y, context, skip_layers)
     }
 }
 
@@ -140,11 +139,7 @@ impl<'a> Sd3Denoiser for MmDitFullDenoiser<'a> {
 /// using `pad_id` (CLIP) or 0 (T5). Matches the eager
 /// `StableDiffusion3TripleClipWithTokenizer::encode_text_to_embedding`
 /// convention: tokenizers either truncate to 76 + EOS or pad to 77.
-fn tokenize_padded(
-    tokenizer: &Tokenizer,
-    prompt: &str,
-    pad_id: u32,
-) -> Result<Vec<u32>> {
+fn tokenize_padded(tokenizer: &Tokenizer, prompt: &str, pad_id: u32) -> Result<Vec<u32>> {
     let mut tokens = tokenizer
         .encode(prompt, true)
         .map_err(E::msg)?
@@ -174,8 +169,7 @@ fn deterministic_noise(seed: u64, n: usize) -> Vec<f32> {
         (state >> 32) as u32
     };
     let mut next_f32 = || -> f32 {
-        let u = (next_u32() as f64 / u32::MAX as f64)
-            .clamp(1e-9, 1.0 - 1e-9);
+        let u = (next_u32() as f64 / u32::MAX as f64).clamp(1e-9, 1.0 - 1e-9);
         u as f32
     };
     let mut out = Vec::with_capacity(n);
@@ -230,9 +224,7 @@ fn main() -> Result<()> {
     } = args;
 
     if !width.is_multiple_of(16) || !height.is_multiple_of(16) {
-        anyhow::bail!(
-            "--width / --height must be multiples of 16 (got {width}×{height})"
-        );
+        anyhow::bail!("--width / --height must be multiples of 16 (got {width}×{height})");
     }
 
     let device = Device::cpu();
@@ -304,8 +296,7 @@ fn main() -> Result<()> {
     let clip_g_tokens = clip_l_tokens.clone();
     let t5_tokens = tokenize_padded(&t5_tokenizer, &prompt, t5_pad_id)?;
 
-    let neg_clip_l_tokens =
-        tokenize_padded(&clip_tokenizer, &negative_prompt, clip_pad_id)?;
+    let neg_clip_l_tokens = tokenize_padded(&clip_tokenizer, &negative_prompt, clip_pad_id)?;
     let neg_clip_g_tokens = neg_clip_l_tokens.clone();
     let neg_t5_tokens = tokenize_padded(&t5_tokenizer, &negative_prompt, t5_pad_id)?;
 
@@ -315,8 +306,8 @@ fn main() -> Result<()> {
         .map_err(|e| E::msg(format!("mmap clip_l: {e}")))?;
     let st_clip_g = unsafe { MmapedSafetensors::new(&clip_g_file) }
         .map_err(|e| E::msg(format!("mmap clip_g: {e}")))?;
-    let st_t5 = unsafe { MmapedSafetensors::new(&t5_file) }
-        .map_err(|e| E::msg(format!("mmap t5: {e}")))?;
+    let st_t5 =
+        unsafe { MmapedSafetensors::new(&t5_file) }.map_err(|e| E::msg(format!("mmap t5: {e}")))?;
 
     let triple_cfg = Sd3TripleClipConfig::sd3_medium();
     let triple_weights =
@@ -384,9 +375,7 @@ fn main() -> Result<()> {
 
     // ---- Sample -----------------------------------------------------
     let denoiser = MmDitFullDenoiser { model: &mmdit };
-    println!(
-        "Sampling {num_steps} steps (CFG={guidance_scale}, SLG={slg_scale})…",
-    );
+    println!("Sampling {num_steps} steps (CFG={guidance_scale}, SLG={slg_scale})…",);
     let start_time = std::time::Instant::now();
     let final_latent = flow_match_euler_sample(
         &denoiser,
@@ -450,8 +439,7 @@ fn main() -> Result<()> {
         height: h,
         width: w,
     };
-    fuel_examples::save_image(&out, &output_png)
-        .map_err(|e| E::msg(format!("save png: {e}")))?;
+    fuel_examples::save_image(&out, &output_png).map_err(|e| E::msg(format!("save png: {e}")))?;
     println!("Saved {output_png}");
     Ok(())
 }

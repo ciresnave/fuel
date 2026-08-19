@@ -78,14 +78,20 @@ impl ConvShape {
     pub fn w_out(&self) -> usize {
         (self.w + 2 * self.padding.1 - self.k_w) / self.stride.1 + 1
     }
-    pub fn c_in_per_group(&self) -> usize { self.c_in / self.groups }
-    pub fn c_out_per_group(&self) -> usize { self.c_out / self.groups }
+    pub fn c_in_per_group(&self) -> usize {
+        self.c_in / self.groups
+    }
+    pub fn c_out_per_group(&self) -> usize {
+        self.c_out / self.groups
+    }
 
     /// Validate that the descriptor is well-formed. Returns an error
     /// message describing the first issue, or `Ok(())`. Cheap; cheap
     /// enough to call at the top of every kernel.
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.groups == 0 { return Err("groups must be ≥ 1"); }
+        if self.groups == 0 {
+            return Err("groups must be ≥ 1");
+        }
         if self.c_in % self.groups != 0 {
             return Err("c_in must be divisible by groups");
         }
@@ -117,8 +123,11 @@ impl ConvShape {
     pub fn im2col_len(&self) -> usize {
         self.batch
             * self.groups
-            * self.c_in_per_group() * self.k_h * self.k_w
-            * self.h_out() * self.w_out()
+            * self.c_in_per_group()
+            * self.k_h
+            * self.k_w
+            * self.h_out()
+            * self.w_out()
     }
 }
 
@@ -150,9 +159,15 @@ pub fn conv2d_direct<T: Float>(
     let (pad_h, pad_w) = s.padding;
 
     debug_assert_eq!(x.len(), s.batch * s.c_in * s.h * s.w, "x size mismatch");
-    debug_assert_eq!(weight.len(), s.c_out * cin_per_g * s.k_h * s.k_w, "weight size");
+    debug_assert_eq!(
+        weight.len(),
+        s.c_out * cin_per_g * s.k_h * s.k_w,
+        "weight size"
+    );
     debug_assert_eq!(out.len(), s.output_len(), "out size mismatch");
-    if let Some(b) = bias { debug_assert_eq!(b.len(), s.c_out, "bias len"); }
+    if let Some(b) = bias {
+        debug_assert_eq!(b.len(), s.c_out, "bias len");
+    }
 
     for ni in 0..s.batch {
         for g in 0..s.groups {
@@ -165,19 +180,26 @@ pub fn conv2d_direct<T: Float>(
                             let ci = g * cin_per_g + ci_in_g;
                             for ky in 0..s.k_h {
                                 let ih_padded = oh * stride_h + ky;
-                                if ih_padded < pad_h || ih_padded >= s.h + pad_h { continue; }
+                                if ih_padded < pad_h || ih_padded >= s.h + pad_h {
+                                    continue;
+                                }
                                 let ih = ih_padded - pad_h;
                                 for kx in 0..s.k_w {
                                     let iw_padded = ow * stride_w + kx;
-                                    if iw_padded < pad_w || iw_padded >= s.w + pad_w { continue; }
+                                    if iw_padded < pad_w || iw_padded >= s.w + pad_w {
+                                        continue;
+                                    }
                                     let iw = iw_padded - pad_w;
                                     let x_off = ((ni * s.c_in + ci) * s.h + ih) * s.w + iw;
-                                    let w_off = ((co * cin_per_g + ci_in_g) * s.k_h + ky) * s.k_w + kx;
+                                    let w_off =
+                                        ((co * cin_per_g + ci_in_g) * s.k_h + ky) * s.k_w + kx;
                                     acc = acc + x[x_off] * weight[w_off];
                                 }
                             }
                         }
-                        if let Some(b) = bias { acc = acc + b[co]; }
+                        if let Some(b) = bias {
+                            acc = acc + b[co];
+                        }
                         let out_off = ((ni * s.c_out + co) * h_out + oh) * w_out + ow;
                         out[out_off] = acc;
                     }
@@ -218,11 +240,7 @@ pub fn conv2d_direct<T: Float>(
 /// the same ordering the weight tensor uses for its inner three
 /// axes — so the per-group matmul's K-dimension lines up directly
 /// with the weight's "input channels × kernel area" reshape.
-pub fn im2col<T: Float>(
-    x: &[T],
-    s: &ConvShape,
-    out: &mut [T],
-) {
+pub fn im2col<T: Float>(x: &[T], s: &ConvShape, out: &mut [T]) {
     s.validate().expect("ConvShape::validate failed");
     let h_out = s.h_out();
     let w_out = s.w_out();
@@ -332,7 +350,9 @@ pub fn conv2d_via_gemm<T, F>(
             let patches_off = bg_idx * patches_per_bg;
             let out_off = (ni * s.c_out + g * cout_per_g) * n; // [m, n] block per group
             gemm(
-                m, n, k,
+                m,
+                n,
+                k,
                 &weight[weight_off..weight_off + weight_per_g],
                 &patches_scratch[patches_off..patches_off + patches_per_bg],
                 &mut out[out_off..out_off + out_per_bg],
@@ -366,9 +386,16 @@ mod tests {
         let x: Vec<f32> = (1..=9).map(|i| i as f32).collect();
         let w: Vec<f32> = vec![1.0, 0.0, 0.0, 1.0]; // identity-on-diagonal
         let s = ConvShape {
-            batch: 1, c_in: 1, c_out: 1,
-            h: 3, w: 3, k_h: 2, k_w: 2,
-            stride: (1, 1), padding: (0, 0), groups: 1,
+            batch: 1,
+            c_in: 1,
+            c_out: 1,
+            h: 3,
+            w: 3,
+            k_h: 2,
+            k_w: 2,
+            stride: (1, 1),
+            padding: (0, 0),
+            groups: 1,
         };
         let mut out = vec![0.0_f32; s.output_len()];
         conv2d_direct(&x, &w, None, &s, &mut out);
@@ -380,9 +407,16 @@ mod tests {
     #[test]
     fn direct_depthwise_3x3_with_padding() {
         let s = ConvShape {
-            batch: 1, c_in: 2, c_out: 2,
-            h: 3, w: 3, k_h: 3, k_w: 3,
-            stride: (1, 1), padding: (1, 1), groups: 2,
+            batch: 1,
+            c_in: 2,
+            c_out: 2,
+            h: 3,
+            w: 3,
+            k_h: 3,
+            k_w: 3,
+            stride: (1, 1),
+            padding: (1, 1),
+            groups: 2,
         };
         // Channel 0: identity 3x3 (only center weight = 1)
         // Channel 1: zero
@@ -408,9 +442,16 @@ mod tests {
     fn im2col_1x1_kernel_is_input_flatten() {
         let x: Vec<f32> = (1..=9).map(|i| i as f32).collect();
         let s = ConvShape {
-            batch: 1, c_in: 1, c_out: 1,
-            h: 3, w: 3, k_h: 1, k_w: 1,
-            stride: (1, 1), padding: (0, 0), groups: 1,
+            batch: 1,
+            c_in: 1,
+            c_out: 1,
+            h: 3,
+            w: 3,
+            k_h: 1,
+            k_w: 1,
+            stride: (1, 1),
+            padding: (0, 0),
+            groups: 1,
         };
         let mut col = vec![0.0_f32; s.im2col_len()];
         im2col(&x, &s, &mut col);
@@ -422,14 +463,23 @@ mod tests {
     #[test]
     fn via_gemm_matches_direct() {
         let s = ConvShape {
-            batch: 2, c_in: 4, c_out: 6,
-            h: 5, w: 5, k_h: 3, k_w: 3,
-            stride: (1, 1), padding: (1, 1), groups: 2,
+            batch: 2,
+            c_in: 4,
+            c_out: 6,
+            h: 5,
+            w: 5,
+            k_h: 3,
+            k_w: 3,
+            stride: (1, 1),
+            padding: (1, 1),
+            groups: 2,
         };
         let x: Vec<f32> = (0..s.batch * s.c_in * s.h * s.w)
-            .map(|i| (i as f32) * 0.013 - 0.4).collect();
+            .map(|i| (i as f32) * 0.013 - 0.4)
+            .collect();
         let w: Vec<f32> = (0..s.c_out * s.c_in_per_group() * s.k_h * s.k_w)
-            .map(|i| ((i as f32) * 0.07).sin()).collect();
+            .map(|i| ((i as f32) * 0.07).sin())
+            .collect();
         let bias: Vec<f32> = (0..s.c_out).map(|i| (i as f32) * 0.01).collect();
 
         let mut direct_out = vec![0.0_f32; s.output_len()];
@@ -438,7 +488,12 @@ mod tests {
         let mut gemm_out = vec![0.0_f32; s.output_len()];
         let mut patches = vec![0.0_f32; s.im2col_len()];
         conv2d_via_gemm(
-            &x, &w, Some(&bias), &s, &mut gemm_out, &mut patches,
+            &x,
+            &w,
+            Some(&bias),
+            &s,
+            &mut gemm_out,
+            &mut patches,
             |m, n, k, a, b, c| {
                 // Naive row-major gemm: c = a @ b. Caller pre-zeroes
                 // not required here — overwrite each cell.
@@ -463,16 +518,38 @@ mod tests {
 
     #[test]
     fn validate_rejects_bad_shapes() {
-        assert!(ConvShape {
-            batch: 1, c_in: 5, c_out: 4,
-            h: 3, w: 3, k_h: 1, k_w: 1,
-            stride: (1, 1), padding: (0, 0), groups: 2,  // 5 not div by 2
-        }.validate().is_err());
+        assert!(
+            ConvShape {
+                batch: 1,
+                c_in: 5,
+                c_out: 4,
+                h: 3,
+                w: 3,
+                k_h: 1,
+                k_w: 1,
+                stride: (1, 1),
+                padding: (0, 0),
+                groups: 2, // 5 not div by 2
+            }
+            .validate()
+            .is_err()
+        );
 
-        assert!(ConvShape {
-            batch: 1, c_in: 1, c_out: 1,
-            h: 3, w: 3, k_h: 4, k_w: 4,  // larger than padded input
-            stride: (1, 1), padding: (0, 0), groups: 1,
-        }.validate().is_err());
+        assert!(
+            ConvShape {
+                batch: 1,
+                c_in: 1,
+                c_out: 1,
+                h: 3,
+                w: 3,
+                k_h: 4,
+                k_w: 4, // larger than padded input
+                stride: (1, 1),
+                padding: (0, 0),
+                groups: 1,
+            }
+            .validate()
+            .is_err()
+        );
     }
 }

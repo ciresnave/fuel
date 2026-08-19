@@ -87,7 +87,11 @@ impl GraniteMoeHybridConfig {
     /// and **multiplies** by it; we keep the divisor view here for
     /// clarity).
     pub fn logits_divisor(&self) -> f32 {
-        if self.logits_scaling == 0.0 { 1.0 } else { self.logits_scaling }
+        if self.logits_scaling == 0.0 {
+            1.0
+        } else {
+            self.logits_scaling
+        }
     }
 }
 
@@ -168,8 +172,10 @@ impl GraniteMoeHybridWeights {
             return Err(crate::Error::Msg(format!(
                 "GraniteMoeHybridWeights::load_from_mmapped: \
                  cfg.layer_types length ({}) must match num_hidden_layers ({})",
-                cfg.layer_types.len(), cfg.num_hidden_layers,
-            )).bt());
+                cfg.layer_types.len(),
+                cfg.num_hidden_layers,
+            ))
+            .bt());
         }
 
         let h = cfg.hidden_size;
@@ -182,7 +188,10 @@ impl GraniteMoeHybridWeights {
         if token_embedding.len() != cfg.vocab_size * h {
             crate::bail!(
                 "model.embed_tokens.weight: {} elts, expected {} ({}×{})",
-                token_embedding.len(), cfg.vocab_size * h, cfg.vocab_size, h,
+                token_embedding.len(),
+                cfg.vocab_size * h,
+                cfg.vocab_size,
+                h,
             );
         }
 
@@ -193,37 +202,57 @@ impl GraniteMoeHybridWeights {
                 GraniteLayerType::Attention => {
                     let p = format!("model.layers.{li}");
                     let q_proj = load_transposed_matrix_preserve_dtype(
-                        st, &format!("{p}.self_attn.q_proj.weight"), q_dim, h,
+                        st,
+                        &format!("{p}.self_attn.q_proj.weight"),
+                        q_dim,
+                        h,
                     )?;
                     let k_proj = load_transposed_matrix_preserve_dtype(
-                        st, &format!("{p}.self_attn.k_proj.weight"), kv_dim, h,
+                        st,
+                        &format!("{p}.self_attn.k_proj.weight"),
+                        kv_dim,
+                        h,
                     )?;
                     let v_proj = load_transposed_matrix_preserve_dtype(
-                        st, &format!("{p}.self_attn.v_proj.weight"), kv_dim, h,
+                        st,
+                        &format!("{p}.self_attn.v_proj.weight"),
+                        kv_dim,
+                        h,
                     )?;
                     let o_proj = load_transposed_matrix_preserve_dtype(
-                        st, &format!("{p}.self_attn.o_proj.weight"), h, q_dim,
+                        st,
+                        &format!("{p}.self_attn.o_proj.weight"),
+                        h,
+                        q_dim,
                     )?;
                     let input_linear = load_transposed_matrix_preserve_dtype(
-                        st, &format!("{p}.shared_mlp.input_linear.weight"), 2 * inter, h,
+                        st,
+                        &format!("{p}.shared_mlp.input_linear.weight"),
+                        2 * inter,
+                        h,
                     )?;
                     let output_linear = load_transposed_matrix_preserve_dtype(
-                        st, &format!("{p}.shared_mlp.output_linear.weight"), h, inter,
+                        st,
+                        &format!("{p}.shared_mlp.output_linear.weight"),
+                        h,
+                        inter,
                     )?;
-                    let input_norm_gain = load_tensor_as_f32(
-                        st, &format!("{p}.input_layernorm.weight"),
-                    )?;
-                    let post_attn_norm_gain = load_tensor_as_f32(
-                        st, &format!("{p}.post_attention_layernorm.weight"),
-                    )?;
+                    let input_norm_gain =
+                        load_tensor_as_f32(st, &format!("{p}.input_layernorm.weight"))?;
+                    let post_attn_norm_gain =
+                        load_tensor_as_f32(st, &format!("{p}.post_attention_layernorm.weight"))?;
                     layers.push(GraniteMoeHybridLayerWeights::Attention {
                         input_norm_gain: Arc::from(input_norm_gain),
                         attn: GraniteMoeHybridAttnWeights {
-                            q_proj, k_proj, v_proj, o_proj,
+                            q_proj,
+                            k_proj,
+                            v_proj,
+                            o_proj,
                         },
                         post_attn_norm_gain: Arc::from(post_attn_norm_gain),
                         mlp: GraniteMoeHybridMlpWeights {
-                            input_linear, output_linear,
+                            input_linear,
+                            output_linear,
                         },
                     });
                 }
@@ -274,7 +303,9 @@ impl GraniteMoeHybridModel {
     ///
     /// Layers of kind `Mamba` return Err (matches eager scope).
     pub fn forward_embeds(
-        &self, scaled_embeds: &LazyTensor, start_pos: usize,
+        &self,
+        scaled_embeds: &LazyTensor,
+        start_pos: usize,
     ) -> Result<LazyTensor> {
         let h_norm = self.run_backbone_embeds(scaled_embeds, start_pos)?;
         self.apply_lm_head(&h_norm)
@@ -282,7 +313,9 @@ impl GraniteMoeHybridModel {
 
     /// Hidden-state variant of [`Self::forward_embeds`].
     pub fn forward_hidden_embeds(
-        &self, scaled_embeds: &LazyTensor, start_pos: usize,
+        &self,
+        scaled_embeds: &LazyTensor,
+        start_pos: usize,
     ) -> Result<LazyTensor> {
         self.run_backbone_embeds(scaled_embeds, start_pos)
     }
@@ -290,13 +323,13 @@ impl GraniteMoeHybridModel {
     /// Build per-token embeddings without running the decoder. NOTE:
     /// the `embedding_multiplier` scaling is NOT applied — caller is
     /// responsible (matches the scaled-embeds contract above).
-    pub fn embed_tokens_anchored(
-        &self, anchor: &LazyTensor, tokens: &[u32],
-    ) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
-            cfg.vocab_size, cfg.hidden_size, tokens,
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
         )
     }
 
@@ -319,7 +352,11 @@ impl GraniteMoeHybridModel {
         assert!(seq > 0);
 
         let mut h = LazyTensor::embed_tokens(
-            weights.token_embedding.clone(), cfg.vocab_size, cfg.hidden_size, tokens, &Device::cpu(),
+            weights.token_embedding.clone(),
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
+            &Device::cpu(),
         )?;
         if (cfg.embedding_multiplier - 1.0).abs() > f32::EPSILON {
             h = h.mul_scalar(cfg.embedding_multiplier as f64);
@@ -328,7 +365,9 @@ impl GraniteMoeHybridModel {
     }
 
     fn run_backbone_embeds(
-        &self, scaled_embeds: &LazyTensor, start_pos: usize,
+        &self,
+        scaled_embeds: &LazyTensor,
+        start_pos: usize,
     ) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
@@ -344,64 +383,98 @@ impl GraniteMoeHybridModel {
         if seq == 0 {
             return Err(crate::Error::Msg(
                 "GraniteMoeHybridModel::forward_embeds: seq must be > 0".into(),
-            ).bt());
+            )
+            .bt());
         }
         if cfg.num_attention_heads * cfg.head_dim() != cfg.hidden_size {
             return Err(crate::Error::Msg(
                 "num_attention_heads * head_dim must equal hidden_size".into(),
-            ).bt());
+            )
+            .bt());
         }
         if cfg.num_attention_heads % cfg.num_key_value_heads != 0 {
             return Err(crate::Error::Msg(
                 "num_attention_heads must be a multiple of num_key_value_heads".into(),
-            ).bt());
+            )
+            .bt());
         }
         if weights.layers.len() != cfg.num_hidden_layers {
             return Err(crate::Error::Msg(format!(
                 "weights.layers length ({}) must match num_hidden_layers ({})",
-                weights.layers.len(), cfg.num_hidden_layers,
-            )).bt());
+                weights.layers.len(),
+                cfg.num_hidden_layers,
+            ))
+            .bt());
         }
         if cfg.layer_types.len() != cfg.num_hidden_layers {
             return Err(crate::Error::Msg(format!(
                 "layer_types length ({}) must match num_hidden_layers ({})",
-                cfg.layer_types.len(), cfg.num_hidden_layers,
-            )).bt());
+                cfg.layer_types.len(),
+                cfg.num_hidden_layers,
+            ))
+            .bt());
         }
         let mut h = scaled_embeds.clone();
 
         let head_dim = cfg.head_dim();
         let (cos_data, sin_data) = build_granite_rope_tables(
-            cfg.rope_theta as f64, start_pos, seq, head_dim,
+            cfg.rope_theta as f64,
+            start_pos,
+            seq,
+            head_dim,
             cfg.rope_scaling.as_ref(),
         );
         let rope_shape = Shape::from_dims(&[seq, head_dim]);
         let rope_cos = h.const_f32_like(cos_data, rope_shape.clone());
         let rope_sin = h.const_f32_like(sin_data, rope_shape);
 
-        for (idx, (layer, kind)) in weights.layers.iter()
-            .zip(cfg.layer_types.iter()).enumerate() {
+        for (idx, (layer, kind)) in weights
+            .layers
+            .iter()
+            .zip(cfg.layer_types.iter())
+            .enumerate()
+        {
             match (layer, kind) {
                 (
-                    GraniteMoeHybridLayerWeights::Attention { input_norm_gain, attn, post_attn_norm_gain, mlp },
+                    GraniteMoeHybridLayerWeights::Attention {
+                        input_norm_gain,
+                        attn,
+                        post_attn_norm_gain,
+                        mlp,
+                    },
                     GraniteLayerType::Attention,
                 ) => {
-                    h = self.apply_attn_block(&h, input_norm_gain, attn, post_attn_norm_gain, mlp, &rope_cos, &rope_sin)?;
+                    h = self.apply_attn_block(
+                        &h,
+                        input_norm_gain,
+                        attn,
+                        post_attn_norm_gain,
+                        mlp,
+                        &rope_cos,
+                        &rope_sin,
+                    )?;
                 }
                 (GraniteMoeHybridLayerWeights::Mamba, GraniteLayerType::Mamba) => {
                     return Err(crate::Error::Msg(format!(
                         "GraniteMoeHybrid layer {idx}: Mamba layers not yet supported \
                          (matches eager scope); use a non-Mamba layer kind",
-                    )).bt());
+                    ))
+                    .bt());
                 }
-                _ => return Err(crate::Error::Msg(format!(
-                    "GraniteMoeHybrid layer {idx}: weight kind does not match \
+                _ => {
+                    return Err(crate::Error::Msg(format!(
+                        "GraniteMoeHybrid layer {idx}: weight kind does not match \
                      layer_types[{idx}] — config + weights are inconsistent",
-                )).bt()),
+                    ))
+                    .bt());
+                }
             }
         }
 
-        Ok(h.rms_norm_affine(std::sync::Arc::clone(&weights.final_norm_gain), cfg.rms_norm_eps)?)
+        Ok(h.rms_norm_affine(
+            std::sync::Arc::clone(&weights.final_norm_gain),
+            cfg.rms_norm_eps,
+        )?)
     }
 
     fn apply_attn_block(
@@ -484,11 +557,7 @@ impl GraniteMoeHybridModel {
         Ok(w.o_proj.apply_linear(&merged, q_dim, cfg.hidden_size)?)
     }
 
-    fn apply_mlp(
-        &self,
-        x: &LazyTensor,
-        w: &GraniteMoeHybridMlpWeights,
-    ) -> Result<LazyTensor> {
+    fn apply_mlp(&self, x: &LazyTensor, w: &GraniteMoeHybridMlpWeights) -> Result<LazyTensor> {
         let cfg = &self.config;
         let h = cfg.hidden_size;
         let inter = cfg.shared_intermediate_size;
@@ -575,40 +644,47 @@ mod tests {
         let mut nb: Box<dyn FnMut() -> f32> = Box::new(next);
         let token_embedding = vec_of(cfg.vocab_size * h, &mut *nb);
 
-        let layers: Vec<GraniteMoeHybridLayerWeights> = cfg.layer_types
+        let layers: Vec<GraniteMoeHybridLayerWeights> = cfg
+            .layer_types
             .iter()
             .map(|kind| match kind {
-                GraniteLayerType::Attention => {
-                    GraniteMoeHybridLayerWeights::Attention {
-                        input_norm_gain: Arc::from(vec![1.0_f32; h]),
-                        attn: GraniteMoeHybridAttnWeights {
-                            q_proj: WeightStorage::F32(vec_of(h * q_dim, &mut *nb)),
-                            k_proj: WeightStorage::F32(vec_of(h * kv_dim, &mut *nb)),
-                            v_proj: WeightStorage::F32(vec_of(h * kv_dim, &mut *nb)),
-                            o_proj: WeightStorage::F32(vec_of(q_dim * h, &mut *nb)),
-                        },
-                        post_attn_norm_gain: Arc::from(vec![1.0_f32; h]),
-                        mlp: GraniteMoeHybridMlpWeights {
-                            input_linear: WeightStorage::F32(vec_of(h * (2 * inter), &mut *nb)),
-                            output_linear: WeightStorage::F32(vec_of(inter * h, &mut *nb)),
-                        },
-                    }
-                }
+                GraniteLayerType::Attention => GraniteMoeHybridLayerWeights::Attention {
+                    input_norm_gain: Arc::from(vec![1.0_f32; h]),
+                    attn: GraniteMoeHybridAttnWeights {
+                        q_proj: WeightStorage::F32(vec_of(h * q_dim, &mut *nb)),
+                        k_proj: WeightStorage::F32(vec_of(h * kv_dim, &mut *nb)),
+                        v_proj: WeightStorage::F32(vec_of(h * kv_dim, &mut *nb)),
+                        o_proj: WeightStorage::F32(vec_of(q_dim * h, &mut *nb)),
+                    },
+                    post_attn_norm_gain: Arc::from(vec![1.0_f32; h]),
+                    mlp: GraniteMoeHybridMlpWeights {
+                        input_linear: WeightStorage::F32(vec_of(h * (2 * inter), &mut *nb)),
+                        output_linear: WeightStorage::F32(vec_of(inter * h, &mut *nb)),
+                    },
+                },
                 GraniteLayerType::Mamba => GraniteMoeHybridLayerWeights::Mamba,
             })
             .collect();
         let final_norm_gain = Arc::from(vec![1.0_f32; h]);
-        GraniteMoeHybridWeights { token_embedding, layers, final_norm_gain }
+        GraniteMoeHybridWeights {
+            token_embedding,
+            layers,
+            final_norm_gain,
+        }
     }
 
     fn tiny_config() -> GraniteMoeHybridConfig {
         GraniteMoeHybridConfig {
-            vocab_size: 16, hidden_size: 8,
-            intermediate_size: 16, shared_intermediate_size: 12,
+            vocab_size: 16,
+            hidden_size: 8,
+            intermediate_size: 16,
+            shared_intermediate_size: 12,
             num_hidden_layers: 2,
-            num_attention_heads: 2, num_key_value_heads: 1,
+            num_attention_heads: 2,
+            num_key_value_heads: 1,
             max_position_embeddings: 32,
-            rms_norm_eps: 1e-5, rope_theta: 10_000.0,
+            rms_norm_eps: 1e-5,
+            rope_theta: 10_000.0,
             rope_scaling: None,
             layer_types: vec![GraniteLayerType::Attention, GraniteLayerType::Attention],
             attention_multiplier: 0.25, // = 1/sqrt(head_dim=16) is irrelevant — Granite chooses freely
@@ -621,7 +697,10 @@ mod tests {
     #[test]
     fn forward_shape_and_finite() {
         let cfg = tiny_config();
-        let model = GraniteMoeHybridModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = GraniteMoeHybridModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
         let logits = model.forward(&tokens, 0).unwrap();
         assert_eq!(logits.shape().dims(), &[1, tokens.len(), cfg.vocab_size]);
@@ -644,38 +723,70 @@ mod tests {
         };
         let weights = tiny_weights(&cfg_neutral);
         let toks = [1_u32, 2, 3];
-        let baseline = GraniteMoeHybridModel { config: cfg_neutral.clone(), weights: weights.clone() }
-            .forward(&toks, 0).unwrap().realize_f32();
+        let baseline = GraniteMoeHybridModel {
+            config: cfg_neutral.clone(),
+            weights: weights.clone(),
+        }
+        .forward(&toks, 0)
+        .unwrap()
+        .realize_f32();
 
         let check = |cfg: GraniteMoeHybridConfig, label: &str| {
-            let m = GraniteMoeHybridModel { config: cfg, weights: weights.clone() };
+            let m = GraniteMoeHybridModel {
+                config: cfg,
+                weights: weights.clone(),
+            };
             let out = m.forward(&toks, 0).unwrap().realize_f32();
             let mut max_diff = 0.0_f32;
             for (a, b) in baseline.iter().zip(out.iter()) {
                 max_diff = max_diff.max((a - b).abs());
             }
-            assert!(max_diff > 1e-6, "{label} must alter output, max_diff = {max_diff}");
+            assert!(
+                max_diff > 1e-6,
+                "{label} must alter output, max_diff = {max_diff}"
+            );
         };
 
-        check(GraniteMoeHybridConfig { embedding_multiplier: 2.5, ..cfg_neutral.clone() },
-              "embedding_multiplier");
-        check(GraniteMoeHybridConfig { attention_multiplier: 0.5, ..cfg_neutral.clone() },
-              "attention_multiplier");
-        check(GraniteMoeHybridConfig { residual_multiplier: 2.0, ..cfg_neutral.clone() },
-              "residual_multiplier");
-        check(GraniteMoeHybridConfig { logits_scaling: 3.0, ..cfg_neutral.clone() },
-              "logits_scaling");
+        check(
+            GraniteMoeHybridConfig {
+                embedding_multiplier: 2.5,
+                ..cfg_neutral.clone()
+            },
+            "embedding_multiplier",
+        );
+        check(
+            GraniteMoeHybridConfig {
+                attention_multiplier: 0.5,
+                ..cfg_neutral.clone()
+            },
+            "attention_multiplier",
+        );
+        check(
+            GraniteMoeHybridConfig {
+                residual_multiplier: 2.0,
+                ..cfg_neutral.clone()
+            },
+            "residual_multiplier",
+        );
+        check(
+            GraniteMoeHybridConfig {
+                logits_scaling: 3.0,
+                ..cfg_neutral.clone()
+            },
+            "logits_scaling",
+        );
     }
 
     /// Granite RoPE scaling must measurably alter the table
     /// for a config that uses the scaled regime.
     #[test]
     fn granite_rope_scaling_alters_tables() {
-        let (cos_a, sin_a) = build_granite_rope_tables(
-            10_000.0, 0, 4, 8, None,
-        );
+        let (cos_a, sin_a) = build_granite_rope_tables(10_000.0, 0, 4, 8, None);
         let (cos_b, sin_b) = build_granite_rope_tables(
-            10_000.0, 0, 4, 8,
+            10_000.0,
+            0,
+            4,
+            8,
             Some(&GraniteRopeScaling {
                 factor: 4.0,
                 low_freq_factor: 1.0,
@@ -691,8 +802,10 @@ mod tests {
         for (a, b) in sin_a.iter().zip(sin_b.iter()) {
             max_diff = max_diff.max((a - b).abs());
         }
-        assert!(max_diff > 1e-6,
-            "Granite RoPE scaling must change the tables, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-6,
+            "Granite RoPE scaling must change the tables, max_diff = {max_diff}"
+        );
     }
 
     /// Mamba layers return Err in v1 (matches eager scope; was a panic
@@ -703,18 +816,26 @@ mod tests {
             layer_types: vec![GraniteLayerType::Mamba, GraniteLayerType::Attention],
             ..tiny_config()
         };
-        let model = GraniteMoeHybridModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = GraniteMoeHybridModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let res = model.forward(&[1, 2], 0);
         assert!(res.is_err(), "Mamba layer should return Err, got Ok");
         let err = format!("{}", res.unwrap_err());
-        assert!(err.contains("Mamba layers not yet supported"),
-            "unexpected error message: {err}");
+        assert!(
+            err.contains("Mamba layers not yet supported"),
+            "unexpected error message: {err}"
+        );
     }
 
     #[test]
     fn forward_hidden_shape_and_finite() {
         let cfg = tiny_config();
-        let model = GraniteMoeHybridModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = GraniteMoeHybridModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
         let hidden = model.forward_hidden(&tokens, 0).unwrap();
         assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
@@ -728,12 +849,13 @@ mod tests {
         // forward_embeds takes scaled embeds (caller applies
         // embedding_multiplier) — mirrors the Gemma convention.
         let cfg = tiny_config();
-        let model = GraniteMoeHybridModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = GraniteMoeHybridModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let scaled = if (cfg.embedding_multiplier - 1.0).abs() > f32::EPSILON {
             embeds.mul_scalar(cfg.embedding_multiplier as f64)
@@ -741,19 +863,28 @@ mod tests {
             embeds
         };
         let logits_via_embeds = model.forward_embeds(&scaled, 0).unwrap().realize_f32();
-        let max_diff = logits_ref.iter().zip(logits_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "GraniteMoeHybrid forward vs forward_embeds (post-scale) must agree (max diff {max_diff})");
+        let max_diff = logits_ref
+            .iter()
+            .zip(logits_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "GraniteMoeHybrid forward vs forward_embeds (post-scale) must agree (max diff {max_diff})"
+        );
     }
 
     #[test]
     fn forward_embeds_rejects_bad_shape() {
         let cfg = tiny_config();
-        let model = GraniteMoeHybridModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = GraniteMoeHybridModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let bad = LazyTensor::from_f32(
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
-            Shape::from_dims(&[1, 3, cfg.hidden_size + 1]), &Device::cpu(),
+            Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
+            &Device::cpu(),
         );
         assert!(model.forward_embeds(&bad, 0).is_err());
     }
@@ -761,22 +892,31 @@ mod tests {
     #[test]
     fn forward_hidden_embeds_matches_forward_hidden() {
         let cfg = tiny_config();
-        let model = GraniteMoeHybridModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = GraniteMoeHybridModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let scaled = if (cfg.embedding_multiplier - 1.0).abs() > f32::EPSILON {
             embeds.mul_scalar(cfg.embedding_multiplier as f64)
         } else {
             embeds
         };
-        let h_via_embeds = model.forward_hidden_embeds(&scaled, 0).unwrap().realize_f32();
-        let max_diff = h_ref.iter().zip(h_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "GraniteMoeHybrid forward_hidden vs forward_hidden_embeds (post-scale) must agree (max diff {max_diff})");
+        let h_via_embeds = model
+            .forward_hidden_embeds(&scaled, 0)
+            .unwrap()
+            .realize_f32();
+        let max_diff = h_ref
+            .iter()
+            .zip(h_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "GraniteMoeHybrid forward_hidden vs forward_hidden_embeds (post-scale) must agree (max diff {max_diff})"
+        );
     }
 }

@@ -23,11 +23,7 @@ use rand::rngs::StdRng;
 /// Xavier (Glorot) uniform initializer. Returns a `Vec<f32>` of length
 /// `fan_in * fan_out` sampled from `U(-a, a)` where
 /// `a = sqrt(6 / (fan_in + fan_out))`.
-pub fn xavier_uniform(
-    fan_in: usize,
-    fan_out: usize,
-    rng: &mut StdRng,
-) -> Result<Vec<f32>> {
+pub fn xavier_uniform(fan_in: usize, fan_out: usize, rng: &mut StdRng) -> Result<Vec<f32>> {
     if fan_in == 0 || fan_out == 0 {
         return Err(crate::Error::Msg(format!(
             "xavier_uniform: fan_in and fan_out must be >= 1, got \
@@ -50,21 +46,14 @@ pub fn xavier_uniform(
 /// Note: the eager fuel-nn module stores a 2-D weight and chooses
 /// `fan_in` from its shape. Here the helper takes the already-computed
 /// `fan_in` and returns a flat buffer the caller reshapes itself.
-pub fn kaiming_uniform(
-    fan_in: usize,
-    gain: f32,
-    rng: &mut StdRng,
-) -> Result<Vec<f32>> {
+pub fn kaiming_uniform(fan_in: usize, gain: f32, rng: &mut StdRng) -> Result<Vec<f32>> {
     if fan_in == 0 {
-        return Err(crate::Error::Msg(
-            "kaiming_uniform: fan_in must be >= 1".to_string(),
-        )
-        .bt());
+        return Err(crate::Error::Msg("kaiming_uniform: fan_in must be >= 1".to_string()).bt());
     }
     if !gain.is_finite() {
-        return Err(crate::Error::Msg(format!(
-            "kaiming_uniform: gain must be finite, got {gain}",
-        ))
+        return Err(crate::Error::Msg(
+            format!("kaiming_uniform: gain must be finite, got {gain}",),
+        )
         .bt());
     }
     let std = gain / (fan_in as f32).sqrt();
@@ -74,16 +63,11 @@ pub fn kaiming_uniform(
 
 /// Normal-distribution initializer. Returns `n` i.i.d. samples from
 /// `N(mean, std^2)`.
-pub fn normal(
-    mean: f32,
-    std: f32,
-    n: usize,
-    rng: &mut StdRng,
-) -> Result<Vec<f32>> {
+pub fn normal(mean: f32, std: f32, n: usize, rng: &mut StdRng) -> Result<Vec<f32>> {
     if std < 0.0 || !std.is_finite() || !mean.is_finite() {
-        return Err(crate::Error::Msg(format!(
-            "normal: invalid parameters mean={mean} std={std}",
-        ))
+        return Err(crate::Error::Msg(
+            format!("normal: invalid parameters mean={mean} std={std}",),
+        )
         .bt());
     }
     let dist = rand_distr::Normal::new(mean, std).map_err(crate::Error::wrap)?;
@@ -92,12 +76,7 @@ pub fn normal(
 
 /// Uniform-distribution initializer. Returns `n` i.i.d. samples from
 /// `U(lo, hi)`. Requires `lo < hi`.
-pub fn uniform(
-    lo: f32,
-    hi: f32,
-    n: usize,
-    rng: &mut StdRng,
-) -> Result<Vec<f32>> {
+pub fn uniform(lo: f32, hi: f32, n: usize, rng: &mut StdRng) -> Result<Vec<f32>> {
     if !lo.is_finite() || !hi.is_finite() || !(lo < hi) {
         return Err(crate::Error::Msg(format!(
             "uniform: require lo < hi and both finite, got lo={lo} hi={hi}",

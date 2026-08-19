@@ -58,8 +58,8 @@
 //! lands.
 
 use crate::registry::{
-    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps,
-    PatternMatch, Reduction, SubgraphPattern, decompose_via_recipe,
+    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps, PatternMatch, Reduction,
+    SubgraphPattern, decompose_via_recipe,
 };
 use crate::{Graph, NodeId};
 use fuel_ir::{DType, Shape};
@@ -69,12 +69,12 @@ use fuel_kernel_seam_types::{OpAttrs, OpTag, PatternNode};
 pub fn entry() -> FusedOpEntry {
     FusedOpEntry {
         destructive_input: None,
-        id:         FusedOps::FUSED_SOFTMAX_CROSS_ENTROPY,
-        name:       "FusedSoftmaxCrossEntropy",
-        family:     FusedOpFamily::Forward,
-        pattern:    SubgraphPattern::Callable(canonical_pattern),
+        id: FusedOps::FUSED_SOFTMAX_CROSS_ENTROPY,
+        name: "FusedSoftmaxCrossEntropy",
+        family: FusedOpFamily::Forward,
+        pattern: SubgraphPattern::Callable(canonical_pattern),
         decompose,
-        backward:   BackwardKind::Decompose,
+        backward: BackwardKind::Decompose,
         shape_rule,
         dtype_rule,
         output_views: None,
@@ -86,14 +86,13 @@ pub fn entry() -> FusedOpEntry {
 /// trailing vocab dim).
 fn shape_rule(input_shapes: &[Shape], params: &FusedOpParams) -> Shape {
     debug_assert_eq!(
-        input_shapes.len(), 2,
+        input_shapes.len(),
+        2,
         "FusedSoftmaxCrossEntropy takes 2 inputs (logits, targets)",
     );
     let reduction = match params {
         FusedOpParams::FusedSoftmaxCrossEntropy { reduction, .. } => *reduction,
-        other => panic!(
-            "fused_softmax_cross_entropy::shape_rule got non-FSCE params: {other:?}"
-        ),
+        other => panic!("fused_softmax_cross_entropy::shape_rule got non-FSCE params: {other:?}"),
     };
     match reduction {
         Reduction::Mean | Reduction::Sum => Shape::from_dims(&[]),
@@ -105,7 +104,8 @@ fn shape_rule(input_shapes: &[Shape], params: &FusedOpParams) -> Shape {
 /// independent of logits/targets dtype.
 fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
     debug_assert_eq!(
-        input_dtypes.len(), 2,
+        input_dtypes.len(),
+        2,
         "FusedSoftmaxCrossEntropy takes 2 inputs",
     );
     DType::F32
@@ -180,14 +180,31 @@ fn recipe(
     let logits_ts = as_ts(logits_dims);
     let keepdim_ts = as_ts(&keepdim_dims);
 
-    let op = |op, attrs, operands| PatternNode::Op { op, attrs, operands };
+    let op = |op, attrs, operands| PatternNode::Op {
+        op,
+        attrs,
+        operands,
+    };
     let bind = |i: u8| PatternNode::Bind { index: i };
-    let shape_attr = |ts: Vec<i64>| OpAttrs { target_shape: ts, ..OpAttrs::default() };
-    let cast_attr = |dt: DType| OpAttrs { cast_dtype: Some(dt.as_str().to_string()), ..OpAttrs::default() };
-    let scalar_attr = |v: f64| OpAttrs { scalars: vec![v], ..OpAttrs::default() };
+    let shape_attr = |ts: Vec<i64>| OpAttrs {
+        target_shape: ts,
+        ..OpAttrs::default()
+    };
+    let cast_attr = |dt: DType| OpAttrs {
+        cast_dtype: Some(dt.as_str().to_string()),
+        ..OpAttrs::default()
+    };
+    let scalar_attr = |v: f64| OpAttrs {
+        scalars: vec![v],
+        ..OpAttrs::default()
+    };
 
     // ---- log-softmax along the last dim, numerically stable ---------------
-    let m = op(T::ReduceMaxTo, shape_attr(keepdim_ts.clone()), vec![bind(0)]);
+    let m = op(
+        T::ReduceMaxTo,
+        shape_attr(keepdim_ts.clone()),
+        vec![bind(0)],
+    );
     let mb = op(T::BroadcastTo, shape_attr(logits_ts.clone()), vec![m]);
     let shifted = op(T::Sub, OpAttrs::default(), vec![bind(0), mb]);
     let exp_shift = op(T::Exp, OpAttrs::default(), vec![shifted.clone()]);
@@ -206,17 +223,26 @@ fn recipe(
     };
     let targets_keepdim = op(
         T::Unsqueeze,
-        OpAttrs { dims: vec![last as u8], ..OpAttrs::default() },
+        OpAttrs {
+            dims: vec![last as u8],
+            ..OpAttrs::default()
+        },
         vec![targets_u32],
     );
     let gathered = op(
         T::Gather,
-        OpAttrs { axis: Some(last as i64), ..OpAttrs::default() },
+        OpAttrs {
+            axis: Some(last as i64),
+            ..OpAttrs::default()
+        },
         vec![log_softmax, targets_keepdim],
     );
     let per_row_log_lik = op(
         T::Squeeze,
-        OpAttrs { dims: vec![last as u8], ..OpAttrs::default() },
+        OpAttrs {
+            dims: vec![last as u8],
+            ..OpAttrs::default()
+        },
         vec![gathered],
     );
     let per_row_nll = op(T::MulScalar, scalar_attr(-1.0), vec![per_row_log_lik]);
@@ -226,11 +252,18 @@ fn recipe(
     let cast_f32 = |src| op(T::Cast, cast_attr(DType::F32), vec![src]);
     // Rank-0 (`[]`, scalar) reduce target via the C-T1 marker (empty
     // `target_shape` + `rank0_target`), NOT an unset/wildcard target.
-    let rank0 = || OpAttrs { rank0_target: true, ..OpAttrs::default() };
+    let rank0 = || OpAttrs {
+        rank0_target: true,
+        ..OpAttrs::default()
+    };
 
     match reduction {
         Reduction::None => {
-            if needs_cast { cast_f32(per_row_nll) } else { per_row_nll }
+            if needs_cast {
+                cast_f32(per_row_nll)
+            } else {
+                per_row_nll
+            }
         }
         Reduction::Sum => {
             let sum = op(T::ReduceSumTo, rank0(), vec![per_row_nll]);
@@ -277,7 +310,12 @@ pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeI
         }
         let logits = graph.node(n.inputs[0]);
         let targets = graph.node(n.inputs[1]);
-        (logits.shape.clone(), targets.shape.clone(), logits.dtype, targets.dtype)
+        (
+            logits.shape.clone(),
+            targets.shape.clone(),
+            logits.dtype,
+            targets.dtype,
+        )
     };
     // FSCE requires rank ≥ 1 logits (the last dim is the vocab axis). Malformed
     // → fixpoint self-return (the `rank - 1` in `recipe` would otherwise wrap).
@@ -285,7 +323,13 @@ pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeI
         return id;
     }
 
-    let recipe_node = recipe(&logits_shape, &targets_shape, work_dtype, targets_dtype, reduction);
+    let recipe_node = recipe(
+        &logits_shape,
+        &targets_shape,
+        work_dtype,
+        targets_dtype,
+        reduction,
+    );
     // No open scalar slots (the -1.0 / 1/N / softplus-free constants are baked).
     decompose_via_recipe(graph, id, &recipe_node, Some(Vec::new()))
 }
@@ -312,9 +356,10 @@ mod tests {
     /// graph structurally identical to this.
     fn frozen_legacy_decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeId {
         let (reduction, _ignore_index) = match params {
-            FusedOpParams::FusedSoftmaxCrossEntropy { reduction, ignore_index } => {
-                (*reduction, *ignore_index)
-            }
+            FusedOpParams::FusedSoftmaxCrossEntropy {
+                reduction,
+                ignore_index,
+            } => (*reduction, *ignore_index),
             _ => return id,
         };
         let (logits_id, targets_id, logits_shape, targets_shape, _logits_dtype, targets_dtype) = {
@@ -499,9 +544,18 @@ mod tests {
         let na = g.node(a);
         let nb = g.node(b);
         assert_eq!(na.op, nb.op, "op mismatch: {:?} vs {:?}", na.op, nb.op);
-        assert_eq!(na.shape, nb.shape, "shape mismatch at {:?}: {:?} vs {:?}", na.op, na.shape, nb.shape);
+        assert_eq!(
+            na.shape, nb.shape,
+            "shape mismatch at {:?}: {:?} vs {:?}",
+            na.op, na.shape, nb.shape
+        );
         assert_eq!(na.dtype, nb.dtype, "dtype mismatch at {:?}", na.op);
-        assert_eq!(na.inputs.len(), nb.inputs.len(), "arity mismatch at {:?}", na.op);
+        assert_eq!(
+            na.inputs.len(),
+            nb.inputs.len(),
+            "arity mismatch at {:?}",
+            na.op
+        );
         for (&ia, &ib) in na.inputs.iter().zip(nb.inputs.iter()) {
             assert_structural_eq(g, ia, ib);
         }
@@ -538,7 +592,10 @@ mod tests {
         g.push(Node {
             op: Op::Fused(
                 FusedOps::FUSED_SOFTMAX_CROSS_ENTROPY,
-                FusedOpParams::FusedSoftmaxCrossEntropy { reduction, ignore_index: -100 },
+                FusedOpParams::FusedSoftmaxCrossEntropy {
+                    reduction,
+                    ignore_index: -100,
+                },
             ),
             inputs: vec![logits, targets],
             shape: out_shape,
@@ -571,10 +628,15 @@ mod tests {
                         "recipe decompose fires (reduction={reduction:?}, tgt={tgt:?}, leading={leading:?})"
                     );
                     assert_eq!(
-                        g.node(new_root).shape, out_sh,
+                        g.node(new_root).shape,
+                        out_sh,
                         "output shape matches shape_rule (reduction={reduction:?})"
                     );
-                    assert_eq!(g.node(new_root).dtype, DType::F32, "FSCE output dtype is F32");
+                    assert_eq!(
+                        g.node(new_root).dtype,
+                        DType::F32,
+                        "FSCE output dtype is F32"
+                    );
 
                     let legacy_root = frozen_legacy_decompose(&mut g, fused, &params);
                     assert_structural_eq(&g, new_root, legacy_root);
@@ -596,7 +658,10 @@ mod tests {
             let mut g = Graph::new();
             let fused = fused_node(&mut g, &[2, 3], 5, DType::F16, DType::I64, reduction);
             let new_root = decompose(&mut g, fused, &params);
-            assert_ne!(new_root, fused, "recipe decompose fires (F16 work, reduction={reduction:?})");
+            assert_ne!(
+                new_root, fused,
+                "recipe decompose fires (F16 work, reduction={reduction:?})"
+            );
             assert_eq!(g.node(new_root).dtype, DType::F32, "Cast(F32) output tail");
             let legacy_root = frozen_legacy_decompose(&mut g, fused, &params);
             assert_structural_eq(&g, new_root, legacy_root);

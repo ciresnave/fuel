@@ -32,9 +32,7 @@ use crate::lazy::{LazyTensor, WeightStorage};
 use crate::lazy_qwen3_vl_text::{
     MropePos, Qwen3VlTextConfig, Qwen3VlTextModel, Qwen3VlTextWeights,
 };
-use crate::lazy_qwen3_vl_vision::{
-    Qwen3VlVisionConfig, Qwen3VlVisionModel, Qwen3VlVisionWeights,
-};
+use crate::lazy_qwen3_vl_vision::{Qwen3VlVisionConfig, Qwen3VlVisionModel, Qwen3VlVisionWeights};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -340,8 +338,7 @@ fn project_visual(
     let projected = proj
         .weight
         .apply_linear(visual, vision_out_hidden, text_hidden)?;
-    let bias_t =
-        projected.const_f32_like(Arc::clone(&proj.bias), Shape::from_dims(&[text_hidden]));
+    let bias_t = projected.const_f32_like(Arc::clone(&proj.bias), Shape::from_dims(&[text_hidden]));
     projected.broadcast_add(&bias_t)
 }
 
@@ -572,9 +569,7 @@ impl Qwen3VlWeights {
         st: &crate::safetensors::MmapedSafetensors,
         cfg: &Qwen3VlConfig,
     ) -> Result<Self> {
-        use crate::lazy::{
-            load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
-        };
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
 
         let vision = Qwen3VlVisionWeights::load_from_mmapped(st, &cfg.vision_config)?;
         let text = Qwen3VlTextWeights::load_from_mmapped(st, &cfg.text_config)?;
@@ -692,11 +687,13 @@ mod tests {
         }
     }
 
-    fn tiny_vision_weights(cfg: &Qwen3VlVisionConfig, nb: &mut Box<dyn FnMut() -> f32>) -> Qwen3VlVisionWeights {
+    fn tiny_vision_weights(
+        cfg: &Qwen3VlVisionConfig,
+        nb: &mut Box<dyn FnMut() -> f32>,
+    ) -> Qwen3VlVisionWeights {
         let h = cfg.hidden_size;
         let inter = cfg.intermediate_size;
-        let conv_raw_len =
-            cfg.hidden_size * cfg.in_channels * 2 * cfg.patch_size * cfg.patch_size;
+        let conv_raw_len = cfg.hidden_size * cfg.in_channels * 2 * cfg.patch_size * cfg.patch_size;
         let conv_raw: Vec<f32> = (0..conv_raw_len).map(|_| (**nb)()).collect();
         let patch_embed = Conv3dTemporal2Weights::from_raw_weight(
             &conv_raw,
@@ -704,7 +701,10 @@ mod tests {
             cfg.in_channels,
             cfg.patch_size,
             cfg.patch_size,
-            Conv3dTemporal2Config { stride: cfg.patch_size, ..Default::default() },
+            Conv3dTemporal2Config {
+                stride: cfg.patch_size,
+                ..Default::default()
+            },
         )
         .unwrap();
         let patch_embed_bias = vec_of(h, &mut **nb);
@@ -742,7 +742,10 @@ mod tests {
         }
     }
 
-    fn tiny_text_weights(cfg: &Qwen3VlTextConfig, nb: &mut Box<dyn FnMut() -> f32>) -> Qwen3VlTextWeights {
+    fn tiny_text_weights(
+        cfg: &Qwen3VlTextConfig,
+        nb: &mut Box<dyn FnMut() -> f32>,
+    ) -> Qwen3VlTextWeights {
         let h = cfg.hidden_size;
         let i = cfg.intermediate_size;
         let kv = cfg.num_key_value_heads * cfg.head_dim;
@@ -782,11 +785,8 @@ mod tests {
 
     /// Build a `(N, C, T_p, H, W)` flattened-patch tensor.
     fn tiny_pixels(cfg: &Qwen3VlVisionConfig, n_patches: usize, scale: f32) -> LazyTensor {
-        let numel = n_patches
-            * cfg.in_channels
-            * cfg.temporal_patch_size
-            * cfg.patch_size
-            * cfg.patch_size;
+        let numel =
+            n_patches * cfg.in_channels * cfg.temporal_patch_size * cfg.patch_size * cfg.patch_size;
         let data: Vec<f32> = (0..numel)
             .map(|i| scale * ((i as f32 / numel as f32) - 0.5))
             .collect();
@@ -935,14 +935,9 @@ mod tests {
         let visual_embeds =
             anchor.const_f32_like(Arc::from(visual_data), Shape::from_dims(&[n, hidden]));
         let slot_positions = vec![1_usize, 3];
-        let out = substitute_visual_embeds(
-            &text_embeds,
-            &visual_embeds,
-            &slot_positions,
-            hidden,
-        )
-        .unwrap()
-        .realize_f32();
+        let out = substitute_visual_embeds(&text_embeds, &visual_embeds, &slot_positions, hidden)
+            .unwrap()
+            .realize_f32();
         assert_eq!(out.len(), seq * hidden);
         for r in 0..seq {
             for c in 0..hidden {

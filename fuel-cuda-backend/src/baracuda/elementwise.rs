@@ -326,7 +326,12 @@ unary_kernel!(unary_sign_f32, unary_sign_f32, 4, "unary_sign_f32");
 unary_kernel!(unary_sqr_f32, unary_square_f32, 4, "unary_square_f32");
 unary_kernel!(unary_sqrt_f32, unary_sqrt_f32, 4, "unary_sqrt_f32");
 unary_kernel!(unary_rsqrt_f32, unary_rsqrt_f32, 4, "unary_rsqrt_f32");
-unary_kernel!(unary_recip_f32, unary_reciprocal_f32, 4, "unary_reciprocal_f32");
+unary_kernel!(
+    unary_recip_f32,
+    unary_reciprocal_f32,
+    4,
+    "unary_reciprocal_f32"
+);
 unary_kernel!(unary_exp_f32, unary_exp_f32, 4, "unary_exp_f32");
 unary_kernel!(unary_log_f32, unary_log_f32, 4, "unary_log_f32");
 unary_kernel!(unary_sin_f32, unary_sin_f32, 4, "unary_sin_f32");
@@ -340,9 +345,19 @@ unary_kernel!(unary_tanh_f32, unary_tanh_f32, 4, "unary_tanh_f32");
 // side of the CPU/CUDA relu NaN-convention divergence opened by
 // 772e27a0 (CPU-only at the time; alpha.76 was the pending Baracuda
 // dependency).
-unary_kernel!(unary_relu_f32, unary_relu_propagating_f32, 4, "unary_relu_propagating_f32");
+unary_kernel!(
+    unary_relu_f32,
+    unary_relu_propagating_f32,
+    4,
+    "unary_relu_propagating_f32"
+);
 unary_kernel!(unary_gelu_f32, unary_gelu_f32, 4, "unary_gelu_f32");
-unary_kernel!(unary_gelu_tanh_f32, unary_gelu_tanh_f32, 4, "unary_gelu_tanh_f32");
+unary_kernel!(
+    unary_gelu_tanh_f32,
+    unary_gelu_tanh_f32,
+    4,
+    "unary_gelu_tanh_f32"
+);
 unary_kernel!(unary_silu_f32, unary_silu_f32, 4, "unary_silu_f32");
 unary_kernel!(unary_sigmoid_f32, unary_sigmoid_f32, 4, "unary_sigmoid_f32");
 
@@ -412,29 +427,129 @@ macro_rules! unary_inplace_kernel {
 // only on the same-position input). Pinned by the dispatch-level live
 // test `cuda_relu_inplace_propagates_nan_f32` in
 // `fuel-dispatch/tests/cuda_dispatch_live.rs`.
-unary_inplace_kernel!(unary_inplace_relu_f32,    unary_relu_propagating_f32,    4, "unary_inplace_relu_f32");
-unary_inplace_kernel!(unary_inplace_silu_f32,    unary_silu_f32,    4, "unary_inplace_silu_f32");
-unary_inplace_kernel!(unary_inplace_gelu_f32,    unary_gelu_tanh_f32, 4, "unary_inplace_gelu_f32");
-unary_inplace_kernel!(unary_inplace_tanh_f32,    unary_tanh_f32,    4, "unary_inplace_tanh_f32");
-unary_inplace_kernel!(unary_inplace_sigmoid_f32, unary_sigmoid_f32, 4, "unary_inplace_sigmoid_f32");
+unary_inplace_kernel!(
+    unary_inplace_relu_f32,
+    unary_relu_propagating_f32,
+    4,
+    "unary_inplace_relu_f32"
+);
+unary_inplace_kernel!(
+    unary_inplace_silu_f32,
+    unary_silu_f32,
+    4,
+    "unary_inplace_silu_f32"
+);
+unary_inplace_kernel!(
+    unary_inplace_gelu_f32,
+    unary_gelu_tanh_f32,
+    4,
+    "unary_inplace_gelu_f32"
+);
+unary_inplace_kernel!(
+    unary_inplace_tanh_f32,
+    unary_tanh_f32,
+    4,
+    "unary_inplace_tanh_f32"
+);
+unary_inplace_kernel!(
+    unary_inplace_sigmoid_f32,
+    unary_sigmoid_f32,
+    4,
+    "unary_inplace_sigmoid_f32"
+);
 
-unary_inplace_kernel!(unary_inplace_relu_f64,    unary_relu_propagating_f64,    8, "unary_inplace_relu_f64");
-unary_inplace_kernel!(unary_inplace_silu_f64,    unary_silu_f64,    8, "unary_inplace_silu_f64");
-unary_inplace_kernel!(unary_inplace_gelu_f64,    unary_gelu_tanh_f64, 8, "unary_inplace_gelu_f64");
-unary_inplace_kernel!(unary_inplace_tanh_f64,    unary_tanh_f64,    8, "unary_inplace_tanh_f64");
-unary_inplace_kernel!(unary_inplace_sigmoid_f64, unary_sigmoid_f64, 8, "unary_inplace_sigmoid_f64");
+unary_inplace_kernel!(
+    unary_inplace_relu_f64,
+    unary_relu_propagating_f64,
+    8,
+    "unary_inplace_relu_f64"
+);
+unary_inplace_kernel!(
+    unary_inplace_silu_f64,
+    unary_silu_f64,
+    8,
+    "unary_inplace_silu_f64"
+);
+unary_inplace_kernel!(
+    unary_inplace_gelu_f64,
+    unary_gelu_tanh_f64,
+    8,
+    "unary_inplace_gelu_f64"
+);
+unary_inplace_kernel!(
+    unary_inplace_tanh_f64,
+    unary_tanh_f64,
+    8,
+    "unary_inplace_tanh_f64"
+);
+unary_inplace_kernel!(
+    unary_inplace_sigmoid_f64,
+    unary_sigmoid_f64,
+    8,
+    "unary_inplace_sigmoid_f64"
+);
 
-unary_inplace_kernel!(unary_inplace_relu_bf16,    unary_relu_propagating_bf16,    2, "unary_inplace_relu_bf16");
-unary_inplace_kernel!(unary_inplace_silu_bf16,    unary_silu_bf16,    2, "unary_inplace_silu_bf16");
-unary_inplace_kernel!(unary_inplace_gelu_bf16,    unary_gelu_tanh_bf16, 2, "unary_inplace_gelu_bf16");
-unary_inplace_kernel!(unary_inplace_tanh_bf16,    unary_tanh_bf16,    2, "unary_inplace_tanh_bf16");
-unary_inplace_kernel!(unary_inplace_sigmoid_bf16, unary_sigmoid_bf16, 2, "unary_inplace_sigmoid_bf16");
+unary_inplace_kernel!(
+    unary_inplace_relu_bf16,
+    unary_relu_propagating_bf16,
+    2,
+    "unary_inplace_relu_bf16"
+);
+unary_inplace_kernel!(
+    unary_inplace_silu_bf16,
+    unary_silu_bf16,
+    2,
+    "unary_inplace_silu_bf16"
+);
+unary_inplace_kernel!(
+    unary_inplace_gelu_bf16,
+    unary_gelu_tanh_bf16,
+    2,
+    "unary_inplace_gelu_bf16"
+);
+unary_inplace_kernel!(
+    unary_inplace_tanh_bf16,
+    unary_tanh_bf16,
+    2,
+    "unary_inplace_tanh_bf16"
+);
+unary_inplace_kernel!(
+    unary_inplace_sigmoid_bf16,
+    unary_sigmoid_bf16,
+    2,
+    "unary_inplace_sigmoid_bf16"
+);
 
-unary_inplace_kernel!(unary_inplace_relu_f16,    unary_relu_propagating_f16,    2, "unary_inplace_relu_f16");
-unary_inplace_kernel!(unary_inplace_silu_f16,    unary_silu_f16,    2, "unary_inplace_silu_f16");
-unary_inplace_kernel!(unary_inplace_gelu_f16,    unary_gelu_tanh_f16, 2, "unary_inplace_gelu_f16");
-unary_inplace_kernel!(unary_inplace_tanh_f16,    unary_tanh_f16,    2, "unary_inplace_tanh_f16");
-unary_inplace_kernel!(unary_inplace_sigmoid_f16, unary_sigmoid_f16, 2, "unary_inplace_sigmoid_f16");
+unary_inplace_kernel!(
+    unary_inplace_relu_f16,
+    unary_relu_propagating_f16,
+    2,
+    "unary_inplace_relu_f16"
+);
+unary_inplace_kernel!(
+    unary_inplace_silu_f16,
+    unary_silu_f16,
+    2,
+    "unary_inplace_silu_f16"
+);
+unary_inplace_kernel!(
+    unary_inplace_gelu_f16,
+    unary_gelu_tanh_f16,
+    2,
+    "unary_inplace_gelu_f16"
+);
+unary_inplace_kernel!(
+    unary_inplace_tanh_f16,
+    unary_tanh_f16,
+    2,
+    "unary_inplace_tanh_f16"
+);
+unary_inplace_kernel!(
+    unary_inplace_sigmoid_f16,
+    unary_sigmoid_f16,
+    2,
+    "unary_inplace_sigmoid_f16"
+);
 
 // In-place unary op family expansion (2026-05-30) — 16 new ops × 4
 // dtypes. Each entry reuses the matching baracuda forward symbol
@@ -442,85 +557,405 @@ unary_inplace_kernel!(unary_inplace_sigmoid_f16, unary_sigmoid_f16, 2, "unary_in
 // thread reads x[i] before writing y[i], no cross-thread aliasing).
 // FFI stems for sqr/recip use baracuda's `square`/`reciprocal`
 // internal naming; matches the forward `unary_kernel!` aliasing.
-unary_inplace_kernel!(unary_inplace_neg_f32,  unary_neg_f32,  4, "unary_inplace_neg_f32");
-unary_inplace_kernel!(unary_inplace_neg_f64,  unary_neg_f64,  8, "unary_inplace_neg_f64");
-unary_inplace_kernel!(unary_inplace_neg_bf16, unary_neg_bf16, 2, "unary_inplace_neg_bf16");
-unary_inplace_kernel!(unary_inplace_neg_f16,  unary_neg_f16,  2, "unary_inplace_neg_f16");
+unary_inplace_kernel!(
+    unary_inplace_neg_f32,
+    unary_neg_f32,
+    4,
+    "unary_inplace_neg_f32"
+);
+unary_inplace_kernel!(
+    unary_inplace_neg_f64,
+    unary_neg_f64,
+    8,
+    "unary_inplace_neg_f64"
+);
+unary_inplace_kernel!(
+    unary_inplace_neg_bf16,
+    unary_neg_bf16,
+    2,
+    "unary_inplace_neg_bf16"
+);
+unary_inplace_kernel!(
+    unary_inplace_neg_f16,
+    unary_neg_f16,
+    2,
+    "unary_inplace_neg_f16"
+);
 
-unary_inplace_kernel!(unary_inplace_abs_f32,  unary_abs_f32,  4, "unary_inplace_abs_f32");
-unary_inplace_kernel!(unary_inplace_abs_f64,  unary_abs_f64,  8, "unary_inplace_abs_f64");
-unary_inplace_kernel!(unary_inplace_abs_bf16, unary_abs_bf16, 2, "unary_inplace_abs_bf16");
-unary_inplace_kernel!(unary_inplace_abs_f16,  unary_abs_f16,  2, "unary_inplace_abs_f16");
+unary_inplace_kernel!(
+    unary_inplace_abs_f32,
+    unary_abs_f32,
+    4,
+    "unary_inplace_abs_f32"
+);
+unary_inplace_kernel!(
+    unary_inplace_abs_f64,
+    unary_abs_f64,
+    8,
+    "unary_inplace_abs_f64"
+);
+unary_inplace_kernel!(
+    unary_inplace_abs_bf16,
+    unary_abs_bf16,
+    2,
+    "unary_inplace_abs_bf16"
+);
+unary_inplace_kernel!(
+    unary_inplace_abs_f16,
+    unary_abs_f16,
+    2,
+    "unary_inplace_abs_f16"
+);
 
-unary_inplace_kernel!(unary_inplace_sqr_f32,  unary_square_f32,  4, "unary_inplace_sqr_f32");
-unary_inplace_kernel!(unary_inplace_sqr_f64,  unary_square_f64,  8, "unary_inplace_sqr_f64");
-unary_inplace_kernel!(unary_inplace_sqr_bf16, unary_square_bf16, 2, "unary_inplace_sqr_bf16");
-unary_inplace_kernel!(unary_inplace_sqr_f16,  unary_square_f16,  2, "unary_inplace_sqr_f16");
+unary_inplace_kernel!(
+    unary_inplace_sqr_f32,
+    unary_square_f32,
+    4,
+    "unary_inplace_sqr_f32"
+);
+unary_inplace_kernel!(
+    unary_inplace_sqr_f64,
+    unary_square_f64,
+    8,
+    "unary_inplace_sqr_f64"
+);
+unary_inplace_kernel!(
+    unary_inplace_sqr_bf16,
+    unary_square_bf16,
+    2,
+    "unary_inplace_sqr_bf16"
+);
+unary_inplace_kernel!(
+    unary_inplace_sqr_f16,
+    unary_square_f16,
+    2,
+    "unary_inplace_sqr_f16"
+);
 
-unary_inplace_kernel!(unary_inplace_sqrt_f32,  unary_sqrt_f32,  4, "unary_inplace_sqrt_f32");
-unary_inplace_kernel!(unary_inplace_sqrt_f64,  unary_sqrt_f64,  8, "unary_inplace_sqrt_f64");
-unary_inplace_kernel!(unary_inplace_sqrt_bf16, unary_sqrt_bf16, 2, "unary_inplace_sqrt_bf16");
-unary_inplace_kernel!(unary_inplace_sqrt_f16,  unary_sqrt_f16,  2, "unary_inplace_sqrt_f16");
+unary_inplace_kernel!(
+    unary_inplace_sqrt_f32,
+    unary_sqrt_f32,
+    4,
+    "unary_inplace_sqrt_f32"
+);
+unary_inplace_kernel!(
+    unary_inplace_sqrt_f64,
+    unary_sqrt_f64,
+    8,
+    "unary_inplace_sqrt_f64"
+);
+unary_inplace_kernel!(
+    unary_inplace_sqrt_bf16,
+    unary_sqrt_bf16,
+    2,
+    "unary_inplace_sqrt_bf16"
+);
+unary_inplace_kernel!(
+    unary_inplace_sqrt_f16,
+    unary_sqrt_f16,
+    2,
+    "unary_inplace_sqrt_f16"
+);
 
-unary_inplace_kernel!(unary_inplace_rsqrt_f32,  unary_rsqrt_f32,  4, "unary_inplace_rsqrt_f32");
-unary_inplace_kernel!(unary_inplace_rsqrt_f64,  unary_rsqrt_f64,  8, "unary_inplace_rsqrt_f64");
-unary_inplace_kernel!(unary_inplace_rsqrt_bf16, unary_rsqrt_bf16, 2, "unary_inplace_rsqrt_bf16");
-unary_inplace_kernel!(unary_inplace_rsqrt_f16,  unary_rsqrt_f16,  2, "unary_inplace_rsqrt_f16");
+unary_inplace_kernel!(
+    unary_inplace_rsqrt_f32,
+    unary_rsqrt_f32,
+    4,
+    "unary_inplace_rsqrt_f32"
+);
+unary_inplace_kernel!(
+    unary_inplace_rsqrt_f64,
+    unary_rsqrt_f64,
+    8,
+    "unary_inplace_rsqrt_f64"
+);
+unary_inplace_kernel!(
+    unary_inplace_rsqrt_bf16,
+    unary_rsqrt_bf16,
+    2,
+    "unary_inplace_rsqrt_bf16"
+);
+unary_inplace_kernel!(
+    unary_inplace_rsqrt_f16,
+    unary_rsqrt_f16,
+    2,
+    "unary_inplace_rsqrt_f16"
+);
 
-unary_inplace_kernel!(unary_inplace_recip_f32,  unary_reciprocal_f32,  4, "unary_inplace_recip_f32");
-unary_inplace_kernel!(unary_inplace_recip_f64,  unary_reciprocal_f64,  8, "unary_inplace_recip_f64");
-unary_inplace_kernel!(unary_inplace_recip_bf16, unary_reciprocal_bf16, 2, "unary_inplace_recip_bf16");
-unary_inplace_kernel!(unary_inplace_recip_f16,  unary_reciprocal_f16,  2, "unary_inplace_recip_f16");
+unary_inplace_kernel!(
+    unary_inplace_recip_f32,
+    unary_reciprocal_f32,
+    4,
+    "unary_inplace_recip_f32"
+);
+unary_inplace_kernel!(
+    unary_inplace_recip_f64,
+    unary_reciprocal_f64,
+    8,
+    "unary_inplace_recip_f64"
+);
+unary_inplace_kernel!(
+    unary_inplace_recip_bf16,
+    unary_reciprocal_bf16,
+    2,
+    "unary_inplace_recip_bf16"
+);
+unary_inplace_kernel!(
+    unary_inplace_recip_f16,
+    unary_reciprocal_f16,
+    2,
+    "unary_inplace_recip_f16"
+);
 
-unary_inplace_kernel!(unary_inplace_exp_f32,  unary_exp_f32,  4, "unary_inplace_exp_f32");
-unary_inplace_kernel!(unary_inplace_exp_f64,  unary_exp_f64,  8, "unary_inplace_exp_f64");
-unary_inplace_kernel!(unary_inplace_exp_bf16, unary_exp_bf16, 2, "unary_inplace_exp_bf16");
-unary_inplace_kernel!(unary_inplace_exp_f16,  unary_exp_f16,  2, "unary_inplace_exp_f16");
+unary_inplace_kernel!(
+    unary_inplace_exp_f32,
+    unary_exp_f32,
+    4,
+    "unary_inplace_exp_f32"
+);
+unary_inplace_kernel!(
+    unary_inplace_exp_f64,
+    unary_exp_f64,
+    8,
+    "unary_inplace_exp_f64"
+);
+unary_inplace_kernel!(
+    unary_inplace_exp_bf16,
+    unary_exp_bf16,
+    2,
+    "unary_inplace_exp_bf16"
+);
+unary_inplace_kernel!(
+    unary_inplace_exp_f16,
+    unary_exp_f16,
+    2,
+    "unary_inplace_exp_f16"
+);
 
-unary_inplace_kernel!(unary_inplace_log_f32,  unary_log_f32,  4, "unary_inplace_log_f32");
-unary_inplace_kernel!(unary_inplace_log_f64,  unary_log_f64,  8, "unary_inplace_log_f64");
-unary_inplace_kernel!(unary_inplace_log_bf16, unary_log_bf16, 2, "unary_inplace_log_bf16");
-unary_inplace_kernel!(unary_inplace_log_f16,  unary_log_f16,  2, "unary_inplace_log_f16");
+unary_inplace_kernel!(
+    unary_inplace_log_f32,
+    unary_log_f32,
+    4,
+    "unary_inplace_log_f32"
+);
+unary_inplace_kernel!(
+    unary_inplace_log_f64,
+    unary_log_f64,
+    8,
+    "unary_inplace_log_f64"
+);
+unary_inplace_kernel!(
+    unary_inplace_log_bf16,
+    unary_log_bf16,
+    2,
+    "unary_inplace_log_bf16"
+);
+unary_inplace_kernel!(
+    unary_inplace_log_f16,
+    unary_log_f16,
+    2,
+    "unary_inplace_log_f16"
+);
 
-unary_inplace_kernel!(unary_inplace_sin_f32,  unary_sin_f32,  4, "unary_inplace_sin_f32");
-unary_inplace_kernel!(unary_inplace_sin_f64,  unary_sin_f64,  8, "unary_inplace_sin_f64");
-unary_inplace_kernel!(unary_inplace_sin_bf16, unary_sin_bf16, 2, "unary_inplace_sin_bf16");
-unary_inplace_kernel!(unary_inplace_sin_f16,  unary_sin_f16,  2, "unary_inplace_sin_f16");
+unary_inplace_kernel!(
+    unary_inplace_sin_f32,
+    unary_sin_f32,
+    4,
+    "unary_inplace_sin_f32"
+);
+unary_inplace_kernel!(
+    unary_inplace_sin_f64,
+    unary_sin_f64,
+    8,
+    "unary_inplace_sin_f64"
+);
+unary_inplace_kernel!(
+    unary_inplace_sin_bf16,
+    unary_sin_bf16,
+    2,
+    "unary_inplace_sin_bf16"
+);
+unary_inplace_kernel!(
+    unary_inplace_sin_f16,
+    unary_sin_f16,
+    2,
+    "unary_inplace_sin_f16"
+);
 
-unary_inplace_kernel!(unary_inplace_cos_f32,  unary_cos_f32,  4, "unary_inplace_cos_f32");
-unary_inplace_kernel!(unary_inplace_cos_f64,  unary_cos_f64,  8, "unary_inplace_cos_f64");
-unary_inplace_kernel!(unary_inplace_cos_bf16, unary_cos_bf16, 2, "unary_inplace_cos_bf16");
-unary_inplace_kernel!(unary_inplace_cos_f16,  unary_cos_f16,  2, "unary_inplace_cos_f16");
+unary_inplace_kernel!(
+    unary_inplace_cos_f32,
+    unary_cos_f32,
+    4,
+    "unary_inplace_cos_f32"
+);
+unary_inplace_kernel!(
+    unary_inplace_cos_f64,
+    unary_cos_f64,
+    8,
+    "unary_inplace_cos_f64"
+);
+unary_inplace_kernel!(
+    unary_inplace_cos_bf16,
+    unary_cos_bf16,
+    2,
+    "unary_inplace_cos_bf16"
+);
+unary_inplace_kernel!(
+    unary_inplace_cos_f16,
+    unary_cos_f16,
+    2,
+    "unary_inplace_cos_f16"
+);
 
-unary_inplace_kernel!(unary_inplace_sign_f32,  unary_sign_f32,  4, "unary_inplace_sign_f32");
-unary_inplace_kernel!(unary_inplace_sign_f64,  unary_sign_f64,  8, "unary_inplace_sign_f64");
-unary_inplace_kernel!(unary_inplace_sign_bf16, unary_sign_bf16, 2, "unary_inplace_sign_bf16");
-unary_inplace_kernel!(unary_inplace_sign_f16,  unary_sign_f16,  2, "unary_inplace_sign_f16");
+unary_inplace_kernel!(
+    unary_inplace_sign_f32,
+    unary_sign_f32,
+    4,
+    "unary_inplace_sign_f32"
+);
+unary_inplace_kernel!(
+    unary_inplace_sign_f64,
+    unary_sign_f64,
+    8,
+    "unary_inplace_sign_f64"
+);
+unary_inplace_kernel!(
+    unary_inplace_sign_bf16,
+    unary_sign_bf16,
+    2,
+    "unary_inplace_sign_bf16"
+);
+unary_inplace_kernel!(
+    unary_inplace_sign_f16,
+    unary_sign_f16,
+    2,
+    "unary_inplace_sign_f16"
+);
 
-unary_inplace_kernel!(unary_inplace_floor_f32,  unary_floor_f32,  4, "unary_inplace_floor_f32");
-unary_inplace_kernel!(unary_inplace_floor_f64,  unary_floor_f64,  8, "unary_inplace_floor_f64");
-unary_inplace_kernel!(unary_inplace_floor_bf16, unary_floor_bf16, 2, "unary_inplace_floor_bf16");
-unary_inplace_kernel!(unary_inplace_floor_f16,  unary_floor_f16,  2, "unary_inplace_floor_f16");
+unary_inplace_kernel!(
+    unary_inplace_floor_f32,
+    unary_floor_f32,
+    4,
+    "unary_inplace_floor_f32"
+);
+unary_inplace_kernel!(
+    unary_inplace_floor_f64,
+    unary_floor_f64,
+    8,
+    "unary_inplace_floor_f64"
+);
+unary_inplace_kernel!(
+    unary_inplace_floor_bf16,
+    unary_floor_bf16,
+    2,
+    "unary_inplace_floor_bf16"
+);
+unary_inplace_kernel!(
+    unary_inplace_floor_f16,
+    unary_floor_f16,
+    2,
+    "unary_inplace_floor_f16"
+);
 
-unary_inplace_kernel!(unary_inplace_ceil_f32,  unary_ceil_f32,  4, "unary_inplace_ceil_f32");
-unary_inplace_kernel!(unary_inplace_ceil_f64,  unary_ceil_f64,  8, "unary_inplace_ceil_f64");
-unary_inplace_kernel!(unary_inplace_ceil_bf16, unary_ceil_bf16, 2, "unary_inplace_ceil_bf16");
-unary_inplace_kernel!(unary_inplace_ceil_f16,  unary_ceil_f16,  2, "unary_inplace_ceil_f16");
+unary_inplace_kernel!(
+    unary_inplace_ceil_f32,
+    unary_ceil_f32,
+    4,
+    "unary_inplace_ceil_f32"
+);
+unary_inplace_kernel!(
+    unary_inplace_ceil_f64,
+    unary_ceil_f64,
+    8,
+    "unary_inplace_ceil_f64"
+);
+unary_inplace_kernel!(
+    unary_inplace_ceil_bf16,
+    unary_ceil_bf16,
+    2,
+    "unary_inplace_ceil_bf16"
+);
+unary_inplace_kernel!(
+    unary_inplace_ceil_f16,
+    unary_ceil_f16,
+    2,
+    "unary_inplace_ceil_f16"
+);
 
-unary_inplace_kernel!(unary_inplace_round_f32,  unary_round_f32,  4, "unary_inplace_round_f32");
-unary_inplace_kernel!(unary_inplace_round_f64,  unary_round_f64,  8, "unary_inplace_round_f64");
-unary_inplace_kernel!(unary_inplace_round_bf16, unary_round_bf16, 2, "unary_inplace_round_bf16");
-unary_inplace_kernel!(unary_inplace_round_f16,  unary_round_f16,  2, "unary_inplace_round_f16");
+unary_inplace_kernel!(
+    unary_inplace_round_f32,
+    unary_round_f32,
+    4,
+    "unary_inplace_round_f32"
+);
+unary_inplace_kernel!(
+    unary_inplace_round_f64,
+    unary_round_f64,
+    8,
+    "unary_inplace_round_f64"
+);
+unary_inplace_kernel!(
+    unary_inplace_round_bf16,
+    unary_round_bf16,
+    2,
+    "unary_inplace_round_bf16"
+);
+unary_inplace_kernel!(
+    unary_inplace_round_f16,
+    unary_round_f16,
+    2,
+    "unary_inplace_round_f16"
+);
 
-unary_inplace_kernel!(unary_inplace_erf_f32,  unary_erf_f32,  4, "unary_inplace_erf_f32");
-unary_inplace_kernel!(unary_inplace_erf_f64,  unary_erf_f64,  8, "unary_inplace_erf_f64");
-unary_inplace_kernel!(unary_inplace_erf_bf16, unary_erf_bf16, 2, "unary_inplace_erf_bf16");
-unary_inplace_kernel!(unary_inplace_erf_f16,  unary_erf_f16,  2, "unary_inplace_erf_f16");
+unary_inplace_kernel!(
+    unary_inplace_erf_f32,
+    unary_erf_f32,
+    4,
+    "unary_inplace_erf_f32"
+);
+unary_inplace_kernel!(
+    unary_inplace_erf_f64,
+    unary_erf_f64,
+    8,
+    "unary_inplace_erf_f64"
+);
+unary_inplace_kernel!(
+    unary_inplace_erf_bf16,
+    unary_erf_bf16,
+    2,
+    "unary_inplace_erf_bf16"
+);
+unary_inplace_kernel!(
+    unary_inplace_erf_f16,
+    unary_erf_f16,
+    2,
+    "unary_inplace_erf_f16"
+);
 
-unary_inplace_kernel!(unary_inplace_gelu_erf_f32,  unary_gelu_erf_f32,  4, "unary_inplace_gelu_erf_f32");
-unary_inplace_kernel!(unary_inplace_gelu_erf_f64,  unary_gelu_erf_f64,  8, "unary_inplace_gelu_erf_f64");
-unary_inplace_kernel!(unary_inplace_gelu_erf_bf16, unary_gelu_erf_bf16, 2, "unary_inplace_gelu_erf_bf16");
-unary_inplace_kernel!(unary_inplace_gelu_erf_f16,  unary_gelu_erf_f16,  2, "unary_inplace_gelu_erf_f16");
+unary_inplace_kernel!(
+    unary_inplace_gelu_erf_f32,
+    unary_gelu_erf_f32,
+    4,
+    "unary_inplace_gelu_erf_f32"
+);
+unary_inplace_kernel!(
+    unary_inplace_gelu_erf_f64,
+    unary_gelu_erf_f64,
+    8,
+    "unary_inplace_gelu_erf_f64"
+);
+unary_inplace_kernel!(
+    unary_inplace_gelu_erf_bf16,
+    unary_gelu_erf_bf16,
+    2,
+    "unary_inplace_gelu_erf_bf16"
+);
+unary_inplace_kernel!(
+    unary_inplace_gelu_erf_f16,
+    unary_gelu_erf_f16,
+    2,
+    "unary_inplace_gelu_erf_f16"
+);
 
 // ---------------------------------------------------------------------------
 // F64 / F16 / BF16 unary kernels.
@@ -558,17 +993,47 @@ unary_kernel!(unary_tanh_f16, unary_tanh_f16, 2, "unary_tanh_f16");
 unary_kernel!(unary_tanh_bf16, unary_tanh_bf16, 2, "unary_tanh_bf16");
 
 // NaN-propagating family — see the f32 relu comment above.
-unary_kernel!(unary_relu_f64, unary_relu_propagating_f64, 8, "unary_relu_propagating_f64");
-unary_kernel!(unary_relu_f16, unary_relu_propagating_f16, 2, "unary_relu_propagating_f16");
-unary_kernel!(unary_relu_bf16, unary_relu_propagating_bf16, 2, "unary_relu_propagating_bf16");
+unary_kernel!(
+    unary_relu_f64,
+    unary_relu_propagating_f64,
+    8,
+    "unary_relu_propagating_f64"
+);
+unary_kernel!(
+    unary_relu_f16,
+    unary_relu_propagating_f16,
+    2,
+    "unary_relu_propagating_f16"
+);
+unary_kernel!(
+    unary_relu_bf16,
+    unary_relu_propagating_bf16,
+    2,
+    "unary_relu_propagating_bf16"
+);
 
 unary_kernel!(unary_gelu_f64, unary_gelu_f64, 8, "unary_gelu_f64");
 unary_kernel!(unary_gelu_f16, unary_gelu_f16, 2, "unary_gelu_f16");
 unary_kernel!(unary_gelu_bf16, unary_gelu_bf16, 2, "unary_gelu_bf16");
 
-unary_kernel!(unary_gelu_tanh_f64, unary_gelu_tanh_f64, 8, "unary_gelu_tanh_f64");
-unary_kernel!(unary_gelu_tanh_f16, unary_gelu_tanh_f16, 2, "unary_gelu_tanh_f16");
-unary_kernel!(unary_gelu_tanh_bf16, unary_gelu_tanh_bf16, 2, "unary_gelu_tanh_bf16");
+unary_kernel!(
+    unary_gelu_tanh_f64,
+    unary_gelu_tanh_f64,
+    8,
+    "unary_gelu_tanh_f64"
+);
+unary_kernel!(
+    unary_gelu_tanh_f16,
+    unary_gelu_tanh_f16,
+    2,
+    "unary_gelu_tanh_f16"
+);
+unary_kernel!(
+    unary_gelu_tanh_bf16,
+    unary_gelu_tanh_bf16,
+    2,
+    "unary_gelu_tanh_bf16"
+);
 
 unary_kernel!(unary_step_f64, unary_step_f64, 8, "unary_step_f64");
 unary_kernel!(unary_step_f16, unary_step_f16, 2, "unary_step_f16");
@@ -580,11 +1045,31 @@ unary_kernel!(unary_silu_bf16, unary_silu_bf16, 2, "unary_silu_bf16");
 
 unary_kernel!(unary_sigmoid_f64, unary_sigmoid_f64, 8, "unary_sigmoid_f64");
 unary_kernel!(unary_sigmoid_f16, unary_sigmoid_f16, 2, "unary_sigmoid_f16");
-unary_kernel!(unary_sigmoid_bf16, unary_sigmoid_bf16, 2, "unary_sigmoid_bf16");
+unary_kernel!(
+    unary_sigmoid_bf16,
+    unary_sigmoid_bf16,
+    2,
+    "unary_sigmoid_bf16"
+);
 
-unary_kernel!(unary_recip_f64, unary_reciprocal_f64, 8, "unary_reciprocal_f64");
-unary_kernel!(unary_recip_f16, unary_reciprocal_f16, 2, "unary_reciprocal_f16");
-unary_kernel!(unary_recip_bf16, unary_reciprocal_bf16, 2, "unary_reciprocal_bf16");
+unary_kernel!(
+    unary_recip_f64,
+    unary_reciprocal_f64,
+    8,
+    "unary_reciprocal_f64"
+);
+unary_kernel!(
+    unary_recip_f16,
+    unary_reciprocal_f16,
+    2,
+    "unary_reciprocal_f16"
+);
+unary_kernel!(
+    unary_recip_bf16,
+    unary_reciprocal_bf16,
+    2,
+    "unary_reciprocal_bf16"
+);
 
 unary_kernel!(unary_sqr_f64, unary_square_f64, 8, "unary_square_f64");
 unary_kernel!(unary_sqr_f16, unary_square_f16, 2, "unary_square_f16");

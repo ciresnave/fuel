@@ -1,4 +1,4 @@
-﻿use crate::{DType, MetalDevice, MetalStorage, Result, Shape, D};
+use crate::{D, DType, MetalDevice, MetalStorage, Result, Shape};
 use fuel_backend_contract::dyn_backend::DynBackendStorage;
 use fuel_backend_contract::quantized::{DynQuantizedStorage, QuantizedDeviceKernels};
 use fuel_ir::quantized::GgmlDType;
@@ -119,19 +119,14 @@ impl QMetalStorage {
         ))
     }
 
-    fn quantize_from_f32(
-        &mut self,
-        src: &[f32],
-        imatrix: Option<(&[f32], usize)>,
-    ) -> Result<()> {
+    fn quantize_from_f32(&mut self, src: &[f32], imatrix: Option<(&[f32], usize)>) -> Result<()> {
         let mut qcpu = fuel_quantized::cpu_zeros(self.dtype, src.len());
         match imatrix {
             None => qcpu.from_float(src),
             Some((iw, n_per_row)) => qcpu.from_float_imatrix(src, iw, n_per_row),
         }
-        let bytes = unsafe {
-            std::slice::from_raw_parts(qcpu.as_ptr(), qcpu.storage_size_in_bytes())
-        };
+        let bytes =
+            unsafe { std::slice::from_raw_parts(qcpu.as_ptr(), qcpu.storage_size_in_bytes()) };
         let buffer = self.device.new_buffer_with_data(bytes)?;
         self.buffer = buffer;
         Ok(())
@@ -367,9 +362,10 @@ impl DynQuantizedStorage for QMetalStorage {
         QMetalStorage::storage_size_in_bytes(self)
     }
     fn quantize(&mut self, src: &dyn DynBackendStorage) -> Result<()> {
-        let metal = src.as_any().downcast_ref::<MetalStorage>().ok_or_else(|| {
-            fuel_ir::Error::Msg("quantize: expected metal storage".into()).bt()
-        })?;
+        let metal = src
+            .as_any()
+            .downcast_ref::<MetalStorage>()
+            .ok_or_else(|| fuel_ir::Error::Msg("quantize: expected metal storage".into()).bt())?;
         QMetalStorage::quantize(self, metal)
     }
     fn quantize_imatrix(
@@ -402,8 +398,7 @@ impl DynQuantizedStorage for QMetalStorage {
             .as_any()
             .downcast_ref::<fuel_cpu_backend::CpuStorage>()
             .ok_or_else(|| {
-                fuel_ir::Error::Msg("quantize_imatrix_onto: expected cpu storage".into())
-                    .bt()
+                fuel_ir::Error::Msg("quantize_imatrix_onto: expected cpu storage".into()).bt()
             })?;
         QMetalStorage::quantize_imatrix_onto(self, &cpu.0, imatrix_weights, n_per_row)
     }
@@ -419,16 +414,19 @@ impl DynQuantizedStorage for QMetalStorage {
         input: &dyn DynBackendStorage,
         layout: &crate::Layout,
     ) -> Result<(Box<dyn DynBackendStorage>, Shape)> {
-        let metal = input.as_any().downcast_ref::<MetalStorage>().ok_or_else(|| {
-            fuel_ir::Error::Msg("qmatmul: expected metal storage".into()).bt()
-        })?;
+        let metal = input
+            .as_any()
+            .downcast_ref::<MetalStorage>()
+            .ok_or_else(|| fuel_ir::Error::Msg("qmatmul: expected metal storage".into()).bt())?;
         let (s, sh) = QMetalStorage::fwd(self, self_shape, metal, layout)?;
         Ok((Box::new(s), sh))
     }
     fn as_any(&self) -> &dyn Any {
         self
     }
-    fn device_arc_dyn(&self) -> std::sync::Arc<dyn fuel_backend_contract::dyn_backend::DynBackendDevice> {
+    fn device_arc_dyn(
+        &self,
+    ) -> std::sync::Arc<dyn fuel_backend_contract::dyn_backend::DynBackendDevice> {
         std::sync::Arc::new(self.device.clone())
     }
 }

@@ -49,8 +49,8 @@
 //!
 //! v1 scope: F32, batch == 1, forward-only inference.
 
-use crate::lazy::{LazyTensor, WeightStorage};
 use crate::Result;
+use crate::lazy::{LazyTensor, WeightStorage};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -134,9 +134,7 @@ impl CsmWeights {
         st: &crate::safetensors::MmapedSafetensors,
         cfg: &CsmConfig,
     ) -> crate::Result<Self> {
-        use crate::lazy::{
-            load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
-        };
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
 
         // ---- audio_embeddings ------------------------------------
         let audio_embedding = load_tensor_as_f32(st, "audio_embeddings.weight")?;
@@ -183,9 +181,7 @@ impl CsmWeights {
 
         // ---- audio_head (raw 3D tensor, no transpose) ------------
         let audio_head = load_tensor_as_f32(st, "audio_head")?;
-        let expected_ah = (cfg.audio_num_codebooks - 1)
-            * cfg.decoder_dim
-            * cfg.audio_vocab_size;
+        let expected_ah = (cfg.audio_num_codebooks - 1) * cfg.decoder_dim * cfg.audio_vocab_size;
         if audio_head.len() != expected_ah {
             crate::bail!(
                 "audio_head: {} elements, expected {expected_ah} \
@@ -236,12 +232,19 @@ impl CsmModel {
         let cfg = &self.config;
         let cb = cfg.audio_num_codebooks;
         let seq = text_tokens.len();
-        assert_eq!(audio_codes.len(), seq * cb,
+        assert_eq!(
+            audio_codes.len(),
+            seq * cb,
             "audio_codes len {} != seq_len {seq} * num_codebooks {cb}",
-            audio_codes.len());
-        assert_eq!(tokens_mask.len(), seq * (cb + 1),
+            audio_codes.len()
+        );
+        assert_eq!(
+            tokens_mask.len(),
+            seq * (cb + 1),
             "tokens_mask len {} != seq_len {seq} * (num_codebooks+1) {}",
-            tokens_mask.len(), cb + 1);
+            tokens_mask.len(),
+            cb + 1
+        );
         let bd = cfg.backbone_dim;
 
         // Apply per-codebook offset to audio codes.
@@ -252,9 +255,7 @@ impl CsmModel {
                 offset_codes.push(c as u32);
             }
         }
-        let audio_ids = anchor.const_u32_like(
-            offset_codes, Shape::from_dims(&[seq * cb]),
-        );
+        let audio_ids = anchor.const_u32_like(offset_codes, Shape::from_dims(&[seq * cb]));
         let audio_table = anchor.const_f32_like(
             Arc::clone(&self.weights.audio_embedding),
             Shape::from_dims(&[cb * cfg.audio_vocab_size, bd]),
@@ -263,9 +264,7 @@ impl CsmModel {
             .index_select(0_usize, &audio_ids)?
             .reshape(Shape::from_dims(&[1, seq, cb, bd]))?;
 
-        let text_ids = anchor.const_u32_like(
-            text_tokens.to_vec(), Shape::from_dims(&[seq]),
-        );
+        let text_ids = anchor.const_u32_like(text_tokens.to_vec(), Shape::from_dims(&[seq]));
         let text_table = anchor.const_f32_like(
             Arc::clone(&self.weights.text_embedding),
             Shape::from_dims(&[cfg.text_vocab_size, bd]),
@@ -279,9 +278,7 @@ impl CsmModel {
 
         // Apply mask (broadcast over backbone_dim) and sum across codebook+1 axis.
         let mask_f32: Vec<f32> = tokens_mask.iter().map(|&b| b as f32).collect();
-        let mask = anchor.const_f32_like(
-            mask_f32, Shape::from_dims(&[1, seq, cb + 1, 1]),
-        );
+        let mask = anchor.const_f32_like(mask_f32, Shape::from_dims(&[1, seq, cb + 1, 1]));
         let mask_b = mask.broadcast_to(Shape::from_dims(&[1, seq, cb + 1, bd]))?;
         let gated = combined.mul(&mask_b)?;
         Ok(gated.sum_dim(2_usize)?)
@@ -291,9 +288,9 @@ impl CsmModel {
     /// `backbone_h` shape `(1, S, backbone_dim)` → `(1, S, audio_vocab_size)`.
     pub fn codebook0_logits(&self, backbone_h: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
-        self.weights.codebook0_head.apply_linear(
-            backbone_h, cfg.backbone_dim, cfg.audio_vocab_size,
-        )
+        self.weights
+            .codebook0_head
+            .apply_linear(backbone_h, cfg.backbone_dim, cfg.audio_vocab_size)
     }
 
     /// Project a tensor from backbone hidden space to decoder hidden
@@ -301,9 +298,9 @@ impl CsmModel {
     /// decoder's `forward_embeds`.
     pub fn project_to_decoder(&self, curr_h: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
-        self.weights.projection.apply_linear(
-            curr_h, cfg.backbone_dim, cfg.decoder_dim,
-        )
+        self.weights
+            .projection
+            .apply_linear(curr_h, cfg.backbone_dim, cfg.decoder_dim)
     }
 
     /// Apply `audio_head[codebook_idx - 1]` to a decoder hidden
@@ -319,20 +316,21 @@ impl CsmModel {
         codebook_idx: usize,
     ) -> Result<LazyTensor> {
         let cfg = &self.config;
-        assert!(codebook_idx >= 1 && codebook_idx < cfg.audio_num_codebooks,
+        assert!(
+            codebook_idx >= 1 && codebook_idx < cfg.audio_num_codebooks,
             "codebook_idx {codebook_idx} must be in 1..{}",
-            cfg.audio_num_codebooks);
+            cfg.audio_num_codebooks
+        );
         let slab = cfg.decoder_dim * cfg.audio_vocab_size;
         let start = (codebook_idx - 1) * slab;
         let end = start + slab;
         // Slice the (num_codebooks - 1, decoder_dim, audio_vocab) tensor
         // by materializing the head-matrix slab as a fresh constant on
         // the same graph as `decoder_h`.
-        let head_slice: Arc<[f32]> = Arc::from(
-            self.weights.audio_head[start..end].to_vec(),
-        );
+        let head_slice: Arc<[f32]> = Arc::from(self.weights.audio_head[start..end].to_vec());
         let head = decoder_h.const_f32_like(
-            head_slice, Shape::from_dims(&[cfg.decoder_dim, cfg.audio_vocab_size]),
+            head_slice,
+            Shape::from_dims(&[cfg.decoder_dim, cfg.audio_vocab_size]),
         );
         decoder_h.matmul(&head)
     }
@@ -438,7 +436,10 @@ mod tests {
                 &mut nb,
             ),
         };
-        CsmModel { config: cfg, weights }
+        CsmModel {
+            config: cfg,
+            weights,
+        }
     }
 
     fn anchor() -> LazyTensor {
@@ -454,9 +455,13 @@ mod tests {
         let text_tokens = vec![1_u32, 2];
         let mask = vec![1_u8; seq * (cb + 1)];
         let a = anchor();
-        let out = model.embed_frame(&audio_codes, &text_tokens, &mask, &a).unwrap();
+        let out = model
+            .embed_frame(&audio_codes, &text_tokens, &mask, &a)
+            .unwrap();
         assert_eq!(out.shape().dims(), &[1, seq, model.config.backbone_dim]);
-        for &v in &out.realize_f32() { assert!(v.is_finite()); }
+        for &v in &out.realize_f32() {
+            assert!(v.is_finite());
+        }
     }
 
     #[test]
@@ -467,18 +472,20 @@ mod tests {
         let a = anchor();
         // All-zero mask → result is the zero vector.
         let zero_mask = vec![0_u8; 1 * (cb + 1)];
-        let zero_out = model.embed_frame(
-            &vec![0_u32; cb], &vec![0_u32], &zero_mask, &a,
-        ).unwrap().realize_f32();
+        let zero_out = model
+            .embed_frame(&vec![0_u32; cb], &vec![0_u32], &zero_mask, &a)
+            .unwrap()
+            .realize_f32();
         for &v in &zero_out {
             assert!(v.abs() < 1e-7, "all-zero mask must zero embed: {v}");
         }
         // All-active mask → result has bd elements all non-zero (with
         // overwhelming probability under random init).
         let one_mask = vec![1_u8; 1 * (cb + 1)];
-        let one_out = model.embed_frame(
-            &vec![0_u32; cb], &vec![0_u32], &one_mask, &a,
-        ).unwrap().realize_f32();
+        let one_out = model
+            .embed_frame(&vec![0_u32; cb], &vec![0_u32], &one_mask, &a)
+            .unwrap()
+            .realize_f32();
         let any_nonzero = one_out.iter().any(|v| v.abs() > 1e-9);
         assert!(any_nonzero, "active mask must produce non-zero embed");
         let _ = bd;
@@ -489,7 +496,9 @@ mod tests {
         let model = tiny_model();
         let cfg = &model.config;
         let h = LazyTensor::from_f32(
-            (0..(1 * 2 * cfg.backbone_dim)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
+            (0..(1 * 2 * cfg.backbone_dim))
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 2, cfg.backbone_dim]),
             &Device::cpu(),
         );
@@ -503,7 +512,9 @@ mod tests {
         let cfg = &model.config;
         let a = anchor();
         let curr_h = LazyTensor::from_f32(
-            (0..(1 * 3 * cfg.backbone_dim)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
+            (0..(1 * 3 * cfg.backbone_dim))
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, cfg.backbone_dim]),
             &Device::cpu(),
         );
@@ -513,7 +524,9 @@ mod tests {
         let ci_logits = model.audio_head_logits(&proj, 1).unwrap();
         let _ = &a;
         assert_eq!(ci_logits.shape().dims(), &[1, 3, cfg.audio_vocab_size]);
-        for &v in &ci_logits.realize_f32() { assert!(v.is_finite()); }
+        for &v in &ci_logits.realize_f32() {
+            assert!(v.is_finite());
+        }
     }
 
     #[test]
@@ -545,15 +558,15 @@ mod tests {
 
     // ---- Safetensors loader round-trip --------------------------------
 
-    fn write_tmp_safetensors(
-        tensors: &[(String, Vec<usize>, Vec<f32>)],
-    ) -> std::path::PathBuf {
+    fn write_tmp_safetensors(tensors: &[(String, Vec<usize>, Vec<f32>)]) -> std::path::PathBuf {
         use safetensors::tensor::TensorView;
         use std::collections::HashMap;
-        let bytes_store: Vec<Vec<u8>> = tensors.iter()
+        let bytes_store: Vec<Vec<u8>> = tensors
+            .iter()
             .map(|(_, _, data)| data.iter().flat_map(|f| f.to_le_bytes()).collect())
             .collect();
-        let views: HashMap<String, TensorView<'_>> = tensors.iter()
+        let views: HashMap<String, TensorView<'_>> = tensors
+            .iter()
             .zip(bytes_store.iter())
             .map(|((name, shape, _), bytes)| {
                 let v = TensorView::new(safetensors::Dtype::F32, shape.clone(), bytes)
@@ -565,7 +578,10 @@ mod tests {
         let bytes_out = safetensors::serialize(&views, metadata).unwrap();
         let path = std::env::temp_dir().join(format!(
             "fuel_lazy_csm_test_{}.safetensors",
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
         ));
         std::fs::write(&path, bytes_out).unwrap();
         path
@@ -573,10 +589,12 @@ mod tests {
 
     fn ramp_f32(n: usize, seed: u32) -> Vec<f32> {
         let mut s = seed;
-        (0..n).map(|_| {
-            s = s.wrapping_mul(1103515245).wrapping_add(12345);
-            ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
-        }).collect()
+        (0..n)
+            .map(|_| {
+                s = s.wrapping_mul(1103515245).wrapping_add(12345);
+                ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
+            })
+            .collect()
     }
 
     /// Round-trip a tiny CSM config through a synthesized safetensors
@@ -605,7 +623,10 @@ mod tests {
         let tensors = vec![
             (
                 "audio_embeddings.weight".to_string(),
-                vec![cfg.audio_num_codebooks * cfg.audio_vocab_size, cfg.backbone_dim],
+                vec![
+                    cfg.audio_num_codebooks * cfg.audio_vocab_size,
+                    cfg.backbone_dim,
+                ],
                 ae.clone(),
             ),
             (
@@ -665,8 +686,10 @@ mod tests {
                 for j in 0..cfg.backbone_dim {
                     let hf = c0[i * cfg.backbone_dim + j];
                     let st_val = arr[j * cfg.audio_vocab_size + i];
-                    assert!((hf - st_val).abs() < 1e-7,
-                        "codebook0_head transpose mismatch at [{i},{j}]");
+                    assert!(
+                        (hf - st_val).abs() < 1e-7,
+                        "codebook0_head transpose mismatch at [{i},{j}]"
+                    );
                 }
             }
         } else {
@@ -683,8 +706,10 @@ mod tests {
                 for j in 0..cfg.backbone_dim {
                     let hf = proj[i * cfg.backbone_dim + j];
                     let st_val = arr[j * cfg.decoder_dim + i];
-                    assert!((hf - st_val).abs() < 1e-7,
-                        "projection transpose mismatch at [{i},{j}]");
+                    assert!(
+                        (hf - st_val).abs() < 1e-7,
+                        "projection transpose mismatch at [{i},{j}]"
+                    );
                 }
             }
         } else {
@@ -722,7 +747,10 @@ mod tests {
         let tensors = vec![
             (
                 "audio_embeddings.weight".to_string(),
-                vec![cfg.audio_num_codebooks * cfg.audio_vocab_size, cfg.backbone_dim],
+                vec![
+                    cfg.audio_num_codebooks * cfg.audio_vocab_size,
+                    cfg.backbone_dim,
+                ],
                 ae,
             ),
             (
@@ -753,7 +781,10 @@ mod tests {
         let path = write_tmp_safetensors(&tensors);
         let st = unsafe { crate::safetensors::MmapedSafetensors::new(&path).unwrap() };
         let weights = CsmWeights::load_from_mmapped(&st, &cfg).unwrap();
-        let model = CsmModel { config: cfg.clone(), weights };
+        let model = CsmModel {
+            config: cfg.clone(),
+            weights,
+        };
 
         let a = anchor();
         let cb = cfg.audio_num_codebooks;
@@ -761,19 +792,27 @@ mod tests {
         let audio_codes = vec![0_u32; seq * cb];
         let text_tokens = vec![0_u32; seq];
         let mask = vec![1_u8; seq * (cb + 1)];
-        let emb = model.embed_frame(&audio_codes, &text_tokens, &mask, &a).unwrap();
+        let emb = model
+            .embed_frame(&audio_codes, &text_tokens, &mask, &a)
+            .unwrap();
         assert_eq!(emb.shape().dims(), &[1, seq, cfg.backbone_dim]);
-        for &v in &emb.realize_f32() { assert!(v.is_finite()); }
+        for &v in &emb.realize_f32() {
+            assert!(v.is_finite());
+        }
 
         let logits = model.codebook0_logits(&emb).unwrap();
         assert_eq!(logits.shape().dims(), &[1, seq, cfg.audio_vocab_size]);
-        for &v in &logits.realize_f32() { assert!(v.is_finite()); }
+        for &v in &logits.realize_f32() {
+            assert!(v.is_finite());
+        }
 
         let proj_h = model.project_to_decoder(&emb).unwrap();
         assert_eq!(proj_h.shape().dims(), &[1, seq, cfg.decoder_dim]);
         let ci = model.audio_head_logits(&proj_h, 1).unwrap();
         assert_eq!(ci.shape().dims(), &[1, seq, cfg.audio_vocab_size]);
-        for &v in &ci.realize_f32() { assert!(v.is_finite()); }
+        for &v in &ci.realize_f32() {
+            assert!(v.is_finite());
+        }
 
         let ce = model.audio_embed_for_code(2, 1, &a).unwrap();
         assert_eq!(ce.shape().dims(), &[1, 1, cfg.backbone_dim]);

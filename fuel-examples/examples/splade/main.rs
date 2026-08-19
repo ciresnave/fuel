@@ -7,12 +7,12 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{anyhow, Error as E, Result};
+use anyhow::{Error as E, Result, anyhow};
 use clap::Parser;
-use fuel::lazy::{load_tensor_as_f32, load_transposed_matrix, LazyTensor};
-use fuel::lazy_bert::{BertConfig, BertModel, BertWeights};
 use fuel::Shape;
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use fuel::lazy::{LazyTensor, load_tensor_as_f32, load_transposed_matrix};
+use fuel::lazy_bert::{BertConfig, BertModel, BertWeights};
+use hf_hub::{Repo, RepoType, api::sync::Api};
 use tokenizers::Tokenizer;
 
 #[derive(Parser, Debug)]
@@ -61,20 +61,12 @@ struct MlmHead {
     decoder_b: Arc<[f32]>,         // `[vocab]`
 }
 
-fn load_mlm_head(
-    st: &fuel::safetensors::MmapedSafetensors,
-    cfg: &BertConfig,
-) -> Result<MlmHead> {
+fn load_mlm_head(st: &fuel::safetensors::MmapedSafetensors, cfg: &BertConfig) -> Result<MlmHead> {
     let h = cfg.hidden_size;
     let v = cfg.vocab_size;
 
-    let dense_w = load_transposed_matrix(
-        st,
-        "cls.predictions.transform.dense.weight",
-        h,
-        h,
-    )
-    .map_err(|e| anyhow!("{e}"))?;
+    let dense_w = load_transposed_matrix(st, "cls.predictions.transform.dense.weight", h, h)
+        .map_err(|e| anyhow!("{e}"))?;
     let dense_b = load_tensor_as_f32(st, "cls.predictions.transform.dense.bias")
         .map_err(|e| anyhow!("{e}"))?;
     let ln_gain = load_tensor_as_f32(st, "cls.predictions.transform.LayerNorm.weight")
@@ -84,8 +76,8 @@ fn load_mlm_head(
     // decoder weight is `[vocab, hidden]` in HF, transposed to `[hidden, vocab]`.
     let decoder_w = load_transposed_matrix(st, "cls.predictions.decoder.weight", v, h)
         .map_err(|e| anyhow!("{e}"))?;
-    let decoder_b = load_tensor_as_f32(st, "cls.predictions.decoder.bias")
-        .map_err(|e| anyhow!("{e}"))?;
+    let decoder_b =
+        load_tensor_as_f32(st, "cls.predictions.decoder.bias").map_err(|e| anyhow!("{e}"))?;
 
     Ok(MlmHead {
         transform_dense_w: Arc::from(dense_w),
@@ -99,17 +91,15 @@ fn load_mlm_head(
 
 /// Build the MLM logits from per-token hidden states `[1, seq, hidden]`.
 /// Output shape: `[1, seq, vocab]`.
-fn apply_mlm_head(
-    hidden: &LazyTensor,
-    mlm: &MlmHead,
-    cfg: &BertConfig,
-) -> Result<LazyTensor> {
+fn apply_mlm_head(hidden: &LazyTensor, mlm: &MlmHead, cfg: &BertConfig) -> Result<LazyTensor> {
     let h = cfg.hidden_size;
     let v = cfg.vocab_size;
 
     // transform.dense + bias
-    let dense_t =
-        hidden.const_f32_like(Arc::clone(&mlm.transform_dense_w), Shape::from_dims(&[h, h]));
+    let dense_t = hidden.const_f32_like(
+        Arc::clone(&mlm.transform_dense_w),
+        Shape::from_dims(&[h, h]),
+    );
     let x = hidden.matmul(&dense_t)?;
     let bias_t = hidden
         .const_f32_like(Arc::clone(&mlm.transform_dense_b), Shape::from_dims(&[h]))
@@ -124,8 +114,7 @@ fn apply_mlm_head(
         cfg.layer_norm_eps,
     )?;
     // decoder
-    let dec_t =
-        hidden.const_f32_like(Arc::clone(&mlm.decoder_w), Shape::from_dims(&[h, v]));
+    let dec_t = hidden.const_f32_like(Arc::clone(&mlm.decoder_w), Shape::from_dims(&[h, v]));
     let logits = x.matmul(&dec_t)?;
     let dec_b = hidden
         .const_f32_like(Arc::clone(&mlm.decoder_b), Shape::from_dims(&[v]))
@@ -173,9 +162,9 @@ fn main() -> Result<()> {
     let mlm = load_mlm_head(&st, &config)?;
     let model = BertModel::new(config.clone(), bert_weights);
 
-    let prompt = args.prompt.unwrap_or_else(|| {
-        "The cat sits outside, listening for the postman.".to_string()
-    });
+    let prompt = args
+        .prompt
+        .unwrap_or_else(|| "The cat sits outside, listening for the postman.".to_string());
     let encoded = tokenizer.encode(prompt.as_str(), true).map_err(E::msg)?;
     let tokens: Vec<u32> = encoded.get_ids().to_vec();
 

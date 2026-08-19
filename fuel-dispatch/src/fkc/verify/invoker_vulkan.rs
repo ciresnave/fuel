@@ -38,7 +38,12 @@ impl VulkanInvoker {
     /// New invoker bound to `backend`, for an op whose output is
     /// `out_dtype`/`out_shape`, with no auxiliary op params.
     pub fn new(backend: Arc<VulkanBackend>, out_dtype: DType, out_shape: Vec<usize>) -> Self {
-        Self { backend, out_dtype, out_shape, params: OpParams::None }
+        Self {
+            backend,
+            out_dtype,
+            out_shape,
+            params: OpParams::None,
+        }
     }
 
     /// Builder-style override for ops that need non-`None` `OpParams`.
@@ -49,7 +54,11 @@ impl VulkanInvoker {
 }
 
 impl KernelInvoker for VulkanInvoker {
-    fn invoke(&self, entry: &BindingEntry, inputs: &[HostTensor]) -> Result<HostTensor, VerifyError> {
+    fn invoke(
+        &self,
+        entry: &BindingEntry,
+        inputs: &[HostTensor],
+    ) -> Result<HostTensor, VerifyError> {
         // H2D: upload every probe input's bytes into fresh device storage,
         // WITH the backend handle attached (`_handle` variant) so the
         // binary-op wrapper can pull it back off `input[0]` to dispatch.
@@ -89,7 +98,9 @@ impl KernelInvoker for VulkanInvoker {
         let layouts: Vec<Layout> = inputs
             .iter()
             .map(|t| Layout::contiguous(Shape::from_dims(&t.shape)))
-            .chain(std::iter::once(Layout::contiguous(Shape::from_dims(&self.out_shape))))
+            .chain(std::iter::once(Layout::contiguous(Shape::from_dims(
+                &self.out_shape,
+            ))))
             .collect();
 
         (entry.kernel)(&ins, &mut outs, &layouts, &self.params)
@@ -100,14 +111,23 @@ impl KernelInvoker for VulkanInvoker {
             VerifyError::Backend("VulkanInvoker: output storage RwLock poisoned".to_string())
         })?;
         let bytes = match &guard.inner {
-            fuel_memory::BackendStorage::Vulkan(v) => {
-                self.backend.download_bytes(v).map_err(|e| VerifyError::Backend(e.to_string()))?
-            }
+            fuel_memory::BackendStorage::Vulkan(v) => self
+                .backend
+                .download_bytes(v)
+                .map_err(|e| VerifyError::Backend(e.to_string()))?,
             #[allow(unreachable_patterns)]
-            _ => return Err(VerifyError::Backend("VulkanInvoker: output storage is not Vulkan".to_string())),
+            _ => {
+                return Err(VerifyError::Backend(
+                    "VulkanInvoker: output storage is not Vulkan".to_string(),
+                ));
+            }
         };
 
-        Ok(HostTensor { dtype: self.out_dtype, shape: self.out_shape.clone(), bytes })
+        Ok(HostTensor {
+            dtype: self.out_dtype,
+            shape: self.out_shape.clone(),
+            bytes,
+        })
     }
 }
 

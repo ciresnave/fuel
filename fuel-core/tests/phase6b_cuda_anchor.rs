@@ -24,28 +24,27 @@
 
 #![cfg(feature = "cuda")]
 
+use fuel_core::Result;
 use fuel_core::lazy::{LayerWeights, LazyTensor, LlamaWeights};
-use fuel_core::lazy_llama2c::{Llama2cConfig, Llama2cModel};
 use fuel_core::lazy_bert::{BertConfig, BertLayerWeights, BertModel, BertWeights};
 use fuel_core::lazy_convnext::ConvNextModel;
+use fuel_core::lazy_llama2c::{Llama2cConfig, Llama2cModel};
 use fuel_core::lazy_qwen2_moe::{
     ExpertWeights, Qwen2MoeConfig, Qwen2MoeLayerWeights, Qwen2MoeModel, Qwen2MoeWeights,
 };
 use fuel_core::lazy_sd_text_encoder::{
-    ClipLayerWeights, ClipTextActivation, ClipTextWeights, SdTextEncoder, ClipTextConfig,
+    ClipLayerWeights, ClipTextActivation, ClipTextConfig, ClipTextWeights, SdTextEncoder,
 };
 use fuel_core::lazy_whisper::WhisperModel;
 use fuel_core::lazy_yolov8::{YoloV8Config, YoloV8Model, YoloV8Weights};
-use fuel_core::Result;
-use fuel_ir::{probe::BackendId, Shape};
+use fuel_ir::{Shape, probe::BackendId};
 use std::sync::Arc;
 
 /// Construct a fresh CUDA device handle on device 0. Asserts presence —
 /// only call from inside a `require_cuda()` guard. Post-9c-E.2:
 /// `realize_f32_cuda` takes `&CudaDevice` instead of `&mut GraphExecutor`.
 fn cuda_executor() -> fuel_cuda_backend::CudaDevice {
-    fuel_cuda_backend::CudaDevice::new(0)
-        .expect("cuda device 0 should be available")
+    fuel_cuda_backend::CudaDevice::new(0).expect("cuda device 0 should be available")
 }
 
 /// Realize `t` on both reference and CUDA backends, assert allclose.
@@ -98,8 +97,8 @@ fn single_matmul_cuda_matches_reference_within_tolerance() -> Result<()> {
     // the CUDA device under test.
     let reference = c.realize_f32_reference();
 
-    let cuda_device = fuel_cuda_backend::CudaDevice::new(0)
-        .expect("cuda device 0 should be available");
+    let cuda_device =
+        fuel_cuda_backend::CudaDevice::new(0).expect("cuda device 0 should be available");
     let cuda_out = c.realize_f32_cuda(&cuda_device);
 
     assert_eq!(reference.len(), cuda_out.len());
@@ -121,29 +120,30 @@ fn tiny_llama_weights(cfg: &Llama2cConfig) -> LlamaWeights {
         s = s.wrapping_mul(1103515245).wrapping_add(12345);
         ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.1
     };
-    let mut vec_of = |n: usize| -> Arc<[f32]> {
-        Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
-    };
+    let mut vec_of =
+        |n: usize| -> Arc<[f32]> { Arc::from((0..n).map(|_| next()).collect::<Vec<_>>()) };
     let kv_dim = cfg.n_kv_heads * cfg.head_dim;
     LlamaWeights {
         instance: fuel_core::decode_shape::ModelInstanceId::next(),
         token_embedding: vec_of(cfg.vocab_size * cfg.dim),
-        layers: (0..cfg.n_layers).map(|_| LayerWeights {
-            attn_q:         vec_of(cfg.dim * cfg.dim).into(),
-            attn_q_bias:    None,
-            attn_k:         vec_of(cfg.dim * kv_dim).into(),
-            attn_k_bias:    None,
-            attn_v:         vec_of(cfg.dim * kv_dim).into(),
-            attn_v_bias:    None,
-            attn_o:         vec_of(cfg.dim * cfg.dim).into(),
-            ffn_gate:       vec_of(cfg.dim * cfg.hidden_dim).into(),
-            ffn_up:         vec_of(cfg.dim * cfg.hidden_dim).into(),
-            ffn_down:       vec_of(cfg.hidden_dim * cfg.dim).into(),
-            attn_norm_gain: Arc::from(vec![1.0; cfg.dim]),
-            ffn_norm_gain:  Arc::from(vec![1.0; cfg.dim]),
-        }).collect(),
+        layers: (0..cfg.n_layers)
+            .map(|_| LayerWeights {
+                attn_q: vec_of(cfg.dim * cfg.dim).into(),
+                attn_q_bias: None,
+                attn_k: vec_of(cfg.dim * kv_dim).into(),
+                attn_k_bias: None,
+                attn_v: vec_of(cfg.dim * kv_dim).into(),
+                attn_v_bias: None,
+                attn_o: vec_of(cfg.dim * cfg.dim).into(),
+                ffn_gate: vec_of(cfg.dim * cfg.hidden_dim).into(),
+                ffn_up: vec_of(cfg.dim * cfg.hidden_dim).into(),
+                ffn_down: vec_of(cfg.hidden_dim * cfg.dim).into(),
+                attn_norm_gain: Arc::from(vec![1.0; cfg.dim]),
+                ffn_norm_gain: Arc::from(vec![1.0; cfg.dim]),
+            })
+            .collect(),
         final_norm_gain: Arc::from(vec![1.0; cfg.dim]),
-        output:          vec_of(cfg.dim * cfg.vocab_size).into(),
+        output: vec_of(cfg.dim * cfg.vocab_size).into(),
     }
 }
 
@@ -156,18 +156,21 @@ fn llama_2layer_cuda_matches_reference() {
     require_cuda();
 
     let cfg = Llama2cConfig {
-        vocab_size:     32,
-        dim:            16,
-        hidden_dim:     32,
-        n_layers:       2,
-        n_heads:        4,
-        n_kv_heads:     2,
-        head_dim:       4,
-        norm_eps:       1e-5,
-        rope_theta:     10_000.0,
+        vocab_size: 32,
+        dim: 16,
+        hidden_dim: 32,
+        n_layers: 2,
+        n_heads: 4,
+        n_kv_heads: 2,
+        head_dim: 4,
+        norm_eps: 1e-5,
+        rope_theta: 10_000.0,
     };
     let weights = tiny_llama_weights(&cfg);
-    let model = Llama2cModel { config: cfg.clone(), weights };
+    let model = Llama2cModel {
+        config: cfg.clone(),
+        weights,
+    };
     let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6, 7, 8];
     let logits: LazyTensor = model.forward(&tokens, 0).unwrap();
 
@@ -175,8 +178,8 @@ fn llama_2layer_cuda_matches_reference() {
     // realized entirely on CPU, not offloaded onto the CUDA device it validates.
     let reference = logits.realize_f32_reference();
 
-    let cuda_device = fuel_cuda_backend::CudaDevice::new(0)
-        .expect("cuda device 0 should be available");
+    let cuda_device =
+        fuel_cuda_backend::CudaDevice::new(0).expect("cuda device 0 should be available");
     let cuda_out = logits.realize_f32_cuda(&cuda_device);
 
     assert_eq!(reference.len(), cuda_out.len());
@@ -199,36 +202,49 @@ fn llama_2layer_cuda_matches_reference() {
 fn bert_cuda_matches_reference() -> Result<()> {
     require_cuda();
     let cfg = BertConfig {
-        vocab_size:              100,
-        hidden_size:             32,
-        num_hidden_layers:       2,
-        num_attention_heads:     4,
-        intermediate_size:       64,
+        vocab_size: 100,
+        hidden_size: 32,
+        num_hidden_layers: 2,
+        num_attention_heads: 4,
+        intermediate_size: 64,
         max_position_embeddings: 16,
-        type_vocab_size:         2,
-        layer_norm_eps:          1e-12,
+        type_vocab_size: 2,
+        layer_norm_eps: 1e-12,
     };
     let h = cfg.hidden_size;
     let z = |n: usize| Arc::<[f32]>::from(vec![0.0_f32; n]);
     let o = |n: usize| Arc::<[f32]>::from(vec![1.0_f32; n]);
     let weights = BertWeights {
-        word_embeddings:       z(cfg.vocab_size * h),
-        position_embeddings:   z(cfg.max_position_embeddings * h),
+        word_embeddings: z(cfg.vocab_size * h),
+        position_embeddings: z(cfg.max_position_embeddings * h),
         token_type_embeddings: z(cfg.type_vocab_size * h),
-        emb_ln_gamma:          o(h),
-        emb_ln_beta:           z(h),
-        layers: (0..cfg.num_hidden_layers).map(|_| BertLayerWeights {
-            attn_q_w:      z(h * h), attn_q_b: z(h),
-            attn_k_w:      z(h * h), attn_k_b: z(h),
-            attn_v_w:      z(h * h), attn_v_b: z(h),
-            attn_out_w:    z(h * h), attn_out_b: z(h),
-            attn_ln_gamma: o(h),     attn_ln_beta: z(h),
-            ffn_in_w:      z(h * cfg.intermediate_size), ffn_in_b: z(cfg.intermediate_size),
-            ffn_out_w:     z(cfg.intermediate_size * h), ffn_out_b: z(h),
-            ffn_ln_gamma:  o(h),     ffn_ln_beta: z(h),
-        }).collect(),
+        emb_ln_gamma: o(h),
+        emb_ln_beta: z(h),
+        layers: (0..cfg.num_hidden_layers)
+            .map(|_| BertLayerWeights {
+                attn_q_w: z(h * h),
+                attn_q_b: z(h),
+                attn_k_w: z(h * h),
+                attn_k_b: z(h),
+                attn_v_w: z(h * h),
+                attn_v_b: z(h),
+                attn_out_w: z(h * h),
+                attn_out_b: z(h),
+                attn_ln_gamma: o(h),
+                attn_ln_beta: z(h),
+                ffn_in_w: z(h * cfg.intermediate_size),
+                ffn_in_b: z(cfg.intermediate_size),
+                ffn_out_w: z(cfg.intermediate_size * h),
+                ffn_out_b: z(h),
+                ffn_ln_gamma: o(h),
+                ffn_ln_beta: z(h),
+            })
+            .collect(),
     };
-    let model = BertModel { config: cfg.clone(), weights };
+    let model = BertModel {
+        config: cfg.clone(),
+        weights,
+    };
     let ids: Vec<u32> = (0..8).collect();
     let hidden = model.forward(&ids)?;
     assert_cuda_oracle(&hidden, 5e-3, 5e-3);
@@ -241,11 +257,16 @@ fn bert_cuda_matches_reference() -> Result<()> {
 fn sd_clip_text_encoder_cuda_matches_reference() -> Result<()> {
     require_cuda();
     let cfg = ClipTextConfig {
-        vocab_size: 100, hidden_size: 16,
-        num_hidden_layers: 2, num_attention_heads: 4,
-        intermediate_size: 32, max_position_embeddings: 8,
+        vocab_size: 100,
+        hidden_size: 16,
+        num_hidden_layers: 2,
+        num_attention_heads: 4,
+        intermediate_size: 32,
+        max_position_embeddings: 8,
         layer_norm_eps: 1e-5,
-        bos_token_id: 0, eos_token_id: 2, pad_token_id: 1,
+        bos_token_id: 0,
+        eos_token_id: 2,
+        pad_token_id: 1,
         // SD 1.5 / SDXL TE1 preset default — matches `ClipTextConfig::sd_v1()`.
         activation: ClipTextActivation::QuickGelu,
     };
@@ -255,19 +276,33 @@ fn sd_clip_text_encoder_cuda_matches_reference() -> Result<()> {
     let weights = ClipTextWeights {
         token_embedding: z(cfg.vocab_size * h),
         position_embedding: z(cfg.max_position_embeddings * h),
-        layers: (0..cfg.num_hidden_layers).map(|_| ClipLayerWeights {
-            ln1_g: o(h), ln1_b: z(h),
-            q_w: z(h * h), q_b: z(h),
-            k_w: z(h * h), k_b: z(h),
-            v_w: z(h * h), v_b: z(h),
-            out_w: z(h * h), out_b: z(h),
-            ln2_g: o(h), ln2_b: z(h),
-            fc1_w: z(h * cfg.intermediate_size), fc1_b: z(cfg.intermediate_size),
-            fc2_w: z(cfg.intermediate_size * h), fc2_b: z(h),
-        }).collect(),
-        final_ln_g: o(h), final_ln_b: z(h),
+        layers: (0..cfg.num_hidden_layers)
+            .map(|_| ClipLayerWeights {
+                ln1_g: o(h),
+                ln1_b: z(h),
+                q_w: z(h * h),
+                q_b: z(h),
+                k_w: z(h * h),
+                k_b: z(h),
+                v_w: z(h * h),
+                v_b: z(h),
+                out_w: z(h * h),
+                out_b: z(h),
+                ln2_g: o(h),
+                ln2_b: z(h),
+                fc1_w: z(h * cfg.intermediate_size),
+                fc1_b: z(cfg.intermediate_size),
+                fc2_w: z(cfg.intermediate_size * h),
+                fc2_b: z(h),
+            })
+            .collect(),
+        final_ln_g: o(h),
+        final_ln_b: z(h),
     };
-    let model = SdTextEncoder { config: cfg.clone(), weights };
+    let model = SdTextEncoder {
+        config: cfg.clone(),
+        weights,
+    };
     let tokens: Vec<u32> = (0..cfg.max_position_embeddings as u32).collect();
     let hidden = model.forward(&tokens)?;
     assert_cuda_oracle(&hidden, 5e-3, 5e-3);
@@ -306,22 +341,27 @@ fn qwen2_moe_cuda_matches_reference() -> Result<()> {
     let shared_int = cfg.shared_expert_intermediate_size;
     let z = |n: usize| Arc::<[f32]>::from(vec![0.0_f32; n]);
     let o = |n: usize| Arc::<[f32]>::from(vec![1.0_f32; n]);
-    let experts: Vec<ExpertWeights> = (0..cfg.num_experts).map(|_| ExpertWeights {
-        gate_w: z(h * moe_int),
-        up_w:   z(h * moe_int),
-        down_w: z(moe_int * h),
-    }).collect();
+    let experts: Vec<ExpertWeights> = (0..cfg.num_experts)
+        .map(|_| ExpertWeights {
+            gate_w: z(h * moe_int),
+            up_w: z(h * moe_int),
+            down_w: z(moe_int * h),
+        })
+        .collect();
     let layer = Qwen2MoeLayerWeights {
         input_ln: o(h),
-        q_w: z(h * h), q_b: z(h),
-        k_w: z(h * h), k_b: z(h),
-        v_w: z(h * h), v_b: z(h),
+        q_w: z(h * h),
+        q_b: z(h),
+        k_w: z(h * h),
+        k_b: z(h),
+        v_w: z(h * h),
+        v_b: z(h),
         o_w: z(h * h),
         post_attn_ln: o(h),
         gate_w: z(h * cfg.num_experts),
         experts,
         shared_gate_w: z(h * shared_int),
-        shared_up_w:   z(h * shared_int),
+        shared_up_w: z(h * shared_int),
         shared_down_w: z(shared_int * h),
         shared_expert_gate_w: z(h),
     };
@@ -331,7 +371,10 @@ fn qwen2_moe_cuda_matches_reference() -> Result<()> {
         final_ln: o(h),
         lm_head: z(h * cfg.vocab_size),
     };
-    let model = Qwen2MoeModel { config: cfg.clone(), weights };
+    let model = Qwen2MoeModel {
+        config: cfg.clone(),
+        weights,
+    };
     let tokens: Vec<u32> = vec![1, 2, 3, 4];
     let logits = model.forward(&tokens)?;
     assert_cuda_oracle(&logits, 5e-3, 5e-3);
@@ -349,7 +392,10 @@ fn whisper_decoder_cuda_matches_reference() -> Result<()> {
     require_cuda();
     let cfg = fuel_core::lazy_whisper::tiny_cfg();
     let weights = fuel_core::lazy_whisper::zero_weights(&cfg);
-    let model = WhisperModel { config: cfg.clone(), weights };
+    let model = WhisperModel {
+        config: cfg.clone(),
+        weights,
+    };
     // mel_time = 32 → encoder produces 16 source tokens.
     let mel = vec![0.0_f32; cfg.num_mel_bins * 32];
     let enc = model.forward_encoder(&mel, 32)?;
@@ -370,7 +416,10 @@ fn convnext_cuda_matches_reference() -> Result<()> {
     require_cuda();
     let cfg = fuel_core::lazy_convnext::tiny_cfg();
     let weights = fuel_core::lazy_convnext::zero_weights(&cfg);
-    let model = ConvNextModel { weights, config: cfg.clone() };
+    let model = ConvNextModel {
+        weights,
+        config: cfg.clone(),
+    };
     let image = vec![0.0_f32; cfg.in_channels * cfg.image_size * cfg.image_size];
     let logits = model.forward(&image)?;
     assert_cuda_oracle(&logits, 5e-3, 5e-3);
@@ -389,10 +438,16 @@ fn cuda_depthwise_conv2d_matches_reference() -> Result<()> {
     let k = 7;
     let pad = 3;
     let x_data: Vec<f32> = (0..(n * c * h * w_sz))
-        .map(|i| ((i as f32) * 1.3e-3).sin()).collect();
+        .map(|i| ((i as f32) * 1.3e-3).sin())
+        .collect();
     let w_data: Vec<f32> = (0..(c * 1 * k * k))
-        .map(|i| ((i as f32) * 1.7e-3).cos()).collect();
-    let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[n, c, h, w_sz]), &fuel_core::Device::cpu());
+        .map(|i| ((i as f32) * 1.7e-3).cos())
+        .collect();
+    let x = LazyTensor::from_f32(
+        x_data,
+        Shape::from_dims(&[n, c, h, w_sz]),
+        &fuel_core::Device::cpu(),
+    );
     let weight = x.const_f32_like(w_data, Shape::from_dims(&[c, 1, k, k]));
     let y = x.conv2d(&weight, None, (1, 1), (pad, pad), c)?; // groups = c → depthwise
     assert_cuda_oracle(&y, 5e-4, 5e-4);
@@ -407,12 +462,15 @@ fn yolov8_cuda_matches_reference() -> Result<()> {
     let mut cfg = YoloV8Config::v8n();
     cfg.image_size = 64;
     let weights = YoloV8Weights::zeros(&cfg);
-    let model = YoloV8Model { config: cfg.clone(), weights };
+    let model = YoloV8Model {
+        config: cfg.clone(),
+        weights,
+    };
     let image = vec![0.0_f32; 3 * cfg.image_size * cfg.image_size];
     let raw = model.forward(&image)?;
     // Loose tolerance — many ops compose, even when most run on CPU
     // the CUDA executor's TrackedTensor wrapping introduces rounding.
     assert_cuda_oracle(&raw.cls_logits, 5e-3, 5e-3);
-    assert_cuda_oracle(&raw.reg_dists,  5e-3, 5e-3);
+    assert_cuda_oracle(&raw.reg_dists, 5e-3, 5e-3);
     Ok(())
 }

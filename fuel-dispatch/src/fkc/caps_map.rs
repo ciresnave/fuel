@@ -116,7 +116,10 @@ impl ResolvedLayout {
         // realize pick must exclude it from a dense operand (path 1a). See
         // [`KernelCaps::requires_broadcast`].
         let requires_broadcast = self.broadcast_stride0.is_required();
-        KernelCaps { strided_input, requires_broadcast }
+        KernelCaps {
+            strided_input,
+            requires_broadcast,
+        }
     }
 }
 
@@ -186,7 +189,10 @@ pub fn project_kernel_caps(operand_layouts: &[ResolvedLayout]) -> KernelCaps {
     let requires_broadcast = operand_layouts
         .iter()
         .any(|l| l.broadcast_stride0.is_required());
-    KernelCaps { strided_input, requires_broadcast }
+    KernelCaps {
+        strided_input,
+        requires_broadcast,
+    }
 }
 
 /// Is this contract the GENERIC (fully-permissive strided) one — admissible
@@ -257,8 +263,14 @@ mod tests {
             Some("rejected"),
         ))
         .project();
-        assert!(caps.requires_broadcast, "required broadcast → requires_broadcast");
-        assert!(!caps.strided_input, "Required is not Accepted → not strided-generic");
+        assert!(
+            caps.requires_broadcast,
+            "required broadcast → requires_broadcast"
+        );
+        assert!(
+            !caps.strided_input,
+            "Required is not Accepted → not strided-generic"
+        );
 
         // A generic (broadcast_stride0: accepted) operand is dense-safe.
         let generic = resolve(&spec(
@@ -269,7 +281,10 @@ mod tests {
             Some("rejected"),
         ))
         .project();
-        assert!(!generic.requires_broadcast, "accepted broadcast is generic, not baked");
+        assert!(
+            !generic.requires_broadcast,
+            "accepted broadcast is generic, not baked"
+        );
         assert!(generic.strided_input);
     }
 
@@ -329,13 +344,7 @@ mod tests {
         assert!(!r.project().strided_input);
 
         // broadcast rejected ⇒ false even if strided accepted.
-        let r = resolve(&spec(
-            None,
-            Some("accepted"),
-            Some("rejected"),
-            None,
-            None,
-        ));
+        let r = resolve(&spec(None, Some("accepted"), Some("rejected"), None, None));
         assert!(!r.project().strided_input);
 
         // both rejected ⇒ false.
@@ -412,7 +421,13 @@ mod tests {
     #[test]
     fn kernel_caps_is_and_of_operands() {
         let strided = resolve(&spec(None, Some("accepted"), Some("accepted"), None, None));
-        let contig = resolve(&spec(Some("required"), Some("rejected"), Some("rejected"), None, None));
+        let contig = resolve(&spec(
+            Some("required"),
+            Some("rejected"),
+            Some("rejected"),
+            None,
+            None,
+        ));
         // All strided ⇒ true.
         assert!(project_kernel_caps(&[strided, strided]).strided_input);
         // Mixed ⇒ false (conservative collapse).
@@ -423,11 +438,23 @@ mod tests {
     fn is_generic_contract_classifies_permissive_vs_specialized() {
         // Fully-permissive strided (accepts strided + broadcast, no contiguity
         // demand) ⇒ generic.
-        let generic = resolve(&spec(Some("n/a"), Some("accepted"), Some("accepted"), None, None));
+        let generic = resolve(&spec(
+            Some("n/a"),
+            Some("accepted"),
+            Some("accepted"),
+            None,
+            None,
+        ));
         assert!(is_generic_contract(&[generic, generic]));
         // A contiguity-requiring operand ⇒ specialized, even if a sibling is
         // permissive (all operands must be permissive).
-        let contig = resolve(&spec(Some("required"), Some("rejected"), Some("rejected"), None, None));
+        let contig = resolve(&spec(
+            Some("required"),
+            Some("rejected"),
+            Some("rejected"),
+            None,
+            None,
+        ));
         assert!(!is_generic_contract(&[generic, contig]));
         assert!(!is_generic_contract(&[contig, contig]));
         // Empty is not generic (no contract to fall back to).

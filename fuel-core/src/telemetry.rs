@@ -200,7 +200,10 @@ impl TelemetryInstall {
     pub fn new(device: DeviceLocation) -> Self {
         let mode = current_mode();
         Self {
-            config: TelemetryConfig { mode, out_path: None },
+            config: TelemetryConfig {
+                mode,
+                out_path: None,
+            },
             #[cfg(feature = "cuda")]
             provider: BaracudaStructureKeyProvider,
             #[cfg(not(feature = "cuda"))]
@@ -305,7 +308,8 @@ mod tests {
         let (misses, dispatches) = flush_to(dir.path()).expect("flush_to");
         assert!(misses >= 1 && dispatches >= 1, "at least our two lines");
 
-        let disp = std::fs::read_to_string(dir.path().join("dispatches.jsonl")).expect("dispatches");
+        let disp =
+            std::fs::read_to_string(dir.path().join("dispatches.jsonl")).expect("dispatches");
         let miss = std::fs::read_to_string(dir.path().join("misses.jsonl")).expect("misses");
         let ours = disp
             .lines()

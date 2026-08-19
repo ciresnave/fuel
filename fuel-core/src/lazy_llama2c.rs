@@ -12,8 +12,8 @@
 
 use crate::inference_context::{InferenceContext, KvCache};
 use crate::lazy::{
-    LayerWeights, LlamaConfig, LlamaModel, LlamaWeights, LazyTensor,
-    SamplingStrategy, WeightStorage,
+    LayerWeights, LazyTensor, LlamaConfig, LlamaModel, LlamaWeights, SamplingStrategy,
+    WeightStorage,
 };
 use crate::{DType, Device, Result};
 use std::sync::Arc;
@@ -35,9 +35,21 @@ pub struct Llama2cConfig {
 }
 
 impl Llama2cConfig {
-    pub fn from_dim(dim: usize, hidden_dim: usize, n_layers: usize, n_heads: usize, n_kv_heads: usize, vocab_size: usize) -> Self {
+    pub fn from_dim(
+        dim: usize,
+        hidden_dim: usize,
+        n_layers: usize,
+        n_heads: usize,
+        n_kv_heads: usize,
+        vocab_size: usize,
+    ) -> Self {
         Self {
-            dim, hidden_dim, n_layers, n_heads, n_kv_heads, vocab_size,
+            dim,
+            hidden_dim,
+            n_layers,
+            n_heads,
+            n_kv_heads,
+            vocab_size,
             head_dim: dim / n_heads,
             norm_eps: 1e-5,
             rope_theta: 10_000.0,
@@ -49,14 +61,14 @@ impl Llama2cConfig {
     pub fn to_llama_config(&self) -> LlamaConfig {
         LlamaConfig {
             vocab_size: self.vocab_size,
-            dim:        self.dim,
-            n_layers:   self.n_layers,
-            n_heads:    self.n_heads,
+            dim: self.dim,
+            n_layers: self.n_layers,
+            n_heads: self.n_heads,
             n_kv_heads: self.n_kv_heads,
-            head_dim:   self.head_dim,
-            ffn_dim:    self.hidden_dim,
-            norm_eps:   self.norm_eps,
-            rope_base:  self.rope_theta,
+            head_dim: self.head_dim,
+            ffn_dim: self.hidden_dim,
+            norm_eps: self.norm_eps,
+            rope_base: self.rope_theta,
         }
     }
 }
@@ -123,11 +135,7 @@ impl Llama2cModel {
     /// embeddings with text embeddings before running the LLM.
     ///
     /// Delegates to [`LlamaModel::forward_embeds`].
-    pub fn forward_embeds(
-        &self,
-        embeds: &LazyTensor,
-        start_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
         let llama = LlamaModel {
             config: self.config.to_llama_config(),
             weights: self.weights.clone(),
@@ -208,7 +216,12 @@ impl Llama2cModel {
             weights: self.weights.clone(),
         };
         llama.generate_with_kv_context(
-            prompt_tokens, max_new_tokens, strategy, eos_id, device, dtype,
+            prompt_tokens,
+            max_new_tokens,
+            strategy,
+            eos_id,
+            device,
+            dtype,
         )
     }
 
@@ -231,7 +244,13 @@ impl Llama2cModel {
             weights: self.weights.clone(),
         };
         llama.generate_streaming_with_kv_context(
-            prompt_tokens, max_new_tokens, strategy, eos_id, device, dtype, on_token,
+            prompt_tokens,
+            max_new_tokens,
+            strategy,
+            eos_id,
+            device,
+            dtype,
+            on_token,
         )
     }
 
@@ -267,8 +286,15 @@ impl Llama2cModel {
             weights: draft.weights.clone(),
         };
         target_inline.generate_streaming_spec_with_kv_context(
-            &draft_inline, prompt_tokens, max_new_tokens, k, strategy, eos_id,
-            device, dtype, on_token,
+            &draft_inline,
+            prompt_tokens,
+            max_new_tokens,
+            k,
+            strategy,
+            eos_id,
+            device,
+            dtype,
+            on_token,
         )
     }
 
@@ -325,11 +351,10 @@ impl Llama2cModel {
                 }
                 paths
             }
-            Err(_) => vec![repo
-                .get("model.safetensors")
-                .map_err(|e| {
-                    crate::Error::Msg(format!("hf-hub model.safetensors: {e}"))
-                })?],
+            Err(_) => vec![
+                repo.get("model.safetensors")
+                    .map_err(|e| crate::Error::Msg(format!("hf-hub model.safetensors: {e}")))?,
+            ],
         };
 
         let st = unsafe { crate::safetensors::MmapedSafetensors::multi(&weight_paths) }?;
@@ -580,10 +605,8 @@ pub fn load_llama2c_bin<R: std::io::Read>(r: &mut R) -> Result<Llama2cModel> {
             let ffn_down = Arc::from(transpose_rows_cols(w2_layer, dim, hidden_dim));
             let ffn_up = Arc::from(transpose_rows_cols(w3_layer, hidden_dim, dim));
 
-            let attn_norm_gain: Arc<[f32]> =
-                Arc::from(rms_att[i * dim..(i + 1) * dim].to_vec());
-            let ffn_norm_gain: Arc<[f32]> =
-                Arc::from(rms_ffn[i * dim..(i + 1) * dim].to_vec());
+            let attn_norm_gain: Arc<[f32]> = Arc::from(rms_att[i * dim..(i + 1) * dim].to_vec());
+            let ffn_norm_gain: Arc<[f32]> = Arc::from(rms_ffn[i * dim..(i + 1) * dim].to_vec());
 
             LayerWeights {
                 attn_q: WeightStorage::F32(attn_q),
@@ -605,11 +628,9 @@ pub fn load_llama2c_bin<R: std::io::Read>(r: &mut R) -> Result<Llama2cModel> {
     // lm_head: transpose (vocab_size, dim) → (dim, vocab_size).
     let output = match lm_head_raw {
         Some(raw) => WeightStorage::F32(Arc::from(transpose_rows_cols(&raw, vocab_size, dim))),
-        None => crate::lazy_llama_full::tied_lm_head_from_embeddings(
-            &token_embedding,
-            vocab_size,
-            dim,
-        ),
+        None => {
+            crate::lazy_llama_full::tied_lm_head_from_embeddings(&token_embedding, vocab_size, dim)
+        }
     };
 
     let weights = LlamaWeights {
@@ -655,8 +676,8 @@ mod tests {
         assert_eq!(cfg.hidden_dim, 5632);
         assert_eq!(cfg.n_layers, 22);
         assert_eq!(cfg.n_heads, 32);
-        assert_eq!(cfg.n_kv_heads, 4);  // GQA model
-        assert_eq!(cfg.head_dim, 64);   // 2048 / 32 default
+        assert_eq!(cfg.n_kv_heads, 4); // GQA model
+        assert_eq!(cfg.head_dim, 64); // 2048 / 32 default
         assert!((cfg.norm_eps - 1e-5).abs() < 1e-12);
         assert!((cfg.rope_theta - 10000.0).abs() < 1e-9);
     }
@@ -673,8 +694,8 @@ mod tests {
             "num_attention_heads": 32
         }"#;
         let cfg = Llama2cConfig::from_hf_json_str(json).unwrap();
-        assert_eq!(cfg.n_kv_heads, 32);  // defaults to n_heads (no GQA)
-        assert_eq!(cfg.head_dim, 128);   // 4096 / 32
+        assert_eq!(cfg.n_kv_heads, 32); // defaults to n_heads (no GQA)
+        assert_eq!(cfg.head_dim, 128); // 4096 / 32
         assert!((cfg.norm_eps - 1e-5).abs() < 1e-12);
         assert!((cfg.rope_theta - 10000.0).abs() < 1e-9);
     }
@@ -687,9 +708,15 @@ mod tests {
         // tokens — i.e. the multimodal path is a strict superset of
         // the token-lookup path, with the lookup factored out.
         let cfg = Llama2cConfig {
-            dim: 16, hidden_dim: 32, n_layers: 2,
-            n_heads: 4, n_kv_heads: 2, vocab_size: 32,
-            head_dim: 4, norm_eps: 1e-5, rope_theta: 10_000.0,
+            dim: 16,
+            hidden_dim: 32,
+            n_layers: 2,
+            n_heads: 4,
+            n_kv_heads: 2,
+            vocab_size: 32,
+            head_dim: 4,
+            norm_eps: 1e-5,
+            rope_theta: 10_000.0,
         };
         let mut s: u32 = 24680;
         let mut next = || -> f32 {
@@ -699,21 +726,27 @@ mod tests {
         let vec_of = |n: usize, next: &mut dyn FnMut() -> f32| -> Arc<[f32]> {
             Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
         };
-        let h = cfg.dim; let i = cfg.hidden_dim;
+        let h = cfg.dim;
+        let i = cfg.hidden_dim;
         let kv = cfg.n_kv_heads * cfg.head_dim;
         let mut nb: Box<dyn FnMut() -> f32> = Box::new(next);
         let token_embedding = vec_of(cfg.vocab_size * h, &mut *nb);
-        let layers: Vec<LayerWeights> = (0..cfg.n_layers).map(|_| LayerWeights {
-            attn_q: WeightStorage::F32(vec_of(h * h, &mut *nb)), attn_q_bias: None,
-            attn_k: WeightStorage::F32(vec_of(h * kv, &mut *nb)), attn_k_bias: None,
-            attn_v: WeightStorage::F32(vec_of(h * kv, &mut *nb)), attn_v_bias: None,
-            attn_o: WeightStorage::F32(vec_of(h * h, &mut *nb)),
-            ffn_gate: WeightStorage::F32(vec_of(h * i, &mut *nb)),
-            ffn_up:   WeightStorage::F32(vec_of(h * i, &mut *nb)),
-            ffn_down: WeightStorage::F32(vec_of(i * h, &mut *nb)),
-            attn_norm_gain: Arc::from(vec![1.0_f32; h]),
-            ffn_norm_gain:  Arc::from(vec![1.0_f32; h]),
-        }).collect();
+        let layers: Vec<LayerWeights> = (0..cfg.n_layers)
+            .map(|_| LayerWeights {
+                attn_q: WeightStorage::F32(vec_of(h * h, &mut *nb)),
+                attn_q_bias: None,
+                attn_k: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
+                attn_k_bias: None,
+                attn_v: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
+                attn_v_bias: None,
+                attn_o: WeightStorage::F32(vec_of(h * h, &mut *nb)),
+                ffn_gate: WeightStorage::F32(vec_of(h * i, &mut *nb)),
+                ffn_up: WeightStorage::F32(vec_of(h * i, &mut *nb)),
+                ffn_down: WeightStorage::F32(vec_of(i * h, &mut *nb)),
+                attn_norm_gain: Arc::from(vec![1.0_f32; h]),
+                ffn_norm_gain: Arc::from(vec![1.0_f32; h]),
+            })
+            .collect();
         let weights = LlamaWeights {
             instance: crate::decode_shape::ModelInstanceId::next(),
             token_embedding: Arc::clone(&token_embedding),
@@ -721,7 +754,10 @@ mod tests {
             final_norm_gain: Arc::from(vec![1.0_f32; h]),
             output: WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *nb)),
         };
-        let model = Llama2cModel { config: cfg.clone(), weights };
+        let model = Llama2cModel {
+            config: cfg.clone(),
+            weights,
+        };
 
         let tokens: Vec<u32> = vec![5, 10, 15];
 
@@ -731,9 +767,13 @@ mod tests {
 
         // Path B: pre-compute the embeddings and call forward_embeds.
         let embeds = LazyTensor::embed_tokens(
-            Arc::clone(&token_embedding), cfg.vocab_size, cfg.dim,
-            &tokens, &crate::Device::cpu(),
-        ).unwrap();
+            Arc::clone(&token_embedding),
+            cfg.vocab_size,
+            cfg.dim,
+            &tokens,
+            &crate::Device::cpu(),
+        )
+        .unwrap();
         let logits_b = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
 
         assert_eq!(logits_a.len(), logits_b.len());
@@ -752,9 +792,15 @@ mod tests {
         // For the prefill (first call on a fresh cache) the two paths
         // should agree to within float tolerance.
         let cfg = Llama2cConfig {
-            dim: 16, hidden_dim: 32, n_layers: 2,
-            n_heads: 4, n_kv_heads: 2, vocab_size: 32,
-            head_dim: 4, norm_eps: 1e-5, rope_theta: 10_000.0,
+            dim: 16,
+            hidden_dim: 32,
+            n_layers: 2,
+            n_heads: 4,
+            n_kv_heads: 2,
+            vocab_size: 32,
+            head_dim: 4,
+            norm_eps: 1e-5,
+            rope_theta: 10_000.0,
         };
         let mut s: u32 = 13579;
         let mut next = || -> f32 {
@@ -764,21 +810,27 @@ mod tests {
         let vec_of = |n: usize, next: &mut dyn FnMut() -> f32| -> Arc<[f32]> {
             Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
         };
-        let h = cfg.dim; let i = cfg.hidden_dim;
+        let h = cfg.dim;
+        let i = cfg.hidden_dim;
         let kv = cfg.n_kv_heads * cfg.head_dim;
         let mut nb: Box<dyn FnMut() -> f32> = Box::new(next);
         let token_embedding = vec_of(cfg.vocab_size * h, &mut *nb);
-        let layers: Vec<LayerWeights> = (0..cfg.n_layers).map(|_| LayerWeights {
-            attn_q: WeightStorage::F32(vec_of(h * h, &mut *nb)), attn_q_bias: None,
-            attn_k: WeightStorage::F32(vec_of(h * kv, &mut *nb)), attn_k_bias: None,
-            attn_v: WeightStorage::F32(vec_of(h * kv, &mut *nb)), attn_v_bias: None,
-            attn_o: WeightStorage::F32(vec_of(h * h, &mut *nb)),
-            ffn_gate: WeightStorage::F32(vec_of(h * i, &mut *nb)),
-            ffn_up:   WeightStorage::F32(vec_of(h * i, &mut *nb)),
-            ffn_down: WeightStorage::F32(vec_of(i * h, &mut *nb)),
-            attn_norm_gain: Arc::from(vec![1.0_f32; h]),
-            ffn_norm_gain:  Arc::from(vec![1.0_f32; h]),
-        }).collect();
+        let layers: Vec<LayerWeights> = (0..cfg.n_layers)
+            .map(|_| LayerWeights {
+                attn_q: WeightStorage::F32(vec_of(h * h, &mut *nb)),
+                attn_q_bias: None,
+                attn_k: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
+                attn_k_bias: None,
+                attn_v: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
+                attn_v_bias: None,
+                attn_o: WeightStorage::F32(vec_of(h * h, &mut *nb)),
+                ffn_gate: WeightStorage::F32(vec_of(h * i, &mut *nb)),
+                ffn_up: WeightStorage::F32(vec_of(h * i, &mut *nb)),
+                ffn_down: WeightStorage::F32(vec_of(i * h, &mut *nb)),
+                attn_norm_gain: Arc::from(vec![1.0_f32; h]),
+                ffn_norm_gain: Arc::from(vec![1.0_f32; h]),
+            })
+            .collect();
         let weights = LlamaWeights {
             instance: crate::decode_shape::ModelInstanceId::next(),
             token_embedding,
@@ -786,7 +838,10 @@ mod tests {
             final_norm_gain: Arc::from(vec![1.0_f32; h]),
             output: WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *nb)),
         };
-        let model = Llama2cModel { config: cfg.clone(), weights };
+        let model = Llama2cModel {
+            config: cfg.clone(),
+            weights,
+        };
 
         let tokens: Vec<u32> = vec![5, 10, 15];
         let logits_nocache = {
@@ -794,20 +849,27 @@ mod tests {
             // Pull the last position's logits to match what
             // forward_with_kv_context returns.
             let last = l
-                .slice(1_usize, tokens.len() - 1, 1).unwrap()
-                .reshape(Shape::from_dims(&[cfg.vocab_size])).unwrap();
+                .slice(1_usize, tokens.len() - 1, 1)
+                .unwrap()
+                .reshape(Shape::from_dims(&[cfg.vocab_size]))
+                .unwrap();
             last.realize_f32()
         };
 
         let device = crate::Device::cpu();
         let mut cache = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim,
-            tokens.len(), crate::DType::F32, &device,
-        ).unwrap();
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            tokens.len(),
+            crate::DType::F32,
+            &device,
+        )
+        .unwrap();
         let mut ctx = InferenceContext::new(device.clone());
-        let logits_cached = model.forward_with_kv_context(
-            &tokens, &mut cache, &mut ctx,
-        ).unwrap();
+        let logits_cached = model
+            .forward_with_kv_context(&tokens, &mut cache, &mut ctx)
+            .unwrap();
 
         assert_eq!(logits_nocache.len(), logits_cached.len());
         for (i, (a, b)) in logits_nocache.iter().zip(logits_cached.iter()).enumerate() {
@@ -826,9 +888,15 @@ mod tests {
     #[test]
     fn generate_streaming_spec_with_kv_context_matches_greedy() {
         let cfg = Llama2cConfig {
-            dim: 16, hidden_dim: 32, n_layers: 2,
-            n_heads: 4, n_kv_heads: 2, vocab_size: 32,
-            head_dim: 4, norm_eps: 1e-5, rope_theta: 10_000.0,
+            dim: 16,
+            hidden_dim: 32,
+            n_layers: 2,
+            n_heads: 4,
+            n_kv_heads: 2,
+            vocab_size: 32,
+            head_dim: 4,
+            norm_eps: 1e-5,
+            rope_theta: 10_000.0,
         };
         let mut s: u32 = 86420;
         let mut next = || -> f32 {
@@ -838,21 +906,27 @@ mod tests {
         let vec_of = |n: usize, next: &mut dyn FnMut() -> f32| -> Arc<[f32]> {
             Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
         };
-        let h = cfg.dim; let i = cfg.hidden_dim;
+        let h = cfg.dim;
+        let i = cfg.hidden_dim;
         let kv = cfg.n_kv_heads * cfg.head_dim;
         let mut nb: Box<dyn FnMut() -> f32> = Box::new(next);
         let token_embedding = vec_of(cfg.vocab_size * h, &mut *nb);
-        let layers: Vec<LayerWeights> = (0..cfg.n_layers).map(|_| LayerWeights {
-            attn_q: WeightStorage::F32(vec_of(h * h, &mut *nb)), attn_q_bias: None,
-            attn_k: WeightStorage::F32(vec_of(h * kv, &mut *nb)), attn_k_bias: None,
-            attn_v: WeightStorage::F32(vec_of(h * kv, &mut *nb)), attn_v_bias: None,
-            attn_o: WeightStorage::F32(vec_of(h * h, &mut *nb)),
-            ffn_gate: WeightStorage::F32(vec_of(h * i, &mut *nb)),
-            ffn_up:   WeightStorage::F32(vec_of(h * i, &mut *nb)),
-            ffn_down: WeightStorage::F32(vec_of(i * h, &mut *nb)),
-            attn_norm_gain: Arc::from(vec![1.0_f32; h]),
-            ffn_norm_gain:  Arc::from(vec![1.0_f32; h]),
-        }).collect();
+        let layers: Vec<LayerWeights> = (0..cfg.n_layers)
+            .map(|_| LayerWeights {
+                attn_q: WeightStorage::F32(vec_of(h * h, &mut *nb)),
+                attn_q_bias: None,
+                attn_k: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
+                attn_k_bias: None,
+                attn_v: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
+                attn_v_bias: None,
+                attn_o: WeightStorage::F32(vec_of(h * h, &mut *nb)),
+                ffn_gate: WeightStorage::F32(vec_of(h * i, &mut *nb)),
+                ffn_up: WeightStorage::F32(vec_of(h * i, &mut *nb)),
+                ffn_down: WeightStorage::F32(vec_of(i * h, &mut *nb)),
+                attn_norm_gain: Arc::from(vec![1.0_f32; h]),
+                ffn_norm_gain: Arc::from(vec![1.0_f32; h]),
+            })
+            .collect();
         let weights = LlamaWeights {
             instance: crate::decode_shape::ModelInstanceId::next(),
             token_embedding,
@@ -860,22 +934,39 @@ mod tests {
             final_norm_gain: Arc::from(vec![1.0_f32; h]),
             output: WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *nb)),
         };
-        let model = Llama2cModel { config: cfg.clone(), weights };
+        let model = Llama2cModel {
+            config: cfg.clone(),
+            weights,
+        };
 
         let prompt = [2_u32, 9, 4];
         let max_new = 6;
         let device = crate::Device::cpu();
 
-        let baseline = model.generate_with_kv_context(
-            &prompt, max_new, SamplingStrategy::Greedy, None,
-            &device, crate::DType::F32,
-        ).expect("baseline");
+        let baseline = model
+            .generate_with_kv_context(
+                &prompt,
+                max_new,
+                SamplingStrategy::Greedy,
+                None,
+                &device,
+                crate::DType::F32,
+            )
+            .expect("baseline");
 
-        let spec = model.generate_streaming_spec_with_kv_context(
-            &model, &prompt, max_new, 2,
-            SamplingStrategy::Greedy, None,
-            &device, crate::DType::F32, |_| {},
-        ).expect("spec");
+        let spec = model
+            .generate_streaming_spec_with_kv_context(
+                &model,
+                &prompt,
+                max_new,
+                2,
+                SamplingStrategy::Greedy,
+                None,
+                &device,
+                crate::DType::F32,
+                |_| {},
+            )
+            .expect("spec");
 
         assert_eq!(spec, baseline);
     }
@@ -910,9 +1001,15 @@ mod tests {
     #[test]
     fn forward_shape_and_finite_2_layer() {
         let cfg = Llama2cConfig {
-            dim: 16, hidden_dim: 32, n_layers: 2,
-            n_heads: 4, n_kv_heads: 2, vocab_size: 32,
-            head_dim: 4, norm_eps: 1e-5, rope_theta: 10_000.0,
+            dim: 16,
+            hidden_dim: 32,
+            n_layers: 2,
+            n_heads: 4,
+            n_kv_heads: 2,
+            vocab_size: 32,
+            head_dim: 4,
+            norm_eps: 1e-5,
+            rope_theta: 10_000.0,
         };
         let mut s: u32 = 99999;
         let mut next = || -> f32 {
@@ -922,21 +1019,27 @@ mod tests {
         let vec_of = |n: usize, next: &mut dyn FnMut() -> f32| -> Arc<[f32]> {
             Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
         };
-        let h = cfg.dim; let i = cfg.hidden_dim;
+        let h = cfg.dim;
+        let i = cfg.hidden_dim;
         let kv = cfg.n_kv_heads * cfg.head_dim;
         let mut nb: Box<dyn FnMut() -> f32> = Box::new(next);
         let token_embedding = vec_of(cfg.vocab_size * h, &mut *nb);
-        let layers: Vec<LayerWeights> = (0..cfg.n_layers).map(|_| LayerWeights {
-            attn_q: WeightStorage::F32(vec_of(h * h, &mut *nb)), attn_q_bias: None,
-            attn_k: WeightStorage::F32(vec_of(h * kv, &mut *nb)), attn_k_bias: None,
-            attn_v: WeightStorage::F32(vec_of(h * kv, &mut *nb)), attn_v_bias: None,
-            attn_o: WeightStorage::F32(vec_of(h * h, &mut *nb)),
-            ffn_gate: WeightStorage::F32(vec_of(h * i, &mut *nb)),
-            ffn_up:   WeightStorage::F32(vec_of(h * i, &mut *nb)),
-            ffn_down: WeightStorage::F32(vec_of(i * h, &mut *nb)),
-            attn_norm_gain: Arc::from(vec![1.0_f32; h]),
-            ffn_norm_gain:  Arc::from(vec![1.0_f32; h]),
-        }).collect();
+        let layers: Vec<LayerWeights> = (0..cfg.n_layers)
+            .map(|_| LayerWeights {
+                attn_q: WeightStorage::F32(vec_of(h * h, &mut *nb)),
+                attn_q_bias: None,
+                attn_k: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
+                attn_k_bias: None,
+                attn_v: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
+                attn_v_bias: None,
+                attn_o: WeightStorage::F32(vec_of(h * h, &mut *nb)),
+                ffn_gate: WeightStorage::F32(vec_of(h * i, &mut *nb)),
+                ffn_up: WeightStorage::F32(vec_of(h * i, &mut *nb)),
+                ffn_down: WeightStorage::F32(vec_of(i * h, &mut *nb)),
+                attn_norm_gain: Arc::from(vec![1.0_f32; h]),
+                ffn_norm_gain: Arc::from(vec![1.0_f32; h]),
+            })
+            .collect();
         let weights = LlamaWeights {
             instance: crate::decode_shape::ModelInstanceId::next(),
             token_embedding,
@@ -945,10 +1048,15 @@ mod tests {
             output: WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *nb)),
         };
         let _ = Shape::from_dims(&[1, 3, cfg.vocab_size]); // unused; included for future debug.
-        let model = Llama2cModel { config: cfg.clone(), weights };
+        let model = Llama2cModel {
+            config: cfg.clone(),
+            weights,
+        };
         let logits = model.forward(&[1, 2, 3], 0).unwrap();
         assert_eq!(logits.shape().dims(), &[1, 3, cfg.vocab_size]);
-        for &v in &logits.realize_f32() { assert!(v.is_finite()); }
+        for &v in &logits.realize_f32() {
+            assert!(v.is_finite());
+        }
     }
 
     #[test]
@@ -967,9 +1075,15 @@ mod tests {
     #[test]
     fn forward_hidden_shape_and_finite() {
         let cfg = Llama2cConfig {
-            dim: 16, hidden_dim: 32, n_layers: 2,
-            n_heads: 4, n_kv_heads: 2, vocab_size: 32,
-            head_dim: 4, norm_eps: 1e-5, rope_theta: 10_000.0,
+            dim: 16,
+            hidden_dim: 32,
+            n_layers: 2,
+            n_heads: 4,
+            n_kv_heads: 2,
+            vocab_size: 32,
+            head_dim: 4,
+            norm_eps: 1e-5,
+            rope_theta: 10_000.0,
         };
         let mut s: u32 = 31415;
         let mut next = || -> f32 {
@@ -979,28 +1093,38 @@ mod tests {
         let vec_of = |n: usize, next: &mut dyn FnMut() -> f32| -> Arc<[f32]> {
             Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
         };
-        let h = cfg.dim; let i = cfg.hidden_dim;
+        let h = cfg.dim;
+        let i = cfg.hidden_dim;
         let kv = cfg.n_kv_heads * cfg.head_dim;
         let mut nb: Box<dyn FnMut() -> f32> = Box::new(next);
         let token_embedding = vec_of(cfg.vocab_size * h, &mut *nb);
-        let layers: Vec<LayerWeights> = (0..cfg.n_layers).map(|_| LayerWeights {
-            attn_q: WeightStorage::F32(vec_of(h * h, &mut *nb)), attn_q_bias: None,
-            attn_k: WeightStorage::F32(vec_of(h * kv, &mut *nb)), attn_k_bias: None,
-            attn_v: WeightStorage::F32(vec_of(h * kv, &mut *nb)), attn_v_bias: None,
-            attn_o: WeightStorage::F32(vec_of(h * h, &mut *nb)),
-            ffn_gate: WeightStorage::F32(vec_of(h * i, &mut *nb)),
-            ffn_up:   WeightStorage::F32(vec_of(h * i, &mut *nb)),
-            ffn_down: WeightStorage::F32(vec_of(i * h, &mut *nb)),
-            attn_norm_gain: Arc::from(vec![1.0_f32; h]),
-            ffn_norm_gain:  Arc::from(vec![1.0_f32; h]),
-        }).collect();
+        let layers: Vec<LayerWeights> = (0..cfg.n_layers)
+            .map(|_| LayerWeights {
+                attn_q: WeightStorage::F32(vec_of(h * h, &mut *nb)),
+                attn_q_bias: None,
+                attn_k: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
+                attn_k_bias: None,
+                attn_v: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
+                attn_v_bias: None,
+                attn_o: WeightStorage::F32(vec_of(h * h, &mut *nb)),
+                ffn_gate: WeightStorage::F32(vec_of(h * i, &mut *nb)),
+                ffn_up: WeightStorage::F32(vec_of(h * i, &mut *nb)),
+                ffn_down: WeightStorage::F32(vec_of(i * h, &mut *nb)),
+                attn_norm_gain: Arc::from(vec![1.0_f32; h]),
+                ffn_norm_gain: Arc::from(vec![1.0_f32; h]),
+            })
+            .collect();
         let weights = LlamaWeights {
             instance: crate::decode_shape::ModelInstanceId::next(),
-            token_embedding, layers,
+            token_embedding,
+            layers,
             final_norm_gain: Arc::from(vec![1.0_f32; h]),
             output: WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *nb)),
         };
-        let model = Llama2cModel { config: cfg.clone(), weights };
+        let model = Llama2cModel {
+            config: cfg.clone(),
+            weights,
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
         let hidden = model.forward_hidden(&tokens, 0).unwrap();
         assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.dim]);
@@ -1081,9 +1205,9 @@ mod tests {
     #[test]
     fn load_llama2c_bin_round_trip_no_gqa_tied() {
         let bin = build_tiny_bin(
-            /*dim*/ 8, /*hidden_dim*/ 16, /*n_layers*/ 1,
-            /*n_heads*/ 2, /*n_kv_heads*/ 2, /*vocab_size*/ 4,
-            /*seq_len*/ 4, /*shared_classifier*/ true, /*with_freq_cis*/ true,
+            /*dim*/ 8, /*hidden_dim*/ 16, /*n_layers*/ 1, /*n_heads*/ 2,
+            /*n_kv_heads*/ 2, /*vocab_size*/ 4, /*seq_len*/ 4,
+            /*shared_classifier*/ true, /*with_freq_cis*/ true,
         );
         let mut reader = std::io::Cursor::new(&bin);
         let model = load_llama2c_bin(&mut reader).unwrap();
@@ -1127,9 +1251,9 @@ mod tests {
     #[test]
     fn load_llama2c_bin_round_trip_gqa_untied() {
         let bin = build_tiny_bin(
-            /*dim*/ 8, /*hidden_dim*/ 16, /*n_layers*/ 2,
-            /*n_heads*/ 4, /*n_kv_heads*/ 2, /*vocab_size*/ 6,
-            /*seq_len*/ 4, /*shared_classifier*/ false, /*with_freq_cis*/ true,
+            /*dim*/ 8, /*hidden_dim*/ 16, /*n_layers*/ 2, /*n_heads*/ 4,
+            /*n_kv_heads*/ 2, /*vocab_size*/ 6, /*seq_len*/ 4,
+            /*shared_classifier*/ false, /*with_freq_cis*/ true,
         );
         let mut reader = std::io::Cursor::new(&bin);
         let model = load_llama2c_bin(&mut reader).unwrap();

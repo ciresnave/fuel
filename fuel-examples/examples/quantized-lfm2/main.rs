@@ -107,7 +107,8 @@ fn format_size(size_in_bytes: usize) -> String {
 fn lfm2_cfg_from_gguf(mc: &MmapedContent) -> Result<LFM2Config> {
     let md = mc.metadata();
     let get = |k: &str| -> Result<&fuel::quantized::gguf_file::Value> {
-        md.get(k).ok_or_else(|| E::msg(format!("gguf metadata: missing key {k:?}")))
+        md.get(k)
+            .ok_or_else(|| E::msg(format!("gguf metadata: missing key {k:?}")))
     };
     let num_attention_heads = get("lfm2.attention.head_count")?.to_u32()? as usize;
     let num_hidden_layers = get("lfm2.block_count")?.to_u32()? as usize;
@@ -118,7 +119,8 @@ fn lfm2_cfg_from_gguf(mc: &MmapedContent) -> Result<LFM2Config> {
     };
     let max_position_embeddings = get("lfm2.context_length")?.to_u32()? as usize;
     let rms_norm_eps = get("lfm2.attention.layer_norm_rms_epsilon")?.to_f32()? as f64;
-    let rope_theta = md.get("lfm2.rope.freq_base")
+    let rope_theta = md
+        .get("lfm2.rope.freq_base")
         .and_then(|v| v.to_f32().ok())
         .unwrap_or(1_000_000.0) as f64;
     let conv_kernel_size = get("lfm2.shortconv.l_cache")?.to_u32()? as usize;
@@ -127,17 +129,33 @@ fn lfm2_cfg_from_gguf(mc: &MmapedContent) -> Result<LFM2Config> {
     // arrays signal LFM2's "Attention if kv_heads > 0 else Conv"
     // schedule; a scalar means uniform attention across layers.
     let block_types: Vec<LFM2BlockType> = match md.get("lfm2.attention.head_count_kv") {
-        Some(fuel::quantized::gguf_file::Value::Array(arr)) => {
-            arr.iter().map(|v| {
+        Some(fuel::quantized::gguf_file::Value::Array(arr)) => arr
+            .iter()
+            .map(|v| {
                 let n = v.to_u32().unwrap_or(0) as usize;
-                if n > 0 { LFM2BlockType::Attention } else { LFM2BlockType::Conv }
-            }).collect()
-        }
+                if n > 0 {
+                    LFM2BlockType::Attention
+                } else {
+                    LFM2BlockType::Conv
+                }
+            })
+            .collect(),
         Some(v) => {
             let n = v.to_u32()? as usize;
-            vec![if n > 0 { LFM2BlockType::Attention } else { LFM2BlockType::Conv }; num_hidden_layers]
+            vec![
+                if n > 0 {
+                    LFM2BlockType::Attention
+                } else {
+                    LFM2BlockType::Conv
+                };
+                num_hidden_layers
+            ]
         }
-        None => return Err(E::msg("gguf metadata: missing lfm2.attention.head_count_kv")),
+        None => {
+            return Err(E::msg(
+                "gguf metadata: missing lfm2.attention.head_count_kv",
+            ));
+        }
     };
     if block_types.len() != num_hidden_layers {
         return Err(E::msg(format!(
@@ -149,8 +167,12 @@ fn lfm2_cfg_from_gguf(mc: &MmapedContent) -> Result<LFM2Config> {
         Some(fuel::quantized::gguf_file::Value::Array(arr)) => {
             // First non-zero entry — all attention layers share the
             // same KV-head count in LFM2 releases.
-            arr.iter().filter_map(|v| v.to_u32().ok()).find(|&n| n > 0)
-                .ok_or_else(|| E::msg("gguf: no attention layer in head_count_kv (every entry is 0)"))? as usize
+            arr.iter()
+                .filter_map(|v| v.to_u32().ok())
+                .find(|&n| n > 0)
+                .ok_or_else(|| {
+                    E::msg("gguf: no attention layer in head_count_kv (every entry is 0)")
+                })? as usize
         }
         Some(v) => v.to_u32()? as usize,
         None => unreachable!(),
@@ -161,7 +183,9 @@ fn lfm2_cfg_from_gguf(mc: &MmapedContent) -> Result<LFM2Config> {
     let vocab_size = match md.get("lfm2.vocab_size") {
         Some(v) => v.to_u32()? as usize,
         None => {
-            let info = mc.content().tensor_infos
+            let info = mc
+                .content()
+                .tensor_infos
                 .get("token_embd.weight")
                 .ok_or_else(|| E::msg("gguf: missing token_embd.weight"))?;
             let dims = info.shape.dims();
@@ -224,28 +248,42 @@ fn main() -> anyhow::Result<()> {
     let cfg = lfm2_cfg_from_gguf(&mmaped)?;
     println!(
         "config: hidden={} layers={} heads={} kv_heads={} head_dim={} ffn={} conv_k={} vocab={}",
-        cfg.hidden_size, cfg.num_hidden_layers, cfg.num_attention_heads,
-        cfg.num_key_value_heads, cfg.head_dim, cfg.intermediate_size,
-        cfg.conv_kernel_size, cfg.vocab_size,
+        cfg.hidden_size,
+        cfg.num_hidden_layers,
+        cfg.num_attention_heads,
+        cfg.num_key_value_heads,
+        cfg.head_dim,
+        cfg.intermediate_size,
+        cfg.conv_kernel_size,
+        cfg.vocab_size,
     );
-    let n_attn = cfg.block_types.iter().filter(|b| matches!(b, LFM2BlockType::Attention)).count();
-    let n_conv = cfg.block_types.iter().filter(|b| matches!(b, LFM2BlockType::Conv)).count();
+    let n_attn = cfg
+        .block_types
+        .iter()
+        .filter(|b| matches!(b, LFM2BlockType::Attention))
+        .count();
+    let n_conv = cfg
+        .block_types
+        .iter()
+        .filter(|b| matches!(b, LFM2BlockType::Conv))
+        .count();
     println!("block schedule: {n_attn} attention + {n_conv} short-conv (LIV)");
     drop(mmaped);
 
     let model = QuantizedLFM2Model::from_gguf(&model_path, &cfg)
         .map_err(|e| E::msg(format!("from_gguf: {e}")))?;
-    println!(
-        "model built in {:.2}s total",
-        start.elapsed().as_secs_f32()
-    );
+    println!("model built in {:.2}s total", start.elapsed().as_secs_f32());
 
     let tokenizer = Tokenizer::from_file(&args.tokenizer).map_err(anyhow::Error::msg)?;
     let mut tos = TokenOutputStream::new(tokenizer);
-    let prompt_str = args.prompt.clone().unwrap_or_else(|| DEFAULT_PROMPT.to_string());
+    let prompt_str = args
+        .prompt
+        .clone()
+        .unwrap_or_else(|| DEFAULT_PROMPT.to_string());
     print!("prompt: {prompt_str}\n");
 
-    let encoded = tos.tokenizer()
+    let encoded = tos
+        .tokenizer()
         .encode(prompt_str.as_str(), true)
         .map_err(anyhow::Error::msg)?;
     let tokens = encoded.get_ids().to_vec();
@@ -308,7 +346,8 @@ fn main() -> anyhow::Result<()> {
     // Decode loop.
     let eos_id = {
         let vocab = tos.tokenizer().get_vocab(true);
-        vocab.get("</s>")
+        vocab
+            .get("</s>")
             .or_else(|| vocab.get("<|endoftext|>"))
             .or_else(|| vocab.get("<|im_end|>"))
             .copied()

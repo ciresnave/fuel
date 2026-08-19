@@ -9,9 +9,9 @@ use clap::{Parser, ValueEnum};
 use std::io::Write;
 use tokenizers::Tokenizer;
 
+use fuel::DType;
 use fuel::lazy_quantized_qwen3_moe::QuantizedQwen3MoeModel;
 use fuel::lazy_qwen3_moe::Qwen3MoeConfig;
-use fuel::DType;
 use fuel_transformers::generation::{LogitsProcessor, Sampling};
 
 use fuel_examples::token_output_stream::TokenOutputStream;
@@ -196,7 +196,8 @@ fn qwen3_moe_config_from_gguf(
 ) -> anyhow::Result<Qwen3MoeConfig> {
     let md = mc.metadata();
     let md_get = |s: &str| -> anyhow::Result<&fuel::quantized::gguf_file::Value> {
-        md.get(s).ok_or_else(|| E::msg(format!("missing gguf metadata {s:?}")))
+        md.get(s)
+            .ok_or_else(|| E::msg(format!("missing gguf metadata {s:?}")))
     };
     let arch = md_get("general.architecture")?
         .to_string()
@@ -205,13 +206,16 @@ fn qwen3_moe_config_from_gguf(
 
     let num_attention_heads = md_get(&format!("{arch}.attention.head_count"))?
         .to_u32()
-        .map_err(|e| E::msg(format!("{arch}.attention.head_count: {e}")))? as usize;
+        .map_err(|e| E::msg(format!("{arch}.attention.head_count: {e}")))?
+        as usize;
     let num_key_value_heads = md_get(&format!("{arch}.attention.head_count_kv"))?
         .to_u32()
-        .map_err(|e| E::msg(format!("{arch}.attention.head_count_kv: {e}")))? as usize;
+        .map_err(|e| E::msg(format!("{arch}.attention.head_count_kv: {e}")))?
+        as usize;
     let hidden_size = md_get(&format!("{arch}.embedding_length"))?
         .to_u32()
-        .map_err(|e| E::msg(format!("{arch}.embedding_length: {e}")))? as usize;
+        .map_err(|e| E::msg(format!("{arch}.embedding_length: {e}")))?
+        as usize;
     let head_dim = match md.get(&format!("{arch}.attention.key_length")) {
         Some(v) => v
             .to_u32()
@@ -221,10 +225,12 @@ fn qwen3_moe_config_from_gguf(
     };
     let max_position_embeddings = md_get(&format!("{arch}.context_length"))?
         .to_u32()
-        .map_err(|e| E::msg(format!("{arch}.context_length: {e}")))? as usize;
+        .map_err(|e| E::msg(format!("{arch}.context_length: {e}")))?
+        as usize;
     let num_hidden_layers = md_get(&format!("{arch}.block_count"))?
         .to_u32()
-        .map_err(|e| E::msg(format!("{arch}.block_count: {e}")))? as usize;
+        .map_err(|e| E::msg(format!("{arch}.block_count: {e}")))?
+        as usize;
     let rms_norm_eps = md_get(&format!("{arch}.attention.layer_norm_rms_epsilon"))?
         .to_f32()
         .map_err(|e| E::msg(format!("{arch}.attention.layer_norm_rms_epsilon: {e}")))?
@@ -243,7 +249,8 @@ fn qwen3_moe_config_from_gguf(
         .map_err(|e| E::msg(format!("{arch}.expert_count: {e}")))? as usize;
     let num_experts_per_tok = md_get(&format!("{arch}.expert_used_count"))?
         .to_u32()
-        .map_err(|e| E::msg(format!("{arch}.expert_used_count: {e}")))? as usize;
+        .map_err(|e| E::msg(format!("{arch}.expert_used_count: {e}")))?
+        as usize;
     let intermediate_size = md
         .get(&format!("{arch}.feed_forward_length"))
         .and_then(|v| v.to_u32().ok())
@@ -256,9 +263,13 @@ fn qwen3_moe_config_from_gguf(
     // quantized-qwen2-instruct's runtime assert and lazy_quantized_qwen3.rs,
     // both of which read dims[0] as the vocabulary axis.)
     let vocab_size = {
-        let info = mc.content().tensor_infos.get("token_embd.weight").ok_or_else(
-            || E::msg("missing tensor token_embd.weight in GGUF for vocab_size inference"),
-        )?;
+        let info = mc
+            .content()
+            .tensor_infos
+            .get("token_embd.weight")
+            .ok_or_else(|| {
+                E::msg("missing tensor token_embd.weight in GGUF for vocab_size inference")
+            })?;
         let dims = info.shape.dims();
         // Fail loudly on an unexpected shape rather than silently returning the
         // wrong axis: the layout is [vocab, hidden], so dims[1] must be hidden.
@@ -273,10 +284,7 @@ fn qwen3_moe_config_from_gguf(
     // Qwen3 ships attention biases in the base config; the GGUF
     // exporter typically writes them under `blk.{i}.attn_q.bias` etc.
     // Probe one tensor name to decide.
-    let attention_bias = mc
-        .content()
-        .tensor_infos
-        .contains_key("blk.0.attn_q.bias");
+    let attention_bias = mc.content().tensor_infos.contains_key("blk.0.attn_q.bias");
 
     Ok(Qwen3MoeConfig {
         vocab_size,

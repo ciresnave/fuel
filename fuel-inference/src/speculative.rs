@@ -520,7 +520,8 @@ mod tests {
         for i in 0..=k {
             target_data[i * vocab + 5] = 10.0; // token 5 has high logit
         }
-        let target_logprobs: Vec<Vec<f32>> = target_data.chunks(vocab).map(<[f32]>::to_vec).collect();
+        let target_logprobs: Vec<Vec<f32>> =
+            target_data.chunks(vocab).map(<[f32]>::to_vec).collect();
 
         // Draft proposes token 0 (which target dislikes)
         let draft_tokens = vec![0u32, 0, 0];

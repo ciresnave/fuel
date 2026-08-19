@@ -22,9 +22,10 @@
 //! v1 scope: F32, batch == 1, forward-only inference, single-call
 //! (no streaming).
 
+use crate::Result;
 use crate::lazy::LazyTensor;
 use crate::lazy_mimi_quantization::{
-    split_rvq_decode, split_rvq_encode, SplitResidualVectorQuantizerWeights,
+    SplitResidualVectorQuantizerWeights, split_rvq_decode, split_rvq_encode,
 };
 use crate::lazy_mimi_resampler::{ConvDownsample1dModel, ConvTrUpsample1dModel};
 use crate::lazy_mimi_seanet::{
@@ -34,7 +35,6 @@ use crate::lazy_mimi_seanet::{
 use crate::lazy_mimi_transformer::{
     MimiTransformerConfig, ProjectedTransformerModel, ProjectedTransformerWeights,
 };
-use crate::Result;
 
 #[derive(Debug, Clone)]
 pub struct MimiConfig {
@@ -142,7 +142,9 @@ impl MimiModel {
     pub fn encode(&self, audio: &LazyTensor) -> Result<LazyTensor> {
         let h = self.encoder().forward(audio)?;
         let h = self.encoder_transformer().forward(&h)?;
-        let h = h.into_iter().next()
+        let h = h
+            .into_iter()
+            .next()
             .expect("encoder transformer must yield ≥1 output");
         let h = self.downsample().forward(&h)?;
         split_rvq_encode(&h, &self.weights.quantizer)
@@ -154,7 +156,9 @@ impl MimiModel {
         let h = split_rvq_decode(codes, &self.weights.quantizer)?;
         let h = self.upsample().forward(&h)?;
         let h = self.decoder_transformer().forward(&h)?;
-        let h = h.into_iter().next()
+        let h = h
+            .into_iter()
+            .next()
             .expect("decoder transformer must yield ≥1 output");
         self.decoder().forward(&h)
     }
@@ -190,22 +194,26 @@ impl MimiWeights {
     ) -> Result<Self> {
         use crate::lazy::load_tensor_as_f32;
 
-        let encoder = SeaNetEncoderWeights::load_from_mmapped(
-            st, "encoder", &cfg.seanet,
-        )?;
-        let decoder = SeaNetDecoderWeights::load_from_mmapped(
-            st, "decoder", &cfg.seanet,
-        )?;
+        let encoder = SeaNetEncoderWeights::load_from_mmapped(st, "encoder", &cfg.seanet)?;
+        let decoder = SeaNetDecoderWeights::load_from_mmapped(st, "decoder", &cfg.seanet)?;
 
         let dim = cfg.seanet.dimension;
         // Both ProjectedTransformers take `input_dim = dim` and a
         // single `output_dim = dim` slot in Mimi v0.1 (the eager
         // `Encodec::new` passes `&[dim]` for output_dims).
         let encoder_transformer = ProjectedTransformerWeights::load_from_mmapped(
-            st, "encoder_transformer", &cfg.transformer, dim, &[dim],
+            st,
+            "encoder_transformer",
+            &cfg.transformer,
+            dim,
+            &[dim],
         )?;
         let decoder_transformer = ProjectedTransformerWeights::load_from_mmapped(
-            st, "decoder_transformer", &cfg.transformer, dim, &[dim],
+            st,
+            "decoder_transformer",
+            &cfg.transformer,
+            dim,
+            &[dim],
         )?;
 
         // Top-level downsample / upsample. Both are bias-less in the
@@ -232,7 +240,8 @@ impl MimiWeights {
         }
 
         let quantizer = SplitResidualVectorQuantizerWeights::load_from_mmapped(
-            st, "quantizer",
+            st,
+            "quantizer",
             cfg.quantizer_dim,
             dim,
             dim,
@@ -282,4 +291,3 @@ mod tests {
         assert_eq!(ratios_product, 8 * 6 * 5 * 4);
     }
 }
-

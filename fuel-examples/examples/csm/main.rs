@@ -54,13 +54,13 @@ extern crate intel_mkl_src;
 #[cfg(feature = "accelerate")]
 extern crate accelerate_src;
 
-use anyhow::{bail, Error as E, Result};
+use anyhow::{Error as E, Result, bail};
 use clap::Parser;
 
+use fuel::Shape;
 use fuel::lazy::LazyTensor;
 use fuel::lazy_csm::{CsmConfig, CsmModel, CsmWeights};
-use fuel::Shape;
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use hf_hub::{Repo, RepoType, api::sync::Api};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "CSM lazy demo (v1 embed + codebook0 head)", long_about = None)]
@@ -115,15 +115,16 @@ fn main() -> Result<()> {
         );
     }
 
-    println!("prompt (informational, not yet tokenized): {:?}", args.prompt);
+    println!(
+        "prompt (informational, not yet tokenized): {:?}",
+        args.prompt
+    );
 
     // ---- Locate model weights ------------------------------------------
     let weights_path: std::path::PathBuf = match args.weights {
         Some(p) => std::path::PathBuf::from(p),
         None => {
-            let model_id = args
-                .model_id
-                .unwrap_or_else(|| "sesame/csm-1b".to_string());
+            let model_id = args.model_id.unwrap_or_else(|| "sesame/csm-1b".to_string());
             let api = Api::new()?;
             let repo = api.repo(Repo::with_revision(
                 model_id,
@@ -152,15 +153,16 @@ fn main() -> Result<()> {
         .map_err(|e| E::msg(format!("mmap csm weights: {e}")))?;
     let weights = CsmWeights::load_from_mmapped(&st, &cfg)
         .map_err(|e| E::msg(format!("load csm weights: {e}")))?;
-    let model = CsmModel { config: cfg.clone(), weights };
+    let model = CsmModel {
+        config: cfg.clone(),
+        weights,
+    };
     println!("loaded weights in {:?}", t_load.elapsed());
 
     // ---- Read voice safetensors (tokens + mask, frame 0) ---------------
     println!("loading voice prompt from {}", args.voice_safetensors);
-    let voice_st = unsafe {
-        fuel::safetensors::MmapedSafetensors::new(&args.voice_safetensors)
-    }
-    .map_err(|e| E::msg(format!("mmap voice safetensors: {e}")))?;
+    let voice_st = unsafe { fuel::safetensors::MmapedSafetensors::new(&args.voice_safetensors) }
+        .map_err(|e| E::msg(format!("mmap voice safetensors: {e}")))?;
 
     let cb = cfg.audio_num_codebooks;
     let expected_cols = cb + 1;
@@ -184,29 +186,30 @@ fn main() -> Result<()> {
     if tokens_shape != mask_shape {
         bail!(
             "tokens shape {:?} does not match mask shape {:?}",
-            tokens_shape, mask_shape,
+            tokens_shape,
+            mask_shape,
         );
     }
     if tokens_shape.len() != 3 || tokens_shape[0] != 1 || tokens_shape[2] != expected_cols {
         bail!(
             "voice tokens shape {:?} doesn't match expected [1, S, {}] \
              (num_codebooks+1)",
-            tokens_shape, expected_cols,
+            tokens_shape,
+            expected_cols,
         );
     }
     let seq_total = tokens_shape[1];
-    println!("voice seq_len={} (using only frame 0 for v1 demo)", seq_total);
+    println!(
+        "voice seq_len={} (using only frame 0 for v1 demo)",
+        seq_total
+    );
 
     // Decode tokens (I64 → u32) for frame 0 only.
     let tokens_bytes = tokens_view.data();
     let tokens_all_u32: Vec<u32> = match tokens_view.dtype() {
         safetensors::Dtype::I64 => tokens_bytes
             .chunks_exact(8)
-            .map(|b| {
-                i64::from_le_bytes([
-                    b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
-                ]) as u32
-            })
+            .map(|b| i64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]) as u32)
             .collect(),
         safetensors::Dtype::U32 => tokens_bytes
             .chunks_exact(4)
@@ -230,11 +233,7 @@ fn main() -> Result<()> {
 
     // ---- Run the v1 forward pass ---------------------------------------
     // Anchor LazyTensor: every constant table is materialized on its graph.
-    let anchor = LazyTensor::from_f32(
-        vec![0.0_f32],
-        Shape::from_dims(&[1]),
-        &fuel::Device::cpu(),
-    );
+    let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &fuel::Device::cpu());
 
     let t_fwd = std::time::Instant::now();
     let (embed, c0_logits) = model
@@ -252,16 +251,12 @@ fn main() -> Result<()> {
     let v = cfg.audio_vocab_size;
     // (1, seq_len=1, v) flat → take the trailing v elements.
     let last = &logits_data[logits_data.len() - v..];
-    let (best_idx, best_val) = last
-        .iter()
-        .enumerate()
-        .fold((0usize, f32::NEG_INFINITY), |(bi, bv), (i, &x)| {
-            if x > bv {
-                (i, x)
-            } else {
-                (bi, bv)
-            }
-        });
+    let (best_idx, best_val) =
+        last.iter()
+            .enumerate()
+            .fold((0usize, f32::NEG_INFINITY), |(bi, bv), (i, &x)| {
+                if x > bv { (i, x) } else { (bi, bv) }
+            });
     println!(
         "argmax codebook-0 token = {} (logit {:.4})",
         best_idx, best_val,

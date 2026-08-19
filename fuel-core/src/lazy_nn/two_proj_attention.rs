@@ -106,13 +106,28 @@ impl LazyTwoProjAttention {
                 w_kv.elem_count(),
             );
         }
-        Ok(Self { w_q, w_kv, n_heads, n_kv_heads, head_dim, hidden_size })
+        Ok(Self {
+            w_q,
+            w_kv,
+            n_heads,
+            n_kv_heads,
+            head_dim,
+            hidden_size,
+        })
     }
 
-    pub fn n_heads(&self) -> usize { self.n_heads }
-    pub fn n_kv_heads(&self) -> usize { self.n_kv_heads }
-    pub fn head_dim(&self) -> usize { self.head_dim }
-    pub fn hidden_size(&self) -> usize { self.hidden_size }
+    pub fn n_heads(&self) -> usize {
+        self.n_heads
+    }
+    pub fn n_kv_heads(&self) -> usize {
+        self.n_kv_heads
+    }
+    pub fn head_dim(&self) -> usize {
+        self.head_dim
+    }
+    pub fn hidden_size(&self) -> usize {
+        self.hidden_size
+    }
 
     /// Per-token, per-layer decode-cache footprint of the shared `kv`
     /// projection (one slot of `n_kv_heads * head_dim` elements).
@@ -237,10 +252,11 @@ impl LazyTwoProjAttention {
             .split_heads(self.n_heads, self.head_dim)?;
 
         // kv_step = W_kv(xs_step): (1, s, Hkv*d) -> [s, Hkv*d] -> append.
-        let kv_step = self.w_kv.apply_linear(
-            xs_step, self.hidden_size, self.n_kv_heads * self.head_dim,
-        )?;
-        let kv_step_2d = kv_step.reshape(Shape::from_dims(&[s, self.n_kv_heads * self.head_dim]))?;
+        let kv_step =
+            self.w_kv
+                .apply_linear(xs_step, self.hidden_size, self.n_kv_heads * self.head_dim)?;
+        let kv_step_2d =
+            kv_step.reshape(Shape::from_dims(&[s, self.n_kv_heads * self.head_dim]))?;
         let cache = cache.append(layer, &[&kv_step_2d])?;
 
         // Read back the full attended prefix (cached + new) and repeat to
@@ -248,7 +264,11 @@ impl LazyTwoProjAttention {
         let kv_all = cache
             .slot_buffer_full(layer, 0)
             .slice(0_usize, 0, total)?
-            .reshape(Shape::from_dims(&[1, total, self.n_kv_heads * self.head_dim]))?
+            .reshape(Shape::from_dims(&[
+                1,
+                total,
+                self.n_kv_heads * self.head_dim,
+            ]))?
             .split_heads(self.n_kv_heads, self.head_dim)?; // (1, Hkv, total, d)
         let n_rep = self.n_heads / self.n_kv_heads;
         let kv_all = kv_all.repeat_interleave(1_usize, n_rep)?; // (1, H, total, d)
@@ -304,11 +324,11 @@ mod tests {
     /// `rows` new tokens starting at `q_start`.
     #[allow(clippy::too_many_arguments)]
     fn hand_reference_attn(
-        q_proj: &[f32],   // [rows, H*d] -- new-token queries only
-        kv_proj: &[f32],  // [total, Hkv*d] -- full attended-prefix kv
+        q_proj: &[f32],  // [rows, H*d] -- new-token queries only
+        kv_proj: &[f32], // [total, Hkv*d] -- full attended-prefix kv
         rows: usize,
         total: usize,
-        q_start: usize,   // absolute position of q row 0
+        q_start: usize, // absolute position of q row 0
         h: usize,
         hkv: usize,
         d: usize,
@@ -364,11 +384,17 @@ mod tests {
         let attn = LazyTwoProjAttention::new(
             WeightStorage::F32(Arc::from(w_q_data.clone())),
             WeightStorage::F32(Arc::from(w_kv_data.clone())),
-            h, hkv, d, hidden,
-        ).unwrap();
+            h,
+            hkv,
+            d,
+            hidden,
+        )
+        .unwrap();
 
         let xs = LazyTensor::from_f32(
-            x_data.clone(), Shape::from_dims(&[batch, seq, hidden]), &Device::cpu(),
+            x_data.clone(),
+            Shape::from_dims(&[batch, seq, hidden]),
+            &Device::cpu(),
         );
         let out = attn.forward(&xs).unwrap();
         assert_eq!(out.shape().dims(), &[batch, seq, h * d]);
@@ -403,22 +429,29 @@ mod tests {
         let attn = LazyTwoProjAttention::new(
             WeightStorage::F32(Arc::from(w_q_data)),
             WeightStorage::F32(Arc::from(w_kv_data)),
-            h, hkv, d, hidden,
-        ).unwrap();
+            h,
+            hkv,
+            d,
+            hidden,
+        )
+        .unwrap();
 
         // ---- Dense reference over all 4 tokens ----
         let xs_dense = LazyTensor::from_f32(
-            x_data.clone(), Shape::from_dims(&[batch, seq, hidden]), &Device::cpu(),
+            x_data.clone(),
+            Shape::from_dims(&[batch, seq, hidden]),
+            &Device::cpu(),
         );
         let dense = attn.forward(&xs_dense).unwrap().realize_f32();
 
         // ---- Cached: prefill 2, decode 1, decode 1 ----
         let xs_full = LazyTensor::from_f32(
-            x_data, Shape::from_dims(&[batch, seq, hidden]), &Device::cpu(),
+            x_data,
+            Shape::from_dims(&[batch, seq, hidden]),
+            &Device::cpu(),
         );
-        let cache = LazyLatentCache::new(
-            &xs_full, 1, seq, vec![vec![hkv * d]], DType::F32,
-        ).unwrap();
+        let cache =
+            LazyLatentCache::new(&xs_full, 1, seq, vec![vec![hkv * d]], DType::F32).unwrap();
 
         let step1 = xs_full.slice(1_usize, 0, 2).unwrap();
         let (out1, cache) = attn.forward_with_latent_cache(&step1, cache, 0).unwrap();
@@ -455,7 +488,11 @@ mod tests {
             );
         }
         for (i, (c, dn)) in cached.iter().zip(dense.iter()).enumerate() {
-            assert_eq!(c.to_bits(), dn.to_bits(), "out[{i}]: cached {c} != dense {dn}");
+            assert_eq!(
+                c.to_bits(),
+                dn.to_bits(),
+                "out[{i}]: cached {c} != dense {dn}"
+            );
         }
     }
 
@@ -477,20 +514,27 @@ mod tests {
         let attn = LazyTwoProjAttention::new(
             WeightStorage::F32(Arc::from(w_q_data)),
             WeightStorage::F32(Arc::from(w_kv_data)),
-            h, hkv, d, hidden,
-        ).unwrap();
+            h,
+            hkv,
+            d,
+            hidden,
+        )
+        .unwrap();
 
         let xs_dense = LazyTensor::from_f32(
-            x_data.clone(), Shape::from_dims(&[batch, seq, hidden]), &Device::cpu(),
+            x_data.clone(),
+            Shape::from_dims(&[batch, seq, hidden]),
+            &Device::cpu(),
         );
         let dense = attn.forward(&xs_dense).unwrap().realize_f32();
 
         let xs_full = LazyTensor::from_f32(
-            x_data, Shape::from_dims(&[batch, seq, hidden]), &Device::cpu(),
+            x_data,
+            Shape::from_dims(&[batch, seq, hidden]),
+            &Device::cpu(),
         );
-        let cache = LazyLatentCache::new(
-            &xs_full, 1, seq, vec![vec![hkv * d]], DType::F32,
-        ).unwrap();
+        let cache =
+            LazyLatentCache::new(&xs_full, 1, seq, vec![vec![hkv * d]], DType::F32).unwrap();
 
         let step1 = xs_full.slice(1_usize, 0, 2).unwrap();
         let (out1, cache) = attn.forward_with_latent_cache(&step1, cache, 0).unwrap();
@@ -511,7 +555,11 @@ mod tests {
 
         assert_eq!(cached.len(), dense.len());
         for (i, (c, dn)) in cached.iter().zip(dense.iter()).enumerate() {
-            assert_eq!(c.to_bits(), dn.to_bits(), "out[{i}]: cached {c} != dense {dn} (GQA repeat)");
+            assert_eq!(
+                c.to_bits(),
+                dn.to_bits(),
+                "out[{i}]: cached {c} != dense {dn} (GQA repeat)"
+            );
         }
     }
 
@@ -527,15 +575,11 @@ mod tests {
 
         // Wrong w_q element count.
         let bad_wq = WeightStorage::F32(Arc::from(vec![0.0_f32; hidden * h * d - 1]));
-        assert!(LazyTwoProjAttention::new(
-            bad_wq, good_wkv.clone(), h, hkv, d, hidden,
-        ).is_err());
+        assert!(LazyTwoProjAttention::new(bad_wq, good_wkv.clone(), h, hkv, d, hidden,).is_err());
 
         // Wrong w_kv element count.
         let bad_wkv = WeightStorage::F32(Arc::from(vec![0.0_f32; hidden * hkv * d + 1]));
-        assert!(LazyTwoProjAttention::new(
-            good_wq.clone(), bad_wkv, h, hkv, d, hidden,
-        ).is_err());
+        assert!(LazyTwoProjAttention::new(good_wq.clone(), bad_wkv, h, hkv, d, hidden,).is_err());
 
         // n_kv_heads does not divide n_heads (3 heads, 2 kv-heads).
         let wq3 = WeightStorage::F32(Arc::from(ramp_f32(hidden * 3 * d, 0.01, 0.0)));
@@ -543,55 +587,79 @@ mod tests {
         assert!(LazyTwoProjAttention::new(wq3, wkv2, 3, 2, d, hidden).is_err());
 
         // Zero n_heads / n_kv_heads / head_dim / hidden_size.
-        assert!(LazyTwoProjAttention::new(
-            good_wq.clone(), good_wkv.clone(), 0, hkv, d, hidden,
-        ).is_err());
-        assert!(LazyTwoProjAttention::new(
-            good_wq.clone(), good_wkv.clone(), h, 0, d, hidden,
-        ).is_err());
-        assert!(LazyTwoProjAttention::new(
-            good_wq.clone(), good_wkv.clone(), h, hkv, 0, hidden,
-        ).is_err());
-        assert!(LazyTwoProjAttention::new(
-            good_wq.clone(), good_wkv.clone(), h, hkv, d, 0,
-        ).is_err());
+        assert!(
+            LazyTwoProjAttention::new(good_wq.clone(), good_wkv.clone(), 0, hkv, d, hidden,)
+                .is_err()
+        );
+        assert!(
+            LazyTwoProjAttention::new(good_wq.clone(), good_wkv.clone(), h, 0, d, hidden,).is_err()
+        );
+        assert!(
+            LazyTwoProjAttention::new(good_wq.clone(), good_wkv.clone(), h, hkv, 0, hidden,)
+                .is_err()
+        );
+        assert!(
+            LazyTwoProjAttention::new(good_wq.clone(), good_wkv.clone(), h, hkv, d, 0,).is_err()
+        );
 
         let attn = LazyTwoProjAttention::new(good_wq, good_wkv, h, hkv, d, hidden).unwrap();
 
         // ---- forward_with_latent_cache: cache/geometry mismatches ----
-        let anchor = LazyTensor::from_f32(vec![0.0_f32; hidden], Shape::from_dims(&[1, 1, hidden]), &Device::cpu());
+        let anchor = LazyTensor::from_f32(
+            vec![0.0_f32; hidden],
+            Shape::from_dims(&[1, 1, hidden]),
+            &Device::cpu(),
+        );
         let step = anchor.clone();
 
         // Wrong slot count (2 slots instead of 1).
         let cache_2slots = LazyLatentCache::new(
-            &anchor, 1, 4, vec![vec![hkv * d], vec![hkv * d]], DType::F32,
-        ).unwrap();
-        assert!(attn.forward_with_latent_cache(&step, cache_2slots, 0).is_err());
+            &anchor,
+            1,
+            4,
+            vec![vec![hkv * d], vec![hkv * d]],
+            DType::F32,
+        )
+        .unwrap();
+        assert!(
+            attn.forward_with_latent_cache(&step, cache_2slots, 0)
+                .is_err()
+        );
 
         // Wrong slot trailing shape.
-        let cache_bad_trailing = LazyLatentCache::new(
-            &anchor, 1, 4, vec![vec![hkv * d + 1]], DType::F32,
-        ).unwrap();
-        assert!(attn.forward_with_latent_cache(&step, cache_bad_trailing, 0).is_err());
+        let cache_bad_trailing =
+            LazyLatentCache::new(&anchor, 1, 4, vec![vec![hkv * d + 1]], DType::F32).unwrap();
+        assert!(
+            attn.forward_with_latent_cache(&step, cache_bad_trailing, 0)
+                .is_err()
+        );
 
         // Capacity overflow: max_seq_len=1, already full, appending 1 more.
-        let cache_full = LazyLatentCache::new(
-            &anchor, 1, 1, vec![vec![hkv * d]], DType::F32,
-        ).unwrap();
+        let cache_full =
+            LazyLatentCache::new(&anchor, 1, 1, vec![vec![hkv * d]], DType::F32).unwrap();
         let prefill = anchor.clone();
-        let (_out, cache_full) = attn.forward_with_latent_cache(&prefill, cache_full, 0).unwrap();
+        let (_out, cache_full) = attn
+            .forward_with_latent_cache(&prefill, cache_full, 0)
+            .unwrap();
         let cache_full = cache_full.advance_by(1);
         let overflow_step = anchor.clone();
-        assert!(attn.forward_with_latent_cache(&overflow_step, cache_full, 0).is_err());
+        assert!(
+            attn.forward_with_latent_cache(&overflow_step, cache_full, 0)
+                .is_err()
+        );
 
         // Bad xs_step batch dim (batch != 1).
-        let cache_ok = LazyLatentCache::new(
-            &anchor, 1, 4, vec![vec![hkv * d]], DType::F32,
-        ).unwrap();
+        let cache_ok =
+            LazyLatentCache::new(&anchor, 1, 4, vec![vec![hkv * d]], DType::F32).unwrap();
         let bad_batch_step = LazyTensor::from_f32(
-            vec![0.0_f32; 2 * hidden], Shape::from_dims(&[2, 1, hidden]), &Device::cpu(),
+            vec![0.0_f32; 2 * hidden],
+            Shape::from_dims(&[2, 1, hidden]),
+            &Device::cpu(),
         );
-        assert!(attn.forward_with_latent_cache(&bad_batch_step, cache_ok, 0).is_err());
+        assert!(
+            attn.forward_with_latent_cache(&bad_batch_step, cache_ok, 0)
+                .is_err()
+        );
     }
 
     /// Test 5: cache-size ratio documented in the module doc, checked
@@ -615,6 +683,9 @@ mod tests {
         let ratio = attn.cache_elems_per_token() as f64 / attn.standard_kv_elems_per_token() as f64;
         assert!((ratio - 0.015625).abs() < 1e-12, "ratio = {ratio}");
         let reduction = 1.0 - ratio;
-        assert!((reduction - 0.984375).abs() < 1e-12, "reduction = {reduction}");
+        assert!(
+            (reduction - 0.984375).abs() < 1e-12,
+            "reduction = {reduction}"
+        );
     }
 }
