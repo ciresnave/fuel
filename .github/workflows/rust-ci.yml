@@ -267,7 +267,16 @@ jobs:
         if: runner.os == 'macOS'
         run: cargo test --workspace --no-fail-fast ${{ env.MACOS_EXCLUDES }}
       - name: Run telemetry-gated dispatch tests (sk4 wire codec)
-        if: runner.os == 'Linux'
+        # `always() &&` is LOAD-BEARING, not defensive. Without it this step is
+        # skipped whenever ANY earlier step in the job fails — and on a CI
+        # summary page a SKIPPED step and a PASSED step are visually identical.
+        # Measured 2026-08-19: this conformance gate had not executed in CI at
+        # all, because the `Run tests` step ahead of it was red. A conformance
+        # gate that silently does not run is worse than an absent one; the
+        # absent one prompts the question. The gate is independent of the step
+        # before it, so there is no reason for its result to be conditional on
+        # that step's.
+        if: always() && runner.os == 'Linux'
         # `cargo test --workspace` above uses DEFAULT features, so the
         # telemetry-gated tests — notably
         # `fuel_emits_only_recognized_sk4_dtype_spellings` — BUILD but never RUN

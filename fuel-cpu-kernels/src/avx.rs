@@ -312,8 +312,8 @@ impl CpuBF16<ARR> for CurrentCpuBF16 {
         // blocks.
         unsafe {
             _mm256_storeu_ps(tmp.as_mut_ptr(), a);
-            for i in 0..8 {
-                *mem_addr.add(i) = bf16::from_f32(tmp[i]);
+            for (i, &v) in tmp.iter().enumerate() {
+                *mem_addr.add(i) = bf16::from_f32(v);
             }
         }
     }
