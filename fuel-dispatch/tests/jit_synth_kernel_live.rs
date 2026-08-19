@@ -496,9 +496,23 @@ fn live_baracuda_synthesizer_full_loop_scalar() {
         // Baracuda EMITS one at runtime is the open half, and printing settles it.
         //
         // Observation only, deliberately: no assertion, and it does not touch the
-        // launch path, so the experiment stays single-variable. If nothing prints,
-        // the founding hedge at jit_cuda_load.rs:53 is still exactly true — Fuel
-        // sniffs the symbol suffix because there is nothing declared to read.
+        // launch path, so the experiment stays single-variable.
+        //
+        // MEASURED 2026-08-19, kernelgen =0.0.1-alpha.78, and it REFUTES the
+        // paragraph above (kept, because the wrong prediction is the point):
+        // the synthesizer DOES declare the field, at runtime, inside `contract`:
+        //
+        //     count_unit: elements
+        //     class: elementwise
+        //
+        // Fuel computes `n` in ELEMENTS (`layouts[n_inputs].shape().elem_count()`
+        // = 7). The declaration says ELEMENTS. **They agree**, so by the GAP-001
+        // row's own rule — agree => body, disagree => contract — this is NOT a
+        // contract mismatch, and the row's "cuda-build-blocked" status was
+        // mislabelling a diagnostic that runs fine.
+        //
+        // Also emitted: `structure_key: sk3|bin|f32|cuda:sm89|ix32|warp|r1|...`
+        // — an sk3 key from a retired crate line. Flagged, not interpreted.
         eprintln!("  structure_key: {}", art.link.structure_key);
         eprintln!("  revision_hash: {:#x}", art.link.revision_hash);
         let mut declared = 0usize;
