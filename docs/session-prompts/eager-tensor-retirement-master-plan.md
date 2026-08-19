@@ -1,6 +1,27 @@
 # Eager `fuel_core::Tensor` retirement — master plan
 
-> Reconciled 2026-06-15 against the 2026-06-14 redirection + current git: live master index for this program (do NOT retire) — Phase C shipped, D/E/F substantially shipped, Phase H in progress; mamba inbound link repointed to `shipped/`.
+> ⚠️ **PROGRAM COMPLETE 2026-08-19 — THIS DOCUMENT IS HISTORY, NOT STATUS.**
+>
+> **The eager `Tensor` retirement (B6) is DONE.** Measured at `origin/main` on
+> 2026-08-19, with a positive control confirming the query works:
+>
+> ```
+> pub struct Tensor  in fuel-core/src/*.rs  ->  0 matches
+> BackpropOp         anywhere in *.rs       ->  0 matches
+> fuel-core/src/op.rs                       ->  GONE
+> (control) pub struct LazyTensor           ->  1 match, fuel-core/src/lazy.rs
+> ```
+>
+> **The line below said "Phase H in progress" and was last touched 2026-06-15.**
+> It was quoted as current state two months later and produced a wrong answer
+> to "what gates the `fuel-core` dissolution?". **A resume artifact that
+> outlives its program is worse than a deleted one, because it gets trusted** —
+> and this one calls itself a "live master index", which is exactly the phrase
+> that stops a reader checking. Read what follows as the record of how the
+> program ran, never as its state.
+>
+> _Superseded status line, kept so the drift is visible rather than erased:_
+> _Reconciled 2026-06-15 against the 2026-06-14 redirection + current git: live master index for this program (do NOT retire) — Phase C shipped, D/E/F substantially shipped, Phase H in progress; mamba inbound link repointed to `shipped/`._
 
 ## Context
 
