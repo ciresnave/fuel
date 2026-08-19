@@ -1,0 +1,20 @@
+# Revisions to skip when running `git blame`.
+#
+# GitHub honours this file automatically. Locally, enable it once with:
+#
+#     git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# ONLY add commits that are provably mechanical — a formatter, a licence-header
+# stamp, a rename. A commit listed here becomes invisible to the default blame
+# view, so listing one that changed behaviour hides that behaviour from every
+# future investigation. Each entry states what makes it mechanical.
+
+# style: cargo fmt --all, run to FIXPOINT — 647 files, +102,151/-45,626.
+# Mechanical: rustfmt output only. Verified on the formatted tree before
+# landing — fmt --check 0 hunks, gap_hedges 11/11, fuel-onnx 21/21, sk4 6/6.
+a63d8f55cdc16ac3a84333b7f46edb4b9476dec0
+
+# chore(licensing): SPDX-License-Identifier on all 795 .rs files.
+# Mechanical: one comment line prepended per file. No copyright line — that is
+# a separate claim and it waits on the Candle attribution work.
+62b0e36b2e57f817b0329edf7059a3ee328da322
