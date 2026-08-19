@@ -124,10 +124,16 @@ pub unsafe fn vec_dot_f32(a_row: *const f32, b_row: *const f32, c: *mut f32, k: 
 )))]
 #[inline(always)]
 pub unsafe fn vec_dot_f32(a_row: *const f32, b_row: *const f32, c: *mut f32, k: usize) {
-    // leftovers
+    // Overwrite semantics, matching the SIMD arm above and the other seven arms
+    // in this file: accumulate into a local, then assign, so `*c`'s incoming
+    // value is discarded rather than added to. This arm previously accumulated
+    // directly into an uninitialised `*c`, making it the lone divergence — a
+    // caller correct on avx2/neon produced `incoming_c + dot` on a scalar target.
+    let mut acc = 0f32;
     for i in 0..k {
-        unsafe { *c += *a_row.add(i) * (*b_row.add(i)) };
+        unsafe { acc += *a_row.add(i) * (*b_row.add(i)) };
     }
+    unsafe { *c = acc };
 }
 
 #[cfg(any(
