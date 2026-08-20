@@ -4,6 +4,23 @@
 persistent-output executor capability (the CapturedRun "capture wiring"), which the original banked
 plan under-scoped. User directive: **full build-out**.
 
+> ⚠️ **AMENDED 2026-08-19 — THE "REMAINING WORK" THIS DOCUMENT SCOPES HAS LANDED.**
+> The status line says Phases 1, 2a and 4 landed and that the doc scopes what is
+> left. Captured replay reached **10.4×, byte-exact** (`ef01a5dc`, `9b7a5d1c`),
+> and `CapturedRun` now appears in **33** files with a second acceptance test
+> (`phi_forward_with_kv_context_captured_matches_persistent`) that postdates this
+> plan entirely.
+>
+> **Scoped honestly: this establishes the program reached its acceptance
+> criterion, NOT that every phase listed below was executed as written.** A
+> phase-by-phase reconciliation is still owed and this notice is not it.
+>
+> ⚠️ The acceptance tests are `#[cfg(feature = "cuda")]` **and** `#[ignore]` —
+> a plain `cargo test` gives a vacuous `0 passed; N filtered out`. Use the
+> `gpu-run` + `--features cuda -- --ignored` form.
+>
+> **Re-derive:** `git grep -l CapturedRun -- '*.rs' | wc -l` → ~33.
+
 ## The problem (adversarially verified, 3/3 probes)
 
 CUDA-graph replay (`fuel-cuda-backend/src/capture.rs`, `CapturedRun::replay`) bakes buffer
