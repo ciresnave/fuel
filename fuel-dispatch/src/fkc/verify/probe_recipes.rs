@@ -118,6 +118,29 @@ pub(crate) fn ht(dt: DType, shape: Vec<usize>, vals: &[f32]) -> Option<HostTenso
     })
 }
 
+/// Deterministic probe seed for one `(OpKind, dtypes)` registration.
+///
+/// Any deterministic seed satisfies `bit_stable_on_same_hardware`, which
+/// re-invokes ONE probe N times — the seed never has to agree across runs for
+/// that claim. It has to agree across BACKENDS for the differential claims
+/// (`seed_cuda_ledger` diffs CUDA against a CPU reference), which is why this
+/// lives here with [`build_primitive_probe`] rather than once per seeder: a
+/// second copy would drift silently, and a differential over two different
+/// inputs reports a disagreement that is entirely its own.
+///
+/// Moved here from `seed_vulkan_ledger` (which was the only definition, and
+/// feature-gated). The move is name-resolution-safe by inspection, not by
+/// assertion: the body calls NOTHING — only literals, `op as u64` and
+/// `dtypes.len()` — so there is no unqualified path that could rebind against
+/// the new module's scope. That check is required after `23785514`, where a
+/// "pure move" silently rebound `to_bytes` to a same-signature encoder with a
+/// smaller domain.
+pub(crate) fn probe_seed(op: OpKind, dtypes: &[DType]) -> u64 {
+    0x2545_F491_4F6C_DD1D_u64
+        ^ (op as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ (dtypes.len() as u64).wrapping_mul(0xD1B5_4A32_D192_ED03)
+}
+
 /// A synthesized, safe, valid probe for one `(OpKind, dtypes)` registration.
 pub(crate) struct Probe {
     pub(crate) inputs: ProbeInputs,

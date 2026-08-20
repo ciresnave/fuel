@@ -43,7 +43,7 @@ use super::bit_stability::{KernelInvoker, VerifyError, VerifyOutcome, verify_bit
 use super::invoker_cpu::CpuInvoker;
 use super::invoker_vulkan::VulkanInvoker;
 use super::ledger::{LedgerRecord, VerificationLedger};
-use super::probe_recipes::build_primitive_probe;
+use super::probe_recipes::{build_primitive_probe, probe_seed};
 use crate::kernel::KernelBindingTable;
 
 /// Repeat-call count per probe for `bit_stable_on_same_hardware` (≥16 floor,
@@ -97,12 +97,6 @@ fn verified_at_string() -> String {
     format!("epoch:{secs}")
 }
 
-/// Deterministic per-(op, dtype) seed so a re-run is byte-identical.
-fn probe_seed(op: OpKind, dtypes: &[DType]) -> u64 {
-    0x2545_F491_4F6C_DD1D_u64
-        ^ (op as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
-        ^ (dtypes.len() as u64).wrapping_mul(0xD1B5_4A32_D192_ED03)
-}
 
 /// Empirically verify every Vulkan primitive registration this harness has a
 /// probe recipe for, returning a ledger seeded from the EMBEDDED (checked-in)
