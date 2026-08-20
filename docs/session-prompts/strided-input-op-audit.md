@@ -7,9 +7,9 @@ through H are higher priority).
 > ⚠️ **AMENDED 2026-08-19 — THE GATE THIS WAS DEFERRED BEHIND CLEARED WEEKS AGO,
 > AND NOTHING FIRED.** The deferral reads "captured here for after the
 > eager-Tensor retirement program completes". **That program is COMPLETE** —
-> `pub struct Tensor` in `fuel-core/src/*.rs` → **0**, `BackpropOp` → **0**,
-> `fuel-core/src/op.rs` → gone (control: `pub struct LazyTensor` → **1**, so the
-> zeros are evidence, not a broken query).
+> `BackpropOp` → **0** and `fuel-core/src/op.rs` → **gone** (control:
+> `pub struct Tensor` in `fuel-core/src/*.rs` → **1**, the *lazy* type at
+> `lazy.rs:98`, so the zeros are evidence rather than a broken query).
 >
 > **This is a question CireSnave asked on 2026-06-01, parked behind a condition
 > that has since been satisfied, with no detector to say so.** An expiry tied to
@@ -26,6 +26,15 @@ through H are higher priority).
 >
 > **Re-derive:** `git grep -h 'strided_input()' -- '*.rs' | wc -l`;
 > `git grep -il contiguize -- '*.rs' | wc -l`.
+>
+⚠️ **The commands above were REPAIRED 2026-08-19 after a rename invalidated
+> them within hours.** `refactor: drop the redundant Lazy prefix` renamed
+> `LazyTensor` → `Tensor`, so the original formulation broke in BOTH directions:
+> the claim `pub struct Tensor` in `fuel-core/src/*.rs` now returns **1** (the
+> *lazy* type, at `lazy.rs:98`) and would read as *"B6 regressed, the eager
+> Tensor is back"*; and the control `pub struct LazyTensor` now returns **0**,
+> so it could no longer prove the query works. **Do not restore either.** The
+> markers above are eager-autograd-specific and a rename cannot resurrect them.
 
 ## The question
 
