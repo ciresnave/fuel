@@ -371,11 +371,12 @@ fn cpu_binary_op(
             lhs_l,
             rhs_l,
             |a, b| {
+                // NaN-propagating maximum (torch semantics): a NaN operand
+                // wins; otherwise the larger. `b` is returned both when it is
+                // NaN and when it exceeds `a` -- distinct reasons, same result.
                 if a.is_nan() {
                     a
-                } else if b.is_nan() {
-                    b
-                } else if a < b {
+                } else if b.is_nan() || a < b {
                     b
                 } else {
                     a
@@ -389,11 +390,12 @@ fn cpu_binary_op(
             lhs_l,
             rhs_l,
             |a, b| {
+                // NaN-propagating minimum (torch semantics): a NaN operand
+                // wins; otherwise the smaller. `b` is returned both when it is
+                // NaN and when it is below `a` -- distinct reasons, same result.
                 if a.is_nan() {
                     a
-                } else if b.is_nan() {
-                    b
-                } else if a > b {
+                } else if b.is_nan() || a > b {
                     b
                 } else {
                     a
@@ -1615,6 +1617,10 @@ fn cpu_copy_strided_src(
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "kernel entry point: the parameters are the operand buffers / strides / dims of the op ABI; bundling into a struct would obscure the signature, not clarify it"
+)]
 fn cpu_copy2d(
     src: &HostBuffer,
     dst: &mut HostBuffer,
@@ -1845,5 +1851,64 @@ mod backend_runtime_tests {
             }
             other => panic!("unexpected (signal, status) pair: {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod binary_op_nan_tests {
+    //! NaN-propagation for `cpu_binary_op`'s Maximum/Minimum on the typed
+    //! `HostBuffer` path. The ratified `byte_kernels::tests::
+    //! maximum_minimum_*_propagates_nan` tests exercise the BYTE path, not this
+    //! one -- confirmed by sabotage (dropping the `b.is_nan()` term here leaves
+    //! them green). This closes a pre-existing coverage hole in a pinned
+    //! convention (Relu/Maximum/Minimum are NaN-propagating, torch semantics).
+    use super::*;
+
+    fn f32_buf(v: &[f32]) -> HostBuffer {
+        HostBuffer::F32(v.to_vec())
+    }
+
+    #[test]
+    fn cpu_binary_op_maximum_minimum_propagate_nan() {
+        let n = f32::NAN;
+        // Every position has exactly one NaN operand, alternating sides, so a
+        // NaN dropped from either the a- or b- side would surface here.
+        let a = f32_buf(&[1.0, n, 3.0, n]);
+        let b = f32_buf(&[n, 2.0, n, 4.0]);
+        let l = Layout::contiguous(Shape::from_dims(&[4]));
+
+        for op in [BinaryOp::Maximum, BinaryOp::Minimum] {
+            let out = cpu_binary_op(&a, &b, &l, &l, op).expect("binary op");
+            let HostBuffer::F32(got) = out else {
+                panic!("expected F32 output for {op:?}");
+            };
+            for (i, &g) in got.iter().enumerate() {
+                assert!(
+                    g.is_nan(),
+                    "{op:?} at {i}: NaN must propagate (torch convention), got {g}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cpu_binary_op_maximum_minimum_basic() {
+        // Non-NaN magnitude behaviour on the same path: max picks the larger,
+        // min the smaller.
+        let a = f32_buf(&[1.0, 5.0]);
+        let b = f32_buf(&[2.0, 3.0]);
+        let l = Layout::contiguous(Shape::from_dims(&[2]));
+
+        let HostBuffer::F32(max) = cpu_binary_op(&a, &b, &l, &l, BinaryOp::Maximum).expect("max")
+        else {
+            panic!("expected F32");
+        };
+        assert_eq!(max, vec![2.0, 5.0]);
+
+        let HostBuffer::F32(min) = cpu_binary_op(&a, &b, &l, &l, BinaryOp::Minimum).expect("min")
+        else {
+            panic!("expected F32");
+        };
+        assert_eq!(min, vec![1.0, 3.0]);
     }
 }
