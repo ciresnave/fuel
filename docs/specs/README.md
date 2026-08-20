@@ -56,6 +56,24 @@ in [`../kernel-contracts/`](../kernel-contracts/) — see its `README.md` for th
 Three program plans drive the rollout of these specs (all WIP on branch
 `feat/kernel-contracts-dlpack`, never `main` until their gates):
 
+> ⚠️ **AMENDED 2026-08-20 — THAT BRANCH DOES NOT EXIST AND THE ROLLOUT IS DONE.**
+> `feat/kernel-contracts-dlpack` is **not on origin**. The sentence above is an
+> **instruction**, not a status, and this is the specs index — the door most
+> readers come through — so following it means attempting a checkout that fails
+> and concluding the program was abandoned.
+>
+> **FKC is unconditional production infrastructure on `main`.**
+> `fuel-dispatch/src/fkc/` holds **33** `.rs` files and there is **no `fkc`
+> feature gate anywhere** — deliberately, because a build without the importer
+> would silently lose whole kernel families. Nothing here is gated behind a
+> merge.
+>
+> **Re-derive:** `git ls-remote --heads origin | grep -c kernel-contracts-dlpack`
+> → **0**; `git ls-files 'fuel-dispatch/src/fkc/*.rs' | wc -l` → **33**;
+> `git grep -c 'feature = "fkc"' -- '*.toml' '*.rs'` → **0**.
+> *(Control: `git ls-files 'fuel-core/src/*.rs' | wc -l` → **190** — a structural
+> anchor, so no identifier rename can silently break this check.)*
+
 - **[`../session-prompts/kernel-contract-adoption-plan.md`](../session-prompts/kernel-contract-adoption-plan.md)**
   — moving Fuel's dispatch layers onto importable FKC contracts: importing a provider's file(s)
   auto-registers all its kernels onto the existing `KernelBindingTable` / `FusedKernelRegistry`,

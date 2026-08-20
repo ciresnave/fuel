@@ -21,6 +21,24 @@ every kernel** onto Fuel's dispatch surface.
 `fuel-cpu-backend`, MKL/AOCL, `fuel-quantized`, external third parties) and Fuel's
 the `fuel-dispatch` / `fuel-graph` import path.
 
+> ⚠️ **AMENDED 2026-08-20 — THE BRANCH IN THE STATUS LINE DOES NOT EXIST, AND
+> THIS SPEC'S SUBJECT IS LIVE ON `main`.** `feat/kernel-contracts-dlpack` is not
+> on origin. **A specification that calls itself an unmerged draft is telling the
+> reader not to rely on it** — and Fuel relies on this one today.
+> > **The format this document specifies is used by 114 contract files on `main`**
+> (`*.fkc.md`), parsed unconditionally by `fuel-dispatch/src/fkc/` — 33 `.rs`
+> files, no feature gate. This is the most-consumed spec in the cluster while
+> describing itself as a design pass with "no code yet".
+>
+> **Status of the DESIGN is unchanged by this notice.** "Draft for review" may
+> still be true of the *document's* review state; what is false is the branch
+> pointer and the implication that nothing is built. Amended rather than
+> restatused, because only the author of the review process can close it.
+>
+> **Re-derive:** `git ls-files '*.fkc.md' | wc -l` → **114**.
+> *(Control: `git ls-files 'fuel-core/src/*.rs' | wc -l` → **190** — a structural
+> anchor, so no identifier rename can silently break this check.)*
+
 > **Correction (2026-08-14).** This previously read *"Drops straight into the `fuel-book`
 > mdBook."* **That was never true and is now unrepresentable — `fuel-book` was deleted**
 > (fork-inherited Candle content, no live consumer). **Contracts have always lived in

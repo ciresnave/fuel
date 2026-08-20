@@ -13,6 +13,22 @@ class — **without ever lying in the base `DLTensor`**.
 `fuel-vulkan-kernels` (Slang), and any external DLPack consumer (PyTorch / JAX / CuPy / NumPy /
 TVM).
 
+> ⚠️ **AMENDED 2026-08-20 — THE BRANCH IN THE STATUS LINE DOES NOT EXIST, AND
+> THIS SPEC'S SUBJECT IS LIVE ON `main`.** `feat/kernel-contracts-dlpack` is not
+> on origin. **A specification that calls itself an unmerged draft is telling the
+> reader not to rely on it** — and Fuel relies on this one today.
+> > `dlpack` is a declared feature in **2** manifests (`fuel-ir`, `fuel-memory`)
+> and appears in **19** `.rs` files.
+>
+> **Status of the DESIGN is unchanged by this notice.** "Draft for review" may
+> still be true of the *document's* review state; what is false is the branch
+> pointer and the implication that nothing is built. Amended rather than
+> restatused, because only the author of the review process can close it.
+>
+> **Re-derive:** `git grep -l dlpack -- '*.rs' | wc -l` → **19**.
+> *(Control: `git ls-files 'fuel-core/src/*.rs' | wc -l` → **190** — a structural
+> anchor, so no identifier rename can silently break this check.)*
+
 **DLPack version targeted:** FDX rides the **versioned** struct family introduced in
 **DLPack v1.0** (`DLManagedTensorVersioned`, `DLPackVersion {major, minor}`,
 `DLPACK_FLAG_BITMASK_*`). It is written and validated against the **DLPack v1.3** header
