@@ -445,3 +445,21 @@ is one you decline to obtain, and record as declined.
 change for it to stop applying.** One clause, written while you still know it —
 and it is the only thing that lets a later reader retire your rule without
 first getting hurt by it.
+
+---
+
+## which-number-moves-if-it-became-a-no-op
+
+> **Index line (in CLAUDE.md):** Ask of any mechanism you ship: **"if this silently became a no-op, which number would move?"** If the honest answer is *none*, the metric is not measuring the mechanism — and the mechanism's own greenness is the thing least able to tell you.
+
+**FORMULATED 2026-08-20 by the precision lane, after two independent instances in one afternoon stopped looking like a coincidence.**
+
+**They are the same family and differ in one way worth keeping, because the REMEDIES differ:**
+
+**(a) A FIX WHOSE INERTNESS IS INVISIBLE IN THE METRIC MEASURING IT.** `CpuInvoker::with_seeded_output` was written to stop in-place kernels being verified against an all-zeros target. **An in-place kernel on a zeroed buffer is perfectly bit-stable, so the seeding could have been inert and every downstream test would still have been green** — GAP-222 one level up, inside its own fix. **REMEDY: A DISCRIMINATING FIXTURE.** The test uses `relu_inplace` *because* its output differs from its input only where the input is negative, and the fixture deliberately carries negatives; **a seed of all positives produces identical bytes whether or not the kernel read them.**
+
+**(b) A METRIC THAT IS INVARIANT UNDER TOTAL FAILURE OF WHAT IT MEASURES.** A ratchet counts live-GPU sites that do not call a guard. **If the guard itself stopped refusing — or were refactored to return `Result` and quietly ignored — every "guarded" site would be guarded by nothing and THE COUNT WOULD NOT MOVE BY ONE.** The ratchet stays green, complete, and meaningless. **REMEDY: A FOUNDATION CHECK ON THE GUARD ITSELF**, as a separate assertion, because no amount of care in the counting can reach it. (Vulkane's observation, made against their own scanner.)
+
+**So one question — *if this mechanism silently became a no-op, which number would move?* — and the answer names the remedy: a fixture that discriminates (a), or an assertion about the foundation (b). "None" means you have not instrumented the mechanism at all, only its surroundings.**
+
+**Why this is not merely "write better tests": in both instances the suite was green, the count was correct, and the work was real. Nothing in the output was wrong. The defect is that THE OUTPUT WOULD HAVE BEEN IDENTICAL HAD THE MECHANISM DONE NOTHING** — the same property as an unheld mutex, a zeroed probe target, and an unrun CI job. **Much of this file is one defect wearing different clothes: a result that cannot distinguish success from absence.**
