@@ -6,11 +6,27 @@
 > 2026-08-19, with a positive control confirming the query works:
 >
 > ```
-> pub struct Tensor  in fuel-core/src/*.rs  ->  0 matches
-> BackpropOp         anywhere in *.rs       ->  0 matches
-> fuel-core/src/op.rs                       ->  GONE
-> (control) pub struct Tensor           ->  1 match, fuel-core/src/lazy.rs
+> BackpropOp   anywhere in *.rs   ->  0 matches      <- the claim
+> fuel-core/src/op.rs             ->  GONE           <- the claim
+> (control) NodeHandle in *.rs    ->  many matches   <- proves the query works
 > ```
+>
+> ⚠️ **REPAIRED 2026-08-20. The original evidence block anchored on
+> `pub struct Tensor` in `fuel-core/src/` returning 0, with `pub struct
+> LazyTensor` returning 1 as its positive control — and the `Lazy`-prefix
+> sweep (`18c29ad0`) REWROTE `LazyTensor` -> `Tensor` INSIDE THIS MARKDOWN.**
+> That left the claim and its control as the same string asserting both 0 and
+> 1, and made the claim independently FALSE, because `pub struct Tensor` now
+> matches the renamed lazy type at `lazy.rs:98`. **A reader running it would
+> have got 1 and concluded B6 regressed.** B6 is fine; what died was the
+> evidence.
+>
+> **ANCHOR RULE, learned here: a re-derivation command embedded in prose is
+> corruptible by any mechanical rename, silently, because no compiler, test or
+> CI job reads markdown.** Anchor on things a rename CANNOT touch — file paths,
+> and identifiers that were **retired** rather than renamed. `BackpropOp` and
+> `fuel-core/src/op.rs` are good anchors precisely because they were DELETED.
+> `pub struct Tensor` was a bad one because it was RENAMED INTO.
 >
 > **The line below said "Phase H in progress" and was last touched 2026-06-15.**
 > It was quoted as current state two months later and produced a wrong answer
