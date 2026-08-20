@@ -5,8 +5,8 @@
 //! the legacy [`crate::VulkanStorage`] (typed `elem_count + dtype`
 //! shape) once kernel migration completes. Both types coexist:
 //!
-//! - **Legacy `VulkanStorage`**: holds `StorageBacking` + `elem_count`
-//!   + `dtype` + `tier`. Used by every existing Vulkan op kernel.
+//! - **Legacy `VulkanStorage`**: holds `StorageBacking` + `elem_count` +
+//!   `dtype` + `tier`. Used by every existing Vulkan op kernel.
 //!   Eviction/fault-back machinery (per Phase 7.5 P5) operates on
 //!   this type.
 //! - **`VulkanStorageBytes`** (this module): holds the same
